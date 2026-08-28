@@ -5,6 +5,7 @@
 #include "mod_packages.h"
 #include "mod_plugins.h"
 #include "gpu.h"
+#include "psx_ram.h"
 #include "psx_sha256.h"
 
 #if defined(RECOMP_LAUNCHER)
@@ -1337,6 +1338,7 @@ extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
 extern "C" void mod_runtime_activate_plugins(void) {
     using namespace PSXRecompV4;
     RuntimeMods& s = state();
+    psx_ram_reset_size_request();
     if (!s.initialized || !s.plan.ok) return;
     for (const ModResolution::Plugin& plugin : s.plan.plugins) {
         s.current_plugin = &plugin;
