@@ -113,3 +113,141 @@ The process exited after the smoke. Original saves/cards were not modified.
 The committed 7,200-tick route is a longer stationary workload manifest; this
 smoke does not validate its full-duration timing or the analog approach route.
 See [tool usage and remaining gates](TOOLS.md).
+
+## MEMORY-TRACE-001: remove empty production write-trace calls
+
+Dates: 2026-09-04 to 2026-09-05. Verdict: retain as a narrowly scoped dead-work
+simplification. Local write benchmark improves; gameplay gain is unproven.
+This does not complete the campaign or establish the cause of the beach slowdown.
+
+### Change and correctness evidence
+
+Guard the six RAM/scratchpad byte, halfword and word calls to
+`debug_server_trace_write_check` with the existing `PSX_NO_DEBUG_TOOLS` switch.
+That function already returns immediately in production. This also removes its
+old-value argument loads. Debug builds keep the original calls. No functional
+memory observer, store, cycle charge, MMIO path, runtime setting, ABI or state
+layout changes. Separate `-O2 -fno-lto` object inspection found the baseline's
+undefined trace symbol and confirmed its absence from the candidate object.
+
+`runtime/tests/test_memory_debug_trace_guard.py` compiles actual `memory.c`
+against real runtime headers, with external device/observer stubs. It checks
+all six writes through four RAM mirrors and scratchpad aliases, expected bytes
+and adjacent sentinels, observer/store counts, and production/debug trace-call
+witnesses. Optional `--baseline-memory` also checks the old production source.
+The compact state hash covers touched bytes and selected counters, not complete
+guest/device state. Structural checks preserve functional RAM observer order.
+An earlier synthetic store model and then a fake-header fixture were rejected
+during review; neither is used by the committed test.
+
+### Build provenance
+
+Framework baseline is `8ec6498d323a7abd04a3058afcbb5e36e62a8ec3`; candidate differs
+only by the six guards in `runtime/src/memory.c`. Source SHA256:
+
+- Baseline: `693be507fa53fded3e8e276f4ac0f7293d3879f3d53a8044fa8c383b4e097b99`.
+- Candidate: `4fdb391d4f74da1ef2d31ce7cd61a0e0b958abab8304da37d83a2c1bb0e85253`.
+
+Both title executables were rebuilt, using the same copied Ape Escape generated
+code and assets from `_wt-ape-crabperf-20260901`. Provenance trees/build logs are
+retained under `.local/ape-build-provenance`. CMake Release uses MinGW GCC/G++
+15.2.0 from `C:/msys64/mingw64/bin`, `-O3 -DNDEBUG`, debug tools OFF, static runtime ON,
+SDL3, recomp UI and rewind ON, netplay OFF, and block cycles ON. Vulkan was
+enabled in the build but was not the selected/tested renderer. The first build
+failed with the wrong windres shim; successful builds explicitly selected
+`C:/msys64/mingw64/bin/windres.exe`.
+
+- A executable SHA256: `f0c893a5743d8dfddcde75fe275d525c99c66294c5333fdf48b797de0b21096e`.
+- B executable SHA256: `6fd00dc4ed8a7e9cf66f1bdd64ebaafd376d867dd5687c126bcd56f8e03dbf12`.
+- A successful build-log SHA256: `c9a042d2ccab65d248a9b91b0b74d1106fc80fe74f611ea5eccfb27f350ad252`.
+- B successful build-log SHA256: `3d5326d5fa5de696cb02fd3c021a2336b92362c04fcfc3f00a560a79ec34ad8e`.
+
+The generated BIOS warned that it was stale against the current emitter
+fingerprint. It was deliberately identical in A/B to retain compatibility with
+the available v5 checkpoint. No native overlay compilation/loading was
+configured. These are controlled local integration artifacts, **not** clean
+release builds or qualification of regenerated code and shipped overlay caches.
+
+### Local write benchmark
+
+Actual memory implementation, external device stubs, and a genuinely empty
+trace function in a separate translation unit; GCC C11 `-O2 -fno-lto`, production
+macro enabled. Each run executes 50 million loops of six writes. Both artifacts
+warm up with one million loops before measured A1/B1/A2/B2/A3/B3 order. Host is
+the Ryzen 7 9800X3D, High Performance power plan, affinity `0x1`, no CPU cap.
+Primary metric is launch-to-completion wall seconds, lower is better.
+
+| Pair | A seconds | B seconds |
+| --- | --- | --- |
+| 1 | 1.4162425 | 1.1504406 |
+| 2 | 1.4181166 | 1.1467513 |
+| 3 | 1.4099258 | 1.1160858 |
+| Minimum | 1.4099258 | 1.1160858 |
+| Median | 1.4162425 | 1.1467513 |
+
+Median improvement: 19.03%; minimum improvement: 20.84%. All six runs produced
+identical selected state/counters: `state=dcc19de5`, 300 million stores,
+150 million parity calls, 150 million card checks, zero trace calls. This
+workload emphasizes write-call overhead and does not predict gameplay gain.
+The compiler-process monitor reported no observed compilers; thermal/frequency
+telemetry was not collected.
+
+### Crabby Beach OpenGL comparison
+
+Same v5 state as CRAB-DISCOVERY-001, staged copies of saves/cards/settings.
+OpenGL context reported NVIDIA 3.3.0 driver 610.74, 2x SSAA and antialiasing,
+165 Hz display, wall-clock 59.94 Hz pacing, driver vsync OFF. Both uncapped
+smokes sustained approximately 60 guest Hz with no reported audio underruns.
+A screenshot outside the acceptance runs confirmed the water-facing beach
+scene. Smoke timings are excluded: they are not three pairs and B's screenshot
+overlapped its smoke window.
+
+Measured A/B uses `PSX_LOAD_SLOT=1`, `PSX_RUNTIME_PERF_DIAG=1`, `PSX_GL_PERF=0`,
+`PSX_BENCH_WINDOW=120:420`. Primary metric is the runtime's exact 300-frame
+`BENCH wall_ms`, not launcher lifespan. Every run uses a 25%-of-one-logical-core
+Job budget (raw CpuRate 157/10000) and affinity `0xFFFF`, limiting the entire
+job. Every process is intentionally stopped after 35 seconds. Timed windows
+complete before timeout. This scheduling cap is not low-end hardware emulation.
+
+| Pair | A wall ms | B wall ms |
+| --- | --- | --- |
+| 1 | 8458.662 | 8588.874 |
+| 2 | 8312.503 | 8274.390 |
+| 3 | 8341.652 | 7946.127 |
+| Minimum | 8312.503 | 7946.127 |
+| Median | 8341.652 | 8274.390 |
+
+Median improvement: **0.81%, within observed noise**; minimum improvement:
+4.41%. No convincing scene-level gain. Each window reports 180,114 interpreted
+instructions, 15,564 fallback dispatches, and zero overlay loads, invalidations,
+or captures. Those matching counters are not full-state parity. Under the
+severe budget both builds slow down and underflow host audio. No compilers or
+monitor errors were observed; configuration/mod hashes remained unchanged.
+No screenshots were taken during these six runs. No runs were discarded.
+
+### Retained evidence and remaining gates
+
+All following paths are relative to the worktree and are intentionally ignored:
+
+| Artifact | SHA256 |
+| --- | --- |
+| `.local/memory-trace-bench/campaign.json` | `fd1944a1fc3a8ea750e37ceda9fb12367d9bb85adc8f12d01fdc28df3a3b06ad` |
+| `.local/game-memory-ab/campaign.json` | `9d0c70ae9b9d221bc601e24cf7563dcdc61f84fecbae97806e7a7d068d8b5e1d` |
+| `.local/run_memory_bench.py` | `90f6fec928f33f3d5e6395d31ce25d7f86ba16359d79851dd8903ef9ef48057d` |
+| `.local/run_game_ab.py` | `e3e9fd310600c3dbde14d4b2b4fff741cee2a063c14bbfc9ffe7f8416f71bff9` |
+
+JSON retains per-run evidence and artifact/configuration hashes; game/state
+assets are not distributed. The focused compiled regression passes, as do the
+FMV quiet and dirty-text admission/continuation guard tests. The combined
+campaign/host-launcher/stall-report suite passes all 63 tests, and CMake's
+registration guard finds all 120 runtime/recompiler test files registered.
+These are not a full runtime CTest pass or cross-platform validation. Two unrelated
+structural tests also fail on the immutable baseline; details are in
+[the audit](RUNTIME_AUDIT.md#validation-gaps).
+
+Retain the change only as removal of already-empty production work, under the
+contract's simplification allowance, not as a 5% gameplay optimization. Full
+checkpoint parity, multi-title/low-end hardware, moving/transition routes,
+long-window frame consistency, clean-install and cross-platform release gates
+remain open. Broader GPU/audio history and GL costs remain separate candidates;
+the flat gameplay result does not justify focusing the campaign on memory.
