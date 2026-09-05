@@ -16,6 +16,10 @@ threading or Vulkan behavior has changed.
 [PACER-COST-001](EXPERIMENTS.md#pacer-cost-001-attribute-idle-pacing-cpu-cost)
 provides idle-pacer CPU attribution, not a speedup claim.
 
+[MANUAL-INTEGRATION-004](EXPERIMENTS.md#manual-integration-004-user-sign-off-and-master-integration)
+records the user's Tomba 2/Mega Man X6 sign-off and approval to integrate the
+scoped guards. This does not close the wider performance/correctness campaign.
+
 ## Disposition Matrix
 
 | Area | Current disposition | Evidence | Candidate / next check | Correctness guardrails |

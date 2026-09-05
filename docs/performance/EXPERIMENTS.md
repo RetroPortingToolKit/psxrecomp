@@ -585,3 +585,46 @@ supports retaining the candidates in the isolated burndown branch for further
 qualification. Normal-speed audio/pacing, constrained-host comparisons,
 multi-title correctness and actual low-end hardware remain open. Do not ship
 the local uncap hook as a gameplay default.
+
+## MANUAL-INTEGRATION-004: user sign-off and master integration
+
+Date: 2026-09-05. The user reviewed the Tomba 2 and Mega Man X6 manual builds,
+reported that they "look good", and explicitly authorized committing and
+merging the work to main/master. This is user acceptance of the supplied test
+builds, not an instrumented audio comparison, full-title playthrough or a new
+performance measurement.
+
+Both manual builds used the combined guards from `04371d60`, normal pacing,
+OpenGL, recomp-ui, production debug-tools OFF, rewind ON, existing generated
+game/BIOS code and isolated copied memory cards. Recomp-ui displayed verified
+discs with BIOS paths supplied. Final executable SHA256 values:
+
+- Tomba 2: `6d978d8e2a736aa8b94cb076091117edbe76f6fa7c7f061df227233be8a648ad`.
+- Mega Man X6: `4c99e7a6092122b6675daf83f52eddb76a71b0b5290b474c7f4d494df84135b2`.
+
+The initial Tomba build disabled rewind to bypass a dependency lookup; review
+rejected that workaround and the final build restored rewind. Mega Man X6's
+older recomp-ui headers were incompatible with the runtime, so its manual
+build used the compatible Tomba 2 recomp-ui checkout. Neither original game
+installation was edited. Local build logs/settings/screenshots remain under
+the original burndown worktree's `.local/manual-validation` directory.
+
+Integration uses `origin/master` at `17f49ad3` as its base. Only the six campaign
+commits `6488414a`, `d38f97e1`, `8ec6498d`, `28e9c844`, `0cf93d57`, and
+`04371d60` were transplanted; the older review-branch ancestry was excluded.
+All six applied without conflicts. The runtime delta remains only the three
+production diagnostic guards; benchmark uncapping and local game artifacts
+are not part of the merge.
+
+The first integration GPU test failed because its old polyline fixture supplied
+only one vertex before the terminator. Upstream now correctly requires two
+vertices. The fixture now supplies both; the upstream runtime fix is unchanged.
+On the integrated sources, all three actual-source guard regressions and the
+63 campaign/host/stall-report tests pass. The previously tested game executables
+are not rebuilds of this newer upstream base; no such equivalence is claimed.
+The CMake registration guard also passes with 133 test files registered.
+
+Disposition: user-approved integration of the scoped optimizations, tests and
+measurement tools. The original WIP label records the historical state at
+implementation time. The broader burndown, general speedup qualification and
+actual low-end hardware coverage remain open after this merge.

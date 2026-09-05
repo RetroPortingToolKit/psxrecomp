@@ -100,6 +100,8 @@ static void emit_copy(uint32_t src_xy, uint32_t dst_xy, uint32_t wh) {
 static void emit_polyline(void) {
     gpu_write_gp0(0x4800007Fu);
     gpu_write_gp0((20u << 16) | 10u);
+    /* The first two vertices are mandatory, before any terminator. */
+    gpu_write_gp0((25u << 16) | 15u);
     gpu_write_gp0(0x55555555u);
     s_frame_count++;
     checkpoint();
@@ -466,7 +468,7 @@ def main() -> int:
     if prod_out["copydump"] != "0" or prod_out["polydump"] != "0":
         fail("production GP0 history frame dumps should be empty")
     if debug_out["total"] != "10" or int(debug_out["cap"]) == 0:
-        fail("debug GP0 history stopped recording")
+        fail(f"unexpected debug GP0 history: {debug_out}")
     if debug_out["src"] != "00123400" or debug_out["op"] != "e1":
         fail("debug GP0 history lost source/opcode tracking")
     if debug_out["cmd0"] != "e10003ff":
