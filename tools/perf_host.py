@@ -494,7 +494,7 @@ def launch_windows(
         )
         if not ok:
             raise _winerr("CreateProcessW failed")
-    except Exception:
+    except BaseException:
         for f in stdio_files:
             f.close()
         raise
@@ -598,7 +598,7 @@ def launch_windows(
             user_s = _filetime_seconds(user_ft)
             kernel_s = _filetime_seconds(kernel_ft)
             total_s = user_s + kernel_s
-    except Exception:
+    except BaseException:
         if job:
             kernel32.TerminateJobObject(job, 1)
         if pi.hProcess:

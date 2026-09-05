@@ -89,3 +89,27 @@ An earlier 0.5-CPU-second witness did not demonstrate effective throttling even
 at a 3% host budget. Longer witnesses did, so sub-second smoke timing is not a
 valid cap calibration. Repeat calibration on each host and use sustained game
 windows rather than assuming the scheduler's short-term behavior is linear.
+
+## ROUTE-SMOKE-001: live runner protocol validation
+
+Date: 2026-09-04 (session date). Verdict: successful diagnostic smoke only.
+No optimization candidate, target-provenance manifest, or acceptance comparison.
+
+Used the isolated executable/state from CRAB-DISCOVERY-001, OpenGL, no host cap,
+`PSX_RUNTIME_PERF_DIAG=1`, and explicitly `PSX_GL_PERF=0`. A local shortened
+route held neutral input for 120 ticks. The runner confirmed completed slot-1
+restore (generation 1, `last_ok=1`) and route completion (`active=false`, one
+step consumed, `remaining=0`). Raw evidence:
+`.local/crabby-baseline/runner-smoke.json`.
+
+- Route wall time: approximately 2.141 seconds, including setup/status overhead.
+- Counter observation window: approximately 2.672 seconds and 161 frame ticks,
+  including sequential snapshots/control traffic, not exactly 120 guest ticks.
+- GL frame timing correctly reported unavailable with timer queries disabled.
+- No native overlay compilation was configured; cache provenance remains
+  unsuitable for a prepared-release acceptance baseline.
+
+The process exited after the smoke. Original saves/cards were not modified.
+The committed 7,200-tick route is a longer stationary workload manifest; this
+smoke does not validate its full-duration timing or the analog approach route.
+See [tool usage and remaining gates](TOOLS.md).

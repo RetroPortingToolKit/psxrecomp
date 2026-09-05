@@ -1,0 +1,10 @@
+{
+  "name": "ape-crabby-water-idle",
+  "title": "Ape Escape (USA)",
+  "scene": "Crabby Beach, sandcastle area facing the water",
+  "state_sha256": "2dfc142e65eb32e179b67d352f510d15f6d97efd22b3b43a9eef24301f3ad5a9",
+  "notes": "Stationary initial workload, 7200 native input-route ticks. Requires the separately supplied compatible v5 slot01 state. This does not reproduce an analog approach to the water and is not a portable savestate fixture. Original state remains local; see docs/performance/EXPERIMENTS.md for identity and limitations.",
+  "steps": [
+    {"frames": 7200, "buttons": 65535}
+  ]
+}

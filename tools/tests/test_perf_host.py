@@ -181,6 +181,16 @@ class PerfHostTests(unittest.TestCase):
         self.assertIn("terminate_process", calls)
         self.assertNotIn("resume", calls)
 
+        calls.clear()
+        kernel = FakeKernel()
+        with mock.patch.object(PERF, "kernel32", kernel), \
+                mock.patch.object(kernel, "AssignProcessToJobObject",
+                                  side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                PERF.launch_windows([sys.executable, "-c", "pass"], 50, None, 1.0)
+        self.assertIn("terminate_process", calls)
+        self.assertNotIn("resume", calls)
+
     def test_windows_get_exit_code_failure_terminates_scoped_job(self):
         if os.name != "nt":
             self.skipTest("Windows API layer is only defined on Windows")
