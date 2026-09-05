@@ -102,11 +102,12 @@ typedef struct {
 void gpu_arm_shaded_quad_capture(void);
 int  gpu_get_shaded_quad_capture(const GpuSqCapEntry** out);
 
-/* Per-frame GP0 command ring (always-on; query via debug server).
- * Each entry records the GP0 command header + up to 6 payload words
- * (longer commands like 0x3C shaded textured quad are truncated to 6).
+/* Per-frame GP0 command ring (always-on in debug-tool builds).
+ * Each entry records up to GPU_GP0_RING_MAX_WORDS command words, including
+ * the header; longer commands are truncated.
  * Stamped with the s_frame_count value at issue time so a debug
- * client can pull all commands for any frame in the ring window. */
+ * client can pull all commands for any frame in the ring window.
+ * PSX_NO_DEBUG_TOOLS builds report zero total/capacity and empty dumps/spans. */
 #define GPU_GP0_RING_MAX_WORDS 12
 typedef struct {
     uint32_t frame;

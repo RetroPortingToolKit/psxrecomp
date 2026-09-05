@@ -1680,7 +1680,9 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
             }
         }
         if (phys == D44_PHYS) d44_note(phys, read_ram_word(phys), val);
+#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, read_ram_word(phys), val, 4);
+#endif
         parity_trace_note_write(phys, 4, effective_store_pc());
         card_data_writes_check(phys, val, 4);
         dirty_ram_mark_kernel_write(phys);
@@ -1713,12 +1715,14 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) return;
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
         uint32_t off = phys - 0x1F800000u;
+#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys,
             (uint32_t)scratchpad[off]
           | ((uint32_t)scratchpad[off + 1] << 8)
           | ((uint32_t)scratchpad[off + 2] << 16)
           | ((uint32_t)scratchpad[off + 3] << 24),
             val, 4);
+#endif
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         scratchpad[off + 2] = (uint8_t)(val >> 16);
@@ -1808,7 +1812,9 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     uint32_t phys = psx_phys_addr(addr);
 
     if (phys < RAM_SIZE) {
+#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, (uint32_t)read_ram_half(phys), (uint32_t)val, 2);
+#endif
         parity_trace_note_write(phys, 2, effective_store_pc());
         card_data_writes_check(phys, (uint32_t)val, 2);
         dirty_ram_mark_kernel_write(phys);
@@ -1840,9 +1846,11 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) return;
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
         uint32_t off = phys - 0x1F800000u;
+#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys,
             (uint32_t)scratchpad[off] | ((uint32_t)scratchpad[off + 1] << 8),
             (uint32_t)val, 2);
+#endif
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         return;
@@ -2143,7 +2151,9 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     uint32_t phys = psx_phys_addr(addr);
 
     if (phys < RAM_SIZE) {
+#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, (uint32_t)ram[phys], (uint32_t)val, 1);
+#endif
         parity_trace_note_write(phys, 1, effective_store_pc());
         card_data_writes_check(phys, (uint32_t)val, 1);
         dirty_ram_mark_kernel_write(phys);
@@ -2171,8 +2181,10 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     }
     if (phys >= 0x1F000000u && phys <= 0x1F7FFFFFu) return;
     if (phys >= 0x1F800000u && phys <= 0x1F8003FFu) {
+#ifndef PSX_NO_DEBUG_TOOLS
         debug_server_trace_write_check(phys, (uint32_t)scratchpad[phys - 0x1F800000u],
                                        (uint32_t)val, 1);
+#endif
         scratchpad[phys - 0x1F800000u] = val;
         return;
     }

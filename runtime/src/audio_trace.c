@@ -1,11 +1,10 @@
 /*
  * audio_trace.c - always-on audio observability rings. See audio_trace.h.
  *
- * Memory: 3 PCM taps x 2^22 stereo frames x 4 bytes = 48 MiB static, plus a
- * 2^19-entry event ring (16 MiB). Static BSS, zero cost until touched; the
- * recording hot path is a memcpy per audio block and is compiled into
- * Release/production builds too (always-on ring-buffer discipline — probes
- * query history, they never arm recording).
+ * Debug-tool builds keep 4 PCM taps x 2^22 stereo frames x 4 bytes = 64 MiB
+ * static history, plus a 2^19-entry event ring (16 MiB). Production
+ * PSX_NO_DEBUG_TOOLS builds retain counters/events but compile out PCM history
+ * storage and WAV dumps.
  */
 #include "audio_trace.h"
 
@@ -14,8 +13,10 @@
 #include <string.h>
 
 /* 2^22 frames @ 44100 ~= 95 s per tap. Power of two so wrap is a mask. */
+#ifndef PSX_NO_DEBUG_TOOLS
 #define PCM_RING_FRAMES (1u << 22)
 #define PCM_RING_MASK   (PCM_RING_FRAMES - 1u)
+#endif
 
 #define EV_RING_CAP  (1u << 19)
 #define EV_RING_MASK (EV_RING_CAP - 1u)
@@ -26,7 +27,9 @@
 #define AUDIBLE_ABS 256
 
 typedef struct {
+#ifndef PSX_NO_DEBUG_TOOLS
     int16_t          pcm[PCM_RING_FRAMES * 2];
+#endif
     _Atomic uint64_t head;      /* frames ever written; ring pos = head & MASK */
     uint64_t         nonzero;
     uint64_t         audible;
@@ -98,9 +101,11 @@ void audio_trace_pcm(int tap, const int16_t *stereo, int frames)
     for (int f = 0; f < frames; f++) {
         int16_t l = stereo[f * 2 + 0];
         int16_t r = stereo[f * 2 + 1];
+#ifndef PSX_NO_DEBUG_TOOLS
         uint32_t pos = (uint32_t)((head + (uint64_t)f) & PCM_RING_MASK);
         t->pcm[pos * 2 + 0] = l;
         t->pcm[pos * 2 + 1] = r;
+#endif
         int32_t al = l < 0 ? -(int32_t)l : l;
         int32_t ar = r < 0 ? -(int32_t)r : r;
         int32_t a  = al > ar ? al : ar;
@@ -187,6 +192,7 @@ uint32_t audio_trace_events_get(AudioTraceEvent *out, uint32_t max)
 
 /* ---- WAV dump --------------------------------------------------------- */
 
+#ifndef PSX_NO_DEBUG_TOOLS
 static void wav_write_header(FILE *fp, uint32_t data_bytes, uint32_t rate)
 {
     uint8_t h[44];
@@ -261,3 +267,14 @@ int64_t audio_trace_dump_wav(int tap, const char *path,
     fclose(fp);
     return (int64_t)count;
 }
+#else
+int64_t audio_trace_dump_wav(int tap, const char *path,
+                             int64_t start, uint64_t count)
+{
+    (void)tap;
+    (void)path;
+    (void)start;
+    (void)count;
+    return -1;
+}
+#endif

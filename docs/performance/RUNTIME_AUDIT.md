@@ -1,0 +1,119 @@
+# Runtime Audit
+
+Source audit for the runtime burndown. The matrix records the initial source
+disposition; follow-up implementation and qualification are noted below.
+The memory-trace candidate has been implemented and measured. See
+[MEMORY-TRACE-001](EXPERIMENTS.md#memory-trace-001-remove-empty-production-write-trace-calls)
+for results and limitations. Paths are repository-relative.
+
+Follow-up: [HISTORY-002](EXPERIMENTS.md#history-002-isolated-gpu-and-audio-history-candidates)
+implements production-only GP0 history and audio PCM-storage gates. Focused
+tests and real OpenGL guest/CPU-timing checkpoints pass.
+[UNCAP-HISTORY-003](EXPERIMENTS.md#uncap-history-003-uncapped-opengl-throughput)
+adds uncapped throughput and process-private-commit measurements; normal-speed
+and low-end acceptance remain open. No shipped census, GL hold-copy, pacing,
+threading or Vulkan behavior has changed.
+[PACER-COST-001](EXPERIMENTS.md#pacer-cost-001-attribute-idle-pacing-cpu-cost)
+provides idle-pacer CPU attribution, not a speedup claim.
+
+[MANUAL-INTEGRATION-004](EXPERIMENTS.md#manual-integration-004-user-sign-off-and-master-integration)
+records the user's Tomba 2/Mega Man X6 sign-off and approval to integrate the
+scoped guards. This does not close the wider performance/correctness campaign.
+
+## Disposition Matrix
+
+| Area | Current disposition | Evidence | Candidate / next check | Correctness guardrails |
+| --- | --- | --- | --- | --- |
+| Host CPU budget | Tooling calibration only, not an optimization. | `docs/performance/TOOLS.md:22-24` defines `--core-percent` as one logical CPU-equivalent, separate from affinity. Sustained calibration on this 16-logical-CPU host: unrestricted 2.580994 wall / 2.500000 CPU sec, core50 raw 313 -> 4.679147 wall / 2.531250 CPU sec, core25 raw 157 -> 9.515031 wall / 2.500000 CPU sec in `docs/performance/EXPERIMENTS.md:64-91`. | Use to expose CPU-limited behavior; do not treat as low-end hardware equivalence. | Does not change guest clocks, CPU frequency, or isolate the emulation thread. |
+| P1-1 audio observer | Active production observer; comment is stale. | `runtime/include/audio_trace.h:40-42` defines 4 taps. `runtime/src/audio_trace.c:17-36` stores 4 taps of `2^22` stereo frames: 64 MiB PCM, plus `EV_RING_CAP = 2^19` events at `runtime/src/audio_trace.c:20-54` (16 MiB by current struct layout). Header/source comments still describe 3 taps / 48 MiB. Hot writes are `audio_trace_pcm` / `audio_trace_event` at `runtime/src/audio_trace.c:92-126`; host-audio calls/events appear at `runtime/src/main.cpp:2071`, `runtime/src/main.cpp:3086-3166`, and `runtime/src/main.cpp:3195`. | `AUDIO-TRACE-001`: measure footprint and CPU cost, then gate or reduce trace only with an explicit diagnostic selector. | Preserve underrun/drop/mute observability and dump workflows; keep cheap health counters if full trace is gated. |
+| P1-1 GPU histories | Mixed active/lazy/toggleable observers. | GP0 ring lazy-allocates at `runtime/src/gpu.c:4859-4866` and records commands at `runtime/src/gpu.c:5058`, with public entry shape at `runtime/include/gpu.h:106-129`. A0/C0 histories are bounded at `runtime/src/gpu.c:4346-4414` and `runtime/src/gpu.c:4459-4494`. GL coherence/present rings are metadata observers at `runtime/include/gpu_gl_renderer.h:137-176`. | Measure before gating. Split active default costs from already-gated diagnostics. | These support route, selfcheck, widescreen, and renderer-debug workflows. |
+| P1-1 `CENSUS-001` WS census | Active by default in ordinary draw path; only debug server consumes/toggles it. | `ws_census_on = 1` at `runtime/src/gpu.c:4950`. Every drawing primitive can call `ws_census_record` from `runtime/src/gpu.c:5062-5066`; the early return is at `runtime/src/gpu.c:5006-5007`, but default-on records allocate a 48 MiB ring at `runtime/src/gpu.c:4937-4950` and read camera with two `psx_read_half` calls at `runtime/src/gpu.c:5017-5018`. The only `gpu_ws_census_*` consumer found is debug server on/off/dump/seq at `runtime/src/debug_server.c:8014-8030` and command registration at `runtime/src/debug_server.c:13540`. `psx_read_half` itself observes data-shard/load-store modes at `runtime/src/memory.c:1744-1753`, so changing census reads is not automatically behavior-neutral. | Candidate: default-off or debug-tool gate after proving no route/selfcheck/widescreen automation depends on default-on census data. | Preserve widescreen diagnosis and avoid changing lockstep/data-shard observer behavior in diagnostic modes. |
+| P1-1 / P2-5 `MEMORY-TRACE-001` | Implemented debug-tool guard, not a planned attribution probe. | `debug_server_trace_write_check` is declared at `runtime/src/memory.c:955-958` and implemented at `runtime/src/debug_server.c:9449`. Six hot write sites are already guarded by `#ifndef PSX_NO_DEBUG_TOOLS`: RAM/scratchpad word at `runtime/src/memory.c:1683-1685` and `runtime/src/memory.c:1718-1725`, half at `runtime/src/memory.c:1815-1817` and `runtime/src/memory.c:1849-1853`, byte at `runtime/src/memory.c:2154-2156` and `runtime/src/memory.c:2184-2187`. | Current candidate is validating this guard/removal surface, not inventing new instrumentation. | Do not change immediate write semantics, cycle accounting, parity last-writer, dirty-RAM, text/overlay watches, card-data checks, or MMIO ordering. |
+| P2-1/P2-2 CPU write-call path | Real native-game exercise exists; hotspot still needs samples. | Generated Ape Escape code calls through `cpu->write_word`, `cpu->write_half`, and `cpu->write_byte`, e.g. `.local/ape-build-provenance/ape-src/generated/SCUS_944.23_full_00.c:120`, `.local/ape-build-provenance/ape-src/generated/SCUS_944.23_full_00.c:421`, `.local/ape-build-provenance/ape-src/generated/SCUS_944.23_full_00.c:11843`. Runtime assigns these pointers to `psx_write_*` at `runtime/src/main.cpp:13843-13847`; implementations start at `runtime/src/memory.c:1585`, `runtime/src/memory.c:1791`, and `runtime/src/memory.c:2134`. | Candidate: immediate-call removal / native write-call fast path, measured separately from renderer work under host CPU budgets. | Scope is call overhead only; no observer, MMIO, load/store recording, or cycle behavior change. |
+| P1-2 GL CPU uploads | Active when CPU writes VRAM. | Pending upload rects are capped at 16 at `runtime/src/gpu_gl_renderer.c:437-456`; overflow flushes at `runtime/src/gpu_gl_renderer.c:541-589`. Flush converts 1555 to RGBA, updates upload/raw textures, streams VBO data, and draws rects at `runtime/src/gpu_gl_renderer.c:1297-1378`. Upload timing diagnostics are already env-gated at `runtime/src/gpu_gl_renderer.c:459-470`. | `GL-UPLOAD-001`: count overflow, bytes, conversion time, and flush causes on replay. | Preserve VRAM feedback, masks, CLUT/page dependencies, and dual/netplay CPU-auth mode. |
+| P1-2 GL pack / feedback | Active when drawn dirty VRAM is sampled. | Draws accumulate a dirty union at `runtime/src/gpu_gl_renderer.c:1504-1530`. Sampling can force pack at `runtime/src/gpu_gl_renderer.c:1452-1472`; pack mirrors dirty HR FBO data back to raw texture at `runtime/src/gpu_gl_renderer.c:1424-1450`. | `GL-PACK-001`: measure pack frequency and dirty area before considering narrower tracking. | Preserve texture feedback, CLUT sampling, PGXP/subpixel edge widening, mask/stencil, and native-wide output. |
+| P1-2 GL batch splits | Deferred until batch diagnostics implicate it. | Semi-transparent textured primitives are isolated at `runtime/src/gpu_gl_renderer.c:1958-2055`; comments tie this to STP ordering at `runtime/src/gpu_gl_renderer.c:2009-2018`. Non-triangle flat geometry is immediate at `runtime/src/gpu_gl_renderer.c:1872-1939`. Batch diagnostics exist at `runtime/include/gpu_gl_renderer.h:214-219` and `runtime/src/debug_server.c:7733-7754`. | Use existing `frame_perf`/batch diagnostics to prove split cost before changes. | Draw order, semi-transparency, mask checks, and feedback are high-risk. |
+| P1-2 GL readbacks/probes | Mostly already gated or non-steady-state. | Full VRAM readback is `ensure_cpu` at `runtime/src/gpu_gl_renderer.c:1479-1497`; normal 15-bit present uses GPU-direct selection at `runtime/src/main.cpp:7047-7078`. `gl_fbo_peek` / `gl_vram_diff` are debug commands at `runtime/src/debug_server.c:9036-9091`; present pixel probes require `PSX_GL_PRESENT_PROBE=1` at `runtime/src/gpu_gl_renderer.c:789-835`. | Verify route logs do not hit unexpected `ensure_cpu` or debug readbacks during measurement. | Keep diagnostic readbacks available; disabling unused tools is not a measured optimization. |
+| P1-2 hold-last copy | Existing capture calls are unconditional in ordinary present paths; safe gating is not implemented. | `hold_capture_drawable` copies before swap at `runtime/src/gpu_gl_renderer.c:717-734` and is called by CPU/blank/VRAM/wide presents at `runtime/src/gpu_gl_renderer.c:3016`, `runtime/src/gpu_gl_renderer.c:3032`, `runtime/src/gpu_gl_renderer.c:4234`, and `runtime/src/gpu_gl_renderer.c:4338`. Consumers include netplay hold at `runtime/src/main.cpp:5578-5611` and rewind pause at `runtime/src/main.cpp:6174-6189`. `gl_swap_with_osd` draws OSD after capture and before swap at `runtime/src/gpu_gl_renderer.c:3961-4034`, so capture is pre-OSD. | `GL-HOLD-001`: gate capture only when all activation/transition dependencies are enumerated. | Preserve rewind pause, netplay catch-up, interpolation hold, blank/tip-hold transitions, and pre-OSD capture ordering. |
+| P1-3 pacing/audio threading | No change candidate without profile attribution. | Vsync ownership and swap interval are derived at `runtime/src/main.cpp:2846-2875`; wall pacing is a deadline cap at `runtime/src/main.cpp:2878-2913`; vblank present calls body then pacer wait at `runtime/src/main.cpp:7423-7449`. | Measure wait/swap/pacer/audio underrun counters under calibrated host budgets. | No speed drift, latency regression, focus/refresh regression, or new underruns. |
+| P1-4 overlays/compilation | Not attributed as runtime contention; several safeguards already avoid hot-path capture. | Overlay capture is enabled/configured from runtime config at `runtime/src/main.cpp:11929-11957`. Universal guest writes clear compact page evidence instead of serializing snapshots at `runtime/src/memory.c:786-800`; dirty interpreter admits decodable CD-DMA overlay words at `runtime/src/dirty_ram_interp.c:2848-2851`. | Separate cold-start/transition attribution from warm steady-state; do not “optimize” overlay capture without samples. | Preserve overlay identity, replacement, self-modification, restore, and cold installs. |
+| P2-3 GTE/PGXP | Several CPU-side optimizations/gates already exist; residual cost needs samples. | GTE debug/projection rings are under `#ifndef PSX_NO_DEBUG_TOOLS` around `runtime/src/gte.cpp:1788-1818`. GTE register accessors read/write CPU state directly (`runtime/src/gte.cpp:2003-2032`, `runtime/src/gte.cpp:2036`, `runtime/src/gte.cpp:2110`), while timing stalls live in `runtime/src/psx_cycles.c:700-770`. PGXP hooks have a single hot gate at `runtime/src/pgxp.cpp:81-85`; hook bodies early return when inactive, e.g. `runtime/src/pgxp.cpp:419-423`. Renderer dirty tracking still depends on PGXP/subpixel at `runtime/src/gpu_gl_renderer.c:1504-1530`. | Attribute PGXP/GTE CPU cost separately from GL pack/upload before proposing changes. | Exact GTE state, command deadlines, load-delay give-back, and unchanged enhanced output. |
+| P2-4 SPU/CD/MDEC/DMA/I/O | Some subsystem optimizations/gates already exist; audio trace remains concrete. | Audio evidence above. SPU already skips the 24-voice walk when enabled with no active voices and no shadow tap at `runtime/src/spu.c:999-1033`. MDEC trace is debug-gated at `runtime/src/mdec.c:122-130`; MDEC has an SSE2 row path at `runtime/src/mdec.c:610-630`. DMA writes also go through `psx_write_word` in `runtime/src/dma.c:586`, `runtime/src/dma.c:652`, `runtime/src/dma.c:763`, `runtime/src/dma.c:855`, `runtime/src/dma.c:884`, `runtime/src/dma.c:913`, and `runtime/src/dma.c:1152`. | Start with audio trace and write-call attribution; expand only if samples point to SPU/CD/MDEC/DMA. | Preserve audio, IRQs, DMA timing, decode output, backpressure, and I/O behavior. |
+| P2-6 build options | Debug tools already compile out; no build-option gain claimed. | `PSX_NO_DEBUG_TOOLS` is defined when debug tools are off at `runtime/runtime.cmake:1436-1439`. GL perf queries are compiled out or can be disabled with `PSX_GL_PERF=0` at `runtime/src/gpu_gl_renderer.c:3466-3559`. | Build-flag A/B only after route attribution. | Multi-title correctness, portable artifacts, arithmetic parity. |
+| P3-1 offload | Deferred. | No attributed hotspot suitable for offload yet; GL context/swap/feedback paths above constrain candidates. | Consider only after upload, pack, audio, or write-call costs dominate including sync/transfer overhead. | Preserve frame order, context ownership, pacing, and synchronization. |
+| P3-2 Vulkan/software | Separate status. | OpenGL path has native-wide fast-path controls at `runtime/src/gpu_gl_renderer.c:1604-1628` and mirror skipping at `runtime/src/gpu_gl_renderer.c:1801-1816`, `runtime/src/gpu_gl_renderer.c:1856-1868`. | Track Vulkan/software separately; do not use as OpenGL acceptance substitute. | Explicit backend coverage and parity. |
+
+## Validation Gaps
+
+Independent Windows CPU sampling was attempted with WPR's CPU profile. Starting
+the trace failed with policy error `0xc5585011`; WPR subsequently reported no
+active recording. No CPU sample attribution was obtained. Wall-time phase
+counters under a Job CPU cap are not exclusive thread CPU time, including the
+large observed pacer intervals. No pacing defect is established by those values.
+
+The GP0 ring's current public entry contains 104 bytes on the tested MinGW ABI,
+not the old source comment's implied size. At `1 << 20` entries its allocation
+request is 104 MiB. This is capacity, not a measured resident-memory reduction.
+Its only public readers found in the runtime are the debug server's GP0 history
+commands. The copy-builder global `g_gp0_last_copy_sp` is referenced only by the
+ring's own capture/record code. A production-only gate remains a candidate;
+do not remove functional GP0 source tracking, command counters, or draw ordering
+along with this history.
+
+Known baseline structural-test failures are not caused by these candidates:
+
+- `runtime/tests/test_runtime_perf_diag_guards.py:50` expects stale pacer-call
+  placement.
+- `runtime/tests/test_interpreter_perf_guards.py:306` asserts inline cycle-limit
+  invalidation for listed GTE/device functions.
+
+Root verified the same failures against immutable provenance under
+`.local/ape-build-provenance/framework-8ec6498d/...`; treat them as validation
+gaps before using those tests as acceptance for write-call work.
+
+## Vulkan Qualification Audit
+
+Read-only follow-up, 2026-09-05. No Vulkan build/run or performance claim.
+The backend is substantially implemented: its vtable wires primitive rendering,
+textures, masks, PGXP, transfers and native-wide callbacks (`gpu_vk_renderer.c`,
+`vkb_backend` near line 3273). Its introductory phase-status comment is stale.
+
+- `PSX_ENABLE_VULKAN=ON` is not proof of an active renderer. CMake only defines
+  `PSX_HAVE_VULKAN` after header/tool checks; otherwise `gpu_vk_renderer.c:35`
+  compiles inert stubs. Context initialization can also fail and select software
+  (`main.cpp:13623`). A real qualification run must witness the active backend.
+- Readback is implemented but can force full VRAM pack/copy/wait through
+  `ensure_cpu` (`gpu_vk_renderer.c:2308`). It is not the normal 15-bit GPU-direct
+  present path. Missing evidence: mixed-command readback parity and counts
+  proving ordinary presentation does not unexpectedly enter this path.
+- Native-wide presentation exists, but Vulkan omits the vtable's
+  `wide_dump_full` callback. `gr_wide_supported()` only checks
+  `render_wide_display`, so presentation support does not imply complete
+  diagnostic capture support (`gpu_render.c:165`, `gpu_render.h:197`).
+- Netplay explicitly forces a Vulkan request to software because the present
+  path is not CPU-authoritative (`main.cpp:13075`). Preserve this correctness
+  guard; it is not an OpenGL optimization.
+- Existing Vulkan tests cover source patterns and an upload-alignment helper,
+  not a live context drawing and comparing pixels. Required follow-up is a
+  backend matrix for primitive order, textures, blending, masks, feedback,
+  transfers, native-wide, depth24, capture, and initialization/fallback cases.
+
+These findings justify a separate qualification track, not a recommendation to
+switch users away from OpenGL or a conclusion that Vulkan is unimplemented.
+
+## Local CPU Attribution Tools
+
+Read-only inventory, 2026-09-05: WPR, xperf and WPA are installed, but the
+attempted WPR CPU profile failed with policy error `0xc5585011`. PATH and
+known-install-path checks found no AMD uProf, Intel VTune, Very Sleepy or
+samply. This is a bounded inventory, not proof that no profiler exists anywhere
+on the machine. No installation, elevation or policy change was attempted.
+
+MinGW `gprof` is available, but requires an instrumented `-pg` rebuild and
+cannot faithfully sample the existing Release artifact. `perf_host.py` supplies
+whole-process CPU time, not stacks. Campaign phase counters are wall time, not
+exclusive CPU time. `host_thread_probe.py` can suspend a same-user thread and
+inspect its context/stack; repeated captures could establish coarse thread
+stack occupancy with symbols, but are perturbing and must not be reported as
+per-function CPU percentages. Cross-check such leads with controlled narrow
+A/B experiments until a statistical CPU profiler can be used.
