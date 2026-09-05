@@ -1,10 +1,17 @@
 # Runtime Audit
 
-Source audit for the runtime burndown, reviewed against the current branch.
-The memory-trace candidate has now been implemented and measured; other rows
-remain source hypotheses, not measured bottlenecks. See
+Source audit for the runtime burndown. The matrix records the initial source
+disposition; follow-up implementation and qualification are noted below.
+The memory-trace candidate has been implemented and measured. See
 [MEMORY-TRACE-001](EXPERIMENTS.md#memory-trace-001-remove-empty-production-write-trace-calls)
 for results and limitations. Paths are repository-relative.
+
+Follow-up: [HISTORY-002](EXPERIMENTS.md#history-002-isolated-gpu-and-audio-history-candidates)
+implements production-only GP0 history and audio PCM-storage gates. Focused
+tests and real OpenGL guest/CPU-timing checkpoints pass; controlled resource
+and time comparisons remain pending. No census, GL hold-copy, pacing, threading
+or Vulkan behavior has changed. [PACER-COST-001](EXPERIMENTS.md#pacer-cost-001-attribute-idle-pacing-cpu-cost)
+provides idle-pacer CPU attribution, not a speedup claim.
 
 ## Disposition Matrix
 
@@ -56,3 +63,50 @@ Known baseline structural-test failures are not caused by these candidates:
 Root verified the same failures against immutable provenance under
 `.local/ape-build-provenance/framework-8ec6498d/...`; treat them as validation
 gaps before using those tests as acceptance for write-call work.
+
+## Vulkan Qualification Audit
+
+Read-only follow-up, 2026-09-05. No Vulkan build/run or performance claim.
+The backend is substantially implemented: its vtable wires primitive rendering,
+textures, masks, PGXP, transfers and native-wide callbacks (`gpu_vk_renderer.c`,
+`vkb_backend` near line 3273). Its introductory phase-status comment is stale.
+
+- `PSX_ENABLE_VULKAN=ON` is not proof of an active renderer. CMake only defines
+  `PSX_HAVE_VULKAN` after header/tool checks; otherwise `gpu_vk_renderer.c:35`
+  compiles inert stubs. Context initialization can also fail and select software
+  (`main.cpp:13623`). A real qualification run must witness the active backend.
+- Readback is implemented but can force full VRAM pack/copy/wait through
+  `ensure_cpu` (`gpu_vk_renderer.c:2308`). It is not the normal 15-bit GPU-direct
+  present path. Missing evidence: mixed-command readback parity and counts
+  proving ordinary presentation does not unexpectedly enter this path.
+- Native-wide presentation exists, but Vulkan omits the vtable's
+  `wide_dump_full` callback. `gr_wide_supported()` only checks
+  `render_wide_display`, so presentation support does not imply complete
+  diagnostic capture support (`gpu_render.c:165`, `gpu_render.h:197`).
+- Netplay explicitly forces a Vulkan request to software because the present
+  path is not CPU-authoritative (`main.cpp:13075`). Preserve this correctness
+  guard; it is not an OpenGL optimization.
+- Existing Vulkan tests cover source patterns and an upload-alignment helper,
+  not a live context drawing and comparing pixels. Required follow-up is a
+  backend matrix for primitive order, textures, blending, masks, feedback,
+  transfers, native-wide, depth24, capture, and initialization/fallback cases.
+
+These findings justify a separate qualification track, not a recommendation to
+switch users away from OpenGL or a conclusion that Vulkan is unimplemented.
+
+## Local CPU Attribution Tools
+
+Read-only inventory, 2026-09-05: WPR, xperf and WPA are installed, but the
+attempted WPR CPU profile failed with policy error `0xc5585011`. PATH and
+known-install-path checks found no AMD uProf, Intel VTune, Very Sleepy or
+samply. This is a bounded inventory, not proof that no profiler exists anywhere
+on the machine. No installation, elevation or policy change was attempted.
+
+MinGW `gprof` is available, but requires an instrumented `-pg` rebuild and
+cannot faithfully sample the existing Release artifact. `perf_host.py` supplies
+whole-process CPU time, not stacks. Campaign phase counters are wall time, not
+exclusive CPU time. `host_thread_probe.py` can suspend a same-user thread and
+inspect its context/stack; repeated captures could establish coarse thread
+stack occupancy with symbols, but are perturbing and must not be reported as
+per-function CPU percentages. Cross-check such leads with controlled narrow
+A/B experiments until a statistical CPU profiler can be used.

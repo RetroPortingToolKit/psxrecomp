@@ -1,10 +1,10 @@
 /*
- * audio_trace.h - always-on audio observability rings (PCM taps + event ring).
+ * audio_trace.h - audio health counters, event ring and debug PCM history.
  *
  * Port of the snesrecomp audio-campaign measurement harness (audio_trace.{c,h},
  * commit 67ead27 lineage) to the PSX pipeline, following the cross-system tap
- * model in F:/Projects/_audio_round2/ROUND2_PLAN.md: always-on ring buffers
- * recording every sample/event from process start, dumped AFTER the fact via
+ * model in F:/Projects/_audio_round2/ROUND2_PLAN.md: debug-tool builds keep
+ * always-on ring buffers recording from process start, dumped AFTER the fact via
  * TCP debug commands — never arm-then-reproduce.
  *
  * Taps (PSX pipeline):
@@ -21,9 +21,11 @@
  * output — giving symmetric `audio_*` commands on ports 4370 and 4380.
  *
  * Threading: each tap has a single writer. Readers (debug-server thread)
- * take a stable [oldest, head) snapshot; the PCM rings hold ~95 s at 44100,
- * so a dump cannot be lapped mid-read in practice. Indices are C11 atomics
- * (release on publish, acquire on read).
+ * take a stable [oldest, head) snapshot; in debug-tool builds the PCM rings
+ * hold ~95 s at 44100, so a dump cannot be lapped mid-read in practice.
+ * Production PSX_NO_DEBUG_TOOLS builds keep counters/events but compile out
+ * PCM history and WAV dumps. Indices are C11 atomics (release on publish,
+ * acquire on read).
  */
 #ifndef PSX_AUDIO_TRACE_H
 #define PSX_AUDIO_TRACE_H
@@ -118,7 +120,9 @@ uint32_t audio_trace_events_get(AudioTraceEvent *out, uint32_t max);
 /* Write a tap slice as a stereo s16 WAV at the tap's rate. start=-1,count=0
  * dumps the whole currently-buffered ring. `start`/`count` are absolute frame
  * indices on the tap's production timeline. Returns frames written, or -1 on
- * error (unwritable path / empty ring / slice already evicted). */
+ * error (unwritable path / empty ring / slice already evicted). In
+ * PSX_NO_DEBUG_TOOLS production builds, PCM history is not present and this
+ * returns -1 without creating/opening `path`. */
 int64_t audio_trace_dump_wav(int tap, const char *path,
                              int64_t start, uint64_t count);
 

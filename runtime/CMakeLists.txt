@@ -507,7 +507,16 @@ if(BUILD_TESTING)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
-        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC
+           AND NOT CMAKE_CROSSCOMPILING)
+            add_test(NAME audio_trace_pcm_guard_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_trace_pcm_guard.py
+                             --cc ${CMAKE_C_COMPILER})
+            add_test(NAME gpu_gp0_history_guard_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_gp0_history_guard.py
+                             --cc ${CMAKE_C_COMPILER})
             add_test(NAME memory_debug_trace_guard_test
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_memory_debug_trace_guard.py

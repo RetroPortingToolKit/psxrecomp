@@ -251,3 +251,165 @@ checkpoint parity, multi-title/low-end hardware, moving/transition routes,
 long-window frame consistency, clean-install and cross-platform release gates
 remain open. Broader GPU/audio history and GL costs remain separate candidates;
 the flat gameplay result does not justify focusing the campaign on memory.
+
+## PACER-COST-001: attribute idle pacing CPU cost
+
+Date: 2026-09-05. Verdict: baseline attribution only, no pacing change or
+gameplay speed claim. Compile actual `frame_pacing.c` and `host_time.c` against
+SDL3 with GCC 15.2.0 `-O2 -DPSX_SDL3`. The driver calls `frame_pacer_wait` 600
+times at 59.94 Hz with no guest work, using `GetThreadTimes` for calling-thread
+CPU time and SDL's performance counter for wall time. The first call anchors
+without waiting, so 599 periods take approximately 9.9933 seconds.
+
+| Run | Wall seconds | Thread CPU seconds |
+| --- | --- | --- |
+| 1 | 9.993298 | 0.812500 |
+| 2 | 9.993297 | 0.859375 |
+| 3 | 9.993297 | 0.765625 |
+
+This is approximately 7.7-8.6% of one logical CPU spent on idle pacing on the
+Ryzen 7 9800X3D, High Performance plan, unrestricted scheduling and inherited
+affinity. The existing sleep decision stops sleeping below two milliseconds,
+then spins until the deadline. This local cost makes the spin tail worth
+measuring in gameplay; it does not establish an actual pacer bug or explain
+exclusive wall-time phase attribution under a Job cap. No candidate was tested.
+Agents held compilation during these runs; no continuous compiler-process or
+thermal monitor was attached to this exploratory probe.
+
+Local retained driver `.local/pacer-cost.c`, SHA256
+`d98305437fb4e8c86769f31893e43bf63ade8568d761f522e0842817a92ac105`;
+executable `.local/pacer-cost.exe`, SHA256
+`7aa80698ca5d3a831d0d651601b3c5b2e8bc3665e2eec82f5e426c308eae7ddb`;
+raw output `.local/pacer-cost-results.txt`, SHA256
+`749fc5185fa512e3a00390f0022fa8939993763ca3b9f6e123ba76ff6654fea1`.
+
+## HISTORY-002: isolated GPU and audio history candidates
+
+Date: 2026-09-05. Correctness milestone; controlled resource/time comparison
+pending. No gameplay gain accepted from the correctness runs below.
+
+### Candidate boundaries
+
+- `GP0-HISTORY-001`: compile the GP0 command-history allocation, recording and
+  diagnostic guest-stack scan only when debug tools are enabled. Production
+  history accessors remain linkable but report zero capacity/count and empty
+  dumps. Keep source tracking, opcode counters, WS census, functional overhang
+  detection, and all command execution unchanged. Removes a 104 MiB allocation
+  request; debug builds retain always-on history.
+- `AUDIO-PCM-001`: compile out four PCM history arrays and their writes in
+  `PSX_NO_DEBUG_TOOLS` builds. Preserve every tap's head, nonzero/audible/peak
+  statistics, rates, event records and pump/underrun/mute counters. Production
+  WAV dump returns the existing error result without opening a file; debug
+  WAV history is unchanged. Actual GCC object BSS is 83,886,272 bytes with debug
+  history and 16,777,408 without it: exactly 64 MiB less backing capacity.
+
+Both use the existing build switch, not a new runtime selector or lazy allocator.
+Capacity is not equivalent to resident memory or a measured speed improvement.
+Packed production audio tap counters may share cache lines between callback and
+emulation threads; require the real bridge-audio path in performance checks.
+
+### Focused checks
+
+The GPU test compiles actual `gpu.c` and real headers with external renderer
+stubs. It compares exact serialized GPU snapshots and the entire VRAM at eleven
+checkpoints across environment, fill, upload, copy, polyline and NOP commands.
+It also checks debug history count, copy source/stack pointer and polyline
+header, and production unavailability. This tests parser/state behavior, not
+the rendering correctness of a stubbed backend. Known pre-existing polyline
+source attribution was not changed or silently redefined by the test.
+
+The audio test compiles actual `audio_trace.c` in both modes. All four taps'
+observed statistics/events compare equally, including a new event after ring
+wrap, signed extremes, audible thresholds, rates and resets. Debug WAV headers
+and sample bytes are checked for all taps and for wrap/clamped eviction;
+production must not create the requested WAV. Review rejected the first test's
+hard-coded output comparison and replaced it with real observations.
+
+Both focused tests passed root execution. The 63 campaign/host/stall-report
+tests passed, as did the memory-trace regression. CMake's registration guard
+finds 122 test files registered. This is not a full cross-platform CTest pass.
+
+### Isolated build provenance
+
+B is the previous memory-guard baseline, C adds only the GP0 gate, and D adds
+only the audio gate. All use identical local-only endpoint memory/restore/
+renderer/audio witnesses and an optional checkpoint probe. Original B from
+MEMORY-TRACE-001 is preserved. Source trees, exact options/commands/logs and
+hashes are in `.local/ape-build-provenance/builds-bcd-manifest.json`, SHA256
+`176ed3d54939fab3498ced5d1e3dd38566a9ef76e7e4cb23f5514a8d9a740530`.
+
+| Variant | Executable SHA256 |
+| --- | --- |
+| B metrics | `f1310b19eb3633d81e01717f36ab60f4d6cd4d53aa3838adf0e614d10bbf4914` |
+| C GP0 | `74063d9dadef152d023c0dead18eabde854773c4399f7f52f49713fb67315045` |
+| D PCM | `e9f525296dfdb0be2a50596a1198bb9735be0371d21afa627cc6e08dfe05bd39` |
+
+Release GCC 15.2.0, SDL3, static runtime, debug tools OFF, rewind ON, netplay OFF,
+same donor generated game/BIOS and saved scene as MEMORY-TRACE-001. The stale
+generated-BIOS warning persists. A default all-target build failed in an
+unrelated donor title test on a long Windows dependency-file path; explicit
+`psx-runtime` builds succeeded. No release qualification is claimed.
+
+### Real OpenGL checkpoint comparison
+
+Separate uncapped 20-second processes restore the same slot-1 v5 beach state.
+All variants report active OpenGL (`gl_active=1`, `gr_backend=1`), completed
+restore (`generation=1,pending=0,last_ok=1,last_op=load,last_slot=1`), and active
+non-legacy bridge output with advancing host-tap frames. The local-only probe
+writes raw boot-state blobs at frames 120, 121 and 420, plus CPU timing sidecars.
+For **both C and D versus B, every blob and sidecar is byte-identical**.
+
+| Frame | Raw guest snapshot SHA256 (all B/C/D) |
+| --- | --- |
+| 120 | `505f7d94c5c7e518e099669ed1623296d9210abc30eab4bc907956e91ff652c6` |
+| 121 | `1e0b19c3a913733aba9bb403b1e01a1c9d309cc919e3accd9c52f3d341d3429b` |
+| 420 | `55ebbe6a36ac2674952a4672575dfb619547ffec0a059f9a277bb955b9d074e2` |
+
+Each blob is 3,685,569 bytes. The existing save format covers CPU registers,
+RAM, scratchpad, VRAM, SPU RAM and serialized device/IRQ/clock/cache/dirty state.
+The 411-byte sidecars add multiply/divide and GTE completion timestamps, all 33
+read-absorb bytes and load-timing scalars. CPU function pointers, host audio
+queues, SDL/pacer/presentation histories and diagnostics are excluded. This is
+one scene's checkpoint evidence, not exhaustive state/restore or multi-title
+qualification. Full campaign correctness gates remain open.
+
+Evidence: `.local/history-correctness-002/report.json`, SHA256
+`7feb56b0f0119688e460ff46b027d3aaf9549021e996a935830e26a6154b21f2`;
+driver `.local/run_history_checks.py`, SHA256
+`f6f29b505225fc0ff8688d9a86921be60590a81288980c5fd7d4c8b56961d0f4`.
+Raw game-derived snapshots remain local and uncommitted.
+
+The first attempt, `.local/history-correctness-001`, failed closed because the
+staged checkpoint hook was absent despite an earlier build report. Explicit
+source and binary-string checks plus forced rebuilds corrected the artifact.
+That failed attempt is retained, not counted as successful state comparison.
+
+Checkpoint saves can publish deferred cycles and force GL readback. These runs
+also overlapped unrelated builds, so **none of their timing or memory values is
+acceptance evidence**. The timed runner explicitly unsets checkpoint capture.
+The preregistered primary metric is exact-frame-420 process PrivateUsage; the
+secondary metric is frames-120:420 wall time, with three interleaved pairs for
+each independent candidate and a validated 25%-one-core Job cap. It requires
+stable input/artifact hashes, active OpenGL/audio and completed restore, and
+aborts on compiler contamination or missing/nonfinite metrics.
+
+### Timing gate outcome and disposition
+
+The benchmark agent monitored the host for ten minutes without finding 30
+consecutive seconds free of compiler/benchmark activity. Concurrent SNES builds
+included Mega Man X and Super Mario Kart. No timed candidate process was
+launched and `.local/game-gp0-memory-ab` was not created. Unrelated work was
+not stopped. The power plan remained High performance before and after;
+thermal state was not measured.
+
+The prepared twelve-run driver is `.local/run_game_gpu_memory_ab.py`, SHA256
+`ce01b28c627dd5a8d0abe3217a49e2fd1d576fc7128153de502487f69a96f64b`.
+It includes `cc.exe` in compiler-contamination detection. Resume the paired
+campaign in a quiet host window before making retention or speedup claims.
+
+Disposition: committed candidate implementation in the isolated performance
+worktree, **pending performance acceptance**, not release qualification. The
+104 MiB GP0 allocation request and 64 MiB PCM static-storage capacity removals
+are established; resident-memory savings and gameplay speedups are not.
+Focused parity tests and real OpenGL checkpoints passed, but the broader
+correctness matrix and the quiet-host comparisons remain open.

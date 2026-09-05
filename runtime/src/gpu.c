@@ -4919,15 +4919,14 @@ static uint32_t gp0_opcode_count[256];
 
 uint32_t gpu_get_opcode_count(uint8_t op) { return gp0_opcode_count[op]; }
 
-/* ---- Per-frame GP0 command ring (always-on, queried via debug server) ---- */
-/* We record every GP0 command (header + up to 6 payload words) with the
- * frame number it was issued in. Per CLAUDE.md ring-buffer rule: capture
- * is continuous and observers query a window of interest later, not arm-
- * then-record. ~34 MB at 1M entries. Polyline / long commands get the
- * first 6 payload words; that's enough for the header + first vertex pair
- * + first uv/color word for diagnosing per-primitive state. */
+/* ---- Per-frame GP0 command ring (debug tools only) -----------------------
+ * We record every GP0 command with the frame number it was issued in. Polyline
+ * / long commands get the current public word cap, enough for diagnosing
+ * per-primitive state. Production builds leave the public accessors linkable
+ * but report an unavailable/empty capture. */
 
 extern uint64_t s_frame_count;  /* defined in debug_server.c */
+#ifndef PSX_NO_DEBUG_TOOLS
 extern uint32_t g_debug_last_store_pc;  /* defined in debug_server.c */
 extern uint32_t g_debug_current_func_addr;  /* defined in debug_server.c */
 uint32_t debug_guest_ra(void);  /* accessor in debug_server.c (guest $ra) */
@@ -5004,10 +5003,6 @@ uint64_t gpu_gp0_ring_total(void)    { return gp0_ring_seq; }
 uint32_t gpu_gp0_ring_capacity(void) { return GP0_RING_CAP; }
 uint32_t gpu_gp0_ring_max_words(void){ return GPU_GP0_RING_MAX_WORDS; }
 
-void gpu_set_gp0_source(uint32_t addr) {
-    gp0_next_source_addr = addr;
-}
-
 /* Fill `out[0..max_out-1]` with entries from the requested frame; returns
  * count. Walks from oldest in-buffer to newest so iteration order matches
  * draw order within a frame. */
@@ -5037,6 +5032,30 @@ void gpu_gp0_ring_frame_span(uint32_t *out_oldest, uint32_t *out_newest) {
     uint32_t newest_idx = (start + avail - 1) % GP0_RING_CAP;
     if (out_oldest) *out_oldest = gp0_ring[start].frame;
     if (out_newest) *out_newest = gp0_ring[newest_idx].frame;
+}
+#else
+static void gp0_ring_record(const uint32_t *words, int n) {
+    (void)words;
+    (void)n;
+}
+
+uint64_t gpu_gp0_ring_total(void) { return 0; }
+uint32_t gpu_gp0_ring_capacity(void) { return 0; }
+uint32_t gpu_gp0_ring_max_words(void) { return GPU_GP0_RING_MAX_WORDS; }
+int gpu_gp0_ring_dump_frame(uint32_t frame, GpuGp0RingEntry *out, int max_out) {
+    (void)frame;
+    (void)out;
+    (void)max_out;
+    return 0;
+}
+void gpu_gp0_ring_frame_span(uint32_t *out_oldest, uint32_t *out_newest) {
+    if (out_oldest) *out_oldest = 0;
+    if (out_newest) *out_newest = 0;
+}
+#endif
+
+void gpu_set_gp0_source(uint32_t addr) {
+    gp0_next_source_addr = addr;
 }
 
 /* ---- Draw census ring (ALWAYS-ON) -----------------------------------------
