@@ -8,9 +8,12 @@ for results and limitations. Paths are repository-relative.
 
 Follow-up: [HISTORY-002](EXPERIMENTS.md#history-002-isolated-gpu-and-audio-history-candidates)
 implements production-only GP0 history and audio PCM-storage gates. Focused
-tests and real OpenGL guest/CPU-timing checkpoints pass; controlled resource
-and time comparisons remain pending. No census, GL hold-copy, pacing, threading
-or Vulkan behavior has changed. [PACER-COST-001](EXPERIMENTS.md#pacer-cost-001-attribute-idle-pacing-cpu-cost)
+tests and real OpenGL guest/CPU-timing checkpoints pass.
+[UNCAP-HISTORY-003](EXPERIMENTS.md#uncap-history-003-uncapped-opengl-throughput)
+adds uncapped throughput and process-private-commit measurements; normal-speed
+and low-end acceptance remain open. No shipped census, GL hold-copy, pacing,
+threading or Vulkan behavior has changed.
+[PACER-COST-001](EXPERIMENTS.md#pacer-cost-001-attribute-idle-pacing-cpu-cost)
 provides idle-pacer CPU attribution, not a speedup claim.
 
 ## Disposition Matrix

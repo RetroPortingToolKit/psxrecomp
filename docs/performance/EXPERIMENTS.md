@@ -413,3 +413,175 @@ worktree, **pending performance acceptance**, not release qualification. The
 are established; resident-memory savings and gameplay speedups are not.
 Focused parity tests and real OpenGL checkpoints passed, but the broader
 correctness matrix and the quiet-host comparisons remain open.
+
+## UNCAP-HISTORY-003: uncapped OpenGL throughput
+
+Date: 2026-09-05. User-requested follow-up to HISTORY-002. Uncapped frame
+throughput removes a limiter that can hide spare capacity; it does not isolate
+the process from concurrent host work or simulate lower-end hardware.
+
+### Mechanism and provenance
+
+`PSX_VSYNC=0` alone leaves the wall-clock pacer active. Debug/manual/load turbo
+can skip presentation, and Ape's historical `ape.framerate.uncapped` plugin
+actually selects frame interpolation. None is appropriate here. The native
+VBlank-rate API already permits zero frontend pacing without changing guest
+cycle accounting (`mod_plugins.h`, `psx_mod_set_native_vblank_rate`).
+
+Identical local-only staged `main.cpp` hooks set `g_frame_period_ms=0` and
+`g_video_vsync=0` after host-refresh selection and before GL context creation
+when `PSX_PERF_UNCAPPED=1`. These are the same host-pacing effects as the native
+API; the hook does not call the API or change guest clocks. It refuses active
+interpolation. A separate endpoint `[BENCH_PACING]` reports actual period,
+effective swap interval, wall-pacing decision, interpolation and load-turbo
+state. Normal presentation and the audio bridge remain enabled.
+
+The three incremental Release `psx-runtime` builds succeeded. Original paced
+executables and the previous manifest remain unchanged; staged original
+`main.cpp` files are backed up. Tracked runtime sources were not changed for
+this experiment. New manifest:
+`.local/ape-build-provenance/uncapped-builds-manifest.json`, SHA256
+`184dfa8a1d0305fc9f1d5aafdd6dda9cec4d0d24b8a73bf684775eefa7103ca4`.
+
+| Variant | Uncapped executable SHA256 |
+| --- | --- |
+| B baseline | `8050206bda873fd42a8cc790c0b9b556680cdcb966893a1414d3774bbbf11dd6` |
+| C GP0 gate | `a43233c44f9c6f6f1a8b7115bc77260de0292571c556e44a5afd97bb4b00d042` |
+| D PCM gate | `566297db442e5e062b2b90864302a20d4cbdbe769496d6cdf7d2560089aff5f3` |
+
+### Uncapped correctness smoke
+
+Root ran separate 12-second uncapped processes with checkpoint capture enabled.
+All B/C/D raw guest snapshots and CPU sidecars at frames 120, 121 and 420 are
+byte-identical to one another **and to the paced B checkpoints in HISTORY-002**.
+All restore, OpenGL and bridge-audio witnesses passed. Endpoint pacing reports
+zero period, swap interval, wall pacing, interpolation and load turbo. These
+checkpoint runs are not timing or memory acceptance measurements.
+
+Evidence: `.local/uncapped-correctness-001/report.json`, SHA256
+`551732b3411c74a113d14edf46f185d364684863ec199d223f3b444ee9474709`;
+driver `.local/check_uncapped_history.py`, SHA256
+`8acb9e3894286237cfbba6b3f3e468c5ff3698c9762c2de488164fa151bd3e91`.
+The existing save-format coverage/exclusions from HISTORY-002 still apply.
+
+### Timed protocol
+
+Three interleaved B/C and B/D pairs, reversing within-pair order for pair two:
+`B,C,B,D; C,B,D,B; B,C,B,D`. Each process restores the same beach save and runs
+with unrestricted requested host CPU budget, affinity `0xFFFF`, the same
+OpenGL 2x SSAA/AA settings and diagnostic counters, and no checkpoint capture.
+Primary metrics are wall time for guest frames 120:420 and guest VBlanks/s
+(`300000 / wall_ms`), not unique rendered game frames or physical display FPS.
+PrivateUsage at frame 420 is secondary. Twelve-second process timeouts provide
+bounded cleanup; whole-process CPU totals are not the fixed-window CPU cost.
+
+The driver requires unchanged artifacts/settings/game/state/mod inventories,
+completed restore, active OpenGL/audio, effective uncapped pacing and matching
+guest-work counters. Compiler observations are retained instead of waiting for
+a quiet host; monitor failures invalidate results. No result is automatically
+accepted based only on the absence of observed compilers. Eight synthetic
+driver checks passed root execution.
+
+Local driver `.local/run_uncapped_history_ab.py`, SHA256
+`ab3fd3efd56b3088a11221d907a5202101dbfff21fb19186b647cef97bf7c8d3`;
+tests `.local/test_run_uncapped_history_ab.py`, SHA256
+`3a4b19138e1272490534b3bea84099e32a856d9d922c368fa9f85329abf23044`.
+
+Uncapped audio production outruns the physical playback timeline. An active
+audio device and advancing host tap do not establish identical callback counts,
+absence of overflow or normal-speed listening quality. Neither title-wide
+correctness nor low-end realtime pacing/audio acceptance follows from this
+throughput experiment.
+
+### Short-window results
+
+All twelve runs passed the fixed-window, effective-pacing, restore, backend,
+audio and inventory checks. No monitored compiler processes or monitor errors
+were observed. High performance power plan before/after; no thermal telemetry
+or continuous monitoring of all other host workloads. Classification remains
+`exploratory_no_compiler_observed`, not automatic acceptance.
+
+| Comparison | Baseline wall ms (three runs) | Candidate wall ms (three runs) | Median VBlanks/s B -> candidate | Median throughput change |
+| --- | --- | --- | --- | --- |
+| GP0 gate | 1205.440, 1247.664, 1181.284 | 1178.411, 1181.626, 1177.182 | 248.872 -> 254.580 | +2.29% |
+| PCM gate | 1212.670, 1185.505, 1215.057 | 1165.711, 1208.837, 1179.628 | 247.388 -> 254.317 | +2.80% |
+
+Within-pair throughput changes were +2.29%, +5.59%, +0.35% for GP0 and +4.03%,
+-1.93%, +3.00% for PCM. This spread, especially the PCM sign reversal, prevents
+treating the modest median gains as robust. Fastest-run throughput changes were
+only +0.35% and +1.70%, respectively. No additive combined gain is established:
+each candidate was tested independently.
+
+Endpoint PrivateUsage fell in every pair: GP0 by 102.87, 103.63 and 105.49 MiB;
+PCM by 62.00, 63.31 and 64.07 MiB. This measures process private commit in this
+scene, not resident physical memory. The amount includes allocator/driver
+variation and is not an exact measurement of the removed arrays alone.
+
+Raw report `.local/game-uncapped-history-ab/campaign.json`, SHA256
+`5e6477c3969eb8799aee300ffa153903d39c48010a814be76f2cfc19413afb4d`;
+power witness `.local/game-uncapped-history-ab/power_plan.json`, SHA256
+`034c141dd4dd57cdbd10819bf884aa01c628e1fb496dc1bee83979aa52a55da4`.
+All stdout/stderr and host reports are retained beside the report. Root
+recomputed paired throughput and memory deltas from the raw rows.
+
+Because the measured windows last only about 1.2 seconds, a separate replication
+uses frames 120:1920 (1,800 guest VBlanks), identical executables/settings and
+the same twelve-run order. This extends the workload past the GP0 history ring's
+wrap point without changing game speed settings or rendering quality. It uses
+a separately named driver/output directory and 15-second process timeouts;
+the short-window artifacts are preserved.
+
+### Longer-window replication
+
+All twelve runs passed the same evidence checks at frames 120:1920. B/D GP0
+history totals reached 1,180,535 commands, beyond the 1,048,576-entry capacity;
+C remained zero/zero. Work counters matched within each candidate comparison.
+This is a workload/wrap witness, not a new byte-level checkpoint at frame 1920.
+
+| Comparison | Baseline wall ms (three runs) | Candidate wall ms (three runs) | Median VBlanks/s B -> candidate | Median throughput change |
+| --- | --- | --- | --- | --- |
+| GP0 gate | 7102.496, 7222.937, 7202.571 | 7108.128, 7020.108, 6990.751 | 249.911 -> 256.406 | +2.60% |
+| PCM gate | 7295.579, 7127.430, 7366.212 | 6982.187, 7070.005, 6977.142 | 246.725 -> 257.799 | +4.49% |
+
+Within-pair throughput changes: GP0 -0.08%, +2.89%, +3.03%; PCM +4.49%,
++0.81%, +5.58%. Fastest-run throughput changes: +1.60% and +2.15%.
+PrivateUsage fell in every pair: GP0 by 105.18, 106.13 and 106.69 MiB;
+PCM by 63.12, 61.83 and 63.25 MiB.
+
+Compiler activity was observed in two runs: GP0 pair-one C (32 observations)
+and PCM pair-one B (30). Observed names included `cc.exe`, `cc1.exe`,
+`cmake.exe`, `collect2.exe`, `g++.exe`, `gcc.exe`, `ld.exe` and `ninja.exe`.
+The monitor covers the full process lifetime, not precisely the measured
+frame window. No monitor errors occurred. All runs remain in the report;
+no post-hoc removal of the slower/contaminated runs was used. Classification:
+`exploratory_contaminated`. High performance power plan before/after;
+thermal state was not measured.
+
+Evidence:
+
+- `.local/run_uncapped_history_long_ab.py`, SHA256
+  `459c852c71fd0f4c927a331a91867566704e1fb811b4f2be38fb1a55db6a19d9`.
+- `.local/game-uncapped-history-long-ab/campaign.json`, SHA256
+  `f71891ad99b20ab5bb1f2e148931494c90951f713d25c8ddd6d4107b436007e7`.
+- `.local/game-uncapped-history-long-ab/power_plan.json`, SHA256
+  `7f115cc8e9fa6998f4e01f557098113881fbe2b1264f0434060fd0621a7179a0`.
+
+Root reviewed the longer driver's delta: only window/frame-count/FPS numerator,
+output path, metric labels and timeout differ from the short driver. Synthetic
+checks accepted a correctly converted 1,800-frame observation and rejected the
+old 300-frame observation. Root recomputed paired changes from raw results.
+
+### Disposition
+
+Uncapped benchmarking is useful here: it exposes approximately 250 guest
+VBlanks/s of throughput instead of hiding spare capacity behind the 60 Hz
+limiter. Both passes suggest modest gains, but run variation and the longer
+pass's contamination prevent claiming a reliable general speedup. These are
+not additive gains or evidence that Crabby Beach slowdowns are fixed.
+
+Reduced process private commit is consistent across all twelve candidate pairs.
+Together with focused parity and the three exact guest checkpoints, this
+supports retaining the candidates in the isolated burndown branch for further
+qualification. Normal-speed audio/pacing, constrained-host comparisons,
+multi-title correctness and actual low-end hardware remain open. Do not ship
+the local uncap hook as a gameplay default.
