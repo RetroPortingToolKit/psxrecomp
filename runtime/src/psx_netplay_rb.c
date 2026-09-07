@@ -117,6 +117,7 @@ uint32_t psx_netplay_rb_rtt_estimate_ms(void) { return 0; }
 #include "netplay_input_hist.h"
 #include "netplay_rb_post.h"
 #include "netplay_snap_ring.h"
+#include "netplay_rb_media_kf_pin.h"
 #include "netplay_state_digest.h"
 #include "psx_netplay.h"
 #include "psx_netplay_sched.h"
@@ -1971,13 +1972,41 @@ static int rb_install_media_kf_bytes(uint32_t tick, const uint8_t *data, size_t 
     return 1;
 }
 
+static const uint8_t *rb_media_kf_ring_peek(void *ring, uint32_t tick,
+                                                size_t *out_size)
+{
+    return netplay_snap_ring_peek((NetplaySnapRing *)ring, tick, out_size);
+}
+
+static NprbMediaKfPin rb_media_kf_pin_view(void)
+{
+    NprbMediaKfPin pin;
+    pin.valid = g_pin_valid;
+    pin.tick = g_pin_tick;
+    pin.data = g_pin_data;
+    pin.size = g_pin_size;
+    return pin;
+}
+
+static const uint8_t *rb_media_kf_peek_local(uint32_t tick, size_t *out_size)
+{
+    NprbMediaKfPin pin = rb_media_kf_pin_view();
+    return nprb_media_kf_peek_local(&pin, g_snaps, tick, out_size,
+                                    rb_media_kf_ring_peek);
+}
+
 static int rb_media_kf_seal_local(uint32_t tick)
 {
     size_t sz = 0;
     const uint8_t *p;
-    if (!g_snaps || !netplay_snap_ring_has(g_snaps, tick))
-        return 0;
-    p = netplay_snap_ring_peek(g_snaps, tick, &sz);
+
+    {
+        NprbMediaKfPin pin = rb_media_kf_pin_view();
+        if (nprb_media_kf_seal_ready_from_pin(&pin, tick, &g_media_kf_ready))
+            return 1;
+    }
+
+    p = g_snaps ? netplay_snap_ring_peek(g_snaps, tick, &sz) : NULL;
     if (!p || !sz)
         return 0;
     return rb_install_media_kf_bytes(tick, p, sz);
@@ -2004,7 +2033,7 @@ static void rb_media_kf_host_drive(void)
         return; /* SAVE/LOAD in flight — wait */
 
     load = rnet_rb_get_load_tick(g_rb);
-    p = g_snaps ? netplay_snap_ring_peek(g_snaps, load, &sz) : NULL;
+    p = rb_media_kf_peek_local(load, &sz);
     if (!p || !sz) {
         static uint32_t s_miss_log;
         if (s_miss_log != load) {
@@ -7125,10 +7154,10 @@ int psx_netplay_rb_media_kf_probe_match(uint32_t size, uint32_t crc)
     size_t sz = 0;
     const uint8_t *p;
     uint32_t got;
-    if (!g_media_kf_episode || !g_rb || !g_snaps)
+    if (!g_media_kf_episode || !g_rb)
         return 0;
     load = rnet_rb_get_load_tick(g_rb);
-    p = netplay_snap_ring_peek(g_snaps, load, &sz);
+    p = rb_media_kf_peek_local(load, &sz);
     if (!p || sz != (size_t)size)
         return 0;
     got = rnet_checksum(p, sz);

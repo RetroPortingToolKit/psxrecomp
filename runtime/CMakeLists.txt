@@ -513,6 +513,10 @@ if(BUILD_TESTING)
         target_link_libraries(rb_post_tip_filter_test PRIVATE retcomm_rbengine)
         add_test(NAME rb_post_tip_filter_test COMMAND rb_post_tip_filter_test)
 
+        add_executable(rb_media_kf_pin_test tests/test_rb_media_kf_pin.c)
+        target_include_directories(rb_media_kf_pin_test PRIVATE src)
+        add_test(NAME rb_media_kf_pin_test COMMAND rb_media_kf_pin_test)
+
         add_executable(netplay_input_hist_test
             tests/test_netplay_input_hist.c
             src/netplay_input_hist.c)
