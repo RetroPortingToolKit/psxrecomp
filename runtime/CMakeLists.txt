@@ -183,6 +183,14 @@ if(BUILD_TESTING)
     add_test(NAME mod_gpu_dma_aperture_test
              COMMAND mod_gpu_dma_aperture_test)
 
+    add_executable(mod_memory_snapshot_test
+        tests/test_mod_memory_snapshot.c
+        src/boot_state.c
+        src/memory.c)
+    target_include_directories(mod_memory_snapshot_test PRIVATE include)
+    add_test(NAME mod_memory_snapshot_test
+             COMMAND mod_memory_snapshot_test)
+
     # The real-handler fixture relies on LTO pruning its unused syscall paths.
     # Enable only the toolchain on which that link contract is verified; keep
     # the coverage gap visible in CTest for every other compiler/platform.

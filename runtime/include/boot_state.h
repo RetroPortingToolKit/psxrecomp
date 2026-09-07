@@ -41,8 +41,9 @@ extern "C" {
  * v4 = v3 + optional zlib on large sections (section pad bit0 = compressed);
  * v5 = v4 + CD-ROM Sub-Q replacement state;
  * v6 = v5 + per-word GPU DMA2 linked-list progress;
- * v7 = v6 + pending XA DATA_END IRQ state. */
-#define BOOT_STATE_VERSION 7u
+ * v7 = v6 + pending XA DATA_END IRQ state;
+ * v8 = v7 + psx_mod guest/GPU DMA allocation contents and cursors. */
+#define BOOT_STATE_VERSION 8u
 /* v7 intentionally breaks older savestates after the CD-ROM wire grew. Reject
  * them at the header before any section changes the live machine. */
 #define BOOT_STATE_VERSION_MIN_READ 7u
@@ -105,6 +106,11 @@ enum {
                               apart (MotK abort@940: fin cyc Δ8, v0 5c83/5c86
                               from identical baselines). Optional on load for
                               old blobs (left untouched when absent).          */
+    BS_SEC_MODMEM = 0x11,  /* psx_mod host-backed guest/GPU DMA allocation
+                              contents and allocator cursors. Required when
+                              current mods allocated either aperture; missing
+                              old states then reject instead of resuming with
+                              0x80F DMA pointers into empty host memory.       */
 };
 
 /* Save a COMPLETE snapshot at game handoff. Returns 1 on success. */

@@ -6,6 +6,7 @@
 #include "gpu_vram_dirty.h"
 #include "cpu_state.h"     /* gte_canonicalize_cpu_state after CPU wire restore   */
 #include "interrupts.h"
+#include "mod_memory.h"
 #include "psx_cycles.h"
 #include "psx_icache.h"    /* g_psx_icache_tv — fetch-cost tags in BS_SEC_ICACHE */
 #include "pst_wire.h"
@@ -370,7 +371,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = (uint32_t)PSX_OVERLAY_CODEGEN_VER;
-    h.section_count = 16;
+    h.section_count = 17;
 
     ok = write_header_le(o, &h);
 
@@ -431,6 +432,9 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     if (ok) ok = write_module_section(o, BS_SEC_DMA,   dma_snapshot_bytes,   dma_snapshot_write);
     if (ok) ok = write_module_section(o, BS_SEC_SIO,   sio_snapshot_bytes,   sio_snapshot_write);
     if (ok) ok = write_module_section(o, BS_SEC_MDEC,  mdec_snapshot_bytes,  mdec_snapshot_write);
+    if (ok) ok = write_module_section(o, BS_SEC_MODMEM,
+                                      memory_mod_snapshot_bytes,
+                                      memory_mod_snapshot_write);
     if (ok) {
         /* I-cache tags: warm loads must replay with the fetch-cost state the
          * live timeline had, or miss cycles differ per peer/retry and IRQ
@@ -649,6 +653,8 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
         return sio_snapshot_read(p, len);
     case BS_SEC_MDEC:
         return mdec_snapshot_read(p, len);
+    case BS_SEC_MODMEM:
+        return memory_mod_snapshot_read(p, len);
     case BS_SEC_DIRTY: {
         uint32_t wc;
         uint32_t* words;
@@ -706,6 +712,82 @@ static int boot_state_parse_header(const uint8_t* file, size_t file_len,
         !pst_r_u32(&hr, &h_out->codegen_ver) ||
         !pst_r_u32(&hr, &h_out->section_count) ||
         !pst_r_u32(&hr, &h_out->reserved)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int boot_state_preflight_mod_memory(const uint8_t* file, size_t file_len,
+                                           const BootStateHeader* h) {
+    const uint8_t* cur;
+    const uint8_t* end;
+    int saw_modmem = 0;
+
+    if (!file || !h)
+        return 0;
+
+    cur = file + BOOT_STATE_HEADER_WIRE_BYTES;
+    end = file + file_len;
+
+    for (uint32_t i = 0; i < h->section_count; i++) {
+        PstR sh;
+        uint32_t tag = 0, pad = 0;
+        uint64_t len = 0;
+        const uint8_t* payload;
+
+        if ((size_t)(end - cur) < 16u)
+            return 0;
+        pst_r_init(&sh, cur, 16);
+        if (!pst_r_u32(&sh, &tag) ||
+            !pst_r_u32(&sh, &pad) ||
+            !pst_r_u64(&sh, &len))
+            return 0;
+        cur += 16;
+        if (len > 64u * 1024u * 1024u || (uint64_t)(end - cur) < len)
+            return 0;
+        payload = cur;
+        cur += (size_t)len;
+
+        if (tag != BS_SEC_MODMEM)
+            continue;
+
+        saw_modmem = 1;
+        if (h->version >= 4u && pad == BOOT_STATE_SEC_ZLIB) {
+            PstR lr;
+            uint32_t raw_len = 0;
+            uLong dest_len;
+            uint8_t* inflated;
+            int ok;
+
+            if (len < 4u)
+                return 0;
+            pst_r_init(&lr, payload, 4);
+            if (!pst_r_u32(&lr, &raw_len) || raw_len == 0 ||
+                raw_len > 64u * 1024u * 1024u)
+                return 0;
+            inflated = (uint8_t*)malloc(raw_len);
+            if (!inflated)
+                return 0;
+            dest_len = (uLong)raw_len;
+            ok = uncompress(inflated, &dest_len, payload + 4,
+                            (uLong)(len - 4u)) == Z_OK &&
+                 dest_len == (uLong)raw_len &&
+                 memory_mod_snapshot_check(inflated, raw_len);
+            free(inflated);
+            if (!ok)
+                return 0;
+        } else {
+            if (pad != 0u || len > 0xffffffffu)
+                return 0;
+            if (!memory_mod_snapshot_check(payload, (uint32_t)len))
+                return 0;
+        }
+    }
+
+    if (!saw_modmem && memory_mod_snapshot_required()) {
+        fprintf(stderr,
+                "boot_state: reject — missing mod memory section while "
+                "mod allocations are active\n");
         return 0;
     }
     return 1;
@@ -819,6 +901,8 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
         return 0;
     }
     if (!boot_state_parse_header(file, file_len, &h))
+        return 0;
+    if (!boot_state_preflight_mod_memory(file, file_len, &h))
         return 0;
 
     cur = file + BOOT_STATE_HEADER_WIRE_BYTES;

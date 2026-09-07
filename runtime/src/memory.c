@@ -16,6 +16,7 @@
 #include "gpu.h"
 #include "mdec.h"
 #include "mod_memory.h"
+#include "pst_wire.h"
 #include "sio.h"
 #include "spu.h"
 #include "timers.h"
@@ -42,6 +43,10 @@ static uint8_t mod_memory[MOD_MEMORY_SIZE];
 static uint32_t mod_memory_used;
 static uint8_t mod_gpu_dma_memory[PSX_MOD_GPU_DMA_APERTURE_SIZE];
 static uint32_t mod_gpu_dma_memory_used;
+
+#define MOD_MEMORY_SNAPSHOT_MAGIC 0x4D4D5850u /* "PXMM" little-endian */
+#define MOD_MEMORY_SNAPSHOT_VERSION 1u
+#define MOD_MEMORY_SNAPSHOT_HEADER_BYTES 16u
 
 /*
  * Trusted mods may opt into host-backed guest memory in Expansion 1. Before
@@ -91,6 +96,90 @@ static int mod_gpu_dma_memory_offset(uint32_t phys, uint32_t width,
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
     return psx_mod_gpu_dma_resolve_address_for(
         address, mod_gpu_dma_memory_used);
+}
+
+static int memory_mod_snapshot_parse(const uint8_t *p, uint32_t len,
+                                     uint32_t *guest_used_out,
+                                     uint32_t *gpu_used_out) {
+    PstR r;
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    uint32_t guest_used = 0;
+    uint32_t gpu_used = 0;
+    uint32_t want_len;
+
+    if (guest_used_out) *guest_used_out = 0;
+    if (gpu_used_out) *gpu_used_out = 0;
+    if (!p || len < MOD_MEMORY_SNAPSHOT_HEADER_BYTES)
+        return 0;
+    pst_r_init(&r, p, len);
+    if (!pst_r_u32(&r, &magic) ||
+        !pst_r_u32(&r, &version) ||
+        !pst_r_u32(&r, &guest_used) ||
+        !pst_r_u32(&r, &gpu_used))
+        return 0;
+    if (magic != MOD_MEMORY_SNAPSHOT_MAGIC ||
+        version != MOD_MEMORY_SNAPSHOT_VERSION ||
+        guest_used > MOD_MEMORY_SIZE ||
+        gpu_used > PSX_MOD_GPU_DMA_APERTURE_SIZE)
+        return 0;
+    if (guest_used > UINT32_MAX - MOD_MEMORY_SNAPSHOT_HEADER_BYTES ||
+        gpu_used > UINT32_MAX - MOD_MEMORY_SNAPSHOT_HEADER_BYTES - guest_used)
+        return 0;
+    want_len = MOD_MEMORY_SNAPSHOT_HEADER_BYTES + guest_used + gpu_used;
+    if (len != want_len)
+        return 0;
+    if (guest_used < mod_memory_used ||
+        gpu_used < mod_gpu_dma_memory_used)
+        return 0;
+    if (guest_used_out) *guest_used_out = guest_used;
+    if (gpu_used_out) *gpu_used_out = gpu_used;
+    return 1;
+}
+
+uint32_t memory_mod_snapshot_bytes(void) {
+    return MOD_MEMORY_SNAPSHOT_HEADER_BYTES +
+           mod_memory_used + mod_gpu_dma_memory_used;
+}
+
+void memory_mod_snapshot_write(uint8_t *p) {
+    PstW w;
+    if (!p) return;
+    pst_w_init(&w, p, memory_mod_snapshot_bytes());
+    if (!pst_w_u32(&w, MOD_MEMORY_SNAPSHOT_MAGIC) ||
+        !pst_w_u32(&w, MOD_MEMORY_SNAPSHOT_VERSION) ||
+        !pst_w_u32(&w, mod_memory_used) ||
+        !pst_w_u32(&w, mod_gpu_dma_memory_used))
+        return;
+    memcpy(p + MOD_MEMORY_SNAPSHOT_HEADER_BYTES, mod_memory, mod_memory_used);
+    memcpy(p + MOD_MEMORY_SNAPSHOT_HEADER_BYTES + mod_memory_used,
+           mod_gpu_dma_memory, mod_gpu_dma_memory_used);
+}
+
+int memory_mod_snapshot_check(const uint8_t *p, uint32_t len) {
+    return memory_mod_snapshot_parse(p, len, (uint32_t *)0, (uint32_t *)0);
+}
+
+int memory_mod_snapshot_read(const uint8_t *p, uint32_t len) {
+    uint32_t guest_used = 0;
+    uint32_t gpu_used = 0;
+
+    if (!memory_mod_snapshot_parse(p, len, &guest_used, &gpu_used))
+        return 0;
+
+    mod_memory_used = guest_used;
+    mod_gpu_dma_memory_used = gpu_used;
+    memcpy(mod_memory, p + MOD_MEMORY_SNAPSHOT_HEADER_BYTES, guest_used);
+    memset(mod_memory + guest_used, 0, MOD_MEMORY_SIZE - guest_used);
+    memcpy(mod_gpu_dma_memory,
+           p + MOD_MEMORY_SNAPSHOT_HEADER_BYTES + guest_used, gpu_used);
+    memset(mod_gpu_dma_memory + gpu_used, 0,
+           PSX_MOD_GPU_DMA_APERTURE_SIZE - gpu_used);
+    return 1;
+}
+
+int memory_mod_snapshot_required(void) {
+    return mod_memory_used != 0u || mod_gpu_dma_memory_used != 0u;
 }
 
 /* Exposed for inlined main-RAM load helpers in psx_cyc.h (VLC/decode hot path). */

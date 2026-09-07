@@ -41,8 +41,15 @@ static inline uint32_t psx_mod_gpu_dma_resolve_address_for(
     return canonical & 0x001FFFFCu;
 }
 
+uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment);
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t size, uint32_t alignment);
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address);
+
+uint32_t memory_mod_snapshot_bytes(void);
+void     memory_mod_snapshot_write(uint8_t *p);
+int      memory_mod_snapshot_check(const uint8_t *p, uint32_t len);
+int      memory_mod_snapshot_read(const uint8_t *p, uint32_t len);
+int      memory_mod_snapshot_required(void);
 
 #ifdef __cplusplus
 }
