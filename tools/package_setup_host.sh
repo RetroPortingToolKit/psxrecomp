@@ -518,8 +518,12 @@ EOF
 # a cmake variable cannot be resolved here.
 if [[ -f "${STAGE}/CMakeLists.txt" ]]; then
   cml="${STAGE}/CMakeLists.txt"
+  # No guarded references at all is the common case, and grep exits 1 on no
+  # match. Under set -e / pipefail that status escapes the command substitution
+  # and kills the packager silently, before the zip, with no message. An empty
+  # allowlist is a valid result, not an error.
   guarded="$(grep -oE 'if\(EXISTS[[:space:]]+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/[^"]+"' "${cml}" \
-               | sed -E 's|.*\$\{CMAKE_CURRENT_SOURCE_DIR\}/||; s|"$||' | sort -u)"
+               | sed -E 's|.*\$\{CMAKE_CURRENT_SOURCE_DIR\}/||; s|"$||' | sort -u || true)"
   missing_refs=()
   while IFS= read -r rel; do
     [[ -z "${rel}" ]] && continue
