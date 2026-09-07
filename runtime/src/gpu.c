@@ -161,7 +161,13 @@ static void ws_nw_sync_target(void);
 #define WS_TAG_BUCKETS 4096                  /* power of two */
 #define WS_TAG_PROBES  8
 #define WS_FMV_HYSTERESIS 30                 /* frames a colour MDEC decode pins 4:3 */
-typedef struct { uint32_t key; uint32_t stamp; int32_t anchor_x; } WsTag;
+typedef struct {
+    uint32_t key, stamp;
+    int32_t anchor_x, repeat_period, source_width;
+    int screen_space;
+    WsPrepassPacketGuard packet_guard;
+    int32_t stretch_left, stretch_right, left_anchor, right_anchor;
+} WsTag;
 static WsTag    ws_tags[WS_TAG_BUCKETS];
 static uint32_t ws_last_tag_stamp = (uint32_t)-1000; /* frame of newest tag */
 static uint32_t ws_last_3d_stamp  = (uint32_t)-1000; /* frame of newest shaded prim (diagnostic) */
@@ -1825,7 +1831,104 @@ void psx_ws_sprite_tag(CPUState* cpu) {
     ws_tags[victim].key      = key;
     ws_tags[victim].stamp    = now;
     ws_tags[victim].anchor_x = ax;
+    ws_tags[victim].repeat_period = 0;
+    ws_tags[victim].source_width = 0;
+    ws_tags[victim].screen_space = 0;
     ws_last_tag_stamp = now;
+}
+
+static int gp0_command_word_count(uint8_t opcode);
+
+static void ws_tag_screen_packet(uint32_t prim, int32_t anchor,
+                                 int32_t period, int32_t source_width) {
+    if (!ws_engaged()) return;
+    uint32_t key = prim & 0x1FFFFCu;
+    if (!key) return;
+    uint32_t words[16];
+    words[0] = psx_read_word(prim + 4u);
+    int count = gp0_command_word_count((uint8_t)(words[0] >> 24));
+    if (count <= 0 || count > 16 || key + 4u + (uint32_t)count * 4u > 0x200000u)
+        return;
+    for (int i = 1; i < count; ++i)
+        words[i] = psx_read_word(prim + 4u + (uint32_t)i * 4u);
+    uint32_t now = (uint32_t)s_frame_count;
+    uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
+    uint32_t victim = idx;
+    for (int i = 0; i < WS_TAG_PROBES; ++i) {
+        uint32_t j = (idx + i) & (WS_TAG_BUCKETS - 1);
+        WsTag *t = &ws_tags[j];
+        if (t->key == key || !t->key) { victim = j; break; }
+        if (now - t->stamp > 2) victim = j;
+    }
+    ws_tags[victim] = (WsTag){key, now, anchor, period, source_width, 1, {0}};
+    ws_tags[victim].packet_guard = ws_prepass_packet_guard(words, (uint32_t)count);
+}
+
+void gpu_ws_tag_tiled_strip(uint32_t prim, int32_t anchor,
+                            int32_t period, int32_t source_width) {
+    if (source_width <= 0 || source_width > 256 ||
+        period < source_width || period > 4096)
+        return;
+    ws_tag_screen_packet(prim, anchor, period, source_width);
+}
+
+void gpu_ws_tag_screen_prim(uint32_t prim, int32_t anchor) {
+    ws_tag_screen_packet(prim, anchor, 0, 0);
+}
+
+static int ws_screen_packet_matches(const WsTag *tag) {
+    return ws_prepass_packet_matches(&tag->packet_guard, gp0_cmd_buf,
+                                     (uint32_t)gp0_words_needed);
+}
+
+void gpu_ws_tag_stretched_prim(uint32_t prim, int32_t left, int32_t right,
+                               int32_t left_anchor, int32_t right_anchor) {
+    if (right <= left) return;
+    gpu_ws_tag_screen_prim(prim, left_anchor);
+    uint32_t key = prim & 0x1FFFFCu;
+    uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
+    for (int i = 0; i < WS_TAG_PROBES; ++i) {
+        WsTag *t = &ws_tags[(idx + i) & (WS_TAG_BUCKETS - 1)];
+        if (t->key != key || !t->screen_space) continue;
+        t->stretch_left = left;
+        t->stretch_right = right;
+        t->left_anchor = left_anchor;
+        t->right_anchor = right_anchor;
+        return;
+    }
+}
+
+static const WsTag *ws_screen_tag(void) {
+    if (ws_mode != 1 || !ws_active() || gp0_cmd_source_addr == 0xFFFFFFFFu)
+        return NULL;
+    uint32_t now = (uint32_t)s_frame_count;
+    /* Explicit tags use the P_TAG address, never the first command address. */
+    uint32_t key = (gp0_cmd_source_addr - 4u) & 0x1FFFFCu;
+    uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
+    for (int i = 0; i < WS_TAG_PROBES; ++i) {
+        const WsTag *t = &ws_tags[(idx + i) & (WS_TAG_BUCKETS - 1)];
+        if (t->key == key && t->screen_space && now - t->stamp <= 2 &&
+            ws_screen_packet_matches(t))
+            return t;
+    }
+    return NULL;
+}
+
+static void ws_screen_transform_quad(int32_t vx[4]) {
+    const WsTag *t = ws_screen_tag();
+    if (!t) return;
+    if (t->stretch_right > t->stretch_left) {
+        int32_t left = ws_scale_about(t->stretch_left, t->left_anchor);
+        int32_t right = ws_scale_about(t->stretch_right, t->right_anchor);
+        int32_t span = t->stretch_right - t->stretch_left;
+        for (int i = 0; i < 4; ++i) {
+            int64_t n = (int64_t)(vx[i] - t->stretch_left) * (right - left);
+            vx[i] = left + (int32_t)((n + (n >= 0 ? span / 2 : -span / 2)) / span);
+        }
+    } else {
+        for (int i = 0; i < 4; ++i)
+            vx[i] = ws_scale_about(vx[i], t->anchor_x);
+    }
 }
 
 /* Look up the executing GP0 command's prim in the tag table. The command's
@@ -1839,7 +1942,9 @@ static int ws_tagged_anchor(int32_t *out_ax) {
         uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
         for (int i = 0; i < WS_TAG_PROBES; i++) {
             WsTag *t = &ws_tags[(idx + i) & (WS_TAG_BUCKETS - 1)];
-            if (t->key == key && now - t->stamp <= 2) {
+            if (t->key == key && now - t->stamp <= 2 &&
+                (!t->screen_space || (ws_mode == 1 && variant == 0 &&
+                                      ws_screen_packet_matches(t)))) {
                 *out_ax = t->anchor_x;
                 return 1;
             }
@@ -1976,7 +2081,10 @@ int psx_ws_prim_is_tagged(void) {
         uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
         for (int i = 0; i < WS_TAG_PROBES; i++) {
             WsTag *t = &ws_tags[(idx + i) & (WS_TAG_BUCKETS - 1)];
-            if (t->key == key && now - t->stamp <= 2) return 1;
+            if (t->key == key && now - t->stamp <= 2 &&
+                (!t->screen_space || (ws_mode == 1 && variant == 0 &&
+                                      ws_screen_packet_matches(t))))
+                return 1;
         }
     }
     return 0;
@@ -3655,6 +3763,8 @@ static void gp0_exec_mono_quad(void) {
     int rej_b = psx_gpu_triangle_oversize(vx, vy, 2, 1, 3);
     if (rej_a && rej_b) return;
 
+    ws_screen_transform_quad(vx);
+
     /* Full-screen filters are commonly encoded as an axis-aligned quad. Drawing
      * a semi-transparent quad as two independent triangles blends their shared
      * diagonal twice; render the equivalent rectangle once to avoid that seam.
@@ -3761,6 +3871,7 @@ static void gp0_exec_shaded_quad(void) {
     int rej_a = psx_gpu_triangle_oversize(vx, vy, 0, 1, 2);
     int rej_b = psx_gpu_triangle_oversize(vx, vy, 2, 1, 3);
     if (rej_a && rej_b) return;
+    ws_screen_transform_quad(vx);
     ws_nw_backdrop_stretch_quad(vx, vy);   /* full-frame 2D backdrop stretch (sky gradient; no-op else) */
     ws_nw_hud_shift_vertices(vx, 4);
     for (int i = 0; i < 4; i++) {
@@ -4032,6 +4143,7 @@ static void gp0_exec_shaded_textured_quad(void) {
     int rej_b = psx_gpu_triangle_oversize(vx, vy, 2, 1, 3);
     if (rej_a && rej_b) return;
 
+    ws_screen_transform_quad(vx);
     ws_auto_ui_transform_quad(vx, vy);
     ws_nw_hud_shift_vertices(vx, 4);
     for (int i = 0; i < 4; i++) {
@@ -4124,7 +4236,11 @@ static void gp0_exec_mono_rect(void) {
      * primitive, and rects never carry GTE output. */
     if (ws_active() && w > 0) {
         int corrected_w = w;
-        if (ws_auto_ui_transform_rect(&x0, y0, &corrected_w, h))
+        const WsTag *tag = ws_screen_tag();
+        if (tag) {
+            x0 = ws_scale_about(x0, tag->anchor_x);
+            w = ws_scale_len(w);
+        } else if (ws_auto_ui_transform_rect(&x0, y0, &corrected_w, h))
             w = corrected_w;
     }
     x0 += ws_nw_hud_shift(x0, w);   /* native-wide HUD corner re-anchor (no-op else) */
@@ -4150,6 +4266,44 @@ static void gp0_exec_textured_rect(void) {
     int h = (gp0_cmd_buf[3] >> 16) & 0x1FF;
     if (w > 1023) w = 1023;
     if (h > 511)  h = 511;
+
+    const WsTag *tile_tag = ws_screen_tag();
+    if (tile_tag && tile_tag->repeat_period > 0 && w > 0 && h > 0) {
+        if (tile_tag->source_width > 0) {
+            x0 -= u0;
+            u0 = 0;
+            w = tile_tag->source_width;
+        }
+        /* Repeat an authored composite at its original texture density. The
+         * renderer knows the actual draw-order texpage; UV endpoints remain
+         * integers here, so a full 256-texel strip never wraps to zero. */
+        int32_t anchor = tile_tag->anchor_x;
+        int32_t period = tile_tag->repeat_period;
+        int32_t visible_lo = anchor + (int32_t)(
+            (int64_t)(ws_disp_x() - anchor) * ws_xden / ws_xnum);
+        int32_t visible_hi = anchor + (int32_t)(
+            (int64_t)(ws_disp_x() + ws_disp_w() - anchor) * ws_xden / ws_xnum);
+        int32_t first = (visible_lo - x0) / period - 1;
+        int32_t last = (visible_hi - x0) / period + 1;
+        /* Bounded even if a plugin supplies an impractically tiny period. */
+        if (last - first <= 128) {
+            setup_textured_draw(color24, semi_trans, raw_texture);
+            for (int32_t n = first; n <= last; ++n) {
+                int32_t source_x = x0 + n * period;
+                if (source_x + w <= visible_lo || source_x >= visible_hi)
+                    continue;
+                int32_t x = ws_scale_about(source_x, anchor);
+                int dw = ws_scale_about(source_x + w, anchor) - x;
+                x += draw_offset_x;
+                int32_t y = y0 + draw_offset_y;
+                if (dw <= 0 || draw_area_out_rect(x, y, dw, h)) continue;
+                gr_draw_textured_rect_scaled(x, y, dw, h,
+                    u0, v0, u0 + w, v0 + h,
+                    clut_x, clut_y, current_texpage());
+            }
+            return;
+        }
+    }
 
     /* Widescreen: tagged sprite parts squash around their projected anchor;
      * untagged SPRTs are screen-space 2D (HUD/menus) and squash around the

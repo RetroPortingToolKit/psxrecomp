@@ -218,6 +218,21 @@ int psx_ws_mmx6_bg_stream_left(int x);
 int psx_ws_mmx6_bg_stream_right(int x);
 struct CPUState;
 void psx_ws_sprite_tag(struct CPUState* cpu);
+/* Explicit screen-space tags for trusted title mods. Tag the P_TAG address
+ * before submission; no guest packets are changed. Anchors/period are authored
+ * display pixels. Unlike billboard tags these do not classify a frame as 3D.
+ * Corrections are identity at 4:3 and on pure-2D screens. Tiled tags apply only
+ * to variable textured rectangles and repeat a title-proven composite period.
+ * A tiled strip reconstructs a horizontally clipped source: authored U is its
+ * left crop, so restore X-U, U=0 and source_width before repeating. */
+void gpu_ws_tag_screen_prim(uint32_t prim, int32_t anchor);
+/* Resize an untextured quad group between two independently anchored edges.
+ * Useful for health gauges that should fill the available width while their
+ * labels and neighboring timer keep their original proportions. */
+void gpu_ws_tag_stretched_prim(uint32_t prim, int32_t left, int32_t right,
+                               int32_t left_anchor, int32_t right_anchor);
+void gpu_ws_tag_tiled_strip(uint32_t prim, int32_t anchor,
+                            int32_t period, int32_t source_width);
 
 /* Native-wide (mode 2) on a game frame. ws_nw_extra() is the total width the
  * frame grows by, in display pixels (the present path widens the display read
