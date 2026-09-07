@@ -1,7 +1,11 @@
 # NoGraphicsAPI / Vulkan investigation — 2026-09-06
 
-**Status: a separate experimental NoGraphicsAPI renderer is now integrated at
-native resolution. Full feature parity and game validation are not delivered.**
+**Status: PARKED EXPERIMENT, at the user's request. Keep this work on
+`feat/nographics-vulkan`; further implementation, optimization and integration
+are deferred until explicitly resumed.**
+
+A separate experimental NoGraphicsAPI renderer is integrated at native
+resolution. Full feature parity and game validation are not delivered.
 Native Vulkan remains selectable and retains its existing setting. The approved
 616.86 hotfix removed the device blocker. The new backend executes real GPU
 primitives and presentation, with passing targeted pixel/validation tests, but
@@ -14,6 +18,31 @@ Worktree: `F:/Projects/psxrecomp/_wt-nographics-vulkan`, branch
 Three GPT-5.5 subagents audited compatibility, renderer coverage and benchmarking;
 the orchestrator reviewed their changes and independently built and ran the
 probes. Initial benchmark assumptions and test defects were rejected/corrected.
+
+## Parking checkpoint
+
+Implementation commit: `eca3181cdf8dea3daf21adc3c8f03c7d76496d6c`.
+The user tested Tomba 2 and reported acceptable behavior with "so-so"
+performance, then requested parking the experiment. This is user feedback,
+not a measured game-performance or compatibility result. The synthetic
+measurements below still show no speedup; full acceptance criteria remain open.
+
+Local Tomba 2 test setup is retained:
+
+- Game worktree: `F:/Projects/psxrecomp/_wt-tomba2-nographics`, upstream
+  revision `3593744`, with `game_nographics_test.toml` enabling both Vulkan
+  choices. Game assets and generated sources remain local only.
+- Build: `F:/Projects/psxrecomp/_build-tomba2-ng-launch/Tomba2-NoGraphicsAPI.exe`,
+  using this framework branch and recomp-ui revision `4c9ad90`.
+- Its separate `settings.toml` preselects `vulkan_nographics` at 1x. Native
+  Vulkan remains selectable. Original game settings were not changed.
+- Relaunch with `--game F:/Projects/psxrecomp/_wt-tomba2-nographics/game_nographics_test.toml
+  --launcher --debug-port 4595`. Logs and launcher captures are in the build
+  directory; the NoGraphicsAPI DLL is staged beside the executable.
+
+Before resuming, review the missing features and validation work at the end of
+this report. Profile actual game workloads before attributing their cost to
+specific transfers, shader work or synchronization.
 
 ## Separate runtime backend
 

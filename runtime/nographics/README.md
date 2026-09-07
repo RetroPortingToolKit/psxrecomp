@@ -1,5 +1,9 @@
 # Experimental NoGraphicsAPI renderer
 
+**Parked experiment:** retained on `feat/nographics-vulkan` at the user's
+request. Further development and integration are deferred. See the
+[parking checkpoint](../../docs/internal/nographics-vulkan-status.md#parking-checkpoint).
+
 This is a separate GPU renderer, loaded from `psx_nographics.dll`. It does not
 replace `gpu_vk_renderer.c`. PSX primitive work runs in NoGraphicsAPI compute
 shaders against GPU VRAM; a graphics shader presents through its Win32 swapchain.
