@@ -122,10 +122,22 @@ endforeach()
 # dependency. That is not merely a different copy: cmake-clang-v1 compiles
 # against its own sysroot and never searches /usr/include, so a host package is
 # found, reported as "using prebuilt/system", and then fails to compile.
+#
+# A distro cross-compiler inverts that reasoning. /usr/bin/x86_64-w64-mingw32-gcc
+# derives the prefix /usr, which is not a self-contained pack but the host
+# system itself — and its /usr/lib/cmake/SDL3 and /usr/lib/libz.a are exactly
+# the Linux-ELF copies the hint exists to avoid. Taking that hint sets SDL3_DIR
+# (or ZLIB_ROOT) to a package the cross compiler cannot use, which the header
+# check below then reports as a fatal "found but does not compile". Standard
+# system prefixes are therefore never hints; if a usable dependency lives
+# under one, find_package reaches it through the normal search (subject to the
+# toolchain file's CMAKE_FIND_ROOT_PATH), and if none exists the FetchContent
+# fallbacks build one for the target.
 if(CMAKE_C_COMPILER)
     get_filename_component(_psx_cc_bin "${CMAKE_C_COMPILER}" DIRECTORY)
     get_filename_component(_psx_cc_pfx "${_psx_cc_bin}" DIRECTORY)
-    if(_psx_cc_pfx AND EXISTS "${_psx_cc_pfx}")
+    if(_psx_cc_pfx AND EXISTS "${_psx_cc_pfx}" AND
+       NOT _psx_cc_pfx MATCHES "^(/|/usr|/usr/local)$")
         list(APPEND _PSX_TOOLCHAIN_PREFIX_HINTS "${_psx_cc_pfx}")
     endif()
     unset(_psx_cc_bin)
