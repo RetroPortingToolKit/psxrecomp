@@ -9773,6 +9773,213 @@ namespace {
         return 0;
     }
 
+
+    static std::string g_lnch_mod_plan_error;
+
+    static void ae_copy_lobby_text(char* out, size_t cap, const char* in) {
+        if (!out || cap == 0) return;
+        std::snprintf(out, cap, "%s", in ? in : "");
+    }
+
+    static const RecompLauncherCModProvider* ae_mod_provider(void) {
+        return PSXRecompV4::mod_runtime_launcher_provider();
+    }
+
+    static int ae_mod_package_get_by_id(const char* id,
+                                        RecompLauncherCModPackage* out) {
+        const RecompLauncherCModProvider* mods = ae_mod_provider();
+        if (!mods || !mods->package_count || !mods->package_get || !id || !id[0])
+            return 0;
+        const int count = mods->package_count(mods->ctx);
+        for (int i = 0; i < count; ++i) {
+            RecompLauncherCModPackage pkg{};
+            if (!mods->package_get(mods->ctx, i, &pkg)) continue;
+            if (std::strcmp(pkg.id, id) != 0) continue;
+            if (out) *out = pkg;
+            return 1;
+        }
+        return 0;
+    }
+
+    static int ae_mod_pkg_installed(const PsxLobbyModPkg* need,
+                                    char* reason, size_t reason_cap) {
+        const RecompLauncherCModProvider* mods = ae_mod_provider();
+        RecompLauncherCModPackage pkg{};
+        if (reason && reason_cap) reason[0] = '\0';
+        if (!need || !need->id[0]) return 0;
+        if (!ae_mod_package_get_by_id(need->id, &pkg)) {
+            ae_copy_lobby_text(reason, reason_cap, "not installed");
+            return 0;
+        }
+        if (need->ver[0] && std::strcmp(pkg.version, need->ver) != 0) {
+            int found_version = 0;
+            if (mods && mods->version_count && mods->version_get) {
+                const int versions = mods->version_count(mods->ctx, need->id);
+                for (int i = 0; i < versions; ++i) {
+                    RecompLauncherCModVersion ver{};
+                    if (mods->version_get(mods->ctx, need->id, i, &ver) &&
+                        std::strcmp(ver.version, need->ver) == 0) {
+                        found_version = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found_version) {
+                ae_copy_lobby_text(reason, reason_cap, "version mismatch");
+                return 0;
+            }
+        }
+        if (pkg.has_error) {
+            ae_copy_lobby_text(reason, reason_cap,
+                               pkg.status[0] ? pkg.status
+                                             : "does not match your game image");
+            return 0;
+        }
+        return 1;
+    }
+
+    static void ae_fill_lobby_mod_pkg_from_package(PsxLobbyModPkg* out,
+                                                   const RecompLauncherCModPackage& pkg) {
+        if (!out) return;
+        std::memset(out, 0, sizeof(*out));
+        ae_copy_lobby_text(out->id, sizeof(out->id), pkg.id);
+        ae_copy_lobby_text(out->ver, sizeof(out->ver), pkg.version);
+        ae_copy_lobby_text(out->name, sizeof(out->name), pkg.name);
+        out->builtin = pkg.removable ? 0 : 1;
+        out->size = 0;
+    }
+
+    static void ae_np_refresh_mod_offer(void) {
+        const RecompLauncherCModProvider* mods = ae_mod_provider();
+        PsxLobbyModOffer offer{};
+        if (!mods || !mods->package_count || !mods->package_get) {
+            psx_lobby_set_mod_offer(nullptr);
+            return;
+        }
+        offer.valid = 1;
+        const int count = mods->package_count(mods->ctx);
+        for (int i = 0; i < count && offer.count < PSX_LOBBY_MAX_MODS; ++i) {
+            RecompLauncherCModPackage pkg{};
+            if (!mods->package_get(mods->ctx, i, &pkg) || !pkg.id[0]) continue;
+            if (mods->version_count && mods->version_get) {
+                const int versions = mods->version_count(mods->ctx, pkg.id);
+                for (int v = 0; v < versions && offer.count < PSX_LOBBY_MAX_MODS; ++v) {
+                    RecompLauncherCModVersion ver{};
+                    if (!mods->version_get(mods->ctx, pkg.id, v, &ver) ||
+                        !ver.version[0])
+                        continue;
+                    ae_fill_lobby_mod_pkg_from_package(&offer.pkgs[offer.count], pkg);
+                    ae_copy_lobby_text(offer.pkgs[offer.count].ver,
+                                       sizeof(offer.pkgs[offer.count].ver),
+                                       ver.version);
+                    offer.pkgs[offer.count].builtin = ver.removable ? 0 : 1;
+                    offer.count++;
+                }
+            } else {
+                ae_fill_lobby_mod_pkg_from_package(&offer.pkgs[offer.count], pkg);
+                offer.count++;
+            }
+        }
+        psx_lobby_set_mod_offer(&offer);
+    }
+
+    static void ae_append_feat_token(char* out, size_t cap, const char* token) {
+        if (!out || cap == 0 || !token || !token[0]) return;
+        const size_t len = std::strlen(out);
+        if (len >= cap - 1) return;
+        std::snprintf(out + len, cap - len, "%s%s", len ? "," : "", token);
+    }
+
+    static void ae_append_feature_options(char* token, size_t cap,
+                                          const RecompLauncherCModProvider* mods,
+                                          const RecompLauncherCModFeature& feature) {
+        if (!token || cap == 0 || !mods || !mods->feature_option_get)
+            return;
+        const size_t base_len = std::strlen(token);
+        size_t len = base_len;
+        for (int i = 0; i < feature.option_count; ++i) {
+            RecompLauncherCModOption opt{};
+            if (!mods->feature_option_get(mods->ctx, feature.package_id,
+                                          feature.id, i, &opt))
+                continue;
+            if (!opt.id[0]) continue;
+            const char* sep = (len == base_len) ? "=" : "+";
+            const int wrote = std::snprintf(token + len, len < cap ? cap - len : 0,
+                                            "%s%s~%s", sep, opt.id, opt.value);
+            if (wrote < 0 || (size_t)wrote >= (len < cap ? cap - len : 0)) {
+                token[base_len] = '\0';
+                return;
+            }
+            len += (size_t)wrote;
+        }
+    }
+
+    static int ae_np_fill_caps_mod_plan(PsxLobbyMatchCaps* caps) {
+        const RecompLauncherCModProvider* mods = ae_mod_provider();
+        g_lnch_mod_plan_error.clear();
+        if (!caps) {
+            g_lnch_mod_plan_error = "missing match caps";
+            return 0;
+        }
+        caps->mod_plan_fp[0] = '\0';
+        caps->mod_count = 0;
+        std::memset(caps->mods, 0, sizeof(caps->mods));
+        if (!mods || !mods->package_count || !mods->package_get)
+            return 1;
+
+        if (mods->feature_count && mods->feature_get) {
+            const int feature_count = mods->feature_count(mods->ctx);
+            for (int i = 0; i < feature_count; ++i) {
+                RecompLauncherCModFeature feature{};
+                if (!mods->feature_get(mods->ctx, i, &feature) || !feature.enabled)
+                    continue;
+                int pkg_index = -1;
+                for (int j = 0; j < caps->mod_count; ++j) {
+                    if (std::strcmp(caps->mods[j].id, feature.package_id) == 0) {
+                        pkg_index = j;
+                        break;
+                    }
+                }
+                if (pkg_index < 0) {
+                    if (caps->mod_count >= PSX_LOBBY_MAX_MODS) {
+                        g_lnch_mod_plan_error = "too many enabled mods for lobby caps";
+                        return 0;
+                    }
+                    RecompLauncherCModPackage pkg{};
+                    if (!ae_mod_package_get_by_id(feature.package_id, &pkg))
+                        continue;
+                    pkg_index = caps->mod_count++;
+                    ae_fill_lobby_mod_pkg_from_package(&caps->mods[pkg_index], pkg);
+                }
+                char token[PSX_LOBBY_MOD_FEATS_LEN] = {};
+                ae_copy_lobby_text(token, sizeof(token), feature.id);
+                ae_append_feature_options(token, sizeof(token), mods, feature);
+                ae_append_feat_token(caps->mods[pkg_index].feats,
+                                     sizeof(caps->mods[pkg_index].feats), token);
+            }
+        } else {
+            const int count = mods->package_count(mods->ctx);
+            for (int i = 0; i < count && caps->mod_count < PSX_LOBBY_MAX_MODS; ++i) {
+                RecompLauncherCModPackage pkg{};
+                if (!mods->package_get(mods->ctx, i, &pkg) || !pkg.enabled)
+                    continue;
+                ae_fill_lobby_mod_pkg_from_package(&caps->mods[caps->mod_count], pkg);
+                caps->mod_count++;
+            }
+        }
+
+        if (caps->mod_count > 0) {
+            const std::string fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable();
+            if (fp.empty()) {
+                g_lnch_mod_plan_error =
+                    "enabled mods did not produce a portable netplay fingerprint";
+                return 0;
+            }
+            ae_copy_lobby_text(caps->mod_plan_fp, sizeof(caps->mod_plan_fp), fp.c_str());
+        }
+        return 1;
+    }
+
     PsxLobbyMatchCaps ae_netplay_caps_from_settings(const RecompLauncherCSettings* s) {
         PsxLobbyMatchCaps caps{};
         caps.valid = 1;
@@ -9796,6 +10003,11 @@ namespace {
         if (s) caps.multitap_analog = s->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
         caps.guest_memcard_active = 0; /* settled at request_start */
+        if (!ae_np_fill_caps_mod_plan(&caps)) {
+            caps.mod_plan_fp[0] = '\0';
+            caps.mod_count = 0;
+            std::memset(caps.mods, 0, sizeof(caps.mods));
+        }
         return caps;
     }
 
@@ -9838,6 +10050,12 @@ namespace {
         if (settings) caps.multitap_analog = settings->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
         caps.guest_memcard_active = 0;
+        if (!ae_np_fill_caps_mod_plan(&caps)) {
+            std::fprintf(stderr, "psxrecomp: cannot publish lobby mod plan: %s\n",
+                         g_lnch_mod_plan_error.c_str());
+            return;
+        }
+        ae_np_refresh_mod_offer();
         (void)psx_lobby_set_match_caps(&caps);
     }
 
@@ -10223,11 +10441,13 @@ namespace {
         psx_lobby_set_game_identity(g_lnch_netplay_game_name.c_str(), psx_lobby_game_version());
         psx_lobby_set_disc_fp(g_session_disc_fp.c_str());
         psx_lobby_set_max_slots(g_lnch_game_players);
+        ae_np_refresh_mod_offer();
         const int rc = psx_lobby_connect(ae_np_default_url(nullptr));
         /* connect resets g_lc; re-apply so create/join never advertise "". */
         psx_lobby_set_game_identity(g_lnch_netplay_game_name.c_str(), psx_lobby_game_version());
         psx_lobby_set_disc_fp(g_session_disc_fp.c_str());
         psx_lobby_set_max_slots(g_lnch_game_players);
+        ae_np_refresh_mod_offer();
         return rc;
     }
 
@@ -10804,9 +11024,15 @@ namespace {
         if (!g_lnch_hosting_lan && !g_lnch_joined_lan && psx_lobby_in_lobby()) {
             static PsxLobbyBiosOffer s_last_offer{};
             static PsxLobbyMemcardOffer s_last_mc{};
+            static PsxLobbyModOffer s_last_mod_offer{};
             ae_np_refresh_bios_offer_from_disk();
+            ae_np_refresh_mod_offer();
             const PsxLobbyBiosOffer* cur = psx_lobby_bios_offer();
             const PsxLobbyMemcardOffer* mc = psx_lobby_memcard_offer();
+            const PsxLobbyModOffer* mo = psx_lobby_mod_offer();
+            const int mod_offer_changed =
+                mo && (!s_last_mod_offer.valid ||
+                       std::memcmp(mo, &s_last_mod_offer, sizeof(*mo)) != 0);
             const int offer_changed =
                 !cur || !s_last_offer.valid ||
                 cur->can_openbios != s_last_offer.can_openbios ||
@@ -10814,11 +11040,13 @@ namespace {
                 cur->prefer_openbios != s_last_offer.prefer_openbios ||
                 (mc && mc->valid &&
                  (!s_last_mc.valid || mc->has_card != s_last_mc.has_card ||
-                  mc->share != s_last_mc.share));
+                  mc->share != s_last_mc.share)) ||
+                mod_offer_changed;
             if (!psx_lobby_local_ready() || offer_changed) {
                 (void)psx_lobby_set_ready(1);
                 if (cur) s_last_offer = *cur;
                 if (mc) s_last_mc = *mc;
+                if (mo) s_last_mod_offer = *mo;
             }
         }
     }
@@ -11168,6 +11396,12 @@ namespace {
         if (host_endpoint)
             std::snprintf(host_endpoint, 96, "%s", endpoint);
 
+        if (!g_lnch_mod_plan_error.empty()) {
+            std::fprintf(stderr, "psxrecomp: cannot create modded lobby: %s\n",
+                         g_lnch_mod_plan_error.c_str());
+            return -1;
+        }
+
         if (g_lnch_hosting_lan) {
             std::error_code ec;
             std::filesystem::remove(ae_np_lan_file(), ec);
@@ -11179,6 +11413,7 @@ namespace {
         g_lnch_remote_lan_state = {};
         g_lnch_lan_endpoint.clear();
         psx_lobby_set_max_slots(max_slots);
+        ae_np_refresh_mod_offer();
         /* Ensure TOC fp survives connect/reset before the lobby stores it. */
         psx_lobby_set_disc_fp(g_session_disc_fp.c_str());
         return psx_lobby_create(lobby_name && lobby_name[0] ? lobby_name : "Netplay Lobby",
@@ -11201,6 +11436,7 @@ namespace {
             if (guest_bind)
                 std::snprintf(guest_bind, 64, "%s", bind_buf);
         }
+        ae_np_refresh_mod_offer();
         if (lobby_id && strncmp(lobby_id, "lan:", 4) == 0) {
             const char* endpoint = lobby_id + 4;
             if (!endpoint[0]) return -1;
@@ -11580,8 +11816,10 @@ namespace {
     int ae_np_local_ready(void*) { return psx_lobby_local_ready(); }
     int ae_np_all_ready(void*) { return psx_lobby_all_ready(); }
     int ae_np_set_ready(void*, int ready) {
-        if (ready)
+        if (ready) {
             ae_np_refresh_bios_offer_from_disk();
+            ae_np_refresh_mod_offer();
+        }
         return psx_lobby_set_ready(ready);
     }
 
@@ -11637,8 +11875,14 @@ namespace {
             ae_np_refresh_bios_offer(settings->bios_path);
         else
             ae_np_refresh_bios_offer_from_disk();
+        ae_np_refresh_mod_offer();
         (void)psx_lobby_set_ready(1);
         PsxLobbyMatchCaps caps = ae_netplay_caps_from_settings(settings);
+        if (!g_lnch_mod_plan_error.empty()) {
+            std::fprintf(stderr, "psxrecomp: cannot start modded lobby: %s\n",
+                         g_lnch_mod_plan_error.c_str());
+            return -1;
+        }
         caps.guest_memcard_active = ae_np_ws_guest_memcard_effective();
         std::fprintf(stdout, "psxrecomp: lobby guest memcard (P2 card as slot 2) = %s\n",
                      caps.guest_memcard_active ? "on" : "off");
@@ -11649,6 +11893,97 @@ namespace {
         std::fprintf(stdout, "psxrecomp: lobby settled session BIOS = %s\n",
                      caps.session_bios[0] ? caps.session_bios : "openbios");
         return psx_lobby_request_start(&caps);
+    }
+
+
+    static void ae_copy_need_mod(RecompLauncherCNetplayNeedMod* out,
+                                 const PsxLobbyModPkg& pkg) {
+        if (!out) return;
+        std::memset(out, 0, sizeof(*out));
+        ae_copy_lobby_text(out->id, sizeof(out->id), pkg.id);
+        ae_copy_lobby_text(out->version, sizeof(out->version), pkg.ver);
+        ae_copy_lobby_text(out->name, sizeof(out->name), pkg.name);
+        out->builtin = pkg.builtin;
+        out->size = pkg.size;
+    }
+
+    int ae_np_need_mods_count(void*) {
+        return psx_lobby_need_mods_count();
+    }
+
+    int ae_np_need_mods_get(void*, int index,
+                            RecompLauncherCNetplayNeedMod* out) {
+        PsxLobbyModPkg pkg{};
+        if (!out || !psx_lobby_need_mods_get(index, &pkg)) return 0;
+        ae_copy_need_mod(out, pkg);
+        return 1;
+    }
+
+    int ae_np_need_mods_can_transfer(void*) {
+        return psx_lobby_need_mods_can_transfer();
+    }
+
+    int ae_np_mod_xfer_start(void*) {
+        return psx_lobby_mod_xfer_start();
+    }
+
+    void ae_np_mod_xfer_cancel(void*) {
+        psx_lobby_mod_xfer_cancel();
+    }
+
+    int ae_np_mod_xfer_progress(void*) {
+        return psx_lobby_mod_xfer_progress();
+    }
+
+    int ae_np_mod_xfer_failed(void*, char* err, size_t err_cap) {
+        return psx_lobby_mod_xfer_failed(err, err_cap);
+    }
+
+    void ae_np_push_match_caps_cb(void*) {
+        ae_np_push_match_caps(nullptr);
+    }
+
+    int ae_np_lobby_mods_count(void*) {
+        const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+        if (!caps || !caps->valid || caps->mod_count <= 0) return 0;
+        return caps->mod_count;
+    }
+
+    int ae_np_lobby_mods_get(void*, int index,
+                             RecompLauncherCNetplayLobbyMod* out) {
+        const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+        if (!out || !caps || !caps->valid || index < 0 ||
+            index >= caps->mod_count)
+            return 0;
+        const PsxLobbyModPkg& pkg = caps->mods[index];
+        std::memset(out, 0, sizeof(*out));
+        ae_copy_lobby_text(out->id, sizeof(out->id), pkg.id);
+        ae_copy_lobby_text(out->version, sizeof(out->version), pkg.ver);
+        ae_copy_lobby_text(out->name, sizeof(out->name), pkg.name);
+        out->builtin = pkg.builtin;
+        out->size = pkg.size;
+        out->installed = ae_mod_pkg_installed(&pkg, out->reason,
+                                              sizeof(out->reason));
+        ae_copy_lobby_text(out->options, sizeof(out->options), pkg.feats);
+        return 1;
+    }
+
+    int ae_np_lobby_mods_missing(void*) {
+        const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+        int missing = 0;
+        if (!caps || !caps->valid || caps->mod_count <= 0) return 0;
+        for (int i = 0; i < caps->mod_count; ++i)
+            if (!ae_mod_pkg_installed(&caps->mods[i], nullptr, 0))
+                missing++;
+        return missing;
+    }
+
+    int ae_np_lobby_mods_download(void*) {
+        return psx_lobby_mod_xfer_start();
+    }
+
+    int ae_np_lobby_mods_can_download(void*) {
+        return psx_lobby_need_mods_can_transfer();
     }
 
     int ae_np_launch_pending(void*) {
@@ -12063,6 +12398,19 @@ namespace {
         g_lnch_netplay_callbacks.lobby_spectator_count = ae_np_lobby_spectator_count;
         g_lnch_netplay_callbacks.local_is_spectator = ae_np_local_is_spectator;
         g_lnch_netplay_callbacks.spectator_slot = ae_np_spectator_slot;
+        g_lnch_netplay_callbacks.need_mods_count = ae_np_need_mods_count;
+        g_lnch_netplay_callbacks.need_mods_get = ae_np_need_mods_get;
+        g_lnch_netplay_callbacks.need_mods_can_transfer = ae_np_need_mods_can_transfer;
+        g_lnch_netplay_callbacks.mod_xfer_start = ae_np_mod_xfer_start;
+        g_lnch_netplay_callbacks.mod_xfer_cancel = ae_np_mod_xfer_cancel;
+        g_lnch_netplay_callbacks.mod_xfer_progress = ae_np_mod_xfer_progress;
+        g_lnch_netplay_callbacks.mod_xfer_failed = ae_np_mod_xfer_failed;
+        g_lnch_netplay_callbacks.push_match_caps = ae_np_push_match_caps_cb;
+        g_lnch_netplay_callbacks.lobby_mods_count = ae_np_lobby_mods_count;
+        g_lnch_netplay_callbacks.lobby_mods_get = ae_np_lobby_mods_get;
+        g_lnch_netplay_callbacks.lobby_mods_missing = ae_np_lobby_mods_missing;
+        g_lnch_netplay_callbacks.lobby_mods_download = ae_np_lobby_mods_download;
+        g_lnch_netplay_callbacks.lobby_mods_can_download = ae_np_lobby_mods_can_download;
         gi->netplay = g_lnch_netplay_available
             ? &g_lnch_netplay_callbacks : nullptr;
 #else
@@ -14236,14 +14584,13 @@ int main(int argc, char** argv) {
     }
 
     {
-        /* Netplay must stay vanilla: launcher commit_netplay clears the plan,
-         * but a following offline-style commit would re-resolve enabled mods
-         * from disk. Skip commit entirely when this session is netplay. */
+        /* Netplay applies the host-published lobby mod plan without mutating
+         * the user's persisted offline mod selection. */
         std::string mod_error;
         if (net_cfg.enabled) {
-            if (!PSXRecompV4::mod_runtime_clear_for_netplay(&mod_error)) {
+            if (!PSXRecompV4::mod_runtime_commit_for_netplay(resolved_disc, &mod_error)) {
                 std::fprintf(stderr,
-                             "psxrecomp: cannot clear mods for netplay: %s\n",
+                             "psxrecomp: cannot apply netplay mods: %s\n",
                              mod_error.c_str());
                 return 1;
             }
@@ -16114,10 +16461,11 @@ soft_return_lobby:
             {
                 std::string mod_error;
                 if (net_cfg.enabled) {
-                    if (!PSXRecompV4::mod_runtime_clear_for_netplay(&mod_error)) {
+                    if (!PSXRecompV4::mod_runtime_commit_for_netplay(resolved_disc,
+                                                                     &mod_error)) {
                         std::fprintf(stderr,
-                                     "psxrecomp: cannot clear mods for netplay "
-                                     "rematch: %s\n",
+                                     "psxrecomp: cannot apply netplay mods "
+                                     "for rematch: %s\n",
                                      mod_error.c_str());
                         SDL_Quit();
                         return 1;

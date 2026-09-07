@@ -29,6 +29,11 @@ extern "C" {
 #define PSX_LOBBY_SPECTATOR_SLOT_BASE 64
 #define PSX_LOBBY_MAX_LAN_EPS 4
 #define PSX_LOBBY_LANG_LEN 16
+#define PSX_LOBBY_MAX_MODS 12
+#define PSX_LOBBY_MOD_ID_LEN 96
+#define PSX_LOBBY_MOD_VER_LEN 32
+#define PSX_LOBBY_MOD_NAME_LEN 64
+#define PSX_LOBBY_MOD_FEATS_LEN 384
 
 #ifndef PSX_GAME_VERSION
 #define PSX_GAME_VERSION "dev"
@@ -74,6 +79,21 @@ typedef struct PsxLobbyOnlinePlayer {
 } PsxLobbyOnlinePlayer;
 #define PSX_LOBBY_MAX_ONLINE 64
 
+typedef struct PsxLobbyModPkg {
+    char id[PSX_LOBBY_MOD_ID_LEN];
+    char ver[PSX_LOBBY_MOD_VER_LEN];
+    char name[PSX_LOBBY_MOD_NAME_LEN];
+    char feats[PSX_LOBBY_MOD_FEATS_LEN];
+    int  builtin;
+    uint32_t size;
+} PsxLobbyModPkg;
+
+typedef struct PsxLobbyModOffer {
+    int valid;
+    int count;
+    PsxLobbyModPkg pkgs[PSX_LOBBY_MAX_MODS];
+} PsxLobbyModOffer;
+
 typedef struct PsxLobbyMember {
     /* Seat index in the shared namespace: a player seat, or
      * spectator_slot_base + gallery index. Pass it back to kick / move as-is. */
@@ -95,6 +115,10 @@ typedef struct PsxLobbyMember {
     int  memcard_share;       /* peer opted in to bring it to the match */
     /* Country (alpha-2) from the server's GeoIP; "" unknown. */
     char country[4];
+    /* Peer mod catalog offer from join/set_ready (0 if legacy/missing). */
+    int  mod_offer_valid;
+    int  mod_count;
+    PsxLobbyModPkg mods[PSX_LOBBY_MAX_MODS];
 } PsxLobbyMember;
 
 /*
@@ -163,6 +187,10 @@ typedef struct PsxLobbyMatchCaps {
     char language[PSX_LOBBY_LANG_LEN];
     /* Settled match BIOS: "openbios" | "scph1001" | "" (unset / legacy). */
     char session_bios[16];
+    /* Host-authoritative online mod plan. Empty mod_plan_fp/mod_count means vanilla. */
+    char mod_plan_fp[72];
+    int  mod_count;
+    PsxLobbyModPkg mods[PSX_LOBBY_MAX_MODS];
 } PsxLobbyMatchCaps;
 
 typedef struct PsxLobbyJoinInfo {
@@ -312,6 +340,17 @@ const PsxLobbyJoinInfo *psx_lobby_join_info(void);
 
 /* Latest host match_caps (valid==0 until create/join/launch delivers one). */
 const PsxLobbyMatchCaps *psx_lobby_match_caps(void);
+
+/* Local mod package/version catalog advertised to the lobby on join. */
+void psx_lobby_set_mod_offer(const PsxLobbyModOffer *offer);
+const PsxLobbyModOffer *psx_lobby_mod_offer(void);
+int  psx_lobby_need_mods_count(void);
+int  psx_lobby_need_mods_get(int index, PsxLobbyModPkg *out);
+int  psx_lobby_need_mods_can_transfer(void);
+int  psx_lobby_mod_xfer_start(void);
+void psx_lobby_mod_xfer_cancel(void);
+int  psx_lobby_mod_xfer_progress(void);
+int  psx_lobby_mod_xfer_failed(char *err, size_t err_cap);
 
 /* Host: push updated caps while in lobby (clears ready via lobby_update). */
 int  psx_lobby_set_match_caps(const PsxLobbyMatchCaps *caps);
