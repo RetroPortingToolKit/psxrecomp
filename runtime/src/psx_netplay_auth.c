@@ -29,6 +29,7 @@ typedef HANDLE auth_thread_t;
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 typedef pthread_t auth_thread_t;
 #endif
@@ -320,36 +321,47 @@ static int prove_and_get_session(void) {
 /* ---- opening the browser ------------------------------------------------ */
 
 /* The one thing the launcher cannot do for us: hand a URL to the desktop.
- * There is no SDL_OpenURL in this runtime, so this is per platform. A failure
- * is not fatal -- the player can still be told to open the page themselves. */
+ * There is no SDL_OpenURL in this runtime, so this is per platform.
+ *
+ * NO SHELL. An earlier version built a `xdg-open '<url>'` command string and
+ * screened the URL for shell metacharacters -- which refused every real
+ * authorize URL, because an OAuth query string is full of `&`. Passing the URL
+ * as a single argv element removes the quoting problem instead of policing it,
+ * and there is nothing left for a metacharacter to escape into. */
 static void account_open_url(const char *url) {
     if (!url || !url[0]) return;
+    /* Still scheme-checked: xdg-open will happily act on a file:// URL or a
+     * local path, and this only ever legitimately receives http(s). */
+    if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) {
+        fprintf(stderr, "%s: refusing to open a non-http(s) URL\n", "psx_account");
+        return;
+    }
 #if defined(_WIN32)
+    /* Takes the URL directly; no command line is built. */
     ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL);
 #else
     {
-        char cmd[1200];
 #if defined(__APPLE__)
         const char *opener = "open";
 #else
         const char *opener = "xdg-open";
 #endif
-        /* The URL comes from our own lobby server, but it still goes through a
-         * shell, so refuse anything that is not a plain http(s) URL rather
-         * than trusting the source. */
-        const char *q;
-        if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) return;
-        for (q = url; *q; ++q) {
-            if (*q == '\'' || *q == '"' || *q == '`' || *q == '$' || *q == '\\' ||
-                *q == ';' || *q == '|' || *q == '&' || *q == '<' || *q == '>' ||
-                (unsigned char)*q < 0x20) {
-                fprintf(stderr, "psx_account: refusing to open a suspicious URL\n");
-                return;
+        pid_t pid = fork();
+        if (pid == 0) {
+            /* Double-fork: the opener is reparented to init, so it outlives
+             * this process and leaves no zombie for a game loop to reap. */
+            if (fork() == 0) {
+                execlp(opener, opener, url, (char *)NULL);
+                _exit(127);
             }
+            _exit(0);
         }
-        snprintf(cmd, sizeof(cmd), "%s '%s' >/dev/null 2>&1 &", opener, url);
-        if (system(cmd) != 0) {
-            fprintf(stderr, "psx_account: could not open a browser; visit:\n  %s\n", url);
+        if (pid > 0) {
+            int st = 0;
+            (void)waitpid(pid, &st, 0);
+        } else {
+            fprintf(stderr, "%s: could not open a browser; visit:\n  %s\n",
+                    "psx_account", url);
         }
     }
 #endif
