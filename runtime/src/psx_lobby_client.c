@@ -153,7 +153,7 @@ void psx_lobby_clear_launch_pending(void) {}
 #include "recomp_net/lan_beacon.h"
 #include "recomp_net/rtt_probe.h"
 #include "recomp_net/chat_filter.h"
-#include "psx_netplay_auth.h"   /* optional Discord session for `hello` */
+#include "recomp_net/auth.h"   /* optional Discord session for `hello` */
 #include "host_time.h"
 
 #if defined(_WIN32)
@@ -1871,7 +1871,7 @@ static void queue_hello(void)
     char game_esc[PSX_LOBBY_NAME_LEN * 2 + 8];
     char sess_esc[2048];
     char msg[PSX_LOBBY_NAME_LEN * 4 + 2176];
-    const char *sess = psx_account_session();
+    const char *sess = rnet_account_session();
     json_escape(g_lc.display_name, name_esc, sizeof(name_esc));
     json_escape(g_lc.filter_game_name, game_esc, sizeof(game_esc));
     /* The session is OPTIONAL and omitted entirely when this client is a

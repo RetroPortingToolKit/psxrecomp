@@ -56,7 +56,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "psx_netplay_rb.h"
 #include "psx_selfcheck.h"
 #include "psx_lobby_client.h"
-#include "psx_netplay_auth.h"
+#include "recomp_net/auth.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "recomp_net/chat_filter.h" /* chat profanity mask, LAN rooms too */
 #endif
@@ -9995,14 +9995,14 @@ namespace {
      * Thin adapters over psx_netplay_auth, which owns the HTTP, the worker
      * thread and the device key. Nothing here blocks a frame except the
      * rename, which is one round trip and wants a verdict for its modal. */
-    int ae_np_account_available(void*) { return psx_account_available(); }
-    int ae_np_account_login_begin(void*) { return psx_account_login_begin(); }
-    int ae_np_account_state(void*) { return psx_account_state(); }
-    const char* ae_np_account_handle(void*) { return psx_account_handle(); }
-    const char* ae_np_account_username(void*) { return psx_account_username(); }
-    const char* ae_np_account_error(void*) { return psx_account_error(); }
-    int ae_np_account_sign_out(void*) { return psx_account_sign_out(); }
-    int ae_np_account_set_handle(void*, const char* h) { return psx_account_set_handle(h); }
+    int ae_np_account_available(void*) { return rnet_account_available(); }
+    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
+    int ae_np_account_state(void*) { return rnet_account_state(); }
+    const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
+    const char* ae_np_account_username(void*) { return rnet_account_username(); }
+    const char* ae_np_account_error(void*) { return rnet_account_error(); }
+    int ae_np_account_sign_out(void*) { return rnet_account_sign_out(); }
+    int ae_np_account_set_handle(void*, const char* h) { return rnet_account_set_handle(h); }
 
     int ae_np_chat_count(void*) {
         ae_np_chat_track_room();
@@ -10211,7 +10211,7 @@ namespace {
         ae_np_save_identity(nullptr, g_lnch_lobby_url.c_str());
         /* The auth endpoints live on the same host and port as the lobby
          * socket, so the sign-in follows whatever server the player points at. */
-        psx_account_init(g_lnch_lobby_url.c_str());
+        rnet_account_init(g_lnch_lobby_url.c_str());
     }
 
     int ae_np_connect(void*) {
@@ -10792,8 +10792,8 @@ namespace {
         psx_lobby_pump();
         /* Redeems a stored device key on the first pump, so a machine that has
          * signed in once comes up signed in with no player action. */
-        psx_account_init(g_lnch_lobby_url.c_str());
-        psx_account_pump();
+        rnet_account_init(g_lnch_lobby_url.c_str());
+        rnet_account_pump();
         ae_np_lan_browse_pump();
         ae_np_lan_udp_pump();
         /* Lobby UI has no Ready toggle; production WS still requires every
