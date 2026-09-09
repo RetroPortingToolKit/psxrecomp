@@ -37,7 +37,7 @@ patch). Pass an explicit version to override. Shared helper:
 
 
 **Host-only model / player updates:** [`HOST_ONLY_RELEASES.md`](HOST_ONLY_RELEASES.md)
-(CI never ships game C; RetComM Update reuses codegen-cache for host/UI bumps;
+(CI never ships game C; Retro Update reuses codegen-cache for host/UI bumps;
 `reuse_cached_emitters` + ccache speed up release jobs when the `psxrecomp` pin
 is unchanged).
 

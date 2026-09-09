@@ -146,9 +146,9 @@ if (-not $ZipPrefix) {
 
 if (-not $GithubOwner) {
     if ($interactive) {
-        $GithubOwner = Prompt-Line "GitHub owner / org (README download badges)" "TechnicallyComputers"
+        $GithubOwner = Prompt-Line "GitHub owner / org (README download badges)" "RetroPortingToolKit"
     } else {
-        $GithubOwner = "TechnicallyComputers"
+        $GithubOwner = "RetroPortingToolKit"
     }
 }
 $derivedRepo = (python -c "from fill_tokens import sanitize_github_name; import sys; print(sanitize_github_name(sys.argv[1]))" $Name).Trim()
@@ -293,7 +293,7 @@ set(PSX_RECOMP_UI OFF CACHE BOOL
 
 if ($useNetplay) {
     # PSX_NETPLAY defaults RNET_ENABLE_ICE=ON; recomp-net FetchContents
-    # libjuice via pinned URL (not git) so RetComM AppImage builds configure.
+    # libjuice via pinned URL (not git) so Retro AppImage builds configure.
     Set-Content -Encoding UTF8 -Path $NetplayBlockFile -Value @"
 if(EXISTS "`${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
     set(PSX_NETPLAY ON CACHE BOOL
@@ -430,7 +430,7 @@ if ($useRecompUi) {
 }
 git submodule update --init --recursive
 
-# RetComM-themed default app icon (Windows .ico + PNG for packaging).
+# Retro-themed default app icon (Windows .ico + PNG for packaging).
 $iconSrc = Join-Path $Root "psxrecomp\assets"
 $iconDst = Join-Path $Root "assets"
 if (Test-Path $iconSrc) {

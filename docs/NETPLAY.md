@@ -156,7 +156,7 @@ asymmetric NAT does not strand players on failed ICE attempts.
 signaling, and fallbacks. With `PSX_NETPLAY=ON`, `runtime.cmake` defaults
 `RNET_ENABLE_ICE=ON` (libjuice) before adding `recomp-net`. Pass
 `-DRNET_ENABLE_ICE=OFF` only for LAN-only / no-FetchContent builds.
-libjuice is pulled as a **pinned URL tarball** (not `git clone`) so RetComM
+libjuice is pulled as a **pinned URL tarball** (not `git clone`) so Retro
 AppImage / mismatched-libcurl hosts can still configure; offline builds can
 vendor `lib/recomp-net/third_party/libjuice` or set `-DRNET_LIBJUICE_ROOT`.
 “Force TURN” in the UI can raise delay floors for relay-heavy paths; it

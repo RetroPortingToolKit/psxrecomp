@@ -90,9 +90,9 @@ that is where the others go when a title needs them.
 
 Offline Play may still launch with a TOC warning; first-run setup Finish and
 online Create/Join require `netplay_ok` (and online also a clean verify +
-non-empty `disc_fp`). Mirror `required_tracks` in the RetComM catalog as
+non-empty `disc_fp`). Mirror `required_tracks` in the Retro catalog as
 `rom_identity.track_counts` so the hub library scan rejects Track-01-only dumps.
-Wizard / RetComM / catalog submission accept Redump `.cue` + sibling `.bin`
+Wizard / Retro / catalog submission accept Redump `.cue` + sibling `.bin`
 tracks only — not `.iso`/`.chd` (cannot reliably expand to multi-track).
 
 ## Program / game block

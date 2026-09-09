@@ -18,7 +18,7 @@ set -euo pipefail
 ARTIFACT=""
 DL_DIR=".cache/toolchain-dl"
 OUT_DIR=".cache/toolchain-pack"
-REPO="TechnicallyComputers/retcomm-toolchains"
+REPO="RetroPortingToolKit/RetroPorting-Toolchains"
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'

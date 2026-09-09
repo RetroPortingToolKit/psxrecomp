@@ -3,7 +3,7 @@
 # into an existing setup-host release stage directory.
 #
 # Title packagers copy the host exe, game sources, and framework tree first,
-# then call this to finish the RetComM/wizard-complete zip layout.
+# then call this to finish the Retro/wizard-complete zip layout.
 #
 # Usage:
 #   stage_setup_sdk.sh --stage <stage-dir> [options]
@@ -235,7 +235,7 @@ if [[ -n "${TOOLCHAIN_DIR}" && -d "${TOOLCHAIN_DIR}" ]]; then
   fi
   echo "bundled toolchain from ${TOOLCHAIN_DIR}"
 elif [[ "${ALLOW_NO_TOOLCHAIN}" -eq 1 ]]; then
-  echo "note: no embedded toolchain/ — RetComM/wizard will download cmake-clang-v1" \
+  echo "note: no embedded toolchain/ — Retro/wizard will download cmake-clang-v1" \
        "(or accept an offline zip / system cmake)" >&2
 else
   echo "error: toolchain dir required (pass --toolchain-dir or set PSXRECOMP_TOOLCHAIN_DIR)" >&2

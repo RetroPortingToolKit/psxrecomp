@@ -119,7 +119,7 @@ Git for Windows also provides the `bash` the setup script uses. Then pick one
 of these for the compiler, CMake, and Ninja:
 
 - **Bundled toolchain (recommended).** Download `cmake-clang-v1-windows-x64.zip`
-  from [retcomm-toolchains](https://github.com/TechnicallyComputers/retcomm-toolchains/releases/latest),
+  from [retcomm-toolchains](https://github.com/RetroPortingToolKit/RetroPorting-Toolchains/releases/latest),
   unzip it (for example to `C:\retcomm-toolchain`), and in the PowerShell
   window you will run the setup from:
 

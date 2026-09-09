@@ -21,7 +21,7 @@
 # still loads the ICD dynamically via SDL.
 #
 # workflow_dispatch: leave version empty to auto-bump patch (or choose bump).
-# Host-focused releases: CI never ships game C. Players Generate once; RetComM
+# Host-focused releases: CI never ships game C. Players Generate once; Retro
 # Update reuses codegen-cache when ROM/BIOS/emitters match (cmake-only).
 # See docs/ci/HOST_ONLY_RELEASES.md. reuse_cached_emitters skips rebuilding
 # psxrecomp-game/bios when the psxrecomp SHA cache hits (host/UI bumps).
@@ -554,7 +554,7 @@ jobs:
             export BPE_RUNTIME_BIN_DIR=/mingw64/bin
           fi
           export RELEASE_VERSION
-          # Lean zip (no embedded toolchain/). RetComM / wizard download
+          # Lean zip (no embedded toolchain/). Retro / wizard download
           # cmake-clang-v1; pass --embed-toolchain only for offline-first packs.
           scripts/package_setup_release.sh build-ci "${{ matrix.artifact }}" build-recompiler
           ls -la dist/

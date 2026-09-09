@@ -1,7 +1,7 @@
 #pragma once
 // analysis_export.h — writers that turn an AnalysisDb into artifacts.
 //
-// The JSON files are the stable public interface: RetComM Studio and any other
+// The JSON files are the stable public interface: Retro Studio and any other
 // front end consume those, never the analyzer's in-process types. Everything
 // else here exists to hand the data to tools people already use rather than to
 // make them adopt a new one.

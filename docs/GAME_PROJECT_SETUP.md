@@ -298,7 +298,7 @@ multi-track `.cue`/`.bin` requirements.
 Everything game-specific lives at the **root** of *your* title repo. Framework
 and UI are submodules next to that code — not nested under each other.
 
-The RetComM / Generate & rebuild CLI (`psxrecomp_cli.py`, `tools/prepare_disc.py`,
+The Retro / Generate & rebuild CLI (`psxrecomp_cli.py`, `tools/prepare_disc.py`,
 pack helpers) ships **inside** the `psxrecomp` submodule. There is no separate
 `psxrecomp-sdk/` tree.
 
@@ -307,12 +307,12 @@ YourGameRecomp/                 # your git repo
 ├── .gitmodules
 ├── CMakeLists.txt              # thin: psxrecomp_add_game_runtime(...)
 ├── game.toml                   # probe autofills identity / netplay gates
-├── catalog_identity.json       # RetComM / catalog digests + track_counts + disc_fp
+├── catalog_identity.json       # Retro / catalog digests + track_counts + disc_fp
 ├── framework_pins.txt          # optional scaffold snapshot (gitlinks are authoritative)
 ├── README.md                   # scaffold stub (legal + quick start)
 ├── VERSION                     # release pin (e.g. 0.1.0)
 ├── assets/
-│   ├── psxrecomp.ico           # default Windows app icon (RetComM-themed pad)
+│   ├── psxrecomp.ico           # default Windows app icon (Retro-themed pad)
 │   ├── psxrecomp.png           # staged beside exe / packaging
 │   └── psxrecomp.svg           # source mark (see psxrecomp/assets/)
 ├── seeds/ghidra_funcs.txt      # probe: boot-EXE JAL seeds (grow over time)
@@ -429,10 +429,10 @@ embedded `toolchain/`. The zip includes:
 - `recomp-ui/` sources (needed to rebuild)
 - On Windows: MinGW runtime DLLs beside the host and emitters
 
-Players (or [RetComM](https://github.com/TechnicallyComputers/RetComM-Launcher))
-run **Generate once** (wizard or RetComM Build & Install) with a legal disc.
-RetComM / the wizard download `cmake-clang-v1` from
-[retcomm-toolchains](https://github.com/TechnicallyComputers/retcomm-toolchains)
+Players (or [Retro](https://github.com/RetroPortingToolKit/Retro-Launcher))
+run **Generate once** (wizard or Retro Build & Install) with a legal disc.
+Retro / the wizard download `cmake-clang-v1` from
+[retcomm-toolchains](https://github.com/RetroPortingToolKit/RetroPorting-Toolchains)
 (or accept an offline zip / `RETCOMM_TOOLCHAIN_DIR`). Pass
 `--embed-toolchain` to `package_setup_host.sh` only for special offline-first
 packs.
@@ -441,7 +441,7 @@ packs.
 
 | Action | Meaning |
 |--------|---------|
-| **Update** (RetComM) | New setup-host zip → refresh source → cmake rebuild. Skips disc→C when `codegen-cache` fingerprints (ROM/BIOS/emitters) still match. |
+| **Update** (Retro) | New setup-host zip → refresh source → cmake rebuild. Skips disc→C when `codegen-cache` fingerprints (ROM/BIOS/emitters) still match. |
 | **Generate & Rebuild** | Force regenerate game C from the disc, then rebuild. Use when emit inputs change or cache is wrong. |
 
 Ordinary host/UI releases do **not** require Generate & Rebuild. Details:
@@ -559,7 +559,7 @@ Full action reference: `[ci/README.md](ci/README.md)`.
 ## Bundled release checklist
 
 Use this before tagging a setup-host release that matches other titles
-(BPE / MotK / RetComM).
+(BPE / MotK / Retro).
 
 ### Repository
 
@@ -631,7 +631,7 @@ Use this before tagging a setup-host release that matches other titles
   ```
 - [ ] Extract → run host → Generate with a legal disc succeeds end-to-end
 - [ ] After rebuild, game launches; saves/settings land beside the exe
-- [ ] RetComM install/update (if you publish a catalog entry) uses this **same**
+- [ ] Retro install/update (if you publish a catalog entry) uses this **same**
   ```
   zip — no separate tools pack required; Update rebuilds via codegen-cache
   (not raw zip extract over a Play binary)
@@ -648,4 +648,4 @@ Use this before tagging a setup-host release that matches other titles
   ```
   no pre-generated game C)
   ```
-- [ ] Catalog / RetComM entry points at the release assets when ready
+- [ ] Catalog / Retro entry points at the release assets when ready

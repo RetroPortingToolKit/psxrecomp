@@ -9,7 +9,7 @@
 #   --stage-disc          Copy full cue+bins into repo disc/ (large; optional)
 #   --no-stage-disc       Default: probe in place, extract boot EXE only
 #   --psxrecomp-ref / --recomp-ui-ref / --recomp-net-ref / URLs
-#   --github-owner <org>  README download-badge owner (default TechnicallyComputers)
+#   --github-owner <org>  README download-badge owner (default RetroPortingToolKit)
 #   --github-repo <name>  README download-badge repo (default project name)
 #
 # Everything else is prompted on a TTY (or passed via flags / --yes defaults):
@@ -272,10 +272,10 @@ fi
 
 if [ -z "$GITHUB_OWNER" ]; then
     if [ "$YES_MODE" -eq 1 ] || ! is_tty; then
-        GITHUB_OWNER=TechnicallyComputers
+        GITHUB_OWNER=RetroPortingToolKit
     else
         prompt_line "GitHub owner / org (README download badges)" GITHUB_OWNER \
-            "TechnicallyComputers"
+            "RetroPortingToolKit"
     fi
 fi
 if [ -z "$GITHUB_REPO" ]; then
@@ -512,7 +512,7 @@ fi
 
 if [ "$ENABLE_NETPLAY" -eq 1 ]; then
     # PSX_NETPLAY defaults RNET_ENABLE_ICE=ON; recomp-net FetchContents
-    # libjuice via pinned URL (not git) so RetComM AppImage builds configure.
+    # libjuice via pinned URL (not git) so Retro AppImage builds configure.
     printf '%s\n' \
 'if(EXISTS "${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
     set(PSX_NETPLAY ON CACHE BOOL
@@ -651,7 +651,7 @@ if [ "$ENABLE_RECOMP_UI" -eq 1 ]; then
 fi
 git submodule update --init --recursive
 
-# RetComM-themed default app icon (Windows .ico + PNG for packaging).
+# Retro-themed default app icon (Windows .ico + PNG for packaging).
 if [ -d psxrecomp/assets ]; then
     mkdir -p "$ROOT/assets"
     for _icon in psxrecomp.svg psxrecomp.png psxrecomp.ico; do

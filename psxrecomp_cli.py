@@ -593,7 +593,7 @@ def _build_recompiler_targets(
             )
 
     src = recompiler_source_dir(project_root)
-    # Prefer recompiler/build (packaging / RetComM harvest layout); also keep
+    # Prefer recompiler/build (packaging / Retro harvest layout); also keep
     # project-root build-recompiler if that is where prior binaries lived.
     build_dir = src / "build"
     try:
@@ -755,7 +755,7 @@ def ensure_framework(
 ) -> Path:
     """Ensure project_root/psxrecomp has BIOS profiles + seeds for local generate.
 
-    GitHub zipballs omit git submodules, so RetComM source trees often lack
+    GitHub zipballs omit git submodules, so Retro source trees often lack
     psxrecomp/bios. Seed from the SDK pack that ships this CLI (ROOT).
     """
     fw = project_root / "psxrecomp"
@@ -780,7 +780,7 @@ def ensure_framework(
         marker = fw / ".gitignore"
         if not marker.is_file():
             marker.write_text(
-                "# RetComM SDK seed marker (project-root for psxrecomp-bios)\n",
+                "# Retro SDK seed marker (project-root for psxrecomp-bios)\n",
                 encoding="utf-8",
             )
     return framework_root(project_root)
@@ -1765,7 +1765,7 @@ def cmd_pgo_train(args: argparse.Namespace, progress: ProgressReporter) -> int:
 
 
 def cmd_ensure_toolchain(args: argparse.Namespace, progress: ProgressReporter) -> int:
-    """Resolve / download / unpack cmake-clang-v1 into the shared RetComM cache."""
+    """Resolve / download / unpack cmake-clang-v1 into the shared Retro cache."""
     project_root = (
         Path(args.project_root).expanduser().resolve()
         if args.project_root

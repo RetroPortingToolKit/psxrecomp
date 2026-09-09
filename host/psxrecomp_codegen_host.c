@@ -475,7 +475,7 @@ static int python_env_usable(const char* env) {
     return 1;
 }
 
-/* Prefer portable pack CPython (RetComM / cmake-clang-v1), then system. */
+/* Prefer portable pack CPython (Retro / cmake-clang-v1), then system. */
 static int find_python(char* out, size_t cap) {
     const char* env = getenv("RETCOMM_PYTHON");
     if (python_env_usable(env)) {
@@ -998,7 +998,7 @@ static int name_is_releases(const char* name) {
 #endif
 }
 
-/* RetComM stages Play under apps/<title>/releases/<tag>/ while the generate
+/* Retro stages Play under apps/<title>/releases/<tag>/ while the generate
  * tree lives at apps/<title>/src/current/. Walking parents of the release dir
  * never visits that sibling — probe it explicitly. */
 static int try_retcomm_src_current(const char* start, char* out, size_t cap) {
@@ -1905,7 +1905,7 @@ static int run_cli_posix(char* const argv[],
 
 /* ---- Host-native toolchain install (no Store Python AppData redirect) ---- */
 
-static const char* k_tc_repo = "TechnicallyComputers/retcomm-toolchains";
+static const char* k_tc_repo = "RetroPortingToolKit/RetroPorting-Toolchains";
 
 static const char* toolchain_zip_asset_name(void) {
 #if defined(_WIN32)
@@ -3412,7 +3412,7 @@ static int host_toolchain_update_available(char* local_ver, size_t local_cap,
 
 /* Download or offline-install cmake-clang-v1 (wizard page 0 / rebuild fallback).
  * Prefer host-native curl/tar so Microsoft Store Python cannot redirect the
- * unpack into Packages\\...\\LocalCache. Installs into the shared RetComM
+ * unpack into Packages\\...\\LocalCache. Installs into the shared Retro
  * cache: %LOCALAPPDATA%/retcomm/toolchains/cmake-clang-v1/…
  * Broken latest/ stamps are healed, then GitHub /releases/latest is fetched.
  *
@@ -3520,7 +3520,7 @@ static int host_ensure_toolchain(RecompLauncherCPrepareProgressFn on_progress,
  * disc.cfg is the mounted-image cache and the runtime takes only its first
  * line; the hot-swap roster is built from game.toml [game] discs. So the
  * wizard's picks reach the roster only by being written there -- which is
- * exactly what the RetComM path does by running probe_disc.py per image and
+ * exactly what the Retro path does by running probe_disc.py per image and
  * verify_disc_set.py over the results.
  *
  * update_disc_set.py performs the same probe/verify and then edits ONLY the

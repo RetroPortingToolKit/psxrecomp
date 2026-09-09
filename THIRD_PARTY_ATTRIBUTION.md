@@ -86,7 +86,7 @@ All reuse keeps the original copyright and dual MIT/Apache-2.0 license.
 
 ## retcomm-studio — multi-disc project tooling
 
-[retcomm-studio](https://github.com/TechnicallyComputers/retcomm-studio) by
+[retcomm-studio](https://github.com/RetroPortingToolKit/Retro-Studio) by
 Alex Vanderveen, licensed **MIT** (notice: `LICENSE` in that repository).
 psxrecomp is PolyForm-NC, so this is permissive vendored into stricter — the
 MIT notice must ride along and is why this entry exists.
@@ -107,5 +107,5 @@ written here because neither repository had it: `probe_disc.py
 scaffolding a project and destructive on a live one.
 
 Keep the pin above accurate when re-syncing. These files are the reason a
-standalone setup-wizard install and a RetComM build produce the same
+standalone setup-wizard install and a Retro build produce the same
 multi-disc `game.toml`; if the two drift, so do those two paths.

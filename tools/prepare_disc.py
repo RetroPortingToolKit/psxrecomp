@@ -13,7 +13,7 @@ Accepted inputs:
 
 Writes working ``.bin`` + ``.cue`` (or copies a multi-track Redump set),
 extracts ``SYSTEM.CNF`` + boot EXE, and prints ``RESULT_CUE=<abs path>``
-for the first-run wizard / RetComM.
+for the first-run wizard / Retro.
 
 ISO→2352 sets Mode2 Form1 sync/header/subheader/EDC (ECC zeroed — fine for
 software readers). Rebuilt images are not bit-identical to Redump.

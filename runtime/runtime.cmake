@@ -31,7 +31,7 @@ endif()
 # SOURCE + compiler + flags (content, not mtime), so those recompiles collapse to
 # near-instant cache hits after any branch op. Completely no-op when ccache is not
 # on PATH, so builds still work without it. Set once, before any target is added.
-# RetComM cmake-clang-v1 packs ship bin/ccache and prepend that dir to PATH;
+# Retro cmake-clang-v1 packs ship bin/ccache and prepend that dir to PATH;
 # also HINT RETCOMM_TOOLCHAIN_DIR for wizards that only set the env override.
 if(NOT DEFINED CMAKE_C_COMPILER_LAUNCHER)
     set(_psx_ccache_hints "")
@@ -103,7 +103,7 @@ set(PSX_SDL_LIBRARIES "")
 set(PSX_SDL_STATIC_LDFLAGS "")
 set(PSX_SDL3 OFF)
 
-# Portable cmake-clang-v1 pack roots (wizard / RetComM / CI emitter fetch).
+# Portable cmake-clang-v1 pack roots (wizard / Retro / CI emitter fetch).
 # Collect as HINTS only — never list(PREPEND CMAKE_PREFIX_PATH …): on Windows CI
 # the pack is llvm-mingw while the setup host links with MSYS2 g++, and a
 # global prefix puts pack lib/ on the -L path so -static-libstdc++ can pick up
@@ -1447,7 +1447,7 @@ function(psxrecomp_add_runtime_target target)
 
     # ---- Windows / desktop app icon ---------------------------------------
     # Prefer an explicit APP_ICON, then the game-repo copy under assets/, then
-    # the framework default shipped in psxrecomp/assets (RetComM-themed pad).
+    # the framework default shipped in psxrecomp/assets (Retro-themed pad).
     if(NOT PSXRT_APP_ICON)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico")
             set(PSXRT_APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico")

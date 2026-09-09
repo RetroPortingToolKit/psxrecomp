@@ -1259,7 +1259,7 @@ def _ensure_boxart_png(root: Path, options: MigrateOptions) -> list[str]:
 
 
 def op_patch_readme_metrics(root: Path, options: MigrateOptions) -> ApplyResult:
-    """Upsert download badges, libretro boxart, RetComM Launcher, and R.A.I.D. footer."""
+    """Upsert download badges, libretro boxart, Retro Launcher, and R.A.I.D. footer."""
     from .readme_metrics import (
         apply_github_about,
         boxart_png_present,
@@ -1313,7 +1313,7 @@ def op_patch_readme_metrics(root: Path, options: MigrateOptions) -> ApplyResult:
     parts: list[str] = []
     if changed:
         parts.append(
-            f"Patched README badges, boxart, RetComM Launcher, and R.A.I.D. footer ({owner}/{repo})"
+            f"Patched README badges, boxart, Retro Launcher, and R.A.I.D. footer ({owner}/{repo})"
         )
     if fetched:
         parts.append("fetched libretro boxart")

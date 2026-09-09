@@ -740,7 +740,7 @@ def audit_project(root: Path) -> AuditReport:
                 title="Disc / catalog identity",
                 status=CheckStatus.WARN,
                 severity=Severity.RECOMMENDED,
-                detail="No catalog_identity.json / [prepare_disc] — needed for RetComM gates.",
+                detail="No catalog_identity.json / [prepare_disc] — needed for Retro gates.",
                 fix_op="probe_disc_refresh",
             )
         )
@@ -785,7 +785,7 @@ def audit_project(root: Path) -> AuditReport:
             )
         )
 
-    # Default RetComM-themed app icon (Windows .ico + PNG)
+    # Default Retro-themed app icon (Windows .ico + PNG)
     app_ico = root / "assets" / "psxrecomp.ico"
     if app_ico.is_file():
         checks.append(
@@ -804,7 +804,7 @@ def audit_project(root: Path) -> AuditReport:
                 title="assets/psxrecomp app icon",
                 status=CheckStatus.WARN,
                 severity=Severity.RECOMMENDED,
-                detail="Missing assets/psxrecomp.ico (RetComM-themed default pad icon).",
+                detail="Missing assets/psxrecomp.ico (Retro-themed default pad icon).",
                 fix_op="ensure_app_icon",
             )
         )
@@ -895,7 +895,7 @@ def audit_project(root: Path) -> AuditReport:
             )
         )
 
-    # README download badges + boxart + RetComM Launcher (idempotent migrate op)
+    # README download badges + boxart + Retro Launcher (idempotent migrate op)
     readme_path = root / "README.md"
     readme_text = _read(readme_path) if readme_path.is_file() else ""
     missing_readme: list[str] = []
@@ -907,7 +907,7 @@ def audit_project(root: Path) -> AuditReport:
         if not readme_has_boxart(readme_text):
             missing_readme.append("libretro boxart")
         if not readme_has_launcher(readme_text):
-            missing_readme.append("RetComM Launcher section")
+            missing_readme.append("Retro Launcher section")
         if not readme_has_raid(readme_text):
             missing_readme.append("R.A.I.D. Discord footer")
     if not (root / ".github" / "raid-discord.png").is_file():
@@ -932,7 +932,7 @@ def audit_project(root: Path) -> AuditReport:
                 title="README download metrics / launcher / RAID / boxart",
                 status=CheckStatus.PASS,
                 severity=Severity.RECOMMENDED,
-                detail="Download badges, boxart, RetComM Launcher, and R.A.I.D. footer present.",
+                detail="Download badges, boxart, Retro Launcher, and R.A.I.D. footer present.",
             )
         )
 

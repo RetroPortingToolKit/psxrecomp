@@ -2309,7 +2309,7 @@ EmitStats FullFunctionEmitter::emit(
 {
     EmitStats stats;
 
-    // Setup / RetComM zips omit generated/; create it before ofstream.
+    // Setup / Retro zips omit generated/; create it before ofstream.
     if (!out_dir.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(out_dir, ec);

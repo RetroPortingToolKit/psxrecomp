@@ -17,7 +17,7 @@ player located and update only the keys that describe the set:
 Everything else in the file is preserved byte-for-byte, comments included.
 
 This is the step that makes the standalone wizard reach the same end state as
-the RetComM path, which runs probe_disc.py per disc and verify_disc_set.py over
+the Retro path, which runs probe_disc.py per disc and verify_disc_set.py over
 the results. The runtime's hot-swap roster is built from [game] discs -- not
 from disc.cfg, which is only the mounted-image cache -- so without this the
 wizard can record every disc a player owns and none of them reach the roster.
@@ -212,7 +212,7 @@ def main() -> int:
             print(f"error: missing disc image {c}", file=sys.stderr)
             return 1
 
-    # Probe each disc, writing the same per-disc artifacts the RetComM path
+    # Probe each disc, writing the same per-disc artifacts the Retro path
     # leaves behind (disc_probe.json, disc_probe.2.json, ...).
     probes, probe_jsons = [], []
     for i, cue in enumerate(cues, start=1):

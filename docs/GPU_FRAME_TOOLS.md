@@ -12,7 +12,7 @@ tools/gpu_parity.py          frame-locked image parity vs DuckStation
 tools/tests/test_gpu_frame.py
 ```
 
-RetComM Studio's **Frames** tab is a viewer and launcher over exactly these
+Retro Studio's **Frames** tab is a viewer and launcher over exactly these
 artifacts. It never decodes a GP0 packet itself, so a headless capture and the
 GUI can never disagree about what a frame contained.
 
@@ -96,7 +96,7 @@ grep -E '^(PSX_DEBUG_TOOLS|CMAKE_BUILD_TYPE):' build-release/CMakeCache.txt
 `CMAKE_BUILD_TYPE` on an **existing** build dir does *not* flip it. Pass the
 `-D` explicitly, or start a fresh build dir.
 
-In RetComM Studio this is the **Build tab → Debug tools** row: a selector that
+In Retro Studio this is the **Build tab → Debug tools** row: a selector that
 injects the flag, a **Configure for debugging** button that sets Release + ON in
 one click, and a status line that reads the configured build dir and says
 whether the server will be there. The Frames tab shows the same line when it

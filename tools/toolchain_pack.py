@@ -1,6 +1,6 @@
 """Resolve / download / unpack portable cmake-clang-v1 toolchain packs.
 
-Shared cache matches RetComM / retcomm-toolchains install.sh:
+Shared cache matches Retro / retcomm-toolchains install.sh:
 
   Windows: %LOCALAPPDATA%/retcomm/toolchains/cmake-clang-v1/<tag>/
   Linux/macOS: $XDG_DATA_HOME/retcomm/… and ~/.local/share/retcomm/…
@@ -24,7 +24,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_REPO = "TechnicallyComputers/retcomm-toolchains"
+DEFAULT_REPO = "RetroPortingToolKit/RetroPorting-Toolchains"
 PACK_ID = "cmake-clang-v1"
 
 _ASSET = {
@@ -260,7 +260,7 @@ def shared_cache_roots() -> list[Path]:
     Layout matches retcomm-toolchains install.sh:
       …/retcomm/toolchains/cmake-clang-v1/<tag>/   plus latest → current
 
-    RetComM (`retcomm`) is preferred; legacy `psxrecomp` remains a read/migrate
+    Retro (`retcomm`) is preferred; legacy `psxrecomp` remains a read/migrate
     fallback. Honors RETCOMM_TOOLCHAIN_CACHE / RETCOMM_DATA_HOME.
     """
     roots: list[Path] = []
@@ -281,7 +281,7 @@ def shared_cache_roots() -> list[Path]:
 
 
 def preferred_install_root() -> Path:
-    """Where newly downloaded / offline-unpacked packs land (RetComM shared)."""
+    """Where newly downloaded / offline-unpacked packs land (Retro shared)."""
     cache = (os.environ.get("RETCOMM_TOOLCHAIN_CACHE") or "").strip()
     if cache:
         r = Path(cache).expanduser()
@@ -747,7 +747,7 @@ def _register_user_path_unix(cache_root: Path, latest: Path, log=None) -> None:
     )
     block = (
         f"{_MARKER_BEGIN}\n"
-        f"# Managed by psxrecomp / RetComM — remove via uninstall.sh\n"
+        f"# Managed by psxrecomp / Retro — remove via uninstall.sh\n"
         f'if [ -f "{hook}" ]; then\n'
         f"  # shellcheck disable=SC1091\n"
         f'  . "{hook}"\n'
@@ -775,7 +775,7 @@ def _register_user_path_unix(cache_root: Path, latest: Path, log=None) -> None:
 def register_toolchain_user_env(pack_root: Path, log=None) -> Path:
     """Refresh ``latest`` + idempotently add ``latest/bin`` to the user login PATH.
 
-    Mirrors retcomm-toolchains zip ``install.sh`` / ``install.ps1`` so RetComM
+    Mirrors retcomm-toolchains zip ``install.sh`` / ``install.ps1`` so Retro
     setup hosts and the standalone wizard leave cmake/clang on PATH for shell
     development after placing the pack in the shared cache.
     """
@@ -953,7 +953,7 @@ def ensure_toolchain(
     Resolution order: env override → project stamp/toolchain/ → shared
     retcomm cache (legacy psxrecomp migrated) → optional --from-zip → download.
 
-    Installs always land under the shared RetComM cache; the project only gets
+    Installs always land under the shared Retro cache; the project only gets
     a stamp file pointing at that pack.
     """
     need = min_version or default_min_version()
