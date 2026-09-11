@@ -1296,7 +1296,7 @@ def check_atomic_dll_publication():
             pair_id = MOD.overlay_pair_id("new source", func_ids)
             assert pair_id != MOD.overlay_pair_id("changed source", func_ids)
             bound_source = MOD.add_overlay_pair_export("new source", pair_id)
-            assert f"overlay_pair_id(void) {{ return UINT64_C(0x{pair_id:016X}); }}" in bound_source
+            assert f"overlay_pair_id(void) {{ return UINT64_C(0x{pair_id:016X}); }}" in " ".join(bound_source.split())
             assert MOD.compile_dll("ignored.c", final, [],
                                    func_ids=func_ids, pair_id=pair_id)
             with open(final, "rb") as built:
@@ -1527,6 +1527,7 @@ m.publish_shard_pair(sys.argv[2], sys.argv[3], sys.argv[4])
                 pair_dll = str(pathlib.Path(tmp) / "pair.dll")
                 pair_source.write_text(
                     '#include <stdint.h>\n' +
+                    '#define PSX_OVERLAY_EXPORT __declspec(dllexport)\n' +
                     '__declspec(dllexport) int overlay_abi(void) { return 14; }\n' +
                     '__declspec(dllexport) void overlay_init(const void *p) {(void)p;}\n' +
                     '__declspec(dllexport) void overlay_flush_cycles(void) {}\n' +
@@ -2999,7 +3000,7 @@ def check_interior_fragment_contract():
                 f"P {pair_id:016X}\nF {entry:08X} {code_crc:08X} junk\n"
                 f"R {entry:08X} 8\n")
             assert MOD.load_shard_entry_set(str(dll)) == set()
-            outside = 0x80200000
+            outside = 0x80000000 + MOD.PSX_RAM_SIZE
             ranges.write_text(
                 f"P {pair_id:016X}\nF {outside:08X} {code_crc:08X}\n"
                 f"R {outside:08X} 4\n")
@@ -3053,7 +3054,7 @@ def check_interior_fragment_contract():
             entry, data, LOAD, len(data), LOAD & 0x1FFFFFFF, "unused",
             Args(), {}, {},
             ((LOAD, LOAD + 0x40), (LOAD + 0x80, LOAD + 0x100)),
-            (LOAD + 0x200, LOAD + 0x180, LOAD + 0x200))
+            (LOAD + 0x200, LOAD + 0x180, LOAD + 0x200), guard_bytes=0)
         assert ids is None and status.startswith("recompiler-error")
     finally:
         MOD.subprocess.run = old_run
@@ -3071,7 +3072,7 @@ def check_interior_fragment_contract():
         ids, status = MOD.compile_fragment_batch(
             {entry + 0x40, entry}, data, LOAD, len(data),
             LOAD & 0x1FFFFFFF, "unused", Args(), {}, {},
-            ((LOAD, LOAD + 0x100),), ())
+            ((LOAD, LOAD + 0x100),), (), guard_bytes=0)
         assert ids is None and status.startswith("recompiler-error")
     finally:
         MOD.subprocess.run = old_run
@@ -3156,7 +3157,7 @@ def check_real_batched_fragment_publication(recompiler):
     with tempfile.TemporaryDirectory() as td:
         ids, status = MOD.compile_fragment_batch(
             {first}, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, initial_recipe, ())
+            td, args, env, {}, initial_recipe, (), guard_bytes=0)
         assert ids and status == 'built', (ids, status)
         initial_dlls = list(pathlib.Path(td).glob(f'*{extension}'))
         assert len(initial_dlls) == 1
@@ -3174,7 +3175,7 @@ def check_real_batched_fragment_publication(recompiler):
             requested_batches.append(tuple(roots))
             return MOD.compile_fragment_batch(
                 roots, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-                td, args, env, {}, recipe, ())
+                td, args, env, {}, recipe, (), guard_bytes=0)
 
         def warm(_roots, func_ids, _status):
             current_entries.update(
@@ -3255,7 +3256,7 @@ def check_real_hosted_fragment_publication(recompiler):
     with tempfile.TemporaryDirectory() as td:
         owner_ids, status = MOD.compile_fragment_batch(
             {host, host2}, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, recipe, ())
+            td, args, env, {}, recipe, (), guard_bytes=0)
         assert owner_ids and status == 'built'
         owners = {identity[0]: identity for identity in owner_ids
                   if identity[0] in (host, host2)}
@@ -3276,7 +3277,7 @@ def check_real_hosted_fragment_publication(recompiler):
         hosted_ids, status = MOD.compile_fragment_batch(
             {target, target2}, bytes(data), LOAD, len(data),
             LOAD & 0x1FFFFFFF, td, args, env, {}, recipe, (),
-            hosted_owners={target: spec, target2: spec2})
+            hosted_owners={target: spec, target2: spec2}, guard_bytes=0)
         assert hosted_ids and status == 'built', status
         by_entry = {
             entry: (crc, tuple(ranges))
@@ -3324,14 +3325,14 @@ def check_real_hosted_fragment_publication(recompiler):
         cached_ids, cached_status = MOD.compile_fragment_batch(
             {target, target2}, bytes(data), LOAD, len(data),
             LOAD & 0x1FFFFFFF, td, args, env, {}, recipe, (),
-            hosted_owners={target: spec, target2: spec2})
+            hosted_owners={target: spec, target2: spec2}, guard_bytes=0)
         assert cached_status == 'cached' and cached_ids == hosted_ids
         assert len(list(pathlib.Path(td).glob(
             f'*{MOD.overlay_ext()}'))) == dll_count
         orphan_before = set(pathlib.Path(td).glob(f'*{MOD.overlay_ext()}'))
         orphan_ids, orphan_status = MOD.compile_interior_fragment(
             target, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, recipe, ())
+            td, args, env, {}, recipe, (), guard_bytes=0)
         assert orphan_ids and orphan_status == 'built'
         orphan_dlls = set(pathlib.Path(td).glob(
             f'*{MOD.overlay_ext()}')) - orphan_before
@@ -3347,7 +3348,7 @@ def check_real_hosted_fragment_publication(recompiler):
             owners[host][0], owners[host][1] ^ 1, owners[host][2]))
         rejected, reason = MOD.compile_fragment_batch(
             {target}, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, recipe, (), hosted_owners={target: bad_spec})
+            td, args, env, {}, recipe, (), hosted_owners={target: bad_spec}, guard_bytes=0)
         assert rejected is None
         assert reason.startswith('hosted-entry-audit:'), reason
         assert len(list(pathlib.Path(td).glob(
@@ -3494,9 +3495,8 @@ def check_full_candidate_cli_fastpath(recompiler):
         # because the test could not get past the BIOS-profile probe to reach
         # the assertion (issue #72).
         leaf = (cache_root / 'CYCT-00101' / 'gcc' / MOD.cache_arch_abi() /
-                f'cg{MOD.codegen_ver(str(runtime_include))}_'
-                f'{MOD.codegen_hash(str(runtime_include)):08x}_'
-                f'gc{MOD.overlay_config_hash(recompiler, str(game_toml)):08x}')
+                MOD.cache_tag(str(runtime_include), recompiler,
+                              str(game_toml), 0))
         leaf.mkdir(parents=True)
         pair_id = 0x123456789ABCDEF0
         captured_bytes = b'\x08\x00\xE0\x03\x00\x00\x00\x00'

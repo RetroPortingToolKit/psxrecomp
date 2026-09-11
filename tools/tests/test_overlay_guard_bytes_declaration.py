@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import compile_overlays  # noqa: E402
+sys.path.insert(0, str(ROOT / "tools" / "aot_overlay_spike"))
+import extract_generic  # noqa: E402
 
 
 class GuardByteDerivationTests(unittest.TestCase):
@@ -66,6 +68,20 @@ class GuardByteDerivationTests(unittest.TestCase):
 
 class PsxExeTagTests(unittest.TestCase):
     PAYLOAD = b"\x00" * 0x2000 + struct.pack("<I", 0x1062005A)
+
+    def test_disc_record_does_not_lose_its_last_instruction(self):
+        # Real disc images can also have a page+4 length (Italian DEMO+A07).
+        # Carry the producer declaration through the normal compiler wrapper.
+        base = 0x80100000
+        record = extract_generic.rec(base, self.PAYLOAD, [base],
+                                     producer_ranges=[(base, base + len(self.PAYLOAD))])
+        guards = compile_overlays.capture_guard_bytes(record, record['size'])
+        wrapped = compile_overlays.make_psxexe(base, base, self.PAYLOAD,
+                                              guard_bytes=guards)
+        self.assertEqual(guards, 0)
+        self.assertEqual(wrapped[2048:], self.PAYLOAD)
+        off = compile_overlays.GUARD_TAG_MAGIC_OFFSET
+        self.assertNotEqual(wrapped[off:off + 8], b"PSXRGRD1")
 
     def test_tag_lands_where_the_recompiler_reads_it(self):
         wrapped = compile_overlays.make_psxexe(

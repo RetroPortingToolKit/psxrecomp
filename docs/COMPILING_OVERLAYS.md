@@ -1,5 +1,9 @@
 # Compiling overlays from `overlay_captures.json`
 
+For ahead-of-time extraction from original disc files, start with the
+[AOT sharding guide](AOT_SHARDING.md). The compiler accepts disc-derived records
+as well as runtime captures; a playthrough is not required for supported producers.
+
 **Audience:** developers preparing a release who want to ship as much
 native-compiled overlay coverage as possible, plus modders and players who want
 to pre-build coverage for their own machine.

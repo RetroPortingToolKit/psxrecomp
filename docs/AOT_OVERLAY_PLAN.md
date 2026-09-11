@@ -1,5 +1,9 @@
 # AOT Overlay Sharding — Spike Findings & Plan (Tomba-first)
 
+For the current workflow and reusable producer boundary, see
+[AOT sharding](AOT_SHARDING.md). This document preserves dated experiments;
+historical observed-PC coverage figures are not exhaustive correctness proofs.
+
 Status: ENHANCEMENT SPIKE (2026-07-17). Foundation executed and live-proven.
 Author: investigation via 4 parallel agents + adversarial source verification.
 Scope: can we move overlay sharding from *runtime discovery* to *build-time (AOT)*,

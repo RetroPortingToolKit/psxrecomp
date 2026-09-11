@@ -749,6 +749,7 @@ def rec(load_addr, data, seeds, dispatch_extra=None, producer_ranges=None,
     disp = static_dispatch
     out={"schema":"psxrecomp overlay capture v2","load_addr":f"0x{load_addr:08X}",
          "size":len(data),"bytes_b64":base64.b64encode(data).decode(),
+         "guard_bytes":0,  # Original source bytes; no capture trailer appended.
          "executed_pcs":[],"dispatch_entry_pcs":[f"0x{a:08X}" for a in disp],
          "static_dispatch_entry_pcs":[
              f"0x{a:08X}" for a in static_dispatch],
