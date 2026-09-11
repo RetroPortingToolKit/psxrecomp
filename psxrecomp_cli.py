@@ -19,6 +19,7 @@ import hashlib
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -1416,21 +1417,45 @@ def _cmake_build(
         raise RuntimeError(err)
 
 
+PGO_DEBUG_PORT = 45231
+
+
 def _soft_stop(pid: int, timeout: int = 30) -> None:
     try:
         os.kill(pid, 15)  # SIGTERM
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return
     for _ in range(timeout):
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return
         time.sleep(1)
     try:
         os.kill(pid, 9)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
+
+
+def _debug_quit(pid: int, port: int, *, exit_timeout: int = 15) -> bool:
+    """Request a clean exit and confirm the training process has stopped."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.sendall(b'{"id":1,"cmd":"quit"}\n')
+            try:
+                sock.settimeout(2)
+                sock.recv(256)
+            except OSError:
+                pass
+    except OSError:
+        return False
+    for _ in range(exit_timeout):
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return True
+        time.sleep(1)
+    return False
 
 
 def _pgo_train_warning(*, hide_video: bool) -> str:
@@ -1525,6 +1550,7 @@ def run_pgo_train(
         ]
         if hide_video:
             cmd.append("--headless")
+        cmd.extend(["--debug-port", str(PGO_DEBUG_PORT)])
         proc = subprocess.Popen(
             cmd,
             cwd=str(project_root),
@@ -1534,11 +1560,17 @@ def run_pgo_train(
         )
         time.sleep(train_secs)
         if proc.poll() is None:
-            _soft_stop(proc.pid)
+            if not _debug_quit(proc.pid, PGO_DEBUG_PORT):
+                progress.log("PGO train debug quit unavailable; using forced stop.")
+                _soft_stop(proc.pid)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _soft_stop(proc.pid)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
     n_gcda = len(list(build_dir.rglob("*.gcda")))
     n_raw = len(list(pgo_dir.glob("*.profraw")))
@@ -1687,7 +1719,7 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
         if not pgo_enabled:
             progress.phase("build", pct=0.2, message="cmake Release build...")
             _cmake_configure(
-                project_root, build_dir, pgo="", extra=cmake_extra, progress=progress
+                project_root, build_dir, pgo="", extra=cmake_extra + ["-DPSX_DEBUG_TOOLS=OFF"], progress=progress
             )
             _cmake_build(build_dir, target, progress)
         else:
@@ -1707,7 +1739,7 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
                 project_root,
                 build_dir,
                 pgo="generate",
-                extra=cmake_extra,
+                extra=cmake_extra + ["-DPSX_DEBUG_TOOLS=ON"],
                 progress=progress,
             )
             _cmake_build(build_dir, target, progress)
@@ -1734,7 +1766,7 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
                 project_root,
                 build_dir,
                 pgo="use",
-                extra=cmake_extra,
+                extra=cmake_extra + ["-DPSX_DEBUG_TOOLS=OFF"],
                 progress=progress,
             )
             _cmake_build(build_dir, target, progress)
