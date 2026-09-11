@@ -753,7 +753,7 @@ static void sc_do_load(struct CPUState *cpu, const char *via)
         extern uint64_t g_guest_store_count;
         extern uint64_t g_irqctx_seq;
         extern uint32_t dirty_ram_text_diverged_pages(void);
-        uint64_t kb[6];
+        uint64_t kb[8];
         const int next_pass = s_warming ? 0 : (s_pass == 0 ? 1 : s_pass + 1);
         psx_kernel_bless_stats(kb);
         fprintf(stderr,

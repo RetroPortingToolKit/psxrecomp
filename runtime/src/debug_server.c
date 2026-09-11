@@ -7735,20 +7735,24 @@ static void handle_ws_hud_mode(int id, const char *json)
 }
 
 /* Kernel-image bless state: {"cmd":"kernel_bless"} ->
- * entries/clean/mismatch/native_hits/verifies/invalidations.
+ * entries/clean/mismatch/native_hits/verifies/invalidations, plus the
+ * declared kernel patch ranges and the segments they made the verifier
+ * skip (psx_bios_kernel_patch_ranges).
  * (memory.c psx_kernel_bless_*; PSX_KERNEL_BLESS=0 disables the mechanism.) */
 static void handle_kernel_bless(int id, const char *json)
 {
-    extern void psx_kernel_bless_stats(uint64_t out[6]);
+    extern void psx_kernel_bless_stats(uint64_t out[8]);
     (void)json;
-    uint64_t s[6];
+    uint64_t s[8];
     psx_kernel_bless_stats(s);
     send_fmt("{\"id\":%d,\"ok\":true,\"entries\":%llu,\"clean\":%llu,"
              "\"mismatch\":%llu,\"native_hits\":%llu,\"verifies\":%llu,"
-             "\"invalidations\":%llu}",
+             "\"invalidations\":%llu,\"patch_ranges\":%llu,"
+             "\"patch_skips\":%llu}",
              id, (unsigned long long)s[0], (unsigned long long)s[1],
              (unsigned long long)s[2], (unsigned long long)s[3],
-             (unsigned long long)s[4], (unsigned long long)s[5]);
+             (unsigned long long)s[4], (unsigned long long)s[5],
+             (unsigned long long)s[6], (unsigned long long)s[7]);
 }
 
 static void handle_ws_margin(int id, const char *json)

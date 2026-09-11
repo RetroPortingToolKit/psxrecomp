@@ -303,6 +303,17 @@ if(BUILD_TESTING)
     target_include_directories(overlay_path_canon_test PRIVATE include)
     add_test(NAME overlay_path_canon_test COMMAND overlay_path_canon_test)
 
+    # The kernel-bless verifier must accept a body whose DECLARED patch range
+    # the guest has overwritten (Psy-Q's install stubs land inside compiled
+    # kernel bodies) and still reject one changed anywhere else. Before this,
+    # the whole-body memcmp failed forever on the first install and the BIOS
+    # exception handler interpreted for the life of the process.
+    add_executable(kernel_patch_ranges_test
+        tests/test_kernel_patch_ranges.c
+        src/kernel_patch_ranges.c)
+    target_include_directories(kernel_patch_ranges_test PRIVATE include)
+    add_test(NAME kernel_patch_ranges_test COMMAND kernel_patch_ranges_test)
+
     # The player-facing "skip the BIOS" flag must resolve to the same boot
     # behaviour on retail SCPH-1001 and on the bundled OpenBIOS, whose
     # kernel-call HLE is (correctly) refused for want of a DeliverEvent anchor.

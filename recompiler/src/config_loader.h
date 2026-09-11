@@ -695,9 +695,11 @@ struct BiosConfig {
     // copies, semantic validation and consumption in BiosAddressModel
     // (bios_address_model.h). Empty = the BIOS runs entirely from ROM.
     std::vector<BiosAddrCopy> address_copies;
-    // [[recompiler.install_slots]]: kernel-RAM PCs the BIOS overwrites with
-    // dispatch stubs at runtime (see docs/dynamic_handler_install.md).
-    std::vector<uint32_t>     install_slots;
+    // [[recompiler.install_slots]]: kernel-RAM RANGES the BIOS (or the game's
+    // Psy-Q libapi patchers) overwrite at runtime. Layout, defaults and the
+    // resume shapes are in BiosInstallSlot (bios_address_model.h); see
+    // docs/dynamic_handler_install.md for how to find new ones.
+    std::vector<BiosInstallSlot> install_slots;
 
     // [recompiler.runtime_exports]: per-image anchors the emitter couriers
     // into the generated C (psx_bios_image, runtime/include/psx_bios_image.h)

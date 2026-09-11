@@ -3322,9 +3322,27 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
             g_dirty_interp_chain_target = pc;
             OV_FPLOG_RET1();
         }
+        uint32_t next_phys = pc & 0x1FFFFFFFu;
+        /* A declared kernel patch range ends here (Rule 18 + the profile's
+         * [[recompiler.install_slots]]). The emitted body dispatched us in at
+         * the range's lo to run the guest's patched words; the emitter
+         * registered this PC as a continuation key and the bless verifier
+         * skips the patched words, so the rest of the body runs native.
+         * Without this hand-back the kernel page stays dirty and straight-
+         * line flow would interpret the whole function — which is why
+         * declaring the slot alone never paid off. */
+        if (next_phys < DIRTY_RAM_KERNEL_WINDOW_END &&
+            psx_kernel_patch_range_ends_at(next_phys) &&
+            psx_kernel_bless_dispatchable(next_phys)) {
+            cpu->pc = pc;
+            g_dirty_ram_native_handoffs++;
+            g_dirty_ram_blocks_run++;
+            if (pc_entry) pc_entry->insns += (uint64_t)insns_executed;
+            g_dirty_interp_chain_target = pc;
+            OV_FPLOG_RET1();
+        }
         /* Straight-line code that left the dirty page — hand back to
          * static dispatch by setting cpu->pc and returning. */
-        uint32_t next_phys = pc & 0x1FFFFFFFu;
         uint32_t next_page = next_phys >> 12;
         if ((!current_page_dirty || next_page != current_page) &&
             !dirty_ram_is_dirty(next_phys)) {

@@ -2,6 +2,7 @@
 
 #include "bios_address_model.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "fmt/format.h"
@@ -91,10 +92,43 @@ BiosAddressModel BiosAddressModel::from_config(const BiosConfig& cfg) {
             m.rom_keyed_idx_ = static_cast<int>(i);
     }
 
-    for (uint32_t slot : m.install_slots_) {
-        if (slot & 3u)
-            fail(fmt::format("install slot 0x{:08X} must be 4-aligned", slot));
+    // Install slots are RANGES now: validate both ends, reject empty and
+    // overlapping declarations (the runtime's verifier walks them in order
+    // and the emitter plants one hook per start).
+    for (size_t i = 0; i < m.install_slots_.size(); ++i) {
+        const BiosInstallSlot& s = m.install_slots_[i];
+        if (s.ram_addr & 3u)
+            fail(fmt::format("install slot 0x{:08X}: ram_addr must be 4-aligned",
+                             s.ram_addr));
+        if (s.len == 0u || (s.len & 3u))
+            fail(fmt::format("install slot 0x{:08X}: len must be a non-zero "
+                             "multiple of 4 (got 0x{:X})", s.ram_addr, s.len));
+        if (s.hi() < s.ram_addr)
+            fail(fmt::format("install slot 0x{:08X}: len 0x{:X} wraps",
+                             s.ram_addr, s.len));
+        for (size_t j = 0; j < i; ++j) {
+            const BiosInstallSlot& p = m.install_slots_[j];
+            if (s.ram_addr < p.hi() && p.ram_addr < s.hi())
+                fail(fmt::format("install slots 0x{:08X} and 0x{:08X} overlap",
+                                 p.ram_addr, s.ram_addr));
+        }
+        // A slot outside the kernel-bless window would be published to the
+        // runtime's verifier as a range it can never reach: a profile defect.
+        if (m.kbless_idx_ >= 0) {
+            uint32_t lo = m.copies_[m.kbless_idx_].ram_lo;
+            uint32_t hi = m.copies_[m.kbless_idx_].ram_hi();
+            if (s.ram_addr < lo || s.hi() > hi)
+                fail(fmt::format("install slot [0x{:08X},0x{:08X}) lies outside "
+                                 "the kernel_bless window [0x{:08X},0x{:08X})",
+                                 s.ram_addr, s.hi(), lo, hi));
+        }
     }
+    // Sorted by start: memory.c's segmented verifier relies on the emitted
+    // table being ordered, and the emitter couriers this vector verbatim.
+    std::sort(m.install_slots_.begin(), m.install_slots_.end(),
+              [](const BiosInstallSlot& a, const BiosInstallSlot& b) {
+                  return a.ram_addr < b.ram_addr;
+              });
 
     return m;
 }
@@ -202,10 +236,21 @@ bool BiosAddressModel::in_kbless(uint32_t norm) const {
 }
 
 bool BiosAddressModel::is_install_slot(uint32_t ram_pc) const {
-    for (uint32_t slot : install_slots_) {
-        if (ram_pc == slot) return true;
+    return install_slot_at(ram_pc) != nullptr;
+}
+
+bool BiosAddressModel::in_install_slot_range(uint32_t ram_pc) const {
+    for (const BiosInstallSlot& s : install_slots_) {
+        if (ram_pc >= s.ram_addr && ram_pc < s.hi()) return true;
     }
     return false;
+}
+
+const BiosInstallSlot* BiosAddressModel::install_slot_at(uint32_t ram_pc) const {
+    for (const BiosInstallSlot& s : install_slots_) {
+        if (ram_pc == s.ram_addr) return &s;
+    }
+    return nullptr;
 }
 
 uint32_t BiosAddressModel::rom_keyed_ram_lo() const {
