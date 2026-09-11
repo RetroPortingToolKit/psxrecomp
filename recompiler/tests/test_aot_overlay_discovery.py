@@ -223,6 +223,81 @@ def check_bounded_jump_table_discovery():
         LOAD + 0x60, 2, (LOAD, LOAD + 0x180)) == set()
 
 
+def check_scheduled_jump_table_discovery():
+    # Independent synthetic function: a checked input in v1, the table base
+    # in v0, and three cases returning distinct values. No captured game bytes.
+    data = bytearray(0x1000)
+    for offset, word in (
+        (0x508, 0x2C620003),  # sltiu v0,v1,3
+        (0x50C, 0x1040001C),  # beq v0,zero,+0x580
+        (0x510, 0x3C028001),  # lui v0,0x8001 (guard delay slot)
+        (0x514, 0x24420A00),  # addiu v0,v0,0xa00
+        (0x518, 0x00031880),  # sll v1,v1,2
+        (0x51C, 0x00621821),  # addu v1,v1,v0
+        (0x520, 0x8C620000),  # lw v0,0(v1)
+        (0x528, 0x00400008),  # jr v0
+        (0x580, 0x03E00008),
+    ):
+        put(data, offset, word)
+    cases = {LOAD + off for off in (0x540, 0x550, 0x560)}
+    for i, target in enumerate(sorted(cases)):
+        put(data, 0xA00 + i * 4, target)
+        put(data, target - LOAD, 0x24020001 + i)
+        put(data, target - LOAD + 4, 0x03E00008)
+
+    def resolve(image, producer=None):
+        return MOD._find_jump_table_targets(
+            image, LOAD, len(image), LOAD + 0x500, LOAD + 0x600,
+            LOAD + 0x528, 2, producer)
+
+    assert resolve(data) == cases
+    no_load_delay = bytearray(data)
+    put(no_load_delay, 0x524, 0x00400008)
+    assert MOD._find_jump_table_targets(
+        no_load_delay, LOAD, len(data), LOAD + 0x500, LOAD + 0x600,
+        LOAD + 0x524, 2) == set()
+    walk = MOD._walk_overlay_function(
+        data, LOAD, len(data), LOAD + 0x500, LOAD + 0x600)
+    assert walk['jump_table_targets'] == cases
+    assert cases <= walk['visited']
+    renamed = bytearray(data)
+    put(renamed, 0x510, 0x3C088001)  # lui t0
+    put(renamed, 0x514, 0x25020A00)  # addiu v0,t0
+    assert resolve(renamed) == cases
+    signed_low = bytearray(0x9000)
+    signed_low[:len(data)] = data
+    signed_low[0x8A00:0x8A0C] = data[0xA00:0xA0C]
+    put(signed_low, 0x510, 0x3C028002)
+    put(signed_low, 0x514, 0x24428A00)
+    assert resolve(signed_low) == cases
+    assert resolve(data, (LOAD, LOAD + 0x900)) == set()
+
+    def jump(offset):
+        return 0x08000000 | (((LOAD + offset) >> 2) & 0x03FFFFFF)
+
+    for name, mutations in (
+        ('bound overwrites index', ((0x508, 0x2C630003), (0x50C, 0x1060001C))),
+        ('LUI overwrites index', ((0x510, 0x3C038001), (0x514, 0x24620A00))),
+        ('ADDIU overwrites index', ((0x514, 0x24430A00),)),
+        ('wrong constant source', ((0x514, 0x25020A00),)),
+        ('reserved LUI fields', ((0x510, 0x3C228001),)),
+        ('call delay slot', ((0x50C, jal(LOAD + 0x580)),)),
+        ('branch likely', ((0x50C, 0x5040001C),)),
+        ('guard loop clobbers condition', ((0x50C, 0x1040FFFF),)),
+        ('reject into constant', ((0x50C, 0x10400000),)),
+        ('skip bound from before', ((0x500, jump(0x510)),)),
+        ('skip bound from after', ((0x590, jump(0x510)),)),
+        ('case skips bound', ((0x540, jump(0x510)), (0x544, 0))),
+        ('bound in delay slot', ((0x504, jump(0x580)),)),
+        ('table case skips bound', ((0xA00, LOAD + 0x510),)),
+        ('out of host target', ((0xA04, LOAD + 0x700),)),
+    ):
+        broken = bytearray(data)
+        for offset, word in mutations:
+            put(broken, offset, word)
+        assert resolve(broken) == set(), name
+
+
 def check_composite_call_boundaries():
     data = bytearray(0x100)
     cross_target = LOAD + 0x50
@@ -3649,6 +3724,7 @@ def main():
 
     check_composite_call_boundaries()
     check_bounded_jump_table_discovery()
+    check_scheduled_jump_table_discovery()
     check_static_discovery_provenance()
     check_static_dispatch_provenance()
     check_owned_direct_call_is_interior()

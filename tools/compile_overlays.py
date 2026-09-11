@@ -844,6 +844,11 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         sll scaled,index,2; addu address,scaled,table_base
         lw target,offset(address); [nop x 0..1]; jr target
 
+    Also accept ``sltiu; beq; lui; addiu; sll``: the LUI executes in the
+    guard's delay slot, then ADDIU completes the base on the in-range path.
+    That exact pair may not overwrite the checked index, and direct edges
+    may not bypass the bound (including edges from switch cases).
+
     ``table_base`` must be a nearest-definition LUI, optionally followed by a
     nearest-definition ADDIU.  The lower instruction may rename the
     register (``lui v0; addiu s0,v0,lo``), as used by Ape Escape.  Any other
@@ -853,7 +858,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     """
     lo = load_addr
     hi = load_addr + size
-    if not (entry <= jr_pc < hard_cap and 0 < jr_rs < 32):
+    if not (entry <= jr_pc < hard_cap and 0 < jr_rs < 31):
         return set()
     jr_word = _word_at(data, load_addr, jr_pc)
     if jr_word != ((jr_rs << 21) | 0x08):
@@ -904,7 +909,24 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     # The bound must guard this exact index on the sole fallthrough into SLL.
     sltiu_pc = sll_pc - 12
     branch_pc = sll_pc - 8
-    if _word_at(data, load_addr, sll_pc - 4) != 0:
+    scheduled_base = _word_at(data, load_addr, sll_pc - 4) != 0
+    if scheduled_base:
+        # R3000 load delay: JR must not consume the immediately preceding LW.
+        if lw_pc != jr_pc - 8:
+            return set()
+        sltiu_pc -= 4
+        branch_pc -= 4
+        upper = _word_at(data, load_addr, sll_pc - 8)
+        lower = _word_at(data, load_addr, sll_pc - 4)
+        if (upper is None or lower is None or
+                (upper >> 26) != 0x0F or ((upper >> 21) & 31) != 0 or
+                (lower >> 26) != 0x09 or ((lower >> 16) & 31) != table_reg or
+                ((upper >> 16) & 31) == 0 or
+                ((upper >> 16) & 31) != ((lower >> 21) & 31) or
+                index_reg in (table_reg, (upper >> 16) & 31)):
+            return set()
+    if sltiu_pc < entry or (sltiu_pc >= entry + 4 and
+            _is_control_flow(_word_at(data, load_addr, sltiu_pc - 4))):
         return set()
     sltiu_word = _word_at(data, load_addr, sltiu_pc)
     branch_word = _word_at(data, load_addr, branch_pc)
@@ -913,7 +935,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         return set()
     guard_reg = (sltiu_word >> 16) & 0x1F
     table_count = sltiu_word & 0xFFFF
-    if not guard_reg or not (1 <= table_count < 512):
+    if not guard_reg or guard_reg == index_reg or not (1 <= table_count < 512):
         return set()
     if branch_word is None or ((branch_word >> 26) & 0x3F) != 0x04:
         return set()
@@ -923,7 +945,8 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         return set()
     reject_target = _branch_target(branch_pc, branch_word)
     if (not (entry <= reject_target < hard_cap) or
-            sll_pc <= reject_target < jr_pc + 8):
+            sll_pc <= reject_target < jr_pc + 8 or
+            (scheduled_base and sltiu_pc < reject_target < jr_pc + 8)):
         return set()
 
     def nearest_writer(reg: int, before: int):
@@ -962,6 +985,10 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     else:
         return set()
 
+    if scheduled_base and (constant_pc != branch_pc + 4 or
+                           table_def_pc != sll_pc - 4):
+        return set()
+
     # Calls could clobber the proven constant.  Other branches could enter the
     # suffix through an unproved path.  The one exact bounds branch is allowed.
     for pc in range(constant_pc + 4, sll_pc, 4):
@@ -971,7 +998,8 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         if _is_control_flow(word) and pc != branch_pc:
             return set()
     predecessor = _word_at(data, load_addr, constant_pc - 4)
-    if constant_pc >= entry + 4 and _is_control_flow(predecessor):
+    if (constant_pc >= entry + 4 and _is_control_flow(predecessor) and
+            not scheduled_base):
         return set()
     table_base = (table_base + lw_offset) & 0xFFFFFFFF
     table_end = table_base + table_count * 4
@@ -984,6 +1012,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         target = _word_at(data, load_addr, table_base + index * 4)
         if (target is None or (target & 3) or
                 not (entry <= target < hard_cap) or
+                (scheduled_base and sltiu_pc < target < jr_pc + 8) or
                 not (range_lo <= target < range_hi) or
                 not _is_valid_mips_word(_word_at(data, load_addr, target))):
             return set()
@@ -1025,15 +1054,16 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         elif kind in ('jr', 'jr_ra'):
             case_reachable.add(delay)
 
+    protected_pc = sltiu_pc if scheduled_base else constant_pc
     for source in range(entry, hard_cap, 4):
         source_word = _word_at(data, load_addr, source)
         if source_word is None:
             return set()
         kind, target = _classify_cf(source, source_word)
         if (kind in ('branch', 'j', 'jal') and
-                constant_pc < target <= jr_pc and
-                not (constant_pc <= source <= jr_pc) and
-                source not in case_reachable):
+                protected_pc < target <= jr_pc and
+                not (protected_pc <= source <= jr_pc) and
+                (scheduled_base or source not in case_reachable)):
             return set()
     if proof_out is not None:
         proof_out.append({

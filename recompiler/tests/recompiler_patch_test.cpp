@@ -1068,6 +1068,29 @@ void jump_table_producer_codegen_test() {
           unbounded_alias_generated.front().full_code.find("/* jump table") !=
               std::string::npos,
           "alias regression fixture reaches the table when ownership is absent");
+
+    // The scheduled variant must feed code generation too, not merely the
+    // discovery report. Its table base overwrites the guard in the BEQ delay
+    // slot, so the existing branch emitter must preserve the tested condition.
+    write_word(exe, base + 0x500u, 0u);
+    write_word(exe, base + 0x504u, 0u);
+    write_word(exe, base + 0x508u, 0x2C620003u);
+    write_word(exe, base + 0x50Cu, 0x1040001Cu);
+    write_word(exe, base + 0x510u, 0x3C028001u);
+    write_word(exe, base + 0x514u, 0x24420A00u);
+    write_word(exe, base + 0x518u, 0x00031880u);
+    write_word(exe, base + 0x51Cu, 0x00621821u);
+    write_word(exe, base + 0x520u, 0x8C620000u);
+    PSXRecomp::ControlFlowAnalyzer scheduled_analyzer(exe);
+    const auto scheduled_cfg = scheduled_analyzer.analyze_function(function);
+    PSXRecomp::CodeGenerator scheduled_generator(exe);
+    const auto scheduled = scheduled_generator.generate_function(
+        function, scheduled_cfg).full_code;
+    check(scheduled.find("/* jump table") != std::string::npos,
+          "codegen emits a switch with its table LUI in the bounds delay slot");
+    for (uint32_t target : cases)
+        check(scheduled.find(fmt::format("goto block_{:08X}", target)) != std::string::npos,
+              "every scheduled case has an emitted native control-flow edge");
 }
 
 void cfg_codegen_load_delay_test() {

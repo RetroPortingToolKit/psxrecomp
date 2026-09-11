@@ -102,9 +102,95 @@ bool resolves_ape_switch(const ApeSwitchFixture& f,
         nullptr, producer_lo, producer_hi);
 }
 
+ApeSwitchFixture make_scheduled_switch() {
+    auto f = make_ape_switch();
+    const size_t text = 2048;
+    put32(f.image, text + 0x500, 0);
+    put32(f.image, text + 0x504, 0);
+    put32(f.image, text + 0x508, 0x2C620003u); // sltiu v0,v1,3
+    put32(f.image, text + 0x50C, 0x1040001Cu); // beq v0,zero,+0x580
+    put32(f.image, text + 0x510, 0x3C028001u); // lui v0 (guard delay)
+    put32(f.image, text + 0x514, 0x24420A00u); // addiu v0,v0,0xa00
+    put32(f.image, text + 0x518, 0x00031880u); // sll v1,v1,2
+    put32(f.image, text + 0x51C, 0x00621821u); // addu v1,v1,v0
+    put32(f.image, text + 0x520, 0x8C620000u); // lw v0,0(v1)
+    return f;
+}
+
+void check_scheduled_switch() {
+    const size_t text = 2048;
+    auto f = make_scheduled_switch();
+    auto exe = parse(f.image);
+    PSXRecomp::ExactJumpTable table;
+    CHECK(PSXRecomp::resolve_exact_bounded_jump_table(
+              exe, f.entry, kLoad + 0x600u, f.jr_pc, 2u, table) &&
+          table.table_base == f.table && table.table_count == 3u,
+          "scheduled table constant resolves exactly");
+    std::set<uint32_t> targets;
+    for (auto target : table.targets) targets.insert(target.second);
+    CHECK(targets == std::set<uint32_t>(f.cases.begin(), f.cases.end()),
+          "scheduled table has exactly the expected case targets");
+    PSXRecomp::FunctionAnalyzer analyzer(exe);
+    auto result = analyzer.analyze_exact_entries({f.entry});
+    for (auto target : f.cases)
+        CHECK(result.exact_reachable_pcs.count(target),
+              "scheduled switch cases are reached from the function root");
+
+    auto renamed = f;
+    put32(renamed.image, text + 0x510, 0x3C088001u);
+    put32(renamed.image, text + 0x514, 0x25020A00u);
+    CHECK(resolves_ape_switch(renamed, renamed.entry),
+          "scheduled constant can rename registers");
+    auto no_load_delay = f;
+    no_load_delay.jr_pc = kLoad + 0x524u;
+    put32(no_load_delay.image, text + 0x524, 0x00400008u);
+    CHECK(!resolves_ape_switch(no_load_delay, f.entry),
+          "scheduled switch must respect the R3000 load delay");
+    auto signed_low = f;
+    signed_low.image.resize(text + 0x9000u);
+    put32(signed_low.image, 0x1C, 0x9000u);
+    put32(signed_low.image, text + 0x510, 0x3C028002u);
+    put32(signed_low.image, text + 0x514, 0x24428A00u);
+    for (size_t i = 0; i < f.cases.size(); ++i)
+        put32(signed_low.image, text + 0x8A00u + 4u * i, f.cases[i]);
+    CHECK(resolves_ape_switch(signed_low, f.entry, kLoad, kLoad + 0x9000u),
+          "scheduled constant sign-extends ADDIU low half");
+    CHECK(!resolves_ape_switch(f, f.entry, kLoad, kLoad + 0x900u),
+          "scheduled table must belong to the producer");
+
+    auto jump = [](uint32_t offset) {
+        return 0x08000000u | (((kLoad + offset) >> 2) & 0x03FFFFFFu);
+    };
+    const std::vector<std::vector<std::pair<size_t, uint32_t>>> mutations = {
+        {{0x508, 0x2C630003u}, {0x50C, 0x1060001Cu}}, // bound writes index
+        {{0x510, 0x3C038001u}, {0x514, 0x24620A00u}}, // LUI writes index
+        {{0x514, 0x24430A00u}}, // ADDIU writes index
+        {{0x514, 0x25020A00u}}, // wrong constant source
+        {{0x510, 0x3C228001u}}, // reserved LUI fields
+        {{0x50C, jump(0x580) | 0x04000000u}}, // JAL delay
+        {{0x50C, 0x5040001Cu}}, // BEQL
+        {{0x50C, 0x1040FFFFu}}, // self-loop with clobbered condition
+        {{0x50C, 0x10400000u}}, // reject into LUI
+        {{0x500, jump(0x510)}}, // earlier edge skips bound
+        {{0x590, jump(0x510)}}, // later edge skips bound
+        {{0x540, jump(0x510)}, {0x544, 0}}, // case skips bound
+        {{0x504, jump(0x580)}}, // bound in delay slot
+        {{0xA00, kLoad + 0x510u}}, // case target skips bound
+        {{0xA04, kLoad + 0x2000u}}, // out of host
+    };
+    for (const auto& changes : mutations) {
+        auto broken = f;
+        for (auto change : changes)
+            put32(broken.image, text + change.first, change.second);
+        CHECK(!resolves_ape_switch(broken, broken.entry),
+              "unsafe scheduled-switch mutation fails closed");
+    }
+}
+
 } // namespace
 
 int main() {
+    check_scheduled_switch();
     auto image = make_exe_buffer(0x2000);
     const size_t text = 2048;
 
