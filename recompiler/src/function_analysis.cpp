@@ -894,16 +894,36 @@ bool resolve_exact_bounded_jump_table(
         return false;
     }
 
-    // Exact canonical guard: sltiu; beq; nop; sll. This is the same accepted
-    // suffix as the Python capture verifier and excludes unrelated bounds.
+    // Exact guards: sltiu; beq; nop; sll, or sltiu; beq; lui; addiu; sll.
+    // The latter schedules the table's LUI in the bounds branch's delay slot.
+    // Keep both forms in parity with the Python capture verifier.
     if (sll_pc < entry + 12u) return false;
     uint32_t guard_pc = sll_pc - 8u;
     uint32_t bound_pc = sll_pc - 12u;
+    auto before_scale = read(sll_pc - 4u);
+    if (!before_scale.has_value()) return false;
+    bool scheduled_base = *before_scale != 0u;
+    if (scheduled_base) {
+        // R3000 JR would see the old target register without this load delay.
+        if (lw_pc != jr_pc - 8u) return false;
+        if (sll_pc < entry + 16u) return false;
+        guard_pc -= 4u;
+        bound_pc -= 4u;
+        auto upper_word = read(sll_pc - 8u);
+        if (!upper_word.has_value()) return false;
+        uint32_t upper_reg = (*upper_word >> 16) & 0x1Fu;
+        if ((*upper_word >> 26) != 0x0Fu ||
+            ((*upper_word >> 21) & 0x1Fu) != 0u || upper_reg == 0u ||
+            (*before_scale >> 26) != 0x09u ||
+            ((*before_scale >> 21) & 0x1Fu) != upper_reg ||
+            ((*before_scale >> 16) & 0x1Fu) != base_reg ||
+            upper_reg == index_reg || base_reg == index_reg) {
+            return false;
+        }
+    }
     auto guard_word_opt = read(guard_pc);
     auto bound_word = read(bound_pc);
-    auto guard_delay = read(sll_pc - 4u);
-    if (!guard_word_opt.has_value() || !bound_word.has_value() ||
-        !guard_delay.has_value() || *guard_delay != 0u) {
+    if (!guard_word_opt.has_value() || !bound_word.has_value()) {
         return false;
     }
     uint32_t guard_word = *guard_word_opt;
@@ -920,20 +940,23 @@ bool resolve_exact_bounded_jump_table(
     uint32_t bound_rt = (*bound_word >> 16) & 0x1Fu;
     uint32_t count = *bound_word & 0xFFFFu;
     if (bound_op != 0x0Bu || bound_rs != index_reg ||
-        bound_rt != bound_reg || count == 0u || count >= 512u ||
+        bound_rt != bound_reg || bound_reg == index_reg ||
+        count == 0u || count >= 512u ||
         in_delay_slot(bound_pc)) {
         return false;
     }
     uint32_t guard_target = exact_branch_target(guard_pc, guard_word);
     if ((guard_target & 3u) != 0u || guard_target < entry ||
         guard_target >= hard_cap ||
-        (guard_target >= sll_pc && guard_target < jr_pc + 8u)) {
+        (guard_target >= sll_pc && guard_target < jr_pc + 8u) ||
+        (scheduled_base && guard_target > bound_pc && guard_target < jr_pc + 8u)) {
         return false;
     }
 
     // Resolve the table-base reaching definition. Cross-register constants
     // (`lui rA; addiu rB,rA,lo`) are valid, but both definitions must be local,
-    // unskippable, outside delay slots, and unclobbered before use.
+    // unskippable and unclobbered before use. Only the validated scheduled
+    // form permits LUI in a delay slot, exactly that of the bounds BEQ.
     uint32_t low_pc = 0, source_reg = base_reg;
     int16_t low = 0;
     uint32_t lui_pc = 0, upper = 0;
@@ -974,7 +997,9 @@ bool resolve_exact_bounded_jump_table(
             break;
         }
     }
-    if (lui_pc == 0u || in_delay_slot(lui_pc) ||
+    if (scheduled_base && (lui_pc != guard_pc + 4u || low_pc != sll_pc - 4u))
+        return false;
+    if (lui_pc == 0u || (in_delay_slot(lui_pc) && !scheduled_base) ||
         (low_pc != 0u && in_delay_slot(low_pc)) ||
         inbound_skips(lui_pc, addu_pc) ||
         (low_pc != 0u && inbound_skips(low_pc, addu_pc)) ||
@@ -1026,6 +1051,7 @@ bool resolve_exact_bounded_jump_table(
         uint32_t runtime_target = *target_word;
         uint32_t image_target = mapped(runtime_target);
         if (image_target < entry || image_target >= hard_cap ||
+            (scheduled_base && image_target > bound_pc && image_target < jr_pc + 8u) ||
             image_target < producer_lo || image_target >= producer_hi ||
             (image_target & 3u) != 0u) {
             return false;
@@ -1089,6 +1115,7 @@ bool resolve_exact_bounded_jump_table(
             break;
         }
     }
+    uint32_t protected_pc = scheduled_base ? bound_pc : lui_pc;
     for (uint32_t source = entry; source < hard_cap; source += 4u) {
         auto word = read(source);
         if (!word.has_value()) return false;
@@ -1096,9 +1123,9 @@ bool resolve_exact_bounded_jump_table(
         bool direct = cf.kind == ExactCfKind::Branch ||
                       cf.kind == ExactCfKind::Jump ||
                       cf.kind == ExactCfKind::Jal;
-        if (direct && cf.target > lui_pc && cf.target <= jr_pc &&
-            (source < lui_pc || source > jr_pc) &&
-            !case_reachable.count(source)) {
+        if (direct && cf.target > protected_pc && cf.target <= jr_pc &&
+            (source < protected_pc || source > jr_pc) &&
+            (scheduled_base || !case_reachable.count(source))) {
             return false;
         }
     }
