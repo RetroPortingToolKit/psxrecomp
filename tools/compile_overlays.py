@@ -2892,12 +2892,9 @@ def overlay_pair_id(src: str, func_ids: list,
 def add_overlay_pair_export(src: str, pair_id: int) -> str:
     """Add the optional v2-pair binding export without changing the shard ABI."""
     return src + f'''\n
-#ifdef _WIN32
-__declspec(dllexport)
-#else
-__attribute__((visibility("default")))
-#endif
-uint64_t overlay_pair_id(void) {{ return UINT64_C(0x{pair_id:016X}); }}
+PSX_OVERLAY_EXPORT uint64_t overlay_pair_id(void) {{
+    return UINT64_C(0x{pair_id:016X});
+}}
 '''
 
 
