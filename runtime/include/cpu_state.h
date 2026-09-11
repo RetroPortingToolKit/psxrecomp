@@ -74,7 +74,16 @@ typedef struct CPUState {
  * Static recompiled code and the interpreter share host cycle state directly,
  * so their barrier compiles to nothing. */
 #ifdef PSX_OVERLAY_DLL_BUILD
-void overlay_flush_cycles(void);
+/* Kept here rather than in psx_cycles.h because cpu_state.h is the first
+ * generated-code include that declares the store barrier.  The preamble is
+ * inserted after all generated includes, so both declaration and definition
+ * must carry the same export attribute for Clang. */
+#  if defined(_WIN32)
+#    define PSX_OVERLAY_EXPORT __declspec(dllexport)
+#  else
+#    define PSX_OVERLAY_EXPORT __attribute__((visibility("default")))
+#  endif
+PSX_OVERLAY_EXPORT void overlay_flush_cycles(void);
 static inline void psx_store_cycle_barrier(void) { overlay_flush_cycles(); }
 #else
 static inline void psx_store_cycle_barrier(void) { }

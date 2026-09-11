@@ -126,7 +126,7 @@ static inline void psx_advance_cycles(uint32_t cycles) {
 /* Publish deferred charges (IRQ edge / MMIO / savestate). Overlay DLLs keep
  * their pending total in the callback shim rather than these host globals. */
 #if defined(PSX_OVERLAY_DLL_BUILD)
-void overlay_flush_cycles(void);
+PSX_OVERLAY_EXPORT void overlay_flush_cycles(void);
 static inline void psx_cyc_local_publish(void) { }
 static inline void psx_cyc_batch_flush(void) { overlay_flush_cycles(); }
 #else

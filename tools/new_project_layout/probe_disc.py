@@ -572,6 +572,11 @@ def render_game_toml(p: DiscProbe, *, disc_rel: str, out_dir: str, players: int,
         "[runtime]",
         'window_title = "' + toml_escape(p.display_name + " Recompiled") + '"',
         'memcard_dir = "saves"',
+        # Enable captured dirty-RAM overlays by default. A freshly probed
+        # project otherwise never initializes the cache pipeline and silently
+        # interprets every runtime-loaded overlay until a maintainer discovers
+        # and adds this setting by hand.
+        "overlay_cache = true",
         "",
         "[video]",
         'renderer = "opengl"',

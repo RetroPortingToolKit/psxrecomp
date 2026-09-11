@@ -8,6 +8,13 @@ if(NOT DEFINED PSXRECOMP_ROOT)
     get_filename_component(PSXRECOMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
 
+# The rebuild CLI configures this as `generate` for its instrumented pass and
+# `use` after it has merged the collected profile.  Keep the switch here,
+# beside the target it must affect: an otherwise unconsumed cache entry makes a
+# costly PGO rebuild/train cycle a silent no-op.
+set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
+set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
+
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
 
@@ -1358,6 +1365,49 @@ function(psxrecomp_add_runtime_target target)
     # CMAKE_C_STANDARD setting. cxx_std_17 likewise — game CMakeLists may omit
     # CMAKE_CXX_STANDARD; mod_packages.cpp must not compile as a pre-17 dialect.
     target_compile_features(${target} PRIVATE c_std_11 cxx_std_17)
+
+    if(NOT PSX_PGO STREQUAL "")
+        if(NOT PSX_PGO STREQUAL "generate" AND NOT PSX_PGO STREQUAL "use")
+            message(FATAL_ERROR
+                "PSX_PGO must be empty, 'generate', or 'use' (got '${PSX_PGO}')")
+        endif()
+        set(_psx_pgo_dir "${CMAKE_BINARY_DIR}/pgo")
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            if(PSX_PGO STREQUAL "generate")
+                target_compile_options(${target} PRIVATE -fprofile-instr-generate)
+                target_link_options(${target} PRIVATE -fprofile-instr-generate)
+            else()
+                set(_psx_pgo_profile "${_psx_pgo_dir}/default.profdata")
+                target_compile_options(${target} PRIVATE
+                    "-fprofile-instr-use=${_psx_pgo_profile}"
+                    -Wno-profile-instr-out-of-date
+                    -Wno-profile-instr-unprofiled)
+                target_link_options(${target} PRIVATE
+                    "-fprofile-instr-use=${_psx_pgo_profile}")
+            endif()
+        elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            # GCC writes .gcda files directly; run_pgo_train already recognizes
+            # those as a completed training run, so no llvm-profdata merge is
+            # required for this branch.
+            if(PSX_PGO STREQUAL "generate")
+                target_compile_options(${target} PRIVATE
+                    "-fprofile-generate=${_psx_pgo_dir}")
+                target_link_options(${target} PRIVATE
+                    "-fprofile-generate=${_psx_pgo_dir}")
+            else()
+                target_compile_options(${target} PRIVATE
+                    "-fprofile-use=${_psx_pgo_dir}"
+                    -Wno-missing-profile)
+                target_link_options(${target} PRIVATE
+                    "-fprofile-use=${_psx_pgo_dir}")
+            endif()
+        else()
+            message(FATAL_ERROR
+                "PSX_PGO requires a Clang or GNU compiler (got ${CMAKE_C_COMPILER_ID})")
+        endif()
+        unset(_psx_pgo_dir)
+        unset(_psx_pgo_profile)
+    endif()
 
     # Game-specific executable name. Every title instantiates this function with
     # the same CMake target name ("psx-runtime"), so without this they ALL produce
