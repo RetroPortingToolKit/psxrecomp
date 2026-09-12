@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import extract_overlays as eo
 import compile_overlays as co
 from packed_sector_table import extract_members as extract_sector_members
+from sector_extent_archive import extract_members as extract_extent_members
 try:
     import tomllib
 except ImportError:
@@ -357,14 +358,18 @@ def raw_base_votes(data, base_lo, base_hi=0x80200000):
     return hist
 
 def split_indexed_archive(data, alignment=0x800):
-    """Recognize a strict ``{id,size}[]`` + aligned-payload archive.
+    """Prefer explicit sector extents over the older opaque-ID heuristic.
 
-    Mega Man X6's ROCK_X6.BIN uses one monotonically increasing table in the
-    first sector.  Payload members follow in table order, each rounded up to a
-    0x800-byte boundary.  Require the complete layout to account for the file
-    (apart from at most one format trailer sector) so ordinary data cannot
-    be mistaken for this container merely because its first words look small.
+    A multi-sector header cannot be inferred from the table's byte length.
+    When descriptors account for the complete file, their sector offsets take
+    precedence. The legacy fallback handles genuinely opaque increasing IDs.
     """
+    try:
+        extents = extract_extent_members(data, sector_size=alignment)
+    except ValueError:
+        extents = []
+    if len(extents) >= 4:
+        return [(m['sector'], m['source_offset'], m['body']) for m in extents]
     if len(data) < alignment*2 or len(data) % alignment:
         return None
     entries=[]
@@ -677,19 +682,31 @@ def full_discovery_output_audit_clean(data, tmp):
     return True
 
 def filter_full_discovery_seeds(body, base, candidates, declared_entry):
-    """Quarantine normal mode's unproven image-body fallback entry.
+    """Remove unproven body-start and invalid-delay normal-mode candidates.
 
-    Normal mode derives interior entries from return/prologue/call/control-flow
-    evidence and classifies their reachable extents.  Its one provenance-free
-    fallback is the image load address: a backward return scan that reaches the
-    beginning promotes that first body word.  Ape MINI2 begins with a pointer
-    table there, while its PS-X header declares the real entry later.  Quarantine
-    only that unproven body-start fallback; preserving the additive interior set
-    is essential because removing selected roots can split otherwise broad
-    functions and create native code-range holes.
+    Return scans can promote a leading pointer table or data after a return.
+    Keep the remaining additive interior set: removing arbitrary roots can
+    split otherwise broad functions and create native code-range holes.
     """
-    return sorted({addr for addr in candidates
-                   if addr != base or addr == declared_entry})
+    # Return scans can also nominate adjacent data whose words resemble JALs.
+    # A control transfer in the first transfer's delay slot cannot substantiate
+    # an optional native root. Keep declared entries so their audit still fails
+    # visibly if authoritative loader evidence actually names unsupported code.
+    return sorted({addr for addr in candidates if addr == declared_entry or
+                   (addr != base and optional_entry_delay_valid(body, base, addr))})
+
+
+def optional_entry_delay_valid(body, base, entry):
+    """Reject structurally invalid delay slots in an optional entry prefix."""
+    offset = entry - base
+    if offset < 0 or offset % 4 or offset + 4 > len(body):
+        return False
+    for at in range(offset, min(offset + 48, len(body) - 3), 4):
+        word = _word(body, at)
+        if _is_control_flow_word(word):
+            delay = _word(body, at + 4)
+            return delay is not None and not _is_control_flow_word(delay)
+    return True
 
 def enrich_positioned_member(member, recompiler, tmp):
     """Add normal-mode entries/aliases to a consensus-positioned member.
@@ -718,6 +735,7 @@ def enrich_positioned_member(member, recompiler, tmp):
              if base <= alias[0] < hi and
              base <= alias[1] < alias[2] <= hi and
              alias[0] != base and
+             optional_entry_delay_valid(body, base, alias[0]) and
              not any(alias[1] < root < alias[2] for root in roots)]
     out=dict(member)
     out['seeds']=sorted(set(discovered)|set(roots))

@@ -20,6 +20,7 @@ import zlib
 import compile_overlays as compiler
 from aot_overlay_spike import extract_generic as extractor
 from packed_sector_table import extract_members as extract_sector_members
+from sector_extent_archive import extract_members as extract_extent_members
 
 FRAMEWORK = Path(__file__).resolve().parents[1]
 
@@ -148,6 +149,31 @@ def positioned_sources(disc, specifications):
         if method == 'packed_sector_members':
             sources.extend(sector_sources(disc, spec))
             continue
+        if method == 'sector_extent_members':
+            members = extract_extent_members(disc.read(spec['file']),
+                sector_size=number(spec.get('sector_size', 2048)),
+                table_offset=number(spec.get('table_offset', 0)), count=number(spec['count']))
+            configured = {number(item['index']): item for item in spec['members']}
+            excluded = {number(item['index']): item for item in spec.get('excluded_members', [])}
+            require(len(configured) == len(spec['members']) and
+                    len(excluded) == len(spec.get('excluded_members', [])), 'Duplicate member inventory')
+            require(not configured.keys() & excluded.keys() and
+                    configured.keys() | excluded.keys() == set(range(len(members))),
+                    'Archive inventory has missing or conflicting classifications')
+            require(all(item.get('reason', '').strip() for item in excluded.values()),
+                    'Excluded archive member needs a reason')
+            for member in members:
+                item = configured.get(member['index'])
+                if item is None:
+                    continue
+                base = number(item['load_addr'])
+                require(0x80000000 <= base < base + len(member['body']) <= 0x80200000,
+                        'Archive image outside RAM')
+                name = f"{spec['file'].upper()}:ENTRY_{member['index']:04X}"
+                sources.append(dict(name=name, base=base, body=member['body'],
+                    spec={**spec, **item}, source_offset=member['source_offset'],
+                    source_file=spec['file'].upper(), aliases=[]))
+            continue
         for name in spec['files']:
             body = disc.read(name)
             offset = 0
@@ -212,6 +238,7 @@ def make_fixed_record(source, disc):
     if spec.get('supplemental_entries', True):
         seeds |= extractor.supplemental_callable_seeds(body, base)
     entries = declared_entries(source, disc)
+    seeds = {entry for entry in seeds if extractor.optional_entry_delay_valid(body, base, entry)}
     seeds |= entries
     require(seeds, f"No static entries: {source['name']}")
     page, data = extractor.page_aligned_region(base, body)
@@ -251,7 +278,7 @@ def prepare(profile, disc, records, output):
             if (lo, hi) == (source['base'], source['base'] + len(source['body'])):
                 singles[source['name']] = record
     for source in sources:
-        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members') and source['name'] not in singles:
+        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members', 'sector_extent_members') and source['name'] not in singles:
             record = make_fixed_record(source, disc)
             singles[source['name']] = record
             records.append(record)

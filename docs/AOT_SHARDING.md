@@ -60,6 +60,7 @@ Profiles declare these reusable methods:
 | `images[].method = fixed_address_files` | Whole original files placed at a verified `load_addr`. Optional duplicate-leaf checks require identical bytes. |
 | `images[].method = psx_exe` | Read the load address and image from a PS-X EXE header; the generic extractor may split resident and overlay floors. |
 | `images[].method = packed_sector_members` | Decode u32 count/offset sector descriptors across ordered payload files. Verify every member classification and requested full-payload coverage; use loader-established addresses for executable members. |
+| `images[].method = sector_extent_members` | Decode `{sector offset, byte size}` pairs in an archive. Use archive-relative offsets, verify the exact count and terminator, reject gaps/overlaps, and account for every member after sector rounding. Each member needs a verified load address or an explicit exclusion. |
 | `checks[].method = words` | Verify loader instructions or descriptors at explicit file offsets / virtual addresses. |
 | `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. |
 | `checks[].method = bcd_extent_table` | Verify an indexed BCD-MSF/size table against an ISO file's actual extent. |

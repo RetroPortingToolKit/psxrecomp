@@ -22,6 +22,63 @@ class FakeDisc:
 
 
 class AotMethodsTest(unittest.TestCase):
+    def test_optional_normal_roots_reject_control_transfer_in_delay_slot(self):
+        base = 0x80100000
+        body = struct.pack('<8I', 0, 0, 0x0C004000, 0x0C004001,
+                           0x0C004000, 0, 0x03E00008, 0)
+        roots = [base + 8, base + 16, base + 24]
+        self.assertEqual(pipeline.extractor.filter_full_discovery_seeds(
+            body, base, roots, base + 16), [base + 16, base + 24])
+        # A loader-established entry is never silently discarded.
+        self.assertIn(base + 8, pipeline.extractor.filter_full_discovery_seeds(
+            body, base, roots, base + 8))
+        source = dict(name='SYNTHETIC', base=base, body=body, spec=dict(allow_missing=True))
+        with mock.patch.object(pipeline.extractor, 'prologues', return_value=roots), \
+             mock.patch.object(pipeline.extractor, 'frameless_leaf_entries', return_value=set()), \
+             mock.patch.object(pipeline.extractor, 'supplemental_callable_seeds', return_value=set()):
+            record = pipeline.make_fixed_record(source, FakeDisc({}))
+        self.assertNotIn('0x80100008', record['function_entry_pcs'])
+
+    @staticmethod
+    def extent_archive():
+        data = bytearray(7 * 2048)
+        for i, (sector, size) in enumerate([(2, 2052), (4, 2048), (5, 13), (6, 2048)]):
+            struct.pack_into('<II', data, i * 8, sector, size)
+            data[sector * 2048:sector * 2048 + size] = bytes([65 + i]) * size
+        return data
+
+    def test_explicit_sector_offsets_win_over_one_sector_header_heuristic(self):
+        data = self.extent_archive()
+        members = pipeline.extractor.split_indexed_archive(data)
+        self.assertEqual([offset for _, offset, _ in members], [4096, 8192, 10240, 12288])
+        self.assertEqual(members[0][2], b'A' * 2052)
+        self.assertEqual(members[-1][2], b'D' * 2048)
+        self.assertEqual(members[2][2], b'C' * 13)
+
+    def test_extent_archive_rejects_gaps_overlaps_truncation_and_count_drift(self):
+        data = self.extent_archive()
+        for offset, value in [(8, 2), (8, 5), (28, 4096), (32, 7)]:
+            changed = bytearray(data)
+            struct.pack_into('<I', changed, offset, value)
+            with self.subTest(offset=offset, value=value), self.assertRaises(ValueError):
+                pipeline.extract_extent_members(changed, count=4)
+        for changed in [data[:-1], data + bytes(2048)]:
+            with self.assertRaises(ValueError):
+                pipeline.extract_extent_members(changed, count=4)
+        with self.assertRaisesRegex(ValueError, 'count'):
+            pipeline.extract_extent_members(data, count=3)
+
+    def test_extent_inventory_accounts_for_every_member(self):
+        disc = FakeDisc({'ARCHIVE': self.extent_archive()})
+        spec = dict(method='sector_extent_members', file='ARCHIVE', count=4,
+                    members=[dict(index=i, load_addr='0x80100000') for i in range(3)],
+                    excluded_members=[dict(index=3, reason='Data table')])
+        sources = pipeline.positioned_sources(disc, [spec])
+        self.assertEqual(sources[0]['source_offset'], 4096)
+        self.assertEqual(sources[0]['body'], b'A' * 2052)
+        with self.assertRaisesRegex(ValueError, 'classifications'):
+            pipeline.positioned_sources(disc, [{**spec, 'excluded_members': []}])
+
     def test_sector_inventory_covers_payload_and_accounts_for_exclusions(self):
         disc = FakeDisc({'INDEX': struct.pack('<III', 0x100000, 0x100001, 0x100002),
                          'DATA': b'A' * 2048, 'CODE': b'B' * 2048 + b'C' * 2048})
