@@ -23,12 +23,76 @@ The framework already separates discovery from compilation:
 
 The extractor lives under `aot_overlay_spike`: it is useful tooling with partial
 format support, not a universal overlay detector. Per-title evidence and recipes
-are still required when an input format or loader layout is ambiguous. There is
-not yet a stable, declarative plugin API covering arbitrary game loaders.
+are still required when an input format or loader layout is ambiguous. The production pipeline below adds declarative profiles for verified methods;
+arbitrary game loaders still require bounded investigation.
 
 The compiler's input option is named `--captures` for historical reasons. It
 also accepts records produced entirely from disc bytes. That filename/schema
 does not imply a playthrough or RAM capture is required.
+
+## Production pipeline and declarative profiles
+
+`tools/aot_overlay_pipeline.py` owns extraction, inventory checks, native builds,
+original-byte auditing and staging. Games supply JSON facts with schema
+`psxrecomp AOT methods v1`; they do not carry copies of extractors or auditors.
+The pipeline contains no game-ID branches.
+
+```sh
+python tools/aot_overlay_pipeline.py release \
+  --profile /game/aot/overlays.json --game-toml /game/game.toml \
+  --runtime-config /game/packaging/release/game.toml \
+  --recompiler /framework/recompiler/build/psxrecomp-game \
+  --work-dir /private/aot-build --stage /release/payload --gcc gcc --workers 3
+```
+
+Use `extract` instead of `release` and omit `--stage` for bounded discovery.
+Every invocation creates a fresh work directory and reads the original disc;
+existing shards and gameplay captures are never inputs. `--runtime-config`
+selects the packaged code-generation settings/cache namespace while the source
+project supplies BIOS profiles and extraction inputs. Never rename cache tags
+to force compatibility. Python 3.11 or newer is required.
+
+Profiles declare these reusable methods:
+
+| Field / method | Contract |
+| --- | --- |
+| `disc_hashes` | Hash the cue's original data track before extracting. |
+| `images[].method = fixed_address_files` | Whole original files placed at a verified `load_addr`. Optional duplicate-leaf checks require identical bytes. |
+| `images[].method = psx_exe` | Read the load address and image from a PS-X EXE header; the generic extractor may split resident and overlay floors. |
+| `checks[].method = words` | Verify loader instructions or descriptors at explicit file offsets / virtual addresses. |
+| `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. |
+| `checks[].method = bcd_extent_table` | Verify an indexed BCD-MSF/size table against an ISO file's actual extent. |
+| `compositions` | Combine declared simultaneous producers in address order. `max_gap` bounds their separation; gap and alignment bytes remain unowned. |
+| `expected_records` | Stop on inventory drift, including unexpected additions requiring review. Every configured image must be represented. |
+| `strict_bounds` | Require emission to remain inside established producer intervals. |
+
+`allow_missing` opts a fixed-address source into static root discovery when the
+generic detector misses it. `entry_word` or `entries` can supply independently
+verified loader entry points. These facts do not turn every plausible code word
+into a proven function. There is no recipe option to ignore a failed compiler.
+
+Each recipe compiles in an isolated cache. `tools/audit_aot_cache.py` checks every
+native pair's ABI/exports, every manifest guard against known original bytes,
+and nonzero native coverage for every recipe. Staging copies precisely the
+audited platform pairs, verifies hashes again, rejects extras, and emits
+`AOT_CACHE_AUDIT.json` without game bytes. A missing disc, changed loader word,
+missing image, compiler failure, empty recipe coverage or failed audit stops
+release packaging. Pair counts are results, not inherited success thresholds.
+An inventory plus valid guards still does not prove complete static execution
+coverage or native semantics; keep fallback and perform gameplay spot checks.
+
+Current consumers:
+
+- Tomba! USA: `TombaRecomp/aot/overlays.json`, 25 fixed-address images, including
+  17 area variants and eight support images.
+- Tomba! 2 USA / Tombi! 2 Italian: `Tomba2Recomp/aot/{usa,ita}.json`, each with
+  MAIN.EXE and 28 raw images, including all 22 area overlays. Their loader tables
+  establish different regional addresses; composition uses the same shared
+  method (including the Italian gap). US START.BIN is explicitly accounted for.
+
+See `tools/tests/test_aot_overlay_pipeline.py` for synthetic method and release
+failure tests. A new title should add a profile when these contracts fit; add
+and test a shared method only when its actual loader requires one.
 
 ## The reusable boundary
 

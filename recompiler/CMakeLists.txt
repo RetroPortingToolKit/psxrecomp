@@ -551,6 +551,13 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_guard_bytes_declaration.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        if(Python3_VERSION VERSION_GREATER_EQUAL "3.11")
+            add_test(
+                NAME aot_overlay_methods
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_aot_overlay_pipeline.py
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        endif()
         add_test(
             NAME fmv_cycle_batch_codegen
             COMMAND ${Python3_EXECUTABLE}

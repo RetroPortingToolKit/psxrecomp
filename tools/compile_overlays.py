@@ -3275,8 +3275,19 @@ def _interior_fail_key(phys_addr: int, interior: int, data: bytes,
 
 def interior_failure_is_deterministic(reason: str) -> bool:
     """Only guest-byte/codegen audit verdicts belong in the persistent memo."""
-    return reason.startswith(('generated-c-audit:', 'requested-entry-audit:',
-                              'guest-walk-audit:'))
+    return (reason.startswith(('generated-c-audit:', 'requested-entry-audit:',
+                               'guest-walk-audit:')) or
+            unsupported_guest_branch_rejection(reason))
+
+
+def unsupported_guest_branch_rejection(reason: str) -> bool:
+    """An invalid guest branch is data/unsupported code, not a tool failure.
+
+    Other delay-slot identity failures remain fatal: missing guarded delay
+    words or a changed instruction identity can indicate an emitter defect.
+    """
+    return (reason.startswith('delay-slot-identity:') and
+            reason.endswith(': reserved/unsupported branch encoding'))
 
 
 def optional_static_fragment_rejection(entry: int, job: dict,
@@ -4204,6 +4215,8 @@ def fragment_batch_failure_is_partitionable(reason: str) -> bool:
     """Whether retrying smaller root sets can change this failure verdict."""
     if reason.startswith('candidate-capacity: full'):
         return False
+    if unsupported_guest_branch_rejection(reason):
+        return True
     return reason.startswith((
         'generated-c-audit:', 'requested-entry-audit:',
         'hosted-entry-audit:',
