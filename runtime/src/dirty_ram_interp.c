@@ -3331,7 +3331,7 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
          * Without this hand-back the kernel page stays dirty and straight-
          * line flow would interpret the whole function — which is why
          * declaring the slot alone never paid off. */
-        if (next_phys < DIRTY_RAM_KERNEL_WINDOW_END &&
+        if (!s_ld_pend_armed && next_phys < DIRTY_RAM_KERNEL_WINDOW_END &&
             psx_kernel_patch_range_ends_at(next_phys) &&
             psx_kernel_bless_dispatchable(next_phys)) {
             cpu->pc = pc;

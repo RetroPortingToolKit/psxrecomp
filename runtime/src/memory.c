@@ -389,6 +389,8 @@ void psx_kernel_bless_reset_for_boot(void) {
     s_kb_lo = 0;
     s_kb_span = 0;
     s_kb_rom_off = 0;
+    s_kb_pr = NULL;
+    s_kb_pr_n = 0;
     memset(kbless_state, KBLESS_UNKNOWN, sizeof(kbless_state));
 }
 
