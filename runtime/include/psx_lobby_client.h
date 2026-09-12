@@ -128,6 +128,15 @@ typedef struct PsxLobbyChatMsg {
     char     player_id[PSX_LOBBY_ID_LEN];
     char     from[PSX_LOBBY_NAME_LEN];
     char     text[PSX_LOBBY_CHAT_TEXT_LEN];
+    /* The SERVER's id for this line, and what psx_lobby_report_chat names.
+     * Empty for a system line, a locally generated one, and anything from a
+     * server too old to assign one -- none of which can be reported, because
+     * there is no referent both sides agree on.
+     *
+     * A report carries this and NOT the text: the server writes down what it
+     * relayed under this id. Sending the words would let a client fabricate a
+     * message and have somebody sanctioned for it. */
+    char     mid[40];
     int      is_local;
     int      is_system;
     uint32_t seq;
@@ -400,6 +409,20 @@ void psx_lobby_seat_swap_clear(void);
 
 /* Lobby chat. send: 0 when queued (the line appears via the server echo).
  * count/get read the ring, oldest first; cleared on create/join/leave. */
+/* Report chat lines for moderation. Same contract on every console -- the
+ * frame is built by recomp-net (recomp_net/chat_report.h), which is also where
+ * the RNET_REPORT_* categories live; this only says where we are and sends it.
+ *
+ * `mids` are PsxLobbyChatMsg.mid values, several at once because harassment is
+ * usually a burst rather than a line. Entries with an empty id are skipped.
+ * The text is never sent: see PsxLobbyChatMsg.mid.
+ *
+ * 0 when handed to the server, which is not the same as accepted -- it refuses
+ * an expired line, a guest's line, your own, and anything over the rate
+ * limit. */
+int  psx_lobby_report_chat(const char *const *mids, int mid_count,
+                           const char *reason, const char *note);
+
 int  psx_lobby_send_chat(const char *text);
 
 /* Server chat: per-game, outside any room (op server_chat). Its own ring,
