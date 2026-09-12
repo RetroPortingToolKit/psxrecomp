@@ -193,8 +193,14 @@ static inline void dirty_ram_mark_page(uint32_t phys) {
  * through the extern each time. A BIOS with no bless window exports all
  * zeros: the span-0 range test then rejects every address. */
 #include "psx_bios_image.h"
+#include "kernel_patch_ranges.h"
 
 static uint32_t s_kb_lo = 0, s_kb_span = 0, s_kb_rom_off = 0;
+
+static const PsxKernelPatchRange* s_kb_pr = 0;
+static uint32_t                   s_kb_pr_n = 0;
+static uint64_t kbless_patch_skips = 0;   /* segments skipped, TCP counter */
+
 
 #define KBLESS_UNKNOWN  0u
 #define KBLESS_CLEAN    1u
@@ -216,6 +222,19 @@ static int kbless_on(void) {
         s_kb_lo      = psx_bios_image.kbless_ram_lo;
         s_kb_span    = psx_bios_image.kbless_ram_hi - psx_bios_image.kbless_ram_lo;
         s_kb_rom_off = psx_bios_image.kbless_rom_off;
+        s_kb_pr      = psx_bios_kernel_patch_ranges;
+        s_kb_pr_n    = psx_bios_kernel_patch_ranges ?
+                       psx_bios_kernel_patch_range_count : 0u;
+        /* PSX_KERNEL_PATCH_RANGES=0 drops the declared ranges, restoring the
+         * whole-body memcmp. Same purpose as PSX_KERNEL_BLESS=0 one level up:
+         * an A/B instrument. With the ranges dropped a patched body mismatches
+         * forever and its emitted hook is unreachable, which is exactly the
+         * behaviour before the ranges existed — so one binary measures both
+         * sides. */
+        {
+            const char* pe = getenv("PSX_KERNEL_PATCH_RANGES");
+            if (pe && pe[0] == '0') s_kb_pr_n = 0;
+        }
         if (s_kb_span == 0) kbless_enabled = 0;   /* BIOS with no bless window */
         /* The emitted constants must agree with each other and the ROM
          * array: a window whose ROM source exceeds the image is a build
@@ -229,6 +248,29 @@ static int kbless_on(void) {
         }
     }
     return kbless_enabled;
+}
+
+/* Declared patch ranges (psx_bios_kernel_patch_ranges, emitted from the
+ * profile's [[recompiler.install_slots]]): kernel-RAM words the guest is
+ * EXPECTED to overwrite at boot. They sit inside compiled bodies, so the
+ * whole-body memcmp below used to fail forever on the first install — the
+ * reason Breath of Fire III's BIOS exception handler interpreted 1.22 billion
+ * instructions with its card stub sitting in the profile's declared slot.
+ * The body is verified in segments that skip them instead: CLEAN now means
+ * every byte OUTSIDE every declared range still matches the ROM source, which
+ * is exactly the claim the native code depends on. The patched words
+ * themselves still execute on the dirty-RAM interpreter (Rule 18), entered
+ * through the emitted patch-range hook.
+ *
+ * Snapshotted on the same latch as the window constants. The decision itself
+ * lives in kernel_patch_ranges.c so it can be unit-tested without the
+ * runtime's globals. */
+/* Does a declared patch range END at this RAM address? The emitter registered
+ * that PC as a continuation key, so the dirty-RAM interpreter hands straight-
+ * line flow back to static dispatch there and only the patched words
+ * interpret (dirty_ram_interp.c). */
+int psx_kernel_patch_range_ends_at(uint32_t phys) {
+    return psx_kernel_patch_ends_at(s_kb_pr, s_kb_pr_n, phys);
 }
 
 /* Binary search the (key-sorted) body table. -1 if absent. */
@@ -255,9 +297,10 @@ int psx_kernel_bless_dispatchable(uint32_t phys) {
     if (st == KBLESS_MISMATCH) return 0;
     const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
     kbless_verifies++;
-    if (memcmp(ram + b->body_lo,
-               bios_rom + s_kb_rom_off + (b->body_lo - s_kb_lo),
-               b->body_hi - b->body_lo) == 0) {
+    if (psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
+                             s_kb_lo, s_kb_rom_off,
+                             b->body_lo, b->body_hi,
+                             &kbless_patch_skips) == 0) {
         kbless_state[i] = KBLESS_CLEAN;
         kbless_native_hits++;
         return 1;
@@ -308,7 +351,7 @@ void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) {
     }
 }
 
-void psx_kernel_bless_stats(uint64_t out[6]) {
+void psx_kernel_bless_stats(uint64_t out[8]) {
     uint32_t n = psx_bios_kernel_body_count;
     uint32_t clean = 0, mism = 0;
     if (n > KBLESS_MAX_ENTRIES) n = KBLESS_MAX_ENTRIES;
@@ -322,6 +365,11 @@ void psx_kernel_bless_stats(uint64_t out[6]) {
     out[3] = kbless_native_hits;
     out[4] = kbless_verifies;
     out[5] = kbless_invalidations;
+    /* Declared patch ranges, and how many segments the verifier skipped
+     * because of them: the proof that a body with a live install stub is
+     * being blessed rather than failing forever. */
+    out[6] = s_kb_pr_n;
+    out[7] = kbless_patch_skips;
 }
 
 void psx_kernel_bless_resync_after_restore(void) {
