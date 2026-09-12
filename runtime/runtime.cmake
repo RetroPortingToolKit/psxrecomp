@@ -618,6 +618,20 @@ set(PSXRECOMP_BIOS_STEM "${PSXRECOMP_BIOS_STEM_PRIMARY}" CACHE STRING
 set(PSXRECOMP_BIOS_PROFILE "${PSXRECOMP_ROOT}/bios/${PSXRECOMP_BIOS_STEM}.toml" CACHE FILEPATH
     "BIOS profile TOML this build regenerates from (staleness stamp input)")
 
+# The setup host must test the same requested backends as the linker, including
+# a relocated framework checkout. Keep the path relative for portable kits.
+file(RELATIVE_PATH PSXRECOMP_SETUP_FRAMEWORK_REL "${CMAKE_SOURCE_DIR}" "${PSXRECOMP_ROOT}")
+string(REPLACE ";" "|" PSXRECOMP_SETUP_BIOS_STEMS "${PSXRECOMP_BIOS_STEMS}")
+set(PSXRECOMP_EXPECTED_RETAIL_STEM "")
+foreach(_stem IN LISTS PSXRECOMP_BIOS_STEMS)
+    if(NOT _stem MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
+        message(FATAL_ERROR "Invalid BIOS backend stem: ${_stem}")
+    endif()
+    if(NOT _stem STREQUAL "OpenBIOS" AND NOT PSXRECOMP_EXPECTED_RETAIL_STEM)
+        set(PSXRECOMP_EXPECTED_RETAIL_STEM "${_stem}")
+    endif()
+endforeach()
+
 # Link a stem only if its generated sources are actually present.
 #
 # PSXRECOMP_BIOS_STEMS lists every stem this build WOULD like. SCPH1001 is in
@@ -1728,7 +1742,9 @@ function(psxrecomp_add_runtime_target target)
         # The retail stem this build pins. A setup host has no linked
         # backend to ask, so this is how it knows which image to look for
         # and name (psx_bios_known_images.h) instead of assuming SCPH-1001.
-        PSX_EXPECTED_BIOS_STEM="${PSXRECOMP_BIOS_STEM}"
+        PSX_EXPECTED_BIOS_STEM="${PSXRECOMP_EXPECTED_RETAIL_STEM}"
+        PSX_SETUP_BIOS_STEMS="${PSXRECOMP_SETUP_BIOS_STEMS}"
+        PSX_SETUP_FRAMEWORK_REL="${PSXRECOMP_SETUP_FRAMEWORK_REL}"
         # Where the shipped redistributable image lives, relative to the exe.
         # This is what a player gets when they choose no BIOS.
         PSX_BUNDLED_BIOS_PATH="${PSXRECOMP_BUNDLED_BIOS_PATH}"

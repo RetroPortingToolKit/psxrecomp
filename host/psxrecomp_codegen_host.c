@@ -1137,72 +1137,66 @@ static int resolve_build_paths(void) {
     return join_path(g_exe_path, sizeof(g_exe_path), g_build_dir, exe_name);
 }
 
-/* Pair a <stem>_dispatch.c with its <stem>_full.c, the same pairing
- * runtime.cmake requires before it will link a BIOS backend. */
-static int dispatch_has_full(const char* dir, const char* name) {
-    static const char suffix[] = "_dispatch.c";
-    char stem[512], full[600], path[1200];
-    size_t len = strlen(name);
-    size_t slen = sizeof(suffix) - 1;
-    if (len <= slen || strcmp(name + len - slen, suffix) != 0)
-        return 0;
-    if (len - slen >= sizeof(stem))
-        return 0;
-    memcpy(stem, name, len - slen);
-    stem[len - slen] = '\0';
+#ifndef PSX_SETUP_BIOS_STEMS
+#define PSX_SETUP_BIOS_STEMS "OpenBIOS|SCPH1001"
+#endif
+#ifndef PSX_SETUP_FRAMEWORK_REL
+#define PSX_SETUP_FRAMEWORK_REL "psxrecomp"
+#endif
+
+/* Match runtime.cmake: a requested pair with its backend descriptor. A stale
+ * pre-descriptor pair or unrelated game dispatch cannot complete BIOS setup. */
+static int generated_bios_backend_linkable(const char* dir, const char* stem) {
+    char full[600], path[1200], descriptor[600], line[4096];
+    FILE* f;
+    int found = 0;
     if ((size_t)snprintf(full, sizeof(full), "%s_full.c", stem) >= sizeof(full))
         return 0;
+    if (!join_path(path, sizeof(path), dir, full) || !path_is_file(path))
+        return 0;
+    snprintf(full, sizeof(full), "%s_dispatch.c", stem);
     if (!join_path(path, sizeof(path), dir, full))
         return 0;
-    return path_is_file(path);
+    f = fopen(path, "r");
+    if (!f) return 0;
+    snprintf(descriptor, sizeof(descriptor), "%s_psx_bios_backend", stem);
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, descriptor)) { found = 1; break; }
+    }
+    fclose(f);
+    return found;
 }
 
-/* Does psxrecomp/generated/ hold ANY recompiled BIOS backend?
+/* Does the configured framework hold a linkable requested BIOS backend?
  *
  * This used to probe two hardcoded names, OpenBIOS_dispatch.c and
  * SCPH1001_dispatch.c. A port that pins a different image — via
  * PSXRECOMP_BIOS_STEMS / game.toml recompiler.bios_config, as every wave-3
  * kit does with SCPH5552 — emits its backend under that other stem, so the
  * probe was permanently unsatisfied: Generate kept succeeding, the wizard
- * kept reopening, and first-run setup could never complete. Accept any stem
- * that has both halves instead of naming images here. */
+ * kept reopening, and first-run setup could never complete. CMake supplies
+ * the requested stems; accept any linkable member, not an unrelated pair. */
 static int generated_has_bios_backend(const char* dir) {
-#if defined(_WIN32)
-    char pat[1200];
-    WIN32_FIND_DATAA fd;
-    HANDLE h;
-    int found = 0;
-    if (!join_path(pat, sizeof(pat), dir, "*_dispatch.c"))
-        return 0;
-    h = FindFirstFileA(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE)
-        return 0;
-    do {
-        if (dispatch_has_full(dir, fd.cFileName)) {
-            found = 1;
-            break;
+    const char* next = PSX_SETUP_BIOS_STEMS;
+    while (*next) {
+        char stem[512];
+        const char* end = strchr(next, '|');
+        size_t len = end ? (size_t)(end - next) : strlen(next);
+        if (len && len < sizeof(stem)) {
+            memcpy(stem, next, len);
+            stem[len] = 0;
+            if (generated_bios_backend_linkable(dir, stem)) return 1;
         }
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-    return found;
-#else
-    DIR* d = opendir(dir);
-    struct dirent* e;
-    int found = 0;
-    if (!d)
-        return 0;
-    while (!found && (e = readdir(d)) != NULL) {
-        if (dispatch_has_full(dir, e->d_name))
-            found = 1;
+        if (!end) break;
+        next = end + 1;
     }
-    closedir(d);
-    return found;
-#endif
+    return 0;
 }
 
 static int bios_backends_missing(void) {
-    char gen[1100];
-    if (!join_path(gen, sizeof(gen), g_project_root, "psxrecomp/generated"))
+    char framework[1100], gen[1200];
+    if (!join_path(framework, sizeof(framework), g_project_root, PSX_SETUP_FRAMEWORK_REL) ||
+        !join_path(gen, sizeof(gen), framework, "generated"))
         return 1;
     return !generated_has_bios_backend(gen);
 }
