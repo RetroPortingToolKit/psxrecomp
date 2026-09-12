@@ -360,9 +360,12 @@ void gpu_ws_tag_hud_prim(uint32_t prim, int anchor);
  * Tag the complete background composite before submitting its ordering table.
  * The caller proves background identity/coverage; no guest data is modified. */
 void gpu_ws_tag_background_prim(uint32_t prim);
-/* Renderer policy: tagged background scenes need their full wide composite;
- * copying the canonical center over it would introduce a scale discontinuity. */
+/* Fresh packet tags are eligible for background classification. */
 int gpu_ws_background_stretch_active(void);
+/* A tagged background can remain in a wide surface after its packet expires.
+ * Once used, retain full compositing until GPU reset or snapshot restoration.
+ * Packet freshness must never re-enable canonical-center overwrites. */
+int gpu_ws_background_requires_full_composite(void);
 /* Clear synthetic margins to black over an opaque 0x64/65 rectangle's Y band
  * immediately before it executes. Packet-guarded; canonical VRAM is untouched. */
 void gpu_ws_tag_black_reveal_rect(uint32_t prim);

@@ -113,11 +113,13 @@ static void test_background_packet_tags(void) {
     memcpy(gp0_cmd_buf, packet, sizeof(packet));
     gpu_ws_tag_background_prim(addr - 4u);
     assert(!gpu_ws_background_stretch_active());
+    assert(!gpu_ws_background_requires_full_composite());
     assert(!ws_nw_explicit_background());
 
     configure_native_wide_16_9();
     gpu_ws_tag_background_prim(0x80000000u | (addr - 4u));
     assert(gpu_ws_background_stretch_active());
+    assert(gpu_ws_background_requires_full_composite());
     assert(ws_nw_explicit_background());
     /* Explicit proof remains valid after a foreground phase has begun. */
     s_bg_phase_frame = (uint32_t)s_frame_count;
@@ -141,11 +143,19 @@ static void test_background_packet_tags(void) {
     ++s_frame_count;
     assert(!gpu_ws_background_stretch_active());
     assert(!ws_nw_explicit_background());
+    /* A held display retains its stretched pixels after packet expiry. The
+     * compositor must not paste canonical 4:3 scenery over their center. */
+    assert(gpu_ws_background_requires_full_composite());
+    s_frame_count += 120;
+    assert(gpu_ws_background_requires_full_composite());
+    assert(!ws_nw_explicit_background());
     s_frame_count = 99;
     assert(!gpu_ws_background_stretch_active());
+    assert(gpu_ws_background_requires_full_composite());
     s_frame_count = 100;
     ws_mode = 0;
     assert(!gpu_ws_background_stretch_active());
+    assert(!gpu_ws_background_requires_full_composite());
 
     /* Reject semi-transparent polygons, rectangles, misalignment and RAM
      * overflow; a rejected tag must not even enable the full-composite path. */
@@ -153,6 +163,7 @@ static void test_background_packet_tags(void) {
                                  0x1F800000u};
     reset_gpu_state_for_test();
     configure_native_wide_16_9();
+    assert(!gpu_ws_background_requires_full_composite());
     for (unsigned i = 0; i < sizeof(bad_prim) / sizeof(bad_prim[0]); ++i)
         gpu_ws_tag_background_prim(bad_prim[i]);
     assert(!gpu_ws_background_stretch_active());

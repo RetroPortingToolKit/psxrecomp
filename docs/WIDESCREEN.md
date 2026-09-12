@@ -18,12 +18,27 @@ the composite remains continuous. Tags expire after two frames and reject
 reused packets whose words changed. This method performs no guest writes or
 extra guest allocations.
 
-OpenGL preserves the tag across flat and textured batching. While an explicitly
-tagged background is active, it renders the full wide composite instead of
-copying the canonical center over it, which would create a scale seam. Other
-scenes retain the center-copy optimization. Measure performance in the title
-and validate the visible sky at the requested aspect before release. Vulkan's
-native-wide compositor is not implemented; this API does not add one.
+OpenGL preserves the tag across flat and textured batching. Once a valid
+background has been tagged, it renders the full wide composite instead of
+copying the canonical center over it, which would create a scale seam. Packet
+freshness and displayed-pixel lifetime are separate: a slow game or held display
+can retain stretched pixels after the two-frame packet guard expires. The
+full-composite requirement therefore remains latched until GPU reset or snapshot
+restore; packet-address/content freshness is not relaxed. Sessions that have not
+tagged a background retain the center-copy optimization. Measure performance in
+the title and validate the visible sky at the requested aspect before release.
+Vulkan's native-wide compositor is not implemented; this API does not add one.
+
+### Parked validation checkpoint (2026-09-12)
+
+The focused GPU packet/tag regression passes, including expired packets,
+changed packet contents, disabled widescreen and retained composite lifetime.
+The V8 Windows runtime builds and both game CTests pass. In the oil-field
+21:9 playtest the owner reports that terrain looks fine and the background
+flickers less badly, but still flickers. This is partial improvement, not visual
+acceptance. State replay required the HLE scheduler; repeat the comparison with
+matched scheduler settings before attributing the improvement solely to this
+change. Work is parked in a draft; no release is approved.
 
 ## Earlier projection-and-stretch implementation
 

@@ -1902,6 +1902,15 @@ int gpu_ws_background_stretch_active(void) {
            frame - ws_background_tag_frame <= WS_HUD_ANCHOR_FRESH_FRAMES;
 }
 
+int gpu_ws_background_requires_full_composite(void) {
+    /* Freshness governs reuse of a packet address, not the lifetime of the
+     * pixels it produced. A slow game frame or a held display buffer can keep
+     * those pixels on screen indefinitely. Conservatively keep full mirroring
+     * once a composite has been tagged; GPU reset/snapshot restore clears the
+     * latch together with the tags. Never modify the packet freshness guard. */
+    return ws_background_tags_used && ws_native_wide_configured();
+}
+
 static int ws_nw_explicit_background(void) {
     if (!gpu_ws_background_stretch_active() ||
         gp0_cmd_source_addr == 0xFFFFFFFFu ||
