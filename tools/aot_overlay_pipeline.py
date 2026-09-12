@@ -21,6 +21,7 @@ import compile_overlays as compiler
 from aot_overlay_spike import extract_generic as extractor
 from packed_sector_table import extract_members as extract_sector_members
 from sector_extent_archive import extract_members as extract_extent_members
+from aligned_lzss_banks import banks as extract_lzss_banks
 
 FRAMEWORK = Path(__file__).resolve().parents[1]
 
@@ -146,6 +147,44 @@ def positioned_sources(disc, specifications):
     sources = []
     for spec in specifications:
         method = spec['method']
+        if method == 'aligned_lzss_banks':
+            grouped = {}
+            containers = spec['containers']
+            require(len({item['file'].upper() for item in containers}) == len(containers),
+                    'Duplicate compressed container')
+            for item in containers:
+                file = item['file'].upper()
+                inventory, banks = extract_lzss_banks(disc.read(file),
+                    alignment=number(spec.get('alignment', 2048)),
+                    version=number(spec.get('version', 1)),
+                    bank_tag=number(spec.get('bank_tag', 0x4B)),
+                    terminal_tag=number(spec.get('terminal_tag', 0x31)),
+                    data_tags=tuple(number(x) for x in spec.get('data_tags', [0x30])))
+                require(len(inventory) == item['member_count'] and
+                        [bank['bank'] for bank in banks] == item['bank_indices'],
+                        f'Compressed bank inventory changed: {file}')
+                for bank in banks:
+                    placement = item['placements'][str(bank['bank'])]
+                    base = number(placement['load_addr'])
+                    body = bank['body']
+                    require(hashlib.sha256(body).hexdigest() == placement['decoded_sha256'],
+                            f'Decoded bank changed: {file}')
+                    require(0x80000000 <= base < base + len(body) <= 0x80200000,
+                            'Decoded bank outside RAM')
+                    name = f"{file}:BANK_{bank['bank']:04X}"
+                    key = (base, body)
+                    if key in grouped:
+                        grouped[key]['aliases'].append(name)
+                        require(grouped[key]['spec']['entries'] == placement.get('entries', []),
+                                'Duplicate bank has conflicting declared entries')
+                        continue
+                    source = dict(name=name, base=base, body=body,
+                        spec={**spec, **placement, 'entries': placement.get('entries', []),
+                              'allow_missing': True},
+                        source_file=file, source_offset=bank['source_offset'], aliases=[])
+                    grouped[key] = source
+                    sources.append(source)
+            continue
         if method == 'packed_sector_members':
             sources.extend(sector_sources(disc, spec))
             continue
@@ -278,7 +317,7 @@ def prepare(profile, disc, records, output):
             if (lo, hi) == (source['base'], source['base'] + len(source['body'])):
                 singles[source['name']] = record
     for source in sources:
-        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members', 'sector_extent_members') and source['name'] not in singles:
+        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks') and source['name'] not in singles:
             record = make_fixed_record(source, disc)
             singles[source['name']] = record
             records.append(record)
@@ -337,6 +376,9 @@ def prepare(profile, disc, records, output):
                      profile_sha256=hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest(),
                      original_disc_sha256=digest(disc.binary), required_images=sorted(by_name),
                      recipe_count=len(jobs), full_static_coverage_proven=False, jobs=jobs)
+    inventory['source_images'] = [dict(name=s['name'], aliases=s['aliases'],
+        method=s['spec']['method'], load_addr=hex(s['base']), size=len(s['body']),
+        sha256=hashlib.sha256(s['body']).hexdigest()) for s in sources]
     write_json(output / 'runtime-input-inventory.json', inventory)
     return inventory
 

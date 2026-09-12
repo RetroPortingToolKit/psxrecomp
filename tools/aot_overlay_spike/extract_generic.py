@@ -703,6 +703,11 @@ def optional_entry_delay_valid(body, base, entry):
         return False
     for at in range(offset, min(offset + 48, len(body) - 3), 4):
         word = _word(body, at)
+        # BLEZ/BGTZ require rt=zero. Library identification data following a
+        # return can resemble these opcodes with a nonzero reserved field.
+        # Such a prefix cannot establish an optional callable entry.
+        if word >> 26 in (6, 7) and (word >> 16) & 31:
+            return False
         if _is_control_flow_word(word):
             delay = _word(body, at + 4)
             return delay is not None and not _is_control_flow_word(delay)
@@ -1000,6 +1005,8 @@ def main():
                 aliases=[alias for alias in aliases_all
                          if va <= alias[0] < span_hi and
                          va <= alias[1] < alias[2] <= span_hi and
+                         (alias[0] == entry_pc or
+                          optional_entry_delay_valid(body, t_addr, alias[0])) and
                          (alias[0] != t_addr or alias[0] == entry_pc)]
                 records.append(rec(
                     va,seg,sd,static_alias_ranges=aliases))
