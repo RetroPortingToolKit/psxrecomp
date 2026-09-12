@@ -30,6 +30,10 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME interp_mod_entry_guards_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_interp_mod_entry_guards.py")
+        add_test(NAME gpu_textured_dot_nw_shift_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_textured_dot_nw_shift.py")
         add_test(NAME gl_readback_runner_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_readback_runner.py")
     endif()
@@ -204,6 +208,30 @@ if(BUILD_TESTING)
     target_include_directories(ws_prepass_guard_test PRIVATE include)
     add_test(NAME ws_prepass_guard_test COMMAND ws_prepass_guard_test)
 
+    add_executable(ws_hud_anchor_test
+        tests/test_ws_hud_anchor.c)
+    target_include_directories(ws_hud_anchor_test PRIVATE include)
+    add_test(NAME ws_hud_anchor_test COMMAND ws_hud_anchor_test)
+
+    add_executable(gpu_textured_dot_nw_shift_exec_test
+        tests/test_gpu_textured_dot_nw_shift_exec.c)
+    target_include_directories(gpu_textured_dot_nw_shift_exec_test PRIVATE
+        include
+        src)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
+            -Wl,--gc-sections
+            -Wl,--error-limit=0)
+    endif()
+    add_test(NAME gpu_textured_dot_nw_shift_exec_test
+             COMMAND gpu_textured_dot_nw_shift_exec_test)
+
+    add_executable(ws_repeat_rect_test tests/test_ws_repeat_rect.c)
+    target_include_directories(ws_repeat_rect_test PRIVATE include)
+    add_test(NAME ws_repeat_rect_test COMMAND ws_repeat_rect_test)
+
     add_executable(mod_gpu_dma_aperture_test
         tests/test_mod_gpu_dma_aperture.c)
     target_include_directories(mod_gpu_dma_aperture_test PRIVATE include)
@@ -274,6 +302,17 @@ if(BUILD_TESTING)
         src/overlay_path_canon.c)
     target_include_directories(overlay_path_canon_test PRIVATE include)
     add_test(NAME overlay_path_canon_test COMMAND overlay_path_canon_test)
+
+    # The kernel-bless verifier must accept a body whose DECLARED patch range
+    # the guest has overwritten (Psy-Q's install stubs land inside compiled
+    # kernel bodies) and still reject one changed anywhere else. Before this,
+    # the whole-body memcmp failed forever on the first install and the BIOS
+    # exception handler interpreted for the life of the process.
+    add_executable(kernel_patch_ranges_test
+        tests/test_kernel_patch_ranges.c
+        src/kernel_patch_ranges.c)
+    target_include_directories(kernel_patch_ranges_test PRIVATE include)
+    add_test(NAME kernel_patch_ranges_test COMMAND kernel_patch_ranges_test)
 
     # The player-facing "skip the BIOS" flag must resolve to the same boot
     # behaviour on retail SCPH-1001 and on the bundled OpenBIOS, whose
@@ -354,6 +393,15 @@ if(BUILD_TESTING)
         include
         ../recompiler/lib/toml11)
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
+    # The real disc hasher uses a 1 MiB scratch buffer. Match the runtime's
+    # stack allowance instead of overflowing MinGW's 1 MiB executable default.
+    if(WIN32)
+        if(MSVC)
+            target_link_options(mod_runtime_test PRIVATE /STACK:16777216)
+        else()
+            target_link_options(mod_runtime_test PRIVATE -Wl,--stack,16777216)
+        endif()
+    endif()
     add_test(NAME mod_runtime_test COMMAND mod_runtime_test)
 
     if(WIN32)

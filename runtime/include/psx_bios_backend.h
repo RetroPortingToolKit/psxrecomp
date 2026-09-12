@@ -49,6 +49,13 @@ typedef struct PsxBiosBackend {
      * the generated dispatch itself, so it stays static there. */
     const PsxKernelBody *kernel_bodies;
     uint32_t             kernel_body_count;
+
+    /* Kernel-RAM ranges the guest legitimately patches at runtime, from this
+     * image's [[recompiler.install_slots]] (psx_bios_image.h). The bless
+     * verifier skips them and the dirty-RAM interpreter resumes native at
+     * each range's hi. Null/0 for an image that declares no slots. */
+    const PsxKernelPatchRange *kernel_patch_ranges;
+    uint32_t                   kernel_patch_range_count;
 } PsxBiosBackend;
 
 /* The backend in use. Null before psx_bios_select() runs; every forwarder and

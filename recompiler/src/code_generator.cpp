@@ -883,10 +883,28 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                        site.expected, addr, instr);
             std::exit(1);
         }
-        const int32_t vanilla = (int32_t)((instr & 0xFFFFu) << 16);
-        return fmt::format("{} = (uint32_t)psx_ws_player_x_bound((int32_t)0x{:08X});"
-                           "  /* typed native-wide signed X bound */{}",
-                           reg_name(get_rt(instr)), (uint32_t)vanilla, comment);
+        const uint32_t bound_opcode = instr >> 26;
+        if (bound_opcode == 0x0Fu) { // LUI rt,imm: signed Q16 gameplay bound
+            const int32_t vanilla = (int32_t)((instr & 0xFFFFu) << 16);
+            return fmt::format("{} = (uint32_t)psx_ws_player_x_bound((int32_t)0x{:08X});"
+                               "  /* typed native-wide signed X bound */{}",
+                               reg_name(get_rt(instr)), (uint32_t)vanilla, comment);
+        }
+        if ((bound_opcode == 0x09u || bound_opcode == 0x0Du) &&
+            get_rs(instr) == 0u && get_rt(instr) != 0u) {
+            // ADDIU sign-extends, ORI zero-extends its screen-pixel constant.
+            const int32_t vanilla = bound_opcode == 0x09u
+                ? (int16_t)(instr & 0xFFFFu) : (int32_t)(instr & 0xFFFFu);
+            return fmt::format("{} = (uint32_t)psx_ws_screen_x_bound({});"
+                               "  /* typed native-wide signed screen-X bound */{}",
+                               reg_name(get_rt(instr)), vanilla, comment);
+        }
+        if (!config_.overlay_mode) {
+            fmt::print(stderr,
+                       "ERROR: signed_x_bound site 0x{:08X} is not LUI or ADDIU/ORI rt,zero,nonzero-imm (0x{:08X})\n",
+                       addr, instr);
+            std::exit(1);
+        }
     }
 
     // Full-word-guarded, camera-horizontal model-participation cones. The
@@ -3273,6 +3291,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern void psx_ws_mmx6_bg_stage_init(void);    /* ws 2D stage reveal invalidation (gpu.c) */\n";
     ss << "extern int  psx_ws_x_margin(void);  /* widescreen cull-margin term (gpu.c) */\n";
     ss << "extern int32_t psx_ws_player_x_bound(int32_t vanilla);  /* typed gameplay X bound */\n";
+    ss << "extern int32_t psx_ws_screen_x_bound(int32_t vanilla);  /* typed screen-pixel X bound */\n";
     ss << "extern int  psx_ws_cull_sltiu(uint32_t sx, uint32_t imm);  /* ws auto screen-x cull (gpu.c) */\n";
     ss << "extern int  psx_ws_cull_slti(uint32_t sx, uint32_t imm);   /* ws cull signed right edge (gpu.c) */\n";
     ss << "extern int  psx_ws_cull_slti_lower(uint32_t sx, uint32_t imm); /* ws cull signed lower edge (gpu.c) */\n";

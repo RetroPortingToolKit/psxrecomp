@@ -40,10 +40,10 @@ _RAID_RE = re.compile(
     re.escape(RAID_BEGIN) + r".*?" + re.escape(RAID_END) + r"\n?",
     re.S,
 )
-# Both headings: this section was "## RetComM Launcher" until the rename, and
-# every README generated before it still says so. Matching only the new one
-# would leave the old block in place and append a second one beside it.
 _LEGACY_LAUNCHER_RE = re.compile(
+    # Both headings: this section was "## RetComM Launcher" until the
+    # rename, and every README generated before it still says so. Matching
+    # only the new one leaves the old block in place and appends a second.
     r"^## (?:Retro|RetComM) Launcher\n.*?(?=^## |\Z)",
     re.M | re.S,
 )

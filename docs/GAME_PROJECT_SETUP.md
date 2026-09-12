@@ -371,7 +371,7 @@ Or use the scaffolding scripts under **New Project Layout (preview)** above.
 ```bash
 cd YourGameRecomp
 git submodule add -b master https://github.com/mstan/psxrecomp.git psxrecomp
-git submodule add -b master https://github.com/mstan/recomp-ui.git recomp-ui
+git submodule add -b master https://github.com/RetroPortingToolKit/recomp-ui.git recomp-ui
 git submodule update --init --recursive
 ```
 

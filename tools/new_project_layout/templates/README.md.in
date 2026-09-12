@@ -8,7 +8,7 @@
 
 Static recompilation of **@GAME_NAME@** built on
 [psxrecomp](https://github.com/mstan/psxrecomp) and
-[recomp-ui](https://github.com/mstan/recomp-ui).
+[recomp-ui](https://github.com/RetroPortingToolKit/recomp-ui).
 
 @DESCRIPTION@
 

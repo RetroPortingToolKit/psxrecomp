@@ -75,7 +75,7 @@ PSXRECOMP_REF="master"
 RECOMP_UI_REF="master"
 RECOMP_NET_REF="${RECOMP_NET_REF:-}"
 PSXRECOMP_URL="${PSXRECOMP_URL:-https://github.com/mstan/psxrecomp.git}"
-RECOMP_UI_URL="${RECOMP_UI_URL:-https://github.com/mstan/recomp-ui.git}"
+RECOMP_UI_URL="${RECOMP_UI_URL:-https://github.com/RetroPortingToolKit/recomp-ui.git}"
 
 # Track whether bools were set on the CLI (so prompts can skip).
 SET_RECOMP_UI=0

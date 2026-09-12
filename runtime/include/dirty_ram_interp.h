@@ -139,8 +139,13 @@ int      dirty_ram_is_dirty(uint32_t phys);
  * on writes into the body. Runtime-patched bodies (pad/SIO install stubs)
  * never verify and keep interpreting — faithful either way. */
 int      psx_kernel_bless_dispatchable(uint32_t phys);
+/* True when a declared kernel patch range ENDS at this RAM address. The
+ * emitter registered that PC as a continuation key, so the interpreter hands
+ * straight-line flow back to static dispatch there and only the guest's
+ * patched words interpret (memory.c psx_bios_kernel_patch_ranges). */
+int      psx_kernel_patch_range_ends_at(uint32_t phys);
 void     psx_kernel_bless_note_range(uint32_t phys, uint32_t len);
-void     psx_kernel_bless_stats(uint64_t out[6]);
+void     psx_kernel_bless_stats(uint64_t out[8]);
 void     psx_kernel_bless_resync_after_restore(void);
 /* Soft-return rematch / BIOS switch: drop latched SCPH↔OpenBIOS window +
  * CLEAN/MISMATCH so the next kbless_on() re-reads psx_bios_image. */

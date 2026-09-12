@@ -4,6 +4,8 @@
 
 # PSXRecomp
 
+> ℹ️ **Note from mstan:** This repo and I are now part of [RetroPortingToolkit](https://retroportingtoolkit.com/). I remain a primary maintainer of psxrecomp alongside the team. [More info](https://1379.tech/forming-a-collective-retro-porting-toolkit/).
+
 **A general-purpose static recompiler for the PlayStation 1.** It turns a PS1
 disc into a native executable — MIPS R3000A translated to C, compiled to x64,
 linked against a hardware-accurate runtime. Not an emulator: the game becomes a
@@ -83,10 +85,12 @@ Three things sit on that foundation:
   works on both linked BIOS backends — the bundled OpenBIOS and a player's
   retail BIOS dump reach the game the same way — while the kernel-call half is
   enabled per image and says so at startup when it isn't.
-- **Capture-and-compile for overlays.** PS1 games stream code off the disc at
-  runtime (*overlays*) that no ahead-of-time recompiler can see. PSXRecomp
-  captures each overlay the moment it loads and recompiles it to native code,
-  cached and reused forever after (`static → gcc → tcc` backend).
+- **Ahead-of-time overlay sharding.** PS1 games stream code from disc into
+  reused RAM addresses. When the stored bytes and loader behavior are known,
+  PSXRecomp can discover and compile those overlays before gameplay, without a
+  full decompilation. The runtime selects matching native code using byte guards.
+  Capture-and-compile remains available for gaps. See the
+  [AOT sharding guide](docs/AOT_SHARDING.md) for the reusable workflow and limits.
 - **A general-purpose interpreter — as a transient safety net, not a fixture.**
   Anything not yet native (a freshly streamed overlay, RAM-installed code) runs
   in a small MIPS interpreter so the machine is always *correct*. But the
@@ -222,6 +226,7 @@ These are the 3 most important folders to be aware of:
 |------|-----|
 | How a game runs | [`docs/EXECUTION_MODEL.md`](docs/EXECUTION_MODEL.md) |
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| **AOT overlay sharding** (disc discovery, per-game recipes, validation) | [`docs/AOT_SHARDING.md`](docs/AOT_SHARDING.md) |
 | Build the framework | [`docs/BUILDING.md`](docs/BUILDING.md) |
 | **Ship a game repo** (submodules + CI + release checklist) | [`docs/GAME_PROJECT_SETUP.md`](docs/GAME_PROJECT_SETUP.md) |
 | **Netplay** (rollback, SFU/ICE, dual-raster, disc gates) | [`docs/NETPLAY.md`](docs/NETPLAY.md) |
@@ -819,7 +824,14 @@ for build failures); design discussion happens in the **R.A.I.D.** Discord
 
 ## License
 
-PolyForm Noncommercial 1.0.0. See `LICENSE`.
+PolyForm Noncommercial 1.0.0. See `LICENSE`. Copyright © 2026 Matthew
+Stanley; commercial licensing inquiries go to him at <https://1379.tech>.
+
+Third-party components vendored into the runtime keep their own terms, and
+their notices ship with every release under `licenses/` in the package
+(sources in [`runtime/licenses/`](runtime/licenses)). See
+[`THIRD_PARTY_ATTRIBUTION.md`](THIRD_PARTY_ATTRIBUTION.md) for what is
+vendored and why.
 
 Retail PS1 BIOS images and game disc images remain copyrighted by their
 respective owners and are not distributed. This project does distribute the

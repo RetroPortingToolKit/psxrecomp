@@ -8,6 +8,13 @@ if(NOT DEFINED PSXRECOMP_ROOT)
     get_filename_component(PSXRECOMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
 
+# The rebuild CLI configures this as `generate` for its instrumented pass and
+# `use` after it has merged the collected profile.  Keep the switch here,
+# beside the target it must affect: an otherwise unconsumed cache entry makes a
+# costly PGO rebuild/train cycle a silent no-op.
+set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
+set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
+
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
 
@@ -322,6 +329,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_sdl_audio.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_stick.c
     ${PSXRECOMP_ROOT}/runtime/src/memory.c
+    ${PSXRECOMP_ROOT}/runtime/src/kernel_patch_ranges.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu.c
     ${PSXRECOMP_ROOT}/runtime/src/ws_ui_group.c
     ${PSXRECOMP_ROOT}/runtime/src/ws_aspect_cone_math.c
@@ -508,7 +516,7 @@ else()
     if(PSXRECOMP_HAS_RECOMP_NET)
         message(FATAL_ERROR
             "psxrecomp: PSX_NETPLAY needs retcomm-rbengine.\n"
-            "  git submodule update --init lib/retcomm-rbengine\n"
+            "  git submodule update --init --recursive lib/retcomm-rbengine\n"
             "  or -DRECOMP_RBENGINE_ROOT=/path/to/retcomm-rbengine")
     endif()
 endif()
@@ -537,7 +545,13 @@ if(PSX_REWIND)
         message(FATAL_ERROR
             "psxrecomp: PSX_REWIND=ON exposes the Rewind launcher controls "
             "but no retcomm-rbengine snap-ring backend was found.\n"
-            "  git submodule update --init lib/retcomm-rbengine\n"
+            "A source ZIP downloaded from GitHub never contains submodule "
+            "contents and cannot build. Clone instead:\n"
+            "  git clone --recurse-submodules <repo-url>\n"
+            "In an existing clone, run this from the GAME repo root. Note "
+            "--recursive: rbengine is a submodule of psxrecomp, not of the "
+            "game, so a non-recursive init leaves it empty.\n"
+            "  git submodule update --init --recursive\n"
             "  or -DRECOMP_RBENGINE_ROOT=/path/to/retcomm-rbengine\n"
             "  or configure with -DPSX_REWIND=OFF to hide Rewind.")
     endif()
@@ -603,6 +617,20 @@ set(PSXRECOMP_BIOS_STEM "${PSXRECOMP_BIOS_STEM_PRIMARY}" CACHE STRING
     "Primary recompiled BIOS stem (staleness stamp; see PSXRECOMP_BIOS_STEMS)")
 set(PSXRECOMP_BIOS_PROFILE "${PSXRECOMP_ROOT}/bios/${PSXRECOMP_BIOS_STEM}.toml" CACHE FILEPATH
     "BIOS profile TOML this build regenerates from (staleness stamp input)")
+
+# The setup host must test the same requested backends as the linker, including
+# a relocated framework checkout. Keep the path relative for portable kits.
+file(RELATIVE_PATH PSXRECOMP_SETUP_FRAMEWORK_REL "${CMAKE_SOURCE_DIR}" "${PSXRECOMP_ROOT}")
+string(REPLACE ";" "|" PSXRECOMP_SETUP_BIOS_STEMS "${PSXRECOMP_BIOS_STEMS}")
+set(PSXRECOMP_EXPECTED_RETAIL_STEM "")
+foreach(_stem IN LISTS PSXRECOMP_BIOS_STEMS)
+    if(NOT _stem MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
+        message(FATAL_ERROR "Invalid BIOS backend stem: ${_stem}")
+    endif()
+    if(NOT _stem STREQUAL "OpenBIOS" AND NOT PSXRECOMP_EXPECTED_RETAIL_STEM)
+        set(PSXRECOMP_EXPECTED_RETAIL_STEM "${_stem}")
+    endif()
+endforeach()
 
 # Link a stem only if its generated sources are actually present.
 #
@@ -1241,15 +1269,18 @@ function(psxrecomp_add_runtime_target target)
     # where releases are validated. Dev checkouts still resolve the relative
     # default without prompting via the exe-dir upward search, which also tries
     # <ancestor>/psxrecomp-v4/<relative> for game-project layouts.
+    # Follow the stem this build actually pins; assuming SCPH1001 here handed
+    # every non-SCPH1001 kit a default path that could never resolve.
+    set(_psxrt_stem_bios "bios/${PSXRECOMP_BIOS_STEM}.BIN")
     if(NOT PSXRT_DEFAULT_BIOS_PATH)
-        set(PSXRT_DEFAULT_BIOS_PATH "bios/SCPH1001.BIN")
+        set(PSXRT_DEFAULT_BIOS_PATH "${_psxrt_stem_bios}")
     elseif(IS_ABSOLUTE "${PSXRT_DEFAULT_BIOS_PATH}")
         message(WARNING
             "DEFAULT_BIOS_PATH '${PSXRT_DEFAULT_BIOS_PATH}' is absolute; refusing to "
             "bake a build-machine path into the binary (release exes must prompt on "
-            "user machines). Using relative 'bios/SCPH1001.BIN' instead — drop the "
+            "user machines). Using relative '${_psxrt_stem_bios}' instead — drop the "
             "DEFAULT_BIOS_PATH argument from this game's CMakeLists.")
-        set(PSXRT_DEFAULT_BIOS_PATH "bios/SCPH1001.BIN")
+        set(PSXRT_DEFAULT_BIOS_PATH "${_psxrt_stem_bios}")
     endif()
     if(NOT DEFINED PSXRT_DEFAULT_GAME_CONFIG_PATH)
         set(PSXRT_DEFAULT_GAME_CONFIG_PATH "")
@@ -1358,6 +1389,49 @@ function(psxrecomp_add_runtime_target target)
     # CMAKE_C_STANDARD setting. cxx_std_17 likewise — game CMakeLists may omit
     # CMAKE_CXX_STANDARD; mod_packages.cpp must not compile as a pre-17 dialect.
     target_compile_features(${target} PRIVATE c_std_11 cxx_std_17)
+
+    if(NOT PSX_PGO STREQUAL "")
+        if(NOT PSX_PGO STREQUAL "generate" AND NOT PSX_PGO STREQUAL "use")
+            message(FATAL_ERROR
+                "PSX_PGO must be empty, 'generate', or 'use' (got '${PSX_PGO}')")
+        endif()
+        set(_psx_pgo_dir "${CMAKE_BINARY_DIR}/pgo")
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            if(PSX_PGO STREQUAL "generate")
+                target_compile_options(${target} PRIVATE -fprofile-instr-generate)
+                target_link_options(${target} PRIVATE -fprofile-instr-generate)
+            else()
+                set(_psx_pgo_profile "${_psx_pgo_dir}/default.profdata")
+                target_compile_options(${target} PRIVATE
+                    "-fprofile-instr-use=${_psx_pgo_profile}"
+                    -Wno-profile-instr-out-of-date
+                    -Wno-profile-instr-unprofiled)
+                target_link_options(${target} PRIVATE
+                    "-fprofile-instr-use=${_psx_pgo_profile}")
+            endif()
+        elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            # GCC writes .gcda files directly; run_pgo_train already recognizes
+            # those as a completed training run, so no llvm-profdata merge is
+            # required for this branch.
+            if(PSX_PGO STREQUAL "generate")
+                target_compile_options(${target} PRIVATE
+                    "-fprofile-generate=${_psx_pgo_dir}")
+                target_link_options(${target} PRIVATE
+                    "-fprofile-generate=${_psx_pgo_dir}")
+            else()
+                target_compile_options(${target} PRIVATE
+                    "-fprofile-use=${_psx_pgo_dir}"
+                    -Wno-missing-profile)
+                target_link_options(${target} PRIVATE
+                    "-fprofile-use=${_psx_pgo_dir}")
+            endif()
+        else()
+            message(FATAL_ERROR
+                "PSX_PGO requires a Clang or GNU compiler (got ${CMAKE_C_COMPILER_ID})")
+        endif()
+        unset(_psx_pgo_dir)
+        unset(_psx_pgo_profile)
+    endif()
 
     # Game-specific executable name. Every title instantiates this function with
     # the same CMake target name ("psx-runtime"), so without this they ALL produce
@@ -1665,6 +1739,12 @@ function(psxrecomp_add_runtime_target target)
     target_compile_definitions(${target} PRIVATE
         DEFAULT_DEBUG_PORT=${PSXRT_DEBUG_PORT}
         PSX_DEFAULT_BIOS_PATH="${PSXRT_DEFAULT_BIOS_PATH}"
+        # The retail stem this build pins. A setup host has no linked
+        # backend to ask, so this is how it knows which image to look for
+        # and name (psx_bios_known_images.h) instead of assuming SCPH-1001.
+        PSX_EXPECTED_BIOS_STEM="${PSXRECOMP_EXPECTED_RETAIL_STEM}"
+        PSX_SETUP_BIOS_STEMS="${PSXRECOMP_SETUP_BIOS_STEMS}"
+        PSX_SETUP_FRAMEWORK_REL="${PSXRECOMP_SETUP_FRAMEWORK_REL}"
         # Where the shipped redistributable image lives, relative to the exe.
         # This is what a player gets when they choose no BIOS.
         PSX_BUNDLED_BIOS_PATH="${PSXRECOMP_BUNDLED_BIOS_PATH}"
@@ -1859,11 +1939,20 @@ function(psxrecomp_add_runtime_target target)
     if(PSX_RECOMP_UI AND NOT PSXRT_ORACLE)
         if(NOT RECOMP_UI_ROOT OR NOT EXISTS "${RECOMP_UI_ROOT}/recomp_ui.cmake")
             message(FATAL_ERROR
-                "PSX_RECOMP_UI=ON but recomp-ui is missing.\n"
-                "Add at the game repo root:\n"
-                "  git submodule add -b master "
-                "https://github.com/mstan/recomp-ui.git recomp-ui\n"
-                "Or set -DRECOMP_UI_ROOT=/path/to/recomp-ui")
+                "PSX_RECOMP_UI=ON but recomp-ui is missing from the game "
+                "repo root.\n"
+                "A source ZIP downloaded from GitHub never contains "
+                "submodule contents and cannot build. Clone instead:\n"
+                "  git clone --recurse-submodules <repo-url>\n"
+                "In a clone that already declares recomp-ui, fetch the "
+                "pinned commit:\n"
+                "  git submodule update --init --recursive\n"
+                "Only if this repo does not declare recomp-ui yet, add it "
+                "(use the fork this project pins, not necessarily "
+                "upstream):\n"
+                "  git submodule add <recomp-ui-url> recomp-ui\n"
+                "Or point at an existing checkout: "
+                "-DRECOMP_UI_ROOT=/path/to/recomp-ui")
         endif()
         # recomp-ui gates its Mods view behind RECOMP_UI_ENABLE_MODS, which
         # defaults OFF there -- correct for a cross-console launcher, since a
@@ -2233,6 +2322,7 @@ function(psxrecomp_add_game_runtime target)
         VERSION_FILE
         CODEGEN_SETUP_INCLUDE_DIR
         NETPLAY_LOBBY_URL
+        PRELOADED_MODS_DIR
     )
     set(multiValueArgs GEN_FULL_GLOB CODEGEN_SETUP_SOURCES)
     cmake_parse_arguments(PSXG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
@@ -2408,16 +2498,22 @@ function(psxrecomp_add_game_runtime target)
     # psxrecomp_codegen_host.c unconditionally includes recomp_launcher.h, so
     # the title's setup host and the shared host implementation can only be
     # built alongside the recomp-ui submodule (PSX_RECOMP_UI).
-    if(PSX_RECOMP_UI)
+    if(PSX_RECOMP_UI AND PSXG_CODEGEN_SETUP_SOURCES)
         list(APPEND _psxg_extras ${PSXG_CODEGEN_SETUP_SOURCES})
         list(APPEND _psxg_extras
             "${PSXRECOMP_ROOT}/host/psxrecomp_codegen_host.c")
     endif()
 
+    set(_psxg_forwarded_args ${PSXG_UNPARSED_ARGUMENTS})
+    if(NOT "${PSXG_PRELOADED_MODS_DIR}" STREQUAL "")
+        list(APPEND _psxg_forwarded_args
+            PRELOADED_MODS_DIR "${PSXG_PRELOADED_MODS_DIR}")
+    endif()
+
     set(_psxg_rt_args
         GAME_VERSION "${PSX_GAME_VERSION}"
+        ${_psxg_forwarded_args}
         EXTRAS_SOURCES ${_psxg_extras}
-        ${PSXG_UNPARSED_ARGUMENTS}
     )
 
     if(_psxg_has_game_c)

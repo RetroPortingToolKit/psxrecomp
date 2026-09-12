@@ -227,6 +227,16 @@ for doc in "${DOCS[@]}"; do
         cp "$REPO/$doc" "$APPDIR/Contents/Resources/$(basename "$doc")"
     fi
 done
+# Third-party notices for everything statically linked into the runtime:
+# libchdr is BSD-3-Clause and toml11 is MIT, and both require the notice to be
+# reproduced in binary redistributions. Copy the whole directory so a new
+# vendored dependency ships its notice without touching this script.
+if [ -d "$REPO/runtime/licenses" ]; then
+    mkdir -p "$APPDIR/Contents/Resources/licenses" "$STAGE/licenses"
+    cp "$REPO"/runtime/licenses/*  "$APPDIR/Contents/Resources/licenses/"
+    cp "$REPO"/runtime/licenses/*  "$STAGE/licenses/"
+fi
+
 # Surface the player-facing docs beside the .app too, so they are readable
 # without opening the bundle. Mirrors the flat Windows package layout.
 for doc in START_HERE.txt README.md LICENSE RELEASE_NOTES.md; do
@@ -333,6 +343,11 @@ OPENBIOS="$APPDIR/Contents/Resources/bios/openbios.bin"
 [ "$(stat -f%z "$OPENBIOS")" = "524288" ] || die "OpenBIOS image is not 512 KiB"
 [ -f "$APPDIR/Contents/Resources/bios/OpenBIOS.LICENSE" ] || die "OpenBIOS MIT notice missing"
 note "bundled OpenBIOS (512 KiB) + MIT notice"
+
+# 3b. Third-party notices for the statically linked runtime dependencies.
+[ -f "$APPDIR/Contents/Resources/licenses/libchdr-NOTICES.txt" ]     || die "libchdr BSD-3-Clause notice missing"
+[ -f "$STAGE/licenses/libchdr-NOTICES.txt" ]     || die "libchdr BSD-3-Clause notice missing beside the .app"
+note "third-party notices staged in the bundle and beside it"
 
 # 4. Required mod packages. A silently mod-less launcher looks fine but has no
 #    Mods page at all, which is indistinguishable from the feature being cut.

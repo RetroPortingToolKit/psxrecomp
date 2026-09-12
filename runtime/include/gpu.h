@@ -218,7 +218,6 @@ int psx_ws_mmx6_bg_stream_left(int x);
 int psx_ws_mmx6_bg_stream_right(int x);
 struct CPUState;
 void psx_ws_sprite_tag(struct CPUState* cpu);
-
 /* Native-wide (mode 2) on a game frame. ws_nw_extra() is the total width the
  * frame grows by, in display pixels (the present path widens the display read
  * by this; 0 when native-wide is inactive). */
@@ -298,6 +297,8 @@ int32_t psx_ws_player_x_bound(int32_t vanilla);
 void gpu_ws_set_signed_x_bound_sites(const uint32_t *addresses,
                                      const uint32_t *expected, int count);
 int psx_ws_is_signed_x_bound_site(uint32_t pc, uint32_t instr);
+/* Widen a signed screen-pixel edge loaded by an explicitly guarded site. */
+int32_t psx_ws_screen_x_bound(int32_t vanilla);
 
 /* Shared render-funnel screen-X cull widening ([widescreen.cull] auto_screen_x):
  * the gcc emit and the interpreter both route a flagged
@@ -348,6 +349,17 @@ void gpu_ws_set_gameplay_state_gate(uint32_t addr,
  * outer-third screen-space HUD primitives out to the true wide-frame corners
  * (they otherwise sit inset by the reveal). Runtime-only. Off by default. */
 void gpu_ws_set_nw_hud_corners(int on);
+/* Explicit native-wide HUD packet anchor from a trusted title plugin.
+ * `prim` is the address of the PsyQ P_TAG word; the drawn command starts at
+ * prim+4. anchor: -1 = left, 0 = center, +1 = right. */
+void gpu_ws_tag_hud_prim(uint32_t prim, int anchor);
+/* Clear synthetic margins to black over an opaque 0x64/65 rectangle's Y band
+ * immediately before it executes. Packet-guarded; canonical VRAM is untouched. */
+void gpu_ws_tag_black_reveal_rect(uint32_t prim);
+/* Repeat an opaque, already-clipped textured rectangle into native-wide
+ * reveal margins only. The caller verifies the composite's source period.
+ * Original UVs, texel density, and canonical VRAM writes are unchanged. */
+void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period);
 /* Targeted alternative for sprite-heavy 2D games: corner-anchor only primitives
  * whose ordering-table packet lives in the configured half-open RAM range. */
 void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi);

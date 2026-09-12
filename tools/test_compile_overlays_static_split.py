@@ -4,8 +4,11 @@
 """
 import os
 import pickle
+import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from pathlib import Path
@@ -107,6 +110,97 @@ class StaticSplitTests(unittest.TestCase):
                  for p in compile_overlays.static_part_paths(self.out)]
         self.assertEqual(found, ['overlays_static_0000.c',
                                  'overlays_static_0001.c'])
+
+
+class StaticDispatchApiTests(unittest.TestCase):
+    def test_empty_dispatcher_exports_can_dispatch_api(self):
+        dispatch = compile_overlays.generate_overlay_dispatch([])
+        self.assertIn('int psx_overlay_static_can_dispatch(uint32_t addr)', dispatch)
+        self.assertIn('int psx_overlay_dispatch(CPUState *cpu, uint32_t addr)', dispatch)
+        self.assertIn('psx_overlay_static_find_variant(addr)', dispatch)
+
+    def test_can_dispatch_uses_crc_lookup_and_does_not_invoke_cpu(self):
+        cc = shutil.which('gcc') or shutil.which('clang')
+        if cc is None:
+            self.skipTest('no C compiler available')
+
+        variants = [
+            {'addr': 0x80100000, 'symbol': 'ov_func_a', 'crc': 0x11111111,
+             'ranges': ((0x00100000, 8),)},
+            {'addr': 0x80100000, 'symbol': 'ov_func_b', 'crc': 0x22222222,
+             'ranges': ((0x00100000, 8),)},
+        ]
+        dispatch = compile_overlays.generate_overlay_dispatch(variants)
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, 'psx_runtime.h').write_text(
+                '#include <stdint.h>\n'
+                'typedef struct CPUState { uint32_t pc; } CPUState;\n',
+                encoding='utf-8')
+            exe = os.path.join(tmp, 'dispatch_api.exe' if os.name == 'nt'
+                               else 'dispatch_api')
+            src = os.path.join(tmp, 'dispatch_api.c')
+            Path(src).write_text(textwrap.dedent(f'''
+                #include "psx_runtime.h"
+                #include <stdio.h>
+
+                void ov_func_a(CPUState *cpu);
+                void ov_func_b(CPUState *cpu);
+
+                {dispatch}
+
+                static uint32_t resident_crc;
+                static int match_checks;
+                static int calls_a;
+                static int calls_b;
+
+                int psx_overlay_static_code_matches(
+                    const uint32_t *lo_len_pairs, uint32_t count,
+                    uint32_t expected_crc)
+                {{
+                    (void)lo_len_pairs;
+                    (void)count;
+                    match_checks++;
+                    return expected_crc == resident_crc;
+                }}
+
+                void ov_func_a(CPUState *cpu) {{ (void)cpu; calls_a++; }}
+                void ov_func_b(CPUState *cpu) {{ (void)cpu; calls_b++; }}
+
+                int main(void)
+                {{
+                    CPUState cpu = {{0}};
+                    uint64_t checks = 0, hits = 0, vm = 0, am = 0;
+
+                    resident_crc = 0x22222222u;
+                    if (!psx_overlay_static_can_dispatch(0x80100000u)) return 1;
+                    if (calls_a != 0 || calls_b != 0) return 2;
+
+                    psx_overlay_static_get_stats(&checks, &hits, &vm, &am);
+                    if (checks != 2 || hits != 0 || vm != 1 || am != 0) {{
+                        fprintf(stderr, "stats after can: %llu %llu %llu %llu\\n",
+                                (unsigned long long)checks,
+                                (unsigned long long)hits,
+                                (unsigned long long)vm,
+                                (unsigned long long)am);
+                        return 3;
+                    }}
+
+                    if (!psx_overlay_dispatch(&cpu, 0x80100000u)) return 4;
+                    if (calls_a != 0 || calls_b != 1) return 5;
+                    if (match_checks != 3) return 6;
+
+                    resident_crc = 0x33333333u;
+                    if (psx_overlay_static_can_dispatch(0x80100000u)) return 7;
+                    if (calls_a != 0 || calls_b != 1) return 8;
+
+                    if (psx_overlay_static_can_dispatch(0x80100004u)) return 9;
+                    if (calls_a != 0 || calls_b != 1) return 10;
+                    return 0;
+                }}
+            '''), encoding='utf-8')
+            subprocess.run([cc, src, '-I', tmp, '-std=c99', '-Wall', '-Werror',
+                            '-o', exe], check=True)
+            subprocess.run([exe], check=True)
 
 
 class StaticWorkerContractTests(unittest.TestCase):

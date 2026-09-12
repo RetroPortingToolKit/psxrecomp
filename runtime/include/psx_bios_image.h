@@ -28,12 +28,34 @@ typedef struct {
     uint32_t body_hi;  /* exclusive */
 } PsxKernelBody;
 
+/* Kernel-RAM ranges the guest is EXPECTED to overwrite at runtime: the Psy-Q
+ * libapi patchers (_patch_gte / _patch_card / _patch_card2 / _patch_pad) and
+ * the BIOS's own install stubs rewrite words inside compiled kernel bodies at
+ * boot. Declared per image by [[recompiler.install_slots]] and emitted next to
+ * the body table.
+ *
+ * Two consumers, one table:
+ *   - memory.c's bless verifier compares a body in segments that SKIP these
+ *     ranges, so a body with a live patch inside it can still run native.
+ *   - dirty_ram_interp.c surfaces back to static dispatch when straight-line
+ *     interpretation reaches a range's `hi`, which the emitter registered as a
+ *     continuation key. Only the patched words themselves interpret.
+ *
+ * This is not HLE: the guest's patched instructions still execute as written,
+ * on the dirty-RAM interpreter. Only the code AROUND them changes backend. */
+typedef struct {
+    uint32_t lo;       /* RAM extent of the patched words [lo, hi) */
+    uint32_t hi;       /* exclusive; also the native resume key */
+} PsxKernelPatchRange;
+
 /* Published from the ACTIVE backend at selection (psx_bios_backend.c),
  * hence a pointer rather than an array: a build links more than one
  * recompiled BIOS and each carries its own table. Indexing is unchanged
  * for consumers. */
 extern const PsxKernelBody *psx_bios_kernel_bodies;
 extern uint32_t             psx_bios_kernel_body_count;
+extern const PsxKernelPatchRange *psx_bios_kernel_patch_ranges;
+extern uint32_t                   psx_bios_kernel_patch_range_count;
 
 /* Native call-stub extents (A0/B0/C0). Layout shared with the generated
  * dispatch, which keeps its own static table. */

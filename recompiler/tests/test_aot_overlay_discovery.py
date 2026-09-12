@@ -223,6 +223,81 @@ def check_bounded_jump_table_discovery():
         LOAD + 0x60, 2, (LOAD, LOAD + 0x180)) == set()
 
 
+def check_scheduled_jump_table_discovery():
+    # Independent synthetic function: a checked input in v1, the table base
+    # in v0, and three cases returning distinct values. No captured game bytes.
+    data = bytearray(0x1000)
+    for offset, word in (
+        (0x508, 0x2C620003),  # sltiu v0,v1,3
+        (0x50C, 0x1040001C),  # beq v0,zero,+0x580
+        (0x510, 0x3C028001),  # lui v0,0x8001 (guard delay slot)
+        (0x514, 0x24420A00),  # addiu v0,v0,0xa00
+        (0x518, 0x00031880),  # sll v1,v1,2
+        (0x51C, 0x00621821),  # addu v1,v1,v0
+        (0x520, 0x8C620000),  # lw v0,0(v1)
+        (0x528, 0x00400008),  # jr v0
+        (0x580, 0x03E00008),
+    ):
+        put(data, offset, word)
+    cases = {LOAD + off for off in (0x540, 0x550, 0x560)}
+    for i, target in enumerate(sorted(cases)):
+        put(data, 0xA00 + i * 4, target)
+        put(data, target - LOAD, 0x24020001 + i)
+        put(data, target - LOAD + 4, 0x03E00008)
+
+    def resolve(image, producer=None):
+        return MOD._find_jump_table_targets(
+            image, LOAD, len(image), LOAD + 0x500, LOAD + 0x600,
+            LOAD + 0x528, 2, producer)
+
+    assert resolve(data) == cases
+    no_load_delay = bytearray(data)
+    put(no_load_delay, 0x524, 0x00400008)
+    assert MOD._find_jump_table_targets(
+        no_load_delay, LOAD, len(data), LOAD + 0x500, LOAD + 0x600,
+        LOAD + 0x524, 2) == set()
+    walk = MOD._walk_overlay_function(
+        data, LOAD, len(data), LOAD + 0x500, LOAD + 0x600)
+    assert walk['jump_table_targets'] == cases
+    assert cases <= walk['visited']
+    renamed = bytearray(data)
+    put(renamed, 0x510, 0x3C088001)  # lui t0
+    put(renamed, 0x514, 0x25020A00)  # addiu v0,t0
+    assert resolve(renamed) == cases
+    signed_low = bytearray(0x9000)
+    signed_low[:len(data)] = data
+    signed_low[0x8A00:0x8A0C] = data[0xA00:0xA0C]
+    put(signed_low, 0x510, 0x3C028002)
+    put(signed_low, 0x514, 0x24428A00)
+    assert resolve(signed_low) == cases
+    assert resolve(data, (LOAD, LOAD + 0x900)) == set()
+
+    def jump(offset):
+        return 0x08000000 | (((LOAD + offset) >> 2) & 0x03FFFFFF)
+
+    for name, mutations in (
+        ('bound overwrites index', ((0x508, 0x2C630003), (0x50C, 0x1060001C))),
+        ('LUI overwrites index', ((0x510, 0x3C038001), (0x514, 0x24620A00))),
+        ('ADDIU overwrites index', ((0x514, 0x24430A00),)),
+        ('wrong constant source', ((0x514, 0x25020A00),)),
+        ('reserved LUI fields', ((0x510, 0x3C228001),)),
+        ('call delay slot', ((0x50C, jal(LOAD + 0x580)),)),
+        ('branch likely', ((0x50C, 0x5040001C),)),
+        ('guard loop clobbers condition', ((0x50C, 0x1040FFFF),)),
+        ('reject into constant', ((0x50C, 0x10400000),)),
+        ('skip bound from before', ((0x500, jump(0x510)),)),
+        ('skip bound from after', ((0x590, jump(0x510)),)),
+        ('case skips bound', ((0x540, jump(0x510)), (0x544, 0))),
+        ('bound in delay slot', ((0x504, jump(0x580)),)),
+        ('table case skips bound', ((0xA00, LOAD + 0x510),)),
+        ('out of host target', ((0xA04, LOAD + 0x700),)),
+    ):
+        broken = bytearray(data)
+        for offset, word in mutations:
+            put(broken, offset, word)
+        assert resolve(broken) == set(), name
+
+
 def check_composite_call_boundaries():
     data = bytearray(0x100)
     cross_target = LOAD + 0x50
@@ -1221,7 +1296,7 @@ def check_atomic_dll_publication():
             pair_id = MOD.overlay_pair_id("new source", func_ids)
             assert pair_id != MOD.overlay_pair_id("changed source", func_ids)
             bound_source = MOD.add_overlay_pair_export("new source", pair_id)
-            assert f"overlay_pair_id(void) {{ return UINT64_C(0x{pair_id:016X}); }}" in bound_source
+            assert f"overlay_pair_id(void) {{ return UINT64_C(0x{pair_id:016X}); }}" in " ".join(bound_source.split())
             assert MOD.compile_dll("ignored.c", final, [],
                                    func_ids=func_ids, pair_id=pair_id)
             with open(final, "rb") as built:
@@ -1452,6 +1527,7 @@ m.publish_shard_pair(sys.argv[2], sys.argv[3], sys.argv[4])
                 pair_dll = str(pathlib.Path(tmp) / "pair.dll")
                 pair_source.write_text(
                     '#include <stdint.h>\n' +
+                    '#define PSX_OVERLAY_EXPORT __declspec(dllexport)\n' +
                     '__declspec(dllexport) int overlay_abi(void) { return 14; }\n' +
                     '__declspec(dllexport) void overlay_init(const void *p) {(void)p;}\n' +
                     '__declspec(dllexport) void overlay_flush_cycles(void) {}\n' +
@@ -2924,7 +3000,7 @@ def check_interior_fragment_contract():
                 f"P {pair_id:016X}\nF {entry:08X} {code_crc:08X} junk\n"
                 f"R {entry:08X} 8\n")
             assert MOD.load_shard_entry_set(str(dll)) == set()
-            outside = 0x80200000
+            outside = 0x80000000 + MOD.PSX_RAM_SIZE
             ranges.write_text(
                 f"P {pair_id:016X}\nF {outside:08X} {code_crc:08X}\n"
                 f"R {outside:08X} 4\n")
@@ -2978,7 +3054,7 @@ def check_interior_fragment_contract():
             entry, data, LOAD, len(data), LOAD & 0x1FFFFFFF, "unused",
             Args(), {}, {},
             ((LOAD, LOAD + 0x40), (LOAD + 0x80, LOAD + 0x100)),
-            (LOAD + 0x200, LOAD + 0x180, LOAD + 0x200))
+            (LOAD + 0x200, LOAD + 0x180, LOAD + 0x200), guard_bytes=0)
         assert ids is None and status.startswith("recompiler-error")
     finally:
         MOD.subprocess.run = old_run
@@ -2996,7 +3072,7 @@ def check_interior_fragment_contract():
         ids, status = MOD.compile_fragment_batch(
             {entry + 0x40, entry}, data, LOAD, len(data),
             LOAD & 0x1FFFFFFF, "unused", Args(), {}, {},
-            ((LOAD, LOAD + 0x100),), ())
+            ((LOAD, LOAD + 0x100),), (), guard_bytes=0)
         assert ids is None and status.startswith("recompiler-error")
     finally:
         MOD.subprocess.run = old_run
@@ -3081,7 +3157,7 @@ def check_real_batched_fragment_publication(recompiler):
     with tempfile.TemporaryDirectory() as td:
         ids, status = MOD.compile_fragment_batch(
             {first}, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, initial_recipe, ())
+            td, args, env, {}, initial_recipe, (), guard_bytes=0)
         assert ids and status == 'built', (ids, status)
         initial_dlls = list(pathlib.Path(td).glob(f'*{extension}'))
         assert len(initial_dlls) == 1
@@ -3099,7 +3175,7 @@ def check_real_batched_fragment_publication(recompiler):
             requested_batches.append(tuple(roots))
             return MOD.compile_fragment_batch(
                 roots, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-                td, args, env, {}, recipe, ())
+                td, args, env, {}, recipe, (), guard_bytes=0)
 
         def warm(_roots, func_ids, _status):
             current_entries.update(
@@ -3180,7 +3256,7 @@ def check_real_hosted_fragment_publication(recompiler):
     with tempfile.TemporaryDirectory() as td:
         owner_ids, status = MOD.compile_fragment_batch(
             {host, host2}, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, recipe, ())
+            td, args, env, {}, recipe, (), guard_bytes=0)
         assert owner_ids and status == 'built'
         owners = {identity[0]: identity for identity in owner_ids
                   if identity[0] in (host, host2)}
@@ -3201,7 +3277,7 @@ def check_real_hosted_fragment_publication(recompiler):
         hosted_ids, status = MOD.compile_fragment_batch(
             {target, target2}, bytes(data), LOAD, len(data),
             LOAD & 0x1FFFFFFF, td, args, env, {}, recipe, (),
-            hosted_owners={target: spec, target2: spec2})
+            hosted_owners={target: spec, target2: spec2}, guard_bytes=0)
         assert hosted_ids and status == 'built', status
         by_entry = {
             entry: (crc, tuple(ranges))
@@ -3249,14 +3325,14 @@ def check_real_hosted_fragment_publication(recompiler):
         cached_ids, cached_status = MOD.compile_fragment_batch(
             {target, target2}, bytes(data), LOAD, len(data),
             LOAD & 0x1FFFFFFF, td, args, env, {}, recipe, (),
-            hosted_owners={target: spec, target2: spec2})
+            hosted_owners={target: spec, target2: spec2}, guard_bytes=0)
         assert cached_status == 'cached' and cached_ids == hosted_ids
         assert len(list(pathlib.Path(td).glob(
             f'*{MOD.overlay_ext()}'))) == dll_count
         orphan_before = set(pathlib.Path(td).glob(f'*{MOD.overlay_ext()}'))
         orphan_ids, orphan_status = MOD.compile_interior_fragment(
             target, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, recipe, ())
+            td, args, env, {}, recipe, (), guard_bytes=0)
         assert orphan_ids and orphan_status == 'built'
         orphan_dlls = set(pathlib.Path(td).glob(
             f'*{MOD.overlay_ext()}')) - orphan_before
@@ -3272,11 +3348,161 @@ def check_real_hosted_fragment_publication(recompiler):
             owners[host][0], owners[host][1] ^ 1, owners[host][2]))
         rejected, reason = MOD.compile_fragment_batch(
             {target}, bytes(data), LOAD, len(data), LOAD & 0x1FFFFFFF,
-            td, args, env, {}, recipe, (), hosted_owners={target: bad_spec})
+            td, args, env, {}, recipe, (), hosted_owners={target: bad_spec}, guard_bytes=0)
         assert rejected is None
         assert reason.startswith('hosted-entry-audit:'), reason
         assert len(list(pathlib.Path(td).glob(
             f'*{MOD.overlay_ext()}'))) == dll_count
+
+
+def make_observed_orphan_capture():
+    """A live entry without a callable boundary or a discovered CFG host."""
+    data = bytearray(b'\xff' * 0x100)
+    entry = LOAD + 0x44
+    put(data, 0x40, 0x24420001)  # preceding code, not a function boundary
+    put(data, 0x44, 0x24420001)  # addiu v0,v0,1: consumes live registers
+    put(data, 0x48, 0x03E00008)  # jr ra
+    put(data, 0x4C, 0x24630002)  # addiu v1,v1,2: real delay-slot side effect
+    cap = {
+        'schema': 'psxrecomp overlay capture v2',
+        'load_addr': f'0x{LOAD:08X}', 'size': len(data), 'guard_bytes': 0,
+        'bytes_b64': MOD.base64.b64encode(data).decode('ascii'),
+        'dispatch_entry_pcs': [hex(entry)], 'seeds': [hex(entry)],
+        'function_entry_pcs': [],
+        'executed_pcs': [hex(entry + offset) for offset in (0, 4, 8)],
+    }
+    return bytes(data), entry, cap
+
+
+def check_observed_dispatch_fragment_recovery():
+    data, entry, cap = make_observed_orphan_capture()
+
+    def classify(image=data, record=cap):
+        seeds, audit = MOD.classify_overlay_seeds(
+            record, image, LOAD, len(image), 0, {})
+        job = MOD.make_interior_fragment_job(
+            LOAD & 0x1FFFFFFF, LOAD, len(image), image, audit, set(), record)
+        return seeds, audit, job
+
+    seeds, audit, job = classify()
+    # Shared-root rejection is intentional: rooting every observed PC would
+    # truncate unrelated hosts. It must NOT erase the independent live demand.
+    assert seeds == []
+    assert entry not in audit['function_entry_pcs']
+    assert audit['excluded_reasons'][entry] == 'OBSERVED_PC_ONLY'
+    assert job is not None, 'observed unhosted dispatch lost before fragment pass'
+    assert job['candidates'] == {entry}  # not every interpreted instruction
+    assert job['forced'] == job['static_demands'] == set()
+    assert MOD.select_fragment_orphans(
+        job['candidates'], job['executed'], set(), set(), set(), set(),
+        [(LOAD & 0x1FFFFFFF, (LOAD & 0x1FFFFFFF) + len(data))]) == [entry]
+    # Exact current-variant F identity is required, not range containment.
+    assert MOD.select_fragment_orphans(
+        job['candidates'], job['executed'], set(), set(), set(),
+        {entry & 0x1FFFFFFF}, []) == []
+    assert MOD.interior_fail_memo_action(entry, job, False) == 'fail'
+
+    # Static/legacy seeds and a dispatch not witnessed by the interpreter do
+    # not gain new speculative compilation authority through this recovery.
+    for record in (
+            dict(cap, executed_pcs=[]),
+            {k: v for k, v in cap.items() if k != 'executed_pcs'},
+            dict(cap, dispatch_entry_pcs=[]),
+            dict(cap, executed_pcs=[], static_dispatch_entry_pcs=[hex(entry)])):
+        assert classify(record=record)[2] is None
+
+    for bad in (LOAD - 4, LOAD + len(data), entry + 1):
+        record = dict(cap, dispatch_entry_pcs=[hex(bad)], executed_pcs=[hex(bad)])
+        assert classify(record=record)[2] is None
+    invalid = bytearray(data)
+    put(invalid, entry - LOAD, 0xFFFFFFFF)
+    assert classify(image=bytes(invalid))[2] is None
+    padding = dict(cap, producer_ranges=[{'start': hex(LOAD),
+                                         'end': hex(LOAD + 0x40)}])
+    assert classify(record=padding)[2] is None
+    # The readable guard instruction is never a new fragment entry.
+    guard_data = data + struct.pack('<I', 0x24420001)
+    guard_cap = dict(cap, size=len(guard_data), guard_bytes=4,
+                     dispatch_entry_pcs=[hex(LOAD + len(data))],
+                     executed_pcs=[hex(LOAD + len(data))], seeds=[])
+    assert classify(image=guard_data, record=guard_cap)[2] is None
+
+
+def check_observed_dispatch_cli_recovery(recompiler):
+    """An empty shared seed set still recovers once, with byte-variant guards."""
+    gcc = (r'C:\msys64\mingw64\bin\gcc.exe'
+           if os.path.isfile(r'C:\msys64\mingw64\bin\gcc.exe')
+           else shutil.which('gcc'))
+    if not gcc:
+        return
+    data, entry, cap = make_observed_orphan_capture()
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        capture_path = root / 'captures.json'
+        cache = root / 'cache'
+        command = [
+            sys.executable, str(ROOT / 'tools/compile_overlays.py'),
+            '--captures', str(capture_path),
+            '--game-toml', str(ROOT / 'tools/cycle_testrom/game.toml'),
+            '--recompiler', recompiler,
+            '--runtime-include', str(ROOT / 'runtime/include'),
+            '--gcc', gcc, '--out-dir', str(cache), '--jobs', '1', '--cps',
+        ]
+        env = dict(os.environ)
+        env['PATH'] = os.path.dirname(gcc) + os.pathsep + env.get('PATH', '')
+
+        def run(record):
+            capture_path.write_text(MOD.json.dumps([record, record]),
+                                    encoding='utf-8')
+            result = subprocess.run(command, env=env, cwd=ROOT,
+                                    capture_output=True, text=True, timeout=120)
+            assert result.returncode == 0, result.stdout + result.stderr
+            return result.stdout
+
+        def inventory():
+            return {str(path.relative_to(cache)): MOD.hashlib.sha256(
+                    path.read_bytes()).hexdigest()
+                    for path in cache.rglob('*')
+                    if path.suffix in (MOD.overlay_ext(), '.ranges')}
+
+        first = run(cap)
+        manifests = list(cache.rglob('*.ranges'))
+        assert len(manifests) == 1, first
+        text = manifests[0].read_text(encoding='ascii')
+        assert MOD.manifest_provenance(text) == MOD.ORPHAN_MANIFEST_PROVENANCE
+        _pair, ids = MOD.parse_runtime_shard_manifest(text, require_pair=True)
+        covered, _ranges = MOD.current_variant_func_id_coverage(
+            ids, data, LOAD, len(data))
+        assert entry & 0x1FFFFFFF in covered, first
+        assert 'isolated fragment demand retained' in first
+        assert 'no shared walk-root seeds; checking fragments separately' in first
+        before = inventory()
+        second = run(cap)
+        assert inventory() == before
+        assert 'PSX_SHARD_RESULT ok=0 failed=0 ' in second, second
+
+        # Historical dispatch metadata does not permit reusing a stale F at
+        # the same PC. New bytes require their own audited identity/shard.
+        variant = bytearray(data)
+        put(variant, entry - LOAD, 0x24420003)
+        covered, _ranges = MOD.current_variant_func_id_coverage(
+            ids, bytes(variant), LOAD, len(variant))
+        assert entry & 0x1FFFFFFF not in covered
+        variant_cap = dict(cap, bytes_b64=MOD.base64.b64encode(variant).decode('ascii'))
+        third = run(variant_cap)
+        assert len(list(cache.rglob('*.ranges'))) == 2, third
+        current_ids = []
+        for manifest in cache.rglob('*.ranges'):
+            _pair, funcs = MOD.parse_runtime_shard_manifest(
+                manifest.read_text(encoding='ascii'), require_pair=True)
+            current_ids.extend(funcs)
+        covered, _ranges = MOD.current_variant_func_id_coverage(
+            current_ids, bytes(variant), LOAD, len(variant))
+        assert entry & 0x1FFFFFFF in covered, third
+        before = inventory()
+        assert 'PSX_SHARD_RESULT ok=0 failed=0 ' in run(variant_cap)
+        assert 'PSX_SHARD_RESULT ok=0 failed=0 ' in run(cap)
+        assert inventory() == before
 
 
 def check_full_hosted_fixed_point(recompiler):
@@ -3419,9 +3645,8 @@ def check_full_candidate_cli_fastpath(recompiler):
         # because the test could not get past the BIOS-profile probe to reach
         # the assertion (issue #72).
         leaf = (cache_root / 'CYCT-00101' / 'gcc' / MOD.cache_arch_abi() /
-                f'cg{MOD.codegen_ver(str(runtime_include))}_'
-                f'{MOD.codegen_hash(str(runtime_include)):08x}_'
-                f'gc{MOD.overlay_config_hash(recompiler, str(game_toml)):08x}')
+                MOD.cache_tag(str(runtime_include), recompiler,
+                              str(game_toml), 0))
         leaf.mkdir(parents=True)
         pair_id = 0x123456789ABCDEF0
         captured_bytes = b'\x08\x00\xE0\x03\x00\x00\x00\x00'
@@ -3649,6 +3874,7 @@ def main():
 
     check_composite_call_boundaries()
     check_bounded_jump_table_discovery()
+    check_scheduled_jump_table_discovery()
     check_static_discovery_provenance()
     check_static_dispatch_provenance()
     check_owned_direct_call_is_interior()
@@ -3671,9 +3897,11 @@ def main():
     check_atomic_dll_publication()
     check_candidate_capacity_publication()
     check_interior_fragment_contract()
+    check_observed_dispatch_fragment_recovery()
     check_tcc_runtime_define_parity()
     check_real_batched_fragment_publication(args.recompiler)
     check_real_hosted_fragment_publication(args.recompiler)
+    check_observed_dispatch_cli_recovery(args.recompiler)
     check_full_hosted_fixed_point(args.recompiler)
     check_full_candidate_cli_fastpath(args.recompiler)
     check_resident_marker_fixed_point()

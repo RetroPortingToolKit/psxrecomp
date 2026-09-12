@@ -169,6 +169,11 @@ static uint32_t    s_ring_count = 0;
  * The heartbeat JSON reports both written and suppressed event counts. */
 static FreezeDumpPolicy s_dump_policy = {0};
 static uint32_t s_last_wedge_kind = 0;  /* informational, last detected kind */
+static volatile int s_wedge_classification_paused = 0;
+
+void freeze_heartbeat_set_paused(int paused) {
+    s_wedge_classification_paused = paused ? 1 : 0;
+}
 
 #ifdef _WIN32
 /* Capture the main thread's call stack at the moment of a hard freeze.
@@ -774,7 +779,10 @@ static void heartbeat_write(void) {
      * a sustained healthy interval before it accepts a new event, and bounds
      * automatic full dumps for the process. Deliberate fatal dumps bypass it. */
     uint32_t wedge_kind = 0;  /* 0=healthy 1=hard 2=reentry storm 3=slow frames */
-    if (s_ring_count >= WEDGE_WINDOW_TICKS) {
+    if (s_wedge_classification_paused) {
+        s_ring_count = 0;
+        s_last_wedge_kind = 0;
+    } else if (s_ring_count >= WEDGE_WINDOW_TICKS) {
         /* The just-pushed tick is at (s_ring_head - 1). The oldest in
          * our window is WEDGE_WINDOW_TICKS - 1 ticks before it. */
         uint32_t newest_idx = (s_ring_head + RING_CAP - 1u) % RING_CAP;
@@ -810,7 +818,8 @@ static void heartbeat_write(void) {
             wedge_kind = 5;  /* spin freeze: game wedged while frames advance */
     }
 
-    if (freeze_dump_policy_observe(&s_dump_policy, wedge_kind,
+    if (!s_wedge_classification_paused &&
+        freeze_dump_policy_observe(&s_dump_policy, wedge_kind,
                                    g_psx_fatal_reason != NULL)) {
         s_last_wedge_kind = wedge_kind;
         int written = freeze_dump_write(

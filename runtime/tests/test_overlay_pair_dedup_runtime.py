@@ -7,10 +7,11 @@ import argparse
 import os
 import pathlib
 import platform
-import re
 import shutil
 import subprocess
+import sys
 import tempfile
+from unittest.mock import patch
 import zlib
 
 
@@ -23,21 +24,12 @@ RESIDENT = "psxrecomp bios resident shard v1\n"
 
 
 def codegen_leaf() -> str:
-    api = (RUNTIME / "include" / "overlay_api.h")
-    hash_header = (RUNTIME / "include" / "overlay_codegen_hash.h")
-    version = "0"
-    code_hash = "00000000"
-    if api.is_file():
-        match = re.search(r"PSX_OVERLAY_CODEGEN_VER\s+(\d+)",
-                          api.read_text(encoding="utf-8"))
-        if match:
-            version = match.group(1)
-    if hash_header.is_file():
-        match = re.search(r"PSX_OVERLAY_CODEGEN_HASH\s+0x([0-9A-Fa-f]{8})",
-                          hash_header.read_text(encoding="utf-8"))
-        if match:
-            code_hash = match.group(1).lower()
-    return f"cg{version}_{code_hash}"
+    sys.path.insert(0, str(ROOT / "tools"))
+    import compile_overlays
+    # The synthetic loader uses a zero config hash; serialize its namespace
+    # with the production owner so new namespace fields cannot go stale here.
+    with patch.object(compile_overlays, "overlay_config_hash", return_value=0):
+        return compile_overlays.cache_tag(str(RUNTIME / "include"), "", "")
 
 
 def arch_abi() -> str:

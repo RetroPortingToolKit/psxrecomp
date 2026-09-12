@@ -81,9 +81,35 @@ runtime_base = "0x80030000"
 dispatch_key = "rom"
 kernel_bless = false
 
-# No [[recompiler.install_slots]]: none identified yet. Runtime-installed
-# stubs fall to the dirty-RAM interpreter, which is correct (just slower)
-# until a slot is identified and added.
+# Kernel-RAM RANGES the guest's Psy-Q libapi patchers overwrite at runtime
+# (CLAUDE.md rule 18; docs/dynamic_handler_install.md). See SCPH1001.toml for
+# what `len` and `resume` mean. OpenBIOS declared none until 2026-09-11; the
+# consequence was that its exception handler failed the kernel-bless memcmp
+# from the first card access onward and interpreted for the life of the
+# process — 1.22 billion instructions in one measured title.
+#
+# Measured on a live boot of Breath of Fire III (SLPS-00990, Psy-Q SDK 3.70)
+# against the ROM source, 30 s in. The shapes are the same three the retail
+# image shows, because the patchers are the game's, not the BIOS's.
+
+[[recompiler.install_slots]]
+ram_addr = "0x000027B4"         # exceptionHandler: register-save prologue
+len      = "0x30"               # shifted two words + an inserted mfc0 v0,Cause
+resume    = "fallthrough"
+
+[[recompiler.install_slots]]
+ram_addr = "0x0000281C"         # stub into exceptionHandlerCardFastTrack
+len      = "0x10"               # lui/addiu/jalr/nop over ROM zeros; installed
+resume    = "jalr"              # on the first card access, not at boot
+
+[[recompiler.install_slots]]
+ram_addr = "0x0000357C"         # exceptionHandlerCardFastTrack: the kernel's
+len      = "0x10"               # card handler replaced by jr into boot EXE
+resume    = "none"              # 0x8017EAA0 (_patch_card payload)
+
+# NOT declared: the three pad-table words after readPadHighLevel (0x45FC,
+# 0x460C, 0x461C). They are data, not instructions, so they unbless nothing
+# and a range there would only widen what the verifier stops checking.
 
 # HLE anchors: only the boot-skip anchor is exported. deliver_event_ret is
 # deliberately ABSENT (0) until the B0 event services are validated against

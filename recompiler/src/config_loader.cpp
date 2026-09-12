@@ -1060,14 +1060,31 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
         }
     }
 
-    // [[recompiler.install_slots]] — kernel-RAM PCs the BIOS overwrites with
-    // dispatch stubs at runtime.
-    std::vector<uint32_t> install_slots;
+    // [[recompiler.install_slots]] — kernel-RAM ranges the BIOS or the game's
+    // Psy-Q libapi patchers overwrite at runtime. `ram_addr` alone keeps the
+    // original meaning (a 4-word jalr stub); `len` and `resume` describe the
+    // other patch shapes (BiosInstallSlot, bios_address_model.h).
+    std::vector<BiosInstallSlot> install_slots;
     if (recomp.contains("install_slots")) {
         for (const auto& v : recomp.at("install_slots").as_array()) {
-            install_slots.push_back(parse_hex(
+            BiosInstallSlot slot;
+            slot.ram_addr = parse_hex(
                 toml::find<std::string>(v, "ram_addr"),
-                "install_slots.ram_addr"));
+                "install_slots.ram_addr");
+            if (v.contains("len"))
+                slot.len = parse_hex(toml::find<std::string>(v, "len"),
+                                     "install_slots.len");
+            if (v.contains("resume")) {
+                const std::string r = toml::find<std::string>(v, "resume");
+                if      (r == "jalr")        slot.resume = BiosInstallSlot::Resume::Jalr;
+                else if (r == "fallthrough") slot.resume = BiosInstallSlot::Resume::Fallthrough;
+                else if (r == "none")        slot.resume = BiosInstallSlot::Resume::None;
+                else throw std::runtime_error(fmt::format(
+                    "{}: install_slots 0x{:08X}: resume must be \"jalr\", "
+                    "\"fallthrough\" or \"none\", got '{}'",
+                    config_path.string(), slot.ram_addr, r));
+            }
+            install_slots.push_back(slot);
         }
     }
 
@@ -1648,10 +1665,28 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                                          "widescreen.signed_x_bound.address");
                 site.expected = parse_hex(toml::find<std::string>(item, "expected"),
                                           "widescreen.signed_x_bound.expected");
-                if ((site.expected >> 26) != 0x0Fu)
+                const uint32_t opcode = site.expected >> 26;
+                if (opcode != 0x0Fu && opcode != 0x09u && opcode != 0x0Du)
                     throw std::runtime_error(fmt::format(
-                        "{}: [[widescreen.signed_x_bound]] expected must be LUI",
+                        "{}: [[widescreen.signed_x_bound]] expected must be LUI or ADDIU/ORI",
                         config_path.string()));
+                if (opcode == 0x09u || opcode == 0x0Du) {
+                    const uint32_t rs = (site.expected >> 21) & 0x1Fu;
+                    const uint32_t rt = (site.expected >> 16) & 0x1Fu;
+                    const uint32_t imm = site.expected & 0xFFFFu;
+                    if (rs != 0u)
+                        throw std::runtime_error(fmt::format(
+                            "{}: [[widescreen.signed_x_bound]] ADDIU/ORI expected must use rs=$zero",
+                            config_path.string()));
+                    if (rt == 0u)
+                        throw std::runtime_error(fmt::format(
+                            "{}: [[widescreen.signed_x_bound]] ADDIU/ORI expected must not write $zero",
+                            config_path.string()));
+                    if (imm == 0u)
+                        throw std::runtime_error(fmt::format(
+                            "{}: [[widescreen.signed_x_bound]] ADDIU/ORI expected must have a non-zero signed screen edge",
+                            config_path.string()));
+                }
                 if (!seen.insert(site.address & 0x1FFFFFFFu).second)
                     throw std::runtime_error(fmt::format(
                         "{}: duplicate [[widescreen.signed_x_bound]] address 0x{:08X}",

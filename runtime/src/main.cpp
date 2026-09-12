@@ -16,6 +16,7 @@
 #include "boot_state.h"
 #include "bios_hle.h"
 #include "bios_hle_plan.h"
+#include "psx_bios_known_images.h"
 #include "psx_bios_backend.h"
 #include "psx_cycles.h"
 #include "starvation_ring.h"
@@ -93,7 +94,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "recomp_launcher.h"   /* shared recomp-ui Dear ImGui launcher */
 #include "launcher_profile.h"  /* per-system variant profile (theme/caps bundle) */
 #include "launcher_boot_timing.h" /* PSX_LAUNCHER_BOOT_TIMING stamps */
-#if defined(PSX_HAS_GAME_CODEGEN)
+#if defined(PSX_HAS_CODEGEN_SETUP_HOST)
 extern "C" void psx_game_codegen_setup_apply(RecompLauncherCGameInfo* gi);
 extern "C" void psx_game_codegen_relaunch_or_exit(const char* disc_path);
 #endif
@@ -2515,11 +2516,32 @@ static std::filesystem::path resolve_bios_for_runtime(const char* requested,
     const bool bundled_only =
         openbios_allowed && bundled && !player_bios_selectable;
 
+    /* 0. Setup host (CI zip root): no BIOS backends are linked yet, so there
+     * is nothing an image could be validated against — bios_backend_for_file()
+     * rejects every file, including the correct one, and a title with
+     * openbios = false has no fallback to land on. This MUST precede the
+     * explicit-choice branch below: a remembered bios.cfg pick reached
+     * validate_bios_for_launch() first and deadlocked first-run setup — the
+     * player was told their good SCPH-1001 was "not an image this build was
+     * compiled from", and could never supply the BIOS that Generate needs in
+     * order to emit the backend. Play belongs to the product binary under
+     * build-release/ after Generate & rebuild. */
+    if (psx_bios_registry_count == 0) {
+        launcher_warning("Setup host — finish Generate & rebuild",
+            "This executable is the first-run setup host (no game/BIOS code "
+            "linked).\n\n"
+            "Use Generate & rebuild in the launcher. After that succeeds, open "
+            "this same shortcut again — it starts the game from build-release/ "
+            "(where bios/, mods/, and settings live).\n\n"
+            "Or run build-release/<game>.exe directly.");
+        return {};
+    }
+
     /* 1. An explicit choice: --bios, else a remembered pick. A product build
      * with only its bundled backend has no meaningful player choice: ignore
      * stale settings/bios.cfg paths instead of validating an image the hidden
-     * launcher row cannot clear. Setup hosts (registry_count == 0) retain their
-     * picker/generation flow. */
+     * launcher row cannot clear. Setup hosts (registry_count == 0) already
+     * returned above. */
     std::filesystem::path chosen;
     if (!bundled_only) {
         if (requested_is_explicit && requested && requested[0]) {
@@ -2552,19 +2574,6 @@ static std::filesystem::path resolve_bios_for_runtime(const char* requested,
         return {};
     }
 
-    /* Setup host (CI zip root): no BIOS backends linked yet. Play belongs to
-     * the product binary under build-release/ after Generate & rebuild. */
-    if (psx_bios_registry_count == 0) {
-        launcher_warning("Setup host — finish Generate & rebuild",
-            "This executable is the first-run setup host (no game/BIOS code "
-            "linked).\n\n"
-            "Use Generate & rebuild in the launcher. After that succeeds, open "
-            "this same shortcut again — it starts the game from build-release/ "
-            "(where bios/, mods/, and settings live).\n\n"
-            "Or run build-release/<game>.exe directly.");
-        return {};
-    }
-
     /* 3. This title requires a retail BIOS: ask for one. */
     const std::string accepted = bios_accepted_images();
     launcher_info((s_picker_game_name + " — PlayStation BIOS needed").c_str(),
@@ -2572,7 +2581,8 @@ static std::filesystem::path resolve_bios_for_runtime(const char* requested,
         "Step 1 of 2 — PlayStation BIOS\n\n"
         "In the next window, select your PlayStation BIOS dump. This build "
         "requires the exact image it was compiled from: " + accepted + ". "
-        "Usually named SCPH1001.BIN and exactly 512 KB. Dump from your own "
+        "Usually named " + std::string(psx_expected_bios_label()) +
+        " and exactly 512 KB. Dump from your own "
         "console or otherwise legally obtain it.\n\n"
         "(This is NOT the game disc — that is asked for next.)");
     std::string bios_title =
@@ -2705,24 +2715,27 @@ static bool retail_bios_file_ok(const std::filesystem::path& path) {
         const PsxBiosBackend* b = bios_backend_for_file(path, nullptr, nullptr);
         return b && b->image && !b->image->image_bundled;
     }
-    /* Setup host (no backends linked yet): accept validated SCPH-1001 only. */
-    constexpr uint64_t kSize = 512u * 1024u;
-    constexpr uint32_t kScph1001Crc = 0x37157331u;
+    /* Setup host (no backends linked yet): accept the retail image THIS build
+     * pins, from psx_bios_known_images.h. This used to hardcode SCPH-1001, so
+     * a kit pinning anything else refused to seed from a correct dump. An
+     * unknown pinned stem seeds nothing and the player is asked instead. */
+    const PsxKnownBiosImage* want = psx_expected_bios();
+    if (!want) return false;
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f.is_open()) return false;
     const auto size = static_cast<uint64_t>(f.tellg());
-    if (size != kSize) return false;
+    if (size != static_cast<uint64_t>(want->size)) return false;
     std::vector<uint8_t> data(static_cast<size_t>(size));
     if (!read_at(f, 0, data.data(), data.size())) return false;
-    return crc32_compute(data.data(), data.size()) == kScph1001Crc;
+    return crc32_compute(data.data(), data.size()) == want->crc32;
 }
 
 static std::filesystem::path discover_retail_bios_near(const char* argv0) {
     namespace fs = std::filesystem;
-    static const char* kNames[] = {
-        "SCPH1001.BIN", "scph1001.bin", "SCPH-1001.BIN", "scph-1001.bin",
-        "SCPH1001.bin", "scph1001.BIN",
-    };
+    char name_buf[8][32];
+    const int name_count =
+        psx_known_bios_filenames(psx_expected_bios(), name_buf, 8);
+    if (name_count <= 0) return {};
     static const char* kSubdirs[] = {
         "bios", "", "system", "firmware", "psxrecomp/bios", "psxrecomp-v4/bios",
     };
@@ -2731,8 +2744,8 @@ static std::filesystem::path discover_retail_bios_near(const char* argv0) {
     for (fs::path root = exe_dir; !root.empty(); root = root.parent_path()) {
         for (const char* sub : kSubdirs) {
             const fs::path dir = (sub && sub[0]) ? (root / sub) : root;
-            for (const char* name : kNames) {
-                const fs::path cand = dir / name;
+            for (int ni = 0; ni < name_count; ++ni) {
+                const fs::path cand = dir / name_buf[ni];
                 if (retail_bios_file_ok(cand)) {
                     auto abs = fs::weakly_canonical(cand, ec);
                     if (ec) abs = fs::absolute(cand, ec);
@@ -3588,7 +3601,7 @@ static void runtime_perf_diag_tick() {
         "cpu=%.1f tex=%.1f draw=%.1f ms/s; "
         "work guest=%.1f pacer=%.1f autocapture=%.1f provider_poll=%.1f ms/s, "
         "dirty=%.0f insn/s %.0f dispatch/s; "
-        "overlay native=+%llu interp=+%llu hot_native=0x%08X/+%llu "
+        "overlay native=+%llu interp=+%llu hot_native_owner=0x%08X/activations>=+%llu "
         "shadow=+%llu div=+%llu first_div=0x%08X "
         "loads=+%u revalidations=+%u "
         "load_wall=%.1f ms max=%.1f last=%.1f ms; "
@@ -5376,6 +5389,7 @@ static void netplay_barrier_admit(int override) {
         s_np_timing_frames++;
     }
     int liveness_rearamed = 0;
+    freeze_heartbeat_set_paused(1);
     for (;;) {
         uint32_t dt = 0, lh = 0, rh = 0;
         const Uint64 now_ms = SDL_GetTicks64();
@@ -5401,13 +5415,13 @@ static void netplay_barrier_admit(int override) {
                     ? 0u
                     : psx_netplay_running_liveness_timeout_ms())) {
             netplay_soft_exit("netplay_peer_disconnect");
-            if (psx_return_to_lobby_requested()) return;
+            if (psx_return_to_lobby_requested()) goto done;
         }
         /* Staged .pst rejected (stale codegen / BIOS / missing) — do not wait
          * out the 90s load barrier with stall=load_apply_done. */
         if (psx_netplay_consume_load_apply_failed()) {
             netplay_soft_exit("netplay_load_failed");
-            if (psx_return_to_lobby_requested()) return;
+            if (psx_return_to_lobby_requested()) goto done;
         }
         /* Mutual INPUT/CONFIRM stall still refreshes last_peer_rx — detect
          * "no sim progress" separately (common rematch + TURN loss mode).
@@ -5425,7 +5439,7 @@ static void netplay_barrier_admit(int override) {
                          "stall=%s lead=%d — returning to lobby\n",
                          (unsigned)sim, stall[0] ? stall : "?", lead);
             netplay_soft_exit("netplay_load_stall");
-            if (psx_return_to_lobby_requested()) return;
+            if (psx_return_to_lobby_requested()) goto done;
         } else if (!psx_netplay_in_load_barrier() && !running &&
                    now_ms - barrier_t0 >= 90000u) {
             char stall[64];
@@ -5437,7 +5451,7 @@ static void netplay_barrier_admit(int override) {
                          "stall=%s lead=%d — returning to lobby\n",
                          (unsigned)sim, stall[0] ? stall : "?", lead);
             netplay_soft_exit("netplay_link_stall");
-            if (psx_return_to_lobby_requested()) return;
+            if (psx_return_to_lobby_requested()) goto done;
         } else if (!psx_netplay_in_load_barrier() && running &&
                    progress_t0 != 0 && now_ms - progress_t0 >= 20000u) {
             char stall[64];
@@ -5449,7 +5463,7 @@ static void netplay_barrier_admit(int override) {
                          "stall=%s lead=%d — returning to lobby\n",
                          (unsigned)sim, stall[0] ? stall : "?", lead);
             netplay_soft_exit("netplay_admit_stall");
-            if (psx_return_to_lobby_requested()) return;
+            if (psx_return_to_lobby_requested()) goto done;
         } else if (now_ms - last_stall_log_ms >= 2000u) {
             char stall[96];
             uint32_t sim = 0;
@@ -5515,12 +5529,14 @@ static void netplay_barrier_admit(int override) {
                 if (t1 >= admit_t0) s_np_admit_ticks += t1 - admit_t0;
                 s_np_last_admit_end = t1;
             }
-            return;
+            goto done;
         }
         /* Episode snap may have been applied during pump/try_admit without
          * longjmp — flush here (no present-body C++ RAII) before spinning.
          * try_admit refuses to arm needs_advance while resume is pending. */
+        freeze_heartbeat_set_paused(0);
         psx_netplay_rb_flush_resume();
+        freeze_heartbeat_set_paused(1);
 #ifndef PSX_NO_DEBUG_TOOLS
         debug_server_poll();
 #endif
@@ -5529,7 +5545,7 @@ static void netplay_barrier_admit(int override) {
             while (SDL_PollEvent(&ev)) {
                 if (ev.type == SDL_QUIT) {
                     netplay_soft_exit("sdl_window_close");
-                    if (psx_return_to_lobby_requested()) return;
+                    if (psx_return_to_lobby_requested()) goto done;
                 }
                 if (ev.type == SDL_KEYDOWN) {
 #if defined(PSX_SDL3)
@@ -5539,7 +5555,7 @@ static void netplay_barrier_admit(int override) {
 #endif
                     if (key == SDLK_ESCAPE) {
                         netplay_soft_exit("netplay_barrier_escape");
-                        if (psx_return_to_lobby_requested()) return;
+                        if (psx_return_to_lobby_requested()) goto done;
                     }
                 }
                 if (ev.type == SDL_CONTROLLERDEVICEADDED ||
@@ -5552,7 +5568,7 @@ static void netplay_barrier_admit(int override) {
             if (!psx_start_bisect_no_gc_update_in_admit())
                 SDL_GameControllerUpdate();
         }
-        if (psx_return_to_lobby_requested()) return;
+        if (psx_return_to_lobby_requested()) goto done;
         /* §35: TipHold invent-cap stall freezes guest (no vblank present).
          * Keep Swap alive on the last Live frame so SAFETY/held waits do not
          * open a ~250ms present gap.
@@ -5570,6 +5586,8 @@ static void netplay_barrier_admit(int override) {
         /* Admit barriers (save/load sync) can last seconds without guest cycles. */
         starvation_watchdog_heartbeat();
     }
+done:
+    freeze_heartbeat_set_paused(0);
 }
 
 static void sample_pad_into_sio(int override) {
@@ -6327,6 +6345,7 @@ static void rewind_pause_present(void) {
 
 /* Freeze guest in vblank present while the rewind filmstrip is open. */
 static void rewind_host_pause_loop(void) {
+    freeze_heartbeat_set_paused(1);
     while (psx_rewind_is_open()) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -6363,12 +6382,14 @@ static void rewind_host_pause_loop(void) {
         starvation_watchdog_heartbeat();
         SDL_Delay(8);
     }
+    freeze_heartbeat_set_paused(0);
     /* Swallow the still-held close press so it doesn't bleed into the game. */
     savestate_input_guard_arm();
 }
 
 /* Freeze guest in vblank present while the save-state slot menu is open. */
 static void savestate_menu_host_pause_loop(void) {
+    freeze_heartbeat_set_paused(1);
     while (savestate_menu_open) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -6409,6 +6430,7 @@ static void savestate_menu_host_pause_loop(void) {
         starvation_watchdog_heartbeat();
         SDL_Delay(8);
     }
+    freeze_heartbeat_set_paused(0);
     /* Swallow the close press; a just-queued save must not snapshot it. */
     savestate_input_guard_arm();
 }
@@ -7658,12 +7680,14 @@ namespace {
                 out->ok = 1;
                 std::snprintf(out->detail, sizeof(out->detail),
                               "OpenBIOS will be emitted on Generate & rebuild "
-                              "(optional: pick SCPH1001). Play uses "
-                              "build-release/ after rebuild.");
+                              "(optional: pick %s). Play uses "
+                              "build-release/ after rebuild.",
+                              psx_expected_bios_label());
                 return 1;
             }
             std::snprintf(out->detail, sizeof(out->detail),
-                          "PlayStation BIOS required (SCPH1001.BIN).");
+                          "PlayStation BIOS required (%s).",
+                          psx_expected_bios_label());
             return 1;
         }
         /* Match runtime resolve: relative picks like bios/SCPH1001.BIN must not
@@ -7681,12 +7705,16 @@ namespace {
                               "BIOS file not found.");
                 return 1;
             }
+            const PsxKnownBiosImage* want = psx_expected_bios();
+            const std::streamoff want_size =
+                want ? (std::streamoff)want->size : (std::streamoff)(512 * 1024);
             const std::streamoff size = f.tellg();
-            if (size != 512 * 1024) {
+            if (size != want_size) {
                 std::snprintf(out->detail, sizeof(out->detail),
-                              "BIOS must be exactly 512 KiB (got %lld). Use "
-                              "SCPH1001.BIN.",
-                              (long long)size);
+                              "BIOS must be exactly %lld bytes (got %lld). Use "
+                              "%s.",
+                              (long long)want_size, (long long)size,
+                              psx_expected_bios_label());
                 return 1;
             }
             std::vector<uint8_t> data((size_t)size);
@@ -7696,15 +7724,20 @@ namespace {
                 return 1;
             }
             const uint32_t crc = crc32_compute(data.data(), data.size());
-            if (crc != 0x37157331u) {
+            if (want && crc != want->crc32) {
                 out->warn = 1;
                 std::snprintf(out->detail, sizeof(out->detail),
-                              "CRC32 %08X (validated dump is SCPH1001 CRC32 "
-                              "37157331).",
-                              crc);
+                              "CRC32 %08X (this build expects %s, CRC32 %08X).",
+                              crc, want->id, want->crc32);
+            } else if (!want) {
+                out->warn = 1;
+                std::snprintf(out->detail, sizeof(out->detail),
+                              "CRC32 %08X (this build pins %s, whose identity "
+                              "is not recorded here).",
+                              crc, PSX_EXPECTED_BIOS_STEM);
             } else {
                 std::snprintf(out->detail, sizeof(out->detail),
-                              "SCPH1001.BIN (CRC OK).");
+                              "%s (CRC OK).", psx_expected_bios_label());
             }
             /* Setup host (no backends yet): file is fine for first Generate. */
             if (psx_bios_registry_count == 0) {
@@ -13795,7 +13828,7 @@ int main(int argc, char** argv) {
                 }
                 gi.needs_setup = (!bios_ok || !disc_ok) ? 1 : 0;
             }
-#if defined(PSX_HAS_GAME_CODEGEN)
+#if defined(PSX_HAS_CODEGEN_SETUP_HOST)
             /* Local codegen: missing generated/ or MOTK_FORCE_SETUP opens the
              * generate & rebuild wizard (may also set prepare_required). */
             psx_game_codegen_setup_apply(&gi);
@@ -14075,7 +14108,7 @@ int main(int argc, char** argv) {
                 SDL_Quit();
                 return 0;
             }
-#if defined(PSX_HAS_GAME_CODEGEN)
+#if defined(PSX_HAS_CODEGEN_SETUP_HOST)
             if (lr == RECOMP_LAUNCHER_RESULT_RELAUNCH) {
                 const char* disc_for_relaunch =
                     rui_out_disc[0] ? rui_out_disc
@@ -15792,7 +15825,7 @@ soft_return_lobby:
             /*resume_netplay_room=*/1);
         gi.discs = rui_discs.empty() ? nullptr : rui_discs.data();
         gi.num_discs = (int)rui_discs.size();
-#if defined(PSX_HAS_SETUP_WIZARD) && defined(PSX_HAS_GAME_CODEGEN)
+#if defined(PSX_HAS_SETUP_WIZARD) && defined(PSX_HAS_CODEGEN_SETUP_HOST)
         psx_game_codegen_setup_apply(&gi);
 #endif
 
@@ -15812,7 +15845,7 @@ soft_return_lobby:
             SDL_Quit();
             return 0;
         }
-#if defined(PSX_HAS_GAME_CODEGEN)
+#if defined(PSX_HAS_CODEGEN_SETUP_HOST)
         if (rui_rc == RECOMP_LAUNCHER_RESULT_RELAUNCH) {
             const char* disc_for_relaunch =
                 rui_out_disc[0] ? rui_out_disc

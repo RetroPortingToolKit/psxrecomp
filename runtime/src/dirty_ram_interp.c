@@ -1983,6 +1983,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
         uint32_t a = cpu->gpr[rs];
         if (psx_ws_angle_site(pc, insn, &widened))
             cpu->gpr[rt] = widened;
+        else if (rs == 0 && rt != 0 && psx_ws_is_signed_x_bound_site(pc, insn))
+            cpu->gpr[rt] = (uint32_t)psx_ws_screen_x_bound(simm);
         else
             cpu->gpr[rt] = a + (uint32_t)simm
                          + (psx_ws_is_cull_bias_site(pc)
@@ -2050,7 +2052,10 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
         return 0;
     case 0x0D: { /* ORI */
         uint32_t a = cpu->gpr[rs];
-        cpu->gpr[rt] = a | imm;
+        if (rs == 0 && rt != 0 && psx_ws_is_signed_x_bound_site(pc, insn))
+            cpu->gpr[rt] = (uint32_t)psx_ws_screen_x_bound((int32_t)imm);
+        else
+            cpu->gpr[rt] = a | imm;
         psx_pgxp_alu(cpu, insn, cpu->gpr[rt], a, imm);
         cpu->gpr[0] = 0;
         return 0;
@@ -2793,7 +2798,11 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
 #ifdef PSX_HAS_OVERLAY_DISPATCH
     {
         extern int psx_overlay_dispatch(CPUState *cpu, uint32_t addr);
-        if (psx_overlay_dispatch(cpu, addr)) return 1;
+        int previous_phase = g_exec_phase;
+        g_exec_phase = 3;
+        int handled = psx_overlay_dispatch(cpu, addr);
+        g_exec_phase = previous_phase;
+        if (handled) return 1;
     }
 #endif
 
@@ -3197,6 +3206,19 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
                 target != stop_addr &&
                 phys_is_overlay_flow_region(target_phys) &&
                 dirty_ram_is_dirty(target_phys)) {
+#ifdef PSX_HAS_OVERLAY_DISPATCH
+                /* A save restore or an uncompiled continuation can enter the
+                 * interpreter in an otherwise static overlay. Surface an exact
+                 * resident match to the outer dispatcher, never nest tail flow. */
+                extern int psx_overlay_static_can_dispatch(uint32_t addr);
+                if (psx_overlay_static_can_dispatch(target)) {
+                    g_dirty_ram_native_handoffs++;
+                    g_dirty_ram_blocks_run++;
+                    if (pc_entry) pc_entry->insns += (uint64_t)insns_executed;
+                    g_dirty_interp_chain_target = target;
+                    OV_FPLOG_RET1();
+                }
+#endif
                 /* A runtime overlay may start executing while its final code
                  * bytes are still being installed. Entry-time native validation
                  * must reject that partial image, but local dirty flow used to
@@ -3247,6 +3269,12 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
                     e->frame = (uint32_t)s_frame_count;
                 }
 #endif
+                /* Local transfers bypass dispatch, but must retain the same
+                 * function-entry hooks as a surfaced interpreter entry. */
+                {
+                    extern void psx_mod_function_entry(CPUState *, uint32_t);
+                    psx_mod_function_entry(cpu, target);
+                }
                 pc = target;
                 current_page = target_phys >> 12;
                 current_page_dirty = 1; /* is_local_dirty_target proved it */
@@ -3294,9 +3322,27 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
             g_dirty_interp_chain_target = pc;
             OV_FPLOG_RET1();
         }
+        uint32_t next_phys = pc & 0x1FFFFFFFu;
+        /* A declared kernel patch range ends here (Rule 18 + the profile's
+         * [[recompiler.install_slots]]). The emitted body dispatched us in at
+         * the range's lo to run the guest's patched words; the emitter
+         * registered this PC as a continuation key and the bless verifier
+         * skips the patched words, so the rest of the body runs native.
+         * Without this hand-back the kernel page stays dirty and straight-
+         * line flow would interpret the whole function — which is why
+         * declaring the slot alone never paid off. */
+        if (!s_ld_pend_armed && next_phys < DIRTY_RAM_KERNEL_WINDOW_END &&
+            psx_kernel_patch_range_ends_at(next_phys) &&
+            psx_kernel_bless_dispatchable(next_phys)) {
+            cpu->pc = pc;
+            g_dirty_ram_native_handoffs++;
+            g_dirty_ram_blocks_run++;
+            if (pc_entry) pc_entry->insns += (uint64_t)insns_executed;
+            g_dirty_interp_chain_target = pc;
+            OV_FPLOG_RET1();
+        }
         /* Straight-line code that left the dirty page — hand back to
          * static dispatch by setting cpu->pc and returning. */
-        uint32_t next_phys = pc & 0x1FFFFFFFu;
         uint32_t next_page = next_phys >> 12;
         if ((!current_page_dirty || next_page != current_page) &&
             !dirty_ram_is_dirty(next_phys)) {

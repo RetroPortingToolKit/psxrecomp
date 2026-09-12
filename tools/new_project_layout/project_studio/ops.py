@@ -568,7 +568,7 @@ def op_ensure_recomp_ui_submodule(root: Path, options: MigrateOptions) -> ApplyR
         or (root / "recomp-ui" / ".git").exists()
     ):
         return ApplyResult("ensure_recomp_ui_submodule", True, "Already present", [])
-    url = "https://github.com/mstan/recomp-ui.git"
+    url = "https://github.com/RetroPortingToolKit/recomp-ui.git"
     ok, out = _run(
         ["git", "submodule", "add", "-b", "master", url, "recomp-ui"],
         root,

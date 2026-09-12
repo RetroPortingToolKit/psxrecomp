@@ -87,7 +87,7 @@ inline bool video_fmv_filter_parse(const std::string& s, int* out) {
 
 struct WidescreenSignedBoundSite {
     uint32_t address = 0;
-    uint32_t expected = 0; // guarded LUI instruction
+    uint32_t expected = 0; // guarded LUI or ADDIU rt,zero,imm instruction
 };
 
 // One exact compare whose verdict is forced while a widescreen reveal is
@@ -695,9 +695,11 @@ struct BiosConfig {
     // copies, semantic validation and consumption in BiosAddressModel
     // (bios_address_model.h). Empty = the BIOS runs entirely from ROM.
     std::vector<BiosAddrCopy> address_copies;
-    // [[recompiler.install_slots]]: kernel-RAM PCs the BIOS overwrites with
-    // dispatch stubs at runtime (see docs/dynamic_handler_install.md).
-    std::vector<uint32_t>     install_slots;
+    // [[recompiler.install_slots]]: kernel-RAM RANGES the BIOS (or the game's
+    // Psy-Q libapi patchers) overwrite at runtime. Layout, defaults and the
+    // resume shapes are in BiosInstallSlot (bios_address_model.h); see
+    // docs/dynamic_handler_install.md for how to find new ones.
+    std::vector<BiosInstallSlot> install_slots;
 
     // [recompiler.runtime_exports]: per-image anchors the emitter couriers
     // into the generated C (psx_bios_image, runtime/include/psx_bios_image.h)
@@ -1101,9 +1103,9 @@ struct GameConfig {
     // transformed in the mirror.
     bool ws_nw_full_mirror = false;
 
-    // [[widescreen.signed_x_bound]] guarded LUI sites whose signed Q16
-    // constants scale with the active native-wide field and remain identity in
-    // 4:3/menus/FMV. Shared by static codegen, overlay JIT, and interpreter.
+    // [[widescreen.signed_x_bound]] guarded LUI signed-Q16 bounds or ADDIU/ORI
+    // rt,zero,imm screen-pixel bounds. Both remain identity in 4:3/menus/FMV.
+    // Shared by static codegen, overlay JIT, and interpreter.
     std::vector<WidescreenSignedBoundSite> ws_signed_x_bound_sites;
     // [widescreen] offer — whether the launcher OFFERS its EXPERIMENTAL
     // Widescreen toggle for this title. Default true. Set false while a

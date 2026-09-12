@@ -844,6 +844,11 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         sll scaled,index,2; addu address,scaled,table_base
         lw target,offset(address); [nop x 0..1]; jr target
 
+    Also accept ``sltiu; beq; lui; addiu; sll``: the LUI executes in the
+    guard's delay slot, then ADDIU completes the base on the in-range path.
+    That exact pair may not overwrite the checked index, and direct edges
+    may not bypass the bound (including edges from switch cases).
+
     ``table_base`` must be a nearest-definition LUI, optionally followed by a
     nearest-definition ADDIU.  The lower instruction may rename the
     register (``lui v0; addiu s0,v0,lo``), as used by Ape Escape.  Any other
@@ -853,7 +858,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     """
     lo = load_addr
     hi = load_addr + size
-    if not (entry <= jr_pc < hard_cap and 0 < jr_rs < 32):
+    if not (entry <= jr_pc < hard_cap and 0 < jr_rs < 31):
         return set()
     jr_word = _word_at(data, load_addr, jr_pc)
     if jr_word != ((jr_rs << 21) | 0x08):
@@ -904,7 +909,24 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     # The bound must guard this exact index on the sole fallthrough into SLL.
     sltiu_pc = sll_pc - 12
     branch_pc = sll_pc - 8
-    if _word_at(data, load_addr, sll_pc - 4) != 0:
+    scheduled_base = _word_at(data, load_addr, sll_pc - 4) != 0
+    if scheduled_base:
+        # R3000 load delay: JR must not consume the immediately preceding LW.
+        if lw_pc != jr_pc - 8:
+            return set()
+        sltiu_pc -= 4
+        branch_pc -= 4
+        upper = _word_at(data, load_addr, sll_pc - 8)
+        lower = _word_at(data, load_addr, sll_pc - 4)
+        if (upper is None or lower is None or
+                (upper >> 26) != 0x0F or ((upper >> 21) & 31) != 0 or
+                (lower >> 26) != 0x09 or ((lower >> 16) & 31) != table_reg or
+                ((upper >> 16) & 31) == 0 or
+                ((upper >> 16) & 31) != ((lower >> 21) & 31) or
+                index_reg in (table_reg, (upper >> 16) & 31)):
+            return set()
+    if sltiu_pc < entry or (sltiu_pc >= entry + 4 and
+            _is_control_flow(_word_at(data, load_addr, sltiu_pc - 4))):
         return set()
     sltiu_word = _word_at(data, load_addr, sltiu_pc)
     branch_word = _word_at(data, load_addr, branch_pc)
@@ -913,7 +935,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         return set()
     guard_reg = (sltiu_word >> 16) & 0x1F
     table_count = sltiu_word & 0xFFFF
-    if not guard_reg or not (1 <= table_count < 512):
+    if not guard_reg or guard_reg == index_reg or not (1 <= table_count < 512):
         return set()
     if branch_word is None or ((branch_word >> 26) & 0x3F) != 0x04:
         return set()
@@ -923,7 +945,8 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         return set()
     reject_target = _branch_target(branch_pc, branch_word)
     if (not (entry <= reject_target < hard_cap) or
-            sll_pc <= reject_target < jr_pc + 8):
+            sll_pc <= reject_target < jr_pc + 8 or
+            (scheduled_base and sltiu_pc < reject_target < jr_pc + 8)):
         return set()
 
     def nearest_writer(reg: int, before: int):
@@ -962,6 +985,10 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     else:
         return set()
 
+    if scheduled_base and (constant_pc != branch_pc + 4 or
+                           table_def_pc != sll_pc - 4):
+        return set()
+
     # Calls could clobber the proven constant.  Other branches could enter the
     # suffix through an unproved path.  The one exact bounds branch is allowed.
     for pc in range(constant_pc + 4, sll_pc, 4):
@@ -971,7 +998,8 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         if _is_control_flow(word) and pc != branch_pc:
             return set()
     predecessor = _word_at(data, load_addr, constant_pc - 4)
-    if constant_pc >= entry + 4 and _is_control_flow(predecessor):
+    if (constant_pc >= entry + 4 and _is_control_flow(predecessor) and
+            not scheduled_base):
         return set()
     table_base = (table_base + lw_offset) & 0xFFFFFFFF
     table_end = table_base + table_count * 4
@@ -984,6 +1012,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         target = _word_at(data, load_addr, table_base + index * 4)
         if (target is None or (target & 3) or
                 not (entry <= target < hard_cap) or
+                (scheduled_base and sltiu_pc < target < jr_pc + 8) or
                 not (range_lo <= target < range_hi) or
                 not _is_valid_mips_word(_word_at(data, load_addr, target))):
             return set()
@@ -1025,15 +1054,16 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         elif kind in ('jr', 'jr_ra'):
             case_reachable.add(delay)
 
+    protected_pc = sltiu_pc if scheduled_base else constant_pc
     for source in range(entry, hard_cap, 4):
         source_word = _word_at(data, load_addr, source)
         if source_word is None:
             return set()
         kind, target = _classify_cf(source, source_word)
         if (kind in ('branch', 'j', 'jal') and
-                constant_pc < target <= jr_pc and
-                not (constant_pc <= source <= jr_pc) and
-                source not in case_reachable):
+                protected_pc < target <= jr_pc and
+                not (protected_pc <= source <= jr_pc) and
+                (scheduled_base or source not in case_reachable)):
             return set()
     if proof_out is not None:
         proof_out.append({
@@ -1555,6 +1585,11 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
 
     included: dict[int, str] = {}
     excluded: dict[int, str] = {}
+    # Shared CFG ownership may later reject a hostless interior. Preserve its
+    # validated dispatch evidence separately so executed entries can still use
+    # the isolated, audited fragment path without truncating a shared host.
+    dispatch_fragment_demands = set()
+    fragment_hi = hi - capture_guard_bytes(cap, size)
     game_text = _game_text_range(toml_doc)
 
     # A dispatch into dirty RAM can land on a jump-table case label. That
@@ -1611,6 +1646,8 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             if impossible_entry_start(addr):
                 excluded[addr] = 'UNKNOWN'
                 return
+            if addr + 4 <= fragment_hi:
+                dispatch_fragment_demands.add(addr)
             if (addr in jump_table_targets or
                     not _callable_legacy_seed(data, load_addr, addr)):
                 included.setdefault(addr, 'DISPATCH_INTERIOR')
@@ -1893,6 +1930,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         'executed_pcs': executed_pcs,
         'dispatch_entry_pcs': dispatch_entry_pcs,
         'static_dispatch_entry_pcs': static_dispatch_entries,
+        'dispatch_fragment_demands': dispatch_fragment_demands,
         'function_entry_pcs': set(included),
         'included_reasons': included,
         'excluded_reasons': excluded,
@@ -1960,6 +1998,9 @@ def print_seed_audit(audit: dict) -> None:
     print(f'toml_entries_included: {audit["counts"].get("TOML_DECLARED_ENTRY", 0)}')
     print(f'dispatch_interior_included: {audit["counts"].get("DISPATCH_INTERIOR", 0)}')
     print(f'dispatch_roots_promoted: {audit["counts"].get("DISPATCH_ROOT", 0)}')
+    unhosted_dispatch = (audit.get('dispatch_fragment_demands', set()) &
+                         audit['executed_pcs']) - set(audit['included_reasons'])
+    print(f'unhosted_executed_dispatch_fragment_demands: {len(unhosted_dispatch)}')
     print(f'cross_producer_calls_rejected: '
           f'{len(audit["rejected_cross_producer_calls"])}')
     print(f'cross_producer_calls_accepted: '
@@ -1972,7 +2013,9 @@ def print_seed_audit(audit: dict) -> None:
     for addr in sorted(audit['excluded_reasons']):
         reason = audit['excluded_reasons'][addr]
         if reason in ('BRANCH_TARGET_ONLY', 'OBSERVED_PC_ONLY', 'UNKNOWN'):
-            print(f'  {addr:08X}  excluded: {reason}')
+            recovery = ('; isolated fragment demand retained'
+                        if addr in unhosted_dispatch else '')
+            print(f'  {addr:08X}  excluded: {reason}{recovery}')
 
 
 def walk_root_seed_entries(seeds: list[str]) -> set[int]:
@@ -2624,14 +2667,24 @@ def generate_overlay_dispatch(variants: list) -> str:
         '    if (address_misses) *address_misses = psx_ov_static_address_misses;',
         '}',
         '',
-        'int psx_overlay_dispatch(CPUState *cpu, uint32_t addr) {',
+        'static const PsxOvVariant *psx_overlay_static_find_variant(uint32_t addr) {',
         '    const uint32_t key = (addr & 0x1FFFFFFFu) | 0x80000000u;',
     ]
 
     if not flat_variants:
         lines += [
-            '    (void)cpu; (void)key;',
+            '    (void)key;',
             '    psx_ov_static_address_misses++;',
+            '    return 0;',
+            '}',
+            '',
+            'int psx_overlay_static_can_dispatch(uint32_t addr) {',
+            '    return psx_overlay_static_find_variant(addr) != 0;',
+            '}',
+            '',
+            'int psx_overlay_dispatch(CPUState *cpu, uint32_t addr) {',
+            '    (void)cpu;',
+            '    if (psx_overlay_static_find_variant(addr) == 0) return 0;',
             '    return 0;',
             '}',
             '',
@@ -2668,9 +2721,7 @@ def generate_overlay_dispatch(variants: list) -> str:
         '            psx_ov_static_checks++;',
         '            if (psx_overlay_static_code_matches(v->ranges, v->count,',
         '                                               v->crc)) {',
-        '                psx_ov_static_hits++;',
-        '                v->fn(cpu);',
-        '                return 1;',
+        '                return v;',
         '            }',
         '            psx_ov_static_variant_misses++;',
         '        }',
@@ -2680,16 +2731,26 @@ def generate_overlay_dispatch(variants: list) -> str:
         '            psx_ov_static_checks++;',
         '            if (psx_overlay_static_code_matches(v->ranges, v->count,',
         '                                               v->crc)) {',
-        '                psx_ov_static_hits++;',
         '                psx_ov_last_hit[ei] = (uint16_t)i;',
-        '                v->fn(cpu);',
-        '                return 1;',
+        '                return v;',
         '            }',
         '            psx_ov_static_variant_misses++;',
         '        }',
         '    }',
         '    /* Address is ours but no occupant is resident -> interpreter. */',
         '    return 0;',
+        '}',
+        '',
+        'int psx_overlay_static_can_dispatch(uint32_t addr) {',
+        '    return psx_overlay_static_find_variant(addr) != 0;',
+        '}',
+        '',
+        'int psx_overlay_dispatch(CPUState *cpu, uint32_t addr) {',
+        '    const PsxOvVariant *v = psx_overlay_static_find_variant(addr);',
+        '    if (!v) return 0;',
+        '    psx_ov_static_hits++;',
+        '    v->fn(cpu);',
+        '    return 1;',
         '}',
         '',
     ]
@@ -2874,12 +2935,9 @@ def overlay_pair_id(src: str, func_ids: list,
 def add_overlay_pair_export(src: str, pair_id: int) -> str:
     """Add the optional v2-pair binding export without changing the shard ABI."""
     return src + f'''\n
-#ifdef _WIN32
-__declspec(dllexport)
-#else
-__attribute__((visibility("default")))
-#endif
-uint64_t overlay_pair_id(void) {{ return UINT64_C(0x{pair_id:016X}); }}
+PSX_OVERLAY_EXPORT uint64_t overlay_pair_id(void) {{
+    return UINT64_C(0x{pair_id:016X});
+}}
 '''
 
 
@@ -3230,8 +3288,34 @@ def _interior_fail_key(phys_addr: int, interior: int, data: bytes,
 
 def interior_failure_is_deterministic(reason: str) -> bool:
     """Only guest-byte/codegen audit verdicts belong in the persistent memo."""
-    return reason.startswith(('generated-c-audit:', 'requested-entry-audit:',
-                              'guest-walk-audit:'))
+    return (reason.startswith(('generated-c-audit:', 'requested-entry-audit:',
+                               'guest-walk-audit:')) or
+            unsupported_guest_branch_rejection(reason))
+
+
+def unsupported_guest_branch_rejection(reason: str) -> bool:
+    """An invalid guest branch is data/unsupported code, not a tool failure.
+
+    Other delay-slot identity failures remain fatal: missing guarded delay
+    words or a changed instruction identity can indicate an emitter defect.
+    """
+    return (reason.startswith('delay-slot-identity:') and
+            reason.endswith(': reserved/unsupported branch encoding'))
+
+
+def reconcile_empty_primary_scans(pending, cache_dir, expected_abi, stats):
+    """Accept an empty primary only if guarded fragments serve every root."""
+    for label, physical, load, size, data, roots in pending:
+        current, _ = load_region_current_variant_coverage(
+            cache_dir, physical, data, load, size,
+            expected_abi)
+        served = {(entry & 0x1FFFFFFF) | 0x80000000 for entry in current}
+        if roots and roots <= served:
+            print(f'  primary scan recovered by guarded fragments: {label}')
+            stats.add_skip()
+        else:
+            stats.add_fail(label, 'no_ranges',
+                           'primary roots remain without guarded native coverage')
 
 
 def optional_static_fragment_rejection(entry: int, job: dict,
@@ -3598,6 +3682,12 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
                       'DISPATCH_ROOT')
     }
     executed = set(seed_audit.get('executed_pcs', set()))
+    # A final DISPATCH_INTERIOR needs a discovered host, but a guarded isolated
+    # fragment does not. Do not rebuild live demand solely from surviving
+    # shared seeds. Retain the existing execution gate: arbitrary seeds,
+    # static-only interiors, and merely observed instructions are not enough.
+    observed_dispatch = (set(seed_audit.get('dispatch_fragment_demands', set())) &
+                         executed)
     static_exact_demands = set(
         seed_audit.get('static_exact_fragment_demands', set()))
     hosted_donor_demands = set(
@@ -3610,7 +3700,7 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         a for a in forced_interiors
         if phys_addr <= (a & 0x1FFFFFFF) < region_hi
     }
-    if not (((interiors or dispatch_roots) and executed) or
+    if not (((interiors or dispatch_roots) and executed) or observed_dispatch or
             static_demands or forced):
         return None
     return {
@@ -3623,7 +3713,8 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         # reconstructed from the page-run format otherwise.
         'guard_bytes': capture_guard_bytes(
             capture, size, f'region 0x{load_addr:08X}'),
-        'candidates': interiors | dispatch_roots | static_demands | forced,
+        'candidates': (interiors | dispatch_roots | observed_dispatch |
+                       static_demands | forced),
         'executed': executed,
         'static_demands': static_demands,
         'static_exact_demands': static_exact_demands,
@@ -4159,6 +4250,8 @@ def fragment_batch_failure_is_partitionable(reason: str) -> bool:
     """Whether retrying smaller root sets can change this failure verdict."""
     if reason.startswith('candidate-capacity: full'):
         return False
+    if unsupported_guest_branch_rejection(reason):
+        return True
     return reason.startswith((
         'generated-c-audit:', 'requested-entry-audit:',
         'hosted-entry-audit:',
@@ -5725,7 +5818,7 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
             seed.split()[0].startswith('0x'))
     ]
     if not root_seeds:
-        print('  SKIP: no walk-root seeds (data-only region)\n')
+        print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
         result['outcome'] = 'skip'
         return
 
@@ -6161,6 +6254,7 @@ def main():
     # executed_pcs). Collected right after classification so it survives a region
     # whose own compile is skipped or audit-fails.
     interior_frag_jobs = []
+    pending_empty_primary = []
 
     def _merge_static_result(res):
         """Fold one static_capture_job result into the shared accumulators.
@@ -6272,7 +6366,7 @@ def main():
                 seed.split()[0].startswith('0x'))
         ]
         if not root_seeds:
-            print('  SKIP: no walk-root seeds (data-only region)\n')
+            print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
             stats.add_skip()
             return
 
@@ -6443,10 +6537,15 @@ def main():
 
             if not this_ids:
                 print('  WARNING: recompiler emitted no usable _full.ranges -- '
-                      'preserving any prior DLL/ranges pair and leaving this '
-                      'region to the interpreter')
-                stats.add_fail(_label, 'no_ranges',
-                               'no usable function identities (DLL not built)')
+                      'preserving any prior DLL/ranges pair; checking exact '
+                      'fragment coverage after supplementation')
+                if cap.get('producer') == BIOS_RESIDENT_PRODUCER:
+                    stats.add_fail(_label, 'no_ranges',
+                                   'resident producer requires its canonical bundle')
+                else:
+                    pending_empty_primary.append((
+                        _label, phys_addr, load_addr, size, data,
+                        demanded_root_entries))
                 return
             missing_exports = {
                 entry for entry, _crc, _ranges in this_ids
@@ -6558,8 +6657,9 @@ def main():
     # Run as a SEPARATE pass AFTER all region compiles, so it is DECOUPLED from
     # region success — an executed orphan interior gets its isolated island shard
     # even if its region's trusted compile failed/audit-failed (that is the whole
-    # point of the separate failure domain). For each region, find DISPATCH_INTERIOR
-    # PCs that ACTUALLY EXECUTED this session but that NO built DLL covers (orphan
+    # point of the separate failure domain). For each region, retain validated
+    # dispatch PCs even when shared CFG ownership dropped their interior seeds.
+    # Select those that ACTUALLY EXECUTED but that NO current DLL serves (orphan
     # interiors — host never discovered, so the region can't alias them), and
     # compile each as its OWN isolated <region>_<key>.dll that ENTERS at the
     # interior PC (recovers no host). Isolated => a bad fragment fails alone and
@@ -7513,6 +7613,15 @@ def main():
         print(f'Static output: {static_out}  '
               f'({len(all_variants)} exact function identities total, '
               f'{len(written)} translation unit(s))')
+
+    # A conservative primary scan can emit no functions while exact-entry
+    # supplementation still serves every requested root. Decide only after
+    # that pass, using ABI-valid, current-byte guarded native coverage. Missing
+    # even one primary root remains a failure; toolchain/audit failures above
+    # are never cleared by this reconciliation.
+    reconcile_empty_primary_scans(
+        pending_empty_primary, cache_dir,
+        overlay_abi_tag(args.runtime_include, args.flavor), stats)
 
     # LOUD summary + machine-readable result line, then a non-zero exit when any
     # shard that should have built failed. The runtime's autocompile watcher and

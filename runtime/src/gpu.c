@@ -30,6 +30,8 @@
 #include "ws_aspect_cone_math.h"
 #include "ws_ui_group.h"
 #include "ws_prepass_guard.h"
+#include "ws_hud_anchor.h"
+#include "ws_repeat_rect.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +92,7 @@ static int      ws_hud_sprt = 0;             /* edge-anchor untagged HUD SPRTs *
 static int      ws_auto_ui_squash;
 static int      ws_auto_ui_dense;
 static int      ws_active(void);
+static int      gp0_command_word_count(uint8_t opcode);
 static uint64_t ws_auto_ui_candidate_count;
 static uint64_t ws_auto_ui_transform_count;
 #define WS_UI_PREPASS_MAX 2048u
@@ -163,6 +166,9 @@ static void ws_nw_sync_target(void);
 #define WS_FMV_HYSTERESIS 30                 /* frames a colour MDEC decode pins 4:3 */
 typedef struct { uint32_t key; uint32_t stamp; int32_t anchor_x; } WsTag;
 static WsTag    ws_tags[WS_TAG_BUCKETS];
+static WsHudAnchorTag ws_hud_anchor_tags[WS_HUD_ANCHOR_TABLE_SIZE];
+static WsHudAnchorTag ws_reveal_clear_tags[WS_HUD_ANCHOR_TABLE_SIZE];
+static WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
 static uint32_t ws_last_tag_stamp = (uint32_t)-1000; /* frame of newest tag */
 static uint32_t ws_last_3d_stamp  = (uint32_t)-1000; /* frame of newest shaded prim (diagnostic) */
 extern uint64_t s_frame_count;               /* defined in debug_server.c */
@@ -1407,6 +1413,12 @@ int gpu_ws_mmx6_validate(int *bad_out) {
     return total;
 }
 
+/* Guarded signed pixel bounds expand by one live margin, with identity at 4:3. */
+int32_t psx_ws_screen_x_bound(int32_t vanilla) {
+    int32_t margin = psx_ws_x_margin();
+    return vanilla < 0 ? vanilla - margin : vanilla > 0 ? vanilla + margin : 0;
+}
+
 /* Shared render-funnel screen-X cull widening ([widescreen.cull] auto_screen_x),
  * called identically by the gcc emit and the interpreter so every
  * overlay execution path widens the same way. sx = the GTE screen-X as loaded by
@@ -1828,6 +1840,91 @@ void psx_ws_sprite_tag(CPUState* cpu) {
     ws_last_tag_stamp = now;
 }
 
+static int ws_hud_command_words(uint32_t command_addr, uint32_t *words,
+                                uint32_t *out_count) {
+    if (!words || !out_count) return 0;
+    if ((command_addr & 3u) != 0) return 0;
+    uint32_t phys = command_addr & 0x1FFFFFFFu;
+    if (phys > 0x00200000u - 4u) return 0;
+
+    words[0] = psx_read_word(command_addr);
+    uint8_t op = (uint8_t)(words[0] >> 24);
+    if (op < 0x20u || op > 0x7Fu) return 0;
+    int count = gp0_command_word_count(op);
+    if (count <= 0 || count > 12) return 0;
+    uint32_t bytes = (uint32_t)count * 4u;
+    if (phys > 0x00200000u - bytes) return 0;
+
+    for (int i = 1; i < count; i++)
+        words[i] = psx_read_word(command_addr + (uint32_t)i * 4u);
+    *out_count = (uint32_t)count;
+    return 1;
+}
+
+void gpu_ws_tag_hud_prim(uint32_t prim, int anchor) {
+    if (!ws_native_wide_configured()) return;
+    if ((prim & 3u) != 0 || prim > UINT32_MAX - 4u) return;
+    uint32_t command_addr = prim + 4u;
+    uint32_t words[12];
+    uint32_t word_count = 0;
+    if (!ws_hud_command_words(command_addr, words, &word_count))
+        return;
+
+    WsPrepassPacketGuard guard =
+        ws_prepass_packet_guard(words, word_count);
+    ws_hud_anchor_insert(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                         command_addr & 0x1FFFFCu, anchor, &guard,
+                         (uint32_t)s_frame_count);
+}
+
+void gpu_ws_tag_black_reveal_rect(uint32_t prim) {
+    if (!ws_native_wide_configured()) return;
+    if ((prim & 3u) != 0 || prim > UINT32_MAX - 4u) return;
+    uint32_t words[12], count = 0;
+    if (!ws_hud_command_words(prim + 4u, words, &count)) return;
+    /* Only opaque variable-size textured rectangles define this clear band. */
+    if ((words[0] >> 24) != 0x64u && (words[0] >> 24) != 0x65u) return;
+    WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
+    ws_hud_anchor_insert(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                         (prim + 4u) & 0x1FFFFCu, 0, &guard,
+                         (uint32_t)s_frame_count);
+}
+
+void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period) {
+    if (!ws_native_wide_configured() || period <= 0 || period > 4096 ||
+        (prim & 3u) || prim > UINT32_MAX - 4u) return;
+    uint32_t words[12], count = 0;
+    if (!ws_hud_command_words(prim + 4u, words, &count)) return;
+    if ((words[0] >> 24) != 0x64u && (words[0] >> 24) != 0x65u) return;
+    uint32_t w = words[3] & 0xFFFFu;
+    uint32_t h = words[3] >> 16;
+    if (!w || w > 256u || (words[2] & 255u) + w > 256u || !h || h > 511u)
+        return;
+    WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
+    ws_repeat_rect_tag_insert(ws_repeat_rect_tags, (prim + 4u) & 0x1FFFFCu,
+                              period, &guard, (uint32_t)s_frame_count);
+}
+
+static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
+    if (out_delta) *out_delta = 0;
+    if (!ws_native_wide_active() || gp0_cmd_source_addr == 0xFFFFFFFFu)
+        return 0;
+    if (gp0_words_needed <= 0 || gp0_words_needed > 12)
+        return 0;
+    uint32_t command_addr = gp0_cmd_source_addr & 0x1FFFFFFFu;
+    if (command_addr >= 0x00200000u || (command_addr & 3u)) return 0;
+    int anchor = 0;
+    if (!ws_hud_anchor_lookup(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                              command_addr, gp0_cmd_buf,
+                              (uint32_t)gp0_words_needed,
+                              (uint32_t)s_frame_count, &anchor))
+        return 0;
+    int32_t off = ws_nw_offset();
+    if (out_delta)
+        *out_delta = ws_hud_anchor_native_delta(1, off, anchor);
+    return 1;
+}
+
 /* Look up the executing GP0 command's prim in the tag table. The command's
  * first word lives at prim+4 (the PsyQ P_TAG header precedes it), but accept
  * a direct hit too in case a tag site passes the colour-word address. */
@@ -2215,6 +2312,8 @@ static int32_t ws_nw_hud_shift(int32_t x, int32_t w) {
     if (!ws_native_wide_active()) return 0;
     int32_t off = ws_nw_offset();
     if (off <= 0) return 0;
+    int32_t explicit_delta = 0;
+    if (ws_nw_explicit_hud_delta(&explicit_delta)) return explicit_delta;
     if (!ws_nw_left_hud_packet() && !ws_nw_hud_corners) return 0;
     /* Sprite-tag titles (anchor configured): HUD ≡ UNTAGGED rect-family prims
      * — the same discriminator the squash path's hud_sprt_squash used. Tagged
@@ -2238,6 +2337,12 @@ static int32_t ws_nw_hud_shift(int32_t x, int32_t w) {
  * the game's dedicated HUD packet arena reaches here, never world polygons. */
 static void ws_nw_hud_shift_vertices(int32_t *vx, int count) {
     if (count <= 0) return;
+    int32_t explicit_delta = 0;
+    if (ws_nw_explicit_hud_delta(&explicit_delta)) {
+        if (explicit_delta)
+            for (int i = 0; i < count; i++) vx[i] += explicit_delta;
+        return;
+    }
     /* Sprite-tag titles: polygon/line prims are the GTE world and the tagged
      * character billboards, never HUD — only the rect-family sites (which
      * call ws_nw_hud_shift directly, with the untagged filter) re-anchor. */
@@ -2569,6 +2674,28 @@ static void ws_clear_all_reveal_margins(void) {
         gr_wide_clear_margins((int)ws_fb_base[i], 0, 512, 0, 3);
 }
 
+static void ws_clear_tagged_rect_reveal(int y, int h) {
+    if (!ws_native_wide_active() || h <= 0 || gp0_cmd_source_addr == UINT32_MAX)
+        return;
+    uint32_t address = gp0_cmd_source_addr & 0x1FFFFFFFu;
+    if (address >= 0x00200000u || (address & 3u) ||
+        !ws_hud_anchor_lookup(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                              address, gp0_cmd_buf, (uint32_t)gp0_words_needed,
+                              (uint32_t)s_frame_count, NULL)) return;
+    int base = 0;
+    if (!ws_local_viewport_draw_target(&base)) {
+        if (ws_local_viewport_cfg) return;
+        if (!ws_display_viewport_draw_target(&base)) {
+            if (!ws_is_fb_base(draw_area_left)) return;
+            base = (int)draw_area_left;
+        }
+    }
+    int bottom = y + h;
+    if (y < (int)draw_area_top) y = (int)draw_area_top;
+    if (bottom > (int)draw_area_bottom + 1) bottom = (int)draw_area_bottom + 1;
+    if (bottom > y) gr_wide_clear_margins(base, y, bottom - y, 0, 3);
+}
+
 /* Stage-init already clears both synthetic margins once. Do not keep clearing
  * a guessed finite-map side here: MMX6's authored layers enter the reveal at
  * different times, so the side guess produced a moving black trim over valid
@@ -2657,6 +2784,9 @@ static void gpu_reset_state(int clear_vram) {
     memset(gp0_cmd_buf, 0, sizeof(gp0_cmd_buf));
     gp0_next_source_addr = 0xFFFFFFFFu;
     gp0_cmd_source_addr = 0xFFFFFFFFu;
+    ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     polyline_color = 0;
     polyline_prev_x = polyline_prev_y = 0;
     polyline_prev_c = 0;
@@ -4134,6 +4264,32 @@ static void gp0_exec_mono_rect(void) {
     gr_draw_flat_rect(x0, y0, w, h, color);
 }
 
+static void ws_repeat_textured_rect_reveal(int x, int y, int w, int h,
+                                          int u, int v, uint16_t clut_x,
+                                          uint16_t clut_y) {
+    int margin = draw_area_wide_x_margin();
+    int width = (int)ws_disp_w();
+    if (margin <= 0 || gp0_cmd_source_addr == UINT32_MAX ||
+        draw_area_right < draw_area_left ||
+        draw_area_right - draw_area_left + 1u != (uint32_t)width)
+        return;
+    uint32_t address = gp0_cmd_source_addr & 0x1FFFFFFFu;
+    if (address >= 0x00200000u || (address & 3u)) return;
+    int32_t period = ws_repeat_rect_tag_lookup(ws_repeat_rect_tags, address,
+        gp0_cmd_buf, (uint32_t)gp0_words_needed, (uint32_t)s_frame_count);
+    if (!period) return;
+    WsRepeatSpan spans[128];
+    int count = ws_repeat_rect_spans(x, u, w, period, (int)draw_area_left,
+                                    width, margin, spans, 128);
+    for (int i = 0; i < count; ++i) {
+        if (draw_area_out_rect(spans[i].x, y, spans[i].w, h)) continue;
+        /* Each span is outside the canonical draw area. Backend scissoring
+         * discards canonical writes while the native-wide mirror draws it. */
+        gr_draw_textured_rect(spans[i].x, y, spans[i].w, h, spans[i].u, v,
+                              clut_x, clut_y, current_texpage());
+    }
+}
+
 /* Execute textured rectangle (GP0 0x64-0x67) */
 static void gp0_exec_textured_rect(void) {
     uint32_t color24 = gp0_cmd_buf[0] & 0xFFFFFFu;
@@ -4150,6 +4306,7 @@ static void gp0_exec_textured_rect(void) {
     int h = (gp0_cmd_buf[3] >> 16) & 0x1FF;
     if (w > 1023) w = 1023;
     if (h > 511)  h = 511;
+    ws_clear_tagged_rect_reveal(y0 + draw_offset_y, h);
 
     /* Widescreen: tagged sprite parts squash around their projected anchor;
      * untagged SPRTs are screen-space 2D (HUD/menus) and squash around the
@@ -4183,6 +4340,7 @@ static void gp0_exec_textured_rect(void) {
                                      clut_x, clut_y, current_texpage());
     else
         gr_draw_textured_rect(x0, y0, w, h, u0, v0, clut_x, clut_y, current_texpage());
+    ws_repeat_textured_rect_reveal(x0, y0, w, h, u0, v0, clut_x, clut_y);
 }
 
 /* Execute 1x1 dot (GP0 0x68-0x6B) */
@@ -4197,6 +4355,25 @@ static void gp0_exec_mono_dot(void) {
     if (draw_area_out_point(x, y)) return;
     gr_set_semi_transparency(semi_trans, (int)semi_transparency);
     gr_draw_flat_rect(x, y, 1, 1, color);
+}
+
+/* Execute textured 1x1 dot (GP0 0x6C-0x6F) */
+static void gp0_exec_textured_dot(void) {
+    uint32_t color24 = gp0_cmd_buf[0] & 0xFFFFFFu;
+    int semi_trans = (gp0_cmd_buf[0] >> 25) & 1;
+    int raw_texture = (gp0_cmd_buf[0] >> 24) & 1;
+    int32_t x0, y0;
+    parse_vertex(gp0_cmd_buf[1], &x0, &y0);
+    (void)ws_sprt_fixed_transform(&x0, y0, 1);  /* position only; 1px stays 1px */
+    x0 += ws_nw_hud_shift(x0, 1);
+    x0 += draw_offset_x; y0 += draw_offset_y;
+    int u0 = gp0_cmd_buf[2] & 0xFF;
+    int v0 = (gp0_cmd_buf[2] >> 8) & 0xFF;
+    uint16_t clut = (uint16_t)(gp0_cmd_buf[2] >> 16);
+    uint16_t clut_x = (clut & 0x3F) * 16;
+    uint16_t clut_y = (clut >> 6) & 0x1FF;
+    setup_textured_draw(color24, semi_trans, raw_texture);
+    gr_draw_textured_rect(x0, y0, 1, 1, u0, v0, clut_x, clut_y, current_texpage());
 }
 
 /* Execute 8x8 textured sprite (GP0 0x74-0x77) */
@@ -5269,24 +5446,9 @@ static void gp0_execute_command(void) {
         case 0x68: case 0x69: case 0x6A: case 0x6B:
             gp0_exec_mono_dot();
             break;
-        case 0x6C: case 0x6D: case 0x6E: case 0x6F: {
-            /* 1x1 textured dot: cmd, vertex, texcoord+clut (no size word) */
-            uint32_t color24 = gp0_cmd_buf[0] & 0xFFFFFFu;
-            int semi_trans = (gp0_cmd_buf[0] >> 25) & 1;
-            int raw_texture = (gp0_cmd_buf[0] >> 24) & 1;
-            int32_t x0, y0;
-            parse_vertex(gp0_cmd_buf[1], &x0, &y0);
-            (void)ws_sprt_fixed_transform(&x0, y0, 1);  /* position only; 1px stays 1px */
-            x0 += draw_offset_x; y0 += draw_offset_y;
-            int u0 = gp0_cmd_buf[2] & 0xFF;
-            int v0 = (gp0_cmd_buf[2] >> 8) & 0xFF;
-            uint16_t clut = (uint16_t)(gp0_cmd_buf[2] >> 16);
-            uint16_t clut_x = (clut & 0x3F) * 16;
-            uint16_t clut_y = (clut >> 6) & 0x1FF;
-            setup_textured_draw(color24, semi_trans, raw_texture);
-            gr_draw_textured_rect(x0, y0, 1, 1, u0, v0, clut_x, clut_y, current_texpage());
+        case 0x6C: case 0x6D: case 0x6E: case 0x6F:
+            gp0_exec_textured_dot();
             break;
-        }
         case 0x70: case 0x71: case 0x72: case 0x73:
             gp0_exec_mono_8x8();
             break;
@@ -5937,6 +6099,9 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     if (len != gpu_snapshot_bytes()) return 0;
     pst_r_init(&r, p, len);
     if (!gpu_snap_parse(&r)) return 0;
+    ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     /* Sync renderer clip/scissor to restored GP0(E3/E4); vars alone leave GL
      * on a stale draw area after savestate load. */
     gr_set_draw_area((int)draw_area_left, (int)draw_area_top,

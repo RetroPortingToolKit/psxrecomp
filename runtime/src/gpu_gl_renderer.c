@@ -3464,6 +3464,7 @@ static void glb_wide_clear(int base_x, int y, int h, uint16_t color) {
 static void glb_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides) {
     if (!s_raster_ok || s_ws_ablate == 1 || g_wide_off <= 0) return;
     double t0 = cw_ms(); s_cw_wide_clears++;
+    flush_flat_batch();
     flush_tex_batch();
     GLuint fbo = wide_fbo_for(base_x);
     if (!fbo) { s_cw_wide_ms += cw_ms() - t0; return; }

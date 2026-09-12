@@ -62,6 +62,7 @@ std::string read_file(const std::filesystem::path& path) {
 struct RunResult {
     EmitStats stats;
     std::string dispatch;
+    std::string full;
 };
 
 RunResult run_case(const char* name, const std::vector<uint32_t>& words,
@@ -86,6 +87,7 @@ RunResult run_case(const char* name, const std::vector<uint32_t>& words,
         rom, kBase, kBase + static_cast<uint32_t>(rom.size()) - 1u,
         discovery, "synthetic", out_dir.string(), stem);
     result.dispatch = read_file(out_dir / (stem + "_dispatch.c"));
+    result.full = read_file(out_dir / (stem + "_full.c"));
     std::filesystem::remove_all(out_dir);
     return result;
 }
@@ -102,7 +104,10 @@ void expect_dispatch_key_absent(const RunResult& result, uint32_t normalized,
                                 const char* message) {
     char needle[32];
     std::snprintf(needle, sizeof(needle), "{ 0x%08Xu,", normalized);
-    expect(result.dispatch.find(needle) == std::string::npos, message);
+    const auto begin = result.dispatch.find("static const DispatchEntry dispatch_table[");
+    const auto end = result.dispatch.find("};", begin);
+    expect(begin != std::string::npos &&
+           result.dispatch.substr(begin, end - begin).find(needle) == std::string::npos, message);
 }
 
 void delay_slot_load_falls_back() {
@@ -199,6 +204,62 @@ void complementary_lwl_lwr_stays_native() {
 
 }  // namespace
 
+void patch_range_guards(BiosConfig config) {
+    PSXRecompV4::BiosInstallSlot slot;
+    slot.ram_addr = 0x508u;
+    slot.len = 8u;
+    slot.resume = PSXRecompV4::BiosInstallSlot::Resume::Fallthrough;
+    config.install_slots.push_back(slot);
+    config.address_copies[0].kernel_bless = true;
+    const auto model = BiosAddressModel::from_config(config);
+    FullFunctionEmitter::set_address_model(&model);
+    const auto result = run_case("patch-terminator", {
+        0x10000002u, // branch directly into the range interior at +12
+        0x00000000u,
+        0x03E00008u, // jr ra at the range START must also be guarded
+        0x00000000u,
+        0x03E00008u,
+        0x00000000u,
+    }, {function_at(kBase, kBase + 20u, {kBase, kBase + 8u, kBase + 12u})});
+    const auto start = result.full.find("label_BFC00008:");
+    const auto interior = result.full.find("label_BFC0000C:");
+    expect(start != std::string::npos &&
+           result.full.find("kernel patch-range hook", start) < interior,
+           "a terminator at range start is guarded");
+    expect(interior != std::string::npos &&
+           result.full.find("kernel patch-range hook", interior) != std::string::npos,
+           "a branch into a range interior cannot bypass the guard");
+    const auto guard = result.full.find("kernel patch-range hook", start);
+    expect(guard < result.full.find("psx_cyc_step", start),
+           "patched instructions are not charged before interpreter handoff");
+    expect_dispatch_key_absent(result, 0x508u, "range start not externally dispatched");
+    expect_dispatch_key_absent(result, 0x50Cu, "range interior not externally dispatched");
+}
+
+void patch_range_delay_boundaries(BiosConfig config) {
+    PSXRecompV4::BiosInstallSlot slot;
+    slot.ram_addr = 0x504u;
+    slot.len = 4u;
+    slot.resume = PSXRecompV4::BiosInstallSlot::Resume::Fallthrough;
+    config.install_slots.push_back(slot);
+    config.address_copies[0].kernel_bless = true;
+    const auto model = BiosAddressModel::from_config(config);
+    FullFunctionEmitter::set_address_model(&model);
+    for (uint32_t predecessor : {0x10000001u, 0x8D280000u}) {
+        const auto result = run_case("patch-delay-boundary", {
+            predecessor, // branch or CPU load immediately before the range
+            0x00000000u,
+            0x03E00008u,
+            0x00000000u,
+        }, {function_at(kBase, kBase + 12u, {kBase})});
+        expect(result.stats.functions_interpreted == 1,
+               "a patch guard cannot discard a pending branch/load delay");
+        expect(result.stats.functions_emitted == 0,
+               "an unsafe patch boundary is fail-closed");
+        expect_entry_absent(result, 0x500u, "unsafe patch owner not dispatched");
+    }
+}
+
 int main() {
     BiosConfig config{};
     config.config_path = "test://full-function-emitter";
@@ -221,6 +282,8 @@ int main() {
     fragment_split_load_falls_back();
     noncomplementary_lwl_falls_back();
     complementary_lwl_lwr_stays_native();
+    patch_range_guards(config);
+    patch_range_delay_boundaries(config);
 
     if (failures != 0) {
         std::fprintf(stderr, "%d full-function emitter test(s) failed\n", failures);

@@ -22,12 +22,35 @@ archive). Vendored as the pinned source archive
 recorded in `third_party/deps.manifest`, and `runtime/chd_dependency.cmake`
 verifies the archive against that digest before building it. It is compiled
 into the runtime as a static library, so the BSD notice must ship with any
-binary that links it.
+binary that links it: the notice text is `runtime/licenses/libchdr-NOTICES.txt`
+and the release packagers copy `runtime/licenses/` into the package as
+`licenses/`.
 
 The archive also carries libchdr's own bundled decompressors — Zstandard
 (BSD-3-Clause / GPL-2.0 dual), LZMA SDK (public domain), and miniz (MIT) —
 built from the same pinned tree; `WITH_SYSTEM_ZLIB`/`WITH_SYSTEM_ZSTD` are
 forced OFF so the disc decoder cannot change with the host's packages.
+
+## Vendored libraries
+
+These are checked in under `recompiler/lib/` and `runtime/third_party/` with
+their upstream license files intact. All are permissive, so nothing here
+constrains this repository's own terms; the obligation is to carry the notice.
+
+| Component | License | Linked into | Notice |
+| --- | --- | --- | --- |
+| [toml11](https://github.com/ToruNiina/toml11) by Toru Niina | MIT | recompiler **and** runtime | `recompiler/lib/toml11/LICENSE`, shipped as `runtime/licenses/toml11-NOTICES.txt` |
+| [stb_image](http://nothings.org/stb) by Sean Barrett | MIT **or** public domain (Unlicense), at your option | runtime | notice in `runtime/third_party/stb_image.h`, shipped as `runtime/licenses/stb_image-NOTICES.txt` |
+| [rabbitizer](https://github.com/Decompollaborate/rabbitizer) by Decompollaborate | MIT | recompiler only | `recompiler/lib/rabbitizer/LICENSE` |
+| [ELFIO](https://github.com/serge1/ELFIO) by Serge Lamikhov-Center | MIT | recompiler only | `recompiler/lib/ELFIO/LICENSE.txt` |
+| [{fmt}](https://github.com/fmtlib/fmt) by Victor Zverovich | MIT | recompiler only | `recompiler/lib/fmt/LICENSE.rst` |
+
+Anything that reaches a **player** binary needs its notice in
+`runtime/licenses/`, which both release packagers copy wholesale into the
+package as `licenses/` — that is the one place to add a notice when a new
+runtime dependency lands. The recompiler-only entries are developer tooling
+and are not in the shipped package; if that ever changes, their notices have
+to ship too.
 
 ## TinyCC (TCC) — toolchain-free overlay compiler shipped to players
 

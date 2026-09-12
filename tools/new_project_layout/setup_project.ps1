@@ -53,7 +53,7 @@ param(
     [string]$PsxrecompRef = "master",
     [string]$RecompUiRef = "master",
     [string]$PsxrecompUrl = "https://github.com/mstan/psxrecomp.git",
-    [string]$RecompUiUrl = "https://github.com/mstan/recomp-ui.git"
+    [string]$RecompUiUrl = "https://github.com/RetroPortingToolKit/recomp-ui.git"
 )
 
 $ErrorActionPreference = "Stop"
