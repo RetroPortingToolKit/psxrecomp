@@ -213,6 +213,21 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-09-12 (WO-3 observed overlay interior recovery):**
+  Branch `fix/observed-overlay-interiors` preserves validated, executed dispatch
+  demands even when shared CFG ownership rejects their hostless interior seeds.
+  Recovery uses the existing guarded isolated-fragment path, without promoting
+  new shared roots or unioning game seed files. A master-failing reproducer,
+  native CPS CLI variant/revisit tests, 65 enabled recompiler CTests, and 35
+  overlay-tool tests pass. Saved Tomba/MMX6 captures each recover four missing
+  exact entries with unchanged shared seed output and zero repeat DLL writes.
+  Eight 11,000-frame cold/warm SCPH-1001 LLE baseline/fix runs exit cleanly;
+  warm MMX6's four target PCs stop appearing in interpreter counters. Tomba is
+  a compile-coverage and non-regression result, not a demonstrated live speedup.
+  PE's five reported PCs remain unverified because the capture bytes are absent.
+  No runtime/emitter timing changes, Tomba2 work, or merge/pin bump. See
+  [the review](OBSERVED_OVERLAY_INTERIOR_REVIEW.md); `beads-eio.3.145`.
+
 - **2026-09-11 (WO-6/WO-7 and BIOS #343/#346 combined validation):**
   Branch `integrate/wo6-bios343-346` preserves both contributor PR histories.
   Resident game dispatch now uses an immutable physical-word index, retaining
