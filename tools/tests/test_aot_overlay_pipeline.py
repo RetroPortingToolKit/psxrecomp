@@ -22,6 +22,20 @@ class FakeDisc:
 
 
 class AotMethodsTest(unittest.TestCase):
+    def test_empty_primary_needs_every_current_byte_root_and_preserves_other_errors(self):
+        compiler = pipeline.compiler
+        pending = [('image', 0x100000, 0x80100000, 16, b'bytes', {0x80100000, 0x80100008})]
+        for coverage, failed in [({0x100000}, 1), ({0x100000, 0x100008}, 0)]:
+            stats = compiler.ShardStats()
+            with mock.patch.object(compiler, 'load_region_current_variant_coverage', return_value=(coverage, [])):
+                compiler.reconcile_empty_primary_scans(pending, 'cache', 123, stats)
+            self.assertEqual(stats.total_fail(), failed)
+        stats = compiler.ShardStats()
+        stats.add_fail('earlier', 'compile_error')
+        with mock.patch.object(compiler, 'load_region_current_variant_coverage', return_value=({0x100000, 0x100008}, [])):
+            compiler.reconcile_empty_primary_scans(pending, 'cache', 123, stats)
+        self.assertEqual(stats.total_fail(), 1)
+
     def test_invalid_branch_candidate_is_rejected_without_hiding_real_failures(self):
         compiler = pipeline.compiler
         entry = 0x80100000

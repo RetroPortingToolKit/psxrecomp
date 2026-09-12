@@ -3290,6 +3290,21 @@ def unsupported_guest_branch_rejection(reason: str) -> bool:
             reason.endswith(': reserved/unsupported branch encoding'))
 
 
+def reconcile_empty_primary_scans(pending, cache_dir, expected_abi, stats):
+    """Accept an empty primary only if guarded fragments serve every root."""
+    for label, physical, load, size, data, roots in pending:
+        current, _ = load_region_current_variant_coverage(
+            cache_dir, physical, data, load, size,
+            expected_abi)
+        served = {(entry & 0x1FFFFFFF) | 0x80000000 for entry in current}
+        if roots and roots <= served:
+            print(f'  primary scan recovered by guarded fragments: {label}')
+            stats.add_skip()
+        else:
+            stats.add_fail(label, 'no_ranges',
+                           'primary roots remain without guarded native coverage')
+
+
 def optional_static_fragment_rejection(entry: int, job: dict,
                                        reason: str) -> bool:
     """Whether an unplayed speculative candidate failed safely.
@@ -6219,6 +6234,7 @@ def main():
     # executed_pcs). Collected right after classification so it survives a region
     # whose own compile is skipped or audit-fails.
     interior_frag_jobs = []
+    pending_empty_primary = []
 
     def _merge_static_result(res):
         """Fold one static_capture_job result into the shared accumulators.
@@ -6501,10 +6517,15 @@ def main():
 
             if not this_ids:
                 print('  WARNING: recompiler emitted no usable _full.ranges -- '
-                      'preserving any prior DLL/ranges pair and leaving this '
-                      'region to the interpreter')
-                stats.add_fail(_label, 'no_ranges',
-                               'no usable function identities (DLL not built)')
+                      'preserving any prior DLL/ranges pair; checking exact '
+                      'fragment coverage after supplementation')
+                if cap.get('producer') == BIOS_RESIDENT_PRODUCER:
+                    stats.add_fail(_label, 'no_ranges',
+                                   'resident producer requires its canonical bundle')
+                else:
+                    pending_empty_primary.append((
+                        _label, phys_addr, load_addr, size, data,
+                        demanded_root_entries))
                 return
             missing_exports = {
                 entry for entry, _crc, _ranges in this_ids
@@ -7571,6 +7592,15 @@ def main():
         print(f'Static output: {static_out}  '
               f'({len(all_variants)} exact function identities total, '
               f'{len(written)} translation unit(s))')
+
+    # A conservative primary scan can emit no functions while exact-entry
+    # supplementation still serves every requested root. Decide only after
+    # that pass, using ABI-valid, current-byte guarded native coverage. Missing
+    # even one primary root remains a failure; toolchain/audit failures above
+    # are never cleared by this reconciliation.
+    reconcile_empty_primary_scans(
+        pending_empty_primary, cache_dir,
+        overlay_abi_tag(args.runtime_include, args.flavor), stats)
 
     # LOUD summary + machine-readable result line, then a non-zero exit when any
     # shard that should have built failed. The runtime's autocompile watcher and
