@@ -2,10 +2,10 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-main = (root / "runtime" / "src" / "main.cpp").read_text()
-config_h = (root / "recompiler" / "src" / "config_loader.h").read_text()
-config_cpp = (root / "recompiler" / "src" / "config_loader.cpp").read_text()
-runtime_cmake = (root / "runtime" / "runtime.cmake").read_text()
+main = (root / "runtime" / "src" / "main.cpp").read_text(encoding="utf-8")
+config_h = (root / "recompiler" / "src" / "config_loader.h").read_text(encoding="utf-8")
+config_cpp = (root / "recompiler" / "src" / "config_loader.cpp").read_text(encoding="utf-8")
+runtime_cmake = (root / "runtime" / "runtime.cmake").read_text(encoding="utf-8")
 
 assert "runtime/" + "launcher" not in runtime_cmake
 assert "Rml" + "Ui" not in runtime_cmake
