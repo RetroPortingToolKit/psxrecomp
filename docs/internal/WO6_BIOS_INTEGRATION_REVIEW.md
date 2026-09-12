@@ -96,6 +96,14 @@ checkpoints show the same FMV. Local raw reports/screenshots are under
 `F:/Projects/psxrecomp/_validation-wo6-bios/{baseline,integration}/{tomba,mmx6}/results/`;
 `final-openbios` and `final-SCPH1001` identify the refreshed runs.
 
+An additional OpenBIOS/MMX6 run on each side captured the demo fade-out at
+roughly 20-frame intervals through frame 11,150. Both show the same fade,
+brief display-disable interval, and return to the 512-wide Capcom screen.
+This explains the darker initial integration screenshot sampled 11 frames
+later than baseline; it is not missing background rendering.
+
+Integration PR: [#348](https://github.com/RetroPortingToolKit/psxrecomp/pull/348).
+
 ## Scope of confidence
 
 This is regression evidence for the tested boot/FMVs/attract paths, generated
