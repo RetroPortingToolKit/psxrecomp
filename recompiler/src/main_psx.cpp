@@ -1606,8 +1606,8 @@ int main(int argc, char** argv) {
         // time instead of binary-searching on every overlay-to-EXE call and
         // every text-validity query. This caches resolution, NEVER validity:
         // callers below still check live instruction ranges on every dispatch.
-        // Bound storage to one PS1 RAM image; unusual sparse/non-RAM tables
-        // retain the existing binary search. No mutable cache or new flag.
+        // Bound the indexed span to one PS1 RAM image; wider or ambiguous
+        // tables retain the existing binary search. No mutable cache or flag.
         const uint32_t lookup_lo = records.empty() ? 0u : (records.front().addr & 0x1FFFFFFFu);
         const uint32_t lookup_hi = records.empty() ? 0u : (records.back().addr & 0x1FFFFFFFu);
         bool indexed_lookup = !records.empty() && lookup_hi - lookup_lo < 0x200000u;

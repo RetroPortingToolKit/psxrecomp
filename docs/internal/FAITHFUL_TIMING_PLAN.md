@@ -213,6 +213,26 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-09-11 (WO-6/WO-7 and BIOS #343/#346 combined validation):**
+  Branch `integrate/wo6-bios343-346` preserves both contributor PR histories.
+  Resident game dispatch now uses an immutable physical-word index, retaining
+  live-byte validation, flat CPS returns and interrupt service. WO-7's sampled
+  owner activations include continuations, unlike function-entry counts; the
+  telemetry label now states that distinction and its collision lower bound.
+  BIOS setup checks configured, linkable backend pairs in the configured
+  framework location. Patch-range guards run before cycles and terminators,
+  cover interior entry labels, and fail closed at unsafe delay boundaries.
+  Fresh Tomba/MMX6 baseline and integration builds each passed 11,000-frame
+  OpenBIOS and SCPH-1001 LLE runs with screenshot and native-coverage checks.
+  The first baseline Tomba screenshot request and first integration MMX6 cold
+  startup exceeded harness timeouts; retries completed. Recompiler tests pass
+  (65 enabled); runtime tests pass (78 executed, one explicit skip, two disabled).
+  The disabled overlay-pair executable regression also passes when run directly.
+  Refresh against master `b4ea4c37` and all eight final live reruns pass, with
+  clean exits and completed card reads. See
+  [the integration review](WO6_BIOS_INTEGRATION_REVIEW.md) for evidence and
+  coverage limits. Tracked by `beads-eio.3.140`.
+
 - **2026-08-31 (GPU DMA2 review correction — source gate passed):**
   The first fork review found two valid timing defects in the DMA2 candidate. The
   linked-list engine now reads and emits one live payload word at each
