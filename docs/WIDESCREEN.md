@@ -1,5 +1,32 @@
 # Widescreen support (`feat/widescreen`)
 
+## Explicit native-wide background polygons (September 2026)
+
+A title plugin can call `gpu_ws_tag_background_prim(prim)` for each opaque
+background polygon in a verified composite, before submitting its ordering
+table. The command starts at `prim + 4`; an embedded command can therefore use
+`command_address - 4` even when that preceding word is not a DMA header.
+The framework validates command type, RAM bounds, complete packet contents,
+address and freshness. The title owns the proof that these are backgrounds
+and that their union covers the authored viewport. No fixed game addresses or
+background guesses belong in the shared API.
+
+OpenGL and software rendering stretch only those polygons about the display
+center in the native-wide surface, preserving canonical VRAM and the default
+4:3 path. Tag every part, including flat fills behind textured sky quads, so
+the composite remains continuous. Tags expire after two frames and reject
+reused packets whose words changed. This method performs no guest writes or
+extra guest allocations.
+
+OpenGL preserves the tag across flat and textured batching. While an explicitly
+tagged background is active, it renders the full wide composite instead of
+copying the canonical center over it, which would create a scale seam. Other
+scenes retain the center-copy optimization. Measure performance in the title
+and validate the visible sky at the requested aspect before release. Vulkan's
+native-wide compositor is not implemented; this API does not add one.
+
+## Earlier projection-and-stretch implementation
+
 Status as of 2026-06-13. Branch `feat/widescreen` in **both** `psxrecomp`
 (framework) and `TombaRecomp` (game opt-in + config), pushed to remote.
 Experimental. Latest: the far-backdrop edge void is largely fixed (2D backdrop

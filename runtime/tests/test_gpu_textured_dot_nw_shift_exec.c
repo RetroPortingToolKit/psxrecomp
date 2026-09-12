@@ -33,6 +33,8 @@ static void reset_gpu_state_for_test(void) {
     memset(test_ram, 0, sizeof(test_ram));
     memset(&last_textured_rect, 0, sizeof(last_textured_rect));
     memset(ws_hud_anchor_tags, 0, sizeof(ws_hud_anchor_tags));
+    memset(ws_background_tags, 0, sizeof(ws_background_tags));
+    ws_background_tags_used = 0;
     memset(ws_tags, 0, sizeof(ws_tags));
 
     s_frame_count = 100;
@@ -98,6 +100,80 @@ static void configure_native_wide_16_9(void) {
     ws_full_2d = 1;
 }
 
+static void test_background_packet_tags(void) {
+    /* The second F4 is embedded in a DMA node: its preceding word need not
+     * be a P_TAG. Only the command and its complete contents are authority. */
+    const uint32_t addr = 0x1001Cu;
+    const uint32_t packet[] = {0x28020304u, 0, 320, 240u << 16,
+                               (240u << 16) | 320u};
+    reset_gpu_state_for_test();
+    memcpy(&test_ram[addr / 4u], packet, sizeof(packet));
+    gp0_cmd_source_addr = addr;
+    gp0_words_needed = 5;
+    memcpy(gp0_cmd_buf, packet, sizeof(packet));
+    gpu_ws_tag_background_prim(addr - 4u);
+    assert(!gpu_ws_background_stretch_active());
+    assert(!ws_nw_explicit_background());
+
+    configure_native_wide_16_9();
+    gpu_ws_tag_background_prim(0x80000000u | (addr - 4u));
+    assert(gpu_ws_background_stretch_active());
+    assert(ws_nw_explicit_background());
+    /* Explicit proof remains valid after a foreground phase has begun. */
+    s_bg_phase_frame = (uint32_t)s_frame_count;
+    s_bg_phase_over = 1;
+    assert(psx_ws_prim_in_backdrop() == 1);
+    assert(memcmp(&test_ram[addr / 4u], packet, sizeof(packet)) == 0);
+
+    for (unsigned i = 0; i < 5; ++i) {
+        gp0_cmd_buf[i] ^= 1u;
+        assert(!ws_nw_explicit_background());
+        gp0_cmd_buf[i] ^= 1u;
+    }
+    gp0_cmd_source_addr += 4u;
+    assert(!ws_nw_explicit_background());
+    gp0_cmd_source_addr -= 4u;
+    gp0_words_needed = 4;
+    assert(!ws_nw_explicit_background());
+    gp0_words_needed = 5;
+    s_frame_count += 2;
+    assert(ws_nw_explicit_background());
+    ++s_frame_count;
+    assert(!gpu_ws_background_stretch_active());
+    assert(!ws_nw_explicit_background());
+    s_frame_count = 99;
+    assert(!gpu_ws_background_stretch_active());
+    s_frame_count = 100;
+    ws_mode = 0;
+    assert(!gpu_ws_background_stretch_active());
+
+    /* Reject semi-transparent polygons, rectangles, misalignment and RAM
+     * overflow; a rejected tag must not even enable the full-composite path. */
+    const uint32_t bad_prim[] = {addr - 3u, 0xFFFFFFFCu, 0x801FFFFCu,
+                                 0x1F800000u};
+    reset_gpu_state_for_test();
+    configure_native_wide_16_9();
+    for (unsigned i = 0; i < sizeof(bad_prim) / sizeof(bad_prim[0]); ++i)
+        gpu_ws_tag_background_prim(bad_prim[i]);
+    assert(!gpu_ws_background_stretch_active());
+    const uint32_t bad_op[] = {0x2Au, 0x2Eu, 0x3Eu, 0x64u, 0x40u};
+    for (unsigned i = 0; i < sizeof(bad_op) / sizeof(bad_op[0]); ++i) {
+        test_ram[addr / 4u] = bad_op[i] << 24;
+        gpu_ws_tag_background_prim(addr - 4u);
+        assert(!gpu_ws_background_stretch_active());
+    }
+    /* The GTE-produced textured quad also qualifies, with all nine words
+     * covered by its guard, including the last UV word. */
+    test_ram[addr / 4u] = 0x2DFFFFFFu;
+    gpu_ws_tag_background_prim(addr - 4u);
+    gp0_cmd_source_addr = addr;
+    gp0_words_needed = 9;
+    memcpy(gp0_cmd_buf, &test_ram[addr / 4u], 9u * sizeof(uint32_t));
+    assert(ws_nw_explicit_background());
+    gp0_cmd_buf[8] ^= 0x10000u;
+    assert(!ws_nw_explicit_background());
+}
+
 int main(void) {
     reset_gpu_state_for_test();
     set_dot_packet(0x10004u, 137, 42);
@@ -120,7 +196,8 @@ int main(void) {
     draw_offset_x = 2;
     exec_dot_and_expect(54, 42);
 
-    puts("gpu_textured_dot_nw_shift_exec_test: PASS");
+    test_background_packet_tags();
+    puts("gpu_textured_dot_nw_shift_exec_test: PASS (HUD and background tags)");
     return 0;
 }
 

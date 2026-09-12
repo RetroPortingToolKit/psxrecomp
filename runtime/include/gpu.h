@@ -353,6 +353,16 @@ void gpu_ws_set_nw_hud_corners(int on);
  * `prim` is the address of the PsyQ P_TAG word; the drawn command starts at
  * prim+4. anchor: -1 = left, 0 = center, +1 = right. */
 void gpu_ws_tag_hud_prim(uint32_t prim, int anchor);
+/* Stretch a trusted authored background polygon about the display center in
+ * the native-wide output only (GL/SW). prim+4 is the command address, including
+ * for a command embedded inside a longer DMA packet. Only opaque polygons are
+ * accepted; address, full packet contents, and frame freshness are guarded.
+ * Tag the complete background composite before submitting its ordering table.
+ * The caller proves background identity/coverage; no guest data is modified. */
+void gpu_ws_tag_background_prim(uint32_t prim);
+/* Renderer policy: tagged background scenes need their full wide composite;
+ * copying the canonical center over it would introduce a scale discontinuity. */
+int gpu_ws_background_stretch_active(void);
 /* Clear synthetic margins to black over an opaque 0x64/65 rectangle's Y band
  * immediately before it executes. Packet-guarded; canonical VRAM is untouched. */
 void gpu_ws_tag_black_reveal_rect(uint32_t prim);
