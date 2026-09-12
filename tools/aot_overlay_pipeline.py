@@ -487,9 +487,15 @@ def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=Non
                 if destination.exists():
                     require(library.with_suffix('.ranges').read_bytes() == destination.with_suffix('.ranges').read_bytes(),
                             f'Conflicting native pair identity: {library.name}')
-                    continue
-                shutil.copy2(library, destination)
-                shutil.copy2(library.with_suffix('.ranges'), destination.with_suffix('.ranges'))
+                else:
+                    shutil.copy2(library, destination)
+                    shutil.copy2(library.with_suffix('.ranges'), destination.with_suffix('.ranges'))
+                marker = library.with_suffix('.resident')
+                if marker.exists():
+                    target_marker = destination.with_suffix('.resident')
+                    require(not target_marker.exists() or marker.read_bytes() == target_marker.read_bytes(),
+                            f'Conflicting resident metadata: {library.name}')
+                    shutil.copy2(marker, target_marker)
     return cache
 
 
@@ -500,8 +506,11 @@ def stage(cache, destination, receipt):
     target.mkdir(parents=True, exist_ok=True)
     expected = set()
     for pair in receipt['pairs']:
-        for name, key in [(pair['dll'], 'dll_sha256'),
-                          (Path(pair['dll']).with_suffix('.ranges').name, 'manifest_sha256')]:
+        artifacts = [(pair['dll'], 'dll_sha256'),
+                     (Path(pair['dll']).with_suffix('.ranges').name, 'manifest_sha256')]
+        if 'resident_sha256' in pair:
+            artifacts.append((Path(pair['dll']).with_suffix('.resident').name, 'resident_sha256'))
+        for name, key in artifacts:
             expected.add(name)
             require(digest(source / name) == pair[key], f'Audited artifact changed: {name}')
             shutil.copy2(source / name, target / name)

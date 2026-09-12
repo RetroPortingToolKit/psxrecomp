@@ -11,6 +11,24 @@ from pathlib import Path
 import sys
 
 
+def resident_metadata(dll, record):
+    """The compiler's preload opt-in must agree with the verified recipe."""
+    marker = dll.with_suffix('.resident')
+    resident = record.get('producer') == 'bios_resident_manifest'
+    assert marker.exists() == resident, f'Resident preload marker/recipe mismatch: {dll.name}'
+    if not resident:
+        return {}
+    body = marker.read_bytes()
+    document = json.loads(body)
+    assert document.get('schema') == 'psxrecomp bios resident shard v1', f'Invalid resident marker: {dll.name}'
+    bios_hash = record.get('bios_sha256', '')
+    assert len(bios_hash) == 64 and all(c in '0123456789abcdef' for c in bios_hash), 'Invalid resident BIOS hash'
+    assert document.get('bios_sha256') == bios_hash, f'Resident BIOS provenance mismatch: {dll.name}'
+    assert document.get('producer_name') == str(record.get('producer_name', 'BIOS resident code')), \
+        f'Resident producer mismatch: {dll.name}'
+    return dict(resident_sha256=hashlib.sha256(body).hexdigest())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--framework-root', type=Path,
@@ -46,6 +64,7 @@ def main():
         dict(name=f'record-{index:03d}', record=record)
         for index, record in enumerate(document)]
     recipes = []
+    records_by_name = {}
     for job in jobs:
         if args.inventory:
             record = json.loads(Path(job['input']).read_text(encoding='utf-8-sig'))[0]
@@ -65,6 +84,7 @@ def main():
         bounds = [(lo & 0x1fffffff, hi & 0x1fffffff) for lo, hi in known]
         assert all(lo < hi for lo, hi in bounds)
         recipes.append((job['name'], load, data, bounds))
+        records_by_name[job['name']] = record
 
     pairs = []
     native_ids = []
@@ -89,7 +109,8 @@ def main():
         assert matched, f'No original-input guard proof for {dll.name}'
         pairs.append(dict(dll=dll.name, functions=len(ids), matched_recipe=matched,
                           dll_sha256=hashlib.sha256(dll.read_bytes()).hexdigest(),
-                          manifest_sha256=hashlib.sha256(dll.with_suffix('.ranges').read_bytes()).hexdigest()))
+                          manifest_sha256=hashlib.sha256(dll.with_suffix('.ranges').read_bytes()).hexdigest(),
+                          **resident_metadata(dll, records_by_name[matched])))
     if args.expected_pairs is not None:
         assert len(pairs) == args.expected_pairs, (len(pairs), args.expected_pairs)
     image_coverage = []

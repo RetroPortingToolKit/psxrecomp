@@ -11,6 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import aot_overlay_pipeline as pipeline
+import audit_aot_cache as auditor
 
 
 class FakeDisc:
@@ -23,6 +24,53 @@ class FakeDisc:
 
 
 class AotMethodsTest(unittest.TestCase):
+    def test_resident_preload_metadata_survives_build_audit_and_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = dict(producer='bios_resident_manifest', bios_sha256='a' * 64,
+                          producer_name='Synthetic exact-BIOS helper')
+            filename = '00001000_12345678' + pipeline.compiler.overlay_ext()
+            def compile_fixture(command, **kwargs):
+                cache = Path(command[command.index('--out-dir') + 1])
+                leaf = cache / 'TEST/gcc' / pipeline.compiler.cache_arch_abi() / 'cg'
+                leaf.mkdir(parents=True)
+                dll = leaf / filename
+                dll.write_bytes(b'Synthetic library')
+                dll.with_suffix('.ranges').write_bytes(b'Synthetic ranges')
+                pipeline.compiler.update_bios_resident_marker(str(dll), record)
+            with mock.patch.object(pipeline.subprocess, 'run', side_effect=compile_fixture):
+                cache = pipeline.build(dict(jobs=[dict(input='input.json', name='resident')]),
+                    root / 'game.toml', root / 'emitter', root, 'gcc', 1)
+            library = next(cache.rglob('*' + pipeline.compiler.overlay_ext()))
+            pair = dict(dll=filename, dll_sha256=pipeline.digest(library),
+                        manifest_sha256=pipeline.digest(library.with_suffix('.ranges')),
+                        **auditor.resident_metadata(library, record))
+            receipt = dict(game_id='TEST', cache_tag='cg', pairs=[pair])
+            pipeline.stage(cache, root / 'stage', receipt)
+            staged = next((root / 'stage').rglob('*.resident'))
+            self.assertEqual(staged.read_bytes(), library.with_suffix('.resident').read_bytes())
+            library.with_suffix('.resident').write_bytes(b'changed after audit')
+            with self.assertRaisesRegex(ValueError, 'Audited artifact changed'):
+                pipeline.stage(cache, root / 'stage', receipt)
+
+    def test_resident_audit_rejects_missing_unproven_and_changed_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dll = Path(directory) / ('helper' + pipeline.compiler.overlay_ext())
+            record = dict(producer='bios_resident_manifest', bios_sha256='a' * 64)
+            with self.assertRaisesRegex(AssertionError, 'marker/recipe mismatch'):
+                auditor.resident_metadata(dll, record)
+            pipeline.compiler.update_bios_resident_marker(str(dll), record)
+            self.assertIn('resident_sha256', auditor.resident_metadata(dll, record))
+            with self.assertRaisesRegex(AssertionError, 'marker/recipe mismatch'):
+                auditor.resident_metadata(dll, {})
+            with self.assertRaisesRegex(AssertionError, 'BIOS provenance'):
+                auditor.resident_metadata(dll, {**record, 'bios_sha256': 'b' * 64})
+            marker = dll.with_suffix('.resident')
+            document = json.loads(marker.read_bytes())
+            marker.write_text(json.dumps({**document, 'schema': 'unknown'}), encoding='utf-8')
+            with self.assertRaisesRegex(AssertionError, 'Invalid resident marker'):
+                auditor.resident_metadata(dll, record)
+
     def test_release_refuses_config_that_would_ignore_bundled_native_modules(self):
         for config in ({}, {'runtime': {}}, {'runtime': {'overlay_cache': False}}):
             with self.subTest(config=config), self.assertRaisesRegex(ValueError, 'overlay_cache = true'):

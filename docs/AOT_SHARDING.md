@@ -90,6 +90,11 @@ coverage or native semantics; keep fallback and perform gameplay spot checks.
 
 Jersey Devil uses `aligned_lzss_banks` for five renderer variants across 70 bank occurrences and `psx_exe` for five secondary executables. Its profile accounts for all 93 BZZ containers, including 23 without code banks.
 
+Exact-BIOS resident helper recipes also publish a `.resident` preload marker.
+The pipeline preserves it through consolidation and staging, verifies its BIOS
+hash against the recipe, and includes its hash in the audit receipt. Omitting
+that marker can leave an otherwise valid helper unused at runtime.
+
 Current consumers:
 
 - Tomba! USA: `TombaRecomp/aot/overlays.json`, 25 fixed-address images, including
