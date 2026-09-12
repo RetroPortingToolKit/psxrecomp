@@ -1585,6 +1585,11 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
 
     included: dict[int, str] = {}
     excluded: dict[int, str] = {}
+    # Shared CFG ownership may later reject a hostless interior. Preserve its
+    # validated dispatch evidence separately so executed entries can still use
+    # the isolated, audited fragment path without truncating a shared host.
+    dispatch_fragment_demands = set()
+    fragment_hi = hi - capture_guard_bytes(cap, size)
     game_text = _game_text_range(toml_doc)
 
     # A dispatch into dirty RAM can land on a jump-table case label. That
@@ -1641,6 +1646,8 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             if impossible_entry_start(addr):
                 excluded[addr] = 'UNKNOWN'
                 return
+            if addr + 4 <= fragment_hi:
+                dispatch_fragment_demands.add(addr)
             if (addr in jump_table_targets or
                     not _callable_legacy_seed(data, load_addr, addr)):
                 included.setdefault(addr, 'DISPATCH_INTERIOR')
@@ -1923,6 +1930,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         'executed_pcs': executed_pcs,
         'dispatch_entry_pcs': dispatch_entry_pcs,
         'static_dispatch_entry_pcs': static_dispatch_entries,
+        'dispatch_fragment_demands': dispatch_fragment_demands,
         'function_entry_pcs': set(included),
         'included_reasons': included,
         'excluded_reasons': excluded,
@@ -1990,6 +1998,9 @@ def print_seed_audit(audit: dict) -> None:
     print(f'toml_entries_included: {audit["counts"].get("TOML_DECLARED_ENTRY", 0)}')
     print(f'dispatch_interior_included: {audit["counts"].get("DISPATCH_INTERIOR", 0)}')
     print(f'dispatch_roots_promoted: {audit["counts"].get("DISPATCH_ROOT", 0)}')
+    unhosted_dispatch = (audit.get('dispatch_fragment_demands', set()) &
+                         audit['executed_pcs']) - set(audit['included_reasons'])
+    print(f'unhosted_executed_dispatch_fragment_demands: {len(unhosted_dispatch)}')
     print(f'cross_producer_calls_rejected: '
           f'{len(audit["rejected_cross_producer_calls"])}')
     print(f'cross_producer_calls_accepted: '
@@ -2002,7 +2013,9 @@ def print_seed_audit(audit: dict) -> None:
     for addr in sorted(audit['excluded_reasons']):
         reason = audit['excluded_reasons'][addr]
         if reason in ('BRANCH_TARGET_ONLY', 'OBSERVED_PC_ONLY', 'UNKNOWN'):
-            print(f'  {addr:08X}  excluded: {reason}')
+            recovery = ('; isolated fragment demand retained'
+                        if addr in unhosted_dispatch else '')
+            print(f'  {addr:08X}  excluded: {reason}{recovery}')
 
 
 def walk_root_seed_entries(seeds: list[str]) -> set[int]:
@@ -3669,6 +3682,12 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
                       'DISPATCH_ROOT')
     }
     executed = set(seed_audit.get('executed_pcs', set()))
+    # A final DISPATCH_INTERIOR needs a discovered host, but a guarded isolated
+    # fragment does not. Do not rebuild live demand solely from surviving
+    # shared seeds. Retain the existing execution gate: arbitrary seeds,
+    # static-only interiors, and merely observed instructions are not enough.
+    observed_dispatch = (set(seed_audit.get('dispatch_fragment_demands', set())) &
+                         executed)
     static_exact_demands = set(
         seed_audit.get('static_exact_fragment_demands', set()))
     hosted_donor_demands = set(
@@ -3681,7 +3700,7 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         a for a in forced_interiors
         if phys_addr <= (a & 0x1FFFFFFF) < region_hi
     }
-    if not (((interiors or dispatch_roots) and executed) or
+    if not (((interiors or dispatch_roots) and executed) or observed_dispatch or
             static_demands or forced):
         return None
     return {
@@ -3694,7 +3713,8 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         # reconstructed from the page-run format otherwise.
         'guard_bytes': capture_guard_bytes(
             capture, size, f'region 0x{load_addr:08X}'),
-        'candidates': interiors | dispatch_roots | static_demands | forced,
+        'candidates': (interiors | dispatch_roots | observed_dispatch |
+                       static_demands | forced),
         'executed': executed,
         'static_demands': static_demands,
         'static_exact_demands': static_exact_demands,
@@ -5798,7 +5818,7 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
             seed.split()[0].startswith('0x'))
     ]
     if not root_seeds:
-        print('  SKIP: no walk-root seeds (data-only region)\n')
+        print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
         result['outcome'] = 'skip'
         return
 
@@ -6346,7 +6366,7 @@ def main():
                 seed.split()[0].startswith('0x'))
         ]
         if not root_seeds:
-            print('  SKIP: no walk-root seeds (data-only region)\n')
+            print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
             stats.add_skip()
             return
 
@@ -6637,8 +6657,9 @@ def main():
     # Run as a SEPARATE pass AFTER all region compiles, so it is DECOUPLED from
     # region success — an executed orphan interior gets its isolated island shard
     # even if its region's trusted compile failed/audit-failed (that is the whole
-    # point of the separate failure domain). For each region, find DISPATCH_INTERIOR
-    # PCs that ACTUALLY EXECUTED this session but that NO built DLL covers (orphan
+    # point of the separate failure domain). For each region, retain validated
+    # dispatch PCs even when shared CFG ownership dropped their interior seeds.
+    # Select those that ACTUALLY EXECUTED but that NO current DLL serves (orphan
     # interiors — host never discovered, so the region can't alias them), and
     # compile each as its OWN isolated <region>_<key>.dll that ENTERS at the
     # interior PC (recovers no host). Isolated => a bad fragment fails alone and
