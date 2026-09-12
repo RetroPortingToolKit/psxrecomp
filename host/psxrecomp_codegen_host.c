@@ -2,6 +2,8 @@
 
 #include "psxrecomp_codegen_host.h"
 
+#include "psx_bios_known_images.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1135,15 +1137,74 @@ static int resolve_build_paths(void) {
     return join_path(g_exe_path, sizeof(g_exe_path), g_build_dir, exe_name);
 }
 
+/* Pair a <stem>_dispatch.c with its <stem>_full.c, the same pairing
+ * runtime.cmake requires before it will link a BIOS backend. */
+static int dispatch_has_full(const char* dir, const char* name) {
+    static const char suffix[] = "_dispatch.c";
+    char stem[512], full[600], path[1200];
+    size_t len = strlen(name);
+    size_t slen = sizeof(suffix) - 1;
+    if (len <= slen || strcmp(name + len - slen, suffix) != 0)
+        return 0;
+    if (len - slen >= sizeof(stem))
+        return 0;
+    memcpy(stem, name, len - slen);
+    stem[len - slen] = '\0';
+    if ((size_t)snprintf(full, sizeof(full), "%s_full.c", stem) >= sizeof(full))
+        return 0;
+    if (!join_path(path, sizeof(path), dir, full))
+        return 0;
+    return path_is_file(path);
+}
+
+/* Does psxrecomp/generated/ hold ANY recompiled BIOS backend?
+ *
+ * This used to probe two hardcoded names, OpenBIOS_dispatch.c and
+ * SCPH1001_dispatch.c. A port that pins a different image — via
+ * PSXRECOMP_BIOS_STEMS / game.toml recompiler.bios_config, as every wave-3
+ * kit does with SCPH5552 — emits its backend under that other stem, so the
+ * probe was permanently unsatisfied: Generate kept succeeding, the wizard
+ * kept reopening, and first-run setup could never complete. Accept any stem
+ * that has both halves instead of naming images here. */
+static int generated_has_bios_backend(const char* dir) {
+#if defined(_WIN32)
+    char pat[1200];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    int found = 0;
+    if (!join_path(pat, sizeof(pat), dir, "*_dispatch.c"))
+        return 0;
+    h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if (dispatch_has_full(dir, fd.cFileName)) {
+            found = 1;
+            break;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return found;
+#else
+    DIR* d = opendir(dir);
+    struct dirent* e;
+    int found = 0;
+    if (!d)
+        return 0;
+    while (!found && (e = readdir(d)) != NULL) {
+        if (dispatch_has_full(dir, e->d_name))
+            found = 1;
+    }
+    closedir(d);
+    return found;
+#endif
+}
+
 static int bios_backends_missing(void) {
-    char openbios[1100], scph[1100];
-    if (!join_path(openbios, sizeof(openbios), g_project_root,
-                   "psxrecomp/generated/OpenBIOS_dispatch.c"))
+    char gen[1100];
+    if (!join_path(gen, sizeof(gen), g_project_root, "psxrecomp/generated"))
         return 1;
-    if (!join_path(scph, sizeof(scph), g_project_root,
-                   "psxrecomp/generated/SCPH1001_dispatch.c"))
-        return 1;
-    return !(path_is_file(openbios) || path_is_file(scph));
+    return !generated_has_bios_backend(gen);
 }
 
 int psxrecomp_codegen_host_sources_missing(
@@ -1209,7 +1270,7 @@ static void write_sidecar_near_exe(const char* near_exe, const char* name,
     write_line_file(path, value ? value : "");
 }
 
-/* IEEE CRC-32 (zlib / Ethernet) — SCPH-1001 identity for setup discovery. */
+/* IEEE CRC-32 (zlib / Ethernet) — retail BIOS identity for setup discovery. */
 static uint32_t host_crc32(const unsigned char* data, size_t len) {
     uint32_t crc = 0xFFFFFFFFu;
     size_t i, j;
@@ -1221,17 +1282,23 @@ static uint32_t host_crc32(const unsigned char* data, size_t len) {
     return ~crc;
 }
 
+/* Does this file match the retail image THIS build pins? A setup host has no
+ * linked backend to ask, so it consults psx_bios_known_images.h rather than
+ * assuming SCPH-1001 — which made every non-SCPH1001 kit reject a perfectly
+ * good dump. An unknown pinned stem adopts nothing and the player is asked. */
 static int retail_bios_file_ok_c(const char* path) {
+    const PsxKnownBiosImage* want = psx_expected_bios();
     FILE* f;
     long size;
     unsigned char* buf;
     uint32_t crc;
+    if (!want) return 0;
     if (!path || !path[0] || !path_is_file(path)) return 0;
     f = fopen(path, "rb");
     if (!f) return 0;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
     size = ftell(f);
-    if (size != 512 * 1024) { fclose(f); return 0; }
+    if (size != (long)want->size) { fclose(f); return 0; }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return 0; }
     buf = (unsigned char*)malloc((size_t)size);
     if (!buf) { fclose(f); return 0; }
@@ -1243,22 +1310,22 @@ static int retail_bios_file_ok_c(const char* path) {
     fclose(f);
     crc = host_crc32(buf, (size_t)size);
     free(buf);
-    return crc == 0x37157331u; /* SCPH-1001 */
+    return crc == want->crc32;
 }
 
-/* Prefer a player-supplied SCPH1001 next to the project/exe for Generate.
- * Missing → leave empty (OpenBIOS). Does not override an explicit OpenBIOS. */
+/* Prefer a player-supplied dump of the pinned retail image next to the
+ * project/exe for Generate. Missing → leave empty (OpenBIOS). Does not
+ * override an explicit OpenBIOS. */
 static int discover_retail_bios_c(char* out, size_t cap) {
-    static const char* names[] = {
-        "SCPH1001.BIN", "scph1001.bin", "SCPH-1001.BIN", "scph-1001.bin",
-        "SCPH1001.bin", "scph1001.BIN",
-    };
+    char names[8][32];
+    int nnames = psx_known_bios_filenames(psx_expected_bios(), names, 8);
     static const char* subs[] = {
         "bios", "", "system", "firmware", "psxrecomp/bios", "psxrecomp-v4/bios",
     };
     char roots[3][1100];
     int nroots = 0;
     int r, s, n;
+    if (nnames <= 0) { out[0] = 0; return 0; }
     if (g_project_root[0]) {
         snprintf(roots[nroots], sizeof(roots[0]), "%s", g_project_root);
         ++nroots;
@@ -1282,7 +1349,7 @@ static int discover_retail_bios_c(char* out, size_t cap) {
                 } else {
                     snprintf(dir, sizeof(dir), "%s", walk);
                 }
-                for (n = 0; n < (int)(sizeof(names) / sizeof(names[0])); ++n) {
+                for (n = 0; n < nnames; ++n) {
                     char cand[1300];
                     if (!join_path(cand, sizeof(cand), dir, names[n])) continue;
                     if (!retail_bios_file_ok_c(cand)) continue;
@@ -3667,6 +3734,7 @@ static const char* host_loop_breaker_note(void) {
     char sidecar[1200], line[64], found[512], marker_abs[1200];
     long long then, now;
     const char* marker_rel;
+    const char* cause;
     int game_missing, bios_missing;
     if (!join_path(sidecar, sizeof(sidecar), g_project_root,
                    HOST_LAST_GENERATE_SIDECAR))
@@ -3687,16 +3755,30 @@ static const char* host_loop_breaker_note(void) {
     if (!game_missing && !bios_missing)
         return NULL;
     list_generated_dispatch(found, sizeof(found));
+    /* Each branch has its own cause, so do not assert a single one. A missing
+     * game dispatch really does point at disagreeing boot-EXE names. Missing
+     * BIOS backends do not: they mean Generate never emitted them, normally
+     * because no retail BIOS was available to emit them from. Blaming
+     * boot-EXE names for that sent players after the wrong thing. */
+    if (game_missing)
+        cause = "please report this to the port maintainer: the project's "
+                "boot-EXE names disagree";
+    else
+        cause = "Generate produced the game code but no BIOS backend, which "
+                "normally means it had no retail BIOS to work from. Select "
+                "the PlayStation BIOS dump this port requires (named in the "
+                "README; it must be exactly 512 KB) in the launcher, then "
+                "run Generate again";
     snprintf(g_loop_breaker_note, sizeof(g_loop_breaker_note),
              "A Generate completed here recently, yet the launcher still "
              "cannot find %s%s%s. generated/ contains: %s. Running Generate "
-             "again will very likely loop — please report this to the port "
-             "maintainer: the project's boot-EXE names disagree.",
+             "again will very likely loop — %s.",
              game_missing ? marker_rel : "",
              (game_missing && bios_missing) ? " and " : "",
              bios_missing ? "the BIOS backends under psxrecomp/generated/"
                           : "",
-             found[0] ? found : "no *_dispatch.c at all");
+             found[0] ? found : "no *_dispatch.c at all",
+             cause);
     fprintf(stderr, "psxrecomp-codegen: %s\n", g_loop_breaker_note);
     return g_loop_breaker_note;
 }
@@ -4200,9 +4282,92 @@ static int host_paths_same_file(const char* a, const char* b) {
 #endif
 }
 
+/* --setup-selfcheck: report what the setup host believes about this tree, as
+ * JSON on stdout, then exit. 0 = generated sources complete, 2 = the wizard
+ * would reopen, 1 = could not tell (no project root).
+ *
+ * This exists because the decision layer -- "are the generated sources
+ * present?" -- had no headless entry point. Disc selection, BIOS selection and
+ * generation were already scriptable via psxrecomp_cli.py; the verdict on
+ * whether setup is DONE was reachable only by clicking through the wizard, so
+ * nothing in CI could assert it. A stem mismatch there shipped a first-run
+ * loop on 26 titles before anyone noticed.
+ *
+ * Deliberately ahead of the PSX_HAS_GAME_DISPATCH early return below, so a
+ * product build answers too. Every title already calls this function with
+ * argc/argv, so no per-title change is needed to gain the flag. */
+static void host_json_str(const char* s) {
+    putchar('"');
+    for (; s && *s; ++s) {
+        if (*s == '\\' || *s == '"')
+            putchar('\\');
+        putchar(*s);
+    }
+    putchar('"');
+}
+
+static void host_selfcheck_or_return(const PsxrecompCodegenHostConfig* cfg,
+                                     int argc, char** argv) {
+    const PsxKnownBiosImage* want;
+    const char* marker_rel;
+    char marker_abs[1200];
+    int i, missing, game_ok, bios_ok;
+
+    for (i = 1; i < argc; ++i)
+        if (argv[i] && strcmp(argv[i], "--setup-selfcheck") == 0)
+            break;
+    if (i >= argc)
+        return;
+
+    if (!cfg || !cfg->cmake_target || !cfg->exe_basename) {
+        printf("{\"error\": \"no codegen host config linked\"}\n");
+        exit(1);
+    }
+    /* Sets g_cfg and g_project_root as a side effect. */
+    missing = psxrecomp_codegen_host_sources_missing(cfg);
+    if (!g_project_root[0]) {
+        printf("{\"error\": \"project root not found\"}\n");
+        exit(1);
+    }
+
+    marker_rel = cfg_or(cfg->gen_marker_relpath,
+                        "generated/SLUS_011.89_dispatch.c");
+    game_ok = join_path(marker_abs, sizeof(marker_abs), g_project_root,
+                        marker_rel) && path_is_file(marker_abs);
+    bios_ok = !bios_backends_missing();
+    want = psx_expected_bios();
+
+    printf("{\n");
+    printf("  \"display_name\": ");
+    host_json_str(cfg_or(cfg->display_name, "Game"));
+    printf(",\n  \"project_root\": ");
+    host_json_str(g_project_root);
+    printf(",\n  \"expected_bios_stem\": ");
+    host_json_str(PSX_EXPECTED_BIOS_STEM);
+    printf(",\n  \"expected_bios_id\": ");
+    host_json_str(want ? want->id : "");
+    printf(",\n  \"expected_bios_crc32\": ");
+    if (want) {
+        char crcbuf[16];
+        snprintf(crcbuf, sizeof(crcbuf), "0x%08X", want->crc32);
+        host_json_str(crcbuf);
+    } else {
+        printf("null");
+    }
+    printf(",\n  \"game_dispatch\": ");
+    host_json_str(marker_rel);
+    printf(",\n  \"game_dispatch_present\": %s", game_ok ? "true" : "false");
+    printf(",\n  \"bios_backends_present\": %s", bios_ok ? "true" : "false");
+    printf(",\n  \"sources_missing\": %s", missing ? "true" : "false");
+    printf("\n}\n");
+    fflush(stdout);
+    exit(missing ? 2 : 0);
+}
+
 /* Setup-host zip-root exe → build-release product (bios/mods/assets/settings). */
 void psxrecomp_codegen_host_forward_if_built(
     const PsxrecompCodegenHostConfig* cfg, int argc, char** argv) {
+    host_selfcheck_or_return(cfg, argc, argv); /* exits when requested */
 #if defined(PSX_HAS_GAME_DISPATCH)
     /* Full game binary — already the product tree. */
     (void)cfg;

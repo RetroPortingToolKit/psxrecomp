@@ -649,6 +649,8 @@ if(BUILD_TESTING)
         foreach(_t IN ITEMS
                 bios_selection_guards
                 capture_history
+                cli_retail_bios_profile
+                codegen_host_bios_stems
                 default_renderer_guards
                 mod_owned_display_controls
                 fmv_quiet_guards

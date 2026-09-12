@@ -515,7 +515,7 @@ else()
     if(PSXRECOMP_HAS_RECOMP_NET)
         message(FATAL_ERROR
             "psxrecomp: PSX_NETPLAY needs retcomm-rbengine.\n"
-            "  git submodule update --init lib/retcomm-rbengine\n"
+            "  git submodule update --init --recursive lib/retcomm-rbengine\n"
             "  or -DRECOMP_RBENGINE_ROOT=/path/to/retcomm-rbengine")
     endif()
 endif()
@@ -544,7 +544,13 @@ if(PSX_REWIND)
         message(FATAL_ERROR
             "psxrecomp: PSX_REWIND=ON exposes the Rewind launcher controls "
             "but no retcomm-rbengine snap-ring backend was found.\n"
-            "  git submodule update --init lib/retcomm-rbengine\n"
+            "A source ZIP downloaded from GitHub never contains submodule "
+            "contents and cannot build. Clone instead:\n"
+            "  git clone --recurse-submodules <repo-url>\n"
+            "In an existing clone, run this from the GAME repo root. Note "
+            "--recursive: rbengine is a submodule of psxrecomp, not of the "
+            "game, so a non-recursive init leaves it empty.\n"
+            "  git submodule update --init --recursive\n"
             "  or -DRECOMP_RBENGINE_ROOT=/path/to/retcomm-rbengine\n"
             "  or configure with -DPSX_REWIND=OFF to hide Rewind.")
     endif()
@@ -1248,15 +1254,18 @@ function(psxrecomp_add_runtime_target target)
     # where releases are validated. Dev checkouts still resolve the relative
     # default without prompting via the exe-dir upward search, which also tries
     # <ancestor>/psxrecomp-v4/<relative> for game-project layouts.
+    # Follow the stem this build actually pins; assuming SCPH1001 here handed
+    # every non-SCPH1001 kit a default path that could never resolve.
+    set(_psxrt_stem_bios "bios/${PSXRECOMP_BIOS_STEM}.BIN")
     if(NOT PSXRT_DEFAULT_BIOS_PATH)
-        set(PSXRT_DEFAULT_BIOS_PATH "bios/SCPH1001.BIN")
+        set(PSXRT_DEFAULT_BIOS_PATH "${_psxrt_stem_bios}")
     elseif(IS_ABSOLUTE "${PSXRT_DEFAULT_BIOS_PATH}")
         message(WARNING
             "DEFAULT_BIOS_PATH '${PSXRT_DEFAULT_BIOS_PATH}' is absolute; refusing to "
             "bake a build-machine path into the binary (release exes must prompt on "
-            "user machines). Using relative 'bios/SCPH1001.BIN' instead — drop the "
+            "user machines). Using relative '${_psxrt_stem_bios}' instead — drop the "
             "DEFAULT_BIOS_PATH argument from this game's CMakeLists.")
-        set(PSXRT_DEFAULT_BIOS_PATH "bios/SCPH1001.BIN")
+        set(PSXRT_DEFAULT_BIOS_PATH "${_psxrt_stem_bios}")
     endif()
     if(NOT DEFINED PSXRT_DEFAULT_GAME_CONFIG_PATH)
         set(PSXRT_DEFAULT_GAME_CONFIG_PATH "")
@@ -1715,6 +1724,10 @@ function(psxrecomp_add_runtime_target target)
     target_compile_definitions(${target} PRIVATE
         DEFAULT_DEBUG_PORT=${PSXRT_DEBUG_PORT}
         PSX_DEFAULT_BIOS_PATH="${PSXRT_DEFAULT_BIOS_PATH}"
+        # The retail stem this build pins. A setup host has no linked
+        # backend to ask, so this is how it knows which image to look for
+        # and name (psx_bios_known_images.h) instead of assuming SCPH-1001.
+        PSX_EXPECTED_BIOS_STEM="${PSXRECOMP_BIOS_STEM}"
         # Where the shipped redistributable image lives, relative to the exe.
         # This is what a player gets when they choose no BIOS.
         PSX_BUNDLED_BIOS_PATH="${PSXRECOMP_BUNDLED_BIOS_PATH}"
@@ -1909,11 +1922,20 @@ function(psxrecomp_add_runtime_target target)
     if(PSX_RECOMP_UI AND NOT PSXRT_ORACLE)
         if(NOT RECOMP_UI_ROOT OR NOT EXISTS "${RECOMP_UI_ROOT}/recomp_ui.cmake")
             message(FATAL_ERROR
-                "PSX_RECOMP_UI=ON but recomp-ui is missing.\n"
-                "Add at the game repo root:\n"
-                "  git submodule add -b master "
-                "https://github.com/RetroPortingToolKit/recomp-ui.git recomp-ui\n"
-                "Or set -DRECOMP_UI_ROOT=/path/to/recomp-ui")
+                "PSX_RECOMP_UI=ON but recomp-ui is missing from the game "
+                "repo root.\n"
+                "A source ZIP downloaded from GitHub never contains "
+                "submodule contents and cannot build. Clone instead:\n"
+                "  git clone --recurse-submodules <repo-url>\n"
+                "In a clone that already declares recomp-ui, fetch the "
+                "pinned commit:\n"
+                "  git submodule update --init --recursive\n"
+                "Only if this repo does not declare recomp-ui yet, add it "
+                "(use the fork this project pins, not necessarily "
+                "upstream):\n"
+                "  git submodule add <recomp-ui-url> recomp-ui\n"
+                "Or point at an existing checkout: "
+                "-DRECOMP_UI_ROOT=/path/to/recomp-ui")
         endif()
         # recomp-ui gates its Mods view behind RECOMP_UI_ENABLE_MODS, which
         # defaults OFF there -- correct for a cross-console launcher, since a
