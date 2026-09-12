@@ -19,6 +19,7 @@ import zlib
 
 import compile_overlays as compiler
 from aot_overlay_spike import extract_generic as extractor
+from packed_sector_table import extract_members as extract_sector_members
 
 FRAMEWORK = Path(__file__).resolve().parents[1]
 
@@ -61,6 +62,12 @@ class Disc:
 def verify_evidence(disc, checks):
     """Reusable binary-word, pointer-string, and BCD extent table identifiers."""
     for check in checks:
+        if check['method'] == 'adjacent_files':
+            files = [disc.files[name.upper()] for name in check['files']]
+            require(all(size % 2048 == 0 and lba + size // 2048 == next_lba
+                        for (lba, size), (next_lba, _) in zip(files, files[1:])),
+                    'Original disc files are not sector-adjacent')
+            continue
         data = disc.read(check['file'])
         origin = number(check.get('file_offset', 0))
         base = number(check.get('base', 0))
@@ -93,10 +100,54 @@ def verify_evidence(disc, checks):
             raise ValueError(f'Unknown evidence method: {method}')
 
 
+def sector_sources(disc, spec):
+    """Verified member inventory, with explicit exclusions and extent checks."""
+    first, last = (number(spec['inventory_range'][key]) for key in ('first', 'last'))
+    require(0 <= first <= last, 'Invalid sector inventory range')
+    configured = {number(item['index']): item for item in spec['members']}
+    excluded = {number(item['index']): item for item in spec.get('excluded_members', [])}
+    require(len(configured) == len(spec['members']) and
+            len(excluded) == len(spec.get('excluded_members', [])), 'Duplicate member inventory')
+    require(not configured.keys() & excluded.keys() and
+            configured.keys() | excluded.keys() == set(range(first, last + 1)),
+            'Sector inventory has missing or conflicting classifications')
+    require(all(item.get('reason', '').strip() for item in excluded.values()),
+            'Excluded sector member needs a reason')
+    members = extract_sector_members(disc.read(spec['table_file']),
+                    [(name.upper(), disc.read(name)) for name in spec['payload_files']],
+                    range(first, last + 1), sector_size=number(spec.get('sector_size', 2048)),
+                    offset_bits=number(spec.get('offset_bits', 20)),
+                    table_offset=number(spec.get('table_offset', 0)))
+    for name in spec.get('cover_payloads', []):
+        spans = sorted((member['source_offset'], len(member['body'])) for member in members
+                       if member['source_file'] == name.upper())
+        cursor = 0
+        for offset, size in spans:
+            require(offset == cursor, 'Sector inventory has a gap or overlapping members')
+            cursor += size
+        require(cursor == len(disc.read(name)), 'Sector inventory does not cover required payload')
+    sources = []
+    for member in members:
+        item = configured.get(member['index'])
+        if item is None:
+            continue
+        base = number(item['load_addr'])
+        require(0x80000000 <= base < base + len(member['body']) <= 0x80200000,
+                'Sector image outside RAM')
+        name = f"{spec['table_file'].upper()}:ENTRY_{member['index']:04X}"
+        sources.append(dict(name=name, base=base, body=member['body'],
+                            spec={**spec, **item}, source_offset=member['source_offset'],
+                            source_file=member['source_file'], aliases=[]))
+    return sources
+
+
 def positioned_sources(disc, specifications):
     sources = []
     for spec in specifications:
         method = spec['method']
+        if method == 'packed_sector_members':
+            sources.extend(sector_sources(disc, spec))
+            continue
         for name in spec['files']:
             body = disc.read(name)
             offset = 0
@@ -140,13 +191,8 @@ def match_sources(record, sources):
     return matches
 
 
-def make_fixed_record(source, disc):
+def declared_entries(source, disc):
     body, base, spec = source['body'], source['base'], source['spec']
-    require(spec.get('allow_missing'), f"Generic extractor missed required image: {source['name']}")
-    direct = set(extractor.direct_jal_roots(body, base))
-    seeds = set(extractor.prologues(body, base)) | extractor.frameless_leaf_entries(body, base)
-    if spec.get('supplemental_entries', True):
-        seeds |= extractor.supplemental_callable_seeds(body, base)
     entries = set()
     if 'entry_word' in spec:
         item = spec['entry_word']
@@ -155,6 +201,17 @@ def make_fixed_record(source, disc):
     entries.update(number(x) for x in spec.get('entries', []))
     require(all(base <= entry < base + len(body) and entry % 4 == 0 for entry in entries),
             f"Entry outside image: {source['name']}")
+    return entries
+
+
+def make_fixed_record(source, disc):
+    body, base, spec = source['body'], source['base'], source['spec']
+    require(spec.get('allow_missing'), f"Generic extractor missed required image: {source['name']}")
+    direct = set(extractor.direct_jal_roots(body, base))
+    seeds = set(extractor.prologues(body, base)) | extractor.frameless_leaf_entries(body, base)
+    if spec.get('supplemental_entries', True):
+        seeds |= extractor.supplemental_callable_seeds(body, base)
+    entries = declared_entries(source, disc)
     seeds |= entries
     require(seeds, f"No static entries: {source['name']}")
     page, data = extractor.page_aligned_region(base, body)
@@ -194,10 +251,21 @@ def prepare(profile, disc, records, output):
             if (lo, hi) == (source['base'], source['base'] + len(source['body'])):
                 singles[source['name']] = record
     for source in sources:
-        if source['spec']['method'] == 'fixed_address_files' and source['name'] not in singles:
+        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members') and source['name'] not in singles:
             record = make_fixed_record(source, disc)
             singles[source['name']] = record
             records.append(record)
+    # Loader-established exports remain required even when heuristic discovery
+    # found the image without finding that particular callable entry.
+    for source in sources:
+        entries = declared_entries(source, disc)
+        if entries:
+            require(source['name'] in singles, 'Declared entries need a complete source recipe')
+            record = singles[source['name']]
+            for key in ('function_entry_pcs', 'dispatch_entry_pcs', 'static_dispatch_entry_pcs', 'seeds'):
+                record[key] = [hex(pc) for pc in sorted(entries | {number(pc) for pc in record[key]})]
+            record['static_discovery_entry_pcs'] = [hex(pc) for pc in sorted(entries |
+                {number(pc) for pc in record.get('static_discovery_entry_pcs', [])})]
     by_name = {source['name']: source for source in sources}
     keys = {(number(r['load_addr']), r['bytes_b64']) for r in records}
     for composition in profile.get('compositions', []):
@@ -231,6 +299,8 @@ def prepare(profile, disc, records, output):
         path = output / 'runtime-inputs' / f'{index:03d}.json'
         write_json(path, [record])
         jobs.append(dict(name=f'{index:03d}-' + '+'.join(names), sources=names,
+                         required_entries=sorted({entry for source, _, _ in matches
+                                                  for entry in declared_entries(source, disc)}),
                          known_ranges=bounds, input=str(path.resolve()), load_addr=hex(load),
                          size=len(data), sha256=hashlib.sha256(data).hexdigest(),
                          recipe_sha256=hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest(),

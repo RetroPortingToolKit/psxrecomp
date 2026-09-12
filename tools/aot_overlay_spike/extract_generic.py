@@ -30,6 +30,7 @@ import argparse, os, sys, json, base64, struct, subprocess, tempfile, re, binasc
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import extract_overlays as eo
 import compile_overlays as co
+from packed_sector_table import extract_members as extract_sector_members
 try:
     import tomllib
 except ImportError:
@@ -565,25 +566,18 @@ def hed_companion_members(disc, files):
         if not runs:
             continue
 
-        logical=[]; cursor=0
-        for path,lba,size in companions:
-            body=disc.read_file_bytes(lba,size)
-            logical.append((cursor,cursor+size//0x800,path,body))
-            cursor+=size//0x800
+        payloads=[(path,disc.read_file_bytes(lba,size)) for path,lba,size in companions]
         members=[]; seen=set()
         for table_index,sector,count in runs:
             key=(sector,count)
             if key in seen:
                 continue
             seen.add(key)
-            owner=next((x for x in logical
-                        if x[0] <= sector and sector+count <= x[1]),None)
-            if owner is None:
+            try:
+                member=extract_sector_members(hed,payloads,[table_index])[0]
+            except ValueError:
                 continue
-            lo,hi,path,body=owner
-            off=(sector-lo)*0x800
-            member=body[off:off+count*0x800]
-            members.append((table_index,sector*0x800,member))
+            members.append((table_index,member['logical_offset'],member['body']))
         if members:
             groups.append({
                 'hed_path':hed_path,

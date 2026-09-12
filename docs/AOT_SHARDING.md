@@ -59,9 +59,11 @@ Profiles declare these reusable methods:
 | `disc_hashes` | Hash the cue's original data track before extracting. |
 | `images[].method = fixed_address_files` | Whole original files placed at a verified `load_addr`. Optional duplicate-leaf checks require identical bytes. |
 | `images[].method = psx_exe` | Read the load address and image from a PS-X EXE header; the generic extractor may split resident and overlay floors. |
+| `images[].method = packed_sector_members` | Decode u32 count/offset sector descriptors across ordered payload files. Verify every member classification and requested full-payload coverage; use loader-established addresses for executable members. |
 | `checks[].method = words` | Verify loader instructions or descriptors at explicit file offsets / virtual addresses. |
 | `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. |
 | `checks[].method = bcd_extent_table` | Verify an indexed BCD-MSF/size table against an ISO file's actual extent. |
+| `checks[].method = adjacent_files` | Require the named ISO extents to be sector aligned and physically adjacent, in order. |
 | `compositions` | Combine declared simultaneous producers in address order. `max_gap` bounds their separation; gap and alignment bytes remain unowned. |
 | `expected_records` | Stop on inventory drift, including unexpected additions requiring review. Every configured image must be represented. |
 | `strict_bounds` | Require emission to remain inside established producer intervals. |
@@ -73,7 +75,9 @@ into a proven function. There is no recipe option to ignore a failed compiler.
 
 Each recipe compiles in an isolated cache. `tools/audit_aot_cache.py` checks every
 native pair's ABI/exports, every manifest guard against known original bytes,
-and nonzero native coverage for every recipe. Staging copies precisely the
+and nonzero native coverage for every recipe. Loader entry points supplied by
+the profile must also have native entries guarded by that image's original bytes.
+Staging copies precisely the
 audited platform pairs, verifies hashes again, rejects extras, and emits
 `AOT_CACHE_AUDIT.json` without game bytes. A missing disc, changed loader word,
 missing image, compiler failure, empty recipe coverage or failed audit stops
@@ -89,6 +93,20 @@ Current consumers:
   MAIN.EXE and 28 raw images, including all 22 area overlays. Their loader tables
   establish different regional addresses; composition uses the same shared
   method (including the Italian gap). US START.BIN is explicitly accounted for.
+- Ape Escape USA: `ApeEscapeRecomp/aot/overlays.json`, 47 established packed
+  sector-table overlays plus two minigame PS-X EXEs. Two additional archive
+  members have unresolved load paths and are explicitly excluded.
+
+For `packed_sector_members`, declare `table_file`, ordered `payload_files`,
+`sector_size` (default 2048), `offset_bits` (default 20), and optional
+`table_offset`. A descriptor's low bits are the logical sector offset and its
+remaining high bits are the sector count. Members cannot cross payload-file
+boundaries. `inventory_range` gives inclusive `first`/`last` descriptor indices;
+every index must occur once in either `members` or `excluded_members`.
+Executable members carry `index`, `load_addr`, and optionally verified `entries`.
+Exclusions require a `reason`. `cover_payloads` names files that this entire
+classified range must cover exactly, without gaps or overlaps. The shared reader
+is `tools/packed_sector_table.py`; heuristic discovery uses that same parser.
 
 See `tools/tests/test_aot_overlay_pipeline.py` for synthetic method and release
 failure tests. A new title should add a profile when these contracts fit; add

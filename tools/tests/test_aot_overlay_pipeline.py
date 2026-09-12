@@ -22,6 +22,42 @@ class FakeDisc:
 
 
 class AotMethodsTest(unittest.TestCase):
+    def test_sector_inventory_covers_payload_and_accounts_for_exclusions(self):
+        disc = FakeDisc({'INDEX': struct.pack('<III', 0x100000, 0x100001, 0x100002),
+                         'DATA': b'A' * 2048, 'CODE': b'B' * 2048 + b'C' * 2048})
+        spec = dict(method='packed_sector_members', table_file='INDEX',
+                    payload_files=['DATA', 'CODE'], inventory_range=dict(first=1, last=2),
+                    cover_payloads=['CODE'], members=[dict(index=1, load_addr='0x80100000')],
+                    excluded_members=[dict(index=2, reason='Load destination unresolved')])
+        sources = pipeline.positioned_sources(disc, [spec])
+        self.assertEqual([(s['name'], s['body'], s['source_offset']) for s in sources],
+                         [('INDEX:ENTRY_0001', b'B' * 2048, 0)])
+        with self.assertRaisesRegex(ValueError, 'classifications'):
+            pipeline.positioned_sources(disc, [{**spec, 'excluded_members': []}])
+        disc.data['INDEX'] = struct.pack('<III', 0x100000, 0x100001, 0x100001)
+        with self.assertRaisesRegex(ValueError, 'overlapping'):
+            pipeline.positioned_sources(disc, [spec])
+
+    def test_sector_bounds_and_descriptor_layout_fail_closed(self):
+        for descriptor, indices, options, error in [
+                (0x200000, [0], {}, 'crosses'), (0x100002, [0], {}, 'bounds'),
+                (0, [0], {}, 'Empty'), (0x100000, [1], {}, 'outside table'),
+                (0x100000, [0, 0], {}, 'Duplicate'),
+                (0x100000, [0], dict(offset_bits=32), 'layout'),
+                (0x100000, [0], dict(sector_size=3), 'power of two')]:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                pipeline.extract_sector_members(struct.pack('<I', descriptor),
+                    [('A', bytes(2048)), ('B', bytes(2048))], indices, **options)
+
+    def test_adjacent_disc_extents_are_verified(self):
+        disc = FakeDisc({'INDEX': bytes(2048), 'BODY': bytes(4096)})
+        disc.files = {'INDEX': (10, 2048), 'BODY': (11, 4096)}
+        check = dict(method='adjacent_files', files=['INDEX', 'BODY'])
+        pipeline.verify_evidence(disc, [check])
+        disc.files['BODY'] = (12, 4096)
+        with self.assertRaisesRegex(ValueError, 'sector-adjacent'):
+            pipeline.verify_evidence(disc, [check])
+
     def test_empty_primary_needs_every_current_byte_root_and_preserves_other_errors(self):
         compiler = pipeline.compiler
         pending = [('image', 0x100000, 0x80100000, 16, b'bytes', {0x80100000, 0x80100008})]

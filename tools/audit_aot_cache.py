@@ -93,6 +93,8 @@ def main():
     if args.expected_pairs is not None:
         assert len(pairs) == args.expected_pairs, (len(pairs), args.expected_pairs)
     image_coverage = []
+    required = {job['name']: {entry & 0x1fffffff for entry in job.get('required_entries', [])}
+                for job in jobs}
     for name, load, data, bounds in recipes:
         compatible = set()
         for physical, ids in native_ids:
@@ -105,7 +107,10 @@ def main():
                               for entry, crc, ranges in compiler.current_variant_func_ids(
                                   bounded, data, load, len(data)))
         assert compatible, f'No guarded native entries for input image: {name}'
+        served = {item[0] & 0x1fffffff for item in compatible}
+        assert required[name] <= served, f'Missing loader-established entries for {name}: {sorted(required[name] - served)}'
         image_coverage.append(dict(name=name,
+                                   required_entries_verified=len(required[name]),
                                    native_entries=len({item[0] for item in compatible}),
                                    guarded_variants=len(compatible)))
     receipt = dict(game_id=game_id, cache_tag=tag, flavor=args.flavor,
