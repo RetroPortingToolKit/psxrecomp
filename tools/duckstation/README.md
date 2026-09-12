@@ -13,7 +13,7 @@ PSXRecomp v4 uses a patched build of [stenzek/duckstation](https://github.com/st
 ## First-time setup -- Linux / macOS
 
 Use `tools/duckstation_oracle.py`. It installs outside any game repo, into the
-shared RetComM data root, so one build serves every title:
+shared Retro data root, so one build serves every title:
 
 ```text
 ~/.local/share/retcomm/oracle/duckstation/     ($RETCOMM_DATA_DIR, or $RETCOMM_ORACLE_DIR)

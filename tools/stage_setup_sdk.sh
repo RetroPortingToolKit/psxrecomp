@@ -3,7 +3,7 @@
 # into an existing setup-host release stage directory.
 #
 # Title packagers copy the host exe, game sources, and framework tree first,
-# then call this to finish the RetComM/wizard-complete zip layout.
+# then call this to finish the Retro/wizard-complete zip layout.
 #
 # Usage:
 #   stage_setup_sdk.sh --stage <stage-dir> [options]
@@ -201,12 +201,15 @@ cat >"${STAGE}/psxrecomp/retcomm-sdk.json" <<'EOF'
 }
 EOF
 
-for f in OpenBIOS.toml openbios.bin OpenBIOS.LICENSE SCPH1001.toml; do
-  if [[ ! -f "${STAGE}/psxrecomp/bios/${f}" ]]; then
-    echo "error: missing psxrecomp/bios/${f} in staged tree" >&2
-    exit 1
-  fi
-done
+if command -v python3 >/dev/null 2>&1; then
+  SDK_PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  SDK_PYTHON=python
+else
+  echo "error: Python is required to check the staged BIOS policy" >&2
+  exit 1
+fi
+"${SDK_PYTHON}" "${SCRIPT_DIR}/check_setup_bios_assets.py" "${STAGE}"
 
 if [[ "${REQUIRE_CLI}" -eq 1 && ! -f "${STAGE}/psxrecomp/psxrecomp_cli.py" ]]; then
   echo "error: missing psxrecomp/psxrecomp_cli.py in staged tree" >&2
@@ -232,7 +235,7 @@ if [[ -n "${TOOLCHAIN_DIR}" && -d "${TOOLCHAIN_DIR}" ]]; then
   fi
   echo "bundled toolchain from ${TOOLCHAIN_DIR}"
 elif [[ "${ALLOW_NO_TOOLCHAIN}" -eq 1 ]]; then
-  echo "note: no embedded toolchain/ — RetComM/wizard will download cmake-clang-v1" \
+  echo "note: no embedded toolchain/ — Retro/wizard will download cmake-clang-v1" \
        "(or accept an offline zip / system cmake)" >&2
 else
   echo "error: toolchain dir required (pass --toolchain-dir or set PSXRECOMP_TOOLCHAIN_DIR)" >&2

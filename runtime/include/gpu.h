@@ -169,6 +169,14 @@ void gpu_ws_configure(int aspect_num, int aspect_den,
 /* [widescreen] full_2d: opt a pure-2D sprite game into the widescreen present
  * path (treat every in-game frame as gameplay, since it never tags 3D prims). */
 void gpu_ws_set_full_2d(int on);
+/* Signed 16-bit camera/min/max; active is a nonzero byte. Requires bg2d hooks.
+ * Zero addresses disable the feature. No guest memory is written. */
+void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_t active);
+/* Bracket each bg2d packet producer, with its guest packet pointer. The
+ * independent-layer mask identifies parallax backdrops that may anchor to
+ * their own map edges; linked/foreground layers retain the world origin. */
+void gpu_ws_bg2d_begin_view_layer(unsigned layer, uint32_t packet, unsigned independent_mask);
+void gpu_ws_bg2d_end_view_layer(unsigned layer, uint32_t packet);
 void gpu_ws_set_auto_ui_squash(int on);
 /* [widescreen.bg2d] Capcom 2D background tile-loop widen — hooked at the renderer's
  * column-count / start-tile-col / start-screen-x instructions. Identity at 4:3
@@ -219,7 +227,6 @@ int psx_ws_mmx6_bg_stream_left(int x);
 int psx_ws_mmx6_bg_stream_right(int x);
 struct CPUState;
 void psx_ws_sprite_tag(struct CPUState* cpu);
-
 /* Native-wide (mode 2) on a game frame. ws_nw_extra() is the total width the
  * frame grows by, in display pixels (the present path widens the display read
  * by this; 0 when native-wide is inactive). */
@@ -272,6 +279,8 @@ void gpu_ws_set_aspect_cone(const uint32_t *addresses,
                             const uint32_t queue_capacities[3],
                             const uint32_t queue_type_masks[3]);
 int  psx_ws_is_cull_bias_site(uint32_t pc);
+void gpu_ws_set_bias_lower_cull_sites(const uint32_t *sites, int nsites);
+int  psx_ws_is_cull_bias_lower_site(uint32_t pc);
 int  psx_ws_is_cull_slti_site(uint32_t pc);
 int  psx_ws_is_cull_slti_lower_site(uint32_t pc);
 int  psx_ws_is_cull_negsub_site(uint32_t pc);
@@ -299,6 +308,8 @@ int32_t psx_ws_player_x_bound(int32_t vanilla);
 void gpu_ws_set_signed_x_bound_sites(const uint32_t *addresses,
                                      const uint32_t *expected, int count);
 int psx_ws_is_signed_x_bound_site(uint32_t pc, uint32_t instr);
+/* Widen a signed screen-pixel edge loaded by an explicitly guarded site. */
+int32_t psx_ws_screen_x_bound(int32_t vanilla);
 
 /* Shared render-funnel screen-X cull widening ([widescreen.cull] auto_screen_x):
  * the gcc emit and the interpreter both route a flagged
@@ -349,6 +360,17 @@ void gpu_ws_set_gameplay_state_gate(uint32_t addr,
  * outer-third screen-space HUD primitives out to the true wide-frame corners
  * (they otherwise sit inset by the reveal). Runtime-only. Off by default. */
 void gpu_ws_set_nw_hud_corners(int on);
+/* Explicit native-wide HUD packet anchor from a trusted title plugin.
+ * `prim` is the address of the PsyQ P_TAG word; the drawn command starts at
+ * prim+4. anchor: -1 = left, 0 = center, +1 = right. */
+void gpu_ws_tag_hud_prim(uint32_t prim, int anchor);
+/* Clear synthetic margins to black over an opaque 0x64/65 rectangle's Y band
+ * immediately before it executes. Packet-guarded; canonical VRAM is untouched. */
+void gpu_ws_tag_black_reveal_rect(uint32_t prim);
+/* Repeat an opaque, already-clipped textured rectangle into native-wide
+ * reveal margins only. The caller verifies the composite's source period.
+ * Original UVs, texel density, and canonical VRAM writes are unchanged. */
+void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period);
 /* Targeted alternative for sprite-heavy 2D games: corner-anchor only primitives
  * whose ordering-table packet lives in the configured half-open RAM range. */
 void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi);
@@ -443,6 +465,7 @@ typedef struct {
     int      xnum, xden;        /* squash factor */
     int      mode;              /* 0 = off, 1 = squash, 2 = native-wide */
     int      nw_extra;          /* native-wide frame growth (display px), 0 if off */
+    int      view_anchor, view_left, view_right, view_shift, view_pad_left, view_pad_right;
     uint64_t cur_frame;
     uint32_t last_tag_frame;    /* frame of newest tagged prim */
     uint32_t last_3d_frame;     /* frame of newest shaded prim (diagnostic) */

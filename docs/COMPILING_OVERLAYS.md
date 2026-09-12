@@ -1,5 +1,9 @@
 # Compiling overlays from `overlay_captures.json`
 
+For ahead-of-time extraction from original disc files, start with the
+[AOT sharding guide](AOT_SHARDING.md). The compiler accepts disc-derived records
+as well as runtime captures; a playthrough is not required for supported producers.
+
 **Audience:** developers preparing a release who want to ship as much
 native-compiled overlay coverage as possible, plus modders and players who want
 to pre-build coverage for their own machine.
@@ -137,6 +141,24 @@ overlays that changed. `--static-single-file` restores the monolithic output.
 The tool side parallelizes too: `--jobs N` (default cores−2) runs each
 capture's recompile + audit in a process pool and merges results in capture
 order, so the emitted C is byte-identical to `--jobs 1`.
+
+**Isolated interior fragments are per (entry, image).** After the region
+compiles, every captured `dispatch_entry_pcs` address that no compiled host
+serves gets its own isolated `dispatch_root` shard — one per *capture that
+observed it*, built from that capture's bytes, because the dispatcher's CRC
+gate only ever accepts a variant against the bytes it was compiled from. Two
+captures of one band that both list an address are two demands. (Keying on
+the bare address, as the pass once did, let one occupant's fragment mark the
+address served for every occupant of the band, so only one occupant per band
+ever got fragments.) The fragment compiles run on the same `--jobs` pool.
+A fragment whose bytes decode as data fails the generated-C audit
+deterministically; that verdict is memoized in
+`<out-dir>/interior_fail_memo.txt` (keyed by image bytes, entry, guard,
+`game.toml`, CPS) and counted as *skipped* — safe coverage loss, since only
+the occupant that really ran the address can serve it. `--force-interior PC`
+retries a memoized entry; delete the memo file to retry everything. Only a
+non-deterministic failure (recompiler exit, missing output) is a shard
+failure.
 
 **Trade-off vs. the DLL cache:** `--static` is a fixed snapshot chosen at build
 time — it will *not* grow as the player explores new areas. The DLL cache (§0/§1)

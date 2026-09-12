@@ -5,7 +5,7 @@ disc image at build time, so a fresh install ships with overlay coverage instead
 of relying entirely on runtime (tcc/gcc) autocompile. See `docs/AOT_OVERLAY_PLAN.md`
 for the full design, findings, and honest coverage numbers.
 
-**Status: ENHANCEMENT SPIKE. Provably-correct for clean producers, not exhaustive.**
+**Status: ENHANCEMENT SPIKE. Partial static discovery; not a correctness proof.**
 `extract_generic.py` is path-parameterized and suitable for the current build
 pipeline. Disc-container discovery remains engine-specific; unsupported producers
 fail closed instead of being guessed as code.
@@ -41,13 +41,22 @@ the named metric.
   All 22 A*.BIN overlays converge on 0x80108F9C (region 0x80108000 +3996),
   DEMO/GAME converge on 0x80106228, and OPN resolves to 0x8018A000.
 
-## Correctness guarantee (why partial coverage is safe)
+## What byte guards establish
 
 Every shard is content-addressed by per-function `code_crc`; the runtime loader
-only executes a shard when live RAM byte-matches (`overlay_loader.c` lazy_man_matches).
-A mis-positioned / data-as-code shard either fails audit at compile time or never
-fires at runtime → coverage loss, never incorrect execution. Whatever static
-misses, production autocompile (tcc/gcc) self-heals on first visit.
+checks live RAM against its recorded byte ranges (`overlay_loader.c`
+`lazy_man_matches`). That protects against selecting a different overlay at the
+same address. It does not prove that bytes were correctly classified as code,
+that all dependencies were guarded, or that the emitted native code is correct.
+Captured shards are investigative references, not correctness or completeness
+oracles. Production fallback can cover additional executed paths; it cannot
+establish that a static extraction is complete.
+
+The shared switch recognizer accepts a bounded `sltiu; beq; lui; addiu; sll;
+addu; lw; nop; jr` pattern, including LUI in the BEQ delay slot. Register
+dependencies, producer bounds, table targets, and direct edges must pass the
+proof checks. This recovers a compiler convention across titles without game
+addresses in the recognizer. Unknown dispatch forms still require investigation.
 
 ## Durable runtime capture history
 

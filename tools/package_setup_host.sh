@@ -3,7 +3,7 @@
 #
 # Stages the host exe, title sources, filtered psxrecomp/ + recomp-ui/, then
 # finishes with stage_setup_sdk.sh (emitters, OpenBIOS, MinGW DLLs).
-# Portable cmake/clang is NOT embedded by default — RetComM / the setup wizard
+# Portable cmake/clang is NOT embedded by default — Retro / the setup wizard
 # download cmake-clang-v1 from retcomm-toolchains (or accept an offline zip).
 #
 # Usage (from game repo root):
@@ -262,7 +262,7 @@ ZIP_NAME="${ZIP_PREFIX}-${VERSION}-${ARTIFACT}.zip"
 rm -f "${DIST}/${ZIP_NAME}"
 
 cp -a "${EXE}" "${STAGE}/"
-# Ship the stamp beside the exe so installers / RetComM can prefer it over VERSION.
+# Ship the stamp beside the exe so installers / Retro can prefer it over VERSION.
 if [[ -f "$(dirname "${EXE}")/psx_game_version.txt" ]]; then
   cp -a "$(dirname "${EXE}")/psx_game_version.txt" "${STAGE}/psx_game_version.txt"
 else
@@ -498,11 +498,11 @@ Standalone:
 3. Provide ${DISC_HINT} (and optional retail SCPH-1001 BIOS; otherwise
    OpenBIOS is regenerated locally).
 4. Follow the Generate & rebuild wizard. On first rebuild the host downloads
-   cmake-clang-v1 from TechnicallyComputers/retcomm-toolchains (or you can
+   cmake-clang-v1 from RetroPortingToolKit/RetroPorting-Toolchains (or you can
    pick a local cmake-clang-v1-*.zip for offline builds). System cmake/ninja
    also works if already on PATH.
 
-RetComM uses this same zip: it harvests emitters into a shared SDK cache,
+Retro uses this same zip: it harvests emitters into a shared SDK cache,
 downloads the toolchain pack (or uses RETCOMM_TOOLCHAIN_DIR), and preserves
 saves/user config across updates.
 EOF
@@ -579,6 +579,23 @@ if (( ${#missing_incs[@]} )); then
   printf '  - %s\n' "${missing_incs[@]}" >&2
   echo "  add them via --project-file / --project-dir in scripts/package_setup_release.sh" >&2
   exit 1
+fi
+
+# --- Windows: Authenticode-sign what the player will run -------------------
+# The host exe, its DLLs, and the emitters. A no-op without a certificate in
+# the environment (see tools/ci/sign_windows.sh); fatal if one is configured
+# and signing fails. Note the limit of what signing can do for a setup-host
+# title: the game exe the player's own machine builds after Generate is not
+# this file and carries no signature -- Smart App Control judges that build
+# on its own, and only the host/wizard, emitters and DLLs shipped here are
+# covered.
+if [[ "${EXE_BASENAME}" == *.exe ]]; then
+  SIGN_SH="${SCRIPT_DIR}/ci/sign_windows.sh"
+  if [[ -f "${SIGN_SH}" ]]; then
+    bash "${SIGN_SH}" "${STAGE}"
+  else
+    echo "note: ${SIGN_SH} missing; Windows binaries ship unsigned" >&2
+  fi
 fi
 
 find "${STAGE}" -exec touch -c {} + 2>/dev/null || find "${STAGE}" -exec touch {} +

@@ -1,7 +1,7 @@
 # Local codegen SDK
 
 Headless contract for regenerating an existing psxrecomp game project from a
-user-supplied disc. Intended for `recomp-ui` setup flows and RetComM launcher
+user-supplied disc. Intended for `recomp-ui` setup flows and Retro launcher
 automation. This does **not** redistribute disc images.
 
 PGO (optional) runs **only on the user’s machine** during local rebuild when
@@ -38,14 +38,14 @@ product binary (`psxrecomp_codegen_host_forward_if_built`). Opt out with
 | `tools/stage_setup_sdk.sh` | Pack: emitters, OpenBIOS checks, optional `toolchain/`, MinGW DLLs |
 | `tools/bundle_mingw_dlls.sh` | Windows: copy MinGW runtime DLLs next to host + emitters |
 | Project `toolchain/` | Stamp file `.psxrecomp-bin` pointing at the shared pack `bin/` |
-| Shared toolchain cache | `%LOCALAPPDATA%/retcomm/toolchains/cmake-clang-v1/` (Windows) or `~/.local/share/retcomm/toolchains/cmake-clang-v1/` — same tree RetComM uses |
+| Shared toolchain cache | `%LOCALAPPDATA%/retcomm/toolchains/cmake-clang-v1/` (Windows) or `~/.local/share/retcomm/toolchains/cmake-clang-v1/` — same tree Retro uses |
 | `docs/ci/` | Composite actions + [`templates/setup-release.yml`](ci/templates/setup-release.yml) |
 | `docs/GAME_PROJECT_SETUP.md` | Submodules, CI template usage, bundled-release checklist |
 | Game sources | `game.toml`, seeds, `CMakeLists.txt` at repo root; `psxrecomp/`, `recomp-ui/` submodules |
 
-RetComM harvests emitters into the SDK cache and **downloads** `cmake-clang-v1`
+Retro harvests emitters into the SDK cache and **downloads** `cmake-clang-v1`
 (no separate tools zip; game zips stay lean). The setup host and CLI install the
-portable pack into the **shared RetComM cache**
+portable pack into the **shared Retro cache**
 (`%LOCALAPPDATA%/retcomm/toolchains/cmake-clang-v1/<tag>/`, or XDG equivalent)
 with host-native `curl` + `tar`/`unzip` when possible — so Microsoft Store
 Python AppData redirection cannot hide cmake. Offline zips unpack to the same
@@ -82,6 +82,10 @@ python psxrecomp/psxrecomp_cli.py pgo-train \
   --exe-basename Bomberman_Party_Edition_Recompiled \
   [--disc …] [--train-secs 120] [--train-runs 3] [--json-progress]
 ```
+
+Disc verification and preparation also check and retain user-supplied
+[SBI companions](DISC_COMPANIONS.md). Main-track hashes alone do not prove
+complete subchannel input.
 
 `generate` normalizes the dump via `tools/prepare_disc.py` when needed, then
 runs `psxrecomp-game --config game.toml` into `[recompiler] out_dir`.

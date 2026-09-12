@@ -43,6 +43,16 @@ New-Item -ItemType Directory -Force $BundledBiosDst | Out-Null
 Copy-Item (Join-Path $BundledBiosSrc "openbios.bin") $BundledBiosDst
 Copy-Item (Join-Path $BundledBiosSrc "OpenBIOS.LICENSE") $BundledBiosDst
 Copy-Item (Join-Path $Root "THIRD_PARTY_ATTRIBUTION.md") $Stage
+# Third-party notices for everything statically linked into the runtime:
+# libchdr is BSD-3-Clause and toml11 is MIT, and both require the notice to
+# be reproduced in binary redistributions. Copy the whole directory so a new
+# vendored dependency ships its notice without touching this script.
+$LicensesSrc = Join-Path $Root "runtime/licenses"
+$LicensesDst = Join-Path $Stage "licenses"
+Copy-Item -LiteralPath $LicensesSrc -Destination $LicensesDst -Recurse
+if (@(Get-ChildItem -LiteralPath $LicensesDst -File).Count -eq 0) {
+    throw "Third-party notices missing from the package: $LicensesDst is empty"
+}
 if (Test-Path (Join-Path $Root "RELEASE_NOTES.md")) {
     Copy-Item (Join-Path $Root "RELEASE_NOTES.md") $Stage
 }

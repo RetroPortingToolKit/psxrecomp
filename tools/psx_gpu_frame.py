@@ -674,7 +674,7 @@ def summarise_dump(dump: Dict[str, Any], dump_name: str = "") -> Dict[str, Any]:
 
     A busy frame's full dump runs to tens of megabytes. Nothing that only wants
     to know *who drew what* should have to parse that, so the summary is a
-    separate artifact and RetComM Studio reads this rather than the dump.
+    separate artifact and Retro Studio reads this rather than the dump.
     """
     ops: Dict[str, int] = {}
     modes: Dict[str, int] = {}

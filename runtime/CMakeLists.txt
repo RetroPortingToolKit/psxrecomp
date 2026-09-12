@@ -23,6 +23,41 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    # Optional real-hardware regression. Configure its dependencies explicitly;
+    # absence must remain visible, never counted as a passing GPU test.
+    set(PSX_GL_READBACK_SDL_ROOT "" CACHE PATH "SDL3 static build root for GL readback test")
+    get_filename_component(_gl_test_default_bin "${CMAKE_C_COMPILER}" DIRECTORY)
+    set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME interp_mod_entry_guards_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_interp_mod_entry_guards.py")
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME ws_activation_bias_exec_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ws_activation_bias_exec.py" "${CMAKE_C_COMPILER}")
+        endif()
+        add_test(NAME gpu_textured_dot_nw_shift_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_textured_dot_nw_shift.py")
+        add_test(NAME gl_readback_runner_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_readback_runner.py")
+    endif()
+    if(MINGW AND PSX_GL_READBACK_SDL_ROOT
+            AND EXISTS "${PSX_GL_READBACK_COMPILER_BIN}/gcc.exe"
+            AND EXISTS "${PSX_GL_READBACK_COMPILER_BIN}/g++.exe"
+            AND IS_DIRECTORY "${PSX_GL_READBACK_SDL_ROOT}/sdl3-src/include"
+            AND EXISTS "${PSX_GL_READBACK_SDL_ROOT}/sdl3-build/libSDL3.a")
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_test(NAME gl_readback_region_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_readback_region.py"
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_readback_region.c"
+                --compiler-bin "${PSX_GL_READBACK_COMPILER_BIN}"
+                --sdl-root "${PSX_GL_READBACK_SDL_ROOT}"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-readback-results")
+        set_tests_properties(gl_readback_region_test PROPERTIES LABELS "gpu;opengl;hardware" TIMEOUT 180)
+    else()
+        message(STATUS "gl_readback_region_test: not registered (requires MinGW, SDL3 headers/static library in PSX_GL_READBACK_SDL_ROOT and gcc.exe/g++.exe in PSX_GL_READBACK_COMPILER_BIN)")
+    endif()
     add_executable(launcher_device_roundtrip_test
         tests/test_launcher_device_roundtrip.cpp)
     target_include_directories(launcher_device_roundtrip_test PRIVATE include)
@@ -177,11 +212,73 @@ if(BUILD_TESTING)
     target_include_directories(ws_prepass_guard_test PRIVATE include)
     add_test(NAME ws_prepass_guard_test COMMAND ws_prepass_guard_test)
 
+    add_executable(ws_hud_anchor_test
+        tests/test_ws_hud_anchor.c)
+    target_include_directories(ws_hud_anchor_test PRIVATE include)
+    add_test(NAME ws_hud_anchor_test COMMAND ws_hud_anchor_test)
+
+    add_executable(gpu_textured_dot_nw_shift_exec_test
+        tests/test_gpu_textured_dot_nw_shift_exec.c)
+    target_include_directories(gpu_textured_dot_nw_shift_exec_test PRIVATE
+        include
+        src)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
+            -Wl,--gc-sections
+            -Wl,--error-limit=0)
+    endif()
+    add_test(NAME gpu_textured_dot_nw_shift_exec_test
+             COMMAND gpu_textured_dot_nw_shift_exec_test)
+
+    add_executable(ws_view_anchor_test tests/test_ws_view_anchor.c)
+    add_executable(ws_view_anchor_gpu_test tests/test_ws_view_anchor_gpu.c)
+    foreach(_anchor_test ws_view_anchor ws_view_anchor_gpu)
+        target_include_directories(${_anchor_test}_test PRIVATE include src)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(${_anchor_test}_test PRIVATE -ffunction-sections -fdata-sections)
+            if(NOT APPLE)
+                target_link_options(${_anchor_test}_test PRIVATE -Wl,--gc-sections)
+            endif()
+        endif()
+        if(NOT WIN32)
+            target_link_libraries(${_anchor_test}_test PRIVATE m)
+        endif()
+    endforeach()
+    add_test(NAME ws_view_anchor_test COMMAND ws_view_anchor_test)
+    add_test(NAME ws_view_anchor_gpu_test COMMAND ws_view_anchor_gpu_test)
+
+    add_executable(ws_repeat_rect_test tests/test_ws_repeat_rect.c)
+    target_include_directories(ws_repeat_rect_test PRIVATE include)
+    add_test(NAME ws_repeat_rect_test COMMAND ws_repeat_rect_test)
+
     add_executable(mod_gpu_dma_aperture_test
         tests/test_mod_gpu_dma_aperture.c)
     target_include_directories(mod_gpu_dma_aperture_test PRIVATE include)
     add_test(NAME mod_gpu_dma_aperture_test
              COMMAND mod_gpu_dma_aperture_test)
+
+    # The real-handler fixture relies on LTO pruning its unused syscall paths.
+    # Enable only the toolchain on which that link contract is verified; keep
+    # the coverage gap visible in CTest for every other compiler/platform.
+    if(WIN32 AND MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 8
+       AND CMAKE_C_COMPILER_ID STREQUAL "GNU"
+       AND CMAKE_C_COMPILER_VERSION VERSION_EQUAL "16.1.0")
+        add_executable(exit_critical_section_test
+            tests/test_exit_critical_section.c src/traps.c)
+        target_include_directories(exit_critical_section_test PRIVATE include)
+        target_compile_definitions(exit_critical_section_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
+        target_compile_options(exit_critical_section_test PRIVATE -O3 -flto -ffunction-sections)
+        target_link_options(exit_critical_section_test PRIVATE -flto -Wl,--gc-sections)
+        add_test(NAME exit_critical_section_test COMMAND exit_critical_section_test)
+    else()
+        add_test(NAME exit_critical_section_test
+            COMMAND "${CMAKE_COMMAND}" -E echo
+                "SKIP: real-handler LTO fixture is verified only on Windows x64 MinGW GCC 16.1.0; current compiler is ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
+        set_tests_properties(exit_critical_section_test PROPERTIES
+            SKIP_REGULAR_EXPRESSION "^SKIP:")
+    endif()
 
     add_executable(dma_gpu_linked_list_timing_test
         tests/test_dma_gpu_linked_list_timing.c
@@ -227,6 +324,17 @@ if(BUILD_TESTING)
     target_include_directories(overlay_path_canon_test PRIVATE include)
     add_test(NAME overlay_path_canon_test COMMAND overlay_path_canon_test)
 
+    # The kernel-bless verifier must accept a body whose DECLARED patch range
+    # the guest has overwritten (Psy-Q's install stubs land inside compiled
+    # kernel bodies) and still reject one changed anywhere else. Before this,
+    # the whole-body memcmp failed forever on the first install and the BIOS
+    # exception handler interpreted for the life of the process.
+    add_executable(kernel_patch_ranges_test
+        tests/test_kernel_patch_ranges.c
+        src/kernel_patch_ranges.c)
+    target_include_directories(kernel_patch_ranges_test PRIVATE include)
+    add_test(NAME kernel_patch_ranges_test COMMAND kernel_patch_ranges_test)
+
     # The player-facing "skip the BIOS" flag must resolve to the same boot
     # behaviour on retail SCPH-1001 and on the bundled OpenBIOS, whose
     # kernel-call HLE is (correctly) refused for want of a DeliverEvent anchor.
@@ -238,6 +346,10 @@ if(BUILD_TESTING)
 
     # A cue, conventional raw image, or Steam .car image is a valid pick; each
     # must mount the same disc and identify off the same data track.
+    add_executable(sbi_setup_test tests/test_sbi_setup.cpp src/psx_sha256.c)
+    target_include_directories(sbi_setup_test PRIVATE include)
+    add_test(NAME sbi_setup_test COMMAND sbi_setup_test ${CMAKE_CURRENT_BINARY_DIR}/sbi-setup-fixture)
+
     add_executable(disc_path_resolve_test
         tests/test_disc_path_resolve.cpp
         src/disc_path.cpp
@@ -302,6 +414,15 @@ if(BUILD_TESTING)
         include
         ../recompiler/lib/toml11)
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
+    # The real disc hasher uses a 1 MiB scratch buffer. Match the runtime's
+    # stack allowance instead of overflowing MinGW's 1 MiB executable default.
+    if(WIN32)
+        if(MSVC)
+            target_link_options(mod_runtime_test PRIVATE /STACK:16777216)
+        else()
+            target_link_options(mod_runtime_test PRIVATE -Wl,--stack,16777216)
+        endif()
+    endif()
     add_test(NAME mod_runtime_test COMMAND mod_runtime_test)
 
     if(WIN32)
@@ -384,6 +505,13 @@ if(BUILD_TESTING)
     target_include_directories(frame_pacing_test PRIVATE include)
     add_test(NAME frame_pacing_test COMMAND frame_pacing_test)
 
+    # Same family of bug as frame_pacing: the starvation watchdog's staleness
+    # gap must not wrap when the (cross-thread) heartbeat is newer than the
+    # clock sample taken by the emu thread.
+    add_executable(starvation_watchdog_test tests/test_starvation_watchdog.c)
+    target_include_directories(starvation_watchdog_test PRIVATE include)
+    add_test(NAME starvation_watchdog_test COMMAND starvation_watchdog_test)
+
     add_executable(freeze_dump_policy_test
         tests/test_freeze_dump_policy.c
         src/freeze_dump_policy.c)
@@ -452,6 +580,29 @@ if(BUILD_TESTING)
             PSX_HAS_RECOMP_NET=1)
         target_link_libraries(netplay_snap_ring_test PRIVATE retcomm_rbengine)
         add_test(NAME netplay_snap_ring_test COMMAND netplay_snap_ring_test)
+
+        # Lobby chat ring. #includes psx_lobby_client.c, so it needs the same
+        # guard define and include roots the runtime build uses; the two WS
+        # calls that TU makes are stubbed in the test and abort if reached.
+        if(EXISTS "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_ws.c")
+            add_executable(lobby_chat_ring_test tests/test_lobby_chat_ring.c)
+            target_include_directories(lobby_chat_ring_test PRIVATE
+                include
+                src
+                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws"
+                ${_RNET_ROOT}/include)
+            target_compile_definitions(lobby_chat_ring_test PRIVATE
+                PSX_HAS_LOBBY_CLIENT=1
+                PSX_HAS_RECOMP_NET=1)
+            # Links the REAL recomp_net and the real WS helpers rather than a
+            # wall of stubs. Nothing in this test reaches a socket, so no fake
+            # is needed and none can drift from what the runtime links.
+            target_sources(lobby_chat_ring_test PRIVATE
+                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_ws.c"
+                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_sha1.c")
+            target_link_libraries(lobby_chat_ring_test PRIVATE recomp_net)
+            add_test(NAME lobby_chat_ring_test COMMAND lobby_chat_ring_test)
+        endif()
 
         add_executable(rb_post_tip_filter_test tests/test_rb_post_tip_filter.c)
         target_include_directories(rb_post_tip_filter_test PRIVATE include)
@@ -522,6 +673,16 @@ if(BUILD_TESTING)
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_memory_debug_trace_guard.py
                              --cc ${CMAKE_C_COMPILER})
         endif()
+        add_test(NAME fntrace_c_linkage_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fntrace_c_linkage.py)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
+        endif()
+        add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME launch_disc_path_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launch_disc_path.py --compiler ${CMAKE_CXX_COMPILER})
+        endif()
+        add_test(NAME disc_companion_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_disc_companion.py)
+        add_test(NAME sbi_registry_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_sbi_registry.py)
         add_test(NAME frame_interpolation_context_ownership_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frame_interpolation_context_ownership.py)

@@ -40,6 +40,83 @@ remains useful for debugging and for hosts that prefer fixed lag.
 
 ---
 
+## Seats vs session slots
+
+Lobby chat is masked for profanity and slurs on every path: the server
+filters relayed lines, and every client runs recomp-net's
+`rnet_chat_filter_apply` on each line it puts in its ring -- so LAN rooms
+(host-relayed `MOTK5 CHAT`) are filtered without a server. The list is
+`lib/recomp-net/data/chat_filter_words.txt`; `RNET_CHAT_FILTER=0` disables
+the client pass.
+
+The lobby browser also carries a per-game server chat (server op
+`server_chat`, relayed to every client listed for the same title) and lists
+only the players online for this title; both are online-only, since a LAN
+room has no server. The same emoji and profanity handling applies.
+
+Players can move themselves in the lobby and ask to swap seats (online via
+the server's `seat_move` / `seat_swap_request` / `seat_swap_answer`; on LAN
+via `MOTK5 SEATMOVE` / `SWAPASK` / `SWAPANS` / `SWAPRES` relayed by the host),
+so the lobby host can hold any seat. The session is planned at launch
+(`ae_np_plan_session_slots`): the host is always **session slot 0** — the
+seat every host-only path keys on — and the other players follow in lobby-seat
+order; each session slot drives the controller port of its lobby seat
+(`PsxNetplayConfig.port_of_slot`), so the game sees a player where the lobby
+seated them. Session slots are therefore compact (no holes) even when the
+lobby is sparse; the sparse ports are what the game sees.
+
+## Host in the spectator table
+
+Online rooms let the host watch from the gallery and still run the match. The
+host keeps session slot 0 — the seat every host-only path keys on (save
+states, card sync, the start barrier, overlay host controls) — but its pad is
+muted (`psx_netplay_stage_local` substitutes "no controller") and slot 0 maps
+to no controller port; player seats sit at lobby seat + 1 and drive port
+slot − 1. The server publishes `host_spectates` with the launch and sizes the
+input relay for the extra forwarded slot; every peer derives its session slot
+from that one flag. The session can therefore hold `PSX_MAX_PLAYERS + 1`
+slots. LAN rooms have no gallery, so this is online-only.
+Env for command-line sessions: `PSX_NET_HOST_SPECTATES=1` on every peer.
+
+## Bring your own memory card (seat 2)
+
+By default a match runs on the **host's** memory-card choices: at launch the
+host hashes / sends both of its cards to every guest (the `SRAM` state op), and
+guests play from a sandbox copy so their own cards are never written.
+
+Some games need each player's *own* card in the machine — Yu-Gi-Oh! Forbidden
+Memories duels load each duelist's deck from a separate card. For that, seat 2
+(P2) can **bring its card**:
+
+- In the lobby a memory-card glyph sits beside P2's name. P2 clicks it to
+  offer its **local slot-1** card; the host can click it to disallow / allow
+  guest cards. It lights up only when both agree, and every peer sees the same
+  state. Default is off (host cards only).
+- At launch, before the host's card broadcast, P2 uploads that card to the host
+  over the session (`MEMCARD` state op, the one guest→host transfer). The host
+  installs it as the match's **slot-2** card and the normal broadcast then
+  carries it to everyone, P2 included.
+- The host's real slot-2 card is neither read by the match nor written: the
+  host rebinds slot 2 to `<memcard_dir>/netplay/guest_card2.mcd` for the
+  session and restores its own file on shutdown. P2's real cards stay untouched
+  too (guests already sandbox both slots); what the match writes to slot 2
+  lands in P2's sandbox copy, not in P2's personal card.
+- The value is **settled once by the host at start** and delivered with the
+  launch caps (`guest_memcard_active`, or the trailing `MOTK1 START` line on
+  LAN), so a toggle racing the start cannot leave peers disagreeing about
+  whether a card is coming.
+
+The room page also carries a lobby chat. Online it is the server's `chat` op,
+echoed to everyone seated; on LAN the host relays it (`MOTK5 CHATREQ` from a
+guest, `MOTK5 CHAT` to everyone). Join, leave and kick are announced as system
+lines the same way (empty sender fields on the wire mark them as system).
+
+Env override for command-line sessions: `PSX_NET_GUEST_MEMCARD=1` on **every**
+peer (a host that expects a card from a seat that never sends one waits at the
+`mc_guest_wait` barrier — the stall phase names it).
+
+---
+
 ## Hybrid graphics (determinism + present quality)
 
 Netplay must keep **guest simulation identical** across peers. Present quality
@@ -79,7 +156,7 @@ asymmetric NAT does not strand players on failed ICE attempts.
 signaling, and fallbacks. With `PSX_NETPLAY=ON`, `runtime.cmake` defaults
 `RNET_ENABLE_ICE=ON` (libjuice) before adding `recomp-net`. Pass
 `-DRNET_ENABLE_ICE=OFF` only for LAN-only / no-FetchContent builds.
-libjuice is pulled as a **pinned URL tarball** (not `git clone`) so RetComM
+libjuice is pulled as a **pinned URL tarball** (not `git clone`) so Retro
 AppImage / mismatched-libcurl hosts can still configure; offline builds can
 vendor `lib/recomp-net/third_party/libjuice` or set `-DRNET_LIBJUICE_ROOT`.
 “Force TURN” in the UI can raise delay floors for relay-heavy paths; it

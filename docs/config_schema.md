@@ -60,6 +60,11 @@ How the two configs relate:
 [audit]
 ```
 
+`[prepare_disc]` digests identify the main track only. See
+[disc companions](DISC_COMPANIONS.md) for the separate SBI input gate,
+exact revision coverage, and preparation receipts. No SBI configuration key
+is required.
+
 ## Netplay disc mount (`[netplay]`)
 
 Optional. Online play needs the same CD geometry on every peer — data-track
@@ -85,9 +90,9 @@ that is where the others go when a title needs them.
 
 Offline Play may still launch with a TOC warning; first-run setup Finish and
 online Create/Join require `netplay_ok` (and online also a clean verify +
-non-empty `disc_fp`). Mirror `required_tracks` in the RetComM catalog as
+non-empty `disc_fp`). Mirror `required_tracks` in the Retro catalog as
 `rom_identity.track_counts` so the hub library scan rejects Track-01-only dumps.
-Wizard / RetComM / catalog submission accept Redump `.cue` + sibling `.bin`
+Wizard / Retro / catalog submission accept Redump `.cue` + sibling `.bin`
 tracks only — not `.iso`/`.chd` (cannot reliably expand to multi-track).
 
 ## Program / game block
@@ -299,7 +304,23 @@ queue_guard = false     # this lower-level predicate appends to no fixed queue
 The debug server’s `ws_aspect_cone_site` command accepts an `address` string
 and reports exact-site identity/keep/reject counters.
 
-Explicit `bias_sites` / `range_sites` may opt into an additional resident
+Signed horizontal bounds can be widened at the constant-load site:
+
+```toml
+[[widescreen.signed_x_bound]]
+address = "0x800BD290"
+expected = "0x2402FF00" # addiu v0,zero,-256
+```
+
+- `LUI rt,imm` sites are signed Q16 gameplay bounds and use the gameplay-field
+  scaler.
+- `ADDIU rt,zero,imm` and `ORI rt,zero,imm` sites are screen-pixel bounds and
+  move by the live horizontal margin. ADDIU sign-extends the constant; ORI
+  zero-extends it. The destination and immediate must both be nonzero.
+- Site identity is the normalized physical address plus the complete
+  instruction word. The helper is identity at 4:3.
+
+Explicit `bias_sites` / `bias_lower_sites` / `range_sites` may opt into an additional resident
 object lead without widening terrain or render queues:
 
 ```toml
@@ -311,12 +332,20 @@ range_sites = ["0x80069BB0"]
 ```
 
 `activation_guard_pixels` is added only to the live margin emitted at those
-two explicit site families, and only while widescreen reveals extra world.
+three explicit site families, and only while widescreen reveals extra world.
 At true 4:3 it is exactly zero. `guard_pixels` remains the shared
 render/terrain participation guard; keep it small when terrain producers or
 model queues have fixed capacity. Both values are restricted to `[0, 256]`
 and contribute to native-overlay cache identity. Changing the activation
 guard requires regenerating the game and overlay code.
+
+`bias_lower_sites` is the lower-endpoint counterpart to `bias_sites`:
+an `ADDI`/`ADDIU` camera-relative bound subtracts the activation margin from
+its original immediate. Both native code and the dirty-RAM path apply it.
+For strip-based enemy spawning, expand the outer strip edge, initial and
+vertical scan X bounds, and any associated respawn-reset interval together.
+Keep authored placement flags and vertical bounds intact. Empty is inert;
+configured sites require regeneration.
 
 ## Runtime block
 
@@ -533,16 +562,45 @@ dispatch_key = "ram"             # "ram": functions keyed by RAM address;
                                  # "rom": RAM alias folds back to ROM
 kernel_bless = true              # runtime may byte-verify + run native
 
-[[recompiler.install_slots]] # kernel-RAM PCs the BIOS patches at runtime
-ram_addr = "0x00000CF0"
+[[recompiler.install_slots]] # kernel-RAM RANGES patched at runtime
+ram_addr = "0x00000CF0"          # legacy form: len 0x10, resume "jalr"
+[[recompiler.install_slots]]
+ram_addr = "0x00000C88"
+len      = "0x30"                # bytes; the patched range is [addr, addr+len)
+resume   = "fallthrough"         # "jalr" (default) | "fallthrough" | "none"
 
 [recompiler.runtime_exports] # per-image HLE anchors (omit = unavailable)
 shell_entry_phys  = "0x00030000"
 deliver_event_ret = "0x80001720"
 ```
 
+An `install_slots` entry declares kernel-RAM words the guest is EXPECTED to
+overwrite at runtime — the BIOS's own install stubs and, far more often, the
+Psy-Q libapi patchers every SDK title runs (`_patch_gte`, `_patch_card`,
+`_patch_card2`, `_patch_pad`). The emitter plants a compare-against-ROM hook
+at the range start, so a live patch dispatches into the interpreter and the
+guest's own instructions execute; the runtime excludes the range from the
+kernel-bless memcmp and resumes native at the range end. Without the
+declaration the patched body fails verification forever and interprets for
+the life of the process.
+
+`resume` says how the compiled body picks up again:
+
+| `resume` | Continuation PC | Use for |
+|---|---|---|
+| `"jalr"` (default) | `ram_addr + 0x10` | the classic 4-word `lui/addiu/jalr/nop` stub, whose call returns there |
+| `"fallthrough"` | `ram_addr + len` | the patched words ARE the function (a prologue rewrite, a NOP'd routine) |
+| `"none"` | — | the patch jumps out and never returns to this body (a `jr` into game text) |
+
+`ram_addr` and `len` must be 4-aligned, `len` non-zero, ranges must not
+overlap, and every range must lie inside the `kernel_bless` window; the
+loader refuses the profile otherwise and sorts the list for the runtime.
+Finding the ranges for a new image is described in
+[`dynamic_handler_install.md`](dynamic_handler_install.md).
+
 Every `copy` entry is a claim that the boot copy is byte-verbatim; the
-runtime kernel-bless memcmp enforces it. A BIOS with no copies (runs
+runtime kernel-bless memcmp enforces it, minus the declared install-slot
+ranges. A BIOS with no copies (runs
 entirely from ROM) is valid: normalization degenerates to the KSEG mask.
 Semantic invariants (disjoint windows, no fold-output/input intersection,
 single bless window) are enforced at load; violations refuse to build.

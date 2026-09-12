@@ -21,7 +21,7 @@ freezing forwards, and it is the only thing that works for a glitch you cannot
 stop on.
 
 Writes <out>/<tag>.json (a psx-gpu-frame dump), <out>/<tag>.summary.json (the
-compact attribution RetComM Studio reads), <out>/<tag>.png (the presented
+compact attribution Retro Studio reads), <out>/<tag>.png (the presented
 frame), and <out>/<tag>.opcodes.json, so a later diff or layer render needs
 nothing still running.
 """

@@ -38,6 +38,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 GUARD = REPO / "runtime" / "psx_check_mod_catalog.cmake"
 RUNTIME_CMAKE = REPO / "runtime" / "runtime.cmake"
+MAIN_CPP = REPO / "runtime" / "src" / "main.cpp"
 
 FW_IDS = [
     "psx.enhancement.cd-speed",
@@ -243,9 +244,15 @@ def main() -> int:
     # ---- 8. source invariants in runtime.cmake ---------------------------
     print("[8] runtime.cmake source invariants")
     text = RUNTIME_CMAKE.read_text(encoding="utf-8", errors="replace")
+    main_text = MAIN_CPP.read_text(encoding="utf-8", errors="replace")
     check(
         "PRELOADED_MODS_DIR" in text,
         "runtime.cmake accepts PRELOADED_MODS_DIR so titles never name the layout",
+    )
+    check(
+        "set(oneValueArgs" in text
+        and "PRELOADED_MODS_DIR" in text[text.find("set(oneValueArgs") : text.find("set(multiValueArgs")],
+        "psxrecomp_add_game_runtime parses PRELOADED_MODS_DIR before multi-value args",
     )
     check(
         "cmake_language(DEFER CALL _psxrt_finalize_mod_catalog_guards" in text,
@@ -254,6 +261,35 @@ def main() -> int:
     check(
         "psx_check_mod_catalog.cmake" in text,
         "runtime.cmake wires the guard script into the build",
+    )
+    forwarded_args = "${_psxg_forwarded_args}"
+    wrapper_extras = "EXTRAS_SOURCES ${_psxg_extras}"
+    check(
+        text.find(forwarded_args) != -1
+        and text.find(wrapper_extras) != -1
+        and text.find(forwarded_args) < text.find(wrapper_extras),
+        "psxrecomp_add_game_runtime forwards target args before EXTRAS_SOURCES",
+    )
+    setup_guard = "if(PSX_RECOMP_UI AND PSXG_CODEGEN_SETUP_SOURCES)"
+    setup_host = '"${PSXRECOMP_ROOT}/host/psxrecomp_codegen_host.c"'
+    check(
+        text.find(setup_guard) != -1
+        and text.find(setup_host) != -1
+        and text.find(setup_guard) < text.find(setup_host),
+        "psxrecomp_add_game_runtime only adds setup host sources when requested",
+    )
+    check(
+        "defined(PSX_HAS_GAME_CODEGEN)\nextern \"C\" void psx_game_codegen_setup_apply"
+        not in main_text
+        and "defined(PSX_HAS_GAME_CODEGEN)\n            psx_game_codegen_setup_apply"
+        not in main_text
+        and "defined(PSX_HAS_GAME_CODEGEN)\n        psx_game_codegen_setup_apply"
+        not in main_text
+        and "defined(PSX_HAS_GAME_CODEGEN)\n            if (lr == RECOMP_LAUNCHER_RESULT_RELAUNCH)"
+        not in main_text
+        and "defined(PSX_HAS_GAME_CODEGEN)\n        if (rui_rc == RECOMP_LAUNCHER_RESULT_RELAUNCH)"
+        not in main_text,
+        "setup-host symbols in main.cpp are gated by PSX_HAS_CODEGEN_SETUP_HOST",
     )
     # The only mods/packages reference left in the staging code must be the
     # legacy purge -- never a copy destination.

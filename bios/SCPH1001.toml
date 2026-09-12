@@ -16,6 +16,20 @@ load_address = "0xBFC00000"
 entry_pc     = "0xBFC00000"
 text_size    = "0x80000"
 
+# Declared identity. The emitter refuses to generate from any other image
+# (main_bios.cpp's declared-identity gate), which is the point: the seeds in
+# this profile name v2.2 function starts, and generating from a SCPH-1001
+# **v2.0** dump (CRC32 55847D8C, 1994-09-22) produced three boot halts and a
+# live A0 table with 90 of 161 ROM targets uncompiled. That looked like
+# missing upstream seeds and was actually a revision mismatch. An empty pin
+# let it through silently.
+#
+# This is v2.2, 1995-09-18: CRC32 37157331, 512 KiB.
+[program.image]
+sha256          = "71af94d1e47a68c11e8fdb9f8368040601514a42a5a399cda48c7d3bff1e99d3"
+license         = "proprietary"
+redistributable = false
+
 [recompiler]
 seeds    = "recompiler/seeds/phase2_ghidra_seeds.json"
 out_dir  = "generated"
@@ -60,11 +74,56 @@ kernel_bless = false
 # class-B bug. Widening this window is a REAL BEHAVIOR CHANGE requiring its
 # own evidence-backed commit — it is not a parameterization cleanup.
 
-# Kernel-RAM PCs the BIOS overwrites with 4-instruction dispatch stubs at
+# Kernel-RAM RANGES the BIOS and the game's Psy-Q libapi patchers overwrite at
 # runtime (CLAUDE.md rule 18; docs/dynamic_handler_install.md). The emitter
-# plants a dirty-check hook at these PCs so the installed stub executes.
+# plants a compare-against-ROM hook at each range start so the guest's patched
+# instructions execute; the runtime excludes the range from the kernel-bless
+# memcmp and resumes native at the range end, so only the patched words
+# interpret.
+#
+# `resume` says how the compiled body picks up again: "jalr" for the classic
+# 4-word lui/addiu/jalr/nop stub (the call returns to ram_addr+0x10),
+# "fallthrough" when the patched words ARE the function, "none" when the patch
+# jumps out and never comes back.
+#
+# Measured on a live boot of Breath of Fire III (SLPS-00990, Psy-Q SDK 3.70)
+# against the ROM source, 30 s in, identical at t+8 s — the patchers are
+# _patch_gte / _patch_card / _patch_card2 / _patch_pad. Every SDK title runs
+# these, so the ranges are a property of the BIOS revision and libapi release,
+# not of one game. Re-measure per SDK version before trusting the numbers:
+# the schema tolerates declaring the union.
+
+[[recompiler.install_slots]]
+ram_addr = "0x00000C88"         # exception handler: register-save prologue
+len      = "0x30"               # shifted two words + an inserted mfc0 v0,Cause
+resume    = "fallthrough"       # the patched words are the function itself
+
 [[recompiler.install_slots]]
 ram_addr = "0x00000CF0"         # SIO data-byte handler dispatch slot
+len      = "0x10"               # lui/addiu/jalr/nop over ROM zeros
+resume    = "jalr"              # the stub's call returns to 0x0D00
+
+[[recompiler.install_slots]]
+ram_addr = "0x00004964"         # pad driver clear routine, 11 words NOP'd
+len      = "0x2C"               # (RemovePatchPad / ChgclrPAD family)
+resume    = "fallthrough"
+
+[[recompiler.install_slots]]
+ram_addr = "0x00004D98"         # _patch_card2 payload: jalr into boot EXE
+len      = "0x14"               # 0x8017EB6C; the ra landing word is NOP'd too,
+resume    = "fallthrough"       # so the body resumes past it, not at +0x10
+
+[[recompiler.install_slots]]
+ram_addr = "0x00006444"         # _patch_card payload: the kernel's card
+len      = "0x10"               # handler replaced by jr into boot EXE
+resume    = "none"              # 0x8017EAA0 — a jr never returns here
+
+# NOT declared: RAM 0x0500, one word of kernel_trampoline_0 cleared to zero
+# (ROM `lui t2, 0`). It differs on every boot, but what writes it is not yet
+# identified, and a range declared on a guess would tell the bless verifier to
+# stop checking a word it should be checking. Rule 14: unknown is acceptable,
+# guessing is not. Undeclared means that body keeps interpreting, exactly as
+# it does today.
 
 # Per-image anchors couriered into the generated C (psx_bios_image) for the
 # runtime HLE tier. Values are FACTS about this image, not tunables: the

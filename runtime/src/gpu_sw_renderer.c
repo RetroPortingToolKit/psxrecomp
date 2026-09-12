@@ -163,19 +163,21 @@ static inline RTarget rt_hires(void) {
  * into the OTHER buffer's band in the shared wide surface and corrupt it
  * (top/bottom edge flicker as the buffers flip). Canonical VRAM never showed
  * this because its draw-area clip already confines it. Scale matches SSAA. */
+static int view_enabled, view_shift, view_pad_left, view_pad_right;
 static inline RTarget rt_wide(void) {
     int s = g_scale;
     RTarget t;
     t.buf = g_wide_cur;
     t.w = g_wide_w * s; t.h = VRAM_HEIGHT * s; t.s = s;
-    t.cx1 = 0;             t.cy1 = g_clip_y1 * s;
-    t.cx2 = g_wide_w * s - 1; t.cy2 = g_clip_y2 * s + (s - 1);
+    t.cx1 = view_pad_left * s; t.cy1 = g_clip_y1 * s;
+    t.cx2 = (g_wide_w - view_pad_right) * s - 1;
+    t.cy2 = g_clip_y2 * s + (s - 1);
     return t;
 }
 
 /* X-translation (native px) from canonical VRAM space into the active wide
  * surface: local_x = vram_x - base_x + OFFSET. */
-static inline int wide_dx(void) { return g_wide_off - g_wide_cur_base; }
+static inline int wide_dx(void) { return g_wide_off + view_shift - g_wide_cur_base; }
 
 /* Native-wide 2D-backdrop X-stretch (SW renderer), mirroring the GL
  * wide_set_bd_scale exactly. The far 2D backdrop (sprite-tagged tile grid: sky
@@ -1768,6 +1770,16 @@ static uint16_t *wide_surf_for(int base_x) {
 
 /* Enable native-wide with a wide width + centering offset (native px), or
  * disable (wide_w <= 0). Re-allocates if the width changed. */
+void sw_wide_set_view(int enabled, int shift, int pad_left, int pad_right) {
+    if (!enabled) shift = pad_left = pad_right = 0;
+    if (view_enabled == enabled && view_shift == shift &&
+        view_pad_left == pad_left && view_pad_right == pad_right) return;
+    view_enabled = enabled;
+    view_shift = shift;
+    view_pad_left = pad_left;
+    view_pad_right = pad_right;
+}
+
 void sw_wide_configure(int wide_w, int offset) {
     if (wide_w <= 0) { wide_free_all(); g_wide_w = 0; g_wide_off = 0; return; }
     if (wide_w != g_wide_w) wide_free_all();

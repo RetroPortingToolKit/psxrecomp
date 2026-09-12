@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 #include <string>
 
 #include "../src/bios_address_model.h"
@@ -23,6 +25,7 @@
 using PSXRecompV4::BiosAddressModel;
 using PSXRecompV4::BiosAddrCopy;
 using PSXRecompV4::BiosConfig;
+using PSXRecompV4::BiosInstallSlot;
 
 // ---------------------------------------------------------------------------
 // Reference implementations: verbatim pre-refactor SCPH1001 hardcodes.
@@ -175,8 +178,66 @@ int main(int argc, char** argv) {
     expect_eq(model.kbless_rom_off(), 0x10000u, "kbless_rom_off", 0);
     expect_eq(model.rom_keyed_ram_lo(),      0x30000u, "rom_keyed_ram_lo", 0);
     expect_eq(model.rom_keyed_ram_hi_incl(), 0x5AFFFu, "rom_keyed_ram_hi_incl", 0);
+
+    // --- install slots are RANGES ----------------------------------------
+    // Only a range START is a slot: that is where the emitter plants the
+    // compare-against-ROM hook. Interior words are covered by the range, not
+    // by a second hook.
     if (!model.is_install_slot(0xCF0u)) { std::fprintf(stderr, "FAIL: 0xCF0 not an install slot\n"); g_failures++; }
     if (model.is_install_slot(0xCF4u))  { std::fprintf(stderr, "FAIL: 0xCF4 claims install slot\n"); g_failures++; }
+    // bios/SCPH1001.toml declares the measured Psy-Q patch sites. The legacy
+    // 0xCF0 form (ram_addr alone) must still mean a 4-word jalr stub.
+    {
+        const BiosInstallSlot* sio = model.install_slot_at(0xCF0u);
+        if (!sio) { std::fprintf(stderr, "FAIL: no slot at 0xCF0\n"); g_failures++; }
+        else {
+            expect_eq(sio->len, 0x10u, "slot.0xCF0.len", 0xCF0u);
+            expect_eq(sio->hi(),  0xD00u, "slot.0xCF0.hi", 0xCF0u);
+            expect_eq(sio->resume_addr(), 0xD00u, "slot.0xCF0.resume", 0xCF0u);
+            if (sio->resume != BiosInstallSlot::Resume::Jalr) {
+                std::fprintf(stderr, "FAIL: 0xCF0 is not a jalr slot\n"); g_failures++;
+            }
+        }
+        // The exception-handler prologue rewrite: a range, resumed by
+        // fallthrough at its end (the patched words ARE the function).
+        const BiosInstallSlot* exc = model.install_slot_at(0xC88u);
+        if (!exc) { std::fprintf(stderr, "FAIL: no slot at 0xC88\n"); g_failures++; }
+        else {
+            expect_eq(exc->len, 0x30u,  "slot.0xC88.len", 0xC88u);
+            expect_eq(exc->resume_addr(), 0xCB8u, "slot.0xC88.resume", 0xC88u);
+        }
+        // The card-handler replacement is a `jr` out of the kernel: no resume.
+        const BiosInstallSlot* card = model.install_slot_at(0x6444u);
+        if (!card) { std::fprintf(stderr, "FAIL: no slot at 0x6444\n"); g_failures++; }
+        else expect_eq(card->resume_addr(), 0u, "slot.0x6444.resume", 0x6444u);
+        // Range CONTAINMENT, not just the start. The emitter drops any
+        // dispatch key inside a range, so this predicate decides which keys
+        // survive; getting it wrong wedges the boot (the 0x357C loop).
+        if (!model.in_install_slot_range(0xCF0u) ||
+            !model.in_install_slot_range(0xCF4u) ||
+            !model.in_install_slot_range(0xCFCu)) {
+            std::fprintf(stderr, "FAIL: 0xCF0 range does not contain its own words\n");
+            g_failures++;
+        }
+        if (model.in_install_slot_range(0xD00u)) {
+            std::fprintf(stderr, "FAIL: range hi 0xD00 claimed as inside (must be exclusive)\n");
+            g_failures++;
+        }
+        if (model.in_install_slot_range(0xCECu)) {
+            std::fprintf(stderr, "FAIL: 0xCEC below the range claimed as inside\n");
+            g_failures++;
+        }
+        // Emitted order is the runtime verifier's contract.
+        uint32_t prev = 0;
+        for (const BiosInstallSlot& sl : model.install_slots()) {
+            if (sl.ram_addr < prev) {
+                std::fprintf(stderr, "FAIL: install slots not sorted at 0x%08X\n",
+                             sl.ram_addr);
+                g_failures++;
+            }
+            prev = sl.ram_addr;
+        }
+    }
 
     // --- from_config invariants refuse bad profiles -----------------------
     expect_throw("overlapping ROM windows", [](BiosConfig& c) {
@@ -220,6 +281,42 @@ int main(int argc, char** argv) {
             mk("b", 0x1FC20000u, 0x1FC28000u, 0x500u, 0x500u, false, false),
         };
     }, minimal_cfg());
+
+    // --- install-slot invariants refuse bad declarations ------------------
+    {
+        auto with_slots = [](std::vector<BiosInstallSlot> slots) {
+            BiosConfig c = minimal_cfg();
+            c.address_copies = {
+                mk("k", 0x1FC10000u, 0x1FC18000u, 0x500u, 0x500u, true, true),
+            };
+            c.install_slots = std::move(slots);
+            return c;
+        };
+        auto slot = [](uint32_t at, uint32_t len) {
+            BiosInstallSlot s; s.ram_addr = at; s.len = len;
+            s.resume = BiosInstallSlot::Resume::Fallthrough;
+            return s;
+        };
+        expect_throw("misaligned slot start",
+            [](BiosConfig&) {}, with_slots({slot(0xC8Au, 0x10u)}));
+        expect_throw("zero-length slot",
+            [](BiosConfig&) {}, with_slots({slot(0xC88u, 0u)}));
+        expect_throw("misaligned slot length",
+            [](BiosConfig&) {}, with_slots({slot(0xC88u, 0x12u)}));
+        expect_throw("overlapping slots",
+            [](BiosConfig&) {}, with_slots({slot(0xC88u, 0x30u), slot(0xCB4u, 0x10u)}));
+        expect_throw("slot outside the bless window",
+            [](BiosConfig&) {}, with_slots({slot(0x9000u, 0x10u)}));
+        expect_throw("slot range crossing the bless window end",
+            [](BiosConfig&) {}, with_slots({slot(0x84F0u, 0x30u)}));
+        // Declared out of order: accepted, and sorted for the runtime.
+        {
+            BiosConfig c = with_slots({slot(0x4964u, 0x2Cu), slot(0xC88u, 0x30u)});
+            const auto m = BiosAddressModel::from_config(c);
+            expect_eq(m.install_slots()[0].ram_addr, 0xC88u, "slots.sorted[0]", 0);
+            expect_eq(m.install_slots()[1].ram_addr, 0x4964u, "slots.sorted[1]", 0);
+        }
+    }
 
     // --- empty model degenerates to the KSEG mask -------------------------
     {

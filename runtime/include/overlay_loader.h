@@ -113,7 +113,10 @@ void overlay_loader_get_counters(uint32_t *loads, uint32_t *invalidations,
 void overlay_loader_get_load_timing(uint64_t *total_us, uint64_t *max_us,
                                     uint64_t *last_us);
 /* Opt-in PSX_RUNTIME_PERF_DIAG sampler: returns and clears the hottest native
- * owner since the preceding call. Disabled runs pay no table update cost. */
+ * owner since the preceding call. Counts owner activations, INCLUDING CPS
+ * continuations, not guest function invocations (use fntrace for entries).
+ * The bounded direct-mapped sampler can undercount on collision; it cannot
+ * inflate a count. Disabled runs pay no table update cost. */
 void overlay_loader_take_hot_native(uint32_t *pc, uint64_t *calls);
 /* Exact shadow-differential summary for opt-in perf diagnostics. */
 void overlay_loader_get_shadow_summary(uint64_t *calls, uint64_t *divergences,

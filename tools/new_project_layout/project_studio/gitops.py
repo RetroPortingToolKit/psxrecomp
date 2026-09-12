@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_PSXRECOMP_URL = "https://github.com/mstan/psxrecomp.git"
-DEFAULT_RECOMP_UI_URL = "https://github.com/mstan/recomp-ui.git"
-DEFAULT_RECOMP_NET_URL = "https://github.com/TechnicallyComputers/recomp-net.git"
-DEFAULT_RBENGINE_URL = "https://github.com/TechnicallyComputers/retcomm-rbengine.git"
+DEFAULT_RECOMP_UI_URL = "https://github.com/RetroPortingToolKit/recomp-ui.git"
+DEFAULT_RECOMP_NET_URL = "https://github.com/RetroPortingToolKit/recomp-net.git"
+DEFAULT_RBENGINE_URL = "https://github.com/RetroPortingToolKit/rbengine.git"
 DEFAULT_BRANCH = "master"
 DEFAULT_NESTED_BRANCH = "main"
 KNOWN_SUBMODULES = ("psxrecomp", "recomp-ui")

@@ -416,6 +416,32 @@ if(BUILD_TESTING)
     target_link_libraries(full_function_emitter_test PRIVATE fmt rabbitizer)
     add_test(NAME full_function_emitter_test COMMAND full_function_emitter_test)
 
+    add_executable(signed_x_bound_codegen_test
+        tests/signed_x_bound_codegen_test.cpp
+        src/ps1_exe_parser.cpp
+        src/mips_decoder.cpp
+        src/control_flow.cpp
+        src/function_analysis.cpp
+        src/code_generator.cpp
+        src/pgxp_hook_emitter.cpp
+        src/annotations.cpp
+        src/bios_address_model.cpp
+        src/config_loader.cpp
+        src/recompiler_patch.cpp
+    )
+    target_include_directories(signed_x_bound_codegen_test PRIVATE
+        include
+        src
+        lib/rabbitizer/include
+        lib/rabbitizer/cplusplus/include
+        lib/fmt/include
+        lib/toml11
+        lib/ELFIO
+    )
+    target_link_libraries(signed_x_bound_codegen_test PRIVATE fmt rabbitizer)
+    add_test(NAME signed_x_bound_codegen_test
+             COMMAND signed_x_bound_codegen_test)
+
     add_executable(recompiler_patch_cxx17_header_test
         tests/recompiler_patch_cxx17_header_test.cpp
     )
@@ -525,6 +551,13 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_guard_bytes_declaration.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        if(Python3_VERSION VERSION_GREATER_EQUAL "3.11")
+            add_test(
+                NAME aot_overlay_methods
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_aot_overlay_pipeline.py
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        endif()
         add_test(
             NAME fmv_cycle_batch_codegen
             COMMAND ${Python3_EXECUTABLE}
@@ -536,6 +569,7 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kuseg_dispatch_lookup.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
+                    --compiler ${CMAKE_C_COMPILER}
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME overlay_shim_compile_contract
@@ -616,6 +650,8 @@ if(BUILD_TESTING)
         foreach(_t IN ITEMS
                 bios_selection_guards
                 capture_history
+                cli_retail_bios_profile
+                codegen_host_bios_stems
                 default_renderer_guards
                 mod_owned_display_controls
                 fmv_quiet_guards

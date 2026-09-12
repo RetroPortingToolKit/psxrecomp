@@ -79,7 +79,10 @@ using ExactAddressMapper = uint32_t (*)(uint32_t, const PS1Executable&);
 // Recognize only the canonical bounded-switch dependency chain:
 // sltiu/beq guard -> sll index,2 -> addu table address -> lw target -> jr.
 // The table constant may use either same-register or cross-register
-// `lui source; addiu base,source,lo`. `producer_lo/producer_hi` bound both
+// `lui source; addiu base,source,lo`, either before the guard or scheduled
+// exactly as `sltiu; beq; lui (delay slot); addiu; sll` without clobbering
+// the checked index or allowing direct edges to bypass the guard.
+// `producer_lo/producer_hi` bound both
 // table storage and case code for composite images; zero/zero means the full
 // executable. Every dependency, table word, and target must pass the hard
 // safety checks; otherwise the whole table is rejected.

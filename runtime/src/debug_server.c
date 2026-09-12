@@ -2906,7 +2906,11 @@ static void handle_dirty_ram_stats(int id, const char *json)
                                                      uint32_t out[5]);
     (void)json;
 
-    char buf[32 * 1024];
+    /* 64 KiB (was 32): the per_pc array is emitted inline and each row grew by
+     * the occ_crc / ext_ra enrichment fields (2026-09-05). The tail reserve
+     * below still truncates the row list before the fixed diagnostics, so a
+     * larger buffer only means more per_pc rows fit before that cut. */
+    char buf[64 * 1024];
     int n = snprintf(buf, sizeof(buf),
              "{\"id\":%d,\"ok\":true,\"blocks_run\":%llu,"
              "\"insns_run\":%llu,\"aborts\":%llu,"
@@ -2926,12 +2930,16 @@ static void handle_dirty_ram_stats(int id, const char *json)
         if (e->pc == 0 || e->hits == 0) continue;
         n += snprintf(buf + n, sizeof(buf) - n,
                       "%s{\"pc\":\"0x%08X\",\"hits\":%llu,\"insns\":%llu,"
-                      "\"entries\":%llu}",
+                      "\"entries\":%llu,\"occ_crc\":\"0x%08X\","
+                      "\"occ_ok\":%u,\"ext_ra\":\"0x%08X\"}",
                       first ? "" : ",",
                       (unsigned)e->pc,
                       (unsigned long long)e->hits,
                       (unsigned long long)e->insns,
-                      (unsigned long long)e->entry_hits);
+                      (unsigned long long)e->entry_hits,
+                      (unsigned)e->occ_crc,
+                      (unsigned)e->occ_ok,
+                      (unsigned)e->last_ext_ra);
         first = 0;
         /* Reserve enough tail room for all bitmap/guard diagnostics below. */
         if (n >= (int)sizeof(buf) - 2048) break;
@@ -5316,6 +5324,8 @@ static void handle_gpu_state(int id, const char *json)
              "\"present_native_43\":%d,\"x_margin\":%d,"
              "\"activation_margin\":%d,\"squash\":[%d,%d],"
              "\"mode\":%d,\"nw_extra\":%d,"
+             "\"view_anchor\":%d,\"view_left\":%d,\"view_right\":%d,"
+             "\"view_shift\":%d,\"view_padding\":[%d,%d],"
              "\"cur_frame\":%llu,\"last_tag_frame\":%u,\"last_3d_frame\":%u,"
              "\"gte_verts\":%u,\"last_world3d_frame\":%u,"
              "\"ovh_prims\":%u,\"last_ovh_frame\":%u,"
@@ -5346,6 +5356,8 @@ static void handle_gpu_state(int id, const char *json)
              ws.present_native_43, ws.x_margin, ws.activation_margin,
              ws.xnum, ws.xden,
              ws.mode, ws.nw_extra,
+             ws.view_anchor, ws.view_left, ws.view_right, ws.view_shift,
+             ws.view_pad_left, ws.view_pad_right,
              (unsigned long long)ws.cur_frame, ws.last_tag_frame,
               ws.last_3d_frame, ws.gte_verts, ws.last_world3d_frame,
               ws.ovh_prims, ws.last_ovh_frame,
@@ -7727,20 +7739,24 @@ static void handle_ws_hud_mode(int id, const char *json)
 }
 
 /* Kernel-image bless state: {"cmd":"kernel_bless"} ->
- * entries/clean/mismatch/native_hits/verifies/invalidations.
+ * entries/clean/mismatch/native_hits/verifies/invalidations, plus the
+ * declared kernel patch ranges and the segments they made the verifier
+ * skip (psx_bios_kernel_patch_ranges).
  * (memory.c psx_kernel_bless_*; PSX_KERNEL_BLESS=0 disables the mechanism.) */
 static void handle_kernel_bless(int id, const char *json)
 {
-    extern void psx_kernel_bless_stats(uint64_t out[6]);
+    extern void psx_kernel_bless_stats(uint64_t out[8]);
     (void)json;
-    uint64_t s[6];
+    uint64_t s[8];
     psx_kernel_bless_stats(s);
     send_fmt("{\"id\":%d,\"ok\":true,\"entries\":%llu,\"clean\":%llu,"
              "\"mismatch\":%llu,\"native_hits\":%llu,\"verifies\":%llu,"
-             "\"invalidations\":%llu}",
+             "\"invalidations\":%llu,\"patch_ranges\":%llu,"
+             "\"patch_skips\":%llu}",
              id, (unsigned long long)s[0], (unsigned long long)s[1],
              (unsigned long long)s[2], (unsigned long long)s[3],
-             (unsigned long long)s[4], (unsigned long long)s[5]);
+             (unsigned long long)s[4], (unsigned long long)s[5],
+             (unsigned long long)s[6], (unsigned long long)s[7]);
 }
 
 static void handle_ws_margin(int id, const char *json)

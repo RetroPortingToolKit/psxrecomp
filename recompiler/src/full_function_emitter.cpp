@@ -251,6 +251,17 @@ bool FullFunctionEmitter::emit_function(
     // dominated by kernel poll-loop leaders 0x45FC/0x4614 inside func_00004498 —
     // both had labels/gotos but no dispatch entries (only jal+8 conts were registered).
     // Entry block is already a function dispatch key; skip it. Dedup later.
+    // Split before computing cycle totals and load-delay boundaries. Guards
+    // precede all replaced instructions, including interior branch targets.
+    for (const auto& [pc, word] : addr_to_raw) {
+        (void)word;
+        const uint32_t ram_pc = addr_model().rom_to_ram_phys(pc);
+        for (const auto& slot : addr_model().install_slots()) {
+            if ((ram_pc >= slot.ram_addr && ram_pc < slot.hi()) ||
+                ram_pc == slot.resume_addr())
+                block_leaders.insert(pc);
+        }
+    }
     for (uint32_t leader : block_leaders) {
         if (!addr_to_raw.count(leader)) continue;
         uint32_t leader_norm = normalize_address(leader);
@@ -352,6 +363,24 @@ bool FullFunctionEmitter::emit_function(
             }
             uint32_t ds_addr = addr + 4;
             pending_at[ds_addr] = pb;
+        }
+    }
+
+    // A guard cannot unwind a live branch/load delay using only a PC. Leave
+    // such a RAM-backed body on the existing fail-closed interpreter path;
+    // never widen the declared bytes to conceal an unsafe boundary.
+    for (const auto& [pc, word] : addr_to_raw) {
+        (void)word;
+        const uint32_t ram_pc = addr_model().rom_to_ram_phys(pc);
+        if (!addr_model().is_install_slot(ram_pc)) continue;
+        const auto previous = addr_to_raw.find(pc - 4u);
+        const bool prior_load = previous != addr_to_raw.end() &&
+            (previous->second >> 26) >= 0x20u && (previous->second >> 26) <= 0x26u;
+        if (pending_at.count(pc) || prior_load) {
+            if (out_interpreter_reason)
+                *out_interpreter_reason = fmt::format(
+                    "patch range at RAM 0x{:08X} crosses a branch/load delay boundary", ram_pc);
+            return false;
         }
     }
 
@@ -754,6 +783,106 @@ bool FullFunctionEmitter::emit_function(
                            relocate_ra(rom_addr));
     };
 
+    auto emit_patch_range_guard = [&](uint32_t addr) {
+        // Kernel patch-range hook (CLAUDE.md Rule 18 / docs/dynamic_handler_install.md).
+        // The BIOS and the game's Psy-Q libapi patchers overwrite specific
+        // kernel-RAM words at runtime: install stubs written over ROM zeros
+        // (RAM 0xCF0, the SIO data-byte handler), but also a `jr` planted over
+        // real ROM instructions, an 11-word prologue rewrite that inserts an
+        // `mfc0 Cause`, and a driver routine NOP'd out. The recompiler emitted
+        // the ROM bytes; if we run those statically the guest's patch never
+        // executes.
+        //
+        // At every possible entry into a declared range, emit a runtime check: if ANY word
+        // in the range differs from its ROM-baked value, the patch is live —
+        // dispatch into RAM so the interpreter runs the guest's own
+        // instructions (Rule 18: we execute the patch as written, we do not
+        // synthesise its effect). The rest of the body still runs native,
+        // because the range is also published to the runtime, which excludes
+        // it from the kernel-bless memcmp (memory.c) and hands straight-line
+        // flow back at the range end (dirty_ram_interp.c).
+        //
+        // Ranges come from the profile's [[recompiler.install_slots]]; see
+        // docs/dynamic_handler_install.md for how to find new ones.
+        uint32_t ram_pc = addr_model().rom_to_ram_phys(addr);
+        const BiosInstallSlot* slot = nullptr;
+        for (const auto& range : addr_model().install_slots()) {
+            if (ram_pc >= range.ram_addr && ram_pc < range.hi()) { slot = &range; break; }
+        }
+        if (slot) {
+            /* Where the compiled body picks up again:
+             *  - Jalr (legacy 4-word stub): the stub's jalr captures
+             *    ra = stub_PC + 8 = ram_addr + 0x10, so the called function
+             *    returns there.
+             *  - Fallthrough: the patched words ARE the function; execution
+             *    continues at the end of the range.
+             *  - None: the patch is a `jr` out of the kernel and never comes
+             *    back to this body.
+             * For the first two, register the resume PC as both a block leader
+             * (so label_<resume>: exists) and a local continuation (so the
+             * entry-switch and the emitted continuation wrapper route to it).
+             * Without the continuation key, external dispatch to the resume PC
+             * misses and falls into interpretation, which has no COP0 and
+             * crashes the exception handler. */
+            uint32_t resume_ram = slot->resume_addr();
+            if (resume_ram != 0u) {
+                uint32_t resume_rom = addr + (resume_ram - ram_pc);
+                if (addr_to_raw.count(resume_rom)) {
+                    block_leaders.insert(resume_rom);
+                    uint32_t resume_norm = normalize_address(resume_rom);
+                    if (!all_function_entries_norm.count(resume_norm)) {
+                        local_continuations.push_back({resume_rom, resume_norm, norm});
+                    }
+                }
+            }
+            /* Compare every word in the range against the ROM-baked value.
+             * The old test was `first word != 0`, which only fires for a stub
+             * written over ROM zeros — a `jr` planted over a real instruction
+             * and a prologue rewrite both leave non-zero ROM words and were
+             * never detected. A page-level dirty bit is far too coarse: the
+             * kernel handler dirties page 0 on every exception by saving
+             * registers, which would redirect unconditionally. Word-level
+             * compare is exact: the range is "live" iff the guest has actually
+             * changed it. */
+            std::string cond;
+            uint32_t base_phys_local = base_addr & 0x1FFFFFFFu;
+            for (uint32_t off = 0; off < slot->len; off += 4u) {
+                uint32_t w_rom_addr = addr - (ram_pc - slot->ram_addr) + off;
+                uint32_t w_phys = w_rom_addr & 0x1FFFFFFFu;
+                if (w_phys < base_phys_local ||
+                    w_phys + 4u > base_phys_local + rom.size()) {
+                    throw std::runtime_error(fmt::format(
+                        "install slot RAM 0x{:08X} len 0x{:X}: word +0x{:X} "
+                        "lies outside the ROM image", ram_pc, slot->len, off));
+                }
+                uint32_t rom_word = read_u32_le(rom, w_phys - base_phys_local);
+                if (!cond.empty()) cond += " ||\n        ";
+                cond += fmt::format("cpu->read_word(0x{:08X}u) != 0x{:08X}u",
+                                    slot->ram_addr + off, rom_word);
+            }
+            // A normal delay-slot execution belongs to the guarded branch.
+            // A direct branch TO this label has no pending branch flag.
+            auto pending = pending_at.find(addr);
+            if (pending != pending_at.end())
+                cond = fmt::format("!psx_delay_{:08X} && ({})",
+                                   pending->second.terminator_addr, cond);
+            out += fmt::format(
+                "    /* 0x{:08X}: kernel patch-range hook (RAM [0x{:08X},0x{:08X}),\n"
+                "     * resume RAM 0x{:08X}). If the guest has overwritten any word\n"
+                "     * of this range, dispatch into RAM so its own instructions run;\n"
+                "     * otherwise fall through to the statically compiled ROM code. */\n"
+                "    if ({}) {{\n"
+                "#ifdef PSX_ENABLE_BLOCK_CYCLES\n"
+                "        psx_cyc_bb_defer_flush();\n"
+                "#endif\n"
+                "        psx_check_interrupts_at(cpu, 0x{:08X}u);\n"
+                "        cpu->pc = 0x{:08X}u; return;\n"
+                "    }}\n",
+                addr, slot->ram_addr, slot->hi(), resume_ram,
+                cond, ram_pc, ram_pc);
+        }
+    };
+
     for (auto it = addr_to_raw.begin(); it != addr_to_raw.end(); ++it) {
         uint32_t addr = it->first;
         uint32_t raw = it->second;
@@ -763,6 +892,7 @@ bool FullFunctionEmitter::emit_function(
         // can service vblank and other hardware interrupts.
         if (block_leaders.count(addr)) {
             out += fmt::format("label_{:08X}:\n", addr);
+            emit_patch_range_guard(addr);
             // Per-block-leader cycle observe (cyc_watch ruler). Sampled BEFORE
             // this block's cycle advance, so it reports cumulative cycles for
             // all PRIOR blocks — matching Beetle's before-instruction sample
@@ -1192,57 +1322,6 @@ bool FullFunctionEmitter::emit_function(
             continue;
         }
 
-        // Install-slot hook (CLAUDE.md Rule 18 / docs/dynamic_handler_install.md).
-        // The PS1 BIOS overwrites specific kernel-RAM addresses at runtime
-        // with dispatch stubs (e.g. RAM 0xCF0 for the SIO data-byte handler).
-        // The recompiler emitted NOPs from the ROM image; if we just run those
-        // statically, the installed stub never executes.  At known install-slot
-        // PCs, emit a runtime check: if the page is dirty (RAM was written-to),
-        // dispatch into RAM to run the installed code.  Otherwise fall through
-        // to the static NOP.
-        //
-        // Install slots come from the profile's [[recompiler.install_slots]]
-        // (e.g. SCPH1001's SIO data-byte handler slot at RAM 0xCF0). See
-        // docs/dynamic_handler_install.md for how to find new ones.
-        uint32_t ram_pc = addr_model().rom_to_ram_phys(addr);
-        bool is_install_slot = addr_model().is_install_slot(ram_pc);
-        if (is_install_slot) {
-            /* The installed stub is 4 instructions: lui, addiu, jalr, nop.
-             * The jalr captures ra = stub_PC + 8 = install_slot + 0x10.  When
-             * the stub's called function returns via jr ra, control flows back
-             * to install_slot + 0x10.  Register that ROM address as both a
-             * block leader (so label_<post_stub>: is emitted) and a local
-             * continuation (so the entry-switch routes to it).  Without this,
-             * external dispatch to the post-stub PC misses and falls into
-             * interpretation, which doesn't have COP0 and crashes the
-             * exception handler. */
-            uint32_t post_stub_rom = addr + 0x10u;
-            if (addr_to_raw.count(post_stub_rom)) {
-                block_leaders.insert(post_stub_rom);
-                uint32_t post_stub_norm = normalize_address(post_stub_rom);
-                if (!all_function_entries_norm.count(post_stub_norm)) {
-                    local_continuations.push_back({post_stub_rom, post_stub_norm, norm});
-                }
-            }
-            /* Hook fires only when the FIRST instruction word at this PC
-             * differs from the ROM-baked value (= 0x00000000 NOP for these
-             * slots).  A page-level dirty bit is too coarse: the kernel
-             * handler dirties page 0 on every exception by saving registers,
-             * which would unconditionally redirect into the interpreter.
-             * Word-level check is exact: the slot is "live" iff the BIOS
-             * install function has actually overwritten it. */
-            out += fmt::format(
-                "    /* 0x{:08X}: install-slot hook (RAM 0x{:08X}) — if the BIOS\n"
-                "     * has overwritten this slot with an install stub, dispatch\n"
-                "     * into the stub.  Otherwise fall through to static NOP.\n"
-                "     * After the stub's jalr returns, ra=RAM 0x{:08X} routes\n"
-                "     * back here as a registered continuation target. */\n"
-                "    if (cpu->read_word(0x{:08X}u) != 0u) {{\n"
-                "        psx_check_interrupts_at(cpu, 0x{:08X}u);\n"
-                "        cpu->pc = 0x{:08X}u; return;\n"
-                "    }}\n",
-                addr, ram_pc, ram_pc + 0x10u, ram_pc, ram_pc, ram_pc);
-        }
 
         // Non-terminator: emit normally — unless this load's successor reads
         // its destination (MIPS-I load-delay pair): then defer the register
@@ -1912,6 +1991,40 @@ void FullFunctionEmitter::emit_dispatch(
                            g_sym_prefix, kb_count);
     }
 
+    // --- Kernel patch-range table (runtime bless + interp hand-back) ---
+    // The profile's [[recompiler.install_slots]], couriered verbatim to the
+    // runtime. Two consumers read it: memory.c verifies a kernel body in
+    // segments that SKIP these ranges (so a body with a live install stub is
+    // still blessed for native execution — before this, the whole-body memcmp
+    // failed forever on the first patch and the BIOS exception handler
+    // interpreted for the life of the process), and dirty_ram_interp.c hands
+    // straight-line flow back to static dispatch at a range's hi, which the
+    // per-function emitter registered as a continuation key. The guest's
+    // patched words themselves still execute on the interpreter, as written.
+    //
+    // Emitted sorted and non-overlapping (BiosAddressModel::from_config
+    // validates and sorts), because the runtime's verifier walks them in
+    // order.
+    {
+        std::string pr;
+        size_t pr_count = 0;
+        for (const BiosInstallSlot& sl : addr_model().install_slots()) {
+            pr += fmt::format("    {{ 0x{:08X}u, 0x{:08X}u }},\n",
+                              sl.ram_addr, sl.hi());
+            pr_count++;
+        }
+        out += fmt::format(
+            "static const PsxKernelPatchRange {}psx_bios_kernel_patch_ranges[{}] = {{\n",
+            g_sym_prefix, pr_count ? pr_count : 1);
+        // A zero-length array is not C; an image with no declared slots emits
+        // one inert entry and a count of 0, which every consumer range-tests
+        // against the count before indexing.
+        out += pr_count ? pr : "    { 0u, 0u },\n";
+        out += "};\n";
+        out += fmt::format("enum {{ {}psx_bios_kernel_patch_range_count = {}u }};\n\n",
+                           g_sym_prefix, pr_count);
+    }
+
     // --- Image self-description (runtime/include/psx_bios_image.h) ---
     // The runtime reads these instead of hardcoding per-image constants;
     // emitted next to the code they describe, so they cannot disagree with
@@ -2288,6 +2401,8 @@ void FullFunctionEmitter::emit_dispatch(
         "    {0}psx_dispatch_call," "\n"
         "    {0}psx_bios_kernel_bodies," "\n"
         "    {0}psx_bios_kernel_body_count," "\n"
+        "    {0}psx_bios_kernel_patch_ranges," "\n"
+        "    {0}psx_bios_kernel_patch_range_count," "\n"
         "}};" "\n",
         g_sym_prefix);
 }
@@ -2309,7 +2424,7 @@ EmitStats FullFunctionEmitter::emit(
 {
     EmitStats stats;
 
-    // Setup / RetComM zips omit generated/; create it before ofstream.
+    // Setup / Retro zips omit generated/; create it before ofstream.
     if (!out_dir.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(out_dir, ec);
@@ -2517,10 +2632,45 @@ EmitStats FullFunctionEmitter::emit(
     // --- Emit continuation wrappers ---
     // Deduplicate continuations by norm_addr (same label from multiple callers).
     std::map<uint32_t, ContinuationLabel> unique_continuations;
+    size_t slot_range_keys_dropped = 0;
     for (const auto& cl : all_continuations) {
+        // A PC inside a declared install-slot range must NOT become a native
+        // dispatch key. The compiled bytes there are not what executes — the
+        // guest's patch is — and the patch-range hook at the range start sets
+        // cpu->pc back to that same PC and returns, so dispatching into the
+        // body spins the dispatch loop forever. Dropping the key lets dispatch
+        // miss through to the dirty-RAM interpreter, which runs the guest's
+        // patched words: the intended path.
+        //
+        // Cost paid 2026-09-11: OpenBIOS RAM 0x357C already carried a
+        // jal-return continuation from before install slots existed, and
+        // declaring the card-handler range there wedged the boot at frame 0.
+        // Four more such keys sit inside retail's NOP'd pad-clear range.
+        if (addr_model().in_install_slot_range(cl.norm_addr)) {
+            slot_range_keys_dropped++;
+            continue;
+        }
         // Only add if not already a function entry (shouldn't be, but guard).
         if (!emitted_normalized.count(cl.norm_addr)) {
             unique_continuations[cl.norm_addr] = cl;
+        }
+    }
+    if (slot_range_keys_dropped) {
+        std::fprintf(stdout,
+            "psxrecomp-bios: dropped %zu continuation key(s) inside declared install-slot ranges\n",
+            slot_range_keys_dropped);
+    }
+    // A FUNCTION ENTRY inside a declared range is a different matter: dropping
+    // it would silently remove a callable function from dispatch. That is a
+    // profile error (the range is too wide, or it covers real code the guest
+    // does not patch), so refuse to emit rather than produce a build whose
+    // dispatch quietly misses.
+    for (uint32_t norm : emitted_normalized) {
+        if (addr_model().in_install_slot_range(norm)) {
+            throw std::runtime_error(fmt::format(
+                "install-slot range covers the function entry at RAM 0x{:08X}: "
+                "a declared range may only cover words the guest patches, never "
+                "a dispatch entry. Narrow the range in the BIOS profile.", norm));
         }
     }
 

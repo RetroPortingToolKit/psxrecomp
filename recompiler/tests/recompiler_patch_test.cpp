@@ -311,6 +311,28 @@ result = 0
               keep_config.ws_cull_keep_sites[1].result == 0u,
           "parser preserves full-word-guarded maximal-participation sites");
 
+    const auto signed_bound = write_config(root, "signed-x-bound", R"toml(
+[[widescreen.signed_x_bound]]
+address = "0x8002D290"
+expected = "0x2402FF00"
+
+[[widescreen.signed_x_bound]]
+address = "0x8002D298"
+expected = "0x3C02FFF0"
+)toml");
+    const auto signed_bound_config =
+        PSXRecompV4::load_game_config(signed_bound);
+    check(signed_bound_config.ws_signed_x_bound_sites.size() == 2 &&
+              signed_bound_config.ws_signed_x_bound_sites[0].address ==
+                  0x8002D290u &&
+              signed_bound_config.ws_signed_x_bound_sites[0].expected ==
+                  0x2402FF00u &&
+              signed_bound_config.ws_signed_x_bound_sites[1].address ==
+                  0x8002D298u &&
+              signed_bound_config.ws_signed_x_bound_sites[1].expected ==
+                  0x3C02FFF0u,
+          "parser preserves guarded signed pixel and Q16 X bounds");
+
     const auto bad_keep = write_config(root, "cull-keep-bad", R"toml(
 [[widescreen.cull.keep]]
 address = "0x8002B310"
@@ -324,13 +346,21 @@ result = 1
     const auto range = write_config(root, "range-cull", R"toml(
 [widescreen.cull]
 range_sites = ["0x80012340"]
+bias_lower_sites = ["0x80012348"]
 activation_guard_pixels = 256
 )toml");
     const auto range_config = PSXRecompV4::load_game_config(range);
     check(range_config.ws_cull_range_sites ==
               std::vector<uint32_t>{0x80012340u} &&
+              range_config.ws_cull_bias_lower_sites ==
+              std::vector<uint32_t>{0x80012348u} &&
               range_config.ws_cull_activation_guard_pixels == 256,
           "parser preserves explicit range sites and activation guard");
+    auto changed_lower_config = range_config;
+    changed_lower_config.ws_cull_bias_lower_sites.clear();
+    check(PSXRecompV4::overlay_codegen_config_hash(range_config) !=
+              PSXRecompV4::overlay_codegen_config_hash(changed_lower_config),
+          "lower activation endpoint changes overlay cache identity");
 
     const auto bad_activation_guard =
         write_config(root, "range-cull-bad-activation-guard", R"toml(
@@ -700,6 +730,30 @@ void codegen_tests() {
     check(depth_overlay_mismatch.find("ws cull depth") == std::string::npos,
           "overlay nonmatching depth variant remains unchanged");
 
+    PSXRecomp::CodeGenConfig signed_bound_config;
+    signed_bound_config.ws_signed_x_bound_sites.push_back(
+        {0x80010000u, 0x2402FF00u}); // addiu v0,zero,-256
+    const std::string signed_pixel_bound = generate_first_instruction(
+        0x2402FF00u, {}, false, signed_bound_config);
+    check(signed_pixel_bound.find("psx_ws_screen_x_bound(-256)") !=
+              std::string::npos,
+          "codegen emits guarded signed screen-pixel X bound");
+
+    signed_bound_config.ws_signed_x_bound_sites[0] =
+        {0x80010000u, 0x3C02FFF0u}; // lui v0,0xfff0
+    const std::string signed_q16_bound = generate_first_instruction(
+        0x3C02FFF0u, {}, false, signed_bound_config);
+    check(signed_q16_bound.find(
+              "psx_ws_player_x_bound((int32_t)0xFFF00000)") !=
+              std::string::npos,
+          "codegen keeps guarded LUI X bounds on the Q16 helper");
+
+    const std::string signed_bound_overlay_mismatch = generate_first_instruction(
+        0x24020078u, {}, true, signed_bound_config);
+    check(signed_bound_overlay_mismatch.find("typed native-wide signed") ==
+              std::string::npos,
+          "overlay nonmatching signed-bound variant remains unchanged");
+
     PSXRecomp::CodeGenConfig range_config;
     range_config.ws_cull_range_sites.insert(0x80010000u);
     const std::string range = generate_first_instruction(
@@ -727,6 +781,27 @@ void codegen_tests() {
               "(psx_ws_x_margin() > 0 ? psx_ws_x_margin() + 256 : 0)") !=
               std::string::npos,
           "activation bias gains the same isolated resident-object lead");
+
+    PSXRecomp::CodeGenConfig lower_bias_config;
+    lower_bias_config.ws_cull_bias_lower_sites.insert(0x80010000u);
+    for (const uint32_t opcode : {0x2082FFD0u, 0x2482FFD0u}) {
+        const std::string lower = generate_first_instruction(opcode, {}, false, lower_bias_config);
+        check(lower.find("((int32_t)-48 - psx_ws_x_margin())") != std::string::npos,
+              "ADDI/ADDIU lower endpoint expands left without changing camera source");
+        check(lower.find("PGXP_ALU(") != std::string::npos &&
+              lower.find("_pgx1 = cpu->gpr[4]") != std::string::npos,
+              "lower bound preserves native ALU precision tracking");
+    }
+    lower_bias_config.ws_cull_activation_guard_pixels = 32;
+    const std::string lower_guard = generate_first_instruction(
+        0x2482FFD0u, {}, false, lower_bias_config);
+    check(lower_guard.find("-48 - (psx_ws_x_margin() > 0 ? psx_ws_x_margin() + 32 : 0)") !=
+              std::string::npos,
+          "lower endpoint includes activation guard only while wide");
+    const std::string lower_mismatch = generate_first_instruction(
+        0x3482FFD0u, {}, true, lower_bias_config); // ORI variant is not an add.
+    check(lower_mismatch.find("psx_ws_x_margin()") == std::string::npos,
+          "lower bias leaves a nonmatching overlay opcode unchanged");
 
     PSXRecomp::CodeGenConfig branch_keep_config;
     branch_keep_config.ws_cull_branch_keep_sites.insert(0x80010000u);
@@ -1022,6 +1097,29 @@ void jump_table_producer_codegen_test() {
           unbounded_alias_generated.front().full_code.find("/* jump table") !=
               std::string::npos,
           "alias regression fixture reaches the table when ownership is absent");
+
+    // The scheduled variant must feed code generation too, not merely the
+    // discovery report. Its table base overwrites the guard in the BEQ delay
+    // slot, so the existing branch emitter must preserve the tested condition.
+    write_word(exe, base + 0x500u, 0u);
+    write_word(exe, base + 0x504u, 0u);
+    write_word(exe, base + 0x508u, 0x2C620003u);
+    write_word(exe, base + 0x50Cu, 0x1040001Cu);
+    write_word(exe, base + 0x510u, 0x3C028001u);
+    write_word(exe, base + 0x514u, 0x24420A00u);
+    write_word(exe, base + 0x518u, 0x00031880u);
+    write_word(exe, base + 0x51Cu, 0x00621821u);
+    write_word(exe, base + 0x520u, 0x8C620000u);
+    PSXRecomp::ControlFlowAnalyzer scheduled_analyzer(exe);
+    const auto scheduled_cfg = scheduled_analyzer.analyze_function(function);
+    PSXRecomp::CodeGenerator scheduled_generator(exe);
+    const auto scheduled = scheduled_generator.generate_function(
+        function, scheduled_cfg).full_code;
+    check(scheduled.find("/* jump table") != std::string::npos,
+          "codegen emits a switch with its table LUI in the bounds delay slot");
+    for (uint32_t target : cases)
+        check(scheduled.find(fmt::format("goto block_{:08X}", target)) != std::string::npos,
+              "every scheduled case has an emitted native control-flow edge");
 }
 
 void cfg_codegen_load_delay_test() {

@@ -168,13 +168,13 @@ def cmd_gui(args: argparse.Namespace) -> int:
     # tools/new_project_layout/project_studio/cli.py → repo root
     repo = here.parents[3] if len(here.parents) > 3 else here.parents[2]
     for rel in (
-        Path("build") / "RetComM-Studio",
+        Path("build") / "Retro-Studio",
         Path("build") / "retcomm-studio",
-        Path("build-release") / "RetComM-Studio",
-        Path("out") / "bin" / "RetComM-Studio",
+        Path("build-release") / "Retro-Studio",
+        Path("out") / "bin" / "Retro-Studio",
     ):
         candidates.append(repo / rel)
-    which = shutil.which("RetComM-Studio") or shutil.which("retcomm-studio")
+    which = shutil.which("Retro-Studio") or shutil.which("retcomm-studio")
     if which:
         candidates.append(Path(which))
 
@@ -186,10 +186,10 @@ def cmd_gui(args: argparse.Namespace) -> int:
             return int(subprocess.call(cmd))
 
     print(
-        "RetComM Studio GUI is Dear ImGui (native).\n"
+        "Retro Studio GUI is Dear ImGui (native).\n"
         "Build it first:\n"
         "  cmake -S . -B build && cmake --build build\n"
-        "  ./build/RetComM-Studio\n"
+        "  ./build/Retro-Studio\n"
         "Or set RETCOMM_STUDIO_BIN to the executable path.",
         file=sys.stderr,
     )

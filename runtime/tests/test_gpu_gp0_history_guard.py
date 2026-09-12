@@ -305,6 +305,8 @@ void gr_wide_clear(int x, int y, int h, uint16_t color)
 void gr_wide_disable_target(void) {}
 void gr_wide_configure(int width, int offset) { (void)width; (void)offset; }
 void gr_wide_set_target(int base) { (void)base; }
+void gr_wide_set_view(int active, int shift, int pad_left, int pad_right)
+{ (void)active; (void)shift; (void)pad_left; (void)pad_right; }
 void gr_wide_clear_margins(int base, int y, int h, uint16_t color, int mode)
 { (void)base; (void)y; (void)h; (void)color; (void)mode; }
 void gr_set_draw_area(int l, int t, int r, int b) { (void)l; (void)t; (void)r; (void)b; }

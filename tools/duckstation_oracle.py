@@ -18,7 +18,7 @@ bracket where.
 Where it lives
 --------------
 NOT in the game repo. The oracle is a developer tool shared by every recomp
-title, so it installs into the RetComM data root alongside the toolchains and
+title, so it installs into the Retro data root alongside the toolchains and
 catalog:
 
     ~/.local/share/retcomm/oracle/duckstation/       (Linux / macOS)
@@ -26,7 +26,7 @@ catalog:
     %LOCALAPPDATA%\\retcomm\\oracle\\duckstation\\      (Windows fallback)
 
 Override with RETCOMM_ORACLE_DIR, or move the whole root with RETCOMM_DATA_DIR
-(the same variables RetComM Launcher and Studio already honour).
+(the same variables Retro Launcher and Studio already honour).
 
     <root>/src/          pinned upstream checkout with the oracle patch applied
     <root>/build/        cmake/ninja tree
@@ -160,7 +160,7 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 def data_root() -> Path:
-    """The RetComM shared data root — same one the launcher and Studio use.
+    """The Retro shared data root — same one the launcher and Studio use.
 
     The precedence must match studio_runner.cpp's retcomm_data_dir() exactly,
     XDG_DATA_HOME included. If the two disagree, the GUI reports an oracle
@@ -656,7 +656,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 def find_bios(explicit: Optional[str]) -> Optional[Path]:
     """Locate a retail BIOS image for the oracle.
 
-    Order: what the caller passed, then the RetComM BIOS root, then the engine
+    Order: what the caller passed, then the Retro BIOS root, then the engine
     checkout this script lives in. Never downloads one — a BIOS dump is the
     user's own property and is not redistributable.
     """
@@ -1209,7 +1209,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("status", help="where it is and what state it is in")
     p.add_argument("--json", action="store_true",
-                   help="machine-readable, for RetComM Studio")
+                   help="machine-readable, for Retro Studio")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("path", help="print the install root")

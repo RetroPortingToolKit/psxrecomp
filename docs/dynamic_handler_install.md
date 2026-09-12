@@ -115,20 +115,85 @@ control returns to `psx_dispatch` for the next basic block. The
 combined effect is that BIOS-installed code at RAM 0xCF0 *runs*,
 correctly, on the same CPU register state as static-recompiled C.
 
+## The patcher is usually the GAME, not the BIOS (measured 2026-09-11)
+
+The section above describes the BIOS patching itself. In practice the larger
+source of patched kernel words is the **game**: every Psy-Q SDK title links
+libapi, whose `_patch_gte` / `_patch_card` / `_patch_card2` / `_patch_pad`
+routines rewrite kernel RAM during `ResetCallback`. Measured on Breath of Fire
+III (SLPS-00990, SDK 3.70) against both BIOS images, 30 s into a boot, five
+distinct shapes appear — and only the first fits the original one-PC,
+`word != 0` model:
+
+| Shape | Example | Resume |
+|---|---|---|
+| 4-word `lui/addiu/jalr/nop` stub over ROM **zeros** | retail `0x0CF0`, OpenBIOS `0x281C` | `"jalr"` — the call returns to `+0x10` |
+| 11-word prologue rewrite with an inserted `mfc0 v0, Cause` | retail `0x0C88`, OpenBIOS `0x27B4` | `"fallthrough"` — the patched words ARE the function |
+| 11 words NOP'd (a driver routine removed) | retail `0x4964` | `"fallthrough"` |
+| 5-word `jalr` into game text, `ra` landing word also NOP'd | retail `0x4D98` | `"fallthrough"`, not `+0x10` |
+| 4-word `jr` into game text over **real ROM instructions** | retail `0x6444`, OpenBIOS `0x357C` | `"none"` — a `jr` never comes back |
+
+The three patched shapes that overwrite real ROM instructions are invisible to
+a zero test, and two of them never return to `ram_addr + 0x10`. That is why a
+slot is a **range** with an explicit `resume` (see
+[`config_schema.md`](config_schema.md) → install slots), detected by comparing
+every word against its ROM-baked value.
+
+## The slot and the bless verifier must compose
+
+Declaring a slot is necessary but not sufficient, and getting this wrong cost
+one title its whole kernel budget. The mechanism has three parts that only
+work together:
+
+1. **The emitted hook** (`full_function_emitter.cpp`) fires when any word in
+   the declared range differs from ROM, and dispatches to the range start so
+   the interpreter runs the guest's patched instructions.
+2. **The bless verifier** (`memory.c`, via `kernel_patch_ranges.c`) compares a
+   kernel body in segments that SKIP the declared ranges. Without this the
+   body's whole-extent memcmp fails on the first patch and the body is
+   MISMATCH for the life of the process — so native code never reaches the
+   hook at all. The two halves were written separately and did not compose:
+   Breath of Fire III's card stub landed at exactly the address
+   `bios/SCPH1001.toml` already declared, and the exception handler still
+   interpreted **1.22 billion instructions**, 44.6 % of all interpreted work.
+3. **The interpreter hand-back** (`dirty_ram_interp.c`) surfaces to static
+   dispatch when straight-line flow reaches a range's `hi`, which the emitter
+   registered as a continuation key. Kernel page 0 is permanently dirty (the
+   handler saves registers there on every exception), so without this the
+   interpreter would run the entire function after the patch rather than just
+   the patched words.
+
+`PSX_KERNEL_PATCH_RANGES=0` drops the declared ranges at runtime, restoring
+the whole-body memcmp. One binary then measures both sides of the change
+(companion to `PSX_KERNEL_BLESS=0`, which disables the mechanism outright).
+
 ## Discoverability
 
-Other install slots may exist. The tracker should detect them
-mechanically by:
+Finding the ranges for a new image is a diff, not a hunt: snapshot the live
+kernel RAM copy, compare it word-for-word against the ROM source it was
+copied from, and keep the differences that land inside a compiled body.
 
-- Logging every write into `RAM 0x000..0xFFFF` (kernel code area).
-- Reporting any PC dispatch that hits a written page.
+- Read the kernel-bless window and ROM offset out of the linked image
+  (`psx_bios_image`), read live RAM over the debug server, and diff.
+- Attribute each differing word to a body using the emitted body table; words
+  outside every body are data (event tables, TCB saves, pad tables) and
+  unbless nothing — do not declare them.
+- Group contiguous differing words into one range, then read the LIVE words to
+  pick `resume`: a `jalr` returns to `+0x10`, a `jr` never returns, and
+  anything else falls through to the range end.
+- Snapshot twice (early and late). Some patches land at boot and some on the
+  first card access, and a range that appears only late is still a range.
+- Cross-check `kernel_bless` over the debug server: `mismatch` should fall to
+  the bodies you have NOT declared, and `patch_skips` should be non-zero.
 
-Known/suspected slots to verify after the SIO data handler works:
+A word whose writer you cannot identify is a word you should not declare: the
+declaration tells the verifier to stop checking it. Leaving it undeclared
+costs performance in one body; declaring it wrongly costs correctness
+everywhere (CLAUDE.md Rule 14).
 
-- VBlank pad poll fast-path (?)
-- Memcard slot-1 detection
-- CD-ROM ready handler
-- Anything in `RAM 0xC80..0xFFF` (kernel hook region)
+Slot addresses are per BIOS revision AND per libapi release. Re-measure on a
+second title before assuming a profile's list is complete; the schema
+tolerates declaring the union.
 
 ## NOT HLE
 

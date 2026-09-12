@@ -101,6 +101,8 @@ struct CodeGenConfig {
     // nop replaced with `a1 += margin`, or move rD,a1 replaced with
     // `rD = a1 + margin`. See config_loader.h. Empty = default.
     std::set<uint32_t> ws_cull_bias_sites;
+    // Lower endpoint counterpart: addi/addiu immediate minus activation margin.
+    std::set<uint32_t> ws_cull_bias_lower_sites;
     std::set<uint32_t> ws_cull_range_sites;
     std::set<uint32_t> ws_cull_a1_sites;
     std::set<uint32_t> ws_cull_screen_x_sites;

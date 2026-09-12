@@ -119,6 +119,7 @@
 #define PSXGL_FUNC_REVERSE_SUBTRACT 0x800B
 #define PSXGL_CONSTANT_ALPHA        0x8003
 #define PSXGL_UNPACK_ROW_LENGTH     0x0CF2
+#define PSXGL_PACK_ROW_LENGTH       0x0D02
 #define PSXGL_SRC1_ALPHA            0x8589
 
 #ifndef APIENTRY
@@ -442,6 +443,7 @@ static int           s_gpu_dirty = 0;      /* CPU VRAM array may be stale    */
 
 /* Dirty-rect unions, native VRAM coords, inclusive bounds. */
 typedef struct { int x0, y0, x1, y1, set; } DirtyRect;
+static DirtyRect s_cpu_dirty; /* conservative GPU-written area not yet read into CPU VRAM */
 static DirtyRect s_pack_dirty;             /* hr FBO content not in raw mirror */
 
 /* CPU writes not yet in the FBO — an EXACT rect list, NOT a single union.
@@ -520,7 +522,8 @@ static int    s_wide_suppress = 0;
 
 /* X-translation (native px) from canonical VRAM space into the active wide
  * surface: local_x = vram_x - base_x + OFFSET. Same as SW wide_dx(). */
-static inline int wide_dx(void) { return g_wide_off - g_wide_cur_base; }
+static int view_enabled, view_shift, view_pad_left, view_pad_right;
+static inline int wide_dx(void) { return g_wide_off + view_shift - g_wide_cur_base; }
 
 /* ---- dirty-rect helpers ------------------------------------------------- */
 static void rect_clear(DirtyRect *r) { r->set = 0; }
@@ -1528,6 +1531,7 @@ static void ensure_cpu(void) {
      * Never glReadPixels — that forked peer snaps/resim. */
     if (s_cpu_auth_dual || psx_netplay_active()) {
         s_gpu_dirty = 0;
+        rect_clear(&s_cpu_dirty);
         return;
     }
     flush_flat_batch();
@@ -1535,10 +1539,22 @@ static void ensure_cpu(void) {
     flush_cpu_upload();
     pack_flush();
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, s_raw_fbo);
-    glReadPixels(0, 0, VRAM_W, VRAM_H, PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT, s_vram);
+    /* CPU uploads have already landed; raw packing preserves command order.
+     * A union is safe for readback (GPU -> CPU), unlike CPU upload unions.
+     * Do not reuse s_pack_dirty: texture sampling can consume it before CPU reads. */
+    int rx = s_cpu_dirty.set ? s_cpu_dirty.x0 : 0;
+    int ry = s_cpu_dirty.set ? s_cpu_dirty.y0 : 0;
+    int rw = s_cpu_dirty.set ? s_cpu_dirty.x1 - rx + 1 : VRAM_W;
+    int rh = s_cpu_dirty.set ? s_cpu_dirty.y1 - ry + 1 : VRAM_H;
+    glPixelStorei(PSXGL_PACK_ROW_LENGTH, VRAM_W);
+    glReadPixels(rx, ry, rw, rh, PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT,
+                 s_vram + (size_t)ry * VRAM_W + rx);
+    glPixelStorei(PSXGL_PACK_ROW_LENGTH, 0);
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
     s_gpu_dirty = 0;
-    coh_record(GL_COH_ENSURE, 0, 0, VRAM_W - 1, VRAM_H - 1);
+    rect_clear(&s_cpu_dirty);
+    coh_record(GL_COH_ENSURE, rx, ry, rx + rw - 1, ry + rh - 1);
+
 }
 
 /* ---- GPU primitives ------------------------------------------------------ */
@@ -1569,6 +1585,7 @@ static void mark_prim_dirty(const int *xs, const int *ys, int n, int textured) {
     if (x1 > s_area_x2) x1 = s_area_x2;
     if (y1 > s_area_y2) y1 = s_area_y2;
     rect_add(&s_pack_dirty, x0, y0, x1, y1);
+    if (!s_cpu_auth_dual) rect_add(&s_cpu_dirty, x0, y0, x1, y1);
     /* Dual-raster keeps CPU current via SW writes — do not mark GPU-ahead. */
     if (!s_cpu_auth_dual)
         s_gpu_dirty = 1;
@@ -1606,7 +1623,8 @@ static void wide_target_begin(int dx, GLint uXoff, GLint uXhalf) {
         if (sy < 0) { sh += sy; sy = 0; }
         if (sy + sh > VRAM_H) sh = VRAM_H - sy;
         if (sh < 0) sh = 0;
-        glScissor(0, sy * s_scale, g_wide_w * s_scale, sh * s_scale);
+        glScissor(view_pad_left * s_scale, sy * s_scale,
+                  (g_wide_w - view_pad_left - view_pad_right) * s_scale, sh * s_scale);
     }
     p_glUniform1f(uXoff, (float)dx);
     p_glUniform1f(uXhalf, (float)g_wide_w / 2.0f);
@@ -1666,13 +1684,13 @@ static void wide_blit_center(GLuint wide_fbo, int base_x, int disp_y, int disp_h
 /* True if [lo,hi] (canonical draw-x) lies strictly inside the 4:3 frame, so the
  * prim adds nothing to either reveal margin and its mirror can be skipped. */
 static int mirror_x_center_only(int lo, int hi) {
-    if (!s_wide_fast) return 0;
+    if (!s_wide_fast || view_enabled) return 0;
     int base = g_wide_cur_base, native_w = g_wide_w - 2 * g_wide_off;
     if (native_w <= 0) return 0;
     return (lo >= base) && (hi < base + native_w);
 }
 static int mirror_geo_center_only(const int *xs, int n) {
-    if (!s_wide_fast) return 0;
+    if (!s_wide_fast || view_enabled) return 0;
     int lo = xs[0], hi = xs[0];
     for (int i = 1; i < n; i++) { if (xs[i] < lo) lo = xs[i]; if (xs[i] > hi) hi = xs[i]; }
     return mirror_x_center_only(lo, hi);
@@ -2205,6 +2223,7 @@ static void fill_segment(int x, int y, int w, int h, float r, float g, float b) 
     glStencilMask(0xFF);
     glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     rect_add(&s_pack_dirty, x, y, x + w - 1, y + h - 1);
+    if (!s_cpu_auth_dual) rect_add(&s_cpu_dirty, x, y, x + w - 1, y + h - 1);
 }
 
 static void gpu_fill(int x,int y,int w,int h,uint16_t c) {
@@ -2287,6 +2306,7 @@ static void gpu_copy_rect(int sx,int sy,int dx,int dy,int w,int h) {
     hr_end();
 
     rect_add(&s_pack_dirty, dx, dy, dx + w - 1, dy + h - 1);
+    if (!s_cpu_auth_dual) rect_add(&s_cpu_dirty, dx, dy, dx + w - 1, dy + h - 1);
     if (!s_cpu_auth_dual)
         s_gpu_dirty = 1;
     coh_record(GL_COH_COPY_SRC, sx, sy, sx + w - 1, sy + h - 1);
@@ -2526,6 +2546,10 @@ static void depth24_clear_skipped_fb(void) {
     glDisable(GL_SCISSOR_TEST);
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
     rect_add(&s_pack_dirty, x0, y0, x1, y1);
+    if (!s_cpu_auth_dual) {
+        rect_add(&s_cpu_dirty, x0, y0, x1, y1);
+        s_gpu_dirty = 1; /* The clear must reach an immediate CPU read too. */
+    }
     present_dirty_rect(x0, y0, x1, y1, 1);
     rect_clear(&s_d24_skip_fb);
 }
@@ -2896,6 +2920,7 @@ static int init_gpu_raster(void) {
     s_up_nrects = 0;
     up_add(0, 0, VRAM_W - 1, VRAM_H - 1);
     s_gpu_dirty = 0;
+    rect_clear(&s_cpu_dirty);
     s_stencil_valid = 1;
     for (int i = 0; i < PRES_ROWS; i++) s_present_dirty[i] = ~0ull;
     s_last_present_path = -1;
@@ -3181,14 +3206,18 @@ void gl_renderer_restage_vram_after_savestate(void) {
         depth24_mark_scanout_band();
     }
     /* Dual-raster: CPU is authority after snap; FBO is cosmetics only. */
-    if (s_cpu_auth_dual)
+    if (s_cpu_auth_dual) {
         s_gpu_dirty = 0;
+        rect_clear(&s_cpu_dirty);
+    }
 }
 
 void gl_renderer_set_cpu_auth_dual(int on) {
     s_cpu_auth_dual = on ? 1 : 0;
-    if (s_cpu_auth_dual)
+    if (s_cpu_auth_dual) {
         s_gpu_dirty = 0;
+        rect_clear(&s_cpu_dirty);
+    }
 }
 
 int gl_renderer_cpu_auth_dual(void) {
@@ -3375,6 +3404,17 @@ static GLuint wide_fbo_for(int base_x) {
 /* Enable native-wide with a wide width + centering offset (native px), or
  * disable (wide_w <= 0). Re-allocates if the width changed. Mirrors
  * sw_wide_configure. */
+static void glb_wide_set_view(int enabled, int shift, int pad_left, int pad_right) {
+    if (!enabled) shift = pad_left = pad_right = 0;
+    if (view_enabled == enabled && view_shift == shift &&
+        view_pad_left == pad_left && view_pad_right == pad_right) return;
+    flush_flat_batch(); flush_tex_batch();
+    view_enabled = enabled;
+    view_shift = shift;
+    view_pad_left = pad_left;
+    view_pad_right = pad_right;
+}
+
 static void glb_wide_configure(int wide_w, int offset) {
     if (!s_raster_ok) return;
     double t0 = cw_ms(); s_cw_wide_cfgs++;
@@ -3437,6 +3477,7 @@ static void glb_wide_clear(int base_x, int y, int h, uint16_t color) {
 static void glb_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides) {
     if (!s_raster_ok || s_ws_ablate == 1 || g_wide_off <= 0) return;
     double t0 = cw_ms(); s_cw_wide_clears++;
+    flush_flat_batch();
     flush_tex_batch();
     GLuint fbo = wide_fbo_for(base_x);
     if (!fbo) { s_cw_wide_ms += cw_ms() - t0; return; }
@@ -3500,6 +3541,7 @@ static int glb_render_wide_display(uint32_t *out, int pitch, int base_x,
     /* Fold any pending CPU->VRAM uploads into the canonical FBO first (uploads
      * are never mirrored to wide, but draws after them are; keep op order) and
      * make sure all wide-FBO draws have completed before the readback. */
+    flush_flat_batch();
     flush_tex_batch();
     flush_cpu_upload();
     wide_blit_center(fbo, base_x, disp_y, disp_h);   /* fast-path: authoritative centre before readback */
@@ -4377,7 +4419,7 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
  * x-translated by the reveal offset. No-op when s_wide_fast is off (then the
  * mirror drew the full surface, as before). Shared by both present paths. */
 static void wide_blit_center(GLuint wide_fbo, int base_x, int disp_y, int disp_h) {
-    if (!s_wide_fast || g_wide_w <= 0) return;
+    if (!s_wide_fast || view_enabled || g_wide_w <= 0) return;
     int native_w = g_wide_w - 2 * g_wide_off;
     if (native_w <= 0) return;
     int S = s_scale;
@@ -4495,6 +4537,7 @@ static const GpuRenderBackend GL_BACKEND = {
     .set_draw_area = glb_set_draw_area, .get_draw_area = glb_get_draw_area,
     .set_draw_offset = glb_set_draw_offset,
     .wide_configure = glb_wide_configure,
+    .wide_set_view = glb_wide_set_view,
     .wide_set_target = glb_wide_set_target,
     .wide_disable_target = glb_wide_disable_target,
     .wide_clear = glb_wide_clear,

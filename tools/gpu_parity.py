@@ -27,7 +27,7 @@ there is nothing to do but restart the DuckStation side; that is reported rather
 than papered over.
 
 Getting the oracle: `python3 duckstation_oracle.py all` builds and installs a
-patched DuckStation into the RetComM data root (once, ~10 minutes), and
+patched DuckStation into the Retro data root (once, ~10 minutes), and
 `duckstation_oracle.py start --disc <cue>` runs it headless on 4371. Pass
 --start-oracle here to have this tool do that for you when nothing is listening.
 

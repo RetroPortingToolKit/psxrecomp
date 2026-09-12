@@ -111,6 +111,10 @@ void gr_set_draw_offset(int x, int y);
  * the canonical present path. */
 int  gr_wide_supported(void);
 void gr_wide_configure(int wide_w, int offset);
+/* Presentation-only origin and padding, independent of the symmetric budget.
+ * enabled also forbids reusing the canonical center: HUD and world may use
+ * different origins. Backends must flush queued draws before changing this. */
+void gr_wide_set_view(int enabled, int shift, int pad_left, int pad_right);
 void gr_wide_set_target(int base_x);
 void gr_wide_disable_target(void);
 void gr_wide_clear(int base_x, int y, int h, uint16_t color);
@@ -188,6 +192,7 @@ typedef struct GpuRenderBackend {
      * facade then reports gr_wide_supported() == 0 and the caller keeps the
      * canonical present). */
     void (*wide_configure)(int wide_w, int offset);
+    void (*wide_set_view)(int enabled, int shift, int pad_left, int pad_right);
     void (*wide_set_target)(int base_x);
     void (*wide_disable_target)(void);
     void (*wide_clear)(int base_x, int y, int h, uint16_t color);

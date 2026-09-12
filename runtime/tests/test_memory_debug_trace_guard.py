@@ -108,6 +108,8 @@ STUBS_C = r"""
 static const PsxKernelBody s_psx_bios_kernel_bodies[1] = {{0, 0, 0}};
 const PsxKernelBody *psx_bios_kernel_bodies = s_psx_bios_kernel_bodies;
 uint32_t psx_bios_kernel_body_count = 0;
+const PsxKernelPatchRange *psx_bios_kernel_patch_ranges = 0;
+uint32_t psx_bios_kernel_patch_range_count = 0;
 PsxBiosImageInfo psx_bios_image = {0};
 
 int g_ls_mode = 0;
@@ -434,6 +436,7 @@ def build(cc: str, work: pathlib.Path, memory_source: pathlib.Path, name: str,
     cmd.extend([
         str(work / "driver.c"),
         str(memory_copy),
+        str(ROOT / "runtime" / "src" / "kernel_patch_ranges.c"),
         str(work / "stubs.c"),
         str(work / trace_source),
         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
