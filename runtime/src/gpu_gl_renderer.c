@@ -1678,17 +1678,23 @@ static int bd_prim_gate(const int *xs, int n, int textured) {
 static int s_wide_fast = 1;
 void gl_renderer_set_wide_fast(int on) { s_wide_fast = on ? 1 : 0; }
 int  gl_renderer_get_wide_fast(void) { return s_wide_fast; }
+static int wide_fast_center_valid(void) {
+    /* An explicitly stretched sky differs inside the canonical viewport too.
+     * Keep the full composite for those scenes, including later foreground
+     * draws. Tags are installed before DMA, so no earlier center draws skip. */
+    return s_wide_fast && !gpu_ws_background_requires_full_composite();
+}
 static void wide_blit_center(GLuint wide_fbo, int base_x, int disp_y, int disp_h); /* def below */
 /* True if [lo,hi] (canonical draw-x) lies strictly inside the 4:3 frame, so the
  * prim adds nothing to either reveal margin and its mirror can be skipped. */
 static int mirror_x_center_only(int lo, int hi) {
-    if (!s_wide_fast) return 0;
+    if (!wide_fast_center_valid()) return 0;
     int base = g_wide_cur_base, native_w = g_wide_w - 2 * g_wide_off;
     if (native_w <= 0) return 0;
     return (lo >= base) && (hi < base + native_w);
 }
 static int mirror_geo_center_only(const int *xs, int n) {
-    if (!s_wide_fast) return 0;
+    if (!wide_fast_center_valid()) return 0;
     int lo = xs[0], hi = xs[0];
     for (int i = 1; i < n; i++) { if (xs[i] < lo) lo = xs[i]; if (xs[i] > hi) hi = xs[i]; }
     return mirror_x_center_only(lo, hi);
@@ -1825,7 +1831,7 @@ static int    s_cw_batches = 0, s_cw_wide_sets = 0, s_cw_wide_cfgs = 0,
 /* Textured-batch variant of mirror_x_center_only: scan the queued verts' x
  * (attr 0, stride TEXV). Defined here so s_tb / TEXV are in scope. */
 static int mirror_batch_center_only(int nverts) {
-    if (!s_wide_fast || nverts <= 0) return 0;
+    if (!wide_fast_center_valid() || nverts <= 0) return 0;
     float flo = s_tb[0], fhi = s_tb[0];
     for (int i = 1; i < nverts; i++) {
         float x = s_tb[i * TEXV];
@@ -1887,9 +1893,10 @@ static float s_fb[FLATBATCH_MAXV * 6];
 static int   s_fb_n = 0;
 static int   s_fb_semi = -2;
 static int   s_fb_mask = -1;
+static int   s_fb_gate = 0;
 
 static int mirror_flat_batch_center_only(int nverts) {
-    if (!s_wide_fast || nverts <= 0) return 0;
+    if (!wide_fast_center_valid() || nverts <= 0) return 0;
     float flo = s_fb[0], fhi = s_fb[0];
     for (int i = 1; i < nverts; i++) {
         float x = s_fb[i * 6];
@@ -1917,8 +1924,7 @@ static void flush_flat_batch(void) {
     if (g_wide_cur && !s_wide_suppress && s_ws_ablate != 1 &&
         !(!g_ws_bd_stretch_on && mirror_flat_batch_center_only(nverts))) {
         int dx = wide_dx();
-        /* Batch may span many prims; use stretch gate off (flat dots/UI). */
-        s_bd_gate = 0;
+        s_bd_gate = s_fb_gate;
         gl_perf_mirror_begin();
         wide_target_begin(dx, s_geo_uXoff, s_geo_uXhalf);
         wide_set_bd_scale(s_geo_uXscale, s_geo_uXcenter);
@@ -1979,12 +1985,15 @@ static void gpu_geometry(GLenum mode, const int *xs, const int *ys,
         return;
     }
 
-    if (s_fb_n > 0 && (s_fb_semi != semi || s_fb_mask != (int)s_mask_set))
+    int gate = bd_prim_gate(xs, n, 0);
+    if (s_fb_n > 0 && (s_fb_semi != semi || s_fb_mask != (int)s_mask_set ||
+                      s_fb_gate != gate))
         flush_flat_batch();
     if (s_fb_n + n > FLATBATCH_MAXV)
         flush_flat_batch();
     s_fb_semi = semi;
     s_fb_mask = (int)s_mask_set;
+    s_fb_gate = gate;
 
     float mask_a = s_mask_set ? 1.0f : 0.0f;
     for (int i = 0; i < n; i++) {
@@ -4405,7 +4414,7 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
  * x-translated by the reveal offset. No-op when s_wide_fast is off (then the
  * mirror drew the full surface, as before). Shared by both present paths. */
 static void wide_blit_center(GLuint wide_fbo, int base_x, int disp_y, int disp_h) {
-    if (!s_wide_fast || g_wide_w <= 0) return;
+    if (!wide_fast_center_valid() || g_wide_w <= 0) return;
     int native_w = g_wide_w - 2 * g_wide_off;
     if (native_w <= 0) return;
     int S = s_scale;

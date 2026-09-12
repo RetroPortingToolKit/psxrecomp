@@ -1,5 +1,47 @@
 # Widescreen support (`feat/widescreen`)
 
+## Explicit native-wide background polygons (September 2026)
+
+A title plugin can call `gpu_ws_tag_background_prim(prim)` for each opaque
+background polygon in a verified composite, before submitting its ordering
+table. The command starts at `prim + 4`; an embedded command can therefore use
+`command_address - 4` even when that preceding word is not a DMA header.
+The framework validates command type, RAM bounds, complete packet contents,
+address and freshness. The title owns the proof that these are backgrounds
+and that their union covers the authored viewport. No fixed game addresses or
+background guesses belong in the shared API.
+
+OpenGL and software rendering stretch only those polygons about the display
+center in the native-wide surface, preserving canonical VRAM and the default
+4:3 path. Tag every part, including flat fills behind textured sky quads, so
+the composite remains continuous. Tags expire after two frames and reject
+reused packets whose words changed. This method performs no guest writes or
+extra guest allocations.
+
+OpenGL preserves the tag across flat and textured batching. Once a valid
+background has been tagged, it renders the full wide composite instead of
+copying the canonical center over it, which would create a scale seam. Packet
+freshness and displayed-pixel lifetime are separate: a slow game or held display
+can retain stretched pixels after the two-frame packet guard expires. The
+full-composite requirement therefore remains latched until GPU reset or snapshot
+restore; packet-address/content freshness is not relaxed. Sessions that have not
+tagged a background retain the center-copy optimization. Measure performance in
+the title and validate the visible sky at the requested aspect before release.
+Vulkan's native-wide compositor is not implemented; this API does not add one.
+
+### Parked validation checkpoint (2026-09-12)
+
+The focused GPU packet/tag regression passes, including expired packets,
+changed packet contents, disabled widescreen and retained composite lifetime.
+The V8 Windows runtime builds and both game CTests pass. In the oil-field
+21:9 playtest the owner reports that terrain looks fine and the background
+flickers less badly, but still flickers. This is partial improvement, not visual
+acceptance. State replay required the HLE scheduler; repeat the comparison with
+matched scheduler settings before attributing the improvement solely to this
+change. Work is parked in a draft; no release is approved.
+
+## Earlier projection-and-stretch implementation
+
 Status as of 2026-06-13. Branch `feat/widescreen` in **both** `psxrecomp`
 (framework) and `TombaRecomp` (game opt-in + config), pushed to remote.
 Experimental. Latest: the far-backdrop edge void is largely fixed (2D backdrop
