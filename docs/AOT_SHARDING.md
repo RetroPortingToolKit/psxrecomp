@@ -259,6 +259,34 @@ with table-address setup around the bounds branch. Register dependencies,
 producer ownership and table-target checks remain required. That improvement
 contains no Tomba-specific addresses and can benefit other matching binaries.
 
+## When discovery finds no game overlay
+
+An archive extension or a historical dirty-RAM capture does not establish an
+executable overlay. A resident-code game is a valid outcome of bounded disc
+inspection. Do not count an independently identified BIOS RAM helper as a game
+overlay, or manufacture a release inventory from runtime observations.
+
+`tools/inspect_disc_inventory.py` verifies a declarative `psxrecomp disc inventory
+v1` profile against the original disc. It reuses the AOT evidence-word checks,
+matches fixed-stride `{LBA, byte-size}` tables to ISO files, and exposes
+`typed_members(data, alignment)` for archives with a `{count, total-size}` header
+and `{type, byte-size}` descriptors followed by aligned members. Repeated types
+are allowed; declared size, count, bounds and full payload coverage are required.
+Header bytes beyond the counted descriptors are opaque.
+
+The metadata-only report accounts for every ISO file and reports member hashes,
+types and aligned MIPS instruction shapes. These shapes are observations, not
+proof of code presence or absence; loader destinations, callbacks and any
+decompression path still need bounded inspection of the original executable.
+The game profile supplies all addresses, filenames, counts and rationales. The
+shared tool contains no game-specific branches or bundled game bytes.
+
+```sh
+python3 psxrecomp-v4/tools/inspect_disc_inventory.py \
+  --profile aot/disc_inventory.json --cue "path/to/original-disc.cue" \
+  --output build/disc-inventory.json
+```
+
 ## Related material
 
 - [Compiling and packaging overlays](COMPILING_OVERLAYS.md): cache and static-link workflows.
