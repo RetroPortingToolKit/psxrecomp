@@ -218,7 +218,13 @@ on a fixed region -> next.
   parallax coverage and explicit HUD origins. SW/GPU regressions and hidden
   real-GL checks at 1x/4x pass. No guest CPU/device timing changes. Headless
   presentation now engages the same widescreen game-entry latch so private
-  captures exercise 16:9. Owner gameplay validation remains pending.
+  captures exercise 16:9. Owner accepted camera presentation and the separate
+  MMX6 draw/despawn follow-up. Spawn activation follow-up (`beads-eio.1.8`)
+  adds opt-in lower camera-relative bounds, mirrored in native/dirty-RAM
+  paths and cache hashing. Preserve PGXP instrumentation for both bias forms.
+  Compiler and executable opcode/registry regressions pass; private intro
+  traversal measures roughly138 pixels earlier right-side activation and
+  offscreen leftward respawns. Final spawn gameplay validation remains pending.
 
 - **2026-09-12 (WO-3 observed overlay interior recovery):**
   Branch `fix/observed-overlay-interiors` preserves validated, executed dispatch

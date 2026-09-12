@@ -320,7 +320,7 @@ expected = "0x2402FF00" # addiu v0,zero,-256
 - Site identity is the normalized physical address plus the complete
   instruction word. The helper is identity at 4:3.
 
-Explicit `bias_sites` / `range_sites` may opt into an additional resident
+Explicit `bias_sites` / `bias_lower_sites` / `range_sites` may opt into an additional resident
 object lead without widening terrain or render queues:
 
 ```toml
@@ -332,12 +332,20 @@ range_sites = ["0x80069BB0"]
 ```
 
 `activation_guard_pixels` is added only to the live margin emitted at those
-two explicit site families, and only while widescreen reveals extra world.
+three explicit site families, and only while widescreen reveals extra world.
 At true 4:3 it is exactly zero. `guard_pixels` remains the shared
 render/terrain participation guard; keep it small when terrain producers or
 model queues have fixed capacity. Both values are restricted to `[0, 256]`
 and contribute to native-overlay cache identity. Changing the activation
 guard requires regenerating the game and overlay code.
+
+`bias_lower_sites` is the lower-endpoint counterpart to `bias_sites`:
+an `ADDI`/`ADDIU` camera-relative bound subtracts the activation margin from
+its original immediate. Both native code and the dirty-RAM path apply it.
+For strip-based enemy spawning, expand the outer strip edge, initial and
+vertical scan X bounds, and any associated respawn-reset interval together.
+Keep authored placement flags and vertical bounds intact. Empty is inert;
+configured sites require regeneration.
 
 ## Runtime block
 

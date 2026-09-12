@@ -200,6 +200,7 @@ int main(int argc, char** argv) {
     std::set<uint32_t>    load_charge_batch_funcs; // [recompiler] load_charge_batch*
     std::map<uint32_t, std::array<uint32_t, 4>> vsync_query_hle_funcs;
     std::set<uint32_t>    ws_cull_bias, ws_cull_range, ws_cull_a1; // [widescreen.cull]
+    std::set<uint32_t>    ws_cull_bias_lower;
     std::set<uint32_t>    ws_cull_screen_x;    // [widescreen.cull] screen_x_sites
     std::set<uint32_t>    ws_cull_slti;         // [widescreen.cull] slti_sites
     std::set<uint32_t>    ws_cull_slti_lower;   // [widescreen.cull] slti_lower_sites
@@ -261,6 +262,7 @@ int main(int argc, char** argv) {
                 cfg.vsync_counter_addr, cfg.vsync_gpustat_ptr_addr,
                 cfg.vsync_timer1_ptr_addr, cfg.vsync_timer1_cache_addr };
         ws_cull_bias.insert(cfg.ws_cull_bias_sites.begin(), cfg.ws_cull_bias_sites.end());
+        ws_cull_bias_lower.insert(cfg.ws_cull_bias_lower_sites.begin(), cfg.ws_cull_bias_lower_sites.end());
         ws_cull_range.insert(cfg.ws_cull_range_sites.begin(), cfg.ws_cull_range_sites.end());
         ws_cull_a1.insert(cfg.ws_cull_a1_sites.begin(), cfg.ws_cull_a1_sites.end());
         ws_cull_screen_x.insert(cfg.ws_cull_screen_x_sites.begin(), cfg.ws_cull_screen_x_sites.end());
@@ -357,6 +359,7 @@ int main(int argc, char** argv) {
         mod_entry_funcs.insert(wscfg.mod_function_entry_funcs.begin(),
                                wscfg.mod_function_entry_funcs.end());
         ws_cull_bias.insert(wscfg.ws_cull_bias_sites.begin(), wscfg.ws_cull_bias_sites.end());
+        ws_cull_bias_lower.insert(wscfg.ws_cull_bias_lower_sites.begin(), wscfg.ws_cull_bias_lower_sites.end());
         ws_cull_range.insert(wscfg.ws_cull_range_sites.begin(), wscfg.ws_cull_range_sites.end());
         ws_cull_a1.insert(wscfg.ws_cull_a1_sites.begin(), wscfg.ws_cull_a1_sites.end());
         ws_cull_screen_x.insert(wscfg.ws_cull_screen_x_sites.begin(), wscfg.ws_cull_screen_x_sites.end());
@@ -1228,6 +1231,7 @@ int main(int argc, char** argv) {
     codegen_config.vsync_query_hle_funcs = vsync_query_hle_funcs;
     codegen_config.ws_bg2d_init_func = ws_bg2d_init_func;
     codegen_config.ws_cull_bias_sites  = ws_cull_bias;
+    codegen_config.ws_cull_bias_lower_sites = ws_cull_bias_lower;
     codegen_config.ws_cull_range_sites = ws_cull_range;
     codegen_config.ws_cull_a1_sites    = ws_cull_a1;
     codegen_config.ws_cull_screen_x_sites = ws_cull_screen_x;

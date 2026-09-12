@@ -346,13 +346,21 @@ result = 1
     const auto range = write_config(root, "range-cull", R"toml(
 [widescreen.cull]
 range_sites = ["0x80012340"]
+bias_lower_sites = ["0x80012348"]
 activation_guard_pixels = 256
 )toml");
     const auto range_config = PSXRecompV4::load_game_config(range);
     check(range_config.ws_cull_range_sites ==
               std::vector<uint32_t>{0x80012340u} &&
+              range_config.ws_cull_bias_lower_sites ==
+              std::vector<uint32_t>{0x80012348u} &&
               range_config.ws_cull_activation_guard_pixels == 256,
           "parser preserves explicit range sites and activation guard");
+    auto changed_lower_config = range_config;
+    changed_lower_config.ws_cull_bias_lower_sites.clear();
+    check(PSXRecompV4::overlay_codegen_config_hash(range_config) !=
+              PSXRecompV4::overlay_codegen_config_hash(changed_lower_config),
+          "lower activation endpoint changes overlay cache identity");
 
     const auto bad_activation_guard =
         write_config(root, "range-cull-bad-activation-guard", R"toml(
@@ -773,6 +781,27 @@ void codegen_tests() {
               "(psx_ws_x_margin() > 0 ? psx_ws_x_margin() + 256 : 0)") !=
               std::string::npos,
           "activation bias gains the same isolated resident-object lead");
+
+    PSXRecomp::CodeGenConfig lower_bias_config;
+    lower_bias_config.ws_cull_bias_lower_sites.insert(0x80010000u);
+    for (const uint32_t opcode : {0x2082FFD0u, 0x2482FFD0u}) {
+        const std::string lower = generate_first_instruction(opcode, {}, false, lower_bias_config);
+        check(lower.find("((int32_t)-48 - psx_ws_x_margin())") != std::string::npos,
+              "ADDI/ADDIU lower endpoint expands left without changing camera source");
+        check(lower.find("PGXP_ALU(") != std::string::npos &&
+              lower.find("_pgx1 = cpu->gpr[4]") != std::string::npos,
+              "lower bound preserves native ALU precision tracking");
+    }
+    lower_bias_config.ws_cull_activation_guard_pixels = 32;
+    const std::string lower_guard = generate_first_instruction(
+        0x2482FFD0u, {}, false, lower_bias_config);
+    check(lower_guard.find("-48 - (psx_ws_x_margin() > 0 ? psx_ws_x_margin() + 32 : 0)") !=
+              std::string::npos,
+          "lower endpoint includes activation guard only while wide");
+    const std::string lower_mismatch = generate_first_instruction(
+        0x3482FFD0u, {}, true, lower_bias_config); // ORI variant is not an add.
+    check(lower_mismatch.find("psx_ws_x_margin()") == std::string::npos,
+          "lower bias leaves a nonmatching overlay opcode unchanged");
 
     PSXRecomp::CodeGenConfig branch_keep_config;
     branch_keep_config.ws_cull_branch_keep_sites.insert(0x80010000u);

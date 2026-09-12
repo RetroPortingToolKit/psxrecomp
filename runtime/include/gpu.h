@@ -278,6 +278,8 @@ void gpu_ws_set_aspect_cone(const uint32_t *addresses,
                             const uint32_t queue_capacities[3],
                             const uint32_t queue_type_masks[3]);
 int  psx_ws_is_cull_bias_site(uint32_t pc);
+void gpu_ws_set_bias_lower_cull_sites(const uint32_t *sites, int nsites);
+int  psx_ws_is_cull_bias_lower_site(uint32_t pc);
 int  psx_ws_is_cull_slti_site(uint32_t pc);
 int  psx_ws_is_cull_slti_lower_site(uint32_t pc);
 int  psx_ws_is_cull_negsub_site(uint32_t pc);

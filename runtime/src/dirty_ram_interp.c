@@ -1971,7 +1971,9 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             cpu->gpr[rt] = widened;
         else
             cpu->gpr[rt] = a + (uint32_t)simm
-                         + (psx_ws_is_cull_bias_site(pc)
+                         + (psx_ws_is_cull_bias_lower_site(pc)
+                                ? 0u - (uint32_t)psx_ws_activation_margin()
+                            : psx_ws_is_cull_bias_site(pc)
                                 ? (uint32_t)psx_ws_activation_margin() : 0u);
         psx_pgxp_alu(cpu, insn, cpu->gpr[rt], a, (uint32_t)simm);
         cpu->gpr[0] = 0;
@@ -1987,7 +1989,9 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             cpu->gpr[rt] = (uint32_t)psx_ws_screen_x_bound(simm);
         else
             cpu->gpr[rt] = a + (uint32_t)simm
-                         + (psx_ws_is_cull_bias_site(pc)
+                         + (psx_ws_is_cull_bias_lower_site(pc)
+                                ? 0u - (uint32_t)psx_ws_activation_margin()
+                            : psx_ws_is_cull_bias_site(pc)
                                 ? (uint32_t)psx_ws_activation_margin() : 0u);
         psx_pgxp_alu(cpu, insn, cpu->gpr[rt], a, (uint32_t)simm);
         cpu->gpr[0] = 0;

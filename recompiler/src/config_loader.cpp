@@ -62,6 +62,7 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
     h.words("sprite_tag_funcs", c.ws_sprite_tag_funcs);
     h.words("mod_function_entry_funcs", c.mod_function_entry_funcs);
     h.words("cull_bias", c.ws_cull_bias_sites);
+    h.words("cull_bias_lower", c.ws_cull_bias_lower_sites);
     h.words("cull_range", c.ws_cull_range_sites);
     h.words("cull_a1", c.ws_cull_a1_sites);
     h.words("cull_screen_x", c.ws_cull_screen_x_sites);
@@ -1704,6 +1705,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
 
     // Optional [widescreen.cull] block — world-space draw-cull widening.
     std::vector<uint32_t> ws_cull_bias_sites, ws_cull_range_sites, ws_cull_a1_sites;
+    std::vector<uint32_t> ws_cull_bias_lower_sites;
     std::vector<uint32_t> ws_cull_screen_x_sites;
     std::vector<uint32_t> ws_cull_slti_sites;
     std::vector<uint32_t> ws_cull_slti_lower_sites;
@@ -1738,6 +1740,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                     out.push_back(parse_hex(a, fmt::format("widescreen.cull.{}", key)));
             };
             load_sites("bias_sites",  ws_cull_bias_sites);
+            load_sites("bias_lower_sites", ws_cull_bias_lower_sites);
             load_sites("range_sites", ws_cull_range_sites);
             load_sites("a1_sites",    ws_cull_a1_sites);
             load_sites("screen_x_sites", ws_cull_screen_x_sites);
@@ -2169,6 +2172,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*vsync_event_horizon_extra_sites*/ vsync_event_horizon_extra_sites,
         /*vsync_event_horizon_any*/   vsync_event_horizon_any,
         /*ws_cull_bias_sites*/    ws_cull_bias_sites,
+        /*ws_cull_bias_lower_sites*/ ws_cull_bias_lower_sites,
         /*ws_cull_range_sites*/   ws_cull_range_sites,
         /*ws_cull_a1_sites*/      ws_cull_a1_sites,
         /*ws_cull_screen_x_sites*/ ws_cull_screen_x_sites,

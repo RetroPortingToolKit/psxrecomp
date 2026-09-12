@@ -1049,7 +1049,8 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
     // same address holds different code across scene variants, so a mismatch is
     // expected — apply the transform only where the bytes match, else fall
     // through to the vanilla translation (see CodeGenConfig::overlay_mode).
-    if (config_.ws_cull_bias_sites.count(addr)) {
+    if (config_.ws_cull_bias_sites.count(addr) ||
+        config_.ws_cull_bias_lower_sites.count(addr)) {
         if (opcode == 0x08 || opcode == 0x09) {  // addi / addiu
             uint32_t rs = get_rs(instr), rt = get_rt(instr);
             int16_t imm = get_imm16(instr);
@@ -1059,9 +1060,13 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                           "(psx_ws_x_margin() > 0 ? psx_ws_x_margin() + {} : 0)",
                           config_.ws_cull_activation_guard_pixels)
                     : "psx_ws_x_margin()";
-            return fmt::format("{} = {} + ((int32_t){} + {});{}",
-                               reg_name(rt), reg_name(rs), imm, margin,
-                               comment);
+            std::string code = fmt::format("{} = {} + ((int32_t){} {} {});",
+                               reg_name(rt), reg_name(rs), imm,
+                               config_.ws_cull_bias_lower_sites.count(addr) ? "-" : "+", margin);
+            // Preserve the ordinary ALU shadow update, including source capture
+            // before an in-place add. Margin zero must also be a PGXP identity.
+            PSXRecomp::append_pgxp_hooks(instr, code);
+            return config_.indent + code + comment;
         } else if (!config_.overlay_mode) {
             fmt::print(stderr, "ERROR: [widescreen.cull] bias site 0x{:08X} is not "
                        "addi/addiu (opcode 0x{:02X})\n", addr, opcode);

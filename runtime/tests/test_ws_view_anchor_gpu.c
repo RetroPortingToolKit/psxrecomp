@@ -10,6 +10,13 @@ int main(void) {
     assert(textured_dot_regression_main() == 0);
     reset_gpu_state_for_test();
     configure_native_wide_16_9();
+    const uint32_t lower_sites[] = {0x80029fd0u};
+    assert(!psx_ws_is_cull_bias_lower_site(lower_sites[0]));
+    gpu_ws_set_bias_lower_cull_sites(lower_sites, 1);
+    assert(psx_ws_is_cull_bias_lower_site(0xa0029fd0u));
+    assert(!psx_ws_is_cull_bias_lower_site(0x80029fd4u));
+    gpu_ws_set_bias_lower_cull_sites(NULL, 0);
+    assert(!psx_ws_is_cull_bias_lower_site(lower_sites[0]));
     gpu_ws_set_view_anchor(0x80097202u, 0x80097216u, 0x80097214u, 0x800971f8u);
     half_at(0x80097214u, 5120);
     half_at(0x80097216u, 0);

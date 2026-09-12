@@ -12579,6 +12579,9 @@ int main(int argc, char** argv) {
             gpu_ws_set_slti_lower_cull_sites(
                 gc.ws_cull_slti_lower_sites.data(),
                 (int)gc.ws_cull_slti_lower_sites.size());
+            gpu_ws_set_bias_lower_cull_sites(
+                gc.ws_cull_bias_lower_sites.data(),
+                (int)gc.ws_cull_bias_lower_sites.size());
             gpu_ws_set_negsub_cull_sites(
                 gc.ws_cull_negsub_sites.data(), (int)gc.ws_cull_negsub_sites.size());
             gpu_ws_set_vxrange_cull_sites(

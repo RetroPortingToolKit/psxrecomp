@@ -890,6 +890,8 @@ struct GameConfig {
     //                     rD = a1 + margin (caller-margin classifier variants)
     // All Ghidra-evidenced; empty by default. Changing these requires a regen.
     std::vector<uint32_t> ws_cull_bias_sites;
+    // Lower endpoint of a camera-relative activation/reset interval.
+    std::vector<uint32_t> ws_cull_bias_lower_sites;
     std::vector<uint32_t> ws_cull_range_sites;
     std::vector<uint32_t> ws_cull_a1_sites;
     // Explicit `sltiu rt,sx,W` render rejects for cases where codegen function
