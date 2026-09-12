@@ -3600,7 +3600,7 @@ static void runtime_perf_diag_tick() {
         "cpu=%.1f tex=%.1f draw=%.1f ms/s; "
         "work guest=%.1f pacer=%.1f autocapture=%.1f provider_poll=%.1f ms/s, "
         "dirty=%.0f insn/s %.0f dispatch/s; "
-        "overlay native=+%llu interp=+%llu hot_native=0x%08X/+%llu "
+        "overlay native=+%llu interp=+%llu hot_native_owner=0x%08X/activations>=+%llu "
         "shadow=+%llu div=+%llu first_div=0x%08X "
         "loads=+%u revalidations=+%u "
         "load_wall=%.1f ms max=%.1f last=%.1f ms; "
