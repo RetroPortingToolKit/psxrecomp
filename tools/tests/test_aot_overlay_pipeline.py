@@ -24,6 +24,26 @@ class FakeDisc:
 
 
 class AotMethodsTest(unittest.TestCase):
+    def test_tagged_relocated_original_file_and_inventory_check(self):
+        original = struct.pack('<8I', 16, 8, 0x03e00008, 0, 4, 0xFFFFFFFF, 0, 0)[:24]
+        disc = FakeDisc({'MODULE.DLL': original})
+        spec = dict(method='tagged_relocated_files', files=['MODULE.DLL'],
+                    load_addr='0x80100000', allow_missing=True, entries=['0x80100008'])
+        source, = pipeline.positioned_sources(disc, [spec])
+        self.assertEqual(source['body'], struct.pack('<4I', 16, 0x80100008, 0x03e00008, 0))
+        self.assertEqual(disc.read('MODULE.DLL'), original)
+        check = dict(method='tagged_relocations', file='MODULE.DLL', image_size=16, relocation_count=1)
+        pipeline.verify_evidence(disc, [check])
+        with self.assertRaisesRegex(ValueError, 'inventory changed'):
+            pipeline.verify_evidence(disc, [{**check, 'relocation_count': 2}])
+        with tempfile.TemporaryDirectory() as directory:
+            disc.binary = Path(directory) / 'source.bin'
+            disc.binary.write_bytes(original)
+            inventory = pipeline.prepare(dict(game_id='TEST', images=[spec], checks=[check],
+                expected_records=1, strict_bounds=True), disc, [], Path(directory))
+        self.assertEqual(inventory['required_images'], ['MODULE.DLL'])
+        self.assertEqual(inventory['jobs'][0]['required_entries'], [0x80100008])
+
     def test_resident_preload_metadata_survives_build_audit_and_stage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
