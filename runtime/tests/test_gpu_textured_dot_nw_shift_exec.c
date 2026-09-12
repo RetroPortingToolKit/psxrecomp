@@ -352,6 +352,9 @@ void gr_get_draw_area(int *x1, int *y1, int *x2, int *y2) {
 void gr_set_draw_offset(int x, int y) { (void)x; (void)y; }
 int gr_wide_supported(void) { return 1; }
 void gr_wide_configure(int wide_w, int offset) { (void)wide_w; (void)offset; }
+void gr_wide_set_view(int enabled, int shift, int left, int right) {
+    (void)enabled; (void)shift; (void)left; (void)right;
+}
 void gr_wide_set_target(int base_x) { (void)base_x; }
 void gr_wide_disable_target(void) {}
 void gr_wide_clear(int base_x, int y, int h, uint16_t color) {

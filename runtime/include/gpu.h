@@ -168,6 +168,14 @@ void gpu_ws_configure(int aspect_num, int aspect_den,
 /* [widescreen] full_2d: opt a pure-2D sprite game into the widescreen present
  * path (treat every in-game frame as gameplay, since it never tags 3D prims). */
 void gpu_ws_set_full_2d(int on);
+/* Signed 16-bit camera/min/max; active is a nonzero byte. Requires bg2d hooks.
+ * Zero addresses disable the feature. No guest memory is written. */
+void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_t active);
+/* Bracket each bg2d packet producer, with its guest packet pointer. The
+ * independent-layer mask identifies parallax backdrops that may anchor to
+ * their own map edges; linked/foreground layers retain the world origin. */
+void gpu_ws_bg2d_begin_view_layer(unsigned layer, uint32_t packet, unsigned independent_mask);
+void gpu_ws_bg2d_end_view_layer(unsigned layer, uint32_t packet);
 void gpu_ws_set_auto_ui_squash(int on);
 /* [widescreen.bg2d] Capcom 2D background tile-loop widen — hooked at the renderer's
  * column-count / start-tile-col / start-screen-x instructions. Identity at 4:3
@@ -454,6 +462,7 @@ typedef struct {
     int      xnum, xden;        /* squash factor */
     int      mode;              /* 0 = off, 1 = squash, 2 = native-wide */
     int      nw_extra;          /* native-wide frame growth (display px), 0 if off */
+    int      view_anchor, view_left, view_right, view_shift, view_pad_left, view_pad_right;
     uint64_t cur_frame;
     uint32_t last_tag_frame;    /* frame of newest tagged prim */
     uint32_t last_3d_frame;     /* frame of newest shaded prim (diagnostic) */

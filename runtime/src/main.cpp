@@ -6887,6 +6887,13 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 #endif
 
     if (g_headless) {
+        /* Headless skips the presenter below, but still needs the same
+         * game-entry widescreen activation for its rendered frame dumps. */
+        if (!g_ws_engaged && fntrace_is_game_started()) {
+            g_ws_engaged = true;
+            g_ws_projection_mode = -1;
+        }
+        refresh_widescreen_projection();
         ep.skip_pace = 1;
         return ep;
     }

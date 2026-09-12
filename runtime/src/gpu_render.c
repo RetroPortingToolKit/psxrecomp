@@ -48,6 +48,7 @@ static const GpuRenderBackend SW_BACKEND = {
     .get_draw_area                 = sw_get_draw_area,
     .set_draw_offset               = sw_set_draw_offset,
     .wide_configure                = sw_wide_configure,
+    .wide_set_view                 = sw_wide_set_view,
     .wide_set_target               = sw_wide_set_target,
     .wide_disable_target           = sw_wide_disable_target,
     .wide_clear                    = sw_wide_clear,
@@ -166,6 +167,9 @@ void gr_set_draw_offset(int x, int y)                { g_b->set_draw_offset(x, y
 int  gr_wide_supported(void) { return g_b->render_wide_display != 0; }
 void gr_wide_configure(int wide_w, int offset) {
     if (g_b->wide_configure) g_b->wide_configure(wide_w, offset);
+}
+void gr_wide_set_view(int enabled, int shift, int pad_left, int pad_right) {
+    if (g_b->wide_set_view) g_b->wide_set_view(enabled, shift, pad_left, pad_right);
 }
 void gr_wide_set_target(int base_x) {
     if (g_b->wide_set_target) g_b->wide_set_target(base_x);

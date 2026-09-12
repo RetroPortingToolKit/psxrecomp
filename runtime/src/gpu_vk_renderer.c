@@ -2531,7 +2531,8 @@ static void set_vp_scissor(VkCommandBuffer cb) {
 /* ---- native-wide compositor helpers ------------------------------------- */
 /* X-translation (native px) from canonical VRAM space into the active wide
  * surface: local_x = vram_x - base_x + OFFSET. Same as GL/SW wide_dx(). */
-static int wide_dx(void) { return s_wide_offset - s_wide_cur_base; }
+static int view_enabled, view_shift, view_pad_left, view_pad_right;
+static int wide_dx(void) { return s_wide_offset + view_shift - s_wide_cur_base; }
 
 static void wide_free_all(void) {
     int any = 0;
@@ -2646,7 +2647,8 @@ static void wide_pass_begin(VkCommandBuffer cb) {
     int y1 = s_da_y1 < 0 ? 0 : s_da_y1;
     int y2 = s_da_y2 >= VRAM_H ? VRAM_H - 1 : s_da_y2;
     int hh = y2 - y1 + 1; if (hh < 0) hh = 0;
-    VkRect2D sc = { { 0, y1 * S }, { (uint32_t)(s_wide_w * S), (uint32_t)(hh * S) } };
+    VkRect2D sc = { { view_pad_left * S, y1 * S },
+        { (uint32_t)((s_wide_w - view_pad_left - view_pad_right) * S), (uint32_t)(hh * S) } };
     p_vkCmdSetScissor(cb, 0, 1, &sc);
 }
 
@@ -3125,6 +3127,17 @@ static void vkb_copy_rect(int sx,int sy,int dx,int dy,int w,int h){
  * disable (wide_w <= 0). No-ops when nothing changed (gpu.c calls this on
  * every draw-area set via ws_nw_sync_target — Part-A lesson: the wide entry
  * points sit inside guest emulation, keep the common path free). */
+static void vkb_wide_set_view(int enabled, int shift, int pad_left, int pad_right) {
+    if (!enabled) shift = pad_left = pad_right = 0;
+    if (view_enabled == enabled && view_shift == shift &&
+        view_pad_left == pad_left && view_pad_right == pad_right) return;
+    flush_tex_batch(); flush_geometry();
+    view_enabled = enabled;
+    view_shift = shift;
+    view_pad_left = pad_left;
+    view_pad_right = pad_right;
+}
+
 static void vkb_wide_configure(int wide_w, int offset) {
     if (!s_ready) return;
     if (wide_w == s_wide_w && offset == s_wide_offset) return;
@@ -3312,6 +3325,7 @@ static const GpuRenderBackend VK_BACKEND = {
     .get_draw_area                 = vkb_get_draw_area,
     .set_draw_offset               = vkb_set_draw_offset,
     .wide_configure                = vkb_wide_configure,
+    .wide_set_view = vkb_wide_set_view,
     .wide_set_target               = vkb_wide_set_target,
     .wide_disable_target           = vkb_wide_disable_target,
     .wide_clear                    = vkb_wide_clear,

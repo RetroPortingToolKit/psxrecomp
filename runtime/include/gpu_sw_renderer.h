@@ -109,6 +109,7 @@ void sw_set_draw_offset(int x, int y);
  * base_x. wide_w<=0 disables. set_target selects/clears the mirror per back
  * buffer; render_wide_display is the present source for the displayed buffer. */
 void sw_wide_configure(int wide_w, int offset);
+void sw_wide_set_view(int enabled, int shift, int pad_left, int pad_right);
 void sw_wide_set_target(int base_x);
 void sw_wide_disable_target(void);
 void sw_wide_clear(int base_x, int y, int h, uint16_t color);

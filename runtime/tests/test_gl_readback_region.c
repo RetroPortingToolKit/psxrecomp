@@ -73,6 +73,30 @@ int main(int argc,char **argv){
  check(glb_vram_read(40,40)==0,"depth24 cleared band immediate CPU read");
  check(glb_vram_read(33,33)==0x3210,"newer overlapping texture survives clear");
  verify("depth24 leave coherence without subsequent primitive");
+ /* World and UI use different origins in an anchored wide frame. Keep the
+  * canonical-center optimization enabled to catch an erroneous blit over the
+  * completed mirror, and change origins with a pending flat batch. */
+ glb_set_draw_area(0,0,319,239);glb_set_precise_triangle(0,0,0,0,0,0,0);
+ glb_wide_configure(426,53);glb_wide_set_target(0);
+ s_wide_fast=1;
+ uint32_t *wide_pixels=calloc((size_t)426*240*scale*scale,sizeof(uint32_t));
+ if(!wide_pixels)return 2;
+ for(int shift=-53;shift<=53;shift+=53){
+  glb_wide_clear(0,0,240,0);
+  glb_wide_set_view(1,shift,0,0);
+  glb_draw_flat_rect(-106,0,532,240,0x7c00);
+  glb_draw_flat_rect(160,40,3,3,0x03e0);
+  glb_wide_set_view(1,0,0,0);
+  glb_draw_flat_rect(160,20,3,3,0x001f);
+  check(glb_render_wide_display(wide_pixels,426*scale*4,0,0,240)>0,"anchored wide readback");
+  check(wide_pixels[(40*scale)*(426*scale)+(213+shift)*scale]==0xff00f800u,"anchored world marker");
+  check(wide_pixels[(20*scale)*(426*scale)+213*scale]==0xfff80000u,"centered dialogue marker");
+  check(wide_pixels[(60*scale)*(426*scale)]==0xff0000f8u,"anchored left edge");
+  check(wide_pixels[(60*scale)*(426*scale)+425*scale]==0xff0000f8u,"anchored right edge");
+ }
+ glb_wide_set_view(0,0,0,0);
+ check(wide_dx()==53,"disabled view preserves original origin");
+ free(wide_pixels);
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }

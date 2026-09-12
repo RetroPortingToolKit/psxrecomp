@@ -213,6 +213,13 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-09-12 (MMX6 widescreen presentation, beads-eio.3.146):**
+  Opt-in native-wide view origins preserve the guest camera, with separate
+  parallax coverage and explicit HUD origins. SW/GPU regressions and hidden
+  real-GL checks at 1x/4x pass. No guest CPU/device timing changes. Headless
+  presentation now engages the same widescreen game-entry latch so private
+  captures exercise 16:9. Owner gameplay validation remains pending.
+
 - **2026-09-12 (WO-3 observed overlay interior recovery):**
   Branch `fix/observed-overlay-interiors` preserves validated, executed dispatch
   demands even when shared CFG ownership rejects their hostless interior seeds.

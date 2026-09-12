@@ -1,5 +1,31 @@
 # Widescreen support (`feat/widescreen`)
 
+## Opt-in native-wide view anchoring (2026-09-12)
+
+`gpu_ws_set_view_anchor(camera, min, max, active)` reads a game's signed
+16-bit camera and clamp bounds at BG renderer setup. It shifts only the host
+wide mirror, preserving the guest camera and canonical VRAM. The native
+view's left edge appears at `extra + shift`; `extra` remains the symmetric
+width budget. The geometry helper distributes reveal toward the room interior
+and centers rooms narrower than the frame with explicit padding.
+
+SW, OpenGL and Vulkan implement `gr_wide_set_view`. Explicit HUD packets keep
+their existing physical origin. OpenGL's canonical-center copy is disabled
+while anchoring is active because world and UI no longer share an origin.
+
+For the existing Capcom BG2D layout, bracket each layer's packet producer with
+`gpu_ws_bg2d_begin_view_layer` / `gpu_ws_bg2d_end_view_layer`. The independent
+layer mask permits parallax backdrops to anchor to their own map bounds;
+tile generation and ring refill use that layer's actual left/right coverage.
+Actor activation uses a constant envelope covering either edge origin.
+Zero configuration is inactive; 4:3 retains the original path.
+
+Tests: `ws_view_anchor_test`, `ws_view_anchor_gpu_test`, and the hidden real
+OpenGL `test_gl_readback_region.c` fixture. MMX6 is the first consumer;
+owner gameplay validation is still pending (`beads-eio.3.146`).
+
+## Earlier squash-mode implementation
+
 Status as of 2026-06-13. Branch `feat/widescreen` in **both** `psxrecomp`
 (framework) and `TombaRecomp` (game opt-in + config), pushed to remote.
 Experimental. Latest: the far-backdrop edge void is largely fixed (2D backdrop

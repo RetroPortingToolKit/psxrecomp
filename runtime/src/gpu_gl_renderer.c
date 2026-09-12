@@ -522,7 +522,8 @@ static int    s_wide_suppress = 0;
 
 /* X-translation (native px) from canonical VRAM space into the active wide
  * surface: local_x = vram_x - base_x + OFFSET. Same as SW wide_dx(). */
-static inline int wide_dx(void) { return g_wide_off - g_wide_cur_base; }
+static int view_enabled, view_shift, view_pad_left, view_pad_right;
+static inline int wide_dx(void) { return g_wide_off + view_shift - g_wide_cur_base; }
 
 /* ---- dirty-rect helpers ------------------------------------------------- */
 static void rect_clear(DirtyRect *r) { r->set = 0; }
@@ -1622,7 +1623,8 @@ static void wide_target_begin(int dx, GLint uXoff, GLint uXhalf) {
         if (sy < 0) { sh += sy; sy = 0; }
         if (sy + sh > VRAM_H) sh = VRAM_H - sy;
         if (sh < 0) sh = 0;
-        glScissor(0, sy * s_scale, g_wide_w * s_scale, sh * s_scale);
+        glScissor(view_pad_left * s_scale, sy * s_scale,
+                  (g_wide_w - view_pad_left - view_pad_right) * s_scale, sh * s_scale);
     }
     p_glUniform1f(uXoff, (float)dx);
     p_glUniform1f(uXhalf, (float)g_wide_w / 2.0f);
@@ -1682,13 +1684,13 @@ static void wide_blit_center(GLuint wide_fbo, int base_x, int disp_y, int disp_h
 /* True if [lo,hi] (canonical draw-x) lies strictly inside the 4:3 frame, so the
  * prim adds nothing to either reveal margin and its mirror can be skipped. */
 static int mirror_x_center_only(int lo, int hi) {
-    if (!s_wide_fast) return 0;
+    if (!s_wide_fast || view_enabled) return 0;
     int base = g_wide_cur_base, native_w = g_wide_w - 2 * g_wide_off;
     if (native_w <= 0) return 0;
     return (lo >= base) && (hi < base + native_w);
 }
 static int mirror_geo_center_only(const int *xs, int n) {
-    if (!s_wide_fast) return 0;
+    if (!s_wide_fast || view_enabled) return 0;
     int lo = xs[0], hi = xs[0];
     for (int i = 1; i < n; i++) { if (xs[i] < lo) lo = xs[i]; if (xs[i] > hi) hi = xs[i]; }
     return mirror_x_center_only(lo, hi);
@@ -3402,6 +3404,17 @@ static GLuint wide_fbo_for(int base_x) {
 /* Enable native-wide with a wide width + centering offset (native px), or
  * disable (wide_w <= 0). Re-allocates if the width changed. Mirrors
  * sw_wide_configure. */
+static void glb_wide_set_view(int enabled, int shift, int pad_left, int pad_right) {
+    if (!enabled) shift = pad_left = pad_right = 0;
+    if (view_enabled == enabled && view_shift == shift &&
+        view_pad_left == pad_left && view_pad_right == pad_right) return;
+    flush_flat_batch(); flush_tex_batch();
+    view_enabled = enabled;
+    view_shift = shift;
+    view_pad_left = pad_left;
+    view_pad_right = pad_right;
+}
+
 static void glb_wide_configure(int wide_w, int offset) {
     if (!s_raster_ok) return;
     double t0 = cw_ms(); s_cw_wide_cfgs++;
@@ -3528,6 +3541,7 @@ static int glb_render_wide_display(uint32_t *out, int pitch, int base_x,
     /* Fold any pending CPU->VRAM uploads into the canonical FBO first (uploads
      * are never mirrored to wide, but draws after them are; keep op order) and
      * make sure all wide-FBO draws have completed before the readback. */
+    flush_flat_batch();
     flush_tex_batch();
     flush_cpu_upload();
     wide_blit_center(fbo, base_x, disp_y, disp_h);   /* fast-path: authoritative centre before readback */
@@ -4405,7 +4419,7 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
  * x-translated by the reveal offset. No-op when s_wide_fast is off (then the
  * mirror drew the full surface, as before). Shared by both present paths. */
 static void wide_blit_center(GLuint wide_fbo, int base_x, int disp_y, int disp_h) {
-    if (!s_wide_fast || g_wide_w <= 0) return;
+    if (!s_wide_fast || view_enabled || g_wide_w <= 0) return;
     int native_w = g_wide_w - 2 * g_wide_off;
     if (native_w <= 0) return;
     int S = s_scale;
@@ -4523,6 +4537,7 @@ static const GpuRenderBackend GL_BACKEND = {
     .set_draw_area = glb_set_draw_area, .get_draw_area = glb_get_draw_area,
     .set_draw_offset = glb_set_draw_offset,
     .wide_configure = glb_wide_configure,
+    .wide_set_view = glb_wide_set_view,
     .wide_set_target = glb_wide_set_target,
     .wide_disable_target = glb_wide_disable_target,
     .wide_clear = glb_wide_clear,
