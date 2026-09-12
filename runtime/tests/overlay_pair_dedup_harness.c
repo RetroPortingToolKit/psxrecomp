@@ -174,6 +174,36 @@ uint32_t psx_ws_backdrop_value(uint32_t orig, int end, int cols) {
 }
 int32_t psx_ws_depth_bound(int32_t imm) { return imm; }
 int32_t psx_ws_player_x_bound(int32_t vanilla) { return vanilla; }
+int32_t psx_ws_screen_x_bound(int32_t vanilla) { return vanilla; }
+void psx_mod_function_entry(CPUState *cpu, uint32_t address) {
+    (void)cpu; (void)address;
+}
+int psx_netplay_is_resimulating(void) { return 0; }
+int psx_game_text_native_ok(uint32_t address) { (void)address; return 1; }
+uint32_t psx_ws_angle_widen(uint32_t vanilla) { return vanilla; }
+uint32_t psx_ws_cull_keep_result(uint32_t vanilla, uint32_t forced) {
+    (void)forced; return vanilla;
+}
+uint32_t psx_ws_aspect_cone_result(uint32_t site, uint32_t vanilla,
+                                  uint32_t object, int32_t x, int32_t z, int32_t y) {
+    (void)site; (void)object; (void)x; (void)z; (void)y; return vanilla;
+}
+/* This harness exercises loader ownership, not precision shadowing. */
+void psx_pgxp_load(CPUState *cpu, uint32_t i, uint32_t a, uint32_t v) {
+    (void)cpu; (void)i; (void)a; (void)v;
+}
+void psx_pgxp_store(CPUState *cpu, uint32_t i, uint32_t a, uint32_t v) {
+    (void)cpu; (void)i; (void)a; (void)v;
+}
+void psx_pgxp_alu(CPUState *cpu, uint32_t i, uint32_t r, uint32_t s, uint32_t t) {
+    (void)cpu; (void)i; (void)r; (void)s; (void)t;
+}
+void psx_pgxp_muldiv(CPUState *cpu, uint32_t i, uint32_t h, uint32_t l, uint32_t s, uint32_t t) {
+    (void)cpu; (void)i; (void)h; (void)l; (void)s; (void)t;
+}
+void psx_pgxp_cop2(CPUState *cpu, uint32_t i, uint32_t v, uint32_t a) {
+    (void)cpu; (void)i; (void)v; (void)a;
+}
 
 typedef int (*CounterFn)(void);
 

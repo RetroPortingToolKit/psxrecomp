@@ -1,5 +1,6 @@
 """Method contracts use invented bytes; no game assets or historical captures."""
 import base64
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -22,6 +23,39 @@ class FakeDisc:
 
 
 class AotMethodsTest(unittest.TestCase):
+    def test_verified_fallback_intervals_split_native_ownership(self):
+        body = bytes(range(32))
+        item = dict(start=0x1008, end=0x1010, reason='Unsupported original instruction',
+                    sha256=hashlib.sha256(body[8:16]).hexdigest())
+        source = dict(base=0x1000, body=body, spec=dict(excluded_ranges=[item]))
+        self.assertEqual(pipeline.eligible_ranges(source, 0x1000, 0x1020),
+                         [(0x1000, 0x1008), (0x1010, 0x1020)])
+        self.assertEqual(pipeline.eligible_ranges(source, 0x1014, 0x1020),
+                         [(0x1014, 0x1020)])
+        self.assertEqual(pipeline.eligible_ranges(source, 0x1008, 0x100c), [])
+        for change, error in [({'start': 0xffc}, 'Invalid'),
+                              ({'end': 0x100f}, 'Invalid'),
+                              ({'reason': ''}, 'reason'),
+                              ({'sha256': '0' * 64}, 'bytes changed')]:
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, error):
+                pipeline.eligible_ranges({**source, 'spec': dict(excluded_ranges=[{**item, **change}])},
+                                         0x1000, 0x1020)
+        with self.assertRaisesRegex(ValueError, 'Overlapping'):
+            pipeline.eligible_ranges({**source, 'spec': dict(excluded_ranges=[item, item])},
+                                     0x1000, 0x1020)
+
+    def test_fallback_cannot_hide_required_loader_entry(self):
+        base, body = 0x80100000, struct.pack('<4I', 0x03e00008, 0, 0x03e00008, 0)
+        spec = dict(method='fixed_address_files', files=['CODE'], load_addr=hex(base),
+                    entries=[hex(base)], excluded_ranges=[dict(start=base, end=base+8,
+                    reason='Synthetic fallback', sha256=hashlib.sha256(body[:8]).hexdigest())])
+        record = pipeline.extractor.rec(base, body, [base, base+8])
+        with tempfile.TemporaryDirectory() as directory:
+            for strict, error in [(False, 'strict producer'), (True, 'required loader entry')]:
+                with self.subTest(strict=strict), self.assertRaisesRegex(ValueError, error):
+                    pipeline.prepare(dict(images=[spec], expected_records=1, strict_bounds=strict),
+                                     FakeDisc({'CODE': body}), [dict(record)], Path(directory))
+
     def test_optional_normal_roots_reject_control_transfer_in_delay_slot(self):
         base = 0x80100000
         body = struct.pack('<8I', 0, 0, 0x0C004000, 0x0C004001,

@@ -230,6 +230,13 @@ uint32_t psx_ws_backdrop_value(uint32_t orig, int is_end, int window_cols) {
 int32_t psx_ws_player_x_bound(int32_t vanilla) {
     return g_cbs.ws_player_x_bound ? g_cbs.ws_player_x_bound(vanilla) : vanilla;
 }
+int32_t psx_ws_screen_x_bound(int32_t vanilla) {
+    return g_cbs.ws_screen_x_bound ? g_cbs.ws_screen_x_bound(vanilla) : vanilla;
+}
+void psx_mod_function_entry(CPUState *cpu, uint32_t address) {
+    overlay_flush_cycles();
+    if (g_cbs.mod_function_entry) g_cbs.mod_function_entry(cpu, address);
+}
 int32_t psx_ws_depth_bound(int32_t imm) {
     return g_cbs.ws_depth_bound ? g_cbs.ws_depth_bound(imm) : imm;
 }

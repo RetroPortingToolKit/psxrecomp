@@ -37,7 +37,7 @@ def codegen_leaf() -> str:
                           hash_header.read_text(encoding="utf-8"))
         if match:
             code_hash = match.group(1).lower()
-    return f"cg{version}_{code_hash}"
+    return f"cg{version}_{code_hash}_gc00000000_f0"
 
 
 def arch_abi() -> str:

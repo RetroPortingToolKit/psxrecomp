@@ -69,6 +69,7 @@ Profiles declare these reusable methods:
 | `compositions` | Combine declared simultaneous producers in address order. `max_gap` bounds their separation; gap and alignment bytes remain unowned. |
 | `expected_records` | Stop on inventory drift, including unexpected additions requiring review. Every configured image must be represented. |
 | `strict_bounds` | Require emission to remain inside established producer intervals. |
+| `images[].excluded_ranges` | Explicit fallback intervals with aligned start/end, original-byte SHA-256 and a reason. Requires strict bounds; required loader entries cannot be excluded. |
 
 `allow_missing` opts a fixed-address source into static root discovery when the
 generic detector misses it. `entry_word` or `entries` can supply independently

@@ -300,6 +300,28 @@ def compose_records(left, right, left_record, right_record, max_gap):
     return extractor.rec(page, bytes(data), seeds, dispatch_extra=dispatch, producer_ranges=bounds)
 
 
+def eligible_ranges(source, lo, hi):
+    """Explicit, byte-verified fallback intervals cannot be native producers."""
+    excluded = []
+    for item in source['spec'].get('excluded_ranges', []):
+        start, end = number(item['start']), number(item['end'])
+        base, body = source['base'], source['body']
+        require(base <= start < end <= base + len(body) and start % 4 == end % 4 == 0,
+                'Invalid excluded native interval')
+        require(item.get('reason', '').strip(), 'Excluded native interval needs a reason')
+        require(hashlib.sha256(body[start-base:end-base]).hexdigest() == item['sha256'],
+                'Excluded native interval bytes changed')
+        excluded.append((start, end))
+    excluded.sort()
+    require(all(a[1] <= b[0] for a, b in zip(excluded, excluded[1:])),
+            'Overlapping excluded native intervals')
+    ranges = [(lo, hi)]
+    for start, end in excluded:
+        ranges = [(a, b) for left, right in ranges
+                  for a, b in [(left, min(right, start)), (max(left, end), right)] if a < b]
+    return ranges
+
+
 def prepare(profile, disc, records, output):
     verify_evidence(disc, profile.get('checks', []))
     sources = positioned_sources(disc, profile['images'])
@@ -350,7 +372,19 @@ def prepare(profile, disc, records, output):
     for index, record in enumerate(records):
         matches = match_sources(record, sources)
         names = [source['name'] for source, _, _ in matches]
-        bounds = [(lo, hi) for _, lo, hi in matches]
+        bounds = [span for source, lo, hi in matches for span in eligible_ranges(source, lo, hi)]
+        if any(source['spec'].get('excluded_ranges') for source, _, _ in matches):
+            require(profile.get('strict_bounds'), 'Excluded intervals require strict producer bounds')
+            eligible = lambda pc: any(lo <= number(pc) < hi for lo, hi in bounds)
+            for key in ('function_entry_pcs', 'dispatch_entry_pcs', 'static_dispatch_entry_pcs',
+                        'static_discovery_entry_pcs', 'seeds'):
+                if key in record:
+                    record[key] = [pc for pc in record[key] if eligible(pc)]
+            record['static_alias_ranges'] = [alias for alias in record.get('static_alias_ranges', [])
+                if any(lo <= number(alias['start']) <= number(alias['entry']) < number(alias['end']) <= hi
+                       for lo, hi in bounds)]
+            require(all(eligible(entry) for source, _, _ in matches
+                        for entry in declared_entries(source, disc)), 'Excluded required loader entry')
         if record.get('producer') == 'bios_resident_manifest':
             names = ['BIOS resident manifest']
             bounds = [(number(r['start']), number(r['end'])) for r in record['producer_ranges']]
@@ -378,7 +412,8 @@ def prepare(profile, disc, records, output):
                      recipe_count=len(jobs), full_static_coverage_proven=False, jobs=jobs)
     inventory['source_images'] = [dict(name=s['name'], aliases=s['aliases'],
         method=s['spec']['method'], load_addr=hex(s['base']), size=len(s['body']),
-        sha256=hashlib.sha256(s['body']).hexdigest()) for s in sources]
+        sha256=hashlib.sha256(s['body']).hexdigest(),
+        excluded_ranges=s['spec'].get('excluded_ranges', [])) for s in sources]
     write_json(output / 'runtime-input-inventory.json', inventory)
     return inventory
 
