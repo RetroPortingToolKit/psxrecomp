@@ -1060,14 +1060,31 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
         }
     }
 
-    // [[recompiler.install_slots]] — kernel-RAM PCs the BIOS overwrites with
-    // dispatch stubs at runtime.
-    std::vector<uint32_t> install_slots;
+    // [[recompiler.install_slots]] — kernel-RAM ranges the BIOS or the game's
+    // Psy-Q libapi patchers overwrite at runtime. `ram_addr` alone keeps the
+    // original meaning (a 4-word jalr stub); `len` and `resume` describe the
+    // other patch shapes (BiosInstallSlot, bios_address_model.h).
+    std::vector<BiosInstallSlot> install_slots;
     if (recomp.contains("install_slots")) {
         for (const auto& v : recomp.at("install_slots").as_array()) {
-            install_slots.push_back(parse_hex(
+            BiosInstallSlot slot;
+            slot.ram_addr = parse_hex(
                 toml::find<std::string>(v, "ram_addr"),
-                "install_slots.ram_addr"));
+                "install_slots.ram_addr");
+            if (v.contains("len"))
+                slot.len = parse_hex(toml::find<std::string>(v, "len"),
+                                     "install_slots.len");
+            if (v.contains("resume")) {
+                const std::string r = toml::find<std::string>(v, "resume");
+                if      (r == "jalr")        slot.resume = BiosInstallSlot::Resume::Jalr;
+                else if (r == "fallthrough") slot.resume = BiosInstallSlot::Resume::Fallthrough;
+                else if (r == "none")        slot.resume = BiosInstallSlot::Resume::None;
+                else throw std::runtime_error(fmt::format(
+                    "{}: install_slots 0x{:08X}: resume must be \"jalr\", "
+                    "\"fallthrough\" or \"none\", got '{}'",
+                    config_path.string(), slot.ram_addr, r));
+            }
+            install_slots.push_back(slot);
         }
     }
 

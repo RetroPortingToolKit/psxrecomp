@@ -569,6 +569,7 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kuseg_dispatch_lookup.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
+                    --compiler ${CMAKE_C_COMPILER}
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME overlay_shim_compile_contract
@@ -649,6 +650,8 @@ if(BUILD_TESTING)
         foreach(_t IN ITEMS
                 bios_selection_guards
                 capture_history
+                cli_retail_bios_profile
+                codegen_host_bios_stems
                 default_renderer_guards
                 mod_owned_display_controls
                 fmv_quiet_guards
