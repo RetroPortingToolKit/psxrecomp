@@ -9,19 +9,24 @@ extern "C" {
 
 /*
  * GPU linked-list tags carry only 24 address bits. Trusted enhancements that
- * need a larger primitive arena use this otherwise-unmapped 1 MiB aperture so
+ * need a larger primitive arena use this otherwise-unmapped 4 MiB aperture so
  * their CPU pointers survive the tag truncation. Nothing is mapped until an
  * enhancement explicitly allocates from it.
  */
-#define PSX_MOD_GPU_DMA_APERTURE_BASE 0x00F00000u
-#define PSX_MOD_GPU_DMA_APERTURE_SIZE (1u * 1024u * 1024u)
-#define PSX_MOD_GPU_DMA_GUEST_BASE    0x80F00000u
+#define PSX_MOD_GPU_DMA_APERTURE_BASE 0x00C00000u
+#define PSX_MOD_GPU_DMA_APERTURE_SIZE (4u * 1024u * 1024u)
+#define PSX_MOD_GPU_DMA_GUEST_BASE    0x80C00000u
 
 static inline int psx_mod_gpu_dma_aperture_offset_for(
     uint32_t address, uint32_t width, uint32_t used, uint32_t *offset) {
-    uint32_t canonical = address & 0x00FFFFFFu;
+    /* CPU addresses retain all physical bits after KSEG normalization. The
+     * BIOS at 0x1FC00000 must never alias the aperture at 0x00C00000.
+     * DMA callers pass an already-truncated 24-bit tag separately below. */
+    uint32_t canonical = address & 0x1FFFFFFFu;
     uint32_t off;
-    if (canonical < PSX_MOD_GPU_DMA_APERTURE_BASE) return 0;
+    if (canonical < PSX_MOD_GPU_DMA_APERTURE_BASE ||
+        canonical >= 0x01000000u || used > PSX_MOD_GPU_DMA_APERTURE_SIZE)
+        return 0;
     off = canonical - PSX_MOD_GPU_DMA_APERTURE_BASE;
     if (off > used || width > used - off) return 0;
     if (offset) *offset = off;

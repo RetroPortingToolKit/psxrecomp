@@ -22,6 +22,7 @@ from aot_overlay_spike import extract_generic as extractor
 from packed_sector_table import extract_members as extract_sector_members
 from sector_extent_archive import extract_members as extract_extent_members
 from aligned_lzss_banks import banks as extract_lzss_banks
+from mips_tagged_relocations import parse as parse_tagged_relocations, relocate as relocate_tagged_image
 
 FRAMEWORK = Path(__file__).resolve().parents[1]
 
@@ -74,7 +75,11 @@ def verify_evidence(disc, checks):
         origin = number(check.get('file_offset', 0))
         base = number(check.get('base', 0))
         method = check['method']
-        if method == 'words':
+        if method == 'tagged_relocations':
+            image, relocations = parse_tagged_relocations(data)
+            require(len(image) == number(check['image_size']), 'Relocated image inventory changed')
+            require(len(relocations) == number(check['relocation_count']), 'Relocation inventory changed')
+        elif method == 'words':
             for address, expected in check['values'].items():
                 offset = origin + number(address) - base
                 require(0 <= offset <= len(data) - 4, 'Evidence word outside source')
@@ -223,6 +228,11 @@ def positioned_sources(disc, specifications):
                 body = body[offset:]
             elif method == 'fixed_address_files':
                 base = number(spec['load_addr'])
+            elif method == 'tagged_relocated_files':
+                base = number(spec['load_addr'])
+                require(not spec.get('verify_duplicate_names'),
+                        'Relocated sources need individual source identities')
+                body, _ = relocate_tagged_image(body, base)
             else:
                 raise ValueError(f'Unknown image method: {method}')
             require(0x80000000 <= base < base + len(body) <= 0x80200000, f'{name}: image outside RAM')
@@ -339,7 +349,7 @@ def prepare(profile, disc, records, output):
             if (lo, hi) == (source['base'], source['base'] + len(source['body'])):
                 singles[source['name']] = record
     for source in sources:
-        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks') and source['name'] not in singles:
+        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'tagged_relocated_files') and source['name'] not in singles:
             record = make_fixed_record(source, disc)
             singles[source['name']] = record
             records.append(record)
@@ -487,9 +497,15 @@ def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=Non
                 if destination.exists():
                     require(library.with_suffix('.ranges').read_bytes() == destination.with_suffix('.ranges').read_bytes(),
                             f'Conflicting native pair identity: {library.name}')
-                    continue
-                shutil.copy2(library, destination)
-                shutil.copy2(library.with_suffix('.ranges'), destination.with_suffix('.ranges'))
+                else:
+                    shutil.copy2(library, destination)
+                    shutil.copy2(library.with_suffix('.ranges'), destination.with_suffix('.ranges'))
+                marker = library.with_suffix('.resident')
+                if marker.exists():
+                    target_marker = destination.with_suffix('.resident')
+                    require(not target_marker.exists() or marker.read_bytes() == target_marker.read_bytes(),
+                            f'Conflicting resident metadata: {library.name}')
+                    shutil.copy2(marker, target_marker)
     return cache
 
 
@@ -500,8 +516,11 @@ def stage(cache, destination, receipt):
     target.mkdir(parents=True, exist_ok=True)
     expected = set()
     for pair in receipt['pairs']:
-        for name, key in [(pair['dll'], 'dll_sha256'),
-                          (Path(pair['dll']).with_suffix('.ranges').name, 'manifest_sha256')]:
+        artifacts = [(pair['dll'], 'dll_sha256'),
+                     (Path(pair['dll']).with_suffix('.ranges').name, 'manifest_sha256')]
+        if 'resident_sha256' in pair:
+            artifacts.append((Path(pair['dll']).with_suffix('.resident').name, 'resident_sha256'))
+        for name, key in artifacts:
             expected.add(name)
             require(digest(source / name) == pair[key], f'Audited artifact changed: {name}')
             shutil.copy2(source / name, target / name)

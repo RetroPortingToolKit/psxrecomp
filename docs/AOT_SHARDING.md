@@ -58,11 +58,13 @@ Profiles declare these reusable methods:
 | --- | --- |
 | `disc_hashes` | Hash the cue's original data track before extracting. |
 | `images[].method = fixed_address_files` | Whole original files placed at a verified `load_addr`. Optional duplicate-leaf checks require identical bytes. |
+| `images[].method = tagged_relocated_files` | Apply a trailing two-bit ABS32/HI16/LO16/J26 relocation stream to a verified `load_addr`, retaining only the original loader's image interval. Destinations are explicit evidence, never inferred from a historical RAM capture. |
 | `images[].method = psx_exe` | Read the load address and image from a PS-X EXE header; the generic extractor may split resident and overlay floors. |
 | `images[].method = packed_sector_members` | Decode u32 count/offset sector descriptors across ordered payload files. Verify every member classification and requested full-payload coverage; use loader-established addresses for executable members. |
 | `images[].method = sector_extent_members` | Decode `{sector offset, byte size}` pairs in an archive. Use archive-relative offsets, verify the exact count and terminator, reject gaps/overlaps, and account for every member after sector rounding. Each member needs a verified load address or an explicit exclusion. |
 | `images[].method = aligned_lzss_banks` | Read aligned stored-size pairs, decode the metadata and its tagged bank members using parameterized LZSS, verify every container and bank classification, and deduplicate exact decoded images at verified destinations. External-RAM references fail extraction. |
 | `checks[].method = words` | Verify loader instructions or descriptors at explicit file offsets / virtual addresses. |
+| `checks[].method = tagged_relocations` | Validate a complete relocation stream, retained `image_size` and `relocation_count`, including modules whose heap placement remains unresolved and which are excluded from native production. |
 | `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. |
 | `checks[].method = bcd_extent_table` | Verify an indexed BCD-MSF/size table against an ISO file's actual extent. |
 | `checks[].method = adjacent_files` | Require the named ISO extents to be sector aligned and physically adjacent, in order. |
@@ -89,6 +91,11 @@ An inventory plus valid guards still does not prove complete static execution
 coverage or native semantics; keep fallback and perform gameplay spot checks.
 
 Jersey Devil uses `aligned_lzss_banks` for five renderer variants across 70 bank occurrences and `psx_exe` for five secondary executables. Its profile accounts for all 93 BZZ containers, including 23 without code banks.
+
+Exact-BIOS resident helper recipes also publish a `.resident` preload marker.
+The pipeline preserves it through consolidation and staging, verifies its BIOS
+hash against the recipe, and includes its hash in the audit receipt. Omitting
+that marker can leave an otherwise valid helper unused at runtime.
 
 Current consumers:
 
