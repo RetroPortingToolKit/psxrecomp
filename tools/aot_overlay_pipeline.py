@@ -511,6 +511,11 @@ def stage(cache, destination, receipt):
     write_json(destination / 'AOT_CACHE_AUDIT.json', receipt)
 
 
+def require_runtime_cache(config):
+    require(config.get('runtime', {}).get('overlay_cache') is True,
+            'AOT release requires runtime.overlay_cache = true in the packaged config')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['extract', 'release'])
@@ -528,6 +533,10 @@ def main():
     parser.add_argument('--workers', type=int, default=3)
     args = parser.parse_args()
     require(args.workers > 0, 'Workers must be positive')
+    if args.action == 'release':
+        import tomllib
+        require_runtime_cache(tomllib.loads((args.runtime_config or args.game_toml)
+                                           .read_text(encoding='utf-8-sig')))
     if args.runtime_build_dir:
         from release_stage import _flavor_from_build
         require(_flavor_from_build(str(args.runtime_build_dir), args.runtime_target) == 0,

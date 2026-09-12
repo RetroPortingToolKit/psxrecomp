@@ -23,6 +23,12 @@ class FakeDisc:
 
 
 class AotMethodsTest(unittest.TestCase):
+    def test_release_refuses_config_that_would_ignore_bundled_native_modules(self):
+        for config in ({}, {'runtime': {}}, {'runtime': {'overlay_cache': False}}):
+            with self.subTest(config=config), self.assertRaisesRegex(ValueError, 'overlay_cache = true'):
+                pipeline.require_runtime_cache(config)
+        pipeline.require_runtime_cache({'runtime': {'overlay_cache': True}})
+
     def test_verified_fallback_intervals_split_native_ownership(self):
         body = bytes(range(32))
         item = dict(start=0x1008, end=0x1010, reason='Unsupported original instruction',
