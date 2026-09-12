@@ -393,6 +393,15 @@ if(BUILD_TESTING)
         include
         ../recompiler/lib/toml11)
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
+    # The real disc hasher uses a 1 MiB scratch buffer. Match the runtime's
+    # stack allowance instead of overflowing MinGW's 1 MiB executable default.
+    if(WIN32)
+        if(MSVC)
+            target_link_options(mod_runtime_test PRIVATE /STACK:16777216)
+        else()
+            target_link_options(mod_runtime_test PRIVATE -Wl,--stack,16777216)
+        endif()
+    endif()
     add_test(NAME mod_runtime_test COMMAND mod_runtime_test)
 
     if(WIN32)

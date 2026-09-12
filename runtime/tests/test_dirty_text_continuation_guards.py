@@ -18,13 +18,15 @@ def main() -> int:
 
     required_range_fragments = (
         "uint32_t exec_pc",
-        "if (phys + len <= at) continue;",
-        "len -= at - phys;",
+        "(void)exec_pc;",
+        "memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), len)",
         "if (!any)",
     )
     for fragment in required_range_fragments:
         if fragment not in range_guard:
             raise AssertionError(f"missing continuation range guard: {fragment}")
+    if "len -= at - phys;" in range_guard or "if (phys + len <= at) continue;" in range_guard:
+        raise AssertionError("continuation guard clips away code reachable by a backward edge")
     if "text_diverged_bitmap" in range_guard:
         raise AssertionError("exact-range mismatch still sticky-poisons a whole page")
     if "dirty_ram_text_native_ok_ranges_from(lo_len_pairs, count, 0u)" not in memory:
