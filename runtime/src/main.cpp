@@ -11590,7 +11590,14 @@ namespace {
         return psx_lobby_allow_spectators_pref();
     }
     int ae_np_allow_spectators_set(void*, int allow) {
-        if (!ae_np_use_ws_members()) return -1;
+        /* A PREFERENCE, read back by the Create Lobby modal and sent with
+         * `create` -- so it has to be settable before any room exists.
+         * Gating this on being seated (as it was) refused the toggle in the
+         * one place it is offered, and the modal, reading the unchanged
+         * value back each frame, snapped the switch off again. Only a LAN /
+         * Direct-IP room refuses, because it has no gallery to allow: same
+         * rule as the SNES host (snes_host_lobby.c cb_allow_spectators_set). */
+        if (g_lnch_hosting_lan || g_lnch_joined_lan) return -1;
         psx_lobby_set_allow_spectators(allow);
         return 0;
     }
