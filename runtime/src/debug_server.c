@@ -7010,7 +7010,7 @@ static void handle_imask_trace(int id, const char *json)
     send_fmt("]}\n");
 }
 
-/* Post-probe bit7 → TX 0x57 handoff (Ape Escape LOAD). */
+/* Post-probe SIO/INTC handoff; records hardware state, not game RAM. */
 static void handle_card_handoff(int id, const char *json)
 {
     int count = json_get_int(json, "count", 64);
@@ -7023,8 +7023,7 @@ static void handle_card_handoff(int id, const char *json)
 
     int start = count ? (idx - count + cap) % cap : 0;
     static const char *kinds[] = {
-        "?", "probe_abort", "b7_set", "b7_clear", "tx", "card_ack", "unstick",
-        "select_flush_ack", "ack_deferred_istat7", "nest_irq_pulse", "b7_hold"
+        "?", "probe_abort", "b7_set", "b7_clear", "tx", "card_ack"
     };
     send_fmt("{\"id\":%d,\"ok\":true,\"armed\":%d,\"total\":%d,\"count\":%d,\"entries\":[",
              id, sio_card_handoff_armed(), total, count);
@@ -7035,11 +7034,11 @@ static void handle_card_handoff(int id, const char *json)
         if (i) send_fmt(",");
         send_fmt("{\"kind\":\"%s\",\"byte\":\"0x%02X\",\"imask\":\"0x%03X\","
                  "\"pc\":\"0x%08X\",\"func\":\"0x%08X\","
-                 "\"a6c10\":\"0x%08X\",\"b4e30\":\"0x%08X\",\"b4e38\":\"0x%08X\","
+                 "\"ctrl\":\"0x%04X\",\"stat\":\"0x%04X\",\"card_state\":%u,"
                  "\"cyc\":%llu}",
                  k, e->byte, e->imask,
                  (unsigned)e->pc, (unsigned)e->func,
-                 (unsigned)e->a6c10, (unsigned)e->b4e30, (unsigned)e->b4e38,
+                 (unsigned)e->ctrl, (unsigned)e->stat, (unsigned)e->card_state,
                  (unsigned long long)e->cyc);
     }
     send_fmt("]}\n");

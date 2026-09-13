@@ -23,6 +23,15 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(sio_card_irq_integrity_test tests/test_sio_card_irq_integrity.c)
+    target_include_directories(sio_card_irq_integrity_test PRIVATE include)
+    foreach(scenario absent deselect pending coarse)
+        add_test(NAME sio_card_irq_integrity_${scenario}
+                 COMMAND sio_card_irq_integrity_test ${scenario})
+        # The retired environment variable must not reactivate the workaround.
+        set_tests_properties(sio_card_irq_integrity_${scenario} PROPERTIES
+            ENVIRONMENT "PSX_APE_CARD_UNSTICK=1")
+    endforeach()
     # Optional real-hardware regression. Configure its dependencies explicitly;
     # absence must remain visible, never counted as a passing GPU test.
     set(PSX_GL_READBACK_SDL_ROOT "" CACHE PATH "SDL3 static build root for GL readback test")

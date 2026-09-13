@@ -213,6 +213,26 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-09-13 (SIO card hack removal — branch-only review checkpoint):**
+  Reproduced fixed-Ape-RAM IRQ7/mask injection after an absent-card probe,
+  plus SELECT-time ACK fabrication and INTC-pending ACK requeueing with the
+  flag disabled. Candidate removes the opt-in mechanism and its GPU/IRQ/mask
+  hooks, uses device-only handoff diagnostics, cancels deselected ACKs and
+  consumes elapsed shift/ACK deadlines. Also deletes the unused ChangeThread
+  deferral helper/state. Owner confirmed Ape's actual Load Game screen and a
+  captured screenshot shows populated save slots; baseline ON also qualified
+  and its ring proves the old repair was active. Final cleanup builds all three
+  title executables and 57 runtime test executables; 83 executed CTests pass,
+  one skips and two remain disabled. Cold 7000-frame and final warm 11000-frame
+  Tomba/MMX6 boot/FMVs/title/attract smokes pass with inspected screenshots,
+  zero kernel mismatches and zero dirty aborts. This is not a save/write/reload,
+  full gameplay, netplay or live Beetle claim. User-tested Ape predates only
+  the final dead-code cleanup; see the audit for binary identity and limits.
+  Original cards unchanged. Owner authorized integration after the human
+  checkpoint; refresh onto upstream 7025bb5f (rewind-key aliases only) and
+  recheck before merging. Game pins and other PRs remain untouched.
+  See `SIO_CARD_NO_HACKS_AUDIT.md`; central issue beads-eio.3.154.
+
 - **2026-09-12 (FMV brief follow-ups, correctness separated from experiments):**
   `fix/cfg-metadata-integrity` repairs missing live reverse edges and replaces
   address-order loop guesses with multi-entry reachability/dominance metadata.

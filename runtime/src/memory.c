@@ -970,20 +970,7 @@ static void interrupt_write_stat_masked(uint32_t val, uint32_t mask) {
 static void interrupt_write_mask_masked(uint32_t val, uint32_t mask, uint8_t width) {
     uint32_t old = i_mask;
     uint32_t next = ((i_mask & ~mask) | (val & mask)) & 0x7FFu;
-    /* IMPORTANT (Ape Escape LOAD): BIOS clears I_MASK.7 immediately after
-     * the probe SELECT abort while A6C10 is still nested. That drops the
-     * nest_irq_pulse before LibCardIntRP can pop to idle / set B4E38.
-     * Hold bit7 until the nest unwinds (sio_card_should_hold_imask_bit7).
-     * EXPERIMENT: helper used to no-op under netplay; ungated for TM4 test.
-     * See ApeEscapeRecomp/docs/APE_MEMCARD_LOAD.md. */
-    if ((old & 0x80u) && !(next & 0x80u)) {
-        extern int sio_card_should_hold_imask_bit7(void);
-        if (sio_card_should_hold_imask_bit7()) {
-            next |= 0x80u;
-            if (!(i_stat & 0x80u))
-                i_stat |= 0x80u;
-        }
-    }
+    /* INTC mask writes are owned by the guest, never by a device repair. */
     i_mask = next;
     imask_trace_record(old, i_mask, width);
     {
