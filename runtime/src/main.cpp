@@ -57,6 +57,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "psx_netplay_rb.h"
 #include "psx_selfcheck.h"
 #include "psx_lobby_client.h"
+#include "recomp_net/auth.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "recomp_net/chat_filter.h" /* chat profanity mask, LAN rooms too */
 #endif
@@ -10023,6 +10024,152 @@ namespace {
         }
         return psx_lobby_send_chat(line);
     }
+    /* ---- optional Discord sign-in -------------------------------------
+     * Thin adapters over psx_netplay_auth, which owns the HTTP, the worker
+     * thread and the device key. Nothing here blocks a frame except the
+     * rename, which is one round trip and wants a verdict for its modal. */
+    int ae_np_account_available(void*) { return rnet_account_available(); }
+    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
+    int ae_np_account_state(void*) { return rnet_account_state(); }
+    const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
+    const char* ae_np_account_username(void*) { return rnet_account_username(); }
+    const char* ae_np_account_error(void*) { return rnet_account_error(); }
+    int ae_np_account_sign_out(void*) { return rnet_account_sign_out(); }
+    int ae_np_account_set_handle(void*, const char* h) { return rnet_account_set_handle(h); }
+
+    /* Point the account client at the lobby host -- once per URL, not once
+     * per pump: the login worker thread reads the host while a sign-in is in
+     * flight, and re-initialising it 60 times a second under that read is a
+     * data race for no gain. The secret is anchored to the EXECUTABLE
+     * directory before the first init: its default is the bare relative name
+     * "netplay_secret", resolved against the working directory, so the same
+     * install signed itself out depending on where it was launched from.
+     * rnet_auth migrates an old CWD-relative file into this path on first
+     * load, so nobody is signed out by the move. Same shape as the SNES
+     * host (snes_host_lobby.c cb_pump). */
+    void ae_np_account_sync(void) {
+        static std::string s_auth_url;
+        const std::string& url = g_lnch_lobby_url;
+        if (url.empty() || url == s_auth_url) return;
+        if (s_auth_url.empty()) {
+            const std::string secret =
+                (exe_dir_from_argv(g_lnch_argv0 ? g_lnch_argv0 : "") /
+                 "netplay_secret").string();
+            rnet_account_set_secret_path(secret.c_str());
+        }
+        s_auth_url = url;
+        rnet_account_init(url.c_str());
+    }
+
+    /* ---- list scope --------------------------------------------------------
+     * The launcher forks LAN / Direct IP from online before the browser, and
+     * only it knows which fork the player took. Without the scope a player
+     * who chose LAN was shown online rooms they had no connection for, and
+     * one who chose online was shown LAN rooms from their own machine. The
+     * values are RECOMP_LAUNCHER_LIST_SCOPE_*; 0 (any) is the historical
+     * merge, and what a recomp-ui without the callback leaves us in. */
+    int g_lnch_list_scope = 0;
+    int ae_np_list_scope_set(void*, int scope) {
+        g_lnch_list_scope = scope;
+        return 0;
+    }
+    bool ae_np_list_want_online(void) { return g_lnch_list_scope != 1; }
+    bool ae_np_list_want_lan(void) { return g_lnch_list_scope != 2; }
+
+    /* ---- moderation ------------------------------------------------------
+     * Both go to the lobby server; a LAN room has none, and the launcher
+     * only offers them online. What a report contains is recomp-net's
+     * (chat_report.h); the block list is the launcher's own file, pushed
+     * here so the server can refuse to pair or seat the two together. */
+    int ae_np_chat_report(void*, const char* const* mids, int mid_count,
+                          const char* reason, const char* note) {
+        if (g_lnch_hosting_lan || g_lnch_joined_lan) return -1;
+        return psx_lobby_report_chat(mids, mid_count, reason, note);
+    }
+    int ae_np_set_blocks(void*, const char* accounts) {
+        if (g_lnch_hosting_lan || g_lnch_joined_lan) return -1;
+        return psx_lobby_set_blocks(accounts);
+    }
+
+    /* ---- automatch -------------------------------------------------------
+     * Thin: the lobby client owns the protocol and the state machine, and
+     * this only translates its vocabulary into the launcher's. The one piece
+     * of POLICY here is mods_enabled -- see ae_np_automatch_queue. */
+    bool ae_np_online_mode(void) {
+        return !g_lnch_hosting_lan && !g_lnch_joined_lan && psx_lobby_connected();
+    }
+    int ae_np_automatch_available(void*) {
+        if (!ae_np_online_mode()) return 0;
+        /* Ask once the answer could exist. The launcher polls this every
+         * frame while the netplay page is up, which is exactly when a reply
+         * is useful, and the client refuses to re-send while one is
+         * outstanding. */
+        if (!psx_lobby_automatch_available())
+            (void)psx_lobby_automatch_request_rulesets();
+        return psx_lobby_automatch_available();
+    }
+    int ae_np_automatch_ruleset_count(void*) {
+        return psx_lobby_automatch_ruleset_count();
+    }
+#if defined(RECOMP_LAUNCHER_HAS_AUTOMATCH)
+    int ae_np_automatch_ruleset_get(void*, int index, RecompLauncherCNetplayRuleset* out) {
+        PsxLobbyRuleset r{};
+        if (!out || !psx_lobby_automatch_ruleset_get(index, &r)) return 0;
+        std::memset(out, 0, sizeof(*out));
+        std::snprintf(out->id, sizeof(out->id), "%s", r.id);
+        std::snprintf(out->label, sizeof(out->label), "%s", r.label);
+        std::snprintf(out->caps_summary, sizeof(out->caps_summary), "%s", r.caps_summary);
+        std::snprintf(out->game_version, sizeof(out->game_version), "%s", r.game_version);
+        out->max_slots = r.max_slots > 0 ? r.max_slots : 2;
+        return 1;
+    }
+    int ae_np_automatch_found_get(void*, RecompLauncherCNetplayFound* out) {
+        PsxLobbyAutomatchFound f{};
+        if (!out || !psx_lobby_automatch_found_get(&f)) return 0;
+        std::memset(out, 0, sizeof(*out));
+        std::snprintf(out->handle, sizeof(out->handle), "%s", f.opponent);
+        std::snprintf(out->username, sizeof(out->username), "%s", f.opponent_username);
+        std::snprintf(out->country, sizeof(out->country), "%s", f.opponent_country);
+        std::snprintf(out->ruleset_label, sizeof(out->ruleset_label), "%s", f.ruleset_label);
+        out->est_rtt_ms = f.est_rtt_ms;
+        out->accept_secs_left = f.accept_secs;
+        return 1;
+    }
+#endif
+    int ae_np_automatch_queue(void*, const char* ruleset_id) {
+        if (!ae_np_online_mode()) return -1;
+        /* mods_enabled asserts that a SIM-AFFECTING mod feature is on locally
+         * beyond what the ruleset imposes. On PSX that is never true for a
+         * netplay session: every netplay launch, rematch included, goes
+         * through mod_runtime_clear_for_netplay and refuses to start if the
+         * plan cannot be cleared, and the caps a match runs (aspect, turbo
+         * loads, BIOS, FMV skip) are the server's ruleset, settled through
+         * match_caps like any host's. There is no cosmetic-exemption
+         * mechanism on this runtime either, so the evidence list is empty. */
+        return psx_lobby_automatch_queue(ruleset_id, 0, "") == 0 ? 0 : -1;
+    }
+    int ae_np_automatch_cancel(void*) { return psx_lobby_automatch_cancel(); }
+    int ae_np_automatch_state(void*) { return psx_lobby_automatch_state(); }
+    int ae_np_automatch_queued_secs(void*) { return psx_lobby_automatch_queued_secs(); }
+    int ae_np_automatch_pool(void*) { return psx_lobby_automatch_pool(); }
+    int ae_np_automatch_accept(void*, int accept) { return psx_lobby_automatch_accept(accept); }
+    const char* ae_np_automatch_error(void*) { return psx_lobby_automatch_error(); }
+
+    /* After a match: an automatch room is the server's, not a host's. It is
+     * created at both-accept, nobody can join it, and there is no host to
+     * rematch with -- staying seated parks the player in a room that can
+     * never fill, and the server refuses their next ticket with
+     * already_in_lobby. So leave it, and tell the caller not to reopen the
+     * launcher on the room. 1 when a room was left. */
+    int ae_np_leave_automatch_room_after_match(void) {
+        if (g_lnch_hosting_lan || g_lnch_joined_lan) return 0;
+        if (!psx_lobby_automatch_room()) return 0;
+        std::fprintf(stderr,
+                     "psxrecomp: leaving the automatch room (no host to rematch with)\n");
+        (void)psx_lobby_leave();
+        return 1;
+    }
+
     int ae_np_chat_count(void*) {
         ae_np_chat_track_room();
         if (g_lnch_hosting_lan || g_lnch_joined_lan) return g_lnch_lan_chat_count;
@@ -10046,6 +10193,14 @@ namespace {
         if (!psx_lobby_chat_get(index, &msg)) return 0;
         std::snprintf(out->from, sizeof(out->from), "%s", msg.from);
         std::snprintf(out->text, sizeof(out->text), "%s", msg.text);
+#if defined(RECOMP_LAUNCHER_HAS_CHAT_REPORT)
+        /* The server's id for the line -- what a report names. Empty for a
+         * system line or an older server, and then it cannot be reported. */
+        std::snprintf(out->mid, sizeof(out->mid), "%s", msg.mid);
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_PLAYER_ACCOUNT)
+        std::snprintf(out->account, sizeof(out->account), "%s", msg.account);
+#endif
         out->is_local = msg.is_local;
         out->is_system = msg.is_system;
         out->seq = msg.seq;
@@ -10071,6 +10226,14 @@ namespace {
         if (!psx_lobby_server_chat_get(index, &msg)) return 0;
         std::snprintf(out->from, sizeof(out->from), "%s", msg.from);
         std::snprintf(out->text, sizeof(out->text), "%s", msg.text);
+#if defined(RECOMP_LAUNCHER_HAS_CHAT_REPORT)
+        /* The server's id for the line -- what a report names. Empty for a
+         * system line or an older server, and then it cannot be reported. */
+        std::snprintf(out->mid, sizeof(out->mid), "%s", msg.mid);
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_PLAYER_ACCOUNT)
+        std::snprintf(out->account, sizeof(out->account), "%s", msg.account);
+#endif
         out->is_local = msg.is_local;
         out->is_system = msg.is_system;
         out->seq = msg.seq;
@@ -10228,6 +10391,9 @@ namespace {
     void ae_np_set_lobby_url(void*, const char* url) {
         g_lnch_lobby_url = url && url[0] ? url : psx_lobby_default_url();
         ae_np_save_identity(nullptr, g_lnch_lobby_url.c_str());
+        /* The auth endpoints live on the same host and port as the lobby
+         * socket, so the sign-in follows whatever server the player points at. */
+        ae_np_account_sync();
     }
 
     int ae_np_connect(void*) {
@@ -10805,6 +10971,26 @@ namespace {
     }
 
     void ae_np_pump(void*) {
+        /* Redeems a stored device key on the first pump, so a machine that has
+         * signed in once comes up signed in with no player action. */
+        ae_np_account_sync();
+        rnet_account_pump();
+        /* Publish the account name to the lobby. The lobby's display name is
+         * what seats and the players-online list show, and nothing else
+         * pushed the handle into it: signing in -- including the automatic
+         * sign-in from a stored secret -- only updated the ACCOUNT, so a
+         * signed-in player created a room and appeared under the LAN name.
+         * Done here rather than at a sign-in edge because there is no single
+         * such edge: interactive login, stored-secret redemption and a
+         * server-side handle change all land asynchronously in the pump.
+         * Comparing against the live name makes this idempotent --
+         * set_display_name only re-sends hello when the value changed. */
+        if (rnet_account_state() == RNET_ACCOUNT_SIGNED_IN) {
+            const char* handle = rnet_account_handle();
+            const char* shown = psx_lobby_display_name();
+            if (handle && handle[0] && (!shown || std::strcmp(shown, handle) != 0))
+                psx_lobby_set_display_name(handle);
+        }
         psx_lobby_pump();
         ae_np_lan_browse_pump();
         ae_np_lan_udp_pump();
@@ -10849,14 +11035,16 @@ namespace {
     }
 
     int ae_np_list_count(void*) {
-        return psx_lobby_list_count() + ae_np_lan_list_extra_count();
+        return (ae_np_list_want_online() ? psx_lobby_list_count() : 0) +
+               (ae_np_list_want_lan() ? ae_np_lan_list_extra_count() : 0);
     }
 
     int ae_np_list_get(void*, int index, RecompLauncherCNetplayLobby* out) {
         if (!out) return 0;
-        const int remote_count = psx_lobby_list_count();
+        const int remote_count = ae_np_list_want_online() ? psx_lobby_list_count() : 0;
         if (index >= remote_count) {
             const int lan_i = index - remote_count;
+            if (!ae_np_list_want_lan()) return 0;
             ae_np_lan_prune_discovered();
             if (g_lnch_lan_discovered_n > 0)
                 return ae_np_lan_fill_lobby_from_discovered(lan_i, out);
@@ -10893,6 +11081,9 @@ namespace {
         std::memset(out, 0, sizeof(*out));
         std::snprintf(out->display_name, sizeof(out->display_name), "%s", p.display_name);
         std::snprintf(out->country, sizeof(out->country), "%s", p.country);
+#if defined(RECOMP_LAUNCHER_HAS_PLAYER_ACCOUNT)
+        std::snprintf(out->account, sizeof(out->account), "%s", p.account);
+#endif
         std::snprintf(out->lobby_name, sizeof(out->lobby_name), "%s", p.lobby_name);
         out->in_lobby = p.lobby_id[0] != '\0';
         out->hosting = p.hosting;
@@ -11451,6 +11642,9 @@ namespace {
             out->memcard_has_card = mem.memcard_has_card;
             out->memcard_share = mem.memcard_share;
             std::snprintf(out->country, sizeof(out->country), "%s", mem.country);
+            #if defined(RECOMP_LAUNCHER_HAS_PLAYER_ACCOUNT)
+            std::snprintf(out->account, sizeof(out->account), "%s", mem.account);
+            #endif
             return 1;
         }
         if (ae_np_use_lan_members()) {
@@ -11512,6 +11706,9 @@ namespace {
         out->memcard_has_card = mem.memcard_has_card;
         out->memcard_share = mem.memcard_share;
         std::snprintf(out->country, sizeof(out->country), "%s", mem.country);
+        #if defined(RECOMP_LAUNCHER_HAS_PLAYER_ACCOUNT)
+        std::snprintf(out->account, sizeof(out->account), "%s", mem.account);
+        #endif
         return 1;
     }
 
@@ -12061,6 +12258,43 @@ namespace {
         g_lnch_netplay_callbacks.server_chat_send = ae_np_server_chat_send;
         g_lnch_netplay_callbacks.server_chat_count = ae_np_server_chat_count;
         g_lnch_netplay_callbacks.server_chat_get = ae_np_server_chat_get;
+#if defined(RECOMP_LAUNCHER_HAS_ACCOUNT)
+        /* Optional Discord sign-in. Guarded on the launcher ABI macro so this
+         * runtime still builds against a recomp-ui that predates it -- the UI
+         * and the runner can land in either order. */
+        g_lnch_netplay_callbacks.account_available = ae_np_account_available;
+        g_lnch_netplay_callbacks.account_login_begin = ae_np_account_login_begin;
+        g_lnch_netplay_callbacks.account_state = ae_np_account_state;
+        g_lnch_netplay_callbacks.account_handle = ae_np_account_handle;
+        g_lnch_netplay_callbacks.account_username = ae_np_account_username;
+        g_lnch_netplay_callbacks.account_error = ae_np_account_error;
+        g_lnch_netplay_callbacks.account_sign_out = ae_np_account_sign_out;
+        g_lnch_netplay_callbacks.account_set_handle = ae_np_account_set_handle;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_LIST_SCOPE)
+        g_lnch_netplay_callbacks.list_scope_set = ae_np_list_scope_set;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_CHAT_REPORT)
+        g_lnch_netplay_callbacks.chat_report = ae_np_chat_report;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_SET_BLOCKS)
+        g_lnch_netplay_callbacks.set_blocks = ae_np_set_blocks;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_AUTOMATCH)
+        /* Server-run pairing. Same guard discipline as the account block:
+         * the runner and the UI land in either order. */
+        g_lnch_netplay_callbacks.automatch_available = ae_np_automatch_available;
+        g_lnch_netplay_callbacks.automatch_ruleset_count = ae_np_automatch_ruleset_count;
+        g_lnch_netplay_callbacks.automatch_ruleset_get = ae_np_automatch_ruleset_get;
+        g_lnch_netplay_callbacks.automatch_queue = ae_np_automatch_queue;
+        g_lnch_netplay_callbacks.automatch_cancel = ae_np_automatch_cancel;
+        g_lnch_netplay_callbacks.automatch_state = ae_np_automatch_state;
+        g_lnch_netplay_callbacks.automatch_queued_secs = ae_np_automatch_queued_secs;
+        g_lnch_netplay_callbacks.automatch_pool = ae_np_automatch_pool;
+        g_lnch_netplay_callbacks.automatch_found_get = ae_np_automatch_found_get;
+        g_lnch_netplay_callbacks.automatch_accept = ae_np_automatch_accept;
+        g_lnch_netplay_callbacks.automatch_error = ae_np_automatch_error;
+#endif
         g_lnch_netplay_callbacks.seat_move_self = ae_np_seat_move_self;
         g_lnch_netplay_callbacks.seat_swap_request = ae_np_seat_swap_request;
         g_lnch_netplay_callbacks.seat_swap_incoming = ae_np_seat_swap_incoming;
@@ -15611,6 +15845,11 @@ soft_return_lobby:
         std::string rui_title = (game_name.empty() ? std::string("PSX") : game_name)
                                  + " - Launcher";
         std::string rui_initial_disc = disc_path_str;
+        /* A human-hosted room survives the match and is where a rematch
+         * happens; an automatch room is the server's and cannot. Leave it
+         * here, and reopen the launcher on the browser instead. */
+        const int rui_resume_room =
+            ae_np_leave_automatch_room_after_match() ? 0 : 1;
 
         ae_rui_set_sidecar_paths(argv[0]);
         g_lnch_expected_serial = game_id;
@@ -15788,7 +16027,7 @@ soft_return_lobby:
             ctrl_locked_mode[0],
             rui_lang_labels.empty() ? nullptr : rui_lang_labels.data(),
             (int)rui_lang_labels.size(),
-            /*resume_netplay_room=*/1);
+            /*resume_netplay_room=*/rui_resume_room);
         gi.discs = rui_discs.empty() ? nullptr : rui_discs.data();
         gi.num_discs = (int)rui_discs.size();
 #if defined(PSX_HAS_SETUP_WIZARD) && defined(PSX_HAS_CODEGEN_SETUP_HOST)
