@@ -449,6 +449,28 @@ if(BUILD_TESTING)
     add_test(NAME signed_x_bound_codegen_test
              COMMAND signed_x_bound_codegen_test)
 
+    add_executable(mod_function_replacement_codegen_test
+        tests/mod_function_replacement_codegen_test.cpp
+        src/ps1_exe_parser.cpp
+        src/mips_decoder.cpp
+        src/control_flow.cpp
+        src/function_analysis.cpp
+        src/code_generator.cpp
+        src/pgxp_hook_emitter.cpp
+        src/annotations.cpp
+        src/bios_address_model.cpp
+        src/config_loader.cpp
+        src/recompiler_patch.cpp
+    )
+    target_include_directories(mod_function_replacement_codegen_test PRIVATE
+        include src lib/rabbitizer/include lib/rabbitizer/cplusplus/include
+        lib/fmt/include lib/toml11 lib/ELFIO)
+    target_link_libraries(mod_function_replacement_codegen_test PRIVATE fmt rabbitizer)
+    add_test(NAME mod_function_replacement_codegen_test
+             COMMAND mod_function_replacement_codegen_test)
+    set_tests_properties(mod_function_replacement_codegen_test PROPERTIES
+        ENVIRONMENT "PSX_CPS=1")
+
     add_executable(recompiler_patch_cxx17_header_test
         tests/recompiler_patch_cxx17_header_test.cpp
     )

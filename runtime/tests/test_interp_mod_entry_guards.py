@@ -14,6 +14,7 @@ def main():
         'psx_overlay_dispatch(cpu, addr);') < static_dispatch.index(
         'g_exec_phase = previous_phase;') < static_dispatch.index('if (handled) return 1;')
     assert source.count('psx_mod_function_entry(cpu, addr);') == 1
+    assert source.count('psx_mod_try_function_replacement(cpu, addr)') == 1
     local_start = source.index('if (allow_local_dirty_flow && target != 0 &&')
     local_end = source.index('current_page = target_phys >> 12;', local_start)
     local = source[local_start:local_end]
@@ -24,6 +25,7 @@ def main():
     assert 'OV_FPLOG_RET1();' in probe
     assert 'psx_overlay_dispatch(cpu' not in probe
     assert local.count('psx_mod_function_entry(cpu, target);') == 1
+    assert local.count('psx_mod_try_function_replacement(cpu, target)') == 1
     assert local.index('overlay_loader_dispatch(cpu, target)') < local.index(
         'psx_mod_function_entry(cpu, target);') < local.index('pc = target;')
     print('interpreter mod entry guards: PASS')

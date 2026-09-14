@@ -2883,7 +2883,9 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
      * executes the page. */
     {
         extern void psx_mod_function_entry(CPUState *cpu, uint32_t address);
+        extern int psx_mod_try_function_replacement(CPUState *cpu, uint32_t address);
         psx_mod_function_entry(cpu, addr);
+        if (psx_mod_try_function_replacement(cpu, addr)) OV_FPLOG_RET1();
     }
 
     /* Per-PC entry counter (visible via dirty_ram_stats). */
@@ -3273,7 +3275,15 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
                  * function-entry hooks as a surfaced interpreter entry. */
                 {
                     extern void psx_mod_function_entry(CPUState *, uint32_t);
+                    extern int psx_mod_try_function_replacement(CPUState *, uint32_t);
                     psx_mod_function_entry(cpu, target);
+                    if (psx_mod_try_function_replacement(cpu, target)) {
+                        g_dirty_ram_native_handoffs++;
+                        g_dirty_ram_blocks_run++;
+                        if (pc_entry) pc_entry->insns += (uint64_t)insns_executed;
+                        g_dirty_interp_chain_target = cpu->pc;
+                        OV_FPLOG_RET1();
+                    }
                 }
                 pc = target;
                 current_page = target_phys >> 12;

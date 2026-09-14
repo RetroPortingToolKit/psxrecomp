@@ -2784,8 +2784,9 @@ GeneratedFunction CodeGenerator::generate_function(
         body_ss << config_.indent
                 << fmt::format(
                        "psx_mod_function_entry(cpu, 0x{:08X}u);"
-                       "  /* trusted opt-in game-mod hook */\n",
-                       func.start_addr);
+                       "  /* trusted opt-in game-mod hook */\n"
+                       "    if (psx_mod_try_function_replacement(cpu, 0x{:08X}u)) return;\n",
+                       func.start_addr, func.start_addr);
     }
     if (config_.ws_sprite_tag_funcs.count(func.start_addr)) {
         body_ss << config_.indent
@@ -3286,6 +3287,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern int  psx_game_text_native_ok(uint32_t addr);  /* stale-static guard (dispatch shard) */\n";
     ss << "extern int  psx_datashard_enter(CPUState* cpu, uint32_t key);  /* data-shard replay/capture (data_shards.c) */\n";
     ss << "extern void psx_mod_function_entry(CPUState* cpu, uint32_t address);  /* trusted opt-in game-mod hook */\n";
+    ss << "extern int psx_mod_try_function_replacement(CPUState* cpu, uint32_t address);\n";
     ss << "extern void psx_datashard_ret(CPUState* cpu);                  /* data-shard capture finalize */\n";
     ss << "extern int  psx_vsync_query_hle_enter(CPUState* cpu, uint32_t func, uint32_t counter_addr, uint32_t gpustat_ptr_addr, uint32_t timer1_ptr_addr, uint32_t timer1_cache_addr);  /* load_accel.c */\n";
     ss << "extern void psx_ws_sprite_tag(CPUState* cpu);  /* widescreen prim tag (gpu.c) */\n";

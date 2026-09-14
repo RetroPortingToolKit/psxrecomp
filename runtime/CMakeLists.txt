@@ -23,6 +23,9 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(mod_function_replacements_test tests/test_mod_function_replacements.c src/mod_function_replacements.c)
+    target_include_directories(mod_function_replacements_test PRIVATE include)
+    add_test(NAME mod_function_replacements_test COMMAND mod_function_replacements_test)
     add_executable(ws_scene_hold_test tests/test_ws_scene_hold.c)
     target_include_directories(ws_scene_hold_test PRIVATE include)
     add_test(NAME ws_scene_hold_test COMMAND ws_scene_hold_test)

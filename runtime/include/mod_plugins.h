@@ -25,6 +25,15 @@ int psx_mod_register_function_entry_plugin(
     const char* id, uint32_t address, PSXModFunctionEntryCallback callback);
 /* Called only from generated functions explicitly listed by the game config. */
 void psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+/* Opt-in native implementation of an explicitly hooked function. Register
+ * during activation. A callback returns nonzero only after completing the
+ * function's caller-visible effects; the dispatcher publishes pc=$ra. A zero
+ * result must leave state untouched and falls through to the original body.
+ * No emulated cycles are credited automatically. Unregister with NULL.
+ * Registration is process configuration, not savestate payload. */
+typedef int (*PSXModFunctionReplacement)(struct CPUState* cpu, uint32_t address);
+int psx_mod_set_function_replacement(uint32_t address, PSXModFunctionReplacement callback);
+int psx_mod_try_function_replacement(struct CPUState* cpu, uint32_t address);
 
 /* Narrow guest services available to trusted plugin callbacks. */
 int psx_mod_game_started(void);
