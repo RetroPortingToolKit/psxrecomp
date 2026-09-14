@@ -18,7 +18,7 @@ static int bank_batching;
 void psx_mod_set_texture_bank_batching(int enabled) { bank_batching = enabled != 0; }
 int mod_texture_bank_batchable(int immutable, int mask_check, int semi) {
     return bank_batching && immutable && !mask_check &&
-        (semi == 0 || semi == 1 || semi == 3);
+        (semi == -1 || semi == 0 || semi == 1 || semi == 3);
 }
 
 void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver) {

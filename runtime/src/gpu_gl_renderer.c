@@ -2070,14 +2070,16 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
         flush_flat_batch();   /* painter order: flat GEO before textured */
         int twx = s_tw_mask_x, twy = s_tw_mask_y, tox = s_tw_off_x, toy = s_tw_off_y;
         int gate = bd_prim_gate(xs, 3, 1); /* backdrop-stretch gate is also a batch key */
-        /* Batch key: keep opaque as -1. Dual-source (4) is only for semi modes
-         * 0/1/3 when mask-check is off — never coalesce opaque into that key.
-         * Mixing opaque+semi under u_semimode==4 made additive particle/glow
-         * batches (CTR Naughty Dog intro binary funnel) paint over later
-         * opaque crate flaps whenever submission order and STP bits disagreed
-         * with the dual-source path's assumptions. */
+        /* Ordinary VRAM keeps opaque/semi transitions isolated (CTR particles
+         * may alias a render target). Only opted-in immutable banks may share
+         * the dual-source key: their opaque vertices carry a_semi=0, yielding
+         * destination factor zero even for STP=1. Painter order is unchanged. */
+        const int bank_batch = mod_texture_bank_batchable(
+            s_selected_bank_tex != 0, s_mask_check, semi);
         int batch_semi;
-        if (semi < 0)
+        if (bank_batch)
+            batch_semi = 4;
+        else if (semi < 0)
             batch_semi = -1;
         else if (!s_mask_check && semi != 2)
             batch_semi = 4;
@@ -2095,9 +2097,8 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
          * keep batching. Cost is one draw per semi prim. A separately opted-in
          * immutable bank may batch the single-pass dual-source cases: it
          * cannot alias a render target, keeps painter order, and still splits
-         * on opaque transitions, bank/state changes, masking or subtraction. */
-        int isolate = semi >= 0 &&
-            !mod_texture_bank_batchable(s_selected_bank_tex != 0, s_mask_check, semi);
+         * on bank/state changes, masking or subtraction. */
+        int isolate = semi >= 0 && !bank_batch;
         int reason = -1;
         if (s_tb_n > 0) {
             if (s_tb_bank_tex != s_selected_bank_tex) reason = 0;

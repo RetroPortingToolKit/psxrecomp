@@ -22,7 +22,7 @@ int main(void){
     psx_mod_set_texture_bank_batching(1);
     for(int mode=-1;mode<=4;++mode) for(int bank=0;bank<=1;++bank) for(int mask=0;mask<=1;++mask)
         check(mod_texture_bank_batchable(bank,mask,mode)==
-            (bank && !mask && (mode==0 || mode==1 || mode==3)),"single-pass opt-in scope");
+            (bank && !mask && (mode==-1 || mode==0 || mode==1 || mode==3)),"single-pass opt-in scope");
     psx_mod_set_texture_bank_batching(0);
     check(!mod_texture_bank_batchable(1,0,0),"bank batching disable");
     uint16_t data[4]={1,2,3,4};uint32_t w,h;

@@ -60,6 +60,65 @@ static void verify_bank_batching(void) {
  psx_mod_set_texture_bank_batching(0);s_tex_filter=0;
  glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
 }
+/* Compare every high-resolution RGBA sample, not just downsampled PS1 words.
+ * Alternating opaque/STP fragments expose painter-order bugs hidden by an
+ * all-semi fixture. Later mask-check draws also exercise deferred stencil. */
+static void verify_mixed_bank_batching(void) {
+ const size_t bytes=96u*96u*s_scale*s_scale*4u;
+ unsigned char *baseline=malloc(bytes), *result=malloc(bytes);
+ if(!baseline || !result) {
+  check(0,"mixed fixture allocation");free(baseline);free(result);return;
+ }
+ static uint16_t bank[256*128];
+ for(int i=256;i<256*128;++i)bank[i]=0x3210;
+ bank[0]=0;bank[1]=0x7c00;bank[2]=0x801f;bank[3]=0x83e0;
+ check(psx_mod_define_texture_bank(9,256,128,bank),"mixed fixture second bank");
+ for(int filter=0;filter<2;++filter) for(int mask=0;mask<2;++mask)
+ for(int set=0;set<2;++set) for(int variant=0;variant<4;++variant) {
+  int counts[2];
+  for(int enabled=0;enabled<2;++enabled) {
+   gl_renderer_select_texture_bank(0);
+   glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+   glb_draw_flat_rect(400,300,96,96,0x1234);flush_flat_batch();
+   glb_vram_write(512,2,0x83e0);
+   psx_mod_set_texture_bank_batching(enabled);s_tex_filter=filter;
+   glb_set_mask_bits(set,mask);gl_renderer_select_texture_bank(8);
+   const int before=s_cw_batches;
+   for(int i=0;i<48;++i) {
+    const int modes[8]={-1,0,-1,1,-1,3,-1,0};
+    int mode=variant==0?-1:modes[i%8];
+    if(variant>=2 && i%11==10)mode=2;
+    const int stock=variant==3 && i%13==12;
+    if(variant==3) {
+     gl_renderer_select_texture_bank(stock?0:((i/8)%2?9:8));
+     glb_set_mask_bits(set,mask || (i>=20 && i<28));
+    }
+    glb_set_semi_transparency(mode>=0,mode<0?0:mode);
+    const int x=404+(i%6)*5,y=304+(i%4)*7;
+    glb_draw_shaded_textured_triangle(x,y,0,2,0x808080,
+        x+44,y+2,stock?0:63,2,0x507090,
+        x+3,y+48,0,stock?2:65,0x907050,0,0,stock?0x108:0,0);
+   }
+   flush_tex_batch();counts[enabled]=s_cw_batches-before;
+   gl_renderer_select_texture_bank(0);
+   glb_set_semi_transparency(0,0);glb_set_mask_bits(0,1);
+   glb_draw_flat_rect(423,311,19,43,0x5a5a);flush_flat_batch();
+   gl_renderer_sync_cpu();
+   p_glBindFramebuffer(PSXGL_FRAMEBUFFER,s_hr_fbo);
+   glReadPixels(400*s_scale,300*s_scale,96*s_scale,96*s_scale,
+                GL_RGBA,GL_UNSIGNED_BYTE,enabled?result:baseline);
+   check(glGetError()==GL_NO_ERROR,"mixed full-resolution read");
+  }
+  const int same=memcmp(baseline,result,bytes)==0;
+  if(!same)fprintf(stderr,"mixed mismatch filter=%d mask=%d set=%d variant=%d\n",filter,mask,set,variant);
+  check(same,"mixed batching RGBA and later destination-mask equivalence");
+  if(variant==1)
+   check(mask?counts[1]==counts[0]:counts[1]<counts[0],"mixed batch reduction only without mask checks");
+ }
+ psx_mod_set_texture_bank_batching(0);s_tex_filter=0;
+ glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ free(baseline);free(result);
+}
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
  if(SDL_Init(SDL_INIT_VIDEO)!=0)return 2;
@@ -127,6 +186,7 @@ int main(int argc,char **argv){
  check(glb_vram_read(302,252)==0x001f,"retained 16-bit texel");
  verify("retained banks and original VRAM ordered together");
  verify_bank_batching();
+ verify_mixed_bank_batching();
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }

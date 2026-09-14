@@ -52,7 +52,7 @@ int psx_mod_texture_banks_supported(void);
 int psx_mod_define_texture_bank(uint16_t id, uint32_t width, uint32_t height,
                                 const uint16_t* pixels);
 void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver);
-/* Default-off GL optimization: batch immutable-bank semi triangles in painter
+/* Default-off GL optimization: batch immutable-bank opaque/semi triangles in painter
  * order on the single-pass dual-source path only. Ordinary VRAM, subtractive
  * blending and destination-mask checks retain per-primitive isolation. Call
  * from activation or an emulation-thread render boundary. */
