@@ -1,7 +1,9 @@
 """Source identity and native observation boundaries, without retail assets."""
 from pathlib import Path
-import json,tempfile
+import json,tempfile,subprocess,sys
 from biohazard import native_span,verify_reference,PROFILE,compare_terminal_observations
+from tekken3 import PROFILE as TEKKEN_PROFILE
+from run_native import validate_card_model
 from compare_ram_pages import MAGIC,PAGE_BYTES,PAGE_COUNT,page_hash
 
 def rejects(call):
@@ -20,7 +22,15 @@ for values in [(0,1,1),(10,9,1),(10,15,0),(10,15,16),(10,15,True)]:
     rejects(lambda:native_span(*values))
 assert PROFILE[PROFILE.index('--pad-ack-model')+1]=='nymashock-1.29.0-dualshock'
 assert PROFILE[PROFILE.index('--card-model')+1]=='nymashock-1.29.0'
-assert PROFILE[PROFILE.index('--legacy-card-repair')+1]=='off'
+assert '--legacy-card-repair' not in PROFILE and '--legacy-card-repair' not in TEKKEN_PROFILE
+launcher = Path(__file__).with_name('run_native.py')
+help_result = subprocess.run([sys.executable, str(launcher), '--help'],
+                             check=True, capture_output=True, text=True)
+assert '--legacy-card-repair' not in help_result.stdout
+assert 'PSX_APE_CARD_UNSTICK' not in launcher.read_text(encoding='utf-8')
+validate_card_model('nymashock-1.29.0')
+rejects(lambda:validate_card_model('default'))
+rejects(lambda:validate_card_model('unknown'))
 assert '--cpu-return-probe' in PROFILE and '--ram-page-probe' in PROFILE
 with tempfile.TemporaryDirectory() as directory:
     p=Path(directory)/'reference.json'

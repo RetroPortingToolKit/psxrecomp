@@ -95,13 +95,15 @@ complete-state transitions and the older digital ACK profile. Completion
 must match both original input and applied protocol hashes, counts and tail.
 The launcher freezes PSXRTI2 bytes in its new private run directory.
 
-An explicit `--card1 RAW_CARD --card-model nymashock-1.29.0
---legacy-card-repair off` stages a fresh writable 128 KiB card copy and enables
+An explicit `--card1 RAW_CARD --card-model nymashock-1.29.0`
+stages a fresh writable 128 KiB card copy and enables
 only that slot. Before guest execution the observer hashes every loaded card
 buffer byte through a read-only accessor, verifies the expected hash and
 absence of card2, and records `initial-cards.json`. Without an explicit card,
 a PSXRTI2 run verifies both slots absent. Wrong size, presence, contents or a
 short buffer read rejects the run; a staged file hash alone is insufficient.
+The retired game-specific card repair and its launcher option do not exist;
+no opt-out argument is required for ordinary card correctness.
 See [the card profile](NYMASHOCK_CARD_PROFILE.md) for its separate device scope.
 
 These changes admit and observe the input contract. They do not make an

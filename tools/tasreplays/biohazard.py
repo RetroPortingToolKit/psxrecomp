@@ -21,7 +21,7 @@ PROFILE=[
     '--field-model','octoshock-2.2.2-ntsc-raster',
     '--dma-model','octoshock-2.2.2-otc',
     '--pad-ack-model','nymashock-1.29.0-dualshock',
-    '--card-model','nymashock-1.29.0','--legacy-card-repair','off',
+    '--card-model','nymashock-1.29.0',
     '--cd-firmware-model','octoshock-2.2.2','--cd-cold-status-model','octoshock-2.2.2',
     '--cd-toc-seek-model','octoshock-2.2.2','--cd-explicit-seek-model','octoshock-2.2.2',
     '--cd-read-start-model','octoshock-2.2.2-pipeline','--cd-dma-model','octoshock-2.2.2',

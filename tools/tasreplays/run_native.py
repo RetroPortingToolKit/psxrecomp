@@ -74,6 +74,11 @@ def card_identity(path):
     return {'path':str(path), 'bytes':131072, 'sha256':digest(path)}
 
 
+def validate_card_model(model):
+    if model != 'nymashock-1.29.0':
+        raise ValueError('card replay requires the qualified explicit card model')
+
+
 def playback_identity_matches(complete, identity, tail):
     if (not isinstance(complete, dict) or complete.get('frame') != identity['frames']+tail or
             complete.get('input_frames') != identity['frames'] or complete.get('neutral_tail_ticks') != tail):
@@ -181,8 +186,6 @@ def main():
                         help="experimental cold-boot source field durations; no state restore or PAL")
     parser.add_argument('--gpu-status-model', choices=('default','octoshock-2.2.2-raster'), default='default',
                         help='source GPUSTAT field/line bits only; requires the NTSC raster clock')
-    parser.add_argument("--legacy-card-repair", choices=("default", "off"), default="default",
-                        help="Disable inherited global Ape Escape fixed-address card repair explicitly")
     parser.add_argument("--pad-ack-model", choices=("default", "octoshock-2.2.2-digital", "nymashock-1.29.0-dualshock"), default="default",
                         help="Experimental source digital-pad ACK delay/pulse; cold boot only")
     parser.add_argument("--dma-model", choices=("default", "octoshock-2.2.2-otc"), default="default",
@@ -256,8 +259,7 @@ def main():
         raise ValueError('DualShock does not admit retiming or the digital Octoshock ACK model')
     initial_card = None
     if args.card1:
-        if args.card_model != 'nymashock-1.29.0' or args.legacy_card_repair != 'off':
-            raise ValueError('card replay requires the qualified explicit card model and legacy repair off')
+        validate_card_model(args.card_model)
         paths['card1'] = args.card1.resolve(strict=True)
         initial_card = card_identity(paths['card1'])
     elif args.card_model != 'default':
@@ -413,8 +415,6 @@ p2_mode = "digital"
     selected_env['PSX_PRECISE_SLICE']='1' if args.precise_slice=='on' else '0'
     if args.gpu_dma_model!='default':
         selected_env['PSX_GPU_DMA_MODEL']=args.gpu_dma_model
-    if args.legacy_card_repair == "off":
-        selected_env["PSX_APE_CARD_UNSTICK"] = "0"
     if args.pad_ack_model != "default":
         selected_env["PSX_INPUT_ROUTE_PAD_ACK_MODEL"] = args.pad_ack_model
     if initial_card:

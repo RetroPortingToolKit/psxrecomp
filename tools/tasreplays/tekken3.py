@@ -37,7 +37,6 @@ PROFILE = [
     '--field-model', 'octoshock-2.2.2-ntsc-raster',
     '--dma-model', 'octoshock-2.2.2-otc',
     '--pad-ack-model', 'octoshock-2.2.2-digital',
-    '--legacy-card-repair', 'off',
     '--cd-firmware-model', 'octoshock-2.2.2',
     '--cd-cold-status-model', 'octoshock-2.2.2',
     '--cd-toc-seek-model', 'octoshock-2.2.2',
