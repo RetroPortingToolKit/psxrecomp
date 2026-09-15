@@ -213,6 +213,15 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-09-15 (TAS correction handoff branch published):**
+  Owner selected the upstream handoff alternative. Pushed the approved additive
+  correction commits and validation notes to
+  RetroPortingToolKit/psxrecomp:fix/tas-regression-gates-20260915; remote head
+  read-back verified. Contributor draft branches and master remain unchanged.
+  Link the published changes in the draft PR notes; retain the exact replay,
+  persistence and feature-coverage merge gates. No replacement PR or merge.
+  See `TAS_STACK_OBJECTIVE_CHECKIN_20260915.md`; central issue beads-eio.3.164.
+
 - **2026-09-15 (TAS corrections approved for publication):**
   Owner approved the audit checkpoint and requested commits on the PR branch,
   publication and merge-prerequisite notes. Prepared additive commits 65fd320f

@@ -11,18 +11,24 @@ populated save list without a game-specific card workaround.
 
 This is not approval to merge the entire experimental runtime stack. Exact
 source-profile retail replay qualification remains outstanding. The owner has
-approved committing/publishing the corrections. Local commits are prepared;
-publication onto the contributor's PR branches is blocked by GitHub permissions.
-Nothing has been merged or changed on a contributor's branch.
+approved committing/publishing the corrections. They are now published on an
+[upstream handoff branch](https://github.com/RetroPortingToolKit/psxrecomp/tree/fix/tas-regression-gates-20260915).
+Direct updates to the contributor's PR branches remain blocked by GitHub
+permissions. Nothing has been merged or changed on a contributor's branch.
 
 ## Branch and review scope
 
 - Worktree: `F:/Projects/psxrecomp/_review-tas-stack-20260915`.
-- Local branch: `fix/tas-regression-gates-20260915`.
+- Published branch: `RetroPortingToolKit/psxrecomp:fix/tas-regression-gates-20260915`.
 - Correction base: `f7652e2b82cdd474c40d6d27a05ab4ccbf47795d`, the complete
   submitted stack. Corrections are appended, without rewriting that history.
-- The owner approved the human-audit checkpoint. Prepared code commits:
-  `65fd320f` (test gates), `0ac5bb84` (runtime CI), `637c0e36` (dead card option).
+- The owner approved the human-audit checkpoint. Published code commits:
+  [65fd320f](https://github.com/RetroPortingToolKit/psxrecomp/commit/65fd320f)
+  (test gates), [0ac5bb84](https://github.com/RetroPortingToolKit/psxrecomp/commit/0ac5bb84)
+  (runtime CI), [637c0e36](https://github.com/RetroPortingToolKit/psxrecomp/commit/637c0e36)
+  (dead card option), followed by validation/publication documentation.
+- [Correction-only comparison](https://github.com/RetroPortingToolKit/psxrecomp/compare/f7652e2b82cdd474c40d6d27a05ab4ccbf47795d...fix%2Ftas-regression-gates-20260915).
+- [Draft PR change summary and merge checklist](https://github.com/Alexbeav/psxrecomp/pull/32#issuecomment-5687121430).
 - Upstream master checked: `193a60b805e1eaa853129d6ccf63022440d4b143`.
   Its tree exactly matches stack base `5968162f`; there is no current tree-level
   rebase conflict to resolve. This does not imply runtime equivalence of the
@@ -44,8 +50,8 @@ The remaining draft stack is:
 
 The authenticated `mstan` account has `push=false` on `Alexbeav/psxrecomp`;
 fork PRs 32 and 37 report `maintainerCanModify=false`. Direct updates require
-write access to the fork. An upstream handoff branch and linked PR notes are
-the alternative awaiting owner direction; no force-push is appropriate.
+write access to the fork. The owner selected the upstream handoff branch and
+linked PR notes instead; no force-push or replacement PR was created.
 Relative to master this local branch contains the contributor's runtime work;
 only the **new local correction diff** is test/CI/tooling/documentation work.
 
@@ -148,10 +154,10 @@ Fresh BIOS emitter fingerprint:
 
 ## Remaining work and merge judgment
 
-- Publish the approved correction commits through an authorized branch, then
-  attach the change summary and prerequisites to the draft PRs. Direct fork
-  access is currently unavailable. Run hosted CI on the chosen integration
-  branch. The corrections are low game-regression risk: production code and
+- The approved correction commits are published through the upstream handoff
+  branch. Apply the relevant corrections to the intended draft slices and run
+  hosted CI on the chosen integration branch; direct fork write access is still
+  unavailable. The corrections are low game-regression risk: production code and
   flags are unchanged. Retired replay CLI arguments are the intentional
   compatibility change to call out.
 - Keep the experimental runtime drafts as drafts until fresh integrated Tekken,
