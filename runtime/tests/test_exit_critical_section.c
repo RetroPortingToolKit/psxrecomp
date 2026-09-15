@@ -7,6 +7,9 @@
 #include <string.h>
 
 int psx_syscall(CPUState *cpu, uint32_t code);
+/* This test exercises ordinary direct SYS(02h), outside exception context. */
+int psx_get_in_exception(void) { return 0; }
+int source_gpu_runtime_active(void) { return 0; }
 
 int main(void) {
     const uint32_t results[] = {0u, 1u, 0x80010000u, UINT32_MAX};

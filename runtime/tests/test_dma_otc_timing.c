@@ -54,4 +54,5 @@ int main(void) {
 
 /* Source GPU projection is inactive in this isolated controller fixture. */
 int source_gpu_runtime_active(void) {return 0;}
+int mdec_source_active(void) {return 0;}
 void source_gpu_runtime_dma_write(void) {}

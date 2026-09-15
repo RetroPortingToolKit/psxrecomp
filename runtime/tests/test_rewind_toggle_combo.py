@@ -2,6 +2,7 @@
 """Guard PSX host controller shortcuts against single-button defaults."""
 
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,7 +65,9 @@ assert "static int g_manual_turbo_latched = 0;" in MAIN
 assert "static void fast_forward_toggle_flip(void)" in MAIN
 assert "fast_forward_toggle_poll_buttons();" in MAIN
 assert "host_keymap_match_event(HOST_KEYMAP_TURBO_TOGGLE," in MAIN
-assert "if (kb_turbo || g_manual_turbo_latched ||" in MAIN
+# Other explicit host inputs (for example startup fast-forward) may precede
+# the keyboard/latch pair; both must still feed the same OR condition.
+assert re.search(r"if\s*\([^)]*\bkb_turbo\s*\|\|\s*g_manual_turbo_latched\s*\|\|", MAIN)
 assert MAIN.count("ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE]") == \
     MAIN.count("ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD]")
 assert '"Fast-forward toggle",' in MAIN

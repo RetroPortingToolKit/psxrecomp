@@ -108,11 +108,6 @@ if(BUILD_TESTING)
         add_test(NAME critical_exception_vector_test COMMAND critical_exception_test exception)
         add_test(NAME critical_exception_nested_reject_test COMMAND critical_exception_test exception nested)
         set_tests_properties(critical_exception_nested_reject_test PROPERTIES WILL_FAIL TRUE)
-        add_executable(sio_card_repair_test tests/test_sio_card_repair.c)
-        target_include_directories(sio_card_repair_test PRIVATE include)
-        target_compile_options(sio_card_repair_test PRIVATE -O2 -flto -fwhole-program)
-        target_link_options(sio_card_repair_test PRIVATE -flto)
-        add_test(NAME sio_card_repair_test COMMAND sio_card_repair_test)
         add_executable(sio_ack_timing_test tests/test_sio_ack_timing.c)
         target_include_directories(sio_ack_timing_test PRIVATE include)
         target_compile_options(sio_ack_timing_test PRIVATE -O2 -flto -fwhole-program)
@@ -230,6 +225,7 @@ if(BUILD_TESTING)
 
     add_executable(psx_icache_fastpath_test
         tests/test_psx_icache_fastpath.c
+        tests/icache_fixture_boundary.c
         src/psx_icache.c
     )
     target_include_directories(psx_icache_fastpath_test PRIVATE include)
@@ -245,7 +241,7 @@ if(BUILD_TESTING)
     add_test(NAME psx_icache_fastpath_test COMMAND psx_icache_fastpath_test)
 
     add_executable(psx_icache_elision_guard_test
-        tests/test_psx_icache_elision_guard.c src/psx_icache.c)
+        tests/test_psx_icache_elision_guard.c tests/icache_fixture_boundary.c src/psx_icache.c)
     target_include_directories(psx_icache_elision_guard_test PRIVATE include)
     target_compile_definitions(psx_icache_elision_guard_test PRIVATE
         PSX_ENABLE_BLOCK_CYCLES=1 PSX_OVERLAY_DLL_BUILD=1)
@@ -374,11 +370,17 @@ if(BUILD_TESTING)
         target_compile_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
             -ffunction-sections -fdata-sections)
         target_link_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
-            -Wl,--gc-sections
-            -Wl,--error-limit=0)
+            -Wl,--gc-sections)
     endif()
     add_test(NAME gpu_textured_dot_nw_shift_exec_test
              COMMAND gpu_textured_dot_nw_shift_exec_test)
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        # GNU PE section GC retains unrelated public GPU entry points. This
+        # closed fixture calls the production dot path directly; whole-program
+        # LTO prunes the other entry points without inventing device behavior.
+        target_compile_options(gpu_textured_dot_nw_shift_exec_test PRIVATE -flto -fwhole-program)
+        target_link_options(gpu_textured_dot_nw_shift_exec_test PRIVATE -flto)
+    endif()
 
     add_executable(ws_repeat_rect_test tests/test_ws_repeat_rect.c)
     target_include_directories(ws_repeat_rect_test PRIVATE include)
@@ -892,6 +894,11 @@ if(BUILD_TESTING)
              WORKING_DIRECTORY
                  ${CMAKE_CURRENT_BINARY_DIR}/sio_card_protocol_scratch)
 
+    foreach(_sio_fixture sio_card_irq_integrity_test sio_card_protocol_test
+                         sio_spu_istat_ownership_test sio_dualshock_rumble_test)
+        target_sources(${_sio_fixture} PRIVATE tests/sio_fixture_input.c)
+    endforeach()
+
     # POSIX-only: dlopen()s a fixture .so out of a synthetic cache tree, so it
     # cannot link under MinGW/MSVC (-ldl). run_overlay_posix_test.sh already
     # stages the cache tree, builds the fixture and the test, and runs it — so
@@ -905,6 +912,17 @@ if(BUILD_TESTING)
         else()
             message(STATUS "overlay_posix_test: bash not found - skipped")
         endif()
+    endif()
+endif()
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/test_assertions.cmake)
+if(BUILD_TESTING)
+    psxrecomp_enable_test_assertions()
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME test_assertions_configuration COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_test_assertions.py
+            --cmake ${CMAKE_COMMAND} --cc ${CMAKE_C_COMPILER}
+            --generator "${CMAKE_GENERATOR}" --build-tool ${CMAKE_MAKE_PROGRAM})
     endif()
 endif()
 

@@ -46,7 +46,8 @@ int main(int argc, char** argv) {
         env = os.environ.copy()
         compiler = shutil.which(args.compiler) or args.compiler
         env['PATH'] = str(Path(compiler).parent) + os.pathsep + env.get('PATH', '')
-        subprocess.run([compiler, '-std=c++17', '-O2', '-I' + str(root/'include'), str(source),
+        subprocess.run([compiler, '-std=c++17', '-O2', '-I' + str(root/'include'),
+                        '-I' + str(root.parent/'recompiler/include'), str(source),
                         str(root/'src/disc_path.cpp'), str(root/'src/cue_sheet.cpp'), '-o', str(program)],
                        check=True, env=env)
         for stem, tracks in [('disc', 12), ('album', 8)]:

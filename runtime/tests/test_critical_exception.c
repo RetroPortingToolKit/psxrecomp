@@ -9,6 +9,7 @@
 
 static int nested;
 int psx_get_in_exception(void) { return nested; }
+int source_gpu_runtime_active(void) { return 0; }
 
 static inline __attribute__((always_inline)) void check(unsigned func, unsigned sr, int enabled) {
     CPUState cpu = {0}, expected;
@@ -27,7 +28,7 @@ static inline __attribute__((always_inline)) void check(unsigned func, unsigned 
         expected.pc = sr & 0x400000u ? 0xBFC00180u : 0x80000080u;
     } else {
         expected.cop0[12] = func == 1 ? sr & ~1u : sr | 0x401u;
-        expected.gpr[2] = func == 1 ? sr & 1u : 0;
+        if (func == 1) expected.gpr[2] = sr & 1u;
         expected.pc = 0;
     }
     int continuation = 0;

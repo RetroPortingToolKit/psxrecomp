@@ -979,6 +979,17 @@ endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/../runtime/check_test_registration.cmake)
 psxrecomp_check_all_tests_registered()
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/../runtime/test_assertions.cmake)
+if(BUILD_TESTING)
+    psxrecomp_enable_test_assertions()
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME test_assertions_configuration COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_test_assertions.py
+            --cmake ${CMAKE_COMMAND} --cc ${CMAKE_C_COMPILER}
+            --generator "${CMAKE_GENERATOR}" --build-tool ${CMAKE_MAKE_PROGRAM})
+    endif()
+endif()
+
 # ---- output-name collision guard (must stay LAST) ---------------------------
 # Fails configure if any two targets here would write the same file on a
 # case-insensitive filesystem. See the module header for the shipped-bug story.

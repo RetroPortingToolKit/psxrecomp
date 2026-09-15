@@ -10,15 +10,18 @@ INTERRUPTS = (ROOT / "src/interrupts.c").read_text(encoding="utf-8")
 REWIND = (ROOT / "src/psx_rewind.c").read_text(encoding="utf-8")
 DIRTY = (ROOT / "src/dirty_ram_interp.c").read_text(encoding="utf-8")
 BOOT_STATE_H = (ROOT / "include/boot_state.h").read_text(encoding="utf-8")
+BOOT_STATE = (ROOT / "src/boot_state.c").read_text(encoding="utf-8")
 DMA = (ROOT / "src/dma.c").read_text(encoding="utf-8")
 
 # The per-word DMA2 cursor and XA DATA_END pending bit grow the snapshot wire.
-# Lock the format change to v7 so an old file is rejected before any state
-# section is applied.
+# v7 remains the ordinary wire and oldest readable version. Optional mod
+# memory uses v8; both header bounds must be enforced before applying sections.
 assert "#define DMA_GPU_LL_WIRE (4u + (10u * 4u))" in DMA
-assert "#define BOOT_STATE_VERSION 7u" in BOOT_STATE_H
+assert "#define BOOT_STATE_VERSION 8u" in BOOT_STATE_H
 assert "#define BOOT_STATE_VERSION_MIN_READ 7u" in BOOT_STATE_H
-assert "Reject\n * them at the header before any section changes the live machine." in BOOT_STATE_H
+assert "psx_mod_memory_snapshot_bytes() ? BOOT_STATE_VERSION : 7u" in BOOT_STATE
+assert "h.version < BOOT_STATE_VERSION_MIN_READ" in BOOT_STATE
+assert "h.version > BOOT_STATE_VERSION" in BOOT_STATE
 
 assert "void savestate_status_json(char* buf, size_t cap);" in HEADER
 assert '\\"generation\\"' in STATE and '\\"pending\\"' in STATE
