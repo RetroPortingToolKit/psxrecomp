@@ -7619,9 +7619,23 @@ def main():
     # that pass, using ABI-valid, current-byte guarded native coverage. Missing
     # even one primary root remains a failure; toolchain/audit failures above
     # are never cleared by this reconciliation.
-    reconcile_empty_primary_scans(
-        pending_empty_primary, cache_dir,
-        overlay_abi_tag(args.runtime_include, args.flavor), stats)
+    #
+    # DLL mode only. The reconciliation reads the per-game DLL cache, and
+    # cache_dir is bound only on the non-static path; --static emits one
+    # self-contained overlays_static.c and _do_capture returns into
+    # static_capture_job before anything is queued. Calling it unconditionally
+    # raised UnboundLocalError at the very end of every --static run, after
+    # the output was already written, and turned a clean compile into exit 1.
+    if args.static:
+        if pending_empty_primary:
+            raise SystemExit(
+                'internal error: --static queued %d empty-primary '
+                'reconciliation(s), but static mode has no DLL cache to '
+                'reconcile against' % len(pending_empty_primary))
+    else:
+        reconcile_empty_primary_scans(
+            pending_empty_primary, cache_dir,
+            overlay_abi_tag(args.runtime_include, args.flavor), stats)
 
     # LOUD summary + machine-readable result line, then a non-zero exit when any
     # shard that should have built failed. The runtime's autocompile watcher and
