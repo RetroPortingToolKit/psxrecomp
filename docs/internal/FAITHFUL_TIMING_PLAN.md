@@ -213,6 +213,32 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-09-15 (TAS corrections approved for publication):**
+  Owner approved the audit checkpoint and requested commits on the PR branch,
+  publication and merge-prerequisite notes. Prepared additive commits 65fd320f
+  (test gates), 0ac5bb84 (runtime CI), 637c0e36 (retired replay card option).
+  Re-ran the complete local suites: 161 recompiler/TAS and 118 no-BIOS runtime
+  enabled tests pass. GitHub confirms mstan cannot push to Alexbeav/psxrecomp;
+  draft32/37 also disable maintainer edits. Publication is awaiting fork access
+  or owner direction to use an upstream handoff branch. No merge or fork update.
+  See `TAS_STACK_OBJECTIVE_CHECKIN_20260915.md`; central issue beads-eio.3.164.
+
+- **2026-09-15 (TAS split objective regression gates, audit checkpoint):**
+  On the complete draft stack f7652e2b, repaired stale no-hack/SIO/cache/exception
+  fixtures, optimized-build assertions, GNU fixture linking and stale source
+  checks. Added a fixture-only build aggregate plus runtime CI coverage. Removed
+  the dead replay card-repair option without changing runtime behavior or card
+  identity checks. GNU16.1 Release suites pass 161 recompiler/TAS and 118 runtime
+  enabled tests; a fresh no-BIOS aggregate also passes. Five existing disabled
+  tests remain disabled. Fresh Clang22 SCPH1001/Tomba/MMX6/Ape builds pass six
+  cold/warm 11000-frame runs with zero kernel mismatches/dirty aborts. Screenshots
+  confirm Tomba FMV/title, MMX6 attract gameplay and Ape's populated Load Game
+  list, without a card workaround. Original cards/pins untouched; no full-game,
+  write/reload, live-oracle, source-TAS, enhanced-renderer or Tomba2 qualification.
+  Corrections remain local/uncommitted on fix/tas-regression-gates-20260915 for
+  human class-fix audit before commit/push; no merge. See
+  `TAS_STACK_OBJECTIVE_CHECKIN_20260915.md`; central issue beads-eio.3.164.
+
 - **2026-09-13 (SIO card hack removal — branch-only review checkpoint):**
   Reproduced fixed-Ape-RAM IRQ7/mask injection after an absent-card probe,
   plus SELECT-time ACK fabrication and INTC-pending ACK requeueing with the
