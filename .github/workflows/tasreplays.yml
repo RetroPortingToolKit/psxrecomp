@@ -21,9 +21,15 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-python
-      - name: Build and test without retail assets
+      - name: Build and test recompiler without retail assets
         shell: msys2 {0}
         run: |
           cmake -S recompiler -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
           cmake --build build/tests --parallel 4
           ctest --test-dir build/tests --output-on-failure -j 4
+      - name: Build and test runtime fixtures without retail assets
+        shell: msys2 {0}
+        run: |
+          cmake -S runtime -B build/runtime-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DPSXRECOMP_ALLOW_NO_BIOS=ON -DPSX_DEBUG_TOOLS=OFF -DPSX_RECOMP_UI=OFF -DPSX_NETPLAY=OFF -DPSX_REWIND=OFF -DPSX_SETUP_WIZARD=OFF -DPSX_ENABLE_VULKAN=OFF
+          cmake --build build/runtime-tests --target psxrecomp-test-fixtures --parallel 4
+          ctest --test-dir build/runtime-tests --output-on-failure -j 4
