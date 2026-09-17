@@ -724,7 +724,36 @@ def main() -> int:
         print(f"cue not found: {cue}", file=sys.stderr)
         return 1
 
-    p = probe(cue, identity_only=args.identity_only)
+    # A .chd is read back into Redump-shaped tracks (one bin per track) in a
+    # scratch directory and probed as that cue, so identity, digests and the
+    # boot EXE come out exactly as they would from the dump it was made from.
+    scratch = None
+    if cue.suffix.lower() == ".chd":
+        import tempfile
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import psx_chd
+
+        fw_root = Path(__file__).resolve().parents[2]
+        lib_path = psx_chd.find_libchdr(None, fw_root)
+        if lib_path is None:
+            print(psx_chd.unsupported_message(cue), file=sys.stderr)
+            return 1
+        scratch = tempfile.TemporaryDirectory(prefix="probe-chd-")
+        try:
+            with psx_chd.ChdDisc(cue, psx_chd.LibChdr(lib_path)) as disc:
+                print(f"  chd: {len(disc.tracks)} track(s) via {lib_path.name}", file=sys.stderr)
+                cue = psx_chd.extract(disc, Path(scratch.name), f"{cue.stem}.cue", layout="multi")
+        except psx_chd.ChdError as exc:
+            print(str(exc), file=sys.stderr)
+            scratch.cleanup()
+            return 1
+
+    try:
+        p = probe(cue, identity_only=args.identity_only)
+    finally:
+        if scratch is not None:
+            scratch.cleanup()
     if args.display_name:
         p.display_name = args.display_name
 

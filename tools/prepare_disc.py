@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from disc_companion import CompanionError, check_destination, inspect_companion, stage_companion
+import psx_chd
 
 DST_SEC = 2352
 SRC_2448 = 2448
@@ -468,6 +469,55 @@ def raw2448_to_bin(src: Path) -> bytes:
     return bytes(out)
 
 
+class ChdStageError(Exception):
+    """A CHD could not be staged; main() prints it and returns 1."""
+
+
+def stage_from_chd(chd: Path, cfg: PrepareConfig, fw_root: Path) -> Path:
+    """Write the Redump-shaped .bin/.cue a CHD compresses into out_dir.
+
+    Returns the cue, which the normal cue path then consumes in place: the
+    data track is already where prepare would copy it, so nothing is copied
+    twice. The layout (one bin per track, or one bin for the disc) is the one
+    whose digests [prepare_disc] recorded; with no digests, one bin per track.
+    """
+    lib_path = psx_chd.find_libchdr(cfg.project_root, fw_root)
+    if lib_path is None:
+        raise ChdStageError(psx_chd.unsupported_message(chd))
+    try:
+        lib = psx_chd.LibChdr(lib_path)
+    except psx_chd.ChdError as exc:
+        raise ChdStageError(str(exc)) from exc
+    sizes = [k.size for k in cfg.known if k.size]
+    md5s = [k.md5 for k in cfg.known if k.md5]
+    sha1s = [k.sha1 for k in cfg.known if k.sha1]
+    try:
+        with psx_chd.ChdDisc(chd, lib) as disc:
+            print(f"source chd: {chd} ({len(disc.tracks)} track(s), via {lib_path.name})")
+            for t in disc.tracks:
+                print(f"  track {t.number:02d} {t.type} frames={t.frames}")
+            digests = psx_chd.digests(disc)
+            for i, d in enumerate(digests.tracks, 1):
+                print(f"  track {i:02d}: size={d.size} md5={d.md5} sha1={d.sha1}")
+            layout = digests.layout_matching(sizes, md5s, sha1s)
+            if layout is None:
+                if cfg.known and not cfg.skip_hash_check:
+                    raise ChdStageError(
+                        "CHD track digests are not in prepare_disc.known_* "
+                        "(pass --skip-hash-check to force)"
+                    )
+                layout = "multi"
+            print(f"  layout: {layout}")
+            cue = psx_chd.extract(
+                disc, cfg.out_dir, cfg.cue_name, layout=layout,
+                bin_name=cfg.bin_name,
+            )
+    except psx_chd.ChdError as exc:
+        raise ChdStageError(str(exc)) from exc
+    print(f"wrote {cue}")
+    return cue
+
+
 def matches_known(cfg: PrepareConfig, size: int, md5: str, sha1: str) -> bool:
     if not cfg.known:
         return False
@@ -553,6 +603,14 @@ def main() -> int:
         return 1
 
     selected_image = src
+    if src.suffix.lower() == ".chd":
+        # The companion lookup and the receipt keep naming the CHD the player
+        # chose; only the track data is materialised.
+        try:
+            src = stage_from_chd(src, cfg, fw_root)
+        except ChdStageError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     cue_src: Path | None = None
     cue_bins: list[Path] = []
     if src.suffix.lower() == ".cue":

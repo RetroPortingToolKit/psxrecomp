@@ -18,7 +18,23 @@ option(PSXRECOMP_ENABLE_CHD
        "Build the psxrecomp media CLI (requires libchdr via FetchContent)" ON)
 
 if(PSXRECOMP_ENABLE_CHD)
+    # The Python disc tools (psxrecomp_cli.py verify-disc, tools/prepare_disc.py,
+    # tools/new_project_layout/probe_disc.py) read .chd through this same
+    # decoder via ctypes, so libchdr is also built as a shared library, placed
+    # next to the emitters where tools/psx_chd.py looks for it. BUILD_SHARED_LIBS
+    # is scoped to that include: libchdr's codecs are declared STATIC and
+    # chdr-static (what psxrecomp links) is unaffected; nothing else in this
+    # project turns shared.
+    set(_psx_saved_build_shared "${BUILD_SHARED_LIBS}")
+    set(BUILD_SHARED_LIBS ON)
     include("${CMAKE_CURRENT_SOURCE_DIR}/../runtime/chd_dependency.cmake")
+    set(BUILD_SHARED_LIBS "${_psx_saved_build_shared}")
+    unset(_psx_saved_build_shared)
+    if(TARGET chdr)
+        set_target_properties(chdr PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    endif()
 endif()
 
 add_subdirectory(lib/fmt)
@@ -267,6 +283,11 @@ if(PSXRECOMP_STATIC_CLI AND WIN32 AND (MINGW OR CMAKE_CXX_COMPILER_ID MATCHES "C
     set(_cli_targets psxrecomp-game psxrecomp-toml psxrecomp-bios psxrecomp-analyze)
     if(PSXRECOMP_ENABLE_CHD)
         list(APPEND _cli_targets psxrecomp)
+    endif()
+    if(TARGET chdr)
+        # The Python tools load this with ctypes from a plain python.exe, with
+        # no toolchain bin/ on PATH, so it must not pull libgcc or libwinpthread.
+        list(APPEND _cli_targets chdr)
     endif()
     foreach(_cli_target IN LISTS _cli_targets)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

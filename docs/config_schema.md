@@ -93,7 +93,10 @@ online Create/Join require `netplay_ok` (and online also a clean verify +
 non-empty `disc_fp`). Mirror `required_tracks` in the Retro catalog as
 `rom_identity.track_counts` so the hub library scan rejects Track-01-only dumps.
 Wizard / Retro / catalog submission accept Redump `.cue` + sibling `.bin`
-tracks only — not `.iso`/`.chd` (cannot reliably expand to multi-track).
+tracks, or a MAME-compatible `.chd` of the same dump: `tools/psx_chd.py` reads
+it through the libchdr the emitters build (CMake target `chdr`) and writes the
+Redump-shaped track files back, so `[prepare_disc]` digests, SBI companions and
+`required_tracks` apply unchanged. A bare `.iso` cannot expand to multi-track.
 
 ## Program / game block
 

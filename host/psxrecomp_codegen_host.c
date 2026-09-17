@@ -1816,7 +1816,14 @@ static void cli_fail_msg(char* err_msg, size_t err_cap, const char* fail_label,
                          long code, const CliTail* t) {
     const char* why = t->last_err[0] ? t->last_err : t->last;
     if (code == 3) {
-        snprintf(err_msg, err_cap, "Disc verification failed (wrong dump).");
+        /* The CLI names the failing check (a digest mismatch, or a .chd it
+         * cannot read) and cli_tail_note has captured that line. A flat
+         * "wrong dump" contradicts it and sends players hunting a bad rip
+         * when the dump is fine. Keep the reason when there is one. */
+        if (why[0])
+            snprintf(err_msg, err_cap, "Disc verification failed: %s", why);
+        else
+            snprintf(err_msg, err_cap, "Disc verification failed (wrong dump).");
         return;
     }
     if (why[0])
