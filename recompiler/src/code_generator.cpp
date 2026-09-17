@@ -2322,6 +2322,15 @@ std::string CodeGenerator::translate_basic_block(
                         exe_, cfg.function_start, cfg.function_end,
                         block.exit_instr.address, jr_rs, exact_table,
                         ram_to_rom, cfg.producer_lo, cfg.producer_hi);
+                    // Not a table: a computed-stride entry into an unrolled
+                    // run (Duff's device — the decompressor copy loops). Same
+                    // switch shape; the CPS default keeps every other target.
+                    if (!have_exact_table) {
+                        have_exact_table = resolve_computed_stride_jump(
+                            exe_, cfg.function_start, cfg.function_end,
+                            block.exit_instr.address, jr_rs, exact_table,
+                            ram_to_rom);
+                    }
                     uint32_t table_base = have_exact_table
                         ? exact_table.table_base : 0u;
                     uint32_t table_count = have_exact_table
@@ -2344,8 +2353,14 @@ std::string CodeGenerator::translate_basic_block(
                             }
                         }
                         if (!targets.empty()) {
-                            ss << config_.indent << fmt::format("/* jump table 0x{:08X} (rom 0x{:08X}), {} entries */\n",
-                                                                table_base, rom_table_base, table_count);
+                            if (exact_table.stride != 0u) {
+                                ss << config_.indent << fmt::format(
+                                    "/* computed-stride jump into unrolled run 0x{:08X} (rom 0x{:08X}), stride {}, {} entries */\n",
+                                    table_base, rom_table_base, exact_table.stride, table_count);
+                            } else {
+                                ss << config_.indent << fmt::format("/* jump table 0x{:08X} (rom 0x{:08X}), {} entries */\n",
+                                                                    table_base, rom_table_base, table_count);
+                            }
                             ss << config_.indent << fmt::format("switch ({}) {{\n", delay_saved_target);
                             for (auto& [rt, rom] : targets) {
                                 if (partial_block_cycle_count(rom, cfg) != 0) {
@@ -2898,7 +2913,10 @@ void CodeGenerator::scan_jr_tables(
         if (!resolve_exact_bounded_jump_table(
                 exe_, cfg.function_start, cfg.function_end,
                 blk.exit_instr.address, jr_r, exact_table, ram_to_rom,
-                cfg.producer_lo, cfg.producer_hi)) {
+                cfg.producer_lo, cfg.producer_hi) &&
+            !resolve_computed_stride_jump(
+                exe_, cfg.function_start, cfg.function_end,
+                blk.exit_instr.address, jr_r, exact_table, ram_to_rom)) {
             continue;
         }
         uint32_t tb = exact_table.table_base;
