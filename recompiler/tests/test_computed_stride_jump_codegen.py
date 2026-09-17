@@ -27,6 +27,11 @@ Synthesized function (load 0x80010000):
 Expected: a `computed-stride jump` switch with cases for every group and the
 tail, each a `goto block_...`, and the CPS tail-transfer kept as default.
 
+A second function (see build_exe) covers the sibling shape from the same
+decoder: an in-function pointer table indexed by a stored, unchecked byte
+offset (`lui/ori base; addu; lw; jr`, no sltiu/beq guard, no sll), whose
+extent resolve_self_limited_jump_table takes from the table's own layout.
+
 Usage:  python test_computed_stride_jump_codegen.py [--recompiler <psxrecomp-game.exe>]
 """
 import argparse
@@ -65,6 +70,22 @@ def build_exe():
     for k in range(4):
         body += [0x90CD0000 | k, 0x00000000, 0xA0ED0000 | k]   # lbu t5,k(a2); nop; sb t5,k(a3)
     body += [0x03E00008, 0x00000000]                           # jr ra; nop
+    body += [0x00000000] * 4                                   # pad to 0x80010060
+
+    # Second function @ 0x80010060: a self-limited pointer table indexed by a
+    # stored, unchecked byte offset (no sltiu/beq guard, no sll):
+    #   lui t5,0x8001 ; ori t5,t5,0x007C ; addu t5,a0,t5 ; lw t4,0(t5) ; nop ; jr t4 ; nop   (0x60..0x78)
+    #   table @ 0x8001007C: 0x80010084, 0x80010090  (ends where its lowest target begins)
+    #   0x80010084: addiu v0,zero,1 ; j exit ; nop
+    #   0x80010090: addiu v0,zero,2 ; j exit ; nop
+    #   0x8001009C exit: jr ra ; nop
+    exit_pc = 0x8001009C
+    j_exit = 0x08000000 | ((exit_pc >> 2) & 0x03FFFFFF)
+    body += [0x3C0D8001, 0x35AD007C, 0x008D6821, 0x8DAC0000, 0x00000000, 0x01800008, 0x00000000]
+    body += [0x80010084, 0x80010090]
+    body += [0x24020001, j_exit, 0x00000000]
+    body += [0x24020002, j_exit, 0x00000000]
+    body += [0x03E00008, 0x00000000]
     return make_psxexe(LOAD, w(body))
 
 
@@ -76,7 +97,7 @@ def gen_c(recompiler, tmp):
     with open(psx, "wb") as f:
         f.write(build_exe())
     with open(seeds, "w") as f:
-        f.write("0x80010000\n")
+        f.write("0x80010000\n0x80010060\n")
     r = subprocess.run([recompiler, psx, "--seeds", seeds, "--out-dir", out],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -120,11 +141,18 @@ def main():
         if ("block_%08X:" % t) not in c:
             fails.append("no interior label block_%08X" % t)
 
+    # Second function: the self-limited table.
+    if not re.search(r"/\* self-limited jump table 0x8001007C \(rom 0x8001007C\), 2 entries, unchecked index \*/", c):
+        fails.append("no self-limited table switch comment for table 0x8001007C / 2 entries")
+    for t in (0x80010084, 0x80010090):
+        if not re.search(r"case 0x%08Xu:\s*(?:\n.*?)*?goto block_%08X;" % (t, t), c):
+            fails.append("missing self-limited case 0x%08X -> goto block_%08X" % (t, t))
+
     for f in fails:
         print("FAIL:", f)
     if fails:
         return 1
-    print("PASS: computed-stride jump emits a switch over every unrolled-run entry.")
+    print("PASS: computed-stride jump and self-limited table each emit a switch over every entry.")
     return 0
 
 

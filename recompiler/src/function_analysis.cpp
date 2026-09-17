@@ -1289,6 +1289,130 @@ bool resolve_computed_stride_jump(
     return true;
 }
 
+bool resolve_self_limited_jump_table(
+    const PS1Executable& exe,
+    uint32_t entry,
+    uint32_t hard_cap,
+    uint32_t jr_pc,
+    uint32_t jr_rs,
+    ExactJumpTable& table,
+    ExactAddressMapper runtime_to_image) {
+    table = {};
+    if (entry >= hard_cap || jr_pc < entry || jr_pc + 8u > hard_cap ||
+        (entry & 3u) != 0u || (hard_cap & 3u) != 0u ||
+        (jr_pc & 3u) != 0u || jr_rs == 0u || jr_rs == 31u) {
+        return false;
+    }
+    auto read = [&](uint32_t pc) { return exe.read_word(pc); };
+    auto jr_word = read(jr_pc);
+    if (!jr_word.has_value() ||
+        *jr_word != ((jr_rs & 0x1Fu) << 21u | 0x08u)) {
+        return false;
+    }
+    auto nearest_def = [&](uint32_t reg, uint32_t use_pc,
+                           uint32_t window) -> std::optional<uint32_t> {
+        if (reg == 0u) return std::nullopt;
+        uint32_t pc = use_pc;
+        for (uint32_t n = 0; n < window && pc >= entry + 4u; ++n) {
+            pc -= 4u;
+            auto w = read(pc);
+            if (!w.has_value()) return std::nullopt;
+            if (exact_classify_cf(pc, *w).kind != ExactCfKind::Normal)
+                return std::nullopt;
+            if (exact_instruction_writes_gpr(*w, reg)) return pc;
+        }
+        return std::nullopt;
+    };
+
+    // lw R, off(T) — the nearest definition of the jr register; allow the
+    // canonical single nop between the load and the jr.
+    auto lw_pc = nearest_def(jr_rs, jr_pc, 2u);
+    if (!lw_pc.has_value()) return false;
+    uint32_t lw = *read(*lw_pc);
+    if (((lw >> 26) & 0x3Fu) != 0x23u || ((lw >> 16) & 0x1Fu) != jr_rs)
+        return false;
+    uint32_t t_reg = (lw >> 21) & 0x1Fu;
+    int32_t lw_off = static_cast<int32_t>(static_cast<int16_t>(lw & 0xFFFFu));
+    if (t_reg == 0u) return false;
+
+    // addu T, A, B
+    auto addu_pc = nearest_def(t_reg, *lw_pc, 6u);
+    if (!addu_pc.has_value()) return false;
+    uint32_t au = *read(*addu_pc);
+    if (((au >> 26) & 0x3Fu) != 0u || (au & 0x3Fu) != 0x21u ||
+        ((au >> 6) & 0x1Fu) != 0u || ((au >> 11) & 0x1Fu) != t_reg) {
+        return false;
+    }
+    uint32_t a = (au >> 21) & 0x1Fu, b = (au >> 16) & 0x1Fu;
+    if (a == 0u || b == 0u || a == b) return false;
+
+    // One operand is `lui X,hi; ori|addiu X,X,lo` — an in-function constant.
+    auto constant_of = [&](uint32_t reg, uint32_t use_pc) -> std::optional<uint32_t> {
+        auto lo_pc = nearest_def(reg, use_pc, 6u);
+        if (!lo_pc.has_value()) return std::nullopt;
+        uint32_t lo = *read(*lo_pc);
+        uint32_t op = (lo >> 26) & 0x3Fu;
+        uint32_t rs = (lo >> 21) & 0x1Fu, rt = (lo >> 16) & 0x1Fu;
+        if ((op != 0x0Du && op != 0x09u) || rt != reg || rs != reg)
+            return std::nullopt;
+        auto hi_pc = nearest_def(reg, *lo_pc, 6u);
+        if (!hi_pc.has_value()) return std::nullopt;
+        uint32_t hi = *read(*hi_pc);
+        if (((hi >> 26) & 0x3Fu) != 0x0Fu || ((hi >> 16) & 0x1Fu) != reg)
+            return std::nullopt;
+        uint32_t v = (hi & 0xFFFFu) << 16;
+        if (op == 0x0Du) v |= (lo & 0xFFFFu);
+        else v += static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(lo & 0xFFFFu)));
+        return v;
+    };
+    std::optional<uint32_t> base = constant_of(a, *addu_pc);
+    if (!base.has_value()) base = constant_of(b, *addu_pc);
+    if (!base.has_value()) return false;
+    const uint32_t runtime_base = *base + static_cast<uint32_t>(lw_off);
+    auto mapped = [&](uint32_t addr) {
+        return runtime_to_image ? runtime_to_image(addr, exe) : addr;
+    };
+    const uint32_t image_base = mapped(runtime_base);
+    if ((image_base & 3u) != 0u || image_base < entry || image_base >= hard_cap)
+        return false;
+
+    auto in_delay_slot = [&](uint32_t pc) {
+        if (pc < entry + 4u) return false;
+        auto prev = read(pc - 4u);
+        return prev.has_value() &&
+               exact_classify_cf(pc - 4u, *prev).kind != ExactCfKind::Normal;
+    };
+
+    // Walk the table: stop at the first word that is not an in-function code
+    // address, or when the walk reaches the lowest target seen so far.
+    ExactJumpTable resolved;
+    resolved.table_base = runtime_base;
+    resolved.self_limited = true;
+    uint32_t lowest_target = hard_cap;
+    for (uint32_t i = 0; i < 256u; ++i) {
+        uint32_t slot = image_base + i * 4u;
+        if (slot >= lowest_target || slot + 4u > hard_cap) break;
+        auto word = read(slot);
+        if (!word.has_value()) break;
+        uint32_t rt_target = *word;
+        uint32_t it_target = mapped(rt_target);
+        if ((it_target & 3u) != 0u || it_target < entry || it_target >= hard_cap ||
+            it_target == jr_pc + 4u || in_delay_slot(it_target)) {
+            break;
+        }
+        auto first = read(it_target);
+        if (!first.has_value() || !exact_is_valid_mips_word(*first)) break;
+        // A target inside the table itself would be data run as code.
+        if (it_target >= image_base && it_target <= slot) break;
+        resolved.targets.emplace_back(rt_target, it_target);
+        lowest_target = std::min(lowest_target, it_target);
+    }
+    if (resolved.targets.size() < 2u) return false;
+    resolved.table_count = static_cast<uint32_t>(resolved.targets.size());
+    table = std::move(resolved);
+    return true;
+}
+
 FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
     const std::vector<uint32_t>& entries,
     const std::vector<std::pair<uint32_t, uint32_t>>& producer_ranges,
@@ -1462,6 +1586,8 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
                                 exe_, entry, hard_cap, pc, jr_rs, table,
                                 nullptr, producer_lo, producer_hi) ||
                             resolve_computed_stride_jump(
+                                exe_, entry, hard_cap, pc, jr_rs, table) ||
+                            resolve_self_limited_jump_table(
                                 exe_, entry, hard_cap, pc, jr_rs, table)) {
                             bool all_owned = std::all_of(
                                 table.targets.begin(), table.targets.end(),
