@@ -3569,6 +3569,44 @@ static void runtime_perf_section_end(uint64_t start, uint64_t *total) {
     if (end >= start) *total += end - start;
 }
 
+/* Frame-rate readout available in EVERY product, release included.
+ *
+ * The debug server and the freeze heartbeat are compiled out under
+ * PSX_NO_DEBUG_TOOLS, which left shipped binaries unable to report their own
+ * speed: a throughput regression could only be measured on the diagnostic
+ * build, which carries instrumentation of its own. s_frame_count is already
+ * maintained in production, so this only needs to expose it.
+ *
+ * Opt-in via PSX_FRAME_REPORT_MS (milliseconds between lines). When unset this
+ * is one branch on a cached int per vblank. */
+static void frame_report_tick(uint64_t frames) {
+    static int interval_ms = -1;
+    static uint64_t first_ticks = 0, last_ticks = 0, last_frames = 0;
+    if (interval_ms < 0) {
+        const char *e = std::getenv("PSX_FRAME_REPORT_MS");
+        interval_ms = (e && e[0]) ? std::atoi(e) : 0;
+        if (interval_ms < 0) interval_ms = 0;
+        first_ticks = last_ticks = SDL_GetTicks();
+        last_frames = frames;
+        if (interval_ms)
+            std::fprintf(stdout, "psxrecomp: frame report every %d ms\n", interval_ms);
+    }
+    if (!interval_ms) return;
+    const uint64_t now = SDL_GetTicks();
+    if (now - last_ticks < (uint64_t)interval_ms) return;
+    const double win_s = (double)(now - last_ticks) / 1000.0;
+    const double all_s = (double)(now - first_ticks) / 1000.0;
+    std::fprintf(stdout,
+                 "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f\n",
+                 (unsigned long long)frames,
+                 (unsigned long long)(now - first_ticks),
+                 win_s > 0.0 ? (double)(frames - last_frames) / win_s : 0.0,
+                 all_s > 0.0 ? (double)frames / all_s : 0.0);
+    std::fflush(stdout);
+    last_ticks = now;
+    last_frames = frames;
+}
+
 static void runtime_perf_diag_tick() {
     static bool have_last = false;
     static RuntimePerfSnapshot last;
@@ -6494,6 +6532,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     int override = -1;
 #endif
 
+    {
+        /* Outside every debug guard on purpose: production must be measurable. */
+        extern uint64_t s_frame_count;
+        frame_report_tick(s_frame_count);
+    }
     runtime_perf_frame_begin();
     RuntimePerfFrameScope runtime_perf_frame_scope;
     runtime_perf_diag_tick();
