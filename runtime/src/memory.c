@@ -857,10 +857,33 @@ void dirty_ram_text_guard_resync_after_restore(void) {
      * forking MotK selfcheck warm #2vs#3 at matched clocks (win#118 class:
      * cold≡0, warm FAIL; post-span irq_resume also drifts). Drop both
      * host-only text-guard bitmaps; live writes re-arm modified, and the
-     * next native_ok compare re-decides diverge against restored bytes. */
+     * next native_ok compare re-decides diverge against restored bytes.
+     *
+     * "Modified" is recomputed, not just forgotten. The page-clean fast
+     * path in dirty_ram_text_native_ok_ranges_from trusts a clear bit as
+     * "bytes still equal the reference" and skips the compare, but the
+     * restored RAM may carry self-modified text (CMR2 class) that no live
+     * write will ever re-flag: the bitmap is not part of the state image,
+     * and the writes happened in the process that produced it. One pass
+     * over the reference range (at most 2 MB, once per restore) puts every
+     * mismatching page back under the exact compare. */
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
     g_text_diverged_pages = 0;
+    if (text_ref_image && text_ref_hi > text_ref_lo) {
+        uint32_t p0 = text_ref_lo >> DIRTY_RAM_PAGE_SHIFT;
+        uint32_t p1 = (text_ref_hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+        for (uint32_t p = p0; p <= p1; p++) {
+            uint32_t lo = p << DIRTY_RAM_PAGE_SHIFT;
+            uint32_t hi = lo + (1u << DIRTY_RAM_PAGE_SHIFT);
+            if (lo < text_ref_lo) lo = text_ref_lo;
+            if (hi > text_ref_hi) hi = text_ref_hi;
+            if (hi > RAM_SIZE) hi = RAM_SIZE;
+            if (hi <= lo) continue;
+            if (memcmp(ram + lo, text_ref_image + (lo - text_ref_lo), hi - lo) != 0)
+                text_modified_bitmap[p >> 5] |= (1u << (p & 31u));
+        }
+    }
 }
 
 void overlay_watch_invalidate_after_ram_restore(void) {
