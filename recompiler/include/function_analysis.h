@@ -72,6 +72,10 @@ struct ExactJumpTable {
     uint32_t table_base = 0;
     uint32_t table_count = 0;
     std::vector<std::pair<uint32_t, uint32_t>> targets;
+    // Non-zero when the targets came from resolve_computed_stride_jump
+    // rather than a table in memory: `table_base` is then the first word of
+    // the unrolled run and the targets are table_base + k * stride.
+    uint32_t stride = 0;
 };
 
 using ExactAddressMapper = uint32_t (*)(uint32_t, const PS1Executable&);
@@ -96,6 +100,35 @@ bool resolve_exact_bounded_jump_table(
     ExactAddressMapper runtime_to_image = nullptr,
     uint32_t producer_lo = 0,
     uint32_t producer_hi = 0);
+
+// Recognize a computed-stride entry into an unrolled run (Duff's device):
+//
+//     sll   S, I, k              (stride = 1<<k)
+//   or
+//     sll   P, I, a ; sll Q, I, b ; addu S, P, Q     (stride = (1<<a)+(1<<b))
+//     addu  R, B, S   (either operand order)
+//     jr    R
+//     <delay slot>
+//     run_start: N >= 2 shape-identical groups of `stride` bytes — the same
+//                opcodes and register fields in every group, immediates free,
+//                no control flow inside a group.
+//
+// The dependency chain is walked backwards from the jr through nearest
+// definitions with no control flow in between. The base register's value is
+// deliberately NOT assumed: the caller emits a switch on the actual runtime
+// target with the CPS tail-transfer as the default, so the recovered targets
+// only ever add native cases and can never redirect a jump that lands
+// elsewhere. Targets are run_start + k * stride for k = 0..N (k = N is the
+// word after the run, the loop tail); all lie inside [entry, hard_cap).
+// `table.stride` is set to the stride; `table.table_base` to run_start.
+bool resolve_computed_stride_jump(
+    const PS1Executable& exe,
+    uint32_t entry,
+    uint32_t hard_cap,
+    uint32_t jr_pc,
+    uint32_t jr_rs,
+    ExactJumpTable& table,
+    ExactAddressMapper runtime_to_image = nullptr);
 
 class FunctionAnalyzer {
 public:

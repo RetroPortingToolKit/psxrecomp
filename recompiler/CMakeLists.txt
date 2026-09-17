@@ -688,6 +688,7 @@ if(BUILD_TESTING)
         foreach(_t IN ITEMS
                 aot_base_recovery
                 bios_resident_shard
+                computed_stride_jump_codegen
                 msvc_cps_codegen
                 overlay_guard_codegen
                 overlay_store_barrier_codegen
