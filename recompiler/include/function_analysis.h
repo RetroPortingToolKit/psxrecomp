@@ -76,6 +76,10 @@ struct ExactJumpTable {
     // rather than a table in memory: `table_base` is then the first word of
     // the unrolled run and the targets are table_base + k * stride.
     uint32_t stride = 0;
+    // True when the targets came from resolve_self_limited_jump_table: the
+    // guest checks no bound, so the extent was taken from the table's own
+    // layout (it ends where its lowest target begins).
+    bool self_limited = false;
 };
 
 using ExactAddressMapper = uint32_t (*)(uint32_t, const PS1Executable&);
@@ -122,6 +126,33 @@ bool resolve_exact_bounded_jump_table(
 // word after the run, the loop tail); all lie inside [entry, hard_cap).
 // `table.stride` is set to the stride; `table.table_base` to run_start.
 bool resolve_computed_stride_jump(
+    const PS1Executable& exe,
+    uint32_t entry,
+    uint32_t hard_cap,
+    uint32_t jr_pc,
+    uint32_t jr_rs,
+    ExactJumpTable& table,
+    ExactAddressMapper runtime_to_image = nullptr);
+
+// Recognize an in-function pointer table indexed by a value the guest never
+// bounds-checks (a stored, pre-scaled state offset rather than a checked
+// case number):
+//
+//     lui   T, hi ; ori|addiu T, T, lo     (table base, an in-function constant)
+//     addu  T, T, I   (either operand order; I is the byte offset)
+//     lw    R, off(T)
+//     [nop]
+//     jr    R
+//
+// With no guard there is no count to read, so the extent comes from the
+// table itself: words are taken from the base while each is a 4-aligned
+// in-function code address outside every delay slot, and the table ends
+// where its lowest target begins (a pointer table cannot overlap the code
+// it points at). As with resolve_computed_stride_jump the caller switches
+// on the actual runtime target with the CPS tail-transfer as default, so the
+// recovered entries only add native cases; a value past the recovered
+// extent still takes the fallback. Requires at least two entries.
+bool resolve_self_limited_jump_table(
     const PS1Executable& exe,
     uint32_t entry,
     uint32_t hard_cap,
