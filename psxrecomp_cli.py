@@ -1886,6 +1886,8 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
     if exe is None:
         progress.error(exe_err, code=EXIT_ERROR)
         return EXIT_ERROR
+    progress.phase("overlays", pct=0.93, message="Staging overlay toolchain beside the product...")
+    stage_overlay_toolchain_for_product(project_root, exe.parent, progress)
 
     prune_raw = (getattr(args, "prune_after", None) or "").strip()
     if prune_raw:
@@ -1896,6 +1898,57 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
     progress.phase("done", pct=1.0, message="Rebuild complete")
     progress.result(ok=True, exe=str(exe), pgo=pgo_enabled)
     return EXIT_OK
+
+
+def stage_overlay_toolchain_for_product(project_root: Path, exe_dir: Path, progress) -> Optional[Path]:
+    """Stage overlay_toolchain/ beside a built product so the runtime's autocompile gate is
+    true for every player build (wave-5 F1), and name the compiler the wizard already has so
+    shards get an optimising compiler instead of tcc (F2). Best effort: a failure leaves the
+    product playable with overlays interpreted, and says so."""
+    try:
+        fw = framework_root(project_root)
+        tools_dir = fw / "tools"
+        inc_dir = fw / "runtime" / "include"
+        game_emitter = find_psxrecomp_game(project_root)
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+        import release_stage  # noqa: E402
+
+        dl_cache = project_root / ".cache" / "overlay-toolchain"
+        # Runtime DLLs only from the emitter's own directory, never from PATH: Git's
+        # mingw64 on PATH carries the MSVCRT runtime, which is the 0xC0000139 trap.
+        mingw_bin = game_emitter.parent if (game_emitter.parent / "libgcc_s_seh-1.dll").is_file() else None
+        tk = Path(release_stage.stage_toolchain(
+            str(exe_dir), str(game_emitter.parent), str(tools_dir), str(inc_dir), str(dl_cache),
+            mingw_bin=str(mingw_bin) if mingw_bin else None, log=progress.log))
+        # The stale-recompiler check compares the emitter's codegen hash with the runtime's tag.
+        for cand in (exe_dir / "psxrecomp_codegen_include" / "overlay_codegen_hash.h",
+                     inc_dir / "overlay_codegen_hash.h"):
+            if cand.is_file():
+                shutil.copy2(cand, tk / "include" / "overlay_codegen_hash.h")
+                break
+        compiler = None
+        if sys.platform == "win32":
+            bin_dir = resolve_toolchain_bin(project_root)
+            if bin_dir and (bin_dir / "clang.exe").is_file():
+                compiler = bin_dir / "clang.exe"
+        else:
+            for name in ("gcc", "cc", "clang"):
+                w = shutil.which(name)
+                if w:
+                    compiler = Path(w)
+                    break
+        if compiler:
+            (tk / "compiler.txt").write_text(str(compiler) + "\n", encoding="utf-8")
+            progress.log(f"overlay toolchain staged at {tk}; shard compiler: {compiler}")
+        else:
+            progress.log(f"overlay toolchain staged at {tk}; no optimising compiler found (tcc tier)")
+        return tk
+    except Exception as exc:  # noqa: BLE001
+        progress.log(f"WARNING: overlay toolchain staging failed; overlays will run interpreted: {exc}")
+        return None
+
+
 
 
 def cmd_pgo_train(args: argparse.Namespace, progress: ProgressReporter) -> int:

@@ -13571,6 +13571,20 @@ int main(int argc, char** argv) {
         const char *tk_tcc        = "tcc";
 #endif
         const bool tk_present = std::filesystem::exists(tk_py);
+        /* Wave-5 F2: the CLI names the compiler it already has (the wizard's pack on
+         * Windows, the native cc on POSIX) in overlay_toolchain/compiler.txt, so a player
+         * with nothing on PATH still gets optimised shards instead of tcc's. */
+        std::string tk_compiler;
+        {
+            std::ifstream cf(tk_dir / "compiler.txt");
+            std::string line;
+            if (cf.is_open() && std::getline(cf, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' '))
+                    line.pop_back();
+                std::error_code cec;
+                if (!line.empty() && std::filesystem::exists(line, cec)) tk_compiler = line;
+            }
+        }
         auto build_toolchain_cmd = [&](const char *compiler) {
             auto cmd_quote = [](const std::string& s) {
                 return std::string("\"") + s + "\"";
@@ -13587,12 +13601,14 @@ int main(int argc, char** argv) {
                 " --out-dir " + cmd_quote((tk_xd / "cache").string()) +
                 (g_psx_cps_mode ? " --cps" : "") +
                 " --compiler " + compiler;
+            if (std::string(compiler) == "gcc" && !tk_compiler.empty())
+                c += " --gcc " + cmd_quote(tk_compiler);
             if (std::string(compiler) == "tcc")
                 c += " --tcc " + cmd_quote((tk_dir / "tcc" / tk_tcc).string());
             return c;
         };
         int gcc_avail = (deferred_has_overlay_ac || tk_present)
-                        && autocompile_toolchain_available();
+                        && (autocompile_toolchain_available() || !tk_compiler.empty());
         OverlayBackend eff = overlay_backend_resolve(cfg_backend, gcc_avail);
         std::string built_tcc_cmd;
         std::string built_gcc_cmd;
@@ -13620,8 +13636,9 @@ int main(int argc, char** argv) {
                 built_gcc_cmd = build_toolchain_cmd("gcc");
                 ac_cmd = &built_gcc_cmd;
                 std::fprintf(stdout,
-                    "psxrecomp: gcc tier using bundled toolchain (%s) with gcc from PATH\n",
-                    tk_dir.string().c_str());
+                    "psxrecomp: gcc tier using bundled toolchain (%s) with %s\n",
+                    tk_dir.string().c_str(),
+                    tk_compiler.empty() ? "gcc from PATH" : tk_compiler.c_str());
             }
         }
         if (const char *e = std::getenv("PSX_OVERLAY_AUTOCOMPILE_CMD")) {
