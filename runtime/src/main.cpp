@@ -14915,6 +14915,11 @@ session_reboot:
         const int mounted = roster_index_for_disc(game_discs, disc_path_str);
         cdrom_disc_roster_set(roster.data(), (int)roster.size(),
                               mounted >= 0 ? mounted + 1 : selected_disc_index);
+        /* --disc names a disc of the set, but the earlier index derivation is
+         * skipped for an override, so selected_disc_index kept its default of
+         * 1. That put the savestate disc token at _disc1 whatever was mounted,
+         * which is the mix-up savestate_set_disc_scope() exists to prevent. */
+        if (mounted >= 0) selected_disc_index = mounted + 1;
     }
     for (const auto& route : warm_cd_routes) {
         cdrom_register_warm_route(route.arm_lba, route.lbas.data(),
