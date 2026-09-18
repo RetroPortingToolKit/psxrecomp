@@ -11873,6 +11873,17 @@ static void handle_disc_select(int id, const char *json)
     send_fmt("%s", buf);
 }
 
+/* cd_reinsert: run the tray open/close cycle on the SAME image, which is what
+ * the reinsert hotkey does. Scripted access matters because the hotkey needs a
+ * focused window, so nothing could previously exercise the lid from a test. */
+static void handle_cd_reinsert(int id, const char *json)
+{
+    (void)json;
+    debug_force_cd_reinsert();
+    send_fmt("{\"id\":%d,\"ok\":true,\"has_disc\":%s}",
+             id, cdrom_has_disc() ? "true" : "false");
+}
+
 /* cdrom_instant_rate: get/set the 'instant' per-frame sector-IRQ budget
  * (step 3 tunable). Param "n" (optional int): new budget, clamped by
  * cdrom_set_instant_rate. Always returns the current value, so a no-arg
@@ -13933,6 +13944,7 @@ static const CmdEntry s_commands[] = {
     { "overlay_dump",      handle_overlay_dump },
     { "cd_read_log",       handle_cd_read_log },
     { "disc_select",       handle_disc_select },
+    { "cd_reinsert",       handle_cd_reinsert },
     { "overlay_loader_status", handle_overlay_loader_status },
     { "overlay_candidates",   handle_overlay_candidates },
     { "overlay_native_ring",  handle_overlay_native_ring },
