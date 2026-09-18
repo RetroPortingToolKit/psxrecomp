@@ -741,6 +741,16 @@ static void exec_command(uint8_t cmd);
 
 /* ISO reader */
 static void* iso_handle = NULL;
+
+/* Multi-disc roster, registered at launch from game.toml [game] discs.
+ * It lives here because the mount lives here, which keeps the disc-change
+ * entry point reachable from C without the launcher's C++ state. */
+#define CDROM_MAX_DISCS      8
+#define CDROM_DISC_PATH_MAX  1024
+static char s_disc_roster[CDROM_MAX_DISCS][CDROM_DISC_PATH_MAX];
+static int  s_disc_roster_count;
+static int  s_disc_selected;  /* 1-based; 0 = no roster registered */
+
 static uint8_t last_valid_subq[12];
 static int last_valid_subq_available;
 static int subq_replacements_active;
@@ -3473,7 +3483,12 @@ int cdrom_snapshot_read(const uint8_t *p, uint32_t len) {
     return 1;
 }
 
-void debug_force_cd_reinsert(void) {
+/* Open the tray: stop every transfer in flight, hide the media, and arm the
+ * timed close. The caller may change the mounted image before that close
+ * fires, because cdrom_lid_media_ready() reports no media for the whole
+ * window. That is what makes a disc change indistinguishable from a reinsert
+ * as far as the guest is concerned. */
+static void begin_tray_open_cycle(void) {
     /* Stop the old transfer before exposing a physical tray-open event. */
     stop_read_stream();
     stop_cdda_playback();
@@ -3487,4 +3502,88 @@ void debug_force_cd_reinsert(void) {
     present_lid_open_irq_if_ready();
     trace_cdrom('O', 0, (uint32_t)CDROM_LID_CLOSE_DELAY_CYCLES,
                 (uint32_t)(CDROM_LID_CLOSE_DELAY_CYCLES >> 32));
+}
+
+void debug_force_cd_reinsert(void) {
+    begin_tray_open_cycle();
+}
+
+void cdrom_disc_roster_set(const char *const *paths, int count,
+                           int selected_1based) {
+    s_disc_roster_count = 0;
+    s_disc_selected = 0;
+    if (!paths || count <= 0) return;
+    if (count > CDROM_MAX_DISCS) count = CDROM_MAX_DISCS;
+    for (int i = 0; i < count; i++) {
+        if (!paths[i]) continue;
+        snprintf(s_disc_roster[s_disc_roster_count], CDROM_DISC_PATH_MAX,
+                 "%s", paths[i]);
+        s_disc_roster_count++;
+    }
+    if (selected_1based >= 1 && selected_1based <= s_disc_roster_count)
+        s_disc_selected = selected_1based;
+}
+
+int cdrom_disc_roster_count(void) { return s_disc_roster_count; }
+
+uint32_t cdrom_mounted_sector_count(void) {
+    return iso_handle ? iso_sector_count(iso_handle) : 0u;
+}
+
+int cdrom_mounted_track_count(void) {
+    return iso_handle ? iso_track_count(iso_handle) : 0;
+}
+
+int cdrom_disc_selected(void) { return s_disc_selected; }
+
+const char *cdrom_disc_roster_path(int index_1based) {
+    if (index_1based < 1 || index_1based > s_disc_roster_count) return NULL;
+    return s_disc_roster[index_1based - 1];
+}
+
+/* Change the mounted image mid-session, the way a player changes a disc.
+ *
+ * cdrom_init() can already mount any image, but only at boot, and it also
+ * clears warm-route, trace and timing state, so calling it here would discard
+ * a running session. This path swaps the handle alone, inside the lid window,
+ * and drops only the state a physical disc change actually invalidates.
+ *
+ * Returns 0 if the index is outside the roster or the image will not open. A
+ * failed open leaves the tray open with no media, which is what the guest
+ * would see from an empty drive. */
+int cdrom_disc_select(int index_1based) {
+    const char *path = cdrom_disc_roster_path(index_1based);
+    if (!path || !path[0]) return 0;
+
+    begin_tray_open_cycle();
+
+    if (iso_handle) {
+        iso_close(iso_handle);
+        iso_handle = NULL;
+    }
+    iso_handle = iso_open(path);
+    if (!iso_handle) return 0;
+
+    last_valid_subq_available = 0;
+    subq_replacements_active = iso_has_subq_replacements(iso_handle);
+    if (subq_replacements_active) update_last_valid_subq(0);
+
+    /* Buffered sectors and the seek position describe the old disc. */
+    clear_sector_buffer();
+    last_sector_lba = -1;
+    last_sector_size = 0;
+    s_setloc_lba = -1;
+
+    /* A warm route tracks a position on the disc that is no longer mounted.
+     * The registered table is configuration and stays; the arming is not. */
+    s_warm_route_armed = 0;
+    s_warm_route_armed_lba = -1;
+    s_warm_route_active = 0;
+    s_warm_route_active_index = -1;
+    s_warm_route_next = 0;
+    s_warm_route_last_lba = -1;
+
+    s_disc_selected = index_1based;
+    trace_cdrom('M', (uint32_t)index_1based, 1u, 0);
+    return 1;
 }

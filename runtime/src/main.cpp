@@ -14900,6 +14900,22 @@ session_reboot:
         launcher_warning("Disc Could Not Be Mounted", detail);
         return 1;
     }
+    /* Register the roster so the mounted image can still be changed once the
+     * game runs (debug server `disc_select`). Take the current index from what
+     * actually mounted rather than the requested one: a --disc override can
+     * mount an image the persisted index does not name. */
+    if (game_discs.size() > 1) {
+        std::vector<std::string> roster_storage;
+        std::vector<const char*> roster;
+        roster_storage.reserve(game_discs.size());
+        roster.reserve(game_discs.size());
+        for (const auto& d : game_discs)
+            roster_storage.push_back(normalize_disc_path_for_launch(d).string());
+        for (const auto& s : roster_storage) roster.push_back(s.c_str());
+        const int mounted = roster_index_for_disc(game_discs, disc_path_str);
+        cdrom_disc_roster_set(roster.data(), (int)roster.size(),
+                              mounted >= 0 ? mounted + 1 : selected_disc_index);
+    }
     for (const auto& route : warm_cd_routes) {
         cdrom_register_warm_route(route.arm_lba, route.lbas.data(),
                                   (int)route.lbas.size(),
