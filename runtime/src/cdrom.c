@@ -20,6 +20,7 @@
 #include "interrupts.h"
 #include "psx_cycles.h"
 #include "psx_netplay.h"
+#include "savestate.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -749,7 +750,7 @@ static void* iso_handle = NULL;
 #define CDROM_DISC_PATH_MAX  1024
 static char s_disc_roster[CDROM_MAX_DISCS][CDROM_DISC_PATH_MAX];
 static int  s_disc_roster_count;
-static int  s_disc_selected;  /* 1-based; 0 = no roster registered */
+static int  s_disc_selected;  /* 1-based roster entry mounted; 0 = none */
 
 static uint8_t last_valid_subq[12];
 static int last_valid_subq_available;
@@ -3516,6 +3517,10 @@ void cdrom_disc_roster_set(const char *const *paths, int count,
     if (count > CDROM_MAX_DISCS) count = CDROM_MAX_DISCS;
     for (int i = 0; i < count; i++) {
         if (!paths[i]) continue;
+        /* Drop a path that does not fit rather than storing a truncated one:
+         * a truncated path still opens something, or opens nothing, and both
+         * are worse than the entry being absent from the roster. */
+        if (strlen(paths[i]) >= CDROM_DISC_PATH_MAX) continue;
         snprintf(s_disc_roster[s_disc_roster_count], CDROM_DISC_PATH_MAX,
                  "%s", paths[i]);
         s_disc_roster_count++;
@@ -3562,7 +3567,10 @@ int cdrom_disc_select(int index_1based) {
         iso_handle = NULL;
     }
     iso_handle = iso_open(path);
-    if (!iso_handle) return 0;
+    if (!iso_handle) {
+        s_disc_selected = 0;
+        return 0;
+    }
 
     last_valid_subq_available = 0;
     subq_replacements_active = iso_has_subq_replacements(iso_handle);
@@ -3584,6 +3592,14 @@ int cdrom_disc_select(int index_1based) {
     s_warm_route_last_lba = -1;
 
     s_disc_selected = index_1based;
+
+    /* Savestates carry a disc token so a state taken on one disc is not
+     * restored under another. main() sets that scope once, from the boot
+     * disc, so a mid-session change has to update it. Without this a state
+     * saved after a swap is filed under the disc the game booted from, which
+     * is the exact mix-up the scoping exists to prevent. */
+    savestate_set_disc_scope(s_disc_roster_count > 1 ? index_1based : 0);
+
     trace_cdrom('M', (uint32_t)index_1based, 1u, 0);
     return 1;
 }
