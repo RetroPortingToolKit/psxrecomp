@@ -3255,6 +3255,15 @@ def current_variant_func_id_coverage(func_ids: list, data: bytes,
 #     contract/header change (which bumps the hash -> fresh dir -> fresh memo)
 #     re-attempts everything (e.g. the psx_rfe_mark_escape contract fix).
 # So a memoized skip only ever elides a build that is deterministically doomed.
+# Printed when a capture contributes no walk-root seed. The wording is
+# deliberate: the region is NOT declared data-only -- its executed dispatch
+# demands are still served by the isolated-fragment pass, which runs
+# separately. Named so the two emit sites and the test cannot drift apart.
+# They did: 4683e923 reworded both prints and left
+# test_compile_overlays_static_split asserting the old string.
+NO_SHARED_WALK_ROOT_SEEDS_SKIP = (
+    'SKIP: no shared walk-root seeds; checking fragments separately')
+
 INTERIOR_FAIL_MEMO = 'interior_fail_memo.txt'
 
 
@@ -5818,7 +5827,7 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
             seed.split()[0].startswith('0x'))
     ]
     if not root_seeds:
-        print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
+        print(f'  {NO_SHARED_WALK_ROOT_SEEDS_SKIP}\n')
         result['outcome'] = 'skip'
         return
 
@@ -6366,7 +6375,7 @@ def main():
                 seed.split()[0].startswith('0x'))
         ]
         if not root_seeds:
-            print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
+            print(f'  {NO_SHARED_WALK_ROOT_SEEDS_SKIP}\n')
             stats.add_skip()
             return
 
