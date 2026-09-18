@@ -630,6 +630,14 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_compile_overlays_static_tail.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # The word after a `jr $ra` is as often a pointer table as a frameless
+        # function; a dispatch entry there must prove a CFG before it may be a
+        # walk root, or the walk runs through the table to the image end.
+        add_test(
+            NAME frameless_dispatch_root_cfg_proof
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_frameless_dispatch_root_cfg_proof.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME fmv_cycle_batch_codegen
             COMMAND ${Python3_EXECUTABLE}

@@ -1269,6 +1269,35 @@ def plausible_callable_target(data: bytes, load_addr: int, size: int,
     return saw_return and not bad and not work and len(visited) < 2048
 
 
+def _frameless_dispatch_root_proven(data: bytes, load_addr: int, size: int,
+                                    addr: int, producer_hi: int) -> bool:
+    """CFG proof for a dispatch entry admitted only by the word before it.
+
+    `_callable_legacy_seed` accepts an address on three different grades of
+    evidence: it is the image entry, it opens a stack frame, or the word two
+    slots back is `jr $ra`. The third is the weak one, and it is weak exactly
+    where it fires most: the first word *after* a function's return is also
+    the first word of whatever the linker laid down next, which in these
+    images is routinely a pointer table, a packed record array or zero fill.
+    A dispatch PC there is real -- a sibling occupant of the shared band has
+    code at that address -- but for *this* image it is data, and promoting it
+    to a walk root sends the linear walk through the table to the image end.
+
+    So require the same bounded CFG probe the discovery roots already use
+    when the classic prologue is absent. Failing it does not discard the
+    entry: the caller demotes it to DISPATCH_INTERIOR, which keeps the
+    dispatch evidence and the isolated-fragment demand and only declines to
+    start a walk there.
+    """
+    word = _word_at(data, load_addr, addr)
+    prev = _word_at(data, load_addr, addr - 4)
+    if addr == load_addr:
+        return True
+    if _is_addiu_sp_neg(word) and not _is_control_flow(prev):
+        return True
+    return plausible_callable_target(data, load_addr, size, addr, producer_hi)
+
+
 def _walk_overlay_function(data: bytes, load_addr: int, size: int,
                            entry: int, hard_cap: int,
                            producer_ranges=(),
@@ -1642,14 +1671,22 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         # Invalid words stay excluded. Call-edge-proven reasons
         # (DIRECT_JAL_TARGET, FUNCTION_POINTER_TARGET, TOML_DECLARED_ENTRY) are
         # exempt — they carry their own proof.
+        # A dispatch entry that has no prologue and is callable only because a
+        # `jr $ra` precedes it is the head of whatever follows the last
+        # function, data included, so it needs the bounded CFG probe before it
+        # may be a walk root (_frameless_dispatch_root_proven).
         if reason in ('DISPATCH_ENTRY', 'STATIC_DISPATCH_ENTRY'):
             if impossible_entry_start(addr):
                 excluded[addr] = 'UNKNOWN'
                 return
             if addr + 4 <= fragment_hi:
                 dispatch_fragment_demands.add(addr)
+            producer = capture_producer_for(addr)
             if (addr in jump_table_targets or
-                    not _callable_legacy_seed(data, load_addr, addr)):
+                    not _callable_legacy_seed(data, load_addr, addr) or
+                    not _frameless_dispatch_root_proven(
+                        data, load_addr, size, addr,
+                        producer[1] if producer else hi)):
                 included.setdefault(addr, 'DISPATCH_INTERIOR')
                 return
         elif (reason not in ('DIRECT_JAL_TARGET', 'STATIC_INDIRECT_TARGET',
