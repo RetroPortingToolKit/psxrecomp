@@ -534,8 +534,12 @@ EOF
 # a cmake variable cannot be resolved here.
 if [[ -f "${STAGE}/CMakeLists.txt" ]]; then
   cml="${STAGE}/CMakeLists.txt"
-  guarded="$(grep -oE 'if\(EXISTS[[:space:]]+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/[^"]+"' "${cml}" \
-               | sed -E 's|.*\$\{CMAKE_CURRENT_SOURCE_DIR\}/||; s|"$||' | sort -u)"
+  # A CMakeLists.txt with no if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/...") guard at
+  # all is normal, and grep exits 1 on no match. Under `set -e -o pipefail` that
+  # status propagates out of the command substitution and kills the packager
+  # here — silently, before any gate can report anything. Guard the assignment.
+  guarded="$( { grep -oE 'if\(EXISTS[[:space:]]+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/[^"]+"' "${cml}" \
+                  || true; } | sed -E 's|.*\$\{CMAKE_CURRENT_SOURCE_DIR\}/||; s|"$||' | sort -u)"
   missing_refs=()
   while IFS= read -r rel; do
     [[ -z "${rel}" ]] && continue
