@@ -45,7 +45,7 @@ thing being diffed.
 | Piece | Status | Notes |
 |---|---|---|
 | **`ShadowVerifier`** (envelope-correlation self-check, auto-gain, prove/strike/pause) | **DONE** — `runtime/{src,include}/audio_shadow.{c,h}`, C, compiles clean, standalone-tested | Engine-agnostic; algorithm identical to gbarecomp/snesrecomp |
-| Color-science core (xyY→XYZ, primaries→matrix, Bradford, sRGB OETF) | **DONE** — `runtime/src/color_lut.c` | Re-implemented in C from the GBA C++ port |
+| Color-science core (xyY→XYZ, primaries→matrix, Bradford, sRGB OETF) | **DONE** — `runtime/src/gpu/color_lut.c` | Re-implemented in C from the GBA C++ port |
 | Present-path color LUT | **DONE** — `color_lut.{c,h}`, wired into `gpu.c` | PSX VRAM is BGR555 (like GBA), so the LUT index is identical; the GBA **LCD-panel** model is swapped for **CRT / composite / Trinitron** models |
 | **SPU float shadow render** | **DONE (substitution path complete; needs on-hardware A/B)** — `runtime/{src,include}/spu_shadow.{c,h}` + tap in `spu.c` | PSX-specific: re-render the ADPCM voices with 4-point cubic interpolation + float headroom (no int16 truncation), verified against the canon SPU mix |
 
@@ -104,14 +104,14 @@ reverts to the canon mix the instant correlation/level breaks.
 
 ## Integration points (found on `master`, file:line)
 
-- **Canon audio render:** `runtime/src/spu.c` `spu_render()` — mix loop sums
+- **Canon audio render:** `runtime/src/spu/spu.c` `spu_render()` — mix loop sums
   `voice_next_sample()` × volumes → `out_stereo`. Shadow tap is recorded in
   `voice_next_sample()` and the mix loop (guarded by `s_shadow_tap_on`), and
   `spu_shadow_process(out_stereo, frames)` is called at the end of `spu_render`.
   `spu_init()` calls `spu_shadow_reset()`.
-- **Audio host consumer:** `runtime/src/main.cpp:586`, `:629` (`spu_render`
+- **Audio host consumer:** `runtime/src/app/main.cpp:586`, `:629` (`spu_render`
   callers). No change needed — substitution happens inside `spu_render`.
-- **Canon video conversion:** `runtime/src/gpu.c:368` `gpu_rgb555_to_rgb888()` —
+- **Canon video conversion:** `runtime/src/gpu/gpu.c:368` `gpu_rgb555_to_rgb888()` —
   the 15-bit→RGB888 step on the present path. The LUT is consulted here
   (`screen_lut_ensure()` + `color_lut_map555`); the raw fast-path is preserved
   verbatim so default output is byte-identical. The depth24/FMV path

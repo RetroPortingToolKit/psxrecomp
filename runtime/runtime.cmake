@@ -325,6 +325,7 @@ if(PSX_RECOMP_UI AND (NOT RECOMP_UI_ROOT OR RECOMP_UI_ROOT STREQUAL ""))
 endif()
 
 set(PSXRECOMP_RUNTIME_SOURCES
+<<<<<<< HEAD
     ${PSXRECOMP_ROOT}/runtime/src/main.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_window_icon.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_sdl_audio.cpp
@@ -422,6 +423,105 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_bios_backend.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_netplay.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_lobby_client.c
+=======
+    ${PSXRECOMP_ROOT}/runtime/src/app/main.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/host/psx_window_icon.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/host/psx_sdl_audio.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/sio/psx_stick.c
+    ${PSXRECOMP_ROOT}/runtime/src/memory/memory.c
+    ${PSXRECOMP_ROOT}/runtime/src/memory/kernel_patch_ranges.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/gpu.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/ws_ui_group.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/ws_aspect_cone_math.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/gpu_sw_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/gpu_vram_dirty.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/gpu_render.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/gpu_gl_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/gpu_vk_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/dma_gpu_ll.c
+    ${PSXRECOMP_ROOT}/runtime/src/dma/dma.c
+    ${PSXRECOMP_ROOT}/runtime/src/mdec/mdec.c
+    ${PSXRECOMP_ROOT}/runtime/src/timers/timers.c
+    ${PSXRECOMP_ROOT}/runtime/src/cpu/interrupts.c
+    ${PSXRECOMP_ROOT}/runtime/src/host/frame_pacing.c
+    ${PSXRECOMP_ROOT}/runtime/src/host/host_clock.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/frame_interpolation.c
+    ${PSXRECOMP_ROOT}/runtime/src/host/host_time.c
+    ${PSXRECOMP_ROOT}/runtime/src/cpu/psx_fiber.c
+    ${PSXRECOMP_ROOT}/runtime/src/sio/sio.c
+    ${PSXRECOMP_ROOT}/runtime/src/sio/memcard.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/debug_server.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/debug_trace_ranges.c
+    ${PSXRECOMP_ROOT}/runtime/src/cpu/dirty_ram_interp.c
+    ${PSXRECOMP_ROOT}/runtime/src/cpu/game_dispatch_compat.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/fntrace.c
+    ${PSXRECOMP_ROOT}/runtime/src/mods/text_xlate.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/debug/parity_trace.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/device_trace.c
+    ${PSXRECOMP_ROOT}/runtime/src/bios/boot_state.c
+    ${PSXRECOMP_ROOT}/runtime/src/net/netplay_snap_ring.c
+    ${PSXRECOMP_ROOT}/runtime/src/net/netplay_state_digest.c
+    ${PSXRECOMP_ROOT}/runtime/src/net/netplay_input_hist.c
+    ${PSXRECOMP_ROOT}/runtime/src/net/psx_netplay_rb.c
+    ${PSXRECOMP_ROOT}/runtime/src/net/psx_netplay_sched.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/psx_selfcheck.c
+    ${PSXRECOMP_ROOT}/runtime/src/bios/bios_hle.c
+    ${PSXRECOMP_ROOT}/runtime/src/bios/bios_hle_plan.c
+    ${PSXRECOMP_ROOT}/runtime/src/state/savestate.c
+    ${PSXRECOMP_ROOT}/runtime/src/host/psx_savestate_menu.c
+    ${PSXRECOMP_ROOT}/runtime/src/state/psx_rewind.c
+    ${PSXRECOMP_ROOT}/runtime/src/host/host_osd.c
+    ${PSXRECOMP_ROOT}/runtime/src/host/host_keymap.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/cosim_state.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/cosim.c
+    ${PSXRECOMP_ROOT}/runtime/src/cpu/traps.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/crash_trace.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/freeze_dump_policy.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/freeze_heartbeat.c
+    ${PSXRECOMP_ROOT}/runtime/src/gte/gte.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/gte/pgxp.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/nd_intro_ot.c
+    ${PSXRECOMP_ROOT}/runtime/src/util/crc32.c
+    ${PSXRECOMP_ROOT}/runtime/src/util/psx_sha256.c
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/disc_identity.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/cue_sheet.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/disc_path.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/cdrom.c
+    ${PSXRECOMP_ROOT}/runtime/src/spu/spu.c
+    ${PSXRECOMP_ROOT}/runtime/src/spu/spu_shadow.c
+    ${PSXRECOMP_ROOT}/runtime/src/spu/audio_shadow.c
+    ${PSXRECOMP_ROOT}/runtime/src/spu/audio_trace.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu/color_lut.c
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/iso_reader.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/iso_reader_c.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/cpu/psx_cycles.c
+    ${PSXRECOMP_ROOT}/runtime/src/cpu/psx_icache.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/starvation_ring.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/latency_ring.c
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/data_shards.c
+    ${PSXRECOMP_ROOT}/runtime/src/cdrom/load_accel.c
+    ${PSXRECOMP_ROOT}/runtime/src/sio/card_read_summary.c
+    ${PSXRECOMP_ROOT}/runtime/src/sio/card_data_writes.c
+    ${PSXRECOMP_ROOT}/runtime/src/overlay/overlay_capture.c
+    ${PSXRECOMP_ROOT}/runtime/src/overlay/overlay_loader.c
+    ${PSXRECOMP_ROOT}/runtime/src/overlay/overlay_path_canon.c
+    ${PSXRECOMP_ROOT}/runtime/src/overlay/overlay_posix.c
+    ${PSXRECOMP_ROOT}/runtime/src/overlay/overlay_backend.c
+    ${PSXRECOMP_ROOT}/runtime/src/overlay/autocompile.c
+    ${PSXRECOMP_ROOT}/runtime/src/overlay/code_provider.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug/event_ring.c
+    ${PSXRECOMP_ROOT}/runtime/src/app/game_options.c
+    ${PSXRECOMP_ROOT}/runtime/src/mods/mod_builtin_speed.c
+    ${PSXRECOMP_ROOT}/runtime/src/mods/mod_builtin_pgxp.c
+    ${PSXRECOMP_ROOT}/runtime/src/mods/mod_builtin_bezel.c
+    ${PSXRECOMP_ROOT}/runtime/src/mods/mod_packages.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/mods/mod_runtime.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/mods/mod_texture_banks.c
+    ${PSXRECOMP_ROOT}/runtime/src/host/psx_keybinds.c
+    ${PSXRECOMP_ROOT}/runtime/src/bios/psx_bios_backend.c
+    ${PSXRECOMP_ROOT}/runtime/src/net/psx_netplay.c
+    ${PSXRECOMP_ROOT}/runtime/src/net/psx_lobby_client.c
+>>>>>>> 4e01d234 (bump)
     ${PSXRECOMP_ROOT}/recompiler/src/config_loader.cpp
     ${PSXRECOMP_ROOT}/recompiler/src/ps1_exe_parser.cpp
     # (sljit Tier-2 in-process JIT backend removed 2026-07-15 — was disabled by
@@ -562,9 +662,9 @@ else()
     message(STATUS "psxrecomp: local rewind disabled (PSX_REWIND=OFF)")
 endif()
 
-# Lobby WebSocket client helpers are vendored under runtime/src/lobby_ws/
+# Lobby WebSocket client helpers are vendored under runtime/src/net/lobby_ws/
 # (protocol talks to the proprietary recomp-net-server, not recomp-net).
-set(PSXRECOMP_LOBBY_WS_DIR "${PSXRECOMP_ROOT}/runtime/src/lobby_ws")
+set(PSXRECOMP_LOBBY_WS_DIR "${PSXRECOMP_ROOT}/runtime/src/net/lobby_ws")
 # Gated on PSX_NETPLAY: this is the client for the netplay lobby server, so it
 # is dead weight in a single-player build. It used to enable itself on nothing
 # more than the source files existing, i.e. always.
@@ -1375,9 +1475,9 @@ function(psxrecomp_add_runtime_target target)
     endif()
 
     if(PSXRT_ORACLE)
-        set(mode_source ${PSXRECOMP_ROOT}/runtime/src/psx_interpreter.c)
+        set(mode_source ${PSXRECOMP_ROOT}/runtime/src/cpu/psx_interpreter.c)
     else()
-        set(mode_source ${PSXRECOMP_ROOT}/runtime/src/stub_interpreter.c)
+        set(mode_source ${PSXRECOMP_ROOT}/runtime/src/cpu/stub_interpreter.c)
     endif()
 
     add_executable(${target}
@@ -1669,8 +1769,8 @@ function(psxrecomp_add_runtime_target target)
     # autocompile again. (add_dependencies above only orders header generation; it
     # does not force object recompiles on content change.)
     set_source_files_properties(
-        ${PSXRECOMP_ROOT}/runtime/src/overlay_loader.c
-        ${PSXRECOMP_ROOT}/runtime/src/boot_state.c
+        ${PSXRECOMP_ROOT}/runtime/src/overlay/overlay_loader.c
+        ${PSXRECOMP_ROOT}/runtime/src/bios/boot_state.c
         PROPERTIES OBJECT_DEPENDS ${_codegen_hash_hdr})
 
     target_include_directories(${target} PRIVATE
@@ -1763,11 +1863,11 @@ function(psxrecomp_add_runtime_target target)
     # Version / git rev change often on package updates. Keep them off the
     # target-wide compile line so Ninja does not rebuild every runtime + shard TU.
     set_source_files_properties(
-        "${PSXRECOMP_ROOT}/runtime/src/psx_lobby_client.c"
+        "${PSXRECOMP_ROOT}/runtime/src/net/psx_lobby_client.c"
         PROPERTIES COMPILE_DEFINITIONS "PSX_GAME_VERSION=\"${PSXRT_GAME_VERSION}\""
     )
     set_source_files_properties(
-        "${PSXRECOMP_ROOT}/runtime/src/crash_trace.c"
+        "${PSXRECOMP_ROOT}/runtime/src/debug/crash_trace.c"
         PROPERTIES COMPILE_DEFINITIONS "PSX_BUILD_REV=\"${PSX_GIT_REV}\""
     )
 
@@ -1891,13 +1991,13 @@ function(psxrecomp_add_runtime_target target)
         # Keeping this off the target-wide definitions avoids recompiling the
         # entire runtime when an existing game regenerates its dispatcher.
         set_property(SOURCE
-            ${PSXRECOMP_ROOT}/runtime/src/game_dispatch_compat.c
+            ${PSXRECOMP_ROOT}/runtime/src/cpu/game_dispatch_compat.c
             APPEND PROPERTY COMPILE_DEFINITIONS
             PSX_GAME_DISPATCH_HAS_NATIVE_OK=1)
     endif()
     if(has_game_dispatch_native_ok_full)
         set_property(SOURCE
-            ${PSXRECOMP_ROOT}/runtime/src/game_dispatch_compat.c
+            ${PSXRECOMP_ROOT}/runtime/src/cpu/game_dispatch_compat.c
             APPEND PROPERTY COMPILE_DEFINITIONS
             PSX_GAME_DISPATCH_HAS_NATIVE_OK_FULL=1)
     endif()
@@ -2239,7 +2339,7 @@ function(psxrecomp_add_runtime_target target)
         # Visual Studio project files cannot represent language-specific target
         # options on a mixed C/C++ target. Scope the experimental MSVC atomics
         # switch to the one C source that needs it instead.
-        set_property(SOURCE ${PSXRECOMP_ROOT}/runtime/src/audio_trace.c
+        set_property(SOURCE ${PSXRECOMP_ROOT}/runtime/src/spu/audio_trace.c
             APPEND PROPERTY COMPILE_OPTIONS /experimental:c11atomics)
         target_link_options(${target} PRIVATE /STACK:67108864,67108864 /GUARD:NO)
         # No console window in Release MSVC builds. /ENTRY keeps main() as

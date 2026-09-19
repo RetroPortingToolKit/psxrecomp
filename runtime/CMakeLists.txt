@@ -26,7 +26,7 @@ if(BUILD_TESTING)
     add_executable(ws_scene_hold_test tests/test_ws_scene_hold.c)
     target_include_directories(ws_scene_hold_test PRIVATE include)
     add_test(NAME ws_scene_hold_test COMMAND ws_scene_hold_test)
-    add_executable(mod_texture_banks_test tests/test_mod_texture_banks.c src/mod_texture_banks.c)
+    add_executable(mod_texture_banks_test tests/test_mod_texture_banks.c src/mods/mod_texture_banks.c)
     target_include_directories(mod_texture_banks_test PRIVATE include)
     add_test(NAME mod_texture_banks_test COMMAND mod_texture_banks_test)
     if(NOT MSVC)
@@ -112,7 +112,7 @@ if(BUILD_TESTING)
 
     add_executable(psx_icache_fastpath_test
         tests/test_psx_icache_fastpath.c
-        src/psx_icache.c
+        src/cpu/psx_icache.c
     )
     target_include_directories(psx_icache_fastpath_test PRIVATE include)
     # PSX_OVERLAY_DLL_BUILD is the seam psx_cycles.h already provides for a TU
@@ -127,7 +127,7 @@ if(BUILD_TESTING)
     add_test(NAME psx_icache_fastpath_test COMMAND psx_icache_fastpath_test)
 
     add_executable(psx_icache_elision_guard_test
-        tests/test_psx_icache_elision_guard.c src/psx_icache.c)
+        tests/test_psx_icache_elision_guard.c src/cpu/psx_icache.c)
     target_include_directories(psx_icache_elision_guard_test PRIVATE include)
     target_compile_definitions(psx_icache_elision_guard_test PRIVATE
         PSX_ENABLE_BLOCK_CYCLES=1 PSX_OVERLAY_DLL_BUILD=1)
@@ -148,7 +148,7 @@ if(BUILD_TESTING)
 
     add_executable(host_keymap_test
         tests/test_host_keymap.c
-        src/host_keymap.c)
+        src/host/host_keymap.c)
     target_include_directories(host_keymap_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(host_keymap_test PRIVATE
@@ -159,7 +159,7 @@ if(BUILD_TESTING)
 
     add_executable(keyboard_pad_chord_test
         tests/test_keyboard_pad_chord.c
-        src/psx_keybinds.c)
+        src/host/psx_keybinds.c)
     target_include_directories(keyboard_pad_chord_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(keyboard_pad_chord_test PRIVATE
@@ -173,7 +173,7 @@ if(BUILD_TESTING)
     # VRAM residency, portable tracking state, and bounded asynchronous decode.
     add_executable(hd_texture_pack_test
         tests/test_hd_texture_pack.cpp
-        src/hd_texture_pack.cpp)
+        src/gpu/hd_texture_pack.cpp)
     target_include_directories(hd_texture_pack_test PRIVATE include)
     find_package(Threads REQUIRED)
     target_link_libraries(hd_texture_pack_test PRIVATE Threads::Threads)
@@ -191,15 +191,15 @@ if(BUILD_TESTING)
     # is the SIO/peripheral axis, not the harness. DISABLED until owned.
     add_executable(sio_dualshock_rumble_test
         tests/test_sio_dualshock_rumble.c
-        src/sio.c)
+        src/sio/sio.c)
     target_include_directories(sio_dualshock_rumble_test PRIVATE include)
     add_test(NAME sio_dualshock_rumble_test COMMAND sio_dualshock_rumble_test)
     set_tests_properties(sio_dualshock_rumble_test PROPERTIES DISABLED TRUE)
 
     add_executable(gte_register_access_test
         tests/test_gte_register_access.cpp
-        src/gte.cpp
-        src/pgxp.cpp
+        src/gte/gte.cpp
+        src/gte/pgxp.cpp
     )
     target_include_directories(gte_register_access_test PRIVATE include)
     target_compile_definitions(gte_register_access_test PRIVATE
@@ -212,9 +212,9 @@ if(BUILD_TESTING)
     # load/store/COP2 roundtrips, half-word semantics, validate-on-read
     # (foreign overwrite + DMA-overwrite rejection), MOVE/repack arithmetic,
     # suppression bracket, invalidate-all, and GetPreciseVertex safeguards
-    # (truncation agreement + tolerance clamp). White-box: includes src/pgxp.cpp
+    # (truncation agreement + tolerance clamp). White-box: includes src/gte/pgxp.cpp
     # and stubs the gte.cpp fallback-cache extern.
-    add_executable(pgxp_test tests/test_pgxp.cpp src/pgxp.cpp)
+    add_executable(pgxp_test tests/test_pgxp.cpp src/gte/pgxp.cpp)
     target_include_directories(pgxp_test PRIVATE include)
     add_test(NAME pgxp_test COMMAND pgxp_test)
 
@@ -224,7 +224,7 @@ if(BUILD_TESTING)
 
     add_executable(ws_aspect_cone_math_test
         tests/test_ws_aspect_cone_math.c
-        src/ws_aspect_cone_math.c)
+        src/gpu/ws_aspect_cone_math.c)
     target_include_directories(ws_aspect_cone_math_test PRIVATE include)
     if(NOT MSVC)
         target_link_libraries(ws_aspect_cone_math_test PRIVATE m)
@@ -233,7 +233,7 @@ if(BUILD_TESTING)
 
     add_executable(ws_ui_group_test
         tests/test_ws_ui_group.c
-        src/ws_ui_group.c)
+        src/gpu/ws_ui_group.c)
     target_include_directories(ws_ui_group_test PRIVATE include)
     add_test(NAME ws_ui_group_test COMMAND ws_ui_group_test)
 
@@ -279,7 +279,7 @@ if(BUILD_TESTING)
        AND CMAKE_C_COMPILER_ID STREQUAL "GNU"
        AND CMAKE_C_COMPILER_VERSION VERSION_EQUAL "16.1.0")
         add_executable(exit_critical_section_test
-            tests/test_exit_critical_section.c src/traps.c)
+            tests/test_exit_critical_section.c src/cpu/traps.c)
         target_include_directories(exit_critical_section_test PRIVATE include)
         target_compile_definitions(exit_critical_section_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
         target_compile_options(exit_critical_section_test PRIVATE -O3 -flto -ffunction-sections)
@@ -295,7 +295,7 @@ if(BUILD_TESTING)
 
     add_executable(dma_gpu_linked_list_timing_test
         tests/test_dma_gpu_linked_list_timing.c
-        src/dma_gpu_ll.c)
+        src/gpu/dma_gpu_ll.c)
     target_include_directories(dma_gpu_linked_list_timing_test PRIVATE include)
     add_test(NAME dma_gpu_linked_list_timing_test
              COMMAND dma_gpu_linked_list_timing_test)
@@ -303,13 +303,13 @@ if(BUILD_TESTING)
     # Clean-room SPU DSP fidelity (issue #103): SPU IRQ on every RAM access
     # class, reverb (write gating + work-area wrap + CD-only path), noise
     # generator, volume sweeps / direct decode, capture buffers, and
-    # savestate coverage of all the new state. Includes src/spu.c directly
+    # savestate coverage of all the new state. Includes src/spu/spu.c directly
     # (white-box) and stubs its externs.
-    # src/crc32.c is linked rather than stubbed: spu.c's capture/shadow paths
+    # src/util/crc32.c is linked rather than stubbed: spu.c's capture/shadow paths
     # feed real CRCs that this test checks, so a zero-returning stub would make
     # those assertions vacuous. (This target did not link at all before —
     # crc32_update was undefined on origin/master too.)
-    add_executable(spu_fidelity_test tests/test_spu_fidelity.c src/crc32.c)
+    add_executable(spu_fidelity_test tests/test_spu_fidelity.c src/util/crc32.c)
     target_include_directories(spu_fidelity_test PRIVATE include)
     add_test(NAME spu_fidelity_test COMMAND spu_fidelity_test)
     # Same story as sio_dualshock_rumble_test: registered but unlinkable on
@@ -322,7 +322,7 @@ if(BUILD_TESTING)
 
     add_executable(overlay_capture_retry_test
         tests/test_overlay_capture_retry.cpp
-        src/overlay_capture.c)
+        src/overlay/overlay_capture.c)
     target_include_directories(overlay_capture_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_retry_test PRIVATE
@@ -333,7 +333,7 @@ if(BUILD_TESTING)
 
     add_executable(overlay_path_canon_test
         tests/test_overlay_path_canon.c
-        src/overlay_path_canon.c)
+        src/overlay/overlay_path_canon.c)
     target_include_directories(overlay_path_canon_test PRIVATE include)
     add_test(NAME overlay_path_canon_test COMMAND overlay_path_canon_test)
 
@@ -344,7 +344,7 @@ if(BUILD_TESTING)
     # exception handler interpreted for the life of the process.
     add_executable(kernel_patch_ranges_test
         tests/test_kernel_patch_ranges.c
-        src/kernel_patch_ranges.c)
+        src/memory/kernel_patch_ranges.c)
     target_include_directories(kernel_patch_ranges_test PRIVATE include)
     add_test(NAME kernel_patch_ranges_test COMMAND kernel_patch_ranges_test)
 
@@ -353,22 +353,29 @@ if(BUILD_TESTING)
     # kernel-call HLE is (correctly) refused for want of a DeliverEvent anchor.
     add_executable(bios_hle_plan_test
         tests/test_bios_hle_plan.c
-        src/bios_hle_plan.c)
+        src/bios/bios_hle_plan.c)
     target_include_directories(bios_hle_plan_test PRIVATE include)
     add_test(NAME bios_hle_plan_test COMMAND bios_hle_plan_test)
 
     # A cue, conventional raw image, or Steam .car image is a valid pick; each
     # must mount the same disc and identify off the same data track.
-    add_executable(sbi_setup_test tests/test_sbi_setup.cpp src/psx_sha256.c)
+    add_executable(sbi_setup_test tests/test_sbi_setup.cpp src/util/psx_sha256.c)
     target_include_directories(sbi_setup_test PRIVATE include)
     add_test(NAME sbi_setup_test COMMAND sbi_setup_test ${CMAKE_CURRENT_BINARY_DIR}/sbi-setup-fixture)
 
     add_executable(disc_path_resolve_test
         tests/test_disc_path_resolve.cpp
+<<<<<<< HEAD
         src/disc_path.cpp
         src/cue_sheet.cpp
         src/iso_reader.cpp)
     target_include_directories(disc_path_resolve_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
+=======
+        src/cdrom/disc_path.cpp
+        src/cdrom/cue_sheet.cpp
+        src/cdrom/iso_reader.cpp)
+    target_include_directories(disc_path_resolve_test PRIVATE include)
+>>>>>>> 4e01d234 (bump)
     target_link_libraries(disc_path_resolve_test PRIVATE chdr-static)
     add_test(NAME disc_path_resolve_test COMMAND disc_path_resolve_test)
 
@@ -382,25 +389,37 @@ if(BUILD_TESTING)
     # Multi-file cue TOC mapping (data track + CD-DA in separate bins).
     add_executable(iso_reader_cdda_test
         tests/test_iso_reader_cdda.cpp
+<<<<<<< HEAD
         src/iso_reader.cpp
         src/cue_sheet.cpp)
     target_include_directories(iso_reader_cdda_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
+=======
+        src/cdrom/iso_reader.cpp
+        src/cdrom/cue_sheet.cpp)
+    target_include_directories(iso_reader_cdda_test PRIVATE include)
+>>>>>>> 4e01d234 (bump)
     target_link_libraries(iso_reader_cdda_test PRIVATE chdr-static)
     add_test(NAME iso_reader_cdda_test COMMAND iso_reader_cdda_test)
 
     add_executable(iso_reader_sbi_test
         tests/test_iso_reader_sbi.cpp
+<<<<<<< HEAD
         src/iso_reader.cpp
         src/cue_sheet.cpp)
     target_include_directories(iso_reader_sbi_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
+=======
+        src/cdrom/iso_reader.cpp
+        src/cdrom/cue_sheet.cpp)
+    target_include_directories(iso_reader_sbi_test PRIVATE include)
+>>>>>>> 4e01d234 (bump)
     target_link_libraries(iso_reader_sbi_test PRIVATE chdr-static)
     add_test(NAME iso_reader_sbi_test COMMAND iso_reader_sbi_test)
 
     add_executable(mod_packages_test
         tests/test_mod_packages.cpp
-        src/mod_packages.cpp
-        src/crc32.c
-        src/psx_sha256.c)
+        src/mods/mod_packages.cpp
+        src/util/crc32.c
+        src/util/psx_sha256.c)
     target_include_directories(mod_packages_test PRIVATE
         include
         ../recompiler/lib/toml11)
@@ -408,7 +427,7 @@ if(BUILD_TESTING)
 
     add_executable(text_xlate_fix_only_test
         tests/test_text_xlate_fix_only.cpp
-        src/text_xlate.cpp)
+        src/mods/text_xlate.cpp)
     target_include_directories(text_xlate_fix_only_test PRIVATE
         include
         ../recompiler/lib/toml11)
@@ -416,13 +435,13 @@ if(BUILD_TESTING)
 
     add_executable(mod_runtime_test
         tests/test_mod_runtime.cpp
-        src/mod_runtime.cpp
-        src/mod_packages.cpp
-        src/disc_path.cpp
-        src/cue_sheet.cpp
-        src/iso_reader.cpp
-        src/crc32.c
-        src/psx_sha256.c)
+        src/mods/mod_runtime.cpp
+        src/mods/mod_packages.cpp
+        src/cdrom/disc_path.cpp
+        src/cdrom/cue_sheet.cpp
+        src/cdrom/iso_reader.cpp
+        src/util/crc32.c
+        src/util/psx_sha256.c)
     target_include_directories(mod_runtime_test PRIVATE
         include
         ../recompiler/include
@@ -442,7 +461,7 @@ if(BUILD_TESTING)
     if(WIN32)
         add_executable(autocompile_publication_test
             tests/test_autocompile_publication.c
-            src/autocompile.c)
+            src/overlay/autocompile.c)
         target_include_directories(autocompile_publication_test PRIVATE include)
         target_compile_definitions(autocompile_publication_test PRIVATE
             PSX_AUTOCOMPILE_TEST=1)
@@ -454,7 +473,7 @@ if(BUILD_TESTING)
         # broken autocompile silently degrades the whole run to the interpreter.
         add_executable(autocompile_degraded_test
             tests/test_autocompile_degraded.c
-            src/autocompile.c)
+            src/overlay/autocompile.c)
         target_include_directories(autocompile_degraded_test PRIVATE include)
         add_test(NAME autocompile_degraded_test
                  COMMAND autocompile_degraded_test)
@@ -499,8 +518,8 @@ if(BUILD_TESTING)
     # test self-provisions test_dir/card1.mcd relative to its cwd.
     add_executable(sio_spu_istat_ownership_test
         tests/test_sio_spu_istat_ownership.c
-        src/sio.c
-        src/memcard.c)
+        src/sio/sio.c
+        src/sio/memcard.c)
     target_include_directories(sio_spu_istat_ownership_test PRIVATE include src)
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sio_spu_istat_scratch)
     add_test(NAME sio_spu_istat_ownership_test COMMAND sio_spu_istat_ownership_test
@@ -528,13 +547,13 @@ if(BUILD_TESTING)
 
     add_executable(freeze_dump_policy_test
         tests/test_freeze_dump_policy.c
-        src/freeze_dump_policy.c)
+        src/debug/freeze_dump_policy.c)
     target_include_directories(freeze_dump_policy_test PRIVATE src)
     add_test(NAME freeze_dump_policy_test COMMAND freeze_dump_policy_test)
 
     add_executable(frame_interpolation_schedule_test
         tests/test_frame_interpolation_schedule.c
-        src/frame_interpolation.c)
+        src/gpu/frame_interpolation.c)
     target_include_directories(frame_interpolation_schedule_test PRIVATE include)
     if(NOT MSVC)
         target_link_libraries(frame_interpolation_schedule_test PRIVATE m)
@@ -598,12 +617,12 @@ if(BUILD_TESTING)
         # Lobby chat ring. #includes psx_lobby_client.c, so it needs the same
         # guard define and include roots the runtime build uses; the two WS
         # calls that TU makes are stubbed in the test and abort if reached.
-        if(EXISTS "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_ws.c")
+        if(EXISTS "${PSXRECOMP_ROOT}/runtime/src/net/lobby_ws/rnet_ws.c")
             add_executable(lobby_chat_ring_test tests/test_lobby_chat_ring.c)
             target_include_directories(lobby_chat_ring_test PRIVATE
                 include
                 src
-                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws"
+                "${PSXRECOMP_ROOT}/runtime/src/net/lobby_ws"
                 ${_RNET_ROOT}/include)
             target_compile_definitions(lobby_chat_ring_test PRIVATE
                 PSX_HAS_LOBBY_CLIENT=1
@@ -612,8 +631,8 @@ if(BUILD_TESTING)
             # wall of stubs. Nothing in this test reaches a socket, so no fake
             # is needed and none can drift from what the runtime links.
             target_sources(lobby_chat_ring_test PRIVATE
-                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_ws.c"
-                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_sha1.c")
+                "${PSXRECOMP_ROOT}/runtime/src/net/lobby_ws/rnet_ws.c"
+                "${PSXRECOMP_ROOT}/runtime/src/net/lobby_ws/rnet_sha1.c")
             target_link_libraries(lobby_chat_ring_test PRIVATE recomp_net)
             add_test(NAME lobby_chat_ring_test COMMAND lobby_chat_ring_test)
         endif()
@@ -625,7 +644,7 @@ if(BUILD_TESTING)
 
         add_executable(netplay_input_hist_test
             tests/test_netplay_input_hist.c
-            src/netplay_input_hist.c)
+            src/net/netplay_input_hist.c)
         target_include_directories(netplay_input_hist_test PRIVATE
             include
             ${_RNET_ROOT}/include)
@@ -643,14 +662,14 @@ if(BUILD_TESTING)
 
     add_executable(psx_cycle_event_boundaries_test
         tests/test_psx_cycle_event_boundaries.c
-        src/psx_cycles.c)
+        src/cpu/psx_cycles.c)
     target_include_directories(psx_cycle_event_boundaries_test PRIVATE include)
     add_test(NAME psx_cycle_event_boundaries_test
              COMMAND psx_cycle_event_boundaries_test)
 
     add_executable(psx_vblank_clock_test
         tests/test_psx_vblank_clock.c
-        src/psx_vblank_clock.c)
+        src/timers/psx_vblank_clock.c)
     target_include_directories(psx_vblank_clock_test PRIVATE include)
     add_test(NAME psx_vblank_clock_test COMMAND psx_vblank_clock_test)
 
@@ -751,8 +770,8 @@ if(BUILD_TESTING)
     # pad interruption, terminal ACK behavior and persistent FLAG semantics.
     add_executable(sio_card_protocol_test
         tests/test_sio_card_protocol.c
-        src/sio.c
-        src/memcard.c)
+        src/sio/sio.c
+        src/sio/memcard.c)
     target_include_directories(sio_card_protocol_test PRIVATE include src)
     # Runs in a build-tree scratch dir, NOT in tests/: the test writes
     # test_dir/card1.mcd relative to the working directory (self-provisioning it
@@ -829,14 +848,14 @@ if(NOT MSVC AND EXISTS "${BEETLE_LIB}")
     )
 
     add_executable(psx-beetle
-        src/beetle_main.cpp
-        src/beetle_libretro.cpp
-        src/beetle_debug_server.c
-        src/frame_pacing.c
-        src/host_time.c
-        src/parity_trace.c
-        src/device_trace.c
-        src/audio_trace.c
+        src/oracle/beetle_main.cpp
+        src/oracle/beetle_libretro.cpp
+        src/oracle/beetle_debug_server.c
+        src/host/frame_pacing.c
+        src/host/host_time.c
+        src/debug/parity_trace.c
+        src/debug/device_trace.c
+        src/spu/audio_trace.c
         ${LIBRETRO_COMMON_SOURCES}
     )
 

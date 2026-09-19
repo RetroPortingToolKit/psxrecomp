@@ -149,8 +149,8 @@ if(PSXRECOMP_ENABLE_CHD)
         src/main_cli.cpp
         src/cli_boot_path.cpp
         src/ps1_exe_parser.cpp
-        ../runtime/src/cue_sheet.cpp
-        ../runtime/src/iso_reader.cpp
+        ../runtime/src/cdrom/cue_sheet.cpp
+        ../runtime/src/cdrom/iso_reader.cpp
     )
     target_include_directories(psxrecomp PRIVATE
         include
@@ -399,7 +399,7 @@ if(BUILD_TESTING)
 
     add_executable(debug_trace_ranges_test
         ../runtime/tests/test_debug_trace_ranges.c
-        ../runtime/src/debug_trace_ranges.c
+        ../runtime/src/debug/debug_trace_ranges.c
     )
     target_include_directories(debug_trace_ranges_test PRIVATE
         ../runtime/include)

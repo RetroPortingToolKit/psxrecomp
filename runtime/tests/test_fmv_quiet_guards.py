@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def main():
-    debug = (ROOT / "runtime/src/debug_server.c").read_text(encoding="utf-8")
-    mdec = (ROOT / "runtime/src/mdec.c").read_text(encoding="utf-8")
+    debug = (ROOT / "runtime/src/debug/debug_server.c").read_text(encoding="utf-8")
+    mdec = (ROOT / "runtime/src/mdec/mdec.c").read_text(encoding="utf-8")
     required = (
         (debug, "if (s_fmv_quiet) return;\n    ls_suppress_begin();",
          "FMV quiet mode does not gate function-entry trace work"),

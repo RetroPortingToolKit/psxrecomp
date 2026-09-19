@@ -26,7 +26,7 @@ def require_regex(source: str, pattern: str, message: str) -> None:
 
 def main() -> int:
     config = (ROOT / "recompiler/src/config_loader.h").read_text(encoding="utf-8")
-    main_cpp = (ROOT / "runtime/src/main.cpp").read_text(encoding="utf-8")
+    main_cpp = (ROOT / "runtime/src/app/main.cpp").read_text(encoding="utf-8")
     cli = (ROOT / "recompiler/src/main_cli.cpp").read_text(encoding="utf-8")
     toml = (ROOT / "recompiler/src/main_toml.cpp").read_text(encoding="utf-8")
 

@@ -10,11 +10,11 @@ comparison target. At `upscale_shift==0`, no PGXP, `line_render_mode==0`,
 Beetle SW = pure mednafen-PSX behavior.
 
 Our files:
-- `runtime/src/gpu.c` — GPU register/command front end (GPUSTAT, GP0/GP1
+- `runtime/src/gpu/gpu.c` — GPU register/command front end (GPUSTAT, GP0/GP1
   decode, VRAM transfers, display config, widescreen machinery).
-- `runtime/src/gpu_sw_renderer.c` — software rasterizer (the default/oracle-
+- `runtime/src/gpu/gpu_sw_renderer.c` — software rasterizer (the default/oracle-
   comparable backend; also drives 24bpp display decode for the GL path).
-- `runtime/src/gpu_gl_renderer.c` — OpenGL backend (FBO RGBA8 hi-res +
+- `runtime/src/gpu/gpu_gl_renderer.c` — OpenGL backend (FBO RGBA8 hi-res +
   R16UI native mirror + stencil mask).
 
 ---

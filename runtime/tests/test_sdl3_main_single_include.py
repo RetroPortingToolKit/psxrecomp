@@ -18,9 +18,9 @@ def main() -> int:
             if SDL_MAIN_HEADER in source:
                 owners.append(path.relative_to(ROOT).as_posix())
 
-    if owners != ["runtime/src/main.cpp"]:
+    if owners != ["runtime/src/app/main.cpp"]:
         raise AssertionError(
-            "SDL_main.h must be included exactly once by runtime/src/main.cpp; "
+            "SDL_main.h must be included exactly once by runtime/src/app/main.cpp; "
             f"found {owners}"
         )
 

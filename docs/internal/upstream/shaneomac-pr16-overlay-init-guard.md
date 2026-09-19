@@ -22,7 +22,7 @@ The focused regression test is
 ## Explicitly excluded
 
 - The source commit's decodable-word/high-RAM dirty-interpreter fallback in
-  `runtime/src/dirty_ram_interp.c`.
+  `runtime/src/cpu/dirty_ram_interp.c`.
 - All SmackDown-specific behavior and data.
 - Every other PR #16 change, including Vulkan, audio/SPU, GPU primitive-size,
   MSVC portability, and helper-script work.

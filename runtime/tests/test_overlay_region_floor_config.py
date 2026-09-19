@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 LOADER_H = (ROOT / "recompiler/src/config_loader.h").read_text(encoding="utf-8")
 LOADER_CPP = (ROOT / "recompiler/src/config_loader.cpp").read_text(encoding="utf-8")
-MAIN = (ROOT / "runtime/src/main.cpp").read_text(encoding="utf-8")
+MAIN = (ROOT / "runtime/src/app/main.cpp").read_text(encoding="utf-8")
 
 assert "has_overlay_region_floor" in LOADER_H and "overlay_region_floor" in LOADER_H
 assert 'runtime.contains("overlay_region_floor")' in LOADER_CPP

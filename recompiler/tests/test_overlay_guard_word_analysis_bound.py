@@ -2,7 +2,7 @@
 """The overlay delay-slot guard word is READ-legal but ANALYSIS-illegal.
 
 An overlay capture deliberately carries one coherent guard instruction past
-the end of a dirty-page run (runtime/src/overlay_capture.c write_json_window,
+the end of a dirty-page run (runtime/src/overlay/overlay_capture.c write_json_window,
 `size += 4u`), so that a MIPS branch sitting at the run's final word (...FFC)
 has its architectural delay slot (...000) available. That makes the guard word
 a legal DELAY-SLOT SOURCE and an illegal BLOCK LEADER: the word AFTER it does

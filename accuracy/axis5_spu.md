@@ -3,7 +3,7 @@
 Cross-reference of our SPU implementation against the in-tree Beetle/Mednafen
 oracle and nocash psx-spx.
 
-- **Our impl:** `runtime/src/spu.c` (799 LOC) + `runtime/src/spu_shadow.c` (float
+- **Our impl:** `runtime/src/spu/spu.c` (799 LOC) + `runtime/src/spu/spu_shadow.c` (float
   resample shadow, opt-in, verify-only — irrelevant to hardware accuracy).
 - **Oracle:** `beetle-psx/mednafen/psx/spu.cpp`
   (1664 LOC, `PS_SPU`).

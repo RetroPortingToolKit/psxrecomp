@@ -100,7 +100,7 @@ unlikely; assert/log the per-function window count at build time.
 - Backends: a backdrop generator may run as a gcc-cache DLL (pass handles it),
   a sljit shard, or interpreted. [sljit was removed 2026-07-15 (`5b7e69b4`); the
   toolchain-free tier is now bundled tcc, which also produces a DLL — so only the
-  DLL and interpreted cases exist today. See `runtime/src/overlay_backend.c`.]
+  DLL and interpreted cases exist today. See `runtime/src/overlay/overlay_backend.c`.]
   For full coverage like `auto_screen_x`, the
   sljit emitter + dirty_ram_interp need the same force-start-0 / widen-end at the
   detected sites. Options: (a) export the detected site map to the runtime so

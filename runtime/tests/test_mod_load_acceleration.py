@@ -5,11 +5,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MAIN = (ROOT / "runtime/src/main.cpp").read_text(encoding="utf-8")
+MAIN = (ROOT / "runtime/src/app/main.cpp").read_text(encoding="utf-8")
 HEADER = (ROOT / "runtime/include/mod_plugins.h").read_text(encoding="utf-8")
-FNTRACE = (ROOT / "runtime/src/fntrace.c").read_text(encoding="utf-8")
-DIRTY_INTERP = (ROOT / "runtime/src/dirty_ram_interp.c").read_text(encoding="utf-8")
-CDROM = (ROOT / "runtime/src/cdrom.c").read_text(encoding="utf-8")
+FNTRACE = (ROOT / "runtime/src/debug/fntrace.c").read_text(encoding="utf-8")
+DIRTY_INTERP = (ROOT / "runtime/src/cpu/dirty_ram_interp.c").read_text(encoding="utf-8")
+CDROM = (ROOT / "runtime/src/cdrom/cdrom.c").read_text(encoding="utf-8")
 CONFIG_H = (ROOT / "recompiler/src/config_loader.h").read_text(encoding="utf-8")
 CONFIG_CPP = (ROOT / "recompiler/src/config_loader.cpp").read_text(
     encoding="utf-8"

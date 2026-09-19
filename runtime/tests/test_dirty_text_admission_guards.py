@@ -25,8 +25,8 @@ def main() -> int:
     parser.add_argument("--root", type=Path,
                         default=Path(__file__).resolve().parents[2])
     root = parser.parse_args().root.resolve()
-    memory = (root / "runtime/src/memory.c").read_text(encoding="utf-8")
-    dma = (root / "runtime/src/dma.c").read_text(encoding="utf-8")
+    memory = (root / "runtime/src/memory/memory.c").read_text(encoding="utf-8")
+    dma = (root / "runtime/src/dma/dma.c").read_text(encoding="utf-8")
 
     text_write = function_body(memory, "static inline void text_guard_note_write(")
     if "text_modified_bitmap" not in text_write:

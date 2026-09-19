@@ -1,6 +1,6 @@
 # Axis 5 — SIO / Controller / Memory-Card Accuracy
 
-Cross-reference of `runtime/src/sio.c` (+ `main.cpp` pad driver, `memcard.c`)
+Cross-reference of `runtime/src/sio/sio.c` (+ `main.cpp` pad driver, `memcard.c`)
 against the in-tree Beetle/Mednafen oracle
 (`beetle-psx/mednafen/psx/`:
 `frontio.cpp`, `input/dualshock.cpp`, `input/gamepad.cpp`, `input/memcard.cpp`)

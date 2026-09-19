@@ -7,9 +7,9 @@ import sys
 
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
-    memory = (root / "runtime/src/memory.c").read_text(encoding="utf-8")
-    interp = (root / "runtime/src/dirty_ram_interp.c").read_text(encoding="utf-8")
-    compat = (root / "runtime/src/game_dispatch_compat.c").read_text(encoding="utf-8")
+    memory = (root / "runtime/src/memory/memory.c").read_text(encoding="utf-8")
+    interp = (root / "runtime/src/cpu/dirty_ram_interp.c").read_text(encoding="utf-8")
+    compat = (root / "runtime/src/cpu/game_dispatch_compat.c").read_text(encoding="utf-8")
     runtime_cmake = (root / "runtime/runtime.cmake").read_text(encoding="utf-8")
 
     start = memory.index("int dirty_ram_text_native_ok_ranges_from(")

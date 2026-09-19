@@ -136,7 +136,7 @@ Instead:
 3. **ASK the user** how to proceed (build the command? change approach?)
 4. **BUILD the tooling** if approved, then resume
 
-Adding a new command is cheap — the pattern is one handler in `runtime/src/debug_server.c`
+Adding a new command is cheap — the pattern is one handler in `runtime/src/debug/debug_server.c`
 (native) and a matching handler in `duckstation/src/core/psxrecomp_debug_server.cpp`
 (DuckStation oracle, then regenerate `tools/duckstation/psxrecomp_oracle.patch`).
 See [`../TCP_COMMANDS.md`](../TCP_COMMANDS.md) for the protocol.

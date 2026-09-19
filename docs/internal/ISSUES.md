@@ -122,7 +122,7 @@ isn't reaching it.
 `fn_entry_dump` iterates the entire ring (up to 270M entries) before
 applying the addr filter, which **freezes the debug server thread for
 seconds-to-minutes** on a populated ring. Both `handle_fn_entry_dump`
-and `handle_fn_exit_dump` in `runtime/src/debug_server.c` need the
+and `handle_fn_exit_dump` in `runtime/src/debug/debug_server.c` need the
 addr filter applied early, plus a `seq_lo/seq_hi` window cap, so a
 filtered query for a small range returns immediately.
 
@@ -298,8 +298,8 @@ values via `fn_exit_dump` of `0x1FC0DA00` while card init is happening
 `mem[0xA000B9D0]` and `mem[0xA000B9D4..B9E0]` during the same window
 to determine which flag fires for the failing sector.
 
-**Or simpler**: The fix is in `runtime/src/memcard.c` /
-`runtime/src/sio.c`. The SIO/card simulation handles sector 0
+**Or simpler**: The fix is in `runtime/src/sio/memcard.c` /
+`runtime/src/sio/sio.c`. The SIO/card simulation handles sector 0
 correctly but fails on sector ≥ 1. The issue is in hardware
 simulation, NOT recompiler/codegen. Inspect how the runtime simulates
 the multi-sector read protocol.
@@ -321,7 +321,7 @@ longer transitioned to the memcard menu. Reverted seeds via
 shell trampolines through recompiled C functions broke shell flow.
 The existing dirty_ram_dispatch handles them correctly; do not reseed.
 
-**Tool fix landed:** `runtime/src/debug_server.c::fn_dump_parse` now
+**Tool fix landed:** `runtime/src/debug/debug_server.c::fn_dump_parse` now
 defaults to a 1M-entry sliding window instead of the full 128M ring,
 preventing the multi-second freeze that previously made `fn_entry_dump`
 unusable on populated rings.
@@ -350,7 +350,7 @@ shell skips it." Suggested approach:
 **Status:** open
 **Date opened:** 2026-05-03
 
-`runtime/src/debug_server.c::handle_fn_entry_dump` and
+`runtime/src/debug/debug_server.c::handle_fn_entry_dump` and
 `handle_fn_exit_dump` walk every entry in the 64K-cap ring (or rather
 the entire `[seq_lo, seq_hi)` window, which can be the full ring)
 applying the addr filter only AFTER constructing the per-entry buffer
@@ -525,7 +525,7 @@ defect's live-execution/save-load shape. Nothing here is actionable; retained as
 history.
 **Date opened:** 2026-06-15
 **Date closed:** 2026-07-15 (by removal of the subsystem)
-**Area:** overlay Tier-2 sljit backend (`runtime/src/overlay_loader.c`,
+**Area:** overlay Tier-2 sljit backend (`runtime/src/overlay/overlay_loader.c`,
 `overlay_sljit.c`, `code_provider.c`, `overlay_sljit.c` resolution)
 
 ### Symptom
@@ -644,8 +644,8 @@ in `00106000_1675417D`).
 **Status:** ROOT-CAUSED; partial fixes in tree (uncommitted, `_wt-tomba2-ipr`);
 segment-granular redesign DESIGNED but NOT implemented
 **Date opened:** 2026-07-06
-**Area:** `runtime/src/overlay_loader.c` (run_shadow_diff + dispatch gates),
-`runtime/src/dirty_ram_interp.c`, `runtime/src/interrupts.c`, `runtime/src/traps.c`
+**Area:** `runtime/src/overlay/overlay_loader.c` (run_shadow_diff + dispatch gates),
+`runtime/src/cpu/dirty_ram_interp.c`, `runtime/src/cpu/interrupts.c`, `runtime/src/cpu/traps.c`
 **Blocks:** Issue #8 path 1. Full detail + design in memory
 `tomba2_shadow_diff_unsound_segment_redesign.md`.
 

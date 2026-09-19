@@ -6,7 +6,7 @@ Why this exists
 ---------------
 `gpu_frame_dump` on the runtime's TCP debug server already stamps every GP0
 packet with the guest code that issued it (`func`, `pc`, `ra`) and its linked-
-list OT rank -- see runtime/src/debug_server.c, handle_gpu_frame_dump(), and
+list OT rank -- see runtime/src/debug/debug_server.c, handle_gpu_frame_dump(), and
 GpuGp0RingEntry in runtime/include/gpu.h. Nothing consumed that attribution.
 This module turns the raw ring into decoded primitives, so "which guest
 function drew this, and was the semi-transparency bit set" has a mechanical
@@ -65,7 +65,7 @@ class DebugConn:
     """JSON client for the runtime (and DuckStation) debug server.
 
     ONE REQUEST PER CONNECTION. That is the server's actual contract, not a
-    conservative choice: runtime/src/debug_server.c's io_thread_main() accepts,
+    conservative choice: runtime/src/debug/debug_server.c's io_thread_main() accepts,
     reads a single line, replies, and sock_close()s. A client that holds the
     socket open and sends a second command gets silence and then EOF, which
     looks exactly like a hung emulator. (`s_client` in that file is vestigial;
@@ -182,7 +182,7 @@ class DebugConn:
         }
 
     # pause / continue / step / run_to_frame were REMOVED from psx-runtime --
-    # runtime/src/debug_server.c registers them only as handlers that return an
+    # runtime/src/debug/debug_server.c registers them only as handlers that return an
     # error, because pause-step-read synthesizes a snapshot instead of reading
     # the history the runtime already records, and it once turned a dropped
     # client into an apparent freeze. They still work on the DuckStation oracle,

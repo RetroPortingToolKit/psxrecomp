@@ -150,10 +150,10 @@ interpreted — a narrow, accepted cost, not a wall.
 | Concern | Where |
 |---|---|
 | MIPS→C translation (static + overlay) | `recompiler/src/` (`code_generator.cpp`, `mips_decoder.cpp`, …) |
-| Overlay capture | `runtime/src/overlay_capture.c` |
-| Overlay compile pipeline | `tools/compile_overlays.py`, `runtime/src/overlay_backend.c`, `overlay_compile_worker.c` |
-| Native overlay load/dispatch | `runtime/src/overlay_loader.c` |
-| Runtime interpreter (dirty RAM) | `runtime/src/dirty_ram_interp.c` |
+| Overlay capture | `runtime/src/overlay/overlay_capture.c` |
+| Overlay compile pipeline | `tools/compile_overlays.py`, `runtime/src/overlay/overlay_backend.c`, `overlay_compile_worker.c` |
+| Native overlay load/dispatch | `runtime/src/overlay/overlay_loader.c` |
+| Runtime interpreter (dirty RAM) | `runtime/src/cpu/dirty_ram_interp.c` |
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how these connect to the hardware
 simulation, and [`docs/FEATURES.md`](FEATURES.md) for the overlay-system feature

@@ -321,7 +321,7 @@ on a fixed region -> next.
   BIOS detail no player can see. Enhancement-phase (load-time) defect; no
   timing-core change.
   Fix: the two axes are now decided by one pure, dependency-free function,
-  `psx_bios_hle_plan()` (`runtime/src/bios_hle_plan.c`), which reads the
+  `psx_bios_hle_plan()` (`runtime/src/bios/bios_hle_plan.c`), which reads the
   REQUESTED `bios_hle` for the boot decision and gates each axis on only the
   anchor it actually needs; refusals are reported at startup instead of silently
   downgrading. `psx_bios_hle_configure()` additionally clamps `boot_skip` to
@@ -688,7 +688,7 @@ on a fixed region -> next.
 - **2026-07-19 (lobby server → closed-source Rust):**
   Proprietary `recomp-net-server` (Rust) owns WS lobby + privacy/docs;
   removed C `servers/lobby` from open `recomp-net`. Client WS helpers
-  vendored at `runtime/src/lobby_ws/`. Default
+  vendored at `runtime/src/net/lobby_ws/`. Default
   `ws://netplay.retcomm.net:8765`.
 
 - **2026-07-19 (netplay lobby server + launcher menus):**
@@ -839,7 +839,7 @@ on a fixed region -> next.
   full_function_emitter.cpp now emits a null-by-default `g_psx_bios_hle_hook` consult at
   the top of every psx_dispatch_impl iteration (pre-normalize phys, BEFORE the game/
   dirty-RAM/static backends; handled ⇒ resume at $ra; NULL default = pure LLE,
-  dispatch-identical). (2) RUNTIME TIER — runtime/src/bios_hle.c(+.h): v1 call-HLE =
+  dispatch-identical). (2) RUNTIME TIER — runtime/src/bios/bios_hle.c(+.h): v1 call-HLE =
   the B0 event family (DeliverEvent/OpenEvent/CloseEvent/TestEvent/EnableEvent/
   DisableEvent) ground-truthed against the SCPH1001 kernel disassembly (Ghidra,
   0xBFC11644..0xBFC11A84; EvCB [0x120]/[0x124], stride 0x1C), operating on the real
@@ -928,7 +928,7 @@ on a fixed region -> next.
   unmodeled. Eventually merge wt/tomba2-load-accuracy to master after cross-title regen+smoke.
 
 - **2026-06-27 (I-cache fetch — MODEL built + interp-validated EXACT; Stage 1 of 2):**
-  New runtime/src/psx_icache.c: faithful direct-mapped (4 KB / 256-line) instruction-cache
+  New runtime/src/cpu/psx_icache.c: faithful direct-mapped (4 KB / 256-line) instruction-cache
   fetch cost, transcribed from Beetle PS_CPU::ReadInstruction — HIT +0 (no give-back clear),
   KSEG1/uncached +4, cached miss +3 + refill from the missing word to the line end (earlier
   words stay invalid), miss clears the load give-back. Mirrors only the per-word TV tag array.
@@ -1068,7 +1068,7 @@ on a fixed region -> next.
   to the already-faithful card path. RESULT: load=4 boots **past the wedge to the
   intro FMV** (screenshot-verified, frame 11k+ stable). Ruler #1 native 54 vs
   Beetle 56 = the known load-ReadFudge gap on the load=4 branch, NOT a regression
-  (SIO timing can't change CPU instruction cost). Runtime-only (`runtime/src/sio.c`),
+  (SIO timing can't change CPU instruction cost). Runtime-only (`runtime/src/sio/sio.c`),
   no regen, UNCOMMITTED. Write-up: WEDGE_load4_shell_rootcause.md. Follow-up
   (completeness, non-blocking): axis5 Fix-6 / "1.0e-e2" fully removes the pad
   fast-path so pad+card share one shifter path — needs menu input validation.
@@ -1165,7 +1165,7 @@ on a fixed region -> next.
   guest-cycle exposure to the Beetle oracle (MAIN checkout, additive diagnostic):
   beetle-psx/libretro.cpp accumulates per-frame `timestamp` (CPU->Run slice) into
   `beetle_total_guest_cycles` (+ reset on init) with `extern "C"
-  beetle_core_get_guest_cycles()`; runtime/src/beetle_debug_server.c h_ping now
+  beetle_core_get_guest_cycles()`; runtime/src/oracle/beetle_debug_server.c h_ping now
   reports `guest_cycles`. Rebuilt beetle static lib + psx-beetle. VALIDATED (Rule
   0): guest_cycles advances ~565,022 cyc/frame = real PSX rate (33.8688MHz/~59.94).
   Beetle needs the .CUE (not raw .bin). FIRST CROSS-CHECK: native psx_cycle_count

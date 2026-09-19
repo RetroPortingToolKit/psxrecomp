@@ -34,7 +34,7 @@ How the two configs relate:
   otherwise inherited from `bios.toml`; that merge was never implemented.
   `load_bios_config` (`recompiler/src/config_loader.cpp`) is called only from the
   recompiler front-ends — `main_bios.cpp`, and `main_psx.cpp` purely to build the
-  `BiosAddressModel` — and never from `runtime/src/main.cpp`. Setting a
+  `BiosAddressModel` — and never from `runtime/src/app/main.cpp`. Setting a
   `[runtime]` scalar in a BIOS toml has no effect on a game run.
   Runtime precedence is: environment > CLI > `settings.toml` > `game.toml` >
   compiled-in default.
@@ -85,7 +85,7 @@ The whole `[netplay]` policy is resolved **per mounted disc**, not once per
 build — `required_tracks` and `required_leadout_lba` are per-disc facts too (a
 set may mix a CD-DA disc with a data-only one, and the lead-out LBA is the
 disc's size). Only `required_disc_fps` carries per-disc data today; the
-resolution point is `netplay_expect_for_disc()` in `runtime/src/main.cpp`, and
+resolution point is `netplay_expect_for_disc()` in `runtime/src/app/main.cpp`, and
 that is where the others go when a title needs them.
 
 Offline Play may still launch with a TOC warning; first-run setup Finish and
@@ -345,7 +345,7 @@ guard requires regenerating the game and overlay code.
 ## Runtime block
 
 Consumed by the cmake macro `psxrecomp_v4_add_runtime_target` (eventually)
-and by `runtime/src/main.cpp` as the source of compiled-in defaults.
+and by `runtime/src/app/main.cpp` as the source of compiled-in defaults.
 
 ```toml
 [runtime]

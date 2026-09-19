@@ -108,7 +108,7 @@ tooling + early-flush) does **not** crash on overworld-load (user-confirmed). Th
 
 ## 3. The native_stack tool (the thing that may be causing the regression)
 
-Uncommitted tooling added to `runtime/src/crash_trace.c` (129 lines): a
+Uncommitted tooling added to `runtime/src/debug/crash_trace.c` (129 lines): a
 host-stack walker `append_native_stack()` that recovers the true recursion cycle
 (the `recent_fn` ring can't — see §1). It is called **only** from
 `psx_crash_trace_dump()`, i.e. only while a crash/fatal/SEH dump is already in
@@ -246,7 +246,7 @@ The codebase ALREADY solves tail-calls for **compiled** code, via two pieces:
   target), and unwinds frame-by-frame until the frame whose `(ra,sp)` matches
   resolves it (clears bail, resumes).
 
-**The dirty-RAM interpreter BYPASSES both.** In `runtime/src/dirty_ram_interp.c`,
+**The dirty-RAM interpreter BYPASSES both.** In `runtime/src/cpu/dirty_ram_interp.c`,
 `exec_one`:
 - guest `JR`/`J` (case 0x08 ~L550, 0x02 ~L697): correctly unwind — `cpu->pc=target; return 1`.
 - guest `JAL`/`JALR` (case 0x03 ~L703, 0x09 ~L556): **NEST** — call

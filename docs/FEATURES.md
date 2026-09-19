@@ -50,7 +50,7 @@ includes `generated/overlays.c` when it exists.
 
 > **Status corrected 2026-07-27.** This section described Layer A as "SHELVED".
 > It is not: dynamic DLL overlay loading is the **live production dispatch
-> path**. `runtime/src/overlay_loader.c` is ~4,400 lines with 15 `LoadLibrary`
+> path**. `runtime/src/overlay/overlay_loader.c` is ~4,400 lines with 15 `LoadLibrary`
 > call sites and was last modified 2026-07-26;
 > [`COMPILING_OVERLAYS.md`](COMPILING_OVERLAYS.md) documents building the
 > `cache/…/<phys>_<crc>.dll` shards that ship inside release packages. The

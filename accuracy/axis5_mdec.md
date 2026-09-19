@@ -1,6 +1,6 @@
 # Axis 5 — MDEC (Motion Decoder / FMV) accuracy cross-reference
 
-Scope: `runtime/src/mdec.c` (our impl) vs the in-tree Beetle/Mednafen oracle
+Scope: `runtime/src/mdec/mdec.c` (our impl) vs the in-tree Beetle/Mednafen oracle
 `beetle-psx/mednafen/psx/mdec.cpp`, plus nocash
 psx-spx "Macroblock Decoder (MDEC)". READ-ONLY analysis; no source/build touched.
 
@@ -10,7 +10,7 @@ References below cite `mdec.c:NN` for ours and `mdec.cpp:NN` for Beetle.
 
 ## 1. What our implementation does
 
-Single file: `runtime/src/mdec.c`. State in one `static MDECState mdec` struct.
+Single file: `runtime/src/mdec/mdec.c`. State in one `static MDECState mdec` struct.
 
 Implemented (not stubbed):
 - **Command dispatch** — `begin_command` (`mdec.c:381`) / `execute_command`

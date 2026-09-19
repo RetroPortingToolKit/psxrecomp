@@ -26,14 +26,14 @@ overlay DLLs uniformly — and extended well past what emulators ship with
 
 | Commit | What |
 |---|---|
-| `f8a29e8` | `[video] aspect_ratio = "W:H"` → GTE X-squash (`gte_set_display_aspect`, `runtime/src/gte.cpp`) + aspect-aware letterbox in both renderers + window opens at aspect. Config plumbed through `game.toml`, `settings.toml` (load+save), launcher seed (`recompiler/src/config_loader.{h,cpp}`, `runtime/src/main.cpp`, `runtime/src/gpu_gl_renderer.c`). |
+| `f8a29e8` | `[video] aspect_ratio = "W:H"` → GTE X-squash (`gte_set_display_aspect`, `runtime/src/gte/gte.cpp`) + aspect-aware letterbox in both renderers + window opens at aspect. Config plumbed through `game.toml`, `settings.toml` (load+save), launcher seed (`recompiler/src/config_loader.{h,cpp}`, `runtime/src/app/main.cpp`, `runtime/src/gpu/gpu_gl_renderer.c`). |
 | `970670b` | Launcher **Aspect ratio** setting: 4:3 (Native) / 16:9 (Widescreen) / 21:9 (Ultrawide). One build does all. |
-| `cad8c96` | **Per-prim proportion correction.** Recompiler emits `psx_ws_sprite_tag(cpu)` at the entry of each `[widescreen] sprite_tag_funcs` function; runtime records prim ptr (`$a0`) → GTE-projected anchor and re-squashes tagged prims around their own anchor at GP0 execution, so characters/billboards are NOT stretched. Untagged textured rects (SPRT = screen-space HUD/menus) center-squash. (`recompiler/src/code_generator.cpp`, `runtime/src/gpu.c`) |
+| `cad8c96` | **Per-prim proportion correction.** Recompiler emits `psx_ws_sprite_tag(cpu)` at the entry of each `[widescreen] sprite_tag_funcs` function; runtime records prim ptr (`$a0`) → GTE-projected anchor and re-squashes tagged prims around their own anchor at GP0 execution, so characters/billboards are NOT stretched. Untagged textured rects (SPRT = screen-space HUD/menus) center-squash. (`recompiler/src/code_generator.cpp`, `runtime/src/gpu/gpu.c`) |
 | `0792086` | **FMV 4:3 pillarbox** (24-bit OR streamed 15-bit MDEC video, detected via `mdec_recently_active`), **menu-2D coherence** (lines/flat-rects/mono-sprites squash on full-2D screens so dialog borders match the SPRT boxes; fades exempt), **HUD edge anchoring** (in-game untagged SPRTs pivot by thirds — outer-third elements keep their wide-screen corner position at native proportions). |
 | `5151e5b` | **Authentic 4:3 BIOS boot** — squash held off until game entry PC fires (`fntrace_is_game_started`); Sony/PS logos + shell render 4:3, widescreen engages at game start. |
 | TombaRecomp `124e3c9` | Tomba `[widescreen]` block (see config below). Tomba `game.toml` defaults `aspect_ratio = "4:3"`; the dev instance opts into 16:9 via `build-stable/settings.toml`. |
-| `8ae73c6` / TombaRecomp `01478fd` | **2D parallax-backdrop screenX squash** (`psx_ws_backdrop_x`, `runtime/src/gpu.c`). The actor-table backdrop (far mountains, midground bush row) is overlay 2D sprites computing `screenX = (worldX-camX)>>parallax` in pure integer math — never touches the GTE, so the GTE squash misses it and far pieces clip past the 320 edge. Fix squashes that stored screenX around screen-centre by the same factor. Applied on BOTH paths: native via `[widescreen.backdrop] x_sites` recompiler emit (overlay DLLs via OverlayCallbacks, ABI v2→v3), and the dirty-RAM interp SH hook (the path that runs in dev). Sites: type-0 `0x801217B4`, type-1 `0x8012196C`. |
-| `1e28a94` / TombaRecomp `66e13e5` | **Depth-gated far-backdrop GTE un-squash** (`gte_ws_set_suppress`, `runtime/src/gte.cpp`; `[widescreen.backdrop] unsquash_funcs` recompiler emit). The far ocean/cloud/distant-mountain is **GTE-3D** drawn by main-EXE `FUN_8004db3c`; the global squash compresses it toward centre → blue void at the revealed edges. Bracket that driver with a squash-suppress so its draws fill the frame skybox-style. Because the driver draws a MIX (far backdrop + near props), the suppress is **depth-gated**: only verts with projected SZ ≥ `s_ws_far_threshold` (default 900, live-tunable) un-squash; near props stay squashed/aligned. |
+| `8ae73c6` / TombaRecomp `01478fd` | **2D parallax-backdrop screenX squash** (`psx_ws_backdrop_x`, `runtime/src/gpu/gpu.c`). The actor-table backdrop (far mountains, midground bush row) is overlay 2D sprites computing `screenX = (worldX-camX)>>parallax` in pure integer math — never touches the GTE, so the GTE squash misses it and far pieces clip past the 320 edge. Fix squashes that stored screenX around screen-centre by the same factor. Applied on BOTH paths: native via `[widescreen.backdrop] x_sites` recompiler emit (overlay DLLs via OverlayCallbacks, ABI v2→v3), and the dirty-RAM interp SH hook (the path that runs in dev). Sites: type-0 `0x801217B4`, type-1 `0x8012196C`. |
+| `1e28a94` / TombaRecomp `66e13e5` | **Depth-gated far-backdrop GTE un-squash** (`gte_ws_set_suppress`, `runtime/src/gte/gte.cpp`; `[widescreen.backdrop] unsquash_funcs` recompiler emit). The far ocean/cloud/distant-mountain is **GTE-3D** drawn by main-EXE `FUN_8004db3c`; the global squash compresses it toward centre → blue void at the revealed edges. Bracket that driver with a squash-suppress so its draws fill the frame skybox-style. Because the driver draws a MIX (far backdrop + near props), the suppress is **depth-gated**: only verts with projected SZ ≥ `s_ws_far_threshold` (default 900, live-tunable) un-squash; near props stay squashed/aligned. |
 
 User has visually confirmed: world geometry, characters, HUD, menus, FMVs, and
 (2026-06-13) the far-backdrop edge fill all present at correct (native)
@@ -242,14 +242,14 @@ title. Documented for Tomba; any new title needs the same investigation.
 
 ## Key files
 
-- `runtime/src/gte.cpp` — `gte_set_display_aspect`, RTPS/RTPT X-squash.
-- `runtime/src/gpu.c` — `gpu_ws_configure`, `psx_ws_sprite_tag`, tag table,
+- `runtime/src/gte/gte.cpp` — `gte_set_display_aspect`, RTPS/RTPT X-squash.
+- `runtime/src/gpu/gpu.c` — `gpu_ws_configure`, `psx_ws_sprite_tag`, tag table,
   per-prim transforms in the GP0 exec handlers.
-- `runtime/src/gpu_gl_renderer.c` — `gl_renderer_set_display_aspect`,
+- `runtime/src/gpu/gpu_gl_renderer.c` — `gl_renderer_set_display_aspect`,
   `letterbox_rect_aspect`, `force_4_3` present paths.
-- `runtime/src/main.cpp` — config resolution, `g_ws_engaged` (boot gate),
+- `runtime/src/app/main.cpp` — config resolution, `g_ws_engaged` (boot gate),
   `fmv_frame` 4:3 pin, window sizing.
-- `runtime/src/mdec.c` — `mdec_recently_active` (FMV detector).
+- `runtime/src/mdec/mdec.c` — `mdec_recently_active` (FMV detector).
 - `recompiler/src/code_generator.cpp` — `psx_ws_sprite_tag` emit at tagged fn
   entry. **This is where the cull-widen emit (issue #1) belongs.**
 - `recompiler/src/config_loader.{h,cpp}` — `[widescreen]` parse, `aspect_ratio`.

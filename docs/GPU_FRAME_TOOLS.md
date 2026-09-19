@@ -22,7 +22,7 @@ GUI can never disagree about what a frame contained.
 
 `gpu_frame_dump` on the debug server has always stamped every GP0 packet with
 the guest code that issued it — `func`, `pc`, `ra`, plus the linked-list OT rank
-(`handle_gpu_frame_dump` in `runtime/src/debug_server.c`, `GpuGp0RingEntry` in
+(`handle_gpu_frame_dump` in `runtime/src/debug/debug_server.c`, `GpuGp0RingEntry` in
 `runtime/include/gpu.h`). Nothing consumed that attribution, so "the glow is
 opaque and the vignette is missing" stayed a description of a screenshot rather
 than a pointer at a function.
@@ -73,8 +73,8 @@ counts and static names in different columns for the same reason.
 build: a Debug build of a recomp is far too slow to reach the frame you are
 chasing.
 
-`runtime/src/debug_server.c` is always compiled, but `debug_server_init()` is
-only *called* when `PSX_NO_DEBUG_TOOLS` is undefined (`runtime/src/main.cpp`).
+`runtime/src/debug/debug_server.c` is always compiled, but `debug_server_init()` is
+only *called* when `PSX_NO_DEBUG_TOOLS` is undefined (`runtime/src/app/main.cpp`).
 `PSX_DEBUG_TOOLS` defaults **ON** for `Debug` / `RelWithDebInfo` and **OFF** for
 `Release` / `MinSizeRel` (`runtime/runtime.cmake`), so a plain
 `cmake -DCMAKE_BUILD_TYPE=Release` produces a lean binary that opens no port at
@@ -121,7 +121,7 @@ selected project's `game.toml` says.
 ## You cannot pause the game, and you do not need to
 
 `pause`, `continue`, `step` and `run_to_frame` were **removed** from
-psx-runtime. `runtime/src/debug_server.c` still registers them, but only as
+psx-runtime. `runtime/src/debug/debug_server.c` still registers them, but only as
 handlers that return an error explaining the migration — pause-step-read
 synthesizes a snapshot ("what is state right NOW") instead of reading the
 history the runtime already records continuously, and in this codebase it forced

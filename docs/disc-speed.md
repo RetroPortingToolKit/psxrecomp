@@ -45,7 +45,7 @@ fires. `"instant"` is expected to be safe for all titles targeted by this recomp
 
 ## Implementation
 
-Change is localized to `runtime/src/cdrom.c`. The timing delay paths (seek duration, sector
+Change is localized to `runtime/src/cdrom/cdrom.c`. The timing delay paths (seek duration, sector
 read interval) check `disc_speed` and either apply the emulated delay or skip it. No other
 subsystem is affected.
 

@@ -64,7 +64,7 @@ rather than LGPL linkage.
 
 The runtime expects an end-user bundle at
 `&lt;exe_dir&gt;/overlay_toolchain/{python/, tcc/tcc.exe, compile_overlays.py, …}`
-(`runtime/src/main.cpp`). **No script in this repository populates that
+(`runtime/src/app/main.cpp`). **No script in this repository populates that
 directory**, so if release packaging supplies it, that step lives outside this
 repo and the TinyCC license notice must be shipped alongside it there.
 
@@ -81,7 +81,7 @@ engine-agnostic pieces originally authored by Jrickey in
 - **`ShadowVerifier`** — the envelope-correlation differential self-check,
   probation auto-gain calibration, and prove/strike/pause state machine.
   Original: `crates/gba-core/src/shadow.rs`.
-  This repo: `runtime/src/audio_shadow.c`, `runtime/include/audio_shadow.h`
+  This repo: `runtime/src/spu/audio_shadow.c`, `runtime/include/audio_shadow.h`
   (C re-implementation, via the gbarecomp C++ port `src/gba/audio_shadow.*`
   and the snesrecomp C port `runner/src/snes/audio_shadow.*`; the algorithm is
   unchanged).
@@ -89,7 +89,7 @@ engine-agnostic pieces originally authored by Jrickey in
 - **Color-science core** (xyY→XYZ, primaries→matrix, Bradford chromatic
   adaptation, sRGB OETF) used to bake the present-time screen-color LUT.
   Original: `crates/screen/src/{color,profile,lut}.rs`.
-  This repo: `runtime/src/color_lut.c`, `runtime/include/color_lut.h`
+  This repo: `runtime/src/gpu/color_lut.c`, `runtime/include/color_lut.h`
   (C re-implementation, via the gbarecomp C++ port `src/runtime/color_lut.*`).
 
 ### PSX-specific work (ours)
@@ -98,12 +98,12 @@ engine-agnostic pieces originally authored by Jrickey in
   (the GBA port modelled a handheld LCD; a console scanned out to a TV needs a
   CRT/composite model instead) — SMPTE-C / Trinitron-class phosphor gamuts,
   CRT gamma, black-lift.
-- The **SPU float shadow render** (`runtime/src/spu_shadow.c`,
+- The **SPU float shadow render** (`runtime/src/spu/spu_shadow.c`,
   `runtime/include/spu_shadow.h`): 4-point cubic resampling + float headroom
   re-render of the PS1 SPU ADPCM voice mix, driven from a read-only tap on the
   canon `spu.c` voice state. This is console-specific (the SNES analog re-renders
   the S-DSP; the GBA analog re-renders the MP2K software mixer).
-- The tap plumbing in `runtime/src/spu.c` and `runtime/include/spu.h`.
+- The tap plumbing in `runtime/src/spu/spu.c` and `runtime/include/spu.h`.
 
 All reuse keeps the original copyright and dual MIT/Apache-2.0 license.
 

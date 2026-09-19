@@ -448,7 +448,7 @@ The recompiler emits GTE commands as calls to a single runtime entry point
 share — so unlike an interpreter/dynarec emulator there is no dispatch hook to
 add, just one funnel to instrument.
 
-1. **`runtime/src/gte.cpp`** — RTPS/RTPT keep the discarded 16.16 fraction in a
+1. **`runtime/src/gte/gte.cpp`** — RTPS/RTPT keep the discarded 16.16 fraction in a
    side cache keyed by the packed SXY word it rounded to (`geom_note`).
    Saturated (off-screen) projections are rejected: they carry no usable
    sub-pixel information.
@@ -460,7 +460,7 @@ add, just one funnel to instrument.
    such a store at that exact DMA packet address — which preserves the
    association through ordering-table reordering and rejects CPU-built UI and
    2D sprites outright. A plain `sw` to a tracked address invalidates it.
-3. **`runtime/src/gpu.c`** — `prepare_precise_triangle()` /
+3. **`runtime/src/gpu/gpu.c`** — `prepare_precise_triangle()` /
    `prepare_texture_triangle()` look the packet up per triangle and hand the
    result to the renderer facade as sideband state for the next draw
    (`gr_set_precise_triangle` / `gr_set_perspective_triangle`).
@@ -780,7 +780,7 @@ our own G1 analysis.
 
 **What exists now:**
 
-- `runtime/src/pgxp.cpp` + `runtime/include/pgxp.h`: per-word RAM+scratchpad
+- `runtime/src/gte/pgxp.cpp` + `runtime/include/pgxp.h`: per-word RAM+scratchpad
   shadows (~10 MB, lazily allocated, fail-closed), per-GPR (+HI/LO) and
   per-GTE-data-reg shadows. Each `PGXPValue` records the sub-pixel 16.16
   screen X/Y, the projected SZ depth, per-half validity flags, and the exact

@@ -22,7 +22,7 @@ cc -std=c99 -Wall -Wextra -Werror -fPIC -shared \
 cc -std=c99 -Wall -Wextra -Werror \
   -I"$root/runtime/include" \
   "$root/runtime/tests/test_overlay_posix.c" \
-  "$root/runtime/src/overlay_posix.c" \
+  "$root/runtime/src/overlay/overlay_posix.c" \
   -ldl -o "$tmp/test_overlay_posix"
 
 "$tmp/test_overlay_posix" "$cache" "$base" "$expected" "$other"

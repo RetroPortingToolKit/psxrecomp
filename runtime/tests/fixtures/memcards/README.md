@@ -23,7 +23,7 @@ were captured while driving that title.
 
 ## Using them with the Beetle oracle
 
-`runtime/src/beetle_libretro.cpp` asks the libretro core for its save directory
+`runtime/src/oracle/beetle_libretro.cpp` asks the libretro core for its save directory
 and answers `"."` (see the `RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY` case), so the
 core opens `dummy.0.mcr` / `dummy.1.mcr` **relative to the oracle process's
 working directory**, not relative to this repo. To boot the oracle with

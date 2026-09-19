@@ -4,7 +4,7 @@ Scope: SEMANTIC correctness (values + side-effects) of the address-space map and
 MMIO register dispatch. Cycle-timing accuracy is explicitly OUT of scope (Axis 2).
 
 Sources cross-referenced:
-- **Our impl:** `runtime/src/memory.c` (map + dispatch), `dma.c` (DICR), `timers.c`,
+- **Our impl:** `runtime/src/memory/memory.c` (map + dispatch), `dma.c` (DICR), `timers.c`,
   `sio.c`.
 - **Oracle (Beetle/mednafen-psx):** `beetle-psx/libretro.cpp` `MemRW<>()` (the memory
   map), `mednafen/psx/irq.cpp` (I_STAT/I_MASK), `mednafen/psx/dma.cpp` (DICR),

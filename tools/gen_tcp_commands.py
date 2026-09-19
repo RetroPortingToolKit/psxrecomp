@@ -99,8 +99,8 @@ def build_block(native: list[str], beetle: list[str], covered: set[str]) -> str:
     lines.append("")
     lines.append(
         f"**{len(all_names)} commands registered** — {len(native)} on the native "
-        f"server (`runtime/src/debug_server.c`), {len(beetle)} on the Beetle "
-        f"server (`runtime/src/beetle_debug_server.c`)."
+        f"server (`runtime/src/debug/debug_server.c`), {len(beetle)} on the Beetle "
+        f"server (`runtime/src/oracle/beetle_debug_server.c`)."
     )
     lines.append("")
     lines.append(

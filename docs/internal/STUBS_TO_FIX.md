@@ -7,7 +7,7 @@ hardware provides.
 ## Pre-Phase 5 (BIOS shell correctness)
 
 ### S1 — GPU shaded line uses flat color
-- **File:** `runtime/src/gpu.c:722`
+- **File:** `runtime/src/gpu/gpu.c:722`
 - **What:** `gp0_exec_shaded_line()` reads C0 but ignores C1. Draws
   the entire line in the first vertex color instead of interpolating.
 - **Fix:** Interpolate RGB between C0 and C1 along the line, same way
@@ -15,7 +15,7 @@ hardware provides.
 - **Impact:** Visual — BIOS shell lines render with wrong color gradient.
 
 ### S2 — GPU polyline crashes
-- **File:** `runtime/src/gpu.c:1462`
+- **File:** `runtime/src/gpu/gpu.c:1462`
 - **What:** GP0 opcodes 0x48-0x4F (mono polyline) and 0x58-0x5F
   (shaded polyline) hit `exit(1)`. These are variable-length commands
   terminated by a sentinel word (bit 31 set in vertex word, or
@@ -28,7 +28,7 @@ hardware provides.
 ## Phase 5+ (game support)
 
 ### S3 — MDEC decoder is a no-op
-- **File:** `runtime/src/memory.c:147-148, 199-200`
+- **File:** `runtime/src/memory/memory.c:147-148, 199-200`
 - **What:** MDEC registers (0x1F801820, 0x1F801824) read as 0 and
   writes are silently absorbed. No MDEC DMA (ch1 in, ch0 out).
 - **Fix:** Implement MDEC MPEG-style macroblock decompression with
@@ -36,7 +36,7 @@ hardware provides.
 - **Impact:** BLOCKING for FMV cutscenes in any game.
 
 ### S4 — SPU has no audio synthesis
-- **File:** `runtime/src/spu.c`
+- **File:** `runtime/src/spu/spu.c`
 - **What:** Register reads/writes and DMA4 buffer transfers work, but
   no ADPCM voice decoding, no audio output, no reverb.
 - **Fix:** Implement 24-voice ADPCM decoder with SDL_audio output.
@@ -44,7 +44,7 @@ hardware provides.
 - **Impact:** BLOCKING — no sound at all.
 
 ### S5 — DMA channels 0,1,3,5 unimplemented
-- **File:** `runtime/src/dma.c`
+- **File:** `runtime/src/dma/dma.c`
 - **What:** Only ch2 (GPU) and ch6 (OTC) are implemented. Ch0
   (MDEC out), ch1 (MDEC in), ch3 (CDROM), ch4 (SPU), ch5 (PIO)
   will crash or silently fail.

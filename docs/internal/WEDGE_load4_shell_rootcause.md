@@ -44,7 +44,7 @@ sub-case of the same axis-5 device-timing weakness.)
 
 ## FIX (step B — faithful, validated)
 
-`runtime/src/sio.c`, pad fast-path ACK arm: replaced the access-paced
+`runtime/src/sio/sio.c`, pad fast-path ACK arm: replaced the access-paced
 `sio_irq_countdown = SIO_IRQ_DELAY_PAD` with the **guest-cycle-paced ack
 scheduler** the card path uses:
 

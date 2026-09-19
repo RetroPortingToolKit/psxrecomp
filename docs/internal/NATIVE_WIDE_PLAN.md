@@ -84,9 +84,9 @@ copies between buffers); `gp0_copy` is nonzero for Tomba so worth confirming.
 Reusable from the first cut: the opt-in **mode descriptor**, GTE-identity feed,
 `ws_nw_offset/extra` math, `ws_nw` live toggle, debug fields. Reverted: the
 canonical `draw_offset`/`draw_area`/clamp injections (they move into the wide
-surface's local coords). Files: `runtime/src/gpu.c`, `runtime/include/gpu.h`,
-`runtime/src/main.cpp`, `runtime/src/debug_server.c`, `runtime/src/gpu_sw_renderer.c`,
-`runtime/src/gpu_gl_renderer.c`.
+surface's local coords). Files: `runtime/src/gpu/gpu.c`, `runtime/include/gpu.h`,
+`runtime/src/app/main.cpp`, `runtime/src/debug/debug_server.c`, `runtime/src/gpu/gpu_sw_renderer.c`,
+`runtime/src/gpu/gpu_gl_renderer.c`.
 
 ---
 
@@ -101,10 +101,10 @@ view should be *real rendered pixels*, not a blow-up of a 4:3 frame.
 
 `feat/widescreen` implements the **squash hack**:
 
-1. **Squash** — `gte_set_display_aspect()` in `runtime/src/gte.cpp` multiplies
+1. **Squash** — `gte_set_display_aspect()` in `runtime/src/gte/gte.cpp` multiplies
    projected screen-X by `(4·den)/(3·num)` (`s_ws_xnum/s_ws_xden`), cramming more
    world into the native ~640-wide internal frame.
-2. **Stretch** — the present path in `runtime/src/main.cpp` (`g_logical_w`,
+2. **Stretch** — the present path in `runtime/src/app/main.cpp` (`g_logical_w`,
    `SDL_RenderSetLogicalSize`, the `dst` rect around line 1339) stretches that
    640-wide frame out to the wide window.
 

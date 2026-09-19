@@ -20,7 +20,7 @@ to the patch is the obvious next step if image parity keeps saying "the streams
 must differ" without saying where.
 
 Only DuckStation gets driven. psx-runtime removed pause / step / run_to_frame
-(runtime/src/debug_server.c) -- it is designed to be read from, not steered --
+(runtime/src/debug/debug_server.c) -- it is designed to be read from, not steered --
 so the native side is sampled where it already is, and DuckStation is advanced
 to meet it. If the native run has already passed the frame DuckStation is on,
 there is nothing to do but restart the DuckStation side; that is reported rather

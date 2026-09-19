@@ -12,7 +12,7 @@ and attributed to the guest functions that issued it.
     python3 gpu_frame_capture.py --ring
 
 You do not pause the game to use this, and you cannot: pause / step /
-run_to_frame were removed from psx-runtime (runtime/src/debug_server.c) because
+run_to_frame were removed from psx-runtime (runtime/src/debug/debug_server.c) because
 pause-step-read synthesizes a snapshot instead of reading the history the
 runtime already keeps. The GP0 ring holds ~1M packets -- several hundred frames
 -- so the workflow is the other way round: play until the bug is on screen, then

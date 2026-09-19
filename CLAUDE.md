@@ -450,9 +450,9 @@ start "" "./runtime/build/psx-beetle.exe"  "./bios/SCPH1001.BIN"
 **Key files:**
 - `beetle-psx/` — cloned beetle-psx-libretro repo
 - `beetle-psx/libmednafen_psx.a` — static library used by psx-beetle
-- `runtime/src/main.cpp` + `runtime/src/debug_server.c` — psx-runtime
-- `runtime/src/beetle_main.cpp` + `runtime/src/beetle_debug_server.c`
-  + `runtime/src/beetle_libretro.cpp` — psx-beetle
+- `runtime/src/app/main.cpp` + `runtime/src/debug/debug_server.c` — psx-runtime
+- `runtime/src/oracle/beetle_main.cpp` + `runtime/src/oracle/beetle_debug_server.c`
+  + `runtime/src/oracle/beetle_libretro.cpp` — psx-beetle
 
 **Where Beetle has gaps, build new tooling.** Do not fall back to
 DuckStation. Do not guess. Build the diagnostic tool that gives you
@@ -507,6 +507,6 @@ code that was put there at runtime by the program.
 Mature static-recompilation projects (N64Recomp, mednafen-PSX's dynarec)
 all handle install-at-runtime code this way. PSXRecomp v4 follows suit.
 
-Implementation lives in `runtime/src/dirty_ram_interp.c` (or similar). It
+Implementation lives in `runtime/src/cpu/dirty_ram_interp.c` (or similar). It
 is intentionally small (~300 LOC), modular, and isolated. It does NOT
 expand into a general-purpose CPU emulator.

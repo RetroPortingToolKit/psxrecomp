@@ -148,11 +148,11 @@ report.
 ## Build plan
 
 - [x] `COSIM_ORACLE.md` (this file).
-- [x] State-hash module `runtime/src/cosim_state.c` (+ `include/cosim_state.h`):
+- [x] State-hash module `runtime/src/debug/cosim_state.c` (+ `include/cosim_state.h`):
       canonical FNV serialize → incremental RAM page hashes + CPU micro-state
       (muldiv/gte/load-delay) + interrupts statics + device blobs (boot_state accessors)
       → `state_hash` + sub-hashes. VRAM excluded in v1 (downstream, not causal).
-- [x] Engine `runtime/src/cosim.c`: cycle-keyed checkpoints (ring + cumulative chain
+- [x] Engine `runtime/src/debug/cosim.c`: cycle-keyed checkpoints (ring + cumulative chain
       hash + park/step) + minimal standalone TCP server. Commands: `status`, `chain`,
       `stride N`, `runto <cycle>`, `hash`, `sub`, `window N`, `inject ram|reg`, `reset`.
 - [x] Hooks (all `#ifdef PSX_COSIM`, zero effect on normal builds): `cosim_tick()` in

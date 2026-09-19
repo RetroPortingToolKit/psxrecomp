@@ -66,7 +66,7 @@ def main():
         return result
 
     fixture = args.fixture or framework / "runtime/tests/test_gl_readback_region.c"
-    for name, source in [("probe", fixture), ("sw", framework / "runtime/src/gpu_sw_renderer.c")]:
+    for name, source in [("probe", fixture), ("sw", framework / "runtime/src/gpu/gpu_sw_renderer.c")]:
         if run([compiler / "gcc.exe", "-std=c11", "-O2", "-flto", "-DPSX_SDL3=1",
                 "-DPSX_NO_DEBUG_TOOLS=1", *includes, "-c", source,
                 "-o", dest / (name + ".o")]).returncode:

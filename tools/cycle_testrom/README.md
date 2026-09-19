@@ -98,7 +98,7 @@ launch psx-cyctest with `PSX_FORCE_INTERP=1`:
 $env:PSX_FORCE_INTERP='1'; Start-Process psx-cyctest.exe -ArgumentList ...
 ```
 
-`PSX_FORCE_INTERP=1` makes `dirty_ram_is_dirty()` (runtime/src/memory.c) report all
+`PSX_FORCE_INTERP=1` makes `dirty_ram_is_dirty()` (runtime/src/memory/memory.c) report all
 RAM above the kernel window as dirty, so the dispatcher routes the test ROM through
 the dirty-RAM interpreter (the SAME path overlays take) instead of the compiled
 image — no emitter/dispatch change. Confirm it engaged via freeze_check
@@ -116,7 +116,7 @@ block 0x1000 bytes away map to the SAME direct-mapped line (4 KB / 256-line cach
 index = addr bits 4-11) with different tags, so each fetch evicts the other. (Every
 other loop is small enough to be all-hits after warm-up — fetch cost 0.)
 
-The faithful R3000A I-cache fetch model lives in `runtime/src/psx_icache.c` (HIT +0,
+The faithful R3000A I-cache fetch model lives in `runtime/src/cpu/psx_icache.c` (HIT +0,
 KSEG1/uncached +4, cached miss +3 + refill from the missing word to the line end —
 transcribed from Beetle ReadInstruction). It is **opt-in via `PSX_ICACHE=1`** (default
 OFF) until BOTH backends charge it: charging it only in the interp while the compiled

@@ -21,7 +21,7 @@ after broad visual validation.
 - **Facade + vtable.** `gpu.c` calls `gr_*` (gpu_render.h/.c); a
   `GpuRenderBackend` vtable dispatches to software (`sw_*`) or OpenGL
   (`glb_*`). `gr_set_backend()` picks at startup from the config.
-- **GL backend** in `runtime/src/gpu_gl_renderer.c`
+- **GL backend** in `runtime/src/gpu/gpu_gl_renderer.c`
   (+ `runtime/include/gpu_gl_renderer.h`). The single authoritative VRAM is
   the **hr FBO** (`s_hr_tex`, RGBA8, 1024·S × 512·S, + depth24/stencil8);
   internal scale S comes from `[video] supersampling` (GL-side; the SW

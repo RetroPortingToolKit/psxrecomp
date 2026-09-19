@@ -8,7 +8,7 @@ allowed to know its shape:
 
     tools/compile_overlays.py       cache_tag() — the producer's single source
                                     of truth, called by everything else
-    runtime/src/overlay_loader.c    the consumer, which must stay identical
+    runtime/src/overlay/overlay_loader.c    the consumer, which must stay identical
 
 Every third copy of that format string has cost a release. The history, all
 measured:

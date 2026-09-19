@@ -14,9 +14,9 @@ def require(source, needle, message):
 
 
 def main():
-    main_cpp = (ROOT / "runtime/src/main.cpp").read_text(encoding="utf-8")
-    interp = (ROOT / "runtime/src/dirty_ram_interp.c").read_text(encoding="utf-8")
-    memory = (ROOT / "runtime/src/memory.c").read_text(encoding="utf-8")
+    main_cpp = (ROOT / "runtime/src/app/main.cpp").read_text(encoding="utf-8")
+    interp = (ROOT / "runtime/src/cpu/dirty_ram_interp.c").read_text(encoding="utf-8")
+    memory = (ROOT / "runtime/src/memory/memory.c").read_text(encoding="utf-8")
 
     require(main_cpp, 'std::getenv("PSX_RUNTIME_PERF_DIAG")',
             "performance diagnostics lost their opt-in gate")

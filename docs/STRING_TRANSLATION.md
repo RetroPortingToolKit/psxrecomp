@@ -8,12 +8,12 @@
 > working code, not a proposal. Where the prose below says "will" or "should",
 > read it as describing what was built.
 
-The implementation lives in `runtime/src/text_xlate.cpp` (~970 lines) behind
+The implementation lives in `runtime/src/mods/text_xlate.cpp` (~970 lines) behind
 `runtime/include/text_xlate.h`:
 
 | Entry point | Role |
 |---|---|
-| `text_xlate_init(project_root, language)` | Loads `translations/*.toml` under the project root; called from `runtime/src/main.cpp` at startup |
+| `text_xlate_init(project_root, language)` | Loads `translations/*.toml` under the project root; called from `runtime/src/app/main.cpp` at startup |
 | `text_xlate_set_language(language)` | Re-applies the resolved language (launcher/settings selection) |
 | `text_xlate_on_dispatch(cpu, target)` | Per-dispatch capture/substitution hook |
 | `text_xlate_vram_upload(x, y, w, h)` | VRAM-upload interception path |
@@ -313,7 +313,7 @@ and is a Phase-0 deliverable.)
 
 ## 3. Framework design (PSX)
 
-Shared module, shipped at `runtime/src/text_xlate.cpp` +
+Shared module, shipped at `runtime/src/mods/text_xlate.cpp` +
 `runtime/include/text_xlate.h` (peers of `fntrace.*` and `bios_hle.*`). The
 design below was written as a proposal and is described in the future tense in
 places; it is built, so read "will" as "does".
@@ -709,12 +709,12 @@ slots, and screenshot the level-select / HUD.
 
 **psxrecomp hook points** (paths relative to this repository; they were captured
 from the since-removed `_wt-tsumu` worktree, but the files live on `master`):
-- `runtime/src/text_xlate.cpp` + `runtime/include/text_xlate.h` — the shipped
+- `runtime/src/mods/text_xlate.cpp` + `runtime/include/text_xlate.h` — the shipped
   module: `text_xlate_init` / `_set_language` / `_on_dispatch` /
   `_vram_upload` / `_debug_json`. Loads every `translations/*.toml`.
-- `runtime/include/fntrace.h` + `runtime/src/fntrace.c:58` — always-on dispatch
+- `runtime/include/fntrace.h` + `runtime/src/debug/fntrace.c:58` — always-on dispatch
   ring (capture analogue).
-- `runtime/include/bios_hle.h:54` (`g_psx_bios_hle_hook`) + `runtime/src/bios_hle.c:297`
+- `runtime/include/bios_hle.h:54` (`g_psx_bios_hle_hook`) + `runtime/src/bios/bios_hle.c:297`
   — dispatch hook slot precedent (apply analogue).
 - `runtime/include/cpu_state.h:164` — `psx_dispatch` / `psx_dispatch_call`.
 

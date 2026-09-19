@@ -40,7 +40,7 @@ Adaptive mid-match delay bumps are always on (no lobby disable).
 ### Tasks
 
 - [x] Add `boot_state_save_buffer` (or serialize-to-malloc) mirroring load-buffer
-- [x] New module e.g. `runtime/src/netplay_snap_ring.c`:
+- [x] New module e.g. `runtime/src/net/netplay_snap_ring.c`:
   - depth `N` (≥ `RNET_RB_SEAL_MAX_SPAN` = 128; start with 64 for soak)
   - keyed by `sim_tick`
   - `ring_save(tick)`, `ring_load(tick)`, `ring_has(tick)`, drop oldest
@@ -439,7 +439,7 @@ Adaptive mid-match delay bumps are always on (no lobby disable).
 - [x] Same BIOS stem + disc identity on both peers (existing verify)
 - [x] Audit non-deterministic host clocks in sim path — **selfcheck-driven**
       (was soak-driven). `PSX_RB_SELFCHECK=1` (offline, single process,
-      `runtime/src/psx_selfcheck.c`): every INTERVAL boundaries snap the
+      `runtime/src/debug/psx_selfcheck.c`): every INTERVAL boundaries snap the
       machine at a savestate BB edge, record SPAN ticks of applied pad rows +
       full digest partitions, then rewind and resim the window **twice** from
       the same snap. Replay#1 vs replay#2 is the rollback invariant (both
@@ -902,7 +902,7 @@ Adaptive mid-match delay bumps are always on (no lobby disable).
       no dirty-region shortcut. Three tiers identified, ordered by
       risk/complexity:
 
-      **Tier 1 — faster CRC32 (landed).** `runtime/src/crc32.c` used the
+      **Tier 1 — faster CRC32 (landed).** `runtime/src/util/crc32.c` used the
       textbook byte-at-a-time Sarwate table method: one table lookup per
       byte, each depending on the previous byte's output CRC (a serial
       dependency chain that stops the CPU overlapping consecutive steps).
@@ -1025,7 +1025,7 @@ falling back to prediction" grace mechanism — worth checking for on every
 future engine port before it ships. Written up here so it travels with the
 rollback playbook rather than staying MotK-specific tribal knowledge.
 
-**The mistake.** MotK's `np_invent_grace_stall()` (`runtime/src/psx_netplay.c`)
+**The mistake.** MotK's `np_invent_grace_stall()` (`runtime/src/net/psx_netplay.c`)
 decides how long to block waiting for a genuinely-late remote row before
 giving up and hold-last-inventing it. Its budget was `max(floor_ms,
 2.5 × measured_local_tick_period)`, capped at 100ms — i.e. it used an EMA of
@@ -1145,10 +1145,10 @@ budget:
       peer Verify compute asymmetry, not pure UDP transit — still a better
       budget signal than local tick cadence, but not a true ping.
 
-Touched: `runtime/src/psx_netplay_rb.c` (`g_rb_rtt_ema_ms`, sampling in the
+Touched: `runtime/src/net/psx_netplay_rb.c` (`g_rb_rtt_ema_ms`, sampling in the
 peer-POST-accepted path, `psx_netplay_rb_rtt_estimate_ms()`, reset in
 `psx_netplay_rb_shutdown()`), `runtime/include/psx_netplay_rb.h` (new
-declaration), `runtime/src/psx_netplay.c` (`np_invent_grace_stall()`
+declaration), `runtime/src/net/psx_netplay.c` (`np_invent_grace_stall()`
 budget formula + floor default + applied-budget log line). Builds clean,
 no new lints. `np_timesync_throttle` intentionally left untouched per
 policy point 3 above (separate mechanism, already has its own small fixed
@@ -1546,7 +1546,7 @@ existing `!psx_netplay_is_resimulating()` guard around `sdl_audio_update`
 in `sdl_vblank_present_body`); presentation had no equivalent guard.
 
 **Fix:** added a `psx_netplay_is_resimulating()` early return in
-`sdl_vblank_present_body()` (`runtime/src/main.cpp`) immediately before
+`sdl_vblank_present_body()` (`runtime/src/app/main.cpp`) immediately before
 the `---- Display from our VRAM ----` block, mirroring the existing
 audio-pump skip. This is presentation-only:
 
@@ -2638,7 +2638,7 @@ untrusted-RTT freeze storms. LAN: rtt untrusted/low → D stays at the
 configured 2 (33ms latency, 33ms cushion).
 
 **Scheduler extraction:** all admission POLICY moved to
-`runtime/src/psx_netplay_sched.c` + `runtime/include/psx_netplay_sched.h`
+`runtime/src/net/psx_netplay_sched.c` + `runtime/include/psx_netplay_sched.h`
 (~850 lines out of psx_netplay.c): invent RTT synth, §21 grace, §27/§28/
 §29/§43 gap1 policy, tip-arrival cadence, §29–§32 timesync pacing +
 phase-ctrl telemetry, pcap freeze + §22 adaptive bump, admit stats, §44

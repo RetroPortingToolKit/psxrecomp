@@ -21,8 +21,8 @@
 > Read them as history. The async worker/file-handoff architecture, the
 > gcc-versus-fallback mutual exclusivity, and the CPS work are still accurate.
 >
-> Current behaviour lives in `runtime/src/overlay_backend.c`,
-> `runtime/src/code_provider.c` and `tools/compile_overlays.py`.
+> Current behaviour lives in `runtime/src/overlay/overlay_backend.c`,
+> `runtime/src/overlay/code_provider.c` and `tools/compile_overlays.py`.
 
 Status: **LARGELY ALREADY BUILT + VALIDATED under CPS (2026-06-18).** The "planned" feature below
 turned out to mostly exist: `overlay_capture.c` (`overlay_autocapture_tick` — autocapture on
@@ -167,12 +167,12 @@ overlay_loader_dispatch(addr):
   starve the guest fiber — but DON'T block the dispatch thread waiting on the worker.
 
 ## 6. Files
-- `runtime/src/overlay_loader.c` — enqueue on miss (replace sync try_sljit_region), per-CRC state,
+- `runtime/src/overlay/overlay_loader.c` — enqueue on miss (replace sync try_sljit_region), per-CRC state,
   cache re-scan flag.
 - `runtime/src/overlay_compile_worker.c` (NEW) — the worker thread, queue, tier dispatch, subprocess
   spawn (gcc) / snapshot-sljit (sljit).
 - `runtime/src/overlay_sljit.c` — add compile-from-buffer + serialize-only variant.
-- `runtime/src/overlay_capture.c` — reuse/extend the snapshot for single-region captures.
+- `runtime/src/overlay/overlay_capture.c` — reuse/extend the snapshot for single-region captures.
 - config_loader (+ game.toml) — optional `[overlay_compile]` paths; else auto-derive.
 - Windows: subprocess via CreateProcess (or _popen); POSIX via fork/exec. There may already be a
   subprocess helper; otherwise keep it minimal + Windows-first (the dev target).

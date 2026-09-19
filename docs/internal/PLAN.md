@@ -1023,10 +1023,10 @@ errors with a clear message ("BIOS read I_STAT @ 0x1F801070, no
 hardware sim available").
 
 **Concrete work:**
-- Create `runtime/src/main.cpp` — minimal SDL2 window, no input, no
+- Create `runtime/src/app/main.cpp` — minimal SDL2 window, no input, no
   rendering yet. Just a CPU state allocation and a single function
   call into the generated C.
-- Create `runtime/src/memory.c` — RAM (2 MB), scratchpad (1 KB),
+- Create `runtime/src/memory/memory.c` — RAM (2 MB), scratchpad (1 KB),
   BIOS ROM region (512 KB, populated from disk). Read/write entry
   points used by the generated C. **No MMIO routing yet** — any
   MMIO read/write fatally errors with the address.
@@ -1048,7 +1048,7 @@ Sony logo, and the logo appears on screen.
 **Concrete work:**
 - Salvage `interrupts.c`, `timers.c`, `dma.c`, `gpu.c`, and
   `gpu_sw_renderer.c` from v3, **one at a time**, audited for HLE
-  state leakage. Wire each into `runtime/src/memory.c`'s MMIO
+  state leakage. Wire each into `runtime/src/memory/memory.c`'s MMIO
   routing.
 - Wire `gpu_sw_renderer`'s VRAM into the SDL2 window's display buffer.
 - Run. Capture every MMIO access and compare against DuckStation's
@@ -1436,14 +1436,14 @@ on VSync(0) because VSync counter (0x80079D9C) never increments.
    `FUN_bfc25e8c` → B0:0x13 trampoline → B-table dispatch at 0x5E0
 3. B-table dispatch at 0x5E0 is a 7-instruction pattern:
    `lui/addiu/sll/add/lw/jr/nop` — reads B_table[$t1] and jumps to it
-4. The trampoline resolver (runtime/src/traps.c) only handled 4-instruction
+4. The trampoline resolver (runtime/src/cpu/traps.c) only handled 4-instruction
    patterns. Pattern 4 matched the first two instructions but failed on the
    third (sll instead of jr), causing a silent dispatch miss → B0:0x13
    was no-op'd → chain #3 never populated → VSync counter never ticked
 
 ### Fix applied
 
-Added Pattern 5 to trampoline resolver (runtime/src/traps.c):
+Added Pattern 5 to trampoline resolver (runtime/src/cpu/traps.c):
 - Matches the 7-instruction BIOS A0/B0/C0 vector dispatch pattern
 - Fixed ADD vs ADDU detection (BIOS uses ADD func=0x20, not ADDU func=0x21)
 - Runtime rebuilt with `-DCMAKE_BUILD_TYPE=Release` (was empty → `-O0`)

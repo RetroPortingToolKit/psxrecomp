@@ -10,8 +10,8 @@ There are **two live** servers, both implementing this protocol with overlapping
 
 | Server | Port | Source |
 |---|---|---|
-| **Native** (our recompiled runtime) | `4370` | `runtime/src/debug_server.c` |
-| **Beetle PSX** (oracle) | `4380` | `runtime/src/beetle_debug_server.c` |
+| **Native** (our recompiled runtime) | `4370` | `runtime/src/debug/debug_server.c` |
+| **Beetle PSX** (oracle) | `4380` | `runtime/src/oracle/beetle_debug_server.c` |
 
 > **DuckStation (port 4371) was retired as the oracle on 2026-05-05** and is no
 > longer built from this repository — there is no `duckstation` entry in
@@ -189,7 +189,7 @@ process always reports `match:1`.
 ## `s3_smear_watch` — callee-saved-register smear tripwire (native only)
 
 Latches the first interpreted instruction in a PC window whose execution
-changes `$s3` (`runtime/src/dirty_ram_interp.c`). A `jalr`'s exec_one spans
+changes `$s3` (`runtime/src/cpu/dirty_ram_interp.c`). A `jalr`'s exec_one spans
 the entire nested native callee, so the latch names the callee that returned
 with a clobbered callee-saved register; the insn ring is frozen at the latch.
 
@@ -204,7 +204,7 @@ with a clobbered callee-saved register; the insn ring is frozen at the latch.
 
 ## `callret_watch` — interp JALR call-resolution ring (native only)
 
-64-entry ring (`runtime/src/dirty_ram_interp.c`) recording, for every
+64-entry ring (`runtime/src/cpu/dirty_ram_interp.c`) recording, for every
 interpreted JALR whose call PC lies in a window, which resolution tier ran
 the callee and the full post-call outcome — the complement of
 `s3_smear_watch`: the tripwire names the callee that came back smeared, this
@@ -221,7 +221,7 @@ ring names the return path that let it come back.
 
 ## `hle_dump` — BIOS-HLE tier call ring (native only)
 
-Always-on ring (`runtime/src/bios_hle.c`, 16K entries) recording every
+Always-on ring (`runtime/src/bios/bios_hle.c`, 16K entries) recording every
 A0/B0/C0 kernel-vector dispatch the HLE tier's hook observes, plus the boot
 shell-skip event.
 
@@ -284,8 +284,8 @@ diagnostics when the response buffer fills; a partial list is still valid JSON
 
 If an inspection need isn't covered by the existing commands, **do not fall back to printf or log files**. Instead:
 
-1. Add a handler in `runtime/src/debug_server.c` (native)
-2. Add the matching handler in `runtime/src/beetle_debug_server.c` (Beetle oracle)
+1. Add a handler in `runtime/src/debug/debug_server.c` (native)
+2. Add the matching handler in `runtime/src/oracle/beetle_debug_server.c` (Beetle oracle)
    when the question needs a cross-check against hardware behaviour
 3. Keep field names parallel between the two
 4. Run `python tools/gen_tcp_commands.py` to refresh the generated index, and add
@@ -303,7 +303,7 @@ The TCP server is the canonical instrumentation surface. Rule 3 in `CLAUDE.md` i
 
 ## Complete command index (generated)
 
-**311 commands registered** — 298 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**311 commands registered** — 298 on the native server (`runtime/src/debug/debug_server.c`), 61 on the Beetle server (`runtime/src/oracle/beetle_debug_server.c`).
 
 52 of 311 have prose above; **259 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 

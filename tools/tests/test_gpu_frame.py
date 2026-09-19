@@ -281,7 +281,7 @@ class TestDiff(unittest.TestCase):
 
 
 class OneShotServer:
-    """Mimics runtime/src/debug_server.c io_thread_main(): accept, read one
+    """Mimics runtime/src/debug/debug_server.c io_thread_main(): accept, read one
     line, reply, close. Any client that assumes a persistent socket fails
     against this exactly the way it fails against the real runtime."""
 

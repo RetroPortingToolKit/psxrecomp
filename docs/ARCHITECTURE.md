@@ -172,7 +172,7 @@ A game is configured by its **game config** (`game.toml`). A **BIOS config**
 
 The two are **not merged.** The BIOS config is consumed only by the recompiler
 at build time (`psxrecomp-bios`, and `psxrecomp-game` for the address model);
-the shipping runtime never loads it — `runtime/src/main.cpp` contains no call to
+the shipping runtime never loads it — `runtime/src/app/main.cpp` contains no call to
 `load_bios_config`. `[runtime]` keys therefore take effect only from `game.toml`,
 `settings.toml`, the CLI, and the environment. Full schema:
 [`docs/config_schema.md`](config_schema.md).

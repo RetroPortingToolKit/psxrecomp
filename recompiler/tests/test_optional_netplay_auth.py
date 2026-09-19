@@ -14,7 +14,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cxx", required=True)
     ap.add_argument("--source", type=Path,
-                    default=Path(__file__).resolve().parents[2] / "runtime/src/main.cpp")
+                    default=Path(__file__).resolve().parents[2] / "runtime/src/app/main.cpp")
     args = ap.parse_args()
     source = args.source.read_text(encoding="utf-8")
     lines = source.splitlines()

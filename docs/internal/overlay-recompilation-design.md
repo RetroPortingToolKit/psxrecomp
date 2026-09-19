@@ -288,7 +288,7 @@ not assumed.
 ## 6. RAM-write-path audit result (gates the §5-A guard)
 
 - All CPU stores (generated + interpreter) and DMA writes funnel through
-  `psx_write_{word,half,byte}` in `runtime/src/memory.c`. The only `memcpy`/
+  `psx_write_{word,half,byte}` in `runtime/src/memory/memory.c`. The only `memcpy`/
   `memset` into memory target device-local buffers (`param_fifo`, `vram`,
   `spu_ram`), never main `ram`. **No native path mutates main RAM behind the
   store functions** ⇒ write-invalidation has no hidden false-negative source.

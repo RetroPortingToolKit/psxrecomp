@@ -52,7 +52,7 @@ previously only ever OR'd bit 10 in at delivery and never cleared it.
 
 Extensions beyond the PR:
 
-1. **A second latching writer the PR missed.** `runtime/src/psx_interpreter.c`
+1. **A second latching writer the PR missed.** `runtime/src/cpu/psx_interpreter.c`
    had its own `cpu->cop0[COP0_CAUSE] |= (1u << 10);` at interrupt delivery —
    the identical defect in the standalone interpreter path. Fixed too. An audit
    of every writer of `cop0[13]` confirms no other site touches bit 10: the
@@ -166,7 +166,7 @@ always-on ring query, not an arm-then-capture.
 
 Separate from this work, and worth a decision:
 
-- `runtime/src/spu.c` `calc_vc_delta()` is commented *"Ported verbatim from
+- `runtime/src/spu/spu.c` `calc_vc_delta()` is commented *"Ported verbatim from
   Beetle's CalcVCDelta"*. This is the ADSR rate decoder, and it is in every
   released binary. Same category as PR #16, already shipped.
 - `runtime/include/spu_gauss.h` cites *"No$PSX docs / DuckStation
@@ -196,10 +196,10 @@ than trusting patch-id alone:
 
 - cherry-picking all three onto current `origin/master` produced **empty**
   commits;
-- `execute_ch5_pio()` is present in `runtime/src/dma.c` on master;
+- `execute_ch5_pio()` is present in `runtime/src/dma/dma.c` on master;
 - `CFC0` handling and the `& ~0x0300u | (val & 0x0300u)` Cause write-protection
-  are present in `runtime/src/dirty_ram_interp.c` on master;
-- `git diff origin/master 9f3cd0a3 -- runtime/src/autocompile.c` is **empty**.
+  are present in `runtime/src/cpu/dirty_ram_interp.c` on master;
+- `git diff origin/master 9f3cd0a3 -- runtime/src/overlay/autocompile.c` is **empty**.
 
 Consequences: there is no salvage left to preserve, no git surgery to perform,
 and the "two competing SPU IRQ implementations" question resolves by default —

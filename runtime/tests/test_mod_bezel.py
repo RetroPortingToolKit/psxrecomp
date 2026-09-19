@@ -5,10 +5,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MAIN = (ROOT / "runtime/src/main.cpp").read_text(encoding="utf-8")
+MAIN = (ROOT / "runtime/src/app/main.cpp").read_text(encoding="utf-8")
 HEADER = (ROOT / "runtime/include/mod_plugins.h").read_text(encoding="utf-8")
-MOD_RUNTIME = (ROOT / "runtime/src/mod_runtime.cpp").read_text(encoding="utf-8")
-BUILTIN = (ROOT / "runtime/src/mod_builtin_bezel.c").read_text(encoding="utf-8")
+MOD_RUNTIME = (ROOT / "runtime/src/mods/mod_runtime.cpp").read_text(encoding="utf-8")
+BUILTIN = (ROOT / "runtime/src/mods/mod_builtin_bezel.c").read_text(encoding="utf-8")
 CONFIG_H = (ROOT / "recompiler/src/config_loader.h").read_text(encoding="utf-8")
 CONFIG_CPP = (ROOT / "recompiler/src/config_loader.cpp").read_text(
     encoding="utf-8"

@@ -656,7 +656,7 @@ and play a title, use its game repo from the [Games](#games) table.
 Builds natively on **Windows (MSVC/MinGW)**, **macOS (Apple Silicon & Intel)**,
 and **Linux**. The selected BIOS backend — OpenBIOS or retail BIOS — uses host
 fibers for its thread scheduler: Win32 Fibers on Windows and `ucontext` on POSIX
-(`runtime/src/psx_fiber.c`). This keeps the selected recompiled backend's
+(`runtime/src/cpu/psx_fiber.c`). This keeps the selected recompiled backend's
 cooperative thread switching, especially the CD-boot handoff, consistent on
 every platform.
 

@@ -611,7 +611,7 @@ def _extract_tar_top_level(archive, parent, expect_top):
 
 
 # The runtime gates autocompile on the presence of the bundled interpreter at
-# this exact path (runtime/src/main.cpp, `tk_py`). The name differs per
+# this exact path (runtime/src/app/main.cpp, `tk_py`). The name differs per
 # platform; the layout does not.
 TOOLCHAIN_PY_REL = {'win': os.path.join('python', 'python.exe'),
                     'linux': os.path.join('python', 'bin', 'python3'),

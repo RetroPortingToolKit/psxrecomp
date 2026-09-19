@@ -2,7 +2,7 @@
 """t2probe.py - native-vs-interp FIRST-DIVERGENCE probe for any PSX recomp title.
 
 Dev tooling (NOT shipped in releases). Pairs with the debug-server commands in
-runtime/src/debug_server.c (all PSX_NO_DEBUG_TOOLS-stripped in release):
+runtime/src/debug/debug_server.c (all PSX_NO_DEBUG_TOOLS-stripped in release):
   frame_fingerprint, record_frame, record_frame_dump, record_reads_dump
 and the boot env seeds PSX_RECORD_FRAME and PSX_READ_WATCH (debug_server_init),
 PSX_OVERLAY_NATIVE_OFF (overlay_loader.c, forces full dirty-interp = the oracle).

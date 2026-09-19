@@ -169,7 +169,7 @@ endif()
 # Ids that are NOT part of this build are left alone and merely noted: on a
 # self-compiling setup release mods/packages can legitimately hold packages the
 # player installed under the pre-split layout, and the runtime's
-# migrate_legacy_root() (runtime/src/mod_packages.cpp) relocates those into
+# migrate_legacy_root() (runtime/src/mods/mod_packages.cpp) relocates those into
 # mods/installed on the next launch. Deleting them here, or failing the build
 # over them, would both be wrong.
 

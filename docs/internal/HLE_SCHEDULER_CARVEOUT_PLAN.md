@@ -44,7 +44,7 @@ Key consequence: a thread's entire context (regs + guest SP + resume EPC) is in 
 TCB. Switching threads = restore the other TCB and resume at its EPC. The host C call
 stack is irrelevant to guest thread semantics.
 
-## 2. What we have now + its non-determinism (`runtime/src/traps.c`)
+## 2. What we have now + its non-determinism (`runtime/src/cpu/traps.c`)
 
 - `psx_save_context_to_tcb` / `psx_restore_context_from_tcb` — **FAITHFUL, KEEP.**
   They already write/read the documented TCB register array (tcb+8 + reg index*4,

@@ -76,7 +76,7 @@ entry twice.
 
 ### B-1 — Capture + JSON dump  *(prerequisite for everything)*
 
-**Files:** `runtime/src/overlay_capture.c` + `runtime/include/overlay_capture.h`
+**Files:** `runtime/src/overlay/overlay_capture.c` + `runtime/include/overlay_capture.h`
 
 - `overlay_capture_init(const char *game_id)` — called at game handoff
 - `overlay_capture_on_dma(uint32_t load_addr, uint32_t size, const uint8_t *bytes)` — called from `dma.c` `execute_ch3_cdrom` when `load_start < 0x1C0000`
@@ -141,7 +141,7 @@ with the new overlays compiled in.
 
 ### A-1 — Cache DLL check on DMA completion
 
-**Files:** `runtime/src/overlay_capture.c` (extended)
+**Files:** `runtime/src/overlay/overlay_capture.c` (extended)
 
 On DMA completion, after the capture-set insert:
 - Compute `hash = crc32(bytes, size)`
@@ -194,8 +194,8 @@ A-1 and A-2 are the quality-of-life layer.
 
 | Component | File | Status |
 |---|---|---|
-| Dirty-RAM interpreter (last-resort fallback) | `runtime/src/dirty_ram_interp.c` | Done |
-| CD DMA ring log (`cd_read_log` TCP cmd) | `runtime/src/dma.c` | Done (filter + 65536 ring, 2026-05-30) |
+| Dirty-RAM interpreter (last-resort fallback) | `runtime/src/cpu/dirty_ram_interp.c` | Done |
+| CD DMA ring log (`cd_read_log` TCP cmd) | `runtime/src/dma/dma.c` | Done (filter + 65536 ring, 2026-05-30) |
 | Dispatch table infrastructure | `runtime/src/full_function_emitter.cpp` | Done |
 | Recompiler core (MIPS→C) | `recompiler/src/` | Done |
 | `game.toml` config loader | `recompiler/src/config_loader.cpp` | Done |

@@ -92,7 +92,7 @@ optionally record IRQ arrivals to flag suspicious shards.
    Config-listed for the spike; auto-detection (hot, pure, hook-worthy) is
    a later phase. Rolls the cg-hash → regen + reshard (worktree owns its
    whole chain).
-2. **Runtime store** (`runtime/src/data_shards.c`): in-memory index +
+2. **Runtime store** (`runtime/src/cdrom/data_shards.c`): in-memory index +
    on-disk persistence under the unified cache dir
    (`cache/<game-id>/datashards/`), one file per shard + a manifest.
    Loaded lazily; saved on capture. Guarded by the same codegen-tag stamp

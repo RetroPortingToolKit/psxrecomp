@@ -16,7 +16,7 @@ CAPTURE SEMANTICS (must be identical on both sides):
   (function entry / branch target), not a mid-block PC.
 
 The native side (psx-runtime) implements `cyc_watch` / `cyc_watch_dump` /
-`cyc_watch_clear` in runtime/src/debug_server.c. The Beetle side
+`cyc_watch_clear` in runtime/src/debug/debug_server.c. The Beetle side
 (psx-beetle) implements the SAME commands to the SAME spec (added parent-side).
 
 Wire format (request):

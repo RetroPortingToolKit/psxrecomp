@@ -47,6 +47,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "../third_party/stb_image.h"
 #include "gpu_vk_renderer.h"
 #include "frame_pacing.h"
+#include "host_clock.h"
 #include "latency_ring.h"
 #include "sio.h"
 #ifndef PSX_MAX_PLAYERS
@@ -6498,7 +6499,36 @@ struct NetplayVblankEpilogue {
 };
 
 /* Called from gpu_vblank_tick() at each simulated vblank. */
+/* Decoupled presentation clock state (host_clock.h). 0 = present every guest
+ * frame, the historical behaviour and the default. */
+static PsxHostClock g_presentation_clock;
+static double       g_presentation_hz;
+static uint64_t     g_presentation_drawn, g_presentation_skipped;
+
+/* Armed once, lazily, from [video] presentation_hz with PSX_PRESENTATION_HZ
+ * overriding -- the same precedence every other knob in this file uses. */
+static void presentation_clock_arm_once(void) {
+    static int armed = 0;
+    if (armed) return;
+    armed = 1;
+    unsigned hz = 0u;
+    const char* e = getenv("PSX_PRESENTATION_HZ");
+    if (e && e[0]) { unsigned v = 0u; if (sscanf(e, "%u", &v) == 1) hz = v; }
+    if (!psx_host_valid_fps(hz)) hz = 0u;
+    g_presentation_hz = hz ? (double)hz : 0.0;
+    if (g_presentation_hz > 0.0) {
+        double now_s = (double)SDL_GetPerformanceCounter() /
+                       (double)SDL_GetPerformanceFrequency();
+        psx_host_clock_reset(&g_presentation_clock, now_s,
+                             PSX_HOST_NTSC_HZ, g_presentation_hz);
+        printf("PRESENT_CLOCK armed at %.1f Hz (decoupled from the guest's frame rate)\n",
+               g_presentation_hz);
+        fflush(stdout);
+    }
+}
+
 static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+    presentation_clock_arm_once();
     NetplayVblankEpilogue ep{};
     /* Guest quantum for this vblank is complete. Drop top-level-resume armed
      * by any resume_at (savestate / selfcheck / RB) during that quantum — the
@@ -7086,6 +7116,36 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         }
     } else {
         s_netplay_depth24_present_skip = 0;
+    }
+
+    /* DECOUPLED PRESENTATION CLOCK (host_clock.h). Everything above this point
+     * is per-guest-frame work that must not be skipped: debug-server poll,
+     * input, savestate/rewind, netplay admit. Everything below is DISPLAY work.
+     *
+     * The existing skips above this one (turbo, turbo-loads, FMV, netplay
+     * depth24) are all `present_every` COUNTERS -- they drop a fixed fraction
+     * of frames. This is a DEADLINE: it draws when the display's own clock says
+     * a frame is due, which is what gives a steady cadence when the guest's
+     * frame rate is neither 60 nor a clean divisor of the panel.
+     *
+     * OFF unless PSX_PRESENTATION_HZ is set, so the shipping path is untouched.
+     * Deliberately env-only for now: a [video] presentation_hz key belongs
+     * beside vsync and frame_interpolation, but it has to be threaded from the
+     * recompiler's config_loader through generate time, and this branch has no
+     * build tree here to verify that against. Add the key with the build.
+     * Note this does NOT hold the guest: a frame that is not drawn was still
+     * simulated, which is the whole point -- capping the cadence instead costs
+     * guest speed, measured at 37 % on the sibling N64 project. */
+    if (g_presentation_hz > 0.0) {
+        double now_s = (double)SDL_GetPerformanceCounter() /
+                       (double)SDL_GetPerformanceFrequency();
+        if (!psx_host_clock_presentation_due(&g_presentation_clock, now_s)) {
+            ++g_presentation_skipped;
+            ep.skip_pace = 1;
+            return ep;
+        }
+        psx_host_clock_presentation_done(&g_presentation_clock, now_s);
+        ++g_presentation_drawn;
     }
 
     /* Offline wall-clock pacing before present. Skipped when driver vsync

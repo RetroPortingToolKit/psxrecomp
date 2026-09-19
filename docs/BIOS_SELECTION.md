@@ -54,7 +54,7 @@ says which image it expects if the check fails. This is not DRM and not a
 preference; it is the difference between running and wild-jumping.
 
 The acceptance gate compares **file size and CRC32** against each linked
-backend's recorded identity (`bios_backend_for_file` in `runtime/src/main.cpp`).
+backend's recorded identity (`bios_backend_for_file` in `runtime/src/app/main.cpp`).
 A SHA-256 is also recorded per image (`image_sha256` in
 `runtime/include/psx_bios_image.h`) and is surfaced for provenance and bug
 reports, but it is **not** part of the accept/reject decision.

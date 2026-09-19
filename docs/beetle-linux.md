@@ -6,7 +6,7 @@ ping/screenshot served over the TCP debug protocol).
 
 ## beetle-psx checkout
 
-`runtime/src/beetle_libretro.cpp` targets the C++ beetle-psx tree. Upstream
+`runtime/src/oracle/beetle_libretro.cpp` targets the C++ beetle-psx tree. Upstream
 master has since been converted to plain C (`libretro.cpp` -> `libretro.c`,
 `PS_CPU` class dropped), which no longer compiles against our integration.
 Pin the checkout to the last compatible commit — the same base
