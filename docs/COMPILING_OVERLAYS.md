@@ -19,6 +19,25 @@ to pre-build coverage for their own machine.
 > ⚠️ **Privacy:** `overlay_captures.json` contains snapshots of the game's own
 > code read from *your* disc. Keep it private — do not post it publicly.
 
+### Enriching runtime captures with conservative walk roots
+
+Runtime capture records PCs it dispatched to, not trusted function boundaries:
+continuations and jump-table cases can be valid dispatch PCs in the middle of a
+function. For continuation-passing titles, derive portable root evidence from
+the captured bytes before compiling rather than placing game addresses in TOML:
+
+```sh
+python psxrecomp/tools/enrich_overlay_captures.py \
+    --captures <exe-dir>/overlay_captures.json \
+    --out <exe-dir>/overlay_captures.enriched.json
+```
+
+The tool writes `static_discovery_entry_pcs`; it never rewrites the
+runtime-owned `function_entry_pcs`. It admits only framed entries plus direct
+`jal`/dense in-image pointer targets that pass the compiler's bounded CFG
+proof. `compile_overlays.py` validates them again, so uncertain data stays
+interpreted. Pass the enriched file to `compile_overlays.py --captures`.
+
 §0 frames the production goal; §1 builds the gcc cache you ship; §2 bakes
 overlays straight into the executable.
 
