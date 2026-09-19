@@ -137,6 +137,60 @@ python3 tools/new_project_layout/probe_disc.py disc/game.cue \
 Prefer a **full multi-track** Redump cue. A single-TRACK dump will warn and will
 fail online multi-track gates (see `[NETPLAY.md](NETPLAY.md)`).
 
+### EXE-only autofill (`psxrecomp-toml`)
+
+When you have a PS-X EXE but no cue — or you just want a `game.toml` skeleton
+without running the full disc probe — `psxrecomp-toml` (built alongside the
+other CLI tools from `recompiler/`, source `recompiler/src/main_toml.cpp`)
+reads the EXE header and writes the config for you. It saves opening a hex
+editor or Ghidra just to recover the entry point, load address and text size.
+
+What it produces:
+
+- **`game.toml`** — `load_address`, `entry_pc` and `text_size` taken from the
+  actual PS-X EXE header, plus the game name and ID.
+- **Seeds** — the destinations of every direct jump-and-link (`JAL`) it finds
+  in the code segment, optionally widened with the addresses immediately
+  following each `jr $ra`.
+
+```
+Usage: psxrecomp-toml <PS1-EXE> [options]
+
+Options:
+  --output <path>   Write game.toml to <path> (default: stdout)
+  --seeds <path>    Also write JAL-target seed file to <path>
+  --name <str>      Game name in TOML (default: derived from EXE)
+  --id <str>        Game ID (default: auto-detect or empty)
+  --stdout          Force output to stdout even with --output
+  --include-after-return
+                    Add addresses after jr $ra to seeds (more coverage,
+                    may include some data addresses)
+  -h, --help        Show this help
+```
+
+Example:
+
+```bash
+psxrecomp-toml ./isos/SCES_028.34 \
+  --output ./projects/CrashBash/game.toml \
+  --seeds ./projects/CrashBash/recompiler/seeds/seeds.txt \
+  --name "Crash-Bash-EUR"
+```
+
+It also prints the EXE, game ID, entry PC, load address, text size, stack base
+and seed count to stderr, so you can sanity-check the header it read.
+
+`--include-after-return` trades precision for coverage: an address just past a
+`jr $ra` is usually the next function, but sometimes it is data, so those seeds
+can introduce junk entries.
+
+**This is a first pass, not full discovery.** Static `JAL` scanning cannot
+resolve dynamic function tables or indirect register dispatches. When the
+recompiler later reports discovery gaps or unknown dispatches at runtime, those
+newly-found addresses still have to be fed back into the seeds file. Prefer
+`probe_disc.py` above when you have a cue — it does the same header work plus
+disc identity, digests and netplay gates.
+
 ### Project Studio — migrate / update existing titles
 
 Older titles (e.g. `psxrecomp-v4` submodule, `psxrecomp_add_runtime_target`,
@@ -244,7 +298,7 @@ multi-track `.cue`/`.bin` requirements.
 Everything game-specific lives at the **root** of *your* title repo. Framework
 and UI are submodules next to that code — not nested under each other.
 
-The RetComM / Generate & rebuild CLI (`psxrecomp_cli.py`, `tools/prepare_disc.py`,
+The Retro / Generate & rebuild CLI (`psxrecomp_cli.py`, `tools/prepare_disc.py`,
 pack helpers) ships **inside** the `psxrecomp` submodule. There is no separate
 `psxrecomp-sdk/` tree.
 
@@ -253,12 +307,12 @@ YourGameRecomp/                 # your git repo
 ├── .gitmodules
 ├── CMakeLists.txt              # thin: psxrecomp_add_game_runtime(...)
 ├── game.toml                   # probe autofills identity / netplay gates
-├── catalog_identity.json       # RetComM / catalog digests + track_counts + disc_fp
+├── catalog_identity.json       # Retro / catalog digests + track_counts + disc_fp
 ├── framework_pins.txt          # optional scaffold snapshot (gitlinks are authoritative)
 ├── README.md                   # scaffold stub (legal + quick start)
 ├── VERSION                     # release pin (e.g. 0.1.0)
 ├── assets/
-│   ├── psxrecomp.ico           # default Windows app icon (RetComM-themed pad)
+│   ├── psxrecomp.ico           # default Windows app icon (Retro-themed pad)
 │   ├── psxrecomp.png           # staged beside exe / packaging
 │   └── psxrecomp.svg           # source mark (see psxrecomp/assets/)
 ├── seeds/ghidra_funcs.txt      # probe: boot-EXE JAL seeds (grow over time)
@@ -267,8 +321,14 @@ YourGameRecomp/                 # your git repo
 │   ├── boxart.tga              # optional: --fetch-boxart (libretro Named_Boxarts)
 │   └── BOXART_SOURCE.txt       # attribution URL
 ├── mods/preloaded/             # scaffold: empty catalog for shipped .psxmod packages
-│   ├── README.md
+│   ├── README.md               # staged to <exe>/mods/README.md
 │   └── packages/               # packages/<id>/<version>/manifest.toml …
+│                               # declared to the framework as
+│                               #   PRELOADED_MODS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded"
+│                               # which stages it into <exe>/mods/bundled beside
+│                               # the framework's builtins. NEVER copy it with
+│                               # your own POST_BUILD command — see
+│                               # docs/MOD_PACKAGES.md ("How bundled/ gets staged").
 ├── scripts/
 │   └── package_setup_release.sh   # scaffold fills from package_setup_release.sh.in
 ├── .github/workflows/
@@ -311,7 +371,7 @@ Or use the scaffolding scripts under **New Project Layout (preview)** above.
 ```bash
 cd YourGameRecomp
 git submodule add -b master https://github.com/mstan/psxrecomp.git psxrecomp
-git submodule add -b master https://github.com/mstan/recomp-ui.git recomp-ui
+git submodule add -b master https://github.com/RetroPortingToolKit/recomp-ui.git recomp-ui
 git submodule update --init --recursive
 ```
 
@@ -369,10 +429,10 @@ embedded `toolchain/`. The zip includes:
 - `recomp-ui/` sources (needed to rebuild)
 - On Windows: MinGW runtime DLLs beside the host and emitters
 
-Players (or [RetComM](https://github.com/TechnicallyComputers/RetComM-Launcher))
-run **Generate once** (wizard or RetComM Build & Install) with a legal disc.
-RetComM / the wizard download `cmake-clang-v1` from
-[retcomm-toolchains](https://github.com/TechnicallyComputers/retcomm-toolchains)
+Players (or [Retro](https://github.com/RetroPortingToolKit/Retro-Launcher))
+run **Generate once** (wizard or Retro Build & Install) with a legal disc.
+Retro / the wizard download `cmake-clang-v1` from
+[retcomm-toolchains](https://github.com/RetroPortingToolKit/RetroPorting-Toolchains)
 (or accept an offline zip / `RETCOMM_TOOLCHAIN_DIR`). Pass
 `--embed-toolchain` to `package_setup_host.sh` only for special offline-first
 packs.
@@ -381,7 +441,7 @@ packs.
 
 | Action | Meaning |
 |--------|---------|
-| **Update** (RetComM) | New setup-host zip → refresh source → cmake rebuild. Skips disc→C when `codegen-cache` fingerprints (ROM/BIOS/emitters) still match. |
+| **Update** (Retro) | New setup-host zip → refresh source → cmake rebuild. Skips disc→C when `codegen-cache` fingerprints (ROM/BIOS/emitters) still match. |
 | **Generate & Rebuild** | Force regenerate game C from the disc, then rebuild. Use when emit inputs change or cache is wrong. |
 
 Ordinary host/UI releases do **not** require Generate & Rebuild. Details:
@@ -427,6 +487,23 @@ Composite actions (from the game repo after checkout):
 
 ## CI workflow template
 
+For an existing project, `tools/generate_ci` writes the filled workflow and
+nothing else (no commit, no push, no migration plan):
+
+```sh
+sh psxrecomp/tools/generate_ci.sh            # in the project; --check, --force, --dry-run
+```
+
+```powershell
+powershell -File psxrecomp\tools\generate_ci.ps1
+```
+
+It is the single-purpose face of Project Studio's `emit_ci_workflow`: the
+template comes from the project's own psxrecomp submodule, the zip prefix from
+`scripts/package_setup_release.sh` so CI uploads the zips the packager built,
+and an installed workflow is compared by step name -- `--check` exits 1 when
+it is missing or stale, and only `--force` overwrites one.
+
 The New Project Layout scaffold **copies and fills** this for you after
 submodules land:
 
@@ -434,10 +511,23 @@ submodules land:
 (Linux x64, Windows x64, macOS arm64 + Intel)
 - `scripts/package_setup_release.sh` ← zip prefix / exe / display name
 
-`--exe-name` / `codegen_setup.exe_basename` must match CMake
-`OUTPUT_NAME` (`MAKE_C_IDENTIFIER(WINDOW_TITLE)`, e.g. `TwistedMetal4_Recompiled`),
-not the bare project folder name (`TwistedMetal4Recomp`). Scaffolding derives
+`--exe-name` / `codegen_setup.exe_basename` should match CMake `OUTPUT_NAME`
+(`MAKE_C_IDENTIFIER(WINDOW_TITLE)`, e.g. `TwistedMetal4_Recompiled`), not the
+bare project folder name (`TwistedMetal4Recomp`). Scaffolding derives
 `EXE_BASENAME` from `WINDOW_TITLE` for that reason.
+
+It is no longer fatal when they disagree. CMake is the single source of truth:
+`runtime.cmake` writes the `OUTPUT_NAME` it chose to
+`<build-dir>/psxrecomp_exe_name-<target>.txt`, and both the build CLI and the
+in-runtime self-compiler read that in preference to their own copy. A build
+tree predating the marker still falls back to `exe_basename`.
+
+This matters because the two values are separate copies of the same window
+title, and renaming a game updates one of them. Before the marker existed, that
+drift produced `build succeeded but binary missing` on a build with no errors
+at all — the executable was sitting in the build directory under the name CMake
+had chosen. To pin the name explicitly instead of deriving it, pass `EXE_NAME`
+to `psxrecomp_add_game_runtime()`.
 
 Zip prefix defaults to a short acronym from `--name` (e.g. `MastersOfTerasKasiRecomp`
 → `motk`); override with `--zip-prefix` / `-ZipPrefix`.
@@ -469,7 +559,7 @@ Full action reference: `[ci/README.md](ci/README.md)`.
 ## Bundled release checklist
 
 Use this before tagging a setup-host release that matches other titles
-(BPE / MotK / RetComM).
+(BPE / MotK / Retro).
 
 ### Repository
 
@@ -541,7 +631,7 @@ Use this before tagging a setup-host release that matches other titles
   ```
 - [ ] Extract → run host → Generate with a legal disc succeeds end-to-end
 - [ ] After rebuild, game launches; saves/settings land beside the exe
-- [ ] RetComM install/update (if you publish a catalog entry) uses this **same**
+- [ ] Retro install/update (if you publish a catalog entry) uses this **same**
   ```
   zip — no separate tools pack required; Update rebuilds via codegen-cache
   (not raw zip extract over a Play binary)
@@ -558,4 +648,4 @@ Use this before tagging a setup-host release that matches other titles
   ```
   no pre-generated game C)
   ```
-- [ ] Catalog / RetComM entry points at the release assets when ready
+- [ ] Catalog / Retro entry points at the release assets when ready

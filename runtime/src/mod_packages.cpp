@@ -22,7 +22,7 @@ namespace PSXRecompV4 {
 namespace {
 
 constexpr uint32_t kMinFormatVersion = 1;
-constexpr uint32_t kMaxFormatVersion = 5;
+constexpr uint32_t kMaxFormatVersion = 6;
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
 
@@ -1471,6 +1471,65 @@ void mod_clear_plugins_for_tests() {
     registered_plugins().clear();
 }
 
+const char* mod_channel_name(ModChannel channel) {
+    switch (channel) {
+        case ModChannel::Experimental: return "experimental";
+        case ModChannel::Developer:    return "developer";
+        case ModChannel::Stable:       break;
+    }
+    return "stable";
+}
+
+bool mod_channel_from_name(const std::string& name, ModChannel& out) {
+    if (name == "stable")       { out = ModChannel::Stable;       return true; }
+    if (name == "experimental") { out = ModChannel::Experimental; return true; }
+    if (name == "developer")    { out = ModChannel::Developer;    return true; }
+    return false;
+}
+
+namespace {
+
+/* Remove every developer-channel feature and everything that only existed to
+ * serve one. "Developer does not ship" means absent, not hidden: a release
+ * build must not carry the operations either, or a stale state.toml naming a
+ * dropped feature could still reach them.
+ *
+ * Returns false when nothing is left, so the caller can drop the package
+ * rather than list one with no features. */
+bool strip_developer_features(ModPackage& package) {
+    std::set<std::string> dropped;
+    for (const ModFeature& feature : package.features)
+        if (feature.channel == ModChannel::Developer)
+            dropped.insert(feature.id);
+    if (dropped.empty()) return !package.features.empty();
+
+    const auto orphaned = [&dropped](const std::string& feature_id) {
+        return dropped.count(feature_id) != 0;
+    };
+    const auto prune = [&orphaned](auto& entries) {
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [&orphaned](const auto& entry) {
+                                         return orphaned(entry.feature_id);
+                                     }),
+                      entries.end());
+    };
+    package.features.erase(
+        std::remove_if(package.features.begin(), package.features.end(),
+                       [&orphaned](const ModFeature& feature) {
+                           return orphaned(feature.id);
+                       }),
+        package.features.end());
+    prune(package.options);
+    prune(package.constraints);
+    prune(package.patches);
+    prune(package.overlays);
+    prune(package.plugins);
+    prune(package.resources);
+    return !package.features.empty();
+}
+
+} // namespace
+
 ModPackageManager::ModPackageManager(fs::path mods_root) : root_(std::move(mods_root)) {}
 
 void ModPackageManager::set_root(fs::path mods_root) {
@@ -1517,6 +1576,16 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
             cfg.contains("resolver") ? toml::find<std::string>(cfg, "resolver") : "declarative";
         out.save_compatibility = cfg.contains("save_compatibility")
             ? toml::find<std::string>(cfg, "save_compatibility") : "shared";
+        /* Accepted at every format version: v5 manifests already carried a
+         * package-level channel, enforced then only by a packaging grep over
+         * the manifest text. Now it parses, and it seeds the per-feature
+         * default rather than quarantining the whole package. */
+        if (cfg.contains("channel")) {
+            const std::string name = toml::find<std::string>(cfg, "channel");
+            if (!mod_channel_from_name(name, out.channel))
+                throw std::runtime_error(
+                    "channel must be stable, experimental or developer");
+        }
         out.root = path.parent_path();
         if (out.format_version < kMinFormatVersion ||
             out.format_version > kMaxFormatVersion)
@@ -1572,6 +1641,17 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                     ? toml::find<std::string>(v, "group") : "General";
                 feature.default_enabled =
                     toml::find_or<bool>(v, "default_enabled", false);
+                feature.hidden = toml::find_or<bool>(v, "hidden", false);
+                feature.channel = out.channel;
+                if (v.contains("channel")) {
+                    if (out.format_version < 6)
+                        throw std::runtime_error(
+                            "per-feature channel requires format_version 6");
+                    const std::string name = toml::find<std::string>(v, "channel");
+                    if (!mod_channel_from_name(name, feature.channel))
+                        throw std::runtime_error(
+                            "channel must be stable, experimental or developer");
+                }
                 if (!valid_id(feature.id) ||
                     !feature_ids.insert(feature.id).second)
                     throw std::runtime_error("invalid or duplicate feature id");
@@ -1587,6 +1667,7 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
             feature.name = out.name;
             feature.author = out.author;
             feature.description = out.description;
+            feature.channel = out.channel;
             feature.legacy = true;
             out.features.push_back(std::move(feature));
         }
@@ -2304,10 +2385,68 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
     }
 }
 
-bool ModPackageManager::scan(std::string* error) {
-    packages_.clear();
+void ModPackageManager::migrate_legacy_root() {
     std::error_code ec;
-    const fs::path packages_root = root_ / "packages";
+    const fs::path legacy = root_ / "packages";
+    if (!fs::exists(legacy, ec)) return;
+    const fs::path installed = installed_root();
+    const fs::path bundled = bundled_root();
+    size_t stranded = 0;
+    for (const fs::directory_entry& id_dir : fs::directory_iterator(legacy, ec)) {
+        if (ec) break;
+        if (!id_dir.is_directory()) continue;
+        const std::string id = id_dir.path().filename().string();
+        for (const fs::directory_entry& version_dir :
+             fs::directory_iterator(id_dir.path(), ec)) {
+            if (ec) break;
+            if (!version_dir.is_directory()) continue;
+            const std::string version = version_dir.path().filename().string();
+            std::error_code move_ec;
+            /* Already staged by the build: this copy is redundant output, not
+             * anything the player owns. */
+            if (fs::exists(bundled / id / version, move_ec)) {
+                fs::remove_all(version_dir.path(), move_ec);
+                continue;
+            }
+            const fs::path destination = installed / id / version;
+            if (fs::exists(destination, move_ec)) {
+                fs::remove_all(version_dir.path(), move_ec);
+                continue;
+            }
+            fs::create_directories(destination.parent_path(), move_ec);
+            if (move_ec) { ++stranded; continue; }
+            fs::rename(version_dir.path(), destination, move_ec);
+            if (move_ec) {
+                /* Cross-device or a locked file: copy rather than lose it. */
+                move_ec.clear();
+                fs::copy(version_dir.path(), destination,
+                         fs::copy_options::recursive, move_ec);
+                if (move_ec) {
+                    ++stranded;
+                    continue;
+                }
+                fs::remove_all(version_dir.path(), move_ec);
+            }
+        }
+    }
+    /* Drop the legacy tree only when every version directory was dealt with.
+     * A blanket remove_all here would be the very data loss this migration
+     * exists to end, so anything that could not be moved stays exactly where
+     * it is and is reported instead. */
+    if (stranded != 0 || ec) {
+        scan_errors_.push_back(
+            legacy.string() + ": could not migrate " +
+            std::to_string(stranded) + " package version(s) to " +
+            installed.string() + "; the old catalog was left in place");
+        return;
+    }
+    ec.clear();
+    fs::remove_all(legacy, ec);
+}
+
+bool ModPackageManager::scan_root(const fs::path& packages_root,
+                                  ModPackageOrigin origin, std::string* error) {
+    std::error_code ec;
     if (!fs::exists(packages_root, ec)) return true;
     for (const fs::directory_entry& id_dir : fs::directory_iterator(packages_root, ec)) {
         if (ec) break;
@@ -2320,13 +2459,34 @@ bool ModPackageManager::scan(std::string* error) {
             ModPackage package;
             std::string parse_error;
             if (!read_manifest(manifest, package, &parse_error)) {
+                /* A package that cannot be parsed must say so. Silently
+                 * skipping it leaves a mod author with a mod that simply does
+                 * not exist and nothing anywhere explaining why. */
+                scan_errors_.push_back(manifest.string() + ": " + parse_error);
                 continue;
             }
             if (package.id != id_dir.path().filename().string() ||
                 package.version != version_dir.path().filename().string()) {
-                set_error(error, "package path does not match manifest id/version: " +
-                                 manifest.string());
-                return false;
+                scan_errors_.push_back(
+                    manifest.string() +
+                    ": package path does not match manifest id/version");
+                continue;
+            }
+            if (!developer_channel_ && !strip_developer_features(package)) {
+                /* Every feature was developer-channel, so on this build the
+                 * package has nothing to offer. Not an error: it is the
+                 * intended outcome of shipping without them. */
+                continue;
+            }
+            package.origin = origin;
+            if (origin == ModPackageOrigin::Installed) {
+                const auto existing = packages_.find(package.id);
+                package.shadows_bundled =
+                    existing != packages_.end() &&
+                    std::any_of(existing->second.begin(), existing->second.end(),
+                                [](const std::pair<const std::string, ModPackage>& e) {
+                                    return e.second.origin == ModPackageOrigin::Bundled;
+                                });
             }
             packages_[package.id][package.version] = std::move(package);
         }
@@ -2335,6 +2495,18 @@ bool ModPackageManager::scan(std::string* error) {
         set_error(error, "cannot scan packages: " + ec.message());
         return false;
     }
+    return true;
+}
+
+bool ModPackageManager::scan(std::string* error) {
+    packages_.clear();
+    scan_errors_.clear();
+    migrate_legacy_root();
+    /* Bundled first, then installed: an installed package of the same id and
+     * version deliberately shadows the build-staged one, and records that it
+     * did so, rather than the two racing on directory-iteration order. */
+    if (!scan_root(bundled_root(), ModPackageOrigin::Bundled, error)) return false;
+    if (!scan_root(installed_root(), ModPackageOrigin::Installed, error)) return false;
     return true;
 }
 
@@ -2535,7 +2707,16 @@ bool ModPackageManager::install_archive(const fs::path& archive,
         fs::remove_all(staging, ec);
         return false;
     }
-    const fs::path destination = root_ / "packages" / package.id / package.version;
+    if (!developer_channel_ && !strip_developer_features(package)) {
+        fs::remove_all(staging, ec);
+        set_error(error,
+                  "this package contains only developer-channel features, "
+                  "which are not available in this build");
+        return false;
+    }
+    /* Player installs land in the launcher-owned root. They must never share
+     * a tree with the build-staged catalog, which every build wipes. */
+    const fs::path destination = installed_root() / package.id / package.version;
     if (fs::exists(destination)) {
         fs::remove_all(staging, ec);
         set_error(error, "package version is already installed");
@@ -2554,6 +2735,7 @@ bool ModPackageManager::install_archive(const fs::path& archive,
         return false;
     }
     package.root = destination;
+    package.origin = ModPackageOrigin::Installed;
     packages_[package.id][package.version] = package;
     if (installed_id) *installed_id = package.id;
     if (installed_version) *installed_version = package.version;
@@ -2592,6 +2774,12 @@ bool ModPackageManager::remove_version(const std::string& id, const std::string&
     const auto pit = packages_.find(id);
     if (pit == packages_.end() || pit->second.find(version) == pit->second.end()) {
         set_error(error, "package version is not installed");
+        return false;
+    }
+    if (pit->second.at(version).origin == ModPackageOrigin::Bundled) {
+        /* Deleting build output would succeed and then be undone by the next
+         * build, which is not a model any player can reason about. */
+        set_error(error, "cannot remove a bundled package; it ships with the game");
         return false;
     }
     const fs::path path = pit->second.at(version).root;

@@ -2,7 +2,8 @@
 //
 // Single source of truth for "is this the right disc?". Reads a .cue, raw
 // .bin/.iso/.img/.car, or CHD, checks for the ISO9660 PVD, extracts the volume id and the
-// PlayStation boot serial (from SYSTEM.CNF), derives the region from the
+// PlayStation boot serial (from the actual SYSTEM.CNF directory entry, with
+// an early-image scan as fallback), derives the region from the
 // serial prefix, and optionally compares against an expected serial / CRC32.
 //
 // Also mounts the resolved path via ISOReader to capture TOC geometry

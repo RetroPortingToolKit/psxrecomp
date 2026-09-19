@@ -38,14 +38,14 @@ under `docs/ci/templates/setup-release.yml`, release checklist). Also see
 These are non-negotiable because violating them is how past efforts turned into
 un-debuggable emulators. The full engineering constitution is
 [`CLAUDE.md`](CLAUDE.md); the debugging philosophy is
-[`PRINCIPLES.md`](PRINCIPLES.md). The short version:
+[`docs/internal/PRINCIPLES.md`](docs/internal/PRINCIPLES.md). The short version:
 
 1. **Build the faithful core; no per-game hacks in the foundation.** The correct
    fix is the general, hardware-accurate one, not a surgical workaround for one
    title. No title checks in the runtime, no magic PC addresses, no spoofed
    return values for one game. (Per-game *enhancements* — widescreen, faster
    loads — are legitimate once the faithful core is proven; see
-   [`ENHANCEMENTS.md`](ENHANCEMENTS.md).)
+   [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md).)
 2. **No stubs.** A function is fully implemented or it fails loudly. No
    `return 0;` placeholders, no `// TODO` behavior, no hand-delivered fake
    events. If execution reaches code we can't handle, we stop and fix
@@ -61,7 +61,7 @@ un-debuggable emulators. The full engineering constitution is
    continuously checked against the Beetle oracle — never a "produce the answer
    the BIOS would have" shim.
 5. **No `printf`/log-file debugging.** Runtime inspection goes through the TCP
-   debug server ([`TCP_COMMANDS.md`](TCP_COMMANDS.md)) and always-on ring
+   debug server ([`docs/TCP_COMMANDS.md`](docs/TCP_COMMANDS.md)) and always-on ring
    buffers, not `fprintf`.
 6. **Fix broken tooling immediately** — don't route around it with indirect
    evidence, and don't infer correctness from two implementations sharing a bug.

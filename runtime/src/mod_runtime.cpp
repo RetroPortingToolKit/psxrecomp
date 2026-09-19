@@ -4,6 +4,7 @@
 #include "iso_reader.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
+#include "gpu.h"
 #include "psx_sha256.h"
 
 #if defined(RECOMP_LAUNCHER)
@@ -628,7 +629,10 @@ int provider_package_get(void*, int index, RecompLauncherCModPackage* out) {
     copy_text(out->source_url, sizeof(out->source_url), package->source_url);
     out->enabled = package_has_enabled_feature(*package);
     out->option_count = (int)package->options.size();
-    out->removable = !out->enabled;
+    /* A bundled package is build output. Offering to remove it would succeed
+     * and then be silently undone by the next build. */
+    out->removable = !out->enabled &&
+                     package->origin == ModPackageOrigin::Installed;
     return 1;
 }
 
@@ -743,6 +747,20 @@ int provider_feature_get(void*, int index, RecompLauncherCModFeature* out) {
     copy_text(out->source_name, sizeof(out->source_name), package->source_name);
     copy_text(out->source_url, sizeof(out->source_url), package->source_url);
     copy_text(out->group, sizeof(out->group), feature->group);
+    out->hidden = feature->hidden ? 1 : 0;
+    switch (feature->channel) {
+        case ModChannel::Experimental:
+            out->channel = RECOMP_MOD_CHANNEL_EXPERIMENTAL;
+            break;
+        case ModChannel::Developer:
+            /* Only reachable on a local developer build: a shipped catalog
+             * carries no developer-channel feature to report. */
+            out->channel = RECOMP_MOD_CHANNEL_DEVELOPER;
+            break;
+        case ModChannel::Stable:
+            out->channel = RECOMP_MOD_CHANNEL_STABLE;
+            break;
+    }
     out->enabled =
         state().manager.feature_enabled(package->id, feature->id) ? 1 : 0;
     out->option_count =
@@ -958,8 +976,9 @@ int provider_version_get(void*, const char* package_id, int index,
     copy_text(out->version, sizeof(out->version), version->first);
     const ModPackage* selected = selected_package(package_id);
     out->selected = selected && selected->version == version->first;
-    out->removable = !out->selected ||
-                     !selected || !package_has_enabled_feature(*selected);
+    out->removable = (!out->selected || !selected ||
+                      !package_has_enabled_feature(*selected)) &&
+                     version->second.origin == ModPackageOrigin::Installed;
     return 1;
 }
 
@@ -1108,6 +1127,11 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
         if (error) *error = s.error;
         return false;
     }
+    /* A manifest that fails to parse used to be skipped in silence, so a mod
+     * author's typo produced a mod that simply did not exist. Name every one. */
+    for (const std::string& scan_error : s.manager.scan_errors())
+        std::fprintf(stderr, "psxrecomp: mod manifest ignored: %s\n",
+                     scan_error.c_str());
     if (!sha256_file(exe_path, s.exe_sha256, &s.error)) {
         /* Release installs commonly do not carry a loose PS-X EXE; game-id and
          * expected-byte guards remain available in that case. */
@@ -1273,6 +1297,43 @@ extern "C" void mod_runtime_enable_disc_patches(void) {
     PSXRecompV4::state().disc_enabled = true;
 }
 
+extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
+                                      uint32_t capacity, uint32_t* size) {
+    using namespace PSXRecompV4;
+    if (size) *size = 0;
+    if (!path || !*path || !size || (!buffer && capacity)) return 0;
+    try {
+        const auto& s = state();
+        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        if (mount.empty()) return 0;
+        PS1::ISOReader reader;
+        PS1::ISOFileEntry entry;
+        if (!reader.Open(mount.string()) || !reader.FindFile(path, entry) ||
+            entry.is_directory || !entry.size || entry.size > 64u * 1024u * 1024u)
+            return 0;
+        if (!buffer) { *size = entry.size; return 1; }
+        if (capacity < entry.size) return 0;
+        uint8_t sector[2048], raw[2352];
+        for (uint32_t offset = 0; offset < entry.size; offset += 2048u) {
+            const uint32_t lba = entry.lba + offset / 2048u;
+            if (reader.ReadRawSector(lba, raw)) {
+                if (raw[15] != 1 && (raw[15] != 2 || (raw[18] & 0x20u))) return 0;
+                mod_runtime_patch_disc_sector(lba, 1, raw, sizeof raw);
+                std::memcpy(sector, raw + (raw[15] == 1 ? 16 : 24), sizeof sector);
+                if (raw[15] == 1) mod_runtime_patch_disc_sector(lba, 0, sector, sizeof sector);
+            } else {
+                if (!reader.ReadSector(lba, sector)) return 0;
+                mod_runtime_patch_disc_sector(lba, 0, sector, sizeof sector);
+            }
+            if (state().disc_guard_failed) return 0;
+            const uint32_t count = std::min(2048u, entry.size - offset);
+            std::memcpy(static_cast<uint8_t*>(buffer) + offset, sector, count);
+        }
+        *size = entry.size;
+        return 1;
+    } catch (...) { return 0; }
+}
+
 extern "C" void mod_runtime_activate_plugins(void) {
     using namespace PSXRecompV4;
     RuntimeMods& s = state();
@@ -1395,6 +1456,27 @@ extern "C" void psx_mod_tag_world_primitive(uint32_t primitive, int is_world) {
 
 extern "C" void psx_mod_set_adaptive_backdrop_preload(int enabled) {
     gpu_ws_set_adaptive_backdrop_preload(enabled);
+}
+
+/*
+ * The presenter's own view of the scanned-out picture. Plugins that draw
+ * overlay primitives need the real edge, and the visible width depends on the
+ * GP1(06h) horizontal range, which GPUSTAT does not carry -- so a plugin
+ * cannot derive this itself. Zero means "not established yet"; the header
+ * tells callers to skip drawing rather than guess.
+ */
+extern "C" uint32_t psx_mod_display_width(void) {
+    GpuDisplayInfo info;
+    std::memset(&info, 0, sizeof(info));
+    gpu_get_display_info(&info);
+    return info.width;
+}
+
+extern "C" uint32_t psx_mod_display_height(void) {
+    GpuDisplayInfo info;
+    std::memset(&info, 0, sizeof(info));
+    gpu_get_display_info(&info);
+    return info.height;
 }
 
 extern "C" int psx_mod_register_function_entry_plugin(

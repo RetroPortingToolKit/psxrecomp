@@ -837,3 +837,96 @@ def launch_status() -> str:
         if code is None:
             return f"running pid={h.pid} ({h.exe.name})"
         return f"exited code={code} ({h.exe.name})"
+
+
+# ---------------------------------------------------------------------------
+# Local release export
+#
+# Studio could build a title but never bundle one: the only path to a
+# distributable package was "install release.yml, commit, push, wait for CI".
+# That made a local mingw/linux export something you did by hand, which is how
+# a broken package (an empty Mods page) survived so long -- nobody produced one
+# locally to look inside.
+#
+# This runs the SAME wrapper CI runs (scripts/package_setup_release.sh), so a
+# local export and a CI release are the same artifact by construction rather
+# than by convention.
+# ---------------------------------------------------------------------------
+
+def release_version(root: Path) -> str:
+    """Version the packager will stamp: $RELEASE_VERSION, else the VERSION file."""
+    env_v = os.environ.get("RELEASE_VERSION", "").strip()
+    if env_v:
+        return env_v
+    vf = root / "VERSION"
+    if vf.is_file():
+        text = vf.read_text(encoding="utf-8", errors="replace").strip()
+        if text:
+            return text
+    return "0.0.0"
+
+
+def default_artifact_tag(host: BuildHost | None = None) -> str:
+    """CI's matrix tag for this host, so local zips match the released names."""
+    h = host or detect_host()
+    if h.label == "windows":
+        return "windows-x64"
+    if h.label == "macos":
+        return "macos-arm64"
+    return "linux-x64"
+
+
+def export_release(
+    root: Path,
+    build_dir: str = "build-release",
+    artifact_tag: str | None = None,
+    recompiler_build: str = "build-recompiler",
+    *,
+    exclude_dev_mods: bool = False,
+    log: LogFn | None = None,
+) -> CmdResult:
+    """Package a distributable zip from an existing build. Returns its path.
+
+    exclude_dev_mods reproduces what CI publishes -- channel = "developer"
+    packages dropped. A local export keeps them by default, because the point
+    of exporting locally is to test the work in progress.
+    """
+    wrapper = root / "scripts" / "package_setup_release.sh"
+    if not wrapper.is_file():
+        return CmdResult(
+            False,
+            "No scripts/package_setup_release.sh",
+            "Emit it first (Migrate -> packager), or install release CI.",
+        )
+    build_path = root / build_dir
+    if not build_path.is_dir():
+        return CmdResult(False, f"No build directory: {build_dir}",
+                         "Build the runtime target first.")
+    # Fail here rather than inside the packager: this is the exact condition
+    # that produced mod-less releases, and the message should name the cause.
+    if not (build_path / "mods").is_dir():
+        return CmdResult(
+            False,
+            f"{build_dir}/mods is missing",
+            "runtime.cmake stages the mod catalog next to the exe on every "
+            "build. Rebuild the runtime target; packaging without it would "
+            "ship a title whose Mods page is empty.",
+        )
+    tag = artifact_tag or default_artifact_tag()
+    env = dict(os.environ)
+    env.setdefault("RELEASE_VERSION", release_version(root))
+    # Explicit either way: the packager defaults this from $CI, and a studio
+    # export must not inherit that by accident on a CI-flavoured machine.
+    env["EXCLUDE_DEV_MODS"] = "1" if exclude_dev_mods else "0"
+    res = _run_stream(
+        ["bash", str(wrapper), build_dir, tag, recompiler_build],
+        root, log=log, env=env,
+    )
+    if not res.ok:
+        return res
+    zips = sorted((root / "dist").glob(f"*-{tag}.zip"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    if not zips:
+        return CmdResult(False, "Packager reported success but wrote no zip",
+                         res.detail)
+    return CmdResult(True, f"Exported {zips[0].name}", str(zips[0]))

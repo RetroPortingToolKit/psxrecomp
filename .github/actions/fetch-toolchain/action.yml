@@ -22,7 +22,7 @@ inputs:
   repo:
     description: GitHub owner/name for toolchain releases
     required: false
-    default: TechnicallyComputers/retcomm-toolchains
+    default: RetroPortingToolKit/RetroPorting-Toolchains
 
 outputs:
   toolchain-dir:

@@ -16,12 +16,14 @@
 #include "gpu.h"
 #include "mdec.h"
 #include "mod_memory.h"
+#include "pst_wire.h"
 #include "sio.h"
 #include "spu.h"
 #include "timers.h"
 #include "lockstep.h"
 #include "data_shards.h"
 #include "dirty_ram_interp.h"
+#include "guest_tty.h"
 #include "psx_cycles.h"
 #include "starvation_ring.h"
 #include <stdint.h>
@@ -42,6 +44,45 @@ static uint8_t mod_memory[MOD_MEMORY_SIZE];
 static uint32_t mod_memory_used;
 static uint8_t mod_gpu_dma_memory[PSX_MOD_GPU_DMA_APERTURE_SIZE];
 static uint32_t mod_gpu_dma_memory_used;
+
+uint32_t psx_mod_memory_snapshot_bytes(void) {
+    return mod_memory_used || mod_gpu_dma_memory_used
+        ? 16u + mod_memory_used + mod_gpu_dma_memory_used : 0u;
+}
+
+uint32_t psx_mod_memory_layout_cookie(void) {
+    /* Compatibility guard, not a cryptographic identity. Include aperture
+     * revision; old enabled-mod saves must be rejected before applying RAM. */
+    if (!psx_mod_memory_snapshot_bytes()) return 0u;
+    return 0x4D4F4402u ^ (mod_memory_used * 16777619u) ^ mod_gpu_dma_memory_used;
+}
+
+void psx_mod_memory_snapshot_write(uint8_t* out) {
+    PstW w;
+    if (!out || !psx_mod_memory_snapshot_bytes()) return;
+    pst_w_init(&w, out, psx_mod_memory_snapshot_bytes());
+    pst_w_u32(&w, 1u);
+    pst_w_u32(&w, PSX_MOD_GPU_DMA_APERTURE_BASE);
+    pst_w_u32(&w, mod_memory_used);
+    pst_w_u32(&w, mod_gpu_dma_memory_used);
+    memcpy(out + 16u, mod_memory, mod_memory_used);
+    memcpy(out + 16u + mod_memory_used, mod_gpu_dma_memory, mod_gpu_dma_memory_used);
+}
+
+int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
+    PstR r;
+    uint32_t version, base, cpu_bytes, dma_bytes;
+    if (!data || size < 16u || size != psx_mod_memory_snapshot_bytes()) return 0;
+    pst_r_init(&r, data, size);
+    if (!pst_r_u32(&r, &version) || !pst_r_u32(&r, &base) ||
+        !pst_r_u32(&r, &cpu_bytes) || !pst_r_u32(&r, &dma_bytes) ||
+        version != 1u || base != PSX_MOD_GPU_DMA_APERTURE_BASE ||
+        cpu_bytes != mod_memory_used || dma_bytes != mod_gpu_dma_memory_used)
+        return 0;
+    memcpy(mod_memory, data + 16u, cpu_bytes);
+    memcpy(mod_gpu_dma_memory, data + 16u + cpu_bytes, dma_bytes);
+    return 1;
+}
 
 /*
  * Trusted mods may opt into host-backed guest memory in Expansion 1. Before
@@ -193,8 +234,14 @@ static inline void dirty_ram_mark_page(uint32_t phys) {
  * through the extern each time. A BIOS with no bless window exports all
  * zeros: the span-0 range test then rejects every address. */
 #include "psx_bios_image.h"
+#include "kernel_patch_ranges.h"
 
 static uint32_t s_kb_lo = 0, s_kb_span = 0, s_kb_rom_off = 0;
+
+static const PsxKernelPatchRange* s_kb_pr = 0;
+static uint32_t                   s_kb_pr_n = 0;
+static uint64_t kbless_patch_skips = 0;   /* segments skipped, TCP counter */
+
 
 #define KBLESS_UNKNOWN  0u
 #define KBLESS_CLEAN    1u
@@ -216,6 +263,19 @@ static int kbless_on(void) {
         s_kb_lo      = psx_bios_image.kbless_ram_lo;
         s_kb_span    = psx_bios_image.kbless_ram_hi - psx_bios_image.kbless_ram_lo;
         s_kb_rom_off = psx_bios_image.kbless_rom_off;
+        s_kb_pr      = psx_bios_kernel_patch_ranges;
+        s_kb_pr_n    = psx_bios_kernel_patch_ranges ?
+                       psx_bios_kernel_patch_range_count : 0u;
+        /* PSX_KERNEL_PATCH_RANGES=0 drops the declared ranges, restoring the
+         * whole-body memcmp. Same purpose as PSX_KERNEL_BLESS=0 one level up:
+         * an A/B instrument. With the ranges dropped a patched body mismatches
+         * forever and its emitted hook is unreachable, which is exactly the
+         * behaviour before the ranges existed — so one binary measures both
+         * sides. */
+        {
+            const char* pe = getenv("PSX_KERNEL_PATCH_RANGES");
+            if (pe && pe[0] == '0') s_kb_pr_n = 0;
+        }
         if (s_kb_span == 0) kbless_enabled = 0;   /* BIOS with no bless window */
         /* The emitted constants must agree with each other and the ROM
          * array: a window whose ROM source exceeds the image is a build
@@ -229,6 +289,29 @@ static int kbless_on(void) {
         }
     }
     return kbless_enabled;
+}
+
+/* Declared patch ranges (psx_bios_kernel_patch_ranges, emitted from the
+ * profile's [[recompiler.install_slots]]): kernel-RAM words the guest is
+ * EXPECTED to overwrite at boot. They sit inside compiled bodies, so the
+ * whole-body memcmp below used to fail forever on the first install — the
+ * reason Breath of Fire III's BIOS exception handler interpreted 1.22 billion
+ * instructions with its card stub sitting in the profile's declared slot.
+ * The body is verified in segments that skip them instead: CLEAN now means
+ * every byte OUTSIDE every declared range still matches the ROM source, which
+ * is exactly the claim the native code depends on. The patched words
+ * themselves still execute on the dirty-RAM interpreter (Rule 18), entered
+ * through the emitted patch-range hook.
+ *
+ * Snapshotted on the same latch as the window constants. The decision itself
+ * lives in kernel_patch_ranges.c so it can be unit-tested without the
+ * runtime's globals. */
+/* Does a declared patch range END at this RAM address? The emitter registered
+ * that PC as a continuation key, so the dirty-RAM interpreter hands straight-
+ * line flow back to static dispatch there and only the patched words
+ * interpret (dirty_ram_interp.c). */
+int psx_kernel_patch_range_ends_at(uint32_t phys) {
+    return psx_kernel_patch_ends_at(s_kb_pr, s_kb_pr_n, phys);
 }
 
 /* Binary search the (key-sorted) body table. -1 if absent. */
@@ -255,9 +338,10 @@ int psx_kernel_bless_dispatchable(uint32_t phys) {
     if (st == KBLESS_MISMATCH) return 0;
     const PsxKernelBody* b = &psx_bios_kernel_bodies[i];
     kbless_verifies++;
-    if (memcmp(ram + b->body_lo,
-               bios_rom + s_kb_rom_off + (b->body_lo - s_kb_lo),
-               b->body_hi - b->body_lo) == 0) {
+    if (psx_kernel_patch_cmp(s_kb_pr, s_kb_pr_n, ram, bios_rom,
+                             s_kb_lo, s_kb_rom_off,
+                             b->body_lo, b->body_hi,
+                             &kbless_patch_skips) == 0) {
         kbless_state[i] = KBLESS_CLEAN;
         kbless_native_hits++;
         return 1;
@@ -308,7 +392,7 @@ void psx_kernel_bless_note_range(uint32_t phys, uint32_t len) {
     }
 }
 
-void psx_kernel_bless_stats(uint64_t out[6]) {
+void psx_kernel_bless_stats(uint64_t out[8]) {
     uint32_t n = psx_bios_kernel_body_count;
     uint32_t clean = 0, mism = 0;
     if (n > KBLESS_MAX_ENTRIES) n = KBLESS_MAX_ENTRIES;
@@ -322,6 +406,11 @@ void psx_kernel_bless_stats(uint64_t out[6]) {
     out[3] = kbless_native_hits;
     out[4] = kbless_verifies;
     out[5] = kbless_invalidations;
+    /* Declared patch ranges, and how many segments the verifier skipped
+     * because of them: the proof that a body with a live install stub is
+     * being blessed rather than failing forever. */
+    out[6] = s_kb_pr_n;
+    out[7] = kbless_patch_skips;
 }
 
 void psx_kernel_bless_resync_after_restore(void) {
@@ -341,6 +430,8 @@ void psx_kernel_bless_reset_for_boot(void) {
     s_kb_lo = 0;
     s_kb_span = 0;
     s_kb_rom_off = 0;
+    s_kb_pr = NULL;
+    s_kb_pr_n = 0;
     memset(kbless_state, KBLESS_UNKNOWN, sizeof(kbless_state));
 }
 
@@ -482,15 +573,19 @@ int dirty_ram_text_native_ok(uint32_t phys) {
  * a mismatch never poisons an unrelated 4 KB page forever: every decision is
  * made from the live bytes the native body will actually execute.
  *
- * exec_pc is the dispatch/resume address. Ranges that end at or before that PC
- * are skipped, and a range that straddles it is clipped to [exec_pc, end). A
- * runtime patch of a function prologue must not block a compiled continuation
- * that never fetches the patched bytes. */
+ * exec_pc is the dispatch/resume address, kept for observability and future
+ * use; ranges are validated IN FULL regardless of it. The former
+ * [exec_pc, end) clip assumed a continuation "never fetches the patched
+ * bytes" behind its resume PC — false for any entry with a backward edge:
+ * a post-call continuation re-enters mid-function and loops back into the
+ * clipped-away region, executing stale static code (CMR2 overlay
+ * corruption, second locus 0x80016B34). A genuinely patched prologue now
+ * blocks the whole entry to the interpreter — correct, merely slower. */
 int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
                                          uint32_t count,
                                          uint32_t exec_pc) {
     if (!text_ref_image || !lo_len_pairs || count == 0) return 0;
-    uint32_t at = exec_pc & 0x1FFFFFFFu;
+    (void)exec_pc;
     int any = 0;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t phys = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
@@ -500,12 +595,26 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
             g_text_native_blocked++;
             return 0;
         }
-        if (phys + len <= at) continue;
-        if (phys < at) {
-            len -= at - phys;
-            phys = at;
-        }
         any = 1;
+        /* Page-clean fast path: every page this range touches is neither
+         * guard-modified nor runtime-dirty, so its bytes still equal the
+         * reference image — skip the memcmp. This keeps the emitted
+         * stale-static guards on inter-piece host transfers near-free on
+         * the (overwhelmingly common) pristine pages. */
+        {
+            uint32_t p0 = phys >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t p1 = (phys + len - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t p;
+            int clean = 1;
+            for (p = p0; p <= p1; p++) {
+                if ((text_modified_bitmap[p >> 5] & (1u << (p & 31u))) ||
+                    dirty_ram_is_dirty(p << DIRTY_RAM_PAGE_SHIFT)) {
+                    clean = 0;
+                    break;
+                }
+            }
+            if (clean) continue;
+        }
         if (memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), len) != 0) {
             uint32_t off = 0;
             const uint8_t *live = ram + phys;
@@ -748,10 +857,33 @@ void dirty_ram_text_guard_resync_after_restore(void) {
      * forking MotK selfcheck warm #2vs#3 at matched clocks (win#118 class:
      * cold≡0, warm FAIL; post-span irq_resume also drifts). Drop both
      * host-only text-guard bitmaps; live writes re-arm modified, and the
-     * next native_ok compare re-decides diverge against restored bytes. */
+     * next native_ok compare re-decides diverge against restored bytes.
+     *
+     * "Modified" is recomputed, not just forgotten. The page-clean fast
+     * path in dirty_ram_text_native_ok_ranges_from trusts a clear bit as
+     * "bytes still equal the reference" and skips the compare, but the
+     * restored RAM may carry self-modified text (CMR2 class) that no live
+     * write will ever re-flag: the bitmap is not part of the state image,
+     * and the writes happened in the process that produced it. One pass
+     * over the reference range (at most 2 MB, once per restore) puts every
+     * mismatching page back under the exact compare. */
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
     g_text_diverged_pages = 0;
+    if (text_ref_image && text_ref_hi > text_ref_lo) {
+        uint32_t p0 = text_ref_lo >> DIRTY_RAM_PAGE_SHIFT;
+        uint32_t p1 = (text_ref_hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+        for (uint32_t p = p0; p <= p1; p++) {
+            uint32_t lo = p << DIRTY_RAM_PAGE_SHIFT;
+            uint32_t hi = lo + (1u << DIRTY_RAM_PAGE_SHIFT);
+            if (lo < text_ref_lo) lo = text_ref_lo;
+            if (hi > text_ref_hi) hi = text_ref_hi;
+            if (hi > RAM_SIZE) hi = RAM_SIZE;
+            if (hi <= lo) continue;
+            if (memcmp(ram + lo, text_ref_image + (lo - text_ref_lo), hi - lo) != 0)
+                text_modified_bitmap[p >> 5] |= (1u << (p & 31u));
+        }
+    }
 }
 
 void overlay_watch_invalidate_after_ram_restore(void) {
@@ -902,20 +1034,7 @@ static void interrupt_write_stat_masked(uint32_t val, uint32_t mask) {
 static void interrupt_write_mask_masked(uint32_t val, uint32_t mask, uint8_t width) {
     uint32_t old = i_mask;
     uint32_t next = ((i_mask & ~mask) | (val & mask)) & 0x7FFu;
-    /* IMPORTANT (Ape Escape LOAD): BIOS clears I_MASK.7 immediately after
-     * the probe SELECT abort while A6C10 is still nested. That drops the
-     * nest_irq_pulse before LibCardIntRP can pop to idle / set B4E38.
-     * Hold bit7 until the nest unwinds (sio_card_should_hold_imask_bit7).
-     * EXPERIMENT: helper used to no-op under netplay; ungated for TM4 test.
-     * See ApeEscapeRecomp/docs/APE_MEMCARD_LOAD.md. */
-    if ((old & 0x80u) && !(next & 0x80u)) {
-        extern int sio_card_should_hold_imask_bit7(void);
-        if (sio_card_should_hold_imask_bit7()) {
-            next |= 0x80u;
-            if (!(i_stat & 0x80u))
-                i_stat |= 0x80u;
-        }
-    }
+    /* INTC mask writes are owned by the guest, never by a device repair. */
     i_mask = next;
     imask_trace_record(old, i_mask, width);
     {
@@ -1583,7 +1702,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     g_guest_store_count++;
     /* (pgxp) plain-store shadow invalidation retired: the PGXP engine
      * validates tracked words against the actual packet word on read, so an
-     * overwritten word can never be believed (ENHANCEMENTS.md G1). */
+     * overwritten word can never be believed (docs/ENHANCEMENTS.md G1). */
     /* KSEG2 cache control — before physical translation. */
     if (addr == 0xFFFE0130u) { cache_ctrl = val; return; }
     /* KSEG2 guard — see psx_read_word_raw. */

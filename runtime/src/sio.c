@@ -45,13 +45,13 @@ static void sio_debug_poll_maybe(void) {
 
 /* Pad state: 0=pressed, 1=released (PS1 convention). Indexed by LOGICAL pad
  * 0 .. PSX_MAX_PLAYERS-1 (not physical SIO slot). */
-static uint16_t pad_buttons[PSX_MAX_PLAYERS] = { [0 ... PSX_MAX_PLAYERS - 1] = 0xFFFF };
+static uint16_t pad_buttons[PSX_MAX_PLAYERS] = { PSX_PAD_INIT(0xFFFF) };
 
 /* Per-logical-pad type + analog stick state. analog: 0=digital pad (poll id
  * 0x41), 1=DualShock/analog (poll id 0x73). Sticks are 0..255, 0x80 centred. */
 static PSX_BSS uint8_t pad_analog[PSX_MAX_PLAYERS];
 static uint8_t pad_stick[PSX_MAX_PLAYERS][4] = {
-    [0 ... PSX_MAX_PLAYERS - 1] = { 0x80, 0x80, 0x80, 0x80 }
+    PSX_PAD_INIT({ 0x80, 0x80, 0x80, 0x80 })
 }; /* lx,ly,rx,ry */
 
 /* DualShock command 0x4D maps the six writable bytes in a 0x42 poll onto the
@@ -59,7 +59,7 @@ static uint8_t pad_stick[PSX_MAX_PLAYERS][4] = {
  * 0xFF = unused. The map powers up unassigned and is echoed back while a new
  * map is latched, matching the physical pad/Mednafen protocol. */
 static uint8_t pad_rumble_map[PSX_MAX_PLAYERS][6] = {
-    [0 ... PSX_MAX_PLAYERS - 1] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
+    PSX_PAD_INIT({ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF })
 };
 static PSX_BSS uint8_t pad_rumble_small[PSX_MAX_PLAYERS];
 static PSX_BSS uint8_t pad_rumble_large[PSX_MAX_PLAYERS];
@@ -134,7 +134,7 @@ static PSX_BSS uint8_t pad_in_config[PSX_MAX_PLAYERS];
  * phantom "all pressed" input. Default 1 keeps analog/hybrid pads unchanged;
  * main.cpp sets 0 for PAD_MODE_DIGITAL. */
 static uint8_t pad_supports_config[PSX_MAX_PLAYERS] = {
-    [0 ... PSX_MAX_PLAYERS - 1] = 1
+    PSX_PAD_INIT(1)
 };
 
 /* Coherent-DualShock model (Tomba phantom-input fix). A real controller never
@@ -149,7 +149,7 @@ static uint8_t pad_supports_config[PSX_MAX_PLAYERS] = {
  * only when the bus is idle (PAD_IDLE) and the pad is NOT in config mode. A
  * request raised during config is held until config exits. -1 = no request. */
 static int8_t pad_type_req[PSX_MAX_PLAYERS] = {
-    [0 ... PSX_MAX_PLAYERS - 1] = -1
+    PSX_PAD_INIT(-1)
 };
 
 /* ---- Logical pad ↔ physical SIO port mapping ----
@@ -413,37 +413,12 @@ int sio_card_protocol_active(void) {
     return 0;
 }
 
-/* Hold ChangeThread-defer across the card ACK → guest IntRP epilogue window.
- * SELECT deassert clears mc_state before DeliverEvent / nested pops finish, so
- * protocol_active alone is too narrow. ~2 VBlank periods of tail cover the
- * libcard A6C10/B4E38 handshake without pinning defer forever on a wedge. */
-static uint64_t s_card_ct_defer_until_cyc = 0;
-/* Declared early: sio_should_defer_thread_switch() needs it before the txn ring. */
-static int sio_txn_open = 0;
-
-static void sio_arm_card_ct_defer_guard(void) {
-    extern uint64_t psx_get_cycle_count(void);
-    uint64_t now = psx_get_cycle_count();
-    uint64_t until = now + 564480ull * 2ull;
-    if (until > s_card_ct_defer_until_cyc)
-        s_card_ct_defer_until_cyc = until;
-}
-
 #if SIO_MODEL_CYCLE_PACED
 static void sio_fire_ack_irq(void);
 static void sio_handle_shift_complete(void);
 #endif
 
-int sio_should_defer_thread_switch(void) {
-    /* Diagnostic helper for card_handoff / future gates. Not wired into
-     * can_defer — forcing defer while A6C10 is nested prevented recovery. */
-    if (sio_txn_open) return 1;
-    if (sio_card_protocol_active()) return 1;
-    extern uint64_t psx_get_cycle_count(void);
-    return psx_get_cycle_count() < s_card_ct_defer_until_cyc;
-}
-
-/* ---- bit7 → TX 0x57 handoff ring (Ape LOAD diagnosis) ---- */
+/* ---- Post-probe SIO / interrupt-mask handoff ring ---- */
 #define CARD_HANDOFF_CAP 256
 static SioCardHandoffEntry s_card_handoff[CARD_HANDOFF_CAP];
 static int s_card_handoff_idx = 0;
@@ -455,137 +430,27 @@ static void card_handoff_push(uint8_t kind, uint8_t byte) {
     extern uint32_t g_debug_last_store_pc;
     extern uint32_t i_mask;
     extern uint64_t psx_get_cycle_count(void);
-    extern uint32_t psx_read_word(uint32_t addr);
     SioCardHandoffEntry *e = &s_card_handoff[s_card_handoff_idx];
     e->kind  = kind;
     e->byte  = byte;
     e->imask = (uint16_t)(i_mask & 0x7FFu);
     e->pc    = g_debug_last_store_pc;
     e->func  = g_debug_current_func_addr;
-    e->a6c10 = psx_read_word(0x800A6C10u);
-    e->b4e30 = psx_read_word(0x800B4E30u);
-    e->b4e38 = psx_read_word(0x800B4E38u);
+    e->ctrl = sio_ctrl;
+    e->stat = sio_stat;
+    e->card_state = (uint32_t)mc_state;
     e->cyc   = psx_get_cycle_count();
     s_card_handoff_idx = (s_card_handoff_idx + 1) % CARD_HANDOFF_CAP;
     s_card_handoff_count++;
 }
 
-/* =========================================================================
- * Ape Escape LOAD GAME — IMPORTANT memcard nest repair
- *
- * Without this block, LOAD wedges on the empty Checking starfield after
- * 81 52 00 (A6C10 stuck nested, B4E38 never latches). Do not remove,
- * collapse A6C10 to 0, or host-synth B4E20/B4E30/B4E38 without re-running
- * ApeEscapeRecomp/tools/ape_memcard_loadtest.py.
- * Doc: ApeEscapeRecomp/docs/APE_MEMCARD_LOAD.md
- *
- * EXPERIMENT (TwistedMetal4Recomp): formerly netplay-gated OFF so MotK
- * leftover-time SIO walks stayed uncapped. Ungated here for local netplay
- * desync testing — PSX_APE_CARD_UNSTICK=0 still disables.
- * =========================================================================
- *
- * LibCardIntRP (0x800226C8) only sets B4E38 when A6C10 becomes idle
- * (bit31 / 0xFFFFFFFF) after pop. Merged IRQ7 edges leave depth≥1 so one
- * pop lands on 0 and skips B4E38 — guest never re-arms bit7 / directory.
- * Repair = re-edge IRQ7 only (no host B4E* / A6C10 stores).
- * Default ON; PSX_APE_CARD_UNSTICK=0 disables. */
-static int s_ape_unstick_env = -1;
-static int s_ape_unstick_pending = 0;
-static uint64_t s_ape_unstick_cool_cyc = 0;
-static int s_ape_torn_pulses = 0;
-
-static int ape_unstick_enabled(void) {
-    if (s_ape_unstick_env < 0) {
-        const char *e = getenv("PSX_APE_CARD_UNSTICK");
-        if (e && e[0] == '0')
-            s_ape_unstick_env = 0;
-        else
-            s_ape_unstick_env = 1;
-    }
-    return s_ape_unstick_env;
-}
-
-/* Defined later; sio_tick calls the pump. */
-void sio_ape_card_unstick_pump(void);
-
-/* Nest repair for Ape Escape LOAD (LibCardIntRP).
- *
- * Idle test is A6C10 bit31; publish runs only when a successful pop leaves
- * bit31 set. Tip post-probe hang without collapse: a6=1, busy=2, B4E38=0
- * (one IntRP short). Re-edge IRQ7 until idle/publish — never poke A6C10
- * or invent B4E20/B4E30/B4E38. */
-static void ape_card_unstick_maybe(int allow_b4e38_synth) {
-    if (!ape_unstick_enabled()) return;
-    if (!s_ape_unstick_pending) return;
-    if (sio_txn_open) return;
-    extern uint64_t psx_get_cycle_count(void);
-    extern uint32_t psx_read_word(uint32_t addr);
-    extern void psx_write_word(uint32_t addr, uint32_t val);
-    uint64_t now = psx_get_cycle_count();
-    if (now < s_ape_unstick_cool_cyc) return;
-    uint32_t a6 = psx_read_word(0x800A6C10u);
-    uint32_t b30 = psx_read_word(0x800B4E30u);
-    uint32_t b38 = psx_read_word(0x800B4E38u);
-    (void)allow_b4e38_synth;
-    if (b38 != 0u || (a6 & 0x80000000u) != 0u) {
-        s_ape_unstick_pending = 0;
-        s_ape_torn_pulses = 0;
-        return;
-    }
-    if (b30 == 0u) {
-        s_ape_unstick_pending = 0;
-        return;
-    }
-
-    /* Nested post-probe / mid-scan: keep re-edging IRQ7 so IntRP can pop.
-     * Depth 1 needs two successful pops (1→0→FFFFFFFF) before B4E38 latches;
-     * a single pulse after SELECT is often eaten. No A6C10/B4E* host stores. */
-    extern uint32_t i_mask;
-    if (!(i_mask & 0x80u))
-        i_mask |= 0x80u;
-    i_stat &= ~0x80u;
-    psx_irq_raise(IRQ_SIO0, 0);
-    /* ~2ms between pulses — faster than one VB/8 so two pops can land
-     * before BIOS clears I_MASK.7 for good. */
-    s_ape_unstick_cool_cyc = now + 564480ull / 32ull;
-    if (s_card_handoff_armed)
-        card_handoff_push(6, (uint8_t)(a6 & 0xffu));
-    if (++s_ape_torn_pulses >= 128)
-        s_ape_unstick_pending = 0;
-}
-
+/* Diagnostic only: guest writes own the interrupt mask. */
 void sio_card_handoff_on_imask(uint32_t old_mask, uint32_t new_mask) {
     if (!s_card_handoff_armed) return;
     if (!(old_mask & 0x80u) && (new_mask & 0x80u))
         card_handoff_push(2, 0);
-    else if ((old_mask & 0x80u) && !(new_mask & 0x80u)) {
+    else if ((old_mask & 0x80u) && !(new_mask & 0x80u))
         card_handoff_push(3, 0);
-        ape_card_unstick_maybe(1);
-    }
-}
-
-int sio_card_should_hold_imask_bit7(void) {
-    static int s_hold_left = -1; /* -1 = idle; 0 = exhausted; >0 remaining */
-    if (!ape_unstick_enabled()) { s_hold_left = -1; return 0; }
-    if (!s_card_handoff_armed && !s_ape_unstick_pending) {
-        s_hold_left = -1;
-        return 0;
-    }
-    extern uint32_t psx_read_word(uint32_t addr);
-    uint32_t a6 = psx_read_word(0x800A6C10u);
-    uint32_t b38 = psx_read_word(0x800B4E38u);
-    if ((a6 & 0x80000000u) != 0u || b38 != 0u) {
-        s_hold_left = -1;
-        return 0;
-    }
-    if (s_hold_left < 0)
-        s_hold_left = 32; /* fresh nest episode — need room for 1→0→idle */
-    if (s_hold_left == 0)
-        return 0; /* exhausted this episode */
-    s_hold_left--;
-    if (s_card_handoff_armed)
-        card_handoff_push(10, (uint8_t)(a6 & 0xffu)); /* b7_hold */
-    return 1;
 }
 
 const SioCardHandoffEntry *sio_get_card_handoff(int *idx_out, int *count_out) {
@@ -691,7 +556,7 @@ static void sr_record(uint8_t kind, uint8_t tx, uint8_t rx) {
 static PSX_BSS SioTxnEntry sio_txn_buf[SIO_TXN_CAP];
 static int       sio_txn_idx = 0;        /* next-write slot */
 static uint32_t  sio_txn_seq = 0;        /* monotonic id of next-to-close */
-/* sio_txn_open declared above (defer guard). */
+static int sio_txn_open = 0;
 static SioTxnEntry sio_txn_cur;          /* in-progress txn, flushed on close */
 
 uint32_t sio_get_card_txns(const SioTxnEntry **buf_out, int *write_idx_out, int *open_out) {
@@ -740,42 +605,18 @@ static void txn_close(uint8_t end_reason, uint8_t terminal_state, uint32_t func)
     sio_txn_cur.end_reason     = end_reason;
     sio_txn_cur.terminal_state = terminal_state;
     sio_txn_cur.end_func       = func;
-    /* Ape Escape LOAD presence probe: 81 52 00 + SELECT abort. Arm handoff
-     * watch for the follow-up bit7 → directory / file-list path. */
+    /* Short read-presence probe: 81 52 00 + SELECT abort. Record the
+     * following interrupt-mask and card traffic without altering it. */
     if (end_reason == SIO_TXN_END_ABORT_OTHER &&
         sio_txn_cur.byte_count == 3 &&
         sio_txn_cur.tx[0] == 0x81 && sio_txn_cur.tx[1] == 0x52) {
         s_card_handoff_armed = 1;
-        s_ape_torn_pulses = 0;
         card_handoff_push(1, 0x52);
-        sio_arm_card_ct_defer_guard();
-        /* IMPORTANT (Ape Escape): tip often ends this probe one IntRP short
-         * (A6C10=1, Ready=0). Do NOT poke A6C10 — writing 0 skips a nest
-         * level and leaves torn idle (a6=0, no B4E38). With MT=1 + ACK
-         * defer + I_MASK.7 hold, re-edge IRQ7 and let LibCardIntRP pop
-         * naturally (1→0→FFFFFFFF + publish). */
-        if (ape_unstick_enabled()) {
-            extern uint32_t psx_read_word(uint32_t addr);
-            extern uint32_t i_mask;
-            uint32_t a6 = psx_read_word(0x800A6C10u);
-            uint32_t b38 = psx_read_word(0x800B4E38u);
-            if ((a6 & 0x80000000u) == 0u && b38 == 0u) {
-                if (!(i_mask & 0x80u))
-                    i_mask |= 0x80u;
-                i_stat &= ~0x80u;
-                card_handoff_push(9, (uint8_t)(a6 & 0xffu)); /* nest_irq_pulse */
-                psx_irq_raise(IRQ_SIO0, 0);
-            }
-        }
     }
-    /* Any finished card txn can leave A6C10 nested; arm unstick check. */
-    if (ape_unstick_enabled())
-        s_ape_unstick_pending = 1;
     sio_txn_buf[sio_txn_idx]   = sio_txn_cur;
     sio_txn_idx = (sio_txn_idx + 1) % SIO_TXN_CAP;
     sio_txn_seq++;
     sio_txn_open = 0;
-    ape_card_unstick_maybe(0);
 }
 
 /* ---- SIO IRQ #7 delivery ring ---- */
@@ -1666,12 +1507,9 @@ static void mc_process_byte(uint8_t tx_byte) {
             mc_state = MC_ID1;
             sio_rx_data = mc_flag;
             sio_stat |= SIO_STAT_ACK;
-            /* no$psx: FLAG byte is 0x08 only after newly-inserted/changed-battery
-             * card; cleared on first read or write. Without this clear, the BIOS
-             * sees 0x08 forever, treats every read as a fresh-card probe, and
-             * resets the chain counter (v0=-1 + 0x7520=1 path in BFC152E0).
-             * Beetle's card sim returns 0x00 in steady-state — match that. */
-            mc_flag = 0x00;
+            /* FLAG.3 survives reads and ID queries.  Original cards clear it
+             * only after a write; BIOS card initialization normally performs
+             * a dummy write to sector 003Fh for exactly that purpose. */
         } else {
             mc_state = MC_IDLE;
             sio_rx_data = 0xFF;
@@ -2399,30 +2237,8 @@ void sio_write(uint32_t addr, uint32_t value) {
          *            buffer; harmless to retain since the next read
          *            overwrites it). */
         if ((old_ctrl & SIO_CTRL_SELECT) && !(value & SIO_CTRL_SELECT)) {
-#if SIO_MODEL_CYCLE_PACED
-            /* Finish a card byte that already shifted before killing the bus.
-             * Cancelling a pending ACK here drops an IntRP pop and leaves
-             * libcard A6C10 nested so B4E38 never arms the next transfer. */
-            int preserve_card_ack = 0;
-            int preserve_ack_rem = 0;
-            if (active_device == DEV_MEMCARD) {
-                if (sio_shift_active && sio_shift_remaining <= 0)
-                    sio_handle_shift_complete();
-                if (sio_pending_ack) {
-                    sio_pending_ack = 0;
-                    sio_ack_remaining = 0;
-                    if (s_card_handoff_armed)
-                        card_handoff_push(7, 0); /* select_flush_ack */
-                    sio_fire_ack_irq();
-                    /* fire may re-queue while I_STAT.7 is still set — keep it
-                     * across the protocol reset below. */
-                    if (sio_pending_ack) {
-                        preserve_card_ack = 1;
-                        preserve_ack_rem = sio_ack_remaining;
-                    }
-                }
-            }
-#endif
+            /* SELECT deassertion cancels the device's pending DSR pulse.
+             * It cannot create an ACK or preserve one for later delivery. */
             if (active_device == DEV_MEMCARD && mc_state != MC_IDLE && sio_txn_open) {
                 extern uint32_t g_debug_current_func_addr;
                 txn_close(SIO_TXN_END_ABORT_OTHER, mc_state, g_debug_current_func_addr);
@@ -2461,13 +2277,6 @@ void sio_write(uint32_t addr, uint32_t value) {
             sio_pending_ack_irq_en = 0;
             sio_bus_owner = SIO_OWNER_NONE; sio_bus_byte_index = 0;
             g_sio_timing_active = 0;
-            if (preserve_card_ack) {
-                sio_pending_ack = 1;
-                sio_ack_remaining = preserve_ack_rem > 0 ? preserve_ack_rem : 16;
-                sio_pending_ack_irq_en = 1;
-                sio_irq_pending_source = SIO_IRQ_SRC_CARD_ACK;
-                g_sio_timing_active = 1;
-            }
             /* Killing an in-flight shifter mid-cycle leaves sio_stat
              * with TX_RDY/TX_EMPTY clear (they were masked by
              * SHIFT_START and only sio_handle_shift_complete restores
@@ -2475,8 +2284,6 @@ void sio_write(uint32_t addr, uint32_t value) {
              * SIO instead of busy-waiting forever on TX_RDY=0. */
             sio_stat |= SIO_STAT_TX_RDY | SIO_STAT_TX_EMPTY;
 #endif
-            /* Protocol is idle now — finish libcard B4E38 if still nested. */
-            ape_card_unstick_maybe(1);
             sr_record(SR_EVT_SELECT_DEASS, 0, 0);
         }
         break;
@@ -2630,14 +2437,13 @@ static int sio_consume_ack_event(void) {
 }
 
 static void sio_fire_ack_irq(void) {
-    /* Card: drop sticky unmasked SPU (I_STAT bit 9) before raising SIO.
-     * Tip's LOAD probe ACKs otherwise land on i_stat_before 0x200 while
-     * master sees 0x000 — guest-visible divergence.
-     * EXPERIMENT: was offline-only; ungated for TM4 netplay test. */
+    /* I_STAT sources are owned per device: an SIO0 card ACK may only raise
+     * bit 7. It must never clear SPU (bit 9) — a pending SPU IRQ stays
+     * pending until the guest performs the SPU/INTC acknowledgement. The
+     * prior netplay-parity experiment that dropped bit 9 here consumed the
+     * SPU interrupt during card scans and silenced SPU-IRQ-driven audio. */
     int card_ack = (sio_irq_pending_source == SIO_IRQ_SRC_CARD_ACK ||
                     active_device == DEV_MEMCARD);
-    if (card_ack)
-        i_stat &= ~(1u << 9);
 
     sio_stat |= SIO_STAT_ACK;
     sio_ack_visible_reads = 2;
@@ -2649,20 +2455,8 @@ static void sio_fire_ack_irq(void) {
         return;
     }
 
-    /* IMPORTANT (Ape Escape): serialize card ACK IRQs. If I_STAT.7 is still
-     * set, raising again merges into the same bit — LibCardIntRP pops once
-     * → A6C10 stays nested → B4E38 never set → LOAD wedges after the
-     * presence probe. Re-queue until the guest clears bit7.
-     * EXPERIMENT: was offline-only; ungated for TM4 netplay test. */
-    if (card_ack && (i_stat & 0x80u)) {
-        sio_pending_ack = 1;
-        sio_ack_remaining = 16;
-        sio_pending_ack_irq_en = 1;
-        g_sio_timing_active = 1;
-        if (s_card_handoff_armed)
-            card_handoff_push(8, 0); /* ack_deferred_istat7 */
-        return;
-    }
+    /* The device IRQ latch is independent of INTC acknowledgement. Do not
+     * queue an ACK for replay when the guest later clears I_STAT.7. */
     sio_pending_ack_irq_en = 0;
     sio_stat |= SIO_STAT_IRQ;
 
@@ -2670,7 +2464,6 @@ static void sio_fire_ack_irq(void) {
     psx_irq_raise(IRQ_SIO0, 0); /* SIO ACK IRQ */
     event_ring_record_aux(EV_DEQ, (uint8_t)SRC_SIO, 0u); /* SIO ACK IRQ fired */
     if (card_ack) {
-        sio_arm_card_ct_defer_guard();
         if (s_card_handoff_armed)
             card_handoff_push(5, 0);
     }
@@ -2757,23 +2550,13 @@ static uint64_t s_sio_advance_with_work = 0;
 uint64_t sio_get_advance_called(void)    { return s_sio_advance_called; }
 uint64_t sio_get_advance_with_work(void) { return s_sio_advance_with_work; }
 
-/* Walk shift/ack deadlines for `cycles`.
- *
- * IMPORTANT (Ape Escape LOAD): MAX_TRANSITIONS=1 so each walk delivers at
- * most one shift/ack edge. Uncapped walks can fire shift-complete + ACK
- * pairs back-to-back under the card ISR; the next ACK merges into the same
- * I_STAT.7 edge and LibCardIntRP pops once for two bytes → nest stuck after
- * 81 52 00. Do not fake-collapse A6C10 to compensate.
- * EXPERIMENT: was uncapped under netplay/selfcheck (MotK leftover-time);
- * always MT=1 here for TM4 netplay desync testing. */
+/* Consume every elapsed device deadline. Device time cannot stop after one
+ * transition merely to space interrupts for a particular guest handler. */
 static void sio_pace_walk(int cycles) {
     int remaining = cycles;
-    int transitions = 0;
-    const int MAX_TRANSITIONS = 1;
-    while (transitions < MAX_TRANSITIONS &&
-           (remaining > 0 ||
-            (sio_shift_active && sio_shift_remaining <= 0) ||
-            (sio_pending_ack && sio_ack_remaining <= 0))) {
+    while (remaining > 0 ||
+           (sio_shift_active && sio_shift_remaining <= 0) ||
+           (sio_pending_ack && sio_ack_remaining <= 0)) {
         int dt = remaining;
         int next_event = -1;
         if (sio_shift_active && sio_shift_remaining > 0
@@ -2797,11 +2580,9 @@ static void sio_pace_walk(int cycles) {
         remaining -= dt;
         if (next_event == 0) {
             sio_handle_shift_complete();
-            transitions++;
         } else if (next_event == 1) {
             sio_pending_ack = 0;
             sio_fire_ack_irq();
-            transitions++;
         } else {
             break;
         }
@@ -2876,13 +2657,6 @@ void sio_tick(int cycles) {
         }
     }
 
-    /* Nested A6C10 after card traffic: also pumped from interrupt checks. */
-    sio_ape_card_unstick_pump();
-}
-
-void sio_ape_card_unstick_pump(void) {
-    if (s_ape_unstick_pending)
-        ape_card_unstick_maybe(1);
 }
 
 void sio_tick_quantum(void) {

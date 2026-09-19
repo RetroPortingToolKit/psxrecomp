@@ -71,6 +71,23 @@ void test_single_file_dump(const fs::path& root) {
 
     // The whole point: both picks agree on what to read identity/CRC from.
     check(same(from_cue.data, from_bin.data), "single: both picks share a data track");
+
+    write_sectors(dir / "Tomba! (USA).bin", 4, 0x12);
+    write_text(dir / "Tomba! (USA).cue",
+               "FILE \"Tomba! (USA).bin\" BINARY\n"
+               "  TRACK 01 MODE2/2352\n"
+               "    INDEX 01 00:00:00\n");
+
+    const auto bang_from_cue = resolve_disc_path(dir / "Tomba! (USA).cue");
+    check(bang_from_cue.from_cue, "single: cue path with ! mounts the cue");
+    check(same(bang_from_cue.data, dir / "Tomba! (USA).bin"),
+          "single: cue path with ! resolves the data track");
+
+    const auto bang_from_bin = resolve_disc_path(dir / "Tomba! (USA).bin");
+    check(bang_from_bin.upgraded_to_cue,
+          "single: bin path with ! upgrades to owning cue");
+    check(same(bang_from_cue.data, bang_from_bin.data),
+          "single: ! cue/bin picks share a data track");
 }
 
 // ---- 2. redump multi-track: picking any track file finds the cue ------------

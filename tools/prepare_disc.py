@@ -13,7 +13,7 @@ Accepted inputs:
 
 Writes working ``.bin`` + ``.cue`` (or copies a multi-track Redump set),
 extracts ``SYSTEM.CNF`` + boot EXE, and prints ``RESULT_CUE=<abs path>``
-for the first-run wizard / RetComM.
+for the first-run wizard / Retro.
 
 ISO→2352 sets Mode2 Form1 sync/header/subheader/EDC (ECC zeroed — fine for
 software readers). Rebuilt images are not bit-identical to Redump.
@@ -23,12 +23,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import shutil
 import struct
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from disc_companion import CompanionError, check_destination, inspect_companion, stage_companion
+import psx_chd
 
 DST_SEC = 2352
 SRC_2448 = 2448
@@ -298,7 +302,11 @@ def stage_multitrack_cue(
         text = re.sub(
             r'FILE\s+"([^"]+)"\s+BINARY', _basename_file, text, flags=re.I
         )
-        cue_dest.write_text(text, encoding="utf-8", newline="\n")
+        # NB: Path.write_text(newline=) is Python 3.10+. Use open() so the
+        # tools keep working on 3.9, which RHEL/Rocky 9, Debian 11 and Ubuntu
+        # 20.04 still ship as the system python3.
+        with open(cue_dest, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
         print(f"wrote {cue_dest}")
     else:
         print(f"source cue already at {cue_dest}")
@@ -400,7 +408,23 @@ def extract_via(
     root = bytes(root[:root_size])
     entries = parse_root_entries(root)
     files: dict[str, bytes] = {}
-    for need in ("SYSTEM.CNF", boot_exe):
+    # Very early titles (e.g. King's Field, Dec 1994) ship no SYSTEM.CNF; the
+    # BIOS falls back to booting PSX.EXE from the root directory. probe_disc.py
+    # already accepts these discs (5ab7a053); staging has to accept the same
+    # ones or a clean worktree can never prepare them.
+    needed = ["SYSTEM.CNF", boot_exe]
+    if "SYSTEM.CNF" not in entries:
+        if boot_exe not in entries:
+            raise SystemExit(
+                f"SYSTEM.CNF missing on disc and no {boot_exe} fallback "
+                f"(found {sorted(entries)[:20]})"
+            )
+        print(
+            "  SYSTEM.CNF missing; using the BIOS "
+            f"{boot_exe} fallback boot path"
+        )
+        needed = [boot_exe]
+    for need in needed:
         if need not in entries:
             raise SystemExit(f"missing {need} on disc (found {sorted(entries)[:20]})")
         extent, size = entries[need]
@@ -443,6 +467,55 @@ def raw2448_to_bin(src: Path) -> bytes:
             n += 1
     print(f"  trimmed {n} sectors 2448 -> 2352")
     return bytes(out)
+
+
+class ChdStageError(Exception):
+    """A CHD could not be staged; main() prints it and returns 1."""
+
+
+def stage_from_chd(chd: Path, cfg: PrepareConfig, fw_root: Path) -> Path:
+    """Write the Redump-shaped .bin/.cue a CHD compresses into out_dir.
+
+    Returns the cue, which the normal cue path then consumes in place: the
+    data track is already where prepare would copy it, so nothing is copied
+    twice. The layout (one bin per track, or one bin for the disc) is the one
+    whose digests [prepare_disc] recorded; with no digests, one bin per track.
+    """
+    lib_path = psx_chd.find_libchdr(cfg.project_root, fw_root)
+    if lib_path is None:
+        raise ChdStageError(psx_chd.unsupported_message(chd))
+    try:
+        lib = psx_chd.LibChdr(lib_path)
+    except psx_chd.ChdError as exc:
+        raise ChdStageError(str(exc)) from exc
+    sizes = [k.size for k in cfg.known if k.size]
+    md5s = [k.md5 for k in cfg.known if k.md5]
+    sha1s = [k.sha1 for k in cfg.known if k.sha1]
+    try:
+        with psx_chd.ChdDisc(chd, lib) as disc:
+            print(f"source chd: {chd} ({len(disc.tracks)} track(s), via {lib_path.name})")
+            for t in disc.tracks:
+                print(f"  track {t.number:02d} {t.type} frames={t.frames}")
+            digests = psx_chd.digests(disc)
+            for i, d in enumerate(digests.tracks, 1):
+                print(f"  track {i:02d}: size={d.size} md5={d.md5} sha1={d.sha1}")
+            layout = digests.layout_matching(sizes, md5s, sha1s)
+            if layout is None:
+                if cfg.known and not cfg.skip_hash_check:
+                    raise ChdStageError(
+                        "CHD track digests are not in prepare_disc.known_* "
+                        "(pass --skip-hash-check to force)"
+                    )
+                layout = "multi"
+            print(f"  layout: {layout}")
+            cue = psx_chd.extract(
+                disc, cfg.out_dir, cfg.cue_name, layout=layout,
+                bin_name=cfg.bin_name,
+            )
+    except psx_chd.ChdError as exc:
+        raise ChdStageError(str(exc)) from exc
+    print(f"wrote {cue}")
+    return cue
 
 
 def matches_known(cfg: PrepareConfig, size: int, md5: str, sha1: str) -> bool:
@@ -529,8 +602,15 @@ def main() -> int:
         print(f"source not found: {src}", file=sys.stderr)
         return 1
 
-    cfg.out_dir.mkdir(parents=True, exist_ok=True)
-
+    selected_image = src
+    if src.suffix.lower() == ".chd":
+        # The companion lookup and the receipt keep naming the CHD the player
+        # chose; only the track data is materialised.
+        try:
+            src = stage_from_chd(src, cfg, fw_root)
+        except ChdStageError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     cue_src: Path | None = None
     cue_bins: list[Path] = []
     if src.suffix.lower() == ".cue":
@@ -550,6 +630,14 @@ def main() -> int:
 
     kind = detect_kind(src, src_size)
 
+    # Bind the selected CUE basename, not its first track's basename.
+    try:
+        companion, companion_data = inspect_companion(selected_image, src_size, src_sha1)
+        check_destination(cfg.out_dir / cfg.cue_name, companion_data)
+    except CompanionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     known_hit = matches_known(cfg, src_size, src_md5, src_sha1)
     if cfg.known and not cfg.skip_hash_check:
         if known_hit:
@@ -568,6 +656,22 @@ def main() -> int:
             )
     elif not cfg.known and not cfg.skip_hash_check and kind == "bin2352":
         print("  no prepare_disc.known_* configured - verifying boot EXE only")
+
+    cfg.out_dir.mkdir(parents=True, exist_ok=True)
+
+    def finish(cue_path: Path) -> None:
+        report = stage_companion(cue_path, companion, companion_data)
+        receipt = {
+            "schema": "psxrecomp-disc-preparation-v1",
+            "source_image": str(selected_image),
+            "source_data_track": {"path": str(src), "size": src_size, "sha1": src_sha1, "md5": src_md5},
+            "output_cue": str(cue_path.resolve()),
+            "subchannel": report,
+        }
+        cue_path.with_suffix(".disc-receipt.json").write_text(
+            json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        print(f"subchannel: {report['status']}")
+        print(f"RESULT_CUE={cue_path.resolve()}")
 
     # Multi-track Redump: keep the cue + every track bin so CDDA works.
     if cue_src is not None and len(cue_bins) > 1 and kind == "bin2352":
@@ -589,7 +693,7 @@ def main() -> int:
         print(f"  size  {out_size}")
         print(f"  md5   {out_md5}")
         print(f"  sha1  {out_sha1}")
-        print(f"RESULT_CUE={cue_path}")
+        finish(cue_path)
         return 0
 
     if kind == "bin2352":
@@ -626,13 +730,12 @@ def main() -> int:
         bin_path.write_bytes(bin_data)
 
     cue_path = cfg.out_dir / cfg.cue_name
-    cue_path.write_text(
-        f'FILE "{cfg.bin_name}" BINARY\n'
-        f"  TRACK 01 MODE2/2352\n"
-        f"    INDEX 01 00:00:00\n",
-        encoding="ascii",
-        newline="\n",
-    )
+    with open(cue_path, "w", encoding="ascii", newline="\n") as fh:
+        fh.write(
+            f'FILE "{cfg.bin_name}" BINARY\n'
+            f"  TRACK 01 MODE2/2352\n"
+            f"    INDEX 01 00:00:00\n"
+        )
     print(f"wrote {cue_path}")
 
     out_md5, out_sha1, out_size = file_hashes(bin_path)
@@ -645,7 +748,7 @@ def main() -> int:
     elif kind == "raw2448":
         print("  trimmed from 2448-byte/sector dump")
 
-    print(f"RESULT_CUE={cue_path.resolve()}")
+    finish(cue_path)
     return 0
 
 

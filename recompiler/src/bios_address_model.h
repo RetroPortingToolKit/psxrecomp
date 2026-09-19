@@ -48,6 +48,41 @@ struct BiosAddrCopy {
     uint32_t ram_hi() const { return ram_lo + len(); }   // exclusive
 };
 
+// One [[recompiler.install_slots]]: a RANGE of kernel-RAM words the guest is
+// expected to overwrite at runtime (Psy-Q's _patch_gte / _patch_card /
+// _patch_card2 / _patch_pad, and the BIOS's own install stubs).
+//
+// The original model was a single 4-word `lui/addiu/jalr/nop` stub written
+// over ROM zeros, detected by testing the first word against 0. Only one of
+// the five shapes observed in the wild fits that (docs/dynamic_handler_install.md):
+// patchers also overwrite REAL ROM instructions with a `jr`, rewrite an
+// 11-word prologue and insert an `mfc0 Cause`, and NOP out a driver routine.
+// So a slot carries a length and is detected against the ROM-BAKED words,
+// not against zero.
+struct BiosInstallSlot {
+    // How the compiled body resumes native execution after the interpreter
+    // has run the patched words.
+    enum class Resume {
+        Jalr,         // legacy 4-word stub: the jalr's ra = ram_addr + 0x10
+        Fallthrough,  // the patched words ARE the function: resume at ram_addr + len
+        None,         // the patch never returns here (a `jr` out of the kernel)
+    };
+
+    uint32_t ram_addr = 0;                  // start of the patched range
+    uint32_t len      = 0x10;               // bytes; legacy default = 4 words
+    Resume   resume   = Resume::Jalr;       // legacy default
+
+    uint32_t hi() const { return ram_addr + len; }          // exclusive
+    // RAM PC the compiled body resumes at, or 0 for Resume::None.
+    uint32_t resume_addr() const {
+        switch (resume) {
+            case Resume::Jalr:        return ram_addr + 0x10u;
+            case Resume::Fallthrough: return hi();
+            default:                  return 0u;
+        }
+    }
+};
+
 class BiosAddressModel {
 public:
     // Empty model: pure KSEG-mask normalization, no copies, no install slots.
@@ -99,7 +134,20 @@ public:
 
     // --- install slots ----------------------------------------------------
 
+    // True when ram_pc is the START of a declared slot (where the emitter
+    // plants the hook). Interior words of a range are NOT slot starts.
     bool is_install_slot(uint32_t ram_pc) const;
+    // The slot starting at ram_pc, or null.
+    const BiosInstallSlot* install_slot_at(uint32_t ram_pc) const;
+    const std::vector<BiosInstallSlot>& install_slots() const { return install_slots_; }
+    // Is this RAM PC inside ANY declared range? Such a PC must never become a
+    // native dispatch key: the compiled bytes there are not what executes —
+    // the guest's patch is. A key inside a range re-enters the compiled body,
+    // whose patch-range hook immediately sets pc back to the range start and
+    // returns, so the dispatch loop spins forever (observed 2026-09-11: a
+    // pre-existing jal-return continuation at OpenBIOS RAM 0x357C wedged the
+    // boot at frame 0).
+    bool in_install_slot_range(uint32_t ram_pc) const;
 
     // --- ROM-keyed RAM window (shell-style), for the game-overlap text ----
 
@@ -116,7 +164,7 @@ public:
 
 private:
     std::vector<BiosAddrCopy> copies_;
-    std::vector<uint32_t>     install_slots_;
+    std::vector<BiosInstallSlot> install_slots_;
     uint32_t                  rom_base_phys_ = 0x1FC00000u;
     uint32_t                  rom_size_ = 0x80000u;
     int                       kbless_idx_ = -1;     // index into copies_

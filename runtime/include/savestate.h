@@ -39,6 +39,23 @@ extern "C" {
 void savestate_configure(const char* dir, uint32_t bios_checksum, uint32_t entry_pc,
                          const char* bios_token, uint32_t openbios_wordsum);
 
+/* Scope savestates to one disc of a multi-image set. The disc appears as a
+ * token in the slot FILENAME inside the existing BIOS directory:
+ * <saves>/<bios>/state_<entry>_disc<N>_slot<NN>.pst. Call before
+ * savestate_configure().
+ *
+ * A savestate is whole-machine state, so restoring one taken on disc 2 while
+ * disc 1 is mounted resumes a guest that believes it is reading disc 2 -- the
+ * slot list gives no hint, because every disc of a set shares one entry_pc and
+ * the existing key is entry_pc. The BIOS stays a directory because a state is
+ * invalid across BIOS images whatever disc it came from; the disc only has to
+ * not collide within one, which a filename token does without another level to
+ * browse, back up and migrate.
+ *
+ * disc_number is 1-based; 0 disables scoping. Single-disc titles must pass 0
+ * so their existing paths are untouched. */
+void savestate_set_disc_scope(int disc_number);
+
 /* Current slot directory (empty if not configured). */
 const char* savestate_dir(void);
 

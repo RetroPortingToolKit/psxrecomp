@@ -1,5 +1,9 @@
 # AOT Overlay Sharding — Spike Findings & Plan (Tomba-first)
 
+For the current workflow and reusable producer boundary, see
+[AOT sharding](AOT_SHARDING.md). This document preserves dated experiments;
+historical observed-PC coverage figures are not exhaustive correctness proofs.
+
 Status: ENHANCEMENT SPIKE (2026-07-17). Foundation executed and live-proven.
 Author: investigation via 4 parallel agents + adversarial source verification.
 Scope: can we move overlay sharding from *runtime discovery* to *build-time (AOT)*,
@@ -481,7 +485,7 @@ Gaps 3 and 4 are why capture is runtime-only today.
 
 **F1 — Naive disc-scan AOT is dead for Tomba (two independent kills):**
 - (a) Scatter-load means the reconstituted RAM image is **not contiguous anywhere on
-  disc** (`docs/overlay-discovery.md:36-45`). A CRC/byte scan can't find it.
+  disc** (`docs/internal/overlay-discovery.md:36-45`). A CRC/byte scan can't find it.
 - (b) Even after de-scattering + decompressing, the executable bytes differ from the
   raw payload because the game applies **load-time fixups (relocated jump tables)**.
   Capturing pre-fixup DMA bytes was tried and caused the **village→overworld blue
@@ -598,7 +602,7 @@ Remove dependence on a recorded route.
   shards CRC-match (native path taken on first entry, no compile).
 - **Artifact:** `game.toml [[overlays]]` populated automatically from the enumerated
   table (finally implementing the documented-but-empty schema; note the current
-  discrepancy in `overlay-discovery.md` that `[[overlays]]` is unimplemented).
+  discrepancy in `docs/internal/overlay-discovery.md` that `[[overlays]]` is unimplemented).
 
 ### T3 — Generalize the framework (Class A static fast-path + other titles)
 - For Class-A titles (position-fixed, disc==RAM), add a pure-static extractor

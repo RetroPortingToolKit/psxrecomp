@@ -21,7 +21,7 @@
 # still loads the ICD dynamically via SDL.
 #
 # workflow_dispatch: leave version empty to auto-bump patch (or choose bump).
-# Host-focused releases: CI never ships game C. Players Generate once; RetComM
+# Host-focused releases: CI never ships game C. Players Generate once; Retro
 # Update reuses codegen-cache when ROM/BIOS/emitters match (cmake-only).
 # See docs/ci/HOST_ONLY_RELEASES.md. reuse_cached_emitters skips rebuilding
 # psxrecomp-game/bios when the psxrecomp SHA cache hits (host/UI bumps).
@@ -194,6 +194,14 @@ jobs:
       - name: Record framework revisions
         shell: bash
         run: bash psxrecomp/tools/ci/record_pins.sh
+
+      # A skew between game.toml, CMakeLists GEN_MARKER and codegen_setup.c
+      # makes every player's self-build loop generate+build forever. The CLI
+      # also refuses the skew at generate time, but failing the release is
+      # cheaper than failing the player.
+      - name: Lint boot-EXE name consistency
+        shell: bash
+        run: bash psxrecomp/tools/ci/check_boot_exe.sh .
 
       - name: Setup host mode (no game C / BIOS backends in CI)
         shell: bash
@@ -530,6 +538,14 @@ jobs:
           echo "lobby pin ok: ${BUILT} (${STAMP})"
 
       - name: Package setup zip
+        # Windows code signing (Smart App Control / SmartScreen): the packager
+        # signs the host exe, DLLs and emitters when these secrets exist and
+        # skips signing, with a notice, when they do not. Put the .pfx in the
+        # repo's Actions secrets base64-encoded (`base64 -w0 cert.pfx`).
+        # See psxrecomp/docs/ci/README.md, "Windows code signing".
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
           set -euo pipefail
           chmod +x scripts/package_setup_release.sh
@@ -538,10 +554,53 @@ jobs:
             export BPE_RUNTIME_BIN_DIR=/mingw64/bin
           fi
           export RELEASE_VERSION
-          # Lean zip (no embedded toolchain/). RetComM / wizard download
+          # Lean zip (no embedded toolchain/). Retro / wizard download
           # cmake-clang-v1; pass --embed-toolchain only for offline-first packs.
           scripts/package_setup_release.sh build-ci "${{ matrix.artifact }}" build-recompiler
           ls -la dist/
+
+      - name: Verify zip ships the mod catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Gate the release on the catalog actually being inside the zip.
+          # The packager stages mods/ by default, but this shipped broken for
+          # a long time precisely because nothing checked: the Mods page was
+          # empty in every release and the build logs looked fine. Assert the
+          # artifact, not the intent.
+          ZIP=$(ls dist/YOUR_ZIP_PREFIX-*-"${{ matrix.artifact }}".zip | head -1)
+          echo "checking ${ZIP}"
+          MANIFESTS=$(unzip -l "${ZIP}" | grep -c 'mods/bundled/.*/manifest\.toml' || true)
+          echo "mod manifests in zip: ${MANIFESTS}"
+          if [[ "${MANIFESTS}" -lt 1 ]]; then
+            echo "::error::release zip ships no mod catalog (mods/bundled/*/manifest.toml)" >&2
+            unzip -l "${ZIP}" | head -40 >&2
+            exit 1
+          fi
+          # Per-machine mod state must never ship: preloaded catalogs are
+          # default-disabled, so a leaked state.toml makes one machine's
+          # selections everybody's defaults.
+          if unzip -l "${ZIP}" | grep -q 'state\.toml'; then
+            echo "::error::release zip contains mods/state.toml (per-machine state)" >&2
+            exit 1
+          fi
+          # Same rule, other half: mods/installed/ is the launcher-owned tree of
+          # .psxmod archives a developer installed as a player would. Only
+          # mods/bundled/ is build output, and only build output ships.
+          if unzip -l "${ZIP}" | grep -q 'mods/installed/'; then
+            echo "::error::release zip contains mods/installed (per-machine installs)" >&2
+            exit 1
+          fi
+          # Developer-channel packages are unfinished work that ships with
+          # local builds only. The packager drops them under CI automatically
+          # (it keys off $CI); assert the outcome so a future change to that
+          # default cannot quietly publish in-progress mods.
+          if unzip -p "${ZIP}" 'mods/**/manifest.toml' 2>/dev/null \
+               | grep -Eq '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"'; then
+            echo "::error::release zip contains developer-channel mod packages" >&2
+            exit 1
+          fi
+          echo "mod catalog verified in ${ZIP} (no developer-channel packages)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

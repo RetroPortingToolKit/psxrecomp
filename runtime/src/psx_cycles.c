@@ -80,6 +80,7 @@ static void advance_devices(uint32_t c) {
     dma_advance(c);
     timers_advance(c);
     interrupts_advance_cycles(c);
+    psx_spu_sample_event_service();
 }
 
 /* ===== Event-deadline device servicing (production fast path) =================
@@ -139,6 +140,7 @@ static uint32_t devices_cycles_to_next_internal_event(void) {
     uint32_t c = cdrom_cycles_to_irq(0xFFFFFFFFu);   if (c < best) best = c;
     uint32_t d = dma_cycles_to_internal_event();     if (d < best) best = d;
     uint32_t s = sio_cycles_to_irq(0xFFFFFFFFu);     if (s < best) best = s;
+    uint32_t a = psx_spu_sample_event_cycles_to_next(); if (a < best) best = a;
     if (best == 0) best = 1;    /* due/overdue: process within one cycle */
     return best;
 }
@@ -156,8 +158,20 @@ static uint32_t devices_cycles_to_next_idle_event(void) {
     uint32_t c = cdrom_cycles_to_irq(i_mask);   if (c < best) best = c;
     uint32_t d = dma_cycles_to_deliverable_irq(i_mask); if (d < best) best = d;
     uint32_t s = sio_cycles_to_irq(i_mask);     if (s < best) best = s;
+    /* SPU IRQ9 is raised by the guest-clock sample scheduler, not by a device
+     * *_advance(); a poll loop waiting on it must not be skipped across several
+     * 768-cycle sample boundaries before it can acknowledge and re-arm. Only an
+     * unmasked IRQ9 is observable, like the other sources above. */
+    if (i_mask & (1u << IRQ_SPU)) {
+        uint32_t a = psx_spu_sample_event_cycles_to_next(); if (a < best) best = a;
+    }
     if (best == 0) best = 1;
     return best;
+}
+
+/* Test/diagnostic accessor for the idle-skip observation boundary above. */
+uint32_t psx_idle_cycles_to_next_observable_event(void) {
+    return devices_cycles_to_next_idle_event();
 }
 
 static void psx_devices_recompute_deadline(void) {
@@ -689,6 +703,10 @@ void psx_muldiv_stall(CPUState* cpu) {
  * §1+DO_LDS that bracket this ran in the instruction's psx_cyc_step (COP2 is non-load).
  * MTC2/CTC2 (writes) use psx_gte_stall (stall only, no give-back). */
 void psx_gte_read(CPUState* cpu, uint32_t rt) {
+    /* Include deferred CPU work before computing a deadline or stall. A
+     * later advance publishes it too, so using the old clock double-counts
+     * that work in the stall and can arm a command deadline too early. */
+    psx_cyc_batch_flush();
     if (cpu->gte_ts_done > psx_cycle_count) {
         uint32_t stall = (uint32_t)(cpu->gte_ts_done - psx_cycle_count);
         cpu->ld_absorb = stall;
@@ -746,6 +764,10 @@ uint32_t psx_gte_cmd_latency(uint32_t cmd) {
 }
 
 void psx_gte_set(CPUState* cpu, uint32_t latency) {
+    /* Include deferred CPU work before computing a deadline or stall. A
+     * later advance publishes it too, so using the old clock double-counts
+     * that work in the stall and can arm a command deadline too early. */
+    psx_cyc_batch_flush();
     /* Back-to-back GTE ops serialize: finish the prior op first. */
     if (cpu->gte_ts_done > psx_cycle_count) {
         psx_advance_cycles((uint32_t)(cpu->gte_ts_done - psx_cycle_count));
@@ -754,6 +776,10 @@ void psx_gte_set(CPUState* cpu, uint32_t latency) {
 }
 
 void psx_gte_stall(CPUState* cpu) {
+    /* Include deferred CPU work before computing a deadline or stall. A
+     * later advance publishes it too, so using the old clock double-counts
+     * that work in the stall and can arm a command deadline too early. */
+    psx_cyc_batch_flush();
     if (cpu->gte_ts_done > psx_cycle_count) {
         psx_advance_cycles((uint32_t)(cpu->gte_ts_done - psx_cycle_count));
     }

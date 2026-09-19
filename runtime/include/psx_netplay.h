@@ -46,7 +46,29 @@ typedef struct PsxNetPad {
 typedef struct PsxNetplayConfig {
     int         enabled;
     int         local_slot;    /* 0 .. slot_count-1 */
-    int         slot_count;    /* 2 .. PSX_MAX_PLAYERS (session pad count) */
+    /* 1 = spectator: simulate the match, display it, contribute nothing.
+     * The session owns no seat (RNetConfig.local_slot == slot_count) and is
+     * never sampled for input, so the local pads never enter the pipeline at
+     * all -- the only version of "cannot affect the game" that survives a
+     * spectator with a controller in their hands. */
+    int         spectator;
+    /* Spectator only: slot in the input relay's namespace, at or above the
+     * relay's player count. Required when spectator is set; it is what makes
+     * the relay refuse to forward anything this peer sends. */
+    int         spectator_wire_slot;
+    /* 1 = the host watches from the gallery: it is still session slot 0
+     * (the seat every host-only path keys on) but its pad is muted and no
+     * controller port is mapped to it; session slot s >= 1 drives pad
+     * port s - 1. slot_count then includes the host's silent slot, so it
+     * may reach PSX_MAX_PLAYERS + 1. Env PSX_NET_HOST_SPECTATES=1. */
+    int         host_spectates;
+    /* Session slot -> controller port (-1 = none), when port_map_valid. The
+     * lobby host is always session slot 0 whatever seat it holds; the other
+     * players follow in seat order and drive the port of their lobby seat.
+     * Without it: identity, or slot - 1 with host_spectates. */
+    int         port_map_valid;
+    int         port_of_slot[9];
+    int         slot_count;    /* 2 .. PSX_MAX_PLAYERS (+1 with host_spectates) */
     int         player_count;  /* seated players at launch (0 = use slot_count) */
     /* Bit i = lobby seat i occupied. 0 = all seats occupied (legacy). Sparse
      * rooms (moved seats leaving a hole) must set this so recomp-net does not
@@ -64,6 +86,14 @@ typedef struct PsxNetplayConfig {
     /* 0 = delay-sync, 1 = rollback invent/contract (lobby default on).
      * Env PSX_NET_MODE=delay|rollback overrides. */
     int         rollback;
+    /* 1 = seat 1 brings its own memory card: before the host's card broadcast,
+     * seat 1 uploads its LOCAL slot-1 card to the host, which installs it as
+     * the match's slot-2 card; every peer then receives it in the usual SRAM
+     * blob. Both the host's real slot-2 card and seat 1's real cards are
+     * left untouched (host sandboxes slot 2; guests already sandbox both).
+     * Must be identical on every peer (the lobby decides it at start).
+     * Env PSX_NET_GUEST_MEMCARD=1 overrides. */
+    int         guest_memcard;
     uint32_t    session_id;
     char        bind_hostport[64];
     char        peer_hostport[64];
@@ -81,6 +111,10 @@ int  psx_netplay_ice_failed(void);
 /* Optional JSONL samples when PSX_NET_DIAG=1 (saves/netplay/net_diag.jsonl). */
 void psx_netplay_diag_tick(void);
 int  psx_netplay_local_slot(void);
+/* 1 while this build is watching rather than playing. */
+int  psx_netplay_is_spectator(void);
+/* 1 when the local peer is the host running the match from the gallery. */
+int  psx_netplay_host_spectates(void);
 /* Resolved host player index used for local capture. */
 int  psx_netplay_input_player(void);
 uint32_t psx_netplay_sim_tick(void);

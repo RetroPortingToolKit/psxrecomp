@@ -1,8 +1,12 @@
 #include "mod_runtime.h"
 #include "mod_packages.h"
+#include "mod_plugins.h"
 #include "psx_sha256.h"
 
+#include "gpu.h"
+
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -57,6 +61,15 @@ extern "C" uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t, uint32_t) {
     return 0;
 }
 extern "C" int psx_ws_x_margin(void) { return 0; }
+
+/* Stand-in for the GPU's display geometry. psx_mod_display_width/height must
+ * report exactly what the presenter reports -- a plugin drawing an overlay
+ * uses this as the screen edge, so a substituted or rounded value would put
+ * HUD elements in the wrong place. */
+static GpuDisplayInfo g_test_display;
+extern "C" void gpu_get_display_info(GpuDisplayInfo* out) {
+    *out = g_test_display;
+}
 
 extern "C" void dirty_ram_mark_executable_range(uint32_t, uint32_t) {}
 extern "C" int fntrace_is_game_started(void) { return 1; }
@@ -460,6 +473,63 @@ int main() {
           "a failed sparse disc guard must leave every write in the sector "
           "untouched");
 
+    /*
+     * Display geometry passthrough. Ape Escape scans out 384 while its mode
+     * width is 368, which is precisely why a plugin cannot derive this from
+     * GPUSTAT: the horizontal range that makes the difference is write-only.
+     */
+    g_test_display.width = 384;
+    g_test_display.height = 240;
+    check(psx_mod_display_width() == 384u,
+          "psx_mod_display_width must report the presenter's visible width, "
+          "not the coarse mode width");
+    check(psx_mod_display_height() == 240u,
+          "psx_mod_display_height must report the presenter's visible height");
+
+    g_test_display.width = 0;
+    g_test_display.height = 0;
+    check(psx_mod_display_width() == 0u && psx_mod_display_height() == 0u,
+          "unestablished display geometry must report zero so callers skip "
+          "drawing instead of guessing");
+
+    /* Source-owned ISO: nested file spanning two sectors, without a derived
+     * disc. Host reads must choose the original mount and leave sizes honest. */
+    std::vector<uint8_t> iso(24*2048);
+    auto le32 = [&](size_t at,uint32_t n) { for(unsigned i=0;i<4;++i) iso[at+i]=(uint8_t)(n>>(i*8)); };
+    auto record = [&](size_t at,uint32_t lba,uint32_t bytes,bool directory,const std::string& name) {
+        iso[at]=(uint8_t)((33+name.size()+1)&~size_t(1));
+        le32(at+2,lba); le32(at+10,bytes); iso[at+25]=directory?2:0;
+        iso[at+28]=1;iso[at+31]=1;iso[at+32]=(uint8_t)name.size();
+        std::copy(name.begin(),name.end(),iso.begin()+at+33);
+    };
+    iso[16*2048]=1;std::copy_n("CD001",5,iso.begin()+16*2048+1);iso[16*2048+6]=1;
+    record(16*2048+156,20,2048,true,std::string(1,'\0'));
+    record(20*2048,21,2048,true,"S0");
+    record(21*2048,22,3000,false,"LEVEL.NSF;1");
+    for(unsigned i=0;i<3000;++i)iso[22*2048+i]=(uint8_t)(i*7);
+    const auto disc_root=root/"host-reader";
+    const auto iso_path=disc_root/"original.iso";
+    write_bytes(iso_path,iso);
+    check(PSXRecompV4::mod_runtime_initialize(disc_root,"READER",0,{},&error),"reader initialize");
+    check(PSXRecompV4::mod_runtime_commit(iso_path,&error),"reader mount original ISO");
+    uint32_t bytes=0;
+    check(psx_mod_read_disc_file("S0/LEVEL.NSF",nullptr,0,&bytes) && bytes==3000,"query original nested file size");
+    std::vector<uint8_t> result(3000);
+    check(!psx_mod_read_disc_file("S0/LEVEL.NSF",result.data(),2999,&bytes) && bytes==0,"undersized destination rejected");
+    check(psx_mod_read_disc_file("S0/LEVEL.NSF",result.data(),(uint32_t)result.size(),&bytes) &&
+          bytes==3000 && std::equal(result.begin(),result.end(),iso.begin()+22*2048),"complete original file bytes");
+    check(!psx_mod_read_disc_file("S0/MISSING.NSF",nullptr,0,&bytes) && bytes==0,"missing file explicit");
+    check(!psx_mod_read_disc_file("S0",nullptr,0,&bytes),"directory rejected");
+    std::vector<uint8_t> raw_iso(24*2352);
+    for(unsigned i=0;i<24;++i) {
+        raw_iso[i*2352+15]=2;
+        std::copy_n(iso.begin()+i*2048,2048,raw_iso.begin()+i*2352+24);
+    }
+    const auto raw_path=disc_root/"original.bin";
+    write_bytes(raw_path,raw_iso);
+    check(PSXRecompV4::mod_runtime_commit(raw_path,&error),"reader mount raw disc");
+    check(psx_mod_read_disc_file("S0/LEVEL.NSF",result.data(),(uint32_t)result.size(),&bytes) &&
+          std::equal(result.begin(),result.end(),iso.begin()+22*2048),"raw and ISO reads identical");
     fs::remove_all(root, ec);
     if (failures) return 1;
     std::cout << "mod runtime tests passed\n";

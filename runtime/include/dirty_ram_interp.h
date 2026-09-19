@@ -139,8 +139,13 @@ int      dirty_ram_is_dirty(uint32_t phys);
  * on writes into the body. Runtime-patched bodies (pad/SIO install stubs)
  * never verify and keep interpreting — faithful either way. */
 int      psx_kernel_bless_dispatchable(uint32_t phys);
+/* True when a declared kernel patch range ENDS at this RAM address. The
+ * emitter registered that PC as a continuation key, so the interpreter hands
+ * straight-line flow back to static dispatch there and only the guest's
+ * patched words interpret (memory.c psx_bios_kernel_patch_ranges). */
+int      psx_kernel_patch_range_ends_at(uint32_t phys);
 void     psx_kernel_bless_note_range(uint32_t phys, uint32_t len);
-void     psx_kernel_bless_stats(uint64_t out[6]);
+void     psx_kernel_bless_stats(uint64_t out[8]);
 void     psx_kernel_bless_resync_after_restore(void);
 /* Soft-return rematch / BIOS switch: drop latched SCPH↔OpenBIOS window +
  * CLEAN/MISMATCH so the next kbless_on() re-reads psx_bios_image. */
@@ -224,6 +229,30 @@ typedef struct {
                           * below the local-flow floor every taken branch
                           * re-dispatches, so chain blocks dominate. entry_hits
                           * is the evidence stream for interior-alias seeds. */
+    /* Enrichment (2026-09-05, BoF3): make a bare interpreted PC explainable
+     * from a session-long per_pc snapshot alone, with no offline join and no
+     * live-ring window. Stamped only on EXTERNAL entries (arrived from native
+     * dispatch, addr != chain target), which is where the value is. */
+    uint32_t occ_crc;    /* tier 1: psx_overlay_resident_crc_at(pc) at the last
+                          * external entry -- the manifest CRC of the static
+                          * variant whose code ranges span this PC (DLL path:
+                          * last hash taken). Disambiguates a mixed band
+                          * (0x801D0C00 carries BATTLE/ETC/SCENARIO/WORLD
+                          * occupants) to the one actually loaded, which the
+                          * offline enrich_pcs join cannot. 0 = nothing compiled
+                          * spans this PC (BIOS / kernel / boot EXE). */
+    uint8_t  occ_ok;     /* 1 = that variant validated at the time (interior
+                          * gap inside live native code: an Axis B seed);
+                          * 0 = it is resident but CRC-missing (data inside the
+                          * code range rewritten, or a different section than
+                          * the one compiled) -- the whole band runs
+                          * interpreted and no seed will fix it. */
+    uint32_t last_ext_ra;/* tier 2: gpr[31] (caller RA) at the most recent
+                          * external entry — names the call site that reaches a
+                          * function-pointer-table interior. This is the §9 (LOGO
+                          * effect-handler tables) diagnosis made durable and
+                          * session-long instead of ring-bounded; the full
+                          * call/jalr/jr transfer split stays in the fp-log ring. */
 } DirtyRamPcEntry;
 extern DirtyRamPcEntry g_dirty_ram_pc_table[DIRTY_RAM_PC_TABLE_SIZE];
 /* Every aligned main-RAM word is a possible instruction PC.  Execution

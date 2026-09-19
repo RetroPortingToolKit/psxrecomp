@@ -67,6 +67,9 @@ typedef struct CdTimingPub {
 } CdTimingPub;
 uint64_t cdrom_timing_total(void);
 int cdrom_timing_record(uint64_t seq, CdTimingPub* out);
+/* Notify the guest that the mounted disc was reinserted. The controller stops
+ * active transfers, reports an open shell, waits two emulated seconds, then
+ * makes the mounted media readable. This call does not mount a different image. */
 void debug_force_cd_reinsert(void);
 /* FMV auto-skip detection: cdrom_xa_stream_active() lets the frontend detect
  * that streaming XA (FMV/CDDA) is in progress. The skip itself is done by the

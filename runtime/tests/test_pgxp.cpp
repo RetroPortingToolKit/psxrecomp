@@ -1,4 +1,4 @@
-/* test_pgxp.cpp — PGXP value-propagation engine unit tests (ENHANCEMENTS.md
+/* test_pgxp.cpp — PGXP value-propagation engine unit tests (docs/ENHANCEMENTS.md
  * G1.2/G1.3). White-box over runtime/src/pgxp.cpp with the gte.cpp fallback
  * cache stubbed, exercising exactly the properties the engine's safety rests
  * on: provenance roundtrips, validate-on-read, half-word semantics, the

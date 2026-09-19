@@ -55,6 +55,7 @@ class DiscProbe:
     data_track_size: int
     data_track_md5: str
     data_track_sha1: str
+    data_track_crc32: str = ""  # 8-digit lowercase hex (Redump-compatible)
     boot_exe: str = ""
     serial: str = ""  # SLUS-00562
     serial_exe: str = ""  # SLUS_005.62
@@ -66,6 +67,11 @@ class DiscProbe:
     stack_base: str = ""
     require_cue: bool = True
     required_disc_fp: str = ""
+    # Content hash of the boot executable itself. `serial` and `boot_exe` name
+    # the DISC; this names the PROGRAM, and the two are not the same thing --
+    # Final Fantasy VII ships one byte-identical executable on three discs
+    # under three serials (SCUS-94163/64/65).
+    boot_exe_sha256: str = ""
     seed_count: int = 0
     seed_addrs: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -74,8 +80,12 @@ class DiscProbe:
     boot_exe_bytes: bytes = field(default=b"", repr=False, compare=False)
 
 
-def file_hashes(path: Path) -> tuple[str, str, int]:
+def file_hashes(path: Path) -> tuple[str, str, str, int]:
+    """Return (md5_hex, sha1_hex, crc32_hex8, size)."""
+    import zlib
+
     h_md5, h_sha1 = hashlib.md5(), hashlib.sha1()
+    crc = 0
     size = 0
     with open(path, "rb") as f:
         while True:
@@ -85,7 +95,13 @@ def file_hashes(path: Path) -> tuple[str, str, int]:
             size += len(chunk)
             h_md5.update(chunk)
             h_sha1.update(chunk)
-    return h_md5.hexdigest(), h_sha1.hexdigest(), size
+            crc = zlib.crc32(chunk, crc)
+    return (
+        h_md5.hexdigest(),
+        h_sha1.hexdigest(),
+        f"{crc & 0xFFFFFFFF:08x}",
+        size,
+    )
 
 
 def msf_to_frames(msf: str) -> int:
@@ -324,17 +340,25 @@ def display_name_from_cue(cue_path: Path, volume_id: str) -> str:
     return name.strip() or stem
 
 
-def probe(cue_path: Path) -> DiscProbe:
+def probe(cue_path: Path, *, identity_only: bool = False) -> DiscProbe:
     cue_path = cue_path.resolve()
     if cue_path.suffix.lower() != ".cue":
         raise SystemExit("probe_disc expects a .cue (Redump multi-track layout)")
 
     tracks, files_order = parse_cue(cue_path)
     bin_path = first_binary_bin(cue_path, files_order, tracks)
-    md5, sha1, size = file_hashes(bin_path)
+    if identity_only:
+        md5, sha1, crc32, size = "", "", "", bin_path.stat().st_size
+    else:
+        md5, sha1, crc32, size = file_hashes(bin_path)
 
     warnings: list[str] = []
     notes: list[str] = []
+    if identity_only:
+        notes.append(
+            "identity-only probe: data-track md5/sha1/crc32 skipped. Not usable "
+            "for [prepare_disc] digests or the catalog."
+        )
     if len(tracks) == 1:
         warnings.append(
             "cue has only 1 TRACK — Track-01-only dumps fail multi-track "
@@ -388,12 +412,24 @@ def probe(cue_path: Path) -> DiscProbe:
     entries = parse_root_entries(bytes(root[:root_size]))
 
     if "SYSTEM.CNF" not in entries:
-        raise SystemExit(
-            f"SYSTEM.CNF missing on disc (found {sorted(entries)[:24]})"
+        # Very early titles (e.g. King's Field, Dec 1994) ship no SYSTEM.CNF;
+        # the BIOS falls back to booting PSX.EXE from the root directory.
+        psx_exe = next((k for k in entries if k.upper() == "PSX.EXE"), None)
+        if psx_exe is None:
+            raise SystemExit(
+                f"SYSTEM.CNF missing on disc and no PSX.EXE fallback "
+                f"(found {sorted(entries)[:24]})"
+            )
+        boot_token = psx_exe
+        warnings.append(
+            "SYSTEM.CNF missing; using the BIOS PSX.EXE fallback boot path. "
+            "No serial is recoverable from the filesystem — set game_id "
+            "manually in catalog_identity.json / game.toml."
         )
-    extent, fsize = entries["SYSTEM.CNF"]
-    cnf = read_file(read_user, data, extent, fsize)
-    boot_token = parse_system_cnf(cnf)
+    else:
+        extent, fsize = entries["SYSTEM.CNF"]
+        cnf = read_file(read_user, data, extent, fsize)
+        boot_token = parse_system_cnf(cnf)
     serial, boot_exe = normalize_serial(boot_token)
 
     disc_boot = boot_token
@@ -450,6 +486,7 @@ def probe(cue_path: Path) -> DiscProbe:
         data_track_size=size,
         data_track_md5=md5,
         data_track_sha1=sha1,
+        data_track_crc32=crc32,
         boot_exe=boot_name,
         serial=serial,
         serial_exe=boot_name if "_" in boot_name else (
@@ -468,6 +505,7 @@ def probe(cue_path: Path) -> DiscProbe:
         warnings=warnings,
         notes=notes,
         boot_exe_bytes=exe,
+        boot_exe_sha256=hashlib.sha256(exe).hexdigest() if exe else "",
     )
 
 
@@ -475,7 +513,8 @@ def toml_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def render_game_toml(p: DiscProbe, *, disc_rel: str, out_dir: str, players: int) -> str:
+def render_game_toml(p: DiscProbe, *, disc_rel: str, out_dir: str, players: int,
+                     extra_discs: list[str] | None = None) -> str:
     exe_rel = f"{out_dir.rstrip('/')}/{p.boot_exe}"
     lines = [
         "# Autofilled by tools/new_project_layout/probe_disc.py from your legal dump.",
@@ -486,7 +525,23 @@ def render_game_toml(p: DiscProbe, *, disc_rel: str, out_dir: str, players: int)
         f'id = "{toml_escape(p.serial)}"' if p.serial else '# id = "SLUS-XXXXX"',
         f"players = {players}",
         f'exe = "{toml_escape(exe_rel)}"',
-        f'disc = "{toml_escape(disc_rel)}"',
+        # One program, N images: the loader already accepts `discs`, and a set
+        # verified data-only is exactly that case. `disc` stays for a single
+        # image so a one-disc title is byte-identical to before.
+        *(
+            [f'disc = "{toml_escape(disc_rel)}"']
+            if not extra_discs
+            else [
+                "# Verified as one program on N images (verify_disc_set.py).",
+                "# Disc 1 boots; the rest are data. The runtime builds its disc",
+                "# roster from this list and mounts the SELECTED one (remembered",
+                "# in disc_index), so the launcher can switch discs between runs.",
+                "# Swapping mid-session is MULTI_DISC.md P3 and is not implemented.",
+                "discs = [",
+                *[f'    "{toml_escape(d)}",' for d in [disc_rel, *extra_discs]],
+                "]",
+            ]
+        ),
         f'load_address = "{p.load_address}"',
         f'entry_pc = "{p.entry_pc}"',
         f'text_size = "{p.text_size}"',
@@ -505,6 +560,9 @@ def render_game_toml(p: DiscProbe, *, disc_rel: str, out_dir: str, players: int)
         "known_sha1 = [",
         f'  "{p.data_track_sha1}",',
         "]",
+        "known_crc32 = [",
+        f'  "{p.data_track_crc32}",',
+        "]",
         "",
         "[recompiler]",
         'seeds = "seeds/ghidra_funcs.txt"',
@@ -514,6 +572,11 @@ def render_game_toml(p: DiscProbe, *, disc_rel: str, out_dir: str, players: int)
         "[runtime]",
         'window_title = "' + toml_escape(p.display_name + " Recompiled") + '"',
         'memcard_dir = "saves"',
+        # Enable captured dirty-RAM overlays by default. A freshly probed
+        # project otherwise never initializes the cache pipeline and silently
+        # interprets every runtime-loaded overlay until a maintainer discovers
+        # and adds this setting by hand.
+        "overlay_cache = true",
         "",
         "[video]",
         'renderer = "opengl"',
@@ -552,6 +615,7 @@ def catalog_identity(
             "size": p.data_track_size,
             "md5": p.data_track_md5,
             "sha1": p.data_track_sha1,
+            "crc32": p.data_track_crc32,
         },
     }
     if p.required_disc_fp:
@@ -592,7 +656,7 @@ def main() -> int:
     ap.add_argument(
         "--write-catalog",
         default="",
-        help="write catalog_identity.json for RetComM / submission autofill",
+        help="write catalog_identity.json for Retro / submission autofill",
     )
     ap.add_argument(
         "--write-seeds",
@@ -603,6 +667,21 @@ def main() -> int:
         "--disc-rel",
         default="",
         help="game.disc path in game.toml (relative or absolute; default: disc/<cue>)",
+    )
+    ap.add_argument(
+        "--extra-disc",
+        action="append",
+        default=[],
+        help="another image for game.toml `discs`, repeatable, in disc order "
+             "after the boot disc. Only for a set verify_disc_set.py reported "
+             "as data-only — one program, N images.",
+    )
+    ap.add_argument(
+        "--extra-disc-list",
+        default="",
+        help="file of additional disc paths, one per line, in disc order. "
+             "Preferred over repeated --extra-disc from a shell: PS1 dump "
+             "filenames contain spaces and parentheses.",
     )
     ap.add_argument(
         "--out-dir",
@@ -624,14 +703,57 @@ def main() -> int:
     ap.add_argument("--publisher", default="", help="marketing publisher")
     ap.add_argument("--year", default="", help="marketing year (string ok)")
     ap.add_argument("--region", default="", help="marketing region (e.g. USA)")
+    ap.add_argument(
+        "--identity-only",
+        action="store_true",
+        help="skip the data-track md5/sha1/crc32 pass (fast identity check; "
+             "not usable with --write-game-toml / --write-catalog)",
+    )
     args = ap.parse_args()
+
+    if args.identity_only and (args.write_game_toml or args.write_catalog):
+        print(
+            "--identity-only cannot be combined with --write-game-toml / "
+            "--write-catalog: both need the data-track digests it skips.",
+            file=sys.stderr,
+        )
+        return 2
 
     cue = Path(args.cue).expanduser()
     if not cue.is_file():
         print(f"cue not found: {cue}", file=sys.stderr)
         return 1
 
-    p = probe(cue)
+    # A .chd is read back into Redump-shaped tracks (one bin per track) in a
+    # scratch directory and probed as that cue, so identity, digests and the
+    # boot EXE come out exactly as they would from the dump it was made from.
+    scratch = None
+    if cue.suffix.lower() == ".chd":
+        import tempfile
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import psx_chd
+
+        fw_root = Path(__file__).resolve().parents[2]
+        lib_path = psx_chd.find_libchdr(None, fw_root)
+        if lib_path is None:
+            print(psx_chd.unsupported_message(cue), file=sys.stderr)
+            return 1
+        scratch = tempfile.TemporaryDirectory(prefix="probe-chd-")
+        try:
+            with psx_chd.ChdDisc(cue, psx_chd.LibChdr(lib_path)) as disc:
+                print(f"  chd: {len(disc.tracks)} track(s) via {lib_path.name}", file=sys.stderr)
+                cue = psx_chd.extract(disc, Path(scratch.name), f"{cue.stem}.cue", layout="multi")
+        except psx_chd.ChdError as exc:
+            print(str(exc), file=sys.stderr)
+            scratch.cleanup()
+            return 1
+
+    try:
+        p = probe(cue, identity_only=args.identity_only)
+    finally:
+        if scratch is not None:
+            scratch.cleanup()
     if args.display_name:
         p.display_name = args.display_name
 
@@ -639,6 +761,13 @@ def main() -> int:
         print(f"  warning: {w}", file=sys.stderr)
 
     disc_rel = args.disc_rel or f"{args.out_dir.rstrip('/')}/{p.cue_name}"
+    extra_discs = [d for d in (args.extra_disc or []) if d.strip()]
+    if args.extra_disc_list:
+        lp = Path(args.extra_disc_list)
+        if lp.is_file():
+            extra_discs += [ln.strip()
+                            for ln in lp.read_text(encoding="utf-8").splitlines()
+                            if ln.strip()]
 
     # Drop bulky / binary fields from JSON dumps
     payload = asdict(p)
@@ -654,7 +783,8 @@ def main() -> int:
 
     if args.write_game_toml:
         text = render_game_toml(
-            p, disc_rel=disc_rel, out_dir=args.out_dir, players=args.players
+            p, disc_rel=disc_rel, out_dir=args.out_dir, players=args.players,
+            extra_discs=extra_discs
         )
         Path(args.write_game_toml).write_text(text, encoding="utf-8")
         print(f"  wrote {args.write_game_toml}", file=sys.stderr)

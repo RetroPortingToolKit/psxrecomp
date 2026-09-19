@@ -37,6 +37,7 @@
 #include "lockstep.h"
 #include "psx_cycles.h"
 #include "psx_scheduler.h"
+#include "spu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,8 +178,8 @@ void psx_irq_raise(uint32_t bit, uint32_t detail)
 
 /* Dispatch counter for vblank scheduling. */
 #define VBLANK_INTERVAL 50000        /* legacy: dispatch-count fallback (unused for VBlank gating now) */
-#define VBLANK_CYCLES   564480u      /* 33.8688 MHz / 60 Hz — real PSX NTSC VBlank period */
-#define VBLANK_DEFER_STALE_CYCLES (VBLANK_CYCLES * 10ull)
+#define VBLANK_DEFER_STALE_CYCLES (vblank_cycles * 10ull)
+uint32_t vblank_cycles = 564480u;    /* 33.8688 MHz / 60 Hz — real PSX NTSC VBlank period */
 static uint32_t dispatch_count;
 static uint64_t total_checks;
 static uint32_t cycles_since_vblank;  /* incremented by interrupts_advance_cycles */
@@ -384,19 +385,100 @@ static int should_defer_vblank_for_sio(void) {
  * From PR #102 by Alexandros Mandravillis. */
 static void (*s_midframe_audio_pump)(void);
 
+/* First-divergence telemetry for the per-sample SPU scheduler. */
+uint64_t g_spu_sample_deadline_queries;
+uint64_t g_spu_sample_service_checks;
+uint64_t g_spu_sample_service_pumps;
+uint64_t g_spu_sample_raw_boundaries;
+uint64_t g_spu_sample_deferred_mismatches;
+uint64_t g_spu_sample_enabled_queries;
+uint64_t g_spu_sample_enabled_services;
+uint32_t g_spu_sample_last_query_phase;
+uint32_t g_spu_sample_last_query_delta;
+uint32_t g_spu_sample_last_service_phase;
+uint64_t g_spu_sample_mode_rejects;
+uint64_t g_spu_sample_pump_null_rejects;
+uint64_t g_spu_sample_ctrl_rejects;
+
 void psx_set_midframe_audio_pump(void (*fn)(void)) { s_midframe_audio_pump = fn; }
+
+/* While SPU IRQ9 is enabled, expose each 44.1-kHz sample as a device deadline
+ * so guest code can acknowledge and re-arm an IRQ-address hit before the next
+ * sample. Rendering a whole VBlank's accumulated samples as one chunk collapses
+ * multiple hardware IRQ edges into one latch, slowing IRQ-driven audio engines
+ * and blocking cutscene synchronization. Keep an explicit opt-out for bisecting
+ * old captures; faithful per-sample scheduling is the production default. */
+static int spu_sample_event_mode(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_SPU_SAMPLE_EVENTS");
+        enabled = (!e || !*e || strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return enabled;
+}
+
+uint32_t psx_spu_sample_event_cycles_to_next(void) {
+    g_spu_sample_deadline_queries++;
+    if (!spu_sample_event_mode()) {
+        g_spu_sample_mode_rejects++;
+        return UINT32_MAX;
+    }
+    if (!s_midframe_audio_pump) {
+        g_spu_sample_pump_null_rejects++;
+        return UINT32_MAX;
+    }
+    /* Gate on SPUCNT alone — this runs on every deadline recompute, and the
+     * full SpuGlobalState snapshot here dominated the emu thread under an
+     * MMIO-polling guest loop (Capcom FMV, gdb-sampled 2026-09-01). */
+    if ((spu_ctrl_read() & 0x0040u) == 0) {
+        g_spu_sample_ctrl_rejects++;
+        return UINT32_MAX;
+    }
+    g_spu_sample_enabled_queries++;
+
+    /* The PS1 CPU/SPU ratio is exactly 768 CPU cycles per 44.1-kHz sample.
+     * Cycle zero is the common hardware epoch; a value exactly on a sample
+     * boundary names the following event, not an already-serviced event. */
+    const uint32_t phase = (uint32_t)(psx_get_cycle_count() % 768u);
+    const uint32_t delta = phase ? (768u - phase) : 768u;
+    g_spu_sample_last_query_phase = phase;
+    g_spu_sample_last_query_delta = delta;
+    return delta;
+}
+
+void psx_spu_sample_event_service(void) {
+    g_spu_sample_service_checks++;
+    if (!spu_sample_event_mode() || !s_midframe_audio_pump)
+        return;
+    /* SPUCNT alone — same hot-gate rationale as the deadline query above. */
+    const uint16_t ctrl = spu_ctrl_read();
+    if ((ctrl & 0x0040u) != 0) {
+        g_spu_sample_enabled_services++;
+        g_spu_sample_last_service_phase = (uint32_t)(psx_cycle_count % 768u);
+    }
+    if ((psx_cycle_count % 768u) == 0) {
+        g_spu_sample_raw_boundaries++;
+        if ((psx_get_cycle_count() % 768u) != 0)
+            g_spu_sample_deferred_mismatches++;
+    }
+    if ((ctrl & 0x0040u) != 0 &&
+        (psx_get_cycle_count() % 768u) == 0) {
+        g_spu_sample_service_pumps++;
+        s_midframe_audio_pump();
+    }
+}
 
 static void fire_vblank_edge(void) {
     /* Subtract one VBlank period rather than reset to 0 so cycle overshoot
      * carries forward. Prevents long-running blocks from rounding multiple
      * VBlanks together. */
-    cycles_since_vblank -= VBLANK_CYCLES;
+    cycles_since_vblank -= vblank_cycles;
     dispatch_count = 0;
     /* DEQUEUE: this VBlank fired. ENQUEUE: next VBlank scheduled one period out. */
     event_ring_record_aux(EV_DEQ, (uint8_t)SRC_VBLANK,
                           (uint32_t)psx_get_cycle_count());
     event_ring_record_aux(EV_ENQ, (uint8_t)SRC_VBLANK,
-                          (uint32_t)(psx_get_cycle_count() + VBLANK_CYCLES));
+                          (uint32_t)(psx_get_cycle_count() + vblank_cycles));
     psx_irq_raise(IRQ_VBLANK, 0);
     g_vblank_raise_count++;
     event_ring_record(EV_ISTAT_RAISE, IRQ_VBLANK);
@@ -412,15 +494,15 @@ static void fire_vblank_edge(void) {
 void interrupts_service_scheduled_events(void) {
     note_sio_progress_cycle();
     if (in_exception) return;
-    while (cycles_since_vblank >= VBLANK_CYCLES) {
+    while (cycles_since_vblank >= vblank_cycles) {
         if (should_defer_vblank_for_sio()) return;
         fire_vblank_edge();
     }
 }
 
 uint32_t interrupts_cycles_to_vblank(void) {
-    if (cycles_since_vblank >= VBLANK_CYCLES) return 0;
-    return VBLANK_CYCLES - cycles_since_vblank;
+    if (cycles_since_vblank >= vblank_cycles) return 0;
+    return vblank_cycles - cycles_since_vblank;
 }
 
 uint32_t interrupts_get_cycles_since_vblank(void) {
@@ -545,6 +627,51 @@ uint32_t psx_compiled_irq_resume_pc(void) { return s_compiled_interrupt_resume_p
 uint64_t psx_last_irq_check_cycle(void) { return s_last_interrupt_check_cycle; }
 uint64_t psx_interrupt_total_checks(void) { return total_checks; }
 uint32_t psx_interrupt_fast_maintenance(void) { return s_fast_maintenance; }
+int psx_irq_resume_context_snapshot_site(void)
+{
+    return g_cosim_dirty_pump_site;
+}
+
+uint32_t psx_irq_resume_context_snapshot_pc(void)
+{
+    return g_dirty_safe_resume_pc;
+}
+
+int psx_irq_resume_context_snapshot_safe_at(uint32_t resume_pc)
+{
+    if (g_cosim_dirty_pump_site == 0)
+        return 1;
+
+    /* Dirty interpreter pump sites are IRQ-precise, but only a subset are
+     * whole-machine snapshot-safe: the interpreted instruction stream has fully
+     * retired into CPUState, no host call unit is active, and the published
+     * dirty resume PC is the same PC the caller intends to serialize. Keep
+     * call-return and precise-IRQ pump sites rejected; those are the contexts
+     * that can pair a plausible resume PC with stale nested-call registers. */
+    extern int g_call_unit_depth;
+    if (in_exception || g_call_unit_depth != 0 || g_psx_dispatch_depth > 1)
+        return 0;
+    if (resume_pc == 0u || (resume_pc & 3u) != 0u)
+        return 0;
+    if (g_dirty_safe_resume_pc == 0u ||
+        ((g_dirty_safe_resume_pc ^ resume_pc) & 0x1FFFFFFFu) != 0u)
+        return 0;
+    switch (g_cosim_dirty_pump_site) {
+    case 1: /* transfer surface: target PC is materialized in CPUState */
+    case 2: /* stop_addr reached: straight-line dirty flow fully retired */
+    case 3: /* left dirty page: next dispatch PC is materialized */
+    case 4: /* interpreter guard-yield: CPUState PC was flushed */
+    case 6: /* public dirty dispatch pump after handled block */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int psx_irq_resume_context_snapshot_safe(void)
+{
+    return psx_irq_resume_context_snapshot_safe_at(g_dirty_safe_resume_pc);
+}
 
 void psx_irq_clear_resume_latches(void)
 {
@@ -896,8 +1023,8 @@ uint32_t cycles_to_next_event(void) {
      * card-SIO case only pushes VBlank LATER, so this estimate stays a safe
      * under-estimate. */
     if (i_mask & (1u << IRQ_VBLANK)) {
-        uint32_t d = (cycles_since_vblank >= VBLANK_CYCLES)
-                       ? 0u : (VBLANK_CYCLES - cycles_since_vblank);
+        uint32_t d = (cycles_since_vblank >= vblank_cycles)
+                       ? 0u : (vblank_cycles - cycles_since_vblank);
         if (d < best) best = d;
     }
     uint32_t t = timers_cycles_to_irq(i_mask); if (t < best) best = t;
@@ -1167,12 +1294,6 @@ void psx_check_interrupts(CPUState* cpu) {
      * waiting for it to re-appear.  If we tick here, the IRQ fires
      * during the delay loop BEFORE the clear, and the BIOS never
      * sees it. */
-    /* Ape LOAD: libcard may poll nest/busy in RAM with no SIO MMIO, so
-     * sio_tick never runs. Throttled nest-repair pump only. */
-    if ((total_checks & 0xFFu) == 0) {
-        extern void sio_ape_card_unstick_pump(void);
-        sio_ape_card_unstick_pump();
-    }
 
     interrupts_service_scheduled_events();
 

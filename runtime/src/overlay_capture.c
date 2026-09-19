@@ -356,9 +356,12 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
              * stabilize region keys, but they are not MIPS execution barriers.
              * Adjacent dirty pages were already folded into this run. */
             const uint32_t ram_size = 2u * 1024u * 1024u;
+            uint32_t guard_bytes = 0u;
             if (phys <= ram_size && size <= ram_size - phys &&
-                phys + size <= ram_size - 4u)
+                phys + size <= ram_size - 4u) {
                 size += 4u;
+                guard_bytes = 4u;
+            }
             uint32_t virt = 0x80000000u | (phys & 0x1FFFFFu);
             in_run = 0;
 
@@ -395,6 +398,15 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
             fprintf(f, "    \"schema\": \"psxrecomp overlay capture v2\",\n");
             fprintf(f, "    \"load_addr\": \"0x%08X\",\n", virt);
             fprintf(f, "    \"size\": %u,\n", size);
+            /* How many of the trailing bytes above are the delay-slot guard,
+             * i.e. NOT part of the dirty-page run.  The consumer must keep
+             * them READABLE (a branch at the run's last word emits its slot
+             * from here) while never discovering them as code: the word after
+             * a guard word is not in this region at all.  Stated explicitly so
+             * the recompiler is TOLD rather than inferring it from `size`
+             * (tools/compile_overlays.py capture_guard_bytes ->
+             * recompiler/include/ps1_exe_parser.h exe_tag). */
+            fprintf(f, "    \"guard_bytes\": %u,\n", guard_bytes);
             fprintf(f, "    \"bytes_b64\": \"");
             write_b64(f, ram_base + phys, size);
             fprintf(f, "\",\n");

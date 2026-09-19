@@ -33,17 +33,17 @@ the portable llvm-mingw fetch; host compile stays on MSYS2 g++.
 Bump the `psxrecomp` gitlink when emitter/CLI behavior must change; leave it
 pinned for pure host/UI/`recomp-ui` releases so CI stays cmake-time.
 
-## What players / RetComM do
+## What players / Retro do
 
 | Step | When |
 |------|------|
-| **Generate** (wizard or RetComM Build & Install) | First install, or after ROM/BIOS/emitter fingerprint changes |
-| **Update** (RetComM) | New setup-host zip → refresh source → cmake rebuild; **codegen-cache** skips regenerate when fingerprints match |
+| **Generate** (wizard or Retro Build & Install) | First install, or after ROM/BIOS/emitter fingerprint changes |
+| **Update** (Retro) | New setup-host zip → refresh source → cmake rebuild; **codegen-cache** skips regenerate when fingerprints match |
 | **Generate & Rebuild** | Force disc→C again (`force_generate`) |
 
 Players do **not** need Generate & Rebuild for ordinary host/UI updates after the
-first successful generate. RetComM keeps `apps/<title>/codegen-cache/` keyed by
-ROM/BIOS + emitter fingerprints (see RetComM `docs/BUILD_PACKS.md`).
+first successful generate. Retro keeps `apps/<title>/codegen-cache/` keyed by
+ROM/BIOS + emitter fingerprints (see Retro `docs/BUILD_PACKS.md`).
 
 Raw zip extract is for true prebuilt Play binaries only. Setup-host catalog
 entries use local generate+cmake (`install_title_auto` / `update_title_auto`).

@@ -81,6 +81,11 @@ typedef struct SpuGlobalState {
 
 void spu_get_voice_state(int voice, SpuVoiceState* out);
 void spu_get_global_state(SpuGlobalState* out);
+/* SPUCNT (0x1F801DAA) alone. The sample-event scheduler gates on one ctrl bit
+ * per device-service call; building the full SpuGlobalState there (register
+ * sweep + three 24-voice loops) was ~40% of emu-thread time during the Capcom
+ * FMV's MMIO-polling loop (gdb-sampled 2026-09-01). */
+uint16_t spu_ctrl_read(void);
 /* Debug peek into SPU sample RAM (spu_ram TCP command). */
 uint32_t spu_ram_peek(uint32_t addr, uint8_t *out, uint32_t len);
 

@@ -87,7 +87,7 @@ inline bool video_fmv_filter_parse(const std::string& s, int* out) {
 
 struct WidescreenSignedBoundSite {
     uint32_t address = 0;
-    uint32_t expected = 0; // guarded LUI instruction
+    uint32_t expected = 0; // guarded LUI or ADDIU rt,zero,imm instruction
 };
 
 // One exact compare whose verdict is forced while a widescreen reveal is
@@ -347,6 +347,16 @@ struct RuntimeConfig {
     // gcc shards still load). The env var PSX_OVERLAY_BACKEND overrides at runtime.
     std::string           overlay_backend;
 
+    // overlay_region_floor: per-title override of the overlay region floor
+    // (defaults to the boot EXE text end). Titles whose gameplay code loads
+    // at/inside the boot text range (Gran Turismo's secondary EXEs all load
+    // at 0x80010000; Driver 2 streams mission code over its text pages) need
+    // it lowered so that code is overlay-cache eligible instead of falling to
+    // single-instruction interpretation. Same semantics and clamp as the
+    // PSX_OVERLAY_REGION_FLOOR env override, which still takes precedence.
+    bool                  has_overlay_region_floor = false;
+    uint32_t              overlay_region_floor = 0;
+
     // overlay_native_block: per-game overlay function entries that must stay on
     // the dirty-RAM interpreter even when a matching native DLL exists. Intended
     // for small timing-sensitive setup/task routines while the rest of the
@@ -477,6 +487,13 @@ struct RuntimeConfig {
     // "trinitron". Stored 0..3 to match ScreenKind in runtime/color_lut.h. The
     // PSX_SCREEN env var overrides this at runtime (debug path).
     int                   video_screen_kind = 0;
+
+    // scanlines: present-time horizontal scanline darkening (host enhancement,
+    // orthogonal to crt_filter's colour LUT — the two compose). Off by default;
+    // scanline_strength 0..1 is the dark-gap depth. PSX_SCANLINES /
+    // PSX_SCANLINE_STRENGTH override at runtime (debug path).
+    bool                  video_scanlines = false;
+    double                video_scanline_strength = 0.5;
 
     // auto_skip_fmv: when true, full-motion videos (streaming XA audio + MDEC
     // video) are skipped the instant they're detected — presentation + pacing are
@@ -678,9 +695,11 @@ struct BiosConfig {
     // copies, semantic validation and consumption in BiosAddressModel
     // (bios_address_model.h). Empty = the BIOS runs entirely from ROM.
     std::vector<BiosAddrCopy> address_copies;
-    // [[recompiler.install_slots]]: kernel-RAM PCs the BIOS overwrites with
-    // dispatch stubs at runtime (see docs/dynamic_handler_install.md).
-    std::vector<uint32_t>     install_slots;
+    // [[recompiler.install_slots]]: kernel-RAM RANGES the BIOS (or the game's
+    // Psy-Q libapi patchers) overwrite at runtime. Layout, defaults and the
+    // resume shapes are in BiosInstallSlot (bios_address_model.h); see
+    // docs/dynamic_handler_install.md for how to find new ones.
+    std::vector<BiosInstallSlot> install_slots;
 
     // [recompiler.runtime_exports]: per-image anchors the emitter couriers
     // into the generated C (psx_bios_image, runtime/include/psx_bios_image.h)
@@ -731,6 +750,17 @@ struct GameConfig {
     // the union here).
     std::vector<std::filesystem::path> discs;
 
+    // Optional per-disc serials, PARALLEL to `discs` ([game] disc_serials).
+    // Each disc of a set carries its own serial (FF7 US: SCUS-94163 / -64 /
+    // -65), so a set verified against the BOOT disc's serial alone would
+    // report every other disc as "wrong disc" the moment the player selects
+    // it. May be shorter than `discs` (or absent entirely, which every
+    // single-disc title and every port written before this is): a disc with
+    // no serial here is simply not serial-gated -- the ISO header check
+    // still applies. Written by tools/new_project_layout from the same probe
+    // that produced disc_set.json.
+    std::vector<std::string> disc_serials;
+
     // Optional expected disc identity, for the launcher's "Disc verified" badge.
     // disc_crc: full-file CRC32 (IEEE) of the data track. disc_sha1: lowercase
     // hex SHA-1. Either may be absent (has_disc_crc / disc_sha1.empty()).
@@ -747,6 +777,16 @@ struct GameConfig {
     bool                  has_netplay_required_leadout = false;
     uint32_t              netplay_required_leadout_lba = 0;
     std::string           netplay_required_disc_fp;  // lowercase hex SHA-256
+    // Per-disc TOC fingerprints for a MULTI-DISC set, PARALLEL to [game]
+    // discs ([netplay] required_disc_fps). Every disc of a set has its own
+    // TOC, so a set gated on one fingerprint refuses online play on every
+    // disc but that one -- and the flat required_disc_fp above can only ever
+    // name the boot disc. May be shorter than `discs`, or absent (every
+    // single-disc title): a disc with no fingerprint here falls back to the
+    // flat value, and a set that declares neither is simply not fingerprint-
+    // gated. Values come from the same verify_disc_set.py probe that writes
+    // disc_set.json.
+    std::vector<std::string> netplay_required_disc_fps;
     // local_viewport = "vertical_split": while real netplay is active, crop
     // presentation to this peer's left/right split-screen half. This is a
     // presentation-only helper for titles that still render native split-screen
@@ -896,6 +936,9 @@ struct GameConfig {
     // not-taken only while widescreen reveals extra world. This is deliberately
     // separate from bltz_sites, whose helper adjusts screen-X edge thresholds.
     std::vector<uint32_t> ws_cull_nclip_keep_sites;
+    // Exact NCLIP/backface branch sites that use the validated tracked sign
+    // only while wide. Guest MAC0 remains native and 4:3 remains bit-exact.
+    std::vector<uint32_t> ws_cull_nclip_exact_sites;
     // Exact branch PCs whose reject path is forced not-taken only while
     // widescreen reveals extra world. Use only after screenshot-validated
     // evidence that the target is a visibility reject.
@@ -1060,9 +1103,9 @@ struct GameConfig {
     // transformed in the mirror.
     bool ws_nw_full_mirror = false;
 
-    // [[widescreen.signed_x_bound]] guarded LUI sites whose signed Q16
-    // constants scale with the active native-wide field and remain identity in
-    // 4:3/menus/FMV. Shared by static codegen, overlay JIT, and interpreter.
+    // [[widescreen.signed_x_bound]] guarded LUI signed-Q16 bounds or ADDIU/ORI
+    // rt,zero,imm screen-pixel bounds. Both remain identity in 4:3/menus/FMV.
+    // Shared by static codegen, overlay JIT, and interpreter.
     std::vector<WidescreenSignedBoundSite> ws_signed_x_bound_sites;
     // [widescreen] offer — whether the launcher OFFERS its EXPERIMENTAL
     // Widescreen toggle for this title. Default true. Set false while a
@@ -1162,6 +1205,10 @@ struct UserSettings {
     bool has_geometry_correction   = false; bool geometry_correction   = false;
     bool has_perspective_texturing = false; bool perspective_texturing = false;
     bool has_screen_kind    = false; int  screen_kind    = 0; // 0..3 (ScreenKind)
+    // Scanline post-process (see RuntimeConfig::video_scanlines). Strength stored
+    // 0..1; the launcher ABI carries it as an integer percent.
+    bool has_scanlines         = false; bool   scanlines         = false;
+    bool has_scanline_strength = false; double scanline_strength = 0.5;
     bool has_auto_skip_fmv  = false; bool auto_skip_fmv  = false; // skip FMVs
     // [video] turbo_loads: DEPRECATED AND IGNORED — the legacy home of the
     // generic Turbo loads switch, back when the launcher drew a row for it.
@@ -1202,6 +1249,11 @@ struct UserSettings {
     bool has_aspect_ratio   = false; int  aspect_num     = 4; // display aspect W:H
                                      int  aspect_den     = 3; // (4:3 = native)
     bool has_adaptive_view  = false; bool adaptive_view  = false;
+    // [video] rewind: local rewind ring on/off. OFF by default — the ring
+    // holds whole-machine snapshots (2 MB RAM + 1 MB VRAM + 512 KB SPU RAM
+    // each) and captures on a frame cadence, so it is opt-in rather than a
+    // cost every host pays. Env PSX_REWIND still outranks this.
+    bool has_rewind         = false; bool rewind         = false;
     // [video] rewind_depth: local rewind snap-ring capacity. UI offers
     // 50 / 100 / 150 / 200 (default 50). Runtime clamps + snaps to those steps.
     bool has_rewind_depth   = false; int  rewind_depth   = 50;
@@ -1212,12 +1264,24 @@ struct UserSettings {
     // RECOMP_LAUNCHER_PAD_* encoding (0 = unbound, 1+button, 100+axis).
     bool has_hotkey_pad_rewind = false; int hotkey_pad_rewind = 1272; /* select+r3 */
     bool has_hotkey_pad_save_state_menu = false; int hotkey_pad_save_state_menu = 2040; /* select+r1 */
+    // fast_forward_pad: hold-to-fast-forward, the controller twin of the
+    // keyboard [KeyMap] Turbo (Tab). 0 = unbound.
+    bool has_hotkey_pad_fast_forward = false; int hotkey_pad_fast_forward = 1528; /* select+l1 */
+    bool has_hotkey_pad_fast_forward_toggle = false; int hotkey_pad_fast_forward_toggle = 0; /* unbound */
     // [audio]
     bool has_spu_hq         = false; bool spu_hq         = false;
     bool has_audio_freq     = false; int  audio_freq     = 44100;
     // [bios] / [disc] / [memcard]
     bool has_bios_path      = false; std::filesystem::path bios_path;
     bool has_disc_path      = false; std::filesystem::path disc_path;
+    // [disc] selected: which image of a MULTI-DISC set ([game] discs in
+    // game.toml) the player last chose, 1-based. Stored as an ordinary
+    // setting so the launcher's Disc Selection dropdown persists across
+    // sessions and an external launcher can drive it like any other row.
+    // Ignored by single-disc titles. When it disagrees with disc_path, the
+    // rule is in resolve_selected_disc() (runtime/src/main.cpp): the index
+    // names the disc, disc_path only survives when it is that same disc.
+    bool has_disc_index     = false; int  disc_index     = 1;
     bool has_memcard_dir    = false; std::filesystem::path memcard_dir;
     // Per-slot memory-card overrides. An explicit card path overrides the
     // <dir>/card<N>.mcd default; the enable flag inserts/removes the card.

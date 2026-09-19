@@ -6,7 +6,7 @@
 
 namespace PSXRecomp {
 
-/* PGXP dataflow-shadowing hook emission (ENHANCEMENTS.md G1.10; runtime
+/* PGXP dataflow-shadowing hook emission (docs/ENHANCEMENTS.md G1.10; runtime
  * pgxp_hooks.h). Shared by BOTH emitters — CodeGenerator (game) and
  * StrictTranslator (BIOS) — so the hook grammar can never drift between them.
  *

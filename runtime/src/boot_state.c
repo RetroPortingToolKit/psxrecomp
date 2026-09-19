@@ -1,4 +1,5 @@
 #include "boot_state.h"
+#include "mod_memory.h"
 #include "overlay_api.h"   /* PSX_OVERLAY_CODEGEN_HASH / _ABI_TAG / _CODEGEN_VER */
 #include "dirty_ram_interp.h"
 #include "gpu.h"           /* gpu_get_vram — CPU-auth mirror under dual-raster   */
@@ -364,19 +365,23 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     int ok;
     memset(&h, 0, sizeof h);
     h.magic         = BOOT_STATE_MAGIC;
-    h.version       = BOOT_STATE_VERSION;
+    h.version       = psx_mod_memory_snapshot_bytes() ? BOOT_STATE_VERSION : 7u;
+    h.reserved      = psx_mod_memory_layout_cookie();
     h.bios_checksum = bios_checksum;
     h.entry_pc      = entry_pc;
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = (uint32_t)PSX_OVERLAY_CODEGEN_VER;
-    h.section_count = 16;
+    h.section_count = 16 + (psx_mod_memory_snapshot_bytes() ? 1u : 0u);
 
     ok = write_header_le(o, &h);
 
     if (ok) ok = write_cpu_section(o, cpu);
     if (ok) ok = write_section(o, BS_SEC_RAM,  memory_get_ram_ptr(),        RAM_SIZE);
     if (ok) ok = write_section(o, BS_SEC_SPAD, memory_get_scratchpad_ptr(), SPAD_SIZE);
+    if (ok && psx_mod_memory_snapshot_bytes())
+        ok = write_module_section(o, BS_SEC_MODMEM, psx_mod_memory_snapshot_bytes,
+                                  psx_mod_memory_snapshot_write);
     if (ok) {
         /* 12B: i_stat, i_mask, cycles_since_vblank. Zeroing csv on warm load
          * rebased every tip to phase 0 and forked MotK wait-loop resim
@@ -668,6 +673,8 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
         free(words);
         return 1;
     }
+    case BS_SEC_MODMEM:
+        return psx_mod_memory_snapshot_read(p, len);
     case BS_SEC_ICACHE: {
         PstR r;
         if (len != 1024u * 4u) return 0;
@@ -752,6 +759,10 @@ int boot_state_check_buffer(const uint8_t* file, size_t file_len,
                  (unsigned)h.magic, (unsigned)BOOT_STATE_MAGIC);
         boot_state_append_reason(reason, reason_cap, part);
     }
+    if (h.reserved != psx_mod_memory_layout_cookie()) {
+        boot_state_append_reason(reason, reason_cap, "enhancement_memory_layout");
+        return 0;
+    }
     if (h.version < BOOT_STATE_VERSION_MIN_READ ||
         h.version > BOOT_STATE_VERSION) {
         snprintf(part, sizeof(part), "version=%u(want %u..%u)",
@@ -802,7 +813,8 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
         (1u<<BS_SEC_CPU)|(1u<<BS_SEC_RAM)|(1u<<BS_SEC_SPAD)|(1u<<BS_SEC_IRQ)|
         (1u<<BS_SEC_TIMER)|(1u<<BS_SEC_CLOCK)|(1u<<BS_SEC_GPU)|(1u<<BS_SEC_VRAM)|
         (1u<<BS_SEC_SPU)|(1u<<BS_SEC_SPURAM)|(1u<<BS_SEC_CDROM)|(1u<<BS_SEC_DMA)|
-        (1u<<BS_SEC_SIO)|(1u<<BS_SEC_MDEC)|(1u<<BS_SEC_DIRTY);
+        (1u<<BS_SEC_SIO)|(1u<<BS_SEC_MDEC)|(1u<<BS_SEC_DIRTY)|
+        (psx_mod_memory_snapshot_bytes() ? (1u<<BS_SEC_MODMEM) : 0u);
     uint32_t seen = 0;
     int ok = 1;
     const double t0 = boot_state_mono_ms();

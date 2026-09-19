@@ -42,7 +42,7 @@ def install_dir_name(name: str) -> str:
     """Local checkout / launcher ``apps/`` folder — same slug as the GitHub repo name.
 
     New-project wizard must create this folder (not the display name with spaces)
-    so Studio catalog matching and RetComM ``install_dir_name`` stay consistent.
+    so Studio catalog matching and Retro ``install_dir_name`` stay consistent.
     """
     return sanitize_github_name(name)
 

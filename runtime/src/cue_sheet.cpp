@@ -1,6 +1,7 @@
 // cue_sheet.cpp — see cue_sheet.h.
 
 #include "cue_sheet.h"
+#include "host_path.h"
 
 #include <cctype>
 #include <cstdio>
@@ -94,7 +95,7 @@ fs::path resolve_cue_relative_file(const fs::path& dir, const std::string& name)
         named = fs::path(slashed);
     }
 
-    const fs::path literal = named.is_absolute() ? named : (dir / named);
+    const fs::path literal = PSXRecompV4::host_path_is_absolute(named) ? named : (dir / named);
     std::error_code ec;
     if (fs::exists(literal, ec)) return literal;
 

@@ -1,4 +1,5 @@
 #include "mdec.h"
+#include "psx_align.h"
 #include "pst_wire.h"
 #include "psx_cycles.h"
 
@@ -327,7 +328,7 @@ static int idct_sse2_dot8(const int16_t *src8, const int16_t *scale8)
     __m128i c = _mm_loadu_si128((const __m128i *)src8);
     __m128i m = _mm_loadu_si128((const __m128i *)scale8);
     __m128i sum = _mm_madd_epi16(m, c);
-    int32_t tmp[4] __attribute__((aligned(16)));
+    PSX_ALIGN(16) int32_t tmp[4];
     sum = _mm_add_epi32(sum, _mm_shuffle_epi32(sum, _MM_SHUFFLE(0, 1, 2, 3)));
     sum = _mm_add_epi32(sum, _mm_shuffle_epi32(sum, _MM_SHUFFLE(0, 0, 0, 1)));
     _mm_store_si128((__m128i *)tmp, sum);
@@ -338,7 +339,7 @@ static void idct_block_sse2(int16_t *block)
 {
     int ac = 0;
     int i, col, x;
-    int16_t tmp[64] __attribute__((aligned(16)));
+    PSX_ALIGN(16) int16_t tmp[64];
 
     for (i = 1; i < 64; i++)
         ac |= block[i];

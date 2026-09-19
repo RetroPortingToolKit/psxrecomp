@@ -71,7 +71,19 @@ void fntrace_mark_game_started(CPUState* cpu) {
 void fntrace_maybe_mark_game_started(CPUState* cpu, uint32_t addr) {
     if (s_game_started) return;
     if (s_game_entry_phys == 0) return;   /* no game range armed */
-    if ((addr & 0x1FFFFFFFu) == s_game_entry_phys)
+    /* The dirty-RAM interpreter path may miss the exact PS-X EXE entry when
+     * the BIOS or loader enters game text through already-interpreted flow.
+     * Mirror fntrace_record's safe fallback: only latch on other game-text
+     * addresses when a reference image exists and live RAM already matches it.
+     * Without that guard, relocated BIOS shell RAM can look like game RAM and
+     * a premature handoff corrupts boot. */
+    extern int psx_game_address_in_text(uint32_t addr);
+    extern int psx_game_text_native_ok(uint32_t addr);
+    extern int dirty_ram_text_image_registered(void);
+    uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys == s_game_entry_phys ||
+        (dirty_ram_text_image_registered() &&
+         psx_game_address_in_text(addr) && psx_game_text_native_ok(addr)))
         fntrace_mark_game_started(cpu);
 }
 
@@ -208,15 +220,7 @@ void fntrace_record(CPUState* cpu, uint32_t target) {
          * latching game-start before the EXE has loaded and clearing the dirty
          * baseline mid-load (the v0.0.2/v0.0.3 release-install boot crash).
          * Without an image, only the exact entry_pc dispatch may latch. */
-        extern int psx_game_address_in_text(uint32_t addr);
-        extern int psx_game_text_native_ok(uint32_t addr);
-        extern int dirty_ram_text_image_registered(void);
-        uint32_t _tphys = target & 0x1FFFFFFFu;
-        if (_tphys == s_game_entry_phys ||
-            (dirty_ram_text_image_registered() &&
-             psx_game_address_in_text(target) && psx_game_text_native_ok(target))) {
-            fntrace_mark_game_started(cpu);
-        }
+        fntrace_maybe_mark_game_started(cpu, target);
     }
     /* Honor the one-shot capture freeze (insn_freeze): once latched, the ring
      * preserves the pre-divergence window instead of evicting it. */

@@ -140,6 +140,14 @@ void fill_toc_from_mount(DiscIdentity& v, const DiscPathResolution& resolved) {
         return;
     }
     v.toc_opened = true;
+    // SYSTEM.CNF can lie beyond the bounded early-image scan. Read the actual
+    // directory entry first; unrelated executable strings must not select a region.
+    uint8_t pvd[2048];
+    if (reader.ReadSector(16, pvd) && is_iso_pvd(pvd)) {
+        std::vector<uint8_t> cnf(4096);
+        cnf.resize(reader.ReadFile("SYSTEM.CNF", cnf.data(), cnf.size()));
+        v.detected_serial = scan_boot_serial(cnf);
+    }
     v.track_count = reader.TrackCount();
     if (v.track_count < 1) v.track_count = 1;
     v.leadout_lba = reader.GetSectorCount();
@@ -276,7 +284,7 @@ DiscIdentity identify_disc(const fs::path& path,
             }
         }
         if (scan_ok) {
-            v.detected_serial = scan_boot_serial(scan);
+            if (v.detected_serial.empty()) v.detected_serial = scan_boot_serial(scan);
             if (v.expected_serial_given) {
                 const std::string serial_id = uppercase_ascii(expected_serial);
                 std::string exe_id = serial_id;
@@ -354,7 +362,7 @@ DiscIdentity identify_disc(const fs::path& path,
     const size_t scan_len = (size_t)std::min<uint64_t>(size, 16ull * 1024ull * 1024ull);
     std::vector<uint8_t> scan(scan_len);
     if (read_at(f, 0, scan.data(), scan.size())) {
-        v.detected_serial = scan_boot_serial(scan);
+        if (v.detected_serial.empty()) v.detected_serial = scan_boot_serial(scan);
 
         if (v.expected_serial_given) {
             // Match either the game-id form (SCUS-94236) or the EXE form (SCUS_942.36).

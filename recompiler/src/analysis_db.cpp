@@ -269,7 +269,7 @@ bool recover_jump_table(const PS1Executable& exe,
                         const std::unordered_map<uint32_t, size_t>& fn_index,
                         RecoveredTable& out) {
     const uint32_t img_lo = exe.load_address();
-    const uint32_t img_hi = exe.end_address();
+    const uint32_t img_hi = exe.analysis_end_address();
 
     // jr $rD  <-  lw $rD, off($rB)
     DecodedInstruction lw;
@@ -508,7 +508,7 @@ AnalysisDb build_analysis_db(const PS1Executable& exe,
     db.image_size = exe.code_size();
 
     const uint32_t lo = exe.load_address();
-    const uint32_t hi = exe.end_address();
+    const uint32_t hi = exe.analysis_end_address();
 
     auto read_w = [&](uint32_t a) -> uint32_t {
         auto w = exe.read_word(a);

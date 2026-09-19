@@ -4,12 +4,7 @@
 static OverlayCallbacks g_cbs;
 static uint32_t s_pending_cycles;
 
-#ifdef _WIN32
-__declspec(dllexport)
-#else
-__attribute__((visibility("default")))
-#endif
-void overlay_flush_cycles(void) {
+PSX_OVERLAY_EXPORT void overlay_flush_cycles(void) {
     uint32_t cycles = s_pending_cycles;
     s_pending_cycles = 0;
     if (cycles && g_cbs.advance_cycles) g_cbs.advance_cycles(cycles);
@@ -24,19 +19,11 @@ int      *g_psx_call_bail_p    = &s_bail_dummy;
 uint64_t *g_psx_bail_first_p   = &s_ctr_dummy0;
 uint64_t *g_psx_bail_resolved_p = &s_ctr_dummy1;
 
-#ifdef _WIN32
-__declspec(dllexport)
-#else
-__attribute__((visibility("default")))
-#endif
-int overlay_abi(void) { return PSX_OVERLAY_ABI_VERSION | (PSX_OVERLAY_FLAVOR << 16); }
+PSX_OVERLAY_EXPORT int overlay_abi(void) {
+    return PSX_OVERLAY_ABI_VERSION | (PSX_OVERLAY_FLAVOR << 16);
+}
 
-#ifdef _WIN32
-__declspec(dllexport)
-#else
-__attribute__((visibility("default")))
-#endif
-void overlay_init(const OverlayCallbacks *cbs) {
+PSX_OVERLAY_EXPORT void overlay_init(const OverlayCallbacks *cbs) {
     g_cbs = *cbs;
     if (g_cbs.call_bail_flag) g_psx_call_bail_p    = g_cbs.call_bail_flag;
     if (g_cbs.bail_first)     g_psx_bail_first_p   = g_cbs.bail_first;
@@ -92,6 +79,16 @@ void psx_restore_state_escape(void) {
 void psx_rfe_mark_escape(void) {
     overlay_flush_cycles();
     g_cbs.rfe_mark_escape();
+}
+/* Stale-static guard (ABI v22). The emitter emits this at block entry and
+ * before every direct jal, but it is DEFINED IN THE GENERATED DISPATCH SHARD
+ * (executable side), so an overlay DLL cannot resolve it without this shim.
+ * Its absence is what made 107 shards fail to link on the 2026-09-02 bump.
+ * NULL-guarded: returning 0 sends the guest down the dispatcher path, which is
+ * slower but never wrong -- the opposite choice (returning 1) would let an
+ * overlay run native code the guard was trying to reject. */
+int psx_game_text_native_ok(uint32_t addr) {
+    return g_cbs.game_text_native_ok ? g_cbs.game_text_native_ok(addr) : 0;
 }
 /* Faithful-timing functions (ABI v9): overlay code built with PSX_ENABLE_BLOCK_CYCLES
  * emits these; forward to the runtime's real impls so native overlays charge cycles on
@@ -233,6 +230,13 @@ uint32_t psx_ws_backdrop_value(uint32_t orig, int is_end, int window_cols) {
 int32_t psx_ws_player_x_bound(int32_t vanilla) {
     return g_cbs.ws_player_x_bound ? g_cbs.ws_player_x_bound(vanilla) : vanilla;
 }
+int32_t psx_ws_screen_x_bound(int32_t vanilla) {
+    return g_cbs.ws_screen_x_bound ? g_cbs.ws_screen_x_bound(vanilla) : vanilla;
+}
+void psx_mod_function_entry(CPUState *cpu, uint32_t address) {
+    overlay_flush_cycles();
+    if (g_cbs.mod_function_entry) g_cbs.mod_function_entry(cpu, address);
+}
 int32_t psx_ws_depth_bound(int32_t imm) {
     return g_cbs.ws_depth_bound ? g_cbs.ws_depth_bound(imm) : imm;
 }
@@ -270,7 +274,7 @@ void gte_precision_store_word(uint32_t addr, uint8_t reg) {
     if (g_cbs.gte_precision_store_word) g_cbs.gte_precision_store_word(addr, reg);
 }
 #if defined(PSX_PGXP) && PSX_PGXP
-/* PGXP dataflow-shadowing hooks (pgxp_hooks.h; ENHANCEMENTS.md G1.10). Only a
+/* PGXP dataflow-shadowing hooks (pgxp_hooks.h; docs/ENHANCEMENTS.md G1.10). Only a
  * pgxp-flavour shard (compiled -DPSX_PGXP=1, flavor bit set) references these
  * — base-flavour shards preprocess the PGXP_*() macros away, so this block is
  * compiled out of them entirely. Forwards to the host engine through the

@@ -19,6 +19,7 @@ import hashlib
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -28,6 +29,8 @@ from typing import Any, Optional
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 from sdk_progress import ProgressReporter  # noqa: E402
+from disc_companion import CompanionError, inspect_companion  # noqa: E402
+import psx_chd  # noqa: E402
 from toolchain_pack import (  # noqa: E402
     ensure_toolchain as _ensure_toolchain_pack,
     resolve_toolchain_bin,
@@ -592,7 +595,7 @@ def _build_recompiler_targets(
             )
 
     src = recompiler_source_dir(project_root)
-    # Prefer recompiler/build (packaging / RetComM harvest layout); also keep
+    # Prefer recompiler/build (packaging / Retro harvest layout); also keep
     # project-root build-recompiler if that is where prior binaries lived.
     build_dir = src / "build"
     try:
@@ -686,7 +689,7 @@ def _build_recompiler_targets(
 
     progress.log(" ".join(cmake_args))
     proc = subprocess.run(
-        cmake_args, cwd=str(project_root), capture_output=True, text=True
+        cmake_args, cwd=str(project_root), capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
     for stream in (proc.stdout, proc.stderr):
         if stream:
@@ -703,7 +706,7 @@ def _build_recompiler_targets(
     for target in targets:
         build_cmd += ["--target", target]
     progress.log(" ".join(build_cmd))
-    proc = subprocess.run(build_cmd, capture_output=True, text=True)
+    proc = subprocess.run(build_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     for stream in (proc.stdout, proc.stderr):
         if stream:
             for line in stream.splitlines():
@@ -754,7 +757,7 @@ def ensure_framework(
 ) -> Path:
     """Ensure project_root/psxrecomp has BIOS profiles + seeds for local generate.
 
-    GitHub zipballs omit git submodules, so RetComM source trees often lack
+    GitHub zipballs omit git submodules, so Retro source trees often lack
     psxrecomp/bios. Seed from the SDK pack that ships this CLI (ROOT).
     """
     fw = project_root / "psxrecomp"
@@ -779,7 +782,7 @@ def ensure_framework(
         marker = fw / ".gitignore"
         if not marker.is_file():
             marker.write_text(
-                "# RetComM SDK seed marker (project-root for psxrecomp-bios)\n",
+                "# Retro SDK seed marker (project-root for psxrecomp-bios)\n",
                 encoding="utf-8",
             )
     return framework_root(project_root)
@@ -816,7 +819,7 @@ def regen_bios_profile(
         [str(bios_tool), "--config", profile_rel],
         cwd=str(fw),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     for stream in (proc.stdout, proc.stderr):
         if not stream:
@@ -834,23 +837,117 @@ def load_sections(config: Path) -> dict[str, dict[str, Any]]:
     return parse_toml_simple(config.read_text(encoding="utf-8"))
 
 
+def ensure_chd_reader(
+    project_root: Path, progress: ProgressReporter, *, build: bool = True
+) -> Optional[Path]:
+    """Return the shared libchdr the Python tools read .chd through.
+
+    recompiler/ builds it next to the emitters (CMake target ``chdr``). A kit
+    whose emitters predate that target has no reader; the build attempt is
+    best-effort and a miss degrades to the extract-it-first message.
+    """
+    lib = psx_chd.find_libchdr(project_root, ROOT)
+    if lib is not None or not build:
+        return lib
+    progress.log("CHD reader (libchdr) not built yet; building target chdr")
+    try:
+        _build_recompiler_targets(project_root, progress, ("chdr",))
+    except Exception as exc:  # noqa: BLE001
+        progress.log(f"CHD reader build failed: {exc}")
+        return None
+    lib = psx_chd.find_libchdr(project_root, ROOT)
+    if lib is not None:
+        progress.log(f"CHD reader ready: {lib}")
+    return lib
+
+
+def _verify_chd(
+    disc: Path,
+    prep: dict[str, Any],
+    *,
+    skip_hash: bool,
+    progress: ProgressReporter,
+    chd_lib: Optional[Path],
+) -> dict[str, Any]:
+    """verify_disc_path for a .chd: reproduce the Redump track bytes through
+    libchdr and check those digests, never the compressed container's."""
+    lib_path = chd_lib or psx_chd.find_libchdr(None, ROOT)
+    if lib_path is None:
+        raise DiscVerifyError(psx_chd.unsupported_message(disc))
+    try:
+        with psx_chd.ChdDisc(disc, psx_chd.LibChdr(lib_path)) as chd:
+            progress.log(
+                f"{disc.name}: {len(chd.tracks)} track(s), reading through {lib_path.name}"
+            )
+            chd_digests = psx_chd.digests(chd)
+    except psx_chd.ChdError as exc:
+        raise DiscVerifyError(str(exc)) from exc
+    sizes = [int(s) for s in (prep.get("known_sizes") or [])]
+    md5s = [str(x).lower() for x in (prep.get("known_md5") or [])]
+    sha1s = [str(x).lower() for x in (prep.get("known_sha1") or [])]
+    layout = chd_digests.layout_matching(sizes, md5s, sha1s)
+    chosen = chd_digests.disc if layout == "single" else chd_digests.first_track
+    try:
+        subchannel, _ = inspect_companion(disc, chosen.size, chosen.sha1)
+    except CompanionError as exc:
+        raise DiscVerifyError(str(exc)) from exc
+    identity = {
+        "path": str(disc),
+        "md5": chosen.md5,
+        "sha1": chosen.sha1,
+        "size": chosen.size,
+        "verified": False,
+        "subchannel": subchannel,
+        "chd": {"layout": layout or "multi", "tracks": len(chd_digests.tracks)},
+    }
+    progress.event("disc", **identity)
+    if not md5s and not sha1s and not sizes:
+        identity["verified"] = True
+        return identity
+    if skip_hash:
+        return identity
+    if layout is None:
+        first = chd_digests.first_track
+        whole = chd_digests.disc
+        raise DiscVerifyError(
+            f"CHD track digests not in prepare_disc.known_* "
+            f"(track 1: size={first.size} md5={first.md5} sha1={first.sha1}; "
+            f"whole disc: size={whole.size} md5={whole.md5} sha1={whole.sha1})"
+        )
+    identity["verified"] = True
+    return identity
+
+
 def verify_disc_path(
     disc: Path,
     prep: dict[str, Any],
     *,
     skip_hash: bool,
     progress: ProgressReporter,
+    chd_lib: Optional[Path] = None,
 ) -> dict[str, Any]:
     path = disc.resolve()
     if path.suffix.lower() == ".cue":
         path = resolve_cue_bin(path)
+    elif path.suffix.lower() == ".chd":
+        # prepare_disc records digests of the uncompressed track data. A CHD
+        # is a compressed container, so it is read back through libchdr into
+        # the same bytes a Redump .bin holds and those are what get hashed.
+        return _verify_chd(
+            path, prep, skip_hash=skip_hash, progress=progress, chd_lib=chd_lib
+        )
     md5, sha1, size = file_hashes(path)
+    try:
+        subchannel, _ = inspect_companion(disc, size, sha1)
+    except CompanionError as exc:
+        raise DiscVerifyError(str(exc)) from exc
     identity = {
         "path": str(path),
         "md5": md5,
         "sha1": sha1,
         "size": size,
         "verified": False,
+        "subchannel": subchannel,
     }
     progress.event("disc", **identity)
     sizes = [int(s) for s in (prep.get("known_sizes") or [])]
@@ -899,14 +996,19 @@ def cmd_verify_disc(args: argparse.Namespace, progress: ProgressReporter) -> int
     secs = load_sections(config)
     prep = secs.get("prepare_disc") or {}
     progress.phase("verify", pct=0.1, message=f"Verifying {disc.name}")
+    chd_lib = None
+    if disc.suffix.lower() == ".chd":
+        chd_lib = ensure_chd_reader(project_root, progress)
     try:
         identity = verify_disc_path(
-            disc, prep, skip_hash=bool(args.skip_hash_check), progress=progress
+            disc, prep, skip_hash=bool(args.skip_hash_check), progress=progress,
+            chd_lib=chd_lib,
         )
     except DiscVerifyError as exc:
         progress.error(str(exc), code=EXIT_VERIFY, verify_failed=True)
         return EXIT_VERIFY
-    progress.phase("done", pct=1.0, message="Disc OK")
+    progress.phase("done", pct=1.0,
+                   message=f"Main track accepted; subchannel status: {identity['subchannel']['status']}")
     progress.result(ok=True, **identity)
     return EXIT_OK
 
@@ -916,6 +1018,8 @@ def run_prepare_disc(
     config: Path,
     source: Path,
     progress: ProgressReporter,
+    *,
+    chd_lib: Optional[Path] = None,
 ) -> Path:
     script = ROOT / "tools" / "prepare_disc.py"
     if not script.is_file():
@@ -930,7 +1034,13 @@ def run_prepare_disc(
         str(project_root),
         str(source),
     ]
-    proc = subprocess.run(cmd, cwd=str(project_root), capture_output=True, text=True)
+    env = dict(os.environ)
+    if chd_lib is not None:
+        env[psx_chd.LIB_ENV] = str(chd_lib)
+    proc = subprocess.run(
+        cmd, cwd=str(project_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", env=env,
+    )
     out = (proc.stdout or "") + (proc.stderr or "")
     for line in out.splitlines():
         if line.strip():
@@ -979,10 +1089,14 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
 
     progress.log(f"generate --disc {disc}")
     progress.phase("verify", pct=0.05, message=f"Checking disc {disc.name}")
+    chd_lib = None
+    if disc.suffix.lower() == ".chd" and disc.is_file():
+        chd_lib = ensure_chd_reader(project_root, progress)
     try:
         if disc.is_file():
             verify_disc_path(
-                disc, prep, skip_hash=bool(args.skip_hash_check), progress=progress
+                disc, prep, skip_hash=bool(args.skip_hash_check), progress=progress,
+                chd_lib=chd_lib,
             )
     except DiscVerifyError as exc:
         progress.error(str(exc), code=EXIT_VERIFY, verify_failed=True)
@@ -999,7 +1113,9 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
     )
     if need_prep or args.force_prepare:
         try:
-            working_disc = run_prepare_disc(project_root, config, disc, progress)
+            working_disc = run_prepare_disc(
+                project_root, config, disc, progress, chd_lib=chd_lib
+            )
         except Exception as exc:  # noqa: BLE001
             progress.error(str(exc), code=EXIT_ERROR)
             return EXIT_ERROR
@@ -1133,7 +1249,7 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
         cmd,
         cwd=str(project_root),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     ri_warn = 0
     for stream in (proc.stdout, proc.stderr):
@@ -1165,12 +1281,24 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
     marker_name = args.gen_marker or f"{boot}_dispatch.c"
     marker = out_dir / marker_name
     if not marker.is_file():
-        # Accept any *_dispatch.c
+        # The build (CMakeLists GEN_MARKER) and the setup host
+        # (codegen_setup.c gen_marker_relpath) both gate on this exact
+        # filename. Accepting a differently named dispatch here used to
+        # report success while the next rebuild silently produced another
+        # setup host — an endless generate+build loop. Fail loudly instead.
         hits = list(out_dir.glob("*_dispatch.c"))
         if not hits:
             progress.error(f"generate produced no dispatch under {out_dir}", code=EXIT_ERROR)
             return EXIT_ERROR
-        marker = hits[0]
+        progress.error(
+            f"generate produced {', '.join(h.name for h in hits)} under "
+            f"{out_dir}, but the project expects {marker_name}. The boot-exe "
+            "name in game.toml disagrees with GEN_MARKER in CMakeLists.txt / "
+            "codegen_setup.c — the rebuild would link no game code. Fix the "
+            "project so all three name the same boot EXE.",
+            code=EXIT_ERROR,
+        )
+        return EXIT_ERROR
 
     progress.phase("done", pct=1.0, message="Generate complete")
     progress.result(
@@ -1294,7 +1422,7 @@ def _cmake_configure(
         *extra,
     ]
     progress.log(" ".join(cmd))
-    proc = subprocess.run(cmd, cwd=str(project_root), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(project_root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     for stream in (proc.stdout, proc.stderr):
         if stream:
             for line in stream.splitlines():
@@ -1304,6 +1432,59 @@ def _cmake_configure(
         raise RuntimeError(f"cmake configure failed (exit {proc.returncode})")
 
 
+
+
+def _runtime_exe_candidates(build_dir: Path, target: str, exe_basename: str):
+    """Names to try for the built runtime, best evidence first.
+
+    runtime.cmake writes the OUTPUT_NAME it actually set to
+    psxrecomp_exe_name-<target>.txt at configure time. That file is the answer;
+    exe_basename is only a guess re-derived from a second copy of the window
+    title, and the two drift the moment a game is renamed.
+    """
+    published = build_dir / f"psxrecomp_exe_name-{target}.txt"
+    names, seen = [], set()
+    try:
+        name = published.read_text(encoding="utf-8").strip()
+    except OSError:
+        name = ""
+    for candidate in (name, exe_basename):
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            names.append(candidate)
+    return names, name
+
+
+def _resolve_runtime_exe(build_dir: Path, target: str, exe_basename: str):
+    """(path, None) once found, or (None, message) explaining what went wrong."""
+    names, published = _runtime_exe_candidates(build_dir, target, exe_basename)
+    for name in names:
+        for path in (build_dir / name, build_dir / f"{name}.exe"):
+            if path.is_file():
+                return path, None
+
+    # Nothing matched. Distinguish the two very different reasons, because
+    # "binary missing" after a clean build reads as a build failure and is not
+    # one: a name disagreement means the executable is sitting right there.
+    built = sorted(
+        p.name
+        for p in build_dir.glob("*")
+        if p.is_file() and (p.suffix.lower() == ".exe" or os.access(p, os.X_OK))
+    )
+    if published and published != exe_basename:
+        return None, (
+            f"the runtime was built as '{published}' but this project expects "
+            f"'{exe_basename}'. The build itself succeeded — nothing is wrong "
+            f"with the code. CMake derives the name from WINDOW_TITLE in "
+            f"CMakeLists.txt; --exe-name / codegen_setup.exe_basename carries a "
+            f"second copy of that title which has drifted. Make them agree, or "
+            f"pin it by passing EXE_NAME to psxrecomp_add_game_runtime()."
+        )
+    hint = f" Executables present: {', '.join(built)}." if built else ""
+    return None, (
+        f"build reported success but no runtime binary was found in "
+        f"{build_dir} (looked for {', '.join(names)}).{hint}"
+    )
 
 
 def _cmake_build(
@@ -1324,7 +1505,7 @@ def _cmake_build(
         target,
     ]
     progress.log(" ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     for stream in (proc.stdout, proc.stderr):
         if stream:
             for line in stream.splitlines():
@@ -1344,21 +1525,45 @@ def _cmake_build(
         raise RuntimeError(err)
 
 
+PGO_DEBUG_PORT = 45231
+
+
 def _soft_stop(pid: int, timeout: int = 30) -> None:
     try:
         os.kill(pid, 15)  # SIGTERM
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return
     for _ in range(timeout):
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return
         time.sleep(1)
     try:
         os.kill(pid, 9)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
+
+
+def _debug_quit(pid: int, port: int, *, exit_timeout: int = 15) -> bool:
+    """Request a clean exit and confirm the training process has stopped."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.sendall(b'{"id":1,"cmd":"quit"}\n')
+            try:
+                sock.settimeout(2)
+                sock.recv(256)
+            except OSError:
+                pass
+    except OSError:
+        return False
+    for _ in range(exit_timeout):
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return True
+        time.sleep(1)
+    return False
 
 
 def _pgo_train_warning(*, hide_video: bool) -> str:
@@ -1380,6 +1585,7 @@ def run_pgo_train(
     build_dir: Path,
     *,
     exe_basename: str,
+    target: str,
     disc: Path,
     config: Path,
     train_secs: int,
@@ -1388,11 +1594,9 @@ def run_pgo_train(
     hide_video: bool,
     progress: ProgressReporter,
 ) -> None:
-    exe = build_dir / exe_basename
-    if not exe.is_file():
-        exe = build_dir / f"{exe_basename}.exe"
-    if not exe.is_file():
-        raise RuntimeError(f"train binary missing: {exe_basename} under {build_dir}")
+    exe, exe_err = _resolve_runtime_exe(build_dir, target, exe_basename)
+    if exe is None:
+        raise RuntimeError(f"PGO training cannot start: {exe_err}")
 
     pgo_dir = build_dir / "pgo"
     if pgo_dir.exists():
@@ -1454,6 +1658,7 @@ def run_pgo_train(
         ]
         if hide_video:
             cmd.append("--headless")
+        cmd.extend(["--debug-port", str(PGO_DEBUG_PORT)])
         proc = subprocess.Popen(
             cmd,
             cwd=str(project_root),
@@ -1463,11 +1668,17 @@ def run_pgo_train(
         )
         time.sleep(train_secs)
         if proc.poll() is None:
-            _soft_stop(proc.pid)
+            if not _debug_quit(proc.pid, PGO_DEBUG_PORT):
+                progress.log("PGO train debug quit unavailable; using forced stop.")
+                _soft_stop(proc.pid)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _soft_stop(proc.pid)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
     n_gcda = len(list(build_dir.rglob("*.gcda")))
     n_raw = len(list(pgo_dir.glob("*.profraw")))
@@ -1480,7 +1691,7 @@ def run_pgo_train(
                 r = subprocess.run(
                     ["xcrun", "--find", "llvm-profdata"],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     check=False,
                 )
                 if r.returncode == 0 and r.stdout.strip():
@@ -1573,12 +1784,20 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
                 return EXIT_ERROR
             progress.log("Using system cmake on PATH")
 
-    cmake_extra = []
+    # Full playable link after local generate (not the CI setup-host shape).
+    # The legacy BPE_ alias in runtime.cmake only maps ON, so clear the
+    # canonical name too; REQUIRE_GAME_C turns a marker-name skew into a
+    # loud configure failure instead of a silently rebuilt setup host that
+    # reopens the wizard forever. --cmake-extra comes last so a deliberate
+    # override (e.g. -DPSXRECOMP_REQUIRE_GAME_C=OFF) still wins.
+    cmake_extra = [
+        "-DBPE_FORCE_SETUP_HOST=OFF",
+        "-DPSXRECOMP_FORCE_SETUP_HOST=OFF",
+        "-DPSXRECOMP_ALLOW_NO_BIOS=OFF",
+        "-DPSXRECOMP_REQUIRE_GAME_C=ON",
+    ]
     if args.cmake_extra:
         cmake_extra.extend(args.cmake_extra)
-    # Full playable link after local generate (not the CI setup-host shape).
-    cmake_extra.append("-DBPE_FORCE_SETUP_HOST=OFF")
-    cmake_extra.append("-DPSXRECOMP_ALLOW_NO_BIOS=OFF")
 
     clamped = clamp_future_mtimes(project_root, skip=build_dir)
     if clamped:
@@ -1608,7 +1827,7 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
         if not pgo_enabled:
             progress.phase("build", pct=0.2, message="cmake Release build...")
             _cmake_configure(
-                project_root, build_dir, pgo="", extra=cmake_extra, progress=progress
+                project_root, build_dir, pgo="", extra=cmake_extra + ["-DPSX_DEBUG_TOOLS=OFF"], progress=progress
             )
             _cmake_build(build_dir, target, progress)
         else:
@@ -1628,7 +1847,7 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
                 project_root,
                 build_dir,
                 pgo="generate",
-                extra=cmake_extra,
+                extra=cmake_extra + ["-DPSX_DEBUG_TOOLS=ON"],
                 progress=progress,
             )
             _cmake_build(build_dir, target, progress)
@@ -1641,6 +1860,7 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
                 project_root,
                 build_dir,
                 exe_basename=exe_basename,
+                target=target,
                 disc=Path(disc),
                 config=config,
                 train_secs=train_secs,
@@ -1654,7 +1874,7 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
                 project_root,
                 build_dir,
                 pgo="use",
-                extra=cmake_extra,
+                extra=cmake_extra + ["-DPSX_DEBUG_TOOLS=OFF"],
                 progress=progress,
             )
             _cmake_build(build_dir, target, progress)
@@ -1662,12 +1882,12 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
         progress.error(str(exc), code=EXIT_ERROR)
         return EXIT_ERROR
 
-    exe = build_dir / exe_basename
-    if not exe.is_file():
-        exe = build_dir / f"{exe_basename}.exe"
-    if not exe.is_file():
-        progress.error(f"build succeeded but binary missing: {exe}", code=EXIT_ERROR)
+    exe, exe_err = _resolve_runtime_exe(build_dir, target, exe_basename)
+    if exe is None:
+        progress.error(exe_err, code=EXIT_ERROR)
         return EXIT_ERROR
+    progress.phase("overlays", pct=0.93, message="Staging overlay toolchain beside the product...")
+    stage_overlay_toolchain_for_product(project_root, exe.parent, progress)
 
     prune_raw = (getattr(args, "prune_after", None) or "").strip()
     if prune_raw:
@@ -1680,6 +1900,57 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
     return EXIT_OK
 
 
+def stage_overlay_toolchain_for_product(project_root: Path, exe_dir: Path, progress) -> Optional[Path]:
+    """Stage overlay_toolchain/ beside a built product so the runtime's autocompile gate is
+    true for every player build (wave-5 F1), and name the compiler the wizard already has so
+    shards get an optimising compiler instead of tcc (F2). Best effort: a failure leaves the
+    product playable with overlays interpreted, and says so."""
+    try:
+        fw = framework_root(project_root)
+        tools_dir = fw / "tools"
+        inc_dir = fw / "runtime" / "include"
+        game_emitter = find_psxrecomp_game(project_root)
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+        import release_stage  # noqa: E402
+
+        dl_cache = project_root / ".cache" / "overlay-toolchain"
+        # Runtime DLLs only from the emitter's own directory, never from PATH: Git's
+        # mingw64 on PATH carries the MSVCRT runtime, which is the 0xC0000139 trap.
+        mingw_bin = game_emitter.parent if (game_emitter.parent / "libgcc_s_seh-1.dll").is_file() else None
+        tk = Path(release_stage.stage_toolchain(
+            str(exe_dir), str(game_emitter.parent), str(tools_dir), str(inc_dir), str(dl_cache),
+            mingw_bin=str(mingw_bin) if mingw_bin else None, log=progress.log))
+        # The stale-recompiler check compares the emitter's codegen hash with the runtime's tag.
+        for cand in (exe_dir / "psxrecomp_codegen_include" / "overlay_codegen_hash.h",
+                     inc_dir / "overlay_codegen_hash.h"):
+            if cand.is_file():
+                shutil.copy2(cand, tk / "include" / "overlay_codegen_hash.h")
+                break
+        compiler = None
+        if sys.platform == "win32":
+            bin_dir = resolve_toolchain_bin(project_root)
+            if bin_dir and (bin_dir / "clang.exe").is_file():
+                compiler = bin_dir / "clang.exe"
+        else:
+            for name in ("gcc", "cc", "clang"):
+                w = shutil.which(name)
+                if w:
+                    compiler = Path(w)
+                    break
+        if compiler:
+            (tk / "compiler.txt").write_text(str(compiler) + "\n", encoding="utf-8")
+            progress.log(f"overlay toolchain staged at {tk}; shard compiler: {compiler}")
+        else:
+            progress.log(f"overlay toolchain staged at {tk}; no optimising compiler found (tcc tier)")
+        return tk
+    except Exception as exc:  # noqa: BLE001
+        progress.log(f"WARNING: overlay toolchain staging failed; overlays will run interpreted: {exc}")
+        return None
+
+
+
+
 def cmd_pgo_train(args: argparse.Namespace, progress: ProgressReporter) -> int:
     args.force_pgo = True
     args.no_pgo = False
@@ -1687,7 +1958,7 @@ def cmd_pgo_train(args: argparse.Namespace, progress: ProgressReporter) -> int:
 
 
 def cmd_ensure_toolchain(args: argparse.Namespace, progress: ProgressReporter) -> int:
-    """Resolve / download / unpack cmake-clang-v1 into the shared RetComM cache."""
+    """Resolve / download / unpack cmake-clang-v1 into the shared Retro cache."""
     project_root = (
         Path(args.project_root).expanduser().resolve()
         if args.project_root
@@ -1854,7 +2125,7 @@ def cmd_analyze(args: argparse.Namespace, progress: ProgressReporter) -> int:
 
     progress.phase("analyze", pct=0.3, message=f"Analyzing {exe_path.name}…")
     progress.log(" ".join(cmd))
-    proc = subprocess.run(cmd, cwd=str(project_root), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(project_root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     for stream in (proc.stdout, proc.stderr):
         if stream:
             for line in stream.splitlines():

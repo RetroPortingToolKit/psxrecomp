@@ -8,11 +8,13 @@
 #include <fstream>
 #include <sstream>
 #include <set>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "bios_rom_alias.h"
+#include "host_path.h"
 #include "fmt/format.h"
 #include "ps1_exe_parser.h"
 
@@ -73,6 +75,7 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
     h.words("cull_plane_nx", c.ws_cull_plane_nx_sites);
     h.words("cull_xclip_load", c.ws_cull_xclip_load_sites);
     h.words("cull_nclip_keep", c.ws_cull_nclip_keep_sites);
+    h.words("cull_nclip_exact", c.ws_cull_nclip_exact_sites);
     h.words("cull_branch_keep", c.ws_cull_branch_keep_sites);
     h.words("cull_w_imms", c.ws_cull_w_imms);
     h.words("cull_h_imms", c.ws_cull_h_imms);
@@ -359,7 +362,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
     }
     if (runtime.contains("memcard_dir")) {
         const auto rel = toml::find<std::string>(runtime, "memcard_dir");
-        rt.memcard_dir = fs::absolute(root / rel);
+        rt.memcard_dir = PSXRecompV4::host_resolve(root, rel);
         rt.has_memcard_dir = true;
     }
     if (runtime.contains("disc_speed")) {
@@ -502,6 +505,35 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
     if (runtime.contains("overlay_backend")) {
         rt.overlay_backend = toml::find<std::string>(runtime, "overlay_backend");
     }
+    if (runtime.contains("overlay_region_floor")) {
+        const auto& v = toml::find(runtime, "overlay_region_floor");
+        uint32_t floor = 0;
+        if (v.is_string()) {
+            floor = parse_hex(v.as_string(), "runtime.overlay_region_floor");
+        } else {
+            // Raw TOML integers are 64-bit signed: reject anything that would
+            // wrap or be masked into a different physical address downstream.
+            const std::int64_t raw = v.as_integer();
+            if (raw < 0 || raw > 0xFFFFFFFFll) {
+                throw std::runtime_error(fmt::format(
+                    "[runtime] overlay_region_floor out of range "
+                    "(0x10000..0x1FFFFF physical, KSEG0/KSEG1 prefix allowed): {}",
+                    raw));
+            }
+            floor = static_cast<uint32_t>(raw);
+        }
+        // The floor names a main-RAM physical address above the kernel window;
+        // fail loud here instead of relying on the runtime clamp/mask.
+        const uint32_t phys = floor & 0x1FFFFFFFu;
+        if (phys < 0x00010000u || phys >= 0x00200000u) {
+            throw std::runtime_error(fmt::format(
+                "[runtime] overlay_region_floor out of range "
+                "(0x10000..0x1FFFFF physical, KSEG0/KSEG1 prefix allowed): 0x{:08X}",
+                floor));
+        }
+        rt.overlay_region_floor = floor;
+        rt.has_overlay_region_floor = true;
+    }
         if (runtime.contains("overlay_native_block")) {
             for (const auto& a : toml::find<std::vector<std::string>>(runtime, "overlay_native_block")) {
                 rt.overlay_native_block.push_back(parse_hex(a, "runtime.overlay_native_block"));
@@ -603,6 +635,15 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             else throw std::runtime_error(fmt::format(
                 "[video] crt_filter must be \"raw\"|\"crt\"|\"composite\"|\"trinitron\": {}",
                 mode));
+        }
+        if (video.contains("scanlines")) {
+            rt.video_scanlines = toml::find<bool>(video, "scanlines");
+        }
+        if (video.contains("scanline_strength")) {
+            double s = toml::find<double>(video, "scanline_strength");
+            if (s < 0.0) s = 0.0;
+            if (s > 1.0) s = 1.0;
+            rt.video_scanline_strength = s;
         }
         if (video.contains("auto_skip_fmv")) {
             rt.video_auto_skip_fmv = toml::find<bool>(video, "auto_skip_fmv");
@@ -779,7 +820,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
 }
 
 fs::path find_project_root(const fs::path& config_path) {
-    fs::path cur = fs::absolute(config_path).parent_path();
+    fs::path cur = PSXRecompV4::host_absolute(config_path).parent_path();
     const fs::path fallback = cur;
     for (int i = 0; i < 8; ++i) {
         for (const char* marker : { ".gitignore", ".git", "CMakeLists.txt" }) {
@@ -815,7 +856,7 @@ static std::string derive_out_stem(const std::string& rom_basename) {
 }
 
 BiosConfig load_bios_config(const fs::path& config_path_in) {
-    const fs::path config_path = fs::absolute(config_path_in);
+    const fs::path config_path = PSXRecompV4::host_absolute(config_path_in);
     if (!fs::exists(config_path)) {
         throw std::runtime_error(
             fmt::format("config file not found: {}", config_path.string()));
@@ -880,7 +921,7 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
     // Tolerate either BIOS filename convention (bare "SCPH1001.BIN" vs
     // region-qualified "US-PSX-SCPH1001.BIN") — see bios_rom_alias.h. A no-op
     // for game [program].exe fields, which never match a BIOS model token.
-    const fs::path rom_path = resolve_bios_rom(fs::absolute(root / rom_field));
+    const fs::path rom_path = resolve_bios_rom(PSXRecompV4::host_resolve(root, rom_field));
 
     const uint32_t load_address =
         parse_hex(toml::find<std::string>(prog, "load_address"), "program.load_address");
@@ -914,13 +955,13 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
             fmt::format("{}: [recompiler] missing 'seeds' field", config_path.string()));
     }
     const std::string seeds_field = toml::find<std::string>(recomp, "seeds");
-    const fs::path seeds_path = fs::absolute(root / seeds_field);
+    const fs::path seeds_path = PSXRecompV4::host_resolve(root, seeds_field);
 
     const std::string out_dir_field =
         recomp.contains("out_dir")
             ? toml::find<std::string>(recomp, "out_dir")
             : std::string{"generated"};
-    const fs::path out_dir = fs::absolute(root / out_dir_field);
+    const fs::path out_dir = PSXRecompV4::host_resolve(root, out_dir_field);
 
     const bool strict = recomp.contains("strict")
                             ? toml::find<bool>(recomp, "strict")
@@ -1020,14 +1061,31 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
         }
     }
 
-    // [[recompiler.install_slots]] — kernel-RAM PCs the BIOS overwrites with
-    // dispatch stubs at runtime.
-    std::vector<uint32_t> install_slots;
+    // [[recompiler.install_slots]] — kernel-RAM ranges the BIOS or the game's
+    // Psy-Q libapi patchers overwrite at runtime. `ram_addr` alone keeps the
+    // original meaning (a 4-word jalr stub); `len` and `resume` describe the
+    // other patch shapes (BiosInstallSlot, bios_address_model.h).
+    std::vector<BiosInstallSlot> install_slots;
     if (recomp.contains("install_slots")) {
         for (const auto& v : recomp.at("install_slots").as_array()) {
-            install_slots.push_back(parse_hex(
+            BiosInstallSlot slot;
+            slot.ram_addr = parse_hex(
                 toml::find<std::string>(v, "ram_addr"),
-                "install_slots.ram_addr"));
+                "install_slots.ram_addr");
+            if (v.contains("len"))
+                slot.len = parse_hex(toml::find<std::string>(v, "len"),
+                                     "install_slots.len");
+            if (v.contains("resume")) {
+                const std::string r = toml::find<std::string>(v, "resume");
+                if      (r == "jalr")        slot.resume = BiosInstallSlot::Resume::Jalr;
+                else if (r == "fallthrough") slot.resume = BiosInstallSlot::Resume::Fallthrough;
+                else if (r == "none")        slot.resume = BiosInstallSlot::Resume::None;
+                else throw std::runtime_error(fmt::format(
+                    "{}: install_slots 0x{:08X}: resume must be \"jalr\", "
+                    "\"fallthrough\" or \"none\", got '{}'",
+                    config_path.string(), slot.ram_addr, r));
+            }
+            install_slots.push_back(slot);
         }
     }
 
@@ -1071,7 +1129,7 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
 }
 
 GameConfig load_game_config(const fs::path& config_path_in) {
-    const fs::path config_path = fs::absolute(config_path_in);
+    const fs::path config_path = PSXRecompV4::host_absolute(config_path_in);
     if (!fs::exists(config_path)) {
         throw std::runtime_error(
             fmt::format("game config not found: {}", config_path.string()));
@@ -1119,7 +1177,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         throw std::runtime_error(
             fmt::format("{}: [game] missing 'exe' or 'rom' field", config_path.string()));
     }
-    const fs::path exe_path = fs::absolute(root / exe_field);
+    const fs::path exe_path = PSXRecompV4::host_resolve(root, exe_field);
 
     // Auto-detect EXE header values for any field not explicitly set in TOML.
     // Parses the PS-X EXE header once and fills in load_address, entry_pc,
@@ -1187,11 +1245,15 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     std::vector<fs::path> discs;
     if (game.contains("discs")) {
         const auto& arr = toml::find<std::vector<std::string>>(game, "discs");
-        for (const auto& d : arr) discs.push_back(fs::absolute(root / d));
+        for (const auto& d : arr) discs.push_back(PSXRecompV4::host_resolve(root, d));
     } else if (game.contains("disc")) {
         const auto& d = toml::find<std::string>(game, "disc");
-        discs.push_back(fs::absolute(root / d));
+        discs.push_back(PSXRecompV4::host_resolve(root, d));
     }
+    /* Per-disc serials, parallel to `discs`. Absent => no per-disc gate. */
+    std::vector<std::string> disc_serials;
+    if (game.contains("disc_serials"))
+        disc_serials = toml::find<std::vector<std::string>>(game, "disc_serials");
 
     // Optional expected disc identity (launcher verification badge).
     bool has_disc_crc = false;
@@ -1213,6 +1275,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     bool has_netplay_required_leadout = false;
     uint32_t netplay_required_leadout_lba = 0;
     std::string netplay_required_disc_fp;
+    std::vector<std::string> netplay_required_disc_fps;
     std::string netplay_local_viewport;
     std::string netplay_local_viewport_aspect;
     if (cfg.contains("netplay")) {
@@ -1230,6 +1293,14 @@ GameConfig load_game_config(const fs::path& config_path_in) {
             netplay_required_disc_fp = toml::find<std::string>(np, "required_disc_fp");
             for (char& c : netplay_required_disc_fp)
                 c = (char)std::tolower((unsigned char)c);
+        }
+        /* Per-disc fingerprints for a multi-disc set, parallel to [game]
+         * discs. Lowercased here so the runtime compares like for like. */
+        if (np.contains("required_disc_fps")) {
+            netplay_required_disc_fps =
+                toml::find<std::vector<std::string>>(np, "required_disc_fps");
+            for (std::string& fp : netplay_required_disc_fps)
+                for (char& c : fp) c = (char)std::tolower((unsigned char)c);
         }
         if (np.contains("local_viewport")) {
             netplay_local_viewport = toml::find<std::string>(np, "local_viewport");
@@ -1276,12 +1347,12 @@ GameConfig load_game_config(const fs::path& config_path_in) {
             fmt::format("{}: [recompiler] missing 'seeds' field", config_path.string()));
     }
     const fs::path seeds_path =
-        fs::absolute(root / toml::find<std::string>(recomp, "seeds"));
+        PSXRecompV4::host_resolve(root, toml::find<std::string>(recomp, "seeds"));
 
     fs::path bios_thunks_path;
     if (recomp.contains("bios_thunks")) {
         bios_thunks_path =
-            fs::absolute(root / toml::find<std::string>(recomp, "bios_thunks"));
+            PSXRecompV4::host_resolve(root, toml::find<std::string>(recomp, "bios_thunks"));
     }
 
     // [recompiler] bios_config — the BIOS profile this game is built
@@ -1290,14 +1361,14 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     fs::path bios_config_path;
     if (recomp.contains("bios_config")) {
         bios_config_path =
-            fs::absolute(root / toml::find<std::string>(recomp, "bios_config"));
+            PSXRecompV4::host_resolve(root, toml::find<std::string>(recomp, "bios_config"));
     }
 
     const std::string out_dir_field =
         recomp.contains("out_dir")
             ? toml::find<std::string>(recomp, "out_dir")
             : std::string{"generated"};
-    const fs::path out_dir = fs::absolute(root / out_dir_field);
+    const fs::path out_dir = PSXRecompV4::host_resolve(root, out_dir_field);
 
     const bool strict = recomp.contains("strict")
                             ? toml::find<bool>(recomp, "strict")
@@ -1595,10 +1666,28 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                                          "widescreen.signed_x_bound.address");
                 site.expected = parse_hex(toml::find<std::string>(item, "expected"),
                                           "widescreen.signed_x_bound.expected");
-                if ((site.expected >> 26) != 0x0Fu)
+                const uint32_t opcode = site.expected >> 26;
+                if (opcode != 0x0Fu && opcode != 0x09u && opcode != 0x0Du)
                     throw std::runtime_error(fmt::format(
-                        "{}: [[widescreen.signed_x_bound]] expected must be LUI",
+                        "{}: [[widescreen.signed_x_bound]] expected must be LUI or ADDIU/ORI",
                         config_path.string()));
+                if (opcode == 0x09u || opcode == 0x0Du) {
+                    const uint32_t rs = (site.expected >> 21) & 0x1Fu;
+                    const uint32_t rt = (site.expected >> 16) & 0x1Fu;
+                    const uint32_t imm = site.expected & 0xFFFFu;
+                    if (rs != 0u)
+                        throw std::runtime_error(fmt::format(
+                            "{}: [[widescreen.signed_x_bound]] ADDIU/ORI expected must use rs=$zero",
+                            config_path.string()));
+                    if (rt == 0u)
+                        throw std::runtime_error(fmt::format(
+                            "{}: [[widescreen.signed_x_bound]] ADDIU/ORI expected must not write $zero",
+                            config_path.string()));
+                    if (imm == 0u)
+                        throw std::runtime_error(fmt::format(
+                            "{}: [[widescreen.signed_x_bound]] ADDIU/ORI expected must have a non-zero signed screen edge",
+                            config_path.string()));
+                }
                 if (!seen.insert(site.address & 0x1FFFFFFFu).second)
                     throw std::runtime_error(fmt::format(
                         "{}: duplicate [[widescreen.signed_x_bound]] address 0x{:08X}",
@@ -1626,6 +1715,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     std::vector<uint32_t> ws_cull_plane_nx_sites;
     std::vector<uint32_t> ws_cull_xclip_load_sites;
     std::vector<uint32_t> ws_cull_nclip_keep_sites;
+    std::vector<uint32_t> ws_cull_nclip_exact_sites;
     std::vector<uint32_t> ws_cull_branch_keep_sites;
     std::vector<WidescreenCullKeepSite> ws_cull_keep_sites;
     std::vector<WidescreenAngleSite> ws_cull_angle_sites;
@@ -1661,6 +1751,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
             load_sites("plane_nx_sites", ws_cull_plane_nx_sites);
             load_sites("xclip_load_sites", ws_cull_xclip_load_sites);
             load_sites("nclip_keep_sites", ws_cull_nclip_keep_sites);
+            load_sites("nclip_exact_sites", ws_cull_nclip_exact_sites);
             load_sites("branch_keep_sites", ws_cull_branch_keep_sites);
             if (cull.contains("keep")) {
                 std::set<uint32_t> seen;
@@ -2040,6 +2131,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*text_size*/        text_size,
         /*stack_base*/       stack_base,
         /*discs*/            discs,
+        /*disc_serials*/     disc_serials,
         /*has_disc_crc*/     has_disc_crc,
         /*disc_crc*/         disc_crc,
         /*disc_sha1*/        disc_sha1,
@@ -2048,6 +2140,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*has_netplay_required_leadout*/ has_netplay_required_leadout,
         /*netplay_required_leadout_lba*/ netplay_required_leadout_lba,
         /*netplay_required_disc_fp*/ netplay_required_disc_fp,
+        /*netplay_required_disc_fps*/ netplay_required_disc_fps,
         /*netplay_local_viewport*/ netplay_local_viewport,
         /*netplay_local_viewport_aspect*/ netplay_local_viewport_aspect,
         /*seeds_path*/       seeds_path,
@@ -2089,6 +2182,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*ws_cull_plane_nx_sites*/ ws_cull_plane_nx_sites,
         /*ws_cull_xclip_load_sites*/ ws_cull_xclip_load_sites,
         /*ws_cull_nclip_keep_sites*/ ws_cull_nclip_keep_sites,
+        /*ws_cull_nclip_exact_sites*/ ws_cull_nclip_exact_sites,
         /*ws_cull_branch_keep_sites*/ ws_cull_branch_keep_sites,
         /*ws_cull_keep_sites*/    ws_cull_keep_sites,
         /*ws_cull_angle_sites*/   ws_cull_angle_sites,
@@ -2247,6 +2341,15 @@ UserSettings load_user_settings(const fs::path& path) {
             else if (m == "composite") { s.screen_kind = 2; s.has_screen_kind = true; }
             else if (m == "trinitron") { s.screen_kind = 3; s.has_screen_kind = true; }
         });
+        if (v.contains("scanlines")) try_get([&]{
+            s.scanlines = toml::find<bool>(v, "scanlines"); s.has_scanlines = true;
+        });
+        if (v.contains("scanline_strength")) try_get([&]{
+            double d = toml::find<double>(v, "scanline_strength");
+            if (d < 0.0) d = 0.0;
+            if (d > 1.0) d = 1.0;
+            s.scanline_strength = d; s.has_scanline_strength = true;
+        });
         if (v.contains("auto_skip_fmv")) try_get([&]{
             s.auto_skip_fmv = toml::find<bool>(v, "auto_skip_fmv"); s.has_auto_skip_fmv = true;
         });
@@ -2304,6 +2407,10 @@ UserSettings load_user_settings(const fs::path& path) {
             s.adaptive_view = toml::find<bool>(v, "adaptive_view");
             s.has_adaptive_view = true;
         });
+        if (v.contains("rewind")) try_get([&]{
+            s.rewind = toml::find<bool>(v, "rewind");
+            s.has_rewind = true;
+        });
         if (v.contains("rewind_depth")) try_get([&]{
             int d = toml::find<int>(v, "rewind_depth");
             static const int opts[4] = {50, 100, 150, 200};
@@ -2358,6 +2465,20 @@ UserSettings load_user_settings(const fs::path& path) {
                 s.has_hotkey_pad_save_state_menu = true;
             }
         });
+        if (h.contains("fast_forward_pad")) try_get([&]{
+            const auto n = toml::find<int64_t>(h, "fast_forward_pad");
+            if (pad_bind_value_ok(n)) {
+                s.hotkey_pad_fast_forward = (int)n;
+                s.has_hotkey_pad_fast_forward = true;
+            }
+        });
+        if (h.contains("fast_forward_toggle_pad")) try_get([&]{
+            const auto n = toml::find<int64_t>(h, "fast_forward_toggle_pad");
+            if (pad_bind_value_ok(n)) {
+                s.hotkey_pad_fast_forward_toggle = (int)n;
+                s.has_hotkey_pad_fast_forward_toggle = true;
+            }
+        });
     }
     if (doc.contains("launcher")) {
         const toml::value& l = toml::find(doc, "launcher");
@@ -2388,6 +2509,15 @@ UserSettings load_user_settings(const fs::path& path) {
         if (d.contains("path")) try_get([&]{
             const auto p = toml::find<std::string>(d, "path");
             if (!p.empty()) { s.disc_path = fs::path(p); s.has_disc_path = true; }
+        });
+        /* Multi-disc selection, 1-based. Anything below 1 is a malformed
+         * hand-edit, not a request to boot disc 0 -- clamp up and keep going
+         * rather than silently mounting nothing. The upper bound is the disc
+         * roster's size, which only the runtime knows, so it clamps there. */
+        if (d.contains("selected")) try_get([&]{
+            const auto n = toml::find<int>(d, "selected");
+            s.disc_index = n < 1 ? 1 : n;
+            s.has_disc_index = true;
         });
     }
     if (doc.contains("memcard")) {
@@ -2553,6 +2683,10 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
                       : s.screen_kind == 3 ? "trinitron" : "raw";
         f << "crt_filter        = \"" << k << "\"\n";
     }
+    if (s.has_scanlines)
+        f << "scanlines         = " << (s.scanlines ? "true" : "false") << "\n";
+    if (s.has_scanline_strength)
+        f << "scanline_strength = " << s.scanline_strength << "\n";
     if (s.has_auto_skip_fmv)
         f << "auto_skip_fmv     = " << (s.auto_skip_fmv ? "true" : "false") << "\n";
     /* turbo_loads is deliberately NOT written back: it is deprecated and no
@@ -2577,6 +2711,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "aspect_ratio      = \"" << s.aspect_num << ":" << s.aspect_den << "\"\n";
     if (s.has_adaptive_view)
         f << "adaptive_view     = " << (s.adaptive_view ? "true" : "false") << "\n";
+    if (s.has_rewind)
+        f << "rewind            = " << (s.rewind ? "true" : "false") << "\n";
     if (s.has_rewind_depth)
         f << "rewind_depth      = " << s.rewind_depth << "\n";
     if (s.has_rewind_interval)
@@ -2586,13 +2722,19 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "frequency = " << s.audio_freq << "\n";
     if (s.has_spu_hq)
         f << "spu_hq = " << (s.spu_hq ? "true" : "false") << "\n";
-    if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu) {
+    if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu ||
+        s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle) {
         f << "\n[hotkeys]\n";
         if (s.has_hotkey_pad_rewind)
             f << "rewind_pad = " << s.hotkey_pad_rewind << "\n";
         if (s.has_hotkey_pad_save_state_menu)
             f << "save_state_menu_pad = "
               << s.hotkey_pad_save_state_menu << "\n";
+        if (s.has_hotkey_pad_fast_forward)
+            f << "fast_forward_pad = " << s.hotkey_pad_fast_forward << "\n";
+        if (s.has_hotkey_pad_fast_forward_toggle)
+            f << "fast_forward_toggle_pad = "
+              << s.hotkey_pad_fast_forward_toggle << "\n";
     }
     if (s.has_skip_launcher)
         f << "\n[launcher]\nskip_launcher = " << (s.skip_launcher ? "true" : "false") << "\n";
@@ -2606,8 +2748,15 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     }
     if (s.has_bios_path)
         f << "\n[bios]\npath = \"" << fwd(s.bios_path) << "\"\n";
-    if (s.has_disc_path)
-        f << "\n[disc]\npath = \"" << fwd(s.disc_path) << "\"\n";
+    if (s.has_disc_path || s.has_disc_index) {
+        f << "\n[disc]\n";
+        if (s.has_disc_path)
+            f << "path = \"" << fwd(s.disc_path) << "\"\n";
+        /* Only meaningful for a multi-disc title; harmless (and informative)
+         * for a single-disc one, where it is always 1. */
+        if (s.has_disc_index)
+            f << "selected = " << s.disc_index << "\n";
+    }
     if (s.has_memcard_dir || s.has_memcard1_path || s.has_memcard2_path ||
         s.has_memcard1_enabled || s.has_memcard2_enabled) {
         f << "\n[memcard]\n";

@@ -119,7 +119,7 @@ stays byte-identical. Extracted overlay for offline analysis:
 ## Status
 IMPLEMENTED 2026-06-15 on `feat/ws-backdrop-coverage` (all 4 execution paths);
 LIVE-TESTED then PIVOTED — see "Pivot" below; pending re-verify + merge. Related:
-`WIDESCREEN.md`, `NATIVE_WIDE_PLAN.md`, memory `ws_draw_census_8c` /
+`../WIDESCREEN.md`, `NATIVE_WIDE_PLAN.md`, memory `ws_draw_census_8c` /
 `native_wide_fov_autocull`.
 
 ### Pivot (2026-06-15, after first live test)

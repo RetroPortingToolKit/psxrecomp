@@ -1356,6 +1356,200 @@ int main() {
     check(!ModPackageManager::read_manifest(root / "bad.toml", invalid, &error),
           "unsafe package id must be rejected");
 
+    /* Catalog roots. mods/bundled is build output that every build wipes and
+     * re-stages; mods/installed belongs to the launcher and a build never
+     * touches it. Before the split both lived in mods/packages, so a rebuild
+     * deleted every mod the player had installed. */
+    {
+        const fs::path split_root = root / "split";
+        /* Pre-split layout: a build-staged package and a player install,
+         * indistinguishable in the same tree. */
+        write_text(split_root / "packages/psx.builtin/1.0.0/manifest.toml",
+                   manifest("psx.builtin", "1.0.0"));
+        write_text(split_root / "packages/player.mod/1.0.0/manifest.toml",
+                   manifest("player.mod", "1.0.0"));
+        /* The current build has already staged its own copy of the builtin. */
+        write_text(split_root / "bundled/psx.builtin/1.0.0/manifest.toml",
+                   manifest("psx.builtin", "1.0.0"));
+
+        ModPackageManager split(split_root);
+        check(split.scan(&error), error.c_str());
+        check(!fs::exists(split_root / "packages"),
+              "the legacy mods/packages tree must be migrated away");
+        check(fs::exists(split_root / "installed/player.mod/1.0.0/manifest.toml"),
+              "a player-installed package must migrate into mods/installed");
+        check(!fs::exists(split_root / "installed/psx.builtin"),
+              "a package the build also staged must not migrate to installed");
+        check(split.packages().at("psx.builtin").at("1.0.0").origin ==
+                  ModPackageOrigin::Bundled,
+              "a package under mods/bundled must be Bundled");
+        check(split.packages().at("player.mod").at("1.0.0").origin ==
+                  ModPackageOrigin::Installed,
+              "a migrated player package must be Installed");
+
+        check(!split.remove_version("psx.builtin", "1.0.0", &error),
+              "a bundled package must not be removable");
+
+        /* What a rebuild does: wipe bundled/ and re-stage it. The player's
+         * installed catalog must survive untouched. */
+        fs::remove_all(split_root / "bundled", ec);
+        write_text(split_root / "bundled/psx.builtin/1.0.0/manifest.toml",
+                   manifest("psx.builtin", "1.0.0"));
+        ModPackageManager rebuilt(split_root);
+        check(rebuilt.scan(&error), error.c_str());
+        check(rebuilt.packages().count("player.mod") == 1,
+              "a rebuild must not delete a player-installed package");
+        check(rebuilt.packages().count("psx.builtin") == 1,
+              "a rebuild must re-stage the bundled catalog");
+
+        /* An installed package of the same id shadows the bundled one, and
+         * says so rather than winning silently. */
+        write_text(split_root / "installed/psx.builtin/1.0.0/manifest.toml",
+                   manifest("psx.builtin", "1.0.0"));
+        ModPackageManager shadowed(split_root);
+        check(shadowed.scan(&error), error.c_str());
+        const ModPackage& shadow =
+            shadowed.packages().at("psx.builtin").at("1.0.0");
+        check(shadow.origin == ModPackageOrigin::Installed &&
+                  shadow.shadows_bundled,
+              "an installed package must shadow the bundled one and record it");
+
+        /* A manifest that cannot be parsed must be named, never skipped in
+         * silence -- an author's typo used to produce a mod that simply did
+         * not exist, with nothing anywhere explaining why. */
+        write_text(split_root / "installed/broken.mod/1.0.0/manifest.toml",
+                   "format_version = 5\nid = \"broken.mod\"\n");
+        ModPackageManager broken(split_root);
+        check(broken.scan(&error), error.c_str());
+        check(broken.packages().count("broken.mod") == 0,
+              "an unparseable package must not load");
+        check(std::any_of(broken.scan_errors().begin(),
+                          broken.scan_errors().end(),
+                          [](const std::string& e) {
+                              return e.find("broken.mod") != std::string::npos;
+                          }),
+              "an unparseable manifest must be reported by scan_errors()");
+    }
+
+    /* Channels. A feature carries its own maturity: a package is the trust and
+     * installation boundary, and tying the two forced a whole catalog down to
+     * the maturity of its least finished feature. */
+    {
+        const fs::path chan_root = root / "channel";
+        const std::string mixed =
+            "format_version = 6\n"
+            "id = \"chan.mod\"\n"
+            "version = \"1.0.0\"\n"
+            "name = \"Channel Mod\"\n"
+            "[[target]]\n"
+            "game_id = \"SLUS-TEST\"\n"
+            "[[feature]]\n"
+            "id = \"solid\"\n"
+            "name = \"Solid\"\n"
+            "[[feature]]\n"
+            "id = \"rough\"\n"
+            "name = \"Rough\"\n"
+            "channel = \"experimental\"\n"
+            "[[feature]]\n"
+            "id = \"probe\"\n"
+            "name = \"Probe\"\n"
+            "channel = \"developer\"\n"
+            "[[option]]\n"
+            "feature = \"probe\"\n"
+            "id = \"depth\"\n"
+            "label = \"Depth\"\n"
+            "type = \"boolean\"\n"
+            "default = \"false\"\n";
+        write_text(chan_root / "bundled/chan.mod/1.0.0/manifest.toml", mixed);
+
+        /* A local build sees all three. */
+        ModPackageManager local(chan_root);
+        local.set_developer_channel_visible(true);
+        check(local.scan(&error), error.c_str());
+        const ModPackage& all = local.packages().at("chan.mod").at("1.0.0");
+        check(all.features.size() == 3, "a local build must see every channel");
+        check(all.features[0].channel == ModChannel::Stable &&
+                  all.features[1].channel == ModChannel::Experimental &&
+                  all.features[2].channel == ModChannel::Developer,
+              "each feature must carry its own channel");
+
+        /* A release build must not carry the developer feature at all --
+         * absent, not hidden -- nor the options that only served it. */
+        ModPackageManager shipped(chan_root);
+        shipped.set_developer_channel_visible(false);
+        check(shipped.scan(&error), error.c_str());
+        const ModPackage& published = shipped.packages().at("chan.mod").at("1.0.0");
+        check(published.features.size() == 2,
+              "a release build must drop developer-channel features");
+        check(std::none_of(published.features.begin(), published.features.end(),
+                           [](const ModFeature& f) { return f.id == "probe"; }),
+              "the developer feature must be absent from a release build");
+        check(std::none_of(published.options.begin(), published.options.end(),
+                           [](const ModOption& o) { return o.feature_id == "probe"; }),
+              "options serving a dropped feature must go with it");
+        check(published.features[1].channel == ModChannel::Experimental,
+              "an experimental feature still ships");
+
+        /* A package whose every feature is developer-channel simply is not
+         * there on a release build, rather than listing with nothing in it. */
+        write_text(chan_root / "bundled/dev.only/1.0.0/manifest.toml",
+                   "format_version = 6\n"
+                   "id = \"dev.only\"\n"
+                   "version = \"1.0.0\"\n"
+                   "name = \"Dev Only\"\n"
+                   "channel = \"developer\"\n"
+                   "[[target]]\n"
+                   "game_id = \"SLUS-TEST\"\n"
+                   "[[feature]]\n"
+                   "id = \"instrument\"\n"
+                   "name = \"Instrument\"\n");
+        ModPackageManager dev_only(chan_root);
+        dev_only.set_developer_channel_visible(false);
+        check(dev_only.scan(&error), error.c_str());
+        check(dev_only.packages().count("dev.only") == 0,
+              "a developer-only package must not load in a release build");
+        ModPackageManager dev_seen(chan_root);
+        dev_seen.set_developer_channel_visible(true);
+        check(dev_seen.scan(&error), error.c_str());
+        check(dev_seen.packages().count("dev.only") == 1,
+              "a developer-only package must load in a local build");
+        check(dev_seen.packages().at("dev.only").at("1.0.0")
+                  .features[0].channel == ModChannel::Developer,
+              "a feature must inherit its package's channel by default");
+
+        /* The key is version-gated like every other format addition, and only
+         * the three names are accepted. */
+        ModPackage rejected;
+        write_text(chan_root / "v5-feature-channel.toml",
+                   "format_version = 5\n"
+                   "id = \"old.mod\"\n"
+                   "version = \"1.0.0\"\n"
+                   "name = \"Old\"\n"
+                   "[[target]]\n"
+                   "game_id = \"SLUS-TEST\"\n"
+                   "[[feature]]\n"
+                   "id = \"f\"\n"
+                   "name = \"F\"\n"
+                   "channel = \"experimental\"\n");
+        check(!ModPackageManager::read_manifest(
+                  chan_root / "v5-feature-channel.toml", rejected, &error),
+              "a per-feature channel must require format_version 6");
+        write_text(chan_root / "bad-channel.toml",
+                   "format_version = 6\n"
+                   "id = \"bad.mod\"\n"
+                   "version = \"1.0.0\"\n"
+                   "name = \"Bad\"\n"
+                   "channel = \"beta\"\n"
+                   "[[target]]\n"
+                   "game_id = \"SLUS-TEST\"\n"
+                   "[[feature]]\n"
+                   "id = \"f\"\n"
+                   "name = \"F\"\n");
+        check(!ModPackageManager::read_manifest(
+                  chan_root / "bad-channel.toml", rejected, &error),
+              "an unknown channel name must be rejected");
+    }
+
     fs::remove_all(root, ec);
     if (failures) {
         std::cerr << failures << " mod package test(s) failed\n";

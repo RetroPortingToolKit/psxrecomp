@@ -36,6 +36,24 @@ set(PSXRECOMP_CODEGEN_HASH_SRCS
     # Shared instruction detector changes alter emitted overlay substitutions.
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/ws_backdrop_detect.h
 
+    # --- image view + walker headers ------------------------------------------
+    # Same gap as the .cpp/.h note above, one level down. The image VIEW decides
+    # what the emitter is even allowed to see: ps1_exe_parser.h now carries two
+    # distinct bounds (the READ bound end_address() and the ANALYSIS bound
+    # analysis_end_address(), which stops short of an overlay capture's trailing
+    # delay-slot guard words), and ps1_exe_parser.cpp decodes the producer's
+    # guard-byte declaration. A change confined to either would move every
+    # overlay shard's CFG while leaving the cg tag untouched — precisely the
+    # stale-but-same-tag hazard this list exists to prevent. The walker/analysis
+    # headers are listed for the same reason: their structs and bounds helpers
+    # are part of the emitter contract even when the .cpp files do not move.
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/ps1_exe_parser.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/ps1_exe_parser.cpp
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/control_flow.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/function_analysis.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/basic_block.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/code_generator.h
+
     # --- Shard COMPILE surface -------------------------------------------------
     # The cg tag must invalidate on anything a shard compiles/links against, not
     # just what the emitter WRITES. A change to the overlay ABI header, the

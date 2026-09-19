@@ -64,7 +64,7 @@ static fs::path write_game_toml(const std::string& name,
  * vertices and splits shared edges) and has no launcher control at all.
  * perspective_texturing is off because it is a deliberate departure from hardware
  * output validated on only one title and renderer; it is structurally safe and
- * players opt in from the launcher. See ENHANCEMENTS.md G1.8/G1.9. */
+ * players opt in from the launcher. See docs/ENHANCEMENTS.md G1.8/G1.9. */
 static void test_defaults_off() {
     fs::path p = write_game_toml("psxrecomp_pgxp_default.toml", "");
     auto gc = PSXRecompV4::load_game_config(p);

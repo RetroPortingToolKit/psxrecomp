@@ -34,11 +34,23 @@ const uint16_t* gpu_get_vram(void);    /* Pointer to 1024x512 16-bit VRAM */
 typedef struct {
     uint32_t display_x, display_y;     /* VRAM start of display area (GP1(05h)) */
     uint32_t width, height;            /* Derived from display mode + ranges */
+    uint32_t screen_height;            /* PAL/NTSC active canvas for depth24 */
+    uint32_t screen_origin_y;          /* Visible source origin in that canvas */
+    uint32_t screen_source_skip_y;     /* VRAM rows clipped above active video */
+    int32_t  screen_offset_y;          /* GP1(07h) position relative to TV centre */
     int      depth24;                  /* GP1(08h) display depth flag: RGB888 scanout */
     int      disabled;                 /* GP1(03h) display disable flag */
 } GpuDisplayInfo;
 
 void gpu_get_display_info(GpuDisplayInfo* out);
+
+/* Perspective-correct UV arming rate, per condition. armed/attempts is the
+ * real perspective coverage: attempts counts only textured triangles, so it is
+ * the denominator that gp0_draw (which includes untextured primitives that are
+ * correctly never armed) cannot provide. Diagnostic; any pointer may be NULL. */
+void gpu_texture_correction_stats(uint64_t *attempts, uint64_t *armed,
+                                  uint64_t *no_correction,
+                                  uint64_t *no_source, uint64_t *no_depth);
 /* GP1(08h) bit4 — 24-bit display. Renderers skip FBO upload queues while set:
  * packed RGB888 lives in the CPU mirror; treating A0 rects as 1555 FBO uploads
  * both wastes bandwidth and force-flushes when UP_RECTS_MAX is hit (MotK FMV). */
@@ -206,7 +218,6 @@ int psx_ws_mmx6_bg_stream_left(int x);
 int psx_ws_mmx6_bg_stream_right(int x);
 struct CPUState;
 void psx_ws_sprite_tag(struct CPUState* cpu);
-
 /* Native-wide (mode 2) on a game frame. ws_nw_extra() is the total width the
  * frame grows by, in display pixels (the present path widens the display read
  * by this; 0 when native-wide is inactive). */
@@ -286,6 +297,8 @@ int32_t psx_ws_player_x_bound(int32_t vanilla);
 void gpu_ws_set_signed_x_bound_sites(const uint32_t *addresses,
                                      const uint32_t *expected, int count);
 int psx_ws_is_signed_x_bound_site(uint32_t pc, uint32_t instr);
+/* Widen a signed screen-pixel edge loaded by an explicitly guarded site. */
+int32_t psx_ws_screen_x_bound(int32_t vanilla);
 
 /* Shared render-funnel screen-X cull widening ([widescreen.cull] auto_screen_x):
  * the gcc emit and the interpreter both route a flagged
@@ -339,12 +352,26 @@ void gpu_ws_set_nw_hud_corners(int on);
 void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge);
 void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world);
 void gpu_ws_set_adaptive_backdrop_preload(int enabled);
+/* Explicit native-wide HUD packet anchor from a trusted title plugin.
+ * `prim` is the address of the PsyQ P_TAG word; the drawn command starts at
+ * prim+4. anchor: -1 = left, 0 = center, +1 = right. */
+void gpu_ws_tag_hud_prim(uint32_t prim, int anchor);
+/* Clear synthetic margins to black over an opaque 0x64/65 rectangle's Y band
+ * immediately before it executes. Packet-guarded; canonical VRAM is untouched. */
+void gpu_ws_tag_black_reveal_rect(uint32_t prim);
+/* Repeat an opaque, already-clipped textured rectangle into native-wide
+ * reveal margins only. The caller verifies the composite's source period.
+ * Original UVs, texel density, and canonical VRAM writes are unchanged. */
+void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period);
 /* Targeted alternative for sprite-heavy 2D games: corner-anchor only primitives
  * whose ordering-table packet lives in the configured half-open RAM range. */
 void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi);
 void gpu_ws_begin_linked_list(void);
 void gpu_ws_end_linked_list(void);
 void gpu_ws_prepass_linked_list(uint32_t start_addr);
+void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t header);
+void gpu_ws_validate_linked_list_node(uint32_t addr, uint32_t num_words);
+void gpu_ws_restore_linked_list_rank(uint32_t rank);
 /* Native-wide full-frame 2D backdrop stretch ([widescreen] nw_backdrop):
  * stretch a screen-space quad that covers the whole 4:3 framebuffer (sky
  * gradient / backdrop image) to fill the wide frame, so it no longer
@@ -385,6 +412,12 @@ void psx_ws_backdrop_ring_note(uint32_t pc, int kind, int wcols, uint32_t orig,
                                uint32_t finalv, int extent, int camx, int count,
                                uint32_t base, uint32_t dl);
 int  psx_ws_backdrop_ring_json(char *buf, int cap);
+
+/* auto_ui_squash partition dump (`ws_ui_groups`). Reports, for the last UI
+ * prepass, each primitive's raw key inputs (CLUT/texpage band/family via op,
+ * y, h) alongside its union-find root and final anchor — enough to tell whether
+ * two HUD primitives shared a run, and which key component split them if not. */
+int  psx_ws_ui_groups_json(char *buf, int cap);
 
 /* Live-tunable backdrop widen amount (ws_backdrop_margin command): <0 whole-row,
  * 0 off, >0 N-column widen. g_ws_bd_from_interp is the interp's one-shot

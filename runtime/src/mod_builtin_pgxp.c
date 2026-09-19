@@ -4,7 +4,7 @@
  * Sub-pixel vertex precision + perspective-correct texturing is a property of
  * the emulated GTE/GPU pair, not of any particular disc, so it ships here and
  * mods/builtin/packages/psx.enhancement.pgxp targets game_id "*". Default off
- * (the faithful floor, ENHANCEMENTS.md G1.9); enabling arms the value-
+ * (the faithful floor, docs/ENHANCEMENTS.md G1.9); enabling arms the value-
  * propagation engine (pgxp.cpp) with the user-validated defaults — tolerance
  * clamp 0.5px, cpu-mode per the mod option.
  *

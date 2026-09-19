@@ -6,6 +6,27 @@
 
 namespace PSXRecomp {
 
+uint32_t decode_analysis_guard_bytes(const PS1ExeHeader& header,
+                                     uint32_t file_size) {
+    const uint8_t* raw = reinterpret_cast<const uint8_t*>(&header);
+    if (std::memcmp(raw + exe_tag::kGuardMagicOffset, exe_tag::kGuardMagic,
+                    sizeof(exe_tag::kGuardMagic)) != 0) {
+        return 0;  // no tag: a genuine PS-X EXE, or an untagged producer
+    }
+    uint32_t declared = 0;
+    std::memcpy(&declared, raw + exe_tag::kGuardCountOffset, sizeof(declared));
+    if (declared == 0) return 0;
+    // A guard trailer must be instruction-aligned, sane in size, and leave at
+    // least one analysable instruction behind. Anything else is a malformed
+    // tag: fall back to "no guard", which is the fail-closed answer (the
+    // emitter's mandatory-delay-slot check then still refuses to emit a
+    // transfer it cannot complete).
+    if ((declared & 3u) != 0) return 0;
+    if (declared > exe_tag::kMaxGuardBytes) return 0;
+    if (file_size < declared + 4u) return 0;
+    return declared;
+}
+
 bool apply_static_analysis_bound(PS1Executable& exe,
                                  uint32_t configured_size,
                                  std::string& error_msg) {
@@ -73,6 +94,10 @@ bool apply_static_analysis_bound(PS1Executable& exe,
 
     exe.header.file_size = configured_size;
     exe.code_data.resize(configured_size);
+    // A title-configured truncation cuts at a page boundary inside real
+    // payload; whatever guard trailer the producer declared no longer sits at
+    // the new end. Drop it so the analysis bound is the truncation itself.
+    exe.analysis_guard_bytes = 0;
     return true;
 }
 
@@ -287,6 +312,13 @@ std::optional<PS1Executable> PS1ExeParser::parse_buffer(
         buffer.data() + 2048,
         exe.header.file_size
     );
+
+    // Analysis-bound tag: how many trailing bytes are delay-slot guard words
+    // that must stay readable but must never be discovered as code. Absent on
+    // every genuine PS-X EXE, so this is a no-op for the BIOS and for retail
+    // main executables.
+    exe.analysis_guard_bytes =
+        decode_analysis_guard_bytes(exe.header, exe.header.file_size);
 
     // Final validation
     if (!exe.validate(error_msg)) {

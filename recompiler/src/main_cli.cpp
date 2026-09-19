@@ -312,11 +312,11 @@ int build_project(const Options& options, const fs::path& exe_dir) {
         find_bios_profile(framework_source, bios_profile);
 
     std::set<uint32_t> seeds = {image.entry_point()};
-    for (uint32_t address = image.load_address(); address + 4 <= image.end_address(); address += 4) {
+    for (uint32_t address = image.load_address(); address + 4 <= image.analysis_end_address(); address += 4) {
         auto word = image.read_word(address);
         if (!word || ((*word >> 26) & 0x3F) != 0x03) continue;
         uint32_t target = (address & 0xF0000000u) | ((*word & 0x03FFFFFFu) << 2);
-        if (target >= image.load_address() && target < image.end_address()) seeds.insert(target);
+        if (target >= image.load_address() && target < image.analysis_end_address()) seeds.insert(target);
     }
     std::string seed_text = fmt::format("# Auto-generated JAL targets for {}\n", serial);
     for (uint32_t seed : seeds) seed_text += fmt::format("0x{:08X}\n", seed);

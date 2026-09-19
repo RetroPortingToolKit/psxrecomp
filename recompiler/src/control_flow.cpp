@@ -175,15 +175,33 @@ ControlFlowInstr ControlFlowAnalyzer::analyze_instruction(uint32_t addr, uint32_
     return cf;
 }
 
+uint32_t ControlFlowAnalyzer::analysis_walk_hi(const Function& func) const {
+    const uint32_t analysis_hi = exe_.analysis_end_address();
+    const uint32_t walk_lo =
+        func.alias_walk_lo ? func.alias_walk_lo : func.start_addr;
+    // Only clamp when the clamp still leaves a non-empty walk. A function that
+    // begins at or past the analysis bound is a degenerate discovery artefact;
+    // leave its range alone so the emitter's mandatory-delay-slot check keeps
+    // failing closed on it rather than silently producing an empty CFG.
+    if (func.end_addr > analysis_hi && analysis_hi > walk_lo) return analysis_hi;
+    return func.end_addr;
+}
+
+// NOTE: find_block_boundaries / build_basic_blocks / link_basic_blocks
+// below are NOT on the live path — analyze_function does its own
+// single-pass walk (see the comment there). They are kept in sync with the
+// analysis bound anyway so wiring them up can never reintroduce the
+// guard-word-as-block-leader defect.
 std::set<uint32_t> ControlFlowAnalyzer::find_block_boundaries(const Function& func) {
     std::set<uint32_t> boundaries;
+    const uint32_t walk_hi = analysis_walk_hi(func);
 
     // Function start is always a boundary
     boundaries.insert(func.start_addr);
 
     // Scan all instructions in function
     uint32_t addr = func.start_addr;
-    while (addr < func.end_addr) {
+    while (addr < walk_hi) {
         auto instr_opt = exe_.read_word(addr);
         if (!instr_opt.has_value()) {
             break;
@@ -195,7 +213,7 @@ std::set<uint32_t> ControlFlowAnalyzer::find_block_boundaries(const Function& fu
             ControlFlowInstr cf = analyze_instruction(addr, instr);
 
             // If branch/jump has a target, target is a boundary
-            if (cf.target != 0 && cf.target >= func.start_addr && cf.target < func.end_addr) {
+            if (cf.target != 0 && cf.target >= func.start_addr && cf.target < walk_hi) {
                 boundaries.insert(cf.target);
             }
 
@@ -204,7 +222,7 @@ std::set<uint32_t> ControlFlowAnalyzer::find_block_boundaries(const Function& fu
                 cf.type == ControlFlowType::JumpLink ||
                 cf.type == ControlFlowType::JumpLinkReg) {
                 uint32_t fall_through = addr + 8; // After delay slot
-                if (fall_through < func.end_addr) {
+                if (fall_through < walk_hi) {
                     boundaries.insert(fall_through);
                 }
             }
@@ -215,7 +233,7 @@ std::set<uint32_t> ControlFlowAnalyzer::find_block_boundaries(const Function& fu
                 cf.type == ControlFlowType::JumpRegister ||
                 cf.type == ControlFlowType::Return) {
                 uint32_t after_delay = addr + 8;
-                if (after_delay < func.end_addr) {
+                if (after_delay < walk_hi) {
                     boundaries.insert(after_delay);
                 }
             }
@@ -232,6 +250,7 @@ std::map<uint32_t, BasicBlock> ControlFlowAnalyzer::build_basic_blocks(
     const std::set<uint32_t>& boundaries) {
 
     std::map<uint32_t, BasicBlock> blocks;
+    const uint32_t walk_hi = analysis_walk_hi(func);
     std::vector<uint32_t> boundary_vec(boundaries.begin(), boundaries.end());
     std::sort(boundary_vec.begin(), boundary_vec.end());
 
@@ -242,7 +261,7 @@ std::map<uint32_t, BasicBlock> ControlFlowAnalyzer::build_basic_blocks(
         if (i + 1 < boundary_vec.size()) {
             block.end_addr = boundary_vec[i + 1] - 4;
         } else {
-            block.end_addr = func.end_addr - 4;
+            block.end_addr = walk_hi - 4;
         }
 
         if (block.end_addr < block.start_addr) continue;
@@ -327,27 +346,129 @@ void ControlFlowAnalyzer::link_basic_blocks(std::map<uint32_t, BasicBlock>& bloc
     }
 }
 
-std::vector<std::pair<uint32_t, uint32_t>> ControlFlowAnalyzer::detect_loops(
-    const std::map<uint32_t, BasicBlock>& blocks) {
+void rebuild_control_flow_metadata(
+    ControlFlowGraph& cfg, const std::vector<uint32_t>& extra_entries) {
+    cfg.loops.clear();
+    cfg.loop_count = 0;
+    std::map<uint32_t, size_t> index;
+    std::vector<uint32_t> addresses;
+    for (auto& [addr, block] : cfg.blocks) {
+        index.emplace(addr, addresses.size());
+        addresses.push_back(addr);
+        block.predecessors.clear();
+        block.is_reachable = block.is_loop_header = false;
+    }
+    // A synthetic root preserves dominance with multiple alias entries.
+    const size_t root = addresses.size(), none = root + 1;
+    std::vector<std::vector<size_t>> succ(root + 1), pred(root + 1);
+    for (const auto& [addr, block] : cfg.blocks) {
+        const size_t source = index.at(addr);
+        for (uint32_t target : block.successors) {
+            auto it = index.find(target);
+            if (it == index.end()) continue; // External edges do not create blocks.
+            succ[source].push_back(it->second);
+            pred[it->second].push_back(source);
+        }
+    }
+    for (size_t i = 0; i < root; ++i) {
+        auto& incoming = pred[i];
+        std::sort(incoming.begin(), incoming.end());
+        incoming.erase(std::unique(incoming.begin(), incoming.end()), incoming.end());
+        for (size_t source : incoming)
+            cfg.blocks.at(addresses[i]).predecessors.push_back(addresses[source]);
+    }
+    std::set<size_t> entries;
+    auto add_entry = [&](uint32_t addr) {
+        auto it = index.find(addr);
+        if (it != index.end()) entries.insert(it->second);
+    };
+    add_entry(cfg.function_start);
+    for (const auto& [addr, block] : cfg.blocks) if (block.is_entry) add_entry(addr);
+    for (uint32_t addr : extra_entries) add_entry(addr);
+    for (size_t entry : entries) {
+        succ[root].push_back(entry);
+        pred[entry].push_back(root); // Synthetic edges are NOT public predecessors.
+    }
 
-    std::vector<std::pair<uint32_t, uint32_t>> loops;
+    // Iterative DFS avoids host stack exhaustion on large capture CFGs.
+    std::vector<bool> seen(root + 1, false);
+    std::vector<size_t> postorder;
+    std::vector<std::pair<size_t, size_t>> stack{{root, 0}};
+    seen[root] = true;
+    while (!stack.empty()) {
+        auto& [node, next] = stack.back();
+        if (next < succ[node].size()) {
+            const size_t child = succ[node][next++];
+            if (!seen[child]) {
+                seen[child] = true;
+                stack.emplace_back(child, 0);
+            }
+        } else {
+            postorder.push_back(node);
+            stack.pop_back();
+        }
+    }
+    std::reverse(postorder.begin(), postorder.end());
+    std::vector<size_t> rank(root + 1, none), idom(root + 1, none);
+    for (size_t i = 0; i < postorder.size(); ++i) rank[postorder[i]] = i;
+    idom[root] = root;
+    // Reverse-postorder immediate-dominator fixed point. Storage is O(V+E),
+    // unlike a set of all dominators for every block. Intersections walk up
+    // strictly decreasing RPO ranks, never address order.
+    auto intersect = [&](size_t a, size_t b) {
+        while (a != b) {
+            while (rank[a] > rank[b]) a = idom[a];
+            while (rank[b] > rank[a]) b = idom[b];
+        }
+        return a;
+    };
+    bool changed;
+    do {
+        changed = false;
+        for (size_t i = 1; i < postorder.size(); ++i) {
+            const size_t node = postorder[i];
+            size_t parent = none;
+            for (size_t p : pred[node]) {
+                if (idom[p] == none) continue;
+                parent = parent == none ? p : intersect(parent, p);
+            }
+            if (idom[node] != parent) { idom[node] = parent; changed = true; }
+        }
+    } while (changed);
 
-    for (const auto& [addr, block] : blocks) {
-        // Check each successor
-        for (uint32_t successor : block.successors) {
-            // Back edge: successor address < current block address
-            if (successor <= addr) {
-                loops.push_back({successor, addr}); // (header, back_edge_source)
-
-                // Mark loop header
-                if (blocks.count(successor)) {
-                    const_cast<BasicBlock&>(blocks.at(successor)).is_loop_header = true;
-                }
+    // Dominator-tree intervals make each back-edge dominance query O(1).
+    std::vector<std::vector<size_t>> children(root + 1);
+    for (size_t node = 0; node < root; ++node) {
+        cfg.blocks.at(addresses[node]).is_reachable = seen[node];
+        if (seen[node]) children[idom[node]].push_back(node);
+    }
+    std::vector<size_t> enter(root + 1), leave(root + 1);
+    size_t clock = 0;
+    stack.emplace_back(root, 0);
+    enter[root] = clock++;
+    while (!stack.empty()) {
+        auto& [node, next] = stack.back();
+        if (next < children[node].size()) {
+            const size_t child = children[node][next++];
+            enter[child] = clock++;
+            stack.emplace_back(child, 0);
+        } else {
+            leave[node] = clock++;
+            stack.pop_back();
+        }
+    }
+    for (size_t source = 0; source < root; ++source) {
+        if (!seen[source]) continue;
+        for (size_t target : succ[source]) {
+            if (enter[target] <= enter[source] && leave[source] <= leave[target]) {
+                cfg.loops.emplace_back(addresses[target], addresses[source]);
+                cfg.blocks.at(addresses[target]).is_loop_header = true;
             }
         }
     }
-
-    return loops;
+    std::sort(cfg.loops.begin(), cfg.loops.end());
+    cfg.loops.erase(std::unique(cfg.loops.begin(), cfg.loops.end()), cfg.loops.end());
+    cfg.loop_count = static_cast<int>(cfg.loops.size());
 }
 
 ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
@@ -357,8 +478,14 @@ ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
     // all stay intra-function. The emitted alias enters via goto to its
     // start_addr block; walk_lo is the host's start.
     uint32_t walk_lo = func.alias_walk_lo ? func.alias_walk_lo : func.start_addr;
+    // Discovery/block-construction bound. Normally exactly func.end_addr; on
+    // an overlay capture that carries trailing delay-slot guard words it stops
+    // short of them, so the guard word can never become a block leader or a
+    // block's exit instruction (its own delay slot does not exist). It stays
+    // READABLE: a transfer at walk_hi - 4 still emits its slot from the guard.
+    const uint32_t walk_hi = analysis_walk_hi(func);
     cfg.function_start = walk_lo;
-    cfg.function_end = func.end_addr;
+    cfg.function_end = walk_hi;
     cfg.producer_lo = func.producer_lo;
     cfg.producer_hi = func.producer_hi;
 
@@ -372,17 +499,17 @@ ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
         // aliases produce identical CFGs.
         boundary_vec.push_back(func.start_addr);
         for (uint32_t e : func.alias_group_entries) {
-            if (e >= walk_lo && e < func.end_addr) boundary_vec.push_back(e);
+            if (e >= walk_lo && e < walk_hi) boundary_vec.push_back(e);
         }
     }
     auto add_boundary = [&](uint32_t target) {
-        if (target >= walk_lo && target < func.end_addr) {
+        if (target >= walk_lo && target < walk_hi) {
             boundary_vec.push_back(target);
         }
     };
 
     // Scan instructions for branches/jumps to find block starts
-    for (uint32_t addr = walk_lo; addr < func.end_addr; addr += 4) {
+    for (uint32_t addr = walk_lo; addr < walk_hi; addr += 4) {
         auto instr_opt = exe_.read_word(addr);
         if (!instr_opt) continue;
         uint32_t instr = *instr_opt;
@@ -390,13 +517,13 @@ ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
         if (is_control_flow(instr)) {
             ControlFlowInstr cf = analyze_instruction(addr, instr);
 
-            if (cf.target != 0 && cf.target >= walk_lo && cf.target < func.end_addr) {
+            if (cf.target != 0 && cf.target >= walk_lo && cf.target < walk_hi) {
                 add_boundary(cf.target);
             }
 
             // After delay slot is a new block
             uint32_t after_delay = addr + 8;
-            if (after_delay < func.end_addr) {
+            if (after_delay < walk_hi) {
                 add_boundary(after_delay);
             }
         }
@@ -408,7 +535,7 @@ ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
     for (size_t i = 0; i < boundary_vec.size(); i++) {
         BasicBlock block;
         block.start_addr = boundary_vec[i];
-        block.end_addr = (i + 1 < boundary_vec.size()) ? boundary_vec[i + 1] - 4 : func.end_addr - 4;
+        block.end_addr = (i + 1 < boundary_vec.size()) ? boundary_vec[i + 1] - 4 : walk_hi - 4;
 
         if (block.end_addr < block.start_addr) continue;
 
@@ -445,7 +572,7 @@ ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
         // Add successors — only targets within this function's block set
         auto in_func = [&](uint32_t addr) {
             return addr >= walk_lo &&
-                   addr < func.end_addr &&
+                   addr < walk_hi &&
                    std::binary_search(boundary_vec.begin(), boundary_vec.end(), addr);
         };
         if (block.exit_instr.type == ControlFlowType::Branch) {
@@ -468,18 +595,9 @@ ControlFlowGraph ControlFlowAnalyzer::analyze_function(const Function& func) {
 
         cfg.blocks[block.start_addr] = block;
     }
-    // Detect back-edges (loops)
-    for (const auto& [addr, block] : cfg.blocks) {
-        for (uint32_t succ : block.successors) {
-            if (succ <= addr) {
-                cfg.loops.push_back({succ, addr});
-                if (cfg.blocks.count(succ)) {
-                    cfg.blocks[succ].is_loop_header = true;
-                }
-            }
-        }
-    }
-    cfg.loop_count = static_cast<int>(cfg.loops.size());
+    auto entries = func.alias_group_entries;
+    entries.push_back(func.start_addr);
+    rebuild_control_flow_metadata(cfg, entries);
 
     for (const auto& [addr, block] : cfg.blocks) {
         cfg.block_order.push_back(addr);

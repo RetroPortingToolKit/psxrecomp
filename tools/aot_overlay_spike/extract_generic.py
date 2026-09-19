@@ -30,6 +30,8 @@ import argparse, os, sys, json, base64, struct, subprocess, tempfile, re, binasc
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import extract_overlays as eo
 import compile_overlays as co
+from packed_sector_table import extract_members as extract_sector_members
+from sector_extent_archive import extract_members as extract_extent_members
 try:
     import tomllib
 except ImportError:
@@ -356,14 +358,18 @@ def raw_base_votes(data, base_lo, base_hi=0x80200000):
     return hist
 
 def split_indexed_archive(data, alignment=0x800):
-    """Recognize a strict ``{id,size}[]`` + aligned-payload archive.
+    """Prefer explicit sector extents over the older opaque-ID heuristic.
 
-    Mega Man X6's ROCK_X6.BIN uses one monotonically increasing table in the
-    first sector.  Payload members follow in table order, each rounded up to a
-    0x800-byte boundary.  Require the complete layout to account for the file
-    (apart from at most one format trailer sector) so ordinary data cannot
-    be mistaken for this container merely because its first words look small.
+    A multi-sector header cannot be inferred from the table's byte length.
+    When descriptors account for the complete file, their sector offsets take
+    precedence. The legacy fallback handles genuinely opaque increasing IDs.
     """
+    try:
+        extents = extract_extent_members(data, sector_size=alignment)
+    except ValueError:
+        extents = []
+    if len(extents) >= 4:
+        return [(m['sector'], m['source_offset'], m['body']) for m in extents]
     if len(data) < alignment*2 or len(data) % alignment:
         return None
     entries=[]
@@ -565,25 +571,18 @@ def hed_companion_members(disc, files):
         if not runs:
             continue
 
-        logical=[]; cursor=0
-        for path,lba,size in companions:
-            body=disc.read_file_bytes(lba,size)
-            logical.append((cursor,cursor+size//0x800,path,body))
-            cursor+=size//0x800
+        payloads=[(path,disc.read_file_bytes(lba,size)) for path,lba,size in companions]
         members=[]; seen=set()
         for table_index,sector,count in runs:
             key=(sector,count)
             if key in seen:
                 continue
             seen.add(key)
-            owner=next((x for x in logical
-                        if x[0] <= sector and sector+count <= x[1]),None)
-            if owner is None:
+            try:
+                member=extract_sector_members(hed,payloads,[table_index])[0]
+            except ValueError:
                 continue
-            lo,hi,path,body=owner
-            off=(sector-lo)*0x800
-            member=body[off:off+count*0x800]
-            members.append((table_index,sector*0x800,member))
+            members.append((table_index,member['logical_offset'],member['body']))
         if members:
             groups.append({
                 'hed_path':hed_path,
@@ -683,19 +682,36 @@ def full_discovery_output_audit_clean(data, tmp):
     return True
 
 def filter_full_discovery_seeds(body, base, candidates, declared_entry):
-    """Quarantine normal mode's unproven image-body fallback entry.
+    """Remove unproven body-start and invalid-delay normal-mode candidates.
 
-    Normal mode derives interior entries from return/prologue/call/control-flow
-    evidence and classifies their reachable extents.  Its one provenance-free
-    fallback is the image load address: a backward return scan that reaches the
-    beginning promotes that first body word.  Ape MINI2 begins with a pointer
-    table there, while its PS-X header declares the real entry later.  Quarantine
-    only that unproven body-start fallback; preserving the additive interior set
-    is essential because removing selected roots can split otherwise broad
-    functions and create native code-range holes.
+    Return scans can promote a leading pointer table or data after a return.
+    Keep the remaining additive interior set: removing arbitrary roots can
+    split otherwise broad functions and create native code-range holes.
     """
-    return sorted({addr for addr in candidates
-                   if addr != base or addr == declared_entry})
+    # Return scans can also nominate adjacent data whose words resemble JALs.
+    # A control transfer in the first transfer's delay slot cannot substantiate
+    # an optional native root. Keep declared entries so their audit still fails
+    # visibly if authoritative loader evidence actually names unsupported code.
+    return sorted({addr for addr in candidates if addr == declared_entry or
+                   (addr != base and optional_entry_delay_valid(body, base, addr))})
+
+
+def optional_entry_delay_valid(body, base, entry):
+    """Reject structurally invalid delay slots in an optional entry prefix."""
+    offset = entry - base
+    if offset < 0 or offset % 4 or offset + 4 > len(body):
+        return False
+    for at in range(offset, min(offset + 48, len(body) - 3), 4):
+        word = _word(body, at)
+        # BLEZ/BGTZ require rt=zero. Library identification data following a
+        # return can resemble these opcodes with a nonzero reserved field.
+        # Such a prefix cannot establish an optional callable entry.
+        if word >> 26 in (6, 7) and (word >> 16) & 31:
+            return False
+        if _is_control_flow_word(word):
+            delay = _word(body, at + 4)
+            return delay is not None and not _is_control_flow_word(delay)
+    return True
 
 def enrich_positioned_member(member, recompiler, tmp):
     """Add normal-mode entries/aliases to a consensus-positioned member.
@@ -724,6 +740,7 @@ def enrich_positioned_member(member, recompiler, tmp):
              if base <= alias[0] < hi and
              base <= alias[1] < alias[2] <= hi and
              alias[0] != base and
+             optional_entry_delay_valid(body, base, alias[0]) and
              not any(alias[1] < root < alias[2] for root in roots)]
     out=dict(member)
     out['seeds']=sorted(set(discovered)|set(roots))
@@ -749,6 +766,7 @@ def rec(load_addr, data, seeds, dispatch_extra=None, producer_ranges=None,
     disp = static_dispatch
     out={"schema":"psxrecomp overlay capture v2","load_addr":f"0x{load_addr:08X}",
          "size":len(data),"bytes_b64":base64.b64encode(data).decode(),
+         "guard_bytes":0,  # Original source bytes; no capture trailer appended.
          "executed_pcs":[],"dispatch_entry_pcs":[f"0x{a:08X}" for a in disp],
          "static_dispatch_entry_pcs":[
              f"0x{a:08X}" for a in static_dispatch],
@@ -987,6 +1005,8 @@ def main():
                 aliases=[alias for alias in aliases_all
                          if va <= alias[0] < span_hi and
                          va <= alias[1] < alias[2] <= span_hi and
+                         (alias[0] == entry_pc or
+                          optional_entry_delay_valid(body, t_addr, alias[0])) and
                          (alias[0] != t_addr or alias[0] == entry_pc)]
                 records.append(rec(
                     va,seg,sd,static_alias_ranges=aliases))

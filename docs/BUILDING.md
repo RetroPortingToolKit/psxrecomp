@@ -188,6 +188,55 @@ cmake --build build --target psx-runtime
 ./build/psx-runtime --game game.toml --disc tomba/tomba.cue
 ```
 
+### Split generated C
+
+The recompiler emits a game's generated C as several parallel-compilable
+translation units rather than one monolithic `<serial>_full.c`:
+
+- `<serial>_decls.h` — shared declarations: the runtime extern prologue, the
+  `static inline` unaligned load/store helpers, and forward declarations for
+  every `func_*` and `psx_alias_body_*`.
+- `<serial>_full_00.c` … `<serial>_full_NN.c` — function-body shards of roughly
+  40k lines each, each one `#include`ing the decls header.
+
+Alias-group host bodies (`psx_alias_body_*`) are externally linked rather than
+emitted into whichever shard happens to reference them, so a shard boundary can
+fall anywhere and shards carry no atomicity constraint.
+
+Measured on Tomba when this landed: a 41 MB single translation unit became 36
+shards, and an `-O3` build went from 4m35s to 51s at `-j16` (~5.4x). The
+generated function bytes are unchanged — this is purely how the same code is
+partitioned across files.
+
+**Game CMakeLists need no manual glob.** `psxrecomp_add_game_runtime()` in
+`runtime/runtime.cmake` takes `GEN_FULL_GLOB` as a multi-value argument and
+expands it itself:
+
+```cmake
+psxrecomp_add_game_runtime(psx-runtime
+  GEN_MARKER    "generated/SLUS_01234_dispatch.c"
+  GEN_FULL_GLOB "generated/SLUS_01234_full_*.c"
+  ...)
+```
+
+Each pattern is made absolute against `CMAKE_CURRENT_SOURCE_DIR` if it is not
+already, expanded with `file(GLOB)`, and the hits are concatenated into the
+`GAME_GENERATED_FULL_C` list. A pattern like `*_full_*.c` therefore picks up
+however many shards a regeneration produced, and `*_full*.c` additionally
+matches a transitional monolithic `<serial>_full.c` — so a game that has not
+been regenerated yet keeps building unchanged.
+
+If the globs match nothing, `runtime.cmake` falls back in two steps: it uses
+`GEN_FULL_FALLBACK` when the title sets it, and otherwise derives
+`<serial>_full.c` from the dispatch marker by substituting `_dispatch.c` with
+`_full.c`. So an unconfigured title still resolves to the monolith it used to
+name explicitly.
+
+One caveat: that `file(GLOB)` is a plain glob, not `CONFIGURE_DEPENDS`. Adding
+or removing shards (which is what regenerating with a different shard count
+does) changes the source list, and CMake will not notice on its own — re-run
+`cmake -S . -B build` after a regeneration that changes the shard count.
+
 ## Linking the framework
 
 Game repositories do **not** vendor the framework. They reference it as a git

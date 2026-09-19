@@ -7,6 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = (ROOT / "runtime/src/main.cpp").read_text(encoding="utf-8")
 HEADER = (ROOT / "runtime/include/mod_plugins.h").read_text(encoding="utf-8")
+FNTRACE = (ROOT / "runtime/src/fntrace.c").read_text(encoding="utf-8")
+DIRTY_INTERP = (ROOT / "runtime/src/dirty_ram_interp.c").read_text(encoding="utf-8")
+CDROM = (ROOT / "runtime/src/cdrom.c").read_text(encoding="utf-8")
 CONFIG_H = (ROOT / "recompiler/src/config_loader.h").read_text(encoding="utf-8")
 CONFIG_CPP = (ROOT / "recompiler/src/config_loader.cpp").read_text(
     encoding="utf-8"
@@ -71,8 +74,13 @@ assert (
 )
 
 assert "release_run = g_turbo_load_release_frames;" in MAIN
-assert "g_frame_period_ms / (double)g_turbo_load_wall_multiplier" in MAIN
+assert ("g_frame_period_ms / (double)g_turbo_load_wall_multiplier" in MAIN or "present_effective_frame_period_ms() / (double)g_turbo_load_wall_multiplier" in MAIN)
 assert "if (!manual_turbo_active && !turbo_load_paced && present_should_wall_pace())" in MAIN
 assert "if (g_mod_disc_speed_divisor >= 0)" in MAIN
+assert "fntrace_maybe_mark_game_started(cpu, addr);" in DIRTY_INTERP
+assert "dirty_ram_text_image_registered()" in FNTRACE
+assert "psx_game_address_in_text(addr) && psx_game_text_native_ok(addr)" in FNTRACE
+assert "mode_reg & 0x48u" in CDROM
+assert "if (xa_stream_active || (mode_reg & 0x68u)) return delay;" not in CDROM
 
 print("mod-owned load acceleration guard passed")

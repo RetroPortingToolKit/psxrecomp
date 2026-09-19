@@ -193,7 +193,7 @@ class TestSettingsMerge(unittest.TestCase):
 
 
 class TestStatusDoc(EnvGuard):
-    """The status document is the whole contract with RetComM Studio."""
+    """The status document is the whole contract with Retro Studio."""
 
     def test_absent_install_reports_absent(self):
         os.environ["RETCOMM_ORACLE_DIR"] = tempfile.mkdtemp()

@@ -25,6 +25,7 @@ _OP_ORDER = [
     "ensure_app_icon",
     "rewrite_cmake_setup_host",
     "emit_packager",
+    "sync_packager_project_dirs",
     "emit_ci_workflow",
     "annotate_legacy_packaging",
     "probe_disc_refresh",
@@ -48,11 +49,12 @@ _OP_TITLES = {
     "ensure_app_icon": "Install assets/psxrecomp app icon",
     "rewrite_cmake_setup_host": "Rewrite CMakeLists.txt (setup-host)",
     "emit_packager": "Emit scripts/package_setup_release.sh",
+    "sync_packager_project_dirs": "Stage src/ + mods/ the release zip is missing",
     "emit_ci_workflow": "Emit setup-host release.yml",
     "annotate_legacy_packaging": "Annotate legacy prebuilt packaging",
     "probe_disc_refresh": "Refresh disc identity via probe_disc.py",
     "record_framework_pins": "Write framework_pins.txt",
-    "patch_readme_metrics": "Patch README badges, RetComM Launcher, and R.A.I.D. footer",
+    "patch_readme_metrics": "Patch README badges, Retro Launcher, and R.A.I.D. footer",
 }
 
 

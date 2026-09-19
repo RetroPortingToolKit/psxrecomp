@@ -60,6 +60,11 @@ How the two configs relate:
 [audit]
 ```
 
+`[prepare_disc]` digests identify the main track only. See
+[disc companions](DISC_COMPANIONS.md) for the separate SBI input gate,
+exact revision coverage, and preparation receipts. No SBI configuration key
+is required.
+
 ## Netplay disc mount (`[netplay]`)
 
 Optional. Online play needs the same CD geometry on every peer — data-track
@@ -74,13 +79,24 @@ multi-track cue. The runtime mounts the resolved path, fingerprints the TOC
 | `required_tracks` | `0` | Exact `iso_track_count` when > 0 (e.g. MotK Redump = `17`) |
 | `required_leadout_lba` | unset | Exact lead-out LBA when set |
 | `required_disc_fp` | `""` | Exact lowercase hex SHA-256 TOC fingerprint when non-empty |
+| `required_disc_fps` | unset | Multi-disc: array parallel to `[game] discs`, the TOC fingerprint of each disc. Each disc of a set has its own TOC, so a set gated only on `required_disc_fp` (the boot disc's) refuses online play on every other disc the launcher lets the player select. A disc with no entry falls back to `required_disc_fp`. |
+
+The whole `[netplay]` policy is resolved **per mounted disc**, not once per
+build — `required_tracks` and `required_leadout_lba` are per-disc facts too (a
+set may mix a CD-DA disc with a data-only one, and the lead-out LBA is the
+disc's size). Only `required_disc_fps` carries per-disc data today; the
+resolution point is `netplay_expect_for_disc()` in `runtime/src/main.cpp`, and
+that is where the others go when a title needs them.
 
 Offline Play may still launch with a TOC warning; first-run setup Finish and
 online Create/Join require `netplay_ok` (and online also a clean verify +
-non-empty `disc_fp`). Mirror `required_tracks` in the RetComM catalog as
+non-empty `disc_fp`). Mirror `required_tracks` in the Retro catalog as
 `rom_identity.track_counts` so the hub library scan rejects Track-01-only dumps.
-Wizard / RetComM / catalog submission accept Redump `.cue` + sibling `.bin`
-tracks only — not `.iso`/`.chd` (cannot reliably expand to multi-track).
+Wizard / Retro / catalog submission accept Redump `.cue` + sibling `.bin`
+tracks, or a MAME-compatible `.chd` of the same dump: `tools/psx_chd.py` reads
+it through the libchdr the emitters build (CMake target `chdr`) and writes the
+Redump-shaped track files back, so `[prepare_disc]` digests, SBI companions and
+`required_tracks` apply unchanged. A bare `.iso` cannot expand to multi-track.
 
 ## Program / game block
 
@@ -107,6 +123,25 @@ respective files.
 | `stack_base` | game | hex string, initial `$sp` value for the game |
 | `disc` | game (single-disc) | path to .cue, relative to project root |
 | `discs` | game (multi-disc) | array of .cue paths; `disc` is sugar for `discs = [disc]` |
+| `disc_serials` | game (multi-disc, optional) | array parallel to `discs`: the serial each disc carries (`["SCUS-94163", "SCUS-94164", "SCUS-94165"]`). Without it every disc is checked against `[game] id` — the BOOT disc's serial — so selecting disc 2 reports "wrong disc". A disc with no entry here is not serial-gated; the ISO-header check still applies. |
+
+### Multi-disc selection
+
+A build whose `discs` array has more than one entry grows a **Disc Selection**
+dropdown in the launcher, above the Serial/Region/ISO-header checklist. The
+choice is persisted in `settings.toml`:
+
+```toml
+[disc]
+path     = "/abs/path/Game (Disc 2).bin"   # the image actually mounted
+selected = 2                               # 1-based index into [game] discs
+```
+
+`selected` names the disc and `path` only survives when it *is* that disc
+(same file-name stem), so writing `selected` alone — from an external launcher
+or by hand — switches discs even though `path` still points at the previous
+one. That is what makes disc choice manageable like any other setting. Both
+keys are written only for multi-disc titles.
 
 ## Recompiler block
 
@@ -272,6 +307,22 @@ queue_guard = false     # this lower-level predicate appends to no fixed queue
 The debug server’s `ws_aspect_cone_site` command accepts an `address` string
 and reports exact-site identity/keep/reject counters.
 
+Signed horizontal bounds can be widened at the constant-load site:
+
+```toml
+[[widescreen.signed_x_bound]]
+address = "0x800BD290"
+expected = "0x2402FF00" # addiu v0,zero,-256
+```
+
+- `LUI rt,imm` sites are signed Q16 gameplay bounds and use the gameplay-field
+  scaler.
+- `ADDIU rt,zero,imm` and `ORI rt,zero,imm` sites are screen-pixel bounds and
+  move by the live horizontal margin. ADDIU sign-extends the constant; ORI
+  zero-extends it. The destination and immediate must both be nonzero.
+- Site identity is the normalized physical address plus the complete
+  instruction word. The helper is identity at 4:3.
+
 Explicit `bias_sites` / `range_sites` may opt into an additional resident
 object lead without widening terrain or render queues:
 
@@ -330,6 +381,11 @@ The other load-time accelerators are likewise opt-in:
 [runtime]
 idle_skip = true
 turbo_audio_sink = true
+overlay_region_floor = "0x10000"   # optional: lowest RAM address treated as overlay region.
+                                    # Default = boot EXE text end. Lower it for titles whose gameplay
+                                    # code loads at/inside the boot text range (GT1 secondary EXEs at
+                                    # 0x80010000, Driver 2 mission pages) so it is overlay-cache
+                                    # eligible. Clamped >= 0x10000; PSX_OVERLAY_REGION_FLOOR overrides.
 ```
 
 ### `turbo_loads` / `offer_turbo_loads` — deprecated and ignored
@@ -399,6 +455,34 @@ Settings surface. A game migrating Skip FMVs into its built-in mod catalog sets
 it to false. The runtime then hides the Settings row, ignores stale persisted
 values, and leaves activation to the selected trusted plugin.
 
+### Local rewind (`settings.toml`)
+
+Rewind is a player setting, not a game one: it lives in the user's
+`settings.toml` beside the runtime executable, under `[video]`.
+
+```toml
+[video]
+rewind          = false   # off by default — see below
+rewind_depth    = 50      # snapshots kept: 50 / 100 / 150 / 200
+rewind_interval = 15      # frames between snapshots: 1 / 4 / 8 / 12 / 15
+```
+
+**`rewind` defaults to `false`.** The ring holds whole *machine* snapshots —
+2 MB main RAM + 1 MB VRAM + 512 KB SPU RAM, stored uncompressed — and captures
+one every `rewind_interval` frames (denser, toward 4, while an FMV runs). At
+the default depth that is a few hundred MB of resident memory plus a periodic
+multi-megabyte copy, which is not a cost to charge every host for a feature a
+session may never open. Turning it on is one click in the launcher's Display
+card; nothing is allocated until it is.
+
+`PSX_REWIND=1` / `PSX_REWIND=0` override the setting either way, and
+`PSX_REWIND_DEPTH` / `PSX_REWIND_INTERVAL` / `PSX_REWIND_FMV_INTERVAL` override
+the tuning. A build configured with `-DPSX_REWIND=OFF` has no rewind at all and
+ignores all of these.
+
+Netplay rollback is a separate subsystem with its own ring and is unaffected by
+this setting; rewind is in fact suppressed while a netplay session is active.
+
 Bezel artwork is intentionally not a `[video]` key. It is exposed as the
 disabled-by-default `psx.presentation.bezel` mod package, which draws a
 user-selected image resource behind the game image in OpenGL letterbox or
@@ -411,7 +495,7 @@ Reserved future fields:
 
 ## Audit block
 
-See `docs/audit_inventory.md` for the audit pipeline. The schema here is
+See `docs/internal/audit_inventory.md` for the audit pipeline. The schema here is
 the input side: regions to walk, address-normalisation rules.
 
 ```toml
@@ -473,16 +557,45 @@ dispatch_key = "ram"             # "ram": functions keyed by RAM address;
                                  # "rom": RAM alias folds back to ROM
 kernel_bless = true              # runtime may byte-verify + run native
 
-[[recompiler.install_slots]] # kernel-RAM PCs the BIOS patches at runtime
-ram_addr = "0x00000CF0"
+[[recompiler.install_slots]] # kernel-RAM RANGES patched at runtime
+ram_addr = "0x00000CF0"          # legacy form: len 0x10, resume "jalr"
+[[recompiler.install_slots]]
+ram_addr = "0x00000C88"
+len      = "0x30"                # bytes; the patched range is [addr, addr+len)
+resume   = "fallthrough"         # "jalr" (default) | "fallthrough" | "none"
 
 [recompiler.runtime_exports] # per-image HLE anchors (omit = unavailable)
 shell_entry_phys  = "0x00030000"
 deliver_event_ret = "0x80001720"
 ```
 
+An `install_slots` entry declares kernel-RAM words the guest is EXPECTED to
+overwrite at runtime — the BIOS's own install stubs and, far more often, the
+Psy-Q libapi patchers every SDK title runs (`_patch_gte`, `_patch_card`,
+`_patch_card2`, `_patch_pad`). The emitter plants a compare-against-ROM hook
+at the range start, so a live patch dispatches into the interpreter and the
+guest's own instructions execute; the runtime excludes the range from the
+kernel-bless memcmp and resumes native at the range end. Without the
+declaration the patched body fails verification forever and interprets for
+the life of the process.
+
+`resume` says how the compiled body picks up again:
+
+| `resume` | Continuation PC | Use for |
+|---|---|---|
+| `"jalr"` (default) | `ram_addr + 0x10` | the classic 4-word `lui/addiu/jalr/nop` stub, whose call returns there |
+| `"fallthrough"` | `ram_addr + len` | the patched words ARE the function (a prologue rewrite, a NOP'd routine) |
+| `"none"` | — | the patch jumps out and never returns to this body (a `jr` into game text) |
+
+`ram_addr` and `len` must be 4-aligned, `len` non-zero, ranges must not
+overlap, and every range must lie inside the `kernel_bless` window; the
+loader refuses the profile otherwise and sorts the list for the runtime.
+Finding the ranges for a new image is described in
+[`dynamic_handler_install.md`](dynamic_handler_install.md).
+
 Every `copy` entry is a claim that the boot copy is byte-verbatim; the
-runtime kernel-bless memcmp enforces it. A BIOS with no copies (runs
+runtime kernel-bless memcmp enforces it, minus the declared install-slot
+ranges. A BIOS with no copies (runs
 entirely from ROM) is valid: normalization degenerates to the KSEG mask.
 Semantic invariants (disjoint windows, no fold-output/input intersection,
 single bless window) are enforced at load; violations refuse to build.

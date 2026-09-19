@@ -36,8 +36,11 @@
 #   --version VER      release version, e.g. v0.0.1        (default: dev)
 #   --out DIR          output directory           (default: <repo>/release-macos)
 #   --game-config P    game.toml to bundle, relative to repo
-#   --mods-src DIR     reviewed catalog source    (default: <repo>/mods/preloaded)
-#   --require-mod PKG  path under mods/packages that must exist (repeatable)
+#   --exclude-dev-mods drop channel = "developer" packages (also EXCLUDE_DEV_MODS=1)
+#   --mods-src DIR     override catalog source   (default: the build tree's
+#                      mods/, which carries framework builtins AND the title's
+#                      own packages; per-machine state.toml is stripped)
+#   --require-mod PKG  path under mods/bundled that must exist (repeatable)
 #   --data FILE        file the runtime reads BESIDE the executable, relative to
 #                      repo, e.g. keybinds.ini (repeatable)
 #   --doc FILE         extra doc to ship, relative to repo (repeatable)
@@ -60,7 +63,7 @@ note() { echo "      $*"; }
 [ "$(uname -s)" = "Darwin" ] || die "run this on macOS."
 
 REPO=""; BUILD=""; BIN_NAME=""; APP_NAME=""; PACKAGE=""; BUNDLE_ID=""
-VERSION="dev"; OUT=""; GAME_CONFIG=""; MODS_SRC=""
+VERSION="dev"; OUT=""; GAME_CONFIG=""; MODS_SRC=""; MODS_SRC_EXPLICIT=""
 DO_DMG=0; DO_ZIP=1
 REQUIRE_MODS=(); DOCS=(); DATA_FILES=()
 
@@ -75,7 +78,8 @@ while [ $# -gt 0 ]; do
     --version) VERSION="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
     --game-config) GAME_CONFIG="$2"; shift 2;;
-    --mods-src) MODS_SRC="$2"; shift 2;;
+    --exclude-dev-mods) EXCLUDE_DEV_MODS=1; shift;;
+    --mods-src) MODS_SRC="$2"; MODS_SRC_EXPLICIT=1; shift 2;;
     --require-mod) REQUIRE_MODS+=("$2"); shift 2;;
     --data) DATA_FILES+=("$2"); shift 2;;
     --doc) DOCS+=("$2"); shift 2;;
@@ -138,7 +142,7 @@ cp "$BIN" "$APPDIR/Contents/MacOS/$BIN_NAME"
 # they must be reachable from Contents/MacOS. They cannot literally live there:
 # codesign treats every non-executable under Contents/MacOS as a nested-code
 # candidate and rejects the whole bundle ("bundle format unrecognized, invalid,
-# or unsuitable") — mods/packages/<pkg>/<version>/ parses as a versioned bundle,
+# or unsuitable") — mods/bundled/<pkg>/<version>/ parses as a versioned bundle,
 # assets/img/*.tga as stray nested code. So data lives in Contents/Resources and
 # Contents/MacOS carries symlinks: codesign seals a symlink as a symlink instead
 # of descending into it, and runtime path resolution is unchanged.
@@ -153,14 +157,60 @@ stage_data() {  # stage_data <name-beside-exe> <source>
 stage_data bios "$BUILD/bios"
 stage_data assets "$BUILD/assets"
 
-# Take the mod catalog from SOURCE, never the build tree: a developer build dir
-# accumulates mods/state.toml with enhancements switched on, and shipping that
-# silently flips a title's default presentation for every player.
-if [ -d "$MODS_SRC" ]; then
+# Mod catalog. The hazard this guards against is real but narrow: a developer
+# build dir accumulates mods/state.toml with enhancements switched on, and
+# shipping that silently flips a title's default presentation for every player.
+#
+# Taking the SOURCE catalog instead used to be the remedy, but it drops every
+# framework builtin (PGXP, fast loading, CD speed, bezel): those live in
+# psxrecomp/mods/builtin and only ever appear NEXT TO THE EXE, staged there by
+# runtime.cmake. A title with its own catalog therefore shipped one package
+# where the player should have seen five.
+#
+# So take the build tree -- which is exactly what the runtime resolves at
+# runtime -- and delete the one file that is actually unsafe. That matches
+# package_setup_host.sh and package_release.ps1, so all three packagers now
+# ship the same catalog. An explicit --mods-src still wins for anyone who
+# wants the source-only set.
+if [ -n "$MODS_SRC_EXPLICIT" ]; then
+    [ -d "$MODS_SRC" ] || die "--mods-src is not a directory: $MODS_SRC"
     stage_data mods "$MODS_SRC"
 elif [ -d "$BUILD/mods" ]; then
-    die "refusing to package mods/ from the build tree ($BUILD/mods): pass --mods-src pointing at the reviewed source catalog"
+    stage_data mods "$BUILD/mods"
+    find "$APPDIR/Contents/Resources/mods" \
+        \( -name state.toml -o -name state.toml.tmp \) -delete
+elif [ -d "$MODS_SRC" ]; then
+    stage_data mods "$MODS_SRC"
+else
+    die "no mod catalog found: neither $BUILD/mods nor $MODS_SRC exists (rebuild the runtime target)"
 fi
+_mod_manifests=$(find "$APPDIR/Contents/Resources/mods" -name manifest.toml 2>/dev/null | wc -l)
+[ "$_mod_manifests" -ge 1 ] \
+    || die "staged mods/ contains no manifest.toml; the catalog would ship empty"
+[ -z "$(find "$APPDIR/Contents/Resources/mods" -name 'state.toml*' 2>/dev/null)" ] \
+    || die "per-machine mods/state.toml survived staging"
+# Developer-channel work is unfinished: it ships with local builds and must
+# never be published. Channels are per FEATURE, so this cannot be a grep -- a
+# line-anchored match cannot tell a package-level key from one inside a
+# [[feature]] block, and would drop a whole catalog over one instrument.
+# mod_channel_filter.py parses instead, dropping the version directory when
+# nothing in it ships and otherwise emitting a manifest without the developer
+# features. The staged catalog is build output, so emitting it filtered is
+# generation; the author's manifest in the repo is never touched.
+if [ "${EXCLUDE_DEV_MODS:-0}" = "1" ]; then
+    note "excluding developer-channel mods"
+    command -v python3 >/dev/null 2>&1 \
+        || die "no python3 on PATH; cannot filter developer-channel mods"
+    python3 "$(dirname "$0")/mod_channel_filter.py" \
+        "$APPDIR/Contents/Resources/mods/bundled" \
+        "$APPDIR/Contents/Resources/mods/packages" \
+        || die "developer-channel filtering failed"
+    _dev_left=$( { grep -rlE '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"[[:space:]]*$' \
+        "$APPDIR" --include=manifest.toml 2>/dev/null || true; } | wc -l)
+    [ "$_dev_left" -eq 0 ] || die "developer manifest(s) survived pruning: $_dev_left"
+    _mod_manifests=$(find "$APPDIR/Contents/Resources/mods" -name manifest.toml 2>/dev/null | wc -l)
+fi
+note "mod catalog: ${_mod_manifests} manifest(s), no per-machine state"
 
 if [ -n "$GAME_CONFIG" ]; then
     stage_data "$(basename "$GAME_CONFIG")" "$REPO/$GAME_CONFIG"
@@ -177,6 +227,16 @@ for doc in "${DOCS[@]}"; do
         cp "$REPO/$doc" "$APPDIR/Contents/Resources/$(basename "$doc")"
     fi
 done
+# Third-party notices for everything statically linked into the runtime:
+# libchdr is BSD-3-Clause and toml11 is MIT, and both require the notice to be
+# reproduced in binary redistributions. Copy the whole directory so a new
+# vendored dependency ships its notice without touching this script.
+if [ -d "$REPO/runtime/licenses" ]; then
+    mkdir -p "$APPDIR/Contents/Resources/licenses" "$STAGE/licenses"
+    cp "$REPO"/runtime/licenses/*  "$APPDIR/Contents/Resources/licenses/"
+    cp "$REPO"/runtime/licenses/*  "$STAGE/licenses/"
+fi
+
 # Surface the player-facing docs beside the .app too, so they are readable
 # without opening the bundle. Mirrors the flat Windows package layout.
 for doc in START_HERE.txt README.md LICENSE RELEASE_NOTES.md; do
@@ -284,11 +344,16 @@ OPENBIOS="$APPDIR/Contents/Resources/bios/openbios.bin"
 [ -f "$APPDIR/Contents/Resources/bios/OpenBIOS.LICENSE" ] || die "OpenBIOS MIT notice missing"
 note "bundled OpenBIOS (512 KiB) + MIT notice"
 
+# 3b. Third-party notices for the statically linked runtime dependencies.
+[ -f "$APPDIR/Contents/Resources/licenses/libchdr-NOTICES.txt" ]     || die "libchdr BSD-3-Clause notice missing"
+[ -f "$STAGE/licenses/libchdr-NOTICES.txt" ]     || die "libchdr BSD-3-Clause notice missing beside the .app"
+note "third-party notices staged in the bundle and beside it"
+
 # 4. Required mod packages. A silently mod-less launcher looks fine but has no
 #    Mods page at all, which is indistinguishable from the feature being cut.
 for m in "${REQUIRE_MODS[@]}"; do
-    [ -f "$APPDIR/Contents/Resources/mods/packages/$m" ] \
-        || die "required mod package missing: mods/packages/$m"
+    [ -f "$APPDIR/Contents/Resources/mods/bundled/$m" ] \
+        || die "required mod package missing: mods/bundled/$m"
 done
 [ ${#REQUIRE_MODS[@]} -eq 0 ] || note "mod catalog: ${#REQUIRE_MODS[@]} required package(s) present"
 

@@ -568,7 +568,7 @@ def op_ensure_recomp_ui_submodule(root: Path, options: MigrateOptions) -> ApplyR
         or (root / "recomp-ui" / ".git").exists()
     ):
         return ApplyResult("ensure_recomp_ui_submodule", True, "Already present", [])
-    url = "https://github.com/mstan/recomp-ui.git"
+    url = "https://github.com/RetroPortingToolKit/recomp-ui.git"
     ok, out = _run(
         ["git", "submodule", "add", "-b", "master", url, "recomp-ui"],
         root,
@@ -917,6 +917,102 @@ def op_emit_packager(root: Path, options: MigrateOptions) -> ApplyResult:
     )
 
 
+_PACKAGER_BLURB = {
+    "src": (
+        "# Game-owned C that CMakeLists.txt compiles into the runtime — mod\n"
+        "# activation plugins live here (CODEGEN_SETUP_SOURCES \"src/*_mods.c\").\n"
+    ),
+    "mods": (
+        "# Preloaded mod packages (mods/preloaded/packages/<id>). Plugins compiled\n"
+        "# in above select themselves through these; without them a mod is built\n"
+        "# and never enabled.\n"
+    ),
+}
+
+
+def op_sync_packager_project_dirs(root: Path, options: MigrateOptions) -> ApplyResult:
+    """Stage paths CMakeLists.txt needs but the packager allowlist omits.
+
+    Patches the existing wrapper rather than regenerating it: packagers are
+    routinely hand-extended with extra --project-file lines, and rewriting from
+    the template would silently drop them.
+    """
+    from .detect import packager_missing_optional_paths, packager_missing_paths
+
+    dst = root / "scripts" / "package_setup_release.sh"
+    if not dst.is_file():
+        return ApplyResult(
+            "sync_packager_project_dirs", False, "No scripts/package_setup_release.sh", []
+        )
+    missing = sorted(set(packager_missing_paths(root)) |
+                     set(packager_missing_optional_paths(root)))
+    if not missing:
+        return ApplyResult(
+            "sync_packager_project_dirs", True, "Packager already stages every needed path", []
+        )
+
+    text = dst.read_text(encoding="utf-8")
+    anchor = "\ncd \"${ROOT}\"\n"
+    if anchor not in text:
+        return ApplyResult(
+            "sync_packager_project_dirs",
+            False,
+            "Unrecognised packager layout (no cd \"${ROOT}\" anchor); fix by hand",
+            [],
+        )
+
+    added: list[str] = []
+    block = ""
+    for rel in missing:
+        target = root / rel
+        kind = "dir" if target.is_dir() else "file"
+        test = "-d" if kind == "dir" else "-f"
+        block += _PACKAGER_BLURB.get(rel, "")
+        block += (
+            f'if [[ {test} "${{ROOT}}/{rel}" ]]; then\n'
+            f"  EXTRA_PROJECT+=(--project-{kind} {rel})\n"
+            "fi\n"
+        )
+        added.append(rel)
+
+    text = text.replace(anchor, "\n" + block + anchor, 1)
+    _write(dst, text, options.dry_run)
+    return ApplyResult(
+        "sync_packager_project_dirs",
+        True,
+        "Staged " + ", ".join(added) + " in scripts/package_setup_release.sh",
+        ["scripts/package_setup_release.sh"],
+    )
+
+
+def _ci_step_names(text: str) -> list[str]:
+    """`- name:` values under a workflow's steps, in order.
+
+    Deliberately a regex over the raw text rather than a YAML parse: this runs
+    against a template that still holds @TOKEN@ placeholders, which are valid
+    YAML here but need no interpretation, and the check must not depend on a
+    yaml module being importable inside Studio.
+    """
+    names: list[str] = []
+    for line in text.splitlines():
+        m = re.match(r"^\s*-\s+name:\s*(.+?)\s*$", line)
+        if m:
+            names.append(m.group(1).strip().strip('"\''))
+    return names
+
+
+def _ci_steps_missing_from(installed: Path, template: Path) -> list[str]:
+    """Template step names absent from the installed workflow."""
+    try:
+        have = set(_ci_step_names(installed.read_text(encoding="utf-8", errors="replace")))
+        want = _ci_step_names(template.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return []
+    # Names carrying a token cannot be compared literally -- the installed copy
+    # has them substituted -- so they are not evidence either way.
+    return [n for n in want if n not in have and "@" not in n]
+
+
 def op_emit_ci_workflow(root: Path, options: MigrateOptions) -> ApplyResult:
     tokens = _resolve_tokens(root, options)
     src = ci_setup_release_template(root)
@@ -931,7 +1027,29 @@ def op_emit_ci_workflow(root: Path, options: MigrateOptions) -> ApplyResult:
     if dst.is_file() and not options.force and "YOUR_ZIP_PREFIX" not in dst.read_text(
         encoding="utf-8", errors="replace"
     ):
-        return ApplyResult("emit_ci_workflow", True, "release.yml already filled", [])
+        # "Filled" is not the same as "current". This used to stop here, so a
+        # project that installed the workflow once never learned the template
+        # had gained steps -- which is how a release gate can exist in the
+        # framework and be missing from every title that predates it.
+        #
+        # Compare STEP NAMES rather than text: a filled workflow legitimately
+        # differs from the template (tokens, and titles customise theirs), so a
+        # textual diff would cry stale on every project forever. A step the
+        # template defines and the installed file does not is unambiguous.
+        missing = _ci_steps_missing_from(dst, src)
+        if missing:
+            return ApplyResult(
+                "emit_ci_workflow",
+                False,
+                "release.yml is out of date with the CI template; missing step(s): "
+                + ", ".join(missing)
+                + " — re-emit with force to update (review the diff first: a "
+                  "customised workflow is overwritten wholesale)",
+                [],
+            )
+        return ApplyResult(
+            "emit_ci_workflow", True, "release.yml already filled and current", []
+        )
     _fill(src, dst, tokens, options.dry_run, ci=True)
     return ApplyResult(
         "emit_ci_workflow",
@@ -1141,7 +1259,7 @@ def _ensure_boxart_png(root: Path, options: MigrateOptions) -> list[str]:
 
 
 def op_patch_readme_metrics(root: Path, options: MigrateOptions) -> ApplyResult:
-    """Upsert download badges, libretro boxart, RetComM Launcher, and R.A.I.D. footer."""
+    """Upsert download badges, libretro boxart, Retro Launcher, and R.A.I.D. footer."""
     from .readme_metrics import (
         apply_github_about,
         boxart_png_present,
@@ -1195,7 +1313,7 @@ def op_patch_readme_metrics(root: Path, options: MigrateOptions) -> ApplyResult:
     parts: list[str] = []
     if changed:
         parts.append(
-            f"Patched README badges, boxart, RetComM Launcher, and R.A.I.D. footer ({owner}/{repo})"
+            f"Patched README badges, boxart, Retro Launcher, and R.A.I.D. footer ({owner}/{repo})"
         )
     if fetched:
         parts.append("fetched libretro boxart")
@@ -1234,6 +1352,7 @@ _OPS = {
     "ensure_app_icon": op_ensure_app_icon,
     "rewrite_cmake_setup_host": op_rewrite_cmake_setup_host,
     "emit_packager": op_emit_packager,
+    "sync_packager_project_dirs": op_sync_packager_project_dirs,
     "emit_ci_workflow": op_emit_ci_workflow,
     "annotate_legacy_packaging": op_annotate_legacy_packaging,
     "probe_disc_refresh": op_probe_disc_refresh,

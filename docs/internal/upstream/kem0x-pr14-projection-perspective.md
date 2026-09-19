@@ -34,5 +34,5 @@ Both are now reachable enhancements, wired up in response to
   OpenGL and Vulkan now consume it too — the parked code only reached the
   software rasterizer, while the default renderer is OpenGL.
 
-See `ENHANCEMENTS.md` §G1 for the shipped design. This file stays as the record
+See `docs/ENHANCEMENTS.md` §G1 for the shipped design. This file stays as the record
 of what was imported and what was deliberately left out.

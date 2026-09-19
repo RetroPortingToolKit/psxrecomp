@@ -210,6 +210,7 @@ int main(int argc, char** argv) {
     std::set<uint32_t>    ws_cull_plane_nx;     // [widescreen.cull] plane_nx_sites
     std::set<uint32_t>    ws_cull_xclip_load;   // [widescreen.cull] xclip_load_sites
     std::set<uint32_t>    ws_cull_nclip_keep;   // [widescreen.cull] nclip_keep_sites
+    std::set<uint32_t>    ws_cull_nclip_exact;  // [widescreen.cull] nclip_exact_sites
     std::set<uint32_t>    ws_cull_branch_keep;  // [widescreen.cull] branch_keep_sites
     std::vector<PSXRecompV4::WidescreenCullKeepSite> ws_cull_keep;
     std::vector<PSXRecompV4::WidescreenAngleSite> ws_cull_angle;
@@ -273,6 +274,7 @@ int main(int argc, char** argv) {
         ws_cull_plane_nx.insert(cfg.ws_cull_plane_nx_sites.begin(), cfg.ws_cull_plane_nx_sites.end());
         ws_cull_xclip_load.insert(cfg.ws_cull_xclip_load_sites.begin(), cfg.ws_cull_xclip_load_sites.end());
         ws_cull_nclip_keep.insert(cfg.ws_cull_nclip_keep_sites.begin(), cfg.ws_cull_nclip_keep_sites.end());
+        ws_cull_nclip_exact.insert(cfg.ws_cull_nclip_exact_sites.begin(), cfg.ws_cull_nclip_exact_sites.end());
         ws_cull_branch_keep.insert(cfg.ws_cull_branch_keep_sites.begin(), cfg.ws_cull_branch_keep_sites.end());
         ws_cull_keep = cfg.ws_cull_keep_sites;
         ws_cull_angle = cfg.ws_cull_angle_sites;
@@ -368,6 +370,7 @@ int main(int argc, char** argv) {
         ws_cull_plane_nx.insert(wscfg.ws_cull_plane_nx_sites.begin(), wscfg.ws_cull_plane_nx_sites.end());
         ws_cull_xclip_load.insert(wscfg.ws_cull_xclip_load_sites.begin(), wscfg.ws_cull_xclip_load_sites.end());
         ws_cull_nclip_keep.insert(wscfg.ws_cull_nclip_keep_sites.begin(), wscfg.ws_cull_nclip_keep_sites.end());
+        ws_cull_nclip_exact.insert(wscfg.ws_cull_nclip_exact_sites.begin(), wscfg.ws_cull_nclip_exact_sites.end());
         ws_cull_branch_keep.insert(wscfg.ws_cull_branch_keep_sites.begin(), wscfg.ws_cull_branch_keep_sites.end());
         if (ws_cull_keep.empty()) ws_cull_keep = wscfg.ws_cull_keep_sites;
         if (ws_cull_angle.empty()) ws_cull_angle = wscfg.ws_cull_angle_sites;
@@ -511,6 +514,13 @@ int main(int argc, char** argv) {
     fmt::print("  Code Size:      {} bytes ({} KB)\n",
                exe->header.file_size, exe->header.file_size / 1024);
     fmt::print("  End Address:    0x{:08X}\n", exe->end_address());
+    if (exe->has_analysis_guard()) {
+        // Only printed for a producer-tagged capture, so a non-overlay image's
+        // log stays byte-identical to the untagged build.
+        fmt::print("  Analysis End:   0x{:08X}  ({} trailing delay-slot guard "
+                   "byte(s), readable but not discoverable)\n",
+                   exe->analysis_end_address(), exe->analysis_guard_bytes);
+    }
     fmt::print("  Global Pointer: 0x{:08X}\n", exe->header.initial_gp);
     fmt::print("  Stack Pointer:  0x{:08X}\n\n", exe->header.initial_sp);
 
@@ -653,7 +663,7 @@ int main(int argc, char** argv) {
         std::ifstream ef(extra_funcs_path);
         if (ef.is_open()) {
             const uint32_t seed_lo = exe->header.load_address;
-            const uint32_t seed_hi = exe->end_address();
+            const uint32_t seed_hi = exe->analysis_end_address();
             std::string line;
             while (std::getline(ef, line)) {
                 if (line.empty() || line[0] == '#') continue;
@@ -819,7 +829,7 @@ int main(int argc, char** argv) {
             for (uint32_t i = 0; i < 3u; i++) {
                 auto value = exe->read_word(a + i * 4u);
                 if (!value.has_value() || (*value & 3u) != 0u ||
-                    *value < exe_lo || *value >= exe->end_address()) {
+                    *value < exe_lo || *value >= exe->analysis_end_address()) {
                     return false;
                 }
             }
@@ -1003,7 +1013,7 @@ int main(int argc, char** argv) {
         std::set<uint32_t> forced;
         forced.insert(exe->header.initial_pc);
         const uint32_t exe_lo = exe->header.load_address;
-        const uint32_t exe_hi = exe->end_address();
+        const uint32_t exe_hi = exe->analysis_end_address();
         auto read_w = [&](uint32_t a) -> uint32_t {
             auto w = exe->read_word(a);
             return w.has_value() ? *w : 0u;
@@ -1232,6 +1242,7 @@ int main(int argc, char** argv) {
     codegen_config.ws_cull_plane_nx_sites = ws_cull_plane_nx;
     codegen_config.ws_cull_xclip_load_sites = ws_cull_xclip_load;
     codegen_config.ws_cull_nclip_keep_sites = ws_cull_nclip_keep;
+    codegen_config.ws_cull_nclip_exact_sites = ws_cull_nclip_exact;
     codegen_config.ws_cull_branch_keep_sites = ws_cull_branch_keep;
     codegen_config.ws_cull_keep_sites = ws_cull_keep;
     codegen_config.ws_cull_angle_sites = ws_cull_angle;
@@ -1591,6 +1602,34 @@ int main(int argc, char** argv) {
         }
         ds << "};\n";
         ds << fmt::format("#define PSX_GAME_DISPATCH_COUNT {}u\n\n", records.size());
+        // WO-6: resident dispatch keys are immutable. Index them once at build
+        // time instead of binary-searching on every overlay-to-EXE call and
+        // every text-validity query. This caches resolution, NEVER validity:
+        // callers below still check live instruction ranges on every dispatch.
+        // Bound the indexed span to one PS1 RAM image; wider or ambiguous
+        // tables retain the existing binary search. No mutable cache or flag.
+        const uint32_t lookup_lo = records.empty() ? 0u : (records.front().addr & 0x1FFFFFFFu);
+        const uint32_t lookup_hi = records.empty() ? 0u : (records.back().addr & 0x1FFFFFFFu);
+        bool indexed_lookup = !records.empty() && lookup_hi - lookup_lo < 0x200000u;
+        for (size_t i = 0; i < records.size(); ++i) {
+            const uint32_t key = records[i].addr & 0x1FFFFFFFu;
+            if ((key & 3u) || (i && key == (records[i - 1].addr & 0x1FFFFFFFu)))
+                indexed_lookup = false;
+        }
+        if (indexed_lookup) {
+            std::vector<uint32_t> index((lookup_hi - lookup_lo) / 4u + 1u, 0u);
+            for (size_t i = 0; i < records.size(); ++i)
+                index[((records[i].addr & 0x1FFFFFFFu) - lookup_lo) / 4u] = (uint32_t)i + 1u;
+            ds << "/* Immutable physical-word index; zero denotes a dispatch miss. */\n";
+            ds << "static const " << (records.size() <= 65535u ? "uint16_t" : "uint32_t")
+               << " k_psx_game_dispatch_index[] = {\n";
+            for (size_t i = 0; i < index.size(); ++i) {
+                if ((i & 15u) == 0) ds << "    ";
+                ds << index[i] << "u,";
+                ds << (((i & 15u) == 15u || i + 1 == index.size()) ? "\n" : " ");
+            }
+            ds << "};\n\n";
+        }
         ds << "/* PS1 segments alias the same physical RAM. A game whose PS-X EXE\n";
         ds << " * header carries KUSEG addresses (load address and entry PC without the\n";
         ds << " * KSEG bit) executes with a KUSEG PC, while this table is keyed by the\n";
@@ -1601,15 +1640,22 @@ int main(int argc, char** argv) {
         ds << " * the table is sorted by the same masked key. */\n";
         ds << "static const PsxGameDispatchEntry* psx_game_find_entry(uint32_t addr) {\n";
         ds << "    const uint32_t want = addr & 0x1FFFFFFFu;\n";
-        ds << "    uint32_t lo = 0, hi = PSX_GAME_DISPATCH_COUNT;\n";
-        ds << "    while (lo < hi) {\n";
-        ds << "        uint32_t mid = lo + (hi - lo) / 2;\n";
-        ds << "        uint32_t key = k_psx_game_dispatch[mid].addr & 0x1FFFFFFFu;\n";
-        ds << "        if (want < key) hi = mid;\n";
-        ds << "        else if (want > key) lo = mid + 1;\n";
-        ds << "        else return &k_psx_game_dispatch[mid];\n";
-        ds << "    }\n";
-        ds << "    return 0;\n";
+        if (indexed_lookup) {
+            ds << fmt::format("    const uint32_t offset = want - 0x{:08X}u;\n", lookup_lo);
+            ds << fmt::format("    if ((want & 3u) || offset > 0x{:X}u) return 0;\n", lookup_hi - lookup_lo);
+            ds << "    const uint32_t index = k_psx_game_dispatch_index[offset >> 2];\n";
+            ds << "    return index ? &k_psx_game_dispatch[index - 1u] : 0;\n";
+        } else {
+            ds << "    uint32_t lo = 0, hi = PSX_GAME_DISPATCH_COUNT;\n";
+            ds << "    while (lo < hi) {\n";
+            ds << "        uint32_t mid = lo + (hi - lo) / 2;\n";
+            ds << "        uint32_t key = k_psx_game_dispatch[mid].addr & 0x1FFFFFFFu;\n";
+            ds << "        if (want < key) hi = mid;\n";
+            ds << "        else if (want > key) lo = mid + 1;\n";
+            ds << "        else return &k_psx_game_dispatch[mid];\n";
+            ds << "    }\n";
+            ds << "    return 0;\n";
+        }
         ds << "}\n\n";
 
         ds << "/* Exact static-code validity for this entry's emitted CFG ranges. */\n";

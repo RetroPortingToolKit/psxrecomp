@@ -3,7 +3,7 @@
 #
 # Stages the host exe, title sources, filtered psxrecomp/ + recomp-ui/, then
 # finishes with stage_setup_sdk.sh (emitters, OpenBIOS, MinGW DLLs).
-# Portable cmake/clang is NOT embedded by default — RetComM / the setup wizard
+# Portable cmake/clang is NOT embedded by default — Retro / the setup wizard
 # download cmake-clang-v1 from retcomm-toolchains (or accept an offline zip).
 #
 # Usage (from game repo root):
@@ -25,6 +25,22 @@
 # shipped layout matches what the build tree staged next to the binary.
 # Per-user state (mods/state.toml) is always excluded. The -optional variant
 # warns and continues when the directory is absent from the build.
+#
+# mods/ IS STAGED BY DEFAULT and is REQUIRED. Every non-oracle game runtime
+# gets <exe>/mods from runtime.cmake, so a release missing it means the build
+# wiring is broken and the title would ship with an empty Mods page -- which
+# is exactly what happened: this was opt-in per title, and 21 of 23 ports
+# silently shipped no mods at all because their generated wrapper never passed
+# --runtime-dir mods. Enforce it here rather than in each title's wrapper.
+# A title that genuinely ships no catalog passes --no-mods.
+#
+# DEVELOPER CHANNEL. A package manifest may declare channel = "developer".
+# Those are work-in-progress catalogs that should stay on the maintainer's
+# machine: they ship with ordinary local builds and local exports, but
+# --exclude-dev-mods (or EXCLUDE_DEV_MODS=1, which CI sets) drops them from a
+# public release. Pruning is by PACKAGE directory, never by rewriting a
+# manifest -- editing a package during packaging would change content that is
+# meant to be verifiable.
 #
 # Env:
 #   RELEASE_VERSION / <version-env> / VERSION file  (must match binary stamp)
@@ -48,10 +64,28 @@ DISPLAY_NAME=""
 RECOMPILER_BUILD="build-recompiler"
 VERSION_ENV="RELEASE_VERSION"
 DISC_HINT="your legally owned game disc"
+# Wave-5 F4: a packaged game.toml without `overlay_cache = true` ships a runtime that never
+# initialises the overlay loader, so every streamed overlay runs on the interpreter (78 of
+# 105 releases measured 2026-09-16). Refuse unless the caller states why.
+SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE=""
 PROJECT_FILES=()
 PROJECT_DIRS=()
 RUNTIME_DIRS=()
 RUNTIME_DIRS_OPTIONAL=()
+# mods/ ships by default; --no-mods opts a catalog-less title out.
+STAGE_MODS=1
+# Drop channel = "developer" packages from the shipped catalog.
+#
+# Defaults to ON under CI and OFF locally, which is the whole point: a
+# maintainer's local build and local export keep the mods they are working on,
+# while anything a release workflow publishes does not. Keying off $CI (set by
+# GitHub Actions and every other provider) means this holds for every title
+# without editing 23 separate release workflows -- a per-workflow opt-in is
+# exactly the shape that left 21 of 23 ports shipping no mods at all.
+# --include-dev-mods / --exclude-dev-mods override either way.
+if [[ -z "${EXCLUDE_DEV_MODS:-}" ]]; then
+  if [[ -n "${CI:-}" ]]; then EXCLUDE_DEV_MODS=1; else EXCLUDE_DEV_MODS=0; fi
+fi
 RUNTIME_BIN_DIR="${PSXRECOMP_RUNTIME_BIN_DIR:-${BPE_RUNTIME_BIN_DIR:-/usr/x86_64-w64-mingw32/bin}}"
 EMBED_TOOLCHAIN=0
 if [[ "${PSXRECOMP_EMBED_TOOLCHAIN:-0}" == "1" ]]; then
@@ -76,18 +110,49 @@ while [[ $# -gt 0 ]]; do
     --disc-hint) DISC_HINT="${2:?}"; shift 2 ;;
     --project-file) PROJECT_FILES+=("${2:?}"); shift 2 ;;
     --project-dir) PROJECT_DIRS+=("${2:?}"); shift 2 ;;
+    --no-mods) STAGE_MODS=0; shift ;;
+    --exclude-dev-mods) EXCLUDE_DEV_MODS=1; shift ;;
+    --include-dev-mods) EXCLUDE_DEV_MODS=0; shift ;;
     --runtime-dir) RUNTIME_DIRS+=("${2:?}"); shift 2 ;;
     --runtime-dir-optional) RUNTIME_DIRS_OPTIONAL+=("${2:?}"); shift 2 ;;
     --runtime-bin) RUNTIME_BIN_DIR="${2:?}"; shift 2 ;;
     --root) ROOT="${2:?}"; shift 2 ;;
     --embed-toolchain) EMBED_TOOLCHAIN=1; shift ;;
     --no-embed-toolchain) EMBED_TOOLCHAIN=0; shift ;;
+    --ship-without-overlay-cache-because) SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE="${2:?}"; shift 2 ;;
     *)
       echo "error: unknown arg: $1" >&2
       usage 2
       ;;
   esac
 done
+
+# Default the mods catalog into the required set unless the caller already
+# named it (in either list) or opted out. Appending rather than overriding
+# keeps an explicit --runtime-dir-optional mods meaningful for a title that
+# knowingly builds without one.
+if [[ "${STAGE_MODS}" -eq 1 ]]; then
+  _mods_named=0
+  for _d in "${RUNTIME_DIRS[@]:-}" "${RUNTIME_DIRS_OPTIONAL[@]:-}"; do
+    [[ "${_d}" == "mods" ]] && _mods_named=1
+  done
+  if [[ "${_mods_named}" -eq 0 ]]; then
+    RUNTIME_DIRS+=("mods")
+  fi
+  # Also ship the SOURCE catalog (mods/preloaded/...) when the title has one.
+  # The setup-host zip rebuilds on the player's machine, and that rebuild
+  # re-runs the title's POST_BUILD mod staging -- which reads the source tree,
+  # not the staged copy. Without this the rebuilt exe silently loses every
+  # game-owned mod and keeps only the framework builtins. copy_proj skips a
+  # path that does not exist, so this is inert for a title with no catalog.
+  _mods_proj=0
+  for _d in "${PROJECT_DIRS[@]:-}"; do
+    [[ "${_d}" == "mods" ]] && _mods_proj=1
+  done
+  if [[ "${_mods_proj}" -eq 0 ]]; then
+    PROJECT_DIRS+=("mods")
+  fi
+fi
 
 if [[ -z "${BUILD_DIR}" || -z "${ARTIFACT}" || -z "${ZIP_PREFIX}" || -z "${EXE_NAME}" ]]; then
   echo "error: --build-dir, --artifact, --zip-prefix, and --exe-name are required" >&2
@@ -202,7 +267,7 @@ ZIP_NAME="${ZIP_PREFIX}-${VERSION}-${ARTIFACT}.zip"
 rm -f "${DIST}/${ZIP_NAME}"
 
 cp -a "${EXE}" "${STAGE}/"
-# Ship the stamp beside the exe so installers / RetComM can prefer it over VERSION.
+# Ship the stamp beside the exe so installers / Retro can prefer it over VERSION.
 if [[ -f "$(dirname "${EXE}")/psx_game_version.txt" ]]; then
   cp -a "$(dirname "${EXE}")/psx_game_version.txt" "${STAGE}/psx_game_version.txt"
 else
@@ -238,9 +303,11 @@ fi
 
 # Exe-relative runtime data (mods catalog, bezels, ...): the runtime resolves
 # these from the exe's own directory, so ship them at the stage root exactly
-# as the build tree staged them. mods/state.toml is the LOCAL machine's mod
-# enable/disable state -- preloaded catalogs ship default-disabled, so a dev
-# machine's selections must never leak into a release.
+# as the build tree staged them. Two things under mods/ belong to the local
+# machine and must never leak into a release: state.toml is this machine's mod
+# enable/disable state (preloaded catalogs ship default-disabled), and
+# installed/ holds .psxmod archives the developer installed as a player would.
+# Only mods/bundled/ is build output, and only build output ships.
 copy_runtime_dir() {
   local name="$1" optional="$2"
   if [[ ! -d "${EXE_DIR}/${name}" ]]; then
@@ -255,20 +322,52 @@ copy_runtime_dir() {
   mkdir -p "${STAGE}/${name}"
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --exclude 'state.toml' --exclude 'state.toml.tmp' \
+      --exclude 'installed' --exclude 'installed/***' \
       "${EXE_DIR}/${name}/" "${STAGE}/${name}/"
   else
     cp -a "${EXE_DIR}/${name}/." "${STAGE}/${name}/"
     rm -f "${STAGE}/${name}/state.toml" "${STAGE}/${name}/state.toml.tmp"
+    rm -rf "${STAGE}/${name}/installed"
   fi
   echo "staged runtime dir ${name}/"
 }
 
-for d in "${RUNTIME_DIRS[@]}"; do
-  copy_runtime_dir "${d}" 0
-done
-for d in "${RUNTIME_DIRS_OPTIONAL[@]}"; do
-  copy_runtime_dir "${d}" 1
-done
+# Drop developer-channel work from a staged catalog tree.
+#
+# Channels are per FEATURE, so this cannot be a grep: a line-anchored match on
+# `channel = "developer"` cannot tell a package-level key from one inside a
+# [[feature]] block, and would drop a whole catalog because one instrument in
+# it is unfinished. mod_channel_filter.py parses the manifest, removes the
+# version directory when nothing in it ships, and otherwise emits a manifest
+# without the developer features and the entries that only served them.
+#
+# Fails closed: if the filter cannot run, packaging stops rather than
+# publishing unfinished work.
+prune_dev_mods() {  # prune_dev_mods <dir of <id>/<version>/manifest.toml>...
+  local python=""
+  for candidate in python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1; then python="${candidate}"; break; fi
+  done
+  if [[ -z "${python}" ]]; then
+    echo "error: no python3 on PATH; cannot filter developer-channel mods" >&2
+    exit 1
+  fi
+  if ! "${python}" "${SCRIPT_DIR}/mod_channel_filter.py" "$@"; then
+    echo "error: developer-channel filtering failed" >&2
+    exit 1
+  fi
+}
+
+if ((${#RUNTIME_DIRS[@]})); then
+  for d in "${RUNTIME_DIRS[@]}"; do
+    copy_runtime_dir "${d}" 0
+  done
+fi
+if ((${#RUNTIME_DIRS_OPTIONAL[@]})); then
+  for d in "${RUNTIME_DIRS_OPTIONAL[@]}"; do
+    copy_runtime_dir "${d}" 1
+  done
+fi
 
 copy_proj() {
   local rel="$1"
@@ -294,6 +393,34 @@ done
 for d in "${PROJECT_DIRS[@]}"; do
   copy_proj "${d}"
 done
+
+# Developer-channel pruning runs AFTER every catalog is staged, and covers BOTH
+# copies: the runtime catalog under mods/bundled that the launcher lists, and
+# the source catalog under mods/preloaded that the setup-host rebuild re-stages
+# from. Pruning only the first would publish the package in source form and let
+# the player's own rebuild put it straight back. mods/packages is the pre-split
+# layout, kept here so an older staged tree is still pruned rather than shipped.
+if [[ "${EXCLUDE_DEV_MODS}" -eq 1 ]]; then
+  echo "excluding developer-channel mods from this package"
+  prune_dev_mods "${STAGE}/mods/bundled" \
+                 "${STAGE}/mods/preloaded/packages" \
+                 "${STAGE}/mods/packages"
+  _dev_left=$( { grep -rlE '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"[[:space:]]*$' \
+      "${STAGE}" --include=manifest.toml 2>/dev/null || true; } | wc -l)
+  if [[ "${_dev_left}" -ne 0 ]]; then
+    echo "error: ${_dev_left} developer manifest(s) survived pruning:" >&2
+    grep -rlE '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"[[:space:]]*$' \
+        "${STAGE}" --include=manifest.toml >&2 || true
+    exit 1
+  fi
+else
+  _dev_in=$( { grep -rlE '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"[[:space:]]*$' \
+      "${STAGE}" --include=manifest.toml 2>/dev/null || true; } | wc -l)
+  if [[ "${_dev_in}" -ne 0 ]]; then
+    echo "note: package includes ${_dev_in} developer-channel manifest(s);" \
+         "pass --exclude-dev-mods (or EXCLUDE_DEV_MODS=1) for a public release"
+  fi
+fi
 
 copy_tree_filtered() {
   local src="$1" dest="$2"
@@ -362,6 +489,17 @@ fi
 
 bash "${STAGE_SDK}" "${stage_args[@]}"
 
+if ! grep -qE '^[[:space:]]*overlay_cache[[:space:]]*=[[:space:]]*true' "${STAGE}/game.toml"; then
+  if [[ -z "${SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE}" ]]; then
+    echo "error: REFUSING TO PACKAGE: ${STAGE}/game.toml has no '[runtime] overlay_cache = true'." >&2
+    echo "       The runtime never initialises the overlay loader without it, so every streamed" >&2
+    echo "       overlay runs on the dirty-RAM interpreter for every player. Add the key, or pass" >&2
+    echo "       --ship-without-overlay-cache-because '<reason>' to record why this title ships without it." >&2
+    exit 1
+  fi
+  echo "warning: packaging without overlay_cache = true (reason: ${SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE})" >&2
+fi
+
 cat >"${STAGE}/README-SETUP.txt" <<EOF
 ${DISPLAY_NAME} ${VERSION} — setup package
 Platform: ${ARTIFACT}
@@ -376,14 +514,109 @@ Standalone:
 3. Provide ${DISC_HINT} (and optional retail SCPH-1001 BIOS; otherwise
    OpenBIOS is regenerated locally).
 4. Follow the Generate & rebuild wizard. On first rebuild the host downloads
-   cmake-clang-v1 from TechnicallyComputers/retcomm-toolchains (or you can
+   cmake-clang-v1 from RetroPortingToolKit/RetroPorting-Toolchains (or you can
    pick a local cmake-clang-v1-*.zip for offline builds). System cmake/ninja
    also works if already on PATH.
 
-RetComM uses this same zip: it harvests emitters into a shared SDK cache,
+Retro uses this same zip: it harvests emitters into a shared SDK cache,
 downloads the toolchain pack (or uses RETCOMM_TOOLCHAIN_DIR), and preserves
 saves/user config across updates.
 EOF
+
+# --- Gate: the staged tree must be able to configure itself ----------------
+# The project file/dir list is an allowlist, so any path a project adds to
+# CMakeLists.txt has to be added here too. When that is missed the zip still
+# builds and only fails on the user's machine, at cmake configure, with
+# "Cannot find source file". Catch it at package time instead.
+#
+# Only unguarded references are required: a path used solely inside
+# if(EXISTS "...") is optional by construction, and a glob or a path built from
+# a cmake variable cannot be resolved here.
+if [[ -f "${STAGE}/CMakeLists.txt" ]]; then
+  cml="${STAGE}/CMakeLists.txt"
+  # A CMakeLists.txt with no if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/...") guard at
+  # all is normal, and grep exits 1 on no match. Under `set -e -o pipefail` that
+  # status propagates out of the command substitution and kills the packager
+  # here — silently, before any gate can report anything. Guard the assignment.
+  guarded="$( { grep -oE 'if\(EXISTS[[:space:]]+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/[^"]+"' "${cml}" \
+                  || true; } | sed -E 's|.*\$\{CMAKE_CURRENT_SOURCE_DIR\}/||; s|"$||' | sort -u)"
+  missing_refs=()
+  while IFS= read -r rel; do
+    [[ -z "${rel}" ]] && continue
+    case "${rel}" in *"*"*|*"?"*|*'$'*) continue ;; esac
+    if [[ -n "${guarded}" ]] && grep -qxF -- "${rel}" <<<"${guarded}"; then
+      continue
+    fi
+    [[ -e "${STAGE}/${rel}" ]] || missing_refs+=("${rel}")
+  done < <(grep -oE '\$\{CMAKE_CURRENT_SOURCE_DIR\}/[^"]+' "${cml}" \
+             | sed 's|^\${CMAKE_CURRENT_SOURCE_DIR}/||' | sort -u)
+  if (( ${#missing_refs[@]} )); then
+    echo "error: CMakeLists.txt references paths that are not staged in the zip:" >&2
+    for r in "${missing_refs[@]}"; do echo "  - ${r}" >&2; done
+    echo "  add them via --project-file / --project-dir in scripts/package_setup_release.sh" >&2
+    exit 1
+  fi
+fi
+
+# Second gate: the project's own C must be able to include what it includes.
+# The CMakeLists check above cannot see this — src/<game>_mods.c pulls in
+# "../psx_symbols.h", a compile input nothing in CMakeLists.txt names, and a zip
+# missing it fails at the first object file rather than at configure.
+#
+# Only project-owned staged paths are scanned. Framework trees (psxrecomp/,
+# recomp-ui/) resolve their headers through -I and are not ours to police.
+missing_incs=()
+for rel in "${PROJECT_FILES[@]}" "${PROJECT_DIRS[@]}"; do
+  [[ -e "${STAGE}/${rel}" ]] || continue
+  while IFS= read -r src; do
+    case "${src}" in *.c|*.cc|*.cpp|*.h|*.hpp) ;; *) continue ;; esac
+    src_dir="$(dirname "${src}")"
+    while IFS= read -r inc; do
+      [[ -z "${inc}" ]] && continue
+      # Only relative includes can name a file the zip is expected to carry.
+      case "${inc}" in /*) continue ;; esac
+      target="${src_dir}/${inc}"
+      [[ -e "${target}" ]] && continue
+      # Resolve against the stage root too (some projects include "x.h" flatly).
+      [[ -e "${STAGE}/${inc}" ]] && continue
+      # Finally, anything reachable through an -I path: the framework trees are
+      # staged whole, so a bare "mod_plugins.h" resolves out of
+      # psxrecomp/runtime/include. Match on basename — deliberately loose, since
+      # a false pass here only forfeits a warning while a false failure would
+      # block a good release.
+      inc_base="${inc##*/}"
+      if find "${STAGE}" -name "${inc_base}" -type f -print -quit 2>/dev/null | grep -q .; then
+        continue
+      fi
+      rel_src="${src#"${STAGE}"/}"
+      missing_incs+=("${inc}  (included by ${rel_src})")
+    done < <(grep -oE '^[[:space:]]*#[[:space:]]*include[[:space:]]+"[^"]+"' "${src}" 2>/dev/null \
+               | sed -E 's|.*"([^"]+)".*|\1|')
+  done < <(find "${STAGE}/${rel}" -type f 2>/dev/null)
+done
+if (( ${#missing_incs[@]} )); then
+  echo "error: staged project sources include files that are not in the zip:" >&2
+  printf '  - %s\n' "${missing_incs[@]}" >&2
+  echo "  add them via --project-file / --project-dir in scripts/package_setup_release.sh" >&2
+  exit 1
+fi
+
+# --- Windows: Authenticode-sign what the player will run -------------------
+# The host exe, its DLLs, and the emitters. A no-op without a certificate in
+# the environment (see tools/ci/sign_windows.sh); fatal if one is configured
+# and signing fails. Note the limit of what signing can do for a setup-host
+# title: the game exe the player's own machine builds after Generate is not
+# this file and carries no signature -- Smart App Control judges that build
+# on its own, and only the host/wizard, emitters and DLLs shipped here are
+# covered.
+if [[ "${EXE_BASENAME}" == *.exe ]]; then
+  SIGN_SH="${SCRIPT_DIR}/ci/sign_windows.sh"
+  if [[ -f "${SIGN_SH}" ]]; then
+    bash "${SIGN_SH}" "${STAGE}"
+  else
+    echo "note: ${SIGN_SH} missing; Windows binaries ship unsigned" >&2
+  fi
+fi
 
 find "${STAGE}" -exec touch -c {} + 2>/dev/null || find "${STAGE}" -exec touch {} +
 

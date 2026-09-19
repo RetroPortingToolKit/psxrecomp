@@ -18,16 +18,22 @@ extern "C" {
 /* Create the GL context on a window made with SDL_WINDOW_OPENGL.
  * Returns 1 on success, 0 to fall back to the SDL_Renderer present path. */
 int  gl_renderer_init_context(struct SDL_Window *win);
+/* Select a retained immutable bank for the next textured submission; zero
+ * selects live VRAM. Emulation/GL owning thread only. Returns 0 if unavailable. */
+int gl_renderer_select_texture_bank(uint16_t id);
+int gl_renderer_texture_banks_supported(void);
 
 /* Set the GL swap interval / vsync mode (1=vsync, 0=immediate, -1=adaptive).
  * Safe before or after context creation; applies live when a context exists. */
 void gl_renderer_set_swap_interval(int interval);
 
-/* Presentation-only frame interpolation. High-refresh sub-presents blend the
- * two most recent stable display images; guest simulation timing is unchanged. */
+/* Presentation-only temporal blending. High-refresh sub-presents blend the two
+ * most recent stable display images on the owning render thread/context; this
+ * does not generate motion vectors or true intermediate object positions. */
 void gl_renderer_set_interpolation(int enabled, double host_hz, double target_hz,
-                                   int blend_mode);
+                                   double source_hz, int blend_mode);
 void gl_renderer_set_interpolation_suspended(int suspended);
+int gl_renderer_interpolation_owns_cadence(void);
 void gl_renderer_interpolation_diag(int *enabled, int *suspended,
                                     int *history_frames,
                                     double *host_hz, double *target_hz,
@@ -119,6 +125,23 @@ int gl_renderer_present_wide_fbo(int disp_x, int disp_y, int disp_h, int linear)
  * stretches the 4:3 frame; pair with gte_set_display_aspect (cpu_state.h)
  * for the widescreen field-of-view hack. */
 void gl_renderer_set_display_aspect(int num, int den);
+
+/* Scanline post-process (host display setting). on toggles the effect; strength
+ * (0..1) is the depth of the dark gap between PS1 scanlines. Applied at the
+ * native display-line pitch in the present/interpolation shaders, and faded in
+ * with output scale so it never shimmers on a sub-2x window. gl_renderer_get_
+ * scanlines returns the on flag and (via out-param) the current strength. */
+void gl_renderer_set_scanlines(int on, float strength);
+int  gl_renderer_get_scanlines(float *strength);
+
+/* Presentation-only gamma adjustment. gamma = 1.0 is the identity; values
+ * above 1.0 lift shadow detail and values below 1.0 darken it. The adjustment
+ * is applied once to game content in the final GL presentation pass, including
+ * temporal interpolation, but not to the bezel, host OSD, black margins, or an
+ * already-composed hold-last image. Non-finite and out-of-range values are
+ * clamped to a safe range. Safe to call before GL context creation. */
+void  gl_renderer_set_post_gamma(float gamma);
+float gl_renderer_get_post_gamma(void);
 
 /* Select full native-wide mirror rendering instead of the centre-splice fast
  * path. Textured edge expansion needs the complete mirror surface. */

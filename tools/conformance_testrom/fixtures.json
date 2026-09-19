@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/JaCzekanski/ps1-tests",
+    "license": "MIT",
+    "release": "build-158",
+    "release_commit": "5f73d61b27a8d51269b54dde1c456d2d2f7dc865",
+    "release_archive_sha256": "5DE0E82854C1A511697A7ADE381C2D778EC4B2FFF4A7D7AC79E8098C35EB859B"
+  },
+  "fixtures": {
+    "cpu-cop": {
+      "exe": "cpu/cop/cop.exe",
+      "exe_sha256": "D31D3CEC66ABE8DB7935B51590F206602346284DA2AC20EA8614339924EA9981",
+      "expected": "cpu/cop/psx.log",
+      "expected_sha256": "E3B09837989C4FD53E4D192AC869F437D965A4D71342BB80D038B5CC813C729C",
+      "expected_assertions": 17,
+      "class": "CPU exception and coprocessor access"
+    },
+    "gte-test-all": {
+      "exe": "gte/test-all/test-all.exe",
+      "exe_sha256": "479ADC925DA6CC4844B567A033FABC06B2AB934FFBBB79C5DAD698BE20944B9E",
+      "expected": "gte/test-all/psx.log",
+      "expected_sha256": "78DB534A7B02B4BC4C521A20A406743F296DADA95C5220568F2DF6E0AC37B7A0",
+      "expected_assertions": 1150,
+      "class": "GTE registers and valid opcodes"
+    }
+  }
+}

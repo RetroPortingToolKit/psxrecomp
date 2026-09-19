@@ -1,6 +1,7 @@
 // disc_path.cpp — see disc_path.h.
 
 #include "disc_path.h"
+#include "host_path.h"
 
 #include "cue_sheet.h"
 
@@ -39,7 +40,7 @@ bool same_file_path(const fs::path& a, const fs::path& b) {
 
 fs::path absolute_or_self(const fs::path& p) {
     std::error_code ec;
-    fs::path abs = fs::absolute(p, ec);
+    fs::path abs = PSXRecompV4::host_absolute(p, ec);
     return ec ? p : abs;
 }
 

@@ -21,6 +21,9 @@ Each DLL exports:
 """
 
 import argparse
+import itertools
+import io
+import contextlib
 import base64
 import binascii
 from bisect import bisect_left
@@ -148,6 +151,26 @@ def verify_recompiler_matches_tag(recompiler: str, tag_hash: int) -> None:
     print(f'recompiler codegen hash verified: {baked} == cg tag hash')
 
 
+def cache_tag(runtime_include: str, recompiler: str, game_toml: str,
+              flavor: int = 0) -> str:
+    """THE cache-namespace string. Single source of truth.
+
+    The release packagers used to rebuild this string themselves in PowerShell.
+    That parallel implementation went stale the moment the flavor suffix was
+    added: the packager derived cg<N>_<hash>_gc<hash> while this tool wrote
+    cg<N>_<hash>_gc<hash>_f<flavor>, so its tag filter matched nothing and a
+    perfectly good regenerated cache staged ZERO shards (measured on Tomba 2,
+    2026-09-01). Anything that needs the tag must call this, never reformat it.
+
+    Must stay identical to overlay_loader.c scan_cache_dir().
+    """
+    return 'cg%d_%08x_gc%08x_f%d' % (
+        codegen_ver(runtime_include),
+        codegen_hash(runtime_include),
+        overlay_config_hash(recompiler, game_toml),
+        int(flavor))
+
+
 def overlay_config_hash(recompiler: str, game_toml: str) -> int:
     """Ask the recompiler for the canonical hash of config fields that affect
     generated overlay code. Keeping the serializer in the shared C++ config
@@ -172,14 +195,17 @@ def overlay_config_hash(recompiler: str, game_toml: str) -> int:
     return int(value, 16)
 
 
+_TARGET_OS = None
+
+def set_target_os(target_os: str | None) -> None:
+    global _TARGET_OS
+    _TARGET_OS = target_os
+
 def is_windows() -> bool:
-    """True on native Windows AND under MSYS/Cygwin/MinGW pythons.
-    platform.system() there returns 'MSYS_NT-...'/'CYGWIN_NT-...', NOT
-    'Windows' — the naive check filed a whole session's overlay DLLs under
-    gcc/linux-x64/ while the Windows loader read gcc/win-x64/: the runtime
-    interpreted 'covered' functions forever (Tomba2 attract ran ~half its
-    instruction volume on the interpreter, 2026-07-02) while autocompile
-    kept reporting 'already covered - no new native code to build'."""
+    if _TARGET_OS == 'win':
+        return True
+    if _TARGET_OS in ('linux', 'macos'):
+        return False
     return (os.name == 'nt'
             or platform.system() == 'Windows'
             or platform.system().startswith(('MSYS', 'CYGWIN', 'MINGW')))
@@ -215,7 +241,9 @@ def cache_arch_abi() -> str:
     gcc DLLs are namespaced under <game_id>/gcc/<arch-abi>/ so same-OS
     different-arch caches never comingle. Keep this
     mapping in lockstep with overlay_loader.c."""
-    if is_windows():
+    if _TARGET_OS in ('win', 'linux', 'macos'):
+        os_tag = _TARGET_OS
+    elif is_windows():
         os_tag = 'win'
     else:
         os_tag = {'Darwin': 'macos'}.get(platform.system(), 'linux')
@@ -308,14 +336,92 @@ class ShardStats:
 # PS-EXE fake header
 # ---------------------------------------------------------------------------
 
-def make_psxexe(load_addr: int, entry_pc: int, data: bytes) -> bytes:
-    """Wrap raw overlay bytes in a minimal PS-EXE header."""
+# Analysis-bound tag read by the recompiler (recompiler/include/ps1_exe_parser.h,
+# namespace exe_tag). Offsets are into the 2048-byte PS-EXE header, whose tail
+# is zero-filled in every retail image; the 8-byte magic makes a false positive
+# on a genuine EXE effectively impossible.
+GUARD_TAG_MAGIC_OFFSET = 0x7E0
+GUARD_TAG_COUNT_OFFSET = 0x7E8
+GUARD_TAG_MAGIC = b'PSXRGRD1'
+CAPTURE_PAGE_BYTES = 4096
+
+
+def capture_guard_bytes(cap: dict, size: int, label: str = '') -> int:
+    """Trailing bytes of a captured region that are guard words ONLY.
+
+    overlay_capture.c write_json_window appends one coherent guard instruction
+    past the end of a dirty-page run so that a MIPS branch at the run's final
+    word (...FFC) has its architectural delay slot (...000) available. Those
+    bytes must stay READABLE by the recompiler and must NEVER be discovered as
+    code: the word after a guard word is not in the image, so a control
+    transfer AT the guard word could not emit its own delay slot. The
+    recompiler is TOLD the count (see make_psxexe) rather than inferring it.
+
+    Precedence:
+      1. the capture's explicit ``guard_bytes`` field — the writer stating its
+         own intent, which survives any future change to capture granularity;
+      2. for captures recorded BEFORE that field existed, reconstruct from the
+         format invariant write_json_window has always obeyed: a dirty-page run
+         is a whole number of 4 KiB pages, plus one 4-byte guard word whenever
+         the next word is still inside RAM. ``size % 4096 == 4`` is exactly
+         that signature and means one guard word.
+
+    Every OTHER shape reconstructs to zero, and that is ordinary traffic rather
+    than an anomaly, so this stays quiet:
+      * ``size % 4096 == 0`` — a page run whose guard word was suppressed
+        because it would have left RAM, or a pre-2026-07-25 page-exact capture.
+      * any other residue — a STATIC extraction, not a RAM page run. Those
+        records carry an exact file extent (tools/aot_overlay_spike/
+        extract_generic.py; they are the ones with static_dispatch_entry_pcs /
+        producer_ranges) and append no guard word. MEASURED: 52 of the 946
+        records in the SCUS-94454 vault are this shape, with residues from 112
+        to 3996 bytes and one that is not even 4-byte aligned.
+
+    Zero is also the fail-closed answer. If some future producer ever appends a
+    guard word in a shape this cannot recognise, that word is analysed as code
+    and the emitter's mandatory-delay-slot check refuses the transfer LOUDLY at
+    generation time; it never silently emits a transfer without its slot. The
+    way to opt in is the explicit field, not a wider guess here.
+    """
+    declared = cap.get('guard_bytes') if cap else None
+    if declared is not None:
+        try:
+            guard = int(declared)
+        except (TypeError, ValueError):
+            guard = -1
+        if guard in (0, 4) and guard < size:
+            return guard
+        # A malformed DECLARATION is a producer bug, unlike the shapes above.
+        print(f'  WARNING: {label or "capture"} declares guard_bytes='
+              f'{declared!r} with size {size}; ignoring (treating as 0)')
+        return 0
+    if size % CAPTURE_PAGE_BYTES == 4 and size > 4:
+        return 4
+    return 0
+
+
+def make_psxexe(load_addr: int, entry_pc: int, data: bytes, *,
+                guard_bytes: int) -> bytes:
+    """Wrap raw overlay bytes in a minimal PS-EXE header.
+
+    ``guard_bytes`` is keyword-only and has NO default on purpose: every
+    producer of an overlay image must state how many of its trailing bytes are
+    delay-slot guard words (see capture_guard_bytes). A new call site that
+    forgets is a TypeError, not a silently mis-analysed shard.
+    """
+    if guard_bytes < 0 or guard_bytes % 4 or guard_bytes >= len(data):
+        raise ValueError(
+            f'invalid guard_bytes={guard_bytes} for {len(data)}-byte image')
     header = bytearray(2048)
     header[0:8]   = b'PS-X EXE'
     struct.pack_into('<I', header, 0x10, entry_pc)   # initial PC
     struct.pack_into('<I', header, 0x14, 0)           # initial GP
     struct.pack_into('<I', header, 0x18, load_addr)   # load address
     struct.pack_into('<I', header, 0x1C, len(data))   # text size
+    if guard_bytes:
+        header[GUARD_TAG_MAGIC_OFFSET:
+               GUARD_TAG_MAGIC_OFFSET + len(GUARD_TAG_MAGIC)] = GUARD_TAG_MAGIC
+        struct.pack_into('<I', header, GUARD_TAG_COUNT_OFFSET, guard_bytes)
     return bytes(header) + data
 
 
@@ -738,6 +844,11 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         sll scaled,index,2; addu address,scaled,table_base
         lw target,offset(address); [nop x 0..1]; jr target
 
+    Also accept ``sltiu; beq; lui; addiu; sll``: the LUI executes in the
+    guard's delay slot, then ADDIU completes the base on the in-range path.
+    That exact pair may not overwrite the checked index, and direct edges
+    may not bypass the bound (including edges from switch cases).
+
     ``table_base`` must be a nearest-definition LUI, optionally followed by a
     nearest-definition ADDIU.  The lower instruction may rename the
     register (``lui v0; addiu s0,v0,lo``), as used by Ape Escape.  Any other
@@ -747,7 +858,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     """
     lo = load_addr
     hi = load_addr + size
-    if not (entry <= jr_pc < hard_cap and 0 < jr_rs < 32):
+    if not (entry <= jr_pc < hard_cap and 0 < jr_rs < 31):
         return set()
     jr_word = _word_at(data, load_addr, jr_pc)
     if jr_word != ((jr_rs << 21) | 0x08):
@@ -798,7 +909,24 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     # The bound must guard this exact index on the sole fallthrough into SLL.
     sltiu_pc = sll_pc - 12
     branch_pc = sll_pc - 8
-    if _word_at(data, load_addr, sll_pc - 4) != 0:
+    scheduled_base = _word_at(data, load_addr, sll_pc - 4) != 0
+    if scheduled_base:
+        # R3000 load delay: JR must not consume the immediately preceding LW.
+        if lw_pc != jr_pc - 8:
+            return set()
+        sltiu_pc -= 4
+        branch_pc -= 4
+        upper = _word_at(data, load_addr, sll_pc - 8)
+        lower = _word_at(data, load_addr, sll_pc - 4)
+        if (upper is None or lower is None or
+                (upper >> 26) != 0x0F or ((upper >> 21) & 31) != 0 or
+                (lower >> 26) != 0x09 or ((lower >> 16) & 31) != table_reg or
+                ((upper >> 16) & 31) == 0 or
+                ((upper >> 16) & 31) != ((lower >> 21) & 31) or
+                index_reg in (table_reg, (upper >> 16) & 31)):
+            return set()
+    if sltiu_pc < entry or (sltiu_pc >= entry + 4 and
+            _is_control_flow(_word_at(data, load_addr, sltiu_pc - 4))):
         return set()
     sltiu_word = _word_at(data, load_addr, sltiu_pc)
     branch_word = _word_at(data, load_addr, branch_pc)
@@ -807,7 +935,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         return set()
     guard_reg = (sltiu_word >> 16) & 0x1F
     table_count = sltiu_word & 0xFFFF
-    if not guard_reg or not (1 <= table_count < 512):
+    if not guard_reg or guard_reg == index_reg or not (1 <= table_count < 512):
         return set()
     if branch_word is None or ((branch_word >> 26) & 0x3F) != 0x04:
         return set()
@@ -817,7 +945,8 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         return set()
     reject_target = _branch_target(branch_pc, branch_word)
     if (not (entry <= reject_target < hard_cap) or
-            sll_pc <= reject_target < jr_pc + 8):
+            sll_pc <= reject_target < jr_pc + 8 or
+            (scheduled_base and sltiu_pc < reject_target < jr_pc + 8)):
         return set()
 
     def nearest_writer(reg: int, before: int):
@@ -856,6 +985,10 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
     else:
         return set()
 
+    if scheduled_base and (constant_pc != branch_pc + 4 or
+                           table_def_pc != sll_pc - 4):
+        return set()
+
     # Calls could clobber the proven constant.  Other branches could enter the
     # suffix through an unproved path.  The one exact bounds branch is allowed.
     for pc in range(constant_pc + 4, sll_pc, 4):
@@ -865,7 +998,8 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         if _is_control_flow(word) and pc != branch_pc:
             return set()
     predecessor = _word_at(data, load_addr, constant_pc - 4)
-    if constant_pc >= entry + 4 and _is_control_flow(predecessor):
+    if (constant_pc >= entry + 4 and _is_control_flow(predecessor) and
+            not scheduled_base):
         return set()
     table_base = (table_base + lw_offset) & 0xFFFFFFFF
     table_end = table_base + table_count * 4
@@ -878,6 +1012,7 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         target = _word_at(data, load_addr, table_base + index * 4)
         if (target is None or (target & 3) or
                 not (entry <= target < hard_cap) or
+                (scheduled_base and sltiu_pc < target < jr_pc + 8) or
                 not (range_lo <= target < range_hi) or
                 not _is_valid_mips_word(_word_at(data, load_addr, target))):
             return set()
@@ -919,15 +1054,16 @@ def _find_jump_table_targets(data: bytes, load_addr: int, size: int,
         elif kind in ('jr', 'jr_ra'):
             case_reachable.add(delay)
 
+    protected_pc = sltiu_pc if scheduled_base else constant_pc
     for source in range(entry, hard_cap, 4):
         source_word = _word_at(data, load_addr, source)
         if source_word is None:
             return set()
         kind, target = _classify_cf(source, source_word)
         if (kind in ('branch', 'j', 'jal') and
-                constant_pc < target <= jr_pc and
-                not (constant_pc <= source <= jr_pc) and
-                source not in case_reachable):
+                protected_pc < target <= jr_pc and
+                not (protected_pc <= source <= jr_pc) and
+                (scheduled_base or source not in case_reachable)):
             return set()
     if proof_out is not None:
         proof_out.append({
@@ -1131,6 +1267,35 @@ def plausible_callable_target(data: bytes, load_addr: int, size: int,
             add_delay(pc)  # bounded indirect/tail exit
 
     return saw_return and not bad and not work and len(visited) < 2048
+
+
+def _frameless_dispatch_root_proven(data: bytes, load_addr: int, size: int,
+                                    addr: int, producer_hi: int) -> bool:
+    """CFG proof for a dispatch entry admitted only by the word before it.
+
+    `_callable_legacy_seed` accepts an address on three different grades of
+    evidence: it is the image entry, it opens a stack frame, or the word two
+    slots back is `jr $ra`. The third is the weak one, and it is weak exactly
+    where it fires most: the first word *after* a function's return is also
+    the first word of whatever the linker laid down next, which in these
+    images is routinely a pointer table, a packed record array or zero fill.
+    A dispatch PC there is real -- a sibling occupant of the shared band has
+    code at that address -- but for *this* image it is data, and promoting it
+    to a walk root sends the linear walk through the table to the image end.
+
+    So require the same bounded CFG probe the discovery roots already use
+    when the classic prologue is absent. Failing it does not discard the
+    entry: the caller demotes it to DISPATCH_INTERIOR, which keeps the
+    dispatch evidence and the isolated-fragment demand and only declines to
+    start a walk there.
+    """
+    word = _word_at(data, load_addr, addr)
+    prev = _word_at(data, load_addr, addr - 4)
+    if addr == load_addr:
+        return True
+    if _is_addiu_sp_neg(word) and not _is_control_flow(prev):
+        return True
+    return plausible_callable_target(data, load_addr, size, addr, producer_hi)
 
 
 def _walk_overlay_function(data: bytes, load_addr: int, size: int,
@@ -1449,6 +1614,11 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
 
     included: dict[int, str] = {}
     excluded: dict[int, str] = {}
+    # Shared CFG ownership may later reject a hostless interior. Preserve its
+    # validated dispatch evidence separately so executed entries can still use
+    # the isolated, audited fragment path without truncating a shared host.
+    dispatch_fragment_demands = set()
+    fragment_hi = hi - capture_guard_bytes(cap, size)
     game_text = _game_text_range(toml_doc)
 
     # A dispatch into dirty RAM can land on a jump-table case label. That
@@ -1501,12 +1671,22 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         # Invalid words stay excluded. Call-edge-proven reasons
         # (DIRECT_JAL_TARGET, FUNCTION_POINTER_TARGET, TOML_DECLARED_ENTRY) are
         # exempt — they carry their own proof.
+        # A dispatch entry that has no prologue and is callable only because a
+        # `jr $ra` precedes it is the head of whatever follows the last
+        # function, data included, so it needs the bounded CFG probe before it
+        # may be a walk root (_frameless_dispatch_root_proven).
         if reason in ('DISPATCH_ENTRY', 'STATIC_DISPATCH_ENTRY'):
             if impossible_entry_start(addr):
                 excluded[addr] = 'UNKNOWN'
                 return
+            if addr + 4 <= fragment_hi:
+                dispatch_fragment_demands.add(addr)
+            producer = capture_producer_for(addr)
             if (addr in jump_table_targets or
-                    not _callable_legacy_seed(data, load_addr, addr)):
+                    not _callable_legacy_seed(data, load_addr, addr) or
+                    not _frameless_dispatch_root_proven(
+                        data, load_addr, size, addr,
+                        producer[1] if producer else hi)):
                 included.setdefault(addr, 'DISPATCH_INTERIOR')
                 return
         elif (reason not in ('DIRECT_JAL_TARGET', 'STATIC_INDIRECT_TARGET',
@@ -1787,6 +1967,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         'executed_pcs': executed_pcs,
         'dispatch_entry_pcs': dispatch_entry_pcs,
         'static_dispatch_entry_pcs': static_dispatch_entries,
+        'dispatch_fragment_demands': dispatch_fragment_demands,
         'function_entry_pcs': set(included),
         'included_reasons': included,
         'excluded_reasons': excluded,
@@ -1854,6 +2035,9 @@ def print_seed_audit(audit: dict) -> None:
     print(f'toml_entries_included: {audit["counts"].get("TOML_DECLARED_ENTRY", 0)}')
     print(f'dispatch_interior_included: {audit["counts"].get("DISPATCH_INTERIOR", 0)}')
     print(f'dispatch_roots_promoted: {audit["counts"].get("DISPATCH_ROOT", 0)}')
+    unhosted_dispatch = (audit.get('dispatch_fragment_demands', set()) &
+                         audit['executed_pcs']) - set(audit['included_reasons'])
+    print(f'unhosted_executed_dispatch_fragment_demands: {len(unhosted_dispatch)}')
     print(f'cross_producer_calls_rejected: '
           f'{len(audit["rejected_cross_producer_calls"])}')
     print(f'cross_producer_calls_accepted: '
@@ -1866,7 +2050,9 @@ def print_seed_audit(audit: dict) -> None:
     for addr in sorted(audit['excluded_reasons']):
         reason = audit['excluded_reasons'][addr]
         if reason in ('BRANCH_TARGET_ONLY', 'OBSERVED_PC_ONLY', 'UNKNOWN'):
-            print(f'  {addr:08X}  excluded: {reason}')
+            recovery = ('; isolated fragment demand retained'
+                        if addr in unhosted_dispatch else '')
+            print(f'  {addr:08X}  excluded: {reason}{recovery}')
 
 
 def walk_root_seed_entries(seeds: list[str]) -> set[int]:
@@ -2256,6 +2442,91 @@ def add_cps_resume_case(src: str, host_symbol: str,
     return src[:definition.end()] + prologue_text + src[definition.end():], True
 
 
+_CPS_SIGNATURE_RE = re.compile(r'^void ([A-Za-z_][A-Za-z0-9_]*)\(CPUState\* cpu\)',
+                               re.MULTILINE)
+
+
+def add_cps_resume_cases(src: str, requests: list) -> tuple:
+    """Batch form of add_cps_resume_case().
+
+    requests: [(host_symbol, host, [entry, ...]), ...]. Returns
+    (src, {host_symbol: set(entries made legal)}).
+
+    Per entry this applies exactly the rule add_cps_resume_case() applies --
+    the block label must exist in the host's own segment, an existing arm is
+    left alone, otherwise the arm goes before the resume switch's ``default:``
+    (or a fresh switch is created after the opening brace). The difference is
+    cost: the per-entry function re-scans and rebuilds the WHOLE part source
+    (tens of MB) for every entry, which made the post-pass quadratic -- 7,386
+    wrappers on a 19 MB part took ~7 minutes. Here every function signature is
+    located once, each host's segment is edited in isolation, and the source
+    is rebuilt once. Output is byte-identical to the per-entry form.
+    """
+    sigs = list(_CPS_SIGNATURE_RE.finditer(src))
+    def_index = {}
+    for i, m in enumerate(sigs):
+        # A definition is the signature followed by "\n{"; the first one wins,
+        # like re.search() did.
+        if src.startswith('\n{', m.end()) and m.group(1) not in def_index:
+            def_index[m.group(1)] = i
+    edits = []
+    ok_by_symbol = {}
+    for host_symbol, host, entries in requests:
+        i = def_index.get(host_symbol)
+        if i is None:
+            continue
+        m = sigs[i]
+        start = m.start()
+        def_len = (m.end() + 2) - start            # through the opening brace
+        end = sigs[i + 1].start() if i + 1 < len(sigs) else len(src)
+        seg = src[start:end]
+        labels = set(re.findall(r'^block_[0-9A-Fa-f]{8}:', seg, re.MULTILINE))
+        ok = set()
+        changed = False
+        for entry in entries:
+            if f'block_{entry:08X}:' not in labels:
+                continue
+            if f'case 0x{entry:08X}u: goto block_{entry:08X};' in seg:
+                ok.add(entry)
+                continue
+            hook = seg.find('debug_server_log_call_entry')
+            prologue = seg[:hook] if hook >= 0 else ''
+            default_match = re.search(r'^\s+default:', prologue, re.MULTILINE)
+            if 'if (cpu->pc != 0u)' in prologue and default_match:
+                insert = default_match.start()
+                indent = re.match(r'\s*', prologue[default_match.start():]).group(0)
+                arm = f'{indent}case 0x{entry:08X}u: goto block_{entry:08X};\n'
+                seg = seg[:insert] + arm + seg[insert:]
+            else:
+                prologue_text = (
+                    '\n    if (cpu->pc != 0u) {\n'
+                    '        uint32_t _cont = cpu->pc; cpu->pc = 0;\n'
+                    '        switch (_cont) {\n'
+                    f'            case 0x{entry:08X}u: goto block_{entry:08X};\n'
+                    f'            case 0x{host:08X}u: break;  /* entry at prologue */\n'
+                    f'            default: cpu->pc = _cont; psx_native_bad_entry(cpu, '
+                    f'0x{host:08X}u, _cont); return;\n'
+                    '        }\n'
+                    '    }')
+                seg = seg[:def_len] + prologue_text + seg[def_len:]
+            ok.add(entry)
+            changed = True
+        ok_by_symbol[host_symbol] = ok
+        if changed:
+            edits.append((start, end, seg))
+    if edits:
+        edits.sort()
+        pieces = []
+        pos = 0
+        for start, end, seg in edits:
+            pieces.append(src[pos:start])
+            pieces.append(seg)
+            pos = end
+        pieces.append(src[pos:])
+        src = ''.join(pieces)
+    return src, ok_by_symbol
+
+
 def generate_overlay_dispatch(variants: list) -> str:
     """Generate byte-validated dispatch for all static overlay variants."""
     unique = []
@@ -2297,7 +2568,132 @@ def generate_overlay_dispatch(variants: list) -> str:
             f'static const uint32_t {variant["range_symbol"]}[] = '
             '{ ' + ', '.join(flat) + ' };')
 
+    # ---- O(1) address lookup ------------------------------------------------
+    # The dispatcher is consulted on EVERY interpreted entry, and the
+    # overwhelming majority of those calls are for addresses with no compiled
+    # entry at all. Measured on BoF3 during a battle-transition stall:
+    # ~264,000 calls/sec, of which ~1,160 out of every 1,161 found nothing.
+    # A `switch` over tens of thousands of sparse cases compiles to a binary
+    # search tree, so each of those fruitless calls walked ~log2(N) compares
+    # through a jump table far larger than cache -- which is why frame rate
+    # tracked compiled-case COUNT rather than variant chain depth, and why
+    # adding bands cost frame rate on screens where no overlay code ran.
+    #
+    # Replace it with a compile-time open-addressed hash table. The miss path
+    # -- the hot one -- becomes: hash, one load, compare, return. Two parallel
+    # uint32 arrays keep a miss inside a single 128 KB table: the address array
+    # answers "is this mine?" without touching the entry or variant arrays at
+    # all. Load factor is held at <= 0.5 to bound probe length.
+    entry_addrs = sorted(by_addr)
+    n_entries = len(entry_addrs)
+
+    def hash_slot(key: int, mask: int) -> int:
+        """MUST stay bit-identical to psx_ov_hash_slot() emitted below."""
+        h = (key >> 2) & 0xFFFFFFFF
+        h = (h * 0x9E3779B1) & 0xFFFFFFFF
+        h ^= h >> 15
+        return h & mask
+
+    bits = 4
+    while (1 << bits) < max(n_entries, 1) * 2:
+        bits += 1
+    size = 1 << bits
+    mask = size - 1
+
+    table_addr = [0] * size
+    table_idx = [0] * size
+    max_probe = 0
+    for index, addr in enumerate(entry_addrs):
+        slot = hash_slot(addr, mask)
+        probe = 0
+        while table_addr[slot] != 0:
+            assert table_addr[slot] != addr, f'duplicate entry 0x{addr:08X}'
+            slot = (slot + 1) & mask
+            probe += 1
+        table_addr[slot] = addr
+        table_idx[slot] = index
+        max_probe = max(max_probe, probe)
+
+    # Flat variant array; each entry owns a contiguous run of it.
+    flat_variants = []
+    entry_rows = []
+    for addr in entry_addrs:
+        entry_rows.append((addr, len(flat_variants), len(by_addr[addr])))
+        flat_variants.extend(by_addr[addr])
+
+    def emit_table(name, values, per_line=8):
+        out = [f'static const uint32_t {name}[{size}] = {{']
+        for i in range(0, size, per_line):
+            chunk = ', '.join(f'0x{v:08X}u' for v in values[i:i + per_line])
+            out.append(f'    {chunk},')
+        out.append('};')
+        return out
+
     lines += [
+        '',
+        'typedef void (*PsxOvFn)(CPUState *cpu);',
+        '',
+        'typedef struct {',
+        '    const uint32_t *ranges;',
+        '    uint32_t        count;',
+        '    uint32_t        crc;',
+        '    PsxOvFn         fn;',
+        '} PsxOvVariant;',
+        '',
+        'typedef struct {',
+        '    uint32_t addr;',
+        '    uint32_t first;   /* index into psx_ov_variants */',
+        '    uint32_t n;       /* occupants compiled at this address */',
+        '} PsxOvEntry;',
+        '',
+    ]
+
+    if flat_variants:
+        lines.append(f'static const PsxOvVariant '
+                     f'psx_ov_variants[{len(flat_variants)}] = {{')
+        for variant in flat_variants:
+            lines.append(
+                f'    {{ {variant["range_symbol"]}, '
+                f'{len(variant["ranges"])}u, 0x{variant["crc"]:08X}u, '
+                f'{variant["symbol"]} }},')
+        lines.append('};')
+        lines.append('')
+        lines.append(f'static const PsxOvEntry psx_ov_entries[{n_entries}] = {{')
+        for addr, first, count in entry_rows:
+            lines.append(f'    {{ 0x{addr:08X}u, {first}u, {count}u }},')
+        lines.append('};')
+        lines.append('')
+        lines += emit_table('psx_ov_hash_addr', table_addr)
+        lines.append('')
+        lines += emit_table('psx_ov_hash_idx', table_idx)
+        lines.append('')
+        # Resident-occupant memo. On hardware the game CD-reads a file to a
+        # fixed address and jal's straight into it -- identity is implicit in
+        # control flow and costs nothing. We rediscover it by walking a band's
+        # occupants and CRC-gating each. On a deep band that walk dominated:
+        # the memory-card screen measured 41.25 checks per hit, i.e. ~41 failed
+        # gates before the resident one, 4.4 M failed checks per 2 s.
+        #
+        # Remember which occupant last satisfied each address and try it first.
+        # Correctness is unchanged because the memo only reorders candidates --
+        # every call still passes psx_overlay_static_code_matches(), so a band
+        # that swapped occupants fails the memo and falls into the full walk.
+        # The memo is a hint, never an authority.
+        lines.append(f'static uint16_t psx_ov_last_hit[{n_entries}];')
+        lines.append('')
+
+    lines += [
+        f'/* {n_entries} dispatch addresses, {len(flat_variants)} variants, '
+        f'{size}-slot table (load {n_entries / size:.2f}), '
+        f'max probe {max_probe}. */',
+        f'#define PSX_OV_HASH_MASK 0x{mask:X}u',
+        '',
+        'static inline uint32_t psx_ov_hash_slot(uint32_t key) {',
+        '    uint32_t h = key >> 2;            /* entries are word-aligned */',
+        '    h *= 0x9E3779B1u;',
+        '    h ^= h >> 15;',
+        '    return h & PSX_OV_HASH_MASK;',
+        '}',
         '',
         'void psx_overlay_static_get_stats(uint64_t *checks, uint64_t *hits,',
         '                                  uint64_t *variant_misses,',
@@ -2308,31 +2704,90 @@ def generate_overlay_dispatch(variants: list) -> str:
         '    if (address_misses) *address_misses = psx_ov_static_address_misses;',
         '}',
         '',
-        'int psx_overlay_dispatch(CPUState *cpu, uint32_t addr) {',
+        'static const PsxOvVariant *psx_overlay_static_find_variant(uint32_t addr) {',
         '    const uint32_t key = (addr & 0x1FFFFFFFu) | 0x80000000u;',
-        '    switch (key) {',
     ]
-    for addr in sorted(by_addr):
-        lines.append(f'        case 0x{addr:08X}u:')
-        for variant in by_addr[addr]:
-            count = len(variant['ranges'])
-            lines += [
-                '            psx_ov_static_checks++;',
-                f'            if (psx_overlay_static_code_matches('
-                f'{variant["range_symbol"]}, {count}u, '
-                f'0x{variant["crc"]:08X}u)) {{',
-                '                psx_ov_static_hits++;',
-                f'                {variant["symbol"]}(cpu);',
-                '                return 1;',
-                '            }',
-                '            psx_ov_static_variant_misses++;',
-            ]
-        lines.append('            return 0;')
+
+    if not flat_variants:
+        lines += [
+            '    (void)key;',
+            '    psx_ov_static_address_misses++;',
+            '    return 0;',
+            '}',
+            '',
+            'int psx_overlay_static_can_dispatch(uint32_t addr) {',
+            '    return psx_overlay_static_find_variant(addr) != 0;',
+            '}',
+            '',
+            'int psx_overlay_dispatch(CPUState *cpu, uint32_t addr) {',
+            '    (void)cpu;',
+            '    if (psx_overlay_static_find_variant(addr) == 0) return 0;',
+            '    return 0;',
+            '}',
+            '',
+        ]
+        return '\n'.join(lines)
+
     lines += [
-        '        default:',
+        '    uint32_t slot = psx_ov_hash_slot(key);',
+        '    for (;;) {',
+        '        uint32_t slot_addr = psx_ov_hash_addr[slot];',
+        '        if (slot_addr == 0u) {',
+        '            /* Empty slot: this address is compiled nowhere. This is',
+        '             * the overwhelmingly common case -- keep it one load. */',
         '            psx_ov_static_address_misses++;',
         '            return 0;',
+        '        }',
+        '        if (slot_addr == key) break;',
+        '        slot = (slot + 1u) & PSX_OV_HASH_MASK;',
         '    }',
+        '    {',
+        '        const uint32_t ei = psx_ov_hash_idx[slot];',
+        '        const PsxOvEntry *e = &psx_ov_entries[ei];',
+        '        const PsxOvVariant *base = &psx_ov_variants[e->first];',
+        '        const uint32_t n = e->n;',
+        '        uint32_t memo = psx_ov_last_hit[ei];',
+        '        uint32_t i;',
+        '        if (memo >= n) memo = 0u;',
+        '        /* Try the occupant that satisfied this address last time. On a',
+        '         * deep band this is the difference between one CRC gate and',
+        '         * walking every occupant. It is only a hint: the gate below',
+        '         * still decides, so a swapped band simply falls through. */',
+        '        if (n > 1u) {',
+        '            const PsxOvVariant *v = base + memo;',
+        '            psx_ov_static_checks++;',
+        '            if (psx_overlay_static_code_matches(v->ranges, v->count,',
+        '                                               v->crc)) {',
+        '                return v;',
+        '            }',
+        '            psx_ov_static_variant_misses++;',
+        '        }',
+        '        for (i = 0; i < n; i++) {',
+        '            const PsxOvVariant *v = base + i;',
+        '            if (n > 1u && i == memo) continue;   /* already tried */',
+        '            psx_ov_static_checks++;',
+        '            if (psx_overlay_static_code_matches(v->ranges, v->count,',
+        '                                               v->crc)) {',
+        '                psx_ov_last_hit[ei] = (uint16_t)i;',
+        '                return v;',
+        '            }',
+        '            psx_ov_static_variant_misses++;',
+        '        }',
+        '    }',
+        '    /* Address is ours but no occupant is resident -> interpreter. */',
+        '    return 0;',
+        '}',
+        '',
+        'int psx_overlay_static_can_dispatch(uint32_t addr) {',
+        '    return psx_overlay_static_find_variant(addr) != 0;',
+        '}',
+        '',
+        'int psx_overlay_dispatch(CPUState *cpu, uint32_t addr) {',
+        '    const PsxOvVariant *v = psx_overlay_static_find_variant(addr);',
+        '    if (!v) return 0;',
+        '    psx_ov_static_hits++;',
+        '    v->fn(cpu);',
+        '    return 1;',
         '}',
         '',
     ]
@@ -2517,12 +2972,9 @@ def overlay_pair_id(src: str, func_ids: list,
 def add_overlay_pair_export(src: str, pair_id: int) -> str:
     """Add the optional v2-pair binding export without changing the shard ABI."""
     return src + f'''\n
-#ifdef _WIN32
-__declspec(dllexport)
-#else
-__attribute__((visibility("default")))
-#endif
-uint64_t overlay_pair_id(void) {{ return UINT64_C(0x{pair_id:016X}); }}
+PSX_OVERLAY_EXPORT uint64_t overlay_pair_id(void) {{
+    return UINT64_C(0x{pair_id:016X});
+}}
 '''
 
 
@@ -2840,20 +3292,33 @@ def current_variant_func_id_coverage(func_ids: list, data: bytes,
 #     contract/header change (which bumps the hash -> fresh dir -> fresh memo)
 #     re-attempts everything (e.g. the psx_rfe_mark_escape contract fix).
 # So a memoized skip only ever elides a build that is deterministically doomed.
+# Printed when a capture contributes no walk-root seed. The wording is
+# deliberate: the region is NOT declared data-only -- its executed dispatch
+# demands are still served by the isolated-fragment pass, which runs
+# separately. Named so the two emit sites and the test cannot drift apart.
+# They did: 4683e923 reworded both prints and left
+# test_compile_overlays_static_split asserting the old string.
+NO_SHARED_WALK_ROOT_SEEDS_SKIP = (
+    'SKIP: no shared walk-root seeds; checking fragments separately')
+
 INTERIOR_FAIL_MEMO = 'interior_fail_memo.txt'
 
 
 def _interior_fail_key(phys_addr: int, interior: int, data: bytes,
                        load_addr: int, size: int, producer_ranges,
                        cross_call_allow, expected_abi: int, cps: bool,
-                       toml_doc: dict) -> str:
+                       toml_doc: dict, guard_bytes: int = 0) -> str:
     """Stable identity of every input to deterministic fragment generation."""
     recipe = {
-        'schema': 'psxrecomp fragment fail key v2',
+        # v3 adds guard_bytes: the analysis bound is an input to generation, so
+        # a memo recorded under the old (guard-word-as-code) analysis must not
+        # suppress a retry under the corrected one.
+        'schema': 'psxrecomp fragment fail key v3',
         'phys_addr': phys_addr,
         'interior': interior & 0x1FFFFFFF,
         'load_addr': load_addr,
         'size': size,
+        'guard_bytes': guard_bytes,
         'data_sha256': hashlib.sha256(data).hexdigest(),
         'producer_ranges': [list(pair) for pair in producer_ranges],
         'cross_call_allow': sorted(set(cross_call_allow)),
@@ -2869,7 +3334,34 @@ def _interior_fail_key(phys_addr: int, interior: int, data: bytes,
 
 def interior_failure_is_deterministic(reason: str) -> bool:
     """Only guest-byte/codegen audit verdicts belong in the persistent memo."""
-    return reason.startswith(('generated-c-audit:', 'requested-entry-audit:'))
+    return (reason.startswith(('generated-c-audit:', 'requested-entry-audit:',
+                               'guest-walk-audit:')) or
+            unsupported_guest_branch_rejection(reason))
+
+
+def unsupported_guest_branch_rejection(reason: str) -> bool:
+    """An invalid guest branch is data/unsupported code, not a tool failure.
+
+    Other delay-slot identity failures remain fatal: missing guarded delay
+    words or a changed instruction identity can indicate an emitter defect.
+    """
+    return (reason.startswith('delay-slot-identity:') and
+            reason.endswith(': reserved/unsupported branch encoding'))
+
+
+def reconcile_empty_primary_scans(pending, cache_dir, expected_abi, stats):
+    """Accept an empty primary only if guarded fragments serve every root."""
+    for label, physical, load, size, data, roots in pending:
+        current, _ = load_region_current_variant_coverage(
+            cache_dir, physical, data, load, size,
+            expected_abi)
+        served = {(entry & 0x1FFFFFFF) | 0x80000000 for entry in current}
+        if roots and roots <= served:
+            print(f'  primary scan recovered by guarded fragments: {label}')
+            stats.add_skip()
+        else:
+            stats.add_fail(label, 'no_ranges',
+                           'primary roots remain without guarded native coverage')
 
 
 def optional_static_fragment_rejection(entry: int, job: dict,
@@ -2926,14 +3418,71 @@ def append_interior_fail_memo(cache_dir: str, key: str, reason: str) -> None:
         pass   # best-effort; a memo write failure must never break the compile
 
 
+def served_static_variant_keys(parts) -> set:
+    """(entry, image_crc) pairs the built static parts can dispatch.
+
+    Coverage is per byte-variant: a part serves an address only for the image
+    it was compiled from, because the dispatcher's CRC gate rejects that
+    identity against any other resident bytes."""
+    return {(variant['addr'], part['image_crc'])
+            for part in parts for variant in part['variants']}
+
+
+def select_static_fragment_demands(requested_keys, parts) -> list:
+    """Requested (entry, image_crc) demands no built part serves, sorted.
+
+    Keyed by (entry, image crc) and NEVER by the bare address. With address
+    keys, the first variant at an address -- from any capture of the band --
+    marked that address served for every other capture, and the per-entry
+    source map kept only the last capture's bytes, so in a band with N
+    occupants exactly one occupant ever received isolated fragments
+    (BoF3 SCENARIO band, 2026-09-05: 20 sections, SCENA16 resident, all 53 of
+    its observed entries interpreted while every spanning piece had been
+    compiled from SCENA19/04/06 bytes and could never validate)."""
+    return sorted(set(requested_keys) - served_static_variant_keys(parts))
+
+
+_STATIC_IMAGE_SOURCES: dict = {}
+
+
+def _init_static_fragment_worker(image_sources: dict) -> None:
+    """Pool initializer: the image table travels to each worker ONCE.
+
+    A demand is (entry, image); thousands of demands share a few hundred
+    images, so pickling the bytes per job would move the whole capture set
+    through the pipe once per demand. Workers look images up by key."""
+    global _STATIC_IMAGE_SOURCES
+    _STATIC_IMAGE_SOURCES = image_sources
+
+
+def static_fragment_job(entry: int, image_key, args):
+    """Worker for the static isolated-fragment pass: one (entry, image).
+
+    Module-level and self-contained so it runs in a ProcessPoolExecutor.
+    Returns (part or None, reason)."""
+    data, load_addr, size, phys_addr, guard_bytes = \
+        _STATIC_IMAGE_SOURCES[image_key]
+    return generate_interior_fragment_static(
+        entry, data, load_addr, size, phys_addr, args,
+        guard_bytes=guard_bytes)
+
+
 def generate_interior_fragment_static(interior: int, data: bytes,
                                       load_addr: int, size: int,
-                                      phys_addr: int, args):
-    """Generate one isolated, exact-range-gated static interior shard."""
+                                      phys_addr: int, args, *,
+                                      guard_bytes: int):
+    """Generate one isolated, exact-range-gated static interior shard.
+
+    Returns (part, reason): part is None on failure and reason then says
+    why. Reasons starting with 'generated-c-audit:', 'requested-entry-audit:'
+    or 'guest-walk-audit:' are deterministic verdicts on these exact bytes
+    (the interior is data in this image) and are safe to memoize; anything
+    else (recompiler exit, missing output) is not."""
     with tempfile.TemporaryDirectory() as tmp:
         psx = os.path.join(tmp, 'frag.psx')
         with open(psx, 'wb') as f:
-            f.write(make_psxexe(load_addr, interior, data))
+            f.write(make_psxexe(load_addr, interior, data,
+                                guard_bytes=guard_bytes))
         seeds_path = os.path.join(tmp, 'seeds.txt')
         with open(seeds_path, 'w') as f:
             f.write(f'dispatch_root 0x{interior:08X}\n')
@@ -2950,7 +3499,18 @@ def generate_interior_fragment_static(interior: int, data: bytes,
             cmd, capture_output=True, text=True,
             cwd=os.path.dirname(os.path.abspath(args.game_toml)), env=sub_env)
         if result.returncode != 0:
-            return None
+            # A walk from this interior that runs off the image (a branch at
+            # the last word, its delay slot past the end) is the recompiler's
+            # own verdict that these bytes are not code from here: it throws
+            # rather than auditing. Deterministic for the image, so memoizable
+            # alongside the audit rejections.
+            text = (result.stderr or '') + (result.stdout or '')
+            walk = [ln.strip() for ln in text.splitlines()
+                    if 'outside the input image' in ln or
+                    'cannot emit control flow' in ln]
+            if walk:
+                return None, 'guest-walk-audit: ' + walk[0][:160]
+            return None, f'recompiler: exit {result.returncode}'
 
         full_c = ranges_src = None
         for filename in os.listdir(out_dir_tmp):
@@ -2959,7 +3519,7 @@ def generate_interior_fragment_static(interior: int, data: bytes,
             elif filename.endswith('_full.ranges'):
                 ranges_src = os.path.join(out_dir_tmp, filename)
         if not full_c or not ranges_src:
-            return None
+            return None, 'no-output: recompiler emitted no _full.c/_full.ranges'
 
         with open(full_c) as f:
             src, func_addrs = patch_generated_c_static(
@@ -2967,17 +3527,19 @@ def generate_interior_fragment_static(interior: int, data: bytes,
         image_crc = binascii.crc32(data) & 0xFFFFFFFF
         audit = audit_generated_c(src, load_addr, size, image_crc, {})
         if audit['unknown_bad'] or audit['unsupported_todo_addrs']:
-            return None
+            return None, (f'generated-c-audit: {len(audit["unknown_bad"])} '
+                          f'unknown_bad, '
+                          f'{len(audit["unsupported_todo_addrs"])} unsupported')
         func_ids = parse_overlay_func_ids(ranges_src, data, load_addr, size)
         ids_by_addr = {}
         for ev, code_crc, ranges in func_ids:
             ids_by_addr.setdefault(ev, []).append((code_crc, ranges))
         if set(func_addrs) - set(ids_by_addr):
-            return None
+            return None, 'static-ranges: dispatchable function(s) lack exact ranges'
 
         entry = (interior & 0x1FFFFFFF) | 0x80000000
         if entry not in ids_by_addr or entry not in set(func_addrs):
-            return None
+            return None, 'requested-entry-audit: fragment omitted its own entry'
         namespace = (f'ov_frag_{phys_addr:08X}_{image_crc:08X}_'
                      f'{entry:08X}')
         continuation_owners = parse_cps_continuation_owners(src)
@@ -2995,11 +3557,12 @@ def generate_interior_fragment_static(interior: int, data: bytes,
             'src': src,
             'variants': variants,
             'namespace': namespace,
+            'image_crc': image_crc,
             'func_addrs': set(func_addrs),
             'symbols': symbols,
             'ids_by_addr': ids_by_addr,
             'continuation_owners': continuation_owners,
-        }
+        }, 'ok'
 
 
 def validate_overlay_func_ids(func_ids: list,
@@ -3165,6 +3728,12 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
                       'DISPATCH_ROOT')
     }
     executed = set(seed_audit.get('executed_pcs', set()))
+    # A final DISPATCH_INTERIOR needs a discovered host, but a guarded isolated
+    # fragment does not. Do not rebuild live demand solely from surviving
+    # shared seeds. Retain the existing execution gate: arbitrary seeds,
+    # static-only interiors, and merely observed instructions are not enough.
+    observed_dispatch = (set(seed_audit.get('dispatch_fragment_demands', set())) &
+                         executed)
     static_exact_demands = set(
         seed_audit.get('static_exact_fragment_demands', set()))
     hosted_donor_demands = set(
@@ -3177,7 +3746,7 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         a for a in forced_interiors
         if phys_addr <= (a & 0x1FFFFFFF) < region_hi
     }
-    if not (((interiors or dispatch_roots) and executed) or
+    if not (((interiors or dispatch_roots) and executed) or observed_dispatch or
             static_demands or forced):
         return None
     return {
@@ -3185,7 +3754,13 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         'load_addr': load_addr,
         'size': size,
         'data': data,
-        'candidates': interiors | dispatch_roots | static_demands | forced,
+        # Trailing delay-slot guard words in `data` (readable, not
+        # discoverable). Stated by the capture writer where the field exists,
+        # reconstructed from the page-run format otherwise.
+        'guard_bytes': capture_guard_bytes(
+            capture, size, f'region 0x{load_addr:08X}'),
+        'candidates': (interiors | dispatch_roots | observed_dispatch |
+                       static_demands | forced),
         'executed': executed,
         'static_demands': static_demands,
         'static_exact_demands': static_exact_demands,
@@ -3721,6 +4296,8 @@ def fragment_batch_failure_is_partitionable(reason: str) -> bool:
     """Whether retrying smaller root sets can change this failure verdict."""
     if reason.startswith('candidate-capacity: full'):
         return False
+    if unsupported_guest_branch_rejection(reason):
+        return True
     return reason.startswith((
         'generated-c-audit:', 'requested-entry-audit:',
         'hosted-entry-audit:',
@@ -3735,7 +4312,8 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
                            args, sub_env: dict, toml_doc: dict,
                            producer_ranges=(), cross_call_allow=(),
                            hosted_owners: dict | None = None,
-                           manifest_provenance: str | None = None):
+                           manifest_provenance: str | None = None,
+                           *, guard_bytes: int):
     """Compile an ISOLATED interior-entry 'island' fragment that ENTERS at an
     executed orphan DISPATCH_INTERIOR PC (a host that static analysis never
     discovered, e.g. an FMV driver reached via a computed jump) and covers the
@@ -3778,7 +4356,8 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
     with tempfile.TemporaryDirectory() as tmp:
         psx = os.path.join(tmp, 'frag.psx')
         with open(psx, 'wb') as f:
-            f.write(make_psxexe(load_addr, first_entry, data))
+            f.write(make_psxexe(load_addr, first_entry, data,
+                                guard_bytes=guard_bytes))
         seeds_path = os.path.join(tmp, 'seeds.txt')
         with open(seeds_path, 'w') as f:
             for range_lo, range_hi in producer_ranges:
@@ -3970,7 +4549,8 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
 def compile_interior_fragment(interior: int, data: bytes, load_addr: int,
                               size: int, phys_addr: int, cache_dir: str,
                               args, sub_env: dict, toml_doc: dict,
-                              producer_ranges=(), cross_call_allow=()):
+                              producer_ranges=(), cross_call_allow=(),
+                              *, guard_bytes: int):
     """Compile one isolated uncertain interior entry.
 
     Executed, operator-forced, and interval-only aliases deliberately use this
@@ -3980,7 +4560,8 @@ def compile_interior_fragment(interior: int, data: bytes, load_addr: int,
     return compile_fragment_batch(
         {interior}, data, load_addr, size, phys_addr, cache_dir, args, sub_env,
         toml_doc, producer_ranges, cross_call_allow,
-        manifest_provenance=ORPHAN_MANIFEST_PROVENANCE)
+        manifest_provenance=ORPHAN_MANIFEST_PROVENANCE,
+        guard_bytes=guard_bytes)
 
 
 def fragment_shard_key(func_ids: list,
@@ -5191,6 +5772,320 @@ def cached_shard_manifest_status(dll_path: str, expected_abi: int | None,
 # Main
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Static mode (--static): per-capture worker + split output writer
+# ---------------------------------------------------------------------------
+
+def static_capture_job(cap: dict, args, toml: dict, forced_interiors: set,
+                       static_out: str) -> dict:
+    """Recompile ONE capture for static mode. Module-level and self-contained so
+    it can run in a worker process (ProcessPoolExecutor needs a picklable
+    callable and picklable arguments: the capture dict, the argparse Namespace,
+    the parsed game.toml, the forced-interior set).
+
+    Nothing here touches shared state. Everything the sequential path used to
+    write into main()'s accumulators comes back in the result and is merged by
+    the caller in canonical capture order, so the emitted C is byte-identical
+    whether --jobs is 1 or 12. Prints go to result['log'] instead of stdout so
+    parallel workers never interleave.
+
+    result: label, outcome ('ok' | 'skip' | 'fail'), fail=(class, detail),
+            part (the static_parts entry, or None),
+            requested_entries (set of (entry, image_crc)),
+            entry_sources ({(entry, image_crc): (data, load_addr, size,
+            phys_addr, guard_bytes)}), log.
+
+    Requested entries are keyed by (entry, image crc), never by the bare
+    address: the dispatcher validates every variant against the exact bytes
+    it was compiled from, so a demand is only served by a variant built from
+    THIS capture's bytes. Two captures of one band that both observed an
+    address are two demands (see the isolated-fragment pass in main()).
+    """
+    result = {'label': None, 'outcome': None, 'fail': None, 'part': None,
+              'requested_entries': set(), 'entry_sources': {}, 'log': ''}
+    log = io.StringIO()
+    with contextlib.redirect_stdout(log):
+        try:
+            _static_capture_job(cap, args, toml, forced_interiors, static_out,
+                                result)
+        finally:
+            result['log'] = log.getvalue()
+    return result
+
+
+def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
+    load_addr = int(cap['load_addr'], 16)
+    size      = int(cap['size'])
+    data      = base64.b64decode(cap['bytes_b64'])
+    crc32     = binascii.crc32(data) & 0xFFFFFFFF
+    phys_addr = (load_addr & 0x1FFFFFFF)
+    _label = f'overlay 0x{load_addr:08X} crc {crc32:08X}'
+    result['label'] = _label
+    # Trailing delay-slot guard words appended by the capture writer.
+    # Declared to the recompiler through the PS-EXE analysis-bound tag so
+    # they stay readable but are never discovered as code.
+    guard_bytes = capture_guard_bytes(cap, size, _label)
+
+    def fail(cls, detail):
+        result['outcome'] = 'fail'
+        result['fail'] = (cls, detail)
+
+    for captured_entry in _parse_addr_list(cap.get('dispatch_entry_pcs', [])):
+        entry = ((captured_entry & 0x1FFFFFFF) | 0x80000000)
+        key = (entry, crc32)
+        result['requested_entries'].add(key)
+        result['entry_sources'][key] = (
+            data, load_addr, size, phys_addr, guard_bytes)
+    # --force-interior is an explicit operator assertion that a live dispatch
+    # entry was observed even if the retained capture lost its classifier
+    # provenance. Bind the requested PC to this capture's exact bytes; the
+    # post-pass builds a content-validated isolated shard for it.
+    region_hi = phys_addr + size
+    for forced_entry in forced_interiors:
+        forced_phys = forced_entry & 0x1FFFFFFF
+        if phys_addr <= forced_phys < region_hi:
+            entry = forced_phys | 0x80000000
+            key = (entry, crc32)
+            result['requested_entries'].add(key)
+            result['entry_sources'][key] = (
+                data, load_addr, size, phys_addr, guard_bytes)
+
+    seeds, seed_audit = classify_overlay_seeds(cap, data, load_addr, size,
+                                               crc32, toml)
+    print(f'Overlay  load=0x{load_addr:08X}  size={size}  crc32=0x{crc32:08X}'
+          + (f'  guard={guard_bytes}B (delay-slot only, not analysed)'
+             if guard_bytes else ''))
+    print(f'  seeds: {len(seeds)}  mode: static -> {static_out}')
+    print_seed_audit(seed_audit)
+
+    root_seeds = [
+        seed for seed in seeds
+        if ((seed.split()[0] in ('call_root', 'dispatch_root')) or
+            seed.split()[0].startswith('0x'))
+    ]
+    if not root_seeds:
+        print(f'  {NO_SHARED_WALK_ROOT_SEEDS_SKIP}\n')
+        result['outcome'] = 'skip'
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Fake PS-EXE: the header entry PC becomes a walk root in the
+        # recompiler, so it must be a walk-root seed, never an interior one.
+        entry_pc = int(root_seeds[0].split()[-1], 16)
+        psx_path = os.path.join(tmp, f'overlay_{load_addr:08X}.psx')
+        with open(psx_path, 'wb') as f:
+            f.write(make_psxexe(load_addr, entry_pc, data,
+                                guard_bytes=guard_bytes))
+        seeds_path = os.path.join(tmp, 'seeds.txt')
+        with open(seeds_path, 'w') as f:
+            for seed in seeds:
+                f.write(seed + '\n')
+        out_dir_tmp = os.path.join(tmp, 'out')
+        os.makedirs(out_dir_tmp)
+
+        # Evidence-scoped discovery (the overlay-compilation contract): compile
+        # only the proven entry seeds and what they reach, never a whole-byte
+        # sweep. Same invocation as the DLL path.
+        cmd = [args.recompiler, psx_path,
+               '--seeds', seeds_path,
+               '--out-dir', out_dir_tmp,
+               '--overlay',
+               '--ws-config', os.path.abspath(args.game_toml)]
+        cmd += recompiler_project_root_args(args)
+        print(f'  recompile: {args.recompiler} ...{" [CPS]" if args.cps else ""}')
+        toml_dir = os.path.dirname(os.path.abspath(args.game_toml))
+        sub_env = dict(os.environ)
+        if args.cps:
+            sub_env['PSX_CPS'] = '1'   # §25: emit continuation-passing overlay C
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           cwd=toml_dir, env=sub_env)
+        if r.returncode != 0:
+            print(f'  RECOMPILER ERROR:\n{r.stderr or r.stdout}')
+            fail('recompiler', r.stderr or r.stdout)
+            return
+
+        stem = os.path.basename(psx_path)
+        full_c = os.path.join(out_dir_tmp, stem + '_full.c')
+        if not os.path.exists(full_c):
+            candidates = [f for f in os.listdir(out_dir_tmp) if f.endswith('_full.c')]
+            if not candidates:
+                print(f'  ERROR: no _full.c in {out_dir_tmp}')
+                fail('no_output', 'no _full.c emitted')
+                return
+            full_c = os.path.join(out_dir_tmp, candidates[0])
+        with open(full_c) as f:
+            src = f.read()
+        ranges_src = None
+        for fn in os.listdir(out_dir_tmp):
+            if fn.endswith('_full.ranges'):
+                ranges_src = os.path.join(out_dir_tmp, fn)
+                break
+
+        src, func_addrs = patch_generated_c_static(src, load_addr, size)
+        continuation_owners = parse_cps_continuation_owners(src)
+        c_audit = audit_generated_c(src, load_addr, size, crc32, toml)
+        print_generated_c_audit(load_addr, size, crc32, c_audit)
+        if c_audit['unknown_bad'] or c_audit['unsupported_todo_addrs']:
+            print('  GENERATED-C AUDIT FAILED\n')
+            fail('audit', f'{len(c_audit["unknown_bad"])} unknown_bad, '
+                          f'{len(c_audit["unsupported_todo_addrs"])} unsupported')
+            return
+        if not ranges_src:
+            print('  STATIC RANGE AUDIT FAILED: no _full.ranges manifest\n')
+            fail('no_ranges', 'no _full.ranges manifest')
+            return
+
+        func_ids = parse_overlay_func_ids(ranges_src, data, load_addr, size)
+        ids_by_addr = {}
+        for ev, code_crc, ranges in func_ids:
+            ids_by_addr.setdefault(ev, []).append((code_crc, ranges))
+        missing = sorted(set(func_addrs) - set(ids_by_addr))
+        if missing:
+            sample = ', '.join(f'0x{a:08X}' for a in missing[:8])
+            print(f'  STATIC RANGE AUDIT FAILED: {len(missing)} '
+                  f'dispatchable function(s) lack exact ranges: {sample}\n')
+            fail('static_ranges', f'{len(missing)} funcs lack exact ranges')
+            return
+
+        # Whole-image identity plus compiled-entry coverage makes the namespace
+        # deterministic while allowing a later, richer seed capture of
+        # identical bytes to coexist without symbol clashes.
+        cov_blob = ','.join(f'{a:08X}' for a in sorted(func_addrs)).encode()
+        cov_crc = binascii.crc32(cov_blob) & 0xFFFFFFFF
+        namespace = f'ov_{phys_addr:08X}_{crc32:08X}_{cov_crc:08X}'
+        src, symbols = namespace_generated_static(src, namespace, func_addrs)
+        variants = []
+        for ev in sorted(func_addrs):
+            for code_crc, ranges in ids_by_addr[ev]:
+                variants.append({
+                    'addr': ev,
+                    'symbol': symbols[ev],
+                    'crc': code_crc,
+                    'ranges': ranges,
+                })
+        result['part'] = {
+            'src': src,
+            'variants': variants,
+            'namespace': namespace,
+            'image_crc': crc32,
+            'func_addrs': set(func_addrs),
+            'symbols': symbols,
+            'ids_by_addr': ids_by_addr,
+            'continuation_owners': continuation_owners,
+        }
+        print(f'  recompiled: {len(func_addrs)} functions, '
+              f'{len(variants)} exact identities\n')
+        result['outcome'] = 'ok'
+
+
+STATIC_HEADER = ('/* Auto-generated overlay dispatch -- do not edit.\n'
+                 ' * Rebuild: python3 psxrecomp/tools/compile_overlays.py --static ...\n'
+                 ' */\n')
+_STATIC_PART_RE = re.compile(r'_(\d{4})\.c$')
+
+
+def static_part_paths(static_out: str) -> list:
+    """Existing split-output part files next to static_out, sorted."""
+    d = os.path.dirname(static_out) or '.'
+    stem = os.path.splitext(os.path.basename(static_out))[0]
+    if not os.path.isdir(d):
+        return []
+    out = []
+    for fn in os.listdir(d):
+        if fn.startswith(stem + '_') and _STATIC_PART_RE.search(fn):
+            out.append(os.path.join(d, fn))
+    return sorted(out)
+
+
+def _write_if_changed(path: str, text: str) -> bool:
+    """Write only when the content differs, so an unchanged translation unit
+    keeps its mtime and the build system does not recompile it."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            if f.read() == text:
+                return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+    return True
+
+
+def write_static_outputs(static_out: str, parts: list, variants: list,
+                         dispatch_src: str, single_file: bool = False) -> list:
+    """Emit the static overlay C.
+
+    Default (split): `static_out` holds the content-validated dispatcher plus
+    an extern prototype for every compiled entry, and each part becomes its own
+    translation unit `<stem>_NNNN.c` beside it. Every part already carries its
+    own #includes and a private symbol namespace, so it compiles standalone.
+    The build then parallelizes across parts, and because unchanged parts are
+    not rewritten, only overlays whose code changed recompile. Stale parts from
+    a previous, larger run are deleted so a glob never links a leftover.
+
+    single_file: the pre-split behaviour, everything in `static_out`.
+
+    Returns the list of files that make up the output (written or unchanged).
+    """
+    stale = static_part_paths(static_out)
+    if single_file:
+        combined = STATIC_HEADER
+        for part in parts:
+            combined += part['src']
+        combined += dispatch_src
+        _write_if_changed(static_out, combined)
+        for p in stale:
+            os.remove(p)
+        return [static_out]
+
+    d = os.path.dirname(static_out) or '.'
+    stem = os.path.splitext(os.path.basename(static_out))[0]
+    # One unit per region part, plus one unit per IMAGE for its isolated
+    # fragments. Fragments are per (entry, image) and a band with many
+    # occupants carries thousands of them (BoF3: 20k), so a unit per fragment
+    # would mean 20k files for the glob and 20k compiler launches. Fragment
+    # parts are privately namespaced, so concatenating an image's fragments
+    # is safe; keeping them apart from the region unit means a new fragment
+    # rewrites only its image's fragment unit, never the region.
+    units = []      # (label, [parts])
+    frag_units = {}
+    for part in parts:
+        if part['namespace'].startswith('ov_frag_'):
+            key = part['namespace'].rsplit('_', 1)[0]   # ov_frag_<phys>_<crc>
+            if key not in frag_units:
+                frag_units[key] = [key + '_fragments', []]
+                units.append(frag_units[key])
+            frag_units[key][1].append(part)
+        else:
+            units.append([part['namespace'], [part]])
+    written = []
+    for index, (label, unit_parts) in enumerate(units):
+        path = os.path.join(d, f'{stem}_{index:04d}.c')
+        # No part COUNT in the header: adding or dropping an overlay must leave
+        # every unchanged unit byte-identical (and therefore not rebuilt).
+        text = (STATIC_HEADER +
+                f'/* Static overlay translation unit {index}: {label} */\n' +
+                ''.join(part['src'] for part in unit_parts))
+        _write_if_changed(path, text)
+        written.append(path)
+    keep = set(written)
+    for p in stale:
+        if p not in keep:
+            os.remove(p)
+
+    symbols = sorted({variant['symbol'] for variant in variants})
+    main = STATIC_HEADER
+    main += '#include "psx_runtime.h"\n\n'
+    main += (f'/* Dispatcher for {len(written)} overlay translation unit(s) '
+             f'({stem}_0000.c ...). Every compiled entry has external linkage '
+             f'in its own unit; declare them here. */\n')
+    main += ''.join(f'void {sym}(CPUState *cpu);\n' for sym in symbols)
+    main += dispatch_src
+    _write_if_changed(static_out, main)
+    return [static_out] + written
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -5241,6 +6136,10 @@ def main():
                          'interior fragment (repeatable; diagnostic recovery for '
                          'an observed dispatch PC whose classifier provenance was '
                          'lost after a later capture)')
+    ap.add_argument('--static-single-file', action='store_true',
+                    help='with --static: emit one monolithic overlays_static.c '
+                         '(pre-split behaviour) instead of the dispatcher plus '
+                         'one translation unit per overlay.')
     ap.add_argument('--static',          action='store_true',
                     help='B-2 mode: compile into binary (overlays_static.c) instead of DLL')
     ap.add_argument('--flavor',          type=int, default=0,
@@ -5258,8 +6157,20 @@ def main():
                          'independent (dedup coverage, prior-ranges merge, '
                          'fragments, and filenames all key on the region), '
                          'captures within one region stay ordered. 1 = the '
-                         'sequential path. --static always runs sequential.')
+                         'sequential path. In --static mode each capture is an '
+                         'independent recompile+audit, run in a process pool '
+                         'and merged in capture order (byte-identical output '
+                         'to the sequential path).')
+    ap.add_argument('--target-os', choices=['auto', 'win', 'linux', 'macos'], default='auto',
+                    help='target operating system for compiled overlay shards (default: auto)')
     args = ap.parse_args()
+    target_os = args.target_os
+    if target_os == 'auto':
+        if 'mingw' in args.gcc.lower() or 'w64' in args.gcc.lower() or args.gcc.lower().endswith('.exe'):
+            target_os = 'win'
+        else:
+            target_os = None
+    set_target_os(target_os)
     forced_interiors = {
         (int(v, 0) & 0x1FFFFFFF) | 0x80000000
         for v in args.force_interior
@@ -5353,7 +6264,8 @@ def main():
         ch = codegen_hash(args.runtime_include)
         gh = overlay_config_hash(args.recompiler, args.game_toml)
         cache_dir = os.path.join(args.out_dir, game_id, args.compiler, cache_arch_abi(),
-                                 f'cg{cg}_{ch:08x}_gc{gh:08x}_f{int(args.flavor)}')
+                                 cache_tag(args.runtime_include, args.recompiler,
+                                           args.game_toml, args.flavor))
         os.makedirs(cache_dir, exist_ok=True)
         print(f'Cache dir: {cache_dir}  '
               f'(codegen ver {cg}, emitter {ch:08x}, config {gh:08x})')
@@ -5388,6 +6300,24 @@ def main():
     # executed_pcs). Collected right after classification so it survives a region
     # whose own compile is skipped or audit-fails.
     interior_frag_jobs = []
+    pending_empty_primary = []
+
+    def _merge_static_result(res):
+        """Fold one static_capture_job result into the shared accumulators.
+        Called in canonical capture order for both the sequential and the
+        --jobs path, so static_parts / entry sources are order-identical."""
+        if res['log']:
+            print(res['log'], end='')
+        static_requested_entries.update(res['requested_entries'])
+        static_entry_sources.update(res['entry_sources'])
+        if res['outcome'] == 'ok':
+            static_parts.append(res['part'])
+            stats.add_ok()
+        elif res['outcome'] == 'skip':
+            stats.add_skip()
+        else:
+            cls, detail = res['fail']
+            stats.add_fail(res['label'], cls, detail)
 
     # Per-capture body, extracted so the region-parallel driver below can call
     # it. All shared state is either read-only closure (args/toml/cache_dir)
@@ -5400,26 +6330,16 @@ def main():
         crc32     = binascii.crc32(data) & 0xFFFFFFFF
         phys_addr = (load_addr & 0x1FFFFFFF)
         _label = f'overlay 0x{load_addr:08X} crc {crc32:08X}'
+        # Trailing delay-slot guard words appended by the capture writer.
+        # Declared to the recompiler through the PS-EXE analysis-bound tag so
+        # they stay readable but are never discovered as code.
+        guard_bytes = capture_guard_bytes(cap, size, _label)
         if args.static:
-            for captured_entry in _parse_addr_list(
-                    cap.get('dispatch_entry_pcs', [])):
-                entry = ((captured_entry & 0x1FFFFFFF) | 0x80000000)
-                static_requested_entries.add(entry)
-                static_entry_sources[entry] = (
-                    data, load_addr, size, phys_addr)
-            # --force-interior is an explicit operator assertion that a live
-            # dispatch entry was observed even if the retained capture lost its
-            # classifier provenance. Static mode must honor it just like DLL
-            # mode: bind the requested PC to this capture's exact bytes, then
-            # the post-pass will build a content-validated isolated shard.
-            region_hi = phys_addr + size
-            for forced_entry in forced_interiors:
-                forced_phys = forced_entry & 0x1FFFFFFF
-                if phys_addr <= forced_phys < region_hi:
-                    entry = forced_phys | 0x80000000
-                    static_requested_entries.add(entry)
-                    static_entry_sources[entry] = (
-                        data, load_addr, size, phys_addr)
+            # Static mode is one self-contained job per capture (see
+            # static_capture_job); the sequential and --jobs paths share it.
+            _merge_static_result(static_capture_job(
+                cap, args, toml, forced_interiors, static_out))
+            return
 
         # Reclassify prior F entry addresses from an identical image. Callable
         # entries may become current roots; other entries re-enter as dispatch
@@ -5479,11 +6399,10 @@ def main():
         if not args.static:
             dll_path = os.path.join(cache_dir, f'{phys_addr:08X}_{crc32:08X}{overlay_ext()}')
 
-        print(f'Overlay  load=0x{load_addr:08X}  size={size}  crc32=0x{crc32:08X}')
-        if args.static:
-            print(f'  seeds: {len(seeds)}  mode: static -> {static_out}')
-        else:
-            print(f'  seeds: {len(seeds)}  dll: {dll_path}')
+        print(f'Overlay  load=0x{load_addr:08X}  size={size}  crc32=0x{crc32:08X}'
+              + (f'  guard={guard_bytes}B (delay-slot only, not analysed)'
+                 if guard_bytes else ''))
+        print(f'  seeds: {len(seeds)}  dll: {dll_path}')
         print_seed_audit(seed_audit)
 
         demanded_root_entries = walk_root_seed_entries(seeds)
@@ -5493,7 +6412,7 @@ def main():
                 seed.split()[0].startswith('0x'))
         ]
         if not root_seeds:
-            print('  SKIP: no walk-root seeds (data-only region)\n')
+            print(f'  {NO_SHARED_WALK_ROOT_SEEDS_SKIP}\n')
             stats.add_skip()
             return
 
@@ -5534,7 +6453,8 @@ def main():
             entry_pc = int(root_seeds[0].split()[-1], 16)
             psx_path = os.path.join(tmp, f'overlay_{load_addr:08X}.psx')
             with open(psx_path, 'wb') as f:
-                f.write(make_psxexe(load_addr, entry_pc, data))
+                f.write(make_psxexe(load_addr, entry_pc, data,
+                                    guard_bytes=guard_bytes))
 
             # Write seeds file
             seeds_path = os.path.join(tmp, 'seeds.txt')
@@ -5594,253 +6514,198 @@ def main():
                     ranges_src = os.path.join(out_dir_tmp, fn)
                     break
 
-            # Post-process
-            if args.static:
-                src, func_addrs = patch_generated_c_static(src, load_addr, size)
-                continuation_owners = parse_cps_continuation_owners(src)
-                c_audit = audit_generated_c(src, load_addr, size, crc32, toml)
-                print_generated_c_audit(load_addr, size, crc32, c_audit)
-                if c_audit['unknown_bad'] or c_audit['unsupported_todo_addrs']:
-                    print('  GENERATED-C AUDIT FAILED\n')
-                    stats.add_fail(_label, 'audit',
-                                   f'{len(c_audit["unknown_bad"])} unknown_bad, '
-                                   f'{len(c_audit["unsupported_todo_addrs"])} unsupported')
+            # Post-process (DLL path; static mode returned early above)
+            src = patch_generated_c(src, load_addr, size)
+            c_audit = audit_generated_c(src, load_addr, size, crc32, toml)
+            print_generated_c_audit(load_addr, size, crc32, c_audit)
+            # Always save the debug copy for inspection — including on audit
+            # failure, so opcode gaps / boundary artifacts can be classified.
+            os.makedirs(os.path.dirname(dll_path), exist_ok=True)
+            debug_c = os.path.join(os.path.dirname(dll_path),
+                                   f'{crc32:08X}_patched.c')
+            with open(debug_c, 'w') as f:
+                f.write(src)
+            if c_audit['unknown_bad'] or c_audit['unsupported_todo_addrs']:
+                fallback = optional_enrichment_fallback_capture(cap)
+                if fallback is not None:
+                    print('  OPTIONAL ENRICHMENT AUDIT REJECTED; '
+                          'retrying conservative recipe\n')
+                    _do_capture(fallback, region_coverage_cache,
+                                interior_frag_jobs, stats)
                     return
-                if not ranges_src:
-                    print('  STATIC RANGE AUDIT FAILED: no _full.ranges manifest\n')
-                    stats.add_fail(_label, 'no_ranges', 'no _full.ranges manifest')
-                    return
+                print('  GENERATED-C AUDIT FAILED\n')
+                stats.add_fail(_label, 'audit',
+                               f'{len(c_audit["unknown_bad"])} unknown_bad, '
+                               f'{len(c_audit["unsupported_todo_addrs"])} unsupported')
+                return
+            patched_c = os.path.join(tmp, 'overlay_patched.c')
+            with open(patched_c, 'w') as f:
+                f.write(src)
 
-                func_ids = parse_overlay_func_ids(ranges_src, data,
-                                                  load_addr, size)
-                ids_by_addr = {}
-                for ev, code_crc, ranges in func_ids:
-                    ids_by_addr.setdefault(ev, []).append((code_crc, ranges))
-                missing = sorted(set(func_addrs) - set(ids_by_addr))
-                if missing:
-                    sample = ', '.join(f'0x{a:08X}' for a in missing[:8])
-                    print(f'  STATIC RANGE AUDIT FAILED: {len(missing)} '
-                          f'dispatchable function(s) lack exact ranges: {sample}\n')
-                    stats.add_fail(_label, 'static_ranges',
-                                   f'{len(missing)} funcs lack exact ranges')
-                    return
+            # overlay-cache v2 dedup: compute this capture's per-function
+            # identity set BEFORE the (expensive) gcc compile. The loader
+            # content-matches each function by (entry, code_crc) across ALL
+            # DLLs at this region_start, so if every function we'd produce is
+            # already provided by an existing DLL, a new DLL adds nothing —
+            # skip the build. This is what stops volatile-data regions (a
+            # changing whole-region CRC over byte-identical code) from minting
+            # an endless pile of redundant DLLs.
+            this_ids = (parse_overlay_func_ids(ranges_src, data, load_addr, size)
+                        if ranges_src else [])
+            delay_errors = audit_func_id_delay_slots(
+                this_ids, data, load_addr)
+            if delay_errors:
+                entry, pc, reason = delay_errors[0]
+                where = f' at 0x{pc:08X}' if pc is not None else ''
+                print(f'  DELAY-SLOT IDENTITY AUDIT FAILED: '
+                      f'func 0x{entry:08X}{where}: {reason}\n')
+                stats.add_fail(_label, 'delay_slot_identity', reason)
+                return
+            this_set = {(ev, crc) for ev, crc, _ in this_ids}
 
-                # Whole-image identity plus compiled-entry coverage makes the
-                # namespace deterministic while allowing a later, richer seed
-                # capture of identical bytes to coexist without symbol clashes.
-                cov_blob = ','.join(f'{a:08X}'
-                                    for a in sorted(func_addrs)).encode()
-                cov_crc = binascii.crc32(cov_blob) & 0xFFFFFFFF
-                namespace = f'ov_{phys_addr:08X}_{crc32:08X}_{cov_crc:08X}'
-                src, symbols = namespace_generated_static(src, namespace,
-                                                          func_addrs)
-                variants = []
-                for ev in sorted(func_addrs):
-                    for code_crc, ranges in ids_by_addr[ev]:
-                        variants.append({
-                            'addr': ev,
-                            'symbol': symbols[ev],
-                            'crc': code_crc,
-                            'ranges': ranges,
-                        })
-                static_parts.append({
-                    'src': src,
-                    'variants': variants,
-                    'namespace': namespace,
-                    'func_addrs': set(func_addrs),
-                    'symbols': symbols,
-                    'ids_by_addr': ids_by_addr,
-                    'continuation_owners': continuation_owners,
-                })
-                print(f'  recompiled: {len(func_addrs)} functions, '
-                      f'{len(variants)} exact identities\n')
-                stats.add_ok()
-            else:
-                src = patch_generated_c(src, load_addr, size)
-                c_audit = audit_generated_c(src, load_addr, size, crc32, toml)
-                print_generated_c_audit(load_addr, size, crc32, c_audit)
-                # Always save the debug copy for inspection — including on audit
-                # failure, so opcode gaps / boundary artifacts can be classified.
-                os.makedirs(os.path.dirname(dll_path), exist_ok=True)
-                debug_c = os.path.join(os.path.dirname(dll_path),
-                                       f'{crc32:08X}_patched.c')
-                with open(debug_c, 'w') as f:
-                    f.write(src)
-                if c_audit['unknown_bad'] or c_audit['unsupported_todo_addrs']:
-                    fallback = optional_enrichment_fallback_capture(cap)
-                    if fallback is not None:
-                        print('  OPTIONAL ENRICHMENT AUDIT REJECTED; '
-                              'retrying conservative recipe\n')
-                        _do_capture(fallback, region_coverage_cache,
-                                    interior_frag_jobs, stats)
-                        return
-                    print('  GENERATED-C AUDIT FAILED\n')
-                    stats.add_fail(_label, 'audit',
-                                   f'{len(c_audit["unknown_bad"])} unknown_bad, '
-                                   f'{len(c_audit["unsupported_todo_addrs"])} unsupported')
-                    return
-                patched_c = os.path.join(tmp, 'overlay_patched.c')
-                with open(patched_c, 'w') as f:
-                    f.write(src)
+            with cov_lock:
+                covered = region_coverage_cache.get(phys_addr)
+                if covered is None:
+                    covered = load_region_coverage(
+                        cache_dir, phys_addr,
+                        overlay_abi_tag(args.runtime_include, args.flavor))
+                    region_coverage_cache[phys_addr] = covered
+                fully_covered = (bool(this_set) and this_set <= covered
+                                 and not args.force
+                                 and cap.get('producer') !=
+                                     BIOS_RESIDENT_PRODUCER)
+            if fully_covered:
+                print(f'  SKIP: all {len(this_set)} function(s) already '
+                      f'covered by existing DLL(s) at this region — no new '
+                      f'native code to build\n')
+                stats.add_skip()
+                return
 
-                # overlay-cache v2 dedup: compute this capture's per-function
-                # identity set BEFORE the (expensive) gcc compile. The loader
-                # content-matches each function by (entry, code_crc) across ALL
-                # DLLs at this region_start, so if every function we'd produce is
-                # already provided by an existing DLL, a new DLL adds nothing —
-                # skip the build. This is what stops volatile-data regions (a
-                # changing whole-region CRC over byte-identical code) from minting
-                # an endless pile of redundant DLLs.
-                this_ids = (parse_overlay_func_ids(ranges_src, data, load_addr, size)
-                            if ranges_src else [])
-                delay_errors = audit_func_id_delay_slots(
-                    this_ids, data, load_addr)
-                if delay_errors:
-                    entry, pc, reason = delay_errors[0]
-                    where = f' at 0x{pc:08X}' if pc is not None else ''
-                    print(f'  DELAY-SLOT IDENTITY AUDIT FAILED: '
-                          f'func 0x{entry:08X}{where}: {reason}\n')
-                    stats.add_fail(_label, 'delay_slot_identity', reason)
-                    return
-                this_set = {(ev, crc) for ev, crc, _ in this_ids}
+            if not this_ids:
+                print('  WARNING: recompiler emitted no usable _full.ranges -- '
+                      'preserving any prior DLL/ranges pair; checking exact '
+                      'fragment coverage after supplementation')
+                if cap.get('producer') == BIOS_RESIDENT_PRODUCER:
+                    stats.add_fail(_label, 'no_ranges',
+                                   'resident producer requires its canonical bundle')
+                else:
+                    pending_empty_primary.append((
+                        _label, phys_addr, load_addr, size, data,
+                        demanded_root_entries))
+                return
+            missing_exports = {
+                entry for entry, _crc, _ranges in this_ids
+                if entry not in c_audit['defs']
+            }
+            if missing_exports:
+                detail = ', '.join(
+                    f'0x{entry:08X}' for entry in sorted(missing_exports))
+                print('  GENERATED-C/MANIFEST EXPORT AUDIT FAILED: '
+                      f'{detail}\n')
+                stats.add_fail(
+                    _label, 'manifest_exports',
+                    f'{len(missing_exports)} manifest entries lack C definitions')
+                return
+            representability_error = validate_overlay_func_ids(
+                this_ids, 'region')
+            if representability_error:
+                print('  RANGE MANIFEST AUDIT FAILED: '
+                      f'{representability_error}\n')
+                stats.add_fail(
+                    _label, 'manifest_ranges', representability_error)
+                return
+            pair_id = overlay_pair_id(src, this_ids)
+            src = add_overlay_pair_export(src, pair_id)
+            # Retained source is the exact source compiled into the DLL.
+            with open(patched_c, 'w') as f:
+                f.write(src)
 
-                with cov_lock:
-                    covered = region_coverage_cache.get(phys_addr)
-                    if covered is None:
-                        covered = load_region_coverage(
+            # Compile to DLL
+            include_dirs = [args.runtime_include]
+            recomp_root = os.path.dirname(os.path.dirname(args.recompiler))
+            for lib_inc in ['lib/fmt/include']:
+                p = os.path.join(recomp_root, lib_inc)
+                if os.path.isdir(p):
+                    include_dirs.append(p)
+
+            publication = {}
+            success = compile_dll(patched_c, dll_path, include_dirs,
+                                  gcc=args.gcc, flavor=args.flavor,
+                                  compiler=args.compiler, tcc=args.tcc,
+                                  func_ids=this_ids,
+                                  pair_id=pair_id,
+                                  preserve_existing_pair=(
+                                      not args.force and
+                                      cap.get('producer') !=
+                                      BIOS_RESIDENT_PRODUCER),
+                                  expected_existing_abi=overlay_abi_tag(
+                                      args.runtime_include, args.flavor),
+                                  publication_result=publication,
+                                  candidate_cap=overlay_candidate_cap(
+                                      args.runtime_include))
+            if success:
+                # compile_dll transactionally published the per-entry range
+                # manifest beside the DLL from the same func-id list used by
+                # dedup. The loader keys it by the same filename stem.
+                ranges_out = os.path.splitext(dll_path)[0] + '.ranges'
+                if this_ids:
+                    nfn = len(this_ids)
+                    published = publication.get('published', True)
+                    reconcile_bios_resident_marker(
+                        dll_path, cap, published)
+                    print(f'  ranges: {nfn} functions -> {ranges_out}')
+                    # New identities are now available for this region_start;
+                    # keep the warm coverage set current so later captures in
+                    # this same run dedup against them. (Parallel note: the
+                    # check→build→update window is deliberately unlocked, so
+                    # two concurrent captures can both build overlapping DLLs.
+                    # That is redundancy, not corruption — the loader content-
+                    # matches every function by (entry, code_crc) across all
+                    # DLLs at a region.)
+                    with cov_lock:
+                        covered |= load_region_coverage(
                             cache_dir, phys_addr,
-                            overlay_abi_tag(args.runtime_include, args.flavor))
-                        region_coverage_cache[phys_addr] = covered
-                    fully_covered = (bool(this_set) and this_set <= covered
-                                     and not args.force
-                                     and cap.get('producer') !=
-                                         BIOS_RESIDENT_PRODUCER)
-                if fully_covered:
-                    print(f'  SKIP: all {len(this_set)} function(s) already '
-                          f'covered by existing DLL(s) at this region — no new '
-                          f'native code to build\n')
+                            overlay_abi_tag(
+                                args.runtime_include, args.flavor))
+                    if published:
+                        print(f'  OK -> {dll_path}\n')
+                        stats.add_ok()
+                    else:
+                        print(f'  PRESERVED concurrent valid pair -> '
+                              f'{dll_path}\n')
+                        stats.add_skip()
+                else:
+                    print('  WARNING: recompiler emitted no _full.ranges — '
+                          'loader will leave this region to the interpreter')
+                    # A DLL with no .ranges is dead weight: the loader has no
+                    # per-function identities to dispatch, so the region stays
+                    # interpreted. Tally it as a failure, not a silent "OK".
+                    stats.add_fail(_label, 'no_ranges',
+                                   'DLL built but no _full.ranges (undispatchable)')
+            else:
+                if publication.get('capacity_error'):
+                    print('  CACHE CAPACITY REACHED; shard left to the '
+                          'interpreter\n')
                     stats.add_skip()
                     return
-
-                if not this_ids:
-                    print('  WARNING: recompiler emitted no usable _full.ranges -- '
-                          'preserving any prior DLL/ranges pair and leaving this '
-                          'region to the interpreter')
-                    stats.add_fail(_label, 'no_ranges',
-                                   'no usable function identities (DLL not built)')
+                fallback = optional_enrichment_fallback_capture(cap)
+                if fallback is not None:
+                    print('  OPTIONAL ENRICHMENT COMPILE REJECTED; '
+                          'retrying conservative recipe\n')
+                    _do_capture(fallback, region_coverage_cache,
+                                interior_frag_jobs, stats)
                     return
-                missing_exports = {
-                    entry for entry, _crc, _ranges in this_ids
-                    if entry not in c_audit['defs']
-                }
-                if missing_exports:
-                    detail = ', '.join(
-                        f'0x{entry:08X}' for entry in sorted(missing_exports))
-                    print('  GENERATED-C/MANIFEST EXPORT AUDIT FAILED: '
-                          f'{detail}\n')
-                    stats.add_fail(
-                        _label, 'manifest_exports',
-                        f'{len(missing_exports)} manifest entries lack C definitions')
-                    return
-                representability_error = validate_overlay_func_ids(
-                    this_ids, 'region')
-                if representability_error:
-                    print('  RANGE MANIFEST AUDIT FAILED: '
-                          f'{representability_error}\n')
-                    stats.add_fail(
-                        _label, 'manifest_ranges', representability_error)
-                    return
-                pair_id = overlay_pair_id(src, this_ids)
-                src = add_overlay_pair_export(src, pair_id)
-                # Retained source is the exact source compiled into the DLL.
-                with open(patched_c, 'w') as f:
-                    f.write(src)
-
-                # Compile to DLL
-                include_dirs = [args.runtime_include]
-                recomp_root = os.path.dirname(os.path.dirname(args.recompiler))
-                for lib_inc in ['lib/fmt/include']:
-                    p = os.path.join(recomp_root, lib_inc)
-                    if os.path.isdir(p):
-                        include_dirs.append(p)
-
-                publication = {}
-                success = compile_dll(patched_c, dll_path, include_dirs,
-                                      gcc=args.gcc, flavor=args.flavor,
-                                      compiler=args.compiler, tcc=args.tcc,
-                                      func_ids=this_ids,
-                                      pair_id=pair_id,
-                                      preserve_existing_pair=(
-                                          not args.force and
-                                          cap.get('producer') !=
-                                          BIOS_RESIDENT_PRODUCER),
-                                      expected_existing_abi=overlay_abi_tag(
-                                          args.runtime_include, args.flavor),
-                                      publication_result=publication,
-                                      candidate_cap=overlay_candidate_cap(
-                                          args.runtime_include))
-                if success:
-                    # compile_dll transactionally published the per-entry range
-                    # manifest beside the DLL from the same func-id list used by
-                    # dedup. The loader keys it by the same filename stem.
-                    ranges_out = os.path.splitext(dll_path)[0] + '.ranges'
-                    if this_ids:
-                        nfn = len(this_ids)
-                        published = publication.get('published', True)
-                        reconcile_bios_resident_marker(
-                            dll_path, cap, published)
-                        print(f'  ranges: {nfn} functions -> {ranges_out}')
-                        # New identities are now available for this region_start;
-                        # keep the warm coverage set current so later captures in
-                        # this same run dedup against them. (Parallel note: the
-                        # check→build→update window is deliberately unlocked, so
-                        # two concurrent captures can both build overlapping DLLs.
-                        # That is redundancy, not corruption — the loader content-
-                        # matches every function by (entry, code_crc) across all
-                        # DLLs at a region.)
-                        with cov_lock:
-                            covered |= load_region_coverage(
-                                cache_dir, phys_addr,
-                                overlay_abi_tag(
-                                    args.runtime_include, args.flavor))
-                        if published:
-                            print(f'  OK -> {dll_path}\n')
-                            stats.add_ok()
-                        else:
-                            print(f'  PRESERVED concurrent valid pair -> '
-                                  f'{dll_path}\n')
-                            stats.add_skip()
-                    else:
-                        print('  WARNING: recompiler emitted no _full.ranges — '
-                              'loader will leave this region to the interpreter')
-                        # A DLL with no .ranges is dead weight: the loader has no
-                        # per-function identities to dispatch, so the region stays
-                        # interpreted. Tally it as a failure, not a silent "OK".
-                        stats.add_fail(_label, 'no_ranges',
-                                       'DLL built but no _full.ranges (undispatchable)')
-                else:
-                    if publication.get('capacity_error'):
-                        print('  CACHE CAPACITY REACHED; shard left to the '
-                              'interpreter\n')
-                        stats.add_skip()
-                        return
-                    fallback = optional_enrichment_fallback_capture(cap)
-                    if fallback is not None:
-                        print('  OPTIONAL ENRICHMENT COMPILE REJECTED; '
-                              'retrying conservative recipe\n')
-                        _do_capture(fallback, region_coverage_cache,
-                                    interior_frag_jobs, stats)
-                        return
-                    print(f'  FAILED\n')
-                    stats.add_fail(_label, 'compile',
-                                   'gcc/tcc compile failed (see COMPILE ERROR above)')
+                print(f'  FAILED\n')
+                stats.add_fail(_label, 'compile',
+                               'gcc/tcc compile failed (see COMPILE ERROR above)')
 
     # Interior-entry "island" fragments (overlay-cache v2): the FMV-driver class.
     # Run as a SEPARATE pass AFTER all region compiles, so it is DECOUPLED from
     # region success — an executed orphan interior gets its isolated island shard
     # even if its region's trusted compile failed/audit-failed (that is the whole
-    # point of the separate failure domain). For each region, find DISPATCH_INTERIOR
-    # PCs that ACTUALLY EXECUTED this session but that NO built DLL covers (orphan
+    # point of the separate failure domain). For each region, retain validated
+    # dispatch PCs even when shared CFG ownership dropped their interior seeds.
+    # Select those that ACTUALLY EXECUTED but that NO current DLL serves (orphan
     # interiors — host never discovered, so the region can't alias them), and
     # compile each as its OWN isolated <region>_<key>.dll that ENTERS at the
     # interior PC (recovers no host). Isolated => a bad fragment fails alone and
@@ -5894,7 +6759,8 @@ def main():
                         job['phys_addr'], entry, job['data'],
                         job['load_addr'], job['size'],
                         job['producer_ranges'], job['cross_call_allow'],
-                        expected_abi, args.cps, toml)
+                        expected_abi, args.cps, toml,
+                        job['guard_bytes'])
                     if key in fail_memo:
                         memo_entries[entry] = fail_memo[key]
                 if not memo_entries:
@@ -5959,7 +6825,8 @@ def main():
                 key = _interior_fail_key(
                     phys_addr, entry, data, load_addr, size,
                     job['producer_ranges'], job['cross_call_allow'],
-                    expected_abi, args.cps, toml)
+                    expected_abi, args.cps, toml,
+                    job['guard_bytes'])
                 memo_action = interior_fail_memo_action(
                     entry, job, args.force)
                 if key in fail_memo and memo_action != 'retry':
@@ -6008,7 +6875,8 @@ def main():
                 return compile_fragment_batch(
                     entries, data, load_addr, size, phys_addr, cache_dir,
                     args, frag_env, toml, job['producer_ranges'],
-                    job['cross_call_allow'])
+                    job['cross_call_allow'],
+                    guard_bytes=job['guard_bytes'])
 
             def strong_batch_success(entries, frag_ids, status):
                 strong_handled.update(entries)
@@ -6044,7 +6912,8 @@ def main():
                 key = _interior_fail_key(
                     phys_addr, entry, data, load_addr, size,
                     job['producer_ranges'], job['cross_call_allow'],
-                    expected_abi, args.cps, toml)
+                    expected_abi, args.cps, toml,
+                    job['guard_bytes'])
                 optional_reject = optional_static_fragment_rejection(
                     entry, job, status)
                 if optional_reject:
@@ -6241,7 +7110,8 @@ def main():
                 key = _interior_fail_key(
                     phys_addr, entry, data, load_addr, size,
                     job['producer_ranges'], job['cross_call_allow'],
-                    expected_abi, args.cps, toml)
+                    expected_abi, args.cps, toml,
+                    job['guard_bytes'])
                 optional_reject = optional_static_fragment_rejection(
                     entry, job, status)
                 if optional_reject:
@@ -6285,7 +7155,8 @@ def main():
                 return compile_fragment_batch(
                     specs, data, load_addr, size, phys_addr, cache_dir,
                     args, frag_env, toml, job['producer_ranges'],
-                    job['cross_call_allow'], hosted_owners=specs)
+                    job['cross_call_allow'], hosted_owners=specs,
+                    guard_bytes=job['guard_bytes'])
 
             hosted_rejected = set()
             hosted_published = False
@@ -6437,7 +7308,8 @@ def main():
                 key = _interior_fail_key(
                     phys_addr, a, data, load_addr, size,
                     job['producer_ranges'], job['cross_call_allow'],
-                    expected_abi, args.cps, toml)
+                    expected_abi, args.cps, toml,
+                    job['guard_bytes'])
                 memo_action = interior_fail_memo_action(a, job, args.force)
                 if key in fail_memo and memo_action != 'retry':
                     # Deterministically doomed from these exact bytes — skip the
@@ -6454,7 +7326,8 @@ def main():
                 frag_ids, status = compile_interior_fragment(
                     a, data, load_addr, size, phys_addr, cache_dir, args,
                     frag_env, toml, job['producer_ranges'],
-                    job['cross_call_allow'])
+                    job['cross_call_allow'],
+                    guard_bytes=job['guard_bytes'])
                 if frag_ids:
                     built += 1
                     record_fragment_success(
@@ -6482,8 +7355,26 @@ def main():
     # capture order.
     stats = ShardStats()
     if args.static:
-        for cap in captures:
-            _do_capture(cap, region_coverage_cache, interior_frag_jobs, stats)
+        if args.jobs > 1 and len(captures) > 1:
+            # Each capture is an independent recompiler subprocess plus a
+            # Python-side audit/namespace pass; the latter is CPU-bound, so
+            # processes, not threads. pool.map yields in submission order, and
+            # the merge runs in that order, so the result is byte-identical to
+            # the sequential loop.
+            from concurrent.futures import ProcessPoolExecutor
+            print(f'Static mode: {args.jobs} worker processes, '
+                  f'results merged in capture order\n')
+            with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+                for res in pool.map(static_capture_job, captures,
+                                    itertools.repeat(args),
+                                    itertools.repeat(toml),
+                                    itertools.repeat(forced_interiors),
+                                    itertools.repeat(static_out),
+                                    chunksize=1):
+                    _merge_static_result(res)
+        else:
+            for cap in captures:
+                _do_capture(cap, region_coverage_cache, interior_frag_jobs, stats)
     else:
         # Publication order is part of the reproducible cache result whenever
         # the process-lifetime Candidate cap can bind. Sort complete capture
@@ -6588,18 +7479,32 @@ def main():
             nonlocal synthesized
             for part in parts:
                 done = part.setdefault('resume_entries', set())
+                # Same per-entry rules as before, but the resume arms are
+                # inserted per HOST in one pass (add_cps_resume_cases) and the
+                # wrappers appended in one concatenation. Entry order is the
+                # sorted order the per-entry loop used, so the emitted C is
+                # byte-identical; the cost drops from quadratic in the part
+                # size to linear.
+                candidates = []
+                by_host = {}
                 for entry, host in sorted(part['continuation_owners'].items()):
                     if entry in part['func_addrs'] or entry in done:
                         continue
                     if host not in part['ids_by_addr']:
                         continue
-                    symbol = f'{part["namespace"]}_func_{entry:08X}'
+                    candidates.append((entry, host))
+                    by_host.setdefault(host, []).append(entry)
+                requests = [(part['symbols'][host], host, entries)
+                            for host, entries in by_host.items()]
+                part['src'], ok_by_symbol = add_cps_resume_cases(
+                    part['src'], requests)
+                wrappers = []
+                for entry, host in candidates:
                     host_symbol = part['symbols'][host]
-                    part['src'], resume_ok = add_cps_resume_case(
-                        part['src'], host_symbol, host, entry)
-                    if not resume_ok:
+                    if entry not in ok_by_symbol.get(host_symbol, ()):
                         continue
-                    part['src'] += (
+                    symbol = f'{part["namespace"]}_func_{entry:08X}'
+                    wrappers.append(
                         f'\n/* CPS block resume entry owned by 0x{host:08X}. */\n'
                         f'void {symbol}(CPUState* cpu)\n{{\n'
                         f'    cpu->pc = 0x{entry:08X}u;\n'
@@ -6614,70 +7519,169 @@ def main():
                         })
                     done.add(entry)
                     synthesized += 1
+                part['src'] += ''.join(wrappers)
 
         synthesize_all_resume_wrappers(static_parts)
-        existing_entries = {
-            variant['addr']
-            for part in static_parts
-            for variant in part['variants']
-        }
 
         # Captured entries not owned by any compiled host are genuine orphan
         # interiors. Compile each as an isolated dispatch-root shard, then give
         # every block in those fragments the same universal resume treatment.
-        unresolved = sorted(static_requested_entries - existing_entries)
+        #
+        # Demands are (entry, image crc), one per capture that observed the
+        # address, and a demand is served only by a part built from that
+        # capture's bytes (select_static_fragment_demands). A band with many
+        # occupants therefore gets one fragment per occupant that observed the
+        # address -- the dispatcher's CRC gate picks the resident one.
+        unresolved = select_static_fragment_demands(
+            static_requested_entries, static_parts)
         # PSX_STATIC_NO_ISOLATED=1: A/B guard -- skip the isolated-fragment pass
         # entirely while testing the universal-resume machinery.
         if os.environ.get('PSX_STATIC_NO_ISOLATED'):
             unresolved = []
-        fragment_built = 0
-        new_fragment_parts = []
-        for entry in unresolved:
-            if entry in existing_entries:
-                continue
-            source = static_entry_sources.get(entry)
+
+        # Persistent doomed-fragment memo, as in the DLL path: an interior
+        # that is data in THIS image fails the generated-C audit every time,
+        # after a full recompiler walk. Band-attributed captures (an observed
+        # PC attached to every occupant of its band) make that the common
+        # case, so remember the verdict per (image bytes, interior, toml,
+        # cps, guard) next to the static output. --force cannot be the retry
+        # switch here (static mode needs it just to overwrite the output);
+        # --force-interior PC retries that entry, deleting the memo file
+        # retries everything.
+        fail_memo = load_interior_fail_memo(args.out_dir)
+        expected_abi = overlay_abi_tag(args.runtime_include, args.flavor)
+        forced_phys = {entry & 0x1FFFFFFF for entry in forced_interiors}
+        fragment_jobs = []      # (demand key, memo key, image key)
+        image_sources = {}      # image key -> (data, load, size, phys, guard)
+        fragment_memo_skipped = 0
+        for key in unresolved:
+            source = static_entry_sources.get(key)
             if source is None:
                 continue
-            data, load_addr, size, phys_addr = source
-            part = generate_interior_fragment_static(
-                entry, data, load_addr, size, phys_addr, args)
+            entry, image_crc = key
+            data, load_addr, size, phys_addr, guard_bytes = source
+            memo_key = _interior_fail_key(
+                phys_addr, entry, data, load_addr, size, [], [],
+                expected_abi, bool(args.cps), toml, guard_bytes=guard_bytes)
+            if (memo_key in fail_memo and
+                    (entry & 0x1FFFFFFF) not in forced_phys):
+                fragment_memo_skipped += 1
+                continue
+            image_key = (image_crc, phys_addr, size)
+            image_sources.setdefault(image_key, source)
+            fragment_jobs.append((key, memo_key, image_key))
+
+        # Fragments are independent recompiler subprocesses; run them on the
+        # same pool as the regions. Results are merged in demand order and a
+        # result whose entry an earlier-merged part already serves for the
+        # same image is discarded, so the output is byte-identical to the
+        # sequential loop (which skipped such entries before compiling).
+        if fragment_jobs:
+            print(f'Static isolated interior fragments: {len(fragment_jobs)} '
+                  f'(entry, image) demand(s) over {len(image_sources)} '
+                  f'image(s) to compile'
+                  + (f', {fragment_memo_skipped} known-doomed skipped'
+                     if fragment_memo_skipped else ''))
+        if args.jobs > 1 and len(fragment_jobs) > 1:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(
+                    max_workers=args.jobs,
+                    initializer=_init_static_fragment_worker,
+                    initargs=(image_sources,)) as pool:
+                fragment_results = list(pool.map(
+                    static_fragment_job,
+                    [job[0][0] for job in fragment_jobs],
+                    [job[2] for job in fragment_jobs],
+                    itertools.repeat(args),
+                    chunksize=8))
+        else:
+            _init_static_fragment_worker(image_sources)
+            fragment_results = [static_fragment_job(key[0], image_key, args)
+                                for key, _memo_key, image_key in fragment_jobs]
+
+        fragment_built = 0
+        fragment_rejected = 0
+        fragment_failed = []
+        new_fragment_parts = []
+        existing_keys = served_static_variant_keys(static_parts)
+        for (key, memo_key, _image_key), (part, reason) in zip(
+                fragment_jobs, fragment_results):
+            if key in existing_keys:
+                continue
             if part is None:
+                if interior_failure_is_deterministic(reason):
+                    fragment_rejected += 1
+                    append_interior_fail_memo(args.out_dir, memo_key, reason)
+                else:
+                    fragment_failed.append((key, reason))
                 continue
             static_parts.append(part)
             new_fragment_parts.append(part)
-            existing_entries.update(
-                variant['addr'] for variant in part['variants'])
+            existing_keys.update(
+                (variant['addr'], part['image_crc'])
+                for variant in part['variants'])
             fragment_built += 1
 
         synthesize_all_resume_wrappers(new_fragment_parts)
-        existing_entries = {
-            variant['addr']
-            for part in static_parts
-            for variant in part['variants']
-        }
-        unresolved = sorted(static_requested_entries - existing_entries)
+        unresolved = select_static_fragment_demands(
+            static_requested_entries, static_parts)
         print(f'Static universal CPS resume wrappers: {synthesized}')
         print(f'Static isolated interior shards: {fragment_built}')
-        if unresolved:
-            sample = ', '.join(f'0x{entry:08X}' for entry in unresolved[:12])
-            print(f'STATIC COVERAGE WARNING: {len(unresolved)} captured dispatch '
-                  f'entry(s) have no compiled body/owner: {sample}')
-            for entry in unresolved:
-                stats.add_fail(f'static entry 0x{entry:08X}', 'static_unresolved',
-                               'captured dispatch entry with no compiled body/owner')
+        if fragment_rejected or fragment_memo_skipped:
+            # Data-as-code in that capture's bytes. Expected whenever a
+            # dispatch entry is attributed to more occupants of a band than
+            # actually ran it: safe coverage loss, never a shard failure --
+            # the resident occupant's own fragment is what serves the entry.
+            print(f'Static fragments rejected as data in their image: '
+                  f'{fragment_rejected} this run (memoized), '
+                  f'{fragment_memo_skipped} skipped from the memo')
+            stats.add_skip(fragment_rejected + fragment_memo_skipped)
+        hard = [(key, reason) for key, reason in fragment_failed]
+        if hard:
+            sample = ', '.join(f'0x{key[0]:08X}/{key[1]:08X}'
+                               for key, _reason in hard[:12])
+            print(f'STATIC COVERAGE WARNING: {len(hard)} captured dispatch '
+                  f'entry(s) have no compiled body/owner (entry/image): '
+                  f'{sample}')
+            for key, reason in hard:
+                stats.add_fail(f'static entry 0x{key[0]:08X} image {key[1]:08X}',
+                               'static_unresolved',
+                               f'captured dispatch entry with no compiled '
+                               f'body/owner: {reason}')
 
         all_variants = []
-        combined = '/* Auto-generated overlay dispatch — do not edit.\n'
-        combined += ' * Rebuild: python3 psxrecomp/tools/compile_overlays.py --static ...\n'
-        combined += ' */\n'
         for part in static_parts:
-            combined += part['src']
             all_variants.extend(part['variants'])
-        combined += generate_overlay_dispatch(all_variants)
-        with open(static_out, 'w') as f:
-            f.write(combined)
+        dispatch_src = generate_overlay_dispatch(all_variants)
+        written = write_static_outputs(static_out, static_parts, all_variants,
+                                       dispatch_src,
+                                       single_file=args.static_single_file)
         print(f'Static output: {static_out}  '
-              f'({len(all_variants)} exact function identities total)')
+              f'({len(all_variants)} exact function identities total, '
+              f'{len(written)} translation unit(s))')
+
+    # A conservative primary scan can emit no functions while exact-entry
+    # supplementation still serves every requested root. Decide only after
+    # that pass, using ABI-valid, current-byte guarded native coverage. Missing
+    # even one primary root remains a failure; toolchain/audit failures above
+    # are never cleared by this reconciliation.
+    #
+    # DLL mode only. The reconciliation reads the per-game DLL cache, and
+    # cache_dir is bound only on the non-static path; --static emits one
+    # self-contained overlays_static.c and _do_capture returns into
+    # static_capture_job before anything is queued. Calling it unconditionally
+    # raised UnboundLocalError at the very end of every --static run, after
+    # the output was already written, and turned a clean compile into exit 1.
+    if args.static:
+        if pending_empty_primary:
+            raise SystemExit(
+                'internal error: --static queued %d empty-primary '
+                'reconciliation(s), but static mode has no DLL cache to '
+                'reconcile against' % len(pending_empty_primary))
+    else:
+        reconcile_empty_primary_scans(
+            pending_empty_primary, cache_dir,
+            overlay_abi_tag(args.runtime_include, args.flavor), stats)
 
     # LOUD summary + machine-readable result line, then a non-zero exit when any
     # shard that should have built failed. The runtime's autocompile watcher and

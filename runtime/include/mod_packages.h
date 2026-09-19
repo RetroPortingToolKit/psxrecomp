@@ -9,6 +9,36 @@
 
 namespace PSXRecompV4 {
 
+/* How finished a feature is, and therefore who is allowed to see it.
+ *
+ * Stable ships and is offered to everyone. Experimental ships, badged, and is
+ * default-off: it works, but has not been validated on this title. Developer
+ * does not ship at all -- contributors reach those features by cloning the
+ * repo and building locally.
+ *
+ * This lives on the FEATURE, not the package. A package is the trust and
+ * installation boundary; how finished one of its features is has nothing to do
+ * with that, and tying the two forced a whole catalog down to the maturity of
+ * its least finished feature. A package may still declare a channel, which its
+ * features inherit unless they state their own. */
+enum class ModChannel {
+    Stable = 0,
+    Experimental = 1,
+    Developer = 2,
+};
+
+/* Whether this build may see developer-channel features. A local build may; a
+ * CI/release build may not, which is what "developer does not ship" means in
+ * practice. runtime.cmake defines PSX_MOD_DEVELOPER_CHANNEL for local builds. */
+#if defined(PSX_MOD_DEVELOPER_CHANNEL) && PSX_MOD_DEVELOPER_CHANNEL
+inline constexpr bool kDeveloperChannelDefault = true;
+#else
+inline constexpr bool kDeveloperChannelDefault = false;
+#endif
+
+const char* mod_channel_name(ModChannel channel);
+bool mod_channel_from_name(const std::string& name, ModChannel& out);
+
 enum class ModOptionType {
     Boolean,
     Choice,
@@ -45,7 +75,9 @@ struct ModFeature {
     std::string author;
     std::string description;
     std::string group = "General";
+    ModChannel channel = ModChannel::Stable;
     bool default_enabled = false;
+    bool hidden = false;
     bool legacy = false;
 };
 
@@ -189,6 +221,20 @@ struct ModAuthorLink {
     std::string url;
 };
 
+/* Where a package's files came from, and therefore who owns them on disk.
+ *
+ * Bundled packages are build output: the framework and the title stage them
+ * into <exe>/mods/bundled, which every build wipes and re-stages. Nothing the
+ * player owns may live there. Installed packages are written by the launcher
+ * into <exe>/mods/installed and are never touched by a build.
+ *
+ * Before this split there was one <exe>/mods/packages tree serving both roles,
+ * so a rebuild deleted every mod the player had installed. */
+enum class ModPackageOrigin {
+    Bundled,
+    Installed,
+};
+
 struct ModPackage {
     uint32_t format_version = 0;
     std::string id;
@@ -202,6 +248,11 @@ struct ModPackage {
     std::string source_url;
     std::string resolver = "declarative";
     std::string save_compatibility = "shared";
+    /* Default channel for features that do not declare their own. */
+    ModChannel channel = ModChannel::Stable;
+    ModPackageOrigin origin = ModPackageOrigin::Installed;
+    /* Set when an installed package of the same id shadows a bundled one. */
+    bool shadows_bundled = false;
     std::filesystem::path root;
     std::vector<ModTarget> targets;
     std::vector<ModRequirement> dependencies;
@@ -311,6 +362,18 @@ public:
 
     void set_root(std::filesystem::path mods_root);
     const std::filesystem::path& root() const { return root_; }
+    /* Developer-channel features are stripped at scan and install time unless
+     * this is set. Defaults to kDeveloperChannelDefault; tests set it
+     * explicitly so they exercise both a local and a release build. */
+    void set_developer_channel_visible(bool visible) {
+        developer_channel_ = visible;
+    }
+    bool developer_channel_visible() const { return developer_channel_; }
+
+    /* Build-owned catalog: wiped and re-staged by every build. */
+    std::filesystem::path bundled_root() const { return root_ / "bundled"; }
+    /* Launcher-owned catalog: a build never touches this tree. */
+    std::filesystem::path installed_root() const { return root_ / "installed"; }
 
     bool scan(std::string* error = nullptr);
     bool load_state(std::string* error = nullptr);
@@ -366,8 +429,23 @@ public:
     static bool read_manifest(const std::filesystem::path& path, ModPackage& out,
                               std::string* error = nullptr);
 
+    /* Manifests that failed to parse during the last scan(), as
+     * "<path>: <reason>". A package that cannot be read must never vanish
+     * silently -- the launcher surfaces these so a mod author sees why their
+     * package is absent from the list. */
+    const std::vector<std::string>& scan_errors() const { return scan_errors_; }
+
 private:
+    /* One-time move of a pre-split <exe>/mods/packages tree into the two
+     * owned roots. Anything the build also staged into bundled/ is dropped;
+     * everything else is the player's and moves to installed/. */
+    void migrate_legacy_root();
+    bool scan_root(const std::filesystem::path& packages_root,
+                   ModPackageOrigin origin, std::string* error);
+
     std::filesystem::path root_;
+    bool developer_channel_ = kDeveloperChannelDefault;
+    std::vector<std::string> scan_errors_;
     std::map<std::string, std::map<std::string, ModPackage>> packages_;
     std::map<std::string, ModSelection> selections_;
 };

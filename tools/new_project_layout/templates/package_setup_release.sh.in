@@ -18,6 +18,12 @@ if [[ -z "${BUILD_DIR}" || -z "${ARTIFACT_TAG}" ]]; then
   exit 2
 fi
 
+# mods/ is staged by the framework packager by default (catalog next to the
+# exe, plus the source catalog for the setup-host rebuild) -- no flag needed.
+# --project-dir src ships game-owned trusted-plugin sources; CMakeLists.txt
+# references them unconditionally, so the rebuild cannot configure without it.
+# copy_proj skips a path that does not exist, so it is inert for titles with
+# no src/.
 PACKAGER="${ROOT}/psxrecomp/tools/package_setup_host.sh"
 if [[ ! -f "${PACKAGER}" ]]; then
   echo "error: missing ${PACKAGER} (psxrecomp submodule)" >&2
@@ -36,6 +42,35 @@ fi
 if [[ -f "${ROOT}/game_options.toml" ]]; then
   EXTRA_PROJECT+=(--project-file game_options.toml)
 fi
+# Game-owned C that CMakeLists.txt compiles into the runtime — mod activation
+# plugins live here (CODEGEN_SETUP_SOURCES "src/<game>_mods.c"). Leaving this
+# out ships a CMakeLists that references a file the zip does not contain, so
+# the build dies at configure with "Cannot find source file".
+if [[ -d "${ROOT}/src" ]]; then
+  EXTRA_PROJECT+=(--project-dir src)
+fi
+# Preloaded mod packages (mods/preloaded/packages/<id>). The activation plugin
+# above is compiled in, but selects itself through these marker files; without
+# them the mod is built and never enabled.
+if [[ -d "${ROOT}/mods" ]]; then
+  EXTRA_PROJECT+=(--project-dir mods)
+fi
+# Desktop/app icon sources. CMakeLists.txt passes APP_ICON
+# "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico" unguarded, so a zip
+# without assets/ cannot configure. runtime.cmake also stages the sibling
+# psxrecomp.png from this directory as the SDL window icon, so the rebuilt exe
+# would otherwise come out unbranded even if configure had survived.
+if [[ -d "${ROOT}/assets" ]]; then
+  EXTRA_PROJECT+=(--project-dir assets)
+fi
+# Generated symbol headers. Game-owned C in src/ includes these by relative
+# path ("../psx_symbols.h"), so they are compile inputs of the shipped tree even
+# though nothing in CMakeLists.txt names them.
+for _sym in psx_symbols.h psx_symbols_overlays.h; do
+  if [[ -f "${ROOT}/${_sym}" ]]; then
+    EXTRA_PROJECT+=(--project-file "${_sym}")
+  fi
+done
 
 cd "${ROOT}"
 exec bash "${PACKAGER}" \

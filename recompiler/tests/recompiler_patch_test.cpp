@@ -245,6 +245,15 @@ branch_keep_sites = ["0x80012340"]
               std::vector<uint32_t>{0x80012340u},
           "parser preserves branch keep sites");
 
+    const auto nclip_exact = write_config(root, "nclip-exact", R"toml(
+[widescreen.cull]
+nclip_exact_sites = ["0x80012340"]
+)toml");
+    const auto nclip_exact_config = PSXRecompV4::load_game_config(nclip_exact);
+    check(nclip_exact_config.ws_cull_nclip_exact_sites ==
+              std::vector<uint32_t>{0x80012340u},
+          "parser preserves exact NCLIP branch sites");
+
     const auto vxrange = write_config(root, "vxrange", R"toml(
 [widescreen.cull]
 vxrange_sites = ["0x80012340"]
@@ -301,6 +310,28 @@ result = 0
               keep_config.ws_cull_keep_sites[1].expected == 0x0082202Au &&
               keep_config.ws_cull_keep_sites[1].result == 0u,
           "parser preserves full-word-guarded maximal-participation sites");
+
+    const auto signed_bound = write_config(root, "signed-x-bound", R"toml(
+[[widescreen.signed_x_bound]]
+address = "0x8002D290"
+expected = "0x2402FF00"
+
+[[widescreen.signed_x_bound]]
+address = "0x8002D298"
+expected = "0x3C02FFF0"
+)toml");
+    const auto signed_bound_config =
+        PSXRecompV4::load_game_config(signed_bound);
+    check(signed_bound_config.ws_signed_x_bound_sites.size() == 2 &&
+              signed_bound_config.ws_signed_x_bound_sites[0].address ==
+                  0x8002D290u &&
+              signed_bound_config.ws_signed_x_bound_sites[0].expected ==
+                  0x2402FF00u &&
+              signed_bound_config.ws_signed_x_bound_sites[1].address ==
+                  0x8002D298u &&
+              signed_bound_config.ws_signed_x_bound_sites[1].expected ==
+                  0x3C02FFF0u,
+          "parser preserves guarded signed pixel and Q16 X bounds");
 
     const auto bad_keep = write_config(root, "cull-keep-bad", R"toml(
 [[widescreen.cull.keep]]
@@ -691,6 +722,30 @@ void codegen_tests() {
     check(depth_overlay_mismatch.find("ws cull depth") == std::string::npos,
           "overlay nonmatching depth variant remains unchanged");
 
+    PSXRecomp::CodeGenConfig signed_bound_config;
+    signed_bound_config.ws_signed_x_bound_sites.push_back(
+        {0x80010000u, 0x2402FF00u}); // addiu v0,zero,-256
+    const std::string signed_pixel_bound = generate_first_instruction(
+        0x2402FF00u, {}, false, signed_bound_config);
+    check(signed_pixel_bound.find("psx_ws_screen_x_bound(-256)") !=
+              std::string::npos,
+          "codegen emits guarded signed screen-pixel X bound");
+
+    signed_bound_config.ws_signed_x_bound_sites[0] =
+        {0x80010000u, 0x3C02FFF0u}; // lui v0,0xfff0
+    const std::string signed_q16_bound = generate_first_instruction(
+        0x3C02FFF0u, {}, false, signed_bound_config);
+    check(signed_q16_bound.find(
+              "psx_ws_player_x_bound((int32_t)0xFFF00000)") !=
+              std::string::npos,
+          "codegen keeps guarded LUI X bounds on the Q16 helper");
+
+    const std::string signed_bound_overlay_mismatch = generate_first_instruction(
+        0x24020078u, {}, true, signed_bound_config);
+    check(signed_bound_overlay_mismatch.find("typed native-wide signed") ==
+              std::string::npos,
+          "overlay nonmatching signed-bound variant remains unchanged");
+
     PSXRecomp::CodeGenConfig range_config;
     range_config.ws_cull_range_sites.insert(0x80010000u);
     const std::string range = generate_first_instruction(
@@ -728,6 +783,16 @@ void codegen_tests() {
               std::string::npos &&
               branch_keep.find("ws branch keep") != std::string::npos,
           "codegen emits guarded branch keep predicate");
+
+    PSXRecomp::CodeGenConfig nclip_exact_config;
+    nclip_exact_config.ws_cull_nclip_exact_sites.insert(0x80010000u);
+    const std::string nclip_exact = generate_first_instruction(
+        0x04400002u, {}, false, nclip_exact_config); // bltz v0,+2
+    check(nclip_exact.find(
+              "gte_nclip_precise_bltz((int32_t)cpu->gpr[2])") !=
+              std::string::npos &&
+              nclip_exact.find("ws exact nclip") != std::string::npos,
+          "codegen emits title-scoped exact NCLIP predicate");
 
     PSXRecomp::CodeGenConfig plane_nx_config;
     plane_nx_config.ws_cull_plane_nx_sites.insert(0x80010000u);
@@ -1003,6 +1068,29 @@ void jump_table_producer_codegen_test() {
           unbounded_alias_generated.front().full_code.find("/* jump table") !=
               std::string::npos,
           "alias regression fixture reaches the table when ownership is absent");
+
+    // The scheduled variant must feed code generation too, not merely the
+    // discovery report. Its table base overwrites the guard in the BEQ delay
+    // slot, so the existing branch emitter must preserve the tested condition.
+    write_word(exe, base + 0x500u, 0u);
+    write_word(exe, base + 0x504u, 0u);
+    write_word(exe, base + 0x508u, 0x2C620003u);
+    write_word(exe, base + 0x50Cu, 0x1040001Cu);
+    write_word(exe, base + 0x510u, 0x3C028001u);
+    write_word(exe, base + 0x514u, 0x24420A00u);
+    write_word(exe, base + 0x518u, 0x00031880u);
+    write_word(exe, base + 0x51Cu, 0x00621821u);
+    write_word(exe, base + 0x520u, 0x8C620000u);
+    PSXRecomp::ControlFlowAnalyzer scheduled_analyzer(exe);
+    const auto scheduled_cfg = scheduled_analyzer.analyze_function(function);
+    PSXRecomp::CodeGenerator scheduled_generator(exe);
+    const auto scheduled = scheduled_generator.generate_function(
+        function, scheduled_cfg).full_code;
+    check(scheduled.find("/* jump table") != std::string::npos,
+          "codegen emits a switch with its table LUI in the bounds delay slot");
+    for (uint32_t target : cases)
+        check(scheduled.find(fmt::format("goto block_{:08X}", target)) != std::string::npos,
+              "every scheduled case has an emitted native control-flow edge");
 }
 
 void cfg_codegen_load_delay_test() {
@@ -1037,6 +1125,40 @@ void cfg_codegen_load_delay_test() {
           "CFG codegen preserves MIPS-I dependent load-delay value semantics");
 }
 
+void cfg_fallthrough_reachability_test() {
+    constexpr uint32_t base = 0x80010000u;
+    PSXRecomp::PS1Executable exe{};
+    exe.header.load_address = exe.header.initial_pc = base;
+    exe.header.file_size = 24;
+    append_word(exe.code_data, 0x03e00008u); // entry returns
+    append_word(exe.code_data, 0);
+    append_word(exe.code_data, 0x08004004u); // unreachable jump to final block
+    append_word(exe.code_data, 0);
+    append_word(exe.code_data, 0x24020001u);
+    append_word(exe.code_data, 0);
+    PSXRecomp::Function f{};
+    f.start_addr = base; f.end_addr = base + 24; f.size = 24;
+    auto check_tail = [&](bool reachable, const char* name) {
+        const auto cfg = PSXRecomp::ControlFlowAnalyzer(exe).analyze_function(f);
+        check(!cfg.blocks.at(base + 16).predecessors.empty(),
+              std::string(name) + " retains the real incoming edge");
+        PSXRecomp::CodeGenerator generator(exe);
+        const auto named = generator.generate_function(f, cfg, "func_80010018").full_code;
+        const auto edge = generator.generate_function(f, cfg).full_code;
+        check((named.find("/* fallthrough to next function */") != std::string::npos) == reachable,
+              std::string(name) + " named final safety net uses entry reachability");
+        check((edge.find("/* image-edge fallthrough: tail-transfer */") != std::string::npos) == reachable,
+              std::string(name) + " image-edge final safety net uses entry reachability");
+    };
+    check_tail(false, "unreachable predecessor");
+    write_word(exe, base, 0x08004002u); // entry now reaches +8 -> +16
+    check_tail(true, "reachable predecessor");
+    write_word(exe, base, 0x03e00008u);
+    f.alias_walk_lo = base; f.start_addr = base + 16;
+    f.alias_group_entries = {base + 16};
+    check_tail(true, "independent alias entry");
+}
+
 } // namespace
 
 int main() {
@@ -1052,6 +1174,7 @@ int main() {
         gte_codegen_classification_tests();
         jump_table_producer_codegen_test();
         cfg_codegen_load_delay_test();
+        cfg_fallthrough_reachability_test();
     } catch (const std::exception& e) {
         fmt::print(stderr, "FAIL  unexpected exception: {}\n", e.what());
         ++failures;

@@ -213,6 +213,93 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-09-13 (SIO card hack removal — branch-only review checkpoint):**
+  Reproduced fixed-Ape-RAM IRQ7/mask injection after an absent-card probe,
+  plus SELECT-time ACK fabrication and INTC-pending ACK requeueing with the
+  flag disabled. Candidate removes the opt-in mechanism and its GPU/IRQ/mask
+  hooks, uses device-only handoff diagnostics, cancels deselected ACKs and
+  consumes elapsed shift/ACK deadlines. Also deletes the unused ChangeThread
+  deferral helper/state. Owner confirmed Ape's actual Load Game screen and a
+  captured screenshot shows populated save slots; baseline ON also qualified
+  and its ring proves the old repair was active. Final cleanup builds all three
+  title executables and 57 runtime test executables; 83 executed CTests pass,
+  one skips and two remain disabled. Cold 7000-frame and final warm 11000-frame
+  Tomba/MMX6 boot/FMVs/title/attract smokes pass with inspected screenshots,
+  zero kernel mismatches and zero dirty aborts. This is not a save/write/reload,
+  full gameplay, netplay or live Beetle claim. User-tested Ape predates only
+  the final dead-code cleanup; see the audit for binary identity and limits.
+  Original cards unchanged. Owner authorized integration after the human
+  checkpoint; refresh onto upstream 7025bb5f (rewind-key aliases only) and
+  recheck before merging. Game pins and other PRs remain untouched.
+  See `SIO_CARD_NO_HACKS_AUDIT.md`; central issue beads-eio.3.154.
+
+- **2026-09-12 (FMV brief follow-ups, correctness separated from experiments):**
+  `fix/cfg-metadata-integrity` repairs missing live reverse edges and replaces
+  address-order loop guesses with multi-entry reachability/dominance metadata.
+  Final fallthrough safety nets consume reachability, not predecessor presence;
+  no IRQ, slice, I-cache, guest cycle or device check is suppressed. A separate
+  offline netplay-header build regression is fixed in PR #355. All 67 enabled
+  recompiler tests pass, including 1000 independent-oracle random CFGs. Fresh
+  Tomba/MMX6/Ape builds preserve dispatch tables and code ranges; twelve cold/
+  warm 11,000-frame SCPH-1001 LLE runs exit 0 with inspected screenshots and
+  native overlay coverage. No performance or full-playthrough claim. Tomba2
+  and game repository pins are untouched. See [validation](CFG_METADATA_VALIDATION.md)
+  and PR #354. IPO/PGO experiment #356 and IRQ-batching RFC/counterexample #357
+  remain drafts pending evidence, not shipping timing optimizations.
+  Tracking: `beads-eio.3.148` through `beads-eio.3.151`.
+
+- **2026-09-12 (WO-3 observed overlay interior recovery):**
+  Branch `fix/observed-overlay-interiors` preserves validated, executed dispatch
+  demands even when shared CFG ownership rejects their hostless interior seeds.
+  Recovery uses the existing guarded isolated-fragment path, without promoting
+  new shared roots or unioning game seed files. A master-failing reproducer,
+  native CPS CLI variant/revisit tests, 65 enabled recompiler CTests, and 35
+  overlay-tool tests pass. Saved Tomba/MMX6 captures each recover four missing
+  exact entries with unchanged shared seed output and zero repeat DLL writes.
+  Eight 11,000-frame cold/warm SCPH-1001 LLE baseline/fix runs exit cleanly;
+  warm MMX6's four target PCs stop appearing in interpreter counters. Tomba is
+  a compile-coverage and non-regression result, not a demonstrated live speedup.
+  PE's five reported PCs remain unverified because the capture bytes are absent.
+  No runtime/emitter timing changes, Tomba2 work, or merge/pin bump. See
+  [the review](OBSERVED_OVERLAY_INTERIOR_REVIEW.md); `beads-eio.3.145`.
+
+- **2026-09-11 (WO-6/WO-7 and BIOS #343/#346 combined validation):**
+  Branch `integrate/wo6-bios343-346` preserves both contributor PR histories.
+  Resident game dispatch now uses an immutable physical-word index, retaining
+  live-byte validation, flat CPS returns and interrupt service. WO-7's sampled
+  owner activations include continuations, unlike function-entry counts; the
+  telemetry label now states that distinction and its collision lower bound.
+  BIOS setup checks configured, linkable backend pairs in the configured
+  framework location. Patch-range guards run before cycles and terminators,
+  cover interior entry labels, and fail closed at unsafe delay boundaries.
+  Fresh Tomba/MMX6 baseline and integration builds each passed 11,000-frame
+  OpenBIOS and SCPH-1001 LLE runs with screenshot and native-coverage checks.
+  The first baseline Tomba screenshot request and first integration MMX6 cold
+  startup exceeded harness timeouts; retries completed. Recompiler tests pass
+  (65 enabled); runtime tests pass (78 executed, one explicit skip, two disabled).
+  The disabled overlay-pair executable regression also passes when run directly.
+  Refresh against master `b4ea4c37` and all eight final live reruns pass, with
+  clean exits and completed card reads. See
+  [the integration review](WO6_BIOS_INTEGRATION_REVIEW.md) for evidence and
+  coverage limits. Tracked by `beads-eio.3.140`.
+
+- **2026-08-31 (GPU DMA2 review correction — source gate passed):**
+  The first fork review found two valid timing defects in the DMA2 candidate. The
+  linked-list engine now reads and emits one live payload word at each
+  one-clock boundary. A CPU rewrite after an earlier word transfers can now
+  affect a later word. The optional widescreen prepass now fingerprints its
+  cached nodes and commands. It discards all cached transform metadata if live
+  RAM differs. The second fork review found three more valid issues. Late
+  service now consumes every elapsed DMA boundary. Header and link rewrites
+  now invalidate cached prepass topology at the exact header-read boundary.
+  The obsolete opt-in polygon-drop filter was removed. The focused regressions
+  and full build pass. The runtime suite passes 61 of 62 enabled tests. The
+  remaining `mod_runtime_test` crash reproduces on the unchanged upstream base,
+  and two pre-existing tests remain disabled. Fresh Spot and Vampire Hunter D
+  builds also pass their
+  600-frame headless gates. Visible software-renderer routes and another fork
+  review are still required before the public branch can change.
+
 - **2026-07-28 (per-game host audio cushion — implemented, parser validated):**
   Added `[audio] buffer_ms` as a runtime-only developer setting with a guarded
   30–500 ms range. The compatibility default remains 180 ms, preserving the
@@ -766,7 +853,7 @@ on a fixed region -> next.
   config_loader (+ settings.toml bios_hle mirror), PSX_BIOS_HLE / PSX_BIOS_HLE_KEEP_INTRO
   env, startup banner bios_backend=/bios_boot=. PSX_HLE_SCHEDULER spike folded in
   (default via psx_hle_scheduler_set_default, env wins). (5) OBSERVABILITY — always-on
-  16K HLE ring (route LLE/HLE/boot-skip) + hle_dump TCP command (TCP_COMMANDS.md).
+  16K HLE ring (route LLE/HLE/boot-skip) + hle_dump TCP command (../TCP_COMMANDS.md).
   Regen era-consistent: BIOS + Tomba + MMX6 images (emitter changed). NEXT: Tomba
   save+load validation under BOTH backends (user drives); overlay-shard cg-tag refresh
   per title; grow the handler set (UnDeliverEvent, RCnt, A0 libc) with kernel-decompile

@@ -31,6 +31,8 @@ PsxBiosImageInfo psx_bios_image;
 
 const PsxKernelBody *psx_bios_kernel_bodies     = 0;
 uint32_t             psx_bios_kernel_body_count = 0;
+const PsxKernelPatchRange *psx_bios_kernel_patch_ranges     = 0;
+uint32_t                   psx_bios_kernel_patch_range_count = 0;
 
 /* Dispatch nesting depth. Shared dispatch state, not per-image: each generated
  * dispatch used to define its own copy, which is precisely why two of them
@@ -84,6 +86,8 @@ int psx_bios_activate(const PsxBiosBackend *backend)
     psx_bios_image              = *backend->image;
     psx_bios_kernel_bodies      = backend->kernel_bodies;
     psx_bios_kernel_body_count  = backend->kernel_body_count;
+    psx_bios_kernel_patch_ranges      = backend->kernel_patch_ranges;
+    psx_bios_kernel_patch_range_count = backend->kernel_patch_range_count;
     /* Soft-return rematch can switch OPENBIOS ↔ SCPH without process exit.
      * Drop the prior image's call-HLE / boot-skip hook immediately so a
      * sticky SCPH DeliverEvent path cannot run against OpenBIOS ROM bytes

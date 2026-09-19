@@ -14,7 +14,7 @@ inline uint32_t get_rd(uint32_t i) { return (i >> 11) & 0x1F; }
 inline int16_t get_imm16(uint32_t i) { return (int16_t)(i & 0xFFFF); }
 }
 
-/* PGXP dataflow-shadowing hook emission (ENHANCEMENTS.md G1.10; pgxp_hooks.h).
+/* PGXP dataflow-shadowing hook emission (docs/ENHANCEMENTS.md G1.10; pgxp_hooks.h).
  *
  * Wraps the translated statement with a PGXP_*() macro carrying the raw
  * instruction word plus the operand values the runtime engine needs. Source

@@ -72,6 +72,14 @@ struct ExactJumpTable {
     uint32_t table_base = 0;
     uint32_t table_count = 0;
     std::vector<std::pair<uint32_t, uint32_t>> targets;
+    // Non-zero when the targets came from resolve_computed_stride_jump
+    // rather than a table in memory: `table_base` is then the first word of
+    // the unrolled run and the targets are table_base + k * stride.
+    uint32_t stride = 0;
+    // True when the targets came from resolve_self_limited_jump_table: the
+    // guest checks no bound, so the extent was taken from the table's own
+    // layout (it ends where its lowest target begins).
+    bool self_limited = false;
 };
 
 using ExactAddressMapper = uint32_t (*)(uint32_t, const PS1Executable&);
@@ -79,7 +87,10 @@ using ExactAddressMapper = uint32_t (*)(uint32_t, const PS1Executable&);
 // Recognize only the canonical bounded-switch dependency chain:
 // sltiu/beq guard -> sll index,2 -> addu table address -> lw target -> jr.
 // The table constant may use either same-register or cross-register
-// `lui source; addiu base,source,lo`. `producer_lo/producer_hi` bound both
+// `lui source; addiu base,source,lo`, either before the guard or scheduled
+// exactly as `sltiu; beq; lui (delay slot); addiu; sll` without clobbering
+// the checked index or allowing direct edges to bypass the guard.
+// `producer_lo/producer_hi` bound both
 // table storage and case code for composite images; zero/zero means the full
 // executable. Every dependency, table word, and target must pass the hard
 // safety checks; otherwise the whole table is rejected.
@@ -93,6 +104,62 @@ bool resolve_exact_bounded_jump_table(
     ExactAddressMapper runtime_to_image = nullptr,
     uint32_t producer_lo = 0,
     uint32_t producer_hi = 0);
+
+// Recognize a computed-stride entry into an unrolled run (Duff's device):
+//
+//     sll   S, I, k              (stride = 1<<k)
+//   or
+//     sll   P, I, a ; sll Q, I, b ; addu S, P, Q     (stride = (1<<a)+(1<<b))
+//     addu  R, B, S   (either operand order)
+//     jr    R
+//     <delay slot>
+//     run_start: N >= 2 shape-identical groups of `stride` bytes — the same
+//                opcodes and register fields in every group, immediates free,
+//                no control flow inside a group.
+//
+// The dependency chain is walked backwards from the jr through nearest
+// definitions with no control flow in between. The base register's value is
+// deliberately NOT assumed: the caller emits a switch on the actual runtime
+// target with the CPS tail-transfer as the default, so the recovered targets
+// only ever add native cases and can never redirect a jump that lands
+// elsewhere. Targets are run_start + k * stride for k = 0..N (k = N is the
+// word after the run, the loop tail); all lie inside [entry, hard_cap).
+// `table.stride` is set to the stride; `table.table_base` to run_start.
+bool resolve_computed_stride_jump(
+    const PS1Executable& exe,
+    uint32_t entry,
+    uint32_t hard_cap,
+    uint32_t jr_pc,
+    uint32_t jr_rs,
+    ExactJumpTable& table,
+    ExactAddressMapper runtime_to_image = nullptr);
+
+// Recognize an in-function pointer table indexed by a value the guest never
+// bounds-checks (a stored, pre-scaled state offset rather than a checked
+// case number):
+//
+//     lui   T, hi ; ori|addiu T, T, lo     (table base, an in-function constant)
+//     addu  T, T, I   (either operand order; I is the byte offset)
+//     lw    R, off(T)
+//     [nop]
+//     jr    R
+//
+// With no guard there is no count to read, so the extent comes from the
+// table itself: words are taken from the base while each is a 4-aligned
+// in-function code address outside every delay slot, and the table ends
+// where its lowest target begins (a pointer table cannot overlap the code
+// it points at). As with resolve_computed_stride_jump the caller switches
+// on the actual runtime target with the CPS tail-transfer as default, so the
+// recovered entries only add native cases; a value past the recovered
+// extent still takes the fallback. Requires at least two entries.
+bool resolve_self_limited_jump_table(
+    const PS1Executable& exe,
+    uint32_t entry,
+    uint32_t hard_cap,
+    uint32_t jr_pc,
+    uint32_t jr_rs,
+    ExactJumpTable& table,
+    ExactAddressMapper runtime_to_image = nullptr);
 
 class FunctionAnalyzer {
 public:

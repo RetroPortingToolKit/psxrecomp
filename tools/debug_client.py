@@ -143,9 +143,14 @@ def send_cmd(sock, cmd_dict):
     return json.loads(buf.decode().strip())
 
 
-def query(host, port, cmd_dict):
-    """One-shot: connect, send, receive, close."""
-    s = connect(host, port)
+def query(host, port, cmd_dict, timeout=10.0):
+    """One-shot: connect, send, receive, close.
+
+    `timeout` is per-socket-operation. The 10 s default suits the small
+    commands; bulk ones (dirty_ram_stats walks a large PC table, read_ram of a
+    whole window) need more, so callers that ask for those must raise it.
+    """
+    s = connect(host, port, timeout)
     try:
         return send_cmd(s, cmd_dict)
     finally:

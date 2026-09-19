@@ -1,5 +1,9 @@
 # Compiling overlays from `overlay_captures.json`
 
+For ahead-of-time extraction from original disc files, start with the
+[AOT sharding guide](AOT_SHARDING.md). The compiler accepts disc-derived records
+as well as runtime captures; a playthrough is not required for supported producers.
+
 **Audience:** developers preparing a release who want to ship as much
 native-compiled overlay coverage as possible, plus modders and players who want
 to pre-build coverage for their own machine.
@@ -118,10 +122,43 @@ python psxrecomp/tools/compile_overlays.py \
     --cps
 ```
 
-Output: `generated/overlays_static.c`, containing every in-overlay
-`func_XXXXXXXX` plus an auto-generated `psx_overlay_dispatch()` switch. Add that
-file to the runtime build (it's a normal translation unit) and rebuild the exe.
-No `cache/` folder and no DLL loading are involved at runtime.
+Output: `generated/overlays_static.c` — the auto-generated, content-validated
+`psx_overlay_dispatch()` plus an extern prototype for every compiled entry —
+and **one translation unit per overlay** beside it, `overlays_static_0000.c`,
+`overlays_static_0001.c`, … (each carries its own `#include`s and a private
+symbol namespace, so it compiles standalone). Point the runtime build at
+`overlays_static.c` (`GAME_OVERLAY_STATIC_C` in `psxrecomp_add_game_runtime`);
+`runtime.cmake` globs the sibling parts with `CONFIGURE_DEPENDS`, so a run that
+changes the part count needs no reconfigure. No `cache/` folder and no DLL
+loading are involved at runtime.
+
+Why split: a whole title's overlays make a single C file of hundreds of MB
+(BoF3: 309 MB, 8.6 M lines), which one `gcc` invocation compiles on one core.
+Per-overlay units build across every core, and because the tool only rewrites
+a part whose content changed, an incremental rebuild recompiles only the
+overlays that changed. `--static-single-file` restores the monolithic output.
+
+The tool side parallelizes too: `--jobs N` (default cores−2) runs each
+capture's recompile + audit in a process pool and merges results in capture
+order, so the emitted C is byte-identical to `--jobs 1`.
+
+**Isolated interior fragments are per (entry, image).** After the region
+compiles, every captured `dispatch_entry_pcs` address that no compiled host
+serves gets its own isolated `dispatch_root` shard — one per *capture that
+observed it*, built from that capture's bytes, because the dispatcher's CRC
+gate only ever accepts a variant against the bytes it was compiled from. Two
+captures of one band that both list an address are two demands. (Keying on
+the bare address, as the pass once did, let one occupant's fragment mark the
+address served for every occupant of the band, so only one occupant per band
+ever got fragments.) The fragment compiles run on the same `--jobs` pool.
+A fragment whose bytes decode as data fails the generated-C audit
+deterministically; that verdict is memoized in
+`<out-dir>/interior_fail_memo.txt` (keyed by image bytes, entry, guard,
+`game.toml`, CPS) and counted as *skipped* — safe coverage loss, since only
+the occupant that really ran the address can serve it. `--force-interior PC`
+retries a memoized entry; delete the memo file to retry everything. Only a
+non-deterministic failure (recompiler exit, missing output) is a shard
+failure.
 
 **Trade-off vs. the DLL cache:** `--static` is a fixed snapshot chosen at build
 time — it will *not* grow as the player explores new areas. The DLL cache (§0/§1)
@@ -247,5 +284,6 @@ shard-compile failure is visible in-game, not only in the provider's console.
   `<os>-<arch>` folder match the runtime you're launching, and that `--cps`
   matched the runtime build.
 
-Design/rationale for the whole system lives in `overlay-recompilation-design.md`,
-`overlay-plan.md`, and `FEATURES.md` in this folder.
+Design/rationale for the whole system lives in
+`internal/overlay-recompilation-design.md` and `internal/overlay-plan.md`;
+`FEATURES.md` is in this folder.

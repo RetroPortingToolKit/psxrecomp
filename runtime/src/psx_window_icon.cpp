@@ -69,10 +69,23 @@ static fs::path find_icon_png(const char *argv0)
     return {};
 }
 
+/* Resolve once and keep it: both the game window and the launcher ask, and
+ * the answer cannot change within a run. */
+extern "C" const char *psx_window_icon_path(const char *argv0)
+{
+    static std::string cached;
+    static bool resolved = false;
+    if (!resolved) {
+        cached = find_icon_png(argv0).string();
+        resolved = true;
+    }
+    return cached.c_str();
+}
+
 extern "C" void psx_apply_window_icon(SDL_Window *window, const char *argv0)
 {
     if (!window) return;
-    const fs::path png = find_icon_png(argv0);
+    const fs::path png(psx_window_icon_path(argv0));
     if (png.empty()) return;
 
     FILE *f = std::fopen(png.string().c_str(), "rb");

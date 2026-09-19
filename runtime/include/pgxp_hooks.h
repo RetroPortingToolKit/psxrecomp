@@ -1,7 +1,7 @@
 #ifndef PGXP_HOOKS_H
 #define PGXP_HOOKS_H
 
-/* PGXP dataflow-shadowing hook surface (ENHANCEMENTS.md G1.2/G1.3).
+/* PGXP dataflow-shadowing hook surface (docs/ENHANCEMENTS.md G1.2/G1.3).
  *
  * The runtime keeps a host-only "shadow" of sub-pixel GTE projection results
  * and follows them BY PROVENANCE as the game moves them through registers and
@@ -33,7 +33,7 @@
  * LICENSING: this is a clean-room implementation of the publicly documented
  * PGXP technique (psx-spx, public design write-ups). Do NOT port code from
  * the vendored duckstation/ (CC BY-NC-ND) or beetle-psx/ (GPL) trees; they
- * are black-box behavioral oracles only. See ENHANCEMENTS.md G1.
+ * are black-box behavioral oracles only. See docs/ENHANCEMENTS.md G1.
  */
 
 #include <stdint.h>

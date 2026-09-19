@@ -75,7 +75,9 @@ static void cdcmd_trace_callback(uint8_t cmd, uint8_t nargs,
                                  uint32_t pc) {
     /* Symmetric self-stop trap (mirror of the runtime's PSX_CD_TRAP_CMD):
      * SIGSTOP on the Nth matching CD command so a debugger can freeze the
-     * oracle at the exact boot point and diff its state against ours. */
+     * oracle at the exact boot point and diff its state against ours.
+     * POSIX-only, same guard as debug_server.c — Windows has no SIGSTOP. */
+#ifndef _WIN32
     {
         static long trap_cmd = -2, trap_nth = 1, hits = 0;
         if (trap_cmd == -2) {
@@ -86,6 +88,7 @@ static void cdcmd_trace_callback(uint8_t cmd, uint8_t nargs,
         }
         if ((long)cmd == trap_cmd && ++hits == trap_nth) raise(SIGSTOP);
     }
+#endif
     BeetleCdcmdEntry *e = &s_cdcmd_trace[s_cdcmd_idx];
     e->seq = s_cdcmd_seq++; e->pc = pc; e->cmd = cmd; e->nargs = nargs;
     e->a0 = a0; e->a1 = a1; e->a2 = a2;
@@ -544,7 +547,10 @@ extern "C" int beetle_init_with_disc(const char *bios_path, const char *disc_pat
             FILE *f = fopen(card_files[sl], "rb");
             if (!f) {
                 std::fprintf(stderr,
-                    "[psx-beetle] WARNING: %s missing — slot %d will be blank\n",
+                    "[psx-beetle] WARNING: %s missing — slot %d will be blank "
+                    "(populated fixtures live in "
+                    "runtime/tests/fixtures/memcards/; copy dummy.*.mcr into "
+                    "this process's working directory)\n",
                     card_files[sl], sl + 1);
                 continue;
             }
@@ -616,7 +622,7 @@ extern "C" int beetle_is_loaded(void) { return s_loaded ? 1 : 0; }
  * Fills out[0..37]: [0..31]=GPR, [32]=PC, [33]=LO, [34]=HI, [35]=SR(cop0.12),
  * [36]=CAUSE(cop0.13), [37]=EPC(cop0.14). Returns 0 if the CPU isn't up yet.
  * This closes the get_registers gap so the oracle can serve full CPU state
- * for order+state+caller first-divergence (PRINCIPLES.md), matching the
+ * for order+state+caller first-divergence (docs/internal/PRINCIPLES.md), matching the
  * recomp's get_registers. */
 extern "C" int beetle_get_registers(uint32_t *out /* >= 38 words */) {
     if (!PSX_CPU || !out) return 0;

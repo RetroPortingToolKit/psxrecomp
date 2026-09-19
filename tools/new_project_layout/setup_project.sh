@@ -9,7 +9,7 @@
 #   --stage-disc          Copy full cue+bins into repo disc/ (large; optional)
 #   --no-stage-disc       Default: probe in place, extract boot EXE only
 #   --psxrecomp-ref / --recomp-ui-ref / --recomp-net-ref / URLs
-#   --github-owner <org>  README download-badge owner (default TechnicallyComputers)
+#   --github-owner <org>  README download-badge owner (default RetroPortingToolKit)
 #   --github-repo <name>  README download-badge repo (default project name)
 #
 # Everything else is prompted on a TTY (or passed via flags / --yes defaults):
@@ -75,7 +75,7 @@ PSXRECOMP_REF="master"
 RECOMP_UI_REF="master"
 RECOMP_NET_REF="${RECOMP_NET_REF:-}"
 PSXRECOMP_URL="${PSXRECOMP_URL:-https://github.com/mstan/psxrecomp.git}"
-RECOMP_UI_URL="${RECOMP_UI_URL:-https://github.com/mstan/recomp-ui.git}"
+RECOMP_UI_URL="${RECOMP_UI_URL:-https://github.com/RetroPortingToolKit/recomp-ui.git}"
 
 # Track whether bools were set on the CLI (so prompts can skip).
 SET_RECOMP_UI=0
@@ -272,10 +272,10 @@ fi
 
 if [ -z "$GITHUB_OWNER" ]; then
     if [ "$YES_MODE" -eq 1 ] || ! is_tty; then
-        GITHUB_OWNER=TechnicallyComputers
+        GITHUB_OWNER=RetroPortingToolKit
     else
         prompt_line "GitHub owner / org (README download badges)" GITHUB_OWNER \
-            "TechnicallyComputers"
+            "RetroPortingToolKit"
     fi
 fi
 if [ -z "$GITHUB_REPO" ]; then
@@ -512,7 +512,7 @@ fi
 
 if [ "$ENABLE_NETPLAY" -eq 1 ]; then
     # PSX_NETPLAY defaults RNET_ENABLE_ICE=ON; recomp-net FetchContents
-    # libjuice via pinned URL (not git) so RetComM AppImage builds configure.
+    # libjuice via pinned URL (not git) so Retro AppImage builds configure.
     printf '%s\n' \
 'if(EXISTS "${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
     set(PSX_NETPLAY ON CACHE BOOL
@@ -620,7 +620,7 @@ chmod +x "$ROOT/tools/sync_symbols.py"
 if [ -f "$TEMPLATE_DIR/raid-discord.png" ]; then
     cp "$TEMPLATE_DIR/raid-discord.png" "$ROOT/.github/raid-discord.png"
 fi
-# Empty mod catalog tree (runtime copies mods/preloaded → beside the exe as mods/).
+# Empty mod catalog tree (build stages mods/preloaded/packages → <exe>/mods/bundled).
 cat > "$ROOT/mods/preloaded/README.md" <<'EOF'
 # Preloaded mods
 
@@ -632,9 +632,15 @@ packages/<package-id>/<version>/
   …
 ```
 
-Build wiring copies `mods/preloaded` next to the game executable as `mods/`.
-Install player `.psxmod` archives through the launcher Mods manager instead of
-committing them here. See `psxrecomp/docs/MOD_PACKAGES.md`.
+Build wiring copies `mods/preloaded/packages` next to the game executable as
+`mods/bundled/`. That tree is build output: every build wipes and re-stages it,
+so nothing you place there by hand survives.
+
+Player-installed `.psxmod` archives live in `mods/installed/`, which the
+launcher owns and no build ever touches. Install them through the launcher Mods
+manager rather than committing them here.
+
+See `psxrecomp/docs/MOD_PACKAGES.md`.
 EOF
 : > "$ROOT/mods/preloaded/packages/.gitkeep"
 
@@ -645,7 +651,7 @@ if [ "$ENABLE_RECOMP_UI" -eq 1 ]; then
 fi
 git submodule update --init --recursive
 
-# RetComM-themed default app icon (Windows .ico + PNG for packaging).
+# Retro-themed default app icon (Windows .ico + PNG for packaging).
 if [ -d psxrecomp/assets ]; then
     mkdir -p "$ROOT/assets"
     for _icon in psxrecomp.svg psxrecomp.png psxrecomp.ico; do

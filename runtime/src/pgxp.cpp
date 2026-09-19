@@ -1,4 +1,4 @@
-/* pgxp.cpp — PGXP value-propagation engine (ENHANCEMENTS.md G1.2/G1.3).
+/* pgxp.cpp — PGXP value-propagation engine (docs/ENHANCEMENTS.md G1.2/G1.3).
  *
  * CLEAN-ROOM implementation of the publicly documented PGXP technique
  * (psx-spx GTE docs + public design write-ups + our own G1 measurements).
@@ -103,10 +103,17 @@ extern "C" void pgxp_invalidate_all(void) {
 }
 
 extern "C" void pgxp_set_enabled(int enabled) {
+    int resized = 0;
     if (enabled && !s_ram) {
         s_ram = (PGXPValue *)std::calloc(PGXP_RAM_WORDS, sizeof(PGXPValue));
-        if (!s_ram) enabled = 0;              /* fail closed: stay faithful   */
+        if (s_ram)
+            resized = 1;
+        else
+            enabled = 0;                      /* fail closed: stay faithful   */
     }
+    /* Re-applying configuration must not invalidate every live shadow. */
+    if (s_enabled == (enabled ? 1 : 0) && !resized)
+        return;
     s_enabled = enabled ? 1 : 0;
     pgxp_invalidate_all();
     recompute_active();
@@ -645,9 +652,16 @@ extern "C" void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3,
 }
 
 extern "C" int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16) {
+    return pgxp_get_gte_sxy_checked(index, 0u, 0, x16, y16);
+}
+
+extern "C" int pgxp_get_gte_sxy_checked(uint32_t index, uint32_t expect,
+                                        int check, int32_t *x16, int32_t *y16) {
     if (index >= 4) return 0;
     const PGXPValue *pv = &s_gte[12 + index];
     if (!pv_live(pv) || (pv->flags & PGXP_F_VXY) != PGXP_F_VXY)
+        return 0;
+    if (check && pv->value != expect)
         return 0;
     if (x16) *x16 = pv->x16;
     if (y16) *y16 = pv->y16;

@@ -40,7 +40,13 @@ class NewProjectOptions:
     lobby_url: str = "netplay.retcomm.net"
     enable_ci: bool = True
     fetch_boxart: bool = True
-    stage_disc: bool = True
+    # OFF, matching setup_project.sh's own STAGE_DISC=0 default: the project
+    # references the dump where the user already keeps it (game.toml gets the
+    # absolute --disc path) and only the small boot EXE is written into disc/.
+    # Staging copies every track into the repo, so a 3-disc PS1 set duplicates
+    # ~2 GB of the user's ROM library per project. Opt in with --stage-disc
+    # when a self-contained tree is actually wanted.
+    stage_disc: bool = False
     do_generate: bool = True
     do_build: bool = True
     create_github: bool = False
