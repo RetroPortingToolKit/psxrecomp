@@ -227,7 +227,11 @@ class StaticWorkerContractTests(unittest.TestCase):
                                                   'overlays_static.c')
         self.assertEqual(res['outcome'], 'skip')
         self.assertIsNone(res['part'])
-        self.assertIn('SKIP: no walk-root seeds', res['log'])
+        # Assert the constant, not a copy of its text: this line asserted a
+        # stale literal from 4683e923 until 2026-09-18 and the test was red
+        # on master the whole time.
+        self.assertIn(compile_overlays.NO_SHARED_WALK_ROOT_SEEDS_SKIP,
+                      res['log'])
         self.assertEqual(res['requested_entries'], set())
 
 
