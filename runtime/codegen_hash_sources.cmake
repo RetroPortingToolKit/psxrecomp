@@ -33,6 +33,8 @@ set(PSXRECOMP_CODEGEN_HASH_SRCS
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/function_discovery.cpp
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/function_discovery.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/gte_register_classification.h
+    # Shared instruction detector changes alter emitted overlay substitutions.
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/ws_backdrop_detect.h
 
     # --- Shard COMPILE surface -------------------------------------------------
     # The cg tag must invalidate on anything a shard compiles/links against, not

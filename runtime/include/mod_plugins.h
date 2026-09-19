@@ -58,6 +58,18 @@ uint32_t psx_mod_alloc_gpu_dma_memory(uint32_t size, uint32_t alignment);
 /* Current per-side widescreen reveal in native game pixels (zero at 4:3). */
 int32_t psx_mod_widescreen_x_margin(void);
 
+/* Mark a guest GPU packet (P_TAG address) as persistent screen-space HUD.
+ * edge = -1 left, +1 right, 0 clears a reused packet's tag. The native-wide
+ * compositor translates it by the live reveal, excluding culling guards.
+ * Guest coordinates, world sprites, and native 4:3 remain unchanged. */
+void psx_mod_tag_hud_primitive(uint32_t primitive, int edge);
+/* Exclude a known world packet from screen-space backdrop stretching, even
+ * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
+void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
+/* Enable aspect-derived column selection for a title that opted into the
+ * auto_backdrop detector. No effect on titles that did not opt in. */
+void psx_mod_set_adaptive_backdrop_preload(int enabled);
+
 /*
  * Read the committed value of one of this package's declared options, as the
  * player left it in the launcher (or the manifest default when untouched).
@@ -98,6 +110,8 @@ int psx_mod_set_fixed_display_aspect(uint32_t numerator,
                                      uint32_t denominator);
 /*
  * Request resize-driven widescreen, capped at the supplied maximum aspect.
+ * Pass (0, 0) for Fit to window with no upper aspect limit. Both modes retain
+ * the native 4:3 minimum; a single zero is invalid.
  * The current fixed aspect continues to shape the initial game window, so a
  * plugin may select that first with psx_mod_set_fixed_display_aspect().
  */

@@ -336,6 +336,9 @@ void gpu_ws_set_gameplay_state_gate(uint32_t addr,
  * outer-third screen-space HUD primitives out to the true wide-frame corners
  * (they otherwise sit inset by the reveal). Runtime-only. Off by default. */
 void gpu_ws_set_nw_hud_corners(int on);
+void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge);
+void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world);
+void gpu_ws_set_adaptive_backdrop_preload(int enabled);
 /* Targeted alternative for sprite-heavy 2D games: corner-anchor only primitives
  * whose ordering-table packet lives in the configured half-open RAM range. */
 void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi);

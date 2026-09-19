@@ -7857,6 +7857,7 @@ static void handle_ws_backdrop_margin(int id, const char *json)
     if (m != -123456789) g_ws_bd_margin = m;
     send_fmt("{\"id\":%d,\"ok\":true,\"margin\":%d,\"mode\":\"%s\"}",
              id, g_ws_bd_margin,
+             g_ws_bd_margin == -2 ? "adaptive" :
              g_ws_bd_margin < 0 ? "whole-row" : (g_ws_bd_margin == 0 ? "off" : "widen-cols"));
 }
 

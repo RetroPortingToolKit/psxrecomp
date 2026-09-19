@@ -1292,10 +1292,11 @@ extern "C" int psx_mod_set_fixed_display_aspect(
 
 extern "C" int psx_mod_set_adaptive_display_aspect(
     uint32_t max_numerator, uint32_t max_denominator) {
-    if (max_numerator == 0 || max_denominator == 0 ||
+    const bool uncapped = max_numerator == 0 && max_denominator == 0;
+    if (!uncapped && (max_numerator == 0 || max_denominator == 0 ||
         max_numerator > 99 || max_denominator > 99 ||
         3u * max_numerator < 4u * max_denominator ||
-        9u * max_numerator > 32u * max_denominator) {
+        9u * max_numerator > 32u * max_denominator)) {
         std::fprintf(stderr,
             "psxrecomp: mod rejected invalid adaptive display aspect %u:%u\n",
             (unsigned)max_numerator, (unsigned)max_denominator);
@@ -1304,7 +1305,12 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
     g_ws_adaptive_view = true;
     g_ws_adaptive_max_num = (int)max_numerator;
     g_ws_adaptive_max_den = (int)max_denominator;
-    std::fprintf(stdout,
+    if (uncapped) {
+        std::fprintf(stdout,
+            "psxrecomp: mod selected adaptive display aspect "
+            "(initial %d:%d, fit to window, no upper aspect limit)\n",
+            g_video_aspect_num, g_video_aspect_den);
+    } else std::fprintf(stdout,
         "psxrecomp: mod selected adaptive display aspect "
         "(initial %d:%d, range 4:3 through %u:%u)\n",
         g_video_aspect_num, g_video_aspect_den,
@@ -1647,7 +1653,8 @@ static void update_adaptive_widescreen() {
     int num = width, den = height;
     if ((int64_t)width * 3 <= (int64_t)height * 4) {
         num = 4; den = 3;
-    } else if ((int64_t)width * g_ws_adaptive_max_den >=
+    } else if (g_ws_adaptive_max_num > 0 && g_ws_adaptive_max_den > 0 &&
+               (int64_t)width * g_ws_adaptive_max_den >=
                (int64_t)height * g_ws_adaptive_max_num) {
         num = g_ws_adaptive_max_num;
         den = g_ws_adaptive_max_den;
@@ -1662,7 +1669,7 @@ static void update_adaptive_widescreen() {
     g_video_aspect_den = den;
     gl_renderer_set_display_aspect(num, den);
     if (sdl_renderer) {
-        g_logical_w = 480 * num * g_video_scale / den;
+        g_logical_w = (int)((int64_t)480 * num * g_video_scale / den);
         SDL_RenderSetLogicalSize(sdl_renderer, g_logical_w, 480 * g_video_scale);
     }
 

@@ -365,6 +365,7 @@ static GLuint        s_raw_tex = 0, s_raw_fbo = 0;
 static GLuint        s_up_tex = 0;
 /* copy_rect staging (hr-sized RGBA8). */
 static GLuint        s_scratch_tex = 0, s_scratch_fbo = 0;
+static int           s_scratch_w = 0, s_scratch_h = 0;
 
 /* Programs. */
 static GLuint s_geo_prog = 0, s_geo_vao = 0, s_geo_vbo = 0;
@@ -1385,8 +1386,17 @@ static void flush_cpu_upload(void) {
 
 /* Recreate one target's stencil mask from its authoritative alpha channel.
  * Sampling an attached render target is undefined, so copy color to the shared
- * scratch texture first. Wide targets never exceed the 1024-pixel VRAM width. */
+ * scratch texture first. Uncapped Fit can exceed the 1024-pixel VRAM width,
+ * so grow this temporary storage to cover the actual target before copying. */
 static void rebuild_target_stencil(GLuint target_fbo, int target_w, int target_h) {
+    if (target_w > s_scratch_w || target_h > s_scratch_h) {
+        if (target_w > s_scratch_w) s_scratch_w = target_w;
+        if (target_h > s_scratch_h) s_scratch_h = target_h;
+        p_glActiveTexture(PSXGL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_scratch_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, s_scratch_w, s_scratch_h,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, target_fbo);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, s_scratch_fbo);
     p_glBlitFramebuffer(0, 0, target_w, target_h, 0, 0, target_w, target_h,
@@ -2665,6 +2675,8 @@ static int init_gpu_raster(void) {
     int hw = VRAM_W * s_scale, hh = VRAM_H * s_scale;
     s_hr_tex      = make_tex(GL_RGBA8, hw, hh, GL_RGBA, GL_UNSIGNED_BYTE);
     s_scratch_tex = make_tex(GL_RGBA8, hw, hh, GL_RGBA, GL_UNSIGNED_BYTE);
+    s_scratch_w = hw;
+    s_scratch_h = hh;
     s_up_tex      = make_tex(GL_RGBA8, VRAM_W, VRAM_H, GL_RGBA, GL_UNSIGNED_BYTE);
     s_raw_tex     = make_tex(PSXGL_R16UI, VRAM_W, VRAM_H, PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT);
     /* Force the driver's first texture-upload allocation while the renderer is

@@ -12,14 +12,14 @@
  * WHAT IT FINDS
  * -------------
  * PSX scrollers generate a far-background tile row one CAMERA-WINDOWED column
- * range per frame. The generator divides the camera world-X by ~96 to a column
+ * range per frame. The generator divides the camera world-X by 80 to a column
  * index and emits a small window [START, END] of columns around it:
  *
- *     lui  M,0x6666 ; ori M,M,0x6667     ; M = 0x66666667 (/96 reciprocal)
+ *     lui  M,0x6666 ; ori M,M,0x6667     ; M = 0x66666667 (/80 reciprocal)
  *     lh/lhu D,0x176(base)               ; D = camera world-X  (offset 0x176)
  *     [addiu/addu D, D, Koff]            ; optional per-layer parallax bias
  *     mult D, M
- *     mfhi H ; sra Q,H,5 ; subu/addu Q,Q,sign   ; Q = camX / 96  (the quotient)
+ *     mfhi H ; sra Q,H,5 ; subu/addu Q,Q,sign   ; Q = camX / 80  (the quotient)
  *     move  rStart, Q                    ; START finalize (offset 0)
  *     addiu rEnd,  Q, N                  ; END   delta     (offset N)
  *     <low clamp on START to a floor>  <high clamp on END to the finite extent>
@@ -36,14 +36,15 @@
  *
  * THE TWO REWRITE SITES (per window)
  * ----------------------------------
- * The quotient is consumed by exactly two instructions: a `move rX, Q` (offset
- * 0) and an `addiu rY, Q, N` (offset N). Which is START and which is END is NOT
+ * Two independent affine consumers finalize bounds: `move rX,Q` (offset 0)
+ * or `addiu rX,Q,bias`. Both may be biased when a table packs multiple strips.
+ * Which is START and which is END is NOT
  * fixed by move-vs-addiu — it is decided by the generator's clamp tail and is
  * captured generically by OFFSET ORDERING: the smaller signed offset is the
  * START (left) bound, the larger is the END (right) bound. Verified on Tomba's
  * village (FUN_80116a28: a2=START/a3=END, +8) and flower-field (s2=START/s1=END;
  * one window has the addiu at offset -18 acting as START with the move as END).
- * The window width in columns is |N| (the addiu offset magnitude) — recorded so
+ * The window width in columns is the DIFFERENCE between offsets — recorded so
  * the runtime sizes the widen margin to the reveal.
  *
  * The actual value substitution is done at runtime by psx_ws_backdrop_value()
@@ -71,6 +72,97 @@ typedef struct {
     int      window_cols; /* window width in columns (|addiu offset|), drives the widen margin */
 } WsBackdropSite;
 
+/* Backward def/use proof for the dividend. Some strips reuse a camera value
+ * loaded for a preceding strip, or keep &scratchpad.camera_x in a saved reg.
+ * Follow copies/biases, not just a matching load somewhere in the lookback. */
+static inline int psx_ws_bd_written_reg(uint32_t w) {
+    unsigned op = w >> 26, fn = w & 63u;
+    if (!op) {
+        if (fn <= 7u || fn == 9u || fn == 0x10u || fn == 0x12u ||
+            (fn >= 0x20u && fn <= 0x2Bu)) return (int)((w >> 11) & 31u);
+    } else if ((op >= 8u && op <= 15u) || (op >= 0x20u && op <= 0x26u) ||
+               ((op == 0x10u || op == 0x12u) && ((w >> 21) & 31u) < 3u)) {
+        return (int)((w >> 16) & 31u);
+    } else if (op == 3u) return 31;
+    return -1;
+}
+
+/* An unconditional jump before a block means the lexically preceding arm
+ * does not reach it. Follow a unique local conditional predecessor (including
+ * its delay slot), never borrow definitions from the skipped arm. */
+static inline int psx_ws_bd_predecessor(const uint32_t* words, int boundary, int lo) {
+    int found = -1;
+    for (int b = boundary - 3; b >= lo; --b) {
+        unsigned op = words[b] >> 26;
+        if ((op == 1u || (op >= 4u && op <= 7u)) &&
+            b + 1 + (int)(int16_t)words[b] == boundary) {
+            if (found >= 0) return -1;
+            found = b;
+        }
+    }
+    return found;
+}
+
+static inline int psx_ws_bd_constant(const uint32_t* words, int before, int lo,
+                                    unsigned reg, unsigned depth, uint32_t* value) {
+    if (!reg) { *value = 0; return 1; }
+    if (!depth) return 0;
+    for (int b = before - 1; b >= lo; --b) {
+        if (b > lo && (words[b - 1] >> 26) == 2u) {
+            int pred = psx_ws_bd_predecessor(words, b + 1, lo);
+            return pred >= 0 && psx_ws_bd_constant(words, pred + 2, lo,
+                                                   reg, depth - 1, value);
+        }
+        uint32_t w = words[b], op = w >> 26, fn = w & 63u;
+        unsigned rs = (w >> 21) & 31u, rt = (w >> 16) & 31u;
+        /* A call may clobber every caller-saved register. */
+        if ((op == 3u || (!op && fn == 9u)) && (reg < 16u || reg > 23u)) return 0;
+        if (psx_ws_bd_written_reg(w) != (int)reg) continue;
+        if (op == 15u) { *value = w << 16; return 1; }
+        uint32_t source;
+        if ((op == 9u || op == 13u) &&
+            psx_ws_bd_constant(words, b, lo, rs, depth - 1, &source)) {
+            *value = op == 13u ? source | (w & 0xFFFFu)
+                              : source + (uint32_t)(int32_t)(int16_t)w;
+            return 1;
+        }
+        if (!op && (fn == 0x21u || fn == 0x25u) && (!rs || !rt))
+            return psx_ws_bd_constant(words, b, lo, rs ? rs : rt, depth - 1, value);
+        return 0;
+    }
+    return 0;
+}
+
+static inline int psx_ws_bd_camera(const uint32_t* words, int before, int lo,
+                                  unsigned reg, unsigned depth) {
+    if (!reg || !depth) return 0;
+    for (int b = before - 1; b >= lo; --b) {
+        if (b > lo && (words[b - 1] >> 26) == 2u) {
+            int pred = psx_ws_bd_predecessor(words, b + 1, lo);
+            return pred >= 0 && psx_ws_bd_camera(words, pred + 2, lo, reg, depth - 1);
+        }
+        uint32_t w = words[b], op = w >> 26, fn = w & 63u;
+        unsigned rs = (w >> 21) & 31u, rt = (w >> 16) & 31u;
+        if ((op == 3u || (!op && fn == 9u)) && (reg < 16u || reg > 23u)) return 0;
+        if (psx_ws_bd_written_reg(w) != (int)reg) continue;
+        if (op == 0x21u || op == 0x25u) {
+            uint32_t base;
+            return psx_ws_bd_constant(words, b, lo, rs, 4, &base) &&
+                base + (uint32_t)(int32_t)(int16_t)w == 0x1F800176u;
+        }
+        if (op == 9u || op == 8u)
+            return psx_ws_bd_camera(words, b, lo, rs, depth - 1);
+        if (!op && (fn == 0x21u || fn == 0x25u || fn == 0x23u)) {
+            /* OR is only a copy. SUBU permits camera - bias, never bias - camera. */
+            if (fn == 0x25u && rs && rt) return 0;
+            return psx_ws_bd_camera(words, b, lo, rs, depth - 1) ||
+                (fn != 0x23u && psx_ws_bd_camera(words, b, lo, rt, depth - 1));
+        }
+        return 0; /* nearest definition is not a proven camera-derived value */
+    }
+    return 0;
+}
+
 /* Scan `n` instruction words starting at guest address `base_pc` for backdrop
  * column-window generators and record the START/END rewrite sites. Returns the
  * number of sites written to `out` (capped at `max_sites`). Pure: the result
@@ -97,19 +189,10 @@ static inline int psx_ws_find_backdrop_windows(const uint32_t *words, int n,
             uint32_t D = swap ? op_rs : op_rt;   /* dividend candidate  */
             if (M == D) continue;
 
-            int have_lui = 0, have_ori = 0, have_camx = 0;
-            int blo = i - 32; if (blo < 0) blo = 0;
-            for (int b = i - 1; b >= blo; b--) {
-                uint32_t bw   = words[b];
-                uint32_t bop  = bw >> 26;
-                uint32_t brs  = (bw >> 21) & 31u;
-                uint32_t brt  = (bw >> 16) & 31u;
-                uint32_t bimm = bw & 0xFFFFu;
-                if (bop == 0x0Fu && brt == M && bimm == 0x6666u) have_lui = 1;                 /* lui M,0x6666     */
-                else if (bop == 0x0Du && brt == M && brs == M && bimm == 0x6667u) have_ori = 1; /* ori M,M,0x6667   */
-                else if ((bop == 0x21u || bop == 0x25u) && brt == D && bimm == 0x176u) have_camx = 1; /* lh/lhu D,0x176 */
-            }
-            if (!have_lui || !have_ori || !have_camx) continue;
+            int blo = i - 48; if (blo < 0) blo = 0;
+            uint32_t magic;
+            if (!psx_ws_bd_constant(words, i, blo, M, 4, &magic) ||
+                magic != 0x66666667u || !psx_ws_bd_camera(words, i, blo, D, 8)) continue;
 
             /* Forward divide tail: mfhi H -> sra Q,H,5. Bail on a control
              * transfer before the tail (the divide is straight-line). */
@@ -132,12 +215,16 @@ static inline int psx_ws_find_backdrop_windows(const uint32_t *words, int n,
             }
             if (quot < 0) continue;
 
-            /* Forward: optional sign correction (addu/subu chaining the
-             * quotient) + the two window consumers (a move and an addiu reading
-             * the quotient, or the addiu reading the move's START register). */
+            /* Both bounds must independently read the intact quotient. A
+             * dependent addiu can instead be a layer-table bias (Tomba's +28
+             * after a clamp), NOT a window end. Independently shifting both
+             * results is also wrong if one consumes the already-shifted other
+             * bound. Leave those ambiguous shapes unchanged. */
             int cur = quot, move_dest = -1;
             uint32_t move_pc = 0, addiu_pc = 0;
-            int have_move = 0, have_addiu = 0, addiu_n = 0;
+            /* Historical names: move is the first affine bound, addiu the
+             * second. Either may now have a nonzero table-segment bias. */
+            int have_move = 0, have_addiu = 0, move_n = 0, addiu_n = 0;
             int fend = jdiv + 1 + 8; if (fend > n) fend = n;
             for (int f = jdiv + 1; f < fend && !(have_move && have_addiu); f++) {
                 uint32_t fw = words[f];
@@ -149,37 +236,80 @@ static inline int psx_ws_find_backdrop_windows(const uint32_t *words, int n,
                 int      fsimm = (int)(int16_t)(uint16_t)(fw & 0xFFFFu);
                 uint32_t pc = base_pc + (uint32_t)f * 4u;
 
+                /* A jump's delay slot still executes in this block. Never
+                 * scan beyond it into an unrelated branch leg. Conditional
+                 * clamps are not part of the independent-bound pattern. */
+                if (fop == 0x02u) {
+                    if (fend > f + 2) fend = f + 2;
+                    continue;
+                }
+                if (fop == 0x03u || (fop >= 0x04u && fop <= 0x07u) ||
+                    fop == 0x01u || (fop == 0u && (ffn == 0x08u || ffn == 0x09u))) break;
+
                 if (fop == 0u && (ffn == 0x21u || ffn == 0x25u)) {   /* addu/or */
                     int src = -1;
                     if (frt == 0u && frs != 0u) src = (int)frs;       /* move rD, rS  (rT == $0) */
                     else if (frs == 0u && frt != 0u) src = (int)frt;  /* move rD, rT  (rS == $0) */
                     if (src == cur) {
-                        if (!have_move) { move_pc = pc; move_dest = (int)frd; have_move = 1; }
+                        if ((int)frd == cur) break;
+                        /* Some rows first clamp the signed quotient to zero
+                         * and add a table-segment bias. Recognize the COMPLETE
+                         * diamond, then match the real bounds after its join:
+                         * move T,Q; sll Q,Q,16; bgez Q,+3; addiu Q,T,bias;
+                         * move T,zero; addiu Q,T,bias; <bounds from Q>.
+                         * Neither the temporary move nor bias is a bound. */
+                        if (!have_move && !have_addiu && f + 6 < n &&
+                            words[f + 1] == ((uint32_t)cur << 16 | (uint32_t)cur << 11 | 16u << 6) &&
+                            words[f + 2] == (0x04010003u | (uint32_t)cur << 21) &&
+                            (words[f + 3] & 0xFFFF0000u) ==
+                                (0x24000000u | frd << 21 | (uint32_t)cur << 16) &&
+                            words[f + 4] == (frd << 11 | 0x21u) &&
+                            words[f + 5] == words[f + 3]) {
+                            f += 5;
+                            fend = f + 1 + 8;
+                            if (fend > n) fend = n;
+                            continue;
+                        }
+                        if (!have_move) {
+                            move_pc = pc; move_dest = (int)frd; move_n = 0; have_move = 1;
+                        } else if ((int)frd != move_dest) {
+                            addiu_pc = pc; addiu_n = 0; have_addiu = 1;
+                        }
                         continue;
                     }
                     if (ffn == 0x21u && frs != 0u && frt != 0u &&
                         ((int)frs == cur || (int)frt == cur)) {       /* addu sign correction */
+                        if (have_move || have_addiu) break;
                         cur = (int)frd; continue;
                     }
                 }
                 if (fop == 0u && ffn == 0x23u &&
                     ((int)frs == cur || (int)frt == cur)) {           /* subu sign correction */
+                    if (have_move || have_addiu) break;
                     cur = (int)frd; continue;
                 }
-                if ((fop == 0x09u || fop == 0x08u) &&                 /* addiu/addi rD, (Q|START), N */
-                    ((int)frs == cur || (have_move && (int)frs == move_dest))) {
-                    if (!have_addiu) { addiu_pc = pc; addiu_n = fsimm; have_addiu = 1; }
+                if ((fop == 0x09u || fop == 0x08u) &&                 /* addiu/addi rD, Q, N */
+                    (int)frs == cur && (!have_move || (int)frt != move_dest)) {
+                    if (!have_move) {
+                        if ((int)frt == cur) break; /* quotient bias, not a bound */
+                        move_pc = pc; move_dest = (int)frt; move_n = fsimm; have_move = 1;
+                    } else if (!have_addiu) {
+                        addiu_pc = pc; addiu_n = fsimm; have_addiu = 1;
+                    }
                     continue;
                 }
+                /* An unrecognized overwrite invalidates the tracked value. */
+                if ((fop == 0u && ((int)frd == cur || (int)frd == move_dest)) ||
+                    ((fop >= 0x08u && fop <= 0x0Fu) &&
+                     ((int)frt == cur || (int)frt == move_dest))) break;
             }
-            if (!have_move || !have_addiu || addiu_n == 0) continue;
+            if (!have_move || !have_addiu || addiu_n == move_n) continue;
 
-            /* Role by offset: smaller signed offset = START (left bound), larger
-             * = END (right bound). The move's offset is 0; the addiu's is
-             * addiu_n. Window width = |addiu_n|. */
-            int move_kind  = (addiu_n > 0) ? WS_BD_START : WS_BD_END;
-            int addiu_kind = (addiu_n > 0) ? WS_BD_END   : WS_BD_START;
-            int wcols      = (addiu_n < 0) ? -addiu_n : addiu_n;
+            /* Role by relative offset, not the absolute table-segment bias. */
+            int delta = addiu_n - move_n;
+            int move_kind  = (delta > 0) ? WS_BD_START : WS_BD_END;
+            int addiu_kind = (delta > 0) ? WS_BD_END   : WS_BD_START;
+            int wcols      = delta < 0 ? -delta : delta;
 
             for (int s = 0; s < 2; s++) {
                 uint32_t spc = s ? addiu_pc : move_pc;
