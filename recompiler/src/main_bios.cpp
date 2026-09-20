@@ -41,6 +41,7 @@
 
 #include "bios_slice_walker.h"
 #include "bios_rom_alias.h"
+#include "host_path.h"
 #include "config_loader.h"
 #include "full_function_emitter.h"
 #include "function_discovery.h"
@@ -969,9 +970,9 @@ int main(int argc, char** argv) {
             } else if (a.rfind("--config=", 0) == 0) {
                 config_path = a.substr(std::string("--config=").size());
             } else if (a == "--rom" && i + 1 < argc) {
-                config_rom_override = fs::absolute(argv[++i]);
+                config_rom_override = PSXRecompV4::host_absolute(argv[++i]);
             } else if (a == "--out-dir" && i + 1 < argc) {
-                config_out_override = fs::absolute(argv[++i]);
+                config_out_override = PSXRecompV4::host_absolute(argv[++i]);
             }
         }
         if (config_path) {

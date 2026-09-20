@@ -23,6 +23,33 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(ws_scene_hold_test tests/test_ws_scene_hold.c)
+    target_include_directories(ws_scene_hold_test PRIVATE include)
+    add_test(NAME ws_scene_hold_test COMMAND ws_scene_hold_test)
+    add_executable(mod_texture_banks_test tests/test_mod_texture_banks.c src/mod_texture_banks.c)
+    target_include_directories(mod_texture_banks_test PRIVATE include)
+    add_test(NAME mod_texture_banks_test COMMAND mod_texture_banks_test)
+    if(NOT MSVC)
+        add_executable(ws_world_scene_test tests/test_ws_world_scene.c)
+        target_include_directories(ws_world_scene_test PRIVATE include src)
+        target_compile_options(ws_world_scene_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections)
+        target_link_options(ws_world_scene_test PRIVATE -flto -Wl,--gc-sections)
+        add_test(NAME ws_world_scene_test COMMAND ws_world_scene_test)
+        add_executable(mod_memory_snapshot_test tests/test_mod_memory_snapshot.c)
+        target_include_directories(mod_memory_snapshot_test PRIVATE include src)
+        target_compile_options(mod_memory_snapshot_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections)
+        target_link_options(mod_memory_snapshot_test PRIVATE -flto -Wl,--gc-sections)
+        add_test(NAME mod_memory_snapshot_test COMMAND mod_memory_snapshot_test)
+    endif()
+    add_executable(sio_card_irq_integrity_test tests/test_sio_card_irq_integrity.c)
+    target_include_directories(sio_card_irq_integrity_test PRIVATE include)
+    foreach(scenario absent deselect pending coarse)
+        add_test(NAME sio_card_irq_integrity_${scenario}
+                 COMMAND sio_card_irq_integrity_test ${scenario})
+        # The retired environment variable must not reactivate the workaround.
+        set_tests_properties(sio_card_irq_integrity_${scenario} PROPERTIES
+            ENVIRONMENT "PSX_APE_CARD_UNSTICK=1")
+    endforeach()
     # Optional real-hardware regression. Configure its dependencies explicitly;
     # absence must remain visible, never counted as a passing GPU test.
     set(PSX_GL_READBACK_SDL_ROOT "" CACHE PATH "SDL3 static build root for GL readback test")
@@ -102,6 +129,13 @@ if(BUILD_TESTING)
         PSX_ENABLE_BLOCK_CYCLES=1
         PSX_OVERLAY_DLL_BUILD=1)
     add_test(NAME psx_icache_fastpath_test COMMAND psx_icache_fastpath_test)
+
+    add_executable(psx_icache_elision_guard_test
+        tests/test_psx_icache_elision_guard.c src/psx_icache.c)
+    target_include_directories(psx_icache_elision_guard_test PRIVATE include)
+    target_compile_definitions(psx_icache_elision_guard_test PRIVATE
+        PSX_ENABLE_BLOCK_CYCLES=1 PSX_OVERLAY_DLL_BUILD=1)
+    add_test(NAME psx_icache_elision_guard_test COMMAND psx_icache_elision_guard_test)
 
     foreach(_ram_geometry IN ITEMS retail expanded)
         add_executable(psx_memory_geometry_${_ram_geometry}_test
@@ -355,7 +389,7 @@ if(BUILD_TESTING)
         src/disc_path.cpp
         src/cue_sheet.cpp
         src/iso_reader.cpp)
-    target_include_directories(disc_path_resolve_test PRIVATE include)
+    target_include_directories(disc_path_resolve_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
     target_link_libraries(disc_path_resolve_test PRIVATE chdr-static)
     add_test(NAME disc_path_resolve_test COMMAND disc_path_resolve_test)
 
@@ -371,7 +405,7 @@ if(BUILD_TESTING)
         tests/test_iso_reader_cdda.cpp
         src/iso_reader.cpp
         src/cue_sheet.cpp)
-    target_include_directories(iso_reader_cdda_test PRIVATE include)
+    target_include_directories(iso_reader_cdda_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
     target_link_libraries(iso_reader_cdda_test PRIVATE chdr-static)
     add_test(NAME iso_reader_cdda_test COMMAND iso_reader_cdda_test)
 
@@ -379,7 +413,7 @@ if(BUILD_TESTING)
         tests/test_iso_reader_sbi.cpp
         src/iso_reader.cpp
         src/cue_sheet.cpp)
-    target_include_directories(iso_reader_sbi_test PRIVATE include)
+    target_include_directories(iso_reader_sbi_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
     target_link_libraries(iso_reader_sbi_test PRIVATE chdr-static)
     add_test(NAME iso_reader_sbi_test COMMAND iso_reader_sbi_test)
 
@@ -412,6 +446,7 @@ if(BUILD_TESTING)
         src/psx_sha256.c)
     target_include_directories(mod_runtime_test PRIVATE
         include
+        ../recompiler/include
         ../recompiler/lib/toml11)
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
     # The real disc hasher uses a 1 MiB scratch buffer. Match the runtime's

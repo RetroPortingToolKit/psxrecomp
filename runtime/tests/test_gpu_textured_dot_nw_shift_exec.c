@@ -208,7 +208,6 @@ uint32_t psx_compiled_irq_resume_pc(void) { return 0; }
 uint32_t psx_last_irq_check_pc(void) { return 0; }
 uint32_t psx_netplay_rb_sticky_bb_pc(void) { return 0; }
 void mod_runtime_on_vblank(void) {}
-void sio_ape_card_unstick_pump(void) {}
 bool screen_kind_from_name(const char *name, ScreenKind *out) {
     (void)name;
     if (out) *out = SCREEN_RAW;

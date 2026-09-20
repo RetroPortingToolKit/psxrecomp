@@ -46,6 +46,7 @@
 #include "crash_trace.h"
 #include "gpu_gl_renderer.h"
 #include "lockstep.h"
+#include "guest_tty.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -3570,6 +3571,40 @@ static void handle_bioscall_dump(int id, const char *json)
     debug_server_send_line(out); free(out);
 }
 
+/* guest_tty_dump — bounded, structured capture of bytes emitted through the
+ * guest console. Hex avoids JSON escaping ambiguity and preserves arbitrary
+ * byte values. The command is observational and never consumes the ring. */
+static void handle_guest_tty_dump(int id, const char *json)
+{
+    int requested = json_get_int(json, "tail", 4096);
+    if (requested < 0) requested = 0;
+    if (requested > 65536) requested = 65536;
+
+    size_t cap = (size_t)requested;
+    uint8_t *bytes = cap ? (uint8_t *)malloc(cap) : NULL;
+    if (cap && !bytes) { send_err(id, "oom"); return; }
+
+    uint64_t total = 0;
+    size_t count = psx_guest_tty_snapshot(bytes, cap, &total);
+    size_t out_cap = 160u + count * 2u;
+    char *out = (char *)malloc(out_cap);
+    if (!out) { free(bytes); send_err(id, "oom"); return; }
+
+    size_t pos = (size_t)snprintf(
+        out, out_cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%llu,\"tail\":%llu,\"hex\":\"",
+        id, (unsigned long long)total, (unsigned long long)count);
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < count; ++i) {
+        out[pos++] = digits[bytes[i] >> 4];
+        out[pos++] = digits[bytes[i] & 0x0Fu];
+    }
+    out[pos++] = '"'; out[pos++] = '}'; out[pos++] = '\n'; out[pos] = '\0';
+    debug_server_send_line(out);
+    free(out);
+    free(bytes);
+}
+
 /* bios_info — which recompiled BIOS this build links, and whether the
  * loaded ROM matches it. Everything static comes from psx_bios_image (the
  * generated dispatch's self-description, couriered from the BIOS profile);
@@ -7014,7 +7049,7 @@ static void handle_imask_trace(int id, const char *json)
     send_fmt("]}\n");
 }
 
-/* Post-probe bit7 → TX 0x57 handoff (Ape Escape LOAD). */
+/* Post-probe SIO/INTC handoff; records hardware state, not game RAM. */
 static void handle_card_handoff(int id, const char *json)
 {
     int count = json_get_int(json, "count", 64);
@@ -7027,8 +7062,7 @@ static void handle_card_handoff(int id, const char *json)
 
     int start = count ? (idx - count + cap) % cap : 0;
     static const char *kinds[] = {
-        "?", "probe_abort", "b7_set", "b7_clear", "tx", "card_ack", "unstick",
-        "select_flush_ack", "ack_deferred_istat7", "nest_irq_pulse", "b7_hold"
+        "?", "probe_abort", "b7_set", "b7_clear", "tx", "card_ack"
     };
     send_fmt("{\"id\":%d,\"ok\":true,\"armed\":%d,\"total\":%d,\"count\":%d,\"entries\":[",
              id, sio_card_handoff_armed(), total, count);
@@ -7039,11 +7073,11 @@ static void handle_card_handoff(int id, const char *json)
         if (i) send_fmt(",");
         send_fmt("{\"kind\":\"%s\",\"byte\":\"0x%02X\",\"imask\":\"0x%03X\","
                  "\"pc\":\"0x%08X\",\"func\":\"0x%08X\","
-                 "\"a6c10\":\"0x%08X\",\"b4e30\":\"0x%08X\",\"b4e38\":\"0x%08X\","
+                 "\"ctrl\":\"0x%04X\",\"stat\":\"0x%04X\",\"card_state\":%u,"
                  "\"cyc\":%llu}",
                  k, e->byte, e->imask,
                  (unsigned)e->pc, (unsigned)e->func,
-                 (unsigned)e->a6c10, (unsigned)e->b4e30, (unsigned)e->b4e38,
+                 (unsigned)e->ctrl, (unsigned)e->stat, (unsigned)e->card_state,
                  (unsigned long long)e->cyc);
     }
     send_fmt("]}\n");
@@ -7896,6 +7930,16 @@ static void handle_ws_aspect(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,\"num\":%d,\"den\":%d}", id, num, den);
 }
 
+extern int psx_debug_display_aspect(int num, int den, int adaptive);
+static void handle_display_aspect(int id, const char *json) {
+    int num=json_get_int(json,"num",-1), den=json_get_int(json,"den",-1);
+    int adaptive=json_get_int(json,"adaptive",0);
+    if (!psx_debug_display_aspect(num,den,adaptive)) {
+        send_err(id,"invalid display aspect (4:3 through 32:9)");return;
+    }
+    send_fmt("{\"id\":%d,\"ok\":true,\"num\":%d,\"den\":%d,\"adaptive\":%d}",id,num,den,adaptive!=0);
+}
+
 /* Live native-wide vs squash toggle (A/B): ws_nw on=<0|1> re-engages the wide
  * path in the chosen mode without a relaunch. 2 = native-wide, 1 = squash. */
 extern void psx_ws_set_native_wide(int on);
@@ -7979,6 +8023,7 @@ static void handle_ws_backdrop_margin(int id, const char *json)
     if (m != -123456789) g_ws_bd_margin = m;
     send_fmt("{\"id\":%d,\"ok\":true,\"margin\":%d,\"mode\":\"%s\"}",
              id, g_ws_bd_margin,
+             g_ws_bd_margin == -2 ? "adaptive" :
              g_ws_bd_margin < 0 ? "whole-row" : (g_ws_bd_margin == 0 ? "off" : "widen-cols"));
 }
 
@@ -13613,6 +13658,7 @@ static const CmdEntry s_commands[] = {
     { "ws_hud_mode",       handle_ws_hud_mode },
     { "kernel_bless",      handle_kernel_bless },
     { "ws_aspect",         handle_ws_aspect },
+    { "display_aspect",    handle_display_aspect },
     { "ws_nw",             handle_ws_nw },
     { "scanline",          handle_scanline },
     { "ws_backdrop_ring",  handle_ws_backdrop_ring },
@@ -13701,6 +13747,7 @@ static const CmdEntry s_commands[] = {
     { "fntrace_dump",      handle_fntrace_dump },
     { "unknown_dispatch_log", handle_unknown_dispatch_log },
     { "bioscall_dump",     handle_bioscall_dump },
+    { "guest_tty_dump",    handle_guest_tty_dump },
     { "bios_info",         handle_bios_info },
     { "hle_dump",          handle_hle_dump },
     { "card_trace_dump",   handle_card_trace_dump },

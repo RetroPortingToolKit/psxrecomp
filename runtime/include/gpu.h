@@ -360,6 +360,9 @@ void gpu_ws_set_gameplay_state_gate(uint32_t addr,
  * outer-third screen-space HUD primitives out to the true wide-frame corners
  * (they otherwise sit inset by the reveal). Runtime-only. Off by default. */
 void gpu_ws_set_nw_hud_corners(int on);
+void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge);
+void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world);
+void gpu_ws_set_adaptive_backdrop_preload(int enabled);
 /* Explicit native-wide HUD packet anchor from a trusted title plugin.
  * `prim` is the address of the PsyQ P_TAG word; the drawn command starts at
  * prim+4. anchor: -1 = left, 0 = center, +1 = right. */

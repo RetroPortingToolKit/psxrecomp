@@ -1269,6 +1269,35 @@ def plausible_callable_target(data: bytes, load_addr: int, size: int,
     return saw_return and not bad and not work and len(visited) < 2048
 
 
+def _frameless_dispatch_root_proven(data: bytes, load_addr: int, size: int,
+                                    addr: int, producer_hi: int) -> bool:
+    """CFG proof for a dispatch entry admitted only by the word before it.
+
+    `_callable_legacy_seed` accepts an address on three different grades of
+    evidence: it is the image entry, it opens a stack frame, or the word two
+    slots back is `jr $ra`. The third is the weak one, and it is weak exactly
+    where it fires most: the first word *after* a function's return is also
+    the first word of whatever the linker laid down next, which in these
+    images is routinely a pointer table, a packed record array or zero fill.
+    A dispatch PC there is real -- a sibling occupant of the shared band has
+    code at that address -- but for *this* image it is data, and promoting it
+    to a walk root sends the linear walk through the table to the image end.
+
+    So require the same bounded CFG probe the discovery roots already use
+    when the classic prologue is absent. Failing it does not discard the
+    entry: the caller demotes it to DISPATCH_INTERIOR, which keeps the
+    dispatch evidence and the isolated-fragment demand and only declines to
+    start a walk there.
+    """
+    word = _word_at(data, load_addr, addr)
+    prev = _word_at(data, load_addr, addr - 4)
+    if addr == load_addr:
+        return True
+    if _is_addiu_sp_neg(word) and not _is_control_flow(prev):
+        return True
+    return plausible_callable_target(data, load_addr, size, addr, producer_hi)
+
+
 def _walk_overlay_function(data: bytes, load_addr: int, size: int,
                            entry: int, hard_cap: int,
                            producer_ranges=(),
@@ -1642,14 +1671,22 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         # Invalid words stay excluded. Call-edge-proven reasons
         # (DIRECT_JAL_TARGET, FUNCTION_POINTER_TARGET, TOML_DECLARED_ENTRY) are
         # exempt — they carry their own proof.
+        # A dispatch entry that has no prologue and is callable only because a
+        # `jr $ra` precedes it is the head of whatever follows the last
+        # function, data included, so it needs the bounded CFG probe before it
+        # may be a walk root (_frameless_dispatch_root_proven).
         if reason in ('DISPATCH_ENTRY', 'STATIC_DISPATCH_ENTRY'):
             if impossible_entry_start(addr):
                 excluded[addr] = 'UNKNOWN'
                 return
             if addr + 4 <= fragment_hi:
                 dispatch_fragment_demands.add(addr)
+            producer = capture_producer_for(addr)
             if (addr in jump_table_targets or
-                    not _callable_legacy_seed(data, load_addr, addr)):
+                    not _callable_legacy_seed(data, load_addr, addr) or
+                    not _frameless_dispatch_root_proven(
+                        data, load_addr, size, addr,
+                        producer[1] if producer else hi)):
                 included.setdefault(addr, 'DISPATCH_INTERIOR')
                 return
         elif (reason not in ('DIRECT_JAL_TARGET', 'STATIC_INDIRECT_TARGET',
@@ -3255,6 +3292,15 @@ def current_variant_func_id_coverage(func_ids: list, data: bytes,
 #     contract/header change (which bumps the hash -> fresh dir -> fresh memo)
 #     re-attempts everything (e.g. the psx_rfe_mark_escape contract fix).
 # So a memoized skip only ever elides a build that is deterministically doomed.
+# Printed when a capture contributes no walk-root seed. The wording is
+# deliberate: the region is NOT declared data-only -- its executed dispatch
+# demands are still served by the isolated-fragment pass, which runs
+# separately. Named so the two emit sites and the test cannot drift apart.
+# They did: 4683e923 reworded both prints and left
+# test_compile_overlays_static_split asserting the old string.
+NO_SHARED_WALK_ROOT_SEEDS_SKIP = (
+    'SKIP: no shared walk-root seeds; checking fragments separately')
+
 INTERIOR_FAIL_MEMO = 'interior_fail_memo.txt'
 
 
@@ -5818,7 +5864,7 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
             seed.split()[0].startswith('0x'))
     ]
     if not root_seeds:
-        print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
+        print(f'  {NO_SHARED_WALK_ROOT_SEEDS_SKIP}\n')
         result['outcome'] = 'skip'
         return
 
@@ -6366,7 +6412,7 @@ def main():
                 seed.split()[0].startswith('0x'))
         ]
         if not root_seeds:
-            print('  SKIP: no shared walk-root seeds; checking fragments separately\n')
+            print(f'  {NO_SHARED_WALK_ROOT_SEEDS_SKIP}\n')
             stats.add_skip()
             return
 
@@ -7619,9 +7665,23 @@ def main():
     # that pass, using ABI-valid, current-byte guarded native coverage. Missing
     # even one primary root remains a failure; toolchain/audit failures above
     # are never cleared by this reconciliation.
-    reconcile_empty_primary_scans(
-        pending_empty_primary, cache_dir,
-        overlay_abi_tag(args.runtime_include, args.flavor), stats)
+    #
+    # DLL mode only. The reconciliation reads the per-game DLL cache, and
+    # cache_dir is bound only on the non-static path; --static emits one
+    # self-contained overlays_static.c and _do_capture returns into
+    # static_capture_job before anything is queued. Calling it unconditionally
+    # raised UnboundLocalError at the very end of every --static run, after
+    # the output was already written, and turned a clean compile into exit 1.
+    if args.static:
+        if pending_empty_primary:
+            raise SystemExit(
+                'internal error: --static queued %d empty-primary '
+                'reconciliation(s), but static mode has no DLL cache to '
+                'reconcile against' % len(pending_empty_primary))
+    else:
+        reconcile_empty_primary_scans(
+            pending_empty_primary, cache_dir,
+            overlay_abi_tag(args.runtime_include, args.flavor), stats)
 
     # LOUD summary + machine-readable result line, then a non-zero exit when any
     # shard that should have built failed. The runtime's autocompile watcher and

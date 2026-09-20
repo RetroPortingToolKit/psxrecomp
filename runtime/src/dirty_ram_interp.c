@@ -1648,7 +1648,16 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             uint32_t target = cpu->gpr[rs];
             if (target & 3) return interp_exception(cpu, 4, target, pc);  /* LoadAddressError */
             uint32_t return_pc = pc + 8;
-            cpu->gpr[rd ? rd : 31] = return_pc;
+            /* JALR writes the encoded rd exactly.  The one-operand assembler
+             * form encodes rd=$ra; rd=0 is a real discard, not an implicit
+             * $ra.  More importantly, only rd=$ra gives the call-unit code a
+             * return contract it can validate.  Games also use other link
+             * registers for data-bearing transfer stubs (for example
+             * `jalr $a1,$t0`, where the target consumes $a1 and later returns
+             * through the pre-existing $ra).  Treating pc+8 as that transfer's
+             * mandatory return address fabricates a nested continuation and
+             * leaks psx_dispatch_call frames. */
+            if (rd != 0) cpu->gpr[rd] = return_pc;
             cpu->gpr[0] = 0;
             exec_delay_slot(cpu, pc + 4);
             cosim_exec_one_transfer_hook(pc + 4);
@@ -1660,6 +1669,13 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             uint32_t _cr = callret_begin(cpu, pc, target);   /* call-resolution ring */
 #define CRET(code, rv) do { callret_end(_cr, cpu, (code)); return (rv); } while (0)
             if (g_precise_mode || g_ls_replay_active) { cpu->pc = target; CRET(CRES_PLAIN, 1); }  /* slice / lockstep-replay: plain transfer, never execute the callee */
+            if (rd != 31) {
+                /* No architectural $ra contract: preserve the transfer as a
+                 * pc-chain and let the callee's eventual JR choose the real
+                 * continuation.  This is both faithful and host-stack-flat. */
+                cpu->pc = target;
+                CRET(CRES_PCCHAIN, 1);
+            }
 #ifdef PSX_HAS_GAME_DISPATCH
             cpu->pc = 0;
             if (interp_enter_compiled(cpu, target)) {

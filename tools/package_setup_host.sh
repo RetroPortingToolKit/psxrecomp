@@ -64,6 +64,10 @@ DISPLAY_NAME=""
 RECOMPILER_BUILD="build-recompiler"
 VERSION_ENV="RELEASE_VERSION"
 DISC_HINT="your legally owned game disc"
+# Wave-5 F4: a packaged game.toml without `overlay_cache = true` ships a runtime that never
+# initialises the overlay loader, so every streamed overlay runs on the interpreter (78 of
+# 105 releases measured 2026-09-16). Refuse unless the caller states why.
+SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE=""
 PROJECT_FILES=()
 PROJECT_DIRS=()
 RUNTIME_DIRS=()
@@ -115,6 +119,7 @@ while [[ $# -gt 0 ]]; do
     --root) ROOT="${2:?}"; shift 2 ;;
     --embed-toolchain) EMBED_TOOLCHAIN=1; shift ;;
     --no-embed-toolchain) EMBED_TOOLCHAIN=0; shift ;;
+    --ship-without-overlay-cache-because) SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE="${2:?}"; shift 2 ;;
     *)
       echo "error: unknown arg: $1" >&2
       usage 2
@@ -484,6 +489,17 @@ fi
 
 bash "${STAGE_SDK}" "${stage_args[@]}"
 
+if ! grep -qE '^[[:space:]]*overlay_cache[[:space:]]*=[[:space:]]*true' "${STAGE}/game.toml"; then
+  if [[ -z "${SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE}" ]]; then
+    echo "error: REFUSING TO PACKAGE: ${STAGE}/game.toml has no '[runtime] overlay_cache = true'." >&2
+    echo "       The runtime never initialises the overlay loader without it, so every streamed" >&2
+    echo "       overlay runs on the dirty-RAM interpreter for every player. Add the key, or pass" >&2
+    echo "       --ship-without-overlay-cache-because '<reason>' to record why this title ships without it." >&2
+    exit 1
+  fi
+  echo "warning: packaging without overlay_cache = true (reason: ${SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE})" >&2
+fi
+
 cat >"${STAGE}/README-SETUP.txt" <<EOF
 ${DISPLAY_NAME} ${VERSION} — setup package
 Platform: ${ARTIFACT}
@@ -518,8 +534,12 @@ EOF
 # a cmake variable cannot be resolved here.
 if [[ -f "${STAGE}/CMakeLists.txt" ]]; then
   cml="${STAGE}/CMakeLists.txt"
-  guarded="$(grep -oE 'if\(EXISTS[[:space:]]+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/[^"]+"' "${cml}" \
-               | sed -E 's|.*\$\{CMAKE_CURRENT_SOURCE_DIR\}/||; s|"$||' | sort -u)"
+  # A CMakeLists.txt with no if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/...") guard at
+  # all is normal, and grep exits 1 on no match. Under `set -e -o pipefail` that
+  # status propagates out of the command substitution and kills the packager
+  # here — silently, before any gate can report anything. Guard the assignment.
+  guarded="$( { grep -oE 'if\(EXISTS[[:space:]]+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/[^"]+"' "${cml}" \
+                  || true; } | sed -E 's|.*\$\{CMAKE_CURRENT_SOURCE_DIR\}/||; s|"$||' | sort -u)"
   missing_refs=()
   while IFS= read -r rel; do
     [[ -z "${rel}" ]] && continue

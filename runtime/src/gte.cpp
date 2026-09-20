@@ -78,100 +78,101 @@ static int32_t gte_divide(uint16_t H, uint16_t SZ3, uint32_t& FLAG) {
 static inline bool gte_instr_lm(uint32_t instr) { return (instr & (1u << 10)) != 0; }
 static inline int  gte_instr_sf(uint32_t instr) { return (instr & (1u << 19)) ? 12 : 0; }
 
+static int64_t gte_mac44_stage(GTEState* gte, int64_t value, int mac_num) {
+    constexpr uint64_t mask = (1ull << 44) - 1ull;
+    constexpr uint64_t sign = 1ull << 43;
+    gte->check_mac_overflow(value, mac_num);
+    uint64_t wrapped = static_cast<uint64_t>(value) & mask;
+    if (wrapped & sign) wrapped |= ~mask;
+    return static_cast<int64_t>(wrapped);
+}
+
+static void gte_store_mac_ir(GTEState* gte, int mac_num, int64_t value,
+                             int shift, bool lm) {
+    value = gte_mac44_stage(gte, value, mac_num) >> shift;
+    int32_t mac = static_cast<int32_t>(value);
+    if (mac_num == 1) { gte->MAC1 = mac; gte->IR1 = gte->saturate_ir(mac, 1, lm); }
+    if (mac_num == 2) { gte->MAC2 = mac; gte->IR2 = gte->saturate_ir(mac, 2, lm); }
+    if (mac_num == 3) { gte->MAC3 = mac; gte->IR3 = gte->saturate_ir(mac, 3, lm); }
+}
+
 // Transform a vertex by Light matrix → IR1/IR2/IR3 (step 1 of lighting)
 static void light_transform(GTEState* gte, int16_t* V, uint32_t instr) {
     const bool lm = gte_instr_lm(instr);
-    int64_t mac1 = ((int64_t)gte->L[0][0] * V[0] +
-                    (int64_t)gte->L[0][1] * V[1] +
-                    (int64_t)gte->L[0][2] * V[2]) >> 12;
-    int64_t mac2 = ((int64_t)gte->L[1][0] * V[0] +
-                    (int64_t)gte->L[1][1] * V[1] +
-                    (int64_t)gte->L[1][2] * V[2]) >> 12;
-    int64_t mac3 = ((int64_t)gte->L[2][0] * V[0] +
-                    (int64_t)gte->L[2][1] * V[1] +
-                    (int64_t)gte->L[2][2] * V[2]) >> 12;
-    gte->MAC1 = static_cast<int32_t>(mac1);
-    gte->MAC2 = static_cast<int32_t>(mac2);
-    gte->MAC3 = static_cast<int32_t>(mac3);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
+    const int shift = gte_instr_sf(instr);
+    for (int row = 0; row < 3; ++row) {
+        int64_t acc = gte_mac44_stage(
+            gte, (int64_t)gte->L[row][0] * V[0] +
+                 (int64_t)gte->L[row][1] * V[1], row + 1);
+        gte_store_mac_ir(gte, row + 1,
+                         acc + (int64_t)gte->L[row][2] * V[2], shift, lm);
+    }
 }
 
 // Apply light color matrix + background color to IR → IR (step 2 of lighting)
 static void light_color(GTEState* gte, uint32_t instr) {
     const bool lm = gte_instr_lm(instr);
-    int64_t mac1 = (int64_t)gte->BK[0] * 4096 +
-                   (int64_t)gte->LC[0][0] * gte->IR1 +
-                   (int64_t)gte->LC[0][1] * gte->IR2 +
-                   (int64_t)gte->LC[0][2] * gte->IR3;
-    int64_t mac2 = (int64_t)gte->BK[1] * 4096 +
-                   (int64_t)gte->LC[1][0] * gte->IR1 +
-                   (int64_t)gte->LC[1][1] * gte->IR2 +
-                   (int64_t)gte->LC[1][2] * gte->IR3;
-    int64_t mac3 = (int64_t)gte->BK[2] * 4096 +
-                   (int64_t)gte->LC[2][0] * gte->IR1 +
-                   (int64_t)gte->LC[2][1] * gte->IR2 +
-                   (int64_t)gte->LC[2][2] * gte->IR3;
-    gte->MAC1 = static_cast<int32_t>(mac1 >> 12);
-    gte->MAC2 = static_cast<int32_t>(mac2 >> 12);
-    gte->MAC3 = static_cast<int32_t>(mac3 >> 12);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
+    const int shift = gte_instr_sf(instr);
+    const int16_t input[3] = {gte->IR1, gte->IR2, gte->IR3};
+    for (int row = 0; row < 3; ++row) {
+        int64_t acc = gte_mac44_stage(
+            gte, (int64_t)gte->BK[row] * 4096 +
+                 (int64_t)gte->LC[row][0] * input[0], row + 1);
+        acc = gte_mac44_stage(
+            gte, acc + (int64_t)gte->LC[row][1] * input[1], row + 1);
+        gte_store_mac_ir(gte, row + 1,
+                         acc + (int64_t)gte->LC[row][2] * input[2], shift, lm);
+    }
 }
 
-// Multiply IR by RGBC color and push to RGB FIFO (step 3 of color output)
-static void color_output(GTEState* gte, uint32_t instr) {
-    const bool lm = gte_instr_lm(instr);
-    uint8_t r0 = (gte->RGBC >> 0)  & 0xFF;
-    uint8_t g0 = (gte->RGBC >> 8)  & 0xFF;
-    uint8_t b0 = (gte->RGBC >> 16) & 0xFF;
-    int64_t mac1 = (int64_t)r0 * gte->IR1 * 16;
-    int64_t mac2 = (int64_t)g0 * gte->IR2 * 16;
-    int64_t mac3 = (int64_t)b0 * gte->IR3 * 16;
-    gte->MAC1 = static_cast<int32_t>(mac1 >> 12);
-    gte->MAC2 = static_cast<int32_t>(mac2 >> 12);
-    gte->MAC3 = static_cast<int32_t>(mac3 >> 12);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
+static void push_rgb_from_mac(GTEState* gte) {
     gte->push_rgb(
         gte->saturate_color(gte->MAC1 >> 4, 0),
         gte->saturate_color(gte->MAC2 >> 4, 1),
         gte->saturate_color(gte->MAC3 >> 4, 2));
 }
 
-// Depth cue / interpolate current IR toward the far color using IR0
-// (common tail of DPCS/DPCT/DPCL/INTPL/NCDS/NCDT/CDP). Hardware:
-//   base    = IR << 12
-//   step    = lim(((FC << 12) - base) >> (sf*12))   ; ±0x8000 clamp, lm FORCED off
-//   MAC     = (base + IR0 * step) >> (sf*12)
-//   IR      = lim(MAC, lm)                          ; lm from the instruction
-static void depth_cue_from_ir(GTEState* gte, uint32_t instr) {
+// Multiply IR by RGBC color (step 3 of NCCS/CC color output).
+static void color_multiply(GTEState* gte, uint32_t instr) {
+    const bool lm = gte_instr_lm(instr);
+    const int shift = gte_instr_sf(instr);
+    uint8_t r0 = (gte->RGBC >> 0)  & 0xFF;
+    uint8_t g0 = (gte->RGBC >> 8)  & 0xFF;
+    uint8_t b0 = (gte->RGBC >> 16) & 0xFF;
+    const int16_t input[3] = {gte->IR1, gte->IR2, gte->IR3};
+    gte_store_mac_ir(gte, 1, (int64_t)r0 * input[0] * 16, shift, lm);
+    gte_store_mac_ir(gte, 2, (int64_t)g0 * input[1] * 16, shift, lm);
+    gte_store_mac_ir(gte, 3, (int64_t)b0 * input[2] * 16, shift, lm);
+}
+
+static void color_output(GTEState* gte, uint32_t instr) {
+    color_multiply(gte, instr);
+    push_rgb_from_mac(gte);
+}
+
+// Interpolate an unshifted MAC input toward far color using IR0. The first
+// stage always uses lm=0; the command's lm applies only to the final result.
+static void depth_cue_from_mac(GTEState* gte, int64_t base1, int64_t base2,
+                               int64_t base3, uint32_t instr) {
     const int  shift = gte_instr_sf(instr);
     const bool lm    = gte_instr_lm(instr);
-    int64_t base1 = (int64_t)gte->IR1 * 4096;
-    int64_t base2 = (int64_t)gte->IR2 * 4096;
-    int64_t base3 = (int64_t)gte->IR3 * 4096;
-    int16_t step1 = gte->saturate_ir(
-        (int32_t)((((int64_t)gte->FC[0] * 4096 - base1) >> shift)), 1, false);
-    int16_t step2 = gte->saturate_ir(
-        (int32_t)((((int64_t)gte->FC[1] * 4096 - base2) >> shift)), 2, false);
-    int16_t step3 = gte->saturate_ir(
-        (int32_t)((((int64_t)gte->FC[2] * 4096 - base3) >> shift)), 3, false);
-    int64_t mac1 = (base1 + (int64_t)gte->IR0 * step1) >> shift;
-    int64_t mac2 = (base2 + (int64_t)gte->IR0 * step2) >> shift;
-    int64_t mac3 = (base3 + (int64_t)gte->IR0 * step3) >> shift;
-    gte->check_mac_overflow(mac1, 1);
-    gte->check_mac_overflow(mac2, 2);
-    gte->check_mac_overflow(mac3, 3);
-    gte->MAC1 = static_cast<int32_t>(mac1);
-    gte->MAC2 = static_cast<int32_t>(mac2);
-    gte->MAC3 = static_cast<int32_t>(mac3);
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
+    gte_store_mac_ir(gte, 1, (int64_t)gte->FC[0] * 4096 - base1, shift, false);
+    gte_store_mac_ir(gte, 2, (int64_t)gte->FC[1] * 4096 - base2, shift, false);
+    gte_store_mac_ir(gte, 3, (int64_t)gte->FC[2] * 4096 - base3, shift, false);
+    const int16_t step1 = gte->IR1;
+    const int16_t step2 = gte->IR2;
+    const int16_t step3 = gte->IR3;
+    gte_store_mac_ir(gte, 1, base1 + (int64_t)gte->IR0 * step1, shift, lm);
+    gte_store_mac_ir(gte, 2, base2 + (int64_t)gte->IR0 * step2, shift, lm);
+    gte_store_mac_ir(gte, 3, base3 + (int64_t)gte->IR0 * step3, shift, lm);
+}
+
+static void depth_cue_from_ir(GTEState* gte, uint32_t instr) {
+    depth_cue_from_mac(gte,
+                       (int64_t)gte->IR1 * 4096,
+                       (int64_t)gte->IR2 * 4096,
+                       (int64_t)gte->IR3 * 4096,
+                       instr);
 }
 
 // ---------------------------------------------------------------------------
@@ -805,23 +806,22 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     const bool lm    = gte_instr_lm(instr);
 
     // Step 1: Matrix multiplication + translation
-    int64_t mac1 = (int64_t)gte->TR[0] * 4096 +
-                   (int64_t)gte->RT[0][0] * V[0] +
-                   (int64_t)gte->RT[0][1] * V[1] +
-                   (int64_t)gte->RT[0][2] * V[2];
-    int64_t mac2 = (int64_t)gte->TR[1] * 4096 +
-                   (int64_t)gte->RT[1][0] * V[0] +
-                   (int64_t)gte->RT[1][1] * V[1] +
-                   (int64_t)gte->RT[1][2] * V[2];
-    int64_t mac3 = (int64_t)gte->TR[2] * 4096 +
-                   (int64_t)gte->RT[2][0] * V[0] +
-                   (int64_t)gte->RT[2][1] * V[1] +
-                   (int64_t)gte->RT[2][2] * V[2];
+    auto dot = [&](int row, int mac_num) {
+        int64_t acc = (int64_t)gte->TR[row] * 4096 +
+                      (int64_t)gte->RT[row][0] * V[0];
+        acc = gte_mac44_stage(gte, acc, mac_num);
+        acc += (int64_t)gte->RT[row][1] * V[1];
+        acc = gte_mac44_stage(gte, acc, mac_num);
+        return acc + (int64_t)gte->RT[row][2] * V[2];
+    };
+    int64_t mac1 = dot(0, 1);
+    int64_t mac2 = dot(1, 2);
+    int64_t mac3 = dot(2, 3);
 
-    // Overflow flags always check the >>12 view (hardware).
-    gte->check_mac_overflow(mac1 >> 12, 1);
-    gte->check_mac_overflow(mac2 >> 12, 2);
-    gte->check_mac_overflow(mac3 >> 12, 3);
+    // MAC1..3 overflow flags observe the unshifted 44-bit accumulator.
+    gte->check_mac_overflow(mac1, 1);
+    gte->check_mac_overflow(mac2, 2);
+    gte->check_mac_overflow(mac3, 3);
     gte->MAC1 = static_cast<int32_t>(mac1 >> shift);
     gte->MAC2 = static_cast<int32_t>(mac2 >> shift);
     gte->MAC3 = static_cast<int32_t>(mac3 >> shift);
@@ -888,6 +888,10 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     dome_probe_note(gte->SZ[3]);   /* locate the dome draw fn (far-vertex tally) */
     int64_t sx16 = gte->OFX + xterm;
     int64_t sy16 = gte->OFY + (int64_t)gte->IR2 * h_div_sz;
+    /* RTPS/RTPT reuse MAC0's overflow flags for each projected X/Y
+     * accumulator before MAC0 is replaced by the depth-cue result. */
+    gte->check_mac0_overflow(sx16);
+    gte->check_mac0_overflow(sy16);
     int64_t sx = sx16 >> 16;
     int64_t sy = sy16 >> 16;
     gte->push_sxy(sx, sy);
@@ -1055,8 +1059,15 @@ void gte_ncct(GTEState* gte, uint32_t instr) {
 void gte_ncds_internal(GTEState* gte, int16_t* V, uint32_t instr) {
     light_transform(gte, V, instr);
     light_color(gte, instr);
-    depth_cue_from_ir(gte, instr);
-    color_output(gte, instr);
+    const uint8_t r = (gte->RGBC >> 0) & 0xFF;
+    const uint8_t g = (gte->RGBC >> 8) & 0xFF;
+    const uint8_t b = (gte->RGBC >> 16) & 0xFF;
+    depth_cue_from_mac(gte,
+                       (int64_t)r * gte->IR1 * 16,
+                       (int64_t)g * gte->IR2 * 16,
+                       (int64_t)b * gte->IR3 * 16,
+                       instr);
+    push_rgb_from_mac(gte);
 }
 
 void gte_ncds(GTEState* gte, uint32_t instr) {
@@ -1114,17 +1125,9 @@ void gte_dpcs(GTEState* gte, uint32_t instr) {
     uint8_t r = (gte->RGBC >> 0)  & 0xFF;
     uint8_t g = (gte->RGBC >> 8)  & 0xFF;
     uint8_t b = (gte->RGBC >> 16) & 0xFF;
-    // MAC = RGBC << 4
-    gte->IR1 = gte->saturate_ir(r << 4, 1, false);
-    gte->IR2 = gte->saturate_ir(g << 4, 2, false);
-    gte->IR3 = gte->saturate_ir(b << 4, 3, false);
-    // Interpolate toward far color using IR0
-    depth_cue_from_ir(gte, instr);
-    // Output
-    gte->push_rgb(
-        gte->saturate_color(gte->MAC1 >> 4, 0),
-        gte->saturate_color(gte->MAC2 >> 4, 1),
-        gte->saturate_color(gte->MAC3 >> 4, 2));
+    depth_cue_from_mac(gte, (int64_t)r << 16, (int64_t)g << 16,
+                       (int64_t)b << 16, instr);
+    push_rgb_from_mac(gte);
     gte->set_error_flag();
 }
 
@@ -1137,14 +1140,9 @@ void gte_dpct(GTEState* gte, uint32_t instr) {
         uint8_t r = (gte->RGB[0] >> 0)  & 0xFF;
         uint8_t g = (gte->RGB[0] >> 8)  & 0xFF;
         uint8_t b = (gte->RGB[0] >> 16) & 0xFF;
-        gte->IR1 = gte->saturate_ir(r << 4, 1, false);
-        gte->IR2 = gte->saturate_ir(g << 4, 2, false);
-        gte->IR3 = gte->saturate_ir(b << 4, 3, false);
-        depth_cue_from_ir(gte, instr);
-        gte->push_rgb(
-            gte->saturate_color(gte->MAC1 >> 4, 0),
-            gte->saturate_color(gte->MAC2 >> 4, 1),
-            gte->saturate_color(gte->MAC3 >> 4, 2));
+        depth_cue_from_mac(gte, (int64_t)r << 16, (int64_t)g << 16,
+                           (int64_t)b << 16, instr);
+        push_rgb_from_mac(gte);
     }
     gte->set_error_flag();
 }
@@ -1158,18 +1156,12 @@ void gte_dpcl(GTEState* gte, uint32_t instr) {
     uint8_t r = (gte->RGBC >> 0)  & 0xFF;
     uint8_t g = (gte->RGBC >> 8)  & 0xFF;
     uint8_t b = (gte->RGBC >> 16) & 0xFF;
-    gte->MAC1 = (r * gte->IR1) >> 8;
-    gte->MAC2 = (g * gte->IR2) >> 8;
-    gte->MAC3 = (b * gte->IR3) >> 8;
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, gte_instr_lm(instr));
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, gte_instr_lm(instr));
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, gte_instr_lm(instr));
-    // Depth cue toward far color
-    depth_cue_from_ir(gte, instr);
-    gte->push_rgb(
-        gte->saturate_color(gte->MAC1 >> 4, 0),
-        gte->saturate_color(gte->MAC2 >> 4, 1),
-        gte->saturate_color(gte->MAC3 >> 4, 2));
+    depth_cue_from_mac(gte,
+                       (int64_t)r * gte->IR1 * 16,
+                       (int64_t)g * gte->IR2 * 16,
+                       (int64_t)b * gte->IR3 * 16,
+                       instr);
+    push_rgb_from_mac(gte);
     gte->set_error_flag();
 }
 
@@ -1179,10 +1171,7 @@ void gte_dpcl(GTEState* gte, uint32_t instr) {
 void gte_intpl(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
     depth_cue_from_ir(gte, instr);
-    gte->push_rgb(
-        gte->saturate_color(gte->MAC1 >> 4, 0),
-        gte->saturate_color(gte->MAC2 >> 4, 1),
-        gte->saturate_color(gte->MAC3 >> 4, 2));
+    push_rgb_from_mac(gte);
     gte->set_error_flag();
 }
 
@@ -1193,8 +1182,15 @@ void gte_cdp(GTEState* gte, uint32_t instr) {
     gte->FLAG = 0;
     // IR1/IR2/IR3 already set (from previous NCS or similar)
     light_color(gte, instr);
-    depth_cue_from_ir(gte, instr);
-    color_output(gte, instr);
+    const uint8_t r = (gte->RGBC >> 0) & 0xFF;
+    const uint8_t g = (gte->RGBC >> 8) & 0xFF;
+    const uint8_t b = (gte->RGBC >> 16) & 0xFF;
+    depth_cue_from_mac(gte,
+                       (int64_t)r * gte->IR1 * 16,
+                       (int64_t)g * gte->IR2 * 16,
+                       (int64_t)b * gte->IR3 * 16,
+                       instr);
+    push_rgb_from_mac(gte);
     gte->set_error_flag();
 }
 
@@ -1217,7 +1213,8 @@ void gte_mvmva(GTEState* gte, uint32_t instr) {
     uint32_t mx = (instr >> 17) & 3;  // Matrix: 0=RT, 1=Light, 2=LightColor, 3=reserved
     uint32_t vv = (instr >> 15) & 3;  // Vector: 0=V0, 1=V1, 2=V2, 3=IR
     uint32_t tv = (instr >> 13) & 3;  // Translation: 0=TR, 1=BK, 2=FC/bugged, 3=none
-    int sf = (instr >> 19) & 1;        // Shift: 0=no shift, 1=shift right 12
+    const int shift = gte_instr_sf(instr);
+    const bool lm = gte_instr_lm(instr);
 
     // Select matrix
     int16_t M[3][3];
@@ -1225,7 +1222,18 @@ void gte_mvmva(GTEState* gte, uint32_t instr) {
         case 0: std::memcpy(M, gte->RT, sizeof(M)); break;
         case 1: std::memcpy(M, gte->L, sizeof(M)); break;
         case 2: std::memcpy(M, gte->LC, sizeof(M)); break;
-        default: std::memset(M, 0, sizeof(M)); break; // Garbage on real HW
+        default: {
+            /* Undocumented matrix selector wiring, verified by hardware
+             * register vectors (also used by Beetle/DuckStation). */
+            const int16_t color = static_cast<int16_t>(
+                static_cast<uint16_t>(gte->RGBC & 0xFFu) << 4);
+            M[0][0] = static_cast<int16_t>(-color);
+            M[0][1] = color;
+            M[0][2] = gte->IR0;
+            M[1][0] = M[1][1] = M[1][2] = gte->RT[0][2];
+            M[2][0] = M[2][1] = M[2][2] = gte->RT[1][1];
+            break;
+        }
     }
 
     // Select vector
@@ -1246,27 +1254,38 @@ void gte_mvmva(GTEState* gte, uint32_t instr) {
         case 3: T[0] = 0; T[1] = 0; T[2] = 0; break;
     }
 
-    // Multiply
-    int64_t mac1 = T[0] + (int64_t)M[0][0] * V[0] + (int64_t)M[0][1] * V[1] + (int64_t)M[0][2] * V[2];
-    int64_t mac2 = T[1] + (int64_t)M[1][0] * V[0] + (int64_t)M[1][1] * V[1] + (int64_t)M[1][2] * V[2];
-    int64_t mac3 = T[2] + (int64_t)M[2][0] * V[0] + (int64_t)M[2][1] * V[1] + (int64_t)M[2][2] * V[2];
+    auto set_mac_ir = [&](int row, int64_t value) {
+        const int mac_num = row + 1;
+        value = gte_mac44_stage(gte, value, mac_num) >> shift;
+        int32_t mac = static_cast<int32_t>(value);
+        if (row == 0) { gte->MAC1 = mac; gte->IR1 = gte->saturate_ir(mac, 1, lm); }
+        if (row == 1) { gte->MAC2 = mac; gte->IR2 = gte->saturate_ir(mac, 2, lm); }
+        if (row == 2) { gte->MAC3 = mac; gte->IR3 = gte->saturate_ir(mac, 3, lm); }
+    };
 
-    if (sf) {
-        mac1 >>= 12; mac2 >>= 12; mac3 >>= 12;
+    for (int row = 0; row < 3; ++row) {
+        const int mac_num = row + 1;
+        if (tv == 2) {
+            /* Hardware's FC translation selector is wired incorrectly: its
+             * translation+X term only feeds a temporary IR saturation, then
+             * MAC/IR are replaced by the Y/Z dot product. */
+            int64_t first = gte_mac44_stage(
+                gte, T[row] + (int64_t)M[row][0] * V[0], mac_num);
+            int32_t temporary = static_cast<int32_t>(first >> shift);
+            if (row == 0) gte->IR1 = gte->saturate_ir(temporary, 1, false);
+            if (row == 1) gte->IR2 = gte->saturate_ir(temporary, 2, false);
+            if (row == 2) gte->IR3 = gte->saturate_ir(temporary, 3, false);
+            int64_t tail = gte_mac44_stage(
+                gte, (int64_t)M[row][1] * V[1], mac_num);
+            set_mac_ir(row, tail + (int64_t)M[row][2] * V[2]);
+        } else {
+            int64_t acc = gte_mac44_stage(
+                gte, T[row] + (int64_t)M[row][0] * V[0], mac_num);
+            acc = gte_mac44_stage(
+                gte, acc + (int64_t)M[row][1] * V[1], mac_num);
+            set_mac_ir(row, acc + (int64_t)M[row][2] * V[2]);
+        }
     }
-
-    gte->check_mac_overflow(mac1, 1);
-    gte->check_mac_overflow(mac2, 2);
-    gte->check_mac_overflow(mac3, 3);
-
-    gte->MAC1 = static_cast<int32_t>(mac1);
-    gte->MAC2 = static_cast<int32_t>(mac2);
-    gte->MAC3 = static_cast<int32_t>(mac3);
-
-    bool lm = (instr >> 10) & 1;
-    gte->IR1 = gte->saturate_ir(gte->MAC1, 1, lm);
-    gte->IR2 = gte->saturate_ir(gte->MAC2, 2, lm);
-    gte->IR3 = gte->saturate_ir(gte->MAC3, 3, lm);
 
     gte->set_error_flag();
 }
@@ -1415,7 +1434,7 @@ void gte_mtc2(GTEState* gte, uint8_t reg, uint32_t value) {
         case 20: gte->RGB[0] = value; break;
         case 21: gte->RGB[1] = value; break;
         case 22: gte->RGB[2] = value; break;
-        case 23: break; // RES1 reserved
+        case 23: gte->RES1 = value; break;
         case 24: gte->MAC0 = value; break;
         case 25: gte->MAC1 = value; break;
         case 26: gte->MAC2 = value; break;
@@ -1448,11 +1467,11 @@ void gte_mtc2(GTEState* gte, uint8_t reg, uint32_t value) {
 uint32_t gte_mfc2(GTEState* gte, uint8_t reg) {
     switch (reg) {
         case 0:  return (static_cast<uint16_t>(gte->V0[1]) << 16) | static_cast<uint16_t>(gte->V0[0]);
-        case 1:  return static_cast<uint16_t>(gte->V0[2]);
+        case 1:  return static_cast<uint32_t>(static_cast<int32_t>(gte->V0[2]));
         case 2:  return (static_cast<uint16_t>(gte->V1[1]) << 16) | static_cast<uint16_t>(gte->V1[0]);
-        case 3:  return static_cast<uint16_t>(gte->V1[2]);
+        case 3:  return static_cast<uint32_t>(static_cast<int32_t>(gte->V1[2]));
         case 4:  return (static_cast<uint16_t>(gte->V2[1]) << 16) | static_cast<uint16_t>(gte->V2[0]);
-        case 5:  return static_cast<uint16_t>(gte->V2[2]);
+        case 5:  return static_cast<uint32_t>(static_cast<int32_t>(gte->V2[2]));
         case 6:  return gte->RGBC;
         case 7:  return gte->OTZ;
         case 8:  return static_cast<int32_t>(gte->IR0);  // sign-extend
@@ -1470,7 +1489,7 @@ uint32_t gte_mfc2(GTEState* gte, uint8_t reg) {
         case 20: return gte->RGB[0];
         case 21: return gte->RGB[1];
         case 22: return gte->RGB[2];
-        case 23: return 0; // RES1
+        case 23: return gte->RES1;
         case 24: return gte->MAC0;
         case 25: return gte->MAC1;
         case 26: return gte->MAC2;
@@ -1523,7 +1542,10 @@ void gte_ctc2(GTEState* gte, uint8_t reg, uint32_t value) {
         case 28: gte->DQB = value; break;
         case 29: gte->ZSF3 = static_cast<int16_t>(value & 0xFFFF); break;
         case 30: gte->ZSF4 = static_cast<int16_t>(value & 0xFFFF); break;
-        case 31: gte->FLAG = value & 0x7FFFF000u; break;
+        case 31:
+            gte->FLAG = value & 0x7FFFF000u;
+            gte->set_error_flag();
+            break;
         default: break;
     }
 }
@@ -1537,7 +1559,7 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
         case 1:  return (static_cast<uint16_t>(gte->RT[1][0]) << 16) | static_cast<uint16_t>(gte->RT[0][2]);
         case 2:  return (static_cast<uint16_t>(gte->RT[1][2]) << 16) | static_cast<uint16_t>(gte->RT[1][1]);
         case 3:  return (static_cast<uint16_t>(gte->RT[2][1]) << 16) | static_cast<uint16_t>(gte->RT[2][0]);
-        case 4:  return static_cast<uint16_t>(gte->RT[2][2]);
+        case 4:  return static_cast<uint32_t>(static_cast<int32_t>(gte->RT[2][2]));
         case 5:  return gte->TR[0];
         case 6:  return gte->TR[1];
         case 7:  return gte->TR[2];
@@ -1545,7 +1567,7 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
         case 9:  return (static_cast<uint16_t>(gte->L[1][0]) << 16) | static_cast<uint16_t>(gte->L[0][2]);
         case 10: return (static_cast<uint16_t>(gte->L[1][2]) << 16) | static_cast<uint16_t>(gte->L[1][1]);
         case 11: return (static_cast<uint16_t>(gte->L[2][1]) << 16) | static_cast<uint16_t>(gte->L[2][0]);
-        case 12: return static_cast<uint16_t>(gte->L[2][2]);
+        case 12: return static_cast<uint32_t>(static_cast<int32_t>(gte->L[2][2]));
         case 13: return gte->BK[0];
         case 14: return gte->BK[1];
         case 15: return gte->BK[2];
@@ -1553,13 +1575,14 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
         case 17: return (static_cast<uint16_t>(gte->LC[1][0]) << 16) | static_cast<uint16_t>(gte->LC[0][2]);
         case 18: return (static_cast<uint16_t>(gte->LC[1][2]) << 16) | static_cast<uint16_t>(gte->LC[1][1]);
         case 19: return (static_cast<uint16_t>(gte->LC[2][1]) << 16) | static_cast<uint16_t>(gte->LC[2][0]);
-        case 20: return static_cast<uint16_t>(gte->LC[2][2]);
+        case 20: return static_cast<uint32_t>(static_cast<int32_t>(gte->LC[2][2]));
         case 21: return gte->FC[0];
         case 22: return gte->FC[1];
         case 23: return gte->FC[2];
         case 24: return gte->OFX;
         case 25: return gte->OFY;
-        case 26: return gte->H;
+        case 26: return static_cast<uint32_t>(static_cast<int32_t>(
+                            static_cast<int16_t>(gte->H)));
         case 27: return static_cast<int32_t>(gte->DQA); // sign-extend
         case 28: return gte->DQB;
         case 29: return static_cast<int32_t>(gte->ZSF3);
@@ -1634,6 +1657,7 @@ static void gte_import_cpu_state(PSXRecomp::GTE::GTEState* gte,
     gte->SXY[3] = static_cast<int32_t>(d[14]);
     for (int i = 0; i < 4; ++i) gte->SZ[i] = static_cast<uint16_t>(d[16 + i]);
     for (int i = 0; i < 3; ++i) gte->RGB[i] = d[20 + i];
+    gte->RES1 = d[23];
     gte->MAC0 = static_cast<int32_t>(d[24]);
     gte->MAC1 = static_cast<int32_t>(d[25]);
     gte->MAC2 = static_cast<int32_t>(d[26]);
@@ -1700,11 +1724,11 @@ static void gte_export_cpu_state(CPUState* cpu,
     uint32_t* c = cpu->gte_ctrl;
 
     d[0] = gte_pack_s16_pair(gte->V0[0], gte->V0[1]);
-    d[1] = static_cast<uint16_t>(gte->V0[2]);
+    d[1] = static_cast<uint32_t>(static_cast<int32_t>(gte->V0[2]));
     d[2] = gte_pack_s16_pair(gte->V1[0], gte->V1[1]);
-    d[3] = static_cast<uint16_t>(gte->V1[2]);
+    d[3] = static_cast<uint32_t>(static_cast<int32_t>(gte->V1[2]));
     d[4] = gte_pack_s16_pair(gte->V2[0], gte->V2[1]);
-    d[5] = static_cast<uint16_t>(gte->V2[2]);
+    d[5] = static_cast<uint32_t>(static_cast<int32_t>(gte->V2[2]));
     d[6] = gte->RGBC;
     d[7] = gte->OTZ;
     d[8] = static_cast<uint32_t>(static_cast<int32_t>(gte->IR0));
@@ -1717,7 +1741,7 @@ static void gte_export_cpu_state(CPUState* cpu,
     d[15] = static_cast<uint32_t>(gte->SXY[3]);
     for (int i = 0; i < 4; ++i) d[16 + i] = gte->SZ[i];
     for (int i = 0; i < 3; ++i) d[20 + i] = gte->RGB[i];
-    d[23] = 0;
+    d[23] = gte->RES1;
     d[24] = static_cast<uint32_t>(gte->MAC0);
     d[25] = static_cast<uint32_t>(gte->MAC1);
     d[26] = static_cast<uint32_t>(gte->MAC2);
@@ -1730,23 +1754,24 @@ static void gte_export_cpu_state(CPUState* cpu,
     c[1] = gte_pack_s16_pair(gte->RT[0][2], gte->RT[1][0]);
     c[2] = gte_pack_s16_pair(gte->RT[1][1], gte->RT[1][2]);
     c[3] = gte_pack_s16_pair(gte->RT[2][0], gte->RT[2][1]);
-    c[4] = static_cast<uint16_t>(gte->RT[2][2]);
+    c[4] = static_cast<uint32_t>(static_cast<int32_t>(gte->RT[2][2]));
     for (int i = 0; i < 3; ++i) c[5 + i] = static_cast<uint32_t>(gte->TR[i]);
     c[8] = gte_pack_s16_pair(gte->L[0][0], gte->L[0][1]);
     c[9] = gte_pack_s16_pair(gte->L[0][2], gte->L[1][0]);
     c[10] = gte_pack_s16_pair(gte->L[1][1], gte->L[1][2]);
     c[11] = gte_pack_s16_pair(gte->L[2][0], gte->L[2][1]);
-    c[12] = static_cast<uint16_t>(gte->L[2][2]);
+    c[12] = static_cast<uint32_t>(static_cast<int32_t>(gte->L[2][2]));
     for (int i = 0; i < 3; ++i) c[13 + i] = static_cast<uint32_t>(gte->BK[i]);
     c[16] = gte_pack_s16_pair(gte->LC[0][0], gte->LC[0][1]);
     c[17] = gte_pack_s16_pair(gte->LC[0][2], gte->LC[1][0]);
     c[18] = gte_pack_s16_pair(gte->LC[1][1], gte->LC[1][2]);
     c[19] = gte_pack_s16_pair(gte->LC[2][0], gte->LC[2][1]);
-    c[20] = static_cast<uint16_t>(gte->LC[2][2]);
+    c[20] = static_cast<uint32_t>(static_cast<int32_t>(gte->LC[2][2]));
     for (int i = 0; i < 3; ++i) c[21 + i] = static_cast<uint32_t>(gte->FC[i]);
     c[24] = static_cast<uint32_t>(gte->OFX);
     c[25] = static_cast<uint32_t>(gte->OFY);
-    c[26] = gte->H;
+    c[26] = static_cast<uint32_t>(static_cast<int32_t>(
+        static_cast<int16_t>(gte->H)));
     c[27] = static_cast<uint32_t>(static_cast<int32_t>(gte->DQA));
     c[28] = static_cast<uint32_t>(gte->DQB);
     c[29] = static_cast<uint32_t>(static_cast<int32_t>(gte->ZSF3));
@@ -1982,20 +2007,17 @@ static uint32_t gte_sign_extend_16(uint32_t value) {
  * invalidate host precision caches: it is also the compatibility boundary for
  * committed AOT C emitted before all masked/aliased writes used helpers. */
 static void gte_cpu_canonicalize_backing(CPUState* cpu) {
-    static const uint8_t data_u16[] = {1, 3, 5, 7, 16, 17, 18, 19};
-    static const uint8_t data_s16[] = {8, 9, 10, 11};
-    static const uint8_t ctrl_u16[] = {4, 12, 20, 26};
-    static const uint8_t ctrl_s16[] = {27, 29, 30};
+    static const uint8_t data_u16[] = {7, 16, 17, 18, 19};
+    static const uint8_t data_s16[] = {1, 3, 5, 8, 9, 10, 11};
+    static const uint8_t ctrl_s16[] = {4, 12, 20, 26, 27, 29, 30};
 
     for (uint8_t reg : data_u16) cpu->gte_data[reg] &= 0xFFFFu;
     for (uint8_t reg : data_s16)
         cpu->gte_data[reg] = gte_sign_extend_16(cpu->gte_data[reg]);
     cpu->gte_data[15] = cpu->gte_data[14];
-    cpu->gte_data[23] = 0;
     cpu->gte_data[28] = cpu->gte_data[29] = gte_cpu_pack_irgb(cpu);
     cpu->gte_data[31] = gte_cpu_lzcr(cpu->gte_data[30]);
 
-    for (uint8_t reg : ctrl_u16) cpu->gte_ctrl[reg] &= 0xFFFFu;
     for (uint8_t reg : ctrl_s16)
         cpu->gte_ctrl[reg] = gte_sign_extend_16(cpu->gte_ctrl[reg]);
 }
@@ -2003,15 +2025,12 @@ static void gte_cpu_canonicalize_backing(CPUState* cpu) {
 extern "C" uint32_t gte_read_data(CPUState* cpu, uint8_t reg) {
     if (reg >= 32) return 0;
     switch (reg) {
-        case 1: case 3: case 5: case 7:
-        case 16: case 17: case 18: case 19:
+        case 7: case 16: case 17: case 18: case 19:
             return cpu->gte_data[reg] & 0xFFFFu;
-        case 8: case 9: case 10: case 11:
+        case 1: case 3: case 5: case 8: case 9: case 10: case 11:
             return gte_sign_extend_16(cpu->gte_data[reg]);
         case 15:
             return cpu->gte_data[14];
-        case 23:
-            return 0;
         case 28: case 29:
             return gte_cpu_pack_irgb(cpu);
         case 31:
@@ -2024,9 +2043,7 @@ extern "C" uint32_t gte_read_data(CPUState* cpu, uint8_t reg) {
 extern "C" uint32_t gte_read_ctrl(CPUState* cpu, uint8_t reg) {
     if (reg >= 32) return 0;
     switch (reg) {
-        case 4: case 12: case 20: case 26:
-            return cpu->gte_ctrl[reg] & 0xFFFFu;
-        case 27: case 29: case 30:
+        case 4: case 12: case 20: case 26: case 27: case 29: case 30:
             return gte_sign_extend_16(cpu->gte_ctrl[reg]);
         default:
             return cpu->gte_ctrl[reg];
@@ -2037,11 +2054,10 @@ extern "C" void gte_write_data(CPUState* cpu, uint8_t reg, uint32_t val) {
     if (reg >= 32) return;
     gte_cpu_canonicalize_backing(cpu);
     switch (reg) {
-        case 1: case 3: case 5: case 7:
-        case 16: case 17: case 18: case 19:
+        case 7: case 16: case 17: case 18: case 19:
             cpu->gte_data[reg] = val & 0xFFFFu;
             break;
-        case 8: case 9: case 10: case 11:
+        case 1: case 3: case 5: case 8: case 9: case 10: case 11:
             cpu->gte_data[reg] = gte_sign_extend_16(val);
             if (reg >= 9) {
                 const uint32_t packed = gte_cpu_pack_irgb(cpu);
@@ -2076,9 +2092,6 @@ extern "C" void gte_write_data(CPUState* cpu, uint8_t reg, uint32_t val) {
                 pgxp_gte_reg_written(15, val);
             }
             break;
-        case 23:
-            cpu->gte_data[23] = 0;
-            break;
         case 28: {
             cpu->gte_data[9] = (val & 0x1Fu) << 7;
             cpu->gte_data[10] = ((val >> 5) & 0x1Fu) << 7;
@@ -2111,14 +2124,13 @@ extern "C" void gte_write_ctrl(CPUState* cpu, uint8_t reg, uint32_t val) {
     if (reg >= 32) return;
     gte_cpu_canonicalize_backing(cpu);
     switch (reg) {
-        case 4: case 12: case 20: case 26:
-            cpu->gte_ctrl[reg] = val & 0xFFFFu;
-            break;
-        case 27: case 29: case 30:
+        case 4: case 12: case 20: case 26: case 27: case 29: case 30:
             cpu->gte_ctrl[reg] = gte_sign_extend_16(val);
             break;
         case 31:
             cpu->gte_ctrl[31] = val & 0x7FFFF000u;
+            if (cpu->gte_ctrl[31] & PSXRecomp::GTE::FLAG_ERROR_MASK)
+                cpu->gte_ctrl[31] |= PSXRecomp::GTE::FLAG_ERROR_BIT;
             break;
         default:
             cpu->gte_ctrl[reg] = val;

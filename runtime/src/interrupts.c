@@ -1294,12 +1294,6 @@ void psx_check_interrupts(CPUState* cpu) {
      * waiting for it to re-appear.  If we tick here, the IRQ fires
      * during the delay loop BEFORE the clear, and the BIOS never
      * sees it. */
-    /* Ape LOAD: libcard may poll nest/busy in RAM with no SIO MMIO, so
-     * sio_tick never runs. Throttled nest-repair pump only. */
-    if ((total_checks & 0xFFu) == 0) {
-        extern void sio_ape_card_unstick_pump(void);
-        sio_ape_card_unstick_pump();
-    }
 
     interrupts_service_scheduled_events();
 

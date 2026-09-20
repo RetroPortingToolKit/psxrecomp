@@ -2063,11 +2063,17 @@ void FullFunctionEmitter::emit_dispatch(
             rom.size(), crc, wsum, bios_sha256, id, bundled);
     }
     // --- Runtime-installed BIOS call-vector stubs ---
-    // Every retail PSX BIOS installs the A0/B0/C0 ABI gates as the same
-    // four-instruction shape: lui/addiu $t0,target; jr $t0; nop. The target is
-    // BIOS-specific, so decode it from live RAM and require the complete shape
-    // before taking the native tail transfer. A game/BIOS patch that changes
-    // even one word fails closed to dirty_ram_interp below.
+    // Every PSX BIOS installs the A0/B0/C0 ABI gates as a 16-byte stub that
+    // loads the handler address into $t0 and jumps through it. Two shapes are
+    // in the wild:
+    //   A (retail SCPH-xxxx): lui $t0,hi; addiu $t0,$t0,lo; jr $t0; nop
+    //   B (OpenBIOS):         addiu $t0,$zero,lo; jr $t0; nop; nop
+    // The target is BIOS-specific, so decode it from live RAM and require one
+    // complete shape before taking the native tail transfer. A game/BIOS patch
+    // that changes even one word fails closed to dirty_ram_interp below. The
+    // cycle steps charge exactly the instructions the guest executes on that
+    // shape (shape B's fourth word is never reached: the jr's delay slot is
+    // word 2).
     out += fmt::format("static const PsxNativeStub {}psx_bios_native_stubs[3] = {{\n",
                        g_sym_prefix);
     out += "    { 0x000000A0u, 0x000000A0u, 0x000000B0u },\n";
@@ -2084,23 +2090,42 @@ void FullFunctionEmitter::emit_dispatch(
     out += "    uint32_t w1 = cpu->read_word(phys + 4u);\n";
     out += "    uint32_t w2 = cpu->read_word(phys + 8u);\n";
     out += "    uint32_t w3 = cpu->read_word(phys + 12u);\n";
-    out += "    if ((w0 & 0xFFFF0000u) != 0x3C080000u ||\n";
-    out += "        (w1 & 0xFFFF0000u) != 0x25080000u ||\n";
-    out += "        w2 != 0x01000008u || w3 != 0u) return 0;\n";
+    out += "    uint32_t target;\n";
+    out += "    if ((w0 & 0xFFFF0000u) == 0x3C080000u &&\n";
+    out += "        (w1 & 0xFFFF0000u) == 0x25080000u &&\n";
+    out += "        w2 == 0x01000008u && w3 == 0u) {\n";
+    out += "        /* shape A: lui $t0,hi; addiu $t0,$t0,lo; jr $t0; nop */\n";
+    out += "        target = ((w0 & 0xFFFFu) << 16) +\n";
+    out += "                 (uint32_t)(int32_t)(int16_t)(w1 & 0xFFFFu);\n";
     out += "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
-    out += "    psx_icache_fetch(cpu, addr);\n";
-    out += fmt::format("    psx_cyc_step(cpu, 0x{:X}u);\n",
+    out += "        psx_icache_fetch(cpu, addr);\n";
+    out += fmt::format("        psx_cyc_step(cpu, 0x{:X}u);\n",
                        psx_cyc_dep_res_mask(0x3C080000u));
-    out += fmt::format("    psx_cyc_step(cpu, 0x{:X}u);\n",
+    out += fmt::format("        psx_cyc_step(cpu, 0x{:X}u);\n",
                        psx_cyc_dep_res_mask(0x25080000u));
-    out += fmt::format("    psx_cyc_step(cpu, 0x{:X}u);\n",
+    out += fmt::format("        psx_cyc_step(cpu, 0x{:X}u);\n",
                        psx_cyc_dep_res_mask(0x01000008u));
-    out += fmt::format("    psx_cyc_step(cpu, 0x{:X}u);\n",
+    out += fmt::format("        psx_cyc_step(cpu, 0x{:X}u);\n",
                        psx_cyc_dep_res_mask(0x00000000u));
     out += "#endif\n";
-    out += "    cpu->gpr[8] = ((w0 & 0xFFFFu) << 16) +\n";
-    out += "                  (uint32_t)(int32_t)(int16_t)(w1 & 0xFFFFu);\n";
-    out += "    cpu->pc = cpu->gpr[8];\n";
+    out += "    } else if ((w0 & 0xFFFF0000u) == 0x24080000u &&\n";
+    out += "               w1 == 0x01000008u && w2 == 0u && w3 == 0u) {\n";
+    out += "        /* shape B: addiu $t0,$zero,lo; jr $t0; nop; nop */\n";
+    out += "        target = (uint32_t)(int32_t)(int16_t)(w0 & 0xFFFFu);\n";
+    out += "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
+    out += "        psx_icache_fetch(cpu, addr);\n";
+    out += fmt::format("        psx_cyc_step(cpu, 0x{:X}u);\n",
+                       psx_cyc_dep_res_mask(0x24080000u));
+    out += fmt::format("        psx_cyc_step(cpu, 0x{:X}u);\n",
+                       psx_cyc_dep_res_mask(0x01000008u));
+    out += fmt::format("        psx_cyc_step(cpu, 0x{:X}u);\n",
+                       psx_cyc_dep_res_mask(0x00000000u));
+    out += "#endif\n";
+    out += "    } else {\n";
+    out += "        return 0;\n";
+    out += "    }\n";
+    out += "    cpu->gpr[8] = target;\n";
+    out += "    cpu->pc = target;\n";
     out += "    return 1;\n";
     out += "}\n\n";
 

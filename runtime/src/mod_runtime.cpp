@@ -44,6 +44,9 @@ extern "C" uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment);
 extern "C" uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t size,
                                                   uint32_t alignment);
 extern "C" int psx_ws_x_margin(void);
+extern "C" void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge);
+extern "C" void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world);
+extern "C" void gpu_ws_set_adaptive_backdrop_preload(int enabled);
 extern "C" void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len);
 extern "C" int fntrace_is_game_started(void);
 
@@ -1294,6 +1297,43 @@ extern "C" void mod_runtime_enable_disc_patches(void) {
     PSXRecompV4::state().disc_enabled = true;
 }
 
+extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
+                                      uint32_t capacity, uint32_t* size) {
+    using namespace PSXRecompV4;
+    if (size) *size = 0;
+    if (!path || !*path || !size || (!buffer && capacity)) return 0;
+    try {
+        const auto& s = state();
+        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        if (mount.empty()) return 0;
+        PS1::ISOReader reader;
+        PS1::ISOFileEntry entry;
+        if (!reader.Open(mount.string()) || !reader.FindFile(path, entry) ||
+            entry.is_directory || !entry.size || entry.size > 64u * 1024u * 1024u)
+            return 0;
+        if (!buffer) { *size = entry.size; return 1; }
+        if (capacity < entry.size) return 0;
+        uint8_t sector[2048], raw[2352];
+        for (uint32_t offset = 0; offset < entry.size; offset += 2048u) {
+            const uint32_t lba = entry.lba + offset / 2048u;
+            if (reader.ReadRawSector(lba, raw)) {
+                if (raw[15] != 1 && (raw[15] != 2 || (raw[18] & 0x20u))) return 0;
+                mod_runtime_patch_disc_sector(lba, 1, raw, sizeof raw);
+                std::memcpy(sector, raw + (raw[15] == 1 ? 16 : 24), sizeof sector);
+                if (raw[15] == 1) mod_runtime_patch_disc_sector(lba, 0, sector, sizeof sector);
+            } else {
+                if (!reader.ReadSector(lba, sector)) return 0;
+                mod_runtime_patch_disc_sector(lba, 0, sector, sizeof sector);
+            }
+            if (state().disc_guard_failed) return 0;
+            const uint32_t count = std::min(2048u, entry.size - offset);
+            std::memcpy(static_cast<uint8_t*>(buffer) + offset, sector, count);
+        }
+        *size = entry.size;
+        return 1;
+    } catch (...) { return 0; }
+}
+
 extern "C" void mod_runtime_activate_plugins(void) {
     using namespace PSXRecompV4;
     RuntimeMods& s = state();
@@ -1404,6 +1444,18 @@ extern "C" uint32_t psx_mod_alloc_gpu_dma_memory(uint32_t size,
 
 extern "C" int32_t psx_mod_widescreen_x_margin(void) {
     return (int32_t)psx_ws_x_margin();
+}
+
+extern "C" void psx_mod_tag_hud_primitive(uint32_t primitive, int edge) {
+    gpu_ws_tag_hud_primitive(primitive, edge);
+}
+
+extern "C" void psx_mod_tag_world_primitive(uint32_t primitive, int is_world) {
+    gpu_ws_tag_world_primitive(primitive, is_world);
+}
+
+extern "C" void psx_mod_set_adaptive_backdrop_preload(int enabled) {
+    gpu_ws_set_adaptive_backdrop_preload(enabled);
 }
 
 /*

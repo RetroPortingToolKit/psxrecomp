@@ -28,6 +28,35 @@ void psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
 
 /* Narrow guest services available to trusted plugin callbacks. */
 int psx_mod_game_started(void);
+/* Read an original mounted-disc file without changing guest CD state/timing.
+ * Emulation-thread callbacks only. NULL buffer + zero capacity queries size;
+ * otherwise capacity must hold the entire file. Active sector mods apply. */
+int psx_mod_read_disc_file(const char* path, void* buffer, uint32_t capacity,
+                           uint32_t* size);
+/* Experimental retained-texture service (currently OpenGL only). IDs are
+ * nonzero, stable game-owned identities, NOT GL names. Banks are immutable
+ * 16-bit PS1 texels/indices with a caller-selected row pitch (width).
+ * A missing bank may be reconstructed from original assets by the resolver,
+ * including when a restored DMA queue refers to a previously unseen level. */
+typedef int (*PSXModTextureBankResolver)(uint16_t id);
+int psx_mod_texture_banks_supported(void);
+int psx_mod_define_texture_bank(uint16_t id, uint32_t width, uint32_t height,
+                                const uint16_t* pixels);
+void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver);
+/* Default-off GL optimization: batch immutable-bank semi triangles in painter
+ * order on the single-pass dual-source path only. Ordinary VRAM, subtractive
+ * blending and destination-mask checks retain per-primitive isolation. Call
+ * from activation or an emulation-thread render boundary. */
+void psx_mod_set_texture_bank_batching(int enabled);
+/* A dedicated GPU-DMA packet arena. Only GT3 commands sourced from this
+ * allocation interpret C1/C2's otherwise-unused high bytes as a bank ID:
+ * id = (C1 >> 24) | ((C2 >> 24) << 8). ID zero uses ordinary VRAM. The rest
+ * of the packet is standard GP0, retaining OT order, palettes and STP blend.
+ * Optional 40-byte suffix after the 40-byte tagged GT3: u32 magic 0x48545031,
+ * three IEEE float 1/z weights, six IEEE float x/y coordinates. This enables
+ * precise perspective rendering without transient host-pointer side tables.
+ * Allocate during activation; do not mix stock game packets into this arena. */
+uint32_t psx_mod_alloc_texture_packet_memory(uint32_t size, uint32_t alignment);
 uint8_t psx_mod_read_byte(uint32_t address);
 void psx_mod_write_byte(uint32_t address, uint8_t value);
 uint16_t psx_mod_read_half(uint32_t address);
@@ -58,6 +87,18 @@ uint32_t psx_mod_alloc_gpu_dma_memory(uint32_t size, uint32_t alignment);
 /* Current per-side widescreen reveal in native game pixels (zero at 4:3). */
 int32_t psx_mod_widescreen_x_margin(void);
 
+/* Mark a guest GPU packet (P_TAG address) as persistent screen-space HUD.
+ * edge = -1 left, +1 right, 0 clears a reused packet's tag. The native-wide
+ * compositor translates it by the live reveal, excluding culling guards.
+ * Guest coordinates, world sprites, and native 4:3 remain unchanged. */
+void psx_mod_tag_hud_primitive(uint32_t primitive, int edge);
+/* Exclude a known world packet from screen-space backdrop stretching, even
+ * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
+void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
+/* Enable aspect-derived column selection for a title that opted into the
+ * auto_backdrop detector. No effect on titles that did not opt in. */
+void psx_mod_set_adaptive_backdrop_preload(int enabled);
+
 /*
  * Width, in native game pixels, of the picture the guest is currently
  * scanning out -- the same value the presenter uses, derived from the display
@@ -79,6 +120,36 @@ uint32_t psx_mod_display_width(void);
 
 /* Height companion to psx_mod_display_width(); same conventions. */
 uint32_t psx_mod_display_height(void);
+
+/* Opt-in presentation hold for a game that retains its previous framebuffer
+ * while loading. The pure, cheap emulation-thread predicate returns HOLD
+ * only while that SAME scene remains displayed; no GPU/API recursion allowed.
+ * RELEASE resumes normal classification immediately. UNTIL_FLIP releases a
+ * prior HOLD only once the displayed VRAM origin changes: useful when drawing
+ * the next backbuffer finishes before it becomes visible. UNTIL_FLIP without
+ * a prior HOLD does nothing. Do not use it for in-place scene replacements.
+ * Native-wide retains its prior wide/4:3 classification, never stretches art
+ * and never overrides FMV. NULL removes the opt-in. Host history is discarded
+ * on GPU reset/savestate restore, so loading a frozen scene cannot recreate
+ * missing widescreen strips. This does not change guest rendering or memory. */
+typedef int (*PSXModRetainedScenePredicate)(void);
+enum {
+    PSX_MOD_SCENE_RELEASE = 0,
+    PSX_MOD_SCENE_HOLD = 1,
+    PSX_MOD_SCENE_UNTIL_FLIP = 2
+};
+void psx_mod_set_retained_scene_predicate(PSXModRetainedScenePredicate predicate);
+
+/* Opt-in supplemental native-wide world classifier. A nonzero result marks a
+ * known, rendered 3D scene (for example a real-time intro) as world content even
+ * when a game's gameplay-state allowlist excludes it. Zero defers to the normal
+ * classifier; NULL removes the callback. Only native-wide mode consults it.
+ * FMV and retained-frame presentation rules still apply. The pure, cheap callback
+ * runs on the emulation thread: no GPU calls, allocation or guest-state writes.
+ * Registration is host configuration, not savestate data. No default behavior
+ * changes and no extra geometry is generated by this service. */
+typedef int (*PSXModWorldScenePredicate)(void);
+void psx_mod_set_world_scene_predicate(PSXModWorldScenePredicate predicate);
 
 /*
  * Read the committed value of one of this package's declared options, as the
@@ -120,6 +191,8 @@ int psx_mod_set_fixed_display_aspect(uint32_t numerator,
                                      uint32_t denominator);
 /*
  * Request resize-driven widescreen, capped at the supplied maximum aspect.
+ * Pass (0, 0) for Fit to window with no upper aspect limit. Both modes retain
+ * the native 4:3 minimum; a single zero is invalid.
  * The current fixed aspect continues to shape the initial game window, so a
  * plugin may select that first with psx_mod_set_fixed_display_aspect().
  */

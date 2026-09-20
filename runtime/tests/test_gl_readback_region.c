@@ -1,5 +1,8 @@
 /* Original source-owned GL readback-coherence regression. No retail payload. */
 #include "gpu_gl_renderer.c"
+#include "mod_texture_banks.c"
+uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t n,uint32_t a){(void)n;(void)a;return 0;}
+uint32_t psx_mod_read_word(uint32_t a){(void)a;return 0;}
 static uint16_t image[1024*512], oracle[1024*512];
 int g_psx_vram_dirty_tracking=0;
 uint64_t s_frame_count=0;
@@ -24,6 +27,38 @@ static void verify(const char *label){
  int n=0;for(int i=0;i<1024*512;i++)n+=image[i]!=oracle[i];
  if(n)fprintf(stderr,"%s: %d native words differ\n",label,n);
  check(n==0,label);check(glGetError()==GL_NO_ERROR,"GL error");
+}
+static void verify_bank_batching(void) {
+ static uint16_t bank[256*128], baseline[96*96], result[96*96];
+ for(int i=256;i<256*128;++i)bank[i]=0x3210;
+ bank[0]=0;bank[1]=0x001f;bank[2]=0x83e0;bank[3]=0xfc00;
+ check(psx_mod_define_texture_bank(8,256,128,bank),"batch fixture bank");
+ for(int filter=0;filter<2;++filter) for(int mask=0;mask<2;++mask) {
+  int counts[2];
+  for(int enabled=0;enabled<2;++enabled) {
+   gl_renderer_select_texture_bank(0);
+   glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+   glb_draw_flat_rect(400,300,96,96,0x1234);flush_flat_batch();
+   psx_mod_set_texture_bank_batching(enabled);
+   s_tex_filter=filter;glb_set_mask_bits(0,mask);
+   gl_renderer_select_texture_bank(8);
+   const int before=s_cw_batches;
+   for(int i=0;i<36;++i) {
+    const int x=404+(i%6)*5,y=304+(i%4)*7;
+    glb_set_semi_transparency(1,(i/6)%4);
+    glb_draw_shaded_textured_triangle(x,y,0,2,0x808080,
+        x+44,y+2,63,2,0x507090,x+3,y+48,0,65,0x907050,0,0,0,0);
+   }
+   flush_tex_batch();counts[enabled]=s_cw_batches-before;
+   gl_renderer_select_texture_bank(0);
+   gl_renderer_sync_cpu();
+   check(gl_renderer_fbo_peek(400,300,96,96,enabled?result:baseline),"batch pixel read");
+  }
+  check(memcmp(baseline,result,sizeof baseline)==0,"ordered semi batching pixel equivalence");
+  check(mask?counts[1]==counts[0]:counts[1]<counts[0],"batch reduction only on supported path");
+ }
+ psx_mod_set_texture_bank_batching(0);s_tex_filter=0;
+ glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
 }
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
@@ -73,6 +108,25 @@ int main(int argc,char **argv){
  check(glb_vram_read(40,40)==0,"depth24 cleared band immediate CPU read");
  check(glb_vram_read(33,33)==0x3210,"newer overlapping texture survives clear");
  verify("depth24 leave coherence without subsequent primitive");
+ /* Run retained-bank tests with the normal draw area before the wide-view
+  * regression narrows it to the gameplay rectangle. */
+ static uint16_t bank[256*128];
+ bank[0]=0x001f; bank[1]=0x03e0; bank[2]=0x7c00;
+ bank[16]=0x1111; /* 4-bit indices, CLUT at (0,0) */
+ check(psx_mod_define_texture_bank(7,256,128,bank),"define retained bank");
+ check(gl_renderer_select_texture_bank(7),"select retained bank");
+ glb_draw_shaded_textured_triangle(100,250,64,0,0x808080,132,250,64,0,0x808080,100,282,64,0,0x808080,0,0,0,1);
+ check(gl_renderer_select_texture_bank(0),"select original VRAM");
+ glb_vram_write(512,0,0x7c00);
+ glb_draw_shaded_textured_triangle(116,250,0,0,0x808080,148,250,0,0,0x808080,116,282,0,0,0x808080,0,0,0x108,1);
+ check(glb_vram_read(102,252)==0x03e0,"retained 4-bit CLUT independent of guest VRAM");
+ check(glb_vram_read(118,252)==0x7c00,"following stock texture wins overlap");
+ check(gl_renderer_select_texture_bank(7),"reselect retained bank");
+ glb_draw_shaded_textured_triangle(300,250,0,0,0x808080,332,250,0,0,0x808080,300,282,0,0,0x808080,0,0,0x100,1);
+ check(gl_renderer_select_texture_bank(0),"reset bank after direct texture");
+ check(glb_vram_read(302,252)==0x001f,"retained 16-bit texel");
+ verify("retained banks and original VRAM ordered together");
+ verify_bank_batching();
  /* World and UI use different origins in an anchored wide frame. Keep the
   * canonical-center optimization enabled to catch an erroneous blit over the
   * completed mirror, and change origins with a pending flat batch. */

@@ -703,6 +703,10 @@ void psx_muldiv_stall(CPUState* cpu) {
  * §1+DO_LDS that bracket this ran in the instruction's psx_cyc_step (COP2 is non-load).
  * MTC2/CTC2 (writes) use psx_gte_stall (stall only, no give-back). */
 void psx_gte_read(CPUState* cpu, uint32_t rt) {
+    /* Include deferred CPU work before computing a deadline or stall. A
+     * later advance publishes it too, so using the old clock double-counts
+     * that work in the stall and can arm a command deadline too early. */
+    psx_cyc_batch_flush();
     if (cpu->gte_ts_done > psx_cycle_count) {
         uint32_t stall = (uint32_t)(cpu->gte_ts_done - psx_cycle_count);
         cpu->ld_absorb = stall;
@@ -760,6 +764,10 @@ uint32_t psx_gte_cmd_latency(uint32_t cmd) {
 }
 
 void psx_gte_set(CPUState* cpu, uint32_t latency) {
+    /* Include deferred CPU work before computing a deadline or stall. A
+     * later advance publishes it too, so using the old clock double-counts
+     * that work in the stall and can arm a command deadline too early. */
+    psx_cyc_batch_flush();
     /* Back-to-back GTE ops serialize: finish the prior op first. */
     if (cpu->gte_ts_done > psx_cycle_count) {
         psx_advance_cycles((uint32_t)(cpu->gte_ts_done - psx_cycle_count));
@@ -768,6 +776,10 @@ void psx_gte_set(CPUState* cpu, uint32_t latency) {
 }
 
 void psx_gte_stall(CPUState* cpu) {
+    /* Include deferred CPU work before computing a deadline or stall. A
+     * later advance publishes it too, so using the old clock double-counts
+     * that work in the stall and can arm a command deadline too early. */
+    psx_cyc_batch_flush();
     if (cpu->gte_ts_done > psx_cycle_count) {
         psx_advance_cycles((uint32_t)(cpu->gte_ts_done - psx_cycle_count));
     }

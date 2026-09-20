@@ -14,6 +14,7 @@ endif()
 # costly PGO rebuild/train cycle a silent no-op.
 set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
 set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
+include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
@@ -330,6 +331,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_stick.c
     ${PSXRECOMP_ROOT}/runtime/src/memory.c
     ${PSXRECOMP_ROOT}/runtime/src/kernel_patch_ranges.c
+    ${PSXRECOMP_ROOT}/runtime/src/guest_tty.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu.c
     ${PSXRECOMP_ROOT}/runtime/src/ws_ui_group.c
     ${PSXRECOMP_ROOT}/runtime/src/ws_aspect_cone_math.c
@@ -415,6 +417,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_bezel.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_runtime.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/mod_texture_banks.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_keybinds.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_bios_backend.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_netplay.c
@@ -1389,6 +1392,7 @@ function(psxrecomp_add_runtime_target target)
     # CMAKE_C_STANDARD setting. cxx_std_17 likewise — game CMakeLists may omit
     # CMAKE_CXX_STANDARD; mod_packages.cpp must not compile as a pre-17 dialect.
     target_compile_features(${target} PRIVATE c_std_11 cxx_std_17)
+    psxrecomp_apply_runtime_ipo(${target})
 
     if(NOT PSX_PGO STREQUAL "")
         if(NOT PSX_PGO STREQUAL "generate" AND NOT PSX_PGO STREQUAL "use")
@@ -2057,11 +2061,10 @@ function(psxrecomp_add_runtime_target target)
                 target_link_libraries(${target} PRIVATE "${OPENGL_opengl_LIBRARY}")
             endif()
         endif()
-        # Async lobby connect (psx_lobby_client.c) uses pthread on Unix.
-        if(PSXRECOMP_HAS_LOBBY_CLIENT)
-            find_package(Threads REQUIRED)
-            target_link_libraries(${target} PRIVATE Threads::Threads)
-        endif()
+        # The overlay autocompile watcher (autocompile.c), the debug server and
+        # the lobby client all use pthread on Unix.
+        find_package(Threads REQUIRED)
+        target_link_libraries(${target} PRIVATE Threads::Threads)
     endif()
 
     # ---- Vulkan backend (gpu_vk_renderer.c) --------------------------------

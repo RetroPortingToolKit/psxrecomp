@@ -2327,6 +2327,24 @@ std::string CodeGenerator::translate_basic_block(
                         exe_, cfg.function_start, cfg.function_end,
                         block.exit_instr.address, jr_rs, exact_table,
                         ram_to_rom, cfg.producer_lo, cfg.producer_hi);
+                    // Not a table: a computed-stride entry into an unrolled
+                    // run (Duff's device — the decompressor copy loops). Same
+                    // switch shape; the CPS default keeps every other target.
+                    if (!have_exact_table) {
+                        have_exact_table = resolve_computed_stride_jump(
+                            exe_, cfg.function_start, cfg.function_end,
+                            block.exit_instr.address, jr_rs, exact_table,
+                            ram_to_rom);
+                    }
+                    // Nor a bounded table: an in-function pointer table
+                    // indexed by a stored, unchecked offset (a decoder's
+                    // state dispatch). Extent from the table's own layout.
+                    if (!have_exact_table) {
+                        have_exact_table = resolve_self_limited_jump_table(
+                            exe_, cfg.function_start, cfg.function_end,
+                            block.exit_instr.address, jr_rs, exact_table,
+                            ram_to_rom);
+                    }
                     uint32_t table_base = have_exact_table
                         ? exact_table.table_base : 0u;
                     uint32_t table_count = have_exact_table
@@ -2349,8 +2367,18 @@ std::string CodeGenerator::translate_basic_block(
                             }
                         }
                         if (!targets.empty()) {
-                            ss << config_.indent << fmt::format("/* jump table 0x{:08X} (rom 0x{:08X}), {} entries */\n",
-                                                                table_base, rom_table_base, table_count);
+                            if (exact_table.stride != 0u) {
+                                ss << config_.indent << fmt::format(
+                                    "/* computed-stride jump into unrolled run 0x{:08X} (rom 0x{:08X}), stride {}, {} entries */\n",
+                                    table_base, rom_table_base, exact_table.stride, table_count);
+                            } else if (exact_table.self_limited) {
+                                ss << config_.indent << fmt::format(
+                                    "/* self-limited jump table 0x{:08X} (rom 0x{:08X}), {} entries, unchecked index */\n",
+                                    table_base, rom_table_base, table_count);
+                            } else {
+                                ss << config_.indent << fmt::format("/* jump table 0x{:08X} (rom 0x{:08X}), {} entries */\n",
+                                                                    table_base, rom_table_base, table_count);
+                            }
                             ss << config_.indent << fmt::format("switch ({}) {{\n", delay_saved_target);
                             for (auto& [rt, rom] : targets) {
                                 if (partial_block_cycle_count(rom, cfg) != 0) {
@@ -2842,11 +2870,12 @@ GeneratedFunction CodeGenerator::generate_function(
         }
 
         if (needs_fallthrough) {
-            // Emit fallthrough if the last block is reachable (has predecessors
-            // or is the entry block). Dead code after a return (e.g., padding
-            // nops) has no predecessors and should NOT get a fallthrough call.
+            // Incoming edges alone do not prove reachability: unreachable
+            // padding/loops can have predecessors too. This final safety net
+            // uses declared-entry reachability; block-level CPS/indirect entry
+            // handling above remains independent of this static metadata.
             const BasicBlock& last = cfg.blocks.at(cfg.block_order.back());
-            bool is_reachable = last.is_entry || !last.predecessors.empty();
+            bool is_reachable = last.is_entry || last.is_reachable;
             if (is_reachable) {
                 body_ss << emit_stale_static_guard_named(fallthrough_name, "    ");
                 body_ss << fmt::format("    {}(cpu);  /* fallthrough to next function */\n",
@@ -2865,7 +2894,7 @@ GeneratedFunction CodeGenerator::generate_function(
             ((last_block.exit_instr.type == ControlFlowType::Branch ||
               last_block.exit_instr.type == ControlFlowType::Jump) &&
              last_block.successors.empty());
-        bool is_reachable = last_block.is_entry || !last_block.predecessors.empty();
+        bool is_reachable = last_block.is_entry || last_block.is_reachable;
         if (runs_off_end && is_reachable) {
             body_ss << fmt::format(
                 "    cpu->pc = 0x{:08X}u; return;  /* image-edge fallthrough: tail-transfer */\n",
@@ -2902,7 +2931,13 @@ void CodeGenerator::scan_jr_tables(
         if (!resolve_exact_bounded_jump_table(
                 exe_, cfg.function_start, cfg.function_end,
                 blk.exit_instr.address, jr_r, exact_table, ram_to_rom,
-                cfg.producer_lo, cfg.producer_hi)) {
+                cfg.producer_lo, cfg.producer_hi) &&
+            !resolve_computed_stride_jump(
+                exe_, cfg.function_start, cfg.function_end,
+                blk.exit_instr.address, jr_r, exact_table, ram_to_rom) &&
+            !resolve_self_limited_jump_table(
+                exe_, cfg.function_start, cfg.function_end,
+                blk.exit_instr.address, jr_r, exact_table, ram_to_rom)) {
             continue;
         }
         uint32_t tb = exact_table.table_base;

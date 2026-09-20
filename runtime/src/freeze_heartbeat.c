@@ -1,5 +1,6 @@
 /* freeze_heartbeat.c — see header for rationale. */
 
+#include "mdec.h"   /* mdec_recently_active: FMV parks the guest in BIOS MDEC code */
 #include "freeze_heartbeat.h"
 #include "freeze_dump_policy.h"
 #include "debug_server.h"
@@ -814,8 +815,12 @@ static void heartbeat_write(void) {
             wedge_kind = 2;
         else if (frame_delta < WEDGE_SLOW_FRAMES_MAX_DELTA)
             wedge_kind = 3;
-        else if (logic_pinned)
+        else if (logic_pinned && !mdec_recently_active((uint32_t)frame_delta + 1u))
             wedge_kind = 5;  /* spin freeze: game wedged while frames advance */
+        /* Wave-5 F9: during an FMV the guest parks in BIOS MDEC code with the dirty-RAM
+         * counters legitimately still while frames advance -- exactly the spin signature.
+         * Every boot FMV wrote a 47-76 MB dump (1.8 GB per kit in one session). MDEC
+         * activity inside the window rules the spin classification out. */
     }
 
     if (!s_wedge_classification_paused &&

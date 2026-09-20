@@ -18,7 +18,23 @@ option(PSXRECOMP_ENABLE_CHD
        "Build the psxrecomp media CLI (requires libchdr via FetchContent)" ON)
 
 if(PSXRECOMP_ENABLE_CHD)
+    # The Python disc tools (psxrecomp_cli.py verify-disc, tools/prepare_disc.py,
+    # tools/new_project_layout/probe_disc.py) read .chd through this same
+    # decoder via ctypes, so libchdr is also built as a shared library, placed
+    # next to the emitters where tools/psx_chd.py looks for it. BUILD_SHARED_LIBS
+    # is scoped to that include: libchdr's codecs are declared STATIC and
+    # chdr-static (what psxrecomp links) is unaffected; nothing else in this
+    # project turns shared.
+    set(_psx_saved_build_shared "${BUILD_SHARED_LIBS}")
+    set(BUILD_SHARED_LIBS ON)
     include("${CMAKE_CURRENT_SOURCE_DIR}/../runtime/chd_dependency.cmake")
+    set(BUILD_SHARED_LIBS "${_psx_saved_build_shared}")
+    unset(_psx_saved_build_shared)
+    if(TARGET chdr)
+        set_target_properties(chdr PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    endif()
 endif()
 
 add_subdirectory(lib/fmt)
@@ -268,6 +284,11 @@ if(PSXRECOMP_STATIC_CLI AND WIN32 AND (MINGW OR CMAKE_CXX_COMPILER_ID MATCHES "C
     if(PSXRECOMP_ENABLE_CHD)
         list(APPEND _cli_targets psxrecomp)
     endif()
+    if(TARGET chdr)
+        # The Python tools load this with ctypes from a plain python.exe, with
+        # no toolchain bin/ on PATH, so it must not pull libgcc or libwinpthread.
+        list(APPEND _cli_targets chdr)
+    endif()
     foreach(_cli_target IN LISTS _cli_targets)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             target_link_options(${_cli_target} PRIVATE
@@ -346,8 +367,36 @@ target_include_directories(emitter_directive_line_test PRIVATE
 target_link_libraries(emitter_directive_line_test PRIVATE fmt rabbitizer)
 
 if(BUILD_TESTING)
+    add_executable(control_flow_metadata_test
+        tests/control_flow_metadata_test.cpp
+        src/control_flow.cpp)
+    target_include_directories(control_flow_metadata_test PRIVATE include)
+    target_link_libraries(control_flow_metadata_test PRIVATE fmt)
+    add_test(NAME control_flow_metadata_test COMMAND control_flow_metadata_test)
+    if(PSXRECOMP_ENABLE_CHD)
+        add_executable(disc_identity_test ../runtime/tests/test_disc_identity.cpp
+            ../runtime/src/disc_identity.cpp ../runtime/src/disc_path.cpp
+            ../runtime/src/iso_reader.cpp ../runtime/src/cue_sheet.cpp
+            ../runtime/src/psx_sha256.c ../runtime/src/crc32.c)
+        target_include_directories(disc_identity_test PRIVATE ../runtime/include include)
+        target_compile_options(disc_identity_test PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+        target_link_libraries(disc_identity_test PRIVATE chdr-static)
+        add_test(NAME disc_identity_test COMMAND disc_identity_test)
+    endif()
+    add_executable(host_path_test tests/host_path_test.cpp)
+    target_include_directories(host_path_test PRIVATE include)
+    add_test(NAME host_path_test COMMAND host_path_test)
+
     add_test(NAME emitter_directive_line_test
              COMMAND emitter_directive_line_test)
+    add_executable(guest_tty_test
+        ../runtime/tests/test_guest_tty.c
+        ../runtime/src/guest_tty.c)
+    target_include_directories(guest_tty_test PRIVATE ../runtime/include)
+    add_test(NAME guest_tty_test COMMAND guest_tty_test)
+
     add_executable(debug_trace_ranges_test
         ../runtime/tests/test_debug_trace_ranges.c
         ../runtime/src/debug_trace_ranges.c
@@ -495,7 +544,21 @@ if(BUILD_TESTING)
     add_test(NAME reachable_discovery_test COMMAND reachable_discovery_test)
 
     find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND AND CMAKE_GENERATOR STREQUAL "Ninja")
+        add_test(NAME runtime_ipo_configuration
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_ipo.py
+                --cmake ${CMAKE_COMMAND} --cc ${CMAKE_C_COMPILER}
+                --cxx ${CMAKE_CXX_COMPILER} --ninja ${CMAKE_MAKE_PROGRAM})
+    endif()
     if(Python3_Interpreter_FOUND)
+        add_test(NAME optional_netplay_auth
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_optional_netplay_auth.py
+                --cxx ${CMAKE_CXX_COMPILER})
+        add_test(NAME pgo_rebuild_flow
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pgo_rebuild_flow.py)
         add_test(
             NAME cli_project_packaging
             COMMAND ${Python3_EXECUTABLE}
@@ -558,6 +621,23 @@ if(BUILD_TESTING)
                         ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_aot_overlay_pipeline.py
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         endif()
+        # --static must walk the whole of compile_overlays.main() and exit 0:
+        # a DLL-only reconciliation at its tail once read an unbound cache_dir
+        # and failed every static run after its output was written.
+        add_test(
+            NAME compile_overlays_static_tail
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_compile_overlays_static_tail.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # The word after a `jr $ra` is as often a pointer table as a frameless
+        # function; a dispatch entry there must prove a CFG before it may be a
+        # walk root, or the walk runs through the table to the image end.
+        add_test(
+            NAME frameless_dispatch_root_cfg_proof
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_frameless_dispatch_root_cfg_proof.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
             NAME fmv_cycle_batch_codegen
             COMMAND ${Python3_EXECUTABLE}
@@ -596,6 +676,12 @@ if(BUILD_TESTING)
                     --recompiler $<TARGET_FILE:psxrecomp-bios>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
+            NAME bios_vector_stub_shapes
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_vector_stub_shapes.py
+                    --recompiler $<TARGET_FILE:psxrecomp-bios>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(
             NAME stall_report
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_stall_report.py
@@ -610,6 +696,7 @@ if(BUILD_TESTING)
         foreach(_t IN ITEMS
                 aot_base_recovery
                 bios_resident_shard
+                computed_stride_jump_codegen
                 msvc_cps_codegen
                 overlay_guard_codegen
                 overlay_store_barrier_codegen
@@ -659,6 +746,7 @@ if(BUILD_TESTING)
                 frame_interpolation_display_rate
                 hybrid_dev_any_input
                 launcher_pad_mode_wiring
+                jalr_link_register_guards
                 launcher_vulkan_option
                 mod_controller_override
                 mod_load_acceleration
@@ -732,7 +820,29 @@ target_include_directories(reachable_discovery_test PRIVATE
 )
 target_link_libraries(reachable_discovery_test PRIVATE fmt)
 
+# GTE deadline ownership includes pending CPU charges from both host sinks.
+if(BUILD_TESTING AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    foreach(_mode IN ITEMS O0 O2)
+        set(_target "tas_gte_deferred_${_mode}")
+        add_executable(${_target}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_gte_deferred.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src/psx_cycles.c")
+        target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/include")
+        target_compile_definitions(${_target} PRIVATE PSX_ENABLE_BLOCK_CYCLES=1)
+        target_compile_options(${_target} PRIVATE -${_mode} -UNDEBUG -ffunction-sections -fdata-sections)
+        target_link_options(${_target} PRIVATE -Wl,--gc-sections)
+        add_test(NAME ${_target} COMMAND ${_target})
+    endforeach()
+endif()
+
 # ---- test-registration completeness guard -----------------------------------
+if(BUILD_TESTING AND Python3_Interpreter_FOUND AND NOT MSVC)
+    add_test(NAME gpu_upload_history
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_gpu_upload_history.py"
+            --cc ${CMAKE_C_COMPILER})
+endif()
+
 # Reads both CMakeLists.txt files as text, so it catches an orphan in either
 # project from whichever one is being configured. Placed before the collision
 # guard, which must stay last because it needs every target declared; this one

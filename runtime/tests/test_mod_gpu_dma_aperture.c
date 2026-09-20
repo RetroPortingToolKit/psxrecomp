@@ -50,7 +50,7 @@ int main(void) {
     check(psx_mod_gpu_dma_aperture_offset_for(0xA0000000u + base, 4u, size, &off)
               && off == 0u, "KSEG1 CPU aperture alias resolves correctly");
     check(psx_mod_gpu_dma_aperture_offset_for(base + size - 4u, 4u, size, &off)
-              && off == size - 4u, "last word of full 4 MiB aperture is accessible");
+              && off == size - 4u, "last word of full enhancement aperture is accessible");
     check(!psx_mod_gpu_dma_aperture_offset_for(base - 4u, 4u, size, &off),
           "word before aperture is rejected");
     check(!psx_mod_gpu_dma_aperture_offset_for(base + size, 4u, size, &off),

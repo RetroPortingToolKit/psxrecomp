@@ -1816,7 +1816,14 @@ static void cli_fail_msg(char* err_msg, size_t err_cap, const char* fail_label,
                          long code, const CliTail* t) {
     const char* why = t->last_err[0] ? t->last_err : t->last;
     if (code == 3) {
-        snprintf(err_msg, err_cap, "Disc verification failed (wrong dump).");
+        /* The CLI names the failing check (a digest mismatch, or a .chd it
+         * cannot read) and cli_tail_note has captured that line. A flat
+         * "wrong dump" contradicts it and sends players hunting a bad rip
+         * when the dump is fine. Keep the reason when there is one. */
+        if (why[0])
+            snprintf(err_msg, err_cap, "Disc verification failed: %s", why);
+        else
+            snprintf(err_msg, err_cap, "Disc verification failed (wrong dump).");
         return;
     }
     if (why[0])
@@ -4353,6 +4360,34 @@ static void host_selfcheck_or_return(const PsxrecompCodegenHostConfig* cfg,
     printf(",\n  \"game_dispatch_present\": %s", game_ok ? "true" : "false");
     printf(",\n  \"bios_backends_present\": %s", bios_ok ? "true" : "false");
     printf(",\n  \"sources_missing\": %s", missing ? "true" : "false");
+    /* Wave-5 F4: overlay_cache is the switch that makes the runtime initialise the
+     * overlay loader at all; without it every streamed overlay is interpreted. CI
+     * asserts this field so a title cannot ship silently without it again. */
+    {
+        char toml_abs[1200];
+        int overlay_cache = 0;
+        if (join_path(toml_abs, sizeof(toml_abs), g_project_root, "game.toml")) {
+            FILE* tf = fopen(toml_abs, "rb");
+            if (tf) {
+                char line[512];
+                while (fgets(line, sizeof(line), tf)) {
+                    const char* p = line;
+                    while (*p == ' ' || *p == '\t') ++p;
+                    if (strncmp(p, "overlay_cache", 13) == 0) {
+                        p += 13;
+                        while (*p == ' ' || *p == '\t') ++p;
+                        if (*p == '=') {
+                            ++p;
+                            while (*p == ' ' || *p == '\t') ++p;
+                            overlay_cache = strncmp(p, "true", 4) == 0;
+                        }
+                    }
+                }
+                fclose(tf);
+            }
+        }
+        printf(",\n  \"overlay_cache_configured\": %s", overlay_cache ? "true" : "false");
+    }
     printf("\n}\n");
     fflush(stdout);
     exit(missing ? 2 : 0);

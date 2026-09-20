@@ -468,7 +468,45 @@ TOOLCHAIN_PINS = {
         'tcc_url': None,
         'tcc_sha256': None,
     },
+    # macOS had no pin at all, so stage_toolchain died with "no toolchain pins"
+    # (or, before that check, staged the Linux interpreter) and no Mac player
+    # ever got a bundled toolchain; the stock /usr/bin/python3 on macOS 13/14
+    # is 3.9, which cannot run compile_overlays.py (tomllib, PEP 604 unions).
+    # Same python-build-standalone release and version as the Linux pin, one
+    # asset per architecture. SHA256 measured 2026-09-16 by downloading both and
+    # matched against the publisher's .sha256 sidecar assets. No prebuilt tcc:
+    # the bundled interpreter drives the system clang (Xcode command-line tools).
+    'macos-x64': {
+        'python_version': '3.13.1',
+        'python_url': ('https://github.com/astral-sh/python-build-standalone/releases/'
+                       'download/20250115/cpython-3.13.1%2B20250115-x86_64-apple-'
+                       'darwin-install_only_stripped.tar.gz'),
+        'python_sha256': '26e0d5320bff7d141531e09849f0735c634bba31003ed6b089b9bf434312a773',
+        'tcc_version': None,
+        'tcc_url': None,
+        'tcc_sha256': None,
+    },
+    'macos-arm64': {
+        'python_version': '3.13.1',
+        'python_url': ('https://github.com/astral-sh/python-build-standalone/releases/'
+                       'download/20250115/cpython-3.13.1%2B20250115-aarch64-apple-'
+                       'darwin-install_only_stripped.tar.gz'),
+        'python_sha256': '650f1d3242667c64959391105525469e0fe1502a6aab9f5db3b0bfefe7dcbabd',
+        'tcc_version': None,
+        'tcc_url': None,
+        'tcc_sha256': None,
+    },
 }
+
+
+def host_platform_tag():
+    """The toolchain pin key for the machine this runs on."""
+    if co.is_windows():
+        return 'win'
+    if sys.platform == 'darwin':
+        import platform
+        return 'macos-arm64' if platform.machine() in ('arm64', 'aarch64') else 'macos-x64'
+    return 'linux'
 
 
 def get_pinned_archive(url, sha256, destination, retries=4, log=print):
@@ -576,8 +614,11 @@ def _extract_tar_top_level(archive, parent, expect_top):
 # this exact path (runtime/src/main.cpp, `tk_py`). The name differs per
 # platform; the layout does not.
 TOOLCHAIN_PY_REL = {'win': os.path.join('python', 'python.exe'),
-                    'linux': os.path.join('python', 'bin', 'python3')}
-TOOLCHAIN_RECOMPILER = {'win': 'psxrecomp-game.exe', 'linux': 'psxrecomp-game'}
+                    'linux': os.path.join('python', 'bin', 'python3'),
+                    'macos-x64': os.path.join('python', 'bin', 'python3'),
+                    'macos-arm64': os.path.join('python', 'bin', 'python3')}
+TOOLCHAIN_RECOMPILER = {'win': 'psxrecomp-game.exe', 'linux': 'psxrecomp-game',
+                        'macos-x64': 'psxrecomp-game', 'macos-arm64': 'psxrecomp-game'}
 
 
 def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
@@ -593,7 +634,7 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
     so on Linux neither the AOT cache nor the capture-and-compile fail-safe
     could extend itself.
     """
-    platform_tag = platform_tag or ('win' if co.is_windows() else 'linux')
+    platform_tag = platform_tag or host_platform_tag()
     if platform_tag not in TOOLCHAIN_PINS:
         _die('no toolchain pins for platform %r' % platform_tag)
     pins = TOOLCHAIN_PINS[platform_tag]
@@ -636,10 +677,18 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
     # Windows needs the mingw runtime beside the recompiler; a Linux build links
     # against the system libstdc++ that is already present.
     if platform_tag == 'win':
-        if not mingw_bin:
-            _die('--mingw-bin is required when staging a Windows toolchain')
+        # A recompiler built against a static CRT (the cmake-clang-v1 emitters) needs no
+        # runtime DLLs; a gcc-built one does. Copy whatever the named bin dir (or the
+        # emitter's own directory) holds, and say which case this is.
+        dll_src = mingw_bin or recomp_dir
+        copied = 0
         for d in ('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'):
-            shutil.copy2(os.path.join(mingw_bin, d), os.path.join(toolchain, d))
+            p = os.path.join(dll_src, d)
+            if os.path.isfile(p):
+                shutil.copy2(p, os.path.join(toolchain, d))
+                copied += 1
+        log('mingw runtime DLLs staged beside the recompiler: %d (from %s)%s'
+            % (copied, dll_src, '' if copied else ' -- assuming a static recompiler'))
 
     shutil.copy2(os.path.join(recomp_tools, 'compile_overlays.py'), toolchain)
     tool_inc = _mkdirs(os.path.join(toolchain, 'include'))

@@ -16,12 +16,14 @@
 #include "gpu.h"
 #include "mdec.h"
 #include "mod_memory.h"
+#include "pst_wire.h"
 #include "sio.h"
 #include "spu.h"
 #include "timers.h"
 #include "lockstep.h"
 #include "data_shards.h"
 #include "dirty_ram_interp.h"
+#include "guest_tty.h"
 #include "psx_cycles.h"
 #include "starvation_ring.h"
 #include <stdint.h>
@@ -42,6 +44,45 @@ static uint8_t mod_memory[MOD_MEMORY_SIZE];
 static uint32_t mod_memory_used;
 static uint8_t mod_gpu_dma_memory[PSX_MOD_GPU_DMA_APERTURE_SIZE];
 static uint32_t mod_gpu_dma_memory_used;
+
+uint32_t psx_mod_memory_snapshot_bytes(void) {
+    return mod_memory_used || mod_gpu_dma_memory_used
+        ? 16u + mod_memory_used + mod_gpu_dma_memory_used : 0u;
+}
+
+uint32_t psx_mod_memory_layout_cookie(void) {
+    /* Compatibility guard, not a cryptographic identity. Include aperture
+     * revision; old enabled-mod saves must be rejected before applying RAM. */
+    if (!psx_mod_memory_snapshot_bytes()) return 0u;
+    return 0x4D4F4402u ^ (mod_memory_used * 16777619u) ^ mod_gpu_dma_memory_used;
+}
+
+void psx_mod_memory_snapshot_write(uint8_t* out) {
+    PstW w;
+    if (!out || !psx_mod_memory_snapshot_bytes()) return;
+    pst_w_init(&w, out, psx_mod_memory_snapshot_bytes());
+    pst_w_u32(&w, 1u);
+    pst_w_u32(&w, PSX_MOD_GPU_DMA_APERTURE_BASE);
+    pst_w_u32(&w, mod_memory_used);
+    pst_w_u32(&w, mod_gpu_dma_memory_used);
+    memcpy(out + 16u, mod_memory, mod_memory_used);
+    memcpy(out + 16u + mod_memory_used, mod_gpu_dma_memory, mod_gpu_dma_memory_used);
+}
+
+int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
+    PstR r;
+    uint32_t version, base, cpu_bytes, dma_bytes;
+    if (!data || size < 16u || size != psx_mod_memory_snapshot_bytes()) return 0;
+    pst_r_init(&r, data, size);
+    if (!pst_r_u32(&r, &version) || !pst_r_u32(&r, &base) ||
+        !pst_r_u32(&r, &cpu_bytes) || !pst_r_u32(&r, &dma_bytes) ||
+        version != 1u || base != PSX_MOD_GPU_DMA_APERTURE_BASE ||
+        cpu_bytes != mod_memory_used || dma_bytes != mod_gpu_dma_memory_used)
+        return 0;
+    memcpy(mod_memory, data + 16u, cpu_bytes);
+    memcpy(mod_gpu_dma_memory, data + 16u + cpu_bytes, dma_bytes);
+    return 1;
+}
 
 /*
  * Trusted mods may opt into host-backed guest memory in Expansion 1. Before
@@ -816,10 +857,33 @@ void dirty_ram_text_guard_resync_after_restore(void) {
      * forking MotK selfcheck warm #2vs#3 at matched clocks (win#118 class:
      * cold≡0, warm FAIL; post-span irq_resume also drifts). Drop both
      * host-only text-guard bitmaps; live writes re-arm modified, and the
-     * next native_ok compare re-decides diverge against restored bytes. */
+     * next native_ok compare re-decides diverge against restored bytes.
+     *
+     * "Modified" is recomputed, not just forgotten. The page-clean fast
+     * path in dirty_ram_text_native_ok_ranges_from trusts a clear bit as
+     * "bytes still equal the reference" and skips the compare, but the
+     * restored RAM may carry self-modified text (CMR2 class) that no live
+     * write will ever re-flag: the bitmap is not part of the state image,
+     * and the writes happened in the process that produced it. One pass
+     * over the reference range (at most 2 MB, once per restore) puts every
+     * mismatching page back under the exact compare. */
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
     g_text_diverged_pages = 0;
+    if (text_ref_image && text_ref_hi > text_ref_lo) {
+        uint32_t p0 = text_ref_lo >> DIRTY_RAM_PAGE_SHIFT;
+        uint32_t p1 = (text_ref_hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+        for (uint32_t p = p0; p <= p1; p++) {
+            uint32_t lo = p << DIRTY_RAM_PAGE_SHIFT;
+            uint32_t hi = lo + (1u << DIRTY_RAM_PAGE_SHIFT);
+            if (lo < text_ref_lo) lo = text_ref_lo;
+            if (hi > text_ref_hi) hi = text_ref_hi;
+            if (hi > RAM_SIZE) hi = RAM_SIZE;
+            if (hi <= lo) continue;
+            if (memcmp(ram + lo, text_ref_image + (lo - text_ref_lo), hi - lo) != 0)
+                text_modified_bitmap[p >> 5] |= (1u << (p & 31u));
+        }
+    }
 }
 
 void overlay_watch_invalidate_after_ram_restore(void) {
@@ -970,20 +1034,7 @@ static void interrupt_write_stat_masked(uint32_t val, uint32_t mask) {
 static void interrupt_write_mask_masked(uint32_t val, uint32_t mask, uint8_t width) {
     uint32_t old = i_mask;
     uint32_t next = ((i_mask & ~mask) | (val & mask)) & 0x7FFu;
-    /* IMPORTANT (Ape Escape LOAD): BIOS clears I_MASK.7 immediately after
-     * the probe SELECT abort while A6C10 is still nested. That drops the
-     * nest_irq_pulse before LibCardIntRP can pop to idle / set B4E38.
-     * Hold bit7 until the nest unwinds (sio_card_should_hold_imask_bit7).
-     * EXPERIMENT: helper used to no-op under netplay; ungated for TM4 test.
-     * See ApeEscapeRecomp/docs/APE_MEMCARD_LOAD.md. */
-    if ((old & 0x80u) && !(next & 0x80u)) {
-        extern int sio_card_should_hold_imask_bit7(void);
-        if (sio_card_should_hold_imask_bit7()) {
-            next |= 0x80u;
-            if (!(i_stat & 0x80u))
-                i_stat |= 0x80u;
-        }
-    }
+    /* INTC mask writes are owned by the guest, never by a device repair. */
     i_mask = next;
     imask_trace_record(old, i_mask, width);
     {

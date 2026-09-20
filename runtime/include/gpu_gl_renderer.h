@@ -18,6 +18,10 @@ extern "C" {
 /* Create the GL context on a window made with SDL_WINDOW_OPENGL.
  * Returns 1 on success, 0 to fall back to the SDL_Renderer present path. */
 int  gl_renderer_init_context(struct SDL_Window *win);
+/* Select a retained immutable bank for the next textured submission; zero
+ * selects live VRAM. Emulation/GL owning thread only. Returns 0 if unavailable. */
+int gl_renderer_select_texture_bank(uint16_t id);
+int gl_renderer_texture_banks_supported(void);
 
 /* Set the GL swap interval / vsync mode (1=vsync, 0=immediate, -1=adaptive).
  * Safe before or after context creation; applies live when a context exists. */
@@ -129,6 +133,15 @@ void gl_renderer_set_display_aspect(int num, int den);
  * scanlines returns the on flag and (via out-param) the current strength. */
 void gl_renderer_set_scanlines(int on, float strength);
 int  gl_renderer_get_scanlines(float *strength);
+
+/* Presentation-only gamma adjustment. gamma = 1.0 is the identity; values
+ * above 1.0 lift shadow detail and values below 1.0 darken it. The adjustment
+ * is applied once to game content in the final GL presentation pass, including
+ * temporal interpolation, but not to the bezel, host OSD, black margins, or an
+ * already-composed hold-last image. Non-finite and out-of-range values are
+ * clamped to a safe range. Safe to call before GL context creation. */
+void  gl_renderer_set_post_gamma(float gamma);
+float gl_renderer_get_post_gamma(void);
 
 /* Select full native-wide mirror rendering instead of the centre-splice fast
  * path. Textured edge expansion needs the complete mirror surface. */

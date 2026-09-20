@@ -275,6 +275,35 @@ int test_reads() {
     return 0;
 }
 
+int test_hardware_register_semantics() {
+    CPUState cpu{};
+    gte_write_data(&cpu, 1, 0x00008001u);
+    if (gte_read_data(&cpu, 1) != 0xFFFF8001u)
+        return fail_value("VZ sign extension", 0, 1, 0x00008001u,
+                          0xFFFF8001u, gte_read_data(&cpu, 1));
+
+    gte_write_data(&cpu, 23, 0xDEADBEEFu);
+    if (gte_read_data(&cpu, 23) != 0xDEADBEEFu)
+        return fail_value("RES1 round trip", 0, 23, 0xDEADBEEFu,
+                          0xDEADBEEFu, gte_read_data(&cpu, 23));
+
+    gte_write_ctrl(&cpu, 4, 0x00008002u);
+    if (gte_read_ctrl(&cpu, 4) != 0xFFFF8002u)
+        return fail_value("matrix tail sign extension", 0, 4, 0x00008002u,
+                          0xFFFF8002u, gte_read_ctrl(&cpu, 4));
+
+    gte_write_ctrl(&cpu, 26, 0x0000E810u);
+    if (gte_read_ctrl(&cpu, 26) != 0xFFFFE810u)
+        return fail_value("H read sign extension", 0, 26, 0x0000E810u,
+                          0xFFFFE810u, gte_read_ctrl(&cpu, 26));
+
+    gte_write_ctrl(&cpu, 31, 0x00800000u);
+    if (gte_read_ctrl(&cpu, 31) != 0x80800000u)
+        return fail_value("FLAG error summary", 0, 31, 0x00800000u,
+                          0x80800000u, gte_read_ctrl(&cpu, 31));
+    return 0;
+}
+
 int test_writes() {
     for (unsigned iteration = 0; iteration < 64; ++iteration) {
         CPUState seed;
@@ -397,7 +426,6 @@ int test_command_marshaling() {
                 return fail_state("command marshal", iteration, function, cmd,
                                   expected, actual);
             if (actual.gte_data[15] != actual.gte_data[14] ||
-                actual.gte_data[23] != 0u ||
                 actual.gte_data[28] != actual.gte_data[29] ||
                 actual.gte_data[31] != gte_read_data(&actual, 31))
                 return fail_value("command canonical aliases", iteration,
@@ -703,6 +731,7 @@ int test_precision_speculative_transaction() {
 } // namespace
 
 int main() {
+    if (int rc = test_hardware_register_semantics()) return rc;
     if (int rc = test_canonicalizer()) return rc;
     if (int rc = test_reads()) return rc;
     if (int rc = test_writes()) return rc;

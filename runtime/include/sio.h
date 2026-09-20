@@ -237,48 +237,22 @@ uint32_t sio_get_seq(void);
  * transaction by issuing 0x01 on the SIO bus mid-read. */
 int sio_card_protocol_active(void);
 
-/* 1 while a card txn/protocol is live or a card ACK just fired. interrupts.c
- * uses this to defer in-exception ChangeThread so the game's SIO IntRP can
- * finish its A6C10/B4E38 handshake (Ape Escape LOAD). */
-int sio_should_defer_thread_switch(void);
-
-/* -------------------------------------------------------------------------
- * Ape Escape LOAD GAME — IMPORTANT memcard path
- *
- * LibCardIntRP needs one distinct IRQ7 edge per nest pop. SIO pacing (MT=1),
- * ACK defer, I_MASK.7 hold, and nest IRQ pulses below exist so presence-probe
- * → directory → file-list can complete.
- * EXPERIMENT (TwistedMetal4Recomp): formerly netplay-inert / MotK-uncapped;
- * ungated for local netplay desync testing. PSX_APE_CARD_UNSTICK=0 disables
- * nest repair + bit7 hold. See ApeEscapeRecomp/docs/APE_MEMCARD_LOAD.md.
- * ------------------------------------------------------------------------- */
-
-/* Post-probe handoff ring: bit7 enable → TX 0x57 (debug_server card_handoff). */
+/* Post-probe handoff ring: diagnostic device state only, no guest-RAM probes. */
 typedef struct {
-    uint8_t  kind;   /* 1=probe_abort 2=b7_set 3=b7_clear 4=tx 5=card_ack
-                      * 6=unstick 7=select_flush_ack 8=ack_deferred_istat7
-                      * 9=nest_irq_pulse 10=b7_hold */
+    uint8_t  kind;   /* 1=probe_abort 2=b7_set 3=b7_clear 4=tx 5=card_ack */
     uint8_t  byte;
     uint16_t imask;
     uint32_t pc;
     uint32_t func;
-    uint32_t a6c10;
-    uint32_t b4e30;
-    uint32_t b4e38;
+    uint32_t ctrl;
+    uint32_t stat;
+    uint32_t card_state;
     uint64_t cyc;
 } SioCardHandoffEntry;
 const SioCardHandoffEntry *sio_get_card_handoff(int *idx_out, int *count_out);
 int sio_card_handoff_cap(void);
 int sio_card_handoff_armed(void);
 void sio_card_handoff_on_imask(uint32_t old_mask, uint32_t new_mask);
-/* Ape Escape: 1 while libcard nest is stuck post-probe — keep I_MASK.7 so
- * IntRP can finish (BIOS otherwise clears bit7 ~tens of cycles after SELECT
- * abort, before the pending SIO edge is taken). */
-int sio_card_should_hold_imask_bit7(void);
-/* Ape Escape: nest repair pump when the guest waiter polls RAM only
- * (no SIO MMIO → sio_tick never runs). IRQ re-edge only — never poke A6C10 /
- * invent B4E38. */
-void sio_ape_card_unstick_pump(void);
 
 /* Netplay deferred-present coexistence: 1 while native memcard SIO is
  * busy and still making progress. Callers keep s_present_pending and

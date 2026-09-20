@@ -37,6 +37,7 @@ struct GTEState {
     uint16_t SZ[4];                      // Screen Z FIFO (unsigned 16-bit)
     uint32_t RGBC;                       // Current input color/code register
     uint32_t RGB[3];                     // RGB color FIFO (RGB0..RGB2)
+    uint32_t RES1;                       // Undocumented read/write data register 23
 
     // === Control Registers (matrices, vectors, config) ===
     int16_t RT[3][3];                    // Rotation matrix (s3.12)
@@ -98,8 +99,8 @@ struct GTEState {
 
     void check_mac_overflow(int64_t value, int mac_num) {
         // mac_num: 1,2,3
-        if (value > 0x7FFFFFFFFLL)  FLAG |= (1u << (31 - mac_num)); // MAC1=30, MAC2=29, MAC3=28
-        if (value < -0x800000000LL) FLAG |= (1u << (28 - mac_num)); // MAC1=27, MAC2=26, MAC3=25
+        if (value > 0x7FFFFFFFFFFLL)  FLAG |= (1u << (31 - mac_num)); // MAC1=30, MAC2=29, MAC3=28
+        if (value < -0x80000000000LL) FLAG |= (1u << (28 - mac_num)); // MAC1=27, MAC2=26, MAC3=25
     }
 
     void check_mac0_overflow(int64_t value) {

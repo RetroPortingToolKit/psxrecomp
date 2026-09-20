@@ -42,7 +42,9 @@ extern "C" {
  * v5 = v4 + CD-ROM Sub-Q replacement state;
  * v6 = v5 + per-word GPU DMA2 linked-list progress;
  * v7 = v6 + pending XA DATA_END IRQ state. */
-#define BOOT_STATE_VERSION 7u
+#define BOOT_STATE_VERSION 8u
+/* v8 adds allocated enhancement memory. Vanilla writers remain v7; older
+ * runtimes must not accept enhanced snapshots while ignoring their arenas. */
 /* v7 intentionally breaks older savestates after the CD-ROM wire grew. Reject
  * them at the header before any section changes the live machine. */
 #define BOOT_STATE_VERSION_MIN_READ 7u
@@ -65,7 +67,7 @@ typedef struct {
     uint32_t codegen_ver;    /* PSX_OVERLAY_CODEGEN_VER                           */
     /* ---- layout ---- */
     uint32_t section_count;  /* number of sections that follow                    */
-    uint32_t reserved;       /* 0                                                 */
+    uint32_t reserved;       /* v8: enhancement-memory layout cookie; vanilla 0   */
 } BootStateHeader;
 
 #define BOOT_STATE_HEADER_WIRE_BYTES 36u
@@ -82,6 +84,7 @@ typedef struct {
  * never allowed) -> normal boot + recapture.
  */
 enum {
+    BS_SEC_MODMEM = 0x11,  /* allocated opt-in CPU/GPU enhancement arenas */
     BS_SEC_CPU    = 0x01,  /* CPUState: gpr/pc/hi/lo/cop0/gte_data/gte_ctrl       */
     BS_SEC_RAM    = 0x02,  /* 2 MB main RAM                                       */
     BS_SEC_SPAD   = 0x03,  /* 1 KB scratchpad                                     */

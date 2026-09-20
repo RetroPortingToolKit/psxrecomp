@@ -11,6 +11,8 @@
  */
 
 #include "gpu.h"
+#include "gpu_gl_renderer.h"
+#include "mod_texture_banks.h"
 #include "display_scanout.h"
 #include "pgxp.h"
 #include "mod_memory.h"
@@ -26,10 +28,15 @@
 #include "event_ring.h"
 #include "color_lut.h"
 #include "mod_runtime.h"
+#include "mod_plugins.h"
+#include "ws_scene_hold.h"
 #include "sio.h"
 #include "ws_cull_detect.h"
+#include "ws_backdrop_margin.h"
 #include "ws_aspect_cone_math.h"
 #include "ws_ui_group.h"
+#include "ws_primitive_roles.h"
+#include "ws_scene_latch.h"
 #include "ws_prepass_guard.h"
 #include "ws_hud_anchor.h"
 #include "ws_repeat_rect.h"
@@ -332,7 +339,15 @@ static int ws_full_2d_mode(void) {
     if (env < 0) { const char *e = getenv("PSX_WS_FORCE_2D"); env = (e && e[0] == '1') ? 1 : 0; }
     return ws_full_2d || env;
 }
+static PSXModWorldScenePredicate s_ws_world_scene_predicate;
+void psx_mod_set_world_scene_predicate(PSXModWorldScenePredicate predicate) {
+    s_ws_world_scene_predicate = predicate;
+}
+static int ws_mod_world_scene(void) {
+    return ws_mode == 2 && s_ws_world_scene_predicate && s_ws_world_scene_predicate();
+}
 static int ws_game_mode(void) {
+    if (ws_mod_world_scene()) return 1;
     int state_match = ws_gameplay_state_matches();
     if (state_match >= 0) return state_match;
     if (ws_full_2d_mode()) return 1;
@@ -363,27 +378,60 @@ static int ws_game_mode(void) {
  * see the overhang block for the full lineage. Scoped to the tag-classified
  * (2.5D) mechanism: full-2D titles (MMX6) are 2D-only by definition and
  * genuinely reveal more, and GTE-detector titles (Ape) already classify 2D
- * screens by projection count. The hysteresis rides out 1-2 frame gaps; a
- * real scene change crosses it in ~0.1 s. */
+ * screens by projection count. Once overhang confirms a world, active world
+ * projection keeps it alive between terrain-submission bursts. A real 2D
+ * scene with neither signal crosses the grace period in ~0.1 s. */
 #define WS_2D_SCENE_HYSTERESIS 6u
+static WsSceneLatch ws_scene_latch;
 static int ws_2d_only_scene(void) {
+    if (ws_mod_world_scene()) return 0;
     if (ws_full_2d_mode() || ws_gte_game_mode_cfg) return 0;
-    return (uint32_t)s_frame_count - ws_sust_ovh_stamp > WS_2D_SCENE_HYSTERESIS;
+    uint32_t f = (uint32_t)s_frame_count;
+    return ws_scene_is_2d(&ws_scene_latch, f,
+        f - ws_sust_ovh_stamp <= WS_2D_SCENE_HYSTERESIS,
+        f - ws_last_world3d_stamp <= 2u, WS_2D_SCENE_HYSTERESIS);
+}
+
+/* Host-derived presentation evidence is not serialized guest state. Relearn it
+ * after reset/load instead of carrying the old scene's classification over. */
+static void ws_reset_scene_history(void) {
+    uint32_t expired = (uint32_t)s_frame_count - 1000u;
+    memset(&ws_scene_latch, 0, sizeof ws_scene_latch);
+    ws_last_tag_stamp = ws_last_3d_stamp = ws_last_gte_stamp = expired;
+    ws_last_world3d_stamp = ws_sust_world3d_stamp = expired;
+    ws_last_ovh_stamp = ws_sust_ovh_stamp = expired;
+    ws_gte_frame = ws_ovh_frame = (uint32_t)-1;
+    ws_gte_count = ws_gte_prev_verts = ws_ovh_count = ws_ovh_prev = 0;
 }
 
 static uint32_t s_ws_fmv_frame_cache = 0xFFFFFFFFu;
 static int      s_ws_fmv_cached = 0;
+static PSXModRetainedScenePredicate s_ws_retained_scene_predicate;
+static WsSceneHold s_ws_scene_hold;
+static uint32_t ws_display_origin(void);
+
+void psx_mod_set_retained_scene_predicate(PSXModRetainedScenePredicate predicate) {
+    s_ws_retained_scene_predicate = predicate;
+    ws_scene_hold_reset(&s_ws_scene_hold);
+}
 
 int gpu_ws_present_native_43(void) {
     if (!ws_engaged()) return 0;
-    if (!ws_game_mode()) return 1;                 /* full-2D screen */
-    if (ws_2d_only_scene()) return 1;              /* 2D-only gameplay scene */
+    int game_mode = ws_game_mode();
+    if (!game_mode) ws_scene_latch.confirmed = 0;
+    int native_43 = !game_mode || ws_2d_only_scene();
+    int hold_enabled = ws_mode == 2 && s_ws_retained_scene_predicate != NULL;
+    if (!hold_enabled && native_43) return 1;      /* unchanged default */
     uint32_t f = (uint32_t)s_frame_count;
     if (f != s_ws_fmv_frame_cache) {
         s_ws_fmv_frame_cache = f;
         GpuDisplayInfo di; gpu_get_display_info(&di);
         s_ws_fmv_cached = di.depth24 || mdec_recently_active(WS_FMV_HYSTERESIS);
     }
+    if (hold_enabled)
+        return ws_scene_hold_classify(&s_ws_scene_hold,
+            s_ws_retained_scene_predicate(), native_43, s_ws_fmv_cached,
+            ws_display_origin());
     return s_ws_fmv_cached;
 }
 
@@ -454,9 +502,10 @@ static int ws_nw_configured_offset(void) {
     int local_offset = 0;
     if (ws_local_viewport_layout(NULL, NULL, NULL, &local_offset))
         return local_offset;
-    int numr = 3 * ws_cfg_num - 4 * ws_cfg_den;
+    int64_t numr = (int64_t)3 * ws_cfg_num - (int64_t)4 * ws_cfg_den;
     int w = (int)ws_disp_w();
-    return (w * numr + 4 * ws_cfg_den) / (8 * ws_cfg_den);
+    return (int)((w * numr + (int64_t)4 * ws_cfg_den) /
+                 ((int64_t)8 * ws_cfg_den));
 }
 static int ws_nw_offset(void) {
     if (!ws_native_wide_active()) return 0;
@@ -1671,7 +1720,7 @@ int psx_ws_backdrop_x(int x) {
  * auto_backdrop). The recompiler/interp detect each scrolling-backdrop
  * column-window generator (see ws_backdrop_detect.h) and route its window START
  * and END bounds through psx_ws_backdrop_value(). When native-wide is engaged we
- * WIDEN the camera-tracked window by the 16:9 reveal: the START (left) bound
+ * WIDEN the camera-tracked window by the live viewport reveal: the START (left) bound
  * moves left by `margin`, the END (right) bound moves right by `margin`, where
  * margin is the per-side reveal in COLUMNS. The window of window_cols columns
  * spans (at least) the full display width, so reveal_cols = window_cols *
@@ -1685,12 +1734,16 @@ int psx_ws_backdrop_preload(void) {
 }
 
 /* Live-tunable widen amount (set via the `ws_backdrop_margin` debug command):
- *   <0  => WHOLE-ROW preload: START->0, END->extent-1 (max generous)
+ *   -2  => adaptive: live viewport reveal plus the screen-space guard
+ *   -1  => WHOLE-ROW preload: START->0, END->extent-1 (diagnostic)
  *    0  => identity: no widening, native-wide still on (A/B the effect)
  *   >0  => widen the camera-tracked window by N columns each side (bounded)
- * Default is a safe-but-generous bounded value; dialed live while debugging so
- * the widen strategy can be tuned without a rebuild. */
-int g_ws_bd_margin = 0;   /* column preload proven irrelevant to the void; default off */
+ * Keep the default inert: a title must opt in after validating its producers.
+ * The debug override permits A/B testing without a rebuild. */
+int g_ws_bd_margin = 0;
+void gpu_ws_set_adaptive_backdrop_preload(int enabled) {
+    g_ws_bd_margin = enabled ? -2 : 0;
+}
 /* Set to 1 by the interpreter around its psx_ws_backdrop_value call so the value
  * function does NOT also ring-note: the interp records a richer entry (live
  * extent / camera / DL count). Native cache-DLL calls leave it 0, so the value
@@ -1701,10 +1754,16 @@ uint32_t psx_ws_backdrop_value(uint32_t orig, int is_end, int window_cols) {
     if (!psx_ws_backdrop_preload()) return orig;   /* 4:3 -> byte-identical */
     if (window_cols < 0) window_cols = -window_cols;
     int      m   = g_ws_bd_margin;
+    int      adaptive = m == -2;
+    if (adaptive)
+        m = psx_ws_backdrop_columns(window_cols, psx_ws_x_margin(),
+                                    (int)ws_disp_w());
     int      from_interp = g_ws_bd_from_interp;
     g_ws_bd_from_interp = 0;                        /* consume one-shot flag */
     uint32_t finalv;
-    if (m < 0) {
+    if (adaptive) {
+        finalv = psx_ws_backdrop_bound(orig, is_end, m);
+    } else if (m < 0) {
         /* Whole-row: the generator's shared clamps (START<0 -> 0; END>=extent ->
          * extent-1) pin the loop to [0, extent-1]. Bounded because `extent` is a
          * byte and the DL count is a byte (row <= 255 cols). */
@@ -2165,6 +2224,7 @@ static int ws_bg_phase_over(void) {
     return s_bg_phase_over;
 }
 
+static int ws_tagged_world_primitive(void);
 int psx_ws_prim_in_backdrop(void) {
     if (gp0_cmd_source_addr != 0xFFFFFFFFu) {
         uint32_t f = (uint32_t)s_frame_count;
@@ -2173,6 +2233,9 @@ int psx_ws_prim_in_backdrop(void) {
         if (gp0_cmd_source_addr > g_bdg_src_hi) g_bdg_src_hi = gp0_cmd_source_addr;
     }
     if (g_dbg_mode != 0) return dbg_gate_match();   /* correlation override */
+    /* Explicit title provenance outranks the legacy draw-order heuristic.
+     * Early-sorted world sprites must not be stretched into the reveal. */
+    if (ws_tagged_world_primitive()) return 0;
     if (ws_nw_textured_edges) {
         uint32_t op = (gp0_cmd_buf[0] >> 24) & 0xFFu;
         if (op >= 0x20u && op <= 0x3Fu && (op & 0x04u))
@@ -2416,6 +2479,30 @@ static int ws_nw_hud_corners = 0;
 static int ws_nw_hud_tag_rects = 0;   /* rects shift even when tagged (A/B) */
 static uint32_t ws_nw_left_hud_packet_lo = 0;
 static uint32_t ws_nw_left_hud_packet_hi = 0;
+/* Explicit title-owned roles. Separate from sprite tags: world sprites and
+ * HUD can share the same builder, and either entry hook may run first. Clear
+ * tags for recycled non-HUD packets; frame expiry protects unused addresses. */
+static WsPrimitiveRole ws_primitive_roles[WS_ROLE_BUCKETS];
+void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge) {
+    WsPrimitiveRole* tag = ws_role_write(ws_primitive_roles, primitive,
+                                        (uint32_t)s_frame_count);
+    if (tag) tag->hud_edge = edge < 0 ? -1 : edge > 0 ? 1 : 0;
+}
+void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world) {
+    WsPrimitiveRole* tag = ws_role_write(ws_primitive_roles, primitive,
+                                        (uint32_t)s_frame_count);
+    if (tag) tag->world = is_world != 0;
+}
+static int ws_tagged_world_primitive(void) {
+    const WsPrimitiveRole* tag = ws_role_read(ws_primitive_roles,
+        gp0_cmd_source_addr, (uint32_t)s_frame_count);
+    return tag && tag->world;
+}
+static int ws_tagged_hud_edge(void) {
+    const WsPrimitiveRole* tag = ws_role_read(ws_primitive_roles,
+        gp0_cmd_source_addr, (uint32_t)s_frame_count);
+    return tag ? tag->hud_edge : 0;
+}
 void gpu_ws_set_nw_hud_corners(int on) { ws_nw_hud_corners = on ? 1 : 0; }
 void gpu_ws_set_nw_hud_tag_rects(int on) { ws_nw_hud_tag_rects = on ? 1 : 0; }
 void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi) {
@@ -2434,6 +2521,8 @@ static int32_t ws_nw_hud_shift(int32_t x, int32_t w) {
     if (!ws_native_wide_active()) return 0;
     int32_t off = ws_nw_offset();
     if (off <= 0) return 0;
+    int hud_edge = ws_tagged_hud_edge();
+    if (hud_edge) return hud_edge * off;
     int32_t explicit_delta = 0;
     if (ws_nw_explicit_hud_delta(&explicit_delta)) return explicit_delta;
     if (!ws_nw_left_hud_packet() && !ws_nw_hud_corners) return 0;
@@ -2692,6 +2781,9 @@ extern void psx_irq_raise(uint32_t bit, uint32_t detail);
 /* Display area start (GP1(05h)) */
 static uint32_t display_area_x;
 static uint32_t display_area_y;
+static uint32_t ws_display_origin(void) {
+    return display_area_x | (display_area_y << 10);
+}
 
 /* ----- Native-wide compositor driving (see runtime/src/gpu_sw_renderer.c) ----
  * The renderer keeps a separate wide surface per framebuffer; we tell it which
@@ -2895,6 +2987,7 @@ uint64_t g_pollhack_vblank_count = 0;  /* instrumentation: poll-fallback VBlank 
 /* ---- Initialization ---- */
 
 static void gpu_reset_state(int clear_vram) {
+    ws_reset_scene_history();
     if (clear_vram) {
         memset(vram, 0, sizeof(vram));
         gpu_vram_dirty_mark_all();
@@ -2976,6 +3069,7 @@ static void gpu_reset_state(int clear_vram) {
     gpustat_poll_count = 0;
     s_ws_fmv_frame_cache = 0xFFFFFFFFu;
     s_ws_fmv_cached = 0;
+    ws_scene_hold_reset(&s_ws_scene_hold);
     s_d24_upload_x1 = 0;
     s_d24_present_hold = 0;
     s_d24_prev_disp_h = 0;
@@ -3265,12 +3359,6 @@ void gpu_vblank_tick(void) {
     /* Trusted package-selected plugins run on guest VBlank, independent of
      * host presentation, pacing, turbo, or skipped frames. */
     mod_runtime_on_vblank();
-    /* Ape LOAD: RAM-only libcard waiter + idle-skip can starve sio_tick /
-     * interrupt-check pumps; VBlank always runs. */
-    {
-        extern void sio_ape_card_unstick_pump(void);
-        sio_ape_card_unstick_pump();
-    }
     psx_irq_raise(0, 0); /* IRQ_VBLANK (gpu_vblank_tick) */
     if (!vblank_callback)
         return;
@@ -4249,14 +4337,36 @@ static void gp0_exec_shaded_textured_tri(void) {
     }
     if (draw_area_out_bbox(vx, vy, 3)) return;
 
+    uint16_t host_bank = mod_texture_packet_bank(gp0_cmd_source_addr, gp0_cmd_buf, 9u);
+    if (host_bank && (gr_backend() != GR_BACKEND_OPENGL ||
+                      !gl_renderer_select_texture_bank(host_bank))) return;
+
     gr_set_semi_transparency(semi_trans, (int)semi_transparency);
     prepare_precise_triangle(1, 4, 7,
                              vx, vy);
     prepare_texture_triangle(1, 4, 7);
+    if (host_bank) {
+        float q[3], xy[6];
+        if (mod_texture_packet_precision(gp0_cmd_source_addr, q, xy)) {
+            gr_set_precise_triangle(1,
+                (int32_t)((xy[0] + draw_offset_x) * 65536.0f),
+                (int32_t)((xy[1] + draw_offset_y) * 65536.0f),
+                (int32_t)((xy[2] + draw_offset_x) * 65536.0f),
+                (int32_t)((xy[3] + draw_offset_y) * 65536.0f),
+                (int32_t)((xy[4] + draw_offset_x) * 65536.0f),
+                (int32_t)((xy[5] + draw_offset_y) * 65536.0f));
+            gr_set_perspective_triangle(1, q[0], q[1], q[2]);
+        }
+    }
     gr_draw_shaded_textured_triangle(vx[0], vy[0], u[0], v[0], c[0],
                                      vx[1], vy[1], u[1], v[1], c[1],
                                      vx[2], vy[2], u[2], v[2], c[2],
                                      clut_x, clut_y, tpage, raw_texture);
+    if (host_bank) (void)gl_renderer_select_texture_bank(0);
+}
+
+int psx_mod_texture_banks_supported(void) {
+    return gr_backend() == GR_BACKEND_OPENGL && gl_renderer_texture_banks_supported();
 }
 
 /* Execute shaded textured quad (GP0 0x3C-0x3F) */
@@ -4765,7 +4875,9 @@ static void gp0_exec_cpu_to_vram(void) {
     vram_write_w = (w == 0) ? 0x400 : (uint16_t)w;
     vram_write_h = (h == 0) ? 0x200 : (uint16_t)h;
 
-    /* Record for debug */
+    /* A full history retains old uploads; later transfers must not append
+     * to the last slot and overflow its diagnostic word counter. */
+    a0_capture_slot = -1;
     if (a0_history_count < A0_HISTORY_CAP) {
         int slot = a0_history_count++;
         a0_history[slot].x = vram_write_x;
@@ -6266,6 +6378,8 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     if (len != gpu_snapshot_bytes()) return 0;
     pst_r_init(&r, p, len);
     if (!gpu_snap_parse(&r)) return 0;
+    ws_reset_scene_history();
+    ws_scene_hold_reset(&s_ws_scene_hold);
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
