@@ -1207,6 +1207,8 @@ typedef struct {
     uint8_t load_failed;
     int resident;
     int capacity_suppressed;
+    int loaded_check_count;
+    int loaded_check_result;
     char path[768];
 } CacheEntry;
 static CacheEntry s_cache_idx[CACHE_IDX_CAP];
@@ -1729,6 +1731,8 @@ static int add_posix_cache_file(const PsxOverlayCacheFile *file, void *opaque) {
     e->tier = (uint8_t)tier;
     e->manifest_ok = 0;
     e->load_failed = 0;
+    e->loaded_check_count = -1;
+    e->loaded_check_result = 0;
     e->resident = cache_path_is_bios_resident(file->path);
     e->capacity_suppressed = 0;
     snprintf(e->path, sizeof(e->path), "%s", file->path);
@@ -1773,6 +1777,8 @@ static void scan_one_cache_dir(const char *dir, int tier) {
         e->tier = (uint8_t)tier;
         e->manifest_ok = 0;
         e->load_failed = 0;
+        e->loaded_check_count = -1;
+        e->loaded_check_result = 0;
         e->capacity_suppressed = 0;
         snprintf(e->path, sizeof(e->path), "%s", full);
         e->resident = cache_path_is_bios_resident(full);
@@ -2999,6 +3005,20 @@ static int dll_already_loaded(const char *path) {
     return 0;
 }
 
+/* A lazy manifest chain may have hundreds of functions from the same DLL.
+ * Re-comparing every long Windows path (including locale case folding) for
+ * each function dominates uncovered CPS continuation dispatches. Loaded paths
+ * are append-only: cache membership per artifact until that set grows. This
+ * caches only path membership; live code/manifest validation is unchanged. */
+static int cache_entry_already_loaded(int ci) {
+    CacheEntry *e = &s_cache_idx[ci];
+    if (e->loaded_check_count != s_nloaded_paths) {
+        e->loaded_check_result = dll_already_loaded(e->path);
+        e->loaded_check_count = s_nloaded_paths;
+    }
+    return e->loaded_check_result;
+}
+
 static void overlay_library_close(OverlayLibraryHandle handle) {
     if (!handle) return;
 #ifdef _WIN32
@@ -3327,7 +3347,7 @@ static int lazy_is_loadable(int li, uint32_t region_start, uint32_t phys,
             s_cache_idx[ci].region_start == region_start) &&
         !s_cache_idx[ci].load_failed &&
         !s_cache_idx[ci].capacity_suppressed &&
-        !dll_already_loaded(s_cache_idx[ci].path) &&
+        !cache_entry_already_loaded(ci) &&
         lazy_man_contains(&lm->fn, phys) && lazy_man_matches(lm);
 }
 
@@ -3347,7 +3367,7 @@ static int lazy_load_selected(int li) {
     if (ci < 0 || ci >= s_cache_idx_count || ci >= CACHE_IDX_CAP ||
         s_cache_idx[ci].load_failed ||
         s_cache_idx[ci].capacity_suppressed ||
-        dll_already_loaded(s_cache_idx[ci].path) ||
+        cache_entry_already_loaded(ci) ||
         s_cache_idx[ci].func_count <= 0) return 0;
     /* If proactive warming has not reached this fragment yet, prefer the
      * historical synchronous path over running a potentially hot function in
