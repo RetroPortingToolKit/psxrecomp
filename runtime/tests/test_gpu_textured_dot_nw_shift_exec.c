@@ -19,6 +19,7 @@ int g_psx_vram_dirty_tracking;
 GrBackend gr_backend(void) { return GR_BACKEND_SOFTWARE; }
 int gl_renderer_texture_banks_supported(void) { return 0; }
 int gl_renderer_select_texture_bank(uint16_t id) { return id == 0; }
+int gl_renderer_select_texture_bank_live_clut(uint16_t id) { return id == 0; }
 uint16_t mod_texture_packet_bank(uint32_t p, const uint32_t *words, uint32_t n) {
     (void)p; (void)words; (void)n; return 0;
 }

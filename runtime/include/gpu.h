@@ -172,6 +172,10 @@ void gpu_ws_set_full_2d(int on);
 /* Signed 16-bit camera/min/max; active is a nonzero byte. Requires bg2d hooks.
  * Zero addresses disable the feature. No guest memory is written. */
 void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_t active);
+/* Optional authored scene bounds when native camera locks do not delimit
+ * visible geometry. Set before layer setup; disable when leaving the scene.
+ * Changes presentation only, and has no effect without view anchoring. */
+void gpu_ws_set_view_bounds_override(int enabled, int minimum, int maximum);
 /* Bracket each bg2d packet producer, with its guest packet pointer. The
  * independent-layer mask identifies parallax backdrops that may anchor to
  * their own map edges; linked/foreground layers retain the world origin. */
@@ -185,6 +189,10 @@ void gpu_ws_bg2d_end_view_layer(unsigned layer, uint32_t packet);
  * native while this arena is registered. Allocate once during mod activation. */
 void gpu_ws_bg2d_set_host_arena(uint32_t base, uint32_t size);
 #define GPU_WS_BG2D_PACKET_MAGIC 0x58364247u
+#define GPU_WS_BG2D_BANK_PACKET_MAGIC 0x58364248u
+/* Bank packets pack signed shift in +16 low half and immutable bank ID in
+ * its high half. Their indices use the bank, but palettes remain live VRAM.
+ * Keep the original magic readable for pending packets in older snapshots. */
 #define GPU_WS_BG2D_MIRROR_X 0x80000000u
 struct WsViewAnchor;
 int gpu_ws_bg2d_get_view(unsigned layer, struct WsViewAnchor *view);

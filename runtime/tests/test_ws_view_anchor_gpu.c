@@ -55,6 +55,18 @@ int main(void) {
     assert(psx_ws_bg2d_startcol(0, 63) == 0);
     assert(psx_ws_bg2d_cols(21) == 28);
     assert(ws_view_current().left == 0 && ws_view_current().right == 106);
+    /* A camera lock inside continuous geometry must not become a new scene
+     * edge. An explicit scene bound still anchors at the real outer edges. */
+    half_at(0x80097202u, 1968); half_at(0x80097216u, 1968);
+    gpu_ws_set_view_bounds_override(1, 0, 5120);
+    ws_view_sample();
+    assert(ws_view_current().left == 53 && ws_view_current().shift == 0);
+    half_at(0x80097202u, 0); ws_view_sample();
+    assert(ws_view_current().left == 0 && ws_view_current().right == 106);
+    gpu_ws_set_view_bounds_override(0, 0, 5120);
+    half_at(0x80097202u, 1968); ws_view_sample();
+    assert(ws_view_current().left == 0 && ws_view_current().right == 106);
+    half_at(0x80097216u, 0); half_at(0x80097202u, 0);
     /* With the option disabled every original BG helper remains centered. */
     gpu_ws_set_view_anchor(0, 0, 0, 0);
     assert(psx_ws_bg2d_cols(21) == 29);
@@ -82,7 +94,20 @@ int main(void) {
     assert(last_scaled_rect.calls==1 && last_scaled_rect.x==400);
     assert(last_scaled_rect.w==16 && last_scaled_rect.h==16);
     assert(last_scaled_rect.u0==15 && last_scaled_rect.u1==-1);
+    ws_mode = 0;
+    gp0_cmd_buf[1]=pack_vertex(20,20);
+    int before_resize_calls=last_scaled_rect.calls;
+    gp0_exec_textured_16x16();
+    assert(last_scaled_rect.calls==before_resize_calls+1 && last_scaled_rect.x==20);
+    configure_native_wide_16_9();
     half_at(0x10001e, 0x5836u);
+    /* New metadata packs a bank ID beside a signed view shift; old saved
+     * packet metadata remains supported, with no accidental sign extension. */
+    half_at(0x10001c, 0x4248u);
+    half_at(0x100010, (uint16_t)-53); half_at(0x100012, 0x6001u);
+    assert(ws_view_packet().shift == -53);
+    half_at(0x10001c, 0x4247u); half_at(0x100012, 0xffffu);
+    assert(ws_view_packet().shift == -53);
     gp0_cmd_source_addr = 0x00010004u;
     parse_vertex(pack_vertex(1400, 20), &px, &py);
     assert(px == -648 && py == 20); /* Ordinary hardware packet unchanged. */

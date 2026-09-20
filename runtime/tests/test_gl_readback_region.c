@@ -135,6 +135,22 @@ int main(int argc,char **argv){
  check(gl_renderer_select_texture_bank(0),"reset bank after direct texture");
  check(glb_vram_read(302,252)==0x001f,"retained 16-bit texel");
  verify("retained banks and original VRAM ordered together");
+ /* A streamed scene can retain indices while CLUT uploads/fades continue.
+  * Alternate both modes of the SAME bank with pending draws: palette source
+  * must participate in the batch key, and stock packets must reset it. */
+ glb_vram_write(1,0,0x7c00);
+ check(gl_renderer_select_texture_bank_live_clut(7),"select bank with live CLUT");
+ glb_draw_shaded_textured_triangle(400,250,64,0,0x808080,432,250,64,0,0x808080,400,282,64,0,0x808080,0,0,0,1);
+ check(gl_renderer_select_texture_bank(7),"same bank with retained CLUT");
+ glb_draw_shaded_textured_triangle(440,250,64,0,0x808080,472,250,64,0,0x808080,440,282,64,0,0x808080,0,0,0,1);
+ check(glb_vram_read(402,252)==0x7c00,"live guest palette used");
+ check(glb_vram_read(442,252)==0x03e0,"same-bank palette source is a batch key");
+ glb_vram_write(1,0,0x001f);
+ check(gl_renderer_select_texture_bank_live_clut(7),"live CLUT after update");
+ glb_draw_shaded_textured_triangle(480,250,64,0,0x808080,512,250,64,0,0x808080,480,282,64,0,0x808080,0,0,0,1);
+ check(gl_renderer_select_texture_bank(0),"reset live-CLUT bank");
+ check(glb_vram_read(482,252)==0x001f,"palette update visible without replacing indices");
+ verify("retained indices with animated guest CLUT");
  verify_bank_batching();
  /* World and UI use different origins in an anchored wide frame. Keep the
   * canonical-center optimization enabled to catch an erroneous blit over the

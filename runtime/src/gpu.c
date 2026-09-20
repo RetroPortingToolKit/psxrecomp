@@ -514,6 +514,7 @@ static int ws_nw_offset(void) {
 int ws_nw_extra(void) { return 2 * ws_nw_offset(); }
 
 static uint32_t ws_view_camera_addr, ws_view_min_addr, ws_view_max_addr, ws_view_active_addr;
+static int ws_view_bounds_override, ws_view_bounds_min, ws_view_bounds_max;
 static WsViewAnchor ws_view;
 static uint32_t ws_view_frame = UINT32_MAX;
 void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_t active) {
@@ -521,9 +522,15 @@ void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_
     ws_view_min_addr = min;
     ws_view_max_addr = max;
     ws_view_active_addr = active;
+    ws_view_bounds_override = 0;
     ws_view_frame = UINT32_MAX;
     memset(&ws_view, 0, sizeof(ws_view));
     gr_wide_set_view(0, 0, 0, 0);
+}
+void gpu_ws_set_view_bounds_override(int enabled, int minimum, int maximum) {
+    ws_view_bounds_override = enabled && minimum <= maximum;
+    ws_view_bounds_min = minimum;
+    ws_view_bounds_max = maximum;
 }
 static int ws_view_enabled(void) {
     return ws_view_camera_addr && ws_view_min_addr && ws_view_max_addr &&
@@ -541,8 +548,8 @@ static void ws_view_sample(void) {
     if (!ws_view_enabled()) return;
     ws_view = ws_view_anchor(ws_nw_offset(),
         (int16_t)psx_read_half(ws_view_camera_addr),
-        (int16_t)psx_read_half(ws_view_min_addr),
-        (int16_t)psx_read_half(ws_view_max_addr));
+        ws_view_bounds_override ? ws_view_bounds_min : (int16_t)psx_read_half(ws_view_min_addr),
+        ws_view_bounds_override ? ws_view_bounds_max : (int16_t)psx_read_half(ws_view_max_addr));
     if (!psx_read_byte(ws_view_active_addr)) {
         ws_view.left = ws_view.right = ws_nw_offset();
         ws_view.shift = ws_view.pad_left = ws_view.pad_right = 0;
@@ -1221,8 +1228,8 @@ static uint32_t ws_bg2d_host_packet(void) {
     uint32_t offset = command - g_bg2d_host_base - 4u;
     if ((offset & 31u) || offset > g_bg2d_host_size - 32u) return 0;
     uint32_t packet = command - 4u;
-    return (psx_read_word(packet + 28u) & ~GPU_WS_BG2D_MIRROR_X) ==
-        GPU_WS_BG2D_PACKET_MAGIC ? packet : 0;
+    uint32_t magic = psx_read_word(packet + 28u) & ~GPU_WS_BG2D_MIRROR_X;
+    return magic == GPU_WS_BG2D_PACKET_MAGIC || magic == GPU_WS_BG2D_BANK_PACKET_MAGIC ? packet : 0;
 }
 #define WS_VIEW_LAYERS 8
 static int ws_view_layer = -1;
@@ -1292,7 +1299,9 @@ static WsViewAnchor ws_view_packet(void) {
     uint32_t packet = ws_bg2d_host_packet();
     if (packet) {
         WsViewAnchor v = ws_view_current();
-        v.shift = (int32_t)psx_read_word(packet + 16u);
+        uint32_t metadata = psx_read_word(packet + 16u);
+        v.shift = (psx_read_word(packet + 28u) & ~GPU_WS_BG2D_MIRROR_X) ==
+            GPU_WS_BG2D_BANK_PACKET_MAGIC ? (int16_t)metadata : (int32_t)metadata;
         v.pad_left = (int32_t)psx_read_word(packet + 20u);
         v.pad_right = (int32_t)psx_read_word(packet + 24u);
         v.left = ws_nw_offset() + v.shift - v.pad_left;
@@ -4720,7 +4729,9 @@ static void gp0_exec_textured_16x16(void) {
      * a stale ring slot; suppressing here caused the stage-start black flicker. */
     uint32_t host_packet = ws_bg2d_host_packet();
     int host_tile = host_packet != 0;
-    if (host_tile && !ws_native_wide_active()) return;
+    /* A pending full-width OT can outlive a resize back to 4:3. Keep its
+     * central tiles; the normal draw area clips the extra columns. Dropping
+     * every host packet here would blank that transition frame. */
     int ws_w = host_tile ? 0 : ws_sprt_fixed_transform(&x0, y0, 16);
     if (!host_tile) x0 += ws_nw_hud_shift(x0, 16);
     x0 += draw_offset_x; y0 += draw_offset_y;
@@ -4734,6 +4745,11 @@ static void gp0_exec_textured_16x16(void) {
         int dw = (ws_w && ws_w != 16) ? ws_w : 16;
         if (draw_area_out_rect(x0, y0, dw, 16)) return;
     }
+    uint16_t bank = host_tile &&
+        (psx_read_word(host_packet + 28u) & ~GPU_WS_BG2D_MIRROR_X) == GPU_WS_BG2D_BANK_PACKET_MAGIC ?
+        (uint16_t)(psx_read_word(host_packet + 16u) >> 16) : 0;
+    if (bank && (gr_backend() != GR_BACKEND_OPENGL ||
+        !gl_renderer_select_texture_bank_live_clut(bank))) return;
     setup_textured_draw(color24, semi_trans, raw_texture);
     if (host_tile && (psx_read_word(host_packet + 28u) & GPU_WS_BG2D_MIRROR_X))
         gr_draw_textured_rect_scaled(x0, y0, 16, 16, u0 + 15, v0, u0 - 1, v0 + 16,
@@ -4743,6 +4759,7 @@ static void gp0_exec_textured_16x16(void) {
                                      clut_x, clut_y, current_texpage());
     else
         gr_draw_textured_rect(x0, y0, 16, 16, u0, v0, clut_x, clut_y, current_texpage());
+    if (bank) (void)gl_renderer_select_texture_bank(0);
 }
 
 /* ---- GP0 command execution ---- */
