@@ -5361,6 +5361,7 @@ static void handle_gpu_state(int id, const char *json)
              "\"mode\":%d,\"nw_extra\":%d,"
              "\"view_anchor\":%d,\"view_left\":%d,\"view_right\":%d,"
              "\"view_shift\":%d,\"view_padding\":[%d,%d],"
+             "\"bg2d_generations\":%u,"
              "\"cur_frame\":%llu,\"last_tag_frame\":%u,\"last_3d_frame\":%u,"
              "\"gte_verts\":%u,\"last_world3d_frame\":%u,"
              "\"ovh_prims\":%u,\"last_ovh_frame\":%u,"
@@ -5393,6 +5394,7 @@ static void handle_gpu_state(int id, const char *json)
              ws.mode, ws.nw_extra,
              ws.view_anchor, ws.view_left, ws.view_right, ws.view_shift,
              ws.view_pad_left, ws.view_pad_right,
+             ws.bg2d_generations,
              (unsigned long long)ws.cur_frame, ws.last_tag_frame,
               ws.last_3d_frame, ws.gte_verts, ws.last_world3d_frame,
               ws.ovh_prims, ws.last_ovh_frame,

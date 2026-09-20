@@ -1207,6 +1207,23 @@ static uint32_t g_bg2d_layer_struct_stride = 0x54;
 static uint32_t g_bg2d_packet_cap = 1000;
 static int g_bg2d_native_cols = 21;
 static int g_bg2d_parent_links = 1;
+static uint32_t g_bg2d_host_base, g_bg2d_host_size;
+static uint32_t g_bg2d_host_generation;
+
+void gpu_ws_bg2d_set_host_arena(uint32_t base, uint32_t size) {
+    g_bg2d_host_base = base & 0x1fffffffu;
+    g_bg2d_host_size = size >= 32u && !(base & 31u) ? size : 0u;
+}
+
+static uint32_t ws_bg2d_host_packet(void) {
+    uint32_t command = gp0_cmd_source_addr & 0x1fffffffu;
+    if (!g_bg2d_host_size || command < g_bg2d_host_base + 4u) return 0;
+    uint32_t offset = command - g_bg2d_host_base - 4u;
+    if ((offset & 31u) || offset > g_bg2d_host_size - 32u) return 0;
+    uint32_t packet = command - 4u;
+    return (psx_read_word(packet + 28u) & ~GPU_WS_BG2D_MIRROR_X) ==
+        GPU_WS_BG2D_PACKET_MAGIC ? packet : 0;
+}
 #define WS_VIEW_LAYERS 8
 static int ws_view_layer = -1;
 static unsigned ws_view_independent_mask;
@@ -1237,17 +1254,33 @@ static WsViewAnchor ws_bg2d_layer_view(int layer) {
         v.shift = origin - extra;
         v.left = origin;
         v.right = 2 * extra - origin;
+    } else if (g_bg2d_host_size && hi > lo && hi - lo < frame_width) {
+        int pad = frame_width - (hi - lo);
+        v.pad_left = pad / 2;
+        v.pad_right = pad - v.pad_left;
+        v.shift = sx - lo + v.pad_left - extra;
+        v.left = sx > lo ? sx - lo : 0;
+        v.right = hi > sx + width ? hi - sx - width : 0;
     }
     return v;
 }
 
 void gpu_ws_bg2d_begin_view_layer(unsigned layer, uint32_t packet, unsigned independent_mask) {
+    if (g_bg2d_host_size) {
+        ws_view_sample();
+        if (layer == 0) ++g_bg2d_host_generation;
+    }
     if (!ws_view_enabled() || layer >= WS_VIEW_LAYERS) return;
     ws_view_independent_mask = independent_mask;
     ws_view_layer = (int)layer;
     ws_view_layers[layer].begin = packet & 0x1fffffffu;
     ws_view_layers[layer].end = ws_view_layers[layer].begin;
     ws_view_layers[layer].frame = (uint32_t)s_frame_count;
+}
+int gpu_ws_bg2d_get_view(unsigned layer, WsViewAnchor *view) {
+    if (!view || !ws_native_wide_active() || ws_disp_w() > 384) return 0;
+    *view = ws_bg2d_layer_view((int)layer);
+    return ws_disp_w();
 }
 void gpu_ws_bg2d_end_view_layer(unsigned layer, uint32_t packet) {
     if (!ws_view_enabled() || layer >= WS_VIEW_LAYERS) return;
@@ -1256,6 +1289,16 @@ void gpu_ws_bg2d_end_view_layer(unsigned layer, uint32_t packet) {
     ws_view_layer = -1;
 }
 static WsViewAnchor ws_view_packet(void) {
+    uint32_t packet = ws_bg2d_host_packet();
+    if (packet) {
+        WsViewAnchor v = ws_view_current();
+        v.shift = (int32_t)psx_read_word(packet + 16u);
+        v.pad_left = (int32_t)psx_read_word(packet + 20u);
+        v.pad_right = (int32_t)psx_read_word(packet + 24u);
+        v.left = ws_nw_offset() + v.shift - v.pad_left;
+        v.right = 2 * ws_nw_offset() - v.left - v.pad_left - v.pad_right;
+        return v;
+    }
     if (!ws_view_enabled()) return ws_view_current();
     uint32_t addr = gp0_cmd_source_addr & 0x1fffffffu;
     for (unsigned i = 0; i < WS_VIEW_LAYERS; i++)
@@ -1284,6 +1327,7 @@ void gpu_ws_bg2d_set_parent_links(int on) {
 }
 
 static int ws_bg2d_left_cols(void) {
+    if (g_bg2d_host_size) return 0;
     if (!ws_native_wide_active()) return 0;
     /* Only the ~320 gameplay mode; the engine's 512 hi-res mode (title) draws
      * its own 33 columns and centres itself — never double-shift it. */
@@ -1293,6 +1337,7 @@ static int ws_bg2d_left_cols(void) {
     return (off + 15) / 16;             /* ceil to whole tile columns */
 }
 static int ws_bg2d_right_cols(void) {
+    if (g_bg2d_host_size) return 0;
     if (!ws_native_wide_active() || ws_disp_w() > 384) return 0;
     return (ws_bg2d_layer_view(ws_view_layer).right + 15) / 16;
 }
@@ -1507,6 +1552,7 @@ long gpu_ws_mmx6_refill_cols(void)    { return g_mmx6_refill_cols; }
  * No-op at 4:3 / 512 hi-res (left==0). Idempotent over the native columns the engine
  * already streamed correctly, so re-streaming them is harmless. */
 void psx_ws_mmx6_bg_refill_all(void) {
+    if (g_bg2d_host_size) return;
     if (!g_mmx6_freshfix) return;
     if (!ws_native_wide_active() || ws_disp_w() > 384) return;
     if (ws_nw_offset() <= 0) return;
@@ -1924,6 +1970,7 @@ void gpu_ws_get_debug(GpuWsDebug* out) {
     out->view_shift = view.shift;
     out->view_pad_left = view.pad_left; out->view_pad_right = view.pad_right;
     out->cur_frame         = s_frame_count;
+    out->bg2d_generations  = g_bg2d_host_generation;
     out->last_tag_frame    = ws_last_tag_stamp;
     out->last_3d_frame     = ws_last_3d_stamp;
     out->gte_verts         = ws_gte_prev_verts;
@@ -2519,6 +2566,7 @@ static int ws_nw_left_hud_packet(void) {
 }
 static int32_t ws_nw_hud_shift(int32_t x, int32_t w) {
     if (!ws_native_wide_active()) return 0;
+    if (g_bg2d_host_size && ws_tagged_world_primitive()) return 0;
     int32_t off = ws_nw_offset();
     if (off <= 0) return 0;
     int hud_edge = ws_tagged_hud_edge();
@@ -3669,7 +3717,9 @@ static int32_t sign_extend(uint32_t val, int bits) {
 
 /* Parse a vertex position word: signed 11-bit X and Y */
 static void parse_vertex(uint32_t word, int32_t* x, int32_t* y) {
-    *x = sign_extend(word & 0x7FFu, 11);
+    int extended = ws_bg2d_host_packet() || (g_bg2d_host_size &&
+        ws_native_wide_active() && ws_tagged_world_primitive());
+    *x = extended ? (int16_t)word : sign_extend(word & 0x7FFu, 11);
     *y = sign_extend((word >> 16) & 0x7FFu, 11);
 }
 
@@ -4668,8 +4718,11 @@ static void gp0_exec_textured_16x16(void) {
     /* Never suppress MMX6 BG packets at a guessed finite-map boundary. The
      * classifier cannot distinguish an authored layer entering the reveal from
      * a stale ring slot; suppressing here caused the stage-start black flicker. */
-    int ws_w = ws_sprt_fixed_transform(&x0, y0, 16);
-    x0 += ws_nw_hud_shift(x0, 16);   /* native-wide HUD corner re-anchor (no-op else) */
+    uint32_t host_packet = ws_bg2d_host_packet();
+    int host_tile = host_packet != 0;
+    if (host_tile && !ws_native_wide_active()) return;
+    int ws_w = host_tile ? 0 : ws_sprt_fixed_transform(&x0, y0, 16);
+    if (!host_tile) x0 += ws_nw_hud_shift(x0, 16);
     x0 += draw_offset_x; y0 += draw_offset_y;
     int u0 = gp0_cmd_buf[2] & 0xFF;
     int v0 = (gp0_cmd_buf[2] >> 8) & 0xFF;
@@ -4682,7 +4735,10 @@ static void gp0_exec_textured_16x16(void) {
         if (draw_area_out_rect(x0, y0, dw, 16)) return;
     }
     setup_textured_draw(color24, semi_trans, raw_texture);
-    if (ws_w && ws_w != 16)
+    if (host_tile && (psx_read_word(host_packet + 28u) & GPU_WS_BG2D_MIRROR_X))
+        gr_draw_textured_rect_scaled(x0, y0, 16, 16, u0 + 15, v0, u0 - 1, v0 + 16,
+                                     clut_x, clut_y, current_texpage());
+    else if (ws_w && ws_w != 16)
         gr_draw_textured_rect_scaled(x0, y0, ws_w, 16, u0, v0, u0 + 16, v0 + 16,
                                      clut_x, clut_y, current_texpage());
     else
@@ -5608,16 +5664,21 @@ static void gp0_execute_command(void) {
     gp0_ring_record(gp0_cmd_buf, gp0_words_needed);
     extern void ws_bg_phase_note(uint32_t op);
     ws_bg_phase_note(opcode);   /* native-wide 2D-backdrop stretch: background-phase latch */
-    if (ws_view_camera_addr) {
+    if (ws_view_camera_addr || g_bg2d_host_size) {
         WsViewAnchor v = ws_view_current();
         /* Draw env packets select the back-buffer band after linked-list
          * begin. Clear narrow-room padding at its first actual draw. */
         static uint32_t clear_frame[512];
-        if (opcode >= 0x20 && opcode <= 0x7F && ws_view_enabled() &&
-            (v.pad_left || v.pad_right) && draw_area_top < 512 &&
-            clear_frame[draw_area_top] != (uint32_t)s_frame_count + 1u &&
+        static uint32_t clear_generation[512];
+        if (opcode >= 0x20 && opcode <= 0x7F &&
+            (ws_view_enabled() || (g_bg2d_host_size && ws_native_wide_active() && ws_disp_w() <= 384)) &&
+            (g_bg2d_host_size || v.pad_left || v.pad_right) && draw_area_top < 512 &&
+            (g_bg2d_host_size
+                ? clear_generation[draw_area_top] != g_bg2d_host_generation
+                : clear_frame[draw_area_top] != (uint32_t)s_frame_count + 1u) &&
             ws_is_fb_base(draw_area_left)) {
             clear_frame[draw_area_top] = (uint32_t)s_frame_count + 1u;
+            clear_generation[draw_area_top] = g_bg2d_host_generation;
             gr_wide_clear_margins((int)draw_area_left, (int)draw_area_top,
                 (int)draw_area_bottom - (int)draw_area_top + 1, 0, 3);
         }
@@ -5625,7 +5686,9 @@ static void gp0_execute_command(void) {
         int32_t hud_delta;
         /* Existing HUD placement stays fixed in the physical frame. Only the
          * wide world mirror receives the camera-edge origin and room clip. */
-        if (ws_nw_left_hud_packet() || ws_nw_explicit_hud_delta(&hud_delta))
+        if (ws_nw_left_hud_packet() ||
+            (!(g_bg2d_host_size && ws_tagged_world_primitive()) &&
+             ws_nw_explicit_hud_delta(&hud_delta)))
             v.shift = v.pad_left = v.pad_right = 0;
         gr_wide_set_view(ws_view_enabled(), v.shift, v.pad_left, v.pad_right);
     }

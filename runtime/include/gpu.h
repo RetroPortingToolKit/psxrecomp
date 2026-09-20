@@ -177,6 +177,17 @@ void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_
  * their own map edges; linked/foreground layers retain the world origin. */
 void gpu_ws_bg2d_begin_view_layer(unsigned layer, uint32_t packet, unsigned independent_mask);
 void gpu_ws_bg2d_end_view_layer(unsigned layer, uint32_t packet);
+/* Opt-in host-produced SPRT_16 packets, 32-byte slots in enhancement DMA RAM.
+ * The 16-byte standard packet is followed by signed view shift, left/right
+ * padding and GPU_WS_BG2D_PACKET_MAGIC, optionally ORed with MIRROR_X.
+ * Coordinates use signed 16-bit X; ordinary
+ * packets retain PS1 signed 11-bit coordinates. The guest tile loop/ring stays
+ * native while this arena is registered. Allocate once during mod activation. */
+void gpu_ws_bg2d_set_host_arena(uint32_t base, uint32_t size);
+#define GPU_WS_BG2D_PACKET_MAGIC 0x58364247u
+#define GPU_WS_BG2D_MIRROR_X 0x80000000u
+struct WsViewAnchor;
+int gpu_ws_bg2d_get_view(unsigned layer, struct WsViewAnchor *view);
 void gpu_ws_set_auto_ui_squash(int on);
 /* [widescreen.bg2d] Capcom 2D background tile-loop widen — hooked at the renderer's
  * column-count / start-tile-col / start-screen-x instructions. Identity at 4:3
@@ -470,6 +481,7 @@ typedef struct {
     int      nw_extra;          /* native-wide frame growth (display px), 0 if off */
     int      view_anchor, view_left, view_right, view_shift, view_pad_left, view_pad_right;
     uint64_t cur_frame;
+    uint32_t bg2d_generations; /* Game background submissions, independent of vblank. */
     uint32_t last_tag_frame;    /* frame of newest tagged prim */
     uint32_t last_3d_frame;     /* frame of newest shaded prim (diagnostic) */
     uint32_t gte_verts;         /* RTPS/RTPT verts in the last completed frame */

@@ -42,6 +42,19 @@ static void draw(int shift, int pad_left, int pad_right) {
 }
 
 int main(void) {
+    /* Same framing at 32:9 / 64:9 and beyond; finite rooms keep symmetric
+     * padding while a full stage transfers the reveal to the available side. */
+    const int extras[] = {267, 693, 1600};
+    for (unsigned i = 0; i < sizeof extras / sizeof extras[0]; ++i) {
+        int e = extras[i];
+        WsViewAnchor left = ws_view_anchor(e,0,0,5120);
+        WsViewAnchor right = ws_view_anchor(e,5120,0,5120);
+        WsViewAnchor room = ws_view_anchor(e,200,200,200);
+        assert(left.left==0 && left.right==2*e && left.shift==-e);
+        assert(right.left==2*e && right.right==0 && right.shift==e);
+        assert(room.left==0 && room.right==0 && room.shift==0);
+        assert(room.pad_left==e && room.pad_right==e);
+    }
     check(0, 0, 1000, 0, 106, -53);
     check(20, 0, 1000, 20, 86, -33);
     check(500, 0, 1000, 53, 53, 0);

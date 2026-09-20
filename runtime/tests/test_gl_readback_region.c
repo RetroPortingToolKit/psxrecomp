@@ -71,6 +71,15 @@ int main(int argc,char **argv){
  printf("driver=%s renderer=%s scale=%d\n",glGetString(GL_VERSION),glGetString(GL_RENDERER),scale);
  glb_set_draw_area(0,0,1023,511);glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);glb_set_color_modulation(128,128,128,1);
  verify("initial upload");
+ /* Adaptive backdrop reflection must retain every edge texel at both native
+  * and supersampled scales; the ordinary rect stays forward-facing. */
+ for(int x=0;x<16;++x) glb_vram_write(512+x,0,(uint16_t)(0x400+x+1));
+ glb_draw_textured_rect(700,200,16,1,0,0,0,0,0x108);
+ glb_draw_textured_rect_scaled(720,200,16,1,15,0,-1,1,0,0,0x108);
+ for(int x=0;x<16;++x) {
+  check(glb_vram_read(700+x,200)==0x401+x,"forward panorama texel");
+  check(glb_vram_read(720+x,200)==0x410-x,"reflected panorama texel");
+ }
  glb_draw_flat_rect(1020,511,1,1,0x7fff);
  check(glb_vram_read(1020,511)==0x7fff,"test pixel value");
  GlCohEvent event;int found=0;

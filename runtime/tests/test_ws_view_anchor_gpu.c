@@ -63,6 +63,43 @@ int main(void) {
     ws_mode = 0;
     assert(psx_ws_bg2d_cols(21) == 21);
     assert(psx_ws_bg2d_startx(0) == 0);
+    /* The opt-in host arena keeps guest loops and the ring native, while
+     * its packet coordinates remain signed 16-bit beyond PS1's +/-1024. */
+    configure_native_wide_16_9();
+    gpu_ws_bg2d_set_host_arena(0x80100000u, 64u); /* mapped fixture memory */
+    half_at(0x10001c, 0x4247u); half_at(0x10001e, 0x5836u);
+    gp0_cmd_source_addr = 0x00100004u;
+    int32_t px, py;
+    parse_vertex(pack_vertex(1400, 20), &px, &py);
+    assert(px == 1400 && py == 20);
+    /* Reflection reverses the exact 16 texels, without reading the adjacent
+     * tile's first column. Its metadata is confined to the registered arena. */
+    half_at(0x10001e, 0xd836u);
+    gp0_cmd_buf[0]=0x7d808080u;
+    gp0_cmd_buf[1]=pack_vertex(400,20);
+    gp0_cmd_buf[2]=0x79804000u;
+    gp0_exec_textured_16x16();
+    assert(last_scaled_rect.calls==1 && last_scaled_rect.x==400);
+    assert(last_scaled_rect.w==16 && last_scaled_rect.h==16);
+    assert(last_scaled_rect.u0==15 && last_scaled_rect.u1==-1);
+    half_at(0x10001e, 0x5836u);
+    gp0_cmd_source_addr = 0x00010004u;
+    parse_vertex(pack_vertex(1400, 20), &px, &py);
+    assert(px == -648 && py == 20); /* Ordinary hardware packet unchanged. */
+    gpu_ws_tag_world_primitive(0x80010000u, 1);
+    parse_vertex(pack_vertex(1400, 20), &px, &py);
+    assert(px == 1400 && py == 20);
+    parse_vertex(pack_vertex(-1400, 20), &px, &py);
+    assert(px == -1400 && py == 20);
+    gpu_ws_tag_world_primitive(0x80010000u, 0);
+    parse_vertex(pack_vertex(1400, 20), &px, &py);
+    assert(px == -648 && py == 20);
+    assert(psx_ws_bg2d_cols(21) == 21);
+    assert(psx_ws_bg2d_startcol(3, 63) == 3);
+    assert(psx_ws_bg2d_startx(-5) == -5);
+    assert(psx_ws_bg2d_stream_left(100) == 100);
+    assert(psx_ws_bg2d_stream_right(436) == 436);
+    gpu_ws_bg2d_set_host_arena(0, 0);
     puts("ws_view_anchor_gpu: sampled camera, per-layer coverage, packet origin, disabled identity PASS");
     return 0;
 }
