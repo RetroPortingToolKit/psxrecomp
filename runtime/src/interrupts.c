@@ -639,6 +639,8 @@ uint32_t psx_irq_resume_context_snapshot_pc(void)
 
 int psx_irq_resume_context_snapshot_safe_at(uint32_t resume_pc)
 {
+    extern int psx_mod_function_entry_active(void);
+    if (psx_mod_function_entry_active()) return 0;
     if (g_cosim_dirty_pump_site == 0)
         return 1;
 

@@ -2410,7 +2410,7 @@ static void init_callbacks(void) {
         }
         {
             extern int32_t psx_ws_screen_x_bound(int32_t vanilla);
-            extern void psx_mod_function_entry(CPUState *cpu, uint32_t address);
+            extern int psx_mod_function_entry(CPUState *cpu, uint32_t address);
             s_callbacks.ws_screen_x_bound = psx_ws_screen_x_bound;
             s_callbacks.mod_function_entry = psx_mod_function_entry;
         }

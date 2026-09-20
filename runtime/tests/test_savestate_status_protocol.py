@@ -13,10 +13,9 @@ BOOT_STATE_H = (ROOT / "include/boot_state.h").read_text(encoding="utf-8")
 DMA = (ROOT / "src/dma.c").read_text(encoding="utf-8")
 
 # The per-word DMA2 cursor and XA DATA_END pending bit grow the snapshot wire.
-# Lock the format change to v7 so an old file is rejected before any state
-# section is applied.
+# v8 adds opt-in enhancement memory; v7 remains the minimum readable wire.
 assert "#define DMA_GPU_LL_WIRE (4u + (10u * 4u))" in DMA
-assert "#define BOOT_STATE_VERSION 7u" in BOOT_STATE_H
+assert "#define BOOT_STATE_VERSION 8u" in BOOT_STATE_H
 assert "#define BOOT_STATE_VERSION_MIN_READ 7u" in BOOT_STATE_H
 assert "Reject\n * them at the header before any section changes the live machine." in BOOT_STATE_H
 
@@ -32,6 +31,8 @@ assert "psx_irq_resume_context_snapshot_safe(void)" in INTERRUPTS
 assert "psx_irq_resume_context_snapshot_safe_at(uint32_t resume_pc)" in INTERRUPTS
 assert "psx_irq_resume_context_snapshot_pc(void)" in INTERRUPTS
 assert "g_cosim_dirty_pump_site == 0" in INTERRUPTS
+assert INTERRUPTS.index('if (psx_mod_function_entry_active()) return 0;') < INTERRUPTS.index('if (g_cosim_dirty_pump_site == 0)')
+assert 'if (psx_mod_function_entry_active()) return;' in STATE
 assert "case 1: /* transfer surface: target PC is materialized in CPUState */" in INTERRUPTS
 assert "cands[n++] = psx_irq_resume_context_snapshot_pc();" in STATE
 assert "cands[n++] = psx_irq_resume_context_snapshot_pc();" in REWIND

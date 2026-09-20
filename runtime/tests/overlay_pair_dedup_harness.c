@@ -175,8 +175,9 @@ uint32_t psx_ws_backdrop_value(uint32_t orig, int end, int cols) {
 int32_t psx_ws_depth_bound(int32_t imm) { return imm; }
 int32_t psx_ws_player_x_bound(int32_t vanilla) { return vanilla; }
 int32_t psx_ws_screen_x_bound(int32_t vanilla) { return vanilla; }
-void psx_mod_function_entry(CPUState *cpu, uint32_t address) {
+int psx_mod_function_entry(CPUState *cpu, uint32_t address) {
     (void)cpu; (void)address;
+    return 0;
 }
 int psx_netplay_is_resimulating(void) { return 0; }
 int psx_game_text_native_ok(uint32_t address) { (void)address; return 1; }

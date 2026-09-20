@@ -11,6 +11,10 @@ typedef void (*PSXModActivationCallback)(void);
 struct CPUState;
 typedef void (*PSXModFunctionEntryCallback)(struct CPUState* cpu,
                                             uint32_t address);
+/* Return nonzero to finish this opt-in function with the callback's return
+ * registers. The runtime publishes pc=$ra; zero executes the original body. */
+typedef int (*PSXModFunctionFilterCallback)(struct CPUState* cpu,
+                                           uint32_t address);
 
 /*
  * Register a trusted, statically linked plugin implementation. Package
@@ -24,7 +28,12 @@ int psx_mod_register_vblank_plugin(const char* id,
 int psx_mod_register_function_entry_plugin(
     const char* id, uint32_t address, PSXModFunctionEntryCallback callback);
 /* Called only from generated functions explicitly listed by the game config. */
-void psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+int psx_mod_register_function_filter_plugin(
+    const char* id, uint32_t address, PSXModFunctionFilterCallback callback);
+int psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+/* Entry callbacks can make nested guest calls while retaining host registers.
+ * Save/load and rewind must wait until that host context has returned. */
+int psx_mod_function_entry_active(void);
 
 /* Narrow guest services available to trusted plugin callbacks. */
 int psx_mod_game_started(void);

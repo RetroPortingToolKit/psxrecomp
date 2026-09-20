@@ -1,4 +1,5 @@
 #include "mod_runtime.h"
+#include "cpu_state.h"
 
 #include "disc_path.h"
 #include "iso_reader.h"
@@ -84,12 +85,14 @@ struct FunctionEntryPlugin {
     std::string id;
     uint32_t address = 0;
     PSXModFunctionEntryCallback callback = nullptr;
+    PSXModFunctionFilterCallback filter = nullptr;
 };
 
 std::vector<FunctionEntryPlugin>& function_entry_plugins() {
     static std::vector<FunctionEntryPlugin> value;
     return value;
 }
+unsigned function_entry_depth;
 
 const ModPackage* selected_package(const std::string& id) {
     return state().manager.selected_package(id);
@@ -1493,12 +1496,36 @@ extern "C" int psx_mod_register_function_entry_plugin(
     return 1;
 }
 
-extern "C" void psx_mod_function_entry(CPUState* cpu, uint32_t address) {
+extern "C" int psx_mod_register_function_filter_plugin(
+    const char* id, uint32_t address, PSXModFunctionFilterCallback callback) {
     using namespace PSXRecompV4;
-    if (!cpu) return;
+    if (!id || !*id || !address || !callback) return 0;
+    auto& plugins = function_entry_plugins();
+    for (const FunctionEntryPlugin& item : plugins)
+        if (item.id == id && item.address == address) return 0;
+    plugins.push_back(FunctionEntryPlugin{id, address, nullptr, callback});
+    return 1;
+}
+
+extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
+    using namespace PSXRecompV4;
+    if (!cpu) return 0;
     for (const FunctionEntryPlugin& plugin : function_entry_plugins()) {
-        if (plugin.address == address) plugin.callback(cpu, address);
+        if (plugin.address != address) continue;
+        ++function_entry_depth;
+        if (plugin.callback) plugin.callback(cpu, address);
+        int handled = plugin.filter && plugin.filter(cpu, address);
+        --function_entry_depth;
+        if (handled) {
+            cpu->pc = cpu->gpr[31];
+            return 1;
+        }
     }
+    return 0;
+}
+
+extern "C" int psx_mod_function_entry_active(void) {
+    return PSXRecompV4::function_entry_depth != 0;
 }
 
 extern "C" void mod_runtime_patch_disc_sector(uint32_t lba, int raw_sector,

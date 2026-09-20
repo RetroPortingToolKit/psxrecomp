@@ -213,6 +213,18 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-09-19 MMX6 adaptive review: added opt-in function-entry filters for
+  supplemental actor scans. A handled filter publishes its return registers
+  and `pc=$ra`; generated, native-overlay and interpreted paths agree. Existing
+  observers remain unchanged. Overlay ABI 24 rejects the old void callback
+  signature; codegen hash is `2caa7102`. Entry callbacks retain a host context
+  while making nested guest calls, so snapshot safety and pending save/load
+  requests now defer until the callback returns. IRQ/device timing continues
+  normally. Registry/forwarder/interpreter/snapshot guards pass, as do the seven
+  MMX6 CTests. Live intro climb, NPC dialogue and boss-room progression passed;
+  32:9/64:9 and restored saves remain approximately 60 submissions/s. This is
+  an enhancement contract, not a change to faithful guest activation rules.
+
 - **2026-09-12 (MMX6 widescreen presentation, beads-eio.3.146):**
   Opt-in native-wide view origins preserve the guest camera, with separate
   parallax coverage and explicit HUD origins. SW/GPU regressions and hidden
