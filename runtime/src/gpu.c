@@ -1406,6 +1406,11 @@ void psx_ws_mmx6_bg_stage_init(void) {
     if (!ws_clear_reveal || ws_mode != 2 || frame == last_frame) return;
     last_frame = frame;
     g_mmx6_void_generation++;
+    /* A host tile arena rebuilds its backbuffer every submission. A scrolling
+     * effect can initialize a ring every frame (MMX6 rain and museum layers);
+     * clearing BOTH display bands here erases the already-rendered frontbuffer.
+     * Its next draw already clears reveal strips, using host_generation. */
+    if (g_bg2d_host_size) return;
     ws_clear_all_reveal_margins();
 }
 
