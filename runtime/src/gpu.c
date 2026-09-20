@@ -40,6 +40,7 @@
 #include "ws_prepass_guard.h"
 #include "ws_hud_anchor.h"
 #include "ws_repeat_rect.h"
+#include "ws_screen_mask.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,6 +177,7 @@ typedef struct { uint32_t key; uint32_t stamp; int32_t anchor_x; } WsTag;
 static WsTag    ws_tags[WS_TAG_BUCKETS];
 static WsHudAnchorTag ws_hud_anchor_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsHudAnchorTag ws_reveal_clear_tags[WS_HUD_ANCHOR_TABLE_SIZE];
+static WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
 static uint32_t ws_last_tag_stamp = (uint32_t)-1000; /* frame of newest tag */
 static uint32_t ws_last_3d_stamp  = (uint32_t)-1000; /* frame of newest shaded prim (diagnostic) */
@@ -407,6 +409,7 @@ static void ws_reset_scene_history(void) {
 static uint32_t s_ws_fmv_frame_cache = 0xFFFFFFFFu;
 static int      s_ws_fmv_cached = 0;
 static PSXModRetainedScenePredicate s_ws_retained_scene_predicate;
+static int (*s_ws_native_scene_predicate)(void);
 static WsSceneHold s_ws_scene_hold;
 static uint32_t ws_display_origin(void);
 
@@ -415,8 +418,14 @@ void psx_mod_set_retained_scene_predicate(PSXModRetainedScenePredicate predicate
     ws_scene_hold_reset(&s_ws_scene_hold);
 }
 
+void gpu_ws_set_native_scene_predicate(int (*predicate)(void)) {
+    s_ws_native_scene_predicate = predicate;
+}
+
 int gpu_ws_present_native_43(void) {
     if (!ws_engaged()) return 0;
+    if (ws_mode == 2 && s_ws_native_scene_predicate && s_ws_native_scene_predicate())
+        return 1;
     int game_mode = ws_game_mode();
     if (!game_mode) ws_scene_latch.confirmed = 0;
     int native_43 = !game_mode || ws_2d_only_scene();
@@ -2147,6 +2156,18 @@ void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period) {
                               period, &guard, (uint32_t)s_frame_count);
 }
 
+void gpu_ws_tag_screen_mask_quad(uint32_t prim) {
+    if (!ws_native_wide_configured() || (prim & 3u) || prim > UINT32_MAX - 4u)
+        return;
+    uint32_t words[12], count = 0;
+    if (!ws_hud_command_words(prim + 4u, words, &count) || count != 5u ||
+        ((words[0] >> 24) & 0xfdu) != 0x28u) return;
+    WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
+    ws_hud_anchor_insert(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                         (prim + 4u) & 0x1ffffcu, 0, &guard,
+                         (uint32_t)s_frame_count);
+}
+
 static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
     if (out_delta) *out_delta = 0;
     if (!ws_native_wide_active() || gp0_cmd_source_addr == 0xFFFFFFFFu)
@@ -3066,6 +3087,7 @@ static void gpu_reset_state(int clear_vram) {
     gp0_cmd_source_addr = 0xFFFFFFFFu;
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     polyline_color = 0;
     polyline_prev_x = polyline_prev_y = 0;
@@ -4063,6 +4085,21 @@ static void gp0_exec_mono_quad(void) {
     int rej_a = psx_gpu_triangle_oversize(vx, vy, 0, 1, 2);
     int rej_b = psx_gpu_triangle_oversize(vx, vy, 2, 1, 3);
     if (rej_a && rej_b) return;
+
+    /* Each added band is outside the original screen and executes in the
+     * mask's own OT position/blend mode. Canonical VRAM clips it away. */
+    if (ws_native_wide_active() && gp0_cmd_source_addr != UINT32_MAX &&
+        ws_hud_anchor_lookup(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+            gp0_cmd_source_addr & 0x1ffffcu, gp0_cmd_buf, 5u,
+            (uint32_t)s_frame_count, NULL)) {
+        WsScreenMaskBand band;
+        if (ws_screen_mask_band(vx, vy, ws_disp_w(), ws_disp_h(),
+                                draw_area_wide_x_margin(), &band)) {
+            gr_set_semi_transparency(semi_trans, (int)semi_transparency);
+            gr_draw_flat_rect(band.x + draw_offset_x, band.y + draw_offset_y,
+                              band.w, band.h, color);
+        }
+    }
 
     /* Full-screen filters are commonly encoded as an axis-aligned quad. Drawing
      * a semi-transparent quad as two independent triangles blends their shared
@@ -6467,6 +6504,7 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     ws_scene_hold_reset(&s_ws_scene_hold);
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     /* Sync renderer clip/scissor to restored GP0(E3/E4); vars alone leave GL
      * on a stale draw area after savestate load. */

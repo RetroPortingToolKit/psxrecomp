@@ -393,6 +393,14 @@ void gpu_ws_tag_black_reveal_rect(uint32_t prim);
  * reveal margins only. The caller verifies the composite's source period.
  * Original UVs, texel density, and canonical VRAM writes are unchanged. */
 void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period);
+/* Title-identified flat screen mask: extend its off-screen vertical boundary
+ * to the adaptive edge, preserving the interior opening and canonical image.
+ * Packet guarded, cleared on reset/load, inert outside native-wide gameplay. */
+void gpu_ws_tag_screen_mask_quad(uint32_t prim);
+/* Pure emulation-thread predicate for a known native-only effect/scene.
+ * Nonzero forces native 4:3; zero defers. No GPU calls or guest writes inside.
+ * Host configuration survives reset/load; classification reads live state. */
+void gpu_ws_set_native_scene_predicate(int (*predicate)(void));
 /* Targeted alternative for sprite-heavy 2D games: corner-anchor only primitives
  * whose ordering-table packet lives in the configured half-open RAM range. */
 void gpu_ws_set_nw_left_hud_packet_range(uint32_t lo, uint32_t hi);

@@ -5,11 +5,12 @@
 
 uint64_t s_frame_count;
 static uint32_t state_word;
-static int world, calls, fmv, hold;
+static int world, calls, fmv, hold, native_effect;
 uint32_t psx_read_word(uint32_t address) { (void)address; return state_word; }
 int mdec_recently_active(uint32_t frames) { (void)frames; return fmv; }
 static int world_scene(void) { ++calls; return world; }
 static int retained_scene(void) { return hold; }
+static int native_scene(void) { return native_effect; }
 static int native_43(void) { ++s_frame_count; return gpu_ws_present_native_43(); }
 
 int main(void) {
@@ -38,6 +39,12 @@ int main(void) {
     assert(native_43() == 1); /* 24-bit FMV veto */
     display_depth = 0;
     assert(native_43() == 0);
+    gpu_ws_set_native_scene_predicate(native_scene);
+    native_effect=1; assert(native_43()==1); /* Native attack overrides world. */
+    native_effect=0; assert(native_43()==0); /* Recovery restores adaptive. */
+    native_effect=1; ws_mode=0; assert(native_43()==0); /* Off stays inert. */
+    ws_mode=2; gpu_ws_set_native_scene_predicate(NULL);
+    assert(native_43()==0); /* No policy left behind after unregister. */
     psx_mod_set_retained_scene_predicate(retained_scene);
     hold = 0;
     assert(native_43() == 0);
