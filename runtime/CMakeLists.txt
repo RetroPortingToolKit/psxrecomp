@@ -57,6 +57,8 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME mod_function_filters_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mod_function_filters.py")
         add_test(NAME interp_mod_entry_guards_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_interp_mod_entry_guards.py")
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
