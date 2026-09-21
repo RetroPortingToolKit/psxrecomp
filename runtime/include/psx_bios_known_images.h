@@ -35,6 +35,9 @@ typedef struct PsxKnownBiosImage {
  * identity the recompiler emits into generated/<stem>_dispatch.c. */
 static const PsxKnownBiosImage psx_known_bios_images[] = {
     { "SCPH1001", "SCPH-1001", 0x37157331u, 524288u },
+    { "SCPH5500", "SCPH-5500", 0xFF3EEB8Cu, 524288u },
+    { "SCPH5501", "SCPH-5501", 0x8D8CB7E4u, 524288u },
+    { "SCPH5502", "SCPH-5502", 0x4D9E7C86u, 524288u },
     { "SCPH5552", "SCPH-5552", 0xD786F0B9u, 524288u },
 };
 

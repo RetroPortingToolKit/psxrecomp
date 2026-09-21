@@ -1,0 +1,2654 @@
+{
+  "schema": "psxrecomp phase2 seeds",
+  "source": "phase2_ghidra_seeds.json filtered vs SCPH5501 ROM (64-byte window)",
+  "seed_count": 534,
+  "seeds": [
+    {
+      "address": "0xBFC00000",
+      "label": "reset_vector",
+      "rationale": "MIPS R3000A reset vector"
+    },
+    {
+      "address": "0xBFC00180",
+      "label": "general_exception_bev1",
+      "rationale": "BEV=1 general exception vector"
+    },
+    {
+      "address": "0xBFC00420",
+      "label": "ghidra_BFC00420",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC00678",
+      "label": "ghidra_BFC00678",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC006A8",
+      "label": "ghidra_BFC006A8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC006D8",
+      "label": "ghidra_BFC006D8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC00778",
+      "label": "ghidra_BFC00778",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC00810",
+      "label": "ghidra_BFC00810",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC008A0",
+      "label": "ghidra_BFC008A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC00944",
+      "label": "ghidra_BFC00944",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC00B7C",
+      "label": "ghidra_BFC00B7C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC00DA0",
+      "label": "ghidra_BFC00DA0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC018E0",
+      "label": "ghidra_BFC018E0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC01920",
+      "label": "ghidra_BFC01920",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC01A60",
+      "label": "ghidra_BFC01A60",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC01A90",
+      "label": "ghidra_BFC01A90",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC01ACC",
+      "label": "ghidra_BFC01ACC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC01B80",
+      "label": "ghidra_BFC01B80",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC01C8C",
+      "label": "ghidra_BFC01C8C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC01E5C",
+      "label": "ghidra_BFC01E5C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC020F0",
+      "label": "ghidra_BFC020F0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02104",
+      "label": "ghidra_BFC02104",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02240",
+      "label": "ghidra_BFC02240",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0227C",
+      "label": "ghidra_BFC0227C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC022C0",
+      "label": "ghidra_BFC022C0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02324",
+      "label": "ghidra_BFC02324",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02590",
+      "label": "ghidra_BFC02590",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC025B0",
+      "label": "ghidra_BFC025B0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02738",
+      "label": "ghidra_BFC02738",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02950",
+      "label": "ghidra_BFC02950",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02AF0",
+      "label": "ghidra_BFC02AF0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02B10",
+      "label": "ghidra_BFC02B10",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02B50",
+      "label": "ghidra_BFC02B50",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02CC0",
+      "label": "ghidra_BFC02CC0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02D20",
+      "label": "ghidra_BFC02D20",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02DAC",
+      "label": "ghidra_BFC02DAC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02EA0",
+      "label": "ghidra_BFC02EA0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02EDC",
+      "label": "ghidra_BFC02EDC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC02F20",
+      "label": "ghidra_BFC02F20",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03098",
+      "label": "ghidra_BFC03098",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03104",
+      "label": "ghidra_BFC03104",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03190",
+      "label": "ghidra_BFC03190",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03288",
+      "label": "ghidra_BFC03288",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03310",
+      "label": "ghidra_BFC03310",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC033C8",
+      "label": "ghidra_BFC033C8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03418",
+      "label": "ghidra_BFC03418",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03494",
+      "label": "ghidra_BFC03494",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03764",
+      "label": "ghidra_BFC03764",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03910",
+      "label": "ghidra_BFC03910",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03968",
+      "label": "ghidra_BFC03968",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03978",
+      "label": "ghidra_BFC03978",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03990",
+      "label": "ghidra_BFC03990",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC039B0",
+      "label": "ghidra_BFC039B0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03A18",
+      "label": "ghidra_BFC03A18",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03AA4",
+      "label": "ghidra_BFC03AA4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03C90",
+      "label": "ghidra_BFC03C90",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03CF0",
+      "label": "ghidra_BFC03CF0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03D80",
+      "label": "ghidra_BFC03D80",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03EA0",
+      "label": "ghidra_BFC03EA0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03F8C",
+      "label": "ghidra_BFC03F8C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03FAC",
+      "label": "ghidra_BFC03FAC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC03FE0",
+      "label": "ghidra_BFC03FE0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0403C",
+      "label": "ghidra_BFC0403C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC040EC",
+      "label": "ghidra_BFC040EC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04138",
+      "label": "ghidra_BFC04138",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04260",
+      "label": "ghidra_BFC04260",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC042A0",
+      "label": "ghidra_BFC042A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC042D0",
+      "label": "ghidra_BFC042D0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04610",
+      "label": "ghidra_BFC04610",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04678",
+      "label": "ghidra_BFC04678",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0472C",
+      "label": "ghidra_BFC0472C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC048D0",
+      "label": "ghidra_BFC048D0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04ABC",
+      "label": "ghidra_BFC04ABC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04BC4",
+      "label": "ghidra_BFC04BC4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04C38",
+      "label": "ghidra_BFC04C38",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04D50",
+      "label": "ghidra_BFC04D50",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04DEC",
+      "label": "ghidra_BFC04DEC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC04FBC",
+      "label": "ghidra_BFC04FBC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0506C",
+      "label": "ghidra_BFC0506C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC050A4",
+      "label": "ghidra_BFC050A4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC050FC",
+      "label": "ghidra_BFC050FC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05120",
+      "label": "ghidra_BFC05120",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05194",
+      "label": "ghidra_BFC05194",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05558",
+      "label": "ghidra_BFC05558",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC057B0",
+      "label": "ghidra_BFC057B0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0593C",
+      "label": "ghidra_BFC0593C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05A44",
+      "label": "ghidra_BFC05A44",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05C18",
+      "label": "ghidra_BFC05C18",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05C50",
+      "label": "ghidra_BFC05C50",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05D04",
+      "label": "ghidra_BFC05D04",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05DB0",
+      "label": "ghidra_BFC05DB0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05DF4",
+      "label": "ghidra_BFC05DF4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05E58",
+      "label": "ghidra_BFC05E58",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC05F08",
+      "label": "ghidra_BFC05F08",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06010",
+      "label": "ghidra_BFC06010",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06038",
+      "label": "ghidra_BFC06038",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC060DC",
+      "label": "ghidra_BFC060DC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0615C",
+      "label": "ghidra_BFC0615C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC061A0",
+      "label": "ghidra_BFC061A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC061D4",
+      "label": "ghidra_BFC061D4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06218",
+      "label": "ghidra_BFC06218",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06288",
+      "label": "ghidra_BFC06288",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC062CC",
+      "label": "ghidra_BFC062CC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC063CC",
+      "label": "ghidra_BFC063CC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC064D8",
+      "label": "ghidra_BFC064D8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06548",
+      "label": "ghidra_BFC06548",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC065C0",
+      "label": "ghidra_BFC065C0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0661C",
+      "label": "ghidra_BFC0661C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06680",
+      "label": "ghidra_BFC06680",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06700",
+      "label": "ghidra_BFC06700",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06784",
+      "label": "ghidra_BFC06784",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC067E8",
+      "label": "ghidra_BFC067E8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06CA4",
+      "label": "ghidra_BFC06CA4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06EC4",
+      "label": "ghidra_BFC06EC4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06F28",
+      "label": "ghidra_BFC06F28",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06FA4",
+      "label": "ghidra_BFC06FA4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC06FF0",
+      "label": "ghidra_BFC06FF0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0703C",
+      "label": "ghidra_BFC0703C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC070AC",
+      "label": "ghidra_BFC070AC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0711C",
+      "label": "ghidra_BFC0711C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07148",
+      "label": "ghidra_BFC07148",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC071A0",
+      "label": "ghidra_BFC071A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC072B8",
+      "label": "ghidra_BFC072B8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07330",
+      "label": "ghidra_BFC07330",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07370",
+      "label": "ghidra_BFC07370",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC073A0",
+      "label": "ghidra_BFC073A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07410",
+      "label": "ghidra_BFC07410",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07664",
+      "label": "ghidra_BFC07664",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07700",
+      "label": "ghidra_BFC07700",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC078A4",
+      "label": "ghidra_BFC078A4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07A04",
+      "label": "ghidra_BFC07A04",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07B88",
+      "label": "ghidra_BFC07B88",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07C1C",
+      "label": "ghidra_BFC07C1C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC07F28",
+      "label": "ghidra_BFC07F28",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC08020",
+      "label": "ghidra_BFC08020",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC08098",
+      "label": "ghidra_BFC08098",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC081FC",
+      "label": "ghidra_BFC081FC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC08354",
+      "label": "ghidra_BFC08354",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC083CC",
+      "label": "ghidra_BFC083CC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC085B0",
+      "label": "ghidra_BFC085B0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC085D4",
+      "label": "ghidra_BFC085D4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC086B0",
+      "label": "ghidra_BFC086B0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC086EC",
+      "label": "ghidra_BFC086EC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC08720",
+      "label": "ghidra_BFC08720",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC087C4",
+      "label": "ghidra_BFC087C4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0884C",
+      "label": "ghidra_BFC0884C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC088A0",
+      "label": "ghidra_BFC088A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0895C",
+      "label": "ghidra_BFC0895C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC089C0",
+      "label": "ghidra_BFC089C0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC08B3C",
+      "label": "ghidra_BFC08B3C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC08FFC",
+      "label": "ghidra_BFC08FFC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC09144",
+      "label": "ghidra_BFC09144",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC091CC",
+      "label": "ghidra_BFC091CC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC092EC",
+      "label": "ghidra_BFC092EC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC09540",
+      "label": "ghidra_BFC09540",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC09598",
+      "label": "ghidra_BFC09598",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC09720",
+      "label": "ghidra_BFC09720",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC098A8",
+      "label": "ghidra_BFC098A8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC09914",
+      "label": "ghidra_BFC09914",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0994C",
+      "label": "ghidra_BFC0994C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0996C",
+      "label": "ghidra_BFC0996C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC09CDC",
+      "label": "ghidra_BFC09CDC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC09D3C",
+      "label": "ghidra_BFC09D3C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0A080",
+      "label": "ghidra_BFC0A080",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0A3D4",
+      "label": "ghidra_BFC0A3D4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0A43C",
+      "label": "ghidra_BFC0A43C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0A4B4",
+      "label": "ghidra_BFC0A4B4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0A5E4",
+      "label": "ghidra_BFC0A5E4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0A754",
+      "label": "ghidra_BFC0A754",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0A8BC",
+      "label": "ghidra_BFC0A8BC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0AB60",
+      "label": "ghidra_BFC0AB60",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0AD08",
+      "label": "ghidra_BFC0AD08",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0B0D0",
+      "label": "ghidra_BFC0B0D0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0B170",
+      "label": "ghidra_BFC0B170",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0B394",
+      "label": "ghidra_BFC0B394",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0B54C",
+      "label": "ghidra_BFC0B54C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0B5A0",
+      "label": "ghidra_BFC0B5A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0B5F4",
+      "label": "ghidra_BFC0B5F4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0B648",
+      "label": "ghidra_BFC0B648",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0BFF0",
+      "label": "ghidra_BFC0BFF0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C048",
+      "label": "ghidra_BFC0C048",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C0DC",
+      "label": "ghidra_BFC0C0DC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C140",
+      "label": "ghidra_BFC0C140",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C1FC",
+      "label": "ghidra_BFC0C1FC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C220",
+      "label": "ghidra_BFC0C220",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C248",
+      "label": "ghidra_BFC0C248",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C270",
+      "label": "ghidra_BFC0C270",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C298",
+      "label": "ghidra_BFC0C298",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C2C0",
+      "label": "ghidra_BFC0C2C0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C2E8",
+      "label": "ghidra_BFC0C2E8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C318",
+      "label": "ghidra_BFC0C318",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C354",
+      "label": "ghidra_BFC0C354",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C580",
+      "label": "ghidra_BFC0C580",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C720",
+      "label": "ghidra_BFC0C720",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C830",
+      "label": "ghidra_BFC0C830",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C890",
+      "label": "ghidra_BFC0C890",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0C9CC",
+      "label": "ghidra_BFC0C9CC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0CAB4",
+      "label": "ghidra_BFC0CAB4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0CC68",
+      "label": "ghidra_BFC0CC68",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0CD80",
+      "label": "ghidra_BFC0CD80",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0CF84",
+      "label": "ghidra_BFC0CF84",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D0CC",
+      "label": "ghidra_BFC0D0CC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D11C",
+      "label": "ghidra_BFC0D11C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D34C",
+      "label": "ghidra_BFC0D34C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D4CC",
+      "label": "ghidra_BFC0D4CC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D570",
+      "label": "ghidra_BFC0D570",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D600",
+      "label": "ghidra_BFC0D600",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D640",
+      "label": "ghidra_BFC0D640",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D664",
+      "label": "ghidra_BFC0D664",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D688",
+      "label": "ghidra_BFC0D688",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D72C",
+      "label": "ghidra_BFC0D72C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D7BC",
+      "label": "ghidra_BFC0D7BC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D850",
+      "label": "ghidra_BFC0D850",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D880",
+      "label": "ghidra_BFC0D880",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D890",
+      "label": "ghidra_BFC0D890",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D8A0",
+      "label": "ghidra_BFC0D8A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D8B0",
+      "label": "ghidra_BFC0D8B0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D8C0",
+      "label": "ghidra_BFC0D8C0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D8D0",
+      "label": "ghidra_BFC0D8D0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D950",
+      "label": "ghidra_BFC0D950",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D960",
+      "label": "ghidra_BFC0D960",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D970",
+      "label": "ghidra_BFC0D970",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D980",
+      "label": "ghidra_BFC0D980",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D990",
+      "label": "ghidra_BFC0D990",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D9A0",
+      "label": "ghidra_BFC0D9A0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D9B0",
+      "label": "ghidra_BFC0D9B0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D9C0",
+      "label": "ghidra_BFC0D9C0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D9D0",
+      "label": "ghidra_BFC0D9D0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D9E0",
+      "label": "ghidra_BFC0D9E0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0D9F0",
+      "label": "ghidra_BFC0D9F0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DA00",
+      "label": "ghidra_BFC0DA00",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DA10",
+      "label": "ghidra_BFC0DA10",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DA20",
+      "label": "ghidra_BFC0DA20",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DA30",
+      "label": "ghidra_BFC0DA30",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DA40",
+      "label": "ghidra_BFC0DA40",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DA50",
+      "label": "ghidra_BFC0DA50",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DA60",
+      "label": "ghidra_BFC0DA60",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DAA0",
+      "label": "ghidra_BFC0DAA0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DAB0",
+      "label": "ghidra_BFC0DAB0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DAC0",
+      "label": "ghidra_BFC0DAC0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DAD0",
+      "label": "ghidra_BFC0DAD0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DAE0",
+      "label": "ghidra_BFC0DAE0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DAF0",
+      "label": "ghidra_BFC0DAF0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB00",
+      "label": "ghidra_BFC0DB00",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB10",
+      "label": "ghidra_BFC0DB10",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB20",
+      "label": "ghidra_BFC0DB20",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB30",
+      "label": "ghidra_BFC0DB30",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB40",
+      "label": "ghidra_BFC0DB40",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB50",
+      "label": "ghidra_BFC0DB50",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB60",
+      "label": "ghidra_BFC0DB60",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB70",
+      "label": "ghidra_BFC0DB70",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB80",
+      "label": "ghidra_BFC0DB80",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DB90",
+      "label": "ghidra_BFC0DB90",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DBA0",
+      "label": "ghidra_BFC0DBA0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DBB0",
+      "label": "ghidra_BFC0DBB0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DBC0",
+      "label": "ghidra_BFC0DBC0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DBD0",
+      "label": "ghidra_BFC0DBD0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DBE0",
+      "label": "ghidra_BFC0DBE0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DBF0",
+      "label": "ghidra_BFC0DBF0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DC00",
+      "label": "ghidra_BFC0DC00",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DC10",
+      "label": "ghidra_BFC0DC10",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DC20",
+      "label": "ghidra_BFC0DC20",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DC30",
+      "label": "ghidra_BFC0DC30",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DC40",
+      "label": "ghidra_BFC0DC40",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC0DC50",
+      "label": "ghidra_BFC0DC50",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC10C74",
+      "label": "ghidra_BFC10C74",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11008",
+      "label": "ghidra_BFC11008",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11294",
+      "label": "ghidra_BFC11294",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC112F4",
+      "label": "ghidra_BFC112F4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11358",
+      "label": "ghidra_BFC11358",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC113BC",
+      "label": "ghidra_BFC113BC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11420",
+      "label": "ghidra_BFC11420",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11458",
+      "label": "ghidra_BFC11458",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11490",
+      "label": "ghidra_BFC11490",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC114C8",
+      "label": "ghidra_BFC114C8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11500",
+      "label": "ghidra_BFC11500",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11620",
+      "label": "ghidra_BFC11620",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC1188C",
+      "label": "ghidra_BFC1188C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11B18",
+      "label": "ghidra_BFC11B18",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11C8C",
+      "label": "ghidra_BFC11C8C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11F58",
+      "label": "ghidra_BFC11F58",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC122C0",
+      "label": "ghidra_BFC122C0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12370",
+      "label": "ghidra_BFC12370",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12408",
+      "label": "ghidra_BFC12408",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12458",
+      "label": "ghidra_BFC12458",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12564",
+      "label": "ghidra_BFC12564",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12628",
+      "label": "ghidra_BFC12628",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12794",
+      "label": "ghidra_BFC12794",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12900",
+      "label": "ghidra_BFC12900",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12998",
+      "label": "ghidra_BFC12998",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC129FC",
+      "label": "ghidra_BFC129FC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12AC8",
+      "label": "ghidra_BFC12AC8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12B00",
+      "label": "ghidra_BFC12B00",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12B60",
+      "label": "ghidra_BFC12B60",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12C08",
+      "label": "ghidra_BFC12C08",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12CE8",
+      "label": "ghidra_BFC12CE8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12F6C",
+      "label": "ghidra_BFC12F6C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC12FB4",
+      "label": "ghidra_BFC12FB4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13070",
+      "label": "ghidra_BFC13070",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC130AC",
+      "label": "ghidra_BFC130AC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13178",
+      "label": "ghidra_BFC13178",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13244",
+      "label": "ghidra_BFC13244",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13310",
+      "label": "ghidra_BFC13310",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC133D8",
+      "label": "ghidra_BFC133D8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC134A4",
+      "label": "ghidra_BFC134A4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC135AC",
+      "label": "ghidra_BFC135AC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC137E0",
+      "label": "ghidra_BFC137E0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13980",
+      "label": "ghidra_BFC13980",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13AF0",
+      "label": "ghidra_BFC13AF0",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13B24",
+      "label": "ghidra_BFC13B24",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13B6C",
+      "label": "ghidra_BFC13B6C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13C34",
+      "label": "ghidra_BFC13C34",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13C64",
+      "label": "ghidra_BFC13C64",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13E04",
+      "label": "ghidra_BFC13E04",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13E60",
+      "label": "ghidra_BFC13E60",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13EE8",
+      "label": "ghidra_BFC13EE8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC13F98",
+      "label": "ghidra_BFC13F98",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC144BC",
+      "label": "ghidra_BFC144BC",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC145C8",
+      "label": "ghidra_BFC145C8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC14690",
+      "label": "ghidra_BFC14690",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC14710",
+      "label": "ghidra_BFC14710",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC14770",
+      "label": "ghidra_BFC14770",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC147F4",
+      "label": "ghidra_BFC147F4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC14A90",
+      "label": "ghidra_BFC14A90",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC14B00",
+      "label": "ghidra_BFC14B00",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC14CF4",
+      "label": "ghidra_BFC14CF4",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC158A8",
+      "label": "ghidra_BFC158A8",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC15B9C",
+      "label": "ghidra_BFC15B9C",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC16170",
+      "label": "ghidra_BFC16170",
+      "rationale": "Ghidra function start"
+    },
+    {
+      "address": "0xBFC11840",
+      "label": "dmiss_BFC11840",
+      "rationale": "dispatch miss: KP2 function, indirect call"
+    },
+    {
+      "address": "0xBFC11524",
+      "label": "dmiss_BFC11524",
+      "rationale": "dispatch miss: KP2 secondary entry point for exception handler, mid-function split of func_00001A00, called during VBlank"
+    },
+    {
+      "address": "0xBFC11610",
+      "label": "dmiss_BFC11610",
+      "rationale": "dispatch miss: KP2 function, tail-call target from 0xBFC11524 exception handler path"
+    },
+    {
+      "address": "0xBFC14A54",
+      "label": "dmiss_BFC14A54",
+      "rationale": "dispatch miss (Beetle wtrace, docs/CASE_A_AOT_GAP.md): chain BUSY-writer at RAM 0x4F54; alias rule RAM=ROM-0xBFC10000+0x500. Reached via JAL inside FUN_bfc147f4; never emitted as standalone entry."
+    },
+    {
+      "address": "0xBFC158D0",
+      "label": "dmiss_BFC158D0",
+      "rationale": "dispatch miss (Beetle wtrace, docs/CASE_A_AOT_GAP.md): chain init slot-0 BUSY writer at RAM 0x5DD0; alias RAM=ROM-0xBFC10000+0x500. Inside FUN_bfc158a8 body."
+    },
+    {
+      "address": "0xBFC158D8",
+      "label": "dmiss_BFC158D8",
+      "rationale": "dispatch miss (Beetle wtrace, docs/CASE_A_AOT_GAP.md): chain init slot-1 BUSY writer at RAM 0x5DD8; alias RAM=ROM-0xBFC10000+0x500. Inside FUN_bfc158a8 body."
+    },
+    {
+      "address": "0xBFC159F4",
+      "label": "dmiss_BFC159F4",
+      "rationale": "dispatch miss (Beetle wtrace, docs/CASE_A_AOT_GAP.md): chain step handler that writes 0x02 OPEN to [0x7568+slot] at RAM 0x5EF4. Indirect-jr target from RAM 0x6c98 jump table; alias RAM=ROM-0xBFC10000+0x500. KEY entry \u00e2\u20ac\u201d without this the gate never clears."
+    },
+    {
+      "address": "0xBFC15AA8",
+      "label": "dmiss_BFC15AA8",
+      "rationale": "dispatch miss (Beetle wtrace, docs/CASE_A_AOT_GAP.md): chain step handler that writes 0x04 OPEN to [0x7568+slot] at RAM 0x5FA8. Indirect-jr target from RAM 0x6c98 jump table; alias RAM=ROM-0xBFC10000+0x500. KEY entry \u00e2\u20ac\u201d paired with 0xBFC159F4."
+    },
+    {
+      "address": "0xBFC04910",
+      "label": "dmiss_BFC04910",
+      "rationale": "Tomba boot dispatch miss after licensed PlayStation screen. Verified in Ghidra/runtime disassembly as a standalone BIOS init routine between 0xBFC048D0 and 0xBFC04ABC, with return at 0xBFC04A98 and table data reference from 0xBFC04554."
+    },
+    {
+      "address": "0xBFC04850",
+      "label": "dmiss_BFC04850",
+      "rationale": "Tomba boot dispatch miss after seeding 0xBFC04910. Verified in Ghidra/runtime disassembly as a standalone BIOS callback-list init routine between 0xBFC0472C and 0xBFC048D0, with return at 0xBFC048C8 and table data reference from 0xBFC04588."
+    },
+    {
+      "address": "0xBFC079F8",
+      "label": "dmiss_BFC079F8",
+      "rationale": "Tomba boot dispatch miss after game callback coverage fixes. Verified in Ghidra as a tiny BIOS table leaf routine (sw a0,0(sp); jr ra; clear v0) referenced by data at 0xBFC04484 and 0xBFC0E30C."
+    },
+    {
+      "address": "0xBFC15F1C",
+      "label": "dmiss_BFC15F1C",
+      "rationale": "dirty_ram hot: SIO/PAD interrupt handler entry point (RAM 0x641C), called via jalr. 10852+ hits/frame across internal branch targets (0x641C, 0x6430, 0x6444, 0x6458, 0x650C, 0x6514, 0x658C, 0x6594). Seeding entry only; CFG discovers internal labels."
+    },
+    {
+      "address": "0xBFC0193C",
+      "label": "cache_flush_continuation",
+      "rationale": "Jump target of cache-flush jr k0 at BFC01938"
+    },
+    {
+      "address": "0xBFC01E24",
+      "label": "SysInitMemory",
+      "rationale": "Dispatch miss during boot \u00e2\u20ac\u201d kernel init function"
+    },
+    {
+      "address": "0xBFC02200",
+      "label": "jal_BFC02200",
+      "rationale": "JAL target from code region"
+    },
+    {
+      "address": "0xBFC02918",
+      "label": "card_copy_dispatch_miss_2026_05_05",
+      "rationale": "Runtime dispatch miss: 8 hits during YES/NO COPY confirm execution. BANDAID per user permission."
+    },
+    {
+      "address": "0xBFC03FC0",
+      "label": "jal_BFC03FC0",
+      "rationale": "JAL target from code region"
+    },
+    {
+      "address": "0xBFC06FDC",
+      "label": "indirect_BFC06FDC",
+      "rationale": "Reached via indirect dispatch during boot"
+    },
+    {
+      "address": "0xBFC09890",
+      "label": "card_cmd_is_not_read",
+      "rationale": "3-instruction predicate function: xori $v0,$a0,0x52; jr $ra; sltu $v0,$0,$v0. Returns ($a0 != 0x52 READ). Sibling of 0xBFC0989C."
+    },
+    {
+      "address": "0xBFC0989C",
+      "label": "card_cmd_is_not_write_2026_05_09",
+      "rationale": "3-instruction predicate function: xori $v0,$a0,0x51; jr $ra; sltu $v0,$0,$v0. Returns ($a0 != 0x51 WRITE). Sibling of 0xBFC09890. Discovery missed it because it sits between 0xBFC09898 (end of 0xBFC09890) and 0xBFC098A8 (next discovered fn). Called via JALR at 0xBFC09788 in func_1FC09598 \u00e2\u20ac\u201d without this seed, JALR dispatches to unknown, write predicate returns junk via uninitialized v0, BIOS COPY silently no-ops the SIO write protocol (60 misses per copy, no 0x57 ever sent). Earlier bisect (2026-05-05) said this crashed; that was before the predicate-init fix and dispatch-miss class fixes. Retry 2026-05-09."
+    },
+    {
+      "address": "0xBFC0BA8C",
+      "label": "bios_BA8C",
+      "rationale": "BIOS boot code function. Dispatch miss from shell input path."
+    },
+    {
+      "address": "0xBFC0C1DC",
+      "label": "bios_C1DC",
+      "rationale": "BIOS boot code function. Dispatch miss from shell input path."
+    },
+    {
+      "address": "0xBFC0DA70",
+      "label": "jal_BFC0DA70",
+      "rationale": "JAL target from code region"
+    },
+    {
+      "address": "0xBFC0DA80",
+      "label": "jal_BFC0DA80",
+      "rationale": "JAL target from code region"
+    },
+    {
+      "address": "0xBFC0DA90",
+      "label": "jal_BFC0DA90",
+      "rationale": "JAL target from code region"
+    },
+    {
+      "address": "0xBFC10000",
+      "label": "kernel_trampoline_0",
+      "rationale": "Trampoline to FileOpen (0x598)"
+    },
+    {
+      "address": "0xBFC10010",
+      "label": "kernel_trampoline_1",
+      "rationale": "Trampoline to FileRead (0x5C4)"
+    },
+    {
+      "address": "0xBFC10020",
+      "label": "kernel_trampoline_2",
+      "rationale": "Trampoline to FileClose (0x5E0)"
+    },
+    {
+      "address": "0xBFC10030",
+      "label": "kernel_trampoline_3",
+      "rationale": "Trampoline to 0x600"
+    },
+    {
+      "address": "0xBFC10040",
+      "label": "kernel_memcpy",
+      "rationale": "ROM-to-RAM and RAM clear routine"
+    },
+    {
+      "address": "0xBFC10098",
+      "label": "kernel_bzero",
+      "rationale": "RAM clear routine (to 0xBFC100BC)"
+    },
+    {
+      "address": "0xBFC100C4",
+      "label": "a0_vector_dispatch",
+      "rationale": "A0 function table dispatch"
+    },
+    {
+      "address": "0xBFC100E0",
+      "label": "b0_vector_dispatch",
+      "rationale": "B0 function table dispatch"
+    },
+    {
+      "address": "0xBFC10100",
+      "label": "c0_vector_dispatch",
+      "rationale": "C0 function table dispatch"
+    },
+    {
+      "address": "0xBFC10120",
+      "label": "kernel_get_cause",
+      "rationale": "mfc0 v0,Cause; jr ra"
+    },
+    {
+      "address": "0xBFC10130",
+      "label": "kernel_get_sr",
+      "rationale": "mfc0 v0,SR; jr ra"
+    },
+    {
+      "address": "0xBFC10140",
+      "label": "kernel_set_sr",
+      "rationale": "mtc0 a0,SR; jr ra"
+    },
+    {
+      "address": "0xBFC10150",
+      "label": "kernel_syscall",
+      "rationale": "syscall; jr ra"
+    },
+    {
+      "address": "0xBFC1015C",
+      "label": "kernel_get_c0_table",
+      "rationale": "Returns C0 table pointer"
+    },
+    {
+      "address": "0xBFC10168",
+      "label": "kernel_get_b0_table",
+      "rationale": "Returns B0 table pointer"
+    },
+    {
+      "address": "0xBFC10174",
+      "label": "kernel_BFC10174",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10780",
+      "label": "rmiss_BFC10780",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC109A0",
+      "label": "kernel_BFC109A0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC109B0",
+      "label": "kernel_BFC109B0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10A20",
+      "label": "kernel_BFC10A20",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10A2C",
+      "label": "kernel_BFC10A2C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10A40",
+      "label": "kernel_BFC10A40",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10B30",
+      "label": "rmiss_BFC10B30",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC10BB8",
+      "label": "kernel_BFC10BB8",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10BE0",
+      "label": "kernel_BFC10BE0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10BE4",
+      "label": "rmiss_BFC10BE4",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC10C3C",
+      "label": "kernel_BFC10C3C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10F08",
+      "label": "kernel_BFC10F08",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10F20",
+      "label": "kernel_BFC10F20",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC10F44",
+      "label": "kernel_BFC10F44",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC110D8",
+      "label": "kernel_BFC110D8",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC110F8",
+      "label": "kernel_BFC110F8",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11114",
+      "label": "kernel_BFC11114",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC111AC",
+      "label": "kernel_BFC111AC",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC111C4",
+      "label": "kernel_BFC111C4",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC111E4",
+      "label": "kernel_BFC111E4",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1121C",
+      "label": "kernel_BFC1121C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11228",
+      "label": "kernel_BFC11228",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1125C",
+      "label": "kernel_BFC1125C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11274",
+      "label": "kernel_BFC11274",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1152C",
+      "label": "rmiss_BFC1152C",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC11560",
+      "label": "rmiss_BFC11560",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC115E8",
+      "label": "rmiss_BFC115E8",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC115FC",
+      "label": "rmiss_BFC115FC",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC11644",
+      "label": "kernel_BFC11644",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1175C",
+      "label": "kernel_BFC1175C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11800",
+      "label": "kernel_BFC11800",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11870",
+      "label": "kernel_BFC11870",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1191C",
+      "label": "kernel_BFC1191C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11944",
+      "label": "kernel_BFC11944",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11980",
+      "label": "kernel_BFC11980",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11998",
+      "label": "kernel_BFC11998",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC119C8",
+      "label": "kernel_BFC119C8",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11A04",
+      "label": "kernel_BFC11A04",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11A10",
+      "label": "kernel_BFC11A10",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11A4C",
+      "label": "kernel_BFC11A4C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11A88",
+      "label": "kernel_BFC11A88",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11AFC",
+      "label": "kernel_BFC11AFC",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11BA8",
+      "label": "kernel_BFC11BA8",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11BD4",
+      "label": "kernel_BFC11BD4",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11C14",
+      "label": "kernel_BFC11C14",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11C24",
+      "label": "kernel_BFC11C24",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11C50",
+      "label": "kernel_BFC11C50",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC11C68",
+      "label": "kernel_BFC11C68",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC12224",
+      "label": "kernel_BFC12224",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1228C",
+      "label": "kernel_BFC1228C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC122A0",
+      "label": "kernel_BFC122A0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC129EC",
+      "label": "kernel_BFC129EC",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC12BC8",
+      "label": "kernel_BFC12BC8",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC12BE0",
+      "label": "kernel_BFC12BE0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC12BE4",
+      "label": "rmiss_BFC12BE4",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC12EA4",
+      "label": "kernel_BFC12EA4",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1302C",
+      "label": "kernel_BFC1302C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC130A4",
+      "label": "kernel_BFC130A4",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC13570",
+      "label": "kernel_BFC13570",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1372C",
+      "label": "kernel_BFC1372C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1376C",
+      "label": "rmiss_BFC1376C",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC137B4",
+      "label": "indirect_BFC137B4",
+      "rationale": "Reached via indirect dispatch during boot (kernel relocated)"
+    },
+    {
+      "address": "0xBFC137BC",
+      "label": "rmiss_BFC137BC",
+      "rationale": "runtime dispatch miss"
+    },
+    {
+      "address": "0xBFC137D0",
+      "label": "kernel_ram_function",
+      "rationale": "Dispatch miss at 0xBFC137D0 (phys 0x00003CD0) \u00e2\u20ac\u201d 3 misses. Kernel RAM function."
+    },
+    {
+      "address": "0xBFC138AC",
+      "label": "kernel_BFC138AC",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1395C",
+      "label": "kernel_BFC1395C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC13968",
+      "label": "kernel_BFC13968",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC13A04",
+      "label": "kernel_BFC13A04",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC13ED0",
+      "label": "kernel_BFC13ED0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC13F5C",
+      "label": "kernel_BFC13F5C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1454C",
+      "label": "kernel_BFC1454C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC14588",
+      "label": "kernel_BFC14588",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC14594",
+      "label": "kernel_BFC14594",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC14670",
+      "label": "kernel_BFC14670",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC14754",
+      "label": "kernel_BFC14754",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC14764",
+      "label": "kernel_BFC14764",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1483C",
+      "label": "kernel_BFC1483C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1484C",
+      "label": "kernel_BFC1484C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC14864",
+      "label": "kernel_BFC14864",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1486C",
+      "label": "kernel_BFC1486C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15188",
+      "label": "kernel_BFC15188",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC151E8",
+      "label": "kernel_56E8",
+      "rationale": "Kernel function at RAM 0x56E8. Dispatch miss from shell input path."
+    },
+    {
+      "address": "0xBFC15268",
+      "label": "kernel_5768",
+      "rationale": "Kernel function at RAM 0x5768. Cascade from input path seeds."
+    },
+    {
+      "address": "0xBFC1529C",
+      "label": "kernel_579C",
+      "rationale": "Kernel function at RAM 0x579C. Cascade from input path."
+    },
+    {
+      "address": "0xBFC15334",
+      "label": "kernel_5834",
+      "rationale": "Kernel function at RAM 0x5834. Cascade."
+    },
+    {
+      "address": "0xBFC15370",
+      "label": "kernel_5870",
+      "rationale": "Kernel (CARD driver) function. Cascade."
+    },
+    {
+      "address": "0xBFC153B4",
+      "label": "kernel_58B4",
+      "rationale": "Kernel (CARD driver) function at RAM 0x58B4. Cascade."
+    },
+    {
+      "address": "0xBFC153E8",
+      "label": "kernel_58E8",
+      "rationale": "Kernel (CARD driver) function at RAM 0x58E8. Cascade."
+    },
+    {
+      "address": "0xBFC15418",
+      "label": "kernel_5918",
+      "rationale": "Kernel (CARD driver) leaf function at RAM 0x5918. Cascade."
+    },
+    {
+      "address": "0xBFC15454",
+      "label": "kernel_5954",
+      "rationale": "CARD driver cascade."
+    },
+    {
+      "address": "0xBFC15490",
+      "label": "kernel_5990",
+      "rationale": "CARD driver cascade."
+    },
+    {
+      "address": "0xBFC154CC",
+      "label": "kernel_59CC",
+      "rationale": "CARD driver cascade (predicted)."
+    },
+    {
+      "address": "0xBFC15500",
+      "label": "kernel_5A00",
+      "rationale": "CARD driver cascade."
+    },
+    {
+      "address": "0xBFC15508",
+      "label": "kernel_5A08",
+      "rationale": "CARD driver cascade (predicted)."
+    },
+    {
+      "address": "0xBFC15544",
+      "label": "kernel_5A44",
+      "rationale": "CARD driver cascade (predicted)."
+    },
+    {
+      "address": "0xBFC15558",
+      "label": "kernel_5A58",
+      "rationale": "CARD read chain state 12 (data-byte-store): SIO_RX -> a1[0x7F], XOR-updates checksum at 0x7560+slot*4, returns v0=0. Targeted by jump table at RAM 0x6c98 entry 12."
+    },
+    {
+      "address": "0xBFC15580",
+      "label": "kernel_5A80",
+      "rationale": "CARD driver cascade (predicted)."
+    },
+    {
+      "address": "0xBFC155B0",
+      "label": "kernel_5AB0",
+      "rationale": "CARD read chain state 13 (data-loop completion): reads byte vs checksum at 0x7560+slot*4, polls SIO_STAT for RX_RDY, reads END byte; v0=1 if 'G' else v0=-1. Targeted by jump table at RAM 0x6c98 entry 13."
+    },
+    {
+      "address": "0xBFC155BC",
+      "label": "kernel_5ABC",
+      "rationale": "CARD driver cascade (predicted)."
+    },
+    {
+      "address": "0xBFC155F8",
+      "label": "kernel_5AF8",
+      "rationale": "CARD driver cascade (predicted)."
+    },
+    {
+      "address": "0xBFC15634",
+      "label": "kernel_5B34",
+      "rationale": "CARD driver cascade (predicted)."
+    },
+    {
+      "address": "0xBFC15650",
+      "label": "kernel_5B50",
+      "rationale": "Kernel function. Cascade from input path."
+    },
+    {
+      "address": "0xBFC15654",
+      "label": "kernel_5B54",
+      "rationale": "Kernel function. Cascade from input path."
+    },
+    {
+      "address": "0xBFC15664",
+      "label": "kernel_BFC15664",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC156A4",
+      "label": "kernel_5BA4",
+      "rationale": "Kernel function at RAM 0x5BA4. Dispatch miss from shell input path."
+    },
+    {
+      "address": "0xBFC15724",
+      "label": "kernel_5C24",
+      "rationale": "Kernel function at RAM 0x5C24. Cascade from input path seeds."
+    },
+    {
+      "address": "0xBFC15758",
+      "label": "kernel_5C58",
+      "rationale": "Kernel function at RAM 0x5C58. Cascade."
+    },
+    {
+      "address": "0xBFC15848",
+      "label": "kernel_5D48",
+      "rationale": "Kernel (CARD driver) function. Cascade."
+    },
+    {
+      "address": "0xBFC15894",
+      "label": "kernel_5D94",
+      "rationale": "Kernel function. Cascade from input path."
+    },
+    {
+      "address": "0xBFC15898",
+      "label": "kernel_5D98",
+      "rationale": "Kernel (CARD driver) function. Cascade."
+    },
+    {
+      "address": "0xBFC15930",
+      "label": "kernel_BFC15930",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15950",
+      "label": "kernel_BFC15950",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15998",
+      "label": "kernel_BFC15998",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15A04",
+      "label": "kernel_BFC15A04",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15A4C",
+      "label": "kernel_BFC15A4C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15AB8",
+      "label": "kernel_BFC15AB8",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15AF0",
+      "label": "kernel_BFC15AF0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15B5C",
+      "label": "kernel_BFC15B5C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15B70",
+      "label": "kernel_BFC15B70",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15CC4",
+      "label": "kernel_BFC15CC4",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15E90",
+      "label": "kernel_BFC15E90",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15EBC",
+      "label": "kernel_BFC15EBC",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC15F08",
+      "label": "kernel_BFC15F08",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC1609C",
+      "label": "kernel_BFC1609C",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC16690",
+      "label": "kernel_BFC16690",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC166A0",
+      "label": "kernel_BFC166A0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC166B0",
+      "label": "kernel_BFC166B0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC166C0",
+      "label": "kernel_BFC166C0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC166D0",
+      "label": "kernel_BFC166D0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC166E0",
+      "label": "kernel_BFC166E0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC166F0",
+      "label": "kernel_BFC166F0",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC16700",
+      "label": "kernel_BFC16700",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC16710",
+      "label": "kernel_BFC16710",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC16720",
+      "label": "kernel_BFC16720",
+      "rationale": "Kernel ROM function (auto-discovered from tables/boundaries)"
+    },
+    {
+      "address": "0xBFC02934",
+      "rationale": "kernel jump-table target: A0:0F (unresolved (see psx-spx A0 table)) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC03200",
+      "rationale": "kernel jump-table target: A0:16 (strncat) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC034D0",
+      "rationale": "kernel jump-table target: A0:1C (atob helper) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC03514",
+      "rationale": "kernel jump-table target: A0:1D (strtol-family) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0357C",
+      "rationale": "kernel jump-table target: A0:1E (strtol-family) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC035C0",
+      "rationale": "kernel jump-table target: A0:1F (abs) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC03628",
+      "rationale": "kernel jump-table target: A0:20 (labs) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC03694",
+      "rationale": "kernel jump-table target: A0:21 (atoi) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC036FC",
+      "rationale": "kernel jump-table target: A0:22 (atol) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC03894",
+      "rationale": "kernel jump-table target: A0:24 (strtol-family) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC01B08",
+      "rationale": "kernel jump-table target: A0:29 (bcmp) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC02B8C",
+      "rationale": "kernel jump-table target: A0:2B (memset) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC02BC8",
+      "rationale": "kernel jump-table target: A0:2C (memmove) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC02C50",
+      "rationale": "kernel jump-table target: A0:2D (memcmp) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC02230",
+      "rationale": "kernel jump-table target: A0:30 (rand-family) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC021A0",
+      "rationale": "kernel jump-table target: A0:37 (rand-family) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D8E0",
+      "rationale": "kernel jump-table target: A0:40 (SystemErrorUnresolvedException) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC04120",
+      "rationale": "kernel jump-table target: A0:4D (ChangeClearRCnt-adjacent) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D8F0",
+      "rationale": "kernel jump-table target: A0:4F (stub/ret) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D900",
+      "rationale": "kernel jump-table target: A0:50 (stub/ret) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D910",
+      "rationale": "kernel jump-table target: A0:52 (stub/ret) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D920",
+      "rationale": "kernel jump-table target: A0:53 (stub/ret) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0B0C4",
+      "rationale": "kernel jump-table target: A0:6F (card/dev service) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC04AA0",
+      "rationale": "kernel jump-table target: A0:94 (card-adjacent service) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D930",
+      "rationale": "kernel jump-table target: A0:9A (stub/ret) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D940",
+      "rationale": "kernel jump-table target: A0:9B (stub/ret) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC06750",
+      "rationale": "kernel jump-table target: A0:9C (kernel service) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC06728",
+      "rationale": "kernel jump-table target: A0:9D (kernel service) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC050DC",
+      "rationale": "kernel jump-table target: A0:9E (kernel service) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    },
+    {
+      "address": "0xBFC0D4F0",
+      "rationale": "kernel jump-table target: A0:B4 (GetSystemInfo-family) \u2014 ROM-resident entry of the post-init A0/B0/C0 tables (read from live kernel RAM 0x200/0x874/0x674); reachable only through the vector table, invisible to transitive discovery. Class found via MMX6 card-check: A0:2B memset dispatch-missed silently, killing the save-scan (2026-07-02)."
+    }
+  ],
+  "excluded": [
+    {
+      "address": "0xBFC00100",
+      "label": "utlb_miss_bev1",
+      "rationale": "R3000 UTLB-miss vector; PS1 has no TLB; never executed"
+    }
+  ]
+}

@@ -635,6 +635,25 @@ if(BUILD_TESTING)
                 "${PSXRECOMP_ROOT}/runtime/src/net/lobby_ws/rnet_sha1.c")
             target_link_libraries(lobby_chat_ring_test PRIVATE recomp_net)
             add_test(NAME lobby_chat_ring_test COMMAND lobby_chat_ring_test)
+
+            # The netplay BIOS settle. Guards the rule that a match may run a
+            # retail BIOS only where every seated peer can run the SAME IMAGE
+            # -- the boolean it replaced let two peers agree on the word
+            # "retail" while holding different dumps.
+            add_executable(lobby_bios_settle_test tests/test_lobby_bios_settle.c)
+            target_include_directories(lobby_bios_settle_test PRIVATE
+                include
+                src
+                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws"
+                ${_RNET_ROOT}/include)
+            target_compile_definitions(lobby_bios_settle_test PRIVATE
+                PSX_HAS_LOBBY_CLIENT=1
+                PSX_HAS_RECOMP_NET=1)
+            target_sources(lobby_bios_settle_test PRIVATE
+                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_ws.c"
+                "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_sha1.c")
+            target_link_libraries(lobby_bios_settle_test PRIVATE recomp_net)
+            add_test(NAME lobby_bios_settle_test COMMAND lobby_bios_settle_test)
         endif()
 
         add_executable(rb_post_tip_filter_test tests/test_rb_post_tip_filter.c)

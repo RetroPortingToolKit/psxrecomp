@@ -1325,6 +1325,81 @@ static int json_get_int(const char *json, const char *key, int def)
     return (int)strtol(p + 1, NULL, 10);
 }
 
+/* Parse an offer's "images":[{"stem","crc32"},...] into `out`.
+ *
+ * Deliberately a small hand parser: the lobby client has no JSON DOM, and the
+ * array is a fixed, flat shape. Anything malformed yields fewer entries, which
+ * settles toward OpenBIOS -- the safe direction. */
+/* Is this a well-formed session BIOS token? "openbios", or a retail image's
+ * lower-case stem. Shape-checked, not matched against a fixed list. */
+static int lobby_session_bios_token_ok(const char *tok)
+{
+    size_t i;
+    if (!tok || !tok[0]) return 0;
+    for (i = 0; tok[i]; ++i) {
+        if (i + 1 >= PSX_LOBBY_BIOS_STEM_LEN) return 0;
+        if (!((tok[i] >= 'a' && tok[i] <= 'z') ||
+              (tok[i] >= '0' && tok[i] <= '9') || tok[i] == '_'))
+            return 0;
+    }
+    return 1;
+}
+
+static int lobby_parse_bios_images(const char *offer, PsxLobbyBiosImage *out,
+                                   int cap)
+{
+    const char *p = offer ? strstr(offer, "\"images\"") : 0;
+    int n = 0;
+    if (!p || !out || cap <= 0) return 0;
+    p = strchr(p, '[');
+    if (!p) return 0;
+    while (n < cap) {
+        const char *obj = strchr(p, '{');
+        const char *end;
+        const char *stem;
+        const char *crc;
+        if (!obj) break;
+        end = strchr(obj, '}');
+        if (!end) break;
+        stem = strstr(obj, "\"stem\"");
+        crc  = strstr(obj, "\"crc32\"");
+        if (stem && crc && stem < end && crc < end) {
+            char sbuf[PSX_LOBBY_BIOS_STEM_LEN];
+            char cbuf[16];
+            const char *q = strchr(stem + 6, '"');
+            size_t len = 0;
+            if (q) {
+                const char *r = strchr(++q, '"');
+                if (r && (size_t)(r - q) < sizeof(sbuf)) {
+                    len = (size_t)(r - q);
+                    memcpy(sbuf, q, len);
+                }
+            }
+            sbuf[len] = '\0';
+            q = strchr(crc + 7, '"');
+            len = 0;
+            if (q) {
+                const char *r = strchr(++q, '"');
+                if (r && (size_t)(r - q) < sizeof(cbuf)) {
+                    len = (size_t)(r - q);
+                    memcpy(cbuf, q, len);
+                }
+            }
+            cbuf[len] = '\0';
+            if (sbuf[0] && cbuf[0]) {
+                snprintf(out[n].stem, sizeof(out[n].stem), "%s", sbuf);
+                out[n].crc32 = (uint32_t)strtoul(cbuf, 0, 16);
+                n++;
+            }
+        }
+        p = end + 1;
+        while (*p == ',' || *p == ' ') p++;
+        if (*p != '{') break;
+    }
+    return n;
+}
+
+
 static int json_get_bool(const char *json, const char *key, int def);
 
 /* The `players` array of a lobby_list: everyone on the hub. Flat objects,
@@ -1474,10 +1549,12 @@ static void parse_match_caps_object(const char *obj, PsxLobbyMatchCaps *out)
     out->guest_memcard_active = json_get_bool(obj, "guest_memcard_active", 0);
     json_get_str(obj, "language", out->language, sizeof(out->language));
     json_get_str(obj, "session_bios", out->session_bios, sizeof(out->session_bios));
-    /* Normalize settled BIOS id. */
-    if (out->session_bios[0] &&
-        strcmp(out->session_bios, "openbios") != 0 &&
-        strcmp(out->session_bios, "scph1001") != 0)
+    /* Normalize the settled BIOS token. It is "openbios" or a retail image's
+     * lower-case stem, so validate the SHAPE -- a bounded run of [a-z0-9_] --
+     * rather than membership of a fixed pair. A hardcoded pair here silently
+     * blanked every stem the moment a build could run more than one image,
+     * which reads downstream as "legacy peer" and drops the room to OpenBIOS. */
+    if (out->session_bios[0] && !lobby_session_bios_token_ok(out->session_bios))
         out->session_bios[0] = '\0';
     out->valid = 1;
 }
@@ -1505,7 +1582,7 @@ static int append_match_caps_json(char *dst, size_t dst_cap, const PsxLobbyMatch
     if (!lang[0]) strncpy(lang, "en", sizeof(lang) - 1);
     {
         const char *sb = caps->session_bios;
-        if (!sb[0] || (strcmp(sb, "openbios") != 0 && strcmp(sb, "scph1001") != 0))
+        if (!sb[0] || !lobby_session_bios_token_ok(sb))
             sb = "";
         return snprintf(dst, dst_cap,
                         ",\"match_caps\":{\"v\":1,\"aspect_num\":%d,\"aspect_den\":%d,"
@@ -1700,16 +1777,27 @@ static int parse_seat_array(const char *json, const char *key, int is_spectator,
                 g_lc.members[n].ready = json_get_bool(chunk, "ready", 0);
                 g_lc.members[n].is_spectator = is_spectator;
                 if (json_extract_object(chunk, "bios_offer", offer, sizeof(offer))) {
-                    char prefer[24];
+                    char prefer[PSX_LOBBY_BIOS_STEM_LEN];
                     prefer[0] = '\0';
                     g_lc.members[n].bios_offer_valid = 1;
                     g_lc.members[n].bios_can_openbios =
                         json_get_bool(offer, "can_openbios", 1);
-                    g_lc.members[n].bios_can_scph1001 =
-                        json_get_bool(offer, "can_scph1001", 0);
                     json_get_str(offer, "prefer", prefer, sizeof(prefer));
                     g_lc.members[n].bios_prefer_openbios =
                         (strcmp(prefer, "openbios") == 0) ? 1 : 0;
+                    snprintf(g_lc.members[n].bios_prefer_stem,
+                             sizeof(g_lc.members[n].bios_prefer_stem), "%s",
+                             g_lc.members[n].bios_prefer_openbios ? "" : prefer);
+                    g_lc.members[n].bios_image_count =
+                        lobby_parse_bios_images(offer,
+                                                g_lc.members[n].bios_images,
+                                                PSX_LOBBY_BIOS_IMAGES_MAX);
+                    /* A v1 peer sends can_scph1001 with no images. It can run
+                     * "some retail image" but cannot say which, so there is no
+                     * identity to agree on -- treat it as retail-incapable and
+                     * let the room settle on OpenBIOS. Downgrading is the only
+                     * safe reading: guessing it holds the same dump is exactly
+                     * the desync this version exists to remove. */
                 }
                 json_get_str(chunk, "country", g_lc.members[n].country,
                              sizeof(g_lc.members[n].country));
@@ -4380,7 +4468,7 @@ void psx_lobby_set_bios_offer(const PsxLobbyBiosOffer *offer)
     g_lc.bios_offer = *offer;
     if (g_lc.bios_offer.valid) {
         /* OpenBIOS is always expected when the title allows it; keep the flag. */
-        if (!g_lc.bios_offer.can_openbios && !g_lc.bios_offer.can_scph1001)
+        if (!g_lc.bios_offer.can_openbios && g_lc.bios_offer.image_count == 0)
             g_lc.bios_offer.can_openbios = 1;
     }
 }
@@ -4566,63 +4654,104 @@ int psx_lobby_chat_get(int index, PsxLobbyChatMsg *out)
     return 1;
 }
 
+/* Lower-case a stem into the session token savestates and paths use. */
+static void bios_token_from_stem(const char *stem, char *out, size_t cap)
+{
+    size_t i = 0;
+    if (!out || cap == 0) return;
+    for (; stem && stem[i] && i + 1 < cap; ++i)
+        out[i] = (stem[i] >= 'A' && stem[i] <= 'Z')
+                     ? (char)(stem[i] - 'A' + 'a') : stem[i];
+    out[i] = '\0';
+}
+
 int psx_lobby_settle_session_bios(char *out, size_t out_cap)
 {
-    int i;
+    /* Candidates start as the LOCAL peer's runnable images and are narrowed by
+     * every other seated peer. Retail survives only where an identical image
+     * (same CRC32) is present everywhere -- agreeing on the word "retail" while
+     * holding different dumps is the desync this replaces. */
+    PsxLobbyBiosImage cand[PSX_LOBBY_BIOS_IMAGES_MAX];
+    int cand_n = 0;
     int any_prefer_open = 0;
-    int any_cannot_scph = 0;
-    int host_prefer_scph = 0;
     int saw_peer = 0;
+    int i, k;
+    const PsxLobbyBiosOffer *local = &g_lc.bios_offer;
+
     if (!out || out_cap < 9) return -1;
     out[0] = '\0';
 
+    if (local->valid) {
+        saw_peer = 1;
+        if (local->prefer_openbios) any_prefer_open = 1;
+        for (i = 0; i < local->image_count && i < PSX_LOBBY_BIOS_IMAGES_MAX; i++)
+            cand[cand_n++] = local->images[i];
+    }
+
     for (i = 0; i < g_lc.member_count; ++i) {
         const PsxLobbyMember *m = &g_lc.members[i];
+        int keep_n = 0;
         if (!m->player_id[0] && !m->display_name[0]) continue;
         saw_peer = 1;
         if (!m->bios_offer_valid) {
-            /* Legacy client / not ready yet — cannot assume SCPH. */
-            any_cannot_scph = 1;
+            /* Legacy client, or not ready yet: no identity to agree on. */
+            cand_n = 0;
             continue;
         }
         if (m->bios_prefer_openbios) any_prefer_open = 1;
-        if (!m->bios_can_scph1001) any_cannot_scph = 1;
-        if (!m->bios_can_openbios && !m->bios_can_scph1001)
-            any_cannot_scph = 1;
-        if (psx_lobby_member_is_host(m) && !m->bios_prefer_openbios &&
-            m->bios_can_scph1001)
-            host_prefer_scph = 1;
+        for (k = 0; k < cand_n; ++k) {
+            int j;
+            for (j = 0; j < m->bios_image_count; ++j) {
+                if (m->bios_images[j].crc32 == cand[k].crc32) {
+                    cand[keep_n++] = cand[k];
+                    break;
+                }
+            }
+        }
+        cand_n = keep_n;
     }
 
-    /* Include local offer even before lobby_update echoes it. */
-    if (g_lc.bios_offer.valid) {
-        saw_peer = 1;
-        if (g_lc.bios_offer.prefer_openbios) any_prefer_open = 1;
-        if (!g_lc.bios_offer.can_scph1001) any_cannot_scph = 1;
-        if (g_lc.is_host && !g_lc.bios_offer.prefer_openbios &&
-            g_lc.bios_offer.can_scph1001)
-            host_prefer_scph = 1;
-    } else if (!saw_peer) {
-        any_cannot_scph = 1;
+    if (!saw_peer || cand_n == 0 || any_prefer_open) {
+        strncpy(out, "openbios", out_cap - 1);
+        out[out_cap - 1] = '\0';
+        return 0;
     }
 
-    /* Capability first: without universal SCPH support, OpenBIOS is required.
-     * Otherwise the host's retail pick wins over guest OpenBIOS preferences. */
-    if (any_cannot_scph || !saw_peer)
-        strncpy(out, "openbios", out_cap - 1);
-    else if (host_prefer_scph)
-        strncpy(out, "scph1001", out_cap - 1);
-    else if (any_prefer_open)
-        strncpy(out, "openbios", out_cap - 1);
-    else
-        strncpy(out, "scph1001", out_cap - 1);
-    out[out_cap - 1] = '\0';
+    /* The host's pick when it survived the intersection, else the first
+     * surviving candidate. Candidate order comes from the local offer and is
+     * narrowed identically on every peer, so every peer computes the same
+     * answer from the same rows without needing a tiebreak protocol. */
+    for (i = 0; i < g_lc.member_count; ++i) {
+        const PsxLobbyMember *m = &g_lc.members[i];
+        if (!psx_lobby_member_is_host(m) || !m->bios_offer_valid) continue;
+        if (!m->bios_prefer_stem[0]) break;
+        for (k = 0; k < cand_n; ++k) {
+            if (strcmp(cand[k].stem, m->bios_prefer_stem) == 0) {
+                bios_token_from_stem(cand[k].stem, out, out_cap);
+                return 0;
+            }
+        }
+        break;
+    }
+    if (g_lc.is_host && local->prefer_stem[0]) {
+        for (k = 0; k < cand_n; ++k) {
+            if (strcmp(cand[k].stem, local->prefer_stem) == 0) {
+                bios_token_from_stem(cand[k].stem, out, out_cap);
+                return 0;
+            }
+        }
+    }
+    bios_token_from_stem(cand[0].stem, out, out_cap);
     return 0;
 }
 
 int psx_lobby_set_ready(int ready)
 {
-    char msg[512];
+    /* 8 images serialize to ~390 bytes, plus the op/ready/memcard wrapper:
+     * ~480 in a 512 buffer, which snprintf would silently truncate into a
+     * -1 return -- leaving the peer permanently un-ready rather than erroring
+     * visibly. Size for the worst case instead of the common one. */
+    char msg[768];
     char memcard[96];
     int n;
     if (!psx_lobby_connected() || !g_lc.in_lobby) {
@@ -4636,15 +4765,38 @@ int psx_lobby_set_ready(int ready)
                  g_lc.memcard_offer.share ? "true" : "false");
     }
     if (g_lc.bios_offer.valid) {
+        /* v2: the images this peer can actually run, by identity. `prefer` is
+         * a stem (or "openbios"), not a category. can_scph1001 is still sent
+         * so a v1 peer reading this frame sees "retail available" rather than
+         * silently dropping to OpenBIOS -- it means "some retail image", which
+         * is all v1 could ever express. */
+        char images[320];
+        int ip = 0, i;
+        images[0] = '\0';
+        for (i = 0; i < g_lc.bios_offer.image_count &&
+                    i < PSX_LOBBY_BIOS_IMAGES_MAX; i++) {
+            int w = snprintf(images + ip, sizeof(images) - (size_t)ip,
+                             "%s{\"stem\":\"%s\",\"crc32\":\"%08X\"}",
+                             i ? "," : "",
+                             g_lc.bios_offer.images[i].stem,
+                             (unsigned)g_lc.bios_offer.images[i].crc32);
+            if (w < 0 || (size_t)(ip + w) >= sizeof(images)) break;
+            ip += w;
+        }
         n = snprintf(msg, sizeof(msg),
                      "{\"op\":\"set_ready\",\"ready\":%s,"
-                     "\"bios_offer\":{\"v\":1,\"prefer\":\"%s\","
-                     "\"can_openbios\":%s,\"can_scph1001\":%s}%s}",
+                     "\"bios_offer\":{\"v\":2,\"prefer\":\"%s\","
+                     "\"can_openbios\":%s,\"can_scph1001\":%s,"
+                     "\"images\":[%s]}%s}",
                      ready ? "true" : "false",
-                     g_lc.bios_offer.prefer_openbios ? "openbios" : "scph1001",
+                     g_lc.bios_offer.prefer_openbios
+                         ? "openbios"
+                         : (g_lc.bios_offer.prefer_stem[0]
+                                ? g_lc.bios_offer.prefer_stem
+                                : "openbios"),
                      g_lc.bios_offer.can_openbios ? "true" : "false",
-                     g_lc.bios_offer.can_scph1001 ? "true" : "false",
-                     memcard);
+                     g_lc.bios_offer.image_count > 0 ? "true" : "false",
+                     images, memcard);
     } else {
         n = snprintf(msg, sizeof(msg), "{\"op\":\"set_ready\",\"ready\":%s%s}",
                      ready ? "true" : "false", memcard);

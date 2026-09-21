@@ -682,6 +682,34 @@ struct BiosConfig {
     // BIOS-selection surface (couriered via psx_bios_image.image_bundled).
     std::string           image_sha256;         // empty = unchecked
     bool                  image_redistributable = false;
+    std::string           image_stem;           // savestate/dir token; derived
+    std::string           image_region;         // "NTSC-U"/"NTSC-J"/"PAL"; advisory
+
+    // [[program.accepted]] — FURTHER images this backend's code is valid for.
+    //
+    // Retail PSX images of the v2.2/v3.0 line share their boot code and kernel
+    // and diverge only in the shell, which carries no seeds and is interpreted.
+    // Generating from SCPH-1001 and from SCPH-5501 with the shared kernel
+    // corpus produces byte-identical C apart from the identity struct — so one
+    // backend can serve several images and a player can switch between them
+    // with no rebuild.
+    //
+    // Each entry is a CLAIM that every seeded function body is byte-identical
+    // to the reference image. tools/add_retail_bios.py verifies it and refuses
+    // otherwise; the emitter only couriers what the profile declares. An image
+    // that differs even in one seeded function (SCPH-5500's reset stub carries
+    // nine extra instructions where SCPH-1001 has padding) does NOT belong
+    // here and needs its own backend.
+    struct AcceptedImage {
+        std::string id;      // "SCPH-5501"
+        std::string stem;    // "SCPH5501"
+        std::string sha256;  // 64 lowercase hex
+        std::string region;  // advisory; see PsxBiosImageInfo::image_region
+        uint32_t    crc32 = 0;
+        uint32_t    size = 0;
+        uint32_t    wordsum = 0;
+    };
+    std::vector<AcceptedImage> accepted_images;
 
     // [recompiler] block
     std::filesystem::path seeds_path;    // absolute path to seeds JSON
@@ -803,6 +831,9 @@ struct GameConfig {
     // [recompiler] bios_config — BIOS profile this game builds against
     // (empty = main_psx resolves the SCPH1001 profile default).
     std::filesystem::path bios_config_path;
+    // Every profile this title links. Entry 0 == bios_config_path (the
+    // primary, which drives game codegen). Empty when bios_config is absent.
+    std::vector<std::filesystem::path> bios_config_paths;
     std::filesystem::path out_dir;
     bool                  strict;
     std::string           discovery;     // "whole-image" (default) or "reachable"

@@ -58,14 +58,65 @@ void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_addr)
 
 /* ── Selection ──────────────────────────────────────────────────────────── */
 
-const PsxBiosBackend *psx_bios_find(const char *image_id)
+const PsxBiosBackend *psx_bios_find(const char *image_id,
+                                    const PsxBiosImageInfo **out_image)
 {
+    if (out_image) *out_image = 0;
     if (!image_id) return 0;
     for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
         const PsxBiosBackend *b = psx_bios_registry[i];
-        if (b && b->image && b->image->image_id &&
-            strcmp(b->image->image_id, image_id) == 0)
-            return b;
+        if (!b) continue;
+        for (uint32_t k = 0; k < b->image_count; k++) {
+            const PsxBiosImageInfo *img = &b->images[k];
+            if (img->image_id && strcmp(img->image_id, image_id) == 0) {
+                if (out_image) *out_image = img;
+                return b;
+            }
+        }
+    }
+    return 0;
+}
+
+const PsxBiosBackend *psx_bios_match(uint32_t size, uint32_t crc32,
+                                     const PsxBiosImageInfo **out_image)
+{
+    if (out_image) *out_image = 0;
+    for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
+        const PsxBiosBackend *b = psx_bios_registry[i];
+        if (!b) continue;
+        for (uint32_t k = 0; k < b->image_count; k++) {
+            const PsxBiosImageInfo *img = &b->images[k];
+            if (img->image_size == size && img->image_crc32 == crc32) {
+                if (out_image) *out_image = img;
+                return b;
+            }
+        }
+    }
+    return 0;
+}
+
+uint32_t psx_bios_image_total(void)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
+        const PsxBiosBackend *b = psx_bios_registry[i];
+        if (b) n += b->image_count;
+    }
+    return n;
+}
+
+const PsxBiosImageInfo *psx_bios_image_at(uint32_t index,
+                                          const PsxBiosBackend **out_backend)
+{
+    if (out_backend) *out_backend = 0;
+    for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
+        const PsxBiosBackend *b = psx_bios_registry[i];
+        if (!b) continue;
+        if (index < b->image_count) {
+            if (out_backend) *out_backend = b;
+            return &b->images[index];
+        }
+        index -= b->image_count;
     }
     return 0;
 }
@@ -74,21 +125,34 @@ const PsxBiosBackend *psx_bios_bundled(void)
 {
     for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
         const PsxBiosBackend *b = psx_bios_registry[i];
-        if (b && b->image && b->image->image_bundled) return b;
+        if (b && b->image_count && b->images[0].image_bundled) return b;
     }
     return 0;
 }
 
-int psx_bios_activate(const PsxBiosBackend *backend)
+int psx_bios_activate(const PsxBiosBackend *backend,
+                      const PsxBiosImageInfo *image)
 {
-    if (!backend || !backend->image) return 0;
+    if (!backend || backend->image_count == 0) return 0;
+    if (!image) {
+        image = &backend->images[0];
+    } else {
+        /* Publishing an image a backend does not own would run one image's
+         * identity against another's code — the exact confusion the accepted
+         * list exists to make impossible. Refuse rather than trust. */
+        int owned = 0;
+        for (uint32_t k = 0; k < backend->image_count; k++) {
+            if (&backend->images[k] == image) { owned = 1; break; }
+        }
+        if (!owned) return 0;
+    }
     psx_bios_active             = backend;
-    psx_bios_image              = *backend->image;
+    psx_bios_image              = *image;
     psx_bios_kernel_bodies      = backend->kernel_bodies;
     psx_bios_kernel_body_count  = backend->kernel_body_count;
     psx_bios_kernel_patch_ranges      = backend->kernel_patch_ranges;
     psx_bios_kernel_patch_range_count = backend->kernel_patch_range_count;
-    /* Soft-return rematch can switch OPENBIOS ↔ SCPH without process exit.
+    /* Soft-return rematch can switch OPENBIOS â SCPH without process exit.
      * Drop the prior image's call-HLE / boot-skip hook immediately so a
      * sticky SCPH DeliverEvent path cannot run against OpenBIOS ROM bytes
      * before session_reboot re-runs psx_bios_hle_plan + configure. */
@@ -104,7 +168,9 @@ int psx_bios_has_selectable(void)
 {
     for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
         const PsxBiosBackend *b = psx_bios_registry[i];
-        if (b && b->image && !b->image->image_bundled) return 1;
+        if (!b) continue;
+        for (uint32_t k = 0; k < b->image_count; k++)
+            if (!b->images[k].image_bundled) return 1;
     }
     return 0;
 }

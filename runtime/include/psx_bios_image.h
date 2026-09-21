@@ -83,6 +83,19 @@ typedef struct {
     uint32_t    image_wordsum;   /* sum of LE u32 words (savestate checksum) */
     const char* image_sha256;    /* 64 lowercase hex chars */
     const char* image_id;        /* profile [program] id, e.g. "SCPH-1001" */
+    /* Console region this image was sold for: "NTSC-U", "NTSC-J", "PAL", or
+     * "" when unknown. ADVISORY ONLY. The disc's own region is derived from
+     * its boot serial and drives the CD licence string, so this never gates
+     * anything -- a NTSC-J BIOS demonstrably runs a NTSC-U disc here. It
+     * exists so a build with several images can default to the one matching
+     * the disc instead of picking arbitrarily. */
+    const char* image_region;
+    const char* image_stem;      /* build stem, e.g. "SCPH1001"; savestate dir
+                                  * token and the name PSXRECOMP_BIOS_STEMS
+                                  * uses. Derived from the id before this
+                                  * field existed, which mis-scoped savestates
+                                  * the moment one backend served several
+                                  * images. */
 
     /* Profile [program.image] redistributable: the BIOS ships WITH the game
      * (e.g. OpenBIOS, MIT). The runtime then resolves the bundled image

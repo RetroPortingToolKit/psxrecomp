@@ -934,6 +934,8 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
 
     // [program.image] — declared identity (optional)
     std::string image_sha256;
+    std::string image_stem;
+    std::string image_region;
     bool image_redistributable = false;
     if (prog.contains("image")) {
         const toml::value& img = toml::find(prog, "image");
@@ -941,6 +943,54 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
             image_sha256 = toml::find<std::string>(img, "sha256");
         if (img.contains("redistributable"))
             image_redistributable = toml::find<bool>(img, "redistributable");
+        // The reference image's own stem. Distinct from [recompiler] out_stem,
+        // which names the BACKEND: a backend serving several images is named
+        // for what it is, while each image keeps the stem its savestates and
+        // its PSXRECOMP_BIOS_STEMS entry are filed under.
+        if (img.contains("stem"))
+            image_stem = toml::find<std::string>(img, "stem");
+        if (img.contains("region"))
+            image_region = toml::find<std::string>(img, "region");
+    }
+
+    // [[program.accepted]] — further images this backend's code is valid for.
+    // Every field is required: a half-declared identity is worse than none,
+    // because the runtime would accept a dump on a partial match and then run
+    // code generated from different bytes. See BiosConfig::AcceptedImage.
+    std::vector<BiosConfig::AcceptedImage> accepted_images;
+    if (prog.contains("accepted")) {
+        for (const auto& v : prog.at("accepted").as_array()) {
+            BiosConfig::AcceptedImage a;
+            a.id     = toml::find<std::string>(v, "id");
+            a.stem   = toml::find<std::string>(v, "stem");
+            a.sha256 = toml::find<std::string>(v, "sha256");
+            if (v.contains("region"))
+                a.region = toml::find<std::string>(v, "region");
+            a.crc32  = parse_hex(toml::find<std::string>(v, "crc32"),
+                                 "program.accepted.crc32");
+            a.size   = static_cast<uint32_t>(toml::find<int64_t>(v, "size"));
+            a.wordsum = parse_hex(toml::find<std::string>(v, "wordsum"),
+                                  "program.accepted.wordsum");
+            if (a.sha256.size() != 64) {
+                throw std::runtime_error(fmt::format(
+                    "{}: [[program.accepted]] '{}': sha256 must be 64 hex "
+                    "characters", config_path.string(), a.id));
+            }
+            if (a.sha256 == image_sha256) {
+                throw std::runtime_error(fmt::format(
+                    "{}: [[program.accepted]] '{}' repeats the reference "
+                    "image's sha256; entry 0 is already the reference",
+                    config_path.string(), a.id));
+            }
+            for (const auto& prior : accepted_images) {
+                if (prior.sha256 == a.sha256 || prior.stem == a.stem) {
+                    throw std::runtime_error(fmt::format(
+                        "{}: [[program.accepted]] '{}' duplicates '{}'",
+                        config_path.string(), a.id, prior.id));
+                }
+            }
+            accepted_images.push_back(std::move(a));
+        }
     }
 
     // [recompiler]
@@ -1115,6 +1165,9 @@ BiosConfig load_bios_config(const fs::path& config_path_in) {
         /*text_size*/    text_size,
         /*image_sha256*/ image_sha256,
         /*image_redistributable*/ image_redistributable,
+        /*image_stem*/   image_stem.empty() ? out_stem : image_stem,
+        /*image_region*/ image_region,
+        /*accepted_images*/ std::move(accepted_images),
         /*seeds_path*/   seeds_path,
         /*out_dir*/      out_dir,
         /*strict*/       strict,
@@ -1358,10 +1411,33 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     // [recompiler] bios_config — the BIOS profile this game is built
     // against. Optional: main_psx falls back to the SCPH1001 profile
     // (bios/SCPH1001.toml, in-repo or under the psxrecomp/ submodule).
+    // Accepts a string or an array. Entry 0 is the PRIMARY: it supplies the
+    // BIOS address model the game emitter builds against, and the game's
+    // recompiled C is identical whichever retail image that is (verified
+    // byte-for-byte), so one is enough for codegen. The whole list is what
+    // the build LINKS -- which is how a title ships more than one retail
+    // backend (e.g. the shared v2.2/v3.0 kernel plus NTSC-J SCPH-5500, whose
+    // reset stub differs and so cannot share compiled code).
     fs::path bios_config_path;
+    std::vector<fs::path> bios_config_paths;
     if (recomp.contains("bios_config")) {
-        bios_config_path =
-            PSXRecompV4::host_resolve(root, toml::find<std::string>(recomp, "bios_config"));
+        const toml::value& bc = recomp.at("bios_config");
+        if (bc.is_array()) {
+            for (const auto& v : bc.as_array()) {
+                bios_config_paths.push_back(
+                    PSXRecompV4::host_resolve(root, std::string(v.as_string())));
+            }
+            if (bios_config_paths.empty()) {
+                throw std::runtime_error(fmt::format(
+                    "{}: [recompiler] bios_config is an empty list; omit it to "
+                    "take the default, or name at least one profile",
+                    config_path.string()));
+            }
+        } else {
+            bios_config_paths.push_back(
+                PSXRecompV4::host_resolve(root, std::string(bc.as_string())));
+        }
+        bios_config_path = bios_config_paths.front();
     }
 
     const std::string out_dir_field =
@@ -2146,6 +2222,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*seeds_path*/       seeds_path,
         /*bios_thunks_path*/ bios_thunks_path,
         /*bios_config_path*/ bios_config_path,
+        /*bios_config_paths*/ std::move(bios_config_paths),
         /*out_dir*/          out_dir,
         /*strict*/           strict,
         /*discovery*/        discovery,

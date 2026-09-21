@@ -79,6 +79,19 @@ typedef struct PsxLobbyOnlinePlayer {
 } PsxLobbyOnlinePlayer;
 #define PSX_LOBBY_MAX_ONLINE 64
 
+/* A build can link several retail backends, each accepting several images;
+ * this bounds what one peer advertises. Eight covers every profile the
+ * framework ships with room to spare, and keeps the set_ready frame inside
+ * the server's 512-byte bios_offer cap. */
+#define PSX_LOBBY_BIOS_IMAGES_MAX 8
+#define PSX_LOBBY_BIOS_STEM_LEN   16
+
+typedef struct PsxLobbyBiosImage {
+    char     stem[PSX_LOBBY_BIOS_STEM_LEN]; /* "SCPH5501"; savestate token too */
+    uint32_t crc32;                         /* the identity that must agree */
+} PsxLobbyBiosImage;
+
+
 typedef struct PsxLobbyMember {
     /* Seat index in the shared namespace: a player seat, or
      * spectator_slot_base + gallery index. Pass it back to kick / move as-is. */
@@ -92,8 +105,14 @@ typedef struct PsxLobbyMember {
     /* Peer BIOS capability from set_ready bios_offer (0 if legacy/missing). */
     int  bios_offer_valid;
     int  bios_can_openbios;   /* linked OpenBIOS backend */
-    int  bios_can_scph1001;   /* linked retail + validated dump available */
     int  bios_prefer_openbios; /* explicit OpenBIOS pick (not retail) */
+    /* Retail images this peer can actually run: linked backend AND a
+     * validated dump on its disk. Identified by CRC32, never by a category
+     * word -- "retail" is not one image, and two peers agreeing to run
+     * "retail" while holding different dumps is a silent desync. */
+    PsxLobbyBiosImage bios_images[PSX_LOBBY_BIOS_IMAGES_MAX];
+    int  bios_image_count;
+    char bios_prefer_stem[PSX_LOBBY_BIOS_STEM_LEN]; /* "" = no retail pick */
     /* Peer memory-card offer from set_ready memcard_offer (0 if legacy). */
     int  memcard_offer_valid;
     int  memcard_has_card;    /* a slot-1 card is enabled locally */
@@ -108,12 +127,27 @@ typedef struct PsxLobbyMember {
 /*
  * Local BIOS capability advertised on set_ready (see docs/BIOS_SELECTION.md
  * netplay settle rule). Updated by the host runtime via psx_lobby_set_bios_offer.
+ *
+ * v2 carries IMAGE IDENTITIES, not a category. The v1 shape was a boolean
+ * `can_scph1001`, which stopped being answerable the moment one build could
+ * run several retail images: two peers both said "yes, retail", settled on
+ * the word "scph1001", and booted different kernels. The shell differs
+ * between images and lives in guest RAM, so that is a rollback desync with
+ * nothing to catch it until a state transfer aborts the match mid-play.
+ *
+ * A peer lists every retail image it can run -- linked backend AND a
+ * validated dump present -- and the settle takes the intersection.
  */
 typedef struct PsxLobbyBiosOffer {
     int  valid;
     int  can_openbios;
-    int  can_scph1001;
-    int  prefer_openbios; /* 1 = OpenBIOS selected; 0 = retail / willing SCPH */
+    int  prefer_openbios; /* 1 = OpenBIOS selected; 0 = retail / willing */
+    /* Retail images this peer can run, and which one it would rather use.
+     * An empty list means "OpenBIOS only", which is exactly v1's
+     * can_scph1001 = 0 and settles the same way. */
+    PsxLobbyBiosImage images[PSX_LOBBY_BIOS_IMAGES_MAX];
+    int  image_count;
+    char prefer_stem[PSX_LOBBY_BIOS_STEM_LEN]; /* "" = no retail preference */
 } PsxLobbyBiosOffer;
 
 /*
@@ -181,8 +215,10 @@ typedef struct PsxLobbyMatchCaps {
      * so a toggle racing the start cannot split the room. */
     int  guest_memcard_active;
     char language[PSX_LOBBY_LANG_LEN];
-    /* Settled match BIOS: "openbios" | "scph1001" | "" (unset / legacy). */
-    char session_bios[16];
+    /* Settled match BIOS: "openbios", or a retail image's stem in lower case
+     * ("scph5501"). "" = unset / legacy peer. A stem, not a category: every
+     * peer must load the SAME image, and the stem names exactly one. */
+    char session_bios[PSX_LOBBY_BIOS_STEM_LEN];
 } PsxLobbyMatchCaps;
 
 typedef struct PsxLobbyJoinInfo {
@@ -446,12 +482,16 @@ int  psx_lobby_chat_get(int index, PsxLobbyChatMsg *out);
 void psx_lobby_chat_clear(void);
 
 /*
- * Settle session BIOS from seated peers' bios_offer (+ local offer):
- *   OpenBIOS if anyone cannot run SCPH-1001 (missing offer ⇒ cannot);
- *   else SCPH-1001 when the host prefers retail and every peer can;
- *   else OpenBIOS if anyone prefers OpenBIOS; else SCPH-1001.
- * Host preference wins over guest OpenBIOS picks when all can SCPH.
- * Writes "openbios" or "scph1001" into out. Returns 0 on success.
+ * Settle the session BIOS from seated peers' offers (+ the local one).
+ *
+ * Retail is available only where every seated peer can run the SAME IMAGE,
+ * so the candidate set is the INTERSECTION of the peers' image lists, keyed
+ * on CRC32. From that set: the host's preferred stem if it survived, else the
+ * first candidate in the host's own order (deterministic across peers, who
+ * all run this on the same inputs). Empty intersection, a peer that sent no
+ * offer, or anyone preferring OpenBIOS -> "openbios".
+ *
+ * Writes "openbios" or a lower-case stem into out. Returns 0 on success.
  */
 int  psx_lobby_settle_session_bios(char *out, size_t out_cap);
 

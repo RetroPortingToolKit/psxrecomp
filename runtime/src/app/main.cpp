@@ -2459,7 +2459,9 @@ static std::string s_bundled_bios_rel  = PSX_BUNDLED_BIOS_PATH;
  */
 static const PsxBiosBackend* bios_backend_for_file(const std::filesystem::path& path,
                                                    uint32_t* out_crc,
-                                                   uint64_t* out_size) {
+                                                   uint64_t* out_size,
+                                                   const PsxBiosImageInfo** out_image = nullptr) {
+    if (out_image) *out_image = nullptr;
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f.is_open()) return nullptr;
     const std::streamoff size = f.tellg();
@@ -2469,35 +2471,33 @@ static const PsxBiosBackend* bios_backend_for_file(const std::filesystem::path& 
     if (!read_at(f, 0, data.data(), data.size())) return nullptr;
     const uint32_t crc = crc32_compute(data.data(), data.size());
     if (out_crc) *out_crc = crc;
-    for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
-        const PsxBiosBackend* b = psx_bios_registry[i];
-        if (!b || !b->image) continue;
-        if ((uint64_t)size == (uint64_t)b->image->image_size &&
-            crc == b->image->image_crc32)
-            return b;
-    }
-    return nullptr;
+    /* One backend may accept several images (psx_bios_backend.h): match the
+     * dump against every accepted identity, and hand back WHICH one matched so
+     * the caller publishes that image's identity rather than the reference's. */
+    return psx_bios_match((uint32_t)size, crc, out_image);
 }
 
 /* What a player may supply, for mismatch and picker copy. The bundled image is
  * excluded: it is never something to go and find. */
 static std::string bios_accepted_images() {
     std::string s;
-    for (uint32_t i = 0; i < psx_bios_registry_count; i++) {
-        const PsxBiosBackend* b = psx_bios_registry[i];
-        if (!b || !b->image || b->image->image_bundled) continue;
+    const uint32_t total = psx_bios_image_total();
+    for (uint32_t i = 0; i < total; i++) {
+        const PsxBiosImageInfo* img = psx_bios_image_at(i, nullptr);
+        if (!img || img->image_bundled) continue;
         if (!s.empty()) s += ", ";
-        s += b->image->image_id;
-        s += " (" + std::to_string(b->image->image_size / 1024u) + " KB)";
+        s += img->image_id;
     }
+    if (!s.empty()) s += " (512 KB each)";
     return s.empty() ? std::string("(this build ships its own BIOS)") : s;
 }
 
 /* Identity-gate a player-chosen BIOS and activate its backend on success. */
 static bool validate_bios_for_launch(const std::filesystem::path& path) {
     uint32_t crc = 0; uint64_t size = 0;
-    const PsxBiosBackend* b = bios_backend_for_file(path, &crc, &size);
-    if (b) return psx_bios_activate(b) != 0;
+    const PsxBiosImageInfo* img = nullptr;
+    const PsxBiosBackend* b = bios_backend_for_file(path, &crc, &size, &img);
+    if (b) return psx_bios_activate(b, img) != 0;
 
     char buf[512];
     std::snprintf(buf, sizeof(buf),
@@ -2578,12 +2578,13 @@ static std::filesystem::path resolve_bios_for_runtime(const char* requested,
             s_bundled_bios_rel.empty() ? nullptr : s_bundled_bios_rel.c_str(), argv0);
         if (!img.empty() && std::filesystem::exists(img) &&
             bios_backend_for_file(img, nullptr, nullptr) == bundled &&
-            psx_bios_activate(bundled)) {
+            psx_bios_activate(bundled, nullptr)) {
             return img;
         }
         launcher_warning("Bundled BIOS Missing",
             std::string("This build ships its own BIOS (") +
-            bundled->image->image_id + "), but the bundled image is missing "
+            std::string(bundled->image_count ? bundled->images[0].image_id : "?") +
+            "), but the bundled image is missing "
             "or does not match.\n\nExpected next to the executable:\n" +
             (s_bundled_bios_rel.empty() ? "(default path)" : s_bundled_bios_rel) +
             "\n\nReinstall or rebuild.");
@@ -2729,7 +2730,7 @@ static bool retail_bios_file_ok(const std::filesystem::path& path) {
     if (!std::filesystem::is_regular_file(path, ec)) return false;
     if (psx_bios_registry_count > 0) {
         const PsxBiosBackend* b = bios_backend_for_file(path, nullptr, nullptr);
-        return b && b->image && !b->image->image_bundled;
+        return b && b->image_count && !b->images[0].image_bundled;
     }
     /* Setup host (no backends linked yet): accept the retail image THIS build
      * pins, from psx_bios_known_images.h. This used to hardcode SCPH-1001, so
@@ -2748,9 +2749,27 @@ static bool retail_bios_file_ok(const std::filesystem::path& path) {
 
 static std::filesystem::path discover_retail_bios_near(const char* argv0) {
     namespace fs = std::filesystem;
-    char name_buf[8][32];
-    const int name_count =
-        psx_known_bios_filenames(psx_expected_bios(), name_buf, 8);
+    /* Probe for every image a linked backend accepts. Deriving the names from
+     * one pinned stem broke the moment a backend served several images: the
+     * stem then names the BACKEND ("RetailKernel"), which is not a filename
+     * anyone has, so discovery found nothing and every accepted dump sitting
+     * next to the build was ignored. */
+    char name_buf[64][32];
+    int name_count = 0;
+    const uint32_t img_total = psx_bios_image_total();
+    for (uint32_t ii = 0; ii < img_total && name_count < 56; ii++) {
+        const PsxBiosImageInfo* info = psx_bios_image_at(ii, nullptr);
+        if (!info || info->image_bundled || !info->image_stem) continue;
+        PsxKnownBiosImage k;
+        k.stem  = info->image_stem;
+        k.id    = info->image_id ? info->image_id : info->image_stem;
+        k.crc32 = info->image_crc32;
+        k.size  = info->image_size;
+        name_count += psx_known_bios_filenames(&k, name_buf + name_count,
+                                               64 - name_count);
+    }
+    if (name_count <= 0)
+        name_count = psx_known_bios_filenames(psx_expected_bios(), name_buf, 8);
     if (name_count <= 0) return {};
     static const char* kSubdirs[] = {
         "bios", "", "system", "firmware", "psxrecomp/bios", "psxrecomp-v4/bios",
@@ -2774,6 +2793,76 @@ static std::filesystem::path discover_retail_bios_near(const char* argv0) {
     return {};
 }
 
+/* Every retail image this host can actually RUN right now: a linked backend
+ * accepts it AND a validated dump for it is on disk. This is what netplay
+ * advertises. "Can you run retail?" stopped being answerable once one build
+ * could run several images, and two peers both answering yes while holding
+ * different dumps is a silent rollback desync.
+ */
+struct PsxRunnableImage {
+    const PsxBiosImageInfo* info;
+    std::filesystem::path   path;
+};
+
+static std::vector<PsxRunnableImage> runnable_retail_images(
+    const char* argv0, const char* launcher_bios_path) {
+    namespace fs = std::filesystem;
+    std::vector<PsxRunnableImage> out;
+    std::error_code ec;
+    auto consider = [&](const fs::path& p) {
+        if (p.empty() || !fs::exists(p, ec)) return;
+        const PsxBiosImageInfo* img = nullptr;
+        const PsxBiosBackend* b = bios_backend_for_file(p, nullptr, nullptr, &img);
+        if (!b || !img || img->image_bundled) return;
+        for (const auto& have : out)
+            if (have.info == img) return;
+        out.push_back({img, p});
+    };
+    if (launcher_bios_path && launcher_bios_path[0])
+        consider(resolve_bios_path(launcher_bios_path, argv0));
+    consider(read_cached_path(argv0, "bios.cfg"));
+
+    char name_buf[64][32];
+    int name_count = 0;
+    const uint32_t img_total = psx_bios_image_total();
+    for (uint32_t ii = 0; ii < img_total && name_count < 56; ii++) {
+        const PsxBiosImageInfo* info = psx_bios_image_at(ii, nullptr);
+        if (!info || info->image_bundled || !info->image_stem) continue;
+        PsxKnownBiosImage k;
+        k.stem = info->image_stem;
+        k.id = info->image_id ? info->image_id : info->image_stem;
+        k.crc32 = info->image_crc32;
+        k.size = info->image_size;
+        name_count += psx_known_bios_filenames(&k, name_buf + name_count,
+                                               64 - name_count);
+    }
+    static const char* kSubdirs[] = {
+        "bios", "", "system", "firmware", "psxrecomp/bios", "psxrecomp-v4/bios",
+    };
+    const fs::path exe_dir = exe_dir_from_argv(argv0);
+    for (fs::path root = exe_dir; !root.empty(); root = root.parent_path()) {
+        for (const char* sub : kSubdirs) {
+            const fs::path dir = (sub && sub[0]) ? (root / sub) : root;
+            for (int ni = 0; ni < name_count; ++ni)
+                consider(dir / name_buf[ni]);
+        }
+        if (!root.has_parent_path() || root == root.root_path()) break;
+    }
+    return out;
+}
+
+/* Does this image's stem equal a lower-case session token? */
+static bool bios_stem_is(const PsxBiosImageInfo* img, const char* token) {
+    if (!img || !img->image_stem || !token) return false;
+    size_t i = 0;
+    for (; img->image_stem[i] && token[i]; ++i) {
+        char a = img->image_stem[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (a != token[i]) return false;
+    }
+    return img->image_stem[i] == '\0' && token[i] == '\0';
+}
+
 /* Match-only BIOS from lobby `session_bios`. Never writes bios.cfg / settings.
  * Returns true when session_bios is a known settle token.
  * *out_path empty ⇒ OpenBIOS for this match; otherwise a validated retail dump. */
@@ -2789,26 +2878,30 @@ static bool resolve_match_session_bios_path(
         out_path->clear();
         return true;
     }
-    if (std::strcmp(session_bios, "scph1001") != 0)
-        return false;
-
+    /* The token names ONE image by stem. Resolve to a dump of THAT image --
+     * not "any non-bundled backend", which with several retail images linked
+     * handed back whichever dump was lying around, so two peers could satisfy
+     * the same token with different kernels and desync on the first rollback. */
     std::filesystem::path retail;
     std::error_code ec;
     auto try_retail = [&](const std::filesystem::path& p) {
-        if (p.empty() || !std::filesystem::exists(p, ec))
+        if (!retail.empty() || p.empty() || !std::filesystem::exists(p, ec))
             return;
-        const PsxBiosBackend* b = bios_backend_for_file(p, nullptr, nullptr);
-        if (b && b->image && !b->image->image_bundled)
+        const PsxBiosImageInfo* img = nullptr;
+        const PsxBiosBackend* b = bios_backend_for_file(p, nullptr, nullptr, &img);
+        if (b && img && !img->image_bundled && bios_stem_is(img, session_bios))
             retail = p;
     };
     try_retail(preferred_hint);
-    if (retail.empty() && launcher_bios_path && launcher_bios_path[0])
+    if (launcher_bios_path && launcher_bios_path[0])
         try_retail(resolve_bios_path(launcher_bios_path, argv0));
-    if (retail.empty())
-        try_retail(read_cached_path(argv0, "bios.cfg"));
-    if (retail.empty())
-        try_retail(discover_retail_bios_near(argv0));
-    *out_path = std::move(retail); /* empty ⇒ caller falls back to OpenBIOS */
+    try_retail(read_cached_path(argv0, "bios.cfg"));
+    if (retail.empty()) {
+        for (const auto& r : runnable_retail_images(argv0, launcher_bios_path)) {
+            if (bios_stem_is(r.info, session_bios)) { retail = r.path; break; }
+        }
+    }
+    *out_path = std::move(retail); /* empty ⇒ caller aborts; see call sites */
     return true;
 }
 
@@ -7823,6 +7916,9 @@ namespace {
                               "BIOS file not found.");
                 return 1;
             }
+            /* "Expected" is now a set, not one image; the registry match
+             * below is the authority. Keep a pinned-stem hint only for a setup
+             * host, which has no linked backend to match against. */
             const PsxKnownBiosImage* want = psx_expected_bios();
             const std::streamoff want_size =
                 want ? (std::streamoff)want->size : (std::streamoff)(512 * 1024);
@@ -7870,11 +7966,19 @@ namespace {
                 out->ok = 1;
                 return 1;
             }
+            /* No linked backend accepts this dump. Offering "Generate &
+             * rebuild" here promised a switch the build cannot perform:
+             * Generate stages the file under the pinned profile's ROM name and
+             * the emitter's declared-identity gate then rejects it, so the
+             * rebuild failed AFTER overwriting a good staged dump. A build
+             * accepts a fixed, verified set of images; say which. */
             out->ok = 0;
-            out->needs_regen = 1;
+            out->needs_regen = 0;
             std::snprintf(out->detail, sizeof(out->detail),
-                          "This BIOS is not compiled into the current build. "
-                          "Generate & rebuild to switch (or use OpenBIOS).");
+                          "Not one of the BIOS images this build runs.\n\n"
+                          "Accepted: %s\n\n"
+                          "Any of those can be selected without rebuilding.",
+                          bios_accepted_images().c_str());
             return 1;
         } catch (const std::exception& e) {
             std::snprintf(out->detail, sizeof(out->detail),
@@ -8157,11 +8261,24 @@ namespace {
         int valid = 0;
         int prefer_openbios = 1;
         int can_openbios = 1;
-        int can_scph1001 = 0;
+        /* Fingerprint of the retail images this seat can run: an order-
+         * independent hash of their CRC32s. 0 = OpenBIOS only.
+         *
+         * LAN frames are fixed-shape UDP lines, so a full image list does not
+         * fit without a protocol revision. A fingerprint does, in the integer
+         * field that used to hold can_scph1001 -- and equal fingerprints mean
+         * equal image SETS, which is all the settle needs: if every seat can
+         * run exactly the same images, the host's pick is runnable by all.
+         * Sets that merely overlap settle to OpenBIOS, which is conservative
+         * but never wrong. An old peer reads this as a nonzero can_scph1001
+         * and behaves as before. */
+        uint32_t image_fp = 0;
+        char prefer_stem[PSX_LOBBY_BIOS_STEM_LEN]{};
     };
     AeLanSlotBios g_lnch_lan_slot_bios[kAeLanMaxSlots]{};
-    /* Match-only BIOS token from lobby settle or LAN START ("openbios"|"scph1001"). */
-    char g_lnch_session_bios[16]{};
+    /* Match-only BIOS token from lobby settle or LAN START: "openbios" or a
+     * retail image's lower-case stem ("scph5501"). */
+    char g_lnch_session_bios[PSX_LOBBY_BIOS_STEM_LEN]{};
 
     /* Bring-your-own memory card (seat 1 / P2). Per-seat offers for LAN
      * (mirrors online memcard_offer); the local offer as last published by
@@ -8255,13 +8372,24 @@ namespace {
     static void ae_np_set_session_bios_token(const char* token);
     static void ae_np_clear_session_bios_token(void);
     static void ae_np_lan_clear_slot_bios(int slot);
-    static void ae_np_lan_store_slot_bios(int slot, int prefer_open, int can_open,
-                                         int can_scph);
+    /* Order-independent hash of an offer's runnable image CRC32s. Summing and
+     * xor-ing together distinguishes sets that either alone would collide. */
+    static uint32_t ae_np_bios_image_fingerprint(const PsxLobbyBiosOffer* offer) {
+        if (!offer || offer->image_count <= 0) return 0u;
+        uint32_t sum = 0u, mix = 0u;
+        for (int i = 0; i < offer->image_count &&
+                        i < PSX_LOBBY_BIOS_IMAGES_MAX; ++i) {
+            sum += offer->images[i].crc32;
+            mix ^= offer->images[i].crc32;
+        }
+        uint32_t fp = (sum * 2654435761u) ^ (mix + 0x9E3779B9u);
+        return fp ? fp : 1u; /* 0 is reserved for "no retail" */
+    }
+    static void ae_np_lan_store_slot_bios(int slot, const PsxLobbyBiosOffer* offer);
     static void ae_np_lan_sync_local_slot_bios(void);
     static int ae_np_lan_settle_session_bios(char* out, size_t out_cap);
     static void ae_np_append_lan_bios_join(char* msg, size_t msg_cap, int* io_off);
-    static int ae_np_parse_lan_bios_tail(char* p, int* prefer_open, int* can_open,
-                                        int* can_scph);
+    static int ae_np_parse_lan_bios_tail(char* p, PsxLobbyBiosOffer* out);
 
 #ifdef _WIN32
     using AeLanSock = SOCKET;
@@ -8977,7 +9105,7 @@ namespace {
                 msg4 + off4, sizeof(msg4) - (size_t)off4, "%s\n%s\n%d\n%d\n%d\n%d\n",
                 state.slot_id[i].c_str(), state.slot_name[i].c_str(),
                 b.valid ? 1 : 0, b.prefer_openbios ? 1 : 0, b.can_openbios ? 1 : 0,
-                b.can_scph1001 ? 1 : 0);
+                (int)b.image_fp);
         }
         /* MOTK5: MOTK4 + host memcard allow in the header + per-seat
          * memcard offer (valid/has_card/share). Newer guests take this one
@@ -8998,7 +9126,7 @@ namespace {
                 "%s\n%s\n%d\n%d\n%d\n%d\n%d\n%d\n%d\n",
                 state.slot_id[i].c_str(), state.slot_name[i].c_str(),
                 b.valid ? 1 : 0, b.prefer_openbios ? 1 : 0, b.can_openbios ? 1 : 0,
-                b.can_scph1001 ? 1 : 0,
+                (int)b.image_fp,
                 mc.valid ? 1 : 0, mc.has_card ? 1 : 0, mc.share ? 1 : 0);
         }
         if (off3 <= 0 && off4 <= 0 && off5 <= 0) return;
@@ -9257,8 +9385,12 @@ namespace {
                 p = nl + 1;
             }
             if (bios_lines[0]) {
-                ae_np_lan_store_slot_bios(i, bios_lines[1], bios_lines[2],
-                                         bios_lines[3]);
+                AeLanSlotBios& b = g_lnch_lan_slot_bios[i];
+                b = {};
+                b.valid = 1;
+                b.prefer_openbios = bios_lines[1] ? 1 : 0;
+                b.can_openbios = bios_lines[2] ? 1 : 0;
+                b.image_fp = (uint32_t)bios_lines[3];
             }
         }
         ae_np_lan_sync_legacy_names(*out);
@@ -9315,7 +9447,14 @@ namespace {
                 v[b] = std::atoi(p);
                 p = nl + 1;
             }
-            if (v[0]) ae_np_lan_store_slot_bios(i, v[1], v[2], v[3]);
+            if (v[0]) {
+                AeLanSlotBios& b = g_lnch_lan_slot_bios[i];
+                b = {};
+                b.valid = 1;
+                b.prefer_openbios = v[1] ? 1 : 0;
+                b.can_openbios = v[2] ? 1 : 0;
+                b.image_fp = (uint32_t)v[3];
+            }
             if (v[4]) {
                 g_lnch_lan_slot_memcard[i].valid = 1;
                 g_lnch_lan_slot_memcard[i].has_card = v[5] ? 1 : 0;
@@ -9535,41 +9674,53 @@ namespace {
         return ae_np_lan_list_visible() ? 1 : 0;
     }
 
-    /* Advertise local BIOS capability for lobby settle (OpenBIOS vs SCPH-1001). */
+    /* Advertise what this host can actually run: OpenBIOS, and every retail
+     * IMAGE for which a linked backend and a validated dump both exist. The
+     * old shape answered "can you run retail?" with a boolean, which stopped
+     * meaning anything once one build could run several images. */
     static void ae_np_refresh_bios_offer(const char* launcher_bios_path) {
         PsxLobbyBiosOffer offer{};
         offer.valid = 1;
         offer.can_openbios =
             (s_openbios_allowed && psx_bios_bundled() != nullptr) ? 1 : 0;
         const char* argv0 = g_lnch_argv0 ? g_lnch_argv0 : "";
-        auto path_is_retail = [&](const std::filesystem::path& p) -> bool {
-            std::error_code ec;
-            if (p.empty() || !std::filesystem::exists(p, ec)) return false;
-            const PsxBiosBackend* b = bios_backend_for_file(p, nullptr, nullptr);
-            return b && b->image && !b->image->image_bundled;
-        };
-        bool has_dump = false;
-        if (launcher_bios_path && launcher_bios_path[0]) {
-            const auto p = resolve_bios_path(launcher_bios_path, argv0);
-            has_dump = path_is_retail(p);
-        }
-        if (!has_dump) has_dump = path_is_retail(read_cached_path(argv0, "bios.cfg"));
-        if (!has_dump) has_dump = path_is_retail(discover_retail_bios_near(argv0));
-        offer.can_scph1001 =
-            (psx_bios_has_selectable() && has_dump) ? 1 : 0;
 
-        /* Empty / bundled path = explicit OpenBIOS preference. */
-        offer.prefer_openbios = 1;
-        if (launcher_bios_path && launcher_bios_path[0]) {
-            const auto p = resolve_bios_path(launcher_bios_path, argv0);
-            if (path_is_retail(p))
-                offer.prefer_openbios = 0;
-        } else {
-            /* No launcher path — bios.cfg empty ⇒ OpenBIOS; retail path ⇒ SCPH. */
-            const auto cached = read_cached_path(argv0, "bios.cfg");
-            if (path_is_retail(cached)) offer.prefer_openbios = 0;
+        const auto runnable = runnable_retail_images(argv0, launcher_bios_path);
+        for (const auto& r : runnable) {
+            if (offer.image_count >= PSX_LOBBY_BIOS_IMAGES_MAX) break;
+            if (!r.info->image_stem || !r.info->image_stem[0]) continue;
+            PsxLobbyBiosImage& im = offer.images[offer.image_count++];
+            std::snprintf(im.stem, sizeof(im.stem), "%s", r.info->image_stem);
+            im.crc32 = r.info->image_crc32;
         }
-        if (!offer.can_openbios && offer.can_scph1001) offer.prefer_openbios = 0;
+
+        /* Which image this player is actually on: an explicit pick, else the
+         * remembered one. Empty/bundled means they chose OpenBIOS. */
+        const PsxBiosImageInfo* chosen = nullptr;
+        auto pick = [&](const std::filesystem::path& p) {
+            std::error_code ec;
+            if (chosen || p.empty() || !std::filesystem::exists(p, ec)) return;
+            const PsxBiosImageInfo* img = nullptr;
+            if (bios_backend_for_file(p, nullptr, nullptr, &img) && img &&
+                !img->image_bundled)
+                chosen = img;
+        };
+        if (launcher_bios_path && launcher_bios_path[0])
+            pick(resolve_bios_path(launcher_bios_path, argv0));
+        else
+            pick(read_cached_path(argv0, "bios.cfg"));
+
+        offer.prefer_openbios = chosen ? 0 : 1;
+        if (chosen && chosen->image_stem)
+            std::snprintf(offer.prefer_stem, sizeof(offer.prefer_stem), "%s",
+                          chosen->image_stem);
+        /* No OpenBIOS to fall back to: prefer retail if any is runnable. */
+        if (!offer.can_openbios && offer.image_count > 0) {
+            offer.prefer_openbios = 0;
+            if (!offer.prefer_stem[0])
+                std::snprintf(offer.prefer_stem, sizeof(offer.prefer_stem), "%s",
+                              offer.images[0].stem);
+        }
         psx_lobby_set_bios_offer(&offer);
     }
 
@@ -9580,9 +9731,15 @@ namespace {
     static void ae_np_set_session_bios_token(const char* token) {
         g_lnch_session_bios[0] = '\0';
         if (!token || !token[0]) return;
-        if (std::strcmp(token, "openbios") != 0 &&
-            std::strcmp(token, "scph1001") != 0)
-            return;
+        /* "openbios" or an image stem. Shape-checked: a fixed pair silently
+         * dropped every stem once a build ran more than one image, which
+         * downstream reads as "no token" and quietly re-settles to OpenBIOS. */
+        for (size_t i = 0; token[i]; ++i) {
+            if (i + 1 >= sizeof(g_lnch_session_bios)) return;
+            const char c = token[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
+                return;
+        }
         std::snprintf(g_lnch_session_bios, sizeof(g_lnch_session_bios), "%s",
                       token);
     }
@@ -9598,15 +9755,17 @@ namespace {
         g_lnch_lan_slot_memcard[slot] = {};
     }
 
-    static void ae_np_lan_store_slot_bios(int slot, int prefer_open, int can_open,
-                                         int can_scph) {
-        if (slot < 0 || slot >= kAeLanMaxSlots) return;
+    static void ae_np_lan_store_slot_bios(int slot, const PsxLobbyBiosOffer* offer) {
+        if (slot < 0 || slot >= kAeLanMaxSlots || !offer) return;
         AeLanSlotBios& b = g_lnch_lan_slot_bios[slot];
+        b = {};
         b.valid = 1;
-        b.prefer_openbios = prefer_open ? 1 : 0;
-        b.can_openbios = can_open ? 1 : 0;
-        b.can_scph1001 = can_scph ? 1 : 0;
-        if (!b.can_openbios && !b.can_scph1001) b.can_openbios = 1;
+        b.prefer_openbios = offer->prefer_openbios ? 1 : 0;
+        b.can_openbios = offer->can_openbios ? 1 : 0;
+        b.image_fp = ae_np_bios_image_fingerprint(offer);
+        std::snprintf(b.prefer_stem, sizeof(b.prefer_stem), "%s",
+                      offer->prefer_stem);
+        if (!b.can_openbios && b.image_fp == 0) b.can_openbios = 1;
     }
 
     static void ae_np_lan_sync_local_slot_bios(void) {
@@ -9620,8 +9779,7 @@ namespace {
             slot = g_lnch_lan_my_slot;
         }
         if (slot < 0 || !offer || !offer->valid) return;
-        ae_np_lan_store_slot_bios(slot, offer->prefer_openbios, offer->can_openbios,
-                                  offer->can_scph1001);
+        ae_np_lan_store_slot_bios(slot, offer);
     }
 
     static void ae_np_lan_send_chat_to_peers(const char* player_id, const char* from,
@@ -9782,46 +9940,50 @@ namespace {
         return (mc.valid && mc.has_card && mc.share) ? 1 : 0;
     }
 
-    /* Same settle rule as psx_lobby_settle_session_bios, over LAN seat offers. */
+    /* LAN twin of psx_lobby_settle_session_bios, on a coarser input.
+     *
+     * LAN frames carry a fingerprint of each seat's runnable image SET, not
+     * the set itself, so this cannot intersect. It requires every seat to
+     * offer the IDENTICAL set (equal, nonzero fingerprints) and then uses the
+     * host's chosen stem -- which every seat necessarily has. Sets that merely
+     * overlap fall back to OpenBIOS: conservative, never wrong, and it can be
+     * tightened later by revising the LAN frame rather than by guessing here. */
     static int ae_np_lan_settle_session_bios(char* out, size_t out_cap) {
         if (!out || out_cap < 9) return -1;
         out[0] = '\0';
         AeLanLobbyState st;
-        if (!ae_np_read_lan_state(&st)) {
+        auto give_openbios = [&]() {
             std::strncpy(out, "openbios", out_cap - 1);
             out[out_cap - 1] = '\0';
             return 0;
-        }
+        };
+        if (!ae_np_read_lan_state(&st)) return give_openbios();
         ae_np_lan_sync_local_slot_bios();
-        int any_prefer_open = 0;
-        int any_cannot_scph = 0;
-        int host_prefer_scph = 0;
-        int saw_peer = 0;
+
         const int host_slot =
             (st.host_slot >= 0 && st.host_slot < kAeLanMaxSlots) ? st.host_slot : 0;
+        int saw_peer = 0;
+        int any_prefer_open = 0;
+        uint32_t common_fp = 0u;
+        bool fp_set = false;
         for (int i = 0; i < st.max_slots && i < kAeLanMaxSlots; ++i) {
             if (st.slot_name[i].empty()) continue;
             saw_peer = 1;
             const AeLanSlotBios& b = g_lnch_lan_slot_bios[i];
-            if (!b.valid) {
-                any_cannot_scph = 1;
-                continue;
-            }
+            if (!b.valid || b.image_fp == 0u) return give_openbios();
             if (b.prefer_openbios) any_prefer_open = 1;
-            if (!b.can_scph1001) any_cannot_scph = 1;
-            if (i == host_slot && !b.prefer_openbios && b.can_scph1001)
-                host_prefer_scph = 1;
+            if (!fp_set) { common_fp = b.image_fp; fp_set = true; }
+            else if (b.image_fp != common_fp) return give_openbios();
         }
-        if (!saw_peer) any_cannot_scph = 1;
-        if (any_cannot_scph)
-            std::strncpy(out, "openbios", out_cap - 1);
-        else if (host_prefer_scph)
-            std::strncpy(out, "scph1001", out_cap - 1);
-        else if (any_prefer_open)
-            std::strncpy(out, "openbios", out_cap - 1);
-        else
-            std::strncpy(out, "scph1001", out_cap - 1);
-        out[out_cap - 1] = '\0';
+        if (!saw_peer || !fp_set || any_prefer_open) return give_openbios();
+
+        const char* stem = g_lnch_lan_slot_bios[host_slot].prefer_stem;
+        if (!stem || !stem[0]) return give_openbios();
+        size_t i = 0;
+        for (; stem[i] && i + 1 < out_cap; ++i)
+            out[i] = (stem[i] >= 'A' && stem[i] <= 'Z')
+                         ? (char)(stem[i] - 'A' + 'a') : stem[i];
+        out[i] = '\0';
         return 0;
     }
 
@@ -9831,14 +9993,19 @@ namespace {
         const PsxLobbyBiosOffer* offer = psx_lobby_bios_offer();
         const char* prefer = "openbios";
         int can_open = 1;
-        int can_scph = 0;
+        unsigned fp = 0u;
         if (offer && offer->valid) {
-            prefer = offer->prefer_openbios ? "openbios" : "scph1001";
+            /* A stem, not a category. An older host strcmp's this against
+             * "scph1001", fails, and treats the seat as offerless -- which
+             * settles the room to OpenBIOS. Safe degradation, not a desync. */
+            prefer = offer->prefer_openbios
+                         ? "openbios"
+                         : (offer->prefer_stem[0] ? offer->prefer_stem : "openbios");
             can_open = offer->can_openbios ? 1 : 0;
-            can_scph = offer->can_scph1001 ? 1 : 0;
+            fp = (unsigned)ae_np_bios_image_fingerprint(offer);
         }
         const int n = std::snprintf(msg + *io_off, msg_cap - (size_t)*io_off,
-                                    "%s\n%d\n%d\n", prefer, can_open, can_scph);
+                                    "%s\n%d\n%u\n", prefer, can_open, fp);
         if (n > 0) *io_off += n;
         /* Memcard offer tail (has_card, share). Older hosts stop reading
          * after the three bios lines, so this is invisible to them. */
@@ -9877,29 +10044,34 @@ namespace {
     }
 
     /* Parse optional JOIN bios tail: prefer\ncan_open\ncan_scph\n */
-    static int ae_np_parse_lan_bios_tail(char* p, int* prefer_open, int* can_open,
-                                        int* can_scph) {
-        if (!p || !prefer_open || !can_open || !can_scph) return -1;
+    static int ae_np_parse_lan_bios_tail(char* p, PsxLobbyBiosOffer* out) {
+        if (!p || !out) return -1;
         char* lines[3] = {};
         for (int i = 0; i < 3; ++i) {
             if (!p || !*p) return -1;
             lines[i] = p;
             char* nl = std::strchr(p, '\n');
-            if (nl) {
-                *nl = '\0';
-                p = nl + 1;
-            } else {
-                p = p + std::strlen(p);
-            }
+            if (nl) { *nl = '\0'; p = nl + 1; }
+            else    { p = p + std::strlen(p); }
         }
-        if (std::strcmp(lines[0], "openbios") == 0)
-            *prefer_open = 1;
-        else if (std::strcmp(lines[0], "scph1001") == 0)
-            *prefer_open = 0;
-        else
-            return -1;
-        *can_open = (std::atoi(lines[1]) != 0) ? 1 : 0;
-        *can_scph = (std::atoi(lines[2]) != 0) ? 1 : 0;
+        *out = {};
+        out->valid = 1;
+        if (std::strcmp(lines[0], "openbios") == 0) {
+            out->prefer_openbios = 1;
+        } else {
+            /* A retail stem. Older peers sent "scph1001" here, which is still
+             * a legal stem and resolves to that image if this build has it. */
+            out->prefer_openbios = 0;
+            std::snprintf(out->prefer_stem, sizeof(out->prefer_stem), "%s",
+                          lines[0]);
+        }
+        out->can_openbios = (std::atoi(lines[1]) != 0) ? 1 : 0;
+        /* The fingerprint rides in the field that used to be can_scph1001.
+         * image_count is not recoverable from it and is not needed: the LAN
+         * settle compares fingerprints, never individual images. */
+        out->image_count = (std::strtoul(lines[2], nullptr, 10) != 0ul) ? 1 : 0;
+        if (out->image_count) out->images[0].crc32 =
+            (uint32_t)std::strtoul(lines[2], nullptr, 10);
         return 0;
     }
 
@@ -10651,13 +10823,24 @@ namespace {
                     ae_np_lan_udp_sendto(from, "MOTK1 ERR\nfull\n");
                     continue;
                 }
-                int prefer_open = 1, can_open = 1, can_scph = 0;
+                PsxLobbyBiosOffer joined{};
                 AeLanSlotMemcard mc_offer{};
                 (void)ae_np_parse_lan_memcard_tail(bios_tail, &mc_offer);
                 if (bios_tail &&
-                    ae_np_parse_lan_bios_tail(bios_tail, &prefer_open, &can_open,
-                                              &can_scph) == 0) {
-                    ae_np_lan_store_slot_bios(slot, prefer_open, can_open, can_scph);
+                    ae_np_parse_lan_bios_tail(bios_tail, &joined) == 0) {
+                    /* Store the fingerprint the peer sent, not one recomputed
+                     * from a one-element stand-in list. */
+                    if (slot >= 0 && slot < kAeLanMaxSlots) {
+                        AeLanSlotBios& b = g_lnch_lan_slot_bios[slot];
+                        b = {};
+                        b.valid = 1;
+                        b.prefer_openbios = joined.prefer_openbios;
+                        b.can_openbios = joined.can_openbios;
+                        b.image_fp = joined.image_count ? joined.images[0].crc32 : 0u;
+                        std::snprintf(b.prefer_stem, sizeof(b.prefer_stem), "%s",
+                                      joined.prefer_stem);
+                        if (!b.can_openbios && b.image_fp == 0) b.can_openbios = 1;
+                    }
                 } else {
                     /* Legacy JOIN without bios_offer — cannot assume SCPH. */
                     ae_np_lan_clear_slot_bios(slot);
@@ -11132,8 +11315,10 @@ namespace {
             const int offer_changed =
                 !cur || !s_last_offer.valid ||
                 cur->can_openbios != s_last_offer.can_openbios ||
-                cur->can_scph1001 != s_last_offer.can_scph1001 ||
+                ae_np_bios_image_fingerprint(cur) !=
+                    ae_np_bios_image_fingerprint(&s_last_offer) ||
                 cur->prefer_openbios != s_last_offer.prefer_openbios ||
+                std::strcmp(cur->prefer_stem, s_last_offer.prefer_stem) != 0 ||
                 (mc && mc->valid &&
                  (!s_last_mc.valid || mc->has_card != s_last_mc.has_card ||
                   mc->share != s_last_mc.share));
@@ -11767,7 +11952,8 @@ namespace {
             }
             out->latency_ms = psx_lobby_member_latency_ms(mem.slot);
             out->bios_offer_valid = mem.bios_offer_valid;
-            out->bios_can_scph1001 = mem.bios_can_scph1001;
+            /* UI flag keeps its meaning: 'some retail image runnable'. */
+            out->bios_can_scph1001 = mem.bios_image_count > 0 ? 1 : 0;
             out->bios_prefer_openbios = mem.bios_prefer_openbios;
             out->is_spectator = mem.is_spectator;
             out->memcard_offer_valid = mem.memcard_offer_valid;
@@ -11800,7 +11986,7 @@ namespace {
                     {
                         const AeLanSlotBios& b = g_lnch_lan_slot_bios[slot];
                         out->bios_offer_valid = b.valid;
-                        out->bios_can_scph1001 = b.can_scph1001;
+                        out->bios_can_scph1001 = b.image_fp ? 1 : 0;
                         out->bios_prefer_openbios = b.prefer_openbios;
                         const AeLanSlotMemcard& mc = g_lnch_lan_slot_memcard[slot];
                         out->memcard_offer_valid = mc.valid;
@@ -11832,7 +12018,7 @@ namespace {
         }
         out->latency_ms = psx_lobby_member_latency_ms(mem.slot);
         out->bios_offer_valid = mem.bios_offer_valid;
-        out->bios_can_scph1001 = mem.bios_can_scph1001;
+        out->bios_can_scph1001 = mem.bios_image_count > 0 ? 1 : 0;
         out->bios_prefer_openbios = mem.bios_prefer_openbios;
         out->memcard_offer_valid = mem.memcard_offer_valid;
         out->memcard_has_card = mem.memcard_has_card;
@@ -15059,6 +15245,20 @@ session_reboot:
         if (!ident.region.empty())
             std::fprintf(stdout, "psxrecomp: disc region %s (serial %s)\n",
                          ident.region.c_str(), ident.detected_serial.c_str());
+        /* Advisory only. The licence string GetID reports comes from the DISC
+         * (above), so a cross-region BIOS still boots -- measured: SCPH-5500
+         * (NTSC-J) runs this NTSC-U title. Say so rather than gate it, because
+         * gating would refuse a configuration that demonstrably works, while
+         * silence leaves a player wondering why their BIOS "feels" wrong. */
+        if (!ident.region.empty() && psx_bios_image.image_region &&
+            psx_bios_image.image_region[0] &&
+            ident.region != psx_bios_image.image_region) {
+            std::fprintf(stdout,
+                         "psxrecomp: note — BIOS %s is %s, disc is %s; the disc's "
+                         "own licence region is used, so this is allowed\n",
+                         psx_bios_image.image_id ? psx_bios_image.image_id : "?",
+                         psx_bios_image.image_region, ident.region.c_str());
+        }
     }
     /* Arm the text-image guard now that both possible sources are resolved:
      * the local EXE file (dev checkouts) and the disc image (every install). */
@@ -15661,12 +15861,29 @@ session_reboot:
      * <memcard>/<openbios|scph1001>/, keyed by entry_pc + boot_state integrity
      * (codegen hash/abi/ver). Memory cards stay in the memcard root. */
     if (game_entry_pc != 0) {
-        const char* bios_token =
-            psx_bios_image.image_bundled ? "openbios" : "scph1001";
+        /* The active image's own stem, lowercased -- not a fixed literal.
+         * One backend now serves SCPH-1001/5501/5502, and filing all three
+         * under "scph1001" would collide their slots: a restore fails closed
+         * on bios_checksum, but slot 1 of one image would overwrite slot 1 of
+         * another. image_stem is per-image for exactly this reason. */
+        char bios_token_buf[32];
+        {
+            const char* stem = psx_bios_image.image_stem;
+            if (!stem || !stem[0])
+                stem = psx_bios_image.image_bundled ? "openbios" : "retail";
+            size_t bi = 0;
+            for (; stem[bi] && bi + 1 < sizeof(bios_token_buf); ++bi) {
+                const char c = stem[bi];
+                bios_token_buf[bi] =
+                    (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+            }
+            bios_token_buf[bi] = '\0';
+        }
+        const char* bios_token = bios_token_buf;
         uint32_t openbios_ws = 0;
         if (const PsxBiosBackend* bundled = psx_bios_bundled()) {
-            if (bundled->image)
-                openbios_ws = bundled->image->image_wordsum;
+            if (bundled->image_count)
+                openbios_ws = bundled->images[0].image_wordsum;
         }
         /* Multi-disc sets tag savestates with the disc, inside the existing
          * BIOS directory. A savestate is whole-machine state, so one taken on

@@ -2049,18 +2049,49 @@ void FullFunctionEmitter::emit_dispatch(
         const uint32_t    kb_off = addr_model().has_kbless() ? addr_model().kbless_rom_off() : 0u;
 
         const int bundled = (g_bios_profile && g_bios_profile->image_redistributable) ? 1 : 0;
+        const std::string stem = g_bios_profile && !g_bios_profile->image_stem.empty()
+                                     ? g_bios_profile->image_stem
+                                     : g_sym_prefix;
+
+        // Entry 0 is the image this code was generated FROM. Any further entry
+        // comes from [[program.accepted]]: a verified claim that every seeded
+        // function body is byte-identical, so the same code runs it. The
+        // shared fields are repeated verbatim because they describe bytes the
+        // verification proved common; only identity differs.
+        const size_t accepted_n =
+            g_bios_profile ? g_bios_profile->accepted_images.size() : 0u;
+        auto image_row = [&](uint32_t size_b, uint32_t crc_b, uint32_t wsum_b,
+                             const std::string& sha, const std::string& iid,
+                             const std::string& istem, const std::string& ireg,
+                             int bundled_b) {
+            return fmt::format(
+                "    {{ 0x{:08X}u, 0x{:08X}u, 0x{:08X}u,  /* kbless lo/hi/rom_off */\n"
+                "      0x{:08X}u,                       /* shell_entry_phys */\n"
+                "      0x{:08X}u,                       /* deliver_event_ret */\n"
+                "      {}u, 0x{:08X}u, 0x{:08X}u,  /* size / crc32 / wordsum */\n"
+                "      \"{}\",\n"
+                "      \"{}\", \"{}\", \"{}\",\n"
+                "      {} }},\n",
+                kb_lo, kb_hi, kb_off, sep, der,
+                size_b, crc_b, wsum_b, sha, iid, ireg, istem, bundled_b);
+        };
+
         out += fmt::format(
-            "static const PsxBiosImageInfo {}psx_bios_image = {{\n"
-            "    0x{:08X}u, 0x{:08X}u, 0x{:08X}u,  /* kbless lo/hi/rom_off */\n"
-            "    0x{:08X}u,                        /* shell_entry_phys */\n"
-            "    0x{:08X}u,                        /* deliver_event_ret */\n"
-            "    {}u, 0x{:08X}u, 0x{:08X}u,   /* size / crc32 / wordsum */\n"
-            "    \"{}\",\n"
-            "    \"{}\",\n"
-            "    {},                               /* image_bundled */\n"
-            "}};\n\n",
-            g_sym_prefix, kb_lo, kb_hi, kb_off, sep, der,
-            rom.size(), crc, wsum, bios_sha256, id, bundled);
+            "/* Images this backend can run. Entry 0 is the reference it was\n"
+            " * generated from; the rest are [[program.accepted]] entries whose\n"
+            " * seeded code was verified byte-identical to it. */\n"
+            "static const PsxBiosImageInfo {}psx_bios_images[{}] = {{\n",
+            g_sym_prefix, accepted_n + 1u);
+        const std::string region =
+            g_bios_profile ? g_bios_profile->image_region : std::string{};
+        out += image_row((uint32_t)rom.size(), crc, wsum, bios_sha256, id, stem,
+                         region, bundled);
+        for (size_t i = 0; i < accepted_n; ++i) {
+            const auto& a = g_bios_profile->accepted_images[i];
+            out += image_row(a.size, a.crc32, a.wordsum, a.sha256, a.id, a.stem,
+                             a.region, bundled);
+        }
+        out += "};\n\n";
     }
     // --- Runtime-installed BIOS call-vector stubs ---
     // Every retail PSX BIOS installs the A0/B0/C0 ABI gates as the same
@@ -2396,7 +2427,9 @@ void FullFunctionEmitter::emit_dispatch(
     out += fmt::format(
         "\n/* Backend descriptor: the one exported symbol of this image. */\n"
         "const PsxBiosBackend {0}psx_bios_backend = {{" "\n"
-        "    &{0}psx_bios_image," "\n"
+        "    {0}psx_bios_images," "\n"
+        "    (uint32_t)(sizeof({0}psx_bios_images) /" "\n"
+        "               sizeof({0}psx_bios_images[0]))," "\n"
         "    {0}psx_dispatch," "\n"
         "    {0}psx_dispatch_call," "\n"
         "    {0}psx_bios_kernel_bodies," "\n"

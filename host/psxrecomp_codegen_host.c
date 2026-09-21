@@ -1,5 +1,17 @@
 /* Portable generate → rebuild (--no-pgo from setup) → relaunch host. */
 
+/* realpath(), lstat() and environ are POSIX, and glibc hides them when a
+ * strict -std=cNN sets __STRICT_ANSI__. The CMake build compiles this file
+ * with C_EXTENSIONS on (-std=gnu*), so it built there, while
+ * runtime/tests/test_codegen_host_bios_stems.py compiles it standalone with
+ * -std=c11 and did not: on GCC 14+ an implicit declaration is an error, not a
+ * warning, so that test failed to build rather than failing an assertion.
+ * State the feature set this file actually uses so it compiles the same way
+ * under both. Must precede every #include. */
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#  define _GNU_SOURCE 1
+#endif
+
 #include "psxrecomp_codegen_host.h"
 
 #include "psx_bios_known_images.h"

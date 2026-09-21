@@ -577,6 +577,39 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_coverage_vault.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+        # tools/gen_retail_bios_seeds.py — the retail seed filter. Its
+        # predecessor was deleted by f55c731c's "no tracked file references"
+        # sweep, which was correct: the only reference was a provenance string
+        # inside recompiler/seeds/phase2_ghidra_seeds_SCPH*.json. Registering
+        # the rebuild means a future sweep sees a test naming it.
+        # Core cases run on synthetic ROMs, so this needs no BIOS dump; the
+        # byte-identical reproduction of the two committed corpora runs only
+        # when bios/SCPH1001.BIN is present and skips otherwise.
+        add_test(
+            NAME gen_retail_bios_seeds
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gen_retail_bios_seeds.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+        # tools/add_retail_bios.py — retail BIOS onboarding. Runs on synthetic
+        # ROMs and a synthetic reference profile, so it needs no dump. The
+        # behaviour under test is the refusal: it must not emit a profile
+        # claiming SCPH-1001's address model for an image whose kernel is not
+        # SCPH-1001's.
+        add_test(
+            NAME add_retail_bios
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_add_retail_bios.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+        # psxrecomp_cli.py's BIOS pin: [recompiler] bios_config decides the
+        # stage filename, the regenerated profile and the linked backend list.
+        add_test(
+            NAME cli_bios_pin
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_bios_pin.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
         # The runtime exe name must come from CMake, not be re-derived.
         add_test(
             NAME runtime_exe_name

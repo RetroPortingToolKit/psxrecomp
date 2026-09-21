@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -800,6 +800,119 @@ def bios_backend_present(fw: Path, stem: str) -> bool:
     return f"{stem}_psx_bios_backend" in text
 
 
+DEFAULT_BIOS_PROFILE_REL = "bios/SCPH1001.toml"
+
+
+class PinnedBios(NamedTuple):
+    """The retail BIOS a title is built against — the developer's pin.
+
+    `[recompiler] bios_config` in game.toml already chose the profile the
+    recompiler builds the BIOS address model from. It is now also what decides
+    the stage filename, the profile to regenerate, and the backend list linked
+    into the build: one value, read by every consumer.
+
+    Before this, the stage path and the regen profile were both the literal
+    SCPH1001. Handing the wizard any other dump copied it over SCPH1001.BIN and
+    then generated with SCPH1001.toml, whose sha256 pin failed the emitter's
+    declared-identity gate — the confusing "hashes to ..." error behind the
+    SCPH-555x requests. Nothing here loosens that gate: the dump must still
+    match the profile it is staged for. It just stages it for the right one.
+    """
+
+    profile_rel: str  # framework-relative, e.g. "bios/SCPH5501.toml"
+    stem: str  # generated/<stem>_*.c, PSXRECOMP_BIOS_STEMS entry
+    rom_name: str  # filename the profile's [program] rom expects
+    image_id: str  # e.g. "SCPH-5501", for player-facing messages
+    sha256: str  # [program.image] sha256, "" when the profile pins none
+
+
+def resolve_pinned_bios_list(project_root: Path,
+                             recomp: dict[str, Any]) -> list[PinnedBios]:
+    """Every BIOS profile this title declares, primary first.
+
+    `bios_config` accepts a string or a list. Entry 0 drives game codegen and
+    is what `--bios` stages for; the whole list is what gets linked, which is
+    how a title ships several retail backends (the shared v2.2/v3.0 kernel
+    plus NTSC-J SCPH-5500, whose reset stub cannot share compiled code).
+    """
+    configured = recomp.get("bios_config")
+    entries = configured if isinstance(configured, list) else [configured]
+    entries = [str(e).strip() for e in entries if str(e or "").strip()]
+    if not entries:
+        return [resolve_pinned_bios(project_root, {})]
+    return [resolve_pinned_bios(project_root, {"bios_config": e}) for e in entries]
+
+
+def resolve_pinned_bios(project_root: Path, recomp: dict[str, Any]) -> PinnedBios:
+    """Read one pin out of game.toml's [recompiler] bios_config.
+
+    Absent, a title keeps the historical default (SCPH-1001), so existing
+    projects behave exactly as before. A list-valued bios_config resolves to
+    its first entry here; resolve_pinned_bios_list() returns them all.
+    """
+    fw = framework_root(project_root)
+    raw = recomp.get("bios_config")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    configured = str(raw or "").strip()
+    if configured:
+        candidates = [
+            project_root / configured,
+            fw / configured,
+            fw / "bios" / Path(configured).name,
+        ]
+        profile = next((c for c in candidates if c.is_file()), None)
+        if profile is None:
+            raise RuntimeError(
+                f"[recompiler] bios_config names {configured!r}, which is not a "
+                f"file under {project_root} or {fw}"
+            )
+    else:
+        profile = fw / DEFAULT_BIOS_PROFILE_REL
+        if not profile.is_file():
+            raise RuntimeError(f"default BIOS profile missing: {profile}")
+
+    secs = parse_toml_simple(profile.read_text(encoding="utf-8"))
+    program = secs.get("program") or {}
+    prof_recomp = secs.get("recompiler") or {}
+    rom_field = str(program.get("rom") or "")
+    stem = str(prof_recomp.get("out_stem") or "").strip()
+    if not stem:
+        # Same rule as bios_rom_alias.h's model token, so a region-qualified
+        # filename ("EUR-PSX-SCPH5502.bin") yields the stem the C++ side uses.
+        stem = Path(rom_field).stem.rsplit("-", 1)[-1].upper() or profile.stem
+    try:
+        profile_rel = profile.resolve().relative_to(fw.resolve()).as_posix()
+    except ValueError:
+        profile_rel = f"bios/{profile.name}"
+    image = secs.get("program.image") or {}
+    return PinnedBios(
+        profile_rel=profile_rel,
+        stem=stem,
+        rom_name=Path(rom_field).name or f"{stem}.BIN",
+        image_id=str(program.get("id") or stem),
+        sha256=str(image.get("sha256") or "").strip().lower(),
+    )
+
+
+def pinned_bios_stems(pinned, openbios_allowed: bool) -> str:
+    """The PSXRECOMP_BIOS_STEMS value these pins imply.
+
+    Accepts one PinnedBios or a list of them. OpenBIOS leads when the title
+    allows it: runtime.cmake treats entry 0 as primary, and the bundled
+    redistributable backend is the fallback for a player with no dump.
+    """
+    # PinnedBios is a NamedTuple, so it IS a tuple -- test for it directly
+    # rather than for tuple-ness, which matched the single case as a sequence
+    # of its own fields.
+    pins = [pinned] if isinstance(pinned, PinnedBios) else list(pinned)
+    stems = ["OpenBIOS"] if openbios_allowed else []
+    for p in pins:
+        if p.stem not in stems:
+            stems.append(p.stem)
+    return ";".join(stems)
+
+
 def regen_bios_profile(
     project_root: Path,
     profile_rel: str,
@@ -1164,6 +1277,17 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
         progress.error(str(exc), code=EXIT_ERROR)
         return EXIT_ERROR
 
+    # Which retail image this title is built against — the developer's pin, not
+    # a fixed SCPH-1001 (docs/BIOS_SELECTION.md). Everything below names the
+    # pinned image: the stage filename, the profile regenerated, the backend
+    # linked, and the text a player sees when a dump is missing.
+    try:
+        pinned = resolve_pinned_bios(project_root, recomp)
+    except Exception as exc:  # noqa: BLE001
+        progress.error(str(exc), code=EXIT_USAGE)
+        return EXIT_USAGE
+    progress.log(f"BIOS pin: {pinned.image_id} ({pinned.profile_rel})")
+
     bios_arg = (getattr(args, "bios", None) or "").strip()
     staged_retail = False
     if bios_arg:
@@ -1175,9 +1299,29 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
         if not bios_path.is_file():
             progress.error(f"BIOS not found: {bios_path}", code=EXIT_USAGE)
             return EXIT_USAGE
-        dest = fw / "bios" / "SCPH1001.BIN"
+        # Verify BEFORE staging. Staging first and letting the emitter's
+        # identity gate fail afterwards overwrote a good staged dump with the
+        # wrong bytes and then errored -- a failed rebuild that also destroyed
+        # the image the build needs. The emitter can only generate from this
+        # profile's reference image; a dump the built backend already accepts
+        # needs no regen at all and should just be selected at run time.
+        if pinned.sha256:
+            digest = hashlib.sha256(bios_path.read_bytes()).hexdigest()
+            if digest != pinned.sha256:
+                progress.error(
+                    f"That dump is not {pinned.image_id}, which is the image "
+                    f"this title's profile generates from.\n"
+                    f"  expected SHA-256 {pinned.sha256}\n"
+                    f"  supplied SHA-256 {digest}\n"
+                    f"Nothing was staged. If the build already accepts this "
+                    f"image, select it at run time instead -- no rebuild is "
+                    f"needed.",
+                    code=EXIT_USAGE)
+                return EXIT_USAGE
+
+        dest = fw / "bios" / pinned.rom_name
         progress.phase("bios", pct=0.15, message="Staging retail BIOS dump...")
-        progress.log(f"generate --bios {bios_path}")
+        progress.log(f"generate --bios {bios_path} -> bios/{pinned.rom_name}")
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.resolve() != bios_path.resolve():
@@ -1186,26 +1330,27 @@ def cmd_generate(args: argparse.Namespace, progress: ProgressReporter) -> int:
             progress.error(f"failed to stage BIOS: {exc}", code=EXIT_ERROR)
             return EXIT_ERROR
         try:
-            if args.force_bios or not bios_backend_present(fw, "SCPH1001"):
+            if args.force_bios or not bios_backend_present(fw, pinned.stem):
                 progress.phase(
-                    "bios", pct=0.2, message="Generating SCPH1001 BIOS C..."
+                    "bios", pct=0.2,
+                    message=f"Generating {pinned.stem} BIOS C...",
                 )
                 regen_bios_profile(
-                    project_root, "bios/SCPH1001.toml", progress=progress
+                    project_root, pinned.profile_rel, progress=progress
                 )
             else:
                 progress.log(
-                    "SCPH1001 backend already present — skipping bios regen "
+                    f"{pinned.stem} backend already present — skipping bios regen "
                     "(pass --force-bios to regenerate)"
                 )
             staged_retail = True
         except Exception as exc:  # noqa: BLE001
             progress.error(str(exc), code=EXIT_ERROR)
             return EXIT_ERROR
-    elif not openbios_allowed and not bios_backend_present(fw, "SCPH1001"):
+    elif not openbios_allowed and not bios_backend_present(fw, pinned.stem):
         progress.error(
-            "This title requires a retail BIOS dump. Pass --bios SCPH1001.BIN "
-            "(or pick one in the setup wizard).",
+            f"This title requires a retail BIOS dump ({pinned.image_id}). Pass "
+            f"--bios {pinned.rom_name} (or pick one in the setup wizard).",
             code=EXIT_USAGE,
         )
         return EXIT_USAGE
@@ -1796,6 +1941,19 @@ def cmd_rebuild(args: argparse.Namespace, progress: ProgressReporter) -> int:
         "-DPSXRECOMP_ALLOW_NO_BIOS=OFF",
         "-DPSXRECOMP_REQUIRE_GAME_C=ON",
     ]
+    # Link the image this title pins, not runtime.cmake's SCPH-1001 default.
+    # Without this a project pinning another profile generated that backend and
+    # then linked a list that never named it, so the build either fell back to
+    # OpenBIOS or failed with an undefined reference to the stem it just built.
+    try:
+        pins = resolve_pinned_bios_list(project_root, secs.get("recompiler") or {})
+        openbios_allowed = bool((secs.get("runtime") or {}).get("openbios", True))
+        cmake_extra.append(
+            f"-DPSXRECOMP_BIOS_STEMS={pinned_bios_stems(pins, openbios_allowed)}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        progress.error(str(exc), code=EXIT_USAGE)
+        return EXIT_USAGE
     if args.cmake_extra:
         cmake_extra.extend(args.cmake_extra)
 
@@ -2165,7 +2323,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument(
         "--bios",
         default="",
-        help="optional retail BIOS dump (staged as bios/SCPH1001.BIN + regen)",
+        help="optional retail BIOS dump (staged under the name the title's "
+             "[recompiler] bios_config pins, then regenerated)",
     )
     g.add_argument(
         "--force-bios",

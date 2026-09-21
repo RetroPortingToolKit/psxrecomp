@@ -33,9 +33,25 @@ extern "C" {
 struct CPUState;
 
 typedef struct PsxBiosBackend {
-    /* Identity, kernel-bless window and HLE anchors for this image. Copied
-     * into the global psx_bios_image when this backend is selected. */
-    const PsxBiosImageInfo *image;
+    /* Every image this backend's recompiled code is valid for. Entry 0 is the
+     * reference the code was generated from; any further entry is a verified
+     * claim that each seeded function body is byte-identical to it, declared
+     * as [[program.accepted]] and checked by tools/add_retail_bios.py.
+     *
+     * This exists because the retail v2.2/v3.0 images share their boot code
+     * and kernel and differ only in the shell, which carries no seeds and is
+     * interpreted: generating from SCPH-1001 and from SCPH-5501 with the
+     * shared kernel corpus yields byte-identical C apart from the identity
+     * fields. One backend therefore serves several images, and a player
+     * switches between them with no rebuild.
+     *
+     * The shared fields (kbless window, HLE anchors) are identical in every
+     * entry — they describe bytes the verification proved common. Only
+     * identity differs, which is exactly what savestate scoping, netplay
+     * agreement and provenance need. The matched entry, not entry 0, is what
+     * psx_bios_activate() publishes as psx_bios_image. */
+    const PsxBiosImageInfo *images;
+    uint32_t                image_count;
 
     /* Dispatch entry points for this image. */
     void (*dispatch)(struct CPUState *cpu, uint32_t addr);
@@ -67,13 +83,31 @@ extern const PsxBiosBackend *psx_bios_active;
 extern const PsxBiosBackend *const psx_bios_registry[];
 extern const uint32_t              psx_bios_registry_count;
 
-/* Look up a compiled-in backend by its profile id ("SCPH-1001", "OPENBIOS").
- * Null if this build does not carry it. */
-const PsxBiosBackend *psx_bios_find(const char *image_id);
+/* Look up a compiled-in backend by an image id ("SCPH-5501", "OPENBIOS"),
+ * searching every accepted image of every backend. When `out_image` is
+ * non-null it receives the matching entry. Null if this build cannot run it. */
+const PsxBiosBackend *psx_bios_find(const char *image_id,
+                                    const PsxBiosImageInfo **out_image);
 
-/* Select a backend and publish it (also assigns the global psx_bios_image).
- * Returns 0 if backend is null. */
-int psx_bios_activate(const PsxBiosBackend *backend);
+/* Find the backend and image whose declared identity matches these bytes.
+ * size + CRC32 must both agree: a mismatch is a guaranteed wild jump, so
+ * identity decides WHICH image may run, not merely whether to warn. */
+const PsxBiosBackend *psx_bios_match(uint32_t size, uint32_t crc32,
+                                     const PsxBiosImageInfo **out_image);
+
+/* Select a backend and publish `image` (one of its own entries) as the global
+ * psx_bios_image. Passing null for `image` selects entry 0, the reference.
+ * Returns 0 if backend is null or image is not one of its entries. */
+int psx_bios_activate(const PsxBiosBackend *backend,
+                      const PsxBiosImageInfo *image);
+
+/* How many distinct images this build can run (sum over linked backends). */
+uint32_t psx_bios_image_total(void);
+
+/* The i'th runnable image across all linked backends, or null. Lets callers
+ * list what a player may supply without knowing the backend layout. */
+const PsxBiosImageInfo *psx_bios_image_at(uint32_t index,
+                                          const PsxBiosBackend **out_backend);
 
 /* The bundled, redistributable backend (image_bundled != 0), or null if this
  * build has none. */
