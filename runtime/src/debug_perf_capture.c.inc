@@ -10,7 +10,7 @@ typedef struct {
 static PerfCaptureSample *s_perf_capture;
 static uint32_t s_perf_count, s_perf_draw_addr, s_perf_state_addr;
 static uint32_t s_perf_draw_limit, s_perf_stop_state, s_perf_warmup;
-static int s_perf_active, s_perf_until_state;
+static int s_perf_active, s_perf_until_state, s_perf_read_state;
 static const char *s_perf_end = "idle";
 static uint64_t s_perf_frequency;
 static uint64_t s_perf_work_start[8], s_perf_work_end[8];
@@ -67,7 +67,7 @@ static void perf_capture_tick(void) {
     s->cycles = psx_get_cycle_count();
     s->frame = s_frame_count;
     s->draw = psx_read_word(s_perf_draw_addr);
-    s->state = s_perf_state_addr ? psx_read_word(s_perf_state_addr) : 0;
+    s->state = s_perf_read_state ? psx_read_word(s_perf_state_addr) : 0;
     uint64_t batches[8]; gl_renderer_batch_diag(batches); s->batches=batches[0];
     if (!s_perf_count) {
         perf_work_snapshot(s_perf_work_start);
@@ -83,7 +83,9 @@ static void perf_capture_tick(void) {
     }
     ++s_perf_count;
     if ((s_perf_count==1 && s_perf_until_state && s->state==s_perf_stop_state) ||
-        (uint32_t)(s->draw-s_perf_capture[0].draw)>8000) {
+        (uint32_t)(s->draw-s_perf_capture[0].draw)>8000 ||
+        (s_perf_count>1 && ((uint32_t)(s->draw-s_perf_capture[s_perf_count-2].draw)>8000 ||
+                           s->cycles<s_perf_capture[s_perf_count-2].cycles))) {
         s_perf_active=0; s_perf_end="invalid_counter_or_start";
     } else if (s_perf_count > 1 &&
         ((s_perf_draw_limit && (uint32_t)(s->draw-s_perf_capture[0].draw)>=s_perf_draw_limit) ||
@@ -108,10 +110,11 @@ static void handle_perf_capture(int id, const char *json) {
         uint32_t draw_addr=0, state_addr=0;
         if (!perf_parse_address(address,&draw_addr)) { send_err(id,"invalid RAM draw_addr");return; }
         int until_state=json_get_str(json,"state_addr",address,sizeof(address)) != NULL;
-        if ((until_state || json_get_str(json,"aux_addr",address,sizeof(address))) &&
+        int read_state=until_state || json_get_str(json,"aux_addr",address,sizeof(address));
+        if (read_state &&
             !perf_parse_address(address,&state_addr)) { send_err(id,"invalid RAM state/aux address");return; }
         int draws=json_get_int(json,"draws",0), warmup=json_get_int(json,"warmup",8);
-        if (!perf_ram_address(draw_addr) || ((until_state || state_addr) && !perf_ram_address(state_addr)) ||
+        if (!perf_ram_address(draw_addr) || (read_state && !perf_ram_address(state_addr)) ||
             draws<0 || draws>8000 || (!draws && !until_state) || warmup<0 || warmup>600) {
             send_err(id,"invalid RAM address or capture limits"); return;
         }
@@ -119,6 +122,7 @@ static void handle_perf_capture(int id, const char *json) {
         if (!s_perf_capture) { send_err(id,"capture allocation failed"); return; }
         s_perf_draw_addr=draw_addr; s_perf_state_addr=state_addr;
         s_perf_until_state=until_state; s_perf_draw_limit=(uint32_t)draws;
+        s_perf_read_state=read_state;
         s_perf_stop_state=(uint32_t)json_get_int(json,"state",0);
         s_perf_warmup=(uint32_t)warmup; s_perf_count=0;
         memset(s_perf_work_start,0,sizeof(s_perf_work_start));

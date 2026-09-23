@@ -60,6 +60,12 @@ int main(void) {
     tick(UINT32_MAX);tick(0);tick(1);CHECK(!s_perf_active && !strcmp(s_perf_end,"complete"));
     command("{\"op\":\"start\",\"draw_addr\":\"80000004\",\"draws\":2,\"warmup\":0}");
     tick(100);tick(1);CHECK(!s_perf_active && !strcmp(s_perf_end,"invalid_counter_or_start"));
+    command("{\"op\":\"start\",\"draw_addr\":\"80000004\",\"draws\":1000,\"warmup\":0}");
+    tick(10);tick(100);tick(20);CHECK(!s_perf_active && !strcmp(s_perf_end,"invalid_counter_or_start"));
+    command("{\"op\":\"start\",\"draw_addr\":\"80000004\",\"draws\":1000,\"warmup\":0}");
+    tick(10);cycles=0;tick(10);CHECK(!s_perf_active && !strcmp(s_perf_end,"invalid_counter_or_start"));
+    command("{\"op\":\"start\",\"draw_addr\":\"80000004\",\"aux_addr\":\"0\",\"draws\":1,\"warmup\":0}");
+    state=777;tick(10);tick(11);CHECK(s_perf_capture[0].state==777 && !s_perf_active);
     command("{\"op\":\"start\",\"draw_addr\":\"80000004\",\"draws\":2,\"warmup\":0}");
     tick(10);++work;command("{}");CHECK(s_perf_gl_end[0]-s_perf_gl_start[0]==1);
     ++work;command("{\"op\":\"stop\"}");CHECK(!s_perf_active && s_perf_batch_end[0]-s_perf_batch_start[0]==2);

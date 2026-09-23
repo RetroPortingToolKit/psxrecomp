@@ -27,7 +27,9 @@ Poll `{"cmd":"perf_capture"}` for status. After completion, retrieve pages:
 Each row is `[host_ticks, guest_cycles, vblank, counter, state_or_aux, batches]`.
 Divide tick differences by status `frequency`. `op:"stop"` freezes an incomplete
 capture. `end` distinguishes complete, stopped, capacity and invalid starts or
-counter resets. An active capture cannot be replaced or read.
+counter resets. A rollback of the guest cycle count also invalidates capture,
+including a rewind or state load whose draw counter happens to stay in range.
+An active capture cannot be replaced or read.
 
 Status also reports:
 
@@ -39,7 +41,9 @@ Status also reports:
   not include every external flush (flat draws, uploads, readbacks, present).
 * `gl_cpu_ms`: cumulative CPU time inside textured/flat batch submission.
   This excludes graphics-driver worker threads and is not GPU busy time.
-* `audio`: output active, underrun and overflow-drop deltas.
+* `audio`: output active, underrun and overflow-drop deltas. In the resampling
+  bridge, the underrun counter increments per output sample frame lacking
+  input after priming; it does not count distinct audible glitches.
 * `rewind`: capture count, snapshot milliseconds, ring-storage milliseconds,
   thumbnail milliseconds. Timing requires `PSX_RUNTIME_PERF_DIAG=1`; the count
   remains available without timers. Flat submission timing has the same gate.

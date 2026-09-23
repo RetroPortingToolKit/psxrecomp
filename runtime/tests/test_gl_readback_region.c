@@ -63,7 +63,9 @@ static void verify_bank_batching(void) {
 /* Compare every high-resolution RGBA sample, not just downsampled PS1 words.
  * Alternating opaque/STP fragments expose painter-order bugs hidden by an
  * all-semi fixture. Later mask-check draws also exercise deferred stencil. */
-static void verify_mixed_bank_batching(int vram) {
+static void verify_mixed_bank_batching(int vram,int wide) {
+ const int left=wide?480:400;
+ if(wide) { glb_wide_configure(896,192);glb_wide_set_target(0);glb_set_draw_area(0,0,511,511); }
  const size_t bytes=96u*96u*s_scale*s_scale*4u;
  unsigned char *baseline=malloc(bytes), *result=malloc(bytes);
  if(!baseline || !result) {
@@ -79,7 +81,8 @@ static void verify_mixed_bank_batching(int vram) {
   for(int enabled=0;enabled<2;++enabled) {
    gl_renderer_select_texture_bank(0);
    glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
-   glb_draw_flat_rect(400,300,96,96,0x1234);flush_flat_batch();
+   if(wide)glb_wide_clear(0,300,96,0x1234);
+   glb_draw_flat_rect(left,300,96,96,0x1234);flush_flat_batch();
    const int depth=variant%3;
    if(vram) {
     static uint16_t live[256*128];
@@ -111,7 +114,10 @@ static void verify_mixed_bank_batching(int vram) {
       * freshly rendered part of this page. pack_flush must realize it first. */
      glb_draw_flat_rect(520,5,12,17,0xfc00);
     }
-    const int x=404+(i%6)*5,y=304+(i%4)*7;
+    const int x=left+4+(i%6)*5,y=304+(i%4)*7;
+    if(wide)glb_set_precise_triangle(1,x*65536+16384,y*65536+32768,
+        (x+44)*65536+16384,(y+2)*65536+32768,(x+3)*65536+16384,(y+48)*65536+32768);
+    if(wide)glb_set_perspective_triangle(1,.003f,.002f,.004f);
     glb_draw_shaded_textured_triangle(x,y,0,2,0x808080,
         x+44,y+2,stock && !vram?0:63,2,0x507090,
         x+3,y+48,0,stock && !vram?2:65,0x907050,vram?512:0,0,
@@ -120,10 +126,11 @@ static void verify_mixed_bank_batching(int vram) {
    flush_tex_batch();counts[enabled]=s_cw_batches-before;
    gl_renderer_select_texture_bank(0);
    glb_set_semi_transparency(0,0);glb_set_mask_bits(0,1);
-   glb_draw_flat_rect(423,311,19,43,0x5a5a);flush_flat_batch();
+   glb_draw_flat_rect(left+23,311,19,43,0x5a5a);flush_flat_batch();
    gl_renderer_sync_cpu();
-   p_glBindFramebuffer(PSXGL_FRAMEBUFFER,s_hr_fbo);
-   glReadPixels(400*s_scale,300*s_scale,96*s_scale,96*s_scale,
+   if(wide)wide_blit_center(g_wide_cur,0,300,96);
+   p_glBindFramebuffer(PSXGL_FRAMEBUFFER,wide?g_wide_cur:s_hr_fbo);
+   glReadPixels((left+(wide?192:0))*s_scale,300*s_scale,96*s_scale,96*s_scale,
                 GL_RGBA,GL_UNSIGNED_BYTE,enabled?result:baseline);
    check(glGetError()==GL_NO_ERROR,"mixed full-resolution read");
   }
@@ -137,6 +144,31 @@ static void verify_mixed_bank_batching(int vram) {
  psx_mod_set_vram_texture_batching(0);
  glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
  free(baseline);free(result);
+ if(wide) { glb_wide_disable_target();glb_wide_configure(0,0);glb_set_draw_area(0,0,1023,511); }
+}
+static int query_ready,query_reads;
+static void APIENTRY test_query_available(GLuint id,GLenum name,GLint *out) {
+ (void)id;(void)name;*out=query_ready;
+}
+static void APIENTRY test_query_result(GLuint id,GLenum name,GLuint64 *out) {
+ (void)id;(void)name;++query_reads;*out=1000;
+}
+static void APIENTRY test_query_begin(GLenum target,GLuint id) { (void)target;(void)id; }
+static void APIENTRY test_query_end(GLenum target) { (void)target; }
+static void verify_query_no_wait(void) {
+ PFN_glGetQueryObjectiv available=p_glGetQueryObjectiv;
+ PFN_glGetQueryObjectui64v result=p_glGetQueryObjectui64v;
+ PFN_glBeginQuery begin=p_glBeginQuery;PFN_glEndQuery end=p_glEndQuery;
+ p_glGetQueryObjectiv=test_query_available;p_glGetQueryObjectui64v=test_query_result;
+ p_glBeginQuery=test_query_begin;p_glEndQuery=test_query_end;
+ s_pf_on=1;s_pf_count=GLPERF_NBUF;s_pf_ring_seq=0;s_pf_b=0;
+ memset(s_mq_n,0,sizeof(s_mq_n));
+ query_ready=0;query_reads=0;gl_perf_present_exit(1);
+ check(query_reads==0 && s_pf_ring_seq==0,"unfinished GPU queries are dropped without RESULT reads");
+ query_ready=1;gl_perf_present_exit(1);
+ check(query_reads==2 && s_pf_ring_seq==1,"available GPU query pair is collected");
+ s_pf_on=0;s_pf_scene_active=0;
+ p_glGetQueryObjectiv=available;p_glGetQueryObjectui64v=result;p_glBeginQuery=begin;p_glEndQuery=end;
 }
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
@@ -205,8 +237,11 @@ int main(int argc,char **argv){
  check(glb_vram_read(302,252)==0x001f,"retained 16-bit texel");
  verify("retained banks and original VRAM ordered together");
  verify_bank_batching();
- verify_mixed_bank_batching(0);
- verify_mixed_bank_batching(1);
+ verify_mixed_bank_batching(0,0);
+ verify_mixed_bank_batching(1,0);
+ verify_mixed_bank_batching(0,1);
+ verify_mixed_bank_batching(1,1);
+ verify_query_no_wait();
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }
