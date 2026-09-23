@@ -1790,6 +1790,12 @@ extern "C" int psx_debug_display_aspect(int num, int den, int adaptive) {
     return 1;
 }
 
+extern "C" void psx_debug_get_display_aspect(int out[3]) {
+    out[0]=g_ws_adaptive_view ? g_ws_adaptive_max_num : g_video_aspect_num;
+    out[1]=g_ws_adaptive_view ? g_ws_adaptive_max_den : g_video_aspect_den;
+    out[2]=g_ws_adaptive_view ? 1 : 0;
+}
+
 static bool          g_gl_active = false;    /* GL context live -> GL present path */
 static bool          g_vk_active = false;    /* Vulkan context live -> VK present path */
 
@@ -6363,6 +6369,9 @@ static void rewind_pause_present(void) {
 static void rewind_host_pause_loop(void) {
     freeze_heartbeat_set_paused(1);
     while (psx_rewind_is_open()) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        debug_server_poll();
+#endif
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) {

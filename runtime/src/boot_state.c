@@ -35,6 +35,12 @@ static double boot_state_mono_ms(void) {
 #endif
 }
 
+static int boot_state_save_profile(void) {
+    static int enabled=-1;
+    if (enabled<0) { const char* e=getenv("PSX_RUNTIME_PERF_DIAG");enabled=e && *e && *e!='0'; }
+    return enabled;
+}
+
 /* Compress payloads at/above this size (RAM/VRAM/SPU/dirty dominate I/O). */
 #define BOOT_STATE_ZLIB_MIN 256u
 
@@ -276,12 +282,15 @@ static int write_section(BsOut* o, uint32_t tag, const void* data, uint64_t len)
 static int write_module_section(BsOut* o, uint32_t tag,
                                 uint32_t (*bytes)(void),
                                 void (*write)(uint8_t*)) {
+    const double start=boot_state_save_profile()?boot_state_mono_ms():0;
     uint32_t n = bytes();
     uint8_t* buf = (uint8_t*)malloc(n ? n : 1);
     if (!buf) return 0;
     write(buf);
     int ok = write_section(o, tag, buf, n);
     free(buf);
+    if (start && boot_state_mono_ms()-start>10)
+        fprintf(stderr,"[snapshot-perf] module=%u bytes=%u ms=%.3f\n",tag,n,boot_state_mono_ms()-start);
     return ok;
 }
 
@@ -330,6 +339,7 @@ static int write_timer_section(BsOut* o) {
 /* Classic full VRAM section (offline / zlib / tracking off). */
 static int write_vram_section_full(BsOut *o)
 {
+    const double start=boot_state_save_profile()?boot_state_mono_ms():0;
     uint16_t *vbuf = (uint16_t *)malloc(VRAM_SIZE);
     int ok;
     if (!vbuf)
@@ -356,6 +366,8 @@ static int write_vram_section_full(BsOut *o)
     }
 #endif
     free(vbuf);
+    if (start && boot_state_mono_ms()-start>10)
+        fprintf(stderr,"[snapshot-perf] vram ms=%.3f\n",boot_state_mono_ms()-start);
     return ok;
 }
 

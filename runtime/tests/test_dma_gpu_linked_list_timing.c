@@ -42,6 +42,9 @@ static void complete(void *opaque, int limited) {
 static const DMAGPULinkedListOps ops = {
     resolve, read_word, NULL, begin_node, emit_word, complete
 };
+static int native_payload(void *opaque,uint32_t address,uint32_t words) {
+    (void)opaque;return address==0 && words==2;
+}
 
 #define CHECK(expr) do { \
     if (!(expr)) { \
@@ -148,6 +151,22 @@ int main(void) {
     dma_gpu_ll_advance(&state, 1u, &ops, NULL);
     CHECK(completed == 1u && hit_limit == 1u && !state.active);
 
+    /* Native enhancement payload runs at its OT position; the following stock
+     * node still waits for its header AND each live payload read. */
+    memset(ram,0,sizeof(ram));emitted_count=completed=hit_limit=0;
+    ram[0]=0x02000020;ram[1]=11;ram[2]=22;
+    ram[8]=0x01ffffff;ram[9]=33;
+    DMAGPULinkedListOps native_ops=ops;native_ops.native_payload=native_payload;
+    dma_gpu_ll_start(&state,0,8);
+    dma_gpu_ll_advance(&state,1,&native_ops,NULL);
+    CHECK(emitted_count==2 && emitted[0]==11 && emitted[1]==22 && !completed);
+    CHECK(state.current_addr==0x20 && state.cycles_remaining==1);
+    DMAGPULinkedList restored=state;
+    dma_gpu_ll_advance(&restored,1,&native_ops,NULL);
+    CHECK(emitted_count==2 && restored.emit_node==1);
+    ram[9]=44;
+    dma_gpu_ll_advance(&restored,1,&native_ops,NULL);
+    CHECK(emitted_count==3 && emitted[2]==44 && completed==1 && !restored.active);
     puts("dma_gpu_linked_list_timing_test: PASS");
     return 0;
 }

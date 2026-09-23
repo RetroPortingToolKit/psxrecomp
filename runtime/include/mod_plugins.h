@@ -66,6 +66,13 @@ void psx_mod_set_texture_bank_batching(int enabled);
  * precise perspective rendering without transient host-pointer side tables.
  * Allocate during activation; do not mix stock game packets into this arena. */
 uint32_t psx_mod_alloc_texture_packet_memory(uint32_t size, uint32_t alignment);
+/* Default-off host execution for payloads in enhancement-only texture arenas.
+ * Preserves OT sequence and packet storage/savestates; does not accelerate
+ * stock RAM packets. Enable only with a compatible native enhancement. */
+void psx_mod_set_native_texture_packets(int enabled);
+/* Experimental default-off batching of live-VRAM opaque/dual-source draws.
+ * Renderer coherency checks still flush before sampling pending writes. */
+void psx_mod_set_vram_texture_batching(int enabled);
 uint8_t psx_mod_read_byte(uint32_t address);
 void psx_mod_write_byte(uint32_t address, uint8_t value);
 uint16_t psx_mod_read_half(uint32_t address);

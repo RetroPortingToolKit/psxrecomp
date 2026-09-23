@@ -63,7 +63,7 @@ static void verify_bank_batching(void) {
 /* Compare every high-resolution RGBA sample, not just downsampled PS1 words.
  * Alternating opaque/STP fragments expose painter-order bugs hidden by an
  * all-semi fixture. Later mask-check draws also exercise deferred stencil. */
-static void verify_mixed_bank_batching(void) {
+static void verify_mixed_bank_batching(int vram) {
  const size_t bytes=96u*96u*s_scale*s_scale*4u;
  unsigned char *baseline=malloc(bytes), *result=malloc(bytes);
  if(!baseline || !result) {
@@ -80,24 +80,42 @@ static void verify_mixed_bank_batching(void) {
    gl_renderer_select_texture_bank(0);
    glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
    glb_draw_flat_rect(400,300,96,96,0x1234);flush_flat_batch();
-   glb_vram_write(512,2,0x83e0);
+   const int depth=variant%3;
+   if(vram) {
+    static uint16_t live[256*128];
+    for(int i=0;i<256*128;++i)
+     live[i]=depth==2?bank[i%4]:(depth==1?(i%2?0x0302:0x0100):0x3210);
+    memcpy(live,bank,4*sizeof(uint16_t));
+    glb_vram_transfer_in(512,0,256,128,live);
+   } else glb_vram_write(512,2,0x83e0);
    psx_mod_set_texture_bank_batching(enabled);s_tex_filter=filter;
+   psx_mod_set_vram_texture_batching(vram && enabled);
    glb_set_mask_bits(set,mask);gl_renderer_select_texture_bank(8);
    const int before=s_cw_batches;
    for(int i=0;i<48;++i) {
     const int modes[8]={-1,0,-1,1,-1,3,-1,0};
     int mode=variant==0?-1:modes[i%8];
     if(variant>=2 && i%11==10)mode=2;
-    const int stock=variant==3 && i%13==12;
-    if(variant==3) {
+    const int stock=vram || (variant==3 && i%13==12);
+    if(variant==3 || vram) {
      gl_renderer_select_texture_bank(stock?0:((i/8)%2?9:8));
      glb_set_mask_bits(set,mask || (i>=20 && i<28));
     }
     glb_set_semi_transparency(mode>=0,mode<0?0:mode);
+    if(vram && variant==3 && i==24) {
+     /* Pending draws followed by a texture/CLUT write must drain the batch. */
+     glb_vram_write(513,0,0xfc00);
+    }
+    if(vram && variant==2 && i==24) {
+     /* GPU feedback, not just CPU upload: a later texture sample aliases a
+      * freshly rendered part of this page. pack_flush must realize it first. */
+     glb_draw_flat_rect(520,5,12,17,0xfc00);
+    }
     const int x=404+(i%6)*5,y=304+(i%4)*7;
     glb_draw_shaded_textured_triangle(x,y,0,2,0x808080,
-        x+44,y+2,stock?0:63,2,0x507090,
-        x+3,y+48,0,stock?2:65,0x907050,0,0,stock?0x108:0,0);
+        x+44,y+2,stock && !vram?0:63,2,0x507090,
+        x+3,y+48,0,stock && !vram?2:65,0x907050,vram?512:0,0,
+        vram?(8|(depth<<7)):(stock?0x108:0),0);
    }
    flush_tex_batch();counts[enabled]=s_cw_batches-before;
    gl_renderer_select_texture_bank(0);
@@ -116,6 +134,7 @@ static void verify_mixed_bank_batching(void) {
    check(mask?counts[1]==counts[0]:counts[1]<counts[0],"mixed batch reduction only without mask checks");
  }
  psx_mod_set_texture_bank_batching(0);s_tex_filter=0;
+ psx_mod_set_vram_texture_batching(0);
  glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
  free(baseline);free(result);
 }
@@ -186,7 +205,8 @@ int main(int argc,char **argv){
  check(glb_vram_read(302,252)==0x001f,"retained 16-bit texel");
  verify("retained banks and original VRAM ordered together");
  verify_bank_batching();
- verify_mixed_bank_batching();
+ verify_mixed_bank_batching(0);
+ verify_mixed_bank_batching(1);
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }

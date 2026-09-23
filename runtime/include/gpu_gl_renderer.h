@@ -238,6 +238,9 @@ uint64_t gl_renderer_perf_prim_split(double *out_tex_frac);
 /* Cumulative textured-batch diagnostics: total, then flushes caused by
  * isolation, blend-mode, mask, filter, backdrop-gate, texture-window, capacity. */
 void gl_renderer_batch_diag(uint64_t out[8]);
+/* Cumulative CPU submission time (textured/flat ms) and flat batch count.
+ * Flat timing requires PSX_RUNTIME_PERF_DIAG; no GPU query or readback. */
+void gl_renderer_submission_diag(double out[3]);
 
 #ifdef __cplusplus
 }

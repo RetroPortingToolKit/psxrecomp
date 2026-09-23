@@ -17,6 +17,7 @@
 #include "crash_trace.h"
 #include "dirty_ram_interp.h"
 #include "dma_gpu_ll.h"
+#include "mod_texture_banks.h"
 #include "gpu.h"
 #include "mdec.h"
 #include "mod_memory.h"
@@ -727,13 +728,18 @@ static void gpu_ll_complete(void *opaque, int hit_limit) {
     complete_transfer(2);
 }
 
+static int gpu_ll_native_payload(void *opaque, uint32_t address, uint32_t words) {
+    (void)opaque;
+    return mod_texture_native_packet(address,words);
+}
 static const DMAGPULinkedListOps gpu_ll_ops = {
     gpu_ll_resolve_address,
     gpu_ll_read_word,
     gpu_ll_observe_header,
     gpu_ll_begin_node,
     gpu_ll_emit_word,
-    gpu_ll_complete
+    gpu_ll_complete,
+    gpu_ll_native_payload
 };
 
 static void start_async_gpu_linked_list(void) {

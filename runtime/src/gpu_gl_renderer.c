@@ -1834,6 +1834,12 @@ static double cw_ms(void) {
 }
 static double s_cw_flush_ms = 0.0;   /* CPU wall inside flush_tex_batch        */
 static double s_cw_wide_ms  = 0.0;   /* CPU wall inside glb_wide_* entry points */
+static double s_submission_flush_ms, s_submission_flat_ms;
+static uint64_t s_submission_flat_batches;
+void gl_renderer_submission_diag(double out[3]) {
+    out[0]=s_submission_flush_ms; out[1]=s_submission_flat_ms;
+    out[2]=(double)s_submission_flat_batches;
+}
 static int    s_cw_batches = 0, s_cw_wide_sets = 0, s_cw_wide_cfgs = 0,
               s_cw_wide_clears = 0, s_cw_fbo_creates = 0, s_cw_flush_depth = 0;
 
@@ -1891,7 +1897,10 @@ static void flush_tex_batch(void) {
         gl_perf_mirror_end();
     }
     hr_end();
-    if (--s_cw_flush_depth == 0) s_cw_flush_ms += cw_ms() - cw_t0;
+    if (--s_cw_flush_depth == 0) {
+        double elapsed=cw_ms()-cw_t0;
+        s_cw_flush_ms+=elapsed; s_submission_flush_ms+=elapsed;
+    }
 }
 
 /* Flat / gouraud GEO batch — MotK title/char-select starfields issue ~30k/s
@@ -1916,6 +1925,8 @@ static int mirror_flat_batch_center_only(int nverts) {
 
 static void flush_flat_batch(void) {
     if (s_fb_n == 0) return;
+    const double diagnostic_start=runtime_upload_diag_enabled()?cw_ms():0;
+    ++s_submission_flat_batches;
     int nverts = s_fb_n, semi = s_fb_semi, mask = s_fb_mask;
     s_fb_n = 0;
 
@@ -1943,6 +1954,7 @@ static void flush_flat_batch(void) {
         gl_perf_mirror_end();
     }
     hr_end();
+    if (diagnostic_start) s_submission_flat_ms+=cw_ms()-diagnostic_start;
 }
 
 /* Flat / gouraud triangles and lines share the GEO program. mode: GL_TRIANGLES
@@ -2070,12 +2082,14 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
         flush_flat_batch();   /* painter order: flat GEO before textured */
         int twx = s_tw_mask_x, twy = s_tw_mask_y, tox = s_tw_off_x, toy = s_tw_off_y;
         int gate = bd_prim_gate(xs, 3, 1); /* backdrop-stretch gate is also a batch key */
-        /* Ordinary VRAM keeps opaque/semi transitions isolated (CTR particles
-         * may alias a render target). Only opted-in immutable banks may share
-         * the dual-source key: their opaque vertices carry a_semi=0, yielding
-         * destination factor zero even for STP=1. Painter order is unchanged. */
+        /* Default VRAM behavior remains conservative. Opted-in banks or live
+         * VRAM can share the single-pass key: opaque vertices carry a_semi=0,
+         * yielding destination factor zero even for STP=1. For live VRAM,
+         * flush_pack_if_sampling above realizes pending texture/CLUT writes
+         * before this primitive is appended. CPU uploads also flush first. */
         const int bank_batch = mod_texture_bank_batchable(
-            s_selected_bank_tex != 0, s_mask_check, semi);
+            s_selected_bank_tex != 0, s_mask_check, semi) ||
+            (!s_selected_bank_tex && mod_texture_vram_batchable(s_mask_check,semi));
         int batch_semi;
         if (bank_batch)
             batch_semi = 4;
@@ -2089,15 +2103,11 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
          * path draws pass 1 = every prim's STP=0 texels then pass 2 = every
          * prim's STP=1 texels — a behind prim's semi texels then overwrite a
          * front prim's opaque texels (Tomba AP-block / CTR intro flaps). The
-         * dual-source single-pass path avoids that WITHIN one prim, but
-         * batching many overlapping semi quads (digit particles + glow) still
-         * mis-orders against neighbouring opaque geometry. Isolate EVERY
-         * semi-transparent textured prim: drain the open batch, draw this
-         * prim alone (composited fully before the next), let opaque prims
-         * keep batching. Cost is one draw per semi prim. A separately opted-in
-         * immutable bank may batch the single-pass dual-source cases: it
-         * cannot alias a render target, keeps painter order, and still splits
-         * on bank/state changes, masking or subtraction. */
+         * dual-source path composites each primitive in submission order.
+         * Keep the existing per-primitive isolation unless a title opts in to
+         * batching that single-pass path. Both opt-ins still split on texture
+         * source/state changes, destination-mask checking and subtraction;
+         * live VRAM additionally retains the dependency flushes above. */
         int isolate = semi >= 0 && !bank_batch;
         int reason = -1;
         if (s_tb_n > 0) {
@@ -3709,10 +3719,11 @@ static int glb_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh,
 /* ===================== frame_perf: per-frame GPU/CPU phase timing ============
  * Developer builds use two GL_TIME_ELAPSED queries per frame to bracket (a) the
  * scene draws (all GP0 raster issued between two presents) and (b) the present
- * clear+blit, giving TRUE GPU time per phase independent of CPU/GPU overlap
- * (glFinish would only catch the non-overlapped tail and mislead). CPU wall time
+ * clear+blit. These are GPU timeline intervals, including idle gaps while the
+ * CPU produces commands; they are not isolated GPU busy time. CPU wall time
  * (present-to-present total, and the present call) comes from SDL perf counters.
- * Results are read back GLPERF_NBUF frames late (no pipeline stall) into a ring
+ * Available results are read back GLPERF_NBUF frames late into a ring;
+ * unfinished results are dropped rather than synchronously draining the GPU.
  * the debug server's frame_perf command aggregates. Release builds compile out
  * the debug server, so they also leave this instrumentation disabled: a native-
  * wide frame can otherwise issue hundreds of unused mirror timestamp queries.
@@ -3783,7 +3794,8 @@ static void gl_perf_init(void) {
         const char *enabled = getenv("PSX_GL_PERF");
         if (enabled && enabled[0] == '0') return;
     }
-    if (!p_glGenQueries || !p_glBeginQuery || !p_glEndQuery || !p_glGetQueryObjectui64v) return;
+    if (!p_glGenQueries || !p_glBeginQuery || !p_glEndQuery ||
+        !p_glGetQueryObjectui64v || !p_glGetQueryObjectiv) return;
     p_glGenQueries(GLPERF_NBUF, s_pf_scene_q);
     p_glGenQueries(GLPERF_NBUF, s_pf_present_q);
     s_mq_ok = (p_glQueryCounter != NULL);
@@ -3861,7 +3873,12 @@ static void gl_perf_present_exit(int wide) {
     s_pf_buf_wide[s_pf_b]  = wide;
     s_pf_buf_frame[s_pf_b] = s_pf_count;
     int rd = (s_pf_b + 1) % GLPERF_NBUF;   /* oldest buffer (frame count+1-NBUF), now done */
-    if (s_pf_count >= (uint64_t)GLPERF_NBUF) {
+    GLint available=0;
+    if (s_pf_count >= (uint64_t)GLPERF_NBUF)
+        p_glGetQueryObjectiv(s_pf_present_q[rd],GL_QUERY_RESULT_AVAILABLE,&available);
+    /* present is the last query in this buffer: its completion implies the
+     * preceding scene and mirror timestamp queries have also completed. */
+    if (available) {
         GLuint64 sc = 0, pr = 0;
         p_glGetQueryObjectui64v(s_pf_scene_q[rd],   GL_QUERY_RESULT, &sc);
         p_glGetQueryObjectui64v(s_pf_present_q[rd], GL_QUERY_RESULT, &pr);

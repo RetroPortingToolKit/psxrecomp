@@ -38,6 +38,10 @@ typedef struct {
     int (*begin_node)(void *opaque, uint32_t address, uint32_t word_count);
     void (*emit_word)(void *opaque, uint32_t address, uint32_t word);
     void (*complete)(void *opaque, int hit_limit);
+    /* Default NULL: faithful word timing. Opted-in enhancement-only packets
+     * may execute their payload at this OT boundary as native host work.
+     * The header retains its clock; unrelated nodes retain normal timing. */
+    int (*native_payload)(void *opaque, uint32_t address, uint32_t word_count);
 } DMAGPULinkedListOps;
 
 void dma_gpu_ll_start(DMAGPULinkedList *state, uint32_t start_addr,

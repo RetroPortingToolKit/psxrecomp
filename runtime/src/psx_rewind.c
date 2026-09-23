@@ -1,6 +1,7 @@
 /* psx_rewind.c — local snap ring + filmstrip overlay. */
 
 #include "psx_rewind.h"
+#include "psx_sdl.h"
 
 #include "boot_state.h"
 #include "cdrom.h"
@@ -34,6 +35,14 @@
 #define RW_PANEL_W     640
 #define RW_PANEL_H     176
 #define RW_SLIDE_MS    180u
+
+static double s_capture_perf[4];
+void psx_rewind_perf(double out[4]) { memcpy(out,s_capture_perf,sizeof(s_capture_perf)); }
+static double rewind_perf_ms(void) {
+    static int enabled=-1;
+    if (enabled<0) { const char *e=getenv("PSX_RUNTIME_PERF_DIAG");enabled=e && *e && *e!='0'; }
+    return enabled ? (double)SDL_GetPerformanceCounter()*1000.0/(double)SDL_GetPerformanceFrequency() : 0;
+}
 
 #if defined(PSX_HAS_RBENGINE_SNAP)
 /* Public-domain 8x8 ASCII 32..90 (subset of font8x8_basic). */
@@ -495,15 +504,24 @@ static int do_capture(CPUState *cpu, uint32_t resume_pc)
         return 0;
     snap = *cpu;
     snap.pc = pc;
+    const double begin=rewind_perf_ms();
     if (!boot_state_save_buffer_raw(&snap, s_bios, s_entry, &blob, &len) ||
         !blob || !len)
         return 0;
+    const double saved=rewind_perf_ms();
     if (!rbe_snap_ring_store(s_ring, tick, blob, len)) {
         free(blob);
         return 0;
     }
+    const double stored=rewind_perf_ms();
     capture_thumb(thumb);
     list_push(tick, thumb);
+    ++s_capture_perf[0];
+    if (begin) {
+        s_capture_perf[1]+=saved-begin;
+        s_capture_perf[2]+=stored-saved;
+        s_capture_perf[3]+=rewind_perf_ms()-stored;
+    }
     s_last_capture_frame = s_frame;
     s_capture_due = 0;
     return 1;

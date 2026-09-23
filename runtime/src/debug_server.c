@@ -46,6 +46,8 @@
 #include "crash_trace.h"
 #include "gpu_gl_renderer.h"
 #include "lockstep.h"
+#include "psx_rewind.h"
+#include "debug_counter_route.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -323,15 +325,13 @@ static uint8_t s_axis_st[4]    = { 0x80, 0x80, 0x80, 0x80 };
  * between short presses and remains deterministic while turbo loads are active.
  */
 #define INPUT_ROUTE_MAX_STEPS 4096
-typedef struct {
-    uint32_t frames;
-    uint16_t buttons;
-} InputRouteStep;
+typedef DebugInputRouteStep InputRouteStep;
 static PSX_BSS InputRouteStep s_input_route[INPUT_ROUTE_MAX_STEPS];
 static uint32_t s_input_route_count = 0;
 static uint32_t s_input_route_index = 0;
 static uint32_t s_input_route_remaining = 0;
 static int      s_input_route_active = 0;
+static uint32_t s_input_route_counter_addr, s_input_route_counter_last;
 
 /* ---- Frontend turbo override ---- */
 static volatile int s_turbo_enabled = 0;
@@ -7686,9 +7686,17 @@ static void handle_input_route_append(int id, const char *json)
              id, (unsigned)s_input_route_count);
 }
 
+#include "debug_perf_capture.c.inc"
+
 static void handle_input_route_start(int id, const char *json)
 {
-    (void)json;
+    char address[24];
+    uint32_t counter_addr=0;
+    if (json_get_str(json,"counter_addr",address,sizeof(address))) {
+        if (!perf_parse_address(address,&counter_addr) || !counter_addr) {
+            send_err(id,"counter_addr must be aligned main RAM"); return;
+        }
+    }
     if (s_input_route_count == 0) {
         send_err(id, "input route is empty"); return;
     }
@@ -7697,6 +7705,8 @@ static void handle_input_route_start(int id, const char *json)
     s_axis_override = 0;
     s_input_route_index = 0;
     s_input_route_remaining = s_input_route[0].frames;
+    s_input_route_counter_addr=counter_addr;
+    s_input_route_counter_last=counter_addr ? psx_read_word(counter_addr) : 0;
     s_input_route_active = 1;
     send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u,\"start_frame\":%llu}\n",
              id, (unsigned)s_input_route_count,
@@ -7892,13 +7902,36 @@ static void handle_ws_aspect(int id, const char *json)
 }
 
 extern int psx_debug_display_aspect(int num, int den, int adaptive);
+extern void psx_debug_get_display_aspect(int out[3]);
 static void handle_display_aspect(int id, const char *json) {
     int num=json_get_int(json,"num",-1), den=json_get_int(json,"den",-1);
     int adaptive=json_get_int(json,"adaptive",0);
+    if (num==-1 && den==-1) {
+        int current[3];psx_debug_get_display_aspect(current);
+        send_fmt("{\"id\":%d,\"ok\":true,\"num\":%d,\"den\":%d,\"adaptive\":%d}",
+                 id,current[0],current[1],current[2]);return;
+    }
     if (!psx_debug_display_aspect(num,den,adaptive)) {
         send_err(id,"invalid display aspect (4:3 through 32:9)");return;
     }
     send_fmt("{\"id\":%d,\"ok\":true,\"num\":%d,\"den\":%d,\"adaptive\":%d}",id,num,den,adaptive!=0);
+}
+
+/* Exercise the ordinary rewind UI actions without OS-level keyboard input. */
+static void handle_rewind(int id, const char *json) {
+    char op[24]="status";json_get_str(json,"op",op,sizeof(op));
+    if (!strcmp(op,"open")) {
+        if (!psx_rewind_is_open() && !psx_rewind_toggle()) { send_err(id,"rewind unavailable");return; }
+    } else if (!strcmp(op,"move")) {
+        int delta=json_get_int(json,"delta",0);
+        if (delta < -200 || delta > 200) { send_err(id,"invalid rewind move");return; }
+        psx_rewind_move(delta);
+    } else if (!strcmp(op,"accept")) {
+        if (!psx_rewind_accept()) { send_err(id,"no rewind selection");return; }
+    } else if (!strcmp(op,"cancel")) psx_rewind_cancel();
+    else if (strcmp(op,"status")) { send_err(id,"unknown rewind operation");return; }
+    send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%d,\"open\":%d}",id,
+             psx_rewind_enabled(),psx_rewind_is_open());
 }
 
 /* Live native-wide vs squash toggle (A/B): ws_nw on=<0|1> re-engages the wide
@@ -13579,6 +13612,8 @@ static void handle_warm_cd_route(int id, const char *json)
 
 static const CmdEntry s_commands[] = {
     { "phase_profile",     handle_phase_profile },
+    { "perf_capture",      handle_perf_capture },
+    { "rewind",            handle_rewind },
     { "starv_ring",        handle_starv_ring },
     { "data_shards",       handle_data_shards },
     { "vsync_query_hle",   handle_vsync_query_hle },
@@ -14483,6 +14518,7 @@ void debug_server_poll(void)
 
 void debug_server_record_frame(void)
 {
+    perf_capture_tick();
     if (s_fmv_quiet) {
         s_history_count = s_frame_count + 1;
         s_frame_count++;
@@ -14629,6 +14665,13 @@ int debug_server_is_connected(void)
 int debug_server_get_input_override(void)
 {
     if (s_input_route_active && s_input_route_index < s_input_route_count) {
+        if (s_input_route_counter_addr) {
+            uint32_t now=psx_read_word(s_input_route_counter_addr);
+            s_input_route_active=debug_counter_route_advance(s_input_route,
+                s_input_route_count,&s_input_route_index,&s_input_route_remaining,
+                &s_input_route_counter_last,now);
+            return s_input_route_active ? (int)s_input_route[s_input_route_index].buttons : -1;
+        }
         int current = (int)s_input_route[s_input_route_index].buttons;
         if (s_input_route_remaining > 0 && --s_input_route_remaining == 0) {
             s_input_route_index++;

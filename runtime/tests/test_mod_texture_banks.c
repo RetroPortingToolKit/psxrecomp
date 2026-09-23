@@ -18,6 +18,13 @@ static void check(int ok,const char* text){if(!ok){fprintf(stderr,"FAIL %s\n",te
 static int resolve(uint16_t id){uint16_t data=0x4567;++resolves;return psx_mod_define_texture_bank(id,1,1,&data);}
 static uint32_t bits(float f){uint32_t n;memcpy(&n,&f,4);return n;}
 int main(void){
+    check(!mod_texture_vram_batchable(0,0),"live VRAM batching defaults off");
+    psx_mod_set_vram_texture_batching(1);
+    for(int mode=-1;mode<=4;++mode) for(int mask=0;mask<=1;++mask)
+        check(mod_texture_vram_batchable(mask,mode)==
+            (!mask && (mode==-1 || mode==0 || mode==1 || mode==3)),"live VRAM batching scope");
+    psx_mod_set_vram_texture_batching(0);
+    check(!mod_texture_vram_batchable(0,0),"live VRAM batching disable");
     check(!mod_texture_bank_batchable(1,0,0),"bank batching defaults off");
     psx_mod_set_texture_bank_batching(1);
     for(int mode=-1;mode<=4;++mode) for(int bank=0;bank<=1;++bank) for(int mask=0;mask<=1;++mask)
@@ -56,5 +63,19 @@ int main(void){
     check(!mod_texture_packet_precision(arena+4,q,xy),"NaN rejected");
     memory[11]=bits(0);
     check(!mod_texture_packet_precision(arena+4,q,xy),"zero reciprocal depth rejected");
+    memory[1]=0x34000000;
+    check(!mod_texture_native_packet(arena,9),"native packet execution defaults off");
+    psx_mod_set_native_texture_packets(1);
+    check(!mod_texture_native_packet(0x80001000,9),"stock RAM cannot use native payload timing");
+    check(mod_texture_native_packet(arena,9),"registered GT3 arena can opt in");
+    check(!mod_texture_native_packet(arena+1,9),"unaligned native packet rejected");
+    check(!mod_texture_native_packet(arena+48,9),"native payload fully bounded");
+    check(!mod_texture_native_packet(arena,6),"G3 size cannot describe a GT3");
+    memory[1]=0x30000000;
+    check(mod_texture_native_packet(arena,6),"registered G3 arena can opt in");
+    memory[1]=0xe1000000;
+    check(!mod_texture_native_packet(arena,6),"environment commands keep ordinary timing");
+    psx_mod_set_native_texture_packets(0);
+    check(!mod_texture_native_packet(arena,6),"native payload timing disable");
     puts("texture bank checks passed");return 0;
 }

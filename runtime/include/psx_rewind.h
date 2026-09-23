@@ -41,6 +41,9 @@ void psx_rewind_shutdown(void);
 
 int  psx_rewind_enabled(void);
 int  psx_rewind_is_open(void);
+/* Cumulative capture count, snapshot/ring/thumbnail milliseconds. Timers only
+ * run with PSX_RUNTIME_PERF_DIAG; used outside acceptance timing runs. */
+void psx_rewind_perf(double out[4]);
 /* 1 while open or slide animation still visible. */
 int  psx_rewind_needs_present(void);
 

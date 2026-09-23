@@ -14,6 +14,24 @@ static uint32_t bank_bytes;
 static PSXModTextureBankResolver resolve_bank;
 static int resolving;
 static int bank_batching;
+static int native_packets;
+static int vram_batching;
+void psx_mod_set_vram_texture_batching(int enabled) { vram_batching=enabled!=0; }
+int mod_texture_vram_batchable(int mask_check,int semi) {
+    return vram_batching && !mask_check && (semi==-1 || semi==0 || semi==1 || semi==3);
+}
+void psx_mod_set_native_texture_packets(int enabled) { native_packets=enabled!=0; }
+int mod_texture_native_packet(uint32_t header, uint32_t words) {
+    if (!native_packets || (header&3u) || (words!=6 && words!=9)) return 0;
+    const uint32_t address=header&0x1fffffffu;
+    for (unsigned i=0;i<arena_count;++i) {
+        if (address<arenas[i].begin || (words+1)*4>arenas[i].size ||
+            address-arenas[i].begin>arenas[i].size-(words+1)*4) continue;
+        const uint32_t command=psx_mod_read_word(header+4)>>24;
+        return words==6 ? command==0x30 : command==0x34 || command==0x36;
+    }
+    return 0;
+}
 
 void psx_mod_set_texture_bank_batching(int enabled) { bank_batching = enabled != 0; }
 int mod_texture_bank_batchable(int immutable, int mask_check, int semi) {
