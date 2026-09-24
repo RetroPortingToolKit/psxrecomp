@@ -11824,6 +11824,67 @@ static void handle_cd_read_log(int id, const char *json)
     send_fmt("]}\n");
 }
 
+/* disc_select: report the multi-disc roster, and optionally mount a different
+ * entry of it while the game runs.
+ *
+ * Without this the only disc-change mechanism is the CD-reinsert hotkey, which
+ * remounts the SAME image and so cannot answer a game asking for its other
+ * disc. It also makes multi-disc paths scriptable, which matters because the
+ * request usually sits behind menu navigation.
+ *
+ * Parameter "n" (optional int, 1-based): roster entry to mount. Omit it for a
+ * pure query. Selecting the already-mounted disc still cycles the tray, which
+ * is what a player pressing eject would get.
+ */
+static void handle_disc_select(int id, const char *json)
+{
+    int n = json_get_int(json, "n", 0);
+    int count = cdrom_disc_roster_count();
+    int ok = 1;
+
+    if (count == 0) {
+        send_fmt("{\"id\":%d,\"ok\":false,"
+                 "\"error\":\"no multi-disc roster registered\"}", id);
+        return;
+    }
+    /* Any supplied "n" is a select attempt, including an out-of-range one.
+     * Only an absent key (0) is a pure query, so a bad index reports the
+     * failure instead of passing as a successful read-back. */
+    if (n != 0) ok = cdrom_disc_select(n);
+
+    /* One buffer, one send: send_fmt terminates a line per call, so emitting
+     * the roster incrementally would split the response across lines. */
+    char buf[32 * 1024];
+    int w = snprintf(buf, sizeof(buf),
+                     "{\"id\":%d,\"ok\":%s,\"count\":%d,\"selected\":%d,"
+                     "\"discs\":[",
+                     id, ok ? "true" : "false", count, cdrom_disc_selected());
+    for (int i = 1; i <= count && w < (int)sizeof(buf); i++) {
+        char path_json[2048];
+        json_escape_string(path_json, sizeof(path_json),
+                           cdrom_disc_roster_path(i));
+        w += snprintf(buf + w, sizeof(buf) - (size_t)w, "%s\"%s\"",
+                      i > 1 ? "," : "", path_json);
+    }
+    if (w > (int)sizeof(buf) - 64) w = (int)sizeof(buf) - 64;
+    snprintf(buf + w, sizeof(buf) - (size_t)w,
+             "],\"has_disc\":%s,\"sectors\":%u,\"tracks\":%d}",
+             cdrom_has_disc() ? "true" : "false",
+             cdrom_mounted_sector_count(), cdrom_mounted_track_count());
+    send_fmt("%s", buf);
+}
+
+/* cd_reinsert: run the tray open/close cycle on the SAME image, which is what
+ * the reinsert hotkey does. Scripted access matters because the hotkey needs a
+ * focused window, so nothing could previously exercise the lid from a test. */
+static void handle_cd_reinsert(int id, const char *json)
+{
+    (void)json;
+    debug_force_cd_reinsert();
+    send_fmt("{\"id\":%d,\"ok\":true,\"has_disc\":%s}",
+             id, cdrom_has_disc() ? "true" : "false");
+}
+
 /* cdrom_instant_rate: get/set the 'instant' per-frame sector-IRQ budget
  * (step 3 tunable). Param "n" (optional int): new budget, clamped by
  * cdrom_set_instant_rate. Always returns the current value, so a no-arg
@@ -13883,6 +13944,8 @@ static const CmdEntry s_commands[] = {
     { "fn_exit_dump",      handle_fn_exit_dump },
     { "overlay_dump",      handle_overlay_dump },
     { "cd_read_log",       handle_cd_read_log },
+    { "disc_select",       handle_disc_select },
+    { "cd_reinsert",       handle_cd_reinsert },
     { "overlay_loader_status", handle_overlay_loader_status },
     { "overlay_candidates",   handle_overlay_candidates },
     { "overlay_native_ring",  handle_overlay_native_ring },

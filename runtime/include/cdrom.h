@@ -71,6 +71,27 @@ int cdrom_timing_record(uint64_t seq, CdTimingPub* out);
  * active transfers, reports an open shell, waits two emulated seconds, then
  * makes the mounted media readable. This call does not mount a different image. */
 void debug_force_cd_reinsert(void);
+
+/* Multi-disc support. The roster is the image set this build was made from
+ * (game.toml [game] discs), registered once at launch in roster order.
+ *
+ * cdrom_disc_select() mounts a different image while the game runs, through
+ * the same tray-open event as a reinsert, so a title that asks for its other
+ * disc can be answered. Returns 0 if the index is outside the roster or the
+ * image will not open. Indexes are 1-based, matching [disc] selected. */
+void cdrom_disc_roster_set(const char *const *paths, int count,
+                           int selected_1based);
+int  cdrom_disc_roster_count(void);
+int  cdrom_disc_selected(void);
+const char *cdrom_disc_roster_path(int index_1based);
+int  cdrom_disc_select(int index_1based);
+
+/* TOC of the image currently mounted; 0 when the drive is empty. Two images
+ * of a set have different TOCs, so this is how a caller confirms that a disc
+ * change reached the reader instead of only moving an index. */
+uint32_t cdrom_mounted_sector_count(void);
+int      cdrom_mounted_track_count(void);
+
 /* FMV auto-skip detection: cdrom_xa_stream_active() lets the frontend detect
  * that streaming XA (FMV/CDDA) is in progress. The skip itself is done by the
  * frontend via uncapped pacing (it does NOT alter CD timing — flooding XA
