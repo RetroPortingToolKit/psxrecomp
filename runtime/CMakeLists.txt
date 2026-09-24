@@ -379,6 +379,11 @@ if(BUILD_TESTING)
         ${PSXRECOMP_ROOT}/recompiler/include)
     add_test(NAME bios_rom_alias_test COMMAND bios_rom_alias_test)
 
+    # The game window opens at a normal size, not maximised.
+    add_executable(window_size_test tests/test_window_size.cpp)
+    target_include_directories(window_size_test PRIVATE include)
+    add_test(NAME window_size_test COMMAND window_size_test)
+
     # Multi-file cue TOC mapping (data track + CD-DA in separate bins).
     add_executable(iso_reader_cdda_test
         tests/test_iso_reader_cdda.cpp
