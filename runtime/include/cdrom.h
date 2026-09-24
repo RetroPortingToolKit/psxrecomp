@@ -288,6 +288,10 @@ typedef struct CDROMCommandHistoryEntry {
     uint8_t pending_pending;
     uint8_t queued_cmd;
     uint8_t queued_pending;
+    /* Immediate response FIFO as the guest will read it (e.g. the GetTD MSF,
+     * the GetTN track range), so a TOC can be checked from the ring. */
+    uint8_t response_count;
+    uint8_t response[16];
 } CDROMCommandHistoryEntry;
 
 typedef struct CDROMSectorHistoryEntry {

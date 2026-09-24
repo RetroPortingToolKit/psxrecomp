@@ -5768,7 +5768,7 @@ static void handle_cdrom_command_history(int id, const char *json)
     uint64_t oldest = (total > CDROM_COMMAND_HISTORY_CAP)
         ? total - CDROM_COMMAND_HISTORY_CAP : 0;
 
-    size_t bufsz = 256u + (size_t)count * 640u;
+    size_t bufsz = 256u + (size_t)count * 800u;
     char *buf = (char *)malloc(bufsz);
     if (!buf) { send_err(id, "oom"); return; }
 
@@ -5781,7 +5781,7 @@ static void handle_cdrom_command_history(int id, const char *json)
                     (unsigned long long)oldest);
 
     uint64_t seq = total;
-    while (seq > oldest && emitted < count && pos < bufsz - 640) {
+    while (seq > oldest && emitted < count && pos < bufsz - 800) {
         seq--;
         const CDROMCommandHistoryEntry *e =
             &entries[seq % CDROM_COMMAND_HISTORY_CAP];
@@ -5809,13 +5809,18 @@ static void handle_cdrom_command_history(int id, const char *json)
                         "\"reading\":%u,\"pending_cmd\":\"0x%02X\","
                         "\"pending\":%u,\"queued_cmd\":\"0x%02X\","
                         "\"queued\":%u,\"func\":\"0x%08X\",\"pc\":\"0x%08X\","
-                        "\"i_stat\":\"0x%08X\"}",
+                        "\"i_stat\":\"0x%08X\",\"response\":[",
                         e->stat, e->request, e->irq_enable, e->irq_flag,
                         e->mode, e->seek_min, e->seek_sec, e->seek_sect,
                         e->read_min, e->read_sec, e->read_sect, e->read_cmd,
                         e->reading, e->pending_cmd, e->pending_pending,
                         e->queued_cmd, e->queued_pending, e->func, e->pc,
                         e->i_stat);
+        for (uint8_t i = 0; i < e->response_count && i < 16 && pos < bufsz - 16; i++) {
+            pos += snprintf(buf + pos, bufsz - pos,
+                            "%s\"0x%02X\"", i ? "," : "", e->response[i]);
+        }
+        pos += snprintf(buf + pos, bufsz - pos, "]}");
         emitted++;
     }
 

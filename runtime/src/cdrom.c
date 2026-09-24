@@ -824,6 +824,13 @@ static void record_command_history(uint8_t kind, uint8_t cmd,
     e->pending_pending = (uint8_t)(pending.pending ? 1 : 0);
     e->queued_cmd = queued_cmd.cmd;
     e->queued_pending = (uint8_t)(queued_cmd.pending ? 1 : 0);
+    {
+        int rn = response_count;
+        if (rn < 0) rn = 0;
+        if (rn > (int)sizeof(e->response)) rn = (int)sizeof(e->response);
+        e->response_count = (uint8_t)rn;
+        memcpy(e->response, response_fifo, (size_t)rn);
+    }
 }
 
 static int xa_is_audio_realtime(const CDROMSectorDelivery *d) {
