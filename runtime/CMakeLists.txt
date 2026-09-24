@@ -388,6 +388,15 @@ if(BUILD_TESTING)
     target_link_libraries(iso_reader_cdda_test PRIVATE chdr-static)
     add_test(NAME iso_reader_cdda_test COMMAND iso_reader_cdda_test)
 
+    # Cue PREGAP/POSTGAP (gaps the dump does not store) shift the disc layout.
+    add_executable(iso_reader_pregap_test
+        tests/test_iso_reader_pregap.cpp
+        src/iso_reader.cpp
+        src/cue_sheet.cpp)
+    target_include_directories(iso_reader_pregap_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
+    target_link_libraries(iso_reader_pregap_test PRIVATE chdr-static)
+    add_test(NAME iso_reader_pregap_test COMMAND iso_reader_pregap_test)
+
     add_executable(iso_reader_sbi_test
         tests/test_iso_reader_sbi.cpp
         src/iso_reader.cpp

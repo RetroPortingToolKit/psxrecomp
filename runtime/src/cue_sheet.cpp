@@ -127,6 +127,10 @@ CueSheet parse_cue_sheet(const fs::path& cue_path) {
     bool     cur_track_audio = false;
     uint32_t cur_index00     = 0;
     bool     cur_has_index00 = false;
+    uint32_t cur_pregap      = 0;
+    // A TRACK whose INDEX 01 has been recorded, so a trailing POSTGAP line
+    // (which follows INDEX 01) still attaches to it.
+    int      last_pushed_track = -1;
 
     while (std::getline(cue, line)) {
         // Strip a trailing CR so cues with CRLF endings parse on POSIX.
@@ -150,6 +154,8 @@ CueSheet parse_cue_sheet(const fs::path& cue_path) {
             cur_track_num   = -1;
             cur_has_index00 = false;
             cur_index00     = 0;
+            cur_pregap      = 0;
+            last_pushed_track = -1;
             continue;
         }
 
@@ -160,10 +166,23 @@ CueSheet parse_cue_sheet(const fs::path& cue_path) {
             cur_track_audio = (std::string(type_buf).find("AUDIO") != std::string::npos);
             cur_index00     = 0;
             cur_has_index00 = false;
+            cur_pregap      = 0;
+            last_pushed_track = -1;
             continue;
         }
 
         int idx = 0, mm = 0, ss = 0, ff = 0;
+        if (std::sscanf(upper.c_str(), " PREGAP %d:%d:%d", &mm, &ss, &ff) == 3) {
+            if (cur_track_num >= 1)
+                cur_pregap = (uint32_t)(((mm * 60 + ss) * 75) + ff);
+            continue;
+        }
+        if (std::sscanf(upper.c_str(), " POSTGAP %d:%d:%d", &mm, &ss, &ff) == 3) {
+            if (last_pushed_track >= 0 && !sheet.tracks.empty() &&
+                sheet.tracks.back().number == last_pushed_track)
+                sheet.tracks.back().postgap = (uint32_t)(((mm * 60 + ss) * 75) + ff);
+            continue;
+        }
         if (std::sscanf(upper.c_str(), " INDEX %d %d:%d:%d", &idx, &mm, &ss, &ff) == 4 &&
             cur_track_num >= 1 && !sheet.files.empty()) {
             const uint32_t index_lba = (uint32_t)(((mm * 60 + ss) * 75) + ff);
@@ -180,7 +199,9 @@ CueSheet parse_cue_sheet(const fs::path& cue_path) {
             t.index01     = index_lba;
             t.index00     = cur_index00;
             t.has_index00 = cur_has_index00;
+            t.pregap      = cur_pregap;
             sheet.tracks.push_back(t);
+            last_pushed_track = cur_track_num;
             cur_track_num = -1;
         }
     }
