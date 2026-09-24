@@ -310,7 +310,6 @@ bool ISOReader::Open(const std::string& filename) {
     // Build the segment table: open every file and lay it out at the next
     // disc-relative sector. Every file must open — a multi-file dump with a
     // missing track file would otherwise silently read the wrong sectors.
-    uint32_t next_lba = 0;
     for (const std::string& bin_name : bin_files) {
         BinSegment seg;
         seg.path = bin_name;
@@ -330,21 +329,71 @@ bool ISOReader::Open(const std::string& filename) {
         seg.raw          = (size % RAW_SECTOR_SIZE) == 0;
         seg.sector_count = static_cast<uint32_t>(size / (seg.raw ? RAW_SECTOR_SIZE
                                                                  : SECTOR_SIZE));
-        seg.start_lba    = next_lba;
-        next_lba += seg.sector_count;
+        seg.start_lba    = 0;  // assigned by the layout pass below
         segments_.push_back(std::move(seg));
     }
 
-    // Convert the pending cue tracks to disc-relative LBAs.
-    for (const PendingTrack& p : pending_tracks) {
-        CDTrack t;
-        t.number    = p.number;
-        t.is_audio  = p.is_audio;
-        t.start_lba = segments_[p.file_index].start_lba + p.index01;
-        t.pregap_lba = segments_[p.file_index].start_lba +
-                       (p.has_index00 ? p.index00 : p.index01);
-        tracks_.push_back(t);
+    // Lay the files out on the disc and convert the pending cue tracks to
+    // disc-relative LBAs. INDEX times are file-relative; a cue PREGAP (before
+    // a track's INDEX 00/01) or POSTGAP (after its data) is a run of sectors
+    // the dump does not store, so it becomes a virtual span and moves every
+    // later disc LBA. Real discs carry those sectors, and games locate tracks
+    // through the TOC (GetTD), so dropping them shifts every later track
+    // earlier than the game expects. Without gap lines each file is one stored
+    // span and the layout is the plain concatenation of the files.
+    uint32_t disc = 0;
+    auto push_stored = [&](size_t seg_index, uint32_t from, uint32_t to) {
+        if (to <= from) return;
+        spans_.push_back({disc, to - from, (int)seg_index, from});
+        disc += to - from;
+    };
+    auto push_virtual = [&](uint32_t count) {
+        if (count == 0) return;
+        spans_.push_back({disc, count, -1, 0});
+        disc += count;
+    };
+    for (size_t si = 0; si < segments_.size(); ++si) {
+        BinSegment& seg = segments_[si];
+        const uint32_t n = seg.sector_count;
+        seg.start_lba = disc;
+        uint32_t cursor = 0;
+        for (size_t pi = 0; pi < pending_tracks.size(); ++pi) {
+            const PendingTrack& p = pending_tracks[pi];
+            if (p.file_index != si) continue;
+            // The track's region in the file starts at INDEX 00 when it has
+            // one; its PREGAP (if any) sits just before that point.
+            const uint32_t region =
+                std::min(std::max(p.has_index00 ? p.index00 : p.index01, cursor), n);
+            push_stored(si, cursor, region);
+            cursor = region;
+
+            CDTrack t;
+            t.number     = p.number;
+            t.is_audio   = p.is_audio;
+            t.pregap_lba = disc;
+            push_virtual(p.pregap);
+            t.start_lba  = disc + (p.index01 > region ? p.index01 - region : 0);
+            tracks_.push_back(t);
+
+            if (p.postgap) {
+                // POSTGAP follows the track's stored data: the next track of
+                // this file starts its region there, else the file ends.
+                uint32_t end = n;
+                for (size_t qi = pi + 1; qi < pending_tracks.size(); ++qi) {
+                    const PendingTrack& q = pending_tracks[qi];
+                    if (q.file_index != si) continue;
+                    end = std::min(std::max(q.has_index00 ? q.index00 : q.index01,
+                                            cursor), n);
+                    break;
+                }
+                push_stored(si, cursor, end);
+                cursor = end;
+                push_virtual(p.postgap);
+            }
+        }
+        push_stored(si, cursor, n);
     }
+    disc_sector_count_ = disc;
 
     // Synthesize a single data track for a bare .bin/.iso or a .cue with no
     // parseable TRACK entries, so TrackCount() is always >= 1.
@@ -384,6 +433,8 @@ void ISOReader::Close() {
         }
     }
     segments_.clear();
+    spans_.clear();
+    disc_sector_count_ = 0;
     tracks_.clear();
     subq_replacements_.clear();
     bin_path_.clear();
@@ -466,11 +517,12 @@ bool ISOReader::ReadSubChannelQ(uint32_t lba, uint8_t* buffer, bool* valid) cons
     return true;
 }
 
-BinSegment* ISOReader::SegmentForLBA(uint32_t lba) {
-    // Linear scan: images carry a handful of segments (one per track file).
-    for (BinSegment& seg : segments_) {
-        if (lba >= seg.start_lba && lba - seg.start_lba < seg.sector_count) {
-            return &seg;
+const BinSpan* ISOReader::SpanForLBA(uint32_t lba) const {
+    // Linear scan: images carry a handful of spans (one per track file, plus
+    // one per cue gap).
+    for (const BinSpan& span : spans_) {
+        if (lba >= span.disc_start && lba - span.disc_start < span.sector_count) {
+            return &span;
         }
     }
     return nullptr;
@@ -492,11 +544,17 @@ bool ISOReader::ReadSector(uint32_t lba, uint8_t* buffer) {
         return true;
     }
 
-    BinSegment* seg = SegmentForLBA(lba);
-    if (!seg) {
+    const BinSpan* span = SpanForLBA(lba);
+    if (!span) {
         return false;
     }
-    const uint32_t local_lba = lba - seg->start_lba;
+    if (span->segment < 0) {
+        // Cue PREGAP/POSTGAP: not stored in the dump; reads back as zero.
+        std::memset(buffer, 0, SECTOR_SIZE);
+        return true;
+    }
+    BinSegment* seg = &segments_[(size_t)span->segment];
+    const uint32_t local_lba = span->file_sector + (lba - span->disc_start);
 
     // Clear any error flags from a previous failed read
     seg->file.clear();
@@ -542,11 +600,21 @@ bool ISOReader::ReadRawSector(uint32_t lba, uint8_t* buffer) {
 
     if (chd_) return read_chd_raw(*chd_, lba, buffer, nullptr);
 
-    BinSegment* seg = SegmentForLBA(lba);
-    if (!seg || !seg->raw) {
+    const BinSpan* span = SpanForLBA(lba);
+    if (!span) {
         return false;
     }
-    const uint32_t local_lba = lba - seg->start_lba;
+    if (span->segment < 0) {
+        // Cue PREGAP/POSTGAP: not stored in the dump; digital silence, the
+        // same as the CHD path's virtual pregap.
+        std::memset(buffer, 0, RAW_SECTOR_SIZE);
+        return true;
+    }
+    BinSegment* seg = &segments_[(size_t)span->segment];
+    if (!seg->raw) {
+        return false;
+    }
+    const uint32_t local_lba = span->file_sector + (lba - span->disc_start);
 
     seg->file.clear();
     std::streampos offset = static_cast<std::streampos>(local_lba) * RAW_SECTOR_SIZE;
@@ -580,10 +648,7 @@ uint32_t ISOReader::GetSectorCount() {
         return 0;
     }
     if (chd_) return chd_->disc_sector_count;
-    if (segments_.empty()) return 0;
-
-    const BinSegment& last = segments_.back();
-    return last.start_lba + last.sector_count;
+    return disc_sector_count_;
 }
 
 int ISOReader::TrackCount() const {
