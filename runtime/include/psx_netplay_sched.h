@@ -1,10 +1,10 @@
-/* psx_netplay_sched.h — MotK facade over retcomm-rbengine (rbe_sched_*).
+/* psx_netplay_sched.h — MotK facade over recomp-net (rnet_sched_*).
  *
- * Policy lives in lib/retcomm-rbengine. This header keeps the historical
+ * Policy lives in lib/recomp-net. This header keeps the historical
  * np_sched_* / PsxNpSchedBridge surface; MotK dig0/FMV/RTT enter through
  * gates in psx_netplay_sched.c.
  *
- * Env knobs: RBE_RB_* (preferred) with MotK PSX_RB_* fallback in rbengine.
+ * Env knobs: RBE_RB_* (preferred) with MotK PSX_RB_* fallback in recomp-net.
  *
  * The scheduler's job (design contract, 2026-08-02):
  *   - keep both peers at the same simulation time (mispredict-driven pacing,

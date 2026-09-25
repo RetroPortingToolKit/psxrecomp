@@ -1,6 +1,6 @@
-/* psx_netplay_sched.c — MotK thin glue over retcomm-rbengine.
+/* psx_netplay_sched.c — MotK thin glue over recomp-net.
  *
- * Policy lives in lib/retcomm-rbengine (rbe_sched_*). This TU binds MotK FMV /
+ * Policy lives in lib/recomp-net (rnet_sched_*). This TU binds MotK FMV /
  * dig0 / RTT gates and keeps the historical np_sched_* call surface.
  */
 
@@ -42,7 +42,7 @@ void np_sched_arm_absurd_invent_catchup(void) {}
 
 #include "psx_netplay_rb.h"
 #include "retcomm_rbengine/mono_ms.h"
-#include "retcomm_rbengine/sched.h"
+#include "recomp_net/sched.h"
 
 #include <string.h>
 
@@ -132,10 +132,10 @@ static uint8_t np_gate_pre_admit_hold(void *ctx, uint32_t sim, uint32_t wire,
 
 void np_sched_bind(const PsxNpSchedBridge *bridge)
 {
-    RbeSchedBridge rb;
+    RNetSchedBridge rb;
     memset(&rb, 0, sizeof(rb));
     if (!bridge) {
-        rbe_sched_bind(NULL);
+        rnet_sched_bind(NULL);
         return;
     }
     rb.session = bridge->session;
@@ -154,74 +154,74 @@ void np_sched_bind(const PsxNpSchedBridge *bridge)
     rb.gates.pre_admit_hold = np_gate_pre_admit_hold;
     rb.gates.episode_count = np_gate_episode_count;
     rb.gates.replay_ticks_total = np_gate_replay_ticks_total;
-    rbe_sched_bind(&rb);
+    rnet_sched_bind(&rb);
 }
 
 void np_sched_reset_session(void)
 {
-    rbe_sched_reset_session();
+    rnet_sched_reset_session();
 }
 
 uint32_t np_sched_wire_for_sim(uint32_t sim_tick)
 {
-    return rbe_sched_wire_for_sim(sim_tick);
+    return rnet_sched_wire_for_sim(sim_tick);
 }
 
 int np_sched_real_delay_enabled(void)
 {
-    return rbe_sched_real_delay_enabled();
+    return rnet_sched_real_delay_enabled();
 }
 
 void np_sched_sync_delay_from_session(void)
 {
-    rbe_sched_sync_delay_from_session();
+    rnet_sched_sync_delay_from_session();
 }
 
 int np_sched_pre_admit(uint32_t sim, uint32_t wire, const RNetSessionStats *st)
 {
-    return rbe_sched_pre_admit(sim, wire, st);
+    return rnet_sched_pre_admit(sim, wire, st);
 }
 
 int np_sched_on_remote_miss(int slot, uint32_t sim, uint32_t wire,
                             const RNetSessionStats *st, int pred,
                             const char **reason_out)
 {
-    return rbe_sched_on_remote_miss(slot, sim, wire, st, pred, reason_out);
+    return rnet_sched_on_remote_miss(slot, sim, wire, st, pred, reason_out);
 }
 
 void np_sched_note_remote_hit(void)
 {
-    rbe_sched_note_remote_hit();
+    rnet_sched_note_remote_hit();
 }
 
 void np_sched_post_admit(int any_invent)
 {
-    rbe_sched_post_admit(any_invent);
+    rnet_sched_post_admit(any_invent);
 }
 
 void np_sched_set_admit_stall(const char *tag)
 {
-    rbe_sched_set_admit_stall(tag);
+    rnet_sched_set_admit_stall(tag);
 }
 
 void np_sched_clear_admit_stall(void)
 {
-    rbe_sched_clear_admit_stall();
+    rnet_sched_clear_admit_stall();
 }
 
 const char *np_sched_admit_stall_tag(void)
 {
-    return rbe_sched_admit_stall_tag();
+    return rnet_sched_admit_stall_tag();
 }
 
 void np_sched_note_mispredict(uint32_t age)
 {
-    rbe_sched_note_mispredict(age);
+    rnet_sched_note_mispredict(age);
 }
 
 void np_sched_note_episode_boundary(void)
 {
-    rbe_sched_note_episode_boundary();
+    rnet_sched_note_episode_boundary();
 }
 
 void psx_netplay_timesync_on_episode_boundary(void)
@@ -231,7 +231,7 @@ void psx_netplay_timesync_on_episode_boundary(void)
 
 void np_sched_arm_absurd_invent_catchup(void)
 {
-    rbe_sched_arm_absurd_invent_catchup();
+    rnet_sched_arm_absurd_invent_catchup();
 }
 
 #endif /* PSX_HAS_RECOMP_NET */

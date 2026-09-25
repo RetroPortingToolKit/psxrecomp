@@ -570,8 +570,9 @@ if(BUILD_TESTING)
     add_test(NAME gpu_vk_upload_alignment_test
              COMMAND gpu_vk_upload_alignment_test)
 
-    # Portable rollback helpers (retcomm-rbengine) — required for MotK netplay
-    # unit tests that use the netplay_* compatibility shims.
+    # Portable rollback helpers — required for MotK netplay unit tests that use
+    # the netplay_* compatibility shims. The peer-facing ones (hash_confirm,
+    # input_hist, rb_post) live in recomp-net; the snap ring in retcomm-rbengine.
     set(_RBE_ROOT "${PSXRECOMP_ROOT}/lib/retcomm-rbengine")
     set(_RNET_ROOT "${PSXRECOMP_ROOT}/lib/recomp-net")
     if(EXISTS "${_RBE_ROOT}/CMakeLists.txt" AND EXISTS "${_RNET_ROOT}/CMakeLists.txt")
@@ -597,7 +598,7 @@ if(BUILD_TESTING)
         add_executable(netplay_hash_confirm_test
             tests/test_netplay_hash_confirm.c)
         target_include_directories(netplay_hash_confirm_test PRIVATE include)
-        target_link_libraries(netplay_hash_confirm_test PRIVATE retcomm_rbengine)
+        target_link_libraries(netplay_hash_confirm_test PRIVATE recomp_net)
         add_test(NAME netplay_hash_confirm_test COMMAND netplay_hash_confirm_test)
 
         # save/load glue #included from the test; ring ops come from rbengine.
@@ -634,7 +635,7 @@ if(BUILD_TESTING)
 
         add_executable(rb_post_tip_filter_test tests/test_rb_post_tip_filter.c)
         target_include_directories(rb_post_tip_filter_test PRIVATE include)
-        target_link_libraries(rb_post_tip_filter_test PRIVATE retcomm_rbengine)
+        target_link_libraries(rb_post_tip_filter_test PRIVATE recomp_net)
         add_test(NAME rb_post_tip_filter_test COMMAND rb_post_tip_filter_test)
 
         add_executable(netplay_input_hist_test
@@ -645,7 +646,7 @@ if(BUILD_TESTING)
             ${_RNET_ROOT}/include)
         target_compile_definitions(netplay_input_hist_test PRIVATE
             PSX_HAS_RECOMP_NET=1)
-        target_link_libraries(netplay_input_hist_test PRIVATE retcomm_rbengine)
+        target_link_libraries(netplay_input_hist_test PRIVATE recomp_net)
         add_test(NAME netplay_input_hist_test COMMAND netplay_input_hist_test)
     endif()
 
