@@ -80,17 +80,6 @@ RuntimeMods& state() {
     return value;
 }
 
-struct FunctionEntryPlugin {
-    std::string id;
-    uint32_t address = 0;
-    PSXModFunctionEntryCallback callback = nullptr;
-};
-
-std::vector<FunctionEntryPlugin>& function_entry_plugins() {
-    static std::vector<FunctionEntryPlugin> value;
-    return value;
-}
-
 const ModPackage* selected_package(const std::string& id) {
     return state().manager.selected_package(id);
 }
@@ -1482,22 +1471,18 @@ extern "C" uint32_t psx_mod_display_height(void) {
 extern "C" int psx_mod_register_function_entry_plugin(
     const char* id, uint32_t address, PSXModFunctionEntryCallback callback) {
     using namespace PSXRecompV4;
-    if (!id || !*id || !address || !callback) return 0;
-    auto& plugins = function_entry_plugins();
-    const auto duplicate = std::find_if(
-        plugins.begin(), plugins.end(), [&](const FunctionEntryPlugin& item) {
-            return item.id == id && item.address == address;
-        });
-    if (duplicate != plugins.end()) return 0;
-    plugins.push_back(FunctionEntryPlugin{id, address, callback});
-    return 1;
+    if (!id || !address || !callback) return 0;
+    return mod_register_function_entry_plugin(id, address, callback) ? 1 : 0;
 }
 
 extern "C" void psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     using namespace PSXRecompV4;
-    if (!cpu) return;
-    for (const FunctionEntryPlugin& plugin : function_entry_plugins()) {
-        if (plugin.address == address) plugin.callback(cpu, address);
+    RuntimeMods& s = state();
+    if (!cpu || !s.initialized || !s.plan.ok) return;
+    for (const ModResolution::Plugin& plugin : s.plan.plugins) {
+        s.current_plugin = &plugin;
+        mod_invoke_function_entry_plugin(plugin.id, cpu, address);
+        s.current_plugin = nullptr;
     }
 }
 

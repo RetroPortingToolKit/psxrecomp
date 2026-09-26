@@ -444,7 +444,11 @@ the same plugin id. Active plugin identities and owners participate in the
 canonical plan fingerprint.
 
 An implementation may register an activation callback, a deterministic
-guest-VBlank callback, or both under the same id. Activation runs after the
+guest-VBlank callback, function-entry hooks, or any combination under the same
+id. A function-entry hook (`psx_mod_register_function_entry_plugin`) runs at the
+top of a generated function the game config lists in
+`[recompiler] mod_function_entry_funcs`; like the other kinds it satisfies a
+manifest `[[plugin]]` and runs only while the resolved plan activates its id. Activation runs after the
 launcher's final mod-plan commit and before renderer/window initialization; it
 is appropriate for a game-owned mod that selects a fixed display aspect or
 another pre-boot host feature. VBlank callbacks run from the emulated GPU
