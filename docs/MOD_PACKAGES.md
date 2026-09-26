@@ -603,6 +603,13 @@ remain black. Enabling the feature without choosing artwork is also a no-op.
 The package supplies only the declaration and trusted plugin selection; archives
 still cannot load native code.
 
+A title's own trusted plugin can call `psx_mod_set_bezel_artwork(path)` directly
+to ship its artwork. An absolute path (such as the built-in package's selected
+resource) is used as-is; a relative path like `"bezels/qirex.png"` is resolved
+against the executable's directory when the artwork loads, never the current
+working directory, so artwork the title stages beside its binary is found
+however the game was launched.
+
 ### Retained-scene loading presentation (native-wide opt-in)
 
 A trusted game plugin can register

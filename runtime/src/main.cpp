@@ -15240,18 +15240,26 @@ session_reboot:
 
         /* Bezel artwork (Mods): load after the GL context exists. */
         if (!g_bezel_path.empty() && g_gl_active) {
-            std::filesystem::path bp(g_bezel_path);
+            /* A relative artwork path names a file shipped beside the
+             * executable (e.g. a title's staged bezels/), so anchor it on the
+             * exe directory -- never cwd (see exe_dir_from_argv). An absolute
+             * path, such as the builtin bezel's owner-selected resource, is
+             * used unchanged. */
+            const std::filesystem::path bp = PSXRecompV4::host_resolve(
+                exe_dir_from_argv(argv[0]), std::filesystem::path(g_bezel_path));
             std::vector<unsigned char> file;
-            if (FILE *bf = std::fopen(bp.string().c_str(), "rb")) {
-                std::fseek(bf, 0, SEEK_END);
-                const long len = std::ftell(bf);
-                std::fseek(bf, 0, SEEK_SET);
+            /* fs::path stream: the exe directory is a wide Windows path, which
+             * a narrow fopen() of bp.string() cannot open when it is non-ASCII. */
+            std::ifstream bf(bp, std::ios::binary | std::ios::ate);
+            if (bf.is_open()) {
+                const std::streamoff len = bf.tellg();
                 if (len > 0) {
                     file.resize((size_t)len);
-                    if (std::fread(file.data(), 1, file.size(), bf) != file.size())
+                    bf.seekg(0, std::ios::beg);
+                    if (!bf.read(reinterpret_cast<char*>(file.data()),
+                                 (std::streamsize)file.size()))
                         file.clear();
                 }
-                std::fclose(bf);
             }
             int bw = 0, bh = 0, bc = 0;
             unsigned char *px = file.empty() ? nullptr
