@@ -237,12 +237,23 @@ def extent_sources(disc, spec):
 def pack_sources(disc, spec):
     """Every member of an offset-indexed LZSS pack decoded and classified."""
     file = spec['file'].upper()
+    data = disc.read(file)
+    # Other places the loader can take the same pack from (for example a copy
+    # linked into the boot EXE). Each must hold these exact bytes.
+    aliases = []
+    for copy in spec.get('identical_copies', []):
+        offset = number(copy.get('file_offset', 0))
+        size = number(copy.get('size', len(data)))
+        require(copy.get('reason', '').strip(), 'Identical pack copy needs a reason')
+        require(disc.read(copy['file'])[offset:offset + size] == data,
+                f"Pack copy differs: {copy['file']} {offset:#x}")
+        aliases.append(f"{copy['file'].upper()}@{offset:X}+{size:X}")
     lzss = spec['lzss']
     require(set(lzss) <= {'position_bits', 'length_bits', 'min_match', 'initial_position',
                           'window_fill'} and
             {'position_bits', 'length_bits', 'min_match', 'initial_position'} <= set(lzss),
             'LZSS parameters must be declared explicitly')
-    members = extract_pack_members(disc.read(file), count_offset=number(spec['count_offset']),
+    members = extract_pack_members(data, count_offset=number(spec['count_offset']),
         table_offset=number(spec['table_offset']), alignment=number(spec['alignment']),
         lzss={key: None if value is None else number(value) for key, value in lzss.items()},
         count=number(spec['count']))
@@ -266,7 +277,7 @@ def pack_sources(disc, spec):
         require(in_ram(base, len(body)) and base % 4 == 0, 'Pack member image outside RAM')
         sources.append(dict(name=f"{file}:ENTRY_{member['index']:04X}", base=base, body=body,
             spec={**spec, **item, 'allow_missing': True}, source_offset=member['source_offset'],
-            source_file=file, aliases=[]))
+            source_file=file, aliases=[f"{alias}:ENTRY_{member['index']:04X}" for alias in aliases]))
     return sources
 
 

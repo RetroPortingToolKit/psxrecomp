@@ -213,9 +213,16 @@ flag precedes a position and a count. Each output byte is also stored at the
 current window slot, so a reference may read bytes it has just written.
 Executable members carry `index`, `load_addr`, `decoded_sha256` and optionally
 verified `entries`; `excluded_members` need a `reason`. Every index must be
-classified exactly once.
+classified exactly once. When the loader can also take the same pack from
+elsewhere, such as a copy linked into the boot EXE, list each place in
+`identical_copies` (`{file, file_offset, size, reason}`); extraction requires
+those bytes to equal the pack exactly and records them as aliases.
 
-WipEout 3's `MenuControl` (0x801179B8) opens `c:\wipeout3\nfe.pb`, requires its
+WipEout 3's `MenuControl` (0x801179B8) opens `c:\wipeout3\nfe.pb`. The first
+open after boot reads no file: a preload flag starts at 1 and the pack is the
+copy linked at the start of `SCES_028.45` (0x80010000, the main heap base);
+once that pack is consumed the flag clears and later opens read the disc file.
+Both copies are identical, including under the framerate package. It requires its
 allocation of the top member to land exactly at 0x800BF800, has the pack reader
 run `lzss.c` `ExpandData` (13-bit position, 4-bit count, three-byte minimum,
 start position 1, uninitialized 8 KiB window) and copies the decoded 0x21424

@@ -699,6 +699,16 @@ class IndexedLzssPackTest(unittest.TestCase):
         self.assertEqual(inventory['jobs'][0]['required_entries'], [0x80100000])
         self.assertEqual(inventory['source_images'][0]['method'], 'indexed_lzss_members')
 
+    def test_identical_pack_copy_elsewhere_is_verified_and_recorded(self):
+        pack = self.pack()
+        disc = FakeDisc({'PACK.PB': pack, 'BOOT.EXE': b'EXE' + pack + b'tail'})
+        copy = dict(file='BOOT.EXE', file_offset=3, size=len(pack), reason='Linked-in copy')
+        source, = pipeline.positioned_sources(disc, [self.spec(identical_copies=[copy])])
+        self.assertEqual(source['aliases'], [f'BOOT.EXE@3+{len(pack):X}:ENTRY_0001'])
+        for change, error in [(dict(file_offset=4), 'Pack copy differs'), (dict(reason=''), 'reason')]:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                pipeline.positioned_sources(disc, [self.spec(identical_copies=[{**copy, **change}])])
+
     def test_pipeline_inventory_hash_and_parameters_fail_closed(self):
         disc = FakeDisc({'PACK.PB': self.pack()})
         member = self.spec()['members'][0]
