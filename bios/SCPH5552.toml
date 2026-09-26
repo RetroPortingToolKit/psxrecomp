@@ -1,44 +1,153 @@
-# SCPH-5552 (EUR, v3.0 01/06/97)
-# Boot + kernel are byte-identical to SCPH1001 (534 seeds kept).
-# Shell (ROM 0x18000+, 568 seeds) differs — runs via dirty-RAM interpreter.
+# bios/SCPH5552.toml — BIOS build profile for the retail Sony SCPH-5502/5552
+# (Europe) v3.0 01/06/97 image ("System ROM Version 3.0 01/06/97 E",
+# SHA-256 1faaa18fa820a0225e488d9f086296b8e6c46df739666093987ff7d8fd352c09).
+#
+# Derived from bios/SCPH1001.toml. ROM 0x00000-0x17FFF (boot + Kernel Part 1/2)
+# is byte-identical to the US SCPH-1001 v2.2 image, so every kernel anchor
+# below (copy windows, install slots, deliver_event_ret, shell entry) carries
+# over unchanged. Verified by direct comparison of the two dumps, each matching
+# its declared identity (SCPH-1001 CRC32 37157331, SCPH-5552 CRC32 D786F0B9):
+# 0x00000-0x0FFFF and 0x10000-0x17FFF identical; the shell at 0x18000-0x42FFF
+# differs in 155874 bytes.
+#
+# Because the shell DIFFERS from the US image, this profile has no shell seeds:
+# recompiler/seeds/phase2_ghidra_seeds_SCPH5552.json is the SCPH1001 corpus
+# filtered through tools/filter_bios_seeds.py to the kernel region, and every
+# seed in it lies below ROM 0x18000. The shell window runs through the dirty-RAM
+# interpreter (build with -DPSX_SHELLWIN_INTERP=ON) until an EU-shell seed
+# corpus exists.
+#
+# The .BIN image itself stays untracked (bios/* gitignore rule) — profiles are
+# the only tracked contents of this directory.
 
 [program]
-name = "SCPH5552 BIOS (Europe)"
-id = "SCPH-5552"
-rom = "bios/EUR-PSX-SCPH5552.bin"
+name         = "Sony SCPH-5552 BIOS (Europe, v3.0 01/06/97)"
+id           = "SCPH-5552"
+rom          = "bios/EUR-PSX-SCPH5552.bin"
 load_address = "0xBFC00000"
-entry_pc = "0xBFC00000"
-text_size = "0x80000"
+entry_pc     = "0xBFC00000"
+text_size    = "0x80000"
+
+# Declared identity. The emitter refuses to generate from any other image
+# (main_bios.cpp's declared-identity gate). Without this pin a different
+# revision generates silently: the kernel seeds above name v3.0 function starts
+# only because the kernel matches SCPH-1001 v2.2 byte for byte, and a dump that
+# differs there would break that premise without any error.
+#
+# This is v3.0, 1997-01-06: CRC32 D786F0B9, 512 KiB.
+[program.image]
+sha256          = "1faaa18fa820a0225e488d9f086296b8e6c46df739666093987ff7d8fd352c09"
+license         = "proprietary"
+redistributable = false
 
 [recompiler]
-seeds = "recompiler/seeds/phase2_ghidra_seeds_SCPH5552.json"
-out_dir = "generated"
+seeds    = "recompiler/seeds/phase2_ghidra_seeds_SCPH5552.json"
+out_dir  = "generated"
 out_stem = "SCPH5552"
-strict = true
+strict   = true
 
-# SCPH5552 shares SCPH1001's A0/B0/C0 dispatch tables and kernel layout.
-# The BIOS vector table ROM addresses and aliases are identical.
-[[recompiler.bios_vectors]]
-ram_addr = "0xA0"
-index_reg = 9
-table_rom_addr = "0xBFC04300"
-table_count = 0xC1
-table_ram_addr = "0x200"
+# The BIOS's boot-time bulk copies of CODE out of ROM into RAM. Single source
+# of truth for every relocation window in the recompiler AND in the C it
+# emits (the generated dispatch's normalize(), the kernel-bless guard, the
+# game/shell-overlap tests). Each entry is a CLAIM that the copy is
+# byte-verbatim; the runtime's kernel-bless memcmp enforces it for the
+# bless window. All bounds are [lo, hi) with hi EXCLUSIVE.
+#
+# dispatch_key = "ram": functions in the window are keyed by RAM address
+#                       (normalize folds ROM -> RAM).
+# dispatch_key = "rom": functions keep their ROM key (normalize folds the
+#                       RAM alias back to ROM).
+[recompiler.address_model]
+normalize_mask = "0x1FFFFFFF"
 
-[[recompiler.bios_vectors]]
-ram_addr = "0xB0"
-index_reg = 9
-table_rom_addr = "0xBFC10874"
-table_count = 0x44
-table_ram_addr = "0x874"
+[[recompiler.address_model.copy]]
+name         = "Kernel Part 2"
+rom_lo       = "0x1FC10000"
+rom_hi       = "0x1FC18000"
+ram_lo       = "0x00000500"
+runtime_base = "0x00000500"     # KUSEG — the kernel executes uncached-region code cached at 0x500
+dispatch_key = "ram"
+kernel_bless = true
 
-[[recompiler.bios_vectors]]
-ram_addr = "0xC0"
-index_reg = 9
-table_rom_addr = "0xBFC10674"
-table_count = 0x1E
-table_ram_addr = "0x674"
+[[recompiler.address_model.copy]]
+name         = "Shell"
+rom_lo       = "0x1FC18000"
+rom_hi       = "0x1FC43000"
+ram_lo       = "0x00030000"
+runtime_base = "0x80030000"     # KSEG0 — LoadRunShell jumps to 0x80030000
+dispatch_key = "rom"
+kernel_bless = false
+# NOTE (do not "fix" without evidence): runtime/src/bios_hle.c documents the
+# actual LoadRunShell copy as 0x67FF0 bytes (ROM 0xBFC18000 -> RAM 0x30000..
+# 0x97FF0). Every pre-profile window constant covered only 0x2B000 of that,
+# and dirty_ram_interp.c tracks live RAM in [0x5B000,0x8F000) as an open
+# class-B bug. Widening this window is a REAL BEHAVIOR CHANGE requiring its
+# own evidence-backed commit — it is not a parameterization cleanup.
 
-[[recompiler.bios_aliases]]
-ram_addr = "0xCF0"
-target_key = "0x641C"
+# Kernel-RAM RANGES the BIOS and the game's Psy-Q libapi patchers overwrite at
+# runtime (CLAUDE.md rule 18; docs/dynamic_handler_install.md). The emitter
+# plants a compare-against-ROM hook at each range start so the guest's patched
+# instructions execute; the runtime excludes the range from the kernel-bless
+# memcmp and resumes native at the range end, so only the patched words
+# interpret.
+#
+# `resume` says how the compiled body picks up again: "jalr" for the classic
+# 4-word lui/addiu/jalr/nop stub (the call returns to ram_addr+0x10),
+# "fallthrough" when the patched words ARE the function, "none" when the patch
+# jumps out and never comes back.
+#
+# EVIDENCE LEVEL — read before relying on these. The five ranges were measured
+# on a live SCPH-1001 boot (bios/SCPH1001.toml, Breath of Fire III, Psy-Q SDK
+# 3.70). They are carried here, NOT re-measured on a live SCPH-5552 boot. The
+# basis is that each range maps through Kernel Part 2 (ROM 0x10000 -> RAM
+# 0x500) into bytes verified identical between the two images, so the same
+# libapi patchers land on the same code. That is a strong inference, not an
+# observation. Re-measure on a 5552 boot before treating a divergence here as a
+# recompiler bug.
+
+[[recompiler.install_slots]]
+ram_addr = "0x00000C88"         # exception handler: register-save prologue
+len      = "0x30"               # shifted two words + an inserted mfc0 v0,Cause
+resume    = "fallthrough"       # the patched words are the function itself
+
+[[recompiler.install_slots]]
+ram_addr = "0x00000CF0"         # SIO data-byte handler dispatch slot
+len      = "0x10"               # lui/addiu/jalr/nop over ROM zeros
+resume    = "jalr"              # the stub's call returns to 0x0D00
+
+[[recompiler.install_slots]]
+ram_addr = "0x00004964"         # pad driver clear routine, 11 words NOP'd
+len      = "0x2C"               # (RemovePatchPad / ChgclrPAD family)
+resume    = "fallthrough"
+
+[[recompiler.install_slots]]
+ram_addr = "0x00004D98"         # _patch_card2 payload: jalr into boot EXE
+len      = "0x14"               # 0x8017EB6C; the ra landing word is NOP'd too,
+resume    = "fallthrough"       # so the body resumes past it, not at +0x10
+
+[[recompiler.install_slots]]
+ram_addr = "0x00006444"         # _patch_card payload: the kernel's card
+len      = "0x10"               # handler replaced by jr into boot EXE
+resume    = "none"              # 0x8017EAA0 — a jr never returns here
+
+# NOT declared: RAM 0x0500, one word of kernel_trampoline_0 cleared to zero
+# (ROM `lui t2, 0`). It differs on every boot, but what writes it is not yet
+# identified, and a range declared on a guess would tell the bless verifier to
+# stop checking a word it should be checking. Rule 14: unknown is acceptable,
+# guessing is not. Undeclared means that body keeps interpreting, exactly as
+# it does today.
+
+# Per-image anchors couriered into the generated C (psx_bios_image) for the
+# runtime HLE tier. Values are FACTS about this image, not tunables: the
+# shell entry is where LoadRunShell (ROM 0xBFC06FF0) jumps after its copy;
+# deliver_event_ret is the instruction after the kernel DeliverEvent loop's
+# `jalr v0` (kernel RAM 0x1718), the $ra a delivered event callback returns
+# through. deliver_event_ret lies in the verified-identical kernel (RAM 0x1720,
+# ROM 0x11220). shell_entry_phys is shell RAM, whose contents differ, but the
+# address is LoadRunShell's jump target and LoadRunShell itself (ROM 0x06FF0)
+# is in the identical region, so the target is the same. Omit a key on a
+# BIOS that has no such anchor — the runtime then treats that HLE feature as
+# structurally unavailable instead of firing on a wrong address.
+[recompiler.runtime_exports]
+shell_entry_phys  = "0x00030000"
+deliver_event_ret = "0x80001720"
