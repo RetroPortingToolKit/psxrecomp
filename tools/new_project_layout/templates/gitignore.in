@@ -9,6 +9,9 @@
 
 # Setup-host: players Generate game C locally (CI clears generated/).
 /generated/
+# psxrecomp_cli.py work areas (overlay toolchain download, static overlay
+# shard evidence -- the latter holds bytes read from the disc).
+/.cache/
 
 # Release packaging
 /release-stage/

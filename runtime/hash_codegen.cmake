@@ -8,6 +8,22 @@
 #
 # Invoked as: cmake -DOUT=<header> "-DSRCS=<a>;<b>;..." -P hash_codegen.cmake
 # Re-runs whenever a listed source changes (it's an add_custom_command DEPENDS).
+#
+# Or, outside any build, with the canonical list resolved here:
+#   cmake -DOUT=<header> -DPSXRECOMP_CODEGEN_HASH_ROOT=<psxrecomp> -P hash_codegen.cmake
+# tools/aot_overlay_pipeline.py `static` does this: a static overlay shard is
+# generated before the runtime is ever built, and compile_overlays' stale-
+# recompiler guard needs this header to exist.
+
+if(NOT DEFINED SRCS)
+    if(NOT DEFINED PSXRECOMP_CODEGEN_HASH_ROOT)
+        message(FATAL_ERROR
+            "hash_codegen.cmake: pass -DSRCS=<list> or "
+            "-DPSXRECOMP_CODEGEN_HASH_ROOT=<psxrecomp root>")
+    endif()
+    include("${CMAKE_CURRENT_LIST_DIR}/codegen_hash_sources.cmake")
+    set(SRCS ${PSXRECOMP_CODEGEN_HASH_SRCS})
+endif()
 
 set(_cat "")
 foreach(f IN LISTS SRCS)

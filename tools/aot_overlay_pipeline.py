@@ -9,7 +9,8 @@ import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import struct
 import subprocess
@@ -34,6 +35,22 @@ RAM_WINDOW = (0x80000000, 0x80800000)
 # Live main-RAM sizes the runtime can run with (runtime/include/psx_memory.h):
 # retail 2 MiB unless the opt-in psx.enhancement.8mb-ram package is active.
 RETAIL_RAM_BYTES, EXPANDED_RAM_BYTES = 0x00200000, 0x00800000
+# Where a title keeps its profile, relative to the project root (the directory
+# holding game.toml). psxrecomp_cli.py generate and runtime.cmake both look here.
+PROFILE_RELPATH = PurePosixPath('aot/overlays.json')
+# compile_overlays.py --static writes this dispatcher (and its _NNNN.c units).
+STATIC_OUTPUT_NAME = 'overlays_static.c'
+GENERATION_INPUTS_SCHEMA = 'psxrecomp AOT static generation inputs v1'
+# Exit status of `static`/`release` when the profile describes another disc.
+EXIT_NOT_APPLICABLE = 3
+
+
+class ProfileError(ValueError):
+    """A profile, disc, or inventory fact failed verification."""
+
+
+class DiscNotApplicable(ProfileError):
+    """The profile describes a different disc, so none of its images apply."""
 
 
 def number(value):
@@ -42,7 +59,39 @@ def number(value):
 
 def require(condition, message):
     if not condition:
-        raise ValueError(message)
+        raise ProfileError(message)
+
+
+def load_profile(profile_path, config):
+    """The AOT profile, checked against the game config it is used with."""
+    profile = json.loads(Path(profile_path).read_text(encoding='utf-8-sig'))
+    require(profile.get('schema') == 'psxrecomp AOT methods v1', 'Unsupported AOT profile')
+    require(config['game']['id'] == profile['game_id'], 'AOT profile/game mismatch')
+    return profile
+
+
+def static_output(profile, project_root):
+    """The overlays_static.c this title's build links, or None.
+
+    A profile opts into build-time static overlays by declaring
+    ``static_output``: a project-relative path whose file name is
+    overlays_static.c. The title's CMake names the same file as
+    GAME_OVERLAY_STATIC_C (runtime.cmake refuses a disagreement), and
+    ``psxrecomp_cli.py generate`` produces it. Titles that stage audited DLL
+    caches with ``release`` do not declare it."""
+    value = profile.get('static_output')
+    if value is None:
+        return None
+    require(isinstance(value, str) and value.strip(),
+            'static_output must be a project-relative path string')
+    posix = PurePosixPath(value.replace('\\', '/'))
+    require(not posix.is_absolute() and not PureWindowsPath(value).anchor,
+            f'static_output must be relative to the project root: {value}')
+    require('..' not in posix.parts, f'static_output must stay inside the project: {value}')
+    require(posix.name == STATIC_OUTPUT_NAME,
+            f'static_output must name {STATIC_OUTPUT_NAME} (the file compile_overlays '
+            f'--static writes): {value}')
+    return Path(project_root).joinpath(*posix.parts)
 
 
 def in_ram(base, size):
@@ -604,27 +653,50 @@ def prepare(profile, disc, records, output, views=None):
     return inventory
 
 
-def extract(profile_path, game_toml, recompiler, output, cue=None):
-    profile = json.loads(profile_path.read_text(encoding='utf-8-sig'))
-    require(profile['schema'] == 'psxrecomp AOT methods v1', 'Unsupported AOT profile')
+def check_disc(profile, disc, cue):
+    """Digests of the disc's data track, or DiscNotApplicable naming both sides.
+
+    A profile is facts about one exact disc. Any other dump (another region,
+    revision, or a modified image) shares none of its verified images."""
+    digests = {}
+    for algorithm, expected in sorted(profile['disc_hashes'].items()):
+        actual = digest(disc.binary, algorithm)
+        digests[algorithm] = actual
+        if actual != expected:
+            raise DiscNotApplicable(
+                f"the AOT profile for {profile['game_id']} describes the disc whose data "
+                f"track has {algorithm} {expected}, but {Path(cue).name} has {actual}. None "
+                'of its images apply to this disc (another region or revision?), so no '
+                'native overlay code can be built for it')
+    return digests
+
+
+def game_disc(game_toml, config, cue=None):
+    """The cue to read: an explicit one, else the game config's [game].disc."""
+    return Path(cue).resolve() if cue else (Path(game_toml).parent / config['game']['disc']).resolve()
+
+
+def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, profile=None):
     import tomllib
     config = tomllib.loads(game_toml.read_text(encoding='utf-8-sig'))
-    require(config['game']['id'] == profile['game_id'], 'AOT profile/game mismatch')
-    cue = cue or game_toml.parent / config['game']['disc']
-    disc = Disc(cue)
-    for algorithm, expected in profile['disc_hashes'].items():
-        require(digest(disc.binary, algorithm) == expected, f'Unsupported disc {algorithm}')
+    profile = profile or load_profile(profile_path, config)
+    cue = game_disc(game_toml, config, cue)
+    if disc is None:
+        disc = Disc(cue)
+        check_disc(profile, disc, cue)
     output.mkdir(parents=True, exist_ok=True)
-    # Override only the input disc in a temporary config beside the original,
-    # retaining its relative paths and code-generation settings.
+    # The config supplies relative paths and code-generation settings; the disc
+    # is passed explicitly so the verified dump is the one that is read.
     command = [sys.executable, str(FRAMEWORK / 'tools/aot_overlay_spike/extract_generic.py'),
                '--game-toml', str(game_toml), '--recompiler', str(recompiler),
+               '--disc', str(cue),
                '--out', str(output / 'generic.json'), '--tmp', str(output / 'extract-tmp')]
-    require(cue.resolve() == (game_toml.parent / config['game']['disc']).resolve(),
-            'Use a local game config with the desired disc path')
     command += ['--require-bios-resident'] if profile.get('bios_resident') else ['--no-bios-resident']
     with (output / 'extract.log').open('w') as log:
-        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+    if result.returncode:
+        print(f"Original-disc extraction failed; see {output / 'extract.log'}", file=sys.stderr, flush=True)
+        raise subprocess.CalledProcessError(result.returncode, command)
     views = mod_package_views(profile, disc, game_toml.parent)
     return prepare(profile, disc, json.loads((output / 'generic.json').read_text(encoding='utf-8-sig')),
                    output, views)
@@ -758,11 +830,127 @@ def require_runtime_cache(config):
             'AOT release requires runtime.overlay_cache = true in the packaged config')
 
 
+def write_codegen_hash_header(cmake='cmake', header=None):
+    """Write runtime/include/overlay_codegen_hash.h from the codegen sources.
+
+    compile_overlays refuses a recompiler whose baked --codegen-hash differs
+    from this header, and the header is otherwise produced only by the runtime
+    BUILD. A static shard is generated BEFORE that build (a fresh player tree
+    runs Generate first), so without this the guard reads 0 and fails. The
+    same script and source list the runtime build uses compute it, so the
+    value is identical and the later build leaves the file untouched."""
+    header = Path(header) if header else FRAMEWORK / 'runtime/include/overlay_codegen_hash.h'
+    result = subprocess.run([str(cmake), f'-DPSXRECOMP_CODEGEN_HASH_ROOT={FRAMEWORK.as_posix()}',
+                             f'-DOUT={header.as_posix()}', '-P',
+                             str(FRAMEWORK / 'runtime/hash_codegen.cmake')],
+                            capture_output=True, text=True, errors='replace')
+    require(result.returncode == 0,
+            f'cannot compute the overlay codegen hash with {cmake}: '
+            f'{(result.stderr or result.stdout).strip()}')
+    require(compiler.codegen_hash(str(header.parent)) != 0, f'{header} was not written')
+    return header
+
+
+def tree_digest(root):
+    """One digest over every file below root, by relative path and content."""
+    h = hashlib.sha256()
+    for path in sorted(p for p in Path(root).rglob('*') if p.is_file()):
+        h.update(path.relative_to(root).as_posix().encode() + b'\0')
+        h.update(digest(path).encode() + b'\0')
+    return h.hexdigest()
+
+
+def generation_inputs(profile_path, profile, game_toml, recompiler, disc_digests, gcc, cps):
+    """Everything a static shard is a function of, for reuse across Generates.
+
+    Conservative on purpose: the whole game config and profile, the recompiler
+    binary and its cache tag (codegen version, emitter-source hash, overlay
+    config hash), every framework tool module this process runs or spawns, the
+    selected mod packages' files, and the BIOS resident inputs when used."""
+    tools_dir = FRAMEWORK / 'tools'
+    modules = {Path(m.__file__).resolve() for m in list(sys.modules.values())
+               if getattr(m, '__file__', None)}
+    modules = {p for p in modules if tools_dir in p.parents and p.suffix == '.py'}
+    modules |= {tools_dir / 'audit_aot_cache.py', tools_dir / 'compile_overlays.py',
+                tools_dir / 'aot_overlay_spike/extract_generic.py', Path(__file__).resolve()}
+    include = str(FRAMEWORK / 'runtime/include')
+    inputs = dict(
+        schema=GENERATION_INPUTS_SCHEMA,
+        profile_sha256=digest(profile_path),
+        game_toml_sha256=digest(game_toml),
+        disc=disc_digests,
+        recompiler_sha256=digest(recompiler),
+        cache_tag=compiler.cache_tag(include, str(recompiler), str(game_toml), 0),
+        cps=bool(cps),
+        gcc=str(gcc),
+        tools={p.relative_to(FRAMEWORK).as_posix(): digest(p) for p in sorted(modules)},
+        mod_packages={spec['name']: tree_digest((Path(game_toml).parent / spec['manifest']).parent)
+                      for spec in profile.get('mod_packages', [])})
+    if profile.get('bios_resident'):
+        manifest = tools_dir / 'aot_overlay_spike/bios_resident_code.json'
+        rom = Path(os.environ.get('PSXRECOMP_BIOS_ROM') or FRAMEWORK / 'bios/SCPH1001.BIN')
+        inputs['bios_resident'] = dict(manifest=digest(manifest) if manifest.is_file() else None,
+                                       rom=digest(rom) if rom.is_file() else None)
+    return inputs, hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+
+def static_outputs(out_dir):
+    """The static overlay units currently in out_dir (dispatcher first)."""
+    main = Path(out_dir) / STATIC_OUTPUT_NAME
+    parts = [Path(p) for p in compiler.static_part_paths(str(main))]
+    return ([main] if main.exists() else []) + parts
+
+
+def clear_static(out_dir):
+    """Remove the published static units and their receipt; returns their names."""
+    removed = []
+    for path in static_outputs(out_dir) + [Path(out_dir) / 'AOT_STATIC_AUDIT.json']:
+        if path.exists():
+            path.unlink()
+            removed.append(path.name)
+    return removed
+
+
+def reusable_static(out_dir, inputs_sha256):
+    """(True, receipt) when out_dir holds exactly the audited output of these inputs."""
+    path = Path(out_dir) / 'AOT_STATIC_AUDIT.json'
+    if not path.is_file():
+        return False, 'no audited static output yet'
+    try:
+        receipt = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False, 'previous audit receipt is unreadable'
+    if receipt.get('generation_inputs_sha256') != inputs_sha256:
+        return False, 'inputs changed since the audited output was built'
+    files = receipt.get('files') or {}
+    present = {p.name: p for p in static_outputs(out_dir)}
+    if not files or set(present) != set(files):
+        return False, 'published units differ from the audit receipt'
+    for name, expected in files.items():
+        if digest(present[name]) != expected:
+            return False, f'{name} changed since it was audited'
+    return True, receipt
+
+
 def main():
+    """Command line. ProfileErrors print one line; other failures keep a traceback."""
+    try:
+        return run()
+    except DiscNotApplicable as exc:
+        print(f'aot_overlay_pipeline: not applicable: {exc}', file=sys.stderr, flush=True)
+        return EXIT_NOT_APPLICABLE
+    except ProfileError as exc:
+        print(f'aot_overlay_pipeline: error: {exc}', file=sys.stderr, flush=True)
+        return 1
+
+
+def run():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['extract', 'release', 'static'])
     parser.add_argument('--profile', type=Path, required=True)
     parser.add_argument('--game-toml', type=Path, required=True)
+    parser.add_argument('--disc', type=Path,
+                        help="Cue to read (default: the game config's [game].disc)")
     parser.add_argument('--runtime-config', type=Path,
                         help='Packaged config controlling native cache namespace/code generation')
     parser.add_argument('--runtime-build-dir', type=Path,
@@ -774,9 +962,18 @@ def main():
     parser.add_argument('--gcc', default='gcc')
     parser.add_argument('--workers', type=int, default=3)
     parser.add_argument('--out-dir', type=Path,
-                        help='static: directory receiving overlays_static.c and its units')
+                        help='static: directory receiving overlays_static.c and its units '
+                             "(default: the directory of the profile's static_output)")
     parser.add_argument('--cps', action='store_true',
                         help='Emit continuation-passing overlays; must match the runtime build')
+    parser.add_argument('--cmake', default='cmake',
+                        help='static: cmake used to compute the overlay codegen hash header')
+    parser.add_argument('--reuse', action='store_true',
+                        help='static: keep the published output when every generation input '
+                             'matches its audit receipt')
+    parser.add_argument('--clear-if-not-applicable', action='store_true',
+                        help='static: when the profile describes another disc, remove the '
+                             'published static units and receipt before exiting 3')
     args = parser.parse_args()
     require(args.workers > 0, 'Workers must be positive')
     if args.action == 'release':
@@ -787,12 +984,47 @@ def main():
         from release_stage import _flavor_from_build
         require(_flavor_from_build(str(args.runtime_build_dir), args.runtime_target) == 0,
                 'This AOT pipeline currently requires a flavor-0 runtime')
+    import tomllib
+    config, recompiler = args.game_toml.resolve(), args.recompiler.resolve()
+    profile_path = args.profile.resolve()
+    game_config = tomllib.loads(config.read_text(encoding='utf-8-sig'))
+    profile = load_profile(profile_path, game_config)
+    cue = game_disc(config, game_config, args.disc)
+    out_dir = None
+    if args.action == 'static':
+        declared = static_output(profile, config.parent)
+        require(args.out_dir is not None or declared is not None,
+                'static requires --out-dir or a profile static_output')
+        out_dir = args.out_dir.resolve() if args.out_dir is not None else declared.parent
+    require(cue.is_file(), f'Disc not found: {cue}')
+    disc = Disc(cue)
+    try:
+        disc_digests = check_disc(profile, disc, cue)
+    except DiscNotApplicable:
+        if out_dir is not None and args.clear_if_not_applicable:
+            removed = clear_static(out_dir)
+            if removed:
+                print(f"Removed {len(removed)} static overlay file(s) from {out_dir}: they "
+                      'cannot describe this disc', flush=True)
+        raise
+    if args.action == 'static':
+        write_codegen_hash_header(args.cmake)
+        inputs, inputs_sha256 = generation_inputs(profile_path, profile, config, recompiler,
+                                                  disc_digests, args.gcc, args.cps)
+        if args.reuse:
+            reused, detail = reusable_static(out_dir, inputs_sha256)
+            if reused:
+                print(f"Reused {detail['published_variants']} audited static variants in "
+                      f"{len(detail['files'])} files: every generation input is unchanged "
+                      f"({inputs_sha256[:16]})", flush=True)
+                print(f'RESULT_STATIC=reused {out_dir}', flush=True)
+                return 0
+            print(f'Building static overlays: {detail}', flush=True)
     args.work_dir.mkdir(parents=True, exist_ok=True)
     # Every release extracts again from the supported original disc. A private
     # new work directory excludes runtime caches and incomplete prior attempts.
     work = Path(tempfile.mkdtemp(prefix='disc-aot-', dir=args.work_dir.resolve()))
-    config, recompiler = args.game_toml.resolve(), args.recompiler.resolve()
-    inventory = extract(args.profile.resolve(), config, recompiler, work)
+    inventory = extract(profile_path, config, recompiler, work, cue=cue, disc=disc, profile=profile)
     print(f"Verified {len(inventory['required_images'])} images / {len(inventory['jobs'])} recipes", flush=True)
     if args.action == 'release':
         require(args.stage is not None, 'release requires --stage')
@@ -809,18 +1041,21 @@ def main():
         stage(cache, args.stage.resolve(), receipt)
         print(f"Staged {receipt['published_pairs']} audited native pairs", flush=True)
     if args.action == 'static':
-        require(args.out_dir is not None, 'static requires --out-dir')
-        build_dir = build_static(inventory, config, recompiler, work, args.out_dir, args.gcc,
+        build_dir = build_static(inventory, config, recompiler, work, out_dir, args.gcc,
                                  args.workers, config.parent, args.cps)
         receipt = audit(config, recompiler, None, work / 'runtime-input-inventory.json',
-                        work / 'audit.json', build_dir / 'overlays_static.c')
+                        work / 'audit.json', build_dir / STATIC_OUTPUT_NAME)
         for key in ('profile_sha256', 'original_disc_sha256', 'required_images', 'mod_packages'):
             receipt[key] = inventory[key]
-        publish_static(build_dir, args.out_dir.resolve(), receipt)
+        receipt['generation_inputs'] = inputs
+        receipt['generation_inputs_sha256'] = inputs_sha256
+        publish_static(build_dir, out_dir, receipt)
         print(f"Published {receipt['published_variants']} audited static variants "
               f"in {len(receipt['files'])} files", flush=True)
+        print(f'RESULT_STATIC=built {out_dir}', flush=True)
     print(f'Original-disc evidence: {work}', flush=True)
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -45,6 +45,14 @@ Players do **not** need Generate & Rebuild for ordinary host/UI updates after th
 first successful generate. Retro keeps `apps/<title>/codegen-cache/` keyed by
 ROM/BIOS + emitter fingerprints (see Retro `docs/BUILD_PACKS.md`).
 
+Generate also writes the static overlay shard when the title's
+`aot/overlays.json` declares `static_output` (`generated/overlays_static*.c`
+plus `AOT_STATIC_AUDIT.json`; see `docs/AOT_SHARDING.md`). A cache that
+restores `generated/` without regenerating has to carry those files and
+include the profile in its key. Otherwise the restored build links a stale
+shard or none. Generate itself reuses an unchanged shard, so re-running it
+costs little.
+
 Raw zip extract is for true prebuilt Play binaries only. Setup-host catalog
 entries use local generate+cmake (`install_title_auto` / `update_title_auto`).
 

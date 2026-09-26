@@ -1,6 +1,8 @@
 """Method contracts use invented bytes; no game assets or historical captures."""
 import base64
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
@@ -722,6 +724,178 @@ class IndexedLzssPackTest(unittest.TestCase):
         for change, error in cases:
             with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
                 pipeline.positioned_sources(disc, [self.spec(**change)])
+
+
+class StaticGenerationTest(unittest.TestCase):
+    """The `static` action as `psxrecomp_cli.py generate` drives it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.track = self.root / 'disc' / 'game.bin'
+        self.track.parent.mkdir()
+        self.track.write_bytes(b'data track' * 100)
+        (self.root / 'disc' / 'game.cue').write_text('FILE "game.bin" BINARY\n')
+        (self.root / 'game.toml').write_text(
+            '[game]\nid = "TEST-00001"\ndisc = "disc/game.cue"\n', encoding='utf-8')
+        self.profile = dict(schema='psxrecomp AOT methods v1', game_id='TEST-00001',
+                            static_output='generated/overlays_static.c',
+                            disc_hashes=dict(sha256=sha(self.track.read_bytes())))
+        self.write_profile()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_profile(self):
+        (self.root / 'aot').mkdir(exist_ok=True)
+        (self.root / 'aot/overlays.json').write_text(json.dumps(self.profile))
+
+    def publish(self, inputs_sha256, parts=('overlays_static_0000.c',)):
+        out = self.root / 'generated'
+        out.mkdir(exist_ok=True)
+        files = {}
+        for name in ('overlays_static.c',) + tuple(parts):
+            (out / name).write_text(f'/* {name} */\n')
+            files[name] = sha((out / name).read_bytes())
+        (out / 'AOT_STATIC_AUDIT.json').write_text(json.dumps(dict(
+            files=files, published_variants=7, generation_inputs_sha256=inputs_sha256)))
+        return out
+
+    def run_cli(self, *extra):
+        argv = ['aot_overlay_pipeline.py', 'static', '--profile', str(self.root / 'aot/overlays.json'),
+                '--game-toml', str(self.root / 'game.toml'), '--recompiler', str(self.track),
+                '--work-dir', str(self.root / 'work'), *extra]
+        out, err = io.StringIO(), io.StringIO()
+        disc = lambda cue: mock.Mock(binary=self.track)
+        with mock.patch.object(sys, 'argv', argv), mock.patch.object(pipeline, 'Disc', disc), \
+             mock.patch.object(pipeline, 'write_codegen_hash_header') as header, \
+             mock.patch.object(pipeline, 'generation_inputs', return_value=({}, 'inputs-a')), \
+             mock.patch.object(pipeline, 'extract',
+                               side_effect=pipeline.ProfileError('extract reached')) as extract, \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = pipeline.main()
+        return code, out.getvalue(), err.getvalue(), header, extract
+
+    def test_static_output_declaration(self):
+        root = Path('project')
+        self.assertIsNone(pipeline.static_output({}, root))
+        self.assertEqual(pipeline.static_output(dict(static_output='generated/overlays_static.c'), root),
+                         root / 'generated' / 'overlays_static.c')
+        self.assertEqual(pipeline.static_output(dict(static_output='a\\b\\overlays_static.c'), root),
+                         root / 'a' / 'b' / 'overlays_static.c')
+        for value, error in [('/abs/overlays_static.c', 'relative'), ('C:/x/overlays_static.c', 'relative'),
+                             ('../generated/overlays_static.c', 'inside'),
+                             ('generated/other.c', 'overlays_static.c'), ('', 'path'), (3, 'path')]:
+            with self.subTest(value=value), self.assertRaisesRegex(pipeline.ProfileError, error):
+                pipeline.static_output(dict(static_output=value), root)
+
+    def test_disc_mismatch_is_not_applicable_and_names_both_digests(self):
+        disc = mock.Mock(binary=self.track)
+        self.assertEqual(pipeline.check_disc(self.profile, disc, 'game.cue'),
+                         dict(sha256=self.profile['disc_hashes']['sha256']))
+        wrong = {**self.profile, 'disc_hashes': dict(sha256='ab' * 32)}
+        with self.assertRaises(pipeline.DiscNotApplicable) as caught:
+            pipeline.check_disc(wrong, disc, 'other.cue')
+        message = str(caught.exception)
+        self.assertIn('ab' * 32, message)
+        self.assertIn(self.profile['disc_hashes']['sha256'], message)
+        self.assertIn('other.cue', message)
+        self.assertIsInstance(caught.exception, ValueError)
+
+    def test_command_line_exit_codes(self):
+        for raised, code, text in [(pipeline.DiscNotApplicable('other disc'), 3, 'not applicable: other disc'),
+                                   (pipeline.ProfileError('drift'), 1, 'error: drift')]:
+            err = io.StringIO()
+            with self.subTest(code=code), mock.patch.object(pipeline, 'run', side_effect=raised), \
+                 contextlib.redirect_stderr(err):
+                self.assertEqual(pipeline.main(), code)
+                self.assertIn(text, err.getvalue())
+        with mock.patch.object(pipeline, 'run', side_effect=KeyError('bug')), \
+             self.assertRaises(KeyError):
+            pipeline.main()
+
+    def test_reuse_requires_matching_inputs_and_exact_published_units(self):
+        out = self.publish('inputs-a')
+        self.assertTrue(pipeline.reusable_static(out, 'inputs-a')[0])
+        self.assertFalse(pipeline.reusable_static(out, 'inputs-b')[0])
+        (out / 'overlays_static_0000.c').write_text('edited\n')
+        self.assertFalse(pipeline.reusable_static(out, 'inputs-a')[0])
+        out = self.publish('inputs-a')
+        (out / 'overlays_static_0001.c').write_text('stray unit\n')
+        self.assertFalse(pipeline.reusable_static(out, 'inputs-a')[0])
+        (out / 'overlays_static_0001.c').unlink()
+        (out / 'AOT_STATIC_AUDIT.json').unlink()
+        self.assertFalse(pipeline.reusable_static(out, 'inputs-a')[0])
+
+    def test_clear_static_removes_only_static_units_and_receipt(self):
+        out = self.publish('inputs-a')
+        (out / 'SCES_000.00_dispatch.c').write_text('game C\n')
+        self.assertEqual(sorted(pipeline.clear_static(out)),
+                         ['AOT_STATIC_AUDIT.json', 'overlays_static.c', 'overlays_static_0000.c'])
+        self.assertEqual([p.name for p in out.iterdir()], ['SCES_000.00_dispatch.c'])
+
+    def test_generation_inputs_track_config_profile_and_mod_packages(self):
+        package = self.root / 'mods/pkg/1.0'
+        package.mkdir(parents=True)
+        (package / 'manifest.toml').write_text('id = "pkg"\n')
+        (package / 'patch.bin').write_bytes(b'one')
+        profile = {**self.profile, 'mod_packages': [dict(name='pkg', manifest='mods/pkg/1.0/manifest.toml')]}
+        path, toml = self.root / 'aot/overlays.json', self.root / 'game.toml'
+        def inputs(cps=True):
+            with mock.patch.object(pipeline.compiler, 'cache_tag', return_value='cg1_tag'):
+                return pipeline.generation_inputs(path, profile, toml, self.track,
+                                                  dict(sha256='d'), 'gcc', cps)
+        values, first = inputs()
+        self.assertEqual(values['cache_tag'], 'cg1_tag')
+        self.assertIn('tools/aot_overlay_pipeline.py', values['tools'])
+        self.assertIn('tools/compile_overlays.py', values['tools'])
+        self.assertIn('tools/aot_overlay_spike/extract_generic.py', values['tools'])
+        self.assertEqual(first, inputs()[1], 'fingerprint must be deterministic')
+        self.assertNotEqual(first, inputs(cps=False)[1])
+        (package / 'patch.bin').write_bytes(b'two')
+        second = inputs()[1]
+        self.assertNotEqual(first, second)
+        toml.write_text(toml.read_text() + '[runtime]\nlanguage = "en"\n')
+        self.assertNotEqual(second, inputs()[1])
+
+    def test_static_reuses_unchanged_output_without_extracting(self):
+        self.publish('inputs-a')
+        code, out, _, header, extract = self.run_cli('--reuse')
+        self.assertEqual(code, 0)
+        self.assertIn('RESULT_STATIC=reused', out)
+        self.assertIn('Reused 7 audited static variants', out)
+        header.assert_called_once()
+        extract.assert_not_called()
+        # Without --reuse (or with changed inputs) it rebuilds.
+        code, _, err, _, extract = self.run_cli()
+        self.assertEqual((code, extract.call_count), (1, 1))
+        self.assertIn('extract reached', err)
+        self.publish('inputs-old')
+        code, out, _, _, extract = self.run_cli('--reuse')
+        self.assertIn('Building static overlays: inputs changed', out)
+        self.assertEqual((code, extract.call_count), (1, 1))
+
+    def test_static_on_another_disc_exits_3_and_clears_only_when_asked(self):
+        out = self.publish('inputs-a')
+        self.profile['disc_hashes'] = dict(sha256='cd' * 32)
+        self.write_profile()
+        code, _, err, header, extract = self.run_cli('--reuse')
+        self.assertEqual(code, pipeline.EXIT_NOT_APPLICABLE)
+        self.assertIn('not applicable', err)
+        self.assertTrue((out / 'overlays_static.c').exists())
+        header.assert_not_called()
+        extract.assert_not_called()
+        code, stdout, _, _, _ = self.run_cli('--reuse', '--clear-if-not-applicable')
+        self.assertEqual(code, pipeline.EXIT_NOT_APPLICABLE)
+        self.assertIn('Removed 3 static overlay file(s)', stdout)
+        self.assertEqual(list(out.iterdir()), [])
+
+    def test_static_needs_a_destination(self):
+        del self.profile['static_output']
+        self.write_profile()
+        code, _, err, _, _ = self.run_cli()
+        self.assertEqual(code, 1)
+        self.assertIn('static requires --out-dir or a profile static_output', err)
 
 
 if __name__ == '__main__':
