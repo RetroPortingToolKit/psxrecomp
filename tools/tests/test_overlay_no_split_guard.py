@@ -266,6 +266,26 @@ class NoSplitGuardTests(unittest.TestCase):
         seeds, _audit = classify(data, True)
         self.assertIn(target, root_seeds(seeds))
 
+    def test_cross_producer_call_evidence(self):
+        # Producer A calls into producer B. A cross-producer call is only
+        # ever weaker evidence: never WEAK evidence, STRONG only when B's own
+        # bytes bound the target and the capture is not strict.
+        a_fn, bounded, frameless = LOAD, LOAD + 0x110, LOAD + 0x130
+        data = image({a_fn: FRAME, a_fn + 4: jal(bounded), a_fn + 8: NOP,
+                      a_fn + 12: jal(frameless), a_fn + 16: NOP,
+                      a_fn + 20: JR_RA, a_fn + 24: UNFRAME,
+                      bounded - 8: JR_RA, bounded - 4: NOP,
+                      bounded: ADDIU, bounded + 4: JR_RA, bounded + 8: NOP,
+                      frameless - 4: ADDIU,
+                      frameless: ADDIU, frameless + 4: JR_RA,
+                      frameless + 8: NOP}, 0x200)
+        ranges = [(LOAD, LOAD + 0x100), (LOAD + 0x100, LOAD + 0x200)]
+        for strict in (True, False):
+            roots, _ = CO.derive_enrichment_roots(
+                data, LOAD, len(data), ranges, strict_producer_ranges=strict)
+            self.assertNotIn(frameless, roots)
+            self.assertEqual(bounded in roots, not strict)
+
     # enrichment policy ----------------------------------------------------
     def test_enrichment_is_default_and_opt_out_is_diagnostic(self):
         data, engine, host, _target = self._cross_image(False)

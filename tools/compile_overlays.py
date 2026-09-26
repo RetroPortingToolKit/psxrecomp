@@ -1435,7 +1435,8 @@ def image_local_entry_proven(data: bytes, load_addr: int, size: int,
 def derive_static_roots(data: bytes, load_addr: int, size: int,
                         producer_ranges=(), analysis_hi: int | None = None,
                         sources: dict | None = None,
-                        weak_out: set | None = None) -> set[int]:
+                        weak_out: set | None = None,
+                        strict_producer_ranges: bool = False) -> set[int]:
     """Enrichment candidates in one image: the STRONG set is returned.
 
     Candidates come from three generic sources -- stack-frame prologues,
@@ -1443,7 +1444,10 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
     passing image_local_entry_proven are STRONG. A jal/table target that only
     passes the bounded CFG probe (plausible_callable_target, not in a delay
     slot) is WEAK and goes to ``weak_out`` when given; derive_enrichment_roots
-    decides which weak ones survive. ``sources`` (optional) receives
+    decides which weak ones survive. With producer ranges, a jal or table in
+    one producer is only weak evidence about an address in the SAME producer;
+    across producers it can support a STRONG root (never under
+    ``strict_producer_ranges``). ``sources`` (optional) receives
     {addr: set of source names} for every returned or weak address.
     """
     hi = load_addr + size if analysis_hi is None else analysis_hi
@@ -1459,7 +1463,24 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
 
     candidates: dict[int, set] = {}
 
-    def note(addr: int, source: str) -> None:
+    def producer_index(addr: int):
+        if not ranges:
+            return 0
+        for index, (range_lo, range_hi) in enumerate(ranges):
+            if range_lo <= addr < range_hi:
+                return index
+        return None
+
+    def note(addr: int, source: str, source_pc: int | None = None) -> None:
+        # Evidence from one producer about an address in another is the
+        # cross-producer case compile_overlays already treats as weaker:
+        # strict captures reject it outright, others need a local boundary.
+        if source_pc is not None:
+            src = producer_index(source_pc)
+            if src is None:
+                return
+            if src != producer_index(addr):
+                source += '_cross'
         candidates.setdefault(addr, set()).add(source)
 
     pointers = []
@@ -1468,7 +1489,7 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
         if _is_addiu_sp_neg(word):
             note(addr, 'prologue')
         if word is not None and (word >> 26) == 0x03:
-            note(_jump_target(addr, word), 'jal')
+            note(_jump_target(addr, word), 'jal', addr)
         pointers.append(word if word is not None and not (word & 3) and
                         load_addr <= word < hi else None)
     start = 0
@@ -1480,17 +1501,21 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
         while end < len(pointers) and pointers[end] is not None:
             end += 1
         if end - start >= 3:
-            for target in pointers[start:end]:
-                note(target, 'pointer_table')
+            for offset in range(start, end):
+                note(pointers[offset], 'pointer_table', load_addr + offset * 4)
         start = end
 
+    local = {'prologue', 'jal', 'pointer_table'}
+    cross = {'jal_cross', 'pointer_table_cross'}
     roots = set()
     for addr, why in candidates.items():
         producer_hi = producer_hi_for(addr)
         if producer_hi is None:
             continue
-        if image_local_entry_proven(data, load_addr, size, addr,
-                                    producer_hi, hi):
+        strong_evidence = bool(why & local) or (
+            bool(why & cross) and not strict_producer_ranges)
+        if strong_evidence and image_local_entry_proven(
+                data, load_addr, size, addr, producer_hi, hi):
             roots.add(addr)
             if sources is not None:
                 sources[addr] = set(why)
@@ -1535,7 +1560,9 @@ def possible_function_starts(data: bytes, load_addr: int,
 
 def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
                             producer_ranges=(), analysis_hi: int | None = None,
-                            explicit=(), walk=None) -> tuple[set, dict]:
+                            explicit=(), walk=None,
+                            strict_producer_ranges: bool = False
+                            ) -> tuple[set, dict]:
     """The enrichment roots compile_overlays adds for one image.
 
     STRONG candidates are returned as-is (the no-split guard demotes any that
@@ -1557,7 +1584,8 @@ def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
             return cache[key]
     weak = set()
     strong = derive_static_roots(data, load_addr, size, producer_ranges, hi,
-                                 weak_out=weak)
+                                 weak_out=weak,
+                                 strict_producer_ranges=strict_producer_ranges)
     hosts = ({a for a in explicit if load_addr <= a < hi and not a & 3} |
              strong | weak |
              possible_function_starts(data, load_addr, hi, producer_ranges))
@@ -1993,7 +2021,8 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             data, load_addr, size, producer_ranges, fragment_hi,
             explicit=(static_discovery_entries | captured_function_entries |
                       dispatch_entry_pcs | toml_entries | legacy_seeds),
-            walk=walk)
+            walk=walk,
+            strict_producer_ranges=not allow_cross_producer_calls)
         derived_static_roots -= (static_discovery_entries |
                                  captured_function_entries |
                                  dispatch_entry_pcs | toml_entries |
