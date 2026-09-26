@@ -4070,26 +4070,30 @@ static int write_windows_deferred_rebuild_helper(int force_pgo,
             "set /p PUBLISHED=<\"%%BUILD_DIR%%\\psxrecomp_exe_name-%%TARGET%%.txt\"\r\n"
             "if defined PUBLISHED if exist \"%%BUILD_DIR%%\\%%PUBLISHED%%.exe\" "
             "set \"EXE_FINAL=%%BUILD_DIR%%\\%%PUBLISHED%%.exe\"\r\n"
-            "if defined GEN_MARKER if not exist \"%%GEN_MARKER%%\" (\r\n"
-            "  echo.\r\n"
-            "  echo Build finished but the generated game code is missing:\r\n"
-            "  echo   %%GEN_MARKER%%\r\n"
-            "  echo Launching now would reopen setup in a loop. Please report\r\n"
-            "  echo this to the port maintainer: the boot-EXE name in\r\n"
-            "  echo game.toml disagrees with GEN_MARKER in CMakeLists.txt.\r\n"
-            "  pause\r\n"
-            "  exit /b 1\r\n"
-            ")\r\n"
-            "if not exist \"%%EXE_FINAL%%\" (\r\n"
-            "  echo.\r\n"
-            "  echo Build finished but the game executable is missing:\r\n"
-            "  echo   %%EXE_FINAL%%\r\n"
-            "  pause\r\n"
-            "  exit /b 1\r\n"
-            ")\r\n"
+            /* Path-bearing messages sit outside ( ) blocks: cmd expands
+             * %VAR% when it parses a block, so a ")" in an install folder
+             * such as "... (1)" would close the block early. */
+            "if defined GEN_MARKER if not exist \"%%GEN_MARKER%%\" goto no_gen\r\n"
+            "if not exist \"%%EXE_FINAL%%\" goto no_exe\r\n"
             "echo Starting %%DISPLAY%%...\r\n"
             "start \"\" /D \"%%ROOT%%\" \"%%EXE_FINAL%%\" --launcher\r\n"
-            "endlocal\r\n");
+            "endlocal\r\n"
+            "exit /b 0\r\n"
+            ":no_gen\r\n"
+            "echo.\r\n"
+            "echo Build finished but the generated game code is missing:\r\n"
+            "echo   %%GEN_MARKER%%\r\n"
+            "echo Launching now would reopen setup in a loop. Please report\r\n"
+            "echo this to the port maintainer: the boot-EXE name in\r\n"
+            "echo game.toml disagrees with GEN_MARKER in CMakeLists.txt.\r\n"
+            "pause\r\n"
+            "exit /b 1\r\n"
+            ":no_exe\r\n"
+            "echo.\r\n"
+            "echo Build finished but the game executable is missing:\r\n"
+            "echo   %%EXE_FINAL%%\r\n"
+            "pause\r\n"
+            "exit /b 1\r\n");
     fclose(f);
     return 1;
 }
@@ -4542,7 +4546,11 @@ void psxrecomp_codegen_host_relaunch_or_exit(const char* disc_path) {
         if (g_relaunch_is_helper) {
             fprintf(stderr,
                     "psxrecomp-codegen: starting deferred rebuild helper\n");
-            snprintf(cmd, sizeof(cmd), "cmd.exe /C \"%s\"", exe);
+            /* cmd /C strips the first and last quote of the command line
+             * when it holds special characters such as the parentheses in
+             * "r4-1.0-windows-x64 (1)"; the doubled outer pair keeps the
+             * path's own quotes intact. */
+            snprintf(cmd, sizeof(cmd), "cmd.exe /C \"\"%s\"\"", exe);
             flags = CREATE_NEW_CONSOLE;
         } else {
             fprintf(stderr, "psxrecomp-codegen: relaunching %s\n", exe);
