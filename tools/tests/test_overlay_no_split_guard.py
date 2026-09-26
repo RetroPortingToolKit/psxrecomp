@@ -34,7 +34,7 @@ FRAME = 0x27BDFFE0          # addiu sp,sp,-32
 UNFRAME = 0x27BD0020        # addiu sp,sp,32
 ADDIU = 0x24420001          # addiu v0,v0,1
 SUBU = 0x00431023           # subu v0,v0,v1
-CMAKE = None
+CMAKE = shutil.which('cmake')   # --cmake overrides; ctest always passes it
 RECOMPILER = None
 
 
@@ -350,6 +350,8 @@ class NoSplitGuardTests(unittest.TestCase):
 # (e) ----------------------------------------------------------------------
 class CacheKeyTests(unittest.TestCase):
     def _cmake_list(self):
+        self.assertIsNotNone(CMAKE, 'cmake not found: pass --cmake or put '
+                                    'cmake on PATH')
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / 'list.cmake'
             script.write_text(
