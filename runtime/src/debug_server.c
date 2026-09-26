@@ -14443,6 +14443,33 @@ void debug_server_init(int port)
     s_wtrace_trans_range_count = 10;
 #endif
 
+    /* Launch-time extra ranges for the boot + transition write rings, so any
+     * title can have a physical window recorded from the first guest write
+     * without a per-title rebuild (the always-on catch-all ring can wrap before
+     * a late probe reads it). Format: "lo-hi[,lo-hi...]", hex, masked to
+     * physical. Appended after the built-in defaults; capacity-bounded. */
+    {
+        const char *spec = getenv("PSX_WTRACE_BOOT_RANGES");
+        while (spec && *spec) {
+            char *end = NULL;
+            unsigned long lo = strtoul(spec, &end, 16);
+            if (!end || *end != '-') break;
+            unsigned long hi = strtoul(end + 1, &end, 16);
+            if (!end || hi <= lo) break;
+            if (s_wtrace_boot_range_count < WTRACE_BOOT_MAX_RANGES) {
+                s_wtrace_boot_ranges[s_wtrace_boot_range_count].lo = (uint32_t)lo & 0x1FFFFFFFu;
+                s_wtrace_boot_ranges[s_wtrace_boot_range_count].hi = (uint32_t)hi & 0x1FFFFFFFu;
+                s_wtrace_boot_range_count++;
+            }
+            if (s_wtrace_trans_range_count < WTRACE_TRANS_MAX_RANGES) {
+                s_wtrace_trans_ranges[s_wtrace_trans_range_count].lo = (uint32_t)lo & 0x1FFFFFFFu;
+                s_wtrace_trans_ranges[s_wtrace_trans_range_count].hi = (uint32_t)hi & 0x1FFFFFFFu;
+                s_wtrace_trans_range_count++;
+            }
+            spec = (*end == ',') ? end + 1 : NULL;
+        }
+    }
+
     /* Tier 1: heap-allocate MMIO trace ring buffer (2 MB). */
     if (!s_mmio_trace) {
         s_mmio_trace = (MmioTraceEntry *)calloc(MMIO_TRACE_CAP, sizeof(MmioTraceEntry));
