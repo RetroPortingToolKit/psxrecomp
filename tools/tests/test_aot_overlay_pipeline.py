@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import aot_overlay_pipeline as pipeline
 import audit_aot_cache as auditor
+import indexed_lzss_pack as lzss_pack
 
 
 class FakeDisc:
@@ -561,6 +562,156 @@ class AotMethodsTest(unittest.TestCase):
             (source / receipt['pairs'][0]['dll']).write_bytes(b'changed')
             with self.assertRaisesRegex(ValueError, 'Audited artifact changed'):
                 pipeline.stage(root / 'cache', root / 'stage', receipt)
+
+
+def bit_lzss(tokens, position_bits, length_bits):
+    """Invented bit-stream LZSS: ints are literals, (position, count) references."""
+    bits = []
+    field = lambda value, width: [(value >> (width - 1 - i)) & 1 for i in range(width)]
+    for token in tokens:
+        if isinstance(token, int):
+            bits += [1] + field(token, 8)
+        else:
+            bits += [0] + field(token[0], position_bits) + field(token[1], length_bits)
+    bits += [0] + field(0, position_bits)
+    bits += [0] * (-len(bits) % 8)
+    return bytes(int(''.join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8))
+
+
+def indexed_pack(members, count_offset=0x10, table_offset=0x18, alignment=4):
+    """members: (decoded size, stored bytes); equal lengths mean stored verbatim."""
+    data = bytearray(table_offset + 12 * len(members))
+    struct.pack_into('<I', data, count_offset, len(members))
+    for index, (size, stored) in enumerate(members):
+        data += bytes(-len(data) % alignment)
+        struct.pack_into('<III', data, table_offset + 12 * index, len(data), size, len(stored))
+        data += stored
+    return bytes(data + bytes(-len(data) % alignment))
+
+
+class IndexedLzssPackTest(unittest.TestCase):
+    """Invented bytes and parameters exercising the declared decoder contract."""
+    LZSS = dict(position_bits=10, length_bits=3, min_match=2, initial_position=5)
+    CODE = struct.pack('<5I', 0x27BDFFF8, 0xAFBF0000, 0x8FBF0000, 0x03E00008, 0x27BD0008)
+
+    def decode(self, tokens, **overrides):
+        options = {**self.LZSS, **overrides}
+        stream = bit_lzss(tokens, options['position_bits'], options['length_bits'])
+        return lzss_pack.decode(stream, 0, **options), stream
+
+    def test_overlapping_copy_reads_bytes_written_by_the_same_reference(self):
+        # Literals land at window 5 and 6; copying 3 + 2 bytes from 5 re-reads
+        # positions 7..9 that the copy itself wrote.
+        (body, consumed), stream = self.decode([65, 66, (5, 3)])
+        self.assertEqual((body, consumed), (b'ABABABA', len(stream)))
+
+    def test_window_wraps_and_position_zero_terminates(self):
+        # Sixteen literals fill a 16-byte window from position 1; the last one
+        # wraps to position 0, which only a copy crossing the end can reach.
+        (body, _), _ = self.decode(list(range(16)) + [(15, 0)], position_bits=4,
+                                   initial_position=1)
+        self.assertEqual(body, bytes(range(16)) + bytes([14, 15]))
+
+    def test_unwritten_window_slot_depends_on_external_ram(self):
+        with self.assertRaisesRegex(ValueError, 'external RAM'):
+            self.decode([65, (9, 0)])
+        (body, _), _ = self.decode([65, (9, 0)], window_fill=0x20)
+        self.assertEqual(body, b'A  ')
+
+    def test_truncation_output_limit_and_parameters_fail_closed(self):
+        _, stream = self.decode([65, 66, (5, 3)])
+        decode = lzss_pack.decode
+        with self.assertRaisesRegex(ValueError, 'Truncated'):
+            decode(stream[:-1], 0, **self.LZSS)
+        with self.assertRaisesRegex(ValueError, 'exceeds limit'):
+            decode(stream, 0, **self.LZSS, max_output=6)
+        for change in (dict(initial_position=0), dict(initial_position=1024), dict(length_bits=0)):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                decode(stream, 0, **{**self.LZSS, **change})
+
+    def pack(self):
+        code = bit_lzss(list(self.CODE), 10, 3)
+        return indexed_pack([(7, bit_lzss([65, 66, (5, 3)], 10, 3)), (len(self.CODE), code),
+                             (5, b'TEXT!')])
+
+    def members(self, data, **overrides):
+        options = dict(count_offset=0x10, table_offset=0x18, alignment=4, lzss=self.LZSS, count=3)
+        return pipeline.extract_pack_members(data, **{**options, **overrides})
+
+    def test_every_member_decodes_to_declared_sizes_and_covers_the_file(self):
+        members = self.members(self.pack())
+        self.assertEqual([(m['index'], m['compressed'], m['body']) for m in members],
+                         [(0, True, b'ABABABA'), (1, True, self.CODE), (2, False, b'TEXT!')])
+        self.assertEqual(members[0]['source_offset'], 0x18 + 36)
+
+    def test_container_drift_fails_closed(self):
+        data = self.pack()
+        table = 0x18
+        offset, size, stored = struct.unpack_from('<III', data, table + 12)
+        next_offset = struct.unpack_from('<I', data, table + 24)[0]
+        padding = offset - 1 if data[offset - 1] == 0 else next_offset - 1
+        cases = [((0, 1), 'header'), ((table + 16, size + 1), 'declared sizes'),
+                 ((table + 16, size - 1), 'exceeds limit'), ((table + 20, stored + 1), 'declared sizes'),
+                 ((table + 24, next_offset + 4), 'gap'), ((table + 12, offset - 4), 'gap')]
+        for (position, value), error in cases:
+            changed = bytearray(data)
+            if position == 0:
+                changed[position] = value
+            else:
+                struct.pack_into('<I', changed, position, value)
+            with self.subTest(error=error, position=position), self.assertRaisesRegex(ValueError, error):
+                self.members(bytes(changed))
+        self.assertEqual(data[padding], 0)
+        changed = bytearray(data)
+        changed[padding] = 1
+        with self.assertRaisesRegex(ValueError, 'padding|outside'):
+            self.members(bytes(changed))
+        # A zero tail (sector fill) is padding; any other byte is unaccounted.
+        self.assertEqual(self.members(data + bytes(2048)), self.members(data))
+        for changed, error in ((data + b'\1', 'outside'), (data[:-4], 'exceeds file')):
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                self.members(changed)
+        with self.assertRaisesRegex(ValueError, 'count changed'):
+            self.members(data, count=2)
+        with self.assertRaisesRegex(ValueError, 'overlaps'):
+            self.members(data, table_offset=0x0C)
+
+    def spec(self, **overrides):
+        spec = dict(method='indexed_lzss_members', file='PACK.PB', count_offset='0x10',
+                    table_offset='0x18', alignment=4, lzss=self.LZSS, count=3,
+                    members=[dict(index=1, load_addr='0x80100000', entries=['0x80100000'],
+                                  decoded_sha256=sha(self.CODE))],
+                    excluded_members=[dict(index=0, reason='Synthetic text'),
+                                      dict(index=2, reason='Synthetic stored data')])
+        return {**spec, **overrides}
+
+    def test_pipeline_places_classified_executable_member(self):
+        disc = FakeDisc({'PACK.PB': self.pack()})
+        source, = pipeline.positioned_sources(disc, [self.spec()])
+        self.assertEqual((source['name'], source['base'], source['body']),
+                         ('PACK.PB:ENTRY_0001', 0x80100000, self.CODE))
+        with tempfile.TemporaryDirectory() as directory:
+            disc.binary = Path(directory) / 'source.bin'
+            disc.binary.write_bytes(b'synthetic disc')
+            inventory = pipeline.prepare(dict(game_id='TEST', images=[self.spec()],
+                expected_records=1, strict_bounds=True), disc, [], Path(directory))
+        self.assertEqual(inventory['required_images'], ['PACK.PB:ENTRY_0001'])
+        self.assertEqual(inventory['jobs'][0]['required_entries'], [0x80100000])
+        self.assertEqual(inventory['source_images'][0]['method'], 'indexed_lzss_members')
+
+    def test_pipeline_inventory_hash_and_parameters_fail_closed(self):
+        disc = FakeDisc({'PACK.PB': self.pack()})
+        member = self.spec()['members'][0]
+        cases = [(dict(excluded_members=[dict(index=0, reason='Synthetic text')]), 'classifications'),
+                 (dict(excluded_members=[dict(index=0, reason=''), dict(index=2, reason='x')]), 'reason'),
+                 (dict(members=[{**member, 'decoded_sha256': '0' * 64}]), 'Decoded pack member changed'),
+                 (dict(members=[{**member, 'load_addr': '0x807FFFF0'}]), 'outside RAM'),
+                 (dict(lzss={k: v for k, v in self.LZSS.items() if k != 'min_match'}), 'explicitly'),
+                 (dict(lzss={**self.LZSS, 'bit_order': 'lsb'}), 'explicitly'),
+                 (dict(count=4), 'count changed')]
+        for change, error in cases:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                pipeline.positioned_sources(disc, [self.spec(**change)])
 
 
 if __name__ == '__main__':

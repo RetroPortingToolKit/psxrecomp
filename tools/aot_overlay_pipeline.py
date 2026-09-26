@@ -22,6 +22,7 @@ from aot_overlay_spike import extract_generic as extractor
 from packed_sector_table import extract_members as extract_sector_members
 from sector_extent_archive import extract_members as extract_extent_members
 from aligned_lzss_banks import banks as extract_lzss_banks
+from indexed_lzss_pack import members as extract_pack_members
 from mips_tagged_relocations import parse as parse_tagged_relocations, relocate as relocate_tagged_image
 from mod_package_images import ModPackageView
 
@@ -233,6 +234,42 @@ def extent_sources(disc, spec):
     return sources
 
 
+def pack_sources(disc, spec):
+    """Every member of an offset-indexed LZSS pack decoded and classified."""
+    file = spec['file'].upper()
+    lzss = spec['lzss']
+    require(set(lzss) <= {'position_bits', 'length_bits', 'min_match', 'initial_position',
+                          'window_fill'} and
+            {'position_bits', 'length_bits', 'min_match', 'initial_position'} <= set(lzss),
+            'LZSS parameters must be declared explicitly')
+    members = extract_pack_members(disc.read(file), count_offset=number(spec['count_offset']),
+        table_offset=number(spec['table_offset']), alignment=number(spec['alignment']),
+        lzss={key: None if value is None else number(value) for key, value in lzss.items()},
+        count=number(spec['count']))
+    configured = {number(item['index']): item for item in spec['members']}
+    excluded = {number(item['index']): item for item in spec.get('excluded_members', [])}
+    require(len(configured) == len(spec['members']) and
+            len(excluded) == len(spec.get('excluded_members', [])), 'Duplicate member inventory')
+    require(not configured.keys() & excluded.keys() and
+            configured.keys() | excluded.keys() == set(range(len(members))),
+            'Pack inventory has missing or conflicting classifications')
+    require(all(item.get('reason', '').strip() for item in excluded.values()),
+            'Excluded pack member needs a reason')
+    sources = []
+    for member in members:
+        item = configured.get(member['index'])
+        if item is None:
+            continue
+        body, base = member['body'], number(item['load_addr'])
+        require(hashlib.sha256(body).hexdigest() == item['decoded_sha256'],
+                f"Decoded pack member changed: {file} {member['index']}")
+        require(in_ram(base, len(body)) and base % 4 == 0, 'Pack member image outside RAM')
+        sources.append(dict(name=f"{file}:ENTRY_{member['index']:04X}", base=base, body=body,
+            spec={**spec, **item, 'allow_missing': True}, source_offset=member['source_offset'],
+            source_file=file, aliases=[]))
+    return sources
+
+
 def positioned_sources(disc, specifications, views=None, ram_bytes=RETAIL_RAM_BYTES):
     sources = []
     for spec in specifications:
@@ -303,6 +340,8 @@ def spec_sources(disc, spec):
     if method == 'packed_sector_members':
         sources.extend(sector_sources(disc, spec))
         return sources
+    if method == 'indexed_lzss_members':
+        return pack_sources(disc, spec)
     if method == 'sector_extent_members':
         members = extract_extent_members(disc.read(spec['file']),
             sector_size=number(spec.get('sector_size', 2048)),
@@ -474,7 +513,7 @@ def prepare(profile, disc, records, output, views=None):
             if (lo, hi) == (source['base'], source['base'] + len(source['body'])):
                 singles[source['name']] = record
     for source in sources:
-        if source['spec']['method'] in ('fixed_address_files', 'fixed_address_extents', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'tagged_relocated_files') and source['name'] not in singles:
+        if source['spec']['method'] in ('fixed_address_files', 'fixed_address_extents', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'indexed_lzss_members', 'tagged_relocated_files') and source['name'] not in singles:
             record = make_fixed_record(source, disc)
             singles[source['name']] = record
             records.append(record)

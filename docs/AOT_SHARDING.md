@@ -66,6 +66,7 @@ Profiles declare these reusable methods:
 | `images[].method = packed_sector_members` | Decode u32 count/offset sector descriptors across ordered payload files. Verify every member classification and requested full-payload coverage; use loader-established addresses for executable members. |
 | `images[].method = sector_extent_members` | Decode `{sector offset, byte size}` pairs in an archive. Use archive-relative offsets, verify the exact count and terminator, reject gaps/overlaps, and account for every member after sector rounding. Each member needs a verified load address or an explicit exclusion. |
 | `images[].method = aligned_lzss_banks` | Read aligned stored-size pairs, decode the metadata and its tagged bank members using parameterized LZSS, verify every container and bank classification, and deduplicate exact decoded images at verified destinations. External-RAM references fail extraction. |
+| `images[].method = indexed_lzss_members` | Read a u32 count and `{offset, size, stored}` descriptors, decode every member (verbatim when `size == stored`, otherwise bit-stream LZSS with declared parameters), require exact sizes, zero padding and a fully accounted file, and classify every member as an executable image at a verified `load_addr` or an explained exclusion. |
 | `checks[].method = words` | Verify loader instructions or descriptors at explicit file offsets / virtual addresses. |
 | `checks[].method = tagged_relocations` | Validate a complete relocation stream, retained `image_size` and `relocation_count`, including modules whose heap placement remains unresolved and which are excluded from native production. |
 | `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. |
@@ -121,8 +122,11 @@ Current consumers:
 - Ape Escape USA: `ApeEscapeRecomp/aot/overlays.json`, 47 established packed
   sector-table overlays plus two minigame PS-X EXEs. Two additional archive
   members have unresolved load paths and are explicitly excluded.
-- WipEout 3 SE PAL: `aot/overlays.json`, no disc overlays; one mod-package
-  engine image linked with `static` (see below).
+- WipEout 3 SE PAL: `aot/overlays.json`, the front-end menu overlay (member 5
+  of `WIPEOUT3/NFE.PB`, `indexed_lzss_members`) from the stock disc and from the
+  framerate package's patched disc, plus that package's engine image; all
+  linked with `static` (see below). The other 88 packs on the disc (`TRACK*.PBP`)
+  hold data only.
 
 ### Executable images from a mod package
 
@@ -185,6 +189,42 @@ Executable members carry `index`, `load_addr`, and optionally verified `entries`
 Exclusions require a `reason`. `cover_payloads` names files that this entire
 classified range must cover exactly, without gaps or overlaps. The shared reader
 is `tools/packed_sector_table.py`; heuristic discovery uses that same parser.
+
+For `indexed_lzss_members` (reader: `tools/indexed_lzss_pack.py`), declare
+`file`, `count_offset` (u32 member count), `table_offset` (12-byte
+`{u32 offset, u32 size, u32 stored}` descriptors), `alignment` of each member
+start, the exact `count`, and every LZSS parameter explicitly; there are no
+defaults. Members follow the table in descriptor order. Every other byte
+before the end of the table, all padding and any tail after the last member
+must be zero. A member whose stored size differs from its size is a bit-stream
+LZSS stream that must decode to exactly `size` bytes while consuming exactly
+`stored` bytes:
+
+| LZSS parameter | Meaning |
+| --- | --- |
+| `position_bits` | Width of a window position; the ring window holds `1 << position_bits` bytes. Position 0 ends the stream. |
+| `length_bits` | Width of the copy count field. |
+| `min_match` | Bytes copied for a count of zero; a reference copies `count + min_match` bytes. |
+| `initial_position` | Window slot receiving the first output byte. |
+| `window_fill` | Optional initial byte of every window slot. Omit it when the original decoder leaves its window uninitialized: reading a slot this stream never wrote then fails extraction as a dependency on pre-existing RAM. |
+
+Bits are read most significant first. A 1 flag precedes an 8-bit literal; a 0
+flag precedes a position and a count. Each output byte is also stored at the
+current window slot, so a reference may read bytes it has just written.
+Executable members carry `index`, `load_addr`, `decoded_sha256` and optionally
+verified `entries`; `excluded_members` need a `reason`. Every index must be
+classified exactly once.
+
+WipEout 3's `MenuControl` (0x801179B8) opens `c:\wipeout3\nfe.pb`, requires its
+allocation of the top member to land exactly at 0x800BF800, has the pack reader
+run `lzss.c` `ExpandData` (13-bit position, 4-bit count, three-byte minimum,
+start position 1, uninitialized 8 KiB window) and copies the decoded 0x21424
+bytes there without relocation, then calls five of its functions directly. The
+profile pins those instructions with `words` checks. The decoded image is
+byte-identical to the RAM at 0x800BF800 in a stock run's menu. The same reader
+and decoder account for all 5,178 members of the disc's 89 packs. This is the
+only member the executable transfers control to, and the only one with MIPS
+function shapes; the rest go to data loaders (textures, models, track tables).
 
 See `tools/tests/test_aot_overlay_pipeline.py` for synthetic method and release
 failure tests. A new title should add a profile when these contracts fit; add
