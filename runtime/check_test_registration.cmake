@@ -88,12 +88,20 @@ function(psxrecomp_check_all_tests_registered)
     # CONFIGURE_DEPENDS matters more than usual here: without it, ADDING a test
     # file would not re-run configure, so this check would sleep through the
     # exact event it exists to catch.
+    # The offline tools' unit tests live beside the tools (tools/tests,
+    # tools/, one level of tools/<package>/) and in the top-level tests/. They
+    # are registered in recompiler/CMakeLists.txt, the BIOS-free tree.
     file(GLOB _found CONFIGURE_DEPENDS
         "${_root}/runtime/tests/test_*.c"
         "${_root}/runtime/tests/test_*.cpp"
         "${_root}/runtime/tests/test_*.py"
         "${_root}/recompiler/tests/*_test.cpp"
-        "${_root}/recompiler/tests/test_*.py")
+        "${_root}/recompiler/tests/test_*.py"
+        "${_root}/tools/tests/test_*.py"
+        "${_root}/tools/test_*.py"
+        "${_root}/tools/*/test_*.py"
+        "${_root}/tests/test_*.py")
+    list(REMOVE_DUPLICATES _found)
 
     # ---- diff -------------------------------------------------------------
     set(_orphans "")

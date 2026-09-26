@@ -180,3 +180,7 @@ class PerPressVerdictTest(unittest.TestCase):
               w(0x8004A5F5, 7, 6, "0xB", seq=3, frame=500),
               w(0x8004A5F5, 6, 5, "0xC", seq=4, frame=500)]
         self.assertEqual(cw.verdict(ws, 0x8004A5F5)[0], "two_paths")
+
+
+if __name__ == "__main__":
+    unittest.main()
