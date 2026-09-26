@@ -16,6 +16,7 @@
 #define PSXRECOMP_DIRTY_RAM_INTERP_H
 
 #include <stdint.h>
+#include "psx_memory.h"
 #include "cpu_state.h"
 
 #ifdef __cplusplus
@@ -64,7 +65,7 @@ void dirty_ram_irq_ambient_resync_after_restore(void);
  *   Kernel RAM   [0x00000, 0x10000): the BIOS part-2 image relocated to RAM
  *     plus install-at-runtime stubs (e.g. the SIO data-byte stub at 0xCF0).
  *     Dirty-tracked per CPU store (dirty_ram_mark_kernel_write).
- *   Overlay region [OVERLAY_REGION_FLOOR, RAM_SIZE): game overlays loaded by
+ *   Overlay region [OVERLAY_REGION_FLOOR, live RAM end): game overlays loaded by
  *     CD DMA (dirty_ram_mark_executable_range).
  *
  * Main-EXE text [0x10000, OVERLAY_REGION_FLOOR): CLEAN pages are statically
@@ -258,15 +259,17 @@ extern DirtyRamPcEntry g_dirty_ram_pc_table[DIRTY_RAM_PC_TABLE_SIZE];
 /* Every aligned main-RAM word is a possible instruction PC.  Execution
  * coverage only needs presence, not a hit count, so record it in a direct
  * bitmap instead of probing a large hash table for every retired instruction.
- * This covers all 524,288 RAM words (the old 262K-entry hash could saturate)
- * and is also the execution-verified seed source used by overlay_capture. */
-#define DIRTY_RAM_EXEC_WORD_COUNT   ((2u * 1024u * 1024u) / 4u)
+ * This covers every word of the host RAM backing (the old 262K-entry hash
+ * could saturate) -- retail 2 MiB and the opt-in 8 MiB map alike -- and is
+ * also the execution-verified seed source used by overlay_capture. */
+#define DIRTY_RAM_EXEC_WORD_COUNT   (PSX_MAIN_RAM_BACKING_BYTES / 4u)
 #define DIRTY_RAM_EXEC_BITMAP_WORDS ((DIRTY_RAM_EXEC_WORD_COUNT + 31u) / 32u)
 extern uint32_t g_dirty_ram_exec_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS];
 /* One bit per 4 KiB page. RAM writes use this as a one-test stale-evidence
  * guard; they clear that page's capture bits rather than serializing from the
  * universal store hot path. */
-#define DIRTY_RAM_EXEC_PAGE_BITMAP_WORDS 16u
+#define DIRTY_RAM_EXEC_PAGE_BITMAP_WORDS \
+    (((PSX_MAIN_RAM_BACKING_BYTES / 4096u) + 31u) / 32u)
 extern uint32_t g_dirty_ram_exec_page_bitmap[DIRTY_RAM_EXEC_PAGE_BITMAP_WORDS];
 /* Presence-only companion for interpreted block/dispatch entries. The richer
  * counter table remains for telemetry, while capture can snapshot/reset this

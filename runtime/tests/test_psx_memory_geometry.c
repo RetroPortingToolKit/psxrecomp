@@ -1,6 +1,13 @@
 #include "psx_memory.h"
 
 #include <stdio.h>
+#include <string.h>
+
+/* The live geometry normally lives in memory.c; this test owns it so each
+ * build of the test pins one geometry the way memory_init() would. */
+uint32_t g_psx_ram_size = PSX_MAIN_RAM_RETAIL_BYTES;
+uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;
+uint32_t g_psx_ram_high_unique[PSX_RAM_HIGH_BITWORDS];
 
 static int failures;
 
@@ -16,6 +23,14 @@ static void check(int condition, const char *name) {
 int main(void) {
     uint32_t off = 0xFFFFFFFFu;
 
+#if defined(PSX_MEMORY_GEOMETRY_TEST_EXPANDED)
+    /* What the 8 MB mod leaves behind after memory_init(): expanded size and
+     * every high page registered unique. */
+    g_psx_ram_size = PSX_MAIN_RAM_EXPANDED_BYTES;
+    g_psx_ram_mask = PSX_MAIN_RAM_EXPANDED_BYTES - 1u;
+    memset(g_psx_ram_high_unique, 0xFF, sizeof(g_psx_ram_high_unique));
+#endif
+
     check(psx_ram_resolve(0x80000000u, 4u, &off) && off == 0u,
           "KSEG0 aliases physical RAM");
     check(psx_ram_resolve(0xA0000100u, 4u, &off) && off == 0x100u,
@@ -24,23 +39,31 @@ int main(void) {
           "first byte beyond DRAM decode is rejected");
     check(!psx_ram_resolve(0x1F801000u, 4u, &off),
           "MMIO is never mistaken for DRAM");
-    check(!psx_ram_resolve(PSX_MAIN_RAM_BYTES - 2u, 4u, &off),
+    check(!psx_ram_resolve(psx_ram_live_bytes() - 2u, 4u, &off),
           "cross-geometry word is rejected");
 
-#if PSX_MAIN_RAM_BYTES == PSX_MAIN_RAM_RETAIL_BYTES
+#if !defined(PSX_MEMORY_GEOMETRY_TEST_EXPANDED)
     check(psx_ram_canonical_offset(0x80612340u) == 0x00012340u,
           "retail canonicalization folds KSEG0 mirrors");
     check(psx_ram_resolve(0x00212340u, 4u, &off) && off == 0x00012340u,
           "retail geometry folds the second mirror");
     check(psx_ram_resolve(0x807FFFFCu, 4u, &off) && off == 0x001FFFFCu,
           "retail geometry folds the fourth mirror top");
-#elif PSX_MAIN_RAM_BYTES == PSX_MAIN_RAM_EXPANDED_BYTES
+    check(psx_ram_canon_code_addr_inline(0x80780000u) == 0x80180000u,
+          "retail code address folds the fourth mirror");
+    check(psx_ram_live_bytes() == PSX_MAIN_RAM_RETAIL_BYTES,
+          "retail live size is 2 MiB");
+#else
     check(psx_ram_canonical_offset(0x80612340u) == 0x00612340u,
           "expanded canonicalization preserves all decoded address bits");
     check(psx_ram_resolve(0x00212340u, 4u, &off) && off == 0x00212340u,
           "expanded geometry uniquely decodes the second bank");
     check(psx_ram_resolve(0x807FFFFCu, 4u, &off) && off == 0x007FFFFCu,
           "expanded geometry uniquely decodes the eighth MiB top");
+    check(psx_ram_canon_code_addr_inline(0x80780000u) == 0x80780000u,
+          "expanded code address stays in the high bank");
+    check(psx_ram_live_bytes() == PSX_MAIN_RAM_EXPANDED_BYTES,
+          "expanded live size is 8 MiB");
 #endif
 
     return failures ? 1 : 0;

@@ -2,7 +2,7 @@
 #define PSXRECOMP_MOD_MEMORY_H
 
 #include <stdint.h>
-#include "psx_ram.h"
+#include "psx_memory.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,7 +44,9 @@ static inline uint32_t psx_mod_gpu_dma_resolve_address_for(
     if (psx_mod_gpu_dma_aperture_offset_for(
             canonical, 4u, used, (uint32_t *)0))
         return canonical;
-    return psx_ram_map_read(canonical) & ~3u;
+    /* 24-bit tag bits above the 8 MiB decode window are ignored, then the
+     * live geometry folds (retail: exactly the DMAC's 0x1FFFFC). */
+    return psx_ram_canonical_offset(canonical) & ~3u;
 }
 
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t size, uint32_t alignment);

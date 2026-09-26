@@ -26,6 +26,7 @@
  */
 
 #include "interrupts.h"
+#include "psx_memory.h"
 #include "sio.h"
 #include "timers.h"
 #include "gpu.h"
@@ -1597,12 +1598,12 @@ irq_deliver_eval:
             if (psx_scheduler_top_level_resume_active() &&
                 cpu->pc != 0u && (cpu->pc & 3u) == 0u) {
                 uint32_t phys = cpu->pc & 0x1FFFFFFFu;
-                if (phys < 0x00200000u ||
+                if (phys < psx_ram_live_bytes() ||
                     (phys >= 0x1FC00000u && phys < 0x1FC80000u))
                     real_pc = cpu->pc;
             }
         }
-        /* Accept the real resume PC from guest RAM (<2MB) OR the BIOS ROM
+        /* Accept the real resume PC from live guest RAM OR the BIOS ROM
          * window. The old RAM-only guard rejected ROM-space block leaders
          * (e.g. OpenBIOS mcWaitForStatus spinning at 0xBFC076xx during a
          * card op), forcing EVERY such delivery onto the legacy sentinel.
@@ -1617,7 +1618,7 @@ irq_deliver_eval:
          * ROM pc still falls back to the sentinel (pre-fix behavior);
          * RAM acceptance is unchanged byte-for-byte. */
         uint32_t real_phys = real_pc & 0x1FFFFFFFu;
-        int resume_in_ram  = real_phys < 0x00200000u;
+        int resume_in_ram  = real_phys < psx_ram_live_bytes();
         int resume_in_rom  = real_phys >= 0x1FC00000u && real_phys < 0x1FC80000u &&
                              psx_is_dispatchable(real_pc);
         if (real_pc != 0u && (real_pc & 0x3u) == 0u &&

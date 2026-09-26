@@ -16,6 +16,7 @@
 #include "display_scanout.h"
 #include "pgxp.h"
 #include "mod_memory.h"
+#include "psx_memory.h"
 #include "gpu_primitive_reject.h"
 #include "gpu_sw_renderer.h"
 #include "gpu_vram_dirty.h"
@@ -43,6 +44,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Word-aligned main-RAM key for a primitive/OT address through the live
+ * geometry (retail: the DMAC's 0x1FFFFC fold). */
+#define GPU_RAM_KEY(a) (psx_ram_canonical_offset(a) & ~3u)
 
 extern uint16_t psx_read_half(uint32_t addr);
 extern uint8_t  psx_read_byte(uint32_t addr);
@@ -1880,7 +1885,7 @@ void gpu_ws_configure(int aspect_num, int aspect_den,
  * start (the first character of a frame would be suppressed forever). */
 void psx_ws_sprite_tag(CPUState* cpu) {
     if (!ws_engaged() || !ws_anchor_addr) return;
-    uint32_t key = cpu->gpr[4] & 0x1FFFFCu;
+    uint32_t key = GPU_RAM_KEY(cpu->gpr[4]);
     if (!key) return;
     uint32_t sxy = cpu->read_word(ws_anchor_addr);
     int32_t  ax  = (int32_t)(int16_t)(sxy & 0xFFFFu);
@@ -1904,7 +1909,7 @@ static int ws_hud_command_words(uint32_t command_addr, uint32_t *words,
     if (!words || !out_count) return 0;
     if ((command_addr & 3u) != 0) return 0;
     uint32_t phys = command_addr & 0x1FFFFFFFu;
-    if (phys > 0x00200000u - 4u) return 0;
+    if (phys > psx_ram_live_bytes() - 4u) return 0;
 
     words[0] = psx_read_word(command_addr);
     uint8_t op = (uint8_t)(words[0] >> 24);
@@ -1912,7 +1917,7 @@ static int ws_hud_command_words(uint32_t command_addr, uint32_t *words,
     int count = gp0_command_word_count(op);
     if (count <= 0 || count > 12) return 0;
     uint32_t bytes = (uint32_t)count * 4u;
-    if (phys > 0x00200000u - bytes) return 0;
+    if (phys > psx_ram_live_bytes() - bytes) return 0;
 
     for (int i = 1; i < count; i++)
         words[i] = psx_read_word(command_addr + (uint32_t)i * 4u);
@@ -1932,7 +1937,7 @@ void gpu_ws_tag_hud_prim(uint32_t prim, int anchor) {
     WsPrepassPacketGuard guard =
         ws_prepass_packet_guard(words, word_count);
     ws_hud_anchor_insert(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE,
-                         command_addr & 0x1FFFFCu, anchor, &guard,
+                         GPU_RAM_KEY(command_addr), anchor, &guard,
                          (uint32_t)s_frame_count);
 }
 
@@ -1945,7 +1950,7 @@ void gpu_ws_tag_black_reveal_rect(uint32_t prim) {
     if ((words[0] >> 24) != 0x64u && (words[0] >> 24) != 0x65u) return;
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     ws_hud_anchor_insert(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE,
-                         (prim + 4u) & 0x1FFFFCu, 0, &guard,
+                         GPU_RAM_KEY((prim + 4u)), 0, &guard,
                          (uint32_t)s_frame_count);
 }
 
@@ -1960,7 +1965,7 @@ void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period) {
     if (!w || w > 256u || (words[2] & 255u) + w > 256u || !h || h > 511u)
         return;
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
-    ws_repeat_rect_tag_insert(ws_repeat_rect_tags, (prim + 4u) & 0x1FFFFCu,
+    ws_repeat_rect_tag_insert(ws_repeat_rect_tags, GPU_RAM_KEY((prim + 4u)),
                               period, &guard, (uint32_t)s_frame_count);
 }
 
@@ -1971,7 +1976,7 @@ static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
     if (gp0_words_needed <= 0 || gp0_words_needed > 12)
         return 0;
     uint32_t command_addr = gp0_cmd_source_addr & 0x1FFFFFFFu;
-    if (command_addr >= 0x00200000u || (command_addr & 3u)) return 0;
+    if (command_addr >= psx_ram_live_bytes() || (command_addr & 3u)) return 0;
     int anchor = 0;
     if (!ws_hud_anchor_lookup(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE,
                               command_addr, gp0_cmd_buf,
@@ -1991,7 +1996,7 @@ static int ws_tagged_anchor(int32_t *out_ax) {
     if (!ws_active() || gp0_cmd_source_addr == 0xFFFFFFFFu) return 0;
     uint32_t now = (uint32_t)s_frame_count;
     for (int variant = 0; variant < 2; variant++) {
-        uint32_t key = (gp0_cmd_source_addr - (variant ? 0u : 4u)) & 0x1FFFFCu;
+        uint32_t key = GPU_RAM_KEY((gp0_cmd_source_addr - (variant ? 0u : 4u)));
         uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
         for (int i = 0; i < WS_TAG_PROBES; i++) {
             WsTag *t = &ws_tags[(idx + i) & (WS_TAG_BUCKETS - 1)];
@@ -2132,7 +2137,7 @@ int psx_ws_prim_is_tagged(void) {
     if (!ws_engaged() || gp0_cmd_source_addr == 0xFFFFFFFFu) return 0;
     uint32_t now = (uint32_t)s_frame_count;
     for (int variant = 0; variant < 2; variant++) {
-        uint32_t key = (gp0_cmd_source_addr - (variant ? 0u : 4u)) & 0x1FFFFCu;
+        uint32_t key = GPU_RAM_KEY((gp0_cmd_source_addr - (variant ? 0u : 4u)));
         uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
         for (int i = 0; i < WS_TAG_PROBES; i++) {
             WsTag *t = &ws_tags[(idx + i) & (WS_TAG_BUCKETS - 1)];
@@ -2228,7 +2233,7 @@ static int ws_auto_ui_anchor(int32_t *out_anchor) {
     if (!ws_auto_ui_squash || !ws_active() ||
         gp0_cmd_source_addr == 0xFFFFFFFFu)
         return 0;
-    uint32_t src = gp0_cmd_source_addr & 0x1FFFFCu;
+    uint32_t src = GPU_RAM_KEY(gp0_cmd_source_addr);
     for (uint32_t i = 0; i < ws_ui_prepass_count; i++) {
         if (ws_ui_prepass[i].src_addr != src) continue;
         if (!ws_prepass_packet_matches(&ws_ui_prepass[i].packet_guard,
@@ -2770,7 +2775,7 @@ static void ws_clear_tagged_rect_reveal(int y, int h) {
     if (!ws_native_wide_active() || h <= 0 || gp0_cmd_source_addr == UINT32_MAX)
         return;
     uint32_t address = gp0_cmd_source_addr & 0x1FFFFFFFu;
-    if (address >= 0x00200000u || (address & 3u) ||
+    if (address >= psx_ram_live_bytes() || (address & 3u) ||
         !ws_hud_anchor_lookup(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE,
                               address, gp0_cmd_buf, (uint32_t)gp0_words_needed,
                               (uint32_t)s_frame_count, NULL)) return;
@@ -3653,7 +3658,7 @@ static void prepare_texture_triangle(int i0, int i1, int i2) {
     int indices[3] = { i0, i1, i2 };
     uint16_t z[3];
     for (int i = 0; i < 3; i++) {
-        uint32_t addr = (gp0_cmd_source_addr + (uint32_t)indices[i] * 4u) & 0x1FFFFCu;
+        uint32_t addr = GPU_RAM_KEY((gp0_cmd_source_addr + (uint32_t)indices[i] * 4u));
         if (!gte_precision_load_word(addr, gp0_cmd_buf[indices[i]], NULL, NULL, &z[i]) ||
             z[i] == 0) {
             s_texcorr.no_depth++;
@@ -4384,7 +4389,7 @@ static void ws_repeat_textured_rect_reveal(int x, int y, int w, int h,
         draw_area_right - draw_area_left + 1u != (uint32_t)width)
         return;
     uint32_t address = gp0_cmd_source_addr & 0x1FFFFFFFu;
-    if (address >= 0x00200000u || (address & 3u)) return;
+    if (address >= psx_ram_live_bytes() || (address & 3u)) return;
     int32_t period = ws_repeat_rect_tag_lookup(ws_repeat_rect_tags, address,
         gp0_cmd_buf, (uint32_t)gp0_words_needed, (uint32_t)s_frame_count);
     if (!period) return;
@@ -4778,8 +4783,8 @@ static void gp0_exec_cpu_to_vram(void) {
             a0_history[slot].s2_val = debug_cpu_ptr->gpr[18]; /* $s2 = source ptr */
             a0_history[slot].a0_val = debug_cpu_ptr->gpr[4];  /* $a0 */
             a0_history[slot].a1_val = debug_cpu_ptr->gpr[5];  /* $a1 */
-            uint32_t sp_phys = sp & 0x1FFFFFu;
-            for (int si = 0; si < 10 && sp_phys + (si + 1) * 4 <= 0x200000u; si++)
+            uint32_t sp_phys = psx_ram_canonical_offset(sp);
+            for (int si = 0; si < 10 && sp_phys + (si + 1) * 4 <= psx_ram_live_bytes(); si++)
                 a0_history[slot].stack[si] = psx_read_word(sp + si * 4);
         }
         a0_capture_slot = slot;
@@ -5022,7 +5027,7 @@ static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
     item->group.height = height;
     item->group.anchor = 0;
     item->group.root = ws_ui_prepass_count - 1u;
-    item->src_addr = source_addr & 0x1FFFFCu;
+    item->src_addr = GPU_RAM_KEY(source_addr);
     item->ot_rank = rank;
     item->y  = min_y;
     item->h  = height;
@@ -5068,7 +5073,7 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
         }
         WsUiPrepassNode *node =
             &ws_ui_prepass_nodes[ws_ui_prepass_node_count++];
-        node->addr = addr & 0x1FFFFCu;
+        node->addr = GPU_RAM_KEY(addr);
         node->header = header;
         node->payload_guard =
             ws_prepass_packet_guard(payload, num_words);
@@ -5165,7 +5170,7 @@ void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t header) {
     if (ws_ui_prepass_count == 0) return;
 
     uint32_t resolved =
-        psx_mod_gpu_dma_resolve_address(addr) & 0x1FFFFCu;
+        GPU_RAM_KEY(psx_mod_gpu_dma_resolve_address(addr));
     for (uint32_t i = 0; i < ws_ui_prepass_node_count; i++) {
         if (ws_ui_prepass_nodes[i].addr != resolved) continue;
         if (ws_ui_prepass_nodes[i].header != header)
@@ -5179,7 +5184,7 @@ void gpu_ws_validate_linked_list_node(uint32_t addr, uint32_t num_words) {
     if (ws_ui_prepass_count == 0) return;
 
     uint32_t resolved =
-        psx_mod_gpu_dma_resolve_address(addr) & 0x1FFFFCu;
+        GPU_RAM_KEY(psx_mod_gpu_dma_resolve_address(addr));
     const WsUiPrepassNode *node = NULL;
     for (uint32_t i = 0; i < ws_ui_prepass_node_count; i++) {
         if (ws_ui_prepass_nodes[i].addr == resolved) {
@@ -5233,11 +5238,11 @@ static void gp0_capture_builder_chain(uint32_t out[6]) {
     for (int i = 0; i < 6; i++) out[i] = 0;
     uint8_t *ram = memory_get_ram_ptr();
     if (!ram) return;
-    const uint32_t RMASK = 0x001FFFFFu;             /* 2 MB, mirror-folded */
+    const uint32_t RMASK = g_psx_ram_mask;          /* live RAM, mirror-folded */
     uint32_t rawsp = debug_guest_sp();
     g_gp0_last_copy_sp = rawsp;
     if ((rawsp & 0x1FFFFFFFu) >= 0x00800000u) return; /* not in RAM/mirror */
-    uint32_t sp = rawsp & RMASK & ~3u;              /* fold to 2MB, word-align */
+    uint32_t sp = psx_ram_canonical_offset(rawsp) & ~3u; /* fold, word-align */
     /* Two-pass: prefer words that are genuine return addresses (call at ret-8),
      * but if guest code validation yields none, fall back to any code-range
      * stack word so the chain is never silently empty. */

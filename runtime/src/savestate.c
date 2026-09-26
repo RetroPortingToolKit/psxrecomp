@@ -582,7 +582,8 @@ int savestate_read_slot(int slot, uint8_t** data_out, size_t* size_out) {
     if (!f) return 0;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
     sz = ftell(f);
-    if (sz <= 0 || (size_t)sz > 8u * 1024u * 1024u) { fclose(f); return 0; }
+    /* Raw 8 MB-RAM states run ~11.5 MiB (RAM + VRAM + SPU + dirty maps). */
+    if (sz <= 0 || (size_t)sz > 16u * 1024u * 1024u) { fclose(f); return 0; }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return 0; }
     buf = (uint8_t*)malloc((size_t)sz);
     if (!buf) { fclose(f); return 0; }

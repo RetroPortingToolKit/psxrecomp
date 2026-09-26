@@ -141,6 +141,14 @@ static void psx_check_interrupts_dispatch_entry(CPUState* cpu, uint32_t a) {
     (void)cpu; (void)a; irqs++;
 }
 int psx_vsync_query_hle_try(CPUState* cpu, uint32_t a) { (void)cpu; (void)a; return 0; }
+/* Retail live geometry (runtime psx_ram_geometry.c with the 8 MB mod off):
+ * 2nd-4th MiB of the decode window fold onto the low 2 MiB. */
+uint32_t psx_ram_canon_code_addr(uint32_t addr) {
+    uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys >= 0x00200000u && phys < 0x00800000u)
+        return (addr & 0xE0000000u) | (phys & 0x001FFFFFu);
+    return addr;
+}
 '''
     harness += "\n".join(f"#define {fn} dummy" for fn in funcs) + "\n" + fragment
     harness += r'''
@@ -155,6 +163,9 @@ int main(void) {
                     expected = &k_psx_game_dispatch[i];
             uint32_t addr = aliases[a] | phys;
             assert(psx_game_find_entry(addr) == expected);
+            // Retail RAM mirrors resolve to the same compiled entry.
+            for (uint32_t m = 1; m < 4; ++m)
+                assert(psx_game_find_entry(addr + m * 0x00200000u) == expected);
             if (!expected) continue;
             // A previously resolved PC must NOT cache its live-byte verdict.
             allowed = 0; cpu.pc = 0xDEADBEEFu;

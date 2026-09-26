@@ -10,6 +10,7 @@
 #include "psx_cycles.h"
 #include "lockstep.h"
 #include "overlay_posix.h"
+#include "psx_memory.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,7 +117,7 @@ static int       s_cand_n = 0;
  * scales catastrophically once a warmed cache contains hundreds of variant
  * DLLs. Index candidates by the 4 KiB RAM pages touched by their code ranges;
  * a continuation then examines only candidates that could contain its PC. */
-#define RANGE_PAGE_COUNT (2u * 1024u * 1024u / 4096u)
+#define RANGE_PAGE_COUNT (PSX_MAIN_RAM_BACKING_BYTES / 4096u)
 #define RANGE_LINK_CAP   (CAND_CAP * 8)
 typedef struct { int cand, next; } RangeLink;
 static int       s_range_page_head[RANGE_PAGE_COUNT];
@@ -182,7 +183,7 @@ static uint32_t s_exact_entry_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS];
 
 static void exact_entry_set(uint32_t phys) {
     phys &= 0x1FFFFFFFu;
-    if (phys < 2u * 1024u * 1024u && (phys & 3u) == 0u) {
+    if (phys < PSX_MAIN_RAM_BACKING_BYTES && (phys & 3u) == 0u) {
         uint32_t word = phys >> 2;
         s_exact_entry_bitmap[word >> 5] |= 1u << (word & 31u);
     }
@@ -190,7 +191,7 @@ static void exact_entry_set(uint32_t phys) {
 
 static int exact_entry_has(uint32_t phys) {
     phys &= 0x1FFFFFFFu;
-    if (phys >= 2u * 1024u * 1024u || (phys & 3u) != 0u) return 0;
+    if (phys >= PSX_MAIN_RAM_BACKING_BYTES || (phys & 3u) != 0u) return 0;
     uint32_t word = phys >> 2;
     return (s_exact_entry_bitmap[word >> 5] >> (word & 31u)) & 1u;
 }
@@ -574,6 +575,15 @@ typedef struct {
 } StaticMatchCache;
 
 static StaticMatchCache s_static_match_cache[STATIC_MATCH_CACHE_CAP];
+
+/* Main-RAM offset of a variant code range, through the one geometry contract
+ * (psx_memory.h). Retail targets fold the 2nd-4th mirrors of the 8 MiB KSEG
+ * decode window and expanded targets decode it uniquely -- the same fold the
+ * CPU applies, so an image a game places in a mirror (a mod engine copied to
+ * 0x80780000 on 2 MiB hardware) is gated on exactly the bytes that execute. */
+static int static_range_offset(uint32_t lo, uint32_t len, uint32_t *off) {
+    return len != 0u && psx_ram_resolve(lo, len, off);
+}
 static uint64_t s_static_match_rehashes = 0;
 static uint64_t s_static_match_crc_misses = 0;
 static uint64_t s_static_match_gen_fastpath = 0;
@@ -589,14 +599,13 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
 
     uint32_t gen_sum = 0;
     for (uint32_t i = 0; i < count; i++) {
-        uint32_t lo = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
+        uint32_t off = 0;
         uint32_t len = lo_len_pairs[i * 2u + 1u];
-        if (len == 0u || lo >= 2u * 1024u * 1024u ||
-            len > 2u * 1024u * 1024u - lo) {
+        if (!static_range_offset(lo_len_pairs[i * 2u], len, &off)) {
             s_static_match_crc_misses++;
             return 0;
         }
-        gen_sum += overlay_watch_pagegen_sum(lo, len);
+        gen_sum += overlay_watch_pagegen_sum(off, len);
     }
 
     uintptr_t raw = (uintptr_t)lo_len_pairs;
@@ -632,15 +641,16 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
      * a band that swapped occupants would keep dispatching the stale variant.
      * Arming only sets bitmap bits -- it does not advance any generation, so
      * the gen_sum computed above stays valid for the cache write below. */
-    for (uint32_t i = 0; i < count; i++)
-        overlay_watch_set_range(lo_len_pairs[i * 2u] & 0x1FFFFFFFu,
-                                lo_len_pairs[i * 2u + 1u]);
-
     uint32_t crc = 0xFFFFFFFFu;
+    uint32_t lo_min = 0xFFFFFFFFu, hi_max = 0;
     for (uint32_t i = 0; i < count; i++) {
-        uint32_t lo = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
+        uint32_t off = 0;
         uint32_t len = lo_len_pairs[i * 2u + 1u];
-        crc = crc32_update(crc, ram + lo, len);
+        (void)static_range_offset(lo_len_pairs[i * 2u], len, &off); /* checked above */
+        overlay_watch_set_range(off, len);
+        crc = crc32_update(crc, ram + off, len);
+        if (off < lo_min) lo_min = off;
+        if (off + len > hi_max) hi_max = off + len;
     }
     crc ^= 0xFFFFFFFFu;
     int matches = (crc == expected_crc) ? 1 : 0;
@@ -653,13 +663,6 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
         entry->expected_crc = expected_crc;
         entry->gen_sum = gen_sum;
         entry->matches = matches;
-        uint32_t lo_min = 0xFFFFFFFFu, hi_max = 0;
-        for (uint32_t i = 0; i < count; i++) {
-            uint32_t lo = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
-            uint32_t hi = lo + lo_len_pairs[i * 2u + 1u];
-            if (lo < lo_min) lo_min = lo;
-            if (hi > hi_max) hi_max = hi;
-        }
         entry->lo_min = lo_min;
         entry->hi_max = hi_max;
     }
@@ -687,17 +690,22 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
  * to a capture / .EMI section offline. Called only on EXTERNAL interp
  * entries, so a 4096-slot scan is fine. */
 uint32_t psx_overlay_resident_crc_at(uint32_t phys, int *valid) {
-    phys &= 0x1FFFFFFFu;
     uint32_t stale = 0;
+    if (!psx_ram_resolve(phys, 1u, &phys)) {
+        if (valid) *valid = 0;
+        return s_last_crc;
+    }
     for (uint32_t i = 0; i < STATIC_MATCH_CACHE_CAP; i++) {
         const StaticMatchCache *e = &s_static_match_cache[i];
         if (!e->ranges || phys < e->lo_min || phys >= e->hi_max)
             continue;
         if (e->matches) {
             uint32_t gen_sum = 0;
-            for (uint32_t k = 0; k < e->count; k++)
-                gen_sum += overlay_watch_pagegen_sum(e->ranges[k * 2u] & 0x1FFFFFFFu,
-                                                    e->ranges[k * 2u + 1u]);
+            for (uint32_t k = 0; k < e->count; k++) {
+                uint32_t off = 0;
+                (void)static_range_offset(e->ranges[k * 2u], e->ranges[k * 2u + 1u], &off);
+                gen_sum += overlay_watch_pagegen_sum(off, e->ranges[k * 2u + 1u]);
+            }
             if (gen_sum == e->gen_sum) {
                 if (valid) *valid = 1;
                 return e->expected_crc;
@@ -737,7 +745,11 @@ typedef struct {
     int      n;
 } ManFn;
 
-#define OVERLAY_RAM_SIZE (2u * 1024u * 1024u)
+/* Manifests are parsed at loader init, before memory_init() latches the live
+ * geometry, so structural validity is the whole KSEG0 decode window. Whether
+ * the bytes there are live code is decided per dispatch by the range CRC. */
+#define OVERLAY_RAM_SIZE PSX_MAIN_RAM_WINDOW_BYTES
+#define OVERLAY_KSEG0_WINDOW_MASK (~(PSX_MAIN_RAM_WINDOW_BYTES - 1u))
 #define MANIFEST_LINE_MAX 128u
 #define MANIFEST_PHYSICAL_LINE_MAX 159u
 #define MANIFEST_PROVENANCE_PREFIX "# psxrecomp overlay provenance "
@@ -751,12 +763,12 @@ enum {
 static int man_structurally_valid(const ManFn *m) {
     if (!m || !m->has_crc || m->n < 1 || m->n > MAX_CODE_RANGES)
         return 0;
-    if ((m->entry & 0xFFE00000u) != 0x80000000u) return 0;
+    if ((m->entry & OVERLAY_KSEG0_WINDOW_MASK) != 0x80000000u) return 0;
     uint32_t entry = m->entry & 0x1FFFFFFFu;
     if ((entry & 3u) != 0u || entry >= OVERLAY_RAM_SIZE) return 0;
     int entry_covered = 0;
     for (int r = 0; r < m->n; r++) {
-        if ((m->lo[r] & 0xFFE00000u) != 0x80000000u) return 0;
+        if ((m->lo[r] & OVERLAY_KSEG0_WINDOW_MASK) != 0x80000000u) return 0;
         uint32_t lo = m->lo[r] & 0x1FFFFFFFu;
         uint32_t len = m->len[r];
         if ((lo & 3u) != 0u || (len & 3u) != 0u || len < 4u ||
@@ -970,7 +982,7 @@ static int mips_control_kind(uint32_t instr) {
 static int ranges_contain_word(const uint32_t *lo_list,
                                const uint32_t *len_list, int n,
                                uint32_t phys) {
-    if ((phys & 3u) != 0u || phys > (2u * 1024u * 1024u) - 4u) return 0;
+    if ((phys & 3u) != 0u || phys > OVERLAY_RAM_SIZE - 4u) return 0;
     for (int r = 0; r < n; r++) {
         uint32_t lo = lo_list[r] & 0x1FFFFFFFu;
         uint32_t len = len_list[r];
@@ -986,7 +998,7 @@ static int ranges_contain_word(const uint32_t *lo_list,
 static int ranges_delay_slots_hashed(const uint32_t *lo_list,
                                      const uint32_t *len_list, int n) {
     const uint8_t *ram = memory_get_ram_ptr();
-    const uint32_t ram_size = 2u * 1024u * 1024u;
+    const uint32_t ram_size = psx_ram_live_bytes();
     if (!ram || n < 1 || n > MAX_CODE_RANGES) return 0;
     for (int r = 0; r < n; r++) {
         uint32_t lo = lo_list[r] & 0x1FFFFFFFu;
@@ -4078,9 +4090,11 @@ int overlay_fp_enabled(void) {
  * so the comparison isolates COMPUTATION (and is longjmp-safe). A divergence
  * here = a real codegen bug (function + exact register/RAM). Zero divergence =
  * computation is correct and the fault is timing/interrupt-ordering. */
-#define SHADOW_RAM_SIZE  (2u * 1024u * 1024u)
+/* Snapshots cover the live RAM (retail 2 MiB unless the 8 MB mod is on). */
+#define SHADOW_RAM_SIZE  psx_ram_live_bytes()
 #define SHADOW_SPAD_SIZE 1024u
-static uint8_t  s_ram0[SHADOW_RAM_SIZE], s_ramN[SHADOW_RAM_SIZE], s_ramI[SHADOW_RAM_SIZE];
+static uint8_t  s_ram0[PSX_MAIN_RAM_BACKING_BYTES], s_ramN[PSX_MAIN_RAM_BACKING_BYTES],
+                s_ramI[PSX_MAIN_RAM_BACKING_BYTES];
 static uint8_t  s_spad0[SHADOW_SPAD_SIZE], s_spadI[SHADOW_SPAD_SIZE];
 static uint64_t s_shadow_skipped_dev = 0;  /* unsafe/incomplete traces skipped */
 /* s_diff_mode / s_in_shadow declared above (before dispatch). */

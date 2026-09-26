@@ -34,7 +34,7 @@
 #endif
 #include "cpu_state.h"   /* CPUState (guard-safe: cpu_state.h includes us last) */
 #include "psx_cycles.h"  /* inline psx_advance_cycles */
-#include "psx_ram.h"
+#include "psx_memory.h"
 
 #ifdef __cplusplus
 extern "C" {

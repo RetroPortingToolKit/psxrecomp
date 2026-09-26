@@ -41,6 +41,7 @@
 #include "psx_cycles.h"
 #include "timers.h"
 #include "dirty_ram_interp.h"
+#include "psx_memory.h"
 #include "card_read_summary.h"
 #include "card_data_writes.h"
 #include "crash_trace.h"
@@ -162,7 +163,7 @@ uint64_t s_frame_count = 0;
  * frame, found in O(1) instead of O(n) function guesses. wr_hash vs pc_hash
  * classifies the fork: pc differs but wr matches => same writes via a different
  * control path; wr differs => actual state divergence. Reusable for any title.
- * Hashed over main RAM (phys < 0x200000) only — game state lives there; MMIO/
+ * Hashed over live main RAM (phys < live RAM end) only — game state lives there; MMIO/
  * scratchpad churn (device polling) would add benign cross-backend noise. */
 uint64_t g_fp_wr_hash    = 1469598103934665603ULL;  /* FNV-1a-style seed (main RAM) */
 uint64_t g_fp_pc_hash    = 1469598103934665603ULL;  /* store-PC path sig (main RAM)  */
@@ -179,7 +180,7 @@ static PSX_BSS FpEntry  s_fp_ring[FP_RING_CAP];
 static uint32_t s_fp_head  = 0;
 static uint64_t s_fp_total = 0;
 
-/* Record a guest WRITE into the per-frame fingerprint. Main RAM (phys<0x200000)
+/* Record a guest WRITE into the per-frame fingerprint. Live main RAM
  * feeds the proven wr/pc hashes. Scratchpad (0x1F800000..0x1F8003FF) feeds a
  * SEPARATE sp_hash — it was previously dropped entirely (the blind spot that
  * hid a possible pre-1823 scratchpad-state fork), but folding it into wr_hash
@@ -196,7 +197,7 @@ static inline void fp_record_write(uint32_t phys, uint32_t val, uint32_t pc)
         g_fp_sp_count++;
         return;
     }
-    if (phys >= 0x200000u) return;                  /* main RAM only */
+    if (phys >= psx_ram_live_bytes()) return;       /* main RAM only */
     uint64_t h = g_fp_wr_hash;
     h = (h ^ (uint64_t)phys) * 1099511628211ULL;
     h = (h ^ (uint64_t)val)  * 1099511628211ULL;
@@ -747,7 +748,7 @@ static uint32_t trace_read_word(CPUState *cpu, uint32_t addr)
 {
     (void)cpu;
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys > 0x001FFFFCu &&
+    if (phys > psx_ram_live_bytes() - 4u &&
         (phys < 0x1F800000u || phys > 0x1F8003FCu)) {
         return 0;
     }
@@ -764,7 +765,7 @@ static uint32_t trace_read_half(CPUState *cpu, uint32_t addr)
 {
     (void)cpu;
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys > 0x001FFFFEu &&
+    if (phys > psx_ram_live_bytes() - 2u &&
         (phys < 0x1F800000u || phys > 0x1F8003FEu)) {
         return 0;
     }
@@ -1367,7 +1368,7 @@ static void evcb_snapshot_capture(EvCBTag tag, uint64_t fn_entry_seq) {
 
     /* Convert RAM base ptr to RAM offset (kernel uses cached + uncached
      * mirrors; mask off region bits). */
-    uint32_t base_ram = base_ptr & 0x001FFFFFu;
+    uint32_t base_ram = psx_ram_canonical_offset(base_ptr);
 
     EvCBSnapshot *e = &s_evcb_ring[s_evcb_ring_seq % EVCB_RING_CAP];
     e->seq              = s_evcb_ring_seq;
@@ -1391,7 +1392,7 @@ static void evcb_snapshot_capture(EvCBTag tag, uint64_t fn_entry_seq) {
 
     for (uint32_t i = 0; i < n_entries; i++) {
         uint32_t off = base_ram + i * EVCB_ENTRY_SIZE;
-        if (off + EVCB_ENTRY_SIZE > 0x00200000u) break;
+        if (off + EVCB_ENTRY_SIZE > psx_ram_live_bytes()) break;
         e->entries[i].cls      = evcb_read_u32_ram(off + 0);
         e->entries[i].status   = evcb_read_u32_ram(off + 4);
         e->entries[i].spec     = evcb_read_u32_ram(off + 8);
@@ -1702,7 +1703,7 @@ static void call_focus_record(uint32_t func_addr)
         e->obj_18    = psx_read_word(phys + 0x18u);
         e->obj_30    = psx_read_word(phys + 0x30u);
         uint32_t out_phys = e->obj_30 & 0x1FFFFFFFu;
-        if (out_phys < 0x00200000u - 1u) {
+        if (out_phys < psx_ram_live_bytes() - 1u) {
             e->obj_30_0 = psx_read_byte(out_phys);
             e->obj_30_1 = psx_read_byte(out_phys + 1u);
         }
@@ -5171,9 +5172,9 @@ static void handle_read_ram(int id, const char *json)
     uint32_t addr = hex_to_u32(addr_str);
     int len = json_get_int(json, "len", 1);
     if (len < 1) len = 1;
-    /* Effectively the entire 2 MB RAM in one shot.  Response uses a heap-
-     * sized envelope so we don't truncate. */
-    if (len > 0x200000) len = 0x200000;
+    /* Effectively the entire live RAM (2 MB, or 8 MB with the opt-in map) in
+     * one shot.  Response uses a heap-sized envelope so we don't truncate. */
+    if (len > (int)psx_ram_live_bytes()) len = (int)psx_ram_live_bytes();
 
     /* Heap buffer for hex chars + JSON envelope.  Each byte = 2 hex chars. */
     size_t env = 256;
@@ -7278,13 +7279,13 @@ static void handle_evcb_snapshot(int id, const char *json)
     snap.flag_755A       = (uint32_t)psx_read_byte(0x0000755A);
     snap.flag_75C0       = evcb_read_u32_ram(0x000075C0);
     snap.frame           = (uint32_t)s_frame_count;
-    uint32_t base_ram    = base_ptr & 0x001FFFFFu;
+    uint32_t base_ram    = psx_ram_canonical_offset(base_ptr);
     uint32_t n_entries   = (total_bytes / EVCB_ENTRY_SIZE);
     if (n_entries > EVCB_MAX_ENTRIES) n_entries = EVCB_MAX_ENTRIES;
     snap.entry_count     = n_entries;
     for (uint32_t i = 0; i < n_entries; i++) {
         uint32_t off = base_ram + i * EVCB_ENTRY_SIZE;
-        if (off + EVCB_ENTRY_SIZE > 0x00200000u) break;
+        if (off + EVCB_ENTRY_SIZE > psx_ram_live_bytes()) break;
         snap.entries[i].cls      = evcb_read_u32_ram(off + 0);
         snap.entries[i].status   = evcb_read_u32_ram(off + 4);
         snap.entries[i].spec     = evcb_read_u32_ram(off + 8);
@@ -9589,7 +9590,7 @@ void debug_server_trace_write_check(uint32_t phys, uint32_t old_val,
     fp_record_write(phys, new_val, g_debug_last_store_pc);
     {
         uint32_t ra = debug_cpu_ptr ? debug_cpu_ptr->gpr[31] : 0;
-        if (phys < 0x200000u)
+        if (phys < psx_ram_live_bytes())
             rec_event(REC_KIND_RAM_W, phys, new_val, g_debug_last_store_pc, ra);
         else if (phys >= 0x1F800000u && phys <= 0x1F8003FFu)
             rec_event(REC_KIND_SP_W, phys, new_val, g_debug_last_store_pc, ra);

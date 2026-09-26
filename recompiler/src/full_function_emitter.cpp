@@ -2190,7 +2190,9 @@ void FullFunctionEmitter::emit_dispatch(
     out += "         * physical 0x30000-0x5AFFF. If the target belongs to the\n";
     out += "         * active game text range, route it through the game/dirty-RAM\n";
     out += "         * path before normalizing it to shell ROM. */\n";
-    out += "        uint32_t game_addr = psx_ram_canon_code_addr(addr);\n";
+    out += "        /* Live-geometry code address: only 2nd-4th-MiB keys can fold. */\n";
+    out += "        uint32_t game_addr = ((addr & 0x1FFFFFFFu) - 0x00200000u < 0x00600000u)\n";
+    out += "            ? psx_ram_canon_code_addr(addr) : addr;\n";
     out += "        uint32_t game_phys = game_addr & 0x1FFFFFFFu;\n";
     out += "        /* Class-A shell-window collision fix: post-game-start the BIOS shell\n";
     out += "         * copy at RAM 0x30000-0x5AFFF is DEAD (overwritten by the game EXE,\n";

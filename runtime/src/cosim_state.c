@@ -13,6 +13,7 @@
  * and compiled-vs-compiled gates.
  */
 #include "cosim_state.h"
+#include "psx_memory.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,18 +51,21 @@ extern uint64_t interrupts_cosim_hash(uint64_t seed);
 /* renderer-agnostic VRAM readback (sw renderer = cheap memcpy). */
 extern void gr_vram_transfer_out(int x, int y, int w, int h, uint16_t *dst);
 
-#define RAM_SIZE   (2u * 1024u * 1024u)
+/* Hash the live RAM (retail 2 MiB unless the 8 MB mod is on); page tables are
+ * sized for the host backing. */
+#define RAM_SIZE   psx_ram_live_bytes()
 #define SPAD_SIZE  (1024u)
 #define PAGE       4096u
-#define RAM_PAGES  (RAM_SIZE / PAGE)      /* 512 */
+#define RAM_PAGES_CAP (PSX_MAIN_RAM_BACKING_BYTES / PAGE)
+#define RAM_PAGES  (RAM_SIZE / PAGE)
 #define VRAM_W 1024
 #define VRAM_H 512
 #define VRAM_SIZE ((uint32_t)(VRAM_W * VRAM_H * 2))   /* 1 MB */
 #define VRAM_PAGES (VRAM_SIZE / PAGE)     /* 256 */
 
 /* ---- incremental RAM page hashes ---- */
-static uint64_t s_ram_page_h[RAM_PAGES];
-static uint8_t  s_ram_page_dirty[RAM_PAGES];
+static uint64_t s_ram_page_h[RAM_PAGES_CAP];
+static uint8_t  s_ram_page_dirty[RAM_PAGES_CAP];
 static int      s_ram_all_dirty = 1;
 
 /* ---- VRAM: full-recompute when dirty (draws are periodic, not per-block) ---- */

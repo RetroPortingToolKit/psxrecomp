@@ -5,7 +5,7 @@
 #include "mod_packages.h"
 #include "mod_plugins.h"
 #include "gpu.h"
-#include "psx_ram.h"
+#include "psx_memory.h"
 #include "psx_sha256.h"
 
 #if defined(RECOMP_LAUNCHER)

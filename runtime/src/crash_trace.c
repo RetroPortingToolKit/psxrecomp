@@ -38,6 +38,7 @@
 #include <time.h>
 
 #include "cpu_state.h"
+#include "psx_memory.h"
 #include "psx_bss.h"
 #include "crash_trace.h"
 #include "autocompile.h"   /* autocompile_degraded_reason — stamp a degraded
@@ -166,8 +167,9 @@ static int crash_peek_guest(uint32_t vaddr, uint8_t *dst, int len) {
         return len;
     }
     if (phys < 0x00800000u && g_psx_ram) {
-        uint32_t folded = phys & 0x1FFFFFu;
-        if (folded + (uint32_t)len > 0x200000u) len = (int)(0x200000u - folded);
+        uint32_t folded = psx_ram_canonical_offset(phys);
+        if (folded + (uint32_t)len > psx_ram_live_bytes())
+            len = (int)(psx_ram_live_bytes() - folded);
         if (len <= 0) return 0;
         memcpy(dst, g_psx_ram + folded, (size_t)len);
         return len;

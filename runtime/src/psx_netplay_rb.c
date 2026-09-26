@@ -1,4 +1,5 @@
 #include "psx_netplay_rb.h"
+#include "psx_memory.h"
 #include "cpu_state.h" /* full CPUState — stub path assigns *out = *in */
 
 #if !defined(PSX_HAS_RECOMP_NET)
@@ -1579,8 +1580,8 @@ static int rb_resume_pc_ok(uint32_t pc)
     if ((pc & 0xfff00000u) == 0xbfc00000u)
         return 1; /* BIOS ROM */
     phys = pc & 0x1fffffffu;
-    /* 2MB main RAM; skip the low scratch page (catches 0xB0 / 0x800000B0). */
-    if (phys >= 0x1000u && phys < 0x200000u)
+    /* Live main RAM; skip the low scratch page (catches 0xB0 / 0x800000B0). */
+    if (phys >= 0x1000u && phys < psx_ram_live_bytes())
         return 1;
     return 0;
 }

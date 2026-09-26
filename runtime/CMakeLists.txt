@@ -35,7 +35,8 @@ if(BUILD_TESTING)
         target_compile_options(ws_world_scene_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections)
         target_link_options(ws_world_scene_test PRIVATE -flto -Wl,--gc-sections)
         add_test(NAME ws_world_scene_test COMMAND ws_world_scene_test)
-        add_executable(mod_memory_snapshot_test tests/test_mod_memory_snapshot.c)
+        add_executable(mod_memory_snapshot_test tests/test_mod_memory_snapshot.c
+            src/psx_ram_geometry.c)
         target_include_directories(mod_memory_snapshot_test PRIVATE include src)
         target_compile_options(mod_memory_snapshot_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections)
         target_link_options(mod_memory_snapshot_test PRIVATE -flto -Wl,--gc-sections)
@@ -140,14 +141,14 @@ if(BUILD_TESTING)
             PRIVATE include)
         if(_ram_geometry STREQUAL "expanded")
             target_compile_definitions(psx_memory_geometry_${_ram_geometry}_test
-                PRIVATE PSX_MAIN_RAM_BYTES=0x00800000u)
+                PRIVATE PSX_MEMORY_GEOMETRY_TEST_EXPANDED=1)
         endif()
         add_test(NAME psx_memory_geometry_${_ram_geometry}_test
                  COMMAND psx_memory_geometry_${_ram_geometry}_test)
     endforeach()
 
     add_executable(psx_ram_runtime_map_test
-        tests/test_psx_ram_runtime_map.c)
+        tests/test_psx_ram_runtime_map.c src/psx_ram_geometry.c)
     target_include_directories(psx_ram_runtime_map_test PRIVATE include)
     add_test(NAME psx_ram_runtime_map_test COMMAND psx_ram_runtime_map_test)
 
@@ -205,6 +206,7 @@ if(BUILD_TESTING)
         tests/test_gte_register_access.cpp
         src/gte.cpp
         src/pgxp.cpp
+        src/psx_ram_geometry.c
     )
     target_include_directories(gte_register_access_test PRIVATE include)
     target_compile_definitions(gte_register_access_test PRIVATE
@@ -219,7 +221,8 @@ if(BUILD_TESTING)
     # suppression bracket, invalidate-all, and GetPreciseVertex safeguards
     # (truncation agreement + tolerance clamp). White-box: includes src/pgxp.cpp
     # and stubs the gte.cpp fallback-cache extern.
-    add_executable(pgxp_test tests/test_pgxp.cpp src/pgxp.cpp)
+    add_executable(pgxp_test tests/test_pgxp.cpp src/pgxp.cpp
+        src/psx_ram_geometry.c)
     target_include_directories(pgxp_test PRIVATE include)
     add_test(NAME pgxp_test COMMAND pgxp_test)
 
@@ -327,7 +330,8 @@ if(BUILD_TESTING)
 
     add_executable(overlay_capture_retry_test
         tests/test_overlay_capture_retry.cpp
-        src/overlay_capture.c)
+        src/overlay_capture.c
+        src/psx_ram_geometry.c)
     target_include_directories(overlay_capture_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_retry_test PRIVATE
@@ -427,7 +431,8 @@ if(BUILD_TESTING)
 
     add_executable(text_xlate_fix_only_test
         tests/test_text_xlate_fix_only.cpp
-        src/text_xlate.cpp)
+        src/text_xlate.cpp
+        src/psx_ram_geometry.c)
     target_include_directories(text_xlate_fix_only_test PRIVATE
         include
         ../recompiler/lib/toml11)

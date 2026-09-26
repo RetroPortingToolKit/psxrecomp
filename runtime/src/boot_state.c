@@ -9,7 +9,7 @@
 #include "interrupts.h"
 #include "psx_cycles.h"
 #include "psx_icache.h"    /* g_psx_icache_tv — fetch-cost tags in BS_SEC_ICACHE */
-#include "psx_ram.h"
+#include "psx_memory.h"
 #include "pst_wire.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -550,7 +550,7 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
         {
             extern void psx_kernel_bless_note_range(uint32_t phys, uint32_t l);
             psx_kernel_bless_note_range(0, memory_get_ram_bytes());
-            psx_ram_resync_high_after_restore();
+            psx_ram_resync_high_after_restore(memory_get_ram_ptr());
         }
         return 1;
     case BS_SEC_SPAD:

@@ -545,7 +545,7 @@ NON_AUTHORITY_MANIFEST_PROVENANCES = {
 HOSTED_MANIFEST_MARKER = (
     f'# psxrecomp overlay provenance {HOSTED_MANIFEST_PROVENANCE}')
 HOSTED_UNIQUE_GUARDED_BYTE_CAP = 1024 * 1024
-# Full 8 MiB host capacity (PSX_RAM_CAPACITY): 8 MB-mod captures carry
+# Full 8 MiB host capacity (PSX_MAIN_RAM_BACKING_BYTES): 8 MB-mod captures carry
 # high-bank enhancement code and their ranges must validate.
 PSX_RAM_SIZE = 8 * 1024 * 1024
 

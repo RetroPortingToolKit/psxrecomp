@@ -42,7 +42,7 @@ def main() -> int:
     read = cd_slice.index("uint32_t word = cdrom_dma_read();")
     store = cd_slice.index("psx_write_word(addr, word);", read)
     admit = cd_slice.index("dirty_ram_mark_executable_range(addr, 4);", store)
-    advance = cd_slice.index("addr = (addr + addr_step)", admit)
+    advance = cd_slice.index("addr = DMA_RAM_ADDR((addr + addr_step))", admit)
     if not read < store < admit < advance:
         raise AssertionError("CD DMA overlay admission is not coupled to each RAM word")
 

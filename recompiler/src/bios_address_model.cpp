@@ -266,10 +266,13 @@ uint32_t BiosAddressModel::rom_keyed_ram_hi_incl() const {
 
 std::string BiosAddressModel::emit_normalize_c() const {
     std::string out;
+    out += "extern uint32_t psx_ram_canon_code_addr(uint32_t addr);\n";
     out += "static uint32_t normalize(uint32_t addr) {\n";
     out += "    uint32_t phys = addr & 0x1FFFFFFFu;\n";
-    out += "    /* PSX main RAM: 2 MiB mirrored through physical 0x007FFFFF. */\n";
-    out += "    if (phys < 0x00800000u) phys &= 0x001FFFFFu;\n";
+    out += "    /* PSX main RAM decode window [0, 0x00800000): retail 2 MiB mirrors\n";
+    out += "     * fold onto the low bank; the opt-in 8 MB map keeps registered high\n";
+    out += "     * pages unique. Only high-window keys need the live-geometry call. */\n";
+    out += "    if (phys - 0x00200000u < 0x00600000u) phys = psx_ram_canon_code_addr(phys);\n";
     for (const BiosAddrCopy& c : copies_) {
         if (c.key_is_ram) {
             out += fmt::format("    /* {}: ROM 0x{:X}+ -> RAM 0x{:X}+ */\n",

@@ -25,14 +25,14 @@
 #include "dirty_ram_interp.h"
 #include "guest_tty.h"
 #include "psx_cycles.h"
-#include "psx_ram.h"
+#include "psx_memory.h"
 #include "starvation_ring.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define RAM_SIZE        PSX_RAM_CAPACITY
+#define RAM_SIZE        PSX_MAIN_RAM_BACKING_BYTES
 #define SCRATCHPAD_SIZE 1024
 #define BIOS_ROM_SIZE   (512 * 1024)
 #define MOD_MEMORY_BASE 0x1F000000u
@@ -45,67 +45,6 @@ static uint8_t mod_memory[MOD_MEMORY_SIZE];
 static uint32_t mod_memory_used;
 static uint8_t mod_gpu_dma_memory[PSX_MOD_GPU_DMA_APERTURE_SIZE];
 static uint32_t mod_gpu_dma_memory_used;
-static int s_ram_8mb_requested;
-
-uint32_t g_psx_ram_size = PSX_RAM_2MB;
-uint32_t g_psx_ram_mask = PSX_RAM_2MB - 1u;
-static uint32_t s_ram_high_registered[PSX_RAM_HIGH_BITWORDS];
-uint32_t g_psx_ram_high_unique[PSX_RAM_HIGH_BITWORDS];
-
-static inline void psx_ram_high_page_mark(uint32_t page) {
-    uint32_t i, bit;
-    if (page < PSX_RAM_HIGH_PAGE0 || page >= (PSX_RAM_8MB >> 12))
-        return;
-    i = page - PSX_RAM_HIGH_PAGE0;
-    bit = 1u << (i & 31u);
-    g_psx_ram_high_unique[i >> 5] |= bit;
-    s_ram_high_registered[i >> 5] |= bit;
-}
-
-static void psx_ram_apply_registered_bitmap(void) {
-    memcpy(g_psx_ram_high_unique, s_ram_high_registered,
-           sizeof(g_psx_ram_high_unique));
-}
-
-void psx_ram_register_unique(uint32_t addr, uint32_t len) {
-    uint32_t phys, end, page, last;
-    if (len == 0u)
-        return;
-    phys = addr & 0x1FFFFFFFu;
-    if (phys >= PSX_RAM_WINDOW)
-        return;
-    end = phys + len;
-    if (end < phys || end > PSX_RAM_WINDOW)
-        end = PSX_RAM_WINDOW;
-    if (end <= PSX_RAM_2MB)
-        return;
-    if (phys < PSX_RAM_2MB)
-        phys = PSX_RAM_2MB;
-    page = phys >> 12;
-    last = (end - 1u) >> 12;
-    for (; page <= last; page++)
-        psx_ram_high_page_mark(page);
-}
-
-uint32_t psx_ram_canon_code_addr(uint32_t addr) {
-    return psx_ram_canon_code_addr_inline(addr);
-}
-
-void psx_ram_resync_high_after_restore(void) {
-    uint32_t page;
-    psx_ram_apply_registered_bitmap();
-    if (g_psx_ram_size <= PSX_RAM_2MB)
-        return;
-    for (page = PSX_RAM_HIGH_PAGE0; page < (PSX_RAM_8MB >> 12); page++) {
-        uint32_t dst = page << 12;
-        uint32_t src = dst & (PSX_RAM_2MB - 1u);
-        if (psx_ram_high_page_unique(page))
-            continue;
-        if (memcmp(ram + dst, ram + src, 4096u) != 0)
-            psx_ram_high_page_mark(page);
-    }
-}
-
 uint32_t psx_mod_memory_snapshot_bytes(void) {
     return mod_memory_used || mod_gpu_dma_memory_used
         ? 16u + mod_memory_used + mod_gpu_dma_memory_used : 0u;
@@ -205,59 +144,19 @@ int g_psx_load_delay = -1;
  * registered high pages uniquely and keeps unregistered high pages aliased. */
 static inline uint32_t psx_phys_addr(uint32_t addr) {
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < PSX_RAM_WINDOW) phys = psx_ram_map_read(phys);
+    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys = psx_ram_map_read(phys);
     return phys;
 }
 
 static inline uint32_t psx_phys_addr_store(uint32_t addr) {
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < PSX_RAM_WINDOW) phys = psx_ram_map_write(phys);
+    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys = psx_ram_map_write(phys);
     return phys;
 }
 
 /* Expose RAM pointer for oracle comparison (find_first_divergence). */
 uint8_t *memory_get_ram_ptr(void) { return ram; }
 uint8_t *memory_get_scratchpad_ptr(void) { return scratchpad; }
-uint32_t memory_get_ram_bytes(void) { return g_psx_ram_size; }
-int psx_ram_8mb_active(void) { return g_psx_ram_size > PSX_RAM_2MB; }
-
-void psx_ram_reset_size_request(void) {
-    s_ram_8mb_requested = 0;
-    memset(s_ram_high_registered, 0, sizeof(s_ram_high_registered));
-    memset(g_psx_ram_high_unique, 0, sizeof(g_psx_ram_high_unique));
-}
-
-int psx_mod_set_main_ram_8mb(int enabled) {
-    s_ram_8mb_requested = enabled ? 1 : 0;
-    memset(s_ram_high_registered, 0, sizeof(s_ram_high_registered));
-    memset(g_psx_ram_high_unique, 0, sizeof(g_psx_ram_high_unique));
-    if (enabled)
-        psx_ram_register_unique(PSX_RAM_2MB, PSX_RAM_8MB - PSX_RAM_2MB);
-    return 1;
-}
-
-static int psx_ram_any_high_registered(void) {
-    uint32_t i;
-    for (i = 0; i < PSX_RAM_HIGH_BITWORDS; i++) {
-        if (s_ram_high_registered[i] != 0u)
-            return 1;
-    }
-    return 0;
-}
-
-static void psx_ram_apply_size_request(void) {
-    if (s_ram_8mb_requested) {
-        g_psx_ram_size = PSX_RAM_8MB;
-        g_psx_ram_mask = PSX_RAM_8MB - 1u;
-        if (!psx_ram_any_high_registered())
-            psx_ram_register_unique(PSX_RAM_2MB, PSX_RAM_8MB - PSX_RAM_2MB);
-    } else {
-        g_psx_ram_size = PSX_RAM_2MB;
-        g_psx_ram_mask = PSX_RAM_2MB - 1u;
-        memset(g_psx_ram_high_unique, 0, sizeof(g_psx_ram_high_unique));
-    }
-}
-
 void memory_clear_low_boot_scratch(void) {
     memset(ram, 0, 0x10u);
 }
@@ -287,6 +186,11 @@ void memory_clear_low_boot_scratch(void) {
 #define DIRTY_RAM_PAGE_SHIFT    12          /* 4 KB pages */
 #define DIRTY_RAM_PAGE_COUNT    (RAM_SIZE >> DIRTY_RAM_PAGE_SHIFT)
 #define DIRTY_RAM_BITMAP_WORDS  ((DIRTY_RAM_PAGE_COUNT + 31u) / 32u)
+/* Guest-visible extent (retail 2 MiB unless the 8 MB mod is live). Host arrays
+ * are sized for the backing capacity; bounds and serialization use this. */
+#define RAM_LIVE                (g_psx_ram_size)
+#define DIRTY_RAM_LIVE_BITMAP_WORDS \
+    (((RAM_LIVE >> DIRTY_RAM_PAGE_SHIFT) + 31u) / 32u)
 static uint32_t dirty_ram_bitmap[DIRTY_RAM_BITMAP_WORDS];
 
 /* Monotonic generation for RAM-resident CODE changes (kernel install-stub
@@ -297,7 +201,7 @@ static uint32_t dirty_ram_bitmap[DIRTY_RAM_BITMAP_WORDS];
 uint32_t g_dirty_ram_code_gen = 1;
 
 static inline void dirty_ram_mark_page(uint32_t phys) {
-    if (phys >= RAM_SIZE) return;
+    if (phys >= RAM_LIVE) return;
     uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t bit = 1u << (page & 31u);
     /* Generation bumps on the clean->dirty TRANSITION only: kernel-window data
@@ -563,7 +467,7 @@ extern uint32_t g_overlay_region_floor;
 void dirty_ram_clear_image_baseline(void) {
     uint32_t floor = g_overlay_region_floor;
     if (floor <= DIRTY_RAM_KERNEL_TRACK_BYTES) return;
-    if (floor > RAM_SIZE) floor = RAM_SIZE;
+    if (floor > RAM_LIVE) floor = RAM_LIVE;
     uint32_t base = g_text_image_lo;
     if (base < DIRTY_RAM_KERNEL_TRACK_BYTES) base = DIRTY_RAM_KERNEL_TRACK_BYTES;
     if (base >= floor) return;
@@ -605,8 +509,8 @@ static uint32_t g_text_exact_last_ref = 0;
 
 void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                    uint32_t len) {
-    if (!bytes || len == 0 || phys_lo >= RAM_SIZE) return;
-    if (len > RAM_SIZE - phys_lo) len = RAM_SIZE - phys_lo;
+    if (!bytes || len == 0 || phys_lo >= RAM_LIVE) return;
+    if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
     text_ref_image = (uint8_t *)bytes;  /* runtime-owned mutable heap buffer */
     text_ref_lo = phys_lo;
     text_ref_hi = phys_lo + len;
@@ -799,10 +703,10 @@ uint32_t dirty_ram_text_diverged_bitmap_word(uint32_t word_index) {
 }
 
 void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return;
+    if (len == 0 || phys >= RAM_LIVE) return;
     psx_kernel_bless_note_range(phys, len);
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
 
     uint32_t first_page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t last_page = end >> DIRTY_RAM_PAGE_SHIFT;
@@ -846,7 +750,7 @@ static int dirty_ram_shellwin_interp(void) {
 }
 
 int dirty_ram_is_dirty(uint32_t phys) {
-    if (phys >= RAM_SIZE) return 0;
+    if (phys >= RAM_LIVE) return 0;
     if (dirty_ram_force_interp() && phys >= DIRTY_RAM_KERNEL_TRACK_BYTES) return 1;
     if (dirty_ram_shellwin_interp() && phys >= 0x00030000u && phys <= 0x0005AFFFu) return 1;
     /* Experimental fallback for overlays copied into their final location by
@@ -868,13 +772,16 @@ uint32_t dirty_ram_get_bitmap_word(uint32_t word_index) {
     return dirty_ram_bitmap[word_index];
 }
 
+/* Serialized (savestate / netplay digest) extent: the LIVE RAM's pages only,
+ * so a retail session's dirty-bitmap section is unchanged by the 8 MiB host
+ * backing. */
 uint32_t dirty_ram_get_bitmap_word_count(void) {
-    return DIRTY_RAM_BITMAP_WORDS;
+    return DIRTY_RAM_LIVE_BITMAP_WORDS;
 }
 
 void dirty_ram_set_bitmap_words(const uint32_t* words, uint32_t count) {
     memset(dirty_ram_bitmap, 0, sizeof(dirty_ram_bitmap));
-    if (count > DIRTY_RAM_BITMAP_WORDS) count = DIRTY_RAM_BITMAP_WORDS;
+    if (count > DIRTY_RAM_LIVE_BITMAP_WORDS) count = DIRTY_RAM_LIVE_BITMAP_WORDS;
     for (uint32_t i = 0; i < count; i++)
         dirty_ram_bitmap[i] = words[i];
     /* Bitmap replace bypasses clean→dirty transitions; bump so interpreter
@@ -914,9 +821,9 @@ void dirty_ram_reset_for_boot(void) {
 }
 
 void overlay_watch_set_range(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return;
+    if (len == 0 || phys >= RAM_LIVE) return;
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     for (uint32_t pg = fp; pg <= lp; pg++)
@@ -924,9 +831,9 @@ void overlay_watch_set_range(uint32_t phys, uint32_t len) {
 }
 
 void overlay_watch_clear_range(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return;
+    if (len == 0 || phys >= RAM_LIVE) return;
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     for (uint32_t pg = fp; pg <= lp; pg++)
@@ -937,9 +844,9 @@ void overlay_watch_clear_range(uint32_t phys, uint32_t len) {
  * loader stores this at validation time and compares on dispatch; any change
  * means a watched page in the range was written. */
 uint32_t overlay_watch_pagegen_sum(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return 0;
+    if (len == 0 || phys >= RAM_LIVE) return 0;
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t sum = 0;
@@ -981,7 +888,7 @@ void dirty_ram_text_guard_resync_after_restore(void) {
             uint32_t hi = lo + (1u << DIRTY_RAM_PAGE_SHIFT);
             if (lo < text_ref_lo) lo = text_ref_lo;
             if (hi > text_ref_hi) hi = text_ref_hi;
-            if (hi > RAM_SIZE) hi = RAM_SIZE;
+            if (hi > RAM_LIVE) hi = RAM_LIVE;
             if (hi <= lo) continue;
             if (memcmp(ram + lo, text_ref_image + (lo - text_ref_lo), hi - lo) != 0)
                 text_modified_bitmap[p >> 5] |= (1u << (p & 31u));
@@ -1002,7 +909,7 @@ void overlay_watch_invalidate_after_ram_restore(void) {
 
 static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
     uint32_t pg = phys >> DIRTY_RAM_PAGE_SHIFT;
-    if (pg >= DIRTY_RAM_PAGE_COUNT) return;
+    if (pg >= (RAM_LIVE >> DIRTY_RAM_PAGE_SHIFT)) return;
     /* Never attach pre-write PC evidence to post-write bytes, including for
      * completely unknown/self-modifying code. This is deliberately a compact
      * page clear, not a capture: serializing snapshots from this universal
