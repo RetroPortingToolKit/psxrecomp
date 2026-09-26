@@ -58,6 +58,9 @@ Profiles declare these reusable methods:
 | --- | --- |
 | `disc_hashes` | Hash the cue's original data track before extracting. |
 | `images[].method = fixed_address_files` | Whole original files placed at a verified `load_addr`. Optional duplicate-leaf checks require identical bytes. |
+| `images[].method = fixed_address_extents` | Declared `{file, file_offset, base, address, size, sha256}` byte extents placed at a verified `load_addr`. Offset rules match `words` checks; size and SHA-256 are required. |
+| `mod_packages[]` / `mod_package` | A named, verified selection of a trusted mod package. Images and checks carrying `mod_package` read the original disc with that selection applied; see below. |
+| `images[].transfer_entries` | `{from: "mod_package_writes", count}`: J/JAL targets inside the image, taken only from words the selected package wrote. The count pins the inventory. |
 | `images[].method = tagged_relocated_files` | Apply a trailing two-bit ABS32/HI16/LO16/J26 relocation stream to a verified `load_addr`, retaining only the original loader's image interval. Destinations are explicit evidence, never inferred from a historical RAM capture. |
 | `images[].method = psx_exe` | Read the load address and image from a PS-X EXE header; the generic extractor may split resident and overlay floors. |
 | `images[].method = packed_sector_members` | Decode u32 count/offset sector descriptors across ordered payload files. Verify every member classification and requested full-payload coverage; use loader-established addresses for executable members. |
@@ -72,6 +75,11 @@ Profiles declare these reusable methods:
 | `expected_records` | Stop on inventory drift, including unexpected additions requiring review. Every configured image must be represented. |
 | `strict_bounds` | Require emission to remain inside established producer intervals. |
 | `images[].excluded_ranges` | Explicit fallback intervals with aligned start/end, original-byte SHA-256 and a reason. Requires strict bounds; required loader entries cannot be excluded. |
+
+Image addresses must lie in the KSEG0 main-RAM decode window
+`0x80000000..0x80800000`. Retail 2 MiB hardware mirrors DRAM across all of it and
+expanded 8 MiB targets decode it uniquely, so an image a loader places in a
+mirror is valid; the runtime gates it on the folded bytes the CPU executes.
 
 `allow_missing` opts a fixed-address source into static root discovery when the
 generic detector misses it. `entry_word` or `entries` can supply independently
@@ -108,6 +116,59 @@ Current consumers:
 - Ape Escape USA: `ApeEscapeRecomp/aot/overlays.json`, 47 established packed
   sector-table overlays plus two minigame PS-X EXEs. Two additional archive
   members have unresolved load paths and are explicitly excluded.
+- WipEout 3 SE PAL: `aot/overlays.json`, no disc overlays; one mod-package
+  engine image linked with `static` (see below).
+
+### Executable images from a mod package
+
+A trusted package can add code that no disc file contains: patched boot-EXE
+text, or an engine the patched EXE copies elsewhere. Such bytes are still
+original inputs plus declared, hash-verified operations, so they get the same
+treatment as disc methods. `tools/mod_package_images.py` reproduces a package's
+selected operations; the pipeline never reads a package it was not told about.
+
+```json
+"mod_packages": [{
+  "name": "engine-full", "manifest": "mods/<package>/<version>/manifest.toml",
+  "manifest_sha256": "<LF-normalized text hash>", "id": "<package id>", "version": "<version>",
+  "features": {"<feature>": {"<option>": "<value>"}}, "plugins": ["<selected plugin ids>"]
+}]
+```
+
+The reader checks the manifest hash, id/version, a `[[target]]` matching the
+game id, original disc and boot-EXE hashes, every selected feature and option
+value, and the exact set of selected plugins (native callbacks; they add no
+guest bytes and are reported, not modelled). It applies the static declarative
+subset of the runtime resolver: equal-length `main_exe` patches checked against
+the original boot EXE and applied to its load image, and `disc_user` patches and
+file-backed overlays checked against payload and stock-range hashes. It rejects
+`replace_from`, `fields`, `when_integer`, `disc_raw`, legacy packages and any
+unknown section or key rather than approximating them. A disc operation over the
+boot EXE's own sectors must agree with the patched load image. Overlapping
+operations fail.
+
+Establish the destination from the patched loader exactly as for a disc image:
+a `words` check with `mod_package` pins the copy loop or load call, and a
+`fixed_address_extents` image names the copied bytes with their SHA-256. A detour
+farm is entered only from the package's patched transfers; `transfer_entries`
+turns those into required entries without accepting stock data words that
+happen to decode as jumps.
+
+WipEout 3 SE PAL (`aot/overlays.json`) uses this for the 1.0.14 framerate
+package's `ntscfull8` engine: the patched entry copies 0x790 words from
+`0x800D03B8` to `0x80780000`, and 46 patched J/JAL sites establish its entries.
+
+### Linking recipes into the runtime (`static`)
+
+`static --out-dir <dir> [--cps]` performs the same extraction, compiles every
+recipe with `compile_overlays.py --static`, and audits the generated dispatcher:
+each variant must be guarded by the original bytes of a recipe whose producer
+bounds contain its code ranges, every image needs guarded entries, and every
+required entry must be served. Only then does it replace `<dir>/overlays_static*.c`
+with exactly the audited files plus `AOT_STATIC_AUDIT.json`. Point the game's
+`GAME_OVERLAY_STATIC_C` at `<dir>/overlays_static.c`. The static path suits a
+runtime flavor the DLL release cannot target (for example a PGXP build); pass
+`--cps` when the runtime is continuation-passing, as the compiler requires.
 
 For `packed_sector_members`, declare `table_file`, ordered `payload_files`,
 `sector_size` (default 2048), `offset_bits` (default 20), and optional

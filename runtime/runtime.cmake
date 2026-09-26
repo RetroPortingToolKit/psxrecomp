@@ -1352,7 +1352,8 @@ function(psxrecomp_add_runtime_target target)
         endif()
     endif()
     # Layer B: statically-compiled overlay dispatch. Inert unless a game
-    # provides a generated overlays_static.c — no target sets this yet.
+    # provides a generated overlays_static.c (tools/aot_overlay_pipeline.py
+    # `static`, or compile_overlays.py --static; docs/AOT_SHARDING.md).
     if(PSXRT_GAME_OVERLAY_STATIC_C AND EXISTS "${PSXRT_GAME_OVERLAY_STATIC_C}")
         set_source_files_properties("${PSXRT_GAME_OVERLAY_STATIC_C}" PROPERTIES GENERATED TRUE)
         list(APPEND generated_sources "${PSXRT_GAME_OVERLAY_STATIC_C}")
