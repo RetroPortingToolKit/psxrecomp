@@ -295,9 +295,13 @@ entry PC. Read-only; safe to poll while the game runs.
   entry was a `jr ra` *return* from native code into an interpreted
   continuation, not a call.
 
-The array is emitted inline and truncates before the trailing bitmap
-diagnostics when the response buffer fills; a partial list is still valid JSON
-(the cut lands between rows). Poll periodically to accumulate coverage.
+The array is emitted inline and stops before the trailing bitmap diagnostics
+when the response buffer fills; a partial list is still valid JSON (the cut
+lands between rows). `per_pc_matching` counts every matching row and
+`per_pc_emitted` the rows in this response, so a page is complete exactly when
+`per_pc_skipped + per_pc_emitted == per_pc_matching`. Narrow the table with
+`{"lo":"0x800BF800","hi":"0x800E0C24"}` (half-open, compared with the KSEG
+bits masked off) and page with `{"skip":N}` to read all of it.
 
 ---
 
