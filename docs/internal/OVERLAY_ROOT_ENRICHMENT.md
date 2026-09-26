@@ -136,6 +136,43 @@ mis-splits**, then as much coverage as possible.
   straight-line multiply block (framework behaviour, beads-eio.3.185).
   Tomba re-checked on 5a094db6: 0 diverging frames vs master.
 
+## Late prologues (beads-eio.3.191)
+
+The STRONG prologue rule rooted every `addiu sp,sp,-N` that was not in a
+delay slot. Compilers schedule loads in front of the stack adjust
+(`lui v0; lw v1,..(v0); addiu sp,sp,-24`), so the root capped the function
+two to five words in. Ace Combat 3 had 359 such roots under the guard, 175
+with the real start executed. The guard could not absorb them because the
+real start was not a root.
+
+Now a prologue roots its function's true start
+(`prologue_function_start`): walk back over the straight-line preamble to
+the nearest boundary (image or producer start, after an unconditional
+transfer's delay slot or a `break`, or after data) and root that word. After
+data the preamble must be global-data setup (`lui`, `li`, loads from a
+`lui` base). No provable start (a conditional branch or call in the
+preamble, a local branch from below into it) makes the prologue weak
+evidence, which the host above always reaches, so it is not rooted.
+Captured entries at a stack adjust keep their own gate and are absorbed by
+the true start.
+
+Measured:
+
+- **Ace Combat 3** (73 captures): late-prologue walk roots 359 to 1 (the one
+  is a jal target right after a pointer table, a real start). 357 roots
+  moved to their true start, 5 mid-function prologues (after a conditional
+  branch, or entered by a branch from above) are no longer roots. Rootless
+  0, capacity skips 0, shards 890/2/61 (the 2 are the guard-word class).
+  Served identities 6219 vs 6337: the stack adjusts are no longer emitted
+  as entries, since nothing enters there; captured dispatch entries served
+  3671 in both, covered words +278.
+- **Four-title gate** (same method as below, master 19b5a65f, own
+  sandboxes and caches): interpreter fallback G <= N on every run, no shard
+  failures, every screenshot identical. Forks from N are the same frames
+  and fields as the previous guard gate. Against the previous guard runs,
+  only the store/MMIO attribution hashes move (code that changed between
+  native and interpreted); writes and cycles are identical.
+
 ## Gate used, and what is left
 
 The gate the four titles passed is **no regression against master**:
