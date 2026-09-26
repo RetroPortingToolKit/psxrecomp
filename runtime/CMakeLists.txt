@@ -35,7 +35,8 @@ if(BUILD_TESTING)
         target_compile_options(ws_world_scene_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections)
         target_link_options(ws_world_scene_test PRIVATE -flto -Wl,--gc-sections)
         add_test(NAME ws_world_scene_test COMMAND ws_world_scene_test)
-        add_executable(mod_memory_snapshot_test tests/test_mod_memory_snapshot.c)
+        add_executable(mod_memory_snapshot_test tests/test_mod_memory_snapshot.c
+            src/psx_ram_geometry.c)
         target_include_directories(mod_memory_snapshot_test PRIVATE include src)
         target_compile_options(mod_memory_snapshot_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections)
         target_link_options(mod_memory_snapshot_test PRIVATE -flto -Wl,--gc-sections)
@@ -59,6 +60,8 @@ if(BUILD_TESTING)
     if(Python3_Interpreter_FOUND)
         add_test(NAME interp_mod_entry_guards_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_interp_mod_entry_guards.py")
+        add_test(NAME mirror_pc_preserved_guards_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mirror_pc_preserved_guards.py")
         add_test(NAME gpu_textured_dot_nw_shift_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_textured_dot_nw_shift.py")
         add_test(NAME gl_readback_runner_test COMMAND "${Python3_EXECUTABLE}"
@@ -140,11 +143,33 @@ if(BUILD_TESTING)
             PRIVATE include)
         if(_ram_geometry STREQUAL "expanded")
             target_compile_definitions(psx_memory_geometry_${_ram_geometry}_test
-                PRIVATE PSX_MAIN_RAM_BYTES=0x00800000u)
+                PRIVATE PSX_MEMORY_GEOMETRY_TEST_EXPANDED=1)
         endif()
         add_test(NAME psx_memory_geometry_${_ram_geometry}_test
                  COMMAND psx_memory_geometry_${_ram_geometry}_test)
     endforeach()
+
+    # Live 2/8 MiB geometry end to end through the REAL memory.c accessors,
+    # dma.c channel execution and boot_state.c save/load (including the
+    # refuse-before-mutation contract). Section GC, as for
+    # mod_memory_snapshot_test, drops the hardware routing the test never
+    # reaches; psx_ram_runtime_map_stubs.c doubles the rest.
+    if(NOT MSVC)
+        add_executable(psx_ram_runtime_map_test
+            tests/test_psx_ram_runtime_map.c
+            tests/psx_ram_runtime_map_stubs.c
+            src/memory.c
+            src/dma.c
+            src/boot_state.c
+            src/psx_ram_geometry.c)
+        target_include_directories(psx_ram_runtime_map_test PRIVATE include src)
+        target_compile_options(psx_ram_runtime_map_test PRIVATE
+            -O2 -flto -ffunction-sections -fdata-sections -Wno-lto-type-mismatch)
+        target_link_options(psx_ram_runtime_map_test PRIVATE
+            -flto -Wl,--gc-sections -Wno-lto-type-mismatch)
+        target_link_libraries(psx_ram_runtime_map_test PRIVATE ZLIB::ZLIB)
+        add_test(NAME psx_ram_runtime_map_test COMMAND psx_ram_runtime_map_test)
+    endif()
 
     add_executable(host_keymap_test
         tests/test_host_keymap.c
@@ -200,6 +225,7 @@ if(BUILD_TESTING)
         tests/test_gte_register_access.cpp
         src/gte.cpp
         src/pgxp.cpp
+        src/psx_ram_geometry.c
     )
     target_include_directories(gte_register_access_test PRIVATE include)
     target_compile_definitions(gte_register_access_test PRIVATE
@@ -214,7 +240,8 @@ if(BUILD_TESTING)
     # suppression bracket, invalidate-all, and GetPreciseVertex safeguards
     # (truncation agreement + tolerance clamp). White-box: includes src/pgxp.cpp
     # and stubs the gte.cpp fallback-cache extern.
-    add_executable(pgxp_test tests/test_pgxp.cpp src/pgxp.cpp)
+    add_executable(pgxp_test tests/test_pgxp.cpp src/pgxp.cpp
+        src/psx_ram_geometry.c)
     target_include_directories(pgxp_test PRIVATE include)
     add_test(NAME pgxp_test COMMAND pgxp_test)
 
@@ -267,7 +294,8 @@ if(BUILD_TESTING)
     add_test(NAME ws_repeat_rect_test COMMAND ws_repeat_rect_test)
 
     add_executable(mod_gpu_dma_aperture_test
-        tests/test_mod_gpu_dma_aperture.c)
+        tests/test_mod_gpu_dma_aperture.c
+        src/psx_ram_geometry.c)
     target_include_directories(mod_gpu_dma_aperture_test PRIVATE include)
     add_test(NAME mod_gpu_dma_aperture_test
              COMMAND mod_gpu_dma_aperture_test)
@@ -322,7 +350,8 @@ if(BUILD_TESTING)
 
     add_executable(overlay_capture_retry_test
         tests/test_overlay_capture_retry.cpp
-        src/overlay_capture.c)
+        src/overlay_capture.c
+        src/psx_ram_geometry.c)
     target_include_directories(overlay_capture_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(overlay_capture_retry_test PRIVATE
@@ -420,9 +449,22 @@ if(BUILD_TESTING)
         ../recompiler/lib/toml11)
     add_test(NAME mod_packages_test COMMAND mod_packages_test)
 
+    add_executable(builtin_mod_manifests_test
+        tests/test_builtin_mod_manifests.cpp
+        src/mod_packages.cpp
+        src/crc32.c
+        src/psx_sha256.c)
+    target_include_directories(builtin_mod_manifests_test PRIVATE
+        include
+        ../recompiler/lib/toml11)
+    add_test(NAME builtin_mod_manifests_test
+             COMMAND builtin_mod_manifests_test
+                     "${CMAKE_CURRENT_SOURCE_DIR}/../mods/builtin/packages")
+
     add_executable(text_xlate_fix_only_test
         tests/test_text_xlate_fix_only.cpp
-        src/text_xlate.cpp)
+        src/text_xlate.cpp
+        src/psx_ram_geometry.c)
     target_include_directories(text_xlate_fix_only_test PRIVATE
         include
         ../recompiler/lib/toml11)

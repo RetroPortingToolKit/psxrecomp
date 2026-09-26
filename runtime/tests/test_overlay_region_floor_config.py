@@ -19,7 +19,7 @@ assert 'parse_hex(v.as_string(), "runtime.overlay_region_floor")' in LOADER_CPP,
 # negative or >32-bit TOML integer must not wrap into a different address, and
 # the value must name main RAM above the kernel window.
 assert "raw < 0 || raw > 0xFFFFFFFFll" in LOADER_CPP, "integer form must reject wrap-around values"
-assert "phys < 0x00010000u || phys >= 0x00200000u" in LOADER_CPP, "floor must be validated against main RAM"
+assert "phys < 0x00010000u || phys >= 0x00800000u" in LOADER_CPP, "floor must be validated against the main-RAM decode window"
 assert LOADER_CPP.count("overlay_region_floor out of range") == 2, "both rejections must fail loud"
 
 cfg = MAIN.index("gc.runtime.has_overlay_region_floor")

@@ -117,7 +117,7 @@ static int       s_cand_n = 0;
  * scales catastrophically once a warmed cache contains hundreds of variant
  * DLLs. Index candidates by the 4 KiB RAM pages touched by their code ranges;
  * a continuation then examines only candidates that could contain its PC. */
-#define RANGE_PAGE_COUNT (2u * 1024u * 1024u / 4096u)
+#define RANGE_PAGE_COUNT (PSX_MAIN_RAM_BACKING_BYTES / 4096u)
 #define RANGE_LINK_CAP   (CAND_CAP * 8)
 typedef struct { int cand, next; } RangeLink;
 static int       s_range_page_head[RANGE_PAGE_COUNT];
@@ -183,7 +183,7 @@ static uint32_t s_exact_entry_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS];
 
 static void exact_entry_set(uint32_t phys) {
     phys &= 0x1FFFFFFFu;
-    if (phys < 2u * 1024u * 1024u && (phys & 3u) == 0u) {
+    if (phys < PSX_MAIN_RAM_BACKING_BYTES && (phys & 3u) == 0u) {
         uint32_t word = phys >> 2;
         s_exact_entry_bitmap[word >> 5] |= 1u << (word & 31u);
     }
@@ -191,7 +191,7 @@ static void exact_entry_set(uint32_t phys) {
 
 static int exact_entry_has(uint32_t phys) {
     phys &= 0x1FFFFFFFu;
-    if (phys >= 2u * 1024u * 1024u || (phys & 3u) != 0u) return 0;
+    if (phys >= PSX_MAIN_RAM_BACKING_BYTES || (phys & 3u) != 0u) return 0;
     uint32_t word = phys >> 2;
     return (s_exact_entry_bitmap[word >> 5] >> (word & 31u)) & 1u;
 }
@@ -543,19 +543,53 @@ extern uint32_t overlay_watch_pagegen_sum(uint32_t phys, uint32_t len);
 
 /* ---- Per-candidate hash / generation over its code ranges -------------- */
 
-static uint32_t cand_crc(const Candidate *c) {
+/* Manifest and candidate code ranges are keyed by the address their code was
+ * compiled for (segment stripped, never mirror-folded: the compiled body bakes
+ * those PCs). Their BYTES live at the live-geometry RAM offset psx_ram_resolve
+ * returns -- the fold the CPU applies (psx_memory.h). Every byte-level use of a
+ * range (CRC, page generations, watch arming, delay-slot scan) goes through
+ * these helpers, so a range compiled at 0x80780000 is validated on RAM offset
+ * 0x180000 in retail and 0x780000 in the 8 MB map, and a range with no
+ * contiguous live bytes (past the live RAM end) can never validate. */
+static int ov_ranges_crc(const uint32_t *lo, const uint32_t *len, int n,
+                         uint32_t *crc_out) {
     const uint8_t *ram = memory_get_ram_ptr();
     uint32_t crc = 0xFFFFFFFFu;
-    for (int i = 0; i < c->nranges; i++)
-        crc = crc32_update(crc, ram + c->range_lo[i], c->range_len[i]);
-    return crc ^ 0xFFFFFFFFu;
+    for (int i = 0; i < n; i++) {
+        uint32_t off = 0;
+        if (!psx_ram_resolve(lo[i], len[i], &off)) return 0;
+        crc = crc32_update(crc, ram + off, len[i]);
+    }
+    *crc_out = crc ^ 0xFFFFFFFFu;
+    return 1;
+}
+
+static uint32_t ov_ranges_gensum(const uint32_t *lo, const uint32_t *len, int n) {
+    uint32_t s = 0;
+    for (int i = 0; i < n; i++) {
+        uint32_t off = 0;
+        if (psx_ram_resolve(lo[i], len[i], &off))
+            s += overlay_watch_pagegen_sum(off, len[i]);
+    }
+    return s;
+}
+
+static void ov_ranges_watch(const uint32_t *lo, const uint32_t *len, int n) {
+    extern void overlay_watch_set_range(uint32_t phys, uint32_t len);
+    for (int i = 0; i < n; i++) {
+        uint32_t off = 0;
+        if (psx_ram_resolve(lo[i], len[i], &off))
+            overlay_watch_set_range(off, len[i]);
+    }
+}
+
+/* 1 and *live = CRC of the live bytes, or 0 when a range has no live bytes. */
+static int cand_live_crc(const Candidate *c, uint32_t *live) {
+    return ov_ranges_crc(c->range_lo, c->range_len, c->nranges, live);
 }
 
 static uint32_t cand_gensum(const Candidate *c) {
-    uint32_t s = 0;
-    for (int i = 0; i < c->nranges; i++)
-        s += overlay_watch_pagegen_sum(c->range_lo[i], c->range_len[i]);
-    return s;
+    return ov_ranges_gensum(c->range_lo, c->range_len, c->nranges);
 }
 
 #ifdef PSX_HAS_OVERLAY_DISPATCH
@@ -745,7 +779,11 @@ typedef struct {
     int      n;
 } ManFn;
 
-#define OVERLAY_RAM_SIZE (2u * 1024u * 1024u)
+/* Manifests are parsed at loader init, before memory_init() latches the live
+ * geometry, so structural validity is the whole KSEG0 decode window. Whether
+ * the bytes there are live code is decided per dispatch by the range CRC. */
+#define OVERLAY_RAM_SIZE PSX_MAIN_RAM_WINDOW_BYTES
+#define OVERLAY_KSEG0_WINDOW_MASK (~(PSX_MAIN_RAM_WINDOW_BYTES - 1u))
 #define MANIFEST_LINE_MAX 128u
 #define MANIFEST_PHYSICAL_LINE_MAX 159u
 #define MANIFEST_PROVENANCE_PREFIX "# psxrecomp overlay provenance "
@@ -759,12 +797,12 @@ enum {
 static int man_structurally_valid(const ManFn *m) {
     if (!m || !m->has_crc || m->n < 1 || m->n > MAX_CODE_RANGES)
         return 0;
-    if ((m->entry & 0xFFE00000u) != 0x80000000u) return 0;
+    if ((m->entry & OVERLAY_KSEG0_WINDOW_MASK) != 0x80000000u) return 0;
     uint32_t entry = m->entry & 0x1FFFFFFFu;
     if ((entry & 3u) != 0u || entry >= OVERLAY_RAM_SIZE) return 0;
     int entry_covered = 0;
     for (int r = 0; r < m->n; r++) {
-        if ((m->lo[r] & 0xFFE00000u) != 0x80000000u) return 0;
+        if ((m->lo[r] & OVERLAY_KSEG0_WINDOW_MASK) != 0x80000000u) return 0;
         uint32_t lo = m->lo[r] & 0x1FFFFFFFu;
         uint32_t len = m->len[r];
         if ((lo & 3u) != 0u || (len & 3u) != 0u || len < 4u ||
@@ -978,7 +1016,7 @@ static int mips_control_kind(uint32_t instr) {
 static int ranges_contain_word(const uint32_t *lo_list,
                                const uint32_t *len_list, int n,
                                uint32_t phys) {
-    if ((phys & 3u) != 0u || phys > (2u * 1024u * 1024u) - 4u) return 0;
+    if ((phys & 3u) != 0u || phys > OVERLAY_RAM_SIZE - 4u) return 0;
     for (int r = 0; r < n; r++) {
         uint32_t lo = lo_list[r] & 0x1FFFFFFFu;
         uint32_t len = len_list[r];
@@ -994,28 +1032,45 @@ static int ranges_contain_word(const uint32_t *lo_list,
 static int ranges_delay_slots_hashed(const uint32_t *lo_list,
                                      const uint32_t *len_list, int n) {
     const uint8_t *ram = memory_get_ram_ptr();
-    const uint32_t ram_size = 2u * 1024u * 1024u;
     if (!ram || n < 1 || n > MAX_CODE_RANGES) return 0;
     for (int r = 0; r < n; r++) {
-        uint32_t lo = lo_list[r] & 0x1FFFFFFFu;
+        uint32_t lo = lo_list[r] & 0x1FFFFFFFu;   /* code address */
         uint32_t len = len_list[r];
+        uint32_t off = 0;                          /* its live bytes */
         if ((lo & 3u) != 0u || (len & 3u) != 0u || len < 4u ||
-            lo >= ram_size || len > ram_size - lo)
+            !psx_ram_resolve(lo, len, &off))
             return 0;
         for (uint32_t pc = lo; pc < lo + len; pc += 4u) {
-            uint32_t instr = (uint32_t)ram[pc] |
-                             ((uint32_t)ram[pc + 1u] << 8) |
-                             ((uint32_t)ram[pc + 2u] << 16) |
-                             ((uint32_t)ram[pc + 3u] << 24);
+            const uint8_t *word = ram + off + (pc - lo);
+            uint32_t instr = (uint32_t)word[0] |
+                             ((uint32_t)word[1] << 8) |
+                             ((uint32_t)word[2] << 16) |
+                             ((uint32_t)word[3] << 24);
             int kind = mips_control_kind(instr);
             if (kind < 0) return 0;
             if (kind > 0) {
                 uint32_t slot = pc + 4u;
                 if (!ranges_contain_word(lo_list, len_list, n, slot)) return 0;
-                uint32_t slot_instr = (uint32_t)ram[slot] |
-                                      ((uint32_t)ram[slot + 1u] << 8) |
-                                      ((uint32_t)ram[slot + 2u] << 16) |
-                                      ((uint32_t)ram[slot + 3u] << 24);
+                /* The slot word lies in some hashed range; fetch it from that
+                 * range's own live bytes (ranges need not be contiguous). */
+                uint32_t slot_off = 0;
+                int slot_found = 0;
+                for (int s = 0; s < n && !slot_found; s++) {
+                    uint32_t slo = lo_list[s] & 0x1FFFFFFFu;
+                    if (len_list[s] >= 4u && slot >= slo &&
+                        slot - slo <= len_list[s] - 4u) {
+                        if (!psx_ram_resolve(slo, len_list[s], &slot_off))
+                            return 0;
+                        slot_off += slot - slo;
+                        slot_found = 1;
+                    }
+                }
+                if (!slot_found) return 0;
+                const uint8_t *sw = ram + slot_off;
+                uint32_t slot_instr = (uint32_t)sw[0] |
+                                      ((uint32_t)sw[1] << 8) |
+                                      ((uint32_t)sw[2] << 16) |
+                                      ((uint32_t)sw[3] << 24);
                 if (mips_control_kind(slot_instr) != 0) return 0;
             }
         }
@@ -1123,10 +1178,8 @@ static int cand_register(uint32_t phys, OverlayFn fn, const ManFn *m, int dll,
         c->range_len[c->nranges] = m->len[i];
         c->nranges++;
     }
-    /* Watch the code pages so future writes bump their generation. */
-    extern void overlay_watch_set_range(uint32_t phys, uint32_t len);
-    for (int i = 0; i < c->nranges; i++)
-        overlay_watch_set_range(c->range_lo[i], c->range_len[i]);
+    /* Watch the code pages (their live bytes) so writes bump their generation. */
+    ov_ranges_watch(c->range_lo, c->range_len, c->nranges);
 
     /* crc_code is the AUTHORITATIVE hash of the bytes the recompiler compiled
      * from (supplied by the manifest) — NOT a sample of live RAM at this instant
@@ -1136,8 +1189,12 @@ static int cand_register(uint32_t phys, OverlayFn fn, const ManFn *m, int dll,
      * which makes validity timing-independent and reload-on-return work. */
     c->crc_code = m->crc;
     c->val_gen = cand_gensum(c);
-    c->state   = (cand_crc(c) == c->crc_code && cand_delay_slots_hashed(c))
-               ? ENTRY_VALID : ENTRY_INVALID;
+    {
+        uint32_t live = 0;
+        c->state = (cand_live_crc(c, &live) && live == c->crc_code &&
+                    cand_delay_slots_hashed(c))
+                 ? ENTRY_VALID : ENTRY_INVALID;
+    }
     /* Keep higher-priority compiler tiers first without discarding additive
      * artifacts. New same-tier repairs precede older ones; lower-tier TCC
      * remains available if every GCC candidate fails live-byte validation. */
@@ -1610,7 +1667,7 @@ static void rebuild_lazy_manifest_index(void) {
                  * generations as registered DLL candidates. Otherwise a CPU
                  * copy can turn INVALID bytes into a match while both the
                  * LazyMan state and final-miss cache remain stale forever. */
-                overlay_watch_set_range(lo, lm->fn.len[r]);
+                ov_ranges_watch(&lm->fn.lo[r], &lm->fn.len[r], 1);
                 uint32_t p0 = lo >> 12, p1 = hi >> 12;
                 if (p0 >= RANGE_PAGE_COUNT) continue;
                 if (p1 >= RANGE_PAGE_COUNT) p1 = RANGE_PAGE_COUNT - 1u;
@@ -2034,7 +2091,7 @@ static void scan_cache_dir(void) {
  * persist/publish writers, on-disk reload scan, and their debug accessors —
  * lived here. No shards are produced or reloaded anymore.) */
 
-static uint32_t lazy_man_crc(const ManFn *m); /* defined with lazy matching */
+static int lazy_man_crc(const ManFn *m, uint32_t *crc); /* defined with lazy matching */
 
 /* True if the cache holds a usable DLL for this region/logical image CRC.
  * Filename identity alone is insufficient: a structurally valid but stale or
@@ -2050,8 +2107,10 @@ int overlay_loader_has_cached_crc(uint32_t region_start, uint32_t crc) {
             int seen = 0, usable = 1;
             for (int li = s_lazy_bundle_head[i]; li >= 0;
                  li = s_lazy_man[li].next_bundle) {
+                uint32_t live_crc = 0;
                 seen++;
-                if (lazy_man_crc(&s_lazy_man[li].fn) != s_lazy_man[li].fn.crc ||
+                if (!lazy_man_crc(&s_lazy_man[li].fn, &live_crc) ||
+                    live_crc != s_lazy_man[li].fn.crc ||
                     !man_delay_slots_hashed(&s_lazy_man[li].fn)) {
                     usable = 0;
                     break;
@@ -3235,19 +3294,13 @@ static int lazy_man_contains(const ManFn *m, uint32_t phys) {
     return 0;
 }
 
-static uint32_t lazy_man_crc(const ManFn *m) {
-    const uint8_t *ram = memory_get_ram_ptr();
-    uint32_t crc = 0xFFFFFFFFu;
-    for (int r = 0; r < m->n; r++)
-        crc = crc32_update(crc, ram + (m->lo[r] & 0x1FFFFFFFu), m->len[r]);
-    return crc ^ 0xFFFFFFFFu;
+/* 1 and *crc = CRC of the manifest's live bytes, 0 when it has none. */
+static int lazy_man_crc(const ManFn *m, uint32_t *crc) {
+    return ov_ranges_crc(m->lo, m->len, m->n, crc);
 }
 
 static uint32_t lazy_man_gensum(const ManFn *m) {
-    uint32_t sum = 0;
-    for (int r = 0; r < m->n; r++)
-        sum += overlay_watch_pagegen_sum(m->lo[r] & 0x1FFFFFFFu, m->len[r]);
-    return sum;
+    return ov_ranges_gensum(m->lo, m->len, m->n);
 }
 
 static int lazy_man_matches(LazyMan *lm) {
@@ -3258,10 +3311,11 @@ static int lazy_man_matches(LazyMan *lm) {
     uint32_t gen = lazy_man_gensum(&lm->fn);
     if (lm->state == ENTRY_VALID && lm->val_gen == gen) return 1;
     if (lm->state == ENTRY_INVALID && lm->val_gen == gen) return 0;
-    uint32_t live = lazy_man_crc(&lm->fn);
+    uint32_t live = 0;
+    const int live_ok = lazy_man_crc(&lm->fn, &live);
     lm->val_gen = gen;
     s_last_crc = live;
-    lm->state = (live == lm->fn.crc && man_delay_slots_hashed(&lm->fn))
+    lm->state = (live_ok && live == lm->fn.crc && man_delay_slots_hashed(&lm->fn))
               ? ENTRY_VALID : ENTRY_INVALID;
     return lm->state == ENTRY_VALID;
 }
@@ -3521,11 +3575,12 @@ static int range_candidate_matches(int i, uint32_t phys) {
     }
     if (c->state == ENTRY_INVALID && gen == c->val_gen)
         return 0;                    /* known mismatch, no watched write */
-    uint32_t live = cand_crc(c);
+    uint32_t live = 0;
+    const int live_ok = cand_live_crc(c, &live);
     s_rehashes++;
     s_last_crc = live;
     c->val_gen = gen;
-    if (live == c->crc_code && cand_delay_slots_hashed(c)) {
+    if (live_ok && live == c->crc_code && cand_delay_slots_hashed(c)) {
         if (c->state != ENTRY_VALID) {
             c->state = ENTRY_VALID;
             s_valid_count++;
@@ -3670,11 +3725,12 @@ retry_candidates:
                 matched = 1;
                 s_gen_fastpath++;
             } else {
-                uint32_t live = cand_crc(c);
+                uint32_t live = 0;
+                const int live_ok = cand_live_crc(c, &live);
                 s_rehashes++;
                 s_last_crc = live;
                 c->val_gen = gen;
-                matched = (live == c->crc_code && cand_delay_slots_hashed(c));
+                matched = (live_ok && live == c->crc_code && cand_delay_slots_hashed(c));
             }
             if (_probe) s_cps_probe_matched = matched;
             if (matched) {
@@ -3782,11 +3838,12 @@ retry_candidates:
              * variant chains scale with cache history instead of live code. */
             continue;
         } else {
-            uint32_t live = cand_crc(c);
+            uint32_t live = 0;
+            const int live_ok = cand_live_crc(c, &live);
             s_rehashes++;
             s_last_crc = live;
             c->val_gen = gen;
-            matched = (live == c->crc_code && cand_delay_slots_hashed(c));
+            matched = (live_ok && live == c->crc_code && cand_delay_slots_hashed(c));
         }
         if (matched) {
             if (c->state != ENTRY_VALID) {
@@ -4086,9 +4143,11 @@ int overlay_fp_enabled(void) {
  * so the comparison isolates COMPUTATION (and is longjmp-safe). A divergence
  * here = a real codegen bug (function + exact register/RAM). Zero divergence =
  * computation is correct and the fault is timing/interrupt-ordering. */
-#define SHADOW_RAM_SIZE  (2u * 1024u * 1024u)
+/* Snapshots cover the live RAM (retail 2 MiB unless the 8 MB mod is on). */
+#define SHADOW_RAM_SIZE  psx_ram_live_bytes()
 #define SHADOW_SPAD_SIZE 1024u
-static uint8_t  s_ram0[SHADOW_RAM_SIZE], s_ramN[SHADOW_RAM_SIZE], s_ramI[SHADOW_RAM_SIZE];
+static uint8_t  s_ram0[PSX_MAIN_RAM_BACKING_BYTES], s_ramN[PSX_MAIN_RAM_BACKING_BYTES],
+                s_ramI[PSX_MAIN_RAM_BACKING_BYTES];
 static uint8_t  s_spad0[SHADOW_SPAD_SIZE], s_spadI[SHADOW_SPAD_SIZE];
 static uint64_t s_shadow_skipped_dev = 0;  /* unsafe/incomplete traces skipped */
 /* s_diff_mode / s_in_shadow declared above (before dispatch). */
@@ -4807,14 +4866,15 @@ int overlay_loader_dump_candidates(char *out, int cap) {
     n += snprintf(out + n, cap - n, "[");
     for (int i = 0; i < s_cand_n && n < cap - 160; i++) {
         Candidate *c = &s_cand[i];
-        uint32_t live = cand_crc(c);
+        uint32_t live = 0;
+        const int live_ok = cand_live_crc(c, &live);
         uint32_t sum  = cand_gensum(c);
         n += snprintf(out + n, cap - n,
             "%s{\"addr\":\"0x%08X\",\"state\":%d,\"nranges\":%d,"
             "\"crc\":\"0x%08X\",\"live\":\"0x%08X\",\"match\":%d,"
             "\"val_gen\":%u,\"gen\":%u,\"dll\":%d,\"diff_passes\":%u}",
             i ? "," : "", c->addr, c->state, c->nranges,
-            c->crc_code, live, (live == c->crc_code) ? 1 : 0,
+            c->crc_code, live, (live_ok && live == c->crc_code) ? 1 : 0,
             c->val_gen, sum, c->dll, c->diff_passes);
     }
     n += snprintf(out + n, cap - n, "]");
@@ -4832,7 +4892,8 @@ int overlay_loader_dump_candidates_at(uint32_t addr, char *out, int cap) {
     for (int i = 0; i < s_cand_n && n < cap - 180; i++) {
         Candidate *c = &s_cand[i];
         if (c->addr != phys) continue;
-        uint32_t live = cand_crc(c);
+        uint32_t live = 0;
+        const int live_ok = cand_live_crc(c, &live);
         uint32_t sum  = cand_gensum(c);
         n += snprintf(out + n, cap - n,
             "%s{\"index\":%d,\"addr\":\"0x%08X\",\"state\":%d,\"nranges\":%d,"
@@ -4840,7 +4901,7 @@ int overlay_loader_dump_candidates_at(uint32_t addr, char *out, int cap) {
             "\"val_gen\":%u,\"gen\":%u,\"dll\":%d,\"diff_passes\":%u,"
             "\"device_touch\":%d}",
             first ? "" : ",", i, c->addr, c->state, c->nranges,
-            c->crc_code, live, (live == c->crc_code) ? 1 : 0,
+            c->crc_code, live, (live_ok && live == c->crc_code) ? 1 : 0,
             c->val_gen, sum, c->dll, c->diff_passes, c->device_touch);
         first = 0;
     }
@@ -4873,7 +4934,8 @@ int overlay_loader_dump_lazy_at(uint32_t addr, char *out, int cap) {
         int ci = lm->cache_idx;
         const char *base = strrchr(s_cache_idx[ci].path, '/');
         base = base ? base + 1 : s_cache_idx[ci].path;
-        uint32_t live = lazy_man_crc(&lm->fn);
+        uint32_t live = 0;
+        const int live_ok = lazy_man_crc(&lm->fn, &live);
         n += snprintf(out + n, cap - n,
             "%s{\"li\":%d,\"ci\":%d,\"region\":\"0x%08X\","
             "\"file\":\"%s\",\"funcs\":%d,\"indexed\":%d,"
@@ -4882,7 +4944,7 @@ int overlay_loader_dump_lazy_at(uint32_t addr, char *out, int cap) {
             first ? "" : ",", li, ci, s_cache_idx[ci].region_start,
             base, s_cache_idx[ci].func_count, s_cache_idx[ci].indexed_func_count,
             dll_already_loaded(s_cache_idx[ci].path), lm->fn.crc, live,
-            live == lm->fn.crc, lazy_man_contains(&lm->fn, phys));
+            live_ok && live == lm->fn.crc, lazy_man_contains(&lm->fn, phys));
         first = 0;
     }
     n += snprintf(out + n, cap - n, "]}");

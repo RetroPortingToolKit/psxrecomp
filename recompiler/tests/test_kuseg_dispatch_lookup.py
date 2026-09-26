@@ -17,6 +17,12 @@ This test synthesizes a KUSEG-addressed PS-EXE and asserts the emitted lookup
 compares 29-bit physical addresses, and that the table is ordered by that same
 key so the binary-search invariant holds.
 
+It also pins the RAM-mirror contract against the runtime's real geometry
+(runtime/src/psx_ram_geometry.c, linked in): a PC in the 2nd-4th RAM mirror is
+a different code address, in retail 2 MiB and 8 MiB geometry alike, so it never
+resolves to a compiled body (whose $ra/EPC constants are the KSEG PCs it was
+compiled for) and never counts as EXE text.
+
 Usage:  python test_kuseg_dispatch_lookup.py [--recompiler <psxrecomp-game>]
 Exit 0 = PASS.
 """
@@ -115,18 +121,24 @@ def main():
         raise SystemExit("dispatch table is not sorted by physical address; "
                          "the masked binary search would miss entries")
 
-    # Compile the REAL emitted lookup, validity gates and dispatch function.
+    # Compile the REAL emitted lookup, validity gates and dispatch function,
+    # linked against the runtime's REAL live-geometry state machine
+    # (runtime/src/psx_ram_geometry.c + psx_memory.h), so the mirror contract
+    # below is checked against exactly what the runtime links -- no copies.
     # Only peripheral callbacks and generated MIPS bodies are fixture doubles.
     if not args.compiler:
         raise SystemExit("a C compiler is required for the dispatch regression")
-    begin = src.index("typedef struct { uint32_t lo; uint32_t len; } PsxGameCodeRange;")
+    runtime = os.path.normpath(os.path.join(here, "..", "..", "runtime"))
+    begin = src.index("int psx_game_address_in_text(uint32_t addr) {")
     end = src.index("/* 1 iff addr is a re-enterable", begin)
     fragment = src[begin:end]
     funcs = sorted(set(re.findall(r"func_[0-9A-Fa-f]{8}", fragment)))
-    harness = r'''
+    harness = r"""
 #include <stdint.h>
 #include <stddef.h>
 #include <assert.h>
+#include "psx_memory.h"
+int psx_mod_set_main_ram_8mb(int enabled);   /* runtime psx_ram_geometry.c */
 typedef struct { uint32_t pc; } CPUState;
 static int allowed = 1, calls = 0, irqs = 0;
 static uint32_t resumed;
@@ -141,52 +153,87 @@ static void psx_check_interrupts_dispatch_entry(CPUState* cpu, uint32_t a) {
     (void)cpu; (void)a; irqs++;
 }
 int psx_vsync_query_hle_try(CPUState* cpu, uint32_t a) { (void)cpu; (void)a; return 0; }
-'''
+"""
     harness += "\n".join(f"#define {fn} dummy" for fn in funcs) + "\n" + fragment
-    harness += r'''
+    harness += r"""
+static void set_geometry(int expanded) {
+    psx_ram_reset_size_request();
+    if (expanded) psx_mod_set_main_ram_8mb(1);
+    psx_ram_apply_size_request();
+    assert(memory_get_ram_bytes() == (expanded ? 0x00800000u : 0x00200000u));
+}
+
 int main(void) {
     const uint32_t aliases[] = {0, 0x80000000u, 0xA0000000u};
     CPUState cpu = {0};
-    for (unsigned a = 0; a < 3; ++a) {
-        for (uint32_t phys = 0xFFF0u; phys < 0x10080u; ++phys) {
-            const PsxGameDispatchEntry* expected = 0;
-            for (unsigned i = 0; i < PSX_GAME_DISPATCH_COUNT; ++i)
-                if ((k_psx_game_dispatch[i].addr & 0x1FFFFFFFu) == phys)
-                    expected = &k_psx_game_dispatch[i];
-            uint32_t addr = aliases[a] | phys;
-            assert(psx_game_find_entry(addr) == expected);
-            if (!expected) continue;
-            // A previously resolved PC must NOT cache its live-byte verdict.
-            allowed = 0; cpu.pc = 0xDEADBEEFu;
-            int old_calls = calls, old_irqs = irqs;
-            assert(!psx_game_text_native_ok(addr));
-            assert(!psx_dispatch_game_compiled(&cpu, addr));
-            assert(calls == old_calls && irqs == old_irqs && cpu.pc == 0xDEADBEEFu);
-            allowed = 1;
-            assert(psx_dispatch_game_compiled(&cpu, addr));
-            assert(calls == old_calls + 1 && irqs == old_irqs + 1);
-            assert(resumed == expected->resume_pc);
+    /* Retail (8 MB mod off) first, then the expanded map: code identity is the
+     * segment-stripped PC in BOTH, so geometry never changes which compiled
+     * body a PC may run. */
+    for (int expanded = 0; expanded < 2; ++expanded) {
+        set_geometry(expanded);
+        for (unsigned a = 0; a < 3; ++a) {
+            for (uint32_t phys = 0xFFF0u; phys < 0x10080u; ++phys) {
+                const PsxGameDispatchEntry* expected = 0;
+                for (unsigned i = 0; i < PSX_GAME_DISPATCH_COUNT; ++i)
+                    if ((k_psx_game_dispatch[i].addr & 0x1FFFFFFFu) == phys)
+                        expected = &k_psx_game_dispatch[i];
+                uint32_t addr = aliases[a] | phys;
+                assert(psx_game_find_entry(addr) == expected);
+                /* A PC in a 2nd-4th RAM mirror keeps its own address: the
+                 * compiled body bakes the KSEG PCs it was compiled for into
+                 * $ra/EPC, so it must never run for a mirror PC, and the
+                 * mirror is not the EXE text. (Retail executes the folded
+                 * bytes through the interpreter, with the mirror PC.) */
+                for (uint32_t m = 1; m < 4; ++m) {
+                    const uint32_t mirror = addr + m * 0x00200000u;
+                    int old_calls = calls, old_irqs = irqs;
+                    cpu.pc = 0xDEADBEEFu;
+                    assert(psx_game_find_entry(mirror) == 0);
+                    assert(!psx_game_address_in_text(mirror));
+                    assert(!psx_game_text_native_ok(mirror));
+                    assert(!psx_dispatch_game_compiled(&cpu, mirror));
+                    assert(calls == old_calls && irqs == old_irqs &&
+                           cpu.pc == 0xDEADBEEFu);
+                }
+                if (expected) assert(psx_game_address_in_text(addr));
+                if (!expected) continue;
+                // A previously resolved PC must NOT cache its live-byte verdict.
+                allowed = 0; cpu.pc = 0xDEADBEEFu;
+                int old_calls = calls, old_irqs = irqs;
+                assert(!psx_game_text_native_ok(addr));
+                assert(!psx_dispatch_game_compiled(&cpu, addr));
+                assert(calls == old_calls && irqs == old_irqs && cpu.pc == 0xDEADBEEFu);
+                allowed = 1;
+                assert(psx_dispatch_game_compiled(&cpu, addr));
+                assert(calls == old_calls + 1 && irqs == old_irqs + 1);
+                assert(resumed == expected->resume_pc);
+            }
         }
+        assert(!psx_game_find_entry(0xFFFFFFFFu));
+        assert(!psx_game_find_entry(0));
     }
-    assert(!psx_game_find_entry(0xFFFFFFFFu));
-    assert(!psx_game_find_entry(0));
     return 0;
 }
-'''
+"""
     with tempfile.TemporaryDirectory() as tmp:
         source = os.path.join(tmp, "lookup.c")
+        geometry = os.path.join(runtime, "src", "psx_ram_geometry.c")
+        include = os.path.join(runtime, "include")
         binary = os.path.join(tmp, "lookup.exe" if os.name == "nt" else "lookup")
         with open(source, "w", encoding="utf-8") as f:
             f.write(harness)
         compiler_name = os.path.basename(args.compiler).lower()
         if compiler_name in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
-            command = [args.compiler, "/nologo", "/Od", source, "/Fe:" + binary]
+            command = [args.compiler, "/nologo", "/Od", "/I" + include, source, geometry,
+                       "/Fe:" + binary]
         else:
-            command = [args.compiler, "-std=c11", "-O2", source, "-o", binary]
+            command = [args.compiler, "-std=c11", "-O2", "-I", include, source, geometry,
+                       "-o", binary]
         subprocess.run(command, check=True, cwd=tmp)
         subprocess.run([binary], check=True, cwd=tmp)
 
-    print("KUSEG dispatch lookup test passed (%d entries, physical-keyed)" % len(keys))
+    print("KUSEG dispatch lookup test passed (%d entries, physical-keyed, "
+          "mirror PCs never run compiled code in 2 or 8 MiB geometry)" % len(keys))
 
 
 if __name__ == "__main__":

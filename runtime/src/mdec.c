@@ -1127,12 +1127,39 @@ void mdec_snapshot_write(uint8_t *p) {
         (void)pst_w_bytes(&w, mdec.output, mdec.output_size);
 }
 
+/* Wire offsets of the fields mdec_snapshot_read gates on (layout above): ver
+ * first, output_pos the 12th scalar, then the two counts and the u64 age that
+ * close the fixed part. */
+#define MDEC_SNAP_OFF_OUTPUT_POS (4u + 11u * 4u)
+#define MDEC_SNAP_OFF_COUNTS     (mdec_snap_fixed_bytes() - 16u)
+
+static uint32_t mdec_wire_u32(const uint8_t *p, uint32_t off) {
+    return (uint32_t)p[off] | ((uint32_t)p[off + 1u] << 8) |
+           ((uint32_t)p[off + 2u] << 16) | ((uint32_t)p[off + 3u] << 24);
+}
+
+/* Non-mutating pre-check for boot_state's two-pass load. mdec_snapshot_read
+ * runs it first, so the two cannot disagree: a section that passes here
+ * cannot fail the reader short of the FIFO allocation itself failing. */
+int mdec_snapshot_validate(const uint8_t *p, uint32_t len) {
+    uint32_t input_count, output_size;
+    if (!p || len < mdec_snap_fixed_bytes()) return 0;
+    if (mdec_wire_u32(p, 0u) != MDEC_SNAP_VER) return 0;
+    input_count = mdec_wire_u32(p, MDEC_SNAP_OFF_COUNTS);
+    output_size = mdec_wire_u32(p, MDEC_SNAP_OFF_COUNTS + 4u);
+    if (input_count > MDEC_SNAP_INPUT_MAX || output_size > MDEC_SNAP_OUTPUT_MAX)
+        return 0;
+    if (mdec_wire_u32(p, MDEC_SNAP_OFF_OUTPUT_POS) > output_size) return 0;
+    return (uint64_t)len - mdec_snap_fixed_bytes() >=
+           (uint64_t)input_count * 2u + output_size;
+}
+
 int mdec_snapshot_read(const uint8_t *p, uint32_t len) {
     PstR r;
     uint32_t ver = 0, input_count = 0, output_size = 0, reserved;
     uint64_t age = 1000ull;
     int16_t s16;
-    if (!p || len < mdec_snap_fixed_bytes()) return 0;
+    if (!mdec_snapshot_validate(p, len)) return 0;
     pst_r_init(&r, p, len);
     if (!pst_r_u32(&r, &ver) || ver != MDEC_SNAP_VER) return 0;
     if (!pst_r_u32(&r, &mdec.command) ||

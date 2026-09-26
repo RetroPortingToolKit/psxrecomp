@@ -2,6 +2,7 @@
  * See text_xlate.h + docs/STRING_TRANSLATION.md. */
 
 #include "text_xlate.h"
+#include "psx_memory.h"
 #include "cpu_state.h"
 
 #include <cstdint>
@@ -36,14 +37,13 @@ namespace {
 namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
-// Guest RAM access (little-endian, no swizzle). Main RAM is 2 MB, mirrored
-// across [0,0x800000). Returns 0 / no-op for out-of-range.
+// Guest RAM access (little-endian, no swizzle). The 8 MiB decode window
+// [0,0x800000) folds through the live geometry (retail: 2 MiB mirrored four
+// times). Returns 0 / no-op for out-of-range.
 // ---------------------------------------------------------------------------
-constexpr uint32_t kRamSize = 2u * 1024u * 1024u;
-
 inline bool ram_fold(uint32_t va, uint32_t* pa_out) {
     uint32_t p = va & 0x1FFFFFFFu;
-    if (p < 0x00800000u) { *pa_out = p & (kRamSize - 1u); return true; }
+    if (p < PSX_MAIN_RAM_WINDOW_BYTES) { *pa_out = psx_ram_canonical_offset(p); return true; }
     return false;  // I/O / BIOS / scratchpad — not translatable text storage
 }
 inline uint8_t grb(uint8_t* ram, uint32_t va) {

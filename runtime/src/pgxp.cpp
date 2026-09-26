@@ -34,6 +34,7 @@
 #include "pgxp.h"
 #include "pgxp_hooks.h"
 #include "cpu_state.h"
+#include "psx_memory.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -61,12 +62,14 @@ struct PGXPValue {
     uint32_t gen;        /* valid iff == s_gen (O(1) invalidate-all)          */
 };
 
-#define PGXP_RAM_WORDS     (0x200000u >> 2)   /* 2 MB RAM                     */
+/* Shadow covers the host RAM backing so the opt-in 8 MB map tracks its high
+ * banks; retail sessions only ever touch the low 2 MiB of it. */
+#define PGXP_RAM_WORDS     (PSX_MAIN_RAM_BACKING_BYTES >> 2)
 #define PGXP_SCRATCH_WORDS (0x400u >> 2)      /* 1 KB scratchpad              */
 #define PGXP_REG_HI        32
 #define PGXP_REG_LO        33
 
-static PGXPValue *s_ram = nullptr;            /* lazily allocated, ~10 MB     */
+static PGXPValue *s_ram = nullptr;            /* lazily allocated, ~40 MB VA  */
 static PGXPValue  s_scratch[PGXP_SCRATCH_WORDS];
 static PGXPValue  s_gpr[34];                  /* 32 GPRs + HI + LO            */
 static PGXPValue  s_gte[32];                  /* GTE data registers           */
@@ -153,8 +156,8 @@ extern "C" void pgxp_get_stats(PGXPStats *out) {
 /* Guest address -> shadow slot, or NULL for BIOS/MMIO/KSEG2 (untrackable). */
 static inline PGXPValue *pgxp_ptr(uint32_t addr) {
     uint32_t m = addr & 0x1FFFFFFFu;
-    if (m < 0x00800000u)                       /* RAM + its mirrors           */
-        return s_ram ? &s_ram[(m & 0x1FFFFCu) >> 2] : nullptr;
+    if (m < PSX_MAIN_RAM_WINDOW_BYTES)         /* RAM + its mirrors (live map) */
+        return s_ram ? &s_ram[psx_ram_canonical_offset(m) >> 2] : nullptr;
     if ((m & 0xFFFFFC00u) == 0x1F800000u)      /* scratchpad                  */
         return &s_scratch[(m & 0x3FCu) >> 2];
     return nullptr;

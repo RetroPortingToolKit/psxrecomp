@@ -12,11 +12,14 @@ SDL_MAIN_HEADER = "<SDL3/SDL_main.h>"
 def main() -> int:
     runtime = ROOT / "runtime"
     owners = []
-    for pattern in ("*.c", "*.cpp", "*.h"):
-        for path in runtime.rglob(pattern):
-            source = path.read_text(encoding="utf-8")
-            if SDL_MAIN_HEADER in source:
-                owners.append(path.relative_to(ROOT).as_posix())
+    # Sources only: a build tree under runtime/ (the documented runtime/build
+    # layout) holds generated binary-ish headers such as vk_shaders_spv.h.
+    for tree in ("src", "include", "tests"):
+        for pattern in ("*.c", "*.cpp", "*.h"):
+            for path in (runtime / tree).rglob(pattern):
+                source = path.read_text(encoding="utf-8")
+                if SDL_MAIN_HEADER in source:
+                    owners.append(path.relative_to(ROOT).as_posix())
 
     if owners != ["runtime/src/main.cpp"]:
         raise AssertionError(

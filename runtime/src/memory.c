@@ -25,13 +25,14 @@
 #include "dirty_ram_interp.h"
 #include "guest_tty.h"
 #include "psx_cycles.h"
+#include "psx_memory.h"
 #include "starvation_ring.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define RAM_SIZE        (2 * 1024 * 1024)
+#define RAM_SIZE        PSX_MAIN_RAM_BACKING_BYTES
 #define SCRATCHPAD_SIZE 1024
 #define BIOS_ROM_SIZE   (512 * 1024)
 #define MOD_MEMORY_BASE 0x1F000000u
@@ -44,7 +45,6 @@ static uint8_t mod_memory[MOD_MEMORY_SIZE];
 static uint32_t mod_memory_used;
 static uint8_t mod_gpu_dma_memory[PSX_MOD_GPU_DMA_APERTURE_SIZE];
 static uint32_t mod_gpu_dma_memory_used;
-
 uint32_t psx_mod_memory_snapshot_bytes(void) {
     return mod_memory_used || mod_gpu_dma_memory_used
         ? 16u + mod_memory_used + mod_gpu_dma_memory_used : 0u;
@@ -69,16 +69,23 @@ void psx_mod_memory_snapshot_write(uint8_t* out) {
     memcpy(out + 16u + mod_memory_used, mod_gpu_dma_memory, mod_gpu_dma_memory_used);
 }
 
-int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
+/* Non-mutating pre-check for boot_state's two-pass load; the reader runs it. */
+int psx_mod_memory_snapshot_validate(const uint8_t* data, uint32_t size) {
     PstR r;
     uint32_t version, base, cpu_bytes, dma_bytes;
     if (!data || size < 16u || size != psx_mod_memory_snapshot_bytes()) return 0;
     pst_r_init(&r, data, size);
-    if (!pst_r_u32(&r, &version) || !pst_r_u32(&r, &base) ||
-        !pst_r_u32(&r, &cpu_bytes) || !pst_r_u32(&r, &dma_bytes) ||
-        version != 1u || base != PSX_MOD_GPU_DMA_APERTURE_BASE ||
-        cpu_bytes != mod_memory_used || dma_bytes != mod_gpu_dma_memory_used)
-        return 0;
+    return pst_r_u32(&r, &version) && pst_r_u32(&r, &base) &&
+           pst_r_u32(&r, &cpu_bytes) && pst_r_u32(&r, &dma_bytes) &&
+           version == 1u && base == PSX_MOD_GPU_DMA_APERTURE_BASE &&
+           cpu_bytes == mod_memory_used && dma_bytes == mod_gpu_dma_memory_used;
+}
+
+int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
+    uint32_t cpu_bytes, dma_bytes;
+    if (!psx_mod_memory_snapshot_validate(data, size)) return 0;
+    cpu_bytes = mod_memory_used;
+    dma_bytes = mod_gpu_dma_memory_used;
     memcpy(mod_memory, data + 16u, cpu_bytes);
     memcpy(mod_gpu_dma_memory, data + 16u + cpu_bytes, dma_bytes);
     return 1;
@@ -139,23 +146,21 @@ uint8_t *g_psx_ram = ram;
 /* PSX_LOAD_DELAY gate (default on). −1 = unread; 0/1 after first resolve. */
 int g_psx_load_delay = -1;
 
-/* Physical address translation for guest accesses. The 2 MB main RAM is
- * mirrored 4x across the first 8 MB of each segment (mem-ctrl RAM_SIZE
- * register, default 0x0B88) and games rely on it — Kula World's crt0
- * parks $sp in the 4th mirror (0x807FFFF8). Fold the mirrors here so the
- * RAM bounds checks below see canonical offsets; without this, mirror
- * writes fell into the open-bus no-op and mirror reads returned 0 (the
- * guest's stack silently vanished and $ra came back as 0). */
+/* Physical address translation for guest accesses. Retail 2 MB DRAM is
+ * mirrored across the first 8 MB of each segment (Kula World's crt0 parks $sp
+ * in the 4th mirror); the opt-in 8 MB map decodes the window uniquely. One
+ * live mask does both: phys & 0x1FFFFF retail, phys & 0x7FFFFF expanded. */
 static inline uint32_t psx_phys_addr(uint32_t addr) {
-    uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < 0x00800000u) phys &= (uint32_t)(RAM_SIZE - 1);
-    return phys;
+    return psx_ram_map_read(addr);
+}
+
+static inline uint32_t psx_phys_addr_store(uint32_t addr) {
+    return psx_ram_map_write(addr);
 }
 
 /* Expose RAM pointer for oracle comparison (find_first_divergence). */
 uint8_t *memory_get_ram_ptr(void) { return ram; }
 uint8_t *memory_get_scratchpad_ptr(void) { return scratchpad; }
-
 void memory_clear_low_boot_scratch(void) {
     memset(ram, 0, 0x10u);
 }
@@ -185,6 +190,11 @@ void memory_clear_low_boot_scratch(void) {
 #define DIRTY_RAM_PAGE_SHIFT    12          /* 4 KB pages */
 #define DIRTY_RAM_PAGE_COUNT    (RAM_SIZE >> DIRTY_RAM_PAGE_SHIFT)
 #define DIRTY_RAM_BITMAP_WORDS  ((DIRTY_RAM_PAGE_COUNT + 31u) / 32u)
+/* Guest-visible extent (retail 2 MiB unless the 8 MB mod is live). Host arrays
+ * are sized for the backing capacity; bounds and serialization use this. */
+#define RAM_LIVE                (g_psx_ram_size)
+#define DIRTY_RAM_LIVE_BITMAP_WORDS \
+    (((RAM_LIVE >> DIRTY_RAM_PAGE_SHIFT) + 31u) / 32u)
 static uint32_t dirty_ram_bitmap[DIRTY_RAM_BITMAP_WORDS];
 
 /* Monotonic generation for RAM-resident CODE changes (kernel install-stub
@@ -195,7 +205,7 @@ static uint32_t dirty_ram_bitmap[DIRTY_RAM_BITMAP_WORDS];
 uint32_t g_dirty_ram_code_gen = 1;
 
 static inline void dirty_ram_mark_page(uint32_t phys) {
-    if (phys >= RAM_SIZE) return;
+    if (phys >= RAM_LIVE) return;
     uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t bit = 1u << (page & 31u);
     /* Generation bumps on the clean->dirty TRANSITION only: kernel-window data
@@ -461,7 +471,7 @@ extern uint32_t g_overlay_region_floor;
 void dirty_ram_clear_image_baseline(void) {
     uint32_t floor = g_overlay_region_floor;
     if (floor <= DIRTY_RAM_KERNEL_TRACK_BYTES) return;
-    if (floor > RAM_SIZE) floor = RAM_SIZE;
+    if (floor > RAM_LIVE) floor = RAM_LIVE;
     uint32_t base = g_text_image_lo;
     if (base < DIRTY_RAM_KERNEL_TRACK_BYTES) base = DIRTY_RAM_KERNEL_TRACK_BYTES;
     if (base >= floor) return;
@@ -503,8 +513,8 @@ static uint32_t g_text_exact_last_ref = 0;
 
 void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                    uint32_t len) {
-    if (!bytes || len == 0 || phys_lo >= RAM_SIZE) return;
-    if (len > RAM_SIZE - phys_lo) len = RAM_SIZE - phys_lo;
+    if (!bytes || len == 0 || phys_lo >= RAM_LIVE) return;
+    if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
     text_ref_image = (uint8_t *)bytes;  /* runtime-owned mutable heap buffer */
     text_ref_lo = phys_lo;
     text_ref_hi = phys_lo + len;
@@ -697,10 +707,10 @@ uint32_t dirty_ram_text_diverged_bitmap_word(uint32_t word_index) {
 }
 
 void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return;
+    if (len == 0 || phys >= RAM_LIVE) return;
     psx_kernel_bless_note_range(phys, len);
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
 
     uint32_t first_page = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t last_page = end >> DIRTY_RAM_PAGE_SHIFT;
@@ -744,7 +754,10 @@ static int dirty_ram_shellwin_interp(void) {
 }
 
 int dirty_ram_is_dirty(uint32_t phys) {
-    if (phys >= RAM_SIZE) return 0;
+    /* Dirtiness belongs to the BYTES: a PC in a retail RAM mirror is asked
+     * about the page it folds to (identity for every live-RAM offset). */
+    phys = psx_ram_map_read(phys);
+    if (phys >= RAM_LIVE) return 0;
     if (dirty_ram_force_interp() && phys >= DIRTY_RAM_KERNEL_TRACK_BYTES) return 1;
     if (dirty_ram_shellwin_interp() && phys >= 0x00030000u && phys <= 0x0005AFFFu) return 1;
     /* Experimental fallback for overlays copied into their final location by
@@ -766,12 +779,16 @@ uint32_t dirty_ram_get_bitmap_word(uint32_t word_index) {
     return dirty_ram_bitmap[word_index];
 }
 
+/* Serialized (savestate / netplay digest) extent: the LIVE RAM's pages only,
+ * so a retail session's dirty-bitmap section is unchanged by the 8 MiB host
+ * backing. */
 uint32_t dirty_ram_get_bitmap_word_count(void) {
-    return DIRTY_RAM_BITMAP_WORDS;
+    return DIRTY_RAM_LIVE_BITMAP_WORDS;
 }
 
 void dirty_ram_set_bitmap_words(const uint32_t* words, uint32_t count) {
-    if (count > DIRTY_RAM_BITMAP_WORDS) count = DIRTY_RAM_BITMAP_WORDS;
+    memset(dirty_ram_bitmap, 0, sizeof(dirty_ram_bitmap));
+    if (count > DIRTY_RAM_LIVE_BITMAP_WORDS) count = DIRTY_RAM_LIVE_BITMAP_WORDS;
     for (uint32_t i = 0; i < count; i++)
         dirty_ram_bitmap[i] = words[i];
     /* Bitmap replace bypasses clean→dirty transitions; bump so interpreter
@@ -811,9 +828,9 @@ void dirty_ram_reset_for_boot(void) {
 }
 
 void overlay_watch_set_range(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return;
+    if (len == 0 || phys >= RAM_LIVE) return;
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     for (uint32_t pg = fp; pg <= lp; pg++)
@@ -821,9 +838,9 @@ void overlay_watch_set_range(uint32_t phys, uint32_t len) {
 }
 
 void overlay_watch_clear_range(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return;
+    if (len == 0 || phys >= RAM_LIVE) return;
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     for (uint32_t pg = fp; pg <= lp; pg++)
@@ -834,9 +851,9 @@ void overlay_watch_clear_range(uint32_t phys, uint32_t len) {
  * loader stores this at validation time and compares on dispatch; any change
  * means a watched page in the range was written. */
 uint32_t overlay_watch_pagegen_sum(uint32_t phys, uint32_t len) {
-    if (len == 0 || phys >= RAM_SIZE) return 0;
+    if (len == 0 || phys >= RAM_LIVE) return 0;
     uint32_t end = phys + len - 1u;
-    if (end >= RAM_SIZE || end < phys) end = RAM_SIZE - 1u;
+    if (end >= RAM_LIVE || end < phys) end = RAM_LIVE - 1u;
     uint32_t fp = phys >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t lp = end  >> DIRTY_RAM_PAGE_SHIFT;
     uint32_t sum = 0;
@@ -878,7 +895,7 @@ void dirty_ram_text_guard_resync_after_restore(void) {
             uint32_t hi = lo + (1u << DIRTY_RAM_PAGE_SHIFT);
             if (lo < text_ref_lo) lo = text_ref_lo;
             if (hi > text_ref_hi) hi = text_ref_hi;
-            if (hi > RAM_SIZE) hi = RAM_SIZE;
+            if (hi > RAM_LIVE) hi = RAM_LIVE;
             if (hi <= lo) continue;
             if (memcmp(ram + lo, text_ref_image + (lo - text_ref_lo), hi - lo) != 0)
                 text_modified_bitmap[p >> 5] |= (1u << (p & 31u));
@@ -899,7 +916,7 @@ void overlay_watch_invalidate_after_ram_restore(void) {
 
 static inline void overlay_watch_note_write(uint32_t phys, uint32_t size) {
     uint32_t pg = phys >> DIRTY_RAM_PAGE_SHIFT;
-    if (pg >= DIRTY_RAM_PAGE_COUNT) return;
+    if (pg >= (RAM_LIVE >> DIRTY_RAM_PAGE_SHIFT)) return;
     /* Never attach pre-write PC evidence to post-write bytes, including for
      * completely unknown/self-modifying code. This is deliberately a compact
      * page clear, not a capture: serializing snapshots from this universal
@@ -1103,6 +1120,7 @@ static uint32_t s_bios_checksum = 0;
 uint32_t memory_get_bios_checksum(void) { return s_bios_checksum; }
 
 void memory_init(const char* bios_path) {
+    psx_ram_apply_size_request();
     memset(ram, 0, sizeof(ram));
     memset(scratchpad, 0, sizeof(scratchpad));
     /* Rematch re-enters without process exit — wipe sticky I/O regs that
@@ -1272,7 +1290,9 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
     if (addr == 0x1F801810u) {
         uint32_t src = addr;
         if (g_debug_last_store_pc == 0xBFC38B1Cu && debug_cpu_ptr) {
-            src = (debug_cpu_ptr->gpr[4] - 4u) & 0x1FFFFCu;
+            /* Word-aligned RAM key through the live geometry (retail: the
+             * 0x1FFFFC fold, identical to the DMA/GPU source keys). */
+            src = psx_ram_canonical_offset(debug_cpu_ptr->gpr[4] - 4u) & ~3u;
         }
         gpu_set_gp0_source(src);
         gpu_write_gp0(val);
@@ -1712,7 +1732,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
      * We have no cache model, so silently discard RAM/scratchpad writes. */
     if (sr_ptr && (*sr_ptr & 0x10000u)) return;
 
-    uint32_t phys = psx_phys_addr(addr);
+    uint32_t phys = psx_phys_addr_store(addr);
 
     /* The generated BIOS mirrors its exception trampoline to 0x80000000 during
      * boot. On hardware this mirror copy is not visible in RAM; only the real
@@ -1906,7 +1926,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 
         /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
-    uint32_t phys = psx_phys_addr(addr);
+    uint32_t phys = psx_phys_addr_store(addr);
 
     if (phys < RAM_SIZE) {
         debug_server_trace_write_check(phys, (uint32_t)read_ram_half(phys), (uint32_t)val, 2);
@@ -2166,10 +2186,14 @@ static inline int psx_cyc_main_ram_fast_addr(uint32_t addr, uint32_t width,
         return 0;
     uint32_t phys = addr & 0x1FFFFFFFu;
     if (phys >= 0x00800000u) return 0;
-    phys &= (uint32_t)(RAM_SIZE - 1);
-    /* Aligned guest loads cannot cross this boundary, but fail closed for a
-     * malformed/unaligned caller instead of introducing a host OOB read. */
-    if (phys > (uint32_t)RAM_SIZE - width) return 0;
+    {
+        /* One live-mask load (psx_memory.h); size = mask + 1. */
+        const uint32_t mask = g_psx_ram_mask;
+        phys &= mask;
+        /* Aligned guest loads cannot cross this boundary, but fail closed for
+         * a malformed/unaligned caller instead of introducing a host OOB read. */
+        if (phys > mask + 1u - width) return 0;
+    }
     *phys_out = phys;
     return 1;
 }
@@ -2241,7 +2265,7 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
 
         /* KSEG2 guard — see psx_read_word_raw. */
     if (addr >= 0xC0000000u) { g_kseg2_ignored_writes++; return; }
-    uint32_t phys = psx_phys_addr(addr);
+    uint32_t phys = psx_phys_addr_store(addr);
 
     if (phys < RAM_SIZE) {
         debug_server_trace_write_check(phys, (uint32_t)ram[phys], (uint32_t)val, 1);

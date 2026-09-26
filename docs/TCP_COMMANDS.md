@@ -100,21 +100,29 @@ Columns: **N** = native, **D** = DuckStation oracle.
 
 ### Boot-time write ranges
 
-Set `PSX_WTRACE_BOOT=lo,hi[;lo,hi...]` before launching a debug-tools build to
-retain the first writes to one or more half-open RAM ranges from guest
-instruction zero. Addresses may be hexadecimal or decimal; KSEG addresses are
-normalized to physical addresses. For example, the Crash Bash investigation
-that motivated this option can be reproduced without title-specific code:
+Set `PSX_WTRACE_BOOT_RANGES=lo-hi[,lo-hi...]` before launching a debug-tools
+build to retain the first writes to up to 8 half-open RAM ranges from guest
+instruction zero, in both the boot and the transition (value-change) rings.
+Addresses are hexadecimal (`0x` optional); KSEG addresses are normalized to
+physical addresses. The ranges get their own slots after the built-in defaults,
+so a default set never crowds them out. For example, the Crash Bash
+investigation that motivated this option can be reproduced without
+title-specific code:
 
 ```powershell
-$env:PSX_WTRACE_BOOT='0x000B3A80,0x000B3B00'
+$env:PSX_WTRACE_BOOT_RANGES='0x000B3A80-0x000B3B00'
 .\CrashBashRecomp.exe
 ```
 
 Connect at any later point and query `wtrace_boot_stats`,
 `wtrace_boot_summary`, or `wtrace_boot_dump`. Each retained entry includes the
 write address/value/width, guest PC and return address, register context, frame,
-and DMA channel. The option is ignored in builds made with debug tools disabled.
+and DMA channel. A malformed spec, a range whose `hi` does not exceed `lo`, or
+more than 8 ranges refuses the whole spec: nothing is armed, a
+`PSX_WTRACE_BOOT_RANGES refused` line is printed at launch, and
+`wtrace_boot_stats` / `wtrace_trans_stats` report `env_ranges` (ranges applied)
+and `env_error` (the reason, empty when accepted). The option is ignored in
+builds made with debug tools disabled.
 
 ---
 

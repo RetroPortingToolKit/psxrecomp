@@ -33,6 +33,7 @@
  */
 
 #include "bios_hle.h"
+#include "psx_memory.h"
 
 #include "cpu_state.h"
 #include "psx_cycles.h"
@@ -100,7 +101,7 @@ static void hle_record(uint32_t vector, uint32_t fn, const CPUState* cpu,
      * load-bearing for event-consumption races (MMX6 card check). */
     uint32_t pcb = cpu->read_word(0xA0000108u);
     uint32_t pcb_phys = pcb & 0x1FFFFFFFu;
-    uint32_t tcb = (pcb != 0u && pcb_phys < 0x200000u)
+    uint32_t tcb = (pcb != 0u && pcb_phys < psx_ram_live_bytes())
                        ? cpu->read_word(0xA0000000u | pcb_phys) : 0u;
     extern int psx_get_in_exception(void);
     uint8_t in_exc = (uint8_t)(psx_get_in_exception() ? 1u : 0u);

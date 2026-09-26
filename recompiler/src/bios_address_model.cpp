@@ -266,10 +266,14 @@ uint32_t BiosAddressModel::rom_keyed_ram_hi_incl() const {
 
 std::string BiosAddressModel::emit_normalize_c() const {
     std::string out;
+    out += "extern uint32_t g_psx_ram_mask;  /* live main-RAM geometry, psx_memory.h */\n";
     out += "static uint32_t normalize(uint32_t addr) {\n";
     out += "    uint32_t phys = addr & 0x1FFFFFFFu;\n";
-    out += "    /* PSX main RAM: 2 MiB mirrored through physical 0x007FFFFF. */\n";
-    out += "    if (phys < 0x00800000u) phys &= 0x001FFFFFu;\n";
+    out += "    /* PSX main RAM decode window [0, 0x00800000). Retail RAM folds its\n";
+    out += "     * 2 MiB mirrors onto the BIOS RAM keys (mask 0x1FFFFF, unchanged\n";
+    out += "     * behaviour); the opt-in 8 MB map decodes the window uniquely\n";
+    out += "     * (mask 0x7FFFFF), so a high-bank PC never reaches a BIOS RAM key. */\n";
+    out += "    if (phys < 0x00800000u) phys &= g_psx_ram_mask;\n";
     for (const BiosAddrCopy& c : copies_) {
         if (c.key_is_ram) {
             out += fmt::format("    /* {}: ROM 0x{:X}+ -> RAM 0x{:X}+ */\n",

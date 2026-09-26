@@ -23,6 +23,7 @@
  */
 
 #include "psx_selfcheck.h"
+#include "psx_memory.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -925,7 +926,7 @@ static int sc_resume_pc_ok(uint32_t pc)
     if ((pc & 0xfff00000u) == 0xbfc00000u)
         return 1;
     phys = pc & 0x1fffffffu;
-    if (phys >= 0x1000u && phys < 0x200000u)
+    if (phys >= 0x1000u && phys < psx_ram_live_bytes())
         return 1;
     return 0;
 }

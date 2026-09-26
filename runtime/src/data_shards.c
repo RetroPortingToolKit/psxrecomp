@@ -30,6 +30,7 @@
  *    functions are data transforms; a GTE-using function must not be listed).
  */
 #include "data_shards.h"
+#include "psx_memory.h"
 #include "psx_cycles.h"
 #include "interrupts.h"
 #include "crc32.h"
@@ -47,7 +48,9 @@ extern void psx_write_word(uint32_t addr, uint32_t val);
 extern void psx_write_byte(uint32_t addr, uint8_t val);
 extern void dirty_ram_mark_executable_range(uint32_t addr, uint32_t len);
 
-#define DS_RAM_BYTES   (2u * 1024u * 1024u)
+/* Unified index space: RAM offsets cover the host backing (the opt-in 8 MB
+ * map's unique high banks included), then the scratchpad. */
+#define DS_RAM_BYTES   PSX_MAIN_RAM_BACKING_BYTES
 #define DS_SP_BYTES    1024u
 #define DS_SPACE       (DS_RAM_BYTES + DS_SP_BYTES)   /* unified index space */
 #define DS_PAGE_SHIFT  12
@@ -139,7 +142,7 @@ void ds_init(const char* cache_dir, const char* game_id) {
 /* virtual addr -> unified index, or -1 (untracked: ROM/open bus), or -2 (MMIO) */
 static int64_t ds_index_of(uint32_t addr) {
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < 0x00800000u) return (int64_t)(phys & (DS_RAM_BYTES - 1u));
+    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) return (int64_t)psx_ram_canonical_offset(phys);
     if (phys >= 0x1F800000u && phys < 0x1F800000u + DS_SP_BYTES)
         return (int64_t)(DS_RAM_BYTES + (phys - 0x1F800000u));
     if (phys >= 0x1F801000u && phys < 0x1F803000u) return -2;   /* MMIO */

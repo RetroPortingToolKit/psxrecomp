@@ -85,6 +85,8 @@ void mdec_debug_dma_out_end(uint32_t addr, uint32_t words);
 uint32_t mdec_snapshot_bytes(void);
 void     mdec_snapshot_write(uint8_t *p);
 int      mdec_snapshot_read(const uint8_t *p, uint32_t len);
+/* 1 iff mdec_snapshot_read(p, len) would accept the section; mutates nothing. */
+int      mdec_snapshot_validate(const uint8_t *p, uint32_t len);
 
 #ifdef __cplusplus
 }

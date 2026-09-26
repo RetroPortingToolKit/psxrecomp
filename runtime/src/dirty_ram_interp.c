@@ -30,6 +30,7 @@
 #include "psx_cycles.h"
 #include "psx_icache.h"
 #include "psx_instr_cost.h"  /* psx_instr_base_cycles — single-source cycle cost */
+#include "psx_memory.h"
 #include "gpu.h"   /* psx_ws_is_backdrop_site / psx_ws_backdrop_x (interp hook) */
 #include "ws_backdrop_detect.h"  /* shared backdrop-window detector (auto_backdrop) */
 #include "lockstep.h"
@@ -256,7 +257,7 @@ static DirtyRamPcEntry *pc_table_get_or_insert(uint32_t pc) {
  * cache-unfriendly open-addressed lookup on every guest instruction. */
 static inline void exec_pc_table_record(uint32_t pc) {
     uint32_t phys = pc & 0x1FFFFFFFu;
-    if (phys < 2u * 1024u * 1024u && (phys & 3u) == 0u) {
+    if (phys < psx_ram_live_bytes() && (phys & 3u) == 0u) {
         uint32_t word = phys >> 2;
         uint32_t mask = 1u << (word & 31u);
         uint32_t *slot = &g_dirty_ram_exec_pc_bitmap[word >> 5];
@@ -507,13 +508,16 @@ static inline uint32_t imm16_field (uint32_t i) { return  i        & 0xFFFFu; }
 static inline int32_t  simm16_field(uint32_t i) { return (int32_t)(int16_t)imm16_field(i); }
 static inline uint32_t target26    (uint32_t i) { return  i        & 0x03FFFFFFu; }
 
-/* Read a 32-bit instruction word from kernel RAM at the given physical addr.
- * Caller has already verified the address is in dirty kernel RAM. */
+/* Read a 32-bit instruction word from main RAM at the given physical addr.
+ * Caller has already verified the address is RAM. The fetch decodes through
+ * the live geometry exactly like a CPU load: a retail PC in the 2nd-4th mirror
+ * fetches the folded 2 MiB bytes, an opt-in 8 MB PC its unique high page. */
 static inline uint32_t fetch_word(uint32_t phys) {
     /* Main RAM is a process-lifetime static allocation. Cache its address so
      * instruction fetch does not cross translation units for every guest op. */
     static const uint8_t *ram;
     if (!ram) ram = memory_get_ram_ptr();
+    phys = psx_ram_map_read(phys);
     return  (uint32_t)ram[phys]
          | ((uint32_t)ram[phys + 1] <<  8)
          | ((uint32_t)ram[phys + 2] << 16)
@@ -551,7 +555,7 @@ static int ws_cull_site(uint32_t pc) {
         return cache[slot].flag;
     uint32_t lo = (phys > (uint32_t)(WIN * 4)) ? phys - (uint32_t)(WIN * 4) : 0u;
     uint32_t hi = phys + (uint32_t)(WIN * 4);
-    if (hi > 0x200000u) hi = 0x200000u;       /* 2 MB main RAM */
+    if (hi > psx_ram_live_bytes()) hi = psx_ram_live_bytes();
     static uint32_t words[2 * WIN + 1];
     int n = 0;
     for (uint32_t a = lo; a + 4u <= hi && n < (int)(2 * WIN + 1); a += 4u)
@@ -577,7 +581,7 @@ static int ws_cull_bltz_site(uint32_t pc) {
         return cache[slot].flag;
     uint32_t lo = (phys > (uint32_t)(WIN * 4)) ? phys - (uint32_t)(WIN * 4) : 0u;
     uint32_t hi = phys + (uint32_t)(WIN * 4);
-    if (hi > 0x200000u) hi = 0x200000u;       /* 2 MB main RAM */
+    if (hi > psx_ram_live_bytes()) hi = psx_ram_live_bytes();
     static uint32_t words[2 * WIN + 1];
     int n = 0;
     for (uint32_t a = lo; a + 4u <= hi && n < (int)(2 * WIN + 1); a += 4u)
@@ -614,7 +618,7 @@ static int ws_backdrop_site_kind(uint32_t pc, int *out_cols) {
     }
     uint32_t lo = (phys > (uint32_t)(WIN * 4)) ? phys - (uint32_t)(WIN * 4) : 0u;
     uint32_t hi = phys + (uint32_t)(WIN * 4 + 4);
-    if (hi > 0x200000u) hi = 0x200000u;          /* 2 MB main RAM */
+    if (hi > psx_ram_live_bytes()) hi = psx_ram_live_bytes();
     static uint32_t words[2 * WIN + 2];
     int n = 0;
     for (uint32_t a = lo; a + 4u <= hi && n < (int)(2 * WIN + 2); a += 4u)
@@ -805,8 +809,10 @@ static inline int phys_is_overlay_flow_region(uint32_t phys) {
 }
 
 static int is_local_dirty_target(uint32_t target) {
-    uint32_t phys = target & 0x1FFFFFFFu;
-    return phys_is_overlay_flow_region(phys) && dirty_ram_is_dirty(phys);
+    /* Region and dirtiness are properties of the BYTES (a retail mirror PC is
+     * classified by the RAM it folds to); the PC itself stays unfolded. */
+    uint32_t ram = psx_ram_map_read(target);
+    return phys_is_overlay_flow_region(ram) && dirty_ram_is_dirty(ram);
 }
 
 /* Target the last interp run handed back to the dispatch loop (chained
@@ -2382,6 +2388,10 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
 int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
     extern int g_psx_dispatch_depth;
     extern void psx_fatal_halt(const char *reason);
+    /* `addr` is architectural: the interpreter runs at exactly this PC, so a
+     * retail RAM-mirror PC (0x807xxxxx) keeps its own $ra/EPC while fetch_word
+     * and the dirty/overlay page checks fold it to the bytes it executes
+     * (psx_memory.h: CODE vs BYTES identity). Never canonicalize it here. */
 #ifndef PSX_NO_DEBUG_TOOLS
     /* A0/B0/C0 kernel-vector stubs are runtime-written, so calls to them
      * land HERE, not in the static dispatcher — which meant the bioscall
@@ -2752,7 +2762,12 @@ int psx_slice_block_impl(CPUState *cpu, uint32_t block_addr, uint32_t bcyc, int 
 }
 
 static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
+    /* phys = CODE identity (segment-stripped PC: compiled-body and overlay
+     * lookups, per-PC telemetry). ram_phys = BYTE identity (the live-geometry
+     * RAM offset the PC's instruction bytes live at: page classification).
+     * They differ only for a PC in a retail RAM mirror. */
     uint32_t phys = addr & 0x1FFFFFFFu;
+    const uint32_t ram_phys = psx_ram_map_read(phys);
     int clean_game_text_miss = 0;
 
     if (addr == 0x80000048u) {
@@ -2870,10 +2885,10 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
          * a JALR into a CD-DMA'd overlay page then fell through to
          * psx_unknown_dispatch and fail-fast exit(1). Data and invalid targets
          * still fail closed via the decodability check. */
-        if (phys < (2u * 1024u * 1024u) &&
-            phys_is_overlay_region(phys) &&
+        if (ram_phys < psx_ram_live_bytes() &&
+            phys_is_overlay_region(ram_phys) &&
             dirty_ram_word_looks_decodable(fetch_word(phys))) {
-            dirty_ram_mark_executable_range(phys, 4u);
+            dirty_ram_mark_executable_range(ram_phys, 4u);
         } else {
             return 0;
         }
@@ -2890,7 +2905,7 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
     /* Overlay flow above the kernel window — kernel window stays per-block (see
      * is_local_dirty_target / phys_is_overlay_flow_region). Includes boot-text
      * pages overwritten by a runtime overlay (Tomba 2), not just [FLOOR, RAM). */
-    int allow_local_dirty_flow = phys_is_overlay_flow_region(phys);
+    int allow_local_dirty_flow = phys_is_overlay_flow_region(ram_phys);
 
     /* Backend-invariant mod_function_entry hooks: generated code fires
      * psx_mod_function_entry at listed function entries, but a mod-patched
@@ -3222,8 +3237,7 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
             uint32_t target_phys = target & 0x1FFFFFFFu;
             if (allow_local_dirty_flow && target != 0 &&
                 target != stop_addr &&
-                phys_is_overlay_flow_region(target_phys) &&
-                dirty_ram_is_dirty(target_phys)) {
+                is_local_dirty_target(target)) {
 #ifdef PSX_HAS_OVERLAY_DISPATCH
                 /* A save restore or an uncompiled continuation can enter the
                  * interpreter in an otherwise static overlay. Surface an exact
@@ -3831,7 +3845,7 @@ void ls_func_enter(uint32_t entry_pc, CPUState *cpu) {
         return;
     }
     uint32_t phys = entry_pc & 0x1FFFFFFFu;
-    if (phys < 0x00010000u || phys >= 0x00200000u) return;
+    if (phys < 0x00010000u || phys >= psx_ram_live_bytes()) return;
 
     s_lsf_dispatch_entry = entry_pc;
     s_lsf_entry = entry_pc;
@@ -3913,9 +3927,10 @@ void ls_at_leader(uint32_t leader_phys, CPUState *cpu) {
      *    (per-instruction, for the cycle ruler); skip those — they're already
      *    interpreted (clean game text dispatched FROM the dirty path still runs
      *    compiled, so we can't use g_dirty_interp_active here).
-     *  - [0x10000, 0x200000): game EXE text in main RAM (above the low-RAM
+     *  - [0x10000, live RAM end): game EXE/overlay text in main RAM (above the low-RAM
      *    kernel/relocated-BIOS area, which isn't the regression locus). */
-    if (!g_ls_dirty_observe && leader_phys >= 0x00010000u && leader_phys < 0x00200000u) {
+    if (!g_ls_dirty_observe && leader_phys >= 0x00010000u &&
+        leader_phys < psx_ram_live_bytes()) {
         s_ls_R0 = *cpu;
         s_ls_block = leader_phys;
         s_ls_trace_n = 0; s_ls_trace_idx = 0; s_ls_overflow = 0; s_ls_mismatch = 0;

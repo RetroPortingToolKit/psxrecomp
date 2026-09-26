@@ -1,6 +1,7 @@
 /* freeze_heartbeat.c — see header for rationale. */
 
 #include "mdec.h"   /* mdec_recently_active: FMV parks the guest in BIOS MDEC code */
+#include "psx_memory.h"
 #include "freeze_heartbeat.h"
 #include "freeze_dump_policy.h"
 #include "debug_server.h"
@@ -347,10 +348,10 @@ static int hb_append_ram_peek(char *out, int n, size_t cap, uint32_t vaddr, int 
                 ncopy = (int)(0x400u - off);
         }
     } else if (phys < 0x00800000u && g_psx_ram) {
-        uint32_t folded = phys & 0x1FFFFFu;
+        uint32_t folded = psx_ram_canonical_offset(phys);
         src = g_psx_ram + folded;
-        if (folded + (uint32_t)ncopy > 0x200000u)
-            ncopy = (int)(0x200000u - folded);
+        if (folded + (uint32_t)ncopy > psx_ram_live_bytes())
+            ncopy = (int)(psx_ram_live_bytes() - folded);
     }
     if (!src) ncopy = 0;
     int m = snprintf(out + n, cap - (size_t)n,
@@ -376,7 +377,7 @@ static uint32_t hb_jal_target_from_ra(uint32_t ra) {
         uint8_t *sp = memory_get_scratchpad_ptr();
         if (sp) src = sp + (phys - 0x1F800000u);
     } else if (phys < 0x00800000u && g_psx_ram) {
-        src = g_psx_ram + (phys & 0x1FFFFFu);
+        src = g_psx_ram + psx_ram_canonical_offset(phys);
     }
     if (!src) return 0;
     memcpy(&insn, src, 4);
