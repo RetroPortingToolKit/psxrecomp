@@ -191,6 +191,9 @@ def main():
                    full_static_coverage_proven=False,
                    image_coverage=image_coverage, pairs=pairs)
     if args.static_dispatch:
+        # Linked into the runtime: no DLL cache namespace, flavor tag or pairs.
+        for key in ('cache_tag', 'flavor', 'published_pairs', 'manifest_rows', 'pairs'):
+            receipt.pop(key)
         receipt.update(static=True, published_variants=len(variants), files=files, variants=variants)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(receipt, indent=2), encoding='utf-8', newline='\n')
