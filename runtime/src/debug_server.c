@@ -12295,6 +12295,79 @@ static void handle_overlay_candidates(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,\"candidates\":%s}\n", id, cbuf);
 }
 
+/* overlay_static_entries: always-on per-entry dispatch counts of the
+ * build-time static overlay dispatcher (generated overlays_static.c). The
+ * global static_hits in overlay_loader_status cannot say WHICH image ran; this
+ * can (a mod engine linked at 0x80780000 versus a menu overlay at 0x800BF800).
+ * Optional addr_lo/addr_hi restrict the sums and the list to [lo, hi) code
+ * addresses (segment bits ignored); `limit` (default 64, max 1024) lists the
+ * busiest entries in the range, most hits first. */
+static void handle_overlay_static_entries(int id, const char *json)
+{
+#ifdef PSX_HAS_OVERLAY_DISPATCH
+    extern uint32_t psx_overlay_static_entry_count(void);
+    extern int psx_overlay_static_entry_stats(uint32_t index, uint32_t *addr,
+                                              uint32_t *variants, uint64_t *hits);
+    typedef struct { uint32_t addr, variants; uint64_t hits; } TopEntry;
+    char lo_str[32], hi_str[32];
+    uint32_t lo = 0u, hi = 0x20000000u;
+    if (json_get_str(json, "addr_lo", lo_str, sizeof(lo_str)))
+        lo = hex_to_u32(lo_str) & 0x1FFFFFFFu;
+    if (json_get_str(json, "addr_hi", hi_str, sizeof(hi_str)))
+        hi = hex_to_u32(hi_str) & 0x1FFFFFFFu;
+    int limit = json_get_int(json, "limit", 64);
+    if (limit < 0) limit = 0;
+    if (limit > 1024) limit = 1024;
+    TopEntry *top = (TopEntry *)calloc((size_t)(limit ? limit : 1), sizeof(TopEntry));
+    char *out = (char *)malloc((size_t)limit * 96u + 512u);
+    if (!top || !out) { free(top); free(out); send_err(id, "oom"); return; }
+    const uint32_t n = psx_overlay_static_entry_count();
+    uint64_t total_hits = 0, range_hits = 0;
+    uint32_t range_entries = 0, range_variants = 0, range_hit_entries = 0;
+    int kept = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t addr = 0, variants = 0;
+        uint64_t hits = 0;
+        if (!psx_overlay_static_entry_stats(i, &addr, &variants, &hits)) break;
+        total_hits += hits;
+        const uint32_t phys = addr & 0x1FFFFFFFu;
+        if (phys < lo || phys >= hi) continue;
+        range_entries++;
+        range_variants += variants;
+        range_hits += hits;
+        if (!hits) continue;
+        range_hit_entries++;
+        /* Insertion into the busiest-first list. */
+        int pos = kept < limit ? kept : limit;
+        while (pos > 0 && top[pos - 1].hits < hits) {
+            if (pos < limit) top[pos] = top[pos - 1];
+            pos--;
+        }
+        if (pos < limit) {
+            top[pos].addr = addr; top[pos].variants = variants; top[pos].hits = hits;
+            if (kept < limit) kept++;
+        }
+    }
+    int w = snprintf(out, 512u,
+        "{\"id\":%d,\"ok\":true,\"entries\":%u,\"total_hits\":%llu,"
+        "\"range_lo\":\"0x%08X\",\"range_hi\":\"0x%08X\",\"range_entries\":%u,"
+        "\"range_variants\":%u,\"range_hits\":%llu,\"range_hit_entries\":%u,\"top\":[",
+        id, n, (unsigned long long)total_hits, lo, hi, range_entries,
+        range_variants, (unsigned long long)range_hits, range_hit_entries);
+    for (int i = 0; i < kept; i++)
+        w += snprintf(out + w, 96u, "%s{\"addr\":\"0x%08X\",\"variants\":%u,\"hits\":%llu}",
+                      i ? "," : "", top[i].addr, top[i].variants,
+                      (unsigned long long)top[i].hits);
+    snprintf(out + w, 8u, "]}");
+    debug_server_send_line(out);
+    free(out);
+    free(top);
+#else
+    (void)json;
+    send_err(id, "no static overlay dispatcher linked (GAME_OVERLAY_STATIC_C unset)");
+#endif
+}
+
 /* overlay_native_ring: dump the always-on ring of native overlay calls + the
  * in-progress entry (freeze-inside-native detector). Measurement surface for
  * the native↔interpreter parity investigation. */
@@ -13953,6 +14026,7 @@ static const CmdEntry s_commands[] = {
     { "cd_reinsert",       handle_cd_reinsert },
     { "overlay_loader_status", handle_overlay_loader_status },
     { "overlay_candidates",   handle_overlay_candidates },
+    { "overlay_static_entries", handle_overlay_static_entries },
     { "overlay_native_ring",  handle_overlay_native_ring },
     { "overlay_irq_suppress_on",  handle_overlay_irq_suppress_on },
     { "overlay_irq_suppress_off", handle_overlay_irq_suppress_off },

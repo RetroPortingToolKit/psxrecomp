@@ -2680,6 +2680,10 @@ def generate_overlay_dispatch(variants: list) -> str:
         # that swapped occupants fails the memo and falls into the full walk.
         # The memo is a hint, never an authority.
         lines.append(f'static uint16_t psx_ov_last_hit[{n_entries}];')
+        # Per-entry hit counters answer "did THIS image's variant run?" (for
+        # example a mod engine in a RAM mirror versus a menu overlay) through
+        # overlay_static_entries, where the global psx_ov_static_hits cannot.
+        lines.append(f'static uint64_t psx_ov_entry_hits[{n_entries}];')
         lines.append('')
 
     lines += [
@@ -2704,6 +2708,9 @@ def generate_overlay_dispatch(variants: list) -> str:
         '    if (address_misses) *address_misses = psx_ov_static_address_misses;',
         '}',
         '',
+        '/* Entry index of the last successful find (single-threaded dispatch). */',
+        'static uint32_t psx_ov_found_entry = 0;',
+        '',
         'static const PsxOvVariant *psx_overlay_static_find_variant(uint32_t addr) {',
         '    const uint32_t key = (addr & 0x1FFFFFFFu) | 0x80000000u;',
     ]
@@ -2711,6 +2718,7 @@ def generate_overlay_dispatch(variants: list) -> str:
     if not flat_variants:
         lines += [
             '    (void)key;',
+            '    (void)psx_ov_found_entry;',
             '    psx_ov_static_address_misses++;',
             '    return 0;',
             '}',
@@ -2722,6 +2730,14 @@ def generate_overlay_dispatch(variants: list) -> str:
             'int psx_overlay_dispatch(CPUState *cpu, uint32_t addr) {',
             '    (void)cpu;',
             '    if (psx_overlay_static_find_variant(addr) == 0) return 0;',
+            '    return 0;',
+            '}',
+            '',
+            'uint32_t psx_overlay_static_entry_count(void) { return 0u; }',
+            '',
+            'int psx_overlay_static_entry_stats(uint32_t index, uint32_t *addr,',
+            '                                   uint32_t *variants, uint64_t *hits) {',
+            '    (void)index; (void)addr; (void)variants; (void)hits;',
             '    return 0;',
             '}',
             '',
@@ -2758,6 +2774,7 @@ def generate_overlay_dispatch(variants: list) -> str:
         '            psx_ov_static_checks++;',
         '            if (psx_overlay_static_code_matches(v->ranges, v->count,',
         '                                               v->crc)) {',
+        '                psx_ov_found_entry = ei;',
         '                return v;',
         '            }',
         '            psx_ov_static_variant_misses++;',
@@ -2769,6 +2786,7 @@ def generate_overlay_dispatch(variants: list) -> str:
         '            if (psx_overlay_static_code_matches(v->ranges, v->count,',
         '                                               v->crc)) {',
         '                psx_ov_last_hit[ei] = (uint16_t)i;',
+        '                psx_ov_found_entry = ei;',
         '                return v;',
         '            }',
         '            psx_ov_static_variant_misses++;',
@@ -2786,7 +2804,21 @@ def generate_overlay_dispatch(variants: list) -> str:
         '    const PsxOvVariant *v = psx_overlay_static_find_variant(addr);',
         '    if (!v) return 0;',
         '    psx_ov_static_hits++;',
+        '    psx_ov_entry_hits[psx_ov_found_entry]++;',
         '    v->fn(cpu);',
+        '    return 1;',
+        '}',
+        '',
+        f'uint32_t psx_overlay_static_entry_count(void) {{ return {n_entries}u; }}',
+        '',
+        '/* Entry `index` (sorted by address): its address, occupant count and',
+        ' * dispatches served. 0 past the last entry. */',
+        'int psx_overlay_static_entry_stats(uint32_t index, uint32_t *addr,',
+        '                                   uint32_t *variants, uint64_t *hits) {',
+        f'    if (index >= {n_entries}u) return 0;',
+        '    if (addr) *addr = psx_ov_entries[index].addr;',
+        '    if (variants) *variants = psx_ov_entries[index].n;',
+        '    if (hits) *hits = psx_ov_entry_hits[index];',
         '    return 1;',
         '}',
         '',
