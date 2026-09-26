@@ -11,14 +11,19 @@ Run: ctest -R overlay_static_sources_cmake
 """
 import argparse
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-ARGS = None
+# ctest passes the tools explicitly; under pytest the cmake on PATH is used and
+# the recompiler comes from PSXRECOMP_GAME (the CLI's override variable).
+ARGS = argparse.Namespace(cmake=shutil.which('cmake') or '', generator='', make_program='',
+                          recompiler=os.environ.get('PSXRECOMP_GAME', ''))
 
 
 def cmake_list(path):
@@ -27,6 +32,8 @@ def cmake_list(path):
 
 class OverlayStaticSourcesTest(unittest.TestCase):
     def setUp(self):
+        if not ARGS.cmake:
+            self.skipTest('no cmake: pass --cmake or put cmake on PATH')
         self.tmp = tempfile.TemporaryDirectory()
         self.project = Path(self.tmp.name) / 'title'
         (self.project / 'generated').mkdir(parents=True)
@@ -130,8 +137,8 @@ message(STATUS "PROBE_SOURCES=${{srcs}}")
 
 class CodegenHashHeaderTest(unittest.TestCase):
     def test_source_list_mode_matches_the_hash_psxrecomp_game_bakes(self):
-        if not ARGS.recompiler:
-            self.skipTest('pass --recompiler <psxrecomp-game>')
+        if not ARGS.cmake or not ARGS.recompiler:
+            self.skipTest('pass --cmake and --recompiler <psxrecomp-game> (or set PSXRECOMP_GAME)')
         sys.path.insert(0, str(ROOT / 'tools'))
         import aot_overlay_pipeline as pipeline
         with tempfile.TemporaryDirectory() as tmp:
@@ -144,9 +151,9 @@ class CodegenHashHeaderTest(unittest.TestCase):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cmake', required=True)
+    parser.add_argument('--cmake', default=ARGS.cmake)
     parser.add_argument('--generator', default='')
     parser.add_argument('--make-program', default='')
-    parser.add_argument('--recompiler', default='')
+    parser.add_argument('--recompiler', default=ARGS.recompiler)
     ARGS, rest = parser.parse_known_args()
     unittest.main(argv=[sys.argv[0]] + rest)
