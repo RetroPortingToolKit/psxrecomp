@@ -439,6 +439,120 @@ class RecompilerGuardTests(unittest.TestCase):
                             for row in mid_rows[:2]), ranges)
 
 
+# supplemental root fragments carry the aliases of their hosts --------------
+#
+# Measured on Tomba 2 (bead beads-eio.3.177): the 0x80038000 capture has more
+# roots than the region shard admits, so ~960 roots are compiled in strong-root
+# supplement fragments. Those fragments were built from `dispatch_root` seeds
+# only, so every candidate the guard absorbed into such a host (0x8003A678 in
+# host 0x8003A614, captured dispatch entries) was served by neither shard: 127
+# captured dispatch entries lost the native identity the unguarded build had.
+class SupplementFragmentAliasTests(unittest.TestCase):
+    HOST, MID = LOAD + 0x20, LOAD + 0x30
+
+    def fallthrough_image(self, size=0x100):
+        host, mid = self.HOST, self.MID
+        return image({host: FRAME, host + 4: ADDIU, host + 8: ADDIU,
+                      host + 12: ADDIU, mid: SUBU, mid + 4: ADDIU,
+                      mid + 8: JR_RA, mid + 12: UNFRAME}, size)
+
+    def job(self, data):
+        cap = {'schema': 'psxrecomp overlay capture v2',
+               'function_entry_pcs': [f'0x{self.HOST:08X}'],
+               'dispatch_entry_pcs': [f'0x{self.HOST:08X}'],
+               'static_discovery_entry_pcs': [f'0x{self.MID:08X}']}
+        _seeds, audit = CO.classify_overlay_seeds(
+            cap, data, LOAD, len(data), 0, {}, root_enrichment=True)
+        return audit, CO.make_interior_fragment_job(
+            LOAD & 0x1FFFFFFF, LOAD, len(data), data, audit, set(), cap)
+
+    def test_classifier_records_final_host_of_every_alias(self):
+        audit, _job = self.job(self.fallthrough_image())
+        self.assertEqual(audit['included_reasons'][self.MID],
+                         'DISPATCH_INTERIOR')
+        self.assertEqual(audit['interior_hosts'][self.MID], {self.HOST})
+        self.assertEqual(audit['guard_demoted'][self.MID],
+                         ('STATIC_DISCOVERY_ROOT', self.HOST))
+
+    def test_root_fragment_selects_its_hosts_aliases(self):
+        _audit, job = self.job(self.fallthrough_image())
+        self.assertIn(self.HOST, job['static_exact_demands'])
+        self.assertEqual(CO.fragment_interior_aliases(job, [self.HOST]),
+                         [self.MID])
+        self.assertEqual(CO.fragment_interior_aliases(job, [LOAD + 0x80]), [])
+        # merged byte-variant recipes union the hosts
+        merged = CO.merge_fragment_jobs_by_recipe([job, job])
+        self.assertEqual(merged[0]['interior_hosts'][self.MID], {self.HOST})
+
+    def test_fragment_seed_file_carries_aliases_as_interior(self):
+        data = self.fallthrough_image()
+        seen = {}
+        real_run = CO.subprocess.run
+
+        def fake_run(cmd, **kw):
+            seen['seeds'] = Path(cmd[cmd.index('--seeds') + 1]).read_text()
+            return subprocess.CompletedProcess(cmd, 1, '', 'stop')
+        args = argparse.Namespace(recompiler='recomp.exe', game_toml=__file__,
+                                  project_root=None, runtime_include='.')
+        CO.subprocess.run = fake_run
+        try:
+            CO.compile_fragment_batch(
+                [self.HOST], data, LOAD, len(data), LOAD & 0x1FFFFFFF, '.',
+                args, {}, {}, guard_bytes=0, interior_aliases=[self.MID])
+        finally:
+            CO.subprocess.run = real_run
+        lines = seen['seeds'].splitlines()
+        self.assertIn(f'dispatch_root 0x{self.HOST:08X}', lines)
+        self.assertIn(f'interior 0x{self.MID:08X}', lines)
+
+    def test_alias_failure_never_costs_the_host(self):
+        calls = []
+
+        def build(aliases):
+            calls.append(list(aliases))
+            return ((None, 'generated-c-audit: 1 unknown_bad') if aliases
+                    else ([('ok',)], 'built'))
+        ids, status = CO.compile_root_fragment_with_aliases(
+            [self.HOST], [self.MID], build)
+        self.assertEqual((ids, status, calls), ([('ok',)], 'built',
+                                                [[self.MID], []]))
+        # a multi-root batch is left to the caller's bisection
+        calls.clear()
+        ids, _status = CO.compile_root_fragment_with_aliases(
+            [self.HOST, LOAD + 0x80], [self.MID], build)
+        self.assertIsNone(ids)
+        self.assertEqual(calls, [[self.MID]])
+        # capacity verdicts are never retried
+        calls.clear()
+        CO.compile_root_fragment_with_aliases(
+            [self.HOST], [self.MID],
+            lambda a: calls.append(a) or (None, 'candidate-capacity: full; x'))
+        self.assertEqual(len(calls), 1)
+
+    def test_recompiler_emits_alias_in_root_fragment(self):
+        if not RECOMPILER:
+            self.skipTest('pass --recompiler (ctest always does)')
+        data = self.fallthrough_image(0x1000)
+        with tempfile.TemporaryDirectory() as tmp:
+            psx = Path(tmp) / 'frag.psx'
+            psx.write_bytes(CO.make_psxexe(LOAD, self.HOST, data,
+                                           guard_bytes=0))
+            seeds = Path(tmp) / 'seeds.txt'
+            seeds.write_text(f'dispatch_root 0x{self.HOST:08X}\n'
+                             f'interior 0x{self.MID:08X}\n')
+            out = Path(tmp) / 'out'
+            proc = subprocess.run(
+                [RECOMPILER, str(psx), '--seeds', str(seeds),
+                 '--out-dir', str(out), '--overlay'],
+                capture_output=True, text=True, cwd=str(ROOT))
+            self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
+            ranges = next(out.glob('*_full.ranges')).read_text()
+        mid_rows = ranges.split(f'F {self.MID:08X}', 1)
+        self.assertEqual(len(mid_rows), 2, ranges)
+        self.assertTrue(mid_rows[1].splitlines()[1].startswith(
+            f'R {self.HOST:08X}'), ranges)
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--cmake', default=shutil.which('cmake'))

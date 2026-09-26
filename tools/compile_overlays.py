@@ -2432,6 +2432,18 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             del included[addr]
             excluded[addr] = ('OBSERVED_PC_ONLY'
                               if addr in executed_pcs else 'UNKNOWN')
+    # Every surviving alias with the final root(s) whose walk reaches it. The
+    # region shard carries all aliases because it compiles every root; a host
+    # compiled instead in a supplemental root fragment (candidate capacity,
+    # region audit fallout) must carry its aliases too, or an address the
+    # no-split guard absorbed loses its callable identity and runs
+    # interpreted where the unguarded build had a (split) native entry.
+    interior_hosts = {
+        addr: {host for host, entry_walk in final_walks.items()
+               if addr in entry_walk['visited']}
+        for addr, reason in included.items()
+        if reason == 'DISPATCH_INTERIOR'
+    }
 
     for addr in delay_slot_rejected:
         if addr not in included:
@@ -2505,6 +2517,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         'derived_static_roots': derived_static_roots,
         'enrichment_stats': enrichment_stats,
         'guard_demoted': guard_demoted,
+        'interior_hosts': interior_hosts,
         'enrichment_shadowed': enrichment_shadowed,
         'delay_slot_rejected': delay_slot_rejected,
     }
@@ -4305,6 +4318,12 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
             addr: {reason}
             for addr, reason in seed_audit['included_reasons'].items()
         },
+        # DISPATCH_INTERIOR alias -> final host root(s) that reach it; a root
+        # fragment carries the aliases of the hosts it compiles.
+        'interior_hosts': {
+            _canonical_guest_addr(addr): {_canonical_guest_addr(h) for h in hosts}
+            for addr, hosts in seed_audit.get('interior_hosts', {}).items()
+        },
         'static_interval_demands': static_interval_demands,
         'forced': forced,
         'producer_ranges': tuple(seed_audit['producer_ranges']),
@@ -4352,6 +4371,10 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
                 addr: set(reasons)
                 for addr, reasons in job.get('included_reasons', {}).items()
             }
+            merged['interior_hosts'] = {
+                addr: set(hosts)
+                for addr, hosts in job.get('interior_hosts', {}).items()
+            }
             grouped[key] = merged
             continue
         for field in set_fields:
@@ -4359,6 +4382,9 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
         for addr, reasons in job.get('included_reasons', {}).items():
             merged.setdefault('included_reasons', {}).setdefault(
                 addr, set()).update(reasons)
+        for addr, hosts in job.get('interior_hosts', {}).items():
+            merged.setdefault('interior_hosts', {}).setdefault(
+                addr, set()).update(hosts)
         if merged.get('resident_cap') is None and job.get('resident_cap'):
             merged['resident_cap'] = job['resident_cap']
     return [grouped[key] for key in sorted(grouped)]
@@ -4622,6 +4648,35 @@ def partition_strong_root_demands(static_exact: set[int], executed: set[int],
     return (sorted(missing - isolated), sorted(missing & isolated))
 
 
+def fragment_interior_aliases(job: dict, entries) -> list[int]:
+    """DISPATCH_INTERIOR aliases whose final host is one of ``entries``.
+
+    A strong-root supplement fragment compiles hosts the region shard left
+    out. Their aliases (dispatch interiors and every candidate the no-split
+    guard absorbed) must ride along, or the absorbed address is served by
+    neither shard and dispatches to it fall back to the interpreter.
+    """
+    roots = {_canonical_guest_addr(entry) for entry in entries}
+    return sorted(
+        alias for alias, hosts in job.get('interior_hosts', {}).items()
+        if alias not in roots and hosts & roots)
+
+
+def compile_root_fragment_with_aliases(entries, aliases, build):
+    """Build one root fragment carrying its hosts' aliases.
+
+    ``build(alias_list)`` returns the usual ``(func_ids, status)``. A failing
+    multi-root batch is returned as-is so the caller bisects it; a single root
+    whose aliases break its fragment is rebuilt without them, so an alias can
+    never cost its host its native entry.
+    """
+    frag_ids, status = build(list(aliases))
+    if (not frag_ids and aliases and len(set(entries)) == 1 and
+            not str(status).startswith('candidate-capacity:')):
+        frag_ids, status = build([])
+    return frag_ids, status
+
+
 def compile_batched_fragment_roots(entries, compile_one, on_success,
                                    on_singleton_failure,
                                    still_needed=lambda _entry: True,
@@ -4849,7 +4904,7 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
                            producer_ranges=(), cross_call_allow=(),
                            hosted_owners: dict | None = None,
                            manifest_provenance: str | None = None,
-                           *, guard_bytes: int):
+                           *, guard_bytes: int, interior_aliases=()):
     """Compile an ISOLATED interior-entry 'island' fragment that ENTERS at an
     executed orphan DISPATCH_INTERIOR PC (a host that static analysis never
     discovered, e.g. an FMV driver reached via a computed jump) and covers the
@@ -4903,6 +4958,14 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
             if hosted_specs is None:
                 for entry in requested:
                     f.write(f'dispatch_root 0x{entry:08X}\n')
+                # Alias candidates of the roots compiled here, exactly as the
+                # region shard passes them: never walk roots, emitted only
+                # where the recompiler's own walk of a requested root reaches
+                # the PC (orphans are dropped by the recompiler).
+                for alias in sorted({_canonical_guest_addr(a)
+                                     for a in interior_aliases} -
+                                    set(requested)):
+                    f.write(f'interior 0x{alias:08X}\n')
             else:
                 host_markers = {}
                 for entry, spec in sorted(hosted_specs.items()):
@@ -7433,11 +7496,15 @@ def main():
                     continue
 
             def compile_strong_batch(entries):
-                return compile_fragment_batch(
-                    entries, data, load_addr, size, phys_addr, cache_dir,
-                    args, frag_env, toml, job['producer_ranges'],
-                    job['cross_call_allow'],
-                    guard_bytes=job['guard_bytes'])
+                def build(alias_list):
+                    return compile_fragment_batch(
+                        entries, data, load_addr, size, phys_addr, cache_dir,
+                        args, frag_env, toml, job['producer_ranges'],
+                        job['cross_call_allow'],
+                        guard_bytes=job['guard_bytes'],
+                        interior_aliases=alias_list)
+                return compile_root_fragment_with_aliases(
+                    entries, fragment_interior_aliases(job, entries), build)
 
             def strong_batch_success(entries, frag_ids, status):
                 strong_handled.update(entries)
