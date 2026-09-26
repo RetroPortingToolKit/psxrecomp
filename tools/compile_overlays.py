@@ -24,6 +24,7 @@ import argparse
 import itertools
 import io
 import contextlib
+import functools
 import base64
 import binascii
 from bisect import bisect_left
@@ -1349,11 +1350,20 @@ def _frameless_dispatch_root_proven(data: bytes, load_addr: int, size: int,
 #      when it executes, and overlay regions are swapped: shared engine code
 #      at 0x80100984 is byte-identical in 12 Tomba area images and calls
 #      0x8011B1CC, which is a function start in exactly one of them. So:
-#        * STRONG: a non-delay-slot stack-frame prologue, or a jal/table
-#          target that THIS image's bytes also bound (preceding `jr $ra` plus
-#          alignment padding, and the bounded CFG probe). A strong root that
-#          turns out to be inside a function is demoted by rule 1.
-#        * WEAK: a jal/table target with only the CFG probe. It is added only
+#        * STRONG: a stack-frame prologue AT a boundary (image/producer
+#          start, after an unconditional transfer's delay slot or a `break`,
+#          or after data), the true start in front of a prologue that loads
+#          come before (walked back over the straight-line preamble to such
+#          a boundary; prologue_function_start), or a jal/table target that
+#          THIS image's bytes also bound (preceding `jr $ra` plus alignment
+#          padding, and the bounded CFG probe). A strong root that turns out
+#          to be inside a function is demoted by rule 1. Ace Combat 3 showed
+#          why the prologue needs the boundary: rooting the `addiu sp` itself
+#          capped 359 functions a few words in (beads-eio.3.191). Captured
+#          entry evidence at a stack adjust (a dispatch PC) keeps its own
+#          gate; the true start's walk absorbs it by rule 1.
+#        * WEAK: a jal/table target with only the CFG probe, or a prologue
+#          whose start the preamble walk cannot prove. It is added only
 #          when no possible function start below it reaches it -- every
 #          capture root, every strong or weak candidate, every prologue and
 #          every word after an unconditional transfer's delay slot, walked
@@ -1405,14 +1415,173 @@ def _return_precedes(data: bytes, load_addr: int, addr: int) -> bool:
     return False
 
 
+# Longest straight-line preamble walked back from a stack-frame prologue to
+# its function's start. Scheduled loads before the frame are 1-5 words on Ace
+# Combat 3 (beads-eio.3.191); a longer run proves nothing more. Zero words
+# (alignment padding, zero fill) are walked but not counted.
+PROLOGUE_PREAMBLE_WORDS = 32
+
+
+@functools.lru_cache(maxsize=8)
+def _local_branch_sources(data: bytes, load_addr: int) -> dict[int, int]:
+    """{target: lowest source pc} of every local branch in the image: a
+    conditional branch or an always-taken `b`, never an absolute j/jal (also
+    how tail calls and calls are encoded) and never a register jump. Compiled
+    code never branches across a function boundary, so a word a branch from
+    BELOW reaches is inside the function that branch belongs to."""
+    hi = load_addr + len(data)
+    sources = {}
+    for pc in range(load_addr, hi, 4):
+        word = _word_at(data, load_addr, pc)
+        if word is None or not _is_control_flow(word) or \
+                (word >> 26) in (0x00, 0x02, 0x03):
+            continue
+        kind, target = _classify_cf(pc, word)
+        if kind in ('branch', 'j') and pc < sources.get(target, hi):
+            sources[target] = pc
+    return sources
+
+
+def _pointer_shaped(word, load_addr: int, hi: int) -> bool:
+    """An aligned RAM (KSEG0) or in-image address: a table entry. As an
+    instruction it is `lb rt,imm(zero|at|v0|v1)`, which real code also uses
+    (`lui v0,0x8010; lb v0,0x5CEC(v0)`), so one such word alone is not data."""
+    return (word is not None and not word & 3 and
+            (load_addr <= word < hi or 0x80000000 <= word < 0x80800000))
+
+
+def _setup_shaped_preamble(data: bytes, load_addr: int, start: int,
+                           end: int) -> bool:
+    """Every word in [start, end) is zero or global-data setup: `lui rt`,
+    `li rt` (addiu/ori from $zero), or a load whose base a preceding `lui`
+    set -- the recompiler's pre-prologue rule (preprologue_window_is_valid).
+    Destination never $zero, $sp or $ra."""
+    bases = set()
+    for pc in range(start, end, 4):
+        word = _word_at(data, load_addr, pc)
+        if word is None:
+            return False
+        if word == 0:
+            continue
+        op, rs, rt = word >> 26, (word >> 21) & 31, (word >> 16) & 31
+        if rt in (0, 29, 31):
+            return False
+        if op == 0x0F and rs == 0:
+            bases.add(rt)
+        elif op in (0x09, 0x0D) and rs == 0:
+            bases.discard(rt)
+        elif 0x20 <= op <= 0x26 and rs in bases:
+            bases.discard(rt)
+        else:
+            return False
+    return True
+
+
+def prologue_function_start(data: bytes, load_addr: int, addr: int,
+                            lo: int | None = None):
+    """The start of the function whose stack-frame prologue is at ``addr``.
+
+    A stack adjust is not a function boundary by itself: compilers schedule
+    loads in front of it (`lui v0; lw v1,..(v0); addiu sp,sp,-24`), and
+    rooting the adjust caps the real function a few words in (Ace Combat 3:
+    359 such roots, 175 with the true start executed). Walk back over the
+    straight-line preamble to the nearest boundary, then step over zero
+    padding. A boundary is ``lo`` (image or producer start), the word after
+    the delay slot of an unconditional transfer (`jr ra`, `jr`, `j`, `b`) or
+    after a `break` trap, or the word after data: an invalid instruction, or
+    the last of two pointer-shaped words (a table). After data the preamble
+    must be global-data setup (_setup_shaped_preamble), since data can decode
+    as valid instructions.
+
+    Returns ``addr`` when the prologue itself is at a boundary, an earlier
+    address when a preamble leads to it, and None when no start is provable:
+    ``addr`` is not a prologue or sits in a delay slot; the walk meets a
+    conditional branch or a call (the prologue is reached by fallthrough from
+    code whose start this walk does not bound) or runs past the window; the
+    preamble after data is not setup; or a local branch from below the start
+    lands in [start, addr] (the start is then a label of the function before
+    it, past an early return or a divide check).
+    """
+    lo = load_addr if lo is None else lo
+    hi = load_addr + len(data)
+    if addr & 3 or not (lo <= addr < hi) or \
+            not _is_addiu_sp_neg(_word_at(data, load_addr, addr)):
+        return None
+    pc = addr
+    preamble = 0
+    after_data = False
+    while pc > lo:
+        prev = _word_at(data, load_addr, pc - 4)
+        if prev is None:
+            return None
+        # A control-transfer shape counts only as a valid instruction: data
+        # like 0x06040200 (REGIMM with no such rt) decodes as a "branch".
+        if _is_valid_mips_word(prev) and _is_control_flow(prev):
+            return None               # pc is a delay slot
+        prev2 = _word_at(data, load_addr, pc - 8) if pc - 8 >= lo else None
+        if (_is_valid_mips_word(prev2) and _is_control_flow(prev2) and
+                _is_valid_mips_word(prev)):
+            kind, _target = _classify_cf(pc - 8, prev2)
+            if kind in ('j', 'jr', 'jr_ra'):
+                break                 # after an unconditional transfer
+            return None               # conditional fallthrough / call return
+        if (prev >> 26) == 0 and (prev & 0x3F) == 0x0D:
+            break                     # after a `break` trap
+        if not _is_valid_mips_word(prev) or (
+                _pointer_shaped(prev, load_addr, hi) and prev2 is not None and
+                (not _is_valid_mips_word(prev2) or
+                 _pointer_shaped(prev2, load_addr, hi))):
+            after_data = True
+            break
+        if prev:                      # zero fill is padding, not preamble
+            preamble += 1
+            if preamble > PROLOGUE_PREAMBLE_WORDS:
+                return None
+        pc -= 4
+    while pc < addr and _word_at(data, load_addr, pc) == 0:
+        pc += 4
+    if after_data and pc < addr and \
+            not _setup_shaped_preamble(data, load_addr, pc, addr):
+        return None
+    sources = _local_branch_sources(bytes(data), load_addr)
+    for label in range(pc, addr + 4, 4):
+        if sources.get(label, pc) < pc:
+            return None
+    return pc
+
+
+def _late_prologue_start_proven(data: bytes, load_addr: int, start: int,
+                                producer_hi: int, hi: int) -> bool:
+    """Proof for the start prologue_function_start found BEFORE a prologue.
+
+    The evidence is the same as for a prologue at a boundary -- a stack frame
+    opened by straight-line code from a boundary -- only relocated to where
+    that code begins, so it needs no more than a prologue does: the checks
+    every root gets (in range, valid non-zero word, not a delay slot or a
+    pointer table). Not the frameless-boundary CFG probe: that stands in for
+    the code evidence a prologue already gives, and it rejects functions that
+    run past a page-sized capture (13 of them on Ace Combat 3) which the
+    prologue itself roots today."""
+    if start & 3 or not (load_addr <= start < min(producer_hi, hi)):
+        return False
+    word = _word_at(data, load_addr, start)
+    if not word or not _is_valid_mips_word(word):
+        return False
+    return not (_dense_local_pointer_table(data, load_addr, start) or
+                _in_delay_slot(data, load_addr, start))
+
+
 def image_local_entry_proven(data: bytes, load_addr: int, size: int,
                              addr: int, producer_hi: int,
-                             analysis_hi: int | None = None) -> bool:
+                             analysis_hi: int | None = None,
+                             producer_lo: int | None = None) -> bool:
     """Does THIS image's own byte content prove a function boundary at addr?
 
     Used for every enrichment source (prologue scan, jal targets, pointer
     tables). A call or pointer elsewhere in the image is not accepted as proof
-    by itself; see the section comment above for why.
+    by itself; see the section comment above for why. A stack-frame prologue
+    proves a boundary only when it is at one (prologue_function_start returns
+    it unchanged); a prologue after a preamble proves its true start instead.
     """
     hi = load_addr + size if analysis_hi is None else analysis_hi
     if addr & 3 or not (load_addr <= addr < hi):
@@ -1424,7 +1593,9 @@ def image_local_entry_proven(data: bytes, load_addr: int, size: int,
         return False
     if _in_delay_slot(data, load_addr, addr):
         return False
-    if _is_addiu_sp_neg(word):
+    if _is_addiu_sp_neg(word) and prologue_function_start(
+            data, load_addr, addr,
+            load_addr if producer_lo is None else producer_lo) == addr:
         return True
     if _return_precedes(data, load_addr, addr):
         return plausible_callable_target(data, load_addr, size, addr,
@@ -1483,11 +1654,32 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
                 source += '_cross'
         candidates.setdefault(addr, set()).add(source)
 
+    def producer_lo_for(addr: int):
+        if not ranges:
+            return load_addr
+        for range_lo, range_hi in ranges:
+            if range_lo <= addr < range_hi:
+                return range_lo
+        return None
+
+    # A prologue roots its function's true start (prologue_function_start):
+    # at a boundary it is its own start; after a straight-line preamble the
+    # start is the candidate, and it must pass _late_prologue_start_proven.
+    # A prologue with no provable start is only weak evidence.
+    late_prologues: dict[int, set] = {}
     pointers = []
     for addr in range(load_addr, hi, 4):
         word = _word_at(data, load_addr, addr)
-        if _is_addiu_sp_neg(word):
-            note(addr, 'prologue')
+        if _is_addiu_sp_neg(word) and not _in_delay_slot(data, load_addr, addr):
+            plo = producer_lo_for(addr)
+            start = (None if plo is None else prologue_function_start(
+                data, load_addr, addr, plo))
+            if start == addr:
+                note(addr, 'prologue')
+            elif start is not None:
+                late_prologues.setdefault(start, set()).add(addr)
+            else:
+                note(addr, 'prologue_unbounded')
         if word is not None and (word >> 26) == 0x03:
             note(_jump_target(addr, word), 'jal', addr)
         pointers.append(word if word is not None and not (word & 3) and
@@ -1505,8 +1697,18 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
                 note(pointers[offset], 'pointer_table', load_addr + offset * 4)
         start = end
 
+    for start, prologue_addrs in late_prologues.items():
+        producer_hi = producer_hi_for(start)
+        if producer_hi is not None and _late_prologue_start_proven(
+                data, load_addr, start, producer_hi, hi):
+            note(start, 'prologue_start')
+        else:
+            for addr in prologue_addrs:
+                note(addr, 'prologue_unbounded')
+
     local = {'prologue', 'jal', 'pointer_table'}
     cross = {'jal_cross', 'pointer_table_cross'}
+    weak_sources = {'jal', 'pointer_table', 'prologue_unbounded'}
     roots = set()
     for addr, why in candidates.items():
         producer_hi = producer_hi_for(addr)
@@ -1514,12 +1716,14 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
             continue
         strong_evidence = bool(why & local) or (
             bool(why & cross) and not strict_producer_ranges)
-        if strong_evidence and image_local_entry_proven(
-                data, load_addr, size, addr, producer_hi, hi):
+        if 'prologue_start' in why or (
+                strong_evidence and image_local_entry_proven(
+                    data, load_addr, size, addr, producer_hi, hi,
+                    producer_lo_for(addr))):
             roots.add(addr)
             if sources is not None:
                 sources[addr] = set(why)
-        elif (weak_out is not None and why & {'jal', 'pointer_table'} and
+        elif (weak_out is not None and why & weak_sources and
               not addr & 3 and load_addr <= addr < hi and
               not _in_delay_slot(data, load_addr, addr) and
               plausible_callable_target(data, load_addr, size, addr,
@@ -1583,8 +1787,9 @@ def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
                     data, load_addr, size, entry, cap, producer_ranges)
             return cache[key]
     weak = set()
+    why = {}
     strong = derive_static_roots(data, load_addr, size, producer_ranges, hi,
-                                 weak_out=weak,
+                                 sources=why, weak_out=weak,
                                  strict_producer_ranges=strict_producer_ranges)
     hosts = ({a for a in explicit if load_addr <= a < hi and not a & 3} |
              strong | weak |
@@ -1599,7 +1804,11 @@ def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
     return strong | accepted, {
         'strong': len(strong), 'weak': len(weak),
         'weak_accepted': len(accepted), 'weak_dropped': len(reached),
-        'hosts': len(hosts)}
+        'hosts': len(hosts),
+        'late_prologue_starts': sum('prologue_start' in why.get(a, ())
+                                    for a in strong),
+        'unbounded_prologues_accepted': sum(
+            'prologue_unbounded' in why.get(a, ()) for a in accepted)}
 
 
 def no_split_partition(candidates, exempt, walk, hi: int, droppable=(),
@@ -2574,7 +2783,10 @@ def print_seed_audit(audit: dict) -> None:
     print(f'root_enrichment: {"on" if audit.get("root_enrichment") else "off"}'
           f' (derived {len(audit.get("derived_static_roots", ()))}'
           + (f'; strong {stats["strong"]}, weak {stats["weak"]} accepted '
-             f'{stats["weak_accepted"]} dropped {stats["weak_dropped"]}'
+             f'{stats["weak_accepted"]} dropped {stats["weak_dropped"]}; '
+             f'late-prologue starts {stats.get("late_prologue_starts", 0)}, '
+             f'unbounded prologues kept '
+             f'{stats.get("unbounded_prologues_accepted", 0)}'
              if stats else '') + ')')
     guard_demoted = audit.get('guard_demoted', {})
     print(f'no_split_guard_demoted: {len(guard_demoted)}')

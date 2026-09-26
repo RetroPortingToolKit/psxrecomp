@@ -316,6 +316,194 @@ class NoSplitGuardTests(unittest.TestCase):
             self.assertNotIn(frameless, roots)
             self.assertEqual(bounded in roots, not strict)
 
+    # late prologues (beads-eio.3.191) -------------------------------------
+    # A stack adjust is a boundary only when it is at one. Compilers schedule
+    # loads in front of it, so rooting every `addiu sp,sp,-N` capped 359 Ace
+    # Combat 3 functions two to five words in, 175 of them with the real
+    # start executed. The prologue must root the function's true start.
+    AC3 = {   # Ace Combat 3 USA image 0 (load 0x800C8000), 0x800D1250..
+        0x00: JR_RA,            # jr ra
+        0x04: 0x27BD0018,       # addiu sp,sp,24        (delay slot)
+        0x08: 0x3C02800F,       # lui v0,0x800F         <- real start
+        0x0C: 0x8C435D4C,       # lw v1,0x5D4C(v0)
+        0x10: 0x27BDFFE8,       # addiu sp,sp,-24       <- was rooted
+        0x14: 0xAFBF0014,       # sw ra,20(sp)
+        0x18: 0xAFB00010,       # sw s0,16(sp)
+        0x1C: 0x8C620000,       # lw v0,0(v1)
+        0x20: NOP,
+        0x24: 0x8FBF0014,       # lw ra,20(sp)
+        0x28: 0x8FB00010,       # lw s0,16(sp)
+        0x2C: JR_RA,
+        0x30: 0x27BD0018,       # addiu sp,sp,24
+    }
+
+    def ac3_image(self, base=LOAD + 0x40, extra=None):
+        words = {LOAD: FRAME, LOAD + 4: JR_RA, LOAD + 8: UNFRAME}
+        words.update({base + off: word for off, word in self.AC3.items()})
+        words.update(extra or {})
+        return image(words, 0x100), base + 0x08, base + 0x10
+
+    def test_late_prologue_roots_its_true_start(self):
+        data, start, prologue = self.ac3_image()
+        self.assertEqual(CO.prologue_function_start(data, LOAD, prologue),
+                         start)
+        self.assertFalse(CO.image_local_entry_proven(
+            data, LOAD, len(data), prologue, LOAD + len(data)))
+        sources = {}
+        strong = CO.derive_static_roots(data, LOAD, len(data),
+                                        sources=sources)
+        self.assertIn(start, strong)
+        self.assertNotIn(prologue, strong)
+        self.assertIn('prologue_start', sources[start])
+        _roots, stats = CO.derive_enrichment_roots(data, LOAD, len(data))
+        self.assertEqual(stats['late_prologue_starts'], 1)
+        seeds, audit = classify(data, True)
+        self.assertIn(start, root_seeds(seeds))
+        self.assertNotIn(prologue, root_seeds(seeds))
+        # Captured entry evidence at the stack adjust is absorbed by the true
+        # start: an alias, never a cap.
+        seeds, audit = classify(data, True, dispatch_entry_pcs=[prologue])
+        self.assertIn(start, root_seeds(seeds))
+        self.assertEqual(audit['included_reasons'][prologue],
+                         'DISPATCH_INTERIOR')
+        self.assertEqual(audit['guard_demoted'][prologue][1], start)
+
+    def test_prologue_at_a_boundary_is_its_own_start(self):
+        # image start, after jr ra + padding, after j, after a break trap
+        far = LOAD + 0xF0
+        data = image({LOAD: FRAME, LOAD + 4: JR_RA, LOAD + 8: UNFRAME,
+                      LOAD + 0x20: FRAME, LOAD + 0x24: JR_RA,
+                      LOAD + 0x28: UNFRAME,
+                      LOAD + 0x40: 0x08000000 | ((far >> 2) & 0x03FFFFFF),
+                      LOAD + 0x44: NOP, LOAD + 0x48: FRAME,
+                      LOAD + 0x4C: JR_RA, LOAD + 0x50: UNFRAME,
+                      LOAD + 0x60: 0x0000000D,          # break
+                      LOAD + 0x64: 0x3C02800F,          # lui v0 <- start
+                      LOAD + 0x68: FRAME, LOAD + 0x6C: JR_RA,
+                      LOAD + 0x70: UNFRAME,
+                      far: JR_RA, far + 4: NOP}, 0x100)
+        for addr in (LOAD, LOAD + 0x20, LOAD + 0x48):
+            self.assertEqual(CO.prologue_function_start(data, LOAD, addr),
+                             addr, hex(addr))
+            self.assertTrue(CO.image_local_entry_proven(
+                data, LOAD, len(data), addr, LOAD + len(data)), hex(addr))
+        self.assertEqual(CO.prologue_function_start(data, LOAD, LOAD + 0x68),
+                         LOAD + 0x64)
+        self.assertTrue({LOAD, LOAD + 0x20, LOAD + 0x48, LOAD + 0x64} <=
+                        CO.derive_static_roots(data, LOAD, len(data)))
+
+    def test_preamble_with_branch_or_call_proves_no_start(self):
+        # `jr ra; nop; lw v0,0(a0); beqz v0,out; nop; addiu sp` -- the stack
+        # adjust is reached by fallthrough from code this walk does not
+        # bound. It is weak evidence, and the start after `jr ra` (a possible
+        # function start) reaches it, so it is dropped: never a root.
+        base = LOAD + 0x40
+        out = base + 0x30
+        for shape, word in (('branch', bne_v0(base + 0x0C, out)),
+                            ('call', jal(LOAD))):
+            data = image({LOAD: FRAME, LOAD + 4: JR_RA, LOAD + 8: UNFRAME,
+                          base: JR_RA, base + 4: NOP,
+                          base + 8: 0x8C820000,          # lw v0,0(a0)
+                          base + 0x0C: word, base + 0x10: NOP,
+                          base + 0x14: FRAME, base + 0x18: ADDIU,
+                          base + 0x1C: JR_RA, base + 0x20: UNFRAME,
+                          out: JR_RA, out + 4: NOP}, 0x100)
+            prologue = base + 0x14
+            self.assertIsNone(CO.prologue_function_start(data, LOAD,
+                                                         prologue), shape)
+            self.assertFalse(CO.image_local_entry_proven(
+                data, LOAD, len(data), prologue, LOAD + len(data)), shape)
+            weak = set()
+            strong = CO.derive_static_roots(data, LOAD, len(data),
+                                            weak_out=weak)
+            self.assertNotIn(prologue, strong, shape)
+            self.assertNotIn(base + 8, strong, shape)
+            roots, _stats = CO.derive_enrichment_roots(data, LOAD, len(data))
+            self.assertNotIn(prologue, roots, shape)
+            seeds, _audit = classify(data, True)
+            self.assertNotIn(prologue, root_seeds(seeds), shape)
+
+    def test_branch_from_below_into_preamble_proves_no_start(self):
+        # The function before returns early (`jr ra`) and branches past it to
+        # a label inside what looks like the next function's preamble: the
+        # words after that `jr ra` are still its body. Also the same with the
+        # label exactly at the would-be start.
+        host = LOAD + 0x20
+        for label_off in (0x0C, 0x08):
+            label = host + 0x10 + label_off
+            data = image({host: FRAME,
+                          host + 4: bne_v0(host + 4, label),
+                          host + 8: NOP,
+                          host + 0x0C: JR_RA, host + 0x10: UNFRAME,
+                          host + 0x18: 0x3C02800F,        # lui v0,0x800F
+                          host + 0x1C: 0x8C435D4C,        # lw v1,..(v0)
+                          host + 0x20: FRAME, host + 0x24: ADDIU,
+                          host + 0x28: JR_RA, host + 0x2C: UNFRAME}, 0x100)
+            prologue = host + 0x20
+            self.assertIsNone(CO.prologue_function_start(data, LOAD,
+                                                         prologue),
+                              hex(label))
+            strong = CO.derive_static_roots(data, LOAD, len(data))
+            self.assertNotIn(host + 0x18, strong, hex(label))
+            self.assertNotIn(prologue, strong, hex(label))
+            seeds, _audit = classify(data, True, function_entry_pcs=[host])
+            self.assertEqual(root_seeds(seeds), {host}, hex(label))
+
+    def test_prologue_after_data(self):
+        # A pointer table (two pointer-shaped words) or an invalid word ends
+        # the walk: the prologue right after it is its own start; a preamble
+        # after data must be global-data setup, since data decodes as
+        # instructions too.
+        table = LOAD + 0x40
+        words = {LOAD: FRAME, LOAD + 4: JR_RA, LOAD + 8: UNFRAME,
+                 table: LOAD + 0x80, table + 4: LOAD + 0x90,
+                 table + 8: FRAME, table + 12: JR_RA, table + 16: UNFRAME}
+        data = image(words, 0x100)
+        self.assertEqual(CO.prologue_function_start(data, LOAD, table + 8),
+                         table + 8)
+        setup = dict(words)
+        setup.update({table + 8: 0x3C02800F, table + 12: 0x8C435D4C,
+                      table + 16: FRAME, table + 20: JR_RA,
+                      table + 24: UNFRAME})
+        data = image(setup, 0x100)
+        self.assertEqual(CO.prologue_function_start(data, LOAD, table + 16),
+                         table + 8)
+        other = dict(setup)
+        other[table + 12] = 0xA6020020                     # sh v0,32(s0)
+        data = image(other, 0x100)
+        self.assertIsNone(CO.prologue_function_start(data, LOAD, table + 16))
+        invalid = {LOAD + 0x40: 0x0000003D, LOAD + 0x44: FRAME,
+                   LOAD + 0x48: JR_RA, LOAD + 0x4C: UNFRAME,
+                   # REGIMM with no such rt: data shaped like a branch
+                   LOAD + 0x60: 0x06040200, LOAD + 0x64: FRAME,
+                   LOAD + 0x68: JR_RA, LOAD + 0x6C: UNFRAME}
+        data = image(invalid, 0x100)
+        for addr in (LOAD + 0x44, LOAD + 0x64):
+            self.assertEqual(CO.prologue_function_start(data, LOAD, addr),
+                             addr, hex(addr))
+
+    def test_single_pointer_shaped_word_is_code(self):
+        # `lui v0,0x8010; lb v0,0x5CEC(v0)` is 0x80425CEC: one aligned RAM
+        # address in a preamble is an instruction, not a table.
+        base = LOAD + 0x40
+        data = image({base: JR_RA, base + 4: UNFRAME,
+                      base + 8: 0x3C028010, base + 12: 0x80425CEC,
+                      base + 16: FRAME, base + 20: JR_RA,
+                      base + 24: UNFRAME}, 0x100)
+        self.assertEqual(CO.prologue_function_start(data, LOAD, base + 16),
+                         base + 8)
+
+    def test_late_prologue_start_respects_producer_start(self):
+        # The walk never leaves the prologue's producer.
+        data, start, prologue = self.ac3_image(base=LOAD + 0xC0)
+        ranges = [(LOAD, LOAD + 0xC8), (LOAD + 0xC8, LOAD + 0x100)]
+        self.assertEqual(CO.prologue_function_start(
+            data, LOAD, prologue, LOAD + 0xC8), start)
+        self.assertEqual(CO.prologue_function_start(
+            data, LOAD, prologue, LOAD + 0xCC), LOAD + 0xCC)
+        self.assertIn(start, CO.derive_static_roots(data, LOAD, len(data),
+                                                    ranges))
+
     # enrichment policy ----------------------------------------------------
     def test_enrichment_is_default_and_opt_out_is_diagnostic(self):
         data, engine, host, _target = self._cross_image(False)
