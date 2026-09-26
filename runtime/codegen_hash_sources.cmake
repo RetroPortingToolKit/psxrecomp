@@ -54,6 +54,16 @@ set(PSXRECOMP_CODEGEN_HASH_SRCS
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/basic_block.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/include/code_generator.h
 
+    # --- Root policy ------------------------------------------------------------
+    # compile_overlays.py decides which captured PCs become walk roots, alias
+    # entries or interpreter-only PCs (the seed classifier, the no-split guard
+    # and default-on root enrichment all live there). Roots are hard caps, so
+    # the same bytes and the same emitter produce DIFFERENT shards under a
+    # different root policy: a shard built before the no-split guard can carry
+    # a mis-split host (beads-eio.3.177). Hashing the classifier moves the cache
+    # namespace whenever the policy changes, so such shards are never reused.
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/tools/compile_overlays.py
+
     # --- Shard COMPILE surface -------------------------------------------------
     # The cg tag must invalidate on anything a shard compiles/links against, not
     # just what the emitter WRITES. A change to the overlay ABI header, the

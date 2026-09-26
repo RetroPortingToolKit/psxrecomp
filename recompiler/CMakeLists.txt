@@ -581,6 +581,18 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_enrich_overlay_captures.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # A walk root is a hard cap: a root inside another function splits it
+        # and still passes every audit. The classifier's no-split guard, the
+        # image-local enrichment proof, the recompiler's own guard on explicit
+        # roots, and the root policy's place in the cache namespace
+        # (beads-eio.3.177).
+        add_test(
+            NAME overlay_no_split_guard
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_no_split_guard.py
+                    --cmake ${CMAKE_COMMAND}
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
         # The runtime exe name must come from CMake, not be re-derived.
         add_test(

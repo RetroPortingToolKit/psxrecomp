@@ -1416,7 +1416,9 @@ bool resolve_self_limited_jump_table(
 FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
     const std::vector<uint32_t>& entries,
     const std::vector<std::pair<uint32_t, uint32_t>>& producer_ranges,
-    const std::set<uint32_t>& cross_call_allow) {
+    const std::set<uint32_t>& cross_call_allow,
+    bool no_split_guard,
+    const std::set<uint32_t>& trusted_entries) {
     FunctionAnalysisResult result;
     result.total_instructions = 0;
     result.jr_ra_count = 0;
@@ -1626,6 +1628,54 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
     std::map<uint32_t, std::set<std::pair<uint32_t, bool>>> derived_evidence;
     fmt::print("Explicit entries: {}\n", explicit_count);
 
+    // No-split guard: fixed point over EVERY non-trusted entry (explicit and
+    // derived); same rule as compile_overlays.no_split_partition. For each
+    // host, the run of following entries its UNCAPPED walk reaches (stopping
+    // at the first it does not reach, or a trusted entry) may be inside it;
+    // walk the host capped at the end of the run, shrink the run to the first
+    // entry that walk misses, and absorb the rest together. Absorbing the run
+    // at once lets a switch whose table targets several entries resolve
+    // (every target must lie inside the walk); stopping at the first
+    // unreached entry keeps a forward tail call over an unrelated function
+    // from orphaning its target. Absorbing only removes caps, so repeat.
+    auto absorb_split_entries = [&](std::set<uint32_t>& entries) {
+        const uint32_t analysis_end = exe_.analysis_end_address();
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            std::vector<uint32_t> roots(entries.begin(), entries.end());
+            std::vector<uint32_t> kept;
+            size_t index = 0;
+            while (index < roots.size()) {
+                const uint32_t host = roots[index];
+                kept.push_back(host);
+                const ExactWalkResult reach = walk(host, analysis_end);
+                size_t end = index + 1;
+                while (end < roots.size() && reach.visited.count(roots[end]) &&
+                       !trusted_entries.count(roots[end]))
+                    end++;
+                while (end > index + 1) {
+                    const uint32_t cap =
+                        end < roots.size() ? roots[end] : analysis_end;
+                    const ExactWalkResult inner = walk(host, cap);
+                    size_t blocked = end;
+                    for (size_t k = index + 1; k < end; k++) {
+                        if (!inner.visited.count(roots[k])) {
+                            blocked = k;
+                            break;
+                        }
+                    }
+                    if (blocked == end) break;
+                    end = blocked;
+                }
+                if (end > index + 1) changed = true;
+                index = end;
+            }
+            entries = std::set<uint32_t>(kept.begin(), kept.end());
+        }
+    };
+    if (no_split_guard) absorb_split_entries(known_entries);
+
     // Discover callees in rounds against one stable entry partition. Processing
     // roots sequentially let an early caller insert a JAL target that actually
     // lay inside a later explicit root. That new entry hard-capped the later
@@ -1641,6 +1691,7 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
             fmt::print("WARNING: exact-entry ownership did not converge; "
                        "falling back to explicit roots only\n");
             known_entries = explicit_entries;
+            if (no_split_guard) absorb_split_entries(known_entries);
             derived_entries.clear();
             derived_evidence.clear();
             break;
@@ -1678,7 +1729,9 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
         // "absorbed forever" set therefore loses reachable code.
         known_entries = explicit_entries;
         known_entries.insert(derived_entries.begin(), derived_entries.end());
-        for (uint32_t target : derived_entries) {
+        if (no_split_guard) {
+            absorb_split_entries(known_entries);
+        } else for (uint32_t target : derived_entries) {
             auto target_it = known_entries.find(target);
             if (target_it == known_entries.end() ||
                 explicit_entries.count(target) ||
@@ -1699,8 +1752,15 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
             derived_entries == previous_derived) break;
     }
 
-    result.call_discovered_count = static_cast<int>(known_entries.size() - explicit_count);
+    size_t explicit_kept = 0;
+    for (uint32_t entry : known_entries)
+        explicit_kept += explicit_entries.count(entry);
+    result.call_discovered_count =
+        static_cast<int>(known_entries.size() - explicit_kept);
     fmt::print("Direct-JAL entries: {}\n", result.call_discovered_count);
+    if (no_split_guard)
+        fmt::print("No-split guard absorbed explicit entries: {}\n",
+                   explicit_count - explicit_kept);
     fmt::print("Total exact entries: {}\n\n", known_entries.size());
 
     std::vector<uint32_t> starts_vec(known_entries.begin(), known_entries.end());
@@ -1780,6 +1840,26 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
                 {target, host.start_addr, host.end_addr,
                  source->first, source->second});
             break;
+        }
+    }
+    // Explicit entries the no-split guard absorbed: the proof is the host's
+    // own walk (fallthrough/branch), so the host start is the source. A
+    // delay-slot target is not exported: an alias there would make the slot
+    // a block leader. It stays with the interpreter.
+    if (no_split_guard) {
+        for (uint32_t target : explicit_entries) {
+            if (final_starts.count(target)) continue;
+            if (target >= exe_.header.load_address + 4u) {
+                auto prev = exe_.read_word(target - 4u);
+                if (prev.has_value() && is_branch_or_jump(*prev)) continue;
+            }
+            for (const auto& [host, wr] : final_walks) {
+                if (!wr.visited.count(target)) continue;
+                result.absorbed_entries.push_back(
+                    {target, host.start_addr, host.end_addr,
+                     host.start_addr, false});
+                break;
+            }
         }
     }
 
