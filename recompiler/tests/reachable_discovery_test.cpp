@@ -831,6 +831,15 @@ int main() {
     CHECK(!PSXRecomp::PS1ExeParser::parse_buffer(mirror_image, mirror_error).has_value() &&
               mirror_error.find("beyond 0x80800000") != std::string::npos,
           "image crossing the RAM decode window end is rejected");
+    // A KUSEG header anywhere in the window names the same RAM as KSEG0.
+    put32(mirror_image, 0x10, 0x00780000u);
+    put32(mirror_image, 0x18, 0x00780000u);
+    {
+        auto kuseg = PSXRecomp::PS1ExeParser::parse_buffer(mirror_image, mirror_error);
+        CHECK(kuseg.has_value() && kuseg->load_address() == 0x80780000u &&
+                  kuseg->header.initial_pc == 0x80780000u,
+              "KUSEG mirror-window header addresses normalize to KSEG0");
+    }
 
     if (failures) {
         std::fprintf(stderr, "FAILED (%d)\n", failures);

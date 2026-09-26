@@ -286,10 +286,11 @@ std::optional<PS1Executable> PS1ExeParser::parse_buffer(
     // Some EXEs (e.g. Kula World SCES-01000) store KUSEG addresses
     // (0x00011000) instead of KSEG0 (0x80011000). KUSEG 0x0-0x1FFFFFFF
     // mirrors the same physical RAM, so normalize to KSEG0 before
-    // validation. Only remap addresses that fall inside the 2 MB RAM
-    // mirror; 0 stays 0 (unused fields like initial_gp).
+    // validation. Only remap addresses inside the main-RAM decode window
+    // (every retail mirror, and the expanded 8 MiB map); 0 stays 0 (unused
+    // fields like initial_gp).
     auto to_kseg0 = [](uint32_t& addr) {
-        if (addr != 0 && addr < 0x00200000) addr |= 0x80000000;
+        if (addr != 0 && addr < kRamWindowBytes) addr |= 0x80000000;
     };
     to_kseg0(exe.header.initial_pc);
     to_kseg0(exe.header.initial_gp);
