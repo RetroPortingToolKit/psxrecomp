@@ -147,18 +147,15 @@ uint8_t *g_psx_ram = ram;
 int g_psx_load_delay = -1;
 
 /* Physical address translation for guest accesses. Retail 2 MB DRAM is
- * mirrored across the first 8 MB of each segment; the opt-in 8 MB mode maps
- * registered high pages uniquely and keeps unregistered high pages aliased. */
+ * mirrored across the first 8 MB of each segment (Kula World's crt0 parks $sp
+ * in the 4th mirror); the opt-in 8 MB map decodes the window uniquely. One
+ * live mask does both: phys & 0x1FFFFF retail, phys & 0x7FFFFF expanded. */
 static inline uint32_t psx_phys_addr(uint32_t addr) {
-    uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys = psx_ram_map_read(phys);
-    return phys;
+    return psx_ram_map_read(addr);
 }
 
 static inline uint32_t psx_phys_addr_store(uint32_t addr) {
-    uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < PSX_MAIN_RAM_WINDOW_BYTES) phys = psx_ram_map_write(phys);
-    return phys;
+    return psx_ram_map_write(addr);
 }
 
 /* Expose RAM pointer for oracle comparison (find_first_divergence). */
@@ -757,6 +754,9 @@ static int dirty_ram_shellwin_interp(void) {
 }
 
 int dirty_ram_is_dirty(uint32_t phys) {
+    /* Dirtiness belongs to the BYTES: a PC in a retail RAM mirror is asked
+     * about the page it folds to (identity for every live-RAM offset). */
+    phys = psx_ram_map_read(phys);
     if (phys >= RAM_LIVE) return 0;
     if (dirty_ram_force_interp() && phys >= DIRTY_RAM_KERNEL_TRACK_BYTES) return 1;
     if (dirty_ram_shellwin_interp() && phys >= 0x00030000u && phys <= 0x0005AFFFu) return 1;
@@ -2184,10 +2184,14 @@ static inline int psx_cyc_main_ram_fast_addr(uint32_t addr, uint32_t width,
         return 0;
     uint32_t phys = addr & 0x1FFFFFFFu;
     if (phys >= 0x00800000u) return 0;
-    phys = psx_ram_map_read(phys);
-    /* Aligned guest loads cannot cross this boundary, but fail closed for a
-     * malformed/unaligned caller instead of introducing a host OOB read. */
-    if (phys > g_psx_ram_size - width) return 0;
+    {
+        /* One live-mask load (psx_memory.h); size = mask + 1. */
+        const uint32_t mask = g_psx_ram_mask;
+        phys &= mask;
+        /* Aligned guest loads cannot cross this boundary, but fail closed for
+         * a malformed/unaligned caller instead of introducing a host OOB read. */
+        if (phys > mask + 1u - width) return 0;
+    }
     *phys_out = phys;
     return 1;
 }

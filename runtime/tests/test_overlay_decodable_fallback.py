@@ -59,10 +59,10 @@ def main() -> int:
         raise AssertionError("unterminated function definition: dirty_ram_clear_image_baseline")
 
     dirty_gate = body.find("!dirty_ram_is_dirty(phys) && !clean_game_text_miss")
-    region_gate = body.find("phys_is_overlay_region(phys)", dirty_gate)
-    ram_gate = body.find("phys < psx_ram_live_bytes()", dirty_gate)
+    region_gate = body.find("phys_is_overlay_region(ram_phys)", dirty_gate)
+    ram_gate = body.find("ram_phys < psx_ram_live_bytes()", dirty_gate)
     decode_gate = body.find("dirty_ram_word_looks_decodable(fetch_word(phys))", dirty_gate)
-    mark = body.find("dirty_ram_mark_executable_range(phys, 4u)", dirty_gate)
+    mark = body.find("dirty_ram_mark_executable_range(ram_phys, 4u)", dirty_gate)
     if min(dirty_gate, region_gate, ram_gate, decode_gate, mark) < 0:
         raise AssertionError("missing dirty/region/RAM/decode/mark fallback chain")
     if not (dirty_gate < region_gate < decode_gate < mark and dirty_gate < ram_gate < mark):

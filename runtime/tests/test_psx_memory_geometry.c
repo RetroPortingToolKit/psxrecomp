@@ -1,13 +1,11 @@
 #include "psx_memory.h"
 
 #include <stdio.h>
-#include <string.h>
 
 /* The live geometry normally lives in memory.c; this test owns it so each
  * build of the test pins one geometry the way memory_init() would. */
 uint32_t g_psx_ram_size = PSX_MAIN_RAM_RETAIL_BYTES;
 uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;
-uint32_t g_psx_ram_high_unique[PSX_RAM_HIGH_BITWORDS];
 
 static int failures;
 
@@ -24,11 +22,9 @@ int main(void) {
     uint32_t off = 0xFFFFFFFFu;
 
 #if defined(PSX_MEMORY_GEOMETRY_TEST_EXPANDED)
-    /* What the 8 MB mod leaves behind after memory_init(): expanded size and
-     * every high page registered unique. */
+    /* What the 8 MB mod leaves behind after memory_init(). */
     g_psx_ram_size = PSX_MAIN_RAM_EXPANDED_BYTES;
     g_psx_ram_mask = PSX_MAIN_RAM_EXPANDED_BYTES - 1u;
-    memset(g_psx_ram_high_unique, 0xFF, sizeof(g_psx_ram_high_unique));
 #endif
 
     check(psx_ram_resolve(0x80000000u, 4u, &off) && off == 0u,
@@ -49,8 +45,8 @@ int main(void) {
           "retail geometry folds the second mirror");
     check(psx_ram_resolve(0x807FFFFCu, 4u, &off) && off == 0x001FFFFCu,
           "retail geometry folds the fourth mirror top");
-    check(psx_ram_canon_code_addr_inline(0x80780000u) == 0x80180000u,
-          "retail code address folds the fourth mirror");
+    check(psx_ram_map_read(0x80780000u) == 0x00180000u,
+          "retail bytes of a fourth-mirror PC are the folded DRAM");
     check(psx_ram_live_bytes() == PSX_MAIN_RAM_RETAIL_BYTES,
           "retail live size is 2 MiB");
 #else
@@ -60,8 +56,8 @@ int main(void) {
           "expanded geometry uniquely decodes the second bank");
     check(psx_ram_resolve(0x807FFFFCu, 4u, &off) && off == 0x007FFFFCu,
           "expanded geometry uniquely decodes the eighth MiB top");
-    check(psx_ram_canon_code_addr_inline(0x80780000u) == 0x80780000u,
-          "expanded code address stays in the high bank");
+    check(psx_ram_map_read(0x80780000u) == 0x00780000u,
+          "expanded bytes of a high-bank PC stay in the high bank");
     check(psx_ram_live_bytes() == PSX_MAIN_RAM_EXPANDED_BYTES,
           "expanded live size is 8 MiB");
 #endif

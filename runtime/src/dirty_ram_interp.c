@@ -809,8 +809,10 @@ static inline int phys_is_overlay_flow_region(uint32_t phys) {
 }
 
 static int is_local_dirty_target(uint32_t target) {
-    uint32_t phys = target & 0x1FFFFFFFu;
-    return phys_is_overlay_flow_region(phys) && dirty_ram_is_dirty(phys);
+    /* Region and dirtiness are properties of the BYTES (a retail mirror PC is
+     * classified by the RAM it folds to); the PC itself stays unfolded. */
+    uint32_t ram = psx_ram_map_read(target);
+    return phys_is_overlay_flow_region(ram) && dirty_ram_is_dirty(ram);
 }
 
 /* Target the last interp run handed back to the dispatch loop (chained
@@ -2386,9 +2388,10 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
 int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
     extern int g_psx_dispatch_depth;
     extern void psx_fatal_halt(const char *reason);
-    addr = psx_ram_canon_code_addr(addr);
-    if (stop_addr != 0u)
-        stop_addr = psx_ram_canon_code_addr(stop_addr);
+    /* `addr` is architectural: the interpreter runs at exactly this PC, so a
+     * retail RAM-mirror PC (0x807xxxxx) keeps its own $ra/EPC while fetch_word
+     * and the dirty/overlay page checks fold it to the bytes it executes
+     * (psx_memory.h: CODE vs BYTES identity). Never canonicalize it here. */
 #ifndef PSX_NO_DEBUG_TOOLS
     /* A0/B0/C0 kernel-vector stubs are runtime-written, so calls to them
      * land HERE, not in the static dispatcher — which meant the bioscall
@@ -2759,7 +2762,12 @@ int psx_slice_block_impl(CPUState *cpu, uint32_t block_addr, uint32_t bcyc, int 
 }
 
 static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
+    /* phys = CODE identity (segment-stripped PC: compiled-body and overlay
+     * lookups, per-PC telemetry). ram_phys = BYTE identity (the live-geometry
+     * RAM offset the PC's instruction bytes live at: page classification).
+     * They differ only for a PC in a retail RAM mirror. */
     uint32_t phys = addr & 0x1FFFFFFFu;
+    const uint32_t ram_phys = psx_ram_map_read(phys);
     int clean_game_text_miss = 0;
 
     if (addr == 0x80000048u) {
@@ -2877,10 +2885,10 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
          * a JALR into a CD-DMA'd overlay page then fell through to
          * psx_unknown_dispatch and fail-fast exit(1). Data and invalid targets
          * still fail closed via the decodability check. */
-        if (phys < psx_ram_live_bytes() &&
-            phys_is_overlay_region(phys) &&
+        if (ram_phys < psx_ram_live_bytes() &&
+            phys_is_overlay_region(ram_phys) &&
             dirty_ram_word_looks_decodable(fetch_word(phys))) {
-            dirty_ram_mark_executable_range(phys, 4u);
+            dirty_ram_mark_executable_range(ram_phys, 4u);
         } else {
             return 0;
         }
@@ -2897,7 +2905,7 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
     /* Overlay flow above the kernel window — kernel window stays per-block (see
      * is_local_dirty_target / phys_is_overlay_flow_region). Includes boot-text
      * pages overwritten by a runtime overlay (Tomba 2), not just [FLOOR, RAM). */
-    int allow_local_dirty_flow = phys_is_overlay_flow_region(phys);
+    int allow_local_dirty_flow = phys_is_overlay_flow_region(ram_phys);
 
     /* Backend-invariant mod_function_entry hooks: generated code fires
      * psx_mod_function_entry at listed function entries, but a mod-patched
@@ -3227,8 +3235,7 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
             uint32_t target_phys = target & 0x1FFFFFFFu;
             if (allow_local_dirty_flow && target != 0 &&
                 target != stop_addr &&
-                phys_is_overlay_flow_region(target_phys) &&
-                dirty_ram_is_dirty(target_phys)) {
+                is_local_dirty_target(target)) {
 #ifdef PSX_HAS_OVERLAY_DISPATCH
                 /* A save restore or an uncompiled continuation can enter the
                  * interpreter in an otherwise static overlay. Surface an exact

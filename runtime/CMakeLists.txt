@@ -60,6 +60,8 @@ if(BUILD_TESTING)
     if(Python3_Interpreter_FOUND)
         add_test(NAME interp_mod_entry_guards_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_interp_mod_entry_guards.py")
+        add_test(NAME mirror_pc_preserved_guards_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mirror_pc_preserved_guards.py")
         add_test(NAME gpu_textured_dot_nw_shift_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_textured_dot_nw_shift.py")
         add_test(NAME gl_readback_runner_test COMMAND "${Python3_EXECUTABLE}"
@@ -147,10 +149,27 @@ if(BUILD_TESTING)
                  COMMAND psx_memory_geometry_${_ram_geometry}_test)
     endforeach()
 
-    add_executable(psx_ram_runtime_map_test
-        tests/test_psx_ram_runtime_map.c src/psx_ram_geometry.c)
-    target_include_directories(psx_ram_runtime_map_test PRIVATE include)
-    add_test(NAME psx_ram_runtime_map_test COMMAND psx_ram_runtime_map_test)
+    # Live 2/8 MiB geometry end to end through the REAL memory.c accessors,
+    # dma.c channel execution and boot_state.c save/load (including the
+    # refuse-before-mutation contract). Section GC, as for
+    # mod_memory_snapshot_test, drops the hardware routing the test never
+    # reaches; psx_ram_runtime_map_stubs.c doubles the rest.
+    if(NOT MSVC)
+        add_executable(psx_ram_runtime_map_test
+            tests/test_psx_ram_runtime_map.c
+            tests/psx_ram_runtime_map_stubs.c
+            src/memory.c
+            src/dma.c
+            src/boot_state.c
+            src/psx_ram_geometry.c)
+        target_include_directories(psx_ram_runtime_map_test PRIVATE include src)
+        target_compile_options(psx_ram_runtime_map_test PRIVATE
+            -O2 -flto -ffunction-sections -fdata-sections -Wno-lto-type-mismatch)
+        target_link_options(psx_ram_runtime_map_test PRIVATE
+            -flto -Wl,--gc-sections -Wno-lto-type-mismatch)
+        target_link_libraries(psx_ram_runtime_map_test PRIVATE ZLIB::ZLIB)
+        add_test(NAME psx_ram_runtime_map_test COMMAND psx_ram_runtime_map_test)
+    endif()
 
     add_executable(host_keymap_test
         tests/test_host_keymap.c
@@ -275,7 +294,8 @@ if(BUILD_TESTING)
     add_test(NAME ws_repeat_rect_test COMMAND ws_repeat_rect_test)
 
     add_executable(mod_gpu_dma_aperture_test
-        tests/test_mod_gpu_dma_aperture.c)
+        tests/test_mod_gpu_dma_aperture.c
+        src/psx_ram_geometry.c)
     target_include_directories(mod_gpu_dma_aperture_test PRIVATE include)
     add_test(NAME mod_gpu_dma_aperture_test
              COMMAND mod_gpu_dma_aperture_test)

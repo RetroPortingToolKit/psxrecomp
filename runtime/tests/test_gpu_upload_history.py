@@ -22,7 +22,6 @@ harness=r"""
 #include <stdio.h>
 #include "psx_memory.h"
 uint32_t g_psx_ram_size=PSX_MAIN_RAM_RETAIL_BYTES,g_psx_ram_mask=PSX_MAIN_RAM_RETAIL_BYTES-1u;
-uint32_t g_psx_ram_high_unique[PSX_RAM_HIGH_BITWORDS];
 static uint32_t gp0_cmd_buf[16],g_debug_current_func_addr;
 static uint16_t vram_write_x,vram_write_y,vram_write_w,vram_write_h,vram_write_col,vram_write_row;
 static unsigned vram_write_remaining,s_frame_count;
