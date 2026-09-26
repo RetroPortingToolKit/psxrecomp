@@ -1456,8 +1456,9 @@ bool mod_register_function_entry_plugin(const std::string& id, uint32_t address,
                                         PSXModFunctionEntryCallback callback) {
     if (!valid_id(id) || !address || !callback) return false;
     RegisteredPlugin& plugin = registered_plugins()[id];
+    /* Code addresses alias across KUSEG/KSEG0/KSEG1; one function is one hook. */
     for (const auto& hook : plugin.function_entries)
-        if (hook.first == address) return false;
+        if (((hook.first ^ address) & 0x1FFFFFFFu) == 0u) return false;
     plugin.function_entries.emplace_back(address, callback);
     return true;
 }
@@ -1481,12 +1482,13 @@ void mod_invoke_vblank_plugin(const std::string& id) {
         found->second.vblank();
 }
 
-void mod_invoke_function_entry_plugin(const std::string& id, ::CPUState* cpu,
-                                      uint32_t address) {
+std::vector<ModFunctionEntryHook> mod_function_entry_hooks(const std::string& id) {
+    std::vector<ModFunctionEntryHook> hooks;
     const auto found = registered_plugins().find(id);
-    if (found == registered_plugins().end()) return;
+    if (found == registered_plugins().end()) return hooks;
     for (const auto& hook : found->second.function_entries)
-        if (hook.first == address) hook.second(cpu, address);
+        hooks.push_back(ModFunctionEntryHook{hook.first, hook.second});
+    return hooks;
 }
 
 void mod_clear_plugins_for_tests() {

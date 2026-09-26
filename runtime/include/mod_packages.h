@@ -463,8 +463,13 @@ bool mod_register_function_entry_plugin(const std::string& id, uint32_t address,
 bool mod_plugin_registered(const std::string& id);
 void mod_invoke_activation_plugin(const std::string& id);
 void mod_invoke_vblank_plugin(const std::string& id);
-void mod_invoke_function_entry_plugin(const std::string& id, ::CPUState* cpu,
-                                      uint32_t address);
+struct ModFunctionEntryHook {
+    uint32_t address = 0;
+    PSXModFunctionEntryCallback callback = nullptr;
+};
+/* Hooks one implementation registered, in registration order. mod_runtime
+ * flattens these into an address table when the plan's plugins activate. */
+std::vector<ModFunctionEntryHook> mod_function_entry_hooks(const std::string& id);
 void mod_clear_plugins_for_tests();
 
 } // namespace PSXRecompV4

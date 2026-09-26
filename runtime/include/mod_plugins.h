@@ -23,8 +23,14 @@ int psx_mod_register_vblank_plugin(const char* id,
                                    PSXModVBlankCallback callback);
 int psx_mod_register_function_entry_plugin(
     const char* id, uint32_t address, PSXModFunctionEntryCallback callback);
-/* Called only from generated functions explicitly listed by the game config. */
+/* Called from generated functions listed by the game config and from every
+ * interpreted entry, so the hook contract does not depend on the backend.
+ * Hooks match by code address (segment bits ignored) and run only for plugins
+ * the active plan resolved; the table is rebuilt at plugin activation. */
 void psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+/* Active function-entry hook count (0 = none). Hot callers test it before the
+ * call, so a run without an active hook pays one load per interpreted entry. */
+extern uint32_t g_psx_mod_function_entry_hooks;
 
 /* Narrow guest services available to trusted plugin callbacks. */
 int psx_mod_game_started(void);

@@ -4,6 +4,7 @@
 #include "psx_sha256.h"
 
 #include "gpu.h"
+#include "cpu_state.h"
 
 #include <array>
 #include <algorithm>
@@ -73,10 +74,27 @@ extern "C" void gpu_get_display_info(GpuDisplayInfo* out) {
 
 extern "C" void dirty_ram_mark_executable_range(uint32_t, uint32_t) {}
 extern "C" int fntrace_is_game_started(void) { return 1; }
+/* Widescreen tag passthroughs mod_runtime forwards to the GPU; unused here. */
+extern "C" void gpu_ws_tag_hud_primitive(uint32_t, int) {}
+extern "C" void gpu_ws_tag_world_primitive(uint32_t, int) {}
+extern "C" void gpu_ws_set_adaptive_backdrop_preload(int) {}
 
 static void test_vblank_plugin(void) {
     plugin_calls++;
 }
+
+/* Function-entry hooks: one owned by the plan's active plugin, one by a
+ * plugin whose feature is disabled, one by an id no package selects. */
+static int active_entry_hits;
+static int disabled_entry_hits;
+static int unselected_entry_hits;
+static uint32_t active_entry_last;
+static void test_active_entry(CPUState*, uint32_t address) {
+    active_entry_hits++;
+    active_entry_last = address;
+}
+static void test_disabled_entry(CPUState*, uint32_t) { disabled_entry_hits++; }
+static void test_unselected_entry(CPUState*, uint32_t) { unselected_entry_hits++; }
 
 static void test_activation_plugin(void) {
     activation_calls++;
@@ -253,7 +271,13 @@ int main() {
             sha256_hex(std::vector<uint8_t>(overlay.size(), 0)) + "\"\n"
         "[[plugin]]\n"
         "feature = \"vblank-plugin\"\n"
-        "id = \"runtime.test-vblank\"\n");
+        "id = \"runtime.test-vblank\"\n"
+        "[[feature]]\n"
+        "id = \"entry-disabled\"\n"
+        "name = \"Disabled Entry\"\n"
+        "[[plugin]]\n"
+        "feature = \"entry-disabled\"\n"
+        "id = \"runtime.test-disabled-entry\"\n");
     write_text(root / "state.toml",
         "format_version = 2\n"
         "[[package]]\n"
@@ -308,17 +332,60 @@ int main() {
     check(PSXRecompV4::mod_register_vblank_plugin(
               "runtime.test-vblank", test_vblank_plugin),
           "runtime test plugin must register");
+    check(psx_mod_register_function_entry_plugin(
+              "runtime.test-vblank", 0x80003000u, test_active_entry) == 1,
+          "active plugin's function-entry hook must register");
+    check(psx_mod_register_function_entry_plugin(
+              "runtime.test-disabled-entry", 0x80003000u, test_disabled_entry) == 1,
+          "disabled feature's function-entry hook must register");
+    check(psx_mod_register_function_entry_plugin(
+              "runtime.unselected-entry", 0x80003000u, test_unselected_entry) == 1,
+          "unselected function-entry hook must register");
+    CPUState entry_cpu{};
     check(PSXRecompV4::mod_runtime_initialize(
               root, "SLUS-RUNTIME", 0x80002000, {}, &error),
           error.c_str());
     check(PSXRecompV4::mod_runtime_commit(cue_path, &error),
           "CUE and its data-track BIN must have the same mod target identity");
+    /* Committed but not yet activated: no hook may run. */
+    psx_mod_function_entry(&entry_cpu, 0x80003000u);
+    check(g_psx_mod_function_entry_hooks == 0 && active_entry_hits == 0,
+          "function-entry hooks must not run before plugin activation");
     mod_runtime_activate_plugins();
     check(activation_calls == 1,
           "resolved trusted plugin must activate before runtime startup");
     mod_runtime_on_vblank();
     check(plugin_calls == 1,
           "resolved trusted plugin must run on guest VBlank");
+    check(g_psx_mod_function_entry_hooks == 1,
+          "activation must flatten exactly the active plan's entry hooks");
+    psx_mod_function_entry(&entry_cpu, 0x80003000u);
+    check(active_entry_hits == 1 && active_entry_last == 0x80003000u,
+          "active plan's function-entry hook must run at its address");
+    psx_mod_function_entry(&entry_cpu, 0x00003000u);
+    psx_mod_function_entry(&entry_cpu, 0xA0003000u);
+    check(active_entry_hits == 3 && active_entry_last == 0xA0003000u,
+          "function-entry hooks must match every segment alias of the code address");
+    psx_mod_function_entry(&entry_cpu, 0x80003004u);
+    psx_mod_function_entry(&entry_cpu, 0x80203000u);
+    check(active_entry_hits == 3,
+          "function-entry hooks must not run for other addresses or RAM mirrors");
+    check(disabled_entry_hits == 0 && unselected_entry_hits == 0,
+          "hooks of plugins the plan does not activate must never run");
+    /* A replaced plan drops every hook until its own activation. */
+    check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
+    psx_mod_function_entry(&entry_cpu, 0x80003000u);
+    check(g_psx_mod_function_entry_hooks == 0 && active_entry_hits == 3,
+          "clearing the plan must drop its function-entry hooks");
+    check(PSXRecompV4::mod_runtime_commit(cue_path, &error), error.c_str());
+    psx_mod_function_entry(&entry_cpu, 0x80003000u);
+    check(active_entry_hits == 3,
+          "a re-committed plan must not run hooks before activation");
+    mod_runtime_activate_plugins();
+    psx_mod_function_entry(&entry_cpu, 0x80003000u);
+    check(active_entry_hits == 4 && disabled_entry_hits == 0 &&
+              unselected_entry_hits == 0,
+          "re-activation restores exactly the active plan's hooks");
 
     ram[0x1000] = 1; ram[0x1001] = 2; ram[0x1002] = 3; ram[0x1003] = 4;
     ram[0x1100] = 0; ram[0x1101] = 0;

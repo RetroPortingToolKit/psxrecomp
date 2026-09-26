@@ -372,16 +372,15 @@ int main() {
     /* A function-entry hook is selected by id exactly like activation and
      * VBlank plugins; a manifest naming only such an implementation must
      * resolve, and must still fail closed once it is gone. */
-    static int entry_hits = 0;
-    check(mod_register_function_entry_plugin(
-              "test.entry", 0x80010000u,
-              +[](CPUState*, uint32_t address) {
-                  if (address == 0x80010000u) entry_hits++;
-              }),
+    const PSXModFunctionEntryCallback entry_hook = +[](CPUState*, uint32_t) {};
+    check(mod_register_function_entry_plugin("test.entry", 0x80010000u, entry_hook),
           "function-entry plugin must register");
     check(!mod_register_function_entry_plugin(
               "test.entry", 0x80010000u, +[](CPUState*, uint32_t) {}),
           "duplicate function-entry hook must be rejected");
+    check(!mod_register_function_entry_plugin(
+              "test.entry", 0x00010000u, +[](CPUState*, uint32_t) {}),
+          "a KUSEG alias of a hooked function is the same hook");
     write_text(root / "packages/entry.mod/1.0.0/manifest.toml",
                "format_version = 5\n"
                "id = \"entry.mod\"\n"
@@ -403,9 +402,13 @@ int main() {
     check(entry_resolution.ok && entry_resolution.plugins.size() == 1 &&
               entry_resolution.plugins[0].id == "test.entry",
           "enabled function-entry plugin must resolve");
-    mod_invoke_function_entry_plugin("test.entry", nullptr, 0x80010004u);
-    mod_invoke_function_entry_plugin("test.entry", nullptr, 0x80010000u);
-    check(entry_hits == 1, "function-entry hook must fire only for its address");
+    const std::vector<ModFunctionEntryHook> entry_hooks =
+        mod_function_entry_hooks("test.entry");
+    check(entry_hooks.size() == 1 && entry_hooks[0].address == 0x80010000u &&
+              entry_hooks[0].callback == entry_hook,
+          "an implementation exposes exactly the hooks it registered");
+    check(mod_function_entry_hooks("test.missing").empty(),
+          "an unregistered implementation exposes no hooks");
     mod_clear_plugins_for_tests();
     ModResolution entry_unavailable = reload.resolve("SLUS-TEST");
     check(!entry_unavailable.ok,
