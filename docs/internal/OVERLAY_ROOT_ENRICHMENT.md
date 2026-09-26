@@ -104,6 +104,25 @@ mis-splits**, then as much coverage as possible.
   resolving those tables, not rooting their labels.
 - **Not caused by splits:** master's own 3-4 cycle drift from the interpreter
   at frame 2111. It is unchanged with the guard.
+- **Tomba 2 (23 captures, autocompile path).** Two guard gaps found and
+  fixed. (1) Roots the region shard leaves out are built in strong-root
+  supplement fragments from `dispatch_root` seeds only, so aliases of those
+  hosts were served by no shard (127 captured dispatch entries lost). The
+  supplement now passes each host's aliases as `interior` seeds, and a single
+  root whose aliases break its fragment is rebuilt without them. (2) When
+  every host of an absorbed candidate stays interpreted (0x800BDF10 walks
+  into data and fails the audit), the candidate is compiled as the root it
+  was before the guard. Left: 14 captured dispatch entries at delay slots,
+  which the guard keeps interpreted by design (master aliased them).
+- **Tomba 2 fingerprints do not match master exactly,** and the cause is
+  master's own splits. Frame 6797: master splits 0x8009B0C0 from its
+  fallthrough 0x8009B0CC; the split leaves the nested call unit, so master
+  takes a CD IRQ inside the loop, while the unsplit function runs as one
+  unit and the runtime's nested-unit rule defers the IRQ to its return
+  (with `PSX_OVERLAY_UNIT_DEFER=0` in both arms this fork goes away).
+  Frame 7169/7363: master splits switch 0x8006D654 at its case label
+  0x8006D690; the jump-table exit costs master 2 extra cycles. Values stay
+  identical, and every route and attract screenshot is identical.
 
 ## Done when
 
