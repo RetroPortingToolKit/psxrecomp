@@ -179,6 +179,47 @@ with exactly the audited files plus `AOT_STATIC_AUDIT.json`. Point the game's
 runtime flavor the DLL release cannot target (for example a PGXP build); pass
 `--cps` when the runtime is continuation-passing, as the compiler requires.
 
+**Players get it from Generate.** Titles ship without game bytes, so the shard
+has to be built on the player's machine. A profile opts in by declaring where
+the build links it:
+
+```json
+"static_output": "generated/overlays_static.c"
+```
+
+(project-relative, file name `overlays_static.c`). `psxrecomp_cli.py generate`,
+which the setup wizard and the Retro launcher's Generate & Build run, then runs
+`static` after it writes the game C, with the same `psxrecomp-game`, the
+generated dispatch's CPS mode, the verified disc, and `--reuse`. `--out-dir`
+defaults to that declaration. The title's CMake must pass the same file as
+`GAME_OVERLAY_STATIC_C`: `runtime/overlay_static_sources.cmake` fails the
+configure if the two disagree or `GAME_OVERLAY_STATIC_C` is missing, and warns
+when the file is absent while game C is linked. Profiles for titles that stage
+an audited DLL cache with `release` leave `static_output` out, and Generate
+builds nothing for them.
+
+- **Reuse.** The receipt records `generation_inputs`: the profile, `game.toml`,
+  data-track digests, the recompiler binary and its cache tag, every framework
+  tool module the pipeline runs, the selected mod packages' files, CPS mode,
+  and the BIOS resident inputs when the profile uses them. With `--reuse` an
+  unchanged set and unmodified published files skip the build.
+  `generate --force-aot-static` rebuilds anyway.
+- **Another disc.** When the data track does not match `disc_hashes`, `static`
+  exits 3 (`--clear-if-not-applicable` first removes the published units).
+  Generate fails if that disc matched `game.toml`'s `[prepare_disc]` digests,
+  because then the title contradicts itself. For an unverified dump it warns
+  and goes on, and those images run interpreted.
+- **Failures** are generate errors that keep the work directory
+  (`.cache/aot-static/`) with its logs. `generate --no-aot-static` skips the
+  step and says so.
+- `static` writes `runtime/include/overlay_codegen_hash.h` from the codegen
+  sources (`hash_codegen.cmake` with `PSXRECOMP_CODEGEN_HASH_ROOT`) before it
+  compiles. Otherwise the runtime build writes that header, and it does not
+  exist yet when Generate runs on a fresh tree, so `compile_overlays`' stale
+  recompiler check would fail against a hash of 0.
+- `--disc <cue>` selects the dump to read. The default is the game config's
+  `[game].disc`.
+
 For `packed_sector_members`, declare `table_file`, ordered `payload_files`,
 `sector_size` (default 2048), `offset_bits` (default 20), and optional
 `table_offset`. A descriptor's low bits are the logical sector offset and its

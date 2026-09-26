@@ -627,8 +627,30 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_aot_overlay_pipeline.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # psxrecomp_cli.py generate builds the static overlay shard a title's
+        # aot/overlays.json declares (static_output) and reports every outcome.
+        # The pipeline it drives needs Python 3.11+, so the CLI refuses older
+        # interpreters and so does this test.
+        add_test(
+            NAME cli_generate_aot_static
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_cli_generate_aot_static.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # runtime/overlay_static_sources.cmake: a declared-but-absent shard is
+        # reported at configure, a profile/CMake disagreement is an error, and
+        # hash_codegen.cmake's source-list mode matches psxrecomp-game's hash.
+        add_test(
+            NAME overlay_static_sources_cmake
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_static_sources_cmake.py
+                    "--cmake=${CMAKE_COMMAND}"
+                    "--generator=${CMAKE_GENERATOR}"
+                    "--make-program=${CMAKE_MAKE_PROGRAM}"
+                    "--recompiler=$<TARGET_FILE:psxrecomp-game>"
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         if(Python3_VERSION VERSION_LESS "3.11")
-            set_tests_properties(aot_overlay_methods PROPERTIES DISABLED TRUE)
+            set_tests_properties(aot_overlay_methods cli_generate_aot_static
+                                 overlay_static_sources_cmake PROPERTIES DISABLED TRUE)
         endif()
         # --static must walk the whole of compile_overlays.main() and exit 0:
         # a DLL-only reconciliation at its tail once read an unbound cache_dir

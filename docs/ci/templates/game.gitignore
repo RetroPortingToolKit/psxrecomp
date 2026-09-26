@@ -11,6 +11,9 @@
 # Setup-host: leave generated/ gitignored (users generate locally).
 # Titles that still CI-build from committed game C may track generated/ instead.
 /generated/
+# psxrecomp_cli.py work areas (overlay toolchain download, static overlay
+# shard evidence -- the latter holds bytes read from the disc).
+/.cache/
 
 # Release packaging
 /release-stage/

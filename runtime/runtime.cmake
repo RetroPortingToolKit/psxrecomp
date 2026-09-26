@@ -18,6 +18,7 @@ include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
+include("${PSXRECOMP_ROOT}/runtime/overlay_static_sources.cmake")
 
 # Default to an optimized build. The recompiled game is a huge (~270 MB) block of
 # generated C; with no CMAKE_BUILD_TYPE the compiler emits it at -O0 and the game
@@ -1353,27 +1354,29 @@ function(psxrecomp_add_runtime_target target)
             endif()
         endif()
     endif()
-    # Layer B: statically-compiled overlay dispatch. Inert unless a game
-    # provides a generated overlays_static.c (tools/aot_overlay_pipeline.py
-    # `static`, or compile_overlays.py --static; docs/AOT_SHARDING.md).
-    if(PSXRT_GAME_OVERLAY_STATIC_C AND EXISTS "${PSXRT_GAME_OVERLAY_STATIC_C}")
-        set_source_files_properties("${PSXRT_GAME_OVERLAY_STATIC_C}" PROPERTIES GENERATED TRUE)
-        list(APPEND generated_sources "${PSXRT_GAME_OVERLAY_STATIC_C}")
-        # compile_overlays.py --static splits its output: overlays_static.c is
-        # the dispatcher and each overlay is its own translation unit,
-        # overlays_static_NNNN.c, beside it. One 300 MB file compiled on one
-        # core is what that replaced. CONFIGURE_DEPENDS re-globs at build time,
-        # so a run that changes the part count needs no reconfigure (a
-        # --static-single-file run simply has no parts to glob).
-        get_filename_component(_ov_static_dir  "${PSXRT_GAME_OVERLAY_STATIC_C}" DIRECTORY)
-        get_filename_component(_ov_static_stem "${PSXRT_GAME_OVERLAY_STATIC_C}" NAME_WE)
-        file(GLOB _ov_static_parts CONFIGURE_DEPENDS
-             "${_ov_static_dir}/${_ov_static_stem}_[0-9][0-9][0-9][0-9].c")
-        list(SORT _ov_static_parts)
-        foreach(_ov_part IN LISTS _ov_static_parts)
-            set_source_files_properties("${_ov_part}" PROPERTIES GENERATED TRUE)
-        endforeach()
-        list(APPEND generated_sources ${_ov_static_parts})
+    # Layer B: statically-compiled overlay dispatch, generated from the
+    # player's disc by psxrecomp_cli.py generate (tools/aot_overlay_pipeline.py
+    # `static` for a profile that declares static_output, or
+    # compile_overlays.py --static; docs/AOT_SHARDING.md). Absent is legal --
+    # CI never has game bytes -- but it is reported, never silent, and a
+    # profile/CMake disagreement on the file is a configure error.
+    # overlays_static.c is the dispatcher; each overlay is its own
+    # overlays_static_NNNN.c unit beside it (one 300 MB file compiled on one
+    # core is what that replaced). Both are globbed with CONFIGURE_DEPENDS, so
+    # a Generate after this configure re-runs it at build time.
+    if(has_game_dispatch)
+        set(_ov_static_game_linked TRUE)
+    else()
+        set(_ov_static_game_linked FALSE)
+    endif()
+    psxrecomp_overlay_static_sources(_ov_static_sources _ov_static_present
+        TARGET      "${target}"
+        STATIC_C    "${PSXRT_GAME_OVERLAY_STATIC_C}"
+        PROFILE     "${CMAKE_CURRENT_SOURCE_DIR}/aot/overlays.json"
+        GAME_LINKED ${_ov_static_game_linked})
+    if(_ov_static_present)
+        set_source_files_properties(${_ov_static_sources} PROPERTIES GENERATED TRUE)
+        list(APPEND generated_sources ${_ov_static_sources})
         set(has_overlay_dispatch TRUE)
     endif()
 

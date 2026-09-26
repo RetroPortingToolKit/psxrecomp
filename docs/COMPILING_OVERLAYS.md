@@ -185,6 +185,17 @@ is the mechanism that keeps improving with play. Use `--static` when you want a
 single self-contained binary with a known coverage set baked in; use the DLL
 cache for everything else.
 
+**From the original disc, on the player's machine.** A title whose images are
+verified in an `aot/overlays.json` profile does not need captures:
+`tools/aot_overlay_pipeline.py static` extracts, compiles and audits them from
+the disc itself. When the profile declares `"static_output":
+"generated/overlays_static.c"`, `psxrecomp_cli.py generate` runs that step for
+the player after it writes the game C, and reuses the output when no input
+changed. If `GAME_OVERLAY_STATIC_C` names a file that does not exist while game
+C is linked, configure prints a warning. The build is not silently left
+without it. See [AOT_SHARDING.md](AOT_SHARDING.md) → *Linking recipes into the
+runtime*.
+
 ---
 
 ## Staleness guard (read this if it refuses to run)
@@ -201,6 +212,18 @@ cmake --build psxrecomp/recompiler/build --target psxrecomp-game
 ```
 
 Rebuild the recompiler from the current tree, then re-run.
+
+The baked hash lives in `runtime/include/overlay_codegen_hash.h`, which the
+runtime build writes. On a tree whose runtime has never been built it is
+absent and the check reads 0. `aot_overlay_pipeline.py static` writes it first
+from the same sources. For a manual run, build the runtime once, or write it
+directly:
+
+```sh
+cmake -DPSXRECOMP_CODEGEN_HASH_ROOT=psxrecomp \
+      -DOUT=psxrecomp/runtime/include/overlay_codegen_hash.h \
+      -P psxrecomp/runtime/hash_codegen.cmake
+```
 
 ---
 

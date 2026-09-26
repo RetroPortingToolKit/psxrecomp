@@ -904,6 +904,8 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--game-toml')
     ap.add_argument('--recompiler')
+    ap.add_argument('--disc', default=None,
+                    help="cue to read (default: the game config's [game].disc)")
     ap.add_argument('--out', required=True)
     ap.add_argument('--tmp', default=None)
     ap.add_argument('--bios', default=None,
@@ -950,7 +952,7 @@ def main():
     text_size=int(str(game.get('text_size','0x00080000')),16)
     floor = (load_addr + text_size) & 0x1FFFFFFF
     floor_page = (floor // 0x1000) * 0x1000        # page-align down
-    disc=os.path.join(root, disc_rel)
+    disc=os.path.abspath(a.disc) if a.disc else os.path.join(root, disc_rel)
     print(f"game={game.get('id')} disc={os.path.basename(disc)} load=0x{load_addr:08X} floor=0x{floor_page:08X}")
     bp,raw=parse_cue_datatrack(disc)   # multi-bin safe: pick track-1 data bin
     dr=eo.DiscReader(bp,raw=raw)
