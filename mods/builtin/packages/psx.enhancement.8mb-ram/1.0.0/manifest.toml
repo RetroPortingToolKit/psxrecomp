@@ -1,14 +1,23 @@
+format_version = 5
 id = "psx.enhancement.8mb-ram"
 version = "1.0.0"
 name = "8 MB Main RAM"
 author = "psxrecomp"
 description = "Enables an opt-in 8 MB main RAM map for patches that require expanded PS1 memory. Disabled by default."
+resolver = "declarative"
+save_compatibility = "shared"
+
+# Main-RAM geometry is a property of the emulated machine, not of any one disc.
+# Only patches written for an 8 MB (development-kit sized) RAM need it; stock
+# games keep retail 2 MB mirroring with this off.
+[[target]]
+game_id = "*"
 
 [[feature]]
 id = "8mb-ram"
 name = "8 MB Main RAM"
-description = "Use expanded 8 MB main RAM instead of stock 2 MB mirroring. Both netplay peers must use the same setting."
-category = "enhancement"
+description = "Use expanded 8 MB main RAM instead of stock 2 MB mirroring. Savestates record the active size, so states from one setting do not load under the other. Both netplay peers must use the same setting."
+group = "Advanced"
 default_enabled = false
 hidden = true
 

@@ -429,6 +429,18 @@ if(BUILD_TESTING)
         ../recompiler/lib/toml11)
     add_test(NAME mod_packages_test COMMAND mod_packages_test)
 
+    add_executable(builtin_mod_manifests_test
+        tests/test_builtin_mod_manifests.cpp
+        src/mod_packages.cpp
+        src/crc32.c
+        src/psx_sha256.c)
+    target_include_directories(builtin_mod_manifests_test PRIVATE
+        include
+        ../recompiler/lib/toml11)
+    add_test(NAME builtin_mod_manifests_test
+             COMMAND builtin_mod_manifests_test
+                     "${CMAKE_CURRENT_SOURCE_DIR}/../mods/builtin/packages")
+
     add_executable(text_xlate_fix_only_test
         tests/test_text_xlate_fix_only.cpp
         src/text_xlate.cpp
