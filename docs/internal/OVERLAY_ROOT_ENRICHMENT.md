@@ -124,11 +124,41 @@ mis-splits**, then as much coverage as possible.
   0x8006D690; the jump-table exit costs master 2 extra cycles. Values stay
   identical, and every route and attract screenshot is identical.
 
-## Done when
+- **Mega Man X6 and Ape Escape (guard at 5a094db6).** Same gate as below,
+  arms N (master) and G (guard), own sandboxes and caches, both proven to run
+  native. MMX6: interpreter fallback 14.04M vs 14.11M on the route, 0/0
+  shard failures, 74/74 route and 13/13 attract screenshots identical; the
+  only fingerprint fork is the store-PC hash at 8303, where overlay code
+  master interprets runs native in G (same address, value and cycle).
+  Ape: fallback 3.28M vs 3.31M, memcard LOAD GAME passes, 67/67 and 39/39
+  screenshots identical; fork at 3564 is the same interpreted-to-native class
+  plus a 3-cycle difference in how native and interpreter cost one
+  straight-line multiply block (framework behaviour, beads-eio.3.185).
+  Tomba re-checked on 5a094db6: 0 diverging frames vs master.
 
-- The no-split guard is in, with a test that a mid-function candidate is
-  demoted, not rooted.
-- Enrichment is on by default in `compile_overlays.py`, and part of the
-  cache key.
-- The four titles match interpreted-only fingerprints and pass a play check.
-- The `no-func-ids` cause is known and fixed at the source.
+## Gate used, and what is left
+
+The gate the four titles passed is **no regression against master**:
+interpreter fallback not higher, no new shard failures, no freeze or wedge,
+all checkpoint screenshots identical. Small timing forks that come from
+removing master's own splits are accepted. Matching the interpreted-only
+arm exactly is not the gate: master itself drifts a few cycles from it.
+
+Done:
+
+- The no-split guard, with tests that mid-function, branch-reached and
+  delay-slot candidates are demoted, not rooted.
+- Enrichment on by default in `compile_overlays.py`, and part of the cache
+  key.
+- Four-title regression gate (above).
+
+Not done:
+
+- Step 3 as a widening. The evidence rules were made stricter (image-local
+  proof, cross-producer calls excluded), not extended with new categories.
+- Step 4, the `no-func-ids` root cause.
+- Re-measuring Ace Combat 3. #386's AC3 numbers (rootless images 250 to 1,
+  capacity skips 3,028 to 0) were taken without the guard; the stricter
+  evidence rule may root fewer of those images.
+- Delay-slot dispatch PCs that master aliased stay interpreted under the
+  guard by design (Tomba 96, Tomba 2 14, Ape 10); no fallback cost measured.
