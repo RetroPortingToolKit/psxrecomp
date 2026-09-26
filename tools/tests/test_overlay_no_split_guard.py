@@ -505,6 +505,20 @@ class SupplementFragmentAliasTests(unittest.TestCase):
         self.assertIn(f'dispatch_root 0x{self.HOST:08X}', lines)
         self.assertIn(f'interior 0x{self.MID:08X}', lines)
 
+    def test_alias_of_interpreted_host_gets_its_root_back(self):
+        # Tomba 2: host 0x800BDF10 (a walk through data, 48 unsupported
+        # instructions) fails its fragment; the 8-byte stubs the guard had
+        # absorbed into it were native roots in the unguarded build.
+        _audit, job = self.job(self.fallthrough_image())
+        self.assertEqual(job['guard_demoted_aliases'], {self.MID})
+        self.assertEqual(CO.orphaned_guard_aliases(job, set()), [self.MID])
+        self.assertEqual(CO.orphaned_guard_aliases(
+            job, {self.HOST & 0x1FFFFFFF}), [])
+        self.assertEqual(CO.orphaned_guard_aliases(
+            job, {self.MID & 0x1FFFFFFF}), [])
+        merged = CO.merge_fragment_jobs_by_recipe([job, dict(job)])
+        self.assertEqual(merged[0]['guard_demoted_aliases'], {self.MID})
+
     def test_alias_failure_never_costs_the_host(self):
         calls = []
 

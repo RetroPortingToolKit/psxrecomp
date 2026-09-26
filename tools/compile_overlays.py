@@ -4324,6 +4324,13 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
             _canonical_guest_addr(addr): {_canonical_guest_addr(h) for h in hosts}
             for addr, hosts in seed_audit.get('interior_hosts', {}).items()
         },
+        # Candidates the no-split guard demoted from a root reason. If none of
+        # their hosts ends up native, they are compiled as the roots they
+        # would have been without the guard (see orphaned_guard_aliases).
+        'guard_demoted_aliases': {
+            _canonical_guest_addr(addr)
+            for addr in seed_audit.get('guard_demoted', {})
+        },
         'static_interval_demands': static_interval_demands,
         'forced': forced,
         'producer_ranges': tuple(seed_audit['producer_ranges']),
@@ -4351,7 +4358,7 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
     set_fields = (
         'candidates', 'executed', 'static_demands',
         'static_exact_demands', 'hosted_donor_demands',
-        'static_interval_demands', 'forced',
+        'static_interval_demands', 'forced', 'guard_demoted_aliases',
     )
     for job in jobs:
         key = (
@@ -4366,7 +4373,7 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
         if merged is None:
             merged = dict(job)
             for field in set_fields:
-                merged[field] = set(job[field])
+                merged[field] = set(job.get(field, ()))
             merged['included_reasons'] = {
                 addr: set(reasons)
                 for addr, reasons in job.get('included_reasons', {}).items()
@@ -4378,7 +4385,7 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
             grouped[key] = merged
             continue
         for field in set_fields:
-            merged[field].update(job[field])
+            merged[field].update(job.get(field, ()))
         for addr, reasons in job.get('included_reasons', {}).items():
             merged.setdefault('included_reasons', {}).setdefault(
                 addr, set()).update(reasons)
@@ -4660,6 +4667,30 @@ def fragment_interior_aliases(job: dict, entries) -> list[int]:
     return sorted(
         alias for alias, hosts in job.get('interior_hosts', {}).items()
         if alias not in roots and hosts & roots)
+
+
+def orphaned_guard_aliases(job: dict, served_phys) -> list[int]:
+    """Guard-absorbed candidates none of whose hosts is native.
+
+    The no-split guard demotes a candidate to an alias only because a host
+    walk reaches it. When every such host fails to compile (a host walk that
+    runs through data audits out as unsupported code) or is otherwise left
+    to the interpreter, the alias has nothing to attach to. Those candidates
+    are compiled as the roots they were before the guard: splitting a host
+    that is interpreted anyway costs nothing, and dropping them would lose
+    native coverage the unguarded build had.
+    """
+    served = {int(entry) & 0x1FFFFFFF for entry in served_phys}
+    hosts_of = job.get('interior_hosts', {})
+    out = []
+    for alias in sorted(job.get('guard_demoted_aliases', ())):
+        if (alias & 0x1FFFFFFF) in served:
+            continue
+        hosts = hosts_of.get(alias, set())
+        if any((host & 0x1FFFFFFF) in served for host in hosts):
+            continue
+        out.append(alias)
+    return out
 
 
 def compile_root_fragment_with_aliases(entries, aliases, build):
@@ -7600,6 +7631,30 @@ def main():
                     strong_shards += 1
                 else:
                     strong_singleton_failure(entry, status)
+            # Guard-absorbed candidates whose every host stayed interpreted
+            # (failed, memoized-doomed, or never compiled) get their root back.
+            orphaned = [
+                entry for entry in orphaned_guard_aliases(
+                    job, current_variant_entries)
+                if fragment_capacity_allows_entry(
+                    candidate_capacity_exhausted, args.force,
+                    job['forced'], entry)
+            ]
+            if orphaned:
+                # Same failure policy as the static root each one was before
+                # the guard: a deterministic audit rejection is a safe skip.
+                job['static_demands'] = set(job['static_demands']) | set(orphaned)
+                orphan_shards = compile_batched_fragment_roots(
+                    orphaned, compile_strong_batch, strong_batch_success,
+                    strong_singleton_failure,
+                    lambda entry: ((entry & 0x1FFFFFFF) not in
+                                   current_variant_entries),
+                    fragment_batch_failure_is_partitionable,
+                    strong_batch_failure)
+                strong_shards += orphan_shards
+                print(f'  guard-alias fallback @0x{phys_addr:08X}: '
+                      f'{len(orphaned)} alias(es) of interpreted hosts -> '
+                      f'{orphan_shards} root shard(s)')
             if strong_candidates:
                 print(f'  strong-root supplement @0x{phys_addr:08X}: '
                       f'{len(strong_candidates)} demand(s) -> '
