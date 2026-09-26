@@ -409,9 +409,18 @@ static uint32_t s_wtrace_head = 0;
 static WriteTraceEntry *s_wtrace_boot = NULL;
 static uint64_t s_wtrace_boot_total = 0;  /* matching writes ever seen */
 static uint32_t s_wtrace_boot_count = 0;  /* entries retained */
-#define WTRACE_BOOT_MAX_RANGES 12
+/* Launch-time PSX_WTRACE_BOOT_RANGES entries get their OWN slots in both the
+ * boot and transition rings, on top of the built-in defaults (boot uses up to
+ * 12, transition up to 10), so a default set can never crowd them out. */
+#define WTRACE_ENV_MAX_RANGES 8
+#define WTRACE_BOOT_DEFAULT_MAX_RANGES 12
+#define WTRACE_BOOT_MAX_RANGES (WTRACE_BOOT_DEFAULT_MAX_RANGES + WTRACE_ENV_MAX_RANGES)
 static struct { uint32_t lo, hi; } s_wtrace_boot_ranges[WTRACE_BOOT_MAX_RANGES];
 static int s_wtrace_boot_range_count = 0;
+/* Outcome of PSX_WTRACE_BOOT_RANGES, reported by wtrace_boot_stats and
+ * wtrace_trans_stats: ranges applied, and why a spec was refused (empty = ok). */
+static int  s_wtrace_env_ranges = 0;
+static char s_wtrace_env_error[96] = "";
 
 /* Multi-range filter: up to 64 [lo, hi) address ranges. Boot defaults
  * occupy ~15; investigative arms must always have headroom. */
@@ -447,7 +456,8 @@ static uint32_t s_wtrace_all_head = 0;
  * long-lived timeseries for high-value scheduler/render state by recording only
  * writes whose value changed. */
 #define WRITE_TRACE_TRANS_CAP (1 << 20)
-#define WTRACE_TRANS_MAX_RANGES 16
+#define WTRACE_TRANS_DEFAULT_MAX_RANGES 16
+#define WTRACE_TRANS_MAX_RANGES (WTRACE_TRANS_DEFAULT_MAX_RANGES + WTRACE_ENV_MAX_RANGES)
 typedef struct {
     uint64_t seq;
     uint32_t addr;
@@ -10370,11 +10380,12 @@ static void handle_wtrace_boot_stats(int id, const char *json)
     uint64_t newest = (s_wtrace_boot_total > 0) ? s_wtrace_boot_total - 1 : 0;
     send_fmt("{\"id\":%d,\"ok\":true,\"total\":%llu,\"stored\":%u,"
              "\"capacity\":%d,\"newest_seq\":%llu,\"ranges\":%d,"
-             "\"full\":%s}",
+             "\"full\":%s,\"env_ranges\":%d,\"env_error\":\"%s\"}",
              id, (unsigned long long)s_wtrace_boot_total,
              s_wtrace_boot_count, WRITE_TRACE_BOOT_CAP,
              (unsigned long long)newest, s_wtrace_boot_range_count,
-             (s_wtrace_boot_count >= WRITE_TRACE_BOOT_CAP) ? "true" : "false");
+             (s_wtrace_boot_count >= WRITE_TRACE_BOOT_CAP) ? "true" : "false",
+             s_wtrace_env_ranges, s_wtrace_env_error);
 }
 
 static void handle_wtrace_boot_clear(int id, const char *json)
@@ -10716,10 +10727,12 @@ static void handle_wtrace_trans_stats(int id, const char *json)
     uint64_t oldest = (total <= WRITE_TRACE_TRANS_CAP) ? 0 : total - WRITE_TRACE_TRANS_CAP;
     uint64_t newest = (total > 0) ? total - 1 : 0;
     send_fmt("{\"id\":%d,\"ok\":true,\"total\":%llu,\"capacity\":%d,"
-             "\"oldest_seq\":%llu,\"newest_seq\":%llu,\"ranges\":%d}",
+             "\"oldest_seq\":%llu,\"newest_seq\":%llu,\"ranges\":%d,"
+             "\"env_ranges\":%d,\"env_error\":\"%s\"}",
              id, (unsigned long long)total, WRITE_TRACE_TRANS_CAP,
              (unsigned long long)oldest, (unsigned long long)newest,
-             s_wtrace_trans_range_count);
+             s_wtrace_trans_range_count, s_wtrace_env_ranges,
+             s_wtrace_env_error);
 }
 
 static void handle_wtrace_trans_reset(int id, const char *json)
@@ -14046,6 +14059,70 @@ void debug_server_set_cpu(CPUState *cpu)
     debug_cpu_ptr = cpu;
 }
 
+/* Parse PSX_WTRACE_BOOT_RANGES (see debug_server_init). Returns the number of
+ * ranges applied; on refusal applies none and records the reason. */
+static int wtrace_apply_env_ranges(const char *spec) {
+    uint32_t lo[WTRACE_ENV_MAX_RANGES], hi[WTRACE_ENV_MAX_RANGES];
+    int n = 0;
+    s_wtrace_env_ranges = 0;
+    s_wtrace_env_error[0] = '\0';
+    if (!spec || !*spec) return 0;
+    for (const char *p = spec;;) {
+        char *end = NULL;
+        unsigned long a, b;
+        while (*p == ' ' || *p == '\t') p++;
+        if (n == WTRACE_ENV_MAX_RANGES) {
+            snprintf(s_wtrace_env_error, sizeof(s_wtrace_env_error),
+                     "more than %d ranges", WTRACE_ENV_MAX_RANGES);
+            break;
+        }
+        a = strtoul(p, &end, 16);
+        if (end == p) goto malformed;
+        p = end;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p != '-') goto malformed;
+        p++;
+        while (*p == ' ' || *p == '\t') p++;
+        b = strtoul(p, &end, 16);
+        if (end == p) goto malformed;
+        p = end;
+        lo[n] = (uint32_t)a & 0x1FFFFFFFu;
+        hi[n] = (uint32_t)b & 0x1FFFFFFFu;
+        if (hi[n] <= lo[n]) {
+            snprintf(s_wtrace_env_error, sizeof(s_wtrace_env_error),
+                     "range %d: hi must exceed lo (physical)", n + 1);
+            break;
+        }
+        n++;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+        if (*p != ',') goto malformed;
+        p++;
+        continue;
+malformed:
+        snprintf(s_wtrace_env_error, sizeof(s_wtrace_env_error),
+                 "range %d: expected hex lo-hi", n + 1);
+        break;
+    }
+    if (s_wtrace_env_error[0]) {
+        fprintf(stdout, "psxrecomp: PSX_WTRACE_BOOT_RANGES refused (%s); "
+                        "no extra write-ring ranges armed\n", s_wtrace_env_error);
+        fflush(stdout);
+        return 0;
+    }
+    /* The reserved slots hold every accepted spec by construction. */
+    for (int i = 0; i < n; i++) {
+        s_wtrace_boot_ranges[s_wtrace_boot_range_count].lo = lo[i];
+        s_wtrace_boot_ranges[s_wtrace_boot_range_count].hi = hi[i];
+        s_wtrace_boot_range_count++;
+        s_wtrace_trans_ranges[s_wtrace_trans_range_count].lo = lo[i];
+        s_wtrace_trans_ranges[s_wtrace_trans_range_count].hi = hi[i];
+        s_wtrace_trans_range_count++;
+    }
+    s_wtrace_env_ranges = n;
+    return n;
+}
+
 void debug_server_init(int port)
 {
     if (port > 0) s_port = port;
@@ -14446,29 +14523,12 @@ void debug_server_init(int port)
     /* Launch-time extra ranges for the boot + transition write rings, so any
      * title can have a physical window recorded from the first guest write
      * without a per-title rebuild (the always-on catch-all ring can wrap before
-     * a late probe reads it). Format: "lo-hi[,lo-hi...]", hex, masked to
-     * physical. Appended after the built-in defaults; capacity-bounded. */
-    {
-        const char *spec = getenv("PSX_WTRACE_BOOT_RANGES");
-        while (spec && *spec) {
-            char *end = NULL;
-            unsigned long lo = strtoul(spec, &end, 16);
-            if (!end || *end != '-') break;
-            unsigned long hi = strtoul(end + 1, &end, 16);
-            if (!end || hi <= lo) break;
-            if (s_wtrace_boot_range_count < WTRACE_BOOT_MAX_RANGES) {
-                s_wtrace_boot_ranges[s_wtrace_boot_range_count].lo = (uint32_t)lo & 0x1FFFFFFFu;
-                s_wtrace_boot_ranges[s_wtrace_boot_range_count].hi = (uint32_t)hi & 0x1FFFFFFFu;
-                s_wtrace_boot_range_count++;
-            }
-            if (s_wtrace_trans_range_count < WTRACE_TRANS_MAX_RANGES) {
-                s_wtrace_trans_ranges[s_wtrace_trans_range_count].lo = (uint32_t)lo & 0x1FFFFFFFu;
-                s_wtrace_trans_ranges[s_wtrace_trans_range_count].hi = (uint32_t)hi & 0x1FFFFFFFu;
-                s_wtrace_trans_range_count++;
-            }
-            spec = (*end == ',') ? end + 1 : NULL;
-        }
-    }
+     * a late probe reads it). Format: "lo-hi[,lo-hi...]", hex (0x optional),
+     * masked to physical, hi > lo, at most WTRACE_ENV_MAX_RANGES. Appended after
+     * the built-in defaults into slots reserved for them. The spec is applied
+     * whole or not at all: a malformed item or too many items refuses it, and
+     * wtrace_boot_stats / wtrace_trans_stats report env_ranges and env_error. */
+    wtrace_apply_env_ranges(getenv("PSX_WTRACE_BOOT_RANGES"));
 
     /* Tier 1: heap-allocate MMIO trace ring buffer (2 MB). */
     if (!s_mmio_trace) {
