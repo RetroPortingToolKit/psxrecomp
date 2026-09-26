@@ -864,6 +864,15 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
         const double t_load0 = savestate_mono_ms();
         double t_after_boot = t_load0;
         double t_after_frontend = t_load0;
+        /* The resume-PC gate below can only judge a state AFTER it is applied
+         * (dispatchability depends on the restored RAM). Hold the pre-load
+         * machine so that refusal puts it back: a failed load never leaves a
+         * half-applied or foreign machine running on this host stack.
+         * (boot_state_load_* itself refuses before mutating anything.) */
+        uint8_t* rollback = NULL;
+        size_t rollback_len = 0;
+        const int have_rollback = boot_state_save_buffer_raw(
+            cpu, s_bios_checksum, s_entry_pc, &rollback, &rollback_len);
         path[0] = '\0';
         if (s_load_blob && s_load_blob_len > 0) {
             const size_t blob_len = s_load_blob_len;
@@ -898,8 +907,14 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                     slot, (unsigned)cpu->pc, path[0] ? "" : " [blob]");
             loaded = 0;
             s_load_failed = 1;
+            /* Restoring this build's own just-written state cannot fail short
+             * of allocation failure; s_load_failed already reports the load. */
+            if (have_rollback)
+                (void)boot_state_load_buffer(rollback, rollback_len,
+                                             s_bios_checksum, s_entry_pc, cpu);
             psx_frontend_on_savestate_notify(1, slot, 0);
         }
+        free(rollback);
         if (!loaded) {
             s_status_pending = 0;
             s_status_last_ok = 0;

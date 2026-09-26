@@ -79,6 +79,23 @@ extern int      sio_snapshot_read(const uint8_t* p, uint32_t len);
 extern uint32_t mdec_snapshot_bytes(void);
 extern void     mdec_snapshot_write(uint8_t* p);
 extern int      mdec_snapshot_read(const uint8_t* p, uint32_t len);
+/* Non-mutating pre-checks for the readers whose acceptance is not just an
+ * exact length (the two-pass load below). */
+extern int      sio_snapshot_validate(const uint8_t* p, uint32_t len);
+extern int      mdec_snapshot_validate(const uint8_t* p, uint32_t len);
+
+/* Header compatibility cookie (h.reserved): the enhancement-memory layout plus
+ * the live main-RAM geometry. The RAM term is zero on retail 2 MiB, so retail
+ * states are byte-identical to states written before the 8 MB map existed; a
+ * state from the other geometry is rejected in the header, before any section
+ * is read, with a reason that names the size. */
+#define BOOT_STATE_RAM_8MB_COOKIE 0x384D4252u  /* "RBM8" */
+static uint32_t boot_state_ram_cookie(void) {
+    return psx_ram_8mb_active() ? BOOT_STATE_RAM_8MB_COOKIE : 0u;
+}
+static uint32_t boot_state_layout_cookie(void) {
+    return psx_mod_memory_layout_cookie() ^ boot_state_ram_cookie();
+}
 
 /* CPU regs wire: 32+3+32+32+32 LE u32 = 131 * 4 = 524 bytes (no padding). */
 #define CPU_REGS_WIRE_BYTES (524u)
@@ -367,7 +384,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     memset(&h, 0, sizeof h);
     h.magic         = BOOT_STATE_MAGIC;
     h.version       = psx_mod_memory_snapshot_bytes() ? BOOT_STATE_VERSION : 7u;
-    h.reserved      = psx_mod_memory_layout_cookie();
+    h.reserved      = boot_state_layout_cookie();
     h.bios_checksum = bios_checksum;
     h.entry_pc      = entry_pc;
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
@@ -697,6 +714,47 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
     }
 }
 
+/* Pass-1 acceptance of one section: 1 iff apply_section(tag, p, len) cannot
+ * fail. It mutates nothing, so the loader can refuse a state before the first
+ * byte of machine state changes. Every check here is the exact precondition
+ * the corresponding reader applies; readers that only ever read fixed-width
+ * fields fail only on length. Unknown tags are skipped, as in apply_section. */
+/* One framed section, inflated if needed, held until pass 2 has applied it. */
+typedef struct {
+    uint32_t       tag;
+    const uint8_t* p;
+    uint32_t       len;
+    uint8_t*       owned;   /* inflated payload (NULL when p points into file) */
+} BsSection;
+/* Current writers emit 16-17 sections; the cap only bounds a hostile count. */
+#define BOOT_STATE_MAX_SECTIONS 256u
+
+static int validate_section(uint32_t tag, const uint8_t* p, uint32_t len) {
+    switch (tag) {
+    case BS_SEC_CPU:    return len == CPU_REGS_WIRE_BYTES;
+    case BS_SEC_RAM:    return len == memory_get_ram_bytes();
+    case BS_SEC_SPAD:   return len == SPAD_SIZE;
+    case BS_SEC_IRQ:    return len == 8u || len == 12u;
+    case BS_SEC_TIMER:  return len == TIMER_REGS_WIRE_BYTES;
+    case BS_SEC_CLOCK:  return len == 8u;
+    case BS_SEC_GPU:    return len == gpu_snapshot_bytes();
+    case BS_SEC_VRAM:   return len == VRAM_SIZE;
+    case BS_SEC_SPU:    return len == spu_snapshot_bytes();
+    case BS_SEC_SPURAM: return len == spu_get_ram_bytes();
+    case BS_SEC_CDROM:  return len == cdrom_snapshot_bytes();
+    case BS_SEC_DMA:    return len == dma_snapshot_bytes();
+    case BS_SEC_SIO:    return sio_snapshot_validate(p, len);
+    case BS_SEC_MDEC:   return mdec_snapshot_validate(p, len);
+    /* A longer dirty bitmap than the live RAM has pages is a state from a
+     * larger geometry; shorter (older) bitmaps zero-fill as before. */
+    case BS_SEC_DIRTY:  return len % 4u == 0u &&
+                               len / 4u <= dirty_ram_get_bitmap_word_count();
+    case BS_SEC_MODMEM: return psx_mod_memory_snapshot_validate(p, len);
+    case BS_SEC_ICACHE: return len == 1024u * 4u;
+    default:            return 1;
+    }
+}
+
 static int boot_state_parse_header(const uint8_t* file, size_t file_len,
                                    BootStateHeader* h_out) {
     PstR hr;
@@ -761,8 +819,15 @@ int boot_state_check_buffer(const uint8_t* file, size_t file_len,
                  (unsigned)h.magic, (unsigned)BOOT_STATE_MAGIC);
         boot_state_append_reason(reason, reason_cap, part);
     }
-    if (h.reserved != psx_mod_memory_layout_cookie()) {
-        boot_state_append_reason(reason, reason_cap, "enhancement_memory_layout");
+    if (h.reserved != boot_state_layout_cookie()) {
+        if ((h.reserved ^ BOOT_STATE_RAM_8MB_COOKIE) == boot_state_layout_cookie()) {
+            snprintf(part, sizeof(part), "main_ram=%uMiB(want %uMiB)",
+                     psx_ram_8mb_active() ? 2u : 8u,
+                     (unsigned)(memory_get_ram_bytes() >> 20));
+            boot_state_append_reason(reason, reason_cap, part);
+        } else {
+            boot_state_append_reason(reason, reason_cap, "enhancement_memory_layout");
+        }
         return 0;
     }
     if (h.version < BOOT_STATE_VERSION_MIN_READ ||
@@ -825,6 +890,8 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
     double apply_vram_ms = 0.0;
     double apply_spuram_ms = 0.0;
     double apply_other_ms = 0.0;
+    BsSection* sections = NULL;
+    uint32_t n_sections = 0;
 
     if (!boot_state_check_buffer(file, file_len, bios_checksum, entry_pc,
                                  reject, sizeof(reject))) {
@@ -834,19 +901,26 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
     }
     if (!boot_state_parse_header(file, file_len, &h))
         return 0;
+    if (h.section_count == 0u || h.section_count > BOOT_STATE_MAX_SECTIONS)
+        return 0;
+    sections = (BsSection*)calloc(h.section_count, sizeof(*sections));
+    if (!sections) return 0;
 
     cur = file + BOOT_STATE_HEADER_WIRE_BYTES;
     end = file + file_len;
 
+    /* PASS 1 -- frame, inflate and validate EVERY section; mutate nothing.
+     * The old single pass applied each section as it was parsed, so a state
+     * rejected at section N (a RAM section of the other geometry, a corrupt
+     * tail, a missing required section) left sections 0..N-1 -- the CPU
+     * first of all -- already restored: savestate/rewind/netplay then
+     * reported a failed load over a half-overwritten machine. */
     for (uint32_t i = 0; ok && i < h.section_count; i++) {
         PstR sh;
         uint32_t tag = 0, pad = 0;
         uint64_t len = 0;
         const uint8_t* payload;
-        uint8_t* inflated = NULL;
-        const uint8_t* apply_ptr;
-        uint32_t apply_len;
-        double t_sec;
+        BsSection* s = &sections[n_sections];
 
         if ((size_t)(end - cur) < 16u) { ok = 0; break; }
         pst_r_init(&sh, cur, 16);
@@ -871,44 +945,58 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
                 raw_len > 64u * 1024u * 1024u) {
                 ok = 0; break;
             }
-            inflated = (uint8_t*)malloc(raw_len);
-            if (!inflated) { ok = 0; break; }
+            s->owned = (uint8_t*)malloc(raw_len);
+            if (!s->owned) { ok = 0; break; }
+            n_sections++;   /* owned buffer is freed below on every path */
             dest_len = (uLong)raw_len;
             t_inf = boot_state_mono_ms();
-            if (uncompress(inflated, &dest_len, payload + 4,
+            if (uncompress(s->owned, &dest_len, payload + 4,
                            (uLong)(len - 4u)) != Z_OK ||
                 dest_len != (uLong)raw_len) {
-                free(inflated);
                 ok = 0;
                 break;
             }
             inflate_ms += boot_state_mono_ms() - t_inf;
-            apply_ptr = inflated;
-            apply_len = raw_len;
+            s->p = s->owned;
+            s->len = raw_len;
         } else if (pad != 0u) {
             /* v3 requires pad==0; v4 unknown/extra flags are a hard reject. */
             ok = 0;
             break;
         } else {
             if (len > 0xffffffffu) { ok = 0; break; }
-            apply_ptr = payload;
-            apply_len = (uint32_t)len;
+            n_sections++;
+            s->p = payload;
+            s->len = (uint32_t)len;
         }
+        s->tag = tag;
+        if (!validate_section(tag, s->p, s->len)) { ok = 0; break; }
+        if (tag < 32) seen |= (1u << tag);
+    }
+    if (ok && (seen & required) != required)
+        ok = 0;
 
-        t_sec = boot_state_mono_ms();
-        if (!apply_section(tag, apply_ptr, apply_len, cpu, entry_pc)) ok = 0;
-        else if (tag < 32) seen |= (1u << tag);
+    /* PASS 2 -- apply. Every section passed validate_section, whose checks
+     * are exactly the preconditions apply_section can fail on, so this pass
+     * does not fail on well-framed input; the check below stays as the
+     * backstop. test_boot_state_load_atomic pins both passes. */
+    for (uint32_t i = 0; ok && i < n_sections; i++) {
+        const double t_sec = boot_state_mono_ms();
+        if (!apply_section(sections[i].tag, sections[i].p, sections[i].len,
+                           cpu, entry_pc))
+            ok = 0;
         {
-            double dt = boot_state_mono_ms() - t_sec;
-            if (tag == BS_SEC_RAM) apply_ram_ms += dt;
-            else if (tag == BS_SEC_VRAM) apply_vram_ms += dt;
-            else if (tag == BS_SEC_SPURAM) apply_spuram_ms += dt;
+            const double dt = boot_state_mono_ms() - t_sec;
+            if (sections[i].tag == BS_SEC_RAM) apply_ram_ms += dt;
+            else if (sections[i].tag == BS_SEC_VRAM) apply_vram_ms += dt;
+            else if (sections[i].tag == BS_SEC_SPURAM) apply_spuram_ms += dt;
             else apply_other_ms += dt;
         }
-        free(inflated);
     }
-
-    if (!ok || (seen & required) != required)
+    for (uint32_t i = 0; i < n_sections; i++)
+        free(sections[i].owned);
+    free(sections);
+    if (!ok)
         return 0;
 
     /* RAM was memcpy'd; force overlay revalidation before resume. */

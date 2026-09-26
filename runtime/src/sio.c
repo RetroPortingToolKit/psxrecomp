@@ -2928,13 +2928,20 @@ void sio_snapshot_write(uint8_t *p) {
     (void)sio_snap_emit(&w);
 }
 
-int sio_snapshot_read(const uint8_t *p, uint32_t len) {
-    PstR r;
+/* Non-mutating pre-check for boot_state's two-pass load: a section that passes
+ * cannot fail sio_snapshot_read (the parser only reads fixed-width fields, and
+ * both accepted lengths end exactly where one of its two layouts ends). */
+int sio_snapshot_validate(const uint8_t *p, uint32_t len) {
     const uint32_t current = sio_snapshot_bytes();
     const uint32_t rumble_bytes = (uint32_t)(sizeof(pad_rumble_map) +
                                   sizeof(pad_rumble_small) +
                                   sizeof(pad_rumble_large));
-    if (len != current && (len > current || len + rumble_bytes != current))
+    return p && (len == current || (len < current && len + rumble_bytes == current));
+}
+
+int sio_snapshot_read(const uint8_t *p, uint32_t len) {
+    PstR r;
+    if (!sio_snapshot_validate(p, len))
         return 0;
     pst_r_init(&r, p, len);
     return sio_snap_parse(&r);
