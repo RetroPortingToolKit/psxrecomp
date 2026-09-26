@@ -115,6 +115,36 @@ class NoSplitGuardTests(unittest.TestCase):
         self.assertNotIn(target, root_seeds(seeds))
         self.assertEqual(audit['guard_demoted'][target][1], host)
 
+    def test_enrichment_root_in_unreached_body_word_is_dropped(self):
+        # The host branches (b) over a dead block whose first word looks like
+        # a prologue. As a root it would cap the host and turn the branch
+        # into a cross-function exit, although nothing reaches it. Enrichment
+        # evidence is weak: it is dropped, not rooted and not aliased.
+        host = LOAD + 0x20
+        dead, label = host + 0x10, host + 0x30
+        data = image({host: FRAME,
+                      host + 4: 0x10000000 | (((label - (host + 8)) >> 2)
+                                              & 0xFFFF),
+                      host + 8: NOP,
+                      dead: FRAME, dead + 4: ADDIU, dead + 8: JR_RA,
+                      dead + 12: UNFRAME,
+                      label: ADDIU, label + 4: JR_RA,
+                      label + 8: UNFRAME}, 0x100)
+        self.assertIn(dead, CO.derive_static_roots(data, LOAD, len(data)))
+        seeds, audit = classify(data, True, function_entry_pcs=[host])
+        self.assertNotIn(dead, root_seeds(seeds))
+        self.assertNotIn(dead, audit['included_reasons'])
+        self.assertEqual(audit['excluded_reasons'][dead],
+                         'ENRICHMENT_SHADOWED')
+        self.assertEqual(root_seeds(seeds), {host})
+        # An absolute j over it is how tail calls are encoded, so that alone
+        # does not make the candidate part of the host.
+        tail = bytearray(data)
+        struct.pack_into('<I', tail, host + 4 - LOAD,
+                         0x08000000 | ((label >> 2) & 0x03FFFFFF))
+        seeds, audit = classify(bytes(tail), True, function_entry_pcs=[host])
+        self.assertIn(dead, root_seeds(seeds))
+
     def test_delay_slot_candidate_is_never_root_nor_alias(self):
         host, callee = LOAD + 0x20, LOAD + 0x80
         slot = host + 8

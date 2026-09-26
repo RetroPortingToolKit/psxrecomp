@@ -1602,7 +1602,8 @@ def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
         'hosts': len(hosts)}
 
 
-def no_split_partition(candidates, exempt, walk, hi: int):
+def no_split_partition(candidates, exempt, walk, hi: int, droppable=(),
+                       dropped_out: set | None = None):
     """Fixed point of the no-split guard over one root partition.
 
     For each root h, ascending:
@@ -1623,6 +1624,14 @@ def no_split_partition(candidates, exempt, walk, hi: int):
     that intervening root would leave hostless. Absorption only removes caps,
     so whole passes repeat until nothing more is absorbed.
 
+    ``droppable`` candidates (weak evidence: enrichment roots) are also
+    removed when h's walk does NOT reach them but one of h's local branches
+    jumps over them -- an unreached word inside h's body (dead code,
+    embedded data) would cap h and turn that branch into a cross-function
+    exit. They are dropped, never aliased (not reachable from h), and
+    reported in ``dropped_out``. Capture-evidence roots keep their existing
+    behaviour in that position.
+
     Returns (roots, {absorbed: owner}).
     """
     roots = sorted(candidates)
@@ -1640,20 +1649,41 @@ def no_split_partition(candidates, exempt, walk, hi: int):
             if index + 1 < len(roots):
                 reach = reach | walk(host, roots[index + 1])['visited']
             end = index + 1
-            while (end < len(roots) and roots[end] in reach and
-                   roots[end] not in exempt):
+            while (end < len(roots) and roots[end] not in exempt and
+                   (roots[end] in reach or roots[end] in droppable)):
                 end += 1
             while end > index + 1:
                 cap = roots[end] if end < len(roots) else hi
-                inner = walk(host, cap)['visited']
-                blocked = next((k for k in range(index + 1, end)
-                                if roots[k] not in inner), None)
+                entry_walk = walk(host, cap)
+                inner = entry_walk['visited']
+                spans = entry_walk['local_branch_spans'] if droppable else ()
+                blocked = None
+                for k in range(index + 1, end):
+                    addr = roots[k]
+                    if addr in inner:
+                        continue
+                    # Dropped only when one of h's own local branches (any
+                    # conditional branch, or an always-taken b; never an
+                    # absolute j, which is also how tail calls are encoded)
+                    # jumps over it: compiled code never branches across a
+                    # function boundary, so the word is an unreached part of
+                    # h's body.
+                    if addr in droppable and any(
+                            src < addr < dst for src, dst in spans):
+                        continue
+                    blocked = k
+                    break
                 if blocked is None:
                     break
                 end = blocked
             if end > index + 1:
+                inner = walk(host, roots[end] if end < len(roots)
+                             else hi)['visited']
                 for addr in roots[index + 1:end]:
-                    absorbed[addr] = host
+                    if addr in inner:
+                        absorbed[addr] = host
+                    elif dropped_out is not None:
+                        dropped_out.add(addr)
                 del roots[index + 1:end]
                 changed = True
             index += 1
@@ -1678,6 +1708,11 @@ def _walk_overlay_function(data: bytes, load_addr: int, size: int,
     forward_branch_targets = set()
     rejected_cross_producer_calls = set()
     accepted_cross_producer_calls = set()
+    # (low, high) of every reached LOCAL branch -- conditional, or an
+    # always-taken b encoded as a branch; never an absolute j (also how tail
+    # calls are encoded). The no-split guard uses these to see an unreached
+    # word inside a function body.
+    local_branch_spans = []
 
     def producer_for(addr: int):
         for range_lo, range_hi in producer_ranges:
@@ -1737,6 +1772,8 @@ def _walk_overlay_function(data: bytes, load_addr: int, size: int,
         kind, target = _classify_cf(pc, word)
         delay = pc + 4
 
+        if kind in ('branch', 'j') and (word >> 26) != 0x02:
+            local_branch_spans.append((min(pc, target), max(pc, target)))
         if kind == 'normal':
             if in_function(pc + 4):
                 work.append(pc + 4)
@@ -1832,6 +1869,7 @@ def _walk_overlay_function(data: bytes, load_addr: int, size: int,
         'forward_branch_targets': forward_branch_targets,
         'rejected_cross_producer_calls': rejected_cross_producer_calls,
         'accepted_cross_producer_calls': accepted_cross_producer_calls,
+        'local_branch_spans': local_branch_spans,
     }
 
 
@@ -2042,7 +2080,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     pre_roots_guarded, _ = no_split_partition(
         {a for a in pre_roots
          if region(a) and not _in_delay_slot(data, load_addr, a)},
-        set(), walk, hi)
+        set(), walk, hi, derived_static_roots)
     pre_roots_sorted = sorted(pre_roots_guarded)
     for i, entry in enumerate(pre_roots_sorted):
         hard_cap = pre_roots_sorted[i + 1] if i + 1 < len(pre_roots_sorted) else hi
@@ -2176,7 +2214,10 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     # The explicit universe is fixed; the no-split guard decides, each round
     # and from scratch, which of it (plus derived targets) actually roots.
     initial_known = explicit_candidates
-    known, _ = no_split_partition(initial_known, set(), walk, hi)
+    # Enrichment roots are weak evidence: dropped (not aliased) when a host
+    # walks past them without reaching them.
+    droppable = initial_known & derived_static_roots
+    known, _ = no_split_partition(initial_known, set(), walk, hi, droppable)
     derived_reasons = {}
     promoted_roots = set()
     suppressed_derived = set()
@@ -2218,7 +2259,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
                           + (f' ({unstable_text})' if unstable_text else ''))
                     known, _ = no_split_partition(
                         initial_known | promoted_roots, promoted_roots,
-                        walk, hi)
+                        walk, hi, droppable)
                     derived_reasons = {}
                     discovery_round = 0
                     seen_states = {}
@@ -2230,7 +2271,8 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
                          f'unstable={unstable_text})'
                          if cycle_start is not None else ' (round limit)'))
                 known, _ = no_split_partition(
-                    initial_known | promoted_roots, promoted_roots, walk, hi)
+                    initial_known | promoted_roots, promoted_roots, walk, hi,
+                    droppable)
                 derived_reasons = {}
                 break
             seen_states[state] = len(state_history)
@@ -2240,7 +2282,11 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             sorted_known = sorted(known)
 
             def derivable(target: int) -> bool:
-                if target in initial_known or target in suppressed_derived:
+                # An enrichment root is weak evidence; a call from rooted code
+                # is stronger, so it may still derive (and stop being
+                # droppable).
+                if ((target in initial_known and target not in droppable) or
+                        target in suppressed_derived):
                     return False
                 if _in_delay_slot(data, load_addr, target):
                     delay_slot_rejected.setdefault(target, 'DERIVED')
@@ -2292,7 +2338,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             # precisely because no walk covered them).
             normalized, _ = no_split_partition(
                 initial_known | promoted_roots | set(next_reasons),
-                promoted_roots, walk, hi)
+                promoted_roots, walk, hi, droppable - set(next_reasons))
 
             if normalized == known and next_reasons == derived_reasons:
                 all_branch_targets = round_branch_targets
@@ -2352,6 +2398,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     # the guard's fixed point that host exists by construction; the fallback
     # branch only keeps a broken invariant from minting a hostless alias.
     guard_demoted = {}
+    enrichment_shadowed = set()
     for addr in sorted(initial_known - known):
         prior = included.get(addr)
         index = bisect_left(sorted_known, addr)
@@ -2361,8 +2408,12 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             guard_demoted[addr] = (prior, host)
         else:
             included.pop(addr, None)
-            excluded[addr] = ('OBSERVED_PC_ONLY'
-                              if addr in executed_pcs else 'UNKNOWN')
+            if addr in droppable:
+                enrichment_shadowed.add(addr)
+                excluded[addr] = 'ENRICHMENT_SHADOWED'
+            else:
+                excluded[addr] = ('OBSERVED_PC_ONLY'
+                                  if addr in executed_pcs else 'UNKNOWN')
 
     # A DISPATCH_INTERIOR is emitted only when the final partition has a real
     # CFG host for that exact PC. Reconsider every derived target after all
@@ -2454,6 +2505,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         'derived_static_roots': derived_static_roots,
         'enrichment_stats': enrichment_stats,
         'guard_demoted': guard_demoted,
+        'enrichment_shadowed': enrichment_shadowed,
         'delay_slot_rejected': delay_slot_rejected,
     }
     # Interior entries carry the 'interior' marker so the recompiler emits
@@ -2513,6 +2565,8 @@ def print_seed_audit(audit: dict) -> None:
              if stats else '') + ')')
     guard_demoted = audit.get('guard_demoted', {})
     print(f'no_split_guard_demoted: {len(guard_demoted)}')
+    print(f'enrichment_roots_shadowed: '
+          f'{len(audit.get("enrichment_shadowed", ()))}')
     print(f'delay_slot_roots_rejected: '
           f'{len(audit.get("delay_slot_rejected", {}))}')
     for addr, (prior, host) in sorted(guard_demoted.items()):
