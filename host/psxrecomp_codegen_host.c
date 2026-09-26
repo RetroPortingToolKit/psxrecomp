@@ -21,6 +21,9 @@
 #  include <sys/stat.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
+#  if defined(__APPLE__)
+#    include <mach-o/dyld.h>
+#  endif
 extern char** environ;
 #endif
 
@@ -946,9 +949,32 @@ static int walk_up_for_project_root(const char* start, char* out, size_t cap) {
     return 0;
 }
 
+#if !defined(_WIN32)
+/* Canonical path of the running executable on POSIX hosts. /proc/self/exe is
+ * Linux-only; macOS has no procfs, so there the path comes from dyld. */
+static int host_posix_exe_path(char* out, size_t cap) {
+    char* rp = NULL;
+#  if defined(__APPLE__)
+    char raw[1100];
+    uint32_t n = (uint32_t)sizeof(raw);
+    if (_NSGetExecutablePath(raw, &n) != 0)
+        return 0;
+    rp = realpath(raw, NULL);
+#  else
+    rp = realpath("/proc/self/exe", NULL);
+#  endif
+    if (!rp)
+        return 0;
+    snprintf(out, cap, "%s", rp);
+    free(rp);
+    return out[0] != '\0';
+}
+#endif
+
 /* Directory containing this process's executable (not cwd). Dolphin / .desktop
- * launches leave cwd as $HOME — VIDEO/PGO/setup must still find the zip tree.
- * Linux: $APPIMAGE parent, else /proc/self/exe. Windows: GetModuleFileName. */
+ * and Finder launches leave cwd as $HOME — VIDEO/PGO/setup must still find the
+ * zip tree. Linux: $APPIMAGE parent, else /proc/self/exe. macOS: dyld's
+ * executable path. Windows: GetModuleFileName. */
 static int resolve_host_exe_dir(char* out, size_t cap) {
     char exe[1100];
     if (!out || cap < 2)
@@ -967,12 +993,8 @@ static int resolve_host_exe_dir(char* out, size_t cap) {
         const char* appimg = getenv("APPIMAGE");
         if (appimg && appimg[0] && path_is_file(appimg)) {
             snprintf(exe, sizeof(exe), "%s", appimg);
-        } else {
-            char* rp = realpath("/proc/self/exe", NULL);
-            if (!rp)
-                return 0;
-            snprintf(exe, sizeof(exe), "%s", rp);
-            free(rp);
+        } else if (!host_posix_exe_path(exe, sizeof(exe))) {
+            return 0;
         }
     }
 #endif
@@ -4248,12 +4270,7 @@ static int host_self_exe_path(char* out, size_t cap) {
             snprintf(out, cap, "%s", appimg);
             return 1;
         }
-        char* rp = realpath("/proc/self/exe", NULL);
-        if (!rp)
-            return 0;
-        snprintf(out, cap, "%s", rp);
-        free(rp);
-        return out[0] != '\0';
+        return host_posix_exe_path(out, cap);
     }
 #endif
 }
