@@ -4441,6 +4441,18 @@ static void host_selfcheck_or_return(const PsxrecompCodegenHostConfig* cfg,
         }
         printf(",\n  \"overlay_cache_configured\": %s", overlay_cache ? "true" : "false");
     }
+    /* Build-tools readiness as wizard page 0 judges it, minus its cache
+     * healing: nothing is deleted or renamed here. toolchain_note carries the
+     * repair hint the wizard would show (e.g. missing Command Line Tools). */
+    {
+        int tc_ready;
+        g_tc_repair_note[0] = '\0';
+        activate_toolchain_path();
+        tc_ready = host_portable_cmake_ready() && host_system_compiler_ready();
+        printf(",\n  \"toolchain_ready\": %s", tc_ready ? "true" : "false");
+        printf(",\n  \"toolchain_note\": ");
+        host_json_str(g_tc_repair_note);
+    }
     printf("\n}\n");
     fflush(stdout);
     exit(missing ? 2 : 0);
