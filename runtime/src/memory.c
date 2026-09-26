@@ -1290,7 +1290,9 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
     if (addr == 0x1F801810u) {
         uint32_t src = addr;
         if (g_debug_last_store_pc == 0xBFC38B1Cu && debug_cpu_ptr) {
-            src = (debug_cpu_ptr->gpr[4] - 4u) & 0x1FFFFCu;
+            /* Word-aligned RAM key through the live geometry (retail: the
+             * 0x1FFFFC fold, identical to the DMA/GPU source keys). */
+            src = psx_ram_canonical_offset(debug_cpu_ptr->gpr[4] - 4u) & ~3u;
         }
         gpu_set_gp0_source(src);
         gpu_write_gp0(val);

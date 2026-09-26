@@ -517,18 +517,20 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             if (raw < 0 || raw > 0xFFFFFFFFll) {
                 throw std::runtime_error(fmt::format(
                     "[runtime] overlay_region_floor out of range "
-                    "(0x10000..0x1FFFFF physical, KSEG0/KSEG1 prefix allowed): {}",
+                    "(0x10000..0x7FFFFF physical, KSEG0/KSEG1 prefix allowed): {}",
                     raw));
             }
             floor = static_cast<uint32_t>(raw);
         }
-        // The floor names a main-RAM physical address above the kernel window;
-        // fail loud here instead of relying on the runtime clamp/mask.
+        // The floor names a main-RAM physical address above the kernel window,
+        // inside the 8 MiB decode window (the opt-in 8 MB map's text may end
+        // above 2 MiB; on retail RAM the runtime clamps it to the live end).
+        // Fail loud here instead of relying on the runtime clamp/mask.
         const uint32_t phys = floor & 0x1FFFFFFFu;
-        if (phys < 0x00010000u || phys >= 0x00200000u) {
+        if (phys < 0x00010000u || phys >= 0x00800000u) {
             throw std::runtime_error(fmt::format(
                 "[runtime] overlay_region_floor out of range "
-                "(0x10000..0x1FFFFF physical, KSEG0/KSEG1 prefix allowed): 0x{:08X}",
+                "(0x10000..0x7FFFFF physical, KSEG0/KSEG1 prefix allowed): 0x{:08X}",
                 floor));
         }
         rt.overlay_region_floor = floor;
