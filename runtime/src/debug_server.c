@@ -2936,10 +2936,27 @@ static void handle_dirty_ram_stats(int id, const char *json)
              (unsigned long long)g_dirty_ram_native_handoffs,
              (unsigned)dirty_ram_get_bitmap());
 
+    /* Optional {"lo":"0x..","hi":"0x.."} keeps rows whose PC (compared with
+     * the KSEG bits masked off, as rows are keyed) lies in [lo, hi), and
+     * {"skip":N} pages past the first N matching rows. The row list is capped
+     * by the response buffer, so per_pc_matching / per_pc_emitted say whether
+     * this page is complete instead of truncating silently. */
+    char lo_s[32] = {0}, hi_s[32] = {0};
+    uint32_t lo = 0, hi = 0xFFFFFFFFu;
+    if (json_get_str(json, "lo", lo_s, sizeof(lo_s))) lo = hex_to_u32(lo_s) & 0x1FFFFFFFu;
+    if (json_get_str(json, "hi", hi_s, sizeof(hi_s))) hi = hex_to_u32(hi_s) & 0x1FFFFFFFu;
+    int skip = json_get_int(json, "skip", 0);
+    int matching = 0, emitted = 0;
     int first = 1;
     for (int i = 0; i < DIRTY_RAM_PC_TABLE_SIZE; i++) {
         DirtyRamPcEntry *e = &g_dirty_ram_pc_table[i];
         if (e->pc == 0 || e->hits == 0) continue;
+        uint32_t key = (uint32_t)e->pc & 0x1FFFFFFFu;
+        if (key < lo || key >= hi) continue;
+        if (matching++ < skip) continue;
+        /* Reserve enough tail room for all bitmap/guard diagnostics below. */
+        if (n >= (int)sizeof(buf) - 2048) continue;
+        emitted++;
         n += snprintf(buf + n, sizeof(buf) - n,
                       "%s{\"pc\":\"0x%08X\",\"hits\":%llu,\"insns\":%llu,"
                       "\"entries\":%llu,\"occ_crc\":\"0x%08X\","
@@ -2953,10 +2970,11 @@ static void handle_dirty_ram_stats(int id, const char *json)
                       (unsigned)e->occ_ok,
                       (unsigned)e->last_ext_ra);
         first = 0;
-        /* Reserve enough tail room for all bitmap/guard diagnostics below. */
-        if (n >= (int)sizeof(buf) - 2048) break;
     }
-    n += snprintf(buf + n, sizeof(buf) - n, "],\"dirty_bitmap_words\":[");
+    n += snprintf(buf + n, sizeof(buf) - n,
+                  "],\"per_pc_matching\":%d,\"per_pc_skipped\":%d,"
+                  "\"per_pc_emitted\":%d,\"dirty_bitmap_words\":[",
+                  matching, matching < skip ? matching : skip, emitted);
     uint32_t word_count = dirty_ram_get_bitmap_word_count();
     for (uint32_t i = 0; i < word_count; i++) {
         n += snprintf(buf + n, sizeof(buf) - n,
