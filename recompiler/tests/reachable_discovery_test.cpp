@@ -817,6 +817,21 @@ int main() {
                before_code_bss, before_code_error).has_value(),
           "BSS beginning before the payload remains rejected");
 
+    // The KSEG0 main-RAM decode window is 8 MiB: an image placed in a retail
+    // mirror (a mod engine copied to 0x80780000) is valid, one crossing the
+    // window end is not.
+    auto mirror_image = make_exe_buffer(0x1000);
+    put32(mirror_image, 0x10, 0x80780000u);
+    put32(mirror_image, 0x18, 0x80780000u);
+    std::string mirror_error;
+    CHECK(PSXRecomp::PS1ExeParser::parse_buffer(mirror_image, mirror_error).has_value(),
+          "image in the 4th RAM mirror is accepted");
+    put32(mirror_image, 0x10, 0x807FF800u);
+    put32(mirror_image, 0x18, 0x807FF800u);
+    CHECK(!PSXRecomp::PS1ExeParser::parse_buffer(mirror_image, mirror_error).has_value() &&
+              mirror_error.find("beyond 0x80800000") != std::string::npos,
+          "image crossing the RAM decode window end is rejected");
+
     if (failures) {
         std::fprintf(stderr, "FAILED (%d)\n", failures);
         return 1;

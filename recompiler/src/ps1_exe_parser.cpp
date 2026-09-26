@@ -6,6 +6,14 @@
 
 namespace PSXRecomp {
 
+namespace {
+// KSEG0 main-RAM decode window. Retail 2 MiB DRAM mirrors across all of it
+// (a game may place code or its stack in the 2nd-4th mirror) and expanded
+// 8 MiB targets decode it uniquely; the runtime folds per its geometry.
+constexpr uint64_t kRamWindowEnd = 0x80800000ull;
+constexpr uint32_t kRamWindowBytes = 0x00800000u;
+}  // namespace
+
 uint32_t decode_analysis_guard_bytes(const PS1ExeHeader& header,
                                      uint32_t file_size) {
     const uint8_t* raw = reinterpret_cast<const uint8_t*>(&header);
@@ -43,7 +51,7 @@ bool apply_static_analysis_bound(PS1Executable& exe,
             "game.text_size 0x{:X} is not instruction-aligned", configured_size);
         return false;
     }
-    if (configured_end > 0x80200000ull) {
+    if (configured_end > kRamWindowEnd) {
         error_msg = fmt::format(
             "game.text_size 0x{:X} extends past PS1 RAM", configured_size);
         return false;
@@ -127,19 +135,20 @@ bool PS1ExeParser::validate_header(const PS1ExeHeader& header, std::string& erro
         return false;
     }
 
-    if (header.file_size > 2 * 1024 * 1024) {  // > 2MB
+    if (header.file_size > kRamWindowBytes) {
         error_msg = fmt::format(
-            "Suspicious file size: {} bytes (> 2MB). PS1 only has 2MB RAM",
+            "Suspicious file size: {} bytes (> 8 MiB main-RAM window)",
             header.file_size
         );
         return false;
     }
 
-    // Check load region doesn't overflow RAM
-    uint32_t end_address = header.load_address + header.file_size;
-    if (end_address > 0x80200000) {  // Beyond 2MB RAM
+    // Check load region stays inside the main-RAM decode window
+    const uint64_t end_address =
+        static_cast<uint64_t>(header.load_address) + header.file_size;
+    if (end_address > kRamWindowEnd) {
         error_msg = fmt::format(
-            "Load region overflows RAM: 0x{:08X}-0x{:08X} (beyond 0x80200000)",
+            "Load region overflows RAM: 0x{:08X}-0x{:08X} (beyond 0x80800000)",
             header.load_address, end_address
         );
         return false;
