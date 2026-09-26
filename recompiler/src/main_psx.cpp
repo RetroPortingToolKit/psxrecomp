@@ -912,8 +912,15 @@ int main(int argc, char** argv) {
         {
             PSXRecomp::FunctionAnalyzer analyzer(*exe);
             std::vector<uint32_t> roots_vec(roots.begin(), roots.end());
+            // Overlay mode enforces the no-split guard on explicit roots too
+            // (compile_overlays.py applies the same rule first; this catches
+            // walk proofs only this analyzer makes). Classifier-promoted
+            // dispatch roots are exempt. Main-EXE reachable discovery keeps
+            // its existing partition.
             analysis_result = analyzer.analyze_exact_entries(
-                roots_vec, producer_ranges, cross_call_allow);
+                roots_vec, producer_ranges, cross_call_allow,
+                /*no_split_guard=*/overlay_mode,
+                overlay_mode ? trusted_root_seeds : std::set<uint32_t>{});
         }
 
         std::vector<AliasEntry> alias_entries;
