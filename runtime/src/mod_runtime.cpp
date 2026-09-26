@@ -50,6 +50,9 @@ extern "C" void gpu_ws_set_adaptive_backdrop_preload(int enabled);
 extern "C" void dirty_ram_mark_executable_range(uint32_t phys, uint32_t len);
 extern "C" int fntrace_is_game_started(void);
 
+/* Declared in mod_plugins.h; see active_function_entry_hooks() below. */
+uint32_t g_psx_mod_function_entry_hooks = 0;
+
 namespace PSXRecompV4 {
 namespace {
 
@@ -80,15 +83,45 @@ RuntimeMods& state() {
     return value;
 }
 
-struct FunctionEntryPlugin {
-    std::string id;
-    uint32_t address = 0;
+/* Function-entry hooks of the ACTIVE plan, flattened at plugin activation into
+ * one table sorted by code key (address with the segment bits stripped, so a
+ * KUSEG or KSEG1 PC reaches the same hook as KSEG0). The interpreter consults
+ * this on every entry it dispatches, so the lookup is a binary search over
+ * integers, never a per-plugin string map, and an empty table short-circuits
+ * in the caller via g_psx_mod_function_entry_hooks. Plugin pointers refer into
+ * RuntimeMods::plan; every plan replacement clears the table first. */
+struct ActiveFunctionEntryHook {
+    uint32_t key = 0;
     PSXModFunctionEntryCallback callback = nullptr;
+    const ModResolution::Plugin* plugin = nullptr;
 };
 
-std::vector<FunctionEntryPlugin>& function_entry_plugins() {
-    static std::vector<FunctionEntryPlugin> value;
+std::vector<ActiveFunctionEntryHook>& active_function_entry_hooks() {
+    static std::vector<ActiveFunctionEntryHook> value;
     return value;
+}
+
+inline uint32_t function_entry_key(uint32_t address) {
+    return address & 0x1FFFFFFFu;
+}
+
+void clear_function_entry_hooks() {
+    active_function_entry_hooks().clear();
+    g_psx_mod_function_entry_hooks = 0;
+}
+
+void build_function_entry_hooks(const RuntimeMods& s) {
+    clear_function_entry_hooks();
+    if (!s.initialized || !s.plan.ok) return;
+    auto& table = active_function_entry_hooks();
+    for (const ModResolution::Plugin& plugin : s.plan.plugins)
+        for (const ModFunctionEntryHook& hook : mod_function_entry_hooks(plugin.id))
+            table.push_back({function_entry_key(hook.address), hook.callback, &plugin});
+    /* Stable: hooks sharing an address keep plan (plugin order) order. */
+    std::stable_sort(table.begin(), table.end(),
+                     [](const ActiveFunctionEntryHook& a,
+                        const ActiveFunctionEntryHook& b) { return a.key < b.key; });
+    g_psx_mod_function_entry_hooks = (uint32_t)table.size();
 }
 
 const ModPackage* selected_package(const std::string& id) {
@@ -1103,6 +1136,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
                             std::string* error) {
     RuntimeMods& s = state();
     s.manager.set_root({});
+    clear_function_entry_hooks();
     s.plan = {};
     s.validation = {};
     s.raw_disc_index.clear();
@@ -1148,6 +1182,7 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
         if (error) error->clear();
         return true;
     }
+    clear_function_entry_hooks();
     s.plan = {};
     s.validation = {};
     s.raw_disc_index.clear();
@@ -1209,6 +1244,9 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
         if (error) *error = s.error;
         return false;
     }
+    /* Hooks follow activation, never a bare commit: a new plan runs none of
+     * its function-entry hooks until mod_runtime_activate_plugins(). */
+    clear_function_entry_hooks();
     s.plan = std::move(plan);
     build_disc_index(s);
     s.effective_disc_path = std::move(effective_disc);
@@ -1343,6 +1381,7 @@ extern "C" void mod_runtime_activate_plugins(void) {
         mod_invoke_activation_plugin(plugin.id);
         s.current_plugin = nullptr;
     }
+    build_function_entry_hooks(s);
 }
 
 extern "C" void mod_runtime_on_vblank(void) {
@@ -1482,22 +1521,24 @@ extern "C" uint32_t psx_mod_display_height(void) {
 extern "C" int psx_mod_register_function_entry_plugin(
     const char* id, uint32_t address, PSXModFunctionEntryCallback callback) {
     using namespace PSXRecompV4;
-    if (!id || !*id || !address || !callback) return 0;
-    auto& plugins = function_entry_plugins();
-    const auto duplicate = std::find_if(
-        plugins.begin(), plugins.end(), [&](const FunctionEntryPlugin& item) {
-            return item.id == id && item.address == address;
-        });
-    if (duplicate != plugins.end()) return 0;
-    plugins.push_back(FunctionEntryPlugin{id, address, callback});
-    return 1;
+    if (!id || !address || !callback) return 0;
+    return mod_register_function_entry_plugin(id, address, callback) ? 1 : 0;
 }
 
 extern "C" void psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     using namespace PSXRecompV4;
-    if (!cpu) return;
-    for (const FunctionEntryPlugin& plugin : function_entry_plugins()) {
-        if (plugin.address == address) plugin.callback(cpu, address);
+    if (!g_psx_mod_function_entry_hooks || !cpu) return;
+    RuntimeMods& s = state();
+    const auto& table = active_function_entry_hooks();
+    const uint32_t key = function_entry_key(address);
+    auto it = std::lower_bound(
+        table.begin(), table.end(), key,
+        [](const ActiveFunctionEntryHook& hook, uint32_t k) { return hook.key < k; });
+    for (; it != table.end() && it->key == key; ++it) {
+        const ModResolution::Plugin* previous = s.current_plugin;
+        s.current_plugin = it->plugin;
+        it->callback(cpu, address);
+        s.current_plugin = previous;
     }
 }
 

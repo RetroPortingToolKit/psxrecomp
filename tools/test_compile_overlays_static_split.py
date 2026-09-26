@@ -118,6 +118,9 @@ class StaticDispatchApiTests(unittest.TestCase):
         self.assertIn('int psx_overlay_static_can_dispatch(uint32_t addr)', dispatch)
         self.assertIn('int psx_overlay_dispatch(CPUState *cpu, uint32_t addr)', dispatch)
         self.assertIn('psx_overlay_static_find_variant(addr)', dispatch)
+        self.assertIn('uint32_t psx_overlay_static_entry_count(void) { return 0u; }', dispatch)
+        self.assertIn('int psx_overlay_static_entry_stats(uint32_t index, uint32_t *addr,',
+                      dispatch)
 
     def test_can_dispatch_uses_crc_lookup_and_does_not_invoke_cpu(self):
         cc = shutil.which('gcc') or shutil.which('clang')
@@ -195,6 +198,25 @@ class StaticDispatchApiTests(unittest.TestCase):
 
                     if (psx_overlay_static_can_dispatch(0x80100004u)) return 9;
                     if (calls_a != 0 || calls_b != 1) return 10;
+
+                    /* Per-entry counters: only real dispatches count, never
+                     * the can_dispatch probes; one entry, two occupants. */
+                    {{
+                        uint32_t addr = 0, variants = 0;
+                        uint64_t entry_hits = 0;
+                        if (psx_overlay_static_entry_count() != 1u) return 11;
+                        if (!psx_overlay_static_entry_stats(0u, &addr, &variants,
+                                                            &entry_hits)) return 12;
+                        if (addr != 0x80100000u || variants != 2u ||
+                            entry_hits != 1u) return 13;
+                        if (psx_overlay_static_entry_stats(1u, &addr, &variants,
+                                                           &entry_hits)) return 14;
+                        resident_crc = 0x11111111u;
+                        if (!psx_overlay_dispatch(&cpu, 0x80100000u)) return 15;
+                        (void)psx_overlay_static_entry_stats(0u, &addr, &variants,
+                                                             &entry_hits);
+                        if (entry_hits != 2u || calls_a != 1) return 16;
+                    }}
                     return 0;
                 }}
             '''), encoding='utf-8')

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mod_plugins.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -454,9 +456,20 @@ bool mod_register_builtin_resolver(const std::string& id, ModBuiltinResolver res
 void mod_clear_builtin_resolvers_for_tests();
 bool mod_register_activation_plugin(const std::string& id, void (*callback)(void));
 bool mod_register_vblank_plugin(const std::string& id, void (*callback)(void));
+/* A function-entry hook is a trusted implementation like the others: manifests
+ * select it by id, and it runs only while a resolved plan activates that id. */
+bool mod_register_function_entry_plugin(const std::string& id, uint32_t address,
+                                        PSXModFunctionEntryCallback callback);
 bool mod_plugin_registered(const std::string& id);
 void mod_invoke_activation_plugin(const std::string& id);
 void mod_invoke_vblank_plugin(const std::string& id);
+struct ModFunctionEntryHook {
+    uint32_t address = 0;
+    PSXModFunctionEntryCallback callback = nullptr;
+};
+/* Hooks one implementation registered, in registration order. mod_runtime
+ * flattens these into an address table when the plan's plugins activate. */
+std::vector<ModFunctionEntryHook> mod_function_entry_hooks(const std::string& id);
 void mod_clear_plugins_for_tests();
 
 } // namespace PSXRecompV4

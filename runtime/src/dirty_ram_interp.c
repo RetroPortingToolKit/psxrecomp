@@ -2896,10 +2896,12 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
      * psx_mod_function_entry at listed function entries, but a mod-patched
      * page runs here instead and would silently skip them. Fire the same hook
      * on interp dispatch so the contract does not depend on which backend
-     * executes the page. */
+     * executes the page. The active-hook count keeps a plan without hooks
+     * to one load per interpreted entry. */
     {
+        extern uint32_t g_psx_mod_function_entry_hooks;
         extern void psx_mod_function_entry(CPUState *cpu, uint32_t address);
-        psx_mod_function_entry(cpu, addr);
+        if (g_psx_mod_function_entry_hooks) psx_mod_function_entry(cpu, addr);
     }
 
     /* Per-PC entry counter (visible via dirty_ram_stats). */
@@ -3288,8 +3290,10 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
                 /* Local transfers bypass dispatch, but must retain the same
                  * function-entry hooks as a surfaced interpreter entry. */
                 {
+                    extern uint32_t g_psx_mod_function_entry_hooks;
                     extern void psx_mod_function_entry(CPUState *, uint32_t);
-                    psx_mod_function_entry(cpu, target);
+                    if (g_psx_mod_function_entry_hooks)
+                        psx_mod_function_entry(cpu, target);
                 }
                 pc = target;
                 current_page = target_phys >> 12;

@@ -619,12 +619,16 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_guard_bytes_declaration.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
-        if(Python3_VERSION VERSION_GREATER_EQUAL "3.11")
-            add_test(
-                NAME aot_overlay_methods
-                COMMAND ${Python3_EXECUTABLE}
-                        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_aot_overlay_pipeline.py
-                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # The pipeline reads mod manifests with tomllib (Python 3.11+). An
+        # older interpreter keeps the test registered but DISABLED, so it is
+        # reported as not run instead of silently missing from `ctest -N`.
+        add_test(
+            NAME aot_overlay_methods
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_aot_overlay_pipeline.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        if(Python3_VERSION VERSION_LESS "3.11")
+            set_tests_properties(aot_overlay_methods PROPERTIES DISABLED TRUE)
         endif()
         # --static must walk the whole of compile_overlays.main() and exit 0:
         # a DLL-only reconciliation at its tail once read an unbound cache_dir
@@ -690,6 +694,50 @@ if(BUILD_TESTING)
             NAME stall_report
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_stall_report.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+        # ---- offline tool unit tests (tools/tests, tools/, tests/) -----------
+        # Pure-Python unit tests of the offline tools: no built target and no
+        # generated BIOS, so they belong in this BIOS-free tree. They had no
+        # add_test() entry and were only run by whoever remembered to invoke
+        # pytest by hand. check_test_registration.cmake now globs these
+        # directories too, so a new one fails configure until it is listed.
+        # test_psx_chd skips its decode cases unless a shared libchdr is found
+        # (PSXRECOMP_LIBCHDR); its container/selection cases always run.
+        foreach(_t IN ITEMS
+                aligned_lzss_banks
+                cursor_writers
+                disc_companion
+                duckstation_oracle
+                gpu_frame
+                menu_scan
+                mips_tagged_relocations
+                overlay_widescreen_callbacks
+                pad_delivery
+                pad_trace
+                psx_chd
+                sbi_registry
+                static_fragment_variant_keys)
+            add_test(
+                NAME ${_t}
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_${_t}.py
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        endforeach()
+        add_test(
+            NAME compile_overlays_static_split
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_compile_overlays_static_split.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(
+            NAME aot_overlay_spike_coverage_report
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/aot_overlay_spike/test_coverage_report.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(
+            NAME disc_inventory
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/test_disc_inventory.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
         # ---- codegen tests that were written but never registered -----------

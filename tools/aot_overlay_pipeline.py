@@ -23,8 +23,16 @@ from packed_sector_table import extract_members as extract_sector_members
 from sector_extent_archive import extract_members as extract_extent_members
 from aligned_lzss_banks import banks as extract_lzss_banks
 from mips_tagged_relocations import parse as parse_tagged_relocations, relocate as relocate_tagged_image
+from mod_package_images import ModPackageView
 
 FRAMEWORK = Path(__file__).resolve().parents[1]
+# KSEG0 main-RAM decode window. Retail 2 MiB DRAM mirrors across all of it and
+# expanded 8 MiB targets map it uniquely; both accept an image placed anywhere
+# inside it (a mod engine at 0x80780000 is the retail 4th mirror).
+RAM_WINDOW = (0x80000000, 0x80800000)
+# Live main-RAM sizes the runtime can run with (runtime/include/psx_memory.h):
+# retail 2 MiB unless the opt-in psx.enhancement.8mb-ram package is active.
+RETAIL_RAM_BYTES, EXPANDED_RAM_BYTES = 0x00200000, 0x00800000
 
 
 def number(value):
@@ -34,6 +42,61 @@ def number(value):
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def in_ram(base, size):
+    return RAM_WINDOW[0] <= base and size > 0 and base + size <= RAM_WINDOW[1]
+
+
+def main_ram_bytes(profile):
+    """Main-RAM size every image of this profile must resolve under.
+
+    Retail 2 MiB is the default. A profile whose images need the opt-in 8 MB
+    map declares ``main_ram_bytes = 0x800000``; nothing else changes it."""
+    value = number(profile.get('main_ram_bytes', RETAIL_RAM_BYTES))
+    require(value in (RETAIL_RAM_BYTES, EXPANDED_RAM_BYTES),
+            f'main_ram_bytes must be 0x200000 or 0x800000, not {value:#x}')
+    return value
+
+
+def ram_resolvable(base, size, ram_bytes):
+    """Mirror of the runtime's psx_ram_resolve for a whole image.
+
+    Retail RAM folds each 2 MiB mirror onto the same DRAM, so an image must fit
+    inside one mirror: one straddling a mirror boundary (or the 2 MiB end) has no
+    contiguous backing and its static variant could never pass the runtime gate."""
+    return in_ram(base, size) and ((base & 0x1FFFFFFF) & (ram_bytes - 1)) + size <= ram_bytes
+
+
+def source_view(disc, spec, views):
+    """Original disc, or the named mod-package view of it."""
+    name = spec.get('mod_package')
+    if name is None:
+        return disc
+    require(views and name in views, f'Unknown mod package view: {name}')
+    return views[name]
+
+
+def transfer_entries(source, view):
+    """J/JAL targets inside the image, from words a mod package wrote.
+
+    A detour farm is entered only through the package's patched transfers, so
+    those instructions establish its entry points statically. Unpatched text is
+    excluded: stock data words that happen to decode as a jump are not evidence.
+    """
+    spec = source['spec']['transfer_entries']
+    require(spec.get('from') == 'mod_package_writes' and hasattr(view, 'written_words'),
+            'transfer_entries requires a mod package view')
+    lo, hi = source['base'], source['base'] + len(source['body'])
+    found = set()
+    for address, word in view.written_words():
+        if word >> 26 in (2, 3):
+            target = ((address + 4) & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
+            if lo <= target < hi:
+                found.add(target)
+    require(len(found) == number(spec['count']),
+            f"Transfer entry inventory changed: {source['name']} has {len(found)}")
+    return found
 
 
 def write_json(path, value):
@@ -62,9 +125,11 @@ class Disc:
         return self.cache[name]
 
 
-def verify_evidence(disc, checks):
+def verify_evidence(disc, checks, views=None):
     """Reusable binary-word, pointer-string, and BCD extent table identifiers."""
+    original = disc
     for check in checks:
+        disc = source_view(original, check, views)
         if check['method'] == 'adjacent_files':
             files = [disc.files[name.upper()] for name in check['files']]
             require(all(size % 2048 == 0 and lba + size // 2048 == next_lba
@@ -139,7 +204,7 @@ def sector_sources(disc, spec):
         if item is None:
             continue
         base = number(item['load_addr'])
-        require(0x80000000 <= base < base + len(member['body']) <= 0x80200000,
+        require(in_ram(base, len(member['body'])),
                 'Sector image outside RAM')
         name = f"{spec['table_file'].upper()}:ENTRY_{member['index']:04X}"
         sources.append(dict(name=name, base=base, body=member['body'],
@@ -148,104 +213,148 @@ def sector_sources(disc, spec):
     return sources
 
 
-def positioned_sources(disc, specifications):
+def extent_sources(disc, spec):
+    """Declared byte extents of original (or mod-package) files at load addresses."""
+    sources = []
+    for item in spec['extents']:
+        data = disc.read(item['file'])
+        address, size = number(item['address']), number(item['size'])
+        offset = number(item.get('file_offset', 0)) + address - number(item.get('base', 0))
+        require(size > 0 and 0 <= offset and offset + size <= len(data),
+                f"Extent outside source file: {item['file']}")
+        body = data[offset:offset + size]
+        require(hashlib.sha256(body).hexdigest() == item['sha256'],
+                f"Extent bytes changed: {item['file']} {address:#x}")
+        base = number(item['load_addr'])
+        require(in_ram(base, size) and base % 4 == 0, 'Extent image outside RAM')
+        name = f"{item['file'].upper()}@{address:08X}+{size:X}"
+        sources.append(dict(name=name, base=base, body=body, spec={**spec, **item},
+                            source_file=item['file'].upper(), source_offset=offset, aliases=[]))
+    return sources
+
+
+def positioned_sources(disc, specifications, views=None, ram_bytes=RETAIL_RAM_BYTES):
     sources = []
     for spec in specifications:
-        method = spec['method']
-        if method == 'aligned_lzss_banks':
-            grouped = {}
-            containers = spec['containers']
-            require(len({item['file'].upper() for item in containers}) == len(containers),
-                    'Duplicate compressed container')
-            for item in containers:
-                file = item['file'].upper()
-                inventory, banks = extract_lzss_banks(disc.read(file),
-                    alignment=number(spec.get('alignment', 2048)),
-                    version=number(spec.get('version', 1)),
-                    bank_tag=number(spec.get('bank_tag', 0x4B)),
-                    terminal_tag=number(spec.get('terminal_tag', 0x31)),
-                    data_tags=tuple(number(x) for x in spec.get('data_tags', [0x30])))
-                require(len(inventory) == item['member_count'] and
-                        [bank['bank'] for bank in banks] == item['bank_indices'],
-                        f'Compressed bank inventory changed: {file}')
-                for bank in banks:
-                    placement = item['placements'][str(bank['bank'])]
-                    base = number(placement['load_addr'])
-                    body = bank['body']
-                    require(hashlib.sha256(body).hexdigest() == placement['decoded_sha256'],
-                            f'Decoded bank changed: {file}')
-                    require(0x80000000 <= base < base + len(body) <= 0x80200000,
-                            'Decoded bank outside RAM')
-                    name = f"{file}:BANK_{bank['bank']:04X}"
-                    key = (base, body)
-                    if key in grouped:
-                        grouped[key]['aliases'].append(name)
-                        require(grouped[key]['spec']['entries'] == placement.get('entries', []),
-                                'Duplicate bank has conflicting declared entries')
-                        continue
-                    source = dict(name=name, base=base, body=body,
-                        spec={**spec, **placement, 'entries': placement.get('entries', []),
-                              'allow_missing': True},
-                        source_file=file, source_offset=bank['source_offset'], aliases=[])
-                    grouped[key] = source
-                    sources.append(source)
-            continue
-        if method == 'packed_sector_members':
-            sources.extend(sector_sources(disc, spec))
-            continue
-        if method == 'sector_extent_members':
-            members = extract_extent_members(disc.read(spec['file']),
-                sector_size=number(spec.get('sector_size', 2048)),
-                table_offset=number(spec.get('table_offset', 0)), count=number(spec['count']))
-            configured = {number(item['index']): item for item in spec['members']}
-            excluded = {number(item['index']): item for item in spec.get('excluded_members', [])}
-            require(len(configured) == len(spec['members']) and
-                    len(excluded) == len(spec.get('excluded_members', [])), 'Duplicate member inventory')
-            require(not configured.keys() & excluded.keys() and
-                    configured.keys() | excluded.keys() == set(range(len(members))),
-                    'Archive inventory has missing or conflicting classifications')
-            require(all(item.get('reason', '').strip() for item in excluded.values()),
-                    'Excluded archive member needs a reason')
-            for member in members:
-                item = configured.get(member['index'])
-                if item is None:
-                    continue
-                base = number(item['load_addr'])
-                require(0x80000000 <= base < base + len(member['body']) <= 0x80200000,
-                        'Archive image outside RAM')
-                name = f"{spec['file'].upper()}:ENTRY_{member['index']:04X}"
-                sources.append(dict(name=name, base=base, body=member['body'],
-                    spec={**spec, **item}, source_offset=member['source_offset'],
-                    source_file=spec['file'].upper(), aliases=[]))
-            continue
-        for name in spec['files']:
-            body = disc.read(name)
-            offset = 0
-            if method == 'psx_exe':
-                require(body[:8] == b'PS-X EXE', f'{name}: missing PS-X EXE header')
-                base = struct.unpack_from('<I', body, 0x18)[0]
-                offset = 0x800
-                body = body[offset:]
-            elif method == 'fixed_address_files':
-                base = number(spec['load_addr'])
-            elif method == 'tagged_relocated_files':
-                base = number(spec['load_addr'])
-                require(not spec.get('verify_duplicate_names'),
-                        'Relocated sources need individual source identities')
-                body, _ = relocate_tagged_image(body, base)
-            else:
-                raise ValueError(f'Unknown image method: {method}')
-            require(0x80000000 <= base < base + len(body) <= 0x80200000, f'{name}: image outside RAM')
-            aliases = []
-            if spec.get('verify_duplicate_names'):
-                leaf = name.rsplit('/', 1)[-1].upper()
-                for other in disc.files:
-                    if other.rsplit('/', 1)[-1] == leaf:
-                        require(disc.read(other) == body, f'Conflicting original duplicate: {other}')
-                        aliases.append(other)
-            sources.append(dict(name=name.upper(), base=base, body=body, spec=spec,
-                                source_offset=offset, aliases=aliases))
+        view = source_view(disc, spec, views)
+        produced = spec_sources(view, spec)
+        for source in produced:
+            base, size = source['base'], len(source['body'])
+            require(ram_resolvable(base, size, ram_bytes),
+                    f"{source['name']}: image {base:#010x}+{size:#x} crosses a "
+                    f"{ram_bytes >> 20} MiB RAM mirror boundary, so the runtime cannot "
+                    'resolve its bytes; declare main_ram_bytes = 0x800000 only if '
+                    'the image needs the 8 MB map')
+        if 'mod_package' in spec:
+            # A mod image is a different producer than the stock file.
+            for source in produced:
+                source['name'] = f"{spec['mod_package']}:{source['name']}"
+                source['aliases'] = [f"{spec['mod_package']}:{a}" for a in source['aliases']]
+        for source in produced:
+            source['view'] = view
+        sources.extend(produced)
     require(len({s['name'] for s in sources}) == len(sources), 'Duplicate configured source')
+    return sources
+
+
+def spec_sources(disc, spec):
+    sources = []
+    method = spec['method']
+    if method == 'fixed_address_extents':
+        return extent_sources(disc, spec)
+    if method == 'aligned_lzss_banks':
+        grouped = {}
+        containers = spec['containers']
+        require(len({item['file'].upper() for item in containers}) == len(containers),
+                'Duplicate compressed container')
+        for item in containers:
+            file = item['file'].upper()
+            inventory, banks = extract_lzss_banks(disc.read(file),
+                alignment=number(spec.get('alignment', 2048)),
+                version=number(spec.get('version', 1)),
+                bank_tag=number(spec.get('bank_tag', 0x4B)),
+                terminal_tag=number(spec.get('terminal_tag', 0x31)),
+                data_tags=tuple(number(x) for x in spec.get('data_tags', [0x30])))
+            require(len(inventory) == item['member_count'] and
+                    [bank['bank'] for bank in banks] == item['bank_indices'],
+                    f'Compressed bank inventory changed: {file}')
+            for bank in banks:
+                placement = item['placements'][str(bank['bank'])]
+                base = number(placement['load_addr'])
+                body = bank['body']
+                require(hashlib.sha256(body).hexdigest() == placement['decoded_sha256'],
+                        f'Decoded bank changed: {file}')
+                require(in_ram(base, len(body)),
+                        'Decoded bank outside RAM')
+                name = f"{file}:BANK_{bank['bank']:04X}"
+                key = (base, body)
+                if key in grouped:
+                    grouped[key]['aliases'].append(name)
+                    require(grouped[key]['spec']['entries'] == placement.get('entries', []),
+                            'Duplicate bank has conflicting declared entries')
+                    continue
+                source = dict(name=name, base=base, body=body,
+                    spec={**spec, **placement, 'entries': placement.get('entries', []),
+                          'allow_missing': True},
+                    source_file=file, source_offset=bank['source_offset'], aliases=[])
+                grouped[key] = source
+                sources.append(source)
+        return sources
+    if method == 'packed_sector_members':
+        sources.extend(sector_sources(disc, spec))
+        return sources
+    if method == 'sector_extent_members':
+        members = extract_extent_members(disc.read(spec['file']),
+            sector_size=number(spec.get('sector_size', 2048)),
+            table_offset=number(spec.get('table_offset', 0)), count=number(spec['count']))
+        configured = {number(item['index']): item for item in spec['members']}
+        excluded = {number(item['index']): item for item in spec.get('excluded_members', [])}
+        require(len(configured) == len(spec['members']) and
+                len(excluded) == len(spec.get('excluded_members', [])), 'Duplicate member inventory')
+        require(not configured.keys() & excluded.keys() and
+                configured.keys() | excluded.keys() == set(range(len(members))),
+                'Archive inventory has missing or conflicting classifications')
+        require(all(item.get('reason', '').strip() for item in excluded.values()),
+                'Excluded archive member needs a reason')
+        for member in members:
+            item = configured.get(member['index'])
+            if item is None:
+                continue
+            base = number(item['load_addr'])
+            require(in_ram(base, len(member['body'])),
+                    'Archive image outside RAM')
+            name = f"{spec['file'].upper()}:ENTRY_{member['index']:04X}"
+            sources.append(dict(name=name, base=base, body=member['body'],
+                spec={**spec, **item}, source_offset=member['source_offset'],
+                source_file=spec['file'].upper(), aliases=[]))
+        return sources
+    for name in spec['files']:
+        body = disc.read(name)
+        offset = 0
+        if method == 'psx_exe':
+            require(body[:8] == b'PS-X EXE', f'{name}: missing PS-X EXE header')
+            base = struct.unpack_from('<I', body, 0x18)[0]
+            offset = 0x800
+            body = body[offset:]
+        elif method == 'fixed_address_files':
+            base = number(spec['load_addr'])
+        elif method == 'tagged_relocated_files':
+            base = number(spec['load_addr'])
+            require(not spec.get('verify_duplicate_names'),
+                    'Relocated sources need individual source identities')
+            body, _ = relocate_tagged_image(body, base)
+        else:
+            raise ValueError(f'Unknown image method: {method}')
+        require(in_ram(base, len(body)), f'{name}: image outside RAM')
+        aliases = []
+        if spec.get('verify_duplicate_names'):
+            leaf = name.rsplit('/', 1)[-1].upper()
+            for other in disc.files:
+                if other.rsplit('/', 1)[-1] == leaf:
+                    require(disc.read(other) == body, f'Conflicting original duplicate: {other}')
+                    aliases.append(other)
+        sources.append(dict(name=name.upper(), base=base, body=body, spec=spec,
+                            source_offset=offset, aliases=aliases))
     return sources
 
 
@@ -268,12 +377,15 @@ def match_sources(record, sources):
 
 def declared_entries(source, disc):
     body, base, spec = source['body'], source['base'], source['spec']
+    view = source.get('view', disc)
     entries = set()
     if 'entry_word' in spec:
         item = spec['entry_word']
         offset = number(item.get('file_offset', 0)) + number(item['address']) - number(item.get('base', 0))
-        entries.add(struct.unpack_from('<I', disc.read(item['file']), offset)[0])
+        entries.add(struct.unpack_from('<I', view.read(item['file']), offset)[0])
     entries.update(number(x) for x in spec.get('entries', []))
+    if 'transfer_entries' in spec:
+        entries |= transfer_entries(source, view)
     require(all(base <= entry < base + len(body) and entry % 4 == 0 for entry in entries),
             f"Entry outside image: {source['name']}")
     return entries
@@ -332,9 +444,22 @@ def eligible_ranges(source, lo, hi):
     return ranges
 
 
-def prepare(profile, disc, records, output):
-    verify_evidence(disc, profile.get('checks', []))
-    sources = positioned_sources(disc, profile['images'])
+def mod_package_views(profile, disc, project_root):
+    """One verified view per declared mod package selection."""
+    views = {}
+    for spec in profile.get('mod_packages', []):
+        name = spec['name']
+        require(name not in views, f'Duplicate mod package view: {name}')
+        view = ModPackageView(disc, project_root, spec, profile['game_id'])
+        require(view.plugins == sorted(spec.get('plugins', [])),
+                f'Selected mod plugins changed: {name} {view.plugins}')
+        views[name] = view
+    return views
+
+
+def prepare(profile, disc, records, output, views=None):
+    verify_evidence(disc, profile.get('checks', []), views)
+    sources = positioned_sources(disc, profile['images'], views, main_ram_bytes(profile))
     bios = extractor.bios_resident_records() if profile.get('bios_resident') else []
     for record in records:
         if record.get('producer') == 'bios_resident_manifest':
@@ -349,7 +474,7 @@ def prepare(profile, disc, records, output):
             if (lo, hi) == (source['base'], source['base'] + len(source['body'])):
                 singles[source['name']] = record
     for source in sources:
-        if source['spec']['method'] in ('fixed_address_files', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'tagged_relocated_files') and source['name'] not in singles:
+        if source['spec']['method'] in ('fixed_address_files', 'fixed_address_extents', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'tagged_relocated_files') and source['name'] not in singles:
             record = make_fixed_record(source, disc)
             singles[source['name']] = record
             records.append(record)
@@ -420,6 +545,7 @@ def prepare(profile, disc, records, output):
                      profile_sha256=hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest(),
                      original_disc_sha256=digest(disc.binary), required_images=sorted(by_name),
                      recipe_count=len(jobs), full_static_coverage_proven=False, jobs=jobs)
+    inventory['mod_packages'] = [view.receipt() for view in (views or {}).values()]
     inventory['source_images'] = [dict(name=s['name'], aliases=s['aliases'],
         method=s['spec']['method'], load_addr=hex(s['base']), size=len(s['body']),
         sha256=hashlib.sha256(s['body']).hexdigest(),
@@ -449,18 +575,21 @@ def extract(profile_path, game_toml, recompiler, output, cue=None):
     command += ['--require-bios-resident'] if profile.get('bios_resident') else ['--no-bios-resident']
     with (output / 'extract.log').open('w') as log:
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
-    return prepare(profile, disc, json.loads((output / 'generic.json').read_text(encoding='utf-8-sig')), output)
+    views = mod_package_views(profile, disc, game_toml.parent)
+    return prepare(profile, disc, json.loads((output / 'generic.json').read_text(encoding='utf-8-sig')),
+                   output, views)
 
 
-def audit(game_toml, recompiler, cache, inventory, output):
+def audit(game_toml, recompiler, cache, inventory, output, static_dispatch=None):
+    target = ['--static-dispatch', str(static_dispatch)] if static_dispatch else ['--cache-root', str(cache)]
     subprocess.run([sys.executable, str(FRAMEWORK / 'tools/audit_aot_cache.py'),
                     '--framework-root', str(FRAMEWORK), '--recompiler', str(recompiler),
-                    '--game-toml', str(game_toml), '--cache-root', str(cache),
+                    '--game-toml', str(game_toml), *target,
                     '--inventory', str(inventory), '--output', str(output)], check=True)
     return json.loads(output.read_text())
 
 
-def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=None):
+def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=None, cps=False):
     """Independent recipe builds cannot nominate entries in sibling images."""
     cache = work / 'cache'
     cache.mkdir(parents=True)
@@ -473,7 +602,7 @@ def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=Non
                    '--project-root', str(project_root or game_toml.parent), '--recompiler', str(recompiler),
                    '--runtime-include', str(FRAMEWORK / 'runtime/include'),
                    '--out-dir', str(target / 'cache'), '--compiler', 'gcc', '--gcc', gcc,
-                   '--flavor', '0', '--jobs', '1']
+                   '--flavor', '0', '--jobs', '1'] + (['--cps'] if cps else [])
         with (target / 'compile.log').open('w') as log:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
         return index, job, target
@@ -509,6 +638,50 @@ def build(inventory, game_toml, recompiler, work, gcc, workers, project_root=Non
     return cache
 
 
+def build_static(inventory, game_toml, recompiler, work, out_dir, gcc, workers, project_root=None,
+                 cps=False):
+    """Link every verified recipe into the runtime binary instead of DLL pairs.
+
+    One compiler invocation sees every recipe, as the DLL build's per-recipe
+    isolation does not apply: each variant is still keyed by its entry and gated
+    by the CRC of the original bytes it was compiled from. Fresh output only.
+    """
+    records = [json.loads(Path(job['input']).read_text(encoding='utf-8'))[0]
+               for job in inventory['jobs']]
+    captures = work / 'static-inputs.json'
+    write_json(captures, records)
+    build_dir = work / 'static'
+    command = [sys.executable, str(FRAMEWORK / 'tools/compile_overlays.py'), '--static',
+               '--captures', str(captures), '--game-toml', str(game_toml),
+               '--project-root', str(project_root or game_toml.parent), '--recompiler', str(recompiler),
+               '--runtime-include', str(FRAMEWORK / 'runtime/include'),
+               '--out-dir', str(build_dir), '--gcc', gcc, '--jobs', str(workers)] +               (['--cps'] if cps else [])
+    with (work / 'static-compile.log').open('w') as log:
+        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+    if result.returncode:
+        print(f'Static AOT compilation failed; see {work / "static-compile.log"}', file=sys.stderr, flush=True)
+        raise subprocess.CalledProcessError(result.returncode, command)
+    return build_dir
+
+
+def publish_static(build_dir, out_dir, receipt):
+    """Replace the destination's static overlay units with exactly the audited set."""
+    import compile_overlays as emitter
+    produced = [build_dir / 'overlays_static.c'] + [Path(p) for p in
+                emitter.static_part_paths(str(build_dir / 'overlays_static.c'))]
+    expected = {path.name: digest(path) for path in produced}
+    require(expected == receipt['files'], 'Audited static output changed')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in [out_dir / 'overlays_static.c'] + [Path(p) for p in
+                  emitter.static_part_paths(str(out_dir / 'overlays_static.c'))]:
+        if stale.exists():
+            stale.unlink()
+    for path in produced:
+        shutil.copy2(path, out_dir / path.name)
+        require(digest(out_dir / path.name) == expected[path.name], f'Published file changed: {path.name}')
+    write_json(out_dir / 'AOT_STATIC_AUDIT.json', receipt)
+
+
 def stage(cache, destination, receipt):
     """Publish precisely the audited platform namespace; never copy old caches."""
     source = cache / receipt['game_id'] / 'gcc' / compiler.cache_arch_abi() / receipt['cache_tag']
@@ -537,7 +710,7 @@ def require_runtime_cache(config):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['extract', 'release'])
+    parser.add_argument('action', choices=['extract', 'release', 'static'])
     parser.add_argument('--profile', type=Path, required=True)
     parser.add_argument('--game-toml', type=Path, required=True)
     parser.add_argument('--runtime-config', type=Path,
@@ -550,6 +723,10 @@ def main():
     parser.add_argument('--stage', type=Path)
     parser.add_argument('--gcc', default='gcc')
     parser.add_argument('--workers', type=int, default=3)
+    parser.add_argument('--out-dir', type=Path,
+                        help='static: directory receiving overlays_static.c and its units')
+    parser.add_argument('--cps', action='store_true',
+                        help='Emit continuation-passing overlays; must match the runtime build')
     args = parser.parse_args()
     require(args.workers > 0, 'Workers must be positive')
     if args.action == 'release':
@@ -573,13 +750,25 @@ def main():
         import tomllib
         require(tomllib.loads(runtime_config.read_text(encoding='utf-8-sig'))['game']['id'] == inventory['game_id'],
                 'Runtime config/game mismatch')
-        cache = build(inventory, runtime_config, recompiler, work, args.gcc, args.workers, config.parent)
+        cache = build(inventory, runtime_config, recompiler, work, args.gcc, args.workers, config.parent,
+                      args.cps)
         receipt = audit(runtime_config, recompiler, cache, work / 'runtime-input-inventory.json', work / 'audit.json')
         receipt['profile_sha256'] = inventory['profile_sha256']
         receipt['original_disc_sha256'] = inventory['original_disc_sha256']
         receipt['required_images'] = inventory['required_images']
         stage(cache, args.stage.resolve(), receipt)
         print(f"Staged {receipt['published_pairs']} audited native pairs", flush=True)
+    if args.action == 'static':
+        require(args.out_dir is not None, 'static requires --out-dir')
+        build_dir = build_static(inventory, config, recompiler, work, args.out_dir, args.gcc,
+                                 args.workers, config.parent, args.cps)
+        receipt = audit(config, recompiler, None, work / 'runtime-input-inventory.json',
+                        work / 'audit.json', build_dir / 'overlays_static.c')
+        for key in ('profile_sha256', 'original_disc_sha256', 'required_images', 'mod_packages'):
+            receipt[key] = inventory[key]
+        publish_static(build_dir, args.out_dir.resolve(), receipt)
+        print(f"Published {receipt['published_variants']} audited static variants "
+              f"in {len(receipt['files'])} files", flush=True)
     print(f'Original-disc evidence: {work}', flush=True)
 
 

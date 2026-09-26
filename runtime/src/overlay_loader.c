@@ -10,6 +10,7 @@
 #include "psx_cycles.h"
 #include "lockstep.h"
 #include "overlay_posix.h"
+#include "psx_memory.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -574,6 +575,15 @@ typedef struct {
 } StaticMatchCache;
 
 static StaticMatchCache s_static_match_cache[STATIC_MATCH_CACHE_CAP];
+
+/* Main-RAM offset of a variant code range, through the one geometry contract
+ * (psx_memory.h). Retail targets fold the 2nd-4th mirrors of the 8 MiB KSEG
+ * decode window and expanded targets decode it uniquely -- the same fold the
+ * CPU applies, so an image a game places in a mirror (a mod engine copied to
+ * 0x80780000 on 2 MiB hardware) is gated on exactly the bytes that execute. */
+static int static_range_offset(uint32_t lo, uint32_t len, uint32_t *off) {
+    return len != 0u && psx_ram_resolve(lo, len, off);
+}
 static uint64_t s_static_match_rehashes = 0;
 static uint64_t s_static_match_crc_misses = 0;
 static uint64_t s_static_match_gen_fastpath = 0;
@@ -589,14 +599,13 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
 
     uint32_t gen_sum = 0;
     for (uint32_t i = 0; i < count; i++) {
-        uint32_t lo = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
+        uint32_t off = 0;
         uint32_t len = lo_len_pairs[i * 2u + 1u];
-        if (len == 0u || lo >= 2u * 1024u * 1024u ||
-            len > 2u * 1024u * 1024u - lo) {
+        if (!static_range_offset(lo_len_pairs[i * 2u], len, &off)) {
             s_static_match_crc_misses++;
             return 0;
         }
-        gen_sum += overlay_watch_pagegen_sum(lo, len);
+        gen_sum += overlay_watch_pagegen_sum(off, len);
     }
 
     uintptr_t raw = (uintptr_t)lo_len_pairs;
@@ -632,15 +641,16 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
      * a band that swapped occupants would keep dispatching the stale variant.
      * Arming only sets bitmap bits -- it does not advance any generation, so
      * the gen_sum computed above stays valid for the cache write below. */
-    for (uint32_t i = 0; i < count; i++)
-        overlay_watch_set_range(lo_len_pairs[i * 2u] & 0x1FFFFFFFu,
-                                lo_len_pairs[i * 2u + 1u]);
-
     uint32_t crc = 0xFFFFFFFFu;
+    uint32_t lo_min = 0xFFFFFFFFu, hi_max = 0;
     for (uint32_t i = 0; i < count; i++) {
-        uint32_t lo = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
+        uint32_t off = 0;
         uint32_t len = lo_len_pairs[i * 2u + 1u];
-        crc = crc32_update(crc, ram + lo, len);
+        (void)static_range_offset(lo_len_pairs[i * 2u], len, &off); /* checked above */
+        overlay_watch_set_range(off, len);
+        crc = crc32_update(crc, ram + off, len);
+        if (off < lo_min) lo_min = off;
+        if (off + len > hi_max) hi_max = off + len;
     }
     crc ^= 0xFFFFFFFFu;
     int matches = (crc == expected_crc) ? 1 : 0;
@@ -653,13 +663,6 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
         entry->expected_crc = expected_crc;
         entry->gen_sum = gen_sum;
         entry->matches = matches;
-        uint32_t lo_min = 0xFFFFFFFFu, hi_max = 0;
-        for (uint32_t i = 0; i < count; i++) {
-            uint32_t lo = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
-            uint32_t hi = lo + lo_len_pairs[i * 2u + 1u];
-            if (lo < lo_min) lo_min = lo;
-            if (hi > hi_max) hi_max = hi;
-        }
         entry->lo_min = lo_min;
         entry->hi_max = hi_max;
     }
@@ -687,17 +690,22 @@ int psx_overlay_static_code_matches(const uint32_t *lo_len_pairs,
  * to a capture / .EMI section offline. Called only on EXTERNAL interp
  * entries, so a 4096-slot scan is fine. */
 uint32_t psx_overlay_resident_crc_at(uint32_t phys, int *valid) {
-    phys &= 0x1FFFFFFFu;
     uint32_t stale = 0;
+    if (!psx_ram_resolve(phys, 1u, &phys)) {
+        if (valid) *valid = 0;
+        return s_last_crc;
+    }
     for (uint32_t i = 0; i < STATIC_MATCH_CACHE_CAP; i++) {
         const StaticMatchCache *e = &s_static_match_cache[i];
         if (!e->ranges || phys < e->lo_min || phys >= e->hi_max)
             continue;
         if (e->matches) {
             uint32_t gen_sum = 0;
-            for (uint32_t k = 0; k < e->count; k++)
-                gen_sum += overlay_watch_pagegen_sum(e->ranges[k * 2u] & 0x1FFFFFFFu,
-                                                    e->ranges[k * 2u + 1u]);
+            for (uint32_t k = 0; k < e->count; k++) {
+                uint32_t off = 0;
+                (void)static_range_offset(e->ranges[k * 2u], e->ranges[k * 2u + 1u], &off);
+                gen_sum += overlay_watch_pagegen_sum(off, e->ranges[k * 2u + 1u]);
+            }
             if (gen_sum == e->gen_sum) {
                 if (valid) *valid = 1;
                 return e->expected_crc;

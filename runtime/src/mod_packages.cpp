@@ -34,6 +34,9 @@ std::map<std::string, ModBuiltinResolver>& builtin_resolvers() {
 struct RegisteredPlugin {
     PSXModActivationCallback activation = nullptr;
     PSXModVBlankCallback vblank = nullptr;
+    /* Generated-function entry hooks, keyed by guest address. One id may
+     * observe several functions. */
+    std::vector<std::pair<uint32_t, PSXModFunctionEntryCallback>> function_entries;
 };
 
 std::map<std::string, RegisteredPlugin>& registered_plugins() {
@@ -1449,10 +1452,22 @@ bool mod_register_vblank_plugin(const std::string& id, void (*callback)(void)) {
     return true;
 }
 
+bool mod_register_function_entry_plugin(const std::string& id, uint32_t address,
+                                        PSXModFunctionEntryCallback callback) {
+    if (!valid_id(id) || !address || !callback) return false;
+    RegisteredPlugin& plugin = registered_plugins()[id];
+    /* Code addresses alias across KUSEG/KSEG0/KSEG1; one function is one hook. */
+    for (const auto& hook : plugin.function_entries)
+        if (((hook.first ^ address) & 0x1FFFFFFFu) == 0u) return false;
+    plugin.function_entries.emplace_back(address, callback);
+    return true;
+}
+
 bool mod_plugin_registered(const std::string& id) {
     const auto found = registered_plugins().find(id);
     return found != registered_plugins().end() &&
-        (found->second.activation || found->second.vblank);
+        (found->second.activation || found->second.vblank ||
+         !found->second.function_entries.empty());
 }
 
 void mod_invoke_activation_plugin(const std::string& id) {
@@ -1465,6 +1480,15 @@ void mod_invoke_vblank_plugin(const std::string& id) {
     const auto found = registered_plugins().find(id);
     if (found != registered_plugins().end() && found->second.vblank)
         found->second.vblank();
+}
+
+std::vector<ModFunctionEntryHook> mod_function_entry_hooks(const std::string& id) {
+    std::vector<ModFunctionEntryHook> hooks;
+    const auto found = registered_plugins().find(id);
+    if (found == registered_plugins().end()) return hooks;
+    for (const auto& hook : found->second.function_entries)
+        hooks.push_back(ModFunctionEntryHook{hook.first, hook.second});
+    return hooks;
 }
 
 void mod_clear_plugins_for_tests() {

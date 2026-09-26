@@ -23,6 +23,226 @@ class FakeDisc:
         return self.data[name.upper()]
 
 
+class SectorDisc:
+    """Logical 2048-byte user data with an ISO-like file table."""
+
+    def __init__(self, directory, files):
+        self.files, data = {}, bytearray()
+        for name, body in files.items():
+            self.files[name] = (len(data) // 2048, len(body))
+            data += body + bytes(-len(body) % 2048)
+        self.data = bytes(data)
+        self.binary = Path(directory) / 'track.bin'
+        self.binary.write_bytes(self.data)
+        self.reader = self
+
+    def read(self, name):
+        lba, size = self.files[name.upper()]
+        return self.data[lba * 2048:lba * 2048 + size]
+
+    def read_sector_data(self, lba):
+        return self.data[lba * 2048:(lba + 1) * 2048]
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+class ModPackageImageTest(unittest.TestCase):
+    """Invented package: an entry detour into an engine the EXE copies high."""
+    ENGINE = 0x80780000
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        text = bytearray(0x1000)
+        header = bytearray(0x800)
+        header[:8] = b'PS-X EXE'
+        struct.pack_into('<III', header, 0x10, 0x80010000, 0, 0x80010000)
+        struct.pack_into('<I', header, 0x1C, len(text))
+        self.exe = bytes(header + text)
+        self.data = bytes(range(256)) * 16
+        self.disc = SectorDisc(self.root, {'SYSTEM.CNF': b'BOOT = cdrom:\\GAME.EXE;1\r\n',
+                                           'GAME.EXE': self.exe, 'DATA.BIN': self.data})
+        # The engine: two stubs that return into the EXE, staged inside its text.
+        self.engine = struct.pack('<8I', 0x03E00008, 0, 0x03E00008, 0,
+                                  0x08004000, 0, 0x08004001, 0)
+        detour = struct.pack('<II', 0x08000000 | ((self.ENGINE + 0x10) >> 2 & 0x3FFFFFF), 0)
+        call = struct.pack('<II', 0x0C000000 | (self.ENGINE >> 2 & 0x3FFFFFF), 0)
+        package = self.root / 'mods/example/1.0.0'
+        (package / 'assets').mkdir(parents=True)
+        self.overlay = b'Z' * 2048
+        (package / 'assets/data.overlay').write_bytes(self.overlay)
+        def patch(address, old, new, build):
+            return ('[[patch]]\nfeature = "engine"\ntarget = "main_exe"\n'
+                    f'address = 0x{address:08X}\nexpected = "{old.hex()}"\n'
+                    f'replace = "{new.hex()}"\nwhen = {{ build = "{build}" }}\n\n')
+        disc_sha = sha(self.disc.data)
+        self.manifest = (
+            'format_version = 5\nid = "example.engine"\nversion = "1.0.0"\nname = "Engine"\n'
+            'resolver = "declarative"\n\n[[target]]\ngame_id = "TEST"\n'
+            f'disc_sha256 = "{disc_sha}"\nexe_sha256 = "{sha(self.exe)}"\n\n'
+            '[[feature]]\nid = "engine"\nname = "Engine"\n\n'
+            '[[option]]\nfeature = "engine"\nid = "build"\ntype = "choice"\ndefault = "small"\n'
+            '[[option.choice]]\nvalue = "small"\n[[option.choice]]\nvalue = "large"\n\n'
+            '[[plugin]]\nfeature = "engine"\nid = "example.hook"\nwhen = { build = "large" }\n\n'
+            + patch(0x80010100, bytes(len(self.engine)), self.engine, 'large')
+            + patch(0x80010040, bytes(8), detour, 'large')
+            + patch(0x80010048, bytes(8), call, 'large')
+            + patch(0x80010080, bytes(4), b'\xff' * 4, 'small')
+            + '[[overlay]]\nfeature = "engine"\ntarget = "disc_user"\n'
+            f'offset = {self.disc.files["DATA.BIN"][0] * 2048}\nfile = "assets/data.overlay"\n'
+            f'sha256 = "{sha(self.overlay)}"\nexpected_sha256 = "{sha(self.data[:2048])}"\n'
+            'when = { build = "large" }\n')
+        self.write_manifest(self.manifest)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def write_manifest(self, text):
+        path = self.root / 'mods/example/1.0.0/manifest.toml'
+        path.write_text(text, encoding='utf-8', newline='\r\n')
+        self.spec = dict(name='large', manifest='mods/example/1.0.0/manifest.toml',
+                         manifest_sha256=sha(text.encode()), id='example.engine', version='1.0.0',
+                         features=dict(engine=dict(build='large')), plugins=['example.hook'])
+
+    def view(self, **changes):
+        return pipeline.ModPackageView(self.disc, self.root, {**self.spec, **changes}, 'TEST')
+
+    def profile(self, **extent_changes):
+        extent = dict(file='GAME.EXE', file_offset='0x800', base='0x80010000',
+                      address='0x80010100', size=hex(len(self.engine)), load_addr=hex(self.ENGINE),
+                      sha256=sha(self.engine),
+                      transfer_entries=dict(**{'from': 'mod_package_writes'}, count=2))
+        extent.update(extent_changes)
+        return dict(game_id='TEST', mod_packages=[self.spec], strict_bounds=True, expected_records=1,
+                    checks=[dict(method='words', mod_package='large', file='GAME.EXE',
+                                 file_offset='0x800', base='0x80010000',
+                                 values={'0x80010100': '0x03E00008'})],
+                    images=[dict(method='fixed_address_extents', mod_package='large',
+                                 allow_missing=True, extents=[extent])])
+
+    def prepare(self, profile):
+        views = pipeline.mod_package_views(profile, self.disc, self.root)
+        return pipeline.prepare(profile, self.disc, [], self.root / 'out', views)
+
+    def test_selected_operations_apply_to_boot_image_and_disc_files(self):
+        view = self.view()
+        exe = view.read('GAME.EXE')
+        self.assertEqual(exe[0x900:0x900 + len(self.engine)], self.engine)
+        self.assertEqual(exe[0x880:0x884], bytes(4), 'inactive option branch applied')
+        self.assertEqual(view.read('DATA.BIN')[:2048], self.overlay)
+        self.assertEqual(view.read('DATA.BIN')[2048:], self.data[2048:])
+        self.assertEqual(self.disc.read('GAME.EXE'), self.exe, 'original disc mutated')
+        self.assertEqual(view.plugins, ['example.hook'])
+        small = self.view(features=dict(engine=dict(build='small')))
+        self.assertEqual(small.read('GAME.EXE')[0x880:0x884], b'\xff' * 4)
+        self.assertEqual(small.plugins, [])
+
+    def test_identity_selection_and_unsupported_constructs_fail_closed(self):
+        for changes, error in [(dict(manifest_sha256='0' * 64), 'manifest changed'),
+                               (dict(version='2.0.0'), 'id/version'),
+                               (dict(features=dict(engine=dict(build='huge'))), 'Invalid choice'),
+                               (dict(features=dict(engine=dict(size='1'))), 'Unknown option'),
+                               (dict(features=dict(other={})), 'must be declared')]:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                self.view(**changes)
+        with self.assertRaisesRegex(ValueError, 'does not target'):
+            pipeline.ModPackageView(self.disc, self.root, self.spec, 'OTHER')
+        for old, new, error in [('expected = "0000000000000000"\nreplace', 'expected = "0100000000000000"\nreplace',
+                                 'expected bytes changed'),
+                                ('replace = "ffffffff"', 'replace_from = { option = "build" }', 'Unsupported'),
+                                ('target = "disc_user"', 'target = "disc_raw"', 'Unsupported mod overlay'),
+                                ('\n[[target]]', '\n[[constraint]]\nfeature = "engine"\n[[target]]', 'sections')]:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                self.write_manifest(self.manifest.replace(old, new, 1))
+                self.view()
+        self.write_manifest(self.manifest)
+        # A disc overlay over the boot EXE must agree with its patched load image.
+        exe_offset = self.disc.files['GAME.EXE'][0] * 2048
+        disagree = self.manifest + (
+            '\n[[overlay]]\nfeature = "engine"\ntarget = "disc_user"\n'
+            f'offset = {exe_offset}\nfile = "assets/data.overlay"\nsha256 = "{sha(self.overlay)}"\n')
+        self.write_manifest(disagree)
+        with self.assertRaisesRegex(ValueError, 'disagrees with the patched boot'):
+            self.view()
+
+    def test_extent_in_ram_mirror_uses_patched_transfers_as_entries(self):
+        inventory = self.prepare(self.profile())
+        job, = inventory['jobs']
+        self.assertEqual(job['required_entries'], [self.ENGINE, self.ENGINE + 0x10])
+        self.assertEqual(job['load_addr'], hex(self.ENGINE))
+        self.assertEqual(inventory['required_images'], ['large:GAME.EXE@80010100+20'])
+        self.assertEqual(inventory['mod_packages'][0]['plugins'], ['example.hook'])
+        record = json.loads(Path(job['input']).read_text())[0]
+        self.assertTrue(record['strict_producer_ranges'])
+        self.assertEqual(record['producer_ranges'], [dict(start='0x80780000', end='0x80780020')])
+
+    def test_extent_evidence_and_inventory_drift_fail_closed(self):
+        for changes, error in [(dict(sha256='0' * 64), 'Extent bytes changed'),
+                               (dict(transfer_entries={'from': 'mod_package_writes', 'count': 3}),
+                                'Transfer entry inventory changed'),
+                               (dict(load_addr='0x807FFFF0'), 'outside RAM'),
+                               (dict(size='0x2000'), 'outside source file')]:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                self.prepare(self.profile(**changes))
+        profile = self.profile()
+        profile['checks'][0]['values'] = {'0x80010100': '0x00000000'}
+        with self.assertRaisesRegex(ValueError, 'Loader evidence changed'):
+            self.prepare(profile)
+        profile = self.profile()
+        profile['mod_packages'] = [{**self.spec, 'plugins': []}]
+        with self.assertRaisesRegex(ValueError, 'plugins changed'):
+            self.prepare(profile)
+
+    def test_image_straddling_a_retail_mirror_needs_a_declared_8mb_profile(self):
+        # 0x801FFFF0 crosses the retail 2 MiB end; 0x803FFFF0 crosses the
+        # second/third mirror boundary. psx_ram_resolve rejects both on a 2 MiB
+        # runtime, so a retail profile must refuse them instead of emitting a
+        # variant that can never pass the gate.
+        for load in ('0x801FFFF0', '0x803FFFF0'):
+            with self.subTest(load=load):
+                # The package's detours target the 4th-mirror engine, so a moved
+                # copy has no package-written transfers into it.
+                moved = dict(load_addr=load, entries=[load],
+                             transfer_entries={'from': 'mod_package_writes', 'count': 0})
+                with self.assertRaisesRegex(ValueError, 'crosses a 2 MiB RAM mirror boundary'):
+                    self.prepare(self.profile(**moved))
+                profile = self.profile(**moved)
+                profile['main_ram_bytes'] = '0x800000'
+                inventory = self.prepare(profile)
+                self.assertEqual(len(inventory['jobs']), 1)
+                self.assertEqual(inventory['source_images'][0]['load_addr'], hex(int(load, 16)))
+        # Inside one mirror stays valid on retail RAM (the 4th-mirror engine).
+        self.assertEqual(self.prepare(self.profile())['jobs'][0]['load_addr'], hex(self.ENGINE))
+        profile = self.profile()
+        profile['main_ram_bytes'] = '0x400000'
+        with self.assertRaisesRegex(ValueError, 'main_ram_bytes must be'):
+            self.prepare(profile)
+
+    def test_static_dispatch_identities_and_publication_receipt(self):
+        text = ('static const uint32_t psx_ov_static_ranges_00000[] = { 0x00780000u, 0x8u, 0x00780010u, 0x8u };\n'
+                'static const PsxOvVariant psx_ov_variants[1] = {\n'
+                '    { psx_ov_static_ranges_00000, 2u, 0x1234ABCDu, ov_fn_80780000 },\n};\n'
+                'static const PsxOvEntry psx_ov_entries[1] = {\n    { 0x80780000u, 0u, 1u },\n};\n')
+        build = self.root / 'static'
+        build.mkdir()
+        (build / 'overlays_static.c').write_text(text)
+        (build / 'overlays_static_0000.c').write_text('/* unit */\n')
+        self.assertEqual(auditor.static_dispatch_identities(build / 'overlays_static.c'),
+                         [(0x80780000, 0x1234ABCD, [(0x780000, 8), (0x780010, 8)])])
+        files = {p.name: pipeline.digest(p) for p in build.iterdir()}
+        out = self.root / 'generated'
+        out.mkdir()
+        (out / 'overlays_static_0007.c').write_text('/* stale unit */\n')
+        pipeline.publish_static(build, out, dict(files=files))
+        self.assertEqual(sorted(p.name for p in out.iterdir()),
+                         ['AOT_STATIC_AUDIT.json', 'overlays_static.c', 'overlays_static_0000.c'])
+        (build / 'overlays_static_0000.c').write_text('/* changed after audit */\n')
+        with self.assertRaisesRegex(ValueError, 'Audited static output changed'):
+            pipeline.publish_static(build, out, dict(files=files))
+
+
 class AotMethodsTest(unittest.TestCase):
     def test_tagged_relocated_original_file_and_inventory_check(self):
         original = struct.pack('<8I', 16, 8, 0x03e00008, 0, 4, 0xFFFFFFFF, 0, 0)[:24]

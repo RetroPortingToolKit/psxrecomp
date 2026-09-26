@@ -243,6 +243,27 @@ vector observation there.
 
 ---
 
+## `overlay_static_entries` — which static overlay images ran (native only)
+
+`overlay_loader_status` reports one `static_hits` total for the build-time
+static overlay dispatcher (`GAME_OVERLAY_STATIC_C`); this command splits it per
+compiled entry address, so a run can prove WHICH image's variants executed (a
+mod engine linked at `0x80780000` versus a menu overlay at `0x800BF800`).
+Counters are always on and count real dispatches only, never
+`psx_overlay_static_can_dispatch` probes.
+
+`{"cmd":"overlay_static_entries","addr_lo":"0x80780000","addr_hi":"0x80800000","limit":16}`
+
+- `entries`, `total_hits` — whole dispatcher.
+- `range_lo`/`range_hi` (physical; segment bits ignored), `range_entries`,
+  `range_variants`, `range_hits`, `range_hit_entries` — the requested range.
+- `top` — up to `limit` (default 64, max 1024) entries of the range with hits,
+  busiest first: `{addr, variants, hits}`.
+
+A build without a static dispatcher answers `ok:false`.
+
+---
+
 ## `dirty_ram_stats` `per_pc` — interpreted-PC table
 
 Snapshot of the open-addressed per-entry-PC table
@@ -303,9 +324,9 @@ The TCP server is the canonical instrumentation surface. Rule 3 in `CLAUDE.md` i
 
 ## Complete command index (generated)
 
-**311 commands registered** — 298 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**316 commands registered** — 303 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-52 of 311 have prose above; **259 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+54 of 316 have prose above; **262 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -338,6 +359,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `card_txn_dump` | ✓ |  |  |
 | `cd_overwrite` | ✓ |  |  |
 | `cd_read_log` | ✓ |  |  |
+| `cd_reinsert` | ✓ |  |  |
 | `cdc_volume` |  | ✓ |  |
 | `cdrom_bursts` | ✓ |  |  |
 | `cdrom_cmd_dump` |  | ✓ |  |
@@ -374,12 +396,14 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `dirty_insn_dump_file` | ✓ |  |  |
 | `dirty_insn_gate` | ✓ |  |  |
 | `dirty_insn_log` | ✓ |  |  |
-| `dirty_ram_stats` | ✓ |  |  |
+| `dirty_ram_stats` | ✓ |  | ✓ |
 | `dirty_ram_unsupported` | ✓ |  |  |
+| `disc_select` | ✓ |  |  |
 | `disp_ring` | ✓ |  |  |
 | `dispatch_check` | ✓ |  |  |
 | `dispatch_stats` | ✓ |  |  |
 | `dispatch_tail` | ✓ |  |  |
+| `display_aspect` | ✓ |  |  |
 | `display_ring_aux` | ✓ |  |  |
 | `display_ring_get` | ✓ |  |  |
 | `display_ring_stats` | ✓ |  |  |
@@ -443,6 +467,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `gte_latch_dump` | ✓ |  |  |
 | `gte_ring_dump` | ✓ |  |  |
 | `gte_state` | ✓ |  |  |
+| `guest_tty_dump` | ✓ |  |  |
 | `history` | ✓ | ✓ | ✓ |
 | `hle_dump` | ✓ |  | ✓ |
 | `idle_skip` | ✓ |  |  |
@@ -490,6 +515,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `overlay_rescan` | ✓ |  |  |
 | `overlay_shadow_detail` | ✓ |  |  |
 | `overlay_shadow_dump` | ✓ |  |  |
+| `overlay_static_entries` | ✓ |  | ✓ |
 | `pace_state` | ✓ |  |  |
 | `pad_status` | ✓ | ✓ |  |
 | `parity_ctl` | ✓ | ✓ |  |

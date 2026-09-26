@@ -368,6 +368,53 @@ int main() {
           "is unavailable");
     check(reload.set_feature_enabled(
               "plugin.mod", "vblank", false, &error), error.c_str());
+
+    /* A function-entry hook is selected by id exactly like activation and
+     * VBlank plugins; a manifest naming only such an implementation must
+     * resolve, and must still fail closed once it is gone. */
+    const PSXModFunctionEntryCallback entry_hook = +[](CPUState*, uint32_t) {};
+    check(mod_register_function_entry_plugin("test.entry", 0x80010000u, entry_hook),
+          "function-entry plugin must register");
+    check(!mod_register_function_entry_plugin(
+              "test.entry", 0x80010000u, +[](CPUState*, uint32_t) {}),
+          "duplicate function-entry hook must be rejected");
+    check(!mod_register_function_entry_plugin(
+              "test.entry", 0x00010000u, +[](CPUState*, uint32_t) {}),
+          "a KUSEG alias of a hooked function is the same hook");
+    write_text(root / "packages/entry.mod/1.0.0/manifest.toml",
+               "format_version = 5\n"
+               "id = \"entry.mod\"\n"
+               "version = \"1.0.0\"\n"
+               "name = \"Entry Mod\"\n"
+               "resolver = \"declarative\"\n"
+               "[[target]]\n"
+               "game_id = \"SLUS-TEST\"\n"
+               "[[feature]]\n"
+               "id = \"entry\"\n"
+               "name = \"Entry Plugin\"\n"
+               "[[plugin]]\n"
+               "feature = \"entry\"\n"
+               "id = \"test.entry\"\n");
+    check(reload.scan(&error), error.c_str());
+    check(reload.set_feature_enabled("entry.mod", "entry", true, &error),
+          error.c_str());
+    ModResolution entry_resolution = reload.resolve("SLUS-TEST");
+    check(entry_resolution.ok && entry_resolution.plugins.size() == 1 &&
+              entry_resolution.plugins[0].id == "test.entry",
+          "enabled function-entry plugin must resolve");
+    const std::vector<ModFunctionEntryHook> entry_hooks =
+        mod_function_entry_hooks("test.entry");
+    check(entry_hooks.size() == 1 && entry_hooks[0].address == 0x80010000u &&
+              entry_hooks[0].callback == entry_hook,
+          "an implementation exposes exactly the hooks it registered");
+    check(mod_function_entry_hooks("test.missing").empty(),
+          "an unregistered implementation exposes no hooks");
+    mod_clear_plugins_for_tests();
+    ModResolution entry_unavailable = reload.resolve("SLUS-TEST");
+    check(!entry_unavailable.ok,
+          "enabled function-entry plugin must fail closed when unregistered");
+    check(reload.set_feature_enabled("entry.mod", "entry", false, &error),
+          error.c_str());
     write_text(root / "packages/features.mod/1.0.0/manifest.toml",
                manifest("features.mod", "1.0.0",
                    "\n[[feature]]\n"

@@ -13,9 +13,14 @@ check before doing anything else. CTest passes it the same way the other
 overlay codegen tests get it.
 
 Usage: test_compile_overlays_static_tail.py --recompiler <psxrecomp-game>
+
+The recompiler may also come from PSXRECOMP_GAME_RECOMPILER, or be found in a
+framework build directory, so a plain unittest/pytest collection runs the test
+instead of handing subprocess a None path (the old failure mode: TypeError).
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,11 +29,33 @@ import unittest
 
 TOOLS = Path(__file__).resolve().parents[1]
 ROOT = TOOLS.parent
+RECOMPILER_ENV = "PSXRECOMP_GAME_RECOMPILER"
 RECOMPILER = None
+
+
+def find_recompiler():
+    """--recompiler, then the environment, then a framework build tree."""
+    if RECOMPILER:
+        return RECOMPILER
+    env = os.environ.get(RECOMPILER_ENV, "").strip()
+    if env:
+        return env
+    names = ("psxrecomp-game.exe", "psxrecomp-game")
+    for build in sorted(ROOT.glob("build*")) + sorted((ROOT / "recompiler").glob("build*")):
+        for name in names:
+            candidate = build / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
 
 
 class StaticTailTest(unittest.TestCase):
     def test_static_run_with_no_captures_exits_zero(self):
+        recompiler = find_recompiler()
+        self.assertTrue(recompiler and Path(recompiler).is_file(),
+                        f"psxrecomp-game not found: pass --recompiler, set "
+                        f"{RECOMPILER_ENV}, or build the recompiler under "
+                        f"{ROOT}/build*")
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             caps = tmp / "captures.json"
@@ -43,7 +70,7 @@ class StaticTailTest(unittest.TestCase):
                  "--captures", str(caps),
                  "--out-dir", str(out),
                  "--game-toml", str(toml),
-                 "--recompiler", RECOMPILER,
+                 "--recompiler", recompiler,
                  "--runtime-include", str(ROOT / "runtime" / "include")],
                 capture_output=True, text=True, timeout=120)
             detail = proc.stdout[-1500:] + proc.stderr[-1500:]
