@@ -331,6 +331,20 @@ if(BUILD_TESTING)
     target_link_libraries(overlay_capture_retry_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME overlay_capture_retry_test COMMAND overlay_capture_retry_test)
 
+    # PC evidence stays inside the dirty-page run: nothing recorded in the
+    # trailing delay-slot guard word (bead beads-eio.3.190).
+    add_executable(overlay_capture_guard_word_test
+        tests/test_overlay_capture_guard_word.cpp
+        src/overlay_capture.c)
+    target_include_directories(overlay_capture_guard_word_test PRIVATE
+        include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(overlay_capture_guard_word_test PRIVATE
+        SDL_MAIN_HANDLED $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(overlay_capture_guard_word_test PRIVATE
+        ${PSX_SDL_LIBRARIES})
+    add_test(NAME overlay_capture_guard_word_test
+             COMMAND overlay_capture_guard_word_test)
+
     add_executable(overlay_path_canon_test
         tests/test_overlay_path_canon.c
         src/overlay_path_canon.c)

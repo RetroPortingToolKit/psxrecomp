@@ -365,10 +365,18 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
             uint32_t virt = 0x80000000u | (phys & 0x1FFFFFu);
             in_run = 0;
 
+            /* PC evidence belongs to the dirty-page run only. The guard word
+             * is the first word of the NEXT page: a PC recorded there (a
+             * resume point at the page boundary, or the first word of an
+             * adjacent run across a capture-window boundary) is not code of
+             * this region, and the consumer cannot analyse it -- its request
+             * came back as an empty manifest (beads-eio.3.190). */
+            const uint32_t pc_hi = phys + size - guard_bytes;
+
             /* Seeds: only per-PC interpreter hits — execution-verified. */
             int nexec = 0;
             int ndisp = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if ((dispatch_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u)
                     ndisp++;
@@ -413,7 +421,7 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
 
             fprintf(f, "    \"executed_pcs\": [");
             int emitted_exec = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if (!((exec_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u))
                     continue;
@@ -425,7 +433,7 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
 
             fprintf(f, "    \"dispatch_entry_pcs\": [");
             int emitted_dispatch = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if (!((dispatch_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u))
                     continue;
@@ -439,7 +447,7 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
 
             fprintf(f, "    \"seeds\": [");
             emitted_dispatch = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if (!((dispatch_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u))
                     continue;

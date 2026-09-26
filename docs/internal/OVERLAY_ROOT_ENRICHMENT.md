@@ -173,6 +173,37 @@ Measured:
   only the store/MMIO attribution hashes move (code that changed between
   native and interpreted); writes and cycles are identical.
 
+## Guard-word requests (beads-eio.3.190)
+
+The `no-func-ids` failures were requests for a capture's trailing
+delay-slot guard word. The capture writer appends one word past a
+dirty-page run so a branch at the run's last word has its delay slot; that
+word is the first word of the next page. It is readable, but the
+recompiler's analysis ends before it, so a fragment requested there comes
+back with an empty manifest. On Ace Combat 3 two page-boundary resume
+points (0x800D1000, 0x800EA000) were requested this way once rooting gave
+their images a host whose walk falls through into the guard word.
+
+Now nothing names the guard word:
+
+- `classify_overlay_seeds` excludes every kind of evidence there
+  (dispatch, executed, captured and static entries, TOML entries, alias
+  recipes, derived call targets) as `GUARD_WORD`, audited and counted. It
+  is never a seed, an alias or a fragment demand.
+- Fragment jobs, hosted cross-variant selection, fragment batches and
+  static mode hold the same rule, so no path can request it. A request
+  that still reaches `compile_fragment_batch` is reported as a failure
+  (`guard-word-request`), not spent on a recompile.
+- The recompiler warns when it drops a requested seed at or past Analysis
+  End, and when the header entry point is there; `compile_overlays` copies
+  the warning into the compile log.
+- The capture writer records executed and dispatch PCs for the page run
+  only, not for the guard word. Older captures still carry such PCs; the
+  classifier handles them.
+
+No coverage is lost: the neighbour variant that holds the word as code
+serves it.
+
 ## Gate used, and what is left
 
 The gate the four titles passed is **no regression against master**:
@@ -193,7 +224,6 @@ Not done:
 
 - Step 3 as a widening. The evidence rules were made stricter (image-local
   proof, cross-producer calls excluded), not extended with new categories.
-- Step 4, the `no-func-ids` root cause.
 - Re-measuring Ace Combat 3. #386's AC3 numbers (rootless images 250 to 1,
   capacity skips 3,028 to 0) were taken without the guard; the stricter
   evidence rule may root fewer of those images.

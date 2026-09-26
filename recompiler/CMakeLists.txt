@@ -623,6 +623,16 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_guard_word_analysis_bound.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        # Request half of the same contract: no seed, alias or fragment demand
+        # may name the guard word (classifier, fragment jobs, hosted selection,
+        # fragment batches), and the recompiler warns when it drops a seed
+        # past Analysis End. Bead beads-eio.3.190 (AC3 fragment no-func-ids).
+        add_test(
+            NAME overlay_guard_word_requests
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_guard_word_requests.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         # Producer half of the same contract: the capture writer declares its
         # guard bytes and compile_overlays puts them in the PS-EXE tag the
         # recompiler reads.

@@ -2145,7 +2145,23 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     """
     lo = load_addr
     hi = load_addr + size
-    region = lambda a: lo <= a < hi and (a & 3) == 0
+    # Trailing delay-slot guard words (capture_guard_bytes) are readable as a
+    # delay slot but are not code of this image: the word after them is not
+    # in it, and the recompiler's analysis ends before them. Evidence there
+    # (a resume PC at a page boundary, a PC attributed to the run by an older
+    # capture writer) is excluded as GUARD_WORD and never requested; the
+    # neighbour variant that holds the word as code serves it.
+    fragment_hi = hi - capture_guard_bytes(cap, size)
+    region = lambda a: lo <= a < fragment_hi and (a & 3) == 0
+    guard_word = lambda a: fragment_hi <= a < hi and (a & 3) == 0
+    guard_word_excluded = set()
+
+    def exclude_outside(addr: int) -> None:
+        if guard_word(addr):
+            guard_word_excluded.add(addr)
+            excluded[addr] = 'GUARD_WORD'
+        else:
+            excluded[addr] = 'UNKNOWN'
     if root_enrichment is None:
         root_enrichment = root_enrichment_default()
     if cap.get(ROOT_ENRICHMENT_OFF_KEY):
@@ -2239,7 +2255,6 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     # validated dispatch evidence separately so executed entries can still use
     # the isolated, audited fragment path without truncating a shared host.
     dispatch_fragment_demands = set()
-    fragment_hi = hi - capture_guard_bytes(cap, size)
     game_text = _game_text_range(toml_doc)
 
     # Every walk in this classification is a pure function of (entry, cap):
@@ -2310,7 +2325,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
 
     def include(addr: int, reason: str):
         if not region(addr):
-            excluded[addr] = 'UNKNOWN'
+            exclude_outside(addr)
             return
         # Composite padding has bytes but no producer identity.  A root there
         # would otherwise get entry_producer=None and could walk through every
@@ -2374,7 +2389,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         include(addr, 'FUNCTION_POINTER_TARGET')
     for addr in static_discovery_entries:
         if not region(addr):
-            excluded[addr] = 'UNKNOWN'
+            exclude_outside(addr)
         elif (_callable_legacy_seed(data, load_addr, addr) or
               plausible_callable_target(data, load_addr, size, addr, hi)):
             include(addr, 'STATIC_DISCOVERY_ROOT')
@@ -2405,6 +2420,8 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     for addr, _range_lo, _range_hi in static_alias_ranges:
         if region(addr):
             included[addr] = 'DISPATCH_INTERIOR'
+        else:
+            exclude_outside(addr)
 
     # Walk roots: callable entries only. DISPATCH_INTERIOR addresses are NOT
     # roots — as roots they would hard-cap (truncate) the sibling walk that
@@ -2496,6 +2513,11 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
                 # droppable).
                 if ((target in initial_known and target not in droppable) or
                         target in suppressed_derived):
+                    return False
+                if guard_word(target):
+                    # A call or branch whose target is this image's guard
+                    # word: the callee is in the next page, not this image.
+                    guard_word_excluded.add(target)
                     return False
                 if _in_delay_slot(data, load_addr, target):
                     delay_slot_rejected.setdefault(target, 'DERIVED')
@@ -2657,10 +2679,22 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     for addr in delay_slot_rejected:
         if addr not in included:
             excluded[addr] = 'DELAY_SLOT'
-    candidates = {a for a in (executed_pcs | dispatch_entry_pcs |
-                              captured_function_entries | static_discovery_entries |
-                              legacy_seeds | toml_entries)
-                  if region(a)}
+    evidence = (executed_pcs | dispatch_entry_pcs | captured_function_entries |
+                static_discovery_entries | legacy_seeds | toml_entries)
+    candidates = {a for a in evidence if region(a)}
+    for addr in sorted(a for a in evidence if guard_word(a)):
+        exclude_outside(addr)
+    for addr in guard_word_excluded:
+        excluded[addr] = 'GUARD_WORD'
+    # Invariant: no seed, alias or fragment demand in the guard word. The
+    # recompiler's analysis ends before it, so any request there comes back
+    # with an empty manifest (beads-eio.3.190).
+    guard_leaks = sorted(a for a in (set(included) | dispatch_fragment_demands)
+                         if not region(a))
+    if guard_leaks:
+        raise RuntimeError(
+            'BUG: classifier kept evidence outside the analysable image: ' +
+            ', '.join(f'0x{a:08X}' for a in guard_leaks))
     for addr in sorted(candidates - set(included) - set(delay_slot_rejected)):
         if addr in all_branch_targets or addr in jump_table_targets:
             excluded[addr] = 'BRANCH_TARGET_ONLY'
@@ -2714,7 +2748,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         # the label outside every current code interval; aliases already inside
         # a guarded body remain candidates for the future exact-resume pass.
         'static_interval_fragment_demands': {
-            entry for entry, _lo, _hi in static_alias_ranges
+            entry for entry, _lo, _hi in static_alias_ranges if region(entry)
         },
         'rejected_cross_producer_calls': rejected_cross_producer_calls,
         'accepted_cross_producer_calls': accepted_cross_producer_calls,
@@ -2729,6 +2763,10 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         'interior_hosts': interior_hosts,
         'enrichment_shadowed': enrichment_shadowed,
         'delay_slot_rejected': delay_slot_rejected,
+        # Evidence at or past the analysable end (the trailing guard word).
+        'analysable_hi': fragment_hi,
+        'guard_word_excluded': guard_word_excluded | {
+            a for a, r in excluded.items() if r == 'GUARD_WORD'},
     }
     # Interior entries carry the 'interior' marker so the recompiler emits
     # them as overlapping aliases, never as walk roots. Promoted kernel
@@ -2761,6 +2799,24 @@ def report_recompiler_guard_absorptions(stdout: str) -> int:
         print(f'  recompiler no-split guard absorbed {total} explicit '
               f'root(s) the classifier kept')
     return total
+
+
+RECOMPILER_SEED_DROP_LINE = re.compile(
+    r'^WARNING: (?:dropped \d+ requested seed\(s\)|entry point 0x[0-9A-F]{8} '
+    r'is at or past Analysis End).*$', re.M)
+
+
+def report_recompiler_seed_drops(stdout: str) -> int:
+    """Surface requested seeds the recompiler could not use.
+
+    A seed at or past Analysis End (the delay-slot guard word) or outside the
+    image produces no function; when it was the whole request the result is
+    an empty manifest. The classifier never writes one, so a line here means
+    a request path broke that invariant (beads-eio.3.190)."""
+    lines = [m.group(0) for m in RECOMPILER_SEED_DROP_LINE.finditer(stdout or '')]
+    for line in lines:
+        print(f'  recompiler {line}')
+    return len(lines)
 
 
 def print_seed_audit(audit: dict) -> None:
@@ -2806,11 +2862,16 @@ def print_seed_audit(audit: dict) -> None:
     print(f'branch_targets_excluded: {audit["branch_targets_excluded_count"]}')
     print(f'observed_only_excluded: {audit["excluded_counts"].get("OBSERVED_PC_ONLY", 0)}')
     print(f'unknown_excluded: {audit["excluded_counts"].get("UNKNOWN", 0)}')
+    print(f'guard_word_excluded: {len(audit.get("guard_word_excluded", ()))}')
     for addr in sorted(audit['included_reasons']):
         print(f'  {addr:08X}  {audit["included_reasons"][addr]}')
     for addr in sorted(audit['excluded_reasons']):
         reason = audit['excluded_reasons'][addr]
-        if reason in ('BRANCH_TARGET_ONLY', 'OBSERVED_PC_ONLY', 'UNKNOWN'):
+        if reason == 'GUARD_WORD':
+            print(f'  {addr:08X}  excluded: GUARD_WORD (delay-slot guard '
+                  f'past analysable end 0x{audit["analysable_hi"]:08X}; '
+                  f'never requested)')
+        elif reason in ('BRANCH_TARGET_ONLY', 'OBSERVED_PC_ONLY', 'UNKNOWN'):
             recovery = ('; isolated fragment demand retained'
                         if addr in unhosted_dispatch else '')
             print(f'  {addr:08X}  excluded: {reason}{recovery}')
@@ -4501,12 +4562,37 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         seed_audit.get('cross_variant_hosted_demands', set()))
     static_interval_demands = set(
         seed_audit.get('static_interval_fragment_demands', set()))
-    static_demands = static_exact_demands | static_interval_demands
     region_hi = phys_addr + size
     forced = {
         a for a in forced_interiors
         if phys_addr <= (a & 0x1FFFFFFF) < region_hi
     }
+    # Trailing delay-slot guard words in `data` (readable, not discoverable).
+    # Stated by the capture writer where the field exists, reconstructed from
+    # the page-run format otherwise. No demand of any kind may name one: the
+    # recompiler's analysis ends before it and returns an empty manifest.
+    guard_bytes = capture_guard_bytes(capture, size,
+                                      f'region 0x{load_addr:08X}')
+    analysable_hi = region_hi - guard_bytes
+    guard_word_excluded = set()
+
+    def analysable(demands: set) -> set:
+        kept = {a for a in demands if (a & 0x1FFFFFFF) < analysable_hi}
+        guard_word_excluded.update(demands - kept)
+        return kept
+
+    interiors = analysable(interiors)
+    dispatch_roots = analysable(dispatch_roots)
+    observed_dispatch = analysable(observed_dispatch)
+    static_exact_demands = analysable(static_exact_demands)
+    hosted_donor_demands = analysable(hosted_donor_demands)
+    static_interval_demands = analysable(static_interval_demands)
+    forced = analysable(forced)
+    for addr in sorted(guard_word_excluded):
+        print(f'  fragment demand 0x{addr:08X} excluded: GUARD_WORD '
+              f'(past analysable end 0x{analysable_hi | 0x80000000:08X} of '
+              f'region 0x{phys_addr:08X}; never requested)')
+    static_demands = static_exact_demands | static_interval_demands
     if not (((interiors or dispatch_roots) and executed) or observed_dispatch or
             static_demands or forced):
         return None
@@ -4515,11 +4601,8 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         'load_addr': load_addr,
         'size': size,
         'data': data,
-        # Trailing delay-slot guard words in `data` (readable, not
-        # discoverable). Stated by the capture writer where the field exists,
-        # reconstructed from the page-run format otherwise.
-        'guard_bytes': capture_guard_bytes(
-            capture, size, f'region 0x{load_addr:08X}'),
+        'guard_bytes': guard_bytes,
+        'guard_word_excluded': guard_word_excluded,
         'candidates': (interiors | dispatch_roots | observed_dispatch |
                        static_demands | forced),
         'executed': executed,
@@ -4571,6 +4654,7 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
         'candidates', 'executed', 'static_demands',
         'static_exact_demands', 'hosted_donor_demands',
         'static_interval_demands', 'forced', 'guard_demoted_aliases',
+        'guard_word_excluded',
     )
     for job in jobs:
         key = (
@@ -4663,6 +4747,9 @@ def select_hosted_interior_demands(job: dict, donor_recipes: dict,
     donor_items = donor_items[:HOSTED_NOMINATION_CAP]
     lo = job['load_addr'] & 0x1FFFFFFF
     hi = lo + job['size']
+    # A sibling recipe may hold as code the word that is this recipe's
+    # delay-slot guard; this recipe cannot analyse it.
+    analysable_hi = hi - job.get('guard_bytes', 0)
     local_reasons = {
         _canonical_guest_addr(addr): set(reasons)
         for addr, reasons in job.get('included_reasons', {}).items()
@@ -4709,6 +4796,9 @@ def select_hosted_interior_demands(job: dict, donor_recipes: dict,
         target_phys = target & 0x1FFFFFFF
         if (target & 3) != 0 or not (lo <= target_phys < hi):
             rejected['target_outside'] += 1
+            continue
+        if target_phys >= analysable_hi:
+            rejected['target_guard_word'] += 1
             continue
         target_producer = _producer_for_job_addr(job, target)
         if target_producer is None:
@@ -5171,6 +5261,17 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
     })
     if not requested:
         return None, 'no-requested-entries'
+    # Every demand path filters the delay-slot guard word out before it gets
+    # here (classify_overlay_seeds, make_interior_fragment_job, hosted
+    # selection). One that does not is a bug, reported as a failure rather
+    # than spent on a recompile that can only return an empty manifest.
+    analysable_hi = (load_addr & 0x1FFFFFFF) + size - guard_bytes
+    guard_requests = sorted(entry for entry in requested
+                            if (entry & 0x1FFFFFFF) >= analysable_hi)
+    if guard_requests:
+        return None, ('guard-word-request (BUG: demand past analysable end '
+                      f'0x{analysable_hi | 0x80000000:08X}): ' +
+                      ', '.join(f'0x{entry:08X}' for entry in guard_requests))
     if hosted_owners is not None:
         hosted_specs = {
             _canonical_guest_addr(entry): spec
@@ -5236,6 +5337,7 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
         if r.returncode != 0:
             return None, f'recompiler-error: {(r.stderr or r.stdout or "").strip()}'
         report_recompiler_guard_absorptions(r.stdout)
+        report_recompiler_seed_drops(r.stdout)
         full_c = ranges_src = None
         for fn in os.listdir(out_dir_tmp):
             if fn.endswith('_full.c'):
@@ -6673,7 +6775,20 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
         result['outcome'] = 'fail'
         result['fail'] = (cls, detail)
 
+    # The delay-slot guard word is not code of this image and the recompiler
+    # cannot analyse it (beads-eio.3.190): never a static demand either.
+    analysable_hi = phys_addr + size - guard_bytes
+    for captured_entry in sorted(
+            _parse_addr_list(cap.get('dispatch_entry_pcs', [])) |
+            {forced for forced in forced_interiors
+             if phys_addr <= (forced & 0x1FFFFFFF) < phys_addr + size}):
+        if (captured_entry & 0x1FFFFFFF) >= analysable_hi:
+            print(f'  demand 0x{captured_entry:08X} excluded: GUARD_WORD '
+                  f'(past analysable end 0x{analysable_hi | 0x80000000:08X}; '
+                  f'never requested)')
     for captured_entry in _parse_addr_list(cap.get('dispatch_entry_pcs', [])):
+        if (captured_entry & 0x1FFFFFFF) >= analysable_hi:
+            continue
         entry = ((captured_entry & 0x1FFFFFFF) | 0x80000000)
         key = (entry, crc32)
         result['requested_entries'].add(key)
@@ -6683,10 +6798,9 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
     # entry was observed even if the retained capture lost its classifier
     # provenance. Bind the requested PC to this capture's exact bytes; the
     # post-pass builds a content-validated isolated shard for it.
-    region_hi = phys_addr + size
     for forced_entry in forced_interiors:
         forced_phys = forced_entry & 0x1FFFFFFF
-        if phys_addr <= forced_phys < region_hi:
+        if phys_addr <= forced_phys < analysable_hi:
             entry = forced_phys | 0x80000000
             key = (entry, crc32)
             result['requested_entries'].add(key)
@@ -6748,6 +6862,7 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
             fail('recompiler', r.stderr or r.stdout)
             return
         report_recompiler_guard_absorptions(r.stdout)
+        report_recompiler_seed_drops(r.stdout)
 
         stem = os.path.basename(psx_path)
         full_c = os.path.join(out_dir_tmp, stem + '_full.c')
@@ -7359,6 +7474,7 @@ def main():
                 stats.add_fail(_label, 'recompiler', r.stderr or r.stdout)
                 return
             report_recompiler_guard_absorptions(r.stdout)
+            report_recompiler_seed_drops(r.stdout)
 
             # Find the generated _full.c
             stem = os.path.basename(psx_path)
