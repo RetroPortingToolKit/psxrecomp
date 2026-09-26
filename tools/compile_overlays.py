@@ -21,6 +21,7 @@ Each DLL exports:
 """
 
 import argparse
+import array
 import itertools
 import io
 import contextlib
@@ -1373,6 +1374,17 @@ def _frameless_dispatch_root_proven(data: bytes, load_addr: int, size: int,
 #      Measured on Tomba (25 AOT images): strong-only enrichment adds zero net
 #      roots after rule 1; the weak class is where the coverage is.
 #
+#   3. Cross-image calls (CrossImageCalls). A jal in the main EXE or in
+#      another captured image that does not overlap this one nominates its
+#      target here, but only as STRONG evidence: the target is rooted only
+#      when this image's own bytes bound it (image_local_entry_proven), never
+#      on the CFG probe alone, and never under strict_producer_ranges (other
+#      images are other producers). The shared-engine `jal 0x8011B1CC` above
+#      is exactly such a call: in X00 the word is mid-body and has no local
+#      boundary, so it is not rooted. Measured on Ace Combat 3
+#      (beads-eio.3.191): every root this adds is jal-referenced and none is
+#      inside another function's body.
+#
 # With both in place a wrong guess can only cost speed (an alias entry or an
 # interpreted PC), never correctness: a surviving weak root inside a function
 # whose start none of the above recognises can only begin a partial walk of
@@ -1607,7 +1619,8 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
                         producer_ranges=(), analysis_hi: int | None = None,
                         sources: dict | None = None,
                         weak_out: set | None = None,
-                        strict_producer_ranges: bool = False) -> set[int]:
+                        strict_producer_ranges: bool = False,
+                        external_call_targets=()) -> set[int]:
     """Enrichment candidates in one image: the STRONG set is returned.
 
     Candidates come from three generic sources -- stack-frame prologues,
@@ -1618,7 +1631,11 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
     decides which weak ones survive. With producer ranges, a jal or table in
     one producer is only weak evidence about an address in the SAME producer;
     across producers it can support a STRONG root (never under
-    ``strict_producer_ranges``). ``sources`` (optional) receives
+    ``strict_producer_ranges``). ``external_call_targets`` are jal targets
+    found in OTHER images (the main EXE, other captured images; see
+    CrossImageCalls): strong evidence only, like a cross-producer call, so a
+    target is returned only when this image bounds it, and never under
+    ``strict_producer_ranges``. ``sources`` (optional) receives
     {addr: set of source names} for every returned or weak address.
     """
     hi = load_addr + size if analysis_hi is None else analysis_hi
@@ -1697,6 +1714,10 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
                 note(pointers[offset], 'pointer_table', load_addr + offset * 4)
         start = end
 
+    for target in external_call_targets or ():
+        if not target & 3 and load_addr <= target < hi:
+            note(target, 'jal_image')
+
     for start, prologue_addrs in late_prologues.items():
         producer_hi = producer_hi_for(start)
         if producer_hi is not None and _late_prologue_start_proven(
@@ -1707,7 +1728,8 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
                 note(addr, 'prologue_unbounded')
 
     local = {'prologue', 'jal', 'pointer_table'}
-    cross = {'jal_cross', 'pointer_table_cross'}
+    # Calls from another producer of this image, or from another image.
+    cross = {'jal_cross', 'pointer_table_cross', 'jal_image'}
     weak_sources = {'jal', 'pointer_table', 'prologue_unbounded'}
     roots = set()
     for addr, why in candidates.items():
@@ -1765,7 +1787,8 @@ def possible_function_starts(data: bytes, load_addr: int,
 def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
                             producer_ranges=(), analysis_hi: int | None = None,
                             explicit=(), walk=None,
-                            strict_producer_ranges: bool = False
+                            strict_producer_ranges: bool = False,
+                            external_call_targets=()
                             ) -> tuple[set, dict]:
     """The enrichment roots compile_overlays adds for one image.
 
@@ -1790,7 +1813,8 @@ def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
     why = {}
     strong = derive_static_roots(data, load_addr, size, producer_ranges, hi,
                                  sources=why, weak_out=weak,
-                                 strict_producer_ranges=strict_producer_ranges)
+                                 strict_producer_ranges=strict_producer_ranges,
+                                 external_call_targets=external_call_targets)
     hosts = ({a for a in explicit if load_addr <= a < hi and not a & 3} |
              strong | weak |
              possible_function_starts(data, load_addr, hi, producer_ranges))
@@ -1808,7 +1832,126 @@ def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
         'late_prologue_starts': sum('prologue_start' in why.get(a, ())
                                     for a in strong),
         'unbounded_prologues_accepted': sum(
-            'prologue_unbounded' in why.get(a, ()) for a in accepted)}
+            'prologue_unbounded' in why.get(a, ()) for a in accepted),
+        # Roots a cross-image call nominated, and those it alone nominated.
+        'cross_image_jal_roots': sum('jal_image' in why.get(a, ())
+                                     for a in strong),
+        'cross_image_jal_only': sum(why.get(a) == {'jal_image'}
+                                    for a in strong)}
+
+
+def jal_targets_in(data: bytes, base: int) -> list[int]:
+    """Sorted distinct targets of every jal-shaped word in one image.
+
+    A nomination list only: a data word that happens to decode as jal can
+    name an address, but classify_overlay_seeds roots it only where the
+    target image's own bytes prove a function boundary."""
+    words = array.array('I')
+    words.frombytes(bytes(data[:len(data) & ~3]))
+    if sys.byteorder != 'little':
+        words.byteswap()
+    targets = set()
+    for index, word in enumerate(words):
+        if (word >> 26) == 0x03:
+            pc = base + index * 4
+            targets.add(((pc + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
+    return sorted(targets)
+
+
+def load_main_exe_image(toml_doc: dict, game_toml: str | None,
+                        project_root: str | None = None,
+                        explicit: str | None = None):
+    """(load_addr, text bytes, path) of the title's boot PS-X EXE, or None.
+
+    ``explicit`` (--main-exe) wins. Otherwise [game] exe is resolved against
+    the game.toml directory, then the project root: the same file
+    tools/prepare_disc.py extracts next to the disc image when a title is set
+    up. A missing EXE only removes the EXE's calls from the cross-image
+    evidence; it is reported, never fatal."""
+    rel = (toml_doc.get('game', {}) or {}).get('exe')
+    candidates = []
+    if explicit:
+        candidates.append(explicit)
+    elif rel:
+        for base in (os.path.dirname(os.path.abspath(game_toml))
+                     if game_toml else None, project_root):
+            if base:
+                candidates.append(os.path.join(base, rel))
+    for path in candidates:
+        try:
+            with open(path, 'rb') as f:
+                raw = f.read()
+        except OSError:
+            continue
+        if raw[:8] != b'PS-X EXE' or len(raw) < 0x800:
+            print(f'  WARNING: main EXE {path} is not a PS-X EXE; '
+                  f'cross-image calls use captured images only')
+            return None
+        load = struct.unpack_from('<I', raw, 0x18)[0]
+        size = struct.unpack_from('<I', raw, 0x1C)[0]
+        return load, raw[0x800:0x800 + size], path
+    if explicit or rel:
+        print(f'  note: main EXE not found ({", ".join(candidates) or rel}); '
+              f'cross-image calls use captured images only')
+    return None
+
+
+class CrossImageCalls:
+    """jal edges into an overlay image from code that can be resident with it.
+
+    Sources are the main EXE and every captured image that does not overlap
+    the target image (an overlapping image is an alternative occupant of the
+    same RAM, never co-resident). The index is built on first use, once per
+    distinct image, so a run that classifies nothing pays nothing."""
+
+    def __init__(self, captures, main_exe=None):
+        self._captures = captures
+        self._main_exe = main_exe
+        self._sources = None
+
+    def _build(self):
+        sources = []
+        seen = {}
+        if self._main_exe is not None:
+            load, text, _path = self._main_exe
+            sources.append((load & 0x1FFFFFFF,
+                            (load & 0x1FFFFFFF) + len(text),
+                            sorted({t & 0x1FFFFFFF
+                                    for t in jal_targets_in(text, load)})))
+        for cap in self._captures:
+            try:
+                load = int(cap['load_addr'], 16)
+                data = base64.b64decode(cap['bytes_b64'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            key = (load, hashlib.sha256(data).digest())
+            if key in seen:
+                continue
+            seen[key] = True
+            sources.append((load & 0x1FFFFFFF, (load & 0x1FFFFFFF) + len(data),
+                            sorted({t & 0x1FFFFFFF
+                                    for t in jal_targets_in(data, load)})))
+        self._sources = sources
+
+    def targets_for(self, load_addr: int, size: int,
+                    analysable_hi: int | None = None) -> set[int]:
+        """Targets in [load_addr, analysable_hi) called from non-overlapping
+        sources. Addresses keep the capture's own segment."""
+        if self._sources is None:
+            self._build()
+        lo = load_addr & 0x1FFFFFFF
+        hi = lo + size
+        top = lo + ((analysable_hi if analysable_hi is not None
+                     else load_addr + size) - load_addr)
+        seg = load_addr & ~0x1FFFFFFF
+        out = set()
+        for src_lo, src_hi, phys in self._sources:
+            if src_lo < hi and lo < src_hi:
+                continue          # the same RAM: never co-resident
+            for t in phys[bisect_left(phys, lo):bisect_left(phys, top)]:
+                if not t & 3:
+                    out.add(seg | t)
+        return out
 
 
 def no_split_partition(candidates, exempt, walk, hi: int, droppable=(),
@@ -2135,13 +2278,17 @@ def _collect_toml_overlay_entries(toml_doc: dict, load_addr: int, crc32: int,
 
 def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
                            crc32: int, toml_doc: dict,
-                           root_enrichment: bool | None = None
+                           root_enrichment: bool | None = None,
+                           external_call_targets=()
                            ) -> tuple[list[str], dict]:
     """Classify one capture's entry evidence into recompiler seed records.
 
     ``root_enrichment`` None means root_enrichment_default(). A capture that
     carries ROOT_ENRICHMENT_OFF_KEY (a conservative retry recipe) is never
-    enriched. The no-split guard is not optional.
+    enriched. The no-split guard is not optional. ``external_call_targets``
+    are jal targets from the main EXE and other captured images
+    (CrossImageCalls.targets_for); enrichment roots them only where this
+    image's bytes prove the boundary.
     """
     lo = load_addr
     hi = load_addr + size
@@ -2284,7 +2431,8 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             explicit=(static_discovery_entries | captured_function_entries |
                       dispatch_entry_pcs | toml_entries | legacy_seeds),
             walk=walk,
-            strict_producer_ranges=not allow_cross_producer_calls)
+            strict_producer_ranges=not allow_cross_producer_calls,
+            external_call_targets=external_call_targets)
         derived_static_roots -= (static_discovery_entries |
                                  captured_function_entries |
                                  dispatch_entry_pcs | toml_entries |
@@ -2842,7 +2990,9 @@ def print_seed_audit(audit: dict) -> None:
              f'{stats["weak_accepted"]} dropped {stats["weak_dropped"]}; '
              f'late-prologue starts {stats.get("late_prologue_starts", 0)}, '
              f'unbounded prologues kept '
-             f'{stats.get("unbounded_prologues_accepted", 0)}'
+             f'{stats.get("unbounded_prologues_accepted", 0)}; '
+             f'cross-image jal roots {stats.get("cross_image_jal_roots", 0)} '
+             f'(only evidence {stats.get("cross_image_jal_only", 0)})'
              if stats else '') + ')')
     guard_demoted = audit.get('guard_demoted', {})
     print(f'no_split_guard_demoted: {len(guard_demoted)}')
@@ -6722,7 +6872,7 @@ def cached_shard_manifest_status(dll_path: str, expected_abi: int | None,
 # ---------------------------------------------------------------------------
 
 def static_capture_job(cap: dict, args, toml: dict, forced_interiors: set,
-                       static_out: str) -> dict:
+                       static_out: str, external_call_targets=()) -> dict:
     """Recompile ONE capture for static mode. Module-level and self-contained so
     it can run in a worker process (ProcessPoolExecutor needs a picklable
     callable and picklable arguments: the capture dict, the argparse Namespace,
@@ -6752,13 +6902,14 @@ def static_capture_job(cap: dict, args, toml: dict, forced_interiors: set,
     with contextlib.redirect_stdout(log):
         try:
             _static_capture_job(cap, args, toml, forced_interiors, static_out,
-                                result)
+                                result, external_call_targets)
         finally:
             result['log'] = log.getvalue()
     return result
 
 
-def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
+def _static_capture_job(cap, args, toml, forced_interiors, static_out, result,
+                        external_call_targets=()):
     load_addr = int(cap['load_addr'], 16)
     size      = int(cap['size'])
     data      = base64.b64decode(cap['bytes_b64'])
@@ -6809,7 +6960,8 @@ def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
 
     seeds, seed_audit = classify_overlay_seeds(
         cap, data, load_addr, size, crc32, toml,
-        root_enrichment=getattr(args, 'root_enrichment', None))
+        root_enrichment=getattr(args, 'root_enrichment', None),
+        external_call_targets=external_call_targets)
     print(f'Overlay  load=0x{load_addr:08X}  size={size}  crc32=0x{crc32:08X}'
           + (f'  guard={guard_bytes}B (delay-slot only, not analysed)'
              if guard_bytes else ''))
@@ -7141,6 +7293,10 @@ def main():
                          'their shards may share a cache namespace; a default '
                          'run over an unenriched cache rebuilds any region '
                          'whose new root demands the cache does not serve.')
+    ap.add_argument('--main-exe', default=None,
+                    help='boot PS-X EXE whose jal targets count as cross-image '
+                         'call evidence (default: [game] exe resolved against '
+                         'the game.toml directory, then --project-root)')
     args = ap.parse_args()
     print(f'root policy: no-split guard on, enrichment '
           f'{"on" if args.root_enrichment else "OFF (diagnostic)"}')
@@ -7252,6 +7408,22 @@ def main():
 
     with open(args.captures) as f:
         captures = json.load(f)
+    # Cross-image call evidence comes from every capture in the file (and the
+    # main EXE), including captures --only-region leaves out.
+    cross_image_calls = CrossImageCalls(
+        list(captures),
+        load_main_exe_image(toml, args.game_toml,
+                            getattr(args, 'project_root', None),
+                            args.main_exe)
+        if args.root_enrichment else None)
+
+    def external_calls_for(cap):
+        if not args.root_enrichment or cap.get(ROOT_ENRICHMENT_OFF_KEY):
+            return set()
+        load = int(cap['load_addr'], 16)
+        size = int(cap['size'])
+        return cross_image_calls.targets_for(
+            load, size, load + size - capture_guard_bytes(cap, size))
 
     if args.only_region:
         only_regions = {int(value, 0) & 0x1FFFFFFF
@@ -7318,7 +7490,8 @@ def main():
             # Static mode is one self-contained job per capture (see
             # static_capture_job); the sequential and --jobs paths share it.
             _merge_static_result(static_capture_job(
-                cap, args, toml, forced_interiors, static_out))
+                cap, args, toml, forced_interiors, static_out,
+                external_calls_for(cap)))
             return
 
         # Reclassify prior F entry addresses from an identical image. Callable
@@ -7354,7 +7527,8 @@ def main():
 
         seeds, seed_audit = classify_overlay_seeds(
             cap, data, load_addr, size, crc32, toml,
-            root_enrichment=args.root_enrichment)
+            root_enrichment=args.root_enrichment,
+            external_call_targets=external_calls_for(cap))
         this_ids = None   # region func-ids once recompiled (None if skipped early)
 
         # Record this region's executed dispatch-proven PCs for the decoupled
@@ -8381,6 +8555,8 @@ def main():
                                     itertools.repeat(toml),
                                     itertools.repeat(forced_interiors),
                                     itertools.repeat(static_out),
+                                    [external_calls_for(cap)
+                                     for cap in captures],
                                     chunksize=1):
                     _merge_static_result(res)
         else:

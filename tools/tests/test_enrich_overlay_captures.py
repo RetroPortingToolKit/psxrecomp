@@ -58,5 +58,33 @@ class EnrichCaptureTests(unittest.TestCase):
                          [f'0x{LOAD:08X}'])
 
 
+    def test_call_from_another_record_roots_a_proven_leaf(self):
+        # Record B holds a frameless leaf after `jr $ra` that nothing in B
+        # calls; record A (another, non-overlapping image) calls it.
+        import contextlib, io, json, tempfile
+        leaf = LOAD + 0x14
+        b_words = [FRAME, NOP, JR_RA, NOP, NOP, 0x24420001, JR_RA, NOP]
+        other = 0x80080000
+        a_data = image([0x0C000000 | ((leaf >> 2) & 0x03FFFFFF), NOP,
+                        JR_RA, NOP])
+        a_rec = {'load_addr': f'0x{other:08X}', 'size': len(a_data),
+                 'bytes_b64': base64.b64encode(a_data).decode('ascii'),
+                 'function_entry_pcs': [], 'dispatch_entry_pcs': []}
+        b_rec = self.record(b_words)
+        alone, _ = MOD.enrich_record(b_rec)
+        self.assertNotIn(f'0x{leaf:08X}', alone['static_discovery_entry_pcs'])
+        with tempfile.TemporaryDirectory() as tmp:
+            src = f'{tmp}/caps.json'
+            out = f'{tmp}/out.json'
+            with open(src, 'w') as f:
+                json.dump([a_rec, b_rec], f)
+            with contextlib.redirect_stdout(io.StringIO()):
+                MOD.main(['--captures', src, '--out', out])
+            with open(out) as f:
+                enriched = json.load(f)
+        self.assertIn(f'0x{leaf:08X}',
+                      enriched[1]['static_discovery_entry_pcs'])
+
+
 if __name__ == '__main__':
     unittest.main()

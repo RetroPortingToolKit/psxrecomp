@@ -594,6 +594,16 @@ if(BUILD_TESTING)
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+        # Cross-image call evidence (main EXE, other captured images) roots
+        # an overlay function only where the overlay's own bytes prove the
+        # boundary (beads-eio.3.191, category a).
+        add_test(
+            NAME overlay_cross_image_calls
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_cross_image_calls.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
         # The runtime exe name must come from CMake, not be re-derived.
         add_test(
             NAME runtime_exe_name
