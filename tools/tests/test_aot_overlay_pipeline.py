@@ -195,6 +195,31 @@ class ModPackageImageTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'plugins changed'):
             self.prepare(profile)
 
+    def test_image_straddling_a_retail_mirror_needs_a_declared_8mb_profile(self):
+        # 0x801FFFF0 crosses the retail 2 MiB end; 0x803FFFF0 crosses the
+        # second/third mirror boundary. psx_ram_resolve rejects both on a 2 MiB
+        # runtime, so a retail profile must refuse them instead of emitting a
+        # variant that can never pass the gate.
+        for load in ('0x801FFFF0', '0x803FFFF0'):
+            with self.subTest(load=load):
+                # The package's detours target the 4th-mirror engine, so a moved
+                # copy has no package-written transfers into it.
+                moved = dict(load_addr=load, entries=[load],
+                             transfer_entries={'from': 'mod_package_writes', 'count': 0})
+                with self.assertRaisesRegex(ValueError, 'crosses a 2 MiB RAM mirror boundary'):
+                    self.prepare(self.profile(**moved))
+                profile = self.profile(**moved)
+                profile['main_ram_bytes'] = '0x800000'
+                inventory = self.prepare(profile)
+                self.assertEqual(len(inventory['jobs']), 1)
+                self.assertEqual(inventory['source_images'][0]['load_addr'], hex(int(load, 16)))
+        # Inside one mirror stays valid on retail RAM (the 4th-mirror engine).
+        self.assertEqual(self.prepare(self.profile())['jobs'][0]['load_addr'], hex(self.ENGINE))
+        profile = self.profile()
+        profile['main_ram_bytes'] = '0x400000'
+        with self.assertRaisesRegex(ValueError, 'main_ram_bytes must be'):
+            self.prepare(profile)
+
     def test_static_dispatch_identities_and_publication_receipt(self):
         text = ('static const uint32_t psx_ov_static_ranges_00000[] = { 0x00780000u, 0x8u, 0x00780010u, 0x8u };\n'
                 'static const PsxOvVariant psx_ov_variants[1] = {\n'

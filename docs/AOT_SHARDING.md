@@ -80,6 +80,11 @@ Image addresses must lie in the KSEG0 main-RAM decode window
 `0x80000000..0x80800000`. Retail 2 MiB hardware mirrors DRAM across all of it and
 expanded 8 MiB targets decode it uniquely, so an image a loader places in a
 mirror is valid; the runtime gates it on the folded bytes the CPU executes.
+On retail RAM an image must also fit inside one 2 MiB mirror: one that crosses
+a mirror boundary (or the 2 MiB end) has no contiguous backing, so the pipeline
+rejects it rather than emit a variant the runtime gate can never accept. A
+profile whose images need the opt-in 8 MB map declares
+`"main_ram_bytes": "0x800000"` (default `0x200000`).
 
 `allow_missing` opts a fixed-address source into static root discovery when the
 generic detector misses it. `entry_word` or `entries` can supply independently

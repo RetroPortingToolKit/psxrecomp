@@ -30,6 +30,9 @@ FRAMEWORK = Path(__file__).resolve().parents[1]
 # expanded 8 MiB targets map it uniquely; both accept an image placed anywhere
 # inside it (a mod engine at 0x80780000 is the retail 4th mirror).
 RAM_WINDOW = (0x80000000, 0x80800000)
+# Live main-RAM sizes the runtime can run with (runtime/include/psx_memory.h):
+# retail 2 MiB unless the opt-in psx.enhancement.8mb-ram package is active.
+RETAIL_RAM_BYTES, EXPANDED_RAM_BYTES = 0x00200000, 0x00800000
 
 
 def number(value):
@@ -43,6 +46,26 @@ def require(condition, message):
 
 def in_ram(base, size):
     return RAM_WINDOW[0] <= base and size > 0 and base + size <= RAM_WINDOW[1]
+
+
+def main_ram_bytes(profile):
+    """Main-RAM size every image of this profile must resolve under.
+
+    Retail 2 MiB is the default. A profile whose images need the opt-in 8 MB
+    map declares ``main_ram_bytes = 0x800000``; nothing else changes it."""
+    value = number(profile.get('main_ram_bytes', RETAIL_RAM_BYTES))
+    require(value in (RETAIL_RAM_BYTES, EXPANDED_RAM_BYTES),
+            f'main_ram_bytes must be 0x200000 or 0x800000, not {value:#x}')
+    return value
+
+
+def ram_resolvable(base, size, ram_bytes):
+    """Mirror of the runtime's psx_ram_resolve for a whole image.
+
+    Retail RAM folds each 2 MiB mirror onto the same DRAM, so an image must fit
+    inside one mirror: one straddling a mirror boundary (or the 2 MiB end) has no
+    contiguous backing and its static variant could never pass the runtime gate."""
+    return in_ram(base, size) and ((base & 0x1FFFFFFF) & (ram_bytes - 1)) + size <= ram_bytes
 
 
 def source_view(disc, spec, views):
@@ -210,11 +233,18 @@ def extent_sources(disc, spec):
     return sources
 
 
-def positioned_sources(disc, specifications, views=None):
+def positioned_sources(disc, specifications, views=None, ram_bytes=RETAIL_RAM_BYTES):
     sources = []
     for spec in specifications:
         view = source_view(disc, spec, views)
         produced = spec_sources(view, spec)
+        for source in produced:
+            base, size = source['base'], len(source['body'])
+            require(ram_resolvable(base, size, ram_bytes),
+                    f"{source['name']}: image {base:#010x}+{size:#x} crosses a "
+                    f"{ram_bytes >> 20} MiB RAM mirror boundary, so the runtime cannot "
+                    'resolve its bytes; declare main_ram_bytes = 0x800000 only if '
+                    'the image needs the 8 MB map')
         if 'mod_package' in spec:
             # A mod image is a different producer than the stock file.
             for source in produced:
@@ -429,7 +459,7 @@ def mod_package_views(profile, disc, project_root):
 
 def prepare(profile, disc, records, output, views=None):
     verify_evidence(disc, profile.get('checks', []), views)
-    sources = positioned_sources(disc, profile['images'], views)
+    sources = positioned_sources(disc, profile['images'], views, main_ram_bytes(profile))
     bios = extractor.bios_resident_records() if profile.get('bios_resident') else []
     for record in records:
         if record.get('producer') == 'bios_resident_manifest':
