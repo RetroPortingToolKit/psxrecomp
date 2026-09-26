@@ -3059,8 +3059,17 @@ static int toolchain_bin_compiler_works(const char* bin) {
             return 0;
     }
 #else
-    if (!join_path(clang, sizeof(clang), bin, "clang") || !path_is_file(clang))
+    if (!join_path(clang, sizeof(clang), bin, "clang") || !path_is_file(clang)) {
+#  if defined(__APPLE__)
+        /* The macOS pack (cmake-clang-v1-macos-universal) ships CMake, Ninja,
+         * ccache and Python only; compiling uses the system toolchain from
+         * Apple's Command Line Tools, checked by macos_system_compiler_works.
+         * A pack without clang is the normal macOS layout, not a broken one. */
+        return 1;
+#  else
         return 0;
+#  endif
+    }
     if (!join_path(lld, sizeof(lld), bin, "ld.lld") || !path_is_file(lld))
         return 0;
 #endif
@@ -3112,6 +3121,50 @@ static int toolchain_bin_compiler_works(const char* bin) {
     unlink(exe);
 #endif
     return ok;
+}
+
+#if defined(__APPLE__)
+/* True when Apple's Command Line Tools are installed and /usr/bin/clang can
+ * compile and link a tiny program. xcode-select runs first so a machine
+ * without the CLT gets a repair note instead of the xcrun install prompt on
+ * every wizard refresh. */
+static int macos_system_compiler_works(void) {
+    char src[256], exe[256], cmd[1024];
+    FILE* f;
+    int ok;
+    if (!run_cmd_exit_zero("xcode-select -p >/dev/null 2>&1"))
+        return 0;
+    snprintf(src, sizeof(src), "/tmp/psxrecomp-cc-probe-%d.c", (int)getpid());
+    snprintf(exe, sizeof(exe), "/tmp/psxrecomp-cc-probe-%d", (int)getpid());
+    f = fopen(src, "wb");
+    if (!f)
+        return 0;
+    fputs("int main(void){return 0;}\n", f);
+    fclose(f);
+    snprintf(cmd, sizeof(cmd), "/usr/bin/clang \"%s\" -o \"%s\" >/dev/null 2>&1",
+             src, exe);
+    ok = run_cmd_exit_zero(cmd);
+    unlink(src);
+    unlink(exe);
+    return ok;
+}
+#endif
+
+/* Pack health says nothing about the macOS system compiler (see above), so
+ * readiness checks it separately and explains how to fix it. The pack itself
+ * is left alone: a missing compiler must never delete a good download. */
+static int host_system_compiler_ready(void) {
+#if defined(__APPLE__)
+    if (macos_system_compiler_works())
+        return 1;
+    snprintf(g_tc_repair_note, sizeof(g_tc_repair_note),
+             "Apple's Command Line Tools are required to build the game. "
+             "Open Terminal, run: xcode-select --install  then reopen this "
+             "app.");
+    return 0;
+#else
+    return 1;
+#endif
 }
 
 static int toolchain_bin_is_healthy(const char* bin) {
@@ -3298,7 +3351,7 @@ static int host_toolchain_is_ready(void) {
     for (attempt = 0; attempt < 3; ++attempt) {
         activate_toolchain_path();
         if (host_portable_cmake_ready())
-            return 1;
+            return host_system_compiler_ready();
         if (!g_toolchain_bin[0])
             break;
         discard_unhealthy_active_toolchain();
