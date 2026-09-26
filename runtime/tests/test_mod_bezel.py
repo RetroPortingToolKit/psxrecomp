@@ -9,7 +9,8 @@ MAIN = (ROOT / "runtime/src/main.cpp").read_text(encoding="utf-8")
 HEADER = (ROOT / "runtime/include/mod_plugins.h").read_text(encoding="utf-8")
 MOD_RUNTIME = (ROOT / "runtime/src/mod_runtime.cpp").read_text(encoding="utf-8")
 BUILTIN = (ROOT / "runtime/src/mod_builtin_bezel.c").read_text(encoding="utf-8")
-CONFIG_H = (ROOT / "recompiler/src/config_loader.h").read_text(encoding="utf-8")
+HOST_PATH = (ROOT / "recompiler/include/host_path.h").read_text(encoding="utf-8")
+CONFIG_H =(ROOT / "recompiler/src/config_loader.h").read_text(encoding="utf-8")
 CONFIG_CPP = (ROOT / "recompiler/src/config_loader.cpp").read_text(
     encoding="utf-8"
 )
@@ -26,6 +27,18 @@ assert "psx_mod_current_resource_path" in HEADER
 assert "psx_mod_set_bezel_artwork" in MAIN
 assert "g_video_renderer = 1;" in MAIN
 assert "mod-owned OpenGL margin artwork" in MAIN
+# Relative artwork paths resolve against the exe directory at load time, never
+# cwd; absolute paths (the builtin resource) pass through host_resolve as-is.
+LOADER = MAIN[MAIN.index("/* Bezel artwork (Mods): load after the GL context exists. */"):]
+LOADER = LOADER[: LOADER.index("gl_renderer_set_bezel(")]
+assert (
+    "PSXRecompV4::host_resolve(\n"
+    "                exe_dir_from_argv(argv[0]), std::filesystem::path(g_bezel_path));"
+) in LOADER
+assert "host_path_is_absolute(path) ? path : root / path" in HOST_PATH
+assert "std::fopen" not in LOADER
+assert "std::filesystem::path bp(g_bezel_path)" not in MAIN
+assert "resolved against the\n * executable's directory, never the current working directory" in HEADER
 assert "current_plugin" in MOD_RUNTIME
 assert 'psx_mod_current_resource_path("artwork"' in BUILTIN
 assert 'psx_mod_register_activation_plugin("psx.bezel"' in BUILTIN

@@ -231,6 +231,10 @@ int psx_mod_set_auto_skip_fmv(int enabled);
  * Draw still artwork behind the game image in OpenGL letterbox/pillarbox
  * margins. The image path is an owner-selected mod resource; with no enabled
  * mod/resource path, the margins remain the historical black clear.
+ * An absolute path is used unchanged. A relative path (e.g. "bezels/x.png"
+ * for artwork a title stages beside its binary) is resolved against the
+ * executable's directory, never the current working directory, when the
+ * artwork is loaded.
  */
 int psx_mod_set_bezel_artwork(const char* path);
 
