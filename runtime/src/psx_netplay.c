@@ -20,6 +20,9 @@
 #else
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 #if defined(__linux__)
@@ -4009,7 +4012,13 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
                 }
             }
 #else
+#if defined(__APPLE__)
+            uint32_t cap = (uint32_t)sizeof(exe);
+            ssize_t n = _NSGetExecutablePath(exe, &cap) == 0
+                            ? (ssize_t)strlen(exe) : -1;
+#else
             ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+#endif
             if (n < 0) {
                 snprintf(exe, sizeof(exe), "(unknown)");
             } else {
