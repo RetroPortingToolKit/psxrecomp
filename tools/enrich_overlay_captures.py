@@ -7,12 +7,14 @@ step. It shows what the compiler's derivation finds in each captured image,
 using exactly the same code (compile_overlays.derive_static_roots), and can
 still write the roots into ``static_discovery_entry_pcs`` for offline A/B.
 
-Every derived root needs an image-local boundary proof (a non-delay-slot
-stack-frame prologue, or a preceding ``jr $ra`` plus the bounded CFG probe).
 A jal or pointer elsewhere in the image is not proof on its own: overlay
 regions are swapped, so shared code can call an address that is a function
-start only in a sibling image. compile_overlays.py additionally applies the
-no-split guard to every root, derived or not.
+start only in a sibling image. A candidate is STRONG when this image's bytes
+bound it (a non-delay-slot stack-frame prologue, or a preceding ``jr $ra``
+plus the bounded CFG probe) and WEAK when only the CFG probe accepts it; a
+weak candidate is kept only if no possible function start below it reaches
+it (compile_overlays.derive_enrichment_roots). compile_overlays.py
+additionally applies the no-split guard to every root, derived or not.
 """
 
 import argparse
@@ -27,10 +29,23 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import compile_overlays as CO  # noqa: E402
 
 
-def derived_roots(data, base, sources=None):
+def derived_roots(data, base, explicit=(), sources=None, stats=None):
     """The compiler's own enrichment roots for one captured image."""
-    return sorted(CO.derive_static_roots(data, base, len(data),
-                                         sources=sources))
+    roots, info = CO.derive_enrichment_roots(data, base, len(data),
+                                             explicit=explicit)
+    if sources is not None:
+        weak = set()
+        CO.derive_static_roots(data, base, len(data), sources=sources,
+                               weak_out=weak)
+    if stats is not None:
+        stats.update(info)
+    return sorted(roots)
+
+
+def explicit_roots(record):
+    return set().union(*(CO._parse_addr_list(record.get(key, [])) for key in (
+        'function_entry_pcs', 'dispatch_entry_pcs',
+        'static_discovery_entry_pcs', 'seeds')))
 
 
 def enrich_record(record):
@@ -45,7 +60,8 @@ def enrich_record(record):
     if size != len(data) or base & 3 or len(data) & 3:
         raise ValueError('capture bytes must be a word-aligned image matching size')
     prior = CO._parse_addr_list(record.get('static_discovery_entry_pcs', []))
-    roots = sorted(prior | set(derived_roots(data, base)))
+    roots = sorted(prior | set(derived_roots(data, base,
+                                             explicit_roots(record))))
     out['static_discovery_entry_pcs'] = [f'0x{addr:08X}' for addr in roots]
     return out, len(roots) - len(prior)
 
@@ -72,9 +88,11 @@ def main(argv=None):
         if args.list:
             base = CO._parse_addr(record['load_addr'])
             data = base64.b64decode(record['bytes_b64'])
-            sources = {}
-            roots = derived_roots(data, base, sources)
-            print(f'capture {index} load=0x{base:08X}: {len(roots)} derived root(s)')
+            sources, stats = {}, {}
+            roots = derived_roots(data, base, explicit_roots(record),
+                                  sources, stats)
+            print(f'capture {index} load=0x{base:08X}: {len(roots)} derived '
+                  f'root(s) {stats}')
             for addr in roots:
                 print(f'  0x{addr:08X}  {"+".join(sorted(sources[addr]))}')
         enriched.append(item)

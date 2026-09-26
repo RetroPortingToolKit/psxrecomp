@@ -1335,28 +1335,38 @@ def _frameless_dispatch_root_proven(data: bytes, load_addr: int, size: int,
 #      classify_overlay_seeds). A candidate that a root below it reaches by
 #      fallthrough or branch (never by jal) -- walked without the caps of the
 #      candidates in between -- is inside that function. It is demoted to
-#      DISPATCH_INTERIOR, an alias entry that never caps. Applied to dispatch entries, captured function
-#      entries, static discovery roots, TOML entries, derived call targets and
-#      enrichment alike; only promoted kernel orphans (DISPATCH_ROOT) are
-#      exempt, because they are promoted precisely when no walk covers them.
-#      A candidate that sits in a delay slot is never a root and never an
-#      alias (entering a host at a delay slot would make the slot a block
-#      leader); it is left to the interpreter.
+#      DISPATCH_INTERIOR, an alias entry that never caps. Applied to dispatch
+#      entries, captured function entries, static discovery roots, TOML
+#      entries, derived call targets and enrichment alike; only promoted
+#      kernel orphans (DISPATCH_ROOT) are exempt, because they are promoted
+#      precisely when no walk covers them. A candidate that sits in a delay
+#      slot is never a root and never an alias (entering a host at a delay
+#      slot would make the slot a block leader); it is left to the
+#      interpreter.
 #
-#   2. Image-local entry proof for enrichment (image_local_entry_proven). A
+#   2. Enrichment evidence is judged per image (derive_enrichment_roots). A
 #      jal or a pointer table is call evidence for the image that is resident
 #      when it executes, and overlay regions are swapped: shared engine code
 #      at 0x80100984 is byte-identical in 12 Tomba area images and calls
-#      0x8011B1CC, which is a function start in exactly one of them. So a jal
-#      or table target becomes a root only when THIS image's bytes also prove
-#      a boundary there: a non-delay-slot stack-frame prologue, or a preceding
-#      `jr $ra` (plus alignment padding) together with the bounded CFG probe.
-#      A frameless target that only the CFG probe accepts is not rooted from
-#      enrichment; if a rooted walk calls it, the classifier's own derived
-#      DIRECT_JAL_TARGET path still finds it, under the guard.
+#      0x8011B1CC, which is a function start in exactly one of them. So:
+#        * STRONG: a non-delay-slot stack-frame prologue, or a jal/table
+#          target that THIS image's bytes also bound (preceding `jr $ra` plus
+#          alignment padding, and the bounded CFG probe). A strong root that
+#          turns out to be inside a function is demoted by rule 1.
+#        * WEAK: a jal/table target with only the CFG probe. It is added only
+#          when no possible function start below it reaches it -- every
+#          capture root, every strong or weak candidate, every prologue and
+#          every word after an unconditional transfer's delay slot, walked
+#          with no caps at all -- and a weak candidate that fails is DROPPED,
+#          never aliased. X00's 0x8011B1CC is reached from the prologue at
+#          host 0x8011AC10, so it is dropped there and kept in X10.
+#      Measured on Tomba (25 AOT images): strong-only enrichment adds zero net
+#      roots after rule 1; the weak class is where the coverage is.
 #
 # With both in place a wrong guess can only cost speed (an alias entry or an
-# interpreted PC), never correctness.
+# interpreted PC), never correctness: a surviving weak root inside a function
+# whose start none of the above recognises can only begin a partial walk of
+# an unrooted (interpreted) host; it caps no native walk.
 
 # Tool-owned capture key: set on a conservative retry recipe so enrichment is
 # not derived again after the enriched recipe was rejected.
@@ -1424,13 +1434,17 @@ def image_local_entry_proven(data: bytes, load_addr: int, size: int,
 
 def derive_static_roots(data: bytes, load_addr: int, size: int,
                         producer_ranges=(), analysis_hi: int | None = None,
-                        sources: dict | None = None) -> set[int]:
-    """Enrichment: independently proven function starts in one image.
+                        sources: dict | None = None,
+                        weak_out: set | None = None) -> set[int]:
+    """Enrichment candidates in one image: the STRONG set is returned.
 
     Candidates come from three generic sources -- stack-frame prologues,
-    direct jal targets, and runs of three or more in-image pointers -- and
-    every candidate must pass image_local_entry_proven. ``sources`` (optional)
-    receives {addr: set of source names} for inspection.
+    direct jal targets, and runs of three or more in-image pointers. Those
+    passing image_local_entry_proven are STRONG. A jal/table target that only
+    passes the bounded CFG probe (plausible_callable_target, not in a delay
+    slot) is WEAK and goes to ``weak_out`` when given; derive_enrichment_roots
+    decides which weak ones survive. ``sources`` (optional) receives
+    {addr: set of source names} for every returned or weak address.
     """
     hi = load_addr + size if analysis_hi is None else analysis_hi
     ranges = sorted(producer_ranges or ())
@@ -1480,7 +1494,84 @@ def derive_static_roots(data: bytes, load_addr: int, size: int,
             roots.add(addr)
             if sources is not None:
                 sources[addr] = set(why)
+        elif (weak_out is not None and why & {'jal', 'pointer_table'} and
+              not addr & 3 and load_addr <= addr < hi and
+              not _in_delay_slot(data, load_addr, addr) and
+              plausible_callable_target(data, load_addr, size, addr,
+                                        min(producer_hi, hi))):
+            weak_out.add(addr)
+            if sources is not None:
+                sources[addr] = set(why) | {'weak'}
     return roots
+
+
+def possible_function_starts(data: bytes, load_addr: int,
+                             analysis_hi: int, producer_ranges=()) -> set[int]:
+    """Every address a function could plausibly start at, for the WEAK
+    enrichment test: image start, producer starts, stack-frame prologues, and
+    the first non-padding word after an unconditional transfer's delay slot
+    (`jr`, `j`, always-taken branch). Generous on purpose -- a wider host set
+    can only drop more weak candidates."""
+    starts = {load_addr}
+    starts.update(lo for lo, _hi in producer_ranges or ())
+    for addr in range(load_addr, analysis_hi, 4):
+        word = _word_at(data, load_addr, addr)
+        if word is None or not _is_valid_mips_word(word):
+            continue
+        if _is_addiu_sp_neg(word) and not _in_delay_slot(data, load_addr, addr):
+            starts.add(addr)
+        if _is_control_flow(word):
+            kind, _target = _classify_cf(addr, word)
+            if kind in ('j', 'jr', 'jr_ra'):
+                nxt = addr + 8
+                for _ in range(8):
+                    if nxt >= analysis_hi or _word_at(data, load_addr, nxt) != 0:
+                        break
+                    nxt += 4
+                if nxt < analysis_hi:
+                    starts.add(nxt)
+    return starts
+
+
+def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
+                            producer_ranges=(), analysis_hi: int | None = None,
+                            explicit=(), walk=None) -> tuple[set, dict]:
+    """The enrichment roots compile_overlays adds for one image.
+
+    STRONG candidates are returned as-is (the no-split guard demotes any that
+    lie inside a function). A WEAK candidate is returned only when no other
+    possible function start -- explicit capture roots, strong and weak
+    candidates, possible_function_starts() -- reaches it by an uncapped walk.
+    ``walk(entry, cap)`` is the caller's memoized _walk_overlay_function.
+    Returns (roots, stats).
+    """
+    hi = load_addr + size if analysis_hi is None else analysis_hi
+    if walk is None:
+        cache = {}
+
+        def walk(entry, cap):
+            key = (entry, cap)
+            if key not in cache:
+                cache[key] = _walk_overlay_function(
+                    data, load_addr, size, entry, cap, producer_ranges)
+            return cache[key]
+    weak = set()
+    strong = derive_static_roots(data, load_addr, size, producer_ranges, hi,
+                                 weak_out=weak)
+    hosts = ({a for a in explicit if load_addr <= a < hi and not a & 3} |
+             strong | weak |
+             possible_function_starts(data, load_addr, hi, producer_ranges))
+    reached = set()
+    if weak:
+        for host in sorted(hosts):
+            hits = walk(host, load_addr + size)['visited'] & weak
+            hits.discard(host)
+            reached |= hits
+    accepted = weak - reached
+    return strong | accepted, {
+        'strong': len(strong), 'weak': len(weak),
+        'weak_accepted': len(accepted), 'weak_dropped': len(reached),
+        'hosts': len(hosts)}
 
 
 def no_split_partition(candidates, exempt, walk, hi: int):
@@ -1514,7 +1605,12 @@ def no_split_partition(candidates, exempt, walk, hi: int):
         index = 0
         while index < len(roots):
             host = roots[index]
+            # Uncapped reach, plus the walk capped at the successor: a wider
+            # range can reject a jump table (more sources may enter its
+            # protected suffix), so the capped walk is not always a subset.
             reach = walk(host, hi)['visited']
+            if index + 1 < len(roots):
+                reach = reach | walk(host, roots[index + 1])['visited']
             end = index + 1
             while (end < len(roots) and roots[end] in reach and
                    roots[end] not in exempt):
@@ -1891,9 +1987,13 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     # demotes jump-table case labels and unproven frameless heads). Every
     # derived root still passes include() and the no-split guard below.
     derived_static_roots = set()
+    enrichment_stats = {}
     if root_enrichment:
-        derived_static_roots = derive_static_roots(
-            data, load_addr, size, producer_ranges, fragment_hi)
+        derived_static_roots, enrichment_stats = derive_enrichment_roots(
+            data, load_addr, size, producer_ranges, fragment_hi,
+            explicit=(static_discovery_entries | captured_function_entries |
+                      dispatch_entry_pcs | toml_entries | legacy_seeds),
+            walk=walk)
         derived_static_roots -= (static_discovery_entries |
                                  captured_function_entries |
                                  dispatch_entry_pcs | toml_entries |
@@ -2323,6 +2423,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         # No-split guard / enrichment provenance, for audits and retries.
         'root_enrichment': bool(root_enrichment),
         'derived_static_roots': derived_static_roots,
+        'enrichment_stats': enrichment_stats,
         'guard_demoted': guard_demoted,
         'delay_slot_rejected': delay_slot_rejected,
     }
@@ -2375,8 +2476,12 @@ def print_seed_audit(audit: dict) -> None:
     print(f'toml_entries_included: {audit["counts"].get("TOML_DECLARED_ENTRY", 0)}')
     print(f'dispatch_interior_included: {audit["counts"].get("DISPATCH_INTERIOR", 0)}')
     print(f'dispatch_roots_promoted: {audit["counts"].get("DISPATCH_ROOT", 0)}')
+    stats = audit.get('enrichment_stats') or {}
     print(f'root_enrichment: {"on" if audit.get("root_enrichment") else "off"}'
-          f' (derived {len(audit.get("derived_static_roots", ()))})')
+          f' (derived {len(audit.get("derived_static_roots", ()))}'
+          + (f'; strong {stats["strong"]}, weak {stats["weak"]} accepted '
+             f'{stats["weak_accepted"]} dropped {stats["weak_dropped"]}'
+             if stats else '') + ')')
     guard_demoted = audit.get('guard_demoted', {})
     print(f'no_split_guard_demoted: {len(guard_demoted)}')
     print(f'delay_slot_roots_rejected: '

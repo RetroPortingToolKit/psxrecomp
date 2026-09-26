@@ -218,9 +218,14 @@ class NoSplitGuardTests(unittest.TestCase):
 
     def test_shared_jal_into_mid_body_is_not_rooted(self):
         data, engine, host, target = self._cross_image(False)
-        derived = CO.derive_static_roots(data, LOAD, len(data))
-        self.assertNotIn(target, derived)
-        self.assertTrue({engine, host} <= derived)
+        weak = set()
+        strong = CO.derive_static_roots(data, LOAD, len(data), weak_out=weak)
+        self.assertNotIn(target, strong)
+        self.assertIn(target, weak)      # the CFG probe alone accepts it
+        self.assertTrue({engine, host} <= strong)
+        derived, stats = CO.derive_enrichment_roots(data, LOAD, len(data))
+        self.assertNotIn(target, derived)   # host's prologue reaches it
+        self.assertEqual(stats['weak_dropped'], 1)
         # Enrichment on (default): the rooted engine walk still derives the
         # jal target, and the guard absorbs it into its host.
         seeds, audit = classify(data, True)
@@ -234,6 +239,26 @@ class NoSplitGuardTests(unittest.TestCase):
         self.assertNotIn(target, root_seeds(seeds))
         self.assertEqual(audit['guard_demoted'][target],
                          ('STATIC_DISCOVERY_ROOT', host))
+
+    def test_weak_target_nothing_reaches_is_rooted(self):
+        # A frameless function right after another function's tail jump,
+        # called by jal: no `jr $ra` before it, so no boundary proof, but no
+        # possible function start reaches it either.
+        caller, tail, leaf, far = LOAD, LOAD + 0x40, LOAD + 0x4C, LOAD + 0x80
+        data = image({caller: FRAME, caller + 4: jal(leaf), caller + 8: NOP,
+                      caller + 12: JR_RA, caller + 16: UNFRAME,
+                      tail: ADDIU,
+                      tail + 4: 0x08000000 | ((far >> 2) & 0x03FFFFFF),
+                      tail + 8: NOP,
+                      leaf: ADDIU, leaf + 4: JR_RA, leaf + 8: NOP,
+                      far: JR_RA, far + 4: NOP}, 0x100)
+        weak = set()
+        CO.derive_static_roots(data, LOAD, len(data), weak_out=weak)
+        self.assertIn(leaf, weak)
+        derived, _stats = CO.derive_enrichment_roots(data, LOAD, len(data))
+        self.assertIn(leaf, derived)
+        seeds, _audit = classify(data, True)
+        self.assertIn(leaf, root_seeds(seeds))
 
     def test_shared_jal_into_real_function_in_sibling_image_is_rooted(self):
         data, _engine, _host, target = self._cross_image(True)

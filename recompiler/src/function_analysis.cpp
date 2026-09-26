@@ -1650,8 +1650,15 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
                 const uint32_t host = roots[index];
                 kept.push_back(host);
                 const ExactWalkResult reach = walk(host, analysis_end);
+                // A wider range can reject a jump table, so the walk capped
+                // at the successor is not always a subset: consult both.
+                const ExactWalkResult succ = index + 1 < roots.size()
+                    ? walk(host, roots[index + 1]) : ExactWalkResult{};
+                auto reached = [&](uint32_t a) {
+                    return reach.visited.count(a) || succ.visited.count(a);
+                };
                 size_t end = index + 1;
-                while (end < roots.size() && reach.visited.count(roots[end]) &&
+                while (end < roots.size() && reached(roots[end]) &&
                        !trusted_entries.count(roots[end]))
                     end++;
                 while (end > index + 1) {
