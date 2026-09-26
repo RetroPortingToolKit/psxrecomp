@@ -4929,6 +4929,7 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
                            env=sub_env)
         if r.returncode != 0:
             return None, f'recompiler-error: {(r.stderr or r.stdout or "").strip()}'
+        report_recompiler_guard_absorptions(r.stdout)
         full_c = ranges_src = None
         for fn in os.listdir(out_dir_tmp):
             if fn.endswith('_full.c'):

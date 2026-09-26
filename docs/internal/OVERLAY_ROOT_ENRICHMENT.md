@@ -74,6 +74,37 @@ mis-splits**, then as much coverage as possible.
    - Then play and explore areas that load new overlays: levels, menus,
      cutscenes, save and load.
 
+## Status: steps 1 and 2 (beads-eio.3.177)
+
+- **Guard** (`no_split_partition` in `compile_overlays.py`, same rule in
+  `FunctionAnalyzer::analyze_exact_entries` for overlay mode). For each root,
+  the following candidates its uncapped walk reaches are absorbed together
+  (a switch resolves only when all its case labels are inside the walk); the
+  run stops at the first unreached root, so a tail call over another function
+  keeps its target. Applies to every root source; promoted kernel orphans are
+  exempt. Delay-slot candidates are never roots or aliases.
+- **Evidence.** A jal or pointer only proves a function start in the image
+  that is resident when it runs. STRONG = a prologue, or a jal/table target
+  that this image bounds (`jr $ra` before it plus the CFG probe). WEAK = CFG
+  probe only; kept only if no possible function start reaches it, and dropped
+  if a host's local branch jumps over it. Cross-producer calls are never weak
+  evidence.
+- **Default on, one code path.** `classify_overlay_seeds` derives the roots;
+  `tools/enrich_overlay_captures.py` is an inspection tool built on the same
+  functions. `--no-root-enrichment` / `PSX_OVERLAY_ROOT_ENRICHMENT=0` is
+  diagnostic only.
+- **Cache key.** `tools/compile_overlays.py` is in
+  `runtime/codegen_hash_sources.cmake`, so any root-policy change moves the
+  cache namespace.
+- **Tomba (25 AOT images).** Emitted fallthrough splits: master 57, #386
+  enrichment 2,072, guard 0. Fingerprints match master on every value and
+  timing field over the 30.7k-frame route and the 32k attract run. Sound
+  enrichment adds almost nothing on Tomba: 12.3k of #386's extra roots were
+  jump-table case labels inside functions. The way to that coverage is
+  resolving those tables, not rooting their labels.
+- **Not caused by splits:** master's own 3-4 cycle drift from the interpreter
+  at frame 2111. It is unchanged with the guard.
+
 ## Done when
 
 - The no-split guard is in, with a test that a mid-function candidate is
