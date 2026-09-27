@@ -1210,6 +1210,24 @@ function(_psxrt_stage_mod_catalog target preloaded_dir)
         list(APPEND _purge "${_out}/mods/packages/${_id}")
     endforeach()
 
+    # The staging below is a POST_BUILD step, so it only runs when ${target}
+    # relinks. Editing a manifest (or any package asset) alone left a stale copy
+    # in mods/bundled while the build reported success. Making every staged
+    # package file a link dependency re-stages on any change; CONFIGURE_DEPENDS
+    # re-globs so files added later are tracked too.
+    set(_pkg_files "")
+    foreach(_id IN LISTS _builtin_ids)
+        file(GLOB_RECURSE _f CONFIGURE_DEPENDS "${_builtin_root}/${_id}/*")
+        list(APPEND _pkg_files ${_f})
+    endforeach()
+    foreach(_id IN LISTS _game_ids)
+        file(GLOB_RECURSE _f CONFIGURE_DEPENDS "${preloaded_dir}/packages/${_id}/*")
+        list(APPEND _pkg_files ${_f})
+    endforeach()
+    if(_pkg_files)
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS ${_pkg_files})
+    endif()
+
     list(LENGTH _ids _n_ids)
     add_custom_command(TARGET ${target} POST_BUILD
         # Wipe first: copy_directory MERGES, so a package deleted from source
