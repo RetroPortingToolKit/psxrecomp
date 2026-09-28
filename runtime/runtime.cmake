@@ -17,6 +17,7 @@ set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_windows_manifest.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/overlay_static_sources.cmake")
 
@@ -1445,6 +1446,8 @@ function(psxrecomp_add_runtime_target target)
         ${PSXRT_EXTRAS_SOURCES}
     )
     target_link_libraries(${target} PRIVATE chdr-static)
+    # UTF-8 process code page on Windows (issue #371).
+    psxrecomp_windows_manifest(${target})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global
     # CMAKE_C_STANDARD setting. cxx_std_17 likewise — game CMakeLists may omit
@@ -1593,29 +1596,13 @@ function(psxrecomp_add_runtime_target target)
     endif()
     if(PSXRT_APP_ICON AND EXISTS "${PSXRT_APP_ICON}")
         if(WIN32)
-            # clang/llvm-mingw CI needs an RC compiler or the .rc is ignored and
-            # the PE ships without an embedded icon.
-            enable_language(RC)
-            if(NOT CMAKE_RC_COMPILER)
-                find_program(CMAKE_RC_COMPILER
-                    NAMES llvm-rc llvm-windres windres
-                    HINTS
-                        "$ENV{RETCOMM_TOOLCHAIN}/bin"
-                        "$ENV{CMAKE_CLANG_V1}/bin"
-                    DOC "Windows resource compiler for APP_ICON .rc")
-            endif()
-            if(CMAKE_RC_COMPILER)
-                string(REPLACE "\\" "/" _psxrt_ico_fwd "${PSXRT_APP_ICON}")
-                set(_psxrt_rc "${CMAKE_CURRENT_BINARY_DIR}/${target}_app_icon.rc")
-                file(WRITE "${_psxrt_rc}" "IDI_ICON1 ICON \"${_psxrt_ico_fwd}\"\n")
-                target_sources(${target} PRIVATE "${_psxrt_rc}")
-                message(STATUS "psxrecomp ${target}: APP_ICON=${PSXRT_APP_ICON} (RC=${CMAKE_RC_COMPILER})")
-            else()
-                message(WARNING
-                    "psxrecomp ${target}: APP_ICON set but no RC compiler "
-                    "(llvm-rc/windres) — PE will have no embedded icon; "
-                    "runtime still loads assets/psxrecomp.png via SDL")
-            endif()
+            # The RC language is enabled (and its compiler required) by
+            # cmake/psx_windows_manifest.cmake.
+            string(REPLACE "\\" "/" _psxrt_ico_fwd "${PSXRT_APP_ICON}")
+            set(_psxrt_rc "${CMAKE_CURRENT_BINARY_DIR}/${target}_app_icon.rc")
+            file(WRITE "${_psxrt_rc}" "IDI_ICON1 ICON \"${_psxrt_ico_fwd}\"\n")
+            target_sources(${target} PRIVATE "${_psxrt_rc}")
+            message(STATUS "psxrecomp ${target}: APP_ICON=${PSXRT_APP_ICON} (RC=${CMAKE_RC_COMPILER})")
         else()
             message(STATUS "psxrecomp ${target}: APP_ICON=${PSXRT_APP_ICON} (window icon via PNG)")
         endif()

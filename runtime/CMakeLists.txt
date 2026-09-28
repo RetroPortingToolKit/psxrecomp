@@ -85,6 +85,19 @@ if(BUILD_TESTING)
     else()
         message(STATUS "gl_readback_region_test: not registered (requires MinGW, SDL3 headers/static library in PSX_GL_READBACK_SDL_ROOT and gcc.exe/g++.exe in PSX_GL_READBACK_COMPILER_BIN)")
     endif()
+    # Windows UTF-8 text boundary (issue #371): the helpers legacy Windows
+    # relies on, and — with the shipped manifest — a UTF-8 process code page.
+    if(WIN32)
+        add_executable(win_utf8_helpers_test tests/test_win_utf8.cpp)
+        target_include_directories(win_utf8_helpers_test PRIVATE include)
+        add_test(NAME win_utf8_helpers_test COMMAND win_utf8_helpers_test)
+        add_executable(win_utf8_manifest_test tests/test_win_utf8.cpp)
+        target_include_directories(win_utf8_manifest_test PRIVATE include)
+        psxrecomp_windows_manifest(win_utf8_manifest_test)
+        add_test(NAME win_utf8_manifest_test
+                 COMMAND win_utf8_manifest_test --expect-utf8-acp)
+    endif()
+
     add_executable(launcher_device_roundtrip_test
         tests/test_launcher_device_roundtrip.cpp)
     target_include_directories(launcher_device_roundtrip_test PRIVATE include)

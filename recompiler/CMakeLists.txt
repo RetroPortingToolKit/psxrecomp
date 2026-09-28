@@ -918,6 +918,15 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND AND NOT MSVC)
             --cc ${CMAKE_C_COMPILER})
 endif()
 
+# UTF-8 process code page on Windows for every shipped tool (issue #371): they
+# take disc/BIOS/output paths from argv and hand them to fopen/Win32 calls.
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/psx_windows_manifest.cmake)
+foreach(_psx_tool psxrecomp-game psxrecomp-toml psxrecomp psxrecomp-analyze psxrecomp-bios)
+    if(TARGET ${_psx_tool})
+        psxrecomp_windows_manifest(${_psx_tool})
+    endif()
+endforeach()
+
 # Reads both CMakeLists.txt files as text, so it catches an orphan in either
 # project from whichever one is being configured. Placed before the collision
 # guard, which must stay last because it needs every target declared; this one
