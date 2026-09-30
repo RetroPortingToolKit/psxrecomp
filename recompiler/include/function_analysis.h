@@ -172,10 +172,22 @@ public:
     // reachable from them. Used by runtime-loaded overlays and opt-in main-EXE
     // reachable discovery. Unresolved jalr/indirect targets do not mint
     // functions; evidence-backed entries must be supplied explicitly.
+    //
+    // no_split_guard (overlay mode): an EXPLICIT entry that the entry below
+    // it reaches by fallthrough or branch -- walked with the entry's own cap
+    // removed -- is inside that function. It is absorbed like a derived
+    // call target and exported in absorbed_entries (an alias, never a cap).
+    // `trusted_entries` (classifier-promoted dispatch roots) are exempt.
+    // compile_overlays.py applies the same rule before writing seeds; this is
+    // the enforcement point for walk proofs only this analyzer can make
+    // (computed-stride and self-limited jump tables). Off by default so the
+    // main-EXE reachable-discovery partition is unchanged.
     FunctionAnalysisResult analyze_exact_entries(
         const std::vector<uint32_t>& entries,
         const std::vector<std::pair<uint32_t, uint32_t>>& producer_ranges = {},
-        const std::set<uint32_t>& cross_call_allow = {});
+        const std::set<uint32_t>& cross_call_allow = {},
+        bool no_split_guard = false,
+        const std::set<uint32_t>& trusted_entries = {});
 
     // Add a forced entry point address that is treated as a function start
     // even if it has no standard ADDIU $sp prologue. The function will be

@@ -760,6 +760,83 @@ int main() {
           thunk_starts.count(kLoad + 0x610),
           "packed BIOS thunk bounds the following frameless leaf");
 
+    // ---- No-split guard on EXPLICIT entries (overlay mode) ----------------
+    // A root is a hard cap, so an explicit entry that the entry below it
+    // reaches by fallthrough splits that function (beads-eio.3.177: Tomba
+    // X00 root 0x8011B1CC, a subu mid-way through host 0x8011AC10).
+    {
+        auto split_image = make_exe_buffer(0x1000);
+        put32(split_image, text + 0x100, 0x27BDFFE0u); // addiu sp,sp,-32
+        put32(split_image, text + 0x104, 0x24420001u);
+        put32(split_image, text + 0x108, 0x00431023u); // subu v0,v0,v1
+        put32(split_image, text + 0x10C, 0x03E00008u);
+        put32(split_image, text + 0x110, 0x27BD0020u);
+        auto split_exe = parse(split_image);
+        PSXRecomp::FunctionAnalyzer unguarded(split_exe);
+        CHECK(starts(unguarded.analyze_exact_entries(
+                  {kLoad + 0x100, kLoad + 0x108})) ==
+                  std::set<uint32_t>({kLoad + 0x100, kLoad + 0x108}),
+              "without the guard an explicit mid-function entry still caps");
+        PSXRecomp::FunctionAnalyzer guarded(split_exe);
+        const auto guarded_result = guarded.analyze_exact_entries(
+            {kLoad + 0x100, kLoad + 0x108}, {}, {}, true);
+        CHECK(starts(guarded_result) == std::set<uint32_t>({kLoad + 0x100}),
+              "no-split guard absorbs an explicit entry reached by fallthrough");
+        bool aliased = false;
+        for (const auto& absorbed : guarded_result.absorbed_entries)
+            aliased |= absorbed.addr == kLoad + 0x108 &&
+                       absorbed.host_start == kLoad + 0x100 &&
+                       absorbed.addr < absorbed.host_end;
+        CHECK(aliased, "absorbed explicit entry is exported as a hosted alias");
+
+        PSXRecomp::FunctionAnalyzer trusted(split_exe);
+        CHECK(starts(trusted.analyze_exact_entries(
+                  {kLoad + 0x100, kLoad + 0x108}, {}, {}, true,
+                  {kLoad + 0x108})) ==
+                  std::set<uint32_t>({kLoad + 0x100, kLoad + 0x108}),
+              "trusted (promoted dispatch) entries are exempt from the guard");
+    }
+    {
+        // Every case label of a switch is an explicit entry. Each one caps
+        // the host below its siblings, so the table (which resolves only when
+        // all of its targets are inside the walk) is only visible when the
+        // whole run of case labels is absorbed together.
+        auto sw = make_ape_switch();
+        auto sw_exe = parse(sw.image);
+        std::vector<uint32_t> entries = {sw.entry};
+        entries.insert(entries.end(), sw.cases.begin(), sw.cases.end());
+        PSXRecomp::FunctionAnalyzer guarded(sw_exe);
+        const auto result = guarded.analyze_exact_entries(entries, {}, {}, true);
+        CHECK(starts(result) == std::set<uint32_t>({sw.entry}),
+              "no-split guard absorbs every case-label entry of a switch host");
+        size_t hosted = 0;
+        for (const auto& absorbed : result.absorbed_entries)
+            hosted += absorbed.host_start == sw.entry;
+        CHECK(hosted == sw.cases.size(),
+              "every absorbed case label is hosted by the switch function");
+    }
+    {
+        // A forward tail call over an unrelated function must not demote the
+        // tail-call target: the intervening root would leave it hostless.
+        auto tail_image = make_exe_buffer(0x1000);
+        put32(tail_image, text + 0x700, 0x08000000u |
+                                        (((kLoad + 0x740) >> 2) & 0x03FFFFFFu));
+        put32(tail_image, text + 0x704, 0x00000000u);
+        put32(tail_image, text + 0x720, 0x03E00008u);
+        put32(tail_image, text + 0x724, 0x00000000u);
+        put32(tail_image, text + 0x740, 0x24020001u);
+        put32(tail_image, text + 0x744, 0x03E00008u);
+        put32(tail_image, text + 0x748, 0x00000000u);
+        auto tail_exe = parse(tail_image);
+        PSXRecomp::FunctionAnalyzer guarded(tail_exe);
+        CHECK(starts(guarded.analyze_exact_entries(
+                  {kLoad + 0x700, kLoad + 0x720, kLoad + 0x740},
+                  {}, {}, true)) ==
+                  std::set<uint32_t>(
+                      {kLoad + 0x700, kLoad + 0x720, kLoad + 0x740}),
+              "tail call over an unrelated root keeps its target a root");
+    }
+
     PSXRecomp::FunctionAnalyzer seeded_analyzer(exe);
     const auto seeded = starts(
         seeded_analyzer.analyze_exact_entries({kLoad, kLoad + 0x200}));
