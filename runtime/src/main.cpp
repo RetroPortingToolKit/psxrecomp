@@ -1,3 +1,4 @@
+#include "mod_netplay.h"
 /* main.cpp — Phase 3 runtime entry point.
  *
  * Loads BIOS ROM, initializes CPU state + SDL display, calls into
@@ -1582,6 +1583,8 @@ static int g_netplay_content_negotiation = 0;
  * fingerprint before guest execution). */
 static bool netplay_commit_mods(const std::filesystem::path& disc,
                                 std::string* error) {
+    if (psx_mod_netplay_profile())
+        return PSXRecompV4::mod_runtime_commit_netplay(disc, error);
     if (!g_netplay_content_negotiation)
         return PSXRecompV4::mod_runtime_commit_netplay_view(disc, error);
     const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
@@ -1612,6 +1615,21 @@ extern "C" int psx_mod_set_widescreen_hud_size(int proportional) {
     if (proportional != 0 && proportional != 1) return 0;
     gpu_ws_set_auto_ui_proportional(proportional);
     return 1;
+}
+
+static int title_netplay_aspect_index(int num, int den) {
+    if (num <= 0 || den <= 0) return 0;
+    return num * 9 == den * 21 ? 2 : num * 9 == den * 16 ? 1 : 0;
+}
+
+static void apply_title_netplay_aspect(bool netplay) {
+    const PSXModNetplayProfile *profile = psx_mod_netplay_profile();
+    if (!netplay || !profile || !profile->fixed_aspect_mask) return;
+    const int index = psx_mod_netplay_aspect();
+    const unsigned num = index == 2 ? 21u : index == 1 ? 16u : 4u;
+    const unsigned den = index ? 9u : 3u;
+    (void)psx_mod_set_fixed_display_aspect(num, den);
+    std::fprintf(stdout, "psxrecomp: title netplay view = %u:%u (fixed)\n", num, den);
 }
 
 extern "C" int psx_mod_set_fixed_display_aspect(
@@ -7511,6 +7529,10 @@ static void savestate_menu_move(int delta) {
 }
 
 static int savestate_submit_slot(int slot, int save) {
+    if (!psx_mod_netplay_savestates_supported()) {
+        host_osd_push("Save states are unavailable in this co-op netplay mode", 1800);
+        return 0;
+    }
     if (!save && !savestate_slot_exists(slot)) {
         char msg[32];
         snprintf(msg, sizeof(msg), "Slot %d is empty", slot + 1);
@@ -12263,7 +12285,7 @@ namespace {
         caps.force_input_relay = g_lnch_force_input_relay != 0;
         caps.relay_host = g_lnch_relay_host != 0;
         caps.force_turn = g_lnch_force_turn != 0;
-        caps.rollback = g_lnch_rollback != 0;
+        caps.rollback = g_lnch_rollback != 0 && psx_mod_netplay_rollback_supported();
         caps.multitap_analog = g_lnch_multitap_analog != 0;
         if (s) caps.multitap_analog = s->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
@@ -12274,6 +12296,15 @@ namespace {
             std::memset(caps.mods, 0, sizeof(caps.mods));
         }
         return caps;
+    }
+
+    void ae_apply_title_netplay_launch_aspect(int local_index) {
+        /* LAN START has already installed the host's choice. */
+        if (g_lnch_hosting_lan || g_lnch_joined_lan) return;
+        const PsxLobbyMatchCaps *caps = psx_lobby_match_caps();
+        (void)psx_mod_netplay_set_aspect(caps && caps->valid
+            ? title_netplay_aspect_index(caps->aspect_num, caps->aspect_den)
+            : local_index);
     }
 
     /* Online: seat 1's published offer && host allow. Host-side only — the
@@ -12322,7 +12353,7 @@ namespace {
         caps.force_input_relay = g_lnch_force_input_relay != 0;
         caps.relay_host = g_lnch_relay_host != 0;
         caps.force_turn = g_lnch_force_turn != 0;
-        caps.rollback = g_lnch_rollback != 0;
+        caps.rollback = g_lnch_rollback != 0 && psx_mod_netplay_rollback_supported();
         caps.multitap_analog = g_lnch_multitap_analog != 0;
         if (settings) caps.multitap_analog = settings->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
@@ -12624,15 +12655,11 @@ namespace {
 #endif
     int ae_np_automatch_queue(void*, const char* ruleset_id) {
         if (!ae_np_online_mode()) return -1;
-        /* mods_enabled asserts that a SIM-AFFECTING mod feature is on locally
-         * beyond what the ruleset imposes. On PSX that is never true for a
-         * netplay session: every netplay launch, rematch included, goes
-         * through mod_runtime_clear_for_netplay and refuses to start if the
-         * plan cannot be cleared, and the caps a match runs (aspect, turbo
-         * loads, BIOS, FMV skip) are the server's ruleset, settled through
-         * match_caps like any host's. There is no cosmetic-exemption
-         * mechanism on this runtime either, so the evidence list is empty. */
-        return psx_lobby_automatch_queue(ruleset_id, 0, "") == 0 ? 0 : -1;
+        /* A built-in title profile changes simulation beyond a stock ruleset.
+         * Report it truthfully; servers without a matching cooperative ruleset
+         * refuse this queue. Private rooms still use the profile's version. */
+        return psx_lobby_automatch_queue(ruleset_id,
+            psx_mod_netplay_profile() != nullptr, "") == 0 ? 0 : -1;
     }
     int ae_np_automatch_cancel(void*) { return psx_lobby_automatch_cancel(); }
     int ae_np_automatch_state(void*) { return psx_lobby_automatch_state(); }
@@ -12856,6 +12883,7 @@ namespace {
         return 0;
     }
     int ae_np_rollback_get(void*) {
+        if (!psx_mod_netplay_rollback_supported()) return 0;
         if (!g_lnch_hosting_lan && !g_lnch_joined_lan) {
             const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
             if (caps && caps->valid)
@@ -12863,8 +12891,11 @@ namespace {
         }
         return g_lnch_rollback;
     }
+    int ae_np_default_rollback(void*, int) {
+        return psx_mod_netplay_rollback_supported() ? 1 : 0;
+    }
     int ae_np_rollback_set(void*, int enable) {
-        g_lnch_rollback = enable ? 1 : 0;
+        g_lnch_rollback = enable && psx_mod_netplay_rollback_supported();
         ae_np_push_match_caps(nullptr);
         return 0;
     }
@@ -13496,7 +13527,8 @@ namespace {
                 (g_lnch_remote_lan || !g_netplay_content_negotiation)) {
                 g_lnch_remote_lan_state.started = true;
                 /* MOTK1 START\n<session>\n[<delay>\n<prediction>\n<rollback>\n
-                 * [<session_bios>\n[<guest_memcard>\n[<session_bios_crc>\n]]]]
+                 * [<session_bios>\n[<guest_memcard>\n[<session_bios_crc>\n
+                 * [<fixed_aspect_index>\n]]]]]
                  * Trailing caps are host-authoritative (incl. settled BIOS). */
                 char* p = buf + 12;
                 char* nl = std::strchr(p, '\n');
@@ -13513,8 +13545,8 @@ namespace {
                 g_lnch_lan_guest_memcard_active = 0;
                 if (nl) {
                     p = nl + 1;
-                    char* lines[6] = {};
-                    for (int i = 0; i < 6; ++i) {
+                    char* lines[7] = {};
+                    for (int i = 0; i < 7; ++i) {
                         if (!p || !*p) break;
                         lines[i] = p;
                         char* n2 = std::strchr(p, '\n');
@@ -13528,6 +13560,7 @@ namespace {
                     if (lines[4] && lines[4][0])
                         g_lnch_lan_guest_memcard_active =
                             (std::atoi(lines[4]) != 0) ? 1 : 0;
+                    (void)psx_mod_netplay_set_aspect(lines[6] ? std::atoi(lines[6]) : 0);
                     if (lines[0] && lines[0][0]) {
                         int d = std::atoi(lines[0]);
                         if (d < 2) d = 2;
@@ -14594,6 +14627,7 @@ namespace {
             std::fprintf(stdout, "psxrecomp: LAN guest memcard (P2 card as slot 2) = %s\n",
                          g_lnch_lan_guest_memcard_active ? "on" : "off");
             char session_crc_text[16];
+            (void)psx_mod_netplay_set_aspect(settings ? settings->aspect_index : 0);
             netplay_bios_format_crc(g_lnch_session_bios_crc, session_crc_text,
                                     sizeof(session_crc_text));
             if (g_netplay_content_negotiation)
@@ -14607,13 +14641,13 @@ namespace {
                               state.mod_caps_json.c_str());
             else
                 std::snprintf(start_msg, sizeof(start_msg),
-                              "MOTK1 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s\n",
+                              "MOTK1 START\n%u\n%d\n%d\n%d\n%s\n%d\n%s\n%d\n",
                               (unsigned)state.session_id, delay, pred,
                               g_lnch_rollback ? 1 : 0,
                               g_lnch_session_bios[0] ? g_lnch_session_bios
                                                     : "openbios",
                               g_lnch_lan_guest_memcard_active ? 1 : 0,
-                              session_crc_text);
+                              session_crc_text, psx_mod_netplay_aspect());
             for (int i = 0; i < kAeLanMaxSlots; ++i) {
                 if (g_lnch_lan_peer_ok[i])
                     ae_np_lan_udp_sendto(g_lnch_lan_peers[i], start_msg);
@@ -15125,6 +15159,13 @@ namespace {
         gi->locked_pad_mode = locked_pad_mode_i;
         gi->lock_device = ctrl_lock_device_b ? 1 : 0;
         gi->aspect_mask = 0;
+        const PSXModNetplayProfile *view_profile = psx_mod_netplay_profile();
+        if (view_profile && view_profile->fixed_aspect_mask) {
+            gi->aspect_mask = (int)view_profile->fixed_aspect_mask;
+            gi->adaptive_view_supported = 0;
+            gi->aspect_setting_label = "Netplay aspect";
+            gi->aspect_setting_help = "Fixed view shared by both players. The host's choice applies to the match.";
+        }
         gi->renderer_labels = kPsxRendererLabels;
         gi->num_renderers = vulkan_offered_b ? 3 : 2;
         gi->settings_bindings = 1;
@@ -15207,6 +15248,9 @@ namespace {
         g_lnch_netplay_callbacks.relay_host_get = ae_np_relay_host_get;
         g_lnch_netplay_callbacks.relay_host_set = ae_np_relay_host_set;
         g_lnch_netplay_callbacks.relay_status = ae_np_relay_status;
+#endif
+#ifdef RECOMP_LAUNCHER_HAS_CREATE_DEFAULT_ROLLBACK
+        g_lnch_netplay_callbacks.create_default_rollback = ae_np_default_rollback;
 #endif
         g_lnch_netplay_callbacks.memcard_offer_set = ae_np_memcard_offer_set;
         g_lnch_netplay_callbacks.guest_memcard_get = ae_np_guest_memcard_get;
@@ -16266,6 +16310,7 @@ int main(int argc, char** argv) {
         if (us.has_aspect_ratio) {
             g_video_aspect_num = us.aspect_num;
             g_video_aspect_den = us.aspect_den;
+            (void)psx_mod_netplay_set_aspect(title_netplay_aspect_index(us.aspect_num, us.aspect_den));
         }
         if (us.has_audio_freq)     g_audio_freq      = us.audio_freq;
         if (us.has_spu_hq)         g_audio_spu_hq    = us.spu_hq;
@@ -17004,6 +17049,8 @@ int main(int argc, char** argv) {
             /* aspect_index: 0 = 4:3, 1 = 16:9, 2 = 21:9 (see RecompLauncherCSettings). */
             ls.aspect_index   = (seed.aspect_num * 9 == seed.aspect_den * 21) ? 2 :
                                  (seed.aspect_num == 16 && seed.aspect_den == 9) ? 1 : 0;
+            if (psx_mod_netplay_profile() && psx_mod_netplay_profile()->fixed_aspect_mask)
+                ls.aspect_index = psx_mod_netplay_aspect();
 
             /* ---- deeper PSX-style settings (capability-gated via launcher_profile
              * below). Sourced 1:1 from PSXRecompV4::UserSettings (config_loader.h). */
@@ -17578,6 +17625,7 @@ int main(int argc, char** argv) {
 #endif
             if (lr == 0) {
                 if (ls.netplay_launch.enabled) {
+                    ae_apply_title_netplay_launch_aspect(ls.aspect_index);
                     net_cfg.enabled = 1;
                     net_cfg.local_slot = ls.netplay_launch.local_slot;
                     net_cfg.spectator = ls.netplay_launch.is_spectator ? 1 : 0;
@@ -17592,7 +17640,7 @@ int main(int argc, char** argv) {
                     net_cfg.transport_host = ls.netplay_launch.transport_host ? 1 : 0;
 #endif
                     net_cfg.force_turn = ls.netplay_launch.force_turn ? 1 : 0;
-                    net_cfg.rollback = ls.netplay_launch.rollback ? 1 : 0;
+                    net_cfg.rollback = ls.netplay_launch.rollback && psx_mod_netplay_rollback_supported();
                     net_cfg.guest_memcard = ls.netplay_launch.guest_memcard ? 1 : 0;
                     net_cfg.player_count = ls.netplay_launch.player_count;
                     net_cfg.host_spectates = ls.netplay_launch.host_spectates ? 1 : 0;
@@ -17793,12 +17841,19 @@ int main(int argc, char** argv) {
         timing.success();
     }
     /* Session start: every session runs this after its mod commit or netplay
-     * clear -- the first boot here, and the lobby rematch, which re-enters at
+     * profile commit -- the first boot here, and the lobby rematch, which re-enters at
      * session_reboot below this block and so calls it itself. Both paths reach
      * renderer and window creation only after session_reboot, so activation
-     * precedes them either way. A netplay clear leaves no plan, so nothing
-     * activates and the session stays vanilla. */
+     * precedes them either way. Stock netplay has an empty plan; opted-in
+     * titles activate only their declared built-in profile. */
     auto start_mod_session = [&](bool netplay) {
+        /* The dedicated netplay choice must not activate offline widescreen;
+         * offline display enhancements are still chosen by their plugins. */
+        const PSXModNetplayProfile *view_profile = psx_mod_netplay_profile();
+        if (view_profile && view_profile->fixed_aspect_mask) {
+            g_video_aspect_num = 4;
+            g_video_aspect_den = 3;
+        }
         /* Clear game-owned controller overrides/policies and load/disc-speed
          * choices first so disabling a package cannot leave its prior state
          * latched across a soft return. */
@@ -17831,6 +17886,7 @@ int main(int argc, char** argv) {
         gpu_ws_set_local_view_only(
             netplay && PSXRecompV4::mod_runtime_netplay_view_active() ? 1 : 0);
         mod_runtime_activate_plugins();
+        apply_title_netplay_aspect(netplay);
         apply_netplay_local_viewport_aspect(netplay);
         for (int i = 0; i < PSX_MAX_PLAYERS; ++i) {
             if (g_mod_controller_mode_override[i] >= 0)
@@ -18948,6 +19004,12 @@ session_reboot:
         req.have_deliver_event_ret = (psx_bios_image.deliver_event_ret != 0);
         req.have_shell_entry       = (psx_bios_image.shell_entry_phys != 0);
         req.have_game_entry        = (game_entry_pc != 0);
+        const PSXModNetplayProfile *boot_profile = psx_mod_netplay_profile();
+        if (net_cfg.enabled && boot_profile && boot_profile->skip_bios_intro) {
+            req.bios_hle = 0;
+            req.keep_intro = 0;
+            req.fast_boot = 1;
+        }
         const PsxBiosHlePlan plan = psx_bios_hle_plan(req);
 
         /* Call-HLE is a per-image capability, not just a preference: an image
@@ -19428,6 +19490,8 @@ soft_return_lobby:
             normalize_hotkey_pad_binding(g_hotkey_pad_fast_forward_toggle, 0);
         ls.aspect_index = (g_video_aspect_num * 9 == g_video_aspect_den * 21) ? 2
             : (g_video_aspect_num == 16 && g_video_aspect_den == 9) ? 1 : 0;
+        if (psx_mod_netplay_profile() && psx_mod_netplay_profile()->fixed_aspect_mask)
+            ls.aspect_index = psx_mod_netplay_aspect();
         ls.language_index = 0;
         for (size_t li = 0; li < lang_menu_options.size(); li++) {
             if (lang_menu_options[li].code == resolved_language) {
@@ -19612,6 +19676,7 @@ soft_return_lobby:
             }
             if (ls.netplay_launch.enabled) {
                 {
+                    ae_apply_title_netplay_launch_aspect(ls.aspect_index);
                     const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
                     if (caps && caps->valid) {
                         multitap_analog = caps->multitap_analog != 0;
@@ -19635,7 +19700,7 @@ soft_return_lobby:
                 net_cfg.transport_host = ls.netplay_launch.transport_host ? 1 : 0;
 #endif
                 net_cfg.force_turn = ls.netplay_launch.force_turn ? 1 : 0;
-                net_cfg.rollback = ls.netplay_launch.rollback ? 1 : 0;
+                net_cfg.rollback = ls.netplay_launch.rollback && psx_mod_netplay_rollback_supported();
                 /* Same fold as the first-boot path: rematch must not lose
                  * the seat rules the lobby settled. */
                 net_cfg.spectator = ls.netplay_launch.is_spectator ? 1 : 0;
@@ -20004,8 +20069,8 @@ soft_return_lobby:
              * commit/clear above: the controller, load and disc-speed resets,
              * the mod-owned presentation reset, activation (which rebuilds the
              * function-entry hook table the commit/clear emptied), then what
-             * activation chose. A netplay rematch has no plan, so it stays
-             * vanilla. Only a netplay match returns here, so the reachable
+             * activation chose, including a title's built-in netplay profile.
+             * Only a netplay match returns here, so the reachable
              * leak the reset closes is the Fit and fixed aspect its local
              * viewport set. The launcher round-trips the previous session's
              * aspect through ls.aspect_index; widescreen is mod-owned on PSX,

@@ -15,6 +15,11 @@ void sw_renderer_init(uint16_t* vram);
 /* Rebind the VRAM array only; draw state is kept. */
 void sw_renderer_rebind_vram(uint16_t* vram);
 
+/* Immutable host texture for a trusted mod primitive, in native 16-bit PSX
+ * words (texels/indices). Caller owns pixels and clears NULL after the primitive.
+ * This also feeds canonical VRAM while OpenGL runs in CPU-authoritative mode. */
+void sw_set_texture_bank(const uint16_t *pixels, uint32_t width, uint32_t height);
+
 /* Internal-resolution supersampling (SSAA).
  * scale == 1 : disabled, renderer behaves exactly as native VRAM only.
  * scale  > 1 : maintain an S*-scaled mirror of VRAM; the display reads the

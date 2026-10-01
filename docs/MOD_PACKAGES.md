@@ -1001,6 +1001,32 @@ against the executable's directory when the artwork loads, never the current
 working directory, so artwork the title stages beside its binary is found
 however the game was launched.
 
+### Built-in title netplay profiles
+
+A title can register one process-lifetime `PSXModNetplayProfile` from
+`mod_netplay.h`. Netplay commits only that statically linked plugin, retaining
+original-disc asset access and leaving offline package selections on disk
+unchanged. With no profile, the existing vanilla netplay path is unchanged.
+The compatibility ID isolates lobby versions and direct transport sessions;
+bump it whenever the title's simulation contract changes.
+
+Profiles declare rollback/save-state support. Titles with host-owned state
+that is not serialized must disable both. Memory-card synchronization continues
+normally. An optional fixed boot policy skips the BIOS shell with kernel calls
+kept LLE on both peers, independent of local intro/HLE preferences.
+
+An optional fixed-aspect mask exposes the existing launcher aspect control as
+**Netplay aspect**. Its only indices are 4:3, 16:9, and 21:9. Online match caps
+and the LAN START trailer carry the host choice; direct sessions also include
+it in their namespace to prevent peers running different camera widths.
+Offline display plugins retain ownership of offline widescreen.
+
+Trusted host texture banks support CPU-authoritative OpenGL dual raster:
+the software pass samples the same immutable PSX texture words as GL, including
+texture-page/CLUT addressing, transparency, modulation and destination masking.
+Selection is scoped to a tagged primitive. Ordinary texture reads still use
+VRAM. See `sw_texture_bank_test` and `mod_runtime_test`.
+
 ### Retained-scene loading presentation (native-wide opt-in)
 
 A trusted game plugin can register

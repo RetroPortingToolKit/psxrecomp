@@ -5401,8 +5401,15 @@ static void gp0_exec_shaded_textured_tri(void) {
     if (draw_area_out_bbox(vx, vy, 3)) return;
 
     uint16_t host_bank = mod_texture_packet_bank(gp0_cmd_source_addr, gp0_cmd_buf, 9u);
-    if (host_bank && (gr_backend() != GR_BACKEND_OPENGL ||
-                      !gl_renderer_select_texture_bank(host_bank))) return;
+    if (host_bank) {
+        uint32_t width, height;
+        const uint16_t *pixels = mod_texture_bank_pixels(host_bank, &width, &height);
+        if (!pixels || gr_backend() != GR_BACKEND_OPENGL ||
+            !gl_renderer_select_texture_bank(host_bank)) return;
+        /* Netplay's canonical software pass must sample the same immutable
+         * pixels as the GL presentation pass, rather than unrelated VRAM. */
+        sw_set_texture_bank(pixels, width, height);
+    }
 
     gr_set_semi_transparency(semi_trans, (int)semi_transparency);
     prepare_precise_triangle(1, 4, 7,
@@ -5425,7 +5432,10 @@ static void gp0_exec_shaded_textured_tri(void) {
                                      vx[1], vy[1], u[1], v[1], c[1],
                                      vx[2], vy[2], u[2], v[2], c[2],
                                      clut_x, clut_y, tpage, raw_texture);
-    if (host_bank) (void)gl_renderer_select_texture_bank(0);
+    if (host_bank) {
+        sw_set_texture_bank(NULL, 0, 0);
+        (void)gl_renderer_select_texture_bank(0);
+    }
 }
 
 int psx_mod_texture_banks_supported(void) {

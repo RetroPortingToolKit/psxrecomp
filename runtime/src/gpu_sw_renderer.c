@@ -46,6 +46,8 @@
 /* ------------------------------------------------------------------ */
 
 static uint16_t *g_vram;
+static const uint16_t *g_texture_bank;
+static uint32_t g_texture_bank_width, g_texture_bank_height;
 
 /* Hi-res supersampling mirror (see file header). g_scale==1 => disabled. */
 static uint16_t *g_hr      = NULL;
@@ -333,6 +335,17 @@ static inline void put_textured(const RTarget *t, int x, int y, uint16_t texel,
 /* Texture lookup with texture window                                 */
 /* ------------------------------------------------------------------ */
 
+static uint16_t texture_word_get(int x, int y) {
+    if (!g_texture_bank) return vram_get(x, y);
+    /* Match GL's integer texture fetch: VRAM wrapping, then bank bounds.
+     * Keep page offsets and indexed CLUT lookup identical on both paths. */
+    x &= VRAM_WIDTH - 1;
+    y &= VRAM_HEIGHT - 1;
+    if ((uint32_t)x >= g_texture_bank_width ||
+        (uint32_t)y >= g_texture_bank_height) return 0;
+    return g_texture_bank[(size_t)y * g_texture_bank_width + (uint32_t)x];
+}
+
 static uint16_t texel_fetch(int u, int v, uint16_t texpage,
                             uint16_t clut_x, uint16_t clut_y) {
     /* Apply texture window:
@@ -351,22 +364,22 @@ static uint16_t texel_fetch(int u, int v, uint16_t texpage,
     case 0: { /* 4-bit CLUT */
         int vram_x = tpx + (u / 4);
         int vram_y = tpy + v;
-        uint16_t texel_word = vram_get(vram_x, vram_y);
+        uint16_t texel_word = texture_word_get(vram_x, vram_y);
         int shift = (u & 3) * 4;
         int index = (texel_word >> shift) & 0xF;
-        return vram_get(clut_x + index, clut_y);
+        return texture_word_get(clut_x + index, clut_y);
     }
     case 1: { /* 8-bit CLUT */
         int vram_x = tpx + (u / 2);
         int vram_y = tpy + v;
-        uint16_t texel_word = vram_get(vram_x, vram_y);
+        uint16_t texel_word = texture_word_get(vram_x, vram_y);
         int shift = (u & 1) * 8;
         int index = (texel_word >> shift) & 0xFF;
-        return vram_get(clut_x + index, clut_y);
+        return texture_word_get(clut_x + index, clut_y);
     }
     case 2:   /* 15-bit direct */
     case 3: {
-        return vram_get(tpx + u, tpy + v);
+        return texture_word_get(tpx + u, tpy + v);
     }
     default:
         return 0;
@@ -463,6 +476,7 @@ static void sw_rect_uv_limits(int u0, int v0, int u1, int v1) {
 
 void sw_renderer_init(uint16_t *vram) {
     g_vram = vram;
+    sw_set_texture_bank(NULL, 0, 0);
     g_clip_x1 = 0;
     g_clip_y1 = 0;
     g_clip_x2 = VRAM_WIDTH - 1;
@@ -485,6 +499,12 @@ void sw_renderer_init(uint16_t *vram) {
  * state (the OpenGL render thread switches its upload source this way). */
 void sw_renderer_rebind_vram(uint16_t *vram) {
     g_vram = vram;
+}
+
+void sw_set_texture_bank(const uint16_t *pixels, uint32_t width, uint32_t height) {
+    g_texture_bank = width && height ? pixels : NULL;
+    g_texture_bank_width = width;
+    g_texture_bank_height = height;
 }
 
 /* ------------------------------------------------------------------ */

@@ -1,3 +1,4 @@
+#include "mod_netplay.h"
 /* savestate.c — user save states. The runtime UI opens from the save-state menu.
  * See savestate.h.
  *
@@ -689,6 +690,7 @@ static int netplay_user_blocked(void) {
 }
 
 static int request_save_inner(int slot) {
+    if (!psx_mod_netplay_savestates_supported()) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: not configured\n");
         psx_frontend_on_savestate_refused(0, slot, "Save states are not available yet");
@@ -706,6 +708,7 @@ static int request_save_inner(int slot) {
 }
 
 static int request_load_inner(int slot) {
+    if (!psx_mod_netplay_savestates_supported()) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: not configured\n");
         psx_frontend_on_savestate_refused(1, slot, "Save states are not available yet");
@@ -752,6 +755,7 @@ int savestate_request_load_protocol(int slot) {
 }
 
 int savestate_request_load_blob_protocol(const void* data, size_t size) {
+    if (!psx_mod_netplay_savestates_supported()) return 0;
     uint8_t* copy;
     if (!s_configured) {
         fprintf(stderr, "savestate: load_blob — not configured\n");

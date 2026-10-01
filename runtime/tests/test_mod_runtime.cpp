@@ -1,6 +1,7 @@
 #include "mod_runtime.h"
 #include "host_launch_timing.h"
 #include "host_file_identity.h"
+#include "mod_netplay.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
 #include "psx_sha256.h"
@@ -1752,6 +1753,56 @@ int main() {
         check(!PSXRecompV4::mod_runtime_try_prepare_cached(iso_path), "default runtime does not opt into cached startup");
     }
 #endif
+    /* A forced title profile must not activate the offline patch plan, lose
+     * original-disc access, or write a temporary selection to state.toml. */
+    static const PSXModNetplayProfile profile = {
+        "runtime.test-vblank", "runtime-coop-delay-v1", 0, 0, 1, 7
+    };
+    check(psx_mod_netplay_rollback_supported(), "vanilla rollback unchanged");
+    check(psx_mod_netplay_session_id(123) == 123, "vanilla session ID unchanged");
+    check(psx_mod_register_netplay_profile(&profile), "trusted profile registration");
+    check(!psx_mod_netplay_rollback_supported(), "profile disallows rollback");
+    check(std::string(psx_mod_netplay_version("dev")) == profile.compatibility_id,
+          "profile isolates lobby compatibility from vanilla dev builds");
+    check(psx_mod_netplay_session_id(123) != 123 &&
+          psx_mod_netplay_session_id(123) == psx_mod_netplay_session_id(123),
+          "direct transport uses stable profile session namespace");
+    const auto native_session = psx_mod_netplay_session_id(123);
+    check(psx_mod_netplay_set_aspect(1), "fixed 16:9 allowed");
+    const auto wide_session = psx_mod_netplay_session_id(123);
+    check(psx_mod_netplay_set_aspect(2), "fixed 21:9 allowed");
+    check(native_session != wide_session &&
+          wide_session != psx_mod_netplay_session_id(123) &&
+          native_session != psx_mod_netplay_session_id(123),
+          "different co-op camera widths isolate direct sessions");
+    check(!psx_mod_netplay_set_aspect(3) && !psx_mod_netplay_set_aspect(-1) &&
+          psx_mod_netplay_aspect() == 2, "adaptive and invalid views refused");
+    check(psx_mod_netplay_set_aspect(0), "native view can be restored");
+    const auto state_path = root / "state.toml";
+    auto read_selection = [&]() {
+        std::ifstream stream(state_path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), {});
+    };
+    const std::string offline_selection = read_selection();
+    check(PSXRecompV4::mod_runtime_initialize(root,"SLUS-RUNTIME",0x80002000,{},&error),
+          "profile reinitialize offline catalog");
+    check(PSXRecompV4::mod_runtime_commit_netplay(iso_path,&error), error.c_str());
+    check(!psx_mod_netplay_savestates_supported(), "active profile prevents incomplete snapshots");
+    const int before_activation = activation_calls;
+    mod_runtime_activate_plugins();
+    check(activation_calls == before_activation+1, "forced plugin activates");
+    check(g_psx_mod_function_entry_hooks == 1, "only forced plugin entry hooks activate");
+    ram[0x1000] = 0x5a;
+    mod_runtime_on_dispatch(0x80002000);
+    check(ram[0x1000] == 0x5a, "offline patches excluded from netplay profile");
+    check(psx_mod_read_disc_file("S0/LEVEL.NSF",result.data(),3000,&bytes) && bytes==3000,
+          "profile retains original disc asset access");
+    check(read_selection() == offline_selection, "profile commit preserves offline selections byte-for-byte");
+    check(PSXRecompV4::mod_runtime_commit_netplay(iso_path,&error), "profile rematch commit");
+    mod_runtime_activate_plugins();
+    check(activation_calls == before_activation+2, "profile rematch activates once");
+    check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), "profile clear");
+    check(psx_mod_netplay_savestates_supported(), "cleared session releases snapshot policy");
     fs::remove_all(root, ec);
     if (failures) return 1;
     std::cout << "mod runtime tests passed\n";

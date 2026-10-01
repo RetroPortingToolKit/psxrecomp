@@ -71,6 +71,13 @@ if(BUILD_TESTING)
     add_executable(mod_texture_banks_test tests/test_mod_texture_banks.c src/mod_texture_banks.c)
     target_include_directories(mod_texture_banks_test PRIVATE include)
     add_test(NAME mod_texture_banks_test COMMAND mod_texture_banks_test)
+    add_executable(sw_texture_bank_test tests/test_sw_texture_bank.c
+        src/gpu_sw_renderer.c src/gpu_vram_dirty.c)
+    target_include_directories(sw_texture_bank_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(sw_texture_bank_test PRIVATE m)
+    endif()
+    add_test(NAME sw_texture_bank_test COMMAND sw_texture_bank_test)
     # First-call capture / later-call restore behind main.cpp's
     # reset_mod_owned_presentation() (header-only, no runtime link).
     add_executable(mod_session_baseline_test tests/test_mod_session_baseline.c)
@@ -993,6 +1000,7 @@ if(BUILD_TESTING)
         tests/test_mod_runtime.cpp
         src/iso_reader_c.cpp
         src/mod_runtime.cpp
+        src/mod_netplay.c
         src/mod_function_replacements.c
         src/mod_packages.cpp
         src/mod_media.cpp
@@ -1386,7 +1394,7 @@ if(BUILD_TESTING)
         # guard define and include roots the runtime build uses; the two WS
         # calls that TU makes are stubbed in the test and abort if reached.
         if(EXISTS "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_ws.c")
-            add_executable(lobby_chat_ring_test tests/test_lobby_chat_ring.c)
+            add_executable(lobby_chat_ring_test tests/test_lobby_chat_ring.c src/mod_netplay.c)
             target_include_directories(lobby_chat_ring_test PRIVATE
                 include
                 src
@@ -1406,6 +1414,7 @@ if(BUILD_TESTING)
             add_test(NAME lobby_chat_ring_test COMMAND lobby_chat_ring_test)
             add_executable(netplay_bios_wire_test
                 tests/test_netplay_bios_wire.c
+                src/mod_netplay.c
                 src/netplay_bios_settle.c
                 src/lobby_ws/rnet_ws.c
                 src/lobby_ws/rnet_sha1.c)

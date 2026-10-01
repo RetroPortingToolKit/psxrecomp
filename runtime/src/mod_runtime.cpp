@@ -8,6 +8,7 @@
 #include "mod_packages.h"
 #include "mod_plugins.h"
 #include "psx_netplay.h"
+#include "mod_netplay.h"
 #include "gpu.h"
 #include "gpu_hd_textures.h"
 #include "psx_memory.h"
@@ -1396,7 +1397,9 @@ int provider_commit_netplay(void*, const char* image_path) {
     HostLaunchTimingScope timing(HOST_LAUNCH_PROVIDER_NETPLAY_COMMIT);
     std::string error;
     /* Without [netplay] content_negotiation every netplay session is vanilla. */
-    if (!(mod_runtime_netplay_content_negotiation()
+    if (!(psx_mod_netplay_profile()
+            ? mod_runtime_commit_netplay(image_path ? image_path : "", &error)
+            : mod_runtime_netplay_content_negotiation()
             ? mod_runtime_commit_for_netplay(image_path ? std::filesystem::path(image_path) :
                                              std::filesystem::path(), &error)
             : mod_runtime_clear_for_netplay(&error))) {
@@ -1568,6 +1571,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
 bool mod_runtime_clear_for_netplay(std::string* error) {
     state().ticket_ready = false;
     ++state().preparation_revision;
+    psx_mod_netplay_set_active(0);
     RuntimeMods& s = state();
     if (!s.initialized) {
         if (error) error->clear();
@@ -1591,7 +1595,29 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     s.netplay_view_plan = false;
     s.error.clear();
     if (error) error->clear();
-    std::fprintf(stdout, "psxrecomp: mods cleared for netplay (vanilla session)\n");
+    std::fprintf(stdout, "psxrecomp: offline mod plan cleared for netplay\n");
+    return true;
+}
+
+bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path, std::string* error) {
+    if (!mod_runtime_clear_for_netplay(error)) return false;
+    const PSXModNetplayProfile *profile = psx_mod_netplay_profile();
+    if (!profile) return true;
+    RuntimeMods& s = state();
+    if (!s.initialized || !mod_plugin_registered(profile->plugin_id)) {
+        if (error) *error = "Title netplay plugin is not registered";
+        return false;
+    }
+    /* Only this executable-owned plugin is trusted. Do not resolve or save
+     * the user's offline package selections. Native disc reads still need
+     * the selected image even though no disc patch plan is active. */
+    s.disc_path = disc_path;
+    s.plan.ok = true;
+    s.plan.fingerprint = profile->compatibility_id;
+    s.plan.plugins.push_back({profile->plugin_id, "", ""});
+    psx_mod_netplay_set_active(1);
+    std::fprintf(stdout, "psxrecomp: title netplay profile %s (%s)\n",
+                 profile->compatibility_id, profile->plugin_id);
     return true;
 }
 
@@ -1935,6 +1961,7 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
 }
 
 bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* error, bool save_selection) {
+    psx_mod_netplay_set_active(0);
     HostLaunchTimingScope timing(HOST_LAUNCH_COMMIT);
     RuntimeMods& s = state();
     s.netplay_view_plan = false;

@@ -5214,7 +5214,7 @@ static int init_gpu_raster(void) {
     return 1;
 }
 
-int gl_renderer_texture_banks_supported(void) { return s_raster_ok && !s_cpu_auth_dual && !s_hd_native_authority; }
+int gl_renderer_texture_banks_supported(void) { return s_raster_ok && !s_hd_native_authority; }
 
 int gl_renderer_fit_wide_aspect(int disp_w, int *num, int *den) {
     /* No sync point: pure arithmetic on limits that change only while the

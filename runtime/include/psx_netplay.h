@@ -212,7 +212,8 @@ int  psx_netplay_is_host(void);
 
 /*
  * Host-only save/load orchestration (hash probe → transfer on miss).
- * Returns 1 if the request was accepted/ignored-as-guest, 0 if netplay inactive.
+ * Returns 1 if accepted/ignored-as-guest, 0 if inactive or the title profile
+ * cannot safely serialize its simulation state.
  */
 int  psx_netplay_request_save(int slot);
 int  psx_netplay_request_load(int slot);

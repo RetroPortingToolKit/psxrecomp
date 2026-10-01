@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include "mod_netplay.h"
 #include "psx_netplay.h"
 #include "netplay_load_probe.h"
 #include "netplay_sim_pad_cache.h"
@@ -204,6 +205,7 @@ void psx_netplay_apply_env(PsxNetplayConfig *cfg)
     v = getenv("PSX_NET_HOST_SPECTATES");
     if (v && v[0])
         cfg->host_spectates = (v[0] != '0') ? 1 : 0;
+    if (!psx_mod_netplay_rollback_supported()) cfg->rollback = 0;
 }
 
 static void force_session_pads_connected(int slot_count)
@@ -1413,6 +1415,15 @@ static void np_apply_ready_state(void)
         return;
     }
 
+    if (!psx_mod_netplay_savestates_supported() &&
+        (op == RNET_STATE_OP_SAVE || op == RNET_STATE_OP_LOAD ||
+         op == RNET_STATE_OP_RB_KF)) {
+        printf("psxrecomp: title profile rejected netplay state transfer op=%u\n", op);
+        rnet_session_state_finish(g_np.session, 0);
+        g_np.xfer = NP_XFER_NONE;
+        return;
+    }
+
     if (op == RNET_STATE_OP_MEMCARD) {
         const uint8_t *blob = (const uint8_t *)data;
         if (g_np.local_slot == 0) {
@@ -1574,6 +1585,13 @@ static void np_guest_handle_probe(void)
     if (g_np.local_slot == 0) return;
     if (!rnet_session_state_probe_pending(g_np.session, &op, &slot, &size, &crc))
         return;
+
+    if (!psx_mod_netplay_savestates_supported() &&
+        (op == RNET_STATE_OP_SAVE || op == RNET_STATE_OP_LOAD ||
+         op == RNET_STATE_OP_RB_KF)) {
+        (void)rnet_session_state_probe_reply(g_np.session, 0);
+        return;
+    }
 
     /* Post-load ready rendezvous (must be before SAVE size==0 coord). */
     if (op == RNET_STATE_OP_LOAD && size == 0 && crc == NP_LOAD_READY_CRC) {
@@ -3834,6 +3852,10 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     int use_ice;
 
     if (!cfg || !cfg->enabled) return -1;
+    if (cfg->rollback && !psx_mod_netplay_rollback_supported()) {
+        fprintf(stderr, "psxrecomp: title netplay profile requires delay-sync\n");
+        return -1;
+    }
     if (g_np.session) psx_netplay_shutdown();
     psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);
     psx_netplay_local_view_reset(&s_local_view);
@@ -3905,7 +3927,7 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
         fflush(stderr);
         rcfg.input_delay = 5u;
     }
-    rcfg.session_id = cfg->session_id ? cfg->session_id : 1u;
+    rcfg.session_id = psx_mod_netplay_session_id(cfg->session_id ? cfg->session_id : 1u);
     {
         uint32_t mask = cfg->occupied_mask;
         if (mask == 0u) {
@@ -4493,6 +4515,10 @@ int psx_netplay_is_host(void)
 
 int psx_netplay_request_save(int slot)
 {
+    if (!psx_mod_netplay_savestates_supported()) {
+        fprintf(stderr, "psxrecomp: savestates are unavailable for this netplay profile\n");
+        return 0;
+    }
     uint32_t sim;
     uint32_t delay;
     uint32_t target;
@@ -4529,6 +4555,10 @@ int psx_netplay_request_save(int slot)
 
 int psx_netplay_request_load(int slot)
 {
+    if (!psx_mod_netplay_savestates_supported()) {
+        fprintf(stderr, "psxrecomp: savestates are unavailable for this netplay profile\n");
+        return 0;
+    }
     uint32_t size = 0, crc = 0;
     char reason[192];
     if (!psx_netplay_active() || !rnet_session_is_running(g_np.session))
