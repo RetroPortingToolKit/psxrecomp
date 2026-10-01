@@ -1608,6 +1608,11 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path, std::str
         if (error) *error = "Title netplay plugin is not registered";
         return false;
     }
+    const char *renderer = psx_mod_netplay_aspect() ? profile->widescreen_plugin_id : nullptr;
+    if (renderer && !mod_plugin_registered(renderer)) {
+        if (error) *error = "Title netplay renderer plugin is not registered";
+        return false;
+    }
     /* Only this executable-owned plugin is trusted. Do not resolve or save
      * the user's offline package selections. Native disc reads still need
      * the selected image even though no disc patch plan is active. */
@@ -1615,6 +1620,7 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path, std::str
     s.plan.ok = true;
     s.plan.fingerprint = profile->compatibility_id;
     s.plan.plugins.push_back({profile->plugin_id, "", ""});
+    if (renderer) s.plan.plugins.push_back({renderer, "", ""});
     psx_mod_netplay_set_active(1);
     std::fprintf(stdout, "psxrecomp: title netplay profile %s (%s)\n",
                  profile->compatibility_id, profile->plugin_id);

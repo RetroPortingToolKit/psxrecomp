@@ -5821,8 +5821,13 @@ static void gp0_exec_textured_16x16(void) {
     uint16_t bank = host_tile &&
         (psx_read_word(host_packet + 28u) & ~GPU_WS_BG2D_MIRROR_X) == GPU_WS_BG2D_BANK_PACKET_MAGIC ?
         (uint16_t)(psx_read_word(host_packet + 16u) >> 16) : 0;
-    if (bank && (gr_backend() != GR_BACKEND_OPENGL ||
-        !gl_renderer_select_texture_bank_live_clut(bank))) return;
+    if (bank) {
+        uint32_t width, height;
+        const uint16_t *pixels = mod_texture_bank_pixels(bank, &width, &height);
+        if (!pixels || gr_backend() != GR_BACKEND_OPENGL ||
+            !gl_renderer_select_texture_bank_live_clut(bank)) return;
+        sw_set_texture_bank_live_clut(pixels, width, height);
+    }
     setup_textured_draw(color24, semi_trans, raw_texture);
     if (host_tile && (psx_read_word(host_packet + 28u) & GPU_WS_BG2D_MIRROR_X))
         gr_draw_textured_rect_scaled(x0, y0, 16, 16, u0 + 15, v0, u0 - 1, v0 + 16,
@@ -5832,7 +5837,10 @@ static void gp0_exec_textured_16x16(void) {
                                      clut_x, clut_y, current_texpage());
     else
         gr_draw_textured_rect(x0, y0, 16, 16, u0, v0, clut_x, clut_y, current_texpage());
-    if (bank) (void)gl_renderer_select_texture_bank(0);
+    if (bank) {
+        sw_set_texture_bank(NULL, 0, 0);
+        (void)gl_renderer_select_texture_bank(0);
+    }
 }
 
 /* ---- GP0 command execution ---- */
@@ -7071,7 +7079,7 @@ static void gp0_execute_command(void) {
         int32_t hud_delta;
         /* Existing HUD placement stays fixed in the physical frame. Only the
          * wide world mirror receives the camera-edge origin and room clip. */
-        if (ws_nw_left_hud_packet() ||
+        if (ws_nw_left_hud_packet() || ws_tagged_hud_edge() ||
             (!(g_bg2d_host_size && ws_tagged_world_primitive()) &&
              ws_nw_explicit_hud_delta(&hud_delta)))
             v.shift = v.pad_left = v.pad_right = 0;

@@ -66,6 +66,17 @@ int main(void) {
         sw_set_color_modulation(128, 128, 128, 1);
         sw_draw_textured_rect(101, 101, 1, 1, 0, 0, 16, 0, 0);
         check(pixel() == 0x7fe0, "indexed bank fetch uses its own CLUT");
+        vram[18] = 0x001f;
+        sw_set_texture_bank_live_clut(indexed, 128, 1);
+        sw_draw_textured_rect(101, 101, 1, 1, 0, 0, 16, 0, 0);
+        check(pixel() == 0x001f, "retained 4-bit indices use the live VRAM palette");
+        indexed[0] = 0x0202;
+        vram[18] = 0x03e0;
+        sw_draw_textured_rect_scaled(101, 101, 2, 1, 1, 0, -1, 1, 16, 0, 0x80);
+        check(pixel() == 0x03e0, "mirrored 8-bit retained tiles follow palette changes");
+        sw_set_texture_bank(indexed, 128, 1);
+        sw_draw_textured_rect(101, 101, 1, 1, 0, 0, 16, 0, 0x80);
+        check(pixel() == 0x7fe0, "ordinary bank selection clears live CLUT mode");
         sw_draw_textured_rect(101, 101, 1, 1, 0, 0, 0, 0, 0x101);
         check(pixel() == 0x4210, "bank fetch respects texture page origin");
         check(sw_vram_read(0, 0) == 0x7c00, "bank selection never replaces VRAM readback");

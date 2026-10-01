@@ -25,6 +25,7 @@ int psx_mod_netplay_savestates_supported(void) {
     return !profile_active || !title_profile || title_profile->savestates_supported;
 }
 void psx_mod_netplay_set_active(int active) { profile_active = active != 0; }
+int psx_mod_netplay_is_active(void) { return profile_active; }
 uint32_t psx_mod_netplay_session_id(uint32_t session_id) {
     uint32_t hash = 2166136261u;
     const unsigned char *p;

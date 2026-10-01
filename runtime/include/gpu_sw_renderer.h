@@ -19,6 +19,8 @@ void sw_renderer_rebind_vram(uint16_t* vram);
  * words (texels/indices). Caller owns pixels and clears NULL after the primitive.
  * This also feeds canonical VRAM while OpenGL runs in CPU-authoritative mode. */
 void sw_set_texture_bank(const uint16_t *pixels, uint32_t width, uint32_t height);
+/* Retained tile indices with the current guest CLUT (palette fades/weather). */
+void sw_set_texture_bank_live_clut(const uint16_t *pixels, uint32_t width, uint32_t height);
 
 /* Internal-resolution supersampling (SSAA).
  * scale == 1 : disabled, renderer behaves exactly as native VRAM only.

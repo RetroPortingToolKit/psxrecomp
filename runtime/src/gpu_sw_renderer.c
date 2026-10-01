@@ -48,6 +48,7 @@
 static uint16_t *g_vram;
 static const uint16_t *g_texture_bank;
 static uint32_t g_texture_bank_width, g_texture_bank_height;
+static int g_texture_bank_live_clut;
 
 /* Hi-res supersampling mirror (see file header). g_scale==1 => disabled. */
 static uint16_t *g_hr      = NULL;
@@ -367,7 +368,8 @@ static uint16_t texel_fetch(int u, int v, uint16_t texpage,
         uint16_t texel_word = texture_word_get(vram_x, vram_y);
         int shift = (u & 3) * 4;
         int index = (texel_word >> shift) & 0xF;
-        return texture_word_get(clut_x + index, clut_y);
+        return g_texture_bank_live_clut ? vram_get(clut_x + index, clut_y)
+                                       : texture_word_get(clut_x + index, clut_y);
     }
     case 1: { /* 8-bit CLUT */
         int vram_x = tpx + (u / 2);
@@ -375,7 +377,8 @@ static uint16_t texel_fetch(int u, int v, uint16_t texpage,
         uint16_t texel_word = texture_word_get(vram_x, vram_y);
         int shift = (u & 1) * 8;
         int index = (texel_word >> shift) & 0xFF;
-        return texture_word_get(clut_x + index, clut_y);
+        return g_texture_bank_live_clut ? vram_get(clut_x + index, clut_y)
+                                       : texture_word_get(clut_x + index, clut_y);
     }
     case 2:   /* 15-bit direct */
     case 3: {
@@ -505,6 +508,11 @@ void sw_set_texture_bank(const uint16_t *pixels, uint32_t width, uint32_t height
     g_texture_bank = width && height ? pixels : NULL;
     g_texture_bank_width = width;
     g_texture_bank_height = height;
+    g_texture_bank_live_clut = 0;
+}
+void sw_set_texture_bank_live_clut(const uint16_t *pixels, uint32_t width, uint32_t height) {
+    sw_set_texture_bank(pixels, width, height);
+    g_texture_bank_live_clut = pixels != NULL;
 }
 
 /* ------------------------------------------------------------------ */
