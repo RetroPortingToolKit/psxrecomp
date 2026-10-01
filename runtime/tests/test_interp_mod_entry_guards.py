@@ -19,6 +19,7 @@ def main():
         'psx_overlay_dispatch(cpu, addr);') < static_dispatch.index(
         'g_exec_phase = previous_phase;') < static_dispatch.index('if (handled) return 1;')
     assert source.count('psx_mod_function_entry(cpu, addr)') == 1
+    assert source.count('psx_mod_try_function_replacement(cpu, addr)') == 1
     # Every interpreted entry reaches these calls: without an active hook they
     # must cost one load, never a call into the plugin table.
     # A forced span replay (psx_mod_run_guest_span) runs inside a hook
@@ -36,6 +37,7 @@ def main():
     assert 'OV_FPLOG_RET1();' in probe
     assert 'psx_overlay_dispatch(cpu' not in probe
     assert local.count('psx_mod_function_entry(cpu, target)') == 1
+    assert local.count('psx_mod_try_function_replacement(cpu, target)') == 1
     assert local.index('overlay_loader_dispatch(cpu, target)') < local.index(
         'psx_mod_function_entry(cpu, target)') < local.index('pc = target;')
     completion = local[local.index('if (g_psx_mod_function_entry_hooks &&'):]

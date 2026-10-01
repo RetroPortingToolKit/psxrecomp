@@ -194,6 +194,7 @@ static void test_active_entry(CPUState* cpu, uint32_t address) {
 }
 static void test_disabled_entry(CPUState*, uint32_t) { disabled_entry_hits++; }
 static void test_unselected_entry(CPUState*, uint32_t) { unselected_entry_hits++; }
+static int test_replacement(CPUState*, uint32_t) { return 1; }
 
 static bool filter_handles;
 static bool filter_context_active;
@@ -239,6 +240,7 @@ static void test_guest_function(CPUState* cpu, uint32_t) {
 
 static void test_activation_plugin(void) {
     activation_calls++;
+    psx_mod_set_function_replacement(0x80003000u, test_replacement);
 }
 
 static const uint8_t* media_snapshot;
@@ -667,6 +669,8 @@ int main() {
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 2, "fetched and live instruction guards reject changed code");
     psx_mod_write_word(0x80003004u, 0x90A30014u);
+    check(psx_mod_try_function_replacement(&entry_cpu, 0x80003000u) == 1,
+          "activation registers trusted replacements");
     mod_runtime_on_vblank();
     check(plugin_calls == 1,
           "resolved trusted plugin must run on guest VBlank");
@@ -692,6 +696,8 @@ int main() {
     check(!psx_mod_dispatch_guest_function(&entry_cpu, 0x8FFF0000u) &&
               g_psx_mod_guest_functions == 0,
           "clearing the plan drops guest callback availability");
+    check(!psx_mod_try_function_replacement(&entry_cpu, 0x80003000u),
+          "clearing the active plan removes its replacements");
     psx_mod_function_entry(&entry_cpu, 0x80003000u);
     check(g_psx_mod_function_entry_hooks == 0 && active_entry_hits == 3,
           "clearing the plan must drop its function-entry hooks");

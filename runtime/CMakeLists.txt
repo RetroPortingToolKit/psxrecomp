@@ -56,6 +56,9 @@ if(BUILD_TESTING)
     add_executable(netplay_local_view_test tests/test_netplay_local_view.c)
     target_include_directories(netplay_local_view_test PRIVATE include)
     add_test(NAME netplay_local_view_test COMMAND netplay_local_view_test)
+    add_executable(mod_function_replacements_test tests/test_mod_function_replacements.c src/mod_function_replacements.c)
+    target_include_directories(mod_function_replacements_test PRIVATE include)
+    add_test(NAME mod_function_replacements_test COMMAND mod_function_replacements_test)
     add_executable(ws_scene_hold_test tests/test_ws_scene_hold.c)
     target_include_directories(ws_scene_hold_test PRIVATE include)
     add_test(NAME ws_scene_hold_test COMMAND ws_scene_hold_test)
@@ -990,6 +993,7 @@ if(BUILD_TESTING)
         tests/test_mod_runtime.cpp
         src/iso_reader_c.cpp
         src/mod_runtime.cpp
+        src/mod_function_replacements.c
         src/mod_packages.cpp
         src/mod_media.cpp
         src/disc_path.cpp

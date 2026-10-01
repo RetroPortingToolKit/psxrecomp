@@ -125,7 +125,8 @@
  * v30: the two lines merged. OverlayCallbacks keeps the master layout, which
  *      already holds every release-line callback; shards built against either
  *      v28 or v29 are rejected and recompiled. */
-#define PSX_OVERLAY_ABI_VERSION 30
+/* v31: trusted native function replacements, appended after all v30 callbacks. */
+#define PSX_OVERLAY_ABI_VERSION 31
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical
@@ -384,6 +385,7 @@ typedef struct OverlayCallbacks {
     int32_t (*nclip_exact_sign)(int32_t native_mac0, uint32_t pc);
     /* Guarded pre-instruction mod callback (ABI v27). */
     void (*mod_instruction)(CPUState*, uint32_t, uint32_t);
+    int (*mod_try_function_replacement)(CPUState *cpu, uint32_t address);
 } OverlayCallbacks;
 
 #ifdef __cplusplus

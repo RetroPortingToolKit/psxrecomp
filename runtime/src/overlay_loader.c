@@ -2604,6 +2604,8 @@ static void init_callbacks(void) {
             s_callbacks.mod_function_entry = psx_mod_function_entry;
             extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);
             s_callbacks.mod_instruction = psx_mod_instruction;
+            extern int psx_mod_try_function_replacement(CPUState *, uint32_t);
+            s_callbacks.mod_try_function_replacement = psx_mod_try_function_replacement;
         }
         /* ABI v14: GTE precision-store tracker — the emitter emits a direct
          * gte_precision_store_word() call for every swc2 (GTE store-word),

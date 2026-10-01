@@ -1472,6 +1472,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     s.disc_extents.clear();
     s.audio_tracks.clear();
     s.extent_start = 0;
+    psx_mod_clear_function_replacements();
     s.plan = {};
     s.validation = {};
     s.raw_disc_index.clear();
@@ -1577,6 +1578,7 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
+    psx_mod_clear_function_replacements();
     s.validation = {};
     s.raw_disc_index.clear();
     s.user_disc_index.clear();
@@ -1913,6 +1915,7 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = std::move(plan);
+    psx_mod_clear_function_replacements();
     {
         HostLaunchTimingScope index_timing(HOST_LAUNCH_BUILD_DISC_INDEX);
         build_disc_index(s);
@@ -2626,6 +2629,7 @@ extern "C" void mod_runtime_activate_plugins(void) {
     psx_projection_reset_session();
     gpu_ws_set_native_scene_predicate(nullptr);
     psx_ram_reset_size_request();
+    psx_mod_clear_function_replacements();
     gpu_hd_textures_shutdown();
     if (!s.initialized || !s.plan.ok) { timing.success(); return; }
     s.disc_extents.clear();

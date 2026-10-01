@@ -31,6 +31,11 @@ static int entry(CPUState *cpu, uint32_t address) {
     assert(cycles == 17); seen_cpu = cpu; seen_address = address;
     cpu->pc = cpu->gpr[31]; return 1;
 }
+static int replace(CPUState *cpu, uint32_t address) {
+    assert(cycles == 20);
+    cpu->gpr[2] = address;
+    return 1;
+}
 int main(void) {
     CPUState cpu = {0};
     OverlayCallbacks callbacks = {0};
@@ -46,6 +51,12 @@ int main(void) {
     assert(psx_mod_function_entry(&cpu, 0x80045770) == 1);
     assert(cpu.pc == 0x80010000);
     assert(seen_cpu == &cpu && seen_address == 0x80045770);
+    assert(!psx_mod_try_function_replacement(&cpu, 0x80031474));
+    callbacks.mod_try_function_replacement = replace;
+    overlay_init(&callbacks);
+    psx_advance_cycles(3);
+    assert(psx_mod_try_function_replacement(&cpu, 0x80031474));
+    assert(cpu.gpr[2] == 0x80031474);
     callbacks.ws_screen_x_bound = 0; callbacks.mod_function_entry = 0;
     overlay_init(&callbacks);
     assert(psx_ws_screen_x_bound(-256) == -256);
