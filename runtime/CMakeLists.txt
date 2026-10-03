@@ -23,6 +23,10 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(disasm_test tests/test_disasm.cpp src/disasm_shim.cpp
+        ../recompiler/src/mips_decoder.cpp)
+    target_include_directories(disasm_test PRIVATE include ../recompiler/include)
+    add_test(NAME disasm_test COMMAND disasm_test)
     # Netplay: which BIOS a match boots, and its wire helpers.
     add_executable(netplay_bios_settle_test
         tests/test_netplay_bios_settle.c
