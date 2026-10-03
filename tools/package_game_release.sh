@@ -151,7 +151,9 @@ REQUESTED="$(printf '%s' "${REQUESTED}" | tr -d '[:space:]')"
 REQUESTED="${REQUESTED#v}"
 
 EXE=""
-for cand in "${BUILD_DIR}/${EXE_NAME}" "${BUILD_DIR}/${EXE_NAME}.exe" "${BUILD_DIR}/Release/${EXE_NAME}.exe"; do
+# Git Bash's -f accepts a Windows PE through its unsuffixed alias. Prefer the
+# literal .exe path so extension-based DLL bundling and signing cannot be skipped.
+for cand in "${BUILD_DIR}/${EXE_NAME}.exe" "${BUILD_DIR}/Release/${EXE_NAME}.exe" "${BUILD_DIR}/${EXE_NAME}"; do
   if [[ -f "${cand}" ]]; then EXE="${cand}"; break; fi
 done
 if [[ -z "${EXE}" ]]; then
@@ -160,7 +162,7 @@ if [[ -z "${EXE}" ]]; then
   marker="${BUILD_DIR}/psxrecomp_exe_name-${RUNTIME_TARGET}.txt"
   if [[ -f "${marker}" ]]; then
     chosen="$(tr -d '[:space:]' <"${marker}")"
-    for cand in "${BUILD_DIR}/${chosen}" "${BUILD_DIR}/${chosen}.exe"; do
+    for cand in "${BUILD_DIR}/${chosen}.exe" "${BUILD_DIR}/${chosen}"; do
       if [[ -f "${cand}" ]]; then EXE="${cand}"; break; fi
     done
     if [[ -n "${EXE}" ]]; then
