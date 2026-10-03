@@ -56,6 +56,7 @@ except ImportError:
 import json
 import platform
 import re
+import sysconfig
 
 
 def codegen_ver(runtime_include: str) -> int:
@@ -236,28 +237,141 @@ def native_path(p: str) -> str:
     return os.path.abspath(p)
 
 
+# The arch the shards are built for: the RUNTIME's, not this interpreter's.
+# None means "this interpreter's" (manual/offline use). The spawning runtime
+# pins it through PSX_OVERLAY_ARCH_ABI (autocompile.c), the same way it pins
+# the cache dir and the flavor, because the interpreter, the compiler and the
+# runtime need not share an architecture on macOS: an x86_64 runtime under
+# Rosetta runs an x86_64 Python, but Xcode's clang is an arm64-only binary and
+# defaults to arm64. Without -arch every shard it built was arm64, landed in
+# the macos-x64 cache and never loaded, so the x64 runtime ran every overlay
+# on the interpreter.
+_TARGET_ARCH = None
+_ARCH_ABI_OSES = ('win', 'linux', 'macos')
+_ARCH_ABI_ARCHES = ('x64', 'arm64', 'x86', 'unknown')
+# Apple's driver names for the arch-abi arches (clang -arch / gcc -arch).
+_DARWIN_ARCH_NAMES = {'x64': 'x86_64', 'arm64': 'arm64', 'x86': 'i386'}
+
+
+def _arch_abi_arch(machine: str) -> str:
+    """A machine/arch name (uname, PE, MSYS2 tag) in arch-abi spelling."""
+    m = machine.lower()
+    if m in ('amd64', 'x86_64', 'x64'):
+        return 'x64'
+    if m in ('arm64', 'aarch64'):
+        return 'arm64'
+    if m in ('i386', 'i686', 'x86'):
+        return 'x86'
+    return 'unknown'
+
+
+def interpreter_arch() -> str:
+    """Arch of THIS Python process, in arch-abi spelling: the only
+    architecture ctypes can load here.
+
+    macOS and Linux: platform.machine() is uname's, which is the process's
+    own (x86_64 for a Python running under Rosetta).
+
+    Native Windows: platform.machine() is the MACHINE's, not the process's
+    (Win32_Processor through WMI since Python 3.12, PROCESSOR_ARCHITEW6432
+    for a WOW64 process before), so an x64 Python emulated on Windows on ARM
+    says ARM64 and a 32-bit one on x64 Windows says AMD64. The interpreter's
+    own build names the process there: sysconfig.get_platform() is
+    win-amd64 / win-arm64 / win32 for python.org builds (from the compiler
+    tag in sys.version) and mingw_<arch>_<crt>_<cc> for MSYS2's."""
+    if os.name == 'nt':
+        plat = sysconfig.get_platform().lower()
+        if plat == 'win32':
+            return 'x86'
+        m = re.match(r'(?:win-|mingw_)(amd64|arm64|x86_64|aarch64|i686)(?:_|$)', plat)
+        if m:
+            return _arch_abi_arch(m.group(1))
+        # Older MSYS2 builds can report plain "mingw"; keep unpinned cache
+        # callers usable without guessing for an unrecognized python.org ABI.
+        return _arch_abi_arch(platform.machine()) if plat.startswith('mingw') else 'unknown'
+    return _arch_abi_arch(platform.machine())
+
+
+def target_os_tag() -> str:
+    """The "<os>" half of the arch-abi tag the shards are built for."""
+    if _TARGET_OS in _ARCH_ABI_OSES:
+        return _TARGET_OS
+    if is_windows():
+        return 'win'
+    return {'Darwin': 'macos'}.get(platform.system(), 'linux')
+
+
+def set_target_arch(arch: str | None) -> None:
+    global _TARGET_ARCH
+    _TARGET_ARCH = arch
+
+
+def target_arch() -> str:
+    """The "<arch>" half: the runtime's when it said so, else this interpreter's."""
+    return _TARGET_ARCH or interpreter_arch()
+
+
 def cache_arch_abi() -> str:
-    """Canonical cache arch-abi tag, IDENTICAL to overlay_loader.c's
+    """Canonical cache arch-abi tag, IDENTICAL to overlay_loader.h's
     PSX_OVERLAY_ARCH_ABI ("<os>-<arch>": win|linux|macos + x64|arm64|x86).
     gcc DLLs are namespaced under <game_id>/gcc/<arch-abi>/ so same-OS
     different-arch caches never comingle. Keep this
-    mapping in lockstep with overlay_loader.c."""
-    if _TARGET_OS in ('win', 'linux', 'macos'):
-        os_tag = _TARGET_OS
-    elif is_windows():
-        os_tag = 'win'
-    else:
-        os_tag = {'Darwin': 'macos'}.get(platform.system(), 'linux')
-    m = platform.machine().lower()
-    if m in ('amd64', 'x86_64', 'x64'):
-        arch = 'x64'
-    elif m in ('arm64', 'aarch64'):
-        arch = 'arm64'
-    elif m in ('i386', 'i686', 'x86'):
-        arch = 'x86'
-    else:
-        arch = 'unknown'
-    return f'{os_tag}-{arch}'
+    mapping in lockstep with overlay_loader.h."""
+    return f'{target_os_tag()}-{target_arch()}'
+
+
+def apply_runtime_arch_abi(value: str | None, source: str) -> str | None:
+    """Build for the runtime's "<os>-<arch>" (PSX_OVERLAY_ARCH_ABI or
+    --arch-abi). Returns None when adopted (or nothing was given), else why
+    not. The OS half must agree with the OS the shards are built for: a
+    disagreement means the cache would be written where no loader reads."""
+    if not value:
+        return None
+    value = value.strip()
+    os_tag, sep, arch = value.partition('-')
+    if not sep or os_tag not in _ARCH_ABI_OSES or arch not in _ARCH_ABI_ARCHES:
+        return (f'{source}={value!r} is not "<os>-<arch>" '
+                f'(os: {"|".join(_ARCH_ABI_OSES)}; '
+                f'arch: {"|".join(_ARCH_ABI_ARCHES)})')
+    if os_tag != target_os_tag():
+        return (f'{source}={value!r} names {os_tag}, but these shards are '
+                f'built for {target_os_tag()}')
+    set_target_arch(arch)
+    return None
+
+
+def target_arch_flags(compiler: str = 'gcc') -> list[str]:
+    """Compiler flags that make a shard's architecture the target's.
+
+    macOS only: Apple's cc defaults to the architecture of the compiler
+    binary, not of whoever runs it, so the target is always named. Other
+    platforms are left exactly as they were (their toolchains target the one
+    architecture the runtime and the bundled Python share)."""
+    if compiler != 'gcc' or target_os_tag() != 'macos':
+        return []
+    name = _DARWIN_ARCH_NAMES.get(target_arch())
+    # Cross-arch macOS builds require Apple clang; Homebrew GCC may ignore -arch.
+    return ['-arch', name] if name else []
+
+
+def interpreter_arch_mismatch() -> str | None:
+    """Why this interpreter cannot build shards for the target, or None.
+
+    Every shard is validated by loading it into this interpreter (ctypes:
+    overlay_abi, pair id, exports) before it counts, and a process can only
+    load its own architecture. So a mismatch cannot produce a usable cache;
+    say so instead of writing shards nothing will load."""
+    have = interpreter_arch()
+    want = target_arch()
+    if have == want or have == 'unknown':
+        # 'unknown': nothing proves a mismatch; each shard's load check
+        # still decides, as before this guard existed.
+        return None
+    return (f'the runtime is {cache_arch_abi()} but this Python runs as '
+            f'{have} ({sys.executable}); compiled shards are validated by '
+            f'loading them here, so the Python must run as {want} too. Use a '
+            f'Python built for {want} (a universal one runs as its caller\'s '
+            f'architecture).')
 
 
 # ---------------------------------------------------------------------------
@@ -5016,7 +5130,7 @@ def _compile_dll_direct(c_path: str, out_dll: str, include_dirs: list[str],
     # that conflicts with the host process. Use -shared without -fPIC.
     pic_flag = [] if is_windows() else ['-fPIC']
     cmd = [
-        gcc, '-shared', *pic_flag, '-O2',
+        gcc, '-shared', *pic_flag, *target_arch_flags('gcc'), '-O2',
         '-DPSX_OVERLAY_DLL_BUILD',
         # Overlays mirror the runtime's no-debug-tools build: the emitter guards
         # debug_server_cyc_observe (and friends) behind PSX_NO_DEBUG_TOOLS, and the
@@ -6514,6 +6628,11 @@ def main():
                          'to the sequential path).')
     ap.add_argument('--target-os', choices=['auto', 'win', 'linux', 'macos'], default='auto',
                     help='target operating system for compiled overlay shards (default: auto)')
+    ap.add_argument('--arch-abi', default=None,
+                    help='"<os>-<arch>" of the runtime that will load the shards '
+                         '(e.g. macos-x64). The spawning runtime injects '
+                         'PSX_OVERLAY_ARCH_ABI, which wins. Default: this '
+                         "interpreter's architecture.")
     args = ap.parse_args()
     target_os = args.target_os
     if target_os == 'auto':
@@ -6567,6 +6686,24 @@ def main():
         if _fl is not None and _fl != args.flavor:
             print(f'[cache] PSX_OVERLAY_FLAVOR overrides --flavor: {_fl}')
             args.flavor = _fl
+    # Architecture is pinned by the spawning runtime too (overlay_loader.h's
+    # PSX_OVERLAY_ARCH_ABI): the shards must be the RUNTIME's architecture and
+    # land in its arch-abi directory, whatever this interpreter or the
+    # compiler binary happens to be.
+    _env_arch = os.environ.get('PSX_OVERLAY_ARCH_ABI')
+    if _env_arch:
+        if args.arch_abi and _env_arch != args.arch_abi:
+            print(f'[cache] PSX_OVERLAY_ARCH_ABI overrides --arch-abi: {_env_arch}')
+        _arch_err = apply_runtime_arch_abi(_env_arch, 'PSX_OVERLAY_ARCH_ABI')
+    else:
+        _arch_err = apply_runtime_arch_abi(args.arch_abi, '--arch-abi')
+    if _arch_err:
+        ap.error(_arch_err)
+    if not args.static:
+        _arch_mismatch = interpreter_arch_mismatch()
+        if _arch_mismatch:
+            print(f'ERROR: cannot build overlay shards: {_arch_mismatch}')
+            sys.exit(2)
     if not args.captures:
         ap.error('no captures file: set PSX_OVERLAY_CAPTURES (runtime injects it) '
                  'or pass --captures for manual/offline use')

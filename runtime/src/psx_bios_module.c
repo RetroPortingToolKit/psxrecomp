@@ -462,6 +462,10 @@ static int build_module(const BmToolchain *tk, const char *dump_path,
         !append_s(cmd, sizeof(cmd), " --stem ") || !append_s(cmd, sizeof(cmd), stem) ||
         !append_s(cmd, sizeof(cmd), " --out ") || !append_q(cmd, sizeof(cmd), out_path) ||
         !append_s(cmd, sizeof(cmd), " --flavor ") || !append_s(cmd, sizeof(cmd), flavor) ||
+        /* This build's architecture, not the Python's or the compiler's (an
+         * x86_64 runtime under Rosetta, arm64-only Xcode clang). */
+        !append_s(cmd, sizeof(cmd), " --arch-abi ") ||
+        !append_s(cmd, sizeof(cmd), overlay_loader_arch_abi()) ||
         !append_s(cmd, sizeof(cmd), " --compiler ") || !append_s(cmd, sizeof(cmd), compiler)) {
         set_err(err, err_cap, "build command too long");
         return 0;

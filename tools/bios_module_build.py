@@ -33,7 +33,7 @@ the exact dump its code describes.
 USAGE (as the runtime invokes it)
     python3 bios_module_build.py --dump <SCPH1001.BIN> --toolchain <dir> \
         --stem SCPH1001 --out <cache>/SCPH1001_<crc8>.so --flavor 0 \
-        --compiler gcc|tcc [--gcc <cc>] [--tcc <tcc>]
+        --compiler gcc|tcc [--gcc <cc>] [--tcc <tcc>] [--arch-abi <os>-<arch>]
 
 The toolchain dir is overlay_toolchain/ as tools/release_stage.py stages it
 (python, psxrecomp-bios, include/, bios/*.toml, recompiler/seeds/). Each
@@ -143,7 +143,7 @@ def compile_module(sources: list[str], out: str, include_dirs: list[str],
     else:
         env, tc_dir = co._toolchain_env(gcc)
         pic = [] if co.is_windows() else ["-fPIC"]
-        cmd = [gcc, "-shared", *pic, "-O2", *defines,
+        cmd = [gcc, "-shared", *pic, *co.target_arch_flags("gcc"), "-O2", *defines,
                *[co.native_path(s) for s in sources],
                "-o", co.native_path(out),
                *[f"-I{co.native_path(d)}" for d in include_dirs], "-lm"]
@@ -187,6 +187,9 @@ def main(argv=None) -> int:
     ap.add_argument("--stem", required=True, help="profile stem, e.g. SCPH1001 (bios/<stem>.toml)")
     ap.add_argument("--out", required=True, help="module path to publish (.so/.dll)")
     ap.add_argument("--flavor", type=int, default=0, help="PSX_OVERLAY_FLAVOR of the host build")
+    ap.add_argument("--arch-abi", default=None,
+                    help="\"<os>-<arch>\" of the host build (overlay_loader.h's PSX_OVERLAY_ARCH_ABI); "
+                         "default: PSX_OVERLAY_ARCH_ABI from the environment, else this interpreter's")
     ap.add_argument("--compiler", choices=("gcc", "tcc"), default="gcc")
     ap.add_argument("--gcc", default="gcc")
     ap.add_argument("--tcc", default="tcc")
@@ -196,6 +199,22 @@ def main(argv=None) -> int:
     ap.add_argument("--seeds", default=None, help="seeds dir (default: <toolchain>/recompiler/seeds)")
     ap.add_argument("--keep-work", action="store_true", help="keep the temporary emit tree (debugging)")
     args = ap.parse_args(argv)
+
+    # Build for the HOST's architecture, which on macOS need not be the
+    # compiler binary's default (an x86_64 runtime under Rosetta, arm64-only
+    # Xcode clang). The self-check loads the module into this interpreter, so
+    # the interpreter has to run as that architecture as well.
+    env_arch = os.environ.get("PSX_OVERLAY_ARCH_ABI")
+    if env_arch and args.arch_abi and env_arch != args.arch_abi:
+        print(f"PSX_OVERLAY_ARCH_ABI overrides --arch-abi: {env_arch}")
+    arch_err = co.apply_runtime_arch_abi(
+        env_arch or args.arch_abi,
+        "PSX_OVERLAY_ARCH_ABI" if env_arch else "--arch-abi")
+    if arch_err:
+        die(arch_err)
+    arch_mismatch = co.interpreter_arch_mismatch()
+    if arch_mismatch:
+        die(f"cannot build a BIOS module: {arch_mismatch}")
 
     tk = os.path.abspath(args.toolchain)
     # Everything absolute: the emitter runs with cwd inside the staged work

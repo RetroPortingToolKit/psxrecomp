@@ -982,9 +982,9 @@ void autocompile_configure(const char *cmd, const char *cwd) {
     }
 #else
     s_out_lock_init = 1;
-    /* Pin WRITE cache + READ captures + flavor to the loader's canonical
-     * values in the environment every child inherits: same contract as the
-     * SetEnvironmentVariableA block in the Windows request path (see it for
+    /* Pin WRITE cache + READ captures + flavor + arch-abi to the loader's
+     * canonical values in the environment every child inherits: same contract
+     * as the SetEnvironmentVariableA block in the Windows request path (see it for
      * why each matters). Done once here, on the emulation thread before any
      * worker exists, because glibc's setenv is not safe against a concurrent
      * getenv on another thread. autocompile_set_cache_paths() runs first. */
@@ -996,6 +996,10 @@ void autocompile_configure(const char *cmd, const char *cwd) {
         snprintf(flavor_buf, sizeof flavor_buf, "%d", (int)PSX_OVERLAY_FLAVOR);
         setenv("PSX_OVERLAY_FLAVOR", flavor_buf, 1);
     }
+    /* The architecture too (see the Windows block): Xcode's clang is an
+     * arm64-only binary and defaults to arm64, so an x86_64 runtime under
+     * Rosetta used to get arm64 shards it could never load. */
+    setenv("PSX_OVERLAY_ARCH_ABI", PSX_OVERLAY_ARCH_ABI, 1);
     if (s_cmd[0]) autocompile_report_interpreter();
 #endif
 }
@@ -1100,6 +1104,12 @@ int autocompile_request(void) {
         snprintf(flavor_buf, sizeof flavor_buf, "%d", (int)PSX_OVERLAY_FLAVOR);
         SetEnvironmentVariableA("PSX_OVERLAY_FLAVOR", flavor_buf);
     }
+    /* And the ARCHITECTURE: shards must be this runtime's "<os>-<arch>"
+     * (overlay_loader.h), whatever the Python or the compiler binary runs as.
+     * On Windows the bundled Python, MinGW gcc and tcc are all x64, so this
+     * names what the tool derives anyway; on macOS it is what makes an x64
+     * runtime under Rosetta get x86_64 shards from an arm64-only clang. */
+    SetEnvironmentVariableA("PSX_OVERLAY_ARCH_ABI", PSX_OVERLAY_ARCH_ABI);
 
     /* cmd.exe /C resolves the command via PATH and supports the relative
      * paths in the configured line (cwd = project root). The WHOLE command is

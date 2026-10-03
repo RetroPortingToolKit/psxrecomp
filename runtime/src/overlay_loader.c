@@ -1835,29 +1835,8 @@ static void refresh_bios_resident_flags(void) {
             cache_path_is_bios_resident(s_cache_idx[i].path);
 }
 
-/* Canonical cache arch-abi tag (caches are namespaced per backend AND per
- * target so a Windows-x64 gcc DLL and, later, a same-OS arm64 build for the
- * same fragment never comingle). compile_overlays.py
- * computes the IDENTICAL string from platform.system()/machine(); keep the two
- * mappings in lockstep ("<os>-<arch>": win|linux|macos + x64|arm64|x86). */
-#if defined(_WIN32)
-#  define PSX_OL_OS "win"
-#elif defined(__APPLE__)
-#  define PSX_OL_OS "macos"
-#else
-#  define PSX_OL_OS "linux"
-#endif
-#if defined(__aarch64__) || defined(_M_ARM64)
-#  define PSX_OL_ARCH "arm64"
-#elif defined(__x86_64__) || defined(_M_X64)
-#  define PSX_OL_ARCH "x64"
-#elif defined(__i386__) || defined(_M_IX86)
-#  define PSX_OL_ARCH "x86"
-#else
-#  define PSX_OL_ARCH "unknown"
-#endif
-#define PSX_OVERLAY_ARCH_ABI PSX_OL_OS "-" PSX_OL_ARCH
-
+/* PSX_OVERLAY_ARCH_ABI (the cache layout's "<os>-<arch>") is defined in
+ * overlay_loader.h, so autocompile.c can hand it to the compile it spawns. */
 const char *overlay_loader_arch_abi(void) { return PSX_OVERLAY_ARCH_ABI; }
 
 #ifndef _WIN32

@@ -1144,6 +1144,17 @@ if(BUILD_TESTING)
         add_test(NAME release_stage_cache_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_stage_cache.py)
+        # Overlay shards and BIOS modules are compiled for the RUNTIME's
+        # architecture: an x86_64 macOS runtime under Rosetta used to get arm64
+        # shards (arm64-only Xcode clang, no -arch) in its macos-x64 cache and
+        # ran every overlay interpreted. Pins the PSX_OVERLAY_ARCH_ABI handoff
+        # (autocompile.c), -arch on macOS, the refusal when the Python cannot
+        # load the runtime's architecture, and unchanged Windows/Linux commands;
+        # with a real cc it builds and loads each slice this Mac can run.
+        add_test(NAME overlay_compile_arch_test
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_compile_arch.py
+                         --cc ${CMAKE_C_COMPILER})
     endif()
 
     # Full card protocol regression: read, write, address echo, per-slot state,

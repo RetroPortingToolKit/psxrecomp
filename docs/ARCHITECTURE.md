@@ -129,7 +129,11 @@ The backend tier is resolved in `overlay_backend.c` (see `main.cpp` around the
 
 Compiled overlays are stored in a content-addressed cache namespaced by
 compiler and target ABI (`<game>/gcc/<arch-abi>/…` vs `<game>/tcc/…`); a `gcc`
-shard wins over a `tcc` shard for the same region. See
+shard wins over a `tcc` shard for the same region. The `<arch-abi>` is the
+runtime's own (`PSX_OVERLAY_ARCH_ABI` in `overlay_loader.h`, the running slice
+of a universal macOS binary): the runtime exports it to every compile it spawns
+and macOS compiles pass the matching `-arch`, so an x86_64 runtime under Rosetta
+gets x86_64 shards even though Xcode's clang defaults to arm64. See
 [`docs/FEATURES.md`](FEATURES.md), [`docs/OVERLAY_CACHE_V2.md`](OVERLAY_CACHE_V2.md),
 and [`docs/ASYNC_OVERLAY_COMPILE.md`](ASYNC_OVERLAY_COMPILE.md).
 
