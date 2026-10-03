@@ -352,6 +352,10 @@ if(BUILD_TESTING)
     add_test(NAME sio_dualshock_rumble_test COMMAND sio_dualshock_rumble_test)
     set_tests_properties(sio_dualshock_rumble_test PROPERTIES DISABLED TRUE)
 
+    add_executable(mod_controller_source_test tests/test_mod_controller_source.c src/mod_controller_source.c)
+    target_include_directories(mod_controller_source_test PRIVATE include)
+    add_test(NAME mod_controller_source_test COMMAND mod_controller_source_test)
+
     add_executable(gte_register_access_test
         tests/test_gte_register_access.cpp
         src/gte.cpp

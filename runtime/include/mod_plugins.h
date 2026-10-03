@@ -460,6 +460,18 @@ int psx_mod_set_controller_presentation_policy(
     uint32_t initial_mode,
     int config_capable);
 
+/* Trusted offline source owns a player's pad at normal input sampling. A
+ * declined/invalid sample delivers neutral, not the previous held input.
+ * Existing TCP overrides take priority; netplay/resim and eye redraws never
+ * invoke the source. The runtime keeps coherent SIO type requests/recording.
+ * Pass NULL to detach. Local keyboard/pad buttons remain merged for menus;
+ * the source owns sticks and type. No source leaves faithful defaults intact. */
+typedef struct PSXModControllerState {
+    uint32_t struct_size, buttons, lx, ly, rx, ry, analog;
+} PSXModControllerState;
+typedef int (*PSXModControllerSource)(PSXModControllerState *state);
+int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source);
+
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.
  * The registry itself uses function-local initialization, so constructor order

@@ -6,6 +6,7 @@
  */
 
 #include "cpu_state.h"
+#include "mod_controller_source.h"
 #include "window_size.h"     /* default game-window size */
 #include "internal_resolution.h" /* Settings -> Display -> Internal resolution */
 #include "psx_scheduler.h"   /* psx_scheduler_run — deterministic TCB scheduler */
@@ -6228,7 +6229,24 @@ static void sample_pad_into_sio(int override) {
         psx_start_consumer_enabled() ? psx_start_consumer_offline_frame() : 0u;
     for (int s = 0; s < n; s++) {
         PsxNetPad pad;
-        if (!capture_pad_slot(s, &pad)) continue;  /* no device in this port */
+        PSXModControllerState source;
+        if (mod_controller_source_sample((uint32_t)s, &source)) {
+            /* Sample physical buttons separately; its axes/type cannot steer
+             * the source's virtual pad. Guards release every source channel. */
+            PsxNetPad local;
+            const int have_local = capture_pad_slot(s, &local);
+            pad.buttons = (uint16_t)source.buttons;
+            if (have_local) pad.buttons &= local.buttons;
+            pad.lx = (uint8_t)source.lx; pad.ly = (uint8_t)source.ly;
+            pad.rx = (uint8_t)source.rx; pad.ry = (uint8_t)source.ry;
+            pad.analog = (uint8_t)source.analog; pad.connected = 1;
+            if (savestate_input_guard_active()) {
+                pad.buttons = 0xffff;
+                pad.lx = pad.ly = pad.rx = pad.ry = 128;
+            }
+            sio_set_pad_connected(s, 1);
+            sio_set_pad_config_capable(s, 1);
+        } else if (!capture_pad_slot(s, &pad)) continue;  /* no device in this port */
         /* Push sticks every frame; request the pad type (digital/analog) through
          * the coherent channel so a policy switch is applied only at an idle,
          * non-config bus boundary (never mid-poll / mid-handshake). This is the
@@ -15763,6 +15781,7 @@ int main(int argc, char** argv) {
          * choices first so disabling a package cannot leave its prior state
          * latched across a soft return. */
         g_mod_controller_mode_override.fill(-1);
+        mod_controller_source_reset();
         for (auto& policy : g_mod_controller_policy)
             policy = ModControllerPresentationPolicy{};
         g_mod_load_wall_multiplier = -1;
