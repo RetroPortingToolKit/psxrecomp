@@ -62,12 +62,12 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "psx_netplay_rb.h"
 #include "psx_selfcheck.h"
 #include "psx_lobby_client.h"
-#include "recomp_net/host_relay.h" /* RNetHostRelayStatus for the launcher relay line */
 #include "netplay_bios_settle.h"
 #include "netplay_exit_reason.h"
 #include "host_time.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "recomp_net/auth.h"
+#include "recomp_net/host_relay.h" /* RNetHostRelayStatus for the launcher relay line */
 #include "recomp_net/chat_filter.h" /* chat profanity mask, LAN rooms too */
 #endif
 #include "spu.h"
@@ -10941,6 +10941,7 @@ namespace {
     int ae_np_relay_status(void*, char* out, size_t out_cap) {
         if (!out || !out_cap) return 0;
         out[0] = '\0';
+#if defined(PSX_HAS_RECOMP_NET)
         if (g_lnch_hosting_lan || g_lnch_joined_lan || !psx_lobby_in_lobby()) return 0;
         RNetHostRelayStatus st;
         if (!psx_lobby_host_relay_status(&st)) return 0;
@@ -10984,6 +10985,9 @@ namespace {
             return 1;
         }
         return 0;
+#else
+        return 0; /* offline build: no lobby host relay */
+#endif
     }
     int ae_np_force_turn_set(void*, int force) {
         if (g_lnch_hosting_lan || g_lnch_joined_lan)
