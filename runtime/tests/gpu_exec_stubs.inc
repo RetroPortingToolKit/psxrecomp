@@ -54,6 +54,10 @@ int mod_texture_packet_precision(uint32_t source, float q[3], float xy[6]) {
 }
 
 static uint32_t test_ram[0x00200000u / 4u];
+/* The enhancement GPU-DMA aperture (mod_memory.h): a test allocates it by
+ * setting test_aperture_used; reads and keys then follow the real rules. */
+static uint32_t test_aperture[0x00020000u / 4u];
+static uint32_t test_aperture_used;
 
 static struct {
     int calls;
@@ -100,7 +104,9 @@ static inline void gpu_exec_record_triangle(int x0, int y0, int x1, int y1,
 }
 
 uint32_t psx_read_word(uint32_t addr) {
-    uint32_t phys = addr & 0x1FFFFFFFu;
+    uint32_t phys = addr & 0x1FFFFFFFu, off;
+    if (psx_mod_gpu_dma_aperture_offset_for(phys, 4u, test_aperture_used, &off))
+        return test_aperture[off / 4u];
     if (phys <= 0x00200000u - 4u)
         return test_ram[phys / 4u];
     return 0;
@@ -243,7 +249,12 @@ void color_lut_map555(const ColorLut *lut, uint16_t bgr555,
     if (g) *g = (uint8_t)(((bgr555 >> 5) & 0x1Fu) << 3);
     if (b) *b = (uint8_t)(((bgr555 >> 10) & 0x1Fu) << 3);
 }
-uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) { return address; }
+uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
+    return psx_mod_gpu_dma_resolve_address_for(address, test_aperture_used);
+}
+uint32_t psx_gpu_packet_key(uint32_t address) {
+    return psx_gpu_packet_key_for(address, test_aperture_used);
+}
 void text_xlate_vram_upload(int x, int y, int w, int h) {
     (void)x; (void)y; (void)w; (void)h;
 }

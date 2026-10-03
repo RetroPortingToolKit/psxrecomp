@@ -49,6 +49,23 @@ static inline uint32_t psx_mod_gpu_dma_resolve_address_for(
     return psx_ram_canonical_offset(canonical) & ~3u;
 }
 
+/*
+ * Identity of a GPU packet word at `address` (a CPU pointer or a DMA tag):
+ * the allocated enhancement aperture keeps its own physical address, main
+ * RAM folds to its word-aligned live offset. Every source-address key (UI
+ * prepass nodes and items, packet guards, title roles) uses this, so a packet
+ * in the aperture never shares a key with, or reads back, the main RAM its
+ * low bits alias.
+ */
+static inline uint32_t psx_gpu_packet_key_for(uint32_t address, uint32_t used) {
+    uint32_t canonical = address & 0x1FFFFFFCu;
+    if (psx_mod_gpu_dma_aperture_offset_for(
+            canonical, 4u, used, (uint32_t *)0))
+        return canonical;
+    return psx_ram_canonical_offset(canonical) & ~3u;
+}
+
+uint32_t psx_gpu_packet_key(uint32_t address);
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t size, uint32_t alignment);
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address);
 uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment);

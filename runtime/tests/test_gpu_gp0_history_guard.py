@@ -250,6 +250,7 @@ void text_xlate_vram_upload(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 int ws_cull_should_keep(uint32_t addr) { (void)addr; return 1; }
 int ws_ui_group_should_keep(uint32_t addr) { (void)addr; return 1; }
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) { return address; }
+uint32_t psx_gpu_packet_key(uint32_t address) { return address & 0x001FFFFCu; }
 void ws_ui_group_assign(WsUiGroupItem *items, size_t count,
                         int32_t display_width, int dense_menu, int in_place)
 { (void)items; (void)count; (void)display_width; (void)dense_menu; (void)in_place; }

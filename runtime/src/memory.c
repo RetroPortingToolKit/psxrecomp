@@ -144,6 +144,10 @@ uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
         address, mod_gpu_dma_memory_used);
 }
 
+uint32_t psx_gpu_packet_key(uint32_t address) {
+    return psx_gpu_packet_key_for(address, mod_gpu_dma_memory_used);
+}
+
 /* Exposed for inlined main-RAM load helpers in psx_cyc.h (VLC/decode hot path). */
 uint8_t *g_psx_ram = ram;
 /* PSX_LOAD_DELAY gate (default on). −1 = unread; 0/1 after first resolve. */
@@ -1355,9 +1359,9 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
          * 0x80030000, so ROM 0xBFC38B1C executes at 0x80050B1C
          * (scph1001_relocated_store). */
         if (debug_cpu_ptr && scph1001_relocated_store(0x80050B1Cu, 0xBFC38B1Cu)) {
-            /* Word-aligned RAM key through the live geometry (retail: the
-             * 0x1FFFFC fold, identical to the DMA/GPU source keys). */
-            src = psx_ram_canonical_offset(debug_cpu_ptr->gpr[4] - 4u) & ~3u;
+            /* The same packet key as the DMA/GPU source keys (retail: the
+             * 0x1FFFFC fold). */
+            src = psx_gpu_packet_key(debug_cpu_ptr->gpr[4] - 4u);
         }
         gpu_set_gp0_source(src);
         gpu_write_gp0(val);

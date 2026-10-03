@@ -107,6 +107,31 @@ static void add_rear_pieces(const RearPiece *pieces, int count) {
     test_ram[NODE_GAP / 4u] = NODE_RING;
 }
 
+/* The same HUD list in the enhancement GPU-DMA aperture (THPS2's draw-distance
+ * prim arena), with unrelated words in the main RAM its low bits alias. */
+#define AP_BASE 0x00800000u
+static void put_node_ap(uint32_t addr, uint32_t next, const uint32_t *words,
+                        uint32_t count) {
+    const uint32_t off = (addr - AP_BASE) / 4u;
+    test_aperture[off] = (count << 24) | (next & 0xFFFFFFu);
+    for (uint32_t i = 0; i < count; i++)
+        test_aperture[off + 1u + i] = words[i];
+}
+static void move_hud_to_aperture(void) {
+    const uint32_t nodes[3] = {NODE_RING, NODE_FILL, NODE_FLAT};
+    test_aperture_used = sizeof test_aperture;
+    memset(test_aperture, 0, sizeof test_aperture);
+    for (int i = 0; i < 3; i++) {
+        const uint32_t h = test_ram[nodes[i] / 4u], n = h >> 24;
+        const uint32_t next = (h & 0xFFFFFFu) == 0xFFFFFFu
+                                  ? 0xFFFFFFu : AP_BASE + (h & 0xFFFFFFu);
+        put_node_ap(AP_BASE + nodes[i], next, &test_ram[nodes[i] / 4u + 1u], n);
+    }
+    test_ram[OT_HEAD / 4u] = AP_BASE + NODE_RING;
+    for (uint32_t a = NODE_RING; a < NODE_FLAT + 0x40u; a += 4u)
+        test_ram[a / 4u] = 0xDEAD0000u | a;
+}
+
 static void load_packet(uint32_t node, uint32_t count) {
     for (uint32_t i = 0; i < count; i++)
         gp0_cmd_buf[i] = test_ram[node / 4u + 1u + i];
@@ -472,6 +497,39 @@ int main(void) {
         gp0_exec_mono_tri();
         assert(gpu_exec_triangles.min_x == 50 && gpu_exec_triangles.max_x == 140);
     }
+
+    /* A list in the aperture validates against its own words at DMA time:
+     * the prepass survives the walk and the fill squashes as in RAM. A RAM
+     * node at the aliased offset is a different node. */
+    reset_state(1);
+    build_hud(60, 128, 64, 120);
+    move_hud_to_aperture();
+    gpu_ws_prepass_linked_list(OT_HEAD);
+    assert(ws_ui_prepass_count == 3);
+    {
+        const uint32_t nodes[3] = {NODE_RING, NODE_FILL, NODE_FLAT};
+        const uint32_t stale = ws_ui_reject.stale;
+        for (int i = 0; i < 3; i++) {
+            const uint32_t a = AP_BASE + nodes[i];
+            const uint32_t h = test_aperture[(a - AP_BASE) / 4u];
+            gpu_ws_validate_linked_list_header(a, h);
+            gpu_ws_validate_linked_list_node(a, h >> 24);
+        }
+        assert(ws_ui_reject.stale == stale && ws_ui_prepass_count == 3);
+        gpu_exec_reset_triangles();
+        for (uint32_t i = 0; i < 8; i++)
+            gp0_cmd_buf[i] = test_aperture[(NODE_FILL + 4u) / 4u + i];
+        gp0_cmd_source_addr = AP_BASE + NODE_FILL + 4u;
+        gp0_words_needed = 8;
+        gp0_exec_shaded_quad();
+        const int32_t centre = 60 + (128 - 60) / 2;
+        assert(gpu_exec_triangles.min_x == ws_scale_about(64, centre));
+        assert(gpu_exec_triangles.max_x == ws_scale_about(120, centre));
+        assert(GPU_RAM_KEY(AP_BASE + NODE_FILL) != GPU_RAM_KEY(NODE_FILL));
+        gpu_ws_validate_linked_list_header(NODE_FILL, test_ram[NODE_FILL / 4u]);
+        assert(ws_ui_reject.stale == stale + 1 && ws_ui_stale_why[2] > 0);
+    }
+    test_aperture_used = 0;
 
     puts("ws_auto_ui_untextured_exec_test: PASS");
     return 0;
