@@ -963,6 +963,11 @@ struct GameConfig {
     // For HUD widgets that combine flat quads with GTE-projected parts the
     // correction cannot move (Spider-Man's compass ring and 3D arrow).
     bool                  ws_auto_ui_in_place = false;
+    // auto_ui_size = "proportional": beyond 16:9 the auto-UI HUD shrinks by
+    // sqrt((16:9) / aspect) about each widget's anchor, so a wide window
+    // does not show a 4:3-height HUD across a much wider view. "original"
+    // (default) keeps the HUD at the display height's scale.
+    bool                  ws_auto_ui_proportional = false;
 
     // [data_shards] funcs: functions that get the memoized pure-function
     // replay entry/return hooks (psx_datashard_enter/psx_datashard_ret).

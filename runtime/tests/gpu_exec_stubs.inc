@@ -81,20 +81,21 @@ static int g_test_precise_triangles = 0;
 static int g_test_textured_triangles = 0;
 
 /* Bounding box of every flat/gouraud triangle drawn since the last reset. */
-static struct { int calls, min_x, max_x; } gpu_exec_triangles;
+static struct { int calls, min_x, max_x, min_y, max_y; } gpu_exec_triangles;
 static inline void gpu_exec_reset_triangles(void) {
     gpu_exec_triangles.calls = 0;
-    gpu_exec_triangles.min_x = 1 << 30;
-    gpu_exec_triangles.max_x = -(1 << 30);
+    gpu_exec_triangles.min_x = gpu_exec_triangles.min_y = 1 << 30;
+    gpu_exec_triangles.max_x = gpu_exec_triangles.max_y = -(1 << 30);
 }
 static inline void gpu_exec_record_triangle(int x0, int y0, int x1, int y1,
                                      int x2, int y2) {
-    const int xs[3] = {x0, x1, x2};
-    (void)y0; (void)y1; (void)y2;
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2};
     gpu_exec_triangles.calls++;
     for (int i = 0; i < 3; i++) {
         if (xs[i] < gpu_exec_triangles.min_x) gpu_exec_triangles.min_x = xs[i];
         if (xs[i] > gpu_exec_triangles.max_x) gpu_exec_triangles.max_x = xs[i];
+        if (ys[i] < gpu_exec_triangles.min_y) gpu_exec_triangles.min_y = ys[i];
+        if (ys[i] > gpu_exec_triangles.max_y) gpu_exec_triangles.max_y = ys[i];
     }
 }
 

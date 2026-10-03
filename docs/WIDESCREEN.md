@@ -140,6 +140,10 @@ auto_ui_anchor     = "edges"           # "edges" (default): each run pins to
                                        # its left/centre/right third.
                                        # "in_place": each run squashes about
                                        # its own centre.
+auto_ui_size       = "proportional"    # "original" (default): the HUD keeps
+                                       # the display height's scale.
+                                       # "proportional": beyond 16:9 it shrinks
+                                       # by sqrt((16:9) / aspect).
 clear_reveal       = true              # clear synthetic native-wide side margins
                                        # at opted-in scene/map boundaries (default false).
 nw_left_hud_packet_lo = "0x000E3400"  # optional targeted left-HUD packet range
@@ -203,6 +207,16 @@ off its arrow at 32:9. `auto_ui_anchor = "in_place"` squashes each run about
 its own centre instead, which corrects its proportions and leaves it where the
 stretched 4:3 layout places it. `gpu_state` reports the mode as
 `ws.auto_ui.in_place`.
+
+The HUD is proportion-corrected horizontally but keeps the display height's
+scale, so on a very wide window it reads large against the much wider view.
+`auto_ui_size = "proportional"` leaves it unchanged up to 16:9 and shrinks it
+by sqrt((16:9) / aspect) beyond (0.87 at 21:9, 0.71 at 32:9), on both axes:
+each run about its horizontal anchor and its vertical anchor (its top edge in
+the upper half of the display, its bottom edge in the lower half), scaling
+both edges of rectangles and sprites so neighbouring parts stay butted. A mod
+may switch it per session with `psx_mod_set_widescreen_hud_size()`.
+Projection widescreen only (native-wide does not squash the HUD).
 
 **Changing `sprite_tag_funcs` requires a game regen** (the tag callback is
 emitted into the generated C). `widescreen.cull.keep` is consumed by both the

@@ -130,6 +130,7 @@ static void reset_state(int in_place) {
     ws_full_2d = 0;
     gpu_ws_set_auto_ui_squash(1);
     gpu_ws_set_auto_ui_in_place(in_place);
+    gpu_ws_set_auto_ui_proportional(0);
 }
 
 /* Prepass the list and execute the two fills; returns their drawn X span. */
@@ -305,6 +306,36 @@ int main(void) {
     assert(gmin == ws_scale_about(64, left));
     assert(gmax == ws_scale_about(120, left));
     assert(fmin == gmin && fmax == gmax);
+
+    /* auto_ui_size proportional at 32:9 (squash 3/8): the HUD shrinks by
+     * sqrt((4/3) * 3/8) = sqrt(1/2) on both axes about its anchors. The run
+     * spans y 20..36 in the top half, so it keeps its top edge (y 20). */
+    reset_state(0);
+    gpu_ws_set_auto_ui_proportional(1);
+    build_hud(60, 128, 64, 120);
+    run_fills(&gmin, &gmax, &fmin, &fmax);
+    {
+        const double s = sqrt(0.5);
+        const int32_t left = ws_disp_x();
+        assert(gmin == left + (int32_t)lround((64 - left) * 3.0 / 8.0 * s));
+        assert(gmax == left + (int32_t)lround((120 - left) * 3.0 / 8.0 * s));
+        gpu_exec_reset_triangles();
+        load_packet(NODE_FILL, 8);
+        gp0_exec_shaded_quad();
+        assert(gpu_exec_triangles.min_y == 20 + (int32_t)lround(6 * s));
+        assert(gpu_exec_triangles.max_y == 20 + (int32_t)lround(10 * s));
+    }
+    /* At 16:9 (squash 3/4) proportional is identical to original. */
+    reset_state(0);
+    ws_cfg_num = 16; ws_cfg_den = 9; ws_xnum = 3; ws_xden = 4;
+    gpu_ws_set_auto_ui_proportional(1);
+    build_hud(60, 128, 64, 120);
+    run_fills(&gmin, &gmax, &fmin, &fmax);
+    assert(gmin == ws_scale_about(64, ws_disp_x()));
+    gpu_exec_reset_triangles();
+    load_packet(NODE_FILL, 8);
+    gp0_exec_shaded_quad();
+    assert(gpu_exec_triangles.min_y == 26 && gpu_exec_triangles.max_y == 30);
 
     /* A non-axis-aligned untextured quad reaching outside every widget is
      * world geometry, never UI (one inside a widget is a part of it: see the

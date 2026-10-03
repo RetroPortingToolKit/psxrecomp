@@ -1510,6 +1510,15 @@ static bool netplay_local_viewport_native_wide(void) {
     return g_netplay_local_viewport == 1 && !g_netplay_local_viewport_projection;
 }
 
+/* [widescreen] auto_ui_size from game.toml; a mod may override it per session
+ * (psx_mod_set_widescreen_hud_size), reset_mod_owned_presentation restores. */
+static bool g_ws_auto_ui_proportional_cfg = false;
+extern "C" int psx_mod_set_widescreen_hud_size(int proportional) {
+    if (proportional != 0 && proportional != 1) return 0;
+    gpu_ws_set_auto_ui_proportional(proportional);
+    return 1;
+}
+
 extern "C" int psx_mod_set_fixed_display_aspect(
     uint32_t numerator, uint32_t denominator) {
     if (numerator == 0 || denominator == 0 ||
@@ -1618,6 +1627,7 @@ static void reset_mod_owned_presentation(void) {
     g_ws_adaptive_view = false;
     g_ws_adaptive_max_num = 16;
     g_ws_adaptive_max_den = 9;
+    gpu_ws_set_auto_ui_proportional(g_ws_auto_ui_proportional_cfg ? 1 : 0);
     psx_mod_set_world_scene_predicate(nullptr);
     gpu_ws_set_native_scene_predicate(nullptr);
     psx_mod_set_retained_scene_predicate(nullptr);
@@ -14699,6 +14709,8 @@ int main(int argc, char** argv) {
             g_ws_hud_sprt      = gc.ws_hud_sprt_squash;
             gpu_ws_set_auto_ui_squash(gc.ws_auto_ui_squash ? 1 : 0);
             gpu_ws_set_auto_ui_in_place(gc.ws_auto_ui_in_place ? 1 : 0);
+            g_ws_auto_ui_proportional_cfg = gc.ws_auto_ui_proportional;
+            gpu_ws_set_auto_ui_proportional(g_ws_auto_ui_proportional_cfg ? 1 : 0);
             /* [widescreen] full_2d — opt a pure-2D sprite game (MMX6) into the
              * widescreen present path. Applied to the GPU layer up front so the
              * ws engage at game entry classifies every frame as gameplay. */

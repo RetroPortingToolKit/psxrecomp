@@ -212,6 +212,9 @@ void gpu_ws_set_auto_ui_squash(int on);
 /* [widescreen] auto_ui_anchor = "in_place": each UI run squashes about its own
  * centre rather than an edge/centre third (default "edges"). */
 void gpu_ws_set_auto_ui_in_place(int on);
+/* [widescreen] auto_ui_size: 1 = proportional (the auto-UI HUD shrinks by
+ * sqrt((16:9) / aspect) beyond 16:9), 0 = original. */
+void gpu_ws_set_auto_ui_proportional(int on);
 /* [widescreen.bg2d] Capcom 2D background tile-loop widen — hooked at the renderer's
  * column-count / start-tile-col / start-screen-x instructions. Identity at 4:3
  * and in the engine's 512 hi-res mode. */
