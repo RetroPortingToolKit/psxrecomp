@@ -549,6 +549,8 @@ static uint64_t   s_gte_latch_seq = 0;
 static inline int gte_sxx(int32_t p){ int v=p&0xFFFF; return v>=0x8000? v-0x10000:v; }
 static inline int gte_syy(int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-0x10000:v; }
 
+static int32_t gte_h_scaled(const GTEState* gte);
+
 static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     if (s_gte_replay_sandbox) return;
     if (!s_gte_rtp_ring) {
@@ -563,7 +565,7 @@ static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     for (int i = 0; i < 3; i++) { e->V0[i]=g->V0[i]; e->V1[i]=g->V1[i]; e->V2[i]=g->V2[i]; }
     for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) e->RT[r*3+c]=g->RT[r][c];
     for (int i = 0; i < 3; i++) e->TR[i]=g->TR[i];
-    e->H=g->H; e->OFX=g->OFX; e->OFY=g->OFY;
+    e->H=(uint16_t)gte_h_scaled(g); e->OFX=g->OFX; e->OFY=g->OFY;
     e->SXY0=g->SXY[0]; e->SXY1=g->SXY[1]; e->SXY2=g->SXY[2];
     e->SZ1=g->SZ[1]; e->SZ2=g->SZ[2]; e->SZ3=g->SZ[3];
     e->FLAG=g->FLAG;
@@ -798,6 +800,34 @@ extern "C" void gte_set_display_aspect(int num, int den) {
 }
 
 // ---------------------------------------------------------------------------
+// VR: perspective (FOV) scale.
+//
+// The PS1 projection distance lives in GTE control register H; psx-spx:
+//     fov = 2*atan(screen_width / (2*H))
+// gte_h_scaled applies H * num / den. A *FOV multiplier* v maps to
+// (num, den) = (1000, v*1000), i.e. H becomes H/v, so v > 1 widens the view.
+// Scaling H here avoids guest-code patches, which cannot change a statically
+// recompiled constant. Identity (num==den) by default, so the faithful path is
+// unchanged. Set from PSX_GTE_FOV_SCALE (float) or gte_set_fov_scale(num, den).
+// ---------------------------------------------------------------------------
+static int32_t s_h_scale_num = 1;
+static int32_t s_h_scale_den = 1;
+
+extern "C" void gte_set_fov_scale(int num, int den) {
+    if (num <= 0 || den <= 0) { s_h_scale_num = s_h_scale_den = 1; return; }
+    s_h_scale_num = num;
+    s_h_scale_den = den;
+}
+
+static int32_t gte_h_scaled(const GTEState* gte) {
+    if (s_h_scale_num == s_h_scale_den) return gte->H;
+    int64_t h = (int64_t)gte->H * s_h_scale_num / s_h_scale_den;
+    if (h < 1) h = 1;
+    if (h > 0xFFFF) h = 0xFFFF;
+    return (int32_t)h;
+}
+
+// ---------------------------------------------------------------------------
 // RTPS — Perspective Transformation (internal, operates on given vertex V)
 //
 // Matches DuckStation/Beetle (psx-spx):
@@ -848,7 +878,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     gte->push_sz(static_cast<int32_t>(mac3 >> 12));
 
     // Step 3: Perspective division
-    int32_t h_div_sz = gte_divide(gte->H, gte->SZ[3], gte->FLAG);
+    int32_t h_div_sz = gte_divide(gte_h_scaled(gte), gte->SZ[3], gte->FLAG);
 
     // Step 4: Project to screen coordinates. Squash X only when configured AND
     // this frame is being stretched — never on a 4:3-presented frame (FMV /
@@ -925,7 +955,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
         if (pgxp_preserve_projection() && pgxp_active()) {
             int32_t ex16, ey16;
             if (pgxp_project_precise(mac1, mac2, mac3, shift, gte->IR1, gte->IR2,
-                                     gte->SZ[3], gte->H, gte->OFX, gte->OFY,
+                                     gte->SZ[3], gte_h_scaled(gte), gte->OFX, gte->OFY,
                                      x_num, x_den, &ex16, &ey16) &&
                 pgxp_ppp_accept(ex16, ey16, (uint32_t)gte->SXY[2])) {
                 px16 = ex16;
@@ -1064,7 +1094,7 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
         for (int i = 0; i < 3; ++i) {
             const int x = exact_x[i] >> 16;
             checked &= (exact_y[i] >> 16) == raw_y[i] && x > -4096 && x < 4096;
-            checked &= gte->SZ[i + 1] >= gte->H / 2 && gte->SZ[i + 1] != 0;
+            checked &= gte->SZ[i + 1] >= gte_h_scaled(gte) / 2 && gte->SZ[i + 1] != 0;
             if (raw_x[i] == 1023 && x > 1023) saturated = true;
             else if (raw_x[i] == -1024 && x < -1024) saturated = true;
             else checked &= x == raw_x[i];

@@ -1,12 +1,22 @@
 #include "cpu_state.h"
 #include "gte.h"
 #include "pgxp.h"
+#include "projection_scale.hpp"
+#include <limits>
+extern "C" void gte_set_fov_scale(int, int);
 
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+
+#define CHECK(expr) do { \
+    if (!(expr)) { \
+        std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #expr); \
+        return 1; \
+    } \
+} while (0)
 
 using PSXRecomp::GTE::GTEState;
 using PSXRecomp::GTE::gte_cfc2;
@@ -1015,7 +1025,36 @@ int test_preserve_projection_is_shadow_only() {
     return 0;
 }
 
+int test_projection_scale() {
+    double value = 2;
+    for (const char* bad : {"", "nan", "inf", "9", "0", "-1", "2junk", "1e999", "1e-999"}) {
+        CHECK(!psx_projection_scale_parse(bad, &value) && value == 2);
+    }
+    CHECK(psx_projection_scale_parse(" 8.0 ", &value) && value == 8);
+    CHECK(!psx_projection_scale_valid(std::numeric_limits<double>::quiet_NaN()));
+    CHECK(psx_projection_scale_denominator(0.00001) == 1);
+    CPUState seed{};
+    seed.gte_ctrl[0] = 4096; seed.gte_ctrl[2] = 4096; seed.gte_ctrl[4] = 4096;
+    seed.gte_ctrl[26] = 320; seed.gte_data[0] = 100; seed.gte_data[1] = 1000;
+    const uint32_t cmd = 0x80001;
+    CPUState stock=seed; gte_set_fov_scale(1,1); gte_execute(&stock,cmd);
+    CPUState identity=seed; gte_set_fov_scale(1000,1000); gte_execute(&identity,cmd);
+    CHECK(same_gte(stock,identity));
+    CPUState widened=seed; gte_set_fov_scale(1,2); gte_execute(&widened,cmd);
+    CPUState reference=seed; reference.gte_ctrl[26]=160;
+    gte_set_fov_scale(1,1); gte_execute(&reference,cmd);
+    CHECK(widened.gte_ctrl[26] == 320 && widened.gte_data[14] == reference.gte_data[14]);
+    CHECK(widened.gte_data[14] != stock.gte_data[14]);
+    for (auto ratio : {std::pair<int,int>{0,1}, {-1,1}, {1,0}, {1,-1}}) {
+        CPUState reset=seed; gte_set_fov_scale(ratio.first,ratio.second); gte_execute(&reset,cmd);
+        CHECK(same_gte(stock,reset));
+    }
+    gte_set_fov_scale(1,1);
+    return 0;
+}
+
 int main() {
+    if (int rc = test_projection_scale()) return rc;
     if (int rc = test_hardware_register_semantics()) return rc;
     if (int rc = test_canonicalizer()) return rc;
     if (int rc = test_reads()) return rc;
