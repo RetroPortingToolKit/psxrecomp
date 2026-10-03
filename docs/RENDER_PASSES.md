@@ -169,6 +169,14 @@ internal resolutions; a size change frees the old set.
 - `render_pass_stats` (TCP): passes, shedding, faults, dropped device
   stores, timing split (backup / guest code / capture / restore), presents
   made from pass images, and `status`.
+  `refused` counts empty plans with wanted phases; pass-call refusals are
+  separate: `pass_attempts`, `argument_refused`, `status_refused`,
+  `begin_refused`, `checkpoint_refused`. `last_failure` is null until a refusal,
+  then retains the failure-site reason, attempt/plan, guest cycle, rect/alpha,
+  and GL begin inputs (actual requested/capture dimensions, scales, generation,
+  source path and resource stage). FBO status and GL errors are numeric enums;
+  `gl_error_before` is distinct from errors produced during that allocation.
+  Success does not erase the record; a new mod session clears it.
 - `render_pass_refuse on=1` (TCP) or `PSX_RENDER_PASS_REFUSE=1`: the backend
   declines passes (`BACKEND`), to test a plugin's fallback.
 - `render_pass_dump path=<dir> count=<n>`: PNGs of the next n frames' images

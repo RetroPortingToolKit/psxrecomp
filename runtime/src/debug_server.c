@@ -7991,7 +7991,34 @@ static void handle_render_pass_stats(int id, const char *json)
     RenderPassStats st;
     uint64_t gd[10], image_bytes = 0;
     uint32_t image_textures;
+    char failure_json[2048];
     render_pass_get_stats(&st);
+    const RenderPassFailure *f = &st.last_failure;
+    const GLRenderPassBeginDiag *b = &f->gl;
+    if (!f->reason) {
+        strcpy(failure_json, "null");
+    } else {
+        snprintf(failure_json, sizeof failure_json,
+                 "{\"reason\":\"%s\",\"attempt\":%llu,\"plan\":%llu,"
+                 "\"guest_cycle\":%llu,\"status\":%u,\"alpha_q16\":%u,"
+                 "\"struct_size\":%u,\"rect\":{\"x\":%u,\"y\":%u,\"w\":%u,\"h\":%u},"
+                 "\"gl\":{\"reason\":\"%s\",\"resource\":\"%s\",\"status\":%u,"
+                 "\"active\":%d,\"open_gen\":%d,\"generation\":%d,"
+                 "\"valid\":%d,\"promoted\":%d,\"hr_scale\":%d,\"out_scale\":%d,"
+                 "\"source_path\":%d,\"wide\":%d,"
+                 "\"requested_w\":%d,\"requested_h\":%d,\"capture_w\":%d,\"capture_h\":%d,"
+                 "\"generation_rect\":{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d},"
+                 "\"fbo_status\":%u,\"gl_error_before\":%u,\"gl_error\":%u}}",
+                 f->reason, (unsigned long long)f->attempt, (unsigned long long)f->plan,
+                 (unsigned long long)f->guest_cycle, f->status, f->alpha_q16,
+                 f->struct_size, (unsigned)f->x, (unsigned)f->y, (unsigned)f->w, (unsigned)f->h,
+                 b->reason ? b->reason : "", b->resource ? b->resource : "", b->status,
+                 b->active, b->open_gen, b->generation, b->valid, b->promoted,
+                 b->hr_scale, b->out_scale, b->source_path, b->wide,
+                 b->requested_w, b->requested_h, b->capture_w, b->capture_h,
+                 b->generation_x, b->generation_y, b->generation_w, b->generation_h,
+                 b->fbo_status, b->gl_error_before, b->gl_error);
+    }
     gl_renderer_pass_diag(gd);
     image_textures = gl_renderer_pass_image_textures(&image_bytes);
     send_fmt("{\"id\":%d,\"ok\":true,\"plans\":%llu,\"planned\":%llu,"
@@ -8011,7 +8038,10 @@ static void handle_render_pass_stats(int id, const char *json)
              "\"cost_us\":%llu,\"cost_rewarms\":%llu,\"frame_images\":%llu,"
              "\"journaled\":%llu,"
              "\"image_textures\":%u,\"image_bytes\":%llu,\"status\":%u,"
-             "\"backups_reused\":%llu}",
+             "\"backups_reused\":%llu,\"pass_attempts\":%llu,"
+             "\"argument_refused\":%llu,\"status_refused\":%llu,"
+             "\"begin_refused\":%llu,\"checkpoint_refused\":%llu,"
+             "\"last_failure\":%s}",
              id, (unsigned long long)st.plans, (unsigned long long)st.planned,
              (unsigned long long)st.wanted, (unsigned long long)st.refused,
              (unsigned long long)st.passes, (unsigned long long)st.aborted,
@@ -8037,7 +8067,11 @@ static void handle_render_pass_stats(int id, const char *json)
              (unsigned long long)gl_renderer_pass_journaled(),
              (unsigned)image_textures, (unsigned long long)image_bytes,
              (unsigned)psx_mod_render_pass_status(),
-             (unsigned long long)gl_renderer_pass_backups_reused());
+             (unsigned long long)gl_renderer_pass_backups_reused(),
+             (unsigned long long)st.pass_attempts,
+             (unsigned long long)st.argument_refused, (unsigned long long)st.status_refused,
+             (unsigned long long)st.begin_refused, (unsigned long long)st.checkpoint_refused,
+             failure_json);
 }
 
 /* render_pass_refuse on=<0|1>: make the OpenGL backend decline render passes

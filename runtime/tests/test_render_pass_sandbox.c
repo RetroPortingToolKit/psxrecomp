@@ -181,7 +181,8 @@ void overlay_loader_set_native_nesting(int d, uint32_t ip) { (void)d; (void)ip; 
 
 /* GPU and presenter. */
 uint64_t gpu_pass_state_hash(void) { return 42; }
-int gpu_pass_checkpoint_save(void) { return 1; }
+static int s_checkpoint_ok = 1;
+int gpu_pass_checkpoint_save(void) { return s_checkpoint_ok; }
 void gpu_pass_checkpoint_restore(void) {}
 static uint64_t s_ticks;
 uint64_t gl_renderer_perf_ticks(void) { return s_ticks += 1000; }
@@ -194,11 +195,18 @@ uint32_t gl_renderer_pass_plan(uint32_t p, uint32_t s, uint32_t *a,
     if (wanted) *wanted = 0;
     return 0;
 }
-static int s_open_passes, s_kept;
+static int s_open_passes, s_kept, s_begin_ok = 1;
+void gl_renderer_pass_begin_diag(GLRenderPassBeginDiag *out) {
+    memset(out, 0, sizeof *out);
+    out->reason = "capture_size";
+    out->requested_w = 320; out->requested_h = 240;
+    out->capture_w = 512; out->capture_h = 240;
+}
 int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
                            uint32_t period, int reuse_backup) {
     (void)x; (void)y; (void)w; (void)h; (void)open_gen; (void)period;
     (void)reuse_backup;
+    if (!s_begin_ok) return 0;
     s_open_passes++;
     return 1;
 }
@@ -397,6 +405,37 @@ static void test_pass(void) {
           "no pass while the backend declines");
     s_gl_status = PSX_MOD_RENDER_PASS_READY;
     CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_READY, "ready again");
+
+    render_pass_get_stats(&st);
+    CHECK(st.status_refused == 2 && st.refused == 0 &&
+          st.last_failure.status == PSX_MOD_RENDER_PASS_BACKEND,
+          "pass refusal counters are separate from plan refusals");
+    s_begin_ok = 0;
+    CHECK(psx_mod_render_pass(&cpu, &pass, never_fn, NULL) == 0, "begin refusal");
+    render_pass_get_stats(&st);
+    CHECK(st.begin_refused == 1 && st.checkpoint_refused == 0 &&
+          strcmp(st.last_failure.reason, "capture_size") == 0 &&
+          st.last_failure.gl.requested_w == 320 && st.last_failure.gl.capture_w == 512,
+          "begin failure retains producer dimensions");
+    uint64_t failed_attempt = st.last_failure.attempt;
+    s_begin_ok = 1;
+    s_checkpoint_ok = 0;
+    CHECK(psx_mod_render_pass(&cpu, &pass, never_fn, NULL) == 0, "checkpoint refusal");
+    render_pass_get_stats(&st);
+    CHECK(st.checkpoint_refused == 1 && s_open_passes == 0 &&
+          strcmp(st.last_failure.reason, "checkpoint_gpu") == 0 &&
+          st.last_failure.attempt > failed_attempt,
+          "checkpoint failure closes transaction without calling guest code");
+    failed_attempt = st.last_failure.attempt;
+    s_checkpoint_ok = 1;
+    CHECK(psx_mod_render_pass(&cpu, &pass, pass_fn, NULL) == 1, "success after refusals");
+    render_pass_get_stats(&st);
+    CHECK(st.last_failure.attempt == failed_attempt && st.pass_attempts == 6,
+          "success does not erase last failure");
+    render_pass_reset_session();
+    render_pass_get_stats(&st);
+    CHECK(!st.last_failure.reason && st.pass_attempts == 0,
+          "session reset clears failure diagnostics");
 }
 
 /* ---- 2b. 8 MiB main RAM live (psx.enhancement.8mb-ram) ------------------ */

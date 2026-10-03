@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "psx_cycle_freeze.h"   /* g_psx_render_pass_active, the time freeze */
+#include "gpu_gl_renderer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,11 +26,22 @@ enum {
 };
 extern uint64_t g_render_pass_dropped_writes[RENDER_PASS_DROP_CLASSES];
 
+typedef struct RenderPassFailure {
+    const char *reason;       /* static name, NULL until the first refusal */
+    uint64_t attempt, plan, guest_cycle;
+    uint32_t status, alpha_q16, struct_size;
+    uint16_t x, y, w, h;
+    GLRenderPassBeginDiag gl;
+} RenderPassFailure;
+
 typedef struct RenderPassStats {
     uint64_t plans;           /* psx_mod_render_pass_plan calls that planned >= 1 */
     uint64_t planned;         /* phases planned (after shedding) */
     uint64_t wanted;          /* phases wanted before shedding */
     uint64_t refused;         /* plan calls that returned 0 while enabled */
+    uint64_t pass_attempts;   /* all psx_mod_render_pass calls */
+    uint64_t argument_refused, status_refused, begin_refused, checkpoint_refused;
+    RenderPassFailure last_failure; /* latched across successes; session reset clears */
     uint64_t passes;          /* passes run to completion and presented */
     uint64_t aborted;         /* passes rolled back by a fault */
     uint64_t discarded;       /* passes whose plugin declined the image */
