@@ -169,6 +169,14 @@ internal resolutions; a size change frees the old set.
 - `render_pass_stats` (TCP): passes, shedding, faults, dropped device
   stores, timing split (backup / guest code / capture / restore), presents
   made from pass images, and `status`.
+  `refused` counts empty plans with wanted phases; pass-call refusals are
+  separate: `pass_attempts`, `argument_refused`, `status_refused`,
+  `begin_refused`, `checkpoint_refused`. `last_failure` is null until a refusal,
+  then retains the failure-site reason, attempt/plan, guest cycle, rect/alpha,
+  and GL begin inputs (actual requested/capture dimensions, scales, generation,
+  source path and resource stage). FBO status and GL errors are numeric enums;
+  `gl_error_before` is distinct from errors produced during that allocation.
+  Success does not erase the record; a new mod session clears it.
 - `render_pass_refuse on=1` (TCP) or `PSX_RENDER_PASS_REFUSE=1`: the backend
   declines passes (`BACKEND`), to test a plugin's fallback.
 - `render_pass_dump path=<dir> count=<n>`: PNGs of the next n frames' images
@@ -211,3 +219,22 @@ Tests (runtime ctest unless noted):
 The GPU half of the VRAM transaction (hr colour, stencil, raw mirror blits)
 needs an OpenGL context and is checked at runtime by
 `PSX_RENDER_PASS_VERIFY=1`.
+
+### Nested mod callbacks and watchdog rollback
+
+The host checkpoint includes the mod function-entry depth and current plugin
+owner. A pass can interrupt an outer callback; restoring to zero would lose
+that caller's context. Watchdog longjmp restores the saved depth/owner instead,
+and normal-return verification checks their balance. This context stays local
+to the committed session and is never part of a guest savestate.
+`render_pass_stats.last_abort_detail` names skipped host exits and remains
+latched across successful passes until session reset.
+
+### Nested mod callback rollback
+
+The host checkpoint includes function-entry depth and current plugin owner.
+A pass can interrupt an outer callback; watchdog rollback restores its exact
+saved context rather than resetting depth to zero. Normal-return verification
+also checks balance. This host context is never serialized in guest savestates.
+TCP render_pass_stats.last_abort_detail names skipped exits and remains latched
+across successes until session reset.

@@ -66,6 +66,18 @@ uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
  * rect at the same scale. Returns 0 when refused (nothing changed). */
 int      gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
                                 uint32_t period_vblanks, int reuse_backup);
+/* Snapshot at the last begin attempt, never reconstructed by a TCP query.
+ * Strings are static reason names; GL enums are raw numeric values. */
+typedef struct GLRenderPassBeginDiag {
+    const char *reason;
+    const char *resource;
+    uint32_t status, fbo_status, gl_error_before, gl_error;
+    int active, open_gen, generation, valid, promoted;
+    int hr_scale, out_scale, source_path, wide;
+    int requested_w, requested_h, capture_w, capture_h;
+    int generation_x, generation_y, generation_w, generation_h;
+} GLRenderPassBeginDiag;
+void gl_renderer_pass_begin_diag(GLRenderPassBeginDiag *out);
 /* Capture the drawn rect at alpha_q16 (keep) and roll the rect back. */
 void     gl_renderer_pass_end(uint32_t alpha_q16, int keep);
 uint32_t gl_renderer_pass_leaks(void);

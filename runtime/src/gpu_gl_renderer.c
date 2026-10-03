@@ -399,6 +399,7 @@ static const HiwTile *hiw_ensure(int x0, int x1);
 static void hiw_flush_queue(void);
 static GLuint make_tex(GLenum internal, int w, int h, GLenum fmt, GLenum type);
 static int  make_fbo(GLuint *out_fbo, GLuint color_tex, GLuint stencil_rb);
+static GLenum s_last_fbo_status;
 static void hiw_clear_rect(int x, int y, int w, int h, float r, float g, float b,
                            float a, int stencil);
 static void hiw_mirror_copy(int sx, int sy, int dx, int dy, int w, int h);
@@ -4070,9 +4071,9 @@ static int make_fbo(GLuint *out_fbo, GLuint color_tex, GLuint stencil_rb) {
         p_glFramebufferRenderbuffer(PSXGL_FRAMEBUFFER, PSXGL_DEPTH_STENCIL_ATTACHMENT,
                                     PSXGL_RENDERBUFFER, stencil_rb);
     GLenum st = p_glCheckFramebufferStatus(PSXGL_FRAMEBUFFER);
+    s_last_fbo_status = st;
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
     if (st != PSXGL_FRAMEBUFFER_COMPLETE) {
-        fprintf(stdout, "psxrecomp: GL FBO incomplete (0x%X)\n", st);
         return 0;
     }
     return 1;
@@ -5874,6 +5875,26 @@ static void pass_gens_invalidate(void) {
 }
 
 static int s_pass_force_refuse = -1;   /* -1: read PSX_RENDER_PASS_REFUSE */
+static GLRenderPassBeginDiag s_pass_begin_diag;
+
+void gl_renderer_pass_begin_diag(GLRenderPassBeginDiag *out) {
+    if (out) *out = s_pass_begin_diag;
+}
+
+static int pass_begin_refuse(const char *reason) {
+    s_pass_begin_diag.reason = reason;
+    return 0;
+}
+
+/* Keep pre-existing errors separate from this allocation's errors. */
+static uint32_t pass_gl_errors(void) {
+    GLenum e;
+    uint32_t first = 0;
+    while ((e = glGetError()) != GL_NO_ERROR) {
+        if (!first) first = (uint32_t)e;
+    }
+    return first;
+}
 
 void gl_renderer_pass_force_refuse(int on) {
     s_pass_force_refuse = on ? 1 : 0;
@@ -6010,6 +6031,9 @@ static int pass_make_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
                                int *cur_w, int *cur_h, int w, int h,
                                GLenum internal, GLenum fmt, GLenum type) {
     if (*fbo && *cur_w == w && *cur_h == h) return 1;
+    s_pass_begin_diag.gl_error_before = pass_gl_errors();
+    s_pass_begin_diag.gl_error = 0;
+    s_pass_begin_diag.fbo_status = 0;
     if (*fbo) p_glDeleteFramebuffers(1, fbo);
     if (*tex) glDeleteTextures(1, tex);
     if (rb && *rb) p_glDeleteRenderbuffers(1, rb);
@@ -6022,7 +6046,10 @@ static int pass_make_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
         p_glRenderbufferStorage(PSXGL_RENDERBUFFER, PSXGL_DEPTH24_STENCIL8, w, h);
         p_glBindRenderbuffer(PSXGL_RENDERBUFFER, 0);
     }
-    if (!make_fbo(fbo, *tex, rb ? *rb : 0)) {
+    int complete = make_fbo(fbo, *tex, rb ? *rb : 0);
+    s_pass_begin_diag.fbo_status = (uint32_t)s_last_fbo_status;
+    s_pass_begin_diag.gl_error = pass_gl_errors();
+    if (!complete) {
         *cur_w = *cur_h = 0;
         return 0;
     }
@@ -6041,7 +6068,10 @@ static void pass_gen_release(int gi) {
 /* Make sure slots [0, need) of generation gi exist at w x h. A size change
  * frees the old set first (the slot cap depends on the size only). */
 static int pass_gen_reserve(int gi, uint32_t need, int w, int h) {
-    if (need > PASS_SLOTS || need > pass_slot_cap(w, h)) return 0;
+    if (need > PASS_SLOTS || need > pass_slot_cap(w, h)) {
+        s_pass_begin_diag.resource = "generation_slot_cap";
+        return 0;
+    }
     if (s_pgen_alloc_w[gi] != w || s_pgen_alloc_h[gi] != h) {
         pass_gen_release(gi);
         s_pgen_alloc_w[gi] = w;
@@ -6049,11 +6079,17 @@ static int pass_gen_reserve(int gi, uint32_t need, int w, int h) {
     }
     while (s_pgen_alloc_n[gi] < need) {
         GLuint *t = &s_pgen_tex[gi][s_pgen_alloc_n[gi]];
+        s_pass_begin_diag.gl_error_before = pass_gl_errors();
+        s_pass_begin_diag.resource = "generation_texture";
         glGenTextures(1, t);
-        if (!*t) return 0;
+        if (!*t) {
+            s_pass_begin_diag.gl_error = pass_gl_errors();
+            return 0;
+        }
         glBindTexture(GL_TEXTURE_2D, *t);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
                      GL_UNSIGNED_BYTE, NULL);
+        s_pass_begin_diag.gl_error = pass_gl_errors();
         s_pgen_alloc_n[gi]++;
         s_pass_allocs++;
     }
@@ -6202,9 +6238,29 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
                            uint32_t period_vblanks, int reuse_backup) {
     int S = s_hr_scale, gi, wide, tw, th;
     PassGen *g;
-    if (!gl_renderer_pass_ready() || s_pass_active) return 0;
+    memset(&s_pass_begin_diag, 0, sizeof s_pass_begin_diag);
+    s_pass_begin_diag.status = gl_renderer_pass_unavailable();
+    s_pass_begin_diag.active = s_pass_active;
+    s_pass_begin_diag.open_gen = open_gen;
+    s_pass_begin_diag.hr_scale = S;
+    s_pass_begin_diag.out_scale = s_out_scale;
+    s_pass_begin_diag.source_path = s_interp_source_path;
+    s_pass_begin_diag.capture_w = s_interp_w;
+    s_pass_begin_diag.capture_h = s_interp_h;
+    gi = 1 - s_pgen_cur;
+    g = &s_pgen[gi];
+    s_pass_begin_diag.generation = gi;
+    s_pass_begin_diag.valid = g->valid;
+    s_pass_begin_diag.promoted = g->promoted;
+    s_pass_begin_diag.generation_x = g->x;
+    s_pass_begin_diag.generation_y = g->y;
+    s_pass_begin_diag.generation_w = g->w;
+    s_pass_begin_diag.generation_h = g->h;
+    if (s_pass_begin_diag.status != PSX_MOD_RENDER_PASS_READY)
+        return pass_begin_refuse("gl_status");
+    if (s_pass_active) return pass_begin_refuse("gl_active");
     if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > VRAM_W || y + h > VRAM_H)
-        return 0;
+        return pass_begin_refuse("rect_range");
     s_pass_allocs_begin = s_pass_allocs;
     flush_flat_batch();
     flush_tex_batch();
@@ -6214,11 +6270,16 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
            pass_wide_fbo_for(x) != 0;
     tw = (wide ? g_wide_w : w) * S;
     th = h * S;
+    s_pass_begin_diag.wide = wide;
+    s_pass_begin_diag.requested_w = tw;
+    s_pass_begin_diag.requested_h = th;
     gi = 1 - s_pgen_cur;
     g = &s_pgen[gi];
     if (open_gen) {
-        if (tw != s_interp_w || th != s_interp_h) return 0;  /* not what is presented */
-        if (!pass_gen_reserve(gi, 1u, tw, th)) return 0;
+        if (tw != s_interp_w || th != s_interp_h)
+            return pass_begin_refuse("capture_size"); /* not what is presented */
+        if (!pass_gen_reserve(gi, 1u, tw, th))
+            return pass_begin_refuse("generation_reserve");
         memset(g, 0, sizeof *g);
         g->x = x; g->y = y; g->w = w; g->h = h;
         g->tex_w = tw; g->tex_h = th;
@@ -6230,7 +6291,7 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
         g->valid = 1;
     } else if (!g->valid || g->promoted || g->x != x || g->y != y ||
                g->w != w || g->h != h) {
-        return 0;
+        return pass_begin_refuse("generation_state");
     }
 
     /* The previous pass of this frame restored exactly this backup and no
@@ -6243,22 +6304,26 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
     }
     s_pb_valid = 0;
     /* Back up the rect: hr color + stencil, raw mirror, wide band, CPU rows. */
+    s_pass_begin_diag.resource = "backup_hr";
     if (!pass_make_color_fbo(&s_pb_hr_tex, &s_pb_hr_rb, &s_pb_hr_fbo,
                              &s_pb_hr_w, &s_pb_hr_h, w * S, h * S,
-                             GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE) ||
-        !pass_make_color_fbo(&s_pb_raw_tex, NULL, &s_pb_raw_fbo,
+                             GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE))
+        return pass_begin_refuse("backup_hr");
+    s_pass_begin_diag.resource = "backup_raw";
+    if (!pass_make_color_fbo(&s_pb_raw_tex, NULL, &s_pb_raw_fbo,
                              &s_pb_raw_w, &s_pb_raw_h, w, h, PSXGL_R16UI,
                              PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT))
-        return 0;
+        return pass_begin_refuse("backup_raw");
     pass_blit(s_hr_fbo, s_pb_hr_fbo, x * S, y * S, 0, 0, w * S, h * S,
               GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     pass_blit(s_raw_fbo, s_pb_raw_fbo, x, y, 0, 0, w, h, GL_COLOR_BUFFER_BIT);
     s_pb_wide_src = g_wide_w > 0 ? pass_wide_fbo_for(x) : 0;
     if (s_pb_wide_src) {
+        s_pass_begin_diag.resource = "backup_wide";
         if (!pass_make_color_fbo(&s_pb_wide_tex, &s_pb_wide_rb, &s_pb_wide_fbo,
                                  &s_pb_wide_w, &s_pb_wide_h, g_wide_w * S,
                                  h * S, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE))
-            return 0;
+            return pass_begin_refuse("backup_wide");
         pass_blit(s_pb_wide_src, s_pb_wide_fbo, 0, y * S, 0, 0, g_wide_w * S,
                   h * S, GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     }
@@ -6266,7 +6331,7 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
         free(s_pb_cpu);
         s_pb_cpu = (uint16_t *)malloc((size_t)w * (size_t)h * sizeof(uint16_t));
         s_pb_cpu_cap = s_pb_cpu ? (size_t)w * (size_t)h : 0;
-        if (!s_pb_cpu) return 0;
+        if (!s_pb_cpu) return pass_begin_refuse("backup_cpu");
     }
     for (int row = 0; row < h; row++)
         memcpy(s_pb_cpu + (size_t)row * w, s_vram + (size_t)(y + row) * VRAM_W + x,
