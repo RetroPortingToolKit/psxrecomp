@@ -28,6 +28,7 @@ int gl_renderer_texture_banks_supported(void);
 /* Set the GL swap interval / vsync mode (1=vsync, 0=immediate, -1=adaptive).
  * Safe before or after context creation; applies live when a context exists. */
 void gl_renderer_set_swap_interval(int interval);
+int gl_renderer_get_swap_interval(void); /* Actual driver interval, -2 if unavailable. */
 
 /* Presentation-only temporal blending. High-refresh sub-presents blend the two
  * most recent stable display images on the owning render thread/context; this
@@ -66,6 +67,18 @@ uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
  * rect at the same scale. Returns 0 when refused (nothing changed). */
 int      gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
                                 uint32_t period_vblanks, int reuse_backup);
+/* Snapshot at the last begin attempt, never reconstructed by a TCP query.
+ * Strings are static reason names; GL enums are raw numeric values. */
+typedef struct GLRenderPassBeginDiag {
+    const char *reason;
+    const char *resource;
+    uint32_t status, fbo_status, gl_error_before, gl_error;
+    int active, open_gen, generation, valid, promoted;
+    int hr_scale, out_scale, source_path, wide;
+    int requested_w, requested_h, capture_w, capture_h;
+    int generation_x, generation_y, generation_w, generation_h;
+} GLRenderPassBeginDiag;
+void gl_renderer_pass_begin_diag(GLRenderPassBeginDiag *out);
 /* Capture the drawn rect at alpha_q16 (keep) and roll the rect back. */
 void     gl_renderer_pass_end(uint32_t alpha_q16, int keep);
 uint32_t gl_renderer_pass_leaks(void);
@@ -86,6 +99,28 @@ uint64_t gl_renderer_pass_backups_reused(void);
 uint32_t gl_renderer_pass_image_textures(uint64_t *bytes);
 /* Debug: dump the images of the next `generations` shown frames as PNGs. */
 void     gl_renderer_pass_dump_arm(const char *dir, int generations);
+/* Stereo shares the VRAM transaction, not the temporal generation/schedule. */
+uint32_t gl_renderer_stereo_unavailable(void);
+int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse_backup);
+int gl_renderer_stereo_end(uint32_t eye, int keep);
+void gl_renderer_stereo_stage_reset(void);
+int gl_renderer_stereo_publish(uint64_t pair_id, uint64_t guest_cycle,
+                                const int32_t eye_view[2][3]);
+void gl_renderer_stereo_reset(void);
+int gl_renderer_stereo_set_presentation(uint32_t mode);
+void gl_renderer_stereo_dump_arm(const char *dir, int pairs);
+/* Bounded metadata for explicitly requested PNG evidence, queried over TCP. */
+typedef struct GLRenderStereoCapture {
+    uint64_t pair_id, guest_cycle;
+    uint32_t width, height;
+    int32_t view_offset[2][3];
+} GLRenderStereoCapture;
+uint32_t gl_renderer_stereo_capture_records(GLRenderStereoCapture *out, uint32_t capacity);
+typedef struct GLRenderStereoDiag {
+    uint64_t pair_id, guest_cycle, presents;
+    uint32_t valid, staged_mask, mode, width, height;
+} GLRenderStereoDiag;
+void gl_renderer_stereo_diag(GLRenderStereoDiag *out);
 uint64_t gl_renderer_perf_ticks(void);
 uint64_t gl_renderer_perf_frequency(void);
 int gl_renderer_interpolation_owns_cadence(void);
@@ -288,6 +323,7 @@ enum {
     GL_PRES_CPU   = 2,   /* CPU-readout quad present (24-bit FMV / forced)     */
     GL_PRES_BLANK = 3,   /* display-disabled black present                     */
     GL_PRES_INTERP = 4,  /* host-refresh interpolation sub-present              */
+    GL_PRES_STEREO = 5,  /* simultaneous left/right side-by-side pair           */
 };
 
 typedef struct {

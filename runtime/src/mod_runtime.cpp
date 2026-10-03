@@ -1603,6 +1603,17 @@ extern "C" int psx_mod_function_entry_active(void) {
     return PSXRecompV4::function_entry_depth != 0;
 }
 
+extern "C" void mod_runtime_function_entry_context_save(ModFunctionEntryContext *out) {
+    out->depth = PSXRecompV4::function_entry_depth;
+    out->plugin = PSXRecompV4::state().current_plugin;
+}
+
+extern "C" void mod_runtime_function_entry_context_restore(const ModFunctionEntryContext *in) {
+    PSXRecompV4::function_entry_depth = in->depth;
+    PSXRecompV4::state().current_plugin =
+        static_cast<const PSXRecompV4::ModResolution::Plugin *>(in->plugin);
+}
+
 extern "C" void mod_runtime_patch_disc_sector(uint32_t lba, int raw_sector,
                                                uint8_t* bytes, uint32_t size) {
     using namespace PSXRecompV4;

@@ -61,6 +61,81 @@ static void verify_bank_batching(void) {
  psx_mod_set_texture_bank_batching(0);s_tex_filter=0;
  glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
 }
+static void verify_stereo_transactions(void) {
+ uint16_t before[16*16], after[16*16];
+ const int32_t views[2][3]={{-24,0,0},{24,0,0}};
+ GLRenderStereoDiag diag;
+ GLRenderStereoCapture record;
+ glb_set_mask_bits(0,0); glb_set_semi_transparency(0,0);
+ check(gl_renderer_fbo_peek(40,40,16,16,before),"stereo canonical snapshot");
+ check(gl_renderer_stereo_unavailable()==PSX_MOD_RENDER_PASS_READY,"stereo GL ready");
+ check(!gl_renderer_stereo_begin(-1,40,16,16,0),"stereo rejects invalid rectangle");
+ s_hiw=1;
+ check(gl_renderer_stereo_unavailable()==PSX_MOD_RENDER_PASS_BACKEND,"stereo refuses windowed tiles");
+ check(!gl_renderer_stereo_begin(40,40,16,16,0),"stereo window refusal before GPU work");
+ s_hiw=0;
+ test_depth24=1;
+ check(!gl_renderer_stereo_begin(40,40,16,16,0),"stereo refuses depth24");
+ test_depth24=0;
+ gl_renderer_stereo_stage_reset();
+ check(gl_renderer_stereo_begin(40,40,16,16,0),"left eye transaction begins");
+ glb_draw_flat_rect(40,40,16,16,0x001f);
+ check(gl_renderer_stereo_end(0,1),"left eye captured and restored");
+ check(!gl_renderer_stereo_publish(41,91000,views),"partial pair cannot publish");
+ gl_renderer_stereo_diag(&diag);
+ check(!diag.valid && diag.staged_mask==1,"partial left stays private");
+ check(gl_renderer_stereo_begin(40,40,16,16,1),"right eye shares canonical backup");
+ glb_draw_flat_rect(40,40,16,16,0x7c00);
+ check(gl_renderer_stereo_end(1,1),"right eye captured and restored");
+ check(gl_renderer_stereo_publish(41,91000,views),"complete pair publishes atomically");
+ check(gl_renderer_fbo_peek(40,40,16,16,after),"stereo canonical readback");
+ check(memcmp(before,after,sizeof before)==0,"eye draws restore canonical VRAM pixels");
+ size_t bytes=(size_t)16*16*s_hr_scale*s_hr_scale*3;
+ uint8_t *left=malloc(bytes),*right=malloc(bytes);
+ if(!left || !right){check(0,"stereo readback allocation");free(left);free(right);return;}
+ StereoPair *pair=&s_stereo_pair[s_stereo_current];
+ glPixelStorei(GL_PACK_ALIGNMENT,1);
+ glBindTexture(GL_TEXTURE_2D,pair->tex[0]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGB,GL_UNSIGNED_BYTE,left);
+ glBindTexture(GL_TEXTURE_2D,pair->tex[1]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGB,GL_UNSIGNED_BYTE,right);
+ glBindTexture(GL_TEXTURE_2D,0);
+ check(left[0]>200 && left[2]==0,"left texture contains left draw");
+ check(right[2]>200 && right[0]==0,"right texture contains right draw");
+ check(memcmp(left,right,bytes)!=0,"both eye textures are independently captured");
+ gl_renderer_stereo_stage_reset();
+ check(gl_renderer_stereo_begin(40,40,16,16,0),"next left starts");
+ glb_draw_flat_rect(40,40,16,16,0x03e0);
+ check(gl_renderer_stereo_end(0,1),"next left stages");
+ check(gl_renderer_stereo_begin(40,40,16,16,1),"next right starts");
+ check(gl_renderer_stereo_end(1,0),"failed right restores without capture");
+ check(!gl_renderer_stereo_publish(42,100000,views),"failed pair does not publish");
+ gl_renderer_stereo_diag(&diag);
+ check(diag.valid && diag.pair_id==41,"failed pair retains complete published pair");
+ pair=&s_stereo_pair[s_stereo_current];
+ glBindTexture(GL_TEXTURE_2D,pair->tex[0]);glGetTexImage(GL_TEXTURE_2D,0,GL_RGB,GL_UNSIGNED_BYTE,right);
+ check(memcmp(left,right,bytes)==0,"failed staging preserves published texture pixels");
+ glBindTexture(GL_TEXTURE_2D,0);
+ free(left);free(right);
+ gl_renderer_stereo_dump_arm(".",1);
+ check(gl_renderer_stereo_capture_records(&record,1)==0,"capture request starts empty");
+ gl_renderer_stereo_stage_reset();
+ for(uint32_t eye=0;eye<2;eye++){
+  check(gl_renderer_stereo_begin(40,40,16,16,eye!=0),"capture eye begins");
+  glb_draw_flat_rect(40,40,16,16,eye?0x7c00:0x001f);
+  check(gl_renderer_stereo_end(eye,1),"capture eye completes");
+ }
+ check(gl_renderer_stereo_publish(43,110000,views),"capture publishes complete pair");
+ check(gl_renderer_stereo_capture_records(&record,1)==1,"capture metadata retained for TCP");
+ check(record.pair_id==43 && record.guest_cycle==110000 && record.view_offset[1][0]==24,
+       "capture metadata belongs to exact exported pair");
+ check(record.width==16u*s_hr_scale && record.height==16u*s_hr_scale,"capture dimensions match textures");
+ FILE *file=fopen("p000043_left.png","rb");check(file!=NULL,"left PNG evidence exported");if(file)fclose(file);
+ file=fopen("p000043_right.png","rb");check(file!=NULL,"right PNG evidence exported");if(file)fclose(file);
+ file=fopen("p000043_sbs.png","rb");check(file!=NULL,"SBS PNG evidence exported");if(file)fclose(file);
+ file=fopen("p000043.json","rb");check(file==NULL,"runtime does not write diagnostic JSON");if(file)fclose(file);
+ gl_renderer_stereo_reset();
+ check(gl_renderer_stereo_capture_records(&record,1)==0,"session reset clears capture metadata");
+ check(glGetError()==GL_NO_ERROR,"stereo transaction GL error");
+}
 int main(int argc,char **argv){
  int scale=argc>1?atoi(argv[1]):1;
  if(SDL_Init(SDL_INIT_VIDEO)!=0)return 2;
@@ -153,6 +228,7 @@ int main(int argc,char **argv){
  check(glb_vram_read(482,252)==0x001f,"palette update visible without replacing indices");
  verify("retained indices with animated guest CLUT");
  verify_bank_batching();
+ verify_stereo_transactions();
  /* World and UI use different origins in an anchored wide frame. Keep the
   * canonical-center optimization enabled to catch an erroneous blit over the
   * completed mirror, and change origins with a pending flat batch. */

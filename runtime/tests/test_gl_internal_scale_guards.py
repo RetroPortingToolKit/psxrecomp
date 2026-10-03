@@ -289,10 +289,16 @@ class RenderPassGuards(unittest.TestCase):
         refuse = body(GL, "uint32_t gl_renderer_pass_unavailable(void)")
         self.assertRegex(strip_comments(refuse),
                          r"if \([^;{}]*\bs_hiw\b[^;{}]*\)\s*return PSX_MOD_RENDER_PASS_BACKEND;")
-        # Every way in goes through that refusal.
-        for sig in ("int gl_renderer_pass_begin(", "uint32_t gl_renderer_pass_plan("):
-            if sig in GL:
-                self.assertIn("gl_renderer_pass_ready()", body(GL, sig), sig)
+        self.assertIn("gl_renderer_pass_ready()", body(GL, "uint32_t gl_renderer_pass_plan("))
+        begin = body(GL, "int gl_renderer_pass_begin(")
+        if "transaction_begin(" in begin:
+            self.assertIn("period, reuse, 0)", begin)
+            begin = body(GL, "static int transaction_begin(")
+        status = "s_pass_begin_diag.status"
+        self.assertIn("gl_renderer_pass_unavailable()", begin)
+        self.assertRegex(begin, r"if \(s_pass_begin_diag\.status != PSX_MOD_RENDER_PASS_READY\)\s*"
+                                r'return pass_begin_refuse\("gl_status"\);')
+        self.assertLess(begin.index(status + " !="), begin.index("flush_flat_batch()"))
         self.assertIn("gl_renderer_pass_unavailable() == PSX_MOD_RENDER_PASS_READY",
                       body(GL, "int gl_renderer_pass_ready(void)"))
 

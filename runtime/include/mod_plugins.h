@@ -358,6 +358,105 @@ enum {
     PSX_MOD_RENDER_PASS_BUSY = 6
 };
 uint32_t psx_mod_render_pass_status(void);
+/* Simultaneous stereo capture, independent of temporal interpolation. Each
+ * eye starts from the same guest state; CPU/RAM/devices/VRAM are restored
+ * before the other eye and on failure. Publish only after both succeed.
+ * The caller provides a draw-only callback at a main-thread frame boundary.
+ * period_vblanks (1..8) describes the game's draw cadence for whole-pair cost
+ * shedding. No alpha/time phase is used. Returns 1 for a published pair. */
+enum { PSX_MOD_EYE_LEFT = 0, PSX_MOD_EYE_RIGHT = 1 };
+typedef struct PSXModStereoFrame {
+    uint32_t struct_size;
+    uint32_t period_vblanks;
+    uint16_t x, y, w, h;
+} PSXModStereoFrame;
+typedef int (*PSXModStereoFn)(struct CPUState*, void*, uint32_t eye);
+int psx_mod_render_stereo(struct CPUState *cpu, const PSXModStereoFrame *frame,
+                          PSXModStereoFn fn, void *user);
+uint32_t psx_mod_render_stereo_status(void);
+/* 0 disables stereo output; 1 shows a complete pair side by side. Capture
+ * itself does not enable presentation. Default 0; applies to this session. */
+int psx_mod_set_stereo_presentation(uint32_t mode);
+/* Camera-space addition to RT*V+TR before RTPS/RTPT perspective division.
+ * Valid only inside a render callback. Replaces (never accumulates) the host
+ * offset and is restored automatically on completion or watchdog abort.
+ * Units are the game's GTE camera units; IPD/world-scale calibration is game
+ * specific. Zero is faithful. Guest TR registers are not modified. */
+int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z);
+/* Rigid camera transform after guest RT*V+TR, before division. Rotation is
+ * row-major Q12; translation uses camera units. Optional projection supplies
+ * focal lengths and centre deltas from guest OFX/OFY in Q16 pixel units.
+ * Identity rotation with projection=0 preserves the architectural path. */
+typedef struct PSXModRenderView {
+    uint32_t struct_size;
+    int32_t rotation_q12[9], translation[3];
+    uint32_t projection;
+    uint32_t projection_h_ref; /* 0 absolute FOV; otherwise scale focal lengths by guest H/ref */
+    int32_t fx_q16, fy_q16, cx_delta_q16, cy_delta_q16;
+} PSXModRenderView;
+int psx_mod_render_view(const PSXModRenderView *view);
+/* Begin locates both views at one predicted time. End submits only a fresh
+ * complete pair; failed/shed redraws submit zero layers. */
+int psx_mod_openxr_enable(int enabled);
+int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units_per_meter);
+int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view);
+int psx_mod_openxr_end(int pair_rendered);
+/* Frame-local UI surface: the fresh pair's left image is shown to both eyes
+ * on a head-relative quad. Call after begin, outside the draw transaction.
+ * Dimensions and distance are meters; zero distance restores projection.
+ * Requests reset at begin/end and never affect faithful guest rendering. */
+int psx_mod_openxr_quad(double distance_m, double width_m, double height_m);
+/* Opt-in native presentation surface for boot, videos and menus. Copies the
+ * freshly drawn desktop content before host overlays, without guest replay.
+ * Zero distance disables it. Applications disable it before scene begin and
+ * re-enable when their scene renderer is inactive. Dimensions are meters;
+ * height follows the presented content aspect. No retained stereo substitution. */
+int psx_mod_openxr_native_surface(double distance_m, double width_m,
+                                  double units_per_meter);
+void psx_mod_openxr_recenter(void);
+/* Fresh action sample at the offline input boundary, never in an eye replay.
+ * Positive Y is forward/up in XR. active[] refers only to thumbsticks;
+ * other actions have independent activity. Unavailable/unfocused actions
+ * return zero values. Click masks are active-high, unrelated to PSX pad bits. */
+#define PSX_MOD_XR_PRIMARY   1u /* left X / right A */
+#define PSX_MOD_XR_SECONDARY 2u /* left Y / right B */
+#define PSX_MOD_XR_MENU      4u /* Touch left Menu */
+#define PSX_MOD_XR_STICK     8u /* thumbstick click */
+#define PSX_MOD_XR_CLICKS   15u
+typedef struct PSXModOpenXRInput {
+    uint32_t struct_size, focused, active[2], synthetic;
+    float stick[2][2];
+    uint64_t sequence;
+    float trigger[2], squeeze[2]; /* [0,1] */
+    uint32_t trigger_active[2], squeeze_active[2];
+    uint32_t buttons[2], buttons_active[2]; /* PSX_MOD_XR_* masks */
+} PSXModOpenXRInput;
+int psx_mod_openxr_input(PSXModOpenXRInput *input);
+
+/* Read-only controller snapshot from the latest located XR frame. Grip and aim
+ * share the eye poses' predicted time and LOCAL space; no action sync or locate
+ * occurs here, including during eye replay. Positions are meters; quaternions
+ * are x,y,z,w. The origin matches the rendered view's recenter basis. Consumers
+ * must check focus, activity, validity and age before using a cached pose. */
+enum { PSX_MOD_XR_GRIP_POSE = 0, PSX_MOD_XR_AIM_POSE = 1 };
+#define PSX_MOD_XR_ORIENTATION_VALID   1u
+#define PSX_MOD_XR_POSITION_VALID      2u
+#define PSX_MOD_XR_ORIENTATION_TRACKED 4u
+#define PSX_MOD_XR_POSITION_TRACKED    8u
+typedef struct PSXModTrackedPose {
+    uint32_t active, flags;
+    float position_m[3], orientation_xyzw[4];
+} PSXModTrackedPose;
+typedef struct PSXModOpenXRHands {
+    uint32_t struct_size, focused, synthetic, origin_valid;
+    uint64_t sequence, predicted_time;
+    uint32_t age_ms; /* UINT32_MAX when no real frame has been located */
+    double origin_position_m[3], origin_orientation_xyzw[4];
+    PSXModTrackedPose pose[2][2]; /* [left/right][grip/aim] */
+} PSXModOpenXRHands;
+int psx_mod_openxr_hands(PSXModOpenXRHands *hands);
+
+
 int psx_mod_set_auto_skip_fmv(int enabled);
 /*
  * Draw still artwork behind the game image in OpenGL letterbox/pillarbox
@@ -459,6 +558,18 @@ int psx_mod_set_controller_presentation_policy(
     PSXModControllerPresentationCallback callback,
     uint32_t initial_mode,
     int config_capable);
+
+/* Trusted offline source owns a player's pad at normal input sampling. A
+ * declined/invalid sample delivers neutral, not the previous held input.
+ * Existing TCP overrides take priority; netplay/resim and eye redraws never
+ * invoke the source. The runtime keeps coherent SIO type requests/recording.
+ * Pass NULL to detach. Local keyboard/pad buttons remain merged for menus;
+ * the source owns sticks and type. No source leaves faithful defaults intact. */
+typedef struct PSXModControllerState {
+    uint32_t struct_size, buttons, lx, ly, rx, ry, analog;
+} PSXModControllerState;
+typedef int (*PSXModControllerSource)(PSXModControllerState *state);
+int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source);
 
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.

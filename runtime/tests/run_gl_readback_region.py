@@ -69,7 +69,8 @@ def main():
     # The renderer's render-pass paths call the journal and VRAM policy in
     # render_pass_plan.c (self-contained: no other runtime symbols).
     sources = [("probe", fixture), ("sw", framework / "runtime/src/gpu_sw_renderer.c"),
-               ("rp", framework / "runtime/src/render_pass_plan.c")]
+               ("rp", framework / "runtime/src/render_pass_plan.c"),
+               ("xr", framework / "runtime/src/psx_openxr.c")]
     for name, source in sources:
         if run([compiler / "gcc.exe", "-std=c11", "-O2", "-flto", "-DPSX_SDL3=1",
                 "-DPSX_NO_DEBUG_TOOLS=1", *includes, "-c", source,

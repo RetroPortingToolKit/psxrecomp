@@ -430,9 +430,9 @@ The TCP server is the canonical instrumentation surface. Rule 3 in `CLAUDE.md` i
 
 ## Complete command index (generated)
 
-**323 commands registered** — 310 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**332 commands registered** — 319 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-61 of 323 have prose above; **262 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+62 of 332 have prose above; **270 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -603,6 +603,13 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `mmio_clear` | ✓ |  | ✓ |
 | `mmio_dump` | ✓ |  | ✓ |
 | `mmx6_freshfix` | ✓ |  |  |
+| `openxr_control` | ✓ |  |  |
+| `openxr_hands` | ✓ |  |  |
+| `openxr_hands_override` | ✓ |  |  |
+| `openxr_input` | ✓ |  |  |
+| `openxr_input_override` | ✓ |  |  |
+| `openxr_stats` | ✓ |  |  |
+| `openxr_views` | ✓ |  |  |
 | `overlay_candidates` | ✓ |  |  |
 | `overlay_capture_dump` | ✓ |  |  |
 | `overlay_cps_probe` | ✓ |  |  |
@@ -631,7 +638,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `pc_probe_arm` | ✓ |  |  |
 | `pc_probe_clear` | ✓ |  |  |
 | `pc_probe_dump` | ✓ |  |  |
-| `pgxp` | ✓ |  |  |
+| `pgxp` | ✓ |  | ✓ |
 | `phase_hot` | ✓ |  |  |
 | `phase_profile` | ✓ |  |  |
 | `ping` | ✓ | ✓ | ✓ |
@@ -701,6 +708,8 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `stack_profile` | ✓ |  |  |
 | `starv_ring` | ✓ |  |  |
 | `step` | ✓ |  | ✓ |
+| `stereo_dump` | ✓ |  |  |
+| `stereo_stats` | ✓ |  |  |
 | `synth_recurse` | ✓ |  |  |
 | `thread_ctx_ring` | ✓ |  |  |
 | `thread_trace` | ✓ |  |  |

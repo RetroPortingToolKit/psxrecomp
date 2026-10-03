@@ -84,6 +84,7 @@
 #include "latency_ring.h"
 #include "frame_pacing.h"
 #include "psx_rewind.h"
+#include "psx_openxr.h"
 
 #include "psx_sdl.h"
 #if defined(PSX_SDL3)
@@ -399,6 +400,7 @@ static const HiwTile *hiw_ensure(int x0, int x1);
 static void hiw_flush_queue(void);
 static GLuint make_tex(GLenum internal, int w, int h, GLenum fmt, GLenum type);
 static int  make_fbo(GLuint *out_fbo, GLuint color_tex, GLuint stencil_rb);
+static GLenum s_last_fbo_status;
 static void hiw_clear_rect(int x, int y, int w, int h, float r, float g, float b,
                            float a, int stencil);
 static void hiw_mirror_copy(int sx, int sy, int dx, int dy, int w, int h);
@@ -409,6 +411,10 @@ static GLuint        s_osd_tex = 0;
 static int           s_osd_tw = 0, s_osd_th = 0;
 static GLuint        s_present_prog = 0, s_present_vao = 0;
 static void          gl_swap_with_osd(void);
+static int s_native_surface_enabled, s_native_surface_pending;
+static int s_native_surface_rect[4]; /* Fresh native backbuffer content, GL coordinates. */
+static double s_native_surface_distance, s_native_surface_width, s_native_surface_units;
+static void openxr_present_native(void);
 static GLint         s_present_uTex = -1, s_present_uUvRect = -1;
 static GLint         s_present_uTexSize = -1, s_present_uSharpScale = -1;
 static GLint         s_present_uSharp = -1;
@@ -465,6 +471,9 @@ static void pass_note_new_frame(int origin_x, int origin_y, int source_path,
                                 int pw, int ph);
 static void pass_apply_promotion(void);
 static int pass_gen_present(uint64_t deadline);
+static int stereo_present(int w, int h);
+static void stereo_resources_release(void);
+static void stereo_invalidate(void);
 static uint64_t s_idle_ticks_accum_fwd(uint64_t add);
 /* Render-pass VRAM transaction (see "Render passes" below). While a pass is
  * open, GPU writes are confined to its rect: the scissor is intersected with
@@ -1011,6 +1020,10 @@ static uint64_t    s_pres_seq = 0;
 
 static void pres_record(int path, int dx, int dy, int w, int h,
                         int lx, int ly, int lw, int lh) {
+    s_native_surface_pending=s_native_surface_enabled &&
+        (path==GL_PRES_VRAM || path==GL_PRES_WIDE || path==GL_PRES_CPU || path==GL_PRES_BLANK);
+    s_native_surface_rect[0]=lx;s_native_surface_rect[1]=ly;
+    s_native_surface_rect[2]=lw;s_native_surface_rect[3]=lh;
     /* The ring metadata stays always-on, but pixel probing must not: each
      * glReadPixels synchronously drains queued GPU work. Two probes per frame
      * were enough to make Tomba 2 miss its frame budget. */
@@ -4070,9 +4083,9 @@ static int make_fbo(GLuint *out_fbo, GLuint color_tex, GLuint stencil_rb) {
         p_glFramebufferRenderbuffer(PSXGL_FRAMEBUFFER, PSXGL_DEPTH_STENCIL_ATTACHMENT,
                                     PSXGL_RENDERBUFFER, stencil_rb);
     GLenum st = p_glCheckFramebufferStatus(PSXGL_FRAMEBUFFER);
+    s_last_fbo_status = st;
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
     if (st != PSXGL_FRAMEBUFFER_COMPLETE) {
-        fprintf(stdout, "psxrecomp: GL FBO incomplete (0x%X)\n", st);
         return 0;
     }
     return 1;
@@ -4622,10 +4635,20 @@ void gl_renderer_set_swap_interval(int interval) {
         }
     }
 }
+int gl_renderer_get_swap_interval(void) {
+    if(!s_ctx)return -2;
+#if defined(PSX_SDL3)
+    int interval=0;
+    return SDL_GL_GetSwapInterval(&interval)?interval:-2;
+#else
+    return SDL_GL_GetSwapInterval();
+#endif
+}
 
 static void pass_resources_release(void);
 
 void gl_renderer_shutdown(void) {
+    s_native_surface_enabled=s_native_surface_pending=0;
     pass_resources_release();
     if (s_ctx) {
         for (unsigned i = 1; i < 65536u; ++i)
@@ -4784,6 +4807,7 @@ void gl_renderer_sync_cpu(void) {
 }
 
 void gl_renderer_invalidate_present(void) {
+    stereo_invalidate();
     for (int i = 0; i < PRES_ROWS; i++) s_present_dirty[i] = ~0ull;
     s_last_present_path = -1;
     s_force_present_remaining = 8;
@@ -5813,6 +5837,24 @@ typedef struct PassGen {
     double   t_start, t_len;      /* host ticks, set on promotion */
 } PassGen;
 static PassGen  s_pgen[2];
+/* Double-buffer complete pairs: the unpublished set may be overwritten while
+ * the last complete pair remains visible. No temporal phases or generation. */
+typedef struct StereoPair {
+    GLuint tex[2], fbo[2];
+    int tw[2], th[2];
+    int x, y, w, h;
+    uint32_t mask;
+    uint64_t id, cycle;
+    int32_t view[2][3];
+} StereoPair;
+static StereoPair s_stereo_pair[2];
+static int s_stereo_current, s_stereo_valid, s_stereo_mode;
+static uint64_t s_stereo_presents;
+static char s_stereo_dump_dir[400];
+static int s_stereo_dump_left;
+enum { STEREO_CAPTURE_MAX = 100 };
+static GLRenderStereoCapture s_stereo_captures[STEREO_CAPTURE_MAX];
+static uint32_t s_stereo_capture_count;
 /* Slot textures are made as slots fill: [0, s_pgen_alloc_n) exist, all at
  * s_pgen_alloc_w x h. A generation never fills past pass_slot_cap, so two
  * generations stay inside its budget whatever the internal scale. */
@@ -5874,12 +5916,32 @@ static void pass_gens_invalidate(void) {
 }
 
 static int s_pass_force_refuse = -1;   /* -1: read PSX_RENDER_PASS_REFUSE */
+static GLRenderPassBeginDiag s_pass_begin_diag;
+
+void gl_renderer_pass_begin_diag(GLRenderPassBeginDiag *out) {
+    if (out) *out = s_pass_begin_diag;
+}
+
+static int pass_begin_refuse(const char *reason) {
+    s_pass_begin_diag.reason = reason;
+    return 0;
+}
+
+/* Keep pre-existing errors separate from this allocation's errors. */
+static uint32_t pass_gl_errors(void) {
+    GLenum e;
+    uint32_t first = 0;
+    while ((e = glGetError()) != GL_NO_ERROR) {
+        if (!first) first = (uint32_t)e;
+    }
+    return first;
+}
 
 void gl_renderer_pass_force_refuse(int on) {
     s_pass_force_refuse = on ? 1 : 0;
 }
 
-uint32_t gl_renderer_pass_unavailable(void) {
+static void pass_refusal_init(void) {
     if (s_pass_force_refuse < 0) {
         const char *e = getenv("PSX_RENDER_PASS_REFUSE");
         s_pass_force_refuse = (e && e[0] && e[0] != '0') ? 1 : 0;
@@ -5887,6 +5949,10 @@ uint32_t gl_renderer_pass_unavailable(void) {
             fprintf(stderr, "psxrecomp: render passes refused by the backend "
                     "(PSX_RENDER_PASS_REFUSE, debug)\n");
     }
+}
+
+uint32_t gl_renderer_pass_unavailable(void) {
+    pass_refusal_init();
     if (!s_ctx || !s_raster_ok || !s_interp_enabled || s_interp_suspended ||
         s_interp_source != 1 || !(s_interp_source_hz > 0.0))
         return PSX_MOD_RENDER_PASS_NO_PRESENTER;
@@ -6010,6 +6076,9 @@ static int pass_make_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
                                int *cur_w, int *cur_h, int w, int h,
                                GLenum internal, GLenum fmt, GLenum type) {
     if (*fbo && *cur_w == w && *cur_h == h) return 1;
+    s_pass_begin_diag.gl_error_before = pass_gl_errors();
+    s_pass_begin_diag.gl_error = 0;
+    s_pass_begin_diag.fbo_status = 0;
     if (*fbo) p_glDeleteFramebuffers(1, fbo);
     if (*tex) glDeleteTextures(1, tex);
     if (rb && *rb) p_glDeleteRenderbuffers(1, rb);
@@ -6022,7 +6091,10 @@ static int pass_make_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
         p_glRenderbufferStorage(PSXGL_RENDERBUFFER, PSXGL_DEPTH24_STENCIL8, w, h);
         p_glBindRenderbuffer(PSXGL_RENDERBUFFER, 0);
     }
-    if (!make_fbo(fbo, *tex, rb ? *rb : 0)) {
+    int complete = make_fbo(fbo, *tex, rb ? *rb : 0);
+    s_pass_begin_diag.fbo_status = (uint32_t)s_last_fbo_status;
+    s_pass_begin_diag.gl_error = pass_gl_errors();
+    if (!complete) {
         *cur_w = *cur_h = 0;
         return 0;
     }
@@ -6041,7 +6113,10 @@ static void pass_gen_release(int gi) {
 /* Make sure slots [0, need) of generation gi exist at w x h. A size change
  * frees the old set first (the slot cap depends on the size only). */
 static int pass_gen_reserve(int gi, uint32_t need, int w, int h) {
-    if (need > PASS_SLOTS || need > pass_slot_cap(w, h)) return 0;
+    if (need > PASS_SLOTS || need > pass_slot_cap(w, h)) {
+        s_pass_begin_diag.resource = "generation_slot_cap";
+        return 0;
+    }
     if (s_pgen_alloc_w[gi] != w || s_pgen_alloc_h[gi] != h) {
         pass_gen_release(gi);
         s_pgen_alloc_w[gi] = w;
@@ -6049,11 +6124,17 @@ static int pass_gen_reserve(int gi, uint32_t need, int w, int h) {
     }
     while (s_pgen_alloc_n[gi] < need) {
         GLuint *t = &s_pgen_tex[gi][s_pgen_alloc_n[gi]];
+        s_pass_begin_diag.gl_error_before = pass_gl_errors();
+        s_pass_begin_diag.resource = "generation_texture";
         glGenTextures(1, t);
-        if (!*t) return 0;
+        if (!*t) {
+            s_pass_begin_diag.gl_error = pass_gl_errors();
+            return 0;
+        }
         glBindTexture(GL_TEXTURE_2D, *t);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
                      GL_UNSIGNED_BYTE, NULL);
+        s_pass_begin_diag.gl_error = pass_gl_errors();
         s_pgen_alloc_n[gi]++;
         s_pass_allocs++;
     }
@@ -6143,6 +6224,8 @@ static void pass_free_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
 /* Context teardown (gl_renderer_shutdown): free the pass images, backups
  * and journal, and forget their names so a new context makes fresh ones. */
 static void pass_resources_release(void) {
+    psx_openxr_shutdown();
+    stereo_resources_release();
     pass_gen_release(0);
     pass_gen_release(1);
     pass_gens_invalidate();
@@ -6198,13 +6281,34 @@ static void pass_journal_rollback(void) {
     render_pass_journal_rollback(&s_pj_cpu, s_vram, VRAM_W);
 }
 
-int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
-                           uint32_t period_vblanks, int reuse_backup) {
+static int transaction_begin(int x, int y, int w, int h, int open_gen,
+                              uint32_t period_vblanks, int reuse_backup, int stereo) {
     int S = s_hr_scale, gi, wide, tw, th;
     PassGen *g;
-    if (!gl_renderer_pass_ready() || s_pass_active) return 0;
+    memset(&s_pass_begin_diag, 0, sizeof s_pass_begin_diag);
+    s_pass_begin_diag.status = stereo ? gl_renderer_stereo_unavailable()
+                                    : gl_renderer_pass_unavailable();
+    s_pass_begin_diag.active = s_pass_active;
+    s_pass_begin_diag.open_gen = open_gen;
+    s_pass_begin_diag.hr_scale = S;
+    s_pass_begin_diag.out_scale = s_out_scale;
+    s_pass_begin_diag.source_path = s_interp_source_path;
+    s_pass_begin_diag.capture_w = s_interp_w;
+    s_pass_begin_diag.capture_h = s_interp_h;
+    gi = 1 - s_pgen_cur;
+    g = &s_pgen[gi];
+    s_pass_begin_diag.generation = gi;
+    s_pass_begin_diag.valid = g->valid;
+    s_pass_begin_diag.promoted = g->promoted;
+    s_pass_begin_diag.generation_x = g->x;
+    s_pass_begin_diag.generation_y = g->y;
+    s_pass_begin_diag.generation_w = g->w;
+    s_pass_begin_diag.generation_h = g->h;
+    if (s_pass_begin_diag.status != PSX_MOD_RENDER_PASS_READY)
+        return pass_begin_refuse("gl_status");
+    if (s_pass_active) return pass_begin_refuse("gl_active");
     if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > VRAM_W || y + h > VRAM_H)
-        return 0;
+        return pass_begin_refuse("rect_range");
     s_pass_allocs_begin = s_pass_allocs;
     flush_flat_batch();
     flush_tex_batch();
@@ -6214,11 +6318,19 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
            pass_wide_fbo_for(x) != 0;
     tw = (wide ? g_wide_w : w) * S;
     th = h * S;
+    s_pass_begin_diag.wide = wide;
+    s_pass_begin_diag.requested_w = tw;
+    s_pass_begin_diag.requested_h = th;
     gi = 1 - s_pgen_cur;
     g = &s_pgen[gi];
-    if (open_gen) {
-        if (tw != s_interp_w || th != s_interp_h) return 0;  /* not what is presented */
-        if (!pass_gen_reserve(gi, 1u, tw, th)) return 0;
+    if (stereo) {
+        StereoPair *pair = &s_stereo_pair[1 - s_stereo_current];
+        pair->x = x; pair->y = y; pair->w = w; pair->h = h;
+    } else if (open_gen) {
+        if (tw != s_interp_w || th != s_interp_h)
+            return pass_begin_refuse("capture_size"); /* not what is presented */
+        if (!pass_gen_reserve(gi, 1u, tw, th))
+            return pass_begin_refuse("generation_reserve");
         memset(g, 0, sizeof *g);
         g->x = x; g->y = y; g->w = w; g->h = h;
         g->tex_w = tw; g->tex_h = th;
@@ -6230,7 +6342,7 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
         g->valid = 1;
     } else if (!g->valid || g->promoted || g->x != x || g->y != y ||
                g->w != w || g->h != h) {
-        return 0;
+        return pass_begin_refuse("generation_state");
     }
 
     /* The previous pass of this frame restored exactly this backup and no
@@ -6243,22 +6355,26 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
     }
     s_pb_valid = 0;
     /* Back up the rect: hr color + stencil, raw mirror, wide band, CPU rows. */
+    s_pass_begin_diag.resource = "backup_hr";
     if (!pass_make_color_fbo(&s_pb_hr_tex, &s_pb_hr_rb, &s_pb_hr_fbo,
                              &s_pb_hr_w, &s_pb_hr_h, w * S, h * S,
-                             GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE) ||
-        !pass_make_color_fbo(&s_pb_raw_tex, NULL, &s_pb_raw_fbo,
+                             GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE))
+        return pass_begin_refuse("backup_hr");
+    s_pass_begin_diag.resource = "backup_raw";
+    if (!pass_make_color_fbo(&s_pb_raw_tex, NULL, &s_pb_raw_fbo,
                              &s_pb_raw_w, &s_pb_raw_h, w, h, PSXGL_R16UI,
                              PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT))
-        return 0;
+        return pass_begin_refuse("backup_raw");
     pass_blit(s_hr_fbo, s_pb_hr_fbo, x * S, y * S, 0, 0, w * S, h * S,
               GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     pass_blit(s_raw_fbo, s_pb_raw_fbo, x, y, 0, 0, w, h, GL_COLOR_BUFFER_BIT);
     s_pb_wide_src = g_wide_w > 0 ? pass_wide_fbo_for(x) : 0;
     if (s_pb_wide_src) {
+        s_pass_begin_diag.resource = "backup_wide";
         if (!pass_make_color_fbo(&s_pb_wide_tex, &s_pb_wide_rb, &s_pb_wide_fbo,
                                  &s_pb_wide_w, &s_pb_wide_h, g_wide_w * S,
                                  h * S, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE))
-            return 0;
+            return pass_begin_refuse("backup_wide");
         pass_blit(s_pb_wide_src, s_pb_wide_fbo, 0, y * S, 0, 0, g_wide_w * S,
                   h * S, GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     }
@@ -6266,7 +6382,7 @@ int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
         free(s_pb_cpu);
         s_pb_cpu = (uint16_t *)malloc((size_t)w * (size_t)h * sizeof(uint16_t));
         s_pb_cpu_cap = s_pb_cpu ? (size_t)w * (size_t)h : 0;
-        if (!s_pb_cpu) return 0;
+        if (!s_pb_cpu) return pass_begin_refuse("backup_cpu");
     }
     for (int row = 0; row < h; row++)
         memcpy(s_pb_cpu + (size_t)row * w, s_vram + (size_t)(y + row) * VRAM_W + x,
@@ -6296,30 +6412,10 @@ backed_up:
     return 1;
 }
 
-void gl_renderer_pass_end(uint32_t alpha_q16, int keep) {
+static void transaction_restore(void) {
     int S = s_hr_scale, gi = 1 - s_pgen_cur;
-    PassGen *g = &s_pgen[gi];
+    (void)gi;
     if (!s_pass_active) return;
-    flush_flat_batch();
-    flush_tex_batch();
-    flush_cpu_upload();
-    if (keep && alpha_q16 && g->valid && !g->promoted && g->n < PASS_SLOTS &&
-        g->n < pass_slot_cap(g->tex_w, g->tex_h) &&
-        pass_gen_reserve(gi, g->n + 1u, g->tex_w, g->tex_h)) {
-        /* Passes arrive in ascending phase; keep the list sorted anyway. */
-        uint32_t slot = g->n, at = g->n;
-        GLuint t;
-        pass_capture_into(s_pgen_tex[gi][slot], g);
-        while (at > 1 && g->phase[at - 1] > alpha_q16) at--;
-        t = s_pgen_tex[gi][slot];
-        for (uint32_t i = slot; i > at; i--) {
-            s_pgen_tex[gi][i] = s_pgen_tex[gi][i - 1];
-            g->phase[i] = g->phase[i - 1];
-        }
-        s_pgen_tex[gi][at] = t;
-        g->phase[at] = alpha_q16;
-        g->n++;
-    }
     /* Roll the journal, then the rect back. */
     pass_journal_rollback();
     pass_blit(s_pb_hr_fbo, s_hr_fbo, 0, 0, s_pass_x * S, s_pass_y * S,
@@ -6359,6 +6455,297 @@ void gl_renderer_pass_end(uint32_t alpha_q16, int keep) {
                   memcmp(s_pv_hr, after_hr, hn) == 0 &&
                   memcmp(s_pv_raw, after_raw, rn) == 0;
     }
+}
+
+int gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
+                           uint32_t period, int reuse) {
+    return transaction_begin(x, y, w, h, open_gen, period, reuse, 0);
+}
+int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
+    return transaction_begin(x, y, w, h, 0, 0, reuse, 1);
+}
+void gl_renderer_pass_end(uint32_t alpha_q16, int keep) {
+    int gi = 1 - s_pgen_cur;
+    PassGen *g = &s_pgen[gi];
+    if (!s_pass_active) return;
+    flush_flat_batch(); flush_tex_batch(); flush_cpu_upload();
+    if (keep && alpha_q16 && g->valid && !g->promoted && g->n < PASS_SLOTS &&
+        g->n < pass_slot_cap(g->tex_w, g->tex_h) &&
+        pass_gen_reserve(gi, g->n + 1u, g->tex_w, g->tex_h)) {
+        uint32_t slot = g->n, at = g->n;
+        GLuint t;
+        pass_capture_into(s_pgen_tex[gi][slot], g);
+        while (at > 1 && g->phase[at - 1] > alpha_q16) at--;
+        t = s_pgen_tex[gi][slot];
+        for (uint32_t i = slot; i > at; i--) {
+            s_pgen_tex[gi][i] = s_pgen_tex[gi][i - 1];
+            g->phase[i] = g->phase[i - 1];
+        }
+        s_pgen_tex[gi][at] = t; g->phase[at] = alpha_q16; g->n++;
+    }
+    transaction_restore();
+}
+
+uint32_t gl_renderer_stereo_unavailable(void) {
+    pass_refusal_init();
+    if (!s_ctx || !s_raster_ok || !s_hr_fbo || gpu_display_is_depth24())
+        return PSX_MOD_RENDER_PASS_NO_PRESENTER;
+    if (s_cpu_auth_dual || s_hiw || g_wide_w > 0 || s_pass_force_refuse > 0)
+        return PSX_MOD_RENDER_PASS_BACKEND;
+    return PSX_MOD_RENDER_PASS_READY;
+}
+void gl_renderer_stereo_stage_reset(void) {
+    s_stereo_pair[1 - s_stereo_current].mask = 0;
+}
+static void stereo_invalidate(void) {
+    s_stereo_valid = 0;
+    s_stereo_pair[0].mask = s_stereo_pair[1].mask = 0;
+}
+void gl_renderer_stereo_reset(void) {
+    stereo_invalidate(); s_stereo_mode = 0; s_stereo_dump_left = 0;
+    s_stereo_capture_count = 0;
+    s_stereo_presents = 0;
+}
+int gl_renderer_stereo_set_presentation(uint32_t mode) {
+    if (mode > 1u) return 0;
+    s_stereo_mode = (int)mode;
+    return 1;
+}
+static void stereo_resources_release(void) {
+    for (int gi = 0; gi < 2; gi++) for (int eye = 0; eye < 2; eye++) {
+        StereoPair *p = &s_stereo_pair[gi];
+        pass_free_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
+                            &p->tw[eye], &p->th[eye]);
+    }
+    stereo_invalidate();
+}
+int gl_renderer_stereo_end(uint32_t eye, int keep) {
+    StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
+    PassGen g;
+    int ok = 0, tw = s_pass_w * s_hr_scale, th = s_pass_h * s_hr_scale;
+    if (!s_pass_active) return 0;
+    flush_flat_batch(); flush_tex_batch(); flush_cpu_upload();
+    if (keep && eye < 2u && (double)tw * th * 16.0 <= 256.0 * 1024.0 * 1024.0 &&
+        pass_make_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
+                            &p->tw[eye], &p->th[eye], tw, th,
+                            GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE)) {
+        memset(&g, 0, sizeof g);
+        g.x = s_pass_x; g.y = s_pass_y; g.w = s_pass_w; g.h = s_pass_h;
+        g.source_path = GL_PRES_VRAM;
+        (void)pass_gl_errors(); /* distinguish this copy from preceding errors */
+        pass_capture_into(p->tex[eye], &g);
+        ok = pass_gl_errors() == 0;
+        if (ok) p->mask |= 1u << eye;
+    }
+    transaction_restore();
+    return keep ? ok : 1;
+}
+void gl_renderer_stereo_diag(GLRenderStereoDiag *out) {
+    StereoPair *p = &s_stereo_pair[s_stereo_current];
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+    out->valid = (uint32_t)s_stereo_valid; out->mode = (uint32_t)s_stereo_mode;
+    out->staged_mask = s_stereo_pair[1 - s_stereo_current].mask;
+    out->pair_id = p->id; out->guest_cycle = p->cycle;
+    out->width = (uint32_t)p->tw[0]; out->height = (uint32_t)p->th[0];
+    out->presents = s_stereo_presents;
+}
+void gl_renderer_stereo_dump_arm(const char *dir, int pairs) {
+    if (!dir || !*dir || pairs <= 0) { s_stereo_dump_left = 0; return; }
+    snprintf(s_stereo_dump_dir, sizeof s_stereo_dump_dir, "%s", dir);
+    s_stereo_dump_left = pairs > STEREO_CAPTURE_MAX ? STEREO_CAPTURE_MAX : pairs;
+    s_stereo_capture_count = 0;
+}
+uint32_t gl_renderer_stereo_capture_records(GLRenderStereoCapture *out, uint32_t capacity) {
+    uint32_t count = s_stereo_capture_count;
+    if (!out) return 0;
+    if (count > capacity) count = capacity;
+    memcpy(out, s_stereo_captures, count * sizeof *out);
+    return count;
+}
+static void stereo_dump(const StereoPair *p) {
+    int w = p->tw[0], h = p->th[0];
+    size_t n = (size_t)w * h * 3u;
+    uint8_t *rgb = (uint8_t *)malloc(n * 2u);
+    uint8_t *sbs = (uint8_t *)malloc(n * 2u);
+    char path[512]; FILE *f;
+    if (!rgb || !sbs) { free(rgb); free(sbs); return; }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    for (int eye = 0; eye < 2; eye++) {
+        glBindTexture(GL_TEXTURE_2D, p->tex[eye]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb + eye * n);
+        snprintf(path, sizeof path, "%s/p%06llu_%s.png", s_stereo_dump_dir,
+                 (unsigned long long)p->id, eye ? "right" : "left");
+        f = fopen(path, "wb");
+        if (f) { (void)png_write_rgb(f, rgb + eye * n, w, h); fclose(f); }
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    for (int row = 0; row < h; row++) for (int eye = 0; eye < 2; eye++)
+        memcpy(sbs + ((size_t)row * w * 2u + eye * w) * 3u,
+               rgb + eye * n + (size_t)row * w * 3u, (size_t)w * 3u);
+    snprintf(path, sizeof path, "%s/p%06llu_sbs.png", s_stereo_dump_dir,
+             (unsigned long long)p->id);
+    f = fopen(path, "wb");
+    if (f) { (void)png_write_rgb(f, sbs, w * 2u, h); fclose(f); }
+    if (s_stereo_capture_count < STEREO_CAPTURE_MAX) {
+        GLRenderStereoCapture *record = &s_stereo_captures[s_stereo_capture_count++];
+        record->pair_id = p->id; record->guest_cycle = p->cycle;
+        record->width = (uint32_t)w; record->height = (uint32_t)h;
+        memcpy(record->view_offset, p->view, sizeof record->view_offset);
+    }
+    free(rgb); free(sbs); s_stereo_dump_left--;
+}
+int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2][3]) {
+    StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
+    if (p->mask != 3u || p->tw[0] != p->tw[1] || p->th[0] != p->th[1]) return 0;
+    p->id = id; p->cycle = cycle;
+    memcpy(p->view, view, sizeof p->view);
+    s_stereo_current = 1 - s_stereo_current; s_stereo_valid = 1;
+    if (s_stereo_dump_left > 0) stereo_dump(p);
+    return 1;
+}
+
+static uint64_t s_xr_begin_pair;
+int psx_mod_openxr_enable(int enabled) {
+    PSXOpenXRStats s; psx_openxr_stats(&s);
+    if (s_pass_active || s.frame_open) return 0;
+    return psx_openxr_enable(enabled);
+}
+void psx_mod_openxr_recenter(void) { psx_openxr_recenter(); }
+int psx_mod_openxr_quad(double distance,double width,double height) {
+    if(s_pass_active)return 0;
+    return psx_openxr_quad(distance,width,height);
+}
+int psx_mod_openxr_native_surface(double distance,double width,double units) {
+    PSXOpenXRStats stats;psx_openxr_stats(&stats);
+    if(s_pass_active || stats.frame_open || !stats.compiled ||
+       !isfinite(distance) || !isfinite(width) || !isfinite(units))return 0;
+    if(distance && (distance<.25 || distance>20 || width<=0 || width>10 || units<1 || units>65536))return 0;
+    s_native_surface_enabled=distance!=0;s_native_surface_pending=0;
+    s_native_surface_distance=distance;s_native_surface_width=width;s_native_surface_units=units;
+    return 1;
+}
+int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units) {
+    if (s_native_surface_enabled || s_pass_active || gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY ||
+        !width || !height || width > VRAM_W || height > VRAM_H) return 0;
+    s_xr_begin_pair = s_stereo_valid ? s_stereo_pair[s_stereo_current].id : 0;
+    return psx_openxr_begin((int)width, (int)height, units);
+}
+int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view) {
+    return psx_openxr_view(eye, view);
+}
+int psx_mod_openxr_input(PSXModOpenXRInput *input) {
+    if (s_pass_active) return 0;
+    return psx_openxr_input(input);
+}
+int psx_mod_openxr_hands(PSXModOpenXRHands *hands) {
+    return psx_openxr_hands(hands); /* Snapshot only, also safe during replay. */
+}
+static int openxr_copy_eye(uint32_t eye, uint32_t texture, int w, int h) {
+    StereoPair *p = &s_stereo_pair[s_stereo_current];
+    GLint read_fbo, draw_fbo; GLuint target = 0;
+    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    glGetIntegerv(0x8CAA, &read_fbo);
+    glGetIntegerv(0x8CA6, &draw_fbo);
+    p_glGenFramebuffers(1, &target);
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, target);
+    p_glFramebufferTexture2D(PSXGL_DRAW_FRAMEBUFFER, PSXGL_COLOR_ATTACHMENT0,GL_TEXTURE_2D, texture, 0);
+    int ok = p_glCheckFramebufferStatus(PSXGL_DRAW_FRAMEBUFFER) == PSXGL_FRAMEBUFFER_COMPLETE;
+    if (ok) {
+        glDisable(GL_SCISSOR_TEST);
+        p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, p->fbo[eye]);
+        /* Stereo capture texture row convention is opposite the XR layer.
+         * User confirmed inverted headset output with the original direct blit.
+         * Flip only submission; eye dumps and desktop presentation stay intact. */
+        p_glBlitFramebuffer(0, p->th[eye], p->tw[eye], 0, 0, 0, w, h,
+                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glFlush();
+    }
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, (GLuint)read_fbo);
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, (GLuint)draw_fbo);
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    p_glDeleteFramebuffers(1, &target);return ok;
+}
+int psx_mod_openxr_end(int rendered) {
+    int fresh = rendered && s_stereo_valid && !s_pass_active &&
+                s_stereo_pair[s_stereo_current].id != s_xr_begin_pair;
+    if (fresh) psx_openxr_pair_metadata(s_stereo_pair[s_stereo_current].id,
+                                       s_stereo_pair[s_stereo_current].cycle);
+    return psx_openxr_end(fresh, openxr_copy_eye);
+}
+
+static int openxr_copy_native(uint32_t eye,uint32_t texture,int w,int h) {
+    GLint read_fbo,draw_fbo,read_buffer;GLuint target=0;
+    GLboolean scissor=glIsEnabled(GL_SCISSOR_TEST);
+    (void)eye;
+    glGetIntegerv(0x8CAA,&read_fbo);glGetIntegerv(0x8CA6,&draw_fbo);
+    glGetIntegerv(GL_READ_BUFFER,&read_buffer);
+    p_glGenFramebuffers(1,&target);p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER,target);
+    p_glFramebufferTexture2D(PSXGL_DRAW_FRAMEBUFFER,PSXGL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,texture,0);
+    int ok=p_glCheckFramebufferStatus(PSXGL_DRAW_FRAMEBUFFER)==PSXGL_FRAMEBUFFER_COMPLETE;
+    if(ok) {
+        int *r=s_native_surface_rect;
+        glDisable(GL_SCISSOR_TEST);p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,0);glReadBuffer(GL_BACK);
+        /* Default framebuffer is already upright: unlike native VRAM/eye
+         * textures, its bottom GL row is the displayed bottom row. */
+        (void)pass_gl_errors();
+        p_glBlitFramebuffer(r[0],r[1],r[0]+r[2],r[1]+r[3],0,0,w,h,GL_COLOR_BUFFER_BIT,GL_LINEAR);
+        glFlush();ok=pass_gl_errors()==0;
+    }
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,(GLuint)read_fbo);glReadBuffer((GLenum)read_buffer);
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER,(GLuint)draw_fbo);
+    if(scissor)glEnable(GL_SCISSOR_TEST);
+    p_glDeleteFramebuffers(1,&target);return ok;
+}
+static void openxr_present_native(void) {
+    int ww=0,wh=0,*r=s_native_surface_rect;
+    if(!s_native_surface_enabled || !s_native_surface_pending || s_pass_active)return;
+    s_native_surface_pending=0;
+    SDL_GL_GetDrawableSize(s_win,&ww,&wh);
+    if(r[0]<0 || r[1]<0 || r[2]<1 || r[3]<1 || r[0]+r[2]>ww || r[1]+r[3]>wh)return;
+    /* No replay or retained pair: this exact native present is the source.
+     * Direct lifecycle permits native 24-bit videos as well as 15-bit UI. */
+    /* The shared locator also builds PSX projection matrices, whose domain
+     * is native VRAM dimensions. Quad geometry does not use those matrices;
+     * keep that domain bounded while copying the full drawable rectangle. */
+    if(!psx_openxr_begin(512,240,s_native_surface_units))return;
+    if(!psx_openxr_quad(s_native_surface_distance,s_native_surface_width,
+                       s_native_surface_width*(double)r[3]/r[2])) {
+        (void)psx_openxr_end(0,NULL);return;
+    }
+    psx_openxr_native_metadata(s_frame_count);
+    (void)psx_openxr_end(1,openxr_copy_native);
+}
+
+static int stereo_present(int w, int h) {
+    StereoPair *p = &s_stereo_pair[s_stereo_current];
+    int ww, wh, lx, ly, lw, lh;
+    if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
+        p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
+        gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY) return 0;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_perf_present_enter();
+    letterbox_rect_aspect(ww, wh, s_aspect_num * 2, s_aspect_den, &lx, &ly, &lw, &lh);
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh);
+    glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
+    for (int eye = 0; eye < 2; eye++) {
+        int start = eye ? lw / 2 : 0, width = eye ? lw - lw / 2 : lw / 2;
+        present_target_quad(p->tex[eye], p->tw[eye], p->th[eye],
+                            0, 0, p->tw[eye], p->th[eye], 0,
+                            lx + start, ly, width, lh, 1, 1, 1);
+    }
+    pres_record(GL_PRES_STEREO, p->x, p->y, w, h, lx, ly, lw, lh);
+    hold_capture_drawable();
+    latency_ring_mark(LAT_SWAP_BEGIN);
+    gl_swap_with_osd();
+    latency_ring_mark(LAT_SWAP_END);
+    s_stereo_presents++; s_probe_swap++;
+    gl_perf_present_exit(0);
+    present_dirty_rect(p->x, p->y, p->x + w - 1, p->y + h - 1, 0);
+    present_force_consumed();
+    s_last_present_path = GL_PRES_STEREO;
+    return 1;
 }
 
 /* Draw two presented images crossfaded (t = weight of b) into the window. */
@@ -6574,6 +6961,8 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
 
 /* Composite host toast + volume bar into the default framebuffer, then swap. */
 static void gl_swap_with_osd(void) {
+    openxr_present_native(); /* Copy guest content before host-only overlays. */
+    s_native_surface_pending=0; /* Hold-last/resim cannot reuse a native source. */
     if (s_present_prog && s_ctx) {
         int ww = 0, wh = 0;
         SDL_GL_GetDrawableSize(s_win, &ww, &wh);
@@ -6842,7 +7231,8 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
     flush_flat_batch();
     flush_tex_batch();
     flush_cpu_upload();
-    if (s_force_present_remaining <= 0 &&
+    if (stereo_present(w, h)) return;
+    if (!s_native_surface_enabled && s_force_present_remaining <= 0 &&
         s_last_present_path == GL_PRES_VRAM &&
         s_last_dx == disp_x && s_last_dy == disp_y &&
         s_last_dw == w && s_last_dh == h &&
@@ -7005,7 +7395,7 @@ int gl_renderer_present_wide_fbo(int disp_x, int disp_y, int disp_h, int linear)
     flush_tex_batch();
     flush_cpu_upload();
     hiw_flush_queue();   /* windowed: queued wide mirrors */
-    if (s_force_present_remaining <= 0 &&
+    if (!s_native_surface_enabled && s_force_present_remaining <= 0 &&
         s_last_present_path == GL_PRES_WIDE &&
         s_last_dx == disp_x && s_last_dy == disp_y &&
         s_last_dw == g_wide_w && s_last_dh == disp_h &&

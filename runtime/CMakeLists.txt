@@ -352,6 +352,29 @@ if(BUILD_TESTING)
     add_test(NAME sio_dualshock_rumble_test COMMAND sio_dualshock_rumble_test)
     set_tests_properties(sio_dualshock_rumble_test PROPERTIES DISABLED TRUE)
 
+    add_executable(openxr_input_test tests/test_openxr_input.c src/psx_openxr.c)
+    target_include_directories(openxr_input_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(openxr_input_test PRIVATE m)
+    endif()
+    add_test(NAME openxr_input_test COMMAND openxr_input_test)
+
+    add_executable(vr_pose_math_test tests/test_vr_pose_math.c src/vr_pose_math.c)
+    target_include_directories(vr_pose_math_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(vr_pose_math_test PRIVATE m)
+    endif()
+    add_test(NAME vr_pose_math_test COMMAND vr_pose_math_test)
+
+    add_executable(projection_scale_config_test
+        tests/test_projection_scale_config.cpp src/projection_scale_config.cpp)
+    target_include_directories(projection_scale_config_test PRIVATE
+        include ../recompiler/lib/toml11)
+    add_test(NAME projection_scale_config_test COMMAND projection_scale_config_test)
+    add_executable(mod_controller_source_test tests/test_mod_controller_source.c src/mod_controller_source.c)
+    target_include_directories(mod_controller_source_test PRIVATE include)
+    add_test(NAME mod_controller_source_test COMMAND mod_controller_source_test)
+
     add_executable(gte_register_access_test
         tests/test_gte_register_access.cpp
         src/gte.cpp

@@ -1,12 +1,23 @@
 #include "cpu_state.h"
 #include "gte.h"
 #include "pgxp.h"
+#include "projection_scale.hpp"
+#include <limits>
+extern "C" void gte_set_fov_scale(int, int);
+#include "gte_view.h"
 
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+
+#define CHECK(expr) do { \
+    if (!(expr)) { \
+        std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #expr); \
+        return 1; \
+    } \
+} while (0)
 
 using PSXRecomp::GTE::GTEState;
 using PSXRecomp::GTE::gte_cfc2;
@@ -902,6 +913,71 @@ int test_precision_speculative_transaction() {
     return 0;
 }
 
+int test_render_pose() {
+    PSXModRenderView pose = {};
+    pose.struct_size = sizeof pose;
+    pose.rotation_q12[2] = 4096; pose.rotation_q12[4] = 4096;
+    pose.rotation_q12[6] = -4096;
+    GTEState g;
+    g.RT[0][0] = g.RT[1][1] = g.RT[2][2] = 4096;
+    g.V0[0] = -800; g.V0[2] = 200; g.H = 400;
+    gte_render_pose_set(&pose);
+    PSXRecomp::GTE::gte_rtps_internal(&g, g.V0, true);
+    if (g.MAC1 != 200 || g.MAC3 != 800 || g.TR[0] != 0)
+        return fail_value("rigid rotation before division",0,0,0,800,g.MAC3);
+    pose = {}; pose.struct_size = sizeof pose;
+    pose.rotation_q12[0] = pose.rotation_q12[4] = pose.rotation_q12[8] = 4096;
+    pose.projection = 1; pose.fx_q16 = 200 << 16; pose.fy_q16 = 100 << 16;
+    pose.cx_delta_q16 = 10 << 16; pose.cy_delta_q16 = -5 * 65536;
+    g = GTEState(); g.RT[0][0] = g.RT[1][1] = g.RT[2][2] = 4096;
+    g.V0[0] = 80; g.V0[1] = 160; g.V0[2] = 800;
+    gte_render_pose_set(&pose);
+    PSXRecomp::GTE::gte_rtps_internal(&g, g.V0, true);
+    if ((int16_t)g.SXY[2] != 30 || (int16_t)(g.SXY[2] >> 16) != 15)
+        return fail_value("asymmetric projection",0,0,0,30,g.SXY[2] & 65535);
+    pose.projection_h_ref = 400; g.H = 133;
+    gte_render_pose_set(&pose);
+    PSXRecomp::GTE::gte_rtps_internal(&g, g.V0, true);
+    if ((int16_t)g.SXY[2] != 16 || (int16_t)(g.SXY[2] >> 16) != 1)
+        return fail_value("authored focal ratio",0,0,0,16,g.SXY[2] & 65535);
+    pose = {}; gte_render_pose_set(&pose);
+    std::puts("PASS: rigid rotation and asymmetric projection before division");
+    return 0;
+}
+
+int test_render_view_parallax() {
+    const int32_t zero[3] = {0, 0, 0}, offset[3] = {24, 0, 0};
+    int shifts[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        GTEState base;
+        base.RT[0][0] = base.RT[1][1] = base.RT[2][2] = 4096;
+        base.H = 400; base.OFX = 256 << 16; base.OFY = 120 << 16;
+        base.V0[2] = i ? 3200 : 800;
+        GTEState baseline = base, eye = base, expected = base, repeat = base;
+        gte_render_view_set(zero);
+        PSXRecomp::GTE::gte_rtps_internal(&baseline, baseline.V0, true);
+        expected.TR[0] += 24;
+        PSXRecomp::GTE::gte_rtps_internal(&expected, expected.V0, true);
+        gte_render_view_set(offset);
+        PSXRecomp::GTE::gte_rtps_internal(&eye, eye.V0, true);
+        PSXRecomp::GTE::gte_rtps_internal(&repeat, repeat.V0, true);
+        if (eye.SXY[2] != expected.SXY[2] || eye.SZ[3] != expected.SZ[3] ||
+            eye.MAC1 != expected.MAC1 || eye.TR[0] != base.TR[0] ||
+            eye.SXY[2] != repeat.SXY[2]) {
+            gte_render_view_set(zero);
+            return fail_value("render view equals pre-divide translation", 0, 0, 0,
+                              expected.SXY[2], eye.SXY[2]);
+        }
+        shifts[i] = (int16_t)eye.SXY[2] - (int16_t)baseline.SXY[2];
+    }
+    gte_render_view_set(zero);
+    if (shifts[0] != 12 || shifts[1] != 3)
+        return fail_value("near/far render-view displacement", 0, 0, 0, 12u,
+                          static_cast<uint32_t>(shifts[0]));
+    std::puts("PASS: view offset gives 12px at Z=800, 3px at Z=3200; TR unchanged; no accumulation");
+    return 0;
+}
+
 } // namespace
 
 /* Preserve projection precision (docs/ENHANCEMENTS.md G1.11) changes the
@@ -1015,7 +1091,36 @@ int test_preserve_projection_is_shadow_only() {
     return 0;
 }
 
+int test_projection_scale() {
+    double value = 2;
+    for (const char* bad : {"", "nan", "inf", "9", "0", "-1", "2junk", "1e999", "1e-999"}) {
+        CHECK(!psx_projection_scale_parse(bad, &value) && value == 2);
+    }
+    CHECK(psx_projection_scale_parse(" 8.0 ", &value) && value == 8);
+    CHECK(!psx_projection_scale_valid(std::numeric_limits<double>::quiet_NaN()));
+    CHECK(psx_projection_scale_denominator(0.00001) == 1);
+    CPUState seed{};
+    seed.gte_ctrl[0] = 4096; seed.gte_ctrl[2] = 4096; seed.gte_ctrl[4] = 4096;
+    seed.gte_ctrl[26] = 320; seed.gte_data[0] = 100; seed.gte_data[1] = 1000;
+    const uint32_t cmd = 0x80001;
+    CPUState stock=seed; gte_set_fov_scale(1,1); gte_execute(&stock,cmd);
+    CPUState identity=seed; gte_set_fov_scale(1000,1000); gte_execute(&identity,cmd);
+    CHECK(same_gte(stock,identity));
+    CPUState widened=seed; gte_set_fov_scale(1,2); gte_execute(&widened,cmd);
+    CPUState reference=seed; reference.gte_ctrl[26]=160;
+    gte_set_fov_scale(1,1); gte_execute(&reference,cmd);
+    CHECK(widened.gte_ctrl[26] == 320 && widened.gte_data[14] == reference.gte_data[14]);
+    CHECK(widened.gte_data[14] != stock.gte_data[14]);
+    for (auto ratio : {std::pair<int,int>{0,1}, {-1,1}, {1,0}, {1,-1}}) {
+        CPUState reset=seed; gte_set_fov_scale(ratio.first,ratio.second); gte_execute(&reset,cmd);
+        CHECK(same_gte(stock,reset));
+    }
+    gte_set_fov_scale(1,1);
+    return 0;
+}
+
 int main() {
+    if (int rc = test_projection_scale()) return rc;
     if (int rc = test_hardware_register_semantics()) return rc;
     if (int rc = test_canonicalizer()) return rc;
     if (int rc = test_reads()) return rc;
@@ -1029,6 +1134,8 @@ int main() {
     if (int rc = test_precision_speculative_transaction()) return rc;
     if (int rc = test_preserve_projection_is_shadow_only()) return rc;
     if (int rc = test_pgxp_culling()) return rc;
+    if (int rc = test_render_view_parallax()) return rc;
+    if (int rc = test_render_pose()) return rc;
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
     return 0;
 }

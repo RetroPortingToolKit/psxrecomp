@@ -1,4 +1,5 @@
 #include "gte.h"
+#include "gte_view.h"
 #include "cpu_state.h"
 #include "nd_intro_ot.h"
 #include "pgxp.h"
@@ -516,7 +517,7 @@ extern "C" int gte_dome_probe_dump(uint32_t* funcs, uint32_t* counts, int32_t* m
 // so types are referred to unqualified.
 extern "C" { extern uint64_t s_frame_count; }
 struct GteRtpRec {
-    uint32_t seq, frame, caller_ra, cmd;
+    uint32_t seq, frame, caller_ra, cmd, render_view;
     int16_t  V0[3], V1[3], V2[3];
     int16_t  RT[9];
     int32_t  TR[3];
@@ -549,6 +550,28 @@ static uint64_t   s_gte_latch_seq = 0;
 static inline int gte_sxx(int32_t p){ int v=p&0xFFFF; return v>=0x8000? v-0x10000:v; }
 static inline int gte_syy(int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-0x10000:v; }
 
+static int32_t gte_h_scaled(const GTEState* gte);
+static int32_t s_render_view[3];
+static PSXModRenderView s_render_pose;
+static bool s_render_rotate;
+extern "C" void gte_render_pose_get(PSXModRenderView *view) { *view = s_render_pose; }
+extern "C" void gte_render_pose_set(const PSXModRenderView *view) {
+    s_render_pose = *view;
+    s_render_rotate = false;
+    for (int i = 0; i < 9; ++i)
+        if (view->rotation_q12[i] != (i % 4 == 0 ? 4096 : 0)) s_render_rotate = true;
+    /* An all-zero reset record means identity. */
+    if (!view->struct_size) s_render_rotate = false;
+    for (int i = 0; i < 3; ++i) s_render_view[i] = view->translation[i];
+}
+
+extern "C" void gte_render_view_get(int32_t xyz[3]) {
+    for (int i = 0; i < 3; i++) xyz[i] = s_render_view[i];
+}
+extern "C" void gte_render_view_set(const int32_t xyz[3]) {
+    for (int i = 0; i < 3; i++) s_render_view[i] = s_render_pose.translation[i] = xyz[i];
+}
+
 static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     if (s_gte_replay_sandbox) return;
     if (!s_gte_rtp_ring) {
@@ -560,10 +583,11 @@ static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     e->frame = (uint32_t)s_frame_count;
     e->caller_ra = s_gte_caller_ra;
     e->cmd = cmd;
+    e->render_view = s_render_pose.struct_size || s_render_view[0] || s_render_view[1] || s_render_view[2];
     for (int i = 0; i < 3; i++) { e->V0[i]=g->V0[i]; e->V1[i]=g->V1[i]; e->V2[i]=g->V2[i]; }
     for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) e->RT[r*3+c]=g->RT[r][c];
     for (int i = 0; i < 3; i++) e->TR[i]=g->TR[i];
-    e->H=g->H; e->OFX=g->OFX; e->OFY=g->OFY;
+    e->H=(uint16_t)gte_h_scaled(g); e->OFX=g->OFX; e->OFY=g->OFY;
     e->SXY0=g->SXY[0]; e->SXY1=g->SXY[1]; e->SXY2=g->SXY[2];
     e->SZ1=g->SZ[1]; e->SZ2=g->SZ[2]; e->SZ3=g->SZ[3];
     e->FLAG=g->FLAG;
@@ -754,7 +778,7 @@ extern "C" int gte_latch_dump_json(char* out, int outsz, int max_count) {
 /* Format up to max_count recent entries as a JSON array body (no outer braces).
  * If frame_filter >= 0, only entries with that frame are emitted. Returns count. */
 extern "C" int gte_rtp_ring_dump_json(char* out, int outsz, int max_count,
-                                      int newest_first, long frame_filter) {
+                                      int newest_first, long frame_filter, int offset, int render_filter) {
     if (!s_gte_rtp_ring || outsz < 64) { if (out && outsz) out[0]=0; return 0; }
     uint64_t total = s_gte_rtp_seq;
     if (total == 0) { out[0]=0; return 0; }
@@ -765,6 +789,8 @@ extern "C" int gte_rtp_ring_dump_json(char* out, int outsz, int max_count,
         if (seq < oldest || seq >= total) break;
         const GteRtpRec* e = &s_gte_rtp_ring[seq % GTE_RTP_RING_CAP];
         if (frame_filter >= 0 && e->frame != (uint32_t)frame_filter) continue;
+        if (render_filter >= 0 && (int)(e->render_view != 0) != render_filter) continue;
+        if (offset > 0) { --offset; continue; }
         auto sxx = [](int32_t p){ int v=p&0xFFFF; return v>=0x8000? v-0x10000:v; };
         auto syy = [](int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-0x10000:v; };
         if (pos > outsz - 700) break;
@@ -772,13 +798,13 @@ extern "C" int gte_rtp_ring_dump_json(char* out, int outsz, int max_count,
             "%s{\"seq\":%u,\"frame\":%u,\"ra\":\"0x%08X\",\"cmd\":\"0x%08X\","
             "\"V0\":[%d,%d,%d],\"V1\":[%d,%d,%d],\"V2\":[%d,%d,%d],"
             "\"RT\":[%d,%d,%d,%d,%d,%d,%d,%d,%d],\"TR\":[%d,%d,%d],"
-            "\"H\":%u,\"OFX\":%d,\"OFY\":%d,"
+            "\"H\":%u,\"OFX\":%d,\"OFY\":%d,\"render_view\":%u,"
             "\"S0\":[%d,%d],\"S1\":[%d,%d],\"S2\":[%d,%d],"
             "\"SZ\":[%u,%u,%u],\"FLAG\":\"0x%08X\"}",
             emitted?",":"", e->seq, e->frame, e->caller_ra, e->cmd,
             e->V0[0],e->V0[1],e->V0[2], e->V1[0],e->V1[1],e->V1[2], e->V2[0],e->V2[1],e->V2[2],
             e->RT[0],e->RT[1],e->RT[2],e->RT[3],e->RT[4],e->RT[5],e->RT[6],e->RT[7],e->RT[8],
-            e->TR[0],e->TR[1],e->TR[2], (unsigned)e->H, e->OFX, e->OFY,
+            e->TR[0],e->TR[1],e->TR[2], (unsigned)e->H, e->OFX, e->OFY, e->render_view,
             sxx(e->SXY0),syy(e->SXY0), sxx(e->SXY1),syy(e->SXY1), sxx(e->SXY2),syy(e->SXY2),
             (unsigned)e->SZ1,(unsigned)e->SZ2,(unsigned)e->SZ3, e->FLAG);
         emitted++;
@@ -798,6 +824,34 @@ extern "C" void gte_set_display_aspect(int num, int den) {
 }
 
 // ---------------------------------------------------------------------------
+// VR: perspective (FOV) scale.
+//
+// The PS1 projection distance lives in GTE control register H; psx-spx:
+//     fov = 2*atan(screen_width / (2*H))
+// gte_h_scaled applies H * num / den. A *FOV multiplier* v maps to
+// (num, den) = (1000, v*1000), i.e. H becomes H/v, so v > 1 widens the view.
+// Scaling H here avoids guest-code patches, which cannot change a statically
+// recompiled constant. Identity (num==den) by default, so the faithful path is
+// unchanged. Set from PSX_GTE_FOV_SCALE (float) or gte_set_fov_scale(num, den).
+// ---------------------------------------------------------------------------
+static int32_t s_h_scale_num = 1;
+static int32_t s_h_scale_den = 1;
+
+extern "C" void gte_set_fov_scale(int num, int den) {
+    if (num <= 0 || den <= 0) { s_h_scale_num = s_h_scale_den = 1; return; }
+    s_h_scale_num = num;
+    s_h_scale_den = den;
+}
+
+static int32_t gte_h_scaled(const GTEState* gte) {
+    if (s_h_scale_num == s_h_scale_den) return gte->H;
+    int64_t h = (int64_t)gte->H * s_h_scale_num / s_h_scale_den;
+    if (h < 1) h = 1;
+    if (h > 0xFFFF) h = 0xFFFF;
+    return (int32_t)h;
+}
+
+// ---------------------------------------------------------------------------
 // RTPS — Perspective Transformation (internal, operates on given vertex V)
 //
 // Matches DuckStation/Beetle (psx-spx):
@@ -812,7 +866,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
 
     // Step 1: Matrix multiplication + translation
     auto dot = [&](int row, int mac_num) {
-        int64_t acc = (int64_t)gte->TR[row] * 4096 +
+        int64_t acc = ((int64_t)gte->TR[row] + (s_render_rotate ? 0 : s_render_view[row])) * 4096 +
                       (int64_t)gte->RT[row][0] * V[0];
         acc = gte_mac44_stage(gte, acc, mac_num);
         acc += (int64_t)gte->RT[row][1] * V[1];
@@ -822,6 +876,17 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     int64_t mac1 = dot(0, 1);
     int64_t mac2 = dot(1, 2);
     int64_t mac3 = dot(2, 3);
+    if (s_render_rotate) {
+        const int64_t v[3] = {mac1, mac2, mac3};
+        int64_t result[3];
+        for (int row = 0; row < 3; ++row) {
+            int64_t sum = 0;
+            for (int col = 0; col < 3; ++col)
+                sum += v[col] * s_render_pose.rotation_q12[row * 3 + col];
+            result[row] = (sum >> 12) + (int64_t)s_render_view[row] * 4096;
+        }
+        mac1 = result[0]; mac2 = result[1]; mac3 = result[2];
+    }
 
     // MAC1..3 overflow flags observe the unshifted 44-bit accumulator.
     gte->check_mac_overflow(mac1, 1);
@@ -848,7 +913,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     gte->push_sz(static_cast<int32_t>(mac3 >> 12));
 
     // Step 3: Perspective division
-    int32_t h_div_sz = gte_divide(gte->H, gte->SZ[3], gte->FLAG);
+    int32_t h_div_sz = gte_divide(gte_h_scaled(gte), gte->SZ[3], gte->FLAG);
 
     // Step 4: Project to screen coordinates. Squash X only when configured AND
     // this frame is being stretched — never on a 4:3-presented frame (FMV /
@@ -901,6 +966,19 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     dome_probe_note(gte->SZ[3]);   /* locate the dome draw fn (far-vertex tally) */
     int64_t sx16 = gte->OFX + xterm;
     int64_t sy16 = gte->OFY + (int64_t)gte->IR2 * h_div_sz;
+    if (s_render_pose.projection && gte->SZ[3]) {
+        sx16 = (int64_t)gte->OFX + s_render_pose.cx_delta_q16 +
+               (int64_t)gte->IR1 * s_render_pose.fx_q16 / gte->SZ[3];
+        sy16 = (int64_t)gte->OFY + s_render_pose.cy_delta_q16 +
+               (int64_t)gte->IR2 * s_render_pose.fy_q16 / gte->SZ[3];
+        if (s_render_pose.projection_h_ref) {
+            const int64_t h = gte_h_scaled(gte), ref = s_render_pose.projection_h_ref;
+            sx16 = (int64_t)gte->OFX + s_render_pose.cx_delta_q16 +
+                   ((int64_t)gte->IR1 * s_render_pose.fx_q16 / gte->SZ[3]) * h / ref;
+            sy16 = (int64_t)gte->OFY + s_render_pose.cy_delta_q16 +
+                   ((int64_t)gte->IR2 * s_render_pose.fy_q16 / gte->SZ[3]) * h / ref;
+        }
+    }
     /* RTPS/RTPT reuse MAC0's overflow flags for each projected X/Y
      * accumulator before MAC0 is replaced by the depth-cue result. */
     gte->check_mac0_overflow(sx16);
@@ -925,7 +1003,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
         if (pgxp_preserve_projection() && pgxp_active()) {
             int32_t ex16, ey16;
             if (pgxp_project_precise(mac1, mac2, mac3, shift, gte->IR1, gte->IR2,
-                                     gte->SZ[3], gte->H, gte->OFX, gte->OFY,
+                                     gte->SZ[3], gte_h_scaled(gte), gte->OFX, gte->OFY,
                                      x_num, x_den, &ex16, &ey16) &&
                 pgxp_ppp_accept(ex16, ey16, (uint32_t)gte->SXY[2])) {
                 px16 = ex16;
@@ -1064,7 +1142,7 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
         for (int i = 0; i < 3; ++i) {
             const int x = exact_x[i] >> 16;
             checked &= (exact_y[i] >> 16) == raw_y[i] && x > -4096 && x < 4096;
-            checked &= gte->SZ[i + 1] >= gte->H / 2 && gte->SZ[i + 1] != 0;
+            checked &= gte->SZ[i + 1] >= gte_h_scaled(gte) / 2 && gte->SZ[i + 1] != 0;
             if (raw_x[i] == 1023 && x > 1023) saturated = true;
             else if (raw_x[i] == -1024 && x < -1024) saturated = true;
             else checked &= x == raw_x[i];

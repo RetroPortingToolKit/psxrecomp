@@ -151,3 +151,23 @@ scaffolding a project and destructive on a live one.
 Keep the pin above accurate when re-syncing. These files are the reason a
 standalone setup-wizard install and a Retro build produce the same
 multi-disc `game.toml`; if the two drift, so do those two paths.
+
+## OpenXR SDK loader - optional PC headset backend
+
+[OpenXR-SDK](https://github.com/KhronosGroup/OpenXR-SDK) by The Khronos Group
+Inc. and contributors is licensed Apache-2.0. Its bundled JsonCpp sources are
+distributed under their MIT terms. Only `PSX_OPENXR=ON` links the static loader;
+the SDK provides the official host API/runtime discovery implementation needed
+to connect to the user's separately installed OpenXR runtime. The feature is
+currently Win32/OpenGL-only and defaults OFF, so ordinary builds do not fetch it.
+
+The dependency is pinned by annotated tag object
+`b76b80adaf65ac3ad6cc1ce61974fb29a5d02352`, resolving to commit
+`c15d38cb4bb10a5b7e075f74493ff13896e2597a`. Enabled builds fetch and compile that
+source, including bundled JsonCpp; they need Git/network on a cold cache or a
+`FETCHCONTENT_SOURCE_DIR_PSX_OPENXR_SDK` override. No proprietary headset SDK,
+runtime binary, API layer or vendor driver is redistributed.
+
+The complete SDK and JsonCpp notices are in
+`runtime/licenses/OpenXR-SDK-NOTICES.txt`; both existing release packagers copy
+that directory into player packages. The source dependency is unmodified.

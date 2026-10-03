@@ -113,7 +113,7 @@ assert "render_pass_cost_add(" in body(
     gl, "void gl_renderer_pass_note_cost(uint64_t ticks) {"), (
     "the pass-cost average must leave allocating passes out")
 assert "s_pass_allocs_begin = s_pass_allocs;" in body(
-    gl, "int gl_renderer_pass_begin("), (
+    gl, "static int transaction_begin("), (
     "each pass must mark where its allocations start")
 # The average belongs to one presented image size. A plan at another size
 # passes an unknown cost (0), for which render_pass_plan_phases plans a single
