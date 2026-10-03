@@ -6,6 +6,8 @@
  */
 
 #include "cpu_state.h"
+#include "projection_scale.hpp"
+#include "projection_scale_config.hpp"
 #include "window_size.h"     /* default game-window size */
 #include "internal_resolution.h" /* Settings -> Display -> Internal resolution */
 #include "psx_scheduler.h"   /* psx_scheduler_run — deterministic TCB scheduler */
@@ -1425,6 +1427,9 @@ extern "C" void debug_get_fmv_config(int *auto_skip, uint32_t *total_table,
 static int           g_video_depth24_trailing_margin = 8;
 static int           g_video_aspect_num = 4;
 static int           g_video_aspect_den = 3;
+/* [video] fov_scale — VR perspective multiplier on the GTE projection distance
+ * H (1.0 = faithful). env PSX_GTE_FOV_SCALE overrides it. */
+static double        g_fov_scale = 1.0;
 /* Resize-driven widescreen. The user's fixed aspect is still used to shape the
  * initial window; after the game window exists these values follow its live
  * aspect, clamped to 4:3..the widest mode offered by the title. */
@@ -1894,7 +1899,16 @@ static void netplay_local_viewport_projection_aspect(
 static int g_ws_projection_num = 4;
 static int g_ws_projection_den = 3;
 static int g_ws_projection_mode = -1;
+extern "C" void gte_set_fov_scale(int num, int den);
+
 static void refresh_widescreen_projection() {
+    /* VR FOV: scale the GTE projection distance H (fov = 2*atan(w/(2H))).
+     * Independent of the widescreen squash; identity by default. */
+    if (g_fov_scale > 0.0 && g_fov_scale != 1.0)
+        gte_set_fov_scale(1000, psx_projection_scale_denominator(g_fov_scale));
+    else
+        gte_set_fov_scale(1, 1);
+
     if (!g_ws_engaged) return;
 
     const bool wide = g_video_aspect_num * 3 != g_video_aspect_den * 4;
@@ -13830,6 +13844,11 @@ int main(int argc, char** argv) {
                 (float)gc.runtime.video_scanline_strength;
             g_video_aspect_num = gc.runtime.video_aspect_num;
             g_video_aspect_den = gc.runtime.video_aspect_den;
+            g_fov_scale = psx_projection_scale_load_config(game_config_path);
+            if (const char* fov_env = std::getenv("PSX_GTE_FOV_SCALE")) {
+                double value;
+                if (psx_projection_scale_parse(fov_env, &value)) g_fov_scale = value;
+            }
             g_low_latency_input = gc.runtime.video_low_latency_input ? 1 : 0;
             gl_renderer_set_texture_window_batching(
                 gc.runtime.video_texture_window_batching ? 1 : 0);

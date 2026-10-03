@@ -50,6 +50,14 @@ void mod_runtime_on_savestate_loaded(void);
  * launcher commit and before renderer/window initialization. */
 void mod_runtime_activate_plugins(void);
 void mod_runtime_on_vblank(void);
+/* Host-only context for a nested render transaction. Restore the interrupted
+ * callback's depth/owner after longjmp; never serialize this into guest saves. */
+typedef struct ModFunctionEntryContext {
+    uint32_t depth;
+    const void *plugin;
+} ModFunctionEntryContext;
+void mod_runtime_function_entry_context_save(ModFunctionEntryContext *out);
+void mod_runtime_function_entry_context_restore(const ModFunctionEntryContext *in);
 void mod_runtime_patch_disc_sector(uint32_t lba, int raw_sector,
                                    uint8_t* bytes, uint32_t size);
 void mod_runtime_enable_disc_patches(void);

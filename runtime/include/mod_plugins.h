@@ -358,6 +358,45 @@ enum {
     PSX_MOD_RENDER_PASS_BUSY = 6
 };
 uint32_t psx_mod_render_pass_status(void);
+/* Simultaneous stereo capture, independent of temporal interpolation. Each
+ * eye starts from the same guest state; CPU/RAM/devices/VRAM are restored
+ * before the other eye and on failure. Publish only after both succeed.
+ * The caller provides a draw-only callback at a main-thread frame boundary.
+ * period_vblanks (1..8) describes the game's draw cadence for whole-pair cost
+ * shedding. No alpha/time phase is used. Returns 1 for a published pair. */
+enum { PSX_MOD_EYE_LEFT = 0, PSX_MOD_EYE_RIGHT = 1 };
+typedef struct PSXModStereoFrame {
+    uint32_t struct_size;
+    uint32_t period_vblanks;
+    uint16_t x, y, w, h;
+} PSXModStereoFrame;
+typedef int (*PSXModStereoFn)(struct CPUState*, void*, uint32_t eye);
+int psx_mod_render_stereo(struct CPUState *cpu, const PSXModStereoFrame *frame,
+                          PSXModStereoFn fn, void *user);
+uint32_t psx_mod_render_stereo_status(void);
+/* 0 disables stereo output; 1 shows a complete pair side by side. Capture
+ * itself does not enable presentation. Default 0; applies to this session. */
+int psx_mod_set_stereo_presentation(uint32_t mode);
+/* Camera-space addition to RT*V+TR before RTPS/RTPT perspective division.
+ * Valid only inside a render callback. Replaces (never accumulates) the host
+ * offset and is restored automatically on completion or watchdog abort.
+ * Units are the game's GTE camera units; IPD/world-scale calibration is game
+ * specific. Zero is faithful. Guest TR registers are not modified. */
+int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z);
+/* Rigid camera transform after guest RT*V+TR, before division. Rotation is
+ * row-major Q12; translation uses camera units. Optional projection supplies
+ * focal lengths and centre deltas from guest OFX/OFY in Q16 pixel units.
+ * Identity rotation with projection=0 preserves the architectural path. */
+typedef struct PSXModRenderView {
+    uint32_t struct_size;
+    int32_t rotation_q12[9], translation[3];
+    uint32_t projection;
+    uint32_t projection_h_ref; /* 0 absolute FOV; otherwise scale focal lengths by guest H/ref */
+    int32_t fx_q16, fy_q16, cx_delta_q16, cy_delta_q16;
+} PSXModRenderView;
+int psx_mod_render_view(const PSXModRenderView *view);
+
+
 int psx_mod_set_auto_skip_fmv(int enabled);
 /*
  * Draw still artwork behind the game image in OpenGL letterbox/pillarbox

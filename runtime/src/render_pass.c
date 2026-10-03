@@ -28,9 +28,12 @@
 #include "gpu.h"
 #include "gpu_gl_renderer.h"
 #include "mod_plugins.h"
+#include "mod_runtime.h"
 #include "overlay_loader.h"
 #include "psx_icache.h"
 #include "timers.h"
+#include "psx_video_timing.h"
+#include "gte_view.h"
 
 extern uint8_t *memory_get_ram_ptr(void);
 extern uint8_t *memory_get_scratchpad_ptr(void);
@@ -108,6 +111,8 @@ typedef struct RenderPassNesting {
     int      ov_active_depth;
     uint32_t ov_inprogress;
     void   (*ov_flush)(void);
+    ModFunctionEntryContext mod_entry;
+    PSXModRenderView render_pose;
 } RenderPassNesting;
 
 static void nesting_save(RenderPassNesting *n) {
@@ -125,6 +130,8 @@ static void nesting_save(RenderPassNesting *n) {
     dirty_ram_ld_delay_save(&n->ld_delay);
     overlay_loader_native_nesting(&n->ov_active_depth, &n->ov_inprogress);
     n->ov_flush = g_overlay_flush_pending_cycles;
+    mod_runtime_function_entry_context_save(&n->mod_entry);
+    gte_render_pose_get(&n->render_pose);
 }
 
 static void nesting_restore(const RenderPassNesting *n) {
@@ -142,6 +149,8 @@ static void nesting_restore(const RenderPassNesting *n) {
     dirty_ram_ld_delay_restore(&n->ld_delay);
     overlay_loader_set_native_nesting(n->ov_active_depth, n->ov_inprogress);
     g_overlay_flush_pending_cycles = n->ov_flush;
+    mod_runtime_function_entry_context_restore(&n->mod_entry);
+    gte_render_pose_set(&n->render_pose);
 }
 
 /* PSX_RENDER_PASS_VERIFY: a pass that returned normally must leave the
@@ -158,7 +167,9 @@ static int nesting_balanced(const RenderPassNesting *n) {
            now.exec_phase == n->exec_phase &&
            now.precise_mode == n->precise_mode &&
            now.ov_active_depth == n->ov_active_depth &&
-           now.ov_flush == n->ov_flush;
+           now.ov_flush == n->ov_flush &&
+           now.mod_entry.depth == n->mod_entry.depth &&
+           now.mod_entry.plugin == n->mod_entry.plugin;
 }
 
 /* After a watchdog abort, before the restore: which exits the longjmp
@@ -193,6 +204,9 @@ static int nesting_describe(const RenderPassNesting *n, int bb_defer_ck,
     RP_NOTE(now.exec_phase != n->exec_phase, "exec phase %d->%d",
             now.exec_phase, n->exec_phase);
     RP_NOTE(now.ld_delay.armed != n->ld_delay.armed, "pending load");
+    RP_NOTE(now.mod_entry.depth != n->mod_entry.depth, "mod entries %+d",
+            (int)now.mod_entry.depth - (int)n->mod_entry.depth);
+    RP_NOTE(now.mod_entry.plugin != n->mod_entry.plugin, "mod owner");
 #undef RP_NOTE
     return count;
 }
@@ -232,6 +246,18 @@ static uint32_t s_plan_period = 2;
 static uint64_t s_plan_serial, s_restored_plan;
 static uint64_t s_restored_cycle, s_restored_stores;
 static int s_restored_valid;
+static RenderPassFailure s_attempt;
+static const char *s_checkpoint_failure;
+static RenderStereoStats s_stereo;
+static int s_pair_busy;
+static uint32_t s_pair_retry;
+
+static int pass_refuse(const char *reason, uint32_t status) {
+    s_attempt.reason = reason;
+    s_attempt.status = status;
+    s_stats.last_failure = s_attempt;
+    return 0;
+}
 
 /* PSX_RENDER_PASS_WATCHDOG=<guest cycles> lowers the cut-off (debug), so a
  * title's rollback path can be exercised on real passes. */
@@ -270,11 +296,17 @@ void render_pass_reset_session(void) {
     memset(g_render_pass_dropped_writes, 0, sizeof g_render_pass_dropped_writes);
     s_open_generation = 0;
     s_restored_valid = 0;
+    memset(&s_attempt, 0, sizeof s_attempt);
+    memset(&s_stereo, 0, sizeof s_stereo);
+    s_stereo.last_eye = -1;
+    s_pair_busy = 0;
+    s_pair_retry = 0;
+    gl_renderer_stereo_reset();
 }
 
 /* Everything that must hold before guest code may run frozen, as a
  * PSX_MOD_RENDER_PASS_* reason (READY = all of it holds). */
-static uint32_t pass_status(void) {
+static uint32_t transaction_status(int stereo) {
     uint32_t gl;
     if (s_stats.disabled) return PSX_MOD_RENDER_PASS_DISABLED;
     if (psx_netplay_active() || psx_netplay_is_resimulating() ||
@@ -282,12 +314,41 @@ static uint32_t pass_status(void) {
         g_ls_mode || g_ls_replay_active)
         return PSX_MOD_RENDER_PASS_SESSION;
     if (psx_presentation_fast_forward()) return PSX_MOD_RENDER_PASS_FAST_FORWARD;
-    gl = gl_renderer_pass_unavailable();
+    gl = stereo ? gl_renderer_stereo_unavailable() : gl_renderer_pass_unavailable();
     if (gl != PSX_MOD_RENDER_PASS_READY) return gl;
     if (s_nesting || g_psx_render_pass_active || psx_get_in_exception() ||
         dma_gpu_linked_list_active())
         return PSX_MOD_RENDER_PASS_BUSY;
     return PSX_MOD_RENDER_PASS_READY;
+}
+
+static uint32_t pass_status(void) { return transaction_status(0); }
+uint32_t psx_mod_render_stereo_status(void) {
+    return s_pair_busy ? PSX_MOD_RENDER_PASS_BUSY : transaction_status(1);
+}
+void render_stereo_get_stats(RenderStereoStats *out) { if (out) *out = s_stereo; }
+int psx_mod_set_stereo_presentation(uint32_t mode) {
+    return mode <= 1u ? gl_renderer_stereo_set_presentation(mode) : 0;
+}
+int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z) {
+    int32_t xyz[3] = {x, y, z};
+    if (!g_psx_render_pass_active) return 0;
+    gte_render_view_set(xyz);
+    return 1;
+}
+
+
+int psx_mod_render_view(const PSXModRenderView *view) {
+    if (!g_psx_render_pass_active || !view || view->struct_size < sizeof *view ||
+        view->projection > 1u || view->projection_h_ref > 65535u) return 0;
+    /* Bound products well inside int64. Rigid matrices are supplied by caller. */
+    for (int i = 0; i < 9; ++i)
+        if (view->rotation_q12[i] < -4096 || view->rotation_q12[i] > 4096) return 0;
+    for (int i = 0; i < 3; ++i)
+        if (view->translation[i] < -65536 || view->translation[i] > 65536) return 0;
+    if (view->projection && (view->fx_q16 <= 0 || view->fy_q16 <= 0)) return 0;
+    gte_render_pose_set(view);
+    return 1;
 }
 
 static int passes_allowed(void) {
@@ -395,17 +456,21 @@ static int checkpoint_save(const CPUState *cpu) {
     /* The whole live RAM: a pass's stores fold through the same geometry
      * (render_pass_store_to), so every byte one can reach is in here. */
     uint32_t ram_bytes = memory_get_ram_bytes();
+    s_checkpoint_failure = NULL;
     if (s_ram_copy_cap < ram_bytes) {
         uint8_t *p = (uint8_t *)realloc(s_ram_copy, ram_bytes);
-        if (!p) return 0;
+        if (!p) { s_checkpoint_failure = "checkpoint_ram"; return 0; }
         s_ram_copy = p;
         s_ram_copy_cap = ram_bytes;
     }
     if (!s_dma_copy) {
         s_dma_copy = (uint8_t *)malloc(dma_len);
-        if (!s_dma_copy) return 0;
+        if (!s_dma_copy) { s_checkpoint_failure = "checkpoint_dma"; return 0; }
     }
-    if (!gpu_pass_checkpoint_save()) return 0;
+    if (!gpu_pass_checkpoint_save()) {
+        s_checkpoint_failure = "checkpoint_gpu";
+        return 0;
+    }
     s_ck.cpu = *cpu;
     s_ck.ram_bytes = ram_bytes;
     memcpy(s_ram_copy, memory_get_ram_ptr(), ram_bytes);
@@ -483,27 +548,54 @@ static void note_fault(const char *what) {
     }
 }
 
-int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
-                        PSXModRenderPassFn fn, void *user) {
+static int transaction_end(int eye, uint32_t alpha, int keep) {
+    if (eye >= 0) return gl_renderer_stereo_end((uint32_t)eye, keep);
+    gl_renderer_pass_end(alpha, keep);
+    return 1;
+}
+
+static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass,
+                              PSXModRenderPassFn fn, void *user, int eye) {
     uint64_t t0, t1, tb, tg, te, tr, hash_before = 0, hash_after = 0;
     uint64_t cycles_before;
     uint32_t leaks;
     int ok = 0, open, reuse;
     static uint32_t s_leaks_before;
+    uint32_t status;
+
+    memset(&s_attempt, 0, sizeof s_attempt);
+    s_attempt.attempt = ++s_stats.pass_attempts;
+    s_attempt.plan = s_plan_serial;
+    s_attempt.guest_cycle = psx_cycle_count;
+    if (pass) {
+        s_attempt.struct_size = pass->struct_size;
+        if (pass->struct_size >= sizeof *pass) {
+            s_attempt.alpha_q16 = pass->alpha_q16;
+            s_attempt.x = pass->x; s_attempt.y = pass->y;
+            s_attempt.w = pass->w; s_attempt.h = pass->h;
+        }
+    }
 
     if (!cpu || !pass || !fn || pass->struct_size < sizeof *pass ||
-        pass->w == 0 || pass->h == 0 || pass->alpha_q16 == 0 ||
-        pass->alpha_q16 >= 65536u)
-        return 0;
-    if (!passes_allowed()) return 0;
+        pass->w == 0 || pass->h == 0 || (eye < 0 &&
+        (pass->alpha_q16 == 0 || pass->alpha_q16 >= 65536u))) {
+        s_stats.argument_refused++;
+        return pass_refuse("arguments", transaction_status(eye >= 0));
+    }
+    status = transaction_status(eye >= 0);
+    if (status != PSX_MOD_RENDER_PASS_READY) {
+        s_stats.status_refused++;
+        return pass_refuse("status", status);
+    }
 
     /* An overlay DLL may still hold cycles it has not published. They belong
      * to the live timeline: publish them now, or the pass's first store would
      * publish them into the frozen clock and the restore would drop them. */
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
 
+    s_attempt.guest_cycle = psx_cycle_count;
     t0 = gl_renderer_perf_ticks();
-    open = s_open_generation;
+    open = eye < 0 ? s_open_generation : 0;
     {
         static double inv = 0.0;
         if (inv == 0.0) inv = 1000.0 / (double)gl_renderer_perf_frequency();
@@ -513,21 +605,35 @@ int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
             s_restored_cycle == psx_cycle_count &&
             s_restored_stores == g_guest_store_count;
     /* Frame N's own image is captured by the first pass after a plan. */
-    if (!gl_renderer_pass_begin(pass->x, pass->y, pass->w, pass->h, open,
-                                s_plan_period, reuse))
-        return 0;
+    if (!(eye >= 0 ? gl_renderer_stereo_begin(pass->x, pass->y, pass->w,
+                                               pass->h, reuse)
+                    : gl_renderer_pass_begin(pass->x, pass->y, pass->w,
+                                               pass->h, open, s_plan_period, reuse))) {
+        gl_renderer_pass_begin_diag(&s_attempt.gl);
+        s_stats.begin_refused++;
+        return pass_refuse(s_attempt.gl.reason ? s_attempt.gl.reason : "gl_begin",
+                           s_attempt.gl.status);
+    }
     s_open_generation = 0;
     s_leaks_before = gl_renderer_pass_leaks();
 
     if (!checkpoint_save(cpu)) {
-        gl_renderer_pass_end(0, 0);
-        return 0;
+        gl_renderer_pass_begin_diag(&s_attempt.gl);
+        s_stats.checkpoint_refused++;
+        /* Capture the rejection status before rolling the GL transaction back. */
+        status = transaction_status(eye >= 0);
+        transaction_end(eye, 0, 0);
+        return pass_refuse(s_checkpoint_failure, status);
     }
     if (verify_on()) hash_before = state_hash(cpu);
 
     tb = gl_renderer_perf_ticks();
     s_nesting = 1;
     cycles_before = psx_cycle_count;
+    if (eye >= 0) {
+        s_stereo.eye_cycle[eye] = cycles_before;
+        s_stereo.eye_hash[eye] = verify_on() ? hash_before : 0;
+    }
     (void)psx_cycle_freeze_begin(&s_freeze, watchdog_cycles(),
                                  watchdog_overrun);
     if (setjmp(s_abort_jmp) == 0) {
@@ -537,6 +643,7 @@ int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
         if (!ok) s_stats.discarded++;
         if (verify_on() && !nesting_balanced(&s_ck.nest)) {
             s_stats.verify_mismatch++;
+            if (eye >= 0) ok = 0;
             fprintf(stderr, "psxrecomp: RENDER PASS VERIFY mismatch "
                     "(host nesting not balanced after the pass)\n");
         }
@@ -550,9 +657,12 @@ int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
         if (nesting_describe(&s_ck.nest, s_freeze.bb_defer, s_abort_detail,
                              sizeof s_abort_detail))
             s_stats.nesting_repairs++;
+        snprintf(s_stats.last_abort_detail, sizeof s_stats.last_abort_detail,
+                 "%s", s_abort_detail);
         ok = 0;
     }
     s_stats.guest_cycles_last = psx_cycle_count - cycles_before;
+    if (eye >= 0) gte_render_view_get(s_stereo.eye_view[eye]);
     tg = gl_renderer_perf_ticks();
 
     leaks = gl_renderer_pass_leaks() - s_leaks_before;
@@ -561,7 +671,10 @@ int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
         ok = 0;
     }
     /* Capture (when kept), then roll the VRAM rect and renderer back. */
-    gl_renderer_pass_end(ok ? pass->alpha_q16 : 0, ok);
+    if (!transaction_end(eye, ok ? pass->alpha_q16 : 0, ok)) {
+        ok = 0;
+        if (eye >= 0) s_stereo.last_failure = "eye_capture";
+    }
     te = gl_renderer_perf_ticks();
     checkpoint_restore(cpu);
     psx_cycle_freeze_end(&s_freeze);
@@ -581,6 +694,7 @@ int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
         s_stats.verify_checks++;
         if (hash_after != hash_before || !gl_renderer_pass_verify_vram()) {
             s_stats.verify_mismatch++;
+            if (eye >= 0) { ok = 0; s_stereo.last_failure = "restore_verify"; }
             if (s_stats.verify_mismatch <= 8)
                 fprintf(stderr, "psxrecomp: RENDER PASS VERIFY mismatch "
                         "(state %016llx -> %016llx)\n",
@@ -597,12 +711,112 @@ int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
         s_stats.avg_pass_ms = s_stats.avg_pass_ms > 0.0
             ? s_stats.avg_pass_ms * 0.9 + ms * 0.1 : ms;
     }
-    gl_renderer_pass_note_cost(t1 - t0);
+    if (eye < 0) gl_renderer_pass_note_cost(t1 - t0);
     if (ok) s_stats.passes++;
     else if (leaks) note_fault("VRAM write outside the pass rect");
     else if (s_stats.watchdog_flag) note_fault("guest-cycle watchdog");
     s_stats.watchdog_flag = 0;
     /* Present anything that fell due while the pass ran. */
-    gl_renderer_pass_service_presents();
+    if (eye < 0) gl_renderer_pass_service_presents();
+    return ok;
+}
+
+int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
+                        PSXModRenderPassFn fn, void *user) {
+    return render_transaction(cpu, pass, fn, user, -1);
+}
+
+typedef struct StereoCallback {
+    PSXModStereoFn fn;
+    void *user;
+    uint32_t eye;
+} StereoCallback;
+static int stereo_eye_draw(CPUState *cpu, void *user, uint32_t unused) {
+    StereoCallback *c = (StereoCallback *)user;
+    (void)unused;
+    return c->fn(cpu, c->user, c->eye);
+}
+
+int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
+                          PSXModStereoFn fn, void *user) {
+    PSXModRenderPass rect;
+    StereoCallback call;
+    uint64_t t0, cycle, stores, mismatches, aborted;
+    double budget_ms, elapsed;
+    uint32_t status;
+    int ok = 1;
+    /* Refuse re-entry without changing the outer pair's counters/selector. */
+    if (s_pair_busy) return 0;
+    s_stereo.attempts++;
+    s_stereo.last_eye = -1;
+    if (!cpu || !frame || !fn || frame->struct_size < sizeof *frame ||
+        !frame->w || !frame->h || !frame->period_vblanks ||
+        frame->period_vblanks > 8u || (uint32_t)frame->x + frame->w > 1024u ||
+        (uint32_t)frame->y + frame->h > 512u) {
+        s_stereo.refused++; s_stereo.last_failure = "arguments"; return 0;
+    }
+    status = transaction_status(1);
+    if (status != PSX_MOD_RENDER_PASS_READY) {
+        s_stereo.refused++; s_stereo.last_failure = "status"; return 0;
+    }
+    budget_ms = frame->period_vblanks * (double)g_psx_vblank_cycles /
+                33868.8 * 0.8;
+    if (s_stereo.avg_pair_ms > budget_ms && ++s_pair_retry < 30u) {
+        s_stereo.shed++; return 0;
+    }
+    s_pair_retry = 0;
+    if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
+    cycle = psx_cycle_count; stores = g_guest_store_count;
+    mismatches = s_stats.verify_mismatch; aborted = s_stats.aborted;
+    s_stereo.last_failure = NULL;
+    s_stereo.eye_cycle[0] = s_stereo.eye_cycle[1] = 0;
+    s_stereo.eye_hash[0] = s_stereo.eye_hash[1] = 0;
+    gl_renderer_stereo_stage_reset();
+    memset(&rect, 0, sizeof rect);
+    rect.struct_size = sizeof rect;
+    rect.x = frame->x; rect.y = frame->y; rect.w = frame->w; rect.h = frame->h;
+    call.fn = fn; call.user = user;
+    s_pair_busy = 1;
+    s_plan_serial++; /* separate the backup lease from any temporal plan */
+    t0 = gl_renderer_perf_ticks();
+    for (call.eye = 0; call.eye < 2u; call.eye++) {
+        s_stereo.last_eye = (int)call.eye;
+        if (psx_cycle_count != cycle || g_guest_store_count != stores) {
+            ok = 0; s_stereo.last_failure = "checkpoint_changed"; break;
+        }
+        if (!render_transaction(cpu, &rect, stereo_eye_draw, &call, (int)call.eye)) {
+            ok = 0;
+            if (!s_stereo.last_failure) s_stereo.last_failure =
+                s_stats.aborted != aborted ? "eye_abort" : "eye_refused_or_discarded";
+            break;
+        }
+    }
+    if (s_stats.verify_mismatch != mismatches ||
+        s_stereo.eye_cycle[0] != s_stereo.eye_cycle[1] ||
+        (verify_on() && s_stereo.eye_hash[0] != s_stereo.eye_hash[1])) {
+        ok = 0;
+        if (!s_stereo.last_failure) s_stereo.last_failure = "eye_checkpoint_mismatch";
+    }
+    elapsed = (double)(gl_renderer_perf_ticks() - t0) * 1000.0 /
+              (double)gl_renderer_perf_frequency();
+    s_stereo.last_pair_ms = elapsed;
+    s_stereo.avg_pair_ms = s_stereo.avg_pair_ms > 0.0
+        ? s_stereo.avg_pair_ms * 0.9 + elapsed * 0.1 : elapsed;
+    if (ok && !gl_renderer_stereo_publish(s_stereo.attempts, cycle, s_stereo.eye_view)) {
+        ok = 0; s_stereo.last_failure = "pair_publish";
+    }
+    if (ok) {
+        s_stereo.pairs++;
+        s_stereo.last_pair_id = s_stereo.attempts;
+        s_stereo.last_guest_cycle = cycle;
+    } else {
+        s_stereo.failed++;
+        s_stereo.last_failed_attempt = s_stereo.attempts;
+        s_stereo.last_failed_eye = s_stereo.last_eye;
+        s_stereo.last_failed_reason = s_stereo.last_failure;
+        s_stereo.retained_pair_id = s_stereo.last_pair_id;
+        gl_renderer_stereo_stage_reset();
+    }
+    s_pair_busy = 0;
     return ok;
 }

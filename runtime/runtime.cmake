@@ -351,6 +351,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/gpu_vram_dirty.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_render.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/vr_pose_math.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_vk_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/dma_gpu_ll.c
     ${PSXRECOMP_ROOT}/runtime/src/dma.c
@@ -397,6 +398,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/freeze_dump_policy.c
     ${PSXRECOMP_ROOT}/runtime/src/freeze_heartbeat.c
     ${PSXRECOMP_ROOT}/runtime/src/gte.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/projection_scale_config.cpp
     ${PSXRECOMP_ROOT}/runtime/src/pgxp.cpp
     ${PSXRECOMP_ROOT}/runtime/src/pgxp_session.cpp
     ${PSXRECOMP_ROOT}/runtime/src/nd_intro_ot.c
