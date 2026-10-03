@@ -106,8 +106,11 @@ uint32_t psx_mod_alloc_gpu_dma_memory(uint32_t size, uint32_t alignment);
  */
 int psx_mod_set_main_ram_8mb(int enabled);
 
-/* Current per-side widescreen reveal in native game pixels (zero at 4:3). */
+/* World-culling envelope in native game pixels, including safety guards. */
 int32_t psx_mod_widescreen_x_margin(void);
+/* Configured per-side visible reveal, excluding culling guards; zero at 4:3.
+ * Use for screen-space layout, including the first frame of a new scene. */
+int32_t psx_mod_widescreen_view_x_margin(void);
 
 /* Opt into render-only recovery of saturated horizontal GTE projections in
  * native-wide gameplay. Requires exact packet-address/word provenance and
@@ -124,6 +127,17 @@ void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
  * compositor translates it by the live reveal, excluding culling guards.
  * Guest coordinates, world sprites, and native 4:3 remain unchanged. */
 void psx_mod_tag_hud_primitive(uint32_t primitive, int edge);
+/* Packet-guarded screen-space anchor: -1 left, +1 right, 0 stays centred.
+ * Unlike the legacy role tag above, zero explicitly protects centred text
+ * from automatic layout transforms. Word immediately before the GP0 colour
+ * command; for a compound E1+SPRT packet this is its E1 word (P_TAG+4). */
+void psx_mod_anchor_hud_primitive(uint32_t primitive, int edge);
+/* Screen-space masks identified by their title's producer, P_TAG addresses.
+ * Flat panels extend only their exterior boundaries. Radial flat/Gouraud
+ * quads scale around the display centre for an aspect-aware iris transition.
+ * Both services are render-only, word guarded and inert at native 4:3. */
+void psx_mod_tag_screen_mask_quad(uint32_t primitive);
+void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale);
 /* Exclude a known world packet from screen-space backdrop stretching, even
  * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
 void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);

@@ -44,6 +44,7 @@
 #include "ws_hud_anchor.h"
 #include "ws_repeat_rect.h"
 #include "ws_screen_mask.h"
+#include "ws_radial_screen_mask.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -192,6 +193,7 @@ static WsTag    ws_tags[WS_TAG_BUCKETS];
 static WsHudAnchorTag ws_hud_anchor_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsHudAnchorTag ws_reveal_clear_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
+static WsRadialScreenMaskTag ws_radial_screen_mask_tags[WS_RADIAL_MASK_TAG_COUNT];
 static WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
 static uint32_t ws_last_tag_stamp = (uint32_t)-1000; /* frame of newest tag */
 static uint32_t ws_last_3d_stamp  = (uint32_t)-1000; /* frame of newest shaded prim (diagnostic) */
@@ -208,6 +210,7 @@ static int ws_engaged(void) { return ws_mode != 0; }
 static int32_t ws_scale_about(int32_t x, int32_t ax);
 static int32_t ws_disp_x(void);
 static int32_t ws_disp_w(void);
+static int32_t ws_disp_h(void);
 static void ws_clear_all_reveal_margins(void);
 
 /* Gameplay vs full-2D screen. Character/billboard prims tag (psx_ws_sprite_tag)
@@ -545,6 +548,7 @@ static int ws_nw_offset(void) {
     if (!ws_native_wide_active()) return 0;
     return ws_nw_configured_offset();
 }
+int gpu_ws_configured_x_reveal(void) { return ws_nw_configured_offset(); }
 int ws_nw_extra(void) { return 2 * ws_nw_offset(); }
 
 static uint32_t ws_view_camera_addr, ws_view_min_addr, ws_view_max_addr, ws_view_active_addr;
@@ -2325,8 +2329,32 @@ void gpu_ws_tag_screen_mask_quad(uint32_t prim) {
         ((words[0] >> 24) & 0xfdu) != 0x28u) return;
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     ws_hud_anchor_insert(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE,
-                         (prim + 4u) & 0x1ffffcu, 0, &guard,
+                         GPU_RAM_KEY(prim + 4u), 0, &guard,
                          (uint32_t)s_frame_count);
+}
+
+void gpu_ws_tag_radial_screen_mask_quad(uint32_t prim, float scale) {
+    if (!ws_native_wide_configured() || (prim & 3u) || prim > UINT32_MAX - 4u)
+        return;
+    uint32_t words[12], count=0;
+    if (!ws_hud_command_words(prim+4u, words, &count)) return;
+    unsigned op=words[0]>>24;
+    if (!((count==5u && (op&0xfdu)==0x28u) ||
+          (count==8u && (op&0xfdu)==0x38u))) return;
+    WsPrepassPacketGuard guard=ws_prepass_packet_guard(words,count);
+    ws_radial_mask_insert(ws_radial_screen_mask_tags,GPU_RAM_KEY(prim+4u),
+                          &guard,(uint32_t)s_frame_count,scale);
+}
+
+static int ws_nw_radial_mask_transform(int32_t x[4], int32_t y[4]) {
+    if (!ws_native_wide_active() || psx_ws_x_margin()<=0 ||
+        gp0_cmd_source_addr==UINT32_MAX) return 0;
+    float scale;
+    if (!ws_radial_mask_lookup(ws_radial_screen_mask_tags,
+        GPU_RAM_KEY(gp0_cmd_source_addr),gp0_cmd_buf,(uint32_t)gp0_words_needed,
+        (uint32_t)s_frame_count,&scale)) return 0;
+    ws_radial_mask_transform(x,y,ws_disp_w(),ws_disp_h(),scale);
+    return 1;
 }
 
 static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
@@ -2671,7 +2699,7 @@ static int ws_axis_aligned_quad(const int32_t vx[4], const int32_t vy[4]) {
 }
 
 static int ws_auto_ui_transform_quad(int32_t vx[4], const int32_t vy[4]) {
-    if (psx_ws_prim_is_tagged() || !ws_axis_aligned_quad(vx, vy))
+    if (ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged() || !ws_axis_aligned_quad(vx, vy))
         return 0;
 
     int32_t min_x = vx[0], max_x = vx[0], min_y = vy[0], max_y = vy[0];
@@ -2696,7 +2724,7 @@ static int ws_auto_ui_transform_quad(int32_t vx[4], const int32_t vy[4]) {
 }
 
 static int ws_auto_ui_transform_rect(int32_t *x, int32_t y, int *w, int h) {
-    if (!x || !w || *w <= 0 || psx_ws_prim_is_tagged())
+    if (!x || !w || *w <= 0 || ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged())
         return 0;
     int32_t X = ws_disp_x(), W = ws_disp_w(), H = ws_disp_h();
     if ((*x <= X && *x + *w >= X + W && y <= 0 && y + h >= H) ||
@@ -2855,7 +2883,7 @@ static int ws_nw_flat_backdrop = 0;
 void gpu_ws_set_nw_flat_backdrop(int on) { ws_nw_flat_backdrop = on ? 1 : 0; }
 int gpu_ws_nw_flat_backdrop_enabled(void) { return ws_nw_flat_backdrop; }
 static int ws_nw_backdrop_stretch_quad(int32_t *vx, const int32_t *vy) {
-    if (!ws_nw_backdrop || !ws_native_wide_active()) return 0;
+    if (!ws_nw_backdrop || !ws_native_wide_active() || ws_nw_explicit_hud_delta(NULL)) return 0;
     int32_t extra = ws_nw_extra();
     if (extra <= 0) return 0;
     int32_t X = ws_disp_x();
@@ -3303,6 +3331,7 @@ static void gpu_reset_state(int clear_vram) {
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     polyline_color = 0;
     polyline_prev_x = polyline_prev_y = 0;
@@ -4389,20 +4418,25 @@ static void gp0_exec_mono_quad(void) {
     int rej_a = psx_gpu_triangle_oversize(vx, vy, 0, 1, 2);
     int rej_b = psx_gpu_triangle_oversize(vx, vy, 2, 1, 3);
     if (rej_a && rej_b) return;
-    ws_auto_ui_transform_quad(vx, vy);
+    int radial_mask=ws_nw_radial_mask_transform(vx,vy);
+    int screen_mask=ws_native_wide_active() && gp0_cmd_source_addr != UINT32_MAX &&
+        ws_hud_anchor_lookup(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+            GPU_RAM_KEY(gp0_cmd_source_addr), gp0_cmd_buf, 5u,
+            (uint32_t)s_frame_count, NULL);
+    if (!radial_mask && !screen_mask) ws_auto_ui_transform_quad(vx, vy);
 
     /* Each added band is outside the original screen and executes in the
      * mask's own OT position/blend mode. Canonical VRAM clips it away. */
-    if (ws_native_wide_active() && gp0_cmd_source_addr != UINT32_MAX &&
-        ws_hud_anchor_lookup(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE,
-            gp0_cmd_source_addr & 0x1ffffcu, gp0_cmd_buf, 5u,
-            (uint32_t)s_frame_count, NULL)) {
-        WsScreenMaskBand band;
-        if (ws_screen_mask_band(vx, vy, ws_disp_w(), ws_disp_h(),
-                                draw_area_wide_x_margin(), &band)) {
+    if (screen_mask) {
+        WsScreenMaskBand bands[2];
+        int count = ws_screen_mask_bands(vx, vy, ws_disp_w(), ws_disp_h(),
+                                         draw_area_wide_x_margin(), bands);
+        if (count) {
             gr_set_semi_transparency(semi_trans, (int)semi_transparency);
-            gr_draw_flat_rect(band.x + draw_offset_x, band.y + draw_offset_y,
-                              band.w, band.h, color);
+            for (int i = 0; i < count; i++)
+                gr_draw_flat_rect(bands[i].x + draw_offset_x,
+                                  bands[i].y + draw_offset_y,
+                                  bands[i].w, bands[i].h, color);
         }
     }
 
@@ -4427,8 +4461,10 @@ static void gp0_exec_mono_quad(void) {
         gr_draw_flat_rect(x, y, w, h, color);
         return;
     }
-    ws_nw_backdrop_stretch_quad(vx, vy);   /* full-frame 2D backdrop stretch (no-op else) */
-    ws_nw_hud_shift_vertices(vx, 4);
+    if (!radial_mask && !screen_mask) {
+        ws_nw_backdrop_stretch_quad(vx, vy);
+        ws_nw_hud_shift_vertices(vx, 4);
+    }
     for (int i = 0; i < 4; i++) {
         vx[i] += draw_offset_x;
         vy[i] += draw_offset_y;
@@ -4512,9 +4548,12 @@ static void gp0_exec_shaded_quad(void) {
     int rej_a = psx_gpu_triangle_oversize(vx, vy, 0, 1, 2);
     int rej_b = psx_gpu_triangle_oversize(vx, vy, 2, 1, 3);
     if (rej_a && rej_b) return;
-    ws_auto_ui_transform_quad(vx, vy);
-    ws_nw_backdrop_stretch_quad(vx, vy);   /* full-frame 2D backdrop stretch (sky gradient; no-op else) */
-    ws_nw_hud_shift_vertices(vx, 4);
+    int radial_mask=ws_nw_radial_mask_transform(vx,vy);
+    if (!radial_mask) {
+        ws_auto_ui_transform_quad(vx, vy);
+        ws_nw_backdrop_stretch_quad(vx, vy);
+        ws_nw_hud_shift_vertices(vx, 4);
+    }
     for (int i = 0; i < 4; i++) {
         vx[i] += draw_offset_x;
         vy[i] += draw_offset_y;
@@ -6953,6 +6992,7 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     /* Sync renderer clip/scissor to restored GP0(E3/E4); vars alone leave GL
      * on a stale draw area after savestate load. */

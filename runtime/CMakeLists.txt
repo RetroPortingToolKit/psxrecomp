@@ -512,6 +512,9 @@ if(BUILD_TESTING)
     add_test(NAME ws_repeat_rect_test COMMAND ws_repeat_rect_test)
     add_executable(ws_screen_mask_test tests/test_ws_screen_mask.c)
     target_include_directories(ws_screen_mask_test PRIVATE include)
+    if(UNIX)
+        target_link_libraries(ws_screen_mask_test PRIVATE m)
+    endif()
     add_test(NAME ws_screen_mask_test COMMAND ws_screen_mask_test)
 
     add_executable(mod_gpu_dma_aperture_test

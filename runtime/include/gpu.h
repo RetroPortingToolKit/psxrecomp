@@ -261,6 +261,9 @@ void psx_ws_sprite_tag(struct CPUState* cpu);
  * by this; 0 when native-wide is inactive). */
 int  ws_native_wide_active(void);
 int  ws_nw_extra(void);
+/* Configured per-side reveal, excluding the world-culling safety envelope.
+ * Available before scene classification so first-frame overlays can fit. */
+int gpu_ws_configured_x_reveal(void);
 int  ws_nw_present_width(void);
 /* Display width (native px) the native-wide margins are derived from. */
 int  gpu_ws_display_width(void);
@@ -442,10 +445,14 @@ void gpu_ws_tag_black_reveal_rect(uint32_t prim);
  * reveal margins only. The caller verifies the composite's source period.
  * Original UVs, texel density, and canonical VRAM writes are unchanged. */
 void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period);
-/* Title-identified flat screen mask: extend its off-screen vertical boundary
- * to the adaptive edge, preserving the interior opening and canonical image.
+/* Title-identified flat screen mask: extend vertical sides or horizontal
+ * letterbox panels to adaptive edges, preserving the interior opening.
  * Packet guarded, cleared on reset/load, inert outside native-wide gameplay. */
 void gpu_ws_tag_screen_mask_quad(uint32_t prim);
+/* Title-owned flat/Gouraud radial screen mask. Render-only scale about the
+ * display centre; guest coordinates and timing stay unchanged. Scale >= 1,
+ * inert at 4:3, packet guarded and reset alongside other transient tags. */
+void gpu_ws_tag_radial_screen_mask_quad(uint32_t prim, float scale);
 /* Pure emulation-thread predicate for a known native-only effect/scene.
  * Nonzero forces native 4:3; zero defers. No GPU calls or guest writes inside.
  * Host configuration survives reset/load; classification reads live state. */
