@@ -33,6 +33,8 @@ void psx_lobby_pump(void) {}
 void psx_lobby_request_list(void) {}
 int  psx_lobby_list_count(void) { return 0; }
 int  psx_lobby_list_get(int index, PsxLobbyRow *out) { (void)index; (void)out; return 0; }
+int  psx_lobby_online_count(void) { return 0; }
+int  psx_lobby_online_get(int index, PsxLobbyOnlinePlayer *out) { (void)index; (void)out; return 0; }
 void psx_lobby_set_game_identity(const char *a, const char *b) { (void)a; (void)b; }
 const char *psx_lobby_game_version(void) { return PSX_GAME_VERSION; }
 void psx_lobby_set_disc_fp(const char *disc_fp) { (void)disc_fp; }
