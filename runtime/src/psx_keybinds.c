@@ -19,10 +19,6 @@
  * bind/save/load/rebind machinery as ordinary SDL_Scancode values while
  * held() resolves them against SDL_GetMouseState() instead of the keyboard
  * array. INI names: Mouse1 (left) .. Mouse5 (X2), plus LMB/RMB/MMB aliases. */
-#define PSXKB_MOUSE_SC_BASE 512                       /* + SDL_BUTTON_* (1..5) */
-#define PSXKB_MOUSE_SC(btn) ((SDL_Scancode)(PSXKB_MOUSE_SC_BASE + (btn)))
-#define PSXKB_IS_MOUSE_SC(sc) \
-    ((int)(sc) > PSXKB_MOUSE_SC_BASE && (int)(sc) <= PSXKB_MOUSE_SC_BASE + 5)
 
 /* PSX pad word bits (active-low), standard DualShock layout. Matches the
  * PAD_* masks in main.cpp / beetle_main.cpp. */
@@ -350,12 +346,43 @@ static PsxPlayerBinds *player_binds(int player) {
 /* Is this single scancode (keyboard or mouse pseudo-code) currently held?
  * Mouse pseudo-scancodes MUST be checked before indexing keys[] — they sit
  * beyond the keyboard state array (SDL_NUM_SCANCODES entries). */
-static int held_sc(const uint8_t *keys, SDL_Scancode sc) {
+static uint8_t s_suppressed[PSXKB_MAX_PLAYERS][PSXKB_MOUSE_SC_BASE + 6];
+
+void psx_keybinds_suppress_control(int player, SDL_Scancode sc) {
+    if (player >= 1 && player <= PSXKB_MAX_PLAYERS && (int)sc > 0 &&
+        (int)sc < PSXKB_MOUSE_SC_BASE + 6)
+        s_suppressed[player - 1][(int)sc] = 1;
+}
+void psx_keybinds_release_control(int player, SDL_Scancode sc) {
+    if (player >= 1 && player <= PSXKB_MAX_PLAYERS && (int)sc > 0 &&
+        (int)sc < PSXKB_MOUSE_SC_BASE + 6)
+        s_suppressed[player - 1][(int)sc] = 0;
+}
+int psx_keybinds_control_suppressed(int player, SDL_Scancode sc) {
+    return player >= 1 && player <= PSXKB_MAX_PLAYERS && (int)sc > 0 &&
+        (int)sc < PSXKB_MOUSE_SC_BASE + 6 && s_suppressed[player - 1][(int)sc];
+}
+void psx_keybinds_host_keys(const uint8_t *keys, uint8_t out[SDL_NUM_SCANCODES]) {
+    if (!out) return;
+    if (!keys) { memset(out, 0, SDL_NUM_SCANCODES); return; }
+    memcpy(out, keys, SDL_NUM_SCANCODES);
+    for (int sc = 1; sc < SDL_NUM_SCANCODES; ++sc)
+        if (s_suppressed[0][sc]) out[sc] = 0;
+}
+static int held_sc(const uint8_t *keys, SDL_Scancode sc, int slot) {
+    int down;
     if (PSXKB_IS_MOUSE_SC(sc)) {
         Uint32 m = SDL_GetMouseState(NULL, NULL);
-        return (m & SDL_BUTTON((int)sc - PSXKB_MOUSE_SC_BASE)) != 0;
+        down = (m & SDL_BUTTON((int)sc - PSXKB_MOUSE_SC_BASE)) != 0;
+    } else {
+        down = sc != SDL_SCANCODE_UNKNOWN && (int)sc >= 0 &&
+            (int)sc < SDL_NUM_SCANCODES && keys[sc];
     }
-    return sc != SDL_SCANCODE_UNKNOWN && (int)sc < SDL_NUM_SCANCODES && keys[sc];
+    if (psx_keybinds_control_suppressed(slot + 1, sc)) {
+        if (!down) psx_keybinds_release_control(slot + 1, sc);
+        return 0;
+    }
+    return down;
 }
 
 /* Is the input at button-def index i held for this player, via either its
@@ -367,7 +394,7 @@ static int held(const uint8_t *keys, const PsxPlayerBinds *pb, int i) {
     const PsxPlayerBinds *alt = &s_alt_binds.player[slot];
     SDL_Scancode p = *(const SDL_Scancode *)((const char *)pb  + s_buttons[i].offset);
     SDL_Scancode a = *(const SDL_Scancode *)((const char *)alt + s_buttons[i].offset);
-    return held_sc(keys, p) || held_sc(keys, a);
+    return held_sc(keys, p, (int)slot) || held_sc(keys, a, (int)slot);
 }
 
 uint16_t psx_keybinds_pad_word(const uint8_t *keys, int player) {

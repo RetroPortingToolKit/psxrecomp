@@ -31,6 +31,13 @@ extern "C" {
 
 #define PSXKB_MAX_PLAYERS 5
 
+/* Shared pseudo-scancodes for INI Mouse1..Mouse5. Keep them outside SDL's
+ * keyboard array and check them before indexing it. Mouse3 is right. */
+#define PSXKB_MOUSE_SC_BASE 512
+#define PSXKB_MOUSE_SC(btn) ((SDL_Scancode)(PSXKB_MOUSE_SC_BASE + (btn)))
+#define PSXKB_IS_MOUSE_SC(sc) \
+    ((int)(sc) > PSXKB_MOUSE_SC_BASE && (int)(sc) <= PSXKB_MOUSE_SC_BASE + 5)
+
 /* Button indices — stable order, matches the order keybinds.ini writes and the
  * order the launcher's rebind chips are laid out. Keep in sync with kButtons[]
  * in psx_keybinds.c. */
@@ -66,6 +73,16 @@ void psx_keybinds_init(const char *exe_path);
 
 /* Read-only view of the current bindings. */
 const PsxKeyBinds *psx_keybinds_get(void);
+
+/* Runtime-owned host controls consumed by optional local input capture.
+ * Suppression is per source/player, before PSX folding, and lasts through
+ * release. It never clears a merged PSX button held by another source. */
+void psx_keybinds_suppress_control(int player, SDL_Scancode sc);
+void psx_keybinds_release_control(int player, SDL_Scancode sc);
+int psx_keybinds_control_suppressed(int player, SDL_Scancode sc);
+/* Host hotkey polling gets a keyboard view excluding consumed P1 sources.
+ * The original SDL state and other players' PSX folds remain unchanged. */
+void psx_keybinds_host_keys(const uint8_t *keys, uint8_t out[SDL_NUM_SCANCODES]);
 
 /* ── Runtime read helpers (keyboard -> PSX pad), player is 1..PSXKB_MAX_PLAYERS */
 

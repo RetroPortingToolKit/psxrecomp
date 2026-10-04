@@ -558,6 +558,45 @@ int psx_mod_set_controller_presentation_policy(
     uint32_t initial_mode,
     int config_capable);
 
+/* Optional local P1 mouse policy. The runtime delivers ordered events on the
+ * SDL owner thread, owns relative capture and folds the resulting right-stick
+ * bytes after native input/presentation, before normal SIO delivery. No SDL
+ * type, guest address, gesture, or game setting belongs in this interface.
+ * This first version is inert during netplay, injected input and replay.
+ * Exactly one trusted activation plugin may register per session. */
+enum {
+    PSX_MOD_MOUSE_HOLD_NONE = 0,
+    PSX_MOD_MOUSE_HOLD_RIGHT = 1, /* Mouse3 in keybinds.ini */
+    PSX_MOD_MOUSE_HOLD_LEFT_ALT = 2,
+    PSX_MOD_MOUSE_RESET = 0,
+    PSX_MOD_MOUSE_ACQUIRED = 1,
+    PSX_MOD_MOUSE_MOTION = 2,
+    PSX_MOD_MOUSE_HOLD_PRESS = 3,
+    PSX_MOD_MOUSE_HOLD_RELEASE = 4
+};
+typedef struct PSXModMouseEvent {
+    uint32_t struct_size;
+    uint32_t type;
+    uint64_t time_ns;
+    double dx, dy;
+} PSXModMouseEvent;
+typedef struct PSXModMouseOutput {
+    uint32_t struct_size;
+    uint32_t override_right;
+    uint32_t rx, ry;
+} PSXModMouseOutput;
+typedef struct PSXModMousePolicy {
+    uint32_t struct_size;
+    uint32_t hold_control;
+    /* Re-read persistent guest context, including pause/menus, on every event
+     * and local sample. Must not infer it from a host Start toggle. */
+    int (*eligible)(uint32_t native_buttons);
+    void (*event)(const PSXModMouseEvent* event);
+    /* A query: must not consume motion, change the event anchor or deadlines. */
+    void (*sample)(uint64_t now_ns, PSXModMouseOutput* output);
+} PSXModMousePolicy;
+int psx_mod_set_local_mouse_policy(const PSXModMousePolicy* policy);
+
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.
  * The registry itself uses function-local initialization, so constructor order

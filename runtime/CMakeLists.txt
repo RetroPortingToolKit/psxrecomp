@@ -23,6 +23,10 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(local_mouse_policy_test
+        tests/test_local_mouse_policy.cpp src/local_mouse_policy.cpp)
+    target_include_directories(local_mouse_policy_test PRIVATE include src)
+    add_test(NAME local_mouse_policy_test COMMAND local_mouse_policy_test)
     # Netplay: which BIOS a match boots, and its wire helpers.
     add_executable(netplay_bios_settle_test
         tests/test_netplay_bios_settle.c
@@ -317,7 +321,7 @@ if(BUILD_TESTING)
 
     add_executable(keyboard_pad_chord_test
         tests/test_keyboard_pad_chord.c
-        src/psx_keybinds.c)
+        src/psx_keybinds.c src/host_keymap.c)
     target_include_directories(keyboard_pad_chord_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(keyboard_pad_chord_test PRIVATE
@@ -325,6 +329,13 @@ if(BUILD_TESTING)
         $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
     target_link_libraries(keyboard_pad_chord_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME keyboard_pad_chord_test COMMAND keyboard_pad_chord_test)
+
+    add_executable(mouse_binding_suppression_test tests/test_mouse_binding_suppression.c)
+    target_include_directories(mouse_binding_suppression_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(mouse_binding_suppression_test PRIVATE
+        SDL_MAIN_HANDLED $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(mouse_binding_suppression_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME mouse_binding_suppression_test COMMAND mouse_binding_suppression_test)
 
     # Generic external replacement-pack core. The renderer integration is a
     # separate consumer; this target pins pack discovery, deterministic keying,

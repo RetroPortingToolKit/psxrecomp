@@ -30,11 +30,17 @@
 
 #include "sio.h"
 #include "memcard.h"
+#include "psx_netplay.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 /* ---- Stubs for sio.c's external dependencies ---- */
 uint32_t i_stat = 0;
@@ -249,7 +255,11 @@ static void test_card_read_sector_0(void) {
      * only public entry. Let's symlink/copy our file as card1.mcd. */
     f = fopen("test_dir/card1.mcd", "wb");
     if (!f) {
-        system("mkdir test_dir 2>/dev/null || mkdir -p test_dir");
+#ifdef _WIN32
+        (void)_mkdir("test_dir");
+#else
+        (void)mkdir("test_dir", 0755);
+#endif
         f = fopen("test_dir/card1.mcd", "wb");
     }
     assert(f);
@@ -414,8 +424,57 @@ static void test_cycle_paced_exact_boundaries(void) {
     EXPECT_EQ("paced.tick.irq", irq_sio0, i_stat & irq_sio0);
 }
 
+/* Local input publishes RX/RY through the ordinary pad state/stick/type APIs.
+ * Pin the actual wire order, P2 independence and idle-boundary type change. */
+static void test_local_pad_report_delivery(void) {
+    PsxNetPad p1 = {0xA55A, 0x11, 0xE7, 0xF1, 0x17, 1, 1};
+    PsxNetPad p2 = {0x3C81, 0x33, 0x55, 0x99, 0xAA, 1, 1};
+    EXPECT_EQ("pad.blob.size", 8, sizeof(PsxNetPad));
+    sio_init();
+    sio_connect_pad(0); sio_connect_pad(1);
+    sio_set_pad_analog(0, 1, 128, 128, 128, 128);
+    sio_set_pad_analog(1, 1, 128, 128, 128, 128);
+    sio_set_pad_state_slot(0, p1.buttons);
+    sio_set_pad_sticks(0, p1.lx, p1.ly, p1.rx, p1.ry);
+    sio_request_pad_type(0, p1.analog);
+    sio_set_pad_state_slot(1, p2.buttons);
+    sio_set_pad_sticks(1, p2.lx, p2.ly, p2.rx, p2.ry);
+    sio_request_pad_type(1, p2.analog);
+    card_deselect(0);
+    EXPECT_EQ("pad.p1.prefix", 0xFF, card_xchg(0x01, 0));
+    EXPECT_EQ("pad.p1.id", 0x73, card_xchg(0x42, 0));
+    /* A frame's requested type cannot truncate an already-started report. */
+    sio_request_pad_type(0, 0);
+    EXPECT_EQ("pad.p1.marker", 0x5A, card_xchg(0, 0));
+    EXPECT_EQ("pad.p1.buttons.low", 0x5A, card_xchg(0, 0));
+    EXPECT_EQ("pad.p1.buttons.high", 0xA5, card_xchg(0, 0));
+    EXPECT_EQ("pad.p1.rx", 0xF1, card_xchg(0, 0));
+    EXPECT_EQ("pad.p1.ry", 0x17, card_xchg(0, 0));
+    EXPECT_EQ("pad.p1.lx", 0x11, card_xchg(0, 0));
+    EXPECT_EQ("pad.p1.ly", 0xE7, card_xchg(0, 0));
+    card_deselect(0);
+    EXPECT_EQ("pad.digital.prefix", 0xFF, card_xchg(0x01, 0));
+    EXPECT_EQ("pad.digital.id", 0x41, card_xchg(0x42, 0));
+    EXPECT_EQ("pad.digital.marker", 0x5A, card_xchg(0, 0));
+    EXPECT_EQ("pad.digital.buttons.low", 0x5A, card_xchg(0, 0));
+    EXPECT_EQ("pad.digital.buttons.high", 0xA5, card_xchg(0, 0));
+    card_deselect(1);
+    EXPECT_EQ("pad.p2.prefix", 0xFF, card_xchg(0x01, 1));
+    EXPECT_EQ("pad.p2.id", 0x73, card_xchg(0x42, 1));
+    EXPECT_EQ("pad.p2.marker", 0x5A, card_xchg(0, 1));
+    EXPECT_EQ("pad.p2.buttons.low", 0x81, card_xchg(0, 1));
+    EXPECT_EQ("pad.p2.buttons.high", 0x3C, card_xchg(0, 1));
+    EXPECT_EQ("pad.p2.rx", 0x99, card_xchg(0, 1));
+    EXPECT_EQ("pad.p2.ry", 0xAA, card_xchg(0, 1));
+    EXPECT_EQ("pad.p2.lx", 0x33, card_xchg(0, 1));
+    EXPECT_EQ("pad.p2.ly", 0x55, card_xchg(0, 1));
+    card_deselect(1);
+}
+
 int main(int argc, char **argv) {
     fprintf(stderr, "=== sio card protocol tests ===\n");
+    test_local_pad_report_delivery();
+    fprintf(stderr, "test_local_pad_report_delivery: %d/%d ok\n", g_checks-g_failures, g_checks);
 
     if (argc == 2 && strcmp(argv[1], "exact-boundaries") == 0) {
         test_cycle_paced_exact_boundaries();
