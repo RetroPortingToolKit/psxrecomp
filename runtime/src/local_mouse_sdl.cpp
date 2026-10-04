@@ -62,11 +62,7 @@ psx::LocalMousePolicy& state() {
 bool focus() {
     if (!window_ || SDL_GetKeyboardFocus() != window_) return false;
     const auto flags = SDL_GetWindowFlags(window_);
-#if defined(PSX_SDL3)
     return (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) == 0;
-#else
-    return (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) == 0;
-#endif
 }
 bool conflict() {
     const SDL_Scancode sc = scancode(state().hold_control());
