@@ -173,6 +173,73 @@ int main() {
     CHECK(policy.control(t+15*Ms,t+15*Ms,psx::MouseControl::Left,false,false));
     t+=20*Ms;
 
+    // SDL may drain several ordered edges after their physical timestamps.
+    // A normal release must not reject a later re-press in that same drain.
+    for (uint64_t delay : {10*Ms, 50*Ms, 200*Ms}) {
+        psx::LocalMousePolicy batch({nullptr,capture,suppress,notice});
+        CHECK(batch.install(&callbacks));
+        const uint64_t base=1000*Ms+delay*10;
+        batch.update(base+10*Ms,host);
+        CHECK(batch.control(base+10*Ms,base+10*Ms,psx::MouseControl::Left,true,false));
+        batch.motion(base+15*Ms,base+15*Ms,30,0);
+        batch.control(base+16*Ms,base+16*Ms,psx::MouseControl::Right,true,false);
+        batch.motion(base+17*Ms,base+17*Ms,30,0); CHECK(active && held);
+        batch.update(base+20*Ms+delay,host);
+        CHECK(batch.control(base+20*Ms,base+20*Ms+delay,psx::MouseControl::Left,false,false));
+        CHECK(!batch.captured() && !active && !held);
+        x=99;y=77;batch.sample(base+20*Ms+delay,x,y);CHECK(x==99 && y==77);
+        batch.update(base+21*Ms+delay,host);
+        CHECK(batch.control(base+25*Ms,base+21*Ms+delay,psx::MouseControl::Left,true,false));
+        CHECK(batch.captured() && !active && !held);
+        batch.sample(base+21*Ms+delay,x,y);CHECK(x==128 && y==128);
+        batch.motion(base+26*Ms,base+22*Ms+delay,30,0);CHECK(active && !held);
+        batch.control(base+27*Ms,base+23*Ms+delay,psx::MouseControl::Right,false,false);
+        CHECK(active && !held); // A physically held RIGHT cannot latch or cancel this flick.
+        CHECK(batch.control(base+28*Ms,base+24*Ms+delay,psx::MouseControl::Left,false,false));
+        CHECK(!batch.captured() && !active && !held);
+        batch.clear();
+    }
+
+    // A release after an interruption cannot lower its processing-time barrier.
+    for (int gate=0;gate<4;++gate) {
+        psx::LocalMousePolicy batch({nullptr,capture,suppress,notice});
+        CHECK(batch.install(&callbacks));
+        const uint64_t base=5000*Ms+gate*1000*Ms;
+        batch.update(base+10*Ms,host);
+        CHECK(batch.control(base+10*Ms,base+10*Ms,psx::MouseControl::Left,true,false));
+        batch.motion(base+15*Ms,base+15*Ms,30,0);
+        auto off=host;const uint64_t barrier=base+(gate==3?300:30)*Ms;
+        if(gate==0)off.focused=false;if(gate==1)guest=false;if(gate==2)off.native_right=true;
+        batch.update(barrier,off);CHECK(!batch.captured() && !active);
+        guest=true;batch.update(barrier+Ms,host);
+        CHECK(batch.control(base+20*Ms,barrier+2*Ms,psx::MouseControl::Left,false,false));
+        CHECK(!batch.control(base+25*Ms,barrier+3*Ms,psx::MouseControl::Left,true,false));
+        CHECK(!batch.captured() && !active && !held);
+        batch.control(barrier+4*Ms,barrier+4*Ms,psx::MouseControl::Left,false,false);
+        batch.update(barrier+5*Ms,host);
+        CHECK(batch.control(barrier+5*Ms,barrier+5*Ms,psx::MouseControl::Left,true,false));
+        batch.sample(barrier+5*Ms,x,y);CHECK(x==128 && y==128);
+        batch.motion(barrier+6*Ms,barrier+6*Ms,30,0);CHECK(active);
+        batch.clear();
+    }
+
+    // Malformed releases are still immediate, but cannot admit a queued press.
+    for (uint64_t bad : {UINT64_MAX, uint64_t(14*Ms), uint64_t(0)}) {
+        psx::LocalMousePolicy batch({nullptr,capture,suppress,notice});
+        CHECK(batch.install(&callbacks));batch.update(10*Ms,host);
+        CHECK(batch.control(10*Ms,10*Ms,psx::MouseControl::Left,true,false));
+        batch.motion(15*Ms,15*Ms,30,0);batch.update(30*Ms,host);
+        CHECK(batch.control(bad,30*Ms,psx::MouseControl::Left,false,false));
+        CHECK(!batch.captured() && !active && !held);
+        batch.update(31*Ms,host);
+        CHECK(!batch.control(25*Ms,31*Ms,psx::MouseControl::Left,true,false));
+        CHECK(!batch.captured());
+        batch.control(32*Ms,32*Ms,psx::MouseControl::Left,false,false);
+        batch.update(33*Ms,host);
+        CHECK(batch.control(33*Ms,33*Ms,psx::MouseControl::Left,true,false));
+        batch.sample(33*Ms,x,y);CHECK(x==128 && y==128);batch.clear();
+    }
+
     policy.reset();host.hold_conflict=false;capture_ok=false;CHECK(acquire());CHECK(!policy.captured());
     const unsigned failure_notices=notices;CHECK(acquire());CHECK(notices==failure_notices);
     policy.clear(); CHECK(!policy.installed() && !policy.captured());

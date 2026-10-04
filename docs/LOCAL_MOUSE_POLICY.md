@@ -45,6 +45,11 @@ routing/removal, invalid data, capture failure and >250 ms host stalls release
 capture and reset the policy. Stale, backwards and future motion cannot
 extend a pulse. Releases remain immediate even with anomalous timestamps;
 their watermark cannot admit old motion after a cleared held target. A
+valid ordered LEFT release while capture remains eligible uses its actual
+event timestamp as the acquisition boundary. A later physical press in the
+same delayed SDL drain can therefore acquire a neutral new session. Lifecycle,
+stall and malformed-release resets retain the processing-time barrier; a release
+after such a reset cannot lower it to admit queued input. A
 stall's backlog cannot acquire capture again. Eligibility recovery needs a
 release/repress of LEFT and fresh motion. Reset retains physical LEFT down-state,
 so holding it across an interruption cannot recapture. Debug input injection, headless, netplay, replay/resimulation and
@@ -81,6 +86,9 @@ pure policy tests do not exercise the OS or game dispatcher.
 The reviewed implementation base is release framework commit
 065888f50f9131839bcbbc8814debf58b4624b16, also the canonical
 `release/ape-v0.5.0-hle-support` branch. Current upstream master has differing
-existing mod APIs and needs separate compatibility validation. Final game-pin
-reachability/CI and physical interruption checks are pending; this is not a
+existing mod APIs and needs separate compatibility validation. The linked game
+draft pins this runtime draft's reachable head through its configured framework
+upstream; final-pin checkout, build and local test validation are recorded with
+the drafts. Hosted CI status and physical interruption checks are reported
+separately; this is not a
 public-quality or merge-readiness claim.

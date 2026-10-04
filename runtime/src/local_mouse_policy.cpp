@@ -86,9 +86,18 @@ bool LocalMousePolicy::control(uint64_t t, uint64_t now, MouseControl control,
         if (!down) {
             // Release is unconditional: a future/backwards event time cannot
             // leave capture or the reducer's separate direction hold active.
+            // A valid ordered release while still eligible owns its event
+            // boundary, rather than the later time at which SDL drains it.
+            // After an interruption or malformed release, retain reset()'s
+            // processing-time barrier so queued input cannot rearm capture.
+            const bool ordered_release = captured_ && allowed() &&
+                t <= now && now - t <= StallNs && t >= release_clock_ &&
+                (!event_valid_ || t >= event_clock_) &&
+                (!clock_valid_ || (now >= clock_ && now - clock_ <= StallNs));
             const bool owned = activation_owned_;
             activation_owned_ = false;
             if (captured_ || owned) reset();
+            if (ordered_release) release_clock_ = t;
             return owned;
         }
         // reset() retains physical down-state. A held button after a menu,
