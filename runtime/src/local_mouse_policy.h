@@ -25,6 +25,8 @@ public:
     void reset();
     void update(uint64_t now, LocalMouseHost host);
     bool control(uint64_t t, uint64_t now, MouseControl control, bool down, bool repeat);
+    // Reconcile a LEFT release the host never delivered (e.g. made while unfocused).
+    void sync_left(uint64_t now, bool physically_down);
     void motion(uint64_t t, uint64_t now, double dx, double dy);
     void sample(uint64_t now, uint8_t& rx, uint8_t& ry);
     bool captured() const { return captured_; }

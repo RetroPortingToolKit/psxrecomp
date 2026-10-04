@@ -105,16 +105,16 @@ void psx_local_mouse_begin(SDL_Window* window, bool live) {
     update(now_ns());
     // Windows global state survives focus clearing SDL's cached window state.
     // Other backends may not support global mouse polling (e.g. Wayland), so
-    // there catch a lost release only while focused and captured. Neither path
-    // manufactures a down or unblocks a held activation across focus loss.
+    // there reconcile whenever focused (captured or not), so a release made
+    // while unfocused is caught on focus regain. Neither path manufactures a
+    // down or unblocks a held activation across focus loss.
 #if defined(_WIN32)
-    const bool left_released = !(SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON(SDL_BUTTON_LEFT));
+    const bool left_down = (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+    state().sync_left(now_ns(), left_down);
 #else
-    const bool left_released = host_.focused && state().captured() &&
-        !(SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(SDL_BUTTON_LEFT));
+    if (host_.focused)
+        state().sync_left(now_ns(), (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0);
 #endif
-    if (left_released)
-        state().control(0, now_ns(), psx::MouseControl::Left, false, false);
     // Catch a lost hold release, including one made outside the game window.
     const auto hold = state().hold_control();
     bool down = false;

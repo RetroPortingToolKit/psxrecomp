@@ -149,6 +149,10 @@ bool LocalMousePolicy::control(uint64_t t, uint64_t now, MouseControl control,
     }
     return false;
 }
+void LocalMousePolicy::sync_left(uint64_t now, bool physically_down) {
+    if (!physically_down && activation_down_)
+        control(0, now, MouseControl::Left, false, false);
+}
 void LocalMousePolicy::motion(uint64_t t, uint64_t now, double dx, double dy) {
     if (!captured_) return;
     if (!allowed() || !std::isfinite(dx) || !std::isfinite(dy) ||

@@ -240,6 +240,27 @@ int main() {
         batch.sample(33*Ms,x,y);CHECK(x==128 && y==128);batch.clear();
     }
 
+    // LEFT released while unfocused is never delivered; reconcile on regain so
+    // the next click activates. A still-held button is not a new activation.
+    {
+        psx::LocalMousePolicy lost({nullptr,capture,suppress,notice});
+        CHECK(lost.install(&callbacks));
+        const uint64_t base=9000*Ms;
+        lost.update(base,host);
+        CHECK(lost.control(base,base,psx::MouseControl::Left,true,false) && lost.captured());
+        auto away=host;away.focused=false;
+        lost.update(base+10*Ms,away);CHECK(!lost.captured());
+        lost.update(base+20*Ms,host);
+        lost.sync_left(base+20*Ms,true);
+        CHECK(!lost.control(base+21*Ms,base+21*Ms,psx::MouseControl::Left,true,false));
+        lost.sync_left(base+22*Ms,false);
+        lost.update(base+23*Ms,host);
+        CHECK(lost.control(base+23*Ms,base+23*Ms,psx::MouseControl::Left,true,false));
+        CHECK(lost.captured());
+        lost.sync_left(base+24*Ms,true);CHECK(lost.captured()); // down: no-op
+        lost.clear();
+    }
+
     policy.reset();host.hold_conflict=false;capture_ok=false;CHECK(acquire());CHECK(!policy.captured());
     const unsigned failure_notices=notices;CHECK(acquire());CHECK(notices==failure_notices);
     policy.clear(); CHECK(!policy.installed() && !policy.captured());
