@@ -62,13 +62,19 @@ one P1 policy; physical device locking and P2 mouse controls are out of scope.
 
 ## Validation status and targets
 
-The preceding click-toggle candidate passed a full SDL3 Release link, focused
-tests, both SDL backend input checks and a private cold-start smoke check.
-The LEFT-held activation revision passes the focused policy/reducer integration,
-both SDL backend input checks, native SIO checks and a full incremental SDL3
-Release link with five registered game tests. Its new private candidate passes
-static import/profile checks; physical startup/interruption validation remains
-pending. `local_mouse_policy_test` supplies a deterministic fake backend and
+Earlier private source validation passed six focused gesture/context/policy
+and activation tests, three host-fold tests on each SDL backend, six native SIO
+checks and five registered game tests after a full SDL3 Release link. Those
+runs used an explicit framework root at feature head
+`12d98c220216a671f41cea6dccecd68c8dfa7042`, while the public game gitlink
+still pointed to its two-commit ancestor `50ec9191`. They do not establish
+checkout/build/CI validation of this newly reconciled private pin. Earlier
+isolated candidates had boot smoke evidence; actual LEFT-held gadget feel,
+capture/focus/menu/restore/rewind interruptions and this final pair remain
+pending. The non-Windows missed-LEFT-release/focus-regain fix and subsequent
+SDL2/SDL3 focus-arm cleanup are present in the reviewed feature head; the
+non-Windows path has not been compiled or exercised on a physical device.
+`local_mouse_policy_test` supplies a deterministic fake backend and
 covers capture, neutral acquisition, releases, host/guest gates, bad times,
 stalls, conflicting hold, failure fallback and registration validation.
 `mouse_binding_suppression_test` folds the real keybind code with a controlled
@@ -85,10 +91,24 @@ pure policy tests do not exercise the OS or game dispatcher.
 
 The reviewed implementation base is release framework commit
 065888f50f9131839bcbbc8814debf58b4624b16, also the canonical
-`release/ape-v0.5.0-hle-support` branch. Current upstream master has differing
-existing mod APIs and needs separate compatibility validation. The linked game
-draft pins this runtime draft's reachable head through its configured framework
-upstream; final-pin checkout, build and local test validation are recorded with
-the drafts. Hosted CI status and physical interruption checks are reported
-separately; this is not a
-public-quality or merge-readiness claim.
+`release/ape-v0.5.0-hle-support` branch. The private companion game's
+gitlink and `framework_pins.txt` identify this exact private framework
+revision; its feature code is unchanged from PR502's reviewed head
+`12d98c220216a671f41cea6dccecd68c8dfa7042`. The only new framework change
+is this documentation correction. The unpublished documentation commit
+needs reviewed upstream availability before an ordinary configured checkout
+can use the final pin. A PR ref is an interim development reference, not a
+stable final merge pin. Repeat final checkout/build/tests and inspect actual
+CI after the final dependency becomes available. Historical release binary
+provenance remains at 065888f5 and is not rewritten for this feature pair.
+
+Current master has different mod/input interfaces and needs a separate port.
+The older maintainer port at 67e30808 omits current `g_hidden_window` and
+`HOST_KEYMAP_CAPTURE_MARK` handling. Future integration must preserve their
+visibility/host-keymap behavior and apply one mouse hook to the final local
+P1 report after native controller-source resolution, preserving whole-vector
+native takeover and all reset boundaries. The separate PR495 path overwrites
+RX/RY after `capture_pad_slot`; merging it unchanged is not verified here.
+No master-range merge, new arbitration policy or compatibility claim is made.
+Physical interruption checks and hosted CI remain separate pending gates;
+this is not a public-quality or merge-readiness claim.
