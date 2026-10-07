@@ -9725,9 +9725,13 @@ static void disp_ring_capture(void)
     static int enabled = -1;
     if (enabled < 0) {
         const char *e = getenv("PSX_DISPLAY_RING");
-        enabled = (!e || !*e || *e != '0') ? 1 : 0;
+        /* With the render thread on, the per-frame display + full-VRAM
+         * readback stalls it on the GPU (a third of its time in an R4
+         * race): off unless PSX_DISPLAY_RING=1. */
+        enabled = (e && *e) ? (*e != '0' ? 1 : 0) : 2;   /* 2: follow the render thread */
     }
-    if (!enabled || s_capture_frozen) return;
+    extern int gl_renderer_render_thread_active(void);
+    if (!enabled || (enabled == 2 && gl_renderer_render_thread_active()) || s_capture_frozen) return;
     if (!s_disp_ring_px) {
         size_t per  = (size_t)DISP_RING_MAX_W * DISP_RING_MAX_H;
         size_t vram = (size_t)1024 * 512;
