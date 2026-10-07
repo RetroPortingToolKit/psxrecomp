@@ -144,6 +144,10 @@ uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
         address, mod_gpu_dma_memory_used);
 }
 
+int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes) {
+    return bytes!=0 && mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,NULL);
+}
+
 uint32_t psx_gpu_packet_key(uint32_t address) {
     return psx_gpu_packet_key_for(address, mod_gpu_dma_memory_used);
 }

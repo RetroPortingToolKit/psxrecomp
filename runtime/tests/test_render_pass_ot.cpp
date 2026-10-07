@@ -2,11 +2,13 @@
 #include <cstdio>
 #include <cstdlib>
 static uint32_t ram[2*1024*1024/4];
+static uint32_t aperture[256/4];
 extern "C" {
 int g_psx_render_pass_active=1;
 uint32_t memory_get_ram_bytes(){return sizeof ram;}
-uint32_t psx_mod_read_word(uint32_t p){return ram[(p&0x1FFFFFFF)/4];}
-void psx_mod_write_word(uint32_t p,uint32_t v){ram[(p&0x1FFFFFFF)/4]=v;}
+int psx_mod_gpu_dma_memory_contains(uint32_t p,uint32_t bytes){return bytes && psx_mod_gpu_dma_aperture_offset_for(p,bytes,sizeof aperture,nullptr);}
+uint32_t psx_mod_read_word(uint32_t p){p&=0x1FFFFFFF;return p>=0x800000 ? aperture[(p-0x800000)/4] : ram[p/4];}
+void psx_mod_write_word(uint32_t p,uint32_t v){p&=0x1FFFFFFF;if(p>=0x800000)aperture[(p-0x800000)/4]=v;else ram[p/4]=v;}
 // Parser lengths used by these fixtures. Runtime supplies its actual GPU decoder.
 int gpu_gp0_command_word_count(uint8_t op) {
     if(op==0x20)return 4;if(op==0xA0)return 3;if(op==0x48)return -1;
@@ -46,6 +48,16 @@ int main() {
     put(p,0x07FFFFFF);put(p+4,0xA0000000);put(p+8,0);put(p+12,0x00010002);
     put(p+16,0xE3000123);put(p+20,0xE3000000);put(p+24,0xE400013F|(239u<<10));put(p+28,0xE5000000);
     check(PSXOTReplay::retarget_y(p,0,256,240) && get(p+16)==0xE3000123,"image data is not a command");
+    // Native widescreen terrain uses a real allocated GPU-DMA aperture.
+    // Apply the same parsed environment edits, with no unrelated memory access.
+    put(slot,0x800000);put(0x800000,0x02FFFFFF);
+    put(0x800004,0xE3000000);put(0x800008,0xE5000000);
+    check(PSXOTReplay::retarget_y(slot,0,256,240) && get(0x800004)==(0xE3000000|(256u<<10)),"allocated terrain aperture retargets");
+    put(slot,0x800100);
+    check(!PSXOTReplay::retarget_y(slot,0,256,240),"unallocated aperture tail refused");
+    check(!psx_mod_gpu_dma_memory_contains(0x1FC00000,4),"BIOS is never an aperture alias");
+    put(slot,0x8000FC);put(0x8000FC,0x02FFFFFF);
+    check(!PSXOTReplay::retarget_y(slot,0,256,240),"packet spanning aperture end refused before edits");
     g_psx_render_pass_active=0;
     check(!PSXOTReplay::retarget_y(p,256,0,240),"outside sandbox refused");
     std::puts("ALL PASS");

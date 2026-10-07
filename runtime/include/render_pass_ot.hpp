@@ -1,6 +1,7 @@
 #pragma once
 #include "render_pass_replay.hpp"
 #include "gpu.h"
+#include "mod_memory.h"
 #include <utility>
 
 /* Preserve packets prepended after a title's world draw, and retarget the
@@ -14,8 +15,9 @@ class PSXOTReplay {
     static uint32_t rd(uint32_t p) { return psx_mod_read_word(p); }
     static void wr(uint32_t p,uint32_t v) { psx_mod_write_word(p,v); }
     static bool valid(uint32_t p,uint32_t bytes) {
-        return !(p&3) && p>=0x10000 && p<=memory_get_ram_bytes() &&
-            bytes<=memory_get_ram_bytes()-p;
+        if(p&3)return false;
+        return (p>=0x10000 && p<=memory_get_ram_bytes() &&
+            bytes<=memory_get_ram_bytes()-p) || psx_mod_gpu_dma_memory_contains(p,bytes);
     }
 public:
     void reset() { buckets.clear(); }

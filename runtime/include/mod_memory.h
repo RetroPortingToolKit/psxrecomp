@@ -68,6 +68,9 @@ static inline uint32_t psx_gpu_packet_key_for(uint32_t address, uint32_t used) {
 uint32_t psx_gpu_packet_key(uint32_t address);
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t size, uint32_t alignment);
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address);
+/* A complete range in the allocated GPU packet aperture (CPU or tag address).
+ * Unallocated bytes, BIOS aliases and a range crossing its end are refused. */
+int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes);
 uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment);
 /* Allocations are fixed during activation. Snapshot allocated bytes, never
  * host pointers; immutable host assets are reconstructed separately. */
