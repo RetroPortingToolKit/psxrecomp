@@ -3,7 +3,9 @@
 
 This observes an already running debug build. It never boots, drives, pauses or
 changes settings. A passing sample is one gameplay window, not title acceptance.
-Run with PSX_RENDER_PASS_VERIFY=1 to check that replay restores guest state.
+Use correctness with PSX_RENDER_PASS_VERIFY=1 to check guest-state restoration.
+For performance, relaunch without verification and select --purpose performance;
+synchronous verification readbacks and hashing are not normal-play costs.
 """
 import argparse
 import hashlib
@@ -19,7 +21,7 @@ COUNTERS = ("passes", "pass_presents", "verify_checks", "verify_mismatch",
             "aborted", "blended_presents")
 
 
-def assess(before, after):
+def assess(before, after, purpose="correctness"):
     reasons, delta = [], {}
     for key in COUNTERS:
         a, b = before.get(key), after.get(key)
@@ -27,7 +29,8 @@ def assess(before, after):
             reasons.append("missing, invalid or reset counter: " + key)
         else:
             delta[key] = b - a
-    for key in ("passes", "pass_presents", "verify_checks"):
+    required = ("passes", "pass_presents", "verify_checks") if purpose == "correctness" else ("passes", "pass_presents")
+    for key in required:
         if key in delta and not delta[key]:
             reasons.append("no evidence during this window: " + key)
     for key in ("verify_mismatch", "vram_leaks", "watchdog", "nesting_repairs",
@@ -44,6 +47,7 @@ def main():
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--case", required=True, help="actual gameplay path being observed")
     parser.add_argument("--seconds", type=float, default=10)
+    parser.add_argument("--purpose", choices=("correctness", "performance"), default="correctness")
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -57,7 +61,7 @@ def main():
     receipt = dict(schema=1, case=args.case, executable=str(executable),
                    executable_sha256=binary_sha, execution=manifest,
                    started_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                   port=args.port, sample_passed=False)
+                   port=args.port, purpose=args.purpose, sample_passed=False)
 
     def query():
         with connect(port=args.port) as sock:
@@ -72,7 +76,9 @@ def main():
         time.sleep(args.seconds)
         receipt["after"] = query()
         receipt["elapsed_seconds"] = time.monotonic() - start
-        receipt["delta"], receipt["reasons"] = assess(receipt["before"], receipt["after"])
+        receipt["delta"], receipt["reasons"] = assess(receipt["before"], receipt["after"], args.purpose)
+        if args.purpose == "performance" and receipt["delta"].get("verify_checks", 0):
+            receipt["reasons"].append("performance sample includes verification readbacks and hashing")
         receipt["sample_passed"] = not receipt["reasons"]
     except (OSError, ValueError, RuntimeError) as error:
         receipt["reasons"] = [str(error)]

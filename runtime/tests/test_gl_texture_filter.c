@@ -73,6 +73,29 @@ static void atlas_edge(int depth) {
     check(gl_renderer_fbo_peek(0,0,64,64,peek),"atlas-edge readback");
     check((peek[21*64+21]&0x7fff)==0x7c00,"footprint clamps before wrapping into far atlas row");
 }
+static void native_hold_images(void) {
+    GLuint textures[2];
+    const uint8_t colors[2][4] = {{255,0,0,255},{0,0,255,255}};
+    const uint32_t phases[2] = {0,32768};
+    glGenTextures(2,textures);
+    for(int i=0;i<2;++i) {
+        glBindTexture(GL_TEXTURE_2D,textures[i]);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,colors[i]);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    }
+    for(int hold=0;hold<2;++hold) {
+        uint32_t lo,hi; float blend; uint8_t pixel[4];
+        check(render_pass_gen_select_mode(phases,2,0.25,hold,&lo,&hi,&blend),"native phase selection");
+        glDisable(GL_SCISSOR_TEST);
+        interp_draw_textures(textures[lo],textures[hi],blend,0,0,0,8,8);
+        p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,0);
+        glReadPixels(4,4,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+        if(hold) check(pixel[0]>250 && pixel[2]<5,"HOLD presents original native red image without ghosting");
+        else check(pixel[0]>60 && pixel[2]>60,"explicit blend still mixes red and blue images");
+    }
+    glDeleteTextures(2,textures);
+}
 int main(void) {
     if(SDL_Init(SDL_INIT_VIDEO)!=0) return 2;
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
@@ -82,6 +105,7 @@ int main(void) {
     if(!win) return 2;
     glb_init(vram); glb_set_scale(1); gl_renderer_set_swap_interval(0);
     if(!gl_renderer_init_context(win)) return 2;
+    native_hold_images();
     for(int depth=0;depth<3;++depth) {
         upload_checker(depth,0);
         triangle(0,depth,0,1); int nearest=chroma();

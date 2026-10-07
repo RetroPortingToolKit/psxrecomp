@@ -7052,13 +7052,13 @@ static int pass_gen_present(uint64_t deadline) {
     /* Past phase 1 the next flip is late (a lagging tick): the newest image
      * holds until it comes. Only a game that stops flipping for several
      * frame lengths expires the generation. */
-    if (!render_pass_gen_select(g->phase, g->n, p, &lo, &hi, &t)) {
+    if (!render_pass_gen_select_mode(g->phase, g->n, p, s_interp_hold, &lo, &hi, &t)) {
         g->valid = 0;
         s_pgen_expired++;
         return 0;
     }
     if (!interp_present_pair(s_pgen_tex[s_pgen_cur][lo],
-                             s_pgen_tex[s_pgen_cur][hi], t, 0))
+                             s_pgen_tex[s_pgen_cur][hi], t, s_interp_blend_mode))
         return 0;
     s_pgen_presents++;
     if (lo != hi) s_pgen_blends++;

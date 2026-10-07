@@ -64,6 +64,9 @@ int render_pass_select(const uint32_t *phases, uint32_t n, double p,
  * game that stops flipping for several frame lengths gets that back. */
 int render_pass_gen_select(const uint32_t *phases, uint32_t n, double p,
                            uint32_t *lo, uint32_t *hi, float *t);
+/* HOLD presents one native phase image without a temporal crossfade. */
+int render_pass_gen_select_mode(const uint32_t *phases, uint32_t n, double p,
+                                int hold, uint32_t *lo, uint32_t *hi, float *t);
 
 /* Is the flip the FLIP source just saw the one a pending generation waits
  * for? A generation built for the next flip (`shown` 0, the canonical PsyQ

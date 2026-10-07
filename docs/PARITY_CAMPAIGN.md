@@ -108,3 +108,17 @@ hash and its execution manifest. Zero replay, image blending, disabled replay,
 counter resets or verification failures cannot produce a passing sample. This
 is one evidence window; visual coverage, load speed and owner acceptance remain
 separate checks. Use `tools/load_probe.py` for passive load-window measurements.
+
+Run correctness and performance windows separately. `PSX_RENDER_PASS_VERIFY=1`
+adds synchronous GPU readbacks plus state hashing. After recording correctness,
+relaunch without it and use `--purpose performance`. The tool rejects a
+performance sample with active verification. Spider-Man 2's initial verified
+replay took 28-35 ms; verification off measured 19.531 ms, of which 19.176 ms
+was guest draw. That evidence points to title geometry processing rather than
+shared GPU checkpoint/capture as the remaining throughput bottleneck.
+
+The shared presenter now honors HOLD for native phase generations instead of
+crossfading neighboring phase images. Phase selection tests and the real OpenGL
+probe (329 checks) pass, including red/blue native images that must stay distinct
+under HOLD while explicit blend mode still mixes them. Title requalification
+on this correction remains required.
