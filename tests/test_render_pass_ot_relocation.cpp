@@ -98,8 +98,10 @@ int main() {
     put(ram,0x1310,0x02001300u);
     put(ram,0x1314,0x64000000);put(ram,0x1318,0x00100020);
     put(ram,OT,0x1310);put(ram,0x1800,0x80001320);
+    put(ram,0x1900,0x1234); // real tail advances an ordinary scratch counter
     CHECK(relocated.prepare(ram.data(),ram.size(),0x80001320));
     ram=recorded_core;put(ram,0x1800,0x80001340);
+    put(ram,0x1900,0xabcd); // interpolation changed the temporary core value
     put(ram,0x1348,0x12345678);put(ram,0x134c,0x87654321);
     CHECK(relocated.prepare_splice(ram.data(),ram.size(),OT,0x80001340,0x1800));
     relocated.apply_splice(ram.data());
@@ -108,6 +110,11 @@ int main() {
     CHECK(PSXOTRelocation::word(ram.data(),0x1348)==0x12345678);
     CHECK(PSXOTRelocation::word(ram.data(),0x134c)==0x87654321);
     CHECK(PSXOTRelocation::word(ram.data(),0x1800)==0x80001360);
+    CHECK(PSXOTRelocation::word(ram.data(),0x1900)==0x1234);
+    ram=recorded_core;put(ram,0x1800,0x80001340);
+    put(ram,OT,0x18fc);put(ram,0x18fc,0x02000000u|Core);
+    put(ram,0x1900,0x64000000);put(ram,0x1904,0x10002000);
+    CHECK(!relocated.prepare_splice(ram.data(),ram.size(),OT,0x80001340,0x1800));
     ram=recorded_core;put(ram,0x1800,0x80001340);
     // A packet outside the actual producer interval is still refused.
     CHECK(relocated.prepare_splice(ram.data(),ram.size(),OT,0x801ffff0,0x1800)==false);

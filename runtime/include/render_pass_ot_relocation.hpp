@@ -266,7 +266,17 @@ public:
                 if((change.value&0x1fffffu)!=end)return refuse(__LINE__);
                 splice_writes.push_back({change.address,(current_cursor&0xffe00000u)|new_end});
             } else {
-                if(word(ram,change.address)!=word(after_core.data(),change.address))return refuse(__LINE__);
+                // The real tail's ordinary state updates are authoritative.
+                // Core replay can change temporary counters/bounds, so matching
+                // every RAM word against the original core rejects valid draw
+                // output. Only refuse a tail write that aliases CURRENT packet
+                // storage; the surrounding sandbox restores gameplay state.
+                const auto next=std::upper_bound(now.begin(),now.end(),change.address,
+                    [](uint32_t address,const Node& node){return address<node.address;});
+                if(next!=now.begin()) {
+                    const Node& node=*(next-1);
+                    if(change.address<node.address+4u+(node.header>>24)*4u)return refuse(__LINE__);
+                }
                 splice_writes.push_back(change);
             }
         }
