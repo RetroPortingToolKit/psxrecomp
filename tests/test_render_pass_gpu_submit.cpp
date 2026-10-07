@@ -11,12 +11,18 @@
 
 using Event=std::tuple<char,uint32_t,uint32_t>;
 static uint32_t ram[256]{};
+static uint32_t arena[8]{};
 static std::vector<Event> trace;
 extern "C" {
 int g_psx_render_pass_active=1;
 uint32_t g_psx_ram_size=sizeof ram,g_psx_ram_mask=sizeof ram-1;
-uint32_t psx_mod_gpu_dma_resolve_address(uint32_t a){return a&g_psx_ram_mask&~3u;}
-uint32_t psx_mod_read_word(uint32_t a){return ram[(a&g_psx_ram_mask)/4];}
+uint32_t psx_mod_gpu_dma_resolve_address(uint32_t a){return psx_mod_gpu_dma_resolve_address_for(a,sizeof arena);}
+int psx_mod_gpu_dma_memory_contains(uint32_t a,uint32_t bytes){return psx_mod_gpu_dma_aperture_offset_for(a,bytes,sizeof arena,nullptr);}
+uint32_t psx_mod_read_word(uint32_t a){
+    uint32_t off;
+    if(psx_mod_gpu_dma_aperture_offset_for(a,4,sizeof arena,&off))return arena[off/4];
+    return ram[(a&g_psx_ram_mask)/4];
+}
 void gpu_ws_begin_linked_list(){trace.emplace_back('B',0,0);}
 void gpu_ws_end_linked_list(){trace.emplace_back('F',0,0);}
 void gpu_ws_prepass_linked_list(uint32_t a){trace.emplace_back('P',a,0);}
@@ -48,6 +54,17 @@ int main(){
     dma_gpu_ll_start(&ll,0x40,32768);dma_gpu_ll_advance(&ll,UINT32_MAX,&ops,nullptr);
     assert(!ll.active);const auto expected=trace;trace.clear();
     assert(PSXRenderSubmit::ot(0x80000040));assert(trace==expected);
+    // The same LLE trace comparison with an OT in RAM and payload in an
+    // expanded primitive arena. Source keys must retain the aperture address.
+    trace.clear();ram[0x40/4]=PSX_MOD_GPU_DMA_APERTURE_BASE;
+    arena[0]=0x02FFFFFF;arena[1]=0x6000FF00;arena[2]=0x00100010;
+    gpu_ws_begin_linked_list();gpu_ws_prepass_linked_list(0x40);
+    dma_gpu_ll_start(&ll,0x40,32768);dma_gpu_ll_advance(&ll,UINT32_MAX,&ops,nullptr);
+    assert(!ll.active);const auto arena_expected=trace;trace.clear();
+    assert(PSXRenderSubmit::ot(0x80000040));assert(trace==arena_expected);
+    trace.clear();arena[0]=0x08FFFFFF;
+    assert(!PSXRenderSubmit::ot(0x40));assert(trace.empty());
+    ram[0x40/4]=0x00000080;
     trace.clear();ram[0x80/4]=0x03000040;
     assert(!PSXRenderSubmit::ot(0x40));assert(trace.empty());
     g_psx_render_pass_active=0;assert(!PSXRenderSubmit::ot(0x40));assert(trace.empty());

@@ -11,7 +11,8 @@
  * resulting picture: PsyQ queue bookkeeping/IRQ polling is restored at exit.
  * REFERENCE continues to call the original SDK. Use the exact DMA provenance
  * and widescreen prepass services; feeding bare GP0 words loses PGXP/UI data.
- * Main-RAM lists only for now. Refuse an unsupported graph before GPU output.
+ * Main RAM and explicitly allocated primitive arenas. Refuse an unsupported
+ * graph or an arena payload outside its allocation before GPU output.
  */
 class PSXRenderSubmit {
     struct Node { uint32_t address,header; };
@@ -26,10 +27,16 @@ public:
         nodes.clear();seen.clear();
         uint32_t address=psx_mod_gpu_dma_resolve_address(root);
         for(unsigned count=0;count<32768;++count) {
-            if(address>=psx_ram_live_bytes() || (address&3) || !seen.insert(address).second)return false;
+            if((address>=psx_ram_live_bytes() && !psx_mod_gpu_dma_memory_contains(address,4)) ||
+               (address&3) || !seen.insert(address).second)return false;
             const uint32_t header=psx_mod_read_word(address),words=header>>24;
+            // The aperture must not fold an overrun into retail RAM. Retail
+            // payload words still wrap through the DMAC's live RAM geometry.
+            if(address>=psx_ram_live_bytes() &&
+               !psx_mod_gpu_dma_memory_contains(address,(words+1)*4))return false;
             for(uint32_t i=1;i<=words;++i)
-                if(psx_mod_gpu_dma_resolve_address(address+4*i)>=psx_ram_live_bytes())return false;
+                if(psx_mod_gpu_dma_resolve_address(address+4*i)>=psx_ram_live_bytes() &&
+                   !psx_mod_gpu_dma_memory_contains(address+4*i,4))return false;
             nodes.push_back({address,header});
             if((header&0xFFFFFF)==0xFFFFFF)break;
             address=psx_mod_gpu_dma_resolve_address(header&0xFFFFFF);
