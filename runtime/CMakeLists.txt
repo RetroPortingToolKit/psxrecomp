@@ -550,6 +550,11 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME pgxp_session_test COMMAND pgxp_session_test)
 
+    foreach(_pgxp_isolated_test
+            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_session_test)
+        target_sources(${_pgxp_isolated_test} PRIVATE tests/pgxp_test_mod_memory.cpp)
+    endforeach()
+
     add_executable(psx_instr_cost_test tests/test_psx_instr_cost.cpp)
     target_include_directories(psx_instr_cost_test PRIVATE include)
     add_test(NAME psx_instr_cost_test COMMAND psx_instr_cost_test)

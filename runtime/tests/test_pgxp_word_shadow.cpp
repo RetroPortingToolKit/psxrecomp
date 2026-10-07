@@ -1,11 +1,16 @@
 #include "pgxp.h"
 #include "pgxp_hooks.h"
+#include "mod_memory.h"
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
 
 extern "C" int gte_geometry_correction_lookup(uint32_t,int32_t*,int32_t*) {return 0;}
 extern "C" int gte_geometry_correction_lookup_probe(uint32_t,int32_t*,int32_t*) {return 0;}
+static uint32_t gpu_bytes = 0;
+extern "C" int psx_mod_gpu_dma_memory_contains(uint32_t address, uint32_t bytes) {
+    return psx_mod_gpu_dma_aperture_offset_for(address, bytes, gpu_bytes, nullptr);
+}
 static int failures=0;
 #define CHECK(c) do {if(!(c)){std::fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#c);++failures;}}while(0)
 constexpr uint32_t Address=0x80001000u,Other=0x80002000u,Packed=0x000C0008u;
@@ -141,6 +146,50 @@ int main() {
     auto relocated_scratch=scratch;relocated_scratch.address=Address&0x1FFFFFFFu;
     check_attributes(relocated_scratch,capture(Address,Packed));
     pgxp_checkpoint_rollback();
+    // Expanded primitive storage must retain the exact same XYZ/depth and
+    // projection as RAM, without aliasing the retail RAM word under its tag.
+    const uint32_t Arena = PSX_MOD_GPU_DMA_GUEST_BASE + 0x1000u;
+    const uint32_t ArenaOther = Arena + 0x1000u;
+    gpu_bytes = 0x4000u;
+    pgxp_invalidate_all();
+    seed(Address, Packed, (8<<16)+16384);
+    seed(Arena, Packed, (8<<16)+32768);
+    const auto ram = capture(Address, Packed);
+    const auto arena = capture(Arena, Packed);
+    CHECK(arena.valid && arena.address == 0x00801000u);
+    CHECK(arena.x16 != ram.x16);
+    check_attributes(arena, capture(Arena & 0x1FFFFFFFu, Packed));
+    check_attributes(arena, capture(Arena | 0x20000000u, Packed));
+    uint16_t depth = 0;
+    CHECK(pgxp_load_precise_word(Arena, Packed, nullptr, nullptr, &depth));
+    CHECK(depth == 300);
+    CHECK(!pgxp_load_precise_word(Arena, Packed + 1, nullptr, nullptr, &depth));
+    PGXPWordShadow refused{};
+    CHECK(!pgxp_capture_word_shadow(PSX_MOD_GPU_DMA_GUEST_BASE + gpu_bytes, Packed, &refused));
+    CHECK(!pgxp_capture_word_shadow(0xBF801000u, Packed, &refused));
+    CHECK(!pgxp_capture_word_shadow(0xC0801000u, Packed, &refused));
+    const auto empty_arena = capture(ArenaOther, Packed);
+    CHECK(!empty_arena.valid);
+    pgxp_checkpoint_begin();
+    seed(Arena, Packed, (8<<16)+49152);
+    // This page is allocated for the first time inside the checkpoint.
+    CHECK(pgxp_restore_relocated_word_shadow(ArenaOther, Packed, &arena));
+    auto relocated_arena = arena; relocated_arena.address = 0x00802000u;
+    check_attributes(relocated_arena, capture(ArenaOther, Packed));
+    check_attributes(ram, capture(Address, Packed));
+    pgxp_checkpoint_rollback();
+    check_attributes(arena, capture(Arena, Packed));
+    check_attributes(empty_arena, capture(ArenaOther, Packed));
+    check_attributes(ram, capture(Address, Packed));
+    pgxp_checkpoint_begin(); pgxp_invalidate_all();
+    CHECK(pgxp_restore_word_shadow(Arena, Packed, &arena));
+    check_attributes(arena, capture(Arena, Packed));
+    pgxp_checkpoint_rollback();
+    check_attributes(arena, capture(Arena, Packed));
+    pgxp_invalidate_all();
+    CHECK(!capture(Arena, Packed).valid);
+    gpu_bytes = 0; // pages retained on the host are not guest allocations
+    CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");
     return failures?1:0;
 }
