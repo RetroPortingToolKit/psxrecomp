@@ -9393,7 +9393,10 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     g_dynres.last_bp_ns = bp_ns;
     /* Smooth motion's in-between frames share the game frame with it. */
     const double share = gl_renderer_frame_gen_real_share();
-    DynrtSample smp{ period * share, wall, frames, cost, bp, held };
+    /* As load: the real frames' cost against their share of the frame (the
+     * period itself stays, so guest-bound detection still compares it with
+     * the wall interval). */
+    DynrtSample smp{ period, wall, frames, share > 0.0 ? cost / share : cost, bp, held };
     const int prev_level = c.level;
     const int level = dynrt_sample(&c, now_s, &smp);
     /* Frame generation only spends surplus: not while the real frames are

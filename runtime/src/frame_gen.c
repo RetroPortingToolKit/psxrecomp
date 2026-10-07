@@ -45,6 +45,7 @@ void fg_cam_defaults(FgCamParams *p) {
     p->max_angle = 0.35f;
     p->max_shift = 0.5f;
     p->max_obj = 0.25f;
+    p->keep_partial = 0;
 }
 
 /* ---- rigid motion ---- */
@@ -349,6 +350,19 @@ int fg_cam_fit(const FgPrimList *older, const FgPrimList *newer, const FgCamPara
         free(pa); free(pb); free(in); free(sb);
     }
     fit->ok = all;
+    if (!all && p->keep_partial) {
+        int any = 0;
+        for (uint32_t vi = 0; vi < fit->nviews; vi++) any |= fit->v[vi].ok;
+        if (any) {
+            for (uint32_t j = 0; j < newer->n * 3u; j++) {
+                const int vi = verts[j].view;
+                if (vi >= 0 && (uint32_t)vi < fit->nviews && !fit->v[vi].ok) {
+                    verts[j].mode = FG_PLACE_UNCHANGED; verts[j].view = -1;
+                }
+            }
+            fit->ok = all = 1;
+        }
+    }
     if (!all) {
         for (uint32_t j = 0; j < newer->n * 3u; j++) verts[j].mode = FG_PLACE_UNCHANGED;
         return 0;
@@ -725,6 +739,7 @@ void fg_cost_cold(FgCost *c, int n) { if (n > c->cold) c->cold = n; }
 void fg_cost_add(FgCost *c, double cost_s, double fit_s) {
     if (cost_s <= 0.0) return;
     if (c->cold > 0) { c->cold--; c->discarded++; return; }
+
     c->samples++;
     if (c->probing || c->ema <= 0.0) {
         c->ema = cost_s;
@@ -738,6 +753,9 @@ void fg_cost_add(FgCost *c, double cost_s, double fit_s) {
             }
         }
     } else {
+        /* One stall (an allocation, a driver hiccup) moves the estimate by
+         * at most a few times itself; a lasting change still wins. */
+        if (cost_s > 4.0 * c->ema) cost_s = 4.0 * c->ema;
         c->ema = c->ema * 0.8 + cost_s * 0.2;
     }
     if (fit_s <= 0.0 || c->ema <= fit_s) c->blocked_since = -1.0;
@@ -803,6 +821,22 @@ int fg_ceiling_get(FgCeiling *c, double now) {
  * little (at most max_px per corner: a tachometer needle, a sliding panel)
  * are placed at fraction u of the way from L to O. Anything that changed
  * what it draws (digits) or jumped stays as L drew it. */
+/* The 2D triangles of L that fg_hud_lerp moves (moved[j] = 1). */
+void fg_hud_match(const FgPrimList *L, const FgPrimList *O, float max_px, uint8_t *moved) {
+    if (!L || !moved) return;
+    memset(moved, 0, L->n);
+    if (!O) return;
+    float *x = (float *)malloc((size_t)L->n * 3 * sizeof *x), *y = (float *)malloc((size_t)L->n * 3 * sizeof *y);
+    if (!x || !y) { free(x); free(y); return; }
+    for (uint32_t j = 0; j < L->n; j++)
+        for (int k = 0; k < 3; k++) { x[3 * j + k] = L->v[j].x[k]; y[3 * j + k] = L->v[j].y[k]; }
+    fg_hud_lerp(L, O, 0.5, x, y, max_px);
+    for (uint32_t j = 0; j < L->n; j++)
+        for (int k = 0; k < 3; k++)
+            if (x[3 * j + k] != L->v[j].x[k] || y[3 * j + k] != L->v[j].y[k]) moved[j] = 1;
+    free(x); free(y);
+}
+
 void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
                  float max_px) {
     if (!L || !O || u <= 0.0 || u >= 1.0) return;

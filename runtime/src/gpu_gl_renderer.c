@@ -10754,12 +10754,18 @@ static void fg_list_open(void);
 /* Reprojection's source: each closed list's finished image, copied from the
  * real surface when the list closes (the game then draws its next frames
  * into the buffers; R4 even flips to a buffer before drawing into it). */
-static GLuint s_rp_ls_tex[4], s_rp_ls_fbo[4];
-static int    s_rp_ls_w[4], s_rp_ls_h[4], s_rp_ls_S[4], s_rp_ls_ok[4];
+static GLuint s_rp_ls_tex[2], s_rp_ls_fbo[2];   /* the two newest closed lists */
+static int    s_rp_ls_w[2], s_rp_ls_h[2], s_rp_ls_S[2], s_rp_ls_li[2] = { -1, -1 }, s_rp_ls_new = 0;
+static uint8_t *s_rp_needle = NULL; static uint32_t s_rp_needle_cap = 0, s_rp_needle_n = 0;
+static int rp_snap_slot(int li) {
+    if (li < 0) return -1;
+    for (int k = 0; k < 2; k++) if (s_rp_ls_li[k] == li) return k;
+    return -1;
+}
 static void rp_snapshot_list(int li, const int disp[4]) {
-    if (li < 0 || li >= 4) return;
-    s_rp_ls_ok[li] = 0;
-    if (!s_fg_reproject || !s_raster_ok) return;
+    if (li < 0 || li >= 4 || !s_fg_reproject || !s_raster_ok || !s_fg_on) return;
+    const int k = s_rp_ls_new ^ 1;
+    s_rp_ls_li[k] = -1;
     const int S = s_hr_scale;
     int iw = -1;
     if (g_wide_w > 0)
@@ -10770,18 +10776,18 @@ static void rp_snapshot_list(int li, const int disp[4]) {
     const int W = iw >= 0 ? g_wide_w : disp[2];
     if (W <= 0 || dh <= 0) return;
     const int w = W * S, h = dh * S;
-    if (s_rp_ls_w[li] != w || s_rp_ls_h[li] != h) {
-        if (s_rp_ls_fbo[li]) { p_glDeleteFramebuffers(1, &s_rp_ls_fbo[li]); glDeleteTextures(1, &s_rp_ls_tex[li]); }
-        s_rp_ls_fbo[li] = s_rp_ls_tex[li] = 0; s_rp_ls_w[li] = s_rp_ls_h[li] = 0;
+    if (s_rp_ls_w[k] != w || s_rp_ls_h[k] != h) {
+        if (s_rp_ls_fbo[k]) { p_glDeleteFramebuffers(1, &s_rp_ls_fbo[k]); glDeleteTextures(1, &s_rp_ls_tex[k]); }
+        s_rp_ls_fbo[k] = s_rp_ls_tex[k] = 0; s_rp_ls_w[k] = s_rp_ls_h[k] = 0;
         fg_cost_cold(fg_cost(), 3);
-        s_rp_ls_tex[li] = make_tex(GL_RGBA8, w, h, GL_RGBA, GL_UNSIGNED_BYTE);
-        if (!make_fbo(&s_rp_ls_fbo[li], s_rp_ls_tex[li], 0)) {
-            glDeleteTextures(1, &s_rp_ls_tex[li]); s_rp_ls_tex[li] = 0; s_rp_ls_fbo[li] = 0; return;
+        s_rp_ls_tex[k] = make_tex(GL_RGBA8, w, h, GL_RGBA, GL_UNSIGNED_BYTE);
+        if (!make_fbo(&s_rp_ls_fbo[k], s_rp_ls_tex[k], 0)) {
+            glDeleteTextures(1, &s_rp_ls_tex[k]); s_rp_ls_tex[k] = 0; s_rp_ls_fbo[k] = 0; return;
         }
-        s_rp_ls_w[li] = w; s_rp_ls_h[li] = h;
+        s_rp_ls_w[k] = w; s_rp_ls_h[k] = h;
     }
     flush_line_batch(); flush_flat_batch(); flush_tex_batch();
-    fg_blit2(iw >= 0 ? s_wide_fbo[iw] : s_hr_fbo, s_rp_ls_fbo[li],
+    fg_blit2(iw >= 0 ? s_wide_fbo[iw] : s_hr_fbo, s_rp_ls_fbo[k],
              iw >= 0 ? 0 : disp[0] * S, dy * S, 0, 0, w, h);
     /* The wide surface's centre may be filled from the hr surface only at
      * present (wide_blit_center's fast path): take it from there too. */
@@ -10789,18 +10795,18 @@ static void rp_snapshot_list(int li, const int disp[4]) {
         if (s_hiw) return;
         const int native_w = g_wide_w - 2 * g_wide_off;
         if (native_w > 0)
-            fg_blit2(s_hr_fbo, s_rp_ls_fbo[li], disp[0] * S, dy * S, g_wide_off * S, 0,
+            fg_blit2(s_hr_fbo, s_rp_ls_fbo[k], disp[0] * S, dy * S, g_wide_off * S, 0,
                      native_w * S, h);
     }
-    s_rp_ls_S[li] = S;
-    s_rp_ls_ok[li] = 1;
+    s_rp_ls_S[k] = S;
+    s_rp_ls_li[k] = li;
+    s_rp_ls_new = k;
 }
 
 /* Close the capturing list as the frame of its buffer; it becomes the newer
  * frame, the newer one the older. */
 static void fg_rotate(void) {
     fg_list_close(&s_fg_l[s_fg_cur], s_fg_buf[s_fg_cur_buf]);
-    rp_snapshot_list(s_fg_cur, s_fg_buf[s_fg_cur_buf]);
     if (s_fg_partial) { s_fg_l[s_fg_cur].valid = 0; s_fg_partial = 0; }
     s_fg_older = s_fg_newer; s_fg_newer = s_fg_cur;
     /* A slot no frame in use holds (a schedule pins its pair). */
@@ -11089,7 +11095,27 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
     if (s_fg_replay_objects_only) {
         /* Reprojected: only cars are drawn, each corner at its own
          * in-between position (fg_cam_place's object motion), computed
-         * per drawn triangle below. */
+         * per drawn triangle below; and the HUD needles, moved like
+         * fg_hud_lerp moves them (the restore put the older frame's dial
+         * under the newer frame's needle). */
+        if (a && s_rp_needle && s_rp_needle_n == b->prims.n) {
+            if (s_fg_pos_cap < b->prims.n) {
+                float *nx = (float *)realloc(s_fg_px, (size_t)b->prims.n * 3 * sizeof *nx);
+                if (nx) s_fg_px = nx;
+                float *ny = (float *)realloc(s_fg_py, (size_t)b->prims.n * 3 * sizeof *ny);
+                if (ny) s_fg_py = ny;
+                if (nx && ny) s_fg_pos_cap = b->prims.n;
+            }
+            if (s_fg_pos_cap >= b->prims.n) {
+                for (uint32_t j = 0; j < b->prims.n; j++)
+                    for (int k = 0; k < 3; k++) {
+                        s_fg_px[3 * j + k] = b->prims.v[j].x[k];
+                        s_fg_py[3 * j + k] = b->prims.v[j].y[k];
+                    }
+                fg_hud_lerp(&b->prims, &a->prims, 1.0 - t, s_fg_px, s_fg_py, 24.0f);
+                placed = 2;
+            }
+        }
     } else if (s_fg_verts && s_fg_verts_cap >= b->prims.n) {
         if (s_fg_pos_cap < b->prims.n) {
             float *nx = (float *)realloc(s_fg_px, (size_t)b->prims.n * 3 * sizeof *nx);
@@ -11107,6 +11133,7 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
     const float ddx = (float)(b->disp[0]), ddy = (float)(b->disp[1]);
     fg_state_apply(&b->start, (b->start.wide_on && b->start.wide_base == disp[0]) ? gen_wide : 0);
     int pc_pending = 0, drawn = 0; int32_t pc[7];
+    int seen_world = 0;
     for (uint32_t r = 0; r < b->n; r++) {
         FgRec h;
         memcpy(&h, b->buf + b->off[r], sizeof h);
@@ -11187,7 +11214,15 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
             }
             const FgPrim *pb = &b->prims.v[pi];
             float x[3], y[3];
-            if (s_fg_replay_objects_only) {
+            const int needle = s_fg_replay_objects_only && placed == 2 && s_rp_needle[pi];
+            if (s_fg_replay_objects_only && !needle && !seen_world) {
+                /* Before the first world triangle: the backdrop (a sky dome
+                 * moves as an object too), which the warp keeps. */
+                for (int k = 0; k < 3; k++) seen_world |= s_fg_verts[3 * pi + k].mode == FG_PLACE_CAMERA;
+                pc_pending = 0;
+                break;
+            }
+            if (s_fg_replay_objects_only && !needle) {
                 /* Cars: every corner moves as an object, and small (a sky
                  * dome is an object to the fit too, but it is the backdrop
                  * the warp keeps). */
@@ -11200,7 +11235,9 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
                 }
                 if (!obj) { pc_pending = 0; break; }
             }
-            if (s_fg_replay_objects_only) {
+            if (needle) {
+                for (int k = 0; k < 3; k++) { x[k] = s_fg_px[3 * pi + k]; y[k] = s_fg_py[3 * pi + k]; }
+            } else if (s_fg_replay_objects_only) {
                 int gone = 0;
                 for (int k = 0; k < 3; k++) {
                     const FgVert *fv = &s_fg_verts[3 * pi + k];
@@ -11361,12 +11398,14 @@ static const char *RP_R_VS =
     "  gl_Position=vec4(q,0.0,1.0); }\n";
 static const char *RP_R_FS =
     "#version 330\n"
-    "uniform sampler2D u_src; uniform sampler2D u_z; uniform ivec2 u_zsize;\n"
-    "uniform vec2 u_org; uniform vec2 u_srcorg; uniform float u_S; out vec4 frag;\n"
+    "uniform sampler2D u_src; uniform sampler2D u_z; uniform sampler2D u_prev; uniform int u_has_prev;\n"
+    "uniform ivec2 u_zsize; uniform vec2 u_org; uniform vec2 u_srcorg; uniform float u_S; uniform int u_dbg; out vec4 frag;\n"
     "void main(){ vec2 p=(gl_FragCoord.xy-u_org)/u_S;\n"
     "  vec4 z=texelFetch(u_z, clamp(ivec2(p*2.0), ivec2(0), u_zsize-1), 0);\n"
+    "  ivec2 t=ivec2(gl_FragCoord.xy-u_org+u_srcorg*u_S);\n"    "  if(u_dbg==2){ frag=vec4(z.y==1.0?0.0:1.0, z.y==2.0?1.0:0.0, z.y==3.0?1.0:(z.y==0.0?0.5:0.0), 1.0); return; }\n"
+    "  if(z.y>2.5){ frag = u_has_prev==1 ? texelFetch(u_prev, t, 0) : texelFetch(u_src, t, 0); return; }\n"
     "  if(z.y>0.5) discard;\n"
-    "  frag=texelFetch(u_src, ivec2(gl_FragCoord.xy-u_org+u_srcorg*u_S), 0); }\n";
+    "  frag=texelFetch(u_src, t, 0); }\n";
 static GLuint s_rp_rprog = 0;
 static int rp_resources(void) {
     if (s_rp_wprog) return 1;
@@ -11449,7 +11488,7 @@ static void rp_view_params(const FgList *L, float out[4][4]) {
  * surface; the region is (x0, y0, W, H) native px, rel x = x - ox. */
 static double s_rp_t_snap = 0, s_rp_t_z = 0, s_rp_t_w = 0;
 static uint32_t s_rp_zn = 0;
-static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fbo,
+static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_fbo, GLuint src_fbo,
                         int x0, int y0, int W, int H, float ox, int S) {
     if (!rp_resources() || W <= 0 || H <= 0) return 0;
     float vp[4][4];
@@ -11470,9 +11509,12 @@ static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fb
     const int zw = W * RP_ZS, zh = H * RP_ZS;
     const uint64_t key = s_fg_flips * 4096u + (uint64_t)(L - s_fg_l) * 1024u + (uint64_t)W;
     const int li = (int)(L - s_fg_l);
-    if (li < 0 || li >= 4 || !s_rp_ls_ok[li] || s_rp_ls_S[li] != S ||
-        s_rp_ls_w[li] != W * S || s_rp_ls_h[li] != H * S) goto fail;
-    GLuint s_rp_snap_fbo = s_rp_ls_fbo[li], s_rp_snap_tex = s_rp_ls_tex[li];
+    const int sk = rp_snap_slot(li);
+    if (sk < 0 || s_rp_ls_S[sk] != S || s_rp_ls_w[sk] != W * S || s_rp_ls_h[sk] != H * S) goto fail;
+    GLuint s_rp_snap_fbo = s_rp_ls_fbo[sk], s_rp_snap_tex = s_rp_ls_tex[sk];
+    /* The older list's snapshot: what lies under the newer frame's needle. */
+    const int ok_ = O ? rp_snap_slot((int)(O - s_fg_l)) : -1;
+    const int ok = (ok_ >= 0 && s_rp_ls_w[ok_] == W * S && s_rp_ls_h[ok_] == H * S) ? ok_ : -1;
     (void)src_fbo;
     /* The picture under the warp: the snapshot. */
     fg_blit2(s_rp_snap_fbo, dst_fbo, 0, 0, x0 * S, y0 * S, W * S, H * S);
@@ -11486,6 +11528,13 @@ static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fb
             s_rp_zw = zw; s_rp_zh = zh;
         }
         size_t n = 0;
+        if (s_rp_needle_cap < L->prims.n) {
+            uint8_t *nn = (uint8_t *)realloc(s_rp_needle, L->prims.n);
+            if (!nn) goto fail;
+            s_rp_needle = nn; s_rp_needle_cap = L->prims.n;
+        }
+        fg_hud_match(&L->prims, O ? &O->prims : NULL, 24.0f, s_rp_needle);
+        s_rp_needle_n = L->prims.n;
         for (uint32_t r = 0; r < L->n; r++) {
             FgRec h;
             memcpy(&h, L->buf + L->off[r], sizeof h);
@@ -11503,7 +11552,8 @@ static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fb
                     else if (view < 0) view = fv->view;
                     else if (view != fv->view) world = 0;
                 }
-                if (world && (view < 0 || view >= FG_MAX_VIEWS || !vp[view][3])) world = 0;
+                if (world && (view < 0 || view >= FG_MAX_VIEWS || !vp[view][3] ||
+                              !s_fg_fit.v[view].ok)) world = 0;
                 if (world) {
                     const float *ar = s_fg_fit.v[view].area;
                     if ((ar[2] - ar[0]) * (ar[3] - ar[1]) < 0.15f * big) world = 0;
@@ -11518,7 +11568,7 @@ static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fb
                     const float *ar = s_fg_fit.v[view].area;
                     if ((ar[2] - ar[0]) * (ar[3] - ar[1]) < 0.15f * big) obj = 0;
                 }
-                const float id = world ? 1.0f : obj ? 2.0f : 0.0f;
+                const float id = world ? 1.0f : obj ? 2.0f : s_rp_needle[pi] ? 3.0f : 0.0f;
                 for (int k = 0; k < 3; k++)
                     if (!rp_push(&n, (p->x[k] + ox) * RP_ZS, p->y[k] * RP_ZS,
                                  world ? 1.0f / p->p[k][2] : 0.0f, id,
@@ -11532,6 +11582,52 @@ static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fb
                                   (float)(v[1] - L->disp[1] + v[3]) * RP_ZS)) goto fail;
                 break;
             default: break;
+            }
+        }
+        /* Overlay, last: small 2D pieces (HUD) and small views (the
+         * mirror) of this list and of the older one. A game can draw its HUD
+         * or mirror into a buffer after the list for it closed; the older
+         * list has them at the same places. Big 2D (a backdrop drawn first)
+         * stays out. */
+        for (int pass = 0; pass < 2; pass++) {
+            const FgList *Q = pass ? O : L;
+            if (!Q || !Q->valid) continue;
+            const float qox = Q == L ? ox : ox + (float)(Q->wide_off - L->wide_off);
+            for (uint32_t r = 0; r < Q->n; r++) {
+                FgRec h;
+                memcpy(&h, Q->buf + Q->off[r], sizeof h);
+                const int32_t *v = (const int32_t *)(Q->buf + Q->off[r] + sizeof h);
+                if (h.op == RTH_FLAT_RECT || h.op == RTH_TEX_RECT || h.op == RTH_TEX_RECT_SCALED) {
+                    if (v[2] > 160 || v[3] > 120) continue;
+                    if (!rp_push_quad(&n, ((float)(v[0] - Q->disp[0]) + qox) * RP_ZS,
+                                      (float)(v[1] - Q->disp[1]) * RP_ZS,
+                                      ((float)(v[0] - Q->disp[0] + v[2]) + qox) * RP_ZS,
+                                      (float)(v[1] - Q->disp[1] + v[3]) * RP_ZS)) goto fail;
+                    continue;
+                }
+                if (h.op != RTH_FLAT_TRI && h.op != RTH_GOURAUD_TRI && h.op != RTH_TEX_TRI &&
+                    h.op != RTH_SHADED_TEX_TRI && h.op != RTH_PROJ_TRI) continue;
+                const int pi = Q->rec2prim ? Q->rec2prim[r] : -1;
+                if (pi < 0) continue;
+                const FgPrim *p = &Q->prims.v[pi];
+                const int twod = !p->vid[0] && !p->vid[1] && !p->vid[2];
+                const float bw = fmaxf(p->x[0], fmaxf(p->x[1], p->x[2])) - fminf(p->x[0], fminf(p->x[1], p->x[2]));
+                const float bh = fmaxf(p->y[0], fmaxf(p->y[1], p->y[2])) - fminf(p->y[0], fminf(p->y[1], p->y[2]));
+                int smallview = 0;
+                {
+                    const float aw = p->area[2] - p->area[0], ah = p->area[3] - p->area[1];
+                    float bigv = 0.0f;
+                    for (uint32_t vi = 0; vi < s_fg_fit.nviews; vi++) {
+                        const float *ar = s_fg_fit.v[vi].area;
+                        const float av = (ar[2] - ar[0]) * (ar[3] - ar[1]);
+                        if (av > bigv) bigv = av;
+                    }
+                    smallview = aw > 0.0f && ah > 0.0f && aw * ah < 0.15f * bigv;
+                }
+                if (!(twod && bw <= 160.0f && bh <= 120.0f) && !smallview) continue;
+                if (Q == L && twod && s_rp_needle[pi]) continue;   /* needles keep id 3 */
+                for (int k = 0; k < 3; k++)
+                    if (!rp_push(&n, (p->x[k] + qox) * RP_ZS, p->y[k] * RP_ZS, 0.0f, 0.0f, 0.0f)) goto fail;
             }
         }
         p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_rp_zfbo);
@@ -11603,8 +11699,20 @@ static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fb
         p_glUniform2f(p_glGetUniformLocation(s_rp_rprog, "u_org"), (float)(x0 * S), (float)(y0 * S));
         p_glUniform2f(p_glGetUniformLocation(s_rp_rprog, "u_srcorg"), 0.0f, 0.0f);
         p_glUniform1f(p_glGetUniformLocation(s_rp_rprog, "u_S"), (float)S);
+        p_glActiveTexture(PSXGL_TEXTURE0 + 2);
+        glBindTexture(GL_TEXTURE_2D, ok >= 0 ? s_rp_ls_tex[ok] : 0);
+        p_glActiveTexture(PSXGL_TEXTURE0);
+        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_prev"), 2);
+        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_has_prev"), ok >= 0 && !getenv("PSX_RP_NOPREV") ? 1 : 0);
+        {   const char *e = getenv("PSX_RP_DEBUG");
+            p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_dbg"), e ? atoi(e) : 0); }
         glDrawArrays(GL_TRIANGLES, 0, 3);
         s_rp_t_w = (double)(host_now_ns_rthf() - qw) * 1e-6;
+        for (int u = 2; u >= 1; u--) {   /* leave no float texture bound */
+            p_glActiveTexture(PSXGL_TEXTURE0 + u);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        p_glActiveTexture(PSXGL_TEXTURE0);
     }
     p_glBindVertexArray(0);
     p_glUseProgram(0);
@@ -11668,8 +11776,12 @@ static int fg_generate(double t, int swap) {
     const int ly = L->disp[1] < 0 ? 0 : L->disp[1];
     const int lh = L->disp[1] + L->disp[3] > VRAM_H ? VRAM_H - ly : L->disp[1] + L->disp[3] - ly;
     if (L->disp[0] != b->disp[0] || lh != dh || L->disp[2] != b->disp[2]) return 0;
-    fg_blit2(s_hr_fbo, s_fg_hr_fbo, b->disp[0] * S, dy * S, L->disp[0] * S, ly * S, b->disp[2] * S, dh * S);
-    if (iw >= 0) fg_blit2(s_wide_fbo[iw], s_fg_w_fbo, 0, dy * S, 0, ly * S, g_wide_w * S, dh * S);
+    /* Reprojected frames start from the list's snapshot instead (below). */
+    const int will_rp = s_fg_reproject && L == b && s_fg_fit.ok && rp_snap_slot((int)(L - s_fg_l)) >= 0;
+    if (!will_rp) {
+        fg_blit2(s_hr_fbo, s_fg_hr_fbo, b->disp[0] * S, dy * S, L->disp[0] * S, ly * S, b->disp[2] * S, dh * S);
+        if (iw >= 0) fg_blit2(s_wide_fbo[iw], s_fg_w_fbo, 0, dy * S, 0, ly * S, g_wide_w * S, dh * S);
+    }
     GLuint t0 = s_hr_tex, f0 = s_hr_fbo, r0 = s_hr_rb;
     s_hr_tex = s_fg_hr_tex; s_hr_fbo = s_fg_hr_fbo; s_hr_rb = s_fg_hr_rb;
     GLuint wt = 0, wf = 0, wr = 0; int was = 0;
@@ -11684,11 +11796,15 @@ static int fg_generate(double t, int swap) {
     if (iw >= 0) wst_add(iw, 0, ly, g_wide_w, ly + lh);
     s_fg_drawing = 1;
     int reproj = 0;
-    if (s_fg_reproject && L == b && s_fg_fit.ok) {
+    if (will_rp) {
         flush_line_batch(); flush_flat_batch(); flush_tex_batch();
         reproj = iw >= 0
-            ? fg_reproject(L, tl, s_fg_w_fbo, wf, 0, ly, g_wide_w, lh, (float)L->wide_off, S)
-            : fg_reproject(L, tl, s_fg_hr_fbo, f0, L->disp[0], ly, L->disp[2], lh, 0.0f, S);
+            ? fg_reproject(L, a, tl, s_fg_w_fbo, wf, 0, ly, g_wide_w, lh, (float)L->wide_off, S)
+            : fg_reproject(L, a, tl, s_fg_hr_fbo, f0, L->disp[0], ly, L->disp[2], lh, 0.0f, S);
+    }
+    if (will_rp && !reproj) {   /* no snapshot after all: the copies the redraw needs */
+        fg_blit2(f0, s_fg_hr_fbo, b->disp[0] * S, dy * S, L->disp[0] * S, ly * S, b->disp[2] * S, dh * S);
+        if (iw >= 0) fg_blit2(wf, s_fg_w_fbo, 0, dy * S, 0, ly * S, g_wide_w * S, dh * S);
     }
     /* Reprojected: only the cars are drawn again (their own motion). */
     s_fg_replay_objects_only = reproj;
@@ -11807,6 +11923,7 @@ static void fg_generate_timed(double t) {
     rthf_pause();
     /* (Re)allocation at a new level is not the generated frame's cost. */
     if (s_fg_pb >= 0) (void)fg_surfaces_ensure(s_fg_l[s_fg_pb].wide);
+    if (s_fg_reproject) (void)rp_resources();   /* compiling is not the frame's cost */
     if (s_fg_qok < 0) {
         s_fg_qok = (p_glGenQueries && p_glBeginQuery && p_glEndQuery && p_glGetQueryObjectui64v) ? 1 : 0;
         if (s_fg_qok) p_glGenQueries(4, s_fg_q);
@@ -12103,6 +12220,7 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     }
     FgCamParams cp;
     fg_cam_defaults(&cp);
+    cp.keep_partial = s_fg_reproject;
     FgList *src = A;
     if (s_fg_reproject) {   /* the newer frame's image is warped: fit for it */
         src = B;
@@ -12160,6 +12278,9 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     s_fg_capture_real = 1;
     rth_present_payload(op, p);
     s_fg_capture_real = 0;
+    /* Reprojection's source: the surface as this present showed it (the
+     * game draws on into its buffers while the in-between frames run). */
+    if (s_fg_reproject && B) rp_snapshot_list((int)(B - s_fg_l), B->disp);
     s_fg_pa = s_fg_older; s_fg_pb = s_fg_newer;
     s_fg_n = n; s_fg_k = 1;
     s_fg_t0 = arrive_ns;
