@@ -1509,6 +1509,7 @@ static_assert((int)PSX_MOD_CONTROLLER_ANALOG ==
 static_assert((int)PSX_MOD_CONTROLLER_DIGITAL ==
               (int)PSXRecompV4::PAD_MODE_DIGITAL);
 static double        g_host_refresh_hz = 0.0;
+static double        g_host_refresh_max_hz = 0.0;   /* panel maximum (VRR) */
 static constexpr double PSX_FRAME_PERIOD_MS = 1000.0 / 59.94;
 static double        g_guest_frame_period_ms = PSX_FRAME_PERIOD_MS;
 static double        g_frame_period_ms = PSX_FRAME_PERIOD_MS;
@@ -3449,14 +3450,28 @@ static void refresh_host_display_cadence(int force_log, int force_probe) {
     }
     g_host_refresh_last_probe_ms = now_ms ? now_ms : 1ull;
 
-    double host_hz = 0.0;
+    double host_hz = 0.0, max_hz = 0.0;
     if (disp_idx >= 0) {
         SDL_DisplayMode dm;
         if (SDL_GetCurrentDisplayMode(disp_idx, &dm) == 0 &&
             dm.refresh_rate > 0) {
             host_hz = (double)dm.refresh_rate;
+            /* The panel's maximum refresh at this size (VRR targets it). */
+            max_hz = psx_sdl_display_max_refresh(disp_idx);
         }
     }
+    /* Simulated displays (headless tests): PSX_HOST_REFRESH_HZ and
+     * PSX_HOST_REFRESH_MAX_HZ override what SDL reports. */
+    if (const char* e = std::getenv("PSX_HOST_REFRESH_HZ")) {
+        const double v = std::atof(e);
+        if (v > 0.0) host_hz = v;
+    }
+    if (const char* e = std::getenv("PSX_HOST_REFRESH_MAX_HZ")) {
+        const double v = std::atof(e);
+        if (v > 0.0) max_hz = v;
+    }
+    if (max_hz < host_hz) max_hz = host_hz;
+    g_host_refresh_max_hz = max_hz;
 
     const int display_changed = (disp_idx != g_host_refresh_display_idx);
     const int refresh_changed =
@@ -3558,7 +3573,7 @@ static int host_driver_vsync_unreliable(void) {
 }
 
 static int present_vsync_owns_cadence(void) {
-    if (g_video_vsync == 0 || g_present_vsync_disabled)
+    if (g_video_vsync == 0 || g_video_vsync == 2 || g_present_vsync_disabled)
         return 0;
     if (host_driver_vsync_unreliable())
         return 0;
@@ -9258,7 +9273,8 @@ static void render_thread_vblank(void) {
         std::fflush(stdout);
     }
     if (g_frame_generation)
-        gl_renderer_frame_gen_configure(g_host_refresh_hz,
+        gl_renderer_frame_gen_configure(g_video_vsync == 2 && g_host_refresh_max_hz > 0.0
+                                            ? g_host_refresh_max_hz : g_host_refresh_hz,
                                         g_guest_frame_period_ms > 0.0
                                             ? 1000.0 / g_guest_frame_period_ms : 0.0);
     gl_renderer_render_thread_frame_boundary();

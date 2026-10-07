@@ -870,8 +870,12 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             if      (mode == "on"  || mode == "vsync")     rt.video_vsync = 1;
             else if (mode == "off" || mode == "immediate") rt.video_vsync = 0;
             else if (mode == "adaptive")                   rt.video_vsync = -1;
+            // vrr: variable refresh (G-Sync/FreeSync, ProMotion): present
+            // each frame when it is ready (swap interval 0), Smooth motion
+            // targets the panel's maximum refresh and never exceeds it.
+            else if (mode == "vrr")                        rt.video_vsync = 2;
             else throw std::runtime_error(fmt::format(
-                "[video] vsync must be \"on\"|\"off\"|\"immediate\"|\"adaptive\": {}", mode));
+                "[video] vsync must be \"on\"|\"off\"|\"immediate\"|\"adaptive\"|\"vrr\": {}", mode));
         }
         if (video.contains("frame_interpolation")) {
             rt.video_frame_interpolation =
