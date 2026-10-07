@@ -6024,6 +6024,10 @@ static int gp0_command_word_count(uint8_t opcode) {
     }
 }
 
+int gpu_gp0_command_word_count(uint8_t opcode) {
+    return gp0_command_word_count(opcode);
+}
+
 static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
                               uint32_t source_addr, uint16_t rank,
                               int full_draw_area) {

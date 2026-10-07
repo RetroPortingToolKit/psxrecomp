@@ -1095,6 +1095,11 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME render_pass_sandbox_test COMMAND render_pass_sandbox_test)
 
+    add_executable(render_pass_ot_test tests/test_render_pass_ot.cpp)
+    target_include_directories(render_pass_ot_test PRIVATE include)
+    target_compile_features(render_pass_ot_test PRIVATE cxx_std_17)
+    add_test(NAME render_pass_ot_test COMMAND render_pass_ot_test)
+
     add_executable(gpu_primitive_reject_test tests/test_gpu_primitive_reject.c)
     target_include_directories(gpu_primitive_reject_test PRIVATE include)
     add_test(NAME gpu_primitive_reject_test COMMAND gpu_primitive_reject_test)

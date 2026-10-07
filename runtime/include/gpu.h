@@ -88,6 +88,9 @@ void gpu_get_crtc_debug(uint32_t *x1, uint32_t *x2, uint32_t *y1, uint32_t *y2,
                         uint32_t *hres1_out, uint32_t *hres2_out);
 uint64_t gpu_get_gp0_count(void);  /* Total GP0 writes since init */
 void gpu_get_gp0_stats(uint64_t* nop, uint64_t* fill, uint64_t* draw, uint64_t* env, uint64_t* copy);
+/* Fixed command words; -1 denotes a terminated polyline, 0 an unknown opcode.
+ * Transfer payloads follow the returned header length. */
+int gpu_gp0_command_word_count(uint8_t opcode);
 
 typedef struct {
     uint32_t left, top, right, bottom;
