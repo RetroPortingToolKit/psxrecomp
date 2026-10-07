@@ -76,6 +76,8 @@ int gpu_display_is_depth24(void){return 0;}
 void gpu_get_display_info(GpuDisplayInfo *out){memset(out,0,sizeof(*out));out->width=320;out->height=240;}
 int psx_ws_prim_in_backdrop(void){return 0;}
 int gpu_ws_nw_flat_backdrop_enabled(void){return 0;}
+int gpu_ws_background_requires_full_composite(void){return 0;}
+void gpu_timeline_note(uint8_t kind,uint32_t a,uint32_t b){(void)kind;(void)a;(void)b;}
 int g_ws_tex_edge_pct=0;
 int psx_ws_prim_is_tagged(void){return 0;}
 void psx_ws_dbg_gate_frame_snapshot(void){}

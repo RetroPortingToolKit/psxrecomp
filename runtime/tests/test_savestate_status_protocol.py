@@ -14,11 +14,12 @@ DMA = (ROOT / "src/dma.c").read_text(encoding="utf-8")
 BOOT_STATE = (ROOT / "src/boot_state.c").read_text(encoding="utf-8")
 
 # The per-word DMA2 cursor and XA DATA_END pending bit grow the snapshot wire.
-# Keep the v7 minimum: v8 adds enhancement memory, while vanilla writers still
-# emit v7. Older files must be rejected before any live state is applied.
+# Keep the v7 read minimum; all current writers emit v9, which requires the
+# BIOS-to-game handoff latch. Older-than-v7 files reject before changing state.
 assert "#define DMA_GPU_LL_WIRE (4u + (10u * 4u))" in DMA
-assert "#define BOOT_STATE_VERSION 8u" in BOOT_STATE_H
-assert "psx_mod_memory_snapshot_bytes() ? BOOT_STATE_VERSION : 7u" in BOOT_STATE
+assert "#define BOOT_STATE_VERSION 9u" in BOOT_STATE_H
+assert "h.version       = BOOT_STATE_VERSION;" in BOOT_STATE
+assert "h.version >= 9u && !(seen & (1u << BS_SEC_GAME_START))" in BOOT_STATE
 assert "#define BOOT_STATE_VERSION_MIN_READ 7u" in BOOT_STATE_H
 assert "Reject\n * them at the header before any section changes the live machine." in BOOT_STATE_H
 
