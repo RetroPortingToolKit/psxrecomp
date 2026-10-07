@@ -831,9 +831,16 @@ void fg_hud_match(const FgPrimList *L, const FgPrimList *O, float max_px, uint8_
     for (uint32_t j = 0; j < L->n; j++)
         for (int k = 0; k < 3; k++) { x[3 * j + k] = L->v[j].x[k]; y[3 * j + k] = L->v[j].y[k]; }
     fg_hud_lerp(L, O, 0.5, x, y, max_px);
-    for (uint32_t j = 0; j < L->n; j++)
+    for (uint32_t j = 0; j < L->n; j++) {
+        const FgPrim *p = &L->v[j];
+        /* Gauge needles are small; a 2D backdrop gradient that shifts with
+         * the camera is not one. */
+        const float bw = fmaxf(p->x[0], fmaxf(p->x[1], p->x[2])) - fminf(p->x[0], fminf(p->x[1], p->x[2]));
+        const float bh = fmaxf(p->y[0], fmaxf(p->y[1], p->y[2])) - fminf(p->y[0], fminf(p->y[1], p->y[2]));
+        if (bw > 48.0f || bh > 48.0f) continue;
         for (int k = 0; k < 3; k++)
-            if (x[3 * j + k] != L->v[j].x[k] || y[3 * j + k] != L->v[j].y[k]) moved[j] = 1;
+            if (x[3 * j + k] != p->x[k] || y[3 * j + k] != p->y[k]) moved[j] = 1;
+    }
     free(x); free(y);
 }
 

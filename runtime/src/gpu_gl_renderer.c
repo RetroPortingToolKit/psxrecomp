@@ -10473,6 +10473,7 @@ typedef struct {
     int       valid, wide, disp[4];            /* closed: display rect it shows */
     int       wide_w, wide_off, scale, linear, force43;
 } FgList;
+static int rp_is_car(const FgList *L, uint32_t pi);
 /* Raw triangle captured while recording a list (absolute coords). */
 typedef struct { uint32_t rec, key0, vid[3]; float x[3], y[3], p[3][3], h[3]; int area[4]; } FgRaw;
 
@@ -11215,19 +11216,26 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
             const FgPrim *pb = &b->prims.v[pi];
             float x[3], y[3];
             const int needle = s_fg_replay_objects_only && placed == 2 && s_rp_needle[pi];
-            if (s_fg_replay_objects_only && !needle && !seen_world) {
-                /* Before the first world triangle: the backdrop (a sky dome
-                 * moves as an object too), which the warp keeps. */
-                for (int k = 0; k < 3; k++) seen_world |= s_fg_verts[3 * pi + k].mode == FG_PLACE_CAMERA;
-                pc_pending = 0;
-                break;
+            if (s_fg_replay_objects_only && !needle) {
+                /* Before its view's first world triangle: the backdrop (a sky
+                 * dome moves as an object too), which the warp keeps. */
+                int vw = -1;
+                for (int k = 0; k < 3 && vw < 0; k++) vw = s_fg_verts[3 * pi + k].view;
+                const int vk = vw >= 0 && vw < FG_MAX_VIEWS ? vw : FG_MAX_VIEWS;
+                if (!(seen_world & (1 << vk))) {
+                    for (int k = 0; k < 3; k++)
+                        if (s_fg_verts[3 * pi + k].mode == FG_PLACE_CAMERA) seen_world |= 1 << vk;
+                    pc_pending = 0;
+                    break;
+                }
             }
             if (s_fg_replay_objects_only && !needle) {
                 /* Cars: every corner moves as an object, and small (a sky
                  * dome is an object to the fit too, but it is the backdrop
                  * the warp keeps). */
-                int obj = 1;
-                for (int k = 0; k < 3; k++) obj &= s_fg_verts[3 * pi + k].mode == FG_PLACE_OBJECT;
+                /* Cars are textured; an untextured gradient is backdrop. */
+                int obj = (h.op == RTH_TEX_TRI || h.op == RTH_SHADED_TEX_TRI || h.op == RTH_PROJ_TRI) &&
+                          rp_is_car(b, (uint32_t)pi);
                 if (obj) {
                     const float bw = fmaxf(pb->x[0], fmaxf(pb->x[1], pb->x[2])) - fminf(pb->x[0], fminf(pb->x[1], pb->x[2]));
                     const float bh = fmaxf(pb->y[0], fmaxf(pb->y[1], pb->y[2])) - fminf(pb->y[0], fminf(pb->y[1], pb->y[2]));
@@ -11483,6 +11491,28 @@ static void rp_view_params(const FgList *L, float out[4][4]) {
     }
 }
 
+/* A triangle the fit called an object is a car only when it really moved
+ * against the world: corners whose older position is what the camera alone
+ * predicts (near road subdivided past the fit's pixel tolerance) are world. */
+static int rp_is_car(const FgList *L, uint32_t pi) {
+    const FgPrim *p = &L->prims.v[pi];
+    int obj = 0;
+    for (int k = 0; k < 3; k++) {
+        const FgVert *fv = &s_fg_verts[3 * pi + k];
+        if (fv->mode != FG_PLACE_OBJECT) return 0;
+        const int vi = fv->view;
+        float A[9], b[3];
+        if (vi < 0 || !fg_view_affine(&s_fg_fit, vi, 0.0, A, b)) return 0;
+        const float *P = p->p[k];
+        float q[3];
+        for (int r = 0; r < 3; r++) q[r] = A[3 * r] * P[0] + A[3 * r + 1] * P[1] + A[3 * r + 2] * P[2] + b[r];
+        const float dx = q[0] - fv->a[0], dy = q[1] - fv->a[1], dz = q[2] - fv->a[2];
+        const float d = sqrtf(dx * dx + dy * dy + dz * dz), z = fabsf(P[2]) + 1.0f;
+        if (d > 0.04f * z) obj = 1;
+    }
+    return obj;
+}
+
 /* Draws the in-between frame of the newer list L at phase t into dst_fbo
  * (which holds a copy of the real frame already). src_tex is the real
  * surface; the region is (x0, y0, W, H) native px, rel x = x - ox. */
@@ -11546,9 +11576,12 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
                 if (pi < 0) break;
                 const FgPrim *p = &L->prims.v[pi];
                 int world = 1, view = -1;
+                const int carlike = rp_is_car(L, (uint32_t)pi);
                 for (int k = 0; k < 3; k++) {
                     const FgVert *fv = &s_fg_verts[3 * pi + k];
-                    if (fv->mode != FG_PLACE_CAMERA || p->p[k][2] < 1.0f) world = 0;
+                    const int placed_world = fv->mode == FG_PLACE_CAMERA ||
+                                             (fv->mode == FG_PLACE_OBJECT && !carlike);
+                    if (!placed_world || p->p[k][2] < 1.0f) world = 0;
                     else if (view < 0) view = fv->view;
                     else if (view != fv->view) world = 0;
                 }
