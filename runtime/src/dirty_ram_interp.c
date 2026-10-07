@@ -3126,7 +3126,12 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
     /* Overlay flow above the kernel window — kernel window stays per-block (see
      * is_local_dirty_target / phys_is_overlay_flow_region). Includes boot-text
      * pages overwritten by a runtime overlay (Tomba 2), not just [FLOOR, RAM). */
-    int allow_local_dirty_flow = phys_is_overlay_flow_region(ram_phys);
+    /* A bounded span's runner owns call/return contracts. Local overlay
+     * chaining can directly enter a native callee and consume its return
+     * continuation past stop_addr (Tomba 2: into the following audio tick).
+     * Surface transfers to the runner; it may still call native callees with
+     * their exact return address. Ordinary overlay execution is unchanged. */
+    int allow_local_dirty_flow = !forced && phys_is_overlay_flow_region(ram_phys);
 
     /* Backend-invariant mod_function_entry hooks: generated code fires
      * psx_mod_function_entry at listed function entries, but a mod-patched
