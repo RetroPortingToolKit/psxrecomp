@@ -313,7 +313,55 @@ static void test_ceiling(void) {
     check(fg_ceiling_get(&c, 100.0) == 7, "up to the maximum");
 }
 
+/* Any-rate presents: the grid fg_tick runs (fg_next_due, fg_clock_phase,
+ * fg_plan at fg_plan_hz), simulated over 10 s of 30 Hz game frames. */
+static void test_any_rate(void) {
+    const double rates[] = { 60.0, 90.0, 100.0, 120.0, 144.0, 165.0, 240.0, 360.0 };
+    const double flip_s = 2.0 / 59.94;
+    const uint64_t flip_ns = (uint64_t)(flip_s * 1e9);
+    for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        const double hz = rates[r];
+        const uint64_t step = (uint64_t)(fg_step_s(flip_s, hz, 1) * 1e9);
+        const int n = fg_plan(flip_s, fg_plan_hz(flip_s, hz), 0.001, 0.0005, 0.85, 64);
+        uint64_t due = 0, last = 0, min_gap = UINT64_MAX;
+        unsigned presents = 0, frames = 300, gens = 0;
+        int phase_ok = 1;
+        for (unsigned f = 0; f < frames; f++) {
+            const uint64_t t0 = (uint64_t)f * flip_ns, next = t0 + flip_ns;
+            if (due < t0 || due > t0 + step) due = t0;
+            double prev_t = 0.0;
+            for (int k = 1;; ) {
+                uint64_t now = due;
+                if (now >= next) { now = next; }
+                else if (k <= n) {
+                    double t = fg_clock_phase(now - t0, step, flip_ns);
+                    if (t > 0.0) {
+                        if (!(t > prev_t && t < 1.0)) phase_ok = 0;
+                        prev_t = t; k++; gens++;
+                        if (presents && now - last < min_gap) min_gap = now - last;
+                        last = now; presents++;
+                        due = fg_next_due(due, now, step);
+                        continue;
+                    }
+                }
+                if (presents && now - last < min_gap && now != next) min_gap = now - last;
+                last = now; presents++;
+                due = fg_next_due(due, now, step);
+                break;
+            }
+        }
+        const double secs = frames * flip_s, rate = presents / secs;
+        char what[96];
+        snprintf(what, sizeof what, "%.0f Hz: %.1f presents/s, phases rise", hz, rate);
+        check(phase_ok && rate > hz * 0.95 && rate < hz * 1.03, what);
+        snprintf(what, sizeof what, "%.0f Hz: no two presents closer than one interval", hz);
+        check(min_gap + 1000u >= step, what);
+        (void)gens;
+    }
+}
+
 int main(void) {
+    test_any_rate();
     test_ceiling();
     test_cost();
     test_pace();

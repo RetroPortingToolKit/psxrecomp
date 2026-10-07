@@ -137,6 +137,19 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
  * Returns 0..slots-1, where slots = round(flip_s * refresh_hz); an unknown
  * generation cost allows one frame while the real cost leaves half the
  * interval, so the cost gets measured. */
+/* Any-rate scheduling. fg_step_s: the interval between in-between frames
+ * of a game frame `flip_s` long with `n` of them on a `refresh_hz` display
+ * (one display interval; an even split when the refresh is unknown).
+ * fg_clock_phase: the interpolation phase (0..1) of a frame generated
+ * `since_real_ns` after the real frame was composed, shown one step later;
+ * 0 when it would land on the next real frame. */
+double fg_step_s(double flip_s, double refresh_hz, int n);
+double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns);
+/* The refresh fg_plan sees: rounded up to whole slots per game frame. */
+double fg_plan_hz(double flip_s, double refresh_hz);
+/* The next present time on the global grid after presenting at `now`. */
+uint64_t fg_next_due(uint64_t due, uint64_t now, uint64_t step_ns);
+
 int fg_plan(double flip_s, double refresh_hz, double real_cost_s,
             double gen_cost_s, double budget, int max_gens);
 

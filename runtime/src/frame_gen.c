@@ -637,6 +637,35 @@ int fg_plan(double flip_s, double refresh_hz, double real_cost_s,
     return fit < n ? (fit > 0 ? fit : 0) : n;
 }
 
+double fg_step_s(double flip_s, double refresh_hz, int n) {
+    if (refresh_hz > 0.0) return 1.0 / refresh_hz;
+    if (n <= 0 || flip_s <= 0.0) return flip_s > 0.0 ? flip_s : 0.0;
+    return flip_s / (double)(n + 1);
+}
+
+double fg_plan_hz(double flip_s, double refresh_hz) {
+    if (flip_s <= 0.0 || refresh_hz <= 0.0) return refresh_hz;
+    /* Room for every display interval a game frame can hold (3.34 at
+     * 100 Hz -> 4 slots); the clock drops the one that does not fit. */
+    double slots = ceil(flip_s * refresh_hz - 1e-6);
+    return slots / flip_s;
+}
+
+uint64_t fg_next_due(uint64_t due, uint64_t now, uint64_t step_ns) {
+    /* On the grid while close to it; a late present restarts it, so frames
+     * are never closer together than one interval. */
+    if (due != 0u && now >= due && now - due < step_ns / 2u) return due + step_ns;
+    return now + step_ns;
+}
+
+double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns) {
+    if (flip_ns == 0u) return 0.0;
+    double t = ((double)since_real_ns + (double)step_ns) / (double)flip_ns;
+    /* Within a quarter interval of the next real frame it is the real one. */
+    if (t >= 1.0 - 0.25 * (double)step_ns / (double)flip_ns) return 0.0;
+    return t;
+}
+
 void fg_breaker_init(FgBreaker *b, double base_hold, double max_hold, double repeat_s) {
     memset(b, 0, sizeof *b);
     b->base_hold = base_hold;

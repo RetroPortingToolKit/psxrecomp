@@ -10525,7 +10525,14 @@ static const char *s_fg_hold_why = NULL;
 static double    s_fg_gen_gpu_ms = 0.0, s_fg_gen_cpu_ms = 0.0;   /* the last one measured */
 /* Schedule after a flip: n generated frames, then the real one. */
 static int       s_fg_pending = 0, s_fg_n = 0, s_fg_k = 0;
-static uint64_t  s_fg_t0 = 0, s_fg_step_ns = 0;
+static uint64_t  s_fg_t0 = 0, s_fg_step_ns = 0, s_fg_flip_ns = 0;
+/* Any-rate presents: one global grid at the display's refresh (or its
+ * panel maximum under VRR), never faster, across game frames. */
+static uint64_t  s_fg_due = 0, s_fg_last_present_ns = 0;
+static void fg_note_present(uint64_t now) {
+    s_fg_last_present_ns = now;
+    s_fg_due = fg_next_due(s_fg_due, now, s_fg_step_ns);
+}
 static uint16_t  s_fg_real_op = 0;
 static uint8_t  *s_fg_real_p = NULL; static size_t s_fg_real_cap = 0;
 /* Generated-frame surfaces (the displayed buffer's hr rect and wide rows). */
@@ -10545,6 +10552,7 @@ static uint64_t  s_fg_q_cpu[4];
 static uint64_t  s_fg_generated = 0, s_fg_real_presents = 0, s_fg_flips = 0,
                  s_fg_flushed = 0, s_fg_skipped_plan = 0, s_fg_dups = 0;
 static int       s_fg_last_n = 0, s_fg_last_slots = 0;
+static const char *s_fg_noplan_why = "";   /* why the last flip planned nothing */
 static double    s_fg_last_match_ms = 0.0;
 
 static double fg_now_s(void) { return (double)rt_now_ns() * 1e-9; }
@@ -11310,7 +11318,7 @@ static void rth_present_payload(uint16_t op, const uint8_t *p);   /* below */
 static FgCeiling s_fg_ceil;
 static int       s_fg_ceil_init = 0;
 static FgCeiling *fg_ceil(void) {
-    if (!s_fg_ceil_init) { fg_ceiling_init(&s_fg_ceil, 7, 2.0); s_fg_ceil_init = 1; }
+    if (!s_fg_ceil_init) { fg_ceiling_init(&s_fg_ceil, 15, 2.0); s_fg_ceil_init = 1; }
     return &s_fg_ceil;
 }
 static uint32_t s_fg_trip_late = 0, s_fg_trip_bp = 0, s_fg_trip_behind = 0;
@@ -11437,6 +11445,7 @@ static void fg_present_real(void) {
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
     gl_swap_now(0);
     s_fg_real_presents++;
+    fg_note_present(rt_now_ns());
 }
 
 /* Present the waiting real frame now (generated frames still due are
@@ -11463,12 +11472,22 @@ static uint64_t fg_tick(void *user, uint64_t now) {
         fg_flush();
         return 0;
     }
-    const uint64_t due = s_fg_t0 + (uint64_t)(s_fg_k - 1) * s_fg_step_ns;
+    const uint64_t due = s_fg_due;
     if (now < due) return due;
     if (s_fg_k <= s_fg_n) {
-        fg_generate_timed((double)s_fg_k / (double)(s_fg_n + 1));
-        s_fg_k++;
-        return s_fg_t0 + (uint64_t)(s_fg_k - 1) * s_fg_step_ns;
+        /* The phase comes from the host clock: the in-between frame shows
+         * one display interval from now, so any refresh (also one that is no
+         * multiple of the game's 30 Hz) and a late tick both get the camera
+         * where it is when the frame is seen. Past the end of the game
+         * frame the rest are dropped and the real frame goes. */
+        const double t = fg_clock_phase(now - s_fg_t0, s_fg_step_ns, s_fg_flip_ns);
+        if (t > 0.0) {
+            fg_generate_timed(t);
+            s_fg_k++;
+            fg_note_present(now);
+            return s_fg_due;
+        }
+        s_fg_flushed++;
     }
     fg_present_real();
     return 0;
@@ -11497,6 +11516,19 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     {   /* Learn the display buffers. */
         int k = 0;
         while (k < s_fg_nbuf && memcmp(s_fg_buf[k], disp, sizeof s_fg_buf[k]) != 0) k++;
+        if (k == s_fg_nbuf) {
+            /* A buffer at the same origin with a new size (a mode change, a
+             * save state's first frame) replaces the old entry: buffers are
+             * looked up by the point drawn to, and a stale entry found first
+             * would close every list with the old size, so no two frames
+             * ever matched. */
+            for (int j = 0; j < s_fg_nbuf; j++)
+                if (s_fg_buf[j][0] == disp[0] && s_fg_buf[j][1] == disp[1]) {
+                    memcpy(s_fg_buf[j], disp, sizeof s_fg_buf[j]);
+                    k = j;
+                    break;
+                }
+        }
         if (k == s_fg_nbuf) {
             if (s_fg_nbuf == 4) { memmove(s_fg_buf[0], s_fg_buf[1], sizeof s_fg_buf[0] * 3); s_fg_nbuf = 3; s_fg_cur_buf = -1; }
             memcpy(s_fg_buf[s_fg_nbuf++], disp, sizeof s_fg_buf[0]);
@@ -11568,6 +11600,16 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     s_fg_fit_s = 0.85 * flip_s - real_s - s_fg_swap_ema;
     if (s_fg_qok > 0) fg_gen_cost_poll();   /* once per game frame: a poll flushes */
     int n = 0;
+    s_fg_noplan_why = !B ? "newer list is another buffer" : !A->valid ? "older list invalid"
+        : !B->valid ? "newer list invalid" : (A->disp[2] != B->disp[2] || A->disp[3] != B->disp[3])
+        ? "display size changed" : A->wide_w != B->wide_w ? "wide width changed"
+        : A->scale <= 0 ? "no scale" : "";
+    if (A && B && A->valid && B->valid && (A->disp[2] != B->disp[2] || A->disp[3] != B->disp[3])) {
+        static char why[96];
+        snprintf(why, sizeof why, "display size changed %dx%d@%d,%d -> %dx%d@%d,%d",
+                 A->disp[2], A->disp[3], A->disp[0], A->disp[1], B->disp[2], B->disp[3], B->disp[0], B->disp[1]);
+        s_fg_noplan_why = why;
+    }
     if (A && B && A->valid && B->valid && A->disp[2] == B->disp[2] &&
         A->disp[3] == B->disp[3] && A->wide_w == B->wide_w && A->scale > 0) {
         /* The surfaces exist (and are warm) before a frame is planned on them. */
@@ -11575,7 +11617,7 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
         if (s_fg_force) n = slots > 1 ? slots - 1 : 1;
         else if (fg_breaker_open(&s_fg_brk, now) && !stale && !held) {
             const double est = fg_cost_estimate(fg_cost(), now, s_fg_fit_s);
-            n = fg_plan(flip_s, rhz, real_s, est > 0.0 ? est + s_fg_swap_ema : 0.0, 0.85,
+            n = fg_plan(flip_s, fg_plan_hz(flip_s, rhz), real_s, est > 0.0 ? est + s_fg_swap_ema : 0.0, 0.85,
                         fg_ceiling_get(fg_ceil(), now));
         }
         if (n == 0) s_fg_skipped_plan++;
@@ -11653,7 +11695,9 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     s_fg_pa = s_fg_older; s_fg_pb = s_fg_newer;
     s_fg_n = n; s_fg_k = 1;
     s_fg_t0 = rt_now_ns();
-    s_fg_step_ns = (uint64_t)(flip_s / (double)(n + 1) * 1e9);
+    s_fg_flip_ns = (uint64_t)(flip_s * 1e9);
+    s_fg_step_ns = (uint64_t)(fg_step_s(flip_s, rhz, n) * 1e9);
+    if (s_fg_due < s_fg_t0 || s_fg_due > s_fg_t0 + s_fg_step_ns) s_fg_due = s_fg_t0;
     s_fg_pending = 1;
     s_fg_bp_seen = bp;
     uint64_t next = fg_tick(NULL, rt_now_ns());
@@ -11728,7 +11772,7 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         "\"trips_late\":%u,\"trips_backed_up\":%u,\"trips_behind\":%u,"
         "\"place_camera\":%u,\"place_object\":%u,\"place_neighbour\":%u,"
         "\"place_unchanged\":%u,\"cam_angle_deg\":%.3f,\"cam_shift\":%.1f,"
-        "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\"",
+        "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\",\"noplan_why\":\"%s\"",
         s_fg_on, s_fg_on && s_rth_on && !s_hd_native_authority && open, s_fg_force,
         (unsigned long long)s_fg_generated, (unsigned long long)s_fg_real_presents,
         (unsigned long long)s_fg_flips, (unsigned long long)s_fg_dups,
@@ -11752,7 +11796,8 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         sqrt(s_fg_fit.v[0].t[0] * s_fg_fit.v[0].t[0] + s_fg_fit.v[0].t[1] * s_fg_fit.v[0].t[1] +
              s_fg_fit.v[0].t[2] * s_fg_fit.v[0].t[2]),
         s_fg_fit.clamped, s_fg_fit.guessed, s_fg_fit.ok,
-        (unsigned long long)s_fg_rejected, s_fg_reject_why ? s_fg_reject_why : "");
+        (unsigned long long)s_fg_rejected, s_fg_reject_why ? s_fg_reject_why : "",
+        s_fg_noplan_why ? s_fg_noplan_why : "");
 }
 
 /* ---- the recording vtable ------------------------------------------------ */
