@@ -26,6 +26,14 @@ public:
         for(uint32_t i=0;i<count;++i)buckets.push_back({first+4*i,rd(first+4*i)&0xFFFFFF,{}});
         return true;
     }
+    // A title may build a separate single-head HUD list after world capture.
+    // Its authored initial value is the terminator, independent of the old
+    // frame's contents currently occupying that stack or arena slot.
+    bool capture_new_list(uint32_t first) {
+        reset();first&=0x1FFFFFFF;
+        if(!valid(first,4))return false;
+        buckets.push_back({first,0xFFFFFF,{}});return true;
+    }
     bool preserve_late() {
         uint32_t nodes=0,words=0;
         for(auto& b:buckets) {

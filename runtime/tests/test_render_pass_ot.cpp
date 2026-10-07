@@ -26,6 +26,12 @@ int main() {
     put(slot,next);put(late,0);put(late+4,0);ot.apply_late();
     check(get(slot)==late && get(late)==(0x01000000|next) && get(late+4)==0xE1000123,"late follows regenerated world");
     put(slot,late);put(late,late);check(!ot.preserve_late(),"cycle bounded");
+    PSXOTReplay hud;
+    check(hud.capture_new_list(slot),"standalone late HUD head");
+    put(slot,late);put(late,0x01FFFFFF);put(late+4,0xE1000123);
+    check(hud.preserve_late(),"capture complete HUD prefix");
+    put(slot,0xFFFFFF);put(late,0);put(late+4,0);hud.apply_late();
+    check(get(slot)==late && get(late)==0x01FFFFFF && get(late+4)==0xE1000123,"restore standalone HUD");
     constexpr uint32_t p=0x30000;
     put(p,0x07FFFFFF);put(p+4,0x20010203);put(p+8,0xE3000042);
     put(p+12,0xE4000012);put(p+16,0xE50000AB);
