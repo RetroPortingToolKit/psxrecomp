@@ -25,7 +25,8 @@ Title code identifies completed screen-space packets; a common edge/centre
 anchor can span separate DMA lists. Native-wide translation, packet guards,
 expiry and native 4:3 behavior remain covered by focused execution fixtures.
 This addresses the mechanism behind Ape's separate Status backing/text batches;
-its title binding and actual visual result still need review. Tracking:
+the current title follows padded packet chains and repeatedly anchors its backing
+with the labels. Broader visual review remains open. Tracking:
 `beads-eio.3.125` and `beads-uutk`.
 
 ## Acceptance target
@@ -52,7 +53,63 @@ its title binding and actual visual result still need review. Tracking:
 - Owner playtesting supplies final acceptance. No title is marked complete
   merely because its settings expose these options.
 
-## Starting inventory and remaining work
+## Current Windows review readiness, 2026-10-07
+
+All 15 titles have executable-bound local Windows review launchers in
+`F:/Projects/psxrecomp/parity-review-20261006`. `REVIEW.txt` is the current owner
+checklist; `receipts/review-readiness.json` records the exact binary identities,
+media/BIOS path checks and staged frame-rate defaults. These milestones do not
+establish full feature parity or final gameplay/performance acceptance.
+
+Latest owner policy: keep native interpolation **default on**. The earlier
+default-off preference was withdrawn. Tomba 1/2, MMX4/5, Tsumu and V8 catalogs
+now default their native feature on; other current candidates already do.
+Existing explicit user choices are preserved. Select Display refresh for review.
+
+The owner suspects background system contention/long uptime and will perform
+final review after restarting. Further performance comparisons on this session
+are deferred. Human-review launchers set `PSX_RENDER_PASS_VERIFY=0` and
+`PSX_GL_PERF=0`, restoring their parent environment. Jersey already compiles GPU
+diagnostics out. Synchronous GPU profiling is an additional possible source of
+measurement overhead, not an established cause of the reported hitching.
+
+| Title | Current first-review milestone | Main remaining gaps |
+|---|---|---|
+| Tomba! | Actual actor/camera replay, 1080p, resident kit and recent Any% FMV work; bounded native state checks pass | Exact native candidate owner approval; combined 0.17.0-alpha minor release, broader view/load/package review |
+| Tomba! 2 | USA actual native replay; short moving-scene state checks pass; resident loading retained | Full 32:9, stable filtering, broad view/load coverage; Italian variant later |
+| MMX4 | Actual native scene replay; moving attract check passes; fresh historical BIOS capture | Broader view/overlay coverage, loading HLE |
+| MMX5 | Actual native scene replay; moving attract check passes; original-disc AOT | Broader view, full 32:9, loading HLE |
+| MMX6 | Native replay/resident candidate includes current widescreen PR543 / `458e6ece` | Current combined-build owner gameplay/load/audio review |
+| Ape Escape | Title `92235ff`, framework `77f3a909`; guarded bulk submission, indexed packet guards, queued native-frame generations, resident distance controls | All-level performance, flyover/Crumbling Castle/transition audio, ultrawide mailbox, CD subdivision residency/object activation |
+| Vigilante 8 | Title `95fa269` native fix, framework `4b754210`; main-thread replay and allocated terrain packet support; Sand Factory correctness check passes | Occasional taxing-scene hiccups; earlier slot01 unlocated; load gain not established; partial AOT |
+| V8 2nd Offense | Built native replay/resident candidate and fresh captures | Broader distance/subdivision/performance/load review |
+| Tsumu | OpenGL/1080p, PGXP/filtering and actual native first-puzzle replay; localization retained | 4:3 only, loading HLE and broader coverage |
+| THPS2 | Built native replay/distance candidate and fresh historical captures | Wider visibility, loading and existing multiplayer review |
+| Jersey Devil | Built native replay/renderer candidate, 13 native pairs | Wider view/scene/load review; loading HLE absent |
+| Spider-Man | Built native replay/PGXP candidate, fresh historical shards | Broad view/scene/load review; loading HLE absent |
+| Spider-Man 2 | Native packed-vertex HLE and bounded rooftop replay; persistent local review candidate | Broader levels, load coverage and display-refresh cadence |
+| MediEvil | Built native replay/PGXP/filtering/distance/subdivision candidate, static original-disc AOT | Resident-loading adapter and broad gameplay/view review |
+| MediEvil II | Built native fidelity/resident PP20/level candidate, static original-disc AOT | Broad combined-build gameplay/view/load review |
+
+Shared `77f3a909` retains the shown generation plus two pending generations
+under the existing total 256 MiB image budget. Ape's old single-pending path
+accepted 340 phases but presented only 24 native images in a six-second sample;
+the queue fix presented 491 native images / 502 swaps at about 59.4 guest Hz.
+Those presentation counts include reused phases; they are not unique-frame FPS
+or proof of 165 Hz delivery. Separate exact rollback checks and focused LLE/HLE
+command/provenance fixtures pass. Owner cadence review remains necessary.
+
+V8's main-thread binding initially refused its extended terrain packets because
+the shared OT parser only accepted main RAM. `4b754210` accepts complete allocated
+GPU-DMA aperture ranges while retaining malformed-packet, allocation-end and
+BIOS guards. The mixed RAM/aperture fixture and 13-pass live exact state check
+pass. Separate short redraw/feature-off samples are diagnostic evidence only;
+they do not locate or resolve the earlier owner slideshow checkpoint.
+
+Windows review readiness, final owner acceptance, missing features and native
+Linux/final release packaging remain separate. Nothing has been published.
+
+## Historical starting inventory and remaining work
 
 This records implementation evidence found during the initial repository audit,
 not full-game qualification. Framework baseline is `7b253941` (CODEGEN 18).
@@ -111,9 +168,9 @@ against the new worktree remains outstanding.
 
 ## Execution and promotion
 
-The owner authorized one Sol worker per title in bounded waves. First wave:
-Ape Escape, Spider-Man 2, and Vigilante 8. Shared changes are owned by the
-coordinator. At most two compile jobs and one game process run at a time;
+The original plan used bounded title workers; the current owner instructions
+require solo work and no worker resumes or delegation. Shared changes remain
+coordinator-owned. At most two compile jobs and one owned game process run at a time;
 validation uses isolated saves and ports. Preserve personal sessions and saves.
 
 For each title record disc identity, framework/game revisions, actual applied
@@ -243,7 +300,7 @@ native median 0.130985 s (5.012x for hashing). Receipts are private under
 This saves about half a second for that operation, not the entire multi-second
 launch delay observed on the busy host. Overall startup still needs attribution.
 
-## Title source milestones awaiting execution
+## Historical title preparation milestones
 
 Tomba! source preparation is local commit `a46ca8ab` on
 `feat/tomba1-parity-hle-20261006`, retaining the newer resident kit at
