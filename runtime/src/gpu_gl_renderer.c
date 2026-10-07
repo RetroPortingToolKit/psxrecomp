@@ -6037,13 +6037,15 @@ static void interp_present_source_interval(void) {
  * rect; its phases then map onto host time from that interval's start. At
  * each output deadline the presenter shows the newest image at or before the
  * deadline's phase, crossfading to the next one when passes were shed. Two
- * generations exist: the one on screen and the one being built for the next
- * flip. */
+ * generations can wait behind the one on screen: IRQ-driven flips can become
+ * visible to the host after the game has already drawn its next frame. */
 
 #define PASS_SLOTS (RENDER_PASS_MAX_PHASES + 1u)
+#define PASS_GENERATIONS 3
 typedef struct PassGen {
     int      valid;
     int      promoted;
+    uint64_t order,created_cycle;
     int      x, y, w, h;          /* guest VRAM rect */
     int      tex_w, tex_h;        /* slot size (hr pixels; wide band if wide) */
     int      source_path;         /* GL_PRES_VRAM or GL_PRES_WIDE */
@@ -6054,7 +6056,8 @@ typedef struct PassGen {
     double   t_start, t_len;      /* host ticks, set on promotion */
 } PassGen;
 static int      s_pass_flip_shown = 0;
-static PassGen  s_pgen[2];
+static PassGen  s_pgen[PASS_GENERATIONS];
+static uint64_t s_pgen_order;
 /* Double-buffer complete pairs: the unpublished set may be overwritten while
  * the last complete pair remains visible. No temporal phases or generation. */
 typedef struct StereoPair {
@@ -6074,13 +6077,14 @@ enum { STEREO_CAPTURE_MAX = 100 };
 static GLRenderStereoCapture s_stereo_captures[STEREO_CAPTURE_MAX];
 static uint32_t s_stereo_capture_count;
 /* Slot textures are made as slots fill: [0, s_pgen_alloc_n) exist, all at
- * s_pgen_alloc_w x h. A generation never fills past pass_slot_cap, so two
+ * s_pgen_alloc_w x h. A generation never fills past pass_slot_cap, so three
  * generations stay inside its budget whatever the internal scale. */
-static GLuint   s_pgen_tex[2][PASS_SLOTS];
-static uint32_t s_pgen_alloc_n[2];
-static int      s_pgen_alloc_w[2], s_pgen_alloc_h[2];
+static GLuint   s_pgen_tex[PASS_GENERATIONS][PASS_SLOTS];
+static uint32_t s_pgen_alloc_n[PASS_GENERATIONS];
+static int      s_pgen_alloc_w[PASS_GENERATIONS], s_pgen_alloc_h[PASS_GENERATIONS];
 static int      s_pgen_cur = 0;
-static int      s_pgen_promote = 0;
+static int      s_pgen_write = 1;
+static int      s_pgen_promote = -1;
 static uint64_t s_pgen_promotions = 0, s_pgen_presents = 0, s_pgen_blends = 0;
 static uint64_t s_pgen_expired = 0, s_pgen_unmatched = 0, s_pgen_early = 0;
 static uint64_t s_pgen_late = 0;     /* presents past the frame's planned end */
@@ -6128,9 +6132,8 @@ uint64_t gl_renderer_perf_ticks(void) { return SDL_GetPerformanceCounter(); }
 uint64_t gl_renderer_perf_frequency(void) { return SDL_GetPerformanceFrequency(); }
 
 static void pass_gens_invalidate(void) {
-    s_pgen[0].valid = s_pgen[1].valid = 0;
-    s_pgen[0].promoted = s_pgen[1].promoted = 0;
-    s_pgen_promote = 0;
+    for(int i=0;i<PASS_GENERATIONS;++i)s_pgen[i].valid=s_pgen[i].promoted=0;
+    s_pgen_promote = -1;
 }
 
 static int s_pass_force_refuse = -1;   /* -1: read PSX_RENDER_PASS_REFUSE */
@@ -6193,9 +6196,9 @@ int gl_renderer_pass_ready(void) {
     return gl_renderer_pass_unavailable() == PSX_MOD_RENDER_PASS_READY;
 }
 
-/* Slots per generation that fit a 256 MiB budget for both generations. */
+/* Slots per generation that fit a 256 MiB budget for the whole queue. */
 static uint32_t pass_slot_cap(int tex_w, int tex_h) {
-    double bytes = (double)tex_w * (double)tex_h * 4.0 * 2.0;
+    double bytes = (double)tex_w * (double)tex_h * 4.0 * PASS_GENERATIONS;
     uint32_t cap = bytes > 0.0 ? (uint32_t)((256.0 * 1024.0 * 1024.0) / bytes)
                                : PASS_SLOTS;
     if (cap > PASS_SLOTS) cap = PASS_SLOTS;
@@ -6449,8 +6452,7 @@ static void pass_resources_release(void) {
     }
     s_xr_color_prog=s_xr_native_tex=0;
     stereo_resources_release();
-    pass_gen_release(0);
-    pass_gen_release(1);
+    for(int gi=0;gi<PASS_GENERATIONS;++gi)pass_gen_release(gi);
     pass_gens_invalidate();
     pass_free_color_fbo(&s_pb_hr_tex, &s_pb_hr_rb, &s_pb_hr_fbo,
                         &s_pb_hr_w, &s_pb_hr_h);
@@ -6518,7 +6520,12 @@ static int transaction_begin(int x, int y, int w, int h, int open_gen,
     s_pass_begin_diag.source_path = s_interp_source_path;
     s_pass_begin_diag.capture_w = s_interp_w;
     s_pass_begin_diag.capture_h = s_interp_h;
-    gi = 1 - s_pgen_cur;
+    if(open_gen && !stereo) {
+        uint64_t order[PASS_GENERATIONS];uint32_t valid=0;
+        for(int i=0;i<PASS_GENERATIONS;++i){order[i]=s_pgen[i].order;if(s_pgen[i].valid)valid|=1u<<i;}
+        s_pgen_write=render_pass_generation_write(s_pgen_cur,valid,order,PASS_GENERATIONS);
+    }
+    gi = s_pgen_write;
     g = &s_pgen[gi];
     s_pass_begin_diag.generation = gi;
     s_pass_begin_diag.valid = g->valid;
@@ -6544,7 +6551,7 @@ static int transaction_begin(int x, int y, int w, int h, int open_gen,
     s_pass_begin_diag.wide = wide;
     s_pass_begin_diag.requested_w = tw;
     s_pass_begin_diag.requested_h = th;
-    gi = 1 - s_pgen_cur;
+    gi = s_pgen_write;
     g = &s_pgen[gi];
     if (stereo) {
         StereoPair *pair = &s_stereo_pair[1 - s_stereo_current];
@@ -6555,6 +6562,7 @@ static int transaction_begin(int x, int y, int w, int h, int open_gen,
         if (!pass_gen_reserve(gi, 1u, tw, th))
             return pass_begin_refuse("generation_reserve");
         memset(g, 0, sizeof *g);
+        g->order=++s_pgen_order;g->created_cycle=psx_cycle_count;
         g->x = x; g->y = y; g->w = w; g->h = h;
         g->tex_w = tw; g->tex_h = th;
         g->source_path = wide ? GL_PRES_WIDE : GL_PRES_VRAM;
@@ -6637,7 +6645,7 @@ backed_up:
 }
 
 static void transaction_restore(void) {
-    int S = s_hr_scale, gi = 1 - s_pgen_cur;
+    int S = s_hr_scale, gi = s_pgen_write;
     (void)gi;
     if (!s_pass_active) return;
     /* Roll the journal, then the rect back. */
@@ -6689,7 +6697,7 @@ int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     return transaction_begin(x, y, w, h, 0, 0, reuse, 1);
 }
 void gl_renderer_pass_end(uint32_t alpha_q16, int keep) {
-    int gi = 1 - s_pgen_cur;
+    int gi = s_pgen_write;
     PassGen *g = &s_pgen[gi];
     if (!s_pass_active) return;
     flush_flat_batch(); flush_tex_batch(); flush_cpu_upload();
@@ -7106,10 +7114,11 @@ uint64_t gl_renderer_pass_journaled(void) { return s_pj_total; }
 uint64_t gl_renderer_pass_backups_reused(void) { return s_pb_reused; }
 
 uint32_t gl_renderer_pass_image_textures(uint64_t *bytes) {
-    uint32_t n = s_pgen_alloc_n[0] + s_pgen_alloc_n[1];
+    uint32_t n = 0;
+    for(int gi=0;gi<PASS_GENERATIONS;++gi)n+=s_pgen_alloc_n[gi];
     if (bytes) {
         *bytes = 0;
-        for (int gi = 0; gi < 2; gi++)
+        for (int gi = 0; gi < PASS_GENERATIONS; gi++)
             *bytes += (uint64_t)s_pgen_alloc_n[gi] * (uint64_t)s_pgen_alloc_w[gi] *
                       (uint64_t)s_pgen_alloc_h[gi] * 4u;
     }
@@ -7133,14 +7142,17 @@ void gl_renderer_pass_set_flip_shown(int shown) { s_pass_flip_shown = shown ? 1 
  * for (render_pass_gen_flip_matches) or a frame without passes. */
 static void pass_note_new_frame(int origin_x, int origin_y, int source_path,
                                 int pw, int ph) {
-    PassGen *pend = &s_pgen[1 - s_pgen_cur];
-    if (pend->valid && !pend->promoted &&
-        render_pass_gen_flip_matches(pend->shown, pend->x, pend->y,
-                                     pend->source_path, pend->tex_w, pend->tex_h,
-                                     origin_x, origin_y, source_path, pw, ph)) {
-        s_pgen_promote = 1;
-    } else {
-        s_pgen_promote = 0;
+    uint64_t order[PASS_GENERATIONS];uint32_t matches=0;
+    for(int i=0;i<PASS_GENERATIONS;++i) {
+        PassGen* pend=&s_pgen[i];order[i]=pend->order;
+        if(!pend->valid || pend->promoted)continue;
+        if(psx_cycle_count<pend->created_cycle || psx_cycle_count-pend->created_cycle>
+            (uint64_t)pend->period*g_psx_vblank_cycles*4u){pend->valid=0;continue;}
+        if(render_pass_gen_flip_matches(pend->shown,pend->x,pend->y,
+            pend->source_path,pend->tex_w,pend->tex_h,origin_x,origin_y,source_path,pw,ph))matches|=1u<<i;
+    }
+    s_pgen_promote=render_pass_generation_oldest(matches,order,PASS_GENERATIONS);
+    if(s_pgen_promote<0) {
         if (s_pgen[s_pgen_cur].valid) s_pgen_unmatched++;
         s_pgen[s_pgen_cur].valid = 0;
         s_pgen[s_pgen_cur].promoted = 0;
@@ -7182,11 +7194,11 @@ static void pass_dump_generation(int gi) {
 
 static void pass_apply_promotion(void) {
     s_intervals_since_plan++;
-    if (!s_pgen_promote) return;
-    s_pgen_promote = 0;
+    if (s_pgen_promote<0) return;
     s_pgen[s_pgen_cur].valid = 0;
     s_pgen[s_pgen_cur].promoted = 0;
-    s_pgen_cur = 1 - s_pgen_cur;
+    s_pgen_cur = s_pgen_promote;
+    s_pgen_promote = -1;
     {
         PassGen *g = &s_pgen[s_pgen_cur];
         double sp = s_interp_schedule.frame_end - s_interp_schedule.frame_start;

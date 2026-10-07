@@ -111,6 +111,20 @@ int render_pass_select(const uint32_t *phases, uint32_t n, double p,
     return 1;
 }
 
+int render_pass_generation_oldest(uint32_t mask,const uint64_t* order,uint32_t count) {
+    int selected=-1;
+    for(uint32_t i=0;i<count && i<32u;++i)
+        if((mask&(1u<<i)) && (selected<0 || order[i]<order[selected]))selected=(int)i;
+    return selected;
+}
+int render_pass_generation_write(uint32_t current,uint32_t valid_mask,
+                                  const uint64_t* order,uint32_t count) {
+    uint32_t available=0;
+    for(uint32_t i=0;i<count && i<32u;++i)if(i!=current && !(valid_mask&(1u<<i)))return (int)i;
+    for(uint32_t i=0;i<count && i<32u;++i)if(i!=current)available|=1u<<i;
+    return render_pass_generation_oldest(available,order,count);
+}
+
 int render_pass_gen_flip_matches(int shown, int gen_x, int gen_y,
                                  int gen_source, int gen_w, int gen_h,
                                  int flip_x, int flip_y, int flip_source,

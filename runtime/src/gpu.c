@@ -163,6 +163,8 @@ typedef struct {
     WsPrepassPacketGuard payload_guard;
 } WsUiPrepassNode;
 static WsUiPrepassNode ws_ui_prepass_nodes[WS_UI_PREPASS_NODE_MAX];
+#include "packet_address_index.h"
+static PSXPacketAddressIndex ws_ui_prepass_node_index[WS_UI_PREPASS_NODE_MAX*2u];
 /* Why the last prepass was discarded (ws_ui_groups "stale_why"): 1 packet
  * guard at draw, 2 DMA node not in the prepass, 3 node header changed,
  * 4 node word count changed, 5 node payload changed. */
@@ -6188,6 +6190,7 @@ static int ws_ui_attached(const WsUiPrepassItem *a, const WsUiPrepassItem *b) {
 void gpu_ws_prepass_linked_list(uint32_t start_addr) {
     ws_ui_prepass_count = 0;
     ws_ui_prepass_node_count = 0;
+    psx_packet_address_index_clear(ws_ui_prepass_node_index,WS_UI_PREPASS_NODE_MAX*2u);
     ws_ui_prepass_rank = 0xFFFFu;
     ws_auto_ui_dense = 0;
     ws_ui_reject.opcode = ws_ui_reject.not_axis = ws_ui_reject.degenerate =
@@ -6228,6 +6231,8 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
         WsUiPrepassNode *node =
             &ws_ui_prepass_nodes[ws_ui_prepass_node_count++];
         node->addr = GPU_RAM_KEY(addr);
+        psx_packet_address_index_add(ws_ui_prepass_node_index,WS_UI_PREPASS_NODE_MAX*2u,
+            node->addr,ws_ui_prepass_node_count-1u);
         node->header = header;
         node->payload_guard =
             ws_prepass_packet_guard(payload, num_words);
@@ -6466,8 +6471,9 @@ void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t header) {
 
     uint32_t resolved =
         GPU_RAM_KEY(psx_mod_gpu_dma_resolve_address(addr));
-    for (uint32_t i = 0; i < ws_ui_prepass_node_count; i++) {
-        if (ws_ui_prepass_nodes[i].addr != resolved) continue;
+    const uint32_t i=psx_packet_address_index_find(ws_ui_prepass_node_index,
+        WS_UI_PREPASS_NODE_MAX*2u,resolved);
+    if (i < ws_ui_prepass_node_count) {
         if (ws_ui_prepass_nodes[i].header != header) {
             ws_ui_prepass_invalidate_stale_why(3, resolved);
             ws_ui_prepass_invalidate_stale();
@@ -6483,13 +6489,10 @@ void gpu_ws_validate_linked_list_node(uint32_t addr, uint32_t num_words) {
 
     const uint32_t node_addr = psx_mod_gpu_dma_resolve_address(addr);
     const uint32_t resolved = GPU_RAM_KEY(node_addr);
-    const WsUiPrepassNode *node = NULL;
-    for (uint32_t i = 0; i < ws_ui_prepass_node_count; i++) {
-        if (ws_ui_prepass_nodes[i].addr == resolved) {
-            node = &ws_ui_prepass_nodes[i];
-            break;
-        }
-    }
+    const uint32_t i=psx_packet_address_index_find(ws_ui_prepass_node_index,
+        WS_UI_PREPASS_NODE_MAX*2u,resolved);
+    const WsUiPrepassNode *node = i < ws_ui_prepass_node_count
+        ? &ws_ui_prepass_nodes[i] : NULL;
     if (!node || node->payload_guard.word_count != num_words) {
         ws_ui_prepass_invalidate_stale_why(node ? 4 : 2, resolved);
         ws_ui_prepass_invalidate_stale();

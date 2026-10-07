@@ -15,6 +15,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Keep the shown generation and up to two frames waiting for their actual
+ * display flip. Never overwrite the sole waiting frame just because drawing
+ * the following frame completed before the host observed its flip. */
+int render_pass_generation_oldest(uint32_t mask,const uint64_t* order,uint32_t count);
+int render_pass_generation_write(uint32_t current,uint32_t valid_mask,
+                                  const uint64_t* order,uint32_t count);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
