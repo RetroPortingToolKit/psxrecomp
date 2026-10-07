@@ -1384,6 +1384,21 @@ if(BUILD_TESTING)
         add_test(NAME release_stage_cache_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_stage_cache.py)
+        find_program(PSX_PACKAGE_TEST_BASH NAMES bash
+            HINTS "C:/Program Files/Git/bin")
+        add_test(NAME package_execution_stage_test
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_package_execution_stage.py
+                         --bash "${PSX_PACKAGE_TEST_BASH}")
+        if(NOT PSX_PACKAGE_TEST_BASH)
+            set_tests_properties(package_execution_stage_test PROPERTIES DISABLED TRUE)
+        endif()
+        add_test(NAME package_appimage_test
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_package_appimage.py)
+        if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(package_appimage_test PROPERTIES DISABLED TRUE)
+        endif()
         # Overlay shards and BIOS modules are compiled for the RUNTIME's
         # architecture: an x86_64 macOS runtime under Rosetta used to get arm64
         # shards (arm64-only Xcode clang, no -arch) in its macos-x64 cache and
