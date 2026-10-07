@@ -292,6 +292,28 @@ int pgxp_load_precise_word(uint32_t addr, uint32_t packed,
 void pgxp_checkpoint_begin(void);
 void pgxp_checkpoint_rollback(void);
 
+/* Exact address-keyed packet precision, for a renderer preserving completed
+ * static packets around a smaller interpolated drawing section. `expected`
+ * MUST be the actual destination RAM/scratchpad word, read by the caller
+ * immediately before either operation (the same convention as the lookups
+ * above). Neither operation reads MMIO or changes guest memory.
+ *
+ * Capture also succeeds for an absent/stale/value-mismatched shadow, recording
+ * a valid no-shadow state. Restore is allowed only in an active checkpoint,
+ * only at the captured canonical address, and only when the capture generation
+ * equals that checkpoint's ENTRY generation. It may then rebind live metadata
+ * to the sandbox's current generation. This never promotes an older timeline's
+ * stale metadata. All restores, including clearing a shadow, are journaled.
+ * Receipts are runtime-only host data: do not persist them in game saves. */
+typedef struct PGXPWordShadow {
+    uint32_t address, value, source_generation, valid;
+    int32_t x16, y16;
+    uint16_t z, flags;
+    PGXPProjection projection;
+} PGXPWordShadow;
+int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected, PGXPWordShadow *out);
+int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected, const PGXPWordShadow *in);
+
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {
     PGXP_MISS_UNTRACKED = 1,

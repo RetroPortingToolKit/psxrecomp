@@ -229,6 +229,15 @@ unit depth, shard stack and cycle-flush hook, the DMA execution depth, and
 the interpreter's active/phase/precise flags, resume latch and pending load
 (`render_pass_abort_test`). A plugin must likewise not keep state that only
 its callback's normal return resets.
+For a verified draw subset with recorded static prefix/tail packets,
+`pgxp_capture_word_shadow` and `pgxp_restore_word_shadow` preserve exact packet
+precision, including CPU-derived coordinate flags and homogeneous projection.
+The caller supplies the actual current RAM/scratchpad word. Restore requires
+the same canonical address, matching word and checkpoint-entry generation;
+it journals both live shadows and recorded absence. These ephemeral host
+receipts belong to one timeline and must not be persisted in saves. Packet
+layout/ownership guards remain the title's responsibility.
+
 After 8 faults (watchdog, refused VRAM writes or uncheckpointed device reads)
 passes stay off for the session. `render_pass_stats` exposes `device_reads`,
 `last_device_read` and `last_device_read_width`; these refusals also count as

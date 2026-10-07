@@ -396,6 +396,67 @@ static inline PGXPValue *pgxp_ptr_w(uint32_t addr) {
     return pv;
 }
 
+static int packet_shadow_address(uint32_t addr, uint32_t *canonical) {
+    if ((addr & 3u) || addr >= 0xC0000000u) return 0;
+    const uint32_t physical = addr & 0x1FFFFFFFu;
+    if (physical < PSX_MAIN_RAM_WINDOW_BYTES) {
+        *canonical = psx_ram_canonical_offset(physical);
+        return 1;
+    }
+    if ((physical & 0xFFFFFC00u) == 0x1F800000u) {
+        *canonical = physical;
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected,
+                                       PGXPWordShadow *out) {
+    uint32_t canonical;
+    if (!out || !packet_shadow_address(addr, &canonical)) return 0;
+    PGXPWordShadow receipt{};
+    receipt.address = canonical;
+    receipt.value = expected;
+    receipt.source_generation = s_gen;
+    const PGXPValue *source = pgxp_ptr(addr);
+    if (s_enabled && source && source->gen == s_gen && source->value == expected) {
+        receipt.valid = 1;
+        receipt.x16 = source->x16;
+        receipt.y16 = source->y16;
+        receipt.z = source->z;
+        receipt.flags = source->flags;
+        receipt.projection = source->projection;
+    }
+    *out = receipt;
+    return 1;
+}
+
+extern "C" int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected,
+                                       const PGXPWordShadow *in) {
+    uint32_t canonical;
+    if (!in || !s_ck_depth || s_ck_lossy || !packet_shadow_address(addr, &canonical) ||
+        in->address != canonical || in->value != expected || in->valid > 1u ||
+        in->source_generation != s_ck_gen) return 0;
+    if (in->valid && !s_enabled) return 0;
+    PGXPValue *destination = pgxp_ptr(addr);
+    // With PGXP disabled/unallocated, there is already no RAM shadow to clear.
+    if (!destination) return in->valid == 0u;
+    ck_note(destination);
+    if (s_ck_lossy) return 0;
+    PGXPValue restored{};
+    if (in->valid) {
+        restored.value = in->value;
+        restored.gen = s_gen;
+        restored.x16 = in->x16;
+        restored.y16 = in->y16;
+        restored.z = in->z;
+        restored.flags = in->flags;
+        restored.projection = in->projection;
+    }
+    *destination = restored;
+    return 1;
+}
+
 extern "C" void pgxp_checkpoint_begin(void) {
     if (s_ck_depth++ != 0) return;             /* the outermost pass journals */
     if (!s_ck_bits) {

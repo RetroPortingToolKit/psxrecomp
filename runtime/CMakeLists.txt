@@ -490,6 +490,11 @@ if(BUILD_TESTING)
     target_include_directories(pgxp_test PRIVATE include)
     add_test(NAME pgxp_test COMMAND pgxp_test)
 
+    add_executable(pgxp_word_shadow_test tests/test_pgxp_word_shadow.cpp
+        src/pgxp.cpp src/psx_ram_geometry.c)
+    target_include_directories(pgxp_word_shadow_test PRIVATE include)
+    add_test(NAME pgxp_word_shadow_test COMMAND pgxp_word_shadow_test)
+
     # psx.enhancement.pgxp at session start (docs/ENHANCEMENTS.md G1.11): the
     # real builtin activation (mod API stubbed) and the pgxp_session.h
     # resolver main.cpp's renderer setup uses, in main.cpp's order. Pins that
