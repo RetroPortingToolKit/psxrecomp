@@ -68,6 +68,11 @@ int main(void) {
         /* Malformed, missing and duplicate phase sections must reject before
          * changing CPU, RAM or the previously active handoff latch. */
         cpu.pc=0xdeadbeef; ram[0x100]=0x55; fntrace_restore_game_started(!started);
+        /* A foreign execution identity must fail before any state is applied. */
+        u32(saved+32,boot_state_layout_cookie() ^ 0x12345678u);
+        assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
+        assert(cpu.pc==0xdeadbeef && ram[0x100]==0x55 && fntrace_is_game_started()==!started);
+        u32(saved+32,boot_state_layout_cookie());
         saved[len-4]=2;
         assert(!boot_state_load_buffer(saved,len,123,0x801b0000,&cpu));
         saved[len-4]=started;

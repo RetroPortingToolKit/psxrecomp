@@ -35,6 +35,7 @@
 #include "crc32.h"
 #include "netplay_hash_confirm.h"
 #include "netplay_content_gate.h"
+#include "execution_identity.h"
 #include "netplay_input_hist.h"
 #include "netplay_state_digest.h"
 #include "psx_netplay_rb.h"
@@ -3748,7 +3749,9 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
         }
     }
 
-    if (!np_content_init(&s_content, cfg->content_fingerprint, rcfg.occupied_mask, local))
+    char execution_content[65];
+    if (!psx_execution_content_identity(cfg->content_fingerprint, execution_content) ||
+        !np_content_init(&s_content, execution_content, rcfg.occupied_mask, local))
         return -5;
     s_content_send_ms = 0;
     /* Host resolves auto (-1) before start; accept 0..PSX_MAX_PLAYERS-1. */

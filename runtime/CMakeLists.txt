@@ -97,6 +97,15 @@ if(BUILD_TESTING)
         target_link_libraries(boot_state_handoff_test PRIVATE ZLIB::ZLIB)
         add_test(NAME boot_state_handoff_test COMMAND boot_state_handoff_test)
 
+        add_executable(boot_state_execution_test tests/test_boot_state_handoff.c)
+        target_include_directories(boot_state_execution_test PRIVATE include src)
+        target_compile_definitions(boot_state_execution_test PRIVATE PSX_COSIM=1)
+        target_compile_options(boot_state_execution_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
+        target_link_options(boot_state_execution_test PRIVATE -flto -Wl,--gc-sections)
+        target_link_libraries(boot_state_execution_test PRIVATE ZLIB::ZLIB)
+        psxrecomp_execution_profile(boot_state_execution_test PROFILE ENHANCED)
+        add_test(NAME boot_state_execution_test COMMAND boot_state_execution_test)
+
         add_executable(static_match_cache_test tests/test_static_match_cache.c
             src/overlay_loader.c src/crc32.c)
         target_include_directories(static_match_cache_test PRIVATE include)
@@ -129,6 +138,14 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        find_program(PSX_PROFILE_TEST_NINJA NAMES ninja ninja.exe)
+        if(PSX_PROFILE_TEST_NINJA)
+            add_test(NAME execution_profile_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_execution_profile.py"
+                --cmake "${CMAKE_COMMAND}" --cc "${CMAKE_C_COMPILER}"
+                --ninja "${PSX_PROFILE_TEST_NINJA}")
+            set_tests_properties(execution_profile_test PROPERTIES RUN_SERIAL TRUE)
+        endif()
         add_test(NAME wtrace_dump_test COMMAND ${CMAKE_COMMAND} -E env
             "CC=${CMAKE_C_COMPILER}" "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_wtrace_dump.py")
@@ -453,6 +470,14 @@ if(BUILD_TESTING)
         PSX_GTE_REGISTER_TEST=1
         PSX_ENABLE_BLOCK_CYCLES=1)
     add_test(NAME gte_register_access_test COMMAND gte_register_access_test)
+    # Same ABI/result corpus for the native operation entry and the reference.
+    add_executable(gte_hle_contract_test
+        tests/test_gte_register_access.cpp src/gte.cpp src/pgxp.cpp src/psx_ram_geometry.c)
+    target_include_directories(gte_hle_contract_test PRIVATE include)
+    target_compile_definitions(gte_hle_contract_test PRIVATE
+        PSX_NO_DEBUG_TOOLS=1 PSX_GTE_REGISTER_TEST=1 PSX_ENABLE_BLOCK_CYCLES=1)
+    psxrecomp_execution_profile(gte_hle_contract_test PROFILE ENHANCED)
+    add_test(NAME gte_hle_contract_test COMMAND gte_hle_contract_test)
 
     # PGXP value-propagation engine (docs/ENHANCEMENTS.md G1.2/G1.3): shadow
     # load/store/COP2 roundtrips, half-word semantics, validate-on-read

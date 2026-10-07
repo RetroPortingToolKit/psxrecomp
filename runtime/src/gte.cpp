@@ -1,6 +1,8 @@
 #include "gte.h"
 #include "gte_view.h"
 #include "cpu_state.h"
+#include "execution_profile.h"
+#include "hle_gte.h"
 #include "nd_intro_ot.h"
 #include "pgxp.h"
 #include "gte_nclip_stats.h"
@@ -2221,7 +2223,7 @@ static void gte_run_command(PSXRecomp::GTE::GTEState* gte, uint32_t cmd) {
     }
 }
 
-extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
+static void gte_execute_impl(CPUState* cpu, uint32_t cmd, bool charge_latency) {
     using namespace PSXRecomp::GTE;
     uint32_t original_transform[8];
     const bool observe_projection = g_psx_projection_command &&
@@ -2337,8 +2339,16 @@ extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
      * (serializing back-to-back ops). Any later COP2 register access stalls to
      * it. Single shared site for BOTH backends (compiled + dirty interp both
      * route GTE commands through gte_execute). */
-    psx_gte_set(cpu, psx_gte_cmd_latency(cmd));
+    if (charge_latency) psx_gte_set(cpu, psx_gte_cmd_latency(cmd));
 #endif
+}
+
+extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
+    gte_execute_impl(cpu, cmd, true);
+}
+
+extern "C" void psx_hle_gte_execute(CPUState* cpu, uint32_t cmd) {
+    gte_execute_impl(cpu, cmd, !PSX_EXECUTION_ENHANCED);
 }
 
 #ifdef PSX_GTE_REGISTER_TEST

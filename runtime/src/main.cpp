@@ -6,6 +6,7 @@
  */
 
 #include "cpu_state.h"
+#include "execution_profile.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
 #include "mod_controller_source.h"
@@ -14218,6 +14219,8 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);
     std::fprintf(stderr, "psxrecomp: main() entered\n");
+    std::fprintf(stderr, "psxrecomp: execution=%s identity=%s\n",
+                 PSX_EXECUTION_NAME, PSX_EXECUTION_ID);
     std::fflush(stderr);
 #if defined(RECOMP_LAUNCHER)
     launcher_boot_timing_mark("host:main_enter");
