@@ -11910,7 +11910,11 @@ static void rth_present_payload(uint16_t op, const uint8_t *p);   /* below */
 
 /* Short first hold, doubling on repeats within 2 s of the last hold's end,
  * up to 8 s: one hiccup costs a fraction of a second of generation. */
-#define FG_BRK_INIT() do { if (!s_fg_brk_init) { fg_breaker_init(&s_fg_brk, 0.5, 8.0, 2.0); s_fg_brk_init = 1; } } while (0)
+/* Reprojected in-between frames cost a millisecond: an overload is the
+ * real frames' own, so the hold is short (0.1 s, at most 1 s). */
+#define FG_BRK_INIT() do { if (!s_fg_brk_init) { \
+        if (s_fg_reproject) fg_breaker_init(&s_fg_brk, 0.1, 1.0, 1.0); \
+        else fg_breaker_init(&s_fg_brk, 0.5, 8.0, 2.0); s_fg_brk_init = 1; } } while (0)
 static FgCeiling s_fg_ceil;
 static int       s_fg_ceil_init = 0;
 static FgCeiling *fg_ceil(void) {
@@ -12254,6 +12258,9 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     FgCamParams cp;
     fg_cam_defaults(&cp);
     cp.keep_partial = s_fg_reproject;
+    /* Reprojection redraws whatever moves on its own (a rival car filling
+     * half of a split-screen view), so a third of the pairs is enough. */
+    if (s_fg_reproject) cp.min_inliers = 0.3f;
     FgList *src = A;
     if (s_fg_reproject) {   /* the newer frame's image is warped: fit for it */
         src = B;
