@@ -65,7 +65,10 @@ Latest owner policy: interpolation **defaults off across the campaign** after
 Ape choppiness and THPS2 flickering in owner playtests. Ape is owner-approved
 with its interpolation package absent from the shipped catalog. MediEvil I/II
 received positive interpolation feedback and keep the option available,
-default off. Other packages also remain opt-in pending title qualification.
+default off. THPS2 exhausted its two allowed repair attempts: the first caused
+skater jitter and the second caused severe scene flickering. Its interpolation
+package and native plugin are now archived and absent from the current build.
+Other packages remain opt-in pending title qualification.
 
 Generic host pacing is deprecated and excluded from all 15 catalogs, along with
 generic CD Speed. The MMX4 and old hidden Tomba Fast Loading wrappers used the
@@ -80,8 +83,8 @@ raster scale and 1200 internal lines from its native 240; no GPU clamp. This is
 rendering resolution, not higher-resolution original textures. THPS2's initial
 music playback is owner-approved after the shared GetlocP position fix;
 its title resident asset loading is also owner-approved, default on.
-Interpolation remains default off and receives at most two new owner-reviewed
-repair attempts. Work now proceeds serially by title. `GAME-PATHS.txt`
+THPS2 interpolation is disabled and hidden after both repair attempts failed;
+no third attempt is authorized. Work proceeds serially by title. `GAME-PATHS.txt`
 lists the executable paths; earlier review preferences are backed up.
 
 The owner suspects background system contention/long uptime and will perform
@@ -102,7 +105,7 @@ measurement overhead, not an established cause of the reported hitching.
 | Vigilante 8 | Title `95fa269` native fix, framework `4b754210`; main-thread replay and allocated terrain packet support; Sand Factory correctness check passes | Occasional taxing-scene hiccups; earlier slot01 unlocated; load gain not established; partial AOT |
 | V8 2nd Offense | Built native replay/resident candidate and fresh captures | Broader distance/subdivision/performance/load review |
 | Tsumu | OpenGL/1080p, PGXP/filtering and actual native first-puzzle replay; localization retained | 4:3 only, loading HLE and broader coverage |
-| THPS2 | Built native replay/distance candidate and fresh historical captures | Wider visibility, loading and existing multiplayer review |
+| THPS2 | Owner-approved music and default-on resident loading; 1080p and distance retained; interpolation rejected after two attempts and removed | Broader level/visibility and existing multiplayer review; interpolation archived |
 | Jersey Devil | Built native replay/renderer candidate, 13 native pairs | Wider view/scene/load review; loading HLE absent |
 | Spider-Man | Built native replay/PGXP candidate, fresh historical shards | Broad view/scene/load review; loading HLE absent |
 | Spider-Man 2 | Native packed-vertex HLE and bounded rooftop replay; persistent local review candidate | Broader levels, load coverage and display-refresh cadence |
