@@ -61,16 +61,26 @@ checklist; `receipts/review-readiness.json` records the exact binary identities,
 media/BIOS path checks and staged frame-rate defaults. These milestones do not
 establish full feature parity or final gameplay/performance acceptance.
 
-Latest owner policy: keep native interpolation **default on**, except Ape Escape. The earlier
-default-off preference was withdrawn. Tomba 1/2, MMX4/5, Tsumu and V8 catalogs
-now default their native feature on; other current candidates already do.
-Ape Escape is owner-approved with interpolation **off and hidden** after the
-owner A/B review found the choppiness disappears with it disabled. Its package
-is absent from the shipped catalog and retained only under `mods/development`.
-The other 14 review presets enable available visual/loading enhancements and
-Display-refresh interpolation; all 14 launcher menus were requested open
-together. Actual gameplay remains one title at a time. `GAME-PATHS.txt` lists
-every exact executable, and previous review settings are backed up.
+Latest owner policy: interpolation **defaults off across the campaign** after
+Ape choppiness and THPS2 flickering in owner playtests. Ape is owner-approved
+with its interpolation package absent from the shipped catalog. MediEvil I/II
+received positive interpolation feedback and keep the option available,
+default off. Other packages also remain opt-in pending title qualification.
+
+Generic host pacing is deprecated and excluded from all 15 catalogs, along with
+generic CD Speed. The MMX4 and old hidden Tomba Fast Loading wrappers used the
+same generic detector and are now retained only in development. Tomba 1/2,
+MMX6, V8 2nd Offense and MediEvil II retain their title resident/loading families.
+The other ten title loaders remain unfinished; geometry HLE, BIOS shell skipping
+and AOT caching do not satisfy that requirement. See [HLE_EXECUTION.md](HLE_EXECUTION.md).
+
+All review configurations retain 1080p OpenGL and available view/distance/filter
+improvements. A live THPS2 resolution query reported the 1080p preset, 5x effective
+raster scale and 1200 internal lines from its native 240; no GPU clamp. This is
+rendering resolution, not higher-resolution original textures. THPS2's initial
+music track fails in owner testing, while manual track selection starts playback;
+that issue is unqualified even after removing generic pacing. `GAME-PATHS.txt`
+lists the executable paths; earlier review preferences are backed up.
 
 The owner suspects background system contention/long uptime and will perform
 final review after restarting. Further performance comparisons on this session

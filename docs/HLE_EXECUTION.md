@@ -79,6 +79,28 @@ This is an integration primitive, not a standalone FPS improvement. Ape's
 packet producer is its first intended consumer. The original `gte_execute`
 always retains faithful timing in both profiles.
 
+## Title-owned loading
+
+Generic host-pacing load detection is deprecated for new game integrations.
+The 15-title parity campaign excludes `psx.enhancement.fast-loading` and generic
+CD-speed controls. A title-named wrapper around `psx_mod_set_load_acceleration`
+is still the generic detector, not a verified title loading implementation.
+Legacy framework APIs/packages remain for compatibility, default off.
+
+Reuse the shared resident store, decompression, transfer and execution-family
+machinery; each title owns the verified disc identity, loader entry/caller,
+resource boundaries, completion/status publication and pacing policy. Preserve
+music startup, audio streaming, gameplay cadence, callbacks, saves and both
+players where applicable. Compare the selected service's caller outcomes with
+LLE; do not qualify a loader by skipping its polling loop or changing its
+package label. Any shortened presentation wait needs a title-specific contract.
+
+Tomba 1/2, MMX6, V8 2nd Offense and MediEvil II have resident/loading families.
+The other campaign titles still need verified title loading adapters. BIOS
+shell skipping, AOT caching and geometry HLE are separate optimizations; their
+presence does not imply a resident loader. Keep missing bindings explicit and
+retain the slower LLE reference until each title is qualified.
+
 ## Validation
 
 The profile fixture links both implementations of one ABI, checks output and
