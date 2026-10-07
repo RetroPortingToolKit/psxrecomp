@@ -6464,8 +6464,10 @@ void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t header) {
         GPU_RAM_KEY(psx_mod_gpu_dma_resolve_address(addr));
     for (uint32_t i = 0; i < ws_ui_prepass_node_count; i++) {
         if (ws_ui_prepass_nodes[i].addr != resolved) continue;
-        if (ws_ui_prepass_nodes[i].header != header)
+        if (ws_ui_prepass_nodes[i].header != header) {
+            ws_ui_prepass_invalidate_stale_why(3, resolved);
             ws_ui_prepass_invalidate_stale();
+        }
         return;
     }
     ws_ui_prepass_invalidate_stale_why(2, resolved);
