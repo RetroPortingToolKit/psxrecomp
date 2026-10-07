@@ -562,6 +562,11 @@ struct RuntimeConfig {
     // draw in far fewer batches. Off by default; a game opts in.
     bool                  video_texture_window_batching = false;
 
+    // [timing] guest_cycle_scale (1 = faithful, 1..64) and its gate; title
+    // constants from game.toml only. See config_loader.cpp.
+    int                   guest_cycle_scale = 1;
+    bool                  guest_cycle_scale_gated = false;
+
     // low_latency_input: re-sample the pad after the wall-clock pacer (just
     // before present) so the next CPU frame reads near-fresh input instead of
     // input ~one frame stale. Default on. vsync: present/swap mode —

@@ -631,6 +631,25 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.parappa_timing_extra_late = parse_window("extra_late");
     }
 
+    // Optional [timing] block — title constants, never player settings.
+    // guest_cycle_scale: no CPU is emulated; recompiled code charges the
+    // guest clock a fixed cost per instruction, and scale N charges 1/N of
+    // it, so N times as much game code fits between two VBlanks while
+    // VBlank, timers, CD, SPU and DMA keep hardware time. 1 = faithful;
+    // clamped to 1..64. guest_cycle_scale_gated: the scale applies only
+    // while the title's mod opens the gate (psx_guest_cycle_scale_gate_open).
+    if (cfg.contains("timing")) {
+        const toml::value& tm = toml::find(cfg, "timing");
+        if (tm.contains("guest_cycle_scale")) {
+            long long n = toml::find<long long>(tm, "guest_cycle_scale");
+            if (n < 1) n = 1;
+            if (n > 64) n = 64;
+            rt.guest_cycle_scale = (int)n;
+        }
+        if (tm.contains("guest_cycle_scale_gated"))
+            rt.guest_cycle_scale_gated = toml::find<bool>(tm, "guest_cycle_scale_gated");
+    }
+
     // Optional [video] block — visual enhancement options. Kept on the same
     // RuntimeConfig so main.cpp consumes them alongside the other knobs.
     if (cfg.contains("video")) {

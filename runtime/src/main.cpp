@@ -14696,6 +14696,21 @@ int main(int argc, char** argv) {
             g_low_latency_input = gc.runtime.video_low_latency_input ? 1 : 0;
             gl_renderer_set_texture_window_batching(
                 gc.runtime.video_texture_window_batching ? 1 : 0);
+            /* [timing] guest_cycle_scale is a title constant from game.toml
+             * (no player setting). PSX_GUEST_CYCLE_SCALE overrides it for
+             * testing only. */
+            psx_guest_cycle_scale_set_gated(gc.runtime.guest_cycle_scale_gated ? 1 : 0);
+            psx_guest_cycle_scale_set((uint32_t)gc.runtime.guest_cycle_scale);
+            if (const char* gcs = getenv("PSX_GUEST_CYCLE_SCALE")) {
+                const int v = atoi(gcs);
+                if (v > 0) psx_guest_cycle_scale_set((uint32_t)v);
+            }
+            if (psx_guest_cycle_scale_config() != 1u)
+                fprintf(stderr, "[timing] guest_cycle_scale %u%s (instructions charge 1/%u "
+                        "of their guest cycles; VBlank/timers/CD/SPU/DMA unchanged)\n",
+                        psx_guest_cycle_scale_config(),
+                        gc.runtime.guest_cycle_scale_gated ? ", gated by the title's mod" : "",
+                        psx_guest_cycle_scale_config());
             g_video_vsync       = gc.runtime.video_vsync;
             g_frame_interpolation = gc.runtime.video_frame_interpolation ? 1 : 0;
             g_frame_interpolation_fps = gc.runtime.video_frame_interpolation_fps;
@@ -17700,6 +17715,26 @@ session_reboot:
             (net_cfg.transport == 2 || !psx_lobby_match_caps() || !psx_lobby_match_caps()->valid))
             std::snprintf(net_cfg.content_fingerprint, sizeof(net_cfg.content_fingerprint),
                           "%s", PSXRecompV4::mod_runtime_session_plan_fp().c_str());
+        // [timing] guest_cycle_scale changes guest timing, so every peer must
+        // run the same one. It is a title constant, but fold it into the
+        // content gate as a safety net (a peer that differs, e.g. through
+        // the test env override, never matches and the session does not
+        // start). 1 (faithful) leaves the fingerprint, and vanilla sessions,
+        // exactly as before.
+        if (psx_guest_cycle_scale_config() != 1u) {
+            char tag[9];
+            std::snprintf(tag, sizeof tag, "%08x", 0x6C000000u | psx_guest_cycle_scale_config());
+            if (std::strlen(net_cfg.content_fingerprint) != 64)
+                std::snprintf(net_cfg.content_fingerprint, sizeof(net_cfg.content_fingerprint),
+                              "%s", "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00000000");
+            for (int i = 0; i < 8; ++i) {
+                char* d = &net_cfg.content_fingerprint[56 + i];
+                auto hv = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
+                *d = "0123456789abcdef"[hv(*d) ^ hv(tag[i])];
+            }
+            std::printf("psxrecomp: netplay requires guest_cycle_scale %u on every peer\n",
+                        psx_guest_cycle_scale_config());
+        }
         const int nrc = psx_netplay_start(&net_cfg);
         if (nrc != 0) {
             const char* const why = netplay_start_failure(nrc, net_cfg);

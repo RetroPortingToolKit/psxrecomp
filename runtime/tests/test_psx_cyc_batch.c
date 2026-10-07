@@ -16,6 +16,8 @@ int g_ls_mode = 0;
 volatile int g_ds_recording = 0;
 uint8_t *g_psx_ram = 0;
 int g_psx_load_delay = 1;
+uint32_t g_psx_gcs_recip_q16 = 65536u;
+uint32_t g_psx_gcs_frac = 0u;
 
 static int service_count;
 

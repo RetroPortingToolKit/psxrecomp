@@ -2307,6 +2307,11 @@ extern int g_event_step_conservative;
 extern int g_ls_replay_active;
 static inline void psx_load_charge_cycles(uint32_t cycles) {
     if (g_ls_replay_active || cycles == 0u) return;
+    if (PSX_GCS_ACTIVE()) {
+        cycles = psx_gcs_scale(cycles);
+        if (cycles) psx_advance_cycles(cycles);
+        return;
+    }
     uint64_t next = psx_cycle_count + (uint64_t)cycles;
     if (!g_event_step_conservative && g_psx_cycle_fast_limit != 0u &&
         next >= psx_cycle_count && next <= g_psx_cycle_fast_limit) {
@@ -2317,6 +2322,7 @@ static inline void psx_load_charge_cycles(uint32_t cycles) {
 }
 #else
 static inline void psx_load_charge_cycles(uint32_t cycles) {
+    if (PSX_GCS_ACTIVE()) cycles = psx_gcs_scale(cycles);
     psx_advance_cycles(cycles);
 }
 #endif

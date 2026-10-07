@@ -100,6 +100,13 @@ static inline void interp_cyc_step(CPUState *cpu, uint32_t reg_mask) {
     if (cpu->read_absorb[w]) {
         cpu->read_absorb[w]--;
     } else if (!g_ls_replay_active) {
+        if (PSX_GCS_ACTIVE()) {
+            uint32_t t = psx_gcs_scale(1u);
+            if (t) psx_advance_cycles(t);
+            psx_cyc_deps(cpu, reg_mask);
+            psx_cyc_lds(cpu);
+            return;
+        }
         uint64_t next = psx_cycle_count + 1u;
         if (!g_event_step_conservative && g_psx_cycle_fast_limit != 0u &&
             next <= g_psx_cycle_fast_limit) {

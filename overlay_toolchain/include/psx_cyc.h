@@ -92,6 +92,12 @@ static inline void psx_cyc_local_cleanup(uint32_t **guard) {
 
 static inline void psx_cyc_charge(uint32_t cycles) {
     if (cycles == 0u) return;
+#if !defined(PSX_OVERLAY_DLL_BUILD)
+    if (PSX_GCS_ACTIVE()) {
+        cycles = psx_gcs_scale(cycles);
+        if (cycles == 0u) return;
+    }
+#endif
 #if defined(PSX_OVERLAY_DLL_BUILD)
     psx_advance_cycles(cycles);
 #else

@@ -58,6 +58,7 @@ How the two configs relate:
 [recompiler]
 [draw_distance] # optional; opt-in far-geometry clamps (below)
 [runtime]
+[timing]        # optional; title timing constants (below)
 [audit]
 ```
 
@@ -728,6 +729,33 @@ margins remain the historical black clear.
 Reserved future fields:
 - `default_disc_path` — game runtimes can pre-mount a disc
 - `default_game_root` — for sibling-junction setups
+
+## Timing block (`[timing]`)
+
+Title constants. They live in the game's `game.toml`, are never written to
+`settings.toml`, and are not shown in the launcher.
+
+```toml
+[timing]
+guest_cycle_scale = 1           # 1..64; 1 = faithful (default)
+guest_cycle_scale_gated = false # scale only while the title's mod opens the gate
+```
+
+No CPU is emulated. Recompiled code charges the guest clock a fixed number of
+cycles for each MIPS instruction it runs (plus load, mul/div and GTE
+latencies), and VBlank, timers, CD, SPU and DMA are scheduled against that
+clock. `guest_cycle_scale = N` charges each instruction 1/N of its cost; the
+devices keep hardware time. Larger N means the game never runs out of frame
+time: N times as much game code fits between two VBlanks. A game that paces
+itself on VBlank keeps its speed; one that busy-waits on a frame counter
+spins longer in host time, which is why `guest_cycle_scale_gated` exists.
+With it set, the scale applies only while the title's trusted mod holds the
+gate open (`psx_guest_cycle_scale_gate_open(1)`), e.g. R4 opens it during
+races; menus and loading keep faithful timing.
+
+A scale other than 1 is folded into the netplay content fingerprint, so peers
+that differ never match. `PSX_GUEST_CYCLE_SCALE=<n>` overrides the scale for
+testing only.
 
 ## Audit block
 

@@ -66,6 +66,42 @@ extern int g_psx_cyc_bb_defer;
  * via psx_cyc_local_publish / psx_cyc_batch_flush before IRQ/MMIO barriers. */
 extern uint32_t *g_psx_cyc_local_acc;
 
+/* [timing] guest_cycle_scale — a title constant, not a player setting.
+ * No CPU is emulated: recompiled code charges the guest clock a fixed number
+ * of cycles per MIPS instruction it runs, and that clock is what VBlank,
+ * timers, CD, SPU and DMA are scheduled against. guest_cycle_scale = N
+ * charges each instruction 1/N of its cost (instruction, load, mul/div and
+ * GTE latencies, overlay DLL batches); device time is unchanged. Larger N
+ * means the game never runs out of frame time; 1 is faithful and skips the
+ * scaling entirely. g_psx_gcs_recip_q16 is 65536/N. */
+extern uint32_t g_psx_gcs_recip_q16;
+extern uint32_t g_psx_gcs_frac;
+void     psx_guest_cycle_scale_set(uint32_t scale);  /* 1..64; 1 = faithful */
+/* Live scale: the configured one, or 1 while gated and the gate is shut. */
+uint32_t psx_guest_cycle_scale(void);
+uint32_t psx_guest_cycle_scale_config(void);
+/* guest_cycle_scale_gated: the scale applies only while the title's mod
+ * holds the gate open (psx_guest_cycle_scale_gate_open), e.g. only in a
+ * paced race loop where it pays off; menus and loading keep faithful timing
+ * (a scaled clock spends host time spinning in their poll loops). */
+void     psx_guest_cycle_scale_set_gated(int gated);
+void     psx_guest_cycle_scale_gate_open(int open);
+static inline uint32_t psx_gcs_recip_for(uint32_t scale) {
+    if (scale <= 1u) return 65536u;
+    if (scale > 64u) scale = 64u;
+    return (uint32_t)((65536u + scale / 2u) / scale);
+}
+static inline uint32_t psx_gcs_scale(uint32_t cpu_cycles) {
+    uint64_t t = (uint64_t)cpu_cycles * g_psx_gcs_recip_q16 + g_psx_gcs_frac;
+    g_psx_gcs_frac = (uint32_t)(t & 0xFFFFu);
+    return (uint32_t)(t >> 16);
+}
+#if defined(__GNUC__) || defined(__clang__)
+#define PSX_GCS_ACTIVE() __builtin_expect(g_psx_gcs_recip_q16 != 65536u, 0)
+#else
+#define PSX_GCS_ACTIVE() (g_psx_gcs_recip_q16 != 65536u)
+#endif
+
 /* Advance guest time. Overlay DLLs forward this through their callback shim;
  * normal runtime/generated code keeps the common production path inlined. */
 #if defined(PSX_OVERLAY_DLL_BUILD)

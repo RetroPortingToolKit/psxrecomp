@@ -269,6 +269,13 @@ if(BUILD_TESTING)
         PSX_ENABLE_BLOCK_CYCLES=1)
     add_test(NAME psx_cyc_batch_test COMMAND psx_cyc_batch_test)
 
+    # [timing] guest_cycle_scale divides instruction charges only (1 = faithful).
+    add_executable(psx_guest_cycle_scale_test tests/test_psx_guest_cycle_scale.c)
+    target_include_directories(psx_guest_cycle_scale_test PRIVATE include)
+    target_compile_definitions(psx_guest_cycle_scale_test PRIVATE
+        PSX_ENABLE_BLOCK_CYCLES=1)
+    add_test(NAME psx_guest_cycle_scale_test COMMAND psx_guest_cycle_scale_test)
+
     # Segment misses in static game code (docs/SEGMENT_AWARE_CODE.md §5.5):
     # classification against the dispatch rows, the ring and the per-PC
     # summary the TCP command and the exit report read.

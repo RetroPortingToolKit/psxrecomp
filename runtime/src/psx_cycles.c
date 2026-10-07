@@ -22,6 +22,40 @@
 #endif
 
 uint64_t psx_cycle_count = 0;
+uint32_t g_psx_gcs_recip_q16 = 65536u;
+uint32_t g_psx_gcs_frac = 0u;
+static uint32_t s_psx_gcs_cfg = 1u;     /* [timing] guest_cycle_scale */
+static uint32_t s_psx_gcs_live = 1u;
+static int      s_psx_gcs_gated = 0;    /* guest_cycle_scale_gated */
+static int      s_psx_gcs_open = 0;
+
+static void psx_guest_cycle_scale_apply(void) {
+    uint32_t n = (!s_psx_gcs_gated || s_psx_gcs_open) ? s_psx_gcs_cfg : 1u;
+    if (n == s_psx_gcs_live) return;
+    s_psx_gcs_live = n;
+    g_psx_gcs_recip_q16 = psx_gcs_recip_for(n);
+    g_psx_gcs_frac = 0u;
+}
+
+void psx_guest_cycle_scale_set(uint32_t scale) {
+    if (scale < 1u) scale = 1u;
+    if (scale > 64u) scale = 64u;
+    s_psx_gcs_cfg = scale;
+    psx_guest_cycle_scale_apply();
+}
+
+void psx_guest_cycle_scale_set_gated(int gated) {
+    s_psx_gcs_gated = gated ? 1 : 0;
+    psx_guest_cycle_scale_apply();
+}
+
+void psx_guest_cycle_scale_gate_open(int open) {
+    s_psx_gcs_open = open ? 1 : 0;
+    psx_guest_cycle_scale_apply();
+}
+
+uint32_t psx_guest_cycle_scale(void) { return s_psx_gcs_live; }
+uint32_t psx_guest_cycle_scale_config(void) { return s_psx_gcs_cfg; }
 uint32_t g_psx_cyc_batch = 0;
 uint32_t g_psx_cyc_batch_limit = 0;
 int      g_psx_cyc_bb_defer = 0;
@@ -721,6 +755,7 @@ void psx_muldiv_set(CPUState* cpu, uint32_t latency) {
     /* The deadline belongs to this instruction, including unpublished CPU
      * work from generated blocks and local charge accumulators. */
     psx_cyc_batch_flush();
+    if (PSX_GCS_ACTIVE()) latency = psx_gcs_scale(latency);
     cpu->muldiv_ts_done = psx_cycle_count + (uint64_t)latency;
 }
 
@@ -822,6 +857,7 @@ void psx_gte_set(CPUState* cpu, uint32_t latency) {
     if (cpu->gte_ts_done > psx_cycle_count) {
         psx_advance_cycles((uint32_t)(cpu->gte_ts_done - psx_cycle_count));
     }
+    if (PSX_GCS_ACTIVE()) latency = psx_gcs_scale(latency);
     cpu->gte_ts_done = psx_cycle_count + (uint64_t)latency;
 }
 
