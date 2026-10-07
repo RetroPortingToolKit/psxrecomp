@@ -40,6 +40,9 @@
 #define BIOS_ROM_SIZE   (512 * 1024)
 #define MOD_MEMORY_BASE 0x1F000000u
 #define MOD_MEMORY_SIZE (1u * 1024u * 1024u)
+#define RP_MOD_PAGE 4096u
+static int rp_mod_journal(uint8_t *base, uint32_t page_base, uint32_t off,
+                          uint32_t width);
 
 static uint8_t ram[RAM_SIZE];
 static uint8_t scratchpad[SCRATCHPAD_SIZE];
@@ -89,6 +92,14 @@ int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
     if (!psx_mod_memory_snapshot_validate(data, size)) return 0;
     cpu_bytes = mod_memory_used;
     dma_bytes = mod_gpu_dma_memory_used;
+    // Draw-entry replay may restore an earlier image inside a frozen pass.
+    // Journal the completed live image first so rollback never retains that
+    // earlier arena or backs up already-restored primitive tags.
+    if (g_psx_render_pass_active &&
+        ((cpu_bytes && !rp_mod_journal(mod_memory, 0, 0, cpu_bytes)) ||
+         (dma_bytes && !rp_mod_journal(mod_gpu_dma_memory,
+                                      MOD_MEMORY_SIZE / RP_MOD_PAGE, 0, dma_bytes))))
+        return 0;
     memcpy(mod_memory, data + 16u, cpu_bytes);
     memcpy(mod_gpu_dma_memory, data + 16u + cpu_bytes, dma_bytes);
     return 1;
@@ -1847,7 +1858,6 @@ static void render_pass_mmio_write(uint32_t phys, uint32_t val,
  * (an extended draw distance) has its passes build their packets there. Each
  * arena page a pass writes is backed up on its first write and put back by
  * render_pass_mod_arenas_rollback(), with the rest of the pass restore. */
-#define RP_MOD_PAGE 4096u
 #define RP_MOD_PAGES ((MOD_MEMORY_SIZE + PSX_MOD_GPU_DMA_APERTURE_SIZE) / RP_MOD_PAGE)
 typedef struct { uint8_t *page; uint32_t index; uint8_t data[RP_MOD_PAGE]; } RpModPage;
 static uint8_t  s_rp_mod_bits[RP_MOD_PAGES / 8u];

@@ -4,6 +4,7 @@
 #include "psx_cycle_freeze.h"
 #include "render_pass_projection.h"
 #include "pgxp.h"
+#include "mod_memory.h"
 #include <cstring>
 #include <vector>
 
@@ -18,6 +19,7 @@ extern "C" uint32_t memory_get_ram_bytes(void);
 class PSXDrawReplay {
     CPUState entry{};
     std::vector<uint8_t> ram;
+    std::vector<uint8_t> arenas;
     uint8_t scratch[1024]{};
     uint32_t start = 0, stop = 0, previous_tick = 0;
     bool captured = false, ready = false, have_tick = false;
@@ -45,6 +47,8 @@ public:
         ram.resize(memory_get_ram_bytes());
         std::memcpy(ram.data(), memory_get_ram_ptr(), ram.size());
         std::memcpy(scratch, memory_get_scratchpad_ptr(), sizeof scratch);
+        arenas.resize(psx_mod_memory_snapshot_bytes());
+        if (!arenas.empty()) psx_mod_memory_snapshot_write(arenas.data());
         captured = true; ready = false;
         if (projections) psx_projection_capture_begin(history);
     }
@@ -62,7 +66,11 @@ public:
         return ready;
     }
     bool restore(CPUState* cpu, uint32_t alpha) {
-        if (!ready || !g_psx_render_pass_active || ram.size() != memory_get_ram_bytes()) return false;
+        if (!ready || !g_psx_render_pass_active || ram.size() != memory_get_ram_bytes() ||
+            arenas.size() != psx_mod_memory_snapshot_bytes()) return false;
+        // This reader journals the live arena before restoring draw entry.
+        // OT prefix packets may live outside main RAM when distance is raised.
+        if (!arenas.empty() && !psx_mod_memory_snapshot_read(arenas.data(), arenas.size())) return false;
         std::memcpy(memory_get_ram_ptr(), ram.data(), ram.size());
         std::memcpy(memory_get_scratchpad_ptr(), scratch, sizeof scratch);
         // Raw RAM is now from section entry. Its current-frame precision
