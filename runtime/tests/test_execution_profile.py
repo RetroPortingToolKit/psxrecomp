@@ -28,7 +28,9 @@ def main():
 #include "netplay_content_gate.h"
 #include <stdio.h>
 extern int operation(int);
+extern int common_game_body(void);
 int main(int argc, char** argv) {
+    if (common_game_body() != 5) return 4;
     char no_mods[65], modded[65], upper[65];
     if (!psx_execution_content_identity("", no_mods) ||
         !psx_execution_content_identity("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", modded) ||
@@ -49,6 +51,7 @@ int main(int argc, char** argv) {
 }
 ''')
         (source / "hle.c").write_text("int operation(int x) { return x * 3; }\n")
+        (source / "common.c").write_text("#ifndef COMMON_SOURCE_FLAG\n#error common source property lost\n#endif\nint common_game_body(void) { return 5; }\n")
         (source / "local_step.h").write_text("#define LOCAL_STEP 3\n")
         (source / "lle.c").write_text('#include "local_step.h"\n#ifndef LLE_SOURCE_FLAG\n#error source compile property lost\n#endif\nint operation(int x) { int s=0; while(x--) s+=LOCAL_STEP; return s; }\n')
         (source / "contract.h").write_text("/* caller contract revision 1 */\n")
@@ -60,14 +63,16 @@ include("{root.as_posix()}/cmake/psx_execution_profile.cmake")
 # automatic configure/hash inputs without creating duplicate Ninja rules.
 set_source_files_properties("${{CMAKE_CURRENT_SOURCE_DIR}}/lle.c" PROPERTIES
     GENERATED TRUE COMPILE_DEFINITIONS LLE_SOURCE_FLAG=1)
-add_executable(fixture main.c "{root.as_posix()}/runtime/src/psx_sha256.c")
+set_source_files_properties("${{CMAKE_CURRENT_SOURCE_DIR}}/common.c" PROPERTIES
+    GENERATED TRUE COMPILE_DEFINITIONS COMMON_SOURCE_FLAG=1)
+add_executable(fixture main.c common.c "{root.as_posix()}/runtime/src/psx_sha256.c")
 target_include_directories(fixture PRIVATE "{root.as_posix()}/runtime/include")
-add_executable(fixture-pgxp main.c "{root.as_posix()}/runtime/src/psx_sha256.c")
+add_executable(fixture-pgxp main.c common.c "{root.as_posix()}/runtime/src/psx_sha256.c")
 target_include_directories(fixture-pgxp PRIVATE "{root.as_posix()}/runtime/include")
 psxrecomp_execution_profile(fixture CONTRACT_FILES shared.h)
 psxrecomp_execution_profile(fixture-pgxp CONTRACT_FILES shared.h)
 psxrecomp_add_implementation(fixture NAME triple CONTRACT integer-v1
-    HLE_SOURCES hle.c LLE_SOURCES lle.c CONTRACT_FILES contract.h)
+    HLE_SOURCES hle.c LLE_SOURCES lle.c CONTRACT_FILES contract.h common.c)
 ''')
 
         def configure(profile, name=None, ok=True):
@@ -125,6 +130,13 @@ psxrecomp_add_implementation(fixture NAME triple CONTRACT integer-v1
         assert changed_contract["identity"] != changed["identity"]
         (source / "shared.h").write_text("/* shared service revision 2 */\n")
         assert build_run(enhanced_build)["identity"] != changed_contract["identity"]
+        # Common generated bodies are compiled in both profiles and hashed as
+        # caller contracts. Their edits must also reconfigure automatically.
+        common_before = build_run(enhanced_build)
+        reference_before = build_run(Path(temp) / "REFERENCE")
+        (source / "common.c").write_text("int common_game_body(void) { return 2 + 3; }\n")
+        assert build_run(enhanced_build)["identity"] != common_before["identity"]
+        assert build_run(Path(temp) / "REFERENCE")["identity"] != reference_before["identity"]
         # Private HLE input is not required to build the maintained reference.
         (source / "hle.c").unlink()
         build_run(configure("REFERENCE", "reference-no-private"))

@@ -102,6 +102,31 @@ function(psxrecomp_execution_profile target)
         VERBATIM)
 endfunction()
 
+# A materialized game shard can also be a configure/hash input. Compile an
+# include wrapper so Ninja does not give the shard both a generation rule and
+# CMake's input-file phony rule. Keep hashing the original body.
+function(_psx_execution_compile_source target source output)
+    get_filename_component(_absolute "${source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    get_source_file_property(_generated "${_absolute}" GENERATED)
+    if(NOT _generated)
+        set(${output} "${source}" PARENT_SCOPE)
+        return()
+    endif()
+    string(SHA256 _path_hash "${_absolute}")
+    get_filename_component(_ext "${_absolute}" LAST_EXT)
+    set(_wrapper "${CMAKE_CURRENT_BINARY_DIR}/psx_execution/${target}/sources/${_path_hash}${_ext}")
+    file(CONFIGURE OUTPUT "${_wrapper}" CONTENT "#include \"@_absolute@\"\n" @ONLY)
+    foreach(_property LANGUAGE COMPILE_DEFINITIONS COMPILE_OPTIONS COMPILE_FLAGS
+                      INCLUDE_DIRECTORIES OBJECT_DEPENDS SKIP_PRECOMPILE_HEADERS
+                      SKIP_UNITY_BUILD_INCLUSION)
+        get_source_file_property(_value "${_absolute}" "${_property}")
+        if(NOT _value STREQUAL "NOTFOUND")
+            set_source_files_properties("${_wrapper}" PROPERTIES "${_property}" "${_value}")
+        endif()
+    endforeach()
+    set(${output} "${_wrapper}" PARENT_SCOPE)
+endfunction()
+
 # Both source lists implement the same caller contract. Exclude these files
 # from common target sources; exactly one list is linked. CONTRACT_FILES names
 # adapter headers/recipes whose changes also affect the implementation identity.
@@ -134,34 +159,29 @@ function(psxrecomp_add_implementation target)
         endif()
         list(APPEND _inputs "${_absolute}")
     endforeach()
+    # CONTRACT_FILES can include common generated game bodies already added by
+    # runtime.cmake, not only selected replacement bodies. Normalize those
+    # existing source entries before declaring their configure dependency.
+    get_target_property(_common_sources ${target} SOURCES)
+    set(_common_compile_sources "")
+    foreach(_source IN LISTS _common_sources)
+        if(_source MATCHES "^\\$<")
+            list(APPEND _common_compile_sources "${_source}")
+            continue()
+        endif()
+        get_filename_component(_absolute "${_source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(_absolute IN_LIST _inputs)
+            _psx_execution_compile_source(${target} "${_absolute}" _compiled)
+            list(APPEND _common_compile_sources "${_compiled}")
+        else()
+            list(APPEND _common_compile_sources "${_source}")
+        endif()
+    endforeach()
+    set_property(TARGET ${target} PROPERTY SOURCES "${_common_compile_sources}")
     set(_compile_sources "")
     foreach(_source IN LISTS _selected)
-        get_filename_component(_absolute "${_source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-        get_source_file_property(_generated "${_absolute}" GENERATED)
-        if(_generated)
-            # runtime.cmake marks game shards GENERATED, though they are
-            # materialized before configure. Giving Ninja that file both as
-            # a compiled generated source and a configure dependency creates
-            # two output rules (an empty generation rule and a CMake phony).
-            # Compile an include wrapper instead. The original remains the
-            # sole maintained body and configure/hash input; #include keeps
-            # its relative includes and __FILE__ behavior intact.
-            string(SHA256 _path_hash "${_absolute}")
-            get_filename_component(_ext "${_absolute}" LAST_EXT)
-            set(_wrapper "${CMAKE_CURRENT_BINARY_DIR}/psx_execution/${target}/sources/${_path_hash}${_ext}")
-            file(CONFIGURE OUTPUT "${_wrapper}" CONTENT "#include \"@_absolute@\"\n" @ONLY)
-            foreach(_property LANGUAGE COMPILE_DEFINITIONS COMPILE_OPTIONS COMPILE_FLAGS
-                              INCLUDE_DIRECTORIES OBJECT_DEPENDS SKIP_PRECOMPILE_HEADERS
-                              SKIP_UNITY_BUILD_INCLUSION)
-                get_source_file_property(_value "${_absolute}" "${_property}")
-                if(NOT _value STREQUAL "NOTFOUND")
-                    set_source_files_properties("${_wrapper}" PROPERTIES "${_property}" "${_value}")
-                endif()
-            endforeach()
-            list(APPEND _compile_sources "${_wrapper}")
-        else()
-            list(APPEND _compile_sources "${_absolute}")
-        endif()
+        _psx_execution_compile_source(${target} "${_source}" _compiled)
+        list(APPEND _compile_sources "${_compiled}")
     endforeach()
     target_sources(${target} PRIVATE ${_compile_sources})
     set_property(TARGET ${target} APPEND PROPERTY PSX_IMPLEMENTATION_FAMILIES "${I_NAME}")
