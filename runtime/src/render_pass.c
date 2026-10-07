@@ -599,6 +599,11 @@ int render_pass_mmio_read_allowed(uint32_t phys, uint32_t width) {
     s_stats.device_reads++;
     s_stats.last_device_read = phys;
     s_stats.last_device_read_width = width;
+    if (s_stats.device_reads <= 4 && s_pass_cpu)
+        fprintf(stderr, "psxrecomp: render pass device read=0x%08X "
+                "pc=0x%08X function=0x%08X ra=0x%08X last_store=0x%08X\n",
+                phys, s_pass_cpu->pc, g_debug_current_func_addr,
+                s_pass_cpu->gpr[31], g_debug_last_store_pc);
     s_attempt.reason = "device_read";
     s_stats.last_failure = s_attempt;
     if (s_abort_armed) {
