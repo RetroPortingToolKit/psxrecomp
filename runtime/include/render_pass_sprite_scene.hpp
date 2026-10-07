@@ -17,7 +17,7 @@ extern "C" uint32_t memory_get_ram_bytes(void);
  * and display-bank prefixes. Capture/replay never runs the gameplay update.
  * Late HUD/effect packets are preserved, the existing VSync wait runs once,
  * and all temporary guest changes remain inside the render-pass sandbox.
- * Derived from the MMX6 native scene implementation; also used by MMX5.
+ * Derived from the MMX6 native scene implementation; used by MMX4 and MMX5.
  */
 template<class Layout>
 class PSXSpriteSceneReplay {
@@ -76,6 +76,9 @@ static void apply_late_packets() {
 }
 
 static bool retarget_packets() {
+    // Older sprite engines carry all draw-bank state in DRAWENV. Later ones
+    // additionally prepend E3/E4/E5 packets which override that environment.
+    if constexpr (!Layout::OffsetPackets && !Layout::ClipPackets) return true;
     const uint32_t index=(buffer-Base)/Stride;
     // Main-loop OT prefixes carry their own draw offset and draw area. Those
     // override PutDrawEnv, so replay must select the pending display bank's
