@@ -314,6 +314,16 @@ typedef struct PGXPWordShadow {
 int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected, PGXPWordShadow *out);
 int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected, const PGXPWordShadow *in);
 
+/* Explicit packet relocation variant. The caller owns and validates both
+ * packet ranges and their relocation map, writes the destination guest word,
+ * then supplies that word's current value as expected. The captured source
+ * must still name canonical RAM/scratchpad, but need not equal the destination.
+ * All other restore rules above apply, including checkpoint ENTRY generation.
+ * Only destination metadata changes; an absent receipt clears its shadow.
+ * Rollback restores the destination's previous metadata. */
+int pgxp_restore_relocated_word_shadow(uint32_t destination, uint32_t expected,
+                                       const PGXPWordShadow *in);
+
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {
     PGXP_MISS_UNTRACKED = 1,

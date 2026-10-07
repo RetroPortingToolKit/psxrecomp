@@ -133,7 +133,7 @@ checking stays at eight and semitransparency at nine. Vigilante 8's measured
 filter-transition pressure motivated this work; game speed is still being
 compared on an isolated shader-only framework checkout.
 
-The campaign framework checkpoint is `04f871f0`. It also includes:
+The campaign framework includes these shared checkpoints:
 
 - `8fe08921`: pre-materialized generated reference bodies build through include
   wrappers, avoiding duplicate Ninja rules without maintaining copied LLE code.
@@ -164,7 +164,41 @@ window's similar primitive counts hid different textured fractions; later
 windows and camera images diverged. Host precision/mod-renderer state around
 the saved checkpoint needs investigation. The earlier b0/d8 title candidate
 remains qualified, with the 7c executable and observations retained separately.
-Use a fixed-work renderer probe before drawing a performance conclusion.
+The subsequent fixed-work renderer probe establishes the batching mechanism's
+benefit, but does not replace a comparable title performance sample.
+
+The probe compiled the exact b0 and 7c renderer sources at O3 and interleaved
+baseline/candidate/candidate/baseline runs on an RTX 3080 Ti. Each scenario
+draws the same 800 textured triangles at 5x with 32:9 margins, with 32 warm-up
+and 64 timed frames. GPU queries exclude shader compilation; canonical and
+wide output hashes match in every run. No game or compiler was active; the
+receipt also records background host activity.
+
+| Fixed workload | Baseline GPU ms | Batched GPU ms | Batches before / after |
+|---|---:|---:|---:|
+| All tracked stable filtering | 0.491272 | 0.505192 | 1 / 1 |
+| Stable world plus 20% untracked nearest | 10.165968 | 0.423384 | 320 / 1 |
+| Alternating nearest, bilinear and stable | 24.188984 | 0.359664 | 800 / 1 |
+| All stable with mask checking | 0.895328 | 0.929272 | 1 / 1 |
+
+These synthetic medians show large savings when filter changes split otherwise
+compatible work, with small costs for homogeneous work. They do not establish
+V8 FPS or negate its unmatched gameplay samples. Reproduction inputs and
+receipts are private under `_build-parity-render-perf-20261006/`:
+`prepare_filter_benchmark.py`, `run_filter_benchmark.py`, and
+`filter-fixed-work/{comparison,host-inventory}.json`.
+
+Packet precision now also has an explicit relocation operation,
+`pgxp_restore_relocated_word_shadow`. It retains checkpoint-entry generation
+and packed-value validation, preserves projection/derived flags, journals the
+destination, and leaves the source unchanged. An absent receipt clears the
+destination's shadow. The same-address API stays strict. The caller must own
+and validate both packet ranges and the relocation mapping, write the guest
+word and supply its current value; this service never reads device memory.
+Focused relocation/rollback cases and the existing PGXP suite pass (2/2).
+Ape needs this because real clipping changes core packet counts: its captured
+tail has 25 packets and two ordering-table head insertions. Relocation does
+not by itself qualify that game's interpolation.
 
 Shared regular-file identity hashing now uses Windows BCrypt or available
 Linux OpenSSL, with the portable SHA-256 implementation as fallback. Failed
@@ -184,3 +218,25 @@ native median 0.130985 s (5.012x for hashing). Receipts are private under
 `_build-parity-render-perf-20261006/{validate_hash,linux-hash-validation,benchmark_hash}.json`.
 This saves about half a second for that operation, not the entire multi-second
 launch delay observed on the busy host. Overall startup still needs attribution.
+
+## Title source milestones awaiting execution
+
+Tomba! source preparation is local commit `a46ca8ab` on
+`feat/tomba1-parity-hle-20261006`, retaining the newer resident kit at
+`3c8d36e`. It adds ENHANCED/REFERENCE resident selection, bounded queue
+telemetry, OpenGL/1080p defaults and executable-bound staging. Metadata and
+six decoder tests pass. The existing presentation still blends images;
+native interpolation, current-build loader contracts, view coverage and
+both platform packages remain outstanding. Its `docs/PARITY_HLE.md` records
+the actual loader/draw candidates and capture route.
+
+Mega Man X6 source preparation is local commit `5c991f60` on
+`campaign/mmx6-parity-hle-20261006`, retaining resident/native-rendering
+base `3bf0205`. It adds ENHANCED/REFERENCE resident selection, 1080p and
+display-refresh interpolation defaults, and final-byte package binding.
+Three configuration tests and script syntax checks pass. Its archives are
+uncompressed; the native work accelerates loading rather than decompression.
+Historical native interpolation and adaptive 32:9 evidence were separate:
+combined current-build coverage, actual caller results, audio/transitions,
+fresh AOT and Windows/Linux artifacts still need qualification. See the
+title's `docs/PARITY_QUALIFICATION.md` and `BLOCKING_LOADER_CONTRACT.md`.

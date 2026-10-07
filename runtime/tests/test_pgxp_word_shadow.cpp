@@ -2,6 +2,7 @@
 #include "pgxp_hooks.h"
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 extern "C" int gte_geometry_correction_lookup(uint32_t,int32_t*,int32_t*) {return 0;}
 extern "C" int gte_geometry_correction_lookup_probe(uint32_t,int32_t*,int32_t*) {return 0;}
@@ -30,6 +31,7 @@ int main() {
     const auto original=capture(Address,Packed);
     CHECK(original.valid && (original.flags&8u));
     CHECK(!pgxp_restore_word_shadow(Address,Packed,&original)); // sandbox only
+    CHECK(!pgxp_restore_relocated_word_shadow(Other,Packed,&original));
     PGXPWordShadow ignored{};
     CHECK(!pgxp_capture_word_shadow(0x1F801814u,0,&ignored)); // no MMIO
     CHECK(!pgxp_capture_word_shadow(Address+1,Packed,&ignored));
@@ -49,6 +51,35 @@ int main() {
     check_attributes(original,capture(Address,Packed));
     CHECK(capture(Address,Packed).source_generation==original.source_generation);
 
+    // Relocating a packet changes only the explicitly owned destination.
+    // Preserve projection and the previous destination across sandbox rollback.
+    seed(Other,Packed,(9<<16)+32768);
+    const auto old_destination=capture(Other,Packed);
+    pgxp_checkpoint_begin();pgxp_invalidate_all();
+    CHECK(!pgxp_restore_word_shadow(Other,Packed,&original));
+    CHECK(pgxp_restore_relocated_word_shadow(0xA0202000u,Packed,&original));
+    auto relocated=original;relocated.address=old_destination.address;
+    check_attributes(relocated,capture(Other,Packed));
+    CHECK(capture(Other,Packed).source_generation!=original.source_generation);
+    CHECK(!capture(Address,Packed).valid); // no source writes/rebinding
+    const auto before_rejection=capture(Other,Packed);
+    CHECK(!pgxp_restore_relocated_word_shadow(Other,Packed+1,&original));
+    CHECK(!pgxp_restore_relocated_word_shadow(Other+1,Packed,&original));
+    CHECK(!pgxp_restore_relocated_word_shadow(0x1F801814u,Packed,&original));
+    CHECK(!pgxp_restore_relocated_word_shadow(0xC0002000u,Packed,&original));
+    CHECK(!pgxp_restore_relocated_word_shadow(Other,Packed,nullptr));
+    for (const uint32_t invalid_source : {0x1F801814u, 0x80001000u, 0x1001u}) {
+        auto invalid=original;invalid.address=invalid_source;
+        CHECK(!pgxp_restore_relocated_word_shadow(Other,Packed,&invalid));
+    }
+    auto invalid=original;invalid.valid=2;
+    CHECK(!pgxp_restore_relocated_word_shadow(Other,Packed,&invalid));
+    check_attributes(before_rejection,capture(Other,Packed));
+    pgxp_checkpoint_rollback();
+    check_attributes(original,capture(Address,Packed));
+    check_attributes(old_destination,capture(Other,Packed));
+    pgxp_invalidate_all();
+
     // CPU-derived coordinate flags must survive; XYZ reconstruction loses them.
     // 100.9 * 2 propagates as 201.8 while the native MULT returns 200.
     // Storing that scalar marks the coordinate as derived, rather than merely
@@ -66,6 +97,9 @@ int main() {
     pgxp_checkpoint_begin();pgxp_invalidate_all();
     CHECK(pgxp_restore_word_shadow(Address,DerivedPacked,&derived));
     check_attributes(derived,capture(Address,DerivedPacked));
+    CHECK(pgxp_restore_relocated_word_shadow(Other,DerivedPacked,&derived));
+    auto relocated_derived=derived;relocated_derived.address=Other&0x1FFFFFFFu;
+    check_attributes(relocated_derived,capture(Other,DerivedPacked));
     pgxp_checkpoint_rollback();
 
     const auto absent=capture(Other,Packed);
@@ -76,12 +110,22 @@ int main() {
     CHECK(!capture(Other,Packed).valid);
     pgxp_checkpoint_rollback();CHECK(!capture(Other,Packed).valid);
 
+    // Absence is transferable too: erase a destination shadow inside replay,
+    // then recover the original destination on rollback.
+    pgxp_checkpoint_begin();
+    CHECK(pgxp_restore_relocated_word_shadow(Address,Packed,&absent));
+    CHECK(!capture(Address,DerivedPacked).valid);
+    CHECK(!capture(Address,Packed).valid);
+    pgxp_checkpoint_rollback();check_attributes(derived,capture(Address,DerivedPacked));
+
     // Both live and absent receipts belong to one generation/timeline.
     pgxp_invalidate_all();seed(Address,DerivedPacked,12<<16);
     const auto latest=capture(Address,DerivedPacked);
     pgxp_checkpoint_begin();
     CHECK(!pgxp_restore_word_shadow(Address,DerivedPacked,&derived));
     CHECK(!pgxp_restore_word_shadow(Other,Packed,&absent));
+    CHECK(!pgxp_restore_relocated_word_shadow(Other,DerivedPacked,&derived));
+    CHECK(!pgxp_restore_relocated_word_shadow(Address,Packed,&absent));
     check_attributes(latest,capture(Address,DerivedPacked));
     pgxp_checkpoint_rollback();
 
@@ -93,6 +137,9 @@ int main() {
     pgxp_checkpoint_begin();pgxp_invalidate_all();
     CHECK(pgxp_restore_word_shadow(Scratch,Packed,&scratch));
     check_attributes(scratch,capture(Scratch,Packed));
+    CHECK(pgxp_restore_relocated_word_shadow(Address,Packed,&scratch));
+    auto relocated_scratch=scratch;relocated_scratch.address=Address&0x1FFFFFFFu;
+    check_attributes(relocated_scratch,capture(Address,Packed));
     pgxp_checkpoint_rollback();
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");
     return failures?1:0;

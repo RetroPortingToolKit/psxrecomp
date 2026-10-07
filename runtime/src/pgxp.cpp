@@ -431,11 +431,13 @@ extern "C" int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected,
     return 1;
 }
 
-extern "C" int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected,
-                                       const PGXPWordShadow *in) {
-    uint32_t canonical;
+static int restore_word_shadow(uint32_t addr, uint32_t expected,
+                               const PGXPWordShadow *in, bool relocated) {
+    uint32_t canonical, source;
     if (!in || !s_ck_depth || s_ck_lossy || !packet_shadow_address(addr, &canonical) ||
-        in->address != canonical || in->value != expected || in->valid > 1u ||
+        !packet_shadow_address(in->address, &source) || source != in->address ||
+        (!relocated && in->address != canonical) ||
+        in->value != expected || in->valid > 1u ||
         in->source_generation != s_ck_gen) return 0;
     if (in->valid && !s_enabled) return 0;
     PGXPValue *destination = pgxp_ptr(addr);
@@ -455,6 +457,17 @@ extern "C" int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected,
     }
     *destination = restored;
     return 1;
+}
+
+extern "C" int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected,
+                                       const PGXPWordShadow *in) {
+    return restore_word_shadow(addr, expected, in, false);
+}
+
+extern "C" int pgxp_restore_relocated_word_shadow(uint32_t destination,
+                                                 uint32_t expected,
+                                                 const PGXPWordShadow *in) {
+    return restore_word_shadow(destination, expected, in, true);
 }
 
 extern "C" void pgxp_checkpoint_begin(void) {
