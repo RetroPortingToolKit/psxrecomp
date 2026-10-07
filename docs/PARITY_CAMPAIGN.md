@@ -4,6 +4,30 @@ Owner-approved scope, 2026-10-06. Tracking: `beads-eio.3.277`; shared execution
 work: `beads-wuhs`. Implementation is in progress. Source presence, a successful
 build, a short gameplay check, and owner acceptance are distinct milestones.
 
+## First review pass
+
+Owner steering after the status check: prioritize runnable candidates and human
+validation. Use build/configuration checks and focused tests for risky changes;
+defer broad automated gameplay and performance matrices until owner feedback.
+Windows review candidates come first in the build queue, with native Linux
+artifacts following. Missing enhancements and known defects stay explicit.
+
+For each candidate, provide its launcher/path and this short playtest checklist:
+
+1. Launch, start/load, and play for a few minutes.
+2. Check ordinary and ultrawide aspect settings: scene edges, HUD and dialogue.
+3. Move the camera: look for jitter, seams, missing geometry and bad textures.
+4. Pause/resume, change areas and revisit; note stalls and load times.
+5. Check audio and existing multiplayer where applicable.
+
+The shared guarded HUD anchor now also supports projection-and-stretch mode.
+Title code identifies completed screen-space packets; a common edge/centre
+anchor can span separate DMA lists. Native-wide translation, packet guards,
+expiry and native 4:3 behavior remain covered by focused execution fixtures.
+This addresses the mechanism behind Ape's separate Status backing/text batches;
+its title binding and actual visual result still need review. Tracking:
+`beads-eio.3.125` and `beads-uutk`.
+
 ## Acceptance target
 
 - Enhanced OpenGL is the normal renderer, with 1080p internal resolution.

@@ -238,8 +238,12 @@ void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expe
 void psx_mod_tag_hud_primitive(uint32_t primitive, int edge);
 /* Packet-guarded screen-space anchor: -1 left, +1 right, 0 stays centred.
  * Unlike the legacy role tag above, zero explicitly protects centred text
- * from automatic layout transforms. Word immediately before the GP0 colour
- * command; for a compound E1+SPRT packet this is its E1 word (P_TAG+4). */
+ * from automatic layout transforms. Native-wide translates the group;
+ * projection-and-stretch squashes around the selected screen anchor. This
+ * works across separate DMA lists and is inert at native 4:3. Title code
+ * owns classification and must tag each completed packet. Pass the word
+ * immediately before the GP0 colour command; for a compound E1+SPRT packet
+ * this is its E1 word (P_TAG+4). */
 void psx_mod_anchor_hud_primitive(uint32_t primitive, int edge);
 /* Screen-space masks identified by their title's producer, P_TAG addresses.
  * Flat panels extend only their exterior boundaries. Radial flat/Gouraud

@@ -190,11 +190,90 @@ static void test_wall_behind_front_layer(int triangle) {
     assert(ws_auto_ui_transform_count == 0);
 }
 
+static void test_explicit_projection_widget(void) {
+    const uint32_t tile = 0x20000u, glyph = 0x21000u;
+    reset_state(0);
+    hres1 = 0; hres2 = 1; /* Captured Ape display: 384x240. */
+    h_display_x2 = h_display_x1 + 384u * 7u;
+    ws_hud_sprt = 0;
+    gpu_ws_set_auto_ui_squash(0); /* Explicit ownership is independent. */
+    ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    memset(test_ram, 0, sizeof(test_ram));
+    /* Actual Status backing tile shape, followed by a separate glyph list.
+     * Replacing the prepass must not lose the earlier list's widget anchor. */
+    const uint32_t backing[] = {0x76606060u, 0x00C60146u, 0x77ABB090u};
+    const uint32_t text[] = {0x7D808080u, pack_vertex(54, 64), 0x7C5D9800u};
+    put_node(tile, 0xFFFFFFu, backing, 3);
+    put_node(glyph, 0xFFFFFFu, text, 3);
+    gpu_ws_tag_hud_prim(tile, 0);
+    gpu_ws_tag_hud_prim(glyph, 0);
+    test_ram[OT_HEAD / 4u] = glyph;
+    gpu_ws_prepass_linked_list(OT_HEAD);
+    load_packet(tile, 3);
+    last_scaled_rect.calls = 0;
+    gp0_exec_textured_8x8();
+    assert(last_scaled_rect.calls == 1);
+    assert(last_scaled_rect.x == ws_scale_about(326, 192));
+    assert(last_scaled_rect.w == 3);
+    assert(last_scaled_rect.u1 - last_scaled_rect.u0 == 8);
+
+    /* A stale legacy billboard classification cannot double-transform an
+     * explicitly owned screen-space packet. */
+    WsTag *legacy = &ws_tags[(glyph >> 2) & (WS_TAG_BUCKETS - 1)];
+    legacy->key = glyph; legacy->stamp = (uint32_t)s_frame_count;
+    legacy->anchor_x = 54;
+    for (int edge = -1; edge <= 1; edge++) {
+        gpu_ws_tag_hud_prim(glyph, edge);
+        load_packet(glyph, 3);
+        last_scaled_rect.calls = 0;
+        gp0_exec_textured_16x16();
+        assert(last_scaled_rect.calls == 1);
+        assert(last_scaled_rect.x == ws_scale_about(54, (edge + 1) * 192));
+        assert(last_scaled_rect.w == 6);
+    }
+    memset(ws_tags, 0, sizeof(ws_tags));
+
+    /* Complete packet guards, frame expiry and native 4:3 identity. */
+    load_packet(glyph, 3);
+    gp0_cmd_buf[2] ^= 1u;
+    last_textured_rect.calls = last_scaled_rect.calls = 0;
+    gp0_exec_textured_16x16();
+    assert(last_textured_rect.calls == 1 && last_textured_rect.x == 54);
+    assert(last_scaled_rect.calls == 0);
+    s_frame_count += 3;
+    load_packet(glyph, 3);
+    last_textured_rect.calls = last_scaled_rect.calls = 0;
+    gp0_exec_textured_16x16();
+    assert(last_textured_rect.calls == 1 && last_textured_rect.x == 54);
+    assert(last_scaled_rect.calls == 0);
+    gpu_ws_tag_hud_prim(glyph, 0);
+    ws_xnum = ws_xden = 1;
+    last_textured_rect.calls = last_scaled_rect.calls = 0;
+    gp0_exec_textured_16x16();
+    assert(last_textured_rect.calls == 1 && last_textured_rect.x == 54);
+    assert(last_scaled_rect.calls == 0);
+
+    /* Explicitly identified panels do not depend on automatic size/rank
+     * heuristics; untagged world/fades still use the existing conservative gate. */
+    ws_xnum = 3; ws_xden = 8;
+    const uint32_t panel[] = {0x28202020u, pack_vertex(30, 30),
+        pack_vertex(334, 30), pack_vertex(30, 206), pack_vertex(334, 206)};
+    put_node(tile, 0xFFFFFFu, panel, 5);
+    gpu_ws_tag_hud_prim(tile, 0);
+    load_packet(tile, 5);
+    gpu_exec_reset_triangles();
+    gp0_exec_mono_quad();
+    assert(gpu_exec_triangles.min_x == ws_scale_about(30, 192));
+    assert(gpu_exec_triangles.max_x == ws_scale_about(334, 192));
+    ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+}
+
 int main(void) {
     int gmin, gmax, fmin, fmax;
 
     test_wall_behind_front_layer(0);
     test_wall_behind_front_layer(1);
+    test_explicit_projection_widget();
 
     /* A real HUD remains eligible when its last drawing layer is followed
      * by an empty OT bucket, as in Ape's memory-card menu. */

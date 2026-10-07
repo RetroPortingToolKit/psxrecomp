@@ -451,7 +451,8 @@ void gpu_ws_set_nw_hud_corners(int on);
 void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge);
 void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world);
 void gpu_ws_set_adaptive_backdrop_preload(int enabled);
-/* Explicit native-wide HUD packet anchor from a trusted title plugin.
+/* Explicit screen-space HUD packet anchor from a trusted title plugin.
+ * Native-wide translates; projection-and-stretch scales about the anchor.
  * `prim` is the address of the PsyQ P_TAG word; the drawn command starts at
  * prim+4. anchor: -1 = left, 0 = center, +1 = right. */
 void gpu_ws_tag_hud_prim(uint32_t prim, int anchor);
