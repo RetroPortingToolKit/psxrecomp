@@ -377,7 +377,29 @@ static void test_hud_lerp(void) {
     fg_prims_free(&L); fg_prims_free(&O);
 }
 
+static void test_view_affine(void) {
+    FgCamFit f; memset(&f, 0, sizeof f);
+    f.nviews = 1;
+    const double a = 0.1;   /* 0.2 rad about y */
+    f.v[0].q[0] = cos(a); f.v[0].q[2] = sin(a);
+    f.v[0].t[0] = 30; f.v[0].t[1] = -5; f.v[0].t[2] = 400;
+    float A[9], b[3];
+    check(fg_view_affine(&f, 0, 1.0, A, b), "affine");
+    check(fabsf(A[0] - 1) < 1e-5f && fabsf(A[4] - 1) < 1e-5f && fabsf(A[8] - 1) < 1e-5f &&
+          fabsf(A[1]) < 1e-5f && fabsf(b[0]) < 1e-3f && fabsf(b[2]) < 1e-3f, "t = 1: the newer camera itself");
+    /* t = 0 maps a newer point back to the older frame: P_old = M^T (P - T). */
+    fg_view_affine(&f, 0, 0.0, A, b);
+    const float P[3] = { 100, 20, 1000 };
+    const float o0 = A[0] * P[0] + A[1] * P[1] + A[2] * P[2] + b[0];
+    const float o2 = A[6] * P[0] + A[7] * P[1] + A[8] * P[2] + b[2];
+    /* M rotates about y by 0.2: M^T (P-T) */
+    const double c = cos(2 * a), sn = sin(2 * a), dx = P[0] - 30, dz = P[2] - 400;
+    check(fabs(o0 - (c * dx - sn * dz)) < 1e-2 && fabs(o2 - (sn * dx + c * dz)) < 1e-2,
+          "t = 0: the older frame's position");
+}
+
 int main(void) {
+    test_view_affine();
     test_hud_lerp();
     test_any_rate();
     test_ceiling();

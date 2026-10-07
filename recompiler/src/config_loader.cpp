@@ -865,6 +865,9 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("frame_generation")) {
             rt.video_frame_generation = toml::find<bool>(video, "frame_generation");
         }
+        if (video.contains("frame_generation_redraw")) {
+            rt.video_frame_generation_redraw = toml::find<bool>(video, "frame_generation_redraw");
+        }
         if (video.contains("vsync")) {
             const auto mode = toml::find<std::string>(video, "vsync");
             if      (mode == "on"  || mode == "vsync")     rt.video_vsync = 1;

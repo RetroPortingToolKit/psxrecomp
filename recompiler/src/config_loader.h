@@ -595,6 +595,9 @@ struct RuntimeConfig {
     // frame of latency (docs/FRAME_GENERATION.md). Off by default;
     // PSX_FRAME_GEN=0/1 overrides.
     bool                  video_frame_generation = false;
+    // frame_generation_redraw: in-between frames redraw the whole list
+    // (the earlier path) instead of reprojecting the real frame.
+    bool                  video_frame_generation_redraw = false;
 
     // [timing] guest_cycle_scale (1 = faithful, 1..64) and its gate; title
     // constants from game.toml only. See config_loader.cpp.

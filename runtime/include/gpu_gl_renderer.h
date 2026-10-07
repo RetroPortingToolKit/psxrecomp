@@ -356,6 +356,7 @@ void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int3
 int  gl_renderer_frame_generation(void);
 void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz);
 double gl_renderer_frame_gen_real_share(void);
+void gl_renderer_set_frame_generation_redraw(int on);
 void gl_renderer_frame_gen_hold(const char *reason, double secs);
 int  gl_renderer_frame_gen_json(char *out, int cap);
 /* Host time the renderer spent, as running totals in performance-counter

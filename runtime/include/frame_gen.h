@@ -145,6 +145,8 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
  * 0 when it would land on the next real frame. */
 double fg_step_s(double flip_s, double refresh_hz, int n);
 double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns);
+/* View vi's in-between camera at phase t as P_t = A P + b (row-major A). */
+int fg_view_affine(const FgCamFit *fit, int vi, double t, float A[9], float b[3]);
 /* HUD motion between two frames' 2D triangles (frame_gen.c). */
 void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
                  float max_px);

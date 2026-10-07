@@ -185,6 +185,7 @@ typedef void   (APIENTRY *PFN_glUniform2i)(GLint, GLint, GLint);
 typedef void   (APIENTRY *PFN_glUniform4i)(GLint, GLint, GLint, GLint, GLint);
 typedef void   (APIENTRY *PFN_glUniform2f)(GLint, GLfloat, GLfloat);
 typedef void   (APIENTRY *PFN_glUniform4f)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
+typedef void   (APIENTRY *PFN_glUniform4fv)(GLint, GLsizei, const GLfloat *);
 typedef void   (APIENTRY *PFN_glBlendColor)(GLfloat, GLfloat, GLfloat, GLfloat);
 typedef void   (APIENTRY *PFN_glBlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
 typedef void   (APIENTRY *PFN_glBlendEquationSeparate)(GLenum, GLenum);
@@ -254,6 +255,7 @@ static PFN_glUniform2i         p_glUniform2i;
 static PFN_glUniform4i         p_glUniform4i;
 static PFN_glUniform2f         p_glUniform2f;
 static PFN_glUniform4f         p_glUniform4f;
+static PFN_glUniform4fv        p_glUniform4fv;
 static PFN_glBlendColor        p_glBlendColor;
 static PFN_glBlendFuncSeparate p_glBlendFuncSeparate;
 static PFN_glBlendEquationSeparate p_glBlendEquationSeparate;
@@ -328,6 +330,7 @@ static int load_modern_gl(void) {
     LOAD(p_glUniform2i, "glUniform2i"); LOAD(p_glUniform4i, "glUniform4i");
     LOAD(p_glUniform2f, "glUniform2f");
     LOAD(p_glUniform4f, "glUniform4f");
+    LOAD(p_glUniform4fv, "glUniform4fv");
     LOAD(p_glBlendColor, "glBlendColor");
     LOAD(p_glBlendFuncSeparate, "glBlendFuncSeparate");
     LOAD(p_glBlendEquationSeparate, "glBlendEquationSeparate");
@@ -10499,6 +10502,11 @@ static FgVert   *s_fg_verts = NULL; static uint32_t s_fg_verts_cap = 0;
 static float    *s_fg_px = NULL, *s_fg_py = NULL; static uint32_t s_fg_pos_cap = 0;
 static FgCamFit  s_fg_fit;
 static float     s_fg_margin[FG_MAX_VIEWS][4];   /* fg_cam_place, per generated frame */
+static int       s_fg_reproject = 1;            /* reprojection (else redraw) */
+static void      rp_snapshot_list(int li, const int disp[4]);
+static void fg_blit2(GLuint src, GLuint dst, int sx, int sy, int dx, int dy, int w, int h);
+static int       s_fg_replay_objects_only = 0;  /* fg_replay: cars only */
+static int       s_fg_reprojected_now = 0;      /* fg_compose: the wide image is complete */
 static int       s_fg_src_older = 0;          /* the older frame is redrawn (moving forward) */
 static uint32_t fg_main_view(const FgCamFit *f) {
     uint32_t m = 0;
@@ -10553,7 +10561,8 @@ static uint64_t  s_fg_generated = 0, s_fg_real_presents = 0, s_fg_flips = 0,
                  s_fg_flushed = 0, s_fg_skipped_plan = 0, s_fg_dups = 0;
 static int       s_fg_last_n = 0, s_fg_last_slots = 0;
 static const char *s_fg_noplan_why = "";
-static uint64_t s_fg_end_ahead = 0, s_fg_end_bp = 0, s_fg_end_phase = 0;   /* why a game frame's in-betweens stopped early */   /* why the last flip planned nothing */
+static uint64_t s_fg_end_ahead = 0, s_fg_end_bp = 0, s_fg_end_phase = 0;
+static uint64_t s_fg_np_brk = 0, s_fg_np_stale = 0, s_fg_np_held = 0, s_fg_np_room = 0;   /* why a game frame's in-betweens stopped early */   /* why the last flip planned nothing */
 static double    s_fg_last_match_ms = 0.0;
 
 static double fg_now_s(void) { return (double)rt_now_ns() * 1e-9; }
@@ -10742,10 +10751,56 @@ static int fg_buf_of(int x, int y) {
 static void fg_list_close(FgList *l, const int disp[4]);
 static void fg_list_open(void);
 
+/* Reprojection's source: each closed list's finished image, copied from the
+ * real surface when the list closes (the game then draws its next frames
+ * into the buffers; R4 even flips to a buffer before drawing into it). */
+static GLuint s_rp_ls_tex[4], s_rp_ls_fbo[4];
+static int    s_rp_ls_w[4], s_rp_ls_h[4], s_rp_ls_S[4], s_rp_ls_ok[4];
+static void rp_snapshot_list(int li, const int disp[4]) {
+    if (li < 0 || li >= 4) return;
+    s_rp_ls_ok[li] = 0;
+    if (!s_fg_reproject || !s_raster_ok) return;
+    const int S = s_hr_scale;
+    int iw = -1;
+    if (g_wide_w > 0)
+        for (int i = 0; i < WIDE_MAX_SURF; i++)
+            if (s_wide_fbo[i] && s_wide_base[i] == disp[0]) { iw = i; break; }
+    const int dy = disp[1] < 0 ? 0 : disp[1];
+    const int dh = disp[1] + disp[3] > VRAM_H ? VRAM_H - dy : disp[1] + disp[3] - dy;
+    const int W = iw >= 0 ? g_wide_w : disp[2];
+    if (W <= 0 || dh <= 0) return;
+    const int w = W * S, h = dh * S;
+    if (s_rp_ls_w[li] != w || s_rp_ls_h[li] != h) {
+        if (s_rp_ls_fbo[li]) { p_glDeleteFramebuffers(1, &s_rp_ls_fbo[li]); glDeleteTextures(1, &s_rp_ls_tex[li]); }
+        s_rp_ls_fbo[li] = s_rp_ls_tex[li] = 0; s_rp_ls_w[li] = s_rp_ls_h[li] = 0;
+        fg_cost_cold(fg_cost(), 3);
+        s_rp_ls_tex[li] = make_tex(GL_RGBA8, w, h, GL_RGBA, GL_UNSIGNED_BYTE);
+        if (!make_fbo(&s_rp_ls_fbo[li], s_rp_ls_tex[li], 0)) {
+            glDeleteTextures(1, &s_rp_ls_tex[li]); s_rp_ls_tex[li] = 0; s_rp_ls_fbo[li] = 0; return;
+        }
+        s_rp_ls_w[li] = w; s_rp_ls_h[li] = h;
+    }
+    flush_line_batch(); flush_flat_batch(); flush_tex_batch();
+    fg_blit2(iw >= 0 ? s_wide_fbo[iw] : s_hr_fbo, s_rp_ls_fbo[li],
+             iw >= 0 ? 0 : disp[0] * S, dy * S, 0, 0, w, h);
+    /* The wide surface's centre may be filled from the hr surface only at
+     * present (wide_blit_center's fast path): take it from there too. */
+    if (iw >= 0 && wide_fast_center_valid() && !view_enabled) {
+        if (s_hiw) return;
+        const int native_w = g_wide_w - 2 * g_wide_off;
+        if (native_w > 0)
+            fg_blit2(s_hr_fbo, s_rp_ls_fbo[li], disp[0] * S, dy * S, g_wide_off * S, 0,
+                     native_w * S, h);
+    }
+    s_rp_ls_S[li] = S;
+    s_rp_ls_ok[li] = 1;
+}
+
 /* Close the capturing list as the frame of its buffer; it becomes the newer
  * frame, the newer one the older. */
 static void fg_rotate(void) {
     fg_list_close(&s_fg_l[s_fg_cur], s_fg_buf[s_fg_cur_buf]);
+    rp_snapshot_list(s_fg_cur, s_fg_buf[s_fg_cur_buf]);
     if (s_fg_partial) { s_fg_l[s_fg_cur].valid = 0; s_fg_partial = 0; }
     s_fg_older = s_fg_newer; s_fg_newer = s_fg_cur;
     /* A slot no frame in use holds (a schedule pins its pair). */
@@ -11031,7 +11086,11 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
      * in-between camera, frame_gen.h). */
     int placed = 0;
     memset(s_fg_margin, 0, sizeof s_fg_margin);
-    if (s_fg_verts && s_fg_verts_cap >= b->prims.n) {
+    if (s_fg_replay_objects_only) {
+        /* Reprojected: only cars are drawn, each corner at its own
+         * in-between position (fg_cam_place's object motion), computed
+         * per drawn triangle below. */
+    } else if (s_fg_verts && s_fg_verts_cap >= b->prims.n) {
         if (s_fg_pos_cap < b->prims.n) {
             float *nx = (float *)realloc(s_fg_px, (size_t)b->prims.n * 3 * sizeof *nx);
             if (nx) s_fg_px = nx;
@@ -11057,7 +11116,7 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
         s_rthx_tagged = (h.flags & RTHF_TAGGED) != 0;
         s_rthx_backdrop = (h.flags >> RTHF_BD_SHIFT) & 3;
         const int area[4] = { s_area_x1, s_area_y1, s_area_x2, s_area_y2 };
-        const int in = fg_area_meets(area, disp);
+        const int in = !s_fg_replay_objects_only && fg_area_meets(area, disp);
         switch (h.op) {
         case RTH_SEMI:    glb_set_semi_transparency(v[0], v[1]); break;
         case RTH_MASK:    glb_set_mask_bits(v[0], v[1]); break;
@@ -11082,10 +11141,10 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
             break;
         case RTH_WIDE_DISABLE: glb_wide_disable_target(); break;
         case RTH_WIDE_CLEAR:
-            if (v[0] == disp[0] && gen_wide) glb_wide_clear(v[0], v[1], v[2], (uint16_t)v[3]);
+            if (v[0] == disp[0] && gen_wide && !s_fg_replay_objects_only) glb_wide_clear(v[0], v[1], v[2], (uint16_t)v[3]);
             break;
         case RTH_WIDE_CLEAR_MARGINS:
-            if (v[0] == disp[0] && gen_wide)
+            if (v[0] == disp[0] && gen_wide && !s_fg_replay_objects_only)
                 glb_wide_clear_margins(v[0], v[1], v[2], (uint16_t)v[3], v[4]);
             break;
         case RTH_FILL:
@@ -11094,7 +11153,7 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
              * camera uncovers (the road below the receding near edge) shows
              * that frame's pixels instead of the clear colour. Fills after
              * drawing (panels, letterbox bands) are part of the picture. */
-            if (drawn && fg_rect_meets(v[0], v[1], v[2], v[3], disp))
+            if (drawn && !s_fg_replay_objects_only && fg_rect_meets(v[0], v[1], v[2], v[3], disp))
                 glb_fill_rect(v[0], v[1], v[2], v[3], (uint16_t)v[4]);
             break;
         case RTH_FLAT_RECT:
@@ -11128,7 +11187,32 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
             }
             const FgPrim *pb = &b->prims.v[pi];
             float x[3], y[3];
-            if (placed) {
+            if (s_fg_replay_objects_only) {
+                /* Cars: every corner moves as an object, and small (a sky
+                 * dome is an object to the fit too, but it is the backdrop
+                 * the warp keeps). */
+                int obj = 1;
+                for (int k = 0; k < 3; k++) obj &= s_fg_verts[3 * pi + k].mode == FG_PLACE_OBJECT;
+                if (obj) {
+                    const float bw = fmaxf(pb->x[0], fmaxf(pb->x[1], pb->x[2])) - fminf(pb->x[0], fminf(pb->x[1], pb->x[2]));
+                    const float bh = fmaxf(pb->y[0], fmaxf(pb->y[1], pb->y[2])) - fminf(pb->y[0], fminf(pb->y[1], pb->y[2]));
+                    if (bw > 96.0f || bh > 64.0f) obj = 0;
+                }
+                if (!obj) { pc_pending = 0; break; }
+            }
+            if (s_fg_replay_objects_only) {
+                int gone = 0;
+                for (int k = 0; k < 3; k++) {
+                    const FgVert *fv = &s_fg_verts[3 * pi + k];
+                    const float *pn = pb->p[k];
+                    float pt[3];
+                    for (int c = 0; c < 3; c++) pt[c] = fv->a[c] + (pn[c] - fv->a[c]) * (float)t;
+                    if (pn[2] < 1.0f || pt[2] < 1.0f) { gone = 1; break; }
+                    x[k] = pb->x[k] + pb->h[k] * (pt[0] / pt[2] - pn[0] / pn[2]);
+                    y[k] = pb->y[k] + pb->h[k] * (pt[1] / pt[2] - pn[1] / pn[2]);
+                }
+                if (gone) { pc_pending = 0; break; }
+            } else if (placed) {
                 int gone = 0;
                 for (int k = 0; k < 3; k++) {
                     x[k] = s_fg_px[3 * pi + k]; y[k] = s_fg_py[3 * pi + k];
@@ -11167,7 +11251,8 @@ static void fg_compose(const FgList *b, GLuint wide_fbo, GLuint wide_tex, int li
     int lx, ly, lw, lh;
     if (b->wide) {
         letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
-        wide_blit_center(wide_fbo, b->disp[0], b->disp[1], b->disp[3]);
+        /* A reprojected frame warped the composed wide image itself. */
+        if (!s_fg_reprojected_now) wide_blit_center(wide_fbo, b->disp[0], b->disp[1], b->disp[3]);
     } else if (force_4_3) {
         letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
     } else {
@@ -11192,6 +11277,354 @@ static void fg_compose(const FgList *b, GLuint wide_fbo, GLuint wide_tex, int li
 /* Draw and present the frame at phase t between the two lists. Returns 1
  * when a frame was presented. `swap` 0 leaves the composed image in the
  * back buffer (tests). */
+
+/* ---- frame generation: reprojection (default) ------------------------------
+ * An in-between frame warps the newer real frame's finished image by the
+ * in-between camera instead of drawing the scene again. Once per game frame
+ * a small image of the newer frame's camera depth is rasterized from its
+ * recorded triangles (1/z, what kind of pixel, which view; painter order, as
+ * the game drew them): world pixels (every vertex placed by the camera fit)
+ * carry their depth; cars, 2D, HUD, sprites, fills and small views (the
+ * mirror) are "keep". Each generated frame is then one draw of a grid with a
+ * vertex per native pixel: a world vertex is unprojected with its depth,
+ * moved by the view's in-between camera and projected again (nearest wins),
+ * and samples the real frame at full resolution. Grid cells over a depth
+ * edge or a keep pixel are not drawn: there the copy of the real frame
+ * underneath shows. Cars are then drawn again at their own in-between
+ * position from the recorded list (cheap); the HUD stays as drawn.
+ * [video] frame_generation_redraw / PSX_FRAME_GEN_REDRAW=1: the previous
+ * path (the whole list drawn again per generated frame). */
+static GLuint s_rp_zprog = 0, s_rp_wprog = 0, s_rp_vao = 0, s_rp_vbo = 0, s_rp_evao = 0;
+static GLuint s_rp_ztex = 0, s_rp_zfbo = 0;
+static int    s_rp_zw = 0, s_rp_zh = 0;
+static float *s_rp_v = NULL; static size_t s_rp_vcap = 0;
+static uint64_t s_rp_key = 0;   /* the game frame the depth image is of */
+static uint64_t s_rp_frames = 0, s_rp_fallback = 0;
+static GLint  s_rp_z_uSize = -1;
+static GLint  s_rp_w_uZ, s_rp_w_uZsize, s_rp_w_uZs, s_rp_w_uGrid, s_rp_w_uSize, s_rp_w_uOx,
+              s_rp_w_uView, s_rp_w_uM, s_rp_w_uSrc, s_rp_w_uSrcOrg, s_rp_w_uS;
+enum { RP_ZS = 2 };   /* depth texels per native pixel */
+
+static const char *RP_Z_VS =
+    "#version 330\n"
+    "layout(location=0) in vec4 a;\n"
+    "layout(location=1) in float av;\n"
+    "uniform vec2 u_size;\n"
+    "out float v_iz; flat out float v_id; flat out float v_view;\n"
+    "void main(){ v_iz=a.z; v_id=a.w; v_view=av;\n"
+    "  gl_Position=vec4(a.x/u_size.x*2.0-1.0, a.y/u_size.y*2.0-1.0, 0.0, 1.0); }\n";
+static const char *RP_Z_FS =
+    "#version 330\n"
+    "in float v_iz; flat in float v_id; flat in float v_view; out vec4 frag;\n"
+    "void main(){ frag=vec4(v_iz, v_id, v_view, 1.0); }\n";
+static const char *RP_W_VS =
+    "#version 330\n"
+    "uniform sampler2D u_z; uniform ivec2 u_zsize; uniform float u_zs;\n"
+    "uniform ivec2 u_grid; uniform vec2 u_size; uniform vec2 u_ox;\n"
+    "uniform vec4 u_view[4]; uniform vec4 u_M[12];\n"
+    "out vec2 v_src; out float v_bad;\n"
+    "vec4 zat(ivec2 g){ return texelFetch(u_z, clamp(ivec2(vec2(g)*u_zs), ivec2(0), u_zsize-1), 0); }\n"
+    "void main(){\n"
+    "  int id=gl_VertexID, cell=id/6, c=id-cell*6;\n"
+    "  int cw=u_grid.x-1; ivec2 base=ivec2(cell-(cell/cw)*cw, cell/cw);\n"
+    "  ivec2 o = (c==0)?ivec2(0,0):(c==1||c==3)?ivec2(1,0):(c==2||c==5)?ivec2(0,1):ivec2(1,1);\n"
+    "  ivec2 gp=base+o; vec2 p=vec2(gp);\n"
+    "  float zmin=1e30, zmax=0.0; float bad=0.0; float v0=-1.0;\n"
+    "  for(int k=0;k<4;k++){ vec4 q=zat(base+ivec2(k&1,k>>1));\n"
+    "    if(q.y<0.5||q.y>1.5||q.x<=0.0){bad=1.0;} else { float Z=1.0/q.x; zmin=min(zmin,Z); zmax=max(zmax,Z);\n"
+    "      if(v0<0.0) v0=q.z; else if(q.z!=v0) bad=1.0; } }\n"
+    "  if(zmax>zmin*1.06+4.0) bad=1.0;\n"
+    "  vec4 z=zat(gp); vec2 np=p; float depth=1.0;\n"
+    "  if(bad<0.5){\n"
+    "    int vi=int(z.z+0.5); vec4 V=u_view[vi]; float Z=1.0/z.x; vec2 rel=p-u_ox;\n"
+    "    vec3 P=vec3((rel.x-V.x)*Z/V.z,(rel.y-V.y)*Z/V.z,Z);\n"
+    "    vec4 r0=u_M[vi*3], r1=u_M[vi*3+1], r2=u_M[vi*3+2];\n"
+    "    vec3 Pt=vec3(dot(r0.xyz,P)+r0.w, dot(r1.xyz,P)+r1.w, dot(r2.xyz,P)+r2.w);\n"
+    "    Pt.z=max(Pt.z, max(16.0, 0.25*Z));\n"
+    "    np=vec2(V.z*Pt.x/Pt.z+V.x, V.z*Pt.y/Pt.z+V.y)+u_ox;\n"
+    "    depth=clamp(Pt.z/262144.0, 0.0, 1.0);\n"
+    "  }\n"
+    "  v_bad=bad; v_src=p;\n"
+    "  gl_Position=vec4(np.x/u_size.x*2.0-1.0, np.y/u_size.y*2.0-1.0, depth*2.0-1.0, 1.0);\n"
+    "}\n";
+static const char *RP_W_FS =
+    "#version 330\n"
+    "uniform sampler2D u_src; uniform vec2 u_srcorg; uniform float u_S; uniform int u_dbg;\n"
+    "in vec2 v_src; in float v_bad; out vec4 frag;\n"
+    "void main(){ if(v_bad>0.0) discard;\n"
+    "  frag=texelFetch(u_src, ivec2((u_srcorg+v_src)*u_S), 0);\n"
+    "  if(u_dbg==1) frag=vec4(fract(v_src/32.0),0.5,1.0); }\n";
+
+static const char *RP_R_VS =
+    "#version 330\n"
+    "void main(){ vec2 q=vec2((gl_VertexID==1)?3.0:-1.0, (gl_VertexID==2)?3.0:-1.0);\n"
+    "  gl_Position=vec4(q,0.0,1.0); }\n";
+static const char *RP_R_FS =
+    "#version 330\n"
+    "uniform sampler2D u_src; uniform sampler2D u_z; uniform ivec2 u_zsize;\n"
+    "uniform vec2 u_org; uniform vec2 u_srcorg; uniform float u_S; out vec4 frag;\n"
+    "void main(){ vec2 p=(gl_FragCoord.xy-u_org)/u_S;\n"
+    "  vec4 z=texelFetch(u_z, clamp(ivec2(p*2.0), ivec2(0), u_zsize-1), 0);\n"
+    "  if(z.y>0.5) discard;\n"
+    "  frag=texelFetch(u_src, ivec2(gl_FragCoord.xy-u_org+u_srcorg*u_S), 0); }\n";
+static GLuint s_rp_rprog = 0;
+static int rp_resources(void) {
+    if (s_rp_wprog) return 1;
+    fg_cost_cold(fg_cost(), 4);   /* compiling the programs is not a frame's cost */
+    s_rp_rprog = build_program(RP_R_VS, RP_R_FS);
+    s_rp_zprog = build_program(RP_Z_VS, RP_Z_FS);
+    s_rp_wprog = build_program(RP_W_VS, RP_W_FS);
+    if (!s_rp_zprog || !s_rp_wprog || !s_rp_rprog || !p_glUniform4fv) { s_fg_reproject = 0; return 0; }
+    s_rp_z_uSize = p_glGetUniformLocation(s_rp_zprog, "u_size");
+    s_rp_w_uZ = p_glGetUniformLocation(s_rp_wprog, "u_z");
+    s_rp_w_uZsize = p_glGetUniformLocation(s_rp_wprog, "u_zsize");
+    s_rp_w_uZs = p_glGetUniformLocation(s_rp_wprog, "u_zs");
+    s_rp_w_uGrid = p_glGetUniformLocation(s_rp_wprog, "u_grid");
+    s_rp_w_uSize = p_glGetUniformLocation(s_rp_wprog, "u_size");
+    s_rp_w_uOx = p_glGetUniformLocation(s_rp_wprog, "u_ox");
+    s_rp_w_uView = p_glGetUniformLocation(s_rp_wprog, "u_view");
+    s_rp_w_uM = p_glGetUniformLocation(s_rp_wprog, "u_M");
+    s_rp_w_uSrc = p_glGetUniformLocation(s_rp_wprog, "u_src");
+    s_rp_w_uSrcOrg = p_glGetUniformLocation(s_rp_wprog, "u_srcorg");
+    s_rp_w_uS = p_glGetUniformLocation(s_rp_wprog, "u_S");
+    p_glGenVertexArrays(1, &s_rp_vao);
+    p_glBindVertexArray(s_rp_vao);
+    p_glGenBuffers(1, &s_rp_vbo);
+    p_glBindBuffer(PSXGL_ARRAY_BUFFER, s_rp_vbo);
+    p_glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)0);
+    p_glEnableVertexAttribArray(0);
+    p_glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)(4 * sizeof(float)));
+    p_glEnableVertexAttribArray(1);
+    p_glGenVertexArrays(1, &s_rp_evao);
+    p_glBindVertexArray(0);
+    return 1;
+}
+
+static int rp_push(size_t *n, float x, float y, float iz, float id, float view) {
+    if ((*n + 1) * 5 > s_rp_vcap) {
+        size_t cap = s_rp_vcap ? s_rp_vcap * 2 : 5 * 65536;
+        float *nv = (float *)realloc(s_rp_v, cap * sizeof *nv);
+        if (!nv) return 0;
+        s_rp_v = nv; s_rp_vcap = cap;
+    }
+    float *v = s_rp_v + *n * 5;
+    v[0] = x; v[1] = y; v[2] = iz; v[3] = id; v[4] = view;
+    (*n)++;
+    return 1;
+}
+static int rp_push_quad(size_t *n, float x0, float y0, float x1, float y1) {
+    const float q[6][2] = { {x0, y0}, {x1, y0}, {x0, y1}, {x1, y0}, {x1, y1}, {x0, y1} };
+    for (int i = 0; i < 6; i++) if (!rp_push(n, q[i][0], q[i][1], 0.0f, 0.0f, 0.0f)) return 0;
+    return 1;
+}
+
+/* Projection centre and distance per view, from its camera-placed vertices
+ * (x = cx + h X / Z). */
+static void rp_view_params(const FgList *L, float out[4][4]) {
+    double sx[FG_MAX_VIEWS] = {0}, sy[FG_MAX_VIEWS] = {0}, sh[FG_MAX_VIEWS] = {0};
+    uint32_t cnt[FG_MAX_VIEWS] = {0};
+    for (uint32_t j = 0; j < L->prims.n; j++) {
+        const FgPrim *p = &L->prims.v[j];
+        for (int k = 0; k < 3; k++) {
+            const FgVert *fv = &s_fg_verts[3 * j + k];
+            if (fv->mode != FG_PLACE_CAMERA || fv->view < 0 || fv->view >= FG_MAX_VIEWS) continue;
+            if (p->p[k][2] < 1.0f || p->h[k] <= 0.0f) continue;
+            const int v = fv->view;
+            sx[v] += p->x[k] - p->h[k] * p->p[k][0] / p->p[k][2];
+            sy[v] += p->y[k] - p->h[k] * p->p[k][1] / p->p[k][2];
+            sh[v] += p->h[k];
+            cnt[v]++;
+        }
+    }
+    for (int v = 0; v < FG_MAX_VIEWS; v++) {
+        out[v][0] = cnt[v] ? (float)(sx[v] / cnt[v]) : 0.0f;
+        out[v][1] = cnt[v] ? (float)(sy[v] / cnt[v]) : 0.0f;
+        out[v][2] = cnt[v] ? (float)(sh[v] / cnt[v]) : 1.0f;
+        out[v][3] = cnt[v] ? 1.0f : 0.0f;
+    }
+}
+
+/* Draws the in-between frame of the newer list L at phase t into dst_fbo
+ * (which holds a copy of the real frame already). src_tex is the real
+ * surface; the region is (x0, y0, W, H) native px, rel x = x - ox. */
+static double s_rp_t_snap = 0, s_rp_t_z = 0, s_rp_t_w = 0;
+static uint32_t s_rp_zn = 0;
+static int fg_reproject(const FgList *L, double t, GLuint dst_fbo, GLuint src_fbo,
+                        int x0, int y0, int W, int H, float ox, int S) {
+    if (!rp_resources() || W <= 0 || H <= 0) return 0;
+    float vp[4][4];
+    rp_view_params(L, vp);
+    float big = 0.0f;
+    for (uint32_t vi = 0; vi < s_fg_fit.nviews; vi++) {
+        const float *ar = s_fg_fit.v[vi].area;
+        const float a = (ar[2] - ar[0]) * (ar[3] - ar[1]);
+        if (a > big) big = a;
+    }
+    GLint prev_vp[4]; glGetIntegerv(GL_VIEWPORT, prev_vp);
+    const GLboolean was_scissor = glIsEnabled(GL_SCISSOR_TEST), was_blend = glIsEnabled(GL_BLEND),
+                    was_stencil = glIsEnabled(GL_STENCIL_TEST);
+    glDisable(GL_SCISSOR_TEST); glDisable(GL_BLEND); glDisable(GL_STENCIL_TEST);
+    /* 1. The depth image and a snapshot of the real frame, once per game
+     * frame (the game draws on into its buffers while the in-between
+     * frames are shown; the snapshot is what they are made of). */
+    const int zw = W * RP_ZS, zh = H * RP_ZS;
+    const uint64_t key = s_fg_flips * 4096u + (uint64_t)(L - s_fg_l) * 1024u + (uint64_t)W;
+    const int li = (int)(L - s_fg_l);
+    if (li < 0 || li >= 4 || !s_rp_ls_ok[li] || s_rp_ls_S[li] != S ||
+        s_rp_ls_w[li] != W * S || s_rp_ls_h[li] != H * S) goto fail;
+    GLuint s_rp_snap_fbo = s_rp_ls_fbo[li], s_rp_snap_tex = s_rp_ls_tex[li];
+    (void)src_fbo;
+    /* The picture under the warp: the snapshot. */
+    fg_blit2(s_rp_snap_fbo, dst_fbo, 0, 0, x0 * S, y0 * S, W * S, H * S);
+    const uint64_t qz = host_now_ns_rthf();
+    if (key != s_rp_key || zw != s_rp_zw || zh != s_rp_zh) {
+        if (zw != s_rp_zw || zh != s_rp_zh) {
+            if (s_rp_zfbo) { p_glDeleteFramebuffers(1, &s_rp_zfbo); glDeleteTextures(1, &s_rp_ztex); }
+            fg_cost_cold(fg_cost(), 3);
+            s_rp_ztex = make_tex(0x8814 /* GL_RGBA32F */, zw, zh, GL_RGBA, GL_FLOAT);
+            if (!make_fbo(&s_rp_zfbo, s_rp_ztex, 0)) { s_rp_zfbo = 0; s_rp_zw = s_rp_zh = 0; goto fail; }
+            s_rp_zw = zw; s_rp_zh = zh;
+        }
+        size_t n = 0;
+        for (uint32_t r = 0; r < L->n; r++) {
+            FgRec h;
+            memcpy(&h, L->buf + L->off[r], sizeof h);
+            const int32_t *v = (const int32_t *)(L->buf + L->off[r] + sizeof h);
+            switch (h.op) {
+            case RTH_FLAT_TRI: case RTH_GOURAUD_TRI: case RTH_TEX_TRI:
+            case RTH_SHADED_TEX_TRI: case RTH_PROJ_TRI: {
+                const int pi = L->rec2prim ? L->rec2prim[r] : -1;
+                if (pi < 0) break;
+                const FgPrim *p = &L->prims.v[pi];
+                int world = 1, view = -1;
+                for (int k = 0; k < 3; k++) {
+                    const FgVert *fv = &s_fg_verts[3 * pi + k];
+                    if (fv->mode != FG_PLACE_CAMERA || p->p[k][2] < 1.0f) world = 0;
+                    else if (view < 0) view = fv->view;
+                    else if (view != fv->view) world = 0;
+                }
+                if (world && (view < 0 || view >= FG_MAX_VIEWS || !vp[view][3])) world = 0;
+                if (world) {
+                    const float *ar = s_fg_fit.v[view].area;
+                    if ((ar[2] - ar[0]) * (ar[3] - ar[1]) < 0.15f * big) world = 0;
+                }
+                /* Not world: 2 for 3D the fit moves on its own (cars, the sky
+                 * dome; they stay where the warp leaves them), 0 for 2D,
+                 * HUD and small views (put back over the warp). */
+                int obj = 0;
+                if (!world)
+                    for (int k = 0; k < 3; k++) obj |= p->vid[k] != 0;
+                if (!world && obj && view >= 0 && view < FG_MAX_VIEWS) {
+                    const float *ar = s_fg_fit.v[view].area;
+                    if ((ar[2] - ar[0]) * (ar[3] - ar[1]) < 0.15f * big) obj = 0;
+                }
+                const float id = world ? 1.0f : obj ? 2.0f : 0.0f;
+                for (int k = 0; k < 3; k++)
+                    if (!rp_push(&n, (p->x[k] + ox) * RP_ZS, p->y[k] * RP_ZS,
+                                 world ? 1.0f / p->p[k][2] : 0.0f, id,
+                                 world ? (float)view : 0.0f)) goto fail;
+                break;
+            }
+            case RTH_FLAT_RECT: case RTH_TEX_RECT: case RTH_TEX_RECT_SCALED:
+                if (!rp_push_quad(&n, ((float)(v[0] - L->disp[0]) + ox) * RP_ZS,
+                                  (float)(v[1] - L->disp[1]) * RP_ZS,
+                                  ((float)(v[0] - L->disp[0] + v[2]) + ox) * RP_ZS,
+                                  (float)(v[1] - L->disp[1] + v[3]) * RP_ZS)) goto fail;
+                break;
+            default: break;
+            }
+        }
+        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_rp_zfbo);
+        glViewport(0, 0, zw, zh);
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        if (n) {
+            p_glUseProgram(s_rp_zprog);
+            p_glUniform2f(s_rp_z_uSize, (float)zw, (float)zh);
+            p_glBindVertexArray(s_rp_vao);
+            p_glBindBuffer(PSXGL_ARRAY_BUFFER, s_rp_vbo);
+            p_glBufferData(PSXGL_ARRAY_BUFFER, (GLsizeiptr)(n * 5 * sizeof(float)), s_rp_v, PSXGL_STREAM_DRAW);
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)n);
+        }
+        s_rp_key = key;
+        s_rp_zn = (uint32_t)n;
+        s_rp_t_z = (double)(host_now_ns_rthf() - qz) * 1e-6;
+    }
+    const uint64_t qw = host_now_ns_rthf();
+    /* 2. The warp. */
+    {
+        float M[12][4]; memset(M, 0, sizeof M);
+        for (uint32_t vi = 0; vi < s_fg_fit.nviews && vi < FG_MAX_VIEWS; vi++) {
+            float A[9], b[3];
+            if (!fg_view_affine(&s_fg_fit, (int)vi, t, A, b)) continue;
+            for (int r = 0; r < 3; r++) {
+                M[vi * 3 + r][0] = A[3 * r]; M[vi * 3 + r][1] = A[3 * r + 1];
+                M[vi * 3 + r][2] = A[3 * r + 2]; M[vi * 3 + r][3] = b[r];
+            }
+        }
+        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, dst_fbo);
+        glViewport(x0 * S, y0 * S, W * S, H * S);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(x0 * S, y0 * S, W * S, H * S);
+        glClearDepth(1.0);
+        glDepthMask(GL_TRUE);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        p_glUseProgram(s_rp_wprog);
+        p_glActiveTexture(PSXGL_TEXTURE0 + 1);
+        glBindTexture(GL_TEXTURE_2D, s_rp_ztex);
+        p_glActiveTexture(PSXGL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_rp_snap_tex);
+        p_glUniform1i(s_rp_w_uSrc, 0);
+        p_glUniform1i(s_rp_w_uZ, 1);
+        p_glUniform2i(s_rp_w_uZsize, zw, zh);
+        p_glUniform1f(s_rp_w_uZs, (float)RP_ZS);
+        p_glUniform2i(s_rp_w_uGrid, W + 1, H + 1);
+        p_glUniform2f(s_rp_w_uSize, (float)W, (float)H);
+        p_glUniform2f(s_rp_w_uOx, ox, 0.0f);
+        p_glUniform4fv(s_rp_w_uView, 4, &vp[0][0]);
+        p_glUniform4fv(s_rp_w_uM, 12, &M[0][0]);
+        p_glUniform2f(s_rp_w_uSrcOrg, 0.0f, 0.0f);
+        p_glUniform1f(s_rp_w_uS, (float)S);
+        {   static int dbg = -1;
+            if (dbg < 0) { const char *e = getenv("PSX_RP_DEBUG"); dbg = e ? atoi(e) : 0; }
+            p_glUniform1i(p_glGetUniformLocation(s_rp_wprog, "u_dbg"), dbg);
+            (void)dbg; }
+        p_glBindVertexArray(s_rp_evao);
+        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(W * H * 6));
+        glDisable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        /* 2D and HUD pixels back over the warp, where the real frame has them. */
+        p_glUseProgram(s_rp_rprog);
+        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_src"), 0);
+        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_z"), 1);
+        p_glUniform2i(p_glGetUniformLocation(s_rp_rprog, "u_zsize"), zw, zh);
+        p_glUniform2f(p_glGetUniformLocation(s_rp_rprog, "u_org"), (float)(x0 * S), (float)(y0 * S));
+        p_glUniform2f(p_glGetUniformLocation(s_rp_rprog, "u_srcorg"), 0.0f, 0.0f);
+        p_glUniform1f(p_glGetUniformLocation(s_rp_rprog, "u_S"), (float)S);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        s_rp_t_w = (double)(host_now_ns_rthf() - qw) * 1e-6;
+    }
+    p_glBindVertexArray(0);
+    p_glUseProgram(0);
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+    if (was_scissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    if (was_blend) glEnable(GL_BLEND);
+    if (was_stencil) glEnable(GL_STENCIL_TEST);
+    s_rp_frames++;
+    return 1;
+fail:
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+    if (was_scissor) glEnable(GL_SCISSOR_TEST);
+    if (was_blend) glEnable(GL_BLEND);
+    if (was_stencil) glEnable(GL_STENCIL_TEST);
+    s_rp_fallback++;
+    return 0;
+}
+
 static int fg_generate(double t, int swap) {
     if (s_fg_pa < 0 || s_fg_pb < 0) return 0;
     FgList *a = &s_fg_l[s_fg_pa], *b = &s_fg_l[s_fg_pb];
@@ -11250,7 +11683,17 @@ static int fg_generate(double t, int swap) {
     rect_add(&s_stencil_stale, L->disp[0], ly, L->disp[0] + L->disp[2] - 1, ly + lh - 1);
     if (iw >= 0) wst_add(iw, 0, ly, g_wide_w, ly + lh);
     s_fg_drawing = 1;
+    int reproj = 0;
+    if (s_fg_reproject && L == b && s_fg_fit.ok) {
+        flush_line_batch(); flush_flat_batch(); flush_tex_batch();
+        reproj = iw >= 0
+            ? fg_reproject(L, tl, s_fg_w_fbo, wf, 0, ly, g_wide_w, lh, (float)L->wide_off, S)
+            : fg_reproject(L, tl, s_fg_hr_fbo, f0, L->disp[0], ly, L->disp[2], lh, 0.0f, S);
+    }
+    /* Reprojected: only the cars are drawn again (their own motion). */
+    s_fg_replay_objects_only = reproj;
     fg_replay(s_fg_src_older ? b : a, L, tl, iw >= 0 ? s_fg_w_fbo : 0);
+    s_fg_replay_objects_only = 0;
     flush_line_batch();
     flush_flat_batch();
     flush_tex_batch();
@@ -11283,7 +11726,9 @@ static int fg_generate(double t, int swap) {
             if (mb) fg_blit2(src, dst, (bx0 + x1) * S, (y2 - mb + sdy) * S, (bx0 + x1) * S, (y2 - mb) * S, w * S, mb * S);
         }
     }
+    s_fg_reprojected_now = reproj;
     fg_compose(L, iw >= 0 ? s_fg_w_fbo : 0, iw >= 0 ? s_fg_w_tex : 0, b->linear, b->force43);
+    s_fg_reprojected_now = 0;
     s_fg_drawing = 0;
     if (swap) {
         s_fg_presenting = 1;
@@ -11576,7 +12021,11 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
      * runs: otherwise they are not generation's doing. */
     const int gen_recent = fg_recently_generated();
     if (atomic_exchange(&s_fg_late, 0)) {
-        if (gen_recent) fg_trip("guest late"); else s_fg_ignored_late++;
+        /* A reprojected in-between frame costs the render thread about a
+         * millisecond: a late guest frame is not its doing unless they
+         * got expensive. */
+        const int cheap = s_fg_reproject && s_fg_gen_cpu_ms < 3.0;
+        if (gen_recent && !cheap) fg_trip("guest late"); else s_fg_ignored_late++;
     }
     const char *why = atomic_exchange(&s_fg_hold_reason, NULL);
     if (why) s_fg_hold_why = why;
@@ -11630,7 +12079,13 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
             n = fg_plan(flip_s, fg_plan_hz(flip_s, rhz), real_s, est > 0.0 ? est + s_fg_swap_ema : 0.0, 0.85,
                         fg_ceiling_get(fg_ceil(), now));
         }
-        if (n == 0) s_fg_skipped_plan++;
+        if (n == 0) {
+            s_fg_skipped_plan++;
+            if (!fg_breaker_open(&s_fg_brk, now)) s_fg_np_brk++;
+            else if (stale) s_fg_np_stale++;
+            else if (held) s_fg_np_held++;
+            else s_fg_np_room++;
+        }
     }
     s_fg_last_n = n;
     if (n <= 0) return 0;
@@ -11649,7 +12104,10 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     FgCamParams cp;
     fg_cam_defaults(&cp);
     FgList *src = A;
-    if (!fg_cam_fit(&B->prims, &A->prims, &cp, &s_fg_fit, s_fg_verts) ||
+    if (s_fg_reproject) {   /* the newer frame's image is warped: fit for it */
+        src = B;
+        fg_cam_fit(&A->prims, &B->prims, &cp, &s_fg_fit, s_fg_verts);
+    } else if (!fg_cam_fit(&B->prims, &A->prims, &cp, &s_fg_fit, s_fg_verts) ||
         s_fg_fit.v[fg_main_view(&s_fg_fit)].t[2] <= 0.0) {
         src = B;
         fg_cam_fit(&A->prims, &B->prims, &cp, &s_fg_fit, s_fg_verts);
@@ -11721,6 +12179,8 @@ void gl_renderer_set_frame_generation(int on) {
     s_fg_on = on ? 1 : 0;
     const char *e = getenv("PSX_FRAME_GEN_FORCE");
     s_fg_force = e && e[0] == '1';
+    e = getenv("PSX_FRAME_GEN_REDRAW");
+    if (e && *e) s_fg_reproject = e[0] == '0';
     if (!s_fg_on) {
         if (s_ctx) fg_surfaces_free();
         fg_invalidate();
@@ -11729,6 +12189,14 @@ void gl_renderer_set_frame_generation(int on) {
     }
 }
 int gl_renderer_frame_generation(void) { return s_fg_on; }
+/* [video] frame_generation_redraw: the whole recorded list drawn again per
+ * generated frame (the earlier path) instead of reprojection. */
+void gl_renderer_set_frame_generation_redraw(int on) {
+    GL_RT_SYNC("frame_generation_redraw");
+    s_fg_reproject = on ? 0 : 1;
+    const char *e = getenv("PSX_FRAME_GEN_REDRAW");
+    if (e && *e) s_fg_reproject = e[0] == '0';
+}
 
 void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
                            const int32_t x[3], const int32_t y[3]) {
@@ -11768,6 +12236,12 @@ void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz) {
  * short tail, without the breaker's escalating holds. */
 void gl_renderer_frame_gen_hold(const char *reason, double secs) {
     if (!s_fg_on) return;
+    /* Reprojected in-between frames cost about a millisecond of the GPU
+     * each: real frames over budget (heavy geometry, dynamic resolution at
+     * its floor) are not a reason to stop them. A step down still pauses
+     * them briefly while its surfaces settle. */
+    if (s_fg_reproject && reason && strstr(reason, "over budget")) return;
+    if (s_fg_reproject && secs > 0.05) secs = 0.05;
     if (secs <= 0.0) secs = 0.1;
     atomic_store(&s_fg_hold_reason, reason ? reason : "hold");
     const uint64_t until = rt_now_ns() + (uint64_t)(secs * 1e9);
@@ -11802,7 +12276,7 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         "\"trips_late\":%u,\"trips_backed_up\":%u,\"trips_behind\":%u,"
         "\"place_camera\":%u,\"place_object\":%u,\"place_neighbour\":%u,"
         "\"place_unchanged\":%u,\"cam_angle_deg\":%.3f,\"cam_shift\":%.1f,"
-        "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\",\"noplan_why\":\"%s\",\"end_ahead\":%llu,\"end_bp\":%llu,\"end_phase\":%llu",
+        "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\",\"noplan_why\":\"%s\",\"rp_ms\":[%.3f,%.3f,%.3f],\"rp_zn\":%u,\"reprojected\":%llu,\"reproject_fallback\":%llu,\"reproject\":%d,\"np\":[%llu,%llu,%llu,%llu],\"end_ahead\":%llu,\"end_bp\":%llu,\"end_phase\":%llu",
         s_fg_on, s_fg_on && s_rth_on && !s_hd_native_authority && open, s_fg_force,
         (unsigned long long)s_fg_generated, (unsigned long long)s_fg_real_presents,
         (unsigned long long)s_fg_flips, (unsigned long long)s_fg_dups,
@@ -11828,6 +12302,10 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         s_fg_fit.clamped, s_fg_fit.guessed, s_fg_fit.ok,
         (unsigned long long)s_fg_rejected, s_fg_reject_why ? s_fg_reject_why : "",
         s_fg_noplan_why ? s_fg_noplan_why : "",
+        s_rp_t_snap, s_rp_t_z, s_rp_t_w, s_rp_zn,
+        (unsigned long long)s_rp_frames, (unsigned long long)s_rp_fallback, s_fg_reproject,
+        (unsigned long long)s_fg_np_brk, (unsigned long long)s_fg_np_stale,
+        (unsigned long long)s_fg_np_held, (unsigned long long)s_fg_np_room,
         (unsigned long long)s_fg_end_ahead, (unsigned long long)s_fg_end_bp,
         (unsigned long long)s_fg_end_phase);
 }

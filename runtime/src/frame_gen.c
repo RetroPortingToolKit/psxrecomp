@@ -833,3 +833,29 @@ void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, f
         }
     }
 }
+
+/* The in-between camera of view vi at phase t (fg_cam_place's motion) as an
+ * affine map on camera-space points of the newer frame: P_t = A P + b. */
+int fg_view_affine(const FgCamFit *fit, int vi, double t, float A[9], float b[3]) {
+    if (!fit || vi < 0 || (uint32_t)vi >= fit->nviews) return 0;
+    const FgView *v = &fit->v[vi];
+    double M[9], Rt[9];
+    q_to_m(v->q, M);
+    const double w = fmin(1.0, fabs(v->q[0]));
+    const double ang = 2.0 * acos(w), sn = sqrt(fmax(0.0, 1.0 - w * w));
+    double qt[4] = { 1, 0, 0, 0 };
+    if (sn > 1e-9) {
+        const double sg = v->q[0] < 0 ? -1.0 : 1.0;
+        qt[0] = cos(0.5 * ang * t);
+        for (int k = 0; k < 3; k++) qt[k + 1] = sg * v->q[k + 1] / sn * sin(0.5 * ang * t);
+    }
+    q_to_m(qt, Rt);
+    double Am[9];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)   /* (Rt M^T)[r][c] = sum_k Rt[r][k] M[c][k] */
+            Am[3 * r + c] = Rt[3 * r] * M[3 * c] + Rt[3 * r + 1] * M[3 * c + 1] + Rt[3 * r + 2] * M[3 * c + 2];
+    for (int k = 0; k < 9; k++) A[k] = (float)Am[k];
+    for (int r = 0; r < 3; r++)
+        b[r] = (float)(t * v->t[r] - (Am[3 * r] * v->t[0] + Am[3 * r + 1] * v->t[1] + Am[3 * r + 2] * v->t[2]));
+    return 1;
+}

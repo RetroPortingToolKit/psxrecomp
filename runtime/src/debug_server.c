@@ -10431,7 +10431,7 @@ static void handle_render_thread(int id, const char *json)
 static void handle_frame_gen(int id, const char *json)
 {
     (void)json;
-    char buf[1024];
+    char buf[4096];
     if (gl_renderer_frame_gen_json(buf, sizeof buf) <= 0) buf[0] = 0;
     send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf[0] ? buf : "\"enabled\":0");
 }

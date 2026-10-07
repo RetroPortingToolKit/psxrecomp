@@ -1464,6 +1464,7 @@ static int           g_render_thread = 0;
 static int           g_render_thread_frames = 2;
 /* [video] frame_generation (docs/FRAME_GENERATION.md), with the render thread. */
 static int           g_frame_generation = 0;
+static int           g_frame_generation_redraw = 0;   /* [video] frame_generation_redraw */
 /* [video] present_thread (docs/RENDER_THREAD.md), with the render thread. */
 static int           g_present_thread = 0;
 /* The player's persisted pipeline choice (game.toml default < settings.toml),
@@ -9259,6 +9260,7 @@ static void render_thread_vblank(void) {
             std::fprintf(stdout, "psxrecomp: render thread on (OpenGL, %d frame(s) in flight)\n",
                          g_render_thread_frames);
             if (g_frame_generation) {
+                gl_renderer_set_frame_generation_redraw(g_frame_generation_redraw);
                 gl_renderer_set_frame_generation(1);
                 std::fprintf(stdout, "psxrecomp: Smooth motion (frame generation) on (render thread, "
                              "from surplus only)\n");
@@ -15787,6 +15789,7 @@ int main(int argc, char** argv) {
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
+            g_frame_generation_redraw = gc.runtime.video_frame_generation_redraw ? 1 : 0;
             /* [timing] guest_cycle_scale is a title constant from game.toml
              * (no player setting). PSX_GUEST_CYCLE_SCALE overrides it for
              * testing only. */
