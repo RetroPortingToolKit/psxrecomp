@@ -49,12 +49,17 @@ int main(int argc, char** argv) {
 }
 ''')
         (source / "hle.c").write_text("int operation(int x) { return x * 3; }\n")
-        (source / "lle.c").write_text("int operation(int x) { int s=0; while(x--) s+=3; return s; }\n")
+        (source / "local_step.h").write_text("#define LOCAL_STEP 3\n")
+        (source / "lle.c").write_text('#include "local_step.h"\n#ifndef LLE_SOURCE_FLAG\n#error source compile property lost\n#endif\nint operation(int x) { int s=0; while(x--) s+=LOCAL_STEP; return s; }\n')
         (source / "contract.h").write_text("/* caller contract revision 1 */\n")
         (source / "shared.h").write_text("/* shared service revision 1 */\n")
         (source / "CMakeLists.txt").write_text(f'''cmake_minimum_required(VERSION 3.20)
 project(profile_fixture C)
 include("{root.as_posix()}/cmake/psx_execution_profile.cmake")
+# Match the runtime helper's pre-materialized game shards. They must remain
+# automatic configure/hash inputs without creating duplicate Ninja rules.
+set_source_files_properties("${{CMAKE_CURRENT_SOURCE_DIR}}/lle.c" PROPERTIES
+    GENERATED TRUE COMPILE_DEFINITIONS LLE_SOURCE_FLAG=1)
 add_executable(fixture main.c "{root.as_posix()}/runtime/src/psx_sha256.c")
 target_include_directories(fixture PRIVATE "{root.as_posix()}/runtime/include")
 add_executable(fixture-pgxp main.c "{root.as_posix()}/runtime/src/psx_sha256.c")
@@ -89,6 +94,12 @@ psxrecomp_add_implementation(fixture NAME triple CONTRACT integer-v1
         enhanced = build_run(enhanced_build)
         reference = build_run(configure("REFERENCE"))
         assert enhanced["identity"] != reference["identity"]
+        # The reference body is maintained once, and modifications still
+        # refresh its selected-source fingerprint without manual configure.
+        (source / "lle.c").write_text("int operation(int x) { int s=0; for(int i=0;i<x;++i) s+=3; return s; }\n")
+        reference_changed = build_run(Path(temp) / "REFERENCE")
+        assert reference_changed["identity"] != reference["identity"]
+        reference = reference_changed
         # Exercise the real wire gate, including sessions without mods.
         fixture = enhanced_build / ("fixture.exe" if (enhanced_build / "fixture.exe").exists() else "fixture")
         def session_id(manifest):

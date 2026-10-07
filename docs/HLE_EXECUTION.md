@@ -56,6 +56,9 @@ absolute paths; changed inputs trigger CMake reconfiguration. Include all helper
 headers/recipes that affect the contract. Generated bodies remain local inputs.
 Runtime targets also hash the shared GTE service contract. The optional PGXP
 build sibling receives the same selected implementation families automatically.
+Pre-materialized sources marked `GENERATED` compile through a generated include
+wrapper. Their original files remain the single body and automatic hash input;
+titles do not need a copied reference shard to avoid duplicate Ninja rules.
 
 The title record names verified disc/code identities, supported entry points,
 arguments, required register/memory results, continuation, observable side

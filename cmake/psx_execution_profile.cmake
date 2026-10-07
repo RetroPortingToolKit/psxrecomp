@@ -134,7 +134,36 @@ function(psxrecomp_add_implementation target)
         endif()
         list(APPEND _inputs "${_absolute}")
     endforeach()
-    target_sources(${target} PRIVATE ${_selected})
+    set(_compile_sources "")
+    foreach(_source IN LISTS _selected)
+        get_filename_component(_absolute "${_source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        get_source_file_property(_generated "${_absolute}" GENERATED)
+        if(_generated)
+            # runtime.cmake marks game shards GENERATED, though they are
+            # materialized before configure. Giving Ninja that file both as
+            # a compiled generated source and a configure dependency creates
+            # two output rules (an empty generation rule and a CMake phony).
+            # Compile an include wrapper instead. The original remains the
+            # sole maintained body and configure/hash input; #include keeps
+            # its relative includes and __FILE__ behavior intact.
+            string(SHA256 _path_hash "${_absolute}")
+            get_filename_component(_ext "${_absolute}" LAST_EXT)
+            set(_wrapper "${CMAKE_CURRENT_BINARY_DIR}/psx_execution/${target}/sources/${_path_hash}${_ext}")
+            file(CONFIGURE OUTPUT "${_wrapper}" CONTENT "#include \"@_absolute@\"\n" @ONLY)
+            foreach(_property LANGUAGE COMPILE_DEFINITIONS COMPILE_OPTIONS COMPILE_FLAGS
+                              INCLUDE_DIRECTORIES OBJECT_DEPENDS SKIP_PRECOMPILE_HEADERS
+                              SKIP_UNITY_BUILD_INCLUSION)
+                get_source_file_property(_value "${_absolute}" "${_property}")
+                if(NOT _value STREQUAL "NOTFOUND")
+                    set_source_files_properties("${_wrapper}" PROPERTIES "${_property}" "${_value}")
+                endif()
+            endforeach()
+            list(APPEND _compile_sources "${_wrapper}")
+        else()
+            list(APPEND _compile_sources "${_absolute}")
+        endif()
+    endforeach()
+    target_sources(${target} PRIVATE ${_compile_sources})
     set_property(TARGET ${target} APPEND PROPERTY PSX_IMPLEMENTATION_FAMILIES "${I_NAME}")
     set_property(TARGET ${target} PROPERTY "PSX_IMPL_${I_NAME}_CONTRACT" "${I_CONTRACT}")
     set_property(TARGET ${target} PROPERTY "PSX_IMPL_${I_NAME}_SOURCES" "${_inputs}")
