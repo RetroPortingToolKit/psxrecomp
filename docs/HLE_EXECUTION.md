@@ -95,7 +95,9 @@ players where applicable. Compare the selected service's caller outcomes with
 LLE; do not qualify a loader by skipping its polling loop or changing its
 package label. Any shortened presentation wait needs a title-specific contract.
 
-Tomba 1/2, MMX6, V8 2nd Offense and MediEvil II have resident/loading families.
+Tomba 1/2, MMX6, V8 2nd Offense, MediEvil II and THPS2 have resident/loading families.
+THPS2's stock CD.HED/CD.WAD adapter is owner-approved, default on; its original
+loader remains selectable through the REFERENCE execution profile.
 The other campaign titles still need verified title loading adapters. BIOS
 shell skipping, AOT caching and geometry HLE are separate optimizations; their
 presence does not imply a resident loader. Keep missing bindings explicit and

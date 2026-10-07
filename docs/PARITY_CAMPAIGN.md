@@ -70,16 +70,18 @@ default off. Other packages also remain opt-in pending title qualification.
 Generic host pacing is deprecated and excluded from all 15 catalogs, along with
 generic CD Speed. The MMX4 and old hidden Tomba Fast Loading wrappers used the
 same generic detector and are now retained only in development. Tomba 1/2,
-MMX6, V8 2nd Offense and MediEvil II retain their title resident/loading families.
-The other ten title loaders remain unfinished; geometry HLE, BIOS shell skipping
+MMX6, V8 2nd Offense, MediEvil II and THPS2 retain their title resident/loading families.
+The other nine title loaders remain unfinished; geometry HLE, BIOS shell skipping
 and AOT caching do not satisfy that requirement. See [HLE_EXECUTION.md](HLE_EXECUTION.md).
 
 All review configurations retain 1080p OpenGL and available view/distance/filter
 improvements. A live THPS2 resolution query reported the 1080p preset, 5x effective
 raster scale and 1200 internal lines from its native 240; no GPU clamp. This is
 rendering resolution, not higher-resolution original textures. THPS2's initial
-music track fails in owner testing, while manual track selection starts playback;
-that issue is unqualified even after removing generic pacing. `GAME-PATHS.txt`
+music playback is owner-approved after the shared GetlocP position fix;
+its title resident asset loading is also owner-approved, default on.
+Interpolation remains default off and receives at most two new owner-reviewed
+repair attempts. Work now proceeds serially by title. `GAME-PATHS.txt`
 lists the executable paths; earlier review preferences are backed up.
 
 The owner suspects background system contention/long uptime and will perform
