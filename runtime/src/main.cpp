@@ -9389,7 +9389,9 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     g_dynres.rt_acc_gpu_frames += co.gpu_frames - c0.gpu_frames;
     g_dynres.last_costs = co;
     g_dynres.last_bp_ns = bp_ns;
-    DynrtSample smp{ period, wall, frames, cost, bp, held };
+    /* Smooth motion's in-between frames share the game frame with it. */
+    const double share = gl_renderer_frame_gen_real_share();
+    DynrtSample smp{ period * share, wall, frames, cost, bp, held };
     const int prev_level = c.level;
     const int level = dynrt_sample(&c, now_s, &smp);
     /* Frame generation only spends surplus: not while the real frames are

@@ -10552,7 +10552,8 @@ static uint64_t  s_fg_q_cpu[4];
 static uint64_t  s_fg_generated = 0, s_fg_real_presents = 0, s_fg_flips = 0,
                  s_fg_flushed = 0, s_fg_skipped_plan = 0, s_fg_dups = 0;
 static int       s_fg_last_n = 0, s_fg_last_slots = 0;
-static const char *s_fg_noplan_why = "";   /* why the last flip planned nothing */
+static const char *s_fg_noplan_why = "";
+static uint64_t s_fg_end_ahead = 0, s_fg_end_bp = 0, s_fg_end_phase = 0;   /* why a game frame's in-betweens stopped early */   /* why the last flip planned nothing */
 static double    s_fg_last_match_ms = 0.0;
 
 static double fg_now_s(void) { return (double)rt_now_ns() * 1e-9; }
@@ -11024,7 +11025,7 @@ static int fg_rect_meets(int x, int y, int w, int h, const int *disp) {
 /* Redraw list b at phase t (0 = a's positions, 1 = b's) into the surfaces
  * currently bound as hr / the displayed wide surface. */
 static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wide) {
-    (void)a;   /* in-between frames redraw the newer frame only */
+    /* b: the redrawn frame; a: the other one (its HUD motion only). */
     const int *disp = b->disp;
     /* Every vertex's position at this phase (the newer frame from an
      * in-between camera, frame_gen.h). */
@@ -11040,6 +11041,7 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
         }
         if (s_fg_pos_cap >= b->prims.n) {
             fg_cam_place(&b->prims, &s_fg_fit, s_fg_verts, t, s_fg_px, s_fg_py, s_fg_margin);
+            if (a) fg_hud_lerp(&b->prims, &a->prims, 1.0 - t, s_fg_px, s_fg_py, 24.0f);
             placed = 1;
         }
     }
@@ -11248,7 +11250,7 @@ static int fg_generate(double t, int swap) {
     rect_add(&s_stencil_stale, L->disp[0], ly, L->disp[0] + L->disp[2] - 1, ly + lh - 1);
     if (iw >= 0) wst_add(iw, 0, ly, g_wide_w, ly + lh);
     s_fg_drawing = 1;
-    fg_replay(NULL, L, tl, iw >= 0 ? s_fg_w_fbo : 0);
+    fg_replay(s_fg_src_older ? b : a, L, tl, iw >= 0 ? s_fg_w_fbo : 0);
     flush_line_batch();
     flush_flat_batch();
     flush_tex_batch();
@@ -11468,6 +11470,7 @@ static uint64_t fg_tick(void *user, uint64_t now) {
         /* Backpressure itself is judged at the flip, by how long the guest
          * waited (fg_on_present); here it only shows the real frame now. */
         if (bp == s_fg_bp_seen && ahead >= 2 && fg_recently_generated()) fg_overload();
+        if (s_fg_k <= s_fg_n) { if (bp != s_fg_bp_seen) s_fg_end_bp++; else s_fg_end_ahead++; }
         s_fg_bp_seen = bp;
         fg_flush();
         return 0;
@@ -11488,6 +11491,7 @@ static uint64_t fg_tick(void *user, uint64_t now) {
             return s_fg_due;
         }
         s_fg_flushed++;
+        s_fg_end_phase++;
     }
     fg_present_real();
     return 0;
@@ -11496,6 +11500,12 @@ static uint64_t fg_tick(void *user, uint64_t now) {
 /* A present record replayed with frame generation on. Returns 1 when it was
  * handled (scheduled or dropped), 0 to present it as usual. */
 static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stale) {
+    /* The game frame's arrival: its in-between frames are timed from here,
+     * not from when its composition finished, because the next game frame
+     * arrives one game frame after this one whatever the composition cost
+     * (timed from the end, the last in-between frame of every game frame
+     * collided with the next one and was dropped). */
+    const uint64_t arrive_ns = rt_now_ns();
     RthOvHdr hd;
     memcpy(&hd, p, sizeof hd);
     const int32_t *a = hd.args;
@@ -11694,7 +11704,7 @@ static int fg_on_present(uint16_t op, const uint8_t *p, uint32_t bytes, int stal
     s_fg_capture_real = 0;
     s_fg_pa = s_fg_older; s_fg_pb = s_fg_newer;
     s_fg_n = n; s_fg_k = 1;
-    s_fg_t0 = rt_now_ns();
+    s_fg_t0 = arrive_ns;
     s_fg_flip_ns = (uint64_t)(flip_s * 1e9);
     s_fg_step_ns = (uint64_t)(fg_step_s(flip_s, rhz, n) * 1e9);
     if (s_fg_due < s_fg_t0 || s_fg_due > s_fg_t0 + s_fg_step_ns) s_fg_due = s_fg_t0;
@@ -11726,6 +11736,26 @@ void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int3
     RTH_REC(RTH_FG_SRC, 0, (int32_t)id[0], (int32_t)id[1], (int32_t)id[2],
             x[0], y[0], x[1], y[1], x[2], y[2],
             pc[0], pc[1], pc[2], pc[3], pc[4], pc[5], pc[6], pc[7], pc[8], h[0], h[1], h[2]);
+}
+
+/* The share of a game frame the real frame may use so Smooth motion still
+ * fills every display interval: (0.85 flip - slots-1 generated frames and
+ * their swaps) / flip, never below 0.35. 1 while generation is off or its
+ * cost is unknown. Dynamic resolution budgets the real frames with it, so
+ * the scale drops until the in-between frames fit (they draw at the same
+ * scale, so they get cheaper too). */
+double gl_renderer_frame_gen_real_share(void) {
+    if (!s_fg_on || !rth_record_mode()) return 1.0;
+    const double ghz = atomic_load(&s_fg_guest_hz), rhz = atomic_load(&s_fg_refresh_hz);
+    const double flip_s = (double)s_fg_flip_vb / (ghz > 1.0 ? ghz : 59.94);
+    if (flip_s <= 0.0 || rhz <= 0.0 || s_fg_flip_vb < 2) return 1.0;
+    const int slots = (int)ceil(flip_s * rhz - 1e-6);
+    const double g = s_fg_cost.ema > 0.0 ? s_fg_cost.ema + s_fg_swap_ema : 0.0;
+    if (slots < 2 || g <= 0.0) return 1.0;
+    double share = (0.85 * flip_s - (double)(slots - 1) * g) / flip_s;
+    if (share < 0.35) share = 0.35;
+    if (share > 1.0) share = 1.0;
+    return share;
 }
 
 void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz) {
@@ -11772,7 +11802,7 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         "\"trips_late\":%u,\"trips_backed_up\":%u,\"trips_behind\":%u,"
         "\"place_camera\":%u,\"place_object\":%u,\"place_neighbour\":%u,"
         "\"place_unchanged\":%u,\"cam_angle_deg\":%.3f,\"cam_shift\":%.1f,"
-        "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\",\"noplan_why\":\"%s\"",
+        "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\",\"noplan_why\":\"%s\",\"end_ahead\":%llu,\"end_bp\":%llu,\"end_phase\":%llu",
         s_fg_on, s_fg_on && s_rth_on && !s_hd_native_authority && open, s_fg_force,
         (unsigned long long)s_fg_generated, (unsigned long long)s_fg_real_presents,
         (unsigned long long)s_fg_flips, (unsigned long long)s_fg_dups,
@@ -11797,7 +11827,9 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
              s_fg_fit.v[0].t[2] * s_fg_fit.v[0].t[2]),
         s_fg_fit.clamped, s_fg_fit.guessed, s_fg_fit.ok,
         (unsigned long long)s_fg_rejected, s_fg_reject_why ? s_fg_reject_why : "",
-        s_fg_noplan_why ? s_fg_noplan_why : "");
+        s_fg_noplan_why ? s_fg_noplan_why : "",
+        (unsigned long long)s_fg_end_ahead, (unsigned long long)s_fg_end_bp,
+        (unsigned long long)s_fg_end_phase);
 }
 
 /* ---- the recording vtable ------------------------------------------------ */

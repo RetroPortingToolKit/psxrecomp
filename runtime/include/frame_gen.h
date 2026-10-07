@@ -145,6 +145,9 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
  * 0 when it would land on the next real frame. */
 double fg_step_s(double flip_s, double refresh_hz, int n);
 double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns);
+/* HUD motion between two frames' 2D triangles (frame_gen.c). */
+void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
+                 float max_px);
 /* The refresh fg_plan sees: rounded up to whole slots per game frame. */
 double fg_plan_hz(double flip_s, double refresh_hz);
 /* The next present time on the global grid after presenting at `now`. */

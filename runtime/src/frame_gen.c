@@ -604,6 +604,24 @@ void fg_cam_place(const FgPrimList *newer, FgCamFit *fit, const FgVert *verts,
     free(done);
     fit->clamped = clamped;
     fit->guessed = guessed;
+    /* Small views (a rear-view mirror inside the main view) stay as the
+     * real frame drew them: their camera is fitted from a few dozen
+     * vertices, and a wrong fit threw their lane marks across the screen as
+     * a dashed line. At this size their 30 Hz motion does not show. */
+    {
+        float big = 0.0f;
+        for (uint32_t vi = 0; vi < fit->nviews; vi++) {
+            const float *ar = fit->v[vi].area;
+            const float a = (ar[2] - ar[0]) * (ar[3] - ar[1]);
+            if (a > big) big = a;
+        }
+        for (uint32_t i = 0; i < n * 3u; i++) {
+            const int vi = verts[i].view;
+            if (vi < 0 || (uint32_t)vi >= fit->nviews) continue;
+            const float *ar = fit->v[vi].area;
+            if ((ar[2] - ar[0]) * (ar[3] - ar[1]) < 0.15f * big) { dxs[i] = 0.0f; dys[i] = 0.0f; }
+        }
+    }
     for (uint32_t i = 0; i < n * 3u; i++) { x[i] += dxs[i]; y[i] += dys[i]; }
     /* Margins: vertices on or past a view edge that moved inward. */
     if (margin)
@@ -661,8 +679,12 @@ uint64_t fg_next_due(uint64_t due, uint64_t now, uint64_t step_ns) {
 double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns) {
     if (flip_ns == 0u) return 0.0;
     double t = ((double)since_real_ns + (double)step_ns) / (double)flip_ns;
-    /* Within a quarter interval of the next real frame it is the real one. */
-    if (t >= 1.0 - 0.25 * (double)step_ns / (double)flip_ns) return 0.0;
+    /* At (or past) the next real frame's time it is the real one. The
+     * phase is where the camera is when this frame is seen, one interval
+     * from now, so the last in-between frame of a game frame lands close
+     * to 1 (a quarter-interval margin here dropped it at every refresh). */
+    (void)step_ns;
+    if (t >= 0.985) return 0.0;
     return t;
 }
 
@@ -773,4 +795,41 @@ int fg_ceiling_get(FgCeiling *c, double now) {
         c->last = c->last < -1e29 ? now : c->last + c->recover_s;
     }
     return c->cap;
+}
+
+/* HUD motion: 2D triangles (no GTE projection: gauges, needles) of the
+ * redrawn list L that the other frame O draws too (same key: op, texture,
+ * colour, UVs, in the same order among the 2D triangles) and that moved a
+ * little (at most max_px per corner: a tachometer needle, a sliding panel)
+ * are placed at fraction u of the way from L to O. Anything that changed
+ * what it draws (digits) or jumped stays as L drew it. */
+void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
+                 float max_px) {
+    if (!L || !O || u <= 0.0 || u >= 1.0) return;
+    uint32_t o = 0;
+    for (uint32_t j = 0; j < L->n; j++) {
+        const FgPrim *a = &L->v[j];
+        if (a->vid[0] || a->vid[1] || a->vid[2]) continue;
+        uint32_t m = o, seen = 0;
+        for (; m < O->n && seen < 8u; m++) {
+            const FgPrim *b = &O->v[m];
+            if (b->vid[0] || b->vid[1] || b->vid[2]) continue;
+            seen++;
+            if (b->key == a->key && b->view == a->view) break;
+        }
+        if (m >= O->n || seen >= 8u) continue;
+        const FgPrim *b = &O->v[m];
+        o = m + 1;
+        int ok = 1, moved = 0;
+        for (int k = 0; k < 3; k++) {
+            const float dx = b->x[k] - a->x[k], dy = b->y[k] - a->y[k];
+            if (fabsf(dx) > max_px || fabsf(dy) > max_px) ok = 0;
+            if (dx != 0.0f || dy != 0.0f) moved = 1;
+        }
+        if (!ok || !moved) continue;
+        for (int k = 0; k < 3; k++) {
+            x[3 * j + k] = a->x[k] + (b->x[k] - a->x[k]) * (float)u;
+            y[3 * j + k] = a->y[k] + (b->y[k] - a->y[k]) * (float)u;
+        }
+    }
 }

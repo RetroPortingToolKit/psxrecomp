@@ -360,7 +360,25 @@ static void test_any_rate(void) {
     }
 }
 
+static void test_hud_lerp(void) {
+    FgPrimList L = {0}, O = {0};
+    FgPrim p; memset(&p, 0, sizeof p);
+    p.key = 7; p.view = 1;
+    p.x[0] = 10; p.y[0] = 10; p.x[1] = 20; p.y[1] = 10; p.x[2] = 15; p.y[2] = 30;
+    fg_prims_add(&L, &p);                          /* needle */
+    p.key = 9; fg_prims_add(&L, &p);               /* a digit */
+    FgPrim q = L.v[0]; q.x[2] = 25; fg_prims_add(&O, &q);      /* needle tip moved 10 px */
+    q = L.v[1]; q.key = 10; fg_prims_add(&O, &q);             /* the digit changed */
+    float x[6], y[6];
+    for (int i = 0; i < 6; i++) { x[i] = L.v[i / 3].x[i % 3]; y[i] = L.v[i / 3].y[i % 3]; }
+    fg_hud_lerp(&L, &O, 0.5, x, y, 24.0f);
+    check(x[2] == 20.0f && x[0] == 10.0f, "HUD needle halfway between the frames");
+    check(x[5] == 15.0f, "a changed digit stays as drawn");
+    fg_prims_free(&L); fg_prims_free(&O);
+}
+
 int main(void) {
+    test_hud_lerp();
     test_any_rate();
     test_ceiling();
     test_cost();
