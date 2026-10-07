@@ -17,6 +17,7 @@ set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
@@ -1909,12 +1910,7 @@ function(psxrecomp_add_runtime_target target)
     # can be correlated to an exact build (issue #1 user reports had no version).
     # Computed at configure time from the psxrecomp repo (this file's dir); empty
     # on failure (no git / not a repo) -> crash_trace.c falls back to "unknown".
-    execute_process(
-        COMMAND git -C "${CMAKE_CURRENT_FUNCTION_LIST_DIR}" describe --always --dirty --tags
-        OUTPUT_VARIABLE PSX_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    if(NOT PSX_GIT_REV)
-        set(PSX_GIT_REV "unknown")
-    endif()
+    psxrecomp_build_revision(PSX_GIT_REV "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
 
     # Release pin for lobby matching (create/join/list). Override via
     # GAME_VERSION arg or -DPSX_GAME_VERSION=...; default "dev".
