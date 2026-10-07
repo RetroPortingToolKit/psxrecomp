@@ -311,6 +311,21 @@ static int span_pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
     return psx_mod_run_guest_span(cpu, 0x800143FCu, 0x8001473Cu);
 }
 
+static int s_device_accesses;
+static int device_read_pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
+    const uint32_t *access = (const uint32_t *)user;
+    (void)alpha_q16;
+    cpu->gpr[8] = 0xBADu;
+    s_ram[0x1000] ^= 0xff;
+    psx_advance_cycles(1000);
+    CHECK(render_pass_mmio_read_allowed(0x1F801070u, 4), "checkpointed IRQ read allowed");
+    CHECK(render_pass_mmio_read_allowed(0x1F801110u, 2), "checkpointed timer read allowed");
+    CHECK(render_pass_mmio_read_allowed(0x1F801814u, 4), "checkpointed GPU read allowed");
+    if (render_pass_mmio_read_allowed(access[0], access[1])) s_device_accesses++;
+    CHECK(0, "unsupported read must unwind before returning a fabricated value");
+    return 1;
+}
+
 static int pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
     (void)alpha_q16;
     guest_frame(cpu, (const Frames *)user, 0);
@@ -550,6 +565,35 @@ int main(void) {
     check_live(&live, "after a span watchdog abort");
     CHECK(s_prec_begins > 0 && s_prec_open == 0,
           "precision shadows were checkpointed and rolled back on every pass, aborts included");
+
+    /* Reads can consume a FIFO or ACK while time is frozen. Refuse before
+     * the device access and restore the same live state as a watchdog abort. */
+    {
+        const uint32_t reads[][2] = {{0x1F801040u,1}, {0x1F801044u,2},
+            {0x1F801800u,1}, {0x1F801820u,4}, {0x1F801DA8u,2}};
+        render_pass_reset_session();
+        for (unsigned i=0;i<sizeof reads/sizeof reads[0];++i) {
+            snap(&live);
+            CHECK(render_pass_mmio_read_allowed(reads[i][0],reads[i][1]),
+                  "live device reads remain allowed");
+            CHECK(psx_mod_render_pass(&cpu,&pass,device_read_pass_fn,(void *)reads[i])==0,
+                  "uncheckpointed read discards the entire render image");
+            render_pass_get_stats(&st);
+            CHECK(st.device_reads==i+1 && st.aborted==i+1 && st.watchdog==0,
+                  "device read refusal is distinct from a watchdog");
+            CHECK(st.last_device_read==reads[i][0] && st.last_device_read_width==reads[i][1],
+                  "device read diagnostic identifies the access");
+            CHECK(st.last_failure.reason && strcmp(st.last_failure.reason,"device_read")==0,
+                  "failure reason identifies device read");
+            CHECK(!s_device_accesses && !st.verify_mismatch && !s_open_passes,
+                  "device untouched, machine restored, no image retained");
+            CHECK(cpu.gpr[8]==0x55u && !memcmp(ram_before,s_ram+0x1000,sizeof ram_before),
+                  "CPU and RAM preceding rejected read are restored");
+            check_live(&live,"after rejected device read");
+        }
+        CHECK(psx_mod_render_pass(&cpu,&pass,pass_fn,&clean)==1,
+              "normal drawing recovers after a rejected device read");
+    }
 
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;

@@ -1266,7 +1266,10 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
         return ram_size_reg;
     }
     /* Interrupts: 0x1F801070, 0x1F801074 */
-    if (addr == 0x1F801070u) { sio_tick(0); return i_stat; }
+    if (addr == 0x1F801070u) {
+        if (!g_psx_render_pass_active) sio_tick(0);
+        return i_stat;
+    }
     if (addr == 0x1F801074u) return i_mask;
     /* DMA: 0x1F801080..0x1F8010FF */
     if (addr >= 0x1F801080u && addr <= 0x1F8010FFu) {
@@ -1301,6 +1304,7 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
  * single (side-effecting) read. Callers use mmio_read32; the body is _impl, so
  * the device read executes exactly once. */
 static uint32_t mmio_read32(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 4)) return 0;
     psx_devices_mmio_sync();
     uint32_t v = mmio_read32_impl(addr);
     debug_server_trace_mmio_read(addr, v, 4);
@@ -1392,7 +1396,7 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
     }
     /* Interrupts */
     if (addr >= 0x1F801070u && addr <= 0x1F801072u) {
-        sio_tick(0);
+        if (!g_psx_render_pass_active) sio_tick(0);
         uint32_t shift = (addr & 2u) ? 16u : 0u;
         return (uint16_t)(i_stat >> shift);
     }
@@ -1423,6 +1427,7 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
 }
 
 static uint16_t mmio_read16(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 2)) return 0;
     psx_devices_mmio_sync();
     uint16_t v = mmio_read16_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 2);
@@ -1508,7 +1513,7 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
     }
     /* Interrupts: 0x1F801070..0x1F801077 (I_STAT, I_MASK) */
     if (addr >= 0x1F801070u && addr <= 0x1F801077u) {
-        if (addr < 0x1F801074u) sio_tick(0);
+        if (addr < 0x1F801074u && !g_psx_render_pass_active) sio_tick(0);
         uint32_t val = (addr < 0x1F801074u) ? i_stat : i_mask;
         return (uint8_t)(val >> (8 * (addr & 3)));
     }
@@ -1542,6 +1547,7 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
 }
 
 static uint8_t mmio_read8(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 1)) return 0;
     psx_devices_mmio_sync();
     uint8_t v = mmio_read8_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 1);

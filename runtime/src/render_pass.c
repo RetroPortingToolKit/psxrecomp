@@ -250,6 +250,7 @@ static jmp_buf s_abort_jmp;
 static volatile int s_abort_armed;
 static const CPUState* s_pass_cpu;
 static int s_nesting;
+static int s_device_read_fault;
 
 static RenderPassStats s_stats;
 static int s_verify = -1;
@@ -313,6 +314,7 @@ void render_pass_reset_session(void) {
     memset(&s_stats, 0, sizeof s_stats);
     memset(g_render_pass_dropped_writes, 0, sizeof g_render_pass_dropped_writes);
     s_open_generation = 0;
+    s_device_read_fault = 0;
     s_restored_valid = 0;
     memset(&s_attempt, 0, sizeof s_attempt);
     memset(&s_stereo, 0, sizeof s_stereo);
@@ -586,6 +588,26 @@ static void watchdog_overrun(void) {
     }
 }
 
+int render_pass_mmio_read_allowed(uint32_t phys, uint32_t width) {
+    if (!g_psx_render_pass_active) return 1;
+    if (!((phys >= 0x1F801040u && phys <= 0x1F80105Fu) || /* SIO */
+          (phys >= 0x1F801800u && phys <= 0x1F801803u) || /* CD */
+          (phys >= 0x1F801820u && phys <= 0x1F801827u) || /* MDEC */
+          (phys >= 0x1F801C00u && phys <= 0x1F801FFFu)))  /* SPU */
+        return 1;
+    s_device_read_fault = 1;
+    s_stats.device_reads++;
+    s_stats.last_device_read = phys;
+    s_stats.last_device_read_width = width;
+    s_attempt.reason = "device_read";
+    s_stats.last_failure = s_attempt;
+    if (s_abort_armed) {
+        s_abort_armed = 0;
+        longjmp(s_abort_jmp, 1);
+    }
+    return 0;
+}
+
 static char s_abort_detail[192];
 
 static void note_fault(const char *what) {
@@ -595,7 +617,7 @@ static void note_fault(const char *what) {
                 s_abort_detail[0] ? "; restored skipped exits: " : "",
                 s_abort_detail);
     s_abort_detail[0] = '\0';
-    if (s_stats.watchdog + s_stats.vram_leaks >= RP_FAULT_LIMIT &&
+    if (s_stats.watchdog + s_stats.vram_leaks + s_stats.device_reads >= RP_FAULT_LIMIT &&
         !s_stats.disabled) {
         s_stats.disabled = 1;
         fprintf(stderr, "psxrecomp: render passes disabled for this session "
@@ -684,6 +706,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
 
     tb = gl_renderer_perf_ticks();
     s_nesting = 1;
+    s_device_read_fault = 0;
     cycles_before = psx_cycle_count;
     if (eye >= 0) {
         s_stereo.eye_cycle[eye] = cycles_before;
@@ -704,7 +727,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
                     "(host nesting not balanced after the pass)\n");
         }
     } else {
-        /* Watchdog abort from inside guest code. An overlay shard may still
+        /* Sandbox abort from inside guest code. An overlay shard may still
          * hold cycles it has not published: publish them now, into the
          * frozen clock the restore discards, never into the live one. The
          * nesting the longjmp skipped is put back by checkpoint_restore and
@@ -723,6 +746,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     s_pass_cpu = NULL;
 
     leaks = gl_renderer_pass_leaks() - s_leaks_before;
+    if (s_device_read_fault) ok = 0;
     if (leaks) {
         s_stats.vram_leaks += leaks;
         ok = 0;
@@ -772,6 +796,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     if (ok) s_stats.passes++;
     else if (leaks) note_fault("VRAM write outside the pass rect");
     else if (s_stats.watchdog_flag) note_fault("guest-cycle watchdog");
+    else if (s_device_read_fault) note_fault("read from an uncheckpointed device");
     s_stats.watchdog_flag = 0;
     /* Present anything that fell due while the pass ran. */
     if (eye < 0) gl_renderer_pass_service_presents();

@@ -53,6 +53,14 @@ assert "g_psx_render_pass_active" in b, (
     "delayed DMA completion would never arrive in frozen time")
 
 mem = (SRC / "memory.c").read_text(encoding="utf-8")
+for bits,width in ((8,1),(16,2),(32,4)):
+    b = body(mem, f"static uint{bits}_t mmio_read{bits}(uint32_t addr) {{")
+    guard = f"g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, {width})"
+    assert guard in b and b.index(guard) < b.index("psx_devices_mmio_sync();"), (
+        "device reads must be refused before effects at every access width")
+assert mem.count("if (!g_psx_render_pass_active) sio_tick(0);") == 2 and \
+    "if (addr < 0x1F801074u && !g_psx_render_pass_active) sio_tick(0);" in mem, (
+        "I_STAT reads must not advance the uncheckpointed SIO countdown in a pass")
 for fn in ("void psx_write_word(uint32_t addr, uint32_t val) {",
            "void psx_write_half(uint32_t addr, uint16_t val) {",
            "void psx_write_byte(uint32_t addr, uint8_t val) {"):

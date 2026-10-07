@@ -113,6 +113,7 @@ void gpu_ws_restore_linked_list_rank(uint32_t r) { (void)r; }
  * linked list synchronously while a pass runs; with the flag at 0 neither
  * path is taken, so the doubles trap if they ever are. */
 int g_psx_render_pass_active;
+int render_pass_mmio_read_allowed(uint32_t a, uint32_t w) { (void)a; (void)w; return 1; }
 int g_psx_guest_time_frozen;
 int render_pass_store_to(const void *t, uint32_t a, uint32_t v, uint32_t w) {
     (void)t; (void)a; (void)v; (void)w; __builtin_trap();
