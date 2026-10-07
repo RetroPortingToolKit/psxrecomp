@@ -279,8 +279,18 @@ int render_pass_vram_policy(const RenderPassJournal *j, int px, int py,
         if (*x >= j->x[i] && *y >= j->y[i] && *x + *w <= j->x[i] + j->w[i] &&
             *y + *h <= j->y[i] + j->h[i])
             return RENDER_PASS_VRAM_ALLOW;      /* already covered */
-    return j->n < RENDER_PASS_JOURNAL_MAX ? RENDER_PASS_VRAM_JOURNAL
-                                          : RENDER_PASS_VRAM_REFUSE;
+    if (j->n >= RENDER_PASS_JOURNAL_MAX) return RENDER_PASS_VRAM_REFUSE;
+    /* Reserve the last entry for a whole-VRAM spill. A sprite scene can
+     * upload more than 64 disjoint animation/CLUT rectangles in one redraw.
+     * Back up the current contents once, including earlier temporary writes;
+     * reverse-order rollback restores this spill FIRST and then restores
+     * those earlier rectangles to their original contents. Subsequent writes
+     * are covered by the spill, so capacity remains bounded without dropping
+     * legitimate texture uploads or disabling native interpolation. */
+    if (j->n == RENDER_PASS_JOURNAL_MAX - 1) {
+        *x = *y = 0; *w = vram_w; *h = vram_h;
+    }
+    return RENDER_PASS_VRAM_JOURNAL;
 }
 
 int render_pass_journal_add(RenderPassJournal *j, const uint16_t *vram,

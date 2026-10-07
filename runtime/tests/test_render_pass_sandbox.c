@@ -17,8 +17,8 @@
  * 3. VRAM journal (render_pass_vram_policy / _journal_add / _rollback, the
  *    CPU side of gpu_gl_renderer.c's out-of-rect journal): writes inside the
  *    pass rect are allowed, writes outside are backed up first and rolled
- *    back exactly, covered writes are not journaled twice, a full journal or
- *    a renderer mode that cannot journal refuses.
+ *    back exactly, covered writes are not journaled twice, the last slot spills
+ *    to a whole-VRAM backup, and a mode that cannot journal refuses.
  *
  * The GPU, presenter and remaining devices are mocks. Build/run:
  * ctest -R render_pass_sandbox_test */
@@ -648,10 +648,16 @@ static void test_journal(void) {
         int k = j.n;
         CHECK(POLICY(400 + 8 * k, 100, 4, 4, 1) == RENDER_PASS_VRAM_JOURNAL, "fill journal");
         render_pass_journal_add(&j, s_vram, VW, x, y, w, h);
-        paint(x, y, w, h, (uint16_t)(0x8000 + k));
+        /* Policy can enlarge the BACKUP, never the actual GPU write. */
+        paint(400 + 8 * k, 100, 4, 4, (uint16_t)(0x8000 + k));
     }
     CHECK(j.n == RENDER_PASS_JOURNAL_MAX && n == 5, "journal full");
-    CHECK(POLICY(900, 400, 4, 4, 1) == RENDER_PASS_VRAM_REFUSE, "full journal refuses");
+    CHECK(j.x[j.n-1] == 0 && j.y[j.n-1] == 0 &&
+          j.w[j.n-1] == VW && j.h[j.n-1] == VH, "last slot protects all VRAM");
+    CHECK(POLICY(900, 400, 4, 4, 1) == RENDER_PASS_VRAM_ALLOW, "spill covers later writes");
+    paint(900, 400, 4, 4, 0x9999);
+    CHECK(POLICY(650, 4, 16, 16, 1) == RENDER_PASS_VRAM_ALLOW, "spill permits overlapping rewrites");
+    paint(650, 4, 16, 16, 0xAAAA);
     CHECK(render_pass_journal_add(&j, s_vram, VW, 900, 400, 4, 4) == -1,
           "add refuses past the limit");
 
