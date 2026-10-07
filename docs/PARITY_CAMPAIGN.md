@@ -61,10 +61,16 @@ checklist; `receipts/review-readiness.json` records the exact binary identities,
 media/BIOS path checks and staged frame-rate defaults. These milestones do not
 establish full feature parity or final gameplay/performance acceptance.
 
-Latest owner policy: keep native interpolation **default on**. The earlier
+Latest owner policy: keep native interpolation **default on**, except Ape Escape. The earlier
 default-off preference was withdrawn. Tomba 1/2, MMX4/5, Tsumu and V8 catalogs
 now default their native feature on; other current candidates already do.
-Existing explicit user choices are preserved. Select Display refresh for review.
+Ape Escape is owner-approved with interpolation **off and hidden** after the
+owner A/B review found the choppiness disappears with it disabled. Its package
+is absent from the shipped catalog and retained only under `mods/development`.
+The other 14 review presets enable available visual/loading enhancements and
+Display-refresh interpolation; all 14 launcher menus were requested open
+together. Actual gameplay remains one title at a time. `GAME-PATHS.txt` lists
+every exact executable, and previous review settings are backed up.
 
 The owner suspects background system contention/long uptime and will perform
 final review after restarting. Further performance comparisons on this session
@@ -80,7 +86,7 @@ measurement overhead, not an established cause of the reported hitching.
 | MMX4 | Actual native scene replay; moving attract check passes; fresh historical BIOS capture | Broader view/overlay coverage, loading HLE |
 | MMX5 | Actual native scene replay; moving attract check passes; original-disc AOT | Broader view, full 32:9, loading HLE |
 | MMX6 | Native replay/resident candidate includes current widescreen PR543 / `458e6ece` | Current combined-build owner gameplay/load/audio review |
-| Ape Escape | Title `92235ff`, framework `77f3a909`; guarded bulk submission, indexed packet guards, queued native-frame generations, resident distance controls | All-level performance, flyover/Crumbling Castle/transition audio, ultrawide mailbox, CD subdivision residency/object activation |
+| Ape Escape | **Owner-approved with interpolation off and hidden**; reviewed binary unchanged, other enhancements retained | Final packages; independent GitHub #18 and expanded streaming/activation remain separately tracked |
 | Vigilante 8 | Title `95fa269` native fix, framework `4b754210`; main-thread replay and allocated terrain packet support; Sand Factory correctness check passes | Occasional taxing-scene hiccups; earlier slot01 unlocated; load gain not established; partial AOT |
 | V8 2nd Offense | Built native replay/resident candidate and fresh captures | Broader distance/subdivision/performance/load review |
 | Tsumu | OpenGL/1080p, PGXP/filtering and actual native first-puzzle replay; localization retained | 4:3 only, loading HLE and broader coverage |
