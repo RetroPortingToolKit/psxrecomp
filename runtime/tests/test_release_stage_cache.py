@@ -30,6 +30,8 @@ on the day the tag grew a field.
 """
 
 import os
+import hashlib
+import json
 import shutil
 import sys
 import tempfile
@@ -459,6 +461,41 @@ class TinyccNoticeTest(unittest.TestCase):
         with self.assertRaises(rs.StageError):
             rs.stage_tcc_notice(self.tmp, pins)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, 'COPYING')))
+
+
+class ExecutionStagingTest(unittest.TestCase):
+    def test_artifact_binding_and_wrong_sidecar_rejection(self):
+        with tempfile.TemporaryDirectory(prefix='psx_execution_stage_') as folder:
+            binary = os.path.join(folder, 'Game.exe')
+            manifest = os.path.join(folder, 'Game.execution.json')
+            output = os.path.join(folder, 'staged.execution.json')
+            shared = hashlib.sha256(b'').hexdigest()
+            identity = hashlib.sha256(('psx-execution-v1\nENHANCED\nshared:%s\n' % shared).encode()).hexdigest()
+            data = dict(schema=1, profile='ENHANCED', identity=identity,
+                        shared_contract_sha256=shared, implementations=[])
+            # The runtime embeds its identity. Straddle the reader's chunk
+            # boundary to catch searches that accidentally check each alone.
+            payload = b'x' * (1024 * 1024 - 7) + identity.encode() + b'code'
+            with open(binary, 'wb') as stream:
+                stream.write(payload)
+            with open(manifest, 'w') as stream:
+                json.dump(data, stream)
+            staged = rs.stage_execution(binary, manifest, output)
+            self.assertEqual(staged['binary_sha256'], hashlib.sha256(payload).hexdigest())
+            with self.assertRaises(rs.StageError):
+                rs.stage_execution(binary, manifest, binary)
+            with open(binary, 'rb') as stream:
+                self.assertEqual(stream.read(), payload)
+            # A self-consistent sidecar for another profile still cannot bind
+            # an executable that lacks that identity.
+            data['profile'] = 'REFERENCE'
+            data['identity'] = hashlib.sha256(('psx-execution-v1\nREFERENCE\nshared:%s\n' % shared).encode()).hexdigest()
+            with open(manifest, 'w') as stream:
+                json.dump(data, stream)
+            with self.assertRaises(rs.StageError):
+                rs.stage_execution(binary, manifest, output)
+            with open(output) as stream:
+                self.assertEqual(json.load(stream), staged)
 
 
 if __name__ == '__main__':

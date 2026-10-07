@@ -61,6 +61,7 @@ Usage (see each subcommand's --help):
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -966,6 +967,64 @@ def cmd_stage_mods(args):
     return 0
 
 
+def stage_execution(binary, manifest=None, output=None):
+    """Bind a build's execution contract to the actual staged executable."""
+    default = os.path.splitext(binary)[0] + '.execution.json'
+    manifest, output = manifest or default, output or default
+    if os.path.normcase(os.path.realpath(binary)) == os.path.normcase(os.path.realpath(output)):
+        _die('execution manifest output must not overwrite the executable')
+    try:
+        with open(manifest, encoding='utf-8') as stream:
+            data = json.load(stream)
+        identity = data['identity']
+        profile = data['profile']
+        shared = data['shared_contract_sha256']
+        families = data['implementations']
+        if data['schema'] != 1 or profile not in ('ENHANCED', 'REFERENCE'):
+            raise ValueError('unsupported execution schema/profile')
+        if not re.fullmatch('[0-9a-f]{64}', identity) or not re.fullmatch('[0-9a-f]{64}', shared):
+            raise ValueError('malformed execution identity')
+        material = 'psx-execution-v1\n%s\nshared:%s\n' % (profile, shared)
+        names = set()
+        for family in sorted(families, key=lambda item: item['name']):
+            name, contract, source = family['name'], family['contract'], family['source_sha256']
+            if (not re.fullmatch('[a-z0-9][a-z0-9_.-]*', name) or name in names or
+                    not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]*', contract) or
+                    not re.fullmatch('[0-9a-f]{64}', source)):
+                raise ValueError('malformed or duplicate implementation family')
+            names.add(name)
+            material += '%s:%s:%s\n' % (name, contract, source)
+        if hashlib.sha256(material.encode()).hexdigest() != identity:
+            raise ValueError('manifest does not match its execution contract')
+        digest, tail, found = hashlib.sha256(), b'', False
+        with open(binary, 'rb') as stream:
+            while True:
+                block = stream.read(1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+                found |= identity.encode('ascii') in tail + block
+                tail = block[-63:]
+        # Runtime startup embeds/reports this exact identity. A sidecar from
+        # another profile or build must not certify the staged executable.
+        if not found:
+            raise ValueError('execution identity is absent from the staged binary')
+        data['binary_sha256'] = digest.hexdigest()
+        with open(output, 'w', encoding='utf-8', newline='\n') as stream:
+            json.dump(data, stream, indent=2)
+            stream.write('\n')
+        return data
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        _die('execution staging failed: %s' % error)
+
+
+def cmd_stage_execution(args):
+    data = stage_execution(args.binary, args.manifest, args.output)
+    print('execution staged: %s %s binary=%s' %
+          (data['profile'], data['identity'], data['binary_sha256']))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(
@@ -973,6 +1032,12 @@ def main(argv=None):
         description='Shared release staging for every psxrecomp title, on every '
                     'platform. See the module docstring and bead beads-eio.3.102.')
     sub = ap.add_subparsers(dest='cmd', required=True)
+
+    p = sub.add_parser('stage-execution', help='verify and bind the execution manifest to a staged binary')
+    p.add_argument('--binary', required=True, help='actual executable being packaged')
+    p.add_argument('--manifest', help='build-published .execution.json (default: beside the binary)')
+    p.add_argument('--output', help='manifest destination (default: beside the binary)')
+    p.set_defaults(func=cmd_stage_execution)
 
     p = sub.add_parser('cg-tag', help='print the overlay codegen cache tag')
     p.add_argument('--runtime-include', required=True)

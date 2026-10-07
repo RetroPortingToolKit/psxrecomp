@@ -23,6 +23,18 @@ promise cross-profile savestate compatibility or netplay. Normal memory cards
 remain game data. Keep generated outputs, overlay caches and packages in their
 own build directories; do not overlay a candidate's runtime on another profile.
 
+After copying a candidate executable, package its contract with the shared
+stager (use the build's sidecar as `--manifest` if the binary was renamed):
+
+```sh
+python tools/release_stage.py stage-execution --binary path/to/staged/Game.exe --manifest path/to/build/Game.execution.json
+```
+
+This validates the contract digest, checks that the staged binary embeds that
+identity, and records the binary SHA-256 beside it. A mismatched or missing
+sidecar stops staging. Use the same command for the executable inside AppDir
+before creating an AppImage. It verifies artifact consistency, not gameplay.
+
 ## A title implementation
 
 After creating the runtime target, remove the replaced translation unit from
