@@ -95,6 +95,8 @@ void psx_local_mouse_reset() {
     host_.connected = host_.analog = false;
 }
 void psx_local_mouse_begin(SDL_Window* window, bool live) {
+    // No policy: preserve native host input without per-frame mouse polling.
+    if (!state().installed()) return;
     if (window_ && window_ != window) state().reset();
     window_ = window;
     host_.live = live;
@@ -191,6 +193,7 @@ bool psx_local_mouse_event(const SDL_Event& ev) {
     return false;
 }
 void psx_local_mouse_pad(bool connected, bool analog, uint16_t buttons, uint8_t& rx, uint8_t& ry) {
+    if (!state().installed()) return;
     host_.connected = connected;
     host_.analog = analog;
     host_.native_right = rx != 128 || ry != 128;
