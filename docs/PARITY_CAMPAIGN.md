@@ -32,9 +32,10 @@ with the labels. Broader visual review remains open. Tracking:
 ## Acceptance target
 
 - Enhanced OpenGL is the normal renderer, with 1080p internal resolution.
-- Native scene interpolation targets Display refresh. Temporal image blending
-  alone does not meet this requirement. HUD, FMV, menus, pauses and transitions
-  need appropriate presentation behavior without advancing gameplay twice.
+- Latest owner scope avoids interpolation for the remaining serial work.
+  Keep it disabled and focus on internal resolution, draw distance, actual
+  title-owned loading and geometry/perspective texture correction. Preserve
+  earlier approved MediEvil I/II optional interpolation, default off.
 - PGXP, stable world texture filtering and perspective correction apply where
   useful. Preserve pixel-art/UI treatment and fix seams, jitter and texel bleed.
 - Adaptive view covers 4:3 through at least 32:9: world geometry, culling and
@@ -84,7 +85,12 @@ rendering resolution, not higher-resolution original textures. THPS2's initial
 music playback is owner-approved after the shared GetlocP position fix;
 its title resident asset loading is also owner-approved, default on.
 THPS2 interpolation is disabled and hidden after both repair attempts failed;
-no third attempt is authorized. Work proceeds serially by title. `GAME-PATHS.txt`
+no third attempt is authorized. The owner accepted the resulting non-interpolated
+first-pass build, then raised a separate texture-correction concern. Its expanded
+primitive buffers were outside the PGXP tracker, so enabled perspective correction
+armed no triangles. Shared allocated-aperture tracking is now corrected; the
+updated gameplay/owner check remains open. Avoid interpolation work on the
+remaining titles. Work proceeds serially by title. `GAME-PATHS.txt`
 lists the executable paths; earlier review preferences are backed up.
 
 The owner suspects background system contention/long uptime and will perform

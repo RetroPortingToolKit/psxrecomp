@@ -1360,3 +1360,22 @@ cover negative depth, stale packets, identical partial writes, rollback and
 mode guards. Live captures remove the previously observed triangular holes;
 the owner confirmed the hallway walls stay intact. Broader map coverage
 remains separate from this reproduction.
+
+### Precision in expanded primitive buffers (2026-10-07)
+
+The draw-distance enhancements can move primitive storage to the allocated
+GPU-DMA aperture (`0x80800000` CPU pointers, `0x00800000` packet keys). PGXP
+now tracks those words separately from main RAM, with sparse stable pages
+created only when a tracked store writes them. Reads refuse unallocated ranges,
+invalid aliases and stale words. Position, depth and projection receipts retain
+the aperture address; checkpoint journaling restores their old shadows without
+copying whole arrays or aliasing the low main-RAM word.
+
+THPS2 exposed the gap: correction was enabled, but every recorded texture-depth
+lookup missed the expanded primitive buffers and no textured triangle received
+perspective correction. The focused packet-shadow fixture covers allocation
+bounds, CPU/DMA aliases, separation from RAM, stale words, generation changes,
+relocated receipts and rollback including a page created during a checkpoint.
+The existing PGXP propagation fixture still passes. The rebuilt title now
+records actual dataflow hits and perspective-corrected triangles. These are
+coverage checks; broader visible texture/geometry quality remains owner-reviewed.
