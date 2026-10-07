@@ -157,3 +157,30 @@ It excludes retail disc/BIOS and player saves, retains audited native AOT pairs,
 and passes execution identity/catalog/ZIP checks. It predates the shader
 batching comparison and is not final parity acceptance. No Linux candidate or
 measured V8 load-speed gain is claimed.
+
+The shader-only V8 comparison did eliminate filter-change splits and reduced
+CPU flush time, but it did not establish a GPU/FPS improvement. Even the first
+window's similar primitive counts hid different textured fractions; later
+windows and camera images diverged. Host precision/mod-renderer state around
+the saved checkpoint needs investigation. The earlier b0/d8 title candidate
+remains qualified, with the 7c executable and observations retained separately.
+Use a fixed-work renderer probe before drawing a performance conclusion.
+
+Shared regular-file identity hashing now uses Windows BCrypt or available
+Linux OpenSSL, with the portable SHA-256 implementation as fallback. Failed
+native initialization, update or finalization restarts the entire file;
+I/O failure leaves the caller's digest untouched. The existing C SHA context
+and CHD decoded-sector fingerprint path are unchanged. This host utility
+preserves exact identity in both execution profiles; it is not a guest HLE
+selection or a shortcut that skips content verification.
+
+The Windows native/portable suites, mod runtime, resident-loading and PGXP
+session CTests pass (5/5). Linux OpenSSL and portable builds pass 68 and 67
+checks respectively, including Unicode paths, SHA block/read-chunk boundaries,
+known vectors, partially consumed native failures and unreadable inputs.
+An isolated interleaved six-sample Windows measurement on V8's 257,200,608-byte
+data track matches Python's SHA-256 in every sample: portable median 0.656533 s,
+native median 0.130985 s (5.012x for hashing). Receipts are private under
+`_build-parity-render-perf-20261006/{validate_hash,linux-hash-validation,benchmark_hash}.json`.
+This saves about half a second for that operation, not the entire multi-second
+launch delay observed on the busy host. Overall startup still needs attribution.

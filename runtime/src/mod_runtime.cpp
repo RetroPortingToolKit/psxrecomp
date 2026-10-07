@@ -9,6 +9,7 @@
 #include "psx_memory.h"
 #include "render_pass_projection.h"
 #include "psx_sha256.h"
+#include "psx_sha256_file.h"
 #include "cpu_state.h"
 #include "psx_lobby_client.h"
 
@@ -351,12 +352,12 @@ bool sha256_file(const std::filesystem::path& path, std::string& out,
     if (path.empty()) return true;
     const DiscPathResolution resolved = resolve_disc_path(path);
     const std::filesystem::path input = resolved.data;
-    psx_sha256_ctx hash;
-    psx_sha256_init(&hash);
     std::string extension = resolved.mount.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
         [](unsigned char c) { return (char)std::tolower(c); });
     if (extension == ".chd") {
+        psx_sha256_ctx hash;
+        psx_sha256_init(&hash);
         PS1::ISOReader disc;
         if (!disc.Open(resolved.mount.string())) {
             if (error) *error =
@@ -383,24 +384,17 @@ bool sha256_file(const std::filesystem::path& path, std::string& out,
         return true;
     }
 
-    std::array<uint8_t, 1024 * 1024> buffer{};
-    std::ifstream file(input, std::ios::binary);
-    if (!file) {
+    uint8_t digest[32];
+    const auto result = psx_sha256_file(input, digest);
+    if (result == PsxFileHashResult::OpenError) {
         if (error) *error = "cannot fingerprint image: " + input.string();
         return false;
     }
-    while (file) {
-        file.read((char*)buffer.data(), (std::streamsize)buffer.size());
-        const std::streamsize got = file.gcount();
-        if (got > 0) psx_sha256_update(&hash, buffer.data(), (size_t)got);
-    }
-    if (!file.eof()) {
+    if (result != PsxFileHashResult::Ok) {
         if (error) *error =
             "cannot finish fingerprinting image: " + input.string();
         return false;
     }
-    uint8_t digest[32];
-    psx_sha256_final(&hash, digest);
     std::ostringstream text;
     for (uint8_t byte : digest)
         text << std::hex << std::setw(2) << std::setfill('0') << (unsigned)byte;

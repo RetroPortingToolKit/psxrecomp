@@ -16,6 +16,7 @@ set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
 set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
@@ -1571,6 +1572,7 @@ function(psxrecomp_add_runtime_target target)
         ${PSXRT_EXTRAS_SOURCES}
     )
     target_link_libraries(${target} PRIVATE chdr-static)
+    psxrecomp_sha256_file(${target})
     set(_execution_contract
         "${PSXRECOMP_ROOT}/runtime/src/gte.cpp"
         "${PSXRECOMP_ROOT}/runtime/src/pgxp.cpp"

@@ -23,6 +23,24 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    # White-box failure injection checks restart after partial native hashing.
+    foreach(_hash_variant native portable)
+        add_executable(sha256_file_${_hash_variant}_test
+            tests/test_psx_sha256_file.cpp src/psx_sha256.c)
+        target_include_directories(sha256_file_${_hash_variant}_test PRIVATE include)
+        if(_hash_variant STREQUAL "portable")
+            target_compile_definitions(sha256_file_${_hash_variant}_test PRIVATE
+                PSX_SHA256_FILE_PORTABLE=1)
+        elseif(WIN32)
+            target_link_libraries(sha256_file_${_hash_variant}_test PRIVATE bcrypt)
+        elseif(TARGET OpenSSL::Crypto)
+            target_compile_definitions(sha256_file_${_hash_variant}_test PRIVATE
+                PSX_SHA256_FILE_OPENSSL=1)
+            target_link_libraries(sha256_file_${_hash_variant}_test PRIVATE OpenSSL::Crypto)
+        endif()
+        add_test(NAME sha256_file_${_hash_variant}_test
+            COMMAND sha256_file_${_hash_variant}_test)
+    endforeach()
     add_executable(disasm_test tests/test_disasm.cpp src/disasm_shim.cpp
         ../recompiler/src/mips_decoder.cpp)
     target_include_directories(disasm_test PRIVATE include ../recompiler/include)
@@ -522,6 +540,7 @@ if(BUILD_TESTING)
     target_compile_definitions(pgxp_session_test PRIVATE
         PSX_BUILTIN_PGXP_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/../mods/builtin/packages/psx.enhancement.pgxp/1.0.0/manifest.toml")
     target_link_libraries(pgxp_session_test PRIVATE chdr-static)
+    psxrecomp_sha256_file(pgxp_session_test)
     if(WIN32)
         if(MSVC)
             target_link_options(pgxp_session_test PRIVATE /STACK:16777216)
@@ -862,8 +881,8 @@ if(BUILD_TESTING)
         ../recompiler/include
         ../recompiler/lib/toml11)
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
-    # The real disc hasher uses a 1 MiB scratch buffer. Match the runtime's
-    # stack allowance instead of overflowing MinGW's 1 MiB executable default.
+    psxrecomp_sha256_file(mod_runtime_test)
+    # Match the runtime's stack allowance for the remaining disc/mod helpers.
     if(WIN32)
         if(MSVC)
             target_link_options(mod_runtime_test PRIVATE /STACK:16777216)
@@ -889,6 +908,7 @@ if(BUILD_TESTING)
         ../recompiler/include
         ../recompiler/lib/toml11)
     target_link_libraries(mod_resident_test PRIVATE chdr-static)
+    psxrecomp_sha256_file(mod_resident_test)
     if(WIN32)
         if(MSVC)
             target_link_options(mod_resident_test PRIVATE /STACK:16777216)
