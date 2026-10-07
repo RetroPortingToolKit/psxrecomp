@@ -41,7 +41,7 @@ not full-game qualification. Framework baseline is `7b253941` (CODEGEN 18).
 | Mega Man X5 | `c8fde08`; earlier widescreen/blending | Native interpolation, current renderer/filtering, load path and view coverage |
 | Mega Man X6 | master `3b4b5dd`; native interpolation; resident/mod branch `3bf0205` | Integrate resident work with current framework; all applicable defaults, views and packages |
 | Ape Escape | release `a8e219a`; native interpolation, private native packet producer | Shared build-selected HLE, gameplay interpolation qualification, startup/load service and packages |
-| Vigilante 8 | active fidelity branch `4bd8b4d`; native replay/wide work, PGXP, 1080p, stable filtering | Gameplay/32:9 qualification, residency/load throughput and packages; donor content excluded |
+| Vigilante 8 | fidelity/packaging checkpoint `3591161`; OpenBIOS Ski Resort gameplay, adaptive 4:3–32:9, PGXP, 1080p and stable filtering checked | Native interpolation, shader batching performance, load throughput, Linux package and broader gameplay; donor content excluded |
 | Vigilante 8: 2nd Offense | `e1133d10`; native replay, PGXP, filtering, resident load-floor improvement (~307 to 45 frames in one case) | Backgrounds, subdivision/distance and remaining performance cases; full validation |
 | Tsumu | `9fa07da`; English localization, older software/4:3 baseline | Applicable enhanced rendering, presentation, adaptive view and load audit |
 | Tony Hawk's Pro Skater 2 | `6890a0da`; native replay, extended distance, existing multiplayer | Wider visibility and distance limits, single/split/network play checks, load audit |
@@ -76,7 +76,8 @@ The initial six targeted CTests pass: execution profile linking and source
 identity, reference/enhanced GTE contracts, reference/enhanced snapshot handoff
 and atomic rejection, and network content gating. Production main/GTE/snapshot
 translation units compile, including production netplay with networking enabled.
-Full runtime linking and title performance comparisons are still required.
+Ape, Spider-Man 2 and Vigilante 8 Windows runtime candidates have linked;
+useful title HLE performance comparisons are still required.
 
 Baseline framework tests also exposed three existing stale fixtures:
 `gl_texture_filter_test`, `gpu_gp0_history_guard_test`, and
@@ -119,6 +120,40 @@ shared GPU checkpoint/capture as the remaining throughput bottleneck.
 
 The shared presenter now honors HOLD for native phase generations instead of
 crossfading neighboring phase images. Phase selection tests and the real OpenGL
-probe (329 checks) pass, including red/blue native images that must stay distinct
+probe pass, including red/blue native images that must stay distinct
 under HOLD while explicit blend mode still mixes them. Title requalification
 on this correction remains required.
+
+The expanded GL probe now passes 509 checks. Shared commit `7c9e13ec` carries
+nearest/bilinear/stable selection per primitive, preserving sharp untracked UI
+while batching filtered world geometry. Across all three texture depths, native
+and 5x rendering and native-wide margins match the original filter-boundary
+submission exactly. Its opaque fixture goes from eight batches to one; mask
+checking stays at eight and semitransparency at nine. Vigilante 8's measured
+filter-transition pressure motivated this work; game speed is still being
+compared on an isolated shader-only framework checkout.
+
+The campaign framework checkpoint is `04f871f0`. It also includes:
+
+- `8fe08921`: pre-materialized generated reference bodies build through include
+  wrappers, avoiding duplicate Ninja rules without maintaining copied LLE code.
+  The profile fixture checks both profiles, source-specific flags, local
+  includes, automatic changed-body identity and relocation.
+- `88730937`: render replay refuses SIO/CD/MDEC/SPU MMIO reads before their
+  uncheckpointed side effects and suppresses I_STAT's SIO tick. The real
+  transaction fixture verifies rollback/recovery; production memory, replay
+  and debug translation units compile. This is separate from correcting Ape's
+  unsuitable broad draw boundary, which reached a real CD command/poll loop.
+- `04f871f0`: generation- and address-guarded packet precision capture/restore,
+  including derived coordinate flags, projection and absent shadows. The new
+  fixture and existing PGXP suite pass. Ape's smaller draw span uses this to
+  preserve recorded prefix/tail packets only when packet ownership and link
+  layout remain compatible; that title candidate still needs gameplay checks.
+
+Vigilante 8's earlier Windows candidate was staged twice byte-identically:
+`Vigilante8PSXRecomp-qualified-candidate-windows-x64.zip`, SHA-256
+`060d8ef2195ca43162564870675b6b15ef2e49147d758e7cebf228cb62b08558`.
+It excludes retail disc/BIOS and player saves, retains audited native AOT pairs,
+and passes execution identity/catalog/ZIP checks. It predates the shader
+batching comparison and is not final parity acceptance. No Linux candidate or
+measured V8 load-speed gain is claimed.
