@@ -5140,9 +5140,15 @@ static void open_player(PlayerInput& p, int self_slot) {
         SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
         char buf[40] = {0};
         SDL_JoystickGetGUIDString(g, buf, sizeof(buf));
-        /* Skip a device already opened by another player. */
+        /* Development seats may explicitly choose the same physical pad.
+         * Auto/fallback allocation still reserves a separate device per seat. */
         SDL_JoystickID inst = SDL_JoystickGetDeviceInstanceID(i);
-        if (device_claimed_by_other(self_slot, inst)) continue;
+        bool shared = false;
+#if !defined(PSX_NO_DEBUG_TOOLS)
+        shared = PSXRecompV4::launcher_controller_can_share(
+            true, p.guid[0] && std::strcmp(buf, p.guid) == 0);
+#endif
+        if (device_claimed_by_other(self_slot, inst) && !shared) continue;
         if (p.guid[0] && std::strcmp(buf, p.guid) == 0) { chosen = i; break; }
         if (fallback < 0) fallback = i;
     }
@@ -15175,6 +15181,9 @@ namespace {
          * the generic Display -> View mode launcher row. */
         gi->widescreen_supported = 0;
         gi->num_players = game_players_n;
+#if defined(RECOMP_LAUNCHER_HAS_SHARED_GAMEPAD) && !defined(PSX_NO_DEBUG_TOOLS)
+        gi->allow_shared_gamepad = 1;
+#endif
         gi->msu1_supported = 0;
         gi->sram_path = nullptr;
         gi->has_bios = psx_bios_has_selectable();
