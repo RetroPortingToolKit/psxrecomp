@@ -85,8 +85,6 @@ void psx_ws_dbg_gate_frame_snapshot(void){}
 void gpu_depth24_upload_span_reset(void){}
 /* Netplay unsplit view and forward-pass opt-in: off in these fixtures. */
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
-int gpu_ws_background_requires_full_composite(void){return 0;}
-void gpu_timeline_note(uint8_t kind,uint32_t a,uint32_t b){(void)kind;(void)a;(void)b;}
 int render_pass_netplay_enabled(void){return 0;}
 /* Guest clock the renderer's stereo-pair freshness reads; test stand-ins, as
  * in test_gl_readback_region.c. */
