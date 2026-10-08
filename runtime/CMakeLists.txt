@@ -23,6 +23,9 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(mod_capcom_bg2d_test tests/test_mod_capcom_bg2d.c)
+    target_include_directories(mod_capcom_bg2d_test PRIVATE include)
+    add_test(NAME mod_capcom_bg2d_test COMMAND mod_capcom_bg2d_test)
     # White-box failure injection checks restart after partial native hashing.
     foreach(_hash_variant native portable)
         add_executable(sha256_file_${_hash_variant}_test
