@@ -70,6 +70,7 @@ import tarfile
 import time
 import urllib.request
 import zipfile
+from pathlib import Path
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
@@ -679,6 +680,22 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
     else:
         # python-build-standalone: one `python/` top-level directory.
         _extract_tar_top_level(py_archive, toolchain, 'python')
+
+    if platform_tag == 'linux':
+        # Standalone Python includes pip's Windows entry-point resources even
+        # in Linux archives. They are data for installing Windows scripts,
+        # never Linux executables. Omit only these six known resources; keep
+        # the AppImage gate rejecting other mixed-platform binaries.
+        launchers = {'t32.exe', 't64.exe', 't64-arm.exe',
+                     'w32.exe', 'w64.exe', 'w64-arm.exe'}
+        removed = 0
+        for candidate in Path(py_dest).glob(
+                'lib/python*/site-packages/pip/_vendor/distlib/*.exe'):
+            if candidate.name in launchers:
+                candidate.unlink()
+                removed += 1
+        log('Omitted unused pip Windows launcher resources from Linux Python: %d'
+            % removed)
 
     if pins['tcc_url']:
         tcc_archive = get_pinned_archive(
