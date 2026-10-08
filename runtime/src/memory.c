@@ -1042,6 +1042,11 @@ uint64_t g_mmio_access_count = 0;
  * ANY store is not a pure poll loop. CPU stores and in-flight DMA writes
  * both funnel through the psx_write_*_raw chokepoints. */
 uint64_t g_guest_store_count = 0;
+/* The last guest store, for the idle-loop detector's store-counter loops
+ * (psx_cycles.c): its address and value when it was a word store, else
+ * address 0xFFFFFFFF. Two plain stores on the store path. */
+uint32_t g_guest_last_store_addr = 0xFFFFFFFFu;
+uint32_t g_guest_last_store_val = 0;
 
 /* ---- Card protocol trace: tracks I_MASK bit 7 transitions ---- */
 #define IMASK_TRACE_CAP 4096
@@ -1990,6 +1995,8 @@ void psx_write_word(uint32_t addr, uint32_t val) {
 }
 static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     g_guest_store_count++;
+    g_guest_last_store_addr = addr;
+    g_guest_last_store_val = val;
     /* (pgxp) CPU stores carry their shadow through the PGXP_STORE hook;
      * DMA and host stores drop it below (pgxp_untracked_store). */
     /* IsC first, before any decode (cpu_store_isolated). */
@@ -2201,6 +2208,7 @@ void psx_write_half(uint32_t addr, uint16_t val) {
 }
 static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     g_guest_store_count++;
+    g_guest_last_store_addr = 0xFFFFFFFFu;
     if (cpu_store_isolated()) { isc_store(addr, val, 2); return; }
 
         /* KSEG2 guard — see psx_read_word_raw. */
@@ -2570,6 +2578,7 @@ void psx_host_write_byte(uint32_t addr, uint8_t val) {
 
 static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     g_guest_store_count++;
+    g_guest_last_store_addr = 0xFFFFFFFFu;
     if (cpu_store_isolated()) { isc_store(addr, val, 1); return; }
 
         /* KSEG2 guard — see psx_read_word_raw. */

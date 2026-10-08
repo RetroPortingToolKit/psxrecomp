@@ -354,6 +354,11 @@ struct RuntimeConfig {
     // device events still advance exactly. Opt-in per game; the idle_skip
     // debug command and PSX_IDLE_SKIP environment variable support live A/B.
     bool                  idle_skip = false;
+    // idle_skip_store_counters: with idle_skip, also skip loops that count a
+    // stack timeout down once per iteration and span several block edges --
+    // PsyQ libetc's v_wait, the VSync(0) spin. Bit-exact (psx_cycles.c);
+    // PSX_IDLE_SKIP_EXT=0/1 overrides it for one run.
+    bool                  idle_skip_store_counters = false;
 
     // overlay_autocompile_cmd: variant-capture automation (step 2.8). A
     // shell command (run via cmd.exe /C, cwd = project root) that compiles

@@ -493,6 +493,20 @@ overlay_region_floor = "0x10000"   # optional: lowest RAM address treated as ove
                                     # eligible. Clamped >= 0x10000; PSX_OVERLAY_REGION_FLOOR overrides.
 ```
 
+`idle_skip` only elides loops with no stores and one interrupt-check edge.
+`idle_skip_store_counters = true` (with `idle_skip`; `PSX_IDLE_SKIP_EXT=0/1`
+overrides it for one run) also elides loops that count a stack timeout down
+by one each pass and span up to eight block edges: PsyQ libetc's `v_wait`,
+the `VSync(0)`/`VSync(n)` spin most PsyQ titles run every frame. The skip
+lowers the counter by the number of passes it skips (never to 1 or below, so
+the real timeout test still runs) and lands on the loop's first edge strictly
+before the next device event, so an interrupt is taken at the same edge as
+without it. Guest cycles, device-register writes and scratchpad writes are
+unchanged; the only difference is that the skipped passes' stores to the
+counter word are not individually made (`frame_fingerprint` `wc`/`ws` count
+fewer writes, its judge columns match). In R4 races it removes about a quarter
+of the emulation thread's time. Off under netplay, like `idle_skip`.
+
 ### `turbo_loads` / `offer_turbo_loads` — deprecated and ignored
 
 **Do not use these keys.** Load acceleration is owned by the Mods catalog:
