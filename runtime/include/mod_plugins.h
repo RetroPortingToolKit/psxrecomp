@@ -238,8 +238,12 @@ void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expe
 void psx_mod_tag_hud_primitive(uint32_t primitive, int edge);
 /* Packet-guarded screen-space anchor: -1 left, +1 right, 0 stays centred.
  * Unlike the legacy role tag above, zero explicitly protects centred text
- * from automatic layout transforms. Word immediately before the GP0 colour
- * command; for a compound E1+SPRT packet this is its E1 word (P_TAG+4). */
+ * from automatic layout transforms. Native-wide translates the group;
+ * projection-and-stretch squashes around the selected screen anchor. This
+ * works across separate DMA lists and is inert at native 4:3. Title code
+ * owns classification and must tag each completed packet. Pass the word
+ * immediately before the GP0 colour command; for a compound E1+SPRT packet
+ * this is its E1 word (P_TAG+4). */
 void psx_mod_anchor_hud_primitive(uint32_t primitive, int edge);
 /* Screen-space masks identified by their title's producer, P_TAG addresses.
  * Flat panels extend only their exterior boundaries. Radial flat/Gouraud
@@ -403,6 +407,15 @@ int psx_mod_set_fixed_display_aspect(uint32_t numerator,
  */
 int psx_mod_set_adaptive_display_aspect(uint32_t max_numerator,
                                         uint32_t max_denominator);
+/*
+ * HUD size for the auto-UI widescreen HUD ([widescreen] auto_ui_squash):
+ * 0 keeps it at the display height's scale ("original"), 1 makes it
+ * proportional (unchanged up to 16:9, shrinking by sqrt((16:9) / aspect)
+ * beyond, about each widget's anchors). Overrides game.toml
+ * [widescreen] auto_ui_size for the session; every session start restores the
+ * title's setting before activation.
+ */
+int psx_mod_set_widescreen_hud_size(int proportional);
 /*
  * Set the wall-clock cadence of simulated guest VBlanks. A value of zero
  * removes frontend pacing; 60 and higher request that many native guest

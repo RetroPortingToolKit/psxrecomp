@@ -48,7 +48,8 @@ Template: [`templates/game-release.yml`](templates/game-release.yml).
    third-party notices (psxrecomp's in `licenses/`, plus recomp-ui's license
    as `licenses/recomp-ui-LICENSE` and its font/image notices as
    `assets/{fonts,img}/NOTICE.md`); refuse if anything kit-shaped is in the
-   stage; sign on Windows; zip.
+   stage; sign on Windows; bind the execution contract to the final executable
+   bytes; zip.
 6. Verify the zip: executable + OpenBIOS + catalog + recomp-ui license and
    font/image notices present; no `psxrecomp/`,
    `recomp-ui/`, CLI, emitters at the root, sources, generated C, dumps,
@@ -73,6 +74,51 @@ A developer packaging locally with a cache can ship it:
 `PSX_OVERLAY_CACHE_ROOT=<cache root> scripts/package_release.sh …`. The packager
 routes it through `tools/release_stage.py`, the only place that knows the cache
 tag and layout.
+
+## Execution-bound staging and Linux AppImage
+
+`package_game_release.sh --stage-only` performs the same payload/catalog/cache
+gates and execution binding as ZIP packaging, then stops before compression. It
+preserves an existing ZIP. The payload is `dist/stage-game-<artifact>`; staging
+still replaces that stage directory, so use a separate artifact label for each
+candidate/profile. Missing or mismatched build `.execution.json` sidecars fail
+packaging. Windows binding runs after signing and records the final binary SHA256.
+
+On native Linux x86_64, wrap that validated Linux payload without a compiler or
+AOT invocation:
+
+```bash
+bash "$fw/tools/package_game_release.sh" --root "$title" --build-dir "$build" \
+  --artifact linux-x64 --zip-prefix "$package" --exe-name "$exe" \
+  --display-name "$name" --recompiler-build "$emitter_build" \
+  --overlay-cache-root "$audited_linux_cache" --stage-only
+SOURCE_DATE_EPOCH="$(git -C "$title" show -s --format=%ct HEAD)" \
+  bash "$fw/tools/package_appimage.sh" \
+    --payload "$title/dist/stage-game-linux-x64" --exe-name "$exe" \
+    --payload-name "$payload_name" --app-run "$rendered_app_run" \
+    --desktop-file "$desktop" --icon "$png_icon" --output "$appimage" --jobs 2
+```
+
+AppRun and desktop metadata are fully rendered title inputs. AppRun must use
+`usr/bin/<exe>` and `usr/share/<payload-name>` and preserve user settings/cards
+under a writable data directory. The wrapper creates AppDir on the native Linux
+filesystem, gives SDL access to its real-ELF assets, rejects Windows binaries,
+and binds the ELF after linuxdeploy may rewrite it. A prior payload hash cannot
+substitute for that final-byte receipt. Output must be a fresh path; AppDir is
+retained for inspection. This wrapper does not qualify gameplay or the artifact.
+
+The wrapper uses versioned upstream URLs and the following official GitHub asset
+digests, checked 2026-10-07 UTC with small metadata requests only:
+
+| Tool release | Asset provenance | SHA256 |
+|---|---|---|
+| linuxdeploy `1-alpha-20251107-1` | [Asset 313839329](https://api.github.com/repos/linuxdeploy/linuxdeploy/releases/assets/313839329) | `c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d` |
+| appimagetool `1.9.1` | [Asset 324406736](https://api.github.com/repos/AppImage/appimagetool/releases/assets/324406736) | `ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0` |
+
+These release records are not marked immutable. Every tool fetch/cache use still
+checks the pinned SHA256; changed bytes fail verification. The old continuous
+pins are not reused merely because a cache exists. Real tool execution and a
+native Linux artifact test remain necessary before claiming an AppImage.
 
 ## Faster host/UI bumps
 

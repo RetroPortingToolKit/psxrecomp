@@ -1,6 +1,7 @@
 /* Include implementation to inspect owned backing storage without pulling in
  * hardware routing. Section GC discards unrelated memory access functions. */
 #include "memory.c"
+int g_psx_render_pass_active = 0;
 static void check(int ok,const char* text){if(!ok){fprintf(stderr,"FAIL %s\n",text);exit(1);}}
 int main(void){
     check(psx_mod_memory_snapshot_bytes()==0 && psx_mod_memory_layout_cookie()==0,"vanilla unchanged");
@@ -45,6 +46,22 @@ int main(void){
         check(render_pass_mod_store(PSX_MOD_GPU_DMA_GUEST_BASE + 8u, 0x1u, 4) == 1 &&
               (render_pass_mod_arenas_rollback(), mod_gpu_dma_memory[8] == 0x34),
               "a second pass journals again");
+    }
+    // Replaying an earlier draw snapshot must still roll back to the completed
+    // live frame, including pages the replay never otherwise writes.
+    size = psx_mod_memory_snapshot_bytes();
+    saved = (uint8_t*)realloc(saved, size);check(saved != NULL,"new-layout test buffer");
+    psx_mod_memory_snapshot_write(saved);
+    memset(mod_memory,0xA5,mod_memory_used);memset(mod_gpu_dma_memory,0x5A,mod_gpu_dma_memory_used);
+    {
+        const uint64_t completed = render_pass_mod_arenas_hash();
+        g_psx_render_pass_active = 1;
+        check(psx_mod_memory_snapshot_read(saved,size),"draw-entry arena restore in a pass");
+        check(mod_memory[0]==0x12 && mod_gpu_dma_memory[0]==0x34,"earlier draw-entry bytes visible");
+        check(render_pass_mod_store(PSX_MOD_GPU_DMA_GUEST_BASE,0xDEADBEEFu,4)==1,"replay writes restored arena");
+        g_psx_render_pass_active = 0;
+        render_pass_mod_arenas_rollback();
+        check(render_pass_mod_arenas_hash()==completed,"rollback restores complete live arena after earlier snapshot");
     }
     free(saved);puts("enhancement snapshot checks passed");return 0;
 }

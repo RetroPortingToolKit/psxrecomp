@@ -8511,6 +8511,7 @@ static void handle_render_pass_stats(int id, const char *json)
              "\"wanted\":%llu,\"refused\":%llu,\"passes\":%llu,"
              "\"aborted\":%llu,\"discarded\":%llu,\"watchdog\":%llu,\"vram_leaks\":%llu,"
              "\"nesting_repairs\":%llu,"
+             "\"device_reads\":%llu,\"last_device_read\":\"0x%08X\",\"last_device_read_width\":%u,"
              "\"verify_checks\":%llu,\"verify_mismatch\":%llu,"
              "\"dropped\":{\"spu\":%llu,\"cd\":%llu,\"timer\":%llu,"
              "\"dma\":%llu,\"gpu\":%llu,\"other\":%llu},"
@@ -8537,6 +8538,7 @@ static void handle_render_pass_stats(int id, const char *json)
              (unsigned long long)st.passes, (unsigned long long)st.aborted,
              (unsigned long long)st.discarded, (unsigned long long)st.watchdog, (unsigned long long)st.vram_leaks,
              (unsigned long long)st.nesting_repairs,
+             (unsigned long long)st.device_reads, st.last_device_read, st.last_device_read_width,
              (unsigned long long)st.verify_checks,
              (unsigned long long)st.verify_mismatch,
              (unsigned long long)st.dropped[RENDER_PASS_DROP_SPU],

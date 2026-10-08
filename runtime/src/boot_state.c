@@ -1,4 +1,5 @@
 #include "boot_state.h"
+#include "execution_profile.h"
 #include "fntrace.h"
 #include "mod_memory.h"
 #include "overlay_api.h"   /* PSX_OVERLAY_CODEGEN_HASH / _ABI_TAG / _CODEGEN_VER */
@@ -85,17 +86,15 @@ extern int      mdec_snapshot_read(const uint8_t* p, uint32_t len);
 extern int      sio_snapshot_validate(const uint8_t* p, uint32_t len);
 extern int      mdec_snapshot_validate(const uint8_t* p, uint32_t len);
 
-/* Header compatibility cookie (h.reserved): the enhancement-memory layout plus
- * the live main-RAM geometry. The RAM term is zero on retail 2 MiB, so retail
- * states are byte-identical to states written before the 8 MB map existed; a
- * state from the other geometry is rejected in the header, before any section
- * is read, with a reason that names the size. */
+/* Header compatibility cookie (h.reserved): enhancement-memory layout, live
+ * RAM geometry and the fixed execution implementation. Reject incompatible
+ * snapshots in the header, before any section changes the live machine. */
 #define BOOT_STATE_RAM_8MB_COOKIE 0x384D4252u  /* "RBM8" */
 static uint32_t boot_state_ram_cookie(void) {
     return psx_ram_8mb_active() ? BOOT_STATE_RAM_8MB_COOKIE : 0u;
 }
 static uint32_t boot_state_layout_cookie(void) {
-    return psx_mod_memory_layout_cookie() ^ boot_state_ram_cookie();
+    return psx_mod_memory_layout_cookie() ^ boot_state_ram_cookie() ^ PSX_EXECUTION_COOKIE;
 }
 
 /* CPU regs wire: 32+3+32+32+32 LE u32 = 131 * 4 = 524 bytes (no padding). */
@@ -838,7 +837,7 @@ int boot_state_check_buffer(const uint8_t* file, size_t file_len,
                      (unsigned)(memory_get_ram_bytes() >> 20));
             boot_state_append_reason(reason, reason_cap, part);
         } else {
-            boot_state_append_reason(reason, reason_cap, "enhancement_memory_layout");
+            boot_state_append_reason(reason, reason_cap, "enhancement_memory_layout_or_execution_profile");
         }
         return 0;
     }

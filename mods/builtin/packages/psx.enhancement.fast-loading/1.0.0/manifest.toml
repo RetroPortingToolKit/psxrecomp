@@ -3,19 +3,19 @@ id = "psx.enhancement.fast-loading"
 version = "1.0.0"
 name = "Fast Loading (host pacing)"
 author = "psxrecomp"
-description = "Speeds up the wall-clock pacing of loads without changing anything the game can observe. Every guest frame, CD interrupt and callback still happens on schedule."
+description = "Deprecated generic loading detector retained for compatibility. New game integrations use title-owned resident loading or pacing at verified loading boundaries."
 resolver = "declarative"
 save_compatibility = "shared"
 
-# Loading speed is a property of the emulated hardware, not of any particular
-# disc, so this ships with the framework and applies to every game.
+# Compatibility-only: the heuristic is not a verified per-game loading policy.
+# Campaign titles exclude this package and own their loading implementations.
 [[target]]
 game_id = "*"
 
 [[feature]]
 id = "fast-loading"
 name = "Fast Loading (host pacing)"
-description = "Disabled by default. Host pacing is the safe accelerator: it only changes how fast real time is fed to a load, so the guest cannot desync. It does speed the game up while a load is detected, which some speedrun routes rely on NOT happening -- if that is you, leave this off and use CD Speed instead."
+description = "Deprecated and disabled by default. This compatibility feature accelerates host pacing when a generic heuristic detects loading. It does not implement a game-specific loading contract."
 group = "Quality of Life"
 default_enabled = false
 

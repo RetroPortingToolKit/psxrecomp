@@ -107,6 +107,31 @@ static void add_rear_pieces(const RearPiece *pieces, int count) {
     test_ram[NODE_GAP / 4u] = NODE_RING;
 }
 
+/* The same HUD list in the enhancement GPU-DMA aperture (THPS2's draw-distance
+ * prim arena), with unrelated words in the main RAM its low bits alias. */
+#define AP_BASE 0x00800000u
+static void put_node_ap(uint32_t addr, uint32_t next, const uint32_t *words,
+                        uint32_t count) {
+    const uint32_t off = (addr - AP_BASE) / 4u;
+    test_aperture[off] = (count << 24) | (next & 0xFFFFFFu);
+    for (uint32_t i = 0; i < count; i++)
+        test_aperture[off + 1u + i] = words[i];
+}
+static void move_hud_to_aperture(void) {
+    const uint32_t nodes[3] = {NODE_RING, NODE_FILL, NODE_FLAT};
+    test_aperture_used = sizeof test_aperture;
+    memset(test_aperture, 0, sizeof test_aperture);
+    for (int i = 0; i < 3; i++) {
+        const uint32_t h = test_ram[nodes[i] / 4u], n = h >> 24;
+        const uint32_t next = (h & 0xFFFFFFu) == 0xFFFFFFu
+                                  ? 0xFFFFFFu : AP_BASE + (h & 0xFFFFFFu);
+        put_node_ap(AP_BASE + nodes[i], next, &test_ram[nodes[i] / 4u + 1u], n);
+    }
+    test_ram[OT_HEAD / 4u] = AP_BASE + NODE_RING;
+    for (uint32_t a = NODE_RING; a < NODE_FLAT + 0x40u; a += 4u)
+        test_ram[a / 4u] = 0xDEAD0000u | a;
+}
+
 static void load_packet(uint32_t node, uint32_t count) {
     for (uint32_t i = 0; i < count; i++)
         gp0_cmd_buf[i] = test_ram[node / 4u + 1u + i];
@@ -130,6 +155,7 @@ static void reset_state(int in_place) {
     ws_full_2d = 0;
     gpu_ws_set_auto_ui_squash(1);
     gpu_ws_set_auto_ui_in_place(in_place);
+    gpu_ws_set_auto_ui_proportional(0);
 }
 
 /* Prepass the list and execute the two fills; returns their drawn X span. */
@@ -190,11 +216,90 @@ static void test_wall_behind_front_layer(int triangle) {
     assert(ws_auto_ui_transform_count == 0);
 }
 
+static void test_explicit_projection_widget(void) {
+    const uint32_t tile = 0x20000u, glyph = 0x21000u;
+    reset_state(0);
+    hres1 = 0; hres2 = 1; /* Captured Ape display: 384x240. */
+    h_display_x2 = h_display_x1 + 384u * 7u;
+    ws_hud_sprt = 0;
+    gpu_ws_set_auto_ui_squash(0); /* Explicit ownership is independent. */
+    ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    memset(test_ram, 0, sizeof(test_ram));
+    /* Actual Status backing tile shape, followed by a separate glyph list.
+     * Replacing the prepass must not lose the earlier list's widget anchor. */
+    const uint32_t backing[] = {0x76606060u, 0x00C60146u, 0x77ABB090u};
+    const uint32_t text[] = {0x7D808080u, pack_vertex(54, 64), 0x7C5D9800u};
+    put_node(tile, 0xFFFFFFu, backing, 3);
+    put_node(glyph, 0xFFFFFFu, text, 3);
+    gpu_ws_tag_hud_prim(tile, 0);
+    gpu_ws_tag_hud_prim(glyph, 0);
+    test_ram[OT_HEAD / 4u] = glyph;
+    gpu_ws_prepass_linked_list(OT_HEAD);
+    load_packet(tile, 3);
+    last_scaled_rect.calls = 0;
+    gp0_exec_textured_8x8();
+    assert(last_scaled_rect.calls == 1);
+    assert(last_scaled_rect.x == ws_scale_about(326, 192));
+    assert(last_scaled_rect.w == 3);
+    assert(last_scaled_rect.u1 - last_scaled_rect.u0 == 8);
+
+    /* A stale legacy billboard classification cannot double-transform an
+     * explicitly owned screen-space packet. */
+    WsTag *legacy = &ws_tags[(glyph >> 2) & (WS_TAG_BUCKETS - 1)];
+    legacy->key = glyph; legacy->stamp = (uint32_t)s_frame_count;
+    legacy->anchor_x = 54;
+    for (int edge = -1; edge <= 1; edge++) {
+        gpu_ws_tag_hud_prim(glyph, edge);
+        load_packet(glyph, 3);
+        last_scaled_rect.calls = 0;
+        gp0_exec_textured_16x16();
+        assert(last_scaled_rect.calls == 1);
+        assert(last_scaled_rect.x == ws_scale_about(54, (edge + 1) * 192));
+        assert(last_scaled_rect.w == 6);
+    }
+    memset(ws_tags, 0, sizeof(ws_tags));
+
+    /* Complete packet guards, frame expiry and native 4:3 identity. */
+    load_packet(glyph, 3);
+    gp0_cmd_buf[2] ^= 1u;
+    last_textured_rect.calls = last_scaled_rect.calls = 0;
+    gp0_exec_textured_16x16();
+    assert(last_textured_rect.calls == 1 && last_textured_rect.x == 54);
+    assert(last_scaled_rect.calls == 0);
+    s_frame_count += 3;
+    load_packet(glyph, 3);
+    last_textured_rect.calls = last_scaled_rect.calls = 0;
+    gp0_exec_textured_16x16();
+    assert(last_textured_rect.calls == 1 && last_textured_rect.x == 54);
+    assert(last_scaled_rect.calls == 0);
+    gpu_ws_tag_hud_prim(glyph, 0);
+    ws_xnum = ws_xden = 1;
+    last_textured_rect.calls = last_scaled_rect.calls = 0;
+    gp0_exec_textured_16x16();
+    assert(last_textured_rect.calls == 1 && last_textured_rect.x == 54);
+    assert(last_scaled_rect.calls == 0);
+
+    /* Explicitly identified panels do not depend on automatic size/rank
+     * heuristics; untagged world/fades still use the existing conservative gate. */
+    ws_xnum = 3; ws_xden = 8;
+    const uint32_t panel[] = {0x28202020u, pack_vertex(30, 30),
+        pack_vertex(334, 30), pack_vertex(30, 206), pack_vertex(334, 206)};
+    put_node(tile, 0xFFFFFFu, panel, 5);
+    gpu_ws_tag_hud_prim(tile, 0);
+    load_packet(tile, 5);
+    gpu_exec_reset_triangles();
+    gp0_exec_mono_quad();
+    assert(gpu_exec_triangles.min_x == ws_scale_about(30, 192));
+    assert(gpu_exec_triangles.max_x == ws_scale_about(334, 192));
+    ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+}
+
 int main(void) {
     int gmin, gmax, fmin, fmax;
 
     test_wall_behind_front_layer(0);
     test_wall_behind_front_layer(1);
+    test_explicit_projection_widget();
 
     /* A real HUD remains eligible when its last drawing layer is followed
      * by an empty OT bucket, as in Ape's memory-card menu. */
@@ -226,6 +331,36 @@ int main(void) {
     assert(gmin == ws_scale_about(64, left));
     assert(gmax == ws_scale_about(120, left));
     assert(fmin == gmin && fmax == gmax);
+
+    /* auto_ui_size proportional at 32:9 (squash 3/8): the HUD shrinks by
+     * sqrt((4/3) * 3/8) = sqrt(1/2) on both axes about its anchors. The run
+     * spans y 20..36 in the top half, so it keeps its top edge (y 20). */
+    reset_state(0);
+    gpu_ws_set_auto_ui_proportional(1);
+    build_hud(60, 128, 64, 120);
+    run_fills(&gmin, &gmax, &fmin, &fmax);
+    {
+        const double s = sqrt(0.5);
+        const int32_t left = ws_disp_x();
+        assert(gmin == left + (int32_t)lround((64 - left) * 3.0 / 8.0 * s));
+        assert(gmax == left + (int32_t)lround((120 - left) * 3.0 / 8.0 * s));
+        gpu_exec_reset_triangles();
+        load_packet(NODE_FILL, 8);
+        gp0_exec_shaded_quad();
+        assert(gpu_exec_triangles.min_y == 20 + (int32_t)lround(6 * s));
+        assert(gpu_exec_triangles.max_y == 20 + (int32_t)lround(10 * s));
+    }
+    /* At 16:9 (squash 3/4) proportional is identical to original. */
+    reset_state(0);
+    ws_cfg_num = 16; ws_cfg_den = 9; ws_xnum = 3; ws_xden = 4;
+    gpu_ws_set_auto_ui_proportional(1);
+    build_hud(60, 128, 64, 120);
+    run_fills(&gmin, &gmax, &fmin, &fmax);
+    assert(gmin == ws_scale_about(64, ws_disp_x()));
+    gpu_exec_reset_triangles();
+    load_packet(NODE_FILL, 8);
+    gp0_exec_shaded_quad();
+    assert(gpu_exec_triangles.min_y == 26 && gpu_exec_triangles.max_y == 30);
 
     /* A non-axis-aligned untextured quad reaching outside every widget is
      * world geometry, never UI (one inside a widget is a part of it: see the
@@ -362,6 +497,39 @@ int main(void) {
         gp0_exec_mono_tri();
         assert(gpu_exec_triangles.min_x == 50 && gpu_exec_triangles.max_x == 140);
     }
+
+    /* A list in the aperture validates against its own words at DMA time:
+     * the prepass survives the walk and the fill squashes as in RAM. A RAM
+     * node at the aliased offset is a different node. */
+    reset_state(1);
+    build_hud(60, 128, 64, 120);
+    move_hud_to_aperture();
+    gpu_ws_prepass_linked_list(OT_HEAD);
+    assert(ws_ui_prepass_count == 3);
+    {
+        const uint32_t nodes[3] = {NODE_RING, NODE_FILL, NODE_FLAT};
+        const uint32_t stale = ws_ui_reject.stale;
+        for (int i = 0; i < 3; i++) {
+            const uint32_t a = AP_BASE + nodes[i];
+            const uint32_t h = test_aperture[(a - AP_BASE) / 4u];
+            gpu_ws_validate_linked_list_header(a, h);
+            gpu_ws_validate_linked_list_node(a, h >> 24);
+        }
+        assert(ws_ui_reject.stale == stale && ws_ui_prepass_count == 3);
+        gpu_exec_reset_triangles();
+        for (uint32_t i = 0; i < 8; i++)
+            gp0_cmd_buf[i] = test_aperture[(NODE_FILL + 4u) / 4u + i];
+        gp0_cmd_source_addr = AP_BASE + NODE_FILL + 4u;
+        gp0_words_needed = 8;
+        gp0_exec_shaded_quad();
+        const int32_t centre = 60 + (128 - 60) / 2;
+        assert(gpu_exec_triangles.min_x == ws_scale_about(64, centre));
+        assert(gpu_exec_triangles.max_x == ws_scale_about(120, centre));
+        assert(GPU_RAM_KEY(AP_BASE + NODE_FILL) != GPU_RAM_KEY(NODE_FILL));
+        gpu_ws_validate_linked_list_header(NODE_FILL, test_ram[NODE_FILL / 4u]);
+        assert(ws_ui_reject.stale == stale + 1 && ws_ui_stale_why[2] > 0);
+    }
+    test_aperture_used = 0;
 
     puts("ws_auto_ui_untextured_exec_test: PASS");
     return 0;

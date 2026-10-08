@@ -54,6 +54,10 @@ int mod_texture_packet_precision(uint32_t source, float q[3], float xy[6]) {
 }
 
 static uint32_t test_ram[0x00200000u / 4u];
+/* The enhancement GPU-DMA aperture (mod_memory.h): a test allocates it by
+ * setting test_aperture_used; reads and keys then follow the real rules. */
+static uint32_t test_aperture[0x00020000u / 4u];
+static uint32_t test_aperture_used;
 
 static struct {
     int calls;
@@ -81,25 +85,28 @@ static int g_test_precise_triangles = 0;
 static int g_test_textured_triangles = 0;
 
 /* Bounding box of every flat/gouraud triangle drawn since the last reset. */
-static struct { int calls, min_x, max_x; } gpu_exec_triangles;
+static struct { int calls, min_x, max_x, min_y, max_y; } gpu_exec_triangles;
 static inline void gpu_exec_reset_triangles(void) {
     gpu_exec_triangles.calls = 0;
-    gpu_exec_triangles.min_x = 1 << 30;
-    gpu_exec_triangles.max_x = -(1 << 30);
+    gpu_exec_triangles.min_x = gpu_exec_triangles.min_y = 1 << 30;
+    gpu_exec_triangles.max_x = gpu_exec_triangles.max_y = -(1 << 30);
 }
 static inline void gpu_exec_record_triangle(int x0, int y0, int x1, int y1,
                                      int x2, int y2) {
-    const int xs[3] = {x0, x1, x2};
-    (void)y0; (void)y1; (void)y2;
+    const int xs[3] = {x0, x1, x2}, ys[3] = {y0, y1, y2};
     gpu_exec_triangles.calls++;
     for (int i = 0; i < 3; i++) {
         if (xs[i] < gpu_exec_triangles.min_x) gpu_exec_triangles.min_x = xs[i];
         if (xs[i] > gpu_exec_triangles.max_x) gpu_exec_triangles.max_x = xs[i];
+        if (ys[i] < gpu_exec_triangles.min_y) gpu_exec_triangles.min_y = ys[i];
+        if (ys[i] > gpu_exec_triangles.max_y) gpu_exec_triangles.max_y = ys[i];
     }
 }
 
 uint32_t psx_read_word(uint32_t addr) {
-    uint32_t phys = addr & 0x1FFFFFFFu;
+    uint32_t phys = addr & 0x1FFFFFFFu, off;
+    if (psx_mod_gpu_dma_aperture_offset_for(phys, 4u, test_aperture_used, &off))
+        return test_aperture[off / 4u];
     if (phys <= 0x00200000u - 4u)
         return test_ram[phys / 4u];
     return 0;
@@ -242,7 +249,12 @@ void color_lut_map555(const ColorLut *lut, uint16_t bgr555,
     if (g) *g = (uint8_t)(((bgr555 >> 5) & 0x1Fu) << 3);
     if (b) *b = (uint8_t)(((bgr555 >> 10) & 0x1Fu) << 3);
 }
-uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) { return address; }
+uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
+    return psx_mod_gpu_dma_resolve_address_for(address, test_aperture_used);
+}
+uint32_t psx_gpu_packet_key(uint32_t address) {
+    return psx_gpu_packet_key_for(address, test_aperture_used);
+}
 void text_xlate_vram_upload(int x, int y, int w, int h) {
     (void)x; (void)y; (void)w; (void)h;
 }

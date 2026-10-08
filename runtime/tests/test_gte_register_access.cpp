@@ -1,5 +1,7 @@
 #include "cpu_state.h"
 #include "gte.h"
+#include "hle_gte.h"
+#include "execution_profile.h"
 #include "pgxp.h"
 #include "projection_scale.hpp"
 #include "gte_view.h"
@@ -473,6 +475,38 @@ int test_projection_override_restores_transform() {
         g_psx_projection_command = nullptr;
         if (projection_callback_calls != 1) return 1;
     }
+    return 0;
+}
+
+int test_hle_command_contract() {
+    constexpr uint8_t commands[] = {1,6,12,16,17,18,19,20,22,27,28,30,32,40,41,42,45,46,48,61,62,63};
+    for (uint8_t function : commands) {
+        for (unsigned i = 0; i < 96; ++i) {
+            CPUState original;
+            randomize_gte(original);
+            original.gte_ts_done = 1234;
+            CPUState expected = original, actual = original;
+            const uint32_t cmd = (random_u32() & ~63u) | function;
+            gte_execute(&expected, cmd);
+            const uint32_t calls = g_test_gte_set_calls;
+            psx_hle_gte_execute(&actual, cmd);
+            CHECK(same_gte(expected, actual));
+            CHECK(!std::memcmp(original.gpr, actual.gpr, sizeof actual.gpr));
+            CHECK(g_test_gte_set_calls == calls + (PSX_EXECUTION_ENHANCED ? 0 : 1));
+            if (PSX_EXECUTION_ENHANCED) CHECK(actual.gte_ts_done == 1234);
+        }
+    }
+    /* The untimed entry must still visit the camera interpolation observer. */
+    CPUState cpu{};
+    g_psx_projection_command = substitute_projection;
+    projection_callback_calls = 0;
+    psx_hle_gte_execute(&cpu, 0x80001u);
+    g_psx_projection_command = nullptr;
+    CHECK(projection_callback_calls == 1);
+    /* A normal call immediately after HLE still owns faithful latency. */
+    const uint32_t calls = g_test_gte_set_calls;
+    gte_execute(&cpu, 6);
+    CHECK(g_test_gte_set_calls == calls + 1);
     return 0;
 }
 
@@ -1326,6 +1360,7 @@ int main() {
     if (int rc = test_writes()) return rc;
     if (int rc = test_sequence_fuzz()) return rc;
     if (int rc = test_command_marshaling()) return rc;
+    if (int rc = test_hle_command_contract()) return rc;
     if (int rc = test_projection_override_restores_transform()) return rc;
     if (int rc = test_command_timing_hook()) return rc;
     if (int rc = test_precise_sxy_invalidation()) return rc;

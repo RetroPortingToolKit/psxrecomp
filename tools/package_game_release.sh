@@ -25,6 +25,7 @@
 #     [--overlay-cache-root DIR]         # ship a prebuilt overlay shard cache
 #     [--ship-without-overlay-cache-because REASON]
 #     [--no-overlay-toolchain]           # do not bundle overlay_toolchain/
+#     [--stage-only]                    # validate/stage, without ZIP compression
 #     [--disc-hint "your legally owned disc"] [--version-env RELEASE_VERSION]
 #
 # Overlay cache. The runtime's overlay shard cache is compiled FROM THE DISC,
@@ -74,6 +75,7 @@ OVERLAY_CACHE_ROOT=""
 SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE=""
 SHIP_WITHOUT_OVERLAY_CACHE_KEY_BECAUSE=""
 STAGE_OVERLAY_TOOLCHAIN=1
+STAGE_ONLY=0
 if [[ -z "${EXCLUDE_DEV_MODS:-}" ]]; then
   if [[ -n "${CI:-}" ]]; then EXCLUDE_DEV_MODS=1; else EXCLUDE_DEV_MODS=0; fi
 fi
@@ -103,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --ship-without-overlay-cache-because) SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE="${2:?}"; shift 2 ;;
     --ship-without-overlay-cache-key-because) SHIP_WITHOUT_OVERLAY_CACHE_KEY_BECAUSE="${2:?}"; shift 2 ;;
     --no-overlay-toolchain) STAGE_OVERLAY_TOOLCHAIN=0; shift ;;
+    --stage-only) STAGE_ONLY=1; shift ;;
     --exclude-dev-mods) EXCLUDE_DEV_MODS=1; shift ;;
     --include-dev-mods) EXCLUDE_DEV_MODS=0; shift ;;
     --runtime-bin) RUNTIME_BIN_DIR="${2:?}"; shift 2 ;;
@@ -222,7 +225,7 @@ STAGE="${DIST:?}/stage-game-${ARTIFACT:?}"
 ZIP_NAME="${ZIP_PREFIX:?}-${VERSION:?}-${ARTIFACT:?}.zip"
 rm -rf "${STAGE:?}"
 mkdir -p "${STAGE}" "${DIST}"
-rm -f "${DIST:?}/${ZIP_NAME:?}"
+if [[ "${STAGE_ONLY}" != 1 ]]; then rm -f "${DIST:?}/${ZIP_NAME:?}"; fi
 
 # --- The executable and what CMake staged beside it --------------------------
 cp -a "${EXE}" "${STAGE}/"
@@ -473,7 +476,20 @@ if [[ "${EXE_BASENAME}" == *.exe ]]; then
   fi
 fi
 
+# --- Bind the final executable to its original build execution contract ----
+# Signing can change the PE bytes, so bind after it and before compression.
+# Do not accept a sidecar copied into the stage from an unrelated build.
+"${PY}" "${SCRIPT_DIR}/release_stage.py" stage-execution \
+  --binary "${STAGE}/${EXE_BASENAME}" \
+  --manifest "${EXE%.exe}.execution.json" \
+  --output "${STAGE}/${EXE_BASENAME%.exe}.execution.json"
+
 find "${STAGE}" -exec touch -c {} + 2>/dev/null || find "${STAGE}" -exec touch {} +
+
+if [[ "${STAGE_ONLY}" == 1 ]]; then
+  echo "Staged ${STAGE} (ZIP compression skipped)"
+  exit 0
+fi
 
 "${PY}" "${SCRIPT_DIR}/create_release_zip.py" --source "${STAGE}" --output "${DIST}/${ZIP_NAME}" >/dev/null
 echo "Wrote ${DIST}/${ZIP_NAME}"

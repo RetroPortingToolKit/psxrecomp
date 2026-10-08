@@ -2323,14 +2323,14 @@ static void exec_command(uint8_t cmd) {
             lba = (int)cdda_lba;
             track = cdda_track;
             track_lba = (int)iso_cdda_track_start_lba(iso_handle, track);
-        } else if (reading) {
-            /* GetlocP reports the drive/sub-Q position. During a read the
-             * sector stream has already advanced past the data-ready sector. */
-            lba = msf_to_lba(read_min, read_sec, read_sect);
-        } else if (last_sector_lba >= 0) {
-            lba = last_sector_lba;
         } else {
-            lba = msf_to_lba(seek_min, seek_sec, seek_sect);
+            /* GetlocP reports drive/sub-Q position, not the data buffer's
+             * header (GetlocL). SeekL/SeekP update this cursor even though
+             * they leave reading stopped; Pause retains it. SetLoc alone
+             * only changes the target. Returning last_sector_lba here kept
+             * THPS2 polling the previous asset's position after its initial
+             * music seek, so it never issued ReadS to start the track. */
+            lba = msf_to_lba(read_min, read_sec, read_sect);
         }
         if (subq_replacements_active) update_last_valid_subq((uint32_t)lba);
         if (subq_replacements_active && last_valid_subq_available) {

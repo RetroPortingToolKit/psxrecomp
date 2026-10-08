@@ -414,6 +414,33 @@ static void test_stereo_pair_fresh(void) {
 }
 
 int main(void) {
+    {
+        const uint64_t order[]={0,1,2};
+        CHECK(render_pass_generation_write(0,2,order,3)==2,
+            "keep pending frame while next frame is drawn before its flip");
+        CHECK(render_pass_generation_oldest(6,order,3)==1,
+            "matching queued generations promote in drawing order");
+        CHECK(render_pass_generation_write(1,6,order,3)==0,
+            "promotion frees the previous shown slot");
+        CHECK(render_pass_generation_write(0,7,order,3)==1,
+            "queue overflow evicts oldest pending, preserving shown frame");
+        CHECK(render_pass_generation_oldest(0,order,3)==-1,
+            "an unrelated flip cannot promote any queued generation");
+    }
+    {
+        const uint32_t phases[] = {0, 16384, 32768, 65536};
+        uint32_t lo, hi; float blend;
+        CHECK(render_pass_gen_select_mode(phases, 4, 0.375, 1, &lo, &hi, &blend) &&
+              lo == 1 && hi == 1 && blend == 0.0f, "HOLD keeps a native sample between phases");
+        CHECK(render_pass_gen_select_mode(phases, 4, 0.5, 1, &lo, &hi, &blend) &&
+              lo == 2 && hi == 2 && blend == 0.0f, "HOLD advances at the next native phase");
+        CHECK(render_pass_gen_select_mode(phases, 4, 0.375, 0, &lo, &hi, &blend) &&
+              lo == 1 && hi == 2 && blend == 0.5f, "explicit blending remains supported");
+        CHECK(render_pass_gen_select_mode(phases, 4, 2.0, 1, &lo, &hi, &blend) &&
+              lo == 3 && hi == 3, "late HOLD uses newest native image");
+        CHECK(!render_pass_gen_select_mode(phases, 4, 5.0, 1, &lo, &hi, &blend),
+              "HOLD cannot revive an expired generation");
+    }
     test_stereo_pair_fresh();
     test_store_policy();
     test_counts_per_rate();

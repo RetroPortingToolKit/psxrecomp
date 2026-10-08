@@ -46,14 +46,17 @@
 #include "ws_screen_mask.h"
 #include "ws_radial_screen_mask.h"
 #include <stdint.h>
+#include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "gpu_timeline.h"
 
-/* Word-aligned main-RAM key for a primitive/OT address through the live
- * geometry (retail: the DMAC's 0x1FFFFC fold). */
-#define GPU_RAM_KEY(a) (psx_ram_canonical_offset(a) & ~3u)
+/* Packet identity of a primitive/OT address: main RAM through the live
+ * geometry (retail: the DMAC's 0x1FFFFC fold), the enhancement aperture by its
+ * own address (mod_memory.h). */
+#define GPU_RAM_KEY(a) psx_gpu_packet_key(a)
 
 extern uint16_t psx_read_half(uint32_t addr);
 extern uint8_t  psx_read_byte(uint32_t addr);
@@ -140,6 +143,10 @@ typedef struct {
     /* A triangle or a rotated quad: UI only as part of a widget it lies
      * inside (ws_ui_prepass_admit_enclosed), never on its own. */
     uint8_t  enclosed_only;
+    /* Vertical anchor of the item's run (auto_ui_size proportional): the
+     * run's top edge in the upper half of the display, its bottom edge in
+     * the lower half, so a shrunken widget keeps hugging its screen edge. */
+    int32_t  anchor_y;
     WsPrepassPacketGuard packet_guard;
 } WsUiPrepassItem;
 static WsUiPrepassItem ws_ui_prepass[WS_UI_PREPASS_MAX];
@@ -156,6 +163,13 @@ typedef struct {
     WsPrepassPacketGuard payload_guard;
 } WsUiPrepassNode;
 static WsUiPrepassNode ws_ui_prepass_nodes[WS_UI_PREPASS_NODE_MAX];
+#include "packet_address_index.h"
+static PSXPacketAddressIndex ws_ui_prepass_node_index[WS_UI_PREPASS_NODE_MAX*2u];
+/* Why the last prepass was discarded (ws_ui_groups "stale_why"): 1 packet
+ * guard at draw, 2 DMA node not in the prepass, 3 node header changed,
+ * 4 node word count changed, 5 node payload changed. */
+static uint32_t ws_ui_stale_why[6];
+static uint32_t ws_ui_stale_addr;
 static uint32_t ws_ui_prepass_node_count;
 
 /* Why a UI-looking primitive did NOT reach the squash partition.
@@ -244,6 +258,11 @@ static int ws_full_2d = 0;
 void gpu_ws_set_full_2d(int on) { ws_full_2d = on ? 1 : 0; }
 void gpu_ws_set_auto_ui_in_place(int on) {
     ws_auto_ui_in_place = on ? 1 : 0;
+}
+/* [widescreen] auto_ui_size (gpu.c ws_auto_ui_size). */
+static int ws_auto_ui_proportional = 0;
+void gpu_ws_set_auto_ui_proportional(int on) {
+    ws_auto_ui_proportional = on ? 1 : 0;
 }
 
 void gpu_ws_set_auto_ui_squash(int on) {
@@ -2189,13 +2208,16 @@ int psx_ws_ui_groups_json(char *buf, int cap) {
         "\"disp_x\":%d,\"disp_w\":%d,\"join_gap\":%d,"
         "\"rejected\":{\"opcode\":%u,\"not_axis\":%u,\"degenerate\":%u,"
         "\"too_big\":%u,\"cap\":%u,\"rank\":%u,\"stale\":%u},"
+        "\"stale_why\":[%u,%u,%u,%u,%u],\"stale_addr\":\"0x%08X\","
         "\"backing_panels\":%u,\"enclosed_parts\":%u,\"n\":%u,",
         ws_active(), ws_auto_ui_squash, ws_auto_ui_dense,
         ws_ui_prepass_rank != 0xFFFFu ? (int)ws_ui_prepass_rank : -1,
         ws_disp_x(), ws_disp_w(), WS_UI_GROUP_JOIN_GAP,
         ws_ui_reject.opcode, ws_ui_reject.not_axis, ws_ui_reject.degenerate,
         ws_ui_reject.too_big, ws_ui_reject.cap, ws_ui_reject.rank,
-        ws_ui_reject.stale, ws_ui_reject.backing, ws_ui_reject.enclosed,
+        ws_ui_reject.stale, ws_ui_stale_why[1], ws_ui_stale_why[2],
+        ws_ui_stale_why[3], ws_ui_stale_why[4], ws_ui_stale_why[5],
+        ws_ui_stale_addr, ws_ui_reject.backing, ws_ui_reject.enclosed,
         ws_ui_prepass_count);
     off += snprintf(buf + off, (size_t)(cap - off), "\"rank_dropped\":[");
     for (uint32_t i = 0; i < ws_ui_rankdrop_count && off < cap - 120; i++) {
@@ -2416,7 +2438,7 @@ void gpu_ws_tag_hud_prim(uint32_t prim, int anchor) {
     uint32_t command_addr = prim + 4u;
     uint32_t words[12];
     uint32_t word_count = 0;
-    if (!ws_native_wide_configured() ||
+    if (!(ws_native_wide_configured() || ws_configured()) ||
         (prim & 3u) != 0 || prim > UINT32_MAX - 4u ||
         !ws_hud_command_words(command_addr, words, &word_count)) {
         ws_hud_tag_stats.tag_rejected++;
@@ -2447,7 +2469,7 @@ void gpu_ws_tag_background_prim(uint32_t prim) {
     }
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     ws_hud_anchor_insert(ws_background_tags, WS_HUD_ANCHOR_TABLE_SIZE,
-                         (prim + 4u) & 0x1FFFFCu, 0, &guard,
+                         GPU_RAM_KEY((prim + 4u)), 0, &guard,
                          (uint32_t)s_frame_count);
     ws_background_tags_used = 1;
     ws_background_tag_frame = (uint32_t)s_frame_count;
@@ -2547,9 +2569,8 @@ static int ws_nw_radial_mask_transform(int32_t x[4], int32_t y[4]) {
     return 1;
 }
 
-static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
-    if (out_delta) *out_delta = 0;
-    if (!ws_native_wide_active() || gp0_cmd_source_addr == 0xFFFFFFFFu)
+static int ws_explicit_hud_anchor(int *out_anchor) {
+    if (gp0_cmd_source_addr == 0xFFFFFFFFu)
         return 0;
     if (gp0_words_needed <= 0 || gp0_words_needed > 12)
         return 0;
@@ -2563,9 +2584,36 @@ static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
     ws_tag_stats_note_lookup(&ws_hud_tag_stats, result);
     if (result != WS_HUD_ANCHOR_HIT)
         return 0;
-    int32_t off = ws_nw_offset();
+    if (out_anchor) *out_anchor = anchor;
+    return 1;
+}
+
+static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
+    if (out_delta) *out_delta = 0;
+    if (!ws_native_wide_active()) return 0;
+    int anchor;
+    if (!ws_explicit_hud_anchor(&anchor)) return 0;
     if (out_delta)
-        *out_delta = ws_hud_anchor_native_delta(1, off, anchor);
+        *out_delta = ws_hud_anchor_native_delta(1, ws_nw_offset(), anchor);
+    return 1;
+}
+
+/* A title can identify one widget whose pieces arrive in separate DMA lists.
+ * Per-list auto grouping cannot see that ownership. Use the same guarded
+ * edge/centre role as native-wide, expressed as a squash pivot here. */
+static int ws_projection_hud_anchor(int32_t *out_anchor) {
+    if (!ws_active()) return 0;
+    int edge;
+    if (!ws_explicit_hud_anchor(&edge)) return 0;
+    if (out_anchor)
+        *out_anchor = ws_disp_x() + (edge < 0 ? 0 : edge > 0 ? ws_disp_w() : ws_disp_w() / 2);
+    return 1;
+}
+
+static int ws_projection_hud_transform(int32_t *x, int count) {
+    int32_t anchor;
+    if (!ws_projection_hud_anchor(&anchor)) return 0;
+    for (int i = 0; i < count; i++) x[i] = ws_scale_about(x[i], anchor);
     return 1;
 }
 
@@ -2574,6 +2622,9 @@ static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
  * a direct hit too in case a tag site passes the colour-word address. */
 static int ws_tagged_anchor(int32_t *out_ax) {
     if (!ws_active() || gp0_cmd_source_addr == 0xFFFFFFFFu) return 0;
+    /* Explicit screen-space ownership wins over a recycled billboard tag.
+     * The regular UI transform below will apply it exactly once. */
+    if (ws_projection_hud_anchor(NULL)) return 0;
     uint32_t now = (uint32_t)s_frame_count;
     for (int variant = 0; variant < 2; variant++) {
         uint32_t key = GPU_RAM_KEY((gp0_cmd_source_addr - (variant ? 0u : 4u)));
@@ -2804,6 +2855,10 @@ static int32_t ws_hud_pivot(int32_t x, int32_t w) {
  * before the list streams through GP0. This excludes CPU-built characters (the
  * source of the old squashed-Spike regression) even when their packets are
  * axis-aligned, and gives animated glyphs a shared anchor on their first frame. */
+static void ws_ui_prepass_invalidate_stale_why(int why, uint32_t addr) {
+    if (why > 0 && why < 6) ws_ui_stale_why[why]++;
+    ws_ui_stale_addr = addr;
+}
 static void ws_ui_prepass_invalidate_stale(void) {
     ws_ui_prepass_count = 0;
     ws_ui_prepass_node_count = 0;
@@ -2812,24 +2867,50 @@ static void ws_ui_prepass_invalidate_stale(void) {
     ws_ui_reject.stale++;
 }
 
-static int ws_auto_ui_anchor(int32_t *out_anchor) {
+static const WsUiPrepassItem *ws_auto_ui_item(void) {
     if (!ws_auto_ui_squash || !ws_active() ||
         gp0_cmd_source_addr == 0xFFFFFFFFu)
-        return 0;
+        return NULL;
     uint32_t src = GPU_RAM_KEY(gp0_cmd_source_addr);
     for (uint32_t i = 0; i < ws_ui_prepass_count; i++) {
         if (ws_ui_prepass[i].src_addr != src) continue;
         if (!ws_prepass_packet_matches(&ws_ui_prepass[i].packet_guard,
                                        gp0_cmd_buf,
                                        (uint32_t)gp0_words_needed)) {
+            ws_ui_prepass_invalidate_stale_why(1, src);
             ws_ui_prepass_invalidate_stale();
-            return 0;
+            return NULL;
         }
-        if (out_anchor) *out_anchor = ws_ui_prepass[i].group.anchor;
         ws_auto_ui_candidate_count++;
-        return 1;
+        return &ws_ui_prepass[i];
     }
-    return 0;
+    return NULL;
+}
+
+static int ws_auto_ui_anchor(int32_t *out_anchor) {
+    const WsUiPrepassItem *it = ws_auto_ui_item();
+    if (!it) return 0;
+    if (out_anchor) *out_anchor = it->group.anchor;
+    return 1;
+}
+
+/* auto_ui_size = "proportional": the HUD keeps its authored size up to 16:9
+ * and shrinks by sqrt((16:9) / aspect) beyond it (0.87 at 21:9, 0.71 at
+ * 32:9), on both axes about the widget's anchors. The squash factor
+ * xnum/xden is (4:3) / aspect, so (16:9) / aspect = (4/3) * xnum/xden.
+ * Projection widescreen only: native-wide does not squash the HUD. */
+static double ws_auto_ui_size(void) {
+    if (!ws_auto_ui_proportional || ws_mode == 2 || ws_xden <= 0) return 1.0;
+    const double r = (4.0 / 3.0) * (double)ws_xnum / (double)ws_xden;
+    return r >= 1.0 ? 1.0 : sqrt(r);
+}
+static int32_t ws_ui_x(int32_t x, int32_t ax, double s) {
+    if (s >= 1.0) return ws_scale_about(x, ax);
+    return ax + (int32_t)lround((double)(x - ax) * ws_xnum / ws_xden * s);
+}
+static int32_t ws_ui_y(int32_t y, int32_t ay, double s) {
+    if (s >= 1.0) return y;
+    return ay + (int32_t)lround((double)(y - ay) * s);
 }
 
 static int ws_shared_ui_packet(void) {
@@ -2895,19 +2976,24 @@ static int ws_axis_aligned_quad(const int32_t vx[4], const int32_t vy[4]) {
 /* A widget part that is not an axis-aligned rectangle (a triangle, a rotated
  * quad): squashed with its widget when the prepass admitted it as lying
  * inside that widget (ws_ui_prepass_finish). */
-static int ws_auto_ui_transform_part(int32_t *vx, int n) {
+static int ws_auto_ui_transform_part(int32_t *vx, int32_t *vy, int n) {
+    if (ws_projection_hud_transform(vx, n)) return 1;
     if (ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged()) return 0;
-    int32_t anchor;
-    if (!ws_auto_ui_anchor(&anchor)) return 0;
-    for (int i = 0; i < n; i++)
-        vx[i] = ws_scale_about(vx[i], anchor) + ws_shared_ui_delta();
+    const WsUiPrepassItem *it = ws_auto_ui_item();
+    if (!it) return 0;
+    const double s = ws_auto_ui_size();
+    for (int i = 0; i < n; i++) {
+        vx[i] = ws_ui_x(vx[i], it->group.anchor, s) + ws_shared_ui_delta();
+        vy[i] = ws_ui_y(vy[i], it->anchor_y, s);
+    }
     ws_auto_ui_transform_count++;
     return 1;
 }
 
-static int ws_auto_ui_transform_quad(int32_t vx[4], const int32_t vy[4]) {
+static int ws_auto_ui_transform_quad(int32_t vx[4], int32_t vy[4]) {
+    if (ws_projection_hud_transform(vx, 4)) return 1;
     if (ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged()) return 0;
-    if (!ws_axis_aligned_quad(vx, vy)) return ws_auto_ui_transform_part(vx, 4);
+    if (!ws_axis_aligned_quad(vx, vy)) return ws_auto_ui_transform_part(vx, vy, 4);
 
     int32_t min_x = vx[0], max_x = vx[0], min_y = vy[0], max_y = vy[0];
     for (int i = 1; i < 4; i++) {
@@ -2922,25 +3008,48 @@ static int ws_auto_ui_transform_quad(int32_t vx[4], const int32_t vy[4]) {
         (width > W / 2 && height > H / 4))
         return 0;
 
-    int32_t anchor;
-    if (!ws_auto_ui_anchor(&anchor)) return 0;
-    for (int i = 0; i < 4; i++)
-        vx[i] = ws_scale_about(vx[i], anchor) + ws_shared_ui_delta();
+    const WsUiPrepassItem *it = ws_auto_ui_item();
+    if (!it) return 0;
+    const double s = ws_auto_ui_size();
+    for (int i = 0; i < 4; i++) {
+        vx[i] = ws_ui_x(vx[i], it->group.anchor, s) + ws_shared_ui_delta();
+        vy[i] = ws_ui_y(vy[i], it->anchor_y, s);
+    }
     ws_auto_ui_transform_count++;
     return 1;
 }
 
-static int ws_auto_ui_transform_rect(int32_t *x, int32_t y, int *w, int h) {
-    if (!x || !w || *w <= 0 || ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged())
+static int ws_auto_ui_transform_rect(int32_t *x, int32_t *y, int *w, int *h) {
+    if (!x || !y || !w || !h || *w <= 0) return 0;
+    int32_t explicit_anchor;
+    if (ws_projection_hud_anchor(&explicit_anchor)) {
+        *x = ws_scale_about(*x, explicit_anchor);
+        *w = (int)ws_scale_len(*w);
+        return 1;
+    }
+    if (ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged())
         return 0;
     int32_t X = ws_disp_x(), W = ws_disp_w(), H = ws_disp_h();
-    if ((*x <= X && *x + *w >= X + W && y <= 0 && y + h >= H) ||
-        (*w > W / 2 && h > H / 4))
+    if ((*x <= X && *x + *w >= X + W && *y <= 0 && *y + *h >= H) ||
+        (*w > W / 2 && *h > H / 4))
         return 0;
-    int32_t anchor;
-    if (!ws_auto_ui_anchor(&anchor)) return 0;
-    *x = ws_scale_about(*x, anchor) + ws_shared_ui_delta();
-    *w = (int)ws_scale_len(*w);
+    const WsUiPrepassItem *it = ws_auto_ui_item();
+    if (!it) return 0;
+    const double s = ws_auto_ui_size();
+    if (s >= 1.0) {
+        *x = ws_scale_about(*x, it->group.anchor) + ws_shared_ui_delta();
+        *w = (int)ws_scale_len(*w);
+    } else {
+        /* Scale both edges so neighbouring parts of a widget stay butted. */
+        const int32_t x0 = ws_ui_x(*x, it->group.anchor, s);
+        const int32_t x1 = ws_ui_x(*x + *w, it->group.anchor, s);
+        const int32_t y0 = ws_ui_y(*y, it->anchor_y, s);
+        const int32_t y1 = ws_ui_y(*y + *h, it->anchor_y, s);
+        *x = x0 + ws_shared_ui_delta();
+        *w = x1 - x0 < 1 ? 1 : (int)(x1 - x0);
+        *y = y0;
+        *h = y1 - y0 < 1 ? 1 : (int)(y1 - y0);
+    }
     ws_auto_ui_transform_count++;
     return 1;
 }
@@ -2948,7 +3057,7 @@ static int ws_auto_ui_transform_rect(int32_t *x, int32_t y, int *w, int h) {
 /* Shared transform for fixed-size textured sprites (8x8 / 16x16 / 1x1 dot):
  * squash *x0 in place (around the tagged anchor, else the HUD pivot) and
  * return the squashed draw width, or 0 = no change. */
-static int ws_sprt_fixed_transform(int32_t *x0, int32_t y0, int w) {
+static int ws_sprt_fixed_transform(int32_t *x0, int32_t *y0, int w, int *h) {
     if (!ws_active()) return 0;
     int32_t ax;
     if (ws_tagged_anchor(&ax)) {
@@ -2956,7 +3065,7 @@ static int ws_sprt_fixed_transform(int32_t *x0, int32_t y0, int w) {
         return (int)ws_scale_len(w);
     }
     int auto_w = w;
-    if (ws_auto_ui_transform_rect(x0, y0, &auto_w, w))
+    if (ws_auto_ui_transform_rect(x0, y0, &auto_w, h))
         return auto_w;
     if (ws_hud_sprt) {
         *x0 = ws_scale_about(*x0, ws_hud_pivot(*x0, w));
@@ -4677,7 +4786,7 @@ static void gp0_exec_mono_tri(void) {
         parse_vertex(gp0_cmd_buf[1 + i], &vx[i], &vy[i]);
     }
     if (gpu_triangle_rejected(vx, vy, 0, 1, 2)) return;
-    ws_auto_ui_transform_part(vx, 3);
+    ws_auto_ui_transform_part(vx, vy, 3);
     ws_nw_hud_shift_vertices(vx, 3);
     for (int i = 0; i < 3; i++) {
         vx[i] += draw_offset_x;
@@ -4818,7 +4927,7 @@ static void gp0_exec_shaded_tri(void) {
         parse_vertex(gp0_cmd_buf[1 + i * 2], &vx[i], &vy[i]);
     }
     if (gpu_triangle_rejected(vx, vy, 0, 1, 2)) return;
-    ws_auto_ui_transform_part(vx, 3);
+    ws_auto_ui_transform_part(vx, vy, 3);
     ws_nw_hud_shift_vertices(vx, 3);
     for (int i = 0; i < 3; i++) {
         vx[i] += draw_offset_x;
@@ -4985,7 +5094,7 @@ static void gp0_exec_textured_tri(void) {
     uint16_t tpage = tpage_word & 0x1FF;
     set_tpage_from_poly(tpage_word);   /* latches even for size-rejected polys */
     if (gpu_triangle_rejected(vx, vy, 0, 1, 2)) return;
-    ws_auto_ui_transform_part(vx, 3);
+    ws_auto_ui_transform_part(vx, vy, 3);
 
     ws_nw_hud_shift_vertices(vx, 3);
     for (int i = 0; i < 3; i++) {
@@ -5133,7 +5242,7 @@ static void gp0_exec_shaded_textured_tri(void) {
     uint16_t tpage = tpage_word & 0x1FF;
     set_tpage_from_poly(tpage_word);   /* latches even for size-rejected polys */
     if (gpu_triangle_rejected(vx, vy, 0, 1, 2)) return;
-    ws_auto_ui_transform_part(vx, 3);
+    ws_auto_ui_transform_part(vx, vy, 3);
 
     ws_nw_hud_shift_vertices(vx, 3);
     for (int i = 0; i < 3; i++) {
@@ -5312,9 +5421,11 @@ static void gp0_exec_mono_rect(void) {
      * behind in open screen. Untouched when the prepass did not admit this
      * primitive, and rects never carry GTE output. */
     if (ws_active() && w > 0) {
-        int corrected_w = w;
-        if (ws_auto_ui_transform_rect(&x0, y0, &corrected_w, h))
+        int corrected_w = w, corrected_h = h;
+        if (ws_auto_ui_transform_rect(&x0, &y0, &corrected_w, &corrected_h)) {
             w = corrected_w;
+            h = corrected_h;
+        }
     }
     x0 += ws_nw_hud_shift(x0, w);   /* native-wide HUD corner re-anchor (no-op else) */
     x0 += draw_offset_x; y0 += draw_offset_y;
@@ -5370,7 +5481,7 @@ static void gp0_exec_textured_rect(void) {
     /* Widescreen: tagged sprite parts squash around their projected anchor;
      * untagged SPRTs are screen-space 2D (HUD/menus) and squash around the
      * display centre. Texels keep full coverage via the scaled-rect path. */
-    int ws_w = 0;
+    int ws_w = 0, ws_h = h;
     if (ws_active() && w > 0) {
         int32_t ws_ax;
         if (ws_tagged_anchor(&ws_ax)) {
@@ -5378,7 +5489,7 @@ static void gp0_exec_textured_rect(void) {
             ws_w = (int)ws_scale_len(w);
         } else {
             int corrected_w = w;
-            if (ws_auto_ui_transform_rect(&x0, y0, &corrected_w, h))
+            if (ws_auto_ui_transform_rect(&x0, &y0, &corrected_w, &ws_h))
                 ws_w = corrected_w;
             else if (ws_hud_sprt) {
                 x0 = ws_scale_about(x0, ws_hud_pivot(x0, w));
@@ -5389,13 +5500,11 @@ static void gp0_exec_textured_rect(void) {
     x0 += ws_nw_hud_shift(x0, w);   /* native-wide HUD corner re-anchor (no-op else) */
 
     x0 += draw_offset_x; y0 += draw_offset_y;
-    {
-        int dw = (ws_w && ws_w != w) ? ws_w : w;
-        if (draw_area_out_rect(x0, y0, dw, h)) return;
-    }
+    const int dw = (ws_w && ws_w != w) ? ws_w : w;
+    if (draw_area_out_rect(x0, y0, dw, ws_h)) return;
     setup_textured_draw(color24, semi_trans, raw_texture);
-    if (ws_w && ws_w != w)
-        gr_draw_textured_rect_scaled(x0, y0, ws_w, h, u0, v0, u0 + w, v0 + h,
+    if (dw != w || ws_h != h)
+        gr_draw_textured_rect_scaled(x0, y0, dw, ws_h, u0, v0, u0 + w, v0 + h,
                                      clut_x, clut_y, current_texpage());
     else
         gr_draw_textured_rect(x0, y0, w, h, u0, v0, clut_x, clut_y, current_texpage());
@@ -5408,7 +5517,7 @@ static void gp0_exec_mono_dot(void) {
     uint16_t color = rgb888_to_rgb555(gp0_cmd_buf[0] & 0xFFFFFFu);
     int32_t x, y;
     parse_vertex(gp0_cmd_buf[1], &x, &y);
-    ws_sprt_fixed_transform(&x, y, 1);   /* auto_ui squash; no-op when unadmitted */
+    { int dot_h = 1; ws_sprt_fixed_transform(&x, &y, 1, &dot_h); }   /* auto_ui squash; no-op when unadmitted */
     x += ws_nw_hud_shift(x, 1);
     x += draw_offset_x; y += draw_offset_y;
     if (draw_area_out_point(x, y)) return;
@@ -5423,7 +5532,7 @@ static void gp0_exec_textured_dot(void) {
     int raw_texture = (gp0_cmd_buf[0] >> 24) & 1;
     int32_t x0, y0;
     parse_vertex(gp0_cmd_buf[1], &x0, &y0);
-    (void)ws_sprt_fixed_transform(&x0, y0, 1);  /* position only; 1px stays 1px */
+    { int dot_h = 1; (void)ws_sprt_fixed_transform(&x0, &y0, 1, &dot_h); }  /* position only; 1px stays 1px */
     x0 += ws_nw_hud_shift(x0, 1);
     x0 += draw_offset_x; y0 += draw_offset_y;
     int u0 = gp0_cmd_buf[2] & 0xFF;
@@ -5442,13 +5551,12 @@ static void gp0_exec_textured_8x8(void) {
     int raw_texture = (gp0_cmd_buf[0] >> 24) & 1;
     int32_t x0, y0;
     parse_vertex(gp0_cmd_buf[1], &x0, &y0);
-    int ws_w = ws_sprt_fixed_transform(&x0, y0, 8);
+    int ws_h = 8;
+    int ws_w = ws_sprt_fixed_transform(&x0, &y0, 8, &ws_h);
     x0 += ws_nw_hud_shift(x0, 8);   /* native-wide HUD corner re-anchor (no-op else) */
     x0 += draw_offset_x; y0 += draw_offset_y;
-    {
-        int dw = (ws_w && ws_w != 8) ? ws_w : 8;
-        if (draw_area_out_rect(x0, y0, dw, 8)) return;
-    }
+    const int dw = (ws_w && ws_w != 8) ? ws_w : 8;
+    if (draw_area_out_rect(x0, y0, dw, ws_h)) return;
     int u0 = gp0_cmd_buf[2] & 0xFF;
     int v0 = (gp0_cmd_buf[2] >> 8) & 0xFF;
     uint16_t clut = (uint16_t)(gp0_cmd_buf[2] >> 16);
@@ -5456,8 +5564,8 @@ static void gp0_exec_textured_8x8(void) {
     uint16_t clut_y = (clut >> 6) & 0x1FF;
 
     setup_textured_draw(color24, semi_trans, raw_texture);
-    if (ws_w && ws_w != 8)
-        gr_draw_textured_rect_scaled(x0, y0, ws_w, 8, u0, v0, u0 + 8, v0 + 8,
+    if (dw != 8 || ws_h != 8)
+        gr_draw_textured_rect_scaled(x0, y0, dw, ws_h, u0, v0, u0 + 8, v0 + 8,
                                      clut_x, clut_y, current_texpage());
     else
         gr_draw_textured_rect(x0, y0, 8, 8, u0, v0, clut_x, clut_y, current_texpage());
@@ -5469,14 +5577,15 @@ static void gp0_exec_mono_8x8(void) {
     uint16_t color = rgb888_to_rgb555(gp0_cmd_buf[0] & 0xFFFFFFu);
     int32_t x0, y0;
     parse_vertex(gp0_cmd_buf[1], &x0, &y0);
-    int ws_w = ws_sprt_fixed_transform(&x0, y0, 8);
+    int ws_h = 8;
+    int ws_w = ws_sprt_fixed_transform(&x0, &y0, 8, &ws_h);
     x0 += ws_nw_hud_shift(x0, 8);
     x0 += draw_offset_x; y0 += draw_offset_y;
     {
         int dw = (ws_w && ws_w != 8) ? ws_w : 8;
-        if (draw_area_out_rect(x0, y0, dw, 8)) return;
+        if (draw_area_out_rect(x0, y0, dw, ws_h)) return;
         gr_set_semi_transparency(semi_trans, (int)semi_transparency);
-        gr_draw_flat_rect(x0, y0, dw, 8, color);
+        gr_draw_flat_rect(x0, y0, dw, ws_h, color);
     }
 }
 
@@ -5495,7 +5604,8 @@ static void gp0_exec_textured_16x16(void) {
     /* A pending full-width OT can outlive a resize back to 4:3. Keep its
      * central tiles; the normal draw area clips the extra columns. Dropping
      * every host packet here would blank that transition frame. */
-    int ws_w = host_tile ? 0 : ws_sprt_fixed_transform(&x0, y0, 16);
+    int ws_h = 16;
+    int ws_w = host_tile ? 0 : ws_sprt_fixed_transform(&x0, &y0, 16, &ws_h);
     if (!host_tile) x0 += ws_nw_hud_shift(x0, 16);
     x0 += draw_offset_x; y0 += draw_offset_y;
     int u0 = gp0_cmd_buf[2] & 0xFF;
@@ -5504,10 +5614,8 @@ static void gp0_exec_textured_16x16(void) {
     uint16_t clut_x = (clut & 0x3F) * 16;
     uint16_t clut_y = (clut >> 6) & 0x1FF;
 
-    {
-        int dw = (ws_w && ws_w != 16) ? ws_w : 16;
-        if (draw_area_out_rect(x0, y0, dw, 16)) return;
-    }
+    const int dw = (ws_w && ws_w != 16) ? ws_w : 16;
+    if (draw_area_out_rect(x0, y0, dw, ws_h)) return;
     uint16_t bank = host_tile &&
         (psx_read_word(host_packet + 28u) & ~GPU_WS_BG2D_MIRROR_X) == GPU_WS_BG2D_BANK_PACKET_MAGIC ?
         (uint16_t)(psx_read_word(host_packet + 16u) >> 16) : 0;
@@ -5517,8 +5625,8 @@ static void gp0_exec_textured_16x16(void) {
     if (host_tile && (psx_read_word(host_packet + 28u) & GPU_WS_BG2D_MIRROR_X))
         gr_draw_textured_rect_scaled(x0, y0, 16, 16, u0 + 15, v0, u0 - 1, v0 + 16,
                                      clut_x, clut_y, current_texpage());
-    else if (ws_w && ws_w != 16)
-        gr_draw_textured_rect_scaled(x0, y0, ws_w, 16, u0, v0, u0 + 16, v0 + 16,
+    else if (dw != 16 || ws_h != 16)
+        gr_draw_textured_rect_scaled(x0, y0, dw, ws_h, u0, v0, u0 + 16, v0 + 16,
                                      clut_x, clut_y, current_texpage());
     else
         gr_draw_textured_rect(x0, y0, 16, 16, u0, v0, clut_x, clut_y, current_texpage());
@@ -5919,6 +6027,10 @@ static int gp0_command_word_count(uint8_t opcode) {
     }
 }
 
+int gpu_gp0_command_word_count(uint8_t opcode) {
+    return gp0_command_word_count(opcode);
+}
+
 static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
                               uint32_t source_addr, uint16_t rank,
                               int full_draw_area) {
@@ -6079,6 +6191,7 @@ static int ws_ui_attached(const WsUiPrepassItem *a, const WsUiPrepassItem *b) {
 void gpu_ws_prepass_linked_list(uint32_t start_addr) {
     ws_ui_prepass_count = 0;
     ws_ui_prepass_node_count = 0;
+    psx_packet_address_index_clear(ws_ui_prepass_node_index,WS_UI_PREPASS_NODE_MAX*2u);
     ws_ui_prepass_rank = 0xFFFFu;
     ws_auto_ui_dense = 0;
     ws_ui_reject.opcode = ws_ui_reject.not_axis = ws_ui_reject.degenerate =
@@ -6119,6 +6232,8 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
         WsUiPrepassNode *node =
             &ws_ui_prepass_nodes[ws_ui_prepass_node_count++];
         node->addr = GPU_RAM_KEY(addr);
+        psx_packet_address_index_add(ws_ui_prepass_node_index,WS_UI_PREPASS_NODE_MAX*2u,
+            node->addr,ws_ui_prepass_node_count-1u);
         node->header = header;
         node->payload_guard =
             ws_prepass_packet_guard(payload, num_words);
@@ -6298,6 +6413,32 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
         ws_ui_prepass[i].group.anchor = group_origin + groups[i].anchor;
         ws_ui_prepass[i].group.root = groups[i].root;
     }
+    /* Vertical anchor per run (auto_ui_size): its top edge in the upper half
+     * of the display, its bottom edge in the lower half. */
+    {
+        static int32_t run_y0[WS_UI_PREPASS_MAX], run_y1[WS_UI_PREPASS_MAX];
+        const int32_t half = ws_disp_h() / 2;
+        for (uint32_t i = 0; i < ws_ui_prepass_count; i++) {
+            run_y0[i] = INT32_MAX;
+            run_y1[i] = INT32_MIN;
+        }
+        for (uint32_t i = 0; i < ws_ui_prepass_count; i++) {
+            const uint32_t r = (uint32_t)groups[i].root;
+            if (r >= ws_ui_prepass_count) continue;
+            if (groups[i].y < run_y0[r]) run_y0[r] = groups[i].y;
+            if (groups[i].y + groups[i].height > run_y1[r])
+                run_y1[r] = groups[i].y + groups[i].height;
+        }
+        for (uint32_t i = 0; i < ws_ui_prepass_count; i++) {
+            const uint32_t r = (uint32_t)groups[i].root;
+            int32_t y0 = groups[i].y, y1 = groups[i].y + groups[i].height;
+            if (r < ws_ui_prepass_count && run_y0[r] <= run_y1[r]) {
+                y0 = run_y0[r];
+                y1 = run_y1[r];
+            }
+            ws_ui_prepass[i].anchor_y = (y0 + y1) / 2 < half ? y0 : y1;
+        }
+    }
 
     /* A shared counter can comprise many glyphs and shadow packets, none of
      * which individually crosses the split. Classify the complete admitted
@@ -6331,41 +6472,47 @@ void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t header) {
 
     uint32_t resolved =
         GPU_RAM_KEY(psx_mod_gpu_dma_resolve_address(addr));
-    for (uint32_t i = 0; i < ws_ui_prepass_node_count; i++) {
-        if (ws_ui_prepass_nodes[i].addr != resolved) continue;
-        if (ws_ui_prepass_nodes[i].header != header)
+    const uint32_t i=psx_packet_address_index_find(ws_ui_prepass_node_index,
+        WS_UI_PREPASS_NODE_MAX*2u,resolved);
+    if (i < ws_ui_prepass_node_count) {
+        if (ws_ui_prepass_nodes[i].header != header) {
+            ws_ui_prepass_invalidate_stale_why(3, resolved);
             ws_ui_prepass_invalidate_stale();
+        }
         return;
     }
+    ws_ui_prepass_invalidate_stale_why(2, resolved);
     ws_ui_prepass_invalidate_stale();
 }
 
 void gpu_ws_validate_linked_list_node(uint32_t addr, uint32_t num_words) {
     if (ws_ui_prepass_count == 0) return;
 
-    uint32_t resolved =
-        GPU_RAM_KEY(psx_mod_gpu_dma_resolve_address(addr));
-    const WsUiPrepassNode *node = NULL;
-    for (uint32_t i = 0; i < ws_ui_prepass_node_count; i++) {
-        if (ws_ui_prepass_nodes[i].addr == resolved) {
-            node = &ws_ui_prepass_nodes[i];
-            break;
-        }
-    }
+    const uint32_t node_addr = psx_mod_gpu_dma_resolve_address(addr);
+    const uint32_t resolved = GPU_RAM_KEY(node_addr);
+    const uint32_t i=psx_packet_address_index_find(ws_ui_prepass_node_index,
+        WS_UI_PREPASS_NODE_MAX*2u,resolved);
+    const WsUiPrepassNode *node = i < ws_ui_prepass_node_count
+        ? &ws_ui_prepass_nodes[i] : NULL;
     if (!node || node->payload_guard.word_count != num_words) {
+        ws_ui_prepass_invalidate_stale_why(node ? 4 : 2, resolved);
         ws_ui_prepass_invalidate_stale();
         return;
     }
 
+    /* Re-read the payload where the walk reads it (the node's own memory),
+     * never through the key. */
     uint32_t payload[255];
     uint32_t first_addr =
-        psx_mod_gpu_dma_resolve_address(resolved + 4u);
+        psx_mod_gpu_dma_resolve_address(node_addr + 4u);
     for (uint32_t i = 0; i < num_words; i++) {
         payload[i] = psx_read_word(psx_mod_gpu_dma_resolve_address(
             first_addr + i * 4u));
     }
-    if (!ws_prepass_packet_matches(&node->payload_guard, payload, num_words))
+    if (!ws_prepass_packet_matches(&node->payload_guard, payload, num_words)) {
+        ws_ui_prepass_invalidate_stale_why(5, resolved);
         ws_ui_prepass_invalidate_stale();
+    }
 }
 
 /* Per-opcode execution counters (exposed via gpu_get_opcode_stats) */
@@ -6804,11 +6951,12 @@ static void gp0_dispatch_command(uint8_t opcode) {
             uint16_t color = rgb888_to_rgb555(gp0_cmd_buf[0] & 0xFFFFFFu);
             int32_t x0, y0;
             parse_vertex(gp0_cmd_buf[1], &x0, &y0);
-            int ws_w = ws_sprt_fixed_transform(&x0, y0, 16);
+            int ws_h = 16;
+            int ws_w = ws_sprt_fixed_transform(&x0, &y0, 16, &ws_h);
             x0 += ws_nw_hud_shift(x0, 16);
             x0 += draw_offset_x; y0 += draw_offset_y;
             gr_set_semi_transparency(semi_trans, (int)semi_transparency);
-            gr_draw_flat_rect(x0, y0, (ws_w && ws_w != 16) ? ws_w : 16, 16,
+            gr_draw_flat_rect(x0, y0, (ws_w && ws_w != 16) ? ws_w : 16, ws_h,
                               color);
             break;
         }

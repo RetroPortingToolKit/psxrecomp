@@ -40,6 +40,9 @@
 #define BIOS_ROM_SIZE   (512 * 1024)
 #define MOD_MEMORY_BASE 0x1F000000u
 #define MOD_MEMORY_SIZE (1u * 1024u * 1024u)
+#define RP_MOD_PAGE 4096u
+static int rp_mod_journal(uint8_t *base, uint32_t page_base, uint32_t off,
+                          uint32_t width);
 
 static uint8_t ram[RAM_SIZE];
 static uint8_t scratchpad[SCRATCHPAD_SIZE];
@@ -89,6 +92,14 @@ int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
     if (!psx_mod_memory_snapshot_validate(data, size)) return 0;
     cpu_bytes = mod_memory_used;
     dma_bytes = mod_gpu_dma_memory_used;
+    // Draw-entry replay may restore an earlier image inside a frozen pass.
+    // Journal the completed live image first so rollback never retains that
+    // earlier arena or backs up already-restored primitive tags.
+    if (g_psx_render_pass_active &&
+        ((cpu_bytes && !rp_mod_journal(mod_memory, 0, 0, cpu_bytes)) ||
+         (dma_bytes && !rp_mod_journal(mod_gpu_dma_memory,
+                                      MOD_MEMORY_SIZE / RP_MOD_PAGE, 0, dma_bytes))))
+        return 0;
     memcpy(mod_memory, data + 16u, cpu_bytes);
     memcpy(mod_gpu_dma_memory, data + 16u + cpu_bytes, dma_bytes);
     return 1;
@@ -142,6 +153,14 @@ static int mod_gpu_dma_memory_offset(uint32_t phys, uint32_t width,
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
     return psx_mod_gpu_dma_resolve_address_for(
         address, mod_gpu_dma_memory_used);
+}
+
+int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes) {
+    return bytes!=0 && mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,NULL);
+}
+
+uint32_t psx_gpu_packet_key(uint32_t address) {
+    return psx_gpu_packet_key_for(address, mod_gpu_dma_memory_used);
 }
 
 /* Exposed for inlined main-RAM load helpers in psx_cyc.h (VLC/decode hot path). */
@@ -1266,7 +1285,10 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
         return ram_size_reg;
     }
     /* Interrupts: 0x1F801070, 0x1F801074 */
-    if (addr == 0x1F801070u) { sio_tick(0); return i_stat; }
+    if (addr == 0x1F801070u) {
+        if (!g_psx_render_pass_active) sio_tick(0);
+        return i_stat;
+    }
     if (addr == 0x1F801074u) return i_mask;
     /* DMA: 0x1F801080..0x1F8010FF */
     if (addr >= 0x1F801080u && addr <= 0x1F8010FFu) {
@@ -1301,6 +1323,7 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
  * single (side-effecting) read. Callers use mmio_read32; the body is _impl, so
  * the device read executes exactly once. */
 static uint32_t mmio_read32(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 4)) return 0;
     psx_devices_mmio_sync();
     uint32_t v = mmio_read32_impl(addr);
     debug_server_trace_mmio_read(addr, v, 4);
@@ -1351,9 +1374,9 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
          * 0x80030000, so ROM 0xBFC38B1C executes at 0x80050B1C
          * (scph1001_relocated_store). */
         if (debug_cpu_ptr && scph1001_relocated_store(0x80050B1Cu, 0xBFC38B1Cu)) {
-            /* Word-aligned RAM key through the live geometry (retail: the
-             * 0x1FFFFC fold, identical to the DMA/GPU source keys). */
-            src = psx_ram_canonical_offset(debug_cpu_ptr->gpr[4] - 4u) & ~3u;
+            /* The same packet key as the DMA/GPU source keys (retail: the
+             * 0x1FFFFC fold). */
+            src = psx_gpu_packet_key(debug_cpu_ptr->gpr[4] - 4u);
         }
         gpu_set_gp0_source(src);
         gpu_write_gp0(val);
@@ -1392,7 +1415,7 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
     }
     /* Interrupts */
     if (addr >= 0x1F801070u && addr <= 0x1F801072u) {
-        sio_tick(0);
+        if (!g_psx_render_pass_active) sio_tick(0);
         uint32_t shift = (addr & 2u) ? 16u : 0u;
         return (uint16_t)(i_stat >> shift);
     }
@@ -1423,6 +1446,7 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
 }
 
 static uint16_t mmio_read16(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 2)) return 0;
     psx_devices_mmio_sync();
     uint16_t v = mmio_read16_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 2);
@@ -1508,7 +1532,7 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
     }
     /* Interrupts: 0x1F801070..0x1F801077 (I_STAT, I_MASK) */
     if (addr >= 0x1F801070u && addr <= 0x1F801077u) {
-        if (addr < 0x1F801074u) sio_tick(0);
+        if (addr < 0x1F801074u && !g_psx_render_pass_active) sio_tick(0);
         uint32_t val = (addr < 0x1F801074u) ? i_stat : i_mask;
         return (uint8_t)(val >> (8 * (addr & 3)));
     }
@@ -1542,6 +1566,7 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
 }
 
 static uint8_t mmio_read8(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 1)) return 0;
     psx_devices_mmio_sync();
     uint8_t v = mmio_read8_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 1);
@@ -1833,7 +1858,6 @@ static void render_pass_mmio_write(uint32_t phys, uint32_t val,
  * (an extended draw distance) has its passes build their packets there. Each
  * arena page a pass writes is backed up on its first write and put back by
  * render_pass_mod_arenas_rollback(), with the rest of the pass restore. */
-#define RP_MOD_PAGE 4096u
 #define RP_MOD_PAGES ((MOD_MEMORY_SIZE + PSX_MOD_GPU_DMA_APERTURE_SIZE) / RP_MOD_PAGE)
 typedef struct { uint8_t *page; uint32_t index; uint8_t data[RP_MOD_PAGE]; } RpModPage;
 static uint8_t  s_rp_mod_bits[RP_MOD_PAGES / 8u];

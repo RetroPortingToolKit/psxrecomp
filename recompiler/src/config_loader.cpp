@@ -1673,6 +1673,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     bool ws_hud_sprt_squash = false;
     bool ws_auto_ui_squash = false;
     bool ws_auto_ui_in_place = false;
+    bool ws_auto_ui_proportional = false;
     bool ws_full_2d = false;
     bool ws_gte_game_mode = false;
     bool ws_precise_nclip = false;
@@ -1835,6 +1836,15 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                 throw std::runtime_error(fmt::format(
                     "{}: [widescreen] auto_ui_anchor must be \"edges\" or "
                     "\"in_place\", got \"{}\"", config_path.string(), anchor));
+        }
+        if (ws.contains("auto_ui_size")) {
+            const auto size = toml::find<std::string>(ws, "auto_ui_size");
+            if (size == "proportional")
+                ws_auto_ui_proportional = true;
+            else if (size != "original")
+                throw std::runtime_error(fmt::format(
+                    "{}: [widescreen] auto_ui_size must be \"original\" or "
+                    "\"proportional\", got \"{}\"", config_path.string(), size));
         }
         if (ws.contains("full_2d"))
             ws_full_2d = toml::find<bool>(ws, "full_2d");
@@ -2480,6 +2490,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*ws_hud_sprt_squash*/    ws_hud_sprt_squash,
         /*ws_auto_ui_squash*/      ws_auto_ui_squash,
         /*ws_auto_ui_in_place*/    ws_auto_ui_in_place,
+        /*ws_auto_ui_proportional*/ ws_auto_ui_proportional,
         /*data_shard_funcs*/      data_shard_funcs,
         /*mod_function_entry_funcs*/ mod_function_entry_funcs,
         /*mod_instruction_sites*/ mod_instruction_sites,

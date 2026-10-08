@@ -280,6 +280,13 @@ void pgxp_note_nclip(int disagree, int corrected);
 
 /* SWC2 site: copy the GTE register shadow (regs 12..15) to the RAM shadow. */
 void pgxp_store_gte_reg(uint32_t addr, uint8_t reg);
+/* After a title's original store: retain a projected SXY's precision/depth
+ * when only clip/outcode bits outside the GPU's two 11-bit fields changed.
+ * The caller supplies the current GTE word and actual stored word. Changed
+ * coordinates, clamping, stale sources and unmapped destinations fail closed.
+ * Host shadow only; no guest memory/register write. */
+int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
+                              uint32_t source_word, uint32_t stored_word);
 
 /* Address-keyed precise-word lookup (perspective texturing path). Returns
  * nonzero when the tracked word matches `packed` AND carries a depth. */
@@ -291,6 +298,38 @@ int pgxp_load_precise_word(uint32_t addr, uint32_t packed,
  * gte_precision_checkpoint_begin / _rollback (which also cover gte.cpp). */
 void pgxp_checkpoint_begin(void);
 void pgxp_checkpoint_rollback(void);
+
+/* Exact address-keyed packet precision, for a renderer preserving completed
+ * static packets around a smaller interpolated drawing section. `expected`
+ * MUST be the actual destination RAM/scratchpad word, read by the caller
+ * immediately before either operation (the same convention as the lookups
+ * above). Neither operation reads MMIO or changes guest memory.
+ *
+ * Capture also succeeds for an absent/stale/value-mismatched shadow, recording
+ * a valid no-shadow state. Restore is allowed only in an active checkpoint,
+ * only at the captured canonical address, and only when the capture generation
+ * equals that checkpoint's ENTRY generation. It may then rebind live metadata
+ * to the sandbox's current generation. This never promotes an older timeline's
+ * stale metadata. All restores, including clearing a shadow, are journaled.
+ * Receipts are runtime-only host data: do not persist them in game saves. */
+typedef struct PGXPWordShadow {
+    uint32_t address, value, source_generation, valid;
+    int32_t x16, y16;
+    uint16_t z, flags;
+    PGXPProjection projection;
+} PGXPWordShadow;
+int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected, PGXPWordShadow *out);
+int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected, const PGXPWordShadow *in);
+
+/* Explicit packet relocation variant. The caller owns and validates both
+ * packet ranges and their relocation map, writes the destination guest word,
+ * then supplies that word's current value as expected. The captured source
+ * must still name canonical RAM/scratchpad, but need not equal the destination.
+ * All other restore rules above apply, including checkpoint ENTRY generation.
+ * Only destination metadata changes; an absent receipt clears its shadow.
+ * Rollback restores the destination's previous metadata. */
+int pgxp_restore_relocated_word_shadow(uint32_t destination, uint32_t expected,
+                                       const PGXPWordShadow *in);
 
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {

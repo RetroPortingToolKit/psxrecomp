@@ -15,6 +15,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Keep the shown generation and up to two frames waiting for their actual
+ * display flip. Never overwrite the sole waiting frame just because drawing
+ * the following frame completed before the host observed its flip. */
+int render_pass_generation_oldest(uint32_t mask,const uint64_t* order,uint32_t count);
+int render_pass_generation_write(uint32_t current,uint32_t valid_mask,
+                                  const uint64_t* order,uint32_t count);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,6 +71,9 @@ int render_pass_select(const uint32_t *phases, uint32_t n, double p,
  * game that stops flipping for several frame lengths gets that back. */
 int render_pass_gen_select(const uint32_t *phases, uint32_t n, double p,
                            uint32_t *lo, uint32_t *hi, float *t);
+/* HOLD presents one native phase image without a temporal crossfade. */
+int render_pass_gen_select_mode(const uint32_t *phases, uint32_t n, double p,
+                                int hold, uint32_t *lo, uint32_t *hi, float *t);
 
 /* Is the flip the FLIP source just saw the one a pending generation waits
  * for? A generation built for the next flip (`shown` 0, the canonical PsyQ

@@ -239,12 +239,16 @@ int main(void) {
      * The flag ops rewrite bits 14/15 and 30/31 of the word, never the 11-bit
      * fields GP0 decodes, so the vertex (and its depth) must survive - in
      * BOTH tiers, since bitwise carries are exact. --- */
-    for (int mode = 0; mode < 2; mode++) {
+    for (int exact = 0; exact < 2; exact++) {
+      pgxp_set_preserve_projection(exact);
+      const int32_t expected_x = X16 - (exact ? 65536 : 0);
+      const int32_t expected_y = Y16 + (exact ? 65536 : 0);
+      for (int mode = 0; mode < 2; mode++) {
         pgxp_set_cpu_mode(mode);
         const uint32_t T2 = 10, T4 = 12, T5 = 13, T9 = 25, A3 = 7;
         const uint32_t bounds = (240u << 16) | 128u;       /* x >= 128 -> flag */
         const uint32_t m14 = 0xBFFFBFFFu, m15 = 0x7FFF7FFFu;
-        pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+        pgxp_gte_push_sxy(expected_x, expected_y, SZ3, PACKED);
         psx_pgxp_cop2(nullptr, MFC2(T2, 14), PACKED, 0);
         psx_pgxp_load(nullptr, LW(1, T4), 0x80180000u, bounds);  /* untracked */
         psx_pgxp_alu(nullptr, LUI(T5, 0xBFFF), 0xBFFF0000u, 0, 0);
@@ -266,11 +270,13 @@ int main(void) {
         psx_pgxp_store(nullptr, SW(1, T2), ADDR_B, w);
         int32_t x, y; uint16_t z;
         CHECK(lookup(ADDR_B, w, 160, 80, &x, &y, &z) == PGXP_SRC_DATAFLOW);
-        CHECK(x == X16 && y == Y16 && z == SZ3);
+        CHECK(x == expected_x && y == expected_y && z == SZ3);
         uint16_t wz = 0;
         CHECK(pgxp_load_precise_word(ADDR_B, w, nullptr, nullptr, &wz) == 1);
         CHECK(wz == SZ3);
     }
+      }
+    pgxp_set_preserve_projection(0);
     pgxp_set_cpu_mode(0);
 
     /* --- quad from a projected-vertex table (Spider-Man 0x8007C5D4):

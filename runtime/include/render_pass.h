@@ -26,6 +26,11 @@ enum {
 };
 extern uint64_t g_render_pass_dropped_writes[RENDER_PASS_DROP_CLASSES];
 
+/* memory.c calls this before a pass reads MMIO. Reads of devices outside the
+ * checkpoint can consume FIFOs/ACKs even with their clock frozen; reject the
+ * entire pass before the access instead of fabricating a device result. */
+int render_pass_mmio_read_allowed(uint32_t phys, uint32_t width);
+
 typedef struct RenderPassFailure {
     const char *reason;       /* static name, NULL until the first refusal */
     uint64_t attempt, plan, guest_cycle;
@@ -47,6 +52,8 @@ typedef struct RenderPassStats {
     uint64_t discarded;       /* passes whose plugin declined the image */
     uint64_t watchdog;        /* of which: guest-cycle watchdog overruns */
     uint64_t vram_leaks;      /* GPU writes outside the declared rect (dropped) */
+    uint64_t device_reads;    /* aborted before reading an uncheckpointed device */
+    uint32_t last_device_read, last_device_read_width;
     uint64_t nesting_repairs; /* aborts whose skipped exits the restore undid */
     char last_abort_detail[192]; /* skipped host exits; latched until session reset */
     uint64_t verify_checks;   /* PSX_RENDER_PASS_VERIFY comparisons */
