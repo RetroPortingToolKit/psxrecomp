@@ -3789,6 +3789,7 @@ static void gpu_reset_state(int clear_vram) {
     semi_transparency = 0;
     texpage_colors = 0;
     dither_enabled = 0;
+    gr_set_dither(0);
     draw_to_display = 0;
     set_mask_bit = 0;
     check_mask_bit = 0;
@@ -5887,6 +5888,7 @@ static void gp0_exec_draw_mode(void) {
     semi_transparency = (param >> 5) & 3;
     texpage_colors    = (param >> 7) & 3;
     dither_enabled    = (param >> 9) & 1;
+    gr_set_dither((int)dither_enabled);
     draw_to_display   = (param >> 10) & 1;
     texture_disable   = (param >> 11) & 1;
     /* Sync semi-transparency to SW renderer — actual blending is per-primitive */
@@ -8011,6 +8013,7 @@ void gpu_pass_checkpoint_restore(void) {
                      (int)draw_area_right, (int)draw_area_bottom);
     gr_set_draw_offset(draw_offset_x, draw_offset_y);
     gr_set_mask_bits((int)set_mask_bit, (int)check_mask_bit);
+    gr_set_dither((int)dither_enabled);
     ws_nw_sync_target();
     /* Target sync may classify the scene before render_pass.c restores RAM.
      * Do not retain history learned from the synthetic draw or that query. */

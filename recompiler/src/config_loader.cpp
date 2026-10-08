@@ -813,6 +813,14 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.video_pgxp_preserve_projection =
                 toml::find<bool>(video, "pgxp_preserve_projection");
         }
+        if (video.contains("dithering")) {
+            const auto mode = toml::find<std::string>(video, "dithering");
+            if (mode == "off")         rt.video_dithering = 0;
+            else if (mode == "on")     rt.video_dithering = 1;
+            else if (mode == "scaled") rt.video_dithering = 2;
+            else throw std::runtime_error(fmt::format(
+                "[video] dithering must be \"off\", \"on\" or \"scaled\": {}", mode));
+        }
         if (video.contains("pgxp_depth_buffer"))
             rt.video_pgxp_depth_buffer = toml::find<bool>(video, "pgxp_depth_buffer");
         if (video.contains("pgxp_color_correction"))

@@ -8573,6 +8573,15 @@ static void handle_post_aa(int id, const char *json)
              gl_renderer_post_aa_gpu_us());
 }
 
+/* dithering: {"cmd":"dithering"} reads, {"cmd":"dithering","mode":0|1|2}
+ * sets [video] dithering live (off, on, scaled). */
+static void handle_dithering(int id, const char *json)
+{
+    int mode = json_get_int(json, "mode", -1);
+    if (mode >= 0) gl_renderer_set_dithering(mode);
+    send_fmt("{\"id\":%d,\"ok\":true,\"mode\":%d}", id, gl_renderer_dithering());
+}
+
 static void handle_frame_perf(int id, const char *json)
 {
     (void)json;
@@ -15665,6 +15674,7 @@ static const CmdEntry s_commands[] = {
     { "nclip_stats",       handle_nclip_stats },
     { "frame_perf",        handle_frame_perf },
     { "post_aa",           handle_post_aa },
+    { "dithering",         handle_dithering },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },
