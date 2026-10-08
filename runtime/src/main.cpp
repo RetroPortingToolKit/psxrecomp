@@ -101,6 +101,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "crash_trace.h"
 #include "freeze_heartbeat.h"
 #include "config_loader.h"
+#include "quality_presets.h"
 #include "bios_rom_alias.h"
 #include "host_path.h"
 #include "launcher_device.h"
@@ -1486,6 +1487,111 @@ static int           s_render_thread_tried = 0;
 static int           g_video_vsync        = 1;
 static int           g_frame_interpolation = 0;
 static int           g_frame_interpolation_fps = 0;
+/* Graphics presets (docs/QUALITY_PRESETS.md): the decision for this run,
+ * the [video] keys the title's presets govern and the presets themselves
+ * (kept for the launcher, which can switch or re-detect). Empty when the
+ * title has no [quality.*] tables: nothing changes. */
+static psxq::Decision g_quality;
+static std::vector<std::string> g_quality_keys;
+static std::vector<PSXRecompV4::QualityPreset> g_quality_presets;
+static unsigned g_quality_offered = 0;
+static const PSXRecompV4::QualityPreset* quality_preset_for(int tier) {
+    const char* n = psx_quality_name(tier);
+    if (!n) return nullptr;
+    for (const auto& p : g_quality_presets)
+        if (p.name == n) return &p;
+    return nullptr;
+}
+static int quality_preset_in_force(void) {
+    return g_quality.preset >= 0 && g_quality.preset < PSX_QUALITY_COUNT;
+}
+/* The [video] globals a preset can set, from a parsed runtime block (the
+ * same assignments game.toml's [video] gets at startup). Used when the
+ * launcher switches presets; the startup path swaps gc.runtime instead. */
+/* GL_RENDERER for a due detection. The launcher may hold a current GL
+ * context: restore it around the probe. SDL video is brought up for the
+ * probe only when nothing else has (and never under the dummy/offscreen
+ * drivers headless runs use). */
+static int quality_gl_probe(char* out, size_t cap) {
+    const char* drv = std::getenv("SDL_VIDEODRIVER");
+    if (drv && (std::strcmp(drv, "dummy") == 0 || std::strcmp(drv, "offscreen") == 0))
+        return 0;
+    const bool was_init = SDL_WasInit(SDL_INIT_VIDEO) != 0;
+    if (!was_init && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) return 0;
+    SDL_Window* cur_w = SDL_GL_GetCurrentWindow();
+    SDL_GLContext cur_c = SDL_GL_GetCurrentContext();
+    const int ok = psx_quality_probe_gl_renderer(out, cap);
+    if (cur_w && cur_c) SDL_GL_MakeCurrent(cur_w, cur_c);
+    if (!was_init) SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    return ok;
+}
+
+/* Detect / restore the graphics preset (docs/QUALITY_PRESETS.md) right after
+ * game.toml loads, before anything reads gc.runtime: the chosen preset's
+ * runtime block replaces it, so every [video] consumer below sees the
+ * preset. settings.toml's values for the keys a preset governs are dropped
+ * later (settings layering) unless the player went Custom. */
+static void quality_startup(PSXRecompV4::GameConfig& gc,
+                            const std::filesystem::path& settings_path) {
+    g_quality_presets = gc.quality_presets;
+    g_quality_offered = psxq::offered_mask(gc);
+    g_quality_keys = psxq::governed_keys(gc);
+    if (!g_quality_offered) return;
+    PsxHostInfo host;
+    psx_quality_probe_host(&host);
+    PSXRecompV4::UserSettings us = PSXRecompV4::load_user_settings(settings_path);
+    const char* redetect = std::getenv("PSX_QUALITY_REDETECT");
+    g_quality = psxq::decide(g_quality_offered, us, host, std::getenv("PSX_QUALITY"),
+                             redetect && redetect[0] == '1', quality_gl_probe);
+    if (const auto* p = quality_preset_for(g_quality.base)) gc.runtime = p->runtime;
+    if (g_quality.detected_now)
+        std::fprintf(stdout, "psxrecomp: graphics preset detected: %s (%s; %s)\n",
+                     psx_quality_name(g_quality.preset), g_quality.reason.c_str(),
+                     g_quality.summary.c_str());
+    else
+        std::fprintf(stdout, "psxrecomp: graphics preset %s%s%s%s\n",
+                     psx_quality_name(g_quality.preset),
+                     g_quality.preset == PSX_QUALITY_CUSTOM ? " (from " : "",
+                     g_quality.preset == PSX_QUALITY_CUSTOM ? psx_quality_name(g_quality.base) : "",
+                     g_quality.env_override ? " (PSX_QUALITY, this run only)"
+                     : g_quality.preset == PSX_QUALITY_CUSTOM ? ")" : "");
+    if (g_quality.hardware_changed_custom)
+        std::fprintf(stdout, "psxrecomp: new hardware since your graphics settings were "
+                     "made; your Custom settings are kept (Re-detect in Settings -> Display)\n");
+    if (g_quality.persist && !us.parse_error) {
+        psxq::record(us, g_quality);
+        if (!PSXRecompV4::save_user_settings(settings_path, us))
+            std::fprintf(stderr, "psxrecomp: could not save the graphics preset to %s\n",
+                         settings_path.string().c_str());
+    }
+}
+
+static void quality_apply_video_globals(const PSXRecompV4::RuntimeConfig& r) {
+    g_video_scale        = r.video_supersampling;
+    g_video_internal_res = r.video_internal_resolution;
+    g_video_dynres       = r.video_dynamic_resolution ? 1 : 0;
+    g_video_dynres_min   = r.video_dynamic_resolution_min;
+    g_video_aa           = r.video_antialiasing;
+    g_video_post_aa      = r.video_antialiasing_mode;
+    g_video_ss_milli     = r.video_supersample_milli;
+    g_video_texfilter    = r.video_texture_filter;
+    g_video_fmv_filter   = r.video_fmv_filter;
+    g_video_geometry_correction   = r.video_geometry_correction ? 1 : 0;
+    g_video_perspective_texturing = r.video_perspective_texturing ? 1 : 0;
+    g_video_pgxp_tolerance = (float)r.video_pgxp_tolerance;
+    g_video_pgxp_position_fallback   = r.video_pgxp_position_fallback ? 1 : 0;
+    g_video_pgxp_preserve_projection = r.video_pgxp_preserve_projection ? 1 : 0;
+    g_video_pgxp_depth_buffer     = r.video_pgxp_depth_buffer ? 1 : 0;
+    g_video_pgxp_color_correction = r.video_pgxp_color_correction ? 1 : 0;
+    g_video_pgxp_seam             = r.video_pgxp_seam;
+    g_video_pgxp_depth_threshold  = (float)r.video_pgxp_depth_threshold;
+    g_render_thread      = r.video_render_thread ? 1 : 0;
+    g_present_thread     = r.video_present_thread ? 1 : 0;
+    g_frame_generation   = r.video_frame_generation ? 1 : 0;
+    g_frame_generation_method = r.video_frame_generation_method;
+    g_frame_interpolation     = r.video_frame_interpolation ? 1 : 0;
+    g_frame_interpolation_fps = r.video_frame_interpolation_fps;
+}
 static int           g_frame_interpolation_blend =
     PSX_MOD_FRAME_INTERPOLATION_LINEAR;
 static int           g_frame_interpolation_blend_default =
@@ -15363,6 +15469,133 @@ namespace {
     }
 #endif
 
+#if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
+    /* Graphics presets in the launcher (docs/QUALITY_PRESETS.md). */
+    std::string g_quality_summary_s, g_quality_reason_s;
+
+    /* Fill the launcher rows a preset sets: run the preset's [video] values
+     * through the same globals -> launcher encodings the seed uses, then put
+     * the globals back (the launch path applies the pick). */
+    void quality_launcher_apply(int preset, RecompLauncherCSettings* s) {
+        const auto* p = quality_preset_for(preset - 1);
+        if (!p || !s) return;
+        const int sv_scale = g_video_scale, sv_ir = g_video_internal_res,
+                  sv_dyn = g_video_dynres, sv_dynmin = g_video_dynres_min,
+                  sv_aa = g_video_aa, sv_paa = g_video_post_aa, sv_ss = g_video_ss_milli,
+                  sv_tf = g_video_texfilter, sv_fmv = g_video_fmv_filter,
+                  sv_gc = g_video_geometry_correction, sv_pt = g_video_perspective_texturing,
+                  sv_pfb = g_video_pgxp_position_fallback,
+                  sv_ppp = g_video_pgxp_preserve_projection,
+                  sv_pdb = g_video_pgxp_depth_buffer, sv_pcc = g_video_pgxp_color_correction,
+                  sv_seam = g_video_pgxp_seam, sv_rt = g_render_thread,
+                  sv_pth = g_present_thread, sv_fg = g_frame_generation,
+                  sv_fgm = g_frame_generation_method, sv_fi = g_frame_interpolation,
+                  sv_fif = g_frame_interpolation_fps;
+        const float sv_tol = g_video_pgxp_tolerance, sv_dth = g_video_pgxp_depth_threshold;
+        quality_apply_video_globals(p->runtime);
+#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
+        s->internal_resolution = internal_resolution_for_launcher();
+#endif
+        s->supersampling = psx_ir_launcher_seed_supersampling(
+            kLauncherHasInternalResolution, g_video_internal_res, g_video_scale,
+            g_video_ref_lines, psx_sdl_display_pixel_height(nullptr));
+#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
+        s->dynamic_resolution = dynres_requested() != 0;
+        s->dynamic_resolution_min = dynres_min_value();
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
+        s->render_thread = g_render_thread ? 1 : 0;
+        s->present_thread = g_present_thread ? 1 : 0;
+        s->frame_generation = g_frame_generation ? 1 : 0;
+#endif
+        s->antialiasing = g_video_aa ? 1 : 0;
+        s->texture_filter = g_video_texfilter;
+        s->fmv_filter = cfg_fmv_filter_to_launcher(g_video_fmv_filter);
+        s->geometry_correction = g_video_geometry_correction ? 1 : 0;
+        s->perspective_texturing = g_video_perspective_texturing ? 1 : 0;
+        s->frame_interp = g_frame_interpolation ? 1 : 0;
+        s->frame_interp_fps = g_frame_interpolation_fps;
+        g_video_scale = sv_scale; g_video_internal_res = sv_ir; g_video_dynres = sv_dyn;
+        g_video_dynres_min = sv_dynmin; g_video_aa = sv_aa; g_video_post_aa = sv_paa;
+        g_video_ss_milli = sv_ss; g_video_texfilter = sv_tf; g_video_fmv_filter = sv_fmv;
+        g_video_geometry_correction = sv_gc; g_video_perspective_texturing = sv_pt;
+        g_video_pgxp_tolerance = sv_tol; g_video_pgxp_position_fallback = sv_pfb;
+        g_video_pgxp_preserve_projection = sv_ppp; g_video_pgxp_depth_buffer = sv_pdb;
+        g_video_pgxp_color_correction = sv_pcc; g_video_pgxp_seam = sv_seam;
+        g_video_pgxp_depth_threshold = sv_dth; g_render_thread = sv_rt;
+        g_present_thread = sv_pth; g_frame_generation = sv_fg;
+        g_frame_generation_method = sv_fgm; g_frame_interpolation = sv_fi;
+        g_frame_interpolation_fps = sv_fif;
+    }
+
+    void quality_publish_strings(void) {
+        g_quality_summary_s = g_quality.summary;
+        g_quality_reason_s = g_quality.reason;
+    }
+
+    /* Re-detect: a fresh detection (GL probe included), saved on launch. */
+    int quality_launcher_redetect(void) {
+        PsxHostInfo host;
+        psx_quality_probe_host(&host);
+        PSXRecompV4::UserSettings none;
+        psxq::Decision d = psxq::decide(g_quality_offered, none, host, nullptr, true,
+                                        quality_gl_probe);
+        if (d.preset < 0 || d.preset >= PSX_QUALITY_COUNT) return 0;
+        g_quality.detected = d.detected;
+        g_quality.fingerprint = d.fingerprint;
+        g_quality.summary = d.summary;
+        g_quality.reason = d.reason;
+        g_quality.detected_now = true;
+        quality_publish_strings();
+        return d.preset + 1;
+    }
+
+    void quality_fill_game_info(RecompLauncherCGameInfo* gi) {
+        if (!g_quality_offered) return;
+        quality_publish_strings();
+        gi->quality_offered_mask = (int)g_quality_offered;
+        gi->quality_detected = (g_quality.detected >= 0 && g_quality.detected < PSX_QUALITY_COUNT)
+            ? g_quality.detected + 1 : 0;
+        gi->quality_summary = g_quality_summary_s.c_str();
+        gi->quality_reason = g_quality_reason_s.c_str();
+        gi->quality_apply = quality_launcher_apply;
+        gi->quality_redetect = quality_launcher_redetect;
+    }
+
+    /* Settings.quality_* <-> the decision (1-based in the launcher). */
+    void quality_seed_launcher(RecompLauncherCSettings* ls) {
+        if (!g_quality_offered) return;
+        ls->quality_preset = g_quality.preset >= 0 ? g_quality.preset + 1 : 0;
+        ls->quality_base = g_quality.base >= 0 ? g_quality.base + 1 : 0;
+    }
+
+    /* After the launcher: apply a newly picked preset's keys the launcher
+     * has no row for, and store the state for settings.toml. */
+    void quality_take_launcher(const RecompLauncherCSettings* ls,
+                               PSXRecompV4::UserSettings* us, bool apply_now) {
+        if (!g_quality_offered || ls->quality_preset < 1 || ls->quality_preset > 5) return;
+        const int preset = ls->quality_preset - 1;
+        const int base = (ls->quality_base >= 1 && ls->quality_base <= 4)
+            ? ls->quality_base - 1 : g_quality.base;
+        if (apply_now && base != g_quality.base) {
+            if (const auto* p = quality_preset_for(base)) {
+                /* The launcher wrote this preset's values into its rows,
+                 * which the launch path applies next; this covers the rest
+                 * (supersample, PGXP extras, ...). */
+                quality_apply_video_globals(p->runtime);
+                std::fprintf(stdout, "psxrecomp: graphics preset %s\n", psx_quality_name(base));
+            }
+        }
+        g_quality.preset = preset;
+        g_quality.base = base;
+        if (us) {
+            psxq::Decision d = g_quality;
+            d.detected_now = g_quality.detected_now;
+            psxq::record(*us, d);
+        }
+    }
+#endif
+
     void ae_rui_set_sidecar_paths(const char* argv0) {
         const auto exe = exe_dir_from_argv(argv0 ? argv0 : "");
         g_rui_keybinds_path = (exe / "keybinds.ini").string();
@@ -15454,6 +15687,9 @@ namespace {
 #endif
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
         gi->has_render_pipeline = 1;   /* OpenGL rows; the launcher gates */
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
+        quality_fill_game_info(gi);
 #endif
         if (language_labels && num_languages > 0) {
             gi->language_labels = language_labels;
@@ -15931,7 +16167,8 @@ int main(int argc, char** argv) {
 
     if (game_config_path) {
         try {
-            const auto gc = PSXRecompV4::load_game_config(game_config_path);
+            auto gc = PSXRecompV4::load_game_config(game_config_path);
+            quality_startup(gc, exe_dir_from_argv(argv[0]) / "settings.toml");
             game_name = gc.name;
             game_id   = gc.id;
             game_region = gc.region;
@@ -16494,8 +16731,11 @@ int main(int argc, char** argv) {
 #if defined(RECOMP_LAUNCHER)
         g_lnch_settings_path = settings_path;
 #endif
-        const PSXRecompV4::UserSettings us =
+        PSXRecompV4::UserSettings us =
             PSXRecompV4::load_user_settings(settings_path);
+        /* A graphics preset in force owns its keys (docs/QUALITY_PRESETS.md). */
+        if (quality_preset_in_force())
+            psxq::mask_user_settings(us, g_quality_keys);
         user_settings_has_renderer = us.has_renderer;
         if (us.parse_error) {
             /* The file exists but is not valid TOML: every setting in it (the
@@ -17355,6 +17595,9 @@ int main(int argc, char** argv) {
             ls.present_thread   = seed.present_thread ? 1 : 0;
             ls.frame_generation = seed.frame_generation ? 1 : 0;
 #endif
+#if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
+            quality_seed_launcher(&ls);
+#endif
             ls.antialiasing       = seed.antialiasing ? 1 : 0;
             ls.texture_filter     = seed.texture_filter;
             ls.fmv_filter         = cfg_fmv_filter_to_launcher(seed.fmv_filter);
@@ -17687,6 +17930,10 @@ int main(int argc, char** argv) {
                     seed.has_deadzone = true;
                 }
 
+#if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
+                /* Before the rows below: a new preset's keys without a row. */
+                quality_take_launcher(&ls, &seed, true);
+#endif
                 /* ---- deeper PSX-style settings write-back (mirrors the seed
                  * fields above), all gated on by the "psx" launcher_profile caps. */
                 seed.window_width          = ls.window_width;          seed.has_window_width          = true;
@@ -19800,6 +20047,9 @@ soft_return_lobby:
         ls.render_thread    = g_render_thread_pref;
         ls.present_thread   = g_present_thread_pref;
         ls.frame_generation = g_frame_generation_pref;
+#if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
+        quality_seed_launcher(&ls);
+#endif
 #endif
         ls.antialiasing = g_video_aa ? 1 : 0;
         ls.texture_filter = g_video_texfilter;
@@ -20188,6 +20438,10 @@ soft_return_lobby:
                 us.render_thread    = ls.render_thread != 0;    us.has_render_thread    = true;
                 us.present_thread   = ls.present_thread != 0;   us.has_present_thread   = true;
                 us.frame_generation = ls.frame_generation != 0; us.has_frame_generation = true;
+#if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
+                /* Persisted only; the preset applies at next launch. */
+                quality_take_launcher(&ls, &us, false);
+#endif
                 g_render_thread_pref    = ls.render_thread ? 1 : 0;
                 g_present_thread_pref   = ls.present_thread ? 1 : 0;
                 g_frame_generation_pref = ls.frame_generation ? 1 : 0;
