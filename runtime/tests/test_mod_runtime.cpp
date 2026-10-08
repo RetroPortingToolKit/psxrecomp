@@ -1756,7 +1756,8 @@ int main() {
     /* A forced title profile must not activate the offline patch plan, lose
      * original-disc access, or write a temporary selection to state.toml. */
     static const PSXModNetplayProfile profile = {
-        "runtime.test-vblank", "runtime-coop-delay-v1", 0, 0, 1, 7
+        "runtime.test-vblank", "runtime-coop-delay-v1", 0, 0, 1, 7,
+        "runtime.net-renderer"
     };
     check(psx_mod_netplay_rollback_supported(), "vanilla rollback unchanged");
     check(psx_mod_netplay_session_id(123) == 123, "vanilla session ID unchanged");
@@ -1789,9 +1790,11 @@ int main() {
     check(PSXRecompV4::mod_runtime_commit_netplay(iso_path,&error), error.c_str());
     check(!psx_mod_netplay_savestates_supported(), "active profile prevents incomplete snapshots");
     const int before_activation = activation_calls;
+    const unsigned persistent_entry_hooks = g_psx_mod_function_entry_hooks;
     mod_runtime_activate_plugins();
     check(activation_calls == before_activation+1, "forced plugin activates");
-    check(g_psx_mod_function_entry_hooks == 1, "only forced plugin entry hooks activate");
+    check(g_psx_mod_function_entry_hooks == persistent_entry_hooks + 2,
+          "forced plugin adds only its entry and filter hooks to persistent title hooks");
     ram[0x1000] = 0x5a;
     mod_runtime_on_dispatch(0x80002000);
     check(ram[0x1000] == 0x5a, "offline patches excluded from netplay profile");
@@ -1801,6 +1804,22 @@ int main() {
     check(PSXRecompV4::mod_runtime_commit_netplay(iso_path,&error), "profile rematch commit");
     mod_runtime_activate_plugins();
     check(activation_calls == before_activation+2, "profile rematch activates once");
+    check(psx_mod_netplay_set_aspect(1), "enable profile renderer");
+    check(!PSXRecompV4::mod_runtime_commit_netplay(iso_path,&error),
+          "missing trusted renderer rejects wide launch");
+    check(!psx_mod_netplay_is_active(), "rejected plan is not active");
+    static int renderer_activations;
+    check(psx_mod_register_activation_plugin("runtime.net-renderer",
+              []() { ++renderer_activations; }), "register trusted renderer");
+    check(PSXRecompV4::mod_runtime_commit_netplay(iso_path,&error), "wide profile commit");
+    mod_runtime_activate_plugins();
+    check(psx_mod_netplay_is_active() && renderer_activations == 1 &&
+          activation_calls == before_activation+3, "both trusted plugins activate once");
+    check(read_selection() == offline_selection, "forced renderer preserves offline settings");
+    check(psx_mod_netplay_set_aspect(0) &&
+          PSXRecompV4::mod_runtime_commit_netplay(iso_path,&error), "return to native match");
+    mod_runtime_activate_plugins();
+    check(renderer_activations == 1, "native match omits enhanced renderer");
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), "profile clear");
     check(psx_mod_netplay_savestates_supported(), "cleared session releases snapshot policy");
     fs::remove_all(root, ec);

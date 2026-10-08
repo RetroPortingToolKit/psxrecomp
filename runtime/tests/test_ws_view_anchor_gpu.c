@@ -125,6 +125,36 @@ int main(void) {
     assert(psx_ws_bg2d_stream_left(100) == 100);
     assert(psx_ws_bg2d_stream_right(436) == 436);
     gpu_ws_bg2d_set_host_arena(0, 0);
+    reset_gpu_state_for_test();
+    configure_native_wide_16_9();
+    test_aperture_used = sizeof(test_aperture);
+    /* Co-op HUD lives in the host DMA aperture, outside guest RAM. Its role
+     * tags must bypass world-origin shifts just like native HUD packets. */
+    gpu_ws_set_view_anchor(0x80097202u, 0x80097216u, 0x80097214u, 0x800971f8u);
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        half_at(0x80097214u, scenario == 2 ? 0 : 5120);
+        half_at(0x80097202u, scenario == 1 ? 5120 : 0);
+        ++s_frame_count;
+        ws_view_sample();
+        WsViewAnchor world = ws_view_current();
+        gp0_cmd_source_addr = 0x00810004u;
+        gp0_words_needed = 3;
+        gp0_cmd_buf[0] = 0x6d808080u;
+        gp0_cmd_buf[1] = pack_vertex(48, 48);
+        gp0_cmd_buf[2] = 0;
+        memcpy(&test_aperture[0x10004u / 4u], gp0_cmd_buf, 3u * sizeof(uint32_t));
+        gpu_ws_tag_hud_primitive(0x80810000u, -1);
+        gp0_execute_command();
+        assert(last_textured_rect.x == 48 - 53);
+        assert(last_wide_view.enabled && last_wide_view.shift == 0 &&
+               last_wide_view.left == 0 && last_wide_view.right == 0);
+        gpu_ws_tag_hud_primitive(0x80810000u, 0);
+        gpu_ws_tag_world_primitive(0x80810000u, 1);
+        gp0_execute_command();
+        assert(last_wide_view.shift == world.shift &&
+               last_wide_view.left == world.pad_left && last_wide_view.right == world.pad_right);
+        gpu_ws_tag_world_primitive(0x80810000u, 0);
+    }
     puts("ws_view_anchor_gpu: sampled camera, per-layer coverage, packet origin, disabled identity PASS");
     return 0;
 }

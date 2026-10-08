@@ -43,7 +43,7 @@ int main() {
     const auto at = code.find(hook);
     check(at != std::string::npos && code.find(hook, at + 1) == std::string::npos,
           "explicit function entry emits exactly one replacement call");
-    check(code.find("psx_mod_function_entry(cpu, 0x80010000u);") < at,
+    check(code.find("if (psx_mod_function_entry(cpu, 0x80010000u)) return;") < at,
           "existing preparation callback runs before replacement");
     check(at < code.find("block_80010000:"), "fallback body remains after replacement");
     const auto continuation = code.find("switch (_cont)");

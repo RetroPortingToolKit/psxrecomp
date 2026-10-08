@@ -43,6 +43,15 @@ int pgxp_projection_tracking(void) { return fixture_projection_tracking; }
 void pgxp_set_projection_tracking(int enabled) { fixture_projection_tracking=!!enabled; }
 int gl_renderer_select_texture_bank(uint16_t id) { return id == 0; }
 int gl_renderer_select_texture_bank_live_clut(uint16_t id) { return id == 0; }
+const uint16_t *mod_texture_bank_pixels(uint16_t id, uint32_t *w, uint32_t *h) {
+    (void)id; *w = *h = 0; return NULL;
+}
+void sw_set_texture_bank(const uint16_t *p, uint32_t w, uint32_t h) {
+    (void)p; (void)w; (void)h;
+}
+void sw_set_texture_bank_live_clut(const uint16_t *p, uint32_t w, uint32_t h) {
+    (void)p; (void)w; (void)h;
+}
 uint16_t mod_texture_packet_bank(uint32_t source, const uint32_t *words,
                                  uint32_t count) {
     (void)source; (void)words; (void)count;
@@ -66,6 +75,7 @@ static struct {
     uint16_t clut_x, clut_y, texpage;
 } last_textured_rect;
 static struct { int calls, x, y, w, h, u0, v0, u1, v1; } last_scaled_rect;
+static struct { int enabled, shift, left, right; } last_wide_view;
 
 /* PGXP stub state: the quad case in main() switches geometry correction on
  * and makes the packet words in a bitmask (bit n = word n at g_test_quad_base)
@@ -391,7 +401,8 @@ void gr_set_draw_offset(int x, int y) { (void)x; (void)y; }
 int gr_wide_supported(void) { return 1; }
 void gr_wide_configure(int wide_w, int offset) { (void)wide_w; (void)offset; }
 void gr_wide_set_view(int enabled, int shift, int left, int right) {
-    (void)enabled; (void)shift; (void)left; (void)right;
+    last_wide_view.enabled = enabled; last_wide_view.shift = shift;
+    last_wide_view.left = left; last_wide_view.right = right;
 }
 void gr_wide_set_target(int base_x) { (void)base_x; }
 void gr_wide_disable_target(void) {}
