@@ -636,16 +636,16 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
     // guest clock a fixed cost per instruction, and scale N charges 1/N of
     // it, so N times as much game code fits between two VBlanks while
     // VBlank, timers, CD, SPU and DMA keep hardware time. 1 = faithful;
-    // clamped to 1..64. guest_cycle_scale_gated: the scale applies only
+    // values outside 1..64 are rejected. guest_cycle_scale_gated: the scale applies only
     // while the mod gate is open (psx_mod_set_guest_cycle_scale_gate); see
     // guest_cycle_scale_gate below for the declarative RAM gate.
     if (cfg.contains("timing")) {
         const toml::value& tm = toml::find(cfg, "timing");
         if (tm.contains("guest_cycle_scale")) {
-            long long n = toml::find<long long>(tm, "guest_cycle_scale");
-            if (n < 1) n = 1;
-            if (n > 64) n = 64;
-            rt.guest_cycle_scale = (int)n;
+            const long long n = toml::find<long long>(tm, "guest_cycle_scale");
+            if (n < 1 || n > 64)
+                throw std::runtime_error("[timing] guest_cycle_scale must be 1..64");
+            rt.guest_cycle_scale = static_cast<int>(n);
         }
         if (tm.contains("guest_cycle_scale_gated"))
             rt.guest_cycle_scale_gated = toml::find<bool>(tm, "guest_cycle_scale_gated");
@@ -658,12 +658,22 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             else preds.push_back(g);
             if (preds.size() > 8)
                 throw std::runtime_error("[timing] guest_cycle_scale_gate: at most 8 predicates");
+            // Range-check the signed TOML integer before narrowing, so an
+            // oversized or negative value cannot wrap into a valid one.
+            auto u32_field = [](const toml::value& pv, const char* key) -> uint32_t {
+                const long long v = toml::find<long long>(pv, key);
+                if (v < 0 || v > 0xFFFFFFFFLL)
+                    throw std::runtime_error(
+                        std::string("[timing] guest_cycle_scale_gate: ") + key +
+                        " must be 0..0xFFFFFFFF");
+                return static_cast<uint32_t>(v);
+            };
             for (const toml::value& pv : preds) {
                 RuntimeConfig::GuestCycleScaleGatePred p;
-                p.addr  = (uint32_t)toml::find<long long>(pv, "addr");
-                p.value = (uint32_t)toml::find<long long>(pv, "value");
-                if (pv.contains("size")) p.size = (uint32_t)toml::find<long long>(pv, "size");
-                if (pv.contains("mask")) p.mask = (uint32_t)toml::find<long long>(pv, "mask");
+                p.addr  = u32_field(pv, "addr");
+                p.value = u32_field(pv, "value");
+                if (pv.contains("size")) p.size = u32_field(pv, "size");
+                if (pv.contains("mask")) p.mask = u32_field(pv, "mask");
                 const uint32_t phys = p.addr & 0x1FFFFFFFu;
                 if ((p.size != 1 && p.size != 2 && p.size != 4) ||
                     (phys & (p.size - 1u)) != 0 || phys >= 0x00800000u)

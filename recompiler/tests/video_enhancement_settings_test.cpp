@@ -411,6 +411,29 @@ static void test_timing_gate() {
     try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { rejected = true; }
     check(rejected, "timing: non-RAM gate address rejected");
     fs::remove(p);
+
+    /* Oversized and negative values must be rejected, not wrapped to 32 bits. */
+    const struct { const char* body; const char* what; } bad[] = {
+        { "guest_cycle_scale_gate = { addr = 0x100010000, value = 1 }", "oversized addr" },
+        { "guest_cycle_scale_gate = { addr = -4, value = 1 }", "negative addr" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 0x100000001 }", "oversized value" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = -1 }", "negative value" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, size = 0x100000004 }", "oversized size" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, size = -4 }", "negative size" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, mask = 0x1FFFFFFFF }", "oversized mask" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, mask = -1 }", "negative mask" },
+        { "guest_cycle_scale = 0", "scale 0" },
+        { "guest_cycle_scale = 65", "scale 65" },
+        { "guest_cycle_scale = -8", "negative scale" },
+        { "guest_cycle_scale = 0x100000008", "oversized scale" },
+    };
+    for (const auto& b : bad) {
+        p = write_game_toml("ves_timing_range.toml", std::string("[timing]\n") + b.body + "\n");
+        rejected = false;
+        try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { rejected = true; }
+        check(rejected, (std::string("timing: rejected ") + b.what).c_str());
+        fs::remove(p);
+    }
 }
 
 int main() {
