@@ -13138,6 +13138,9 @@ namespace {
                     ae_np_lan_udp_sendto(from, "MOTK1 ERR\nbad_password\n");
                     continue;
                 }
+                /* JOIN also refreshes a seated guest every 400 ms. */
+                const bool already_seated =
+                    ae_np_lan_find_slot_by_id(st, player_id) >= 0;
                 const int slot = ae_np_lan_seat_guest(st, player_id, name);
                 if (slot < 0) {
                     ae_np_lan_udp_sendto(from, "MOTK1 ERR\nfull\n");
@@ -13164,7 +13167,8 @@ namespace {
                 if (!ae_np_write_lan_state(st)) continue;
                 ae_np_lan_set_peer_slot(slot, from);
                 ae_np_lan_send_update_to_peers(st);
-                ae_np_lan_chat_announce(st.slot_name[slot].c_str(), "has joined.");
+                if (!already_seated)
+                    ae_np_lan_chat_announce(st.slot_name[slot].c_str(), "has joined.");
                 continue;
             }
 
@@ -13190,6 +13194,9 @@ namespace {
                 std::snprintf(synth_id, sizeof(synth_id), "motk1-%08x-%04x",
                               (unsigned)ntohl(from.sin_addr.s_addr),
                               (unsigned)ntohs(from.sin_port));
+                /* JOIN also refreshes a seated guest every 400 ms. */
+                const bool already_seated =
+                    ae_np_lan_find_slot_by_id(st, synth_id) >= 0;
                 const int slot = ae_np_lan_seat_guest(st, synth_id, name);
                 if (slot < 0) {
                     ae_np_lan_udp_sendto(from, "MOTK1 ERR\nfull\n");
@@ -13202,7 +13209,8 @@ namespace {
                 if (!ae_np_write_lan_state(st)) continue;
                 ae_np_lan_set_peer_slot(slot, from);
                 ae_np_lan_send_update_to_peers(st);
-                ae_np_lan_chat_announce(st.slot_name[slot].c_str(), "has joined.");
+                if (!already_seated)
+                    ae_np_lan_chat_announce(st.slot_name[slot].c_str(), "has joined.");
                 continue;
             }
 
