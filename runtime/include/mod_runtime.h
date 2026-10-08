@@ -67,6 +67,8 @@ bool mod_runtime_netplay_input_active();
 std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& plan);
 bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
                                 std::string* error = nullptr);
+/* Limit the existing lobby mod picker to a trusted title's optional feature. */
+void mod_runtime_set_netplay_lobby_view(bool active);
 const std::string& mod_runtime_fingerprint();
 const std::filesystem::path& mod_runtime_effective_disc_path();
 /* Read an effective-disc file as whole sectors (true end-of-file tail bytes

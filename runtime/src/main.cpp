@@ -12216,7 +12216,10 @@ namespace {
         caps->mod_plan_fp[0] = '\0';
         caps->mod_count = 0;
         std::memset(caps->mods, 0, sizeof(caps->mods));
-        if (!PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
+        const auto* title_profile = psx_mod_netplay_profile();
+        const bool title_loading = title_profile && title_profile->loading_plugin_id;
+        if (!title_loading &&
+            !PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
                                                        &g_lnch_mod_plan_error)) return 0;
         if (!mods || !mods->package_count || !mods->package_get)
             return 1;
@@ -12227,6 +12230,8 @@ namespace {
                 RecompLauncherCModFeature feature{};
                 if (!mods->feature_get(mods->ctx, i, &feature) || !feature.enabled)
                     continue;
+                if (title_loading && !psx_mod_netplay_loading_feature(
+                        feature.package_id, feature.id)) continue;
                 int pkg_index = -1;
                 for (int j = 0; j < caps->mod_count; ++j) {
                     if (std::strcmp(caps->mods[j].id, feature.package_id) == 0) {
@@ -12251,7 +12256,7 @@ namespace {
                 ae_append_feat_token(caps->mods[pkg_index].feats,
                                      sizeof(caps->mods[pkg_index].feats), token);
             }
-        } else {
+        } else if (!title_loading) {
             const int count = mods->package_count(mods->ctx);
             for (int i = 0; i < count && caps->mod_count < PSX_LOBBY_MAX_MODS; ++i) {
                 RecompLauncherCModPackage pkg{};
@@ -15179,6 +15184,10 @@ namespace {
 #endif
         gi->aspect_mask = 0;
         const PSXModNetplayProfile *view_profile = psx_mod_netplay_profile();
+        if (view_profile && view_profile->loading_plugin_id)
+            gi->netplay_mode_changed = [](int active) {
+                PSXRecompV4::mod_runtime_set_netplay_lobby_view(active != 0);
+            };
         if (view_profile && view_profile->fixed_aspect_mask) {
             gi->aspect_mask = (int)view_profile->fixed_aspect_mask;
             gi->adaptive_view_supported = 0;

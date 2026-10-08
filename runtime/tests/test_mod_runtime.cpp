@@ -1755,9 +1755,16 @@ int main() {
 #endif
     /* A forced title profile must not activate the offline patch plan, lose
      * original-disc access, or write a temporary selection to state.toml. */
+    write_text(root / "packages/runtime.loading/1.0.0/manifest.toml",
+        "format_version = 5\nid = \"runtime.loading\"\nversion = \"1.0.0\"\n"
+        "name = \"Resident Loading\"\n[[target]]\ngame_id = \"SLUS-RUNTIME\"\n"
+        "[[feature]]\nid = \"resident\"\nname = \"Resident Loading\"\n"
+        "default_enabled = false\n[[plugin]]\nfeature = \"resident\"\n"
+        "id = \"runtime.net-loader\"\n");
+    test_match_caps = {};
     static const PSXModNetplayProfile profile = {
         "runtime.test-vblank", "runtime-coop-delay-v1", 0, 0, 1, 7,
-        "runtime.net-renderer"
+        "runtime.net-renderer", "runtime.loading", "resident", "runtime.net-loader"
     };
     check(psx_mod_netplay_rollback_supported(), "vanilla rollback unchanged");
     check(psx_mod_netplay_session_id(123) == 123, "vanilla session ID unchanged");
@@ -1822,6 +1829,50 @@ int main() {
     check(renderer_activations == 1, "native match omits enhanced renderer");
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), "profile clear");
     check(psx_mod_netplay_savestates_supported(), "cleared session releases snapshot policy");
+    PSXRecompV4::mod_runtime_end_netplay();
+    test_match_caps.valid = 1;
+    test_match_caps.mod_count = 1;
+    std::snprintf(test_match_caps.mods[0].id, sizeof(test_match_caps.mods[0].id), "runtime.loading");
+    std::snprintf(test_match_caps.mods[0].ver, sizeof(test_match_caps.mods[0].ver), "1.0.0");
+    std::snprintf(test_match_caps.mods[0].feats, sizeof(test_match_caps.mods[0].feats), "resident");
+    check(!PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error),
+          "missing native loading plugin rejects enabled host option");
+    static int loader_activations;
+    check(psx_mod_register_activation_plugin("runtime.net-loader",
+              []() { ++loader_activations; }), "register trusted loader");
+    PSXRecompV4::ModPackageManager preferences;
+    preferences.set_root(root);
+    check(preferences.scan(&error) && preferences.load_state(&error), "load host preferences");
+    check(preferences.set_feature_enabled("runtime.loading", "resident", true, &error) &&
+          preferences.save_state(&error), "host selects loading option");
+    check(PSXRecompV4::mod_runtime_initialize(root,"SLUS-RUNTIME",0x80002000,{},&error), "host option offer");
+    const auto host_fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable();
+    check(host_fp.size() == 64, "host offers a verified loading fingerprint");
+    std::snprintf(test_match_caps.mod_plan_fp, sizeof(test_match_caps.mod_plan_fp), "%s", host_fp.c_str());
+    check(preferences.set_feature_enabled("runtime.loading", "resident", false, &error) &&
+          preferences.save_state(&error), "guest prefers original loading");
+    check(PSXRecompV4::mod_runtime_initialize(root,"SLUS-RUNTIME",0x80002000,{},&error), "guest option catalog");
+    const auto guest_selection = read_selection();
+    check(PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error), error.c_str());
+    mod_runtime_activate_plugins();
+    check(loader_activations == 1 && psx_mod_netplay_loading(), "host enables loader on guest");
+    check(read_selection() == guest_selection, "host loading choice does not rewrite guest selections");
+    check(PSXRecompV4::mod_runtime_plan_fingerprint_portable() ==
+          PSXRecompV4::mod_runtime_session_plan_fp(), "negotiated loading fingerprint matches");
+    const auto loading_session = psx_mod_netplay_session_id(123);
+    test_match_caps.mod_plan_fp[0] ^= 1;
+    check(!PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error), "different loading fingerprint rejects launch");
+    test_match_caps.mod_plan_fp[0] ^= 1;
+    std::snprintf(test_match_caps.mods[0].id, sizeof(test_match_caps.mods[0].id), "runtime.test");
+    check(!PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error), "offline patch package rejected in trusted plan");
+    test_match_caps = {};
+    test_match_caps.valid = 1;
+    check(PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error), "host can disable loader");
+    mod_runtime_activate_plugins();
+    check(loader_activations == 1 && !psx_mod_netplay_loading(), "disabled loader is not activated");
+    check(loading_session != psx_mod_netplay_session_id(123), "direct sessions isolate loading choices");
+    PSXRecompV4::mod_runtime_end_netplay();
+    check(read_selection() == guest_selection, "leaving match preserves guest loading preference");
     fs::remove_all(root, ec);
     if (failures) return 1;
     std::cout << "mod runtime tests passed\n";

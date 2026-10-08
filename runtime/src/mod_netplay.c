@@ -5,11 +5,17 @@
 static const PSXModNetplayProfile *title_profile;
 static int profile_active;
 static int profile_aspect;
+static int profile_loading;
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile) {
     if (!profile || !profile->plugin_id || !profile->plugin_id[0] ||
         !profile->compatibility_id || !profile->compatibility_id[0] ||
         strlen(profile->compatibility_id) >= 64) return 0;
+    if ((profile->loading_package_id || profile->loading_feature_id ||
+         profile->loading_plugin_id) &&
+        (!profile->loading_package_id || !profile->loading_package_id[0] ||
+         !profile->loading_feature_id || !profile->loading_feature_id[0] ||
+         !profile->loading_plugin_id || !profile->loading_plugin_id[0])) return 0;
     if (title_profile && title_profile != profile) return 0;
     title_profile = profile;
     return 1;
@@ -38,6 +44,10 @@ uint32_t psx_mod_netplay_session_id(uint32_t session_id) {
         hash ^= (uint32_t)profile_aspect;
         hash *= 16777619u;
     }
+    if (title_profile->loading_plugin_id) {
+        hash ^= (uint32_t)profile_loading;
+        hash *= 16777619u;
+    }
     return session_id ^ hash;
 }
 int psx_mod_netplay_set_aspect(int index) {
@@ -47,3 +57,11 @@ int psx_mod_netplay_set_aspect(int index) {
     return 1;
 }
 int psx_mod_netplay_aspect(void) { return profile_aspect; }
+int psx_mod_netplay_loading_feature(const char *package_id, const char *feature_id) {
+    return title_profile && title_profile->loading_package_id &&
+        title_profile->loading_feature_id && package_id && feature_id &&
+        strcmp(title_profile->loading_package_id, package_id) == 0 &&
+        strcmp(title_profile->loading_feature_id, feature_id) == 0;
+}
+void psx_mod_netplay_set_loading(int enabled) { profile_loading = enabled != 0; }
+int psx_mod_netplay_loading(void) { return profile_loading; }

@@ -87,6 +87,8 @@ static uint64_t g_mod_vblanks = 0;
 namespace PSXRecompV4 {
 namespace {
 
+bool netplay_lobby_view;
+
 struct RuntimeMods {
     struct DiscExtent { uint32_t lba, count; const uint8_t* data; };
     std::vector<DiscExtent> disc_extents;
@@ -1011,6 +1013,12 @@ int provider_choice_get(void*, const char* package_id, const char* option_id,
 template <typename Callback>
 int mutate(Callback callback);
 
+bool title_lobby_feature(const std::string& package, const std::string& feature) {
+    const auto* profile = psx_mod_netplay_profile();
+    return !netplay_lobby_view || !profile || !profile->loading_plugin_id ||
+        psx_mod_netplay_loading_feature(package.c_str(), feature.c_str());
+}
+
 bool provider_feature_at(int index, const ModPackage*& package,
                          const ModFeature*& feature) {
     if (index < 0) return false;
@@ -1019,6 +1027,7 @@ bool provider_feature_at(int index, const ModPackage*& package,
         const ModPackage* selected = selected_package(package_id);
         if (!selected) continue;
         for (const ModFeature& candidate : selected->features) {
+            if (!title_lobby_feature(package_id, candidate.id)) continue;
             if (index-- == 0) {
                 package = selected;
                 feature = &candidate;
@@ -1051,7 +1060,8 @@ int provider_feature_count(void*) {
     for (const auto& [package_id, versions] : state().manager.packages()) {
         (void)versions;
         const ModPackage* package = selected_package(package_id);
-        if (package) count += (int)package->features.size();
+        if (package) for (const auto& feature : package->features)
+            if (title_lobby_feature(package_id, feature.id)) ++count;
     }
     return count;
 }
@@ -1452,6 +1462,23 @@ RecompLauncherCModProvider provider = {
 static std::optional<ModPackageManager> offline_manager_before_netplay;
 static bool netplay_content_negotiation_enabled = false;
 
+void mod_runtime_set_netplay_lobby_view(bool active) { netplay_lobby_view = active; }
+
+static ModPackageManager title_loading_selection(const ModPackageManager& source) {
+    auto selected = source;
+    const auto* profile = psx_mod_netplay_profile();
+    for (const auto& [id, versions] : source.packages()) {
+        (void)versions;
+        const auto* package = source.selected_package(id);
+        if (!package) continue;
+        if (!profile || id != profile->loading_package_id) selected.set_enabled(id, false);
+        for (const auto& feature : package->features)
+            if (!psx_mod_netplay_loading_feature(id.c_str(), feature.id.c_str()))
+                selected.set_feature_enabled(id, feature.id, false);
+    }
+    return selected;
+}
+
 void mod_runtime_set_netplay_content_negotiation(bool enabled) {
     netplay_content_negotiation_enabled = enabled;
 }
@@ -1613,9 +1640,53 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path, std::str
         if (error) *error = "Title netplay renderer plugin is not registered";
         return false;
     }
-    /* Only this executable-owned plugin is trusted. Do not resolve or save
-     * the user's offline package selections. Native disc reads still need
-     * the selected image even though no disc patch plan is active. */
+    if (profile->loading_plugin_id) {
+        auto selected = title_loading_selection(s.manager);
+        const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+        if (caps && caps->valid) {
+            /* The host may select only this native feature. Reject other
+             * contributions instead of importing an offline patch plan. */
+            if (caps->mod_count < 0 || caps->mod_count > 1 ||
+                (caps->mod_count == 1 &&
+                 (std::strcmp(caps->mods[0].id, profile->loading_package_id) ||
+                  std::strcmp(caps->mods[0].feats, profile->loading_feature_id)))) {
+                if (error) *error = "Unsupported mod in the title netplay plan";
+                return false;
+            }
+            if (caps->mod_count == 1 &&
+                !selected.select_version(profile->loading_package_id,
+                                         caps->mods[0].ver, error)) return false;
+            if (!selected.set_feature_enabled(profile->loading_package_id,
+                    profile->loading_feature_id, caps->mod_count == 1, error)) return false;
+        }
+        const bool loading = selected.feature_enabled(profile->loading_package_id,
+                                                       profile->loading_feature_id);
+        const auto option_plan = selected.resolve(s.game_id, s.exe_sha256, std::string());
+        if (!option_plan.ok || !option_plan.writes.empty() ||
+            !option_plan.overlays.empty() || !option_plan.derived_discs.empty() ||
+            !option_plan.resources.empty() ||
+            option_plan.plugins.size() != (loading ? 1u : 0u) ||
+            (loading && (option_plan.plugins[0].id != profile->loading_plugin_id ||
+                         !mod_plugin_registered(profile->loading_plugin_id)))) {
+            if (error) *error = "Title loading option must resolve to its native plugin";
+            return false;
+        }
+        if (caps && caps->valid && caps->mod_count == 1 &&
+            option_plan.fingerprint != caps->mod_plan_fp) {
+            if (error) *error = "Title loading option differs from the host's plan";
+            return false;
+        }
+        if (!offline_manager_before_netplay) offline_manager_before_netplay = s.manager;
+        s.manager = std::move(selected);
+        mod_runtime_set_session_plan_fp(option_plan.fingerprint);
+        if (loading) s.plan.plugins.push_back({profile->loading_plugin_id,
+            profile->loading_package_id, profile->loading_feature_id});
+        psx_mod_netplay_set_loading(loading);
+        std::fprintf(stdout, "psxrecomp: title netplay loading = %s\n",
+                     loading ? "resident assets" : "original disc loader");
+    }
+    /* The simulation, renderer and optional loader are executable-owned.
+     * Native disc reads retain the selected image without an offline patch plan. */
     s.disc_path = disc_path;
     s.plan.ok = true;
     s.plan.fingerprint = profile->compatibility_id;
@@ -2075,7 +2146,10 @@ const std::string& mod_runtime_session_plan_fp() {
 std::string mod_runtime_plan_fingerprint_portable() {
     RuntimeMods& s = state();
     if (!s.initialized) return {};
-    ModResolution plan = s.manager.resolve(s.game_id, s.exe_sha256, std::string());
+    const auto* profile = psx_mod_netplay_profile();
+    auto manager = profile && profile->loading_plugin_id
+        ? title_loading_selection(s.manager) : s.manager;
+    ModResolution plan = manager.resolve(s.game_id, s.exe_sha256, std::string());
     if (!plan.ok || !netplay_resources_verified(plan)) return {};
     return plan.fingerprint;
 }
