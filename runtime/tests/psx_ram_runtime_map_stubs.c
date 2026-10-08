@@ -69,6 +69,12 @@ void gte_canonicalize_cpu_state(CPUState *cpu) { (void)cpu; }
 
 /* ---- scheduler / interrupts ------------------------------------------------ */
 void psx_advance_cycles_slow(uint32_t c) { psx_cycle_count += c; }
+/* [timing] guest_cycle_scale at 1 (faithful) for the real memory.c/icache. */
+uint32_t g_psx_gcs_recip_q16 = 65536u;
+uint32_t g_psx_gcs_frac = 0u;
+uint32_t psx_guest_cycle_scale_config(void) { return 1u; }
+void psx_guest_cycle_scale_snapshot(uint32_t out[3]) { out[0] = out[1] = out[2] = 0u; }
+void psx_guest_cycle_scale_restore(const uint32_t in[3]) { (void)in; }
 void psx_devices_mmio_sync(void) {}
 void psx_devices_service_to_now(void) {}
 int  psx_get_in_exception(void) { return 0; }

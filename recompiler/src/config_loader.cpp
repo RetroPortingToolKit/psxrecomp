@@ -619,7 +619,8 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
     // it, so N times as much game code fits between two VBlanks while
     // VBlank, timers, CD, SPU and DMA keep hardware time. 1 = faithful;
     // clamped to 1..64. guest_cycle_scale_gated: the scale applies only
-    // while the title's mod opens the gate (psx_guest_cycle_scale_gate_open).
+    // while the mod gate is open (psx_mod_set_guest_cycle_scale_gate); see
+    // guest_cycle_scale_gate below for the declarative RAM gate.
     if (cfg.contains("timing")) {
         const toml::value& tm = toml::find(cfg, "timing");
         if (tm.contains("guest_cycle_scale")) {
@@ -630,6 +631,30 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         }
         if (tm.contains("guest_cycle_scale_gated"))
             rt.guest_cycle_scale_gated = toml::find<bool>(tm, "guest_cycle_scale_gated");
+        // guest_cycle_scale_gate: one inline table or an array of them,
+        // { addr, value, size = 4, mask = 0xFFFFFFFF }; all must hold.
+        if (tm.contains("guest_cycle_scale_gate")) {
+            const toml::value& g = toml::find(tm, "guest_cycle_scale_gate");
+            std::vector<toml::value> preds;
+            if (g.is_array()) preds = g.as_array();
+            else preds.push_back(g);
+            if (preds.size() > 8)
+                throw std::runtime_error("[timing] guest_cycle_scale_gate: at most 8 predicates");
+            for (const toml::value& pv : preds) {
+                RuntimeConfig::GuestCycleScaleGatePred p;
+                p.addr  = (uint32_t)toml::find<long long>(pv, "addr");
+                p.value = (uint32_t)toml::find<long long>(pv, "value");
+                if (pv.contains("size")) p.size = (uint32_t)toml::find<long long>(pv, "size");
+                if (pv.contains("mask")) p.mask = (uint32_t)toml::find<long long>(pv, "mask");
+                const uint32_t phys = p.addr & 0x1FFFFFFFu;
+                if ((p.size != 1 && p.size != 2 && p.size != 4) ||
+                    (phys & (p.size - 1u)) != 0 || phys >= 0x00800000u)
+                    throw std::runtime_error(
+                        "[timing] guest_cycle_scale_gate: addr must be an aligned "
+                        "main-RAM address and size 1, 2 or 4");
+                rt.guest_cycle_scale_gate.push_back(p);
+            }
+        }
     }
 
     // Optional [video] block — visual enhancement options. Kept on the same

@@ -85,7 +85,7 @@ void psx_icache_fetch_miss(CPUState* cpu, uint32_t addr) {
     cpu->read_absorb_which = 0u;
 
     if (psx_fetch_uncached(addr)) { /* KSEG1 / uncached (BIOS ROM): every fetch */
-        psx_advance_cycles(4u);
+        psx_cpu_charge(4u);   /* CPU charge: [timing] guest_cycle_scale */
         return;
     }
 
@@ -101,7 +101,7 @@ void psx_icache_fetch_miss(CPUState* cpu, uint32_t addr) {
         g_psx_icache_tv[bidx + i] &= ~0x2u;
         cost++;
     }
-    psx_advance_cycles(cost);
+    psx_cpu_charge(cost);
 #else
     (void)cpu;
     (void)addr;

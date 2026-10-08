@@ -485,6 +485,47 @@ static void test_pgxp_title_keys() {
     fs::remove(p);
 }
 
+/* [timing] guest_cycle_scale and its declarative RAM gate (title constants). */
+static void test_timing_gate() {
+    fs::path p = write_game_toml("ves_timing_none.toml", "");
+    auto gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale == 1, "timing: default scale 1");
+    check(gc.runtime.guest_cycle_scale_gate.empty(), "timing: no gate by default");
+    check(!gc.runtime.guest_cycle_scale_gated, "timing: mod gate off by default");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_one.toml",
+        "[timing]\nguest_cycle_scale = 64\n"
+        "guest_cycle_scale_gate = { addr = 0x800AC794, value = 0x180 }\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale == 64, "timing: scale 64");
+    check(gc.runtime.guest_cycle_scale_gate.size() == 1 &&
+          gc.runtime.guest_cycle_scale_gate[0].addr == 0x800AC794u &&
+          gc.runtime.guest_cycle_scale_gate[0].value == 0x180u &&
+          gc.runtime.guest_cycle_scale_gate[0].size == 4u &&
+          gc.runtime.guest_cycle_scale_gate[0].mask == 0xFFFFFFFFu,
+          "timing: single inline-table gate with defaults");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_arr.toml",
+        "[timing]\nguest_cycle_scale = 8\nguest_cycle_scale_gated = true\n"
+        "guest_cycle_scale_gate = [ { addr = 0x800AC794, value = 0x180 },\n"
+        "  { addr = 0x00010003, size = 1, mask = 0x0F, value = 5 } ]\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale_gate.size() == 2 &&
+          gc.runtime.guest_cycle_scale_gate[1].size == 1u &&
+          gc.runtime.guest_cycle_scale_gate[1].mask == 0x0Fu &&
+          gc.runtime.guest_cycle_scale_gated, "timing: gate array + mod gate");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_bad.toml",
+        "[timing]\nguest_cycle_scale_gate = { addr = 0x1F801070, value = 1 }\n");
+    bool rejected = false;
+    try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { rejected = true; }
+    check(rejected, "timing: non-RAM gate address rejected");
+    fs::remove(p);
+}
+
 int main() {
     test_internal_resolution_game_toml();
     test_internal_resolution_settings();
@@ -502,6 +543,7 @@ int main() {
     test_present_thread();
     test_pipeline_user_settings();
     test_pgxp_title_keys();
+    test_timing_gate();
 
     if (failures) {
         std::fprintf(stderr, "video_enhancement_settings_test: %d failure(s)\n",

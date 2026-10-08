@@ -182,7 +182,7 @@ static void hle_open_event(CPUState* cpu, uint32_t base, uint32_t n)
         cpu->write_word(ev + EV_STATUS, EVST_DISABLED);
         cpu->gpr[2] = 0xF1000000u | slot;
     }
-    psx_advance_cycles(40u + 6u * (slot == 0xFFFFFFFFu ? n : slot + 1u));
+    psx_cpu_charge(40u + 6u * (slot == 0xFFFFFFFFu ? n : slot + 1u));
 }
 
 /* CloseEvent (kernel 0x1E1C): status=free, return 1. */
@@ -191,7 +191,7 @@ static void hle_close_event(CPUState* cpu, uint32_t base)
     uint32_t ev = base + (cpu->gpr[4] & 0xFFFFu) * EVCB_STRIDE;
     cpu->write_word(ev + EV_STATUS, EVST_FREE);
     cpu->gpr[2] = 1u;
-    psx_advance_cycles(36u);
+    psx_cpu_charge(36u);
 }
 
 /* TestEvent (kernel 0x1EC8): ready => re-arm to enabled and return 1, else 0. */
@@ -204,7 +204,7 @@ static void hle_test_event(CPUState* cpu, uint32_t base)
     } else {
         cpu->gpr[2] = 0u;
     }
-    psx_advance_cycles(40u);
+    psx_cpu_charge(40u);
 }
 
 /* EnableEvent (kernel 0x1F10) / DisableEvent (kernel 0x1F4C): a non-free
@@ -216,7 +216,7 @@ static void hle_set_event_status(CPUState* cpu, uint32_t base, uint32_t status)
     if (cpu->read_word(ev + EV_STATUS) != EVST_FREE)
         cpu->write_word(ev + EV_STATUS, status);
     cpu->gpr[2] = 1u;
-    psx_advance_cycles(40u);
+    psx_cpu_charge(40u);
 }
 
 /* DeliverEvent (kernel 0x1B44): for every ENABLED EvCB matching class+spec,
@@ -260,7 +260,7 @@ static void hle_deliver_event(CPUState* cpu, uint32_t base, uint32_t n)
      * caller may depend on it (libapi types DeliverEvent void). Set 0 for a
      * stable, observable value. */
     cpu->gpr[2] = 0u;
-    psx_advance_cycles(36u + 12u * n);
+    psx_cpu_charge(36u + 12u * n);
 }
 
 /* B0 vector service. Returns 1 iff serviced in HLE. */

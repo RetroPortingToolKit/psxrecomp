@@ -8,7 +8,7 @@ static uint32_t s_pending_cycles;
 PSX_OVERLAY_EXPORT void overlay_flush_cycles(void) {
     uint32_t cycles = s_pending_cycles;
     s_pending_cycles = 0;
-    if (cycles && g_cbs.advance_cycles) g_cbs.advance_cycles(cycles);
+    if (cycles && g_cbs.cpu_charge) g_cbs.cpu_charge(cycles);
 }
 
 /* Call-contract state (ABI v2): generated code reads/bumps the runtime's
@@ -53,10 +53,16 @@ void psx_check_interrupts_at(CPUState *cpu, uint32_t resume_pc) {
     if (g_cbs.check_interrupts_at) g_cbs.check_interrupts_at(cpu, resume_pc);
     else g_cbs.check_interrupts(cpu);
 }
-void psx_advance_cycles(uint32_t cycles) {
+/* The CPU charge (psx_cycles.h): overlay code is guest CPU work, so its
+ * charges accumulate here raw and publish through cpu_charge, the host's
+ * psx_cpu_charge, which applies [timing] guest_cycle_scale exactly as it does
+ * for native code. psx_advance_cycles is kept as the same accumulator for
+ * code generated before the emitter named the CPU charge. */
+void psx_cpu_charge(uint32_t cycles) {
     if (cycles > UINT32_MAX - s_pending_cycles) overlay_flush_cycles();
     s_pending_cycles += cycles;
 }
+void psx_advance_cycles(uint32_t cycles) { psx_cpu_charge(cycles); }
 void gte_execute(CPUState *cpu, uint32_t cmd) {
     overlay_flush_cycles();
     g_cbs.gte_execute(cpu, cmd);

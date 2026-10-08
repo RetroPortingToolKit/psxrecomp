@@ -8,6 +8,8 @@ int g_ls_replay_active = 0;
 static uint64_t test_cycles = 0;
 
 void psx_advance_cycles(uint32_t cycles) { test_cycles += cycles; }
+/* I-cache refills are CPU work: they go through the CPU charge. */
+void psx_cpu_charge(uint32_t cycles) { psx_advance_cycles(cycles); }
 
 static int expect(int condition, const char *message) {
     if (condition) return 1;

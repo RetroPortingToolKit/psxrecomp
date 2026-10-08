@@ -1,5 +1,6 @@
 /* [timing] guest_cycle_scale: instruction charges reach the guest clock at
  * 1/N of their cost; 1 leaves every charge exactly as it was. */
+#undef NDEBUG   /* the checks below must run in Release too */
 #include "psx_cyc.h"
 
 #include <assert.h>

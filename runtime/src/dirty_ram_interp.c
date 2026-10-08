@@ -101,8 +101,7 @@ static inline void interp_cyc_step(CPUState *cpu, uint32_t reg_mask) {
         cpu->read_absorb[w]--;
     } else if (!g_ls_replay_active) {
         if (PSX_GCS_ACTIVE()) {
-            uint32_t t = psx_gcs_scale(1u);
-            if (t) psx_advance_cycles(t);
+            psx_cpu_charge(1u);   /* the CPU charge, scaled */
             psx_cyc_deps(cpu, reg_mask);
             psx_cyc_lds(cpu);
             return;

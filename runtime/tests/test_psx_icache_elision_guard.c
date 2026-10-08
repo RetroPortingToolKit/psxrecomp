@@ -9,6 +9,8 @@
 int g_ls_replay_active = 0;
 static uint64_t cycles;
 void psx_advance_cycles(uint32_t count) { cycles += count; }
+/* I-cache refills are CPU work: they go through the CPU charge. */
+void psx_cpu_charge(uint32_t count) { psx_advance_cycles(count); }
 
 static uint64_t run(int omit_body, uint32_t *giveback, uint32_t *tag) {
     CPUState cpu;
