@@ -28,6 +28,7 @@ typedef struct NetplayCoreParts {
     uint32_t timers;    /* timer snapshot */
     uint32_t ram;       /* 2 MiB main RAM */
     uint32_t dirty;     /* dirty-RAM bitmap words */
+    uint32_t mod;       /* trusted profile's canonical host gameplay state */
     uint32_t core;      /* full core (same as netplay_core_digest) */
 } NetplayCoreParts;
 

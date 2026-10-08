@@ -7,6 +7,7 @@
 #include "iso_reader.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
+#include "mod_netplay.h"
 #include "psx_netplay.h"
 #include "gpu.h"
 #include "gpu_hd_textures.h"
@@ -196,7 +197,8 @@ bool catalog_files(RuntimeMods& s, std::map<std::filesystem::path, std::string>&
 
 bool prepared_ticket_matches(const std::filesystem::path& disc) {
     auto& s = state();
-    if (!s.ticket_ready || s.main_applied || !mod_runtime_session_plan_fp().empty() ||
+    if (!s.ticket_ready || s.main_applied || psx_mod_netplay_is_active() ||
+        !mod_runtime_session_plan_fp().empty() ||
         disc != s.disc_path || s.ticket_revision != s.preparation_revision) return false;
     std::map<std::filesystem::path, std::string> files;
     if (!dependency_files(s, disc, files) || files != s.ticket_files) return false;
@@ -1389,8 +1391,11 @@ int provider_commit(void*, const char* image_path) {
 int provider_commit_netplay(void*, const char* image_path) {
     HostLaunchTimingScope timing(HOST_LAUNCH_PROVIDER_NETPLAY_COMMIT);
     std::string error;
-    /* Without [netplay] content_negotiation every netplay session is vanilla. */
-    if (!(mod_runtime_netplay_content_negotiation()
+    /* Trusted title profiles take precedence over optional package negotiation. */
+    if (!(psx_mod_netplay_profile()
+            ? mod_runtime_commit_netplay(image_path ? std::filesystem::path(image_path) :
+                                         std::filesystem::path(), &error)
+            : mod_runtime_netplay_content_negotiation()
             ? mod_runtime_commit_for_netplay(image_path ? std::filesystem::path(image_path) :
                                              std::filesystem::path(), &error)
             : mod_runtime_clear_for_netplay(&error))) {
@@ -1456,6 +1461,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
                             uint32_t game_entry_pc,
                             const std::filesystem::path& exe_path,
                             std::string* error) {
+    psx_mod_netplay_set_active(0);
     RuntimeMods& s = state();
     s.ticket_ready = false;
     ++s.preparation_revision;
@@ -1559,6 +1565,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
 }
 
 bool mod_runtime_clear_for_netplay(std::string* error) {
+    psx_mod_netplay_set_active(0);
     state().ticket_ready = false;
     ++state().preparation_revision;
     RuntimeMods& s = state();
@@ -1584,6 +1591,38 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     s.error.clear();
     if (error) error->clear();
     std::fprintf(stdout, "psxrecomp: mods cleared for netplay (vanilla session)\n");
+    return true;
+}
+
+bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
+                                std::string* error) {
+    if (!mod_runtime_clear_for_netplay(error)) return false;
+    const PSXModNetplayProfile* profile = psx_mod_netplay_profile();
+    if (!profile) return true;
+    RuntimeMods& s = state();
+    if (!s.initialized || !mod_plugin_registered(profile->plugin_id)) {
+        if (error) *error = "Title netplay simulation plugin is not registered";
+        return false;
+    }
+    const char* renderer = psx_mod_netplay_aspect() ? profile->widescreen_plugin_id : nullptr;
+    if (renderer && !mod_plugin_registered(renderer)) {
+        if (error) *error = "Title netplay renderer plugin is not registered";
+        return false;
+    }
+    const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+    if (caps && caps->valid && caps->mod_count != 0) {
+        if (error) *error = "Title netplay profile does not accept package mod plans";
+        return false;
+    }
+    s.disc_path = disc_path;
+    s.plan.ok = true;
+    s.plan.fingerprint = profile->compatibility_id;
+    s.plan.plugins.push_back({profile->plugin_id, "", ""});
+    if (renderer) s.plan.plugins.push_back({renderer, "", ""});
+    mod_runtime_set_session_plan_fp({});
+    psx_mod_netplay_set_active(1);
+    std::fprintf(stdout, "psxrecomp: title netplay profile %s (%s)\n",
+                 profile->compatibility_id, profile->plugin_id);
     return true;
 }
 
@@ -2001,7 +2040,8 @@ bool mod_runtime_try_prepare_cached(const std::filesystem::path& disc_path) {
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     try {
         auto& s = state();
-        if (!s.initialized || s.main_applied || !session_plan_fp().empty()) return false;
+        if (!s.initialized || s.main_applied || psx_mod_netplay_is_active() ||
+            !session_plan_fp().empty()) return false;
         auto probe = s.manager;
         if (!probe.prepare_resources(s.game_id, disc_path, media_cache_root(), nullptr, true)) return false;
         ScopedFlag flag(s.cached_prepare);
@@ -2052,6 +2092,7 @@ bool mod_runtime_verify_session_plan_fp(std::string* error) {
 
 bool mod_runtime_commit_for_netplay(const std::filesystem::path& disc_path,
                                     std::string* error) {
+    if (psx_mod_netplay_profile()) return mod_runtime_commit_netplay(disc_path, error);
     RuntimeMods& s = state();
     const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
     if (!caps || !caps->valid)
@@ -2080,6 +2121,7 @@ bool mod_runtime_commit_for_netplay(const std::filesystem::path& disc_path,
 
 bool mod_runtime_commit_for_direct_netplay(const std::filesystem::path& disc_path,
                                            std::string* error) {
+    if (psx_mod_netplay_profile()) return mod_runtime_commit_netplay(disc_path, error);
     RuntimeMods& s = state();
     /* No mod runtime (no mods root): vanilla on every peer, no content gate. */
     if (!s.initialized) {
@@ -2110,6 +2152,7 @@ bool mod_runtime_commit_for_direct_netplay(const std::filesystem::path& disc_pat
 }
 
 void mod_runtime_end_netplay() {
+    if (psx_mod_netplay_is_active()) mod_runtime_clear_for_netplay();
     if (!offline_manager_before_netplay) return;
     RuntimeMods& s = state();
     mod_runtime_clear_for_netplay();
@@ -2161,6 +2204,7 @@ bool mod_runtime_netplay_view_active() {
 
 bool mod_runtime_commit_netplay_view(const std::filesystem::path& disc_path,
                                      std::string* error) {
+    if (psx_mod_netplay_profile()) return mod_runtime_commit_netplay(disc_path, error);
     RuntimeMods& s = state();
     std::string why;
     (void)mod_runtime_clear_for_netplay(&why);

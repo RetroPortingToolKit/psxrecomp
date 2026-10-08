@@ -6,6 +6,7 @@
  */
 
 #include "cpu_state.h"
+#include "mod_netplay.h"
 #include "execution_profile.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
@@ -1414,6 +1415,9 @@ extern "C" int psx_mod_allow_direct_shortcut(uint32_t shortcut) {
 extern "C" void psx_mod_set_rewind_blocked(int blocked) {
     psx_rewind_set_title_blocked(blocked);
 }
+extern "C" void psx_mod_set_savestate_blocked(int blocked) {
+    savestate_set_title_blocked(blocked);
+}
 static uint32_t      g_savestate_input_guard_min_until = 0;
 static uint32_t      g_savestate_input_guard_max_until = 0;
 static int           g_headless       = 0;   /* debug/CI frontend: no SDL window/audio */
@@ -1576,6 +1580,19 @@ static bool ensure_sdl_pixel_buf_capacity(size_t pixels) {
  * session vanilla (mods cleared), the LAN MOTK1 wire protocol, lobby caps
  * without mod fields, and the neutral headless idle pad. */
 static int g_netplay_content_negotiation = 0;
+static int title_netplay_aspect_index(int num, int den) {
+    if (num <= 0 || den <= 0) return 0;
+    return num * 9 == den * 21 ? 2 : num * 9 == den * 16 ? 1 : 0;
+}
+static void title_netplay_fix_caps_view(PsxLobbyMatchCaps* caps) {
+    const PSXModNetplayProfile* profile = psx_mod_netplay_profile();
+    if (!caps || !profile || !profile->fixed_aspect_mask) return;
+    const int index = title_netplay_aspect_index(caps->aspect_num, caps->aspect_den);
+    if (!psx_mod_netplay_set_aspect(index)) (void)psx_mod_netplay_set_aspect(0);
+    const int selected = psx_mod_netplay_aspect();
+    caps->aspect_num = selected == 2 ? 21 : selected == 1 ? 16 : 4;
+    caps->aspect_den = selected ? 9 : 3;
+}
 /* Install the netplay session's mod plan without touching the persisted
  * offline selection. Default: vanilla (clear every mod). Opted in: the
  * host-published lobby plan, or the locally selected verified plan for a
@@ -1583,6 +1600,14 @@ static int g_netplay_content_negotiation = 0;
  * fingerprint before guest execution). */
 static bool netplay_commit_mods(const std::filesystem::path& disc,
                                 std::string* error) {
+    if (psx_mod_netplay_profile()) {
+        const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+        const int num = caps && caps->valid ? caps->aspect_num : g_video_aspect_num;
+        const int den = caps && caps->valid ? caps->aspect_den : g_video_aspect_den;
+        const int index = title_netplay_aspect_index(num, den);
+        if (!psx_mod_netplay_set_aspect(index)) (void)psx_mod_netplay_set_aspect(0);
+        return PSXRecompV4::mod_runtime_commit_netplay(disc, error);
+    }
     if (!g_netplay_content_negotiation)
         return PSXRecompV4::mod_runtime_commit_netplay_view(disc, error);
     const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
@@ -7516,6 +7541,10 @@ static void savestate_menu_move(int delta) {
 }
 
 static int savestate_submit_slot(int slot, int save) {
+    if (savestate_title_blocked() || !psx_mod_netplay_savestates_supported()) {
+        host_osd_push("Save states are unavailable in this game mode", 1800);
+        return 0;
+    }
     if (!save && !savestate_slot_exists(slot)) {
         char msg[32];
         snprintf(msg, sizeof(msg), "Slot %d is empty", slot + 1);
@@ -12191,6 +12220,7 @@ namespace {
         caps->mod_plan_fp[0] = '\0';
         caps->mod_count = 0;
         std::memset(caps->mods, 0, sizeof(caps->mods));
+        if (psx_mod_netplay_profile()) return 1;
         if (!PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
                                                        &g_lnch_mod_plan_error)) return 0;
         if (!mods || !mods->package_count || !mods->package_get)
@@ -12257,6 +12287,7 @@ namespace {
             case 1:  caps.aspect_num = 16; caps.aspect_den = 9; break;
             default: caps.aspect_num = 4;  caps.aspect_den = 3; break;
         }
+        title_netplay_fix_caps_view(&caps);
         caps.turbo_loads   = s ? (s->turbo_loads != 0) : 0;
         caps.auto_skip_fmv = s ? (s->auto_skip_fmv != 0) : 0;
         caps.input_delay   = g_lnch_lobby_input_delay;
@@ -12268,7 +12299,7 @@ namespace {
         caps.force_input_relay = g_lnch_force_input_relay != 0;
         caps.relay_host = g_lnch_relay_host != 0;
         caps.force_turn = g_lnch_force_turn != 0;
-        caps.rollback = g_lnch_rollback != 0;
+        caps.rollback = g_lnch_rollback != 0 && psx_mod_netplay_rollback_supported();
         caps.multitap_analog = g_lnch_multitap_analog != 0;
         if (s) caps.multitap_analog = s->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
@@ -12319,6 +12350,7 @@ namespace {
             : ae_netplay_caps_from_settings(settings);
         caps.valid = 1;
         caps.input_delay = g_lnch_lobby_input_delay;
+        title_netplay_fix_caps_view(&caps);
         if (caps.input_delay < 2) caps.input_delay = 2;
         if (caps.input_delay > 20) caps.input_delay = 20;
         caps.input_prediction = g_lnch_lobby_input_prediction;
@@ -12327,7 +12359,7 @@ namespace {
         caps.force_input_relay = g_lnch_force_input_relay != 0;
         caps.relay_host = g_lnch_relay_host != 0;
         caps.force_turn = g_lnch_force_turn != 0;
-        caps.rollback = g_lnch_rollback != 0;
+        caps.rollback = g_lnch_rollback != 0 && psx_mod_netplay_rollback_supported();
         caps.multitap_analog = g_lnch_multitap_analog != 0;
         if (settings) caps.multitap_analog = settings->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
@@ -12861,6 +12893,7 @@ namespace {
         return 0;
     }
     int ae_np_rollback_get(void*) {
+        if (!psx_mod_netplay_rollback_supported()) return 0;
         if (!g_lnch_hosting_lan && !g_lnch_joined_lan) {
             const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
             if (caps && caps->valid)
@@ -12869,7 +12902,7 @@ namespace {
         return g_lnch_rollback;
     }
     int ae_np_rollback_set(void*, int enable) {
-        g_lnch_rollback = enable ? 1 : 0;
+        g_lnch_rollback = enable && psx_mod_netplay_rollback_supported();
         ae_np_push_match_caps(nullptr);
         return 0;
     }
@@ -17850,6 +17883,7 @@ int main(int argc, char** argv) {
         g_direct_shortcut_allowed = 0;
         g_p1_claimed_buttons = 0;
         psx_rewind_set_title_blocked(0);
+        savestate_set_title_blocked(0);
         for (auto& policy : g_mod_controller_policy)
             policy = ModControllerPresentationPolicy{};
         g_mod_load_wall_multiplier = -1;
@@ -17873,6 +17907,12 @@ int main(int argc, char** argv) {
         gpu_ws_set_local_view_only(
             netplay && PSXRecompV4::mod_runtime_netplay_view_active() ? 1 : 0);
         mod_runtime_activate_plugins();
+        const PSXModNetplayProfile* profile = psx_mod_netplay_profile();
+        if (netplay && profile && profile->fixed_aspect_mask) {
+            const int index = psx_mod_netplay_aspect();
+            (void)psx_mod_set_fixed_display_aspect(index == 2 ? 21u : index == 1 ? 16u : 4u,
+                                                 index ? 9u : 3u);
+        }
         apply_netplay_local_viewport_aspect(netplay);
         for (int i = 0; i < PSX_MAX_PLAYERS; ++i) {
             if (g_mod_controller_mode_override[i] >= 0)
@@ -19011,6 +19051,12 @@ session_reboot:
         req.have_deliver_event_ret = (psx_bios_image.deliver_event_ret != 0);
         req.have_shell_entry       = (psx_bios_image.shell_entry_phys != 0);
         req.have_game_entry        = (game_entry_pc != 0);
+        const PSXModNetplayProfile* boot_profile = psx_mod_netplay_profile();
+        if (net_cfg.enabled && boot_profile && boot_profile->skip_bios_intro) {
+            req.bios_hle = 0;
+            req.keep_intro = 0;
+            req.fast_boot = 1;
+        }
         const PsxBiosHlePlan plan = psx_bios_hle_plan(req);
 
         /* Call-HLE is a per-image capability, not just a preference: an image

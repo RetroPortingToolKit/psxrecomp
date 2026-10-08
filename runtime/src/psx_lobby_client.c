@@ -1,4 +1,5 @@
 #include "psx_lobby_client.h"
+#include "mod_netplay.h"
 #include "netplay_bios_settle.h"
 
 #include <ctype.h>
@@ -1056,6 +1057,7 @@ void psx_lobby_set_max_slots(int max_slots)
 
 static const char *effective_game_version(const char *override_ver)
 {
+    if (psx_mod_netplay_profile()) return psx_mod_netplay_version(NULL);
     if (override_ver && override_ver[0]) {
         return override_ver;
     }

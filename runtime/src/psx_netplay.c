@@ -3,6 +3,7 @@
 #endif
 
 #include "psx_netplay.h"
+#include "mod_netplay.h"
 #include "netplay_load_probe.h"
 #include "netplay_sim_pad_cache.h"
 #include "netplay_local_view.h"
@@ -205,6 +206,7 @@ void psx_netplay_apply_env(PsxNetplayConfig *cfg)
     v = getenv("PSX_NET_HOST_SPECTATES");
     if (v && v[0])
         cfg->host_spectates = (v[0] != '0') ? 1 : 0;
+    if (!psx_mod_netplay_rollback_supported()) cfg->rollback = 0;
 }
 
 static void force_session_pads_connected(int slot_count)
@@ -743,12 +745,12 @@ static void np_log_live_digest(uint32_t tick, const NetplayCoreParts *parts,
 {
     fprintf(stderr,
             "psxrecomp: rb live dig %s sim=%u core=%08x cpu=%08x clk=%08x "
-            "tim=%08x ram=%08x dirty=%08x av=%08x cd=%08x "
+            "tim=%08x ram=%08x dirty=%08x mod=%08x av=%08x cd=%08x "
             "spu=%08x mdec=%08x aux=%08x\n",
             tag ? tag : "tick", (unsigned)tick, (unsigned)parts->core,
             (unsigned)parts->cpu, (unsigned)parts->clock_irq,
             (unsigned)parts->timers, (unsigned)parts->ram,
-            (unsigned)parts->dirty, (unsigned)av, (unsigned)cd,
+            (unsigned)parts->dirty, (unsigned)parts->mod, (unsigned)av, (unsigned)cd,
             (unsigned)spu, (unsigned)mdec, (unsigned)aux);
     {
         static int s_parts = -1;
@@ -1408,6 +1410,12 @@ static void np_apply_ready_state(void)
 
     if (!rnet_session_state_take_ready(g_np.session, &op, &slot, &data, &size))
         return;
+    if ((savestate_title_blocked() || !psx_mod_netplay_savestates_supported()) &&
+        (op == RNET_STATE_OP_SAVE || op == RNET_STATE_OP_LOAD)) {
+        rnet_session_state_finish(g_np.session, 0);
+        g_np.xfer = NP_XFER_NONE;
+        return;
+    }
     if (!data || size == 0) {
         rnet_session_state_finish(g_np.session, 0);
         g_np.xfer = NP_XFER_NONE;
@@ -1575,6 +1583,11 @@ static void np_guest_handle_probe(void)
     if (g_np.local_slot == 0) return;
     if (!rnet_session_state_probe_pending(g_np.session, &op, &slot, &size, &crc))
         return;
+    if ((savestate_title_blocked() || !psx_mod_netplay_savestates_supported()) &&
+        (op == RNET_STATE_OP_SAVE || op == RNET_STATE_OP_LOAD)) {
+        (void)rnet_session_state_probe_reply(g_np.session, 0);
+        return;
+    }
 
     /* Post-load ready rendezvous (must be before SAVE size==0 coord). */
     if (op == RNET_STATE_OP_LOAD && size == 0 && crc == NP_LOAD_READY_CRC) {
@@ -3827,6 +3840,7 @@ static int resolve_use_ice(const PsxNetplayConfig *cfg)
 
 int psx_netplay_start(const PsxNetplayConfig *cfg)
 {
+    PsxNetplayConfig trusted_cfg;
     RNetConfig rcfg;
     RNetHostVTable host;
     int in_player;
@@ -3835,6 +3849,16 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     int use_ice;
 
     if (!cfg || !cfg->enabled) return -1;
+    if (psx_mod_netplay_profile() && !psx_mod_netplay_is_active()) {
+        fprintf(stderr, "psxrecomp: title netplay profile was not committed\n");
+        return -1;
+    }
+    if (cfg->rollback && !psx_mod_netplay_rollback_supported()) {
+        trusted_cfg = *cfg;
+        trusted_cfg.rollback = 0;
+        cfg = &trusted_cfg;
+        fprintf(stderr, "psxrecomp: trusted netplay profile forces delay-sync\n");
+    }
     if (g_np.session) psx_netplay_shutdown();
     psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);
     psx_netplay_local_view_reset(&s_local_view);
@@ -3906,7 +3930,7 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
         fflush(stderr);
         rcfg.input_delay = 5u;
     }
-    rcfg.session_id = cfg->session_id ? cfg->session_id : 1u;
+    rcfg.session_id = psx_mod_netplay_session_id(cfg->session_id ? cfg->session_id : 1u);
     {
         uint32_t mask = cfg->occupied_mask;
         if (mask == 0u) {
@@ -3928,8 +3952,10 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     }
 
     char execution_content[65];
+    char profile_content[65];
     if (!psx_execution_content_identity(cfg->content_fingerprint, execution_content) ||
-        !np_content_init(&s_content, execution_content, rcfg.occupied_mask, local))
+        !psx_mod_netplay_content_identity(execution_content, profile_content) ||
+        !np_content_init(&s_content, profile_content, rcfg.occupied_mask, local))
         return -5;
     s_content_send_ms = 0;
     /* Host resolves auto (-1) before start; accept 0..PSX_MAX_PLAYERS-1. */
@@ -4499,6 +4525,7 @@ int psx_netplay_request_save(int slot)
     uint32_t sim;
     uint32_t delay;
     uint32_t target;
+    if (savestate_title_blocked() || !psx_mod_netplay_savestates_supported()) return 0;
     if (!psx_netplay_active() || !rnet_session_is_running(g_np.session))
         return 0;
     if (g_np.local_slot != 0)
@@ -4534,6 +4561,7 @@ int psx_netplay_request_load(int slot)
 {
     uint32_t size = 0, crc = 0;
     char reason[192];
+    if (savestate_title_blocked() || !psx_mod_netplay_savestates_supported()) return 0;
     if (!psx_netplay_active() || !rnet_session_is_running(g_np.session))
         return 0;
     if (g_np.local_slot != 0)

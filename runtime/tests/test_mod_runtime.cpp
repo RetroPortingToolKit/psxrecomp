@@ -1,4 +1,5 @@
 #include "mod_runtime.h"
+#include "mod_netplay.h"
 #include "host_launch_timing.h"
 #include "host_file_identity.h"
 #include "mod_packages.h"
@@ -385,7 +386,7 @@ static uint64_t startup_counter(const char* requested) {
     return 0;
 }
 
-int main() {
+int main(int argc, char** argv) {
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     const fs::path root = fs::temp_directory_path() / "psxrecomp-mod-runtime-cache-test";
     const auto isolated_cache = root / "test-cache";
@@ -1746,6 +1747,68 @@ int main() {
         check(!PSXRecompV4::mod_runtime_try_prepare_cached(iso_path), "default runtime does not opt into cached startup");
     }
 #endif
+    /* The executable-owned profile forces its trusted plugin, including hooks,
+     * without applying/saving any player's offline patches or selections. */
+    test_match_caps = {};
+    const bool missing_profile = argc > 1 && std::string(argv[1]) == "--missing-profile";
+    const bool missing_renderer = argc > 1 && std::string(argv[1]) == "--missing-renderer";
+    static const PSXModNetplayProfile profile = {
+        missing_profile ? "runtime.missing-simulation" : "runtime.test-vblank",
+        "runtime-coop-delay-v1", 0, 0, 1, 3u,
+        "runtime.missing-renderer", nullptr
+    };
+    check(psx_mod_register_netplay_profile(&profile), "trusted profile registration");
+    check(PSXRecompV4::mod_runtime_initialize(root, "SLUS-RUNTIME", 0x80002000, {}, &error),
+          "profile reinitialize offline catalog");
+    if (missing_profile || missing_renderer) {
+        if (missing_renderer) check(psx_mod_netplay_set_aspect(1), "select profile renderer");
+        check(!PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error) &&
+              !psx_mod_netplay_is_active() && !error.empty(),
+              "missing trusted plugin refuses profile activation with a reason");
+        check(psx_mod_netplay_savestates_supported(), "failed profile cannot latch snapshot policy");
+        const auto before_failed_activation = activation_calls;
+        mod_runtime_activate_plugins();
+        check(activation_calls == before_failed_activation, "failed profile cannot activate stale offline plugin");
+        fs::remove_all(root, ec);
+        return failures ? 1 : 0;
+    }
+    const auto selection_path = root / "state.toml";
+    auto read_selection = [&]() {
+        std::ifstream file(selection_path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    const std::string offline_selection = read_selection();
+    check(PSXRecompV4::mod_runtime_commit_for_direct_netplay(iso_path, &error), error.c_str());
+    check(psx_mod_netplay_is_active() && !psx_mod_netplay_savestates_supported(),
+          "profile activates host-state snapshot policy");
+    const int activations_before = activation_calls;
+    mod_runtime_activate_plugins();
+    check(activation_calls == activations_before + 1, "profile forces native plugin activation");
+    ram[0x1000] = 0x5a;
+    mod_runtime_on_dispatch(0x80002000);
+    check(ram[0x1000] == 0x5a, "profile excludes offline executable writes");
+    check(psx_mod_read_disc_file("S0/LEVEL.NSF", result.data(), 3000, &bytes) && bytes == 3000,
+          "profile retains original-disc reads");
+    check(read_selection() == offline_selection, "profile does not save temporary selections");
+    check(PSXRecompV4::mod_runtime_commit_netplay_view(iso_path, &error), "profile rematch commit");
+    mod_runtime_activate_plugins();
+    check(activation_calls == activations_before + 2, "profile rematch activates exactly once");
+    CPUState profile_cpu{};
+    test_netplay_active = 1;
+    filter_handles = true;
+    check(psx_mod_function_entry(&profile_cpu, 0x80003008) && profile_cpu.gpr[2] == 42u,
+          "profile retains modern trusted function filters");
+    test_netplay_active = 0;
+    test_match_caps.valid = 1;
+    test_match_caps.mod_count = 1;
+    check(!PSXRecompV4::mod_runtime_commit_for_netplay(iso_path, &error) &&
+          !psx_mod_netplay_is_active(), "profile rejects imported package plans");
+    test_match_caps = {};
+    check(PSXRecompV4::mod_runtime_commit_netplay(iso_path, &error), "profile restores after rejected plan");
+    PSXRecompV4::mod_runtime_end_netplay();
+    check(!psx_mod_netplay_is_active() && psx_mod_netplay_savestates_supported() &&
+          PSXRecompV4::mod_runtime_fingerprint().empty(), "profile end clears hooks and snapshot policy");
+    check(read_selection() == offline_selection, "profile end preserves offline selection file");
     fs::remove_all(root, ec);
     if (failures) return 1;
     std::cout << "mod runtime tests passed\n";

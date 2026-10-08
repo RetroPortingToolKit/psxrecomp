@@ -23,6 +23,15 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(mod_netplay_test tests/test_mod_netplay.c
+        src/mod_netplay.c src/netplay_state_digest.c src/crc32.c src/psx_sha256.c)
+    target_include_directories(mod_netplay_test PRIVATE include)
+    add_test(NAME mod_netplay_test COMMAND mod_netplay_test)
+    add_test(NAME mod_netplay_wide_test COMMAND mod_netplay_test --wide)
+    add_executable(savestate_title_policy_test tests/test_savestate_title_policy.c
+        src/mod_netplay.c src/psx_sha256.c)
+    target_include_directories(savestate_title_policy_test PRIVATE include)
+    add_test(NAME savestate_title_policy_test COMMAND savestate_title_policy_test)
     add_executable(mod_capcom_bg2d_test tests/test_mod_capcom_bg2d.c)
     target_include_directories(mod_capcom_bg2d_test PRIVATE include)
     add_test(NAME mod_capcom_bg2d_test COMMAND mod_capcom_bg2d_test)
@@ -696,6 +705,7 @@ if(BUILD_TESTING)
         src/pgxp_session.cpp src/mod_builtin_pgxp.c src/pgxp.cpp
         src/psx_ram_geometry.c
         src/mod_runtime.cpp
+        src/mod_netplay.c
         src/mod_packages.cpp
         src/mod_media.cpp
         src/disc_path.cpp
@@ -1064,6 +1074,7 @@ if(BUILD_TESTING)
         tests/test_mod_runtime.cpp
         src/iso_reader_c.cpp
         src/mod_runtime.cpp
+        src/mod_netplay.c
         src/mod_packages.cpp
         src/mod_media.cpp
         src/disc_path.cpp
@@ -1086,6 +1097,8 @@ if(BUILD_TESTING)
         endif()
     endif()
     add_test(NAME mod_runtime_test COMMAND mod_runtime_test)
+    add_test(NAME mod_netplay_missing_plugin_test COMMAND mod_runtime_test --missing-profile)
+    add_test(NAME mod_netplay_missing_renderer_test COMMAND mod_runtime_test --missing-renderer)
 
     add_executable(neversoft_helpers_test tests/test_neversoft_helpers.cpp)
     target_include_directories(neversoft_helpers_test PRIVATE include)
@@ -1105,6 +1118,7 @@ if(BUILD_TESTING)
         tests/test_netplay_view_mods.cpp
         src/iso_reader_c.cpp
         src/mod_runtime.cpp
+        src/mod_netplay.c
         src/mod_packages.cpp
         src/mod_media.cpp
         src/disc_path.cpp
@@ -1117,6 +1131,7 @@ if(BUILD_TESTING)
         ../recompiler/include
         ../recompiler/lib/toml11)
     target_link_libraries(netplay_view_mods_test PRIVATE chdr-static)
+    psxrecomp_sha256_file(netplay_view_mods_test)
     if(WIN32)
         if(MSVC)
             target_link_options(netplay_view_mods_test PRIVATE /STACK:16777216)
@@ -1132,6 +1147,7 @@ if(BUILD_TESTING)
     target_compile_definitions(mod_runtime_cache_test PRIVATE
         PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE=1)
     target_link_libraries(mod_runtime_cache_test PRIVATE chdr-static)
+    psxrecomp_sha256_file(mod_runtime_cache_test)
     if(WIN32)
         if(MSVC)
             target_link_options(mod_runtime_cache_test PRIVATE /STACK:16777216)
@@ -1145,6 +1161,7 @@ if(BUILD_TESTING)
         tests/test_mod_resident.cpp
         src/mod_resident.cpp
         src/mod_runtime.cpp
+        src/mod_netplay.c
         src/mod_packages.cpp
         src/mod_media.cpp
         src/disc_path.cpp
@@ -1485,7 +1502,8 @@ if(BUILD_TESTING)
         # guard define and include roots the runtime build uses; the two WS
         # calls that TU makes are stubbed in the test and abort if reached.
         if(EXISTS "${PSXRECOMP_ROOT}/runtime/src/lobby_ws/rnet_ws.c")
-            add_executable(lobby_chat_ring_test tests/test_lobby_chat_ring.c)
+            add_executable(lobby_chat_ring_test tests/test_lobby_chat_ring.c
+                src/mod_netplay.c src/psx_sha256.c)
             target_include_directories(lobby_chat_ring_test PRIVATE
                 include
                 src
@@ -1505,6 +1523,8 @@ if(BUILD_TESTING)
             add_test(NAME lobby_chat_ring_test COMMAND lobby_chat_ring_test)
             add_executable(netplay_bios_wire_test
                 tests/test_netplay_bios_wire.c
+                src/mod_netplay.c
+                src/psx_sha256.c
                 src/netplay_bios_settle.c
                 src/lobby_ws/rnet_ws.c
                 src/lobby_ws/rnet_sha1.c)

@@ -42,8 +42,12 @@ bool mod_runtime_commit_for_netplay(const std::filesystem::path& disc_path = {},
 bool mod_runtime_commit_for_direct_netplay(const std::filesystem::path& disc_path,
                                            std::string* error = nullptr);
 bool mod_runtime_clear_for_netplay(std::string* error = nullptr);
-/* [netplay] content_negotiation from game.toml. Off (default): the launcher's
- * netplay commit clears the plan exactly like mod_runtime_clear_for_netplay. */
+/* Install only the executable's trusted simulation profile (if registered).
+ * Original-disc reads remain available; offline selections are never saved. */
+bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path = {},
+                                std::string* error = nullptr);
+/* [netplay] content_negotiation from game.toml. Off (default): clear package
+ * simulation mods; an executable-owned profile takes precedence when present. */
 void mod_runtime_set_netplay_content_negotiation(bool enabled);
 bool mod_runtime_netplay_content_negotiation();
 /* Restore the pre-session selection before returning to the launcher. */

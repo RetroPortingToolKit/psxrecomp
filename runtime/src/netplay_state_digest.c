@@ -1,4 +1,5 @@
 #include "netplay_state_digest.h"
+#include "mod_netplay.h"
 #include "cdrom.h"
 #include "crc32.h"
 #include "dirty_ram_interp.h"
@@ -176,6 +177,13 @@ void netplay_core_digest_parts(const CPUState* cpu, NetplayCoreParts* out)
     fold = crc32_update(fold, (const uint8_t*)&tim_h, sizeof(tim_h));
     fold = crc32_update(fold, (const uint8_t*)&ram_h, sizeof(ram_h));
     fold = crc32_update(fold, (const uint8_t*)&drt_h, sizeof(drt_h));
+    /* Keep vanilla digests byte-for-byte unchanged. Zero is a valid plugin
+     * digest, so presence is separate from its value. */
+    if (psx_mod_netplay_has_state_digest()) {
+        uint32_t mod = psx_mod_netplay_state_digest();
+        fold = crc32_update(fold, (const uint8_t*)&mod, sizeof(mod));
+        if (out) out->mod = mod;
+    }
 
     if (out) {
         out->cpu = cpu_h;

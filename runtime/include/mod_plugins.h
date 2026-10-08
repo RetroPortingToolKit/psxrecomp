@@ -1009,6 +1009,10 @@ int psx_mod_allow_direct_shortcut(uint32_t shortcut);
  * when the mode starts and 0 when it ends (setting it every frame from the
  * title's state is fine). Cleared at every mod/session reset. */
 void psx_mod_set_rewind_blocked(int blocked);
+/* Refuse saves and loads while trusted host gameplay state cannot be restored
+ * by the guest serializer. Includes synchronized netplay state operations;
+ * pending requests are cancelled. Cleared before each session's activation. */
+void psx_mod_set_savestate_blocked(int blocked);
 
 /* Local P1 mouse policy. The runtime delivers ordered events on the SDL owner
  * (main) thread, owns relative capture and folds the resulting right-stick

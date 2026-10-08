@@ -24,8 +24,26 @@ appears when the host advertises `GameInfo.netplay_supported`.
 ## Rollback netcode
 
 Titles that opt in with `[netplay] content_negotiation = true` (game.toml,
-default false) get content negotiation; every other title keeps vanilla
-netplay (mods cleared), the MOTK1 LAN protocol and plan-free lobby caps.
+default false) get content negotiation; titles without a trusted simulation
+profile keep vanilla netplay (simulation mods cleared), the MOTK1 LAN protocol
+and plan-free lobby caps.
+
+A statically linked title can register `PSXModNetplayProfile` from
+`runtime/include/mod_netplay.h` for a shared simulation such as experimental
+co-op. The profile forces its native simulation plugin and permitted fixed view
+without importing or saving offline package choices. Its compatibility revision
+pins lobby versioning and a SHA-256 profile identity joins the normal
+execution/content handshake on every transport. Unsupported rollback requests
+use delay-sync; unsupported user and synchronized save/load requests are refused.
+An optional read-only callback contributes canonical host-owned gameplay state
+to the existing core CRC; digest logs report this as `mod=`. The callback must
+exclude pointers, padding, rendering caches and local-only input state.
+
+For an offline mode whose host state is not serialized, a trusted plugin can
+call `psx_mod_set_savestate_blocked(1)` and `psx_mod_set_rewind_blocked(1)` during
+activation. These policies reset before each new session; save blocking also
+cancels already staged requests and in-memory load blobs. Memory-card saves
+and the user's persisted settings are separate and remain available.
 
 Online rooms can publish a host-selected mod plan: package versions, enabled
 features/options and a portable plan fingerprint. Every peer resolves and

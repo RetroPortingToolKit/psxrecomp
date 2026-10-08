@@ -26,6 +26,12 @@ extern "C" {
 #define SAVESTATE_THUMB_W 128
 #define SAVESTATE_THUMB_H 96
 
+/* Session-only trusted-title policy. Blocking cancels pending requests and
+ * refuses user and synchronized-protocol save/load; it never alters files.
+ * main resets this before each mod activation (including soft returns). */
+void savestate_set_title_blocked(int blocked);
+int savestate_title_blocked(void);
+
 /* Configure the slot directory + integrity key (from main, after config load).
  *
  * When bios_token is non-empty (e.g. "openbios" / "scph1001"):

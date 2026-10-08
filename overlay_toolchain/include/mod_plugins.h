@@ -2,6 +2,15 @@
 
 #include <stdint.h>
 
+/* Session-only title policy; see runtime/include/mod_plugins.h. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void psx_mod_set_savestate_blocked(int blocked);
+#ifdef __cplusplus
+}
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

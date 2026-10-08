@@ -7,6 +7,7 @@
  * restores the full machine then unwinds to the scheduler and re-dispatches. */
 
 #include "savestate.h"
+#include "mod_netplay.h"
 #include "boot_state.h"
 #include "cdrom.h"
 #include "gpu.h"
@@ -54,6 +55,7 @@ static uint32_t s_openbios_wordsum;   /* bundled OpenBIOS wordsum for migrate */
 static uint32_t s_bios_checksum;
 static uint32_t s_entry_pc;
 static int      s_configured   = 0;
+static int      s_title_blocked;
 static int      s_save_pending = -1;   /* slot, or -1 */
 static int      s_load_pending = -1;
 static int      s_load_completed = 0;
@@ -190,6 +192,28 @@ static void clear_load_blob(void) {
     free(s_load_blob);
     s_load_blob = NULL;
     s_load_blob_len = 0;
+}
+
+int savestate_title_blocked(void) { return s_title_blocked; }
+void savestate_set_title_blocked(int blocked) {
+    s_title_blocked = blocked != 0;
+    if (!s_title_blocked) return;
+    if (s_save_pending >= 0 || s_save_defer_slot >= 0) s_save_failed = 1;
+    if (s_load_pending >= 0) s_load_failed = 1;
+    s_save_pending = s_load_pending = s_save_defer_slot = -1;
+    s_last_save_pc = 0;
+    s_status_pending = 0;
+    clear_load_blob();
+}
+
+static int title_save_request_blocked(int is_load, int slot) {
+    const char* reason;
+    if (!s_title_blocked && psx_mod_netplay_savestates_supported()) return 0;
+    reason = s_title_blocked ? "Save states are unavailable in this game mode" :
+                              "Save states are unavailable in this netplay mode";
+    fprintf(stderr, "savestate: %s\n", reason);
+    psx_frontend_on_savestate_refused(is_load, slot, reason);
+    return 1;
 }
 
 /* Peek .pst header bios_checksum (BOOT_STATE wire: magic, version, checksum). */
@@ -689,6 +713,7 @@ static int netplay_user_blocked(void) {
 }
 
 static int request_save_inner(int slot) {
+    if (title_save_request_blocked(0, slot)) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: not configured\n");
         psx_frontend_on_savestate_refused(0, slot, "Save states are not available yet");
@@ -706,6 +731,7 @@ static int request_save_inner(int slot) {
 }
 
 static int request_load_inner(int slot) {
+    if (title_save_request_blocked(1, slot)) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: not configured\n");
         psx_frontend_on_savestate_refused(1, slot, "Save states are not available yet");
@@ -753,6 +779,7 @@ int savestate_request_load_protocol(int slot) {
 
 int savestate_request_load_blob_protocol(const void* data, size_t size) {
     uint8_t* copy;
+    if (title_save_request_blocked(1, -1)) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: load_blob — not configured\n");
         return 0;
