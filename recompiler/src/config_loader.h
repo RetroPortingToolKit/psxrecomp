@@ -925,6 +925,16 @@ struct WidescreenMaskedRejectSite {
     uint32_t reject_mask = 0;
 };
 
+// [quality.<name>] -- a named graphics preset (docs/QUALITY_PRESETS.md).
+// The table holds [video] keys; the preset's runtime config is the whole
+// game.toml parsed with those keys laid over [video], so every [video] key
+// (and its validation) works in a preset without being listed here.
+struct QualityPreset {
+    std::string              name;     // "low" | "medium" | "high" | "ultra"
+    RuntimeConfig            runtime;  // [video] with [quality.<name>] on top
+    std::vector<std::string> keys;     // the [video] keys this preset sets
+};
+
 struct GameConfig {
     std::filesystem::path config_path;
     std::filesystem::path project_root;
@@ -1436,6 +1446,9 @@ struct GameConfig {
     // [[draw_distance.clamp]] -- opt-in "keep far geometry" clamps. Empty by
     // default; inert until a mod switches them on; regen required.
     std::vector<DrawDistanceClampSite> draw_distance_clamp_sites;
+    // [quality.low/medium/high/ultra] -- graphics presets, lowest first. Empty:
+    // the title has no presets and [video] alone applies (unchanged).
+    std::vector<QualityPreset> quality_presets;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.
@@ -1530,6 +1543,14 @@ struct UserSettings {
     bool has_vsync             = false; int  vsync             = 1;
     bool has_frame_interpolation = false; bool frame_interpolation = false;
     bool has_frame_interpolation_fps = false; int frame_interpolation_fps = 0;
+    // [video] quality_* (docs/QUALITY_PRESETS.md): the graphics preset in
+    // force ("low".."ultra", or "custom" once the player changed a setting it
+    // governs), the preset a "custom" started from, the hardware fingerprint
+    // the last detection ran on, and what that detection picked.
+    bool has_quality_preset = false;   std::string quality_preset;
+    bool has_quality_base = false;     std::string quality_base;
+    bool has_quality_hardware = false; std::string quality_hardware;
+    bool has_quality_detected = false; std::string quality_detected;
     // [launcher] — when true, boot straight into the game and skip the GUI
     // launcher window (mirrors snesrecomp's SkipLauncher). Overridable per-run:
     // `--launcher` forces the GUI back on; `PSX_NO_LAUNCHER=1` forces it off.

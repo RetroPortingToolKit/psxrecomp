@@ -6134,7 +6134,9 @@ int gl_renderer_init_context(SDL_Window *win) {
     }
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
     const char *ver = (const char *)glGetString(GL_VERSION);
-    fprintf(stdout, "psxrecomp: OpenGL context created (%s)\n", ver ? ver : "?");
+    const char *gpu = (const char *)glGetString(0x1F01 /* GL_RENDERER */);
+    fprintf(stdout, "psxrecomp: OpenGL context created (%s; %s)\n", ver ? ver : "?",
+            gpu ? gpu : "?");
 
     /* All-or-nothing: any missing entry point / failed shader / bad FBO means
      * the whole GL renderer is unavailable and the runtime stays on the pure
