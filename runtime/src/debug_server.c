@@ -8596,6 +8596,25 @@ static void handle_synth_recurse(int id, const char *json)
 
 /* post_aa: post-process anti-aliasing, live. {"cmd":"post_aa"} reads it,
  * {"cmd":"post_aa","mode":0|1|2} sets it (off, fxaa, fxaa_hq). */
+/* bloom: {"cmd":"bloom"} reads; optional "strength" (0..2), "threshold",
+ * "view" (0 normal, 1 bloom only, 2 split, 3 sources) and "time" (1: time
+ * each pass; the mean resets on read) set. */
+static void handle_bloom(int id, const char *json)
+{
+    const char *p = strstr(json, "\"strength\"");
+    float strength = -1.0f, threshold = -1.0f;
+    if (p && (p = strchr(p, ':'))) strength = (float)strtod(p + 1, NULL);
+    p = strstr(json, "\"threshold\"");
+    if (p && (p = strchr(p, ':'))) threshold = (float)strtod(p + 1, NULL);
+    GlBloomInfo bi;
+    gl_renderer_bloom_debug(strength, threshold, json_get_int(json, "view", -1),
+                            json_get_int(json, "time", -1), &bi);
+    send_fmt("{\"id\":%d,\"ok\":true,\"strength\":%.3f,\"threshold\":%.3f,\"view\":%d,"
+             "\"passes\":%llu,\"timed\":%llu,\"us_mean\":%.1f}",
+             id, bi.strength, bi.threshold, bi.view, (unsigned long long)bi.passes,
+             (unsigned long long)bi.us_n, bi.us_mean);
+}
+
 static void handle_post_aa(int id, const char *json)
 {
     int mode = json_get_int(json, "mode", -1);
@@ -15854,6 +15873,7 @@ static const CmdEntry s_commands[] = {
     { "post_aa",           handle_post_aa },
     { "fmv_chroma",        handle_fmv_chroma },
     { "texture_lod",       handle_texture_lod },
+    { "bloom",             handle_bloom },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },
