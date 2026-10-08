@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "mod_capcom_bg2d.h"
+#include "mod_visible_placements.h"
 
 static unsigned char memory[10u * 1024u * 1024u];
 static uint32_t writes;
@@ -28,6 +29,19 @@ void gpu_ws_bg2d_set_host_arena(uint32_t base, uint32_t bytes) {
 }
 
 int main(void) {
+    PSXPlacementRect original={0,320,0,240},wide={-160,480,0,240},strips[4];
+    assert(psx_placement_exposed(original,wide,0,strips)==1);
+    assert(psx_placement_exposed(wide,wide,1,strips)==0); /* No repeat scan while idle. */
+    assert(psx_placement_exposed(original,wide,1,strips)==2);
+    assert(psx_placement_contains(strips[0],-100,100));
+    assert(psx_placement_contains(strips[1],400,100));
+    assert(!psx_placement_contains(strips[1],319,100));
+    PSXPlacementRect moved={-128,512,0,240};
+    assert(psx_placement_exposed(wide,moved,1,strips)==1);
+    assert(psx_placement_contains(strips[0],500,100));
+    assert(!psx_placement_contains(strips[0],400,100)); /* A killed wide enemy is not revisited. */
+    assert(psx_placement_contains(wide,400,100));
+    assert(!psx_placement_contains((PSXPlacementRect){480,1120,0,240},400,100));
     WsViewAnchor centered = {106,106,0,0,0};
     WsViewAnchor mapped = psx_capcom_scroll_view(centered,800,667);
     assert(mapped.left==133 && mapped.right==79 && mapped.shift==27);
