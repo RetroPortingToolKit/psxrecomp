@@ -28,6 +28,7 @@ if(BUILD_TESTING)
     target_include_directories(mod_netplay_test PRIVATE include)
     add_test(NAME mod_netplay_test COMMAND mod_netplay_test)
     add_test(NAME mod_netplay_wide_test COMMAND mod_netplay_test --wide)
+    add_test(NAME mod_netplay_optional_bank_test COMMAND mod_netplay_test --no-banks)
     add_executable(savestate_title_policy_test tests/test_savestate_title_policy.c
         src/mod_netplay.c src/psx_sha256.c)
     target_include_directories(savestate_title_policy_test PRIVATE include)

@@ -25,6 +25,10 @@ typedef struct PSXModNetplayProfile {
     unsigned fixed_aspect_mask; /* bit 0=4:3, 1=16:9, 2=21:9; zero=no policy */
     const char *widescreen_plugin_id; /* Optional forced renderer for wide. */
     PSXModNetplayStateDigest state_digest;
+    /* Require GL retained texture banks. Netplay retains software @1x VRAM
+     * authority, while GL may use immutable banks for presentation. Software
+     * and unsupported GL launches are refused before guest boot. */
+    int requires_retained_texture_banks;
 } PSXModNetplayProfile;
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile);
@@ -43,6 +47,10 @@ int psx_mod_netplay_set_aspect(int index);
 int psx_mod_netplay_aspect(void);
 int psx_mod_netplay_has_state_digest(void);
 uint32_t psx_mod_netplay_state_digest(void);
+int psx_mod_netplay_requires_texture_banks(void);
+/* Runtime renderer index: 0=software, 1=OpenGL, 2=Vulkan. No profile leaves
+ * existing renderer policy unchanged; call only for a netplay launch. */
+int psx_mod_netplay_renderer_allowed(int renderer);
 
 #ifdef __cplusplus
 }

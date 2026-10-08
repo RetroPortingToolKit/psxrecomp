@@ -57,7 +57,7 @@ int main(void) {
     CPUState cpu;
     const uint8_t blob = 1;
     static const PSXModNetplayProfile profile = {
-        "test.simulation", "test-no-snapshots-v1", 0, 0, 0, 1u, NULL, NULL
+        "test.simulation", "test-no-snapshots-v1", 0, 0, 0, 1u, NULL, NULL, 0
     };
     memset(&cpu, 0, sizeof(cpu));
     s_configured = 1; /* No configure/filesystem needed to test request staging. */

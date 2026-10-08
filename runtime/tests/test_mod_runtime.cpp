@@ -1755,7 +1755,7 @@ int main(int argc, char** argv) {
     static const PSXModNetplayProfile profile = {
         missing_profile ? "runtime.missing-simulation" : "runtime.test-vblank",
         "runtime-coop-delay-v1", 0, 0, 1, 3u,
-        "runtime.missing-renderer", nullptr
+        "runtime.missing-renderer", nullptr, 0
     };
     check(psx_mod_register_netplay_profile(&profile), "trusted profile registration");
     check(PSXRecompV4::mod_runtime_initialize(root, "SLUS-RUNTIME", 0x80002000, {}, &error),

@@ -526,6 +526,29 @@ int main(int argc,char **argv){
  for(test_full_composite=0;test_full_composite<2;test_full_composite++){verify_wide_overlay_band();verify_wide_overlay_order();}
  test_full_composite=0;
  verify_presentation_capture();
+ /* A trusted retained-bank profile permits GL presentation in delay-sync,
+  * while the software authority still samples the original guest texture. */
+ gl_renderer_sync_cpu();
+ gl_renderer_set_cpu_auth_dual(1);
+ check(!gl_renderer_texture_banks_supported(),"dual banks refused without profile");
+ test_title_profile_banks=1;
+ check(!gl_renderer_texture_banks_supported(),"dual banks refused for inactive profile");
+ test_title_profile_active=1;
+ check(gl_renderer_texture_banks_supported(),"trusted dual retained-bank profile allowed");
+ test_title_profile_banks=0;
+ check(!gl_renderer_texture_banks_supported(),"active profile must explicitly request banks");
+ test_title_profile_banks=1;
+ s_hd_native_authority=1;
+ check(!gl_renderer_texture_banks_supported(),"HD authority still refuses retained banks");
+ s_hd_native_authority=0;
+ glb_set_draw_area(0,0,1023,511);
+ glb_vram_write(0,0,0x7c00);
+ check(gl_renderer_select_texture_bank(7),"trusted dual bank selected");
+ glb_draw_shaded_textured_triangle(100,300,0,0,0x808080,132,300,0,0,0x808080,100,332,0,0,0x808080,0,0,0x100,1);
+ check(gl_renderer_select_texture_bank(0),"reset trusted dual bank");
+ check(glb_vram_read(102,302)==0x7c00,"dual software authority samples ordinary VRAM");
+ test_title_profile_active=test_title_profile_banks=0;
+ gl_renderer_set_cpu_auth_dual(0);
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }

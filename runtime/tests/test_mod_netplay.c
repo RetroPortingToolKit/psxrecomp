@@ -48,9 +48,10 @@ int main(int argc, char** argv) {
     NetplayCoreParts baseline, live, changed;
     PSXModNetplayProfile invalid, duplicate;
     static PSXModNetplayProfile profile = {
-        "test.simulation", "test-coop-delay-v1", 0, 0, 1, 1u, NULL, gameplay_digest
+        "test.simulation", "test-coop-delay-v1", 0, 0, 1, 1u, NULL, gameplay_digest, 1
     };
     const int wide = argc > 1 && strcmp(argv[1], "--wide") == 0;
+    const int no_banks = argc > 1 && strcmp(argv[1], "--no-banks") == 0;
     uint32_t original_session, profile_session;
     char original_identity[65], current_identity[65];
     const char* fingerprint =
@@ -60,6 +61,9 @@ int main(int argc, char** argv) {
     netplay_core_digest_parts(&cpu, &baseline);
     assert(baseline.mod == 0);
     assert(psx_mod_netplay_rollback_supported());
+    assert(!psx_mod_netplay_requires_texture_banks());
+    assert(psx_mod_netplay_renderer_allowed(0) && psx_mod_netplay_renderer_allowed(1) &&
+           psx_mod_netplay_renderer_allowed(2));
     assert(psx_mod_netplay_savestates_supported());
     assert(strcmp(psx_mod_netplay_version("dev"), "dev") == 0);
     assert(psx_mod_netplay_session_id(123) == 123);
@@ -81,11 +85,17 @@ int main(int argc, char** argv) {
     invalid.fixed_aspect_mask = 8u;
     assert(!psx_mod_register_netplay_profile(&invalid));
     if (wide) profile.fixed_aspect_mask = 6u;
+    if (no_banks) profile.requires_retained_texture_banks = 0;
     assert(psx_mod_register_netplay_profile(&profile));
     assert(psx_mod_register_netplay_profile(&profile));
     duplicate = profile;
     assert(!psx_mod_register_netplay_profile(&duplicate));
     assert(!psx_mod_netplay_rollback_supported());
+    assert(psx_mod_netplay_requires_texture_banks() == !no_banks);
+    assert(psx_mod_netplay_renderer_allowed(1));
+    assert(psx_mod_netplay_renderer_allowed(0) == no_banks);
+    assert(psx_mod_netplay_renderer_allowed(2) == no_banks);
+    assert(psx_mod_netplay_renderer_allowed(-1) == no_banks);
     assert(psx_mod_netplay_savestates_supported());
     assert(strcmp(psx_mod_netplay_version("override"), "test-coop-delay-v1") == 0);
     assert(psx_mod_netplay_aspect() == (wide ? 1 : 0));

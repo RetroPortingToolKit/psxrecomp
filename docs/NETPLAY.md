@@ -39,6 +39,17 @@ An optional read-only callback contributes canonical host-owned gameplay state
 to the existing core CRC; digest logs report this as `mod=`. The callback must
 exclude pointers, padding, rendering caches and local-only input state.
 
+`requires_retained_texture_banks` opts a trusted profile into retained GL
+textures during dual-raster netplay. It requires a working OpenGL backend;
+software/Vulkan selections and an unavailable bank implementation are rejected
+before guest boot. Software at 1x remains the authoritative VRAM/GPUREAD/CRC
+source, independent of GL presentation resolution/filter preferences. Retained
+bank pixels replace textures only on the GL image; the software authority still
+samples ordinary VRAM for those commands. This policy follows the X6 co-op
+renderer behavior and does not provide software retained-bank rendering or
+prove visual equivalence to authoritative VRAM. Validate gameplay state and
+GL presentation separately. The flag is part of the session content identity.
+
 For an offline mode whose host state is not serialized, a trusted plugin can
 call `psx_mod_set_savestate_blocked(1)` and `psx_mod_set_rewind_blocked(1)` during
 activation. These policies reset before each new session; save blocking also

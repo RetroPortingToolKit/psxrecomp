@@ -18047,6 +18047,11 @@ session_reboot:
     }
     memory_init(bios_path_str.c_str());
     if (g_headless_opengl) g_video_renderer = 1;
+    if (net_cfg.enabled && !psx_mod_netplay_renderer_allowed(g_video_renderer)) {
+        std::fprintf(stderr, "psxrecomp: this title's netplay profile requires OpenGL "
+                             "retained textures; select the OpenGL renderer\n");
+        return 1;
+    }
 #ifndef PSX_HAVE_VULKAN
     /* Vulkan was not compiled in (PSX_ENABLE_VULKAN=OFF or no SDK found).
      * Refuse a vulkan request from ANY source (config / CLI / launcher seed)
@@ -18884,6 +18889,12 @@ session_reboot:
     log_present_cadence();
   }
 
+    if (net_cfg.enabled && psx_mod_netplay_requires_texture_banks() &&
+        !psx_mod_texture_banks_supported()) {
+        std::fprintf(stderr, "psxrecomp: this title's netplay profile requires "
+                             "OpenGL retained texture banks; the backend is unavailable\n");
+        return 1;
+    }
     /* Register vblank presentation callback. */
     gpu_set_vblank_callback(sdl_vblank_present);
 

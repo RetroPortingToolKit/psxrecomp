@@ -80,6 +80,7 @@
 #include "gpu_gl_renderer.h"
 #include "gpu_hd_textures.h"
 #include "mod_texture_banks.h"
+#include "mod_netplay.h"
 #include "frame_interpolation.h"
 #include "render_pass_plan.h"
 #include "render_pass.h"
@@ -5218,7 +5219,13 @@ static int init_gpu_raster(void) {
     return 1;
 }
 
-int gl_renderer_texture_banks_supported(void) { return s_raster_ok && !s_cpu_auth_dual && !s_hd_native_authority; }
+int gl_renderer_texture_banks_supported(void) {
+    /* A trusted title's bank pixels affect GL presentation only. Keep the
+     * existing software @1x VRAM authority during its delay-sync session. */
+    return s_raster_ok && !s_hd_native_authority &&
+           (!s_cpu_auth_dual || (psx_mod_netplay_is_active() &&
+                                psx_mod_netplay_requires_texture_banks()));
+}
 
 int gl_renderer_fit_wide_aspect(int disp_w, int *num, int *den) {
     /* No sync point: pure arithmetic on limits that change only while the

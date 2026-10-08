@@ -53,7 +53,7 @@ int psx_mod_netplay_content_identity(const char *execution_content, char out[65]
     char normalized[65];
     size_t n = strlen(input), i;
     psx_sha256_ctx ctx;
-    uint8_t bytes[32], policy[5];
+    uint8_t bytes[32], policy[6];
     static const char domain[] = "psx-trusted-netplay-profile-v1";
     static const char hex[] = "0123456789abcdef";
     const char *renderer;
@@ -75,6 +75,7 @@ int psx_mod_netplay_content_identity(const char *execution_content, char out[65]
     policy[2] = title_profile->rollback_supported != 0;
     policy[3] = title_profile->savestates_supported != 0;
     policy[4] = title_profile->skip_bios_intro != 0;
+    policy[5] = title_profile->requires_retained_texture_banks != 0;
     psx_sha256_init(&ctx);
     psx_sha256_update(&ctx, (const uint8_t*)domain, sizeof(domain));
     psx_sha256_update(&ctx, (const uint8_t*)normalized, n + 1);
@@ -104,4 +105,10 @@ int psx_mod_netplay_has_state_digest(void) {
 }
 uint32_t psx_mod_netplay_state_digest(void) {
     return psx_mod_netplay_has_state_digest() ? title_profile->state_digest() : 0u;
+}
+int psx_mod_netplay_requires_texture_banks(void) {
+    return title_profile && title_profile->requires_retained_texture_banks != 0;
+}
+int psx_mod_netplay_renderer_allowed(int renderer) {
+    return !psx_mod_netplay_requires_texture_banks() || renderer == 1;
 }
