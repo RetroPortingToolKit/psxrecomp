@@ -30,6 +30,9 @@ dynamic_resolution_min = "720p"
 supersample = 1.0
 dynamic_resolution_min = "native"
 frame_generation = false
+pgxp_depth_buffer = false        # PGXP itself stays on (a mod switch)
+pgxp_color_correction = false
+pgxp_seam = "off"
 ```
 
 Each `[quality.<name>]` table holds `[video]` keys. The preset is the whole
