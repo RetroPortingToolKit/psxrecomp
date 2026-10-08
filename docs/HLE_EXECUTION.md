@@ -103,6 +103,14 @@ shell skipping, AOT caching and geometry HLE are separate optimizations; their
 presence does not imply a resident loader. Keep missing bindings explicit and
 retain the slower LLE reference until each title is qualified.
 
+Stock resident catalog generators can reuse `tools/resident_catalog.py` with
+the existing `aot_overlay_pipeline.Disc` reader. `collect_entries(disc, include)`
+hashes actual sector-padded content and returns metadata only; the title's
+`include(path)` chooses its supported assets. `executable_range_sha256` validates
+declared guest code ranges against the original PS-X EXE header before hashing
+them. Titles still own their ABI, file selection and generated catalog layout.
+Include this helper in the implementation family's contract files when used.
+
 ## Validation
 
 The profile fixture links both implementations of one ABI, checks output and
