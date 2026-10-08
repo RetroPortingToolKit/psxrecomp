@@ -722,6 +722,31 @@ first layer's full 8-bit result where the console would have truncated it to
 5 bits first (at most one 5-bit step). OpenGL only.
 `PSX_ACCURATE_BLENDING=0|1` overrides it for one run and the
 `accurate_blending` TCP command switches it live.
+### Dithering (`dithering`)
+
+```toml
+[video]
+dithering = "off"     # off (default, true colour) | on | scaled
+```
+
+The PS1 GPU adds a 4x4 offset pattern to shaded and texture-modulated pixels
+before truncating them to 5 bits per channel, when the game sets GP0(E1h)
+bit 9. The OpenGL renderer has always drawn those pixels at 8 bits per channel
+with no pattern ("true colour"), and `off` keeps exactly that. `on` applies
+the PS1 pattern and 5-bit truncation per internal-resolution pixel (a fine
+grain that all but vanishes at high scales); `scaled` puts the pattern on the
+native pixel grid, so it looks like the console at any scale and the native
+VRAM a game reads back is the same at every internal resolution. Flat fills,
+flat polygons and raw textures are already 5-bit exact and are never touched.
+The pattern is applied to the source colour before semi-transparent blending;
+the console dithers the blended result at its final 8-to-5-bit write. Fixed-
+function GL blending cannot run a shader after the blend (GL 3.3 has no
+framebuffer fetch, and macOS offers none), so a dithered semi-transparent
+pixel can differ from the console by one 5-bit step; opaque pixels match.
+The dither output follows the surface basis, so it composes with
+`accurate_blending`.
+OpenGL only. `PSX_DITHERING=0|1|2` overrides it for one run and the
+`dithering` TCP command switches it live.
 
 The runtime clamps N per backend:
 

@@ -268,6 +268,7 @@ int gr_scale(void) { return 1; }
 void gr_set_texture_filter(int bilinear) { (void)bilinear; }
 int gr_texture_filter(void) { return 0; }
 void gr_set_semi_transparency(int enabled, int mode) { (void)enabled; (void)mode; }
+void gr_set_dither(int enabled) { (void)enabled; }
 void gr_set_mask_bits(int set_bit, int check_bit) { (void)set_bit; (void)check_bit; }
 void gr_set_texture_window(uint32_t raw) { (void)raw; }
 void gr_set_color_modulation(int r, int g, int b, int raw_texture) {
