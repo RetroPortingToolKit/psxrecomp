@@ -897,6 +897,11 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME mod_runtime_test COMMAND mod_runtime_test)
 
+    add_executable(neversoft_helpers_test tests/test_neversoft_helpers.cpp)
+    target_include_directories(neversoft_helpers_test PRIVATE include)
+    target_compile_features(neversoft_helpers_test PRIVATE cxx_std_17)
+    add_test(NAME neversoft_helpers_test COMMAND neversoft_helpers_test)
+
     add_executable(mod_resident_test
         tests/test_mod_resident.cpp
         src/mod_resident.cpp
