@@ -1464,7 +1464,7 @@ static int           g_render_thread = 0;
 static int           g_render_thread_frames = 2;
 /* [video] frame_generation (docs/FRAME_GENERATION.md), with the render thread. */
 static int           g_frame_generation = 0;
-static int           g_frame_generation_redraw = 0;   /* [video] frame_generation_redraw */
+static int           g_frame_generation_method = 0;   /* [video] frame_generation_method: 0 redraw, 1 reprojection */
 /* [video] present_thread (docs/RENDER_THREAD.md), with the render thread. */
 static int           g_present_thread = 0;
 /* The player's persisted pipeline choice (game.toml default < settings.toml),
@@ -9260,7 +9260,7 @@ static void render_thread_vblank(void) {
             std::fprintf(stdout, "psxrecomp: render thread on (OpenGL, %d frame(s) in flight)\n",
                          g_render_thread_frames);
             if (g_frame_generation) {
-                gl_renderer_set_frame_generation_redraw(g_frame_generation_redraw);
+                gl_renderer_set_frame_generation_method(g_frame_generation_method);
                 gl_renderer_set_frame_generation(1);
                 std::fprintf(stdout, "psxrecomp: Smooth motion (frame generation) on (render thread, "
                              "from surplus only)\n");
@@ -9393,19 +9393,22 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     g_dynres.last_bp_ns = bp_ns;
     /* Smooth motion's in-between frames share the game frame with it. */
     const double share = gl_renderer_frame_gen_real_share();
-    /* As load: the real frames' cost against their share of the frame (the
+    /* Redraw: the real frames' budget is their share of the period.
+     * Reprojection: as load, the real frames' cost against their share (the
      * period itself stays, so guest-bound detection still compares it with
      * the wall interval). */
-    DynrtSample smp{ period, wall, frames, share > 0.0 ? cost / share : cost, bp, held };
+    const bool rp = gl_renderer_frame_generation_method() == GL_FG_METHOD_REPROJECTION;
+    DynrtSample smp = rp ? DynrtSample{ period, wall, frames, share > 0.0 ? cost / share : cost, bp, held }
+                         : DynrtSample{ period * share, wall, frames, cost, bp, held };
     const int prev_level = c.level;
     const int level = dynrt_sample(&c, now_s, &smp);
     /* Frame generation only spends surplus: not while the real frames are
      * over budget (renewed every over-budget sample) and briefly after a
      * step down, while the new level's first frames settle. */
     if (level < prev_level)
-        gl_renderer_frame_gen_hold("dynres stepped down", 0.25);
+        gl_renderer_frame_gen_hold(GL_FG_HOLD_STEP_DOWN, 0.25);
     else if (c.over_streak > 0)
-        gl_renderer_frame_gen_hold("dynres over budget", 0.1);
+        gl_renderer_frame_gen_hold(GL_FG_HOLD_OVER_BUDGET, 0.1);
     if (c.windows != g_dynres.rt_last_windows) {
         g_dynres.rt_last_windows = c.windows;
         g_dynres.rt_win_cpu_ms = g_dynres.rt_acc_frames
@@ -15792,7 +15795,7 @@ int main(int argc, char** argv) {
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
-            g_frame_generation_redraw = gc.runtime.video_frame_generation_redraw ? 1 : 0;
+            g_frame_generation_method = gc.runtime.video_frame_generation_method;
             /* [timing] guest_cycle_scale is a title constant from game.toml
              * (no player setting). PSX_GUEST_CYCLE_SCALE overrides it for
              * testing only. */
@@ -18164,6 +18167,14 @@ session_reboot:
         g_present_thread_slots = std::atoi(e) > 0 ? std::atoi(e) : 3;
     if (const char* e = std::getenv("PSX_FRAME_GEN"))
         g_frame_generation = (*e && *e != '0') ? 1 : 0;
+    /* PSX_FRAME_GEN_METHOD=redraw|reprojection overrides [video]
+     * frame_generation_method for one run. */
+    if (const char* e = std::getenv("PSX_FRAME_GEN_METHOD")) {
+        if (!std::strcmp(e, "reprojection")) g_frame_generation_method = GL_FG_METHOD_REPROJECTION;
+        else if (!std::strcmp(e, "redraw")) g_frame_generation_method = GL_FG_METHOD_REDRAW;
+        else if (*e) std::fprintf(stderr, "psxrecomp: PSX_FRAME_GEN_METHOD=%s ignored "
+                                  "(redraw|reprojection)\n", e);
+    }
     if (const char* e = std::getenv("PSX_RENDER_THREAD_FRAMES"))
         g_render_thread_frames = std::atoi(e) > 0 ? std::atoi(e) : 2;
     /* Scanlines: env override wins over config, same as the corrections above,

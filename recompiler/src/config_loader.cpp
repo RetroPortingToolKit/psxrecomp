@@ -865,8 +865,12 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("frame_generation")) {
             rt.video_frame_generation = toml::find<bool>(video, "frame_generation");
         }
-        if (video.contains("frame_generation_redraw")) {
-            rt.video_frame_generation_redraw = toml::find<bool>(video, "frame_generation_redraw");
+        if (video.contains("frame_generation_method")) {
+            const auto m = toml::find<std::string>(video, "frame_generation_method");
+            if      (m == "redraw")       rt.video_frame_generation_method = 0;
+            else if (m == "reprojection") rt.video_frame_generation_method = 1;
+            else throw std::runtime_error(fmt::format(
+                "[video] frame_generation_method must be \"redraw\"|\"reprojection\": {}", m));
         }
         if (video.contains("vsync")) {
             const auto mode = toml::find<std::string>(video, "vsync");

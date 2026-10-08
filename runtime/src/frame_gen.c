@@ -739,7 +739,6 @@ void fg_cost_cold(FgCost *c, int n) { if (n > c->cold) c->cold = n; }
 void fg_cost_add(FgCost *c, double cost_s, double fit_s) {
     if (cost_s <= 0.0) return;
     if (c->cold > 0) { c->cold--; c->discarded++; return; }
-
     c->samples++;
     if (c->probing || c->ema <= 0.0) {
         c->ema = cost_s;
@@ -755,7 +754,7 @@ void fg_cost_add(FgCost *c, double cost_s, double fit_s) {
     } else {
         /* One stall (an allocation, a driver hiccup) moves the estimate by
          * at most a few times itself; a lasting change still wins. */
-        if (cost_s > 4.0 * c->ema) cost_s = 4.0 * c->ema;
+        if (c->clamp_spikes && cost_s > 4.0 * c->ema) cost_s = 4.0 * c->ema;
         c->ema = c->ema * 0.8 + cost_s * 0.2;
     }
     if (fit_s <= 0.0 || c->ema <= fit_s) c->blocked_since = -1.0;

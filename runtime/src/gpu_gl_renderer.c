@@ -193,6 +193,8 @@ typedef void   (APIENTRY *PFN_glGenVertexArrays)(GLsizei, GLuint *);
 typedef void   (APIENTRY *PFN_glBindVertexArray)(GLuint);
 typedef void   (APIENTRY *PFN_glActiveTexture)(GLenum);
 typedef void   (APIENTRY *PFN_glGenBuffers)(GLsizei, GLuint *);
+typedef void   (APIENTRY *PFN_glDeleteBuffers)(GLsizei, const GLuint *);
+typedef void   (APIENTRY *PFN_glDeleteVertexArrays)(GLsizei, const GLuint *);
 typedef void   (APIENTRY *PFN_glBindBuffer)(GLenum, GLuint);
 typedef void   (APIENTRY *PFN_glBufferData)(GLenum, ptrdiff_t, const void *, GLenum);
 typedef void   (APIENTRY *PFN_glVertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void *);
@@ -263,6 +265,8 @@ static PFN_glGenVertexArrays   p_glGenVertexArrays;
 static PFN_glBindVertexArray   p_glBindVertexArray;
 static PFN_glActiveTexture     p_glActiveTexture;
 static PFN_glGenBuffers        p_glGenBuffers;
+static PFN_glDeleteBuffers     p_glDeleteBuffers;
+static PFN_glDeleteVertexArrays p_glDeleteVertexArrays;
 static PFN_glBindBuffer        p_glBindBuffer;
 static PFN_glBufferData        p_glBufferData;
 static PFN_glVertexAttribPointer p_glVertexAttribPointer;
@@ -336,6 +340,7 @@ static int load_modern_gl(void) {
     LOAD(p_glBlendEquationSeparate, "glBlendEquationSeparate");
     LOAD(p_glGenVertexArrays, "glGenVertexArrays"); LOAD(p_glBindVertexArray, "glBindVertexArray");
     LOAD(p_glActiveTexture, "glActiveTexture");  LOAD(p_glGenBuffers, "glGenBuffers");
+    LOAD(p_glDeleteBuffers, "glDeleteBuffers"); LOAD(p_glDeleteVertexArrays, "glDeleteVertexArrays");
     LOAD(p_glBindBuffer, "glBindBuffer");        LOAD(p_glBufferData, "glBufferData");
     LOAD(p_glVertexAttribPointer, "glVertexAttribPointer");
     LOAD(p_glEnableVertexAttribArray, "glEnableVertexAttribArray");
@@ -10503,7 +10508,7 @@ static FgVert   *s_fg_verts = NULL; static uint32_t s_fg_verts_cap = 0;
 static float    *s_fg_px = NULL, *s_fg_py = NULL; static uint32_t s_fg_pos_cap = 0;
 static FgCamFit  s_fg_fit;
 static float     s_fg_margin[FG_MAX_VIEWS][4];   /* fg_cam_place, per generated frame */
-static int       s_fg_reproject = 1;            /* reprojection (else redraw) */
+static int       s_fg_reproject = 0;            /* [video] frame_generation_method: reprojection (opt-in), else redraw */
 static void      rp_snapshot_list(int li, const int disp[4]);
 static void fg_blit2(GLuint src, GLuint dst, int sx, int sy, int dx, int dy, int w, int h);
 static int       s_fg_replay_objects_only = 0;  /* fg_replay: cars only */
@@ -10570,6 +10575,7 @@ static double fg_now_s(void) { return (double)rt_now_ns() * 1e-9; }
 
 static FgCost *fg_cost(void) {
     if (!s_fg_cost_init) { fg_cost_init(&s_fg_cost, 2.0, 16.0); s_fg_cost_init = 1; }
+    s_fg_cost.clamp_spikes = s_fg_reproject;
     return &s_fg_cost;
 }
 
@@ -11323,7 +11329,7 @@ static void fg_compose(const FgList *b, GLuint wide_fbo, GLuint wide_tex, int li
  * when a frame was presented. `swap` 0 leaves the composed image in the
  * back buffer (tests). */
 
-/* ---- frame generation: reprojection (default) ------------------------------
+/* ---- frame generation: reprojection (opt-in) ------------------------------
  * An in-between frame warps the newer real frame's finished image by the
  * in-between camera instead of drawing the scene again. Once per game frame
  * a small image of the newer frame's camera depth is rasterized from its
@@ -11337,8 +11343,10 @@ static void fg_compose(const FgList *b, GLuint wide_fbo, GLuint wide_tex, int li
  * edge or a keep pixel are not drawn: there the copy of the real frame
  * underneath shows. Cars are then drawn again at their own in-between
  * position from the recorded list (cheap); the HUD stays as drawn.
- * [video] frame_generation_redraw / PSX_FRAME_GEN_REDRAW=1: the previous
- * path (the whole list drawn again per generated frame). */
+ * Only with [video] frame_generation_method = "reprojection" (or
+ * PSX_FRAME_GEN_METHOD=reprojection); redraw, the default, runs and
+ * allocates none of this. The object rules below (cars, needles, small
+ * views) were tuned on R4 (docs/FRAME_GENERATION.md). */
 static GLuint s_rp_zprog = 0, s_rp_wprog = 0, s_rp_vao = 0, s_rp_vbo = 0, s_rp_evao = 0;
 static GLuint s_rp_ztex = 0, s_rp_zfbo = 0;
 static int    s_rp_zw = 0, s_rp_zh = 0;
@@ -11347,7 +11355,13 @@ static uint64_t s_rp_key = 0;   /* the game frame the depth image is of */
 static uint64_t s_rp_frames = 0, s_rp_fallback = 0;
 static GLint  s_rp_z_uSize = -1;
 static GLint  s_rp_w_uZ, s_rp_w_uZsize, s_rp_w_uZs, s_rp_w_uGrid, s_rp_w_uSize, s_rp_w_uOx,
-              s_rp_w_uView, s_rp_w_uM, s_rp_w_uSrc, s_rp_w_uSrcOrg, s_rp_w_uS;
+              s_rp_w_uView, s_rp_w_uM, s_rp_w_uSrc, s_rp_w_uSrcOrg, s_rp_w_uS, s_rp_w_uDbg;
+static GLint  s_rp_r_uSrc, s_rp_r_uZ, s_rp_r_uZsize, s_rp_r_uOrg, s_rp_r_uSrcOrg, s_rp_r_uS,
+              s_rp_r_uPrev, s_rp_r_uHasPrev, s_rp_r_uDbg;
+/* Diagnostics, read once with the programs: PSX_RP_DEBUG=1 (warp grid) / 2
+ * (pixel kinds), PSX_RP_NOPREV (HUD needles over the newer frame's dial). */
+static int    s_rp_dbg = 0, s_rp_noprev = 0;
+static GLuint s_rp_last_dst = 0;   /* tests: the surface the last warp drew into */
 enum { RP_ZS = 2 };   /* depth texels per native pixel */
 
 static const char *RP_Z_VS =
@@ -11434,6 +11448,22 @@ static int rp_resources(void) {
     s_rp_w_uSrc = p_glGetUniformLocation(s_rp_wprog, "u_src");
     s_rp_w_uSrcOrg = p_glGetUniformLocation(s_rp_wprog, "u_srcorg");
     s_rp_w_uS = p_glGetUniformLocation(s_rp_wprog, "u_S");
+    s_rp_w_uDbg = p_glGetUniformLocation(s_rp_wprog, "u_dbg");
+    s_rp_r_uSrc = p_glGetUniformLocation(s_rp_rprog, "u_src");
+    s_rp_r_uZ = p_glGetUniformLocation(s_rp_rprog, "u_z");
+    s_rp_r_uZsize = p_glGetUniformLocation(s_rp_rprog, "u_zsize");
+    s_rp_r_uOrg = p_glGetUniformLocation(s_rp_rprog, "u_org");
+    s_rp_r_uSrcOrg = p_glGetUniformLocation(s_rp_rprog, "u_srcorg");
+    s_rp_r_uS = p_glGetUniformLocation(s_rp_rprog, "u_S");
+    s_rp_r_uPrev = p_glGetUniformLocation(s_rp_rprog, "u_prev");
+    s_rp_r_uHasPrev = p_glGetUniformLocation(s_rp_rprog, "u_has_prev");
+    s_rp_r_uDbg = p_glGetUniformLocation(s_rp_rprog, "u_dbg");
+    {
+        const char *e = getenv("PSX_RP_DEBUG");
+        s_rp_dbg = e ? atoi(e) : 0;
+        e = getenv("PSX_RP_NOPREV");
+        s_rp_noprev = e && *e && *e != '0';
+    }
     p_glGenVertexArrays(1, &s_rp_vao);
     p_glBindVertexArray(s_rp_vao);
     p_glGenBuffers(1, &s_rp_vbo);
@@ -11701,6 +11731,13 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         p_glUseProgram(s_rp_wprog);
+        /* The renderer's own bindings on units 1 and 2 (its programs sample
+         * them), put back below. */
+        GLint keep_tex[3] = { 0, 0, 0 };
+        for (int u = 1; u <= 2; u++) {
+            p_glActiveTexture(PSXGL_TEXTURE0 + u);
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &keep_tex[u]);
+        }
         p_glActiveTexture(PSXGL_TEXTURE0 + 1);
         glBindTexture(GL_TEXTURE_2D, s_rp_ztex);
         p_glActiveTexture(PSXGL_TEXTURE0);
@@ -11716,34 +11753,36 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
         p_glUniform4fv(s_rp_w_uM, 12, &M[0][0]);
         p_glUniform2f(s_rp_w_uSrcOrg, 0.0f, 0.0f);
         p_glUniform1f(s_rp_w_uS, (float)S);
-        {   static int dbg = -1;
-            if (dbg < 0) { const char *e = getenv("PSX_RP_DEBUG"); dbg = e ? atoi(e) : 0; }
-            p_glUniform1i(p_glGetUniformLocation(s_rp_wprog, "u_dbg"), dbg);
-            (void)dbg; }
+        p_glUniform1i(s_rp_w_uDbg, s_rp_dbg);
         p_glBindVertexArray(s_rp_evao);
         glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(W * H * 6));
         glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
+        /* The warp's depth (nearest wins, its own scale) is not the scene's:
+         * the cars drawn next test only against each other, as on a fresh
+         * frame (with PGXP depth they would test LEQUAL against it). */
+        glClear(GL_DEPTH_BUFFER_BIT);
         /* 2D and HUD pixels back over the warp, where the real frame has them. */
         p_glUseProgram(s_rp_rprog);
-        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_src"), 0);
-        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_z"), 1);
-        p_glUniform2i(p_glGetUniformLocation(s_rp_rprog, "u_zsize"), zw, zh);
-        p_glUniform2f(p_glGetUniformLocation(s_rp_rprog, "u_org"), (float)(x0 * S), (float)(y0 * S));
-        p_glUniform2f(p_glGetUniformLocation(s_rp_rprog, "u_srcorg"), 0.0f, 0.0f);
-        p_glUniform1f(p_glGetUniformLocation(s_rp_rprog, "u_S"), (float)S);
+        p_glUniform1i(s_rp_r_uSrc, 0);
+        p_glUniform1i(s_rp_r_uZ, 1);
+        p_glUniform2i(s_rp_r_uZsize, zw, zh);
+        p_glUniform2f(s_rp_r_uOrg, (float)(x0 * S), (float)(y0 * S));
+        p_glUniform2f(s_rp_r_uSrcOrg, 0.0f, 0.0f);
+        p_glUniform1f(s_rp_r_uS, (float)S);
         p_glActiveTexture(PSXGL_TEXTURE0 + 2);
-        glBindTexture(GL_TEXTURE_2D, ok >= 0 ? s_rp_ls_tex[ok] : 0);
+        /* Without an older snapshot u_prev is unused, but a sampler must
+         * still have a complete texture (Apple's GL warns otherwise). */
+        glBindTexture(GL_TEXTURE_2D, ok >= 0 ? s_rp_ls_tex[ok] : s_rp_snap_tex);
         p_glActiveTexture(PSXGL_TEXTURE0);
-        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_prev"), 2);
-        p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_has_prev"), ok >= 0 && !getenv("PSX_RP_NOPREV") ? 1 : 0);
-        {   const char *e = getenv("PSX_RP_DEBUG");
-            p_glUniform1i(p_glGetUniformLocation(s_rp_rprog, "u_dbg"), e ? atoi(e) : 0); }
+        p_glUniform1i(s_rp_r_uPrev, 2);
+        p_glUniform1i(s_rp_r_uHasPrev, ok >= 0 && !s_rp_noprev ? 1 : 0);
+        p_glUniform1i(s_rp_r_uDbg, s_rp_dbg);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         s_rp_t_w = (double)(host_now_ns_rthf() - qw) * 1e-6;
-        for (int u = 2; u >= 1; u--) {   /* leave no float texture bound */
+        for (int u = 2; u >= 1; u--) {   /* the renderer's bindings back */
             p_glActiveTexture(PSXGL_TEXTURE0 + u);
-            glBindTexture(GL_TEXTURE_2D, 0);
+            glBindTexture(GL_TEXTURE_2D, (GLuint)keep_tex[u]);
         }
         p_glActiveTexture(PSXGL_TEXTURE0);
     }
@@ -11755,6 +11794,7 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
     if (was_blend) glEnable(GL_BLEND);
     if (was_stencil) glEnable(GL_STENCIL_TEST);
     s_rp_frames++;
+    s_rp_last_dst = dst_fbo;
     return 1;
 fail:
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
@@ -11764,6 +11804,41 @@ fail:
     if (was_stencil) glEnable(GL_STENCIL_TEST);
     s_rp_fallback++;
     return 0;
+}
+
+/* Everything reprojection allocated (programs, snapshots, depth image,
+ * buffers): released when Smooth motion goes off or redraw is chosen, so
+ * neither keeps any of it. Context thread. */
+static void rp_free(void) {
+    if (!s_ctx) return;
+    for (int k = 0; k < 2; k++) {
+        if (s_rp_ls_fbo[k]) p_glDeleteFramebuffers(1, &s_rp_ls_fbo[k]);
+        if (s_rp_ls_tex[k]) glDeleteTextures(1, &s_rp_ls_tex[k]);
+        s_rp_ls_fbo[k] = s_rp_ls_tex[k] = 0;
+        s_rp_ls_w[k] = s_rp_ls_h[k] = s_rp_ls_S[k] = 0; s_rp_ls_li[k] = -1;
+    }
+    if (s_rp_zfbo) p_glDeleteFramebuffers(1, &s_rp_zfbo);
+    if (s_rp_ztex) glDeleteTextures(1, &s_rp_ztex);
+    s_rp_zfbo = s_rp_ztex = 0; s_rp_zw = s_rp_zh = 0; s_rp_key = 0;
+    if (s_rp_vbo) p_glDeleteBuffers(1, &s_rp_vbo);
+    if (s_rp_vao) p_glDeleteVertexArrays(1, &s_rp_vao);
+    if (s_rp_evao) p_glDeleteVertexArrays(1, &s_rp_evao);
+    s_rp_vbo = s_rp_vao = s_rp_evao = 0;
+    if (s_rp_zprog) p_glDeleteProgram(s_rp_zprog);
+    if (s_rp_wprog) p_glDeleteProgram(s_rp_wprog);
+    if (s_rp_rprog) p_glDeleteProgram(s_rp_rprog);
+    s_rp_zprog = s_rp_wprog = s_rp_rprog = 0;
+    free(s_rp_v); s_rp_v = NULL; s_rp_vcap = 0;
+    free(s_rp_needle); s_rp_needle = NULL; s_rp_needle_cap = s_rp_needle_n = 0;
+    s_rp_last_dst = 0;
+}
+
+/* Tests: reprojection holds nothing (no program, surface or buffer). */
+static int rp_allocated(void) {
+    int any = s_rp_zprog || s_rp_wprog || s_rp_rprog || s_rp_vao || s_rp_vbo || s_rp_evao ||
+              s_rp_zfbo || s_rp_ztex || s_rp_v || s_rp_needle;
+    for (int k = 0; k < 2; k++) any |= s_rp_ls_fbo[k] || s_rp_ls_tex[k];
+    return any;
 }
 
 static int fg_generate(double t, int swap) {
@@ -11912,9 +11987,11 @@ static void rth_present_payload(uint16_t op, const uint8_t *p);   /* below */
  * up to 8 s: one hiccup costs a fraction of a second of generation. */
 /* Reprojected in-between frames cost a millisecond: an overload is the
  * real frames' own, so the hold is short (0.1 s, at most 1 s). */
-#define FG_BRK_INIT() do { if (!s_fg_brk_init) { \
+/* s_fg_brk_init: 1 + the method the breaker was set up for; a method switch
+ * starts that method's breaker afresh. */
+#define FG_BRK_INIT() do { if (s_fg_brk_init != 1 + s_fg_reproject) { \
         if (s_fg_reproject) fg_breaker_init(&s_fg_brk, 0.1, 1.0, 1.0); \
-        else fg_breaker_init(&s_fg_brk, 0.5, 8.0, 2.0); s_fg_brk_init = 1; } } while (0)
+        else fg_breaker_init(&s_fg_brk, 0.5, 8.0, 2.0); s_fg_brk_init = 1 + s_fg_reproject; } } while (0)
 static FgCeiling s_fg_ceil;
 static int       s_fg_ceil_init = 0;
 static FgCeiling *fg_ceil(void) {
@@ -12340,23 +12417,28 @@ void gl_renderer_set_frame_generation(int on) {
     s_fg_on = on ? 1 : 0;
     const char *e = getenv("PSX_FRAME_GEN_FORCE");
     s_fg_force = e && e[0] == '1';
-    e = getenv("PSX_FRAME_GEN_REDRAW");
-    if (e && *e) s_fg_reproject = e[0] == '0';
     if (!s_fg_on) {
-        if (s_ctx) fg_surfaces_free();
+        if (s_ctx) { fg_surfaces_free(); rp_free(); }
         fg_invalidate();
     } else {
         fg_invalidate();
     }
 }
 int gl_renderer_frame_generation(void) { return s_fg_on; }
-/* [video] frame_generation_redraw: the whole recorded list drawn again per
- * generated frame (the earlier path) instead of reprojection. */
-void gl_renderer_set_frame_generation_redraw(int on) {
-    GL_RT_SYNC("frame_generation_redraw");
-    s_fg_reproject = on ? 0 : 1;
-    const char *e = getenv("PSX_FRAME_GEN_REDRAW");
-    if (e && *e) s_fg_reproject = e[0] == '0';
+/* [video] frame_generation_method (PSX_FRAME_GEN_METHOD, resolved by the
+ * frontend): redraw, the default, draws the whole recorded list again per
+ * generated frame; reprojection (a title opts in) warps the newer real frame.
+ * Redraw allocates and runs nothing of reprojection's. */
+void gl_renderer_set_frame_generation_method(int method) {
+    GL_RT_SYNC("frame_generation_method");
+    const int rp = method == GL_FG_METHOD_REPROJECTION;
+    if (rp == s_fg_reproject) return;
+    s_fg_reproject = rp;
+    if (!rp) rp_free();
+    fg_invalidate();
+}
+int gl_renderer_frame_generation_method(void) {
+    return s_fg_reproject ? GL_FG_METHOD_REPROJECTION : GL_FG_METHOD_REDRAW;
 }
 
 void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
@@ -12395,16 +12477,17 @@ void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz) {
 /* Not a breaker trip: generation pauses while the real frames are under
  * pressure (dynamic resolution over budget or stepping down) for the caller's
  * short tail, without the breaker's escalating holds. */
-void gl_renderer_frame_gen_hold(const char *reason, double secs) {
+void gl_renderer_frame_gen_hold(GlFgHold kind, double secs) {
     if (!s_fg_on) return;
+    const char *reason = kind == GL_FG_HOLD_OVER_BUDGET ? "dynres over budget" : "dynres stepped down";
     /* Reprojected in-between frames cost about a millisecond of the GPU
      * each: real frames over budget (heavy geometry, dynamic resolution at
      * its floor) are not a reason to stop them. A step down still pauses
      * them briefly while its surfaces settle. */
-    if (s_fg_reproject && reason && strstr(reason, "over budget")) return;
+    if (s_fg_reproject && kind == GL_FG_HOLD_OVER_BUDGET) return;
     if (s_fg_reproject && secs > 0.05) secs = 0.05;
     if (secs <= 0.0) secs = 0.1;
-    atomic_store(&s_fg_hold_reason, reason ? reason : "hold");
+    atomic_store(&s_fg_hold_reason, reason);
     const uint64_t until = rt_now_ns() + (uint64_t)(secs * 1e9);
     if (until > atomic_load(&s_fg_hold_until)) atomic_store(&s_fg_hold_until, until);
 }

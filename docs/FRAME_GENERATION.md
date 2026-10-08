@@ -8,7 +8,25 @@ runs and the renderer is the render thread of docs/RENDER_THREAD.md.
 [video]
 render_thread = true
 frame_generation = true
+# How in-between frames are made: "redraw" (default) or "reprojection".
+frame_generation_method = "redraw"
 ```
+
+`frame_generation_method` (`PSX_FRAME_GEN_METHOD=redraw|reprojection`
+overrides it for one run):
+
+- **`redraw`** (the default for every title): each in-between frame draws the
+  recorded list again from an in-between camera (How, below).
+- **`reprojection`** (opt-in per title, in its `game.toml`): each in-between
+  frame warps the newer real frame's finished image (Reprojection, below). It
+  is cheaper (about a millisecond of GPU per frame) but its object rules were
+  tuned on R4 and are assumptions about how a game draws; on other titles it
+  has shown flicker (THPS2), so no title gets it unless it opts in.
+
+With Smooth motion off, or in `redraw`, nothing of reprojection runs or is
+allocated: no snapshots, depth image, warp programs, HUD matching, per-frame
+`getenv` or uniform lookups. Switching to `redraw` (or Smooth motion off)
+frees what reprojection held.
 
 ## Rule
 
@@ -96,6 +114,67 @@ has measured time to spare.
 - **Sync points** show the waiting real frame and restart the lists at the
   next flip.
 
+## Reprojection (`frame_generation_method = "reprojection"`)
+
+- **Source.** At each flip the newer list's finished image is copied
+  (`rp_snapshot_list`): the game draws on into its buffers while the
+  in-between frames are shown. The camera is fitted for the newer frame
+  (`fg_cam_fit`, a view that fails leaves its vertices unchanged; a third of
+  the pairs is enough, since whatever moves on its own is redrawn).
+- **Depth image** (once per game frame, 2 texels per native pixel): the
+  newer list's recorded triangles in painter order, each pixel one of world
+  (every corner placed by the camera: its 1/z and view), object, keep, or HUD
+  needle.
+- **Warp** (per in-between frame, one draw): a grid with a vertex per native
+  pixel; a world vertex is unprojected with its depth, moved by its view's
+  in-between camera (`fg_view_affine`) and projected again (nearest wins);
+  cells over a depth edge, a view boundary or a non-world pixel are not
+  drawn, so the snapshot underneath shows there (disocclusion is filled with
+  the newer frame). Keep pixels (2D, HUD, the mirror) are then put back from
+  the snapshot; needle pixels from the older snapshot. The warp's depth is
+  cleared before anything else is drawn (with PGXP depth the cars would
+  otherwise test `LEQUAL` against it).
+- **Objects.** Cars are drawn again from the recorded list at their own
+  in-between position; HUD needles are moved as `fg_hud_lerp` moves them.
+- **Breaker.** Each method has its own breaker settings, set again when the
+  method changes: reprojection holds 0.1 s (at most 1 s; redraw 0.5 s to
+  8 s). Dynamic resolution over budget does not pause reprojection (its
+  frames cost little; a step down still pauses it 0.05 s), and a late guest
+  frame trips it only when its in-between frames cost over 3 ms of CPU. The
+  generated-frame cost estimate moves at most 4x per sample.
+- **Dynamic resolution** budgets the real frames as their cost against their
+  share of the frame (redraw: the share of the period).
+
+### Object rules (R4-tuned assumptions)
+
+These rules decide what the warp moves and what is drawn again. They were
+tuned on R4; a title that opts in gets them as they are:
+
+- **Cars** are triangles the fit calls objects (`FG_PLACE_OBJECT`) whose
+  corners really moved against the world (more than 4 % of their depth from
+  where the camera alone puts them; near road subdivided past the fit's
+  tolerance is world), **textured** (an untextured gradient is backdrop), and
+  **small** (at most 96 x 64 native px). Anything else the fit moves on its
+  own (a sky dome) is backdrop the warp keeps where it is.
+- **Backdrop.** A view's triangles drawn before its first world triangle are
+  backdrop and are not drawn again.
+- **HUD needles** are 2D triangles at most 48 px on a side that moved at most
+  24 px per corner between the two frames and drew the same thing
+  (`fg_hud_match`); they are drawn at their in-between position over the
+  older frame's dial.
+- **HUD protection.** 2D pieces up to 160 x 120 px (rects and triangles) of
+  the newer and the older list are keep pixels: the newer frame's pixels are
+  shown there, never warped. Big 2D (a backdrop drawn first) is not.
+- **Small views** (a view whose area is under 15 % of the biggest, R4's
+  mirror) are keep: shown as the newer frame drew them.
+- **Split screen.** Each view is fitted on its own; one view's failed fit
+  leaves the others reprojected.
+
+Diagnostics (read once when the programs are built): `PSX_RP_DEBUG=1` shows
+the warp grid, `=2` the pixel kinds; `PSX_RP_NOPREV=1` draws needles over the
+newer frame's dial. `frame_gen` reports `reproject`, `reprojected`,
+`reproject_fallback`, `rp_ms` and `rp_zn`.
+
 ## Limits
 
 - Only GTE-projected triangles move; sprites, lines and fills are the
@@ -142,4 +221,13 @@ the in-between frames that lead up to it).
   30 Hz scene, VRAM and native-wide presents, flipping right after drawing
   and a VBlank late: the distinct real presented images are identical with
   generation off and on, generated frames are presented, and an in-between
-  frame composed at t = 1 / t = 0 equals the newer / older real frame.
+  frame composed at t = 1 / t = 0 equals the newer / older real frame. In
+  redraw (the default) the fixture checks that nothing of reprojection ran
+  or was allocated and prints the phase 0.5 image's digest (`p05=`), which
+  matches master's. With `FG_METHOD=reprojection` the warp's pixels are
+  checked: with a parallax pan (a projected backdrop twice as far as the
+  triangles) phase 0.5 matches the redraw of the same pair (under 5 % of the
+  pixels differ, under half of what the unwarped newer frame differs), every
+  pixel is a real frame's or the redraw's (no holes), the HUD is exactly the
+  newer frame's, the real frames are those of generation off, and with PGXP
+  depth the warp leaves no depth behind for the cars.

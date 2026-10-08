@@ -192,6 +192,7 @@ typedef struct FgCost {
     double blocked_since;/* when the estimate started keeping the plan at 0 */
     double probe_at;     /* when the probe was granted */
     double probe_s, base_probe_s, max_probe_s;
+    int    clamp_spikes; /* reprojection: one sample moves the estimate at most 4x */
 } FgCost;
 void   fg_cost_init(FgCost *c, double probe_s, double max_probe_s);
 void   fg_cost_cold(FgCost *c, int n);

@@ -5,7 +5,11 @@ scale and present path (VRAM, native-wide), the fixture runs with the render
 thread on and generation off, then on (forced). The real presented images, in
 order, must be identical; the run with generation on must have presented
 generated frames and passes its own endpoint checks (phase 1 = the newer real
-image, phase 0 = the older one). Build flags and skips as
+image, phase 0 = the older one; in redraw, the default, nothing of
+reprojection ran or was allocated). Then with reprojection
+(FG_METHOD=reprojection, with and without PGXP depth): the warp's pixel checks
+pass and the real images are those of the run with generation off. Build
+flags and skips as
 run_gl_render_thread.py.
 """
 import argparse
@@ -139,6 +143,30 @@ def main():
                 print(f"FAIL scale {s} {path} {timing}: generated frames off={runs[0]['generated']} "
                       f"on={runs[1]['generated']}")
                 ok = False
+            # Reprojection ([video] frame_generation_method = "reprojection",
+            # opt-in): the fixture checks the warp's pixels (and with PGXP
+            # depth, that the warp leaves no depth for the cars); the real
+            # frames stay those of the run with generation off.
+            # pan 1 (the scene above, with PGXP depth): its real frames must be
+            # the generation-off run's; pan 6: a camera move the warp must follow.
+            for pgxp, pan in (("1", "1"), ("0", "6")):
+                env = dict(os.environ, FG_METHOD="reprojection", FG_PGXP=pgxp, FG_PAN=pan)
+                command = [str(c) for c in (probe, s, 1, path, args.frames, timing)]
+                r = subprocess.run(command, cwd=dest, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", env=env)
+                receipt.append({"cmd": command, "env": {"FG_METHOD": "reprojection", "FG_PGXP": pgxp, "FG_PAN": pan},
+                                "exit": r.returncode, "stdout": r.stdout, "stderr": r.stderr[-4000:]})
+                (dest / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+                p = parse(r.stdout)
+                info = [l for l in r.stdout.splitlines()
+                        if l.startswith(("reproject", "pgxp", "presents"))]
+                print(f"scale {s} {path} {timing} reprojection pgxp={pgxp} pan={pan}: exit={r.returncode}", info,
+                      r.stderr.strip()[-800:])
+                m = re.search(r"^presents=(\d+) generated=(\d+)$", r.stdout, re.M)
+                if (r.returncode or p["failures"] != 0 or not m or int(m[2]) <= 0
+                        or (pan == "1" and p["real"] != runs[0]["real"])):
+                    print(f"FAIL scale {s} {path} {timing} reprojection pgxp={pgxp} pan={pan}")
+                    ok = False
             # Present thread ([video] present_thread): the fixture checks the
             # window shows every composed image bit for bit, in order. The real
             # images match the direct-swap run: bit for bit, except that

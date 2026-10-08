@@ -17,6 +17,14 @@
  * with generation on the endpoint checks: the in-between image composed at
  * phase 1 equals the newer real frame's image, at phase 0 the older one's
  * (the last two game frames move without a jump, so every triangle pairs).
+ * FG_METHOD=reprojection (env) generates by reprojection
+ * (docs/FRAME_GENERATION.md) and checks the warp's pixels: phase 0.5 against
+ * the redraw of the same pair (known camera pan), every pixel one of the
+ * real frames' or the redraw's (disocclusion filled), the HUD exactly the
+ * newer frame's; FG_PGXP=1 adds PGXP depth and checks the warp leaves no
+ * depth behind for the cars drawn after it. In redraw (the default) the
+ * fixture checks reprojection ran and allocated nothing, and prints the
+ * phase 0.5 image's digest (p05=) to compare with master.
  * Original source-owned scene; no retail payload. */
 static void fixture_present(int generated);
 #define GL_PRESENT_TEST_HOOK(gen) fixture_present(gen)
@@ -179,6 +187,7 @@ static void textures(void) {
 }
 
 static int wide_mode;
+static int g_pan = 1;   /* FG_PAN: camera pan per game frame, px */
 /* What gpu.c records for a GTE-projected triangle (gl_renderer_fg_source):
  * vertex identities and camera-space positions that project (H = z = 1000)
  * to the triangle's screen positions relative to its buffer. */
@@ -202,6 +211,38 @@ static void fixture_sources(int i, int bx, int x, int y) {
     gl_renderer_fg_source(id, pc, h, xs, ys);
 }
 
+/* FG_PAN > 1: a projected backdrop twice as far as the triangles (gouraud
+ * tiles, 40 px at H = 1000, z = 2000) behind them, so the whole picture is
+ * world the warp moves, with parallax: the near triangles move twice as far
+ * as the backdrop and uncover it at their trailing edges. */
+static void backdrop(int g, int bx) {
+    const int cx = (g % 9) * g_pan;   /* the camera, as the triangles see it */
+    for (int ty = 0; ty < 7; ty++)
+        for (int tx = 0; tx < 10; tx++) {
+            int gx[4], gy[4]; uint32_t gid[4]; uint32_t col[4];
+            for (int c = 0; c < 4; c++) {
+                const int X = (tx + (c & 1)) * 80 - 80, Y = (ty + (c >> 1)) * 80 - 40;
+                gx[c] = bx + (X + cx) / 2;   /* the triangles move right with it */ gy[c] = Y / 2;
+                gid[c] = 1000u + (uint32_t)((ty + (c >> 1)) * 16 + tx + (c & 1));
+                const uint32_t h = gid[c] * 2654435761u;
+                col[c] = ((h >> 3) & 0x1f) | (((h >> 11) & 0x1f) << 5) | (((h >> 19) & 0x1f) << 10);
+            }
+            static const int tri[2][3] = { { 0, 1, 2 }, { 1, 3, 2 } };
+            for (int t = 0; t < 2; t++) {
+                uint32_t id[3]; int32_t pc[9], h[3], xs[3], ys[3];
+                for (int k = 0; k < 3; k++) {
+                    const int c = tri[t][k];
+                    id[k] = gid[c]; xs[k] = gx[c]; ys[k] = gy[c];
+                    pc[3 * k] = (xs[k] - bx) * 2; pc[3 * k + 1] = ys[k] * 2; pc[3 * k + 2] = 2000; h[k] = 1000;
+                }
+                gl_renderer_fg_source(id, pc, h, xs, ys);
+                const int a = tri[t][0], b = tri[t][1], c = tri[t][2];
+                gr_draw_gouraud_triangle(gx[a], gy[a], (uint16_t)col[a], gx[b], gy[b], (uint16_t)col[b],
+                                         gx[c], gy[c], (uint16_t)col[c]);
+            }
+        }
+}
+
 /* One game frame drawn into buffer bx. Positions move by whole pixels with
  * g; every fifth frame triangle 0 jumps across the screen. */
 static void game_frame_part(int g, int bx, int part) {
@@ -212,13 +253,14 @@ static void game_frame_part(int g, int bx, int part) {
     if (part == 0) {
         gr_fill_rect(bx, 0, FRAME_W, FRAME_H, 0x1084);
         if (wide_mode) gr_wide_clear(bx, 0, FRAME_H, 0x1084);
+        if (g_pan > 1) backdrop(g, bx);
     }
     gr_set_color_modulation(128, 128, 128, 0);
     gr_set_semi_transparency(0, 0);
     for (int i = part ? 20 : 0; i < (part ? 40 : 20); i++) {
         /* The camera pans one pixel per game frame (every triangle moves
          * alike); triangle 5 is an object moving on its own. */
-        int x = bx + 10 + (i % 8) * 36 + (i == 5 ? (g * 3) % 9 : g % 9) - 4;
+        int x = bx + 10 + (i % 8) * 36 + (i == 5 ? (g * 3) % 9 : (g % 9) * g_pan) - 4;
         int y = 12 + (i / 8) * 42 + (i == 5 ? g % 5 : 0);
         if (i == 0 && g % 5 == 0) { x = bx + 250 - (g * 37) % 200; y = 180; }
         fixture_sources(i, bx, x, y);
@@ -285,12 +327,20 @@ int main(int argc, char **argv) {
     if (pt_mode) gl_renderer_set_present_thread(1, 3);
     check(gl_renderer_render_thread_start(2) == 1, "render thread started");
     if (pt_mode) check(gl_renderer_present_thread_active(), "present thread started");
+    const char *method = getenv("FG_METHOD");
+    const int rp = method && !strcmp(method, "reprojection");
+    const int pgxp = getenv("FG_PGXP") && getenv("FG_PGXP")[0] == '1';
+    if (getenv("FG_PAN")) g_pan = atoi(getenv("FG_PAN")) > 0 ? atoi(getenv("FG_PAN")) : 1;
+    if (pgxp) gl_renderer_set_pgxp_depth(1);
     if (fg) {
 #ifdef _WIN32
         _putenv("PSX_FRAME_GEN_FORCE=1");
 #else
         setenv("PSX_FRAME_GEN_FORCE", "1", 1);
 #endif
+        if (rp) gl_renderer_set_frame_generation_method(GL_FG_METHOD_REPROJECTION);
+        check(gl_renderer_frame_generation_method() ==
+              (rp ? GL_FG_METHOD_REPROJECTION : GL_FG_METHOD_REDRAW), "generation method");
         gl_renderer_set_frame_generation(1);
         check(gl_renderer_frame_generation() == 1, "frame generation on");
     }
@@ -316,7 +366,7 @@ int main(int argc, char **argv) {
     SDL_Delay(60);
     gl_renderer_render_thread_sync("test");   /* the render thread parks; we hold the context */
     if (fg) {
-        char js[1024];
+        char js[4096];
         gl_renderer_frame_gen_json(js, sizeof js);
         printf("fg {%s}\n", js);
         /* Endpoints: compose (no swap) at phase 1 and 0 between the last two
@@ -350,14 +400,87 @@ int main(int argc, char **argv) {
         printf("phase0_diff_px=%ld (neither frame %ld) of %d camera=%u object=%u\n", diff, neither, ww * wh,
                s_fg_fit.camera, s_fg_fit.object);
         (void)d0; (void)r0;
-        check(s_fg_fit.ok && s_fg_fit.camera + s_fg_fit.object == 120, "every projected vertex placed");
-        check(neither * 1000 < (long)ww * wh, "phase 0: the older real frame, uncovered areas the newer (<0.1%)");
+        check(s_fg_fit.ok && (g_pan > 1 ? s_fg_fit.camera + s_fg_fit.object >= 120
+                                         : s_fg_fit.camera + s_fg_fit.object == 120),
+              "every projected vertex placed");
+        /* With the parallax backdrop (FG_PAN) edges resample: 1 %. */
+        check(neither * (g_pan > 1 ? 100 : 1000) < (long)ww * wh,
+              "phase 0: the older real frame, uncovered areas the newer (<0.1%, parallax <1%)");
         check(fg_generate(0.5, 0) == 1, "compose at phase 0.5");
         uint64_t dm = read_back(img);
         if (getenv("FG_DUMP")) {
             FILE *f = fopen("pm.rgba", "wb"); fwrite(img, 4, (size_t)ww * wh, f); fclose(f);
         }
         check(dm != r0 && dm != r1, "phase 0.5 is neither endpoint");
+        printf("p05=%016llx\n", (unsigned long long)dm);
+        if (!rp) {
+            /* Redraw: nothing of reprojection ran or was allocated. */
+            check(s_rp_frames == 0 && s_rp_fallback == 0, "redraw: no reprojected frame");
+            check(!rp_allocated(), "redraw: reprojection allocated nothing");
+            check(s_fg_cost.clamp_spikes == 0, "redraw: cost estimate unclamped");
+        } else {
+            check(s_rp_frames > 0, "reprojection: in-between frames reprojected");
+            printf("reprojected=%llu fallback=%llu\n", (unsigned long long)s_rp_frames,
+                   (unsigned long long)s_rp_fallback);
+            /* The warp's own depth must not stay for the cars (PGXP depth
+             * tests them LEQUAL against it): read the surface it drew into. */
+            if (pgxp && s_rp_last_dst) {
+                const int dw = wide_mode ? g_wide_w * scale : FRAME_W * scale, dh = FRAME_H * scale;
+                float *dep = (float *)malloc((size_t)dw * dh * sizeof *dep);
+                p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, s_rp_last_dst);
+                glPixelStorei(GL_PACK_ALIGNMENT, 4);
+                glReadPixels(0, 0, dw, dh, GL_DEPTH_COMPONENT, GL_FLOAT, dep);
+                p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+                long near = 0;
+                for (long i = 0; i < (long)dw * dh; i++) near += dep[i] < 0.9999f;
+                printf("pgxp depth_written_px=%ld of %d\n", near, dw * dh);
+                check(near * 20 < (long)dw * dh, "pgxp: no warp depth left for the cars (<5%)");
+                free(dep);
+            }
+            if (getenv("FG_ZDBG")) {   /* the depth image's pixel kinds */
+                float *zz = (float *)malloc((size_t)s_rp_zw * s_rp_zh * 16);
+                p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, s_rp_zfbo);
+                glReadPixels(0, 0, s_rp_zw, s_rp_zh, GL_RGBA, GL_FLOAT, zz);
+                long c[4] = {0};
+                for (long i = 0; i < (long)s_rp_zw * s_rp_zh; i++) { int k = (int)(zz[4*i+1]+0.5f); if (k>=0&&k<4) c[k]++; }
+                printf("zdbg %dx%d kinds %ld %ld %ld %ld zn=%u views=%u ok=%d iz=%g\n", s_rp_zw, s_rp_zh, c[0], c[1], c[2], c[3], s_rp_zn, s_fg_fit.nviews, s_fg_fit.ok, zz[4*(s_rp_zw*100+100)]);
+                free(zz);
+            }
+            uint32_t *ref = (uint32_t *)malloc((size_t)ww * wh * 4);
+            s_fg_reproject = 0;   /* the redraw of the same pair and fit: the reference */
+            check(fg_generate(0.5, 0) == 1, "redraw reference at phase 0.5");
+            read_back(ref);
+            s_fg_reproject = 1;
+            check(fg_generate(0.5, 0) == 1, "reprojected again at phase 0.5");
+            read_back(img);
+            long far = 0, far_newer = 0, none = 0, hud = 0, hud_bad = 0;
+            for (int i = 0; i < ww * wh; i++) {
+                const int f = px_far(img[i], ref[i]);
+                far += f;
+                far_newer += px_far(img_last[1][i], ref[i]);
+                none += f && px_far(img[i], img_last[0][i]) && px_far(img[i], img_last[1][i]);
+                /* The HUD bar (near white in both real frames, where no
+                 * triangle reaches): exactly the newer frame's. */
+                const uint32_t a = img_last[0][i], b = img_last[1][i];
+                if (a == b && (b & 0xff) >= 0xf0 && ((b >> 8) & 0xff) >= 0xf0 && ((b >> 16) & 0xff) >= 0xf0) {
+                    hud++; hud_bad += img[i] != b;
+                }
+            }
+            printf("reproject_vs_redraw far_px=%ld newer_vs_redraw=%ld unfilled_px=%ld hud_px=%ld "
+                   "hud_changed=%ld of %d\n", far, far_newer, none, hud, hud_bad, ww * wh);
+            /* With a real pan (FG_PAN; one pixel is half a pixel at phase 0.5,
+             * below what a warp at native resolution resolves) the warp moved
+             * the picture: close to the redraw, much closer than the newer
+             * frame it started from. */
+            if (g_pan > 1) {
+                check(far * 20 < (long)ww * wh, "reprojection: phase 0.5 matches the redraw (<5% differ)");
+                check(far_newer * 50 > (long)ww * wh && far * 2 < far_newer,
+                      "reprojection: the warp follows the camera (under half the newer frame's difference)");
+            }
+            check(none * 100 < (long)ww * wh, "reprojection: no holes, every pixel from a real frame or the redraw (<1%)");
+            check(hud > 0 && hud_bad == 0, "reprojection: HUD exactly the newer frame's");
+            free(ref);
+        }
         /* With an HD texture pack the CPU raster is native VRAM's authority;
          * an in-between frame is presentation only and must not draw there. */
         gl_renderer_set_hd_texture_mode(1);

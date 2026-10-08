@@ -356,8 +356,14 @@ void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int3
 int  gl_renderer_frame_generation(void);
 void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz);
 double gl_renderer_frame_gen_real_share(void);
-void gl_renderer_set_frame_generation_redraw(int on);
-void gl_renderer_frame_gen_hold(const char *reason, double secs);
+/* How in-between frames are made ([video] frame_generation_method,
+ * docs/FRAME_GENERATION.md): redraw (default) or reprojection (opt-in). */
+enum { GL_FG_METHOD_REDRAW = 0, GL_FG_METHOD_REPROJECTION = 1 };
+void gl_renderer_set_frame_generation_method(int method);
+int  gl_renderer_frame_generation_method(void);
+/* Why the real frames want generation paused (dynamic resolution). */
+typedef enum { GL_FG_HOLD_STEP_DOWN = 0, GL_FG_HOLD_OVER_BUDGET = 1 } GlFgHold;
+void gl_renderer_frame_gen_hold(GlFgHold kind, double secs);
 int  gl_renderer_frame_gen_json(char *out, int cap);
 /* Host time the renderer spent, as running totals in performance-counter
  * ticks (only kept while dynamic resolution is on): waits for the frame
