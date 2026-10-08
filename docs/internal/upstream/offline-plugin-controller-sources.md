@@ -1,9 +1,12 @@
 # Offline plugin controller sources: source and validation
 
-The records below are historical upstream evidence. This private release
-backport selects the controller-source dependency and unified resolver on
-`c18a055`; its fresh regression/build request is pending. These earlier results
-do not certify the private backport.
+The records below preserve historical upstream evidence. The release backport
+selects the controller-source dependency from `5a1264b7` and the unified resolver
+from [6f9bdd94](https://github.com/RetroPortingToolKit/psxrecomp/commit/6f9bdd94f24f417f2b47affba707512c7846f786)
+on `c18a055`, without the duplicated mouse commits or unrelated master changes.
+Its matched Ape Escape SDL3 Release build and 32-execution automated matrix
+passed on Windows x64. See [the release input validation](../../LOCAL_MOUSE_POLICY.md#validation-status-and-targets);
+the historical game/headset observations below are not validation of this pair.
 
 Reconstructed from [FractalEngineer/psxrecomp](https://github.com/FractalEngineer/psxrecomp), developed on
 `vr-dev` at `9976567eb8e95510ca7eeeeccd9af3a260885de5`.

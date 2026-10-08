@@ -62,53 +62,53 @@ one P1 policy; physical device locking and P2 mouse controls are out of scope.
 
 ## Validation status and targets
 
-Earlier private source validation passed six focused gesture/context/policy
-and activation tests, three host-fold tests on each SDL backend, six native SIO
-checks and five registered game tests after a full SDL3 Release link. Those
-runs used an explicit framework root at feature head
-`12d98c220216a671f41cea6dccecd68c8dfa7042`, while the public game gitlink
-still pointed to its two-commit ancestor `50ec9191`. They do not establish
-checkout/build/CI validation of this newly reconciled private pin. Earlier
-isolated candidates had boot smoke evidence; actual LEFT-held gadget feel,
-capture/focus/menu/restore/rewind interruptions and this final pair remain
-pending. The non-Windows missed-LEFT-release/focus-regain fix and subsequent
-SDL2/SDL3 focus-arm cleanup are present in the reviewed feature head; the
-non-Windows path has not been compiled or exercised on a physical device.
-`local_mouse_policy_test` supplies a deterministic fake backend and
-covers capture, neutral acquisition, releases, host/guest gates, bad times,
-stalls, conflicting hold, failure fallback and registration validation.
-`mouse_binding_suppression_test` folds the real keybind code with a controlled
-mouse poll, covering primary/alternate/button/axis consumption through release
-and independent controller/P2 actions. `keyboard_pad_chord_test` includes
-captured-Escape suppression and fresh native re-presses.
-It also checks repeated Turbo=Escape polls and the independent P2 report.
+This release backport retains the original mouse policy and the maintainer's
+missed-LEFT-release/focus-regain correction. It adopts the ordered external-input
+layer from [psxrecomp #510](https://github.com/RetroPortingToolKit/psxrecomp/pull/510)
+and only its required offline controller-source dependency from #495:
 
-Run these and the existing controller presentation, stick mapping, netplay
-pad codec and SIO tests with both supported SDL backends. Compile the actual
-adapter/main path with debug tools enabled and disabled. Observe relative
-capture/focus/menu/removal and normal report delivery in a private game copy;
-pure policy tests do not exercise the OS or game dispatcher.
+1. Capture the physical/local pad.
+2. Resolve an attached offline controller source and the controller presentation
+   policy. Physical and source buttons combine as active-low input.
+3. Apply the mouse policy once to the resolved P1 right axes. A source cannot
+   capture the mouse and then discard its result. A deflected native/source
+   right stick takes over as a whole vector; a digital source or Start disables
+   capture under the existing eligibility rules.
 
-The reviewed implementation base is release framework commit
-065888f50f9131839bcbbc8814debf58b4624b16, also the canonical
-`release/ape-v0.5.0-hle-support` branch. The private companion game's
-gitlink and `framework_pins.txt` identify this exact private framework
-revision; its feature code is unchanged from PR502's reviewed head
-`12d98c220216a671f41cea6dccecd68c8dfa7042`. The only new framework change
-is this documentation correction. The unpublished documentation commit
-needs reviewed upstream availability before an ordinary configured checkout
-can use the final pin. A PR ref is an interim development reference, not a
-stable final merge pin. Repeat final checkout/build/tests and inspect actual
-CI after the final dependency becomes available. Historical release binary
-provenance remains at 065888f5 and is not rewritten for this feature pair.
+Detach/reset release frames, input guards and device absence reset capture.
+Declined/invalid sources remain neutral and do not suppress physical buttons.
+P2, pad type, buttons and left axes retain their ordinary delivery. Registration
+is restricted to the main thread and validates the ABI structure size.
+The release visibility and `HOST_KEYMAP_CAPTURE_MARK` guards are retained.
+There is no master-range merge, game-specific runtime address or new gesture API.
 
-Current master has different mod/input interfaces and needs a separate port.
-The older maintainer port at 67e30808 omits current `g_hidden_window` and
-`HOST_KEYMAP_CAPTURE_MARK` handling. Future integration must preserve their
-visibility/host-keymap behavior and apply one mouse hook to the final local
-P1 report after native controller-source resolution, preserving whole-vector
-native takeover and all reset boundaries. The separate PR495 path overwrites
-RX/RY after `capture_pad_slot`; merging it unchanged is not verified here.
-No master-range merge, new arbitration policy or compatibility claim is made.
-Physical interruption checks and hosted CI remain separate pending gates;
-this is not a public-quality or merge-readiness claim.
+The matched release pair passed a fresh Windows x64 matrix with MSVC 19.50,
+CMake 4.1.2 and Ninja 1.12.1: 34 operations, 32 test executions, 18 unique names,
+eight CTest inventories and both unchanged native BIOS fingerprints.
+
+- Six game-focused tests cover reducer geometry/timing, guest eligibility,
+  capture lifecycle, activation, stick response and the preloaded catalog.
+- Three controller-source/resolver tests cover registration, neutralization,
+  attach/decline/detach/reset, precedence, routing and eligibility gates.
+- Host keymap, keyboard chord and mouse suppression tests pass separately on
+  SDL3 3.4.10 and SDL2 2.32.10, with debug tools enabled and disabled. The real
+  main, mouse adapter and game plugin translation units compile in all four
+  configurations.
+- Six native SIO protocol/boundary/IRQ checks pass with active assertions.
+- A full offline SDL3 Release game/runtime build links and its five selected
+  game tests pass. Fatal BIOS fingerprint validation remains enabled.
+
+`local_mouse_policy_test` uses a deterministic fake capture backend; the source
+bridge and host-fold tests use controlled input. Automated results do not prove
+physical relative capture, controller feel, live gadget use or gameplay.
+Non-Windows capture behavior has not been exercised on a physical device.
+Hosted CI results must be read separately from local results.
+
+The runtime PR targets `release/ape-v0.5.0-hle-support` at
+`065888f50f9131839bcbbc8814debf58b4624b16`. The companion
+[Ape Escape PR #21](https://github.com/mstan/ApeEscapeRecomp/pull/21) deliberately
+updates both its `psxrecomp-v4` gitlink and `framework_pins.txt` to the same
+runtime commit. Consume the runtime PR first and keep that exact commit
+reachable when merging the game pin. Runtime-only changes need a rebuild,
+not BIOS or game C regeneration. Release packaging metadata records the
+historical v0.5.0 binary and is unchanged.
