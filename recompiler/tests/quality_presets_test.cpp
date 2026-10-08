@@ -54,6 +54,9 @@ static fs::path write_game_toml(const std::string& name, const std::string& tail
         "render_thread = true\n"
         "dynamic_resolution = true\n"
         "dynamic_resolution_min = \"display\"\n"
+        "pgxp_depth_buffer = true\n"
+        "pgxp_color_correction = true\n"
+        "pgxp_seam = \"fine\"\n"
         + tail);
 }
 
@@ -65,7 +68,10 @@ static const char* kPresets =
     "[quality.low]\n"
     "supersample = 1.0\n"
     "frame_generation = false\n"
-    "dynamic_resolution_min = \"native\"\n";
+    "dynamic_resolution_min = \"native\"\n"
+    "pgxp_depth_buffer = false\n"
+    "pgxp_color_correction = false\n"
+    "pgxp_seam = \"off\"\n";
 
 static void test_parse() {
     fs::path p = write_game_toml("psxrecomp_quality_parse.toml", kPresets);
@@ -77,12 +83,17 @@ static void test_parse() {
     check(low.runtime.video_supersample_milli == 1000, "low: supersample 1.0");
     check(!low.runtime.video_frame_generation, "low: frame_generation off");
     check(low.runtime.video_render_thread, "low inherits [video] render_thread");
+    check(!low.runtime.video_pgxp_depth_buffer && !low.runtime.video_pgxp_color_correction &&
+          low.runtime.video_pgxp_seam == 0, "low: PGXP extras off");
+    check(gc.quality_presets[1].runtime.video_pgxp_depth_buffer &&
+          gc.quality_presets[1].runtime.video_pgxp_seam == 1,
+          "medium inherits the [video] PGXP extras");
     check(gc.quality_presets[2].runtime.video_supersample_milli == 1500,
           "ultra (empty) is the [video] block");
     check(gc.runtime.video_supersample_milli == 1500, "gc.runtime stays the [video] block");
     check(psxq::offered_mask(gc) == 0xBu, "offered mask low|medium|ultra");
     auto keys = psxq::governed_keys(gc);
-    check(keys.size() == 3, "governed keys are the union of preset keys");
+    check(keys.size() == 6, "governed keys are the union of preset keys");
     fs::remove(p);
 
     fs::path bad = write_game_toml("psxrecomp_quality_badname.toml", "[quality.epic]\n");
