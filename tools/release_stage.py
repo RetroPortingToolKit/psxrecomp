@@ -661,6 +661,29 @@ def _run_build(cmd, cwd, what):
              % (what, r.returncode, ' '.join(cmd), r.stdout[-4000:]))
 
 
+def adapt_musl_headers_for_tcc(libc_inc):
+    """musl spells va_list as GCC's __builtin_va_list, which tcc 0.9.27 does
+    not know ("';' expected (got va_list)" in every shard). Use tcc's own
+    stdarg.h, whose x86-64 va_list has GCC's layout, so v*printf calls into
+    the game's glibc agree: drop musl's stdarg.h and define musl's two
+    va_list typedefs from tcc's."""
+    stdarg = os.path.join(libc_inc, 'stdarg.h')
+    if os.path.isfile(stdarg):
+        os.remove(stdarg)
+    path = os.path.join(libc_inc, 'bits', 'alltypes.h')
+    with open(path, encoding='utf-8') as f:
+        text = f.read()
+    a = 'typedef __builtin_va_list va_list;'
+    b = 'typedef __builtin_va_list __isoc_va_list;'
+    if a not in text or b not in text:
+        _die('%s no longer defines va_list as expected; re-check the musl pin'
+             % path)
+    text = text.replace(a, '#include <stdarg.h> /* tcc\'s va_list (psxrecomp) */')
+    text = text.replace(b, 'typedef va_list __isoc_va_list;')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
 def stage_linux_tcc(toolchain, dl_cache, pins, log=print):
     """Build the pinned TinyCC source and stage it with musl's libc headers as
     overlay_toolchain/tcc/: tcc, libtcc1.a, include/ (tcc's), libc-include/
@@ -703,6 +726,7 @@ def stage_linux_tcc(toolchain, dl_cache, pins, log=print):
     shutil.copy2(os.path.join(libdir, 'libtcc1.a'), dest)
     shutil.copytree(os.path.join(libdir, 'include'), os.path.join(dest, 'include'))
     shutil.copytree(os.path.join(minst, 'include'), os.path.join(dest, 'libc-include'))
+    adapt_musl_headers_for_tcc(os.path.join(dest, 'libc-include'))
     shutil.copy2(os.path.join(work, mtop, 'COPYRIGHT'),
                  os.path.join(dest, 'libc-include', 'COPYRIGHT'))
     stage_tcc_notice(dest, pins)

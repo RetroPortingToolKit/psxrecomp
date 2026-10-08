@@ -6,7 +6,7 @@ win64 binary distribution under overlay_toolchain/tcc/ (tcc.exe, libtcc.dll,
 its headers and runtime library). Release packages for Linux bundle tcc built
 from the unmodified 0.9.27 source below (default configure, -O2), with its
 headers and runtime library, plus musl 1.2.5's MIT-licensed C headers in
-libc-include/ (notice: libc-include/COPYRIGHT; source
+libc-include/, adapted to use tcc's va_list (notice: libc-include/COPYRIGHT; source
 https://musl.libc.org/releases/musl-1.2.5.tar.gz). tcc runs as a separate
 program that compiles overlay shards on the player's machine; the game does
 not link against it.

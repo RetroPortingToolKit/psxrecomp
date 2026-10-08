@@ -478,6 +478,24 @@ class LinuxTinyccTest(unittest.TestCase):
         self.assertIn(pins['tcc_sha256'], text)
         self.assertIn('musl', text)
 
+    def test_musl_va_list_is_adapted_for_tcc(self):
+        tmp = tempfile.mkdtemp(prefix='musl_inc_')
+        try:
+            os.mkdir(os.path.join(tmp, 'bits'))
+            open(os.path.join(tmp, 'stdarg.h'), 'w').close()
+            with open(os.path.join(tmp, 'bits', 'alltypes.h'), 'w') as f:
+                f.write('typedef __builtin_va_list va_list;\n'
+                        'typedef __builtin_va_list __isoc_va_list;\n')
+            rs.adapt_musl_headers_for_tcc(tmp)
+            self.assertFalse(os.path.exists(os.path.join(tmp, 'stdarg.h')))
+            text = open(os.path.join(tmp, 'bits', 'alltypes.h')).read()
+            self.assertNotIn('__builtin_va_list', text)
+            self.assertIn('#include <stdarg.h>', text)
+            with self.assertRaises(rs.StageError):
+                rs.adapt_musl_headers_for_tcc(tmp)   # layout changed: loud
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_bundle_args_only_for_the_bundle_layout(self):
         import compile_overlays as co_mod
         tmp = tempfile.mkdtemp(prefix='tcc_bundle_')
