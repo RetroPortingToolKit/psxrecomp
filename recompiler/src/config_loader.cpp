@@ -544,6 +544,10 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
     if (runtime.contains("turbo_audio_sink")) {
         rt.turbo_audio_sink = toml::find<bool>(runtime, "turbo_audio_sink");
     }
+    if (runtime.contains("idle_skip_store_counters")) {
+        rt.idle_skip_store_counters =
+            toml::find<bool>(runtime, "idle_skip_store_counters");
+    }
     if (runtime.contains("idle_skip")) {
         rt.idle_skip = toml::find<bool>(runtime, "idle_skip");
     }
