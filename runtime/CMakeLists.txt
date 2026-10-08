@@ -907,6 +907,11 @@ if(BUILD_TESTING)
     target_compile_features(aligned_archive_test PRIVATE cxx_std_17)
     add_test(NAME aligned_archive_test COMMAND aligned_archive_test)
 
+    add_executable(resident_sector_test tests/test_resident_sector.cpp)
+    target_include_directories(resident_sector_test PRIVATE include)
+    target_compile_features(resident_sector_test PRIVATE cxx_std_17)
+    add_test(NAME resident_sector_test COMMAND resident_sector_test)
+
     add_executable(mod_resident_test
         tests/test_mod_resident.cpp
         src/mod_resident.cpp
