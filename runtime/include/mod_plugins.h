@@ -558,6 +558,86 @@ int psx_mod_set_controller_presentation_policy(
     uint32_t initial_mode,
     int config_capable);
 
+/* ---- External offline input: ONE ordered resolution per player ----------
+ * Two optional, mod-supplied inputs can act on an offline player's pad. The
+ * runtime resolves them in a fixed order in pad_external_input.h:
+ *   1. physical/local capture (keyboard, controllers: buttons, sticks, type)
+ *   2. offline controller source (psx_mod_set_controller_source): buttons =
+ *      source AND physical; sticks/type come from the source, through the
+ *      same mode override / multitap rule / presentation policy as a physical
+ *      pad. A declined/invalid sample delivers neutral, not the last input.
+ *   3. local mouse policy (psx_mod_set_local_mouse_policy), P1 only: may
+ *      override ONLY the right analog axes of the pad resolved by 1-2. It sees
+ *      the final buttons/analog flag/right stick, so it composes with a
+ *      source (a source never suppresses it) and no capture is taken to be
+ *      discarded. A deflected source right stick, a digital pad, or Start
+ *      held disables it exactly as for a physical pad; a source release,
+ *      no device, or an armed input guard resets (releases) the capture.
+ * Gating. Neither input reaches the guest under netplay or rollback resim,
+ * selfcheck replay, headless, or a debug-server input override (which wins and
+ * is never mixed with external input). The mouse policy is additionally live
+ * only outside selfcheck input lock/resim, render passes, rewind, the
+ * savestate menu and the savestate input guard (pad_ext_live). A source is
+ * still sampled while the input guard is armed but its output is discarded
+ * (neutral). With no source and no mouse policy registered, pad bytes and
+ * host event handling are exactly the faithful defaults.
+ *
+ * Both setters run only on the main (emulation) thread. The mouse policy
+ * struct_size is validated at registration (invalid registration returns 0);
+ * a source registration takes only a callback and a checked player index.
+ * Each callback result is validated per use and falls back to neutral. These are mod-trusted APIs --
+ * arbitrary native code, no caller check -- not launcher settings. A source
+ * is per player (NULL detaches, with one neutral release frame); the mouse
+ * policy is one per session (a second registration returns 0). Callbacks run
+ * on the main thread only: sources once per frame, in the normal offline
+ * sampler.
+ * The source's `analog` is the pad capability; the final type still goes
+ * through the multitap rule, mod mode override and presentation policy.
+ */
+typedef struct PSXModControllerState {
+    uint32_t struct_size, buttons, lx, ly, rx, ry, analog;
+} PSXModControllerState;
+typedef int (*PSXModControllerSource)(PSXModControllerState *state);
+int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source);
+
+/* Local P1 mouse policy. The runtime delivers ordered events on the SDL owner
+ * (main) thread, owns relative capture and folds the resulting right-stick
+ * bytes after native input/presentation (and after any controller source),
+ * before normal SIO delivery. No SDL type, guest address, gesture, or game
+ * setting belongs in this interface. */
+enum {
+    PSX_MOD_MOUSE_HOLD_NONE = 0,
+    PSX_MOD_MOUSE_HOLD_RIGHT = 1, /* Mouse3 in keybinds.ini */
+    PSX_MOD_MOUSE_HOLD_LEFT_ALT = 2,
+    PSX_MOD_MOUSE_RESET = 0,
+    PSX_MOD_MOUSE_ACQUIRED = 1,
+    PSX_MOD_MOUSE_MOTION = 2,
+    PSX_MOD_MOUSE_HOLD_PRESS = 3,
+    PSX_MOD_MOUSE_HOLD_RELEASE = 4
+};
+typedef struct PSXModMouseEvent {
+    uint32_t struct_size;
+    uint32_t type;
+    uint64_t time_ns;
+    double dx, dy;
+} PSXModMouseEvent;
+typedef struct PSXModMouseOutput {
+    uint32_t struct_size;
+    uint32_t override_right;
+    uint32_t rx, ry;
+} PSXModMouseOutput;
+typedef struct PSXModMousePolicy {
+    uint32_t struct_size;
+    uint32_t hold_control;
+    /* Re-read persistent guest context, including pause/menus, on every event
+     * and local sample. Must not infer it from a host Start toggle. */
+    int (*eligible)(uint32_t native_buttons);
+    void (*event)(const PSXModMouseEvent* event);
+    /* A query: must not consume motion, change the event anchor or deadlines. */
+    void (*sample)(uint64_t now_ns, PSXModMouseOutput* output);
+} PSXModMousePolicy;
+int psx_mod_set_local_mouse_policy(const PSXModMousePolicy* policy);
+
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.
  * The registry itself uses function-local initialization, so constructor order
