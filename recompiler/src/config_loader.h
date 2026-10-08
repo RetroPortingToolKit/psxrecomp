@@ -824,6 +824,11 @@ struct WidescreenMaskedRejectSite {
     uint32_t reject_mask = 0;
 };
 
+struct WidescreenPackedXSite {
+    uint32_t address = 0;
+    uint32_t expected = 0;
+};
+
 struct GameConfig {
     std::filesystem::path config_path;
     std::filesystem::path project_root;
@@ -1335,6 +1340,8 @@ struct GameConfig {
     // [[draw_distance.clamp]] -- opt-in "keep far geometry" clamps. Empty by
     // default; inert until a mod switches them on; regen required.
     std::vector<DrawDistanceClampSite> draw_distance_clamp_sites;
+    // Guarded SLTU on SX<<16 against screen width<<16; both wide edges.
+    std::vector<WidescreenPackedXSite> ws_cull_packed_x_sites;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.

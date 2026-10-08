@@ -240,6 +240,23 @@ Changing a site, guard or mask changes the overlay configuration fingerprint.
 
 ### Guarded widescreen participation comparisons
 
+`[[widescreen.cull.packed_x]]` handles a proven mesh screen-X predicate
+expressed as `SLTU rd, (SX << 16), (width << 16)`:
+
+```toml
+[[widescreen.cull.packed_x]]
+address = "0x801466A0"
+expected = "0x0079C02B"
+```
+
+The complete instruction guards native overlays and the interpreter. While
+wide, X must lie in `[-margin, width + margin)`; both sides widen together.
+At 4:3 the original unsigned comparison is exact. Nonzero low-half operands,
+zero width, and widths above 1024 retain the original comparison. It changes
+only the predicate, preserving GPR operands, vertical, backface, depth and
+ordering-table limits. Sites affect the overlay cache identity; regenerate
+main/native overlays after changing them. Empty lists are inert.
+
 Games may disable a proven object/model cull verdict in widened world views
 without changing true 4:3 behavior:
 

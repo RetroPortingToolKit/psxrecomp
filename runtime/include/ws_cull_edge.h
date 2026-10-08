@@ -55,6 +55,20 @@ extern "C" {
 #endif
 
 /* bgez predicate (1 = branch taken = keep) for a signed screen X. */
+/* SLTU on screen X and width shifted into the high half. Only proven packed
+ * operands widen; original comparison is exact at 4:3 and for other layouts. */
+static inline uint32_t psx_ws_cull_packed_x_value(uint32_t x, uint32_t width,
+                                                 int32_t m)
+{
+    if (m <= 0 || ((x | width) & 0xFFFFu) || width == 0u ||
+        (width >> 16) > 1024u)
+        return x < width ? 1u : 0u;
+    int32_t sx = (int16_t)(x >> 16);
+    int64_t offset = (int64_t)sx + m;
+    int64_t span = (int64_t)(width >> 16) + 2LL * m;
+    return offset >= 0 && offset < span ? 1u : 0u;
+}
+
 static inline int psx_ws_cull_bgez_value(int32_t v, int32_t m)
 {
     return v >= -(m > 0 ? m : 0);

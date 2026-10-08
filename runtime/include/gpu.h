@@ -366,6 +366,10 @@ uint32_t psx_ws_clip_edge_width(void);
 uint32_t psx_ws_cull_keep_result(uint32_t vanilla, uint32_t forced);
 int psx_ws_cull_keep_site(uint32_t pc, uint32_t instr, uint32_t vanilla,
                           uint32_t *out);
+void gpu_ws_set_packed_x_sites(const uint32_t *addresses,
+                              const uint32_t *expected, int count);
+int psx_ws_cull_packed_x_site(uint32_t pc, uint32_t instr, uint32_t x,
+                              uint32_t width, uint32_t *out);
 uint32_t psx_ws_angle_widen(uint32_t vanilla);
 int psx_ws_angle_site(uint32_t pc, uint32_t instr, uint32_t *out);
 /* bound * (half_extent + margin) / half_extent; identity at 4:3. */

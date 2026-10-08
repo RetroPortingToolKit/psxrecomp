@@ -1014,6 +1014,29 @@ typedef struct {
     uint32_t expected;
     uint32_t result;
 } WsCullKeepSite;
+typedef struct { uint32_t address, expected; } WsPackedXSite;
+static WsPackedXSite ws_packed_x_sites[WS_EXPLICIT_CULL_SITES_MAX];
+static int ws_packed_x_n;
+void gpu_ws_set_packed_x_sites(const uint32_t *addresses,
+                              const uint32_t *expected, int count) {
+    if (count < 0) count = 0;
+    if (count > WS_EXPLICIT_CULL_SITES_MAX) count = WS_EXPLICIT_CULL_SITES_MAX;
+    ws_packed_x_n = count;
+    for (int i = 0; i < count; ++i) {
+        ws_packed_x_sites[i].address = addresses[i] & 0x1FFFFFFFu;
+        ws_packed_x_sites[i].expected = expected[i];
+    }
+}
+int psx_ws_cull_packed_x_site(uint32_t pc, uint32_t instr, uint32_t x,
+                              uint32_t width, uint32_t *out) {
+    for (int i = 0; i < ws_packed_x_n; ++i) {
+        if (ws_packed_x_sites[i].address != (pc & 0x1FFFFFFFu) ||
+            ws_packed_x_sites[i].expected != instr) continue;
+        if (out) *out = psx_ws_cull_packed_x_value(x, width, psx_ws_x_margin());
+        return 1;
+    }
+    return 0;
+}
 static WsCullKeepSite ws_cull_keep_sites[WS_EXPLICIT_CULL_SITES_MAX];
 static int ws_cull_keep_n = 0;
 void gpu_ws_set_cull_keep_sites(const uint32_t *addresses,

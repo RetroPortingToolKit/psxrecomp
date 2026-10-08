@@ -1137,6 +1137,25 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             reg_name(dst), vanilla, site.result, comment);
     }
 
+    for (const auto& site : config_.ws_cull_packed_x_sites) {
+        if ((site.address & 0x1FFFFFFFu) != (addr & 0x1FFFFFFFu)) continue;
+        if (instr != site.expected) {
+            if (config_.overlay_mode) continue;
+            fmt::print(stderr, "ERROR: packed_x expected 0x{:08X} at 0x{:08X}, found 0x{:08X}\n",
+                       site.expected, addr, instr);
+            std::exit(1);
+        }
+        if (opcode != 0u || funct != 0x2Bu) {
+            fmt::print(stderr, "ERROR: packed_x site 0x{:08X} must be SLTU\n", addr);
+            std::exit(1);
+        }
+        return fmt::format(
+            "{} = psx_ws_cull_packed_x_value({}, {}, psx_ws_x_margin());"
+            "  /* guarded packed screen-X range */{}",
+            reg_name(get_rd(instr)), reg_name(get_rs(instr)),
+            reg_name(get_rt(instr)), comment);
+    }
+
     // Register-register frustum-edge compares ([[widescreen.cull.scale]]):
     // the configured operand is a +/-half_extent*z bound computed at runtime,
     // so it is scaled by the live reveal instead of rewriting an immediate.
@@ -3631,6 +3650,8 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern uint32_t psx_ws_xclip_bound(uint32_t vanilla);      /* ws per-prim X reject bound load (gpu.c) */\n";
     ss << "extern uint32_t psx_ws_cull_keep_result(uint32_t vanilla, uint32_t forced); /* ws guarded keep compare (gpu.c) */\n";
     ss << "extern int32_t psx_ws_cull_scale(int32_t bound, int32_t half_extent); /* ws frustum-edge bound scale (gpu.c) */\n";
+    if (!config_.ws_cull_packed_x_sites.empty())
+        ss << "#include \"ws_cull_edge.h\"\n";
     ss << "extern uint32_t psx_ws_aspect_cone_result(uint32_t site, uint32_t vanilla, uint32_t object, int32_t x, int32_t z, int32_t y); /* aspect-aware participation cone */\n";
     ss << "extern uint32_t psx_ws_angle_widen(uint32_t vanilla); /* aspect-scaled 12-bit terrain-frustum half-angle */\n";
     ss << "extern int  psx_ws_backdrop_x(int x);  /* widescreen backdrop screenX squash (gpu.c) */\n";

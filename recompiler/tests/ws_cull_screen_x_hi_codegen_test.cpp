@@ -275,6 +275,27 @@ void runtime_math() {
 
 }  // namespace
 
+static void packed_x_forms() {
+    PSXRecomp::CodeGenConfig config;
+    config.ws_cull_packed_x_sites.push_back({kBase, 0x0079C02Bu});
+    const auto emitted = generate_first_instruction(0x0079C02Bu, config);
+    check(has(emitted, "psx_ws_cull_packed_x_value"), "packed X emits the shared predicate");
+    config.overlay_mode = true;
+    const auto alias = generate_first_instruction(0x0079C02Au, config);
+    check(!has(alias, "psx_ws_cull_packed_x_value"), "different overlay opcode stays vanilla");
+    for (int sx = -32768; sx <= 32767; ++sx) {
+        const uint32_t x = (uint32_t)sx << 16;
+        const uint32_t w = 320u << 16;
+        check(psx_ws_cull_packed_x_value(x, w, 0) == (x < w), "packed X 4:3 identity");
+        check(psx_ws_cull_packed_x_value(x, w, 120) == (sx >= -120 && sx < 440),
+              "packed X covers exactly the expanded horizontal range");
+    }
+    check(psx_ws_cull_packed_x_value(0xFFFF0001u, 320u << 16, 120) == 0,
+          "nonzero packed low half stays vanilla");
+    check(psx_ws_cull_packed_x_value(0xFFFF0000u, 2048u << 16, 120) == 0,
+          "non-screen width stays vanilla");
+}
+
 int main(int argc, char** argv) {
     g_self = argv[0];
     if (argc == 3 && std::string(argv[1]) == "--exit-probe") {
@@ -287,6 +308,7 @@ int main(int argc, char** argv) {
     main_exe_guard_and_overlay_variants();
     declarations_only_when_the_key_is_used();
     runtime_math();
+    packed_x_forms();
 
     if (g_exit_probe >= 0) return 3;  // no call had that probe index
     if (failures != 0) {

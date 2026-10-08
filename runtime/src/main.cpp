@@ -14812,6 +14812,15 @@ int main(int argc, char** argv) {
                     (int)addresses.size());
             }
             {
+                std::vector<uint32_t> addresses, expected;
+                for (const auto& site : gc.ws_cull_packed_x_sites) {
+                    addresses.push_back(site.address);
+                    expected.push_back(site.expected);
+                }
+                gpu_ws_set_packed_x_sites(addresses.data(), expected.data(),
+                    (int)addresses.size());
+            }
+            {
                 std::vector<uint32_t> addresses, expected, masks;
                 for (const auto& site : gc.ws_cull_masked_reject_sites) {
                     addresses.push_back(site.address);

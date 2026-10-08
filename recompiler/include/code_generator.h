@@ -175,6 +175,7 @@ struct CodeGenConfig {
     // while widescreen reveals extra world. 4:3 evaluates the original compare.
     std::vector<PSXRecompV4::WidescreenCullKeepSite> ws_cull_keep_sites;
     std::vector<PSXRecompV4::WidescreenMaskedRejectSite> ws_cull_masked_reject_sites;
+    std::vector<PSXRecompV4::WidescreenPackedXSite> ws_cull_packed_x_sites;
     std::vector<PSXRecompV4::WidescreenCullScaleSite> ws_cull_scale_sites;
 
     // Exact `addi[u] rt,zero,imm` 12-bit angular half-extents. The runtime
