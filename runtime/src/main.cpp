@@ -6033,8 +6033,10 @@ static uint16_t host_layer_release_claimed(uint16_t word, uint32_t claimed) {
  * (host_view, the transform's host pad: the sticks in either mode). */
 static int capture_host_layer_pad(PsxNetPad* out, uint16_t word,
                                   const uint8_t st[4], bool guarded,
-                                  bool host_view) {
-    const int mode = effective_player_mode_for_sio(g_players[0], 0);
+                                  bool host_view, int present_sio_slot = 0) {
+    const int present = present_sio_slot >= 0 && present_sio_slot < PSX_MAX_PLAYERS
+        ? present_sio_slot : 0;
+    const int mode = effective_player_mode_for_sio(g_players[0], present);
     const bool analog = mode != PSXRecompV4::PAD_MODE_DIGITAL;
     const bool sticks = analog || host_view;
     out->buttons = host_layer_release_claimed(word, g_p1_claimed_buttons);
@@ -6174,6 +6176,16 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     out->lx = out->ly = out->rx = out->ry = 0x80u;
     out->analog = 0;
     out->connected = 0;
+
+    /* An explicit virtual host device follows the same local-device -> session
+     * seat route as a physical controller. It is not a simulation SIO override. */
+    if (s == 0) {
+        uint16_t word;
+        uint8_t sticks[4], lt, rt;
+        if (host_pad_layer(&word, sticks, &lt, &rt))
+            return capture_host_layer_pad(out, word, sticks, false, false,
+                                          present_sio_slot);
+    }
 
     PlayerInput& p = g_players[s];
     const int  player  = s + 1;             /* keybinds.ini section (1..5) */
@@ -6703,6 +6715,10 @@ static void netplay_barrier_admit(int override) {
             (tip_hold && !psx_start_bisect_no_tiphold_capture());
         if (need_sample) {
             PsxNetPad local{};
+            uint16_t host_word;
+            uint8_t host_sticks[4], host_lt, host_rt;
+            const bool virtual_host = g_headless &&
+                host_pad_layer(&host_word, host_sticks, &host_lt, &host_rt);
             /* An explicit debug-server override is the local player's input
              * windowed or headless: headless LAN peers are how netplay is
              * exercised without windows. With no override, headless has no
@@ -6710,8 +6726,11 @@ static void netplay_barrier_admit(int override) {
              * into content negotiation, whose headless fixtures use the same
              * negotiated pad mode and local-to-session routing as windowed
              * injected input. */
-            if (override >= 0 || (g_headless && g_netplay_content_negotiation)) {
+            if (override >= 0 || (g_headless && g_netplay_content_negotiation && !virtual_host)) {
                 capture_override_pad(override >= 0 ? override : 0xFFFF, &local);
+            } else if (virtual_host) {
+                capture_host_layer_pad(&local, host_word, host_sticks, false, false,
+                                      psx_netplay_local_slot());
             } else if (g_headless) {
                 local.buttons = 0xFFFFu;
                 local.lx = local.ly = local.rx = local.ry = 0x80u;
