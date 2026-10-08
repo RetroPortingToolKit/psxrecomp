@@ -566,6 +566,15 @@ struct RuntimeConfig {
     // constants from game.toml only. See config_loader.cpp.
     int                   guest_cycle_scale = 1;
     bool                  guest_cycle_scale_gated = false;
+    // guest_cycle_scale_gate: declarative RAM gate, judged at every VBlank;
+    // the scale applies only while every predicate holds.
+    struct GuestCycleScaleGatePred {
+        uint32_t addr  = 0;           // guest main-RAM address (any segment)
+        uint32_t size  = 4;           // 1, 2 or 4 bytes, aligned
+        uint32_t mask  = 0xFFFFFFFFu;
+        uint32_t value = 0;           // open while (word & mask) == value
+    };
+    std::vector<GuestCycleScaleGatePred> guest_cycle_scale_gate;
 
     // low_latency_input: re-sample the pad after the wall-clock pacer (just
     // before present) so the next CPU frame reads near-fresh input instead of

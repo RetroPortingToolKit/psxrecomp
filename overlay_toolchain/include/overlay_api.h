@@ -230,11 +230,14 @@ typedef struct OverlayCallbacks {
     /* Interrupt check with the guest PC that should resume if a game-installed
      * handler later RFEs to the sentinel outside the synchronous host window. */
     void (*check_interrupts_at)(CPUState *cpu, uint32_t resume_pc);
-    /* Guest-cycle accounting (ABI v7): block-cycle charge. Overlay code built
+    /* Guest-cycle accounting (ABI v7): the CPU charge. Overlay code built
      * with PSX_ENABLE_BLOCK_CYCLES must charge the SAME shared host cycle/timer
      * timeline as the dirty-RAM interpreter and the BIOS, or timer-sensitive
-     * code reads different values per backend (Tomba2 logo Timer1 fork). */
-    void (*advance_cycles)(uint32_t cycles);
+     * code reads different values per backend (Tomba2 logo Timer1 fork). The
+     * host binds its psx_cpu_charge (psx_cycles.h), so [timing]
+     * guest_cycle_scale applies to overlay code exactly as to native code.
+     * (Named advance_cycles before; same slot, same arguments.) */
+    void (*cpu_charge)(uint32_t cycles);
     /* GTE coprocessor 2 execution */
     void (*gte_execute)(CPUState *cpu, uint32_t cmd);
     /* MIPS syscall (break/syscall instructions). Returns 1 if control

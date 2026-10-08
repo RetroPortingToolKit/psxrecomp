@@ -84,6 +84,16 @@ void psx_mod_set_texture_filter(int mode);
  * Save/load and rewind must wait until that host context has returned. */
 int psx_mod_function_entry_active(void);
 
+/* [timing] guest_cycle_scale mod gate (docs/config_schema.md, Timing block).
+ * With guest_cycle_scale_gated = true in game.toml the scale applies only
+ * while a trusted plugin holds this gate open (and any declarative
+ * guest_cycle_scale_gate RAM predicates hold). Every mod session reset
+ * shuts it; open it from the activation callback. Mod plans are cleared
+ * online, so this gate keeps a scale that depends on a mod out of netplay.
+ * The gate state is part of savestates and the netplay rollback snapshot. */
+void psx_mod_set_guest_cycle_scale_gate(int open);
+/* Live scale: the configured one while every gate is open, else 1. */
+uint32_t psx_mod_guest_cycle_scale(void);
 /* Narrow guest services available to trusted plugin callbacks. */
 int psx_mod_game_started(void);
 /* Read an original mounted-disc file without changing guest CD state/timing.

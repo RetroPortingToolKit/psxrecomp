@@ -2308,8 +2308,7 @@ extern int g_ls_replay_active;
 static inline void psx_load_charge_cycles(uint32_t cycles) {
     if (g_ls_replay_active || cycles == 0u) return;
     if (PSX_GCS_ACTIVE()) {
-        cycles = psx_gcs_scale(cycles);
-        if (cycles) psx_advance_cycles(cycles);
+        psx_cpu_charge(cycles);
         return;
     }
     uint64_t next = psx_cycle_count + (uint64_t)cycles;
@@ -2322,8 +2321,7 @@ static inline void psx_load_charge_cycles(uint32_t cycles) {
 }
 #else
 static inline void psx_load_charge_cycles(uint32_t cycles) {
-    if (PSX_GCS_ACTIVE()) cycles = psx_gcs_scale(cycles);
-    psx_advance_cycles(cycles);
+    psx_cpu_charge(cycles);
 }
 #endif
 
@@ -2383,7 +2381,7 @@ static inline void psx_cyc_readmem(CPUState* cpu, uint32_t phys, uint32_t size,
     uint32_t cost = region + compl_cost;               /* LDAbsorb = region + completion */
     uint32_t fudge = (uint32_t)((cpu->read_fudge >> 4) & 2u);
     cpu->ld_absorb = cost;
-    psx_advance_cycles(fudge + cost);
+    psx_cpu_charge(fudge + cost);   /* CPU charge: [timing] guest_cycle_scale */
     cpu->ld_which_t = (uint8_t)arm_rt;
     /* PROOF GATE (PSX_POLL_PROOF=N, default 0/off): a FLAT, non-absorbed extra N
      * cycles per main-RAM data read — replicates the historical "+6 cyc/main-RAM

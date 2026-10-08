@@ -26,11 +26,19 @@ uint32_t g_psx_gcs_recip_q16 = 65536u;
 uint32_t g_psx_gcs_frac = 0u;
 static uint32_t s_psx_gcs_cfg = 1u;     /* [timing] guest_cycle_scale */
 static uint32_t s_psx_gcs_live = 1u;
-static int      s_psx_gcs_gated = 0;    /* guest_cycle_scale_gated */
-static int      s_psx_gcs_open = 0;
+static int      s_psx_gcs_gated = 0;    /* guest_cycle_scale_gated (mod gate) */
+static int      s_psx_gcs_open = 0;     /* mod gate state */
+/* [timing] guest_cycle_scale_gate: RAM predicates, all must hold. */
+typedef struct { uint32_t phys, size, mask, value; } PsxGcsRamPred;
+static PsxGcsRamPred s_psx_gcs_ram[PSX_GCS_RAM_GATE_MAX];
+static uint32_t s_psx_gcs_ram_n = 0;
+static int      s_psx_gcs_ram_open = 0; /* last VBlank's verdict */
+static uint32_t (*s_psx_gcs_ram_read)(uint32_t phys, uint32_t size) = NULL;
 
 static void psx_guest_cycle_scale_apply(void) {
-    uint32_t n = (!s_psx_gcs_gated || s_psx_gcs_open) ? s_psx_gcs_cfg : 1u;
+    const int open = (!s_psx_gcs_gated || s_psx_gcs_open) &&
+                     (s_psx_gcs_ram_n == 0u || s_psx_gcs_ram_open);
+    uint32_t n = open ? s_psx_gcs_cfg : 1u;
     if (n == s_psx_gcs_live) return;
     s_psx_gcs_live = n;
     g_psx_gcs_recip_q16 = psx_gcs_recip_for(n);
@@ -52,6 +60,64 @@ void psx_guest_cycle_scale_set_gated(int gated) {
 void psx_guest_cycle_scale_gate_open(int open) {
     s_psx_gcs_open = open ? 1 : 0;
     psx_guest_cycle_scale_apply();
+}
+
+void psx_guest_cycle_scale_set_ram_reader(uint32_t (*read)(uint32_t phys, uint32_t size)) {
+    s_psx_gcs_ram_read = read;
+}
+
+int psx_guest_cycle_scale_ram_gate_add(uint32_t addr, uint32_t size,
+                                       uint32_t mask, uint32_t value) {
+    const uint32_t phys = addr & 0x1FFFFFFFu;
+    if (s_psx_gcs_ram_n >= (uint32_t)PSX_GCS_RAM_GATE_MAX) return 0;
+    if (size != 1u && size != 2u && size != 4u) return 0;
+    if ((phys & (size - 1u)) != 0u || phys >= 0x00800000u) return 0;  /* main RAM */
+    if (size < 4u) mask &= (1u << (8u * size)) - 1u;
+    s_psx_gcs_ram[s_psx_gcs_ram_n].phys = phys;
+    s_psx_gcs_ram[s_psx_gcs_ram_n].size = size;
+    s_psx_gcs_ram[s_psx_gcs_ram_n].mask = mask;
+    s_psx_gcs_ram[s_psx_gcs_ram_n].value = value & mask;
+    s_psx_gcs_ram_n++;
+    s_psx_gcs_ram_open = 0;                 /* shut until the first VBlank */
+    psx_guest_cycle_scale_apply();
+    return 1;
+}
+
+void psx_guest_cycle_scale_ram_gate_clear(void) {
+    s_psx_gcs_ram_n = 0u;
+    s_psx_gcs_ram_open = 0;
+    psx_guest_cycle_scale_apply();
+}
+
+/* VBlank edge (interrupts.c fire_vblank_edge): a guest-time point, so every
+ * peer and every rollback re-simulation sees the same verdict. */
+void psx_guest_cycle_scale_vblank(void) {
+    if (s_psx_gcs_ram_n == 0u || !s_psx_gcs_ram_read) return;
+    int open = 1;
+    for (uint32_t i = 0; open && i < s_psx_gcs_ram_n; i++) {
+        const PsxGcsRamPred *p = &s_psx_gcs_ram[i];
+        open = (s_psx_gcs_ram_read(p->phys, p->size) & p->mask) == p->value;
+    }
+    if (open == s_psx_gcs_ram_open) return;
+    s_psx_gcs_ram_open = open;
+    psx_guest_cycle_scale_apply();
+}
+
+/* Public mod API (mod_plugins.h): the mod gate. */
+void psx_mod_set_guest_cycle_scale_gate(int open) { psx_guest_cycle_scale_gate_open(open); }
+uint32_t psx_mod_guest_cycle_scale(void) { return s_psx_gcs_live; }
+
+void psx_guest_cycle_scale_snapshot(uint32_t out[3]) {
+    out[0] = g_psx_gcs_frac;
+    out[1] = (uint32_t)s_psx_gcs_open;
+    out[2] = (uint32_t)s_psx_gcs_ram_open;
+}
+
+void psx_guest_cycle_scale_restore(const uint32_t in[3]) {
+    s_psx_gcs_open = in[1] ? 1 : 0;
+    s_psx_gcs_ram_open = in[2] ? 1 : 0;
+    psx_guest_cycle_scale_apply();
+    g_psx_gcs_frac = PSX_GCS_ACTIVE() ? (in[0] & 0xFFFFu) : 0u;
 }
 
 uint32_t psx_guest_cycle_scale(void) { return s_psx_gcs_live; }
@@ -755,7 +821,7 @@ void psx_muldiv_set(CPUState* cpu, uint32_t latency) {
     /* The deadline belongs to this instruction, including unpublished CPU
      * work from generated blocks and local charge accumulators. */
     psx_cyc_batch_flush();
-    if (PSX_GCS_ACTIVE()) latency = psx_gcs_scale(latency);
+    latency = psx_cpu_cycles(latency);   /* [timing] guest_cycle_scale */
     cpu->muldiv_ts_done = psx_cycle_count + (uint64_t)latency;
 }
 
@@ -857,7 +923,7 @@ void psx_gte_set(CPUState* cpu, uint32_t latency) {
     if (cpu->gte_ts_done > psx_cycle_count) {
         psx_advance_cycles((uint32_t)(cpu->gte_ts_done - psx_cycle_count));
     }
-    if (PSX_GCS_ACTIVE()) latency = psx_gcs_scale(latency);
+    latency = psx_cpu_cycles(latency);   /* [timing] guest_cycle_scale */
     cpu->gte_ts_done = psx_cycle_count + (uint64_t)latency;
 }
 

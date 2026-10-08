@@ -31,7 +31,7 @@ extern uint32_t g_debug_last_store_pc;
  * Compile generated code with -DPSX_ENABLE_BLOCK_CYCLES=1 to
  * activate cycle advancement at every block leader. */
 #ifdef PSX_ENABLE_BLOCK_CYCLES
-extern void psx_advance_cycles(uint32_t cycles);
+extern void psx_cpu_charge(uint32_t cycles);
 #endif
 
 void OpenBIOS_func_1FC00000(CPUState* cpu);

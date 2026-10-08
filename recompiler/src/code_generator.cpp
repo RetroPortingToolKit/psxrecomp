@@ -165,7 +165,9 @@ std::string CodeGenerator::emit_mid_block_cycle_charge(uint32_t addr,
 
     std::stringstream ss;
     ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
-    ss << indent << fmt::format("psx_advance_cycles({}u);\n", cycles);
+    // The CPU charge (psx_cycles.h): the same call in native and overlay
+    // DLL code; [timing] guest_cycle_scale is applied inside it.
+    ss << indent << fmt::format("psx_cpu_charge({}u);\n", cycles);
     ss << "#endif\n";
     return ss.str();
 }
@@ -2111,7 +2113,7 @@ std::string CodeGenerator::translate_basic_block(
     };
     if (!cycle_per_insn && block_exec_cycles > 0) {
         ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
-        ss << config_.indent << fmt::format("psx_advance_cycles({}u);\n",
+        ss << config_.indent << fmt::format("psx_cpu_charge({}u);\n",
                                             block_exec_cycles);
         ss << "#endif\n";
     }

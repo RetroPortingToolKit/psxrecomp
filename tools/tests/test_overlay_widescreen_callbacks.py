@@ -36,7 +36,7 @@ int main(void) {
     OverlayCallbacks callbacks = {0};
     callbacks.ws_screen_x_bound = bound;
     callbacks.mod_function_entry = entry;
-    callbacks.advance_cycles = advance;
+    callbacks.cpu_charge = advance;
     overlay_init(&callbacks);
     assert(overlay_abi() == PSX_OVERLAY_ABI_TAG);
     assert(psx_ws_screen_x_bound(-256) == -512);

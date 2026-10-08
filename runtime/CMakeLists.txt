@@ -276,6 +276,16 @@ if(BUILD_TESTING)
         PSX_ENABLE_BLOCK_CYCLES=1)
     add_test(NAME psx_guest_cycle_scale_test COMMAND psx_guest_cycle_scale_test)
 
+    # One CPU charge for every tier, the declarative RAM gate and the mod gate,
+    # and rollback re-simulation, against the real psx_cycles.c.
+    add_executable(psx_guest_cycle_scale_gate_test
+        tests/test_psx_guest_cycle_scale_gate.c
+        src/psx_cycles.c)
+    target_include_directories(psx_guest_cycle_scale_gate_test PRIVATE include)
+    target_compile_definitions(psx_guest_cycle_scale_gate_test PRIVATE
+        PSX_ENABLE_BLOCK_CYCLES=1)
+    add_test(NAME psx_guest_cycle_scale_gate_test COMMAND psx_guest_cycle_scale_gate_test)
+
     # Segment misses in static game code (docs/SEGMENT_AWARE_CODE.md §5.5):
     # classification against the dispatch rows, the ring and the per-PC
     # summary the TCP command and the exit report read.

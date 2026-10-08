@@ -103,6 +103,10 @@ enum {
     BS_SEC_SIO    = 0x0D,  /* SIO regs + pad-config FSM + memcard FSM             */
     BS_SEC_DIRTY  = 0x0E,  /* dirty-RAM page bitmap (guest-written code pages)    */
     BS_SEC_MDEC   = 0x0F,  /* MDEC command/FIFOs/quant/scale (FMV decode resume)  */
+    BS_SEC_GCS    = 0x13,  /* [timing] guest_cycle_scale: carried fraction + gate
+                              state (3 u32). Written only when the title's
+                              scale is not 1, so faithful states are unchanged;
+                              absent => fraction 0, gates as they are. */
     BS_SEC_ICACHE = 0x10,  /* R3000A I-cache tag/valid words (1024 u32) — fetch
                               cost model. Host-persistent otherwise: a warm load
                               without it replays with the pre-load timeline's
