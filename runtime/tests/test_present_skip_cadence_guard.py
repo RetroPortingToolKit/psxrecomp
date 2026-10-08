@@ -31,7 +31,11 @@ assert RENDERER.count("!psx_present_vsync_owns_cadence() &&") == skips, (
     "every present-skip site must be gated on psx_present_vsync_owns_cadence(); "
     "an ungated skip lets the guest free-run when driver vsync owns cadence"
 )
-assert RENDERER.count("!host_osd_needs_present() &&") == skips
+# The OSD query goes through ov_needs_present(), which is host_osd_needs_present()
+# except when the render thread replays a present recorded with its own copy
+# of the overlay state (docs/RENDER_THREAD.md).
+assert RENDERER.count("!ov_needs_present() &&") == skips
+assert ": host_osd_needs_present();" in RENDERER
 assert RENDERER.count("!gl_renderer_interpolation_owns_cadence()) {") == skips
 
 # The query is declared beside the pacer it is the XOR partner of, and defined

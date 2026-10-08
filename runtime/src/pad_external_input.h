@@ -1,12 +1,19 @@
 #pragma once
 /* Ordered external-input resolution for one offline player's pad.
  *
- *   (1) physical/local capture  -> buttons, device presence
+ *   (1) physical/local capture  -> buttons, device presence; host extras
+ *         of the port (gamepad present, LT/RT values)
  *   (2) offline controller source (psx_mod_set_controller_source), if any:
  *         buttons = source & physical; sticks/type from the source, through
  *         the controller presentation policy (hook)
+ *   (2b) title pad transform (psx_mod_set_pad_transform), if any: sees the
+ *         pad of (1)/(2) plus the host extras (a digital pad with no source
+ *         as its host pad: real sticks, no stick->D-pad fold); may rewrite
+ *         buttons, sticks and the presented type (NeGcon packed as PsxNetPad
+ *         documents). Declining delivers the stock pad of (1)/(2).
  *   (3) local mouse policy (psx_mod_set_local_mouse_policy), P1 only: may
- *         override ONLY the right analog axes of whatever (1)/(2) produced.
+ *         override ONLY the right analog axes of whatever (1)-(2b) produced;
+ *         a NeGcon result has no right stick, so it resets the mouse.
  *
  * Precedence: a source never suppresses the mouse policy. The mouse sees the
  * RESOLVED pad (final buttons, final analog flag, final right stick), so a
@@ -47,6 +54,19 @@ typedef struct PadExtHooks {
     void (*mouse_reset)(void *ctx);
     void (*mouse_fold)(void *ctx, int connected, int analog, uint16_t buttons,
                        uint8_t *rx, uint8_t *ry);
+    /* (1) Host extras of port `s`: PSX_MOD_PAD_HOST_* flags and LT/RT
+     * 0..255. NULL = none (all zero). Queried only when a transform exists. */
+    void (*host_extras)(void *ctx, int s, uint32_t *flags, uint32_t *lt,
+                        uint32_t *rt);
+    /* (2b) Title transform: mod_pad_transform_run semantics (0 = none,
+     * 1 = deliver *out; `stock` is the pass-through). NULL = no stage. */
+    int (*pad_transform)(void *ctx, int s, const PSXModPadFrame *frame,
+                         const PSXModPadOutput *stock, PSXModPadOutput *out);
+    /* (1) Host pad of port `s` before presentation: buttons without the
+     * digital stick->D-pad fold and the real sticks, whatever the configured
+     * mode. Queried only for the transform frame of a digital stage-1 pad
+     * with no source; 0 = unavailable (the frame keeps the stock pad). */
+    int (*host_pad)(void *ctx, int s, uint16_t *buttons, uint8_t st[4]);
 } PadExtHooks;
 
 /* Resolve one port. Returns 1 = deliver *out, 0 = no device/source here. */

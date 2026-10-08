@@ -390,7 +390,8 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = (uint32_t)PSX_OVERLAY_CODEGEN_VER;
-    h.section_count = 17 + (psx_mod_memory_snapshot_bytes() ? 1u : 0u);
+    h.section_count = 17 + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
+                      (psx_guest_cycle_scale_config() != 1u ? 1u : 0u);
 
     ok = write_header_le(o, &h);
 
@@ -487,6 +488,17 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
         pst_w_init(&w, handoff, sizeof handoff);
         ok = pst_w_u32(&w, fntrace_is_game_started() ? 1u : 0u) &&
              write_section(o, BS_SEC_GAME_START, handoff, sizeof handoff);
+    }
+    if (ok && psx_guest_cycle_scale_config() != 1u) {
+        /* Rollback re-simulation must resume with the same carried fraction
+         * and gate verdicts, or scaled charges land a cycle apart. */
+        uint32_t g[3];
+        uint8_t gb[PSX_GCS_SNAPSHOT_BYTES];
+        PstW w;
+        psx_guest_cycle_scale_snapshot(g);
+        pst_w_init(&w, gb, sizeof gb);
+        ok = pst_w_u32(&w, g[0]) && pst_w_u32(&w, g[1]) && pst_w_u32(&w, g[2]) &&
+             write_section(o, BS_SEC_GCS, gb, sizeof gb);
     }
     return ok;
 }
@@ -624,6 +636,7 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
         pst_r_init(&r, p, len);
         if (!pst_r_u64(&r, &cyc)) return 0;
         psx_cycle_count = cyc;
+        g_psx_gcs_frac = 0u;   /* BS_SEC_GCS (if present) restores it */
         return 1;
     }
     case BS_SEC_GPU:
@@ -703,6 +716,16 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
     case BS_SEC_GAME_START:
         fntrace_restore_game_started(p[0]);
         return 1;
+    case BS_SEC_GCS: {
+        PstR r;
+        uint32_t g[3];
+        if (len != PSX_GCS_SNAPSHOT_BYTES) return 0;
+        pst_r_init(&r, p, len);
+        if (!pst_r_u32(&r, &g[0]) || !pst_r_u32(&r, &g[1]) || !pst_r_u32(&r, &g[2]))
+            return 0;
+        psx_guest_cycle_scale_restore(g);
+        return 1;
+    }
     case BS_SEC_ICACHE: {
         PstR r;
         if (len != 1024u * 4u) return 0;
@@ -762,6 +785,7 @@ static int validate_section(uint32_t tag, const uint8_t* p, uint32_t len) {
     case BS_SEC_GAME_START:
         return len == 4u && p[0] <= 1u && !p[1] && !p[2] && !p[3];
     case BS_SEC_ICACHE: return len == 1024u * 4u;
+    case BS_SEC_GCS:    return len == PSX_GCS_SNAPSHOT_BYTES;
     default:            return 1;
     }
 }

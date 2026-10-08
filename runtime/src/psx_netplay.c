@@ -3,6 +3,9 @@
 #endif
 
 #include "psx_netplay.h"
+#include "netplay_load_probe.h"
+#include "netplay_sim_pad_cache.h"
+#include "netplay_local_view.h"
 
 #include "host_time.h"
 #include "memcard.h"
@@ -60,6 +63,13 @@
 
 /* Session pad count mirrored for release_pads (available without recomp-net). */
 static int g_np_slot_count = 2;
+/* Every other occupied seat (bit i = seat i): who must answer an episode. */
+static uint32_t g_np_peer_seats;
+
+uint32_t psx_netplay_peer_seats(void)
+{
+    return g_np_peer_seats;
+}
 /* Session slots may exceed the pad count by one: with host_spectates the
  * host holds slot 0 silently and pads sit at slot - 1. Mirrored here (like
  * g_np_slot_count) for the pad helpers that sit above g_np's definition. */
@@ -195,20 +205,6 @@ void psx_netplay_apply_env(PsxNetplayConfig *cfg)
     v = getenv("PSX_NET_HOST_SPECTATES");
     if (v && v[0])
         cfg->host_spectates = (v[0] != '0') ? 1 : 0;
-}
-
-void psx_netplay_normalize_pad(PsxNetPad *pad)
-{
-    const int dead = 24; /* ~SDL-ish center deadzone in 0..255 space */
-    if (!pad) return;
-    pad->connected = 1;
-    if (pad->lx > (uint8_t)(0x80 - dead) && pad->lx < (uint8_t)(0x80 + dead)) pad->lx = 0x80;
-    if (pad->ly > (uint8_t)(0x80 - dead) && pad->ly < (uint8_t)(0x80 + dead)) pad->ly = 0x80;
-    if (pad->rx > (uint8_t)(0x80 - dead) && pad->rx < (uint8_t)(0x80 + dead)) pad->rx = 0x80;
-    if (pad->ry > (uint8_t)(0x80 - dead) && pad->ry < (uint8_t)(0x80 + dead)) pad->ry = 0x80;
-    if (!pad->analog) {
-        pad->lx = pad->ly = pad->rx = pad->ry = 0x80;
-    }
 }
 
 static void force_session_pads_connected(int slot_count)
@@ -456,7 +452,40 @@ uint32_t psx_netplay_sim_tick(void) { return 0; }
 int psx_netplay_content_note(uint32_t e, uint32_t a, uint32_t b, uint32_t seen,
                              uint8_t slot, uint8_t op, uint8_t flags)
 { (void)e;(void)a;(void)b;(void)seen;(void)slot;(void)op;(void)flags;return 0; }
-int  psx_netplay_start(const PsxNetplayConfig *cfg) { (void)cfg; return -1; }
+int psx_netplay_seat_count(void) { return 0; }
+int psx_netplay_sim_pad(int seat, PsxNetPad *out)
+{
+    (void)seat;
+    (void)out;
+    return 0;
+}
+void psx_netplay_present_local_view(uint32_t x, uint32_t y,
+                                    uint32_t w, uint32_t h)
+{
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+}
+void psx_netplay_local_view_clear(void) {}
+int psx_netplay_local_view_shed(void) { return 0; }
+int psx_netplay_local_view(uint32_t display_w, uint32_t display_h,
+                           uint32_t *x, uint32_t *y,
+                           uint32_t *w, uint32_t *h)
+{
+    (void)display_w;
+    (void)display_h;
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+    return 0;
+}
+int  psx_netplay_start(const PsxNetplayConfig *cfg)
+{
+    (void)cfg;
+    return -1;
+}
 void psx_netplay_shutdown(void) {}
 void psx_netplay_cold_reset(void) {}
 void psx_netplay_stage_local(const PsxNetPad *pad) { (void)pad; }
@@ -603,6 +632,7 @@ typedef struct {
     int          load_ready_replied; /* READY exchanged; synced; stay LOAD_READY until admit */
     int          load_sync_done;     /* hard_resync+prime once at mutual ready */
     int          load_apply_failed;  /* sticky: staged apply rejected — soft-exit */
+    PsxNetplayLoadProbe load_probe; /* guest's verified local LOAD probe/apply */
     /* Transport / ICE / diag (MotK online path). */
     int          use_ice;
     int          ice_has_turn;
@@ -1037,7 +1067,9 @@ static void np_drain_peer_frame_commits(void)
             continue;
         if (through == 0u)
             psx_netplay_rb_boot_dig0_note_peer(hash);
-        netplay_hc_note_peer(&g_np.hc, through, hash);
+        netplay_hc_note_peer_from(&g_np.hc,
+                                  rnet_session_rb_last_take_from(g_np.session),
+                                  through, hash);
     }
     /* FIRST CORE can stick the watermark forever once that tick ages out of
      * the 128-slot ring — heal so choose_load_tick sees a real frontier. */
@@ -1480,6 +1512,35 @@ static void np_apply_ready_state(void)
      * dependency — relative sandbox/CWD issues used to fail write_slot here).
      * Both peers request apply so host cannot restore before guest has bytes. */
     if (g_np.local_slot != 0) {
+        uint32_t local_size = 0, local_crc = 0;
+        const uint32_t blob_crc = (size <= UINT32_MAX)
+            ? rnet_checksum((const rnet_u8 *)data, size) : 0u;
+        /* A guest whose local hash matched may already have completed the
+         * local restore while the host was collecting other seats' replies.
+         * The host still sends the authoritative blob to every guest after
+         * any miss. Verify its full wire CRC and re-read the local slot before
+         * reusing the completed apply; never skip a different/stale blob. */
+        if (g_np.xfer == NP_XFER_LOAD_READY && g_np.load_applied_local &&
+            size <= UINT32_MAX &&
+            np_slot_crc((int)slot, &local_size, &local_crc) &&
+            psx_netplay_load_probe_can_reuse(&g_np.load_probe, (int)slot,
+                                             (uint32_t)size, blob_crc,
+                                             local_size, local_crc)) {
+            printf("psxrecomp: netplay guest load slot=%u — verified host blob "
+                   "matches completed local apply (size=%u crc=%08x); "
+                   "skipping duplicate restore\n",
+                   (unsigned)slot, (unsigned)size, (unsigned)blob_crc);
+            fflush(stdout);
+            /* Keep the sandbox mirror current for future match probes. */
+            if (!savestate_write_slot((int)slot, data, size)) {
+                printf("psxrecomp: netplay guest load slot=%u — verified "
+                       "sandbox mirror failed (completed local apply retained)\n",
+                       (unsigned)slot);
+                fflush(stdout);
+            }
+            rnet_session_state_finish(g_np.session, 0);
+            return; /* preserve LOAD_READY and its existing apply receipt */
+        }
         if (!savestate_request_load_blob_protocol(data, size)) {
             printf("psxrecomp: netplay guest load slot=%u — blob stage failed "
                    "(%zu bytes, sandbox='%s')\n",
@@ -1640,6 +1701,8 @@ static void np_guest_handle_probe(void)
                     g_np.xfer != NP_XFER_LOAD_READY) {
                     (void)savestate_request_load_protocol((int)slot);
                     np_begin_load_apply((int)slot);
+                    psx_netplay_load_probe_record(&g_np.load_probe,
+                                                  (int)slot, size, crc);
                     printf("psxrecomp: netplay guest load slot=%u — hashes match, "
                            "applying…\n",
                            (unsigned)slot);
@@ -1862,7 +1925,7 @@ static void np_prime_after_hard_resync(void)
     bytes[3] = pad.ly;
     bytes[4] = pad.rx;
     bytes[5] = pad.ry;
-    bytes[6] = pad.analog ? 1u : 0u;
+    bytes[6] = pad.analog;
     bytes[7] = 1u;
     rnet_session_prime_delay_inputs(g_np.session, bytes, (rnet_u16)PSX_NETPLAY_PAD_BYTES);
 
@@ -1884,6 +1947,7 @@ static void np_begin_load_apply(int slot)
     g_np.load_applied_local = 0;
     g_np.load_sync_done = 0;
     g_np.load_ready_replied = 0;
+    psx_netplay_load_probe_clear(&g_np.load_probe);
     g_np.needs_advance = 0;
     g_np.latched_for_tick = 0;
     g_np.staged_valid = 0;
@@ -1918,6 +1982,7 @@ static void np_enter_load_ready(int slot)
      * Do not suppress INPUT here either: the first peer to finish apply must
      * keep sending pads so the other can still admit frames for savestate_poll. */
     g_np.load_applied_local = 1;
+    psx_netplay_load_probe_mark_applied(&g_np.load_probe, slot);
     g_np.load_ready_replied = 0;
     g_np.load_sync_done = 0;
     g_np.needs_advance = 0;
@@ -1949,6 +2014,7 @@ static void np_drive_load_barrier(void)
         g_np.load_ready_replied = 0;
         g_np.load_sync_done = 0;
         g_np.load_apply_failed = 1;
+        psx_netplay_load_probe_clear(&g_np.load_probe);
         if (g_np.session)
             rnet_session_set_input_send_suppress(g_np.session, 0);
         return;
@@ -2048,7 +2114,7 @@ static void encode_pad(const PsxNetPad *pad, RNetInputSample *out, rnet_u32 tick
     out->bytes[3] = n.ly;
     out->bytes[4] = n.rx;
     out->bytes[5] = n.ry;
-    out->bytes[6] = n.analog ? 1u : 0u;
+    out->bytes[6] = n.analog;
     out->bytes[7] = 1u;
     out->valid = 1;
 }
@@ -2066,7 +2132,7 @@ static void decode_pad(const RNetInputSample *in, PsxNetPad *pad)
     pad->ly = in->bytes[3];
     pad->rx = in->bytes[4];
     pad->ry = in->bytes[5];
-    pad->analog = in->bytes[6] ? 1u : 0u;
+    pad->analog = in->bytes[6] <= PSX_NETPAD_TYPE_MAX ? in->bytes[6] : 0u;
     pad->connected = 1;
     psx_netplay_normalize_pad(pad);
 }
@@ -2341,6 +2407,18 @@ void psx_netplay_pad_trace_dev(int card, int fallback, int sdl_start,
     }
 }
 
+/* A game plugin reads the exact seat row last published to SIO for this tick.
+ * Keep this host-side cache outside savestates: each admitted/replayed tick
+ * publishes it again, including sealed rollback authority overwrites. */
+static PsxNetplaySimPadCache s_sim_pad_cache;
+/* Host-only presentation request; see psx_netplay_present_local_view. */
+static PsxNetplayLocalView s_local_view;
+
+static void note_sim_pad(int slot, uint32_t tick, const PsxNetPad *pad)
+{
+    psx_netplay_sim_pad_cache_publish(&s_sim_pad_cache, slot, tick, pad);
+}
+
 static void apply_pad_slot(int slot, const PsxNetPad *pad)
 {
     if (slot < 0 || slot >= g_np.slot_count || slot >= NP_SLOT_CAP || !pad) return;
@@ -2414,12 +2492,14 @@ static void apply_pad_slot(int slot, const PsxNetPad *pad)
     const int force_dig = on_tap && !sio_get_multitap_analog();
     sio_set_pad_connected(port, 1);
     sio_set_pad_config_capable(port, force_dig ? 0 : 1);
-    sio_set_pad_state_slot(port, pad->buttons);
-    if (force_dig)
-        sio_set_pad_sticks(port, 0x80, 0x80, 0x80, 0x80);
-    else
-        sio_set_pad_sticks(port, pad->lx, pad->ly, pad->rx, pad->ry);
-    sio_request_pad_type(port, (!force_dig && pad->analog) ? 1 : 0);
+    if (force_dig) {
+        PsxNetPad digital = *pad;
+        digital.lx = digital.ly = digital.rx = digital.ry = 0x80;
+        digital.analog = 0;
+        psx_pad_apply_to_sio(port, &digital);
+    } else {
+        psx_pad_apply_to_sio(port, pad);
+    }
     if (psx_start_consumer_enabled()) {
         uint32_t sim = g_np.session ? rnet_session_sim_tick(g_np.session) : 0u;
         psx_start_consumer_note(slot, sim, pad->buttons);
@@ -2444,7 +2524,6 @@ static void host_publish(rnet_u32 tick, const RNetInputSample *by_slot, int slot
 {
     int i;
     int n;
-    (void)tick;
     (void)ctx;
     if (!by_slot || slots <= 0) return;
     n = g_np.slot_count;
@@ -2455,6 +2534,7 @@ static void host_publish(rnet_u32 tick, const RNetInputSample *by_slot, int slot
         PsxNetPad pad;
         decode_pad(&by_slot[i], &pad);
         apply_pad_slot(i, &pad);
+        note_sim_pad(i, tick, &pad);
     }
 }
 
@@ -2481,25 +2561,29 @@ static void np_publish_hist_sio(uint32_t tick)
             continue;
         netplay_ih_frame_to_pad(&row, &pad);
         apply_pad_slot(i, &pad);
+        note_sim_pad(i, tick, &pad);
     }
 }
 
 static void np_rb_apply_frame_slot(int slot, uint32_t tick, uint16_t buttons,
-                                   int8_t sx, int8_t sy, uint8_t analog)
+                                   int8_t sx, int8_t sy, uint8_t analog,
+                                   uint8_t rx, uint8_t ry)
 {
     RNetRbFrame row;
     PsxNetPad pad;
-    (void)tick;
     memset(&row, 0, sizeof(row));
     row.tick = tick;
     row.buttons = buttons;
     row.stick_x = sx;
     row.stick_y = sy;
-    row.analog = analog ? 1u : 0u;
+    row.analog = analog <= PSX_NETPAD_TYPE_MAX ? analog : 0u;
+    row.rx = rx;
+    row.ry = ry;
     row.is_valid = 1;
     netplay_ih_frame_to_pad(&row, &pad);
     force_session_pads_connected(g_np.slot_count);
     apply_pad_slot(slot, &pad);
+    note_sim_pad(slot, tick, &pad);
 }
 
 static void np_rb_bind_and_start(void)
@@ -2595,9 +2679,7 @@ static void np_scrub_ahead_predicted(int slot, rnet_u32 release_tick,
             continue;
         if (!row.is_predicted)
             continue;
-        if (row.buttons == released->buttons &&
-            row.stick_x == released->stick_x &&
-            row.stick_y == released->stick_y)
+        if (netplay_ih_pad_payload_equal(&row, released))
             continue;
         scrub = *released;
         scrub.tick = t;
@@ -2656,9 +2738,7 @@ static void np_tip_hold_coalesce_ahead(void)
                 break;
             decode_pad(&sample, &pad);
             netplay_ih_pad_to_frame(&pad, t, 0, &wire_frame);
-            if (wire_frame.buttons == tip_row.buttons &&
-                wire_frame.stick_x == tip_row.stick_x &&
-                wire_frame.stick_y == tip_row.stick_y)
+            if (netplay_ih_pad_payload_equal(&wire_frame, &tip_row))
                 continue;
             edge = t;
             break;
@@ -2846,6 +2926,7 @@ static void np_rollback_reconcile_wire(void)
             rnet_u32 wire;
             int pads_differ;
             int buttons_differ;
+            int rest_differ;
 
             if (!netplay_ih_get(&g_np.ih, slot, t, &published))
                 continue;
@@ -2861,7 +2942,10 @@ static void np_rollback_reconcile_wire(void)
             netplay_ih_frame_to_contract(&published, &pub_c);
             netplay_ih_frame_to_contract(&wire_frame, &wire_c);
             buttons_differ = (pub_c.buttons != wire_c.buttons);
-            pads_differ = buttons_differ ||
+            /* The rest of the pad (type, right stick, NeGcon I/II) is not in the
+             * contract view; any difference there is a real mispredict. */
+            rest_differ = netplay_ih_extra_pad_differ(&published, &wire_frame);
+            pads_differ = buttons_differ || rest_differ ||
                           (pub_c.stick_x != wire_c.stick_x) ||
                           (pub_c.stick_y != wire_c.stick_y);
             completed = (sim > t) ? 1u : 0u;
@@ -2872,7 +2956,7 @@ static void np_rollback_reconcile_wire(void)
              * release) without opening an episode. Distinct from the old
              * ungated menu soft-promote that forked RAM: HC fail-closed
              * means a real state-affecting press still rewinds. */
-            if (buttons_differ && completed &&
+            if (buttons_differ && !rest_differ && completed &&
                 np_hc_silent_promote_enabled() &&
                 netplay_hc_confirm_through(&g_np.hc, t)) {
                 (void)netplay_ih_promote(&g_np.ih, slot, &wire_frame);
@@ -2919,14 +3003,14 @@ static void np_rollback_reconcile_wire(void)
                 continue;
             }
             gate_ctx.tick = t;
-            d = rnet_input_contract_stick_replace_decide(
-                &pub_c, &wire_c, completed, &params, &gates);
+            d = netplay_ih_pad_correction_decide(
+                &published, &wire_frame, completed, &params, &gates);
             if (rnet_input_contract_decision_is_rewind(d)) {
                 /* FMV/settle only: soft-promote releases (skip must rewind on
                  * press). Menu soft-promote + hold-last invent forked RAM
                  * (sticky Up skipped resim). Live invent is hold-last again —
                  * menu releases open a real episode unless §46 HC-silent. */
-                if (fmv_defer && np_digital_release_only(&pub_c, &wire_c)) {
+                if (!rest_differ && fmv_defer && np_digital_release_only(&pub_c, &wire_c)) {
                     (void)netplay_ih_promote(&g_np.ih, slot, &wire_frame);
                     np_scrub_ahead_predicted(slot, t, &wire_frame);
                     if (n_soft_release == 0) {
@@ -2941,7 +3025,7 @@ static void np_rollback_reconcile_wire(void)
                 /* §48: post-FMV UNLOCK_GRACE — invent is on (§26) but sticky
                  * hold-last D-pad vs wire release must not open tip episodes
                  * into the title/menu (soak: pub=ffef wire=ffff @902). */
-                if (published.is_predicted &&
+                if (!rest_differ && published.is_predicted &&
                     np_digital_release_only(&pub_c, &wire_c) &&
                     psx_netplay_rb_fmv_unlock_grace_active()) {
                     (void)netplay_ih_promote(&g_np.ih, slot, &wire_frame);
@@ -2957,7 +3041,7 @@ static void np_rollback_reconcile_wire(void)
                     continue;
                 }
                 /* FMV: non-press pad noise → promote only (avoid CD thrash). */
-                if (fmv_defer && !np_digital_new_press(&pub_c, &wire_c)) {
+                if (!rest_differ && fmv_defer && !np_digital_new_press(&pub_c, &wire_c)) {
                     (void)netplay_ih_promote(&g_np.ih, slot, &wire_frame);
                     if (pads_differ) {
                         if (n_no_resim == 0) {
@@ -3346,6 +3430,83 @@ uint32_t psx_netplay_sim_tick(void)
     return rnet_session_sim_tick(g_np.session);
 }
 
+int psx_netplay_seat_count(void)
+{
+    return psx_netplay_active() ? g_np.slot_count : 0;
+}
+
+int psx_netplay_sim_pad(int seat, PsxNetPad *out)
+{
+    if (!out || !psx_netplay_active() || seat < 0 || seat >= g_np.slot_count)
+        return 0;
+    return psx_netplay_sim_pad_cache_read(
+        &s_sim_pad_cache, seat, g_np.slot_count,
+        rnet_session_sim_tick(g_np.session), out);
+}
+
+void psx_netplay_present_local_view(uint32_t x, uint32_t y,
+                                    uint32_t w, uint32_t h)
+{
+    if (!psx_netplay_active())
+        return;
+    (void)psx_netplay_local_view_set(&s_local_view,
+                                     rnet_session_sim_tick(g_np.session),
+                                     x, y, w, h);
+}
+
+void psx_netplay_local_view_clear(void)
+{
+    psx_netplay_local_view_reset(&s_local_view);
+}
+
+int psx_netplay_local_view_shed(void)
+{
+    static int s_enabled = -1;
+    static PsxNetplayLocalViewShed s_shed;
+    static uint64_t s_shed_frames;
+    int was, on;
+    if (!psx_netplay_active() || !g_np.session)
+        return 0;
+    if (s_enabled < 0) {
+        const char *e = getenv("PSX_NET_LOCAL_VIEW_SHED");
+        s_enabled = (e && e[0] == '0') ? 0 : 1;
+    }
+    if (!s_enabled)
+        return 0;
+    was = s_shed.on;
+    on = psx_netplay_local_view_shed_step(&s_shed,
+                                          rnet_session_sim_tick(g_np.session),
+                                          psx_netplay_remote_lead(),
+                                          psx_netplay_input_delay());
+    if (on && !was)
+        s_shed_frames = 0;
+    if (on != was) {
+        fprintf(stderr,
+                "psxrecomp: netplay own view %s (sim=%u remote_lead=%d D=%d; "
+                "%llu checks shed)\n",
+                on ? "SHED: this peer is behind, presenting the shared frame"
+                   : "restored: caught up",
+                (unsigned)rnet_session_sim_tick(g_np.session),
+                psx_netplay_remote_lead(), psx_netplay_input_delay(),
+                (unsigned long long)s_shed_frames);
+        fflush(stderr);
+    }
+    if (on)
+        s_shed_frames++;
+    return on;
+}
+
+int psx_netplay_local_view(uint32_t display_w, uint32_t display_h,
+                           uint32_t *x, uint32_t *y,
+                           uint32_t *w, uint32_t *h)
+{
+    if (!psx_netplay_active())
+        return 0;
+    return psx_netplay_local_view_get(&s_local_view,
+                                      rnet_session_sim_tick(g_np.session),
+                                      display_w, display_h, x, y, w, h);
+}
+
 void psx_netplay_stage_local(const PsxNetPad *pad)
 {
     /* Host in the gallery: its seat still publishes a row every tick (the
@@ -3499,6 +3660,21 @@ void psx_netplay_touch_peer_liveness(void)
     rnet_session_touch_peer_liveness(g_np.session);
 }
 
+/* Silence (no datagram from a peer) that counts as a disconnect while
+ * running: PSX_NET_LIVENESS_MS, default 1500, 500..60000. A peer stuck in a
+ * long host-side stall (a heavy frame, a deep resimulation on a slow machine)
+ * still sends nothing for that long, so slower setups can raise it. */
+static uint32_t np_liveness_ms(void)
+{
+    static uint32_t ms;
+    if (!ms) {
+        const char *e = getenv("PSX_NET_LIVENESS_MS");
+        long v = e ? strtol(e, NULL, 10) : 0;
+        ms = (v >= 500 && v <= 60000) ? (uint32_t)v : 1500u;
+    }
+    return ms;
+}
+
 uint32_t psx_netplay_running_liveness_timeout_ms(void)
 {
     uint32_t sim;
@@ -3515,7 +3691,7 @@ uint32_t psx_netplay_running_liveness_timeout_ms(void)
     /* Free-run + tick-0 dig publish no INPUT; rematch dig can exceed 1.5s. */
     if (sim < 48u)
         return 0u;
-    return 1500u;
+    return np_liveness_ms();
 }
 
 static void np_diag_capture(const PsxNetplayConfig *cfg, int slots)
@@ -3660,6 +3836,8 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
 
     if (!cfg || !cfg->enabled) return -1;
     if (g_np.session) psx_netplay_shutdown();
+    psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);
+    psx_netplay_local_view_reset(&s_local_view);
 
     slots = cfg->slot_count;
     if (slots < 2) slots = 2;
@@ -3980,6 +4158,20 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     g_np_slot_count = g_np.slot_count;
     g_np.local_slot = (int)rcfg.local_slot;
     g_np.spectator = cfg->spectator ? 1 : 0;
+    {
+        /* Hash confirm against EVERY peer, not whichever committed last: with
+         * three or more seats, peers that shared one wrong prediction agree
+         * with each other and would confirm a tick the predicted seat never
+         * reached (rnet_hc_set_peer_mask). Two seats keep the one-peer chain. */
+        uint32_t peers = rcfg.occupied_mask;
+        if (rcfg.slot_count < 32u)
+            peers &= (1u << rcfg.slot_count) - 1u;
+        if (rcfg.local_slot < 32u)
+            peers &= ~(1u << rcfg.local_slot);
+        netplay_hc_set_peer_mask(&g_np.hc,
+                                 (peers & (peers - 1u)) ? peers : 0u);
+        g_np_peer_seats = peers;
+    }
     if (g_np.host_spectates) {
         fprintf(stderr,
                 "psxrecomp: HOST SPECTATES - slot 0 runs the match with a "
@@ -4236,6 +4428,8 @@ void psx_netplay_cold_reset(void)
         }
     }
     g_local_pad_prev = 0xFFFFu;
+    psx_netplay_sim_pad_cache_reset(&s_sim_pad_cache);
+    psx_netplay_local_view_reset(&s_local_view);
     g_local_pad_have = 0;
     g_live_trace_prev = 0xFFFFu;
     g_live_trace_have = 0;
@@ -4766,13 +4960,13 @@ static int np_try_admit_gameplay(void)
 }
 
 /*
- * §95: rollback LOAD barrier admit — tip + hold-last invent, no INPUT_CONFIRM.
- * Delay-sync try_admit wait_confirm hung the slower peer after the faster one
- * applied and froze (guest LOADED, host stuck load_applying+wait_confirm).
+ * LOAD barrier admit — tip + hold-last invent, no INPUT_CONFIRM.
+ * Confirmed admission can hang the slower peer after the faster one applies
+ * and freezes, including when a graphical peer is paced behind headless peers.
  * Load will hard_resync at mutual ready; pads here only need guest cycles for
  * savestate_poll / one resume tick.
  */
-static int np_try_admit_load_barrier_rb(void)
+static int np_try_admit_load_barrier_unconfirmed(void)
 {
     rnet_u32 sim = rnet_session_sim_tick(g_np.session);
     rnet_u32 wire;
@@ -4858,31 +5052,27 @@ int psx_netplay_poll_admit(void)
 
     /* Staged load must run guest cycles — bypass starvation latch. ICE xfer
      * often leaves lead=D-1 and would otherwise block try_admit forever.
-     * §95: rollback must not use delay-sync confirm here. */
+     * Neither netplay mode can wait for confirmation from an already-frozen
+     * peer during the apply barrier. */
     if (g_np.xfer == NP_XFER_LOAD_APPLYING && savestate_pending()) {
         if (g_np.needs_advance)
             return 1;
-        if (g_np.rollback)
-            return np_try_admit_load_barrier_rb();
-        return np_try_admit_gameplay();
+        return np_try_admit_load_barrier_unconfirmed();
     }
 
-    /* Both peers: after mutual ready + sync, stay in LOAD_READY until admit
-     * succeeds. Dropping the barrier early on the host let it spin on confirm
-     * with FPS/present already "live". §95: rollback exits via tip invent. */
+    /* After mutual ready + sync, stay in LOAD_READY until a confirmed first
+     * tick is available. Rollback's invented rows are only needed while a
+     * slower peer is still applying the save; inventing the first resumed
+     * tick let peers run different inputs from the identical restored state. */
     if (g_np.xfer == NP_XFER_LOAD_READY) {
         if (g_np.load_sync_done && g_np.load_ready_replied && !g_np.needs_advance) {
             int admitted;
-            if (g_np.rollback)
-                admitted = np_try_admit_load_barrier_rb();
-            else {
-                sim = rnet_session_sim_tick(g_np.session);
-                admitted = rnet_session_try_admit(g_np.session, sim);
-                if (admitted)
-                    g_np.needs_advance = 1;
-                else
-                    force_session_pads_connected(g_np.slot_count);
-            }
+            sim = rnet_session_sim_tick(g_np.session);
+            admitted = rnet_session_try_admit(g_np.session, sim);
+            if (admitted)
+                g_np.needs_advance = 1;
+            else
+                force_session_pads_connected(g_np.slot_count);
             if (admitted) {
                 g_np.xfer = NP_XFER_NONE;
                 g_np.load_applied_local = 0;

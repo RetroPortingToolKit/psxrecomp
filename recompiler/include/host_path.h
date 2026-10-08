@@ -1,9 +1,21 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 #include <system_error>
 
 namespace PSXRecompV4 {
+
+// generic_string() can collapse a MinGW UNC root from "//server" to
+// "/server". Persist the native spelling, changing separators only on
+// Windows; a backslash in a POSIX filename is an ordinary character.
+inline std::string host_path_forward_slashes(const std::filesystem::path& path) {
+    std::string result = path.string();
+#ifdef _WIN32
+    for (char& c : result) if (c == '\\') c = '/';
+#endif
+    return result;
+}
 
 // Some MinGW libstdc++ builds treat a readable UNC path as drive-relative:
 // absolute("\\\\server\\share\\file") becomes "D:\\server\\share\\file".

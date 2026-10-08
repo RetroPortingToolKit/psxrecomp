@@ -157,6 +157,14 @@ int  psx_get_in_exception(void) { return 0; }
 static int s_netplay_active, s_netplay_resim;
 int  psx_netplay_active(void) { return s_netplay_active; }
 int  psx_netplay_is_resimulating(void) { return s_netplay_resim; }
+static int s_crop_clears;
+#define s_netplay s_netplay_active
+#define s_resim s_netplay_resim
+void psx_netplay_local_view_clear(void) { s_crop_clears++; }
+static int s_view_shed;
+int  psx_netplay_local_view_shed(void) { return s_view_shed; }
+static int s_ws_scope;
+void gpu_ws_set_local_view_scope(int on) { s_ws_scope = on; }
 int  psx_selfcheck_resim_active(void) { return 0; }
 int  psx_selfcheck_enabled(void) { return 0; }
 int  psx_rewind_is_open(void) { return 0; }
@@ -243,6 +251,17 @@ uint32_t gl_renderer_pass_leaks(void) { return 0; }
 int gl_renderer_pass_verify_vram(void) { return 1; }
 void gl_renderer_pass_note_cost(uint64_t t) { (void)t; }
 void gl_renderer_pass_service_presents(void) {}
+static uint32_t s_local_status = PSX_MOD_RENDER_PASS_READY;
+static int s_local_kept;
+uint32_t gl_renderer_local_view_unavailable(void) { return s_local_status; }
+int gl_renderer_local_view_begin(int x, int y, int w, int h) {
+    return gl_renderer_pass_begin(x, y, w, h, 0, 0, 0);
+}
+int gl_renderer_local_view_end(int keep) {
+    gl_renderer_pass_end(0, 0);
+    if (keep) s_local_kept++;
+    return 1;
+}
 static uint32_t s_stereo_mask;
 static uint64_t s_stereo_published;
 static int s_capture_fail_eye = -1;
@@ -737,6 +756,71 @@ static void test_stereo(void) {
     CHECK(!psx_mod_render_stereo(&cpu, &f, pair_draw, NULL), "invalid cadence refused");
 }
 
+static int local_draw(CPUState *cpu, void *user, uint32_t alpha) {
+    (void)user;
+    CHECK(alpha == 0, "a local view has no phase");
+    CHECK(s_ws_scope == 1 && psx_mod_local_view_scope() == 1,
+          "own-view presentation scope open while the local view draws");
+    cpu->gpr[8] = 0xBEEFu;
+    s_ram[0x456] = 0x11;            /* the game's draw code writes RAM */
+    psx_advance_cycles(5000u);
+    return 1;
+}
+
+/* Netplay local view: forward netplay frames only; guest state restored
+ * exactly; a committed image cancels the crop request. */
+static void test_local_view(void) {
+    CPUState cpu = {0};
+    PSXModRenderPass r;
+    RenderPassStats st;
+    uint64_t cycle;
+    render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1;
+    memset(&r, 0, sizeof r);
+    r.struct_size = sizeof r;
+    r.y = 240; r.w = 320; r.h = 240;
+    cpu.gpr[8] = 7; s_ram[0x456] = 0x77;
+    cycle = psx_cycle_count;
+    s_netplay = 0;
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_SESSION,
+          "local view refused offline");
+    CHECK(!psx_mod_render_local_view(&cpu, &r, never_fn, NULL), "no offline call");
+    s_netplay = 1;
+    CHECK(psx_mod_render_pass_status() == PSX_MOD_RENDER_PASS_SESSION,
+          "temporal passes stay off in netplay");
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_READY,
+          "local view ready in netplay");
+    s_resim = 1;
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_SESSION &&
+          !psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
+          "no local view while resimulating");
+    s_resim = 0;
+    s_view_shed = 1;
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_FAST_FORWARD &&
+          !psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
+          "a peer behind the match sheds its own view first");
+    s_view_shed = 0;
+    s_local_status = PSX_MOD_RENDER_PASS_BACKEND;
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_BACKEND &&
+          !psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
+          "no local view without a separate presenter surface");
+    s_local_status = PSX_MOD_RENDER_PASS_READY;
+    s_crop_clears = 0;
+    CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
+          "local view committed");
+    render_pass_get_stats(&st);
+    CHECK(st.local_views == 1 && s_local_kept == 1 && s_open_passes == 0 &&
+          st.passes == 0, "one kept local image, transaction closed");
+    CHECK(s_crop_clears == 1, "the committed image cancels the crop request");
+    CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0,
+          "own-view scope closed after the local view");
+    CHECK(cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "guest state restored after the local view");
+    r.x = 900;
+    CHECK(!psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
+          "rect outside VRAM refused");
+    s_netplay = 0;
+}
+
 static void test_texture_stream_journal(void) {
     RenderPassJournal j = {0};
     memcpy(s_vram, s_vram0, sizeof s_vram);
@@ -764,6 +848,7 @@ int main(void) {
     test_ram_8mb();
     test_journal();
     test_stereo();
+    test_local_view();
     test_texture_stream_journal();
     CHECK(s_prec_open == 0, "precision checkpoints balanced");
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);

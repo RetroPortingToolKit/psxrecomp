@@ -8,6 +8,11 @@
 #include "interrupts.h"
 #include "debug_server.h"
 #include "psx_cycles.h"
+
+/* Out-of-line copy of the header-inline CPU charge for the overlay callback
+ * table: overlay DLLs publish their accumulated CPU charge here, into the
+ * same function native code charges (no scaling at this boundary). */
+static void overlay_cpu_charge(uint32_t cycles) { psx_cpu_charge(cycles); }
 #include "lockstep.h"
 #include "overlay_posix.h"
 #include "psx_memory.h"
@@ -2493,7 +2498,7 @@ static void init_callbacks(void) {
     s_callbacks.check_interrupts     = overlay_ci_wrapper;
     s_callbacks.check_interrupts_at  = overlay_ci_at_wrapper;
     /* Address of the header inline → out-of-line copy in this TU (host side). */
-    s_callbacks.advance_cycles     = psx_advance_cycles;
+    s_callbacks.cpu_charge         = overlay_cpu_charge;
     s_callbacks.gte_execute          = gte_execute;
     s_callbacks.psx_syscall          = psx_syscall;
     s_callbacks.psx_native_bad_entry = psx_native_bad_entry;

@@ -148,6 +148,8 @@ int render_pass_store_to(const RenderPassStoreTarget *t, uint32_t addr,
                          uint32_t value, uint32_t width) {
     (void)t; (void)addr; (void)value; (void)width; abort();
 }
+/* DMA / host stores drop their word's PGXP shadow (pgxp.cpp). */
+void pgxp_invalidate_word(uint32_t addr) { (void)addr; }
 
 unsigned g_trace_write_calls = 0;
 unsigned g_parity_write_calls = 0;

@@ -138,6 +138,7 @@ uint32_t psx_netplay_rb_rtt_estimate_ms(void) { return 0; }
 #include "spu.h"
 
 #include "recomp_net/recomp_net.h"
+#include "recomp_net/rb_quorum.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -295,6 +296,25 @@ static int g_peer_baseline_ready; /* dig_a flag: follower ACK after it has our b
 static int g_local_baseline_ready_sent;
 static int g_local_post_sent;
 static int g_peer_post_ok;
+/* N seats (rb_quorum.h): every other seat must send its BASELINE, ready-ACK
+ * and POST before the episode moves on. g_peer_baseline_* / g_peer_post_*
+ * above are the quorum's view (rb_bl_publish / rb_post_publish), so with two
+ * seats nothing changes. */
+static RNetRbQuorum g_bl_q;
+static RNetRbQuorum g_post_q;
+/* Early BASELINEs (episode not open yet), one per seat. */
+static struct {
+    int valid;
+    uint32_t epoch, load, dig_m, dig_a, dig_b, dig_c;
+} g_stash_bl_seat[RNET_RB_QUORUM_SEATS];
+/* A BEGIN whose load we have not simulated yet: join when we get there. */
+static int g_join_valid;
+static int g_joining; /* begin_follower from a deferred join: load may be
+                       * behind our agreed tip because we only now got there */
+static uint32_t g_join_epoch, g_join_mismatch, g_join_load, g_join_target;
+static int g_join_slot;
+static uint8_t g_join_flags;
+static uint32_t g_peer_progress_tip[RNET_RB_QUORUM_SEATS];
 static uint32_t g_peer_post_digest;
 static uint8_t g_peer_post_match;
 static uint32_t g_post_digest;
@@ -1482,7 +1502,8 @@ static void dump_post_diverge_diag(const char *why)
                             hist.is_predicted ? "P" : "");
                     if (have_s && (seal.buttons != hist.buttons ||
                                    seal.stick_x != hist.stick_x ||
-                                   seal.stick_y != hist.stick_y))
+                                   seal.stick_y != hist.stick_y ||
+                                   seal.rx != hist.rx || seal.ry != hist.ry))
                         fprintf(stderr, "!");
                 } else {
                     fprintf(stderr, "/h=----");
@@ -1723,8 +1744,12 @@ static void log_cpu_digest_split(const CPUState *raw, const char *tag)
     fflush(stderr);
 }
 
+static uint32_t rb_quorum_epoch(void);
+static void rb_quorum_reset_all(void);
+
 static void clear_episode_wire_state(void)
 {
+    rb_quorum_reset_all();
     g_local_baseline_sent = 0;
     g_local_baseline_digest = 0;
     g_local_baseline_av = 0;
@@ -2900,7 +2925,7 @@ static int host_promote_from_session(int slot, uint32_t tick, RNetRbFrame *out)
     pad.ly = sample.bytes[3];
     pad.rx = sample.bytes[4];
     pad.ry = sample.bytes[5];
-    pad.analog = sample.bytes[6] ? 1u : 0u;
+    pad.analog = sample.bytes[6] <= PSX_NETPAD_TYPE_MAX ? sample.bytes[6] : 0u;
     pad.connected = 1;
     netplay_ih_pad_to_frame(&pad, tick, 0, &frame);
     if (!netplay_ih_promote(g_b.ih, slot, &frame))
@@ -4170,13 +4195,13 @@ static void publish_sealed_sio(uint32_t tick)
         if (!rnet_rb_get_sealed_frame(g_rb, slot, tick, &row) || !row.is_valid)
             continue;
         g_b.apply_frame_slot(slot, tick, row.buttons, row.stick_x, row.stick_y,
-                             row.analog);
+                             row.analog, row.rx, row.ry);
     }
 }
 
 static void maybe_send_baseline(void);
 static void maybe_enter_replay(void);
-static void accept_peer_baseline(uint32_t epoch, uint32_t load, uint32_t dig_m,
+static void accept_peer_baseline(int from, uint32_t epoch, uint32_t load, uint32_t dig_m,
                                  uint32_t dig_a, uint32_t dig_b, uint32_t dig_c);
 static void apply_stashed_baseline(void);
 static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load,
@@ -4211,7 +4236,101 @@ static void enter_awaiting_baseline(void)
     apply_stashed_baseline();
 }
 
-static void accept_peer_baseline(uint32_t epoch, uint32_t load, uint32_t dig_m,
+static uint32_t rb_quorum_epoch(void)
+{
+    return g_rb ? rnet_rb_get_epoch_id(g_rb) : 0u;
+}
+
+static void rb_quorum_reset_all(void)
+{
+    rnet_rb_quorum_reset(&g_bl_q, psx_netplay_peer_seats(), rb_quorum_epoch());
+    rnet_rb_quorum_reset(&g_post_q, psx_netplay_peer_seats(), rb_quorum_epoch());
+}
+
+/* The sender seat of a reply, or the only peer when there is one. */
+static int rb_reply_seat(int from)
+{
+    uint32_t seats = psx_netplay_peer_seats();
+    if (from >= 0 && (uint32_t)from < RNET_RB_QUORUM_SEATS &&
+        (seats & (1u << from)))
+        return from;
+    return rnet_rb_quorum_sole_seat(seats);
+}
+
+/* Peer baseline as the whole quorum sees it: present once every seat sent
+ * one, "ready" once every seat set ready, digests that fail against ours
+ * whenever any seat disagrees. */
+static void rb_bl_publish(void)
+{
+    uint32_t local[4], view[4];
+    g_peer_baseline_ok = rnet_rb_quorum_complete(&g_bl_q) ? 1 : 0;
+    g_peer_baseline_ready = rnet_rb_quorum_all_ready(&g_bl_q) ? 1 : 0;
+    if (!g_peer_baseline_ok)
+        return;
+    local[0] = g_local_baseline_digest;
+    local[1] = g_local_baseline_av;
+    local[2] = g_local_baseline_aux;
+    local[3] = 0u;
+    (void)rnet_rb_quorum_view(&g_bl_q, g_local_baseline_sent ? local : NULL,
+                              view, NULL);
+    g_peer_baseline_digest = view[0];
+    g_peer_baseline_av = view[1];
+    g_peer_baseline_aux = view[2];
+}
+
+static void rb_post_publish(void)
+{
+    uint32_t local[4] = {g_post_digest, g_post_av, 0u, 0u}, view[4];
+    g_peer_post_ok = rnet_rb_quorum_complete(&g_post_q) ? 1 : 0;
+    if (!g_peer_post_ok)
+        return;
+    (void)rnet_rb_quorum_view(&g_post_q, g_local_post_sent ? local : NULL,
+                              view, NULL);
+    g_peer_post_digest = view[0];
+    g_peer_post_av = view[1];
+}
+
+/* Session-only cleanup. Do not put this in clear_episode_wire_state: an
+ * early BASELINE must survive opening the episode it belongs to. */
+static void rb_reset_session_peer_state(void)
+{
+    memset(g_stash_bl_seat, 0, sizeof(g_stash_bl_seat));
+    memset(g_peer_progress_tip, 0, sizeof(g_peer_progress_tip));
+    g_join_valid = 0;
+    g_joining = 0;
+    g_join_epoch = 0;
+    g_join_mismatch = 0;
+    g_join_load = 0;
+    g_join_target = 0;
+    g_join_slot = 0;
+    g_join_flags = 0;
+}
+
+/* Seats still owing a reply that are nonetheless moving: their input tip
+ * advanced since the last look. A slow peer still catching up to the load
+ * tick is waited for; a handshake times out only when nobody owing a reply
+ * has moved for the whole budget. */
+static int rb_owing_seats_progressed(uint32_t owing)
+{
+    RNetSession *s = sess();
+    int seat, moved = 0;
+    if (!s)
+        return 0;
+    for (seat = 0; seat < (int)RNET_RB_QUORUM_SEATS; ++seat) {
+        rnet_u32 tip = 0;
+        if (!(owing & (1u << seat)))
+            continue;
+        (void)rnet_session_remote_tip(s, seat, &tip);
+        if (tip > g_peer_progress_tip[seat]) {
+            if (g_peer_progress_tip[seat] != 0u)
+                moved = 1;
+            g_peer_progress_tip[seat] = tip;
+        }
+    }
+    return moved;
+}
+
+static void accept_peer_baseline(int from, uint32_t epoch, uint32_t load, uint32_t dig_m,
                                  uint32_t dig_a, uint32_t dig_b, uint32_t dig_c)
 {
     /* Dedup vs the last *logged* copy of this exact message. RB_BASELINE_BURST
@@ -4233,18 +4352,21 @@ static void accept_peer_baseline(uint32_t epoch, uint32_t load, uint32_t dig_m,
     static uint32_t s_log_dig_c;
     int changed;
     (void)load;
-    g_peer_baseline_ok = 1;
-    g_peer_baseline_digest = dig_m;
-    g_peer_baseline_av = dig_b;
-    g_peer_baseline_aux = dig_c;
-    if (dig_a & RB_BL_FLAG_READY) {
-        if (!g_peer_baseline_ready) {
+    {
+        const uint32_t d[4] = {dig_m, dig_b, dig_c, 0u};
+        const int was_ready = g_peer_baseline_ready;
+        if (g_bl_q.epoch != epoch)
+            rnet_rb_quorum_reset(&g_bl_q, psx_netplay_peer_seats(), epoch);
+        (void)rnet_rb_quorum_note(&g_bl_q, rb_reply_seat(from), epoch, d,
+                                  (dig_a & RB_BL_FLAG_READY) ? 1u : 0u);
+        rb_bl_publish();
+        if (g_peer_baseline_ready && !was_ready) {
             fprintf(stderr,
-                    "psxrecomp: rb peer baseline ready-ACK received load=%u\n",
+                    "psxrecomp: rb peer baseline ready-ACK received load=%u "
+                    "(every seat)\n",
                     (unsigned)load);
             fflush(stderr);
         }
-        g_peer_baseline_ready = 1;
     }
     changed = (epoch != s_log_epoch || load != s_log_load || dig_m != s_log_dig_m ||
               dig_a != s_log_dig_a || dig_b != s_log_dig_b || dig_c != s_log_dig_c);
@@ -4256,9 +4378,9 @@ static void accept_peer_baseline(uint32_t epoch, uint32_t load, uint32_t dig_m,
         s_log_dig_b = dig_b;
         s_log_dig_c = dig_c;
         fprintf(stderr,
-                "psxrecomp: rb peer baseline epoch=%u load=%u core=%08x av=%08x ext=%08x "
+                "psxrecomp: rb peer baseline seat=%d epoch=%u load=%u core=%08x av=%08x ext=%08x "
                 "ready=%u (local_applied=%d phase=%d)\n",
-                (unsigned)epoch, (unsigned)load, (unsigned)dig_m, (unsigned)dig_b,
+                from, (unsigned)epoch, (unsigned)load, (unsigned)dig_m, (unsigned)dig_b,
                 (unsigned)dig_c, (unsigned)(dig_a & RB_BL_FLAG_READY),
                 g_episode_snap_applied, (int)rnet_rb_get_phase(g_rb));
         fflush(stderr);
@@ -4269,28 +4391,48 @@ static void accept_peer_baseline(uint32_t epoch, uint32_t load, uint32_t dig_m,
 
 static void apply_stashed_baseline(void)
 {
-    if (!g_stash_bl_valid || !g_rb || !rnet_rb_is_active(g_rb))
+    int seat;
+    if (!g_rb || !rnet_rb_is_active(g_rb))
         return;
-    if (g_stash_bl_epoch != rnet_rb_get_epoch_id(g_rb))
-        return;
+    for (seat = 0; seat < (int)RNET_RB_QUORUM_SEATS; ++seat) {
+        if (!g_stash_bl_seat[seat].valid ||
+            g_stash_bl_seat[seat].epoch != rnet_rb_get_epoch_id(g_rb))
+            continue;
+        g_stash_bl_seat[seat].valid = 0;
+        fprintf(stderr, "psxrecomp: rb baseline unstash seat=%d epoch=%u dig=%08x ready=%u\n",
+                seat, (unsigned)g_stash_bl_seat[seat].epoch,
+                (unsigned)g_stash_bl_seat[seat].dig_m,
+                (unsigned)(g_stash_bl_seat[seat].dig_a & RB_BL_FLAG_READY));
+        fflush(stderr);
+        accept_peer_baseline(seat, g_stash_bl_seat[seat].epoch,
+                             g_stash_bl_seat[seat].load, g_stash_bl_seat[seat].dig_m,
+                             g_stash_bl_seat[seat].dig_a, g_stash_bl_seat[seat].dig_b,
+                             g_stash_bl_seat[seat].dig_c);
+    }
     g_stash_bl_valid = 0;
-    fprintf(stderr, "psxrecomp: rb baseline unstash epoch=%u dig=%08x ready=%u\n",
-            (unsigned)g_stash_bl_epoch, (unsigned)g_stash_bl_dig_m,
-            (unsigned)(g_stash_bl_dig_a & RB_BL_FLAG_READY));
-    fflush(stderr);
-    accept_peer_baseline(g_stash_bl_epoch, g_stash_bl_load, g_stash_bl_dig_m,
-                         g_stash_bl_dig_a, g_stash_bl_dig_b, g_stash_bl_dig_c);
 }
 
-static void stash_or_accept_baseline(uint32_t epoch, uint32_t load, uint32_t dig_m,
+static void stash_or_accept_baseline(int from, uint32_t epoch, uint32_t load, uint32_t dig_m,
                                      uint32_t dig_a, uint32_t dig_b, uint32_t dig_c)
 {
+    int seat = rb_reply_seat(from);
     if (g_rb && rnet_rb_is_active(g_rb) && epoch == rnet_rb_get_epoch_id(g_rb)) {
-        accept_peer_baseline(epoch, load, dig_m, dig_a, dig_b, dig_c);
+        accept_peer_baseline(from, epoch, load, dig_m, dig_a, dig_b, dig_c);
         return;
     }
     /* Host often applies+sends before the follower has opened the episode —
-     * dropping those packets left the guest forever without peer baseline. */
+     * dropping those packets left the guest forever without peer baseline.
+     * One stash per seat: with several peers the first early BASELINE must
+     * not be overwritten by the next one. */
+    if (seat >= 0) {
+        g_stash_bl_seat[seat].valid = 1;
+        g_stash_bl_seat[seat].epoch = epoch;
+        g_stash_bl_seat[seat].load = load;
+        g_stash_bl_seat[seat].dig_m = dig_m;
+        g_stash_bl_seat[seat].dig_a = dig_a;
+        g_stash_bl_seat[seat].dig_b = dig_b;
+        g_stash_bl_seat[seat].dig_c = dig_c;
+    }
     g_stash_bl_valid = 1;
     g_stash_bl_epoch = epoch;
     g_stash_bl_load = load;
@@ -4750,6 +4892,7 @@ static void enter_verify_at_tip(uint32_t done)
                                     g_post_av, 1u);
     g_local_post_sent = 1;
     g_post_rexmit_logged = 0;
+    rb_post_publish();
     fprintf(stderr,
             "psxrecomp: rb post sent tip=%u dig_m=%08x av=%08x cd=%08x (peer_ok=%d)\n",
             (unsigned)g_post_target, (unsigned)g_post_digest, (unsigned)g_post_av,
@@ -4780,6 +4923,8 @@ static void maybe_enter_replay(void)
     int follower;
     if (!g_rb || !s)
         return;
+    if (g_bl_q.epoch == rb_quorum_epoch())
+        rb_bl_publish(); /* digests against ours, now that ours exists */
     if (!g_episode_snap_applied || !g_local_baseline_sent || !g_peer_baseline_ok)
         return;
     if (rnet_rb_get_phase(g_rb) == nRNetRbPhaseReplay)
@@ -4852,6 +4997,9 @@ static void maybe_enter_replay(void)
     /* Light tip: digests already match and load is tip-aligned — skip the
      * ready-ACK RTT (both peers enter Replay on digest match). Full episodes
      * keep symmetric ready (follower ACK → initiator GO). */
+    if (g_baseline_handshake_ms != 0ull &&
+        rb_owing_seats_progressed(rnet_rb_quorum_not_ready(&g_bl_q)))
+        g_baseline_handshake_ms = rb_mono_ms(); /* slow seat still coming */
     if (!rnet_rb_recommend_light_tip(g_rb)) {
         uint32_t ready_ms = rb_ready_timeout_ms();
         if (follower) {
@@ -4900,6 +5048,14 @@ static void maybe_enter_replay(void)
          * is not stranded in wait-for-GO until RB_READY_TIMEOUT_MS — that
          * asymmetry was the 4 fps cliff in the 2026-08-01 soak (initiator
          * light-skipped, follower full-path timed out). */
+        /* Three or more seats: the "ready" each seat sends is how the others
+         * learn it has rolled back to load too. Skipping that let two guests
+         * resume while the host had not opened the episode (R4 4-peer). */
+        if (!g_peer_baseline_ready &&
+            rnet_rb_quorum_sole_seat(psx_netplay_peer_seats()) < 0) {
+            send_baseline_burst(1, RB_BASELINE_BURST, 0);
+            return;
+        }
         g_peer_baseline_ready = 1;
         send_baseline_burst(1, RB_BASELINE_BURST, 0);
         fprintf(stderr,
@@ -4922,6 +5078,7 @@ static void maybe_enter_replay(void)
     rnet_rb_set_phase(g_rb, nRNetRbPhaseReplay);
     g_local_post_sent = 0;
     g_peer_post_ok = 0;
+    rnet_rb_quorum_reset(&g_post_q, psx_netplay_peer_seats(), rb_quorum_epoch());
     g_post_rexmit_logged = 0;
     {
         uint32_t target = rnet_rb_get_target_tick(g_rb);
@@ -4966,6 +5123,7 @@ static void maybe_enter_replay(void)
 
 static void clear_post_handshake(void)
 {
+    rnet_rb_quorum_reset(&g_post_q, psx_netplay_peer_seats(), rb_quorum_epoch());
     g_local_post_sent = 0;
     g_peer_post_ok = 0;
     g_peer_post_digest = 0;
@@ -6052,7 +6210,35 @@ static void schedule_episode_rereplay(uint32_t prefer_plus_one)
     if (tip_extend_keep_live(prefer))
         return;
 
-    if (g_snaps && netplay_snap_ring_has(g_snaps, prefer)) {
+    /* Still replaying and not past prefer yet: every tick finished so far
+     * ran on rows the extension did not change, so the replay simply goes
+     * on to the raised target. Reloading here picked a ring snap between
+     * load and prefer that the replay had not re-saved -- a pre-episode
+     * live snap -- and forked this follower from the initiator, which
+     * reloaded its freshly replayed prefer (R4 2-peer, epoch 9: FOLLOW
+     * reloaded live 3013, initiator replayed 3017; POST diverge). */
+    if (rnet_rb_get_phase(g_rb) == nRNetRbPhaseReplay && g_episode_snap_applied &&
+        !g_pending_load_valid && sess() && rnet_session_sim_tick(sess()) <= prefer) {
+        fprintf(stderr,
+                "psxrecomp: rb tip-extend continue replay at sim=%u (prefer=%u "
+                "target=%u, nothing to redo)\n",
+                (unsigned)rnet_session_sim_tick(sess()), (unsigned)prefer,
+                (unsigned)rnet_rb_get_target_tick(g_rb));
+        fflush(stderr);
+        return;
+    }
+
+    /* Past prefer: replay again from the episode's own load (the pinned,
+     * frame-boundary baseline every seat matched), never from a snap saved
+     * mid-frame during this replay. Restoring those is not cycle-exact
+     * (resume pc inside the frame), so a seat that reloaded one and a seat
+     * that ran straight through drifted apart (R4 2-peer: initiator reloaded
+     * 3001 @0x800663b4, follower continued; resim core diverge at 3002).
+     * The span is at most the seal span, so the extra replay is short. */
+    if ((g_pin_valid && g_pin_tick == load) ||
+        (g_snaps && netplay_snap_ring_has(g_snaps, load))) {
+        reload = load;
+    } else if (g_snaps && netplay_snap_ring_has(g_snaps, prefer)) {
         reload = prefer;
     } else if (g_snaps) {
         for (t = prefer; t > load; --t) {
@@ -6275,6 +6461,7 @@ void psx_netplay_rb_cold_reset(void)
     /* Residue rb_shutdown historically left until the next rb_start — a
      * rematch host in lobby + cold-boot guest then forked dig0/sim~14. */
     tip_dense_reset();
+    rb_reset_session_peer_state();
     clear_episode_wire_state();
     clear_baseline_pin();
     g_boot_dig0_synced = 0;
@@ -8411,7 +8598,8 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
      * (soak: follow load=1808 after commit tip=1852; session-136 load=3184
      * vs agreed tip=3200 → silent REFUSED ×100 + seal timeout). load==agreed
      * is the ownership-chain skip-snap continue and stays legal. */
-    if (!rnet_rb_is_active(g_rb) && g_agreed_valid && load < g_agreed_through) {
+    if (!rnet_rb_is_active(g_rb) && g_agreed_valid && load < g_agreed_through &&
+        !g_joining) {
         char detail[96];
         snprintf(detail, sizeof(detail),
                  "behind agreed tip=%u (zombie load)",
@@ -8510,6 +8698,29 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
         int media_kf_ok = rb_media_kf_enabled() &&
                           ((wire_flags & RNET_RB_SYNC_FLAG_MEDIA_KF) ||
                            rb_want_heal_kf(mismatch, load));
+        if (!skip_ok && !media_kf_ok && sess() &&
+            rnet_session_sim_tick(sess()) <= load) {
+            /* Not there yet (a slow peer): the initiator's inputs up to its
+             * tip are already on the wire, so we will reach load and snap
+             * it. Join then instead of refusing an episode every other seat
+             * is in (R4 4-peer: the slow seat NACKed, the rest realigned on
+             * their own forked snaps). */
+            if (!g_join_valid || g_join_epoch != epoch)
+                fprintf(stderr,
+                        "psxrecomp: rb follow DEFER epoch=%u load=%u — not reached "
+                        "yet (sim=%u); joining when it arrives\n",
+                        (unsigned)epoch, (unsigned)load,
+                        (unsigned)rnet_session_sim_tick(sess()));
+            fflush(stderr);
+            g_join_valid = 1;
+            g_join_epoch = epoch;
+            g_join_mismatch = mismatch;
+            g_join_load = load;
+            g_join_target = target;
+            g_join_slot = slot;
+            g_join_flags = wire_flags;
+            return;
+        }
         if (!skip_ok && !media_kf_ok) {
             fprintf(stderr,
                     "psxrecomp: rb follow REFUSED epoch=%u load=%u — snap missing "
@@ -9204,7 +9415,8 @@ void psx_netplay_rb_pump(void)
     }
 
     while (rnet_session_take_rb_baseline(s, &epoch, &load, &dig_m, &dig_a, &dig_b, &dig_c)) {
-        stash_or_accept_baseline(epoch, load, dig_m, dig_a, dig_b, dig_c);
+        stash_or_accept_baseline(rnet_session_rb_last_take_from(s), epoch, load, dig_m,
+                                 dig_a, dig_b, dig_c);
     }
 
     while (rnet_session_take_rb_post(s, &epoch, &target, &dig_m, &in_dig, &match)) {
@@ -9231,10 +9443,18 @@ void psx_netplay_rb_pump(void)
             }
             continue;
         }
-        g_peer_post_ok = 1;
-        g_peer_post_digest = dig_m;
-        g_peer_post_av = in_dig;
+        {
+            const uint32_t d[4] = {dig_m, in_dig, 0u, 0u};
+            if (g_post_q.epoch != epoch)
+                rnet_rb_quorum_reset(&g_post_q, psx_netplay_peer_seats(), epoch);
+            (void)rnet_rb_quorum_note(&g_post_q,
+                                      rb_reply_seat(rnet_session_rb_last_take_from(s)),
+                                      epoch, d, 1u);
+            rb_post_publish();
+        }
         g_peer_post_match = match;
+        if (!g_peer_post_ok)
+            continue; /* another seat's POST is still owed */
         if (g_local_post_sent) {
             /* RTT sample: elapsed time since *we* sent our POST, now that the
              * peer's POST for this same episode has arrived. Both sides enter
@@ -9287,6 +9507,16 @@ void psx_netplay_rb_pump(void)
         uint64_t now = rb_mono_ms();
         export_local_seals();
         maybe_rexmit_begin();
+        {
+            uint32_t owing = 0u;
+            int seat;
+            for (seat = 0; seat < (int)RNET_RB_QUORUM_SEATS; ++seat)
+                if ((psx_netplay_peer_seats() & (1u << seat)) &&
+                    !rnet_rb_peer_seal_rows_complete(g_rb, seat))
+                    owing |= 1u << seat;
+            if (g_seal_wait_ms != 0ull && rb_owing_seats_progressed(owing))
+                g_seal_wait_ms = now; /* a slow seat is still coming */
+        }
         if (g_seal_wait_ms != 0ull && now >= g_seal_wait_ms &&
             (now - g_seal_wait_ms) >= (uint64_t)RB_SEAL_TIMEOUT_MS) {
             abort_episode("seal timeout (peer missing snap / NACK lost)");
@@ -9306,6 +9536,21 @@ void psx_netplay_rb_pump(void)
      * ordered after SYNC in this pump, or BEGIN arrived while Verify-active). */
     if (!rnet_rb_is_active(g_rb))
         apply_stashed_begin();
+    /* A deferred join: follow once our simulation has passed its load. */
+    if (g_join_valid && !rnet_rb_is_active(g_rb) &&
+        rnet_session_sim_tick(s) > g_join_load) {
+        g_join_valid = 0;
+        if (g_join_epoch != g_last_commit_epoch) {
+            fprintf(stderr, "psxrecomp: rb follow JOIN epoch=%u load=%u (sim=%u)\n",
+                    (unsigned)g_join_epoch, (unsigned)g_join_load,
+                    (unsigned)rnet_session_sim_tick(s));
+            fflush(stderr);
+            g_joining = 1;
+            begin_follower(g_join_epoch, g_join_mismatch, g_join_load,
+                           g_join_target, g_join_slot, g_join_flags);
+            g_joining = 0;
+        }
+    }
 
     /* Keep BASELINE on the wire through Replay until the peer is clearly in. */
     if (rnet_rb_is_active(g_rb) && rnet_rb_get_phase(g_rb) == nRNetRbPhaseReplay) {
@@ -9341,6 +9586,8 @@ void psx_netplay_rb_pump(void)
                                         1u);
         if (g_verify_wait_ms == 0ull)
             g_verify_wait_ms = now;
+        else if (rb_owing_seats_progressed(rnet_rb_quorum_missing(&g_post_q)))
+            g_verify_wait_ms = now; /* a slow seat is still replaying */
         else if (now >= g_verify_wait_ms &&
                  (now - g_verify_wait_ms) >= (uint64_t)RB_VERIFY_TIMEOUT_MS) {
             abort_episode_realign("verify timeout (peer POST missing)");

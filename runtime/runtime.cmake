@@ -1,4 +1,4 @@
-﻿# Shared psxrecomp runtime CMake helpers.
+# Shared psxrecomp runtime CMake helpers.
 #
 # Include this from either the framework runtime build or a sibling game
 # project. SDL3 is the default; set -DPSX_SDL_BACKEND=SDL2 for the legacy
@@ -24,6 +24,7 @@ include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/openxr_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/overlay_static_sources.cmake")
 include("${PSXRECOMP_ROOT}/runtime/netplay_dependency.cmake")
+include("${PSXRECOMP_ROOT}/runtime/texture_image_dependency.cmake")
 
 # Default to an optimized build. The recompiled game is a huge (~270 MB) block of
 # generated C; with no CMAKE_BUILD_TYPE the compiler emits it at -O0 and the game
@@ -84,6 +85,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"
 else()
     option(PSX_DEBUG_TOOLS "Build with TCP debug server + heartbeat + per-block recording" ON)
 endif()
+
+# A title may opt in only after auditing every trusted media preparer used by
+# its mod commit. Older recomp-ui pins ignore this capability and remain sync.
+option(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE
+    "Title certifies preboot mod commit/preparers have no UI or thread affinity" OFF)
 
 # PSX_STATIC_RUNTIME: produce a 100% self-contained MinGW exe.
 #
@@ -367,10 +373,17 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/gpu_sw_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_vram_dirty.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_render.c
+    ${PSXRECOMP_ROOT}/runtime/src/render_thread.c
+    ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
+    ${PSXRECOMP_ROOT}/runtime/src/frame_gen.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu_hd_textures.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/hd_texture_pack.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/duckstation_texture_pack.cpp
     ${PSXRECOMP_ROOT}/runtime/src/psx_openxr.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_controller_source.c
     ${PSXRECOMP_ROOT}/runtime/src/pad_external_input.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_pad_transform.c
     ${PSXRECOMP_ROOT}/runtime/src/vr_pose_math.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_vk_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/dma_gpu_ll.c
@@ -386,11 +399,13 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_motion.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_projection.cpp
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_frame.c
+    ${PSXRECOMP_ROOT}/runtime/src/dynamic_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/host_time.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_fiber.c
     ${PSXRECOMP_ROOT}/runtime/src/sio.c
     ${PSXRECOMP_ROOT}/runtime/src/memcard.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_server.c
+    ${PSXRECOMP_ROOT}/runtime/src/host_sampler.c
     ${PSXRECOMP_ROOT}/runtime/src/debug_trace_ranges.c
     ${PSXRECOMP_ROOT}/runtime/src/dirty_ram_interp.c
     ${PSXRECOMP_ROOT}/runtime/src/draw_distance.c
@@ -461,6 +476,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_pgxp.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_bezel.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_ram.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_hd_textures.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_runtime.cpp
@@ -471,6 +487,8 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_bios_backend.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_bios_module.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_netplay.c
+    ${PSXRECOMP_ROOT}/runtime/src/psx_net_pad.c
+    ${PSXRECOMP_ROOT}/runtime/src/psx_pad_apply.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_lobby_client.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_bios_settle.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_exit_reason.c
@@ -1572,7 +1590,7 @@ function(psxrecomp_add_runtime_target target)
         ${generated_sources}
         ${PSXRT_EXTRAS_SOURCES}
     )
-    target_link_libraries(${target} PRIVATE chdr-static)
+    target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode)
     psxrecomp_sha256_file(${target})
     set(_execution_contract
         "${PSXRECOMP_ROOT}/runtime/src/gte.cpp"
@@ -2089,6 +2107,9 @@ function(psxrecomp_add_runtime_target target)
     endif()
     if(PSX_MOD_DEVELOPER_CHANNEL)
         target_compile_definitions(${target} PRIVATE PSX_MOD_DEVELOPER_CHANNEL=1)
+    endif()
+    if(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
+        target_compile_definitions(${target} PRIVATE PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE=1)
     endif()
     if(has_game_dispatch)
         target_compile_definitions(${target} PRIVATE PSX_HAS_GAME_DISPATCH=1)

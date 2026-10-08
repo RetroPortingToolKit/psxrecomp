@@ -100,6 +100,12 @@ static inline void interp_cyc_step(CPUState *cpu, uint32_t reg_mask) {
     if (cpu->read_absorb[w]) {
         cpu->read_absorb[w]--;
     } else if (!g_ls_replay_active) {
+        if (PSX_GCS_ACTIVE()) {
+            psx_cpu_charge(1u);   /* the CPU charge, scaled */
+            psx_cyc_deps(cpu, reg_mask);
+            psx_cyc_lds(cpu);
+            return;
+        }
         uint64_t next = psx_cycle_count + 1u;
         if (!g_event_step_conservative && g_psx_cycle_fast_limit != 0u &&
             next <= g_psx_cycle_fast_limit) {
@@ -2238,6 +2244,7 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             cpu->ld_which_t = (uint8_t)rt;
 #endif
             cpu->gpr[rt] = cop0_read;
+            psx_pgxp_alu(cpu, insn, cpu->gpr[rt], 0, 0);
             cpu->gpr[0] = 0;
             return 0;
         }
@@ -2247,6 +2254,7 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             cpu->ld_which_t = (uint8_t)rt;
 #endif
             cpu->gpr[rt] = cop0_read;
+            psx_pgxp_alu(cpu, insn, cpu->gpr[rt], 0, 0);
             cpu->gpr[0] = 0;
             return 0;
         }

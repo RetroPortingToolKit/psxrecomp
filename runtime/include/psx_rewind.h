@@ -40,6 +40,13 @@ void psx_rewind_configure(uint32_t bios_checksum, uint32_t entry_pc);
 void psx_rewind_shutdown(void);
 
 int  psx_rewind_enabled(void);
+/* Title block (mod API psx_mod_set_rewind_blocked): while set, Rewind refuses
+ * to open and captures no history (the ring keeps what it has). Cleared at
+ * every mod session start. */
+void psx_rewind_set_title_blocked(int blocked);
+int  psx_rewind_title_blocked(void);
+/* Snapshots in the ring (debug/status). */
+uint32_t psx_rewind_snap_count(void);
 int  psx_rewind_is_open(void);
 /* 1 while open or slide animation still visible. */
 int  psx_rewind_needs_present(void);

@@ -11,6 +11,7 @@
  *      anchoring resolves it on the new PC.
  */
 #include "config_loader.h"
+#include "host_path.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -70,6 +71,33 @@ int main() {
           "relative disc path reads back unchanged");
     check(back.has_memcard1_path && back.memcard1_path == fs::path("saves/card1.mcd"),
           "relative card path reads back unchanged");
+
+#ifdef _WIN32
+    // A NAS selection must survive a launcher save and reopen. No network
+    // asset is opened: only the task-local settings file is written/read.
+    const fs::path expected("//server/share/Game files/disc.chd");
+    for (const char* spelling : {
+            "//server/share/Game files/disc.chd",
+            R"(\\server\share\Game files\disc.chd)"}) {
+        PSXRecompV4::UserSettings network{};
+        network.disc_path = spelling; network.has_disc_path = true;
+        network.bios_path = spelling; network.has_bios_path = true;
+        network.memcard1_path = spelling; network.has_memcard1_path = true;
+        check(PSXRecompV4::save_user_settings(settings, network), "UNC settings save");
+        const auto restored = PSXRecompV4::load_user_settings(settings);
+        check(restored.has_disc_path &&
+              restored.disc_path.native() == expected.native(),
+              "saved UNC disc keeps both leading separators");
+        check(restored.has_bios_path &&
+              restored.bios_path.native() == expected.native(),
+              "saved UNC BIOS keeps both leading separators");
+        check(restored.has_memcard1_path &&
+              restored.memcard1_path.native() == expected.native(),
+              "saved UNC memory card keeps both leading separators");
+        check(PSXRecompV4::host_resolve(game, restored.disc_path).native() == expected.native(),
+              "reopened UNC disc never becomes a path on the current drive");
+    }
+#endif
 
     fs::remove_all(game.parent_path(), ec);
     if (failures) return 1;

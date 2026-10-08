@@ -12,6 +12,8 @@ extern "C" {
 
 /* Initialize software renderer */
 void sw_renderer_init(uint16_t* vram);
+/* Rebind the VRAM array only; draw state is kept. */
+void sw_renderer_rebind_vram(uint16_t* vram);
 
 /* Internal-resolution supersampling (SSAA).
  * scale == 1 : disabled, renderer behaves exactly as native VRAM only.

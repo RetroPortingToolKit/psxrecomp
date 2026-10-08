@@ -211,6 +211,7 @@ While `fn` runs (`g_psx_render_pass_active`):
 | Interrupts | never delivered | `interrupts.c` |
 | GPU DMA | linked lists and delayed completions finish synchronously | `dma.c` |
 | RAM / scratchpad stores | written directly, bypassing code-page tracking, overlay watch, write traces and fingerprints; RAM addresses fold through the live geometry (2 MiB mirrored, or 8 MiB with the 8 MB RAM mod), as outside a pass | `memory.c` `render_pass_store` |
+| Mod arena stores (Expansion-1 mod memory, GPU-DMA aperture) | written; each page is backed up on its first write in the pass and put back at the end, so a title may keep its primitive buffers there (extended draw distance) | `memory.c` `render_pass_mod_store` |
 | MMIO stores | allowed: GP0, GP1 DMA mode / info, GPU and OTC DMA channels, DPCR/DICR, I_STAT/I_MASK. Dropped and counted: SPU (key-ons), CD, timers, SIO, MDEC, other DMA channels, memory control | `memory.c` |
 | MMIO reads | SIO, CD, MDEC and SPU reads abort the pass before consuming device state. I_STAT reads do not tick SIO. Checkpointed GPU, timer, DMA and interrupt reads remain available | `memory.c`, `render_pass.c` |
 | VRAM | only the declared rect; writes that bypass the scissor elsewhere (fills, copies, uploads, pokes: never a native-wide surface) are journaled and rolled back | `gpu_gl_renderer.c` |
@@ -222,6 +223,15 @@ mod; `psx_memory.h`), scratchpad, I-cache tags, I_STAT/I_MASK, timers, DMA
 and GPU registers (without the widescreen side effects of a savestate load), the
 VRAM rect (hr colour, mask stencil, raw 16-bit mirror, native-wide band, CPU
 VRAM rows), the renderer's coherency bookkeeping, and every clock value.
+
+RAM-keyed GPU presentation provenance is restored too: sprite/HUD/background
+tags, primitive roles, reveal-clear/repeat/mask proofs, and the automatic UI
+prepass. A synthetic draw can rewrite and retag the same packet addresses;
+restoring only their RAM would leave the canonical draw comparing its original
+words against a synthetic proof. Packet freshness, the full-composite latch,
+backdrop phase, and scene classification evidence return to their pre-pass
+values. Diagnostic counters and rings still include synthetic activity.
+
 A watchdog abort leaves by longjmp from inside guest code, skipping the
 exits of the frames it leaves, so the host nesting those frames own is put
 back from the checkpoint too: the cycle-deferral depth, the native overlay
@@ -243,6 +253,37 @@ passes stay off for the session. `render_pass_stats` exposes `device_reads`,
 `last_device_read` and `last_device_read_width`; these refusals also count as
 `aborted`. A draw boundary that reaches a device service needs correction;
 the sandbox does not manufacture its completion or return value.
+
+## Netplay local view
+
+```c
+int psx_mod_render_local_view(struct CPUState *cpu, const PSXModRenderPass *rect,
+                              PSXModRenderPassFn fn, void *user);
+uint32_t psx_mod_render_local_view_status(void);
+```
+
+A title whose netplay frame draws every seat's view (so guest state stays
+identical on every peer) can give each player their own seat's single view:
+at the point where the next flip will show `rect` and the guest has finished
+drawing it, `fn` redraws that rect with the game's code (alpha 0) in the same
+sandbox as a pass. Everything a pass restores is restored; the difference is
+the product. The OpenGL presenter's surface keeps the rect's colour (the
+internal-resolution surface and the native-wide band) until the guest draws
+there again, while the stencil, raw mirror, CPU VRAM rows, out-of-rect journal
+and coherency state are put back. Its draws skip the software raster, so the
+authoritative CPU VRAM never sees them. A committed image cancels any
+`psx_netplay_present_local_view()` crop.
+
+It needs a netplay session on a forward frame and the OpenGL dual-raster
+presenter (a surface separate from the authoritative VRAM); it does not need
+frame interpolation. The status is `SESSION` offline, while resimulating, in
+rewind or lockstep replay; `BACKEND` without dual raster or in the
+high-resolution window; `NO_PRESENTER` without an OpenGL surface or with
+24-bit scanout; plus the usual `FAST_FORWARD`, `DISABLED` and `BUSY`.
+`render_pass_stats` counts `local_attempts` and `local_views` and reports
+`local_status`. `PSX_RENDER_PASS_VERIFY=1` checks the guest state as for a
+pass (the kept rect is the product, so its VRAM comparison is skipped).
+R4's online Link Battle (`src/mods/r4_link_netplay.c`) is the worked example.
 
 ## Gates
 
@@ -277,13 +318,17 @@ first pass copies the rect out (`backups_reused` in `render_pass_stats`).
 
 Passes cost host time inside the game's frame: they run on the emulation
 thread. The budget per frame is `PSX_RENDER_PASS_BUDGET` percent (default 80)
-of the presenter's idle time plus the presents beyond two per frame, learnt
-from the previous frame, over a smoothed per-pass cost. When the budget runs
+of the presenter's idle time plus the presents beyond two per frame and prior
+replay time, learnt from the previous frame, over a smoothed per-pass cost.
+Zero measured credit means zero budget, including startup and a frame after
+replay was shed. It does not grant a fraction of the nominal frame: that would
+repeatedly readmit expensive replay on an already overloaded host.
+When the budget runs
 out, fewer passes are rendered, and a pass that costs more than the budget is
 not planned at all. The cost is measured per presented image size: until
 three passes have been measured at the current size (the first plans, and
-after an aspect or internal-resolution change) a plan asks for one pass, so
-an expensive size costs at most one pass per frame while it is learnt. The
+after an aspect or internal-resolution change) a positive-budget plan asks for
+one pass, so an expensive size costs at most one pass per frame while it is learnt. The
 three seed the average with their median, so one slow pass on a busy host
 does not price passes out. A pass that creates pass textures or
 framebuffers (the first frames at a size, or a slot filled for the first
@@ -293,7 +338,7 @@ busy host, code run for the first time) that costs several times the steady
 state; an estimate that high prices every plan out, so no pass would ever
 correct it. An estimate that no pass has been measured against for 30
 plans that wanted passes (about a second of a 30 Hz game) is measured again:
-the warm-up restarts, with one pass per plan (`cost_rewarms` in
+the warm-up restarts, with one pass per positive-budget plan (`cost_rewarms` in
 `render_pass_stats`). When the new median is not at least a quarter below
 the old estimate, the old one was right (a size that is truly too
 expensive, or a host at its limit), and the next wait doubles, up to 960
@@ -319,6 +364,14 @@ internal resolutions; a size change frees the old set.
   source path and resource stage). FBO status and GL errors are numeric enums;
   `gl_error_before` is distinct from errors produced during that allocation.
   Success does not erase the record; a new mod session clears it.
+  `admission` records the last eligible planner call's guest `frame`, measured
+  `idle_ms`, `present_ms`, `prior_pass_ms`, two-present `present_reserve_ms`,
+  clamped `spare_ms`, nominal `frame_ms`, effective `cost_ms` (zero during a
+  warm-up), `budget_ms`, `wanted` and `planned`. Its `plans` and
+  `zero_credit_refusals` are lifetime counters; use deltas over an active window.
+  The latter counts wanted plans shed with zero budget. Backend refusal leaves
+  this snapshot unchanged, so compare its frame and count before interpreting
+  it as current evidence. Queries neither run a plan nor reset admission history.
 - `render_pass_refuse on=1` (TCP) or `PSX_RENDER_PASS_REFUSE=1`: the backend
   declines passes (`BACKEND`), to test a plugin's fallback.
 - `render_pass_dump path=<dir> count=<n>`: PNGs of the next n frames' images

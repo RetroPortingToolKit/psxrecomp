@@ -954,7 +954,7 @@ bool FullFunctionEmitter::emit_function(
                 if (bcit != block_cycles.end()) bcyc = bcit->second;
                 if (bcyc > 0) {
                     out += "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
-                    out += fmt::format("    psx_advance_cycles({}u);\n", bcyc);
+                    out += fmt::format("    psx_cpu_charge({}u);\n", bcyc);
                     out += "#endif\n";
                 }
             }
@@ -2644,7 +2644,7 @@ EmitStats FullFunctionEmitter::emit(
     full_c += " * Compile generated code with -DPSX_ENABLE_BLOCK_CYCLES=1 to\n";
     full_c += " * activate cycle advancement at every block leader. */\n";
     full_c += "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
-    full_c += "extern void psx_advance_cycles(uint32_t cycles);\n";
+    full_c += "extern void psx_cpu_charge(uint32_t cycles);\n";
     full_c += "#endif\n\n";
 
     // Forward declare ALL functions so intra-file calls resolve.

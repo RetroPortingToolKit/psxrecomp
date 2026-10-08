@@ -27,7 +27,9 @@ inline int16_t get_imm16(uint32_t i) { return (int16_t)(i & 0xFFFF); }
  * Every GPR-writing ALU op is hooked. Bitwise ops (AND/OR/XOR/NOR, ANDI/ORI/
  * XORI) carry a vertex half whose 11-bit GPU field survives them - engines
  * pack clip flags above the field after projecting - and SLT-family results
- * are reset, so no destination keeps a stale shadow. The configured
+ * are reset, so no destination keeps a stale shadow. Coprocessor reads into
+ * a GPR (MFC0, MFC2, CFC2) are hooked for the same reason: the interpreters
+ * hook them, and an equal word is not proof of an equal vertex. The configured
  * widescreen special sites return early above translate_instruction's main
  * dispatch and are unhooked (they are cull compares, not vertex moves;
  * validation covers). */
@@ -123,6 +125,16 @@ void append_pgxp_hooks(uint32_t instr, std::string& code) {
         code = fmt::format("{}\n    PGXP_ALU(0x{:08X}u, {}, 0u, 0u);",
                            code, instr, reg_name(rt));
         return;
+    case 0x10: {                               /* COP0 register reads         */
+        /* MFC0 writes a GPR like any ALU op: reset its shadow so a status or
+         * EPC word can never inherit an old vertex's precision. (CFC0 is not
+         * translated by either emitter.) */
+        const uint32_t cop_op = (instr >> 21) & 0x1F;
+        if (cop_op == 0x00 && rt != 0)
+            code = fmt::format("{}\n    PGXP_ALU(0x{:08X}u, {}, 0u, 0u);",
+                               code, instr, reg_name(rt));
+        return;
+    }
     case 0x12: {                               /* COP2 register transfers     */
         /* Control transfers too: engines pack tracked vertex halves into a
          * matrix row with CTC2 and use MVMVA as a weighted-sum multiplier

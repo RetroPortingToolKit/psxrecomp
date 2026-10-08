@@ -63,7 +63,7 @@ class GlScaleGuards(unittest.TestCase):
         geo = body(GL, "static void gpu_geometry(")
         self.assertIn("if (is_line && s_hr_scale > 1) {", geo)
         self.assertIn("if (draw_mode == GL_LINES) glLineWidth((float)s_hr_scale);", geo)
-        quad = body(GL, "static void present_target_quad(GLuint tex, int tex_w, int tex_h,\n"
+        quad = body(GL, "static void present_target_quad(GLuint tex, float tex_w, float tex_h,\n"
                         "                                int x, int y, int w, int h, int linear,\n"
                         "                                int lx, int ly, int lw, int lh, int v_flip,\n"
                         "                                int apply_gamma, int src_scale) {")
@@ -132,8 +132,11 @@ class HiresWindowGuards(unittest.TestCase):
             self.assertIn("if (!hiw_on()", body(GL, fn))
             # an immediate write into the window lands after every queued draw
             self.assertIn("hiw_flush_queue();", body(GL, fn))
+        # Queued when the window is on, or (full-VRAM surface) when a native-wide
+        # mirror can ride the queue (wide_queue_live).
         for site in ("flush_tex_batch(void)", "flush_flat_batch(void)"):
-            self.assertIn("if (hiw_on() && hiw_enqueue_", body(GL, "static void " + site))
+            self.assertRegex(body(GL, "static void " + site),
+                             r"if \(\(hiw_on\(\) \|\| \(mirror[^)]*wide_queue_live\(\)\)\) &&\s*hiw_enqueue_")
 
     def test_wide_mirror_queued_in_windowed_mode(self):
         # Windowed mode: a draw's native-wide mirror rides in its window queue
@@ -141,14 +144,16 @@ class HiresWindowGuards(unittest.TestCase):
         # surface), not as a surface switch per batch. The immediate mirror
         # runs only when the entry did not take it.
         for site, call in (("static void flush_tex_batch(void)",
-                            "if (hiw_on() && hiw_enqueue_tex(nverts, semi, mirror, s_tb_gate)) mirror = 0;"),
+                            "hiw_enqueue_tex(nverts, semi, mirror, s_tb_gate)) mirror = 0;"),
                            ("static void flush_flat_batch(void)",
-                            "if (hiw_on() && hiw_enqueue_geo(s_fb, nverts, semi, mask, mirror, s_fb_gate)) mirror = 0;"),
+                            "hiw_enqueue_geo(s_fb, nverts, semi, mask, mirror, s_fb_gate)) mirror = 0;"),
                            ("static void gpu_geometry(", "mirror = 0;")):
             fn = body(GL, site)
             self.assertIn(call, fn, site)
-            self.assertLess(fn.index(call), fn.index("if (mirror) {"), site)
-            self.assertIn("wide_target_begin(", fn[fn.index("if (mirror) {"):], site)
+            # the immediate mirror is the last `if (mirror) {` (an earlier one
+            # notes the stencil the draw leaves behind)
+            self.assertLess(fn.index(call), fn.rindex("if (mirror) {"), site)
+            self.assertIn("wide_target_begin(", fn[fn.rindex("if (mirror) {"):], site)
         ok = body(GL, "static int hiw_wide_queue_ok(int mirror)")
         self.assertIn("return mirror && g_wide_cur && s_ws_ablate == 0;", ok)
         for fn in ("static int hiw_enqueue_tex(", "static int hiw_enqueue_geo("):
@@ -156,12 +161,14 @@ class HiresWindowGuards(unittest.TestCase):
             self.assertIn("if (!wq && !hiw_area_touches()) return 0;", b)
             self.assertIn("if (wq) hiw_wide_set(c, gate);", b)
         flush = body(GL, "static void hiw_flush_queue(void)")
+        if "hiw_flush_tail();" in flush:   # shared with the native-wide-only queue
+            flush = body(GL, "static void hiw_flush_tail(void) {")
         self.assertIn("hiw_replay_wide();", flush)
         self.assertLess(flush.index("hiw_replay_wide();"), flush.index("hr_end();"))
         replay = body(GL, "static void hiw_replay_wide(void)")
         for need in ("if (!c->wfbo) continue;", "p_glBindFramebuffer(PSXGL_FRAMEBUFFER, c->wfbo);",
                      "glViewport(0, 0, g_wide_w * S, VRAM_H * S);",
-                     "glScissor(0, sy * S, g_wide_w * S, sh * S);",
+                     "glScissor(c->wsx * S, c->wsy * S, c->wsw * S, c->wsh * S);",
                      "p_glUniform1f(s_tex_uXoff, (float)c->wdx);",
                      "p_glUniform1f(s_geo_uXoff, (float)c->wdx);",
                      "tex_draw_passes_ex(c->vcount, c->semi, c->mask, c->check, 0);",
@@ -175,7 +182,7 @@ class HiresWindowGuards(unittest.TestCase):
         for fn in ("static void glb_wide_configure(",
                    "static void glb_wide_clear(", "static void glb_wide_clear_margins(",
                    "static int glb_render_wide_display(", "static int glb_wide_dump_full(",
-                   "int gl_renderer_present_wide_fbo(", "static void rebuild_mask_stencils(void)"):
+                   "static int present_wide_fbo_impl(", "static void rebuild_mask_stencils(void)"):
             self.assertIn("hiw_flush_queue();", body(GL, fn), fn)
 
     def test_queue_syncs_before_the_raw_mirror_changes(self):
@@ -186,7 +193,7 @@ class HiresWindowGuards(unittest.TestCase):
         self.assertIn("hiw_flush_queue();", body(GL, "static void depth24_clear_skipped_fb(void)"))
         self.assertIn("hiw_flush_queue();", body(GL, "static void rebuild_mask_stencils(void)"))
         self.assertIn("hiw_flush_queue();", body(GL, "static const HiwTile *hiw_ensure(int x0, int x1)"))
-        present = body(GL, "void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,")
+        present = body(GL, "static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,")
         self.assertIn("if (s_hiw) {", present)
         self.assertIn("int src_tw = VRAM_W, src_x = disp_x, src_scale = s_out_scale;", present)
 

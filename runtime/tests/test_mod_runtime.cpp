@@ -1,15 +1,20 @@
 #include "mod_runtime.h"
+#include "host_launch_timing.h"
+#include "host_file_identity.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
 #include "psx_sha256.h"
 #include "psx_lobby_client.h"
 
 #include "gpu.h"
+#include "gpu_hd_textures.h"
 #include "cpu_state.h"
 
 #include <array>
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <stdexcept>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -27,6 +32,18 @@ static int restore_calls;
 static PsxLobbyMatchCaps test_match_caps;
 extern "C" const PsxLobbyMatchCaps* psx_lobby_match_caps(void) {
     return &test_match_caps;
+}
+static int game_netplay_entry_hits;
+static int game_netplay_filter_hits;
+static int test_netplay_active;
+extern "C" int psx_netplay_active(void) { return test_netplay_active; }
+static void test_game_netplay_entry(CPUState*, uint32_t) {
+    game_netplay_entry_hits++;
+}
+static int test_game_netplay_filter(CPUState* cpu, uint32_t) {
+    game_netplay_filter_hits++;
+    cpu->gpr[2] = 0x1234u;
+    return 1;
 }
 
 extern "C" uint8_t psx_read_byte(uint32_t address) {
@@ -82,6 +99,36 @@ extern "C" uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t, uint32_t) {
     return 0;
 }
 extern "C" void psx_ram_reset_size_request(void) {}
+static int hd_shutdown_calls, hd_configure_calls, hd_dump_value;
+static int hd_replacements_value, hd_reload_calls;
+static std::string hd_root;
+extern "C" void gpu_hd_textures_shutdown(void) { ++hd_shutdown_calls; hd_root.clear(); }
+extern "C" int gpu_hd_textures_configure(const char* root, int replacements, int dump,
+                                          char*, size_t) {
+    ++hd_configure_calls;
+    hd_root = root;
+    hd_replacements_value = replacements;
+    hd_dump_value = dump;
+    return 1;
+}
+extern "C" void gpu_hd_textures_set_dump_enabled(int enabled) {
+    hd_dump_value = enabled;
+}
+extern "C" int gpu_hd_textures_active(void) {
+    return !hd_root.empty() && (hd_replacements_value || hd_dump_value);
+}
+extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) {
+    *out = {};
+    out->root = hd_root.c_str();
+}
+extern "C" int gpu_hd_textures_reload(char*, size_t) { ++hd_reload_calls; return 1; }
+static void test_hd_activation(void) {
+    char replacements[16], dump[16];
+    if (!psx_mod_current_option_value("replacements", replacements, sizeof(replacements)) ||
+        !psx_mod_current_option_value("dump", dump, sizeof(dump))) { ++failures; return; }
+    if (!psx_mod_set_hd_texture_pack("pack", std::string(replacements) == "true",
+                                    std::string(dump) == "true")) ++failures;
+}
 extern "C" void psx_projection_reset_session(void) {}
 extern "C" void gpu_ws_set_native_scene_predicate(int (*)(void)) {}
 extern "C" int psx_ws_x_margin(void) { return 0; }
@@ -288,8 +335,77 @@ static std::string sha256_hex(const std::vector<uint8_t>& bytes) {
     return out;
 }
 
+static uint64_t launch_timing_total() {
+    uint64_t total = 0;
+    host_launch_timing_snapshot(nullptr, 0, &total, nullptr);
+    return total;
+}
+
+static void check_commit_timing(uint64_t before, bool ok, bool hashed) {
+    HostLaunchTimingEvent events[HOST_LAUNCH_TIMING_CAPACITY]{};
+    const auto n = host_launch_timing_snapshot(events, HOST_LAUNCH_TIMING_CAPACITY,
+                                              nullptr, nullptr);
+    const HostLaunchTimingEvent* commit = nullptr;
+    for (uint32_t i = 0; i < n; ++i)
+        if (events[i].seq > before && events[i].stage == HOST_LAUNCH_COMMIT)
+            commit = &events[i];
+    check(commit && commit->ok == unsigned(ok), "real commit outcome retained by C snapshot");
+    if (!commit) return;
+    uint32_t stages = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const auto& e = events[i];
+        if (e.seq <= before || e.parent_id != commit->scope_id) continue;
+        stages |= 1u << e.stage;
+        check(e.start_us >= commit->start_us &&
+              e.start_us + e.duration_us <= commit->start_us + commit->duration_us,
+              "real commit child measurement nested inside total");
+    }
+    check(bool(stages & (1u << HOST_LAUNCH_DISC_HASH)) == hashed,
+          "disc hash timing follows actual digest reuse");
+    const uint32_t required = (1u << HOST_LAUNCH_PREPARE_RESOURCES) |
+        (1u << HOST_LAUNCH_RESOLVE);
+    check((stages & required) == required, "real preparation and resolution observed");
+    if (ok) {
+        const uint32_t final = (1u << HOST_LAUNCH_OVERLAY_VERIFY) |
+            (1u << HOST_LAUNCH_DERIVED_DISC) | (1u << HOST_LAUNCH_SAVE_STATE) |
+            (1u << HOST_LAUNCH_BUILD_DISC_INDEX);
+        check((stages & final) == final, "real successful commit final stages observed");
+    } else {
+        check(!(stages & (1u << HOST_LAUNCH_BUILD_DISC_INDEX)),
+              "rejected commit does not invent final-stage completion");
+    }
+}
+
+extern "C" int psx_mod_counters_snapshot(const char**, uint64_t*, uint64_t*, int, uint64_t*);
+static uint64_t startup_counter(const char* requested) {
+    const char* names[128]{}; uint64_t counts[128]{}, frames[128]{};
+    const int count = psx_mod_counters_snapshot(names, counts, frames, 128, nullptr);
+    for (int i = 0; i < count && i < 128; ++i)
+        if (std::string(names[i]) == requested) return counts[i];
+    return 0;
+}
+
 int main() {
+#if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
+    const fs::path root = fs::temp_directory_path() / "psxrecomp-mod-runtime-cache-test";
+    const auto isolated_cache = root / "test-cache";
+#if defined(_WIN32)
+    check(_wputenv_s(L"LOCALAPPDATA", isolated_cache.c_str()) == 0,
+          "isolate audited digest receipts from owner cache");
+#else
+    check(setenv("XDG_CACHE_HOME", isolated_cache.c_str(), 1) == 0,
+          "isolate audited digest receipts from owner cache");
+#endif
+#if defined(_WIN32)
+    const char* configured_cache = std::getenv("LOCALAPPDATA");
+#else
+    const char* configured_cache = std::getenv("XDG_CACHE_HOME");
+#endif
+    check(configured_cache && fs::path(configured_cache) == isolated_cache,
+          "CRT getenv observes the isolated audited cache");
+#else
     const fs::path root = fs::temp_directory_path() / "psxrecomp-mod-runtime-test";
+#endif
     std::error_code ec;
     fs::remove_all(root, ec);
     const std::vector<uint8_t> stock(8 * 2352, 0);
@@ -525,8 +641,10 @@ int main() {
     check(PSXRecompV4::mod_runtime_initialize(
               root, "SLUS-RUNTIME", 0x80002000, {}, &error),
           error.c_str());
+    const auto first_commit_timing = launch_timing_total();
     check(PSXRecompV4::mod_runtime_commit(cue_path, &error),
           "CUE and its data-track BIN must have the same mod target identity");
+    check_commit_timing(first_commit_timing, true, true);
     /* Committed but not yet activated: no hook may run. */
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 0 && !g_psx_mod_instruction_hooks, "instruction hooks await activation");
@@ -1162,7 +1280,13 @@ int main() {
     check(PSXRecompV4::mod_runtime_initialize(loose_root, "READER", 0, {}, &error), "loose resource initialize");
     check(PSXRecompV4::mod_runtime_commit(iso_path, &error), "unverified file remains usable offline");
     check(PSXRecompV4::mod_runtime_plan_fingerprint_portable().empty(), "unverified resource has no online fingerprint");
+    const auto rejected_commit_timing = launch_timing_total();
     check(!PSXRecompV4::mod_runtime_commit(iso_path, &error, false), "online commit rejects unverified resource");
+#if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
+    check_commit_timing(rejected_commit_timing, false, true);
+#else
+    check_commit_timing(rejected_commit_timing, false, false);
+#endif
     check(!PSXRecompV4::mod_runtime_commit_for_direct_netplay(iso_path, &error), "LAN also refuses unverified resources");
     test_match_caps = {};
     test_match_caps.valid = 1;
@@ -1325,8 +1449,308 @@ int main() {
         check(psx_mod_read_disc_file("S0/LEVEL.NSF", nullptr, 0, &bytes) && bytes == 69400576u,
               "files grown past 64 MiB keep their effective size");
     }
+    {
+        const fs::path hd_mods = root / "hd-mods";
+        write_text(hd_mods / "bundled" / "runtime.hd" / "1.0.0" / "manifest.toml",
+            "format_version = 5\nid = \"runtime.hd\"\nversion = \"1.0.0\"\n"
+            "name = \"HD\"\nresolver = \"declarative\"\nsave_compatibility = \"shared\"\n"
+            "[[target]]\ngame_id = \"SCUS-94236\"\n"
+            "[[feature]]\nid = \"textures\"\nname = \"HD\"\ndefault_enabled = false\n"
+            "[[resource]]\nfeature = \"textures\"\nid = \"pack\"\nlabel = \"Pack\"\n"
+            "format = \"directory\"\nrequired = true\n"
+            "[[option]]\nfeature = \"textures\"\nid = \"replacements\"\n"
+            "label = \"Load\"\ntype = \"boolean\"\ndefault = \"true\"\n"
+            "[[option]]\nfeature = \"textures\"\nid = \"dump\"\n"
+            "label = \"Dump\"\ntype = \"boolean\"\ndefault = \"false\"\n"
+            "[[plugin]]\nfeature = \"textures\"\nid = \"psx.hd-textures\"\n");
+        write_text(hd_mods / "state.toml",
+            "format_version = 2\n[[feature]]\npackage_id = \"runtime.hd\"\n"
+            "id = \"textures\"\nenabled = true\n[feature.values]\ndump = \"true\"\n");
+        check(psx_mod_register_activation_plugin("psx.hd-textures", test_hd_activation),
+              "HD activation plugin registers");
+        check(PSXRecompV4::mod_runtime_initialize(hd_mods, "SCUS-94236", 0, {}, &error),
+              "HD mods initialize");
+        const fs::path expected = fs::absolute(hd_mods / "texture-packs" / "SCUS-94236");
+        check(fs::is_directory(expected / "dumps") && fs::is_directory(expected / "replacements"),
+              "default HD directories exist before first launch, even without dumping");
+        check(PSXRecompV4::mod_runtime_commit(stock_path, &error),
+              "default pack resource commits without manual folder selection");
+        const int shutdown_before = hd_shutdown_calls;
+        mod_runtime_activate_plugins();
+        check(hd_shutdown_calls == shutdown_before + 1 && hd_configure_calls == 1 &&
+                  hd_root == expected.string() && hd_replacements_value == 1 && hd_dump_value == 1,
+              "HD activation clears previous session and reads owning committed options");
+        char value[16] = "old";
+        check(!psx_mod_current_option_value("dump", value, sizeof(value)) && value[0] == '\0',
+              "owning option context does not escape the trusted callback");
+        check(!psx_mod_set_hd_texture_pack("pack", 1, 1),
+              "pack configuration requires the trusted resource callback context");
+        hd_replacements_value = 0;
+        check(psx_mod_set_hd_texture_dump(0) && hd_dump_value == 0,
+              "live dump control forwards the requested switch");
+        check(!gpu_hd_textures_active() && psx_mod_set_hd_texture_dump(1) && hd_dump_value == 1,
+              "dump-only session can turn capture back on after turning it off");
+        check(psx_mod_reload_hd_texture_pack() && hd_reload_calls == 1,
+              "pack reload forwards to renderer");
+        check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), "HD plan clears");
+        mod_runtime_activate_plugins();
+        check(hd_shutdown_calls == shutdown_before + 2 && hd_configure_calls == 1,
+              "disabled HD feature leaves no previous session pack active");
+        check(!psx_mod_set_hd_texture_dump(1), "live dump control refuses an unconfigured session");
+        const fs::path custom = hd_mods / fs::u8path(u8"chosen pack # % \u65e5\u672c");
+        fs::create_directories(custom);
+        write_text(hd_mods / "state.toml",
+            "format_version = 2\n[[feature]]\npackage_id = \"runtime.hd\"\n"
+            "id = \"textures\"\nenabled = true\n[feature.resources]\npack = \"" +
+            custom.generic_u8string() + "\"\n");
+        check(PSXRecompV4::mod_runtime_initialize(hd_mods, "SCUS-94236", 0, {}, &error) &&
+                  PSXRecompV4::mod_runtime_commit(stock_path, &error),
+              "chosen Unicode pack path resolves and persists through commit");
+        mod_runtime_activate_plugins();
+        check(hd_root == custom.generic_u8string(), "renderer receives the chosen folder as UTF-8");
+        check(PSXRecompV4::mod_runtime_initialize(hd_mods, "SCUS-94236", 0, {}, &error) &&
+                  PSXRecompV4::mod_runtime_commit(stock_path, &error),
+              "committed Unicode pack path reloads without corruption");
+        mod_runtime_activate_plugins();
+        check(hd_root == custom.generic_u8string(), "Unicode pack root survives the complete session cycle");
+    }
+    /* A compiled game hook survives mod-plan clearing, but runs only online. */
+    check(psx_game_register_netplay_function_entry(
+              0x80004000u, test_game_netplay_entry) == 1,
+          "trusted game netplay entry must register");
+    check(psx_game_register_netplay_function_entry(
+              0x80004000u, test_game_netplay_entry) == 1,
+          "duplicate game netplay registration must be idempotent");
+    check(psx_game_register_netplay_function_filter(
+              0x80005000u, test_game_netplay_filter) == 1,
+          "trusted game netplay filter must register");
+    CPUState game_cpu{};
+    psx_mod_function_entry(&game_cpu, 0x80004000u);
+    game_cpu.gpr[31] = 0x80006000u;
+    check(!psx_mod_function_entry(&game_cpu, 0x80005000u),
+          "game netplay filter must not consume offline function");
+    check(game_netplay_entry_hits == 0,
+          "game netplay hook must not run offline");
+    check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
+    test_netplay_active = 1;
+    psx_mod_function_entry(&game_cpu, 0xA0004000u);
+    check(game_netplay_entry_hits == 1 && g_psx_mod_function_entry_hooks == 2,
+          "game hook must survive netplay mod clear and match code aliases");
+    check(psx_mod_function_entry(&game_cpu, 0xA0005000u) == 1 &&
+              game_cpu.pc == 0x80006000u && game_cpu.gpr[2] == 0x1234u &&
+              game_netplay_filter_hits == 1,
+          "game netplay filter must consume call and resume at return PC");
+    psx_mod_function_entry(&game_cpu, 0x80004004u);
+    check(game_netplay_entry_hits == 1,
+          "game hook must ignore other addresses");
+    test_netplay_active = 0;
+    psx_mod_function_entry(&game_cpu, 0x80004000u);
+    check(game_netplay_entry_hits == 1,
+          "game hook must disarm when netplay stops");
+    check(!psx_mod_function_entry(&game_cpu, 0x80005000u) &&
+              game_netplay_filter_hits == 1,
+          "game filter must disarm when netplay stops");
+    // Reliable identity detects byte replacement even when size/mtime are restored.
+    {
+        const auto identity_path = root / "identity.bin";
+        write_bytes(identity_path, {1, 2, 3, 4});
+        const auto original_time = fs::last_write_time(identity_path);
+        std::string before, after;
+        const bool reliable = PSXRecompV4::host_file_identity(identity_path, before);
+        write_bytes(identity_path, {4, 3, 2, 1});
+        fs::last_write_time(identity_path, original_time);
+        check(!reliable || (PSXRecompV4::host_file_identity(identity_path, after) && before != after),
+              "file identity rejects same-size restored-mtime replacement");
+        check(!PSXRecompV4::host_file_identity(root, after), "directories are never file cache identities");
+        check(!PSXRecompV4::host_file_identity(root / "absent.bin", after), "missing identity is a cache miss");
+    }
+#if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
+    {
+        const auto cached_root = root / "audited-cache";
+        const auto output_path = root / "audited-output.z64";
+        const auto input_path = root / "audited-input.bin";
+        const auto disc = root / "audited-disc.iso";
+        fs::copy_file(iso_path, disc, fs::copy_options::overwrite_existing);
+        write_bytes(input_path, {1,2,3,4});
+        std::string input_receipt, output_receipt;
+        int prepare_calls = 0;
+        bool throw_probe = false, mutate_on_resolve = false, throw_resolver = false;
+        const std::string manifest =
+            "format_version = 9\nid = \"cache.test\"\nversion = \"1.0.0\"\nname = \"Cache\"\nprepare = \"test.cache.prepare\"\nresolver = \"builtin:test.cache.resolve\"\n"
+            "[[target]]\ngame_id = \"READER\"\n"
+            "[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n"
+            "[[resource]]\nfeature = \"active\"\nid = \"source\"\nlabel = \"Source\"\ninput_only = true\nshared_source = \"cache.original\"\nrequired = true\n"
+            "[[resource]]\nfeature = \"active\"\nid = \"rom\"\nlabel = \"ROM\"\nformat = \"n64-rom\"\nhidden = true\nrequired = true\nsize = 64\nsha256 = \"" + sha256_hex(rom) + "\"\n"
+            "[[feature]]\nid = \"second\"\nname = \"Second\"\ndefault_enabled = false\n"
+            "[[resource]]\nfeature = \"second\"\nid = \"rom\"\nlabel = \"ROM\"\nformat = \"n64-rom\"\nhidden = true\nrequired = true\nsize = 64\nsha256 = \"" + sha256_hex(rom) + "\"\n";
+        check(PSXRecompV4::mod_register_builtin_resolver("test.cache.resolve",
+            [&](const auto&, const auto&, const auto&, auto&, auto&) {
+                if (throw_resolver) throw std::runtime_error("resolver fixture exception");
+                if (mutate_on_resolve) write_bytes(input_path, {7,7,7,7});
+                return true;
+            }), "register resolver for mutation and unwind regression");
+        const auto manifest_path = cached_root / "packages/cache.test/1.0.0/manifest.toml";
+        write_text(manifest_path, manifest);
+        check(PSXRecompV4::mod_register_media_preparer("test.cache.prepare",
+            [&](const PSXRecompV4::ModPrepareContext&, std::map<std::string, fs::path>& outputs, std::string&) {
+                ++prepare_calls;
+                write_bytes(output_path, rom);
+                PSXRecompV4::host_file_identity(input_path, input_receipt);
+                PSXRecompV4::host_file_identity(output_path, output_receipt);
+                outputs["rom"] = output_path;
+                return true;
+            },
+            [&](const PSXRecompV4::ModPrepareContext& context, std::map<std::string, fs::path>& outputs, std::string&) {
+                if (throw_probe) throw std::runtime_error("probe fixture exception");
+                std::string input, output;
+                if (context.feature_id == "second" ||
+                    !PSXRecompV4::host_file_identity(input_path, input) || input != input_receipt ||
+                    !PSXRecompV4::host_file_identity(output_path, output) || output != output_receipt) return false;
+                outputs["rom"] = output_path; return true;
+            }), "register audited preparation and cheap identity probe");
+        PSXRecompV4::ModPackageManager source_selection(cached_root);
+        check(source_selection.scan(&error) &&
+              source_selection.set_feature_resource_path("cache.test", "active", "source", input_path, &error) &&
+              source_selection.save_state(&error), "persist shared input selection for audited fixture");
+        PSXRecompV4::mod_runtime_end_netplay(); test_match_caps = {};
+        check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error), "audited initialize");
+        check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls == 0,
+              "cold cached-only launch does not prepare missing receipt");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == 1,
+              "cold launcher creates verified preparation");
+        const auto reused = startup_counter("startup.plan_reuse");
+        const auto hashed = startup_counter("startup.disc_hash");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
+              PSXRecompV4::mod_runtime_commit(disc, &error) && prepare_calls == 1 &&
+              startup_counter("startup.plan_reuse") == reused + 2 && startup_counter("startup.disc_hash") == hashed,
+              "duplicate provider and main commit reuse a prepared plan without converter or hash");
+        check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls == 1 &&
+              startup_counter("startup.disc_hash") == hashed,
+              "warm initialize preloads receipts with no preparer or raw hash");
+        mod_runtime_activate_plugins();
+        check(PSXRecompV4::mod_runtime_commit(disc, &error) && prepare_calls == 2,
+              "activation invalidates the preboot ticket");
+        check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(disc), "restore warm plan for source invalidation");
+        const auto input_time = fs::last_write_time(input_path);
+        write_bytes(input_path, {4,3,2,1}); fs::last_write_time(input_path, input_time);
+        check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc), "external shared input replacement invalidates title receipt");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == 3,
+              "changed source goes through full preparation");
+        auto corrupt_rom = rom; corrupt_rom[32] ^= 1; write_bytes(output_path, corrupt_rom);
+        // Even if the probe claims the file is current, the first warm resolve
+        // must verify output bytes against the declared SHA.
+        PSXRecompV4::host_file_identity(output_path, output_receipt);
+        check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error) &&
+              !PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls == 3,
+              "warm output corruption fails immutable-byte verification");
+        fs::remove(output_path);
+        check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls == 3,
+              "missing output fails without invoking converter");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == 4,
+              "full preparation repairs missing output");
+        throw_probe = true;
+        check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc), "throwing cached probe fails safely");
+        throw_probe = false;
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error), "cached flag restored after failure");
+        // Probe results are transactional across multiple enabled features.
+        PSXRecompV4::ModPackageManager transactional(cached_root);
+        check(transactional.scan(&error) && transactional.load_state(&error) &&
+              transactional.set_feature_enabled("cache.test", "second", true, &error) &&
+              transactional.set_feature_resource_path("cache.test", "active", "rom", rom_path, &error), "enable second probe fixture");
+        const auto original_output = transactional.feature_resource_path("cache.test", "active", "rom");
+        check(!transactional.prepare_resources("READER", disc, root / "cache", &error, true) &&
+              transactional.feature_resource_path("cache.test", "active", "rom") == original_output,
+              "later cache miss discards earlier pending output selections");
+        // A throw inside resolve must restore cached-only/provider modes.
+        check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error), "invalidate ticket for resolver exception fixture");
+        throw_resolver = true;
+        check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc),
+              "best-effort preload contains resolver exceptions before launcher UI");
+        throw_resolver = false;
+        fs::remove(output_path);
+        const auto before_unwind = prepare_calls;
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == before_unwind + 1,
+              "cached-only mode restored after resolve exception");
+        // A dependency changed during resolution must never publish readiness.
+        check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error), "invalidate ticket for resolver mutation fixture");
+        const auto before_mutation = prepare_calls;
+        mutate_on_resolve = true;
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error), "full resolution can finish with concurrent input mutation");
+        mutate_on_resolve = false;
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == before_mutation + 2,
+              "unstable resolve never publishes a reusable ticket");
+        // Altering a syntactically valid digest must fail its receipt checksum.
+        std::filesystem::path cache_dir;
+#if defined(_WIN32)
+        if (const char* local = std::getenv("LOCALAPPDATA")) cache_dir = local;
+#else
+        if (const char* cache = std::getenv("XDG_CACHE_HOME")) cache_dir = cache;
+        else if (const char* home_dir = std::getenv("HOME")) cache_dir = fs::path(home_dir) / ".cache";
+#endif
+        if (cache_dir.empty()) cache_dir = fs::temp_directory_path();
+        cache_dir /= "psxrecomp/imports/disc-digests-v2";
+        bool corrupted_receipt = false;
+        for (const auto& entry : fs::directory_iterator(cache_dir)) {
+            std::ifstream saved(entry.path(), std::ios::binary);
+            std::string receipt(std::istreambuf_iterator<char>(saved), {});
+            if (receipt.find(disc.generic_string()) == std::string::npos || receipt.size() < 130) continue;
+            const size_t digest_offset = receipt.size() - 130;
+            receipt[digest_offset] = receipt[digest_offset] == '0' ? '1' : '0';
+            write_text(entry.path(), receipt); corrupted_receipt = true;
+        }
+        check(corrupted_receipt && PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error) &&
+              !PSXRecompV4::mod_runtime_try_prepare_cached(disc), "corrupt well-formed digest receipt misses warm startup");
+        const auto before_corrupt_hash = startup_counter("startup.disc_hash");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
+              startup_counter("startup.disc_hash") == before_corrupt_hash + 1,
+              "full launch repairs corrupted digest with authoritative source hash");
+        // Catalog changes cannot certify stale in-memory parsed manifests.
+        write_text(manifest_path, manifest + "\n# external catalog mutation\n");
+        check(!PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
+              error.find("catalog changed") != std::string::npos,
+              "changed manifest requires rescan instead of resealing stale package");
+        check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error), "explicit initialize rescans changed catalog");
+        const int before_netplay = prepare_calls;
+        const auto net_hash = startup_counter("startup.disc_hash");
+        check(PSXRecompV4::mod_runtime_commit_for_direct_netplay(disc, &error) &&
+              prepare_calls == before_netplay + 1 && startup_counter("startup.disc_hash") > net_hash,
+              "netplay ignores preboot ticket and hashes the source fully");
+        check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc), "active netplay never preloads an offline ticket");
+        PSXRecompV4::mod_runtime_end_netplay();
+        // Legacy preparers have no cheap receipt and must never claim warm readiness.
+        const auto legacy_root = root / "legacy-cache";
+        int legacy_calls = 0;
+        check(PSXRecompV4::mod_register_media_preparer("test.legacy.prepare",
+            [&](const PSXRecompV4::ModPrepareContext&, std::map<std::string, fs::path>& outputs, std::string&) {
+                ++legacy_calls; outputs["rom"] = output_path; return true;
+            }), "register legacy preparer without probe");
+        std::string legacy_manifest = manifest;
+        legacy_manifest.replace(legacy_manifest.find("test.cache.prepare"), std::string("test.cache.prepare").size(), "test.legacy.prepare");
+        write_text(legacy_root / "packages/cache.test/1.0.0/manifest.toml", legacy_manifest);
+        check(PSXRecompV4::mod_runtime_initialize(legacy_root, "READER", 0, {}, &error) &&
+              !PSXRecompV4::mod_runtime_try_prepare_cached(disc) && legacy_calls == 0,
+              "legacy preparer always misses cached-only startup");
+    }
+#else
+    {
+        const auto defaults = root / "default-hashing";
+        fs::create_directories(defaults);
+        check(PSXRecompV4::mod_runtime_initialize(defaults, "READER", 0, {}, &error), "default hashing fixture initialize");
+        const auto hash_count = startup_counter("startup.disc_hash");
+        check(PSXRecompV4::mod_runtime_commit(iso_path, &error) &&
+              PSXRecompV4::mod_runtime_commit(iso_path, &error) &&
+              startup_counter("startup.disc_hash") == hash_count + 1,
+              "default runtime preserves hash-only-on-selected-path-change behavior");
+        check(!PSXRecompV4::mod_runtime_try_prepare_cached(iso_path), "default runtime does not opt into cached startup");
+    }
+#endif
     fs::remove_all(root, ec);
     if (failures) return 1;
     std::cout << "mod runtime tests passed\n";
     return 0;
 }
+
+/* render_pass.c: no sandboxed local view runs in this test. */
+extern "C" int psx_mod_local_view_scope(void) { return 0; }

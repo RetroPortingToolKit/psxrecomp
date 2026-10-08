@@ -149,6 +149,10 @@ int  pgxp_mod_request_take(int *cpu_mode, int *culling);
 /* Drop all shadows (savestate load, raw RAM restore, timeline breaks).
  * O(1) via generation bump. Deferred while suppressed. */
 void pgxp_invalidate_all(void);
+/* A DMA or host store has no instruction hook. Even an unchanged word can
+ * belong to a different sub-pixel projection, so drop the shadow of the
+ * touched RAM / scratchpad word by provenance, not by value (memory.c). */
+void pgxp_invalidate_word(uint32_t addr);
 
 /* Counted suppression bracket for speculative native-validation passes and
  * the GTE replay sandbox: hooks and producers no-op inside it. */

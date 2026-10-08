@@ -534,7 +534,9 @@ in-process second session is the lobby rematch: a netplay match launched from
 the lobby returns to the lobby launcher when it ends, and the next launch from
 there, netplay or offline, re-enters the emulator in the same process. The
 session before a rematch is therefore always a netplay match, which ran with
-the plan cleared, so no plugin activated in it.
+the plan cleared, so no plugin activated in it -- except own-view plugins
+(`[[plugin]] netplay = "local_view"`, docs/NETPLAY.md "Own-view mods"), whose
+setters the reset below covers like any other.
 
 The reset is one step of the session start that every session runs,
 immediately before activation (see *A rematch is a full session start* below).
@@ -1049,6 +1051,18 @@ remain user-owned and outside the bundled package directory.
 
 Register via `mod_register_media_preparer` in mod_packages.h. Ship any worker
 and its runtime dependencies with the title: players should only supply media.
+
+Launcher preparation is synchronous by default. A title may set
+`PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE=ON` only after auditing all its trusted
+preparers and services for serialized worker execution without UI, SDL, GL,
+or main-thread affinity. With a recomp-ui header advertising
+`RECOMP_LAUNCHER_HAS_WORKER_MOD_COMMIT`, preboot offline PLAY then commits on an
+owned worker while the launcher renders an exclusive progress view. The UI
+does not access the provider until that worker has joined; close is queued
+until completion. Verification, preparation, persistence, and failure gates
+are unchanged. Older UI pins, other titles, netplay, and in-session commits
+retain synchronous behavior. Plugin activation remains on the runtime's
+existing post-commit path, not the preparation worker.
 The `prepare_resources` method is separate from read-only `resolve`, so editing
 launcher settings does not trigger conversions. Runtime activation still sees
 only fully verified immutable resources.

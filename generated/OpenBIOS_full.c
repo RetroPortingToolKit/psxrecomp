@@ -31,7 +31,7 @@ extern uint32_t g_debug_last_store_pc;
  * Compile generated code with -DPSX_ENABLE_BLOCK_CYCLES=1 to
  * activate cycle advancement at every block leader. */
 #ifdef PSX_ENABLE_BLOCK_CYCLES
-extern void psx_advance_cycles(uint32_t cycles);
+extern void psx_cpu_charge(uint32_t cycles);
 #endif
 
 void OpenBIOS_func_1FC00000(CPUState* cpu);
@@ -89042,6 +89042,7 @@ label_BFC057F0:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 8u;
 #endif
+    PGXP_ALU(0x40086000u, cpu->gpr[8], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0xBFC057F0u);
 #endif
@@ -94486,6 +94487,7 @@ label_BFC05CBC:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 17u;
 #endif
+    PGXP_ALU(0x40114000u, cpu->gpr[17], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0xBFC05CD0u);
 #endif
@@ -100322,6 +100324,7 @@ label_BFC06260:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 2u;
 #endif
+    PGXP_ALU(0x40027800u, cpu->gpr[2], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0xBFC06260u);
 #endif
@@ -111276,6 +111279,7 @@ label_BFC06C7C:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 2u;
 #endif
+    PGXP_ALU(0x40026000u, cpu->gpr[2], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0xBFC06CA8u);
 #endif
@@ -238712,6 +238716,7 @@ label_BFC20770:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 2u;
 #endif
+    PGXP_ALU(0x40026800u, cpu->gpr[2], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0x0000279Cu);
 #endif
@@ -238726,6 +238731,7 @@ label_BFC20770:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 3u;
 #endif
+    PGXP_ALU(0x40037000u, cpu->gpr[3], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0x000027A0u);
 #endif
@@ -239850,6 +239856,7 @@ label_BFC20800:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 4u;
 #endif
+    PGXP_ALU(0x40046000u, cpu->gpr[4], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0x0000286Cu);
 #endif
@@ -239881,6 +239888,7 @@ label_BFC20800:
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     cpu->ld_absorb = 0u; cpu->ld_which_t = 5u;
 #endif
+    PGXP_ALU(0x40056800u, cpu->gpr[5], 0u, 0u);
 #ifdef PSX_COSIM
     cosim_instr(0x00002878u);
 #endif

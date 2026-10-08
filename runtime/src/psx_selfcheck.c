@@ -206,11 +206,12 @@ static void sc_apply_rows(const ScBoundary *b)
         const ScRow *r = &b->rows[i];
         if (!r->present)
             continue;
-        if (sio_pad_on_multitap(i))
-            sio_set_pad_config_capable(i, 0);
-        sio_set_pad_state_slot(i, r->buttons);
-        sio_set_pad_sticks(i, r->lx, r->ly, r->rx, r->ry);
-        sio_request_pad_type(i, r->analog ? 1 : 0);
+        PsxNetPad pad;
+        pad.buttons = r->buttons;
+        pad.lx = r->lx; pad.ly = r->ly; pad.rx = r->rx; pad.ry = r->ry;
+        pad.analog = r->analog <= PSX_NETPAD_TYPE_MAX ? r->analog : 0;
+        pad.connected = 1;
+        psx_pad_apply_to_sio(i, &pad);
     }
 }
 

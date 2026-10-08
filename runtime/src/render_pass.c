@@ -60,6 +60,9 @@ extern void     psx_irq_refresh_cause_ip2(void);
 extern int      psx_get_in_exception(void);
 extern int      psx_netplay_active(void);
 extern int      psx_netplay_is_resimulating(void);
+extern void     psx_netplay_local_view_clear(void);
+extern int      psx_netplay_local_view_shed(void);
+extern void     gpu_ws_set_local_view_scope(int on);
 extern int      psx_selfcheck_resim_active(void);
 extern int      psx_rewind_is_open(void);
 extern int      psx_presentation_fast_forward(void);
@@ -339,17 +342,28 @@ int psx_mod_set_render_pass_flip(uint32_t mode) {
     return 1;
 }
 
+/* Transaction kinds: what `eye` holds in render_transaction. */
+#define RP_EYE_PASS  (-1)   /* temporal pass */
+#define RP_EYE_LOCAL (-2)   /* netplay local view */
+
 /* Everything that must hold before guest code may run frozen, as a
- * PSX_MOD_RENDER_PASS_* reason (READY = all of it holds). */
-static uint32_t transaction_status(int stereo) {
+ * PSX_MOD_RENDER_PASS_* reason (READY = all of it holds). kind: 0 temporal
+ * pass, 1 stereo, 2 netplay local view (forward netplay frames only). */
+static uint32_t transaction_status(int kind) {
     uint32_t gl;
     if (s_stats.disabled) return PSX_MOD_RENDER_PASS_DISABLED;
-    if ((psx_netplay_active() && !s_netplay_allowed) || psx_netplay_is_resimulating() ||
+    if ((kind == 2 ? !psx_netplay_active() :
+         (psx_netplay_active() && !s_netplay_allowed)) || psx_netplay_is_resimulating() ||
         psx_selfcheck_resim_active() || psx_rewind_is_open() ||
         g_ls_mode || g_ls_replay_active)
         return PSX_MOD_RENDER_PASS_SESSION;
     if (psx_presentation_fast_forward()) return PSX_MOD_RENDER_PASS_FAST_FORWARD;
-    gl = stereo ? gl_renderer_stereo_unavailable() : gl_renderer_pass_unavailable();
+    /* A peer behind the match catches up first: its own view is the first
+     * thing to go (presentation only), like any other fast-forward. */
+    if (kind == 2 && psx_netplay_local_view_shed())
+        return PSX_MOD_RENDER_PASS_FAST_FORWARD;
+    gl = kind == 2 ? gl_renderer_local_view_unavailable()
+       : kind == 1 ? gl_renderer_stereo_unavailable() : gl_renderer_pass_unavailable();
     if (gl != PSX_MOD_RENDER_PASS_READY) return gl;
     if (s_nesting || g_psx_guest_time_frozen || psx_get_in_exception() ||
         dma_gpu_linked_list_active())
@@ -630,8 +644,20 @@ static void note_fault(const char *what) {
     }
 }
 
+static int s_local_scope = 0;
+static void local_scope_set(int on) {
+    s_local_scope = on;
+    gpu_ws_set_local_view_scope(on);
+}
+int psx_mod_local_view_scope(void) { return s_local_scope; }
+
+static int transaction_kind(int eye) {
+    return eye >= 0 ? 1 : eye == RP_EYE_LOCAL ? 2 : 0;
+}
+
 static int transaction_end(int eye, uint32_t alpha, int keep) {
     if (eye >= 0) return gl_renderer_stereo_end((uint32_t)eye, keep);
+    if (eye == RP_EYE_LOCAL) return gl_renderer_local_view_end(keep);
     gl_renderer_pass_end(alpha, keep);
     return 1;
 }
@@ -659,12 +685,12 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     }
 
     if (!cpu || !pass || !fn || pass->struct_size < sizeof *pass ||
-        pass->w == 0 || pass->h == 0 || (eye < 0 &&
+        pass->w == 0 || pass->h == 0 || (eye == RP_EYE_PASS &&
         (pass->alpha_q16 == 0 || pass->alpha_q16 >= 65536u))) {
         s_stats.argument_refused++;
-        return pass_refuse("arguments", transaction_status(eye >= 0));
+        return pass_refuse("arguments", transaction_status(transaction_kind(eye)));
     }
-    status = transaction_status(eye >= 0);
+    status = transaction_status(transaction_kind(eye));
     if (status != PSX_MOD_RENDER_PASS_READY) {
         s_stats.status_refused++;
         return pass_refuse("status", status);
@@ -677,18 +703,21 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
 
     s_attempt.guest_cycle = psx_cycle_count;
     t0 = gl_renderer_perf_ticks();
-    open = eye < 0 ? s_open_generation : 0;
+    open = eye == RP_EYE_PASS ? s_open_generation : 0;
     {
         static double inv = 0.0;
         if (inv == 0.0) inv = 1000.0 / (double)gl_renderer_perf_frequency();
         s_ms_per_tick = inv;
     }
-    reuse = !open && s_restored_valid && s_restored_plan == s_plan_serial &&
+    reuse = !open && eye != RP_EYE_LOCAL && s_restored_valid &&
+            s_restored_plan == s_plan_serial &&
             s_restored_cycle == psx_cycle_count &&
             s_restored_stores == g_guest_store_count;
     /* Frame N's own image is captured by the first pass after a plan. */
     if (!(eye >= 0 ? gl_renderer_stereo_begin(pass->x, pass->y, pass->w,
                                                pass->h, reuse)
+          : eye == RP_EYE_LOCAL ? gl_renderer_local_view_begin(pass->x, pass->y,
+                                                               pass->w, pass->h)
                     : gl_renderer_pass_begin(pass->x, pass->y, pass->w,
                                                pass->h, open, s_plan_period, reuse))) {
         gl_renderer_pass_begin_diag(&s_attempt.gl);
@@ -703,7 +732,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
         gl_renderer_pass_begin_diag(&s_attempt.gl);
         s_stats.checkpoint_refused++;
         /* Capture the rejection status before rolling the GL transaction back. */
-        status = transaction_status(eye >= 0);
+        status = transaction_status(transaction_kind(eye));
         transaction_end(eye, 0, 0);
         return pass_refuse(s_checkpoint_failure ? s_checkpoint_failure : "checkpoint", status);
     }
@@ -719,6 +748,9 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     }
     (void)psx_cycle_freeze_begin(&s_freeze, watchdog_cycles(),
                                  watchdog_overrun);
+    /* A netplay local view is the one place a peer's presentation-only mods
+     * act on guest code (own-view plugins, widescreen cull margin). */
+    if (eye == RP_EYE_LOCAL) local_scope_set(1);
     if (setjmp(s_abort_jmp) == 0) {
         s_pass_cpu = cpu;
         s_abort_armed = 1;
@@ -762,10 +794,13 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
         if (eye >= 0) s_stereo.last_failure = "eye_capture";
     }
     te = gl_renderer_perf_ticks();
+    local_scope_set(0);
     checkpoint_restore(cpu);
     psx_cycle_freeze_end(&s_freeze);
     s_nesting = 0;
-    s_restored_valid = 1;
+    /* A committed local view changed the presented rect: no later pass may
+     * reuse this backup. */
+    s_restored_valid = !(eye == RP_EYE_LOCAL && ok);
     s_restored_plan = s_plan_serial;
     s_restored_cycle = psx_cycle_count;
     s_restored_stores = g_guest_store_count;
@@ -797,15 +832,37 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
         s_stats.avg_pass_ms = s_stats.avg_pass_ms > 0.0
             ? s_stats.avg_pass_ms * 0.9 + ms * 0.1 : ms;
     }
-    if (eye < 0) gl_renderer_pass_note_cost(t1 - t0);
-    if (ok) s_stats.passes++;
+    if (eye == RP_EYE_PASS) gl_renderer_pass_note_cost(t1 - t0);
+    if (ok && eye == RP_EYE_LOCAL) {
+        s_stats.local_views++;
+        /* The peer's own image supersedes a crop of the canonical frame. */
+        psx_netplay_local_view_clear();
+    } else if (ok) s_stats.passes++;
     else if (leaks) note_fault("VRAM write outside the pass rect");
     else if (s_stats.watchdog_flag) note_fault("guest-cycle watchdog");
     else if (s_device_read_fault) note_fault("read from an uncheckpointed device");
     s_stats.watchdog_flag = 0;
     /* Present anything that fell due while the pass ran. */
-    if (eye < 0) gl_renderer_pass_service_presents();
+    if (eye == RP_EYE_PASS) gl_renderer_pass_service_presents();
     return ok;
+}
+
+int psx_mod_render_local_view(struct CPUState *cpu, const PSXModRenderPass *rect,
+                              PSXModRenderPassFn fn, void *user) {
+    PSXModRenderPass r;
+    s_stats.local_attempts++;
+    if (!rect || rect->struct_size < sizeof r ||
+        (uint32_t)rect->x + rect->w > 1024u || (uint32_t)rect->y + rect->h > 512u) {
+        s_stats.argument_refused++;
+        return pass_refuse("arguments", transaction_status(2));
+    }
+    r = *rect;
+    r.alpha_q16 = 0;
+    return render_transaction(cpu, &r, fn, user, RP_EYE_LOCAL);
+}
+
+uint32_t psx_mod_render_local_view_status(void) {
+    return transaction_status(2);
 }
 
 int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,

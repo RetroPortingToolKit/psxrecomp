@@ -89,8 +89,8 @@ assert "".join(helper[call_at:call_end].split()) == (
     "&g_mod_owned_baseline,&live,g_mod_native_vblank_rate?1:0);"
 ), "the helper must get the persistent baseline and the live native-pacing flag"
 
-# Before the call: only the copy-in, so nothing (such as clearing the native
-# pacing flag) can change what the helper sees.
+# Before the call: clear the session's local mouse accumulator and copy in
+# the scalars. Neither may change the native-pacing state the helper captures.
 COPIES = (
     ("video_vsync", "g_video_vsync"),
     ("frame_interpolation", "g_frame_interpolation"),
@@ -100,9 +100,11 @@ COPIES = (
     ("frame_period_ms", "g_frame_period_ms"),
 )
 before = c_statements(helper[len(HELPER_SIG):call_at])
-expected = ["PSXModSessionScalars live;"] + [f"live.{f} = {g};" for f, g in COPIES]
+expected = ["psx_local_mouse_clear();", "PSXModSessionScalars live;"] + [
+    f"live.{f} = {g};" for f, g in COPIES
+]
 assert sorted(before) == sorted(expected), \
-    f"only the scalar copy-in may precede the baseline call, got {before}"
+    f"only mouse reset and scalar copy-in may precede the baseline call, got {before}"
 
 # After the call: the copy-out, each once, then the native-pacing flag cleared.
 after = helper[call_end:]
@@ -202,7 +204,9 @@ assert first_commit < session_start < first_start < first_disc < reboot, \
 # Soft return (rematch) re-enters below that block via `goto session_reboot`,
 # so the rematch path runs the same session start after its commit / netplay
 # clear, and mounts the disc the new plan selects.
-rematch = MAIN[MAIN.index('"psxrecomp: cannot clear mods for netplay "'):]
+rematch_start = MAIN.index('"psxrecomp: cannot apply netplay mods "',
+                           MAIN.index("soft_return_lobby:"))
+rematch = MAIN[rematch_start:]
 rematch = rematch[:rematch.index("goto session_reboot;")]
 commit = rematch.index("mod_runtime_commit(resolved_disc,")
 rematch_session = rematch.index("start_mod_session(net_cfg.enabled);")
@@ -222,7 +226,6 @@ assert rematch.count(clamp) == 1, "rematch must re-clamp the aspect to 4:3"
 clamp_at = rematch.index(clamp)
 assert commit < clamp_at < rematch_session, \
     "4:3 re-clamp must follow the commit and precede the session start"
-rematch_start = MAIN.index('"psxrecomp: cannot clear mods for netplay "')
 assert MAIN.rfind("case 1:  g_video_aspect_num = 16; g_video_aspect_den = 9; break;",
                   0, rematch_start) > MAIN.index("soft_return_lobby:"), \
     "the launcher's aspect must be applied before the rematch re-clamp"

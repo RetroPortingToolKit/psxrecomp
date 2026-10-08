@@ -320,6 +320,94 @@ static void test_texture_window_batching() {
     fs::remove(q);
 }
 
+/* settings.toml [video] render_thread / present_thread / frame_generation:
+ * the player's override of the game.toml default. Absent keys stay unset (so
+ * the title default stands), present keys parse, and a launcher save writes
+ * back exactly what was set -- including an explicit false. */
+static void test_pipeline_user_settings() {
+    fs::path p = write_temp("psxrecomp_pipe_absent.toml", "[video]\n");
+    auto a = PSXRecompV4::load_user_settings(p);
+    check(!a.has_render_thread && !a.has_present_thread && !a.has_frame_generation,
+          "pipeline keys absent => unset (game.toml default stands)");
+    fs::remove(p);
+
+    p = write_temp("psxrecomp_pipe_read.toml",
+        "[video]\n"
+        "render_thread = true\n"
+        "present_thread = false\n"
+        "frame_generation = true\n");
+    auto u = PSXRecompV4::load_user_settings(p);
+    check(u.has_render_thread && u.render_thread, "settings render_thread = true parses");
+    check(u.has_present_thread && !u.present_thread, "settings present_thread = false parses");
+    check(u.has_frame_generation && u.frame_generation, "settings frame_generation = true parses");
+    fs::remove(p);
+
+    PSXRecompV4::UserSettings out;
+    out.has_render_thread = true;    out.render_thread = false;
+    out.has_present_thread = true;   out.present_thread = true;
+    out.has_frame_generation = true; out.frame_generation = true;
+    p = fs::temp_directory_path() / "psxrecomp_pipe_rt.toml";
+    check(PSXRecompV4::save_user_settings(p, out), "save_user_settings writes pipeline keys");
+    auto back = PSXRecompV4::load_user_settings(p);
+    check(back.has_render_thread && !back.render_thread, "render_thread = false round-trips");
+    check(back.has_present_thread && back.present_thread, "present_thread round-trips");
+    check(back.has_frame_generation && back.frame_generation, "frame_generation round-trips");
+    fs::remove(p);
+
+    PSXRecompV4::UserSettings none;
+    p = fs::temp_directory_path() / "psxrecomp_pipe_none.toml";
+    check(PSXRecompV4::save_user_settings(p, none), "save_user_settings writes defaults");
+    auto nb = PSXRecompV4::load_user_settings(p);
+    check(!nb.has_render_thread && !nb.has_present_thread && !nb.has_frame_generation,
+          "unset pipeline keys are not written");
+    fs::remove(p);
+}
+
+/* [video] render_thread (docs/RENDER_THREAD.md): opt-in, off by default so
+ * every title keeps the synchronous OpenGL path unless it asks. */
+static void test_render_thread() {
+    fs::path p = write_game_toml("psxrecomp_rth_default.toml", "");
+    auto gc = PSXRecompV4::load_game_config(p);
+    check(!gc.runtime.video_render_thread, "render_thread defaults OFF");
+    fs::remove(p);
+    fs::path q = write_game_toml("psxrecomp_rth_on.toml",
+        "[video]\n"
+        "render_thread = true\n");
+    auto gq = PSXRecompV4::load_game_config(q);
+    check(gq.runtime.video_render_thread, "[video] render_thread = true is honoured");
+    fs::remove(q);
+}
+
+/* [video] present_thread (docs/RENDER_THREAD.md): opt-in, off by default. */
+static void test_present_thread() {
+    fs::path p = write_game_toml("psxrecomp_pt_default.toml", "");
+    auto gc = PSXRecompV4::load_game_config(p);
+    check(!gc.runtime.video_present_thread, "present_thread defaults OFF");
+    fs::remove(p);
+    fs::path q = write_game_toml("psxrecomp_pt_on.toml",
+        "[video]\n"
+        "render_thread = true\n"
+        "present_thread = true\n");
+    auto gq = PSXRecompV4::load_game_config(q);
+    check(gq.runtime.video_present_thread, "[video] present_thread = true is honoured");
+    fs::remove(q);
+}
+
+/* [video] frame_generation (docs/FRAME_GENERATION.md): opt-in, off by default. */
+static void test_frame_generation() {
+    fs::path p = write_game_toml("psxrecomp_fg_default.toml", "");
+    auto gc = PSXRecompV4::load_game_config(p);
+    check(!gc.runtime.video_frame_generation, "frame_generation defaults OFF");
+    fs::remove(p);
+    fs::path q = write_game_toml("psxrecomp_fg_on.toml",
+        "[video]\n"
+        "render_thread = true\n"
+        "frame_generation = true\n");
+    auto gq = PSXRecompV4::load_game_config(q);
+    check(gq.runtime.video_frame_generation, "[video] frame_generation = true is honoured");
+    fs::remove(q);
+}
+
 /* docs/ENHANCEMENTS.md G1.11: the PGXP title keys. Defaults keep the
  * historical behaviour (tolerance 0.5, position cache consulted, IR-path
  * shadows); a title built with the hooks sets all three. */
@@ -372,6 +460,70 @@ static void test_pgxp_title_keys() {
     fs::remove(p);
 }
 
+/* [timing] guest_cycle_scale and its declarative RAM gate (title constants). */
+static void test_timing_gate() {
+    fs::path p = write_game_toml("ves_timing_none.toml", "");
+    auto gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale == 1, "timing: default scale 1");
+    check(gc.runtime.guest_cycle_scale_gate.empty(), "timing: no gate by default");
+    check(!gc.runtime.guest_cycle_scale_gated, "timing: mod gate off by default");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_one.toml",
+        "[timing]\nguest_cycle_scale = 64\n"
+        "guest_cycle_scale_gate = { addr = 0x800AC794, value = 0x180 }\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale == 64, "timing: scale 64");
+    check(gc.runtime.guest_cycle_scale_gate.size() == 1 &&
+          gc.runtime.guest_cycle_scale_gate[0].addr == 0x800AC794u &&
+          gc.runtime.guest_cycle_scale_gate[0].value == 0x180u &&
+          gc.runtime.guest_cycle_scale_gate[0].size == 4u &&
+          gc.runtime.guest_cycle_scale_gate[0].mask == 0xFFFFFFFFu,
+          "timing: single inline-table gate with defaults");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_arr.toml",
+        "[timing]\nguest_cycle_scale = 8\nguest_cycle_scale_gated = true\n"
+        "guest_cycle_scale_gate = [ { addr = 0x800AC794, value = 0x180 },\n"
+        "  { addr = 0x00010003, size = 1, mask = 0x0F, value = 5 } ]\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.guest_cycle_scale_gate.size() == 2 &&
+          gc.runtime.guest_cycle_scale_gate[1].size == 1u &&
+          gc.runtime.guest_cycle_scale_gate[1].mask == 0x0Fu &&
+          gc.runtime.guest_cycle_scale_gated, "timing: gate array + mod gate");
+    fs::remove(p);
+
+    p = write_game_toml("ves_timing_bad.toml",
+        "[timing]\nguest_cycle_scale_gate = { addr = 0x1F801070, value = 1 }\n");
+    bool rejected = false;
+    try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { rejected = true; }
+    check(rejected, "timing: non-RAM gate address rejected");
+    fs::remove(p);
+
+    /* Oversized and negative values must be rejected, not wrapped to 32 bits. */
+    const struct { const char* body; const char* what; } bad[] = {
+        { "guest_cycle_scale_gate = { addr = 0x100010000, value = 1 }", "oversized addr" },
+        { "guest_cycle_scale_gate = { addr = -4, value = 1 }", "negative addr" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 0x100000001 }", "oversized value" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = -1 }", "negative value" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, size = 0x100000004 }", "oversized size" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, size = -4 }", "negative size" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, mask = 0x1FFFFFFFF }", "oversized mask" },
+        { "guest_cycle_scale_gate = { addr = 0x80010000, value = 1, mask = -1 }", "negative mask" },
+        { "guest_cycle_scale = 0", "scale 0" },
+        { "guest_cycle_scale = 65", "scale 65" },
+        { "guest_cycle_scale = -8", "negative scale" },
+        { "guest_cycle_scale = 0x100000008", "oversized scale" },
+    };
+    for (const auto& b : bad) {
+        p = write_game_toml("ves_timing_range.toml", std::string("[timing]\n") + b.body + "\n");
+        rejected = false;
+        try { (void)PSXRecompV4::load_game_config(p); } catch (const std::exception&) { rejected = true; }
+        check(rejected, (std::string("timing: rejected ") + b.what).c_str());
+        fs::remove(p);
+    }
+}
+
 int main() {
     test_internal_resolution_game_toml();
     test_internal_resolution_settings();
@@ -384,7 +536,12 @@ int main() {
     test_user_settings_round_trip();
     test_user_settings_fov_scale();
     test_texture_window_batching();
+    test_render_thread();
+    test_frame_generation();
+    test_present_thread();
+    test_pipeline_user_settings();
     test_pgxp_title_keys();
+    test_timing_gate();
 
     if (failures) {
         std::fprintf(stderr, "video_enhancement_settings_test: %d failure(s)\n",

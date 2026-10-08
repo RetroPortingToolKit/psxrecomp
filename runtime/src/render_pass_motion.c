@@ -176,6 +176,27 @@ static void to_quat(const int16_t* r, double q[4]) {
     for (int i = 0; i < 4; i++) q[i] /= n;
 }
 
+static double det3(const int16_t* r) {
+    return (double)r[0] * ((double)r[4] * r[8] - (double)r[5] * r[7]) -
+           (double)r[1] * ((double)r[3] * r[8] - (double)r[5] * r[6]) +
+           (double)r[2] * ((double)r[3] * r[7] - (double)r[4] * r[6]);
+}
+
+/* Orthonormal bases may be mirrored (determinant -1: a game that keeps a
+ * flipped axis, as THPS2's skater basis does). A mirrored basis is a rotation
+ * after one fixed reflection, so both ends are reflected the same way (third
+ * row negated), blended as rotations and reflected back. Returns the number
+ * of mirrored ends (0, 1 or 2), and fills the proper versions. A basis that
+ * changes handedness between frames was placed, not moved. */
+static int proper_pair(const int16_t* a, const int16_t* b, int16_t* pa, int16_t* pb) {
+    const int ma = det3(a) < 0, mb = det3(b) < 0;
+    memcpy(pa, a, 9 * sizeof *pa);
+    memcpy(pb, b, 9 * sizeof *pb);
+    if (ma) for (int i = 6; i < 9; i++) pa[i] = (int16_t)-pa[i];
+    if (mb) for (int i = 6; i < 9; i++) pb[i] = (int16_t)-pb[i];
+    return ma + mb;
+}
+
 static int16_t fixed12(double v) {
     double x = v * 4096.0;
     if (x > 32767.0) x = 32767.0;
@@ -188,9 +209,11 @@ static double turn_limit(double turn) { return turn > 0 ? turn : MOTION_PI; }
 /* Angle between two orientations, or -1 when either is not a rotation. */
 static double rotation_angle(const int16_t* a, const int16_t* b) {
     double p[4], q[4], d;
+    int16_t pa[9], pb[9];
     if (!orthonormal(a) || !orthonormal(b)) return -1;
-    to_quat(a, p);
-    to_quat(b, q);
+    if (proper_pair(a, b, pa, pb) == 1) return MOTION_PI * 2;   /* handedness flipped */
+    to_quat(pa, p);
+    to_quat(pb, q);
     d = fabs(p[0] * q[0] + p[1] * q[1] + p[2] * q[2] + p[3] * q[3]);
     if (d > 1.0) d = 1.0;
     return 2.0 * acos(d);
@@ -199,8 +222,11 @@ static double rotation_angle(const int16_t* a, const int16_t* b) {
 static int blend_rotation(const int16_t* a, const int16_t* b, double t, double turn, int16_t* out) {
     if (orthonormal(a) && orthonormal(b)) {
         double p[4], q[4], d, angle, wa, wb, r[4];
-        to_quat(a, p);
-        to_quat(b, q);
+        int16_t pa[9], pb[9];
+        const int mirrored = proper_pair(a, b, pa, pb);
+        if (mirrored == 1) { memcpy(out, b, 9 * sizeof *out); return 0; }
+        to_quat(pa, p);
+        to_quat(pb, q);
         d = p[0] * q[0] + p[1] * q[1] + p[2] * q[2] + p[3] * q[3];
         if (d < 0) { for (int i = 0; i < 4; i++) q[i] = -q[i]; d = -d; }
         if (d > 1.0) d = 1.0;
@@ -215,6 +241,7 @@ static int blend_rotation(const int16_t* a, const int16_t* b, double t, double t
                                  2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
                                  2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)};
             for (int i = 0; i < 9; i++) out[i] = fixed12(m[i]);
+            if (mirrored) for (int i = 6; i < 9; i++) out[i] = (int16_t)-out[i];
         }
         return 1;
     }

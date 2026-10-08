@@ -32,7 +32,8 @@ typedef struct PsxNetplayRbBindings {
     int *input_delay;
     void (*publish_sio)(uint32_t tick); /* publish history or sealed rows to SIO */
     void (*apply_frame_slot)(int slot, uint32_t tick, uint16_t buttons,
-                             int8_t sx, int8_t sy, uint8_t analog);
+                             int8_t sx, int8_t sy, uint8_t analog,
+                             uint8_t rx, uint8_t ry);
 } PsxNetplayRbBindings;
 
 void psx_netplay_rb_bind(const PsxNetplayRbBindings *b);

@@ -93,6 +93,33 @@ int main() {
               "a CFC2 to $zero writes no register and is not hooked");
     }
 
+    /* Coprocessor reads into a GPR replace its value like any ALU op. The
+     * interpreters hook them; the compiled code must too, or the register
+     * keeps the shadow of the vertex it held before. MFC0's emission ends on
+     * the block-cycles #endif, so its hook also has to land on a new line. */
+    {
+        const uint32_t mfc0 = (0x10u << 26) | (0x00u << 21) | (3u << 16) | (12u << 11);
+        std::string code =
+            "cpu->gpr[3] = cpu->cop0[12];"
+            "\n#ifdef PSX_ENABLE_BLOCK_CYCLES\n    cpu->ld_absorb = 0u; cpu->ld_which_t = 3u;\n#endif";
+        PSXRecomp::append_pgxp_hooks(mfc0, code);
+        CHECK(code.find("\n    PGXP_ALU(0x40036000u, cpu->gpr[3], 0u, 0u);") != std::string::npos,
+              "MFC0 resets the destination shadow on its own line");
+
+        const uint32_t cfc2 = (0x12u << 26) | (0x02u << 21) | (3u << 16) | (31u << 11);
+        code = "cpu->gpr[3] = gte_read_ctrl(cpu, 31);";
+        PSXRecomp::append_pgxp_hooks(cfc2, code);
+        CHECK(code.find("PGXP_COP2(0x4843F800u, cpu->gpr[3], 0u);") != std::string::npos,
+              "CFC2 resets the destination shadow");
+
+        code = "(void)cpu->cop0[12];";
+        PSXRecomp::append_pgxp_hooks(mfc0 & ~(31u << 16), code);
+        CHECK(code.find("PGXP_") == std::string::npos, "MFC0 to $zero is not hooked");
+        code = "(void)gte_read_ctrl(cpu, 31);";
+        PSXRecomp::append_pgxp_hooks(cfc2 & ~(31u << 16), code);
+        CHECK(code.find("PGXP_") == std::string::npos, "CFC2 to $zero is not hooked");
+    }
+
     std::printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;
 }

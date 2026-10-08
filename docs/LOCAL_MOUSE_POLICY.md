@@ -59,9 +59,16 @@ render-only passes inhibit this policy.
 ## Order with offline controller sources
 
 Per player the runtime resolves, in `pad_external_input.c`: (1) physical
-capture, (2) an offline controller source (`psx_mod_set_controller_source`:
-buttons = source AND physical, sticks/type from the source), (3) this mouse
-policy, P1 only, which may override only the right axes of that result. A
+capture plus the port's host extras (gamepad present, LT/RT 0..255),
+(2) an offline controller source (`psx_mod_set_controller_source`:
+buttons = source AND physical, sticks/type from the source), (2b) a title pad
+transform (`psx_mod_set_pad_transform`: sees that pad and the host extras,
+may rewrite buttons, sticks and the presented controller type; output
+validated against its allowed types, neutral when invalid, one neutral
+release frame on detach/reset), (3) this mouse policy, P1 only, which may
+override only the right axes of that result. A NeGcon result has pressure
+bytes where the right stick was, so it resets the mouse instead. With no
+transform registered stage 2b is a no-op and the pad is bit-identical. A
 source never suppresses the mouse policy: it sees the final buttons, analog
 flag and right stick, so capture is never taken and then discarded, and a
 deflected source right stick, a digital pad or Start held disable it just as a

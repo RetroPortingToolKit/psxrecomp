@@ -105,6 +105,9 @@ void mdec_snapshot_write(uint8_t *p) { (void)p; }
 int  psx_get_in_exception(void) { return 0; }
 int  psx_netplay_active(void) { return 0; }
 int  psx_netplay_is_resimulating(void) { return 0; }
+void psx_netplay_local_view_clear(void) {}
+int  psx_netplay_local_view_shed(void) { return 0; }
+void gpu_ws_set_local_view_scope(int on) { (void)on; }
 int  psx_selfcheck_resim_active(void) { return 0; }
 int  psx_selfcheck_enabled(void) { return 0; }
 int  psx_rewind_is_open(void) { return 0; }
@@ -192,6 +195,11 @@ int gl_renderer_pass_verify_vram(void) { return 1; }
 void gl_renderer_pass_note_cost(uint64_t t) { (void)t; }
 void gl_renderer_pass_service_presents(void) {}
 uint32_t g_psx_vblank_cycles = 564480u;
+uint32_t gl_renderer_local_view_unavailable(void) { return 0; }
+int gl_renderer_local_view_begin(int x, int y, int w, int h) {
+    return gl_renderer_pass_begin(x, y, w, h, 0, 0, 0);
+}
+int gl_renderer_local_view_end(int keep) { gl_renderer_pass_end(0, keep); return 1; }
 uint32_t gl_renderer_stereo_unavailable(void) { return 0; }
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     return gl_renderer_pass_begin(x, y, w, h, 0, 0, reuse);

@@ -74,7 +74,7 @@ next guest PC, even if common images never cross that boundary.
 
 Use a deterministic workload with fixed inputs and a fixed capture or replay
 when possible. Keep renderer, audio backend, window state, display refresh,
-vsync/pacer ownership, CPU overclock, CRTC multiplier, mods, RAM size, and
+vsync/pacer ownership, guest cycle scale, CRTC multiplier, mods, RAM size, and
 instrumentation identical. Warm caches outside the timed region unless cold
 behavior is the stated metric.
 

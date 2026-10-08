@@ -55,6 +55,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `screenshot_wide_hires` | ✓ |   | `path`, `base_x` | The displayed band of the native-wide surface at internal resolution (`wide_w×S` by `height×S`). `present_shot` is capped at the window; this checks a widescreen + internal-resolution combination at full size |
 | `present_shot` | ✓ |   | `path` | PNG of the **composed present surface** — the frame after the backend fits the display buffer to the window, so it carries the presented aspect. ⚠ every other capture resolves the display buffer *before* that fit: on a 508×256 display in a 4:3 window they answer 508×256 while the player sees 640×480. Use this one for anything aspect-shaped (widescreen, letterbox), where a pre-fit buffer would hide the very stage the change touches. Staged and fulfilled on the next present, so the ack means *queued* — poll `present_shot_seq`. Unavailable headless and on the Vulkan backend (its swapchain has no readback hook) |
 | `present_shot_seq` | ✓ |   | — | Completion counter for `present_shot`, plus `wrote` (1 = that completion produced a PNG). Sample before staging, poll until `seq` moves. Advances on success *and* failure, so the poll always terminates |
+| `hd_textures` | ✓ |   | optional `replacements`, `dump` (0 or 1), `reload` (1) | HD pack root, switches, backend support, replacement count, matched/ready/applied draw counts, and queued dump count. Optional controls update the configured host pack on the emulation thread; no configured root is an error. Reload retains unchanged upload identities. OpenGL displays replacements; software/Vulkan retain original artwork. Pair with `present_shot` for visual evidence and native VRAM probes for architectural data |
 | `gl_interp` | ✓ |   | — | OpenGL frame-rate presenter ([FRAME_RATE.md](FRAME_RATE.md)): enabled/suspended, host and target Hz, swaps, `source` (`vblank`/`flip`), `flip_period`, `captures` (new source frames) and `duplicates` (VBlanks that re-presented the same frame) |
 | `render_pass_stats` | ✓ |   | — | Render passes ([RENDER_PASSES.md](RENDER_PASSES.md)): plans, phases wanted/planned (shedding), passes, rollbacks (`nesting_repairs`: watchdog aborts whose skipped frame exits the restore undid), dropped device stores by class, `verify_mismatch` under `PSX_RENDER_PASS_VERIFY=1`, host-time split per pass, smoothed pass cost (`cost_us`; `cost_rewarms`: estimates no pass had run on for a while, measured again), presents made from pass images (`late_presents`: held past the frame's planned end because the next flip was late; `expired`: frames whose images stopped showing after several frame lengths without a flip), pass image textures allocated (`image_textures`, `image_bytes`), `status` (`psx_mod_render_pass_status`: 0 ready, 1 no presenter, 2 backend, 3 disabled, 4 session, 5 fast-forward, 6 busy), `backups_reused` (passes that reused the previous pass's VRAM backup), `spans` / `span_failures` and the last failure `span_fail` (`psx_mod_run_guest_span`: reason, exit PC, `$ra`, PC after a call that did not return) |
 | `window_size` | ✓ |   | `w`, `h` | Resize the game window as a player would (Fit / adaptive widescreen follow it): window-shaped checks in `--hidden-window` runs. Pair with `present_shot` |
@@ -75,8 +76,9 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `cdrom_sector_history_clear` | ✓ |   | — | Reset the CD-ROM sector history ring |
 | `watch` | ✓ | ✓ | `addr` | Set byte-level memory watchpoint (fires per-frame on change) |
 | `unwatch` | ✓ | ✓ | `addr` | Remove memory watchpoint |
-| `set_input` | ✓ | ✓ | `buttons`, optional `frames`, optional `lx`, `ly`, `rx`, `ry` | Override pad1 buttons and optional analog axes (PS1 inverted bitmask, 0 = pressed; axes 0-255). Holds until `clear_input` on both backends; pass `frames=N` (beetle) to auto-release after N frames |
-| `clear_input` | ✓ | ✓ | — | Remove input and analog axis overrides |
+| `set_input` | ✓ | ✓ | `buttons`, optional `frames`, optional `lx`, `ly`, `rx`, `ry`, `pad_type`, optional `port` | Override pad1 buttons and optional analog axes (PS1 inverted bitmask, 0 = pressed; axes 0-255). Debug builds also accept `pad_type` (0 digital, 1 DualShock, 2 JogCon) to test an emulated device identity. Holds until `clear_input` on both backends; pass `frames=N` (beetle) to auto-release after N frames. Runtime: `layer="host"` instead arms a virtual P1 gamepad (`buttons`, `lx`..`ry`, `lt`/`rt` 0-255) that feeds the normal offline input path (controller source, title pad transform, trigger values) and host shortcut polling, also headless; a plain override still wins while armed; `clear_input` disarms it. `port=2` (psx-runtime) drives pad 2 instead (digital buttons; plugs a digital pad into port 2 while driven) for headless two-player modes; `press` takes `port` too |
+| `clear_input` | ✓ | ✓ | optional `port` | Remove input and analog axis overrides (`port` 1 or 2 clears one port; default both) |
+| `rewind_status` | ✓ |   | — | Local Rewind: `enabled`, `open`, `title_blocked` (`psx_mod_set_rewind_blocked`) and `snaps` held in the ring |
 | `turbo` | ✓ |   | `enabled` | Enable/disable TCP-controlled frontend turbo for fast-forward validation |
 | `turbo_state` | ✓ |   | — | Query TCP-controlled turbo state |
 | `pause` | ✓ |   | — | **REMOVED** — still registered, but always returns an error. Query a ring buffer (`fn_entry_tail`, `wtrace_dump`, `gpu_frame_dump`) instead of synthesizing a snapshot |
@@ -191,6 +193,20 @@ re-dispatches the guest's true target. Counters in
   anything else is a runtime bug).
 
 ---
+
+## `render_thread` — OpenGL render thread state (native only)
+
+`{"cmd":"render_thread"}` reports the `[video] render_thread` pipeline
+(docs/RENDER_THREAD.md): `active`, `held` (the emulation thread holds the GL
+context for the rest of this frame), `max_frames`, `records`, `bytes`,
+`frames_produced` / `frames_consumed`, `presents` recorded and
+`presents_stale` skipped, `acquires` (sync points) with `recent_acquires`
+(`frame`, `wait_us`, `reason` — the GL entry point that needed the context),
+`backpressure_waits` / `backpressure_ms` (the emulation thread waited on the
+in-flight bound), `ring_full_waits`, `acquire_ms`, `render_busy_ms` /
+`render_idle_ms` and `ring_high_water`. With the thread off every counter is
+0 and `active` is 0. Reading it is not a sync point; a steady game frame
+should add no `acquires`.
 
 ## `frame_fingerprint` — per-frame guest-write fingerprint (native only)
 
@@ -430,13 +446,42 @@ If an inspection need isn't covered by the existing commands, **do not fall back
 
 The TCP server is the canonical instrumentation surface. Rule 3 in `CLAUDE.md` is absolute: **no `fprintf(stderr, …)` in source code, ever, for any reason**.
 
+## `host_launch_timings` — retained host startup and mod-commit costs
+
+`{"cmd":"host_launch_timings","count":256}` reads the newest completed host
+scopes, oldest completion first. The fixed 256-entry ring is always on, including
+before TCP starts, and reading it never drains or resets it. `total` is the
+lifetime completion count; `overwritten` counts completions displaced by ring
+wrap. `count` is clamped to 1..256. Only completed work is represented.
+
+Each entry has `seq`, `scope_id`, `parent_id`, `stage`, `start_us`, `duration_us`,
+`ok`, `package`, `feature`, and `labels_truncated`. Times use a monotonic host
+clock, independent of guest frames/cycles. A parent includes its children:
+**nested durations overlap and must not be summed**. Sequence orders completion;
+scope IDs identify starts. Separate threads have independent parent chains.
+Package/feature labels retain at most 63 bytes each; no owner-media paths are
+recorded. `ok=0` indicates an unsuccessful or incomplete scope exit, including
+exceptions; it is not a replacement for the existing launch error message.
+
+`provider_commit` encloses the launcher's offline mod callback;
+`provider_netplay_commit` identifies its netplay counterpart. `runtime_commit`
+encloses the later main-thread commit/clear. Within `commit`, stages distinguish
+`disc_hash` (absent when the existing digest is reused), `prepare_resources`
+(with nested per-package/feature `media_provider`), `resolve`, `overlay_verify`,
+`derived_disc`, `save_state`, and `build_disc_index`. `overlay_worker` records
+the concurrent startup work; `overlay_join` measures only the later wait.
+`plugin_activation` contains per-package/feature `plugin_callback` measurements,
+including Resident Loading when enabled. No work is moved off-thread and no
+verification or cache policy changes. These scopes do not cover every action
+between Play and TCP availability.
+
 <!-- BEGIN AUTOGENERATED COMMAND INDEX -- edit tools/gen_tcp_commands.py, not this block -->
 
 ## Complete command index (generated)
 
-**349 commands registered** — 336 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**360 commands registered** — 347 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-68 of 349 have prose above; **281 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+73 of 360 have prose above; **287 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -527,6 +572,9 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `dma_trace_dump` | ✓ |  |  |
 | `dump_buffer` | ✓ |  |  |
 | `dump_ram` | ✓ | ✓ | ✓ |
+| `dynres` | ✓ |  |  |
+| `dynres_check` | ✓ |  |  |
+| `dynres_force` | ✓ |  |  |
 | `evcb_snapshot` | ✓ |  |  |
 | `evcb_walk_dump` | ✓ |  |  |
 | `evcb_walk_stats` | ✓ |  |  |
@@ -554,6 +602,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `fntrace_unfiltered` |  | ✓ |  |
 | `frame` | ✓ |  | ✓ |
 | `frame_fingerprint` | ✓ |  | ✓ |
+| `frame_gen` | ✓ |  |  |
 | `frame_perf` | ✓ |  |  |
 | `frame_range` | ✓ | ✓ | ✓ |
 | `frame_timeseries` | ✓ | ✓ | ✓ |
@@ -584,8 +633,11 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `gte_ring_dump` | ✓ |  |  |
 | `gte_state` | ✓ |  |  |
 | `guest_tty_dump` | ✓ |  |  |
+| `hd_textures` | ✓ |  | ✓ |
 | `history` | ✓ | ✓ | ✓ |
 | `hle_dump` | ✓ |  | ✓ |
+| `host_launch_timings` | ✓ |  | ✓ |
+| `host_profile` | ✓ |  |  |
 | `idle_skip` | ✓ |  |  |
 | `imask_trace` | ✓ |  |  |
 | `input_route_append` | ✓ |  |  |
@@ -654,6 +706,8 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `pgxp` | ✓ |  | ✓ |
 | `pgxp_miss_ring` | ✓ |  |  |
 | `pgxp_shadow` | ✓ |  |  |
+| `pgxp_store_ring` | ✓ |  |  |
+| `pgxp_tri_ring` | ✓ |  |  |
 | `phase_hot` | ✓ |  |  |
 | `phase_profile` | ✓ |  | ✓ |
 | `ping` | ✓ | ✓ | ✓ |
@@ -662,7 +716,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `present_ring` | ✓ |  |  |
 | `present_shot` | ✓ |  | ✓ |
 | `present_shot_seq` | ✓ |  | ✓ |
-| `press` | ✓ | ✓ |  |
+| `press` | ✓ | ✓ | ✓ |
 | `probe_clear` | ✓ |  |  |
 | `probe_trace` | ✓ |  |  |
 | `quit` | ✓ |  | ✓ |
@@ -675,11 +729,13 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `render_pass_dump` | ✓ |  | ✓ |
 | `render_pass_refuse` | ✓ |  | ✓ |
 | `render_pass_stats` | ✓ |  | ✓ |
+| `render_thread` | ✓ |  | ✓ |
 | `resident_events` | ✓ |  |  |
 | `resident_status` | ✓ |  |  |
 | `restore_trace` | ✓ |  |  |
 | `restore_trace_clear` | ✓ |  |  |
 | `restore_trace_window` | ✓ |  |  |
+| `rewind_status` | ✓ |  | ✓ |
 | `rtrace_arm` | ✓ | ✓ |  |
 | `rtrace_clear` | ✓ |  |  |
 | `rtrace_disarm` |  | ✓ |  |

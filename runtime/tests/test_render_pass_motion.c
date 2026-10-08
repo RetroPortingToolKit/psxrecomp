@@ -89,6 +89,32 @@ static void test_matrix_slerp(void) {
     psx_motion_set_destroy(s);
 }
 
+/* A mirrored basis (determinant -1, THPS2's skater) blends as a rotation
+ * after one fixed reflection; a change of handedness snaps. */
+static void make_yaw(double yaw, int mirrored, PSXMotionMatrix* m) {
+    const double c = cos(yaw), s = sin(yaw);
+    const double r[9] = {c, 0, s, 0, mirrored ? -1.0 : 1.0, 0, -s, 0, c};
+    memset(m, 0, sizeof *m);
+    for (int i = 0; i < 9; i++) m->r[i] = (int16_t)lround(r[i] * 4096.0);
+}
+static double det_of(const PSXMotionMatrix* m) {
+    const int16_t* r = m->r;
+    return ((double)r[0] * ((double)r[4] * r[8] - (double)r[5] * r[7]) -
+            (double)r[1] * ((double)r[3] * r[8] - (double)r[5] * r[6]) +
+            (double)r[2] * ((double)r[3] * r[7] - (double)r[4] * r[6])) / (4096.0 * 4096.0 * 4096.0);
+}
+static void test_mirrored_basis(void) {
+    PSXMotionMatrix a, b, o;
+    make_yaw(0.2, 1, &a);
+    make_yaw(1.0, 1, &b);
+    CHECK(psx_motion_blend_matrix(&a, &b, 0.5, 0, &o) == 1, "a mirrored pair blends");
+    CHECK(det_of(&o) < -0.99, "the blend stays mirrored");
+    CHECK(fabs(atan2(o.r[2], o.r[0]) - 0.6) < 0.002, "a mirrored basis turns to the half-way angle");
+    make_yaw(1.0, 0, &b);
+    CHECK(psx_motion_blend_matrix(&a, &b, 0.5, 0, &o) == 0 &&
+          memcmp(o.r, b.r, sizeof o.r) == 0, "a change of handedness snaps to the new basis");
+}
+
 static void test_identity_and_limits(void) {
     PSXMotionSet* s = psx_motion_set_create(16);
     PSXMotionLimits lim = {1000.0, 1.0};
@@ -228,6 +254,7 @@ static void test_frame_driver(void) {
 
 int main(void) {
     test_matrix_slerp();
+    test_mirrored_basis();
     test_identity_and_limits();
     test_angles_vectors_scalars();
     test_rotation_only();

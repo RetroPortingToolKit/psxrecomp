@@ -214,6 +214,15 @@ struct ModPlugin {
     std::string id;
     std::map<std::string, std::string> when;
     int64_t order = 0;
+    /* [[plugin]] netplay = "local_view": the plugin only changes what this
+     * player sees. In a netplay match it stays on, per player, but its hooks
+     * run only inside the sandboxed own-view render
+     * (psx_mod_render_local_view), never in the shared simulation. */
+    bool netplay_local_view = false;
+    /* netplay = "input": the plugin only transforms this player's own pad
+     * before it is staged (psx_mod_set_pad_transform). Online it stays on per
+     * player: the post-transform pad is what every peer simulates. */
+    bool netplay_input = false;
 };
 
 struct ModResource {
@@ -309,7 +318,14 @@ struct ModPrepareContext {
 using ModMediaPreparer = std::function<bool(const ModPrepareContext&,
     std::map<std::string, std::filesystem::path>&, std::string&)>;
 // Implementations are linked trusted code. A manifest cannot execute a command.
-bool mod_register_media_preparer(const std::string& id, ModMediaPreparer callback);
+// Normally called synchronously during launch preparation. A title enabling
+// PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE also permits preboot offline preparation
+// on a launcher-owned worker. Every registered callback/service used by that
+// title must then support serialized worker calls without SDL/UI/GL or
+// main-thread affinity. Registration must finish before opening the launcher;
+// activation callbacks still run separately, before renderer initialization.
+bool mod_register_media_preparer(const std::string& id, ModMediaPreparer callback,
+                                 ModMediaPreparer cache_probe = {});
 
 struct ModFeatureSelection {
     bool enabled = false;
@@ -367,6 +383,8 @@ struct ModResolution {
         std::string id;
         std::string package_id;
         std::string feature_id;
+        bool netplay_local_view = false;
+        bool netplay_input = false;
     };
     std::vector<Plugin> plugins;
     struct Resource {
@@ -442,7 +460,7 @@ public:
     bool prepare_resources(const std::string& game_id,
                            const std::filesystem::path& disc_path,
                            const std::filesystem::path& cache_root,
-                           std::string* error = nullptr);
+                           std::string* error = nullptr, bool cached_only = false);
 
     bool install_archive(const std::filesystem::path& archive,
                          std::string* installed_id = nullptr,
@@ -474,6 +492,15 @@ public:
         return packages_;
     }
     const std::map<std::string, ModSelection>& selections() const { return selections_; }
+    /* Swap the in-memory selection for `next` and return the previous one.
+     * Never saved by itself: a session that must not run the player's whole
+     * choice (a netplay match) swaps a reduced selection in, resolves, and
+     * swaps the player's back before anything can save_state(). */
+    std::map<std::string, ModSelection> exchange_selections(
+        std::map<std::string, ModSelection> next) {
+        selections_.swap(next);
+        return next;
+    }
     const ModPackage* selected_package(const std::string& id) const;
     const ModFeature* selected_feature(const std::string& package_id,
                                        const std::string& feature_id) const;

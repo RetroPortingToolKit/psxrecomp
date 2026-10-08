@@ -28,6 +28,7 @@ DRIVER_C = r"""
 #include <stdio.h>
 
 extern uint64_t s_frame_count;
+extern int test_upload_begins, test_upload_commits, test_upload_rect[4];
 uint32_t gpu_get_opcode_count(uint8_t op);
 uint64_t gpu_get_gp0_count(void);
 void gpu_get_gp0_stats(uint64_t* nop, uint64_t* fill, uint64_t* draw,
@@ -184,6 +185,28 @@ int main(int argc, char **argv) {
            copy_dumped > 0 ? copy_entries[0].csp : 0u,
            poly_dumped, poly_dumped > 0 ? poly_entries[0].opcode : 0u,
            poly_dumped > 0 ? poly_entries[0].cmd[0] : 0u);
+    /* Native upload identity is invalidated at the header, even when GP1
+     * aborts a partially written payload. Mask rules stay in gpu.c and bulk
+     * commits carry only the final native words. */
+    gpu_write_gp1(0x00000000u);
+    int begins = test_upload_begins, commits = test_upload_commits;
+    gpu_write_gp0(0xA0000000u); gpu_write_gp0((511u<<16)|1023u);
+    gpu_write_gp0((2u<<16)|4u);
+    if (test_upload_begins != begins+1 || test_upload_rect[0]!=1023 ||
+        test_upload_rect[1]!=511 || test_upload_rect[2]!=4 || test_upload_rect[3]!=2) return 3;
+    gpu_write_gp0(0x33332222u);
+    gpu_write_gp1(0x01000000u);
+    if (test_upload_commits!=commits || gpu_vram_peek(1023,511)!=0x2222u ||
+        gpu_vram_peek(0,511)!=0x3333u) return 4;
+    gpu_write_gp0(0xE6000001u);
+    gpu_write_gp0(0xA0000000u); gpu_write_gp0((100u<<16)|32u);
+    gpu_write_gp0((1u<<16)|2u); gpu_write_gp0(0x00020001u);
+    if (gpu_vram_peek(32,100)!=0x8001u || gpu_vram_peek(33,100)!=0x8002u) return 5;
+    gpu_write_gp0(0xE6000002u);
+    gpu_write_gp0(0xA0000000u); gpu_write_gp0((100u<<16)|32u);
+    gpu_write_gp0((1u<<16)|2u); gpu_write_gp0(0x12341234u);
+    if (gpu_vram_peek(32,100)!=0x8001u || gpu_vram_peek(33,100)!=0x8002u ||
+        test_upload_commits!=commits+2 || test_upload_begins!=begins+3) return 6;
     return 0;
 }
 """
@@ -257,8 +280,32 @@ void ws_ui_group_assign(WsUiGroupItem *items, size_t count,
 int32_t ws_ui_anchor_for_bounds(int32_t x, int32_t width, int32_t display_width)
 { (void)x; (void)width; return display_width / 2; }
 int gte_geometry_correction_enabled(void) { return 0; }
-int gte_nclip_native_wide_sign(int32_t mac0, int *sign) { (void)mac0; (void)sign; return 0; }
-int gte_nclip_native_wide_previous_sign(int32_t mac0, int *sign) { (void)mac0; (void)sign; return 0; }
+/* The fixture is software-only, with native-wide/PGXP disabled. Unexpected
+ * geometry/projective paths remain fatal rather than becoming silent stubs. */
+int gte_nclip_native_wide_sign(int32_t mac0, int *sign)
+{ (void)mac0; (void)sign; abort(); }
+int gte_nclip_native_wide_previous_sign(int32_t mac0, int *sign)
+{ (void)mac0; (void)sign; abort(); }
+int pgxp_projection_tracking(void) { return 0; }
+void pgxp_set_projection_tracking(int enabled)
+{ if (enabled) abort(); }
+int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out)
+{ (void)addr; (void)packed; (void)out; abort(); }
+int gl_renderer_projective_supported(void) { abort(); }
+void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
+    uint16_t texpage, uint16_t cx, uint16_t cy, int raw, int semi, int perspective)
+{ (void)vertices; (void)texpage; (void)cx; (void)cy; (void)raw; (void)semi; (void)perspective; abort(); }
+void gl_renderer_note_wide_triangle_recovery(int enabled)
+{ if (enabled) abort(); }
+/* Smooth motion vertex sources are an OpenGL path: never reached here. */
+int gl_renderer_frame_generation(void) { return 0; }
+void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
+    const int32_t x[3], const int32_t y[3])
+{ (void)id; (void)pc; (void)h; (void)x; (void)y; abort(); }
+void gte_fg_source_set(int enabled) { if (enabled) abort(); }
+int gte_fg_source_enabled(void) { return 0; }
+int gte_fg_source_lookup(uint32_t packed, GteFgSrc out[2])
+{ (void)packed; (void)out; abort(); }
 void pgxp_set_enabled(int enabled) { (void)enabled; }
 void pgxp_set_projection_tracking(int enabled) { (void)enabled; }
 int pgxp_projection_tracking(void) { return 0; }
@@ -321,9 +368,15 @@ int ws_active(void) { return 0; }
 int ws_engaged(void) { return 0; }
 
 void gr_init(uint16_t *vram) { g_vram = vram; }
+int test_upload_begins, test_upload_commits, test_upload_rect[4];
+void gr_vram_upload_begin(int x,int y,int w,int h) {
+    ++test_upload_begins; test_upload_rect[0]=x; test_upload_rect[1]=y;
+    test_upload_rect[2]=w; test_upload_rect[3]=h;
+}
 uint16_t gr_vram_read(int x, int y) { return g_vram[(y & 511) * 1024 + (x & 1023)]; }
 void gr_vram_transfer_in(int x, int y, int w, int h, const uint16_t *pixels)
 {
+    ++test_upload_commits;
     for (int yy = 0; yy < h; yy++)
         for (int xx = 0; xx < w; xx++)
             g_vram[((y + yy) & 511) * 1024 + ((x + xx) & 1023)] = pixels[yy * w + xx];

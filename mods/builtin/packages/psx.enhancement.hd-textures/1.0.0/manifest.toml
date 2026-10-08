@@ -1,0 +1,46 @@
+format_version = 5
+id = "psx.enhancement.hd-textures"
+version = "1.0.0"
+name = "HD Texture Packs"
+author = "psxrecomp"
+description = "Load compatible DuckStation PNG/JPEG/WebP packs with OpenGL or capture originals during gameplay. Exit the game to finish capture PNGs. No artwork is bundled."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "hd-textures"
+name = "HD Texture Packs"
+description = "Disabled by default. Install PNG/JPEG/WebP artwork in replacements, or enable Dump textures to collect originals. Exit the game to finish capture PNGs in dumps. Options apply on Play. OpenGL displays replacements; other backends retain original artwork."
+group = "Visual"
+default_enabled = false
+
+[[resource]]
+feature = "hd-textures"
+id = "pack"
+label = "Texture pack folder"
+description = "The launcher creates mods/texture-packs/<game-id> beside the executable on first use. Open folder to add replacement images or read captured originals; Change folder selects another compatible pack or empty directory."
+format = "directory"
+required = true
+
+[[option]]
+feature = "hd-textures"
+id = "replacements"
+label = "Load replacements"
+description = "Display matching PNG/JPEG/WebP artwork from replacements in OpenGL. Unsupported or missing replacements retain the original artwork."
+type = "boolean"
+default = "true"
+
+[[option]]
+feature = "hd-textures"
+id = "dump"
+label = "Dump textures"
+description = "Collect original texture usage while playing. Exit the game to finish capture PNGs under dumps, then edit the files you need."
+type = "boolean"
+default = "false"
+
+[[plugin]]
+feature = "hd-textures"
+id = "psx.hd-textures"

@@ -132,6 +132,25 @@ int main(void) {
         CHECK(x == (161 << 16) && y == (81 << 16) && z == 0);
     }
 
+    /* --- DMA/host rewrite of the identical word: equal bits are not the
+     * same projection, so memory.c drops the shadow by provenance; a
+     * render pass rolls the drop back with the rest of its writes --- */
+    produce_at(ADDR_A);
+    pgxp_invalidate_word(0xA0100000u);           /* a mirror of ADDR_A     */
+    CHECK(lookup(ADDR_A, PACKED, 160, 80, nullptr, nullptr, nullptr) ==
+          PGXP_SRC_NATIVE);
+    produce_at(ADDR_A);
+    CHECK(lookup(ADDR_A, PACKED, 160, 80, nullptr, nullptr, nullptr) ==
+          PGXP_SRC_DATAFLOW);
+    pgxp_checkpoint_begin();
+    pgxp_invalidate_word(ADDR_A);
+    CHECK(lookup(ADDR_A, PACKED, 160, 80, nullptr, nullptr, nullptr) ==
+          PGXP_SRC_NATIVE);
+    pgxp_checkpoint_rollback();
+    CHECK(lookup(ADDR_A, PACKED, 160, 80, nullptr, nullptr, nullptr) ==
+          PGXP_SRC_DATAFLOW);
+    pgxp_invalidate_word(0x1F000000u);           /* untracked: no slot     */
+
     /* --- LW/SW roundtrip: packet copied by the CPU keeps provenance --- */
     produce_at(ADDR_A);
     psx_pgxp_load(nullptr, LW(1, 8), ADDR_A, PACKED);
@@ -147,6 +166,24 @@ int main(void) {
     psx_pgxp_store(nullptr, SW(1, 8), ADDR_B, 0xDEADBEEFu);   /* r8 mutated */
     CHECK(lookup(ADDR_B, 0xDEADBEEFu, 0, 0, nullptr, nullptr, nullptr) ==
           PGXP_SRC_NATIVE);
+
+    /* --- coprocessor reads replace the GPR: a word equal to the vertex the
+     * register held is still not that vertex (MFC0 decodes through the ALU
+     * hook, CFC2 through the COP2 hook) --- */
+    {
+        const uint32_t mfc0 = (0x10u << 26) | (8u << 16) | (12u << 11);
+        produce_at(ADDR_A);
+        psx_pgxp_load(nullptr, LW(1, 8), ADDR_A, PACKED);
+        psx_pgxp_alu(nullptr, mfc0, PACKED, 0, 0);
+        psx_pgxp_store(nullptr, SW(1, 8), ADDR_B, PACKED);
+        CHECK(lookup(ADDR_B, PACKED, 160, 80, nullptr, nullptr, nullptr) ==
+              PGXP_SRC_NATIVE);
+        psx_pgxp_load(nullptr, LW(1, 8), ADDR_A, PACKED);
+        psx_pgxp_cop2(nullptr, enc_cop2(0x02, 8, 31), PACKED, 0);  /* CFC2 */
+        psx_pgxp_store(nullptr, SW(1, 8), ADDR_B, PACKED);
+        CHECK(lookup(ADDR_B, PACKED, 160, 80, nullptr, nullptr, nullptr) ==
+              PGXP_SRC_NATIVE);
+    }
 
     /* --- MOVE idiom (memory mode, no cpu_mode needed) --- */
     produce_at(ADDR_A);
@@ -565,7 +602,14 @@ int main(void) {
         CHECK(pgxp_probe_precise_vertex(ADDR_A, PACKED, 160, 80) ==
               PGXP_SRC_DATAFLOW);
         CHECK(pgxp_probe_precise_vertex(ADDR_A, PACKED, 161, 80) ==
-              PGXP_SRC_NATIVE);
+              PGXP_SRC_NATIVE);                /* truncation reject */
+        CHECK(pgxp_probe_precise_vertex(ADDR_A, PACKED ^ 1u, 160, 80) ==
+              PGXP_SRC_NATIVE);                /* value mismatch */
+        const float tolerance_was = pgxp_tolerance();
+        pgxp_set_tolerance(0.1f);
+        CHECK(pgxp_probe_precise_vertex(ADDR_A, PACKED, 160, 80) ==
+              PGXP_SRC_NATIVE);                /* tolerance reject */
+        pgxp_set_tolerance(tolerance_was);
         pgxp_get_stats(&b);
         CHECK(std::memcmp(&a, &b, sizeof a) == 0);
         pgxp_note_rect_bypass(1);

@@ -93,8 +93,15 @@ static inline void psx_cyc_local_cleanup(uint32_t **guard) {
 static inline void psx_cyc_charge(uint32_t cycles) {
     if (cycles == 0u) return;
 #if defined(PSX_OVERLAY_DLL_BUILD)
-    psx_advance_cycles(cycles);
+    psx_cpu_charge(cycles);
 #else
+    /* [timing] guest_cycle_scale: a scaled charge is the CPU charge itself
+     * (the one place CPU work is scaled); the batch below is the scale-1
+     * production path, unchanged. */
+    if (PSX_GCS_ACTIVE()) {
+        psx_cpu_charge(cycles);
+        return;
+    }
 #if defined(__GNUC__) || defined(__clang__)
     if (__builtin_expect(g_ls_replay_active | g_event_step_conservative, 0)) {
 #else

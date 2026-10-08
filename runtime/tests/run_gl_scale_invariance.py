@@ -33,11 +33,22 @@ from the VRAM, so a decode error both ways share still fails.
 Pass runs (mode passes, where the renderer has the frame-rate stack's render
 passes) check that the window mode refuses them and the full-VRAM surface
 offers them.
+Step runs (mode steps, dynamic resolution) keep the surfaces at a ceiling and
+change the scale at run time. "fresh" steps before drawing: the native VRAM,
+the frame at S and the wide surface must equal the fixed-scale run at the
+final level. "chain" draws, then steps through a list: each step must leave
+the native VRAM unchanged and rescale the displayed rect, the draw area and
+the wide margins from their own pixels (the fixture checks every pixel); the
+scene drawn again at the final level must equal the fixed-scale run there.
+The window mode refuses steps.
 
-macOS/Linux: pass the SDL3 include directory and static library (for example
-from a runtime build tree's _deps/sdl3-src/include and
+macOS/Linux/Windows (MinGW): pass the SDL3 include directory and static
+library (for example from a runtime build tree's _deps/sdl3-src/include and
 _deps/sdl3-build/libSDL3.a) and a C compiler. Evidence (commands, output) is
 written to receipt.json under --output.
+When the host cannot create a hidden window with a GL 3.3 core context (a
+headless or non-interactive session, such as Windows over SSH) the fixture
+exits SKIP_EXIT and so does this script: CTest reports a skip, not a pass.
 """
 import argparse
 import json
@@ -53,6 +64,11 @@ MAC_FRAMEWORKS = ["Cocoa", "OpenGL", "IOKit", "CoreVideo", "CoreAudio", "AudioTo
                   "Carbon", "ForceFeedback", "GameController", "Metal", "QuartzCore",
                   "CoreMedia", "AVFoundation", "Foundation", "CoreHaptics",
                   "UniformTypeIdentifiers"]
+# The static SDL3's Win32 dependencies (as run_gl_texture_filter.py links them).
+WIN_LIBS = ["opengl32", "kernel32", "user32", "gdi32", "winmm", "imm32", "ole32",
+            "oleaut32", "version", "uuid", "advapi32", "setupapi", "shell32", "dinput8"]
+SKIP_EXIT = 77  # CTest SKIP_RETURN_CODE, as wtrace_dump_test uses it
+WINDOWS = os.name == "nt" or platform.system().startswith(("MINGW", "MSYS", "CYGWIN"))
 
 
 def parse_run(stdout):
@@ -118,10 +134,20 @@ def main():
         sources.append(("rp", framework / "runtime/src/render_pass_plan.c"))
     if (framework / "runtime/src/psx_openxr.c").exists():
         sources.append(("xr", framework / "runtime/src/psx_openxr.c"))
+    if (framework / "runtime/src/render_thread.c").exists():
+        sources.append(("rth", framework / "runtime/src/render_thread.c"))
+    if (framework / "runtime/src/present_thread.c").exists():
+        sources.append(("pth", framework / "runtime/src/present_thread.c"))
+    if (framework / "runtime/src/frame_gen.c").exists():
+        sources.append(("fg", framework / "runtime/src/frame_gen.c"))
     # Unused renderer functions reference the rest of the runtime; the linker
     # drops them (-dead_strip, or per-function sections with --gc-sections).
+    # MinGW's PE linker reports undefined references from sections it later
+    # collects, so there LTO drops them first (as run_gl_readback_region.py).
     # Anything still unresolved is a link error, not a NULL call at run time.
     sections = [] if platform.system() == "Darwin" else ["-ffunction-sections", "-fdata-sections"]
+    if WINDOWS:
+        sections.append("-flto")
     # Render passes (the frame-rate stack): build the fixture's passes mode.
     renderer = (framework / "runtime/src/gpu_gl_renderer.c").read_text(encoding="utf-8")
     passes = "uint32_t gl_renderer_pass_unavailable(void)" in renderer
@@ -136,11 +162,15 @@ def main():
             print(r.stderr[-3000:])
             return 2
         objs.append(o)
-    link = [args.cc, *objs, args.sdl_library, "-o", dest / "probe"]
+    probe = dest / ("probe.exe" if WINDOWS else "probe")
+    link = [args.cc, *objs, args.sdl_library, "-o", probe]
     if platform.system() == "Darwin":
         for f in MAC_FRAMEWORKS:
             link += ["-framework", f]
         link += ["-liconv", "-lm", "-Wl,-dead_strip"]
+    elif WINDOWS:
+        # -static: no libwinpthread/libgcc DLLs needed next to probe.exe.
+        link += ["-flto", "-static", *["-l" + x for x in WIN_LIBS], "-lm", "-Wl,--gc-sections"]
     else:
         link += ["-lGL", "-lm", "-ldl", "-lpthread", "-Wl,--gc-sections"]
     r = run(link)
@@ -148,11 +178,18 @@ def main():
         print(r.stderr[-3000:])
         return 2
 
+    # One preflight run: no window/GL context on this host means skip, before
+    # any check is counted. After this, a skip exit is a failure like any other.
+    r = run([probe, 1])
+    if r.returncode == SKIP_EXIT:
+        print("SKIP:", r.stderr.strip()[-600:])
+        return SKIP_EXIT
+
     ok = True
     digests = {}
     hires_full = {}
     for s in [int(v) for v in args.scales.split(",") if v]:
-        r = run([dest / "probe", s])
+        r = run([probe, s])
         parsed = parse_run(r.stdout)
         print(f"scale {s}: exit={r.returncode}", r.stdout.strip().splitlines()[-3:],
               r.stderr.strip()[-600:])
@@ -164,7 +201,7 @@ def main():
     wenv = dict(env)
     wenv["PSX_GL_HIRES_WINDOW"] = "1"
     for s in [int(v) for v in args.window_scales.split(",") if v]:
-        r = run([dest / "probe", s, "window"], env=wenv)
+        r = run([probe, s, "window"], env=wenv)
         parsed = parse_run(r.stdout)
         print(f"window {s}: exit={r.returncode}", r.stdout.strip().splitlines()[-3:],
               r.stderr.strip()[-600:])
@@ -192,7 +229,7 @@ def main():
     for label, s, extra, ref, tiles in sbs_runs:
         e = dict(env)
         e.update(extra)
-        r = run([dest / "probe", s, "sbs"], env=e)
+        r = run([probe, s, "sbs"], env=e)
         parsed = parse_run(r.stdout)
         got_tiles = re.search(r"^tiles=(\d+)$", r.stdout, re.M)
         print(f"sbs {label} {s}: exit={r.returncode}", r.stdout.strip().splitlines()[-5:],
@@ -218,7 +255,7 @@ def main():
                             ("window", 18, {"PSX_GL_HIRES_WINDOW": "1"})):
         e = dict(env)
         e.update(extra)
-        r = run([dest / "probe", s, "lines"], env=e)
+        r = run([probe, s, "lines"], env=e)
         parsed = parse_run(r.stdout)
         print(f"lines {label} {s}: exit={r.returncode}", r.stdout.strip().splitlines()[-4:],
               r.stderr.strip()[-600:])
@@ -241,7 +278,7 @@ def main():
                                       ("window", 18, {"PSX_GL_HIRES_WINDOW": "1"}, True)):
         e = dict(env)
         e.update(extra)
-        r = run([dest / "probe", s, "capture"], env=e)
+        r = run([probe, s, "capture"], env=e)
         parsed = parse_run(r.stdout)
         print(f"capture {label} {s}: exit={r.returncode}", r.stdout.strip().splitlines()[-2:],
               r.stderr.strip()[-600:])
@@ -257,7 +294,7 @@ def main():
                             ("window", 18, {"PSX_GL_HIRES_WINDOW": "1"})):
         e = dict(env)
         e.update(extra)
-        r = run([dest / "probe", s, "mask"], env=e)
+        r = run([probe, s, "mask"], env=e)
         parsed = parse_run(r.stdout)
         print(f"mask {label} {s}: exit={r.returncode}", r.stdout.strip().splitlines()[-1:],
               r.stderr.strip()[-600:])
@@ -271,7 +308,7 @@ def main():
         e.update(extra)
         got = {}
         for on in (0, 1):
-            r = run([dest / "probe", s, "twin", on], env=e)
+            r = run([probe, s, "twin", on], env=e)
             parsed = parse_run(r.stdout)
             m = re.search(r"^twin_flushes=(\d+) batches=(\d+)$", r.stdout, re.M)
             print(f"twin {label} {s} batching={on}: exit={r.returncode}",
@@ -286,6 +323,37 @@ def main():
         if got[0][3] is None or got[1][3] is None or got[1][3] >= got[0][3]:
             print(f"FAIL twin {label} {s}x: batching on did not draw fewer batches:", got)
             ok = False
+    # Native-wide mirror queue and stale-rect wide stencil rebuild: the same
+    # native VRAM, frame at S and wide surface with each off (the previous
+    # immediate mirrors and whole-surface rebuilds) and on.
+    ab_envs = (("default", {}), ("queue-off", {"PSX_GL_WIDE_QUEUE": "0"}),
+               ("stencil-full", {"PSX_GL_WIDE_STENCIL_FULL": "1"}),
+               ("both-off", {"PSX_GL_WIDE_QUEUE": "0", "PSX_GL_WIDE_STENCIL_FULL": "1"}))
+    ab_runs = [("wmask", s, fast, {}) for s in (1, 3, 9) for fast in ("0", "1")]
+    ab_runs += [("wmask", 9, fast, {"PSX_GL_HIRES_WINDOW": "1"}) for fast in ("0", "1")]
+    ab_runs += [("lines", 9, None, {}), ("twin", 9, "1", {}), ("scene", 3, None, {}),
+                ("scene", 9, None, {})]
+    for mode, s, arg, extra in ab_runs:
+        got = {}
+        for name, ab in ab_envs:
+            e = dict(env)
+            e.update(extra)
+            e.update(ab)
+            cmd = [dest / "probe", s, mode] + ([arg] if arg is not None else [])
+            r = run(cmd, env=e)
+            parsed = parse_run(r.stdout)
+            if r.returncode or not parsed or parsed[1]:
+                print(f"wide a/b {mode} {s} {arg} {name}: exit={r.returncode}",
+                      r.stdout.strip().splitlines()[-3:], r.stderr.strip()[-600:])
+                ok = False
+            got[name] = (parsed[2] if parsed else None, parse_hires(r.stdout),
+                         parse_hires(r.stdout, "wide"))
+        same = len(set(got.values())) == 1 and None not in got["default"][1:]
+        print(f"wide a/b {mode} {s}x {arg or ''}{' window' if extra else ''}:",
+              "same" if same else got)
+        if not same:
+            print(f"FAIL wide a/b {mode} {s}x: queue/stencil change the image:", got)
+            ok = False
     # Render passes: offered on the full-VRAM surface, refused in the window mode.
     if not passes:
         print("passes: skipped (this renderer has no render passes)")
@@ -293,17 +361,49 @@ def main():
                              ("window", 18, {"PSX_GL_HIRES_WINDOW": "1"})) if passes else ()):
         e = dict(env)
         e.update(extra)
-        r = run([dest / "probe", s, "passes"], env=e)
+        r = run([probe, s, "passes"], env=e)
         parsed = parse_run(r.stdout)
         print(f"passes {label} {s}: exit={r.returncode}", r.stdout.strip().splitlines()[-2:],
               r.stderr.strip()[-600:])
         if r.returncode or not parsed or parsed[1]:
             ok = False
+    # Dynamic resolution steps: (ceiling, levels, kind, env). The final level
+    # must be one of --scales (its fixed-scale run is the reference).
+    step_runs = (
+        (9, "5", "fresh", {}), (9, "3,9", "fresh", {}), (9, "1", "fresh", {}),
+        (5, "2", "fresh", {}),
+        (9, "8,5,9,3,1,2,9", "chain", {}), (5, "3,5,1,2", "chain", {}),
+        (9, "5", "chain", {"PSX_GL_HIRES_WINDOW": "1"}),
+    )
+    for ceiling, levels, kind, extra in step_runs:
+        e = dict(env)
+        e.update(extra)
+        r = run([dest / "probe", ceiling, "steps", levels, kind], env=e)
+        parsed = parse_run(r.stdout)
+        label = f"steps {kind} {ceiling}x [{levels}]" + (" window" if extra else "")
+        print(f"{label}: exit={r.returncode}",
+              [ln for ln in r.stdout.strip().splitlines() if ln.startswith("step ")][-8:],
+              r.stdout.strip().splitlines()[-1:], r.stderr.strip()[-600:])
+        if r.returncode or not parsed or parsed[1]:
+            ok = False
+        if extra:
+            continue   # the window mode only has to refuse
+        final = int(levels.split(",")[-1])
+        if parsed:
+            digests[("steps", ceiling, levels, kind)] = parsed[2]
+        got = (parse_hires(r.stdout), parse_hires(r.stdout, "wide"))
+        if final not in hires_full or None in got or got != hires_full[final]:
+            print(f"FAIL {label}: frame/wide surface differ from the fixed {final}x run:",
+                  got, hires_full.get(final))
+            ok = False
+    if not digests_agree(digests):
+        print("FAIL native VRAM digest differs across steps:", digests)
+        ok = False
     for label, s, budget in (("over-limit", 32, None), ("budget", 12, "40")):
         e = dict(env)
         if budget is not None:
             e["PSX_GL_VRAM_BUDGET_MB"] = budget
-        r = run([dest / "probe", s, "clamp"], env=e)
+        r = run([probe, s, "clamp"], env=e)
         parsed = parse_run(r.stdout)
         print(f"clamp {label}: exit={r.returncode}", r.stdout.strip().splitlines()[-2:],
               r.stderr.strip()[-600:])

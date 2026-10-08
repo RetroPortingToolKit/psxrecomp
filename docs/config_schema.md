@@ -58,6 +58,7 @@ How the two configs relate:
 [recompiler]
 [draw_distance] # optional; opt-in far-geometry clamps (below)
 [runtime]
+[timing]        # optional; title timing constants (below)
 [audit]
 ```
 
@@ -638,6 +639,21 @@ Settings surface. A game migrating Skip FMVs into its built-in mod catalog sets
 it to false. The runtime then hides the Settings row, ignores stale persisted
 values, and leaves activation to the selected trusted plugin.
 
+### Render thread (`render_thread`, OpenGL)
+
+```toml
+[video]
+render_thread = true   # default false; PSX_RENDER_THREAD=0/1 overrides
+```
+
+Runs the OpenGL backend on its own thread: the emulation thread records each
+frame's draw work and the render thread replays and presents it, so GL driver
+stalls leave the guest's frame. Everything the guest can read back is
+identical; a readback, savestate, depth24 (FMV) display, render pass or
+setting change makes that frame synchronous. Netplay, frame interpolation,
+Vulkan and software keep the synchronous path. `PSX_RENDER_THREAD_FRAMES`
+(default 2) bounds the frames in flight. See `docs/RENDER_THREAD.md`.
+
 ### Texture-window batching (`texture_window_batching`, OpenGL)
 
 ```toml
@@ -690,6 +706,15 @@ ignores all of these.
 Netplay rollback is a separate subsystem with its own ring and is unaffected by
 this setting; rewind is in fact suppressed while a netplay session is active.
 
+A title can also block Rewind while it is in a mode that must not be rewound,
+such as local split-screen multiplayer: a trusted mod plugin calls
+`psx_mod_set_rewind_blocked(1)` when the mode starts and `0` when it ends
+(`runtime/include/mod_plugins.h`). While blocked, opening Rewind is refused
+with an OSD note, no snapshots are captured (the ring keeps what it already
+has), and a title-allowed direct Rewind button (`psx_mod_allow_direct_shortcut`)
+is not claimed, so it reaches the game as if Rewind were off. The block clears
+at every mod/session reset; nothing changes for a title that never calls it.
+
 Bezel artwork is intentionally not a `[video]` key. It is exposed as the
 disabled-by-default `psx.presentation.bezel` mod package, which draws a
 user-selected image resource behind the game image in OpenGL letterbox or
@@ -699,6 +724,62 @@ margins remain the historical black clear.
 Reserved future fields:
 - `default_disc_path` — game runtimes can pre-mount a disc
 - `default_game_root` — for sibling-junction setups
+
+## Timing block (`[timing]`)
+
+Title constants. They live in the game's `game.toml`, are never written to
+`settings.toml`, and are not shown in the launcher.
+
+```toml
+[timing]
+guest_cycle_scale = 1           # 1..64; 1 = faithful (default)
+# Optional declarative gate: the scale applies only while every predicate
+# holds, judged at each VBlank edge (one inline table or an array, max 8).
+guest_cycle_scale_gate = [
+  { addr = 0x800AC794, value = 0x180 },            # size = 4, mask = ~0
+  # { addr = 0x80010003, size = 1, mask = 0x0F, value = 5 },
+]
+guest_cycle_scale_gated = false # also require the mod gate (custom logic)
+```
+
+No CPU is emulated. Recompiled code charges the guest clock a fixed number of
+cycles for each MIPS instruction it runs, and VBlank, timers, CD, SPU and DMA
+are scheduled against that clock. `guest_cycle_scale = N` charges each
+instruction 1/N of its cost; the devices keep hardware time. Larger N means
+the game never runs out of frame time: N times as much game code fits
+between two VBlanks. A game that paces itself on VBlank keeps its speed; one
+that busy-waits on a frame counter spins longer in host time, which is what
+the gates are for.
+
+Accounting is the same on every tier. Guest time has two entry points
+(`psx_cycles.h`): the **CPU charge** `psx_cpu_charge()` (instruction base
+cost, load fudge/region wait/completion, i-cache refills, BIOS HLE costs),
+which applies the scale, and the **device advance** `psx_advance_cycles()`
+(DMA, idle skips, mul/div and GTE deadline waits), which never does.
+Native generated code, overlay DLLs (their batched charge publishes through
+the `cpu_charge` callback into the same function), the dirty-RAM
+interpreter and the BIOS all charge CPU work through it; mul/div and GTE
+latencies are scaled where their deadline is set. At 1 the CPU charge is
+exactly the device advance and nothing else changes.
+
+Gates (all present gates must be open; with none the scale always applies):
+
+- `guest_cycle_scale_gate` — RAM predicates on aligned main-RAM words
+  (`(word & mask) == value`, `size` 1/2/4), judged at every VBlank edge, so
+  every netplay peer and every rollback re-simulation sees the same verdict.
+  Shut until the first VBlank that sees them hold. Needs no mod.
+- `guest_cycle_scale_gated = true` — a trusted plugin opens the gate with
+  `psx_mod_set_guest_cycle_scale_gate(1)` (`mod_plugins.h`) for logic a
+  predicate cannot express, or to tie the scale to a mod that must be active
+  for it (every mod session reset shuts the gate; mod plans are cleared
+  online, so a mod-gated scale stays out of netplay). With only the
+  declarative gate the scale applies online too.
+
+The carried fraction of the scaled clock and both gate states are saved in
+savestates and the netplay rollback snapshot (`boot_state` section
+`BS_SEC_GCS`, written only when the scale is not 1). A scale other than 1 is
+folded into the netplay content fingerprint, so peers that differ never
+match. `PSX_GUEST_CYCLE_SCALE=<n>` overrides the scale for testing only.
 
 ## Audit block
 

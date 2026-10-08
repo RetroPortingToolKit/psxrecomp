@@ -7,24 +7,10 @@
 #define PSX_HAS_RECOMP_NET 1
 #include "netplay_input_hist.h"
 #include "recomp_net/input_contract.h"
+#include "sio.h"
 
 #include <stdio.h>
 #include <string.h>
-
-/* Standalone: provide normalize used by pad↔frame (mirrors psx_netplay). */
-void psx_netplay_normalize_pad(PsxNetPad *pad)
-{
-    const int dead = 24;
-    if (!pad) return;
-    if (pad->lx > (uint8_t)(0x80 - dead) && pad->lx < (uint8_t)(0x80 + dead))
-        pad->lx = 0x80;
-    if (pad->ly > (uint8_t)(0x80 - dead) && pad->ly < (uint8_t)(0x80 + dead))
-        pad->ly = 0x80;
-    if (pad->rx > (uint8_t)(0x80 - dead) && pad->rx < (uint8_t)(0x80 + dead))
-        pad->rx = 0x80;
-    if (pad->ry > (uint8_t)(0x80 - dead) && pad->ry < (uint8_t)(0x80 + dead))
-        pad->ry = 0x80;
-}
 
 static int failures;
 #define CHECK(cond, msg) do { \
@@ -69,6 +55,31 @@ int main(void)
     CHECK(pad2.lx == (uint8_t)(0x80 + 40), "roundtrip lx");
     CHECK(pad2.analog == 1u, "roundtrip analog");
 
+    pad.analog = SIO_PAD_JOGCON;
+    pad.lx = 0xFF;
+    netplay_ih_pad_to_frame(&pad, 13, 0, &f);
+    CHECK(f.analog == SIO_PAD_JOGCON, "JogCon type from pad");
+    netplay_ih_frame_to_pad(&f, &pad2);
+    CHECK(pad2.analog == SIO_PAD_JOGCON && pad2.lx == 0xFF,
+          "JogCon type/steering roundtrip");
+    pad = pad2;
+
+    /* NeGcon: the rollback row's stick view carries twist (lx) and L (ly);
+     * L is a pressure, so no centre deadzone may touch it. */
+    {
+        PsxNetPad neg = pad;
+        neg.analog = SIO_PAD_NEGCON;
+        neg.lx = 0x90;  /* twist inside the centre deadzone -> 0x80 */
+        neg.ly = 0x70;  /* L pressure near 0x80 must survive exactly */
+        neg.rx = 0xC0;
+        neg.ry = 0x10;
+        netplay_ih_pad_to_frame(&neg, 14, 0, &f);
+        CHECK(f.analog == SIO_PAD_NEGCON, "NeGcon type from pad");
+        netplay_ih_frame_to_pad(&f, &pad2);
+        CHECK(pad2.analog == SIO_PAD_NEGCON && pad2.lx == 0x80 &&
+              pad2.ly == 0x70, "NeGcon twist/L roundtrip");
+    }
+
     /* Digital MotK path must not become DualShock through hist. */
     {
         RNetRbFrame dig;
@@ -77,8 +88,19 @@ int main(void)
         netplay_ih_pad_to_frame(&pad, 9, 0, &dig);
         CHECK(dig.analog == 0u, "digital frame");
         netplay_ih_frame_to_pad(&dig, &pad2);
-        CHECK(pad2.analog == 0u, "digital roundtrip");
+    CHECK(pad2.analog == 0u, "digital roundtrip");
     }
+
+    /* Restore the original DualShock sample for the ring-buffer assertions
+     * below; the preceding type/steering checks intentionally used later
+     * ticks and different pad modes. */
+    memset(&pad, 0, sizeof(pad));
+    pad.buttons = 0xFDFFu;
+    pad.lx = (uint8_t)(0x80 + 40);
+    pad.ly = pad.rx = pad.ry = 0x80;
+    pad.analog = SIO_PAD_DUALSHOCK;
+    pad.connected = 1;
+    netplay_ih_pad_to_frame(&pad, 10, 0, &f);
 
     CHECK(netplay_ih_put(&h, 0, &f), "put local");
     CHECK(netplay_ih_get(&h, 0, 10, &got), "get local");
@@ -136,6 +158,43 @@ int main(void)
     d = rnet_input_contract_stick_replace_decide(&pub, &wire, 1, &params, &gates);
     CHECK(d == nRNetInputContractPromoteHashConfirm, "hash_confirm → promote");
     CHECK(!rnet_input_contract_decision_is_rewind(d), "promote not rewind");
+
+    /* A type-only late correction used to disappear in the stick contract.
+     * Cover the production PSX wrapper, including a permissive HC callback. */
+    {
+        RNetRbFrame predicted = {0}, actual;
+        predicted.tick = 42;
+        predicted.buttons = 0xFFFFu;
+        predicted.rx = predicted.ry = 0x80;
+        predicted.is_valid = predicted.is_predicted = 1;
+        actual = predicted;
+        actual.is_predicted = 0;
+        CHECK(netplay_ih_pad_payload_equal(&predicted, &actual),
+              "prediction metadata does not change pad payload");
+        CHECK(!netplay_ih_extra_pad_differ(&predicted, &actual),
+              "unchanged extra pad fields stay equal");
+        for (uint8_t type = 1; type <= PSX_NETPAD_TYPE_MAX; ++type) {
+            actual.analog = type;
+            CHECK(!netplay_ih_pad_payload_equal(&predicted, &actual) &&
+                  netplay_ih_extra_pad_differ(&predicted, &actual),
+                  "every controller-type change is a payload correction");
+            d = netplay_ih_pad_correction_decide(&predicted, &actual, 1, &params, &gates);
+            CHECK(rnet_input_contract_decision_is_rewind(d),
+                  "completed type correction rewinds even with hash-confirm gate");
+        }
+        actual = predicted; actual.rx++;
+        CHECK(rnet_input_contract_decision_is_rewind(
+                  netplay_ih_pad_correction_decide(&predicted, &actual, 1, &params, &gates)),
+              "completed RX/NeGcon-I correction rewinds");
+        actual = predicted; actual.ry++;
+        CHECK(rnet_input_contract_decision_is_rewind(
+                  netplay_ih_pad_correction_decide(&predicted, &actual, 1, &params, &gates)),
+              "completed RY/NeGcon-II correction rewinds");
+        actual = predicted; actual.analog = 1;
+        CHECK(!rnet_input_contract_decision_is_rewind(
+                  netplay_ih_pad_correction_decide(&predicted, &actual, 0, &params, &gates)),
+              "uncompleted type correction may replace history without rewind");
+    }
 
     if (failures) {
         printf("%d failure(s)\n", failures);

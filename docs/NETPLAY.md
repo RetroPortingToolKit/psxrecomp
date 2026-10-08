@@ -57,6 +57,20 @@ prediction + resimulation), with **delay-sync** still available as an opt-out
 Rollback is the product default for titles that ship it (e.g. MotK). Delay-sync
 remains useful for debugging and for hosts that prefer fixed lag.
 
+- With three or more seats, a tick counts as confirmed (hash confirm, the
+  agreed watermark, a silently promoted button correction) only when every
+  other peer has committed the same digest for it
+  (`rnet_hc_set_peer_mask`). Peers that made the same wrong prediction for a
+  slow seat agree with each other, so confirming against whichever peer spoke
+  last let them skip a rollback the slow seat's real input needed.
+- A peer that falls behind the others' inputs sheds its own view first
+  (`psx_netplay_local_view_shed`, presentation only); its rollbacks then stay
+  short for everyone. `PSX_NET_LOCAL_VIEW_SHED=0` keeps the own view.
+- A match ends after `PSX_NET_ADMIT_STALL_MS` (default 20000) without any
+  progress; a remote input tip that advances is progress, so a slow peer is
+  waited for. A peer silent for `PSX_NET_LIVENESS_MS` (default 1500) counts as
+  gone.
+
 ---
 
 ## Seats vs session slots
@@ -158,7 +172,40 @@ Internal resolution is not a mod, so it is not cleared for netplay: each peer
 keeps its own preset, clamped to its own GPU, and one peer at 4K next to another
 at Native is a supported match. Only the GL present surface changes; the 1×
 software authority, the digests and the rollback snapshots are the same on every
-peer. Widescreen and frame-rate mods, by contrast, are cleared for netplay.
+peer. Mods are cleared for netplay, except a player's own-view mods (below),
+which stay per player and never touch the shared game.
+
+### Each peer's own view (presentation only)
+
+Some titles draw every player's view into one frame (split screen, or a link
+mode that renders all seats). Online, every peer still renders and digests
+that identical frame; only what its window shows changes:
+
+- `game.toml [netplay] local_viewport = "vertical_split"`: during netplay, seat
+  0 or 1 presents its own half of a detected vertical split.
+- `psx_netplay_present_local_view(x, y, w, h)` (`psx_netplay.h`): a trusted
+  game plugin names this peer's rectangle of the display area (guest pixels,
+  relative to the GP1(05h) display start), usually from
+  `psx_netplay_local_slot()`. The present path shows that rectangle alone,
+  scaled to the window at 4:3, from the GL internal-resolution surface (or the
+  software frame). The request lasts a few simulation ticks
+  (`PSX_NETPLAY_LOCAL_VIEW_HOLD`), so the plugin renews it every frame its
+  multi-view screen is up and menus fall back to the full frame by
+  themselves. It wins over `local_viewport`, never reaches the guest or a
+  savestate, and is ignored offline. The headless present-image ring records
+  the same rectangle, which is how a harness checks it. Vulkan, which netplay
+  replaces with the software present, ignores it.
+- `psx_mod_render_local_view(cpu, rect, fn, user)` (`mod_plugins.h`): this
+  peer draws its *own* image of a display rect with the game's code, for
+  example its seat's single full-screen view, inside the render-pass sandbox
+  (docs/RENDER_PASSES.md, "Netplay local view"). The machine is restored
+  afterwards, so the canonical frame stays in the authoritative VRAM, rollback
+  snapshots and digests; only the OpenGL presenter's surface keeps the image.
+  A committed image cancels any `psx_netplay_present_local_view` crop
+  (`psx_netplay_local_view_clear`). Forward netplay frames only; a title falls
+  back to the crop when `psx_mod_render_local_view_status()` is not ready
+  (software present, Vulkan, resimulation, or `FAST_FORWARD` while this peer
+  is behind the match and sheds its own view).
 
 ---
 
@@ -323,6 +370,40 @@ Generate & rebuild / prepare flows should point at the **`.cue`**, not a lone
   fingerprint before entering guest execution. Direct launches retain local
   choices and require matching plans. No assets or local paths are transferred;
   the guest's saved offline selection survives the session.
+### Own-view mods (per player)
+
+The shared simulation stays stock on every peer; a mod that only changes
+what one player sees runs for that player alone, inside the sandboxed own-view
+render (`psx_mod_render_local_view`). A package opts in per plugin:
+
+```toml
+[[plugin]]
+feature = "widescreen"
+id = "r4.widescreen"
+netplay = "local_view"
+```
+
+At a netplay session start the runtime resolves the player's own selection
+and keeps only features whose every contribution is such a plugin (no EXE or
+disc write, overlay or derived disc; `mod_runtime_commit_netplay_view`). They
+activate as usual (presentation state: aspect, scene predicates), but:
+
+- their function-entry, filter, guest-function and instruction hooks run only
+  while `psx_mod_local_view_scope()` is 1, i.e. inside a local-view draw, whose
+  guest-side effects the sandbox discards; vblank and savestate callbacks do
+  not run in a match;
+- `gpu_ws_set_local_view_only(1)`: the widescreen cull margin
+  (`psx_ws_x_margin()`) is the stock 0 in the shared game and this peer's own
+  margin only inside the local-view draw; squash widescreen (which changes the
+  GTE projection) is not used.
+
+So the canonical frame, rollback snapshots and digests are identical on every
+peer whatever each player chose, there is nothing to negotiate or hash, and
+each player keeps their own aspect (Fit follows their own window). Nothing is
+written to `mods/state.toml`. A title without an own view simply shows its
+canonical frame. A plugin must not keep host state that feeds guest writes
+outside the scope; anything that persists guest state across frames is not an
+own-view mod.
 
 ---
 

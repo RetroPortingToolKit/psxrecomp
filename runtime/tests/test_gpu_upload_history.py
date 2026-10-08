@@ -29,6 +29,7 @@ static int gp0_state;
 enum {GP0_VRAM_WRITE=2};
 static struct {uint32_t gpr[32];} *debug_cpu_ptr;
 uint32_t psx_read_word(uint32_t addr){(void)addr;assert(0);return 0;}
+void gr_vram_upload_begin(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
 """+production+'\nstatic void capture(uint32_t val) {\n'+capture+'}\n'+r"""
 int main(void) {
  gp0_cmd_buf[1]=7|(9u<<16);gp0_cmd_buf[2]=4|(1u<<16);

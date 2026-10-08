@@ -66,6 +66,79 @@ extern int g_psx_cyc_bb_defer;
  * via psx_cyc_local_publish / psx_cyc_batch_flush before IRQ/MMIO barriers. */
 extern uint32_t *g_psx_cyc_local_acc;
 
+/* [timing] guest_cycle_scale — a title constant, not a player setting.
+ * No CPU is emulated: recompiled code charges the guest clock a fixed number
+ * of cycles per MIPS instruction it runs, and that clock is what VBlank,
+ * timers, CD, SPU and DMA are scheduled against. guest_cycle_scale = N
+ * charges each instruction 1/N of its cost; device time is unchanged.
+ * Larger N means the game never runs out of frame time; 1 is faithful and
+ * skips the scaling entirely. g_psx_gcs_recip_q16 is 65536/N, g_psx_gcs_frac
+ * the carried fraction (part of the rollback/savestate snapshot).
+ *
+ * Two kinds of guest-time charge, and only these two:
+ *   psx_cpu_charge(n)      CPU work: instruction base cost, load costs
+ *                          (fudge, region wait, completion), i-cache refills,
+ *                          BIOS HLE costs. Scaled. Every tier (native
+ *                          generated code, overlay DLLs, the dirty-RAM
+ *                          interpreter, the BIOS) charges CPU work through
+ *                          it; the batched psx_cyc_charge hot path hands its
+ *                          charge to it whenever the scale is active.
+ *   psx_advance_cycles(n)  device time and stalls already measured in guest
+ *                          time (DMA, idle skips, mul/div and GTE deadline
+ *                          waits). Never scaled.
+ * Mul/div and GTE latencies are CPU work too: psx_cpu_cycles() scales the
+ * deadline they set, so the later stall waits the scaled time. */
+extern uint32_t g_psx_gcs_recip_q16;
+extern uint32_t g_psx_gcs_frac;
+void     psx_guest_cycle_scale_set(uint32_t scale);  /* 1..64; 1 = faithful */
+/* Live scale: the configured one, or 1 while gated and the gate is shut. */
+uint32_t psx_guest_cycle_scale(void);
+uint32_t psx_guest_cycle_scale_config(void);
+/* Gates (all must be open for the scale to apply; with none it always does):
+ *  - RAM gate: [timing] guest_cycle_scale_gate, predicates on guest RAM
+ *    words evaluated at every VBlank edge (deterministic, works online).
+ *  - Mod gate: guest_cycle_scale_gated = true; a trusted plugin opens it
+ *    with psx_mod_set_guest_cycle_scale_gate() (mod_plugins.h). */
+void     psx_guest_cycle_scale_set_gated(int gated);
+void     psx_guest_cycle_scale_gate_open(int open);
+enum { PSX_GCS_RAM_GATE_MAX = 8 };
+/* addr: guest main-RAM address (any segment), size 1/2/4, open while
+ * (word & mask) == value. Returns 0 for a bad predicate. Clear with
+ * psx_guest_cycle_scale_ram_gate_clear(). */
+int      psx_guest_cycle_scale_ram_gate_add(uint32_t addr, uint32_t size,
+                                            uint32_t mask, uint32_t value);
+void     psx_guest_cycle_scale_ram_gate_clear(void);
+/* How the RAM gate reads guest RAM (main.cpp installs a main-RAM reader;
+ * phys is masked physical, aligned to size). */
+void     psx_guest_cycle_scale_set_ram_reader(uint32_t (*read)(uint32_t phys, uint32_t size));
+/* Called on each VBlank edge (interrupts.c); no-op without a RAM gate. */
+void     psx_guest_cycle_scale_vblank(void);
+/* Rollback/savestate: carried fraction + gate state (boot_state BS_SEC_GCS). */
+enum { PSX_GCS_SNAPSHOT_BYTES = 12 };
+void     psx_guest_cycle_scale_snapshot(uint32_t out[3]);
+void     psx_guest_cycle_scale_restore(const uint32_t in[3]);
+static inline uint32_t psx_gcs_recip_for(uint32_t scale) {
+    if (scale <= 1u) return 65536u;
+    if (scale > 64u) scale = 64u;
+    return (uint32_t)((65536u + scale / 2u) / scale);
+}
+static inline uint32_t psx_gcs_scale(uint32_t cpu_cycles) {
+    uint64_t t = (uint64_t)cpu_cycles * g_psx_gcs_recip_q16 + g_psx_gcs_frac;
+    g_psx_gcs_frac = (uint32_t)(t & 0xFFFFu);
+    return (uint32_t)(t >> 16);
+}
+#if defined(__GNUC__) || defined(__clang__)
+#define PSX_GCS_ACTIVE() __builtin_expect(g_psx_gcs_recip_q16 != 65536u, 0)
+#else
+#define PSX_GCS_ACTIVE() (g_psx_gcs_recip_q16 != 65536u)
+#endif
+#if !defined(PSX_OVERLAY_DLL_BUILD)
+/* CPU cycles -> guest cycles. Identity at scale 1 (no state touched). */
+static inline uint32_t psx_cpu_cycles(uint32_t cpu_cycles) {
+    return PSX_GCS_ACTIVE() ? psx_gcs_scale(cpu_cycles) : cpu_cycles;
+}
+#endif
+
 /* Advance guest time. Overlay DLLs forward this through their callback shim;
  * normal runtime/generated code keeps the common production path inlined. */
 #if defined(PSX_OVERLAY_DLL_BUILD)
@@ -120,6 +193,23 @@ static inline void psx_advance_cycles(uint32_t cycles) {
         psx_devices_service_to_now();
     }
 #endif
+}
+#endif
+
+/* The CPU charge (see above): every tier's CPU work is scaled in this one
+ * function (psx_cpu_cycles does the same for mul/div and GTE deadlines,
+ * which are set, not charged). At scale 1 it is exactly psx_advance_cycles(cycles). Overlay DLLs
+ * accumulate it locally (overlay_dispatch_preamble.c.inc) and publish the
+ * raw total through the cpu_charge callback, which lands in this function. */
+#if defined(PSX_OVERLAY_DLL_BUILD)
+void psx_cpu_charge(uint32_t cycles);
+#else
+static inline void psx_cpu_charge(uint32_t cycles) {
+    if (PSX_GCS_ACTIVE()) {
+        cycles = psx_gcs_scale(cycles);
+        if (cycles == 0u) return;
+    }
+    psx_advance_cycles(cycles);
 }
 #endif
 

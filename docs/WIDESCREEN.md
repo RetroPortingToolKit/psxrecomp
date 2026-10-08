@@ -1,5 +1,28 @@
 # Widescreen support (`feat/widescreen`)
 
+## Finite 2D backdrop falls back to 4:3 (2026-10-07)
+
+Pre-rendered 2D scenes draw their background as a few large textured
+rectangles before any polygon. Rects are screen-space blits, so the image is
+exactly as wide as those rects. Polygon overhang alone cannot see that: widened
+2D actor culls put sprite quads past the canonical edge, and Tomba's overhead
+village (384x256 ground image, fence/sign quads out to x=428) presented wide
+with black margins and props floating over them (`beads-eio.4.28`).
+
+`ws_backdrop_extent.h` takes each frame's leading run of rectangles (closed by
+the first polygon or line), keeps the untagged, unstretched textured ones and
+grids them over `[-reveal, W + reveal)` using the configured reveal. If they
+cover at least 90% of the canonical display but leave any reveal cell empty in
+the rows they occupy, the frame is short. Two short frames within six frames
+veto native-wide in the 2D-only-scene classifier until short frames stop for
+`WS_2D_SCENE_HYSTERESIS` frames. Tagged, stretched or host-extended backdrops,
+untextured rects and everything after the first polygon are neutral. The veto
+uses the same scope as the 2D-only classifier (sprite-tag titles; not
+`full_2d` or `gte_game_mode`), and an explicit title world-scene predicate
+still wins. Observability: `gpu_state.ws.backdrop` and the last field
+(`bd_veto`) of each `present_ring` event. Tests: `ws_backdrop_extent_test`,
+`ws_backdrop_scene_test`.
+
 ## Opt-in native-wide view anchoring (2026-09-12)
 
 `gpu_ws_set_view_anchor(camera, min, max, active)` reads a game's signed

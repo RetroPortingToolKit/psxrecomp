@@ -270,6 +270,9 @@ void psx_mod_set_world_scene_predicate(PSXModWorldScenePredicate predicate);
  */
 int psx_mod_option_value(const char* package_id, const char* feature_id,
                          const char* option_id, char* out, uint32_t out_size);
+/* The committed option for the trusted callback's owning package/feature. */
+int psx_mod_current_option_value(const char* option_id,
+                                 char* out, uint32_t out_size);
 /*
  * Read the committed owner-selected path for a resource declared by the
  * package feature whose trusted plugin is currently running. Returns 0 when
@@ -278,6 +281,12 @@ int psx_mod_option_value(const char* package_id, const char* feature_id,
  */
 int psx_mod_current_resource_path(const char* resource_id,
                                   char* out, uint32_t out_size);
+/* Configure an HD pack from the callback's selected directory resource.
+ * Activation/emulation-thread only. Replacements require OpenGL. */
+int psx_mod_set_hd_texture_pack(const char* resource_id,
+                                int replacements_enabled, int dump_enabled);
+int psx_mod_set_hd_texture_dump(int enabled);
+int psx_mod_reload_hd_texture_pack(void);
 /* Read-only canonical media verified by the engine for this plugin's owning
  * package/feature. The pointer lives until the committed plan is replaced or
  * cleared. Available only during that plugin's callbacks; returns 0 for an

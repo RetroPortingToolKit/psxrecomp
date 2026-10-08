@@ -403,6 +403,119 @@ extern "C" int gte_geometry_correction_lookup_probe(uint32_t packed,
     return gte_geometry_correction_lookup_impl(packed, x16, y16, 0);
 }
 
+/* Frame generation's vertex sources ([video] frame_generation,
+ * docs/FRAME_GENERATION.md). Every RTPS/RTPT output position is noted with
+ * what produced it: an identity (the game function that issued the
+ * projection, ra, and the model-space input vertex VX/VY/VZ - the same in
+ * consecutive frames for the same piece of geometry, whatever the camera did
+ * and in whatever order the game draws), the camera-space position RT*V+TR
+ * the GTE divided, and the projection distance H. The GPU side looks a packet
+ * vertex up by its packed screen word; frame generation estimates the camera
+ * motion from these positions and re-projects from an in-between camera.
+ * Direct-indexed by screen position like the geometry cache, pointing into a
+ * ring of the recent projections; a position two different vertices projected
+ * to in one frame is ambiguous. Entries a few frames old are not believed.
+ * Allocated only while frame generation is on: the guest-visible GTE results
+ * are untouched either way. */
+struct FgSrcEntry { uint32_t seq, seq2; uint32_t gen; };   /* gen: frame << 1 | ambiguous; seq2: a second point */
+struct FgSrcRec { uint32_t seq, id, ra; int32_t p[3]; int32_t h; };
+#define FGSRC_RING (1u << 17)
+static FgSrcEntry *s_fgsrc = nullptr;
+static FgSrcRec   *s_fgsrc_ring = nullptr;
+static uint32_t    s_fgsrc_seq = 0;
+#define FGSRC_MAX_AGE 4u
+extern "C" { extern uint64_t s_frame_count; }
+static int32_t gte_h_scaled(const GTEState* gte);
+
+extern "C" void gte_fg_source_set(int enabled) {
+    if (enabled && !s_fgsrc) {
+        s_fgsrc = (FgSrcEntry *)std::calloc(GEOM_CACHE_SIZE, sizeof(FgSrcEntry));
+        s_fgsrc_ring = (FgSrcRec *)std::calloc(FGSRC_RING, sizeof(FgSrcRec));
+        if (!s_fgsrc || !s_fgsrc_ring) enabled = 0;
+    }
+    if (!enabled) {
+        std::free(s_fgsrc); s_fgsrc = nullptr;
+        std::free(s_fgsrc_ring); s_fgsrc_ring = nullptr;
+    }
+}
+
+extern "C" int gte_fg_source_enabled(void) { return s_fgsrc != nullptr; }
+
+static inline uint32_t fgsrc_frame(void) { return (uint32_t)(s_frame_count + 1u) & 0x7FFFFFFFu; }
+
+static void fgsrc_note(const GTEState *g, int32_t packed, uint32_t ra, const int16_t v[3]) {
+    const int64_t slot = geom_slot((uint32_t)packed);
+    if (slot < 0) return;
+    uint32_t h = 2166136261u;
+    const uint32_t w[4] = { ra, (uint16_t)v[0], (uint16_t)v[1], (uint16_t)v[2] };
+    for (int i = 0; i < 4; i++)
+        for (int k = 0; k < 4; k++) h = (h ^ ((w[i] >> (8 * k)) & 0xFFu)) * 16777619u;
+    if (!h) h = 1;
+    const uint32_t seq = ++s_fgsrc_seq ? s_fgsrc_seq : ++s_fgsrc_seq;
+    FgSrcRec &r = s_fgsrc_ring[seq & (FGSRC_RING - 1u)];
+    r.seq = seq;
+    r.id = h;
+    r.ra = ra;
+    for (int i = 0; i < 3; i++) {
+        int64_t m = (int64_t)g->TR[i] * 4096;
+        for (int k = 0; k < 3; k++) m += (int64_t)g->RT[i][k] * v[k];
+        r.p[i] = (int32_t)(m >> 12);
+    }
+    r.h = gte_h_scaled(g);
+    FgSrcEntry &e = s_fgsrc[slot];
+    const uint32_t f = fgsrc_frame();
+    if ((e.gen >> 1) != f) { e.gen = f << 1; e.seq = seq; e.seq2 = 0; return; }
+    /* Earlier this frame: the same point projected again (another function,
+     * another model vertex: shared corners of separate meshes) is one vertex,
+     * keeping the smaller identity so the choice does not depend on draw
+     * order. Up to two different points on one pixel are kept (the GPU side
+     * picks by the triangle's other vertices); a third is ambiguous. */
+    auto same = [&](uint32_t sq) {
+        const FgSrcRec &o = s_fgsrc_ring[sq & (FGSRC_RING - 1u)];
+        return o.seq == sq && std::abs(o.p[0] - r.p[0]) <= 2 && std::abs(o.p[1] - r.p[1]) <= 2 &&
+               std::abs(o.p[2] - r.p[2]) <= 2;
+    };
+    auto keep = [&](uint32_t &sq) { if (s_fgsrc_ring[sq & (FGSRC_RING - 1u)].id > h) sq = seq; };
+    if (same(e.seq)) { keep(e.seq); return; }
+    if (!e.seq2) { e.seq2 = seq; return; }
+    if (same(e.seq2)) { keep(e.seq2); return; }
+    e.gen |= 1u;
+}
+
+static void fgsrc_record(const GTEState *g, uint32_t cmd, uint32_t ra) {
+    ra &= 0x1FFFFFFFu;
+    if ((cmd & 0x3F) == 0x30) {
+        fgsrc_note(g, g->SXY[0], ra, g->V0);
+        fgsrc_note(g, g->SXY[1], ra, g->V1);
+        fgsrc_note(g, g->SXY[2], ra, g->V2);
+    } else {
+        fgsrc_note(g, g->SXY[2], ra, g->V0);
+    }
+}
+
+/* The sources of the vertices last projected to a packed screen word this
+ * frame (or a few frames ago): 0 when none, ambiguous or stale, else 1 or 2
+ * (two different points on that pixel). */
+extern "C" int gte_fg_source_lookup(uint32_t packed, GteFgSrc out[2]) {
+    if (!s_fgsrc) return 0;
+    const int64_t slot = geom_slot(packed);
+    if (slot < 0) return 0;
+    const FgSrcEntry &e = s_fgsrc[slot];
+    if (!e.seq || (e.gen & 1u)) return 0;
+    if (((fgsrc_frame() - (e.gen >> 1)) & 0x7FFFFFFFu) > FGSRC_MAX_AGE) return 0;
+    int n = 0;
+    const uint32_t sq[2] = { e.seq, e.seq2 };
+    for (int i = 0; i < 2; i++) {
+        if (!sq[i]) continue;
+        const FgSrcRec &r = s_fgsrc_ring[sq[i] & (FGSRC_RING - 1u)];
+        if (r.seq != sq[i]) continue;
+        out[n].id = r.id; out[n].ra = r.ra; out[n].h = r.h;
+        for (int k = 0; k < 3; k++) out[n].p[k] = r.p[k];
+        n++;
+    }
+    return n;
+}
+
 /* Render-pass checkpoint for the gte.cpp side of precision tracking: the
  * position cache entries a pass writes are journaled and put back, and the
  * speculative bracket depth is restored (a watchdog abort can leave one open).
@@ -2257,6 +2370,8 @@ static void gte_execute_impl(CPUState* cpu, uint32_t cmd, bool charge_latency) {
 #endif
     gte_run_command(&gte, cmd);
     pgxp_gte_op_end(func);               /* IR / MAC scalars the op overwrote */
+    if (s_fgsrc && !s_gte_replay_sandbox && (func == 0x01 || func == 0x30))
+        fgsrc_record(&gte, cmd, cpu->gpr[31]);
 
 #ifndef PSX_NO_DEBUG_TOOLS
     if (func == 0x01 || func == 0x30) gte_rtp_record(&gte, cmd);

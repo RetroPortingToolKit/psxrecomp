@@ -100,8 +100,19 @@ static const uint8_t FONT8[59][8] = {
 };
 #endif
 
+/* Title block (psx_mod_set_rewind_blocked): set by the running title while
+ * a mode it cannot rewind is live, cleared at every mod session start. */
+static int s_title_blocked;
+
+int psx_rewind_title_blocked(void)
+{
+    return s_title_blocked;
+}
+
 #if !defined(PSX_HAS_RBENGINE_SNAP)
 
+void psx_rewind_set_title_blocked(int blocked) { s_title_blocked = blocked ? 1 : 0; }
+uint32_t psx_rewind_snap_count(void) { return 0; }
 void psx_rewind_set_depth(uint32_t depth) { (void)depth; }
 void psx_rewind_set_interval(uint32_t interval) { (void)interval; }
 void psx_rewind_set_enabled(int enabled) { (void)enabled; }
@@ -462,6 +473,11 @@ int psx_rewind_is_open(void)
     return s_open;
 }
 
+uint32_t psx_rewind_snap_count(void)
+{
+    return s_count;
+}
+
 int psx_rewind_needs_present(void)
 {
     return s_open || s_slide > 0.01f || s_anim_dir != 0;
@@ -470,7 +486,8 @@ int psx_rewind_needs_present(void)
 void psx_rewind_note_frame(void)
 {
     uint32_t iv;
-    if (!psx_rewind_enabled() || s_open || psx_netplay_active())
+    if (!psx_rewind_enabled() || s_open || psx_netplay_active() ||
+        s_title_blocked)
         return;
     s_frame++;
     iv = rewind_capture_interval();
@@ -552,7 +569,7 @@ void psx_rewind_poll(CPUState *cpu, uint32_t resume_pc)
         (void)do_load(cpu, tick);
         return;
     }
-    if (s_capture_due && !s_open && !psx_netplay_active())
+    if (s_capture_due && !s_open && !psx_netplay_active() && !s_title_blocked)
         (void)do_capture(cpu, resume_pc);
 }
 
@@ -567,6 +584,10 @@ int psx_rewind_toggle(void)
     }
     if (psx_netplay_active()) {
         host_osd_push("Rewind off during netplay", 1500);
+        return 0;
+    }
+    if (s_title_blocked && !s_open) {
+        host_osd_push("Rewind is off in this mode", 1500);
         return 0;
     }
     if (s_open) {
@@ -586,6 +607,17 @@ int psx_rewind_toggle(void)
     s_panel_dirty = 1;
     host_osd_push(s_count ? "Rewind" : "Rewind (no snaps yet)", 1200);
     return 1;
+}
+
+void psx_rewind_set_title_blocked(int blocked)
+{
+    s_title_blocked = blocked ? 1 : 0;
+    if (!s_title_blocked)
+        return;
+    /* Captures stop here; one already scheduled is dropped so nothing from
+     * the blocked mode lands in history. An open panel closes unloaded. */
+    s_capture_due = 0;
+    (void)psx_rewind_cancel();
 }
 
 int psx_rewind_cancel(void)

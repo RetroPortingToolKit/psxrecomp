@@ -267,6 +267,22 @@ int psx_ws_mmx6_bg_stream_left(int x);
 int psx_ws_mmx6_bg_stream_right(int x);
 struct CPUState;
 void psx_ws_sprite_tag(struct CPUState* cpu);
+/* Explicit screen-space tags for trusted title mods. Tag the P_TAG address
+ * before submission; no guest packets are changed. Anchors/period are authored
+ * display pixels. Unlike billboard tags these do not classify a frame as 3D.
+ * Corrections are identity at 4:3 and on pure-2D screens. Tiled tags apply only
+ * to variable textured rectangles and repeat a title-proven composite period.
+ * A tiled strip reconstructs a horizontally clipped source: authored U is its
+ * left crop, so restore X-U, U=0 and source_width before repeating. */
+void gpu_ws_tag_screen_prim(uint32_t prim, int32_t anchor);
+/* Resize an untextured quad group between two independently anchored edges.
+ * Useful for health gauges that should fill the available width while their
+ * labels and neighboring timer keep their original proportions. */
+void gpu_ws_tag_stretched_prim(uint32_t prim, int32_t left, int32_t right,
+                               int32_t left_anchor, int32_t right_anchor);
+void gpu_ws_tag_tiled_strip(uint32_t prim, int32_t anchor,
+                            int32_t period, int32_t source_width);
+
 /* Native-wide (mode 2) on a game frame. ws_nw_extra() is the total width the
  * frame grows by, in display pixels (the present path widens the display read
  * by this; 0 when native-wide is inactive). */
@@ -288,6 +304,11 @@ int  gpu_ws_present_native_43(void);
 /* Per-side X cull-margin (screen/world units) emitted into the game's draw-
  * cull immediates by the recompiler ([widescreen.cull]); 0 unless stretching. */
 int  psx_ws_x_margin(void);
+/* Netplay own-view mods: while on, psx_ws_x_margin() is 0 (the stock cull)
+ * except inside a sandboxed local-view render (render_pass.c sets the scope). */
+void gpu_ws_set_local_view_only(int on);
+void gpu_ws_set_local_view_scope(int on);
+int  gpu_ws_local_view_only(void);
 void gpu_ws_set_cull_guard_pixels(int pixels);
 /* Bias/range activation-window margin. This may include an additional
  * resident-object lead while render/terrain paths retain psx_ws_x_margin(). */
@@ -635,6 +656,13 @@ typedef struct {
     uint64_t angle_43_identity;
     uint32_t angle_max_vanilla;
     uint32_t angle_max_widened;
+    /* Finite 2D backdrop verdict (ws_backdrop_extent.h), newest evaluation. */
+    int      bd_veto;           /* scene presented 4:3: backdrop stops short */
+    uint32_t bd_eval_frame, bd_rects, bd_last_short;
+    int      bd_full, bd_short;
+    int32_t  bd_min_x, bd_max_x, bd_reveal;
+    uint32_t bd_canon_pct, bd_left_pct, bd_right_pct;
+    uint64_t bd_evaluations, bd_short_frames;
 } GpuWsDebug;
 void gpu_ws_get_debug(GpuWsDebug* out);
 

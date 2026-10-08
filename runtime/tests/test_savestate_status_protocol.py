@@ -14,8 +14,9 @@ DMA = (ROOT / "src/dma.c").read_text(encoding="utf-8")
 BOOT_STATE = (ROOT / "src/boot_state.c").read_text(encoding="utf-8")
 
 # The per-word DMA2 cursor and XA DATA_END pending bit grow the snapshot wire.
-# Keep the v7 read minimum; all current writers emit v9, which requires the
-# BIOS-to-game handoff latch. Older-than-v7 files reject before changing state.
+# Keep the v7 read minimum: v8 adds enhancement memory, and all current v9
+# writers preserve the BIOS-to-game handoff latch. Older incompatible files
+# must be rejected before any live state is applied.
 assert "#define DMA_GPU_LL_WIRE (4u + (10u * 4u))" in DMA
 assert "#define BOOT_STATE_VERSION 9u" in BOOT_STATE_H
 assert "h.version       = BOOT_STATE_VERSION;" in BOOT_STATE

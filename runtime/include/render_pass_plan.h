@@ -138,7 +138,8 @@ int    render_pass_cost_note_plan(RenderPassCost *cost);
 
 /* Next frame's pass budget from the last frame: the host time the presenter
  * spent idle-waiting plus the time passes used, scaled by `share` (0..1) and
- * clamped to [0, frame_length]. No history (both zero) -> share of the frame. */
+ * clamped to [0, frame_length]. Both zero means no measured credit, including
+ * startup: an unknown cost warms up only when positive credit is available. */
 double render_pass_budget(double idle_ticks, double pass_ticks,
                           double frame_length, double share);
 

@@ -427,6 +427,14 @@ struct RuntimeConfig {
     // game.toml it is the shipped default ("native", "720p", "1080p",
     // "1440p", "4k", "5k", "8k", "display", or a number of lines).
     int                   video_internal_resolution = 0;
+    // dynamic_resolution: OpenGL only. Keep the internal resolution above as
+    // the ceiling and step the scale down (whole integer levels) only while
+    // the game would otherwise miss frames, back up when there is headroom
+    // (runtime/include/dynamic_resolution.h). Off by default; a title opts
+    // in. dynamic_resolution_min: the lowest level, a preset value as for
+    // internal_resolution (720 = "720p"; 1 = native).
+    bool                  video_dynamic_resolution = false;
+    int                   video_dynamic_resolution_min = 720;
     // resolution_reference_lines: the title's usual display height, which a
     // preset divides into (S = ceil(target / reference)). 240 for NTSC
     // 320x240 games; 120..1024.
@@ -558,6 +566,44 @@ struct RuntimeConfig {
     // image is identical; games that tile textures with per-primitive windows
     // draw in far fewer batches. Off by default; a game opts in.
     bool                  video_texture_window_batching = false;
+
+    // render_thread: OpenGL only. Run the GL backend on its own thread: the
+    // emulation thread records each frame's draw work and the render thread
+    // replays and presents it, so GPU driver stalls stop blocking the guest.
+    // Guest-visible results are identical (docs/RENDER_THREAD.md). Off by
+    // default; PSX_RENDER_THREAD=0/1 overrides.
+    bool                  video_render_thread = false;
+
+    // frame_generation: with render_thread, the render thread draws
+    // in-between frames at the display's refresh from the last two game
+    // frames' draw lists when it has time to spare (never by running guest
+    // code). The real frames are unchanged and come first; a breaker turns
+    // generation off for seconds after a late frame. Adds up to one game
+    // frame of latency (docs/FRAME_GENERATION.md). Off by default;
+    // PSX_FRAME_GEN=0/1 overrides.
+    bool                  video_frame_generation = false;
+
+    // [timing] guest_cycle_scale (1 = faithful, 1..64) and its gate; title
+    // constants from game.toml only. See config_loader.cpp.
+    int                   guest_cycle_scale = 1;
+    bool                  guest_cycle_scale_gated = false;
+    // guest_cycle_scale_gate: declarative RAM gate, judged at every VBlank;
+    // the scale applies only while every predicate holds.
+    struct GuestCycleScaleGatePred {
+        uint32_t addr  = 0;           // guest main-RAM address (any segment)
+        uint32_t size  = 4;           // 1, 2 or 4 bytes, aligned
+        uint32_t mask  = 0xFFFFFFFFu;
+        uint32_t value = 0;           // open while (word & mask) == value
+    };
+    std::vector<GuestCycleScaleGatePred> guest_cycle_scale_gate;
+
+    // present_thread: with render_thread, composed frames go to offscreen
+    // slots and a present thread (second, shared GL context on the window)
+    // does the copy and the swap, so the window compositor's wait does not
+    // block rendering (docs/RENDER_THREAD.md "Present thread"). Same pixels.
+    // Off by default; PSX_PRESENT_THREAD=0/1 overrides,
+    // PSX_PRESENT_THREAD_SLOTS=2..4 (default 3).
+    bool                  video_present_thread = false;
 
     // low_latency_input: re-sample the pad after the wall-clock pacer (just
     // before present) so the next CPU frame reads near-fresh input instead of
@@ -706,11 +752,28 @@ struct RuntimeConfig {
     bool                  has_multitap_port = false;
     int                   multitap_port     = 1;
 
+    // direct_shortcut / direct_shortcut_button: one host shortcut ("rewind",
+    // "save_state_menu", "fast_forward", "fast_forward_toggle") the launcher
+    // captures as a single controller button, with that SDL GameController
+    // button name (e.g. "y") as its default binding. At run time a
+    // one-button binding acts alone only while the title's mod allows it
+    // (psx_mod_allow_direct_shortcut); otherwise it means Select + button.
+    std::string           direct_shortcut;
+    std::string           direct_shortcut_button;
+
     // multitap_analog: DualShock-on-tap hack (default true). When true,
     // multitap bulk seats may report 0x73 + stick bytes; when false (faithful),
     // tap seats stay plain digital. Overridable by settings.toml / match_caps.
     bool                  has_multitap_analog = false;
     bool                  multitap_analog     = true;
+
+    // multitap: title default for the offline multitap (players >= 3). false
+    // keeps offline play at two standalone pads for a title whose local game
+    // has no multitap support but whose netplay seats more players (players
+    // still sets the netplay seat ceiling). settings.toml [controller]
+    // multitap / the launcher toggle override it.
+    bool                  has_multitap_default = false;
+    bool                  multitap_default     = true;
 
     // legacy_pad_config: per-game pad-protocol compatibility opt-in. false (default)
     // = the modern DualShock config state machine (proper 0x43 enter/exit, config id
@@ -1368,6 +1431,11 @@ struct UserSettings {
     // it wins over supersampling, which is still written (capped at 4) so an
     // older runtime reading the same file degrades gracefully.
     bool has_internal_resolution = false; int internal_resolution = 0;
+    // Dynamic resolution (RuntimeConfig::video_dynamic_resolution, _min).
+    // Written only once the player changed them, so a title's default can
+    // still move in a later release.
+    bool has_dynamic_resolution = false; bool dynamic_resolution = false;
+    bool has_dynamic_resolution_min = false; int dynamic_resolution_min = 720;
     // Window size: width in px; height is always width*3/4 (PSX 4:3). Applies to
     // both the launcher and the emulator window so they boot at the same size.
     bool has_window_width   = false; int  window_width   = 1280; // -> 1280x960
@@ -1414,6 +1482,13 @@ struct UserSettings {
     // on a vsync-light box). vsync: 1=on (tear-free), 0=immediate (lowest
     // display latency, may tear), -1=adaptive.
     bool has_low_latency_input = false; bool low_latency_input = true;
+    // Rendering pipeline (RuntimeConfig::video_render_thread, _present_thread,
+    // _frame_generation; docs/RENDER_THREAD.md). Written only once the player
+    // changed them, so game.toml stays the default. Applied at next launch;
+    // PSX_RENDER_THREAD / PSX_PRESENT_THREAD / PSX_FRAME_GEN override one run.
+    bool has_render_thread    = false; bool render_thread    = false;
+    bool has_present_thread   = false; bool present_thread   = false;
+    bool has_frame_generation = false; bool frame_generation = false;
     bool has_vsync             = false; int  vsync             = 1;
     bool has_frame_interpolation = false; bool frame_interpolation = false;
     bool has_frame_interpolation_fps = false; int frame_interpolation_fps = 0;

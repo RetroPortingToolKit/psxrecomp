@@ -481,6 +481,12 @@ void sw_renderer_init(uint16_t *vram) {
     g_texture_filter_req = 0;
 }
 
+/* Point the rasterizer at another VRAM array without touching any draw
+ * state (the OpenGL render thread switches its upload source this way). */
+void sw_renderer_rebind_vram(uint16_t *vram) {
+    g_vram = vram;
+}
+
 /* ------------------------------------------------------------------ */
 /* Supersampling control                                              */
 /* ------------------------------------------------------------------ */

@@ -1,5 +1,6 @@
 /* Original source-owned GL readback-coherence regression. No retail payload. */
 #include "gpu_gl_renderer.c"
+#include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
 #include "gpu_timeline.c"
 uint64_t psx_cycle_count=0;
@@ -15,6 +16,10 @@ void gpu_vram_dirty_mark_row_impl(uint32_t y){}
 void gpu_vram_dirty_mark_rect(int x,int y,int w,int h){}
 void gpu_vram_dirty_mark_all(void){}
 int psx_netplay_active(void){return 0;}
+/* The renderer's facade hooks (gpu_render.c) for the render thread, which
+ * these fixtures never start. */
+GrBackend gr_backend(void){return GR_BACKEND_OPENGL;}
+void gr_refresh_backend(void){}
 static int test_depth24;
 int gpu_display_is_depth24(void){return test_depth24;}
 void gpu_get_display_info(GpuDisplayInfo *out){memset(out,0,sizeof(*out));out->display_x=32;out->display_y=32;out->width=320;out->height=16;}

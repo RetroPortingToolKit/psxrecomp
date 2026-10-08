@@ -387,6 +387,7 @@ static void exec_one(CPUState* cpu) {
         switch (cop_op) {
         case 0x00: /* MFC0 */
             set_load_delay(RT(insn), cpu->cop0[RD(insn)]);
+            psx_pgxp_alu(cpu, insn, cpu->cop0[RD(insn)], 0, 0);
             break;
         case 0x04: /* MTC0 */
             cpu->cop0[RD(insn)] = rt_val;

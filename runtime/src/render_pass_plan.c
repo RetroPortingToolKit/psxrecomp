@@ -217,8 +217,9 @@ double render_pass_budget(double idle_ticks, double pass_ticks,
     if (!(frame_length > 0.0)) return 0.0;
     if (!(share > 0.0)) return 0.0;
     if (share > 1.0) share = 1.0;
-    if (!(idle_ticks > 0.0) && !(pass_ticks > 0.0))
-        return frame_length * share;
+    /* Both zero also describes a mature, overloaded frame after a skipped
+     * pass. Inventing a nominal allowance there alternates expensive replay
+     * with shedding. Unknown costs may warm up when measured credit returns. */
     b = ((idle_ticks > 0.0 ? idle_ticks : 0.0) +
          (pass_ticks > 0.0 ? pass_ticks : 0.0)) * share;
     if (b > frame_length) b = frame_length;

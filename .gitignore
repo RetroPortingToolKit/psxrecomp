@@ -46,9 +46,6 @@ generated/*
 !generated/OpenBIOS_full.c
 !generated/OpenBIOS_dispatch.c
 !generated/OpenBIOS.emitter.sha
-!generated/SCPH1001_full.c
-!generated/SCPH1001_dispatch.c
-!generated/SCPH1001.emitter.sha
 
 # Release packaging artifacts
 release-stage/

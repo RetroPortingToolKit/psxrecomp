@@ -27,6 +27,7 @@
 #include "psx_cycles.h"
 #include "psx_icache.h"
 #include "psx_memory.h"
+#include "pgxp.h"
 #include "render_pass.h"
 #include "render_pass_plan.h"
 #include "starvation_ring.h"
@@ -1821,6 +1822,16 @@ uint64_t g_render_pass_dropped_writes[RENDER_PASS_DROP_CLASSES];
  * enhancement fills); like DMA it reaches memory whatever SR says. */
 int g_host_store_depth;   /* >0 inside psx_host_write_* */
 
+/* DMA and host stores have no instruction hook to carry or reset a PGXP
+ * shadow. Validation on read cannot catch one that rewrites the identical
+ * word: two projections that round to the same integers differ in their
+ * fractions and depth, so the old shadow would be believed for a value it
+ * did not produce. Drop the touched word's shadow instead. */
+static inline void pgxp_untracked_store(uint32_t phys) {
+    if (g_dma_exec_depth > 0 || g_host_store_depth > 0)
+        pgxp_invalidate_word(phys);
+}
+
 static inline int cpu_store_isolated(void) {
     return sr_ptr && (*sr_ptr & 0x10000u) && g_dma_exec_depth == 0 &&
            g_host_store_depth == 0;
@@ -1965,9 +1976,8 @@ void psx_write_word(uint32_t addr, uint32_t val) {
 }
 static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     g_guest_store_count++;
-    /* (pgxp) plain-store shadow invalidation retired: the PGXP engine
-     * validates tracked words against the actual packet word on read, so an
-     * overwritten word can never be believed (docs/ENHANCEMENTS.md G1). */
+    /* (pgxp) CPU stores carry their shadow through the PGXP_STORE hook;
+     * DMA and host stores drop it below (pgxp_untracked_store). */
     /* IsC first, before any decode (cpu_store_isolated). */
     if (cpu_store_isolated()) { isc_store(addr, val, 4); return; }
     /* KSEG2 cache control — before physical translation. */
@@ -2060,6 +2070,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 4); }
 #endif
+        pgxp_untracked_store(phys);
         ram[phys]     = (uint8_t)(val);
         ram[phys + 1] = (uint8_t)(val >> 8);
         ram[phys + 2] = (uint8_t)(val >> 16);
@@ -2092,6 +2103,7 @@ static void psx_write_word_raw(uint32_t addr, uint32_t val) {
           | ((uint32_t)scratchpad[off + 3] << 24),
             val, 4);
 #endif
+        pgxp_untracked_store(phys);
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         scratchpad[off + 2] = (uint8_t)(val >> 16);
@@ -2193,6 +2205,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 2); }
 #endif
+        pgxp_untracked_store(phys);
         ram[phys]     = (uint8_t)(val);
         ram[phys + 1] = (uint8_t)(val >> 8);
         return;
@@ -2221,6 +2234,7 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
             (uint32_t)scratchpad[off] | ((uint32_t)scratchpad[off + 1] << 8),
             (uint32_t)val, 2);
 #endif
+        pgxp_untracked_store(phys);
         scratchpad[off]     = (uint8_t)(val);
         scratchpad[off + 1] = (uint8_t)(val >> 8);
         return;
@@ -2307,6 +2321,10 @@ extern int g_event_step_conservative;
 extern int g_ls_replay_active;
 static inline void psx_load_charge_cycles(uint32_t cycles) {
     if (g_ls_replay_active || cycles == 0u) return;
+    if (PSX_GCS_ACTIVE()) {
+        psx_cpu_charge(cycles);
+        return;
+    }
     uint64_t next = psx_cycle_count + (uint64_t)cycles;
     if (!g_event_step_conservative && g_psx_cycle_fast_limit != 0u &&
         next >= psx_cycle_count && next <= g_psx_cycle_fast_limit) {
@@ -2317,7 +2335,7 @@ static inline void psx_load_charge_cycles(uint32_t cycles) {
 }
 #else
 static inline void psx_load_charge_cycles(uint32_t cycles) {
-    psx_advance_cycles(cycles);
+    psx_cpu_charge(cycles);
 }
 #endif
 
@@ -2377,7 +2395,7 @@ static inline void psx_cyc_readmem(CPUState* cpu, uint32_t phys, uint32_t size,
     uint32_t cost = region + compl_cost;               /* LDAbsorb = region + completion */
     uint32_t fudge = (uint32_t)((cpu->read_fudge >> 4) & 2u);
     cpu->ld_absorb = cost;
-    psx_advance_cycles(fudge + cost);
+    psx_cpu_charge(fudge + cost);   /* CPU charge: [timing] guest_cycle_scale */
     cpu->ld_which_t = (uint8_t)arm_rt;
     /* PROOF GATE (PSX_POLL_PROOF=N, default 0/off): a FLAT, non-absorbed extra N
      * cycles per main-RAM data read — replicates the historical "+6 cyc/main-RAM
@@ -2556,6 +2574,7 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
 #ifdef PSX_COSIM
         { extern void cosim_note_ram_write(uint32_t,uint32_t); cosim_note_ram_write(phys, 1); }
 #endif
+        pgxp_untracked_store(phys);
         ram[phys] = val;
         return;
     }
@@ -2579,6 +2598,7 @@ static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
         debug_server_trace_write_check(phys, (uint32_t)scratchpad[phys - 0x1F800000u],
                                        (uint32_t)val, 1);
 #endif
+        pgxp_untracked_store(phys);
         scratchpad[phys - 0x1F800000u] = val;
         return;
     }

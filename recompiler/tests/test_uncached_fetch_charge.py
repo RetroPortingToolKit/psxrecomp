@@ -105,6 +105,7 @@ HARNESS = r"""
 int g_ls_replay_active = 0;
 static unsigned long long cycles;
 void psx_advance_cycles(uint32_t c) { cycles += c; }
+void psx_cpu_charge(uint32_t c) { cycles += c; }
 int main(void) {
     static CPUState cpu;
     char line[64];

@@ -213,6 +213,19 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-07 — DuckStation texture authoring fidelity (beads-qi66).**
+  The early Tomba capture report exposed per-draw crops and automatic page
+  fallback in the opt-in HD texture enhancement. An independent synthetic
+  PS-X GPU sequence run in the official DuckStation binary at reference
+  `697599c47a646a6cfcc4d246018adf4904d55001` produced one lifetime-unioned
+  36x32 STP4 image from nested 32x32/36x32 draws and a separate 40x24 image
+  for another palette. The new module matches both literal filenames,
+  dimensions, and every decoded RGBA byte from that binary. Focused module,
+  image-decoder (Windows/Linux), and real OpenGL checks pass. A Tomba title
+  and Village smoke displayed checkerboards, preserved the native texture
+  atlas, and flushed pending native PNG captures without errors. Canonical native VRAM remains
+  authoritative; this enhancement changes no guest CPU, BIOS, or cycle model.
+
 - **2026-10-03 - Render replay validation and texture streaming.** Increased the bounded small-transfer VRAM journal from 16 to 64 entries; Jersey Devil streams 31 texture/CLUT uploads in a draw. The 32-transfer rollback regression compares all VRAM bytes. Jersey Devil configures the SDK draw environment before replay packet allocation, preventing its command storage from overwriting a world quad. Final live runs completed at least 1,040 Jersey Devil and 1,088 A Bug's Life extra passes with zero state-verification mismatches, VRAM leaks, watchdogs or span failures. Changes remain local beyond base 9c1e716a.
 
 - **2026-10-03 - Ape Escape wall-flicker regression.** Dense frame/VRAM capture isolated world GT4s incorrectly promoted to UI behind a front-layer fade. UI grouping now selects the actual populated drawing layer, retaining empty trailing OT behavior. Captured-packet tests fail on the prior core and pass on the fix; software and 4K OpenGL/PGXP captures show no gaps in the affected camera interval. No guest timing or draw replay changes.

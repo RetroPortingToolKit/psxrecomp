@@ -81,6 +81,8 @@ void psx_unknown_dispatch(CPUState *cpu, uint32_t addr, uint32_t phys) {
 }
 
 void psx_advance_cycles(uint32_t cycles) { (void)cycles; }
+/* The CPU charge the loader binds as the overlay cpu_charge callback. */
+void psx_cpu_charge(uint32_t cycles) { (void)cycles; }
 uint64_t psx_get_cycle_count(void) { return 0; }
 int psx_cycle_replay_begin(uint64_t cycle) { (void)cycle; return 1; }
 uint64_t psx_cycle_replay_end(void) { return 0; }

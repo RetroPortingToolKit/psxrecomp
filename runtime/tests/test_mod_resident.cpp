@@ -7,6 +7,7 @@
 #include "psx_sha256.h"
 #include "psx_lobby_client.h"
 #include "gpu.h"
+#include "gpu_hd_textures.h"
 
 #include <array>
 #include <algorithm>
@@ -44,6 +45,12 @@ extern "C" void psx_host_write_word(uint32_t a, uint32_t v) { psx_write_word(a, 
 extern "C" uint32_t psx_mod_memory_alloc(uint32_t, uint32_t) { return 0; }
 extern "C" uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t, uint32_t) { return 0; }
 extern "C" void psx_ram_reset_size_request(void) {}
+extern "C" void gpu_hd_textures_shutdown(void) {}
+extern "C" int gpu_hd_textures_configure(const char*, int, int, char*, size_t) { return 1; }
+extern "C" void gpu_hd_textures_set_dump_enabled(int) {}
+extern "C" int gpu_hd_textures_active(void) { return 1; }
+extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) { *out = {}; }
+extern "C" int gpu_hd_textures_reload(char*, size_t) { return 1; }
 extern "C" void psx_projection_reset_session(void) {}
 extern "C" void gpu_ws_set_native_scene_predicate(int (*)(void)) {}
 extern "C" int psx_ws_x_margin(void) { return 0; }
@@ -336,3 +343,6 @@ int main() {
     std::cout << "mod resident tests passed\n";
     return 0;
 }
+
+/* render_pass.c: no sandboxed local view runs in this test. */
+extern "C" int psx_mod_local_view_scope(void) { return 0; }

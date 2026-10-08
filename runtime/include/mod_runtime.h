@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include "mod_packages.h"
 #if defined(RECOMP_LAUNCHER)
 #include "recomp_launcher.h"
 #endif
@@ -20,6 +21,14 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
 bool mod_runtime_commit(const std::filesystem::path& disc_path = {},
                         std::string* error = nullptr,
                         bool save_selection = true);
+/* Prepare a preboot launcher selection; the audited runtime retains a ticket. */
+bool mod_runtime_prepare_for_launcher(const std::filesystem::path& disc_path,
+                                      std::string* error = nullptr);
+
+/* Audited preboot only: load and verify a plan using existing receipts.
+ * A miss never invokes a media converter or computes a disc digest. */
+bool mod_runtime_try_prepare_cached(const std::filesystem::path& disc_path);
+
 /* Prepare enabled media without installing a guest plan or saving choices. */
 bool mod_runtime_prepare_resources(const std::filesystem::path& disc_path,
                                    std::string* error = nullptr);
@@ -42,6 +51,20 @@ void mod_runtime_end_netplay();
 void mod_runtime_set_session_plan_fp(const std::string& fp);
 const std::string& mod_runtime_session_plan_fp();
 std::string mod_runtime_plan_fingerprint_portable();
+/* Netplay: clear the plan, then keep only the player's own features whose
+ * every contribution is a [[plugin]] with netplay = "local_view" (no writes,
+ * overlays or derived discs). They activate as usual, but their hooks run
+ * only inside psx_mod_render_local_view and their vblank/savestate callbacks
+ * not at all, so the shared simulation stays stock. Never saves state.toml. */
+bool mod_runtime_commit_netplay_view(const std::filesystem::path& disc_path,
+                                     std::string* error = nullptr);
+/* 1 while the session plan is such an own-view plan. */
+bool mod_runtime_netplay_view_active();
+/* 1 while that plan holds a [[plugin]] netplay = "input" (a pad transform
+ * applied to this player's own pad at netplay staging). */
+bool mod_runtime_netplay_input_active();
+/* "package/feature" keys of `plan` that qualify as own-view features. */
+std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& plan);
 const std::string& mod_runtime_fingerprint();
 const std::filesystem::path& mod_runtime_effective_disc_path();
 /* Read an effective-disc file as whole sectors (true end-of-file tail bytes

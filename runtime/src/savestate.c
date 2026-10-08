@@ -15,6 +15,9 @@
 #include "psx_netplay.h"
 #include "psx_netplay_rb.h"
 #include "psx_scheduler.h"
+#if defined(PSX_HAS_RECOMP_NET)
+#include "netplay_state_digest.h"
+#endif
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
@@ -66,6 +69,43 @@ static int      s_save_defer_slot = -1;
 static double   s_save_defer_t0 = 0.0;
 static uint8_t *s_load_blob = NULL;   /* optional in-memory .pst for netplay */
 static size_t   s_load_blob_len = 0;
+#if defined(PSX_HAS_RECOMP_NET)
+static uint32_t s_load_trace_generation;
+
+static int savestate_load_trace_enabled(void)
+{
+    static int enabled = -1;
+    const char *value;
+    if (enabled >= 0) return enabled;
+    value = getenv("PSX_NETPLAY_LOAD_TRACE");
+    enabled = (value && value[0] == '1' && value[1] == '\0') ? 1 : 0;
+    return enabled;
+}
+
+static void savestate_load_trace(const char *stage, uint32_t generation,
+                                 int slot, const char *source,
+                                 const CPUState *cpu)
+{
+    NetplayCoreParts core;
+    if (!savestate_load_trace_enabled()) return;
+    memset(&core, 0, sizeof(core));
+    netplay_core_digest_parts(cpu, &core);
+    fprintf(stderr,
+            "savestate: load_trace gen=%u stage=%s source=%s slot=%d sim=%u "
+            "pc=%08x core=%08x cpu=%08x clk=%08x timers=%08x ram=%08x "
+            "dirty=%08x av=%08x cd=%08x spu=%08x mdec=%08x aux=%08x\n",
+            (unsigned)generation, stage ? stage : "?",
+            source ? source : "?", slot,
+            (unsigned)psx_netplay_sim_tick(), (unsigned)(cpu ? cpu->pc : 0u),
+            (unsigned)core.core, (unsigned)core.cpu,
+            (unsigned)core.clock_irq, (unsigned)core.timers,
+            (unsigned)core.ram, (unsigned)core.dirty,
+            (unsigned)netplay_av_digest(), (unsigned)netplay_cdrom_digest(),
+            (unsigned)netplay_spu_digest(), (unsigned)netplay_mdec_digest(),
+            (unsigned)netplay_aux_digest());
+    fflush(stderr);
+}
+#endif
 
 typedef struct SavestateThumbHeader {
     char magic[4];
@@ -871,6 +911,11 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
     if (s_load_pending >= 0) {
         int slot = s_load_pending;
         int loaded = 0;
+#if defined(PSX_HAS_RECOMP_NET)
+        uint32_t load_trace_generation = ++s_load_trace_generation;
+        const char *load_trace_source =
+            (s_load_blob && s_load_blob_len > 0) ? "blob" : "file";
+#endif
         s_load_pending = -1;
         char path[600];
         const double t_load0 = savestate_mono_ms();
@@ -886,6 +931,10 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
         const int have_rollback = boot_state_save_buffer_raw(
             cpu, s_bios_checksum, s_entry_pc, &rollback, &rollback_len);
         path[0] = '\0';
+#if defined(PSX_HAS_RECOMP_NET)
+        savestate_load_trace("before_apply", load_trace_generation, slot,
+                             load_trace_source, cpu);
+#endif
         if (s_load_blob && s_load_blob_len > 0) {
             const size_t blob_len = s_load_blob_len;
             loaded = boot_state_load_buffer(s_load_blob, blob_len,
@@ -926,6 +975,11 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                                              s_bios_checksum, s_entry_pc, cpu);
             psx_frontend_on_savestate_notify(1, slot, 0);
         }
+#if defined(PSX_HAS_RECOMP_NET)
+        if (loaded)
+            savestate_load_trace("after_restore", load_trace_generation, slot,
+                                 load_trace_source, cpu);
+#endif
         free(rollback);
         if (!loaded) {
             s_status_pending = 0;
@@ -961,6 +1015,10 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                     t_after_frontend - t_load0,
                     path[0] ? "" : " [blob]");
             psx_frontend_on_savestate_notify(1, slot, 1);
+#if defined(PSX_HAS_RECOMP_NET)
+            savestate_load_trace("before_resume", load_trace_generation, slot,
+                                 load_trace_source, cpu);
+#endif
             /* Unwind to the scheduler and re-dispatch the restored PC. Never
              * returns; abandons the suspended CPS frames on the current stack. */
             psx_scheduler_resume_at(cpu->pc);

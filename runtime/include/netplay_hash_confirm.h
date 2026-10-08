@@ -19,6 +19,8 @@ typedef RNetHashConfirm NetplayHashConfirm;
 #define netplay_hc_prime_after      rnet_hc_prime_after
 #define netplay_hc_note_local       rnet_hc_note_local
 #define netplay_hc_note_peer        rnet_hc_note_peer
+#define netplay_hc_note_peer_from   rnet_hc_note_peer_from
+#define netplay_hc_set_peer_mask    rnet_hc_set_peer_mask
 #define netplay_hc_resolved_through rnet_hc_resolved_through
 #define netplay_hc_confirm_through  rnet_hc_confirm_through
 #define netplay_hc_local_digest     rnet_hc_local_digest

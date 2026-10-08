@@ -1,4 +1,5 @@
 #include "mod_packages.h"
+#include "host_launch_timing.h"
 
 #include "crc32.h"
 #include "mod_plugins.h"
@@ -33,8 +34,9 @@ std::map<std::string, ModBuiltinResolver>& builtin_resolvers() {
     return value;
 }
 
-std::map<std::string, ModMediaPreparer>& media_preparers() {
-    static std::map<std::string, ModMediaPreparer> value;
+struct MediaPreparer { ModMediaPreparer prepare, probe; };
+std::map<std::string, MediaPreparer>& media_preparers() {
+    static std::map<std::string, MediaPreparer> value;
     return value;
 }
 
@@ -774,7 +776,7 @@ std::string canonical_resolution(const std::vector<const ModPackage*>& ordered,
             out << resource.format << ':' << resource.bytes->size() << ':'
                 << resource.sha256;
         else
-            out << resource.path.string();
+            out << resource.path.u8string();
         out << '\n';
     }
     return out.str();
@@ -870,7 +872,7 @@ fs::path effective_resource_path(const ModPackage& package,
     if (!selected) return {};
     const auto resource = selected->resources.find(id);
     return resource == selected->resources.end() ? fs::path{} :
-                                                   fs::path(resource->second);
+                                                   fs::u8path(resource->second);
 }
 
 bool prospective_feature_enabled(
@@ -1443,8 +1445,8 @@ std::string fingerprint_text(const std::string& text) {
 
 } // namespace
 
-bool mod_register_media_preparer(const std::string& id, ModMediaPreparer callback) {
-    return valid_id(id) && callback && media_preparers().emplace(id, std::move(callback)).second;
+bool mod_register_media_preparer(const std::string& id, ModMediaPreparer callback, ModMediaPreparer cache_probe) {
+    return valid_id(id) && callback && media_preparers().emplace(id, MediaPreparer{std::move(callback), std::move(cache_probe)}).second;
 }
 
 bool mod_register_builtin_resolver(const std::string& id, ModBuiltinResolver resolver) {
@@ -2559,6 +2561,16 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                     throw std::runtime_error("invalid plugin id");
                 plugin.order = toml::find_or<int64_t>(
                     v, "order", (int64_t)declaration_index);
+                {
+                    const std::string netplay =
+                        toml::find_or<std::string>(v, "netplay", "");
+                    if (!netplay.empty() && netplay != "local_view" &&
+                        netplay != "input")
+                        throw std::runtime_error(
+                            "plugin netplay must be \"local_view\" or \"input\"");
+                    plugin.netplay_local_view = netplay == "local_view";
+                    plugin.netplay_input = netplay == "input";
+                }
                 read_conditions(v, out.options, plugin.feature_id,
                                 plugin.when, "plugin");
                 out.plugins.push_back(std::move(plugin));
@@ -3206,7 +3218,7 @@ bool ModPackageManager::set_feature_resource_path(
         return false;
     }
     if (!resource->shared_source.empty()) sources_[resource->shared_source] = path;
-    else selections_[package_id].features[feature_id].resources[resource_id] = path.string();
+    else selections_[package_id].features[feature_id].resources[resource_id] = path.u8string();
     return true;
 }
 
@@ -3427,7 +3439,7 @@ std::string ModPackageManager::feature_option_value(
 }
 
 bool ModPackageManager::prepare_resources(const std::string& game_id,
-    const fs::path& disc_path, const fs::path& cache_root, std::string* error) {
+    const fs::path& disc_path, const fs::path& cache_root, std::string* error, bool cached_only) {
     auto effective = effective_selections(nullptr, nullptr, nullptr);
     auto pending = selections_;
     try {
@@ -3452,13 +3464,19 @@ bool ModPackageManager::prepare_resources(const std::string& game_id,
                 }
                 std::map<std::string, fs::path> outputs;
                 std::string reason;
-                if (!provider->second(context, outputs, reason))
-                    throw std::runtime_error(package->name + ": " + reason);
+                {
+                    HostLaunchTimingScope timing(HOST_LAUNCH_MEDIA_PROVIDER,
+                        package->id.c_str(), feature.id.c_str());
+                    const auto& callback = cached_only ? provider->second.probe : provider->second.prepare;
+                    if (!callback || !callback(context, outputs, reason))
+                        throw std::runtime_error(package->name + ": " + reason);
+                    timing.success();
+                }
                 for (const auto& [name, path] : outputs) {
                     const auto* resource = find_resource(*package, feature.id, name);
                     if (!resource || resource->input_only || resource->sha256.empty())
                         throw std::runtime_error("preparer returned an undeclared or unverified output");
-                    pending[id].features[feature.id].resources[name] = path.string();
+                    pending[id].features[feature.id].resources[name] = path.u8string();
                 }
                 for (const auto& r : package->resources)
                     if (r.feature_id == feature.id && !r.input_only && r.required && !outputs.count(r.id))
@@ -3891,6 +3909,8 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
             resolved.id = plugin->id;
             resolved.package_id = package->id;
             resolved.feature_id = plugin->feature_id;
+            resolved.netplay_local_view = plugin->netplay_local_view;
+            resolved.netplay_input = plugin->netplay_input;
             result.plugins.push_back(std::move(resolved));
         }
         for (const ModResource& resource : package->resources) {

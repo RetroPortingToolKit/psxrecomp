@@ -8,6 +8,7 @@
  * same struct tag) so this header needs no SDL include. */
 
 #include <stdint.h>
+#include <stddef.h>
 #include "gpu_projective_clip.h"
 
 struct SDL_Window;
@@ -25,6 +26,10 @@ int gl_renderer_select_texture_bank(uint16_t id);
 /* Retain texture indices while sampling current guest CLUTs (fades/animation). */
 int gl_renderer_select_texture_bank_live_clut(uint16_t id);
 int gl_renderer_texture_banks_supported(void);
+/* HD texture presentation uses an independent native SW VRAM authority.
+ * Both entry points drain pending draws before changing or deleting textures. */
+void gl_renderer_set_hd_texture_mode(int enabled);
+void gl_renderer_clear_hd_texture_cache(void);
 
 /* Set the GL swap interval / vsync mode (1=vsync, 0=immediate, -1=adaptive).
  * Safe before or after context creation; applies live when a context exists. */
@@ -95,6 +100,17 @@ void     gl_renderer_pass_service_presents(void);
  * presents past the frame's planned end (the next flip was late; the newest
  * image held), stale pass-cost estimates measured again. */
 void     gl_renderer_pass_diag(uint64_t out[10]);
+/* Always-on snapshot of the last eligible planner call and lifetime count of
+ * wanted plans refused with zero measured credit. Times are host milliseconds;
+ * reads do not reset counters or invoke the planner. Backend refusals leave
+ * this snapshot unchanged. */
+typedef struct GLRenderPassPlanDiag {
+    uint64_t plans, frame, zero_credit_refusals;
+    double idle_ms, present_ms, prior_pass_ms, present_reserve_ms, spare_ms;
+    double frame_ms, cost_ms, budget_ms;
+    uint32_t wanted, planned;
+} GLRenderPassPlanDiag;
+void gl_renderer_pass_plan_diag(GLRenderPassPlanDiag *out);
 /* Out-of-rect VRAM writes journaled and rolled back (lifetime count). */
 uint64_t gl_renderer_pass_journaled(void);
 /* Passes that reused the previous pass's VRAM backup (lifetime count). */
@@ -103,6 +119,15 @@ uint64_t gl_renderer_pass_backups_reused(void);
 uint32_t gl_renderer_pass_image_textures(uint64_t *bytes);
 /* Debug: dump the images of the next `generations` shown frames as PNGs. */
 void     gl_renderer_pass_dump_arm(const char *dir, int generations);
+/* Netplay local view (psx_mod_render_local_view): the VRAM transaction with
+ * no generation. Available only with a presenter surface separate from the
+ * authoritative CPU VRAM (dual raster). While it is open, draws reach only
+ * that surface. end(keep=1) keeps the rect's presented colour (hr surface and
+ * native-wide band) and restores everything else (stencil, raw mirror, CPU
+ * rows, out-of-rect journal, coherency state); keep=0 restores all. */
+uint32_t gl_renderer_local_view_unavailable(void);
+int gl_renderer_local_view_begin(int x, int y, int w, int h);
+int gl_renderer_local_view_end(int keep);
 /* Stereo shares the VRAM transaction, not the temporal generation/schedule. */
 uint32_t gl_renderer_stereo_unavailable(void);
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse_backup);
@@ -244,7 +269,8 @@ void gl_renderer_set_wide_fast(int on);
 /* Internal-resolution scale state of the live GL context (0 before init). */
 typedef struct GlScaleInfo {
     int requested;      /* scale requested before context init (gr_set_scale) */
-    int effective;      /* scale the hr surface was allocated at */
+    int effective;      /* scale rendered at now (the hr surface's allocation
+                         * unless dynamic resolution stepped below it) */
     int max_scale;      /* largest scale this context could allocate */
     int max_dim;        /* min(GL_MAX_TEXTURE_SIZE, _RENDERBUFFER_SIZE, _VIEWPORT_DIMS) */
     int clamp_reason;   /* PSX_GL_SCALE_* mask (gl_scale_limits.h) */
@@ -264,8 +290,79 @@ typedef struct GlScaleInfo {
     int window_grows;   /* tile allocations so far */
     int window_tiles;
     int window_mib;     /* all tiles */
+    /* Dynamic resolution: the scale the hr and native-wide surfaces are
+     * allocated at (the ceiling a step never exceeds); 0 when steps are not
+     * available (off, the window mode, dual raster). */
+    int alloc_scale;
 } GlScaleInfo;
 int gl_renderer_scale_info(GlScaleInfo *out);
+
+/* ---- Dynamic internal resolution ([video] dynamic_resolution) ---------------
+ * Opt-in. On, the hr and native-wide surfaces stay allocated at the scale
+ * context init gave them (the ceiling) and the internal scale may step to any
+ * integer level from 1 to it while the game runs; off (the default), nothing
+ * changes. A step keeps the guest-visible VRAM exact (the pack of every native
+ * block is preserved) and is presentation-only. Not available in the windowed
+ * high-resolution mode or with dual raster (netplay): the scale stays fixed. */
+void gl_renderer_set_dynamic_resolution(int on);   /* any time; before init too */
+/* The ceiling a level may step up to, or 0 when steps are not available. */
+int  gl_renderer_dynamic_resolution_ceiling(void);
+/* Ask for a level: applied at the next post-present point outside a render
+ * pass (clamped to 1..ceiling). Returns 0 when steps are not available. */
+int  gl_renderer_request_internal_scale(int scale);
+/* Step now (debug probes and tests): 1 when the level is `scale` on return,
+ * 0 when refused or deferred (inside a render pass; it then applies after
+ * the next present). Never call it inside a render pass. */
+int  gl_renderer_step_internal_scale_now(int scale);
+typedef struct GlDynresStats {
+    int      level, ceiling, pending;   /* pending: requested level, 0 = none */
+    uint64_t steps, deferred, refused;
+    int      last_from, last_to;
+    /* The last step's wall time (ms, glFinish'ed when timing is on) and its
+     * parts: draining queued work, the 1x top-left image and the saved rects,
+     * the reseed, the rects back, the native-wide surfaces. */
+    double   last_ms, last_prep_ms, last_seed_ms, last_rects_ms, last_wide_ms;
+    int      last_rects;                /* rects kept at full detail */
+    uint64_t hr_reallocs, wide_reallocs; /* surfaces reallocated at a step */
+} GlDynresStats;
+void gl_renderer_dynres_stats(GlDynresStats *out);
+/* Frame generation ([video] frame_generation, docs/FRAME_GENERATION.md):
+ * in-between frames drawn by the render thread from the last two game
+ * frames' draw lists when it has time to spare. Off by default; with it off
+ * nothing changes. set: a sync point. configure: the display's refresh and
+ * the guest's frame rate (any thread). hold: pause generation for `secs`
+ * (not a breaker trip), e.g. while dynamic resolution is over budget.
+ * json: the debug server's {"cmd":"frame_gen"} fields (no sync point). */
+void gl_renderer_set_frame_generation(int on);
+/* The sources of the next triangle's vertices (gte_fg_source_lookup: id,
+ * camera-space x/y/z, projection distance H; id 0 = none) and the integer
+ * positions it will be drawn at; recorded for frame generation only, never
+ * drawn. */
+void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
+                           const int32_t x[3], const int32_t y[3]);
+int  gl_renderer_frame_generation(void);
+void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz);
+void gl_renderer_frame_gen_hold(const char *reason, double secs);
+int  gl_renderer_frame_gen_json(char *out, int cap);
+/* Host time the renderer spent, as running totals in performance-counter
+ * ticks (only kept while dynamic resolution is on): waits for the frame
+ * blend's next present, render passes, blend presents' own work, and time
+ * blocked in the swap. The dynamic-resolution controller differences them per
+ * guest interval. */
+typedef struct GlHostLedger {
+    uint64_t idle_ticks, pass_ticks, interp_work_ticks, swap_ticks;
+    uint64_t interp_presents, swaps;
+} GlHostLedger;
+void gl_renderer_host_ledger(GlHostLedger *out);
+/* Render thread ([video] render_thread): the cost of each guest frame it
+ * replayed, max(GPU time, its CPU time without idle waits and the swap), as
+ * running totals the emulation thread differences. Measured only while
+ * gl_renderer_render_thread_measure(1) (dynamic resolution on). */
+typedef struct GlRthCosts {
+    uint64_t frames, cost_ns, cpu_ns, gpu_ns, gpu_frames, dropped;
+} GlRthCosts;
+void gl_renderer_render_thread_measure(int on);
+void gl_renderer_render_thread_costs(GlRthCosts *out);
 
 /* Narrow a native-wide display aspect num:den to the widest whose surface
  * this context can allocate at its internal scale (psx_gl_fit_wide_aspect;
@@ -395,6 +492,34 @@ void gl_renderer_batch_diag(uint64_t out[8]);
  * call before GL context creation. */
 void gl_renderer_set_texture_window_batching(int on);
 int  gl_renderer_get_texture_window_batching(void);
+
+/* Render thread ([video] render_thread, docs/RENDER_THREAD.md). Opt-in, off
+ * by default; with it off nothing below runs and the backend is unchanged.
+ * start: after gl_renderer_init_context, on the thread holding the context;
+ * moves the context to a new render thread and records backend calls from
+ * here on (1 = running). max_frames bounds closed frames in flight. stop:
+ * drain and take the context back (gl_renderer_shutdown also stops it).
+ * frame_boundary: once per vblank after the present; hands the context to or
+ * from the render thread and applies the in-flight bound. sync: an explicit
+ * sync point for readers of renderer-written host state outside the GL entry
+ * points. json: stats object body for the render_thread debug command. */
+int  gl_renderer_render_thread_start(int max_frames);
+void gl_renderer_render_thread_stop(void);
+int  gl_renderer_render_thread_active(void);
+void gl_renderer_render_thread_frame_boundary(void);
+void gl_renderer_render_thread_sync(const char *reason);
+int  gl_renderer_render_thread_json(char *out, size_t cap);
+/* [video] present_thread (docs/RENDER_THREAD.md "Present thread"): set before
+ * gl_renderer_render_thread_start; with the render thread, composed frames go
+ * to `slots` (2..4) offscreen slots and a present thread with a shared context
+ * does the copy + swap. Falls back to direct swaps when it cannot start.
+ * json: the "present_thread" member for the render_thread debug command. */
+void gl_renderer_set_present_thread(int on, int slots);
+int  gl_renderer_present_thread_active(void);
+int  gl_renderer_present_thread_json(char *out, size_t cap);
+int  gl_renderer_fbo_peek_deferred(int x, int y, int w, int h, uint16_t *out);
+void gl_renderer_ring_capture(uint32_t frame, int wide, int base_x, int disp_y, int disp_h,
+                              int cx, int cy, int cw, int ch);
 
 #ifdef __cplusplus
 }

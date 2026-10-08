@@ -36,6 +36,8 @@ typedef struct {
     uint16_t gte_verts;     /* RTPS/RTPT verts, last completed frame */
     uint16_t ovh_prims;     /* overhanging polys, last completed frame (the
                                2D-only-scene classifier's world signal) */
+    uint8_t  bd_veto;       /* finite 2D backdrop stops short of the reveal
+                               (ws_backdrop_extent.h): scene forced 4:3 */
 } PresRingEntry;
 
 uint64_t present_ring_total(void);

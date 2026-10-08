@@ -613,6 +613,60 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.parappa_timing_extra_late = parse_window("extra_late");
     }
 
+    // Optional [timing] block — title constants, never player settings.
+    // guest_cycle_scale: no CPU is emulated; recompiled code charges the
+    // guest clock a fixed cost per instruction, and scale N charges 1/N of
+    // it, so N times as much game code fits between two VBlanks while
+    // VBlank, timers, CD, SPU and DMA keep hardware time. 1 = faithful;
+    // values outside 1..64 are rejected. guest_cycle_scale_gated: the scale applies only
+    // while the mod gate is open (psx_mod_set_guest_cycle_scale_gate); see
+    // guest_cycle_scale_gate below for the declarative RAM gate.
+    if (cfg.contains("timing")) {
+        const toml::value& tm = toml::find(cfg, "timing");
+        if (tm.contains("guest_cycle_scale")) {
+            const long long n = toml::find<long long>(tm, "guest_cycle_scale");
+            if (n < 1 || n > 64)
+                throw std::runtime_error("[timing] guest_cycle_scale must be 1..64");
+            rt.guest_cycle_scale = static_cast<int>(n);
+        }
+        if (tm.contains("guest_cycle_scale_gated"))
+            rt.guest_cycle_scale_gated = toml::find<bool>(tm, "guest_cycle_scale_gated");
+        // guest_cycle_scale_gate: one inline table or an array of them,
+        // { addr, value, size = 4, mask = 0xFFFFFFFF }; all must hold.
+        if (tm.contains("guest_cycle_scale_gate")) {
+            const toml::value& g = toml::find(tm, "guest_cycle_scale_gate");
+            std::vector<toml::value> preds;
+            if (g.is_array()) preds = g.as_array();
+            else preds.push_back(g);
+            if (preds.size() > 8)
+                throw std::runtime_error("[timing] guest_cycle_scale_gate: at most 8 predicates");
+            // Range-check the signed TOML integer before narrowing, so an
+            // oversized or negative value cannot wrap into a valid one.
+            auto u32_field = [](const toml::value& pv, const char* key) -> uint32_t {
+                const long long v = toml::find<long long>(pv, key);
+                if (v < 0 || v > 0xFFFFFFFFLL)
+                    throw std::runtime_error(
+                        std::string("[timing] guest_cycle_scale_gate: ") + key +
+                        " must be 0..0xFFFFFFFF");
+                return static_cast<uint32_t>(v);
+            };
+            for (const toml::value& pv : preds) {
+                RuntimeConfig::GuestCycleScaleGatePred p;
+                p.addr  = u32_field(pv, "addr");
+                p.value = u32_field(pv, "value");
+                if (pv.contains("size")) p.size = u32_field(pv, "size");
+                if (pv.contains("mask")) p.mask = u32_field(pv, "mask");
+                const uint32_t phys = p.addr & 0x1FFFFFFFu;
+                if ((p.size != 1 && p.size != 2 && p.size != 4) ||
+                    (phys & (p.size - 1u)) != 0 || phys >= 0x00800000u)
+                    throw std::runtime_error(
+                        "[timing] guest_cycle_scale_gate: addr must be an aligned "
+                        "main-RAM address and size 1, 2 or 4");
+                rt.guest_cycle_scale_gate.push_back(p);
+            }
+        }
+    }
+
     // Optional [video] block — visual enhancement options. Kept on the same
     // RuntimeConfig so main.cpp consumes them alongside the other knobs.
     if (cfg.contains("video")) {
@@ -652,6 +706,28 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
                     "1440p, 4k, 5k, 8k, display, or a number of lines");
             }
             rt.video_internal_resolution = value;
+        }
+        if (video.contains("dynamic_resolution")) {
+            rt.video_dynamic_resolution = toml::find<bool>(video, "dynamic_resolution");
+        }
+        if (video.contains("dynamic_resolution_min")) {
+            const toml::value& ir = toml::find(video, "dynamic_resolution_min");
+            int value = 0;
+            bool ok = false;
+            if (ir.is_string()) {
+                ok = psx_ir_parse(ir.as_string().str.c_str(), &value) != 0 &&
+                     value != PSX_IR_DISPLAY;
+            } else if (ir.is_integer()) {
+                const auto n = ir.as_integer();
+                ok = n >= PSX_IR_MIN_LINES && n <= PSX_IR_MAX_LINES;
+                value = static_cast<int>(n);
+            }
+            if (!ok) {
+                throw std::runtime_error(
+                    "[video] dynamic_resolution_min must be native, 720p, 1080p, "
+                    "1440p, 4k, 5k, 8k, or a number of lines");
+            }
+            rt.video_dynamic_resolution_min = value;
         }
         if (video.contains("resolution_reference_lines")) {
             const auto n = toml::find<int64_t>(video, "resolution_reference_lines");
@@ -777,6 +853,15 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.video_texture_window_batching =
                 toml::find<bool>(video, "texture_window_batching");
         }
+        if (video.contains("render_thread")) {
+            rt.video_render_thread = toml::find<bool>(video, "render_thread");
+        }
+        if (video.contains("present_thread")) {
+            rt.video_present_thread = toml::find<bool>(video, "present_thread");
+        }
+        if (video.contains("frame_generation")) {
+            rt.video_frame_generation = toml::find<bool>(video, "frame_generation");
+        }
         if (video.contains("vsync")) {
             const auto mode = toml::find<std::string>(video, "vsync");
             if      (mode == "on"  || mode == "vsync")     rt.video_vsync = 1;
@@ -899,6 +984,10 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.multitap_port = static_cast<int>(n);
             rt.has_multitap_port = true;
         }
+        if (ct.contains("multitap")) {
+            rt.multitap_default = toml::find<bool>(ct, "multitap");
+            rt.has_multitap_default = true;
+        }
         if (ct.contains("multitap_analog")) {
             rt.multitap_analog = toml::find<bool>(ct, "multitap_analog");
             rt.has_multitap_analog = true;
@@ -906,6 +995,22 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         // Prefer string key; accept legacy bool alias.
         if (ct.contains("legacy_pad_config")) {
             rt.legacy_pad_config = toml::find<bool>(ct, "legacy_pad_config");
+        }
+        if (ct.contains("direct_shortcut")) {
+            rt.direct_shortcut = toml::find<std::string>(ct, "direct_shortcut");
+            if (rt.direct_shortcut != "rewind" &&
+                rt.direct_shortcut != "save_state_menu" &&
+                rt.direct_shortcut != "fast_forward" &&
+                rt.direct_shortcut != "fast_forward_toggle")
+                throw std::runtime_error(fmt::format(
+                    "[controller] direct_shortcut must be rewind, "
+                    "save_state_menu, fast_forward or fast_forward_toggle, "
+                    "got '{}'", rt.direct_shortcut));
+            if (!ct.contains("direct_shortcut_button"))
+                throw std::runtime_error(
+                    "[controller] direct_shortcut needs direct_shortcut_button");
+            rt.direct_shortcut_button =
+                toml::find<std::string>(ct, "direct_shortcut_button");
         }
         if (ct.contains("anti_deadzone")) {
             const auto n = toml::find<int64_t>(ct, "anti_deadzone");
@@ -2670,6 +2775,25 @@ UserSettings load_user_settings(const fs::path& path) {
                 }
             }
         });
+        if (v.contains("dynamic_resolution")) try_get([&]{
+            s.dynamic_resolution = toml::find<bool>(v, "dynamic_resolution");
+            s.has_dynamic_resolution = true;
+        });
+        if (v.contains("dynamic_resolution_min")) try_get([&]{
+            const toml::value& ir = toml::find(v, "dynamic_resolution_min");
+            int value = 0;
+            if (ir.is_string()) {
+                if (psx_ir_parse(ir.as_string().str.c_str(), &value) &&
+                    value != PSX_IR_DISPLAY) {
+                    s.dynamic_resolution_min = value; s.has_dynamic_resolution_min = true;
+                }
+            } else if (ir.is_integer()) {
+                const auto n = ir.as_integer();
+                if (n >= PSX_IR_MIN_LINES && n <= PSX_IR_MAX_LINES) {
+                    s.dynamic_resolution_min = (int)n; s.has_dynamic_resolution_min = true;
+                }
+            }
+        });
         if (v.contains("window_width")) try_get([&]{
             const auto n = toml::find<int64_t>(v, "window_width");
             if (n >= 640 && n <= 7680) { s.window_width = (int)n; s.has_window_width = true; }
@@ -2747,6 +2871,18 @@ UserSettings load_user_settings(const fs::path& path) {
         if (v.contains("low_latency_input")) try_get([&]{
             s.low_latency_input = toml::find<bool>(v, "low_latency_input");
             s.has_low_latency_input = true;
+        });
+        if (v.contains("render_thread")) try_get([&]{
+            s.render_thread = toml::find<bool>(v, "render_thread");
+            s.has_render_thread = true;
+        });
+        if (v.contains("present_thread")) try_get([&]{
+            s.present_thread = toml::find<bool>(v, "present_thread");
+            s.has_present_thread = true;
+        });
+        if (v.contains("frame_generation")) try_get([&]{
+            s.frame_generation = toml::find<bool>(v, "frame_generation");
+            s.has_frame_generation = true;
         });
         if (v.contains("vsync")) try_get([&]{
             const auto m = toml::find<std::string>(v, "vsync");
@@ -3027,10 +3163,9 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     std::ofstream f(path, std::ios::trunc);
     if (!f.is_open()) return false;
 
-    // TOML strings use forward slashes so backslash escaping is never an issue.
+    // Windows paths use forward slashes so separators need no TOML escaping.
     auto fwd = [](const fs::path& p) {
-        std::string str = p.generic_string();
-        return str;
+        return host_path_forward_slashes(p);
     };
     // Paths inside the game folder are stored relative to it, so a portable
     // folder still finds its disc, BIOS and memory cards after it is moved or
@@ -3054,6 +3189,17 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             f << "internal_resolution = \"" << id << "\"\n";
         else
             f << "internal_resolution = " << s.internal_resolution << "\n";
+    }
+    if (s.has_dynamic_resolution)
+        f << "dynamic_resolution = " << (s.dynamic_resolution ? "true" : "false") << "\n";
+    if (s.has_dynamic_resolution_min &&
+        psx_ir_value_valid(s.dynamic_resolution_min) &&
+        s.dynamic_resolution_min != PSX_IR_DISPLAY) {
+        const char* id = psx_ir_id_for(s.dynamic_resolution_min);
+        if (id)
+            f << "dynamic_resolution_min = \"" << id << "\"\n";
+        else
+            f << "dynamic_resolution_min = " << s.dynamic_resolution_min << "\n";
     }
     if (s.has_window_width)
         f << "window_width      = " << s.window_width << "\n";
@@ -3095,6 +3241,12 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "fullscreen        = " << s.fullscreen << "\n";
     if (s.has_low_latency_input)
         f << "low_latency_input = " << (s.low_latency_input ? "true" : "false") << "\n";
+    if (s.has_render_thread)
+        f << "render_thread = " << (s.render_thread ? "true" : "false") << "\n";
+    if (s.has_present_thread)
+        f << "present_thread = " << (s.present_thread ? "true" : "false") << "\n";
+    if (s.has_frame_generation)
+        f << "frame_generation = " << (s.frame_generation ? "true" : "false") << "\n";
     if (s.has_vsync)
         f << "vsync             = \"" << (s.vsync == 0 ? "immediate" : s.vsync < 0 ? "adaptive" : "on") << "\"\n";
     if (s.has_frame_interpolation)

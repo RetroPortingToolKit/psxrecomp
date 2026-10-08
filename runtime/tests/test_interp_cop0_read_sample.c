@@ -61,6 +61,20 @@ enum { A1 = 5, CAUSE = 13 };
 #define CAUSE_SYSCALL 0x20u   /* ExcCode 8 */
 #define CAUSE_IP2     0x400u
 
+/* COP0 reads now invalidate a stale PGXP destination shadow. Observe that
+ * seam explicitly; every unrelated runtime seam remains an abort stub. */
+static unsigned s_pgxp_calls;
+static uint32_t s_pgxp_instr, s_pgxp_result;
+void psx_pgxp_alu(CPUState *cpu, uint32_t instr, uint32_t result,
+                  uint32_t s1, uint32_t s2) {
+    ++s_pgxp_calls;
+    s_pgxp_instr = instr;
+    s_pgxp_result = result;
+    CHECK(cpu == s_device_cpu, "PGXP received the wrong CPU");
+    CHECK(result == cpu->gpr[A1], "PGXP did not receive the written GPR");
+    CHECK(s1 == 0u && s2 == 0u, "COP0 read inherited ALU source provenance");
+}
+
 /* Runs `insn` (MFC0/CFC0 a1,$13) once and returns what it read. The device
  * deadline falls on the instruction's own cycle, or never. */
 static uint32_t read_cause(uint32_t insn, int due_on_own_cycle, int raised_before) {
@@ -72,6 +86,7 @@ static uint32_t read_cause(uint32_t insn, int due_on_own_cycle, int raised_befor
     cpu.cop0[CAUSE] = CAUSE_SYSCALL | (raised_before ? CAUSE_IP2 : 0u);
     s_device_cpu = &cpu;
     s_services = 0;
+    s_pgxp_calls = 0;
     psx_cycle_count = 100000u;
     psx_next_service_cycle = due_on_own_cycle ? psx_cycle_count + 1u : UINT64_MAX;
 
@@ -86,6 +101,10 @@ static uint32_t read_cause(uint32_t insn, int due_on_own_cycle, int raised_befor
     CHECK(cpu.cop0[CAUSE] == cause_after,
           "0x%08X: CAUSE after the instruction is 0x%08X", (unsigned)insn,
           (unsigned)cpu.cop0[CAUSE]);
+    CHECK(s_pgxp_calls == 1u && s_pgxp_instr == insn &&
+          s_pgxp_result == cpu.gpr[A1],
+          "0x%08X: missing/duplicate/wrong COP0 destination invalidation",
+          (unsigned)insn);
     return cpu.gpr[A1];
 }
 

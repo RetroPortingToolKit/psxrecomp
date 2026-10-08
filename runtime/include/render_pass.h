@@ -48,6 +48,8 @@ typedef struct RenderPassStats {
     uint64_t argument_refused, status_refused, begin_refused, checkpoint_refused;
     RenderPassFailure last_failure; /* latched across successes; session reset clears */
     uint64_t passes;          /* passes run to completion and presented */
+    uint64_t local_views;     /* psx_mod_render_local_view images committed */
+    uint64_t local_attempts;  /* psx_mod_render_local_view calls */
     uint64_t aborted;         /* passes rolled back by a fault */
     uint64_t discarded;       /* passes whose plugin declined the image */
     uint64_t watchdog;        /* of which: guest-cycle watchdog overruns */

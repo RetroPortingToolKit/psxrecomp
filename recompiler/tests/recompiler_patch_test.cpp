@@ -157,6 +157,17 @@ p2_mode = "digital"
               controller_defaults_config.runtime.default_p2_mode ==
                   PSXRecompV4::PAD_MODE_DIGITAL,
           "parser preserves per-game controller device defaults");
+    check(!controller_defaults_config.runtime.has_multitap_default,
+          "offline multitap keeps the framework default when unset");
+
+    const auto no_multitap = write_config(root, "no-multitap", R"toml(
+[controller]
+multitap = false
+)toml");
+    const auto no_multitap_config = PSXRecompV4::load_game_config(no_multitap);
+    check(no_multitap_config.runtime.has_multitap_default &&
+              !no_multitap_config.runtime.multitap_default,
+          "parser preserves a title's offline multitap default");
 
     const auto netplay_viewport = write_config(root, "netplay-viewport", R"toml(
 [runtime]

@@ -17,14 +17,15 @@
  * halves); the GPU asks for the precise position of a GP0 vertex word by the
  * packet's RAM address.
  *
- * The single safety invariant: a shadow is only ever BELIEVED after
- * validation against the actual guest word it claims to describe. Anything
- * that writes guest state without a hook (DMA, memcpy loaders, un-hooked
- * instructions) simply leaves a stale shadow behind, and the next validation
- * drops it. We never model side effects — overwrite and validate only. The
- * one accepted hole (shared with the reference implementations): an untracked
- * writer storing the byte-identical word keeps the shadow alive, which is
- * harmless because the position it describes is still that word.
+ * The safety invariant: a shadow is only ever BELIEVED after validation
+ * against the actual guest word it claims to describe, and only while no
+ * writer it did not see has replaced that word. A matching word alone does
+ * not prove provenance: two projections that round to the same integer X/Y
+ * carry different fractions and depths. So every CPU write of a GPR or
+ * memory word runs a hook that carries or resets its shadow, and DMA / host
+ * stores drop the shadow of each word they touch (pgxp_invalidate_word, from
+ * memory.c). Validation still catches any other writer that changes the
+ * word. We never model side effects — overwrite, invalidate, validate.
  *
  * Everything here is host-only and visual-only: guest-visible state is never
  * read back from shadows, shadows are dropped on savestate/rewind, and the
@@ -573,6 +574,12 @@ static inline void pv_reset(PGXPValue *pv, uint32_t value) {
 }
 
 static inline void pv_kill(PGXPValue *pv) { pv->gen = 0; }
+
+extern "C" void pgxp_invalidate_word(uint32_t addr) {
+    if (!g_pgxp_active) return;
+    PGXPValue *pv = pgxp_ptr_w(addr);       /* a render pass rolls it back */
+    if (pv) pv_kill(pv);
+}
 
 /* ------------------------------------------------------------------------- */
 /* Instruction field helpers                                                  */
@@ -1345,7 +1352,7 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         }
         return;
     }
-    default:                                   /* SLTI/SLTIU: not a vertex    */
+    default:                                   /* SLTI/SLTIU, MFC0/CFC0: reset */
         pv_reset(dst, result);
         return;
     }
@@ -1723,7 +1730,11 @@ static int pgxp_get_precise_vertex_impl(uint32_t addr, uint32_t packet_word,
                                         int32_t int_x, int32_t int_y,
                                         int32_t *x16, int32_t *y16,
                                         uint16_t *sz, int probe) {
-    s_stats.lookups++;
+    /* A probe asks the same question without recording it (the rectangle
+     * shortcut runs one per corner before drawing): it skips every counter
+     * instead of copying the whole statistics record around the call. */
+    const int count = !probe;
+    if (count) s_stats.lookups++;
 
     int32_t px = 0, py = 0;
     uint16_t pz = 0;
@@ -1740,7 +1751,7 @@ static int pgxp_get_precise_vertex_impl(uint32_t addr, uint32_t packet_word,
                 pz = (pv->flags & PGXP_F_VZ) ? pv->z : 0;
                 pflags = pv->flags;
                 have = PGXP_SRC_DATAFLOW;
-            } else {
+            } else if (count) {
                 s_stats.value_mismatch++;
             }
         }
@@ -1767,25 +1778,27 @@ static int pgxp_get_precise_vertex_impl(uint32_t addr, uint32_t packet_word,
          * tolerance clamp. */
         const int why = pgxp_accept(px, py, int_x, int_y, packet_word, pflags);
         if (why == 1) {
-            s_stats.trunc_reject++;
+            if (count) s_stats.trunc_reject++;
             have = 0;
         } else if (why == 2) {
-            s_stats.tolerance_reject++;
+            if (count) s_stats.tolerance_reject++;
             have = 0;
         }
     }
 
     if (!have) {
-        s_stats.native++;
+        if (count) s_stats.native++;
         *x16 = int_x << 16;
         *y16 = int_y << 16;
         *sz = 0;
         return PGXP_SRC_NATIVE;
     }
 
-    if (have == PGXP_SRC_DATAFLOW) s_stats.dataflow_hit++;
-    else                           s_stats.fallback_hit++;
-    if (pz != 0) s_stats.w_valid++;
+    if (count) {
+        if (have == PGXP_SRC_DATAFLOW) s_stats.dataflow_hit++;
+        else                           s_stats.fallback_hit++;
+        if (pz != 0) s_stats.w_valid++;
+    }
     *x16 = px;
     *y16 = py;
     *sz = pz;
@@ -1802,13 +1815,10 @@ extern "C" int pgxp_get_precise_vertex(uint32_t addr, uint32_t packet_word,
 
 extern "C" int pgxp_probe_precise_vertex(uint32_t addr, uint32_t packet_word,
                                          int32_t int_x, int32_t int_y) {
-    const PGXPStats saved = s_stats;
     int32_t x16, y16;
     uint16_t sz;
-    const int src = pgxp_get_precise_vertex_impl(addr, packet_word, int_x, int_y,
-                                                 &x16, &y16, &sz, 1);
-    s_stats = saved;
-    return src;
+    return pgxp_get_precise_vertex_impl(addr, packet_word, int_x, int_y,
+                                        &x16, &y16, &sz, 1);
 }
 
 /* ------------------------------------------------------------------------- */

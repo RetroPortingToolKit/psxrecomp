@@ -17,6 +17,8 @@
 #endif
 #include <time.h>
 #include "debug_server.h"
+#include "host_launch_timing.h"
+#include "host_sampler.h"
 #include "psx_video_timing.h"
 #include "psx_netplay.h"
 #include "psx_bss.h"
@@ -35,6 +37,7 @@
 #endif
 #include "dma.h"
 #include "gpu.h"
+#include "gpu_hd_textures.h"
 #include "gpu_render.h"   /* gr_scale + gr_render_display_hires (screenshot_hires) */
 #include "present_ring.h"
 #include "gpu_timeline.h"
@@ -62,6 +65,7 @@
 #include "guest_tty.h"
 #include "frame_fingerprint.h"
 #include "psx_segment_miss.h"
+#include "psx_rewind.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -283,11 +287,18 @@ static uint64_t s_dirty_break_hits = 0;
 /* ---- Input override ---- */
 static int s_input_override = -1;
 static int s_input_frames   = 0;
+/* Port 2 (set_input / press / clear_input "port":2): digital buttons only,
+ * for driving two-player modes headless. */
+static int s_input_override_p2 = -1;
+static int s_input_frames_p2   = 0;
 /* Optional analog-stick override (set_input lx/ly/rx/ry, 0..255, 0x80 =
  * centre). Lets injected input drive analog-mode movement; consumed by the
  * pad sampler alongside the button word. */
 static int     s_axis_override = 0;
 static uint8_t s_axis_st[4]    = { 0x80, 0x80, 0x80, 0x80 };
+/* Test-only controller identity override for set_input/press. -1 follows the
+ * selected host device/config; 0/1/2 force digital/DualShock/JogCon. */
+static int s_pad_type_override = -1;
 
 /*
  * Exact guest-VBlank input route. A client queues run-length encoded digital
@@ -5399,6 +5410,68 @@ static void handle_geom_correction(int id, const char *json)
              (unsigned long long)ps.word_no_z);
 }
 
+/* host_profile — histogram of the always-on host CPU sampler (host_sampler.c)
+ * over a window of the ring: {"cmd":"host_profile","since":SEQ} or
+ * {"cmd":"host_profile","frames":N} (the last N guest frames), optional
+ * "pass":1 (only samples inside render passes) / "pass":0 (outside), "top":K.
+ * Addresses are executable-relative; tools/host_profile.py names them. Take
+ * "seq" from one reply as "since" of the next to profile what ran between. */
+static void handle_host_profile(int id, const char *json)
+{
+    enum { MAXB = 4096 };
+    static uint64_t rvas[MAXB];
+    static uint32_t counts[MAXB];
+    const uint64_t seq = host_sampler_seq();
+    const uint64_t oldest = seq > HOST_SAMPLER_CAP ? seq - HOST_SAMPLER_CAP : 0;
+    int since = json_get_int(json, "since", -1);
+    const int frames = json_get_int(json, "frames", -1);
+    const int pass = json_get_int(json, "pass", -1);
+    int top = json_get_int(json, "top", 60);
+    if (top < 1) top = 1;
+    if (top > 400) top = 400;
+    uint64_t from = since >= 0 ? (uint64_t)since : oldest;
+    if (from < oldest) from = oldest;
+    uint32_t frame_lo = 0;
+    if (frames > 0) frame_lo = (uint32_t)s_frame_count - (uint32_t)frames;
+    int nb = 0;
+    uint64_t total = 0, dropped = 0;
+    for (uint64_t i = from; i < seq; i++) {
+        HostSample smp;
+        if (!host_sampler_get(i, &smp)) continue;
+        if (frames > 0 && (int32_t)(smp.frame - frame_lo) < 0) continue;
+        if (pass >= 0 && (int)smp.in_pass != pass) continue;
+        total++;
+        int b = 0;
+        while (b < nb && rvas[b] != smp.rva) b++;
+        if (b == nb) {
+            if (nb == MAXB) { dropped++; continue; }
+            rvas[nb] = smp.rva; counts[nb] = 0; nb++;
+        }
+        counts[b]++;
+    }
+    size_t cap = 256 + (size_t)top * 48;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { send_err(id, "oom"); return; }
+    size_t n = (size_t)snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"supported\":%d,\"seq\":%llu,"
+        "\"image_base\":\"0x%llX\",\"samples\":%llu,\"unbinned\":%llu,\"top\":[",
+        id, host_sampler_supported(), (unsigned long long)seq,
+        (unsigned long long)host_sampler_image_base(),
+        (unsigned long long)total, (unsigned long long)dropped);
+    for (int k = 0; k < top; k++) {
+        int best = -1;
+        for (int b = 0; b < nb; b++)
+            if (counts[b] && (best < 0 || counts[b] > counts[best])) best = b;
+        if (best < 0) break;
+        n += (size_t)snprintf(buf + n, cap - n, "%s[\"0x%llX\",%u]", k ? "," : "",
+                              (unsigned long long)rvas[best], counts[best]);
+        counts[best] = 0;
+    }
+    snprintf(buf + n, cap - n, "]}");
+    send_fmt("%s", buf);
+    free(buf);
+}
+
 /* pgxp_shadow — read PGXP shadow slots: {"cmd":"pgxp_shadow","addr":A,
  * "count":N} walks N guest words from A (RAM / scratchpad); "space":"gpr" or
  * "gte" with "index"/"count" reads register shadows instead. Each slot: the
@@ -5684,7 +5757,11 @@ static void handle_gpu_state(int id, const char *json)
              "\"outside_reject\":%llu,\"queue_reject\":%llu,"
              "\"queue_highwater\":[%u,%u,%u]},"
              "\"terrain_angle\":{\"calls\":%llu,\"identity_43\":%llu,"
-             "\"max_vanilla\":%u,\"max_widened\":%u}}}",
+             "\"max_vanilla\":%u,\"max_widened\":%u},"
+             "\"backdrop\":{\"veto\":%d,\"eval_frame\":%u,\"rects\":%u,"
+             "\"full\":%d,\"short\":%d,\"x\":[%d,%d],\"reveal\":%d,"
+             "\"canon_pct\":%u,\"left_pct\":%u,\"right_pct\":%u,"
+             "\"last_short\":%u,\"evaluations\":%llu,\"short_frames\":%llu}}}",
              id, di.display_x, di.display_y,
              di.width, di.height,
              di.screen_offset_y,
@@ -5726,7 +5803,12 @@ static void handle_gpu_state(int id, const char *json)
              ws.aspect_cone_queue_highwater[2],
              (unsigned long long)ws.angle_calls,
              (unsigned long long)ws.angle_43_identity,
-             ws.angle_max_vanilla, ws.angle_max_widened);
+             ws.angle_max_vanilla, ws.angle_max_widened,
+             ws.bd_veto, ws.bd_eval_frame, ws.bd_rects,
+             ws.bd_full, ws.bd_short, ws.bd_min_x, ws.bd_max_x, ws.bd_reveal,
+             ws.bd_canon_pct, ws.bd_left_pct, ws.bd_right_pct,
+             ws.bd_last_short, (unsigned long long)ws.bd_evaluations,
+             (unsigned long long)ws.bd_short_frames);
 }
 
 static void handle_ws_aspect_cone_site(int id, const char *json)
@@ -7947,12 +8029,55 @@ static void handle_unwatch(int id, const char *json)
     send_err(id, "watchpoint not found");
 }
 
+static int s_trigger_override;
+static uint32_t s_trigger_lt, s_trigger_rt;
+/* Host-pad layer (set_input {"layer":"host"}): a virtual P1 gamepad that
+ * feeds stage 1 of the normal offline input path (and host shortcut
+ * polling) instead of replacing it, so title transforms, direct shortcuts
+ * and trigger values see it like a physical pad. Persistent until
+ * clear_input. A plain override still wins while armed. */
+static int s_host_layer = 0;
+static uint16_t s_host_buttons = 0xFFFF;
+static uint8_t s_host_axes[4] = { 0x80, 0x80, 0x80, 0x80 };
+static uint8_t s_host_lt = 0, s_host_rt = 0;
+
+static uint8_t clamp_u8_arg(int v, uint8_t dflt) {
+    if (v < 0) return dflt;
+    return (uint8_t)(v > 255 ? 255 : v);
+}
+
 static void handle_set_input(int id, const char *json)
 {
     char val_str[32];
+    char layer[16];
+    const int pad_type = json_get_int(json, "pad_type", -1);
+    if (json_get_str(json, "layer", layer, sizeof(layer)) &&
+        strcmp(layer, "host") == 0) {
+        s_host_buttons = json_get_str(json, "buttons", val_str, sizeof(val_str))
+            ? (uint16_t)hex_to_u32(val_str) : (uint16_t)0xFFFF;
+        s_host_axes[0] = clamp_u8_arg(json_get_int(json, "lx", -1), 0x80);
+        s_host_axes[1] = clamp_u8_arg(json_get_int(json, "ly", -1), 0x80);
+        s_host_axes[2] = clamp_u8_arg(json_get_int(json, "rx", -1), 0x80);
+        s_host_axes[3] = clamp_u8_arg(json_get_int(json, "ry", -1), 0x80);
+        s_host_lt = clamp_u8_arg(json_get_int(json, "lt", -1), 0);
+        s_host_rt = clamp_u8_arg(json_get_int(json, "rt", -1), 0);
+        s_host_layer = 1;
+        send_ok(id);
+        return;
+    }
     if (!json_get_str(json, "buttons", val_str, sizeof(val_str))) {
         send_err(id, "missing buttons"); return;
     }
+    if (pad_type < -1 || pad_type > 2) {
+        send_err(id, "pad_type must be -1 (automatic), 0, 1, or 2"); return;
+    }
+    if (json_get_int(json, "port", 1) == 2) {
+        s_input_override_p2 = (int)(hex_to_u32(val_str) & 0xFFFFu);
+        s_input_frames_p2 = 0;
+        send_ok(id);
+        return;
+    }
+    s_pad_type_override = pad_type;
     s_input_override = (int)hex_to_u32(val_str);
     s_input_frames = 0;
     /* Optional stick override: any of lx/ly/rx/ry (0..255) arms it; omitted
@@ -7964,14 +8089,41 @@ static void handle_set_input(int id, const char *json)
         int v = ax[i] < 0 ? 0x80 : (ax[i] > 255 ? 255 : ax[i]);
         s_axis_st[i] = (uint8_t)v;
     }
+    /* Optional host triggers lt/rt (0..255) for a title pad transform, as a
+     * gamepad's analog triggers would give it. Absent -> released. */
+    {
+        const int lt = json_get_int(json, "lt", -1), rt = json_get_int(json, "rt", -1);
+        s_trigger_override = lt >= 0 || rt >= 0;
+        s_trigger_lt = (uint32_t)(lt < 0 ? 0 : (lt > 255 ? 255 : lt));
+        s_trigger_rt = (uint32_t)(rt < 0 ? 0 : (rt > 255 ? 255 : rt));
+    }
     send_ok(id);
+}
+
+int debug_server_get_trigger_override(uint32_t *lt, uint32_t *rt)
+{
+    if (!s_trigger_override) return 0;
+    *lt = s_trigger_lt;
+    *rt = s_trigger_rt;
+    return 1;
 }
 
 static void handle_press(int id, const char *json)
 {
     int buttons = json_get_int(json, "buttons", -1);
     int frames  = json_get_int(json, "frames", 2);
+    const int pad_type = json_get_int(json, "pad_type", -1);
     if (buttons < 0) { send_err(id, "missing buttons"); return; }
+    if (pad_type < -1 || pad_type > 2) {
+        send_err(id, "pad_type must be -1 (automatic), 0, 1, or 2"); return;
+    }
+    if (json_get_int(json, "port", 1) == 2) {
+        s_input_override_p2 = buttons & 0xFFFF;
+        s_input_frames_p2   = frames;
+        send_ok(id);
+        return;
+    }
+    s_pad_type_override = pad_type;
     s_input_override = buttons;
     s_input_frames   = frames;
     int ax[4] = { json_get_int(json, "lx", -1), json_get_int(json, "ly", -1),
@@ -7991,39 +8143,79 @@ extern uint16_t sio_get_pad_buttons_slot(int slot);
 extern int sio_get_pad_connected(int slot);
 extern int sio_get_pad_analog(int slot);
 extern void sio_get_pad_sticks(int slot, uint8_t out[4]);
+extern void sio_get_pad_negcon(int slot, uint8_t out[3]);
+extern int sio_get_pad_mode_locked(int slot);
+/* Local Rewind: enabled, panel open, title block (psx_mod_set_rewind_blocked)
+ * and the snapshots held, so scripted runs can check capture and opening. */
+static void handle_rewind_status(int id, const char *json)
+{
+    (void)json;
+    send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%s,\"open\":%s,"
+             "\"title_blocked\":%s,\"snaps\":%u}\n",
+             id, psx_rewind_enabled() ? "true" : "false",
+             psx_rewind_is_open() ? "true" : "false",
+             psx_rewind_title_blocked() ? "true" : "false",
+             (unsigned)psx_rewind_snap_count());
+}
+
 static void handle_pad_status(int id, const char *json)
 {
     (void)json;
     uint16_t pad0 = sio_get_pad_buttons_slot(0);
     uint16_t pad1 = sio_get_pad_buttons_slot(1);
-    uint8_t sticks0[4], sticks1[4];
+    uint8_t sticks0[4], sticks1[4], neg0[3], neg1[3];
     sio_get_pad_sticks(0, sticks0);
     sio_get_pad_sticks(1, sticks1);
+    sio_get_pad_negcon(0, neg0);
+    sio_get_pad_negcon(1, neg1);
     send_fmt("{\"id\":%d,\"ok\":true,\"pad\":\"0x%04X\","
-             "\"slot0\":{\"buttons\":\"0x%04X\",\"connected\":%s,\"analog\":%s,\"sticks\":[%u,%u,%u,%u]},"
-             "\"slot1\":{\"buttons\":\"0x%04X\",\"connected\":%s,\"analog\":%s,\"sticks\":[%u,%u,%u,%u]},"
-             "\"override\":%d,\"override_frames\":%d,"
-             "\"override_axes\":[%u,%u,%u,%u],\"override_axes_valid\":%s}\n",
+             "\"slot0\":{\"buttons\":\"0x%04X\",\"connected\":%s,\"analog\":%s,\"type\":%d,\"sticks\":[%u,%u,%u,%u],"
+             "\"negcon\":[%u,%u,%u],\"mode_locked\":%s},"
+             "\"slot1\":{\"buttons\":\"0x%04X\",\"connected\":%s,\"analog\":%s,\"type\":%d,\"sticks\":[%u,%u,%u,%u],"
+             "\"negcon\":[%u,%u,%u],\"mode_locked\":%s},"
+             "\"override\":%d,\"override_frames\":%d,\"override_pad_type\":%d,"
+             "\"override_p2\":%d,\"override_p2_frames\":%d,"
+             "\"override_axes\":[%u,%u,%u,%u],\"override_axes_valid\":%s,"
+             "\"host_layer\":%s,\"host_buttons\":\"0x%04X\",\"host_axes\":[%u,%u,%u,%u],"
+             "\"host_lt\":%u,\"host_rt\":%u}\n",
              id, pad0,
              pad0, sio_get_pad_connected(0) ? "true" : "false", sio_get_pad_analog(0) ? "true" : "false",
+             sio_get_pad_analog(0),
              sticks0[0], sticks0[1], sticks0[2], sticks0[3],
+             neg0[0], neg0[1], neg0[2], sio_get_pad_mode_locked(0) ? "true" : "false",
              pad1, sio_get_pad_connected(1) ? "true" : "false", sio_get_pad_analog(1) ? "true" : "false",
+             sio_get_pad_analog(1),
              sticks1[0], sticks1[1], sticks1[2], sticks1[3],
-             s_input_override, s_input_frames,
+             neg1[0], neg1[1], neg1[2], sio_get_pad_mode_locked(1) ? "true" : "false",
+             s_input_override, s_input_frames, s_pad_type_override,
+             s_input_override_p2, s_input_frames_p2,
              s_axis_st[0], s_axis_st[1], s_axis_st[2], s_axis_st[3],
-             s_axis_override ? "true" : "false");
+             s_axis_override ? "true" : "false",
+             s_host_layer ? "true" : "false", s_host_buttons,
+             s_host_axes[0], s_host_axes[1], s_host_axes[2], s_host_axes[3],
+             s_host_lt, s_host_rt);
 }
 
 static void handle_clear_input(int id, const char *json)
 {
-    (void)json;
+    const int port = json_get_int(json, "port", 0);   /* 0 = both */
+    if (port == 0 || port == 2) {
+        s_input_override_p2 = -1;
+        s_input_frames_p2 = 0;
+    }
+    if (port == 2) { send_ok(id); return; }
     s_input_route_active = 0;
     s_input_route_index = 0;
     s_input_route_remaining = 0;
     s_input_override = -1;
     s_input_frames   = 0;
     s_axis_override  = 0;
+    s_pad_type_override = -1;
     s_axis_st[0] = s_axis_st[1] = s_axis_st[2] = s_axis_st[3] = 0x80;
+    s_host_layer = 0;
+    s_host_buttons = 0xFFFF;
+    s_host_axes[0] = s_host_axes[1] = s_host_axes[2] = s_host_axes[3] = 0x80;
+    s_host_lt = s_host_rt = 0;
     send_ok(id);
 }
 
@@ -8069,6 +8261,7 @@ static void handle_input_route_start(int id, const char *json)
     s_input_override = -1;
     s_input_frames = 0;
     s_axis_override = 0;
+    s_pad_type_override = -1;
     s_input_route_index = 0;
     s_input_route_remaining = s_input_route[0].frames;
     s_input_route_active = 1;
@@ -8123,6 +8316,53 @@ static void handle_netplay_status(int id, const char *json)
           psx_netplay_resolved_through(), stall, lead, desync,
           bad_tick, local_hash, remote_hash);
     debug_server_send_line(out);
+}
+
+/* Startup host work recorded before TCP was initialized; always-on, read-only.
+ * Completion order is not start order. Parents include their children. */
+static void handle_host_launch_timings(int id, const char *json)
+{
+    int requested = json_get_int(json, "count", HOST_LAUNCH_TIMING_CAPACITY);
+    if (requested < 1) requested = 1;
+    if (requested > (int)HOST_LAUNCH_TIMING_CAPACITY)
+        requested = HOST_LAUNCH_TIMING_CAPACITY;
+    HostLaunchTimingEvent *events = (HostLaunchTimingEvent *)malloc(
+        (size_t)requested * sizeof(*events));
+    if (!events) { send_err(id, "alloc failed"); return; }
+    uint64_t total = 0, overwritten = 0;
+    uint32_t n = host_launch_timing_snapshot(events, (uint32_t)requested,
+                                            &total, &overwritten);
+    /* Two labels may each expand sixfold when JSON-escaped. */
+    size_t cap = 512u + (size_t)n * 1536u;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { free(events); send_err(id, "alloc failed"); return; }
+    size_t off = (size_t)snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"clock\":\"steady_us\","
+        "\"nested_durations_overlap\":true,\"capacity\":%u,"
+        "\"total\":%llu,\"overwritten\":%llu,\"entries\":[",
+        id, HOST_LAUNCH_TIMING_CAPACITY, (unsigned long long)total,
+        (unsigned long long)overwritten);
+    for (uint32_t i = 0; i < n; ++i) {
+        const HostLaunchTimingEvent *e = &events[i];
+        char package[HOST_LAUNCH_TIMING_LABEL * 6u + 1u];
+        char feature[HOST_LAUNCH_TIMING_LABEL * 6u + 1u];
+        json_escape_string(package, sizeof(package), e->package_id);
+        json_escape_string(feature, sizeof(feature), e->feature_id);
+        off += (size_t)snprintf(buf + off, cap - off,
+            "%s{\"seq\":%llu,\"scope_id\":%llu,\"parent_id\":%llu,"
+            "\"stage\":\"%s\",\"start_us\":%llu,\"duration_us\":%llu,"
+            "\"ok\":%u,\"package\":\"%s\",\"feature\":\"%s\","
+            "\"labels_truncated\":%u}",
+            i ? "," : "", (unsigned long long)e->seq,
+            (unsigned long long)e->scope_id, (unsigned long long)e->parent_id,
+            host_launch_timing_stage_name(e->stage),
+            (unsigned long long)e->start_us, (unsigned long long)e->duration_us,
+            e->ok, package, feature, e->labels_truncated);
+    }
+    snprintf(buf + off, cap - off, "]}");
+    debug_server_send_line(buf);
+    free(buf);
+    free(events);
 }
 
 static void handle_mod_counters(int id, const char *json)
@@ -8407,9 +8647,11 @@ static void handle_render_pass_stats(int id, const char *json)
 {
     (void)json;
     RenderPassStats st;
+    GLRenderPassPlanDiag admission;
     uint64_t gd[10], image_bytes = 0;
     uint32_t image_textures;
     char failure_json[2048];
+    char admission_json[768];
     char abort_detail_json[sizeof st.last_abort_detail * 6 + 1];
     DirtyRamSpanFailure sf;
     render_pass_get_stats(&st);
@@ -8443,6 +8685,18 @@ static void handle_render_pass_stats(int id, const char *json)
                  b->fbo_status, b->gl_error_before, b->gl_error);
     }
     gl_renderer_pass_diag(gd);
+    gl_renderer_pass_plan_diag(&admission);
+    snprintf(admission_json, sizeof admission_json,
+             "{\"plans\":%llu,\"frame\":%llu,\"zero_credit_refusals\":%llu,"
+             "\"idle_ms\":%.3f,\"present_ms\":%.3f,\"prior_pass_ms\":%.3f,"
+             "\"present_reserve_ms\":%.3f,\"spare_ms\":%.3f,\"frame_ms\":%.3f,"
+             "\"cost_ms\":%.3f,\"budget_ms\":%.3f,\"wanted\":%u,\"planned\":%u}",
+             (unsigned long long)admission.plans,
+             (unsigned long long)admission.frame,
+             (unsigned long long)admission.zero_credit_refusals,
+             admission.idle_ms, admission.present_ms, admission.prior_pass_ms,
+             admission.present_reserve_ms, admission.spare_ms, admission.frame_ms,
+             admission.cost_ms, admission.budget_ms, admission.wanted, admission.planned);
     image_textures = gl_renderer_pass_image_textures(&image_bytes);
     send_fmt("{\"id\":%d,\"ok\":true,\"plans\":%llu,\"planned\":%llu,"
              "\"wanted\":%llu,\"refused\":%llu,\"passes\":%llu,"
@@ -8466,7 +8720,9 @@ static void handle_render_pass_stats(int id, const char *json)
              "\"argument_refused\":%llu,\"status_refused\":%llu,"
              "\"begin_refused\":%llu,\"checkpoint_refused\":%llu,"
              "\"spans\":%llu,\"span_failures\":%llu,"
-             "\"last_failure\":%s,\"last_abort_detail\":\"%s\","
+             "\"local_views\":%llu,\"local_attempts\":%llu,"
+             "\"local_status\":%u,"
+             "\"admission\":%s,\"last_failure\":%s,\"last_abort_detail\":\"%s\","
              "\"span_fail\":{\"reason\":%u,\"pc\":\"0x%08X\",\"start\":\"0x%08X\","
              "\"stop\":\"0x%08X\",\"ra\":\"0x%08X\",\"after\":\"0x%08X\","
              "\"insns\":%llu}}",
@@ -8501,7 +8757,10 @@ static void handle_render_pass_stats(int id, const char *json)
              (unsigned long long)st.argument_refused, (unsigned long long)st.status_refused,
              (unsigned long long)st.begin_refused, (unsigned long long)st.checkpoint_refused,
              (unsigned long long)st.spans, (unsigned long long)st.span_failures,
-             failure_json, abort_detail_json,
+             (unsigned long long)st.local_views,
+             (unsigned long long)st.local_attempts,
+             psx_mod_render_local_view_status(),
+             admission_json, failure_json, abort_detail_json,
              (unsigned)sf.reason, (unsigned)sf.pc, (unsigned)sf.start_pc,
              (unsigned)sf.stop_pc, (unsigned)sf.ra, (unsigned)sf.after,
              (unsigned long long)sf.insns);
@@ -9593,11 +9852,13 @@ static void disp_ring_capture(void)
      * just the display rect + one small readback); CPU VRAM otherwise (the
      * software backend's authoritative surface). Runs on the present thread,
      * where the GL context is current. */
-    extern int gl_renderer_fbo_peek(int x, int y, int w_, int h_, uint16_t *out);
+    /* Deferred: with the render thread on, the readback is recorded at this
+     * point of the command stream and filled in by the render thread (ring
+     * readers sync first), instead of a per-frame sync point. */
     int got = 0;
     if (di.display_x + w <= 1024 && di.display_y + h <= 512)
-        got = gl_renderer_fbo_peek((int)di.display_x, (int)di.display_y,
-                                   (int)w, (int)h, e->px);
+        got = gl_renderer_fbo_peek_deferred((int)di.display_x, (int)di.display_y,
+                                            (int)w, (int)h, e->px);
     if (!got) {
         for (uint32_t y = 0; y < h; y++)
             for (uint32_t x = 0; x < w; x++)
@@ -9605,7 +9866,7 @@ static void disp_ring_capture(void)
                     gpu_vram_peek((int)(di.display_x + x), (int)(di.display_y + y));
     }
     /* Full-VRAM aux capture (same GL-truth/CPU-truth split as the display). */
-    if (!gl_renderer_fbo_peek(0, 0, 1024, 512, e->vram)) {
+    if (!gl_renderer_fbo_peek_deferred(0, 0, 1024, 512, e->vram)) {
         const uint16_t *v = gpu_get_vram();
         memcpy(e->vram, v, (size_t)1024 * 512 * sizeof(uint16_t));
     }
@@ -9616,6 +9877,7 @@ static void disp_ring_capture(void)
  * (1024x512 row-major). */
 static void handle_display_ring_aux(int id, const char *json)
 {
+    gl_renderer_render_thread_sync("display_ring");
     int f = json_get_int(json, "frame", -1);
     if (f < 0) { send_err(id, "missing frame"); return; }
     char path[512];
@@ -9637,6 +9899,7 @@ static void handle_display_ring_aux(int id, const char *json)
 
 static void handle_display_ring_stats(int id, const char *json)
 {
+    gl_renderer_render_thread_sync("display_ring");
     (void)json;
     uint32_t oldest = 0, newest = 0;
     int n = 0;
@@ -9654,6 +9917,7 @@ static void handle_display_ring_stats(int id, const char *json)
 
 static void handle_display_ring_get(int id, const char *json)
 {
+    gl_renderer_render_thread_sync("display_ring");
     int f = json_get_int(json, "frame", -1);
     if (f < 0) { send_err(id, "missing frame"); return; }
     char path[512];
@@ -9840,6 +10104,134 @@ encode:;
  * surface was actually allocated at (after the driver/memory clamp), the
  * driver limit, the hr surface size, and the window's point and pixel sizes
  * (the HiDPI drawable). Everything a preset needs to be verified against. */
+static void handle_hd_textures(int id, const char *json)
+{
+    GpuHdTextureDiag info;
+    gpu_hd_textures_get_diag(&info);
+    /* Development validation controls run at the emulation-thread boundary.
+     * The normal owner workflow remains the Mods controls applied on Play. */
+    const int replacements = json_get_int(json, "replacements", -1);
+    const int dump = json_get_int(json, "dump", -1);
+    const int reload = json_get_int(json, "reload", 0);
+    if (replacements != -1 || dump != -1 || reload) {
+        if ((replacements < -1 || replacements > 1) || (dump < -1 || dump > 1)) {
+            send_err(id, "replacements and dump must be 0 or 1"); return;
+        }
+        if (!info.root || !info.root[0]) {
+            send_err(id, "no texture pack is configured; enable the mod and click Play"); return;
+        }
+        char error[512] = "";
+        if (replacements != -1) {
+            if (!gpu_hd_textures_configure(info.root, replacements,
+                    dump == -1 ? info.dump : dump, error, sizeof(error))) {
+                send_err(id, error); return;
+            }
+        } else {
+            if (dump != -1) gpu_hd_textures_set_dump_enabled(dump);
+            if (reload && !gpu_hd_textures_reload(error, sizeof(error))) {
+                send_err(id, error); return;
+            }
+        }
+        gpu_hd_textures_get_diag(&info);
+    }
+    char root_json[8192];
+    json_escape_string(root_json, sizeof(root_json), info.root ? info.root : "");
+    char diagnostic_json[4096];
+    json_escape_string(diagnostic_json, sizeof(diagnostic_json),
+                       info.diagnostic ? info.diagnostic : "");
+    const int backend = gr_backend();
+    send_fmt("{\"id\":%d,\"ok\":true,\"root\":\"%s\",\"active\":%s,"
+             "\"replacements\":%s,\"dump\":%s,\"format\":%d,"
+             "\"backend\":\"%s\",\"replacement_backend_supported\":%s,"
+             "\"replacement_count\":%llu,\"draw_queries\":%llu,"
+             "\"matched_draws\":%llu,\"ready_draws\":%llu,"
+             "\"applied_draws\":%llu,\"dumped_textures\":%llu,"
+             "\"pending_dump_sources\":%llu,\"diagnostic\":\"%s\"}",
+             id, root_json, info.active ? "true" : "false",
+             info.replacements ? "true" : "false", info.dump ? "true" : "false", info.format,
+             backend == GR_BACKEND_OPENGL ? "opengl" :
+                 backend == GR_BACKEND_VULKAN ? "vulkan" : "software",
+             backend == GR_BACKEND_OPENGL ? "true" : "false",
+             (unsigned long long)info.replacement_count,
+             (unsigned long long)info.draw_queries, (unsigned long long)info.matched_draws,
+             (unsigned long long)info.ready_draws, (unsigned long long)info.applied_draws,
+             (unsigned long long)info.dumped_textures,
+             (unsigned long long)info.pending_dump_sources, diagnostic_json);
+}
+
+/* Dynamic internal resolution ([video] dynamic_resolution; docs/TCP_COMMANDS.md).
+ * dynres: the controller's state and the last step. */
+static void handle_dynres(int id, const char *json)
+{
+    (void)json;
+    extern int psx_dynres_status_json(char *out, int cap);
+    char body[2048];
+    psx_dynres_status_json(body, (int)sizeof body);
+    send_fmt("{\"id\":%d,\"ok\":true,%s}", id, body);
+}
+
+/* dynres_force {"scale":N}: pin the level (clamped to floor..ceiling);
+ * {"scale":0} releases the pin. */
+static void handle_dynres_force(int id, const char *json)
+{
+    extern int psx_dynres_force(int scale);
+    int s = json_get_int(json, "scale", -1);
+    if (s < 0) { send_err(id, "need scale (0 releases)"); return; }
+    int l = psx_dynres_force(s);
+    if (l < 0) { send_err(id, "dynamic resolution is not on"); return; }
+    send_fmt("{\"id\":%d,\"ok\":true,\"level\":%d,\"forced\":%d}", id, l, s > 0);
+}
+
+/* FNV-1a over the guest-visible VRAM (the CPU array after a GL sync). */
+static uint64_t dynres_vram_hash(void) {
+    gl_renderer_sync_cpu();
+    uint64_t h = 1469598103934665603ull;
+    for (int y = 0; y < 512; y++)
+        for (int x = 0; x < 1024; x++) {
+            uint16_t p = gpu_vram_peek(x, y);
+            h = (h ^ (p & 0xFF)) * 1099511628211ull;
+            h = (h ^ (p >> 8)) * 1099511628211ull;
+        }
+    return h;
+}
+
+/* dynres_check {"seq":"9,8,3,10"}: hash the guest-visible VRAM, step through
+ * seq inside this one handler (no guest code runs in between), hash after
+ * each step, then step back to the level it started at. Any change is a
+ * mismatch. The regression probe for runtime scale steps. */
+static void handle_dynres_check(int id, const char *json)
+{
+    char seq[256];
+    if (!json_get_str(json, "seq", seq, sizeof(seq))) { send_err(id, "need seq"); return; }
+    GlDynresStats st;
+    gl_renderer_dynres_stats(&st);
+    if (st.ceiling < 2) { send_err(id, "runtime scale steps are not available"); return; }
+    const int start = st.level;
+    const uint64_t h0 = dynres_vram_hash();
+    char out[4096];
+    int pos = 0, bad = 0, first = 1;
+    pos += snprintf(out + pos, sizeof(out) - (size_t)pos, "[");
+    char *save = NULL;
+    for (char *t = strtok_r(seq, ",", &save); t && pos < (int)sizeof(out) - 160;
+         t = strtok_r(NULL, ",", &save)) {
+        int s = atoi(t);
+        int ok = gl_renderer_step_internal_scale_now(s);
+        gl_renderer_dynres_stats(&st);
+        uint64_t h = dynres_vram_hash();
+        if (h != h0) bad++;
+        pos += snprintf(out + pos, sizeof(out) - (size_t)pos,
+                        "%s{\"to\":%d,\"ok\":%d,\"level\":%d,\"same\":%d,\"ms\":%.3f,"
+                        "\"rects\":%d}", first ? "" : ",", s, ok, st.level, h == h0,
+                        st.last_ms, st.last_rects);
+        first = 0;
+    }
+    pos += snprintf(out + pos, sizeof(out) - (size_t)pos, "]");
+    (void)gl_renderer_step_internal_scale_now(start);
+    if (dynres_vram_hash() != h0) bad++;
+    send_fmt("{\"id\":%d,\"ok\":true,\"hash0\":\"%016llx\",\"mismatches\":%d,"
+             "\"restored\":%d,\"steps\":%s}", id, (unsigned long long)h0, bad, start, out);
+}
+
 static void handle_video_info(int id, const char *json)
 {
     (void)json;
@@ -9853,7 +10245,11 @@ static void handle_video_info(int id, const char *json)
     GpuDisplayInfo di;
     gpu_get_display_info(&di);
     int eff = gr_scale();
-    send_fmt("{\"id\":%d,\"ok\":true,\"backend\":\"%s\",\"preset\":%d,"
+    extern void psx_dynres_summary(int *enabled, int *level, int *floor_s, int *ceiling);
+    int dyn_on = 0, dyn_level = 0, dyn_floor = 0, dyn_ceiling = 0;
+    psx_dynres_summary(&dyn_on, &dyn_level, &dyn_floor, &dyn_ceiling);
+    send_fmt("{\"id\":%d,\"ok\":true,\"dynamic\":%d,\"level\":%d,\"floor\":%d,"
+             "\"alloc_scale\":%d,\"backend\":\"%s\",\"preset\":%d,"
              "\"reference_lines\":%d,\"requested_scale\":%d,\"effective_scale\":%d,\"texture_filter\":%d,"
              "\"internal_lines\":%u,\"gl\":%d,\"gl_max_dim\":%d,\"gl_max_scale\":%d,"
              "\"gl_swap_interval\":%d,"
@@ -9865,7 +10261,8 @@ static void handle_video_info(int id, const char *json)
              "\"hires_window_x\":%d,\"hires_window_w\":%d,\"hires_fbo_w\":%d,"
              "\"hires_fbo_h\":%d,\"hires_window_grows\":%d,\"hires_window_tiles\":%d,"
              "\"hires_window_mib\":%d}",
-             id, gr_backend() == GR_BACKEND_OPENGL ? "opengl"
+             id, dyn_on, dyn_level, dyn_floor, gl ? si.alloc_scale : 0,
+             gr_backend() == GR_BACKEND_OPENGL ? "opengl"
                  : gr_backend() == GR_BACKEND_VULKAN ? "vulkan" : "software",
              preset, ref, req, eff, gr_texture_filter(), di.height * (unsigned)(eff > 0 ? eff : 1), gl,
              si.max_dim, si.max_scale, gl_renderer_get_swap_interval(), si.clamp_reason, si.alloc_retries, si.budget_mib,
@@ -10106,8 +10503,34 @@ void debug_server_capture_mark(void)
     s_capture_wide_ok = write_wide_png(s_capture_wide_path, NULL, NULL) == NULL;
     s_capture_frozen = 1;
     gpu_gp0_ring_set_frozen(1);
+    gl_renderer_render_thread_sync("capture_mark");
     present_image_ring_set_frozen(1);
     gpu_timeline_set_frozen(1);
+}
+
+/* Render thread ([video] render_thread, docs/RENDER_THREAD.md):
+ *   {"cmd":"render_thread"} -> active, held, frames produced/consumed, presents
+ *   (and stale presents skipped), sync points (acquires) with the most recent
+ *   reasons, backpressure / ring-full waits, render busy/idle time.
+ * Reading it is not a sync point. */
+static void handle_render_thread(int id, const char *json)
+{
+    (void)json;
+    char buf[4096];
+    if (gl_renderer_render_thread_json(buf, sizeof buf) <= 0) buf[0] = 0;
+    send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf[0] ? buf : "\"active\":0");
+}
+
+/* Smooth motion (frame generation; [video] frame_generation, docs/FRAME_GENERATION.md):
+ *   {"cmd":"frame_gen"} -> enabled, active, generated / real presents, flips,
+ *   the last plan (in-between frames per game frame, display slots), costs,
+ *   match counts, breaker. Not a sync point (render-thread counters, racy). */
+static void handle_frame_gen(int id, const char *json)
+{
+    (void)json;
+    char buf[1024];
+    if (gl_renderer_frame_gen_json(buf, sizeof buf) <= 0) buf[0] = 0;
+    send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf[0] ? buf : "\"enabled\":0");
 }
 
 /* Presented-image ring (see present_image_ring.h):
@@ -10116,6 +10539,7 @@ void debug_server_capture_mark(void)
 static void handle_present_image_ring_stats(int id, const char *json)
 {
     (void)json;
+    gl_renderer_render_thread_sync("present_image_ring");  /* render thread writes it */
     uint32_t lo = 0, hi = 0, seq_lo = 0, seq_hi = 0; int n = 0;
     present_image_ring_span(&lo, &hi, &n);
     present_image_ring_sequence_span(&seq_lo, &seq_hi);
@@ -10126,6 +10550,7 @@ static void handle_present_image_ring_stats(int id, const char *json)
 }
 static void handle_present_image_ring_get(int id, const char *json)
 {
+    gl_renderer_render_thread_sync("present_image_ring");
     int f = json_get_int(json, "frame", -1);
     int seq = json_get_int(json, "sequence", -1);
     char path[512];
@@ -10167,6 +10592,7 @@ static void handle_capture_mark(int id, const char *json)
     } else if (strcmp(op, "status")) { send_err(id, "op must be status|mark|release"); return; }
     uint32_t oldest = 0, newest = 0;
     gpu_gp0_ring_frame_span(&oldest, &newest);
+    gl_renderer_render_thread_sync("display_ring");
     uint32_t d_old = UINT32_MAX, d_new = 0;
     for (int i = 0; i < DISP_RING_CAP; i++) {
         if (!s_disp_ring[i].valid) continue;
@@ -10430,7 +10856,7 @@ static void handle_gl_present_ring(int id, const char *json)
  *   {"cmd":"present_ring","n":600}
  * -> events: [seq, frame, path, present_w, disp_w, disp_h, game_mode,
  *             native_43, fellback, tag_delta, nw_extra, gte_verts,
- *             ovh_prims] */
+ *             ovh_prims, bd_veto] */
 static void handle_present_ring(int id, const char *json)
 {
     static const char *pres_path_name[4] =
@@ -10440,7 +10866,7 @@ static void handle_present_ring(int id, const char *json)
     if (n > 4096) n = 4096;
     uint64_t total = present_ring_total();
     uint64_t start = total > (uint64_t)n ? total - (uint64_t)n : 0;
-    int bufsz = 96 + n * 112;
+    int bufsz = 96 + n * 128;
     char *buf = (char *)malloc((size_t)bufsz);
     if (!buf) { send_err(id, "alloc failed"); return; }
     int pos = snprintf(buf, bufsz,
@@ -10451,13 +10877,13 @@ static void handle_present_ring(int id, const char *json)
         PresRingEntry e;
         if (!present_ring_get(s, &e)) continue;
         pos += snprintf(buf + pos, bufsz - pos,
-                        "%s[%llu,%u,\"%s\",%u,%u,%u,%u,%u,%u,%ld,%u,%u,%u]",
+                        "%s[%llu,%u,\"%s\",%u,%u,%u,%u,%u,%u,%ld,%u,%u,%u,%u]",
                         first ? "" : ",", (unsigned long long)s, e.frame,
                         e.path < 4 ? pres_path_name[e.path] : "?",
                         e.present_w, e.disp_w, e.disp_h,
                         e.game_mode, e.native_43, e.wide_fellback,
                         (long)e.tag_delta, e.nw_extra,
-                        e.gte_verts, e.ovh_prims);
+                        e.gte_verts, e.ovh_prims, e.bd_veto);
         first = 0;
     }
     pos += snprintf(buf + pos, bufsz - pos, "]}");
@@ -15168,17 +15594,21 @@ static const CmdEntry s_commands[] = {
     { "pgxp_tri_ring",     handle_pgxp_tri_ring },
     { "pgxp_store_ring",   handle_pgxp_store_ring },
     { "pgxp_shadow",       handle_pgxp_shadow },
+    { "host_profile",      handle_host_profile },
     { "pgxp_miss_ring",    handle_pgxp_miss_ring },
     { "ws_aspect_cone_site", handle_ws_aspect_cone_site },
     { "ws_margin",         handle_ws_margin },
     { "ws_hud_mode",       handle_ws_hud_mode },
     { "ws_tag_stats",      handle_ws_tag_stats },
     { "mod_counters",      handle_mod_counters },
+    { "host_launch_timings", handle_host_launch_timings },
     { "resident_status",   handle_resident_status },
     { "netplay_status",    handle_netplay_status },
     { "resident_events",   handle_resident_events },
     { "capture_mark",      handle_capture_mark },
     { "present_image_ring_stats", handle_present_image_ring_stats },
+    { "render_thread",     handle_render_thread },
+    { "frame_gen",         handle_frame_gen },
     { "present_image_ring_get",   handle_present_image_ring_get },
     { "kernel_bless",      handle_kernel_bless },
     { "ws_aspect",         handle_ws_aspect },
@@ -15371,6 +15801,7 @@ static const CmdEntry s_commands[] = {
     { "set_input",         handle_set_input },
     { "press",             handle_press },
     { "pad_status",        handle_pad_status },
+    { "rewind_status",     handle_rewind_status },
     { "clear_input",       handle_clear_input },
     { "input_route_clear", handle_input_route_clear },
     { "input_route_append",handle_input_route_append },
@@ -15407,6 +15838,10 @@ static const CmdEntry s_commands[] = {
     { "dump_buffer",       handle_dump_buffer },
     { "wide_full",         handle_wide_full },
     { "video_info",        handle_video_info },
+    { "hd_textures",       handle_hd_textures },
+    { "dynres",            handle_dynres },
+    { "dynres_force",      handle_dynres_force },
+    { "dynres_check",      handle_dynres_check },
     { "screenshot_wide_hires", handle_screenshot_wide_hires },
     { "wide_shot",         handle_wide_shot },
     { "gpu_opcodes",       handle_gpu_opcodes },
@@ -15604,6 +16039,31 @@ malformed:
 void debug_server_init(int port)
 {
     if (port > 0) s_port = port;
+
+    /* Deterministic cold-boot controller probe. Unlike a TCP set_input command,
+     * which can only arrive after the guest has already started polling, this
+     * debug-only override is active for the very first VBlank/input sample.
+     * It lets runtime tests reproduce a controller attached before power-on.
+     * Example: PSX_DEBUG_INITIAL_PAD_TYPE=2 selects a centered JogCon. */
+    {
+        const char *initial_type = getenv("PSX_DEBUG_INITIAL_PAD_TYPE");
+        if (initial_type && *initial_type) {
+            char *end = NULL;
+            long type = strtol(initial_type, &end, 0);
+            if (end != initial_type && *end == '\0' && type >= 0 && type <= 2) {
+                s_input_override = 0xFFFF;
+                s_input_frames = 0;
+                s_axis_override = 1;
+                s_axis_st[0] = s_axis_st[1] =
+                    s_axis_st[2] = s_axis_st[3] = 0x80;
+                s_pad_type_override = (int)type;
+                fprintf(stdout, "psxrecomp: debug cold-boot pad type=%ld\n", type);
+            } else {
+                fprintf(stderr, "psxrecomp: invalid PSX_DEBUG_INITIAL_PAD_TYPE='%s' (expected 0, 1, or 2)\n",
+                        initial_type);
+            }
+        }
+    }
 
     /* Race-free recorder arming: PSX_RECORD_FRAME=<N> arms the unified ordered
      * access recorder from boot (instruction 0), so it deterministically
@@ -16347,12 +16807,38 @@ int debug_server_get_input_override(void)
     return current;
 }
 
+int debug_server_get_input_override_port2(void)
+{
+    int current = s_input_override_p2;
+    if (s_input_override_p2 >= 0 && s_input_frames_p2 > 0) {
+        if (--s_input_frames_p2 == 0)
+            s_input_override_p2 = -1;
+    }
+    return current;
+}
+
 int debug_server_get_axis_override(unsigned char st[4])
 {
     if (!s_axis_override) return 0;
     st[0] = s_axis_st[0]; st[1] = s_axis_st[1];
     st[2] = s_axis_st[2]; st[3] = s_axis_st[3];
     return 1;
+}
+
+int debug_server_get_host_pad(uint16_t *buttons, uint8_t st[4], uint8_t *lt,
+                              uint8_t *rt)
+{
+    if (!s_host_layer) return 0;
+    if (buttons) *buttons = s_host_buttons;
+    if (st) memcpy(st, s_host_axes, 4);
+    if (lt) *lt = s_host_lt;
+    if (rt) *rt = s_host_rt;
+    return 1;
+}
+
+int debug_server_get_pad_type_override(void)
+{
+    return s_pad_type_override;
 }
 
 int debug_server_turbo_enabled(void)
