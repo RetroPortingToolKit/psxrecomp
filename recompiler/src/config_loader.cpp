@@ -755,6 +755,15 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             else throw std::runtime_error(fmt::format(
                 "[video] antialiasing_mode must be \"off\", \"fxaa\" or \"fxaa_hq\": {}", mode));
         }
+        // bloom: opt-in glow (OpenGL), 0.0 (off, default) .. 2.0.
+        if (video.contains("bloom")) {
+            const auto& v = toml::find(video, "bloom");
+            const double f = v.is_integer() ? static_cast<double>(v.as_integer())
+                                            : toml::get<double>(v);
+            if (!(f >= 0.0 && f <= 2.0))
+                throw std::runtime_error(fmt::format("[video] bloom out of range (0.0..2.0): {}", f));
+            rt.video_bloom = static_cast<float>(f);
+        }
         if (video.contains("supersample")) {
             const auto& v = toml::find(video, "supersample");
             const double f = v.is_integer() ? static_cast<double>(v.as_integer())

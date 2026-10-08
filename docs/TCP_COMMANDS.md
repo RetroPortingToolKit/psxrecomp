@@ -55,6 +55,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `screenshot_wide_hires` | ✓ |   | `path`, `base_x` | The displayed band of the native-wide surface at internal resolution (`wide_w×S` by `height×S`). `present_shot` is capped at the window; this checks a widescreen + internal-resolution combination at full size |
 | `present_shot` | ✓ |   | `path` | PNG of the **composed present surface** — the frame after the backend fits the display buffer to the window, so it carries the presented aspect. ⚠ every other capture resolves the display buffer *before* that fit: on a 508×256 display in a 4:3 window they answer 508×256 while the player sees 640×480. Use this one for anything aspect-shaped (widescreen, letterbox), where a pre-fit buffer would hide the very stage the change touches. Staged and fulfilled on the next present, so the ack means *queued* — poll `present_shot_seq`. Unavailable headless and on the Vulkan backend (its swapchain has no readback hook) |
 | `present_shot_seq` | ✓ |   | — | Completion counter for `present_shot`, plus `wrote` (1 = that completion produced a PNG). Sample before staging, poll until `seq` moves. Advances on success *and* failure, so the poll always terminates |
+| `bloom` | ✓ |   | `strength` (0..2), `threshold`, `view` (0 normal, 1 bloom only, 2 split, 3 sources), `time` (0/1), all optional | Read or set bloom live (`[video] bloom`). Replies the settings, `passes` and, while `time` is on, `us_mean`: the mean `glFinish`-fenced pass time over `timed` passes since the last query |
 | `post_aa` | ✓ |   | `mode` (optional: 0 off, 1 fxaa, 2 fxaa_hq) | Read or set post-process anti-aliasing live (`[video] antialiasing_mode`). Replies `mode`, `passes` (filtered presents so far) and `gpu_us`: the mean pass time since the last query when the run has `PSX_POST_AA_TIME=N` (N passes per present between `glFinish` fences, a measurement mode), else 0 |
 | `hd_textures` | ✓ |   | optional `replacements`, `dump` (0 or 1), `reload` (1) | HD pack root, switches, backend support, replacement count, matched/ready/applied draw counts, and queued dump count. Optional controls update the configured host pack on the emulation thread; no configured root is an error. Reload retains unchanged upload identities. OpenGL displays replacements; software/Vulkan retain original artwork. Pair with `present_shot` for visual evidence and native VRAM probes for architectural data |
 | `gl_interp` | ✓ |   | — | OpenGL frame-rate presenter ([FRAME_RATE.md](FRAME_RATE.md)): enabled/suspended, host and target Hz, swaps, `source` (`vblank`/`flip`), `flip_period`, `captures` (new source frames) and `duplicates` (VBlanks that re-presented the same frame) |
@@ -480,9 +481,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**362 commands registered** — 349 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**363 commands registered** — 350 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-74 of 362 have prose above; **288 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+75 of 363 have prose above; **288 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -496,6 +497,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `autocompile_status` | ✓ |  |  |
 | `bios_info` | ✓ |  | ✓ |
 | `bioscall_dump` | ✓ |  |  |
+| `bloom` | ✓ |  | ✓ |
 | `c0_history` | ✓ |  |  |
 | `call_focus_dump` | ✓ |  |  |
 | `call_focus_reset` | ✓ |  |  |

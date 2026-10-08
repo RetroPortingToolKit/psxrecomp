@@ -455,6 +455,9 @@ struct RuntimeConfig {
     // "fxaa_hq". Separate from the legacy antialiasing bool above, which the
     // launcher and settings.toml already persist as the linear present filter.
     int                   video_antialiasing_mode = 0;
+    // bloom: opt-in glow strength, 0.0 (off, the default) .. 2.0. A plain
+    // [video] key, so [quality.*] presets can set it.
+    float                 video_bloom = 0.0f;
     // supersample: factor on the internal-resolution target (Match display or
     // a line preset), 1.0..4.0, kept in thousandths (internal_resolution.h).
     int                   video_supersample_milli = 1000;
