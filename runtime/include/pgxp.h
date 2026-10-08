@@ -280,6 +280,13 @@ void pgxp_note_nclip(int disagree, int corrected);
 
 /* SWC2 site: copy the GTE register shadow (regs 12..15) to the RAM shadow. */
 void pgxp_store_gte_reg(uint32_t addr, uint8_t reg);
+/* After a title's original store: retain a projected SXY's precision/depth
+ * when only clip/outcode bits outside the GPU's two 11-bit fields changed.
+ * The caller supplies the current GTE word and actual stored word. Changed
+ * coordinates, clamping, stale sources and unmapped destinations fail closed.
+ * Host shadow only; no guest memory/register write. */
+int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
+                              uint32_t source_word, uint32_t stored_word);
 
 /* Address-keyed precise-word lookup (perspective texturing path). Returns
  * nonzero when the tracked word matches `packed` AND carries a depth. */

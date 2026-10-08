@@ -188,6 +188,31 @@ int main() {
     check_attributes(arena, capture(Arena, Packed));
     pgxp_invalidate_all();
     CHECK(!capture(Arena, Packed).valid);
+    // Neversoft subdivision unpacks/re-packs SXY and adds screen outcodes.
+    // Reattach validated position/depth; exact projection may cross the
+    // original integer boundary while the guest packet remains unchanged.
+    pgxp_set_preserve_projection(1);
+    pgxp_set_tolerance(-1.0f);
+    const uint32_t Flagged = Packed | 0x80004000u;
+    pgxp_gte_push_sxy((8<<16)-16384, (12<<16)+73728, 300, Packed);
+    CHECK(pgxp_store_flagged_gte_sxy(Arena, 14, Packed, Flagged));
+    int32_t precise_x=0, precise_y=0;
+    CHECK(pgxp_get_precise_vertex(Arena, Flagged, 8, 12, &precise_x, &precise_y, &depth) == PGXP_SRC_DATAFLOW);
+    CHECK(precise_x == (8<<16)-16384 && precise_y == (12<<16)+73728 && depth == 300);
+    CHECK(pgxp_load_precise_word(Arena, Flagged, nullptr, nullptr, &depth) && depth == 300);
+    const auto flagged = capture(Arena, Flagged);
+    CHECK(!pgxp_store_flagged_gte_sxy(Arena, 14, Packed + 1, Flagged));
+    CHECK(!pgxp_store_flagged_gte_sxy(Arena, 14, Packed, Flagged ^ 1));
+    CHECK(!pgxp_store_flagged_gte_sxy(Arena + 1, 14, Packed, Flagged));
+    CHECK(!pgxp_store_flagged_gte_sxy(0x1F801814u, 14, Packed, Flagged));
+    CHECK(!pgxp_store_flagged_gte_sxy(Arena, 11, Packed, Flagged));
+    check_attributes(flagged, capture(Arena, Flagged));
+    pgxp_checkpoint_begin();
+    CHECK(pgxp_store_flagged_gte_sxy(Arena, 14, Packed, Packed));
+    pgxp_checkpoint_rollback();
+    check_attributes(flagged, capture(Arena, Flagged));
+    pgxp_invalidate_all();
+    CHECK(!pgxp_store_flagged_gte_sxy(Arena, 14, Packed, Flagged));
     gpu_bytes = 0; // pages retained on the host are not guest allocations
     CHECK(!pgxp_capture_word_shadow(Arena, Packed, &refused));
     std::printf("PGXP packet shadow checks: %s\n",failures?"FAIL":"PASS");

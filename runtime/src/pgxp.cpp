@@ -999,6 +999,17 @@ static inline int half_exact(const PGXPValue *pv, uint32_t value, int hi_half) {
     }
     /* A saturated projection shadow sits beyond the clamped word; it is not
      * the value of that half and must not be carried as one. */
+    if (s_preserve_projection) {
+        const int32_t field = (int32_t)((uint32_t)half << 21) >> 21;
+        const int64_t d = (int64_t)v16 - (int64_t)half * 65536;
+        // Clip metadata uses bits 13..15. Bits 11/12 must still be the
+        // coordinate's sign fill; a real wrapped coordinate stays strict.
+        const uint16_t sign_fill = field < 0 ? 0x1800u : 0;
+        if (field > -0x400 && field < 0x3FF &&
+            (uint16_t(half) & 0x1800u) == sign_fill)
+            return d > -(int64_t)PGXP_PPP_AGREE_BELOW * 65536 &&
+                   d < (int64_t)PGXP_PPP_AGREE_ABOVE * 65536;
+    }
     return (v16 >> 16) == half;
 }
 
@@ -1646,9 +1657,9 @@ extern "C" void pgxp_gte_reg_written(int reg, uint32_t value) {
  * packet half, `half` the raw 16-bit half in the word. Exact (integer part
  * equals the native parse) unless preserve-projection is on; then the precise
  * position may sit a bounded distance from it (PGXP_PPP_AGREE_*), except
- * when the half is at or beyond the GTE saturation limits: there the guest
- * integer is a clamp that says nothing about the vertex, or (beyond them) a
- * CPU-modified word the GPU's 11-bit parse wraps. */
+ * when the decoded coordinate is saturated or the word is a genuinely
+ * wrapped coordinate. Known outcode bits 13..15 alone are not saturation;
+ * bits 11/12 must still match the decoded coordinate's sign fill. */
 static inline int pgxp_agrees(int32_t p16, int32_t native, int16_t half,
                               int derived) {
     const int64_t d = (int64_t)p16 - (int64_t)native * 65536;
@@ -1656,7 +1667,9 @@ static inline int pgxp_agrees(int32_t p16, int32_t native, int16_t half,
      * own arithmetic chose, so the value may sit one pixel either side of
      * the truncation window - still bounded, still the same vertex. */
     if (derived) return d > -65536 && d < 2 * 65536;
-    if (!s_preserve_projection || half <= -0x400 || half >= 0x3FF)
+    const uint16_t sign_fill = native < 0 ? 0x1800u : 0;
+    if (!s_preserve_projection || native <= -0x400 || native >= 0x3FF ||
+        (uint16_t(half) & 0x1800u) != sign_fill)
         return (p16 >> 16) == native;
     return d > -(int64_t)PGXP_PPP_AGREE_BELOW * 65536 &&
            d < (int64_t)PGXP_PPP_AGREE_ABOVE * 65536;
@@ -1813,6 +1826,27 @@ extern "C" void pgxp_store_gte_reg(uint32_t addr, uint8_t reg) {
     if (src->gen != s_gen) return;
     s_stats.swc2_stores++;
     *dst = *src;
+}
+
+extern "C" int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
+                                          uint32_t source_word, uint32_t stored_word) {
+    if (!g_pgxp_active || (addr & 3u) || reg < 12 || reg > 15 ||
+        ((source_word ^ stored_word) & 0x07FF07FFu)) return 0;
+    const PGXPValue* src = &s_gte[reg];
+    if (src->gen != s_gen || src->value != source_word || !src->z ||
+        (src->flags & (PGXP_F_VXY | PGXP_F_VZ)) != (PGXP_F_VXY | PGXP_F_VZ)) return 0;
+    const int64_t x = (int64_t)src->x16 +
+        ((int64_t)(int16_t)stored_word - (int16_t)source_word) * 65536;
+    const int64_t y = (int64_t)src->y16 +
+        ((int64_t)(int16_t)(stored_word >> 16) - (int16_t)(source_word >> 16)) * 65536;
+    if (x < INT32_MIN || x > INT32_MAX || y < INT32_MIN || y > INT32_MAX) return 0;
+    PGXPValue* dst = pgxp_ptr_w(addr);
+    if (!dst) return 0;
+    *dst = *src;
+    dst->value = stored_word;
+    dst->x16 = (int32_t)x;
+    dst->y16 = (int32_t)y;
+    return 1;
 }
 
 extern "C" int pgxp_debug_shadow(int space, uint32_t key, int *live,
