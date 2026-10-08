@@ -101,6 +101,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "crash_trace.h"
 #include "freeze_heartbeat.h"
 #include "config_loader.h"
+#include "game_mode.h"
 #include "bios_rom_alias.h"
 #include "host_path.h"
 #include "launcher_device.h"
@@ -15663,6 +15664,8 @@ int main(int argc, char** argv) {
      * PSX_NO_LAUNCHER env) forces it off. --launcher wins if both are given. */
     bool        force_launcher    = false;
     bool        force_no_launcher = false;
+    /* --game-mode / --no-game-mode (game_mode.h): -1 = detect. */
+    int         cli_game_mode     = -1;
     /* CLI overrides for running several instances side by side (soak fleet).
      * These win over any game-config value and, crucially, work for the BIOS
      * (which has no [game]-block config schema, so debug_port/renderer can't be
@@ -15756,6 +15759,10 @@ int main(int argc, char** argv) {
             force_launcher = true;
         } else if (std::strcmp(argv[i], "--no-launcher") == 0) {
             force_no_launcher = true;
+        } else if (std::strcmp(argv[i], "--game-mode") == 0) {
+            cli_game_mode = 1;
+        } else if (std::strcmp(argv[i], "--no-game-mode") == 0) {
+            cli_game_mode = 0;
         } else if (std::strcmp(argv[i], "--headless-opengl") == 0) {
             g_headless = 1;
             g_headless_opengl = 1;
@@ -17081,6 +17088,31 @@ int main(int argc, char** argv) {
      * --no-launcher, or the persisted [launcher] skip_launcher setting — unless
      * --launcher forces it back on (mirrors snesrecomp's SkipLauncher / --launcher).
      * This removes the dismiss-the-launcher round-trip for scripted/debug runs. */
+    /* Game Mode (Steam Deck / gamescope, game_mode.h): straight into the
+     * game, fullscreen, once a disc is set up; the first run keeps the
+     * launcher so the player can pick their disc. --launcher still wins. */
+    {
+        PsxGameModeEnv gm_env{};
+        gm_env.psx_game_mode = std::getenv("PSX_GAME_MODE");
+        gm_env.xdg_current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
+        gm_env.gamescope_display = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+        gm_env.steam_gamepad_ui = std::getenv("SteamGamepadUI");
+        gm_env.cli_game_mode = cli_game_mode;
+        const char *gm_why = "";
+        if (psx_game_mode_detect(&gm_env, &gm_why) && !g_headless && !g_hidden_window) {
+            std::error_code gm_ec;
+            const bool disc_ready = disc_override_path ||
+                (!resolved_disc.empty() && std::filesystem::exists(resolved_disc, gm_ec));
+            if (disc_ready && !force_launcher) force_no_launcher = true;
+            /* Borderless (gamescope owns the display mode), this run only:
+             * set after the launcher would have seeded it, so a desktop
+             * session's saved Fullscreen choice is never rewritten. */
+            if (force_no_launcher) g_fullscreen = 1;
+            std::fprintf(stdout, "psxrecomp: game mode (%s): fullscreen, %s\n", gm_why,
+                         force_no_launcher ? "no launcher"
+                                           : "launcher first (no disc set up yet)");
+        }
+    }
     const bool want_launcher =
         force_launcher ||
         (!std::getenv("PSX_NO_LAUNCHER") && !force_no_launcher && !skip_launcher_setting);
