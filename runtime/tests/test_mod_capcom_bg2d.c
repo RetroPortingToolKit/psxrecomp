@@ -28,6 +28,16 @@ void gpu_ws_bg2d_set_host_arena(uint32_t base, uint32_t bytes) {
 }
 
 int main(void) {
+    WsViewAnchor centered = {106,106,0,0,0};
+    WsViewAnchor mapped = psx_capcom_scroll_view(centered,800,667);
+    assert(mapped.left==133 && mapped.right==79 && mapped.shift==27);
+    WsViewAnchor edge = {212,0,106,0,0};
+    mapped = psx_capcom_scroll_view(edge,800,535);
+    assert(mapped.left==265 && mapped.right==0 && mapped.shift==159);
+    /* Native fractional scroll crosses integer boundaries without replacing
+     * its quantization with a floating-point scale of the view shift. */
+    mapped=psx_capcom_parallax_view((WsViewAnchor){53,53,0,0,0},2,65);
+    assert(mapped.left==26 && mapped.right==80 && mapped.shift==-27);
     PSXCapcomTileMap map = {0x80010000u,0x80011000u,0x80014000u,4,1,4,0,0,3};
     /* Native map cell0 points to metatile1. A patterned row proves the
      * wide output reads authored tile coordinates rather than a32-col ring. */

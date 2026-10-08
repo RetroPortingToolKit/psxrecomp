@@ -52,15 +52,24 @@ static inline int psx_capcom_floor_div(int n, int d) {
     return n >= 0 ? n / d : -((-n + d - 1) / d);
 }
 
-/* Use the same fractional scroll mapping as the retail parallax function.
- * The title chooses the divisor; independent atlas layers may use their own
- * authored bounds instead. */
-static inline WsViewAnchor psx_capcom_parallax_view(WsViewAnchor fg, int divisor, int camera) {
+/* The title evaluates its retail scroll mapping at the camera and at the
+ * wider view's left edge. Preserve its rounding and authored offsets instead
+ * of assuming every plane scrolls at the foreground camera's speed. */
+static inline WsViewAnchor psx_capcom_scroll_view(WsViewAnchor fg,
+                                                int current_scroll, int view_scroll) {
     int extra = (fg.left + fg.right + fg.pad_left + fg.pad_right) / 2;
-    int origin = psx_capcom_floor_div(camera, divisor) -
-        psx_capcom_floor_div(camera - fg.left, divisor) + fg.pad_left;
-    WsViewAnchor result = {origin, 2 * extra - origin, origin - extra, fg.pad_left, fg.pad_right};
+    int origin = current_scroll - view_scroll + fg.pad_left;
+    /* A faster plane can crop part of the native window at a room end.
+     * Emit enough source tiles; keep the true shift for GPU viewport clipping. */
+    int right = 2 * extra - origin;
+    WsViewAnchor result = {origin > 0 ? origin : 0, right > 0 ? right : 0,
+        origin - extra, fg.pad_left, fg.pad_right};
     return result;
+}
+
+static inline WsViewAnchor psx_capcom_parallax_view(WsViewAnchor fg, int divisor, int camera) {
+    return psx_capcom_scroll_view(fg, psx_capcom_floor_div(camera, divisor),
+        psx_capcom_floor_div(camera - fg.left, divisor));
 }
 
 /* Optional per-tile title policy (panorama wrapping, retained texture bank,
