@@ -5107,11 +5107,19 @@ static void close_controller(void) {
 }
 
 static int device_claimed_by_other(int self_slot, SDL_JoystickID inst) {
+#ifndef PSX_NO_DEBUG_TOOLS
+    /* Development co-op testing may route one physical controller to both
+     * seats. SDL retains each open reference; release builds stay exclusive. */
+    (void)self_slot;
+    (void)inst;
+    return 0;
+#else
     for (int o = 0; o < PSX_MAX_PLAYERS; o++) {
         if (o == self_slot) continue;
         if (g_players[o].handle && g_players[o].instance == inst) return 1;
     }
     return 0;
+#endif
 }
 
 /* Open the SDL controller whose GUID matches p.guid. If no exact GUID match
@@ -15158,6 +15166,9 @@ namespace {
         gi->pad_mode_selectable = ctrl_lock_mode_b ? 0 : 1;
         gi->locked_pad_mode = locked_pad_mode_i;
         gi->lock_device = ctrl_lock_device_b ? 1 : 0;
+#if !defined(PSX_NO_DEBUG_TOOLS) && defined(RECOMP_LAUNCHER_HAS_DEVELOPMENT_SHARED_CONTROLLERS)
+        gi->development_shared_controllers = 1;
+#endif
         gi->aspect_mask = 0;
         const PSXModNetplayProfile *view_profile = psx_mod_netplay_profile();
         if (view_profile && view_profile->fixed_aspect_mask) {
