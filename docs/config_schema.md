@@ -698,6 +698,30 @@ keep their exact texels, and `off` is the historical path. Cost is up to 64
 fetches per minified pixel. OpenGL only. `PSX_TEXTURE_LOD=0|1` and
 `PSX_ANISO=N` override them for one run; the `texture_lod` TCP command
 switches them live.
+### Accurate blending (`accurate_blending`)
+
+```toml
+[video]
+accurate_blending = false    # default
+```
+
+The OpenGL surface holds each 5-bit VRAM channel as an 8-bit value. Uploads,
+copies and untextured primitives store `k*8`, but fills and texels have
+always stored `k*255/31` (full-range white). Semi-transparent blending of two
+operands in different bases, truncated back to 5 bits when the game reads
+VRAM, is off by one step in places: B+F/4 over a fill, B/2+F/2 with an odd
+sum, B+F/4 of a texel. `true` makes every VRAM write use `k*8`, so GL's
+8-bit blend followed by the readback's `>>3` is exactly the PS1's 5-bit
+arithmetic in all four modes (B/2+F/2, B+F, B-F, B+F/4), with set-mask,
+mask check, texel STP and PGXP depth, at any internal scale (checked against
+the formulas and the software rasterizer by `gl_blend_accuracy_test`). The
+visible cost: textured and filled whites present as 248 instead of 255, as
+uploaded images and untextured primitives already do. One divergence
+remains in both settings: a second semi-transparent layer blends with the
+first layer's full 8-bit result where the console would have truncated it to
+5 bits first (at most one 5-bit step). OpenGL only.
+`PSX_ACCURATE_BLENDING=0|1` overrides it for one run and the
+`accurate_blending` TCP command switches it live.
 
 The runtime clamps N per backend:
 

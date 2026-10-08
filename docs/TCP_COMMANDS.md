@@ -486,15 +486,16 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**367 commands registered** — 354 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**368 commands registered** — 355 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-82 of 367 have prose above; **285 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+82 of 368 have prose above; **286 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
 | Command | Native | Beetle | Described above |
 |---|:--:|:--:|:--:|
 | `a0_history` | ✓ |  |  |
+| `accurate_blending` | ✓ |  |  |
 | `audio_events` | ✓ | ✓ |  |
 | `audio_stats` | ✓ | ✓ |  |
 | `audio_wav` | ✓ | ✓ |  |
