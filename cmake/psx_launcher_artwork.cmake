@@ -1,0 +1,32 @@
+# Artwork belongs in the build directory. Games supply an immutable URL and
+# digest; repeated configuration reuses a verified file. An offline builder
+# may explicitly provide an existing image instead.
+function(psxrecomp_launcher_artwork output)
+    cmake_parse_arguments(ART "" "NAME;URL;SHA256;OVERRIDE" "" ${ARGN})
+    if(ART_OVERRIDE)
+        if(NOT EXISTS "${ART_OVERRIDE}" OR IS_DIRECTORY "${ART_OVERRIDE}")
+            message(FATAL_ERROR "Launcher artwork override is not a file: ${ART_OVERRIDE}")
+        endif()
+        get_filename_component(_artwork "${ART_OVERRIDE}" ABSOLUTE)
+    else()
+        if(NOT ART_NAME OR NOT ART_URL OR NOT ART_SHA256)
+            message(FATAL_ERROR "Launcher artwork requires NAME, URL and SHA256")
+        endif()
+        set(_artwork "${CMAKE_CURRENT_BINARY_DIR}/launcher_assets/${ART_NAME}")
+        set(_actual "")
+        if(EXISTS "${_artwork}")
+            file(SHA256 "${_artwork}" _actual)
+        endif()
+        if(NOT _actual STREQUAL ART_SHA256)
+            file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/launcher_assets")
+            file(DOWNLOAD "${ART_URL}" "${_artwork}"
+                EXPECTED_HASH "SHA256=${ART_SHA256}"
+                TLS_VERIFY ON TIMEOUT 60 STATUS _status)
+            list(GET _status 0 _result)
+            if(NOT _result EQUAL 0)
+                message(FATAL_ERROR "Could not fetch launcher artwork: ${_status}. Supply an existing image through the game's artwork override for an offline build.")
+            endif()
+        endif()
+    endif()
+    set(${output} "${_artwork}" PARENT_SCOPE)
+endfunction()
