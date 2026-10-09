@@ -313,6 +313,18 @@ int iso_read_cdda_sector(void*,uint32_t,uint8_t*,int);
 }
 
 static int big_ram_activations;
+static int option_changed_hits = 0;
+static std::string option_changed_value;
+static int test_option_changed(const char* option_id, const char* value) {
+    char cur[32];
+    option_changed_hits++;
+    /* Runs in the plugin's context: current_option_value answers the new value. */
+    if (std::string(option_id) == "size" &&
+        psx_mod_current_option_value("size", cur, sizeof(cur)) == 1)
+        option_changed_value = cur;
+    (void)value;
+    return 1;
+}
 static void test_big_ram_activation(void) {
     big_ram_activations++;
 }
@@ -1073,6 +1085,24 @@ int main() {
                                    sizeof(value)) == 1 &&
                   std::string(value) == "eight",
               "an implicit feature's plugin must read its option values");
+        /* In-game overlay P5: a live option change reaches the plugin and
+         * every later read, and is refused while netplay owns the plan. */
+        check(psx_mod_set_option_live("runtime.ram", "big-ram", "size", "four") == 0,
+              "without an option-changed callback a live set waits for restart");
+        check(psx_mod_option_value("runtime.ram", "big-ram", "size", value, sizeof(value)) == 1 &&
+                  std::string(value) == "four",
+              "a live override must answer later reads");
+        check(psx_mod_register_option_changed_plugin("runtime.big-ram", test_option_changed),
+              "option-changed hook must register");
+        check(psx_mod_set_option_live("runtime.ram", "big-ram", "size", "eight") == 1 &&
+                  option_changed_hits == 1 && option_changed_value == "eight",
+              "the plugin must see the change in its own context");
+        check(psx_mod_set_option_live("runtime.ram", "no-such-feature", "size", "x") == 0,
+              "features outside the plan are not live-settable");
+        test_netplay_active = 1;
+        check(psx_mod_set_option_live("runtime.ram", "big-ram", "size", "four") == -1,
+              "netplay must refuse live option changes");
+        test_netplay_active = 0;
         /* commit rewrites state.toml in canonical form; what matters is that
          * the player's choice survives and the derived one is never added. */
         const std::string after = read_state();
