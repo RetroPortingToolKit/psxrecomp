@@ -16125,6 +16125,7 @@ int main(int argc, char** argv) {
              * widescreen present path. Applied to the GPU layer up front so the
              * ws engage at game entry classifies every frame as gameplay. */
             gpu_ws_set_full_2d(gc.ws_full_2d ? 1 : 0);
+            gpu_ws_set_scene_predicate_per_frame(gc.ws_scene_predicate_per_frame ? 1 : 0);
             /* [widescreen.bg2d] engine tile-ring layout for the freshness
              * refill shared by the MMX5/MMX6 2D background hook. */
             gpu_ws_bg2d_configure(gc.ws_bg2d_layer_base,

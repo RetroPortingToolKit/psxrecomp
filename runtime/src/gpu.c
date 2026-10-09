@@ -421,11 +421,37 @@ static int ws_full_2d_mode(void) {
     return ws_full_2d || env;
 }
 static PSXModWorldScenePredicate s_ws_world_scene_predicate;
+static int s_ws_scene_cache_valid;
 void psx_mod_set_world_scene_predicate(PSXModWorldScenePredicate predicate) {
     s_ws_world_scene_predicate = predicate;
+    s_ws_scene_cache_valid = 0;
+}
+/* Opt-in ([widescreen] scene_predicate_per_frame, PSX_WS_SCENE_CACHE=0/1):
+ * evaluate a mod's world-scene predicate once per VBlank instead of on every
+ * primitive and GTE call. R4's predicate reads several guest words through the
+ * full memory bus, 2-4 % of the emulation thread in races. The answer can then
+ * lag a scene change by up to one frame, which is why it is opt-in and must be
+ * checked per title with a fingerprint A/B across scene transitions. Reset and
+ * savestate load invalidate it (ws_reset_scene_history). */
+static int      s_ws_scene_cache_cfg = 0;
+static uint32_t s_ws_scene_cache_frame = 0;
+static int      s_ws_scene_cache_val = 0;
+void gpu_ws_set_scene_predicate_per_frame(int on) { s_ws_scene_cache_cfg = on ? 1 : 0; s_ws_scene_cache_valid = 0; }
+static int ws_scene_cache_on(void) {
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("PSX_WS_SCENE_CACHE"); env = e ? (e[0] == '1') : -1; }
+    return env >= 0 ? env : s_ws_scene_cache_cfg;
 }
 static int ws_mod_world_scene(void) {
-    return ws_mode == 2 && s_ws_world_scene_predicate && s_ws_world_scene_predicate();
+    if (!(ws_mode == 2 && s_ws_world_scene_predicate)) return 0;
+    if (!ws_scene_cache_on()) return s_ws_world_scene_predicate();
+    const uint32_t f = (uint32_t)s_frame_count;
+    if (!s_ws_scene_cache_valid || s_ws_scene_cache_frame != f) {
+        s_ws_scene_cache_val = s_ws_world_scene_predicate() ? 1 : 0;
+        s_ws_scene_cache_frame = f;
+        s_ws_scene_cache_valid = 1;
+    }
+    return s_ws_scene_cache_val;
 }
 static int ws_game_mode(void) {
     if (ws_mod_world_scene()) return 1;
@@ -488,6 +514,7 @@ static int ws_2d_only_scene(void) {
 /* Host-derived presentation evidence is not serialized guest state. Relearn it
  * after reset/load instead of carrying the old scene's classification over. */
 static void ws_reset_scene_history(void) {
+    s_ws_scene_cache_valid = 0;
     uint32_t expired = (uint32_t)s_frame_count - 1000u;
     memset(&ws_scene_latch, 0, sizeof ws_scene_latch);
     ws_bdx_reset(&ws_bdx);
