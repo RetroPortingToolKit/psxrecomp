@@ -7196,7 +7196,8 @@ static void handle_audio_stats(int id, const char *json)
              "\"out\":{\"active\":%d,\"mode\":\"%s\",\"host_rate\":%d,"
              "\"fill_ms\":%.1f,\"target_ms\":%.1f,\"underruns\":%llu,"
              "\"overflow_drops\":%llu,"
-             "\"correction\":%.5f}}",
+             "\"correction\":%.5f},"
+             "\"spu_out\":{\"queued\":%u,\"drops\":%llu}}",
              id,
              (unsigned long long)st.tap_frames[0],
              (unsigned long long)st.tap_nonzero[0],
@@ -7221,7 +7222,9 @@ static void handle_audio_stats(int id, const char *json)
              fill_ms, target_ms,
              (unsigned long long)out_underruns,
              (unsigned long long)overflow_drops,
-             correction);
+             correction,
+             spu_output_available(),
+             (unsigned long long)spu_output_overflow_drops());
 }
 
 static void handle_audio_wav(int id, const char *json)

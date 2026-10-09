@@ -1547,6 +1547,11 @@ if(BUILD_TESTING)
     add_test(NAME spu_pitch_zero_test
              COMMAND spu_pitch_zero_test)
 
+    # Guest-clocked SPU: accesses advance it to the current cycle (beads-eio.3.321).
+    add_executable(spu_guest_clock_test tests/test_spu_guest_clock.c)
+    target_include_directories(spu_guest_clock_test PRIVATE include)
+    add_test(NAME spu_guest_clock_test COMMAND spu_guest_clock_test)
+
     add_executable(spu_gaussian_test tests/test_spu_gaussian.c)
     target_include_directories(spu_gaussian_test PRIVATE include)
     add_test(NAME spu_gaussian_test COMMAND spu_gaussian_test)
