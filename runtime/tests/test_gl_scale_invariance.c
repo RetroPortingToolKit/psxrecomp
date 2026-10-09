@@ -80,6 +80,9 @@
 #include "gpu_gl_renderer.c"
 #include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
+#include "gl_batch_policy_lle.c"
+#include "gl_batch_policy_hle.c"
+#include "gl_batch_policy_select.c"
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t n,uint32_t a){(void)n;(void)a;return 0;}
 uint32_t psx_mod_read_word(uint32_t a){(void)a;return 0;}
 int g_psx_vram_dirty_tracking=0;

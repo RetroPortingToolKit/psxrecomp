@@ -8650,6 +8650,28 @@ static void handle_frame_perf(int id, const char *json)
              n43[13], n43[15]);
 }
 
+/* batch_sites: cumulative non-empty batch flushes by caller line in
+ * gpu_gl_renderer.c, "tex" and "flat" as [line,count] pairs. Diff two reads
+ * to attribute a window (always on; no arming). */
+static void handle_batch_sites(int id, const char *json)
+{
+    (void)json;
+    char buf[8192];
+    int len = snprintf(buf, sizeof buf, "{\"id\":%d,\"ok\":true", id);
+    for (int kind = 0; kind < 2; kind++) {
+        int lines[128]; uint64_t counts[128];
+        int n = gl_renderer_batch_sites(kind, lines, counts, 128);
+        len += snprintf(buf + len, sizeof buf - (size_t)len, ",\"%s\":[",
+                        kind ? "flat" : "tex");
+        for (int i = 0; i < n && len < (int)sizeof buf - 64; i++)
+            len += snprintf(buf + len, sizeof buf - (size_t)len, "%s[%d,%llu]",
+                            i ? "," : "", lines[i], (unsigned long long)counts[i]);
+        len += snprintf(buf + len, sizeof buf - (size_t)len, "]");
+    }
+    snprintf(buf + len, sizeof buf - (size_t)len, "}");
+    send_fmt("%s", buf);
+}
+
 /* gl_ws_ablate mode=<0..3>: native-wide mirror ablation for perf attribution.
  * 0 normal | 1 skip mirror passes (incl. wide_clear) | 2 mirror state churn, no
  * draws | 3 mirror draws stay on the hr FBO (no per-pass FBO rebind; corrupts
@@ -15703,6 +15725,7 @@ static const CmdEntry s_commands[] = {
     { "gpu_timeline",      handle_gpu_timeline },
     { "nclip_stats",       handle_nclip_stats },
     { "frame_perf",        handle_frame_perf },
+    { "batch_sites",       handle_batch_sites },
     { "post_aa",           handle_post_aa },
     { "fmv_chroma",        handle_fmv_chroma },
     { "texture_lod",       handle_texture_lod },
