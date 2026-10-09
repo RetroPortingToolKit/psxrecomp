@@ -18,6 +18,11 @@ extern "C" {
 #define PSX_MOD_GPU_DMA_APERTURE_SIZE (8u * 1024u * 1024u)
 #define PSX_MOD_GPU_DMA_GUEST_BASE    0x80800000u
 
+/* Trusted-mod guest memory in Expansion 1 (psx_mod_memory_alloc; KSEG0
+ * 0x9F000000). Open bus until the first allocation. */
+#define PSX_MOD_MEMORY_BASE 0x1F000000u
+#define PSX_MOD_MEMORY_SIZE (1u * 1024u * 1024u)
+
 static inline int psx_mod_gpu_dma_aperture_offset_for(
     uint32_t address, uint32_t width, uint32_t used, uint32_t *offset) {
     /* CPU addresses retain all physical bits after KSEG normalization. The

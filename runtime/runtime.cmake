@@ -375,6 +375,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_gen.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_lle.c
+    ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_hle.c
+    ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_select.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_hd_textures.cpp
     ${PSXRECOMP_ROOT}/runtime/src/hd_texture_pack.cpp
     ${PSXRECOMP_ROOT}/runtime/src/duckstation_texture_pack.cpp
@@ -600,6 +603,18 @@ else()
             "  or -DRECOMP_RBENGINE_ROOT=/path/to/retcomm-rbengine")
     endif()
 endif()
+
+# OpenGL textured-batch grouping tier (runtime/src/gl_batch_policy.h;
+# recomp-template HLE.md). LLE, the reference, draws every semi-transparent
+# primitive alone. HLE draws painter-ordered runs of opaque primitives and
+# blend modes 0/1/3 as one dual-source draw. Build-time only: use separate
+# build directories. Both tiers always compile.
+set(PSX_GL_BATCH_IMPL "LLE" CACHE STRING "OpenGL textured batching: LLE or HLE")
+set_property(CACHE PSX_GL_BATCH_IMPL PROPERTY STRINGS LLE HLE)
+if(NOT PSX_GL_BATCH_IMPL MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "PSX_GL_BATCH_IMPL must be LLE or HLE")
+endif()
+message(STATUS "psxrecomp: GL textured batching = ${PSX_GL_BATCH_IMPL}")
 
 # Local rewind: full rbengine when netplay is on; otherwise compile snap_ring.c
 # only (no recomp-net / sched / hash_confirm). Never both — duplicate symbols.
@@ -2081,6 +2096,9 @@ function(psxrecomp_add_runtime_target target)
     endif()
     if(PSX_SHELLWIN_INTERP)
         target_compile_definitions(${target} PRIVATE PSX_SHELLWIN_INTERP_DEFAULT=1)
+    endif()
+    if(PSX_GL_BATCH_IMPL STREQUAL "HLE")
+        target_compile_definitions(${target} PRIVATE PSX_GL_BATCH_HLE=1)
     endif()
 
     # Developer-channel mod features do not ship. A contributor reaches them by

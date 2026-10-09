@@ -65,7 +65,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `render_pass_dump` | ✓ |   | `path`, `count` | Write the images (the game's own frame, then each pass in phase order) of the next `count` frames that get passes as `<path>/g<frame>_<index>_a<phase q16>.png` |
 | `render_pass_refuse` | ✓ |   | `on` | Make the OpenGL backend decline render passes (`status` 2, BACKEND), as a renderer mode without them would; tests a plugin's fallback. `PSX_RENDER_PASS_REFUSE=1` does the same from start |
 | `geom_correction` |   | ✓ | — | `[video] geometry_correction` / `perspective_texturing` engagement: enable flag plus free-running `geometry_vertex_hits` and `perspective_triangles` totals. Both enhancements silently fall back to the faithful path on anything they cannot prove is projected geometry, so a zero counter with the flag on means the title never qualifies — sample twice and diff for a rate. Also `texture_correction`. Its `pgxp` object adds the engine's per-lookup counters, the `position_fallback` / `preserve_projection` / `culling` switches, `ppp_produced` and `ppp_window_fallback` (exact projections outside the agreement window, shadowed with the IR path instead), geometry-corrected triangles split into `tri_precise` / `tri_mixed` / `tri_native` (the mixed share is the mesh-cracking exposure), `rect_bypass` / `rect_partial` (fully / partly precise textured quads that matched the 2D rectangle shortcut; only the former leave it) and `nclip_precise` / `nclip_disagree` / `nclip_corrected` (NCLIPs with an exact determinant, whose exact sign differs from the integer one, and that precise culling corrected); `ENHANCEMENTS.md` G1.11/G1.12 |
-| `pgxp` | ✓ |   | `geometry`, `texture`, `cpu_mode`, `tolerance`, `position_fallback`, `preserve_projection`, `culling` (all optional) | Live-tune PGXP for same-scene A/B: arm or disarm geometry / texture correction and set the engine knobs, without a restart. `culling` changes guest NCLIP results, so a toggle mid-run makes the run diverge from one without it. Replies with the resulting state (`enabled`, `cpu_mode`, `tolerance`, `position_fallback`, `preserve_projection`, `culling`, `suppress`, `active`). `ENHANCEMENTS.md` G1.10-G1.12 |
+| `pgxp` | ✓ |   | `geometry`, `texture`, `cpu_mode`, `tolerance`, `position_fallback`, `preserve_projection`, `culling` (all optional) | Live-tune PGXP for same-scene A/B: arm or disarm geometry / texture correction and set the engine knobs, without a restart. `culling` changes guest NCLIP results, so a toggle mid-run makes the run diverge from one without it. Replies with the resulting state (`enabled`, `cpu_mode`, `tolerance`, `position_fallback`, `preserve_projection`, `culling`, `suppress`, `active`). `ENHANCEMENTS.md` G1.10-G1.12 Also reports the renderer side: `depth_buffer`, cumulative `depth_tris`, `depth_clears`, `seam_tris`, and `depth_clear_reasons` (config, area, fill, threshold, present) |
 | `sio_state` | ✓ | ✓ | — | SIO registers + (native only) pad/memcard protocol + TX/RX history |
 | `irq_state` | ✓ | ✓ | — | `I_STAT`, `I_MASK` (both), plus chain state on native |
 | `dma_state` | ✓ | ✓ | — | DPCR, DICR, all 7 channel states (madr/bcr/chcr) |
@@ -106,6 +106,8 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `mmio_clear` | ✓ |   | — | Reset the MMIO write ring |
 | `gp1_dump` | ✓ |   | optional `frame_lo`, `frame_hi`, `count`, `newest` | Dump the dedicated ALWAYS-ON GP1 (0x1F801814 display control) ring — 512K entries ≈ 15 min of gameplay (Tomba writes ~10 GP1/frame), survives the general MMIO ring's eviction. Frame filter is server-side over the full ring. Each entry: val + func/pc/cpu_pc/ra/sp/a0/a1/sr/epc/frame |
 | `gcp_ring` | ✓ |   | `frame_lo`, `frame_hi`, then `path` or `key` + `top` | Always-on guest-cycle profile ring (512K samples, one every `period` = 4096 guest cycles by default, `PSX_GCP_PERIOD`; about 63 guest seconds). Each sample: cycle, frame, `weight` (sample periods crossed, so idle-skipped waits stay credited to the waiting code), backend `phase`, exception flag, last block leader (`block`, debug-tools builds), last function entered (`fn`), guest `$ra`, native shard in progress, static-dispatch stamp. No args: ring stats. `path`: write the window as CSV. `key` = `fn`/`block`/`ra`/`native`/`disp`: top `top` keys by guest-cycle share in the window |
+| `input_route_start` | ✓ |   | optional `at_frame` | Start the route queued with `input_route_append` (`buttons`, `frames` per step, counted per pad poll). With `at_frame` the route waits for that vblank count, so it replays on the same guest frames in every run (frame-exact A/B with input) |
+| `batch_sites` | ✓ |   | — | Always-on OpenGL batch-flush attribution: cumulative flushes of non-empty batches by caller source line in `gpu_gl_renderer.c`, as `tex` and `flat` arrays of `[line, count]`. Diff two reads to attribute a window (every flush call site is covered by the `flush_*_batch()` macros) |
 | `pc_break` |   | ✓² | `addr` | DS execute breakpoint, state captured on hit (via `pc_hit_last`) |
 | `pc_unbreak` |   | ✓² | `addr` | Remove an execute breakpoint |
 | `pc_break_list` |   | ✓² | — | List active execute breakpoints |
@@ -484,9 +486,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**366 commands registered** — 353 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**367 commands registered** — 354 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-79 of 366 have prose above; **287 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+82 of 367 have prose above; **285 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -498,6 +500,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `audio_wav` | ✓ | ✓ |  |
 | `autocompile_run` | ✓ |  |  |
 | `autocompile_status` | ✓ |  |  |
+| `batch_sites` | ✓ |  | ✓ |
 | `bios_info` | ✓ |  | ✓ |
 | `bioscall_dump` | ✓ |  |  |
 | `c0_history` | ✓ |  |  |
@@ -648,9 +651,9 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `host_profile` | ✓ |  |  |
 | `idle_skip` | ✓ |  |  |
 | `imask_trace` | ✓ |  |  |
-| `input_route_append` | ✓ |  |  |
+| `input_route_append` | ✓ |  | ✓ |
 | `input_route_clear` | ✓ |  |  |
-| `input_route_start` | ✓ |  |  |
+| `input_route_start` | ✓ |  | ✓ |
 | `input_route_status` | ✓ |  |  |
 | `input_route_stop` | ✓ |  |  |
 | `insn_freeze` | ✓ |  |  |

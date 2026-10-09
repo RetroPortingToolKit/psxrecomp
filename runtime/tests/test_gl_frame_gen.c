@@ -36,6 +36,9 @@ static void fixture_window(int slot);
 #include "gpu_gl_renderer.c"
 #include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
+#include "gl_batch_policy_lle.c"
+#include "gl_batch_policy_hle.c"
+#include "gl_batch_policy_select.c"
 /* gpu_render.c (the facade) observes draws for HD texture packs: no pack here. */
 int gpu_hd_textures_active(void){return 0;}
 int gpu_hd_textures_dump_enabled(void){return 0;}
