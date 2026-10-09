@@ -315,6 +315,7 @@ int iso_read_cdda_sector(void*,uint32_t,uint8_t*,int);
 static int big_ram_activations;
 static int option_changed_hits = 0;
 static std::string option_changed_value;
+static int option_changed_refuse = 0;  /* 1 = the plugin answers "next start" */
 static int test_option_changed(const char* option_id, const char* value) {
     char cur[32];
     option_changed_hits++;
@@ -323,7 +324,7 @@ static int test_option_changed(const char* option_id, const char* value) {
         psx_mod_current_option_value("size", cur, sizeof(cur)) == 1)
         option_changed_value = cur;
     (void)value;
-    return 1;
+    return option_changed_refuse ? 0 : 1;
 }
 static void test_big_ram_activation(void) {
     big_ram_activations++;
@@ -1104,6 +1105,16 @@ int main() {
         check(psx_mod_option_value("runtime.ram", "big-ram", "size", value, sizeof(value)) == 1 &&
                   std::string(value) == "four",
               "a live override must answer later reads");
+        /* A callback that refuses ("nothing changes until next start") must
+         * leave the value the session runs with untouched. */
+        option_changed_refuse = 1;
+        check(psx_mod_set_option_live("runtime.ram", "big-ram", "size", "two") == 0 &&
+                  option_changed_hits == 2,
+              "a refused live set reports refused after asking the plugin");
+        check(psx_mod_option_value("runtime.ram", "big-ram", "size", value, sizeof(value)) == 1 &&
+                  std::string(value) == "four",
+              "a refused live set must not change the value later reads see");
+        option_changed_refuse = 0;
         check(psx_mod_set_option_live("runtime.ram", "no-such-feature", "size", "x") == 0,
               "features outside the plan are not live-settable");
         check(psx_mod_save_selection() == 1, "saving the selection mid-session must succeed");
