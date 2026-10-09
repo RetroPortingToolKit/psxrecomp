@@ -2903,9 +2903,21 @@ static const HiwTile *hiw_ensure(int x0, int x1) {
 #define PSXGL_PIXEL_UNPACK_BUFFER 0x88EC
 #endif
 static GLuint s_raw_pbo = 0;
+/* On by default only on macOS, where the stall was measured (Apple's GL on
+ * Metal); elsewhere opt-in until there is AMD/NVIDIA/Intel data (an AMD iGPU
+ * on Windows showed no stall and no change). PSX_GL_PBO_UPLOAD=0/1 overrides
+ * it on any platform. */
+#if defined(__APPLE__)
+#define PSXGL_PBO_UPLOAD_DEFAULT 1
+#else
+#define PSXGL_PBO_UPLOAD_DEFAULT 0
+#endif
 static int raw_upload_pbo_on(void) {
     static int env = -1;
-    if (env < 0) { const char *e = getenv("PSX_GL_PBO_UPLOAD"); env = !(e && e[0] == '0'); }
+    if (env < 0) {
+        const char *e = getenv("PSX_GL_PBO_UPLOAD");
+        env = (e && e[0]) ? (e[0] != '0') : PSXGL_PBO_UPLOAD_DEFAULT;
+    }
     if (!env) return 0;
     if (!s_raw_pbo) p_glGenBuffers(1, &s_raw_pbo);
     return s_raw_pbo != 0;
@@ -6163,8 +6175,12 @@ void gl_renderer_shutdown(void) {
     s_selected_bank_live_clut = s_tb_bank_live_clut = 0;
     if (s_ctx) {
         ensure_cpu();
+        /* The upload buffer belongs to this context: a lobby rematch
+         * creates a new one, which must create its own. */
+        if (s_raw_pbo) p_glDeleteBuffers(1, &s_raw_pbo);
         SDL_GL_DeleteContext(s_ctx); s_ctx = NULL;
     }
+    s_raw_pbo = 0;
     free(s_conv); s_conv = NULL;
     s_hq_n = 0; s_hq_vn = 0;   /* queued window draws die with the context */
     s_raster_ok = 0;
