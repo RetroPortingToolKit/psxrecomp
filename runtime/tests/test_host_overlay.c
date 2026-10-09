@@ -31,7 +31,27 @@ static void test_pause(void) {
     for (int i = 0; i < 8; i++) psx_host_pause_pop();
 }
 
+static int draws = 0, last_w = 0, last_h = 0;
+static void *last_ctx = NULL;
+static void on_draw(int w, int h, void *ctx) { draws++; last_w = w; last_h = h; last_ctx = ctx; }
+
+static void test_draw(void) {
+    int tag = 7;
+    CHECK(!psx_host_overlay_has_draw());
+    psx_host_overlay_draw(640, 480); /* no callback: nothing happens */
+    psx_host_overlay_set_draw_cb(on_draw, &tag);
+    CHECK(psx_host_overlay_has_draw());
+    psx_host_overlay_draw(1280, 800);
+    CHECK(draws == 1 && last_w == 1280 && last_h == 800 && last_ctx == &tag);
+    psx_host_overlay_draw(0, 800); /* minimised window: skipped */
+    CHECK(draws == 1);
+    psx_host_overlay_set_draw_cb(NULL, NULL);
+    psx_host_overlay_draw(1280, 800);
+    CHECK(draws == 1 && !psx_host_overlay_has_draw());
+}
+
 int main(void) {
+    test_draw();
     test_pause();
     printf("host_overlay_test: %s\n", g_fail ? "FAIL" : "ok");
     return g_fail ? 1 : 0;

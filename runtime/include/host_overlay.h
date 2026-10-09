@@ -24,6 +24,18 @@ int  psx_host_pause_depth(void);
 const char *psx_host_pause_reason(void);
 void psx_host_pause_set_refuse_probe(PsxHostPauseRefuseFn fn);
 
+/* ---- P2: overlay draw callback ---------------------------------------------
+ * Called once per presented frame by the OpenGL backend after the game image
+ * and the host OSD layers are composed, before present_shot capture and the
+ * swap, with the drawable size in pixels. It runs on the thread that owns the
+ * GL context (the render thread when it is on, else the main thread), with the
+ * window framebuffer bound. The callback must leave GL state as it found it.
+ * Vulkan and the SDL renderer never call it. NULL unregisters. */
+typedef void (*PsxHostOverlayDrawFn)(int width, int height, void *ctx);
+void psx_host_overlay_set_draw_cb(PsxHostOverlayDrawFn fn, void *ctx);
+int  psx_host_overlay_has_draw(void);
+void psx_host_overlay_draw(int width, int height);  /* renderer side */
+
 #ifdef __cplusplus
 }
 #endif

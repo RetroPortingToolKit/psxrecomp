@@ -27,3 +27,21 @@ const char *psx_host_pause_reason(void) {
 }
 
 void psx_host_pause_set_refuse_probe(PsxHostPauseRefuseFn fn) { s_pause_refuse = fn; }
+
+/* ---- P2: overlay draw callback -------------------------------------------- */
+/* Written on the main thread before the overlay can open, read on the GL
+ * thread; a pointer-sized store, and registration happens once at startup. */
+static PsxHostOverlayDrawFn volatile s_draw_fn = NULL;
+static void *volatile s_draw_ctx = NULL;
+
+void psx_host_overlay_set_draw_cb(PsxHostOverlayDrawFn fn, void *ctx) {
+    s_draw_ctx = ctx;
+    s_draw_fn = fn;
+}
+
+int psx_host_overlay_has_draw(void) { return s_draw_fn != NULL; }
+
+void psx_host_overlay_draw(int width, int height) {
+    PsxHostOverlayDrawFn fn = s_draw_fn;
+    if (fn && width > 0 && height > 0) fn(width, height, s_draw_ctx);
+}
