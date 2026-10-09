@@ -6930,18 +6930,18 @@ static void handle_mc_status(int id, const char *json)
     json_escape_string(p1_json, sizeof(p1_json), p1);
     send_fmt("{\"id\":%d,\"ok\":true,"
              "\"slot0\":{\"present\":%s,\"dirty\":%s,\"path\":\"%s\","
-             "\"magic\":\"%c%c\",\"magic_hex\":\"%02X%02X\"},"
+             "\"magic\":\"%c%c\",\"magic_hex\":\"%02X%02X\",\"flush_result\":%d},"
              "\"slot1\":{\"present\":%s,\"dirty\":%s,\"path\":\"%s\","
-             "\"magic\":\"%c%c\",\"magic_hex\":\"%02X%02X\"}}",
+             "\"magic\":\"%c%c\",\"magic_hex\":\"%02X%02X\",\"flush_result\":%d}}",
              id,
              pres0 ? "true" : "false", dirty0 ? "true" : "false", p0_json,
              (m0[0] >= 0x20 && m0[0] < 0x7F) ? m0[0] : '?',
              (m0[1] >= 0x20 && m0[1] < 0x7F) ? m0[1] : '?',
-             m0[0], m0[1],
+             m0[0], m0[1], memcard_last_flush_result(0),
              pres1 ? "true" : "false", dirty1 ? "true" : "false", p1_json,
              (m1[0] >= 0x20 && m1[0] < 0x7F) ? m1[0] : '?',
              (m1[1] >= 0x20 && m1[1] < 0x7F) ? m1[1] : '?',
-             m1[0], m1[1]);
+             m1[0], m1[1], memcard_last_flush_result(1));
 }
 
 static void handle_spu_status(int id, const char *json)

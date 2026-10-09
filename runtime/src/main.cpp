@@ -1705,6 +1705,7 @@ static PSXModSessionBaseline g_mod_owned_baseline;
 
 static void reset_mod_owned_presentation(void) {
     psx_mod_internal_resolution_reset();
+    memcard_set_extension_codec(nullptr, nullptr);
     psx_local_mouse_clear();
     PSXModSessionScalars live;
     live.video_vsync = g_video_vsync;
