@@ -258,6 +258,33 @@ uint64_t g_plp_svc_calls        = 0;
 static uint64_t s_next_watchdog        = 0;
 static uint64_t s_next_pc_sample       = 0;
 
+/* Guest-cycle profile sampler (guest_cycle_profile.c). Every `period` guest
+ * cycles the installed hook records where the guest is. The next sample point
+ * is folded into the service deadline, so a sample lands on the first charge
+ * that crosses it -- not on whatever MMIO access or device event happened to
+ * trigger servicing -- which keeps the attribution unbiased. A charge that
+ * jumps several periods at once (idle skip, a long stall) reports the number
+ * of periods crossed so those cycles stay credited to the code that spent
+ * them. Period 0 or no hook = off; the unit tests that link this file
+ * without the ring see NULL. */
+uint32_t psx_cycle_sample_period = 0;
+void   (*psx_cycle_sample_hook)(uint64_t cycle, uint32_t periods) = NULL;
+static uint64_t s_next_cycle_sample    = 0;
+
+static void psx_cycle_sample_check(uint64_t target) {
+    const uint32_t period = psx_cycle_sample_period;
+    if (!period || !psx_cycle_sample_hook) return;
+    /* First use, or the clock was rewound (savestate / boot reset). */
+    if (s_next_cycle_sample == 0u || s_next_cycle_sample > target + period) {
+        s_next_cycle_sample = target + period;
+        return;
+    }
+    if (target < s_next_cycle_sample) return;
+    uint64_t n = (target - s_next_cycle_sample) / period + 1u;
+    s_next_cycle_sample += n * (uint64_t)period;
+    psx_cycle_sample_hook(target, n > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)n);
+}
+
 /* Absolute inclusive limit for dirty_ram_interp.c's exact one-cycle path.
  * Zero means that the next charge must visit psx_advance_cycles(). */
 uint64_t g_psx_cycle_fast_limit = 0;
@@ -312,6 +339,10 @@ uint32_t psx_idle_cycles_to_next_observable_event(void) {
 static void psx_devices_recompute_deadline(void) {
     uint32_t next = devices_cycles_to_next_internal_event();
     if (next > PSX_DEADLINE_HARD_CAP) next = PSX_DEADLINE_HARD_CAP;
+    if (psx_cycle_sample_period && s_next_cycle_sample > psx_cycle_count) {
+        uint64_t d = s_next_cycle_sample - psx_cycle_count;
+        if (d < next) next = (uint32_t)d;
+    }
     psx_next_service_cycle = psx_cycle_count + (uint64_t)next;
 }
 
@@ -351,6 +382,7 @@ void psx_devices_service_to_now(void) {
         }
         s_devices_synced_cycle = target;
     }
+    psx_cycle_sample_check(target);
     psx_devices_recompute_deadline();
     psx_in_device_service = 0;
 
@@ -772,6 +804,7 @@ void psx_cycles_reset_for_boot(void) {
     g_psx_cycle_fast_limit = 0;
     s_next_watchdog        = 0;
     s_next_pc_sample       = 0;
+    s_next_cycle_sample    = 0;
 }
 
 /* ---- Mult/div completion-stall timing (faithful R3000A; Beetle muldiv_ts_done) ----
@@ -1007,6 +1040,11 @@ int psx_cycle_uncharged_begin(PsxCycleFreeze *save, uint64_t budget_cycles) {
     g_psx_guest_time_frozen = 1;
     psx_cycle_freeze_tick();
     return 1;
+}
+
+uint64_t psx_cycle_uncharged_counted(void) {
+    if (!s_uncharged_active) return 0;
+    return psx_cycle_count - s_freeze_start + g_psx_cyc_batch;
 }
 
 int psx_cycle_uncharged_end(const PsxCycleFreeze *save) {

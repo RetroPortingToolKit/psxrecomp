@@ -63,20 +63,30 @@ static void timing_restore(struct CPUState* cpu, const CallerTiming* t) {
     cpu->ld_absorb = t->ld_absorb;
 }
 
-uint32_t psx_mod_call_guest_uncharged(struct CPUState* cpu, uint32_t function,
-                                      uint32_t return_address, uint32_t a0,
-                                      uint32_t a1, uint32_t a2, uint32_t a3,
-                                      uint32_t budget_cycles, int* charged) {
+uint32_t psx_mod_call_guest_uncharged_counted(struct CPUState* cpu,
+        uint32_t function, uint32_t return_address, uint32_t a0, uint32_t a1,
+        uint32_t a2, uint32_t a3, uint32_t budget_cycles, int* charged,
+        uint64_t* counted_cycles) {
     PsxCycleFreeze save;
     CallerTiming timing;
     timing_save(&timing, cpu);
     const int frozen = psx_cycle_uncharged_begin(&save, budget_cycles);
     const uint32_t result =
         psx_mod_call_guest(cpu, function, return_address, a0, a1, a2, a3);
+    const uint64_t counted = frozen ? psx_cycle_uncharged_counted() : 0;
     const int uncharged = frozen ? psx_cycle_uncharged_end(&save) : 1;
     if (frozen && uncharged) timing_restore(cpu, &timing);
     if (charged) *charged = !uncharged;
+    if (counted_cycles) *counted_cycles = counted;
     return result;
+}
+
+uint32_t psx_mod_call_guest_uncharged(struct CPUState* cpu, uint32_t function,
+                                      uint32_t return_address, uint32_t a0,
+                                      uint32_t a1, uint32_t a2, uint32_t a3,
+                                      uint32_t budget_cycles, int* charged) {
+    return psx_mod_call_guest_uncharged_counted(cpu, function, return_address,
+        a0, a1, a2, a3, budget_cycles, charged, NULL);
 }
 
 int psx_mod_dma_write_ram(uint32_t address, const void* data, uint32_t bytes,
