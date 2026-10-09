@@ -1437,6 +1437,15 @@ static uint32_t          g_rumble_vblank = 0;
 extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
                                        uint32_t large) {
     if (player >= PSX_MAX_PLAYERS) return 0;
+    if (psx_netplay_active()) {
+        /* Online: only this peer's own guest port drives its own pad, once per
+         * real tick (a rollback resim replays ticks the pad already felt). */
+        if (psx_netplay_is_resimulating() ||
+            (int)player != psx_netplay_local_port())
+            return 1;
+        const int card = psx_netplay_input_player();
+        player = card >= 0 && card < PSX_MAX_PLAYERS ? (uint32_t)card : 0u;
+    }
     psx_host_rumble_set(&g_mod_rumble[player], g_rumble_vblank, small, large);
     return 1;
 }
