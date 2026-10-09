@@ -14900,6 +14900,7 @@ int main(int argc, char** argv) {
                     object_regs.data(), x_regs.data(), z_regs.data(),
                     y_regs.data(), queue_guards.data(), (int)addresses.size(),
                     gc.ws_aspect_cone.forward_addr,
+                    gc.ws_aspect_cone.forward_offsets.data(),
                     gc.ws_aspect_cone.object_type_offset,
                     gc.ws_aspect_cone.hysteresis_pixels,
                     gc.ws_aspect_cone.queue_reserve,

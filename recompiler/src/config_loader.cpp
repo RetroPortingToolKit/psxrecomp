@@ -208,6 +208,7 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
         h.u32(site.queue_guard ? 1u : 0u);
     }
     h.u32(c.ws_aspect_cone.forward_addr);
+    for (uint32_t value : c.ws_aspect_cone.forward_offsets) h.u32(value);
     h.u32(c.ws_aspect_cone.object_type_offset);
     h.u32(c.ws_aspect_cone.object_reg);
     h.u32(c.ws_aspect_cone.x_reg);
@@ -2266,6 +2267,18 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                             out[i] = (uint32_t)values[i];
                         }
                     };
+                if (cone.contains("forward_offsets")) {
+                    load_cone_int_array("forward_offsets",
+                                        ws_aspect_cone.forward_offsets);
+                    auto offsets = ws_aspect_cone.forward_offsets;
+                    std::sort(offsets.begin(), offsets.end());
+                    if (offsets != std::array<uint32_t, 3>{0u, 2u, 4u})
+                        throw std::runtime_error(fmt::format(
+                            "{}: [widescreen.cull.aspect_cone] "
+                            "forward_offsets must be a permutation of [0, 2, 4] "
+                            "for X, Z, Y (Y is world vertical)",
+                            config_path.string()));
+                }
                 load_cone_hex_array("queue_count_addrs",
                                     ws_aspect_cone.queue_count_addrs);
                 load_cone_int_array("queue_capacities",

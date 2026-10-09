@@ -1206,6 +1206,7 @@ typedef struct {
 static WsAspectConeSite ws_aspect_cone_sites[WS_EXPLICIT_CULL_SITES_MAX];
 static int ws_aspect_cone_n = 0;
 static uint32_t ws_aspect_cone_forward_addr = 0;
+static uint32_t ws_aspect_cone_forward_offsets[3] = {0u, 2u, 4u};
 static uint32_t ws_aspect_cone_object_type_offset = 0;
 static uint32_t ws_aspect_cone_hysteresis_pixels = 0;
 static uint32_t ws_aspect_cone_queue_reserve = 0;
@@ -1234,6 +1235,7 @@ void gpu_ws_set_aspect_cone(const uint32_t *addresses,
                             const uint32_t *queue_guards,
                             int nsites,
                             uint32_t forward_addr,
+                            const uint32_t forward_offsets[3],
                             uint32_t object_type_offset,
                             uint32_t hysteresis_pixels,
                             uint32_t queue_reserve,
@@ -1262,6 +1264,9 @@ void gpu_ws_set_aspect_cone(const uint32_t *addresses,
             (uint8_t)(!queue_guards || queue_guards[i] != 0);
     }
     ws_aspect_cone_forward_addr = forward_addr;
+    for (int i = 0; i < 3; i++)
+        ws_aspect_cone_forward_offsets[i] =
+            forward_offsets ? forward_offsets[i] : (uint32_t)i * 2u;
     ws_aspect_cone_object_type_offset = object_type_offset;
     ws_aspect_cone_hysteresis_pixels = hysteresis_pixels;
     ws_aspect_cone_queue_reserve = queue_reserve;
@@ -1400,11 +1405,14 @@ uint32_t psx_ws_aspect_cone_result(uint32_t site_address, uint32_t vanilla,
         (total_margin > ws_cull_guard_pixels)
             ? total_margin - ws_cull_guard_pixels : 0;
     const int32_t fx =
-        (int16_t)psx_read_half(ws_aspect_cone_forward_addr + 0u);
+        (int16_t)psx_read_half(ws_aspect_cone_forward_addr +
+                             ws_aspect_cone_forward_offsets[0]);
     const int32_t fz =
-        (int16_t)psx_read_half(ws_aspect_cone_forward_addr + 2u);
+        (int16_t)psx_read_half(ws_aspect_cone_forward_addr +
+                             ws_aspect_cone_forward_offsets[1]);
     const int32_t fy =
-        (int16_t)psx_read_half(ws_aspect_cone_forward_addr + 4u);
+        (int16_t)psx_read_half(ws_aspect_cone_forward_addr +
+                             ws_aspect_cone_forward_offsets[2]);
     const uint32_t threshold = site->cosine_threshold;
 
     const int in_visible =

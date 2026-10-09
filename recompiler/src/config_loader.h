@@ -161,7 +161,10 @@ struct WidescreenAspectConeSite {
 
 struct WidescreenAspectConeConfig {
     std::vector<WidescreenAspectConeSite> sites;
-    uint32_t forward_addr = 0;       // three signed Q12 halfwords: X,Z,Y
+    uint32_t forward_addr = 0;       // three signed Q12 halfwords
+    // Byte offsets for semantic X,Z,Y. Y is world vertical; legacy configs
+    // stored the forward vector in X,Z,Y order.
+    std::array<uint32_t, 3> forward_offsets{0u, 2u, 4u};
     uint32_t object_type_offset = 0;
     uint32_t object_reg = 0;
     uint32_t x_reg = 0;
