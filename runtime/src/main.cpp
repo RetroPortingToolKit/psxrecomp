@@ -68,6 +68,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #define PSX_MAX_PLAYERS 2
 #endif
 #include "psx_netplay.h"
+#include "netplay_session_slots.h"
 #include "psx_stick.h"       /* radial SDL-stick -> DualShock response transform */
 #include "psx_trigger.h"     /* continuous SDL trigger -> 0..255 magnitude */
 #include "mod_pad_transform.h"
@@ -10466,15 +10467,10 @@ namespace {
     }
 
     static int ae_np_session_slot_count(int player_count, int max_slots,
-                                       int local_slot, int game_fallback,
-                                       int slot_cap) {
-        int slots = player_count >= 2 ? player_count
-                    : (max_slots >= 2 ? max_slots
-                       : (game_fallback >= 2 ? game_fallback : 2));
-        if (local_slot + 1 > slots) slots = local_slot + 1;
-        if (slots < 2) slots = 2;
-        if (slots > slot_cap) slots = slot_cap;
-        return slots;
+                                       int local_slot, int is_spectator,
+                                       int game_fallback, int slot_cap) {
+        return psx_netplay_session_slot_count(player_count, max_slots, local_slot,
+                                              is_spectator, game_fallback, slot_cap);
     }
     bool g_lnch_hosting_lan = false;
     bool g_lnch_joined_lan = false;
@@ -17936,7 +17932,8 @@ int main(int argc, char** argv) {
                                 ? ls.netplay_launch.slot_port[i] : -1;
                     net_cfg.slot_count = ae_np_session_slot_count(
                         ls.netplay_launch.player_count, ls.netplay_launch.max_slots,
-                        ls.netplay_launch.local_slot, game_players,
+                        ls.netplay_launch.local_slot,
+                        ls.netplay_launch.is_spectator ? 1 : 0, game_players,
                         PSX_MAX_PLAYERS + (net_cfg.host_spectates ? 1 : 0));
                     if (net_cfg.player_count <= 0)
                         net_cfg.player_count = net_cfg.slot_count;
@@ -20069,7 +20066,8 @@ soft_return_lobby:
                 net_cfg.player_count = ls.netplay_launch.player_count;
                 net_cfg.slot_count = ae_np_session_slot_count(
                     ls.netplay_launch.player_count, ls.netplay_launch.max_slots,
-                    ls.netplay_launch.local_slot, game_players,
+                    ls.netplay_launch.local_slot,
+                        ls.netplay_launch.is_spectator ? 1 : 0, game_players,
                     PSX_MAX_PLAYERS + (net_cfg.host_spectates ? 1 : 0));
                 if (net_cfg.player_count <= 0)
                     net_cfg.player_count = net_cfg.slot_count;
