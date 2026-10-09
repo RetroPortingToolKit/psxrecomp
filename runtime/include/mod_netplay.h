@@ -29,6 +29,10 @@ typedef struct PSXModNetplayProfile {
      * authority, while GL may use immutable banks for presentation. Software
      * and unsupported GL launches are refused before guest boot. */
     int requires_retained_texture_banks;
+    const char *settings_package_id;
+    const char *settings_feature_id;
+    const char *renderer_option_id;
+    const char *renderer_option_value;
 } PSXModNetplayProfile;
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile);
@@ -43,6 +47,7 @@ uint32_t psx_mod_netplay_session_id(uint32_t session_id);
  * profile identity. This rejects mismatches even if the 32-bit transport
  * namespace happens to collide. Input must be empty or a 64-digit hex SHA. */
 int psx_mod_netplay_content_identity(const char *execution_content, char out[65]);
+int psx_mod_netplay_set_options_identity(const char *identity);
 int psx_mod_netplay_set_aspect(int index);
 int psx_mod_netplay_aspect(void);
 int psx_mod_netplay_has_state_digest(void);

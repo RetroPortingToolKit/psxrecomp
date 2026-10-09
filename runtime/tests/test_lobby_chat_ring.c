@@ -194,6 +194,30 @@ static void case_mod_caps_roundtrip(void)
     ck(!caps.mod_plan_fp[0], "invalid fingerprint rejected");
 }
 
+static void case_profile_settings_roundtrip(void)
+{
+    PsxLobbyMatchCaps caps = {0}, received = {0};
+    char wire[4096];
+    caps.valid = 1;
+    caps.aspect_num = 4;
+    caps.aspect_den = 3;
+    caps.mod_count = 1;
+    strcpy(caps.mods[0].id, "runtime.test");
+    strcpy(caps.mods[0].ver, "1.0.0");
+    strcpy(caps.mods[0].feats, "vblank-plugin=cameras~split");
+    ck(psx_lobby_encode_match_caps(wire, sizeof(wire), &caps) &&
+       !psx_lobby_decode_match_caps(wire, &received), "settings without an identity cannot enter a LAN session");
+    strcpy(caps.mod_plan_fp, "24a3aeaf6034d1a59df3ac27334227343237550d4938b7b00c6ae77dfec21367");
+    ck(psx_lobby_encode_match_caps(wire, sizeof(wire), &caps) &&
+       psx_lobby_decode_match_caps(wire, &received) && received.mod_count == 1 &&
+       !strcmp(received.mod_plan_fp, caps.mod_plan_fp) &&
+       !strcmp(received.mods[0].feats, caps.mods[0].feats), "trusted settings survive the real LAN codec");
+    ingest_match_caps_from_json(wire);
+    ck(g_lc.match_caps.mod_count == 1 &&
+       !strcmp(g_lc.match_caps.mod_plan_fp, caps.mod_plan_fp) &&
+       !strcmp(g_lc.match_caps.mods[0].feats, caps.mods[0].feats), "trusted settings survive the online lobby codec");
+}
+
 int main(void)
 {
     case_room_order();
@@ -201,6 +225,7 @@ int main(void)
     case_empty_and_clear();
     case_long_line_is_truncated_not_dropped();
     case_mod_caps_roundtrip();
+    case_profile_settings_roundtrip();
     if (g_failures == 0) {
         printf("lobby_chat_ring_test: ok\n");
         return 0;

@@ -252,6 +252,10 @@ void color_lut_map555(const ColorLut *lut, uint16_t bgr555,
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
     return psx_mod_gpu_dma_resolve_address_for(address, test_aperture_used);
 }
+int psx_mod_gpu_dma_memory_contains(uint32_t address, uint32_t bytes) {
+    return bytes && psx_mod_gpu_dma_aperture_offset_for(
+        address, bytes, test_aperture_used, NULL);
+}
 uint32_t psx_gpu_packet_key(uint32_t address) {
     return psx_gpu_packet_key_for(address, test_aperture_used);
 }
@@ -390,8 +394,12 @@ void gr_get_draw_area(int *x1, int *y1, int *x2, int *y2) {
 void gr_set_draw_offset(int x, int y) { (void)x; (void)y; }
 int gr_wide_supported(void) { return 1; }
 void gr_wide_configure(int wide_w, int offset) { (void)wide_w; (void)offset; }
+static struct { int enabled, shift, left, right; } fixture_wide_view;
 void gr_wide_set_view(int enabled, int shift, int left, int right) {
-    (void)enabled; (void)shift; (void)left; (void)right;
+    fixture_wide_view.enabled = enabled;
+    fixture_wide_view.shift = shift;
+    fixture_wide_view.left = left;
+    fixture_wide_view.right = right;
 }
 void gr_wide_set_target(int base_x) { (void)base_x; }
 void gr_wide_disable_target(void) {}

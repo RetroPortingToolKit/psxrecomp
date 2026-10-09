@@ -466,6 +466,8 @@ static uint64_t state_hash(const CPUState *cpu) {
     int32_t ti[3];
     uint32_t csv = interrupts_get_cycles_since_vblank();
     uint64_t cyc = psx_cycle_count;
+    uint32_t guest_cycle_scale[3];
+    psx_guest_cycle_scale_snapshot(guest_cycle_scale);
     h = fnv(h, cpu->gpr, sizeof cpu->gpr);
     h = fnv(h, &cpu->hi, sizeof cpu->hi);
     h = fnv(h, &cpu->lo, sizeof cpu->lo);
@@ -483,6 +485,7 @@ static uint64_t state_hash(const CPUState *cpu) {
     h = fnv(h, &i_mask, sizeof i_mask);
     h = fnv(h, &csv, sizeof csv);
     h = fnv(h, &cyc, sizeof cyc);
+    h = fnv(h, guest_cycle_scale, sizeof guest_cycle_scale);
     timers_get_snapshot(tc, tm, tt, ti, tf);
     h = fnv(h, tc, sizeof tc); h = fnv(h, tm, sizeof tm);
     h = fnv(h, tt, sizeof tt); h = fnv(h, ti, sizeof ti); h = fnv(h, tf, sizeof tf);

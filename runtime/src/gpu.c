@@ -2454,7 +2454,8 @@ static int ws_hud_command_words(uint32_t command_addr, uint32_t *words,
     if (!words || !out_count) return 0;
     if ((command_addr & 3u) != 0) return 0;
     uint32_t phys = command_addr & 0x1FFFFFFFu;
-    if (phys > psx_ram_live_bytes() - 4u) return 0;
+    if (phys > psx_ram_live_bytes() - 4u &&
+        !psx_mod_gpu_dma_memory_contains(command_addr, 4u)) return 0;
 
     words[0] = psx_read_word(command_addr);
     uint8_t op = (uint8_t)(words[0] >> 24);
@@ -2462,7 +2463,8 @@ static int ws_hud_command_words(uint32_t command_addr, uint32_t *words,
     int count = gp0_command_word_count(op);
     if (count <= 0 || count > 12) return 0;
     uint32_t bytes = (uint32_t)count * 4u;
-    if (phys > psx_ram_live_bytes() - bytes) return 0;
+    if (phys > psx_ram_live_bytes() - bytes &&
+        !psx_mod_gpu_dma_memory_contains(command_addr, bytes)) return 0;
 
     for (int i = 1; i < count; i++)
         words[i] = psx_read_word(command_addr + (uint32_t)i * 4u);
@@ -2632,10 +2634,12 @@ static int ws_explicit_hud_anchor(int *out_anchor) {
     if (gp0_words_needed <= 0 || gp0_words_needed > 12)
         return 0;
     uint32_t command_addr = gp0_cmd_source_addr & 0x1FFFFFFFu;
-    if (command_addr >= psx_ram_live_bytes() || (command_addr & 3u)) return 0;
+    if ((command_addr & 3u) ||
+        (command_addr >= psx_ram_live_bytes() &&
+         !psx_mod_gpu_dma_memory_contains(command_addr, 4u))) return 0;
     int anchor = 0;
     int result = ws_hud_anchor_lookup_result(
-        ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE, command_addr,
+        ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE, GPU_RAM_KEY(command_addr),
         gp0_cmd_buf, (uint32_t)gp0_words_needed, (uint32_t)s_frame_count,
         &anchor);
     ws_tag_stats_note_lookup(&ws_hud_tag_stats, result);

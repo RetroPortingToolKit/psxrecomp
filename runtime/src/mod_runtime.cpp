@@ -1462,6 +1462,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
                             const std::filesystem::path& exe_path,
                             std::string* error) {
     psx_mod_netplay_set_active(0);
+    (void)psx_mod_netplay_set_options_identity("");
     RuntimeMods& s = state();
     s.ticket_ready = false;
     ++s.preparation_revision;
@@ -1566,6 +1567,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
 
 bool mod_runtime_clear_for_netplay(std::string* error) {
     psx_mod_netplay_set_active(0);
+    (void)psx_mod_netplay_set_options_identity("");
     state().ticket_ready = false;
     ++state().preparation_revision;
     RuntimeMods& s = state();
@@ -1594,6 +1596,95 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     return true;
 }
 
+static void feat_token_split(const std::string& token, std::string& name,
+                             std::string& opts);
+static bool feat_csv_apply_options(ModPackageManager& mgr,
+                                   const std::string& package_id,
+                                   const std::string& feature_id,
+                                   const char* csv, std::string* error);
+
+static bool prepare_profile_settings(const PSXModNetplayProfile* profile,
+                                      const PsxLobbyMatchCaps* caps,
+                                      ModResolution& plan,
+                                      std::string& options_identity,
+                                      std::string* error) {
+    RuntimeMods& s = state();
+    if (!s.initialized) {
+        if (error) *error = "Title netplay settings catalog is not initialized";
+        return false;
+    }
+    options_identity.clear();
+    if (profile->settings_package_id) {
+        const ModPackage* package = s.manager.selected_package(profile->settings_package_id);
+        if (!package || std::none_of(package->features.begin(), package->features.end(),
+                [&](const ModFeature& feature) { return feature.id == profile->settings_feature_id; })) {
+            if (error) *error = "Title netplay settings feature is not installed";
+            return false;
+        }
+        ModPackageManager settings = s.manager;
+        if (!settings.set_feature_enabled(package->id, profile->settings_feature_id, true, error))
+            return false;
+        const bool host_options = caps && caps->valid && caps->mod_count != 0;
+        if (host_options) {
+            if (caps->mod_count != 1 || package->id != caps->mods[0].id ||
+                package->version != caps->mods[0].ver) {
+                if (error) *error = "Title netplay profile accepts only its declared settings package";
+                return false;
+            }
+            std::string feature, options;
+            const std::string token = caps->mods[0].feats;
+            feat_token_split(token, feature, options);
+            if (feature != profile->settings_feature_id || token.find(',') != std::string::npos) {
+                if (error) *error = "Title netplay profile accepts only its declared settings feature";
+                return false;
+            }
+        }
+        for (const ModOption& option : package->options) {
+            if (option.feature_id != profile->settings_feature_id) continue;
+            const std::string value = host_options ? option.default_value :
+                s.manager.feature_option_value(package->id, option.feature_id, option.id);
+            if (!settings.set_feature_option(package->id, option.feature_id, option.id, value, error))
+                return false;
+        }
+        if (host_options && !feat_csv_apply_options(settings, package->id,
+                profile->settings_feature_id, caps->mods[0].feats, error)) return false;
+        ModSelection selection;
+        selection.version = package->version;
+        ModFeatureSelection& feature = selection.features[profile->settings_feature_id];
+        feature.enabled = feature.has_enabled = true;
+        for (const ModOption& option : package->options)
+            if (option.feature_id == profile->settings_feature_id)
+                feature.values[option.id] = settings.feature_option_value(
+                    package->id, option.feature_id, option.id);
+        plan.selections[package->id] = std::move(selection);
+        std::string identity = "psx-trusted-settings-v1\n" + package->id + "\n" +
+            package->version + "\n" + profile->settings_feature_id + "\n";
+        for (const auto& value : plan.selections[package->id].features[profile->settings_feature_id].values)
+            identity += value.first + "=" + value.second + "\n";
+        uint8_t digest[32];
+        psx_sha256_compute(reinterpret_cast<const uint8_t*>(identity.data()), identity.size(), digest);
+        static const char hex[] = "0123456789abcdef";
+        for (uint8_t value : digest) {
+            options_identity += hex[value >> 4];
+            options_identity += hex[value & 15];
+        }
+    }
+    return true;
+}
+
+bool mod_runtime_netplay_settings_fingerprint(const PsxLobbyMatchCaps& caps,
+                                               std::string& fingerprint,
+                                               std::string* error) {
+    fingerprint.clear();
+    const PSXModNetplayProfile* profile = psx_mod_netplay_profile();
+    if (!profile || !profile->settings_package_id || !caps.valid || caps.mod_count != 1) {
+        if (error) *error = "Title netplay settings offer is missing";
+        return false;
+    }
+    ModResolution plan;
+    return prepare_profile_settings(profile, &caps, plan, fingerprint, error);
+}
+
 bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
                                 std::string* error) {
     if (!mod_runtime_clear_for_netplay(error)) return false;
@@ -1604,21 +1695,45 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
         if (error) *error = "Title netplay simulation plugin is not registered";
         return false;
     }
-    const char* renderer = psx_mod_netplay_aspect() ? profile->widescreen_plugin_id : nullptr;
+    ModResolution plan;
+    std::string options_identity;
+    const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+    if (!prepare_profile_settings(profile, caps, plan, options_identity, error)) return false;
+    if (profile->settings_package_id && caps && caps->valid && caps->mod_count != 0 &&
+        options_identity != caps->mod_plan_fp) {
+        if (error) *error = "Title netplay settings fingerprint does not match the host offer";
+        return false;
+    }
+    const bool option_renderer = profile->renderer_option_id &&
+        s.manager.feature_option_value(plan, profile->settings_package_id,
+            profile->settings_feature_id, profile->renderer_option_id) == profile->renderer_option_value;
+    const char* renderer = psx_mod_netplay_aspect() || option_renderer
+        ? profile->widescreen_plugin_id : nullptr;
     if (renderer && !mod_plugin_registered(renderer)) {
         if (error) *error = "Title netplay renderer plugin is not registered";
         return false;
     }
-    const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
-    if (caps && caps->valid && caps->mod_count != 0) {
+    if (!profile->settings_package_id && caps && caps->valid && caps->mod_count != 0) {
         if (error) *error = "Title netplay profile does not accept package mod plans";
         return false;
     }
+    if (!psx_mod_netplay_set_options_identity(options_identity.c_str())) {
+        if (error) *error = "Title netplay settings identity is invalid";
+        return false;
+    }
+    plan.ok = true;
+    plan.fingerprint = profile->compatibility_id;
+    if (!options_identity.empty()) {
+        char identity[65];
+        if (!psx_mod_netplay_content_identity("", identity)) return false;
+        plan.fingerprint = identity;
+    }
+    plan.plugins.push_back({profile->plugin_id,
+        profile->settings_package_id ? profile->settings_package_id : "",
+        profile->settings_feature_id ? profile->settings_feature_id : ""});
+    if (renderer) plan.plugins.push_back({renderer, "", ""});
     s.disc_path = disc_path;
-    s.plan.ok = true;
-    s.plan.fingerprint = profile->compatibility_id;
-    s.plan.plugins.push_back({profile->plugin_id, "", ""});
-    if (renderer) s.plan.plugins.push_back({renderer, "", ""});
+    s.plan = std::move(plan);
     mod_runtime_set_session_plan_fp({});
     psx_mod_netplay_set_active(1);
     std::fprintf(stdout, "psxrecomp: title netplay profile %s (%s)\n",

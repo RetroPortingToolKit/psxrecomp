@@ -207,7 +207,7 @@ While `fn` runs (`g_psx_render_pass_active`):
 
 | Area | Behaviour | Where |
 |---|---|---|
-| Guest clock | cycles are counted (GTE and mult/div deadlines work) but no device is serviced, no VBlank or device event fires | `psx_cycles.c` freeze (`psx_cycle_freeze.h`, runtime-only: the codegen-hashed `psx_cycles.h` is untouched) |
+| Guest clock | cycles are counted (GTE and mult/div deadlines work) but no device is serviced, no VBlank or device event fires; render freezes restore the carried guest-cycle-scale fraction and gates as well as clock/deferred charges | `psx_cycles.c` freeze (`psx_cycle_freeze.h`, runtime-only: the codegen-hashed `psx_cycles.h` is untouched) |
 | Interrupts | never delivered | `interrupts.c` |
 | GPU DMA | linked lists and delayed completions finish synchronously | `dma.c` |
 | RAM / scratchpad stores | written directly, bypassing code-page tracking, overlay watch, write traces and fingerprints; RAM addresses fold through the live geometry (2 MiB mirrored, or 8 MiB with the 8 MB RAM mod), as outside a pass | `memory.c` `render_pass_store` |

@@ -42,6 +42,7 @@ typedef struct PsxCycleFreeze {
      * cleanup handler, which a longjmp out of the pass (the watchdog) skips:
      * end() puts the interrupted code's depth back. */
     int      bb_defer;
+    uint32_t guest_cycle_scale[3];
 } PsxCycleFreeze;
 int  psx_cycle_freeze_begin(PsxCycleFreeze *save, uint64_t watchdog_cycles,
                             void (*overrun)(void));

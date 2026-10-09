@@ -948,6 +948,7 @@ static void freeze_save(PsxCycleFreeze *save) {
     save->local_acc_value = g_psx_cyc_local_acc ? *g_psx_cyc_local_acc : 0u;
     save->in_device_service = psx_in_device_service;
     save->bb_defer = g_psx_cyc_bb_defer;
+    psx_guest_cycle_scale_snapshot(save->guest_cycle_scale);
     /* Pending deferred charges stay pending: they belong to the interrupted
      * guest code and are republished, unchanged, after the freeze. */
     g_psx_cyc_batch = 0;
@@ -995,6 +996,7 @@ void psx_cycle_freeze_end(const PsxCycleFreeze *save) {
     if (!save) return;
     freeze_restore_clock(save);
     freeze_restore_deferred(save);
+    psx_guest_cycle_scale_restore(save->guest_cycle_scale);
 }
 
 int psx_cycle_uncharged_begin(PsxCycleFreeze *save, uint64_t budget_cycles) {

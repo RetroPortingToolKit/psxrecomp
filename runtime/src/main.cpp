@@ -12245,7 +12245,34 @@ namespace {
         caps->mod_plan_fp[0] = '\0';
         caps->mod_count = 0;
         std::memset(caps->mods, 0, sizeof(caps->mods));
-        if (psx_mod_netplay_profile()) return 1;
+        if (const PSXModNetplayProfile* profile = psx_mod_netplay_profile()) {
+            if (!profile->settings_package_id) return 1;
+            RecompLauncherCModPackage package{};
+            if (!mods || !mods->feature_count || !mods->feature_get ||
+                !ae_mod_package_get_by_id(profile->settings_package_id, &package)) {
+                g_lnch_mod_plan_error = "Title netplay settings package is unavailable";
+                return 0;
+            }
+            for (int index = 0; index < mods->feature_count(mods->ctx); ++index) {
+                RecompLauncherCModFeature feature{};
+                if (!mods->feature_get(mods->ctx, index, &feature) ||
+                    std::strcmp(feature.package_id, profile->settings_package_id) ||
+                    std::strcmp(feature.id, profile->settings_feature_id)) continue;
+                ae_fill_lobby_mod_pkg_from_package(&caps->mods[0], package);
+                char token[PSX_LOBBY_MOD_FEATS_LEN] = {};
+                ae_copy_lobby_text(token, sizeof(token), feature.id);
+                ae_append_feature_options(token, sizeof(token), mods, feature);
+                ae_copy_lobby_text(caps->mods[0].feats, sizeof(caps->mods[0].feats), token);
+                caps->mod_count = 1;
+                std::string fingerprint;
+                if (!PSXRecompV4::mod_runtime_netplay_settings_fingerprint(
+                        *caps, fingerprint, &g_lnch_mod_plan_error)) return 0;
+                ae_copy_lobby_text(caps->mod_plan_fp, sizeof(caps->mod_plan_fp), fingerprint.c_str());
+                return 1;
+            }
+            g_lnch_mod_plan_error = "Title netplay settings feature is unavailable";
+            return 0;
+        }
         if (!PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
                                                        &g_lnch_mod_plan_error)) return 0;
         if (!mods || !mods->package_count || !mods->package_get)
@@ -15749,7 +15776,9 @@ int main(int argc, char** argv) {
                 gc.netplay_local_viewport_state_addr,
                 gc.netplay_local_viewport_state_values.data(),
                 (int)gc.netplay_local_viewport_state_values.size());
-            g_netplay_content_negotiation = gc.netplay_content_negotiation ? 1 : 0;
+            const PSXModNetplayProfile* settings_profile = psx_mod_netplay_profile();
+            g_netplay_content_negotiation = gc.netplay_content_negotiation ||
+                (settings_profile && settings_profile->settings_package_id) ? 1 : 0;
             PSXRecompV4::mod_runtime_set_netplay_content_negotiation(
                 g_netplay_content_negotiation != 0);
             game_discs = gc.discs;
