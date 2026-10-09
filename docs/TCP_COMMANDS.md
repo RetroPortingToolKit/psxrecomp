@@ -105,6 +105,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `mmio_dump` | ✓ |   | optional `addr`, `count`, `newest` | Dump the always-on MMIO write ring (256K entries, ALL 0x1F801xxx writes — SPU/DMA traffic rolls it in well under a minute of gameplay; for display history use `gp1_dump`) |
 | `mmio_clear` | ✓ |   | — | Reset the MMIO write ring |
 | `gp1_dump` | ✓ |   | optional `frame_lo`, `frame_hi`, `count`, `newest` | Dump the dedicated ALWAYS-ON GP1 (0x1F801814 display control) ring — 512K entries ≈ 15 min of gameplay (Tomba writes ~10 GP1/frame), survives the general MMIO ring's eviction. Frame filter is server-side over the full ring. Each entry: val + func/pc/cpu_pc/ra/sp/a0/a1/sr/epc/frame |
+| `batch_sites` | ✓ |   | — | Always-on OpenGL batch-flush attribution: cumulative flushes of non-empty batches by caller source line in `gpu_gl_renderer.c`, as `tex` and `flat` arrays of `[line, count]`. Diff two reads to attribute a window (every flush call site is covered by the `flush_*_batch()` macros) |
 | `pc_break` |   | ✓² | `addr` | DS execute breakpoint, state captured on hit (via `pc_hit_last`) |
 | `pc_unbreak` |   | ✓² | `addr` | Remove an execute breakpoint |
 | `pc_break_list` |   | ✓² | — | List active execute breakpoints |
@@ -483,9 +484,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**365 commands registered** — 352 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**366 commands registered** — 353 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-78 of 365 have prose above; **287 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+79 of 366 have prose above; **287 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -497,6 +498,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `audio_wav` | ✓ | ✓ |  |
 | `autocompile_run` | ✓ |  |  |
 | `autocompile_status` | ✓ |  |  |
+| `batch_sites` | ✓ |  | ✓ |
 | `bios_info` | ✓ |  | ✓ |
 | `bioscall_dump` | ✓ |  |  |
 | `c0_history` | ✓ |  |  |
