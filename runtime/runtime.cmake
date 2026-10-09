@@ -1600,7 +1600,11 @@ function(psxrecomp_add_runtime_target target)
         "${PSXRECOMP_ROOT}/runtime/include/cpu_state.h"
         "${PSXRECOMP_ROOT}/runtime/include/gte.h"
         "${PSXRECOMP_ROOT}/runtime/include/pgxp.h"
-        "${PSXRECOMP_ROOT}/runtime/include/render_pass_projection.h")
+        "${PSXRECOMP_ROOT}/runtime/include/render_pass_projection.h"
+        # SPU snapshot layout and immutable sample-bank playback are part of
+        # runtime compatibility, including sessions with no title mod enabled.
+        "${PSXRECOMP_ROOT}/runtime/src/spu.c"
+        "${PSXRECOMP_ROOT}/runtime/include/spu.h")
     if(PSXRT_ORACLE)
         psxrecomp_execution_profile(${target} PROFILE REFERENCE CONTRACT_FILES ${_execution_contract})
     else()

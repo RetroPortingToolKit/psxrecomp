@@ -31,6 +31,11 @@
 #define SPU_REG_COUNT      256
 #define SPU_VOICE_COUNT    24
 #define SPU_BLOCK_SAMPLES  28
+#define SPU_SAMPLE_BANKS   32u
+
+/* Title enhancements preload assets from the owner's disc. Hardware DMA,
+ * capture buffers and reverb continue to use spu_ram exclusively. */
+static struct { uint8_t *data; uint32_t bytes; } sample_banks[SPU_SAMPLE_BANKS];
 
 static uint8_t  spu_ram[SPU_RAM_SIZE];
 static uint16_t spu_regs[SPU_REG_COUNT];
@@ -137,6 +142,7 @@ typedef struct {
     int active;
     uint32_t cur_addr;
     uint32_t repeat_addr;
+    uint32_t sample_bank, pending_bank;
     int16_t samples[SPU_BLOCK_SAMPLES];
     int16_t previous_samples[3];
     int sample_idx;
@@ -152,6 +158,22 @@ typedef struct {
 } SpuVoice;
 
 static SpuVoice voices[SPU_VOICE_COUNT];
+
+int spu_register_sample_bank(uint32_t bank,const void *adpcm,uint32_t bytes) {
+    if(!bank || bank>=SPU_SAMPLE_BANKS || !adpcm || !bytes ||
+       bytes>SPU_RAM_SIZE || (bytes&15u))return 0;
+    /* Assets cannot change under a playing or queued voice. */
+    if(sample_banks[bank].data)
+        return sample_banks[bank].bytes==bytes && !memcmp(sample_banks[bank].data,adpcm,bytes);
+    uint8_t *copy=malloc(bytes);if(!copy)return 0;
+    memcpy(copy,adpcm,bytes);sample_banks[bank].data=copy;sample_banks[bank].bytes=bytes;
+    return 1;
+}
+int spu_bind_next_voice_bank(unsigned voice,uint32_t bank) {
+    if(voice>=SPU_VOICE_COUNT || bank>=SPU_SAMPLE_BANKS ||
+       (bank && !sample_banks[bank].data))return 0;
+    voices[voice].pending_bank=bank;return 1;
+}
 
 static void spu_event_record(uint8_t kind, int voice, uint32_t addr) {
     SpuEvent *e = &s_events[s_event_idx & (SPU_EVENT_CAP - 1u)];
@@ -472,10 +494,19 @@ static void decode_block(SpuVoice *v) {
     /* The 16-byte ADPCM block fetch is an SPU RAM access: IRQ-address games
      * (CD streaming double-buffers, MDEC audio) park the IRQ inside a voice's
      * sample buffer and rely on this exact compare firing. */
-    spu_irq_check(addr, 16u);
+    const uint8_t *block;
+    static const uint8_t silent_end[16]={0,1};
+    if(v->sample_bank) {
+        uint32_t bank=v->sample_bank;
+        block=bank<SPU_SAMPLE_BANKS && sample_banks[bank].data &&
+            addr<=sample_banks[bank].bytes-16u ? sample_banks[bank].data+addr : silent_end;
+    } else {
+        spu_irq_check(addr,16u);
+        block=spu_ram+addr;
+    }
 
-    uint8_t header = spu_ram[addr + 0u];
-    uint8_t flags = spu_ram[addr + 1u];
+    uint8_t header = block[0];
+    uint8_t flags = block[1];
     int shift = header & 0x0F;
     int filter = (header >> 4) & 0x0F;
     if (filter > 4) filter = 0;
@@ -490,7 +521,7 @@ static void decode_block(SpuVoice *v) {
 
     int out = 0;
     for (int b = 0; b < 14; b++) {
-        uint8_t packed = spu_ram[addr + 2u + (uint32_t)b];
+        uint8_t packed = block[2u + (uint32_t)b];
         for (int n = 0; n < 2; n++) {
             int sample4 = (n == 0) ? (packed & 0x0F) : (packed >> 4);
             if (sample4 & 0x08) sample4 -= 0x10;
@@ -913,7 +944,9 @@ static void key_on(uint32_t mask) {
     for (int i = 0; i < SPU_VOICE_COUNT; i++) {
         if (!(mask & (1u << i))) continue;
         SpuVoice *v = &voices[i];
+        uint32_t bank=v->pending_bank;
         memset(v, 0, sizeof(*v));
+        v->sample_bank=bank;
         v->active = 1;
         /* Address registers count 8-byte units but hardware ignores bit0
          * — block fetches are 16-byte aligned (DuckStation Voice::KeyOn
@@ -948,6 +981,9 @@ static void key_off(uint32_t mask) {
 }
 
 void spu_init(void) {
+    for(unsigned bank=1;bank<SPU_SAMPLE_BANKS;++bank) {
+        free(sample_banks[bank].data);sample_banks[bank].data=NULL;sample_banks[bank].bytes=0;
+    }
     memset(spu_ram, 0, sizeof(spu_ram));
     memset(spu_regs, 0, sizeof(spu_regs));
     memset(voices, 0, sizeof(voices));
@@ -1671,15 +1707,17 @@ void spu_event_reset(void) {
 
 /* SpuVoice host sizeof has padding; wire is packed LE fields. 94 bytes of
  * classic voice state + 12 bytes of per-voice volume-sweep envelope state
- * (L then R: int16 level + uint32 divider each) = 106 bytes. */
+ * (L then R: int16 level + uint32 divider each), plus 8 bytes for optional
+ * immutable sample-bank bindings = 114 bytes. Older section sizes are rejected. */
 #define SPU_VOICE_WIRE_BYTES ( \
     4u + 4u + 4u + (28u * 2u) + (3u * 2u) + 4u + 4u + 2u + 2u + 1u + 2u + 4u + 1u \
-    + 2u * (2u + 4u))
+    + 2u * (2u + 4u) + 8u)
 
 static int spu_w_voice(PstW *w, int idx) {
     const SpuVoice *v = &voices[idx];
     if (!pst_w_i32(w, (int32_t)v->active) || !pst_w_u32(w, v->cur_addr) ||
-        !pst_w_u32(w, v->repeat_addr))
+        !pst_w_u32(w, v->repeat_addr) || !pst_w_u32(w,v->sample_bank) ||
+        !pst_w_u32(w,v->pending_bank))
         return 0;
     for (int i = 0; i < SPU_BLOCK_SAMPLES; i++)
         if (!pst_w_i16(w, v->samples[i])) return 0;
@@ -1700,8 +1738,10 @@ static int spu_r_voice(PstR *r, int idx) {
     SpuVoice *v = &voices[idx];
     int32_t active = 0, sample_idx = 0;
     if (!pst_r_i32(r, &active) || !pst_r_u32(r, &v->cur_addr) ||
-        !pst_r_u32(r, &v->repeat_addr))
+        !pst_r_u32(r, &v->repeat_addr) || !pst_r_u32(r,&v->sample_bank) ||
+        !pst_r_u32(r,&v->pending_bank))
         return 0;
+    if(v->sample_bank>=SPU_SAMPLE_BANKS || v->pending_bank>=SPU_SAMPLE_BANKS)return 0;
     v->active = (int)active;
     for (int i = 0; i < SPU_BLOCK_SAMPLES; i++)
         if (!pst_r_i16(r, &v->samples[i])) return 0;

@@ -138,6 +138,14 @@ void spu_cd_audio_reset(void);
 /* Get pointer to SPU RAM for direct access (512KB) */
 const uint8_t* spu_get_ram(void);
 
+/* Opt-in enhancement assets. Bank 0 is hardware RAM; immutable ADPCM banks
+ * 1..31 reside outside it. A binding is consumed at the next KEYON on that
+ * voice, preserving the native decoder, pitch, envelopes, mixer and KEYOFF.
+ * Bank addresses are byte offsets (the voice registers still use /8 units).
+ * Both active and pending bindings are part of the SPU snapshot wire. */
+int spu_register_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
+int spu_bind_next_voice_bank(unsigned voice, uint32_t bank);
+
 /* ---- Verified-enhancement shadow tap (consumed by spu_shadow.c) ---------
  *
  * Present-time, opt-in float SPU re-render. When the shadow is enabled,

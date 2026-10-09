@@ -1610,6 +1610,10 @@ if(BUILD_TESTING)
     add_test(NAME spu_pitch_zero_test
              COMMAND spu_pitch_zero_test)
 
+    add_executable(spu_sample_banks_test tests/test_spu_sample_banks.c)
+    target_include_directories(spu_sample_banks_test PRIVATE include)
+    add_test(NAME spu_sample_banks_test COMMAND spu_sample_banks_test)
+
     add_executable(spu_gaussian_test tests/test_spu_gaussian.c)
     target_include_directories(spu_gaussian_test PRIVATE include)
     add_test(NAME spu_gaussian_test COMMAND spu_gaussian_test)

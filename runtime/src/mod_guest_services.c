@@ -107,6 +107,13 @@ int psx_mod_host_write_ram(uint32_t address, const void* data, uint32_t bytes) {
 #define SPU_TRANSFER_ADDR 0x1F801DA6u
 #define SPU_CONTROL 0x1F801DAAu
 
+int psx_mod_spu_sample_bank(uint32_t bank,const void *adpcm,uint32_t bytes) {
+    return spu_register_sample_bank(bank,adpcm,bytes);
+}
+int psx_mod_spu_bind_voice_bank(unsigned voice,uint32_t bank) {
+    return spu_bind_next_voice_bank(voice,bank);
+}
+
 int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
                        uint32_t bytes, int stop_after) {
     if ((spu_address & 7u) || (guest_source & 3u) || (bytes & 3u) ||

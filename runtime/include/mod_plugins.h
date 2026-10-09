@@ -196,6 +196,11 @@ int psx_mod_host_write_ram(uint32_t address, const void* data, uint32_t bytes);
  * Library bookkeeping (transfer callbacks, busy flags) stays the caller's. */
 int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
                        uint32_t bytes, int stop_after);
+/* Private immutable ADPCM residency for opt-in title mods. Does not upload
+ * into or expand the 512 KiB hardware RAM. Bind before the original driver
+ * queues a voice; the bank is latched when its next KEYON reaches the SPU. */
+int psx_mod_spu_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
+int psx_mod_spu_bind_voice_bank(unsigned voice, uint32_t bank);
 /* PsyQ LoadImage completed synchronously: texture-cache flush, GP0 A0h
  * rectangle copy of w*h 16-bit pixels from guest RAM (provenance attributed
  * per word), then GP1(04h) DMA direction CPU->GP0 for uploads the library
