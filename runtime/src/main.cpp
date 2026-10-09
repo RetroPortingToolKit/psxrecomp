@@ -17802,6 +17802,14 @@ int main(int argc, char** argv) {
             ls.scanline_strength_pct = seed.has_scanline_strength
                 ? (int)(seed.scanline_strength * 100.0 + 0.5) : 50;
 #endif
+#if defined(RECOMP_LAUNCHER_VSYNC_ADAPTIVE)
+            /* [video] vsync (1 on, 0 off/immediate, -1 adaptive, 2 VRR) <->
+             * the launcher's V-Sync row (1 On, 2 Off, 3 Adaptive). VRR has no
+             * row; it shows as On and is kept unless the player changes it. */
+            ls.vsync = g_video_vsync == 0 ? RECOMP_LAUNCHER_VSYNC_OFF
+                     : g_video_vsync == -1 ? RECOMP_LAUNCHER_VSYNC_ADAPTIVE
+                     : RECOMP_LAUNCHER_VSYNC_ON;
+#endif
             ls.frame_interp       = seed.frame_interpolation ? 1 : 0;
             ls.frame_interp_fps   = seed.frame_interpolation_fps;
             ls.spu_hq             = seed.spu_hq ? 1 : 0;
@@ -18155,6 +18163,16 @@ int main(int argc, char** argv) {
                 if (ls.scanline_strength_pct >= 0) {
                     seed.scanline_strength = ls.scanline_strength_pct / 100.0;
                     seed.has_scanline_strength = true;
+                }
+#endif
+#if defined(RECOMP_LAUNCHER_VSYNC_ADAPTIVE)
+                if (ls.vsync >= RECOMP_LAUNCHER_VSYNC_ON && ls.vsync <= RECOMP_LAUNCHER_VSYNC_ADAPTIVE) {
+                    const int was = g_video_vsync;
+                    g_video_vsync = ls.vsync == RECOMP_LAUNCHER_VSYNC_OFF ? 0
+                                  : ls.vsync == RECOMP_LAUNCHER_VSYNC_ADAPTIVE ? -1
+                                  : (was == 2 ? 2 : 1);
+                    seed.vsync = g_video_vsync;
+                    seed.has_vsync = true;
                 }
 #endif
                 seed.frame_interpolation   = ls.frame_interp != 0;     seed.has_frame_interpolation   = true;
