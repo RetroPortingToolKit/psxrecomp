@@ -458,6 +458,17 @@ static void test_pgxp_title_keys() {
           "PGXP renderer keys are honoured");
     fs::remove(p);
 
+    /* Integer literals for number keys (Crash sets the threshold to 0). */
+    p = write_game_toml("psxrecomp_pgxp_render_int.toml",
+        "[video]\n"
+        "pgxp_depth_threshold = 0\n"
+        "pgxp_tolerance = 1\n"
+        "scanline_strength = 1\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.video_pgxp_depth_threshold == 0.0 && gc.runtime.video_pgxp_tolerance == 1.0,
+          "integer literals load for number keys");
+    fs::remove(p);
+
     p = write_game_toml("psxrecomp_pgxp_render_bad.toml",
         "[video]\n"
         "pgxp_seam = \"huge\"\n");

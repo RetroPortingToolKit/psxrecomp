@@ -783,6 +783,12 @@ static float   s_pgxp_depth_threshold = 4096.0f;   /* SZ units, as DuckStation *
 static int     s_depth_need_clear = 1, s_depth_used = 0;
 static float   s_depth_last_avg = 0.0f;
 static uint64_t s_depth_clears = 0, s_depth_tris = 0, s_seam_tris = 0;
+/* Why each depth clear ran (pgxp TCP depth_clear_reasons): the request
+ * pending when it ran. */
+enum { DCLR_CONFIG, DCLR_AREA, DCLR_FILL, DCLR_THRESHOLD, DCLR_PRESENT, DCLR_N };
+static int      s_depth_need_reason = DCLR_CONFIG;
+static uint64_t s_depth_clear_reason[DCLR_N];
+#define DEPTH_REQUEST_CLEAR(r) (s_depth_need_clear = 1, s_depth_need_reason = (r))
 
 /* TEX program uniforms. */
 static GLint s_uVram = -1, s_uTpage = -1, s_uClut = -1, s_uDepth = -1;
@@ -3230,7 +3236,7 @@ int gl_renderer_pgxp_render_wanted(void) {
 void gl_renderer_set_pgxp_depth(int on) {
     GL_RT_SYNC("set_pgxp_depth");
     s_pgxp_depth = on ? 1 : 0;
-    s_depth_need_clear = 1;
+    DEPTH_REQUEST_CLEAR(DCLR_CONFIG);
     s_pz_valid = 0;
     pgxp_render_wanted_update();
 }
@@ -3249,6 +3255,10 @@ void gl_renderer_set_pgxp_seam(int mode) {
 int  gl_renderer_get_pgxp_seam(void) { return s_pgxp_seam; }
 void gl_renderer_set_pgxp_depth_threshold(float sz) {
     GL_RT_SYNC("set_pgxp_depth_threshold"); s_pgxp_depth_threshold = sz; }
+void gl_renderer_pgxp_depth_clear_reasons(uint64_t out[5]) {
+    GL_RT_SYNC("pgxp_depth_clear_reasons");
+    for (int i = 0; i < DCLR_N; i++) out[i] = s_depth_clear_reason[i];
+}
 void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears,
                                    uint64_t *seam_tris) {
     GL_RT_SYNC("pgxp_render_stats");
@@ -4176,6 +4186,7 @@ static void depth_clear_now(void) {
     s_fb_n = 6;
     flush_flat_batch();
     s_depth_clears++;
+    s_depth_clear_reason[s_depth_need_reason]++;
     { FILE *f = pgxp_tri_log(); if (f) fprintf(f, "C\n"); }
 }
 /* Before a depth-tested triangle: clear when the drawing area changed since
@@ -4186,7 +4197,7 @@ static void depth_before_tri(void) {
     const float avg = (s_pz[0] + s_pz[1] + s_pz[2]) * (1.0f / 3.0f);
     if (s_depth_used && s_pgxp_depth_threshold > 0.0f &&
         avg - s_depth_last_avg >= s_pgxp_depth_threshold)
-        s_depth_need_clear = 1;
+        DEPTH_REQUEST_CLEAR(DCLR_THRESHOLD);
     s_depth_last_avg = avg;
     if (s_depth_need_clear) {
         s_depth_need_clear = 0;
@@ -4987,7 +4998,7 @@ static void glb_set_depth_triangle(int enabled, float z0, float z1, float z2) {
 }
 static void glb_set_draw_area(int x1,int y1,int x2,int y2) {
     if (s_depth_used && (x1 != s_area_x1 || y1 != s_area_y1 || x2 != s_area_x2 || y2 != s_area_y2))
-        s_depth_need_clear = 1;   /* PGXP depth: a new drawing area starts clean */
+        DEPTH_REQUEST_CLEAR(DCLR_AREA);   /* PGXP depth: a new drawing area starts clean */
     flush_flat_batch(); flush_tex_batch(); s_area_x1=x1; s_area_y1=y1; s_area_x2=x2; s_area_y2=y2; sw_set_draw_area(x1,y1,x2,y2); }
 static void glb_get_draw_area(int *x1,int *y1,int *x2,int *y2) { sw_get_draw_area(x1,y1,x2,y2); }
 static void glb_set_draw_offset(int x,int y) { flush_flat_batch(); flush_tex_batch(); s_off_x=x; s_off_y=y; sw_set_draw_offset(x,y); }
@@ -5095,7 +5106,7 @@ static void glb_draw_gouraud_triangle(int x0,int y0,uint16_t c0,int x1,int y1,ui
 }
 static void glb_fill_rect(int x,int y,int w,int h,uint16_t c){
     if (pass_refuse_write("fill", x, y, w, h)) return;
-    if (s_depth_used) s_depth_need_clear = 1;   /* PGXP depth: the image under it is gone */
+    if (s_depth_used) DEPTH_REQUEST_CLEAR(DCLR_FILL);   /* PGXP depth: the image under it is gone */
     if (cpu_raster_required()) {
         int faithful = native_draw_begin();
         sw_fill_rect(x,y,w,h,c);
@@ -7068,7 +7079,7 @@ static void gl_perf_present_enter(void) {
     s_bdg_applied = 0; s_bdg_prims = 0; s_bdg_clearx = -999999;
     /* PGXP depth (G1.14): every displayed frame starts with a clear depth
      * buffer, whatever the game does with its drawing areas. */
-    if (s_depth_used) s_depth_need_clear = 1;
+    if (s_depth_used) DEPTH_REQUEST_CLEAR(DCLR_PRESENT);
     /* Replay: taken on the emulation thread when the present was recorded. */
     { extern void psx_ws_dbg_gate_frame_snapshot(void); if (!rth_replaying()) psx_ws_dbg_gate_frame_snapshot(); }
     if (!s_pf_on || rthf_owns_timer()) return;
@@ -12319,6 +12330,9 @@ static int fg_generate(double t, int swap) {
     const int real_dneed = s_depth_need_clear, real_dused = s_depth_used;
     const float real_davg = s_depth_last_avg;
     const uint64_t real_dtris = s_depth_tris, real_dclears = s_depth_clears;
+    uint64_t real_dreason[DCLR_N];
+    memcpy(real_dreason, s_depth_clear_reason, sizeof real_dreason);
+    const int real_dneed_reason = s_depth_need_reason;
     s_pz_valid = 0;
     s_depth_need_clear = 1;
     DirtyRect pack = s_pack_dirty, sten = s_stencil_stale, cpu = s_cpu_dirty;
@@ -12425,6 +12439,8 @@ static int fg_generate(double t, int swap) {
     s_pc_valid = real_pc; s_pq_valid = real_pq; s_pz_valid = real_pz;
     s_depth_need_clear = real_dneed; s_depth_used = real_dused; s_depth_last_avg = real_davg;
     s_depth_tris = real_dtris; s_depth_clears = real_dclears;
+    memcpy(s_depth_clear_reason, real_dreason, sizeof real_dreason);
+    s_depth_need_reason = real_dneed_reason;
     s_pack_dirty = pack; s_stencil_stale = sten; s_cpu_dirty = cpu;
     s_stencil_valid = sten_valid; s_gpu_dirty = gpu_dirty;
     memcpy(s_present_dirty, pres_dirty, sizeof pres_dirty);

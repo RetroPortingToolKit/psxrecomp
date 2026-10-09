@@ -279,6 +279,13 @@ const char* pad_mode_to_string(int mode) {
 }
 
 // Parse a hex string ("0x...") to uint32_t. Throws on malformed input.
+/* A TOML number key: `0` and `0.0` both mean zero. toml::find<double>
+ * rejects an integer literal and failed the whole load on `key = 0`. */
+static double toml_number(const toml::value& table, const char* key) {
+    const toml::value& v = toml::find(table, key);
+    return v.is_integer() ? static_cast<double>(v.as_integer()) : v.as_floating();
+}
+
 static uint32_t parse_hex(const std::string& s, const std::string& field) {
     try {
         return static_cast<uint32_t>(std::stoul(s, nullptr, 16));
@@ -803,7 +810,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         }
         if (video.contains("pgxp_tolerance")) {
             rt.video_pgxp_tolerance =
-                toml::find<double>(video, "pgxp_tolerance");
+                toml_number(video, "pgxp_tolerance");
         }
         if (video.contains("pgxp_position_fallback")) {
             rt.video_pgxp_position_fallback =
@@ -833,7 +840,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("pgxp_color_correction"))
             rt.video_pgxp_color_correction = toml::find<bool>(video, "pgxp_color_correction");
         if (video.contains("pgxp_depth_threshold"))
-            rt.video_pgxp_depth_threshold = toml::find<double>(video, "pgxp_depth_threshold");
+            rt.video_pgxp_depth_threshold = toml_number(video, "pgxp_depth_threshold");
         if (video.contains("pgxp_seam")) {
             const auto m = toml::find<std::string>(video, "pgxp_seam");
             if (m == "off") rt.video_pgxp_seam = 0;
@@ -858,7 +865,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.video_scanlines = toml::find<bool>(video, "scanlines");
         }
         if (video.contains("scanline_strength")) {
-            double s = toml::find<double>(video, "scanline_strength");
+            double s = toml_number(video, "scanline_strength");
             if (s < 0.0) s = 0.0;
             if (s > 1.0) s = 1.0;
             rt.video_scanline_strength = s;
@@ -2884,7 +2891,7 @@ UserSettings load_user_settings(const fs::path& path) {
             s.scanlines = toml::find<bool>(v, "scanlines"); s.has_scanlines = true;
         });
         if (v.contains("scanline_strength")) try_get([&]{
-            double d = toml::find<double>(v, "scanline_strength");
+            double d = toml_number(v, "scanline_strength");
             if (d < 0.0) d = 0.0;
             if (d > 1.0) d = 1.0;
             s.scanline_strength = d; s.has_scanline_strength = true;

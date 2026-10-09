@@ -224,6 +224,7 @@ typedef struct PGXPStats {
     uint64_t value_mismatch;     /* shadow present but wrong word (stale)    */
     uint64_t trunc_reject;       /* integer part disagreed with native parse */
     uint64_t tolerance_reject;
+    uint64_t depth_only;         /* tolerance-clamped to native, depth kept   */
     uint64_t w_valid;            /* lookups that also carried a usable depth */
     uint64_t produced;           /* RTPS/RTPT projections pushed into shadows */
     uint64_t swc2_stores;        /* GTE reg shadows copied to RAM shadows     */
@@ -353,6 +354,7 @@ typedef struct PGXPTriRecord {
     uint32_t word[3];       /* the packet words                               */
     int32_t  x16[3];        /* position handed to the rasterizer (16.16,     */
     int32_t  y16[3];        /* draw offset and widescreen already applied)   */
+    uint16_t z[3];          /* validated GTE depth handed on (0 = none)       */
 } PGXPTriRecord;
 void pgxp_note_triangle_detail(const PGXPTriRecord *rec);
 /* Returns the total number of triangles ever recorded. */
