@@ -415,6 +415,9 @@ int gte_nclip_native_wide_sign(int32_t mac0, int* sign) {
 int gte_nclip_native_wide_previous_sign(int32_t mac0, int* sign) {
     (void)mac0; (void)sign; return 0;
 }
+int gte_nclip_zero_positive(int32_t mac0, uint32_t pc) {
+    (void)mac0; (void)pc; return 0;
+}
 static int fixture_triangle_recovered;
 void gl_renderer_note_wide_triangle_recovery(int enabled) {
     fixture_triangle_recovered=enabled;

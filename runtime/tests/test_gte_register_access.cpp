@@ -66,6 +66,8 @@ extern "C" int gpu_ws_precise_nclip_enabled(void) {
     return g_test_precise_nclip_enabled;
 }
 extern "C" void gpu_pgxp_rederive_enable(void) {}
+/* This fixture has ordinary RAM only; no optional GPU DMA arena is allocated. */
+extern "C" int psx_mod_gpu_dma_memory_contains(uint32_t, uint32_t) { return 0; }
 static int g_test_shadow_diff = 0;
 extern "C" int psx_overlay_shadow_diff_active(void) { return g_test_shadow_diff; }
 extern "C" void psx_ws_note_gte_project(int) {}
@@ -773,6 +775,7 @@ int test_saturated_nclip_keeps_architectural_result() {
     if (cpu.gte_data[24] != 0 || !gte_nclip_native_wide_sign(0, &sign) || sign != 1 ||
         gte_nclip_native_wide_sign(1, &sign))
         return fail_value("saturated winding rescue preserves native zero MAC0",0,6,0,0,cpu.gte_data[24]);
+    CHECK(!gte_nclip_zero_positive(0, 0x80011008u));
     /* Both quad MAC0 values can saturate to the same zero. Keep each exact
      * sign separately: the preceding triangle points forward, latest back. */
     for (unsigned i=0;i<3;i++) {
@@ -801,6 +804,74 @@ int test_saturated_nclip_keeps_architectural_result() {
     gte_execute(&cpu, 6);
     if (gte_nclip_native_wide_sign(0, &sign))
         return fail_value("stale NCLIP projection refuses rescue",0,6,0,0,1);
+    g_test_precise_nclip_enabled = 0;
+    return 0;
+}
+
+int test_zero_nclip_requires_current_safe_projection() {
+    CPUState cpu{};
+    gte_precision_tracking_set(1);
+    g_test_precise_nclip_enabled = 1;
+    pgxp_set_culling(0);
+    gte_nclip_exact_set_enabled(1);
+    /* Captured terrain quad801ACC44, first three vertices. Both first vertices
+     * quantize to (221,45), although their precise face has positive area. */
+    const int16_t rt[] = {3518,0,-2096,-375,4029,-629,2061,732,3460};
+    for (unsigned i = 0; i < 4; ++i)
+        cpu.gte_ctrl[i] = (uint16_t)rt[2*i] | ((uint32_t)(uint16_t)rt[2*i+1] << 16);
+    cpu.gte_ctrl[4] = (uint32_t)(int32_t)rt[8];
+    cpu.gte_ctrl[5] = (uint32_t)-4521; cpu.gte_ctrl[6] = 2122;
+    cpu.gte_ctrl[7] = (uint32_t)-5132;
+    cpu.gte_ctrl[24] = 160u << 16; cpu.gte_ctrl[25] = 120u << 16;
+    cpu.gte_ctrl[26] = 350;
+    const int16_t v[3][3] = {{9970,-1315,6223},{9938,-1315,6172},{9970,-894,6223}};
+    auto project = [&](bool reverse = false) {
+        for (unsigned i = 0; i < 3; ++i) {
+            unsigned j = reverse ? 2-i : i;
+            cpu.gte_data[2*i] = (uint16_t)v[j][0] | ((uint32_t)(uint16_t)v[j][1] << 16);
+            cpu.gte_data[2*i+1] = (uint32_t)(int32_t)v[j][2];
+        }
+        gte_execute(&cpu, 0x00280030u);
+        gte_execute(&cpu, 6);
+    };
+    const uint32_t site = 0x8013FF14u;
+    gte_nclip_stats_reset();
+    project();
+    CHECK(cpu.gte_data[24] == 0);
+    CHECK(gte_nclip_zero_positive(0, site));
+    GteNclipSiteStat stat{};
+    CHECK(gte_nclip_site_stats(&stat, 1) == 1 && stat.pc == site &&
+          stat.evals == 1 && stat.flips == 1 && stat.fallbacks == 0);
+    CHECK(!gte_nclip_zero_positive(-1, site) && !gte_nclip_zero_positive(1, site));
+    CHECK(cpu.gte_data[24] == 0);
+    gte_nclip_exact_set_enabled(0);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    gte_nclip_exact_set_enabled(1);
+    project(true);
+    CHECK(cpu.gte_data[24] == 0 && !gte_nclip_zero_positive(0, site));
+    project();
+    gte_execute(&cpu, 0x2D);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_write_data(&cpu, 24, 0);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_write_ctrl(&cpu, 26, 350);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    cpu.gte_data[17] = 10;
+    gte_execute(&cpu, 6);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_precision_speculative_begin();
+    CHECK(!gte_nclip_zero_positive(0, site));
+    gte_precision_speculative_end();
+    gte_precision_timeline_invalidate();
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_test_seed_precise_projection(0, cpu.gte_data[12] ^ 1u, 221 << 16, 45 << 16, 4906);
+    gte_execute(&cpu, 6);
+    CHECK(!gte_nclip_zero_positive(0, site));
     g_test_precise_nclip_enabled = 0;
     return 0;
 }
@@ -1366,6 +1437,7 @@ int main() {
     if (int rc = test_precise_sxy_invalidation()) return rc;
     if (int rc = test_precise_nclip_is_title_scoped()) return rc;
     if (int rc = test_saturated_nclip_keeps_architectural_result()) return rc;
+    if (int rc = test_zero_nclip_requires_current_safe_projection()) return rc;
     if (int rc = test_precision_speculative_transaction()) return rc;
     if (int rc = test_pgxp_probe_does_not_count_geometry_lookup()) return rc;
     if (int rc = test_preserve_projection_is_shadow_only()) return rc;

@@ -74,6 +74,9 @@ int mdec_recently_active(uint32_t f) { (void)f; return 0; }
 void gte_execute(CPUState *cpu, uint32_t cmd) { (void)cpu; (void)cmd; }
 static int precise_sign_valid, precise_sign;
 static int previous_sign_valid, previous_sign;
+int gte_nclip_zero_positive(int32_t mac0, uint32_t pc) {
+    (void)mac0; (void)pc; return 0;
+}
 int gte_nclip_native_wide_sign(int32_t mac0, int* sign) {
     (void)mac0; *sign = precise_sign; return precise_sign_valid;
 }
