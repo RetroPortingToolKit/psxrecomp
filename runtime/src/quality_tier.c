@@ -48,18 +48,20 @@ static int apple_gen(const char *s, int *variant) {
     return gen;
 }
 
-/* Ultra is the default (owner decision 2026-10-08): dynamic resolution
- * (down to native x1), Smooth motion from surplus only and the adaptive
- * aspect absorb most hardware live. A GPU class steps down only when Ultra
- * cannot hold 60 Hz even at that floor: software GL, the Steam Deck's APU,
- * mobile GPUs and the weakest integrated GPUs (Intel HD/UHD, small AMD
- * "Radeon Graphics"/Vega iGPUs) go to Low; mid integrated GPUs to Medium.
- * Returns -1 when the name says nothing we know (=> Ultra). */
+/* Autodetect picks between Low and Ultra only (owner decision 2026-10-08):
+ * low-end machines -- software GL, the Steam Deck's APU, mobile GPUs, every
+ * integrated GPU up to the 890M class, Apple M1/M2 base chips, GeForce MX/GT
+ * -- start on Low; everything else, unknown GPUs included, starts on Ultra
+ * with dynamic resolution, Smooth motion from surplus and the adaptive aspect
+ * as the safety net. Medium and High are manual choices. Returns -1 when the
+ * name says nothing we know (=> Ultra). */
 static int gpu_tier(const char *g, const char **why) {
     int variant = 0;
-    if (apple_gen(g, &variant)) {
+    const int gen = apple_gen(g, &variant);
+    if (gen) {
         *why = "Apple silicon";
-        return PSX_QUALITY_ULTRA;
+        /* M1 / M2 base GPUs (7-10 cores): low-end class. */
+        return (variant == 0 && gen <= 2) ? PSX_QUALITY_LOW : PSX_QUALITY_ULTRA;
     }
     if (has(g, "llvmpipe") || has(g, "softpipe") || has(g, "swiftshader") ||
         has(g, "basic render") || has(g, "gdi generic") || has(g, "software")) {
@@ -77,7 +79,7 @@ static int gpu_tier(const char *g, const char **why) {
     }
     if (has(g, "nvidia") || has(g, "geforce") || has(g, "quadro") || has(g, "rtx")) {
         *why = "NVIDIA GPU";
-        if (has(g, " mx") || has(g, "gt ") || has(g, "gt1") || has(g, "gt7")) return PSX_QUALITY_MEDIUM;
+        if (has(g, " mx") || has(g, "gt ") || has(g, "gt1") || has(g, "gt7")) return PSX_QUALITY_LOW;
         return PSX_QUALITY_ULTRA;
     }
     if (has(g, "intel")) {
@@ -86,8 +88,7 @@ static int gpu_tier(const char *g, const char **why) {
             return PSX_QUALITY_ULTRA;
         }
         *why = "Intel integrated GPU";
-        if (has(g, "iris") || has(g, "xe") || has(g, "arc")) return PSX_QUALITY_MEDIUM;
-        return PSX_QUALITY_LOW;          /* HD / UHD Graphics */
+        return PSX_QUALITY_LOW;          /* HD / UHD / Iris Xe / Arc iGPU */
     }
     if (has(g, "radeon") || has(g, "amd") || has(g, "ati ")) {
         if (has(g, " rx ") || has(g, "rx 4") || has(g, "rx 5") || has(g, "rx 6") ||
@@ -97,10 +98,8 @@ static int gpu_tier(const char *g, const char **why) {
             return PSX_QUALITY_ULTRA;
         }
         *why = "AMD integrated GPU";
-        if (has(g, "680m") || has(g, "760m") || has(g, "780m") || has(g, "880m") ||
-            has(g, "890m") || has(g, "8060s") || has(g, "8050s"))
-            return PSX_QUALITY_MEDIUM;
-        return PSX_QUALITY_LOW;          /* Vega 3..11, "Radeon(TM) Graphics" */
+        if (has(g, "8060s") || has(g, "8050s")) return PSX_QUALITY_ULTRA;  /* Strix Halo */
+        return PSX_QUALITY_LOW;          /* Vega, 680M-890M, "Radeon(TM) Graphics" */
     }
     return -1;
 }
@@ -126,7 +125,7 @@ int psx_quality_classify(const PsxHostInfo *h, char *reason, size_t reason_cap) 
     if (h && h->logical_cores > 0 && h->logical_cores < 4) {
         if (tier > PSX_QUALITY_LOW) { tier = PSX_QUALITY_LOW; cap_why = "fewer than 4 CPU threads"; }
     } else if (h && h->logical_cores > 0 && h->logical_cores == 4) {
-        if (tier > PSX_QUALITY_MEDIUM) { tier = PSX_QUALITY_MEDIUM; cap_why = "4 CPU threads"; }
+        if (tier > PSX_QUALITY_LOW) { tier = PSX_QUALITY_LOW; cap_why = "4 CPU threads"; }
     }
     if (h && h->ram_mb > 0 && h->ram_mb < 6u * 1024u) {
         if (tier > PSX_QUALITY_LOW) { tier = PSX_QUALITY_LOW; cap_why = "under 6 GB of memory"; }
