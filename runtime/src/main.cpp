@@ -7917,8 +7917,7 @@ static void rewind_host_pause_loop(void) {
  * audio is paused, until every psx_host_pause_push() has been popped. Nothing
  * pushes unless an overlay provider is registered, so titles without one never
  * enter this loop. */
-static void host_pause_service(void);  /* P6 fills this in; no-op until then */
-static void host_pause_service(void) {}
+static void host_pause_service(void);  /* in-game overlay glue (P6), below */
 static bool host_pause_event(const SDL_Event& ev);  /* P3: input sink */
 static bool host_pause_event(const SDL_Event& ev) {
     return psx_host_input_sink_dispatch(&ev) != 0;
@@ -8479,6 +8478,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         /* Pump SDL events to prevent window freeze. */
         psx_local_mouse_begin(sdl_window, local_mouse_live(override));
         if (!drain_host_events()) return ep;
+        host_pause_service();
         savestate_menu_poll_toggle_buttons();
         rewind_poll_toggle_buttons();
         fast_forward_toggle_poll_buttons();
@@ -15815,6 +15815,210 @@ static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
     return v;
 }
 
+/* ---- In-game overlay provider (host_overlay.h P6) --------------------------
+ * When the launcher in RECOMP_UI_ROOT ships recomp_launcher_overlay.h (the
+ * recomp-launcher drop-in does; recomp-ui does not), the same menus run over
+ * the game: Esc, Guide or Start+Select open them. The overlay draws on the GL
+ * thread (P2), takes input first (P3), pauses through P1 (refused, so
+ * non-pausing, in netplay), applies video live (P4) and mod options live (P5).
+ * Everything the overlay asks of the host from the GL thread is posted here
+ * and applied on the main thread in host_pause_service(). PSX_OVERLAY=0
+ * turns it off; without the header none of this is compiled. */
+#if defined(RECOMP_LAUNCHER) && defined(__has_include)
+#if __has_include("recomp_launcher_overlay.h")
+#define PSX_HAS_RECOMP_OVERLAY 1
+#include "recomp_launcher_overlay.h"
+#endif
+#endif
+
+#if defined(PSX_HAS_RECOMP_OVERLAY)
+#include <mutex>
+namespace {
+std::mutex g_ovl_mu;
+bool g_ovl_on = false;
+std::atomic<int> g_ovl_pause_wanted{0};
+bool g_ovl_pause_held = false;
+std::atomic<int> g_ovl_reload_binds{0};
+std::atomic<int> g_ovl_exit{0};
+bool g_ovl_settings_pending = false;
+RecompLauncherCSettings g_ovl_settings_post{};
+RecompLauncherCSettings g_ovl_ls{};
+RecompLauncherCGameInfo g_ovl_gi{};
+std::string g_ovl_argv0, g_ovl_name, g_ovl_keybinds, g_ovl_config, g_ovl_assets;
+const char* const kOvlRenderers[] = {"Software", "OpenGL", "Vulkan"};
+const char* const kOvlLanguages[] = {nullptr};
+
+PsxHostVideoSettings ovl_video_from(const RecompLauncherCSettings& ls) {
+    PsxHostVideoSettings v;
+    psx_video_current(&v);  /* keeps fields the menu does not show */
+    v.fullscreen = ls.fullscreen ? (g_fullscreen ? g_fullscreen : 1) : 0;
+    v.texture_filter = ls.texture_filter ? 1 : 0;
+    v.fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
+    v.scanlines = ls.scanlines ? 1 : 0;
+    v.scanline_strength_pct = ls.scanline_strength_pct;
+    v.present_linear = ls.antialiasing ? 1 : 0;
+    v.dynamic_resolution = ls.dynamic_resolution ? 1 : 0;
+    v.frame_generation = ls.frame_generation ? 1 : 0;
+    v.renderer = ls.renderer;
+    v.render_thread = ls.render_thread ? 1 : 0;
+    v.present_thread = ls.present_thread ? 1 : 0;
+    return v;
+}
+
+int ovl_set_paused(void*, int paused) {
+    if (paused && psx_netplay_active()) return 0;
+    g_ovl_pause_wanted = paused ? 1 : 0;
+    return 1;
+}
+int ovl_netplay_active(void*) { return psx_netplay_active() ? 1 : 0; }
+unsigned ovl_apply_settings(void*, const RecompLauncherCSettings* s) {
+    if (!s) return 0;
+    PsxHostVideoSettings boot, next = ovl_video_from(*s);
+    psx_video_current(&boot);
+    {
+        std::lock_guard<std::mutex> lk(g_ovl_mu);
+        g_ovl_settings_post = *s;
+        g_ovl_settings_pending = true;
+    }
+    (void)boot;
+    unsigned bits = psx_host_video_restart_bits(&g_video_boot, &next), out = 0;
+    if (bits & PSX_VIDEO_RESTART_RENDERER) out |= RECOMP_OVERLAY_RESTART_RENDERER;
+    if (bits & PSX_VIDEO_RESTART_RESOLUTION) out |= RECOMP_OVERLAY_RESTART_INTERNAL_RESOLUTION;
+    if (bits & PSX_VIDEO_RESTART_THREADS) out |= RECOMP_OVERLAY_RESTART_THREADS;
+    return out;
+}
+struct OvlModSet { std::string p, f, o, v; };
+std::vector<OvlModSet> g_ovl_mod_posts;
+/* The overlay never touches the mod provider itself (it runs on the GL
+ * thread): every change is posted here, recorded in the provider and saved to
+ * mods/state.toml on the main thread, and handed to a live-capable plugin.
+ * o == NULL is the feature switch (v "true"/"false"), which needs a restart. */
+int ovl_mod_set_live(void*, const char* p, const char* f, const char* o, const char* v) {
+    if (!p || !f || !v) return 0;
+    if (psx_netplay_active()) return 0;  /* the plan is negotiated with peers */
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    g_ovl_mod_posts.push_back({p, f, o ? o : "", v});
+    return o ? psx_mod_option_live_capable(p, f) : 0;
+}
+void ovl_reload_bindings(void*) { g_ovl_reload_binds = 1; }
+void ovl_request_exit(void*, int) { g_ovl_exit = 1; }
+
+RecompOverlayHost g_ovl_host = {
+    RECOMP_OVERLAY_ABI_VERSION, nullptr, ovl_set_paused, ovl_netplay_active,
+    ovl_apply_settings, ovl_mod_set_live, ovl_reload_bindings, ovl_request_exit,
+};
+
+int ovl_sink(const void* ev, void*) { return recomp_overlay_handle_event(ev); }
+void ovl_draw(int w, int h, void*) { recomp_overlay_render(w, h); }
+
+void ovl_fill(const char* argv0) {
+    const std::filesystem::path dir = exe_dir_from_argv(argv0);
+    g_ovl_argv0 = argv0 ? argv0 : "";
+    g_ovl_keybinds = (dir / "keybinds.ini").string();
+    g_ovl_config = (dir / "config.ini").string();
+    g_ovl_assets = (dir / "assets").string();
+    RecompLauncherCGameInfo& gi = g_ovl_gi;
+    launcher_profile_apply("psx", &gi);
+    gi.name = g_ovl_name.c_str();
+    gi.keybinds_path = g_ovl_keybinds.c_str();
+    gi.config_path = g_ovl_config.c_str();
+    gi.num_players = PSX_MAX_PLAYERS < 4 ? PSX_MAX_PLAYERS : 4;
+    gi.renderer_labels = kOvlRenderers;
+    gi.num_renderers = 2;
+    gi.has_supersampling = 0;            /* restart-only; set before boot */
+    gi.has_dynamic_resolution = 1;
+    gi.has_render_pipeline = 1;
+    gi.has_vsync = 0;
+    gi.has_rewind_depth = 0;
+    gi.mods = PSXRecompV4::mod_runtime_launcher_provider();
+    (void)kOvlLanguages;
+    PsxHostVideoSettings v;
+    psx_video_current(&v);
+    RecompLauncherCSettings& ls = g_ovl_ls;
+    ls.fullscreen = v.fullscreen;
+    ls.texture_filter = v.texture_filter;
+    ls.fmv_filter = cfg_fmv_filter_to_launcher(v.fmv_filter);
+    ls.scanlines = v.scanlines;
+    ls.scanline_strength_pct = v.scanline_strength_pct;
+    ls.antialiasing = v.present_linear;
+    ls.dynamic_resolution = v.dynamic_resolution;
+    ls.frame_generation = v.frame_generation;
+    ls.renderer = v.renderer;
+    ls.render_thread = v.render_thread;
+    ls.present_thread = v.present_thread;
+    for (int i = 0; i < PSX_MAX_PLAYERS && i < RECOMP_LAUNCHER_MAX_PLAYERS; ++i) {
+        ls.player_src[i] = g_players[i].kind;
+        ls.pad_mode[i] = PSXRecompV4::PAD_MODE_ANALOG;
+    }
+}
+}  // namespace
+
+/* Main thread: once the GL context exists (windowed OpenGL only). */
+static void recomp_overlay_setup(const char* argv0, const std::string& title) {
+    const char* e = std::getenv("PSX_OVERLAY");
+    if (g_ovl_on || !g_gl_active || g_headless || (e && *e == '0')) return;
+    g_ovl_name = title;
+    ovl_fill(argv0);
+    if (!recomp_overlay_init(sdl_window, nullptr, &g_ovl_gi, &g_ovl_ls, &g_ovl_host,
+                             g_ovl_assets.c_str()))
+        return;
+    psx_host_set_input_sink(ovl_sink, nullptr);
+    psx_host_overlay_set_draw_cb(ovl_draw, nullptr);
+    g_ovl_on = true;
+    std::fprintf(stdout, "psxrecomp: in-game menu ready (Esc, Guide or Start+Select)\n");
+}
+
+static void host_pause_service(void) {
+    if (!g_ovl_on) return;
+    psx_host_set_ui_capture(recomp_overlay_is_open());
+    const bool want = g_ovl_pause_wanted != 0 && recomp_overlay_is_open();
+    if (want && !g_ovl_pause_held) g_ovl_pause_held = psx_host_pause_push("overlay") != 0;
+    else if (!want && g_ovl_pause_held) { psx_host_pause_pop(); g_ovl_pause_held = false; }
+    RecompLauncherCSettings post{};
+    bool have = false;
+    std::vector<OvlModSet> mods;
+    {
+        std::lock_guard<std::mutex> lk(g_ovl_mu);
+        if (g_ovl_settings_pending) { post = g_ovl_settings_post; have = true; g_ovl_settings_pending = false; }
+        mods.swap(g_ovl_mod_posts);
+    }
+    if (have) {
+        const PsxHostVideoSettings v = ovl_video_from(post);
+        (void)psx_video_apply_live(&v);
+    }
+    if (!mods.empty()) {
+        const RecompLauncherCModProvider* mp = PSXRecompV4::mod_runtime_launcher_provider();
+        for (const OvlModSet& m : mods) {
+            if (m.o.empty()) {
+                if (mp && mp->feature_enable)
+                    (void)mp->feature_enable(mp->ctx, m.p.c_str(), m.f.c_str(), m.v == "true");
+            } else {
+                if (mp && mp->feature_set_option)
+                    (void)mp->feature_set_option(mp->ctx, m.p.c_str(), m.f.c_str(), m.o.c_str(), m.v.c_str());
+                (void)psx_mod_set_option_live(m.p.c_str(), m.f.c_str(), m.o.c_str(), m.v.c_str());
+            }
+        }
+        (void)psx_mod_save_selection();
+    }
+    if (g_ovl_reload_binds.exchange(0)) {
+        psx_keybinds_init(g_ovl_argv0.c_str());
+        load_input_config(g_ovl_argv0.c_str());
+    }
+    if (g_ovl_exit.exchange(0)) {
+        if (psx_netplay_active()) {
+            netplay_soft_exit("overlay_quit");
+        } else {
+            psx_crash_trace_set_exit_origin("overlay_quit");
+            shutdown_runtime();
+            std::exit(0);
+        }
+    }
+}
+#else
+static void recomp_overlay_setup(const char*, const std::string&) {}
+static void host_pause_service(void) {}
+#endif
+
 int main(int argc, char** argv) {
     /* Force line-buffered output so messages appear even if killed. */
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
@@ -19219,6 +19423,8 @@ session_reboot:
         (void)gl_renderer_set_post_aa(g_video_post_aa);
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
         dynres_setup();
+        psx_video_current(&g_video_boot);  /* boot snapshot for restart-only rows */
+        recomp_overlay_setup(argv[0], s_picker_game_name);
         if (dbg_live_scale && g_gl_active) {
             if (!dynres_requested()) g_dynres.active = false;
             const int ceil_s = gl_renderer_dynamic_resolution_ceiling();
