@@ -2717,9 +2717,16 @@ extern "C" int psx_mod_set_option_live(const char* package_id, const char* featu
     for (const ModResolution::Plugin& plugin : s.plan.plugins)
         if (plugin.package_id == package_id && plugin.feature_id == feature_id) in_plan = true;
     if (!in_plan || !psx_mod_option_live_capable(package_id, feature_id)) return 0;
-    /* Only a feature whose plugin re-reads options live sees the new value;
-     * anything else keeps its committed value until the next start. */
-    live_option_values()[live_option_key(package_id, feature_id, option_id)] = value;
+    /* The value is visible to the callbacks while they run (a plugin may
+     * re-read it through psx_mod_current_option_value), but it is kept only
+     * if one of them accepts. Refused by all = nothing changes this session:
+     * the previous value (live or committed) is restored. */
+    auto& values = live_option_values();
+    const std::string key = live_option_key(package_id, feature_id, option_id);
+    auto prev_it = values.find(key);
+    const bool had_prev = prev_it != values.end();
+    const std::string prev = had_prev ? prev_it->second : std::string();
+    values[key] = value;
     int live = 0;
     for (const ModResolution::Plugin& plugin : s.plan.plugins) {
         if (plugin.package_id != package_id || plugin.feature_id != feature_id) continue;
@@ -2727,6 +2734,10 @@ extern "C" int psx_mod_set_option_live(const char* package_id, const char* featu
         if (it == option_changed_plugins().end()) continue;
         PluginCallbackScope scope(s, &plugin);
         if (it->second(option_id, value)) live = 1;
+    }
+    if (!live) {
+        if (had_prev) values[key] = prev;
+        else values.erase(key);
     }
     return live;
 }
