@@ -765,6 +765,8 @@ current base and publishes both parts together through an exclusive temporary
 and atomic replacement. Tails are bounded to 64 KiB; rejected load/encode,
 oversized tails and I/O errors leave the original file intact and writes dirty.
 `memcard_last_flush_result()` and debug `mc_status` expose failure.
+SIO reports a failed write to the guest instead of acknowledging a rejected
+flush as saved.
 
 Each mod session clears the codec before activation. Without a codec, loaded
 tails are preserved opaquely; their game-specific binding can become stale when
