@@ -12821,7 +12821,13 @@ namespace {
      * host (snes_host_lobby.c cb_pump). */
     void ae_np_account_sync(void) {
         static std::string s_auth_url;
-        const std::string& url = g_lnch_lobby_url;
+        /* No lobby URL in settings means the built-in default -- the same
+         * server Connect uses. Without this the account client was never
+         * initialised for a player who never typed a URL, and Sign in failed
+         * with "Could not reach the lobby server" (empty host). */
+        const std::string url = g_lnch_lobby_url.empty()
+                                    ? std::string(psx_lobby_default_url())
+                                    : g_lnch_lobby_url;
         if (url.empty() || url == s_auth_url) return;
         if (s_auth_url.empty()) {
             const std::string secret =
