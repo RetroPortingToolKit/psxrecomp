@@ -1547,12 +1547,18 @@ static void quality_startup(PSXRecompV4::GameConfig& gc,
     PSXRecompV4::UserSettings us = PSXRecompV4::load_user_settings(settings_path);
     const char* redetect = std::getenv("PSX_QUALITY_REDETECT");
     g_quality = psxq::decide(g_quality_offered, us, host, std::getenv("PSX_QUALITY"),
-                             redetect && redetect[0] == '1', quality_gl_probe);
+                             redetect && redetect[0] == '1', quality_gl_probe,
+                             g_headless || g_hidden_window);
     if (const auto* p = quality_preset_for(g_quality.base)) gc.runtime = p->runtime;
-    if (g_quality.detected_now)
-        std::fprintf(stdout, "psxrecomp: graphics preset detected: %s (%s; %s)\n",
+    if (g_quality.detection_skipped)
+        std::fprintf(stdout, "psxrecomp: graphics preset %s (headless / hidden window: "
+                     "no detection)\n", g_quality.preset >= 0
+                     ? psx_quality_name(g_quality.preset) : "none, [video] as configured");
+    else if (g_quality.detected_now)
+        std::fprintf(stdout, "psxrecomp: graphics preset detected: %s (%s; %s)%s\n",
                      psx_quality_name(g_quality.preset), g_quality.reason.c_str(),
-                     g_quality.summary.c_str());
+                     g_quality.summary.c_str(),
+                     g_quality.gl_probed ? "" : " [no GL probe: this run only, not saved]");
     else
         std::fprintf(stdout, "psxrecomp: graphics preset %s%s%s%s\n",
                      psx_quality_name(g_quality.preset),

@@ -167,6 +167,81 @@ static void test_classify() {
     check(psx_quality_from_name("custom") == PSX_QUALITY_CUSTOM, "custom name");
 }
 
+/* Real GL_RENDERER strings: Windows drivers, Mesa (Linux / SteamOS) and
+ * macOS. 16 threads and 32 GB, so only the GPU class decides. */
+static void test_renderer_table() {
+    struct Row { const char* renderer; int want; };
+    static const Row rows[] = {
+        /* Windows (AMD Adrenalin, NVIDIA, Intel) */
+        {"AMD Radeon(TM) Graphics", PSX_QUALITY_LOW},
+        {"AMD Radeon RX Vega 11 Graphics", PSX_QUALITY_LOW},
+        {"AMD Radeon(TM) Vega 8 Graphics", PSX_QUALITY_LOW},
+        {"AMD Radeon(TM) R7 Graphics", PSX_QUALITY_LOW},
+        {"AMD Radeon 780M Graphics", PSX_QUALITY_LOW},
+        {"AMD Radeon(TM) 890M Graphics", PSX_QUALITY_LOW},
+        {"AMD Radeon RX 6800 XT", PSX_QUALITY_ULTRA},
+        {"AMD Radeon RX 7600M XT", PSX_QUALITY_ULTRA},
+        {"AMD Radeon(TM) RX 580 Series", PSX_QUALITY_ULTRA},
+        {"Radeon RX Vega 64", PSX_QUALITY_ULTRA},
+        {"AMD Radeon Pro W6800", PSX_QUALITY_ULTRA},
+        {"AMD Radeon(TM) 8060S Graphics", PSX_QUALITY_ULTRA},
+        {"NVIDIA GeForce RTX 4080 SUPER/PCIe/SSE2", PSX_QUALITY_ULTRA},
+        {"NVIDIA GeForce GTX 1060 6GB/PCIe/SSE2", PSX_QUALITY_ULTRA},
+        {"NVIDIA GeForce MX450/PCIe/SSE2", PSX_QUALITY_LOW},
+        {"NVIDIA GeForce GT 1030/PCIe/SSE2", PSX_QUALITY_LOW},
+        {"Intel(R) UHD Graphics 620", PSX_QUALITY_LOW},
+        {"Intel(R) Iris(R) Xe Graphics", PSX_QUALITY_LOW},
+        {"Intel(R) Arc(TM) Graphics", PSX_QUALITY_LOW},
+        {"Intel(R) Arc(TM) A770 Graphics", PSX_QUALITY_ULTRA},
+        {"GDI Generic", PSX_QUALITY_LOW},
+        {"Microsoft Basic Render Driver", PSX_QUALITY_LOW},
+        /* Mesa */
+        {"AMD Radeon Graphics (radeonsi, renoir, LLVM 15.0.7, DRM 3.54, 6.5.0)", PSX_QUALITY_LOW},
+        {"AMD Radeon Vega 8 Graphics (radeonsi, raven, LLVM 15.0.7, DRM 3.42)", PSX_QUALITY_LOW},
+        {"AMD Radeon 780M (radeonsi, gfx1103_r1, LLVM 17.0.6, DRM 3.57)", PSX_QUALITY_LOW},
+        {"AMD Custom GPU 0405 (radeonsi, vangogh, LLVM 15.0.7, DRM 3.49, 6.1.52-valve16-1-neptune-61)",
+         PSX_QUALITY_LOW},
+        {"AMD Custom GPU 0932 (radeonsi, vangogh, ACO, DRM 3.57)", PSX_QUALITY_LOW},
+        {"AMD Radeon RX 6700 XT (radeonsi, navi22, LLVM 17.0.6, DRM 3.57)", PSX_QUALITY_ULTRA},
+        {"Mesa Intel(R) UHD Graphics 620 (KBL GT2)", PSX_QUALITY_LOW},
+        {"Mesa Intel(R) Xe Graphics (TGL GT2)", PSX_QUALITY_LOW},
+        {"Mesa Intel(R) Arc(tm) Graphics (MTL)", PSX_QUALITY_LOW},
+        {"Mesa Intel(R) Arc(tm) A750 Graphics (DG2)", PSX_QUALITY_ULTRA},
+        {"NVIDIA GeForce RTX 3060/PCIe/SSE2", PSX_QUALITY_ULTRA},
+        {"NV167 (nouveau)", PSX_QUALITY_ULTRA},
+        {"llvmpipe (LLVM 17.0.6, 256 bits)", PSX_QUALITY_LOW},
+        {"zink Vulkan 1.3(AMD Radeon Graphics (RADV RENOIR) (MESA_RADV))", PSX_QUALITY_LOW},
+        /* macOS */
+        {"Apple M1", PSX_QUALITY_LOW},
+        {"Apple M2", PSX_QUALITY_LOW},
+        {"Apple M1 Pro", PSX_QUALITY_ULTRA},
+        {"Apple M2 Max", PSX_QUALITY_ULTRA},
+        {"Apple M3", PSX_QUALITY_ULTRA},
+        {"Apple M4", PSX_QUALITY_ULTRA},
+        {"AMD Radeon Pro 5500M OpenGL Engine", PSX_QUALITY_ULTRA},
+        {"Intel(R) Iris(TM) Plus Graphics OpenGL Engine", PSX_QUALITY_LOW},
+    };
+    for (const Row& r : rows) {
+        PsxHostInfo h = host("x", r.renderer, 16, 32);
+        const int got = psx_quality_classify(&h, nullptr, 0);
+        if (got != r.want) {
+            std::fprintf(stderr, "  renderer \"%s\": got %s, want %s\n", r.renderer,
+                         psx_quality_name(got), psx_quality_name(r.want));
+            check(false, "renderer table");
+        }
+    }
+    /* Linux without a GL probe: the PCI id. */
+    PsxHostInfo deck = host("x", "", 8, 16);
+    std::snprintf(deck.gpu_id, sizeof deck.gpu_id, "0x1002:0x163f");
+    check(psx_quality_classify(&deck, nullptr, 0) == PSX_QUALITY_LOW, "PCI id: Steam Deck -> Low");
+    PsxHostInfo uhd = host("x", "", 8, 16);
+    std::snprintf(uhd.gpu_id, sizeof uhd.gpu_id, "0x8086:0x5917");
+    check(psx_quality_classify(&uhd, nullptr, 0) == PSX_QUALITY_LOW, "PCI id: Intel iGPU -> Low");
+    PsxHostInfo arc = host("x", "", 8, 16);
+    std::snprintf(arc.gpu_id, sizeof arc.gpu_id, "0x8086:0x56a0");
+    check(psx_quality_classify(&arc, nullptr, 0) == PSX_QUALITY_ULTRA, "PCI id: Intel Arc -> Ultra");
+}
+
 static int probe_calls = 0;
 static const char* fake_gl = nullptr;      /* nullptr: the GL probe fails */
 static int fake_probe(char* out, size_t cap) {
@@ -180,6 +255,24 @@ static void test_decide() {
     const unsigned all = 0xFu;
     PSXRecompV4::UserSettings fresh;
     PsxHostInfo m1 = host("Intel(R) Core(TM) i5-8250U", "Intel(R) UHD Graphics 620", 8, 8);
+    {
+        /* The GL probe fails: classified from the OS name for this run, not
+         * saved, so the next launch probes again. */
+        psxq::Decision np = psxq::decide(all, fresh, m1, nullptr, false, fake_probe);
+        check(np.detected_now && !np.persist && !np.gl_probed && np.preset == PSX_QUALITY_LOW,
+              "probe failure: OS-name result used, not persisted");
+        probe_calls = 0;
+        /* Headless / hidden window: no detection, nothing saved. */
+        psxq::Decision hd = psxq::decide(all, fresh, m1, nullptr, false, fake_probe, true);
+        check(hd.detection_skipped && !hd.persist && hd.preset == PSX_QUALITY_NONE &&
+              probe_calls == 0, "headless: no detection, no probe, nothing saved");
+        PSXRecompV4::UserSettings saved_low;
+        saved_low.has_quality_preset = true; saved_low.quality_preset = "low";
+        psxq::Decision hs = psxq::decide(all, saved_low, m1, nullptr, false, fake_probe, true);
+        check(hs.preset == PSX_QUALITY_LOW && !hs.persist,
+              "headless with a saved preset: the saved preset applies");
+    }
+    fake_gl = "Intel(R) UHD Graphics 620";
     psxq::Decision d = psxq::decide(all, fresh, m1, nullptr, false, fake_probe);
     check(d.detected_now && d.persist, "first launch detects and persists");
     check(d.preset == PSX_QUALITY_LOW && d.base == PSX_QUALITY_LOW, "UHD 620 first launch: Low");
@@ -281,6 +374,7 @@ static void test_settings_round_trip() {
 int main() {
     test_parse();
     test_classify();
+    test_renderer_table();
     test_decide();
     test_mask();
     test_settings_round_trip();

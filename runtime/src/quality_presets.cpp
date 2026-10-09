@@ -36,7 +36,7 @@ std::vector<std::string> governed_keys(const PSXRecompV4::GameConfig& gc) {
 
 Decision decide(unsigned offered, const PSXRecompV4::UserSettings& us,
                 PsxHostInfo host, const char* env, bool redetect,
-                const std::function<int(char*, size_t)>& gl_probe) {
+                const std::function<int(char*, size_t)>& gl_probe, bool no_detect) {
     Decision d;
     if (!(offered & 0xFu)) return d;          /* no presets: nothing changes */
     char fp[17];
@@ -49,19 +49,33 @@ Decision decide(unsigned offered, const PSXRecompV4::UserSettings& us,
     const bool due = redetect || saved == PSX_QUALITY_NONE ||
                      (saved != PSX_QUALITY_CUSTOM && !same_hw);
 
-    if (due) {
+    if (due && no_detect) {
+        /* Headless and hidden-window runs (CI, scripted tests) never detect
+         * and never write settings.toml: a saved preset still applies, else
+         * the title's [video] block does. */
+        d.detection_skipped = true;
+        if (saved >= 0 && saved < PSX_QUALITY_COUNT)
+            d.preset = d.base = psx_quality_pick_offered(saved, offered);
+    } else if (due) {
         /* The GPU OpenGL will actually use: a hybrid laptop or a desktop
-         * with an iGPU may name another adapter in the OS. The OS name stays
-         * the fallback (and the fingerprint, which is taken above). */
+         * with an iGPU may name another adapter in the OS. The OS name (or
+         * the Linux PCI id) is only a fallback, and a result reached without
+         * the GL probe is used for this run but not saved, so the next
+         * launch probes again. */
+        bool probed = false;
         if (gl_probe) {
             char r[sizeof host.gpu];
-            if (gl_probe(r, sizeof r)) std::snprintf(host.gpu, sizeof host.gpu, "%s", r);
+            if (gl_probe(r, sizeof r) && r[0]) {
+                std::snprintf(host.gpu, sizeof host.gpu, "%s", r);
+                probed = true;
+            }
         }
         char reason[192];
         d.detected = psx_quality_classify(&host, reason, sizeof reason);
         d.reason = reason;
         d.detected_now = true;
-        d.persist = true;
+        d.gl_probed = probed;
+        d.persist = probed;
         d.preset = d.base = psx_quality_pick_offered(d.detected, offered);
     } else if (saved == PSX_QUALITY_CUSTOM) {
         d.preset = PSX_QUALITY_CUSTOM;
