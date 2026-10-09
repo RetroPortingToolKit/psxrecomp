@@ -2704,7 +2704,9 @@ extern "C" int psx_mod_set_option_live(const char* package_id, const char* featu
     bool in_plan = false;
     for (const ModResolution::Plugin& plugin : s.plan.plugins)
         if (plugin.package_id == package_id && plugin.feature_id == feature_id) in_plan = true;
-    if (!in_plan) return 0;
+    if (!in_plan || !psx_mod_option_live_capable(package_id, feature_id)) return 0;
+    /* Only a feature whose plugin re-reads options live sees the new value;
+     * anything else keeps its committed value until the next start. */
     live_option_values()[live_option_key(package_id, feature_id, option_id)] = value;
     int live = 0;
     for (const ModResolution::Plugin& plugin : s.plan.plugins) {

@@ -368,8 +368,9 @@ int psx_mod_current_option_value(const char* option_id,
  *
  * psx_mod_set_option_live records a new value for a committed feature's
  * option for the rest of the session and notifies its plugin. Returns 1 when
- * a plugin applied it live, 0 when it only takes effect after a restart (or
- * the feature is not in the plan), -1 when refused: during netplay the plan is
+ * a plugin applied it live; 0 when the feature has no live-capable plugin (or
+ * is not in the plan) -- then nothing changes until the next start; -1 when
+ * refused: during netplay the plan is
  * negotiated between peers and must not change. Persisting the choice stays
  * the mod provider's job (mods/state.toml).
  */
