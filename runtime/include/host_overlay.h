@@ -74,6 +74,10 @@ typedef struct PsxHostVideoSettings {
 #define PSX_VIDEO_RESTART_RENDERER    (1u << 0)
 #define PSX_VIDEO_RESTART_RESOLUTION  (1u << 1)
 #define PSX_VIDEO_RESTART_THREADS     (1u << 2)
+/* Netplay is running: live changes beyond presentation (dynamic resolution,
+ * frame generation, filters) were saved but not applied; they take effect in
+ * the next session. */
+#define PSX_VIDEO_RESTART_NETPLAY     (1u << 3)
 
 #define PSX_VIDEO_LIVE_FULLSCREEN     (1u << 0)
 #define PSX_VIDEO_LIVE_TEXTURE_FILTER (1u << 1)
