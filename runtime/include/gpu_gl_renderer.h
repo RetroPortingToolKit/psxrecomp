@@ -543,6 +543,10 @@ void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
 /* Cumulative textured-batch diagnostics: total, then flushes caused by
  * isolation, blend-mode, mask, filter, backdrop-gate, texture-window, capacity. */
 void gl_renderer_batch_diag(uint64_t out[9]);
+/* Cumulative flushes of non-empty batches by caller source line in
+ * gpu_gl_renderer.c (kind 0 textured, 1 flat/gouraud). Returns entries
+ * written; diff two reads to attribute a window. */
+int gl_renderer_batch_sites(int kind, int *lines, uint64_t *counts, int cap);
 
 /* Texture-window batching ([video] texture_window_batching; default off).
  * On: textured prims with different GP0(E2h) texture windows share a batch

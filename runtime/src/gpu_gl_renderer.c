@@ -80,6 +80,7 @@
 #include "gpu_gl_renderer.h"
 #include "gpu_hd_textures.h"
 #include "mod_texture_banks.h"
+#include "gl_batch_policy.h"
 #include "frame_interpolation.h"
 #include "render_pass_plan.h"
 #include "render_pass.h"
@@ -293,8 +294,13 @@ static void gl_perf_mirror_end(void);   /* mirror pass (timestamp pair; splits s
  * draw calls, 3 = mirror draws land in the hr FBO (no per-pass FBO rebind; wide
  * margins go stale + hr gets garbage — perf probe only). */
 static int s_ws_ablate = 0;
-static void flush_tex_batch(void); /* textured-prim batch — defined below, flushed from coherency points */
-static void flush_flat_batch(void); /* flat/gouraud GEO batch (MotK starfield 0x68 dots) */
+static void flush_tex_batch_impl(void); /* textured-prim batch — defined below, flushed from coherency points */
+static void flush_flat_batch_impl(void); /* flat/gouraud GEO batch (MotK starfield 0x68 dots) */
+/* Every flush call site is attributed (gl_renderer_batch_sites): a flush that
+ * draws a non-empty batch counts against its caller's source line. */
+static void batch_site_note(int kind, int line);
+#define flush_tex_batch()  (batch_site_note(0, __LINE__), flush_tex_batch_impl())
+#define flush_flat_batch() (batch_site_note(1, __LINE__), flush_flat_batch_impl())
 static PFN_glGenRenderbuffers  p_glGenRenderbuffers;
 static PFN_glDeleteRenderbuffers p_glDeleteRenderbuffers;
 static PFN_glBindRenderbuffer  p_glBindRenderbuffer;
@@ -3080,7 +3086,6 @@ static void ensure_cpu(void) {
 
 static uint64_t s_scene_prims = 0;     /* frame_perf: scene primitives submitted (pre double-draw) */
 static uint64_t s_scene_prims_tex = 0; /* frame_perf: of which textured (vs flat geometry)         */
-static void flush_tex_batch(void);     /* fwd: drained at the backdrop-phase boundary below */
 static void mark_prim_dirty(const int *xs, const int *ys, int n, int textured) {
     s_scene_prims++;
     int x0 = xs[0], x1 = xs[0], y0 = ys[0], y1 = ys[0];
@@ -3884,7 +3889,7 @@ static void hiw_flush_tail(void) {
     s_hq_vn = 0;
 }
 
-static void flush_tex_batch(void) {
+static void flush_tex_batch_impl(void) {
     if (s_tb_n == 0) return;
     wide_stencil_ready();   /* before any of this batch's GL state */
     int nverts = s_tb_n, semi = s_tb_semi, dmode = s_tb_depth;
@@ -3997,7 +4002,29 @@ static void flat_batch_draw_hr_lines(int nverts, int nl) {
     if (nverts > pos) glDrawArrays(GL_TRIANGLES, pos, nverts - pos);
 }
 
-static void flush_flat_batch(void) {
+#define BATCH_SITE_CAP 128
+typedef struct { int line; uint64_t count; } BatchSite;
+static BatchSite s_batch_sites[2][BATCH_SITE_CAP];
+static void batch_site_note(int kind, int line) {
+    if (kind ? s_fb_n == 0 : s_tb_n == 0) return;
+    BatchSite *t = s_batch_sites[kind];
+    for (unsigned i = (unsigned)line % BATCH_SITE_CAP, n = 0; n < BATCH_SITE_CAP;
+         i = (i + 1) % BATCH_SITE_CAP, n++) {
+        if (t[i].line == line) { t[i].count++; return; }
+        if (!t[i].line) { t[i].line = line; t[i].count = 1; return; }
+    }
+}
+int gl_renderer_batch_sites(int kind, int *lines, uint64_t *counts, int cap) {
+    GL_RT_SYNC("batch_sites");
+    int n = 0;
+    for (int i = 0; i < BATCH_SITE_CAP && n < cap; i++) {
+        const BatchSite *b = &s_batch_sites[kind ? 1 : 0][i];
+        if (b->line) { lines[n] = b->line; counts[n] = b->count; n++; }
+    }
+    return n;
+}
+
+static void flush_flat_batch_impl(void) {
     if (s_fb_n == 0) return;
     wide_stencil_ready();   /* before any of this batch's GL state */
     if (s_fb_mode != GL_TRIANGLES && !hiw_on())
@@ -4566,34 +4593,13 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
         flush_flat_batch();   /* painter order: flat GEO before textured */
         int twx = s_tw_mask_x, twy = s_tw_mask_y, tox = s_tw_off_x, toy = s_tw_off_y;
         int gate = bd_prim_gate(xs, 3, 1); /* backdrop-stretch gate is also a batch key */
-        /* Batch key: keep opaque as -1. Dual-source (4) is only for semi modes
-         * 0/1/3 when mask-check is off — never coalesce opaque into that key.
-         * Mixing opaque+semi under u_semimode==4 made additive particle/glow
-         * batches (CTR Naughty Dog intro binary funnel) paint over later
-         * opaque crate flaps whenever submission order and STP bits disagreed
-         * with the dual-source path's assumptions. */
-        int batch_semi;
-        if (semi < 0)
-            batch_semi = -1;
-        else if (!s_mask_check && semi != 2)
-            batch_semi = 4;
-        else
-            batch_semi = semi;
-        /* STP draw-ORDER correctness. flush_tex_batch's conservative two-pass
-         * path draws pass 1 = every prim's STP=0 texels then pass 2 = every
-         * prim's STP=1 texels — a behind prim's semi texels then overwrite a
-         * front prim's opaque texels (Tomba AP-block / CTR intro flaps). The
-         * dual-source single-pass path avoids that WITHIN one prim, but
-         * batching many overlapping semi quads (digit particles + glow) still
-         * mis-orders against neighbouring opaque geometry. Isolate EVERY
-         * semi-transparent textured prim: drain the open batch, draw this
-         * prim alone (composited fully before the next), let opaque prims
-         * keep batching. Cost is one draw per semi prim. A separately opted-in
-         * immutable bank may batch the single-pass dual-source cases: it
-         * cannot alias a render target, keeps painter order, and still splits
-         * on opaque transitions, bank/state changes, masking or subtraction. */
-        int isolate = semi >= 0 &&
-            !mod_texture_bank_batchable(s_selected_bank_tex != 0, s_mask_check, semi);
+        /* Batch key and isolation come from the build's tier
+         * (gl_batch_policy.h): LLE draws every semi prim alone; HLE keeps
+         * painter-ordered opaque + modes 0/1/3 runs in one dual-source draw. */
+        const GlBatchClass batch_class = gl_batch_classify(semi, s_mask_check,
+            mod_texture_bank_batchable(s_selected_bank_tex != 0, s_mask_check, semi));
+        const int batch_semi = batch_class.key;
+        const int isolate = batch_class.isolate;
         const int tdmode = pgxp_tri_depth_mode(semi);
         if (tdmode) depth_before_tri();
         int reason = -1;
@@ -5947,6 +5953,7 @@ static int init_gpu_raster(void) {
                 "mask-bit stencil, texture window, GPU copy/upload)\n", s_out_scale,
                 s_hiw ? " windowed" : "");
     }
+    fprintf(stdout, "psxrecomp: GL textured batching = %s\n", gl_batch_policy_name());
     return 1;
 }
 

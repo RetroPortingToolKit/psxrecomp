@@ -7207,7 +7207,8 @@ static void handle_audio_stats(int id, const char *json)
              "\"out\":{\"active\":%d,\"mode\":\"%s\",\"host_rate\":%d,"
              "\"fill_ms\":%.1f,\"target_ms\":%.1f,\"underruns\":%llu,"
              "\"overflow_drops\":%llu,"
-             "\"correction\":%.5f}}",
+             "\"correction\":%.5f},"
+             "\"spu_out\":{\"queued\":%u,\"drops\":%llu}}",
              id,
              (unsigned long long)st.tap_frames[0],
              (unsigned long long)st.tap_nonzero[0],
@@ -7232,7 +7233,9 @@ static void handle_audio_stats(int id, const char *json)
              fill_ms, target_ms,
              (unsigned long long)out_underruns,
              (unsigned long long)overflow_drops,
-             correction);
+             correction,
+             spu_output_available(),
+             (unsigned long long)spu_output_overflow_drops());
 }
 
 static void handle_audio_wav(int id, const char *json)
@@ -8666,6 +8669,28 @@ static void handle_frame_perf(int id, const char *json)
              wide[13], wide[14], wide[15], wide[16], wide[17],
              (int)n43[0], n43[1], n43[3], n43[5], n43[6], n43[7], n43[9], npp,
              n43[13], n43[15]);
+}
+
+/* batch_sites: cumulative non-empty batch flushes by caller line in
+ * gpu_gl_renderer.c, "tex" and "flat" as [line,count] pairs. Diff two reads
+ * to attribute a window (always on; no arming). */
+static void handle_batch_sites(int id, const char *json)
+{
+    (void)json;
+    char buf[8192];
+    int len = snprintf(buf, sizeof buf, "{\"id\":%d,\"ok\":true", id);
+    for (int kind = 0; kind < 2; kind++) {
+        int lines[128]; uint64_t counts[128];
+        int n = gl_renderer_batch_sites(kind, lines, counts, 128);
+        len += snprintf(buf + len, sizeof buf - (size_t)len, ",\"%s\":[",
+                        kind ? "flat" : "tex");
+        for (int i = 0; i < n && len < (int)sizeof buf - 64; i++)
+            len += snprintf(buf + len, sizeof buf - (size_t)len, "%s[%d,%llu]",
+                            i ? "," : "", lines[i], (unsigned long long)counts[i]);
+        len += snprintf(buf + len, sizeof buf - (size_t)len, "]");
+    }
+    snprintf(buf + len, sizeof buf - (size_t)len, "}");
+    send_fmt("%s", buf);
 }
 
 /* gl_ws_ablate mode=<0..3>: native-wide mirror ablation for perf attribution.
@@ -15721,6 +15746,7 @@ static const CmdEntry s_commands[] = {
     { "gpu_timeline",      handle_gpu_timeline },
     { "nclip_stats",       handle_nclip_stats },
     { "frame_perf",        handle_frame_perf },
+    { "batch_sites",       handle_batch_sites },
     { "post_aa",           handle_post_aa },
     { "fmv_chroma",        handle_fmv_chroma },
     { "texture_lod",       handle_texture_lod },

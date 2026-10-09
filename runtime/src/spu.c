@@ -52,6 +52,18 @@ static uint32_t endx_latch;
 static uint32_t kon_latch;
 static uint32_t koff_latch;
 
+/* Guest-clocked SPU state (see spu_catch_up). */
+#define SPU_CYCLES_PER_SAMPLE 768u
+#define SPU_OUT_FRAMES        16384u
+static int16_t  s_out[SPU_OUT_FRAMES * 2u];
+static uint32_t s_out_head, s_out_count;
+static uint64_t s_out_drops;
+static uint64_t s_clock;            /* guest cycle the SPU state is current to */
+static uint32_t s_clock_carry;      /* snapshot-restored phase, applied lazily */
+static int      s_clock_valid;
+static int      s_catching_up;
+static int    (*s_output_suppressed)(void);
+
 /* ---- SPU IRQ (I_STAT bit 9) ------------------------------------------- */
 /* Register 0x1F801DA4 holds the IRQ address in 8-byte units (value << 3 =
  * byte address). While SPUCNT bit 6 is set, ANY SPU RAM access touching
@@ -419,6 +431,7 @@ void spu_cd_audio_reset(void) {
 }
 
 void spu_cd_audio_push(const int16_t* stereo, int frames) {
+    spu_catch_up();   /* samples owed so far consume the CD data queued before this push */
     if (!stereo || frames <= 0) return;
 
     uint32_t in_frames = (uint32_t)frames;
@@ -981,9 +994,12 @@ void spu_init(void) {
     s_shadow_tap_on = 0;
     s_shadow_tap_frame = 0;
     spu_shadow_reset();
+    s_clock_valid = 0;
+    s_clock_carry = 0;
+    spu_output_flush();
 }
 
-void spu_render(int16_t* out_stereo, int frames) {
+static void spu_render_block(int16_t* out_stereo, int frames) {
     if (!out_stereo || frames <= 0) return;
 
     uint16_t ctrl = spu_regs[reg_index(0x1F801DAAu)];
@@ -1308,9 +1324,80 @@ void spu_render(int16_t* out_stereo, int frames) {
 
     /* T1 tap: the SPU's final output block as handed to the host layer
      * (post-shadow, pre host fade/mute). Placed here so every spu_render
-     * caller — the vblank pump and the turbo fade tail — is covered. */
+     * block spu_catch_up renders is covered. */
     audio_trace_pcm(AUDIO_TAP_SPU_OUT, out_stereo, frames);
 }
+
+/* ---- Guest-clocked SPU (beads-eio.3.321) ------------------------------
+ * The SPU runs on the guest clock: 768 CPU cycles per 44.1 kHz sample.
+ * spu_catch_up() renders every whole sample owed up to the current guest
+ * cycle before any guest-visible SPU access (register read/write, DMA, CD
+ * input push) and before a snapshot, so what the guest reads (ENVX, ENDX,
+ * capture position, IRQ flag) reflects every sample produced by now. A
+ * KEYON's envelope therefore starts moving at the next sample, not at the
+ * next host audio pump. Rendered output queues in s_out until the host
+ * pump drains it; host-side drops never change SPU state. */
+
+void spu_set_output_gate(int (*suppressed)(void)) { s_output_suppressed = suppressed; }
+
+static void spu_out_push(const int16_t *src, uint32_t frames) {
+    for (uint32_t i = 0; i < frames; i++) {
+        if (s_out_count == SPU_OUT_FRAMES) {   /* host fell behind: drop oldest */
+            s_out_head = (s_out_head + 1u) % SPU_OUT_FRAMES;
+            s_out_count--;
+            s_out_drops++;
+        }
+        const uint32_t at = (s_out_head + s_out_count) % SPU_OUT_FRAMES;
+        s_out[at * 2u] = src[i * 2u];
+        s_out[at * 2u + 1u] = src[i * 2u + 1u];
+        s_out_count++;
+    }
+}
+
+void spu_catch_up(void) {
+    const uint64_t now = psx_get_cycle_count();
+    if (!s_clock_valid) {
+        s_clock = now >= s_clock_carry ? now - s_clock_carry : now;
+        s_clock_carry = 0;
+        s_clock_valid = 1;
+    }
+    if (now < s_clock) { s_clock = now; return; }   /* guest clock rewound */
+    uint64_t frames = (now - s_clock) / SPU_CYCLES_PER_SAMPLE;
+    if (!frames || s_catching_up) return;
+    s_catching_up = 1;
+    s_clock += frames * SPU_CYCLES_PER_SAMPLE;
+    const int keep = !(s_output_suppressed && s_output_suppressed());
+    static int16_t block[2048 * 2];
+    while (frames) {
+        const int n = frames > 2048u ? 2048 : (int)frames;
+        spu_render_block(block, n);
+        if (keep) spu_out_push(block, (uint32_t)n);
+        frames -= (uint64_t)n;
+    }
+    s_catching_up = 0;
+}
+
+uint32_t spu_output_available(void) { return s_out_count; }
+
+uint32_t spu_output_pop(int16_t *out_stereo, uint32_t max_frames) {
+    uint32_t n = s_out_count < max_frames ? s_out_count : max_frames;
+    for (uint32_t i = 0; i < n; i++) {
+        out_stereo[i * 2u] = s_out[s_out_head * 2u];
+        out_stereo[i * 2u + 1u] = s_out[s_out_head * 2u + 1u];
+        s_out_head = (s_out_head + 1u) % SPU_OUT_FRAMES;
+    }
+    s_out_count -= n;
+    return n;
+}
+
+void spu_output_drop(uint32_t frames) {
+    if (frames > s_out_count) frames = s_out_count;
+    s_out_head = (s_out_head + frames) % SPU_OUT_FRAMES;
+    s_out_count -= frames;
+}
+
+void spu_output_flush(void) { s_out_head = 0; s_out_count = 0; }
+uint64_t spu_output_overflow_drops(void) { return s_out_drops; }
 
 void spu_debug_info(SpuDebugInfo* out) {
     if (!out) return;
@@ -1339,6 +1426,7 @@ void spu_debug_info(SpuDebugInfo* out) {
 }
 
 uint32_t spu_read(uint32_t addr) {
+    spu_catch_up();
     if (addr >= 0x1F801C00u && addr <= 0x1F801DFFu) {
         uint32_t idx = reg_index(addr);
         if (idx < SPU_REG_COUNT) {
@@ -1428,6 +1516,7 @@ uint32_t spu_read(uint32_t addr) {
 }
 
 void spu_write(uint32_t addr, uint32_t value) {
+    spu_catch_up();
     if (addr >= 0x1F801C00u && addr <= 0x1F801DFFu) {
         uint32_t idx = reg_index(addr);
         if (idx < SPU_REG_COUNT) {
@@ -1534,6 +1623,7 @@ void spu_write(uint32_t addr, uint32_t value) {
 }
 
 void spu_dma_write(uint32_t word) {
+    spu_catch_up();
     spu_irq_check(transfer_addr, 4u);
     if (transfer_addr + 3 < SPU_RAM_SIZE) {
         spu_ram[transfer_addr]     = (uint8_t)(word & 0xFF);
@@ -1549,6 +1639,7 @@ void spu_dma_write(uint32_t word) {
  * exact mirror of spu_dma_write. Titles carry state through SPU RAM across
  * EXE transitions via this path; returning zeros breaks them. */
 uint32_t spu_dma_read(void) {
+    spu_catch_up();
     uint32_t word = 0;
     spu_irq_check(transfer_addr, 4u);
     if (transfer_addr + 3 < SPU_RAM_SIZE) {
@@ -1726,12 +1817,19 @@ static int spu_r_voice(PstR *r, int idx) {
 #define SPU_SNAPSHOT_TAIL_BYTES \
     (20u + 1u + 2u + 4u + 4u + 1u + 4u + 4u + 4u + 4u + 4u + 2u * (2u + 4u))
 
-uint32_t spu_snapshot_bytes(void) {
+/* + 4: guest-clock phase (cycles since the SPU's last whole sample). States
+ * written before the guest-clocked SPU lack it and still load (phase 0). */
+static uint32_t spu_snapshot_bytes_v1(void) {
     return (uint32_t)(SPU_REG_COUNT * 2u) +
            (SPU_VOICE_COUNT * SPU_VOICE_WIRE_BYTES) + SPU_SNAPSHOT_TAIL_BYTES;
 }
+uint32_t spu_snapshot_bytes(void) { return spu_snapshot_bytes_v1() + 4u; }
+int spu_snapshot_len_ok(uint32_t len) {
+    return len == spu_snapshot_bytes() || len == spu_snapshot_bytes_v1();
+}
 
 void spu_snapshot_write(uint8_t *p) {
+    spu_catch_up();
     PstW w;
     uint32_t n = spu_snapshot_bytes();
     pst_w_init(&w, p, n);
@@ -1758,11 +1856,12 @@ void spu_snapshot_write(uint8_t *p) {
         pst_w_i16(&w, sweep_main_env[ch].level);
         pst_w_u32(&w, sweep_main_env[ch].divider);
     }
+    pst_w_u32(&w, (uint32_t)(psx_get_cycle_count() - s_clock));
 }
 
 int spu_snapshot_read(const uint8_t *p, uint32_t len) {
     PstR r;
-    if (len != spu_snapshot_bytes()) return 0;
+    if (!spu_snapshot_len_ok(len)) return 0;
     pst_r_init(&r, p, len);
     for (uint32_t i = 0; i < SPU_REG_COUNT; i++)
         if (!pst_r_u16(&r, &spu_regs[i])) return 0;
@@ -1784,6 +1883,12 @@ int spu_snapshot_read(const uint8_t *p, uint32_t len) {
             !pst_r_u32(&r, &sweep_main_env[ch].divider))
             return 0;
     }
+    uint32_t phase = 0;
+    if (len == spu_snapshot_bytes() && !pst_r_u32(&r, &phase)) return 0;
+    /* Applied at the next catch-up, once the guest clock is restored too. */
+    s_clock_carry = phase % SPU_CYCLES_PER_SAMPLE;
+    s_clock_valid = 0;
+    spu_output_flush();
     return 1;
 }
 uint8_t*  spu_get_ram_ptr(void){ return spu_ram; }
