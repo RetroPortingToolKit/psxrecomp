@@ -4646,8 +4646,9 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
             any_precise = 1;
             n_precise++;
         }
-        /* PGXP depth (G1.14): only a dataflow shadow carries a validated SZ. */
-        vz[i] = src == PGXP_SRC_DATAFLOW ? sz : 0;
+        /* PGXP depth (G1.14): only a value-validated dataflow shadow carries
+         * SZ, also when the seam clamp kept the native position. */
+        vz[i] = sz;
         /* Native-wide edge recovery is not PGXP: it does not count in n_precise. */
         if (native_wide_projection_x(addr, word, raw_x, raw_y, &px))
             any_precise = 1;
@@ -4660,6 +4661,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         rec.word[i] = word;
         rec.x16[i] = fx[i];
         rec.y16[i] = fy[i];
+        rec.z[i] = vz[i];
     }
     if (geometry) {
         pgxp_note_triangle(n_precise);   /* G1.1 crack exposure: mixed share */
@@ -4668,12 +4670,17 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         rec.op = (uint8_t)(gp0_cmd_buf[0] >> 24);
         pgxp_note_triangle_detail(&rec);
     }
-    if (!any_precise) {
+    const int depth = want_depth && vz[0] && vz[1] && vz[2];
+    if (!any_precise && !depth) {
         gr_set_precise_triangle(0, 0,0, 0,0, 0,0);
         return;
     }
+    /* A triangle with validated depth on every vertex is proven projected
+     * geometry even when the seam clamp left all three at their integers:
+     * fx/fy then are exactly those integers (plus offsets), so the position
+     * is unchanged and only the depth test is added. */
     gr_set_precise_triangle(1, fx[0],fy[0], fx[1],fy[1], fx[2],fy[2]);
-    if (want_depth && vz[0] && vz[1] && vz[2])
+    if (depth)
         gr_set_depth_triangle(1, (float)vz[0], (float)vz[1], (float)vz[2]);
 }
 

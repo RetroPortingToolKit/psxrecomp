@@ -429,6 +429,34 @@ int main(void) {
           PGXP_SRC_DATAFLOW);
     pgxp_set_tolerance(-1.0f);
 
+    /* --- the clamp keeps the native position but the validated depth --- */
+    {
+        int32_t x, y; uint16_t z = 0;
+        pgxp_set_tolerance(0.25f);
+        CHECK(lookup(ADDR_A, PACKED, 160, 80, &x, &y, &z) == PGXP_SRC_NATIVE);
+        CHECK(x == (160 << 16) && y == (80 << 16) && z == SZ3);
+        pgxp_set_tolerance(-1.0f);
+        /* a truncation reject (CPU-modified integer) carries no depth */
+        z = 1;
+        CHECK(lookup(ADDR_A, PACKED, 161, 80, &x, &y, &z) == PGXP_SRC_NATIVE);
+        CHECK(z == 0);
+    }
+
+    /* --- trusted-mod guest regions are tracked like RAM --- */
+    {
+        static const uint32_t APERTURE = 0x809D0004u;   /* GPU DMA aperture   */
+        static const uint32_t MODMEM   = 0x9F000040u;   /* Expansion 1 memory */
+        int32_t x, y; uint16_t z;
+        produce_at(APERTURE);
+        CHECK(lookup(APERTURE & 0x00FFFFFFu, PACKED, 160, 80, &x, &y, &z) ==
+              PGXP_SRC_DATAFLOW);                  /* 24-bit DMA tag form   */
+        CHECK(x == X16 && y == Y16 && z == SZ3);
+        CHECK(lookup(0x801D0004u, PACKED, 160, 80, nullptr, nullptr, nullptr) !=
+              PGXP_SRC_DATAFLOW);                  /* never aliases its RAM mirror */
+        produce_at(MODMEM);
+        CHECK(lookup(MODMEM, PACKED, 160, 80, &x, &y, &z) == PGXP_SRC_DATAFLOW);
+    }
+
     /* --- fallback tier: no address -> position cache, never a depth --- */
     g_fb_valid = 1; g_fb_packed = PACKED; g_fb_x16 = X16; g_fb_y16 = Y16;
     {

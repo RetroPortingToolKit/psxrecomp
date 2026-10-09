@@ -36,6 +36,7 @@
 #include "pgxp_hooks.h"
 #include "cpu_state.h"
 #include "psx_memory.h"
+#include "mod_memory.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -75,13 +76,21 @@ struct PGXPValue {
 };
 
 /* Shadow covers the host RAM backing so the opt-in 8 MB map tracks its high
- * banks; retail sessions only ever touch the low 2 MiB of it. */
-#define PGXP_RAM_WORDS     (PSX_MAIN_RAM_BACKING_BYTES >> 2)
+ * banks; retail sessions only ever touch the low 2 MiB of it. The same array
+ * continues with the trusted-mod guest regions: the GPU DMA aperture (an
+ * enhancement's enlarged primitive arena, e.g. Crash widescreen) and the
+ * Expansion 1 mod memory. Packets built there are tracked exactly like
+ * packets in RAM; without this every vertex an enlarged arena carried drew
+ * native and had no depth. */
+#define PGXP_RAM_WORDS      (PSX_MAIN_RAM_BACKING_BYTES >> 2)
+#define PGXP_APERTURE_WORDS (PSX_MOD_GPU_DMA_APERTURE_SIZE >> 2)
+#define PGXP_MODMEM_WORDS   (PSX_MOD_MEMORY_SIZE >> 2)
+#define PGXP_SHADOW_WORDS   (PGXP_RAM_WORDS + PGXP_APERTURE_WORDS + PGXP_MODMEM_WORDS)
 #define PGXP_SCRATCH_WORDS (0x400u >> 2)      /* 1 KB scratchpad              */
 #define PGXP_REG_HI        32
 #define PGXP_REG_LO        33
 
-static PGXPValue *s_ram = nullptr;            /* lazily allocated, 72 MiB VA  */
+static PGXPValue *s_ram = nullptr;            /* lazily allocated: RAM + mod regions */
 static PGXPValue  s_scratch[PGXP_SCRATCH_WORDS];
 static PGXPValue  s_gpr[34];                  /* 32 GPRs + HI + LO            */
 static PGXPValue  s_gte[32];                  /* GTE data registers           */
@@ -137,7 +146,7 @@ extern "C" void pgxp_invalidate_all(void) {
     if (++s_gen == 0) {
         ck_wrapped();
         /* generation wrapped: physically clear so stale slots can't revive */
-        if (s_ram) std::memset(s_ram, 0, PGXP_RAM_WORDS * sizeof(PGXPValue));
+        if (s_ram) std::memset(s_ram, 0, PGXP_SHADOW_WORDS * sizeof(PGXPValue));
         std::memset(s_scratch, 0, sizeof(s_scratch));
         std::memset(s_gpr, 0, sizeof(s_gpr));
         std::memset(s_gte, 0, sizeof(s_gte));
@@ -155,7 +164,7 @@ extern "C" void pgxp_set_enabled(int enabled) {
         s_store_ring = (PGXPStoreRecord *)std::calloc(PGXP_STORE_RING_CAP,
                                                       sizeof(PGXPStoreRecord));
     if (enabled && !s_ram) {
-        s_ram = (PGXPValue *)std::calloc(PGXP_RAM_WORDS, sizeof(PGXPValue));
+        s_ram = (PGXPValue *)std::calloc(PGXP_SHADOW_WORDS, sizeof(PGXPValue));
         if (s_ram)
             resized = 1;
         else
@@ -315,11 +324,19 @@ extern "C" uint64_t pgxp_store_ring(const PGXPStoreRecord **ring, uint32_t *cap)
 /* Address mapping + validation                                               */
 /* ------------------------------------------------------------------------- */
 
-/* Guest address -> shadow slot, or NULL for BIOS/MMIO/KSEG2 (untrackable). */
+/* Guest address -> shadow slot, or NULL for BIOS/MMIO/KSEG2 (untrackable).
+ * Unallocated mod-region addresses map too: nothing stores there, and every
+ * consumer validates the shadow against the actual guest word. */
 static inline PGXPValue *pgxp_ptr(uint32_t addr) {
     uint32_t m = addr & 0x1FFFFFFFu;
     if (m < PSX_MAIN_RAM_WINDOW_BYTES)         /* RAM + its mirrors (live map) */
         return s_ram ? &s_ram[psx_ram_canonical_offset(m) >> 2] : nullptr;
+    if (m - PSX_MOD_GPU_DMA_APERTURE_BASE < PSX_MOD_GPU_DMA_APERTURE_SIZE)
+        return s_ram ? &s_ram[PGXP_RAM_WORDS +
+                              ((m - PSX_MOD_GPU_DMA_APERTURE_BASE) >> 2)] : nullptr;
+    if (m - PSX_MOD_MEMORY_BASE < PSX_MOD_MEMORY_SIZE)
+        return s_ram ? &s_ram[PGXP_RAM_WORDS + PGXP_APERTURE_WORDS +
+                              ((m - PSX_MOD_MEMORY_BASE) >> 2)] : nullptr;
     if ((m & 0xFFFFFC00u) == 0x1F800000u)      /* scratchpad                  */
         return &s_scratch[(m & 0x3FCu) >> 2];
     return nullptr;
@@ -356,7 +373,7 @@ static int               s_ck_deferred = 0;
 
 static inline size_t ck_index(const PGXPValue *pv) {
     if (pv >= s_scratch && pv < s_scratch + PGXP_SCRATCH_WORDS)
-        return (size_t)PGXP_RAM_WORDS + (size_t)(pv - s_scratch);
+        return (size_t)PGXP_SHADOW_WORDS + (size_t)(pv - s_scratch);
     return (size_t)(pv - s_ram);
 }
 
@@ -401,7 +418,7 @@ extern "C" void pgxp_checkpoint_begin(void) {
     if (s_ck_depth++ != 0) return;             /* the outermost pass journals */
     if (!s_ck_bits) {
         s_ck_bits = (uint8_t *)std::calloc(
-            ((size_t)PGXP_RAM_WORDS + PGXP_SCRATCH_WORDS + 7u) / 8u, 1);
+            ((size_t)PGXP_SHADOW_WORDS + PGXP_SCRATCH_WORDS + 7u) / 8u, 1);
         if (!s_ck_bits) s_ck_lossy = 1;
     }
     s_ck_ram = s_ram;
@@ -1665,17 +1682,26 @@ static int pgxp_get_precise_vertex_impl(uint32_t addr, uint32_t packet_word,
         if (why == 1) {
             if (count) s_stats.trunc_reject++;
             have = 0;
+            pz = 0;
         } else if (why == 2) {
+            /* The seam clamp (G1.10) keeps the native position, but the
+             * shadow still matched this exact word and its integers: its
+             * GTE depth describes this vertex. Depth testing needs only
+             * that, not the sub-pixel position. */
             if (count) s_stats.tolerance_reject++;
+            if (have != PGXP_SRC_DATAFLOW) pz = 0;
             have = 0;
         }
+    } else {
+        pz = 0;
     }
 
     if (!have) {
         if (count) s_stats.native++;
+        if (count && pz != 0) s_stats.depth_only++;
         *x16 = int_x << 16;
         *y16 = int_y << 16;
-        *sz = 0;
+        *sz = pz;
         return PGXP_SRC_NATIVE;
     }
 
