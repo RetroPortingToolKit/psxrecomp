@@ -507,7 +507,8 @@ class LinuxTinyccTest(unittest.TestCase):
             os.mkdir(os.path.join(tmp, 'libc-include'))
             open(os.path.join(tmp, 'libtcc1.a'), 'w').close()
             args = co_mod._tcc_bundle_args(tcc)
-            self.assertEqual(args[:2], ['-B' + tmp, '-nostdlib'])
+            self.assertEqual(args[:3], ['-B' + tmp, '-nostdinc', '-nostdlib'])
+            self.assertIn(os.path.join(tmp, 'include'), args)
             self.assertIn(os.path.join(tmp, 'libc-include'), args)
             self.assertEqual(args[-1], os.path.join(tmp, 'libtcc1.a'))
         finally:

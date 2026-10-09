@@ -5091,7 +5091,10 @@ def _tcc_bundle_args(tcc: str) -> list:
     libtcc1 = os.path.join(d, 'libtcc1.a')
     if not (os.path.isdir(libc_inc) and os.path.isfile(libtcc1)):
         return []
-    return ['-B' + d, '-nostdlib', '-isystem', libc_inc, libtcc1]
+    # -nostdinc: only the bundle's headers (tcc's, then musl's); a Linux box
+    # with libc6-dev installed must not change what a shard compiles against.
+    return ['-B' + d, '-nostdinc', '-nostdlib', '-isystem', os.path.join(d, 'include'),
+            '-isystem', libc_inc, libtcc1]
 
 
 def _compile_dll_tcc(c_path: str, out_dll: str, include_dirs, flavor: int,
