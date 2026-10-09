@@ -15888,8 +15888,13 @@ unsigned ovl_apply_settings(void*, const RecompLauncherCSettings* s) {
         g_ovl_settings_post = *s;
         g_ovl_settings_pending = true;
     }
-    (void)boot;
     unsigned bits = psx_host_video_restart_bits(&g_video_boot, &next), out = 0;
+    /* In a netplay match only presentation applies live (psx_video_apply_live);
+     * tell the menu the rest waits for the next session. */
+    if (psx_netplay_active() &&
+        (psx_host_video_live_changes(&boot, &next) &
+         ~(PSX_VIDEO_LIVE_FULLSCREEN | PSX_VIDEO_LIVE_SCANLINES | PSX_VIDEO_LIVE_PRESENT_LINEAR)))
+        out |= RECOMP_OVERLAY_RESTART_OTHER;
     if (bits & PSX_VIDEO_RESTART_RENDERER) out |= RECOMP_OVERLAY_RESTART_RENDERER;
     if (bits & PSX_VIDEO_RESTART_RESOLUTION) out |= RECOMP_OVERLAY_RESTART_INTERNAL_RESOLUTION;
     if (bits & PSX_VIDEO_RESTART_THREADS) out |= RECOMP_OVERLAY_RESTART_THREADS;
