@@ -116,6 +116,7 @@ uint32_t psx_netplay_rb_rtt_estimate_ms(void) { return 0; }
 #else
 
 #include "netplay_hash_confirm.h"
+#include "netplay_peer_frontier.h"
 #include "netplay_input_hist.h"
 #include "netplay_rb_post.h"
 #include "netplay_snap_ring.h"
@@ -435,6 +436,9 @@ static uint32_t g_agreed_span_lo;
  * otherwise ADVANCE→begin races the follower's agreed and NACK-storms
  * (2026-08-02 post-§39 soak). */
 static uint32_t g_peer_resolved_through;
+/* Per-seat RESOLVED adverts; g_peer_resolved_through is the lowest of them
+ * across every peer seat (netplay_peer_frontier.h). */
+static NetplayPeerFrontier g_peer_frontier;
 /* §41: wall-clock when choose_load/begin first blocked on peer RESOLVED
  * (0 = not waiting). After RB_MOTK_PEER_RESOLVED_GATE_MS, force-open —
  * unbounded defer silently desynced Live (2026-08-02 post-§40 soak). */
@@ -2245,6 +2249,7 @@ static void realign_invalidate_evidence(uint32_t tick)
     }
     if (g_peer_resolved_through > tick)
         g_peer_resolved_through = tick;
+    netplay_peer_frontier_clamp(&g_peer_frontier, tick);
     if (g_local_advertised_through > tick)
         g_local_advertised_through = tick;
     if (g_snaps)
@@ -3295,10 +3300,35 @@ static int maybe_abandon_tip_extend(void)
 
 /* Apply inbound peer RESOLVED: raise g_peer_resolved_through + library
  * convergence, and complete Verify if POST was lost. */
-static void apply_peer_resolved(uint32_t resolved)
+static void apply_peer_resolved(int from, uint32_t advert)
 {
-    if (!g_rb || resolved == 0u)
+    uint32_t seats = psx_netplay_peer_seats();
+    uint32_t resolved;
+    if (!g_rb || advert == 0u)
         return;
+    if (seats == 0u) {
+        /* No seat roster (bare two-seat session): the one peer's advert. */
+        resolved = advert;
+    } else {
+        int seat = -1;
+        if (from >= 0 && (uint32_t)from < NETPLAY_PEER_FRONTIER_SEATS &&
+            (seats & (1u << from)))
+            seat = from;
+        else if ((seats & (seats - 1u)) == 0u) {
+            /* Sole peer: the sender is unambiguous. */
+            seat = 0;
+            while (!(seats & (1u << seat)))
+                seat++;
+        }
+        if (seat < 0)
+            return;
+        netplay_peer_frontier_note(&g_peer_frontier, seat, advert);
+        /* With more than two seats an advert speaks only for its sender:
+         * the frontier every follower has reached is the lowest. */
+        resolved = netplay_peer_frontier_min(&g_peer_frontier, seats);
+        if (resolved == 0u)
+            return;
+    }
     if (resolved > g_peer_resolved_through) {
         g_peer_resolved_through = resolved;
         g_peer_resolved_gate_expired = 0;
@@ -3522,6 +3552,15 @@ static void advance_agreed_watermark_from_hc(void)
             fprintf(stderr,
                     "psxrecomp: rb agreed ADVANCE %u→%u (hc=%u live confirm)\n",
                     (unsigned)old, (unsigned)t, (unsigned)rt);
+            /* §55: every peer matched cores at t >= the bisect cap, so the
+             * fork it bounded is healed. A stale cap refuses every later
+             * episode once its loads leave the ring. */
+            if (netplay_fork_cap_retired(g_bl_fork_cap, t)) {
+                fprintf(stderr,
+                        "psxrecomp: rb fork cap %u retired (agreed %u live confirm)\n",
+                        (unsigned)g_bl_fork_cap, (unsigned)t);
+                g_bl_fork_cap = 0u;
+            }
             fflush(stderr);
             /* §40: peer follow frontier lags local agreed until RESOLVED lands. */
             advertise_agreed_resolved(t);
@@ -6415,6 +6454,7 @@ void psx_netplay_rb_start(void)
     g_agreed_through = 0;
     g_agreed_span_lo = 0;
     g_peer_resolved_through = 0;
+    netplay_peer_frontier_reset(&g_peer_frontier);
     g_peer_resolved_wait_t0_ms = 0ull;
     g_peer_resolved_gate_expired = 0;
     g_past_frontier_sticky = 0;
@@ -6595,6 +6635,7 @@ void psx_netplay_rb_shutdown(void)
     g_agreed_through = 0;
     g_agreed_span_lo = 0;
     g_peer_resolved_through = 0;
+    netplay_peer_frontier_reset(&g_peer_frontier);
     g_peer_resolved_wait_t0_ms = 0ull;
     g_peer_resolved_gate_expired = 0;
     g_past_frontier_sticky = 0;
@@ -7796,7 +7837,7 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
     {
         rnet_u32 resolved = 0;
         while (rnet_session_take_rb_resolved(s, &resolved))
-            apply_peer_resolved(resolved);
+            apply_peer_resolved(rnet_session_rb_last_take_from(s), resolved);
     }
 
     /* Tick settle tracker. Media/lockstep episodes resume into MotK wait/VLC
@@ -9003,7 +9044,7 @@ void psx_netplay_rb_pump(void)
     {
         rnet_u32 resolved = 0;
         while (rnet_session_take_rb_resolved(s, &resolved))
-            apply_peer_resolved(resolved);
+            apply_peer_resolved(rnet_session_rb_last_take_from(s), resolved);
     }
     /* §53b: Live cadence — only HC-confirmed ADVANCE. Aged HEAL / HEAL-FORCE
      * stay at begin/follow: running them every pump under a live HC stall
@@ -9027,7 +9068,7 @@ void psx_netplay_rb_pump(void)
                 (g_peer_commit_epoch != epoch || load > g_peer_commit_tick)) {
                 g_peer_commit_epoch = epoch;
                 g_peer_commit_tick = load;
-                apply_peer_resolved(load);
+                apply_peer_resolved(rnet_session_rb_last_take_from(s), load);
                 (void)maybe_abandon_tip_extend();
             }
             continue;
@@ -9144,7 +9185,7 @@ void psx_netplay_rb_pump(void)
                                 (unsigned)peer_frontier);
                         fflush(stderr);
                     }
-                    apply_peer_resolved(peer_frontier);
+                    apply_peer_resolved(rnet_session_rb_last_take_from(s), peer_frontier);
                     if (!g_agreed_valid || g_agreed_through < peer_frontier) {
                         g_agreed_through = peer_frontier;
                         g_agreed_span_lo = peer_frontier;
@@ -9284,6 +9325,8 @@ void psx_netplay_rb_pump(void)
                             if (g_peer_resolved_through == 0u ||
                                 g_peer_resolved_through > peer_frontier)
                                 g_peer_resolved_through = peer_frontier;
+                            netplay_peer_frontier_clamp(&g_peer_frontier,
+                                                        peer_frontier);
                             g_peer_resolved_gate_expired = 0;
                             g_peer_resolved_wait_t0_ms = 0ull;
                             g_past_frontier_sticky = 1;
