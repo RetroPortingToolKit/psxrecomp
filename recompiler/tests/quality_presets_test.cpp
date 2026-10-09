@@ -130,10 +130,11 @@ static PsxHostInfo host(const char* cpu, const char* gpu, int cores, unsigned gb
 static int tier(const PsxHostInfo& h) { return psx_quality_classify(&h, nullptr, 0); }
 
 static void test_classify() {
-    check(tier(host("Apple M1", "Apple M1", 8, 8)) == PSX_QUALITY_LOW, "M1 8 GB: Low");
+    check(tier(host("Apple M1", "Apple M1", 8, 8)) == PSX_QUALITY_ULTRA,
+          "M1 8 GB: Ultra (dynamic resolution and Smooth motion absorb it)");
     check(tier(host("Apple M4", "Apple M4", 10, 16)) == PSX_QUALITY_ULTRA, "M4: Ultra");
     check(tier(host("Apple M1 Max", "Apple M1 Max", 10, 32)) == PSX_QUALITY_ULTRA, "M1 Max: Ultra");
-    check(tier(host("Apple M2", "Apple M2", 8, 16)) == PSX_QUALITY_MEDIUM, "M2: Medium");
+    check(tier(host("Apple M2", "Apple M2", 8, 16)) == PSX_QUALITY_ULTRA, "M2: Ultra");
     check(tier(host("AMD Custom APU 0405", "", 8, 16)) == PSX_QUALITY_LOW, "Deck by CPU: Low");
     check(tier(host("AMD Custom APU 0932",
                     "AMD Custom GPU 0932 (radeonsi, vangogh, LLVM 15)", 8, 16)) == PSX_QUALITY_LOW,
@@ -147,13 +148,15 @@ static void test_classify() {
               PSX_QUALITY_ULTRA, "RTX 4080: Ultra");
     check(tier(host("x", "llvmpipe (LLVM 17.0.6, 256 bits)", 16, 32)) == PSX_QUALITY_LOW,
           "software GL: Low");
-    check(tier(host("x", "Some Future GPU", 16, 32)) == PSX_QUALITY_HIGH, "unknown GPU: High");
+    check(tier(host("x", "Some Future GPU", 16, 32)) == PSX_QUALITY_ULTRA, "unknown GPU: Ultra");
+    check(tier(host("AMD Ryzen 7 9800X3D 8-Core Processor", "AMD Radeon(TM) Graphics", 16, 48)) ==
+              PSX_QUALITY_LOW, "2-CU Radeon iGPU: Low");
     check(tier(host("x", "NVIDIA GeForce RTX 3060", 4, 16)) == PSX_QUALITY_MEDIUM,
           "4 threads cap at Medium");
     check(tier(host("x", "NVIDIA GeForce RTX 3060", 2, 16)) == PSX_QUALITY_LOW,
           "2 threads cap at Low");
-    check(tier(host("x", "NVIDIA GeForce RTX 3060", 12, 8)) == PSX_QUALITY_MEDIUM,
-          "8 GB caps at Medium");
+    check(tier(host("x", "NVIDIA GeForce RTX 3060", 12, 8)) == PSX_QUALITY_ULTRA,
+          "8 GB does not cap");
     check(tier(host("x", "NVIDIA GeForce RTX 3060", 12, 4)) == PSX_QUALITY_LOW,
           "4 GB caps at Low");
     check(psx_quality_pick_offered(PSX_QUALITY_HIGH, 0xBu) == PSX_QUALITY_MEDIUM,
@@ -176,10 +179,10 @@ static int fake_probe(char* out, size_t cap) {
 static void test_decide() {
     const unsigned all = 0xFu;
     PSXRecompV4::UserSettings fresh;
-    PsxHostInfo m1 = host("Apple M1", "Apple M1", 8, 8);
+    PsxHostInfo m1 = host("Intel(R) Core(TM) i5-8250U", "Intel(R) UHD Graphics 620", 8, 8);
     psxq::Decision d = psxq::decide(all, fresh, m1, nullptr, false, fake_probe);
     check(d.detected_now && d.persist, "first launch detects and persists");
-    check(d.preset == PSX_QUALITY_LOW && d.base == PSX_QUALITY_LOW, "M1 first launch: Low");
+    check(d.preset == PSX_QUALITY_LOW && d.base == PSX_QUALITY_LOW, "UHD 620 first launch: Low");
     check(probe_calls == 1, "a due detection asks GL");
     {
         PsxHostInfo igpu = host("AMD Ryzen 7 9800X3D 8-Core Processor", "NVIDIA GeForce RTX 4080 SUPER", 16, 48);
