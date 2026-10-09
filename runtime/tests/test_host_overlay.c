@@ -50,7 +50,26 @@ static void test_draw(void) {
     CHECK(draws == 1 && !psx_host_overlay_has_draw());
 }
 
+static int sunk = 0;
+static int sink(const void *ev, void *ctx) { (void)ctx; sunk++; return *(const int *)ev == 1; }
+
+static void test_sink(void) {
+    int a = 1, b = 2;
+    CHECK(!psx_host_input_sink_dispatch(&a)); /* none registered */
+    psx_host_set_input_sink(sink, NULL);
+    CHECK(psx_host_input_sink_dispatch(&a) && !psx_host_input_sink_dispatch(&b) && sunk == 2);
+    CHECK(!psx_host_input_sink_dispatch(NULL) && sunk == 2);
+    psx_host_set_input_sink(NULL, NULL);
+    CHECK(!psx_host_input_sink_dispatch(&a));
+    CHECK(!psx_host_ui_capture_active());
+    psx_host_set_ui_capture(5);
+    CHECK(psx_host_ui_capture_active() == 1);
+    psx_host_set_ui_capture(0);
+    CHECK(!psx_host_ui_capture_active());
+}
+
 int main(void) {
+    test_sink();
     test_draw();
     test_pause();
     printf("host_overlay_test: %s\n", g_fail ? "FAIL" : "ok");

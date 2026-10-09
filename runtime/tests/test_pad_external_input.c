@@ -280,7 +280,7 @@ int main(void) {
         int *f[] = { &g.injected_input, &g.headless, &g.netplay_active,
                      &g.netplay_resim, &g.selfcheck_locked, &g.selfcheck_resim,
                      &g.render_pass, &g.savestate_menu_open, &g.rewind_open,
-                     &g.input_guard };
+                     &g.input_guard, &g.ui_capture };
         for (unsigned i = 0; i < sizeof f / sizeof f[0]; i++) {
             *f[i] = 1; CHECK(pad_ext_live(&g) == 0); *f[i] = 0;
         }
