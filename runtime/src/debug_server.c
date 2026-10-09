@@ -9195,6 +9195,18 @@ static void handle_debug_key(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":%s,\"state\":\"%s\"}", id, ok ? "true" : "false", msg);
 }
 
+/* host_pause on=<1|0>: push/pop a host pause (host_overlay.h P1). */
+#include "host_overlay.h"
+static void handle_host_pause(int id, const char *json)
+{
+    int on = json_get_int(json, "on", -1);
+    int ok = 1;
+    if (on == 1) ok = psx_host_pause_push("debug");
+    else if (on == 0) psx_host_pause_pop();
+    send_fmt("{\"id\":%d,\"ok\":%s,\"depth\":%d}", id, ok ? "true" : "false",
+             psx_host_pause_depth());
+}
+
 static void handle_ws_nw(int id, const char *json)
 {
     int on = json_get_int(json, "on", -1);
@@ -15831,6 +15843,7 @@ static const CmdEntry s_commands[] = {
     { "window_size",       handle_window_size },
     { "ws_nw",             handle_ws_nw },
     { "debug_key",         handle_debug_key },
+    { "host_pause",        handle_host_pause },
     { "scanline",          handle_scanline },
     { "ws_backdrop_ring",  handle_ws_backdrop_ring },
     { "ws_ui_groups",      handle_ws_ui_groups },

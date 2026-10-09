@@ -67,6 +67,13 @@ extern "C" int psx_sdl_audio_resume(SDL_AudioDeviceID)
                : -1;
 }
 
+extern "C" void psx_sdl_audio_set_paused(SDL_AudioDeviceID, int paused)
+{
+    if (!s_audio_stream) return;
+    if (paused) (void)SDL_PauseAudioStreamDevice(s_audio_stream);
+    else (void)SDL_ResumeAudioStreamDevice(s_audio_stream);
+}
+
 extern "C" void psx_sdl_audio_close(SDL_AudioDeviceID)
 {
     if (s_audio_stream) SDL_DestroyAudioStream(s_audio_stream);
@@ -138,6 +145,11 @@ extern "C" int psx_sdl_audio_resume(SDL_AudioDeviceID device)
 {
     SDL_PauseAudioDevice(device, 0);
     return 0;
+}
+
+extern "C" void psx_sdl_audio_set_paused(SDL_AudioDeviceID device, int paused)
+{
+    SDL_PauseAudioDevice(device, paused ? 1 : 0);
 }
 
 extern "C" void psx_sdl_audio_close(SDL_AudioDeviceID device)
