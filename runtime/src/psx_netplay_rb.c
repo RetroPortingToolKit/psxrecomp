@@ -116,6 +116,7 @@ uint32_t psx_netplay_rb_rtt_estimate_ms(void) { return 0; }
 #else
 
 #include "netplay_hash_confirm.h"
+#include "netplay_fmv_confirm.h"
 #include "netplay_input_hist.h"
 #include "netplay_rb_post.h"
 #include "netplay_snap_ring.h"
@@ -715,6 +716,8 @@ static uint32_t g_fmv_settle_until;
 static uint32_t g_fmv_lockstep_until;
 static uint32_t g_fmv_media_end_sim;
 static uint32_t g_fmv_core_match_streak;
+/* Highest hash-confirmed tick already counted into the streak. */
+static uint32_t g_fmv_confirm_seen;
 static int g_fmv_lockstep_released; /* sticky: never re-lock after invent on */
 /* Inclusive last tick both peers dense-snapped (media/lockstep/+tip). */
 static uint32_t g_fmv_dense_through;
@@ -1037,21 +1040,31 @@ static int rb_fmv_media_active(void)
 /* After media: grow/shrink lockstep_until from hash_confirm agreement. */
 static void rb_fmv_update_lockstep_gate(uint32_t sim)
 {
-    int matched = 0;
     uint32_t cap;
     uint32_t prev_until;
     if (!g_fmv_media_end_sim || rb_fmv_media_active())
         return;
 
-    if (g_b.hc && !netplay_hc_peek_mismatch(g_b.hc, NULL, NULL, NULL)) {
-        uint32_t need = (sim > 0u) ? (sim - 1u) : 0u;
-        if (netplay_hc_confirm_through(g_b.hc, need))
-            matched = 1;
+    /* Agreement is counted in CONFIRMED ticks, not in "sim-1 is already
+     * confirmed" ticks. The peer's digest for a tick arrives one RTT after
+     * the tick; the peer that runs ahead (usually the host, cross-machine)
+     * never has sim-1 confirmed when it asks, so the old per-tick test reset
+     * the streak every tick and fired a false "MAX unmatched" DESYNC after
+     * every movie even though every digest matched. Only a real mismatch
+     * resets the streak now; a confirm that is merely late leaves it. */
+    {
+        uint32_t gained = 0u;
+        if (g_b.hc && netplay_hc_peek_mismatch(g_b.hc, NULL, NULL, NULL)) {
+            g_fmv_core_match_streak = 0;
+        } else if (g_b.hc && netplay_hc_confirm_through(g_b.hc, g_fmv_media_end_sim)) {
+            const uint32_t rt = netplay_hc_resolved_through(g_b.hc);
+            const uint32_t from = (g_fmv_confirm_seen > g_fmv_media_end_sim)
+                                      ? g_fmv_confirm_seen : g_fmv_media_end_sim;
+            gained = rb_fmv_confirm_gain(from, rt);
+            if (rt > g_fmv_confirm_seen) g_fmv_confirm_seen = rt;
+        }
+        g_fmv_core_match_streak += gained;
     }
-    if (matched)
-        g_fmv_core_match_streak++;
-    else
-        g_fmv_core_match_streak = 0;
 
     /* §93: after MAX-unmatched DESYNC, keep counting so a later rematch can
      * clear invent/begin hold without requiring a new media bout. */
@@ -1237,6 +1250,7 @@ static void rb_fmv_tick_settle(void)
         if (sim >= g_fmv_media_hi)
             g_fmv_media_hi = sim;
         g_fmv_core_match_streak = 0;
+        g_fmv_confirm_seen = 0;
         g_fmv_lockstep_released = 0;
         g_fmv_settle_until = sim + RB_FMV_SETTLE_TICKS;
         g_fmv_lockstep_until = sim + RB_FMV_LOCKSTEP_MIN;
@@ -6498,6 +6512,7 @@ void psx_netplay_rb_cold_reset(void)
     g_fmv_settle_until = 0;
     g_fmv_lockstep_until = 0;
     g_fmv_media_end_sim = 0;
+    g_fmv_confirm_seen = 0;
     g_fmv_core_match_streak = 0;
     g_fmv_lockstep_released = 0;
     g_fmv_dense_through = 0;
@@ -6551,6 +6566,7 @@ void psx_netplay_rb_shutdown(void)
     g_fmv_settle_until = 0;
     g_fmv_lockstep_until = 0;
     g_fmv_media_end_sim = 0;
+    g_fmv_confirm_seen = 0;
     g_fmv_core_match_streak = 0;
     g_fmv_lockstep_released = 0;
     g_fmv_dense_through = 0;
