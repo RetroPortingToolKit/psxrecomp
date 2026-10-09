@@ -53,8 +53,27 @@ static int apple_gen(const char *s, int *variant) {
  * integrated GPU up to the 890M class, Apple M1/M2 base chips, GeForce MX/GT
  * -- start on Low; everything else, unknown GPUs included, starts on Ultra
  * with dynamic resolution, Smooth motion from surplus and the adaptive aspect
- * as the safety net. Medium and High are manual choices. Returns -1 when the
- * name says nothing we know (=> Ultra). */
+ * as the safety net. Medium and High are manual choices.
+ *
+ * The input is a GL_RENDERER string as Windows drivers, Mesa and macOS
+ * report it ("AMD Radeon(TM) Graphics", "AMD Radeon RX Vega 11 Graphics",
+ * "AMD Radeon Graphics (radeonsi, renoir, LLVM 15.0.7, DRM 3.54, ...)",
+ * "Mesa Intel(R) UHD Graphics 620 (KBL GT2)", "NVIDIA GeForce RTX 3060/PCIe/SSE2",
+ * "Apple M2 Pro"). tests: recompiler/tests/quality_presets_test.cpp.
+ * Returns -1 when the name says nothing we know (=> Ultra). */
+
+/* "radeon 680m" ... "radeon 890m": the integrated RDNA parts. */
+static int amd_igpu_number(const char *g) {
+    for (const char *p = strstr(g, "radeon"); p; p = strstr(p + 1, "radeon")) {
+        const char *q = p + 6;
+        if (strncmp(q, "(tm)", 4) == 0) q += 4;
+        while (*q == ' ') q++;
+        if (q[0] >= '1' && q[0] <= '9' && q[1] >= '0' && q[1] <= '9' &&
+            q[2] >= '0' && q[2] <= '9' && q[3] == 'm') return 1;
+    }
+    return 0;
+}
+
 static int gpu_tier(const char *g, const char **why) {
     int variant = 0;
     const int gen = apple_gen(g, &variant);
@@ -63,7 +82,7 @@ static int gpu_tier(const char *g, const char **why) {
         /* M1 / M2 base GPUs (7-10 cores): low-end class. */
         return (variant == 0 && gen <= 2) ? PSX_QUALITY_LOW : PSX_QUALITY_ULTRA;
     }
-    if (has(g, "llvmpipe") || has(g, "softpipe") || has(g, "swiftshader") ||
+    if (has(g, "llvmpipe") || has(g, "softpipe") || has(g, "swiftshader") || has(g, "lavapipe") ||
         has(g, "basic render") || has(g, "gdi generic") || has(g, "software")) {
         *why = "software rendering";
         return PSX_QUALITY_LOW;
@@ -73,35 +92,69 @@ static int gpu_tier(const char *g, const char **why) {
         *why = "Steam Deck GPU";
         return PSX_QUALITY_LOW;
     }
-    if (has(g, "mali") || has(g, "adreno") || has(g, "powervr") || has(g, "videocore")) {
+    if (has(g, "mali") || has(g, "adreno") || has(g, "powervr") || has(g, "videocore") ||
+        has(g, "tegra")) {
         *why = "mobile GPU";
         return PSX_QUALITY_LOW;
     }
     if (has(g, "nvidia") || has(g, "geforce") || has(g, "quadro") || has(g, "rtx")) {
         *why = "NVIDIA GPU";
-        if (has(g, " mx") || has(g, "gt ") || has(g, "gt1") || has(g, "gt7")) return PSX_QUALITY_LOW;
+        if (has(g, " mx") || has(g, "gt ") || has(g, "gt1") || has(g, "gt7") || has(g, "gt6"))
+            return PSX_QUALITY_LOW;
         return PSX_QUALITY_ULTRA;
     }
     if (has(g, "intel")) {
-        if (has(g, "arc") && !has(g, "arc(tm) graphics") && !has(g, "arc graphics")) {
+        /* Arc discrete cards are "Intel(R) Arc(TM) A770 Graphics"; the
+         * integrated Arc of Meteor/Lunar Lake is "Intel(R) Arc(TM) Graphics". */
+        if (has(g, "arc") && (has(g, " a3") || has(g, " a5") || has(g, " a7") ||
+                              has(g, " b5") || has(g, " b7"))) {
             *why = "Intel Arc GPU";
             return PSX_QUALITY_ULTRA;
         }
         *why = "Intel integrated GPU";
-        return PSX_QUALITY_LOW;          /* HD / UHD / Iris Xe / Arc iGPU */
+        return PSX_QUALITY_LOW;          /* HD / UHD / Iris / Xe / Arc iGPU */
     }
     if (has(g, "radeon") || has(g, "amd") || has(g, "ati ")) {
-        if (has(g, " rx ") || has(g, "rx 4") || has(g, "rx 5") || has(g, "rx 6") ||
-            has(g, "rx 7") || has(g, "rx 9") || has(g, "pro w") || has(g, "vega 56") ||
-            has(g, "vega 64")) {
-            *why = "AMD Radeon GPU";
+        if (has(g, "8060s") || has(g, "8050s")) {
+            *why = "AMD Strix Halo";
             return PSX_QUALITY_ULTRA;
         }
-        *why = "AMD integrated GPU";
-        if (has(g, "8060s") || has(g, "8050s")) return PSX_QUALITY_ULTRA;  /* Strix Halo */
-        return PSX_QUALITY_LOW;          /* Vega, 680M-890M, "Radeon(TM) Graphics" */
+        /* Integrated: "Radeon(TM) Graphics", "Radeon Graphics", "Radeon
+         * Vega 8 Graphics", "Radeon RX Vega 11 Graphics" (note the RX),
+         * "Radeon 780M". Discrete Vega is "RX Vega 56/64" (no "Graphics"). */
+        const int vega_igpu = has(g, "vega") && has(g, "graphics") &&
+                              !has(g, "vega 56") && !has(g, "vega 64");
+        if (vega_igpu || has(g, "radeon(tm) graphics") || has(g, "radeon graphics") ||
+            amd_igpu_number(g) || has(g, "r5 graphics") || has(g, "r7 graphics")) {
+            *why = "AMD integrated GPU";
+            return PSX_QUALITY_LOW;
+        }
+        *why = "AMD Radeon GPU";
+        return PSX_QUALITY_ULTRA;        /* RX, Pro, W-series, Vega 56/64 */
     }
     return -1;
+}
+
+/* Linux without a GL probe: the PCI id from sysfs ("0x8086:0x5917").
+ * Vendor-level only, plus the Steam Deck parts. */
+static int pci_tier(const char *id, const char **why) {
+    unsigned vendor = 0, device = 0;
+    if (!id || sscanf(id, "%x:%x", &vendor, &device) != 2) return -1;
+    if (vendor == 0x1002 && (device == 0x163f || device == 0x1435)) {
+        *why = "Steam Deck GPU (PCI id)";
+        return PSX_QUALITY_LOW;
+    }
+    if (vendor == 0x8086) {
+        /* Arc discrete: 0x56xx (Alchemist), 0xe20x (Battlemage). */
+        if ((device & 0xff00) == 0x5600 || (device & 0xfff0) == 0xe200) {
+            *why = "Intel Arc GPU (PCI id)";
+            return PSX_QUALITY_ULTRA;
+        }
+        *why = "Intel integrated GPU (PCI id)";
+        return PSX_QUALITY_LOW;
+    }
+    if (vendor == 0x10de) { *why = "NVIDIA GPU (PCI id)"; return PSX_QUALITY_ULTRA; }
+    return -1;   /* AMD: the id alone does not tell an APU from a card */
 }
 
 int psx_quality_classify(const PsxHostInfo *h, char *reason, size_t reason_cap) {
@@ -116,6 +169,7 @@ int psx_quality_classify(const PsxHostInfo *h, char *reason, size_t reason_cap) 
         why = "Steam Deck";
     }
     if (tier < 0 && g[0]) tier = gpu_tier(g, &why);
+    if (tier < 0 && !g[0] && h && h->gpu_id[0]) tier = pci_tier(h->gpu_id, &why);
     if (tier < 0) tier = gpu_tier(c, &why);      /* Apple: the CPU names the GPU */
     if (tier < 0) { tier = PSX_QUALITY_ULTRA; why = "unknown GPU"; }
 
