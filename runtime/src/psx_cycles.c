@@ -12,7 +12,6 @@
 #include "dma.h"
 #include "interrupts.h"
 #include "sio.h"
-#include "psx_memory.h"
 #include "starvation_ring.h"
 #include "timers.h"
 #if defined(PSX_HAS_RECOMP_NET)
@@ -641,6 +640,20 @@ int psx_idle_skip_is_enabled(void) { return idle_skip_on(); }
  * counter (and its register) lowered by k and never to 1 or below, so the
  * real timeout test still runs. */
 int g_idle_skip_ext = -1;            /* -1 = read PSX_IDLE_SKIP_EXT once */
+/* Last-store tracking (memory.c writes it only while this is set) and the
+ * host writer used to lower a skipped counter. Both live here so every
+ * target that links the cycle model links them too. */
+static int            s_track_dummy;
+static const uint32_t s_no_store = 0xFFFFFFFFu;
+static int            *s_track = &s_track_dummy;
+static const uint32_t *s_last_addr = &s_no_store, *s_last_val = &s_no_store;
+static void (*s_idle_host_write)(uint32_t addr, uint32_t val) = NULL;
+void psx_idle_skip_set_host_writer(void (*w)(uint32_t, uint32_t)) { s_idle_host_write = w; }
+void psx_idle_skip_set_store_tracker(int *gate, const uint32_t *addr, const uint32_t *val) {
+    s_track = gate ? gate : &s_track_dummy;
+    s_last_addr = addr ? addr : &s_no_store;
+    s_last_val = val ? val : &s_no_store;
+}
 enum { IDLE_EDGES_MAX = 8 };
 static uint32_t s_idle_edges = 0;          /* non-anchor edges since the anchor */
 static uint32_t s_idle_iter_edges = 0;     /* edges in the last whole iteration */
@@ -653,23 +666,24 @@ static int idle_skip_ext_on(void) {
         const char *e = getenv("PSX_IDLE_SKIP_EXT");
         g_idle_skip_ext = e ? (e[0] == '1') : 0;
     }
-    return g_idle_skip_ext > 0;
+    /* Without a host writer the counter cannot be lowered: no extension. */
+    *s_track = g_idle_skip_ext > 0 && s_idle_host_write != NULL && s_track != &s_track_dummy;
+    return *s_track;
 }
 
 /* Stores since the last edge: 0, or (extension) one word store to RAM or
  * the scratchpad. *addr/*val name it; addr 0xFFFFFFFF when none. */
 static int idle_stores_ok(uint64_t stores_now, int ext, uint32_t *addr, uint32_t *val) {
-    extern uint32_t g_guest_last_store_addr, g_guest_last_store_val;
     *addr = 0xFFFFFFFFu;
     *val = 0;
     const uint64_t d = stores_now - s_idle_last_stores;
     if (d == 0) return 1;
-    if (!ext || d != 1 || g_guest_last_store_addr == 0xFFFFFFFFu) return 0;
-    const uint32_t phys = g_guest_last_store_addr & 0x1FFFFFFFu;
+    if (!ext || d != 1 || *s_last_addr == 0xFFFFFFFFu) return 0;
+    const uint32_t phys = *s_last_addr & 0x1FFFFFFFu;
     if ((phys & 3u) != 0u) return 0;
     if (!(phys < 0x00800000u || (phys >= 0x1F800000u && phys < 0x1F800400u))) return 0;
-    *addr = g_guest_last_store_addr;
-    *val = g_guest_last_store_val;
+    *addr = *s_last_addr;
+    *val = *s_last_val;
     return 1;
 }
 
@@ -793,8 +807,24 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
     s_idle_last_mmio   = g_mmio_access_count;
 
     if (s_idle_streak < IDLE_STREAK_MIN) return;
+    /* Several edges per pass are accepted only for the store-counter shape
+     * (v_wait). Multi-edge loops with no counter store -- OpenBIOS's
+     * 0xBFC057C0 poll, kernel 0x16BC -- moved R4's boot timing when skipped
+     * (frame 192, cyc +3857), so they keep running for real. */
+    if (s_idle_iter_edges && !s_idle_mem_progress) return;
     uint32_t q = s_idle_quantum;
     uint32_t dist = devices_cycles_to_next_idle_event();
+    /* The devices report distances from where they were last serviced
+     * (s_devices_synced_cycle), which can trail psx_cycle_count by a few
+     * hundred cycles. For the store-counter shape, measure from now: an
+     * overstated distance lands the skip after the event and delivers the
+     * IRQ late (R4 boot, frame 961: +402 cycles). */
+    if (s_idle_iter_edges || s_idle_mem_progress) {
+        const uint64_t lag = psx_cycle_count > s_devices_synced_cycle
+            ? psx_cycle_count - s_devices_synced_cycle : 0;
+        if ((uint64_t)dist <= lag) return;
+        dist -= (uint32_t)lag;
+    }
     if (dist <= q) return;               /* one real iteration reaches it */
     uint32_t k;
     if (s_idle_iter_edges == 0)
@@ -817,7 +847,7 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
     if (s_idle_progress_reg > 0)
         cpu->gpr[s_idle_progress_reg] -= k;
     if (s_idle_mem_progress)
-        psx_host_write_word(s_idle_store_addr, s_idle_store_val - k);
+        s_idle_host_write(s_idle_store_addr, s_idle_store_val - k);
 
     g_idle_skip_count++;
     g_idle_skip_cycles += skip;
