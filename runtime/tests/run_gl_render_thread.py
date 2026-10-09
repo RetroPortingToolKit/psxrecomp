@@ -56,6 +56,8 @@ def main():
     ap.add_argument("--fixture", type=pathlib.Path)
     ap.add_argument("--scales", default="1,4")
     ap.add_argument("--frames", default="80")
+    ap.add_argument("--single", action="store_true",
+                    help="run the fixture once with no arguments; its exit code is the result")
     args = ap.parse_args()
     sdl_includes = [str(pathlib.Path(d).resolve()) for d in args.sdl_include.split(";") if d]
     args.sdl_library = str(pathlib.Path(args.sdl_library).resolve())
@@ -115,6 +117,13 @@ def main():
     if r.returncode:
         print(r.stderr[-3000:])
         return 2
+
+    if args.single:
+        r = run([probe])
+        print(r.stdout[-6000:], r.stderr[-3000:])
+        if r.returncode == SKIP_EXIT:
+            print("SKIP:", r.stderr.strip()[-600:])
+        return r.returncode
 
     ok = True
     first = True

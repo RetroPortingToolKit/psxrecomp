@@ -61,6 +61,9 @@ void gr_set_precise_triangle(int enabled,
  * perspective_texturing). q[i] is the normalized 1/z homogeneous weight at
  * vertex i. enabled == 0 restores the PS1's affine UV interpolation. */
 void gr_set_perspective_triangle(int enabled, float q0, float q1, float q2);
+/* GP0(E1h) bit 9 (dither enable). Only a backend with [video] dithering
+ * implements it; the default renderers stay true colour. */
+void gr_set_dither(int enabled);
 /* PGXP depth for the NEXT triangle (docs/ENHANCEMENTS.md G1.14): the GTE SZ
  * of each vertex (1..65535), taken from validated dataflow shadows. Only a
  * backend with a PGXP depth buffer / perspective-correct colour uses it;
@@ -167,6 +170,7 @@ typedef struct GpuRenderBackend {
                                  int32_t x1, int32_t y1,
                                  int32_t x2, int32_t y2);
     void (*set_perspective_triangle)(int enabled, float q0, float q1, float q2);
+    void (*set_dither)(int enabled);   /* optional: GP0(E1h) bit 9 */
     void (*fill_rect)(int x, int y, int w, int h, uint16_t color);
     void (*copy_rect)(int src_x, int src_y, int dst_x, int dst_y, int w, int h);
     void (*draw_flat_triangle)(int x0, int y0, int x1, int y1, int x2, int y2,

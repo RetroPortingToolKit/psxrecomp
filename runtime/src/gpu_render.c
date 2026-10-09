@@ -177,6 +177,9 @@ void gr_set_perspective_triangle(int enabled, float q0, float q1, float q2) {
     if (g_b->set_perspective_triangle)
         g_b->set_perspective_triangle(enabled, q0, q1, q2);
 }
+void gr_set_dither(int enabled) {
+    if (g_b->set_dither) g_b->set_dither(enabled);
+}
 void gr_set_depth_triangle(int enabled, float z0, float z1, float z2) {
     if (g_b->set_depth_triangle)
         g_b->set_depth_triangle(enabled, z0, z1, z2);
