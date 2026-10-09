@@ -1222,6 +1222,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void psx_web_set_smooth_60fps(int enabled) {
 static int           g_video_scale = 1;     /* internal-resolution SSAA factor */
 static bool          g_video_aa    = true;  /* linear present filtering */
 static int           g_video_post_aa = 0;   /* [video] antialiasing_mode / PSX_AA_MODE (GL_POST_AA_*) */
+static float         g_video_bloom = 0.0f;  /* [video] bloom (PSX_BLOOM overrides) */
 static int           g_video_ss_milli = 1000; /* [video] supersample / PSX_SUPERSAMPLE */
 /* FMV present reconstruction (VIDEO_FMV_FILTER_*), pushed to the GL renderer
  * once the config is resolved. Only consulted while g_video_aa is on. */
@@ -16296,6 +16297,7 @@ int main(int argc, char** argv) {
             }
             g_video_aa         = gc.runtime.video_antialiasing;
             g_video_post_aa    = gc.runtime.video_antialiasing_mode;
+            g_video_bloom      = gc.runtime.video_bloom;
             g_video_ss_milli   = gc.runtime.video_supersample_milli;
             g_video_texfilter  = gc.runtime.video_texture_filter;
             g_video_fmv_filter = gc.runtime.video_fmv_filter;
@@ -19043,6 +19045,7 @@ session_reboot:
         }
         gl_renderer_set_swap_interval(0);
         (void)gl_renderer_set_post_aa(g_video_post_aa);
+        gl_renderer_set_bloom(g_video_bloom);
         g_gl_active = gl_renderer_init_context(s_headless_gl_window) != 0;
         if (!g_gl_active || gr_backend() != GR_BACKEND_OPENGL ||
             !(SDL_GetWindowFlags(s_headless_gl_window) & SDL_WINDOW_HIDDEN)) {
@@ -19254,6 +19257,7 @@ session_reboot:
         gl_renderer_set_dynamic_resolution(
             ((dynres_requested() || dbg_live_scale) && g_video_scale_applies) ? 1 : 0);
         (void)gl_renderer_set_post_aa(g_video_post_aa);
+        gl_renderer_set_bloom(g_video_bloom);
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
         dynres_setup();
         if (dbg_live_scale && g_gl_active) {

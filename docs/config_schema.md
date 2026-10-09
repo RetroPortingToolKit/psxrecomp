@@ -610,6 +610,28 @@ the pixels to show it. Native keeps the window exactly as before.
 downsamples to the window. It accepts 1 to 32 in both `game.toml` and the
 player's `settings.toml`; 1 (the default) is native and unchanged.
 
+### Bloom (`bloom`)
+
+Opt-in glow around lights, OpenGL only. Off (0) changes nothing.
+
+```toml
+[video]
+bloom = 1.0                     # 0.0 (off, default) .. 2.0 strength
+```
+
+Only what 3D primitives (proven from GTE data, so it needs PGXP geometry) and
+additive semi-transparent primitives (blend modes 1 and 3) drew can glow: each
+draw marks its pixels in a spare stencil bit, and a sprite, fill or HUD element
+drawn over them clears the mark, so the HUD never glows. The pass runs on the
+composed game image like `antialiasing_mode` (before it): a quarter-resolution
+bright pass under those marks, three Gaussian iterations and a screen blend.
+It follows 4:3, native-wide, supersample, dynamic resolution, the render
+thread and Smooth motion (generated frames carry the marks of the frame they
+are drawn from). Without PGXP geometry only additive primitives glow.
+`PSX_BLOOM=<0..2>` overrides it for one run and the `bloom` TCP command reads
+or changes it live. It is a plain `[video]` key, so a `[quality.*]` preset can
+turn it off on low-end machines.
+
 ### Anti-aliasing (`antialiasing_mode`, `supersample`)
 
 Both are opt-in and change nothing unless set.
