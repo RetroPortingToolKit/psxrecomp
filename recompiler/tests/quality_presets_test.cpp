@@ -130,11 +130,11 @@ static PsxHostInfo host(const char* cpu, const char* gpu, int cores, unsigned gb
 static int tier(const PsxHostInfo& h) { return psx_quality_classify(&h, nullptr, 0); }
 
 static void test_classify() {
-    check(tier(host("Apple M1", "Apple M1", 8, 8)) == PSX_QUALITY_ULTRA,
-          "M1 8 GB: Ultra (dynamic resolution and Smooth motion absorb it)");
+    check(tier(host("Apple M1", "Apple M1", 8, 8)) == PSX_QUALITY_LOW, "M1: Low");
     check(tier(host("Apple M4", "Apple M4", 10, 16)) == PSX_QUALITY_ULTRA, "M4: Ultra");
     check(tier(host("Apple M1 Max", "Apple M1 Max", 10, 32)) == PSX_QUALITY_ULTRA, "M1 Max: Ultra");
-    check(tier(host("Apple M2", "Apple M2", 8, 16)) == PSX_QUALITY_ULTRA, "M2: Ultra");
+    check(tier(host("Apple M2", "Apple M2", 8, 16)) == PSX_QUALITY_LOW, "M2 base: Low");
+    check(tier(host("Apple M3", "Apple M3", 8, 16)) == PSX_QUALITY_ULTRA, "M3: Ultra");
     check(tier(host("AMD Custom APU 0405", "", 8, 16)) == PSX_QUALITY_LOW, "Deck by CPU: Low");
     check(tier(host("AMD Custom APU 0932",
                     "AMD Custom GPU 0932 (radeonsi, vangogh, LLVM 15)", 8, 16)) == PSX_QUALITY_LOW,
@@ -142,8 +142,8 @@ static void test_classify() {
     check(tier(host("x", "", 8, 16, 1)) == PSX_QUALITY_LOW, "Deck by DMI: Low");
     check(tier(host("Intel(R) Core(TM) i5-8250U", "Intel(R) UHD Graphics 620", 8, 16)) ==
               PSX_QUALITY_LOW, "Intel UHD: Low");
-    check(tier(host("i7", "Intel(R) Iris(R) Xe Graphics", 8, 16)) == PSX_QUALITY_MEDIUM,
-          "Iris Xe: Medium");
+    check(tier(host("i7", "Intel(R) Iris(R) Xe Graphics", 8, 16)) == PSX_QUALITY_LOW,
+          "Iris Xe: Low");
     check(tier(host("AMD Ryzen 9 7950X", "NVIDIA GeForce RTX 4080 SUPER/PCIe/SSE2", 32, 64)) ==
               PSX_QUALITY_ULTRA, "RTX 4080: Ultra");
     check(tier(host("x", "llvmpipe (LLVM 17.0.6, 256 bits)", 16, 32)) == PSX_QUALITY_LOW,
@@ -151,8 +151,8 @@ static void test_classify() {
     check(tier(host("x", "Some Future GPU", 16, 32)) == PSX_QUALITY_ULTRA, "unknown GPU: Ultra");
     check(tier(host("AMD Ryzen 7 9800X3D 8-Core Processor", "AMD Radeon(TM) Graphics", 16, 48)) ==
               PSX_QUALITY_LOW, "2-CU Radeon iGPU: Low");
-    check(tier(host("x", "NVIDIA GeForce RTX 3060", 4, 16)) == PSX_QUALITY_MEDIUM,
-          "4 threads cap at Medium");
+    check(tier(host("x", "NVIDIA GeForce RTX 3060", 4, 16)) == PSX_QUALITY_LOW,
+          "4 threads: Low");
     check(tier(host("x", "NVIDIA GeForce RTX 3060", 2, 16)) == PSX_QUALITY_LOW,
           "2 threads cap at Low");
     check(tier(host("x", "NVIDIA GeForce RTX 3060", 12, 8)) == PSX_QUALITY_ULTRA,
