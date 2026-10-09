@@ -74,6 +74,12 @@ class is detected as Medium: on every in-between part measured, either Low's
 savings or Ultra's dynamic floor decided it. There is no timed benchmark
 yet; the probe is the GPU class, thread count and memory.
 
+The classifier reads the `GL_RENDERER` string as Windows drivers, Mesa and
+macOS report it; the unit test holds a table of real strings from all three.
+On Linux, when the GL probe fails, the sysfs PCI id is used instead (Steam
+Deck parts, Intel integrated vs Arc, NVIDIA); an AMD id alone cannot tell an
+APU from a card, so it falls through to Ultra.
+
 ## When detection runs, and what is saved
 
 settings.toml `[video]` keeps the following:
@@ -86,7 +92,11 @@ settings.toml `[video]` keeps the following:
 | `quality_detected` | what that detection picked |
 
 Detection runs on first launch (no `quality_preset`), whenever the fingerprint
-changes while a preset (not Custom) is in force, and on **Re-detect**. A new
+changes while a preset (not Custom) is in force, and on **Re-detect**. It never
+runs under `--headless` or `--hidden-window` (CI and scripted runs): a saved
+preset applies there, or else the title's `[video]` block, and nothing is
+written. A detection is saved only when the GL probe succeeded; a result from
+the OS name alone is used for that run and the next launch probes again. A new
 machine under Custom is only reported:
 
     psxrecomp: new hardware since your graphics settings were made; your Custom settings are kept
