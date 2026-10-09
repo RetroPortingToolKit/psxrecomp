@@ -1106,6 +1106,7 @@ int main() {
               "a live override must answer later reads");
         check(psx_mod_set_option_live("runtime.ram", "no-such-feature", "size", "x") == 0,
               "features outside the plan are not live-settable");
+        check(psx_mod_save_selection() == 1, "saving the selection mid-session must succeed");
         test_netplay_active = 1;
         check(psx_mod_set_option_live("runtime.ram", "big-ram", "size", "four") == -1,
               "netplay must refuse live option changes");

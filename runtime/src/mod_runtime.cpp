@@ -2694,6 +2694,18 @@ extern "C" int psx_mod_option_live_capable(const char* package_id, const char* f
     return 0;
 }
 
+extern "C" int psx_mod_save_selection(void) {
+    using namespace PSXRecompV4;
+    RuntimeMods& s = state();
+    if (!s.initialized) return 0;
+    std::string error;
+    if (!s.manager.save_state(&error)) {
+        std::fprintf(stderr, "psxrecomp: mods: could not save state.toml: %s\n", error.c_str());
+        return 0;
+    }
+    return 1;
+}
+
 extern "C" int psx_mod_set_option_live(const char* package_id, const char* feature_id,
                                        const char* option_id, const char* value) {
     using namespace PSXRecompV4;
