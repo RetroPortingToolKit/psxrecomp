@@ -99,8 +99,18 @@ static inline void psx_cyc_charge(uint32_t cycles) {
      * (the one place CPU work is scaled); the batch below is the scale-1
      * production path, unchanged. */
     if (PSX_GCS_ACTIVE()) {
-        psx_cpu_charge(cycles);
-        return;
+        /* Opt-in ([timing] guest_cycle_scale_batch, PSX_GCS_BATCH=0/1): scale
+         * here, exactly as psx_cpu_charge would (same fractional carry, same
+         * order), then batch the scaled cycles like the scale-1 path instead
+         * of publishing every 1-cycle step to the devices. The batch is
+         * flushed at the same observation points (stores, MMIO, interrupt
+         * checks, deadlines) as at scale 1. */
+        if (!g_psx_gcs_batch) {
+            psx_cpu_charge(cycles);
+            return;
+        }
+        cycles = psx_gcs_scale(cycles);
+        if (cycles == 0u) return;
     }
 #if defined(__GNUC__) || defined(__clang__)
     if (__builtin_expect(g_ls_replay_active | g_event_step_conservative, 0)) {
