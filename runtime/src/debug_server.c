@@ -9153,6 +9153,18 @@ static void handle_host_pause(int id, const char *json)
              psx_host_pause_depth());
 }
 
+/* host_key name=<SDL scancode name> down=<1|0> (both when omitted). */
+extern int psx_debug_push_host_key(const char *name, int down);
+static void handle_host_key(int id, const char *json)
+{
+    char name[64] = "";
+    json_get_str(json, "name", name, sizeof name);
+    int down = json_get_int(json, "down", -1);
+    int ok = down < 0 ? (psx_debug_push_host_key(name, 1) && psx_debug_push_host_key(name, 0))
+                      : psx_debug_push_host_key(name, down);
+    send_fmt("{\"id\":%d,\"ok\":%s}", id, ok ? "true" : "false");
+}
+
 static void handle_ws_nw(int id, const char *json)
 {
     int on = json_get_int(json, "on", -1);
@@ -15694,6 +15706,7 @@ static const CmdEntry s_commands[] = {
     { "ws_nw",             handle_ws_nw },
     { "debug_key",         handle_debug_key },
     { "host_pause",        handle_host_pause },
+    { "host_key",          handle_host_key },
     { "scanline",          handle_scanline },
     { "ws_backdrop_ring",  handle_ws_backdrop_ring },
     { "ws_ui_groups",      handle_ws_ui_groups },
