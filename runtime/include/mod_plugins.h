@@ -431,6 +431,13 @@ int psx_mod_set_adaptive_display_aspect(uint32_t max_numerator,
  * title's setting before activation.
  */
 int psx_mod_set_widescreen_hud_size(int proportional);
+/* Request an internal rendering height for this mod session (120..8192).
+ * The existing resolution resolver selects an integer raster scale and the
+ * backend applies its normal allocation limits. Zero clears the request.
+ * Player settings are preserved, explicit PSX_INTERNAL_RESOLUTION overrides
+   * win, and each session clears this request before activating its committed
+   * mod plan. */
+int psx_mod_set_internal_resolution(uint32_t target_lines);
 /*
  * Set the wall-clock cadence of simulated guest VBlanks. A value of zero
  * removes frontend pacing; 60 and higher request that many native guest

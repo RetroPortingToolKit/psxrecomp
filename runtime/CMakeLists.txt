@@ -1248,6 +1248,12 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME render_pass_plan_test COMMAND render_pass_plan_test)
 
+    add_executable(mod_internal_resolution_test
+        tests/test_mod_internal_resolution.c
+        src/mod_internal_resolution.c)
+    target_include_directories(mod_internal_resolution_test PRIVATE include)
+    add_test(NAME mod_internal_resolution_test COMMAND mod_internal_resolution_test)
+
     # Motion kit and per-frame driver for render-pass plugins: blending,
     # identity matching, limits and the crossfade fallback, on mock RAM.
     add_executable(render_pass_motion_test
