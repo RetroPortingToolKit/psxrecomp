@@ -1055,6 +1055,10 @@ if(BUILD_TESTING)
         ../recompiler/lib/toml11)
     add_test(NAME text_xlate_fix_only_test COMMAND text_xlate_fix_only_test)
 
+    add_executable(netplay_peer_frontier_test tests/test_netplay_peer_frontier.c)
+    target_include_directories(netplay_peer_frontier_test PRIVATE include)
+    add_test(NAME netplay_peer_frontier_test COMMAND netplay_peer_frontier_test)
+
     add_executable(netplay_content_gate_test tests/test_netplay_content_gate.c)
     target_include_directories(netplay_content_gate_test PRIVATE include)
     add_test(NAME netplay_content_gate_test COMMAND netplay_content_gate_test)
