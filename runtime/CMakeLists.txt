@@ -609,6 +609,11 @@ if(BUILD_TESTING)
     target_include_directories(psx_pad_apply_test PRIVATE include)
     add_test(NAME psx_pad_apply_test COMMAND psx_pad_apply_test)
 
+    # Title-supplied host rumble (psx_mod_set_host_rumble) merge and expiry.
+    add_executable(host_rumble_test tests/test_host_rumble.c)
+    target_include_directories(host_rumble_test PRIVATE include)
+    add_test(NAME host_rumble_test COMMAND host_rumble_test)
+
     add_executable(controller_type_test tests/test_controller_type.cpp)
     target_include_directories(controller_type_test PRIVATE include)
     add_test(NAME controller_type_test COMMAND controller_type_test)
