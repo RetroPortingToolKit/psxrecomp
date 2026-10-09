@@ -713,7 +713,7 @@ VRAM, is off by one step in places: B+F/4 over a fill, B/2+F/2 with an odd
 sum, B+F/4 of a texel. `true` makes every VRAM write use `k*8`, so GL's
 8-bit blend followed by the readback's `>>3` is exactly the PS1's 5-bit
 arithmetic in all four modes (B/2+F/2, B+F, B-F, B+F/4), with set-mask,
-mask check, texel STP and PGXP depth, at any internal scale (checked against
+mask check, texel STP and PGXP depth, at any internal scale and on drivers that quantise the blend constant to 8 bits (it uses 128/255 and 64/255, exact in unorm8, instead of 0.5 and 0.25) (checked against
 the formulas and the software rasterizer by `gl_blend_accuracy_test`). The
 visible cost: textured and filled whites present as 248 instead of 255, as
 uploaded images and untextured primitives already do. One divergence
