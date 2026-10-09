@@ -58,25 +58,22 @@ name is the fallback when the probe fails, and the probe is skipped under the
 renderer too.
 
 `quality_tier.c` maps the facts to a tier. It is a pure function, unit-tested in
-`recompiler/tests/quality_presets_test.cpp`:
+`recompiler/tests/quality_presets_test.cpp`. **Ultra is the default.** The
+dynamic systems absorb weaker hardware live: dynamic resolution (a title can
+floor it at native x1), Smooth motion's in-between frames (made from surplus
+only) and the adaptive aspect. A machine steps down only where Ultra cannot
+hold 60 Hz even at that floor:
 
 | GPU | Tier |
 | --- | --- |
-| Software GL (llvmpipe, SwiftShader, Microsoft Basic Render), Steam Deck (Van Gogh, `AMD Custom GPU 0405/0932`), mobile GPUs, Intel HD/UHD, AMD Vega / "Radeon Graphics" APUs, Apple M1 | Low |
-| Apple M2, Intel Iris Xe / Arc iGPU, Radeon 680M–890M class, GeForce MX / GT | Medium |
-| Apple M3, M1 Pro, GTX 9xx/10xx, RX 4xx/5xx, unknown GPU | High |
-| Apple M4 and later, M2+ Pro, any Max/Ultra, RTX, GTX 16, RX 6000+, Intel Arc A | Ultra |
+| Software GL (llvmpipe, SwiftShader, Microsoft Basic Render), Steam Deck (Van Gogh, `AMD Custom GPU 0405/0932`), mobile GPUs, Intel HD/UHD, small AMD iGPUs (Vega, "Radeon(TM) Graphics") | Low |
+| Intel Iris Xe / Arc iGPU, Radeon 680M-890M class, GeForce MX / GT | Medium |
+| Everything else, including every Apple silicon chip and unknown GPUs | Ultra |
 
-Two caps apply after the GPU class. Fewer than 4 threads, or under 6 GB of
-memory, caps the tier at Low. Exactly 4 threads, or 8 GB of memory, caps it at
-Medium. If the tier is not offered, the highest offered tier below it is used,
-or failing that the lowest one above it. Unknown hardware gets High, because
-dynamic resolution catches an optimistic guess.
-
-The reference points come from R4 measurements (RidgeRacerType4Recomp
-`analysis/lowend-perf/PLAN.md`). An Apple M4 holds every enhancement at 60 Hz.
-An M1 has about a third of the M4's GPU and about 70 % of its per-core speed. A
-Steam Deck has about 40 % of the GPU and half the per-core speed.
+Fewer than 4 CPU threads, or under 6 GB of memory, caps the tier at Low.
+Exactly 4 threads caps it at Medium. If the tier is not offered, the highest
+offered tier below it is used, or failing that the lowest one above it. There
+is no timed benchmark yet; the probe is the GPU class.
 
 ## When detection runs, and what is saved
 

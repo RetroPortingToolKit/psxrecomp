@@ -1,10 +1,8 @@
 /* quality_tier.c -- graphics preset autodetection rules (quality_tier.h).
  *
- * The reference points are measured (docs/QUALITY_PRESETS.md): an Apple M4
- * holds every R4 enhancement at 60 Hz with headroom (Ultra); an M1 has about
- * a third of its GPU and 70 % of its per-core speed; a Steam Deck's Van Gogh
- * APU about 40 % of the GPU and half the per-core speed. The GPU class picks
- * the tier, then core count and memory cap it. */
+ * Ultra is the default; a GPU class, a thread count or memory size steps a
+ * machine down only where Ultra cannot hold 60 Hz even at its dynamic floor
+ * (docs/QUALITY_PRESETS.md). */
 #include "quality_tier.h"
 
 #include <ctype.h>
@@ -50,17 +48,17 @@ static int apple_gen(const char *s, int *variant) {
     return gen;
 }
 
-/* GPU class from its name; -1 when the name says nothing we know. */
+/* Ultra is the default (owner decision 2026-10-08): dynamic resolution
+ * (down to native x1), Smooth motion from surplus only and the adaptive
+ * aspect absorb most hardware live. A GPU class steps down only when Ultra
+ * cannot hold 60 Hz even at that floor: software GL, the Steam Deck's APU,
+ * mobile GPUs and the weakest integrated GPUs (Intel HD/UHD, small AMD
+ * "Radeon Graphics"/Vega iGPUs) go to Low; mid integrated GPUs to Medium.
+ * Returns -1 when the name says nothing we know (=> Ultra). */
 static int gpu_tier(const char *g, const char **why) {
     int variant = 0;
-    const int gen = apple_gen(g, &variant);
-    if (gen) {
+    if (apple_gen(g, &variant)) {
         *why = "Apple silicon";
-        if (variant == 2) return PSX_QUALITY_ULTRA;
-        if (variant == 1) return gen >= 2 ? PSX_QUALITY_ULTRA : PSX_QUALITY_HIGH;
-        if (gen <= 1) return PSX_QUALITY_LOW;
-        if (gen == 2) return PSX_QUALITY_MEDIUM;
-        if (gen == 3) return PSX_QUALITY_HIGH;
         return PSX_QUALITY_ULTRA;
     }
     if (has(g, "llvmpipe") || has(g, "softpipe") || has(g, "swiftshader") ||
@@ -80,7 +78,6 @@ static int gpu_tier(const char *g, const char **why) {
     if (has(g, "nvidia") || has(g, "geforce") || has(g, "quadro") || has(g, "rtx")) {
         *why = "NVIDIA GPU";
         if (has(g, " mx") || has(g, "gt ") || has(g, "gt1") || has(g, "gt7")) return PSX_QUALITY_MEDIUM;
-        if (has(g, "gtx 9") || has(g, "gtx 10") || has(g, "gtx 7")) return PSX_QUALITY_HIGH;
         return PSX_QUALITY_ULTRA;
     }
     if (has(g, "intel")) {
@@ -93,10 +90,10 @@ static int gpu_tier(const char *g, const char **why) {
         return PSX_QUALITY_LOW;          /* HD / UHD Graphics */
     }
     if (has(g, "radeon") || has(g, "amd") || has(g, "ati ")) {
-        if (has(g, " rx ") || has(g, "rx 5") || has(g, "rx 6") || has(g, "rx 7") ||
-            has(g, "rx 9") || has(g, "pro w") || has(g, "vega 56") || has(g, "vega 64")) {
+        if (has(g, " rx ") || has(g, "rx 4") || has(g, "rx 5") || has(g, "rx 6") ||
+            has(g, "rx 7") || has(g, "rx 9") || has(g, "pro w") || has(g, "vega 56") ||
+            has(g, "vega 64")) {
             *why = "AMD Radeon GPU";
-            if (has(g, "rx 4") || has(g, "rx 5") ) return PSX_QUALITY_HIGH;
             return PSX_QUALITY_ULTRA;
         }
         *why = "AMD integrated GPU";
@@ -121,18 +118,18 @@ int psx_quality_classify(const PsxHostInfo *h, char *reason, size_t reason_cap) 
     }
     if (tier < 0 && g[0]) tier = gpu_tier(g, &why);
     if (tier < 0) tier = gpu_tier(c, &why);      /* Apple: the CPU names the GPU */
-    if (tier < 0) { tier = PSX_QUALITY_HIGH; why = "unknown GPU"; }
+    if (tier < 0) { tier = PSX_QUALITY_ULTRA; why = "unknown GPU"; }
 
+    /* Only what the dynamic systems cannot absorb: too few CPU threads for
+     * the emulation + render threads, or too little memory. */
     const char *cap_why = NULL;
     if (h && h->logical_cores > 0 && h->logical_cores < 4) {
         if (tier > PSX_QUALITY_LOW) { tier = PSX_QUALITY_LOW; cap_why = "fewer than 4 CPU threads"; }
-    } else if (h && h->logical_cores > 0 && h->logical_cores <= 4) {
+    } else if (h && h->logical_cores > 0 && h->logical_cores == 4) {
         if (tier > PSX_QUALITY_MEDIUM) { tier = PSX_QUALITY_MEDIUM; cap_why = "4 CPU threads"; }
     }
     if (h && h->ram_mb > 0 && h->ram_mb < 6u * 1024u) {
         if (tier > PSX_QUALITY_LOW) { tier = PSX_QUALITY_LOW; cap_why = "under 6 GB of memory"; }
-    } else if (h && h->ram_mb > 0 && h->ram_mb <= 8u * 1024u + 512u) {
-        if (tier > PSX_QUALITY_MEDIUM) { tier = PSX_QUALITY_MEDIUM; cap_why = "8 GB of memory"; }
     }
     if (reason && reason_cap) {
         if (cap_why)
