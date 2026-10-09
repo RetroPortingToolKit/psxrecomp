@@ -1009,6 +1009,11 @@ int psx_cycle_uncharged_begin(PsxCycleFreeze *save, uint64_t budget_cycles) {
     return 1;
 }
 
+uint64_t psx_cycle_uncharged_counted(void) {
+    if (!s_uncharged_active) return 0;
+    return psx_cycle_count - s_freeze_start + g_psx_cyc_batch;
+}
+
 int psx_cycle_uncharged_end(const PsxCycleFreeze *save) {
     const int uncharged = !s_uncharged_thawed;
     g_psx_guest_time_frozen = 0;
