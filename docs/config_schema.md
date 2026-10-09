@@ -705,6 +705,26 @@ fetches per minified pixel. OpenGL only. `PSX_TEXTURE_LOD=0|1` and
 `PSX_ANISO=N` override them for one run; the `texture_lod` TCP command
 switches them live.
 
+### FMV chroma smoothing (`fmv_chroma_smoothing`)
+
+```toml
+[video]
+fmv_chroma_smoothing = false   # default
+fmv_filter = "bicubic"         # optional upscale filter (needs antialiasing on)
+```
+
+MDEC movies are 4:2:0: one colour (Cb/Cr) sample per 2x2 pixels, which the
+decoder replicates, so saturated edges in a 24-bit movie frame show 2-pixel
+colour blocks around sharp luma. With `fmv_chroma_smoothing = true` the
+OpenGL present of a 24-bit frame keeps each sample's luma (from whatever
+`fmv_filter` reconstructs) and takes its chroma from a [1 2 1] tent over the
+3x3 source pixels around it (BT.601), which removes the colour blocks without
+softening luma detail. Guest VRAM and MDEC output are untouched; 15-bit frames
+are never affected. It pairs with the existing `fmv_filter` upscale choice
+(`nearest`, `bilinear`, `sharp`, `bicubic`). OpenGL only.
+`PSX_FMV_CHROMA=0|1` overrides it for one run and the `fmv_chroma` TCP
+command switches it live.
+
 The runtime clamps N per backend:
 
 - Software and Vulkan stop at 4.

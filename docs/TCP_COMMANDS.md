@@ -57,6 +57,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `present_shot_seq` | ✓ |   | — | Completion counter for `present_shot`, plus `wrote` (1 = that completion produced a PNG). Sample before staging, poll until `seq` moves. Advances on success *and* failure, so the poll always terminates |
 | `dithering` | ✓ |   | `mode` (optional: 0 off, 1 on, 2 scaled) | Read or set `[video] dithering` live. Replies `mode` |
 | `texture_lod` | ✓ |   | `mode` (optional: 0 off, 1 mipmap), `aniso` (optional: 1..16) | Read or set `[video] texture_lod` / `anisotropic_filtering` live. Replies `mode`, `aniso` |
+| `fmv_chroma` | ✓ |   | `on` (optional: 0/1) | Read or set `[video] fmv_chroma_smoothing` live. Replies `on` and `frames` (24-bit presents smoothed so far) |
 | `post_aa` | ✓ |   | `mode` (optional: 0 off, 1 fxaa, 2 fxaa_hq) | Read or set post-process anti-aliasing live (`[video] antialiasing_mode`). Replies `mode`, `passes` (filtered presents so far) and `gpu_us`: the mean pass time since the last query when the run has `PSX_POST_AA_TIME=N` (N passes per present between `glFinish` fences, a measurement mode), else 0 |
 | `hd_textures` | ✓ |   | optional `replacements`, `dump` (0 or 1), `reload` (1) | HD pack root, switches, backend support, replacement count, matched/ready/applied draw counts, and queued dump count. Optional controls update the configured host pack on the emulation thread; no configured root is an error. Reload retains unchanged upload identities. OpenGL displays replacements; software/Vulkan retain original artwork. Pair with `present_shot` for visual evidence and native VRAM probes for architectural data |
 | `gl_interp` | ✓ |   | — | OpenGL frame-rate presenter ([FRAME_RATE.md](FRAME_RATE.md)): enabled/suspended, host and target Hz, swaps, `source` (`vblank`/`flip`), `flip_period`, `captures` (new source frames) and `duplicates` (VBlanks that re-presented the same frame) |
@@ -588,6 +589,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `event_ring_tail` | ✓ |  |  |
 | `exc_ring` |  | ✓ |  |
 | `first_failure` | ✓ | ✓ | ✓ |
+| `fmv_chroma` | ✓ |  | ✓ |
 | `fmv_state` | ✓ |  |  |
 | `fn_clear` | ✓ |  |  |
 | `fn_disable` | ✓ |  |  |

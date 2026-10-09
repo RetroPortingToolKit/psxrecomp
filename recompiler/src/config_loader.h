@@ -575,6 +575,9 @@ struct RuntimeConfig {
     // default 1); only with texture_lod. OpenGL only.
     int                   video_texture_lod = 0;
     int                   video_anisotropic_filtering = 1;
+    // fmv_chroma_smoothing: on 24-bit (MDEC) presents keep luma and smooth
+    // chroma over 3x3 source pixels (hides 4:2:0 colour blocks). OpenGL only.
+    bool                  video_fmv_chroma_smoothing = false;
     bool                  video_pgxp_color_correction = false;
     int                   video_pgxp_seam = 0;
     double                video_pgxp_depth_threshold = 4096.0;

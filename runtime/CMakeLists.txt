@@ -311,6 +311,18 @@ if(BUILD_TESTING)
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-texture-lod-results")
         set_tests_properties(gl_texture_lod_test PROPERTIES
             LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
+        # [video] fmv_chroma_smoothing: 24-bit presents lose their 2x2 chroma
+        # blocks, luma kept; 15-bit presents and off are byte-identical.
+        add_test(NAME gl_fmv_chroma_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_texture_filter.py"
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_fmv_chroma.c"
+                --cc "${CMAKE_C_COMPILER}"
+                --sdl-include "$<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>"
+                --sdl-library "$<TARGET_FILE:SDL3::SDL3-static>"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-fmv-chroma-results")
+        set_tests_properties(gl_fmv_chroma_test PROPERTIES
+            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
     endif()
     add_executable(launcher_device_roundtrip_test
         tests/test_launcher_device_roundtrip.cpp)

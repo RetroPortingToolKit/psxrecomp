@@ -1657,6 +1657,7 @@ static const char *PRESENT_FS =
     "uniform vec2 u_sharp_scale;\n"
     "uniform int  u_sharp;\n"
     "uniform float u_gamma;\n"
+    "uniform int  u_chroma;   /* [video] fmv_chroma_smoothing (24-bit frames) */\n"
     PSX_SCANLINE_UNIFORMS
     /* Catmull-Rom bicubic via 9 bilinear taps. Sharper than plain bilinear at
      * the same smoothness, with mild overshoot that reads as edge definition.
@@ -1728,6 +1729,26 @@ static const char *PRESENT_FS =
     "      uv = clamp(uv, lo, hi);\n"
     "    }\n"
     "    c = texture(u_tex, uv);\n"
+    "  }\n"
+    /* MDEC decodes 4:2:0 video: one Cb/Cr pair per 2x2 pixels, upsampled by
+     * replication, so saturated edges in a 24-bit movie frame show 2-pixel
+     * colour blocks around sharp luma. Chroma smoothing keeps the luma of the
+     * reconstructed sample and takes its chroma from a [1 2 1] tent over the
+     * 3x3 source pixels around it (BT.601), which spreads each block's colour
+     * into its neighbours without softening the luma detail. */
+    "  if (u_chroma != 0) {\n"
+    "    vec2 ts = 1.0 / u_tex_size;\n"
+    "    vec2 lo = min(u_uv_rect.xy, u_uv_rect.zw), hi = max(u_uv_rect.xy, u_uv_rect.zw);\n"
+    "    vec2 base = (floor(v_uv * u_tex_size) + 0.5) * ts;\n"
+    "    vec2 cc = vec2(0.0);\n"
+    "    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {\n"
+    "      vec3 s = texture(u_tex, clamp(base + vec2(i, j) * ts, lo, hi)).rgb;\n"
+    "      float w = float((2 - abs(i)) * (2 - abs(j)));\n"
+    "      cc += w * vec2(dot(s, vec3(-0.168736, -0.331264, 0.5)), dot(s, vec3(0.5, -0.418688, -0.081312)));\n"
+    "    }\n"
+    "    cc /= 16.0;\n"
+    "    float y = dot(c.rgb, vec3(0.299, 0.587, 0.114));\n"
+    "    c.rgb = clamp(vec3(y + 1.402 * cc.y, y - 0.344136 * cc.x - 0.714136 * cc.y, y + 1.772 * cc.x), 0.0, 1.0);\n"
     "  }\n"
     "  c.rgb = psx_scanline(c.rgb, v_uv.y);\n"
     "  if (u_gamma > 0.0 && u_gamma != 1.0) c.rgb = pow(max(c.rgb, vec3(0.0)), vec3(1.0 / u_gamma));\n"
@@ -5444,6 +5465,18 @@ static void upload_present_tex(const uint32_t *pixels, int w, int h, int linear)
 }
 
 static int s_fmv_filter_cfg = 0;          /* VIDEO_FMV_FILTER_NEAREST */
+/* [video] fmv_chroma_smoothing, and whether the frame being presented is a
+ * 24-bit (MDEC) scanout (main.cpp notes it before gl_renderer_present). */
+static int s_fmv_chroma = 0, s_present_d24 = 0;
+static GLint s_present_uChroma = -1;
+static uint64_t s_fmv_chroma_frames = 0;
+void gl_renderer_set_fmv_chroma_smoothing(int on) {
+    GL_RT_SYNC("fmv_chroma");
+    s_fmv_chroma = on ? 1 : 0;
+}
+int gl_renderer_fmv_chroma_smoothing(void) { return s_fmv_chroma; }
+uint64_t gl_renderer_fmv_chroma_frames(void) { GL_RT_SYNC("fmv_chroma_stats"); return s_fmv_chroma_frames; }
+void gl_renderer_note_present_depth24(int d24) { GL_RT_SYNC("present_d24"); s_present_d24 = d24 ? 1 : 0; }
 
 void gl_renderer_set_fmv_filter(int cfg_value) {
     GL_RT_SYNC("set_fmv_filter");
@@ -6180,6 +6213,8 @@ int gl_renderer_init_context(SDL_Window *win) {
                 p_glGetUniformLocation(s_present_prog, "u_sharp");
             s_present_uGamma =
                 p_glGetUniformLocation(s_present_prog, "u_gamma");
+            s_present_uChroma =
+                p_glGetUniformLocation(s_present_prog, "u_chroma");
             s_present_uScanline =
                 p_glGetUniformLocation(s_present_prog, "u_scanline");
             s_present_uScanStrength =
@@ -6379,7 +6414,16 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
     } else {
         p_glUniform4f(s_present_uUvRect, 0.f, 0.f, 1.f, 1.f);
     }
+    const int chroma = s_fmv_chroma && s_present_d24;
+    if (chroma) {
+        /* present_set_sharp only sets the source size for filtered modes; the
+         * chroma tent needs it in every mode. */
+        p_glUniform1i(s_present_uChroma, 1);
+        if (s_present_uTexSize >= 0) p_glUniform2f(s_present_uTexSize, (float)src_w, (float)src_h);
+        s_fmv_chroma_frames++;
+    }
     p_glBindVertexArray(s_present_vao); glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (chroma) p_glUniform1i(s_present_uChroma, 0);
     p_glBindVertexArray(0); p_glUseProgram(0);
     pres_record(GL_PRES_CPU, 0, 0, src_w, src_h, lx, ly, lw, lh);
     hold_capture_drawable();

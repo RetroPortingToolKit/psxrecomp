@@ -8595,6 +8595,17 @@ static void handle_texture_lod(int id, const char *json)
              gl_renderer_texture_lod(), gl_renderer_anisotropy());
 }
 
+/* fmv_chroma: {"cmd":"fmv_chroma"} reads, {"cmd":"fmv_chroma","on":0|1} sets
+ * [video] fmv_chroma_smoothing live. Replies the smoothed-present count. */
+static void handle_fmv_chroma(int id, const char *json)
+{
+    int on = json_get_int(json, "on", -1);
+    if (on >= 0) gl_renderer_set_fmv_chroma_smoothing(on);
+    send_fmt("{\"id\":%d,\"ok\":true,\"on\":%d,\"frames\":%llu}", id,
+             gl_renderer_fmv_chroma_smoothing(),
+             (unsigned long long)gl_renderer_fmv_chroma_frames());
+}
+
 static void handle_frame_perf(int id, const char *json)
 {
     (void)json;
@@ -15689,6 +15700,7 @@ static const CmdEntry s_commands[] = {
     { "post_aa",           handle_post_aa },
     { "dithering",         handle_dithering },
     { "texture_lod",       handle_texture_lod },
+    { "fmv_chroma",        handle_fmv_chroma },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },

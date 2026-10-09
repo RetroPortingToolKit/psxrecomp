@@ -226,6 +226,14 @@ void gl_renderer_set_cpu_auth_dual(int on);
  * config enum VIDEO_FMV_FILTER_* (0 nearest, 1 bilinear, 2 sharp, 3 bicubic).
  * Only consulted while video antialiasing is on; AA off is always nearest. */
 void gl_renderer_set_fmv_filter(int cfg_value);
+/* [video] fmv_chroma_smoothing: on 24-bit (MDEC) presents, keep each sample's
+ * luma and smooth its chroma over the 3x3 source pixels around it, hiding the
+ * 2x2 colour blocks of 4:2:0 video. Off by default. main.cpp notes whether
+ * the next gl_renderer_present is a 24-bit scanout. */
+void gl_renderer_set_fmv_chroma_smoothing(int on);
+int  gl_renderer_fmv_chroma_smoothing(void);
+uint64_t gl_renderer_fmv_chroma_frames(void);
+void gl_renderer_note_present_depth24(int d24);
 int  gl_renderer_cpu_auth_dual(void);
 
 /* Post-savestate freeze probe: skip/swap/dirty-mark counters (GL present path).
