@@ -1092,8 +1092,12 @@ int main() {
         check(psx_mod_option_value("runtime.ram", "big-ram", "size", value, sizeof(value)) == 1 &&
                   std::string(value) == "four",
               "a live override must answer later reads");
+        check(!psx_mod_option_live_capable("runtime.ram", "big-ram"),
+              "no callback yet: not live-capable");
         check(psx_mod_register_option_changed_plugin("runtime.big-ram", test_option_changed),
               "option-changed hook must register");
+        check(psx_mod_option_live_capable("runtime.ram", "big-ram"),
+              "a registered callback makes the feature live-capable");
         check(psx_mod_set_option_live("runtime.ram", "big-ram", "size", "eight") == 1 &&
                   option_changed_hits == 1 && option_changed_value == "eight",
               "the plugin must see the change in its own context");
