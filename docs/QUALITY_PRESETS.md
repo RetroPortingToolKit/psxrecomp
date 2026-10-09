@@ -58,22 +58,21 @@ name is the fallback when the probe fails, and the probe is skipped under the
 renderer too.
 
 `quality_tier.c` maps the facts to a tier. It is a pure function, unit-tested in
-`recompiler/tests/quality_presets_test.cpp`. **Ultra is the default.** The
-dynamic systems absorb weaker hardware live: dynamic resolution (a title can
-floor it at native x1), Smooth motion's in-between frames (made from surplus
-only) and the adaptive aspect. A machine steps down only where Ultra cannot
-hold 60 Hz even at that floor:
+`recompiler/tests/quality_presets_test.cpp`. **Autodetect picks only Low or
+Ultra.** Medium and High are manual choices. Low-end machines start on Low.
+Every other machine starts on Ultra, and the dynamic systems are its safety
+net: dynamic resolution (a title can floor it at native x1), Smooth motion's
+in-between frames (made from surplus only) and the adaptive aspect.
 
-| GPU | Tier |
+| Class | Detected |
 | --- | --- |
-| Software GL (llvmpipe, SwiftShader, Microsoft Basic Render), Steam Deck (Van Gogh, `AMD Custom GPU 0405/0932`), mobile GPUs, Intel HD/UHD, small AMD iGPUs (Vega, "Radeon(TM) Graphics") | Low |
-| Intel Iris Xe / Arc iGPU, Radeon 680M-890M class, GeForce MX / GT | Medium |
-| Everything else, including every Apple silicon chip and unknown GPUs | Ultra |
+| Software GL, Steam Deck (Van Gogh), mobile GPUs, every integrated GPU up to the Radeon 890M / Iris Xe / Arc iGPU class, Apple M1 and M2 base chips, GeForce MX/GT | Low |
+| Everything else: discrete GPUs, Apple M3 and later, any Pro/Max/Ultra chip, Strix Halo (8050S/8060S), unknown GPUs | Ultra |
 
-Fewer than 4 CPU threads, or under 6 GB of memory, caps the tier at Low.
-Exactly 4 threads caps it at Medium. If the tier is not offered, the highest
-offered tier below it is used, or failing that the lowest one above it. There
-is no timed benchmark yet; the probe is the GPU class.
+Fewer than 5 CPU threads, or under 6 GB of memory, also gives Low. No mid
+class is detected as Medium: on every in-between part measured, either Low's
+savings or Ultra's dynamic floor decided it. There is no timed benchmark
+yet; the probe is the GPU class, thread count and memory.
 
 ## When detection runs, and what is saved
 
