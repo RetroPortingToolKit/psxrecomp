@@ -85,6 +85,7 @@ typedef struct PadExtGate {
     int savestate_menu_open;
     int rewind_open;
     int input_guard;         /* savestate input guard armed */
+    int ui_capture;          /* host overlay owns input (host_overlay.h P3) */
 } PadExtGate;
 int pad_ext_live(const PadExtGate *g);
 

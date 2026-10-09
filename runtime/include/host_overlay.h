@@ -36,6 +36,19 @@ void psx_host_overlay_set_draw_cb(PsxHostOverlayDrawFn fn, void *ctx);
 int  psx_host_overlay_has_draw(void);
 void psx_host_overlay_draw(int width, int height);  /* renderer side */
 
+/* ---- P3: input sink -----------------------------------------------------
+ * The sink sees every host SDL event first (main thread), in the normal event
+ * drain and in the host pause loop. Returning non-zero consumes the event.
+ * While ui_capture is on, local game input reads as released/centred, in
+ * netplay too (the peer then simply receives "nothing pressed"), so a menu
+ * open over a running session never leaks presses into the game.
+ * `event` is an SDL_Event*. NULL unregisters. */
+typedef int (*PsxHostInputSinkFn)(const void *event, void *ctx);
+void psx_host_set_input_sink(PsxHostInputSinkFn fn, void *ctx);
+int  psx_host_input_sink_dispatch(const void *event);
+void psx_host_set_ui_capture(int on);
+int  psx_host_ui_capture_active(void);
+
 #ifdef __cplusplus
 }
 #endif
