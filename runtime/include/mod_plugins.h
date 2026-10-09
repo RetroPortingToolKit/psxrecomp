@@ -374,6 +374,10 @@ int psx_mod_set_option_live(const char* package_id, const char* feature_id,
 /* 1 when the committed feature's plugin registered an option-changed callback
  * (so a live set can take effect now). Read-only; any thread. */
 int psx_mod_option_live_capable(const char* package_id, const char* feature_id);
+/* Write the player's current selection (feature switches and option values,
+ * as edited through the launcher mod provider) to mods/state.toml now,
+ * without re-resolving the running plan. Main thread. 1 on success. */
+int psx_mod_save_selection(void);
 /*
  * Read the committed owner-selected path for a resource declared by the
  * package feature whose trusted plugin is currently running. Returns 0 when
