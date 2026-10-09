@@ -422,6 +422,7 @@ struct PlayerInput {
     int   deadzone = 3277;  /* raw SDL axis units, ~10% default */
     SDL_GameController* handle = nullptr;
     SDL_JoystickID      instance = -1;
+    SDL_JoystickID      preferred_instance = -1; /* live launcher choice only */
     uint8_t rumble_small = 0;
     uint8_t rumble_large = 0;
     bool    rumble_known = false;
@@ -5149,7 +5150,20 @@ static void open_player(PlayerInput& p, int self_slot) {
             true, p.guid[0] && std::strcmp(buf, p.guid) == 0);
 #endif
         if (device_claimed_by_other(self_slot, inst) && !shared) continue;
-        if (p.guid[0] && std::strcmp(buf, p.guid) == 0) { chosen = i; break; }
+        /* Do not let an earlier seat's fallback steal a later seat's explicit
+         * selection. Two pads of the same model have the same GUID. */
+        bool reserved = false;
+        for (int o = 0; o < PSX_MAX_PLAYERS; ++o) {
+            if (o != self_slot && g_players[o].kind == 2 &&
+                g_players[o].preferred_instance == inst) reserved = true;
+        }
+        if (reserved && p.preferred_instance != inst && !shared) continue;
+        if (p.preferred_instance == inst &&
+            (!p.guid[0] || std::strcmp(buf, p.guid) == 0)) {
+            chosen = i;
+            break;
+        }
+        if (chosen < 0 && p.guid[0] && std::strcmp(buf, p.guid) == 0) chosen = i;
         if (fallback < 0) fallback = i;
     }
     if (chosen < 0) chosen = fallback;
@@ -5159,6 +5173,7 @@ static void open_player(PlayerInput& p, int self_slot) {
     if (p.handle) {
         SDL_Joystick* joy = SDL_GameControllerGetJoystick(p.handle);
         p.instance = joy ? SDL_JoystickInstanceID(joy) : -1;
+        p.preferred_instance = p.instance;
         /* Persist the GUID of the pad we actually opened so per-device
          * [mapping.<guid>] lookups match the live hardware (including the
          * first-available fallback when the saved GUID is offline). */
@@ -5168,7 +5183,8 @@ static void open_player(PlayerInput& p, int self_slot) {
         }
         const char* name = SDL_GameControllerName(p.handle);
         p.steering_wheel = psx_controller_name_is_wheel(name);
-        std::fprintf(stdout, "psxrecomp runtime: opened controller for slot: %s\n",
+        std::fprintf(stdout, "psxrecomp runtime: opened controller for slot %d (instance %d): %s\n",
+                     self_slot + 1, (int)p.instance,
                      name ? name : "(unnamed)");
         if (p.steering_wheel)
             std::fprintf(stdout,
@@ -13736,7 +13752,7 @@ namespace {
 
     void ae_np_request_list(void*) {
         ae_np_lan_rescan();
-        psx_lobby_request_list();
+        if (ae_np_list_want_online()) psx_lobby_request_list();
     }
 
     int ae_np_list_count(void*) {
@@ -15658,6 +15674,7 @@ int main(int argc, char** argv) {
      * Release keeps "keyboard" as its pre-launch default (the launcher assigns
      * the selected physical device). */
     std::string player_device[PSX_MAX_PLAYERS];
+    uint32_t player_instance[PSX_MAX_PLAYERS] = {}; /* never persisted */
     int  player_mode[PSX_MAX_PLAYERS];
     int  player_deadzone[PSX_MAX_PLAYERS];
     int  ctrl_locked_mode[PSX_MAX_PLAYERS];
@@ -17453,6 +17470,10 @@ int main(int argc, char** argv) {
                     const int n = std::min(PSX_MAX_PLAYERS, RECOMP_LAUNCHER_MAX_PLAYERS);
                     const int un = std::min(n, PSXRecompV4::UserSettings::kMaxControllerPlayers);
                     for (int i = 0; i < n; ++i) {
+#if defined(RECOMP_LAUNCHER_HAS_PLAYER_GAMEPAD_INSTANCE)
+                        player_instance[i] = ls.player_src[i] == 2
+                            ? ls.player_gamepad_instance[i] : 0;
+#endif
                         if (ls.player_src[i] == 1) {
                             player_device[i] = "keyboard";
                         } else if (ls.player_src[i] == 0) {
@@ -18349,6 +18370,8 @@ session_reboot:
      * ports during early boot. */
     for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
         set_player_device(g_players[s], player_device[s], player_mode[s]);
+        g_players[s].preferred_instance = player_instance[s]
+            ? (SDL_JoystickID)(player_instance[s] - 1) : -1;
         g_players[s].deadzone = player_deadzone[s];
     }
     /* Multitap stays OFF through BIOS boot: SCPH-1070 on port 1 breaks shell /
@@ -19846,6 +19869,10 @@ soft_return_lobby:
             {
                 const int n = std::min(PSX_MAX_PLAYERS, RECOMP_LAUNCHER_MAX_PLAYERS);
                 for (int i = 0; i < n; ++i) {
+#if defined(RECOMP_LAUNCHER_HAS_PLAYER_GAMEPAD_INSTANCE)
+                    player_instance[i] = ls.player_src[i] == 2
+                        ? ls.player_gamepad_instance[i] : 0;
+#endif
                     if (ls.player_src[i] == 1) {
                         player_device[i] = "keyboard";
                     } else if (ls.player_src[i] == 0) {
