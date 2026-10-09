@@ -7945,6 +7945,14 @@ static void host_pause_loop(void) {
     }
     psx_sdl_audio_set_paused(sdl_audio_device, 0);
     freeze_heartbeat_set_paused(0);
+    /* Resume the way a savestate load does: the pacer's deadline is now in
+     * the past, and without a re-anchor it pays the pause back as up to ~12
+     * unpaced frames (a visible catch-up burst). Re-anchor presentation and
+     * the FPS baseline, resync guest-cycle audio budgeting, and hold dynamic
+     * resolution so the pause's wall time is not read as an overrun. */
+    present_session_reset();
+    g_audio_cycle_resync = 1;
+    dynres_note_savestate_loaded();
     /* Swallow the still-held resume press so it doesn't reach the game. */
     savestate_input_guard_arm();
 }
@@ -8428,6 +8436,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         if (psx_rewind_is_open())
             rewind_host_pause_loop();
     }
+    /* Headless: a host pause (debug host_pause, scripted overlay tests)
+     * holds the guest exactly as it does windowed; the loop polls the debug
+     * server and needs no window. */
+    if (g_headless && psx_host_pause_depth() > 0)
+        host_pause_loop();
 
     /* Sample each player's device and feed the matching SIO pad slot.
      * Debug server input override (when active) drives port 1 only. With
