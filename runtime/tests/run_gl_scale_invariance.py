@@ -154,6 +154,9 @@ def main():
     if passes:
         sections.append("-DPSX_TEST_RENDER_PASSES=1")
     objs = []
+    # The renderer calls the in-game overlay hook (host_overlay.c) at present.
+    if (framework / "runtime/src" / "host_overlay.c").exists():
+        sources.append(("hov", framework / "runtime/src" / "host_overlay.c"))
     for name, src in sources:
         o = dest / (name + ".o")
         r = run([args.cc, "-std=gnu11", "-O1", "-DPSX_SDL3=1", "-DPSX_NO_DEBUG_TOOLS=1",
