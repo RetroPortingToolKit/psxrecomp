@@ -220,7 +220,8 @@ them.
 
 ### Guarded packed-coordinate rejection
 
-Some polygon funnels combine packed SXY flags and reject on `BNE flags,zero`.
+Some polygon funnels combine packed SXY flags and reject on `BNE flags,zero`,
+or read the GTE error summary with `BLTZ flags`.
 The native-wide GPU can clip horizontal overflow while the game retains its
 vertical rejection bits. Declare only verified render rejection branches:
 
@@ -237,6 +238,10 @@ wide gameplay only the specified flag bits participate in the predicate; guest
 registers, the branch delay slot, vertical/depth/backface tests and timing remain
 intact. Adapters must provide sufficient bounded primitive/capture capacity.
 Changing a site, guard or mask changes the overlay configuration fingerprint.
+For a verified GTE `BLTZ` consumer, mask the underlying error bits rather than
+bit 31 itself. For example, `0x7F87A000` preserves the hardware error constituents
+except horizontal SX saturation. Positive non-summary flags retain their original
+acceptance at 4:3. Link branches and other REGIMM forms are not supported.
 
 ### Guarded widescreen participation comparisons
 

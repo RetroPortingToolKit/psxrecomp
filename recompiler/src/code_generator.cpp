@@ -803,6 +803,11 @@ std::string CodeGenerator::generate_branch_condition(uint32_t instr, uint32_t ad
             fmt::print(stderr, "ERROR: masked_reject instruction mismatch at 0x{:08X}\n", addr);
             std::exit(1);
         }
+        // BLTZ GTE error-summary consumers retain the signed original
+        // predicate at 4:3. Non-summary positive flags are not a reject.
+        if (opcode == 1u)
+            return fmt::format("psx_ws_x_margin() > 0 ? psx_ws_masked_reject({}, 0x{:08X}u) : ((int32_t){} < 0)",
+                               reg_name(rs), site.reject_mask, reg_name(rs));
         return fmt::format("psx_ws_masked_reject({}, 0x{:08X}u)",
                            reg_name(rs), site.reject_mask);
     }

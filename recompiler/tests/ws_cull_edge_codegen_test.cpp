@@ -413,6 +413,29 @@ reject_mask = "0xFFFF0000"
     const auto other = generate_first_instruction(0x14800003u, config).full_code;
     check(other.find("psx_ws_masked_reject(") == std::string::npos,
           "overlay with another instruction stays vanilla");
+
+    const std::string flag_body = plain + R"toml(
+[[widescreen.cull.masked_reject]]
+address = "0x80010000"
+expected = "0x04400002"
+reject_mask = "0x7F87A000"
+)toml";
+    const auto flag_config = load(flag_body);
+    config.ws_cull_masked_reject_sites = flag_config.ws_cull_masked_reject_sites;
+    config.overlay_mode = false;
+    const auto flags = generate_first_instruction(kBltzV0, config).full_code;
+    check(flags.find("psx_ws_x_margin() > 0 ? psx_ws_masked_reject(cpu->gpr[2], 0x7F87A000u) : ((int32_t)cpu->gpr[2] < 0)") != std::string::npos,
+          "GTE summary branch preserves signed predicate at 4:3");
+    check(load_throws_with(plain + R"toml(
+[[widescreen.cull.masked_reject]]
+address = "0x80010000"
+expected = "0x04500002"
+reject_mask = "0x7F87A000"
+)toml", "BLTZ reg"), "masked reject excludes link branch");
+    config.overlay_mode = true;
+    const auto mismatched_flags = generate_first_instruction(kBgezV0, config).full_code;
+    check(mismatched_flags.find("psx_ws_masked_reject(") == std::string::npos,
+          "GTE overlay opcode mismatch keeps signed vanilla branch");
 }
 
 void runtime_math() {

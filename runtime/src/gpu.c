@@ -952,6 +952,7 @@ int psx_ws_masked_reject(uint32_t flags, uint32_t mask) {
 }
 int psx_ws_masked_reject_site(uint32_t pc, uint32_t instr,
     uint32_t flags, int vanilla) {
+    if (psx_ws_x_margin() <= 0) return vanilla;
     for (int i = 0; i < ws_masked_reject_n; ++i) {
         const WsMaskedRejectSite *s = &ws_masked_reject_sites[i];
         if (s->address == (pc & 0x1FFFFFFFu) && s->expected == instr)
@@ -2506,13 +2507,18 @@ int gpu_ws_background_stretch_active(void) {
            frame - ws_background_tag_frame <= WS_HUD_ANCHOR_FRESH_FRAMES;
 }
 
+/* Legacy title opt-ins also change background sampling inside the original
+ * viewport. Keep their wide composite intact, just like explicit packet tags. */
+static int ws_nw_phase_backdrop = 0;
+static int ws_nw_flat_backdrop = 0;
 int gpu_ws_background_requires_full_composite(void) {
     /* Freshness governs reuse of a packet address, not the lifetime of the
      * pixels it produced. A slow game frame or a held display buffer can keep
      * those pixels on screen indefinitely. Conservatively keep full mirroring
      * once a composite has been tagged; GPU reset/snapshot restore clears the
      * latch together with the tags. Never modify the packet freshness guard. */
-    return ws_background_tags_used && ws_native_wide_configured();
+    return ws_native_wide_configured() &&
+           (ws_background_tags_used || ws_nw_phase_backdrop || ws_nw_flat_backdrop);
 }
 
 static int ws_nw_explicit_background(void) {
@@ -2676,7 +2682,6 @@ static int ws_tagged_anchor(int32_t *out_ax) {
  * flower-field tiles — the 3D rock/foreground is untagged AND has narrow prims,
  * so tag/narrow heuristics alone mis-stretch and tear it. */
 uint32_t g_ws_backdrop_lo = 0, g_ws_backdrop_hi = 0;
-static int ws_nw_phase_backdrop = 0;
 void gpu_ws_set_nw_phase_backdrop(int on) { ws_nw_phase_backdrop = on ? 1 : 0; }
 static int ws_nw_textured_edges = 0;
 int g_ws_tex_edge_pct = 0;
@@ -3218,7 +3223,6 @@ static void ws_nw_hud_shift_vertices(int32_t *vx, int count) {
  * Transforms vx[0..3] IN PLACE (pre-draw_offset); returns 1 if it applied. */
 static int ws_nw_backdrop = 0;
 void gpu_ws_set_nw_backdrop(int on) { ws_nw_backdrop = on ? 1 : 0; }
-static int ws_nw_flat_backdrop = 0;
 void gpu_ws_set_nw_flat_backdrop(int on) { ws_nw_flat_backdrop = on ? 1 : 0; }
 int gpu_ws_nw_flat_backdrop_enabled(void) { return ws_nw_flat_backdrop; }
 static int ws_nw_backdrop_stretch_quad(int32_t *vx, const int32_t *vy) {

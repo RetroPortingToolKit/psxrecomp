@@ -2051,10 +2051,12 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                                               "widescreen.cull.masked_reject.expected");
                     site.reject_mask = parse_hex(toml::find<std::string>(item, "reject_mask"),
                                                  "widescreen.cull.masked_reject.reject_mask");
-                    if ((site.address & 3u) || (site.expected >> 26) != 5u ||
+                    const uint32_t opcode = site.expected >> 26;
+                    const bool supported = opcode == 5u || opcode == 1u;
+                    if ((site.address & 3u) || !supported ||
                         ((site.expected >> 16) & 31u) != 0u ||
                         ((site.expected >> 21) & 31u) == 0u || !site.reject_mask)
-                        throw std::runtime_error("masked_reject needs aligned BNE reg,zero and nonzero reject_mask");
+                        throw std::runtime_error("masked_reject needs aligned BNE reg,zero or BLTZ reg and nonzero reject_mask");
                     if (!seen.insert(site.address & 0x1FFFFFFFu).second)
                         throw std::runtime_error("duplicate masked_reject address");
                     ws_cull_masked_reject_sites.push_back(site);

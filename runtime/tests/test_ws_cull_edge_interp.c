@@ -425,6 +425,31 @@ static void test_masked_reject(void) {
     gpu_ws_set_margin_override(-1);
 }
 
+static void test_gte_summary_reject(void) {
+    CPUState cpu = {0};
+    const uint32_t site = CODE + 0x240;
+    const uint32_t word = i_type(1, A0, 0, 3);
+    const uint32_t mask = 0x7F87A000u;
+    gpu_ws_set_masked_reject_sites(&site, &word, &mask, 1);
+    for (int margin = 0; margin <= 53; margin += 53) {
+        gpu_ws_set_margin_override(margin);
+        cpu.gpr[A0] = 0x80004000u;
+        CHECK(branch_taken(&cpu, site, word) == (margin == 0), "GTE X-only summary at margin %d", margin);
+        CHECK(cpu.gpr[A0] == 0x80004000u, "GTE mask preserves architectural FLAG copy");
+        CHECK(branch_taken(&cpu, site + 0x40, word), "unlisted GTE branch stays vanilla");
+        CHECK(!branch_taken(&cpu, site, i_type(1, A0, 1, 3)), "wrong GTE full word keeps BGEZ predicate");
+        const uint32_t flags[] = {0x80002000u, 0x80020000u, 0x80040000u, 0xC0000000u};
+        for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; ++i) {
+            cpu.gpr[A0] = flags[i];
+            CHECK(branch_taken(&cpu, site, word), "GTE Y/depth flags retain rejection");
+        }
+        cpu.gpr[A0] = 0x00401000u;
+        CHECK(!branch_taken(&cpu, site, word), "positive non-summary flags do not reject");
+    }
+    gpu_ws_set_masked_reject_sites(NULL, NULL, NULL, 0);
+    gpu_ws_set_margin_override(-1);
+}
+
 static void test_wide_nclip_branches(void) {
     CPUState cpu = {0};
     ws_xnum = 3; ws_xden = 4; ws_mode = 0;
@@ -470,6 +495,7 @@ int main(int argc, char **argv) {
     test_helpers();
     test_interpreter();
     test_masked_reject();
+    test_gte_summary_reject();
     test_wide_nclip_branches();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
