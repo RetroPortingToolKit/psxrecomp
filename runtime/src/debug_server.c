@@ -322,6 +322,9 @@ static uint32_t s_input_route_count = 0;
 static uint32_t s_input_route_index = 0;
 static uint32_t s_input_route_remaining = 0;
 static int      s_input_route_active = 0;
+/* input_route_start at_frame: the route waits for this vblank count, so a
+ * route replays on the same guest frames in every run (0 = start now). */
+static uint64_t s_input_route_start_frame = 0;
 
 /* ---- Frontend turbo override ---- */
 static volatile int s_turbo_enabled = 0;
@@ -5374,7 +5377,7 @@ static void handle_geom_correction(int id, const char *json)
              "\"culling\":%d,"
              "\"lookups\":%llu,\"dataflow_hit\":%llu,\"fallback_hit\":%llu,"
              "\"native\":%llu,\"value_mismatch\":%llu,\"trunc_reject\":%llu,"
-             "\"tolerance_reject\":%llu,\"w_valid\":%llu,"
+             "\"tolerance_reject\":%llu,\"depth_only\":%llu,\"w_valid\":%llu,"
              "\"produced\":%llu,\"swc2_stores\":%llu,\"ppp_produced\":%llu,"
              "\"ppp_window_fallback\":%llu,"
              "\"tri_precise\":%llu,\"tri_mixed\":%llu,\"tri_native\":%llu,"
@@ -5402,6 +5405,7 @@ static void handle_geom_correction(int id, const char *json)
              (unsigned long long)ps.value_mismatch,
              (unsigned long long)ps.trunc_reject,
              (unsigned long long)ps.tolerance_reject,
+             (unsigned long long)ps.depth_only,
              (unsigned long long)ps.w_valid,
              (unsigned long long)ps.produced,
              (unsigned long long)ps.swc2_stores,
@@ -5560,8 +5564,9 @@ static void handle_pgxp_miss_ring(int id, const char *json)
  * with any packet vertex inside [x0,x1]x[y0,y1] (packet integers). Returns
  * the newest N matches (default 4096) oldest first. Per triangle: packet
  * address, opcode, and per vertex the packet word, its integers, the 16.16
- * position handed to the rasterizer and its source (0 native, 1 dataflow,
- * 2 fallback). Join vertices by word across triangles to find cracks. */
+ * position handed to the rasterizer, its source (0 native, 1 fallback,
+ * 2 dataflow) and the validated GTE depth handed on (0 none). Join vertices
+ * by word across triangles to find cracks. */
 static void handle_pgxp_tri_ring(int id, const char *json)
 {
     const PGXPTriRecord *ring; uint32_t cap;
@@ -5606,8 +5611,8 @@ static void handle_pgxp_tri_ring(int id, const char *json)
             r->op, r->pass);
         for (int i = 0; i < 3; i++)
             p += (size_t)snprintf(buf + p, sz - p,
-                "%s[%u,\"0x%08X\",%d,%d,%d,%d,%u]", i ? "," : "", r->vidx[i], r->word[i],
-                r->raw_x[i], r->raw_y[i], r->x16[i], r->y16[i], r->src[i]);
+                "%s[%u,\"0x%08X\",%d,%d,%d,%d,%u,%u]", i ? "," : "", r->vidx[i], r->word[i],
+                r->raw_x[i], r->raw_y[i], r->x16[i], r->y16[i], r->src[i], r->z[i]);
         p += (size_t)snprintf(buf + p, sz - p, "]}");
     }
     snprintf(buf + p, sz - p, "]}");
@@ -5711,14 +5716,28 @@ static void handle_pgxp(int id, const char *json)
         if (*p == '-' || (*p >= '0' && *p <= '9') || *p == '.')
             pgxp_set_tolerance((float)strtod(p, NULL));
     }
+    /* Renderer side (G1.14): depth-buffer state and cumulative counts of
+     * depth-tested triangles, depth clears and seam-expanded triangles. */
+    uint64_t depth_tris = 0, depth_clears = 0, seam_tris = 0;
+    gl_renderer_pgxp_render_stats(&depth_tris, &depth_clears, &seam_tris);
+    uint64_t dr[5];
+    gl_renderer_pgxp_depth_clear_reasons(dr);
     send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%d,\"cpu_mode\":%d,"
              "\"tolerance\":%.3f,\"position_fallback\":%d,"
              "\"preserve_projection\":%d,\"culling\":%d,"
-             "\"suppress\":%u,\"active\":%d}",
+             "\"suppress\":%u,\"active\":%d,\"depth_buffer\":%d,"
+             "\"depth_tris\":%llu,\"depth_clears\":%llu,\"seam_tris\":%llu,"
+             "\"depth_clear_reasons\":{\"config\":%llu,\"area\":%llu,\"fill\":%llu,"
+             "\"threshold\":%llu,\"present\":%llu}}",
              id, pgxp_enabled(), pgxp_cpu_mode(), (double)pgxp_tolerance(),
              pgxp_position_fallback(), pgxp_preserve_projection(),
              pgxp_culling(),
-             (unsigned)pgxp_test_suppress_depth(), pgxp_test_active());
+             (unsigned)pgxp_test_suppress_depth(), pgxp_test_active(),
+             gl_renderer_get_pgxp_depth(), (unsigned long long)depth_tris,
+             (unsigned long long)depth_clears, (unsigned long long)seam_tris,
+             (unsigned long long)dr[0], (unsigned long long)dr[1],
+             (unsigned long long)dr[2], (unsigned long long)dr[3],
+             (unsigned long long)dr[4]);
 }
 
 static void handle_gpu_state(int id, const char *json)
@@ -8270,7 +8289,6 @@ static void handle_input_route_append(int id, const char *json)
 
 static void handle_input_route_start(int id, const char *json)
 {
-    (void)json;
     if (s_input_route_count == 0) {
         send_err(id, "input route is empty"); return;
     }
@@ -8280,10 +8298,13 @@ static void handle_input_route_start(int id, const char *json)
     s_pad_type_override = -1;
     s_input_route_index = 0;
     s_input_route_remaining = s_input_route[0].frames;
+    const int at = json_get_int(json, "at_frame", 0);
+    s_input_route_start_frame = at > 0 && (uint64_t)at > s_frame_count ? (uint64_t)at : 0u;
     s_input_route_active = 1;
     send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u,\"start_frame\":%llu}\n",
              id, (unsigned)s_input_route_count,
-             (unsigned long long)s_frame_count);
+             (unsigned long long)(s_input_route_start_frame ? s_input_route_start_frame
+                                                            : s_frame_count));
 }
 
 static void handle_input_route_stop(int id, const char *json)
@@ -16988,7 +17009,8 @@ int debug_server_is_connected(void)
 
 int debug_server_get_input_override(void)
 {
-    if (s_input_route_active && s_input_route_index < s_input_route_count) {
+    if (s_input_route_active && s_input_route_index < s_input_route_count &&
+        s_frame_count >= s_input_route_start_frame) {
         int current = (int)s_input_route[s_input_route_index].buttons;
         if (s_input_route_remaining > 0 && --s_input_route_remaining == 0) {
             s_input_route_index++;

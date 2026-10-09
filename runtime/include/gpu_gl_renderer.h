@@ -303,6 +303,9 @@ int  gl_renderer_get_pgxp_color_perspective(void);
 void gl_renderer_set_pgxp_seam(int mode);
 int  gl_renderer_get_pgxp_seam(void);
 void gl_renderer_set_pgxp_depth_threshold(float sz);
+/* Cumulative depth clears by cause: config, drawing-area change, fill,
+ * average-SZ jump-back threshold, displayed frame. */
+void gl_renderer_pgxp_depth_clear_reasons(uint64_t out[5]);
 void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears,
                                    uint64_t *seam_tris);
 
