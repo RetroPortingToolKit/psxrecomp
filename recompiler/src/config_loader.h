@@ -625,6 +625,9 @@ struct RuntimeConfig {
     // constants from game.toml only. See config_loader.cpp.
     int                   guest_cycle_scale = 1;
     bool                  guest_cycle_scale_gated = false;
+    // [timing] guest_cycle_scale_batch: batch the scaled CPU charge like the
+    // scale-1 path (psx_cyc.h). Same totals and observation points; opt-in.
+    bool                  guest_cycle_scale_batch = false;
     // guest_cycle_scale_gate: declarative RAM gate, judged at every VBlank;
     // the scale applies only while every predicate holds.
     struct GuestCycleScaleGatePred {

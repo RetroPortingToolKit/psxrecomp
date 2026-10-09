@@ -857,6 +857,16 @@ interpreter and the BIOS all charge CPU work through it; mul/div and GTE
 latencies are scaled where their deadline is set. At 1 the CPU charge is
 exactly the device advance and nothing else changes.
 
+`guest_cycle_scale_batch = true` (opt-in; `PSX_GCS_BATCH=0/1` for one run)
+scales each CPU charge where it is made and then batches it like the scale-1
+path, instead of publishing every one-cycle step to the devices. The
+fractional carry and the flush points (stores, MMIO, interrupt checks, device
+deadlines) are the same, so guest-visible timing is unchanged. In R4 races,
+`frame_fingerprint` A/Bs over 9000 frames (boot to attract, 1P race, 2P VS
+race) agree on `cyc`, `mmio` and `mc` on every frame. They also end with
+identical ordered write hashes. The only differences are one-frame VBlank
+straddles of `wc`/`sc`, as documented for batched code.
+
 Gates (all present gates must be open; with none the scale always applies):
 
 - `guest_cycle_scale_gate` — RAM predicates on aligned main-RAM words
