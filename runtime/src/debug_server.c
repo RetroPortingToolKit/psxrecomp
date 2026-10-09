@@ -9219,6 +9219,16 @@ static void handle_host_key(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":%s}", id, ok ? "true" : "false");
 }
 
+/* host_mouse x=<pt> y=<pt> [wheel=<steps>]: click (or scroll) at a window point. */
+extern int psx_debug_push_host_mouse(float x, float y, int wheel);
+static void handle_host_mouse(int id, const char *json)
+{
+    int ok = psx_debug_push_host_mouse((float)json_get_int(json, "x", 0),
+                                       (float)json_get_int(json, "y", 0),
+                                       json_get_int(json, "wheel", 0));
+    send_fmt("{\"id\":%d,\"ok\":%s}", id, ok ? "true" : "false");
+}
+
 static void handle_ws_nw(int id, const char *json)
 {
     int on = json_get_int(json, "on", -1);
@@ -15857,6 +15867,7 @@ static const CmdEntry s_commands[] = {
     { "debug_key",         handle_debug_key },
     { "host_pause",        handle_host_pause },
     { "host_key",          handle_host_key },
+    { "host_mouse",        handle_host_mouse },
     { "scanline",          handle_scanline },
     { "ws_backdrop_ring",  handle_ws_backdrop_ring },
     { "ws_ui_groups",      handle_ws_ui_groups },
