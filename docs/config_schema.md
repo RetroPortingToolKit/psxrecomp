@@ -498,7 +498,9 @@ overlay_region_floor = "0x10000"   # optional: lowest RAM address treated as ove
 overrides it for one run) also elides loops that count a stack timeout down
 by one each pass and span up to eight block edges: PsyQ libetc's `v_wait`,
 the `VSync(0)`/`VSync(n)` spin most PsyQ titles run every frame. The skip
-lowers the counter by the number of passes it skips (never to 1 or below, so
+lowers the counter by the number of passes it skips (several edges per pass are
+accepted only together with such a counter store; the device distance is
+measured from the current cycle, not from the devices' last service) (never to 1 or below, so
 the real timeout test still runs) and lands on the loop's first edge strictly
 before the next device event, so an interrupt is taken at the same edge as
 without it. Guest cycles, device-register writes and scratchpad writes are

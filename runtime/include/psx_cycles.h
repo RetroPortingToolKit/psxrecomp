@@ -257,6 +257,14 @@ int  psx_idle_skip_is_enabled(void);
 /* Cycles until the nearest IRQ-observable device event (mask-aware); the bound an idle skip may not cross. */
 uint32_t psx_idle_cycles_to_next_observable_event(void);
 extern int      g_idle_skip_enabled;
+/* [runtime] idle_skip_store_counters (psx_cycles.c): 1 on, 0 off, -1 env. */
+extern int      g_idle_skip_ext;
+/* The host write that lowers a skipped loop counter (psx_host_write_word);
+ * the store-counter extension stays off until one is installed. */
+void psx_idle_skip_set_host_writer(void (*w)(uint32_t addr, uint32_t val));
+/* The store path's last-word-store record (memory.c): the gate the detector
+ * sets while the extension is on, and the address/value it reads. */
+void psx_idle_skip_set_store_tracker(int *gate, const uint32_t *addr, const uint32_t *val);
 extern uint64_t g_idle_skip_count;
 extern uint64_t g_idle_skip_cycles;
 extern uint32_t g_idle_skip_last_pc;
