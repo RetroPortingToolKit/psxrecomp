@@ -682,6 +682,29 @@ The pattern is applied to the source colour before semi-transparent blending.
 OpenGL only. `PSX_DITHERING=0|1|2` overrides it for one run and the
 `dithering` TCP command switches it live.
 
+### Texture LOD and anisotropic filtering (`texture_lod`, `anisotropic_filtering`)
+
+```toml
+[video]
+texture_lod = "off"          # off (default) | mipmap
+anisotropic_filtering = 1    # 1..16, taps along the footprint (with mipmap)
+```
+
+PS1 texture pages and CLUTs live in VRAM and are decoded per fetch, so there
+is no GL mip chain to sample, and a far road or wall at high internal scale
+still point-samples one texel per pixel (shimmer). `mipmap` emulates the mip
+level in the textured shader: the screen-space UV footprint is box-averaged
+(opaque texels of the same STP class only), and `anisotropic_filtering` > 1
+spreads up to that many taps along the footprint's long axis so grazing
+surfaces stay sharp across it. Every tap clamps to the primitive's own UV
+bounds (or its texture window), so packed atlases never bleed into each
+other, and a live CLUT change is seen at once (nothing is cached). Only
+proven 3D world primitives are affected; sprites, HUD and magnified textures
+keep their exact texels, and `off` is the historical path. Cost is up to 64
+fetches per minified pixel. OpenGL only. `PSX_TEXTURE_LOD=0|1` and
+`PSX_ANISO=N` override them for one run; the `texture_lod` TCP command
+switches them live.
+
 The runtime clamps N per backend:
 
 - Software and Vulkan stop at 4.

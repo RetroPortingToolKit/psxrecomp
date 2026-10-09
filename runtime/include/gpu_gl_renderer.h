@@ -287,6 +287,13 @@ void gl_renderer_set_pgxp_depth(int on);
  * shaded/modulated draws while the guest's GP0(E1h) dither bit is set. */
 void gl_renderer_set_dithering(int mode);
 int  gl_renderer_dithering(void);
+/* [video] texture_lod / anisotropic_filtering: mip-level emulation (box
+ * average of the screen footprint, clamped to the primitive's UV bounds) for
+ * minified world textures, with up to `aniso` taps along the footprint's
+ * major axis. mode 0 (default) leaves sampling exactly as before. */
+void gl_renderer_set_texture_lod(int mode, int aniso);
+int  gl_renderer_texture_lod(void);
+int  gl_renderer_anisotropy(void);
 int  gl_renderer_get_pgxp_depth(void);
 void gl_renderer_set_pgxp_color_perspective(int on);
 int  gl_renderer_get_pgxp_color_perspective(void);

@@ -568,6 +568,13 @@ struct RuntimeConfig {
     // 1 "on" = pattern per internal-resolution pixel, 2 "scaled" = pattern
     // on the native pixel grid (the PS1 look at any scale). OpenGL only.
     int                   video_dithering = 0;
+    // texture_lod: "off" (default) or "mipmap" — mip-level emulation for
+    // minified 3D world textures (CLUT pages have no GL mip chain; the
+    // footprint is box-averaged inside the primitive's UV bounds).
+    // anisotropic_filtering: taps along the footprint's major axis (1..16,
+    // default 1); only with texture_lod. OpenGL only.
+    int                   video_texture_lod = 0;
+    int                   video_anisotropic_filtering = 1;
     bool                  video_pgxp_color_correction = false;
     int                   video_pgxp_seam = 0;
     double                video_pgxp_depth_threshold = 4096.0;

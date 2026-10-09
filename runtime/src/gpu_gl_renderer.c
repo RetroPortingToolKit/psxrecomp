@@ -892,6 +892,9 @@ static int s_tex_filter = 0;
  * the native pixel grid. s_dither_bit is the last GP0(E1h) bit 9; the shaders
  * only ever see s_dither_mode while the guest has dithering enabled. */
 static int s_dither_mode = 0, s_dither_bit = 0, s_dither_live = 0;
+/* [video] texture_lod (0 off, 1 mipmap emulation) and anisotropic_filtering
+ * (taps along the footprint's major axis, 1..16). */
+static int s_tex_lod = 0, s_tex_aniso = 1;
 /* Opaque textured draws carry the exact mask bit in FBO alpha. Keeping the
  * duplicate stencil copy current is deferred until mask checking is requested. */
 static int s_stencil_valid = 1;
@@ -1919,7 +1922,8 @@ static const char *TEX_FS =
     "uniform int u_semipass;  /* 0=all texels, 1=STP=0 only, 2=STP=1 only */\n"
     "uniform int u_semimode;  /* PS1 blend mode; drives dual-source factors */\n"
     "uniform int u_maskset;   /* GP0(E6h) set-mask: OR bit15 into output */\n"
-    "uniform int u_filter;    /* 0 nearest, 1 bilinear, 2 stable */\n"
+    "uniform int u_filter;    /* bits 0-3: 0 nearest, 1 bilinear, 2 stable; bit 4: LOD */\n"
+    "uniform int u_aniso;     /* [video] anisotropic_filtering, 1..16 */\n"
     "uniform float u_shift;\n"
     "int vram_at(int x, int y){\n"
     "  ivec2 p = ivec2(x & 1023, y & 511);\n"
@@ -1981,13 +1985,46 @@ static const char *TEX_FS =
     "  ivec2 at=clamp(ivec2(floor(t*vec2(size))),ivec2(0),size-ivec2(1));\n"
     "  return texelFetch(u_hd_texture,at,0);\n"
     "}\n"
+    /* [video] texture_lod: mip-level emulation for CLUT/15-bit pages, which
+     * have no GL mip chain (they are decoded per fetch from raw VRAM). The
+     * screen-space UV footprint gives a major and a minor axis; up to u_aniso
+     * taps go along the major axis (anisotropic filtering) and each averages
+     * a k x k texel box the size of the minor footprint (the mip level).
+     * Every fetch clamps to the primitive's own UV bounds (or its texture
+     * window), so a packed atlas never bleeds into the neighbour; texels
+     * that are transparent or of the other STP class carry no weight. */
+    "vec3 lod_sample(vec2 uv, vec2 dx, vec2 dy, int stp, vec3 base){\n"
+    "  float lx=length(dx), ly=length(dy);\n"
+    "  vec2 ax = lx >= ly ? dx : dy;\n"
+    "  float major=max(lx,ly), minor=max(min(lx,ly),1.0);\n"
+    "  if (major <= 1.0) return base;\n"
+    "  int n = clamp(int(ceil(major/minor)), 1, u_aniso);\n"
+    "  float box = max(minor, major/float(n));\n"
+    "  int k = clamp(int(ceil(box)), 1, 8);\n"
+    "  while (k > 1 && n*k*k > 64) k--;\n"
+    "  vec2 bx = normalize(dx) * box, by = normalize(dy) * box;\n"
+    "  if (lx < 1e-6) bx = vec2(box, 0.0);\n"
+    "  if (ly < 1e-6) by = vec2(0.0, box);\n"
+    "  vec4 sum = vec4(0.0);\n"
+    "  for (int t=0; t<n; ++t) {\n"
+    "    vec2 c = uv + ax * ((float(t)+0.5)/float(n) - 0.5);\n"
+    "    for (int j=0; j<k; ++j) for (int i=0; i<k; ++i) {\n"
+    "      vec2 o = bx*((float(i)+0.5)/float(k)-0.5) + by*((float(j)+0.5)/float(k)-0.5);\n"
+    "      int raw = stable_texel(ivec2(floor(c+o)));\n"
+    "      if (raw != 0 && ((raw>>15)&1) == stp) sum += vec4(col5(raw), 1.0);\n"
+    "    }\n"
+    "  }\n"
+    "  return sum.a > 0.0 ? sum.rgb / sum.a : base;\n"
+    "}\n"
     "void main(){\n"
     "  int stp; vec3 rgb;\n"
+    "  int fmode = u_filter & 15;\n"
     "  /* v_persp is 0 for every prim unless [video] perspective_texturing is on\n"
     "   * AND this prim's packet carried full GTE projection provenance, so the\n"
     "   * default is the PS1's affine (noperspective) mapping. */\n"
     "  vec2 uv = (v_persp != 0) ? v_uv_p : v_uv;\n"
     "  vec2 dx=dFdx(uv), dy=dFdy(uv);\n"
+    "  vec2 uv0=uv, dx0=dx, dy0=dy;   /* the PS1 sample point (texture_lod) */\n"
     "  if (v_hd_mode != 0) {\n"
     "    vec4 hd=hd_texel(uv);\n"
     "    rgb=hd.rgb;\n"
@@ -2003,12 +2040,12 @@ static const char *TEX_FS =
     "      stp=hd.a<=242.0/255.0 ? 1 : 0;\n"
     "      if(all(equal(hd,vec4(0.0))) || (stp==0 && all(equal(hd.rgb,vec3(0.0))))) discard;\n"
     "    }\n"
-    "  } else if (u_filter == 0) {\n"
+    "  } else if (fmode == 0) {\n"
     "    int raw = fetch_texel(int(floor(uv.x)), int(floor(uv.y)));\n"
     "    if (raw == 0) discard;\n"
     "    rgb = col5(raw);\n"
     "    stp = (raw >> 15) & 1;\n"
-    "  } else if (u_filter == 2) {\n"
+    "  } else if (fmode == 2) {\n"
     "    uv+=vec2(u_shift); int raw=stable_texel(ivec2(floor(uv)));\n"
     "    if(raw==0) discard; stp=(raw>>15)&1;\n"
     "    float lx=length(dx), ly=length(dy);\n"
@@ -2049,6 +2086,7 @@ static const char *TEX_FS =
     "                + float((c01 >> 15) & 1) * w01 + float((c11 >> 15) & 1) * w11) / opac;\n"
     "    stp = stpf >= 0.5 ? 1 : 0;\n"
     "  }\n"
+    "  if ((u_filter & 16) != 0 && v_hd_mode == 0) rgb = lod_sample(uv0, dx0, dy0, stp, rgb);\n"
     "  if (u_semipass == 1 && stp == 1) discard;\n"
     "  if (u_semipass == 2 && stp == 0) discard;\n"
     "  if (v_raw == 0) rgb = psx_dither(clamp(rgb * (v_cp != 0 ? v_col_p : v_col.rgb) * 2.0, 0.0, 1.0), v_npos);\n"
@@ -4481,7 +4519,11 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
                                   int semi, const int *lim) {
     // Mode 2 needs proven world geometry. Sprites, HUD and untracked packets
     // retain point sampling; their cutout pixels must stay sharp.
-    const int filter=s_tex_filter==2 && ((lim && !s_projected_uv_valid) || (!s_pc_valid && !s_pq_valid)) ? 0 : s_tex_filter;
+    const int untracked=(lim && !s_projected_uv_valid) || (!s_pc_valid && !s_pq_valid);
+    /* [video] texture_lod rides in the filter batch key (bit 4) for proven
+     * world geometry only; sprites and HUD keep their exact texels. */
+    const int filter=(s_tex_filter==2 && untracked ? 0 : s_tex_filter) |
+                     (s_tex_lod && !untracked ? 16 : 0);
     int lim_buf[4];
     int uv_buf[6];
     if (!lim) {
@@ -4908,6 +4950,25 @@ void gl_renderer_set_dithering(int mode) {
     if (s_ctx) dither_update();
 }
 int gl_renderer_dithering(void) { return s_dither_mode; }
+static GLint s_uAniso = -1;
+static void lod_apply_uniforms(void) {
+    if (!s_tex_prog) return;
+    GLint prev = 0; glGetIntegerv(GL_CURRENT_PROGRAM, &prev);
+    if (s_uAniso < 0) s_uAniso = p_glGetUniformLocation(s_tex_prog, "u_aniso");
+    p_glUseProgram(s_tex_prog); p_glUniform1i(s_uAniso, s_tex_aniso);
+    p_glUseProgram((GLuint)prev);
+}
+void gl_renderer_set_texture_lod(int mode, int aniso) {
+    GL_RT_SYNC("texture_lod");
+    if (aniso < 1) aniso = 1;
+    if (aniso > 16) aniso = 16;
+    if (s_ctx) { flush_flat_batch(); flush_tex_batch(); hiw_flush_queue(); }
+    s_tex_lod = mode ? 1 : 0;
+    s_tex_aniso = aniso;
+    if (s_ctx) lod_apply_uniforms();
+}
+int gl_renderer_texture_lod(void) { return s_tex_lod; }
+int gl_renderer_anisotropy(void) { return s_tex_aniso; }
 static void glb_set_texture_filter(int b) { s_tex_filter = b >= 0 && b <= 2 ? b : 0; sw_set_texture_filter(b != 0); }
 static int  glb_texture_filter(void) { return s_tex_filter; }
 
@@ -5759,6 +5820,8 @@ static int init_gpu_raster(void) {
     s_uSemimode = p_glGetUniformLocation(s_tex_prog, "u_semimode");
     s_uMaskset  = p_glGetUniformLocation(s_tex_prog, "u_maskset");
     s_uFilter   = p_glGetUniformLocation(s_tex_prog, "u_filter");
+    s_uAniso = -1;
+    lod_apply_uniforms();
     s_uLimits   = p_glGetUniformLocation(s_tex_prog, "u_limits");
     s_uHdTexture = p_glGetUniformLocation(s_tex_prog, "u_hd_texture");
     s_uBlitSrc     = p_glGetUniformLocation(s_blit_prog, "u_src");

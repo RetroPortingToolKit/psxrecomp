@@ -821,6 +821,19 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             else throw std::runtime_error(fmt::format(
                 "[video] dithering must be \"off\", \"on\" or \"scaled\": {}", mode));
         }
+        if (video.contains("texture_lod")) {
+            const auto mode = toml::find<std::string>(video, "texture_lod");
+            if (mode == "off")         rt.video_texture_lod = 0;
+            else if (mode == "mipmap") rt.video_texture_lod = 1;
+            else throw std::runtime_error(fmt::format(
+                "[video] texture_lod must be \"off\" or \"mipmap\": {}", mode));
+        }
+        if (video.contains("anisotropic_filtering")) {
+            const auto n = toml::find<int>(video, "anisotropic_filtering");
+            if (n < 1 || n > 16) throw std::runtime_error(fmt::format(
+                "[video] anisotropic_filtering must be 1..16: {}", n));
+            rt.video_anisotropic_filtering = n;
+        }
         if (video.contains("pgxp_depth_buffer"))
             rt.video_pgxp_depth_buffer = toml::find<bool>(video, "pgxp_depth_buffer");
         if (video.contains("pgxp_color_correction"))

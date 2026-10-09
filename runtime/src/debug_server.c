@@ -8582,6 +8582,19 @@ static void handle_dithering(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,\"mode\":%d}", id, gl_renderer_dithering());
 }
 
+/* texture_lod: {"cmd":"texture_lod"} reads, {"cmd":"texture_lod","mode":0|1,
+ * "aniso":1..16} sets [video] texture_lod / anisotropic_filtering live. */
+static void handle_texture_lod(int id, const char *json)
+{
+    int mode = json_get_int(json, "mode", -1);
+    int aniso = json_get_int(json, "aniso", -1);
+    if (mode >= 0 || aniso >= 0)
+        gl_renderer_set_texture_lod(mode >= 0 ? mode : gl_renderer_texture_lod(),
+                                    aniso >= 0 ? aniso : gl_renderer_anisotropy());
+    send_fmt("{\"id\":%d,\"ok\":true,\"mode\":%d,\"aniso\":%d}", id,
+             gl_renderer_texture_lod(), gl_renderer_anisotropy());
+}
+
 static void handle_frame_perf(int id, const char *json)
 {
     (void)json;
@@ -15675,6 +15688,7 @@ static const CmdEntry s_commands[] = {
     { "frame_perf",        handle_frame_perf },
     { "post_aa",           handle_post_aa },
     { "dithering",         handle_dithering },
+    { "texture_lod",       handle_texture_lod },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
     { "render_pass_stats", handle_render_pass_stats },
