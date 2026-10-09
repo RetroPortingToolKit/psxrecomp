@@ -208,7 +208,12 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
         h.u32(site.queue_guard ? 1u : 0u);
     }
     h.u32(c.ws_aspect_cone.forward_addr);
-    for (uint32_t value : c.ws_aspect_cone.forward_offsets) h.u32(value);
+    // Preserve cache identities for titles using the existing component order.
+    // A non-default order changes runtime participation and needs a new key.
+    if (c.ws_aspect_cone.forward_offsets != std::array<uint32_t, 3>{0u, 2u, 4u}) {
+        h.u32(0x41584953u); // AXIS
+        for (uint32_t value : c.ws_aspect_cone.forward_offsets) h.u32(value);
+    }
     h.u32(c.ws_aspect_cone.object_type_offset);
     h.u32(c.ws_aspect_cone.object_reg);
     h.u32(c.ws_aspect_cone.x_reg);
