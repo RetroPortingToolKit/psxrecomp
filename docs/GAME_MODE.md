@@ -10,7 +10,7 @@ the game, borderless fullscreen.
 | `--game-mode` / `--no-game-mode` | on / off (wins over everything) |
 | `PSX_GAME_MODE=1` / `=0` | on / off |
 | `XDG_CURRENT_DESKTOP` contains `gamescope`, or `GAMESCOPE_WAYLAND_DISPLAY` is set | on (detected) |
-| `SteamGamepadUI=1` (started from Big Picture / Game Mode) | on (detected) |
+| `SteamDeck=1` (Steam sets it for games on a Steam Deck) | on (detected) |
 | none of the above | off: desktop behaviour, unchanged |
 
 When it is on:

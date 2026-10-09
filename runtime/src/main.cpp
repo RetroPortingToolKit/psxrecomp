@@ -17096,7 +17096,7 @@ int main(int argc, char** argv) {
         gm_env.psx_game_mode = std::getenv("PSX_GAME_MODE");
         gm_env.xdg_current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
         gm_env.gamescope_display = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
-        gm_env.steam_gamepad_ui = std::getenv("SteamGamepadUI");
+        gm_env.steam_deck = std::getenv("SteamDeck");
         gm_env.cli_game_mode = cli_game_mode;
         const char *gm_why = "";
         if (psx_game_mode_detect(&gm_env, &gm_why) && !g_headless && !g_hidden_window) {
