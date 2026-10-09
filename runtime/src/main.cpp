@@ -64,6 +64,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "frame_pacing.h"
 #include "latency_ring.h"
 #include "sio.h"
+#include "psx_jogcon_ffb.h"
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
 #endif
@@ -425,7 +426,17 @@ struct PlayerInput {
     bool    rumble_known = false;
     bool    rumble_warned = false;
     bool    steering_wheel = false;
+    /* JogCon force feedback on this pad's haptics ([controller]
+     * jogcon_force_feedback; psx_jogcon_ffb.h). -1 = no such effect. */
+    SDL_Haptic*  haptic = nullptr;
+    int          ffb_constant = -1;
+    int          ffb_spring = -1;
+    bool         ffb_probed = false;
+    PsxJogconFfb ffb_last = {0, 0};
 };
+/* game.toml [controller] jogcon_force_feedback(_invert): opt-in. */
+static bool g_jogcon_ffb = false;
+static bool g_jogcon_ffb_invert = false;
 static PlayerInput g_players[PSX_MAX_PLAYERS];
 /* Offline SIO sample loop bound (from game.toml players; clamped). */
 static int g_offline_pad_count = 2;
@@ -5134,7 +5145,18 @@ static void load_input_config(const char* argv0) {
     psx_keybinds_init(argv0);
 }
 
+static void close_player_haptic(PlayerInput& p) {
+    if (p.haptic) {
+        SDL_HapticClose(p.haptic);   /* stops and frees its effects */
+        p.haptic = nullptr;
+    }
+    p.ffb_constant = p.ffb_spring = -1;
+    p.ffb_probed = false;
+    p.ffb_last = PsxJogconFfb{0, 0};
+}
+
 static void close_player(PlayerInput& p) {
+    close_player_haptic(p);
     if (p.handle) {
         if (p.rumble_small || p.rumble_large)
             (void)SDL_GameControllerRumble(p.handle, 0, 0, 0);
@@ -5214,6 +5236,101 @@ static void open_player(PlayerInput& p, int self_slot) {
  * the small motor is fixed-strength/high-frequency. Active effects are renewed
  * every VBlank with a short lifetime so a crash or unplug cannot leave a host
  * controller vibrating indefinitely. */
+#if defined(PSX_SDL3)
+#define PSX_SDL_OK(call) ((call) ? 0 : -1)
+#else
+#define PSX_SDL_OK(call) (call)
+#endif
+
+/* Open the pad's haptic device and make the two JogCon effects, once per
+ * pad. Pads without constant / spring support (gamepads) get none. */
+static void probe_jogcon_haptic(PlayerInput& p) {
+    p.ffb_probed = true;
+    if (!p.handle) return;
+    if (!SDL_WasInit(SDL_INIT_HAPTIC) &&
+        PSX_SDL_OK(SDL_InitSubSystem(SDL_INIT_HAPTIC)) != 0)
+        return;
+    SDL_Joystick* joy = SDL_GameControllerGetJoystick(p.handle);
+    p.haptic = joy ? SDL_HapticOpenFromJoystick(joy) : nullptr;
+    if (!p.haptic) return;
+    const unsigned features = (unsigned)SDL_HapticQuery(p.haptic);
+    SDL_HapticEffect e;
+    if (features & SDL_HAPTIC_CONSTANT) {
+        std::memset(&e, 0, sizeof e);
+        e.type = SDL_HAPTIC_CONSTANT;
+        e.constant.direction.type = SDL_HAPTIC_CARTESIAN;
+        e.constant.direction.dir[0] = 1;
+        e.constant.length = SDL_HAPTIC_INFINITY;
+        p.ffb_constant = SDL_HapticNewEffect(p.haptic, &e);
+    }
+    if (features & SDL_HAPTIC_SPRING) {
+        std::memset(&e, 0, sizeof e);
+        e.type = SDL_HAPTIC_SPRING;
+        e.condition.direction.type = SDL_HAPTIC_CARTESIAN;
+        e.condition.length = SDL_HAPTIC_INFINITY;
+        e.condition.right_sat[0] = e.condition.left_sat[0] = 0xFFFF;
+        p.ffb_spring = SDL_HapticNewEffect(p.haptic, &e);
+    }
+    if (p.ffb_constant < 0 && p.ffb_spring < 0) {
+        SDL_HapticClose(p.haptic);
+        p.haptic = nullptr;
+    } else {
+        std::fprintf(stdout,
+            "psxrecomp runtime: JogCon force feedback on this controller "
+            "(constant %s, spring %s)\n", p.ffb_constant >= 0 ? "yes" : "no",
+            p.ffb_spring >= 0 ? "yes" : "no");
+    }
+}
+
+static void apply_jogcon_effect(PlayerInput& p, int effect, bool on,
+                                SDL_HapticEffect* e) {
+    if (!p.haptic || effect < 0) return;
+    if (on) {
+        (void)SDL_HapticUpdateEffect(p.haptic, effect, e);
+        (void)SDL_HapticRunEffect(p.haptic, effect, 1);
+    } else {
+        (void)SDL_HapticStopEffect(p.haptic, effect);
+    }
+}
+
+/* JogCon force feedback ([controller] jogcon_force_feedback): the guest's
+ * motor command and strength become a constant force or a centring spring on
+ * a host wheel with SDL haptics. Gamepads are left alone. */
+static void update_jogcon_ffb(int s, PlayerInput& p, bool trace) {
+    PsxJogconFfb f = {0, 0};
+    uint8_t command = 0, strength = 0;
+    if (g_jogcon_ffb && sio_get_pad_analog(s) == SIO_PAD_JOGCON) {
+        sio_get_pad_jogcon_motor(s, &command, &strength);
+        f = psx_jogcon_ffb_map(command, strength, g_jogcon_ffb_invert ? 1 : 0);
+        if (!p.ffb_probed) probe_jogcon_haptic(p);
+    }
+    if (f.constant == p.ffb_last.constant && f.spring == p.ffb_last.spring)
+        return;
+    if (p.haptic) {
+        SDL_HapticEffect e;
+        std::memset(&e, 0, sizeof e);
+        e.type = SDL_HAPTIC_CONSTANT;
+        e.constant.direction.type = SDL_HAPTIC_CARTESIAN;
+        e.constant.direction.dir[0] = 1;
+        e.constant.length = SDL_HAPTIC_INFINITY;
+        e.constant.level = f.constant;
+        apply_jogcon_effect(p, p.ffb_constant, f.constant != 0, &e);
+        std::memset(&e, 0, sizeof e);
+        e.type = SDL_HAPTIC_SPRING;
+        e.condition.direction.type = SDL_HAPTIC_CARTESIAN;
+        e.condition.length = SDL_HAPTIC_INFINITY;
+        e.condition.right_sat[0] = e.condition.left_sat[0] = 0xFFFF;
+        e.condition.right_coeff[0] = e.condition.left_coeff[0] = (Sint16)f.spring;
+        apply_jogcon_effect(p, p.ffb_spring, f.spring != 0, &e);
+    }
+    if (trace)
+        std::fprintf(stdout,
+            "psxrecomp ffb: slot=%d jogcon cmd=%u strength=%u constant=%d "
+            "spring=%u host=%s\n", s + 1, (unsigned)command, (unsigned)strength,
+            (int)f.constant, (unsigned)f.spring, p.haptic ? "wheel" : "none");
+    p.ffb_last = f;
+}
+
 static void update_controller_rumble(void) {
     static const bool trace = [] {
         const char* e = std::getenv("PSX_RUMBLE_TRACE");
@@ -5221,6 +5338,7 @@ static void update_controller_rumble(void) {
     }();
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
         PlayerInput& p = g_players[s];
+        update_jogcon_ffb(s, p, trace);
         uint8_t small = 0, large = 0;
         sio_get_pad_rumble(s, &small, &large);
         if (!p.handle) {
@@ -8441,7 +8559,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_selfcheck_finish_frame(
             (g_offline_pad_count >= 3 && !sio_get_multitap()) ? 1 : 0);
     }
-    if (!g_headless) update_controller_rumble();
+    /* Headless has no pads; PSX_RUMBLE_TRACE still logs what would be sent. */
+    if (!g_headless || std::getenv("PSX_RUMBLE_TRACE")) update_controller_rumble();
 
     /* Latency ring: open this present cycle's slot, stamping when input was
      * sampled into SIO.  Always-on; queried via the debug server "latency". */
@@ -16340,6 +16459,8 @@ int main(int argc, char** argv) {
             g_auto_skip_fmv    = gc.runtime.video_auto_skip_fmv ? 1 : 0;
             /* [controller] game-declared input defaults (settings.toml/launcher
              * still override below). */
+            g_jogcon_ffb = gc.runtime.jogcon_force_feedback;
+            g_jogcon_ffb_invert = gc.runtime.jogcon_force_feedback_invert;
             if (!gc.runtime.direct_shortcut.empty())
                 apply_title_direct_shortcut(gc.runtime.direct_shortcut,
                                             gc.runtime.direct_shortcut_button);

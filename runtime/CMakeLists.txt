@@ -609,6 +609,11 @@ if(BUILD_TESTING)
     target_include_directories(psx_pad_apply_test PRIVATE include)
     add_test(NAME psx_pad_apply_test COMMAND psx_pad_apply_test)
 
+    # JogCon motor byte -> host wheel haptics ([controller] jogcon_force_feedback).
+    add_executable(jogcon_ffb_test tests/test_jogcon_ffb.c)
+    target_include_directories(jogcon_ffb_test PRIVATE include)
+    add_test(NAME jogcon_ffb_test COMMAND jogcon_ffb_test)
+
     add_executable(controller_type_test tests/test_controller_type.cpp)
     target_include_directories(controller_type_test PRIVATE include)
     add_test(NAME controller_type_test COMMAND controller_type_test)
