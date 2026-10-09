@@ -2682,6 +2682,18 @@ extern "C" int psx_mod_register_option_changed_plugin(const char* id,
     return 1;
 }
 
+extern "C" int psx_mod_option_live_capable(const char* package_id, const char* feature_id) {
+    using namespace PSXRecompV4;
+    if (!package_id || !feature_id) return 0;
+    RuntimeMods& s = state();
+    if (!s.initialized || !s.plan.ok) return 0;
+    for (const ModResolution::Plugin& plugin : s.plan.plugins)
+        if (plugin.package_id == package_id && plugin.feature_id == feature_id &&
+            option_changed_plugins().count(plugin.id))
+            return 1;
+    return 0;
+}
+
 extern "C" int psx_mod_set_option_live(const char* package_id, const char* feature_id,
                                        const char* option_id, const char* value) {
     using namespace PSXRecompV4;

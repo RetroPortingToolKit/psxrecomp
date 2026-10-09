@@ -370,6 +370,9 @@ int psx_mod_register_option_changed_plugin(const char* id,
                                            PSXModOptionChangedCallback callback);
 int psx_mod_set_option_live(const char* package_id, const char* feature_id,
                             const char* option_id, const char* value);
+/* 1 when the committed feature's plugin registered an option-changed callback
+ * (so a live set can take effect now). Read-only; any thread. */
+int psx_mod_option_live_capable(const char* package_id, const char* feature_id);
 /*
  * Read the committed owner-selected path for a resource declared by the
  * package feature whose trusted plugin is currently running. Returns 0 when
