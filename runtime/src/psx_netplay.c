@@ -53,6 +53,9 @@
 #include "spu.h"
 #if defined(PSX_HAS_LOBBY_CLIENT)
 #include "psx_lobby_client.h"
+
+/* Ticks of input a seated peer resends for spectators (recomp-net observer_resend). */
+#define PSX_NETPLAY_OBSERVER_RESEND 48
 #endif
 #endif
 
@@ -3892,6 +3895,12 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
         rcfg.wire_slot = (rnet_u8)cfg->spectator_wire_slot;
     } else {
         rcfg.local_slot = (rnet_u8)local;
+        /* A gallery cannot ask for what it lost (the relay forwards nothing
+         * a spectator sends), so seated peers resend the last
+         * PSX_NETPLAY_OBSERVER_RESEND ticks in every bundle when the lobby
+         * has one. Off in rooms without spectators: nothing changes there. */
+        if (psx_lobby_in_lobby() && psx_lobby_allow_spectators())
+            rcfg.observer_resend = PSX_NETPLAY_OBSERVER_RESEND;
     }
     /* Max delay 20 matches RNET_MAX_BUNDLE 21 (neutral prefix + tip). */
     rcfg.input_delay = (rnet_u8)(cfg->input_delay < 0 ? 0
