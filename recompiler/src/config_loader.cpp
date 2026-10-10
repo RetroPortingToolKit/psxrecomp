@@ -2825,6 +2825,12 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     loaded.draw_distance_clamp_sites =
         parse_draw_distance_clamps(cfg, config_path);
     loaded.quality_presets = parse_quality_presets(cfg, root, config_path);
+    if (cfg.contains("widescreen")) {
+        const toml::value& wsv = toml::find(cfg, "widescreen");
+        if (wsv.contains("scene_predicate_per_frame"))
+            loaded.ws_scene_predicate_per_frame =
+                toml::find<bool>(wsv, "scene_predicate_per_frame");
+    }
     return loaded;
 }
 

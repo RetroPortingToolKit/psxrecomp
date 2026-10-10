@@ -1369,6 +1369,10 @@ if(BUILD_TESTING)
     add_executable(game_mode_test tests/test_game_mode.c src/game_mode.c)
     target_include_directories(game_mode_test PRIVATE include)
     add_test(NAME game_mode_test COMMAND game_mode_test)
+    # [widescreen] scene_predicate_per_frame: flips within and across frames.
+    add_executable(ws_scene_cache_test tests/test_ws_scene_cache.c)
+    target_include_directories(ws_scene_cache_test PRIVATE include)
+    add_test(NAME ws_scene_cache_test COMMAND ws_scene_cache_test)
     # The render-thread controller (dynrt_*) against a synthetic pipeline.
     add_executable(dynamic_resolution_rt_test
         tests/test_dynamic_resolution_rt.c

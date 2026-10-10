@@ -1467,6 +1467,9 @@ struct GameConfig {
     // [quality.low/medium/high/ultra] -- graphics presets, lowest first. Empty:
     // the title has no presets and [video] alone applies (unchanged).
     std::vector<QualityPreset> quality_presets;
+    // [widescreen] scene_predicate_per_frame -- evaluate a mod's world-scene
+    // predicate once per VBlank (gpu.c). Opt-in; check with a fingerprint A/B.
+    bool ws_scene_predicate_per_frame = false;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.
