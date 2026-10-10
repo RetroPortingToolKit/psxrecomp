@@ -810,6 +810,13 @@ has), and a title-allowed direct Rewind button (`psx_mod_allow_direct_shortcut`)
 is not claimed, so it reaches the game as if Rewind were off. The block clears
 at every mod/session reset; nothing changes for a title that never calls it.
 
+A title that computes vibration but cannot send it over SIO to the presented
+pad (a NeGcon has no motors) can call `psx_mod_set_host_rumble(player, small,
+large)` every frame with DualShock motor values. The runtime drives the host
+pad with the louder of that and the guest's SIO motors; a value lapses 8
+VBlanks after the last call and all are cleared at every mod/session reset.
+`PSX_RUMBLE_TRACE=1` logs every change, headless included.
+
 Bezel artwork is intentionally not a `[video]` key. It is exposed as the
 disabled-by-default `psx.presentation.bezel` mod package, which draws a
 user-selected image resource behind the game image in OpenGL letterbox or

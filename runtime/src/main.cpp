@@ -65,6 +65,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "frame_pacing.h"
 #include "latency_ring.h"
 #include "sio.h"
+#include "psx_host_rumble.h"
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
 #endif
@@ -1427,6 +1428,27 @@ extern "C" int psx_mod_allow_direct_shortcut(uint32_t shortcut) {
 
 extern "C" void psx_mod_set_rewind_blocked(int blocked) {
     psx_rewind_set_title_blocked(blocked);
+}
+
+/* psx_mod_set_host_rumble: per-seat title rumble, stamped with the rumble
+ * VBlank so a value the mod stops refreshing lapses (psx_host_rumble.h). */
+static PsxHostRumbleSlot g_mod_rumble[PSX_MAX_PLAYERS];
+static uint32_t          g_rumble_vblank = 0;
+
+extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
+                                       uint32_t large) {
+    if (player >= PSX_MAX_PLAYERS) return 0;
+    if (psx_netplay_active()) {
+        /* Online: only this peer's own guest port drives its own pad, once per
+         * real tick (a rollback resim replays ticks the pad already felt). */
+        if (psx_netplay_is_resimulating() ||
+            (int)player != psx_netplay_local_port())
+            return 1;
+        const int card = psx_netplay_input_player();
+        player = card >= 0 && card < PSX_MAX_PLAYERS ? (uint32_t)card : 0u;
+    }
+    psx_host_rumble_set(&g_mod_rumble[player], g_rumble_vblank, small, large);
+    return 1;
 }
 static uint32_t      g_savestate_input_guard_min_until = 0;
 static uint32_t      g_savestate_input_guard_max_until = 0;
@@ -5213,11 +5235,18 @@ static void update_controller_rumble(void) {
         const char* e = std::getenv("PSX_RUMBLE_TRACE");
         return e && e[0] && e[0] != '0';
     }();
+    ++g_rumble_vblank;
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
         PlayerInput& p = g_players[s];
         uint8_t small = 0, large = 0;
         sio_get_pad_rumble(s, &small, &large);
+        psx_host_rumble_merge(&g_mod_rumble[s], g_rumble_vblank, &small, &large);
         if (!p.handle) {
+            if (trace && (!p.rumble_known || p.rumble_small != small ||
+                          p.rumble_large != large))
+                std::fprintf(stdout,
+                    "psxrecomp rumble: slot=%d small=%u large=%u host=none\n",
+                    s + 1, (unsigned)small, (unsigned)large);
             p.rumble_small = small;
             p.rumble_large = large;
             p.rumble_known = true;
@@ -8435,7 +8464,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_selfcheck_finish_frame(
             (g_offline_pad_count >= 3 && !sio_get_multitap()) ? 1 : 0);
     }
-    if (!g_headless) update_controller_rumble();
+    /* Headless has no pads; PSX_RUMBLE_TRACE still logs what would be sent. */
+    if (!g_headless || std::getenv("PSX_RUMBLE_TRACE")) update_controller_rumble();
 
     /* Latency ring: open this present cycle's slot, stamping when input was
      * sampled into SIO.  Always-on; queried via the debug server "latency". */
@@ -18151,6 +18181,7 @@ int main(int argc, char** argv) {
         mod_controller_source_reset();
         mod_pad_transform_reset();
         g_direct_shortcut_allowed = 0;
+        std::memset(g_mod_rumble, 0, sizeof g_mod_rumble);
         g_p1_claimed_buttons = 0;
         psx_rewind_set_title_blocked(0);
         for (auto& policy : g_mod_controller_policy)
