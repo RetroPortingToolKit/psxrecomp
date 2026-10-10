@@ -73,6 +73,7 @@
  * returns 0 and the runtime falls back to the pure software renderer — no
  * half-GL hybrid. */
 
+#include "host_overlay.h"
 #include "gpu.h"
 #include "gpu_render.h"
 #include "gl_scale_limits.h"
@@ -9622,6 +9623,9 @@ static void gl_swap_with_osd(void) {
             }
             if (ov_image(3, &px, &ow, &oh) && px)
                 gl_draw_osd_image(px, ow, oh, ww, wh, 0, 0, ww, wh);
+            /* In-game overlay provider (host_overlay.h P2), over everything
+             * the host composes; no-op unless one registered. */
+            psx_host_overlay_draw(ww, wh);
         }
     }
     if (!rth_replaying()) host_osd_present_done();   /* replay: done at record */
