@@ -4468,6 +4468,9 @@ void gpu_pgxp_rederive_enable(void) {
 void psx_mod_set_native_wide_projection_correction(int enabled) {
     s_native_wide_projection_correction = enabled ? 1 : 0;
     s_native_wide_projection_vertices = 0;
+    /* Signed camera-space provenance is required for correct native-wide
+     * faces, including corners behind the camera. Arm it with the mode. */
+    pgxp_set_projection_tracking(s_native_wide_projection_correction);
     gpu_pgxp_rederive_enable();
 }
 
@@ -4482,7 +4485,9 @@ static int gpu_ws_projective_enabled(void) {
         gl_renderer_projective_supported();
 }
 void psx_mod_set_native_wide_near_clip(int enabled) {
-    pgxp_set_projection_tracking(enabled);
+    /* Compatibility entry point: clipping follows projection correction.
+     * A separate toggle must not disable this mode's correctness fix. */
+    (void)enabled;
 }
 
 /* The PS1 clamps each projected X independently. At a wider FOV that can

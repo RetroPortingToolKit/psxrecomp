@@ -238,15 +238,14 @@ int32_t psx_mod_widescreen_x_margin(void);
  * Use for screen-space layout, including the first frame of a new scene. */
 int32_t psx_mod_widescreen_view_x_margin(void);
 
-/* Opt into render-only recovery of saturated horizontal GTE projections in
- * native-wide gameplay. Requires exact packet-address/word provenance and
- * depth; never changes guest SXY, vertical coordinates, or the 4:3 path. */
+/* Enable render-only recovery of saturated horizontal GTE projections and
+ * camera-plane clipping in native-wide gameplay. Requires exact packet-address/
+ * word provenance and depth; never changes guest SXY or the 4:3 path. */
 void psx_mod_set_native_wide_projection_correction(int enabled);
-/* Separately qualify near-camera world clipping for a title. The GL path
- * carries signed, unclamped projection through exact PGXP word transport,
- * clips at the camera/view planes, and preserves ordered GPU/VRAM writes.
- * Requires projection correction above; 4:3, software and untracked UI stay
- * on their existing paths. No architectural GTE or gameplay changes. */
+/* Deprecated compatibility entry point; enabled is ignored. Camera/view-plane
+ * clipping is automatic with projection correction above. The GL path requires
+ * signed projection through exact PGXP word transport; 4:3, software and
+ * untracked UI stay on their existing paths. No guest GTE/gameplay changes. */
 void psx_mod_set_native_wide_near_clip(int enabled);
 /* Bind render-only NCLIP branch consumers to full instruction words. These
  * recover winding only when valid horizontal projections saturated; guest
