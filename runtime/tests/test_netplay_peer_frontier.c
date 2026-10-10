@@ -55,6 +55,20 @@ int main(void)
     CHECK(netplay_fork_cap_retired(1928u, 1928u), "agreed at the cap retires it");
     CHECK(netplay_fork_cap_retired(1928u, 3136u), "agreed past the cap retires it (4-seat race)");
 
+    /* Epoch ids: (counter << 3) | initiator slot. */
+#define EP(n, slot) (((uint32_t)(n) << 3) | (uint32_t)(slot))
+    CHECK(netplay_rb_concurrent_begin(EP(5, 1), EP(5, 1), 0, 7u) == 0, "same epoch: no contest");
+    CHECK(netplay_rb_concurrent_begin(EP(5, 2), EP(5, 1), 0, 7u) == 1,
+          "initiator: lower peer slot wins, we yield");
+    CHECK(netplay_rb_concurrent_begin(EP(5, 1), EP(5, 2), 0, 7u) == -1,
+          "initiator: higher peer slot loses, drop it");
+    CHECK(netplay_rb_concurrent_begin(EP(5, 3), EP(5, 1), 1, 7u) == 1,
+          "follower of slot 3 switches to slot 1 (4-seat WAN split)");
+    CHECK(netplay_rb_concurrent_begin(EP(5, 1), EP(5, 3), 1, 7u) == -1,
+          "follower of slot 1 drops slot 3's BEGIN");
+    CHECK(netplay_rb_concurrent_begin(EP(5, 0), EP(6, 0), 1, 7u) == 0,
+          "follower: initiator reopened -> not a contest (two-seat path)");
+
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

@@ -8594,9 +8594,20 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
      * after local snap apply. Gating on !snap_applied left the loser
      * stashing the winner's BEGIN forever while both sides waited on
      * peer baseline (2026-08-02 soak: epoch 16 vs 17, 404× WIN drop).
-     * Replay/Verify still refuse — abort/NACK owns those. */
-    if (g_rb && rnet_rb_is_active(g_rb) && !rnet_rb_is_from_peer_notify(g_rb) &&
-        epoch != rnet_rb_get_epoch_id(g_rb)) {
+     * Replay/Verify still refuse — abort/NACK owns those.
+     * With three or more seats a FOLLOWER sees the race too: two guests
+     * mispredict the same tick and both BEGIN. The follower used to follow
+     * whichever BEGIN landed first and stash the other, so with three
+     * initiators the seats split across epochs and each waited forever for
+     * baselines that never came (4-seat WAN: host on epoch 43 from slot 3,
+     * slot 1 winning with 41). The epoch id names its initiator, so a
+     * follower applies the same rule to the episode it follows
+     * (netplay_rb_concurrent_begin). Two seats never reach this for a
+     * follower: the only other initiator is the one it already follows. */
+    if (g_rb && rnet_rb_is_active(g_rb) &&
+        netplay_rb_concurrent_begin(rnet_rb_get_epoch_id(g_rb), epoch,
+                                    rnet_rb_is_from_peer_notify(g_rb),
+                                    RB_EPOCH_SLOT_MASK) != 0) {
         uint32_t our_epoch = rnet_rb_get_epoch_id(g_rb);
         uint32_t our_slot = our_epoch & RB_EPOCH_SLOT_MASK;
         uint32_t their_slot = epoch & RB_EPOCH_SLOT_MASK;
