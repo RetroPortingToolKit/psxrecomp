@@ -23,6 +23,12 @@ schedule on the emulation thread). Blend and source are reset to their
 defaults at every session start (first boot and the lobby rematch), so a
 netplay session or a later offline one never inherits them.
 
+The presenter uses the high-resolution host timer for microsecond waits,
+leaving only a short final spin for scheduling jitter. Whole-millisecond
+waits previously spent up to almost two milliseconds spinning per output,
+which could starve game execution on a CPU-constrained host at high refresh.
+The presentation deadlines and guest cadence remain unchanged.
+
 ## Blend modes
 
 | Mode | Output between two source frames |

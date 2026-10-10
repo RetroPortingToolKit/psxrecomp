@@ -7578,8 +7578,12 @@ static void interp_wait_until(uint64_t deadline, uint64_t frequency) {
             return;
         }
         uint64_t remain = deadline - now;
-        uint32_t ms = (uint32_t)((remain * 1000u) / frequency);
-        if (ms > 1) psx_host_sleep_ms(ms - 1);
+        /* Whole-millisecond sleeps left up to almost two milliseconds of
+         * spinning before EVERY blended present. At high refresh that burns
+         * CPU needed by the guest. The host timer already supports microsecond
+         * waits; keep a short final margin for scheduling jitter instead. */
+        uint64_t us = (remain * 1000000u) / frequency;
+        if (us > 300u) psx_host_sleep_micros((unsigned)(us - 200u));
     }
 }
 
