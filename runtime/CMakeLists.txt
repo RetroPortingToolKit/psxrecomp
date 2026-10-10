@@ -262,6 +262,45 @@ if(BUILD_TESTING)
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-frame-gen-results")
         set_tests_properties(gl_frame_gen_test PROPERTIES
             LABELS "gpu;opengl;hardware" TIMEOUT 300 SKIP_RETURN_CODE 77)
+        # [video] texture_lod / anisotropic_filtering: off and untracked/
+        # magnified prims are unchanged; minified world textures average
+        # inside their UV bounds; render thread and PGXP depth agree.
+        add_test(NAME gl_texture_lod_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_texture_lod.c"
+                --cc "${CMAKE_C_COMPILER}"
+                --sdl-include "${_gl_scale_sdl_inc}"
+                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-texture-lod-results")
+        set_tests_properties(gl_texture_lod_test PROPERTIES
+            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
+        # PS1 semi-transparency modes and mask bit at 4x with PGXP depth and
+        # the render thread, against the formulas and the software reference
+        # ([video] accurate_blending on; off is measured and printed).
+        add_test(NAME gl_blend_accuracy_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_blend_accuracy.c"
+                --cc "${CMAKE_C_COMPILER}"
+                --sdl-include "${_gl_scale_sdl_inc}"
+                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-blend-accuracy-results")
+        set_tests_properties(gl_blend_accuracy_test PROPERTIES
+            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
+        # [video] dithering: off ignores the guest's dither bit (byte-identical
+        # true colour); on/scaled add the PS1 pattern to shaded/modulated draws
+        # only, through the facade, the render thread, PGXP depth and wide.
+        add_test(NAME gl_dithering_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_dithering.c"
+                --cc "${CMAKE_C_COMPILER}"
+                --sdl-include "${_gl_scale_sdl_inc}"
+                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-dithering-results")
+        set_tests_properties(gl_dithering_test PROPERTIES
+            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
         unset(_gl_scale_sdl_inc)
     else()
         message(STATUS "gl_scale_invariance_test: not registered (needs macOS, Linux or MinGW, Python 3 and SDL3)")
@@ -308,19 +347,6 @@ if(BUILD_TESTING)
                 --sdl-library "$<TARGET_FILE:SDL3::SDL3-static>"
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-fmv-chroma-results")
         set_tests_properties(gl_fmv_chroma_test PROPERTIES
-            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
-        # [video] texture_lod / anisotropic_filtering: off and untracked/
-        # magnified prims are unchanged; minified world textures average
-        # inside their UV bounds; render thread and PGXP depth agree.
-        add_test(NAME gl_texture_lod_test
-            COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
-                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_texture_lod.c"
-                --cc "${CMAKE_C_COMPILER}"
-                --sdl-include "${_gl_scale_sdl_inc}"
-                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
-                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-texture-lod-results")
-        set_tests_properties(gl_texture_lod_test PROPERTIES
             LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
     endif()
     add_executable(launcher_device_roundtrip_test
