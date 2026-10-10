@@ -21,6 +21,9 @@ typedef struct PsxSdlAudioSpec {
 SDL_AudioDeviceID psx_sdl_audio_open(
     const PsxSdlAudioSpec *want, PsxSdlAudioSpec *have);
 int psx_sdl_audio_resume(SDL_AudioDeviceID device);
+/* Host pause (host_overlay.h P1): stop/start the device without dropping
+ * queued samples. */
+void psx_sdl_audio_set_paused(SDL_AudioDeviceID device, int paused);
 void psx_sdl_audio_close(SDL_AudioDeviceID device);
 void psx_sdl_audio_clear(SDL_AudioDeviceID device);
 Uint32 psx_sdl_audio_queued_size(SDL_AudioDeviceID device);
