@@ -6234,6 +6234,8 @@ static int capture_host_layer_pad(PsxNetPad* out, uint16_t word,
 static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
                                  bool host_view) {
     if (!out) return 0;
+    /* An open overlay menu owns the controls: the game sees released pads. */
+    if (psx_host_ui_capture_active()) guarded = true;
     out->buttons = 0xFFFFu;
     out->lx = out->ly = out->rx = out->ry = 0x80u;
     out->analog = 0;
@@ -6334,6 +6336,12 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
 
     out->buttons = btn;
     out->lx = st[0]; out->ly = st[1]; out->rx = st[2]; out->ry = st[3];
+    if (psx_host_ui_capture_active()) {
+        /* Overlay open during netplay: publish "nothing pressed", which every
+         * peer simulates identically. */
+        out->buttons = 0xFFFFu;
+        out->lx = out->ly = out->rx = out->ry = 0x80u;
+    }
     out->analog = (uint8_t)frame_type;
     out->connected = 1;
     return 1;
@@ -8062,7 +8070,9 @@ static void rewind_host_pause_loop(void) {
 static void host_pause_service(void);  /* P6 fills this in; no-op until then */
 static void host_pause_service(void) {}
 static bool host_pause_event(const SDL_Event& ev);  /* P3: input sink */
-static bool host_pause_event(const SDL_Event&) { return false; }
+static bool host_pause_event(const SDL_Event& ev) {
+    return psx_host_input_sink_dispatch(&ev) != 0;
+}
 
 static void host_pause_loop(void) {
     psx_local_mouse_begin(sdl_window, false);
@@ -8105,6 +8115,57 @@ static void host_pause_loop(void) {
     dynres_note_savestate_loaded();
     /* Swallow the still-held resume press so it doesn't reach the game. */
     savestate_input_guard_arm();
+}
+
+/* Debug: inject a host key / gamepad button as an SDL event, so scripted
+ * runs can drive host UI (the overlay) through the real event path. */
+extern "C" int psx_debug_push_host_key(const char *name, int down) {
+    const SDL_Scancode sc = SDL_GetScancodeFromName(name ? name : "");
+    if (sc == SDL_SCANCODE_UNKNOWN) return 0;
+    SDL_Event ev;
+    SDL_zero(ev);
+#if defined(PSX_SDL3)
+    ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    ev.key.scancode = sc;
+    ev.key.key = SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false);
+    ev.key.down = down != 0;
+    ev.key.windowID = sdl_window ? SDL_GetWindowID(sdl_window) : 0;
+#else
+    ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    ev.key.keysym.scancode = sc;
+    ev.key.keysym.sym = SDL_GetKeyFromScancode(sc);
+    ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+#endif
+    return SDL_PushEvent(&ev) ? 1 : 0;
+}
+
+/* Debug: inject a mouse click (x, y in window points) or wheel step. */
+extern "C" int psx_debug_push_host_mouse(float x, float y, int wheel) {
+    SDL_Event ev;
+    const Uint32 win = sdl_window ? SDL_GetWindowID(sdl_window) : 0;
+#if defined(PSX_SDL3)
+    SDL_zero(ev);
+    ev.type = SDL_EVENT_MOUSE_MOTION;
+    ev.motion.windowID = win; ev.motion.x = x; ev.motion.y = y;
+    if (!SDL_PushEvent(&ev)) return 0;
+    if (wheel) {
+        SDL_zero(ev);
+        ev.type = SDL_EVENT_MOUSE_WHEEL;
+        ev.wheel.windowID = win; ev.wheel.y = (float)wheel; ev.wheel.mouse_x = x; ev.wheel.mouse_y = y;
+        return SDL_PushEvent(&ev) ? 1 : 0;
+    }
+    for (int down = 1; down >= 0; --down) {
+        SDL_zero(ev);
+        ev.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        ev.button.windowID = win; ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.down = down != 0; ev.button.clicks = 1; ev.button.x = x; ev.button.y = y;
+        if (!SDL_PushEvent(&ev)) return 0;
+    }
+    return 1;
+#else
+    (void)ev; (void)win; (void)x; (void)y; (void)wheel;
+    return 0;
+#endif
 }
 
 static int host_pause_refuse_netplay(void) { return psx_netplay_active() ? 1 : 0; }
@@ -8252,6 +8313,8 @@ static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (psx_local_mouse_event(ev)) continue;
+        /* In-game overlay provider sees events first (host_overlay.h P3). */
+        if (psx_host_input_sink_dispatch(&ev)) continue;
         if (ev.type == SDL_QUIT) {
             if (psx_netplay_active()) {
                 netplay_soft_exit("sdl_window_close");
@@ -8398,6 +8461,7 @@ static bool local_mouse_live(int override_word) {
     g.savestate_menu_open = savestate_menu_open;
     g.rewind_open = psx_rewind_is_open();
     g.input_guard = savestate_input_guard_active();
+    g.ui_capture = psx_host_ui_capture_active();
     return pad_ext_live(&g) != 0;
 }
 
@@ -8964,6 +9028,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             if (psx_local_mouse_installed()) {
                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
                 if (!drain_host_events()) return ep;
+                /* The overlay may have opened during the pacer wait (its
+                 * Start+Select chord): settle ui_capture before the pad
+                 * sample below, or the chord reaches the guest for a frame. */
+                host_pause_service();
                 // A hotkey acquired during pacing may open a host menu.
                 if (savestate_menu_open) savestate_menu_host_pause_loop();
                 if (psx_rewind_is_open()) rewind_host_pause_loop();

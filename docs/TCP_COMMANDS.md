@@ -652,7 +652,9 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `hd_textures` | ✓ |  | ✓ |
 | `history` | ✓ | ✓ | ✓ |
 | `hle_dump` | ✓ |  | ✓ |
+| `host_key` | ✓ |  |  |
 | `host_launch_timings` | ✓ |  | ✓ |
+| `host_mouse` | ✓ |  |  |
 | `host_pause` | ✓ |  |  |
 | `host_profile` | ✓ |  |  |
 | `idle_skip` | ✓ |  |  |
