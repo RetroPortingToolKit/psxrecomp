@@ -1585,6 +1585,13 @@ if(BUILD_TESTING)
     add_test(NAME psx_cycle_event_boundaries_test
              COMMAND psx_cycle_event_boundaries_test)
 
+    # idle_skip store-counter loops: PsyQ v_wait skips, near misses do not.
+    add_executable(idle_skip_store_counter_test
+        tests/test_idle_skip_store_counter.c
+        src/psx_cycles.c)
+    target_include_directories(idle_skip_store_counter_test PRIVATE include)
+    add_test(NAME idle_skip_store_counter_test COMMAND idle_skip_store_counter_test)
+
     add_executable(psx_vblank_clock_test
         tests/test_psx_vblank_clock.c
         src/psx_vblank_clock.c)

@@ -44,6 +44,9 @@
 #include "autocompile.h"
 #include "code_provider.h"
 extern "C" void psx_event_step_conservative_env_init(void);
+/* memory.c's last-word-store record for the idle-loop detector. */
+extern "C" int g_psx_track_last_store;
+extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "overlay_backend.h"
 #include "gpu.h"
 #include "draw_distance.h"
@@ -16067,6 +16070,18 @@ int main(int argc, char** argv) {
                 std::fprintf(stdout, "psxrecomp: idle_skip %s%s\n",
                              g_idle_skip_enabled ? "enabled" : "disabled",
                              idle_env ? " (environment override)" : "");
+                {
+                    psx_idle_skip_set_host_writer(psx_host_write_word);
+                    psx_idle_skip_set_store_tracker(&g_psx_track_last_store,
+                                                    &g_guest_last_store_addr,
+                                                    &g_guest_last_store_val);
+                }
+                const char *ext_env = std::getenv("PSX_IDLE_SKIP_EXT");
+                g_idle_skip_ext = ext_env ? (ext_env[0] == '1' ? 1 : 0)
+                                          : (gc.runtime.idle_skip_store_counters ? 1 : 0);
+                if (g_idle_skip_enabled && g_idle_skip_ext)
+                    std::fprintf(stdout, "psxrecomp: idle_skip store-counter loops on%s\n",
+                                 ext_env ? " (environment override)" : "");
                 psx_precise_slice_init_from_env();
             }
             for (uint32_t site : gc.vsync_event_horizon_sites)
