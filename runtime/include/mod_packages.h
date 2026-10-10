@@ -223,6 +223,11 @@ struct ModPlugin {
      * before it is staged (psx_mod_set_pad_transform). Online it stays on per
      * player: the post-transform pad is what every peer simulates. */
     bool netplay_input = false;
+    /* netplay = "host_output": the plugin only reads guest state and drives
+     * host output (rumble, haptics). Online it stays on per player and its
+     * hooks run in the shared simulation, but every guest write it attempts
+     * is refused there, so it can never diverge the peers. */
+    bool netplay_host_output = false;
 };
 
 struct ModResource {
@@ -388,6 +393,7 @@ struct ModResolution {
         std::string feature_id;
         bool netplay_local_view = false;
         bool netplay_input = false;
+        bool netplay_host_output = false;
     };
     std::vector<Plugin> plugins;
     struct Resource {

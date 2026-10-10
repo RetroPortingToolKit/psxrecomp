@@ -139,6 +139,13 @@ static void sim_entry(CPUState*, uint32_t) { sim_hits++; }
 static void view_activate(void) { view_activations++; }
 static void sim_activate(void) { sim_activations++; }
 static void view_vblank(void) { vblanks++; }
+static int out_hits, out_activations;
+static void out_entry(CPUState* cpu, uint32_t) {
+    out_hits++;
+    psx_mod_write_byte(0x80004000u, 0x5Au);   /* must be refused online */
+    psx_mod_finish_function(cpu);             /* must be ignored online */
+}
+static void out_activate(void) { out_activations++; }
 
 static std::string package(const std::string& id, const std::string& feature,
                            const std::string& plugin, const std::string& extra) {
@@ -157,12 +164,15 @@ int main() {
                package("view.pkg", "wide", "view.wide", "netplay = \"local_view\"\n"));
     write_text(root / "bundled/sim.pkg/1.0.0/manifest.toml",
                package("sim.pkg", "cheat", "sim.cheat", ""));
+    write_text(root / "bundled/out.pkg/1.0.0/manifest.toml",
+               package("out.pkg", "rumble", "out.rumble", "netplay = \"host_output\"\n"));
     write_text(root / "bundled/bad.pkg/1.0.0/manifest.toml",
                package("bad.pkg", "x", "bad.x", "netplay = \"everywhere\"\n"));
     const std::string state =
         "format_version = 2\n"
         "[[feature]]\npackage_id = \"view.pkg\"\nid = \"wide\"\nenabled = true\n"
-        "[[feature]]\npackage_id = \"sim.pkg\"\nid = \"cheat\"\nenabled = true\n";
+        "[[feature]]\npackage_id = \"sim.pkg\"\nid = \"cheat\"\nenabled = true\n"
+        "[[feature]]\npackage_id = \"out.pkg\"\nid = \"rumble\"\nenabled = true\n";
     write_text(root / "state.toml", state);
 
     check(psx_mod_register_function_entry_plugin("view.wide", 0x80003000u, view_entry),
@@ -173,6 +183,9 @@ int main() {
               psx_mod_register_activation_plugin("sim.cheat", sim_activate),
           "register activations");
     check(psx_mod_register_vblank_plugin("view.wide", view_vblank), "register vblank");
+    check(psx_mod_register_function_entry_plugin("out.rumble", 0x80003200u, out_entry) &&
+              psx_mod_register_activation_plugin("out.rumble", out_activate),
+          "register host-output hook");
 
     std::string error;
     check(PSXRecompV4::mod_runtime_initialize(root, "SLUS-VIEW", 0x80002000u, {}, &error),
@@ -186,6 +199,10 @@ int main() {
     psx_mod_function_entry(&cpu, 0x80003000u);
     psx_mod_function_entry(&cpu, 0x80003100u);
     check(view_hits == 1 && sim_hits == 1, "offline hooks run in the game");
+    check(psx_mod_function_entry(&cpu, 0x80003200u) == 1 && out_hits == 1 &&
+              psx_read_byte(0x80004000u) == 0x5Au,
+          "offline a host-output hook is an ordinary hook");
+    psx_write_byte(0x80004000u, 0);
 
     /* Netplay: only the local-view feature remains, parked outside the scope. */
     view_hits = sim_hits = view_activations = sim_activations = vblanks = 0;
@@ -195,6 +212,12 @@ int main() {
     mod_runtime_activate_plugins();
     check(view_activations == 1 && sim_activations == 0,
           "only the local-view plugin activates in a match");
+    check(out_activations == 2, "the host-output plugin activates in a match too");
+    out_hits = 0;
+    check(psx_mod_function_entry(&cpu, 0x80003200u) == 0 && out_hits == 1,
+          "a host-output hook runs in the shared simulation, cannot finish it");
+    check(psx_read_byte(0x80004000u) == 0,
+          "a host-output plugin's guest write is refused online");
     psx_mod_function_entry(&cpu, 0x80003000u);
     psx_mod_function_entry(&cpu, 0x80003100u);
     mod_runtime_on_vblank();
