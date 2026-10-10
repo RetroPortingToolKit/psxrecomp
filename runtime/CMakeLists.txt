@@ -1740,6 +1740,13 @@ if(BUILD_TESTING)
         add_test(NAME release_stage_cache_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_stage_cache.py)
+        # The Linux release's bundled tcc + musl headers build and load a real
+        # shard with nothing from the host (x86_64 Linux; skips elsewhere).
+        add_test(NAME linux_tcc_bundle_smoke_test
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_linux_tcc_bundle_smoke.py)
+        set_tests_properties(linux_tcc_bundle_smoke_test PROPERTIES
+            SKIP_RETURN_CODE 77 TIMEOUT 900)
         # Overlay shards and BIOS modules are compiled for the RUNTIME's
         # architecture: an x86_64 macOS runtime under Rosetta used to get arm64
         # shards (arm64-only Xcode clang, no -arch) in its macos-x64 cache and

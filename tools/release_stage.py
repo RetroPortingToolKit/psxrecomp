@@ -64,6 +64,7 @@ import hashlib
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import time
@@ -458,15 +459,21 @@ TOOLCHAIN_PINS = {
                        'download/20250115/cpython-3.13.1%2B20250115-x86_64-unknown-'
                        'linux-gnu-install_only_stripped.tar.gz'),
         'python_sha256': '56817aa976e4886bec1677699c136cb01c1cdfe0495104c0d8ef546541864bbb',
-        # tinycc publishes no prebuilt Linux binary (savannah ships source
-        # tarballs only), so there is no pinned tcc on this platform. The
-        # bundled interpreter plus compile_overlays.py can still drive a gcc
-        # from PATH, which is the common case on Linux; a player with no
-        # compiler at all gets the shipped AOT cache and no autocompile, and
-        # main.cpp says so on stdout rather than silently doing nothing.
-        'tcc_version': None,
+        # tinycc publishes no prebuilt Linux binary, so the packager BUILDS the
+        # pinned, unmodified 0.9.27 source (stage_linux_tcc). SteamOS (Steam
+        # Deck) has no compiler and a read-only root, so without it a Deck
+        # player's overlays stay interpreted. tcc's own headers cover the
+        # freestanding set; the libc headers overlay C needs (stdint, string,
+        # stdio) come from musl's MIT-licensed headers, so nothing from the
+        # player's system is required. Shards link with -nostdlib: their libc
+        # symbols resolve against the running game's glibc at dlopen.
+        'tcc_version': '0.9.27',
         'tcc_url': None,
-        'tcc_sha256': None,
+        'tcc_sha256': 'de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c',
+        'tcc_source_url': 'https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27.tar.bz2',
+        'musl_version': '1.2.5',
+        'musl_url': 'https://musl.libc.org/releases/musl-1.2.5.tar.gz',
+        'musl_sha256': 'a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4',
     },
     # macOS had no pin at all, so stage_toolchain died with "no toolchain pins"
     # (or, before that check, staged the Linux interpreter) and no Mac player
@@ -646,6 +653,88 @@ def stage_tcc_notice(tcc_dir, pins):
     shutil.copy2(TCC_NOTICE, os.path.join(tcc_dir, 'COPYING'))
 
 
+def _run_build(cmd, cwd, what):
+    r = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True)
+    if r.returncode != 0:
+        _die('%s failed (exit %d): %s\n%s'
+             % (what, r.returncode, ' '.join(cmd), r.stdout[-4000:]))
+
+
+def adapt_musl_headers_for_tcc(libc_inc):
+    """musl spells va_list as GCC's __builtin_va_list, which tcc 0.9.27 does
+    not know ("';' expected (got va_list)" in every shard). Use tcc's own
+    stdarg.h, whose x86-64 va_list has GCC's layout, so v*printf calls into
+    the game's glibc agree: drop musl's stdarg.h and define musl's two
+    va_list typedefs from tcc's."""
+    stdarg = os.path.join(libc_inc, 'stdarg.h')
+    if os.path.isfile(stdarg):
+        os.remove(stdarg)
+    path = os.path.join(libc_inc, 'bits', 'alltypes.h')
+    with open(path, encoding='utf-8') as f:
+        text = f.read()
+    a = 'typedef __builtin_va_list va_list;'
+    b = 'typedef __builtin_va_list __isoc_va_list;'
+    if a not in text or b not in text:
+        _die('%s no longer defines va_list as expected; re-check the musl pin'
+             % path)
+    text = text.replace(a, '#include <stdarg.h> /* tcc\'s va_list (psxrecomp) */')
+    text = text.replace(b, 'typedef va_list __isoc_va_list;')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
+def stage_linux_tcc(toolchain, dl_cache, pins, log=print):
+    """Build the pinned TinyCC source and stage it with musl's libc headers as
+    overlay_toolchain/tcc/: tcc, libtcc1.a, include/ (tcc's), libc-include/
+    (musl's) and COPYING. compile_overlays.py recognises this layout and calls
+    tcc with -B<dir> -nostdlib -isystem <dir>/libc-include <dir>/libtcc1.a.
+    Needs a host C compiler and make on the PACKAGING machine only."""
+    work = os.path.join(dl_cache, 'tcc_linux_build')
+    if os.path.isdir(work):
+        shutil.rmtree(work)
+    _mkdirs(work)
+    src = get_pinned_archive(pins['tcc_source_url'], pins['tcc_sha256'],
+                             os.path.join(dl_cache, _url_basename(pins['tcc_source_url'])),
+                             log=log)
+    top = 'tcc-' + pins['tcc_version']
+    _extract_tar_top_level(src, work, top)
+    tcc_src = os.path.join(work, top)
+    inst = os.path.join(work, 'inst')
+    cc = os.environ.get('CC', 'cc')
+    _run_build(['./configure', '--prefix=' + inst, '--cc=' + cc,
+                '--extra-cflags=-O2'], tcc_src, 'tcc configure')
+    _run_build(['make', '-j%d' % (os.cpu_count() or 2)], tcc_src, 'tcc build')
+    _run_build(['make', 'install'], tcc_src, 'tcc install')
+
+    musl = get_pinned_archive(pins['musl_url'], pins['musl_sha256'],
+                              os.path.join(dl_cache, _url_basename(pins['musl_url'])),
+                              log=log)
+    mtop = 'musl-' + pins['musl_version']
+    _extract_tar_top_level(musl, work, mtop)
+    minst = os.path.join(work, 'musl-inst')
+    _run_build(['make', 'install-headers', 'ARCH=x86_64', 'prefix=' + minst],
+               os.path.join(work, mtop), 'musl install-headers')
+
+    dest = os.path.join(toolchain, 'tcc')
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    _mkdirs(dest)
+    shutil.copy2(os.path.join(inst, 'bin', 'tcc'), os.path.join(dest, 'tcc'))
+    os.chmod(os.path.join(dest, 'tcc'), 0o755)
+    libdir = os.path.join(inst, 'lib', 'tcc')
+    shutil.copy2(os.path.join(libdir, 'libtcc1.a'), dest)
+    shutil.copytree(os.path.join(libdir, 'include'), os.path.join(dest, 'include'))
+    shutil.copytree(os.path.join(minst, 'include'), os.path.join(dest, 'libc-include'))
+    adapt_musl_headers_for_tcc(os.path.join(dest, 'libc-include'))
+    shutil.copy2(os.path.join(work, mtop, 'COPYRIGHT'),
+                 os.path.join(dest, 'libc-include', 'COPYRIGHT'))
+    stage_tcc_notice(dest, pins)
+    shutil.rmtree(work)
+    log('TinyCC %s built from source with musl %s headers -> %s'
+        % (pins['tcc_version'], pins['musl_version'], dest))
+
+
 def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
                     platform_tag=None, mingw_bin=None, log=print):
     """Stage the self-contained overlay toolchain (interpreter + recompiler +
@@ -691,6 +780,8 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
         shutil.copytree(inner if os.path.isdir(inner) else tcc_tmp,
                         os.path.join(toolchain, 'tcc'), dirs_exist_ok=True)
         stage_tcc_notice(os.path.join(toolchain, 'tcc'), pins)
+    elif pins.get('tcc_source_url'):
+        stage_linux_tcc(toolchain, dl_cache, pins, log=log)
 
     recompiler = TOOLCHAIN_RECOMPILER[platform_tag]
     src_recompiler = os.path.join(recomp_dir, recompiler)
@@ -787,7 +878,8 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
             total += st.st_size
     log('Bundled overlay toolchain (pinned python%s + recompiler + BIOS emitter + headers): '
         '~%d MB in %d file(s) + %d symlink(s)'
-        % (' + tcc' if pins['tcc_url'] else '', total // (1 << 20),
+        % (' + tcc' if (pins['tcc_url'] or pins.get('tcc_source_url')) else '',
+           total // (1 << 20),
            sum(len(f) for _r, _d, f in os.walk(toolchain)) - links, links))
     return toolchain
 

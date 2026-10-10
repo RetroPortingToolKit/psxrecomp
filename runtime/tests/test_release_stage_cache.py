@@ -435,7 +435,8 @@ class TinyccNoticeTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_every_pinned_tcc_has_a_notice_naming_it(self):
-        pinned = [p for p in rs.TOOLCHAIN_PINS.values() if p['tcc_url']]
+        pinned = [p for p in rs.TOOLCHAIN_PINS.values()
+                  if p['tcc_url'] or p.get('tcc_source_url')]
         self.assertTrue(pinned, 'no platform pins a tcc')
         with open(rs.TCC_NOTICE, encoding='utf-8') as f:
             text = f.read()
@@ -459,6 +460,59 @@ class TinyccNoticeTest(unittest.TestCase):
         with self.assertRaises(rs.StageError):
             rs.stage_tcc_notice(self.tmp, pins)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, 'COPYING')))
+
+
+class LinuxTinyccTest(unittest.TestCase):
+    """Linux bundles a source-built tcc with musl headers (Steam Deck has no
+    compiler); compile_overlays.py drives that layout self-contained."""
+
+    def test_linux_pins_a_source_tcc_and_musl_headers(self):
+        pins = rs.TOOLCHAIN_PINS['linux']
+        self.assertEqual(pins['tcc_version'], '0.9.27')
+        self.assertTrue(pins['tcc_source_url'].endswith('tcc-0.9.27.tar.bz2'))
+        self.assertRegex(pins['tcc_sha256'], r'^[0-9a-f]{64}$')
+        self.assertRegex(pins['musl_sha256'], r'^[0-9a-f]{64}$')
+        self.assertIn(pins['musl_version'], pins['musl_url'])
+        with open(rs.TCC_NOTICE, encoding='utf-8') as f:
+            text = f.read()
+        self.assertIn(pins['tcc_sha256'], text)
+        self.assertIn('musl', text)
+
+    def test_musl_va_list_is_adapted_for_tcc(self):
+        tmp = tempfile.mkdtemp(prefix='musl_inc_')
+        try:
+            os.mkdir(os.path.join(tmp, 'bits'))
+            open(os.path.join(tmp, 'stdarg.h'), 'w').close()
+            with open(os.path.join(tmp, 'bits', 'alltypes.h'), 'w') as f:
+                f.write('typedef __builtin_va_list va_list;\n'
+                        'typedef __builtin_va_list __isoc_va_list;\n')
+            rs.adapt_musl_headers_for_tcc(tmp)
+            self.assertFalse(os.path.exists(os.path.join(tmp, 'stdarg.h')))
+            text = open(os.path.join(tmp, 'bits', 'alltypes.h')).read()
+            self.assertNotIn('__builtin_va_list', text)
+            self.assertIn('#include <stdarg.h>', text)
+            with self.assertRaises(rs.StageError):
+                rs.adapt_musl_headers_for_tcc(tmp)   # layout changed: loud
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_bundle_args_only_for_the_bundle_layout(self):
+        import compile_overlays as co_mod
+        tmp = tempfile.mkdtemp(prefix='tcc_bundle_')
+        try:
+            tcc = os.path.join(tmp, 'tcc')
+            open(tcc, 'w').close()
+            self.assertEqual(co_mod._tcc_bundle_args(tcc), [],
+                             'a bare tcc (Windows bundle, system tcc) is unchanged')
+            os.mkdir(os.path.join(tmp, 'libc-include'))
+            open(os.path.join(tmp, 'libtcc1.a'), 'w').close()
+            args = co_mod._tcc_bundle_args(tcc)
+            self.assertEqual(args[:3], ['-B' + tmp, '-nostdinc', '-nostdlib'])
+            self.assertIn(os.path.join(tmp, 'include'), args)
+            self.assertIn(os.path.join(tmp, 'libc-include'), args)
+            self.assertEqual(args[-1], os.path.join(tmp, 'libtcc1.a'))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == '__main__':

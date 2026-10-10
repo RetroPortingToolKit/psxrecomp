@@ -5078,6 +5078,25 @@ def _bom_free_incdir(d: str) -> str:
     _TCC_BOMFREE_INC[d] = out
     return out
 
+def _tcc_bundle_args(tcc: str) -> list:
+    """The Linux release bundle (tools/release_stage.py stage_linux_tcc) is a
+    source-built tcc whose compiled-in paths point at the packaging machine:
+    point it at its own directory (-B: tcc's headers and libtcc1.a), give it
+    the bundled musl libc headers, and link no crt/libc of the player's (a
+    SteamOS player has none): libc symbols resolve against the game's glibc
+    when the shard is loaded. Any other tcc (Windows bundle, a system tcc)
+    gets no extra arguments."""
+    d = os.path.dirname(os.path.abspath(tcc))
+    libc_inc = os.path.join(d, 'libc-include')
+    libtcc1 = os.path.join(d, 'libtcc1.a')
+    if not (os.path.isdir(libc_inc) and os.path.isfile(libtcc1)):
+        return []
+    # -nostdinc: only the bundle's headers (tcc's, then musl's); a Linux box
+    # with libc6-dev installed must not change what a shard compiles against.
+    return ['-B' + d, '-nostdinc', '-nostdlib', '-isystem', os.path.join(d, 'include'),
+            '-isystem', libc_inc, libtcc1]
+
+
 def _compile_dll_tcc(c_path: str, out_dll: str, include_dirs, flavor: int,
                      tcc: str) -> bool:
     # Strip a UTF-8 BOM off the overlay C itself (tcc 0.9.27 chokes on it) and
@@ -5105,6 +5124,7 @@ def _compile_dll_tcc(c_path: str, out_dll: str, include_dirs, flavor: int,
            native_path(c_path), '-o', native_path(out_dll)]
     for d in include_dirs:
         cmd.append('-I' + native_path(_bom_free_incdir(d)))
+    cmd += _tcc_bundle_args(tcc)
     print(f'  compile (tcc): {" ".join(cmd)}')
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
