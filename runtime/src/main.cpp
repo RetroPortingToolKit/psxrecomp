@@ -18174,7 +18174,9 @@ int main(int argc, char** argv) {
              * accelerated presentation-side audio until pacing resumes;
              * otherwise the SDL bridge overflows and the load becomes
              * observably unstable. */
-            g_turbo_audio_sink_enabled = g_turbo_load_wall_multiplier > 1;
+            /* 0 is UNCAPPED (the fastest case), not off: it needs the sink
+             * most. Only 1 (authentic pacing) keeps presentation audio. */
+            g_turbo_audio_sink_enabled = g_turbo_load_wall_multiplier != 1;
             if (g_turbo_load_wall_multiplier) {
                 std::fprintf(stdout,
                     "psxrecomp: mod selected %dx load acceleration "
