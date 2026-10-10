@@ -5038,6 +5038,21 @@ static int np_try_admit_load_barrier_unconfirmed(void)
     return 1;
 }
 
+/* A Live realign restores the snap at T and resumes the guest at the frame
+ * boundary after it, with the session already at T+1. Admit T+1 before the
+ * resume: resuming first ran frame T+1 unadmitted (no inputs latched, no
+ * advance), so the next frame was counted as T+1 and this peer ran one frame
+ * ahead of its tick label (4-seat race: L-saves after a NACK realign carried
+ * the next tick's clock; the realigned seat forked from every other). */
+int psx_netplay_live_realign_admit(void)
+{
+    if (!psx_netplay_active() || !g_np.rollback || g_np.xfer != NP_XFER_NONE)
+        return 1;
+    if (g_np.needs_advance)
+        return 1;
+    return np_try_admit_rollback();
+}
+
 int psx_netplay_poll_admit(void)
 {
     rnet_u32 sim;

@@ -7133,6 +7133,11 @@ void psx_netplay_rb_flush_resume(void)
     live_realign_resume = !g_rb || !rnet_rb_is_active(g_rb);
     if (!live_realign_resume && rnet_rb_get_phase(g_rb) != nRNetRbPhaseReplay)
         return;
+    /* Live realign: the resumed frame must be an admitted tick, or it runs
+     * uncounted and this seat ends one frame ahead of its label. Stay
+     * spinning until the tick's inputs admit. */
+    if (live_realign_resume && !psx_netplay_live_realign_admit())
+        return;
     pc = g_pending_resume_pc;
     if (!rb_resume_pc_ok(pc)) {
         uint32_t alt = pick_snap_resume_pc(cpu(), pc);
