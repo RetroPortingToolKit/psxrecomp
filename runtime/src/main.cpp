@@ -83,6 +83,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "host_time.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "recomp_net/auth.h"
+#include "recomp_netplay_account.h"   /* shared recomp-ui account sync */
 #include "recomp_net/host_relay.h" /* RNetHostRelayStatus for the launcher relay line */
 #include "recomp_net/chat_filter.h" /* chat profanity mask, LAN rooms too */
 #endif
@@ -12833,28 +12834,22 @@ namespace {
     int ae_np_account_sign_out(void*) { return rnet_account_sign_out(); }
     int ae_np_account_set_handle(void*, const char* h) { return rnet_account_set_handle(h); }
 
-    /* Point the account client at the lobby host -- once per URL, not once
-     * per pump: the login worker thread reads the host while a sign-in is in
-     * flight, and re-initialising it 60 times a second under that read is a
-     * data race for no gain. The secret is anchored to the EXECUTABLE
-     * directory before the first init: its default is the bare relative name
-     * "netplay_secret", resolved against the working directory, so the same
-     * install signed itself out depending on where it was launched from.
-     * rnet_auth migrates an old CWD-relative file into this path on first
-     * load, so nobody is signed out by the move. Same shape as the SNES
-     * host (snes_host_lobby.c cb_pump). */
+    /* Point the account client at the lobby host. The rule (resolved URL,
+     * once per URL, secret anchored to the exe dir) lives in recomp-ui, shared
+     * with recomp_netplay_host.c. The URL is ae_np_default_url, NOT the raw
+     * g_lnch_lobby_url: that is empty until a player saves one, which left the
+     * auth host blank and every sign-in "could not reach the lobby server". */
+    static int ae_np_exe_dir_path(void*, const char* leaf, char* out, size_t cap) {
+        const std::string p =
+            (exe_dir_from_argv(g_lnch_argv0 ? g_lnch_argv0 : "") / leaf).string();
+        if (p.size() + 1 > cap) return 0;
+        std::memcpy(out, p.c_str(), p.size() + 1);
+        return 1;
+    }
+    const char* ae_np_default_url(void*);  /* defined below */
     void ae_np_account_sync(void) {
-        static std::string s_auth_url;
-        const std::string& url = g_lnch_lobby_url;
-        if (url.empty() || url == s_auth_url) return;
-        if (s_auth_url.empty()) {
-            const std::string secret =
-                (exe_dir_from_argv(g_lnch_argv0 ? g_lnch_argv0 : "") /
-                 "netplay_secret").string();
-            rnet_account_set_secret_path(secret.c_str());
-        }
-        s_auth_url = url;
-        rnet_account_init(url.c_str());
+        recomp_netplay_account_sync(ae_np_default_url(nullptr),
+                                    ae_np_exe_dir_path, nullptr);
     }
 
 #endif /* PSX_HAS_RECOMP_NET: account client is not linked in offline builds */
