@@ -3831,6 +3831,19 @@ static int resolve_use_ice(const PsxNetplayConfig *cfg)
         fflush(stderr);
         return 0;
     }
+#if defined(PSX_HAS_LOBBY_CLIENT) && defined(RNET_ENABLE_ICE)
+    /* The server started this room on ICE (2 players the host relay cannot
+     * carry): peer-to-peer over STUN/TURN, signalled over the lobby socket.
+     * Same-NAT peers advertise equal endpoints; that is not a relay. */
+    if (in_motk_room && !cfg->force_input_relay) {
+        const PsxLobbyJoinInfo *ji = psx_lobby_join_info();
+        if (ji && ji->transport_ice) {
+            fprintf(stderr, "psx_netplay: lobby launch transport=ice — ICE peer-to-peer\n");
+            fflush(stderr);
+            return 1;
+        }
+    }
+#endif
     if (cfg->force_input_relay || in_motk_room) {
         if (!cfg->peer_hostport || !cfg->peer_hostport[0]) {
             fprintf(stderr,

@@ -272,6 +272,10 @@ typedef struct PsxLobbyJoinInfo {
      * force_input_relay is 0. The host binds bind_hostport and accepts the
      * guest (2 seats) or hubs (3+). */
     int      transport_host;
+    /* Launch: transport "ice" -- a 2-player room started on ICE
+     * (peer-to-peer, signalled over the lobby). No endpoint is dialled and
+     * force_input_relay is 0 (psx_lobby_launch_transport.h). */
+    int      transport_ice;
     /* A server code (need_password | bad_password | …) or, from
      * psx_lobby_set_last_error, one sentence the launcher shows as is. */
     char     last_error[192];
