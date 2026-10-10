@@ -2,6 +2,19 @@
 #define main scale_fixture_main
 #include "test_gl_scale_invariance.c"
 #undef main
+void gpu_hd_textures_track_upload(int x, int y, int w, int h, const uint16_t* words) {
+    (void)x; (void)y; (void)w; (void)h; (void)words;
+}
+void gpu_hd_textures_begin_upload(int x, int y, int w, int h) {
+    (void)x; (void)y; (void)w; (void)h;
+}
+void gpu_hd_textures_begin_copy(int sx, int sy, int dx, int dy, int w, int h) {
+    (void)sx; (void)sy; (void)dx; (void)dy; (void)w; (void)h;
+}
+void gpu_hd_textures_end_copy(void) {}
+void gpu_hd_textures_invalidate(int x, int y, int w, int h) {
+    (void)x; (void)y; (void)w; (void)h;
+}
 void present_shot_done(int ok) { (void)ok; }
 int host_osd_needs_present(void) { return 0; }
 int psx_present_vsync_owns_cadence(void) { return 0; }

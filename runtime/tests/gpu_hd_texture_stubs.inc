@@ -19,17 +19,4 @@ void gpu_hd_textures_reset_tracking(void) {}
 void gpu_hd_textures_restage(void) {}
 void gpu_hd_textures_bind_vram(const uint16_t* vram) { (void)vram; }
 void gpu_hd_textures_suppress_dumps(int on) { (void)on; }
-void gpu_hd_textures_track_upload(int x, int y, int w, int h, const uint16_t* words) {
-    (void)x; (void)y; (void)w; (void)h; (void)words;
-}
-void gpu_hd_textures_begin_upload(int x, int y, int w, int h) {
-    (void)x; (void)y; (void)w; (void)h;
-}
-void gpu_hd_textures_begin_copy(int sx, int sy, int dx, int dy, int w, int h) {
-    (void)sx; (void)sy; (void)dx; (void)dy; (void)w; (void)h;
-}
-void gpu_hd_textures_end_copy(void) {}
-void gpu_hd_textures_invalidate(int x, int y, int w, int h) {
-    (void)x; (void)y; (void)w; (void)h;
-}
 #endif
