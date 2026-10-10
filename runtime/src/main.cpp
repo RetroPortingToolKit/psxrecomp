@@ -9594,6 +9594,92 @@ static void dynres_setup(void) {
                  floor_s * g_video_ref_lines, ceiling * g_video_ref_lines);
 }
 
+/* ---- Live video apply (host_overlay.h P4) ------------------------------- */
+static std::filesystem::path g_overlay_settings_path;  /* settings.toml */
+static PsxHostVideoSettings g_video_boot;              /* as the session booted */
+static bool g_video_boot_valid = false;
+
+extern "C" void psx_video_current(PsxHostVideoSettings *v) {
+    if (!v) return;
+    std::memset(v, 0, sizeof *v);
+    v->fullscreen = s_window_fullscreen.mode;
+    v->texture_filter = g_video_texfilter;
+    v->fmv_filter = g_video_fmv_filter;
+    v->scanlines = g_video_scanlines ? 1 : 0;
+    v->scanline_strength_pct = (int)(g_video_scanline_strength * 100.0f + 0.5f);
+    v->present_linear = g_video_aa ? 1 : 0;
+    v->dynamic_resolution = g_video_dynres ? 1 : 0;
+    v->frame_generation = g_frame_generation ? 1 : 0;
+    v->renderer = g_video_renderer;
+    v->internal_resolution = g_video_internal_res;
+    v->supersampling = g_video_scale;
+    v->render_thread = g_render_thread ? 1 : 0;
+    v->present_thread = g_present_thread ? 1 : 0;
+    if (!g_video_boot_valid) { g_video_boot = *v; g_video_boot_valid = true; }
+}
+
+extern "C" unsigned psx_video_apply_live(const PsxHostVideoSettings *next) {
+    if (!next) return 0;
+    PsxHostVideoSettings cur;
+    psx_video_current(&cur);
+    unsigned m = psx_host_video_live_changes(&cur, next);
+    unsigned deferred = 0;
+    /* Netplay: dynamic resolution, frame generation and the filters change
+     * how a peer renders mid-match; only the presentation of the frame we
+     * already show may change. The rest is saved for the next session. */
+    if (psx_netplay_active()) {
+        const unsigned present_only = PSX_VIDEO_LIVE_FULLSCREEN |
+                                      PSX_VIDEO_LIVE_SCANLINES |
+                                      PSX_VIDEO_LIVE_PRESENT_LINEAR;
+        if (m & ~present_only) deferred = PSX_VIDEO_RESTART_NETPLAY;
+        m &= present_only;
+    }
+    if (m & PSX_VIDEO_LIVE_FULLSCREEN)
+        (void)psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, next->fullscreen);
+    if (m & PSX_VIDEO_LIVE_TEXTURE_FILTER) {
+        g_video_texfilter = next->texture_filter ? 1 : 0;
+        if (g_mod_texfilter < 0) gr_set_texture_filter(g_video_texfilter);
+    }
+    if (m & PSX_VIDEO_LIVE_FMV_FILTER) {
+        g_video_fmv_filter = next->fmv_filter;
+        if (g_gl_active) gl_renderer_set_fmv_filter(g_video_fmv_filter);
+    }
+    if (m & PSX_VIDEO_LIVE_SCANLINES)
+        psx_video_set_scanlines(next->scanlines, next->scanline_strength_pct / 100.0f);
+    if (m & PSX_VIDEO_LIVE_PRESENT_LINEAR) g_video_aa = next->present_linear != 0;
+    if (m & PSX_VIDEO_LIVE_DYNRES) {
+        g_video_dynres = next->dynamic_resolution ? 1 : 0;
+        if (!g_video_dynres) g_dynres.active = false;
+        else { dynres_setup(); if (!g_dynres.active && gl_renderer_dynamic_resolution_ceiling() >= 2) g_dynres.active = true; }
+    }
+    if ((m & PSX_VIDEO_LIVE_FRAME_GEN) && g_gl_active) {
+        g_frame_generation = next->frame_generation ? 1 : 0;
+        gl_renderer_set_frame_generation(g_frame_generation);
+    }
+    /* Persist everything the menu shows, live or not, like the launcher. */
+    if (!g_overlay_settings_path.empty()) {
+        try {
+            PSXRecompV4::UserSettings us = PSXRecompV4::load_user_settings(g_overlay_settings_path);
+            us.fullscreen = next->fullscreen;                  us.has_fullscreen = true;
+            us.texture_filter = next->texture_filter;          us.has_texture_filter = true;
+            us.fmv_filter = next->fmv_filter;                  us.has_fmv_filter = true;
+            us.scanlines = next->scanlines != 0;               us.has_scanlines = true;
+            us.scanline_strength = next->scanline_strength_pct / 100.0; us.has_scanline_strength = true;
+            us.antialiasing = next->present_linear != 0;       us.has_antialiasing = true;
+            us.dynamic_resolution = next->dynamic_resolution != 0; us.has_dynamic_resolution = true;
+            us.frame_generation = next->frame_generation != 0; us.has_frame_generation = true;
+            us.renderer = next->renderer;                      us.has_renderer = true;
+            us.supersampling = next->supersampling;            us.has_supersampling = true;
+            us.render_thread = next->render_thread != 0;       us.has_render_thread = true;
+            us.present_thread = next->present_thread != 0;     us.has_present_thread = true;
+            us.internal_resolution = next->internal_resolution; us.has_internal_resolution = true;
+            (void)PSXRecompV4::save_user_settings(g_overlay_settings_path, us);
+        } catch (...) {
+        }
+    }
+    return psx_host_video_restart_bits(&g_video_boot, next) | deferred;
+}
+
 #ifndef PSX_NO_DEBUG_TOOLS
 /* ---- Live rendering A/B keys (debug-tools builds) --------------------------
  * PSX_DEBUG_TOGGLES=0 turns them off. Each key flips one rendering feature
@@ -16625,6 +16711,7 @@ int main(int argc, char** argv) {
             exe_dir_from_argv(argv[0]) / "settings.toml";
 #if defined(RECOMP_LAUNCHER)
         g_lnch_settings_path = settings_path;
+        g_overlay_settings_path = settings_path;
 #endif
         const PSXRecompV4::UserSettings us =
             PSXRecompV4::load_user_settings(settings_path);

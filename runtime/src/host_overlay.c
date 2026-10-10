@@ -80,3 +80,33 @@ int psx_host_input_sink_dispatch(const void *event) {
 
 void psx_host_set_ui_capture(int on) { s_ui_capture = on ? 1 : 0; }
 int psx_host_ui_capture_active(void) { return s_ui_capture; }
+
+/* ---- P4: live video settings ------------------------------------------------ */
+unsigned psx_host_video_live_changes(const PsxHostVideoSettings *a,
+                                     const PsxHostVideoSettings *b) {
+    unsigned m = 0;
+    if (!a || !b) return 0;
+    if (a->fullscreen != b->fullscreen) m |= PSX_VIDEO_LIVE_FULLSCREEN;
+    if (a->texture_filter != b->texture_filter) m |= PSX_VIDEO_LIVE_TEXTURE_FILTER;
+    if (a->fmv_filter != b->fmv_filter) m |= PSX_VIDEO_LIVE_FMV_FILTER;
+    if (a->scanlines != b->scanlines || a->scanline_strength_pct != b->scanline_strength_pct)
+        m |= PSX_VIDEO_LIVE_SCANLINES;
+    if (a->present_linear != b->present_linear) m |= PSX_VIDEO_LIVE_PRESENT_LINEAR;
+    if (a->dynamic_resolution != b->dynamic_resolution) m |= PSX_VIDEO_LIVE_DYNRES;
+    if (a->frame_generation != b->frame_generation) m |= PSX_VIDEO_LIVE_FRAME_GEN;
+    return m;
+}
+
+unsigned psx_host_video_restart_bits(const PsxHostVideoSettings *boot,
+                                     const PsxHostVideoSettings *next) {
+    unsigned m = 0;
+    if (!boot || !next) return 0;
+    if (boot->renderer != next->renderer) m |= PSX_VIDEO_RESTART_RENDERER;
+    if (boot->internal_resolution != next->internal_resolution ||
+        boot->supersampling != next->supersampling)
+        m |= PSX_VIDEO_RESTART_RESOLUTION;
+    if (boot->render_thread != next->render_thread ||
+        boot->present_thread != next->present_thread)
+        m |= PSX_VIDEO_RESTART_THREADS;
+    return m;
+}
