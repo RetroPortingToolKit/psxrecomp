@@ -6701,6 +6701,15 @@ static int rb_fmv_dense_snap_window(void)
 void psx_netplay_rb_request_snap(uint32_t tick)
 {
     uint32_t iv;
+    /* Every tick boundary, Live and Replay alike: re-anchor the dirty-RAM
+     * interpreter's host-only IRQ poll stride. A load resets it to phase 0;
+     * Live otherwise carried an arbitrary phase, so a replay took the VBlank
+     * in RAM code at another instruction (EPC / clock split at R4's race
+     * start under PSX_RB_DET_SELFTEST). */
+    {
+        extern void dirty_ram_irq_ambient_resync_after_restore(void);
+        dirty_ram_irq_ambient_resync_after_restore();
+    }
     if (!g_snaps)
         return;
     /* Never overwrite the frozen episode baseline (or its ring slot). */

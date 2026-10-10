@@ -93,6 +93,12 @@ uint32_t netplay_av_digest(void)
             gcap = gn;
         }
         gpu_snapshot_write(gbuf);
+        /* The last 12 bytes are depth-24 present helpers (upload span,
+         * present hold, previous display height): host presentation state
+         * that a suppressed-present replay leaves different from Live. Not
+         * guest-visible; keep them out of the av comparison. */
+        if (gn >= 12u)
+            memset(gbuf + gn - 12u, 0, 12u);
         crc = crc32_update(crc, gbuf, gn);
     }
     if (vram)
