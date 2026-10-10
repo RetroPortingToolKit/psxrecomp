@@ -383,6 +383,16 @@ id = "r4.widescreen"
 netplay = "local_view"
 ```
 
+Two more plugin classes stay on per player. `netplay = "input"` transforms
+only this player's pad before it is staged (`psx_mod_set_pad_transform`).
+`netplay = "host_output"` only reads guest state to drive this player's host
+output (rumble, haptics): its function-entry hooks run in the shared
+simulation (including rollback resimulation), a completion request from them
+is ignored, and every `psx_mod_write_*` they attempt is refused while the
+match runs, so they cannot diverge the peers. Host-side calls that must not
+repeat on a resim (e.g. `psx_mod_set_host_rumble`) check
+`psx_netplay_is_resimulating()` themselves.
+
 At a netplay session start the runtime resolves the player's own selection
 and keeps only features whose every contribution is such a plugin (no EXE or
 disc write, overlay or derived disc; `mod_runtime_commit_netplay_view`). They
