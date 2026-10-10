@@ -1299,6 +1299,7 @@ static uint64_t s_nclip_disagreements = 0;
 static int32_t s_nclip_last_native = 0;
 static int8_t s_nclip_last_precise_sign = 0;
 static bool s_nclip_last_precise_valid = false;
+static bool s_nclip_last_zero_safe = false;
 static bool s_nclip_last_horizontal_saturated = false;
 static uint32_t s_nclip_last_generation;
 static int32_t s_nclip_previous_native;
@@ -1308,6 +1309,7 @@ static bool s_nclip_previous_horizontal_saturated;
 static uint32_t s_nclip_previous_generation;
 static void gte_nclip_precision_invalidate() {
     s_nclip_last_precise_valid = false;
+    s_nclip_last_zero_safe = false;
     s_nclip_previous_precise_valid = false;
 }
 extern "C" void gte_nclip_precise_stats(uint64_t *hits, uint64_t *fallbacks,
@@ -1381,6 +1383,26 @@ extern "C" int gte_nclip_native_wide_sign(int32_t native_mac0, int* sign) {
     *sign = s_nclip_last_precise_sign;
     return 1;
 }
+extern "C" int gte_nclip_zero_positive(int32_t native_mac0, uint32_t pc) {
+    const bool usable = native_mac0 == 0 && s_nclip_last_native == 0 &&
+        s_nclip_exact_enabled && gpu_ws_precise_nclip_enabled() &&
+        s_nclip_last_precise_valid && s_nclip_last_zero_safe &&
+        s_nclip_last_generation == s_geom_generation &&
+        !s_gte_replay_sandbox && s_speculative_depth == 0 &&
+        !psx_overlay_shadow_diff_active();
+    const bool rescue = usable && s_nclip_last_precise_sign > 0;
+    if (!s_gte_replay_sandbox && s_speculative_depth == 0) {
+        if (GteNclipSiteStat *e = nclip_find(s_nclip_site, pc,
+                                             &GteNclipSiteStat::pc,
+                                             &s_nclip_site_dropped)) {
+            e->evals++;
+            if (!usable) e->fallbacks++;
+            else if (rescue) e->flips++;
+            e->last_frame = (uint32_t)s_frame_count;
+        }
+    }
+    return rescue;
+}
 /* Some guarded quad consumers save two MAC0 values before branching. Their
  * first branch must use the first command's provenance, even when both native
  * results are equal. This is explicitly selected by the title, never searched
@@ -1445,6 +1467,7 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
     s_nclip_previous_generation = s_nclip_last_generation;
     s_nclip_last_native = out;
     s_nclip_last_precise_valid = false;
+    s_nclip_last_zero_safe = false;
     s_nclip_last_horizontal_saturated = false;
     /* Compute an exact 16.16 determinant for configured branch consumers, but
      * preserve native guest-visible MAC0 for every architectural reader. */
@@ -1468,16 +1491,20 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
          * the matching saturation rail. Ordinary subpixel winding stays stock. */
         const int raw_x[3] = {sx0, sx1, sx2}, raw_y[3] = {sy0, sy1, sy2};
         const int32_t exact_x[3] = {px0, px1, px2}, exact_y[3] = {py0, py1, py2};
-        bool checked = true, saturated = false;
+        bool checked = true, saturated = false, zero_safe = true;
         for (int i = 0; i < 3; ++i) {
             const int x = exact_x[i] >> 16;
             checked &= (exact_y[i] >> 16) == raw_y[i] && x > -4096 && x < 4096;
             checked &= gte->SZ[i + 1] >= gte_h_scaled(gte) / 2 && gte->SZ[i + 1] != 0;
+            zero_safe &= raw_x[i] > -1024 && raw_x[i] < 1023 &&
+                raw_y[i] > -1024 && raw_y[i] < 1023 &&
+                2u * gte->SZ[i + 1] > gte_h_scaled(gte);
             if (raw_x[i] == 1023 && x > 1023) saturated = true;
             else if (raw_x[i] == -1024 && x < -1024) saturated = true;
             else checked &= x == raw_x[i];
         }
         s_nclip_last_horizontal_saturated = checked && saturated;
+        s_nclip_last_zero_safe = out == 0 && checked && !saturated && zero_safe;
         const bool disagree = (cross > 0 && out <= 0) || (cross < 0 && out >= 0);
         if (disagree)
             s_nclip_disagreements++;

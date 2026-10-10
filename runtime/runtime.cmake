@@ -15,6 +15,7 @@ endif()
 set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
 set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")

@@ -1015,8 +1015,25 @@ int psx_ws_masked_reject_site(uint32_t pc, uint32_t instr,
 static WsMaskedRejectSite ws_nclip_sites[WS_EXPLICIT_CULL_SITES_MAX];
 static uint8_t ws_nclip_previous[WS_EXPLICIT_CULL_SITES_MAX];
 static int ws_nclip_site_count;
+static WsMaskedRejectSite ws_nclip_zero_sites[WS_EXPLICIT_CULL_SITES_MAX];
+static int ws_nclip_zero_site_count;
 static uint64_t ws_nclip_rescues;
 uint64_t gpu_ws_native_wide_nclip_rescues(void) { return ws_nclip_rescues; }
+void psx_mod_set_native_wide_nclip_zero_sites(const uint32_t* addresses,
+    const uint32_t* expected, int count) {
+    if (count < 0 || count > WS_EXPLICIT_CULL_SITES_MAX ||
+        (count && (!addresses || !expected))) abort();
+    for (int i = 0; i < count; ++i) {
+        /* Only BLEZ rs,reject is proved here; positive/negative nonzero
+         * winding and all other branch shapes retain their native result. */
+        if ((addresses[i] & 3u) || expected[i] >> 26 != 6u ||
+            ((expected[i] >> 16) & 31u) != 0u ||
+            ((expected[i] >> 21) & 31u) == 0u) abort();
+        ws_nclip_zero_sites[i].address = addresses[i] & 0x1FFFFFFFu;
+        ws_nclip_zero_sites[i].expected = expected[i];
+    }
+    ws_nclip_zero_site_count = count;
+}
 void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
     const uint32_t* expected, int count) {
     if (count < 0 || count > WS_EXPLICIT_CULL_SITES_MAX) abort();
@@ -1042,8 +1059,18 @@ void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expe
 }
 extern int gte_nclip_native_wide_sign(int32_t mac0, int* sign);
 extern int gte_nclip_native_wide_previous_sign(int32_t mac0, int* sign);
+extern int gte_nclip_zero_positive(int32_t mac0, uint32_t pc);
 int psx_ws_nclip_branch(uint32_t pc, uint32_t instr, int32_t mac0, int vanilla) {
     if (psx_ws_x_margin() <= 0 || !gpu_ws_precise_nclip_enabled()) return vanilla;
+    for (int i = 0; i < ws_nclip_zero_site_count; ++i) {
+        if (ws_nclip_zero_sites[i].address != (pc & 0x1FFFFFFFu) ||
+            ws_nclip_zero_sites[i].expected != instr) continue;
+        if (mac0 == 0 && gte_nclip_zero_positive(mac0, pc)) {
+            ++ws_nclip_rescues;
+            return 0;
+        }
+        return vanilla;
+    }
     for (int i = 0; i < ws_nclip_site_count; ++i) {
         if (ws_nclip_sites[i].address != (pc & 0x1FFFFFFFu) ||
             ws_nclip_sites[i].expected != instr) continue;
