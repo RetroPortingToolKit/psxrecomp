@@ -3942,6 +3942,31 @@ static int choose_load_tick_inner(uint32_t mismatch, uint32_t *out_load)
     return 0;
 }
 
+/* The bisect window (below the fork cap, above the peer NACK floor) is
+ * empty or holds no loadable snap. Bisecting cannot heal the fork, but a
+ * MEDIA_KF heal can: it transfers the initiator's pin to every follower, so
+ * any recent mutual snap works. Without this an hc-fork recovery on a
+ * 4-seat WAN race refused for the rest of the session (cap 3296, floor 3280:
+ * "no mutually-loadable snap") and two pairs of seats finished the race on
+ * different states. */
+static int choose_load_fork_cap_heal_bypass(uint32_t mismatch, uint32_t *out_load)
+{
+    static uint32_t s_log_cap;
+    if (!rb_media_kf_enabled() || !(g_request_post_fmv_heal || g_post_fmv_heal_kf))
+        return 0;
+    if (!choose_load_tick_inner(mismatch, out_load))
+        return 0;
+    if (s_log_cap != g_bl_fork_cap) {
+        fprintf(stderr,
+                "psxrecomp: rb choose_load fork cap %u bypass load=%u "
+                "(bisect window empty; MEDIA_KF heal transfers the pin)\n",
+                (unsigned)g_bl_fork_cap, (unsigned)*out_load);
+        fflush(stderr);
+        s_log_cap = g_bl_fork_cap;
+    }
+    return 1;
+}
+
 static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
 {
     /* §55: after a baseline core mismatch at load L the fork provably predates
@@ -3952,7 +3977,7 @@ static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
         if (m > g_bl_fork_cap)
             m = g_bl_fork_cap; /* inner's shared walk returns load < m */
         if (!choose_load_tick_inner(m, out_load))
-            return 0;
+            return choose_load_fork_cap_heal_bypass(mismatch, out_load);
         /* §62: peer proved it cannot follow ≤ floor (snap evicted). If the
          * bisect window (must be < fork cap AND > peer floor) is empty, no
          * mutually-loadable snap covers the fork — refuse to open rather
@@ -3968,7 +3993,7 @@ static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
                 fflush(stderr);
                 s_floor_log = *out_load;
             }
-            return 0;
+            return choose_load_fork_cap_heal_bypass(mismatch, out_load);
         }
         if (*out_load >= g_bl_fork_cap) {
             static uint32_t s_refuse_log;
@@ -3980,7 +4005,7 @@ static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
                 fflush(stderr);
                 s_refuse_log = g_bl_fork_cap;
             }
-            return 0;
+            return choose_load_fork_cap_heal_bypass(mismatch, out_load);
         }
         {
             static uint32_t s_bisect_log;
