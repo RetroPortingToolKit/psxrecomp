@@ -1436,24 +1436,28 @@ native code and the dirty-RAM interpreter agree
 (`draw_distance_codegen_test`, `draw_distance_interp_test`). First user: R4's
 course renderers (RidgeRacerType4Recomp, Max Detail).
 
-### Opt-in camera-plane clipping for native-wide textured worlds
+### Default camera-plane clipping for native-wide textured worlds
 
-`psx_mod_set_native_wide_near_clip(1)` complements horizontal projection
-recovery. A large face can remain visible while a corner crosses the camera
-plane: unsigned SZ, the capped H/Z divider and saturated SXY cannot represent
-that face. PGXP now optionally carries the signed homogeneous projection from
-RTPS/RTPT through exact full-word copies. CPU arithmetic, partial writes,
+`psx_mod_set_native_wide_projection_correction(1)` automatically enables both
+horizontal projection recovery and camera-plane clipping. A large face can
+remain visible while a corner crosses the camera plane: unsigned SZ, the capped
+H/Z divider and saturated SXY cannot represent that face. PGXP carries the
+signed homogeneous projection from RTPS/RTPT through exact full-word copies. CPU arithmetic, partial writes,
 stale words and timeline invalidation discard the association; sandbox
 rollback restores it with the rest of the precision shadow.
 
-Opted-in native-wide OpenGL sessions clip proven textured faces at depth 1
-and the visible bounds before perspective division. UV and color attributes
+Native-wide OpenGL sessions with projection correction clip proven textured
+faces at depth 1 and the visible bounds before perspective division. UV and color attributes
 follow each intersection, and ordinary GPU batches, painter order, masking,
 texture filtering and canonical/wide readback remain in use. The existing
 guest GTE registers, gameplay state and title culling branches do not change.
 Software/CPU-authoritative rendering, 4:3 and missing provenance use the
 original path. The larger PGXP value increases the full 8 MiB RAM shadow
-from 40 to 72 MiB; projection calculations are disabled unless a title opts in.
+from 40 to 72 MiB; projection calculations run only while projection correction
+is enabled. Session start resets that mode before the new plan's activation.
+The old `psx_mod_set_native_wide_near_clip` entry point remains for source/ABI
+compatibility, but its argument no longer changes clipping. The enhanced view
+is elective; clipping its proven geometry correctly needs no separate opt-in.
 
 MediEvil II's title hallway provided the camera-crossing reproduction. The
 GL authority/order fixture passes 197 checks at 1x and 4x; provenance tests

@@ -39,7 +39,7 @@ int main(void) {
     prepare_precise_triangle(1,4,7,ax,ay);
     assert(!fixture_precise_triangle.enabled); /* default remains stock */
     psx_mod_set_native_wide_projection_correction(1);
-    assert(fixture_pgxp_enabled);
+    assert(fixture_pgxp_enabled && fixture_projection_tracking);
     prepare_precise_triangle(1,4,7,ax,ay);
     assert(fixture_precise_triangle.enabled && area(fixture_precise_triangle.xy)>0);
     assert(fixture_precise_triangle.xy[5]==152*65536); /* no Y fraction correction */
@@ -128,12 +128,14 @@ int main(void) {
     gp0_cmd_source_addr=UINT32_MAX;
     assert(gpu_triangle_rejected(wall_x,wall_y,0,1,2));
     psx_mod_set_native_wide_projection_correction(0);
-    assert(!fixture_pgxp_enabled);
+    assert(!fixture_pgxp_enabled && !fixture_projection_tracking);
+    psx_mod_set_native_wide_near_clip(1); /* legacy API cannot enable the mode */
+    assert(!fixture_projection_tracking);
     prepare_precise_triangle(7,4,10,bx,by);
     assert(!fixture_triangle_recovered);
     assert(!fixture_precise_triangle.enabled);
     /* A camera-plane crossing needs intact homogeneous data for ALL corners.
-     * The native-wide clip opt-in is independent of horizontal recovery. */
+     * Enabling projection correction alone must also correct these faces. */
     psx_mod_set_native_wide_projection_correction(1);
     configure_native_wide_16_9();
     fixture_projective_supported=1;fixture_backend=GR_BACKEND_OPENGL;
@@ -146,8 +148,8 @@ int main(void) {
         fixture_homogeneous[i].p=(PGXPProjection){40000,8000,i==1?-62:500,150};
         fixture_homogeneous[i].valid=1;
     }
-    assert(!native_wide_projective_draw());
-    psx_mod_set_native_wide_near_clip(1);
+    psx_mod_set_native_wide_near_clip(0); /* legacy toggle cannot disable the fix */
+    assert(fixture_projection_tracking);
     assert(native_wide_projective_draw() && fixture_projective_draws==2);
     assert(fixture_projective_vertices[1].z==-62); /* behind-camera depth retained */
     gp0_cmd_buf[4]^=1;

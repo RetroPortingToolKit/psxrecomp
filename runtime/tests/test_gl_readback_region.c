@@ -249,6 +249,13 @@ static void verify_stereo_transactions(void) {
  check(glGetError()==GL_NO_ERROR,"stereo transaction GL error");
 }
 
+static void check_wide_green(uint32_t pixel,const char *label) {
+ /* Accurate blending stores each 5-bit channel as k*8, so full green is
+  * 248 in the raw wide surface. The legacy basis expands it to 255. */
+ const uint32_t expected=gl_renderer_accurate_blending()?0xff00f800u:0xff00ff00u;
+ if(pixel!=expected)fprintf(stderr,"%s: got %08x expected %08x\n",label,pixel,expected);
+ check(pixel==expected,label);
+}
 static void verify_oversize_wide_geometry(int scale) {
  /* Captured hallway triangles exceed the PS1 height limit. Proven geometry
   * must use identical canonical/wide passes, including the center-copy edge. */
@@ -288,11 +295,11 @@ static void verify_oversize_wide_geometry(int scale) {
  check(pixels!=NULL,"oversize wide pixels allocation");
  if(pixels) {
   check(glb_render_wide_display(pixels,848*scale*4,0,0,240)>0,"oversize wide readback");
-  check(pixels[(100*scale)*(848*scale)+68*scale]==0xff00ff00u,"left oversize margin drawn in painter order");
-  check(pixels[(100*scale)*(848*scale)+818*scale]==0xff00ff00u,"captured right hallway wall drawn");
-  check(pixels[(100*scale)*(848*scale)+268*scale]==0xff00ff00u,"canonical center retains recovered faces");
-  check(pixels[(100*scale)*(848*scale)+678*scale]==0xff00ff00u,"recovered wall before center-copy boundary");
-  check(pixels[(100*scale)*(848*scale)+680*scale]==0xff00ff00u,"same recovered wall after center-copy boundary");
+  check_wide_green(pixels[(100*scale)*(848*scale)+68*scale],"left oversize margin drawn in painter order");
+  check_wide_green(pixels[(100*scale)*(848*scale)+818*scale],"captured right hallway wall drawn");
+  check_wide_green(pixels[(100*scale)*(848*scale)+268*scale],"canonical center retains recovered faces");
+  check_wide_green(pixels[(100*scale)*(848*scale)+678*scale],"recovered wall before center-copy boundary");
+  check_wide_green(pixels[(100*scale)*(848*scale)+680*scale],"same recovered wall after center-copy boundary");
   free(pixels);
  }
  glb_wide_disable_target();
@@ -326,8 +333,8 @@ static void verify_camera_plane_clip(int scale) {
  check(pixels!=NULL,"camera-plane wide allocation");
  if(pixels) {
   check(glb_render_wide_display(pixels,848*scale*4,0,0,240)>0,"camera-plane wide readback");
-  check(pixels[100*scale*(848*scale)+68*scale]==0xff00ff00u,"crossing wall retained in wide margin");
-  check(pixels[100*scale*(848*scale)+268*scale]==0xff00ff00u,"same crossing wall across center copy");
+  check_wide_green(pixels[100*scale*(848*scale)+68*scale],"crossing wall retained in wide margin");
+  check_wide_green(pixels[100*scale*(848*scale)+268*scale],"same crossing wall across center copy");
   free(pixels);
  }
  /* Perspective UVs must survive intersections without integer rounding.
