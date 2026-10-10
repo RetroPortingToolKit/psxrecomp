@@ -820,6 +820,12 @@ struct RuntimeConfig {
     std::string           direct_shortcut;
     std::string           direct_shortcut_button;
 
+    // jogcon_force_feedback: drive a host wheel's SDL haptics (constant force
+    // / centring spring) from a presented JogCon's motor commands. Opt-in;
+    // gamepads are never driven. _invert flips the turn direction.
+    bool                  jogcon_force_feedback = false;
+    bool                  jogcon_force_feedback_invert = false;
+
     // multitap_analog: DualShock-on-tap hack (default true). When true,
     // multitap bulk seats may report 0x73 + stick bytes; when false (faithful),
     // tap seats stay plain digital. Overridable by settings.toml / match_caps.

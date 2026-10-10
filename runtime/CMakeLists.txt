@@ -664,6 +664,10 @@ if(BUILD_TESTING)
     add_executable(host_rumble_test tests/test_host_rumble.c)
     target_include_directories(host_rumble_test PRIVATE include)
     add_test(NAME host_rumble_test COMMAND host_rumble_test)
+    # JogCon motor byte -> host wheel haptics ([controller] jogcon_force_feedback).
+    add_executable(jogcon_ffb_test tests/test_jogcon_ffb.c)
+    target_include_directories(jogcon_ffb_test PRIVATE include)
+    add_test(NAME jogcon_ffb_test COMMAND jogcon_ffb_test)
 
     add_executable(controller_type_test tests/test_controller_type.cpp)
     target_include_directories(controller_type_test PRIVATE include)

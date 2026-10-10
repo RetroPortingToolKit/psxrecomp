@@ -140,6 +140,9 @@ static PSX_BSS uint8_t pad_in_config[PSX_MAX_PLAYERS];
  * the frontend's vibration/force-feedback capabilities. */
 static PSX_BSS int8_t pad_jogcon_last_steering[PSX_MAX_PLAYERS];
 static PSX_BSS uint8_t pad_jogcon_motor_command[PSX_MAX_PLAYERS];
+/* The same motor byte's strength nibble, for host force feedback only (not
+ * echoed to the guest and not savestated: every poll rewrites it). */
+static PSX_BSS uint8_t pad_jogcon_motor_strength[PSX_MAX_PLAYERS];
 
 /* Whether the pad on a logical slot is config-capable (DualShock/JogCon, 1) or a
  * plain digital controller (0). A real SCPH-1080 digital pad (poll id 0x41)
@@ -854,6 +857,7 @@ void sio_init(void) {
     memset(pad_rumble_large, 0, sizeof(pad_rumble_large));
     memset(pad_jogcon_last_steering, 0, sizeof(pad_jogcon_last_steering));
     memset(pad_jogcon_motor_command, 0, sizeof(pad_jogcon_motor_command));
+    memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
     memset(pad_negcon_analog, 0, sizeof(pad_negcon_analog));
     for (int i = 0; i < PSX_MAX_PLAYERS; i++) {
         pad_analog_device[i] = SIO_PAD_DUALSHOCK;
@@ -1061,6 +1065,7 @@ void sio_set_pad_connected(int slot, int connected) {
         pad_rumble_large[slot] = 0;
         pad_jogcon_last_steering[slot] = 0;
         pad_jogcon_motor_command[slot] = 0;
+        pad_jogcon_motor_strength[slot] = 0;
     }
 }
 
@@ -1075,6 +1080,17 @@ void sio_set_pad_config_capable(int slot, int capable) {
         pad_rumble_small[slot] = 0;
         pad_rumble_large[slot] = 0;
     }
+}
+
+void sio_get_pad_jogcon_motor(int slot, uint8_t *command, uint8_t *strength) {
+    uint8_t c = 0, s = 0;
+    if (slot >= 0 && slot < PSX_MAX_PLAYERS && (pad_connected & (1u << slot)) &&
+        pad_analog[slot] == SIO_PAD_JOGCON) {
+        c = pad_jogcon_motor_command[slot];
+        s = pad_jogcon_motor_strength[slot];
+    }
+    if (command) *command = c;
+    if (strength) *strength = s;
 }
 
 void sio_get_pad_rumble(int slot, uint8_t *small, uint8_t *large) {
@@ -1111,6 +1127,7 @@ static void pad_commit_type(int slot, uint8_t type) {
     if (from != type) {
         pad_jogcon_last_steering[slot] = 0;
         pad_jogcon_motor_command[slot] = 0;
+        pad_jogcon_motor_strength[slot] = 0;
     }
     if (pad_type_is_device_swap(from, type)) {
         pad_in_config[slot] = 0;
@@ -1615,6 +1632,7 @@ static void pad_process_byte(uint8_t tx_byte) {
                     const uint8_t motor = pad_rumble_map[rs][map_index];
                     if (pad_analog[rs] == SIO_PAD_JOGCON && motor == 0x00) {
                         pad_jogcon_motor_command[rs] = (uint8_t)(tx_byte >> 4);
+                        pad_jogcon_motor_strength[rs] = (uint8_t)(tx_byte & 0x0Fu);
                     } else if (motor == 0x00)
                         pad_rumble_small[rs] = tx_byte;
                     else if (motor == 0x01)
@@ -3143,6 +3161,7 @@ static int sio_snap_parse(PstR *r) {
         memset(pad_rumble_large, 0, sizeof(pad_rumble_large));
         memset(pad_jogcon_last_steering, 0, sizeof(pad_jogcon_last_steering));
         memset(pad_jogcon_motor_command, 0, sizeof(pad_jogcon_motor_command));
+        memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
         for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
             pad_rumble_map[s][0] = 0x00;
             pad_rumble_map[s][1] = 0x01;
@@ -3159,6 +3178,7 @@ static int sio_snap_parse(PstR *r) {
     if (r->p == r->end) {
         memset(pad_jogcon_last_steering, 0, sizeof(pad_jogcon_last_steering));
         memset(pad_jogcon_motor_command, 0, sizeof(pad_jogcon_motor_command));
+        memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
         sio_pad_mode_legacy_defaults();
         return 1;
     }
