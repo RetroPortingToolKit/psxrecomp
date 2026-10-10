@@ -11,6 +11,7 @@
 #include "mod_controller_source.h"
 #include "window_size.h"     /* default game-window size */
 #include "internal_resolution.h" /* Settings -> Display -> Internal resolution */
+#include "mod_internal_resolution.h"
 #include "dynamic_resolution.h"  /* [video] dynamic_resolution: the step controller */
 #include "render_thread.h"        /* rt_get_stats: queue backpressure (dynres) */
 #include "psx_scheduler.h"   /* psx_scheduler_run — deterministic TCB scheduler */
@@ -1365,11 +1366,11 @@ static int video_scale_ceiling(void) {
     return g_video_renderer == 1 ? GL_MAX_INTERNAL_SCALE : SW_MAX_INTERNAL_SCALE;
 }
 
-/* The preset in effect this run: the environment override, else the
- * configured one. */
+/* Session priority: environment override, active mod request, player setting. */
 static int effective_internal_resolution(void) {
+    const uint32_t mod_lines = psx_mod_internal_resolution_request();
     return g_video_internal_res_env != PSX_IR_UNSET ? g_video_internal_res_env
-                                                    : g_video_internal_res;
+        : mod_lines ? (int)mod_lines : g_video_internal_res;
 }
 
 /* Resolve the Internal resolution preset into g_video_scale. display_px_h is
@@ -1706,6 +1707,7 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
 static PSXModSessionBaseline g_mod_owned_baseline;
 
 static void reset_mod_owned_presentation(void) {
+    psx_mod_internal_resolution_reset();
     psx_local_mouse_clear();
     PSXModSessionScalars live;
     live.video_vsync = g_video_vsync;
