@@ -300,7 +300,7 @@ int  gl_renderer_anisotropy(void);
 /* [video] accurate_blending: store every VRAM write in the k*8/255 basis so
  * 8-bit GL blending truncated to 5 bits is exactly the PS1's semi-transparency
  * arithmetic (whites of fills and textures become 248 instead of 255, as
- * uploads and untextured primitives already are). Off by default. */
+ * uploads and untextured primitives already are). On by default. */
 void gl_renderer_set_accurate_blending(int on);
 int  gl_renderer_accurate_blending(void);
 int  gl_renderer_get_pgxp_depth(void);

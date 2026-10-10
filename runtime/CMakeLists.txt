@@ -53,6 +53,9 @@ if(BUILD_TESTING)
     target_include_directories(netplay_sim_pad_cache_test PRIVATE include)
     target_compile_definitions(netplay_sim_pad_cache_test PRIVATE PSX_MAX_PLAYERS=4)
     add_test(NAME netplay_sim_pad_cache_test COMMAND netplay_sim_pad_cache_test)
+    add_executable(netplay_fmv_confirm_test tests/test_netplay_fmv_confirm.c)
+    target_include_directories(netplay_fmv_confirm_test PRIVATE include)
+    add_test(NAME netplay_fmv_confirm_test COMMAND netplay_fmv_confirm_test)
     add_executable(netplay_local_view_test tests/test_netplay_local_view.c)
     target_include_directories(netplay_local_view_test PRIVATE include)
     add_test(NAME netplay_local_view_test COMMAND netplay_local_view_test)
@@ -287,6 +290,18 @@ if(BUILD_TESTING)
                 --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-blend-accuracy-results")
         set_tests_properties(gl_blend_accuracy_test PROPERTIES
+            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
+        # texture_filtering = "xbr": diagonals lose the staircase, straight
+        # edges, flat areas, cutouts and 1:1 draws stay nearest; RT agrees.
+        add_test(NAME gl_xbr_filter_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_xbr.c"
+                --cc "${CMAKE_C_COMPILER}"
+                --sdl-include "${_gl_scale_sdl_inc}"
+                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-xbr-results")
+        set_tests_properties(gl_xbr_filter_test PROPERTIES
             LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
         unset(_gl_scale_sdl_inc)
     else()
@@ -621,6 +636,11 @@ if(BUILD_TESTING)
         src/sio.c)
     target_include_directories(psx_pad_apply_test PRIVATE include)
     add_test(NAME psx_pad_apply_test COMMAND psx_pad_apply_test)
+
+    # Title-supplied host rumble (psx_mod_set_host_rumble) merge and expiry.
+    add_executable(host_rumble_test tests/test_host_rumble.c)
+    target_include_directories(host_rumble_test PRIVATE include)
+    add_test(NAME host_rumble_test COMMAND host_rumble_test)
 
     add_executable(controller_type_test tests/test_controller_type.cpp)
     target_include_directories(controller_type_test PRIVATE include)
@@ -1059,6 +1079,10 @@ if(BUILD_TESTING)
         ../recompiler/lib/toml11)
     add_test(NAME text_xlate_fix_only_test COMMAND text_xlate_fix_only_test)
 
+    add_executable(netplay_peer_frontier_test tests/test_netplay_peer_frontier.c)
+    target_include_directories(netplay_peer_frontier_test PRIVATE include)
+    add_test(NAME netplay_peer_frontier_test COMMAND netplay_peer_frontier_test)
+
     add_executable(netplay_content_gate_test tests/test_netplay_content_gate.c)
     target_include_directories(netplay_content_gate_test PRIVATE include)
     add_test(NAME netplay_content_gate_test COMMAND netplay_content_gate_test)
@@ -1285,6 +1309,12 @@ if(BUILD_TESTING)
         target_link_libraries(render_pass_plan_test PRIVATE m)
     endif()
     add_test(NAME render_pass_plan_test COMMAND render_pass_plan_test)
+
+    add_executable(mod_internal_resolution_test
+        tests/test_mod_internal_resolution.c
+        src/mod_internal_resolution.c)
+    target_include_directories(mod_internal_resolution_test PRIVATE include)
+    add_test(NAME mod_internal_resolution_test COMMAND mod_internal_resolution_test)
 
     # Motion kit and per-frame driver for render-pass plugins: blending,
     # identity matching, limits and the crossfade fallback, on mock RAM.

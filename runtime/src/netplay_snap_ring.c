@@ -12,11 +12,73 @@
 #include "boot_state.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <zlib.h>
 #if defined(_WIN32)
 #  include <windows.h>
 #else
 #  include <time.h>
 #endif
+
+/* PSX_RB_SNAP_AUDIT=<dir>: one line per ring save -- mode (L live, R replay),
+ * tick, and per boot_state section the CRC32 (+ hex for sections <= 4 KiB).
+ * tools/rb_snap_audit_diff.py compares seats tick by tick and a seat's replay
+ * against its own live save, naming the first section/byte that differs. It
+ * is the replay-determinism check: same snap + same rows must give the same
+ * machine, field by field. Off (zero cost) unless the variable is set. */
+static void netplay_snap_audit_note(uint32_t tick, const uint8_t *d, size_t n)
+{
+    extern int psx_netplay_local_slot(void);
+    extern int psx_netplay_is_resimulating(void);
+    static FILE *f;
+    static int init;
+    size_t start;
+    if (!init) {
+        const char *dir = getenv("PSX_RB_SNAP_AUDIT");
+        char nm[600];
+        init = 1;
+        if (dir && *dir) {
+            snprintf(nm, sizeof(nm), "%s/snap-audit-p%d.txt", dir, psx_netplay_local_slot());
+            f = fopen(nm, "w");
+        }
+    }
+    if (!f || !d)
+        return;
+    for (start = 0; start < 256; start += 4) {
+        size_t o = start;
+        int cnt = 0, ok = 1;
+        while (o + 16 <= n) {
+            uint32_t tag;
+            uint64_t ln;
+            memcpy(&tag, d + o, 4);
+            memcpy(&ln, d + o + 8, 8);
+            if (ln > n || tag == 0 || tag > 0x7fffffffu) { ok = 0; break; }
+            o += 16 + (size_t)ln;
+            cnt++;
+        }
+        if (!ok || o != n || cnt < 6)
+            continue;
+        fprintf(f, "%c %u", psx_netplay_is_resimulating() ? 'R' : 'L', (unsigned)tick);
+        o = start;
+        while (o + 16 <= n) {
+            uint32_t tag;
+            uint64_t ln, i;
+            memcpy(&tag, d + o, 4);
+            memcpy(&ln, d + o + 8, 8);
+            fprintf(f, " %x:%08lx", (unsigned)tag,
+                    (unsigned long)crc32(0L, d + o + 16, (uInt)ln));
+            if (ln <= 4096u && tag != 0x10u) {
+                fputc('=', f);
+                for (i = 0; i < ln; i++)
+                    fprintf(f, "%02x", d[o + 16 + i]);
+            }
+            o += 16 + (size_t)ln;
+        }
+        fputc('\n', f);
+        return;
+    }
+}
 
 static double snap_mono_ms(void)
 {
@@ -69,6 +131,7 @@ int netplay_snap_ring_save(NetplaySnapRing *r, uint32_t tick,
                 100.0 * (double)s_tele_incr_n / (double)s_tele_n);
         fflush(stderr);
     }
+    netplay_snap_audit_note(tick, data, len);
     if (!netplay_snap_ring_store(r, tick, data, len))
         return 0;
     return 1;

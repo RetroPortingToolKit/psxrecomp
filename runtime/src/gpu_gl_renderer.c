@@ -908,8 +908,8 @@ static int s_tex_lod = 0, s_tex_aniso = 1;
  * different bases and truncating to 5 bits at readback is off by one in
  * places (e.g. B+F/4, B/2+F/2 with odd sums). On, every VRAM write uses
  * k*8, so GL's 8-bit blend followed by >>3 is exactly the PS1's 5-bit
- * arithmetic. Off (default) keeps the historical bases. */
-static int s_accurate_blend = 0;
+ * arithmetic. On by default; off is the historical diagnostic path. */
+static int s_accurate_blend = 1;
 static void c5_to_float(uint16_t c, float *r, float *g, float *b) {
     if (s_accurate_blend) {
         *r = (float)((c & 0x1F) << 3) / 255.0f;
@@ -1938,7 +1938,7 @@ static const char *TEX_FS =
     "uniform int u_semipass;  /* 0=all texels, 1=STP=0 only, 2=STP=1 only */\n"
     "uniform int u_semimode;  /* PS1 blend mode; drives dual-source factors */\n"
     "uniform int u_maskset;   /* GP0(E6h) set-mask: OR bit15 into output */\n"
-    "uniform int u_filter;    /* bits 0-3: 0 nearest, 1 bilinear, 2 stable; bit 4: LOD */\n"
+    "uniform int u_filter;    /* bits 0-3: 0 nearest, 1 bilinear, 2 stable, 3 xbr; bit 4: LOD */\n"
     "uniform int u_aniso;     /* [video] anisotropic_filtering, 1..16 */\n"
     "uniform float u_shift;\n"
     "int vram_at(int x, int y){\n"
@@ -2034,6 +2034,47 @@ static const char *TEX_FS =
     "  }\n"
     "  return sum.a > 0.0 ? sum.rgb / sum.a : base;\n"
     "}\n"
+    /* [video] texture_filtering = "xbr": edge-directed magnification after
+     * Hyllian's xBR (MIT; notice in THIRD_PARTY_ATTRIBUTION.md): the same
+     * E/F/H/I neighbourhood and 4x-weighted edge sums, adapted to CLUT
+     * texels and an anti-aliased corner cut. For the
+     * texel corner nearest the sample, two weighted colour-distance sums
+     * across a 5x5 neighbourhood decide whether an edge runs along the
+     * corner's anti-diagonal; if so, the corner is cut by that diagonal and
+     * takes the closer of the two side neighbours, with an anti-aliased
+     * boundary one output pixel wide. Smooth gradients and straight edges are
+     * left as nearest texels, so pixel art keeps its crisp blocks while
+     * diagonals and curves lose their staircase. Transparent (0) texels never
+     * supply a colour; cutout and STP stay the centre texel's. */
+    "vec3 xbr_c(int raw){ return col5(raw); }\n"
+    "float xbr_d(int a, int b){\n"
+    "  vec3 x = xbr_c(a), y = xbr_c(b);\n"
+    "  vec3 dv = x - y;\n"
+    "  float yy = dot(dv, vec3(0.299, 0.587, 0.114));\n"
+    "  float u = dot(dv, vec3(-0.169, -0.331, 0.5)), v = dot(dv, vec3(0.5, -0.419, -0.081));\n"
+    "  return 48.0*abs(yy) + 7.0*abs(u) + 6.0*abs(v) + (((a==0)!=(b==0)) ? 64.0 : 0.0);\n"
+    "}\n"
+    "int xbr_at(ivec2 e, ivec2 s, int x, int y){ return stable_texel(e + ivec2(x*s.x, y*s.y)); }\n"
+    "vec3 xbr_sample(vec2 uv, int e_raw, vec2 fw){\n"
+    "  ivec2 e = ivec2(floor(uv)); vec2 f = fract(uv);\n"
+    "  ivec2 s = ivec2(f.x < 0.5 ? -1 : 1, f.y < 0.5 ? -1 : 1);\n"
+    "  vec2 l = vec2(s.x > 0 ? f.x : 1.0 - f.x, s.y > 0 ? f.y : 1.0 - f.y); /* 0.5..1 toward the corner */\n"
+    "  int E=e_raw;\n"
+    "  if (max(fw.x, fw.y) >= 0.5) return xbr_c(E);   /* under 2x: stay nearest, no fetches */\n"
+    "  int F=xbr_at(e,s,1,0), H=xbr_at(e,s,0,1);\n"
+    "  if (E == F || E == H) return xbr_c(E);\n"
+    "  int I=xbr_at(e,s,1,1);\n"
+    "  int B=xbr_at(e,s,0,-1), C=xbr_at(e,s,1,-1), D=xbr_at(e,s,-1,0), G=xbr_at(e,s,-1,1);\n"
+    "  int F4=xbr_at(e,s,2,0), I4=xbr_at(e,s,2,1), H5=xbr_at(e,s,0,2), I5=xbr_at(e,s,1,2);\n"
+    "  float we = xbr_d(E,C)+xbr_d(E,G)+xbr_d(I,H5)+xbr_d(I,F4)+4.0*xbr_d(H,F);\n"
+    "  float wi = xbr_d(H,D)+xbr_d(H,I5)+xbr_d(F,I4)+xbr_d(F,B)+4.0*xbr_d(E,I);\n"
+    "  if (!(we < wi)) return xbr_c(E);\n"
+    "  int px = xbr_d(E,F) <= xbr_d(E,H) ? F : H;\n"
+    "  if (px == 0) return xbr_c(E);\n"
+    "  float w = max(fw.x + fw.y, 1e-3);\n"
+    "  float a = clamp((l.x + l.y - 1.5) / w + 0.5, 0.0, 1.0);\n"
+    "  return mix(xbr_c(E), xbr_c(px), a);\n"
+    "}\n"
     "void main(){\n"
     "  int stp; vec3 rgb;\n"
     "  int fmode = u_filter & 15;\n"
@@ -2063,6 +2104,12 @@ static const char *TEX_FS =
     "    if (raw == 0) discard;\n"
     "    rgb = col5(raw);\n"
     "    stp = (raw >> 15) & 1;\n"
+    "  } else if (fmode == 3) {\n"
+    "    /* The nearest texel stays the PS1 one (floor of the unshifted uv). */\n"
+    "    int raw = stable_texel(ivec2(floor(uv)));\n"
+    "    if (raw == 0) discard;\n"
+    "    stp = (raw >> 15) & 1;\n"
+    "    rgb = xbr_sample(uv, raw, abs(dx) + abs(dy));\n"
     "  } else if (fmode == 2) {\n"
     "    uv+=vec2(u_shift); int raw=stable_texel(ivec2(floor(uv)));\n"
     "    if(raw==0) discard; stp=(raw>>15)&1;\n"
@@ -4985,7 +5032,7 @@ void gl_renderer_set_accurate_blending(int on) {
     if (s_ctx) accurate_apply_uniforms();
 }
 int gl_renderer_accurate_blending(void) { return s_accurate_blend; }
-static void glb_set_texture_filter(int b) { s_tex_filter = b >= 0 && b <= 2 ? b : 0; sw_set_texture_filter(b != 0); }
+static void glb_set_texture_filter(int b) { s_tex_filter = b >= 0 && b <= 3 ? b : 0; sw_set_texture_filter(b != 0); }
 static int  glb_texture_filter(void) { return s_tex_filter; }
 
 static void glb_set_semi_transparency(int e, int m) { s_semi_en = e; s_semi_mode = m & 3; sw_set_semi_transparency(e, m); }

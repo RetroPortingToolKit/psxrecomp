@@ -197,7 +197,14 @@ int main(void) {
     gl_renderer_set_swap_interval(0);
     if (!gl_renderer_init_context(win)) { fprintf(stderr, "SKIP no GL context\n"); return 77; }
     page();
-    /* Default bases (accurate_blending off): measured, not required. */
+    /* No caller opt-in: default rendering must match the console. */
+    check(gl_renderer_accurate_blending() == 1, "correct blending is the default");
+    scene(0);
+    gr_vram_transfer_out(0, 0, 1024, 512, out);
+    check(oracle_errors(out) == 0, "default GL rendering matches the PS1 formulas");
+    check(diff(out, ref) == 0, "default GL VRAM matches the software reference");
+    /* Historical bases: measured for diagnosis, not required. */
+    gl_renderer_set_accurate_blending(0);
     scene(0);
     gr_vram_transfer_out(0, 0, 1024, 512, out);
     printf("gl 4x accurate_blending=0: oracle mismatches=%ld (historical bases)\n", oracle_errors(out));

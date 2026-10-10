@@ -466,6 +466,41 @@ void spu_cd_audio_push(const int16_t* stereo, int frames) {
                       cd_frame_count);
 }
 
+/* CD input frames queued for the SPU are guest state: they come from the
+ * CD-ROM decoder at guest time and the SPU consumes them sample by sample
+ * (output and the CD capture area of SPU RAM). They used to be outside the
+ * snapshot and were wiped on rollback loads, so a replay mixed different CD
+ * audio than the live run (SPU voices / SPU RAM split at R4's race start). */
+int g_spu_cd_restored;
+uint32_t spu_cd_snapshot_bytes(void) { return 4u + cd_frame_count * 4u; }
+void spu_cd_snapshot_write(uint8_t *p) {
+    uint32_t n = cd_frame_count, pos = cd_read_pos;
+    p[0] = (uint8_t)n; p[1] = (uint8_t)(n >> 8); p[2] = (uint8_t)(n >> 16); p[3] = (uint8_t)(n >> 24);
+    p += 4;
+    for (uint32_t i = 0; i < n; i++) {
+        uint16_t l = (uint16_t)cd_ring[pos * 2u], r = (uint16_t)cd_ring[pos * 2u + 1u];
+        p[0] = (uint8_t)l; p[1] = (uint8_t)(l >> 8); p[2] = (uint8_t)r; p[3] = (uint8_t)(r >> 8);
+        p += 4;
+        pos = (pos + 1u) % SPU_CD_RING_FRAMES;
+    }
+}
+int spu_cd_snapshot_read(const uint8_t *p, uint32_t len) {
+    uint32_t n;
+    if (!p || len < 4u) return 0;
+    n = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    if (n > SPU_CD_RING_FRAMES || len != 4u + n * 4u) return 0;
+    p += 4;
+    for (uint32_t i = 0; i < n; i++, p += 4) {
+        cd_ring[i * 2u] = (int16_t)(uint16_t)(p[0] | (p[1] << 8));
+        cd_ring[i * 2u + 1u] = (int16_t)(uint16_t)(p[2] | (p[3] << 8));
+    }
+    cd_read_pos = 0;
+    cd_write_pos = n % SPU_CD_RING_FRAMES;
+    cd_frame_count = n;
+    g_spu_cd_restored = 1;
+    return 1;
+}
+
 static int cd_audio_pop(int16_t* left, int16_t* right) {
     if (cd_frame_count == 0) return 0;
     *left = cd_ring[cd_read_pos * 2u + 0u];
