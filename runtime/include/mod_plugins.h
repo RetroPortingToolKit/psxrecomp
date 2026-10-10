@@ -361,6 +361,32 @@ int psx_mod_option_value(const char* package_id, const char* feature_id,
 int psx_mod_current_option_value(const char* option_id,
                                  char* out, uint32_t out_size);
 /*
+ * Live option changes (in-game overlay P5). A trusted plugin that can re-read
+ * an option on a running game registers an option-changed callback under its
+ * plugin id; it runs in that plugin's context (psx_mod_current_option_value
+ * already answers the new value) and returns 1 if the change took effect now.
+ *
+ * psx_mod_set_option_live records a new value for a committed feature's
+ * option for the rest of the session and notifies its plugin. Returns 1 when
+ * a plugin applied it live; 0 when the feature has no live-capable plugin (or
+ * is not in the plan) -- then nothing changes until the next start; -1 when
+ * refused: during netplay the plan is
+ * negotiated between peers and must not change. Persisting the choice stays
+ * the mod provider's job (mods/state.toml).
+ */
+typedef int (*PSXModOptionChangedCallback)(const char* option_id, const char* value);
+int psx_mod_register_option_changed_plugin(const char* id,
+                                           PSXModOptionChangedCallback callback);
+int psx_mod_set_option_live(const char* package_id, const char* feature_id,
+                            const char* option_id, const char* value);
+/* 1 when the committed feature's plugin registered an option-changed callback
+ * (so a live set can take effect now). Read-only; any thread. */
+int psx_mod_option_live_capable(const char* package_id, const char* feature_id);
+/* Write the player's current selection (feature switches and option values,
+ * as edited through the launcher mod provider) to mods/state.toml now,
+ * without re-resolving the running plan. Main thread. 1 on success. */
+int psx_mod_save_selection(void);
+/*
  * Read the committed owner-selected path for a resource declared by the
  * package feature whose trusted plugin is currently running. Returns 0 when
  * the feature has no selected path for that resource; plugins then leave the
