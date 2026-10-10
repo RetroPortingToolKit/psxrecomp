@@ -14126,7 +14126,11 @@ namespace {
                  (!s_last_mc.valid || mc->has_card != s_last_mc.has_card ||
                   mc->share != s_last_mc.share)) ||
                 mod_offer_changed;
-            if (!psx_lobby_local_ready() || offer_changed) {
+            static uint32_t s_ready_sent_ms;
+            const uint32_t now_ms = SDL_GetTicks();
+            if (offer_changed ||
+                (!psx_lobby_local_ready() && now_ms - s_ready_sent_ms >= 1000u)) {
+                s_ready_sent_ms = now_ms;
                 (void)psx_lobby_set_ready(1);
                 if (cur) s_last_offer = *cur;
                 if (mc) s_last_mc = *mc;
