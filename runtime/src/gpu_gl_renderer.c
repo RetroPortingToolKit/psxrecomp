@@ -670,6 +670,8 @@ static void pass_note_new_frame(int origin_x, int origin_y, int source_path,
 static void pass_apply_promotion(void);
 static int pass_gen_present(uint64_t deadline);
 static int stereo_present(int w, int h);
+static int xr_mirror_mode(void);
+static int xr_mirror_active(void);
 static void stereo_resources_release(void);
 static void stereo_invalidate(void);
 static uint64_t s_idle_ticks_accum_fwd(uint64_t add);
@@ -8984,15 +8986,29 @@ static int stereo_present(int w, int h) {
         gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY) return 0;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     gl_perf_present_enter();
-    letterbox_rect_aspect(ww, wh, s_aspect_num * 2, s_aspect_den, &lx, &ly, &lw, &lh);
+    /* Desktop spectator layout while XR runs: default single left eye filled to
+     * the window, PSX_VR_DESKTOP_MIRROR selects 0 off / 1 left / 2 SBS / 3 right. */
+    const int mirror = xr_mirror_active() ? xr_mirror_mode() : 0;
+    const int solo = (mirror == 1 || mirror == 3);
+    const int solo_eye = (mirror == 3) ? 1 : 0;
+    if (solo)
+        letterbox_rect_aspect(ww, wh, p->tw[solo_eye], p->th[solo_eye], &lx, &ly, &lw, &lh);
+    else
+        letterbox_rect_aspect(ww, wh, s_aspect_num * 2, s_aspect_den, &lx, &ly, &lw, &lh);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
-    for (int eye = 0; eye < 2; eye++) {
-        int start = eye ? lw / 2 : 0, width = eye ? lw - lw / 2 : lw / 2;
-        present_target_quad(p->tex[eye], p->tw[eye], p->th[eye],
-                            0, 0, p->tw[eye], p->th[eye], 0,
-                            lx + start, ly, width, lh, 1, 1, 1);
+    if (solo) {
+        present_target_quad(p->tex[solo_eye], p->tw[solo_eye], p->th[solo_eye],
+                            0, 0, p->tw[solo_eye], p->th[solo_eye], 0,
+                            lx, ly, lw, lh, 1, 1, 1);
+    } else {
+        for (int eye = 0; eye < 2; eye++) {
+            int start = eye ? lw / 2 : 0, width = eye ? lw - lw / 2 : lw / 2;
+            present_target_quad(p->tex[eye], p->tw[eye], p->th[eye],
+                                0, 0, p->tw[eye], p->th[eye], 0,
+                                lx + start, ly, width, lh, 1, 1, 1);
+        }
     }
     pres_record(GL_PRES_STEREO, p->x, p->y, w, h, lx, ly, lw, lh);
     hold_capture_drawable();
@@ -9005,6 +9021,30 @@ static int stereo_present(int w, int h) {
     present_force_consumed();
     s_last_present_path = GL_PRES_STEREO;
     return 1;
+}
+
+/* ---- Desktop spectator mirror -------------------------------------------
+ * stereo_present() draws the live XR eye textures, so this shows the headset
+ * image on the monitor. Default is a single left eye filled to the window;
+ * PSX_VR_DESKTOP_MIRROR selects 0 off (native side-by-side), 1 left (default),
+ * 2 side-by-side, 3 right. Applies only while an XR session is running. */
+static int s_xr_mirror = -2;
+static int xr_mirror_mode(void) {
+    if (s_xr_mirror == -2) {
+        const char* e = getenv("PSX_VR_DESKTOP_MIRROR");
+        if (!e || !*e) s_xr_mirror = 1;                                    /* on by default */
+        else if (*e == '0') s_xr_mirror = 0;
+        else if (!strcmp(e, "sbs") || !strcmp(e, "both") || !strcmp(e, "2")) s_xr_mirror = 2;
+        else if (!strcmp(e, "right") || !strcmp(e, "r") || !strcmp(e, "3")) s_xr_mirror = 3;
+        else s_xr_mirror = 1;
+    }
+    return s_xr_mirror;
+}
+static int xr_mirror_active(void) {
+    if (xr_mirror_mode() == 0) return 0;
+    PSXOpenXRStats s;
+    psx_openxr_stats(&s);
+    return s.running ? 1 : 0;
 }
 
 /* Draw two presented images crossfaded (t = weight of b) into the window. */
