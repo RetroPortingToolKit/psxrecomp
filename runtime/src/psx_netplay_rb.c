@@ -4792,12 +4792,11 @@ static void log_resim_tick_audit(uint32_t sim, const char *tag)
     for (slot = 0; slot < n; ++slot) {
         RNetRbFrame row;
         if (rnet_rb_get_sealed_frame(g_rb, slot, sim, &row) && row.is_valid)
-            fprintf(stderr, " s%d=%04x%s", slot, (unsigned)row.buttons,
-                    row.analog ? "A" : "");
-        /* Analog bytes too: equal buttons hid a sealed-row stick difference. */
-        if (rnet_rb_get_sealed_frame(g_rb, slot, sim, &row) && row.is_valid &&
-            row.analog)
-            fprintf(stderr, ":%02x%02x%02x%02x", (unsigned)(uint8_t)row.stick_x,
+            /* Device type and axes too: equal buttons hid a sealed-row
+             * difference (a digital idle fill vs the seat's analog row). */
+            fprintf(stderr, " s%d=%04x%s:t%u:%02x%02x%02x%02x", slot,
+                    (unsigned)row.buttons, row.analog ? "A" : "",
+                    (unsigned)row.analog, (unsigned)(uint8_t)row.stick_x,
                     (unsigned)(uint8_t)row.stick_y, (unsigned)row.rx,
                     (unsigned)row.ry);
         else
