@@ -11,6 +11,7 @@
 #include "mod_controller_source.h"
 #include "window_size.h"     /* default game-window size */
 #include "internal_resolution.h" /* Settings -> Display -> Internal resolution */
+#include "mod_internal_resolution.h"
 #include "dynamic_resolution.h"  /* [video] dynamic_resolution: the step controller */
 #include "render_thread.h"        /* rt_get_stats: queue backpressure (dynres) */
 #include "psx_scheduler.h"   /* psx_scheduler_run — deterministic TCB scheduler */
@@ -64,6 +65,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "frame_pacing.h"
 #include "latency_ring.h"
 #include "sio.h"
+#include "psx_host_rumble.h"
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
 #endif
@@ -81,6 +83,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "host_time.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "recomp_net/auth.h"
+#include "recomp_netplay_account.h"   /* shared recomp-ui account sync */
 #include "recomp_net/host_relay.h" /* RNetHostRelayStatus for the launcher relay line */
 #include "recomp_net/chat_filter.h" /* chat profanity mask, LAN rooms too */
 #endif
@@ -1365,11 +1368,11 @@ static int video_scale_ceiling(void) {
     return g_video_renderer == 1 ? GL_MAX_INTERNAL_SCALE : SW_MAX_INTERNAL_SCALE;
 }
 
-/* The preset in effect this run: the environment override, else the
- * configured one. */
+/* Session priority: environment override, active mod request, player setting. */
 static int effective_internal_resolution(void) {
+    const uint32_t mod_lines = psx_mod_internal_resolution_request();
     return g_video_internal_res_env != PSX_IR_UNSET ? g_video_internal_res_env
-                                                    : g_video_internal_res;
+        : mod_lines ? (int)mod_lines : g_video_internal_res;
 }
 
 /* Resolve the Internal resolution preset into g_video_scale. display_px_h is
@@ -1426,6 +1429,27 @@ extern "C" int psx_mod_allow_direct_shortcut(uint32_t shortcut) {
 
 extern "C" void psx_mod_set_rewind_blocked(int blocked) {
     psx_rewind_set_title_blocked(blocked);
+}
+
+/* psx_mod_set_host_rumble: per-seat title rumble, stamped with the rumble
+ * VBlank so a value the mod stops refreshing lapses (psx_host_rumble.h). */
+static PsxHostRumbleSlot g_mod_rumble[PSX_MAX_PLAYERS];
+static uint32_t          g_rumble_vblank = 0;
+
+extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
+                                       uint32_t large) {
+    if (player >= PSX_MAX_PLAYERS) return 0;
+    if (psx_netplay_active()) {
+        /* Online: only this peer's own guest port drives its own pad, once per
+         * real tick (a rollback resim replays ticks the pad already felt). */
+        if (psx_netplay_is_resimulating() ||
+            (int)player != psx_netplay_local_port())
+            return 1;
+        const int card = psx_netplay_input_player();
+        player = card >= 0 && card < PSX_MAX_PLAYERS ? (uint32_t)card : 0u;
+    }
+    psx_host_rumble_set(&g_mod_rumble[player], g_rumble_vblank, small, large);
+    return 1;
 }
 static uint32_t      g_savestate_input_guard_min_until = 0;
 static uint32_t      g_savestate_input_guard_max_until = 0;
@@ -1706,6 +1730,7 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
 static PSXModSessionBaseline g_mod_owned_baseline;
 
 static void reset_mod_owned_presentation(void) {
+    psx_mod_internal_resolution_reset();
     psx_local_mouse_clear();
     PSXModSessionScalars live;
     live.video_vsync = g_video_vsync;
@@ -5211,11 +5236,18 @@ static void update_controller_rumble(void) {
         const char* e = std::getenv("PSX_RUMBLE_TRACE");
         return e && e[0] && e[0] != '0';
     }();
+    ++g_rumble_vblank;
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
         PlayerInput& p = g_players[s];
         uint8_t small = 0, large = 0;
         sio_get_pad_rumble(s, &small, &large);
+        psx_host_rumble_merge(&g_mod_rumble[s], g_rumble_vblank, &small, &large);
         if (!p.handle) {
+            if (trace && (!p.rumble_known || p.rumble_small != small ||
+                          p.rumble_large != large))
+                std::fprintf(stdout,
+                    "psxrecomp rumble: slot=%d small=%u large=%u host=none\n",
+                    s + 1, (unsigned)small, (unsigned)large);
             p.rumble_small = small;
             p.rumble_large = large;
             p.rumble_known = true;
@@ -8433,7 +8465,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_selfcheck_finish_frame(
             (g_offline_pad_count >= 3 && !sio_get_multitap()) ? 1 : 0);
     }
-    if (!g_headless) update_controller_rumble();
+    /* Headless has no pads; PSX_RUMBLE_TRACE still logs what would be sent. */
+    if (!g_headless || std::getenv("PSX_RUMBLE_TRACE")) update_controller_rumble();
 
     /* Latency ring: open this present cycle's slot, stamping when input was
      * sampled into SIO.  Always-on; queried via the debug server "latency". */
@@ -9489,7 +9522,7 @@ static int debug_toggles_on(void) {
 }
 static int s_dbg_scale_target = 0;
 static const char *dbg_texfilter_name(int f) {
-    return f == 1 ? "bilinear" : f == 2 ? "stable world" : "nearest";
+    return f == 1 ? "bilinear" : f == 2 ? "stable world" : f == 3 ? "xbr" : "nearest";
 }
 static void debug_toggle_summary(char *buf, size_t cap) {
     GlDynresStats st; gl_renderer_dynres_stats(&st);
@@ -9545,7 +9578,7 @@ static int debug_toggle_key(int key, char *out, int cap) {
                       on && !g_render_thread ? " (inert: render thread off)" : "");
         break; }
     case SDLK_5: {
-        const int f = (gr_texture_filter() + 1) % 3;
+        const int f = (gr_texture_filter() + 1) % 4;
         gr_set_texture_filter(f);
         std::snprintf(msg, sizeof msg, "Texture filter: %s", dbg_texfilter_name(f));
         break; }
@@ -12801,28 +12834,22 @@ namespace {
     int ae_np_account_sign_out(void*) { return rnet_account_sign_out(); }
     int ae_np_account_set_handle(void*, const char* h) { return rnet_account_set_handle(h); }
 
-    /* Point the account client at the lobby host -- once per URL, not once
-     * per pump: the login worker thread reads the host while a sign-in is in
-     * flight, and re-initialising it 60 times a second under that read is a
-     * data race for no gain. The secret is anchored to the EXECUTABLE
-     * directory before the first init: its default is the bare relative name
-     * "netplay_secret", resolved against the working directory, so the same
-     * install signed itself out depending on where it was launched from.
-     * rnet_auth migrates an old CWD-relative file into this path on first
-     * load, so nobody is signed out by the move. Same shape as the SNES
-     * host (snes_host_lobby.c cb_pump). */
+    /* Point the account client at the lobby host. The rule (resolved URL,
+     * once per URL, secret anchored to the exe dir) lives in recomp-ui, shared
+     * with recomp_netplay_host.c. The URL is ae_np_default_url, NOT the raw
+     * g_lnch_lobby_url: that is empty until a player saves one, which left the
+     * auth host blank and every sign-in "could not reach the lobby server". */
+    static int ae_np_exe_dir_path(void*, const char* leaf, char* out, size_t cap) {
+        const std::string p =
+            (exe_dir_from_argv(g_lnch_argv0 ? g_lnch_argv0 : "") / leaf).string();
+        if (p.size() + 1 > cap) return 0;
+        std::memcpy(out, p.c_str(), p.size() + 1);
+        return 1;
+    }
+    const char* ae_np_default_url(void*);  /* defined below */
     void ae_np_account_sync(void) {
-        static std::string s_auth_url;
-        const std::string& url = g_lnch_lobby_url;
-        if (url.empty() || url == s_auth_url) return;
-        if (s_auth_url.empty()) {
-            const std::string secret =
-                (exe_dir_from_argv(g_lnch_argv0 ? g_lnch_argv0 : "") /
-                 "netplay_secret").string();
-            rnet_account_set_secret_path(secret.c_str());
-        }
-        s_auth_url = url;
-        rnet_account_init(url.c_str());
+        recomp_netplay_account_sync(ae_np_default_url(nullptr),
+                                    ae_np_exe_dir_path, nullptr);
     }
 
 #endif /* PSX_HAS_RECOMP_NET: account client is not linked in offline builds */
@@ -17365,6 +17392,14 @@ int main(int argc, char** argv) {
             ls.scanline_strength_pct = seed.has_scanline_strength
                 ? (int)(seed.scanline_strength * 100.0 + 0.5) : 50;
 #endif
+#if defined(RECOMP_LAUNCHER_VSYNC_ADAPTIVE)
+            /* [video] vsync (1 on, 0 off/immediate, -1 adaptive, 2 VRR) <->
+             * the launcher's V-Sync row (1 On, 2 Off, 3 Adaptive). VRR has no
+             * row; it shows as On and is kept unless the player changes it. */
+            ls.vsync = g_video_vsync == 0 ? RECOMP_LAUNCHER_VSYNC_OFF
+                     : g_video_vsync == -1 ? RECOMP_LAUNCHER_VSYNC_ADAPTIVE
+                     : RECOMP_LAUNCHER_VSYNC_ON;
+#endif
             ls.frame_interp       = seed.frame_interpolation ? 1 : 0;
             ls.frame_interp_fps   = seed.frame_interpolation_fps;
             ls.spu_hq             = seed.spu_hq ? 1 : 0;
@@ -17718,6 +17753,16 @@ int main(int argc, char** argv) {
                 if (ls.scanline_strength_pct >= 0) {
                     seed.scanline_strength = ls.scanline_strength_pct / 100.0;
                     seed.has_scanline_strength = true;
+                }
+#endif
+#if defined(RECOMP_LAUNCHER_VSYNC_ADAPTIVE)
+                if (ls.vsync >= RECOMP_LAUNCHER_VSYNC_ON && ls.vsync <= RECOMP_LAUNCHER_VSYNC_ADAPTIVE) {
+                    const int was = g_video_vsync;
+                    g_video_vsync = ls.vsync == RECOMP_LAUNCHER_VSYNC_OFF ? 0
+                                  : ls.vsync == RECOMP_LAUNCHER_VSYNC_ADAPTIVE ? -1
+                                  : (was == 2 ? 2 : 1);
+                    seed.vsync = g_video_vsync;
+                    seed.has_vsync = true;
                 }
 #endif
                 seed.frame_interpolation   = ls.frame_interp != 0;     seed.has_frame_interpolation   = true;
@@ -18131,6 +18176,7 @@ int main(int argc, char** argv) {
         mod_controller_source_reset();
         mod_pad_transform_reset();
         g_direct_shortcut_allowed = 0;
+        std::memset(g_mod_rumble, 0, sizeof g_mod_rumble);
         g_p1_claimed_buttons = 0;
         psx_rewind_set_title_blocked(0);
         for (auto& policy : g_mod_controller_policy)
@@ -18417,6 +18463,7 @@ session_reboot:
                             (net_cfg.enabled && s_netplay_gl_present &&
                              gl_renderer_cpu_auth_dual());
     g_video_scale = gr_scale(); /* reflect any clamp / alloc fallback */
+    if (const char* e = std::getenv("PSX_TEXTURE_FILTER")) g_video_texfilter = std::atoi(e);
     gr_set_texture_filter(g_mod_texfilter < 0 ? g_video_texfilter : g_mod_texfilter);
     /* Sub-pixel vertex precision + perspective-correct UVs. Both default off;
      * with both off every setter below leaves the tracking caches disabled and
