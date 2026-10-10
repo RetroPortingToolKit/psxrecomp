@@ -5,7 +5,7 @@ int pad_ext_live(const PadExtGate *g) {
     return g && !g->injected_input && !g->headless && !g->netplay_active &&
            !g->netplay_resim && !g->selfcheck_locked && !g->selfcheck_resim &&
            !g->render_pass && !g->savestate_menu_open && !g->rewind_open &&
-           !g->input_guard;
+           !g->input_guard && !g->ui_capture;
 }
 
 /* Stage 2b: run the title transform over the resolved pad and pack its
