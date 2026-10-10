@@ -538,6 +538,42 @@ void split_coalesce_copy_parts(const fs::path& root) {
     check(duck_texture_pack_match_draw(pack.get(),&q,0,&match) == HD_TEXTURE_LOOKUP_NONE,"single-cover API preserves native fallback for composed draw");
 }
 
+void resident_checkpoint(const fs::path& root) {
+    std::vector<uint16_t> vram(1024*512);
+    place(vram,0,0,8,std::vector<uint16_t>(8*16,0x3210));
+    vram[400*1024+1] = 0x001f;
+    auto pack = create(root); char error[512]{};
+    duck_texture_pack_track_upload(pack.get(),0,0,8,16,vram.data(),vram.size());
+    auto q = query(vram,0,0,0,0,15,0,15,0,400);
+    duck_texture_pack_dump_draw(pack.get(),&q,0,error,sizeof(error));
+    check(duck_texture_pack_checkpoint_dumps(pack.get(),error,sizeof(error)) == HD_TEXTURE_LOOKUP_FOUND,
+          "resident background checkpoint queues without retirement");
+    DuckTexturePackInfo info{}; duck_texture_pack_get_info(pack.get(),&info);
+    check(info.queued_dump_count == 1 && info.pending_dump_sources == 0,
+          "checkpoint publishes a still-resident source");
+    duck_texture_pack_dump_draw(pack.get(),&q,0,error,sizeof(error));
+    duck_texture_pack_checkpoint_dumps(pack.get(),error,sizeof(error));
+    duck_texture_pack_get_info(pack.get(),&info);
+    check(info.queued_dump_count == 1,"unchanged resident draws do not requeue PNGs");
+    /* A later disjoint crop must retain the previous crop and captured CLUT.
+     * Its union is 32 wide, rather than a separate right-hand 16-wide image. */
+    q.u_first = 16; q.u_last = 31;
+    duck_texture_pack_dump_draw(pack.get(),&q,1,error,sizeof(error));
+    vram[400*1024+1] = 0x7c00;
+    duck_texture_pack_checkpoint_dumps(pack.get(),error,sizeof(error));
+    flush(pack.get());
+    const auto files = dumps(root);
+    check(files.size() == 2,"resident checkpoint and expanded final crop are durable");
+    bool union_found = false;
+    for (const auto& file : files) {
+        DuckTextureKey key{}; duck_texture_parse_name(file.filename().u8string().c_str(),&key);
+        if (key.width == 32) {
+            const auto pixels = read_png(file,32,16);
+            union_found = key.offset_x == 0 && key.semitransparent && pixels.size() > 8 && pixels[4] == 255 && pixels[6] == 0;
+        }
+    }
+    check(union_found,"checkpoint preserves palette originals and earlier crop union");
+}
 void copied_pack_ownership(const fs::path& root) {
     std::vector<uint16_t> vram(1024*512); place(vram,0,0,8,std::vector<uint16_t>(8*16,0x3210));
     vram[400*1024+1] = 31;
@@ -568,6 +604,7 @@ int main(int argc, char** argv) {
         palettes(root/"palettes"); st_alias_duplicates(root/"keys"); failed_payloads(root/"invalid"); dumping(root/"dump");
         official_binary_oracle(root/"official-oracle"); defaults_and_options(root/"defaults");
         immutable_palettes_and_pages(root/"snapshots"); split_coalesce_copy_parts(root/"lifecycle"); copied_pack_ownership(root/"ownership");
+        resident_checkpoint(root/"resident");
         /* Every artifact is created beneath this fresh, explicitly named test
          * root. No user-provided paths participate in recursive cleanup. */
         if (argc > 1 && !std::strcmp(argv[1],"--keep-artifacts")) std::printf("ARTIFACT_ROOT: %s\n",root.u8string().c_str());

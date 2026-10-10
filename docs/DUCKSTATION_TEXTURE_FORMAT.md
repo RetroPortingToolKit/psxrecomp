@@ -124,7 +124,7 @@ was checked against the pinned
 The module accepts bounded replacement parts clipped to the draw query.
 It supports ordinary unchanged uploads and nonwrapping page subrectangles.
 OpenGL composes up to 64 matching parts over a native-pixel fallback, with at
-most 16 cached compositions, 64 MiB of composed RGBA, and 8192 pixels per side.
+most 256 cached compositions, 64 MiB of composed RGBA, and 8192 pixels per side.
 `ReplacementScaleLinearFilter` enables color interpolation when scaling parts
 while keeping cutout, STP, and opaque classification discrete. The default is
 nearest scaling. Decode or composition limits retain native rendering.
@@ -200,11 +200,19 @@ One low-priority background worker performs PNG/JPEG/WebP decoding and PNG dumpi
 decode queue is bounded to 32, decoded metadata to 512 entries, and decoded
 pixels to a default 64 MiB budget. Encoded files are limited to 64 MiB and each
 image dimension to 8192 before decoding. Pixel leases survive eviction and
-pack destruction. Decoding failure leaves native rendering active.
+pack destruction. Complete compositions retain their source pixels and can
+be reused after source PNGs leave the decoded cache. OpenGL also reuses
+GPU-resident full replacements without decoding them again; its image cache
+holds at most 256 entries within the existing 128 MiB budget. Decoding failure
+leaves native rendering active.
 
 Dumps accumulate the union of word-aligned used rectangles per source and
-palette, including semitransparent draw usage. They finalize when a source
-retires or capture is flushed, rather than writing a PNG for each draw.
+palette, including semitransparent draw usage. Changed observations are
+checkpointed approximately once per second during draws, so long-lived
+backgrounds appear while capture remains enabled. Checkpoints retain the
+original words, captured palettes, and crop union; later usage can enlarge
+the crop. Unchanged captures are deduplicated. Sources also finalize when
+they retire or capture is flushed.
 Default upload mode emits `texupload`; optional page mode emits `texpage`.
 Original source snapshots are bounded to 64 MiB by default, with at most 8192
 tracked sources/uploads and 8192 palette records; pressure retires sources and
