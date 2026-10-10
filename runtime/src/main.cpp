@@ -15062,13 +15062,14 @@ namespace {
          * §108's "always SFU"). Prefer caps.force_input_relay from the
          * relay_endpoint rewrite; also infer when host==guest advertise. */
         out->force_input_relay =
-            (g_lnch_hosting_lan || g_lnch_joined_lan || ji->transport_host)
+            (g_lnch_hosting_lan || g_lnch_joined_lan || ji->transport_host || ji->transport_ice)
                 ? 0
                 : (caps->force_input_relay ? 1 : 0);
 #if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY)
         out->transport_host = ji->transport_host ? 1 : 0;
 #endif
-        if (!out->force_input_relay && !ji->transport_host && !g_lnch_hosting_lan &&
+        if (!out->force_input_relay && !ji->transport_host && !ji->transport_ice &&
+            !g_lnch_hosting_lan &&
             !g_lnch_joined_lan && ji->host_endpoint[0] &&
             ji->guest_endpoint[0] &&
             std::strcmp(ji->host_endpoint, ji->guest_endpoint) == 0) {
