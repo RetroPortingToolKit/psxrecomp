@@ -1365,6 +1365,10 @@ if(BUILD_TESTING)
         target_link_libraries(dynamic_resolution_test PRIVATE m)
     endif()
     add_test(NAME dynamic_resolution_test COMMAND dynamic_resolution_test)
+    # Game Mode (Steam Deck / gamescope) detection and precedence.
+    add_executable(game_mode_test tests/test_game_mode.c src/game_mode.c)
+    target_include_directories(game_mode_test PRIVATE include)
+    add_test(NAME game_mode_test COMMAND game_mode_test)
     # The render-thread controller (dynrt_*) against a synthetic pipeline.
     add_executable(dynamic_resolution_rt_test
         tests/test_dynamic_resolution_rt.c
