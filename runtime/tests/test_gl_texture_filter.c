@@ -20,6 +20,7 @@ int host_osd_needs_present(void) { return 0; }
 int psx_present_vsync_owns_cadence(void) { return 0; }
 void latency_ring_mark(LatencyStage stage) { (void)stage; }
 void psx_host_sleep_ms(unsigned ms) { SDL_Delay(ms); }
+void psx_host_sleep_micros(unsigned us) { SDL_Delay((us + 999u) / 1000u); }
 int present_shot_take(char* out,int n) { (void)out; (void)n; return 0; }
 int host_osd_image(const uint32_t** p,int* w,int* h) { (void)p; (void)w; (void)h; return 0; }
 int host_osd_volume_image(const uint32_t** p,int* w,int* h) { return host_osd_image(p,w,h); }

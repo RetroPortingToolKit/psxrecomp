@@ -90,6 +90,7 @@ int psx_savestate_menu_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*
 int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
 void present_shot_done(int ok){(void)ok;}
 void psx_host_sleep_ms(uint32_t ms){(void)ms;}
+void psx_host_sleep_micros(unsigned us){(void)us;}
 /* Called on every present. On the render thread it also stands in for a slow
  * swap, so replay runs well behind recording and anything it read live from
  * the "guest" (instead of what was recorded) would be a later value. */
