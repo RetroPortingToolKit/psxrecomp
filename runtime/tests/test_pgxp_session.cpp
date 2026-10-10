@@ -29,6 +29,7 @@
 
 #include "cpu_state.h"
 #include "gpu.h"
+#include "gpu_hd_textures.h"
 
 #include <array>
 #include <cstdio>
@@ -76,11 +77,22 @@ static int g_failures = 0;
 
 static int g_geometry = -1;
 static int g_texture = -1;
+extern "C" int psx_netplay_active(void) { return 0; }
+/* No external HD pack is configured by the PGXP session fixture. */
+extern "C" void gpu_hd_textures_shutdown(void) {}
+extern "C" int gpu_hd_textures_configure(const char*, int, int, char*, size_t) { return 0; }
+extern "C" int gpu_hd_textures_reload(char*, size_t) { return 0; }
+extern "C" void gpu_hd_textures_set_dump_enabled(int) {}
+extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) { *out = GpuHdTextureDiag{}; }
 extern "C" void gte_geometry_correction_set(int enabled) { g_geometry = enabled; }
 extern "C" void gpu_texture_correction_set(int enabled) { g_texture = enabled; }
 /* pgxp.cpp's position-cache tier lives in gte.cpp. */
-extern "C" int gte_geometry_correction_lookup(uint32_t, int32_t*, int32_t*) {
-    return 0;
+static bool g_cached_hud_vertex = false;
+extern "C" int gte_geometry_correction_lookup(uint32_t, int32_t* x, int32_t* y) {
+    if (!g_cached_hud_vertex) return 0;
+    *x = (160 << 16) + 0x4000;
+    *y = (80 << 16) + 0x4000;
+    return 1;
 }
 
 /* The session harness has no GTE backend; pre-draw probes must link as a no-op. */
@@ -219,6 +231,70 @@ int main(void) {
                           "PSX_PGXP_CPU_MODE", "PSX_PGXP_CULLING"})
         test_unsetenv(v);
     g_cfg = PSXPgxpSessionConfig{};
+    /* No title tuning: session arming must choose the build's defaults,
+     * including resetting values left by a previous session/debug toggle. */
+    pgxp_set_tolerance(2.0f);
+    pgxp_set_position_fallback(0);
+    CHECK(armed(session(), 0, 0, 0, 0));
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(pgxp_tolerance() < 0.0f && pgxp_position_fallback() == 0);
+#else
+    CHECK(pgxp_tolerance() == 0.5f && pgxp_position_fallback() == 1);
+#endif
+    CHECK(pgxp_preserve_projection() == 0);
+    /* Run those defaults through the real engine: a proven world vertex
+     * retains its 0.75px fraction, while a HUD coordinate sharing its integer
+     * position cannot borrow a different projection from the cache. */
+    pgxp_set_enabled(1);
+    const uint32_t packed = (80u << 16) | 160u;
+    const uint32_t addr = 0x80100000u;
+    const int32_t precise_x = (160 << 16) + 0xc000;
+    pgxp_gte_push_sxy(precise_x, 80 << 16, 100, packed);
+    psx_pgxp_cop2(nullptr, (0x3au << 26) | (14u << 16), packed, addr);
+    int32_t x, y;
+    uint16_t z;
+    const int world = pgxp_get_precise_vertex(addr, packed, 160, 80, &x, &y, &z);
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(world == PGXP_SRC_DATAFLOW && x == precise_x && z == 100);
+#else
+    CHECK(world == PGXP_SRC_NATIVE && x == (160 << 16) && z == 100);
+#endif
+    g_cached_hud_vertex = true;
+    const int hud = pgxp_get_precise_vertex(0xffffffffu, packed, 160, 80, &x, &y, &z);
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(hud == PGXP_SRC_NATIVE && x == (160 << 16) && z == 0);
+#else
+    CHECK(hud == PGXP_SRC_FALLBACK && x == (160 << 16) + 0x4000 && z == 0);
+#endif
+    g_cached_hud_vertex = false;
+    pgxp_set_enabled(0);
+    /* Each explicit compatibility override is independent of the other. */
+    g_cfg.tolerance = 0.25f;
+    g_cfg.tolerance_set = 1;
+    CHECK(armed(session(), 0, 0, 0, 0));
+    CHECK(pgxp_tolerance() == 0.25f);
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(pgxp_position_fallback() == 0);
+#else
+    CHECK(pgxp_position_fallback() == 1);
+#endif
+    g_cfg.tolerance_set = 0;
+    g_cfg.position_fallback = 1;
+    g_cfg.position_fallback_set = 1;
+    CHECK(armed(session(), 0, 0, 0, 0));
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(pgxp_tolerance() < 0.0f);
+#else
+    CHECK(pgxp_tolerance() == 0.5f);
+#endif
+    CHECK(pgxp_position_fallback() == 1);
+    /* Explicit compatibility tuning wins even in the hook flavor. */
+    g_cfg.tolerance = 0.5f;
+    g_cfg.tolerance_set = 1;
+    g_cfg.position_fallback = 1;
+    g_cfg.position_fallback_set = 1;
+    CHECK(armed(session(), 0, 0, 0, 0));
+    CHECK(pgxp_tolerance() == 0.5f && pgxp_position_fallback() == 1);
     g_cfg.tolerance = -1.0f;
     g_cfg.position_fallback = 0;
     g_cfg.preserve_projection = 1;

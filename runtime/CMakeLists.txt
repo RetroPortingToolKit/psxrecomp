@@ -730,32 +730,38 @@ if(BUILD_TESTING)
     # real mod runtime, the real builtin plugin and the builtin's own
     # manifest: default-on, netplay clear, the off switch, options, env
     # overrides and [video] pgxp_mod_only.
-    add_executable(pgxp_session_test tests/test_pgxp_session.cpp
-        src/pgxp_session.cpp src/mod_builtin_pgxp.c src/pgxp.cpp
-        src/psx_ram_geometry.c
-        src/mod_runtime.cpp
-        src/mod_packages.cpp
-        src/mod_media.cpp
-        src/disc_path.cpp
-        src/cue_sheet.cpp
-        src/iso_reader.cpp
-        src/crc32.c
-        src/psx_sha256.c)
-    target_include_directories(pgxp_session_test PRIVATE
-        include
-        ../recompiler/include
-        ../recompiler/lib/toml11)
-    target_compile_definitions(pgxp_session_test PRIVATE
-        PSX_BUILTIN_PGXP_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/../mods/builtin/packages/psx.enhancement.pgxp/1.0.0/manifest.toml")
-    target_link_libraries(pgxp_session_test PRIVATE chdr-static)
-    if(WIN32)
-        if(MSVC)
-            target_link_options(pgxp_session_test PRIVATE /STACK:16777216)
-        else()
-            target_link_options(pgxp_session_test PRIVATE -Wl,--stack,16777216)
+    # Run the same session fixture in both real compilation flavors.
+    foreach(_pgxp_session_test IN ITEMS pgxp_session_test pgxp_session_hooks_test)
+        add_executable(${_pgxp_session_test} tests/test_pgxp_session.cpp
+            src/pgxp_session.cpp src/mod_builtin_pgxp.c src/pgxp.cpp
+            src/psx_ram_geometry.c
+            src/mod_runtime.cpp
+            src/mod_packages.cpp
+            src/mod_media.cpp
+            src/disc_path.cpp
+            src/cue_sheet.cpp
+            src/iso_reader.cpp
+            src/crc32.c
+            src/psx_sha256.c)
+        target_include_directories(${_pgxp_session_test} PRIVATE
+            include
+            ../recompiler/include
+            ../recompiler/lib/toml11)
+        target_compile_definitions(${_pgxp_session_test} PRIVATE
+            PSX_BUILTIN_PGXP_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/../mods/builtin/packages/psx.enhancement.pgxp/1.0.0/manifest.toml")
+        target_link_libraries(${_pgxp_session_test} PRIVATE chdr-static)
+        if(WIN32)
+            if(MSVC)
+                target_link_options(${_pgxp_session_test} PRIVATE /STACK:16777216)
+            else()
+                target_link_options(${_pgxp_session_test} PRIVATE -Wl,--stack,16777216)
+            endif()
         endif()
-    endif()
-    add_test(NAME pgxp_session_test COMMAND pgxp_session_test)
+        add_test(NAME ${_pgxp_session_test} COMMAND ${_pgxp_session_test})
+        if(_pgxp_session_test STREQUAL "pgxp_session_hooks_test")
+            target_compile_definitions(${_pgxp_session_test} PRIVATE PSX_PGXP=1)
+        endif()
+    endforeach()
 
     add_executable(psx_instr_cost_test tests/test_psx_instr_cost.cpp)
     target_include_directories(psx_instr_cost_test PRIVATE include)

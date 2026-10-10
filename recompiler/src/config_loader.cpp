@@ -812,10 +812,12 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (video.contains("pgxp_tolerance")) {
             rt.video_pgxp_tolerance =
                 toml_number(video, "pgxp_tolerance");
+            rt.video_pgxp_tolerance_set = true;
         }
         if (video.contains("pgxp_position_fallback")) {
             rt.video_pgxp_position_fallback =
                 toml::find<bool>(video, "pgxp_position_fallback");
+            rt.video_pgxp_position_fallback_set = true;
         }
         if (video.contains("pgxp_preserve_projection")) {
             rt.video_pgxp_preserve_projection =

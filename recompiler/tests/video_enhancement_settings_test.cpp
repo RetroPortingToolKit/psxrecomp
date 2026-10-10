@@ -72,6 +72,9 @@ static void test_defaults_off() {
           "geometry_correction defaults OFF (known to crack meshes)");
     check(!gc.runtime.video_perspective_texturing,
           "perspective_texturing defaults OFF (faithful floor; opt-in)");
+    check(!gc.runtime.video_pgxp_tolerance_set &&
+          !gc.runtime.video_pgxp_position_fallback_set,
+          "absent PGXP tuning delegates defaults to the runtime flavor");
     fs::remove(p);
 }
 
@@ -427,16 +430,15 @@ static void test_frame_generation() {
     fs::remove(q);
 }
 
-/* docs/ENHANCEMENTS.md G1.11: the PGXP title keys. Defaults keep the
- * historical behaviour (tolerance 0.5, position cache consulted, IR-path
- * shadows); a title built with the hooks sets all three. */
+/* PGXP title tuning retains base values here; presence flags distinguish
+ * explicit title overrides from the runtime's hook-flavor defaults. */
 static void test_pgxp_title_keys() {
     fs::path p = write_game_toml("psxrecomp_pgxp_keys_default.toml", "");
     auto gc = PSXRecompV4::load_game_config(p);
     check(gc.runtime.video_pgxp_tolerance == 0.5,
-          "pgxp_tolerance defaults to 0.5");
+          "pgxp_tolerance retains the base-build value before runtime resolution");
     check(gc.runtime.video_pgxp_position_fallback,
-          "pgxp_position_fallback defaults ON (unchanged behaviour)");
+          "pgxp_position_fallback retains the base value before runtime resolution");
     check(!gc.runtime.video_pgxp_preserve_projection,
           "pgxp_preserve_projection defaults OFF (unchanged behaviour)");
     check(!gc.runtime.video_pgxp_mod_only,
@@ -465,8 +467,9 @@ static void test_pgxp_title_keys() {
         "pgxp_tolerance = 1\n"
         "scanline_strength = 1\n");
     gc = PSXRecompV4::load_game_config(p);
-    check(gc.runtime.video_pgxp_depth_threshold == 0.0 && gc.runtime.video_pgxp_tolerance == 1.0,
-          "integer literals load for number keys");
+    check(gc.runtime.video_pgxp_depth_threshold == 0.0 && gc.runtime.video_pgxp_tolerance == 1.0 &&
+          gc.runtime.video_pgxp_tolerance_set && !gc.runtime.video_pgxp_position_fallback_set,
+          "explicit tolerance alone leaves fallback on its automatic default");
     fs::remove(p);
 
     p = write_game_toml("psxrecomp_pgxp_render_bad.toml",
@@ -487,8 +490,10 @@ static void test_pgxp_title_keys() {
         "pgxp_mod_only = true\n");
     gc = PSXRecompV4::load_game_config(p);
     check(gc.runtime.video_pgxp_mod_only, "pgxp_mod_only = true is honoured");
-    check(gc.runtime.video_pgxp_tolerance < 0.0,
-          "pgxp_tolerance = -1.0 disables the clamp");
+    check(gc.runtime.video_pgxp_tolerance < 0.0 &&
+          gc.runtime.video_pgxp_tolerance_set &&
+          gc.runtime.video_pgxp_position_fallback_set,
+          "explicit PGXP tuning is marked as an override");
     check(!gc.runtime.video_pgxp_position_fallback,
           "pgxp_position_fallback = false is honoured");
     check(gc.runtime.video_pgxp_preserve_projection,

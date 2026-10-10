@@ -1278,8 +1278,10 @@ static int           g_video_geometry_correction   = 0;
 static int           g_video_perspective_texturing = 0;
 static int           g_video_pgxp_cpu_mode         = 0;
 static float         g_video_pgxp_tolerance        = 0.5f;
-/* docs/ENHANCEMENTS.md G1.11: dataflow-only and exact-projection shadows.
- * Defaults keep the historical behaviour. game.toml [video] only. */
+/* game.toml [video] tuning. Session arming selects dataflow-only/no-clamp
+ * defaults in hook builds unless the title supplied an explicit value. */
+static int           g_video_pgxp_tolerance_set = 0;
+static int           g_video_pgxp_position_fallback_set = 0;
 static int           g_video_pgxp_position_fallback   = 1;
 static int           g_video_pgxp_preserve_projection = 0;
 /* PGXP renderer features (G1.14); PSX_PGXP_DEPTH / _COLOR / _SEAM override. */
@@ -16202,6 +16204,9 @@ int main(int argc, char** argv) {
                 gc.runtime.video_perspective_texturing ? 1 : 0;
             g_video_pgxp_cpu_mode = gc.runtime.video_pgxp_cpu_mode ? 1 : 0;
             g_video_pgxp_tolerance = (float)gc.runtime.video_pgxp_tolerance;
+            g_video_pgxp_tolerance_set = gc.runtime.video_pgxp_tolerance_set;
+            g_video_pgxp_position_fallback_set =
+                gc.runtime.video_pgxp_position_fallback_set;
             g_video_pgxp_position_fallback =
                 gc.runtime.video_pgxp_position_fallback ? 1 : 0;
             g_video_pgxp_preserve_projection =
@@ -18604,6 +18609,8 @@ session_reboot:
     pgxp_cfg.video_cpu_mode = g_video_pgxp_cpu_mode;
     pgxp_cfg.tolerance = g_video_pgxp_tolerance;
     pgxp_cfg.position_fallback = g_video_pgxp_position_fallback;
+    pgxp_cfg.tolerance_set = g_video_pgxp_tolerance_set;
+    pgxp_cfg.position_fallback_set = g_video_pgxp_position_fallback_set;
     pgxp_cfg.preserve_projection = g_video_pgxp_preserve_projection;
     pgxp_cfg.mod_only = g_video_pgxp_mod_only;
     /* Precise culling changes guest NCLIP results from host-only shadows; a
