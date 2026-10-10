@@ -13114,6 +13114,7 @@ namespace {
             ae_np_push_match_caps(nullptr); /* no-op unless hosting online */
         return 0;
     }
+#if defined(PSX_HAS_RECOMP_NET)
     /* ICE-mode waiting-room text, from the agents' own state. Never says
      * "port": no port is held in this mode. 1 = `out` holds the line. */
     static const char* ae_np_ice_state_word(int state) {
@@ -13167,6 +13168,7 @@ namespace {
                           "on failed can't reach you; check its firewall.");
         return 1;
     }
+#endif
     int ae_np_relay_via_ice_get(void*) {
         if (g_lnch_hosting_lan || g_lnch_joined_lan || !psx_lobby_ice_available()) return 0;
         if (psx_lobby_in_lobby()) {
