@@ -2469,6 +2469,20 @@ function(psxrecomp_add_runtime_target target)
             $<$<COMPILE_LANGUAGE:CXX>:-fzero-initialized-in-bss>)
     endif()
 
+    # Netplay compares guest state bit-for-bit across hosts. Clang contracts
+    # a*b+c into an FMA by default on arm64 (-ffp-contract=on) while x86-64
+    # GCC without -mfma never fuses, so the software rasterizer's float edge /
+    # shading math produced +-1 colour steps on single pixels between a Mac
+    # and a Windows peer (VRAM, hence the av digest, diverged from ~sim 1800
+    # in every cross-machine R4 race; rollback baselines then aborted on
+    # "baseline av mismatch" and the realigns forked the session). Keep IEEE
+    # results identical everywhere: never contract.
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:-ffp-contract=off>
+            $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+    endif()
+
     if(MINGW)
         target_link_options(${target} PRIVATE -Wl,--stack,67108864)
         # No console window in Release MinGW builds.
