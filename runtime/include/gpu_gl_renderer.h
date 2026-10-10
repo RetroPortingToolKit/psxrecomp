@@ -30,6 +30,9 @@ int gl_renderer_texture_banks_supported(void);
  * Both entry points drain pending draws before changing or deleting textures. */
 void gl_renderer_set_hd_texture_mode(int enabled);
 void gl_renderer_clear_hd_texture_cache(void);
+/* Only on the renderer thread, before the immediately following HD draw. */
+int gl_renderer_hd_texture_cached(uint64_t key, uint64_t generation,
+                                 uint32_t* width, uint32_t* height);
 
 /* Set the GL swap interval / vsync mode (1=vsync, 0=immediate, -1=adaptive).
  * Safe before or after context creation; applies live when a context exists. */

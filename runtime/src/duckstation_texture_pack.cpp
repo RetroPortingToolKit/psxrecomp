@@ -160,6 +160,7 @@ struct Source {
     DuckTexturePack* dump_owner = nullptr;
     uint8_t kind = DUCK_TEXTURE_UPLOAD;
     bool used = false;
+    bool dump_dirty = false;
 };
 struct Upload { std::shared_ptr<Source> source; Rect active{}; unsigned splits = 0; };
 struct PageSource { std::shared_ptr<Source> source; uint8_t depth = 0; uint16_t clut_x = 0, clut_y = 0; };
@@ -229,6 +230,7 @@ struct Worker {
     size_t budget = kDefaultBudget, used = 0;
     size_t dump_bytes = 0;
     uint64_t tick = 0;
+    uint64_t decoded_images = 0, decode_evictions = 0;
     bool stop = false;
     bool dump_busy = false;
     std::string dump_error;
@@ -245,6 +247,7 @@ struct Worker {
                     (candidate == decoded.end() || it->second.use < candidate->second.use)) candidate = it;
             if (candidate == decoded.end()) break;
             used -= candidate->second.image->rgba.size();
+            ++decode_evictions;
             decoded.erase(candidate);
         }
     }
@@ -294,6 +297,7 @@ void worker_main(Worker* w) {
             if (image) w->evict(image->rgba.size());
             if (!image || w->used + image->rgba.size() > w->budget) { it->second.status = DecodeStatus::Failed; continue; }
             w->used += image->rgba.size(); it->second.image = std::move(image);
+            ++w->decoded_images;
             it->second.status = DecodeStatus::Ready; it->second.use = ++w->tick;
         } else {
             bool created = false;
@@ -358,6 +362,9 @@ struct DuckTexturePack {
     std::string lifecycle_error;
     size_t ignored = 0, ambiguous = 0;
     bool geometry_limit_reported = false, dump_limit_reported = false;
+    unsigned dump_draw_tick = 0;
+    std::chrono::steady_clock::time_point next_dump_checkpoint =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
     Worker worker;
 };
 
@@ -517,7 +524,7 @@ bool enqueue_dump(DuckTexturePack& p, const std::string& name, std::shared_ptr<I
     w.wake.notify_one();
     return true;
 }
-bool finalize_source(DuckTexturePack& p, Source& source) {
+bool finalize_source(DuckTexturePack& p, Source& source, bool keep_observations = false) {
     if (source.dump_owner != &p) return true;
     bool success = true;
     for (const Observation& record : source.records) {
@@ -576,7 +583,10 @@ bool finalize_source(DuckTexturePack& p, Source& source) {
         }
         if (!enqueue_dump(p,name,std::move(image))) success = false;
     }
-    if (success) { p.palette_records -= source.records.size(); source.records.clear(); }
+    if (success) {
+        source.dump_dirty = false;
+        if (!keep_observations) { p.palette_records -= source.records.size(); source.records.clear(); }
+    }
     return success;
 }
 bool has_residency(const DuckTexturePack& p, const Source* source) {
@@ -638,6 +648,7 @@ bool record_usage(DuckTexturePack& p, Source& source, Rect global, const HdTextu
         const bool changed = combined.x != previous.used.x || combined.y != previous.used.y ||
             combined.w != previous.used.w || combined.h != previous.used.h || (!previous.semi && semi);
         previous.used = combined; previous.semi |= semi;
+        source.dump_dirty |= changed;
         return changed;
     }
     if (p.palette_records >= kMaxPaletteRecords) {
@@ -648,6 +659,7 @@ bool record_usage(DuckTexturePack& p, Source& source, Rect global, const HdTextu
     }
     if (p.palette_records >= kMaxPaletteRecords) { p.lifecycle_error = "palette record budget exhausted"; return false; }
     source.records.push_back(std::move(current)); ++p.palette_records;
+    source.dump_dirty = true;
     return true;
 }
 } // namespace
@@ -790,11 +802,14 @@ void duck_texture_pack_get_info(const DuckTexturePack* p, DuckTexturePackInfo* o
         p->reported_diagnostic = p->diagnostic;
         if (!p->lifecycle_error.empty()) p->reported_diagnostic += "; " + p->lifecycle_error;
         { std::lock_guard<std::mutex> lock(p->worker.mutex);
+          out->decoded_images = p->worker.decoded_images;
+          out->decode_evictions = p->worker.decode_evictions;
+          out->decoded_bytes = p->worker.used;
           if (!p->worker.dump_error.empty()) p->reported_diagnostic += "; " + p->worker.dump_error; }
         out->root = p->root.c_str(); out->diagnostic = p->reported_diagnostic.c_str(); out->replacement_count = p->entries.size();
         out->ambiguous_count = p->ambiguous; out->ignored_count = p->ignored; out->queued_dump_count = p->queued_dumps;
         out->snapshot_bytes = p->snapshot_bytes;
-        for (const auto& source : p->sources) if (source->dump_owner == p && !source->records.empty()) {
+        for (const auto& source : p->sources) if (source->dump_owner == p && source->dump_dirty && !source->records.empty()) {
             ++out->pending_dump_sources; out->pending_palette_records += source->records.size();
         }
     }
@@ -868,6 +883,7 @@ int duck_texture_pack_copy_tracking(DuckTexturePack* destination, const DuckText
             const auto found = cloned.find(item.get());
             if (found != cloned.end()) return found->second;
             auto copy = std::make_shared<Source>(*item); copy->dump_owner = destination;
+            if (destination->root != source->root && !copy->records.empty()) copy->dump_dirty = true;
             cloned.emplace(item.get(),copy); sources.push_back(copy);
             bytes += copy->words.size()*sizeof(uint16_t); records += copy->records.size();
             return copy;
@@ -1143,9 +1159,29 @@ int duck_texture_pack_dump_draw(DuckTexturePack* p, const HdTextureDrawQuery* q,
             if (source) changed = record_usage(*p,*source,rect,*q,st != 0);
         }
         if (!p->lifecycle_error.empty()) { error_text(error,capacity,p->lifecycle_error); return HD_TEXTURE_LOOKUP_ERROR; }
+        /* Background atlases can remain resident for an entire level. Publish
+         * observed originals while playing, rather than waiting indefinitely
+         * for a native overwrite or for capture to be turned off. Retain the
+         * observations so later draws enlarge the same palette crop. */
+        if ((++p->dump_draw_tick & 255u) == 0 &&
+            std::chrono::steady_clock::now() >= p->next_dump_checkpoint) {
+            if (duck_texture_pack_checkpoint_dumps(p,error,capacity) < 0) return HD_TEXTURE_LOOKUP_ERROR;
+            p->next_dump_checkpoint = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
         return changed ? HD_TEXTURE_LOOKUP_FOUND : HD_TEXTURE_LOOKUP_NONE;
     } catch (const std::exception& e) { error_text(error,capacity,e.what()); return HD_TEXTURE_LOOKUP_ERROR; }
       catch (...) { error_text(error,capacity,"texture dump allocation failed"); return HD_TEXTURE_LOOKUP_ERROR; }
+}
+int duck_texture_pack_checkpoint_dumps(DuckTexturePack* p, char* error, size_t capacity) {
+    if (!p) return HD_TEXTURE_LOOKUP_ERROR;
+    try {
+        bool success = true;
+        for (const auto& source : p->sources)
+            if (source->dump_dirty) success &= finalize_source(*p,*source,true);
+        if (!success) { error_text(error,capacity,p->lifecycle_error); return HD_TEXTURE_LOOKUP_ERROR; }
+        return HD_TEXTURE_LOOKUP_FOUND;
+    } catch (const std::exception& e) { error_text(error,capacity,e.what()); return HD_TEXTURE_LOOKUP_ERROR; }
+      catch (...) { error_text(error,capacity,"texture dump checkpoint allocation failed"); return HD_TEXTURE_LOOKUP_ERROR; }
 }
 int duck_texture_pack_flush_dumps(DuckTexturePack* p, char* error, size_t capacity) {
     if (!p) return HD_TEXTURE_LOOKUP_ERROR;

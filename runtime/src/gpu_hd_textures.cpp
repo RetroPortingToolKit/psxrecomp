@@ -20,7 +20,9 @@
 namespace {
 constexpr size_t kVramWords = 1024u * 512u;
 constexpr size_t kCompositionBudget = 64u * 1024u * 1024u;
-constexpr size_t kCompositionCount = 16;
+/* A tiled scene can use dozens of small compositions per frame. The byte
+ * budget bounds memory; a sixteen-entry limit thrashed below that budget. */
+constexpr size_t kCompositionCount = 256;
 constexpr uint32_t kCompositionDimension = 8192;
 constexpr size_t kMaxParts = 64;
 struct Composition {
@@ -28,6 +30,7 @@ struct Composition {
     std::vector<uint8_t> rgba;
     uint32_t width = 0, height = 0;
     uint64_t cache_key = 0, last_use = 0;
+    uint64_t ready_mask = 0;
 };
 struct Session {
     std::string root;
@@ -150,14 +153,12 @@ void native_pixel(const HdTextureDrawQuery& query, const std::array<uint16_t,256
     output[2] = static_cast<uint8_t>((((word >> 10) & 31u) * 255u + 15u) / 31u);
     output[3] = !word ? 0 : (word & 0x8000u) ? 128 : 255;
 }
-std::shared_ptr<Composition> compose(const HdTextureDrawQuery& query,
-    const std::array<DuckTextureMatch,kMaxParts>& matches, const DecodedParts& decoded, size_t count) {
+std::vector<uint64_t> composition_signature(const HdTextureDrawQuery& query,
+    const std::array<DuckTextureMatch,kMaxParts>& matches, size_t count,
+    std::array<uint16_t,256>& palette) {
     const unsigned per_word = 4u >> query.depth;
     const unsigned first_word = query.u_first / per_word, last_word = query.u_last / per_word;
-    if (query.page_x + last_word >= 1024 || query.page_y + query.v_last >= 512) return {};
-    const uint32_t native_width = query.u_last - query.u_first + 1;
     const uint32_t native_height = query.v_last - query.v_first + 1;
-    std::array<uint16_t,256> palette{};
     const size_t palette_size = query.depth == HD_TEXTURE_DEPTH_4BPP ? 16 : query.depth == HD_TEXTURE_DEPTH_8BPP ? 256 : 0;
     for (size_t i = 0; i < palette_size; ++i)
         palette[i] = query.vram[(query.clut_y & 511u) * 1024u + ((query.clut_x + i) & 1023u)];
@@ -168,22 +169,42 @@ std::shared_ptr<Composition> compose(const HdTextureDrawQuery& query,
         duck_texture_hash_rect(query.vram, query.vram_word_count, query.page_x + first_word,
             query.page_y + query.v_first, last_word - first_word + 1, native_height),
         duck_texture_hash_words_le(palette.data(), palette_size)};
-    double scale_x = 1, scale_y = 1;
-    const bool linear = duck_texture_pack_linear_filter(session->duck) != 0;
-    signature.push_back(linear);
+    signature.push_back(duck_texture_pack_linear_filter(session->duck) != 0);
     for (size_t i = 0; i < count; ++i) {
-        const auto& pixel = decoded.pixels[i];
-        if (!pixel.rgba) continue;
         const auto& match = matches[i];
-        scale_x = std::max(scale_x, static_cast<double>(pixel.width) / match.source_width);
-        scale_y = std::max(scale_y, static_cast<double>(pixel.height) / match.source_height);
         signature.insert(signature.end(), {match.entry_id, static_cast<uint32_t>(match.origin_u),
             static_cast<uint32_t>(match.origin_v), match.source_width, match.source_height,
             static_cast<uint32_t>(match.clip_u), static_cast<uint32_t>(match.clip_v),
-            match.clip_width, match.clip_height, pixel.width, pixel.height, match.key.semitransparent});
+            match.clip_width, match.clip_height, match.key.semitransparent});
     }
+    return signature;
+}
+std::shared_ptr<Composition> find_composition(const std::vector<uint64_t>& signature, uint64_t ready_mask) {
     for (auto& cached : session->compositions)
-        if (cached->signature == signature) { cached->last_use = ++session->composition_clock; return cached; }
+        if (cached->ready_mask == ready_mask && cached->signature == signature) {
+            ++session->diag.composition_hits;
+            cached->last_use = ++session->composition_clock; return cached;
+        }
+    return {};
+}
+std::shared_ptr<Composition> compose(const HdTextureDrawQuery& query,
+    const std::array<DuckTextureMatch,kMaxParts>& matches, const DecodedParts& decoded, size_t count,
+    std::vector<uint64_t> signature, const std::array<uint16_t,256>& palette) {
+    const unsigned per_word = 4u >> query.depth;
+    if (query.page_x + query.u_last / per_word >= 1024 || query.page_y + query.v_last >= 512) return {};
+    const uint32_t native_width = query.u_last - query.u_first + 1;
+    const uint32_t native_height = query.v_last - query.v_first + 1;
+    const bool linear = duck_texture_pack_linear_filter(session->duck) != 0;
+    double scale_x = 1, scale_y = 1;
+    uint64_t ready_mask = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const auto& pixel = decoded.pixels[i];
+        if (!pixel.rgba) continue;
+        ready_mask |= UINT64_C(1) << i;
+        scale_x = std::max(scale_x, static_cast<double>(pixel.width) / matches[i].source_width);
+        scale_y = std::max(scale_y, static_cast<double>(pixel.height) / matches[i].source_height);
+    }
+    if (auto cached = find_composition(signature, ready_mask)) return cached;
     const double wanted_width = std::ceil(native_width * scale_x);
     const double wanted_height = std::ceil(native_height * scale_y);
     if (wanted_width > kCompositionDimension || wanted_height > kCompositionDimension) return {};
@@ -197,7 +218,10 @@ std::shared_ptr<Composition> compose(const HdTextureDrawQuery& query,
         session->composition_bytes -= (*oldest)->rgba.size(); session->compositions.erase(oldest);
     }
     auto result = std::make_shared<Composition>();
+    ++session->diag.composition_builds;
+    session->diag.composition_pixels += static_cast<uint64_t>(width) * height;
     result->signature = std::move(signature); result->width = width; result->height = height;
+    result->ready_mask = ready_mask;
     result->rgba.resize(bytes);
     for (uint32_t y = 0; y < height; ++y) for (uint32_t x = 0; x < width; ++x)
         native_pixel(query, palette, query.u_first + (static_cast<uint64_t>(x) * 2 + 1) * native_width / (width * 2u),
@@ -357,6 +381,9 @@ extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) {
     out->replacements = session->replacements; out->dump = session->dump && !session->dump_failed;
     out->format = session->beetle ? 1 : 2;
     DuckTexturePackInfo info{}; duck_texture_pack_get_info(session->duck, &info);
+    out->decoded_images = info.decoded_images;
+    out->decode_evictions = info.decode_evictions;
+    out->decoded_bytes = info.decoded_bytes;
     out->dumped_textures = info.queued_dump_count; out->pending_dump_sources = info.pending_dump_sources;
     if (session->beetle) { HdTexturePackInfo beetle_info{}; hd_texture_pack_get_info(session->beetle, &beetle_info); out->replacement_count = beetle_info.unique_key_count; }
     else out->replacement_count = info.replacement_count;
@@ -370,6 +397,12 @@ extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) {
     out->diagnostic = session->diagnostics.back().c_str();
 }
 extern "C" void gpu_hd_textures_note_applied(void) { if (session) ++session->diag.applied_draws; }
+extern "C" void gpu_hd_textures_note_gl_cache(int eviction) {
+    if (session) {
+        if (eviction) ++session->diag.gl_evictions;
+        else ++session->diag.gl_uploads;
+    }
+}
 extern "C" void gpu_hd_textures_bind_vram(const uint16_t* vram) { native_vram = vram; }
 extern "C" void gpu_hd_textures_suppress_dumps(int on) { dumps_suppressed = on != 0; }
 extern "C" void gpu_hd_textures_set_vram(const uint16_t* vram) { native_vram = vram; gpu_hd_textures_reset_tracking(); }
@@ -496,9 +529,9 @@ extern "C" void gpu_hd_textures_restage(void) {
             hd_texture_pack_track_upload(session->beetle, r[0], r[1], r[2], r[3], words.data(), count, nullptr);
     }
 }
-extern "C" int gpu_hd_textures_acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
+static int acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
                                             const int limits[4], uint32_t window,
-                                            int semi, GpuHdTextureImage* image) {
+                                            int semi, GpuHdTextureImage* image, bool allow_gl_cache) {
     if (!image) return 0;
     *image = {};
     if (!session) return 0;
@@ -530,24 +563,41 @@ extern "C" int gpu_hd_textures_acquire_draw(uint16_t tp, uint16_t cx, uint16_t c
             std::array<DuckTextureMatch,kMaxParts> matches{}; size_t count = 0;
             if (duck_texture_pack_match_parts(session->duck, &query, semi, matches.data(), matches.size(), &count) != HD_TEXTURE_LOOKUP_FOUND || !count) return 0;
             ++session->diag.matched_draws;
-            DecodedParts decoded; size_t ready = 0;
-            for (size_t i = 0; i < count; ++i) {
-                duck_texture_pack_request_decode(session->duck, matches[i].entry_id);
-                if (duck_texture_pack_acquire_decoded(session->duck, matches[i].entry_id, &decoded.pixels[i]) == HD_TEXTURE_LOOKUP_FOUND) ++ready;
-            }
-            if (!ready) return 0;
             const auto& match = matches[0];
             if (count == 1 && match.clip_u <= query.u_first && match.clip_v <= query.v_first &&
                 match.clip_u + match.clip_width > query.u_last && match.clip_v + match.clip_height > query.v_last) {
-                lease->duck = decoded.pixels[0]; decoded.pixels[0] = {};
-                image->rgba = lease->duck.rgba; image->width = lease->duck.width;
-                image->height = lease->duck.height; image->stride = lease->duck.stride;
+                /* The GPU copy outlives the decoder's smaller CPU LRU. A draw
+                 * using that copy must not queue another PNG decode. */
+                if (allow_gl_cache && gl_renderer_hd_texture_cached(match.entry_id, generation,
+                        &image->width, &image->height)) {
+                    image->stride = image->width * 4u;
+                } else {
+                    duck_texture_pack_request_decode(session->duck, match.entry_id);
+                    if (duck_texture_pack_acquire_decoded(session->duck, match.entry_id, &lease->duck) != HD_TEXTURE_LOOKUP_FOUND) return 0;
+                    image->rgba = lease->duck.rgba; image->width = lease->duck.width;
+                    image->height = lease->duck.height; image->stride = lease->duck.stride;
+                }
                 image->source_width = match.source_width; image->source_height = match.source_height;
                 image->origin_u = match.origin_u; image->origin_v = match.origin_v;
                 image->cache_key = match.entry_id;
                 image->alpha_mode = match.key.semitransparent ? 3 : 2;
             } else {
-                lease->composition = compose(query, matches, decoded, count);
+                std::array<uint16_t,256> palette{};
+                auto signature = composition_signature(query, matches, count, palette);
+                const uint64_t full_mask = count == 64 ? UINT64_MAX : (UINT64_C(1) << count) - 1;
+                /* An immutable, complete composition already owns all source
+                 * pixels. Reuse it even after those decoded PNGs are evicted.
+                 * Partial compositions still check for newly ready parts. */
+                lease->composition = find_composition(signature, full_mask);
+                if (!lease->composition) {
+                    DecodedParts decoded; size_t ready = 0;
+                    for (size_t i = 0; i < count; ++i) {
+                        duck_texture_pack_request_decode(session->duck, matches[i].entry_id);
+                        if (duck_texture_pack_acquire_decoded(session->duck, matches[i].entry_id, &decoded.pixels[i]) == HD_TEXTURE_LOOKUP_FOUND) ++ready;
+                    }
+                    if (!ready) return 0;
+                    lease->composition = compose(query, matches, decoded, count, std::move(signature), palette);
+                }
                 if (!lease->composition) return 0;
                 const auto& composed = *lease->composition;
                 image->rgba = composed.rgba.data(); image->width = composed.width;
@@ -562,6 +612,14 @@ extern "C" int gpu_hd_textures_acquire_draw(uint16_t tp, uint16_t cx, uint16_t c
     image->generation = generation; image->lease = lease.release();
     ++session->diag.ready_draws;
     return 1;
+}
+extern "C" int gpu_hd_textures_acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
+    const int limits[4], uint32_t window, int semi, GpuHdTextureImage* image) {
+    return acquire_draw(tp, cx, cy, limits, window, semi, image, false);
+}
+extern "C" int gpu_hd_textures_acquire_gl_draw(uint16_t tp, uint16_t cx, uint16_t cy,
+    const int limits[4], uint32_t window, int semi, GpuHdTextureImage* image) {
+    return acquire_draw(tp, cx, cy, limits, window, semi, image, true);
 }
 extern "C" void gpu_hd_textures_release_image(GpuHdTextureImage* image) {
     if (!image) return;

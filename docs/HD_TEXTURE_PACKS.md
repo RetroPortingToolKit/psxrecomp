@@ -39,8 +39,8 @@ beside it. Keep editable packs outside `mods/bundled`, which builds regenerate.
 1. Enable **HD Texture Packs**, disable **Load replacements**, and enable
    **Dump textures**.
 2. Click **Play** and visit the scenes you want to capture. The runtime collects
-   the used area of each texture source across its lifetime. Some files appear
-   when the game overwrites or retires that source; others are still pending.
+   the used area of each texture source across its lifetime and publishes
+   changed captures periodically while playing, including resident backgrounds.
 3. Exit the game to finish capture and allow the writer to complete. Copy
    selected PNGs from `dumps` into `replacements`, then edit or
    enlarge them while keeping the filenames, aspect ratio, and an integer
@@ -103,6 +103,9 @@ It reports the selected root, switches, backend support, pack size, and matched,
 ready, and applied draw counts. Optional integer fields `replacements: 0|1`,
 `dump: 0|1`, and `reload: 1` control an already configured pack during a test
 session. `pending_dump_sources` counts sources with capture usage awaiting
-finalization; `dumped_textures` counts queued PNG jobs, which can precede files
+publication; `dumped_textures` counts queued PNG jobs, which can precede files
 appearing. Exit the game to finish capture. Use `present_shot` to capture the composed OpenGL window; native VRAM
 screenshots retain the original artwork.
+Cache counters report composition hits/builds/pixels, GL uploads/evictions,
+decoded images/evictions, and decoded bytes. Repeated builds and uploads in a
+stationary scene indicate cache pressure rather than one-time pack loading.

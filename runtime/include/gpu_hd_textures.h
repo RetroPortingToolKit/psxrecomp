@@ -27,9 +27,13 @@ typedef struct GpuHdTextureDiag {
     size_t replacement_count;
     const char* diagnostic;
     uint64_t pending_dump_sources;
+    uint64_t composition_hits, composition_builds, composition_pixels;
+    uint64_t gl_uploads, gl_evictions;
+    uint64_t decoded_images, decode_evictions, decoded_bytes;
 } GpuHdTextureDiag;
 void gpu_hd_textures_get_diag(GpuHdTextureDiag* out);
 void gpu_hd_textures_note_applied(void);
+void gpu_hd_textures_note_gl_cache(int eviction);
 /* Non-GL backends can observe native draws for dumping; replacements remain
  * an OpenGL presentation feature. */
 void gpu_hd_textures_observe_draw(uint16_t texpage, uint16_t clut_x,
@@ -90,6 +94,11 @@ int gpu_hd_textures_acquire_draw(uint16_t texpage, uint16_t clut_x,
                                 uint32_t texture_window, int semitransparent,
                                 GpuHdTextureImage* image);
 void gpu_hd_textures_release_image(GpuHdTextureImage* image);
+/* Renderer-thread variant: rgba may be NULL when the GL cache already owns
+ * this immutable image. CPU callers use acquire_draw above. */
+int gpu_hd_textures_acquire_gl_draw(uint16_t texpage, uint16_t clut_x,
+    uint16_t clut_y, const int limits[4], uint32_t texture_window,
+    int semitransparent, GpuHdTextureImage* image);
 
 #ifdef __cplusplus
 }

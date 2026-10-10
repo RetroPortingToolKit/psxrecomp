@@ -3431,13 +3431,14 @@ static int   s_tb_mask = 0, s_tb_filter = 0;
 static GLuint s_tb_bank_tex;
 static GLuint s_tb_hd_tex;
 
-#define HD_GL_CACHE_CAP 64
+#define HD_GL_CACHE_CAP 256
 #define HD_GL_CACHE_BUDGET (128u * 1024u * 1024u)
 typedef struct HdGlTexture {
     uint64_t generation, key;
     uint64_t last_use;
     GLuint texture;
     size_t bytes;
+    uint32_t width, height;
 } HdGlTexture;
 static HdGlTexture s_hd_gl_cache[HD_GL_CACHE_CAP];
 static size_t s_hd_gl_cache_bytes;
@@ -3455,13 +3456,17 @@ void gl_renderer_clear_hd_texture_cache(void) {
     memset(s_hd_gl_cache, 0, sizeof(s_hd_gl_cache));
     s_hd_gl_cache_bytes = 0; s_tb_hd_tex = 0;
 }
+int gl_renderer_hd_texture_cached(uint64_t key, uint64_t generation,
+                                 uint32_t* width, uint32_t* height) {
+    for (int i = 0; i < HD_GL_CACHE_CAP; ++i) {
+        const HdGlTexture* texture = &s_hd_gl_cache[i];
+        if (texture->texture && texture->key == key && texture->generation == generation) {
+            *width = texture->width; *height = texture->height; return 1;
+        }
+    }
+    return 0;
+}
 static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
-    if (!image->rgba || !image->width || !image->height || !image->source_width ||
-        !image->source_height || image->stride != (uint64_t)image->width * 4u ||
-        image->width > (uint32_t)s_gl_max_dim || image->height > (uint32_t)s_gl_max_dim)
-        return 0;
-    size_t bytes = (size_t)image->stride * image->height;
-    if (bytes > HD_GL_CACHE_BUDGET) return 0;
     int free_slot = -1;
     for (int i = 0; i < HD_GL_CACHE_CAP; ++i) {
         HdGlTexture* texture = &s_hd_gl_cache[i];
@@ -3471,6 +3476,12 @@ static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
         }
         if (!texture->texture && free_slot < 0) free_slot = i;
     }
+    if (!image->rgba || !image->width || !image->height || !image->source_width ||
+        !image->source_height || image->stride != (uint64_t)image->width * 4u ||
+        image->width > (uint32_t)s_gl_max_dim || image->height > (uint32_t)s_gl_max_dim)
+        return 0;
+    size_t bytes = (size_t)image->stride * image->height;
+    if (bytes > HD_GL_CACHE_BUDGET) return 0;
     while (free_slot < 0 || s_hd_gl_cache_bytes + bytes > HD_GL_CACHE_BUDGET) {
         int oldest = -1;
         for (int i = 0; i < HD_GL_CACHE_CAP; ++i)
@@ -3480,6 +3491,7 @@ static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
         flush_flat_batch(); flush_tex_batch(); hiw_flush_queue();
         HdGlTexture* victim = &s_hd_gl_cache[oldest];
         glDeleteTextures(1, &victim->texture);
+        gpu_hd_textures_note_gl_cache(1);
         s_hd_gl_cache_bytes -= victim->bytes;
         memset(victim, 0, sizeof(*victim)); free_slot = oldest;
     }
@@ -3503,6 +3515,8 @@ static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
     texture->key = image->cache_key; texture->generation = image->generation;
     texture->last_use = ++s_hd_gl_cache_clock;
     texture->bytes = bytes; s_hd_gl_cache_bytes += bytes;
+    texture->width = image->width; texture->height = image->height;
+    gpu_hd_textures_note_gl_cache(0);
     return texture->texture;
 }
 
@@ -4651,7 +4665,7 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
     if (s_hd_native_authority && !s_selected_bank_tex) {
         uint32_t window = (uint32_t)(s_tw_mask_x | (s_tw_mask_y << 5) |
                                     (s_tw_off_x << 10) | (s_tw_off_y << 15));
-        if (gpu_hd_textures_acquire_draw(texpage, clut_x, clut_y, lim, window,
+        if (gpu_hd_textures_acquire_gl_draw(texpage, clut_x, clut_y, lim, window,
                                         semi >= 0, &hd)) {
             hd_tex = hd_gl_texture(&hd);
             if (!hd_tex) hd.alpha_mode = 0;

@@ -10283,7 +10283,11 @@ static void handle_hd_textures(int id, const char *json)
              "\"replacement_count\":%llu,\"draw_queries\":%llu,"
              "\"matched_draws\":%llu,\"ready_draws\":%llu,"
              "\"applied_draws\":%llu,\"dumped_textures\":%llu,"
-             "\"pending_dump_sources\":%llu,\"diagnostic\":\"%s\"}",
+             "\"pending_dump_sources\":%llu,"
+             "\"composition_hits\":%llu,\"composition_builds\":%llu,\"composition_pixels\":%llu,"
+             "\"gl_uploads\":%llu,\"gl_evictions\":%llu,"
+             "\"decoded_images\":%llu,\"decode_evictions\":%llu,\"decoded_bytes\":%llu,"
+             "\"diagnostic\":\"%s\"}",
              id, root_json, info.active ? "true" : "false",
              info.replacements ? "true" : "false", info.dump ? "true" : "false", info.format,
              backend == GR_BACKEND_OPENGL ? "opengl" :
@@ -10293,7 +10297,12 @@ static void handle_hd_textures(int id, const char *json)
              (unsigned long long)info.draw_queries, (unsigned long long)info.matched_draws,
              (unsigned long long)info.ready_draws, (unsigned long long)info.applied_draws,
              (unsigned long long)info.dumped_textures,
-             (unsigned long long)info.pending_dump_sources, diagnostic_json);
+             (unsigned long long)info.pending_dump_sources,
+             (unsigned long long)info.composition_hits, (unsigned long long)info.composition_builds,
+             (unsigned long long)info.composition_pixels,
+             (unsigned long long)info.gl_uploads, (unsigned long long)info.gl_evictions,
+             (unsigned long long)info.decoded_images, (unsigned long long)info.decode_evictions,
+             (unsigned long long)info.decoded_bytes, diagnostic_json);
 }
 
 /* Dynamic internal resolution ([video] dynamic_resolution; docs/TCP_COMMANDS.md).
