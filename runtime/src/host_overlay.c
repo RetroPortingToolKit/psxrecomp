@@ -1,7 +1,9 @@
 /* host_overlay.c -- see host_overlay.h. */
 #include "host_overlay.h"
 
+#include <stdatomic.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 /* ---- P1: host pause ------------------------------------------------------ */
 #define PSX_HOST_PAUSE_MAX 8
@@ -27,3 +29,37 @@ const char *psx_host_pause_reason(void) {
 }
 
 void psx_host_pause_set_refuse_probe(PsxHostPauseRefuseFn fn) { s_pause_refuse = fn; }
+
+/* ---- P2: overlay draw callback -------------------------------------------- */
+/* Registered on the main thread, read on the render / present thread. The
+ * function and its context are published together as one immutable record
+ * behind an atomic pointer (release on store, acquire on load), so a reader
+ * can never pair a live function with a stale or NULL context. Records are
+ * never freed: registration happens a handful of times per process, and a
+ * reader may still hold the previous record when it is replaced. */
+typedef struct {
+    PsxHostOverlayDrawFn fn;
+    void *ctx;
+} PsxHostOverlayDraw;
+
+static _Atomic(PsxHostOverlayDraw *) s_draw = NULL;
+
+void psx_host_overlay_set_draw_cb(PsxHostOverlayDrawFn fn, void *ctx) {
+    PsxHostOverlayDraw *rec = NULL;
+    if (fn) {
+        rec = (PsxHostOverlayDraw *)malloc(sizeof(*rec));
+        if (!rec) return;
+        rec->fn = fn;
+        rec->ctx = ctx;
+    }
+    atomic_store_explicit(&s_draw, rec, memory_order_release);
+}
+
+int psx_host_overlay_has_draw(void) {
+    return atomic_load_explicit(&s_draw, memory_order_acquire) != NULL;
+}
+
+void psx_host_overlay_draw(int width, int height) {
+    const PsxHostOverlayDraw *rec = atomic_load_explicit(&s_draw, memory_order_acquire);
+    if (rec && rec->fn && width > 0 && height > 0) rec->fn(width, height, rec->ctx);
+}

@@ -48,6 +48,9 @@ def main():
     if (fw/'runtime/src/frame_gen.c').exists():
         sources.append(('fg',fw/'runtime/src/frame_gen.c'))
     objects=[]
+    # The renderer calls the in-game overlay hook (host_overlay.c) at present.
+    if (fw/'runtime/src' / "host_overlay.c").exists():
+        sources.append(("hov", fw/'runtime/src' / "host_overlay.c"))
     for name,source in sources:
         obj=out/(name+'.o'); run([args.cc,*flags,'-c',source,'-o',obj]); objects.append(obj)
     if args.hd_pack:

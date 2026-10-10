@@ -94,6 +94,9 @@ def main():
     if WINDOWS:
         sections.append("-flto")
     objs = []
+    # The renderer calls the in-game overlay hook (host_overlay.c) at present.
+    if (src / "host_overlay.c").exists():
+        sources.append(("hov", src / "host_overlay.c"))
     for name, path in sources:
         o = dest / (name + ".o")
         r = run([args.cc, "-std=gnu11", "-O1", "-DPSX_SDL3=1", "-DPSX_NO_DEBUG_TOOLS=1",
