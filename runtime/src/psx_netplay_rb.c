@@ -6818,8 +6818,14 @@ static int try_apply_pending_load(CPUState *cpu_in)
             psx_cycles_resync_after_restore(cpu_in);
             interrupts_resync_after_restore();
             cdrom_resync_deadlines_after_restore();
-            if (!cdrom_xa_stream_active() && !cdrom_fmv_stream_pending())
-                spu_cd_audio_reset();
+            {
+                /* The snap carried the CD input FIFO (BS_SEC_SPUCD): keep it. */
+                extern int g_spu_cd_restored;
+                if (!g_spu_cd_restored && !cdrom_xa_stream_active() &&
+                    !cdrom_fmv_stream_pending())
+                    spu_cd_audio_reset();
+                g_spu_cd_restored = 0;
+            }
             {
                 extern void overlay_loader_clear_lazy_miss(void);
                 overlay_loader_clear_lazy_miss();
@@ -6953,8 +6959,14 @@ static int try_apply_pending_load(CPUState *cpu_in)
             cdrom_resync_deadlines_after_restore();
             /* Wipe SPU CD FIFO only when XA is idle — clearing mid-stream
              * left MotK FMV silent/black after tip loads into media. */
-            if (!cdrom_xa_stream_active() && !cdrom_fmv_stream_pending())
-                spu_cd_audio_reset();
+            {
+                /* The snap carried the CD input FIFO (BS_SEC_SPUCD): keep it. */
+                extern int g_spu_cd_restored;
+                if (!g_spu_cd_restored && !cdrom_xa_stream_active() &&
+                    !cdrom_fmv_stream_pending())
+                    spu_cd_audio_reset();
+                g_spu_cd_restored = 0;
+            }
             {
                 extern void overlay_loader_clear_lazy_miss(void);
                 overlay_loader_clear_lazy_miss();
@@ -10046,7 +10058,7 @@ void psx_netplay_rb_finish_frame(void)
     log_resim_tick_audit(done, "fin");
     psx_netplay_rb_request_snap(done);
     if (c)
-        psx_netplay_rb_poll(c, pick_snap_resume_pc(c, 0u));
+        psx_netplay_rb_poll(c, psx_netplay_snap_resume_hint(c));
     rnet_session_advance(s);
     g_needs_advance = 0;
 

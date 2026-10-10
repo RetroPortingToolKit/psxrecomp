@@ -110,6 +110,10 @@ static uint32_t boot_state_layout_cookie(void) {
 #define CPU_REGS_WIRE_BYTES (524u)
 /* Timer wire: 3*u16 + 3*u32 + 3*u16 + 3*i32 + 3*u32 = 48 bytes (no pad holes). */
 #define TIMER_REGS_WIRE_BYTES (48u)
+/* CPU stall wire: 2*u32 + 33 + 3*u8 + u32 = 48 bytes. */
+#define BS_CPUTIM_BYTES (48u)
+/* Set by a BS_SEC_CPUTIM load; psx_cycles_resync_after_restore consumes it. */
+int g_boot_state_cpu_timing_restored;
 
 /* ---- deferred capture state (armed before first boot, fired at handoff) ---- */
 static char     s_capture_path[512];
@@ -322,8 +326,21 @@ static int write_cpu_section(BsOut* o, const CPUState* cpu) {
         return 0;
     for (int i = 0; i < 32; i++)
         if (!pst_w_u32(&w, cpu->cop0[i])) return 0;
-    for (int i = 0; i < 32; i++)
-        if (!pst_w_u32(&w, cpu->gte_data[i])) return 0;
+    for (int i = 0; i < 32; i++) {
+        uint32_t v = cpu->gte_data[i];
+        /* LZCR is derived from LZCS (what MFC2 31 returns, and what a load
+         * recomputes). Serialize the derived value: the raw backing stays 0
+         * until the first LZCS write, so a live save and a replayed save of
+         * the same tick differed here although no guest could tell. */
+        if (i == 31) {
+            uint32_t bits = (cpu->gte_data[30] & 0x80000000u) ? ~cpu->gte_data[30]
+                                                             : cpu->gte_data[30];
+            v = 0;
+            if (bits == 0) v = 32;
+            else while (!(bits & 0x80000000u)) { bits <<= 1; ++v; }
+        }
+        if (!pst_w_u32(&w, v)) return 0;
+    }
     for (int i = 0; i < 32; i++)
         if (!pst_w_u32(&w, cpu->gte_ctrl[i])) return 0;
     if (w.written != CPU_REGS_WIRE_BYTES) return 0;
@@ -399,8 +416,26 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = BOOT_STATE_IMPLEMENTATION_KEY;
-    h.section_count = 17 + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
+    h.section_count = 18 + (cpu ? 1u : 0u) + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
                       (psx_guest_cycle_scale_config() != 1u ? 1u : 0u);
+
+    /* Publish deferred cycle charges before ANY section: IRQ (cycles since
+     * VBlank) and the root counters were written before the old flush point
+     * (just ahead of CLOCK), so they lagged the saved clock by whatever batch
+     * was pending -- a host-path quantity (live vs rollback replay). */
+    psx_cyc_batch_flush();
+    /* Devices (root counters, VBlank phase, CD/SPU/DMA) are serviced lazily
+     * up to the next event deadline, so between deadlines they lag the clock
+     * by a host-path amount. A load re-anchors them at the restored clock,
+     * dropping that lag: live and replay saves of one tick then differed in
+     * cycles_since_vblank and the counters at the same clock. Bring every
+     * device to the clock first so the snap is the canonical machine at it
+     * (service_to_now replays the exact event-bounded timeline). */
+    psx_devices_service_to_now();
+    /* The SPU renders in whole samples when the host audio pump or a guest
+     * SPU access asks; between those it lags the clock by a path-dependent
+     * amount (live pumps at VBlank, rollback replay suppresses output). */
+    { extern void spu_catch_up(void); spu_catch_up(); }
 
     ok = write_header_le(o, &h);
 
@@ -497,6 +532,31 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
         pst_w_init(&w, handoff, sizeof handoff);
         ok = pst_w_u32(&w, fntrace_is_game_started() ? 1u : 0u) &&
              write_section(o, BS_SEC_GAME_START, handoff, sizeof handoff);
+    }
+    if (ok) {
+        extern uint32_t spu_cd_snapshot_bytes(void);
+        extern void spu_cd_snapshot_write(uint8_t *p);
+        ok = write_module_section(o, BS_SEC_SPUCD, spu_cd_snapshot_bytes, spu_cd_snapshot_write);
+    }
+    if (ok && cpu) {
+        /* In-flight CPU stalls, relative to the clock. They used to be
+         * re-anchored at the restored clock on every load, so a GTE / mul-div
+         * op or load give-back in flight at the snap point cost the live run
+         * its remaining stall but the replay nothing: replaying a snap with
+         * the same rows ran a few cycles short of the live tick
+         * (PSX_RB_DET_SELFTEST: IRQ/TIMER drift at equal clock). */
+        uint8_t tb[BS_CPUTIM_BYTES];
+        PstW w;
+        uint64_t now = psx_cycle_count;
+        uint32_t gte_rem = cpu->gte_ts_done > now ? (uint32_t)(cpu->gte_ts_done - now) : 0u;
+        uint32_t md_rem = cpu->muldiv_ts_done > now ? (uint32_t)(cpu->muldiv_ts_done - now) : 0u;
+        pst_w_init(&w, tb, sizeof tb);
+        ok = pst_w_u32(&w, gte_rem) && pst_w_u32(&w, md_rem) &&
+             pst_w_bytes(&w, cpu->read_absorb, sizeof cpu->read_absorb) &&
+             pst_w_u8(&w, cpu->read_absorb_which) && pst_w_u8(&w, cpu->read_fudge) &&
+             pst_w_u8(&w, cpu->ld_which_t) && pst_w_u32(&w, cpu->ld_absorb) &&
+             w.written == BS_CPUTIM_BYTES &&
+             write_section(o, BS_SEC_CPUTIM, tb, sizeof tb);
     }
     if (ok && psx_guest_cycle_scale_config() != 1u) {
         /* Rollback re-simulation must resume with the same carried fraction
@@ -725,6 +785,26 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
     case BS_SEC_GAME_START:
         fntrace_restore_game_started(p[0]);
         return 1;
+    case BS_SEC_SPUCD: {
+        extern int spu_cd_snapshot_read(const uint8_t *p, uint32_t len);
+        return spu_cd_snapshot_read(p, len);
+    }
+    case BS_SEC_CPUTIM: {
+        PstR r;
+        uint32_t gte_rem, md_rem;
+        if (len != BS_CPUTIM_BYTES || !cpu) return 0;
+        pst_r_init(&r, p, len);
+        if (!pst_r_u32(&r, &gte_rem) || !pst_r_u32(&r, &md_rem) ||
+            !pst_r_bytes(&r, cpu->read_absorb, sizeof cpu->read_absorb) ||
+            !pst_r_u8(&r, &cpu->read_absorb_which) || !pst_r_u8(&r, &cpu->read_fudge) ||
+            !pst_r_u8(&r, &cpu->ld_which_t) || !pst_r_u32(&r, &cpu->ld_absorb))
+            return 0;
+        /* CLOCK precedes this section, so psx_cycle_count is restored. */
+        cpu->gte_ts_done = psx_cycle_count + gte_rem;
+        cpu->muldiv_ts_done = psx_cycle_count + md_rem;
+        g_boot_state_cpu_timing_restored = 1;
+        return 1;
+    }
     case BS_SEC_GCS: {
         PstR r;
         uint32_t g[3];
@@ -795,6 +875,8 @@ static int validate_section(uint32_t tag, const uint8_t* p, uint32_t len) {
         return len == 4u && p[0] <= 1u && !p[1] && !p[2] && !p[3];
     case BS_SEC_ICACHE: return len == 1024u * 4u;
     case BS_SEC_GCS:    return len == PSX_GCS_SNAPSHOT_BYTES;
+    case BS_SEC_CPUTIM: return len == BS_CPUTIM_BYTES;
+    case BS_SEC_SPUCD:  return len >= 4u && (len - 4u) % 4u == 0u;
     default:            return 1;
     }
 }
