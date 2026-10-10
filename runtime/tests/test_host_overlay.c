@@ -68,7 +68,25 @@ static void test_sink(void) {
     CHECK(!psx_host_ui_capture_active());
 }
 
+static void test_video(void) {
+    PsxHostVideoSettings a, b;
+    memset(&a, 0, sizeof a);
+    a.fmv_filter = 2; a.renderer = 1; a.render_thread = 1; a.scanline_strength_pct = 50;
+    b = a;
+    CHECK(psx_host_video_live_changes(&a, &b) == 0 && psx_host_video_restart_bits(&a, &b) == 0);
+    b.scanline_strength_pct = 60; b.present_linear = 1; b.fullscreen = 1;
+    CHECK(psx_host_video_live_changes(&a, &b) ==
+          (PSX_VIDEO_LIVE_SCANLINES | PSX_VIDEO_LIVE_PRESENT_LINEAR | PSX_VIDEO_LIVE_FULLSCREEN));
+    CHECK(psx_host_video_restart_bits(&a, &b) == 0);
+    b.internal_resolution = 4; b.present_thread = 1;
+    CHECK(psx_host_video_restart_bits(&a, &b) == (PSX_VIDEO_RESTART_RESOLUTION | PSX_VIDEO_RESTART_THREADS));
+    b.renderer = 0;
+    CHECK(psx_host_video_restart_bits(&a, &b) & PSX_VIDEO_RESTART_RENDERER);
+    CHECK(psx_host_video_live_changes(NULL, &b) == 0 && psx_host_video_restart_bits(&a, NULL) == 0);
+}
+
 int main(void) {
+    test_video();
     test_sink();
     test_draw();
     test_pause();
