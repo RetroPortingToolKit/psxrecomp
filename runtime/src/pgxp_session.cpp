@@ -34,8 +34,21 @@ extern "C" PSXPgxpSessionArm psx_pgxp_session_arm(
     in.mod_enabled = pgxp_mod_request_take(&in.mod_cpu_mode, &in.mod_culling);
 
     const PSXPgxpSessionArm arm = psx_pgxp_session_resolve(&in);
-    pgxp_set_tolerance(config->tolerance);
-    pgxp_set_position_fallback(config->position_fallback);
+    /* The hook flavor tracks the full-word dataflow. A coordinate cache can
+     * inject unrelated world fractions into HUD vertices, and a tolerance
+     * clamp discards valid shadows, mixing precise/native triangle corners.
+     * Base builds lack that coverage and retain their validated defaults.
+     * Neither default enables the optional PGXP enhancement itself. */
+#if defined(PSX_PGXP) && PSX_PGXP
+    const float default_tolerance = -1.0f;
+    const int default_position_fallback = 0;
+#else
+    const float default_tolerance = 0.5f;
+    const int default_position_fallback = 1;
+#endif
+    pgxp_set_tolerance(config->tolerance_set ? config->tolerance : default_tolerance);
+    pgxp_set_position_fallback(config->position_fallback_set ?
+                                config->position_fallback : default_position_fallback);
     pgxp_set_preserve_projection(config->preserve_projection);
     pgxp_set_culling(arm.culling);
     gte_geometry_correction_set(arm.geometry);

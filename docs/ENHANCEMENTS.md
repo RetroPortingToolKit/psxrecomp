@@ -882,10 +882,11 @@ the formal Crash/Tomba2 A/B.
 ### G1.11 — PGXP as a title's default: hook build, mod at session start, dataflow only, exact projection (2026-10-01)
 
 Ridge Racer Type 4 turns PGXP on by default. Getting there took framework
-changes that are all opt-in. With PGXP off, nothing changes for any title.
-With PGXP on, two changes apply without a new option: the
-`psx.enhancement.pgxp` mod now actually arms PGXP (item 2), and fully precise
-axis-aligned quads take the triangle path (item 4).
+changes within the elective PGXP enhancement. With PGXP off, nothing changes
+for any title. With PGXP on, its correctness fixes apply without a new option:
+the mod arms PGXP (item 2), hook builds default to dataflow-only precision
+without a tolerance clamp (item 3), and fully precise axis-aligned quads take
+the triangle path (item 4).
 
 **What R4 got from G1.10 as shipped: nothing.** Base flavor, PGXP mod on:
 0% dataflow hits, 3.6% position-cache hits, 0 of 282k textured triangles with
@@ -921,12 +922,18 @@ sub-vertex with RTPT.
    own manifest (default-on override, netplay clear with and without the
    reset, the off switch, options, env overrides). R4's `r4_pgxp_boot`
    boots the built runtime and fails if main.cpp stops calling the arming.
-3. **Two `[video]` keys** (game.toml; live over the TCP `pgxp` verb):
+3. **Automatic hook-build defaults and `[video]` overrides** (game.toml;
+   live over the TCP `pgxp` verb). A runtime built with `PSX_PGXP=1` selects
+   `pgxp_tolerance = -1.0` and `pgxp_position_fallback = false` when those keys
+   are absent. The runtime and overlay ABI enforce the matching hook flavor.
+   Base builds keep 0.5 and true for their limited dataflow coverage. Explicit
+   title tuning wins independently for each key, including Ape's validated
+   clamp. PGXP remains elective; exact-projection shadows remain separate:
 
    ```toml
    [video]
-   pgxp_tolerance = -1.0            # existing key: no clamp
-   pgxp_position_fallback = false   # default true
+   pgxp_tolerance = -1.0            # hook-build default: no clamp
+   pgxp_position_fallback = false   # hook-build default: dataflow only
    pgxp_preserve_projection = true  # default false
    ```
 
@@ -957,8 +964,10 @@ sub-vertex with RTPT.
      (the G1.10 Ape result). At hook-build coverage the clamp is harmful: on
      R4 it keeps 26% of vertices, leaves 52% of drawn triangles mixed (a
      4K capture shows a hairline across the road) and shakes more than stock
-     (tables below). The default stays 0.5 because changing it would change
-     every title that already arms PGXP through `[video]`.
+     (tables below). The old universal default stayed 0.5 to avoid changing
+     every title that already arms PGXP through `[video]`. This historical
+     default is now retained only in base builds; hook builds automatically
+     disable the clamp unless a title supplies an explicit value.
 4. **Fully precise axis-aligned textured quads skip the 2D rectangle
    shortcut.** `gp0_exec_textured_quad` draws a quad whose integer vertices
    and UVs form an axis-aligned rectangle with `gr_draw_textured_rect`, at the

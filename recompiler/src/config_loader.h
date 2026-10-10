@@ -529,22 +529,24 @@ struct RuntimeConfig {
     // pgxp_tolerance: reject a corrected vertex whose sub-pixel offset from
     // the native integer position exceeds this many pixels (the truncation-
     // agreement check already bounds offsets to < 1px; this narrows them
-    // further). Default 0.5 — user-validated on Ape Escape (2026-08-15):
+    // further). Unspecified: off in the PGXP hook flavor, 0.5 in base builds.
+    // An explicit title value wins — user-validated on Ape Escape (2026-08-15):
     // unclamped, sparse hairline background-bleed seams appear where a
     // corrected triangle borders an uncorrected one; at 0.5 the seams are
     // gone and only sub-half-pixel misalignment remains. Negative disables
     // the clamp. Live-tunable over TCP (pgxp verb).
     double                video_pgxp_tolerance = 0.5;
+    bool                  video_pgxp_tolerance_set = false;
 
     // pgxp_position_fallback: let a vertex with no validated dataflow shadow
     // take the fraction of the projection last cached at its integer screen
-    // position (the G1.4 exact table). Default true (unchanged behaviour).
-    // A title built with the PGXP hooks (psxrecomp_add_game_runtime PGXP)
-    // reaches near-total dataflow coverage, so for it the cache only hands
-    // unrelated fractions to CPU-built 2D polygons; such a title sets false
-    // ("dataflow only", the reference implementations' default).
+    // position (the G1.4 exact table). Unspecified: false in the PGXP hook
+    // flavor, true in base builds. The hook flavor tracks full-word copies;
+    // the cache can assign unrelated 3D fractions to CPU-built 2D polygons.
+    // An explicit title value overrides the runtime's automatic default.
     // Live-tunable over TCP (pgxp verb). docs/ENHANCEMENTS.md G1.11.
     bool                  video_pgxp_position_fallback = true;
+    bool                  video_pgxp_position_fallback_set = false;
 
     // pgxp_preserve_projection: shadow the exact projection of each vertex
     // (from the GTE's unshifted MACs and a true divide) instead of the GTE's
