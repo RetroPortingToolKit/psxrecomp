@@ -80,4 +80,32 @@ static inline int netplay_fork_cap_retired(uint32_t fork_cap, uint32_t agreed_th
     return fork_cap > 0u && agreed_through >= fork_cap;
 }
 
+/* Concurrent BEGIN while an episode is active. Wire epoch ids carry their
+ * initiator in the low bits (`slot_mask`); the lower initiator slot wins.
+ * Returns +1 when the incoming episode wins (yield ours if still in the
+ * handshake, then follow it), -1 when ours wins (drop the incoming BEGIN),
+ * 0 when the rule does not apply (same epoch, or a follower seeing another
+ * epoch from the initiator it already follows -- an abort-and-reopen).
+ *
+ * A follower applies it too: with three or more seats two guests can both
+ * BEGIN on the same mispredict, and a follower that followed whichever
+ * arrived first split the seats across epochs (4-seat WAN: host following
+ * slot 3's epoch while slot 1's won; every seat then waited on baselines
+ * that never came). */
+static inline int netplay_rb_concurrent_begin(uint32_t ours, uint32_t theirs,
+                                              int following, uint32_t slot_mask)
+{
+    uint32_t our_slot = ours & slot_mask;
+    uint32_t their_slot = theirs & slot_mask;
+    if (ours == theirs)
+        return 0;
+    if (following && our_slot == their_slot)
+        return 0;
+    if (their_slot < our_slot)
+        return 1;
+    if (their_slot > our_slot)
+        return -1;
+    return 0;
+}
+
 #endif /* NETPLAY_PEER_FRONTIER_H */
