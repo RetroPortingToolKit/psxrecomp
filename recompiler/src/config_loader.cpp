@@ -836,6 +836,8 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
                 "[video] anisotropic_filtering must be 1..16: {}", n));
             rt.video_anisotropic_filtering = n;
         }
+        if (video.contains("accurate_blending"))
+            rt.video_accurate_blending = toml::find<bool>(video, "accurate_blending");
         if (video.contains("pgxp_depth_buffer"))
             rt.video_pgxp_depth_buffer = toml::find<bool>(video, "pgxp_depth_buffer");
         if (video.contains("pgxp_color_correction"))

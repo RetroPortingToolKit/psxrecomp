@@ -8629,6 +8629,15 @@ static void handle_texture_lod(int id, const char *json)
              gl_renderer_texture_lod(), gl_renderer_anisotropy());
 }
 
+/* accurate_blending: {"cmd":"accurate_blending"} reads, {"cmd":
+ * "accurate_blending","on":0|1} sets [video] accurate_blending live. */
+static void handle_accurate_blending(int id, const char *json)
+{
+    int on = json_get_int(json, "on", -1);
+    if (on >= 0) gl_renderer_set_accurate_blending(on);
+    send_fmt("{\"id\":%d,\"ok\":true,\"on\":%d}", id, gl_renderer_accurate_blending());
+}
+
 /* texture_filter: {"cmd":"texture_filter"} reads, {"cmd":"texture_filter",
  * "mode":0..3} sets it live (nearest, bilinear, stable world, xbr). */
 static void handle_texture_filter(int id, const char *json)
@@ -15863,6 +15872,8 @@ static const CmdEntry s_commands[] = {
     { "post_aa",           handle_post_aa },
     { "fmv_chroma",        handle_fmv_chroma },
     { "texture_lod",       handle_texture_lod },
+    { "accurate_blending", handle_accurate_blending },
+
     { "texture_filter",    handle_texture_filter },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },

@@ -574,6 +574,10 @@ struct RuntimeConfig {
     // default 1); only with texture_lod. OpenGL only.
     int                   video_texture_lod = 0;
     int                   video_anisotropic_filtering = 1;
+    // accurate_blending: one 8-bit basis (k*8) for every VRAM write so GL
+    // semi-transparency truncates exactly like the PS1's 5-bit blend.
+    // Default true: PS1 colour/blend correctness. OpenGL only.
+    bool                  video_accurate_blending = true;
     bool                  video_pgxp_color_correction = false;
     int                   video_pgxp_seam = 0;
     double                video_pgxp_depth_threshold = 4096.0;
