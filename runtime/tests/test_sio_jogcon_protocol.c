@@ -286,6 +286,14 @@ int main(void) {
     (void)xchg(0, 0x00);
     (void)xchg(0, 0x21);
     for (int i = 0; i < 5; i++) (void)xchg(0, 0x00);
+    {   /* host force feedback reads command and strength */
+        uint8_t cmd = 0xEE, strength = 0xEE;
+        sio_get_pad_jogcon_motor(0, &cmd, &strength);
+        EXPECT("motor.host.command", 0x02, cmd);
+        EXPECT("motor.host.strength", 0x01, strength);
+        sio_get_pad_jogcon_motor(1, &cmd, &strength);
+        EXPECT("motor.host.other_slot", 0x00, cmd | strength);
+    }
     EXPECT("motor.status.prefix", 0xFF, xchg(0, 0x01));
     EXPECT("motor.status.id", 0xF3, xchg(0, 0x42));
     for (int i = 0; i < 5; i++) (void)xchg(0, 0x00);

@@ -1075,6 +1075,12 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.direct_shortcut_button =
                 toml::find<std::string>(ct, "direct_shortcut_button");
         }
+        if (ct.contains("jogcon_force_feedback"))
+            rt.jogcon_force_feedback =
+                toml::find<bool>(ct, "jogcon_force_feedback");
+        if (ct.contains("jogcon_force_feedback_invert"))
+            rt.jogcon_force_feedback_invert =
+                toml::find<bool>(ct, "jogcon_force_feedback_invert");
         if (ct.contains("anti_deadzone")) {
             const auto n = toml::find<int64_t>(ct, "anti_deadzone");
             if (n < 0 || n > 32767)
