@@ -5268,6 +5268,22 @@ int psx_netplay_poll_admit(void)
     return 0;
 }
 
+/* The resume PC a tick snapshot is saved with. Live finish_frame and the
+ * Replay finish_frame must use the same rule: Replay passed no hint, so its
+ * snap often fell back to a different PC or was deferred to a later BB edge,
+ * and the replayed save of tick T sat at another guest point than the live
+ * save of T (pc, cycles_since_vblank, root counters all differed --
+ * PSX_RB_DET_SELFTEST: 106 of 262 replayed saves). */
+uint32_t psx_netplay_snap_resume_hint(const CPUState *cpu)
+{
+    uint32_t hint = psx_compiled_irq_resume_pc();
+    if (!psx_is_dispatchable(hint))
+        hint = psx_last_irq_check_pc();
+    if (!psx_is_dispatchable(hint) && cpu)
+        hint = cpu->pc;
+    return hint;
+}
+
 void psx_netplay_finish_frame(void)
 {
     rnet_u32 done;
@@ -5312,11 +5328,7 @@ void psx_netplay_finish_frame(void)
          * deferred BB-edge saves never ran and the ring stayed empty. Prefer
          * IRQ BB-edge PCs — cpu->pc is often 0 during present/finish_frame. */
         if (g_np.cpu) {
-            resume_hint = psx_compiled_irq_resume_pc();
-            if (!psx_is_dispatchable(resume_hint))
-                resume_hint = psx_last_irq_check_pc();
-            if (!psx_is_dispatchable(resume_hint))
-                resume_hint = g_np.cpu->pc;
+            resume_hint = psx_netplay_snap_resume_hint(g_np.cpu);
             psx_netplay_rb_poll(g_np.cpu, resume_hint);
         }
     }
