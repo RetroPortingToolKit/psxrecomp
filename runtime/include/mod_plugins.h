@@ -180,6 +180,14 @@ uint32_t psx_mod_call_guest_uncharged(struct CPUState* cpu, uint32_t function,
                                       uint32_t return_address, uint32_t a0,
                                       uint32_t a1, uint32_t a2, uint32_t a3,
                                       uint32_t budget_cycles, int* charged);
+/* psx_mod_call_guest_uncharged that also reports the guest cycles the callee
+ * executed (*counted_cycles; 0 when time was already frozen, so the call ran
+ * inside an outer span). An adapter can then charge its own estimate, e.g. a
+ * share of the measured cost, instead of nothing. */
+uint32_t psx_mod_call_guest_uncharged_counted(struct CPUState* cpu,
+        uint32_t function, uint32_t return_address, uint32_t a0, uint32_t a1,
+        uint32_t a2, uint32_t a3, uint32_t budget_cycles, int* charged,
+        uint64_t* counted_cycles);
 /* Deliver disc sectors into RAM exactly as a completed CD-ROM DMA would
  * (overlay capture, executable-page invalidation, CD DMA log when lba >= 0).
  * Word-aligned address and length. Returns 0 when the span leaves RAM. */

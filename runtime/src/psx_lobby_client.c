@@ -1,4 +1,5 @@
 #include "psx_lobby_client.h"
+#include "psx_lobby_launch_transport.h"
 #include "netplay_bios_settle.h"
 
 #include <ctype.h>
@@ -1910,16 +1911,12 @@ static void copy_first_usable_endpoint(char *dst, size_t dst_len, const char *a,
 
 static int using_server_input_relay(const PsxLobbyJoinInfo *j)
 {
-    if (g_lc.match_caps.valid && g_lc.match_caps.force_input_relay)
-        return 1;
-    /* Server rewrote both endpoints to the same relay advertise address. */
-    if (j && j->host_endpoint[0] && j->guest_endpoint[0] &&
-        !endpoint_port_is_zero(j->host_endpoint) &&
-        !endpoint_port_is_zero(j->guest_endpoint) &&
-        strcmp(j->host_endpoint, j->guest_endpoint) == 0 &&
-        (!g_lc.my_bind[0] || strcmp(j->host_endpoint, g_lc.my_bind) != 0))
-        return 1;
-    return 0;
+    if (!j)
+        return g_lc.match_caps.valid && g_lc.match_caps.force_input_relay;
+    return psx_lobby_launch_transport(j->transport_ice ? "ice" : j->transport_host ? "host" : "",
+                                      "", g_lc.match_caps.valid && g_lc.match_caps.force_input_relay,
+                                      j->host_endpoint, j->guest_endpoint,
+                                      g_lc.my_bind) == PSX_LAUNCH_RELAY;
 }
 
 static void fill_peer_bind_from_join(void)
@@ -3275,6 +3272,7 @@ static void handle_server_json(const char *json)
         transport_kind[0] = '\0';
         json_get_str(json, "transport", transport_kind, sizeof(transport_kind));
         g_lc.join.transport_host = strcmp(transport_kind, "host") == 0 ? 1 : 0;
+        g_lc.join.transport_ice = strcmp(transport_kind, "ice") == 0 ? 1 : 0;
         rnet_host_relay_release_port(g_host_relay);
         g_lc.join.player_count = json_get_int(json, "player_count", g_lc.join.player_count);
         g_lc.join.max_slots = json_get_int(json, "max_slots", g_lc.join.max_slots);
@@ -3283,7 +3281,10 @@ static void handle_server_json(const char *json)
         /* Prefer explicit relay_endpoint when the server opened input relay.
          * Apply after caps ingest: omitted force_input_relay must not leave
          * hosts on the hub path while guests dial the relay. */
-        if (relay_endpoint[0] && !endpoint_port_is_zero(relay_endpoint)) {
+        if (g_lc.join.transport_ice) {
+            /* ICE: nothing is dialled; a stale relay ask must not survive. */
+            if (g_lc.match_caps.valid) g_lc.match_caps.force_input_relay = 0;
+        } else if (relay_endpoint[0] && !endpoint_port_is_zero(relay_endpoint)) {
             char relay_raw[PSX_LOBBY_ENDPOINT_LEN];
             strncpy(relay_raw, relay_endpoint, sizeof(relay_raw) - 1);
             relay_raw[sizeof(relay_raw) - 1] = '\0';
@@ -3325,7 +3326,11 @@ static void handle_server_json(const char *json)
             json_get_str(json, "transport", transport, sizeof(transport));
             if (strcmp(transport, "ice_p2p") == 0)
                 ice_p2p = 1;
-            if (force_relay) {
+            if (g_lc.join.transport_ice) {
+                fprintf(stderr, "psx_lobby: launch transport=ice (peer-to-peer, "
+                                "signalled over the lobby)\n");
+                fflush(stderr);
+            } else if (force_relay) {
                 if (peer_bad) {
                     strncpy(g_lc.join.last_error, "missing_endpoints",
                             sizeof(g_lc.join.last_error) - 1);

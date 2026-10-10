@@ -73,7 +73,7 @@ static int16_t g_render_buf[4096 * 2];
 static void render_n(int frames) {
     while (frames > 0) {
         int n = frames > 4096 ? 4096 : frames;
-        spu_render(g_render_buf, n);
+        spu_render_block(g_render_buf, n);
         frames -= n;
     }
 }
@@ -308,7 +308,7 @@ static void test_reverb_write_gating_and_cd_path(void) {
     /* Reverb tail: CD input stops; the wet path must keep the output alive
      * (this is the reverb-on-CD-only / FMV behaviour in one assert). */
     memset(g_render_buf, 0, sizeof(g_render_buf));
-    spu_render(g_render_buf, 64);
+    spu_render_block(g_render_buf, 64);
     CHECK(buf_has_nonzero(g_render_buf, 64 * 2));
 }
 
@@ -375,7 +375,7 @@ static void test_noise_generator(void) {
     setup_voice(0, 0x0600, 0x3FFF, 0x3FFF);
     wr(R_KON_LO, 0x0001);
     memset(g_render_buf, 0, sizeof(g_render_buf));
-    spu_render(g_render_buf, 512);
+    spu_render_block(g_render_buf, 512);
     CHECK(!buf_has_nonzero(g_render_buf, 512 * 2));
 
     /* Noise mode: same setup + NON bit -> non-silent, non-constant output. */
@@ -387,7 +387,7 @@ static void test_noise_generator(void) {
     wr(R_NON_LO, 0x0001);
     wr(R_KON_LO, 0x0001);
     memset(g_render_buf, 0, sizeof(g_render_buf));
-    spu_render(g_render_buf, 512);
+    spu_render_block(g_render_buf, 512);
     CHECK(buf_has_nonzero(g_render_buf, 512 * 2));
 
     /* Count distinct left-channel values: the LFSR must keep moving. */
@@ -425,7 +425,7 @@ static void test_direct_volume_decode(void) {
     wr(R_MAINVOLL, 0x3FFF);
     wr(R_MAINVOLR, 0x3FFF);
     push_cd_const(1, 0x1000, 0x1000);
-    spu_render(g_render_buf, 1);
+    spu_render_block(g_render_buf, 1);
     CHECK(g_render_buf[0] == 4094);
     CHECK(g_render_buf[1] == 4094);
 }
@@ -533,7 +533,7 @@ static void test_savestate_roundtrip(void) {
 
     /* Timeline A. */
     static int16_t out_a[256 * 2], out_b[256 * 2];
-    spu_render(out_a, 256);
+    spu_render_block(out_a, 256);
     CHECK(buf_has_nonzero(out_a, 256 * 2));   /* noise + reverb tail audible */
 
     /* State moved on... */
@@ -553,7 +553,7 @@ static void test_savestate_roundtrip(void) {
     CHECK(sweep_voice_env[6][0].divider == sweep_div_0);
     CHECK(rev_out_l == rev_out_l_0);
 
-    spu_render(out_b, 256);
+    spu_render_block(out_b, 256);
     CHECK(memcmp(out_a, out_b, sizeof(out_a)) == 0);
 
     /* A truncated blob is rejected. */

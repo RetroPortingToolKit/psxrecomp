@@ -81,6 +81,7 @@
 #include "gpu_gl_renderer.h"
 #include "gpu_hd_textures.h"
 #include "mod_texture_banks.h"
+#include "gl_batch_policy.h"
 #include "frame_interpolation.h"
 #include "render_pass_plan.h"
 #include "render_pass.h"
@@ -294,8 +295,13 @@ static void gl_perf_mirror_end(void);   /* mirror pass (timestamp pair; splits s
  * draw calls, 3 = mirror draws land in the hr FBO (no per-pass FBO rebind; wide
  * margins go stale + hr gets garbage — perf probe only). */
 static int s_ws_ablate = 0;
-static void flush_tex_batch(void); /* textured-prim batch — defined below, flushed from coherency points */
-static void flush_flat_batch(void); /* flat/gouraud GEO batch (MotK starfield 0x68 dots) */
+static void flush_tex_batch_impl(void); /* textured-prim batch — defined below, flushed from coherency points */
+static void flush_flat_batch_impl(void); /* flat/gouraud GEO batch (MotK starfield 0x68 dots) */
+/* Every flush call site is attributed (gl_renderer_batch_sites): a flush that
+ * draws a non-empty batch counts against its caller's source line. */
+static void batch_site_note(int kind, int line);
+#define flush_tex_batch()  (batch_site_note(0, __LINE__), flush_tex_batch_impl())
+#define flush_flat_batch() (batch_site_note(1, __LINE__), flush_flat_batch_impl())
 static PFN_glGenRenderbuffers  p_glGenRenderbuffers;
 static PFN_glDeleteRenderbuffers p_glDeleteRenderbuffers;
 static PFN_glBindRenderbuffer  p_glBindRenderbuffer;
@@ -778,6 +784,12 @@ static float   s_pgxp_depth_threshold = 4096.0f;   /* SZ units, as DuckStation *
 static int     s_depth_need_clear = 1, s_depth_used = 0;
 static float   s_depth_last_avg = 0.0f;
 static uint64_t s_depth_clears = 0, s_depth_tris = 0, s_seam_tris = 0;
+/* Why each depth clear ran (pgxp TCP depth_clear_reasons): the request
+ * pending when it ran. */
+enum { DCLR_CONFIG, DCLR_AREA, DCLR_FILL, DCLR_THRESHOLD, DCLR_PRESENT, DCLR_N };
+static int      s_depth_need_reason = DCLR_CONFIG;
+static uint64_t s_depth_clear_reason[DCLR_N];
+#define DEPTH_REQUEST_CLEAR(r) (s_depth_need_clear = 1, s_depth_need_reason = (r))
 
 /* TEX program uniforms. */
 static GLint s_uVram = -1, s_uTpage = -1, s_uClut = -1, s_uDepth = -1;
@@ -3075,7 +3087,6 @@ static void ensure_cpu(void) {
 
 static uint64_t s_scene_prims = 0;     /* frame_perf: scene primitives submitted (pre double-draw) */
 static uint64_t s_scene_prims_tex = 0; /* frame_perf: of which textured (vs flat geometry)         */
-static void flush_tex_batch(void);     /* fwd: drained at the backdrop-phase boundary below */
 static void mark_prim_dirty(const int *xs, const int *ys, int n, int textured) {
     s_scene_prims++;
     int x0 = xs[0], x1 = xs[0], y0 = ys[0], y1 = ys[0];
@@ -3226,7 +3237,7 @@ int gl_renderer_pgxp_render_wanted(void) {
 void gl_renderer_set_pgxp_depth(int on) {
     GL_RT_SYNC("set_pgxp_depth");
     s_pgxp_depth = on ? 1 : 0;
-    s_depth_need_clear = 1;
+    DEPTH_REQUEST_CLEAR(DCLR_CONFIG);
     s_pz_valid = 0;
     pgxp_render_wanted_update();
 }
@@ -3245,6 +3256,10 @@ void gl_renderer_set_pgxp_seam(int mode) {
 int  gl_renderer_get_pgxp_seam(void) { return s_pgxp_seam; }
 void gl_renderer_set_pgxp_depth_threshold(float sz) {
     GL_RT_SYNC("set_pgxp_depth_threshold"); s_pgxp_depth_threshold = sz; }
+void gl_renderer_pgxp_depth_clear_reasons(uint64_t out[5]) {
+    GL_RT_SYNC("pgxp_depth_clear_reasons");
+    for (int i = 0; i < DCLR_N; i++) out[i] = s_depth_clear_reason[i];
+}
 void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears,
                                    uint64_t *seam_tris) {
     GL_RT_SYNC("pgxp_render_stats");
@@ -3875,7 +3890,7 @@ static void hiw_flush_tail(void) {
     s_hq_vn = 0;
 }
 
-static void flush_tex_batch(void) {
+static void flush_tex_batch_impl(void) {
     if (s_tb_n == 0) return;
     wide_stencil_ready();   /* before any of this batch's GL state */
     int nverts = s_tb_n, semi = s_tb_semi, dmode = s_tb_depth;
@@ -3988,7 +4003,29 @@ static void flat_batch_draw_hr_lines(int nverts, int nl) {
     if (nverts > pos) glDrawArrays(GL_TRIANGLES, pos, nverts - pos);
 }
 
-static void flush_flat_batch(void) {
+#define BATCH_SITE_CAP 128
+typedef struct { int line; uint64_t count; } BatchSite;
+static BatchSite s_batch_sites[2][BATCH_SITE_CAP];
+static void batch_site_note(int kind, int line) {
+    if (kind ? s_fb_n == 0 : s_tb_n == 0) return;
+    BatchSite *t = s_batch_sites[kind];
+    for (unsigned i = (unsigned)line % BATCH_SITE_CAP, n = 0; n < BATCH_SITE_CAP;
+         i = (i + 1) % BATCH_SITE_CAP, n++) {
+        if (t[i].line == line) { t[i].count++; return; }
+        if (!t[i].line) { t[i].line = line; t[i].count = 1; return; }
+    }
+}
+int gl_renderer_batch_sites(int kind, int *lines, uint64_t *counts, int cap) {
+    GL_RT_SYNC("batch_sites");
+    int n = 0;
+    for (int i = 0; i < BATCH_SITE_CAP && n < cap; i++) {
+        const BatchSite *b = &s_batch_sites[kind ? 1 : 0][i];
+        if (b->line) { lines[n] = b->line; counts[n] = b->count; n++; }
+    }
+    return n;
+}
+
+static void flush_flat_batch_impl(void) {
     if (s_fb_n == 0) return;
     wide_stencil_ready();   /* before any of this batch's GL state */
     if (s_fb_mode != GL_TRIANGLES && !hiw_on())
@@ -4150,6 +4187,7 @@ static void depth_clear_now(void) {
     s_fb_n = 6;
     flush_flat_batch();
     s_depth_clears++;
+    s_depth_clear_reason[s_depth_need_reason]++;
     { FILE *f = pgxp_tri_log(); if (f) fprintf(f, "C\n"); }
 }
 /* Before a depth-tested triangle: clear when the drawing area changed since
@@ -4160,7 +4198,7 @@ static void depth_before_tri(void) {
     const float avg = (s_pz[0] + s_pz[1] + s_pz[2]) * (1.0f / 3.0f);
     if (s_depth_used && s_pgxp_depth_threshold > 0.0f &&
         avg - s_depth_last_avg >= s_pgxp_depth_threshold)
-        s_depth_need_clear = 1;
+        DEPTH_REQUEST_CLEAR(DCLR_THRESHOLD);
     s_depth_last_avg = avg;
     if (s_depth_need_clear) {
         s_depth_need_clear = 0;
@@ -4556,34 +4594,13 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
         flush_flat_batch();   /* painter order: flat GEO before textured */
         int twx = s_tw_mask_x, twy = s_tw_mask_y, tox = s_tw_off_x, toy = s_tw_off_y;
         int gate = bd_prim_gate(xs, 3, 1); /* backdrop-stretch gate is also a batch key */
-        /* Batch key: keep opaque as -1. Dual-source (4) is only for semi modes
-         * 0/1/3 when mask-check is off — never coalesce opaque into that key.
-         * Mixing opaque+semi under u_semimode==4 made additive particle/glow
-         * batches (CTR Naughty Dog intro binary funnel) paint over later
-         * opaque crate flaps whenever submission order and STP bits disagreed
-         * with the dual-source path's assumptions. */
-        int batch_semi;
-        if (semi < 0)
-            batch_semi = -1;
-        else if (!s_mask_check && semi != 2)
-            batch_semi = 4;
-        else
-            batch_semi = semi;
-        /* STP draw-ORDER correctness. flush_tex_batch's conservative two-pass
-         * path draws pass 1 = every prim's STP=0 texels then pass 2 = every
-         * prim's STP=1 texels — a behind prim's semi texels then overwrite a
-         * front prim's opaque texels (Tomba AP-block / CTR intro flaps). The
-         * dual-source single-pass path avoids that WITHIN one prim, but
-         * batching many overlapping semi quads (digit particles + glow) still
-         * mis-orders against neighbouring opaque geometry. Isolate EVERY
-         * semi-transparent textured prim: drain the open batch, draw this
-         * prim alone (composited fully before the next), let opaque prims
-         * keep batching. Cost is one draw per semi prim. A separately opted-in
-         * immutable bank may batch the single-pass dual-source cases: it
-         * cannot alias a render target, keeps painter order, and still splits
-         * on opaque transitions, bank/state changes, masking or subtraction. */
-        int isolate = semi >= 0 &&
-            !mod_texture_bank_batchable(s_selected_bank_tex != 0, s_mask_check, semi);
+        /* Batch key and isolation come from the build's tier
+         * (gl_batch_policy.h): LLE draws every semi prim alone; HLE keeps
+         * painter-ordered opaque + modes 0/1/3 runs in one dual-source draw. */
+        const GlBatchClass batch_class = gl_batch_classify(semi, s_mask_check,
+            mod_texture_bank_batchable(s_selected_bank_tex != 0, s_mask_check, semi));
+        const int batch_semi = batch_class.key;
+        const int isolate = batch_class.isolate;
         const int tdmode = pgxp_tri_depth_mode(semi);
         if (tdmode) depth_before_tri();
         int reason = -1;
@@ -4982,7 +4999,7 @@ static void glb_set_depth_triangle(int enabled, float z0, float z1, float z2) {
 }
 static void glb_set_draw_area(int x1,int y1,int x2,int y2) {
     if (s_depth_used && (x1 != s_area_x1 || y1 != s_area_y1 || x2 != s_area_x2 || y2 != s_area_y2))
-        s_depth_need_clear = 1;   /* PGXP depth: a new drawing area starts clean */
+        DEPTH_REQUEST_CLEAR(DCLR_AREA);   /* PGXP depth: a new drawing area starts clean */
     flush_flat_batch(); flush_tex_batch(); s_area_x1=x1; s_area_y1=y1; s_area_x2=x2; s_area_y2=y2; sw_set_draw_area(x1,y1,x2,y2); }
 static void glb_get_draw_area(int *x1,int *y1,int *x2,int *y2) { sw_get_draw_area(x1,y1,x2,y2); }
 static void glb_set_draw_offset(int x,int y) { flush_flat_batch(); flush_tex_batch(); s_off_x=x; s_off_y=y; sw_set_draw_offset(x,y); }
@@ -5090,7 +5107,7 @@ static void glb_draw_gouraud_triangle(int x0,int y0,uint16_t c0,int x1,int y1,ui
 }
 static void glb_fill_rect(int x,int y,int w,int h,uint16_t c){
     if (pass_refuse_write("fill", x, y, w, h)) return;
-    if (s_depth_used) s_depth_need_clear = 1;   /* PGXP depth: the image under it is gone */
+    if (s_depth_used) DEPTH_REQUEST_CLEAR(DCLR_FILL);   /* PGXP depth: the image under it is gone */
     if (cpu_raster_required()) {
         int faithful = native_draw_begin();
         sw_fill_rect(x,y,w,h,c);
@@ -5937,6 +5954,7 @@ static int init_gpu_raster(void) {
                 "mask-bit stencil, texture window, GPU copy/upload)\n", s_out_scale,
                 s_hiw ? " windowed" : "");
     }
+    fprintf(stdout, "psxrecomp: GL textured batching = %s\n", gl_batch_policy_name());
     return 1;
 }
 
@@ -7062,7 +7080,7 @@ static void gl_perf_present_enter(void) {
     s_bdg_applied = 0; s_bdg_prims = 0; s_bdg_clearx = -999999;
     /* PGXP depth (G1.14): every displayed frame starts with a clear depth
      * buffer, whatever the game does with its drawing areas. */
-    if (s_depth_used) s_depth_need_clear = 1;
+    if (s_depth_used) DEPTH_REQUEST_CLEAR(DCLR_PRESENT);
     /* Replay: taken on the emulation thread when the present was recorded. */
     { extern void psx_ws_dbg_gate_frame_snapshot(void); if (!rth_replaying()) psx_ws_dbg_gate_frame_snapshot(); }
     if (!s_pf_on || rthf_owns_timer()) return;
@@ -12316,6 +12334,9 @@ static int fg_generate(double t, int swap) {
     const int real_dneed = s_depth_need_clear, real_dused = s_depth_used;
     const float real_davg = s_depth_last_avg;
     const uint64_t real_dtris = s_depth_tris, real_dclears = s_depth_clears;
+    uint64_t real_dreason[DCLR_N];
+    memcpy(real_dreason, s_depth_clear_reason, sizeof real_dreason);
+    const int real_dneed_reason = s_depth_need_reason;
     s_pz_valid = 0;
     s_depth_need_clear = 1;
     DirtyRect pack = s_pack_dirty, sten = s_stencil_stale, cpu = s_cpu_dirty;
@@ -12422,6 +12443,8 @@ static int fg_generate(double t, int swap) {
     s_pc_valid = real_pc; s_pq_valid = real_pq; s_pz_valid = real_pz;
     s_depth_need_clear = real_dneed; s_depth_used = real_dused; s_depth_last_avg = real_davg;
     s_depth_tris = real_dtris; s_depth_clears = real_dclears;
+    memcpy(s_depth_clear_reason, real_dreason, sizeof real_dreason);
+    s_depth_need_reason = real_dneed_reason;
     s_pack_dirty = pack; s_stencil_stale = sten; s_cpu_dirty = cpu;
     s_stencil_valid = sten_valid; s_gpu_dirty = gpu_dirty;
     memcpy(s_present_dirty, pres_dirty, sizeof pres_dirty);

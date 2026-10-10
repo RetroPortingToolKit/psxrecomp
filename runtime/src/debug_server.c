@@ -19,6 +19,7 @@
 #include "debug_server.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
+#include "guest_cycle_profile.h"
 #include "psx_video_timing.h"
 #include "psx_netplay.h"
 #include "psx_bss.h"
@@ -321,6 +322,9 @@ static uint32_t s_input_route_count = 0;
 static uint32_t s_input_route_index = 0;
 static uint32_t s_input_route_remaining = 0;
 static int      s_input_route_active = 0;
+/* input_route_start at_frame: the route waits for this vblank count, so a
+ * route replays on the same guest frames in every run (0 = start now). */
+static uint64_t s_input_route_start_frame = 0;
 
 /* ---- Frontend turbo override ---- */
 static volatile int s_turbo_enabled = 0;
@@ -2053,6 +2057,12 @@ static inline void cyc_watch_observe(uint32_t block_leader_phys);  /* defined be
  * actually ran. Entry-stamp attribution is leaf-biased but honest. */
 volatile uint32_t g_psx_last_fn_entry = 0;
 
+/* Last basic-block leader (phys) observed by debug_server_cyc_observe, which
+ * the recompiler emits at every compiled block leader and the dirty-RAM
+ * interpreter calls per block. Read by the guest-cycle profile ring. Stays 0
+ * in PSX_NO_DEBUG_TOOLS builds, which emit no per-block hook. */
+volatile uint32_t g_psx_last_block = 0;
+
 /* Addressable entry for overlay CPS callbacks (header inlines the Release path). */
 void debug_server_log_call_entry_fn(uint32_t func_addr) {
 #ifdef PSX_NO_DEBUG_TOOLS
@@ -2674,8 +2684,9 @@ void debug_server_cyc_observe(uint32_t block_leader_phys) {
     (void)block_leader_phys;
     return;
 #else
-    if (s_fmv_quiet) return;
     uint32_t phys = block_leader_phys & 0x1FFFFFFFu;
+    g_psx_last_block = phys;
+    if (s_fmv_quiet) return;
     /* ND debug: PSX_ND_WOOD_CLEAR80=1 clears model+184 bit0x80 at the flag-load
      * leader so 0x5CF/'cras' models enter NdIntroWoodBatchSetup's textured path.
      * Fires before lw v1,184(a2) @ AB3C. Default-off. */
@@ -5366,7 +5377,7 @@ static void handle_geom_correction(int id, const char *json)
              "\"culling\":%d,"
              "\"lookups\":%llu,\"dataflow_hit\":%llu,\"fallback_hit\":%llu,"
              "\"native\":%llu,\"value_mismatch\":%llu,\"trunc_reject\":%llu,"
-             "\"tolerance_reject\":%llu,\"w_valid\":%llu,"
+             "\"tolerance_reject\":%llu,\"depth_only\":%llu,\"w_valid\":%llu,"
              "\"produced\":%llu,\"swc2_stores\":%llu,\"ppp_produced\":%llu,"
              "\"ppp_window_fallback\":%llu,"
              "\"tri_precise\":%llu,\"tri_mixed\":%llu,\"tri_native\":%llu,"
@@ -5394,6 +5405,7 @@ static void handle_geom_correction(int id, const char *json)
              (unsigned long long)ps.value_mismatch,
              (unsigned long long)ps.trunc_reject,
              (unsigned long long)ps.tolerance_reject,
+             (unsigned long long)ps.depth_only,
              (unsigned long long)ps.w_valid,
              (unsigned long long)ps.produced,
              (unsigned long long)ps.swc2_stores,
@@ -5552,8 +5564,9 @@ static void handle_pgxp_miss_ring(int id, const char *json)
  * with any packet vertex inside [x0,x1]x[y0,y1] (packet integers). Returns
  * the newest N matches (default 4096) oldest first. Per triangle: packet
  * address, opcode, and per vertex the packet word, its integers, the 16.16
- * position handed to the rasterizer and its source (0 native, 1 dataflow,
- * 2 fallback). Join vertices by word across triangles to find cracks. */
+ * position handed to the rasterizer, its source (0 native, 1 fallback,
+ * 2 dataflow) and the validated GTE depth handed on (0 none). Join vertices
+ * by word across triangles to find cracks. */
 static void handle_pgxp_tri_ring(int id, const char *json)
 {
     const PGXPTriRecord *ring; uint32_t cap;
@@ -5598,8 +5611,8 @@ static void handle_pgxp_tri_ring(int id, const char *json)
             r->op, r->pass);
         for (int i = 0; i < 3; i++)
             p += (size_t)snprintf(buf + p, sz - p,
-                "%s[%u,\"0x%08X\",%d,%d,%d,%d,%u]", i ? "," : "", r->vidx[i], r->word[i],
-                r->raw_x[i], r->raw_y[i], r->x16[i], r->y16[i], r->src[i]);
+                "%s[%u,\"0x%08X\",%d,%d,%d,%d,%u,%u]", i ? "," : "", r->vidx[i], r->word[i],
+                r->raw_x[i], r->raw_y[i], r->x16[i], r->y16[i], r->src[i], r->z[i]);
         p += (size_t)snprintf(buf + p, sz - p, "]}");
     }
     snprintf(buf + p, sz - p, "]}");
@@ -5703,14 +5716,28 @@ static void handle_pgxp(int id, const char *json)
         if (*p == '-' || (*p >= '0' && *p <= '9') || *p == '.')
             pgxp_set_tolerance((float)strtod(p, NULL));
     }
+    /* Renderer side (G1.14): depth-buffer state and cumulative counts of
+     * depth-tested triangles, depth clears and seam-expanded triangles. */
+    uint64_t depth_tris = 0, depth_clears = 0, seam_tris = 0;
+    gl_renderer_pgxp_render_stats(&depth_tris, &depth_clears, &seam_tris);
+    uint64_t dr[5];
+    gl_renderer_pgxp_depth_clear_reasons(dr);
     send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%d,\"cpu_mode\":%d,"
              "\"tolerance\":%.3f,\"position_fallback\":%d,"
              "\"preserve_projection\":%d,\"culling\":%d,"
-             "\"suppress\":%u,\"active\":%d}",
+             "\"suppress\":%u,\"active\":%d,\"depth_buffer\":%d,"
+             "\"depth_tris\":%llu,\"depth_clears\":%llu,\"seam_tris\":%llu,"
+             "\"depth_clear_reasons\":{\"config\":%llu,\"area\":%llu,\"fill\":%llu,"
+             "\"threshold\":%llu,\"present\":%llu}}",
              id, pgxp_enabled(), pgxp_cpu_mode(), (double)pgxp_tolerance(),
              pgxp_position_fallback(), pgxp_preserve_projection(),
              pgxp_culling(),
-             (unsigned)pgxp_test_suppress_depth(), pgxp_test_active());
+             (unsigned)pgxp_test_suppress_depth(), pgxp_test_active(),
+             gl_renderer_get_pgxp_depth(), (unsigned long long)depth_tris,
+             (unsigned long long)depth_clears, (unsigned long long)seam_tris,
+             (unsigned long long)dr[0], (unsigned long long)dr[1],
+             (unsigned long long)dr[2], (unsigned long long)dr[3],
+             (unsigned long long)dr[4]);
 }
 
 static void handle_gpu_state(int id, const char *json)
@@ -7188,7 +7215,8 @@ static void handle_audio_stats(int id, const char *json)
              "\"out\":{\"active\":%d,\"mode\":\"%s\",\"host_rate\":%d,"
              "\"fill_ms\":%.1f,\"target_ms\":%.1f,\"underruns\":%llu,"
              "\"overflow_drops\":%llu,"
-             "\"correction\":%.5f}}",
+             "\"correction\":%.5f},"
+             "\"spu_out\":{\"queued\":%u,\"drops\":%llu}}",
              id,
              (unsigned long long)st.tap_frames[0],
              (unsigned long long)st.tap_nonzero[0],
@@ -7213,7 +7241,9 @@ static void handle_audio_stats(int id, const char *json)
              fill_ms, target_ms,
              (unsigned long long)out_underruns,
              (unsigned long long)overflow_drops,
-             correction);
+             correction,
+             spu_output_available(),
+             (unsigned long long)spu_output_overflow_drops());
 }
 
 static void handle_audio_wav(int id, const char *json)
@@ -8259,7 +8289,6 @@ static void handle_input_route_append(int id, const char *json)
 
 static void handle_input_route_start(int id, const char *json)
 {
-    (void)json;
     if (s_input_route_count == 0) {
         send_err(id, "input route is empty"); return;
     }
@@ -8269,10 +8298,13 @@ static void handle_input_route_start(int id, const char *json)
     s_pad_type_override = -1;
     s_input_route_index = 0;
     s_input_route_remaining = s_input_route[0].frames;
+    const int at = json_get_int(json, "at_frame", 0);
+    s_input_route_start_frame = at > 0 && (uint64_t)at > s_frame_count ? (uint64_t)at : 0u;
     s_input_route_active = 1;
     send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u,\"start_frame\":%llu}\n",
              id, (unsigned)s_input_route_count,
-             (unsigned long long)s_frame_count);
+             (unsigned long long)(s_input_route_start_frame ? s_input_route_start_frame
+                                                            : s_frame_count));
 }
 
 static void handle_input_route_stop(int id, const char *json)
@@ -8645,6 +8677,28 @@ static void handle_frame_perf(int id, const char *json)
              wide[13], wide[14], wide[15], wide[16], wide[17],
              (int)n43[0], n43[1], n43[3], n43[5], n43[6], n43[7], n43[9], npp,
              n43[13], n43[15]);
+}
+
+/* batch_sites: cumulative non-empty batch flushes by caller line in
+ * gpu_gl_renderer.c, "tex" and "flat" as [line,count] pairs. Diff two reads
+ * to attribute a window (always on; no arming). */
+static void handle_batch_sites(int id, const char *json)
+{
+    (void)json;
+    char buf[8192];
+    int len = snprintf(buf, sizeof buf, "{\"id\":%d,\"ok\":true", id);
+    for (int kind = 0; kind < 2; kind++) {
+        int lines[128]; uint64_t counts[128];
+        int n = gl_renderer_batch_sites(kind, lines, counts, 128);
+        len += snprintf(buf + len, sizeof buf - (size_t)len, ",\"%s\":[",
+                        kind ? "flat" : "tex");
+        for (int i = 0; i < n && len < (int)sizeof buf - 64; i++)
+            len += snprintf(buf + len, sizeof buf - (size_t)len, "%s[%d,%llu]",
+                            i ? "," : "", lines[i], (unsigned long long)counts[i]);
+        len += snprintf(buf + len, sizeof buf - (size_t)len, "]");
+    }
+    snprintf(buf + len, sizeof buf - (size_t)len, "}");
+    send_fmt("%s", buf);
 }
 
 /* gl_ws_ablate mode=<0..3>: native-wide mirror ablation for perf attribution.
@@ -15487,6 +15541,101 @@ static void handle_phase_profile(int id, const char *json)
              (unsigned long long)s_phase_interp_all);
 }
 
+/* gcp_ring: always-on guest-cycle profile ring (guest_cycle_profile.c).
+ *   {"cmd":"gcp_ring"}                               -> ring stats
+ *   {"cmd":"gcp_ring","frame_lo":a,"frame_hi":b,"path":"x.csv"}
+ *       -> writes every held sample with guest frame in [a, b] as CSV
+ *          (seq,cycle,frame,weight,phase,flags,block,fn,ra,native,disp)
+ *   {"cmd":"gcp_ring","frame_lo":a,"frame_hi":b,"key":"fn|block|ra|native|disp",
+ *    "top":N}  -> top N keys by weight (sample periods) in the window
+ * One weight unit = `period` guest cycles. Samples are taken on a fixed
+ * guest-cycle cadence (folded into the device deadline), so shares are
+ * shares of guest CPU time, including idle-skipped waits. */
+static void handle_gcp_ring(int id, const char *json)
+{
+    const uint64_t total = guest_cycle_profile_total();
+    const uint64_t oldest = guest_cycle_profile_oldest();
+    GcpSample first, last;
+    int have = total > oldest && guest_cycle_profile_get(oldest, &first) &&
+               guest_cycle_profile_get(total - 1u, &last);
+    const int lo = json_get_int(json, "frame_lo", 0);
+    const int hi = json_get_int(json, "frame_hi", -1);
+    const uint64_t flo = lo < 0 ? 0u : (uint64_t)lo;
+    const uint64_t fhi = hi < 0 ? UINT64_MAX : (uint64_t)hi;
+    char head[384];
+    snprintf(head, sizeof head,
+             "\"id\":%d,\"ok\":true,\"period\":%u,\"total\":%llu,"
+             "\"capacity\":%u,\"oldest_frame\":%u,\"newest_frame\":%u,"
+             "\"oldest_cycle\":%llu,\"newest_cycle\":%llu",
+             id, guest_cycle_profile_period(), (unsigned long long)total,
+             guest_cycle_profile_capacity(), have ? first.frame : 0u,
+             have ? last.frame : 0u,
+             (unsigned long long)(have ? first.cycle : 0u),
+             (unsigned long long)(have ? last.cycle : 0u));
+    char path[512];
+    if (json_get_str(json, "path", path, sizeof path) && path[0]) {
+        uint64_t rows = 0, weight = 0;
+        if (!guest_cycle_profile_write_csv(path, flo, fhi, &rows, &weight)) {
+            send_err(id, "cannot open path");
+            return;
+        }
+        send_fmt("{%s,\"rows\":%llu,\"weight\":%llu}", head,
+                 (unsigned long long)rows, (unsigned long long)weight);
+        return;
+    }
+    char key[16] = "";
+    if (!json_get_str(json, "key", key, sizeof key) || !key[0]) {
+        send_fmt("{%s}", head);
+        return;
+    }
+    int top = json_get_int(json, "top", 32);
+    if (top < 1) top = 1;
+    if (top > 256) top = 256;
+    enum { HSLOTS = 16384 };
+    uint32_t *ha = (uint32_t *)calloc(HSLOTS, sizeof(uint32_t));
+    uint64_t *hw = (uint64_t *)calloc(HSLOTS, sizeof(uint64_t));
+    uint8_t  *hu = (uint8_t *)calloc(HSLOTS, 1);
+    if (!ha || !hw || !hu) { free(ha); free(hw); free(hu); send_err(id, "oom"); return; }
+    uint64_t weight = 0, rows = 0, drops = 0;
+    for (uint64_t s = oldest; s < total; s++) {
+        GcpSample e;
+        if (!guest_cycle_profile_get(s, &e)) continue;
+        if (e.frame < flo || e.frame > fhi) continue;
+        uint32_t k = key[0] == 'b' ? e.block : key[0] == 'r' ? e.ra :
+                     key[0] == 'n' ? e.native : key[0] == 'd' ? e.disp : e.fn;
+        rows++;
+        weight += e.weight;
+        uint32_t h = (k >> 2) * 2654435761u;
+        int placed = 0;
+        for (uint32_t p = 0; p < 64; p++) {
+            uint32_t i = (h + p) & (HSLOTS - 1u);
+            if (hu[i] && ha[i] == k) { hw[i] += e.weight; placed = 1; break; }
+            if (!hu[i]) { hu[i] = 1; ha[i] = k; hw[i] = e.weight; placed = 1; break; }
+        }
+        if (!placed) drops += e.weight;
+    }
+    char *buf = (char *)malloc(1024u + (size_t)top * 96u);
+    if (!buf) { free(ha); free(hw); free(hu); send_err(id, "oom"); return; }
+    size_t pos = (size_t)snprintf(buf, 1024u,
+        "{%s,\"key\":\"%s\",\"rows\":%llu,\"weight\":%llu,\"drops\":%llu,\"top\":[",
+        head, key, (unsigned long long)rows, (unsigned long long)weight,
+        (unsigned long long)drops);
+    for (int t = 0; t < top; t++) {
+        int best = -1;
+        for (int i = 0; i < HSLOTS; i++)
+            if (hu[i] && (best < 0 || hw[i] > hw[best])) best = i;
+        if (best < 0) break;
+        pos += (size_t)snprintf(buf + pos, 96u,
+            "%s{\"addr\":\"0x%08X\",\"weight\":%llu,\"share\":%.4f}",
+            t ? "," : "", ha[best], (unsigned long long)hw[best],
+            weight ? (double)hw[best] / (double)weight : 0.0);
+        hu[best] = 0;
+    }
+    snprintf(buf + pos, 8u, "]}");
+    debug_server_send_line(buf);
+    free(buf); free(ha); free(hw); free(hu);
+}
+
 /* phase_hot: top guest functions by native wall-time samples (cumulative
  * since boot — diff two snapshots for a window). {"cmd":"phase_hot","top":N}
  * Optional {"set":"static"} ranks the STATIC-phase histogram instead
@@ -15661,6 +15810,7 @@ static const CmdEntry s_commands[] = {
     { "vsync_query_hle",   handle_vsync_query_hle },
     { "warm_cd_route",     handle_warm_cd_route },
     { "phase_hot",         handle_phase_hot },
+    { "gcp_ring",          handle_gcp_ring },
     { "idle_skip",         handle_idle_skip },
     { "lockstep",          handle_lockstep },
     { "lockstep_func",     handle_lockstep_func },
@@ -15737,6 +15887,7 @@ static const CmdEntry s_commands[] = {
     { "gpu_timeline",      handle_gpu_timeline },
     { "nclip_stats",       handle_nclip_stats },
     { "frame_perf",        handle_frame_perf },
+    { "batch_sites",       handle_batch_sites },
     { "post_aa",           handle_post_aa },
     { "fmv_chroma",        handle_fmv_chroma },
     { "texture_lod",       handle_texture_lod },
@@ -16077,6 +16228,8 @@ void debug_server_set_cpu(CPUState *cpu)
 {
     s_cpu = cpu;
     debug_cpu_ptr = cpu;
+    /* Always-on guest-cycle profile ring (gcp_ring), Release included. */
+    guest_cycle_profile_install();
 }
 
 /* Parse PSX_WTRACE_BOOT_RANGES (see debug_server_init). Returns the number of
@@ -16893,7 +17046,8 @@ int debug_server_is_connected(void)
 
 int debug_server_get_input_override(void)
 {
-    if (s_input_route_active && s_input_route_index < s_input_route_count) {
+    if (s_input_route_active && s_input_route_index < s_input_route_count &&
+        s_frame_count >= s_input_route_start_frame) {
         int current = (int)s_input_route[s_input_route_index].buttons;
         if (s_input_route_remaining > 0 && --s_input_route_remaining == 0) {
             s_input_route_index++;
