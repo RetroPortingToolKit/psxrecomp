@@ -133,6 +133,9 @@ static int      s_img_dirty = 1;
 static char     s_status_msg[OSD_MAX_CHARS];
 static int      s_status_active;
 static int      s_status_dirty = 1;
+static char     s_diagnostic_msg[2][OSD_MAX_CHARS];
+static int      s_diagnostic_active;
+static int      s_diagnostic_dirty = 1;
 
 static int      s_volume = 100;          /* host master 0..100 */
 static int      s_vol_pct = 100;         /* last shown bar fill */
@@ -143,7 +146,7 @@ static int      s_vol_dirty = 1;
 static int      s_needs_clear;
 
 #define OSD_IMG_W  ((OSD_PAD_X * 2 + OSD_MAX_CHARS * OSD_GLYPH_W) * OSD_SCALE)
-#define OSD_IMG_H  ((OSD_PAD_Y * 2 + OSD_GLYPH_H) * OSD_SCALE)
+#define OSD_IMG_H  ((OSD_PAD_Y * 2 + OSD_GLYPH_H * 3) * OSD_SCALE)
 static uint32_t s_img[OSD_IMG_W * OSD_IMG_H];
 static int      s_img_w;
 static int      s_img_h;
@@ -202,10 +205,15 @@ static int vol_visible(void) {
 }
 
 static void rasterize_text(const char *msg) {
-    int n = (int)strlen(msg);
-    if (n > OSD_MAX_CHARS) n = OSD_MAX_CHARS;
+    int n = 0, columns = 0, lines = 1;
+    for(const char *p=msg;*p && lines<=3;++p) {
+        if(*p=='\n') {if(columns>n)n=columns;columns=0;++lines;}
+        else if(columns<OSD_MAX_CHARS)++columns;
+    }
+    if(columns>n)n=columns;
+    if(lines>3)lines=3;
     s_img_w = (OSD_PAD_X * 2 + n * OSD_GLYPH_W) * OSD_SCALE;
-    s_img_h = (OSD_PAD_Y * 2 + OSD_GLYPH_H) * OSD_SCALE;
+    s_img_h = (OSD_PAD_Y * 2 + OSD_GLYPH_H * lines) * OSD_SCALE;
     if (s_img_w < 1) s_img_w = 1;
     if (s_img_h < 1) s_img_h = 1;
     if (s_img_w > OSD_IMG_W) s_img_w = OSD_IMG_W;
@@ -214,8 +222,11 @@ static void rasterize_text(const char *msg) {
     for (int i = 0; i < s_img_w * s_img_h; i++)
         s_img[i] = 0xFF202020u;
 
-    for (int ci = 0; ci < n; ci++) {
-        unsigned char ch = (unsigned char)msg[ci];
+    int ci=0,line=0;
+    for (const char *p=msg;*p && line<3;++p) {
+        unsigned char ch = (unsigned char)*p;
+        if(ch=='\n') {ci=0;++line;continue;}
+        if(ci>=OSD_MAX_CHARS)continue;
         if (ch < 32 || ch > 126) ch = '?';
         const uint8_t *g = FONT8X8[ch - 32];
         for (int row = 0; row < OSD_GLYPH_H; row++) {
@@ -223,7 +234,7 @@ static void rasterize_text(const char *msg) {
             for (int col = 0; col < OSD_GLYPH_W; col++) {
                 if (!(bits & (1u << col))) continue;
                 int x0 = (OSD_PAD_X + ci * OSD_GLYPH_W + col) * OSD_SCALE;
-                int y0 = (OSD_PAD_Y + row) * OSD_SCALE;
+                int y0 = (OSD_PAD_Y + line*OSD_GLYPH_H + row) * OSD_SCALE;
                 for (int dy = 0; dy < OSD_SCALE; dy++) {
                     for (int dx = 0; dx < OSD_SCALE; dx++) {
                         int x = x0 + dx, y = y0 + dy;
@@ -234,6 +245,7 @@ static void rasterize_text(const char *msg) {
                 }
             }
         }
+        ++ci;
     }
     s_img_dirty = 0;
 }
@@ -361,6 +373,21 @@ void host_osd_set_status(const char *msg) {
 #endif
 }
 
+void host_osd_set_diagnostics(const char *first,const char *second) {
+#if !HOST_OSD_VISUAL
+    (void)first;(void)second;
+#else
+    char rows[2][OSD_MAX_CHARS]={{0}};
+    snprintf(rows[0],sizeof rows[0],"%s",first?first:"");
+    snprintf(rows[1],sizeof rows[1],"%s",second?second:"");
+    if(!memcmp(rows,s_diagnostic_msg,sizeof rows))return;
+    memcpy(s_diagnostic_msg,rows,sizeof rows);
+    int active=rows[0][0] || rows[1][0];
+    if(s_diagnostic_active && !active)s_needs_clear=1;
+    s_diagnostic_active=active;s_diagnostic_dirty=1;
+#endif
+}
+
 void host_osd_show_volume(int percent, int duration_ms) {
 #if !HOST_OSD_VISUAL
     (void)percent;
@@ -398,7 +425,7 @@ int host_osd_needs_present(void) {
 #if !HOST_OSD_VISUAL
     return 0;
 #else
-    if (msg_visible() || s_status_active || vol_visible()) return 1;
+    if (msg_visible() || s_status_active || s_diagnostic_active || vol_visible()) return 1;
     return s_needs_clear;
 #endif
 }
@@ -411,19 +438,20 @@ int host_osd_image(const uint32_t **pixels, int *w, int *h) {
     return 0;
 #else
     const int show_msg = msg_visible();
-    if (!show_msg && !s_status_active) {
+    if (!show_msg && !s_status_active && !s_diagnostic_active) {
         if (pixels) *pixels = NULL;
         if (w) *w = 0;
         if (h) *h = 0;
         return 0;
     }
-    if (show_msg) {
-        if (s_img_dirty) rasterize_text(s_msg);
-    } else {
-        if (s_status_dirty || s_img_dirty) {
-            rasterize_text(s_status_msg);
-            s_status_dirty = 0;
-        }
+    if(s_img_dirty || s_status_dirty || s_diagnostic_dirty) {
+        char text[3*OSD_MAX_CHARS+3];
+        const char *main=show_msg?s_msg:(s_status_active?s_status_msg:"");
+        snprintf(text,sizeof text,"%s%s%s%s%s",main,
+            main[0] && s_diagnostic_msg[0][0]?"\n":"",s_diagnostic_msg[0],
+            (main[0] || s_diagnostic_msg[0][0]) && s_diagnostic_msg[1][0]?"\n":"",
+            s_diagnostic_msg[1]);
+        rasterize_text(text);s_status_dirty=s_diagnostic_dirty=0;
     }
     if (pixels) *pixels = s_img;
     if (w) *w = s_img_w;
@@ -457,7 +485,7 @@ void host_osd_present_done(void) {
 #if !HOST_OSD_VISUAL
     return;
 #else
-    if (!s_active && !s_status_active && !s_vol_active) s_needs_clear = 0;
+    if (!s_active && !s_status_active && !s_diagnostic_active && !s_vol_active) s_needs_clear = 0;
 #endif
 }
 

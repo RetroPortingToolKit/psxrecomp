@@ -74,6 +74,8 @@ bool mod_runtime_netplay_input_active();
 /* "package/feature" keys of `plan` that qualify as own-view features. */
 std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& plan);
 const std::string& mod_runtime_fingerprint();
+/* Host diagnostics may copy the persisted offline selection from this root. */
+const std::filesystem::path& mod_runtime_root();
 const std::filesystem::path& mod_runtime_effective_disc_path();
 /* Read an effective-disc file as whole sectors (true end-of-file tail bytes
  * included). max_bytes = 0 allows a full CD. Emulation-thread only. */

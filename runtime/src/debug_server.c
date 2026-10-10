@@ -19,6 +19,7 @@
 #include "debug_server.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
+#include "host_osd.h"
 #include "psx_video_timing.h"
 #include "psx_netplay.h"
 #include "psx_bss.h"
@@ -10374,6 +10375,34 @@ static void handle_present_shot_seq(int id, const char *json)
              id, present_shot_seq(), present_shot_ok());
 }
 
+/* Capture host text independently of a visible present surface. This makes
+ * diagnostic input rows and runtime toasts inspectable in hidden runs. */
+static void handle_host_osd_shot(int id, const char *json)
+{
+    char path[512];
+    const uint32_t *pixels = NULL;
+    int w = 0, h = 0;
+    if (!json_get_str(json, "path", path, sizeof(path))) {
+        send_err(id, "need path"); return;
+    }
+    if (!host_osd_image(&pixels, &w, &h) || !pixels || w <= 0 || h <= 0) {
+        send_err(id, "no host OSD text image"); return;
+    }
+    uint8_t *rgb = (uint8_t *)malloc((size_t)w * h * 3);
+    if (!rgb) { send_err(id, "alloc failed"); return; }
+    for (size_t i = 0; i < (size_t)w * h; ++i) {
+        rgb[i*3] = (uint8_t)(pixels[i] >> 16);
+        rgb[i*3+1] = (uint8_t)(pixels[i] >> 8);
+        rgb[i*3+2] = (uint8_t)pixels[i];
+    }
+    FILE *file = fopen(path, "wb");
+    int ok = file && png_write_rgb(file, rgb, (uint32_t)w, (uint32_t)h);
+    if (file) fclose(file);
+    free(rgb);
+    if (!ok) { send_err(id, "png write failed"); return; }
+    send_fmt("{\"id\":%d,\"ok\":true,\"width\":%d,\"height\":%d}", id, w, h);
+}
+
 /* dump_buffer: dump a raw 512x240 VRAM region starting at display Y = `y` to a
  * PNG, regardless of what the game currently displays. Used to inspect BOTH
  * double-buffer halves (y=0 and y=256) coherently in one call to see whether a
@@ -15832,6 +15861,7 @@ static const CmdEntry s_commands[] = {
     { "screenshot_hires",  handle_screenshot_hires },
     { "present_shot",      handle_present_shot },
     { "present_shot_seq",  handle_present_shot_seq },
+    { "host_osd_shot",     handle_host_osd_shot },
     { "display_ring_get",  handle_display_ring_get },
     { "display_ring_aux",  handle_display_ring_aux },
     { "display_ring_stats", handle_display_ring_stats },

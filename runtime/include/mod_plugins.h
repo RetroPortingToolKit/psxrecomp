@@ -201,6 +201,10 @@ int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
  * queues a voice; the bank is latched when its next KEYON reaches the SPU. */
 int psx_mod_spu_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
 int psx_mod_spu_bind_voice_bank(unsigned voice, uint32_t bank);
+int psx_mod_spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
+void psx_mod_spu_private_voice_stop(uint32_t mask);
+int psx_mod_spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right);
+uint32_t psx_mod_spu_private_voice_active(void);
 /* PsyQ LoadImage completed synchronously: texture-cache flush, GP0 A0h
  * rectangle copy of w*h 16-bit pixels from guest RAM (provenance attributed
  * per word), then GP1(04h) DMA direction CPU->GP0 for uploads the library

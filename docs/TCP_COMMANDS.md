@@ -35,6 +35,11 @@ args of the form `key=value` become JSON fields (ints when numeric, else
 strings), so every server command is reachable, e.g.
 `debug_client.py --port 4370 gpu_frame_dump frame=14528 count=65536`.
 
+`host_osd_shot path=<absolute-png-path>` captures the current host text bitmap
+(status/toast and diagnostic input rows), including in hidden OpenGL runs.
+It does not need a visible window or alter guest VRAM. An empty overlay returns
+an error. The image is the text layer, rather than the full game presentation.
+
 ---
 
 ## Command inventory

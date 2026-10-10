@@ -2364,6 +2364,10 @@ const std::string& mod_runtime_fingerprint() {
     return state().plan.fingerprint;
 }
 
+const std::filesystem::path& mod_runtime_root() {
+    return state().manager.root();
+}
+
 const std::filesystem::path& mod_runtime_effective_disc_path() {
     return state().effective_disc_path;
 }

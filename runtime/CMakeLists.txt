@@ -537,6 +537,16 @@ if(BUILD_TESTING)
     target_link_libraries(host_keymap_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME host_keymap_test COMMAND host_keymap_test)
 
+    add_executable(host_osd_diagnostics_test
+        tests/test_host_osd_diagnostics.c src/host_osd.c)
+    target_include_directories(host_osd_diagnostics_test PRIVATE
+        include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(host_osd_diagnostics_test PRIVATE
+        SDL_MAIN_HANDLED RECOMP_LAUNCHER=1 PSX_SDL_NO_RENDER=1
+        $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(host_osd_diagnostics_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME host_osd_diagnostics_test COMMAND host_osd_diagnostics_test)
+
     add_executable(keyboard_pad_chord_test
         tests/test_keyboard_pad_chord.c
         src/psx_keybinds.c src/host_keymap.c)
