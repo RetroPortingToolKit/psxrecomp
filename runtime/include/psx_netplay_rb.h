@@ -52,6 +52,8 @@ void psx_netplay_rb_poll(struct CPUState *cpu, uint32_t resume_pc);
  * (same as savestate_poll). No-op when nothing is pending. Never returns on
  * success. */
 void psx_netplay_rb_flush_resume(void);
+/* psx_netplay.c: admit the Live tick a realign resumes into (1 = admitted). */
+int psx_netplay_live_realign_admit(void);
 
 /* 1 after flush_resume longjmp until finish_frame / abort — top-level
  * dispatch has no native call chain under the resume PC. */

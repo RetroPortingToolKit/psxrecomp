@@ -779,6 +779,37 @@ static void np_log_live_digest(uint32_t tick, const NetplayCoreParts *parts,
  * episode reloads from the newest provably-safe snap (≤ fork tick — HC is
  * confirmed through fork-1 by definition) and reseals both seats from
  * wire-authoritative history, converging the states. */
+/* PSX_RB_DET_SELFTEST=<K>: the replay-determinism test. Every K ticks the
+ * slot-0 host opens a rollback episode 16 ticks back although nothing was
+ * mispredicted, so every seat reloads a snap and replays confirmed rows over
+ * ticks it already ran live. Same snap + same rows must give the same
+ * machine: with PSX_RB_SNAP_AUDIT set, tools/rb_snap_audit_diff.py compares
+ * each replayed save with the live save of that tick section by section
+ * (CPU, RAM, timers, DMA, SIO/multitap, SPU, ...) and names the first field
+ * that differs. Off unless set. */
+static void np_det_selftest_tick(uint32_t done)
+{
+    static int k = -1;
+    static uint32_t last;
+    if (k < 0) {
+        const char *e = getenv("PSX_RB_DET_SELFTEST");
+        k = (e && *e) ? atoi(e) : 0;
+        if (k < 0) k = 0;
+    }
+    if (k <= 0 || g_np.local_slot != 0 || !g_np.rollback || done < 64u)
+        return;
+    if (done - last < (uint32_t)k)
+        return;
+    if (psx_netplay_rb_active() || psx_netplay_rb_tip_holding() ||
+        psx_netplay_rb_load_pending())
+        return;
+    last = done;
+    fprintf(stderr, "psxrecomp: rb det-selftest rewind mismatch=%u\n",
+            (unsigned)(done - 16u));
+    fflush(stderr);
+    (void)psx_netplay_rb_begin_rewind(done - 16u, g_np.slot_count > 1 ? 1 : 0);
+}
+
 static void np_try_hc_fork_recovery(uint32_t fork_tick)
 {
     uint32_t sim;
@@ -5016,6 +5047,21 @@ static int np_try_admit_load_barrier_unconfirmed(void)
     return 1;
 }
 
+/* A Live realign restores the snap at T and resumes the guest at the frame
+ * boundary after it, with the session already at T+1. Admit T+1 before the
+ * resume: resuming first ran frame T+1 unadmitted (no inputs latched, no
+ * advance), so the next frame was counted as T+1 and this peer ran one frame
+ * ahead of its tick label (4-seat race: L-saves after a NACK realign carried
+ * the next tick's clock; the realigned seat forked from every other). */
+int psx_netplay_live_realign_admit(void)
+{
+    if (!psx_netplay_active() || !g_np.rollback || g_np.xfer != NP_XFER_NONE)
+        return 1;
+    if (g_np.needs_advance)
+        return 1;
+    return np_try_admit_rollback();
+}
+
 int psx_netplay_poll_admit(void)
 {
     rnet_u32 sim;
@@ -5261,6 +5307,7 @@ void psx_netplay_finish_frame(void)
             np_rollback_reconcile_wire();
         psx_netplay_rb_pump();
         psx_netplay_rb_request_snap(done);
+        np_det_selftest_tick(done);
         /* Flush at vblank: MotK IRQ fast/mid paths used to skip poll_snap, so
          * deferred BB-edge saves never ran and the ring stayed empty. Prefer
          * IRQ BB-edge PCs — cpu->pc is often 0 during present/finish_frame. */
