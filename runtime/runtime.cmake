@@ -493,6 +493,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_lobby_client.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_bios_settle.c
     ${PSXRECOMP_ROOT}/runtime/src/netplay_exit_reason.c
+    ${PSXRECOMP_ROOT}/runtime/src/netplay_ice_hub.c
     ${PSXRECOMP_ROOT}/recompiler/src/config_loader.cpp
     ${PSXRECOMP_ROOT}/recompiler/src/ps1_exe_parser.cpp
     # (sljit Tier-2 in-process JIT backend removed 2026-07-15 — was disabled by

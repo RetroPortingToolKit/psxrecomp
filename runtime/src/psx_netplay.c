@@ -7,6 +7,7 @@
 #include "netplay_load_probe.h"
 #include "netplay_sim_pad_cache.h"
 #include "netplay_local_view.h"
+#include "netplay_ice_hub.h"
 
 #include "host_time.h"
 #include "memcard.h"
@@ -53,9 +54,9 @@
 #include "psx_cycles.h"
 #include "psx_scheduler.h"
 #include "spu.h"
-#if defined(PSX_HAS_LOBBY_CLIENT)
+/* Unconditional: the lobby client TU defines no-op stubs when it is off, and
+ * the host-relay-over-ICE handover below calls it either way. */
 #include "psx_lobby_client.h"
-#endif
 #endif
 
 #ifndef PSX_MAX_PLAYERS
@@ -142,6 +143,7 @@ void psx_netplay_config_defaults(PsxNetplayConfig *cfg)
     cfg->force_input_relay = 0;
     cfg->force_turn = 0;
     cfg->transport = 0;
+    cfg->transport_ice_hub = 0;
     cfg->guest_memcard = 0;
     cfg->host_spectates = 0;
     cfg->session_id = 1;
@@ -488,6 +490,9 @@ int  psx_netplay_start(const PsxNetplayConfig *cfg)
     (void)cfg;
     return -1;
 }
+int  psx_netplay_ice_stash_from_lobby(void) { return 0; }
+void psx_netplay_ice_stash_discard(void) {}
+int  psx_netplay_ice_stash_held(void) { return 0; }
 void psx_netplay_shutdown(void) {}
 void psx_netplay_cold_reset(void) {}
 void psx_netplay_stage_local(const PsxNetPad *pad) { (void)pad; }
@@ -637,6 +642,7 @@ typedef struct {
     PsxNetplayLoadProbe load_probe; /* guest's verified local LOAD probe/apply */
     /* Transport / ICE / diag (MotK online path). */
     int          use_ice;
+    int          ice_hub;        /* match runs over adopted waiting-room agents */
     int          ice_has_turn;
     int          force_input_relay;
     int          is_host;
@@ -3398,6 +3404,7 @@ int psx_netplay_is_running(void)
 const char *psx_netplay_transport_name(void)
 {
     if (!psx_netplay_active()) return "none";
+    if (g_np.ice_hub) return "ice_hub";
     return g_np.use_ice ? "ice" : "lan";
 }
 
@@ -3712,7 +3719,9 @@ static void np_diag_capture(const PsxNetplayConfig *cfg, int slots)
     const char *arch = "p2p";
     int players;
     if (!cfg) return;
-    if (cfg->force_input_relay)
+    if (cfg->transport_ice_hub)
+        arch = "ice_host_relay";
+    else if (cfg->force_input_relay)
         arch = "server_relay";
     else if (slots >= 3)
         arch = "host_relay";
@@ -3774,6 +3783,10 @@ static void drain_lobby_signals(void)
     if (!g_np.session) return;
     while (psx_lobby_poll_signal(&type, &flag, text, sizeof(text))) {
         RNetSignal sig;
+        /* Host relay over ICE: the adopted agents are frozen at COMPLETED.
+         * Nothing may be pushed into them; a stray legacy ICE signal is
+         * consumed and dropped. */
+        if (g_np.ice_hub) continue;
         memset(&sig, 0, sizeof(sig));
         /* Peers emit LOCAL_*; push_signal expects REMOTE_* for SDP/candidates. */
         if (type == (int)RNET_SIGNAL_LOCAL_SDP)
@@ -3790,35 +3803,29 @@ static void drain_lobby_signals(void)
 static void drain_lobby_signals(void) {}
 #endif
 
-static int resolve_use_ice(const PsxNetplayConfig *cfg)
+/* Transport for this launch: 0 = LAN UDP (bind + hub / dial), 1 = one
+ * negotiated ICE agent, 2 = the waiting room's connected agents (host relay
+ * over ICE), -1 = refuse. The decision itself is netplay_ice_hub.c (tested
+ * without a ROM); this adds the room lookup and the log lines. */
+static int resolve_transport(const PsxNetplayConfig *cfg)
 {
     int in_motk_room = 0;
+    int ice_built = 0;
+    PsxTransportChoice c;
 
-    if (cfg->transport == 2) return 0; /* force LAN */
 #if defined(PSX_HAS_LOBBY_CLIENT)
     in_motk_room = psx_lobby_connected() && psx_lobby_in_lobby();
 #endif
-
-    /* §108: MotK/BPE online lobbies always use lobby UDP SFU — LAN dial to
-     * relay_endpoint (or equal host/guest advertise). Match ICE / ice_p2p
-     * selection was removed; waiting-room ICE RTT may still run for delay
-     * hints only. Direct IP / LAN file lobby (no MotK seat) stays LAN UDP. */
-    /* Host relay (2026-10-01): an online room whose host carries the match
-     * launches transport "host" -- no server relay. Host: bind the advertised
-     * port, peer empty (accept-first / hub); guest: dial host_endpoint. That
-     * is the LAN path below, so it is excluded from the SFU rule here. */
-    if (cfg->transport_host) {
-        fprintf(stderr,
-                "psx_netplay: host relay — LAN transport (%s)\n",
-                cfg->peer_hostport && cfg->peer_hostport[0] ? "dial host" : "host binds");
-        fflush(stderr);
-        return 0;
-    }
+#if defined(RNET_ENABLE_ICE)
+    ice_built = 1;
+#endif
 #if defined(PSX_HAS_LOBBY_CLIENT) && defined(RNET_ENABLE_ICE)
     /* The server started this room on ICE (2 players the host relay cannot
      * carry): peer-to-peer over STUN/TURN, signalled over the lobby socket.
-     * Same-NAT peers advertise equal endpoints; that is not a relay. */
-    if (in_motk_room && !cfg->force_input_relay) {
+     * Same-NAT peers advertise equal endpoints; that is not a relay. A host
+     * relay over ICE launch (hub) or a legacy host relay is decided below. */
+    if (in_motk_room && !cfg->force_input_relay && !cfg->transport_ice_hub &&
+        !cfg->transport_host) {
         const PsxLobbyJoinInfo *ji = psx_lobby_join_info();
         if (ji && ji->transport_ice) {
             fprintf(stderr, "psx_netplay: lobby launch transport=ice — ICE peer-to-peer\n");
@@ -3827,29 +3834,171 @@ static int resolve_use_ice(const PsxNetplayConfig *cfg)
         }
     }
 #endif
-    if (cfg->force_input_relay || in_motk_room) {
-        if (!cfg->peer_hostport || !cfg->peer_hostport[0]) {
-            fprintf(stderr,
-                    "psx_netplay: MotK online / force_input_relay needs a "
-                    "peer or SFU endpoint (empty peer)\n");
-            fflush(stderr);
-            return -1;
-        }
-        fprintf(stderr,
-                "psx_netplay: server input relay — LAN transport to %s\n",
-                cfg->peer_hostport);
+    /* §108: MotK/BPE online lobbies use the lobby UDP SFU unless the launch
+     * says otherwise. Host relay (2026-10-01): transport "host" -- the host
+     * carries the match on its advertised UDP port (the LAN path). Host relay
+     * over ICE (2026-10-03): transport "host" + relay_via "ice" -- no port, the
+     * match rides the waiting room's connected agents (psx_transport_decide
+     * keeps it off the SFU and off the single-agent ICE path). Direct IP / LAN
+     * file lobby (no MotK seat) stays LAN UDP. */
+    c = psx_transport_decide(cfg->transport, cfg->transport_ice_hub,
+                             cfg->transport_host, cfg->force_input_relay,
+                             in_motk_room,
+                             cfg->peer_hostport && cfg->peer_hostport[0],
+                             ice_built);
+    switch (c) {
+    case PSX_TRANSPORT_ICE_HUB:
+        fprintf(stderr, "psx_netplay: host relay over ICE - adopting the "
+                        "waiting room's connected agents (no UDP bind, no dial)\n");
+        fflush(stderr);
+        return 2;
+    case PSX_TRANSPORT_SINGLE_ICE:
+        return 1;
+    case PSX_TRANSPORT_ERROR_NO_PEER:
+        if (cfg->transport_ice_hub)
+            fprintf(stderr, "psx_netplay: host relay over ICE refused (%s)\n",
+                    cfg->transport == 2 ? "PSX_NET_TRANSPORT=lan forces UDP"
+                                        : "this build has no ICE");
+        else
+            fprintf(stderr, "psx_netplay: MotK online / force_input_relay needs a "
+                            "peer or SFU endpoint (empty peer)\n");
+        fflush(stderr);
+        return -1;
+    case PSX_TRANSPORT_LAN_UDP:
+    default:
+        if (cfg->transport_host)
+            fprintf(stderr, "psx_netplay: host relay - LAN transport (%s)\n",
+                    cfg->peer_hostport && cfg->peer_hostport[0] ? "dial host"
+                                                                : "host binds");
+        else if ((cfg->force_input_relay || in_motk_room) && cfg->transport != 2)
+            fprintf(stderr, "psx_netplay: server input relay - LAN transport to %s\n",
+                    cfg->peer_hostport);
         fflush(stderr);
         return 0;
     }
-
-#if defined(RNET_ENABLE_ICE)
-    /* Explicit ICE only outside MotK online (rare). */
-    if (cfg->transport == 1)
-        return 1;
-#endif
-    return 0;
 }
 
+/* Agents taken from the lobby when the launch was consumed, until start()
+ * adopts them. Outside g_np: shutdown wipes g_np, and this must survive the
+ * gap between the launcher closing and the session being created. */
+typedef struct {
+    int n;                                  /* host: seats held */
+    PsxLobbyIceSeat seat[PSX_ICE_HUB_MAX_SEATS];
+    struct RNetIceAgent *guest;             /* guest: agent held */
+    int is_host;
+} NpIceStash;
+static NpIceStash g_np_ice_stash;
+
+void psx_netplay_ice_stash_discard(void)
+{
+#if defined(PSX_HAS_LOBBY_CLIENT)
+    int i;
+    for (i = 0; i < g_np_ice_stash.n; ++i)
+        psx_lobby_ice_destroy_agent(g_np_ice_stash.seat[i].agent);
+    if (g_np_ice_stash.guest)
+        psx_lobby_ice_destroy_agent(g_np_ice_stash.guest);
+#endif
+    memset(&g_np_ice_stash, 0, sizeof(g_np_ice_stash));
+}
+
+int psx_netplay_ice_stash_held(void)
+{
+    return g_np_ice_stash.n > 0 || g_np_ice_stash.guest != NULL;
+}
+
+int psx_netplay_ice_stash_from_lobby(void)
+{
+#if defined(PSX_HAS_LOBBY_CLIENT)
+    const PsxLobbyJoinInfo *ji = psx_lobby_join_info();
+    if (!ji || !ji->transport_ice_hub || !psx_lobby_launch_pending())
+        return 0;
+    psx_netplay_ice_stash_discard();
+    g_np_ice_stash.is_host = psx_lobby_is_host() ? 1 : 0;
+    if (g_np_ice_stash.is_host) {
+        const int n = psx_lobby_ice_take_hub(g_np_ice_stash.seat,
+                                             PSX_ICE_HUB_MAX_SEATS);
+        if (n < 1) {
+            fprintf(stderr, "psx_netplay: ICE hub handover failed: %s\n",
+                    psx_lobby_ice_launch_error());
+            fflush(stderr);
+            return 0;
+        }
+        g_np_ice_stash.n = n;
+    } else {
+        g_np_ice_stash.guest = psx_lobby_ice_take_guest_agent();
+        if (!g_np_ice_stash.guest) {
+            fprintf(stderr, "psx_netplay: ICE guest handover failed: %s\n",
+                    psx_lobby_ice_launch_error());
+            fflush(stderr);
+            return 0;
+        }
+    }
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+/* Host relay over ICE: take ownership of the connected agents and bind each to
+ * the SESSION slot it serves. Failure destroys everything held and leaves one
+ * sentence for the lobby's status line; never a smaller room. On success the
+ * caller owns the agents (adopt, or rnet_host_ice_destroy_agent them). */
+static int ice_hub_acquire(const PsxNetplayConfig *cfg, int slots, int local,
+                           RNetIceAdoptSeat *seats_out, int *n_out,
+                           struct RNetIceAgent **guest_out)
+{
+    char why[192];
+    why[0] = '\0';
+    *n_out = 0;
+    *guest_out = NULL;
+    if (cfg->spectator) {
+        snprintf(why, sizeof(why),
+                 "spectators are not on the ICE host-relay path");
+    } else if (!psx_netplay_ice_stash_held() && !psx_netplay_ice_stash_from_lobby()) {
+        snprintf(why, sizeof(why), "no ICE connection was handed over for this launch");
+    } else if (g_np_ice_stash.is_host) {
+        int lobby_slots[PSX_ICE_HUB_MAX_SEATS];
+        int session_slots[PSX_ICE_HUB_MAX_SEATS];
+        PsxIceHubMapError err = PSX_ICE_HUB_MAP_OK;
+        int i;
+        if (local != 0) {
+            snprintf(why, sizeof(why), "host launch with a non-host seat (%d)", local);
+        } else {
+            for (i = 0; i < g_np_ice_stash.n; ++i)
+                lobby_slots[i] = g_np_ice_stash.seat[i].lobby_slot;
+            if (psx_ice_hub_map_seats(cfg->port_of_slot, cfg->port_map_valid, slots,
+                                      cfg->host_spectates, lobby_slots,
+                                      g_np_ice_stash.n, session_slots, &err) != 0) {
+                snprintf(why, sizeof(why), "cannot seat the connected players: %s",
+                         psx_ice_hub_map_error_text(err));
+            } else {
+                for (i = 0; i < g_np_ice_stash.n; ++i) {
+                    seats_out[i].slot = session_slots[i];
+                    seats_out[i].agent = g_np_ice_stash.seat[i].agent;
+                    fprintf(stderr, "psx_netplay: ICE hub lobby seat %d -> session slot %d\n",
+                            lobby_slots[i], session_slots[i]);
+                }
+                *n_out = g_np_ice_stash.n;
+                memset(&g_np_ice_stash, 0, sizeof(g_np_ice_stash));   /* caller owns */
+                fflush(stderr);
+                return 1;
+            }
+        }
+    } else {
+        if (local < 1)
+            snprintf(why, sizeof(why), "guest launch holding the host seat");
+        else {
+            *guest_out = g_np_ice_stash.guest;
+            memset(&g_np_ice_stash, 0, sizeof(g_np_ice_stash));
+            return 1;
+        }
+    }
+    psx_netplay_ice_stash_discard();
+    fprintf(stderr, "psx_netplay: host relay over ICE refused: %s\n", why);
+    fflush(stderr);
+    psx_lobby_set_last_error(why);
+    return 0;
+}
 
 int psx_netplay_start(const PsxNetplayConfig *cfg)
 {
@@ -3860,6 +4009,11 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     int slots;
     int local;
     int use_ice;
+    int transport;
+    int ice_hub;
+    RNetIceAdoptSeat hub_agents[PSX_ICE_HUB_MAX_SEATS];
+    int hub_seats = 0;
+    struct RNetIceAgent *guest_agent = NULL;
 
     if (!cfg || !cfg->enabled) return -1;
     if (psx_mod_netplay_profile() && !psx_mod_netplay_is_active()) {
@@ -3975,9 +4129,13 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     in_player = cfg->input_player;
     if (in_player < 0 || in_player >= PSX_MAX_PLAYERS) in_player = 0;
 
-    use_ice = resolve_use_ice(cfg);
-    if (use_ice < 0)
+    transport = resolve_transport(cfg);
+    if (transport < 0)
         return -4;
+    use_ice = (transport == 1);
+    ice_hub = (transport == 2);
+    if (ice_hub && !ice_hub_acquire(cfg, slots, local, hub_agents, &hub_seats, &guest_agent))
+        return -5;
 
     memset(&host, 0, sizeof(host));
     host.sample_local = host_sample_local;
@@ -3989,7 +4147,15 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
 #endif
 
     g_np.session = rnet_session_create(&rcfg, &host);
-    if (!g_np.session) return -2;
+    if (!g_np.session) {
+        if (ice_hub) {
+            int i;
+            for (i = 0; i < hub_seats; ++i)
+                psx_lobby_ice_destroy_agent(hub_agents[i].agent);
+            if (guest_agent) psx_lobby_ice_destroy_agent(guest_agent);
+        }
+        return -2;
+    }
 
     if (use_ice) {
 #if defined(RNET_ENABLE_ICE)
@@ -4156,6 +4322,31 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
 #endif
     }
 
+    if (ice_hub) {
+        /* No socket, no dial, no signals: the agents are already COMPLETED and
+         * are frozen on adoption (never push signals to them). */
+        int rc;
+        if (hub_seats > 0) {
+            rc = rnet_session_start_ice_hub_adopt(g_np.session, hub_agents, hub_seats);
+        } else {
+            rc = rnet_session_adopt_ice_agent(g_np.session, guest_agent);
+        }
+        if (rc != 0) {
+            int i;
+            /* -1: nothing adopted, the agents are still ours. */
+            for (i = 0; i < hub_seats; ++i)
+                psx_lobby_ice_destroy_agent(hub_agents[i].agent);
+            if (guest_agent) psx_lobby_ice_destroy_agent(guest_agent);
+            fprintf(stderr, "psx_netplay: ICE adopt failed; the match is not started\n");
+            fflush(stderr);
+            psx_lobby_set_last_error("The connection to the host was lost before the "
+                                     "match started.");
+            rnet_session_destroy(g_np.session);
+            g_np.session = NULL;
+            return -6;
+        }
+    }
+
     if (!use_ice) {
         /* Host-as-relay: slot 0 with 3+ seats and no dial peer. */
 #if PSX_MAX_PLAYERS >= 3
@@ -4193,6 +4384,7 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
      * freezes local_slot + slot_count at create. Starting with zeroed g_np made
      * every peer seal as slot 0 and export the wrong seat (VS-select hang). */
     g_np.use_ice = use_ice ? 1 : 0;
+    g_np.ice_hub = ice_hub ? 1 : 0;
     g_np.slot_count = (int)rcfg.slot_count;
     g_np_slot_count = g_np.slot_count;
     g_np.local_slot = (int)rcfg.local_slot;
@@ -4368,10 +4560,11 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
     fprintf(stderr,
             "psx_netplay: started transport=%s slot=%d input_player=%d session=%u "
             "delay=%u force_input_relay=%d force_turn=%d bind=%s peer=%s\n",
-            use_ice ? "ice" : "lan", g_np.local_slot, g_np.input_player,
+            ice_hub ? "ice_hub" : (use_ice ? "ice" : "lan"), g_np.local_slot,
+            g_np.input_player,
             (unsigned)rcfg.session_id, (unsigned)rcfg.input_delay,
             g_np.force_input_relay, cfg->force_turn ? 1 : 0, cfg->bind_hostport,
-            use_ice ? "(ice)" : cfg->peer_hostport);
+            (use_ice || ice_hub) ? "(ice)" : cfg->peer_hostport);
     return 0;
 }
 
