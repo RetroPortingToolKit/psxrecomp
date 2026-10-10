@@ -16089,6 +16089,11 @@ int main(int argc, char** argv) {
              * (no player setting). PSX_GUEST_CYCLE_SCALE overrides it for
              * testing only. */
             psx_guest_cycle_scale_set_gated(gc.runtime.guest_cycle_scale_gated ? 1 : 0);
+            {
+                extern int g_psx_gcs_batch;
+                const char *gb = getenv("PSX_GCS_BATCH");
+                g_psx_gcs_batch = gb ? (gb[0] == '1') : (gc.runtime.guest_cycle_scale_batch ? 1 : 0);
+            }
             psx_guest_cycle_scale_ram_gate_clear();
             psx_guest_cycle_scale_set_ram_reader(gcs_gate_read_ram);
             for (const auto& gp : gc.runtime.guest_cycle_scale_gate)

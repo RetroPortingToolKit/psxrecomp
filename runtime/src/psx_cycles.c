@@ -24,6 +24,7 @@
 uint64_t psx_cycle_count = 0;
 uint32_t g_psx_gcs_recip_q16 = 65536u;
 uint32_t g_psx_gcs_frac = 0u;
+int g_psx_gcs_batch = 0;   /* [timing] guest_cycle_scale_batch */
 static uint32_t s_psx_gcs_cfg = 1u;     /* [timing] guest_cycle_scale */
 static uint32_t s_psx_gcs_live = 1u;
 static int      s_psx_gcs_gated = 0;    /* guest_cycle_scale_gated (mod gate) */
