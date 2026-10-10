@@ -15552,6 +15552,51 @@ static void handle_starv_ring(int id, const char *json)
     free(buf);
 }
 
+/* stall_ring: always-on stall sampler ring (starvation_ring.c).
+ * {"cmd":"stall_ring","count":N} -> last N entries, oldest first: EMU_SAMPLE
+ * (emu-thread call stack while its heartbeat was stale), SAMPLER_GAP (the
+ * sampler itself was not scheduled: process/machine pause), HOST_BLOCK (emu
+ * thread resumed after a host-side block; gap_us = block length) and
+ * GUEST_ABORT. Frames are "module+0xRVA" (addr2line/nm on that module). */
+static void handle_stall_ring(int id, const char *json)
+{
+    int count = json_get_int(json, "count", 64);
+    if (count < 1) count = 1;
+    if (count > (int)STALL_RING_CAP) count = (int)STALL_RING_CAP;
+    uint64_t total = stall_ring_total();
+    uint64_t start = total > (uint64_t)count ? total - (uint64_t)count : 0;
+    size_t cap = 512u + (size_t)count * (256u + STALL_MAX_FRAMES * 96u);
+    char *buf = (char *)malloc(cap);
+    if (!buf) { send_err(id, "oom"); return; }
+    int len = snprintf(buf, cap, "{\"id\":%d,\"ok\":true,\"total\":%llu,\"entries\":[",
+                       id, (unsigned long long)total);
+    int emitted = 0;
+    for (uint64_t seq = start; seq < total; seq++) {
+        StallSample s;
+        if (!stall_ring_get(seq, &s)) continue;
+        static const char *kinds[] = { "?", "EMU_SAMPLE", "SAMPLER_GAP", "HOST_BLOCK", "GUEST_ABORT" };
+        len += snprintf(buf + len, cap - (size_t)len,
+                        "%s{\"seq\":%llu,\"kind\":\"%s\",\"us\":%llu,\"gap_us\":%llu,"
+                        "\"episode\":%u,\"cyc\":%llu,\"frame\":%llu,\"func\":\"0x%08X\",\"frames\":[",
+                        emitted++ ? "," : "", (unsigned long long)s.seq,
+                        kinds[s.kind < 5 ? s.kind : 0], (unsigned long long)s.host_us,
+                        (unsigned long long)s.gap_us, s.episode,
+                        (unsigned long long)s.psx_cycle_count,
+                        (unsigned long long)s.frame_count, s.current_func);
+        for (unsigned i = 0; i < s.nframes; i++) {
+            char name[320];
+            stall_format_frame(s.frames[i], name, sizeof(name));
+            for (char *c = name; *c; c++) if (*c == '"' || *c == '\\') *c = '_';
+            len += snprintf(buf + len, cap - (size_t)len, "%s\"%s\"", i ? "," : "", name);
+        }
+        len += snprintf(buf + len, cap - (size_t)len, "]}");
+        if ((size_t)len + 256u + STALL_MAX_FRAMES * 96u > cap) break;
+    }
+    snprintf(buf + len, cap - (size_t)len, "]}");
+    debug_server_send_line(buf);
+    free(buf);
+}
+
 /* data_shards: memoized pure-function replay counters (data_shards.c).
  *   {"cmd":"data_shards"}              -> counters
  *   {"cmd":"data_shards","enable":0|1} -> toggle, then counters */
@@ -15599,6 +15644,7 @@ static void handle_warm_cd_route(int id, const char *json)
 static const CmdEntry s_commands[] = {
     { "phase_profile",     handle_phase_profile },
     { "starv_ring",        handle_starv_ring },
+    { "stall_ring",        handle_stall_ring },
     { "data_shards",       handle_data_shards },
     { "vsync_query_hle",   handle_vsync_query_hle },
     { "warm_cd_route",     handle_warm_cd_route },

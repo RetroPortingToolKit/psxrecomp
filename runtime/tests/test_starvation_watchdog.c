@@ -61,6 +61,22 @@ int main(void) {
     CHECK(starvation_watchdog_stale(1, UINT64_MAX, TIMEOUT) == 1,
           "tiny heartbeat vs max clock fires");
 
+    /* 6. Host-side block: the emu thread itself did not reach a check for at
+     *    least half the timeout. FF7 2026-10-09: 9.7 s between consecutive
+     *    checks, then the first check after resuming aborted a recovered game. */
+    CHECK(starvation_watchdog_host_block(T, T + 9700000ull, TIMEOUT) == 1,
+          "9.7 s between consecutive checks is a host block");
+    CHECK(starvation_watchdog_host_block(T, T + TIMEOUT / 2, TIMEOUT) == 1,
+          "half the timeout between checks is a host block");
+    CHECK(starvation_watchdog_host_block(T, T + 2000, TIMEOUT) == 0,
+          "normal 2 ms check cadence is not a host block (guest starvation still aborts)");
+    CHECK(starvation_watchdog_host_block(0, T, TIMEOUT) == 0,
+          "no previous check is not a host block");
+    CHECK(starvation_watchdog_host_block(T + 5, T, TIMEOUT) == 0,
+          "clock behind the previous check is not a host block");
+    CHECK(starvation_watchdog_host_block(T, T + 60 * 1000000ull, 0) == 0,
+          "disabled watchdog never classifies");
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all starvation watchdog checks passed\n");
     return 0;

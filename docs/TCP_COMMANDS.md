@@ -786,6 +786,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `sreg_trace_find` | ✓ |  |  |
 | `sreg_trace_stats` | ✓ |  |  |
 | `stack_profile` | ✓ |  |  |
+| `stall_ring` | ✓ |  |  |
 | `starv_ring` | ✓ |  |  |
 | `step` | ✓ |  | ✓ |
 | `stereo_dump` | ✓ |  |  |

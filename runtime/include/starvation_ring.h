@@ -13,6 +13,7 @@
 #ifndef PSXRECOMP_STARVATION_RING_H
 #define PSXRECOMP_STARVATION_RING_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -117,6 +118,64 @@ static inline int starvation_watchdog_stale(uint64_t last, uint64_t now,
     if (now <= last) return 0;
     return (now - last) > timeout;
 }
+
+/* Host-block decision behind starvation_watchdog_check(). The check runs on
+ * the emu thread every ~64K guest cycles, so consecutive checks are normally
+ * milliseconds apart. When the heartbeat is stale AND the emu thread itself
+ * did not reach a check for at least half the timeout, the wall time went to
+ * a host-side block (OS/disk/driver/process pause) that is already over: the
+ * thread is running again. That is recorded in the stall ring and the game
+ * continues. Guest-side starvation (checks keep running, heartbeat does not)
+ * still fires. `prev_check == 0` means no previous check. */
+static inline int starvation_watchdog_host_block(uint64_t prev_check, uint64_t now,
+                                                 uint64_t timeout) {
+    if (prev_check == 0 || timeout == 0 || now <= prev_check) return 0;
+    return (now - prev_check) >= timeout / 2u;
+}
+
+/* ---- Stall sampler (always-on, in memory) --------------------------------
+ * A host thread ticks every STALL_TICK_US. While the emu-thread heartbeat is
+ * older than STALL_SAMPLE_AFTER_US it records the emu thread's native stack
+ * (Windows; POSIX records the gap without frames) every STALL_SAMPLE_EVERY_US.
+ * It also records its OWN scheduling gaps: when the sampler did not run
+ * either, the whole process (or the machine) was paused, not the emu thread.
+ * The emu thread records HOST_BLOCK when it resumes from such a block. Query
+ * with TCP `stall_ring`; every starvation dump appends the ring. No disk I/O
+ * happens on the sampler thread, so a disk stall cannot hide the evidence. */
+#define STALL_RING_CAP        256u
+#define STALL_MAX_FRAMES      24u
+#define STALL_TICK_US         50000ull
+#define STALL_SAMPLE_AFTER_US 500000ull
+#define STALL_SAMPLE_EVERY_US 250000ull
+#define STALL_SAMPLER_GAP_US  250000ull
+
+typedef enum {
+    STALL_EMU_SAMPLE = 1,   /* emu thread stale; its stack at this moment */
+    STALL_SAMPLER_GAP = 2,  /* the sampler itself was not scheduled */
+    STALL_HOST_BLOCK = 3,   /* emu thread resumed after a host-side block */
+    STALL_GUEST_ABORT = 4,  /* guest-side starvation: watchdog aborted */
+} StallKind;
+
+typedef struct {
+    uint64_t seq;
+    uint64_t host_us;
+    uint64_t gap_us;          /* heartbeat age (EMU/ABORT), own gap (SAMPLER), block length (HOST) */
+    uint64_t psx_cycle_count;
+    uint64_t frame_count;
+    uint32_t episode;         /* increments for each new emu-stale episode */
+    uint32_t current_func;
+    uint32_t kind;            /* StallKind */
+    uint32_t nframes;
+    uint64_t frames[STALL_MAX_FRAMES];  /* absolute host return addresses */
+} StallSample;
+
+/* Start the sampler; call once ON the emulation thread (it is the thread
+ * sampled). Idempotent. */
+void     stall_sampler_start(void);
+uint64_t stall_ring_total(void);
+int      stall_ring_get(uint64_t seq, StallSample *out);
+/* "module+0xRVA" for a host address (Windows), else "0x...". */
+void     stall_format_frame(uint64_t addr, char *out, size_t cap);
 
 /* Manual dump-to-file (for testing / TCP probe). Filename can be NULL. */
 void starvation_ring_dump(const char *path);

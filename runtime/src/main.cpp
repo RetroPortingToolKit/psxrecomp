@@ -18732,6 +18732,7 @@ session_reboot:
 #ifndef PSX_NO_DEBUG_TOOLS
         debug_server_init(debug_port);
         host_sampler_start();   /* this is the emulation thread */
+        stall_sampler_start();  /* call stacks while it is blocked */
 #else
         (void)debug_port;
 #endif
