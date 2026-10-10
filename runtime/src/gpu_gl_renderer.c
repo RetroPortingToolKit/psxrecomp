@@ -3098,6 +3098,29 @@ static const HiwTile *hiw_ensure(int x0, int x1) {
 }
 
 /* ---- coherency: hr FBO -> raw mirror (pack) ------------------------------ */
+#ifndef PSXGL_PIXEL_UNPACK_BUFFER
+#define PSXGL_PIXEL_UNPACK_BUFFER 0x88EC
+#endif
+static GLuint s_raw_pbo = 0;
+/* On by default only on macOS, where the stall was measured (Apple's GL on
+ * Metal); elsewhere opt-in until there is AMD/NVIDIA/Intel data (an AMD iGPU
+ * on Windows showed no stall and no change). PSX_GL_PBO_UPLOAD=0/1 overrides
+ * it on any platform. */
+#if defined(__APPLE__)
+#define PSXGL_PBO_UPLOAD_DEFAULT 1
+#else
+#define PSXGL_PBO_UPLOAD_DEFAULT 0
+#endif
+static int raw_upload_pbo_on(void) {
+    static int env = -1;
+    if (env < 0) {
+        const char *e = getenv("PSX_GL_PBO_UPLOAD");
+        env = (e && e[0]) ? (e[0] != '0') : PSXGL_PBO_UPLOAD_DEFAULT;
+    }
+    if (!env) return 0;
+    if (!s_raw_pbo) p_glGenBuffers(1, &s_raw_pbo);
+    return s_raw_pbo != 0;
+}
 static void pack_flush(void) {
     if (!s_raster_ok || !s_pack_dirty.set) return;
     /* A generated frame draws into its own surfaces: the raw mirror keeps
@@ -3116,8 +3139,26 @@ static void pack_flush(void) {
         p_glActiveTexture(PSXGL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, s_raw_tex);
         glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, VRAM_W);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, PSXGL_RED_INTEGER,
-                       GL_UNSIGNED_SHORT, s_vram + (size_t)y * VRAM_W + x);
+        if (raw_upload_pbo_on()) {
+            /* Through an orphaned pixel-unpack buffer: the copy into a
+             * texture the GPU is still sampling is queued on the GPU, where
+             * a client-memory upload makes the driver wait for those draws
+             * (Apple's GL: GLDShareGroupRec::waitUsage, about 40 % of the
+             * render thread's work in an R4 race with the HD HUD). Same
+             * bytes, same order. PSX_GL_PBO_UPLOAD=0 for the direct path. */
+            const size_t rows = (size_t)(y + h - 1) * VRAM_W + (size_t)x + (size_t)w;
+            const size_t first = (size_t)y * VRAM_W + (size_t)x;
+            const size_t bytes = (rows - first) * sizeof(uint16_t);
+            p_glBindBuffer(PSXGL_PIXEL_UNPACK_BUFFER, s_raw_pbo);
+            p_glBufferData(PSXGL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)bytes,
+                           s_vram + first, PSXGL_STREAM_DRAW);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, PSXGL_RED_INTEGER,
+                            GL_UNSIGNED_SHORT, (const void *)0);
+            p_glBindBuffer(PSXGL_PIXEL_UNPACK_BUFFER, 0);
+        } else {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, PSXGL_RED_INTEGER,
+                           GL_UNSIGNED_SHORT, s_vram + (size_t)y * VRAM_W + x);
+        }
         glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, 0);
         return;
     }
@@ -6528,8 +6569,12 @@ void gl_renderer_shutdown(void) {
     s_selected_bank_live_clut = s_tb_bank_live_clut = 0;
     if (s_ctx) {
         ensure_cpu();
+        /* The upload buffer belongs to this context: a lobby rematch
+         * creates a new one, which must create its own. */
+        if (s_raw_pbo) p_glDeleteBuffers(1, &s_raw_pbo);
         SDL_GL_DeleteContext(s_ctx); s_ctx = NULL;
     }
+    s_raw_pbo = 0;
     free(s_conv); s_conv = NULL;
     s_hq_n = 0; s_hq_vn = 0;   /* queued window draws die with the context */
     s_raster_ok = 0;
