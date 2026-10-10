@@ -211,16 +211,47 @@ that identical frame; only what its window shows changes:
 
 ## Connectivity: ICE, TURN, SFU, LAN
 
-### Online lobbies (WebSocket + SFU)
+### Online lobbies (WebSocket + host relay, SFU fallback)
 
 Online matches go through the lobby at **netplay.retcomm.net**
-(WebSocket control plane). Match **UDP pad traffic** for online rooms uses an
-**SFU star** (selective forwarding unit on the lobby server): every peer sends
-to the SFU; the SFU fans out to other seats. Peers do **not** mesh each other
-for game data online.
+(WebSocket control plane). Match **UDP pad traffic** is a star; who is the
+hub depends on the launch the server sends (`transport`, `relay_via`):
 
-Current lobby policy prefers **always SFU** for online starts so CGNAT /
-asymmetric NAT does not strand players on failed ICE attempts.
+| Launch | Hub | Transport in the engine |
+|--------|-----|-------------------------|
+| `transport "host"` + `relay_via "ice"` (default when the host's build has ICE) | **the host** | **ICE hub** — the ICE agents the waiting room already connected are adopted by the session (`rnet_session_start_ice_hub_adopt` on the host, `rnet_session_adopt_ice_agent` on a guest). No UDP port is bound or forwarded, nothing is dialled, no TURN. |
+| `transport "host"`, no `relay_via` (older server / host without ICE) | **the host** | LAN path on the host's advertised UDP port (UPnP / NAT-PMP / STUN, probed by guests). |
+| otherwise | the lobby server's **SFU** | LAN path to the server's relay endpoint. |
+
+Host relay is a preference of the hosting player (launcher toggles, default
+on): `psx_lobby_set_relay_host_pref` publishes `match_caps.relay = "host"`;
+`psx_lobby_set_relay_via_ice_pref` adds `relay_via = "ice"` (only when the
+build can run ICE). The server falls back to its SFU unless every guest proved
+its path to the host.
+
+**Host relay over ICE.** In the waiting room the host runs one ICE agent per
+seated guest (host = answerer, guests offer), signalled over the lobby
+`signal` op in its own type range (`130 + RNetSignalType`); a guest's proof is
+`path_report direct`. `psx_lobby_client.c` carries that glue (the proof logic
+is recomp-net's `RNetHostIce`). At launch the client captures the COMPLETED
+agents; `ae_np_clear_launch_pending` takes them (before the lobby launch is
+cleared) into `psx_netplay`'s stash and `psx_netplay_start` adopts them. A
+seat that is not connected, or a spectator in the room, **refuses the launch**:
+`join.last_error == "ice_not_connected"`, reason in
+`psx_lobby_ice_launch_error()`; a smaller room is never started.
+
+Slot mapping: the lobby seat of each agent is mapped to its **session slot**
+from the launch's `port_of_slot` table (`psx_ice_hub_map_seats`,
+`netplay_ice_hub.c`), which already folds in `host_spectates` (slot 0 is the
+silent host, players start at slot 1) and moved seats (slots follow ascending
+lobby seat, the host is always slot 0). Every non-host session slot must get
+exactly one agent. `psx_transport_decide` guarantees an ICE-hub launch is
+never routed to the single-agent ICE path or the SFU, whatever else the config
+carries. Covered ROM-free by `netplay_ice_hub_test`.
+
+Not on this path: spectators (gallery seats), and the waiting-room latency
+column in ICE mode (the per-pair RTT probe is disabled there so it cannot race
+the proof's `path_report`).
 
 ### ICE + TURN
 
@@ -233,7 +264,7 @@ libjuice is pulled as a **pinned URL tarball** (not `git clone`) so Retro
 AppImage / mismatched-libcurl hosts can still configure; offline builds can
 vendor `lib/recomp-net/third_party/libjuice` or set `-DRNET_LIBJUICE_ROOT`.
 “Force TURN” in the UI can raise delay floors for relay-heavy paths; it
-does not replace the SFU online architecture above.
+does not change which transport the launch selects (see Online lobbies).
 
 ### LAN / Direct IP (P2P star)
 

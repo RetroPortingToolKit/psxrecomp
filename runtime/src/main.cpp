@@ -85,6 +85,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "recomp_net/auth.h"
 #include "recomp_netplay_account.h"   /* shared recomp-ui account sync */
 #include "recomp_net/host_relay.h" /* RNetHostRelayStatus for the launcher relay line */
+#include "recomp_net/host_ice.h"   /* RNetHostIceStatus: host relay over ICE waiting-room line */
 #include "recomp_net/chat_filter.h" /* chat profanity mask, LAN rooms too */
 #endif
 #include "spu.h"
@@ -10433,6 +10434,11 @@ namespace {
      * (Network Settings / Lobby Settings, persisted there) and pushes it
      * through relay_host_set; default on. */
     int g_lnch_relay_host = 1;
+    /* Host relay over ICE (2026-10-03): with the host relay on, publish
+     * relay_via "ice" so guests reach the host through ICE and nobody forwards
+     * a port. Default on; the lobby client mirrors it (psx_lobby_set_
+     * relay_via_ice_pref) and only publishes it when the build can run ICE. */
+    int g_lnch_relay_via_ice = 1;
     /* Lobby default on; host “Disable Rollback” clears this → delay_sync. */
     int g_lnch_rollback = 1;
     int g_lnch_multitap_analog = 1;
@@ -13104,11 +13110,87 @@ namespace {
             ae_np_push_match_caps(nullptr); /* no-op unless hosting online */
         return 0;
     }
+    /* ICE-mode waiting-room text, from the agents' own state. Never says
+     * "port": no port is held in this mode. 1 = `out` holds the line. */
+    static const char* ae_np_ice_state_word(int state) {
+        switch (state) {
+            case RNET_ICE_STATE_COMPLETED: return "connected";
+            case RNET_ICE_STATE_FAILED:    return "failed";
+            default:                       return "connecting";
+        }
+    }
+    static void ae_np_ice_peer_text(const RNetHostIcePeerStatus& p, char* out, size_t cap) {
+        if (p.state == RNET_ICE_STATE_COMPLETED && p.path[0])
+            std::snprintf(out, cap, "connected (%s)", p.path);
+        else
+            std::snprintf(out, cap, "%s", ae_np_ice_state_word(p.state));
+    }
+    static int ae_np_ice_status_line(char* out, size_t out_cap) {
+        RNetHostIceStatus st;
+        std::memset(&st, 0, sizeof(st));
+        if (!psx_lobby_host_ice_status(&st)) return 0;
+        if (st.role == 2) {
+            char w[40];
+            if (st.peer_count < 1) {
+                std::snprintf(out, out_cap, "Connecting to the host...");
+                return 1;
+            }
+            ae_np_ice_peer_text(st.peer[0], w, sizeof(w));
+            if (st.peer[0].state == RNET_ICE_STATE_FAILED)
+                std::snprintf(out, out_cap,
+                              "Connection to the host failed. Check that your firewall "
+                              "allows the game, then rejoin.");
+            else
+                std::snprintf(out, out_cap, "Connection to the host: %s.", w);
+            return 1;
+        }
+        if (st.peer_count < 1) {
+            std::snprintf(out, out_cap, "Waiting for guests to connect through you...");
+            return 1;
+        }
+        size_t n = 0;
+        for (int i = 0; i < st.peer_count && i < RNET_HOST_ICE_MAX_PEERS; ++i) {
+            char w[40];
+            ae_np_ice_peer_text(st.peer[i], w, sizeof(w));
+            const int k = std::snprintf(out + n, out_cap - n, "%sSeat %d: %s",
+                                        i ? "\n" : "", st.peer[i].slot + 1, w);
+            if (k < 0 || (size_t)k >= out_cap - n) break;
+            n += (size_t)k;
+        }
+        if (st.completed < st.peer_count && n < out_cap)
+            std::snprintf(out + n, out_cap - n,
+                          "\nPlay starts once every seat is connected. A seat that stays "
+                          "on failed can't reach you; check its firewall.");
+        return 1;
+    }
+    int ae_np_relay_via_ice_get(void*) {
+        if (g_lnch_hosting_lan || g_lnch_joined_lan || !psx_lobby_ice_available()) return 0;
+        if (psx_lobby_in_lobby()) {
+            const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+            if (caps && caps->valid) return (caps->relay_host && caps->relay_via_ice) ? 1 : 0;
+        }
+        return g_lnch_relay_via_ice;
+    }
+    int ae_np_relay_via_ice_set(void*, int on) {
+        g_lnch_relay_via_ice = on ? 1 : 0;
+        psx_lobby_set_relay_via_ice_pref(g_lnch_relay_via_ice);
+        if (!g_lnch_hosting_lan && !g_lnch_joined_lan)
+            ae_np_push_match_caps(nullptr); /* no-op unless hosting online */
+        return 0;
+    }
     int ae_np_relay_status(void*, char* out, size_t out_cap) {
         if (!out || !out_cap) return 0;
         out[0] = '\0';
 #if defined(PSX_HAS_RECOMP_NET)
         if (g_lnch_hosting_lan || g_lnch_joined_lan || !psx_lobby_in_lobby()) return 0;
+        /* ICE mode replaces the port/reachability guidance entirely: the
+         * legacy status would talk about a forwarded port this room never opens. */
+        if (ae_np_ice_status_line(out, out_cap)) return 1;
+        {
+            const PsxLobbyMatchCaps* c = psx_lobby_match_caps();
+            if (c && c->valid && c->relay_host && c->relay_via_ice)
+                return 0; /* ICE room, agents not up yet: say nothing */
+        }
         RNetHostRelayStatus st;
         if (!psx_lobby_host_relay_status(&st)) return 0;
         if (st.role == 1) {
@@ -15138,6 +15220,12 @@ namespace {
         return g_lnch_pending_direct_launch.enabled || psx_lobby_launch_pending();
     }
     void ae_np_clear_launch_pending(void*) {
+        /* Host relay over ICE: the connected agents must be TAKEN before the
+         * launch is cleared (the lobby destroys an untaken bundle after 60 s
+         * and the game boots well after this). Held by psx_netplay until
+         * psx_netplay_start adopts them. No-op for every other launch. */
+        if (!g_lnch_pending_direct_launch.enabled && psx_lobby_launch_pending())
+            (void)psx_netplay_ice_stash_from_lobby();
         g_lnch_pending_direct_launch = {};
         psx_lobby_clear_launch_pending();
     }
@@ -15171,6 +15259,16 @@ namespace {
 
     const char* ae_np_lan_endpoint_cstr(void) {
         return g_lnch_lan_endpoint.empty() ? nullptr : g_lnch_lan_endpoint.c_str();
+    }
+
+    /* Host relay over ICE: transport "host" + relay_via "ice". Decided from the
+     * lobby's launch (the same join info fill_launch read), and only for a
+     * launch the lobby filled: a LAN / direct launch is never an ICE hub, and
+     * transport_host is ALSO set for an ICE hub, so it gates the lobby read. */
+    static int ae_np_launch_is_ice_hub(const RecompLauncherCNetplayLaunch& l) {
+        if (!l.transport_host || g_lnch_hosting_lan || g_lnch_joined_lan) return 0;
+        const PsxLobbyJoinInfo* ji = psx_lobby_join_info();
+        return (ji && ji->ok && ji->transport_ice_hub) ? 1 : 0;
     }
 
     int ae_np_fill_launch(void*, RecompLauncherCNetplayLaunch* out) {
@@ -15526,6 +15624,10 @@ namespace {
         g_lnch_netplay_callbacks.relay_host_get = ae_np_relay_host_get;
         g_lnch_netplay_callbacks.relay_host_set = ae_np_relay_host_set;
         g_lnch_netplay_callbacks.relay_status = ae_np_relay_status;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY_ICE)
+        g_lnch_netplay_callbacks.relay_via_ice_get = ae_np_relay_via_ice_get;
+        g_lnch_netplay_callbacks.relay_via_ice_set = ae_np_relay_via_ice_set;
 #endif
         g_lnch_netplay_callbacks.memcard_offer_set = ae_np_memcard_offer_set;
         g_lnch_netplay_callbacks.guest_memcard_get = ae_np_guest_memcard_get;
@@ -17973,6 +18075,7 @@ int main(int argc, char** argv) {
                     net_cfg.force_input_relay = ls.netplay_launch.force_input_relay ? 1 : 0;
 #if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY)
                     net_cfg.transport_host = ls.netplay_launch.transport_host ? 1 : 0;
+                    net_cfg.transport_ice_hub = ae_np_launch_is_ice_hub(ls.netplay_launch);
 #endif
                     net_cfg.force_turn = ls.netplay_launch.force_turn ? 1 : 0;
                     net_cfg.rollback = ls.netplay_launch.rollback ? 1 : 0;
@@ -20108,6 +20211,7 @@ soft_return_lobby:
                 net_cfg.force_input_relay = ls.netplay_launch.force_input_relay ? 1 : 0;
 #if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY)
                 net_cfg.transport_host = ls.netplay_launch.transport_host ? 1 : 0;
+                net_cfg.transport_ice_hub = ae_np_launch_is_ice_hub(ls.netplay_launch);
 #endif
                 net_cfg.force_turn = ls.netplay_launch.force_turn ? 1 : 0;
                 net_cfg.rollback = ls.netplay_launch.rollback ? 1 : 0;

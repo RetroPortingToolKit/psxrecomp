@@ -98,6 +98,16 @@ typedef struct PsxNetplayConfig {
      * carries the match on bind_hostport; guests dial peer_hostport. Takes
      * the LAN / hub transport path, not the server-relay one. */
     int         transport_host;
+    /* 1 = the launch said transport "host" AND relay_via "ice" (host relay
+     * over ICE). transport_host is ALSO 1 then; this is tested first. No UDP
+     * port is bound and nothing is dialled (bind_hostport is a placeholder,
+     * peer_hostport empty): the match runs over the ICE agents the waiting
+     * room connected -- host: a hub over one agent per guest; guest: a 1:1
+     * agent to the host. Neither the single-agent ICE path nor the SFU is
+     * ever chosen for it. The agents come from psx_netplay_ice_stash_from_lobby
+     * (taken when the launch was consumed) or, failing that, straight from the
+     * lobby client. */
+    int         transport_ice_hub;
     int         force_turn;        /* 1 = ICE relay-only (Force TURN for UDP) */
     /* 0 = auto (MotK room → ICE, else LAN), 1 = force ICE, 2 = force LAN.
      * Env PSX_NET_TRANSPORT=lan|ice overrides. */
@@ -186,13 +196,24 @@ int psx_netplay_local_view(uint32_t display_w, uint32_t display_h,
 
 /*
  * Snapshot for diagnostic dumps (starvation_dump.jsonl meta, etc.).
- * arch_out: "off" | "p2p" | "host_relay" | "server_relay" (never NULL when
+ * arch_out: "off" | "p2p" | "host_relay" | "ice_host_relay" | "server_relay" (never NULL when
  * arch_cap > 0). Returns 1 when netplay is/was configured this run.
  */
 int  psx_netplay_diag_snapshot(char *arch_out, size_t arch_cap,
                                int *max_players_out, int *player_count_out);
 
 int  psx_netplay_start(const PsxNetplayConfig *cfg);
+
+/* Host relay over ICE: take the launch's connected agents from the lobby
+ * client and hold them until psx_netplay_start adopts them. Call where the
+ * launch is consumed, BEFORE the lobby launch is cleared (the lobby destroys an
+ * untaken bundle after 60 s). No-op unless the lobby's launch is an ICE hub
+ * launch with a bundle pending. Returns 1 when agents are now held. */
+int  psx_netplay_ice_stash_from_lobby(void);
+/* Release held agents (a launch that never started). Safe at any time. */
+void psx_netplay_ice_stash_discard(void);
+/* 1 when held agents await psx_netplay_start. */
+int  psx_netplay_ice_stash_held(void);
 void psx_netplay_shutdown(void);
 /* Soft-return rematch / new lobby opponent: make host sim state match a cold
  * process peer. Call from session_reboot (rematch) and after BYE teardown.

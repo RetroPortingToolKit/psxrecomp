@@ -208,6 +208,11 @@ typedef struct PsxLobbyMatchCaps {
      * server falls back to its relay unless every guest proved the path
      * (recomp_net/host_relay.h). Guests read it to know the room asks. */
     int  relay_host;
+    /* 0/1 -- with relay_host: match_caps.relay_via = "ice". The host carries
+     * the match over the ICE agents the waiting room already connected (one
+     * per guest); no port is forwarded or advertised. Published by the host
+     * when psx_lobby_relay_via_ice() is on and this build has ICE. */
+    int  relay_via_ice;
     int  force_turn;       /* 0/1 — ICE relay-only (Force TURN for UDP) */
     int  rollback;         /* 0/1 — invent/rollback netplay (default on) */
     /* DualShock-on-multitap-tap hack (0/1). Host-authoritative for the match. */
@@ -276,6 +281,14 @@ typedef struct PsxLobbyJoinInfo {
      * (peer-to-peer, signalled over the lobby). No endpoint is dialled and
      * force_input_relay is 0 (psx_lobby_launch_transport.h). */
     int      transport_ice;
+    /* Launch: transport "host" AND relay_via "ice". transport_host is ALSO 1
+     * then, so test this first. Nothing is bound or dialled (bind_hostport is
+     * the placeholder 0.0.0.0:0, peer_hostport empty): the match rides the
+     * agents psx_lobby_ice_take_* hands over. A launch whose seats are not all
+     * connected is refused in the client: launch_pending stays 0 and
+     * last_error is "ice_not_connected" (psx_lobby_ice_launch_error() says
+     * which seat). */
+    int      transport_ice_hub;
     /* A server code (need_password | bad_password | …) or, from
      * psx_lobby_set_last_error, one sentence the launcher shows as is. */
     char     last_error[192];
@@ -422,6 +435,37 @@ int  psx_lobby_relay_host_pref(void);
 struct RNetHostRelayStatus;
 int  psx_lobby_host_relay_status(struct RNetHostRelayStatus *out);
 void psx_lobby_host_relay_release_port(void);
+
+/* Host relay over ICE (recomp_net/host_ice.h). The pref is the HOST's, default
+ * on; it only publishes relay_via "ice" when the build can run ICE. */
+void psx_lobby_set_relay_via_ice_pref(int on);
+int  psx_lobby_relay_via_ice_pref(void);
+/* 1 when this build can run ICE agents at all. */
+int  psx_lobby_ice_available(void);
+struct RNetHostIceStatus;
+/* Waiting-room per-seat state; 1 while the ICE proof is running. */
+int  psx_lobby_host_ice_status(struct RNetHostIceStatus *out);
+
+/* Launch handover (transport_ice_hub). The agents are COMPLETED and owned by
+ * the caller on success: give them to the session or release them with
+ * psx_lobby_ice_destroy_agent. TAKE BEFORE psx_lobby_clear_launch_pending's
+ * consumer finishes with the launch -- an untaken bundle is destroyed after
+ * 60 s, at the next launch, or on leave. lobby_slot is the lobby's seat
+ * namespace; the engine maps it to its own session slot. */
+struct RNetIceAgent;
+typedef struct PsxLobbyIceSeat {
+    int  lobby_slot;
+    char player_id[PSX_LOBBY_ID_LEN];
+    struct RNetIceAgent *agent;
+} PsxLobbyIceSeat;
+/* Host: n >= 1 (ownership moves to the caller) or -1. */
+int  psx_lobby_ice_take_hub(PsxLobbyIceSeat *out, int max);
+/* Guest: the one agent connected to the host, or NULL. */
+struct RNetIceAgent *psx_lobby_ice_take_guest_agent(void);
+/* Why the last launch was refused / a take failed ("" when none). */
+const char *psx_lobby_ice_launch_error(void);
+void psx_lobby_ice_discard(void);
+void psx_lobby_ice_destroy_agent(struct RNetIceAgent *agent);
 
 /* Live member table from lobby_update (and create/join). */
 int  psx_lobby_member_count(void);
