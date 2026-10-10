@@ -506,6 +506,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `batch_sites` | ✓ |  | ✓ |
 | `bios_info` | ✓ |  | ✓ |
 | `bioscall_dump` | ✓ |  |  |
+| `bloom` | ✓ |  |  |
 | `c0_history` | ✓ |  |  |
 | `call_focus_dump` | ✓ |  |  |
 | `call_focus_reset` | ✓ |  |  |
