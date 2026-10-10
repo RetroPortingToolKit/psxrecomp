@@ -9522,7 +9522,7 @@ static int debug_toggles_on(void) {
 }
 static int s_dbg_scale_target = 0;
 static const char *dbg_texfilter_name(int f) {
-    return f == 1 ? "bilinear" : f == 2 ? "stable world" : "nearest";
+    return f == 1 ? "bilinear" : f == 2 ? "stable world" : f == 3 ? "xbr" : "nearest";
 }
 static void debug_toggle_summary(char *buf, size_t cap) {
     GlDynresStats st; gl_renderer_dynres_stats(&st);
@@ -9578,7 +9578,7 @@ static int debug_toggle_key(int key, char *out, int cap) {
                       on && !g_render_thread ? " (inert: render thread off)" : "");
         break; }
     case SDLK_5: {
-        const int f = (gr_texture_filter() + 1) % 3;
+        const int f = (gr_texture_filter() + 1) % 4;
         gr_set_texture_filter(f);
         std::snprintf(msg, sizeof msg, "Texture filter: %s", dbg_texfilter_name(f));
         break; }
@@ -18463,6 +18463,7 @@ session_reboot:
                             (net_cfg.enabled && s_netplay_gl_present &&
                              gl_renderer_cpu_auth_dual());
     g_video_scale = gr_scale(); /* reflect any clamp / alloc fallback */
+    if (const char* e = std::getenv("PSX_TEXTURE_FILTER")) g_video_texfilter = std::atoi(e);
     gr_set_texture_filter(g_mod_texfilter < 0 ? g_video_texfilter : g_mod_texfilter);
     /* Sub-pixel vertex precision + perspective-correct UVs. Both default off;
      * with both off every setter below leaves the tracking caches disabled and
