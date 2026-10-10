@@ -571,6 +571,12 @@ a build compiled with Vulkan support. `offer_vulkan` controls launcher
 visibility only; it defaults to false so game projects must explicitly expose
 Vulkan after validating their visuals and stability.
 
+### Graphics presets (`[quality.low|medium|high|ultra]`)
+
+Optional named presets of `[video]` keys, laid over `[video]`, with hardware
+detection on first launch, a launcher Graphics preset row, Re-detect and a
+Custom state. See [QUALITY_PRESETS.md](QUALITY_PRESETS.md).
+
 ### Internal resolution (`internal_resolution`, `supersampling`)
 
 The player picks a preset in Settings → Display → **Internal resolution**:

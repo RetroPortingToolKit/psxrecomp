@@ -1195,6 +1195,59 @@ static std::vector<DrawDistanceClampSite> parse_draw_distance_clamps(
 // Derive the output filename stem from a rom basename. Mirrors the Python
 // audit_config.py logic: strip a trailing .BIN/.EXE (case-insensitive) but
 // preserve dotted names like "SCUS_942.36" unchanged.
+// [quality.<name>] (docs/QUALITY_PRESETS.md). Each preset is the whole
+// game.toml re-parsed with its keys laid over [video], so a preset accepts
+// exactly the [video] keys (with the same validation) and nothing else needs
+// to know about presets. Lowest preset first.
+static std::vector<QualityPreset> parse_quality_presets(const toml::value& cfg,
+                                                        const fs::path& root,
+                                                        const fs::path& config_path) {
+    std::vector<QualityPreset> out;
+    if (!cfg.contains("quality")) return out;
+    const toml::value& q = toml::find(cfg, "quality");
+    if (!q.is_table())
+        throw std::runtime_error(fmt::format("{}: [quality] must be a table",
+                                             config_path.string()));
+    static const char* const kNames[] = {"low", "medium", "high", "ultra"};
+    for (const auto& kv : q.as_table()) {
+        bool known = false;
+        for (const char* n : kNames) known = known || kv.first == n;
+        if (!known)
+            throw std::runtime_error(fmt::format(
+                "{}: [quality.{}] is not a preset (low, medium, high, ultra)",
+                config_path.string(), kv.first));
+        if (!kv.second.is_table())
+            throw std::runtime_error(fmt::format(
+                "{}: [quality.{}] must be a table of [video] keys",
+                config_path.string(), kv.first));
+    }
+    for (const char* n : kNames) {
+        if (!q.contains(n)) continue;
+        QualityPreset p;
+        p.name = n;
+        toml::value merged = cfg;
+        toml::table& top = merged.as_table();
+        if (!top.count("video") || !top["video"].is_table())
+            top["video"] = toml::table{};
+        toml::table& video = top["video"].as_table();
+        for (const auto& kv : toml::find(q, n).as_table()) {
+            if (kv.second.is_table())
+                throw std::runtime_error(fmt::format(
+                    "{}: [quality.{}] {} must be a [video] value, not a table",
+                    config_path.string(), n, kv.first));
+            video[kv.first] = kv.second;
+            p.keys.push_back(kv.first);
+        }
+        try {
+            p.runtime = parse_runtime_block(merged, root);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(fmt::format("[quality.{}]: {}", n, e.what()));
+        }
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
 static std::string derive_out_stem(const std::string& rom_basename) {
     auto ends_with_ci = [](const std::string& s, const std::string& suffix) {
         if (s.size() < suffix.size()) return false;
@@ -2771,6 +2824,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     loaded.ws_cull_masked_reject_sites = std::move(ws_cull_masked_reject_sites);
     loaded.draw_distance_clamp_sites =
         parse_draw_distance_clamps(cfg, config_path);
+    loaded.quality_presets = parse_quality_presets(cfg, root, config_path);
     return loaded;
 }
 
@@ -2986,6 +3040,24 @@ UserSettings load_user_settings(const fs::path& path) {
             s.frame_interpolation_fps = toml::find<int>(v, "frame_interpolation_fps");
             if (s.frame_interpolation_fps == 0 || s.frame_interpolation_fps >= 90)
                 s.has_frame_interpolation_fps = true;
+        });
+        // Graphics preset state (docs/QUALITY_PRESETS.md). Values are checked
+        // by the runtime, which knows the title's presets.
+        if (v.contains("quality_preset")) try_get([&]{
+            s.quality_preset = toml::find<std::string>(v, "quality_preset");
+            s.has_quality_preset = !s.quality_preset.empty();
+        });
+        if (v.contains("quality_base")) try_get([&]{
+            s.quality_base = toml::find<std::string>(v, "quality_base");
+            s.has_quality_base = !s.quality_base.empty();
+        });
+        if (v.contains("quality_hardware")) try_get([&]{
+            s.quality_hardware = toml::find<std::string>(v, "quality_hardware");
+            s.has_quality_hardware = !s.quality_hardware.empty();
+        });
+        if (v.contains("quality_detected")) try_get([&]{
+            s.quality_detected = toml::find<std::string>(v, "quality_detected");
+            s.has_quality_detected = !s.quality_detected.empty();
         });
         if (v.contains("aspect_ratio")) try_get([&]{
             const auto m = toml::find<std::string>(v, "aspect_ratio");
@@ -3341,6 +3413,14 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "frame_interpolation = " << (s.frame_interpolation ? "true" : "false") << "\n";
     if (s.has_frame_interpolation_fps)
         f << "frame_interpolation_fps = " << s.frame_interpolation_fps << "\n";
+    if (s.has_quality_preset)
+        f << "quality_preset    = \"" << s.quality_preset << "\"\n";
+    if (s.has_quality_base)
+        f << "quality_base      = \"" << s.quality_base << "\"\n";
+    if (s.has_quality_hardware)
+        f << "quality_hardware  = \"" << s.quality_hardware << "\"\n";
+    if (s.has_quality_detected)
+        f << "quality_detected  = \"" << s.quality_detected << "\"\n";
     if (s.has_aspect_ratio)
         f << "aspect_ratio      = \"" << s.aspect_num << ":" << s.aspect_den << "\"\n";
     if (s.has_adaptive_view)
