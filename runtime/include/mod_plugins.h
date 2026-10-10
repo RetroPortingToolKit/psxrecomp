@@ -45,6 +45,9 @@ int psx_mod_dispatch_guest_function(struct CPUState* cpu, uint32_t address);
 extern uint32_t g_psx_mod_guest_functions;
 /* Run immediately before a configured instruction, including delay slots.
  * The complete instruction word must match both registration and live RAM.
+ * Distinct callbacks/word guards may share an address (overlay reuse); exact
+ * duplicate registrations, including segment aliases, are rejected. Matching
+ * callbacks run in registration order and must guard their overlay context.
  * Callbacks may update registers/data but cannot redirect PC, finish a guest
  * function, or re-enter guest execution (pending load/branch state is live).
  * Native emits opt in with [recompiler] mod_instruction_sites; dirty-RAM

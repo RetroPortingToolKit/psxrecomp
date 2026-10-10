@@ -232,10 +232,20 @@ static int test_inactive_filter(CPUState*, uint32_t) {
 }
 static int guest_function_hits;
 static int instruction_hits;
+static int instruction_shared_hits, instruction_overlay_hits;
 static void test_instruction(CPUState* cpu, uint32_t) {
     instruction_hits++;
     cpu->gpr[5] = 0x80301008u;
     if (psx_mod_finish_function(cpu)) failures++;
+}
+static void test_shared_instruction(CPUState* cpu, uint32_t) {
+    ++instruction_shared_hits;
+    if (cpu->gpr[5] != 0x80301008u) ++failures;
+    cpu->gpr[6] = 0x12345678u;
+}
+static void test_overlay_instruction(CPUState* cpu, uint32_t) {
+    ++instruction_overlay_hits;
+    cpu->gpr[7] = 0x87654321u;
 }
 static void test_guest_function(CPUState* cpu, uint32_t) {
     guest_function_hits++;
@@ -652,6 +662,12 @@ int main() {
               0x90A30014u, test_instruction) &&
           !psx_mod_register_instruction_plugin("runtime.other", 0x80003005u,
               0x90A30014u, test_instruction), "reject aliased duplicate and unaligned sites");
+    check(psx_mod_register_instruction_plugin("runtime.test-vblank", 0xA0003004u,
+              0x90A30014u, test_shared_instruction), "overlay contexts may share an instruction word");
+    check(psx_mod_register_instruction_plugin("runtime.test-vblank", 0x80003004u,
+              0x90A30015u, test_overlay_instruction), "overlay versions may share an address");
+    check(!psx_mod_register_instruction_plugin("runtime.test-vblank", 0x80003004u,
+              0x90A30014u, test_shared_instruction), "shared callback exact duplicates remain rejected");
     psx_mod_write_word(0x80003004u, 0x90A30014u);
     check(psx_mod_register_guest_function_plugin(
               "runtime.test-vblank", 0x8FFF0000u, test_guest_function),
@@ -693,10 +709,19 @@ int main() {
     psx_mod_instruction(&entry_cpu, 0xA0003004u, 0x90A30014u);
     check(instruction_hits == 2 && entry_cpu.gpr[5] == 0x80301008u &&
           entry_cpu.pc == 0x80004000u, "instruction aliases preserve control flow and edit registers");
+    check(instruction_shared_hits == 2 && instruction_overlay_hits == 0 &&
+          entry_cpu.gpr[6] == 0x12345678u && g_psx_mod_instruction_hooks == 3,
+          "both matching contexts run; other overlay word remains inactive");
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30015u);
     psx_mod_write_word(0x80003004u, 0x90A30015u);
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 2, "fetched and live instruction guards reject changed code");
+    check(instruction_shared_hits == 2 && instruction_overlay_hits == 0,
+          "shared callbacks also require fetched and live word agreement");
+    psx_mod_instruction(&entry_cpu, 0xA0003004u, 0x90A30015u);
+    check(instruction_overlay_hits == 1 && entry_cpu.gpr[7] == 0x87654321u &&
+          instruction_hits == 2 && instruction_shared_hits == 2,
+          "overlay replacement selects only its instruction word");
     psx_mod_write_word(0x80003004u, 0x90A30014u);
     mod_runtime_on_vblank();
     check(plugin_calls == 1,
@@ -720,6 +745,8 @@ int main() {
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 2 && !g_psx_mod_instruction_hooks, "clearing removes instruction hooks");
+    check(instruction_shared_hits == 2 && instruction_overlay_hits == 1,
+          "clearing removes every shared-address variant");
     check(!psx_mod_dispatch_guest_function(&entry_cpu, 0x8FFF0000u) &&
               g_psx_mod_guest_functions == 0,
           "clearing the plan drops guest callback availability");

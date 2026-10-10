@@ -1553,8 +1553,13 @@ bool mod_register_instruction_plugin(const std::string& id, uint32_t address,
         (address & 0x1FFFFFFFu) >= 0x00800000u) return false;
     auto& hooks = registered_plugins()[id].instructions;
     const uint32_t key = address & 0x1FFFFFFFu;
+    /* Overlay code can reuse an address and even the instruction word.
+     * Each callback retains its own surrounding-code guard. Reject only
+     * the exact registration; dispatch already walks every matching hook
+     * in registration order and verifies the fetched/live word. */
     for (const auto& hook : hooks)
-        if (hook.address == key) return false;
+        if (hook.address == key && hook.expected == expected &&
+            hook.callback == callback) return false;
     hooks.push_back({key, expected, callback});
     return true;
 }
