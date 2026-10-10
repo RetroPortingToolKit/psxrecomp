@@ -107,6 +107,12 @@ enum {
     BS_SEC_SIO    = 0x0D,  /* SIO regs + pad-config FSM + memcard FSM             */
     BS_SEC_DIRTY  = 0x0E,  /* dirty-RAM page bitmap (guest-written code pages)    */
     BS_SEC_MDEC   = 0x0F,  /* MDEC command/FIFOs/quant/scale (FMV decode resume)  */
+    BS_SEC_SPUCD  = 0x15,  /* SPU CD-input frames queued (u32 n + n*(l,r) s16) */
+    BS_SEC_CPUTIM = 0x14,  /* [timing] in-flight CPU stall state, relative to
+                              the clock: GTE / mul-div cycles left, the load-
+                              delay give-back (read_absorb[33], which, fudge,
+                              ld_which_t, ld_absorb). Absent => anchored at the
+                              restored clock (pre-0x14 behaviour). */
     BS_SEC_GCS    = 0x13,  /* [timing] guest_cycle_scale: carried fraction + gate
                               state (3 u32). Written only when the title's
                               scale is not 1, so faithful states are unchanged;

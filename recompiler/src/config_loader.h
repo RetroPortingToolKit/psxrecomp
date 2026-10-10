@@ -460,6 +460,7 @@ struct RuntimeConfig {
     int                   video_supersample_milli = 1000;
 
     // texture_filtering: "nearest" (default, native PSX look) | "bilinear"
+    // | "xbr" (3: edge-directed magnification, OpenGL only)
     // (smooths textures and 2D backgrounds). Stored as 0/1.
     int                   video_texture_filter = 0;
 

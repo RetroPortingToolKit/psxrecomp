@@ -116,6 +116,8 @@ uint32_t psx_netplay_rb_rtt_estimate_ms(void) { return 0; }
 #else
 
 #include "netplay_hash_confirm.h"
+#include "netplay_peer_frontier.h"
+#include "netplay_fmv_confirm.h"
 #include "netplay_input_hist.h"
 #include "netplay_rb_post.h"
 #include "netplay_snap_ring.h"
@@ -435,6 +437,9 @@ static uint32_t g_agreed_span_lo;
  * otherwise ADVANCE→begin races the follower's agreed and NACK-storms
  * (2026-08-02 post-§39 soak). */
 static uint32_t g_peer_resolved_through;
+/* Per-seat RESOLVED adverts; g_peer_resolved_through is the lowest of them
+ * across every peer seat (netplay_peer_frontier.h). */
+static NetplayPeerFrontier g_peer_frontier;
 /* §41: wall-clock when choose_load/begin first blocked on peer RESOLVED
  * (0 = not waiting). After RB_MOTK_PEER_RESOLVED_GATE_MS, force-open —
  * unbounded defer silently desynced Live (2026-08-02 post-§40 soak). */
@@ -715,6 +720,8 @@ static uint32_t g_fmv_settle_until;
 static uint32_t g_fmv_lockstep_until;
 static uint32_t g_fmv_media_end_sim;
 static uint32_t g_fmv_core_match_streak;
+/* Highest hash-confirmed tick already counted into the streak. */
+static uint32_t g_fmv_confirm_seen;
 static int g_fmv_lockstep_released; /* sticky: never re-lock after invent on */
 /* Inclusive last tick both peers dense-snapped (media/lockstep/+tip). */
 static uint32_t g_fmv_dense_through;
@@ -1037,21 +1044,31 @@ static int rb_fmv_media_active(void)
 /* After media: grow/shrink lockstep_until from hash_confirm agreement. */
 static void rb_fmv_update_lockstep_gate(uint32_t sim)
 {
-    int matched = 0;
     uint32_t cap;
     uint32_t prev_until;
     if (!g_fmv_media_end_sim || rb_fmv_media_active())
         return;
 
-    if (g_b.hc && !netplay_hc_peek_mismatch(g_b.hc, NULL, NULL, NULL)) {
-        uint32_t need = (sim > 0u) ? (sim - 1u) : 0u;
-        if (netplay_hc_confirm_through(g_b.hc, need))
-            matched = 1;
+    /* Agreement is counted in CONFIRMED ticks, not in "sim-1 is already
+     * confirmed" ticks. The peer's digest for a tick arrives one RTT after
+     * the tick; the peer that runs ahead (usually the host, cross-machine)
+     * never has sim-1 confirmed when it asks, so the old per-tick test reset
+     * the streak every tick and fired a false "MAX unmatched" DESYNC after
+     * every movie even though every digest matched. Only a real mismatch
+     * resets the streak now; a confirm that is merely late leaves it. */
+    {
+        uint32_t gained = 0u;
+        if (g_b.hc && netplay_hc_peek_mismatch(g_b.hc, NULL, NULL, NULL)) {
+            g_fmv_core_match_streak = 0;
+        } else if (g_b.hc && netplay_hc_confirm_through(g_b.hc, g_fmv_media_end_sim)) {
+            const uint32_t rt = netplay_hc_resolved_through(g_b.hc);
+            const uint32_t from = (g_fmv_confirm_seen > g_fmv_media_end_sim)
+                                      ? g_fmv_confirm_seen : g_fmv_media_end_sim;
+            gained = rb_fmv_confirm_gain(from, rt);
+            if (rt > g_fmv_confirm_seen) g_fmv_confirm_seen = rt;
+        }
+        g_fmv_core_match_streak += gained;
     }
-    if (matched)
-        g_fmv_core_match_streak++;
-    else
-        g_fmv_core_match_streak = 0;
 
     /* §93: after MAX-unmatched DESYNC, keep counting so a later rematch can
      * clear invent/begin hold without requiring a new media bout. */
@@ -1237,6 +1254,7 @@ static void rb_fmv_tick_settle(void)
         if (sim >= g_fmv_media_hi)
             g_fmv_media_hi = sim;
         g_fmv_core_match_streak = 0;
+        g_fmv_confirm_seen = 0;
         g_fmv_lockstep_released = 0;
         g_fmv_settle_until = sim + RB_FMV_SETTLE_TICKS;
         g_fmv_lockstep_until = sim + RB_FMV_LOCKSTEP_MIN;
@@ -2245,6 +2263,7 @@ static void realign_invalidate_evidence(uint32_t tick)
     }
     if (g_peer_resolved_through > tick)
         g_peer_resolved_through = tick;
+    netplay_peer_frontier_clamp(&g_peer_frontier, tick);
     if (g_local_advertised_through > tick)
         g_local_advertised_through = tick;
     if (g_snaps)
@@ -3295,10 +3314,35 @@ static int maybe_abandon_tip_extend(void)
 
 /* Apply inbound peer RESOLVED: raise g_peer_resolved_through + library
  * convergence, and complete Verify if POST was lost. */
-static void apply_peer_resolved(uint32_t resolved)
+static void apply_peer_resolved(int from, uint32_t advert)
 {
-    if (!g_rb || resolved == 0u)
+    uint32_t seats = psx_netplay_peer_seats();
+    uint32_t resolved;
+    if (!g_rb || advert == 0u)
         return;
+    if (seats == 0u) {
+        /* No seat roster (bare two-seat session): the one peer's advert. */
+        resolved = advert;
+    } else {
+        int seat = -1;
+        if (from >= 0 && (uint32_t)from < NETPLAY_PEER_FRONTIER_SEATS &&
+            (seats & (1u << from)))
+            seat = from;
+        else if ((seats & (seats - 1u)) == 0u) {
+            /* Sole peer: the sender is unambiguous. */
+            seat = 0;
+            while (!(seats & (1u << seat)))
+                seat++;
+        }
+        if (seat < 0)
+            return;
+        netplay_peer_frontier_note(&g_peer_frontier, seat, advert);
+        /* With more than two seats an advert speaks only for its sender:
+         * the frontier every follower has reached is the lowest. */
+        resolved = netplay_peer_frontier_min(&g_peer_frontier, seats);
+        if (resolved == 0u)
+            return;
+    }
     if (resolved > g_peer_resolved_through) {
         g_peer_resolved_through = resolved;
         g_peer_resolved_gate_expired = 0;
@@ -3522,6 +3566,15 @@ static void advance_agreed_watermark_from_hc(void)
             fprintf(stderr,
                     "psxrecomp: rb agreed ADVANCE %u→%u (hc=%u live confirm)\n",
                     (unsigned)old, (unsigned)t, (unsigned)rt);
+            /* §55: every peer matched cores at t >= the bisect cap, so the
+             * fork it bounded is healed. A stale cap refuses every later
+             * episode once its loads leave the ring. */
+            if (netplay_fork_cap_retired(g_bl_fork_cap, t)) {
+                fprintf(stderr,
+                        "psxrecomp: rb fork cap %u retired (agreed %u live confirm)\n",
+                        (unsigned)g_bl_fork_cap, (unsigned)t);
+                g_bl_fork_cap = 0u;
+            }
             fflush(stderr);
             /* §40: peer follow frontier lags local agreed until RESOLVED lands. */
             advertise_agreed_resolved(t);
@@ -3889,6 +3942,31 @@ static int choose_load_tick_inner(uint32_t mismatch, uint32_t *out_load)
     return 0;
 }
 
+/* The bisect window (below the fork cap, above the peer NACK floor) is
+ * empty or holds no loadable snap. Bisecting cannot heal the fork, but a
+ * MEDIA_KF heal can: it transfers the initiator's pin to every follower, so
+ * any recent mutual snap works. Without this an hc-fork recovery on a
+ * 4-seat WAN race refused for the rest of the session (cap 3296, floor 3280:
+ * "no mutually-loadable snap") and two pairs of seats finished the race on
+ * different states. */
+static int choose_load_fork_cap_heal_bypass(uint32_t mismatch, uint32_t *out_load)
+{
+    static uint32_t s_log_cap;
+    if (!rb_media_kf_enabled() || !(g_request_post_fmv_heal || g_post_fmv_heal_kf))
+        return 0;
+    if (!choose_load_tick_inner(mismatch, out_load))
+        return 0;
+    if (s_log_cap != g_bl_fork_cap) {
+        fprintf(stderr,
+                "psxrecomp: rb choose_load fork cap %u bypass load=%u "
+                "(bisect window empty; MEDIA_KF heal transfers the pin)\n",
+                (unsigned)g_bl_fork_cap, (unsigned)*out_load);
+        fflush(stderr);
+        s_log_cap = g_bl_fork_cap;
+    }
+    return 1;
+}
+
 static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
 {
     /* §55: after a baseline core mismatch at load L the fork provably predates
@@ -3899,7 +3977,7 @@ static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
         if (m > g_bl_fork_cap)
             m = g_bl_fork_cap; /* inner's shared walk returns load < m */
         if (!choose_load_tick_inner(m, out_load))
-            return 0;
+            return choose_load_fork_cap_heal_bypass(mismatch, out_load);
         /* §62: peer proved it cannot follow ≤ floor (snap evicted). If the
          * bisect window (must be < fork cap AND > peer floor) is empty, no
          * mutually-loadable snap covers the fork — refuse to open rather
@@ -3915,7 +3993,7 @@ static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
                 fflush(stderr);
                 s_floor_log = *out_load;
             }
-            return 0;
+            return choose_load_fork_cap_heal_bypass(mismatch, out_load);
         }
         if (*out_load >= g_bl_fork_cap) {
             static uint32_t s_refuse_log;
@@ -3927,7 +4005,7 @@ static int choose_load_tick(uint32_t mismatch, uint32_t *out_load)
                 fflush(stderr);
                 s_refuse_log = g_bl_fork_cap;
             }
-            return 0;
+            return choose_load_fork_cap_heal_bypass(mismatch, out_load);
         }
         {
             static uint32_t s_bisect_log;
@@ -4728,8 +4806,13 @@ static void log_resim_tick_audit(uint32_t sim, const char *tag)
     for (slot = 0; slot < n; ++slot) {
         RNetRbFrame row;
         if (rnet_rb_get_sealed_frame(g_rb, slot, sim, &row) && row.is_valid)
-            fprintf(stderr, " s%d=%04x%s", slot, (unsigned)row.buttons,
-                    row.analog ? "A" : "");
+            /* Device type and axes too: equal buttons hid a sealed-row
+             * difference (a digital idle fill vs the seat's analog row). */
+            fprintf(stderr, " s%d=%04x%s:t%u:%02x%02x%02x%02x", slot,
+                    (unsigned)row.buttons, row.analog ? "A" : "",
+                    (unsigned)row.analog, (unsigned)(uint8_t)row.stick_x,
+                    (unsigned)(uint8_t)row.stick_y, (unsigned)row.rx,
+                    (unsigned)row.ry);
         else
             fprintf(stderr, " s%d=----", slot);
     }
@@ -6415,6 +6498,7 @@ void psx_netplay_rb_start(void)
     g_agreed_through = 0;
     g_agreed_span_lo = 0;
     g_peer_resolved_through = 0;
+    netplay_peer_frontier_reset(&g_peer_frontier);
     g_peer_resolved_wait_t0_ms = 0ull;
     g_peer_resolved_gate_expired = 0;
     g_past_frontier_sticky = 0;
@@ -6498,6 +6582,7 @@ void psx_netplay_rb_cold_reset(void)
     g_fmv_settle_until = 0;
     g_fmv_lockstep_until = 0;
     g_fmv_media_end_sim = 0;
+    g_fmv_confirm_seen = 0;
     g_fmv_core_match_streak = 0;
     g_fmv_lockstep_released = 0;
     g_fmv_dense_through = 0;
@@ -6551,6 +6636,7 @@ void psx_netplay_rb_shutdown(void)
     g_fmv_settle_until = 0;
     g_fmv_lockstep_until = 0;
     g_fmv_media_end_sim = 0;
+    g_fmv_confirm_seen = 0;
     g_fmv_core_match_streak = 0;
     g_fmv_lockstep_released = 0;
     g_fmv_dense_through = 0;
@@ -6595,6 +6681,7 @@ void psx_netplay_rb_shutdown(void)
     g_agreed_through = 0;
     g_agreed_span_lo = 0;
     g_peer_resolved_through = 0;
+    netplay_peer_frontier_reset(&g_peer_frontier);
     g_peer_resolved_wait_t0_ms = 0ull;
     g_peer_resolved_gate_expired = 0;
     g_past_frontier_sticky = 0;
@@ -6630,6 +6717,15 @@ static int rb_fmv_dense_snap_window(void)
 void psx_netplay_rb_request_snap(uint32_t tick)
 {
     uint32_t iv;
+    /* Every tick boundary, Live and Replay alike: re-anchor the dirty-RAM
+     * interpreter's host-only IRQ poll stride. A load resets it to phase 0;
+     * Live otherwise carried an arbitrary phase, so a replay took the VBlank
+     * in RAM code at another instruction (EPC / clock split at R4's race
+     * start under PSX_RB_DET_SELFTEST). */
+    {
+        extern void dirty_ram_irq_ambient_resync_after_restore(void);
+        dirty_ram_irq_ambient_resync_after_restore();
+    }
     if (!g_snaps)
         return;
     /* Never overwrite the frozen episode baseline (or its ring slot). */
@@ -6747,8 +6843,14 @@ static int try_apply_pending_load(CPUState *cpu_in)
             psx_cycles_resync_after_restore(cpu_in);
             interrupts_resync_after_restore();
             cdrom_resync_deadlines_after_restore();
-            if (!cdrom_xa_stream_active() && !cdrom_fmv_stream_pending())
-                spu_cd_audio_reset();
+            {
+                /* The snap carried the CD input FIFO (BS_SEC_SPUCD): keep it. */
+                extern int g_spu_cd_restored;
+                if (!g_spu_cd_restored && !cdrom_xa_stream_active() &&
+                    !cdrom_fmv_stream_pending())
+                    spu_cd_audio_reset();
+                g_spu_cd_restored = 0;
+            }
             {
                 extern void overlay_loader_clear_lazy_miss(void);
                 overlay_loader_clear_lazy_miss();
@@ -6882,8 +6984,14 @@ static int try_apply_pending_load(CPUState *cpu_in)
             cdrom_resync_deadlines_after_restore();
             /* Wipe SPU CD FIFO only when XA is idle — clearing mid-stream
              * left MotK FMV silent/black after tip loads into media. */
-            if (!cdrom_xa_stream_active() && !cdrom_fmv_stream_pending())
-                spu_cd_audio_reset();
+            {
+                /* The snap carried the CD input FIFO (BS_SEC_SPUCD): keep it. */
+                extern int g_spu_cd_restored;
+                if (!g_spu_cd_restored && !cdrom_xa_stream_active() &&
+                    !cdrom_fmv_stream_pending())
+                    spu_cd_audio_reset();
+                g_spu_cd_restored = 0;
+            }
             {
                 extern void overlay_loader_clear_lazy_miss(void);
                 overlay_loader_clear_lazy_miss();
@@ -7044,6 +7152,11 @@ void psx_netplay_rb_flush_resume(void)
      * resumes outside any episode after POST/baseline abort. */
     live_realign_resume = !g_rb || !rnet_rb_is_active(g_rb);
     if (!live_realign_resume && rnet_rb_get_phase(g_rb) != nRNetRbPhaseReplay)
+        return;
+    /* Live realign: the resumed frame must be an admitted tick, or it runs
+     * uncounted and this seat ends one frame ahead of its label. Stay
+     * spinning until the tick's inputs admit. */
+    if (live_realign_resume && !psx_netplay_live_realign_admit())
         return;
     pc = g_pending_resume_pc;
     if (!rb_resume_pc_ok(pc)) {
@@ -7796,7 +7909,7 @@ int psx_netplay_rb_begin_rewind(uint32_t mismatch_tick, int slot)
     {
         rnet_u32 resolved = 0;
         while (rnet_session_take_rb_resolved(s, &resolved))
-            apply_peer_resolved(resolved);
+            apply_peer_resolved(rnet_session_rb_last_take_from(s), resolved);
     }
 
     /* Tick settle tracker. Media/lockstep episodes resume into MotK wait/VLC
@@ -8537,9 +8650,20 @@ static void begin_follower(uint32_t epoch, uint32_t mismatch, uint32_t load, uin
      * after local snap apply. Gating on !snap_applied left the loser
      * stashing the winner's BEGIN forever while both sides waited on
      * peer baseline (2026-08-02 soak: epoch 16 vs 17, 404× WIN drop).
-     * Replay/Verify still refuse — abort/NACK owns those. */
-    if (g_rb && rnet_rb_is_active(g_rb) && !rnet_rb_is_from_peer_notify(g_rb) &&
-        epoch != rnet_rb_get_epoch_id(g_rb)) {
+     * Replay/Verify still refuse — abort/NACK owns those.
+     * With three or more seats a FOLLOWER sees the race too: two guests
+     * mispredict the same tick and both BEGIN. The follower used to follow
+     * whichever BEGIN landed first and stash the other, so with three
+     * initiators the seats split across epochs and each waited forever for
+     * baselines that never came (4-seat WAN: host on epoch 43 from slot 3,
+     * slot 1 winning with 41). The epoch id names its initiator, so a
+     * follower applies the same rule to the episode it follows
+     * (netplay_rb_concurrent_begin). Two seats never reach this for a
+     * follower: the only other initiator is the one it already follows. */
+    if (g_rb && rnet_rb_is_active(g_rb) &&
+        netplay_rb_concurrent_begin(rnet_rb_get_epoch_id(g_rb), epoch,
+                                    rnet_rb_is_from_peer_notify(g_rb),
+                                    RB_EPOCH_SLOT_MASK) != 0) {
         uint32_t our_epoch = rnet_rb_get_epoch_id(g_rb);
         uint32_t our_slot = our_epoch & RB_EPOCH_SLOT_MASK;
         uint32_t their_slot = epoch & RB_EPOCH_SLOT_MASK;
@@ -9003,7 +9127,7 @@ void psx_netplay_rb_pump(void)
     {
         rnet_u32 resolved = 0;
         while (rnet_session_take_rb_resolved(s, &resolved))
-            apply_peer_resolved(resolved);
+            apply_peer_resolved(rnet_session_rb_last_take_from(s), resolved);
     }
     /* §53b: Live cadence — only HC-confirmed ADVANCE. Aged HEAL / HEAL-FORCE
      * stay at begin/follow: running them every pump under a live HC stall
@@ -9027,7 +9151,7 @@ void psx_netplay_rb_pump(void)
                 (g_peer_commit_epoch != epoch || load > g_peer_commit_tick)) {
                 g_peer_commit_epoch = epoch;
                 g_peer_commit_tick = load;
-                apply_peer_resolved(load);
+                apply_peer_resolved(rnet_session_rb_last_take_from(s), load);
                 (void)maybe_abandon_tip_extend();
             }
             continue;
@@ -9144,7 +9268,7 @@ void psx_netplay_rb_pump(void)
                                 (unsigned)peer_frontier);
                         fflush(stderr);
                     }
-                    apply_peer_resolved(peer_frontier);
+                    apply_peer_resolved(rnet_session_rb_last_take_from(s), peer_frontier);
                     if (!g_agreed_valid || g_agreed_through < peer_frontier) {
                         g_agreed_through = peer_frontier;
                         g_agreed_span_lo = peer_frontier;
@@ -9284,6 +9408,8 @@ void psx_netplay_rb_pump(void)
                             if (g_peer_resolved_through == 0u ||
                                 g_peer_resolved_through > peer_frontier)
                                 g_peer_resolved_through = peer_frontier;
+                            netplay_peer_frontier_clamp(&g_peer_frontier,
+                                                        peer_frontier);
                             g_peer_resolved_gate_expired = 0;
                             g_peer_resolved_wait_t0_ms = 0ull;
                             g_past_frontier_sticky = 1;
@@ -9957,7 +10083,7 @@ void psx_netplay_rb_finish_frame(void)
     log_resim_tick_audit(done, "fin");
     psx_netplay_rb_request_snap(done);
     if (c)
-        psx_netplay_rb_poll(c, pick_snap_resume_pc(c, 0u));
+        psx_netplay_rb_poll(c, psx_netplay_snap_resume_hint(c));
     rnet_session_advance(s);
     g_needs_advance = 0;
 

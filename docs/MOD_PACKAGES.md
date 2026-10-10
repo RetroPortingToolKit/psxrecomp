@@ -757,6 +757,13 @@ some selections of one feature is a `[[requirement]]`, not a dependency.
 
 ## Implicit requirements across packages
 
+Trusted graphics plugins can call `psx_mod_set_internal_resolution(lines)` to
+request a rendering height for their session. Values from 120 through 8192 use
+the existing integer-scale resolver and backend allocation limits; zero clears
+the request. `PSX_INTERNAL_RESOLUTION` takes precedence. The player's saved
+resolution stays unchanged, and every new session clears the request before
+its mod plan activates, including rematches and sessions without that mod.
+
 The shared PGXP plugin uses `psx_mod_set_pgxp_precision(enabled, cpu_mode)`.
 This stores a session selection as well as setting live correction flags, so
 later renderer initialization cannot erase mod activation with the base video

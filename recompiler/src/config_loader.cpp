@@ -776,8 +776,9 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             const auto mode = toml::find<std::string>(video, "texture_filtering");
             if (mode == "nearest")       rt.video_texture_filter = 0;
             else if (mode == "bilinear") rt.video_texture_filter = 1;
+            else if (mode == "xbr")      rt.video_texture_filter = 3;
             else throw std::runtime_error(fmt::format(
-                "[video] texture_filtering must be \"nearest\" or \"bilinear\": {}", mode));
+                "[video] texture_filtering must be \"nearest\", \"bilinear\" or \"xbr\": {}", mode));
         }
         if (video.contains("fmv_filter")) {
             const auto mode = toml::find<std::string>(video, "fmv_filter");
@@ -2867,6 +2868,7 @@ UserSettings load_user_settings(const fs::path& path) {
             const auto m = toml::find<std::string>(v, "texture_filtering");
             if (m == "nearest") { s.texture_filter = 0; s.has_texture_filter = true; }
             else if (m == "bilinear") { s.texture_filter = 1; s.has_texture_filter = true; }
+            else if (m == "xbr") { s.texture_filter = 3; s.has_texture_filter = true; }
         });
         if (v.contains("fmv_filter")) try_get([&]{
             const auto m = toml::find<std::string>(v, "fmv_filter");
@@ -3268,7 +3270,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_antialiasing)
         f << "antialiasing      = " << (s.antialiasing ? "true" : "false") << "\n";
     if (s.has_texture_filter)
-        f << "texture_filtering = \"" << (s.texture_filter ? "bilinear" : "nearest") << "\"\n";
+        f << "texture_filtering = \"" << (s.texture_filter == 3 ? "xbr" : s.texture_filter ? "bilinear" : "nearest") << "\"\n";
     if (s.has_fmv_filter)
         f << "fmv_filter        = \"" << video_fmv_filter_name(s.fmv_filter) << "\"\n";
     if (s.has_geometry_correction)

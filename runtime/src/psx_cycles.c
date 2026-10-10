@@ -766,14 +766,20 @@ void psx_cycles_resync_after_restore(CPUState *cpu) {
      * would then advance (live_ts - restored_cycle) in one shot — tens of
      * millions of cycles / N nested presents with zero IRQ checks (MotK
      * transform CTC2 path). Anchor them at the restored clock. */
-    if (cpu) {
-        cpu->gte_ts_done = psx_cycle_count;
-        cpu->muldiv_ts_done = psx_cycle_count;
-        memset(cpu->read_absorb, 0, sizeof(cpu->read_absorb));
-        cpu->read_absorb_which = 0;
-        cpu->read_fudge = 0x20u; /* no committed predecessor load */
-        cpu->ld_which_t = 0x20u; /* no pending load dest */
-        cpu->ld_absorb = 0;
+    {
+        /* A snap with BS_SEC_CPUTIM carried them relative to its clock --
+         * keep those; older snaps anchor at the restored clock as before. */
+        extern int g_boot_state_cpu_timing_restored;
+        if (cpu && !g_boot_state_cpu_timing_restored) {
+            cpu->gte_ts_done = psx_cycle_count;
+            cpu->muldiv_ts_done = psx_cycle_count;
+            memset(cpu->read_absorb, 0, sizeof(cpu->read_absorb));
+            cpu->read_absorb_which = 0;
+            cpu->read_fudge = 0x20u; /* no committed predecessor load */
+            cpu->ld_which_t = 0x20u; /* no pending load dest */
+            cpu->ld_absorb = 0;
+        }
+        g_boot_state_cpu_timing_restored = 0;
     }
     /* Dirty-RAM interpreter load-delay writebacks live in host statics, not
      * BS_SEC_CPU. Discard (do not flush): snap GPRs are already architectural.

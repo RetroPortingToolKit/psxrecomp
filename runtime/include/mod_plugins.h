@@ -439,6 +439,13 @@ int psx_mod_set_adaptive_display_aspect(uint32_t max_numerator,
  * title's setting before activation.
  */
 int psx_mod_set_widescreen_hud_size(int proportional);
+/* Request an internal rendering height for this mod session (120..8192).
+ * The existing resolution resolver selects an integer raster scale and the
+ * backend applies its normal allocation limits. Zero clears the request.
+ * Player settings are preserved, explicit PSX_INTERNAL_RESOLUTION overrides
+   * win, and each session clears this request before activating its committed
+   * mod plan. */
+int psx_mod_set_internal_resolution(uint32_t target_lines);
 /*
  * Set the wall-clock cadence of simulated guest VBlanks. A value of zero
  * removes frontend pacing; 60 and higher request that many native guest
@@ -1013,6 +1020,17 @@ int psx_mod_allow_direct_shortcut(uint32_t shortcut);
  * when the mode starts and 0 when it ends (setting it every frame from the
  * title's state is fine). Cleared at every mod/session reset. */
 void psx_mod_set_rewind_blocked(int blocked);
+
+/* Title-supplied host rumble for one guest port (0-based): DualShock motor
+ * values (small: 0 off / nonzero on, large: 0..255) for a title that
+ * computes vibration but cannot send it over SIO to the presented pad (e.g. a
+ * NeGcon has no motors). The runtime drives the host pad with the louder of
+ * this and the guest's own SIO motors. Online only the local seat's value
+ * is used (this peer's local port, on its pad) and calls during a rollback resim are
+ * ignored, so a netplay = "host_output" plugin can call it for every seat.
+ * Opt-in: call every frame while it applies; a value lapses 8 VBlanks after the last call, and all are cleared
+ * at every mod/session reset (psx_host_rumble.h). Returns 0 for a bad seat. */
+int psx_mod_set_host_rumble(uint32_t player, uint32_t small, uint32_t large);
 
 /* Local P1 mouse policy. The runtime delivers ordered events on the SDL owner
  * (main) thread, owns relative capture and folds the resulting right-stick

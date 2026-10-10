@@ -698,6 +698,28 @@ keep their exact texels, and `off` is the historical path. Cost is up to 64
 fetches per minified pixel. OpenGL only. `PSX_TEXTURE_LOD=0|1` and
 `PSX_ANISO=N` override them for one run; the `texture_lod` TCP command
 switches them live.
+### Texture filtering (`texture_filtering`)
+
+```toml
+[video]
+texture_filtering = "nearest"   # nearest (default) | bilinear | xbr
+```
+
+`nearest` is the PS1's point sampling. `bilinear` blends the four nearest
+texels (opacity-gated, so cutout edges keep their colour). `xbr` (OpenGL
+only) is edge-directed magnification after Hyllian's xBR (MIT; see
+`THIRD_PARTY_ATTRIBUTION.md`): for the texel
+corner nearest each sample it compares weighted colour distances over a 5x5
+neighbourhood, and where an edge runs along that corner's diagonal the corner
+is cut and takes the closer side neighbour, with an anti-aliased boundary one
+output pixel wide. Flat areas, straight edges and gradients stay crisp
+texels; diagonals and curves lose their staircase. It acts only where a
+texel spans two or more output pixels (high internal scale or a magnified
+texture), so a 1:1 draw is exactly nearest; cutouts and STP stay the centre
+texel's. It costs up to 13 texel fetches per pixel. JINC2 is not offered.
+`PSX_TEXTURE_FILTER=0..3` overrides it for one run (2 is the mod-only "stable
+world" minification filter) and the `texture_filter` TCP command switches it
+live. The launcher's toggle still offers nearest and bilinear.
 
 The runtime clamps N per backend:
 
@@ -809,6 +831,13 @@ with an OSD note, no snapshots are captured (the ring keeps what it already
 has), and a title-allowed direct Rewind button (`psx_mod_allow_direct_shortcut`)
 is not claimed, so it reaches the game as if Rewind were off. The block clears
 at every mod/session reset; nothing changes for a title that never calls it.
+
+A title that computes vibration but cannot send it over SIO to the presented
+pad (a NeGcon has no motors) can call `psx_mod_set_host_rumble(player, small,
+large)` every frame with DualShock motor values. The runtime drives the host
+pad with the louder of that and the guest's SIO motors; a value lapses 8
+VBlanks after the last call and all are cleared at every mod/session reset.
+`PSX_RUMBLE_TRACE=1` logs every change, headless included.
 
 Bezel artwork is intentionally not a `[video]` key. It is exposed as the
 disabled-by-default `psx.presentation.bezel` mod package, which draws a
