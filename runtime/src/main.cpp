@@ -1286,6 +1286,7 @@ static int           g_video_fmv_chroma = 0;   /* [video] fmv_chroma_smoothing /
 /* [video] texture_lod / anisotropic_filtering; PSX_TEXTURE_LOD / PSX_ANISO. */
 static int           g_video_texture_lod = 0, g_video_aniso = 1;
 static int           g_video_accurate_blending = 0;   /* [video] accurate_blending / PSX_ACCURATE_BLENDING */
+static int           g_video_dithering = 0;   /* [video] dithering / PSX_DITHERING */
 static int           g_video_pgxp_color_correction = 0;
 static int           g_video_pgxp_seam = 0;
 static float         g_video_pgxp_depth_threshold = 4096.0f;
@@ -16102,6 +16103,7 @@ int main(int argc, char** argv) {
             g_video_texture_lod = gc.runtime.video_texture_lod;
             g_video_aniso = gc.runtime.video_anisotropic_filtering;
             g_video_accurate_blending = gc.runtime.video_accurate_blending ? 1 : 0;
+            g_video_dithering = gc.runtime.video_dithering;
             g_video_pgxp_color_correction = gc.runtime.video_pgxp_color_correction ? 1 : 0;
             g_video_pgxp_seam = gc.runtime.video_pgxp_seam;
             g_video_pgxp_depth_threshold = (float)gc.runtime.video_pgxp_depth_threshold;
@@ -18514,6 +18516,8 @@ session_reboot:
     gl_renderer_set_texture_lod(g_video_texture_lod, g_video_aniso);
     if (const char* e = std::getenv("PSX_ACCURATE_BLENDING")) g_video_accurate_blending = (*e && *e != '0');
     gl_renderer_set_accurate_blending(g_video_accurate_blending);
+    if (const char* e = std::getenv("PSX_DITHERING")) g_video_dithering = std::atoi(e);
+    gl_renderer_set_dithering(g_video_dithering);
     gl_renderer_set_pgxp_color_perspective(g_video_pgxp_color_correction);
     gl_renderer_set_pgxp_seam(g_video_pgxp_seam);
     if (const char* e = std::getenv("PSX_PGXP_DEPTH_THRESHOLD")) g_video_pgxp_depth_threshold = (float)std::atof(e);

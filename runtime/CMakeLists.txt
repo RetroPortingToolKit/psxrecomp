@@ -291,6 +291,19 @@ if(BUILD_TESTING)
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-blend-accuracy-results")
         set_tests_properties(gl_blend_accuracy_test PROPERTIES
             LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
+        # [video] dithering: off ignores the guest's dither bit (byte-identical
+        # true colour); on/scaled add the PS1 pattern to shaded/modulated draws
+        # only, through the facade, the render thread, PGXP depth and wide.
+        add_test(NAME gl_dithering_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
+                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_dithering.c"
+                --cc "${CMAKE_C_COMPILER}"
+                --sdl-include "${_gl_scale_sdl_inc}"
+                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
+                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-dithering-results")
+        set_tests_properties(gl_dithering_test PROPERTIES
+            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
         unset(_gl_scale_sdl_inc)
     else()
         message(STATUS "gl_scale_invariance_test: not registered (needs macOS, Linux or MinGW, Python 3 and SDL3)")
