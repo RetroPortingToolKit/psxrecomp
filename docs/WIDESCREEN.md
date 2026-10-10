@@ -517,3 +517,13 @@ To enable 21:9 later: widen the backdrop generation, then promote the launcher's
 2-state toggle to a 3-way Off / 16:9 / 21:9 (the `cycle_aspect` callback already
 cycles `aspect_index` 0/1/2 and is the scaffold). Full feasibility analysis in
 the session memory `native_wide_fov_autocull.md`.
+
+## `scene_predicate_per_frame` (opt-in)
+
+`[widescreen] scene_predicate_per_frame = true` evaluates a mod's world-scene
+predicate (`psx_mod_set_world_scene_predicate`) once per VBlank instead of on
+every primitive and GTE call. `PSX_WS_SCENE_CACHE=0/1` overrides it for one
+run. The answer can trail a scene change by up to one frame, so turn it on per
+title only after a `frame_fingerprint` A/B across scene transitions. In R4 the
+predicate was 2.4 % of the emulation thread in races and drops to 0.3 %. Reset
+and savestate load invalidate the cached value.

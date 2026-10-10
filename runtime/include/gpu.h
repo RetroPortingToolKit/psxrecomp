@@ -181,6 +181,8 @@ void gpu_ws_configure(int aspect_num, int aspect_den,
 /* [widescreen] full_2d: opt a pure-2D sprite game into the widescreen present
  * path (treat every in-game frame as gameplay, since it never tags 3D prims). */
 void gpu_ws_set_full_2d(int on);
+/* Opt-in: a mod world-scene predicate is evaluated once per VBlank (gpu.c). */
+void gpu_ws_set_scene_predicate_per_frame(int on);
 /* Signed 16-bit camera/min/max; active is a nonzero byte. Requires bg2d hooks.
  * Zero addresses disable the feature. No guest memory is written. */
 void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_t active);

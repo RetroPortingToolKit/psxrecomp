@@ -1436,6 +1436,9 @@ struct GameConfig {
     // [[draw_distance.clamp]] -- opt-in "keep far geometry" clamps. Empty by
     // default; inert until a mod switches them on; regen required.
     std::vector<DrawDistanceClampSite> draw_distance_clamp_sites;
+    // [widescreen] scene_predicate_per_frame -- evaluate a mod's world-scene
+    // predicate once per VBlank (gpu.c). Opt-in; check with a fingerprint A/B.
+    bool ws_scene_predicate_per_frame = false;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.
