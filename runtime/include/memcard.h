@@ -10,6 +10,26 @@ extern "C" {
 #define MEMCARD_SIZE         (128 * 1024)   /* 128KB per card */
 #define MEMCARD_SECTOR_SIZE  128
 #define MEMCARD_SECTORS      1024
+#define MEMCARD_EXTENSION_MAX 65536u
+
+/* Optional game-owned metadata after the standard 128KiB image. The serial
+ * device and raw export see only the standard image. A missing codec preserves
+ * a loaded opaque tail unchanged; its title-specific binding may become stale.
+ * Callbacks run on the emulation thread and must not re-enter card I/O.
+ * load: zero accepts, negative blocks flushing until a successful reload.
+ * save: return tail byte count (zero = raw card), negative aborts the flush.
+ * Both callbacks are required. Reset before each mod session's activation.
+ * The codec must define native save fallback, slot identity and restore policy;
+ * this transport cannot infer those from an opaque tail. */
+typedef int (*MemcardExtensionLoad)(int card, const uint8_t* base,
+                                  const uint8_t* tail, uint32_t tail_size);
+typedef int (*MemcardExtensionSave)(int card, const uint8_t* base,
+                                  uint8_t* tail, uint32_t capacity);
+void memcard_set_extension_codec(MemcardExtensionLoad load,
+                                MemcardExtensionSave save);
+/* Last attempted disk flush: 0 success, -1 I/O failure, -2 extension rejected.
+ * On failure the card stays dirty and the original file stays intact. */
+int memcard_last_flush_result(int card);
 
 /* Initialize memcard subsystem. dir = directory for .mcd files (can be NULL).
  * Loads (or formats+creates) card1.mcd / card2.mcd in `dir` for both slots. */
@@ -31,7 +51,7 @@ void memcard_init_slots(const char* dir, const MemcardSlotConfig slots[2]);
  * .mcd file's directory frames without touching the live card array. */
 typedef struct {
     int       exists;        /* file present and readable */
-    int       valid;         /* 128KB and "MC" magic in frame 0 */
+    int       valid;         /* complete 128KB base and "MC" magic in frame 0 */
     int       used_blocks;   /* directory frames in use (0..15) */
     int       total_blocks;  /* always 15 */
     uint8_t   block_used[15];/* per-block: 1 = occupied, 0 = free */
