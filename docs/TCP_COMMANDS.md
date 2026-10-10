@@ -803,6 +803,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `stereo_dump` | ✓ |  |  |
 | `stereo_stats` | ✓ |  |  |
 | `synth_recurse` | ✓ |  |  |
+| `texture_filter` | ✓ |  |  |
 | `texture_lod` | ✓ |  | ✓ |
 | `thread_ctx_ring` | ✓ |  |  |
 | `thread_trace` | ✓ |  |  |

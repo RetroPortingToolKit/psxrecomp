@@ -748,6 +748,29 @@ The dither output follows the surface basis, so it composes with
 OpenGL only. `PSX_DITHERING=0|1|2` overrides it for one run and the
 `dithering` TCP command switches it live.
 
+### Texture filtering (`texture_filtering`)
+
+```toml
+[video]
+texture_filtering = "nearest"   # nearest (default) | bilinear | xbr
+```
+
+`nearest` is the PS1's point sampling. `bilinear` blends the four nearest
+texels (opacity-gated, so cutout edges keep their colour). `xbr` (OpenGL
+only) is edge-directed magnification after Hyllian's xBR (MIT; see
+`THIRD_PARTY_ATTRIBUTION.md`): for the texel
+corner nearest each sample it compares weighted colour distances over a 5x5
+neighbourhood, and where an edge runs along that corner's diagonal the corner
+is cut and takes the closer side neighbour, with an anti-aliased boundary one
+output pixel wide. Flat areas, straight edges and gradients stay crisp
+texels; diagonals and curves lose their staircase. It acts only where a
+texel spans two or more output pixels (high internal scale or a magnified
+texture), so a 1:1 draw is exactly nearest; cutouts and STP stay the centre
+texel's. It costs up to 13 texel fetches per pixel. JINC2 is not offered.
+`PSX_TEXTURE_FILTER=0..3` overrides it for one run (2 is the mod-only "stable
+world" minification filter) and the `texture_filter` TCP command switches it
+live. The launcher's toggle still offers nearest and bilinear.
+
 The runtime clamps N per backend:
 
 - Software and Vulkan stop at 4.
