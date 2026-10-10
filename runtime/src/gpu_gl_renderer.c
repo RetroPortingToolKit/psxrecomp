@@ -902,6 +902,23 @@ static int s_tex_filter = 0;
 /* [video] texture_lod (0 off, 1 mipmap emulation) and anisotropic_filtering
  * (taps along the footprint's major axis, 1..16). */
 static int s_tex_lod = 0, s_tex_aniso = 1;
+/* [video] accurate_blending. The FBO holds 5-bit channels as 8-bit values:
+ * uploads, copies and untextured primitives already store k*8, but fills and
+ * texels have stored k*255/31 (full-range white). Blending two operands in
+ * different bases and truncating to 5 bits at readback is off by one in
+ * places (e.g. B+F/4, B/2+F/2 with odd sums). On, every VRAM write uses
+ * k*8, so GL's 8-bit blend followed by >>3 is exactly the PS1's 5-bit
+ * arithmetic. Off (default) keeps the historical bases. */
+static int s_accurate_blend = 0;
+static void c5_to_float(uint16_t c, float *r, float *g, float *b) {
+    if (s_accurate_blend) {
+        *r = (float)((c & 0x1F) << 3) / 255.0f;
+        *g = (float)(((c >> 5) & 0x1F) << 3) / 255.0f;
+        *b = (float)(((c >> 10) & 0x1F) << 3) / 255.0f;
+    } else {
+        *r = (c & 0x1F) / 31.0f; *g = ((c >> 5) & 0x1F) / 31.0f; *b = ((c >> 10) & 0x1F) / 31.0f;
+    }
+}
 /* Opaque textured draws carry the exact mask bit in FBO alpha. Keeping the
  * duplicate stencil copy current is deferred until mask checking is requested. */
 static int s_stencil_valid = 1;
@@ -1955,8 +1972,10 @@ static const char *TEX_FS =
     "  }\n"
     "  return vram_at(v_tpage.x + u, v_tpage.y + v);\n"
     "}\n"
+    "uniform int u_accurate;  /* [video] accurate_blending: VRAM in the k*8/255 basis */\n"
     "vec3 col5(int raw){\n"
-    "  return vec3(float(raw & 31), float((raw >> 5) & 31), float((raw >> 10) & 31)) / 31.0;\n"
+    "  vec3 k = vec3(float(raw & 31), float((raw >> 5) & 31), float((raw >> 10) & 31));\n"
+    "  return u_accurate != 0 ? k * (8.0 / 255.0) : k / 31.0;\n"
     "}\n"
     "int stable_texel(ivec2 p){\n"
     "  /* Clamp before wrap, so a footprint left of u=0 cannot pick up u=255. */\n"
@@ -2240,9 +2259,18 @@ static void apply_psx_blend(int mode) {
     p_glBlendEquationSeparate((mode & 3) == 2 ? PSXGL_FUNC_REVERSE_SUBTRACT
                                               : PSXGL_FUNC_ADD,
                               PSXGL_FUNC_ADD);
+    /* [video] accurate_blending: drivers quantise the constant blend colour
+     * to the target's 8-bit unorm (NVIDIA: 0.5 -> 127/255, 0.25 -> 63/255),
+     * which puts B/2+F/2 and B+F/4 one 8-bit step under a k*8 boundary and
+     * the >>3 readback one 5-bit step low. 128/255 and 64/255 are exact in
+     * unorm8 and bias every result up by less than one 8-bit step, which
+     * stays inside the PS1's truncation bucket for all 5-bit operands, so the
+     * result is the same on drivers that blend in float and in fixed point. */
+    const float half = s_accurate_blend ? 128.0f / 255.0f : 0.5f;
+    const float quarter = s_accurate_blend ? 64.0f / 255.0f : 0.25f;
     switch (mode & 3) {
     case 0:
-        p_glBlendColor(0.5f, 0.5f, 0.5f, 0.5f);
+        p_glBlendColor(half, half, half, half);
         p_glBlendFuncSeparate(PSXGL_CONSTANT_ALPHA, PSXGL_CONSTANT_ALPHA, GL_ONE, GL_ZERO);
         break;
     case 1:
@@ -2250,7 +2278,7 @@ static void apply_psx_blend(int mode) {
         p_glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ZERO);
         break;
     case 3:
-        p_glBlendColor(0.25f, 0.25f, 0.25f, 0.25f);
+        p_glBlendColor(quarter, quarter, quarter, quarter);
         p_glBlendFuncSeparate(PSXGL_CONSTANT_ALPHA, GL_ONE, GL_ONE, GL_ZERO);
         break;
     }
@@ -4808,7 +4836,8 @@ static void gpu_fill(int x,int y,int w,int h,uint16_t c) {
     flush_flat_batch();
     flush_tex_batch();
     flush_cpu_upload();
-    float r=(c&0x1F)/31.0f, g=((c>>5)&0x1F)/31.0f, b=((c>>10)&0x1F)/31.0f;
+    float r, g, b;
+    c5_to_float(c, &r, &g, &b);
     x &= VRAM_W - 1; y &= VRAM_H - 1;
     if (w > VRAM_W) w = VRAM_W;
     if (h > VRAM_H) h = VRAM_H;
@@ -4941,6 +4970,21 @@ void gl_renderer_set_texture_lod(int mode, int aniso) {
 }
 int gl_renderer_texture_lod(void) { return s_tex_lod; }
 int gl_renderer_anisotropy(void) { return s_tex_aniso; }
+static GLint s_uAccurate = -1;
+static void accurate_apply_uniforms(void) {
+    if (!s_tex_prog) return;
+    GLint prev = 0; glGetIntegerv(GL_CURRENT_PROGRAM, &prev);
+    if (s_uAccurate < 0) s_uAccurate = p_glGetUniformLocation(s_tex_prog, "u_accurate");
+    p_glUseProgram(s_tex_prog); p_glUniform1i(s_uAccurate, s_accurate_blend);
+    p_glUseProgram((GLuint)prev);
+}
+void gl_renderer_set_accurate_blending(int on) {
+    GL_RT_SYNC("accurate_blending");
+    if (s_ctx) { flush_flat_batch(); flush_tex_batch(); hiw_flush_queue(); }
+    s_accurate_blend = on ? 1 : 0;
+    if (s_ctx) accurate_apply_uniforms();
+}
+int gl_renderer_accurate_blending(void) { return s_accurate_blend; }
 static void glb_set_texture_filter(int b) { s_tex_filter = b >= 0 && b <= 2 ? b : 0; sw_set_texture_filter(b != 0); }
 static int  glb_texture_filter(void) { return s_tex_filter; }
 
@@ -5806,6 +5850,8 @@ static int init_gpu_raster(void) {
     s_uFilter   = p_glGetUniformLocation(s_tex_prog, "u_filter");
     s_uAniso = -1;
     lod_apply_uniforms();
+    s_uAccurate = -1;
+    accurate_apply_uniforms();
     s_uLimits   = p_glGetUniformLocation(s_tex_prog, "u_limits");
     s_uHdTexture = p_glGetUniformLocation(s_tex_prog, "u_hd_texture");
     s_uBlitSrc     = p_glGetUniformLocation(s_blit_prog, "u_src");
@@ -6779,9 +6825,8 @@ static void glb_wide_clear(int base_x, int y, int h, uint16_t color) {
     if (y0 < 0) y0 = 0;
     if (y1 > H) y1 = H;
     if (y1 <= y0) return;
-    float r = (color & 0x1F) / 31.0f;
-    float g = ((color >> 5) & 0x1F) / 31.0f;
-    float b = ((color >> 10) & 0x1F) / 31.0f;
+    float r, g, b;
+    c5_to_float(color, &r, &g, &b);
     float a = (color >> 15) & 1 ? 1.0f : 0.0f;
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, fbo);
     glViewport(0, 0, g_wide_w * s_out_scale, H);
@@ -6819,9 +6864,8 @@ static void glb_wide_clear_margins(int base_x, int y, int h, uint16_t color, int
         s_cw_wide_ms += cw_ms() - t0;
         return;
     }
-    float r = (color & 0x1F) / 31.0f;
-    float g = ((color >> 5) & 0x1F) / 31.0f;
-    float b = ((color >> 10) & 0x1F) / 31.0f;
+    float r, g, b;
+    c5_to_float(color, &r, &g, &b);
     float a = (color >> 15) & 1 ? 1.0f : 0.0f;
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, fbo);
     glViewport(0, 0, W, H);
