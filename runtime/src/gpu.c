@@ -4502,6 +4502,7 @@ static int gpu_ws_projective_enabled(void) {
         ws_nw_extra() > 0 && gr_backend() == GR_BACKEND_OPENGL &&
         gl_renderer_projective_supported();
 }
+int gpu_ws_projective_clipping_supported(void) { return gpu_ws_projective_enabled(); }
 void psx_mod_set_native_wide_near_clip(int enabled) {
     /* Compatibility entry point: clipping follows projection correction.
      * A separate toggle must not disable this mode's correctness fix. */

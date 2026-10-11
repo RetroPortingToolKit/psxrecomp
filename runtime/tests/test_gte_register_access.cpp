@@ -5,6 +5,7 @@
 #include "gte_view.h"
 #include "gte_nclip_stats.h"
 #include "render_pass_projection.h"
+#include "mod_plugins.h"
 #include <limits>
 extern "C" void gte_set_fov_scale(int, int);
 
@@ -60,6 +61,8 @@ extern "C" void gte_test_execute_reference(CPUState *cpu, uint32_t cmd);
 /* gte.cpp runtime dependencies that are irrelevant to register-transfer tests. */
 extern "C" int gpu_ws_present_native_43(void) { return 0; }
 static int g_test_precise_nclip_enabled;
+static int g_test_projective_supported = 1;
+extern "C" int gpu_ws_projective_clipping_supported(void) { return g_test_projective_supported; }
 extern "C" int gpu_ws_precise_nclip_enabled(void) {
     return g_test_precise_nclip_enabled;
 }
@@ -767,6 +770,63 @@ int test_saturated_nclip_keeps_architectural_result() {
     gte_execute(&cpu, 6);
     if (gte_nclip_native_wide_sign(0, &sign))
         return fail_value("stale NCLIP projection refuses rescue",0,6,0,0,1);
+    /* A large sky face can saturate vertically with no X saturation. The
+     * host clips this positive-depth face, so retain its original winding. */
+    for (unsigned i=0;i<3;i++) {
+        const uint32_t packed=(uint32_t)py[i] | (1023u<<16);
+        cpu.gte_data[12+i]=packed; cpu.gte_data[17+i]=1000;
+        gte_test_seed_precise_projection(i,packed,py[i]*65536,px[i]*65536,1000);
+    }
+    gte_execute(&cpu,6);
+    if (cpu.gte_data[24]!=0 || !gte_nclip_native_wide_sign(0,&sign) || sign!=-1)
+        return fail_value("vertical saturation preserves proven render winding",0,6,0,0,1);
+    gte_test_seed_precise_projection(0,cpu.gte_data[12],py[0]*65536,1000*65536,1000);
+    gte_execute(&cpu,6);
+    if (gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign))
+        return fail_value("mismatched vertical rail refuses render winding",0,6,0,0,1);
+    const int old_tracking = pgxp_projection_tracking();
+    pgxp_set_projection_tracking(1);
+    cpu = CPUState{};
+    cpu.gte_ctrl[0]=4096; cpu.gte_ctrl[2]=4096; cpu.gte_ctrl[4]=4096;
+    cpu.gte_ctrl[26]=300;
+    cpu.gte_data[0]=10u|(10u<<16); cpu.gte_data[1]=(uint32_t)(uint16_t)-200;
+    cpu.gte_data[2]=(uint16_t)-100|(100u<<16); cpu.gte_data[3]=1000;
+    cpu.gte_data[4]=100u|(100u<<16); cpu.gte_data[5]=1000;
+    gte_execute(&cpu,0x80030u);
+    gte_execute(&cpu,6);
+    const int32_t native=(int32_t)cpu.gte_data[24];
+    if (native >= 0 || !gte_nclip_native_wide_sign(native,&sign) || sign!=1 ||
+        gte_nclip_native_wide_sign(native+1,&sign))
+        return fail_value("camera crossing uses proven homogeneous winding",0,6,0,1,sign);
+    const uint32_t flags=cpu.gte_ctrl[31], mac0=cpu.gte_data[24];
+    (void)gte_nclip_native_wide_sign(native,&sign);
+    if (cpu.gte_ctrl[31]!=flags || cpu.gte_data[24]!=mac0)
+        return fail_value("homogeneous render query leaves GTE architectural state intact",0,6,0,mac0,cpu.gte_data[24]);
+    g_test_projective_supported=0;
+    gte_execute(&cpu,6);
+    if (gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign))
+        return fail_value("unsupported renderer retains native near rejection",0,6,0,0,1);
+    g_test_projective_supported=1;
+    /* A same-coordinate word written without its projection provenance must
+     * not inherit the corner's signed camera-space source. */
+    gte_write_data(&cpu,12,cpu.gte_data[12]);
+    gte_execute(&cpu,6);
+    if (gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign))
+        return fail_value("camera crossing refuses missing source projection",0,6,0,0,1);
+    pgxp_set_projection_tracking(old_tracking);
+    pgxp_set_projection_tracking(1);
+    cpu.gte_data[1]=1000;
+    gte_execute(&cpu,0x80030u);
+    if (!psx_mod_projected_triangle_clipping_supported(&cpu))
+        return fail_value("positive-depth triangle proves host clipping",0,0x30,0,1,0);
+    g_test_projective_supported=0;
+    if (psx_mod_projected_triangle_clipping_supported(&cpu))
+        return fail_value("background clipping refuses unsupported renderer",0,0x30,0,0,1);
+    g_test_projective_supported=1;
+    cpu.gte_data[12]^=1u;
+    if (psx_mod_projected_triangle_clipping_supported(&cpu))
+        return fail_value("background clipping requires all original SXY words",0,0x30,0,0,1);
+    pgxp_set_projection_tracking(old_tracking);
     g_test_precise_nclip_enabled = 0;
     return 0;
 }

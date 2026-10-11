@@ -9,10 +9,12 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 extern "C" int psx_netplay_active(void);
 
 extern "C" uint32_t psx_read_word(uint32_t addr);
 extern "C" int gpu_ws_precise_nclip_enabled(void);
+extern "C" int gpu_ws_projective_clipping_supported(void);
 /* overlay_loader.c: nonzero while an overlay shadow diff (interpreter record
  * plus native replay of one candidate) is running. */
 extern "C" int psx_overlay_shadow_diff_active(void);
@@ -1300,15 +1302,21 @@ static int32_t s_nclip_last_native = 0;
 static int8_t s_nclip_last_precise_sign = 0;
 static bool s_nclip_last_precise_valid = false;
 static bool s_nclip_last_horizontal_saturated = false;
+static bool s_nclip_last_projective_valid;
+static int8_t s_nclip_last_projective_sign;
 static uint32_t s_nclip_last_generation;
 static int32_t s_nclip_previous_native;
 static int8_t s_nclip_previous_precise_sign;
 static bool s_nclip_previous_precise_valid;
 static bool s_nclip_previous_horizontal_saturated;
+static bool s_nclip_previous_projective_valid;
+static int8_t s_nclip_previous_projective_sign;
 static uint32_t s_nclip_previous_generation;
 static void gte_nclip_precision_invalidate() {
     s_nclip_last_precise_valid = false;
     s_nclip_previous_precise_valid = false;
+    s_nclip_last_projective_valid = false;
+    s_nclip_previous_projective_valid = false;
 }
 extern "C" void gte_nclip_precise_stats(uint64_t *hits, uint64_t *fallbacks,
                                         uint64_t *disagreements) {
@@ -1375,10 +1383,24 @@ extern "C" int32_t gte_nclip_exact_sign(int32_t native_mac0, uint32_t pc) {
     return sign;
 }
 extern "C" int gte_nclip_native_wide_sign(int32_t native_mac0, int* sign) {
-    if (!s_nclip_last_precise_valid || !s_nclip_last_horizontal_saturated ||
+    if ((!s_nclip_last_projective_valid &&
+         (!s_nclip_last_precise_valid || !s_nclip_last_horizontal_saturated)) ||
         native_mac0 != s_nclip_last_native || s_nclip_last_generation != s_geom_generation ||
         s_gte_replay_sandbox || s_speculative_depth != 0) return 0;
-    *sign = s_nclip_last_precise_sign;
+    *sign = s_nclip_last_projective_valid ? s_nclip_last_projective_sign : s_nclip_last_precise_sign;
+    return 1;
+}
+extern "C" int psx_mod_projected_triangle_clipping_supported(const CPUState* cpu) {
+    if (!cpu || !gpu_ws_projective_clipping_supported() ||
+        !pgxp_projection_tracking() || s_gte_replay_sandbox || s_speculative_depth != 0)
+        return 0;
+    for (unsigned i=0;i<3;i++) {
+        PGXPProjection p;
+        if (!pgxp_get_gte_projection(i,cpu->gte_data[12+i],&p) ||
+            !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+            !std::isfinite(p.near_z) || p.near_z <= 0 || p.z < p.near_z)
+            return 0;
+    }
     return 1;
 }
 /* Some guarded quad consumers save two MAC0 values before branching. Their
@@ -1386,10 +1408,11 @@ extern "C" int gte_nclip_native_wide_sign(int32_t native_mac0, int* sign) {
  * results are equal. This is explicitly selected by the title, never searched
  * as a fallback for arbitrary architectural MAC0 readers. */
 extern "C" int gte_nclip_native_wide_previous_sign(int32_t native_mac0, int* sign) {
-    if (!s_nclip_previous_precise_valid || !s_nclip_previous_horizontal_saturated ||
+    if ((!s_nclip_previous_projective_valid &&
+         (!s_nclip_previous_precise_valid || !s_nclip_previous_horizontal_saturated)) ||
         native_mac0 != s_nclip_previous_native || s_nclip_previous_generation != s_geom_generation ||
         s_gte_replay_sandbox || s_speculative_depth != 0) return 0;
-    *sign = s_nclip_previous_precise_sign;
+    *sign = s_nclip_previous_projective_valid ? s_nclip_previous_projective_sign : s_nclip_previous_precise_sign;
     return 1;
 }
 
@@ -1443,9 +1466,13 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
         !s_gte_replay_sandbox && s_speculative_depth == 0;
     s_nclip_previous_horizontal_saturated = s_nclip_last_horizontal_saturated;
     s_nclip_previous_generation = s_nclip_last_generation;
+    s_nclip_previous_projective_valid = s_nclip_last_projective_valid &&
+        !s_gte_replay_sandbox && s_speculative_depth == 0;
+    s_nclip_previous_projective_sign = s_nclip_last_projective_sign;
     s_nclip_last_native = out;
     s_nclip_last_precise_valid = false;
     s_nclip_last_horizontal_saturated = false;
+    s_nclip_last_projective_valid = false;
     /* Compute an exact 16.16 determinant for configured branch consumers, but
      * preserve native guest-visible MAC0 for every architectural reader. */
     int32_t px0, py0, px1, py1, px2, py2;
@@ -1463,19 +1490,23 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
         s_nclip_last_precise_sign = cross < 0 ? -1 : (cross > 0 ? 1 : 0);
         s_nclip_last_precise_valid = true;
         s_nclip_last_generation = s_geom_generation;
-        /* Narrow rescue: exact Y still agrees with the architectural FIFO,
-         * depth is outside the GTE near region, and at least one X exceeded
-         * the matching saturation rail. Ordinary subpixel winding stays stock. */
+        /* Configured render consumers may clip a face against either screen
+         * axis on the host. Validate both saturation rails and positive depth;
+         * a saturated Y must not invalidate otherwise intact winding. */
         const int raw_x[3] = {sx0, sx1, sx2}, raw_y[3] = {sy0, sy1, sy2};
         const int32_t exact_x[3] = {px0, px1, px2}, exact_y[3] = {py0, py1, py2};
         bool checked = true, saturated = false;
         for (int i = 0; i < 3; ++i) {
             const int x = exact_x[i] >> 16;
-            checked &= (exact_y[i] >> 16) == raw_y[i] && x > -4096 && x < 4096;
+            const int y = exact_y[i] >> 16;
+            checked &= x > -4096 && x < 4096 && y > -4096 && y < 4096;
             checked &= gte->SZ[i + 1] >= gte_h_scaled(gte) / 2 && gte->SZ[i + 1] != 0;
             if (raw_x[i] == 1023 && x > 1023) saturated = true;
             else if (raw_x[i] == -1024 && x < -1024) saturated = true;
             else checked &= x == raw_x[i];
+            if (raw_y[i] == 1023 && y > 1023) saturated = true;
+            else if (raw_y[i] == -1024 && y < -1024) saturated = true;
+            else checked &= y == raw_y[i];
         }
         s_nclip_last_horizontal_saturated = checked && saturated;
         const bool disagree = (cross > 0 && out <= 0) || (cross < 0 && out >= 0);
@@ -1499,6 +1530,34 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
     } else if (gpu_ws_precise_nclip_enabled() &&
                !s_gte_replay_sandbox && s_speculative_depth == 0) {
         s_nclip_fallbacks++;
+    }
+    /* A corner crossing the camera plane reverses the divided 2D winding.
+     * Configured render consumers can use the homogeneous determinant that
+     * the host clipper draws. Physics and generic exact-sign readers continue
+     * to see their architectural result. Full-word projection provenance is
+     * required for all corners; no position-cache guess is accepted here. */
+    if (gpu_ws_precise_nclip_enabled() && gpu_ws_projective_clipping_supported() && pgxp_projection_tracking() &&
+        !s_gte_replay_sandbox && s_speculative_depth == 0) {
+        PGXPProjection p[3];
+        bool valid = true, crosses = false, front = false;
+        for (unsigned i=0;i<3;i++) {
+            if (!pgxp_get_gte_projection(i, gte->SXY[i], &p[i])) { valid=false; break; }
+            valid &= std::isfinite(p[i].x) && std::isfinite(p[i].y) &&
+                std::isfinite(p[i].z) && std::isfinite(p[i].near_z) && p[i].near_z > 0;
+            crosses |= p[i].z < p[i].near_z;
+            front |= p[i].z >= p[i].near_z;
+        }
+        if (valid && crosses && front) {
+            const double determinant =
+                (double)p[0].x * ((double)p[1].y*p[2].z-(double)p[1].z*p[2].y) -
+                (double)p[0].y * ((double)p[1].x*p[2].z-(double)p[1].z*p[2].x) +
+                (double)p[0].z * ((double)p[1].x*p[2].y-(double)p[1].y*p[2].x);
+            if (std::isfinite(determinant)) {
+                s_nclip_last_projective_sign = determinant < 0 ? -1 : determinant > 0 ? 1 : 0;
+                s_nclip_last_projective_valid = true;
+                s_nclip_last_generation = s_geom_generation;
+            }
+        }
     }
     gte->MAC0 = out;
     gte->set_error_flag();

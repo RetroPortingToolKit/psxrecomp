@@ -247,8 +247,12 @@ void psx_mod_set_native_wide_projection_correction(int enabled);
  * signed projection through exact PGXP word transport; 4:3, software and
  * untracked UI stay on their existing paths. No guest GTE/gameplay changes. */
 void psx_mod_set_native_wide_near_clip(int enabled);
+/* For a verified textured render path: all three live SXY words must carry
+ * intact signed projection provenance and the active renderer must support
+ * host clipping. This query never changes guest registers or GTE flags. */
+int psx_mod_projected_triangle_clipping_supported(const struct CPUState* cpu);
 /* Bind render-only NCLIP branch consumers to full instruction words. These
- * recover winding only when valid horizontal projections saturated; guest
+ * recover winding for proven saturated projections or camera crossings; guest
  * MAC0 and flags remain architectural. Empty registration disables the sites. */
 void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
     const uint32_t* expected, int count);
@@ -814,6 +818,8 @@ int psx_mod_set_bezel_artwork(const char* path);
  * uncapped host speed (1 is a no-op, i.e. authentic pacing).
  * release_frames controls how many guest frames acceleration may remain active
  * after the load predicate clears; zero is the precise/speedrun-safe policy.
+ * Applies immediately, including at VBlank boundaries; 1 restores normal
+ * pacing and presentation, and 0 selects uncapped loading.
  */
 int psx_mod_set_load_acceleration(uint32_t wall_clock_multiplier,
                                   uint32_t release_frames);
