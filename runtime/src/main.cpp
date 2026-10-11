@@ -8304,6 +8304,7 @@ static int savestate_menu_open = 0;
 static int savestate_menu_slot = 0;
 static int savestate_menu_ignore_toggle_release = 0;
 static SDL_Keycode savestate_menu_open_key = 0;
+static int savestate_menu_key_direction = 0;
 
 static void savestate_menu_sync_overlay(void) {
     const char* unavailable = nullptr;
@@ -8317,6 +8318,7 @@ static void savestate_menu_sync_overlay(void) {
 
 static void savestate_menu_close(void) {
     savestate_menu_open = 0;
+    savestate_menu_key_direction = 0;
     savestate_menu_sync_overlay();
     host_osd_push("Save states closed", 800);
 }
@@ -8410,9 +8412,9 @@ static void savestate_menu_handle_key(SDL_Keycode key, SDL_Scancode scancode,
         key == SDLK_ESCAPE || key == SDLK_BACKSPACE) {
         savestate_menu_close();
     } else if (key == SDLK_LEFT || key == SDLK_UP) {
-        savestate_menu_move(-1);
+        savestate_menu_key_direction = -1;
     } else if (key == SDLK_RIGHT || key == SDLK_DOWN) {
-        savestate_menu_move(+1);
+        savestate_menu_key_direction = +1;
     } else if (key == SDLK_s) {
         savestate_menu_submit(1);
     } else if (key == SDLK_l) {
@@ -8435,8 +8437,14 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
     uint8_t sticks[4], lt, rt;
     if (host_pad_layer(&host_word, sticks, &lt, &rt)) buttons = host_word;
     const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
-    prev = !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
-    next = !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    /* Merge event taps and held keyboard-as-pad arrows before stepping.
+     * Moving in both the event handler and this poll skipped two slots. */
+    prev = savestate_menu_key_direction < 0 || keys[SDL_SCANCODE_LEFT] ||
+        keys[SDL_SCANCODE_UP] || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
+    next = savestate_menu_key_direction > 0 || keys[SDL_SCANCODE_RIGHT] ||
+        keys[SDL_SCANCODE_DOWN] || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
+    savestate_menu_key_direction = 0;
     load = !(buttons & PAD_CROSS);
     save = !(buttons & PAD_SQUARE);
     cancel = !(buttons & PAD_CIRCLE);
