@@ -279,6 +279,140 @@ static void case_start_retains_relay_path(void)
     psx_lobby_set_relay_via_ice_pref(old_pref);
 }
 
+static void init_mod_caps(PsxLobbyMatchCaps *caps)
+{
+    memset(caps, 0, sizeof(*caps));
+    caps->valid = 1;caps->aspect_num = 4;caps->aspect_den = 3;
+    strcpy(caps->session_bios, "openbios");strcpy(caps->language, "en");
+    memset(caps->mod_plan_fp, 'c', 64);
+}
+
+static void case_complete_start_plan(void)
+{
+    PsxLobbyMatchCaps caps, received = {0};
+    char wire[PSX_LOBBY_START_JSON_CAP], tiny[640];
+    printf("  START preserves the complete X4 option plan\n");
+    init_mod_caps(&caps);caps.mod_count = 1;
+    strcpy(caps.mods[0].id, "mmx4.coop");strcpy(caps.mods[0].ver, "0.0.1");
+    strcpy(caps.mods[0].name, "X + Zero Co-op (Playtest)");caps.mods[0].builtin = 1;
+    strcpy(caps.mods[0].feats,
+        "coop=black_zero~true+cameras~unified+hud_layout~side_by_side+ultimate_armor_x~true");
+    ck(psx_lobby_start_message(&caps, wire, sizeof(wire)) == 0,
+       "long real title options fit the START codec");
+    ck(strlen(wire) > sizeof(tiny), "regression plan exceeds former 640-byte nested buffer");
+    ck(psx_lobby_decode_match_caps(wire, &received) && received.mod_count == 1 &&
+       !strcmp(received.mods[0].feats, caps.mods[0].feats), "all four agreed options roundtrip through START");
+    memset(tiny, '!', sizeof(tiny));
+    ck(psx_lobby_start_message(&caps, tiny, sizeof(tiny)) == -1 && !tiny[0],
+       "small START output refuses and clears partial JSON");
+    {
+        char nested[PSX_LOBBY_MATCH_CAPS_JSON_CAP];
+        int length = append_match_caps_json(nested, sizeof(nested), &caps);
+        ck(length > 0, "measure complete nested capability field");
+        ck(length >= (int)sizeof(tiny), "real package metadata and side-by-side HUD exceed the old nested bound");
+        /* START adds its operation and closing brace, so a 640-byte START
+         * failure does not imply its smaller nested field cannot fit 640.
+         * Refuse exactly one byte short of the measured nested capacity. */
+        size_t insufficient = length > 0 && (size_t)length < sizeof(tiny)
+            ? (size_t)length : sizeof(tiny);
+        ck(!append_match_caps_json(tiny, insufficient, &caps) && !tiny[0],
+           "nested caps codec also refuses and clears truncation");
+    }
+    memset(&g_lc, 0, sizeof(g_lc));g_lc.connected = g_lc.in_lobby = g_lc.is_host = 1;
+    ck(psx_lobby_request_start(&caps) == 0 && g_lc.pending_n == 1,
+       "production host START queues the complete message");
+    ck(!strcmp(g_lc.pending_tx[0], wire) &&
+       psx_lobby_decode_match_caps(g_lc.pending_tx[0], &received) &&
+       !strcmp(received.mods[0].feats, caps.mods[0].feats), "actual queued START retains the option plan");
+    ck(psx_lobby_start_message(NULL, wire, sizeof(wire)) == 0 &&
+       !strcmp(wire, "{\"op\":\"start\"}"), "legacy no-caps START stays compatible");
+}
+
+static void case_maximum_mod_plan(void)
+{
+    PsxLobbyMatchCaps caps, received = {0};
+    char wire[PSX_LOBBY_START_JSON_CAP];
+    char oversized[PSX_LOBBY_MESSAGE_JSON_CAP + 1];
+    printf("  declared package/field limits and transport buffers\n");
+    init_mod_caps(&caps);caps.mod_count = PSX_LOBBY_MAX_MODS;
+    for (int i = 0; i < caps.mod_count; ++i) {
+        PsxLobbyModPkg *pkg = &caps.mods[i];
+        memset(pkg->id, 'a' + i, sizeof(pkg->id) - 1);
+        memset(pkg->ver, 'v', sizeof(pkg->ver) - 1);
+        memset(pkg->name, '"', sizeof(pkg->name) - 1);
+        /* Delimiters inside quoted names must not terminate nested JSON. */
+        pkg->name[0] = '}';pkg->name[1] = ']';pkg->name[2] = '\\';
+        memset(pkg->feats, 'f', sizeof(pkg->feats) - 1);
+        pkg->size = UINT32_MAX;
+    }
+    ck(psx_lobby_encode_match_caps(wire, sizeof(wire), &caps), "encode all 12 maximum-length packages");
+    ck(strlen(wire) > 8192, "maximum plan exceeds previous queue and decoder limits");
+    ck(psx_lobby_decode_match_caps(wire, &received) && received.mod_count == PSX_LOBBY_MAX_MODS,
+       "decode all maximum-length packages without dropping entries");
+    for (int i = 0; i < caps.mod_count; ++i)
+        ck(!strcmp(received.mods[i].id, caps.mods[i].id) &&
+           !strcmp(received.mods[i].name, caps.mods[i].name) &&
+           !strcmp(received.mods[i].feats, caps.mods[i].feats) &&
+           received.mods[i].size == UINT32_MAX, "maximum package fields remain exact");
+    ck(psx_lobby_start_message(&caps, wire, sizeof(wire)) == 0,
+       "START supports the complete declared plan capacity");
+    memset(&g_lc, 0, sizeof(g_lc));g_lc.connected = g_lc.in_lobby = g_lc.is_host = 1;
+    ck(psx_lobby_request_start(&caps) == 0 && g_lc.pending_n == 1 &&
+       !strcmp(g_lc.pending_tx[0], wire), "production queue does not clip an 8K-plus START");
+    ck(psx_lobby_set_match_caps(&caps) == 0 && g_lc.pending_n == 2 &&
+       psx_lobby_decode_match_caps(g_lc.pending_tx[1], &received) &&
+       received.mod_count == PSX_LOBBY_MAX_MODS, "host capability updates preserve maximum plans");
+    ck(psx_lobby_create("Fixture", "Fixture", "dev", "", "0.0.0.0:7777", &caps) == 0 &&
+       g_lc.pending_n == 3 && psx_lobby_decode_match_caps(g_lc.pending_tx[2], &received),
+       "room creation uses complete nested capabilities");
+    g_lc.mod_offer.valid = 1;g_lc.mod_offer.count = caps.mod_count;
+    memcpy(g_lc.mod_offer.pkgs, caps.mods, sizeof(caps.mods));
+    ck(psx_lobby_join("room", "", "0.0.0.0:7778") == 0 && g_lc.pending_n == 4 &&
+       parse_mod_pkg_array(g_lc.pending_tx[3], "pkgs", received.mods, PSX_LOBBY_MAX_MODS) == PSX_LOBBY_MAX_MODS,
+       "guest offer preserves complete package list");
+    /* Exercise the actual inbound WebSocket frame buffer, without a socket. */
+    size_t length = strlen(g_lc.pending_tx[1]);
+    g_lc.ws_pending[0] = 0x81;g_lc.ws_pending[1] = 126;
+    g_lc.ws_pending[2] = (uint8_t)(length >> 8);g_lc.ws_pending[3] = (uint8_t)length;
+    memcpy(g_lc.ws_pending + 4, g_lc.pending_tx[1], length);
+    g_lc.ws_pending_len = length + 4;g_lc.match_caps.valid = 0;
+    /* Inbound op is lobby_update, not the outgoing set_match_caps operation. */
+    const char *caps_field = strstr(g_lc.pending_tx[1], ",\"match_caps\"");
+    ck(caps_field != NULL, "find full inbound capability fixture");
+    if (caps_field) {
+        char frame[PSX_LOBBY_MESSAGE_JSON_CAP];
+        snprintf(frame, sizeof(frame), "{\"op\":\"lobby_update\"%s", caps_field);
+        length = strlen(frame);g_lc.ws_pending[2] = (uint8_t)(length >> 8);g_lc.ws_pending[3] = (uint8_t)length;
+        memcpy(g_lc.ws_pending + 4, frame, length);g_lc.ws_pending_len = length + 4;
+        drain_ws_pending();
+        ck(g_lc.ws_pending_len == 0 && g_lc.match_caps.valid &&
+           g_lc.match_caps.mod_count == PSX_LOBBY_MAX_MODS &&
+           !strcmp(g_lc.match_caps.mods[11].feats, caps.mods[11].feats), "full plan survives real incoming frame dispatch");
+    }
+    memset(oversized, 'x', sizeof(oversized) - 1);oversized[sizeof(oversized) - 1] = '\0';
+    int before = g_lc.pending_n;
+    ck(!queue_send(oversized) && g_lc.pending_n == before, "oversized queue refuses instead of truncating");
+    caps.mod_count = PSX_LOBBY_MAX_MODS + 1;
+    PsxLobbyMatchCaps previous = g_lc.match_caps;
+    ck(psx_lobby_request_start(&caps) == -1 && g_lc.pending_n == before &&
+       !memcmp(&previous, &g_lc.match_caps, sizeof(previous)), "invalid nested START changes neither queue nor local caps");
+    ck(psx_lobby_set_match_caps(&caps) == -1 && g_lc.pending_n == before &&
+       !memcmp(&previous, &g_lc.match_caps, sizeof(previous)), "invalid host update cannot silently omit the plan");
+    ck(psx_lobby_create("Fixture", "Fixture", "dev", "", "", &caps) == -1 &&
+       g_lc.pending_n == before, "invalid room caps are refused before enqueue");
+    g_lc.mod_offer.count = PSX_LOBBY_MAX_MODS + 1;
+    ck(psx_lobby_join("room", "", "") == -1 && g_lc.pending_n == before,
+       "invalid guest offer cannot silently become vanilla");
+    caps.mod_count = 1;memset(caps.mods[0].feats, 'f', sizeof(caps.mods[0].feats));
+    ck(!psx_lobby_encode_match_caps(wire, sizeof(wire), &caps) && !wire[0],
+       "unterminated fixed-size feature data is refused safely");
+    char oversized_field[PSX_LOBBY_MOD_FEATS_LEN + 1];
+    memset(oversized_field, 'f', sizeof(oversized_field) - 1);oversized_field[sizeof(oversized_field) - 1] = '\0';
+    snprintf(wire, sizeof(wire), "{\"match_caps\":{\"mods\":[{\"id\":\"fixture\",\"feats\":\"%s\"}]}}", oversized_field);
+    ck(!psx_lobby_decode_match_caps(wire, &received), "overlong incoming options are refused instead of shortened");
+    memset(&g_lc, 0, sizeof(g_lc));g_lc.fd = -1;
+}
+
 int main(void)
 {
     case_room_order();
@@ -289,6 +423,8 @@ int main(void)
     case_profile_settings_roundtrip();
     case_full_title_profile_version();
     case_start_retains_relay_path();
+    case_complete_start_plan();
+    case_maximum_mod_plan();
     if (g_failures == 0) {
         printf("lobby_chat_ring_test: ok\n");
         return 0;
