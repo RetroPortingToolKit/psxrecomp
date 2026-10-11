@@ -158,6 +158,7 @@ int psx_mod_spu_sample_bank(uint32_t bank,const void *adpcm,uint32_t bytes) {
     if (psx_mod_host_output_scope()) return 0;
     return spu_register_sample_bank(bank,adpcm,bytes);
 }
+uint32_t psx_mod_spu_sample_bank_epoch(void) {return spu_sample_bank_epoch();}
 int psx_mod_spu_bind_voice_bank(unsigned voice,uint32_t bank) {
     if (psx_mod_host_output_scope()) return 0;
     return spu_bind_next_voice_bank(voice,bank);

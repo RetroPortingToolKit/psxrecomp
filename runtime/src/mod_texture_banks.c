@@ -1,6 +1,8 @@
 #include "mod_plugins.h"
 #include "mod_memory.h"
 #include "mod_texture_banks.h"
+#include "gpu_gl_renderer.h"
+#include "psx_cycle_freeze.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -15,6 +17,16 @@ static PSXModTextureBankResolver resolve_bank;
 static int resolving;
 static int bank_batching;
 
+int mod_texture_banks_reset_session(void) {
+    /* Called after renderer teardown, before enhancement arenas are reused.
+     * A callback or render pass must retain its current resource identities. */
+    if (resolving || g_psx_render_pass_active) return 0;
+    if (!psx_mod_forget_texture_bank_range(1,65535)) return 0;
+    memset(arenas,0,sizeof arenas);arena_count=0;
+    resolve_bank=NULL;bank_batching=0;
+    return 1;
+}
+
 void psx_mod_set_texture_bank_batching(int enabled) { bank_batching = enabled != 0; }
 int mod_texture_bank_batchable(int immutable, int mask_check, int semi) {
     return bank_batching && immutable && !mask_check &&
@@ -23,6 +35,20 @@ int mod_texture_bank_batchable(int immutable, int mask_check, int semi) {
 
 void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver) {
     resolve_bank = resolver;
+}
+
+int psx_mod_forget_texture_bank_range(uint16_t first, uint32_t count) {
+    if (!first || !count || count > 65536u - first || resolving) return 0;
+    gl_renderer_forget_texture_bank_range(first, count);
+    for (uint32_t id = first; id < (uint32_t)first + count; ++id) {
+        Bank* bank = &banks[id];
+        if (bank->pixels) {
+            bank_bytes -= bank->width * bank->height * 2u;
+            free(bank->pixels);
+        }
+        memset(bank, 0, sizeof(*bank));
+    }
+    return 1;
 }
 
 int psx_mod_define_texture_bank(uint16_t id, uint32_t w, uint32_t h,

@@ -26,6 +26,8 @@ int gl_renderer_select_texture_bank(uint16_t id);
 /* Retain texture indices while sampling current guest CLUTs (fades/animation). */
 int gl_renderer_select_texture_bank_live_clut(uint16_t id);
 int gl_renderer_texture_banks_supported(void);
+/* Emulation/GL owning thread: drain draws and invalidate an owned ID range. */
+void gl_renderer_forget_texture_bank_range(uint16_t first, uint32_t count);
 /* HD texture presentation uses an independent native SW VRAM authority.
  * Both entry points drain pending draws before changing or deleting textures. */
 void gl_renderer_set_hd_texture_mode(int enabled);
