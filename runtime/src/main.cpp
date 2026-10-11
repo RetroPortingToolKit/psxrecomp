@@ -16053,7 +16053,7 @@ namespace {
         psx_lobby_json_str(req.c_str(), "handoff_query", op, sizeof(op));
         psx_lobby_json_str(req.c_str(), "handoff_disc", disc, sizeof(disc));
         std::string ans = "{\"v\":1,\"engine\":\"psxrecomp\",\"handoff\":1";
-        char msg[1024] = {};
+        char msg[PSX_LOBBY_START_JSON_CAP] = {};
         ae_np_refresh_bios_offer_for(settings);
         if (std::strcmp(op, "identity") == 0) {
             const std::string d = disc[0] ? std::string(disc) : initial_disc;
