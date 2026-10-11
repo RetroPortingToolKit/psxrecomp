@@ -794,6 +794,20 @@ def game_disc(game_toml, config, cue=None):
     return Path(cue).resolve() if cue else (Path(game_toml).parent / config['game']['disc']).resolve()
 
 
+def generic_exclusion_arguments(profile, disc):
+    """Explicit original-file exclusions, e.g. unrelated playable demos."""
+    arguments, seen = [], set()
+    for item in profile.get('excluded_files', []):
+        name = item['file'].replace('\\', '/').strip('/').upper()
+        require(name and name not in seen and item.get('reason', '').strip(),
+                'Excluded original file needs a unique name and reason')
+        require(hashlib.sha256(disc.read(name)).hexdigest() == item['sha256'],
+                f'Excluded original file changed: {name}')
+        seen.add(name)
+        arguments += ['--exclude-file', name]
+    return arguments
+
+
 def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, profile=None):
     import tomllib
     config = tomllib.loads(game_toml.read_text(encoding='utf-8-sig'))
@@ -811,6 +825,7 @@ def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, pr
                '--out', str(output / 'generic.json'), '--tmp', str(output / 'extract-tmp'),
                '--project-root', str(FRAMEWORK)]
     command += ['--require-bios-resident'] if profile.get('bios_resident') else ['--no-bios-resident']
+    command += generic_exclusion_arguments(profile, disc)
     with (output / 'extract.log').open('w') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:

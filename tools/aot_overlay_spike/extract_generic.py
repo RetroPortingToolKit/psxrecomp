@@ -972,6 +972,8 @@ def main():
                     help="cue to read (default: the game config's [game].disc)")
     ap.add_argument('--out', required=True)
     ap.add_argument('--tmp', default=None)
+    ap.add_argument('--exclude-file', action='append', default=[],
+                    help='omit this original-disc file from generic discovery (repeatable)')
     ap.add_argument('--project-root', default=None,
                     help='root holding bios/SCPH1001.toml for normal-mode discovery '
                          '(default: this framework)')
@@ -1026,6 +1028,8 @@ def main():
     bp,raw=parse_cue_datatrack(disc)   # multi-bin safe: pick track-1 data bin
     dr=eo.DiscReader(bp,raw=raw)
     files=list(eo.enumerate_files(dr))
+    excluded={name.replace('\\','/').strip('/').upper() for name in a.exclude_file}
+    files=[entry for entry in files if entry[0].replace('\\','/').strip('/').upper() not in excluded]
     hed_groups=hed_companion_members(dr,files)
     hed_consumed=set().union(*(group['consumed'] for group in hed_groups)) \
         if hed_groups else set()

@@ -31,6 +31,23 @@ class FlaggedLzTests(unittest.TestCase):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_generic_exclusions_require_original_hash_and_reason(self):
+        class Disc:
+            def read(self,name):
+                self.name=name
+                return b'Unrelated executable fixture'
+        disc=Disc()
+        item=dict(file='DEMO/OTHER.EXE',reason='Unrelated included demo',
+                  sha256=hashlib.sha256(disc.read('')).hexdigest())
+        profile=dict(excluded_files=[item])
+        self.assertEqual(pipeline.generic_exclusion_arguments(profile,disc),
+                         ['--exclude-file','DEMO/OTHER.EXE'])
+        for changed in (dict(item,sha256='0'*64),dict(item,reason='')):
+            with self.assertRaises(ValueError):
+                pipeline.generic_exclusion_arguments(dict(excluded_files=[changed]),disc)
+        with self.assertRaises(ValueError):
+            pipeline.generic_exclusion_arguments(dict(excluded_files=[item,item]),disc)
+
     def fixture(self):
         data = bytearray(6144)
         struct.pack_into('<I', data, 0, 2)
