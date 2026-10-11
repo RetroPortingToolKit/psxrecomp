@@ -939,6 +939,11 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_aot_overlay_pipeline.py
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         add_test(
+            NAME flagged_lz_archive
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_flagged_lz_archive.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(
             NAME counted_relocation_discovery
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_counted_relocation_discovery.py
@@ -973,7 +978,7 @@ if(BUILD_TESTING)
                     "--recompiler=$<TARGET_FILE:psxrecomp-game>"
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         if(Python3_VERSION VERSION_LESS "3.11")
-            set_tests_properties(aot_overlay_methods cli_generate_aot_static
+            set_tests_properties(aot_overlay_methods flagged_lz_archive cli_generate_aot_static
                                  overlay_static_sources_cmake PROPERTIES DISABLED TRUE)
         endif()
         # --static must walk the whole of compile_overlays.main() and exit 0:
