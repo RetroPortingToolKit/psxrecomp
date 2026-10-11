@@ -839,8 +839,9 @@ std::string CodeGenerator::generate_branch_condition(uint32_t instr, uint32_t ad
     check_explicit_branch_site(addr, instr);
     if (config_.ws_cull_nclip_exact_sites.count(addr) &&
         (opcode == 0x06 || opcode == 0x07 ||
-         (opcode == 0x01 && ((instr >> 16) & 31) == 1))) {
-        const char* compare = opcode == 0x06 ? "<= 0" : opcode == 0x07 ? "> 0" : ">= 0";
+         (opcode == 0x01 && ((instr >> 16) & 31) <= 1))) {
+        const char* compare = opcode == 0x06 ? "<= 0" : opcode == 0x07 ? "> 0" :
+            ((instr >> 16) & 1) ? ">= 0" : "< 0";
         return fmt::format("psx_ws_nclip_branch(0x{:08X}u, 0x{:08X}u, (int32_t){}, ((int32_t){} {})) /* guarded wide nclip */",
                            addr, instr, reg_name(rs), reg_name(rs), compare);
     }

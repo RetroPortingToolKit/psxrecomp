@@ -415,6 +415,20 @@ reject_mask = "0xFFFF0000"
           "overlay with another instruction stays vanilla");
 }
 
+void guarded_nclip_branches() {
+    PSXRecomp::CodeGenConfig config{};
+    config.ws_cull_nclip_exact_sites.insert(kBase);
+    const auto left = generate_first_instruction(kBltzV0, config).full_code;
+    const auto right = generate_first_instruction(kBgezV0, config).full_code;
+    check(left.find("psx_ws_nclip_branch(") != std::string::npos &&
+              left.find("gte_nclip_exact_sign(") == std::string::npos &&
+              left.find("cpu->gpr[2] < 0") != std::string::npos,
+          "BLTZ uses the word-guarded handedness consumer and vanilla fallback");
+    check(right.find("psx_ws_nclip_branch(") != std::string::npos &&
+              right.find("cpu->gpr[2] >= 0") != std::string::npos,
+          "BGEZ uses the same word-guarded handedness consumer");
+}
+
 void runtime_math() {
     // Identity at 4:3 (margin 0) for every input.
     for (int32_t v : {-1000, -54, -53, -1, 0, 1, 98, 222, 319, 320, 321, 1000}) {
@@ -460,6 +474,7 @@ int main(int argc, char** argv) {
     shared_decls_include_new_helpers();
     runtime_math();
     masked_reject_sites();
+    guarded_nclip_branches();
 
     if (g_exit_probe >= 0) return 3;  // no call had that probe index
     if (failures != 0) {
