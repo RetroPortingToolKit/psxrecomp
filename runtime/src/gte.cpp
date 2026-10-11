@@ -1403,6 +1403,39 @@ extern "C" int psx_mod_projected_triangle_clipping_supported(const CPUState* cpu
     }
     return 1;
 }
+extern "C" int psx_mod_extend_nclip_for_quad_vertex(const CPUState* cpu, uint32_t vertex) {
+    const uint32_t physical=vertex&0x1fffffffu;
+    if (!cpu || !cpu->read_word || (vertex&3u) || physical<0x10000u ||
+        physical>0x200000u-8u || !gpu_ws_precise_nclip_enabled() ||
+        !gpu_ws_projective_clipping_supported() || !pgxp_projection_tracking() ||
+        s_gte_replay_sandbox || s_speculative_depth ||
+        s_nclip_last_generation!=s_geom_generation ||
+        (int32_t)cpu->gte_data[24]!=s_nclip_last_native) return 0;
+    PGXPProjection p[3];
+    for (unsigned i=0;i<3;++i) {
+        if (!pgxp_get_gte_projection(i,cpu->gte_data[12+i],&p[i]) ||
+            !std::isfinite(p[i].x) || !std::isfinite(p[i].y) ||
+            !std::isfinite(p[i].z) || !std::isfinite(p[i].near_z) ||
+            p[i].near_z<=0 || p[i].z>=p[i].near_z) return 0;
+    }
+    const uint32_t xy=cpu->read_word(vertex), zw=cpu->read_word(vertex+4u);
+    const int16_t v[3]={(int16_t)xy,(int16_t)(xy>>16),(int16_t)zw};
+    const int16_t r[3]={(int16_t)cpu->gte_ctrl[3],(int16_t)(cpu->gte_ctrl[3]>>16),
+                        (int16_t)cpu->gte_ctrl[4]};
+    const int64_t mac3=(int64_t)(int32_t)cpu->gte_ctrl[7]*4096 +
+        (int64_t)r[0]*v[0]+(int64_t)r[1]*v[1]+(int64_t)r[2]*v[2];
+    /* Fail closed when the fourth transform would overflow the GTE MAC lane. */
+    if (mac3<-(1ll<<43) || mac3>=(1ll<<43) ||
+        (double)(mac3>>12)<p[0].near_z) return 0;
+    const double determinant=
+        (double)p[0].x*((double)p[1].y*p[2].z-(double)p[1].z*p[2].y)-
+        (double)p[0].y*((double)p[1].x*p[2].z-(double)p[1].z*p[2].x)+
+        (double)p[0].z*((double)p[1].x*p[2].y-(double)p[1].y*p[2].x);
+    if (!std::isfinite(determinant) || determinant==0) return 0;
+    s_nclip_last_projective_sign=determinant<0?-1:1;
+    s_nclip_last_projective_valid=true;
+    return 1;
+}
 /* Some guarded quad consumers save two MAC0 values before branching. Their
  * first branch must use the first command's provenance, even when both native
  * results are equal. This is explicitly selected by the title, never searched
@@ -1499,7 +1532,8 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
         for (int i = 0; i < 3; ++i) {
             const int x = exact_x[i] >> 16;
             const int y = exact_y[i] >> 16;
-            checked &= x > -4096 && x < 4096 && y > -4096 && y < 4096;
+            checked &= exact_x[i] > -4096 * 65536 && exact_x[i] < 4096 * 65536 - 1 &&
+                       exact_y[i] > -4096 * 65536 && exact_y[i] < 4096 * 65536 - 1;
             checked &= gte->SZ[i + 1] >= gte_h_scaled(gte) / 2 && gte->SZ[i + 1] != 0;
             if (raw_x[i] == 1023 && x > 1023) saturated = true;
             else if (raw_x[i] == -1024 && x < -1024) saturated = true;
@@ -1539,15 +1573,21 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
     if (gpu_ws_precise_nclip_enabled() && gpu_ws_projective_clipping_supported() && pgxp_projection_tracking() &&
         !s_gte_replay_sandbox && s_speculative_depth == 0) {
         PGXPProjection p[3];
-        bool valid = true, crosses = false, front = false;
+        bool valid = true, crosses = false, front = false, saturated = false;
         for (unsigned i=0;i<3;i++) {
             if (!pgxp_get_gte_projection(i, gte->SXY[i], &p[i])) { valid=false; break; }
             valid &= std::isfinite(p[i].x) && std::isfinite(p[i].y) &&
                 std::isfinite(p[i].z) && std::isfinite(p[i].near_z) && p[i].near_z > 0;
             crosses |= p[i].z < p[i].near_z;
             front |= p[i].z >= p[i].near_z;
+            const int x = (int16_t)(gte->SXY[i] & 0xffffu);
+            const int y = (int16_t)(gte->SXY[i] >> 16);
+            saturated |= x == -1024 || x == 1023 || y == -1024 || y == 1023;
         }
-        if (valid && crosses && front) {
+        /* Close, forward-facing terrain can exceed the bounded 16.16
+         * transport without crossing the camera. Its clamped SXY winding
+         * is equally unreliable. The full homogeneous source stays valid. */
+        if (valid && (crosses || saturated) && front) {
             const double determinant =
                 (double)p[0].x * ((double)p[1].y*p[2].z-(double)p[1].z*p[2].y) -
                 (double)p[0].y * ((double)p[1].x*p[2].z-(double)p[1].z*p[2].x) +

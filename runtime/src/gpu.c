@@ -5239,7 +5239,11 @@ static int native_wide_projective_draw(void) {
         PGXPProjection p;
         if (!pgxp_load_projection(gp0_cmd_source_addr+4*index,word,&p)) return 0;
         int32_t x,y; parse_vertex(word,&x,&y);
-        needs_clip |= p.z<p.near_z || x==-1024 || x==1023 || y==-1024 || y==1023;
+        /* CPU near clippers can use -1023 for their left rail. Its explicit
+         * full projection proves whether that rail actually truncated it. */
+        needs_clip |= p.z<p.near_z || x==-1024 || x==1023 || y==-1024 || y==1023 ||
+            (x==-1023 && p.x < -1023.0f*p.z) ||
+            (y==-1023 && p.y < -1023.0f*p.z);
         const uint32_t color=gp0_cmd_buf[(op&16u)?index-1:0];
         const uint32_t uv=gp0_cmd_buf[index+1];
         vertices[i]=(PSXProjectedVertex){p.x+(double)draw_offset_x*p.z,

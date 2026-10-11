@@ -1481,6 +1481,31 @@ extern "C" void pgxp_gte_set_projection(const PGXPProjection *projection) {
     s_gte[14].flags |= PGXP_F_PROJECTION;
     s_gte[15] = s_gte[14];
 }
+
+extern "C" int psx_mod_record_cpu_projected_vertex(const CPUState* cpu,
+    uint32_t address, uint32_t expected, int32_t x, int32_t y,
+    uint16_t depth, uint16_t near_depth) {
+    const uint32_t physical = address & 0x1fffffffu;
+    if (!g_pgxp_active || !s_projection_tracking || !cpu || !cpu->read_word ||
+        (address & 3u) || physical < 0x10000u ||
+        physical > psx_ram_live_bytes() - 4u || !depth || !near_depth ||
+        depth < near_depth || x < -1048576 || x > 1048576 ||
+        y < -1048576 || y > 1048576) return 0;
+    const int32_t cx = x < -1023 ? -1023 : x > 1023 ? 1023 : x;
+    const int32_t cy = y < -1023 ? -1023 : y > 1023 ? 1023 : y;
+    const uint32_t clamped = (uint16_t)cx | ((uint32_t)(uint16_t)cy << 16);
+    if (expected != clamped || cpu->read_word(address) != expected) return 0;
+    PGXPValue* pv = pgxp_ptr(address);
+    if (!pv) return 0;
+    pv->value = expected; pv->gen = s_gen;
+    /* The ordinary precision tier remains at the original CPU coordinates.
+     * Only the explicit full projection carries values outside those rails. */
+    pv->x16 = cx * 65536; pv->y16 = cy * 65536; pv->z = depth;
+    pv->flags = PGXP_F_VXY | PGXP_F_VZ | PGXP_F_PROJECTION;
+    pv->projection = {(float)((double)x * depth), (float)((double)y * depth),
+                      (float)depth, (float)near_depth};
+    return 1;
+}
 static int projection_read(const PGXPValue *pv, uint32_t packed, PGXPProjection *out) {
     const uint16_t flags = PGXP_F_VXY | PGXP_F_PROJECTION;
     if (!s_enabled || !s_projection_tracking || !pv || pv->gen != s_gen || pv->value != packed ||

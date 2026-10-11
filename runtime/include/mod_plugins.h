@@ -283,6 +283,18 @@ void psx_mod_anchor_hud_primitive(uint32_t primitive, int edge);
  * Both services are render-only, word guarded and inert at native 4:3. */
 void psx_mod_tag_screen_mask_quad(uint32_t primitive);
 void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale);
+/* A verified CPU near-clip producer may publish its unclamped screen point.
+ * The original aligned RAM word must equal the producer's +/-1023 clamp;
+ * the complete word is rechecked through cpu->read_word. Metadata follows
+ * ordinary tracked loads/stores and is invalidated by every later writer.
+ * This records presentation provenance only; RAM and CPU state are untouched. */
+int psx_mod_record_cpu_projected_vertex(const struct CPUState* cpu,
+    uint32_t address, uint32_t expected, int32_t x, int32_t y,
+    uint16_t depth, uint16_t near_depth);
+/* A verified quad renderer may prove its fourth source corner lies in front
+ * when the three current NCLIP corners are behind the near plane. This only
+ * supplements the current full-word winding proof; guest registers stay stock. */
+int psx_mod_extend_nclip_for_quad_vertex(const struct CPUState* cpu, uint32_t vertex);
 /* Exclude a known world packet from screen-space backdrop stretching, even
  * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
 void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
