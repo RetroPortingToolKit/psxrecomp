@@ -38,6 +38,8 @@
 /* Title enhancements preload assets from the owner's disc. Hardware DMA,
  * capture buffers and reverb continue to use spu_ram exclusively. */
 static struct { uint8_t *data; uint32_t bytes; } sample_banks[SPU_SAMPLE_BANKS];
+static uint32_t sample_bank_epoch;
+uint32_t spu_sample_bank_epoch(void) {return sample_bank_epoch;}
 
 static uint8_t  spu_ram[SPU_RAM_SIZE];
 static uint16_t spu_regs[SPU_REG_COUNT];
@@ -1075,6 +1077,7 @@ uint32_t spu_private_voice_active(void) {
 }
 
 void spu_init(void) {
+    if(!++sample_bank_epoch)++sample_bank_epoch;
     for(unsigned bank=1;bank<SPU_SAMPLE_BANKS;++bank) {
         free(sample_banks[bank].data);sample_banks[bank].data=NULL;sample_banks[bank].bytes=0;
     }

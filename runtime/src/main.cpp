@@ -7,6 +7,8 @@
 
 #include "cpu_state.h"
 #include "mod_netplay.h"
+#include "mod_memory.h"
+#include "mod_texture_banks.h"
 #include "execution_profile.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
@@ -1966,8 +1968,9 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
  * Fit and fixed aspect apply_netplay_local_viewport_aspect() set, into an
  * offline rematch. The rest is defensive, for the state listed here only; see
  * docs/MOD_PACKAGES.md "Session starts" for what is exempt and why (the
- * renderer and fixed aspect are launcher controls; guest/GPU-DMA memory,
- * texture-packet arenas and defined texture banks live for the process).
+ * renderer and fixed aspect are launcher controls; enhancement guest/GPU-DMA
+ * arenas, texture-packet registrations and retained texture banks are retired
+ * separately at start_mod_session before the new activation).
  *
  * Function-entry hooks need nothing here: the commit or netplay clear empties
  * upstream's hook table, and only activation rebuilds it.
@@ -20403,6 +20406,15 @@ int main(int argc, char** argv) {
                       "reset_mod_owned_presentation() would clobber a launcher "
                       "setting; restore only when the feature is mod-owned");
         reset_mod_owned_presentation();
+        /* Cold boot has no renderer yet. A lobby rematch reaches here only
+         * after scheduler unwind and renderer/audio/window teardown. Retire
+         * texture IDs and packet registrations before reusing guest addresses;
+         * memory_init below must preserve the new activation's allocations. */
+        if (!mod_texture_banks_reset_session() || !psx_mod_memory_reset_session()) {
+            std::fprintf(stderr,
+                         "psxrecomp: cannot reset enhancement resources at session start\n");
+            return false;
+        }
         /* Netplay own-view mods: the widescreen margin follows them into the
          * sandboxed own view only; the shared game keeps the stock cull. */
         gpu_ws_set_local_view_only(
@@ -20460,7 +20472,10 @@ int main(int argc, char** argv) {
         }
         return true;
     };
-    if (!start_mod_session(net_cfg.enabled)) return 1;
+    if (!start_mod_session(net_cfg.enabled)) {
+        SDL_Quit();
+        return 1;
+    }
 
     /* Re-apply the resolved language to the translation layer. text_xlate_init
      * (at config load) only saw the game.toml default; this folds in the
@@ -22853,7 +22868,10 @@ soft_return_lobby:
                 g_video_aspect_num = 4;
                 g_video_aspect_den = 3;
             }
-            if (!start_mod_session(net_cfg.enabled)) return 1;
+            if (!start_mod_session(net_cfg.enabled)) {
+                SDL_Quit();
+                return 1;
+            }
             disc_path_str = session_disc_path(resolved_disc);
             std::printf("psxrecomp: rematch from lobby (netplay=%d)\n",
                         net_cfg.enabled ? 1 : 0);
