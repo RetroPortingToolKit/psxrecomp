@@ -256,6 +256,12 @@ void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
  * preceding NCLIP result. Exact address/word must match an existing site;
  * registering the base site list again resets every site to the latest result. */
 void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expected);
+/* A verified instruction hook can supply the original renderer's conditional
+ * MAC0 negation before this branch executes. This preserves both exact raw
+ * provenance and the game's winding convention, including raw MAC0 == 0.
+ * Base registration resets negation; address/word must match a bound site. */
+void psx_mod_set_native_wide_nclip_negated_site(uint32_t address, uint32_t expected,
+                                               int negated);
 
 /* Mark a guest GPU packet (P_TAG address) as persistent screen-space HUD.
  * edge = -1 left, +1 right, 0 clears a reused packet's tag. The native-wide

@@ -990,6 +990,7 @@ int psx_ws_masked_reject_site(uint32_t pc, uint32_t instr,
 
 static WsMaskedRejectSite ws_nclip_sites[WS_EXPLICIT_CULL_SITES_MAX];
 static uint8_t ws_nclip_previous[WS_EXPLICIT_CULL_SITES_MAX];
+static uint8_t ws_nclip_negated[WS_EXPLICIT_CULL_SITES_MAX];
 static int ws_nclip_site_count;
 static uint64_t ws_nclip_rescues;
 uint64_t gpu_ws_native_wide_nclip_rescues(void) { return ws_nclip_rescues; }
@@ -1002,6 +1003,7 @@ void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
         ws_nclip_sites[i].address = addresses[i] & 0x1FFFFFFFu;
         ws_nclip_sites[i].expected = expected[i];
         ws_nclip_previous[i] = 0;
+        ws_nclip_negated[i] = 0;
     }
     ws_nclip_site_count = count;
     ws_nclip_rescues = 0;
@@ -1016,6 +1018,17 @@ void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expe
     }
     abort();
 }
+void psx_mod_set_native_wide_nclip_negated_site(uint32_t address, uint32_t expected,
+                                               int negated) {
+    for (int i = 0; i < ws_nclip_site_count; ++i) {
+        if (ws_nclip_sites[i].address == (address & 0x1FFFFFFFu) &&
+            ws_nclip_sites[i].expected == expected) {
+            ws_nclip_negated[i] = negated != 0;
+            return;
+        }
+    }
+    abort();
+}
 extern int gte_nclip_native_wide_sign(int32_t mac0, int* sign);
 extern int gte_nclip_native_wide_previous_sign(int32_t mac0, int* sign);
 int psx_ws_nclip_branch(uint32_t pc, uint32_t instr, int32_t mac0, int vanilla) {
@@ -1024,10 +1037,15 @@ int psx_ws_nclip_branch(uint32_t pc, uint32_t instr, int32_t mac0, int vanilla) 
         if (ws_nclip_sites[i].address != (pc & 0x1FFFFFFFu) ||
             ws_nclip_sites[i].expected != instr) continue;
         int sign;
+        /* Undo only a title-proven negation to check the architectural MAC0.
+         * Unsigned arithmetic retains MIPS wraparound for INT32_MIN. */
+        const int32_t raw = ws_nclip_negated[i] ?
+            (int32_t)(0u - (uint32_t)mac0) : mac0;
         const int valid = ws_nclip_previous[i] ?
-            gte_nclip_native_wide_previous_sign(mac0, &sign) :
-            gte_nclip_native_wide_sign(mac0, &sign);
+            gte_nclip_native_wide_previous_sign(raw, &sign) :
+            gte_nclip_native_wide_sign(raw, &sign);
         if (!valid) return vanilla;
+        if (ws_nclip_negated[i]) sign = -sign;
         const uint32_t op = instr >> 26;
         const int result = op == 6 ? sign <= 0 : op == 7 ? sign > 0 :
             ((instr >> 16) & 1) ? sign >= 0 : sign < 0;
