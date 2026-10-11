@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "dma.h"
+#include "mod_memory.h"
 
 void     dma_init(void);
 void     dma_write(uint32_t addr, uint32_t val);
@@ -60,12 +61,23 @@ void psx_advance_cycles_slow(uint32_t cycles) {
 uint32_t g_psx_ram_size = 0x00200000u;
 uint32_t g_psx_ram_mask = 0x001FFFFFu;
 static uint8_t ram[0x00200000u];
+static uint8_t mod_ot[0x10000u], otc_original_ram[sizeof ram];
 uint8_t *memory_get_ram_ptr(void) { return ram; }
 uint32_t psx_read_word(uint32_t a) {
+    uint32_t off;
+    if (psx_mod_gpu_dma_aperture_offset_for(a,4u,sizeof mod_ot,&off)) {
+        uint32_t v;memcpy(&v,mod_ot+off,4);return v;
+    }
     uint32_t v; memcpy(&v, ram + (a & 0x1FFFFCu), 4); return v;
 }
-void psx_write_word(uint32_t a, uint32_t v) { memcpy(ram + (a & 0x1FFFFCu), &v, 4); }
-uint32_t psx_mod_gpu_dma_resolve_address(uint32_t a) { return a; }
+void psx_write_word(uint32_t a, uint32_t v) {
+    uint32_t off;
+    if (psx_mod_gpu_dma_aperture_offset_for(a,4u,sizeof mod_ot,&off)) memcpy(mod_ot+off,&v,4);
+    else memcpy(ram+(a&0x1ffffcu),&v,4);
+}
+uint32_t psx_mod_gpu_dma_resolve_address(uint32_t a) {
+    return psx_mod_gpu_dma_resolve_address_for(a,sizeof mod_ot);
+}
 
 /* ---- GPU ---------------------------------------------------------------- */
 static uint32_t s_gp0[64];
@@ -186,6 +198,26 @@ int main(void) {
     CHECK(kick(1), "a kick from inside the device service was held");
     finish_walk();
     CHECK(!dma_gpu_linked_list_active(), "control walk did not finish");
+
+    /* Enlarged modern OTs must retain their 24-bit aperture addresses during
+     * channel6 clear; their retail-RAM aliases stay byte-for-byte intact. */
+    dma_init();memset(ram,0xa5,sizeof ram);memcpy(otc_original_ram,ram,sizeof ram);
+    memset(mod_ot,0xcc,sizeof mod_ot);
+    const uint32_t otc_base=PSX_MOD_GPU_DMA_APERTURE_BASE, otc_entries=6144u;
+    dma_write(0x1f8010f0u,0x08000000u);
+    dma_write(0x1f8010e0u,PSX_MOD_GPU_DMA_GUEST_BASE+(otc_entries-1u)*4u);
+    dma_write(0x1f8010e4u,otc_entries);
+    dma_write(0x1f8010e8u,0x11000002u);
+    CHECK(!memcmp(ram,otc_original_ram,sizeof ram),"OTC aliased enhanced table into original RAM");
+    for(uint32_t i=0;i<otc_entries;++i)
+        CHECK(psx_read_word(otc_base+i*4u)==(i?otc_base+(i-1u)*4u:END),"enhanced OTC link %u",i);
+    CHECK(psx_read_word(otc_base+otc_entries*4u)==0xccccccccu,"OTC crossed table end");
+    /* An ordinary mirrored head still uses the retail decode window. */
+    dma_init();dma_write(0x1f8010f0u,0x08000000u);
+    dma_write(0x1f8010e0u,0x00201018u);dma_write(0x1f8010e4u,7u);
+    dma_write(0x1f8010e8u,0x11000002u);
+    for(uint32_t i=0;i<7u;++i)
+        CHECK(psx_read_word(0x1000u+i*4u)==(i?0x1000u+(i-1u)*4u:END),"retail OTC link %u",i);
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
