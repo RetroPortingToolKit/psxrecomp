@@ -19,6 +19,7 @@
 #include "debug_server.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
+#include "host_span_ring.h"
 #include "guest_cycle_profile.h"
 #include "host_osd.h"
 #include "psx_video_timing.h"
@@ -5431,7 +5432,7 @@ static void handle_geom_correction(int id, const char *json)
 /* host_profile — histogram of the always-on host CPU sampler (host_sampler.c)
  * over a window of the ring: {"cmd":"host_profile","since":SEQ} or
  * {"cmd":"host_profile","frames":N} (the last N guest frames), optional
- * "pass":1 (only samples inside render passes) / "pass":0 (outside), "top":K.
+ * "frame_lo"/"frame_hi" (an absolute guest-frame window), "pass":1 (only samples inside render passes) / "pass":0 (outside), "top":K.
  * Addresses are executable-relative; tools/host_profile.py names them. Take
  * "seq" from one reply as "since" of the next to profile what ran between. */
 static void handle_host_profile(int id, const char *json)
@@ -5443,6 +5444,9 @@ static void handle_host_profile(int id, const char *json)
     const uint64_t oldest = seq > HOST_SAMPLER_CAP ? seq - HOST_SAMPLER_CAP : 0;
     int since = json_get_int(json, "since", -1);
     const int frames = json_get_int(json, "frames", -1);
+    /* Optional absolute guest-frame window (inclusive): profile exactly one hitch. */
+    const int frame_lo_abs = json_get_int(json, "frame_lo", -1);
+    const int frame_hi_abs = json_get_int(json, "frame_hi", -1);
     const int pass = json_get_int(json, "pass", -1);
     int top = json_get_int(json, "top", 60);
     if (top < 1) top = 1;
@@ -5457,6 +5461,8 @@ static void handle_host_profile(int id, const char *json)
         HostSample smp;
         if (!host_sampler_get(i, &smp)) continue;
         if (frames > 0 && (int32_t)(smp.frame - frame_lo) < 0) continue;
+        if (frame_lo_abs >= 0 && smp.frame < (uint32_t)frame_lo_abs) continue;
+        if (frame_hi_abs >= 0 && smp.frame > (uint32_t)frame_hi_abs) continue;
         if (pass >= 0 && (int)smp.in_pass != pass) continue;
         total++;
         int b = 0;
@@ -5467,7 +5473,41 @@ static void handle_host_profile(int id, const char *json)
         }
         counts[b]++;
     }
-    size_t cap = 256 + (size_t)top * 48;
+    /* Where did the samples that are NOT in this executable land? A hitch spent inside the
+     * GL driver, the OS loader or the audio stack shows up here by module name ("modules":
+     * [[name, samples], ...], the exe itself as "(exe)"), where the bare addresses above
+     * cannot be mapped to anything without that module's symbols. */
+    char modnames[24][96]; uint64_t modcount[24]; int nmod = 0;
+#ifdef _WIN32
+    {
+        const HMODULE exe_mod = GetModuleHandleA(NULL);
+        const uint64_t base = host_sampler_image_base();
+        for (int b = 0; b < nb; b++) {
+            HMODULE h = NULL;
+            const char *name = "(unknown)";
+            char path[260];
+            if (rvas[b] == 0) {
+                name = "(non-image pc)";
+            } else if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                          (LPCSTR)(uintptr_t)(base + rvas[b]), &h) && h) {
+                if (h == exe_mod) name = "(exe)";
+                else if (GetModuleFileNameA(h, path, sizeof path)) {
+                    name = strrchr(path, '\\');
+                    name = name ? name + 1 : path;
+                }
+            }
+            int m = 0;
+            while (m < nmod && strcmp(modnames[m], name) != 0) m++;
+            if (m == nmod) {
+                if (nmod == 24) { m = 23; }
+                else { nmod++; snprintf(modnames[m], sizeof modnames[m], "%s", name); modcount[m] = 0; }
+            }
+            modcount[m] += counts[b];
+        }
+    }
+#endif
+    size_t cap = 256 + (size_t)top * 48 + 24u * 128u;
     char *buf = (char *)malloc(cap);
     if (!buf) { send_err(id, "oom"); return; }
     size_t n = (size_t)snprintf(buf, cap,
@@ -5485,7 +5525,78 @@ static void handle_host_profile(int id, const char *json)
                               (unsigned long long)rvas[best], counts[best]);
         counts[best] = 0;
     }
+    n += (size_t)snprintf(buf + n, cap - n, "],\"modules\":[");
+    for (int m = 0; m < nmod; m++)
+        n += (size_t)snprintf(buf + n, cap - n, "%s[\"%s\",%llu]", m ? "," : "", modnames[m],
+                              (unsigned long long)modcount[m]);
     snprintf(buf + n, cap - n, "]}");
+    send_fmt("%s", buf);
+    free(buf);
+}
+
+/* host_span_ring / frame_wall_ring - always-on wall-time rings (host_span_ring.h).
+ *   {"cmd":"host_span_ring","from":SEQ,"n":N}  spans with seq >= from (default: oldest)
+ *     -> {total, oldest, events:[[seq, kind, t0_us, dur_us, frame, emu, arg], ...]}
+ *   {"cmd":"frame_wall_ring","from":SEQ,"n":N} per-guest-frame wall stamps
+ *     -> {total, oldest, now_us, f:[frame, t_us, interp_insns_lo32, static_checks_lo32, page_faults, io_read_kb, ...]}
+ * Both read a window that already happened; nothing is armed. */
+static void handle_host_span_ring(int id, const char *json)
+{
+    const uint64_t total = host_span_total();
+    const uint64_t oldest = total > HOST_SPAN_RING_CAP ? total - HOST_SPAN_RING_CAP : 0;
+    int from_i = json_get_int(json, "from", -1);
+    int n = json_get_int(json, "n", 4096);
+    if (n < 1) n = 1;
+    if (n > (int)HOST_SPAN_RING_CAP) n = (int)HOST_SPAN_RING_CAP;
+    uint64_t from = from_i >= 0 ? (uint64_t)from_i : oldest;
+    if (from < oldest) from = oldest;
+    size_t cap = 160 + (size_t)n * 96;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { send_err(id, "oom"); return; }
+    size_t pos = (size_t)snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%llu,\"oldest\":%llu,\"now_us\":%llu,\"events\":[",
+        id, (unsigned long long)total, (unsigned long long)oldest,
+        (unsigned long long)host_clock_us());
+    int first = 1, emitted = 0;
+    for (uint64_t q = from; q < total && emitted < n && pos + 128 < cap; q++) {
+        HostSpan sp;
+        if (!host_span_get(q, &sp)) continue;
+        pos += (size_t)snprintf(buf + pos, cap - pos, "%s[%llu,\"%s\",%llu,%u,%u,%u,%u]",
+            first ? "" : ",", (unsigned long long)q, host_span_kind_name(sp.kind),
+            (unsigned long long)sp.t0_us, sp.dur_us, sp.frame, sp.emu, sp.arg);
+        first = 0; emitted++;
+    }
+    snprintf(buf + pos, cap - pos, "]}");
+    send_fmt("%s", buf);
+    free(buf);
+}
+
+static void handle_frame_wall_ring(int id, const char *json)
+{
+    const uint64_t total = host_frame_stamp_total();
+    const uint64_t oldest = total > HOST_FRAME_STAMP_CAP ? total - HOST_FRAME_STAMP_CAP : 0;
+    int from_i = json_get_int(json, "from", -1);
+    int n = json_get_int(json, "n", 20000);
+    if (n < 1) n = 1;
+    if (n > (int)HOST_FRAME_STAMP_CAP) n = (int)HOST_FRAME_STAMP_CAP;
+    uint64_t from = from_i >= 0 ? (uint64_t)from_i : oldest;
+    if (from < oldest) from = oldest;
+    size_t cap = 192 + (size_t)n * 64;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { send_err(id, "oom"); return; }
+    size_t pos = (size_t)snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%llu,\"oldest\":%llu,\"from\":%llu,\"now_us\":%llu,\"stride\":6,\"f\":[",
+        id, (unsigned long long)total, (unsigned long long)oldest,
+        (unsigned long long)from, (unsigned long long)host_clock_us());
+    int first = 1, emitted = 0;
+    for (uint64_t q = from; q < total && emitted < n && pos + 96 < cap; q++) {
+        uint32_t fr, ii, ck, pf, io; uint64_t t;
+        if (!host_frame_stamp_get(q, &fr, &t, &ii, &ck, &pf, &io)) continue;
+        pos += (size_t)snprintf(buf + pos, cap - pos, "%s%u,%llu,%u,%u,%u,%u", first ? "" : ",", fr,
+                                (unsigned long long)t, ii, ck, pf, io);
+        first = 0; emitted++;
+    }
+    snprintf(buf + pos, cap - pos, "]}");
     send_fmt("%s", buf);
     free(buf);
 }
@@ -9925,23 +10036,22 @@ static void handle_get_snapshots(int id, const char *json)
  * deterministic runs (GL vs software) can each serve the display for the
  * SAME frame number, giving a pixel-exact renderer-divergence census.
  * GL reads GPU-side truth via the fbo peek; software reads CPU VRAM (its
- * authoritative surface). depth24 scanout frames are tagged and refused
- * (15-bit only). */
-#define DISP_RING_CAP   64    /* full-VRAM entries are 1MB each; 32 frames of
-                               * lookback (~0.3-0.5s) for exact-frame forensics */
-#define DISP_RING_MAX_W 640
-#define DISP_RING_MAX_H 256
-/* Full-VRAM aux capture alongside the display: the entire 1024x512 raw VRAM
- * as the renderer sees it at this frame (GL: FBO truth; SW: CPU truth), so an
- * offline client can micro-cosim ANY prim of the frame — rasterize it from
- * the GP0 ring against the exact same-frame texels/CLUTs — and attribute a
- * bad pixel to sampling vs content. Streamed texture pages and palette
- * cycling make later peeks worthless; only a same-frame capture is evidence. */
+ * authoritative surface). Each entry is the full 1024x512 VRAM plus the
+ * display geometry of that frame, and the PNG is decoded from it with the
+ * same scanout decode as screenshot_file — so 480-line interlaced displays
+ * and depth24 (FMV) frames are served whole, not cropped or refused. */
+#define DISP_RING_CAP   64    /* full-VRAM entries are 1MB each; ~1s of
+                               * lookback for exact-frame forensics */
+/* The entire 1024x512 raw VRAM as the renderer sees it at this frame (GL: FBO
+ * truth; SW and depth24: CPU truth), so an offline client can micro-cosim ANY
+ * prim of the frame — rasterize it from the GP0 ring against the exact
+ * same-frame texels/CLUTs — and attribute a bad pixel to sampling vs content.
+ * Streamed texture pages and palette cycling make later peeks worthless; only
+ * a same-frame capture is evidence. */
 typedef struct {
     uint32_t frame;
-    uint16_t w, h;
-    uint8_t  depth24, valid;
-    uint16_t *px;                 /* DISP_RING_MAX_W*DISP_RING_MAX_H halfwords */
+    uint8_t  valid;
+    GpuDisplayInfo di;            /* display geometry/depth at capture */
     uint16_t *vram;               /* full 1024x512 */
 } DispRingEntry;
 static PSX_BSS DispRingEntry s_disp_ring[DISP_RING_CAP];
@@ -9966,15 +10076,11 @@ static void disp_ring_capture(void)
     }
     if (!enabled || s_capture_frozen) return;
     if (!s_disp_ring_px) {
-        size_t per  = (size_t)DISP_RING_MAX_W * DISP_RING_MAX_H;
         size_t vram = (size_t)1024 * 512;
-        s_disp_ring_px = (uint16_t *)malloc(DISP_RING_CAP * (per + vram) * sizeof(uint16_t));
+        s_disp_ring_px = (uint16_t *)malloc(DISP_RING_CAP * vram * sizeof(uint16_t));
         if (!s_disp_ring_px) return;
-        for (int i = 0; i < DISP_RING_CAP; i++) {
-            uint16_t *base = s_disp_ring_px + (size_t)i * (per + vram);
-            s_disp_ring[i].px   = base;
-            s_disp_ring[i].vram = base + per;
-        }
+        for (int i = 0; i < DISP_RING_CAP; i++)
+            s_disp_ring[i].vram = s_disp_ring_px + (size_t)i * vram;
     }
     DispRingEntry *e = &s_disp_ring[(uint32_t)(s_frame_count % DISP_RING_CAP)];
     e->frame = (uint32_t)s_frame_count;
@@ -9983,30 +10089,15 @@ static void disp_ring_capture(void)
     gpu_get_display_info(&di);
     if (di.disabled || di.width == 0 || di.height == 0) return;
     gpu_timeline_note(GTL_DISP_CAPTURE, 0, di.display_x | (di.display_y << 16));
-    uint32_t w = di.width, h = di.height;
-    if (w > DISP_RING_MAX_W) w = DISP_RING_MAX_W;
-    if (h > DISP_RING_MAX_H) h = DISP_RING_MAX_H;
-    e->w = (uint16_t)w; e->h = (uint16_t)h;
-    e->depth24 = (uint8_t)(di.depth24 ? 1 : 0);
-    /* GPU-side truth when the GL raster pipeline is live (scissored pack of
-     * just the display rect + one small readback); CPU VRAM otherwise (the
-     * software backend's authoritative surface). Runs on the present thread,
-     * where the GL context is current. */
-    /* Deferred: with the render thread on, the readback is recorded at this
-     * point of the command stream and filled in by the render thread (ring
-     * readers sync first), instead of a per-frame sync point. */
-    int got = 0;
-    if (di.display_x + w <= 1024 && di.display_y + h <= 512)
-        got = gl_renderer_fbo_peek_deferred((int)di.display_x, (int)di.display_y,
-                                            (int)w, (int)h, e->px);
-    if (!got) {
-        for (uint32_t y = 0; y < h; y++)
-            for (uint32_t x = 0; x < w; x++)
-                e->px[y * w + x] =
-                    gpu_vram_peek((int)(di.display_x + x), (int)(di.display_y + y));
-    }
-    /* Full-VRAM aux capture (same GL-truth/CPU-truth split as the display). */
-    if (!gl_renderer_fbo_peek_deferred(0, 0, 1024, 512, e->vram)) {
+    e->di = di;
+    /* GPU-side truth when the GL raster pipeline is live; CPU VRAM otherwise
+     * (the software backend's authoritative surface). depth24 always reads
+     * the CPU mirror: packed RGB888 MDEC bytes live there, not in the FBO
+     * (see screenshot_file). Runs on the present thread, where the GL context
+     * is current. Deferred: with the render thread on, the readback is
+     * recorded at this point of the command stream and filled in by the
+     * render thread (ring readers sync first). */
+    if (di.depth24 || !gl_renderer_fbo_peek_deferred(0, 0, 1024, 512, e->vram)) {
         const uint16_t *v = gpu_get_vram();
         memcpy(e->vram, v, (size_t)1024 * 512 * sizeof(uint16_t));
     }
@@ -10069,16 +10160,17 @@ static void handle_display_ring_get(int id, const char *json)
     if (!e->valid || e->frame != (uint32_t)f) {
         send_err(id, "frame not in display ring"); return;
     }
-    if (e->depth24) { send_err(id, "frame is 24bpp scanout (unsupported)"); return; }
-    uint32_t w = e->w, h = e->h;
+    /* Same clamp and scanout decode as screenshot_file, against this frame's
+     * VRAM snapshot. */
+    uint32_t w = e->di.width;  if (w > 640) w = 640;
+    uint32_t h = e->di.height; if (h > 512) h = 512;
     uint8_t *rgb = (uint8_t *)malloc((size_t)w * h * 3);
     if (!rgb) { send_err(id, "alloc failed"); return; }
-    for (uint32_t i = 0; i < w * h; i++) {
-        uint16_t p = e->px[i];
-        rgb[i * 3 + 0] = (uint8_t)((p & 0x1F) << 3);
-        rgb[i * 3 + 1] = (uint8_t)(((p >> 5) & 0x1F) << 3);
-        rgb[i * 3 + 2] = (uint8_t)(((p >> 10) & 0x1F) << 3);
-    }
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) {
+            uint8_t *p = rgb + ((size_t)y * w + x) * 3;
+            gpu_display_pixel_rgb_in(e->vram, &e->di, x, y, &p[0], &p[1], &p[2]);
+        }
     FILE *fp = fopen(path, "wb");
     if (!fp) { free(rgb); send_err(id, "cannot open file"); return; }
     int ok = png_write_rgb(fp, rgb, w, h);
@@ -10086,7 +10178,8 @@ static void handle_display_ring_get(int id, const char *json)
     fclose(fp);
     if (!ok) { send_err(id, "png encode failed"); return; }
     send_fmt("{\"id\":%d,\"ok\":true,\"frame\":%d,\"path\":\"%s\","
-             "\"width\":%u,\"height\":%u}", id, f, path, w, h);
+             "\"width\":%u,\"height\":%u,\"depth24\":%d}", id, f, path, w, h,
+             e->di.depth24 ? 1 : 0);
 }
 
 static void handle_screenshot_file(int id, const char *json)
@@ -14220,6 +14313,19 @@ static void handle_overlay_loader_status(int id, const char *json)
             (unsigned long long)nd, (unsigned long long)ni,
             (unsigned long long)sn, (unsigned long long)ss,
             (unsigned long long)sc, (unsigned long long)sx);
+        {
+            /* Call-unit IRQ starvation signature: call_unit_depth stuck > 0 with
+             * ci_skip_unit climbing while an unmasked IRQ stays pending. */
+            uint64_t cu=0, cs=0, cn=0, cr=0, cd=0, ce=0;
+            overlay_loader_get_ci_skip_diag(&cu, &cs, &cn, &cr, &cd, &ce);
+            n += snprintf(buf + n, sizeof(buf) - n,
+                ",\"ci_skip_unit\":%llu,\"ci_skip_supp\":%llu,\"ci_skip_none\":%llu,"
+                "\"ci_skip_sr\":%llu,\"ci_skip_deliv\":%llu,\"ci_enter\":%llu,"
+                "\"call_unit_depth\":%d",
+                (unsigned long long)cu, (unsigned long long)cs, (unsigned long long)cn,
+                (unsigned long long)cr, (unsigned long long)cd, (unsigned long long)ce,
+                overlay_loader_call_unit_depth());
+        }
         extern volatile long g_overlay_image_warm_loaded;
         extern volatile long g_overlay_image_warm_pending;
         n += snprintf(buf + n, sizeof(buf) - n,
@@ -15868,6 +15974,8 @@ static const CmdEntry s_commands[] = {
     { "pgxp_store_ring",   handle_pgxp_store_ring },
     { "pgxp_shadow",       handle_pgxp_shadow },
     { "host_profile",      handle_host_profile },
+    { "host_span_ring",    handle_host_span_ring },
+    { "frame_wall_ring",   handle_frame_wall_ring },
     { "pgxp_miss_ring",    handle_pgxp_miss_ring },
     { "ws_aspect_cone_site", handle_ws_aspect_cone_site },
     { "ws_margin",         handle_ws_margin },

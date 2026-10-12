@@ -999,6 +999,18 @@ re-enter guest execution, because pending branch/load state is live.
 do not change guest behavior. Function entry replacement remains the separate
 `psx_mod_register_function_entry_plugin` interface.
 
+### Guarded immediate selectors
+
+A plugin that must change a constant, offset or address inside compiled game
+code (a capacity compare, a relocated table) lists the instruction under
+`[mod_immediate]` in `game.toml` and picks the variant with
+`psx_mod_set_immediate_selector(group, selector)` from its activation
+callback. The instruction bytes stay original, so static AOT code, cached
+overlays and the interpreter keep matching their guards and run the same
+variant; selector 0, every session start and inactive plans run the stock
+instruction. Config rules and the emitted switch: docs/config_schema.md "Mod
+immediates".
+
 ### Presentation bezel packages
 
 The framework registers `psx.bezel`, a trusted presentation plugin for OpenGL

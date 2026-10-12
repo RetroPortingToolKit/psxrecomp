@@ -76,6 +76,12 @@ typedef struct PSXResidentSpec {
     void* derive_user;
     uint32_t keep_packs;             /* packs of this format kept besides the
                                       * active one; 0 = 3 */
+    uint32_t memory_only;            /* nonzero: never read or write a disk
+                                      * cache; the pack is built from the
+                                      * effective disc at every prepare. For
+                                      * packs that are plain disc files, where
+                                      * verifying a copy costs as much as
+                                      * reading the disc again. */
 } PSXResidentSpec;
 
 typedef struct PSXResidentPack PSXResidentPack;

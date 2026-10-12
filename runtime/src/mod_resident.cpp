@@ -405,7 +405,7 @@ extern "C" const PSXResidentPack* psx_resident_prepare(const PSXResidentSpec* sp
         const Digest key = cache_key(spec, fingerprint);
         /* Without a committed plan there is no disc identity to key on: build
          * in memory and never reuse or publish. */
-        bool cacheable = !fingerprint.empty();
+        bool cacheable = !fingerprint.empty() && !spec->memory_only;
         std::string memory_only;  /* why a planned cache is not used */
         std::filesystem::path path;
         std::unique_ptr<PSXResidentPack> pack;
@@ -448,7 +448,9 @@ extern "C" const PSXResidentPack* psx_resident_prepare(const PSXResidentSpec* sp
                 rec.state = "prepared (memory only: " + memory_only + ")";
                 psx_mod_counter_add("resident.cache_write_failed", 1);
             } else {
-                rec.state = cacheable ? "prepared" : "prepared (uncached: no mod plan)";
+                rec.state = cacheable ? "prepared"
+                          : spec->memory_only ? "prepared (memory only)"
+                                              : "prepared (uncached: no mod plan)";
             }
             psx_mod_counter_add("resident.prepared", 1);
         }

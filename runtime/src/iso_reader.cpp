@@ -30,6 +30,49 @@ static bool valid_bcd(uint8_t value) {
     return (value & 0x0f) <= 9 && (value >> 4) <= 9;
 }
 
+// Sector size the cue's TRACK modes declare for one FILE: 0 when no track of
+// that file names a size, UINT32_MAX when its tracks disagree.
+static uint32_t cue_declared_sector_size(
+        const std::vector<PSXRecompV4::CueTrackRef>& tracks, size_t file_index) {
+    uint32_t declared = 0;
+    for (const PSXRecompV4::CueTrackRef& t : tracks) {
+        if (t.file_index != file_index || t.sector_size == 0) continue;
+        if (declared != 0 && declared != t.sector_size)
+            return std::numeric_limits<uint32_t>::max();
+        declared = t.sector_size;
+    }
+    return declared;
+}
+
+// Raw (2352) vs cooked (2048) for one stored file. The cue's TRACK mode is
+// the authority. File length is not evidence: a raw dump can carry a partial
+// trailing sector and still be a multiple of 2048, which a length test mounts
+// as a cooked ISO so every read lands mid-sector (LBA 16 reads back zeros and
+// the BIOS gives up with SystemError B/906). Without a cue mode, a raw sector
+// 0 starts with the 12-byte CD sync pattern and an ISO's system area does not;
+// length only decides when sector 0 is unreadable. Returns false for layouts
+// this reader cannot mount (conflicting modes, MODE2/2336).
+static bool stored_file_is_raw(std::ifstream& file, uint64_t size,
+                               uint32_t declared, bool* raw) {
+    if (declared == std::numeric_limits<uint32_t>::max() || declared == 2336)
+        return false;
+    if (declared != 0) {
+        *raw = declared == RAW_SECTOR_SIZE;
+        return true;
+    }
+    static const uint8_t kSync[12] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+    uint8_t head[sizeof(kSync)] = {};
+    file.clear();
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char*>(head), sizeof(head));
+    const bool have_head = file.gcount() == (std::streamsize)sizeof(head);
+    file.clear();
+    *raw = have_head ? std::memcmp(head, kSync, sizeof(kSync)) == 0
+                     : (size % RAW_SECTOR_SIZE) == 0;
+    return true;
+}
+
 static uint32_t bcd_to_binary(uint8_t value) {
     return (value >> 4) * 10u + (value & 0x0f);
 }
@@ -326,7 +369,13 @@ bool ISOReader::Open(const std::string& filename) {
             return false;
         }
         const uint64_t size = static_cast<uint64_t>(file_size);
-        seg.raw          = (size % RAW_SECTOR_SIZE) == 0;
+        if (!stored_file_is_raw(seg.file, size,
+                                cue_declared_sector_size(pending_tracks, segments_.size()),
+                                &seg.raw)) {
+            Close();
+            return false;
+        }
+        // Whole sectors only; a partial trailing sector is not addressable.
         seg.sector_count = static_cast<uint32_t>(size / (seg.raw ? RAW_SECTOR_SIZE
                                                                  : SECTOR_SIZE));
         seg.start_lba    = 0;  // assigned by the layout pass below
@@ -423,6 +472,25 @@ bool ISOReader::Open(const std::string& filename) {
     }
 
     return true;
+}
+
+bool ISOReader::FirstFileIsRaw(const std::string& path, bool* raw) {
+    if (!raw) return false;
+    std::string stored = path;
+    uint32_t declared = 0;
+    if (PSXRecompV4::path_has_extension_ci(std::filesystem::path(path), ".cue")) {
+        const PSXRecompV4::CueSheet sheet =
+            PSXRecompV4::parse_cue_sheet(std::filesystem::path(path));
+        if (!sheet.opened || sheet.files.empty()) return false;
+        stored = sheet.files.front().path.string();
+        declared = cue_declared_sector_size(sheet.tracks, 0);
+    }
+    std::ifstream file(stored, std::ios::binary);
+    if (!file.is_open()) return false;
+    file.seekg(0, std::ios::end);
+    const std::streampos size = file.tellg();
+    if (size <= 0) return false;
+    return stored_file_is_raw(file, static_cast<uint64_t>(size), declared, raw);
 }
 
 void ISOReader::Close() {

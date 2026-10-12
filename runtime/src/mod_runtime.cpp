@@ -714,8 +714,14 @@ bool sha256_disc_range(const std::filesystem::path& image,
     std::array<uint8_t, 2048> bytes{};
     size_t remaining = size;
     uint64_t at = location;
-    const bool raw_source = file_size > 0 &&
-        ((uint64_t)file_size % 2352u) == 0;
+    // Same geometry rule as the mount (cue TRACK mode, else sector-0 sync):
+    // a raw dump whose length happens to be a multiple of 2048 is still raw.
+    bool raw_source = false;
+    if (target == ModPatchTarget::DiscUser &&
+        !PS1::ISOReader::FirstFileIsRaw(image.string(), &raw_source)) {
+        if (error) *error = "cannot determine stock image sector geometry: " + image.string();
+        return false;
+    }
     while (remaining != 0) {
         uint64_t physical = at;
         size_t chunk = remaining;
@@ -2687,6 +2693,36 @@ static bool find_effective_file(PS1::ISOReader& reader, const std::string& path,
     return true;
 }
 
+/* The disc image the guest drive currently reads. A multi-disc title swaps
+ * images mid-session; host reads that stand in for the drive must follow the
+ * swap. The runtime registers a resolver for the roster; without one (or with
+ * a patched effective disc, which exists only for the boot image) the boot
+ * disc is read, exactly as before. */
+static const char* (*g_mounted_disc_path)(void) = nullptr;
+static int (*g_mounted_disc_index)(void) = nullptr;
+static void (*g_progress_hook)(void) = nullptr;
+
+extern "C" void mod_runtime_set_progress_hook(void (*hook)(void)) { g_progress_hook = hook; }
+
+static std::filesystem::path mounted_disc_path(const PSXRecompV4::RuntimeMods& s) {
+    if (!s.effective_disc_path.empty()) return s.effective_disc_path;
+    if (g_mounted_disc_path) {
+        const char* p = g_mounted_disc_path();
+        if (p && *p) return p;
+    }
+    return s.disc_path;
+}
+
+extern "C" void mod_runtime_set_mounted_disc_resolver(const char* (*path)(void),
+                                                      int (*index)(void)) {
+    g_mounted_disc_path = path;
+    g_mounted_disc_index = index;
+}
+
+extern "C" int psx_mod_mounted_disc(void) {
+    return g_mounted_disc_index ? g_mounted_disc_index() : 0;
+}
+
 extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
                                       uint32_t capacity, uint32_t* size) {
     using namespace PSXRecompV4;
@@ -2694,7 +2730,7 @@ extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
     if (!path || !*path || !size || (!buffer && capacity)) return 0;
     try {
         const auto& s = state();
-        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        const auto mount = mounted_disc_path(s);
         if (mount.empty()) return 0;
         PS1::ISOReader reader;
         uint32_t lba = 0, bytes = 0;
@@ -2724,7 +2760,7 @@ extern "C" int psx_mod_disc_file_extent(const char* path, uint32_t* lba,
     if (!path || !*path || !lba || !size) return 0;
     try {
         const auto& s = state();
-        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        const auto mount = mounted_disc_path(s);
         if (mount.empty()) return 0;
         PS1::ISOReader reader;
         uint32_t first = 0, bytes = 0;
@@ -2754,7 +2790,7 @@ bool mod_runtime_read_disc_file_sectors(const std::string& path, uint32_t max_by
     };
     try {
         const auto& s = state();
-        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        const auto mount = mounted_disc_path(s);
         if (mount.empty()) return fail("no disc mounted");
         PS1::ISOReader reader;
         bool directory = false;
@@ -2765,9 +2801,11 @@ bool mod_runtime_read_disc_file_sectors(const std::string& path, uint32_t max_by
             return fail("unsupported size " + std::to_string(size));
         const uint32_t sectors = (size + 2047u) / 2048u;
         padded.resize(size_t(sectors) * 2048u);
-        for (uint32_t i = 0; i < sectors; ++i)
+        for (uint32_t i = 0; i < sectors; ++i) {
+            if (g_progress_hook && !(i & 1023u)) g_progress_hook();
             if (!read_effective_user_sector(reader, lba + i, padded.data() + size_t(i) * 2048u))
                 return fail("unreadable sector " + std::to_string(lba + i));
+        }
         return true;
     } catch (const std::exception& e) {
         return fail(e.what());

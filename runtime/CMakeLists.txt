@@ -180,7 +180,7 @@ if(BUILD_TESTING)
         add_test(NAME boot_state_execution_test COMMAND boot_state_execution_test)
 
         add_executable(static_match_cache_test tests/test_static_match_cache.c
-            src/overlay_loader.c src/crc32.c)
+            src/overlay_loader.c src/host_span_ring.c src/crc32.c)
         target_include_directories(static_match_cache_test PRIVATE include)
         target_compile_definitions(static_match_cache_test PRIVATE
             PSX_HAS_OVERLAY_DISPATCH PSX_NO_DEBUG_TOOLS)
@@ -238,10 +238,14 @@ if(BUILD_TESTING)
             "${PSXRECOMP_ROOT}/tools/tests/test_counted_mips_relocations.py")
         add_test(NAME interp_mod_entry_guards_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_interp_mod_entry_guards.py")
+        add_test(NAME interp_mod_immediate_guards_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_interp_mod_immediate_guards.py")
         add_test(NAME mirror_pc_preserved_guards_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mirror_pc_preserved_guards.py")
         add_test(NAME segment_miss_wiring_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_segment_miss_wiring.py")
+        add_test(NAME overlay_unit_defer_wiring_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_unit_defer_wiring.py")
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME ws_screen_tags_exec_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ws_screen_tags_exec.py"
@@ -1031,6 +1035,7 @@ if(BUILD_TESTING)
     add_executable(overlay_capture_retry_test
         tests/test_overlay_capture_retry.cpp
         src/overlay_capture.c
+        src/host_span_ring.c
         src/psx_ram_geometry.c)
     target_include_directories(overlay_capture_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
@@ -1121,6 +1126,16 @@ if(BUILD_TESTING)
     target_link_libraries(iso_reader_pregap_test PRIVATE chdr-static)
     add_test(NAME iso_reader_pregap_test COMMAND iso_reader_pregap_test)
 
+    # Raw vs cooked geometry comes from the cue TRACK mode / sector-0 sync,
+    # never from file length.
+    add_executable(iso_reader_geometry_test
+        tests/test_iso_reader_geometry.cpp
+        src/iso_reader.cpp
+        src/cue_sheet.cpp)
+    target_include_directories(iso_reader_geometry_test PRIVATE include ${PSXRECOMP_ROOT}/recompiler/include)
+    target_link_libraries(iso_reader_geometry_test PRIVATE chdr-static)
+    add_test(NAME iso_reader_geometry_test COMMAND iso_reader_geometry_test)
+
     add_executable(iso_reader_sbi_test
         tests/test_iso_reader_sbi.cpp
         src/iso_reader.cpp
@@ -1184,6 +1199,7 @@ if(BUILD_TESTING)
     add_executable(mod_runtime_test
         tests/test_mod_runtime.cpp
         src/iso_reader_c.cpp
+        src/host_span_ring.c
         src/mod_runtime.cpp
         src/mod_netplay.c
         src/mod_packages.cpp
@@ -1230,6 +1246,7 @@ if(BUILD_TESTING)
     add_executable(netplay_view_mods_test
         tests/test_netplay_view_mods.cpp
         src/iso_reader_c.cpp
+        src/host_span_ring.c
         src/mod_runtime.cpp
         src/mod_netplay.c
         src/mod_packages.cpp
@@ -1300,7 +1317,8 @@ if(BUILD_TESTING)
     if(WIN32)
         add_executable(autocompile_publication_test
             tests/test_autocompile_publication.c
-            src/autocompile.c)
+            src/autocompile.c
+            src/host_span_ring.c)
         target_include_directories(autocompile_publication_test PRIVATE include)
         target_compile_definitions(autocompile_publication_test PRIVATE
             PSX_AUTOCOMPILE_TEST=1)
@@ -1312,11 +1330,34 @@ if(BUILD_TESTING)
         # broken autocompile silently degrades the whole run to the interpreter.
         add_executable(autocompile_degraded_test
             tests/test_autocompile_degraded.c
-            src/autocompile.c)
+            src/autocompile.c
+            src/host_span_ring.c)
         target_include_directories(autocompile_degraded_test PRIVATE include)
         add_test(NAME autocompile_degraded_test
                  COMMAND autocompile_degraded_test)
+
+        # A toolchain staged from a different emitter writes shards into a cache directory the
+        # runtime never reads (LoD playtest 2026-10-12); the runtime must refuse it loudly.
+        add_executable(autocompile_toolchain_hash_test
+            tests/test_autocompile_toolchain_hash.c
+            src/autocompile.c
+            src/host_span_ring.c)
+        target_include_directories(autocompile_toolchain_hash_test PRIVATE include)
+        add_test(NAME autocompile_toolchain_hash_test
+                 COMMAND autocompile_toolchain_hash_test)
     endif()
+
+    # Always-on wall-time frame/span rings (host_span_ring.h): the hitch-attribution
+    # rings every runtime stall probe reads.
+    add_executable(host_span_ring_test
+        tests/test_host_span_ring.c
+        src/host_span_ring.c)
+    target_include_directories(host_span_ring_test PRIVATE include)
+    if(UNIX)
+        find_package(Threads REQUIRED)
+        target_link_libraries(host_span_ring_test PRIVATE Threads::Threads)
+    endif()
+    add_test(NAME host_span_ring_test COMMAND host_span_ring_test)
 
     # ---- previously-unregistered standalone tests -------------------------
     # These 16 existed in runtime/tests/ with no add_test() entry. Their only
@@ -1673,6 +1714,13 @@ if(BUILD_TESTING)
         add_test(NAME netplay_input_hist_test COMMAND netplay_input_hist_test)
     endif()
 
+    # IRQ policy for nested overlay call units: IRQs are delivered inside a
+    # unit (a callee that polls for an IRQ-set flag, libcard MemCardSync, must
+    # not starve: LoD "Checking MEMORY CARD" hang). Header-only, no runtime link.
+    add_executable(overlay_unit_defer_test tests/test_overlay_unit_defer.c)
+    target_include_directories(overlay_unit_defer_test PRIVATE src)
+    add_test(NAME overlay_unit_defer_test COMMAND overlay_unit_defer_test)
+
     add_executable(overlay_store_cycle_barrier_test
         tests/test_overlay_store_cycle_barrier.c)
     target_include_directories(overlay_store_cycle_barrier_test PRIVATE include)
@@ -1766,6 +1814,7 @@ if(BUILD_TESTING)
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
+        add_test(NAME compile_overlays_publish_marker_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compile_overlays_publish_marker.py)
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME launch_disc_path_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launch_disc_path.py --compiler ${CMAKE_CXX_COMPILER})
             add_test(NAME persisted_settings_paths_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_persisted_settings_paths.py --compiler ${CMAKE_CXX_COMPILER})

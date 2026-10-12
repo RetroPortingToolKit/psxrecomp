@@ -27,6 +27,7 @@ from indexed_lzss_pack import members as extract_pack_members
 from mips_tagged_relocations import parse as parse_tagged_relocations, relocate as relocate_tagged_image
 from counted_mips_relocations import parse as parse_counted_relocations, relocate as relocate_counted_image
 from mod_package_images import ModPackageView
+import prepared_files
 
 FRAMEWORK = Path(__file__).resolve().parents[1]
 # KSEG0 main-RAM decode window. Retail 2 MiB DRAM mirrors across all of it and
@@ -68,7 +69,27 @@ def load_profile(profile_path, config):
     profile = json.loads(Path(profile_path).read_text(encoding='utf-8-sig'))
     require(profile.get('schema') == 'psxrecomp AOT methods v1', 'Unsupported AOT profile')
     require(config['game']['id'] == profile['game_id'], 'AOT profile/game mismatch')
+    require(('disc_hashes' in profile) != ('disc_set' in profile),
+            'An AOT profile declares exactly one of disc_hashes (one disc) and disc_set (several)')
     return profile
+
+
+def disc_identities(profile):
+    """[(name, {algorithm: digest})] for every disc this profile accepts.
+
+    `disc_hashes` is one disc. `disc_set` is a list of {name, disc_hashes}: a
+    release spread over several discs whose executable images are identical.
+    The profile's image sources are pinned by content hashes, so they - not the
+    disc - decide what is built; the disc identity only gates applicability."""
+    if 'disc_hashes' in profile:
+        return [('disc', profile['disc_hashes'])]
+    entries = profile['disc_set']
+    require(isinstance(entries, list) and entries, 'disc_set needs at least one disc')
+    for entry in entries:
+        require(entry.get('name') and entry.get('disc_hashes'),
+                'Every disc_set entry needs a name and disc_hashes')
+    require(len({entry['name'] for entry in entries}) == len(entries), 'Duplicate disc_set name')
+    return [(entry['name'], entry['disc_hashes']) for entry in entries]
 
 
 def static_output(profile, project_root):
@@ -214,8 +235,10 @@ def verify_evidence(disc, checks, views=None):
                 actual = struct.unpack_from('<I', data, offset)[0]
                 require(actual == number(expected), f"Loader evidence changed: {check['file']} {address}")
         elif method == 'pointer_strings':
+            stride = number(check.get('stride', 4))
+            require(stride >= 4 and stride % 4 == 0, 'Invalid pointer table stride')
             for index, expected in enumerate(check['strings']):
-                offset = origin + number(check['table']) - base + index * 4
+                offset = origin + number(check['table']) - base + index * stride
                 pointer = struct.unpack_from('<I', data, offset)[0]
                 start = origin + pointer - base
                 require(0 <= start < len(data), 'String pointer outside source')
@@ -556,10 +579,31 @@ def declared_entries(source, disc):
     return entries
 
 
-def make_fixed_record(source, disc):
+def foreign_call_roots(source, sources):
+    """Entries of `source` that other images call directly (`jal`).
+
+    A call target is a function entry by construction, but an image's own scan
+    cannot see calls made from elsewhere: an overlay calling a frameless engine
+    routine, boot code calling its constructors. Only targets inside exactly one
+    image count: an address that several images occupy alternatively (overlays
+    sharing a load slot) names no particular one. The same boundary evidence as
+    for local calls applies to the target bytes."""
+    lo, hi = source['base'], source['base'] + len(source['body'])
+    others = [other for other in sources if other is not source]
+    targets = set()
+    for other in others:
+        targets |= {t for t in extractor.jal_targets(other['body']) if lo <= t < hi}
+    targets = {t for t in targets
+               if not any(o['base'] <= t < o['base'] + len(o['body']) for o in others)}
+    return extractor.direct_jal_roots(source['body'], source['base'], targets)
+
+
+def make_fixed_record(source, disc, sources=(), cross_image=False):
     body, base, spec = source['body'], source['base'], source['spec']
     require(spec.get('allow_missing'), f"Generic extractor missed required image: {source['name']}")
     direct = set(extractor.direct_jal_roots(body, base))
+    if cross_image:
+        direct |= set(foreign_call_roots(source, sources))
     seeds = set(extractor.prologues(body, base)) | extractor.frameless_leaf_entries(body, base)
     if spec.get('supplemental_entries', True):
         seeds |= extractor.supplemental_callable_seeds(body, base)
@@ -642,7 +686,7 @@ def prepare(profile, disc, records, output, views=None):
                 singles[source['name']] = record
     for source in sources:
         if source['spec']['method'] in ('fixed_address_files', 'fixed_address_extents', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'indexed_lzss_members', 'tagged_relocated_files', 'counted_relocated_members') and source['name'] not in singles:
-            record = make_fixed_record(source, disc)
+            record = make_fixed_record(source, disc, sources, bool(profile.get('cross_image_call_roots')))
             singles[source['name']] = record
             records.append(record)
     # Loader-established exports remain required even when heuristic discovery
@@ -713,6 +757,7 @@ def prepare(profile, disc, records, output, views=None):
                      original_disc_sha256=digest(disc.binary), required_images=sorted(by_name),
                      recipe_count=len(jobs), full_static_coverage_proven=False, jobs=jobs)
     inventory['mod_packages'] = [view.receipt() for view in (views or {}).values()]
+    inventory['prepared_files'] = list(getattr(disc, 'receipts', []))
     inventory['source_images'] = [dict(name=s['name'], aliases=s['aliases'],
         method=s['spec']['method'], load_addr=hex(s['base']), size=len(s['body']),
         sha256=hashlib.sha256(s['body']).hexdigest(),
@@ -724,19 +769,28 @@ def prepare(profile, disc, records, output, views=None):
 def check_disc(profile, disc, cue):
     """Digests of the disc's data track, or DiscNotApplicable naming both sides.
 
-    A profile is facts about one exact disc. Any other dump (another region,
-    revision, or a modified image) shares none of its verified images."""
-    digests = {}
-    for algorithm, expected in sorted(profile['disc_hashes'].items()):
-        actual = digest(disc.binary, algorithm)
-        digests[algorithm] = actual
-        if actual != expected:
-            raise DiscNotApplicable(
-                f"the AOT profile for {profile['game_id']} describes the disc whose data "
-                f"track has {algorithm} {expected}, but {Path(cue).name} has {actual}. None "
-                'of its images apply to this disc (another region or revision?), so no '
-                'native overlay code can be built for it')
-    return digests
+    A profile is facts about its exact disc(s). Any other dump (another region,
+    revision, or a modified image) shares none of its verified images. A
+    `disc_set` accepts the disc if it is any one of the declared discs."""
+    identities = disc_identities(profile)
+    digests, failures = {}, []
+    for name, expected in identities:
+        matched = True
+        for algorithm, wanted in sorted(expected.items()):
+            if algorithm not in digests:
+                digests[algorithm] = digest(disc.binary, algorithm)
+            if digests[algorithm] != wanted:
+                failures.append(f'{name} {algorithm} {wanted}')
+                matched = False
+                break
+        if matched:
+            return digests
+    actual = ', '.join(f'{algorithm} {value}' for algorithm, value in sorted(digests.items()))
+    raise DiscNotApplicable(
+        f"the AOT profile for {profile['game_id']} describes the disc whose data "
+        f"track has {'; or '.join(failures)}, but {Path(cue).name} has {actual}. None "
+        'of its images apply to this disc (another region or revision?), so no '
+        'native overlay code can be built for it')
 
 
 def game_disc(game_toml, config, cue=None):
@@ -753,6 +807,10 @@ def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, pr
         disc = Disc(cue)
         check_disc(profile, disc, cue)
     output.mkdir(parents=True, exist_ok=True)
+    try:
+        disc = prepared_files.prepare(disc, profile)
+    except prepared_files.PreparedError as exc:
+        raise ProfileError(str(exc)) from exc
     # The config supplies relative paths and code-generation settings; the disc
     # is passed explicitly so the verified dump is the one that is read.
     command = [sys.executable, str(FRAMEWORK / 'tools/aot_overlay_spike/extract_generic.py'),
@@ -760,6 +818,8 @@ def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, pr
                '--disc', str(cue),
                '--out', str(output / 'generic.json'), '--tmp', str(output / 'extract-tmp'),
                '--project-root', str(FRAMEWORK)]
+    for name in generic_exclusions(profile):
+        command += ['--exclude-file', name]
     command += ['--require-bios-resident'] if profile.get('bios_resident') else ['--no-bios-resident']
     with (output / 'extract.log').open('w') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
@@ -769,6 +829,22 @@ def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, pr
     views = mod_package_views(profile, disc, game_toml.parent)
     return prepare(profile, disc, json.loads((output / 'generic.json').read_text(encoding='utf-8-sig')),
                    output, views)
+
+
+def generic_exclusions(profile):
+    """Disc files the generic detector must not consider, each with a reason.
+
+    Files the profile owns through other declarations: aliased program files
+    (their static analysis is the title's main program or a declared image) and
+    packed files whose bytes only a prepared_files transform makes visible."""
+    names = set()
+    for logical, candidates in profile.get('file_aliases', {}).items():
+        names.update(candidate.upper() for candidate in candidates)
+    for item in profile.get('generic_exclude_files', []):
+        require(item.get('files') and item.get('reason', '').strip(),
+                'generic_exclude_files entries need files and a reason')
+        names.update(name.upper() for name in item['files'])
+    return sorted(names)
 
 
 def audit(game_toml, recompiler, cache, inventory, output, static_dispatch=None, flavor=0):
@@ -947,7 +1023,9 @@ def generation_inputs(profile_path, profile, game_toml, recompiler, disc_digests
         schema=GENERATION_INPUTS_SCHEMA,
         profile_sha256=digest(profile_path),
         game_toml_sha256=digest(game_toml),
-        disc=disc_digests,
+        # A disc_set profile builds from content-pinned images that are identical on
+        # every disc it lists, so which of them was read does not change the output.
+        disc=disc_digests if 'disc_hashes' in profile else dict(disc_set=True),
         recompiler_sha256=digest(recompiler),
         cache_tag=compiler.cache_tag(include, str(recompiler), str(game_toml), 0),
         cps=bool(cps),
@@ -1118,7 +1196,8 @@ def run():
                                  args.workers, config.parent, args.cps)
         receipt = audit(config, recompiler, None, work / 'runtime-input-inventory.json',
                         work / 'audit.json', build_dir / STATIC_OUTPUT_NAME)
-        for key in ('profile_sha256', 'original_disc_sha256', 'required_images', 'mod_packages'):
+        for key in ('profile_sha256', 'original_disc_sha256', 'required_images', 'mod_packages',
+                    'prepared_files'):
             receipt[key] = inventory[key]
         receipt['generation_inputs'] = inputs
         receipt['generation_inputs_sha256'] = inputs_sha256

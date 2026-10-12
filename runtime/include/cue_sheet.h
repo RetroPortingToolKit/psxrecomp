@@ -45,6 +45,11 @@ struct CueTrackRef {
     // shifting every later disc LBA (and the TOC) accordingly.
     uint32_t pregap      = 0;
     uint32_t postgap     = 0;
+    // Bytes per stored sector declared by the TRACK mode: 2352 for AUDIO and
+    // every "/2352" mode, 2048 or 2336 for the cooked modes. 0 = the mode named
+    // no size (unknown). The cue is the authority for a file's geometry; the
+    // file length is not (dumps can carry a partial trailing sector).
+    uint32_t sector_size = 0;
 };
 
 struct CueSheet {

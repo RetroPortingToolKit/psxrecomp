@@ -8,6 +8,8 @@
 #ifndef PSXRECOMP_AUTOCOMPILE_H
 #define PSXRECOMP_AUTOCOMPILE_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +27,19 @@ int  autocompile_configured(void);
  * over any CLI --out-dir/--captures. This is the single source of truth for the
  * cache location: no per-game config, no drift. */
 void autocompile_set_cache_paths(const char *cache_dir, const char *captures);
+
+/* Is the staged overlay toolchain the one THIS runtime was built with?
+ *
+ * The shard cache directory carries the codegen hash (gcc/<abi>/cg<N>_<hash>_...). A toolchain
+ * staged from an older emitter writes its shards under its own hash, a directory this runtime
+ * never reads: every compile succeeds, nothing is ever loaded, every overlay stays interpreted
+ * and the same regions are recompiled for the whole session (LoD playtest 2026-10-12: 27
+ * compile runs, 0 shards loaded). Reads <toolchain_include_dir>/overlay_codegen_hash.h and
+ * compares its PSX_OVERLAY_CODEGEN_HASH with `runtime_hash`.
+ * Returns 1 when usable or unknown (no/unparseable header, or runtime_hash == 0); returns 0 and
+ * records a degraded reason (autocompile_status "degraded_reason") on a mismatch. The caller
+ * must then NOT configure the bundled toolchain command. */
+int autocompile_check_toolchain_hash(const char *toolchain_include_dir, uint32_t runtime_hash);
 
 /* Probe whether a C compiler is actually reachable on PATH (gcc/cc/clang) — the
  * REAL "developer machine" signal, distinct from autocompile_configured() which

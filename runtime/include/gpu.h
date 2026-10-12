@@ -64,6 +64,11 @@ void gpu_texture_correction_stats(uint64_t *attempts, uint64_t *armed,
 int  gpu_display_is_depth24(void);
 void gpu_display_pixel_rgb(const GpuDisplayInfo* di, uint32_t x, uint32_t y,
                            uint8_t* r, uint8_t* g, uint8_t* b);
+/* Same decode against any 1024x512 VRAM image (e.g. a display-ring snapshot)
+ * instead of live VRAM: 15-bit or depth24 per `di`. */
+void gpu_display_pixel_rgb_in(const uint16_t* image, const GpuDisplayInfo* di,
+                              uint32_t x, uint32_t y,
+                              uint8_t* r, uint8_t* g, uint8_t* b);
 uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y);
 /* Batch equivalent of calling gpu_display_pixel_argb(di, x, y) for x in
  * [0, count) on a depth24 (FMV) scanline — same output, far less per-pixel

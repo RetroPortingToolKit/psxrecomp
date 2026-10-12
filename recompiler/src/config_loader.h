@@ -132,6 +132,27 @@ struct DrawDistanceClampSite {
     int32_t  max = 0;
 };
 
+// [[mod_immediate.sites]]: a guarded I-type instruction whose 16-bit immediate a
+// trusted mod may swap at run time. The complete word at `address` must equal
+// `expected` (an unrelated overlay word at the same address is left alone).
+// Selector 0 always runs `expected` unchanged; selector N (1-based) runs the
+// same instruction with `values[N-1]` in the immediate field. The selector
+// belongs to `group` (0..63) and is set by the mod
+// (psx_mod_set_immediate_selector). Because the instruction bytes in RAM never
+// change, static / cached native code keeps matching its original-bytes guard;
+// generated code, the interpreter and every overlay path pick the immediate
+// from the same selector. Only ADDI..LUI (0x08-0x0F) and the byte/half/word
+// loads and stores (0x20-0x2B) qualify.
+struct ModImmediateSite {
+    uint32_t address = 0;
+    uint32_t expected = 0;
+    uint32_t group = 0;
+    std::vector<uint16_t> values; // imm16 per selector 1..N
+};
+
+// Empty on success; otherwise why `site` cannot be a mod-immediate site.
+std::string mod_immediate_site_error(const ModImmediateSite& site);
+
 // True when `instr` is an ALU instruction (I-type or SPECIAL R-type, not a
 // load, store, branch or jump) that reads GPR `reg`. These are the only
 // instructions a draw-distance clamp may precede.
@@ -1443,6 +1464,8 @@ struct GameConfig {
     // [[draw_distance.clamp]] -- opt-in "keep far geometry" clamps. Empty by
     // default; inert until a mod switches them on; regen required.
     std::vector<DrawDistanceClampSite> draw_distance_clamp_sites;
+    // [[mod_immediate.sites]]: run-time-selectable immediates (ModImmediateSite).
+    std::vector<ModImmediateSite> mod_immediate_sites;
 };
 
 // Effective clip_edge_width: explicit value, else screen_w_imms[0], else 320.

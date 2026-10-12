@@ -5,6 +5,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -125,6 +126,7 @@ CueSheet parse_cue_sheet(const fs::path& cue_path) {
     std::string line;
     int      cur_track_num   = -1;
     bool     cur_track_audio = false;
+    uint32_t cur_sector_size = 0;
     uint32_t cur_index00     = 0;
     bool     cur_has_index00 = false;
     uint32_t cur_pregap      = 0;
@@ -162,8 +164,19 @@ CueSheet parse_cue_sheet(const fs::path& cue_path) {
         int  tn = 0;
         char type_buf[32] = {0};
         if (std::sscanf(upper.c_str(), " TRACK %d %31s", &tn, type_buf) == 2) {
+            const std::string type(type_buf);
             cur_track_num   = tn;
-            cur_track_audio = (std::string(type_buf).find("AUDIO") != std::string::npos);
+            cur_track_audio = (type.find("AUDIO") != std::string::npos);
+            // "MODE2/2352" etc. name the stored sector size; AUDIO is always
+            // 2352. Anything else (CDG, malformed) leaves it unknown.
+            cur_sector_size = 0;
+            const size_t slash = type.find('/');
+            if (cur_track_audio) {
+                cur_sector_size = 2352;
+            } else if (slash != std::string::npos) {
+                const unsigned long n = std::strtoul(type.c_str() + slash + 1, nullptr, 10);
+                if (n == 2048 || n == 2336 || n == 2352) cur_sector_size = (uint32_t)n;
+            }
             cur_index00     = 0;
             cur_has_index00 = false;
             cur_pregap      = 0;
@@ -200,6 +213,7 @@ CueSheet parse_cue_sheet(const fs::path& cue_path) {
             t.index00     = cur_index00;
             t.has_index00 = cur_has_index00;
             t.pregap      = cur_pregap;
+            t.sector_size = cur_sector_size;
             sheet.tracks.push_back(t);
             last_pushed_track = cur_track_num;
             cur_track_num = -1;

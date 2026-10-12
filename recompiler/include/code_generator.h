@@ -67,6 +67,9 @@ struct CodeGenConfig {
     // Only explicitly listed guest functions call the runtime dispatcher.
     std::set<uint32_t> mod_function_entry_funcs;
     std::set<uint32_t> mod_instruction_sites;
+    // [[mod_immediate.sites]]: guarded instructions whose immediate a trusted mod
+    // selects at run time; emitted as a selector switch over every variant.
+    std::vector<PSXRecompV4::ModImmediateSite> mod_immediate_sites;
 
     // [recompiler] hot_funcs: emit __attribute__((hot)) on these guest
     // addresses (MotK VLC leaves, etc.). Host locality hint only.
@@ -494,6 +497,14 @@ private:
     // The [[draw_distance.clamp]] statement for (addr, instr), or "".
     std::string draw_distance_clamp_prefix(uint32_t addr, uint32_t instr) const;
     std::string mod_instruction_call(uint32_t addr, uint32_t instr) const;
+    // The [[mod_immediate.sites]] entry for (addr, instr), or nullptr. In a main
+    // EXE a word mismatch at a listed address is a hard error; overlay code may
+    // hold unrelated words at a shared load address and is left unchanged.
+    const PSXRecompV4::ModImmediateSite* find_mod_immediate_site(uint32_t addr, uint32_t instr) const;
+    // The instruction translated once per selector: `switch (psx_mod_immediate_select(group))`
+    // with case N running the word whose imm16 is values[N-1] and default the original.
+    std::string mod_immediate_translation(uint32_t addr, uint32_t instr,
+                                          const PSXRecompV4::ModImmediateSite& site);
 
     // Register name mapping
     static std::string reg_name(int reg_num);

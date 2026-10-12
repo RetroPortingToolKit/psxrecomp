@@ -109,6 +109,18 @@ public:
     bool Open(const std::string& filename);
 
     /**
+     * Sector geometry of the first stored file behind an image, decided the
+     * same way Open() decides it: a .cue's TRACK mode is authoritative; a bare
+     * file is raw when sector 0 starts with the CD sync pattern. File length
+     * is never the evidence (raw dumps can be a multiple of 2048).
+     * @param path .cue or bare .bin/.iso/.img
+     * @param raw  set to true for 2352-byte raw sectors, false for 2048
+     * @return false when the image cannot be opened or its geometry is not
+     *         mountable (conflicting or MODE2/2336 track modes)
+     */
+    static bool FirstFileIsRaw(const std::string& path, bool* raw);
+
+    /**
      * Close the currently open file
      */
     void Close();

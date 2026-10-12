@@ -1165,6 +1165,9 @@ int main(int argc, char** argv) {
     check(!psx_mod_read_disc_file("S0",nullptr,0,&bytes),"directory rejected");
     std::vector<uint8_t> raw_iso(24*2352);
     for(unsigned i=0;i<24;++i) {
+        /* A raw sector starts with the CD sync pattern; geometry is read from
+         * it, never from the file length. */
+        raw_iso[i*2352]=0; std::fill_n(raw_iso.begin()+i*2352+1,10,(uint8_t)0xFF); raw_iso[i*2352+11]=0;
         raw_iso[i*2352+15]=2;
         std::copy_n(iso.begin()+i*2048,2048,raw_iso.begin()+i*2352+24);
     }

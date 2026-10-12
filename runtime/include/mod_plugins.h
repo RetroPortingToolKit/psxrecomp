@@ -110,6 +110,10 @@ int psx_mod_game_started(void);
  * otherwise capacity must hold the entire file. Active sector mods apply. */
 int psx_mod_read_disc_file(const char* path, void* buffer, uint32_t capacity,
                            uint32_t* size);
+/* 1-based roster index of the disc image the guest drive has mounted, or 0
+ * for a single-image session. It changes when the player swaps discs; the
+ * psx_mod_read_disc_file / psx_mod_disc_file_extent calls read that image. */
+int psx_mod_mounted_disc(void);
 /* Effective-disc LBA and byte size of a file (directory records patched by
  * active mods apply, so a relocated file reports its new extent). */
 int psx_mod_disc_file_extent(const char* path, uint32_t* lba, uint32_t* size);
@@ -849,6 +853,20 @@ int psx_mod_set_disc_speed(uint32_t divisor,
  */
 int psx_mod_set_draw_distance_clamp(int enabled);
 int psx_mod_draw_distance_clamp_enabled(void);
+
+/*
+ * Select the immediate variant of one [[mod_immediate.sites]] group
+ * (mod_immediate.h). Selector 0 runs the stock instructions; N runs
+ * values[N-1] of every site in `group`. The instruction bytes in RAM never
+ * change, so static and cached native code stay valid. Returns 1 when the
+ * title configured sites, 0 otherwise (nothing the guest sees changes), and
+ * rejects a group >= 64 or a selector > 15. Reset to 0 at every session start:
+ * call it from activation, before the guest runs. The caller owns the memory
+ * layout the selector implies (a savestate or card written under another
+ * selector is not interchangeable).
+ */
+int psx_mod_set_immediate_selector(uint32_t group, uint32_t selector);
+uint32_t psx_mod_immediate_selector(uint32_t group);
 
 /* Controller presentation values exposed to trusted game-owned plugins. */
 enum {

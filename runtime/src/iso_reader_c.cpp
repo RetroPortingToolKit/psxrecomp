@@ -4,6 +4,7 @@
  * Provides iso_open() / iso_read_sector() / iso_close() for use by cdrom.c
  */
 
+#include "host_span_ring.h"
 #include "iso_reader.h"
 #include "mod_runtime.h"
 #include <cstdio>
@@ -23,7 +24,10 @@ void* iso_open(const char* path) {
 int iso_read_sector(void* handle, uint32_t lba, uint8_t* buffer, int size) {
     if (!handle || !buffer || size < 2048) return 0;
     auto* reader = static_cast<PS1::ISOReader*>(handle);
-    if (!mod_runtime_read_disc_extent(lba, 0, buffer, size) && !reader->ReadSector(lba, buffer)) return 0;
+    const uint64_t span_t0 = host_span_begin();
+    const bool read_ok = mod_runtime_read_disc_extent(lba, 0, buffer, size) || reader->ReadSector(lba, buffer);
+    host_span_end(HSPAN_DISC_READ, span_t0, lba);   /* a stalled disk shows here, not as an unexplained frame */
+    if (!read_ok) return 0;
     mod_runtime_patch_disc_sector(lba, 0, buffer, 2048);
     return 1;
 }
@@ -31,7 +35,10 @@ int iso_read_sector(void* handle, uint32_t lba, uint8_t* buffer, int size) {
 int iso_read_raw_sector(void* handle, uint32_t lba, uint8_t* buffer, int size) {
     if (!handle || !buffer || size < 2352) return 0;
     auto* reader = static_cast<PS1::ISOReader*>(handle);
-    if (!mod_runtime_read_disc_extent(lba, 1, buffer, size) && !reader->ReadRawSector(lba, buffer)) return 0;
+    const uint64_t span_t0 = host_span_begin();
+    const bool read_ok = mod_runtime_read_disc_extent(lba, 1, buffer, size) || reader->ReadRawSector(lba, buffer);
+    host_span_end(HSPAN_DISC_READ, span_t0, lba);
+    if (!read_ok) return 0;
     mod_runtime_patch_disc_sector(lba, 1, buffer, 2352);
     return 1;
 }

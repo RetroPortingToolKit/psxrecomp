@@ -4198,11 +4198,6 @@ const uint16_t* gpu_get_vram(void) {
     return vram;
 }
 
-static uint8_t gpu_vram_byte(uint32_t byte_x, uint32_t y) {
-    uint16_t hw = vram[((y & 511u) * 1024u) + ((byte_x >> 1) & 1023u)];
-    return (byte_x & 1u) ? (uint8_t)(hw >> 8) : (uint8_t)hw;
-}
-
 /* Depth24: note/query/reset the CPU→VRAM upload span tracked above. Used to
  * hide trailing RGB columns when a movie blit doesn't fill the full CRTC
  * width — MotK's Star Wars crawl leaves ~8px of stale VRAM on the right.
@@ -4308,8 +4303,9 @@ static void gpu_rgb555_to_rgb888(uint16_t c, uint8_t* r, uint8_t* g, uint8_t* b)
     *b = (uint8_t)(((c >> 10) & 0x1Fu) << 3);
 }
 
-void gpu_display_pixel_rgb(const GpuDisplayInfo* di, uint32_t x, uint32_t y,
-                           uint8_t* r, uint8_t* g, uint8_t* b) {
+void gpu_display_pixel_rgb_in(const uint16_t* image, const GpuDisplayInfo* di,
+                              uint32_t x, uint32_t y,
+                              uint8_t* r, uint8_t* g, uint8_t* b) {
     if (di->depth24) {
         uint32_t byte_x = ((di->display_x & 1023u) * 2u) + x * 3u;
         uint32_t vy = (di->display_y + y) & 511u;
@@ -4320,15 +4316,24 @@ void gpu_display_pixel_rgb(const GpuDisplayInfo* di, uint32_t x, uint32_t y,
             *r = *g = *b = 0;
             return;
         }
-        *r = gpu_vram_byte(byte_x + 0u, vy);
-        *g = gpu_vram_byte(byte_x + 1u, vy);
-        *b = gpu_vram_byte(byte_x + 2u, vy);
+        const uint16_t* row = image + (size_t)vy * 1024u;
+        uint8_t px[3];
+        for (uint32_t i = 0; i < 3u; i++) {
+            uint16_t hw = row[((byte_x + i) >> 1) & 1023u];
+            px[i] = ((byte_x + i) & 1u) ? (uint8_t)(hw >> 8) : (uint8_t)hw;
+        }
+        *r = px[0]; *g = px[1]; *b = px[2];
         return;
     }
 
     uint32_t vx = (di->display_x + x) & 1023u;
     uint32_t vy = (di->display_y + y) & 511u;
-    gpu_rgb555_to_rgb888(vram[vy * 1024u + vx], r, g, b);
+    gpu_rgb555_to_rgb888(image[vy * 1024u + vx], r, g, b);
+}
+
+void gpu_display_pixel_rgb(const GpuDisplayInfo* di, uint32_t x, uint32_t y,
+                           uint8_t* r, uint8_t* g, uint8_t* b) {
+    gpu_display_pixel_rgb_in(vram, di, x, y, r, g, b);
 }
 
 uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y) {
@@ -4342,11 +4347,11 @@ uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y
  * output, including the black-fill past the 2048-byte VRAM row), but hoists
  * the per-row invariants (vy, base_byte_x, the "how many pixels are past the
  * row edge" test) out of the per-pixel path instead of recomputing them
- * `count` times and paying three gpu_vram_byte() calls per pixel. The
+ * `count` times and paying three byte extractions per pixel. The
  * per-pixel path was the dominant present-side cost of FMV frames (3x the
  * VRAM touches of the 16-bit path, done as a function-call chain instead of
  * a straight-line loop). Still scalar C — no host-endianness assumptions,
- * same byte-order shifts as gpu_vram_byte. */
+ * same byte-order shifts as gpu_display_pixel_rgb_in. */
 void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out,
                              uint32_t count) {
     uint32_t vy = (di->display_y + y) & 511u;

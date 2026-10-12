@@ -57,6 +57,11 @@ Profiles declare these reusable methods:
 | Field / method | Contract |
 | --- | --- |
 | `disc_hashes` | Hash the cue's original data track before extracting. |
+| `disc_set` | Instead of `disc_hashes`: `[{name, disc_hashes}]`, every disc of a release whose executable images are identical. Any one matches; the images are pinned by their own content hashes, so which disc was read does not change the output. |
+| `file_aliases` | `{logical: [per-disc names]}` for one file that discs name differently (`SCUS_944.91`, `SCUS_945.84`, ...). Exactly one candidate must exist; the logical name reads as that file everywhere in the profile. |
+| `prepared_files[]` | Virtual files derived from disc bytes by a declared transform (see below). Each is verified, then usable as a `file` by every method and check. |
+| `cross_image_call_roots` | Opt in (`true`): a `jal` target that other images call becomes a static discovery root of the image holding it, when the evidence at the target is the same as for local calls and exactly one image occupies that address. Finds routines only an overlay (or boot code) calls. |
+| `generic_exclude_files[]` | `{files, reason}`: disc files the generic detector must not consider because the profile owns them (aliased program files are excluded automatically). |
 | `images[].method = fixed_address_files` | Whole original files placed at a verified `load_addr`. Optional duplicate-leaf checks require identical bytes. |
 | `images[].method = fixed_address_extents` | Declared `{file, file_offset, base, address, size, sha256}` byte extents placed at a verified `load_addr`. Offset rules match `words` checks; size and SHA-256 are required. |
 | `mod_packages[]` / `mod_package` | A named, verified selection of a trusted mod package. Images and checks carrying `mod_package` read the original disc with that selection applied; see below. |
@@ -71,7 +76,7 @@ Profiles declare these reusable methods:
 | `images[].method = indexed_lzss_members` | Read a u32 count and `{offset, size, stored}` descriptors, decode every member (verbatim when `size == stored`, otherwise bit-stream LZSS with declared parameters), require exact sizes, zero padding and a fully accounted file, and classify every member as an executable image at a verified `load_addr` or an explained exclusion. |
 | `checks[].method = words` | Verify loader instructions or descriptors at explicit file offsets / virtual addresses. |
 | `checks[].method = tagged_relocations` | Validate a complete relocation stream, retained `image_size` and `relocation_count`, including modules whose heap placement remains unresolved and which are excluded from native production. |
-| `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. |
+| `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. Optional `stride` (default 4, a multiple of 4) reads tables of `{id, name*}` records. |
 | `checks[].method = bcd_extent_table` | Verify an indexed BCD-MSF/size table against an ISO file's actual extent. |
 | `checks[].method = adjacent_files` | Require the named ISO extents to be sector aligned and physically adjacent, in order. |
 | `compositions` | Combine declared simultaneous producers in address order. `max_gap` bounds their separation; gap and alignment bytes remain unowned. |
@@ -127,11 +132,49 @@ Current consumers:
 - Ape Escape USA: `ApeEscapeRecomp/aot/overlays.json`, 47 established packed
   sector-table overlays plus two minigame PS-X EXEs. Two additional archive
   members have unresolved load paths and are explicitly excluded.
+- The Legend of Dragoon USA: `aot/overlays.json`, `disc_set` over all four discs
+  (identical executable images). The BPE launcher's embedded container is the engine
+  (`prepared_files`, two code extents at 0x80010000) and the ten BPE overlays fill
+  slot A (0x800C6688) or slot B (0x800FB778); all linked with `static`.
 - WipEout 3 SE PAL: `aot/overlays.json`, the front-end menu overlay (member 5
   of `WIPEOUT3/NFE.PB`, `indexed_lzss_members`) from the stock disc and from the
   NTSC / PAL Mode package's patched disc, plus that package's engine image; all
   linked with `static` (see below). The other 88 packs on the disc (`TRACK*.PBP`)
   hold data only.
+
+### Prepared images: packed executables and overlays
+
+Some engines run code that no disc file holds verbatim: a launcher EXE that
+unpacks the real executable, overlays stored compressed. The loader's transform
+is deterministic, so its output is an original input like any other, provided the
+transform and every byte it reads and writes are pinned. `prepared_files` declares
+such outputs; the pipeline rebuilds them from the user's own disc every time and
+nothing derived is stored or committed. The profile carries hashes, offsets, sizes
+and addresses only.
+
+```json
+"prepared_files": [{
+  "name": "PREPARED/ENGINE", "method": "bpe_container",
+  "source": {"file": "BOOT.EXE", "file_offset": "0xA00"}, "magic": "0x1A455042",
+  "consumed": "0x36228", "source_sha256": "...", "size": "0xD7800", "sha256": "..."
+}]
+```
+
+The decoder must consume exactly `consumed` bytes, whose SHA-256 is
+`source_sha256`, and produce exactly `size` bytes with SHA-256 `sha256`; any
+difference stops the run. A prepared name may not be a real disc file or alias, and
+a later entry may read an earlier one. Prepared names then work in
+`fixed_address_files`, `fixed_address_extents`, `words` and `pointer_strings`, so the
+loader code that fixes the destination is verified against the very bytes that run.
+
+Methods: `bpe_container` (`tools/bpe_container.py`): block-wise byte-pair
+expansion, `u32 size, u32 magic, {u32 block size, pair table, symbols}*, 0`. The
+magic is a required parameter.
+
+A packed image is rarely all code (its BSS, tables and replaced overlay area are
+data). Use `fixed_address_extents` on the prepared file to name only the code runs,
+each with its `sha256`, so data is never a producer: a data run decoded as code
+fails the generated-C audit and costs the whole image.
 
 ### Executable images from a mod package
 

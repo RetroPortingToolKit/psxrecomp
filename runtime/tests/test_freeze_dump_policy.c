@@ -23,8 +23,23 @@ static void observe_healthy(FreezeDumpPolicy *policy, uint32_t ticks) {
     for (uint32_t i = 0; i < ticks; i++) EXPECT_EQ(observe(policy, 0), 0);
 }
 
-int main(void) {
-    FreezeDumpPolicy policy = {0};
+#define UNK FREEZE_WEDGE_FN_DIVERSITY_UNKNOWN
+
+static int mdec_idle(uint32_t frames) { (void)frames; return 0; }
+static int mdec_busy(uint32_t frames) { (void)frames; return 1; }
+
+/* 20 samples, frames advancing 9 per tick, guest pinned in one kernel loop. */
+static void spin_window(FreezeWedgeSample *w, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        w[i].frame_count = 1746u + 9u * i;
+        w[i].exc_reentry = 2000u + i;
+        w[i].dirty_ram_insns = 908846u;
+        w[i].current_func = 0x00000F40u;
+        w[i].last_store_pc = 0x8003A230u;
+    }
+}
+
+int main(void) {    FreezeDumpPolicy policy = {0};
 
     /* Authorization does not consume a slot until the file reaches disk. */
     EXPECT_EQ(observe(&policy, 5), 1);
@@ -114,8 +129,38 @@ int main(void) {
     EXPECT_EQ(strcmp(path0, path1) != 0, 1);
     EXPECT_EQ(freeze_dump_format_path(path0, 4, "psx-runtime", 1234, 0), 0);
 
-    if (failures != 0) {
-        fprintf(stderr, "freeze dump policy: %d failure(s)\n", failures);
+    /* Wedge classification over the whole window. */
+    FreezeWedgeSample w[20];
+    spin_window(w, 20);
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_idle), FREEZE_WEDGE_SPIN);
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, NULL), FREEZE_WEDGE_SPIN);
+    /* FMV decode parks the guest the same way; MDEC activity vetoes it. */
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_busy), 0);
+    /* Static-code main loop (LoD 2026-10-12 dump): the window ends agree but
+     * intermediate ticks store elsewhere. Not a spin. */
+    w[3].last_store_pc = 0x800461F0u;
+    w[11].last_store_pc = 0x800FBD44u;
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_idle), 0);
+    spin_window(w, 20);
+    w[7].current_func = 0x1FC02918u;
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_idle), 0);
+    spin_window(w, 20);
+    w[19].dirty_ram_insns += 4u;
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_idle), 0);
+    /* Frame-progress kinds take precedence over the spin test. */
+    spin_window(w, 20);
+    for (uint32_t i = 0; i < 20; i++) w[i].frame_count = 500u;
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_busy), FREEZE_WEDGE_HARD);
+    for (uint32_t i = 0; i < 20; i++) w[i].frame_count = 500u + (i == 19 ? 5u : 0u);
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_idle), FREEZE_WEDGE_SLOW_FRAMES);
+    spin_window(w, 20);
+    w[19].exc_reentry = w[0].exc_reentry +
+        (uint64_t)(FREEZE_WEDGE_EXC_REENTRY_PER_FRAME_THRESHOLD + 1u) * 171u;
+    EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_idle), FREEZE_WEDGE_REENTRY_STORM);
+    EXPECT_EQ(freeze_wedge_classify(w, 1, UNK, mdec_idle), 0);
+    EXPECT_EQ(freeze_wedge_classify(NULL, 20, UNK, mdec_idle), 0);
+
+    if (failures != 0) {        fprintf(stderr, "freeze dump policy: %d failure(s)\n", failures);
         return 1;
     }
     puts("freeze dump policy: all checks passed");
