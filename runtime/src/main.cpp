@@ -16321,6 +16321,11 @@ static void host_pause_service(void) {
 #endif
     if (const int how = g_ovl_exit.exchange(0)) {
         if (how == 2 /* to launcher */) {
+            /* The menu does not come along into the next session: close it
+             * and drop its pause, or the match would start paused. */
+            g_ovl_pause_wanted = 0;
+            if (g_ovl_pause_held) { psx_host_pause_pop(); g_ovl_pause_held = false; }
+            recomp_overlay_set_open(0);
             if (psx_netplay_active()) {
                 netplay_soft_exit("overlay_to_launcher");
             } else {
