@@ -16323,7 +16323,9 @@ static void host_pause_service(void) {
             std::fflush(stdout);
             psx_crash_trace_set_exit_origin("overlay_relaunch");
             shutdown_runtime();
+            std::fprintf(stderr, "psxrecomp: relaunching\n");
             psx_relaunch_self(g_main_argc, g_main_argv);
+            std::fprintf(stderr, "psxrecomp: relaunch failed (%s)\n", std::strerror(errno));
             std::exit(0); /* relaunch failed: leave rather than run torn down */
         }
         if (psx_netplay_active()) {

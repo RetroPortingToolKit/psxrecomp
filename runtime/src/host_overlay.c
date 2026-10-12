@@ -142,6 +142,10 @@ void psx_relaunch_self(int argc, char** argv) {
     if (_spawnv(_P_NOWAIT, exe, (const char* const*)q) != -1) _exit(0);
 }
 #else
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/time.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -162,6 +166,20 @@ void psx_relaunch_self(int argc, char** argv) {
         path[n > 0 ? n : 0] = '\0';
     }
 #endif
+    /* Interval timers and the signal mask survive exec: a still-armed
+     * profiling/watchdog timer would kill the new image (default SIGPROF)
+     * before it reaches main. */
+    {
+        struct itimerval off;
+        sigset_t none;
+        memset(&off, 0, sizeof(off));
+        setitimer(ITIMER_REAL, &off, NULL);
+        setitimer(ITIMER_VIRTUAL, &off, NULL);
+        setitimer(ITIMER_PROF, &off, NULL);
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, NULL);
+    }
+    fflush(NULL);
     execv(path[0] ? path : argv[0], argv);
 }
 #endif
