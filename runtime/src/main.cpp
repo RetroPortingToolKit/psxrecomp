@@ -16306,13 +16306,17 @@ static void host_pause_service(void) {
     }
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
     /* The launcher loop is not running during a game: pump the lobby here. */
-    if (g_ovl_gi.netplay && !psx_netplay_active()) {
+    if (g_ovl_gi.netplay && !psx_netplay_active() && !g_ovl_launch_to_start) {
         /* Keep the lobby the menu joined alive while the menu is closed,
-         * and start its match when the host starts it. */
-        if (g_ovl_gi.netplay->pump) g_ovl_gi.netplay->pump(g_ovl_gi.netplay->ctx);
-        if (g_ovl_gi.netplay->launch_pending && g_ovl_gi.netplay->launch_pending(g_ovl_gi.netplay->ctx) &&
-            !g_ovl_exit.load())
-            g_ovl_exit = 2; /* to launcher: it starts the match */
+         * and start its match when the host starts it. Once a launch is
+         * pending, stop pumping: the pending check freed the lobby's UDP port
+         * for the match and a pump would bind it again. */
+        const RecompLauncherCNetplayCallbacks* np = g_ovl_gi.netplay;
+        if (np->launch_pending && np->launch_pending(np->ctx)) {
+            if (!g_ovl_exit.load()) g_ovl_exit = 2; /* to launcher: it starts the match */
+        } else if (np->pump) {
+            np->pump(np->ctx);
+        }
     }
 #endif
     if (const int how = g_ovl_exit.exchange(0)) {
