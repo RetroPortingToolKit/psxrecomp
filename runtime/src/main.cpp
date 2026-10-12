@@ -16128,7 +16128,7 @@ PsxHostVideoSettings ovl_video_from(const RecompLauncherCSettings& ls) {
     PsxHostVideoSettings v;
     psx_video_current(&v);  /* keeps fields the menu does not show */
     v.fullscreen = ls.fullscreen ? (g_fullscreen ? g_fullscreen : 1) : 0;
-    v.texture_filter = ls.texture_filter ? 1 : 0;
+    v.texture_filter = psx_texture_filter_from_ui(ls.texture_filter);  /* same translation as the launcher handoff */
     v.fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
     v.scanlines = ls.scanlines ? 1 : 0;
     v.scanline_strength_pct = ls.scanline_strength_pct;
