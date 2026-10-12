@@ -16107,6 +16107,10 @@ static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
 #endif
 #endif
 
+/* main()'s arguments, for the in-game menu's seamless relaunch. */
+static int g_main_argc = 0;
+static char** g_main_argv = nullptr;
+
 #if defined(PSX_HAS_RECOMP_OVERLAY)
 #include <mutex>
 namespace {
@@ -16182,7 +16186,10 @@ int ovl_mod_set_live(void*, const char* p, const char* f, const char* o, const c
     return o ? psx_mod_option_live_capable(p, f) : 0;
 }
 void ovl_reload_bindings(void*) { g_ovl_reload_binds = 1; }
-void ovl_request_exit(void*, int) { g_ovl_exit = 1; }
+/* 0 quit, 1 back to the launcher loop (in-process: a netplay launch the
+ * in-game menu started is picked up there), 2 relaunch this process (a
+ * restart-only setting). Stored +1 so 0 means "nothing asked". */
+void ovl_request_exit(void*, int how) { g_ovl_exit = (how < 0 || how > 2 ? 0 : how) + 1; }
 
 RecompOverlayHost g_ovl_host = {
     RECOMP_OVERLAY_ABI_VERSION, nullptr, ovl_set_paused, ovl_netplay_active,
@@ -16212,6 +16219,12 @@ void ovl_fill(const char* argv0) {
     gi.has_vsync = 0;
     gi.has_rewind_depth = 0;
     gi.mods = PSXRecompV4::mod_runtime_launcher_provider();
+#if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
+    /* The launcher's lobby, so the in-game menu can host and join: the same
+     * callbacks the pre-game launcher drives (filled when it first ran). */
+    gi.netplay_supported = g_lnch_netplay_available ? 1 : 0;
+    gi.netplay = g_lnch_netplay_available ? &g_lnch_netplay_callbacks : nullptr;
+#endif
     (void)kOvlLanguages;
     PsxHostVideoSettings v;
     psx_video_current(&v);
@@ -16285,7 +16298,34 @@ static void host_pause_service(void) {
         psx_keybinds_init(g_ovl_argv0.c_str());
         load_input_config(g_ovl_argv0.c_str());
     }
-    if (g_ovl_exit.exchange(0)) {
+#if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
+    /* The in-game menu's lobby view needs the lobby pumped while it is open
+     * (the launcher loop is not running during a game). */
+    if (recomp_overlay_is_open() && g_ovl_gi.netplay && g_ovl_gi.netplay->pump)
+        g_ovl_gi.netplay->pump(g_ovl_gi.netplay->ctx);
+#endif
+    if (const int how = g_ovl_exit.exchange(0)) {
+        if (how == 2 /* to launcher */) {
+            if (psx_netplay_active()) {
+                netplay_soft_exit("overlay_to_launcher");
+            } else {
+                /* End this session and re-enter the launcher loop in-process
+                 * (the netplay soft-return path); the launcher then starts
+                 * whatever the menu asked for, e.g. the lobby's match. */
+                std::fprintf(stdout, "psxrecomp: in-game menu -> launcher loop\n");
+                g_netplay_from_lobby = 1;
+                psx_request_return_to_lobby();
+            }
+            return;
+        }
+        if (how == 3 /* relaunch */) {
+            std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch for restart-only settings\n");
+            std::fflush(stdout);
+            psx_crash_trace_set_exit_origin("overlay_relaunch");
+            shutdown_runtime();
+            psx_relaunch_self(g_main_argc, g_main_argv);
+            std::exit(0); /* relaunch failed: leave rather than run torn down */
+        }
         if (psx_netplay_active()) {
             netplay_soft_exit("overlay_quit");
         } else {
@@ -16301,6 +16341,8 @@ static void host_pause_service(void) {}
 #endif
 
 int main(int argc, char** argv) {
+    g_main_argc = argc;
+    g_main_argv = argv;
     /* Force line-buffered output so messages appear even if killed. */
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);

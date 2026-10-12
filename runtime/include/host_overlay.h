@@ -109,6 +109,11 @@ unsigned psx_host_video_restart_bits(const PsxHostVideoSettings *boot,
 unsigned psx_video_apply_live(const PsxHostVideoSettings *next);
 void     psx_video_current(PsxHostVideoSettings *out);
 
+/* Replace this process with a fresh copy started with the same arguments
+ * (the in-game menu's quick relaunch for restart-only settings). Returns only
+ * on failure. */
+void psx_relaunch_self(int argc, char** argv);
+
 #ifdef __cplusplus
 }
 #endif

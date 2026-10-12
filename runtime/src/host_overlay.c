@@ -115,3 +115,53 @@ int psx_texture_filter_from_ui(int value) {
     return (value >= PSX_TEXTURE_FILTER_NEAREST && value <= PSX_TEXTURE_FILTER_XBR)
                ? value : PSX_TEXTURE_FILTER_NEAREST;
 }
+
+/* ---- seamless relaunch ----------------------------------------------------- */
+#if defined(_WIN32)
+#include <process.h>
+#include <stdlib.h>
+#include <string.h>
+#include <windows.h>
+/* The CRT joins argv with spaces and does not quote, so quote each entry
+ * (enough for paths with spaces; no embedded quotes in our arguments). */
+void psx_relaunch_self(int argc, char** argv) {
+    char exe[MAX_PATH];
+    char* q[64];
+    int i, n = 0;
+    if (!argv || !argv[0]) return;
+    if (!GetModuleFileNameA(NULL, exe, sizeof(exe))) strncpy(exe, argv[0], sizeof(exe) - 1), exe[sizeof(exe) - 1] = 0;
+    for (i = 0; i < argc && n < 63; ++i) {
+        size_t len = strlen(argv[i]);
+        char* a = (char*)malloc(len + 3);
+        if (!a) return;
+        a[0] = '"'; memcpy(a + 1, argv[i], len); a[len + 1] = '"'; a[len + 2] = 0;
+        q[n++] = a;
+    }
+    q[n] = NULL;
+    fflush(NULL);
+    if (_spawnv(_P_NOWAIT, exe, (const char* const*)q) != -1) _exit(0);
+}
+#else
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+void psx_relaunch_self(int argc, char** argv) {
+    char path[4096];
+    (void)argc;
+    if (!argv || !argv[0]) return;
+    path[0] = '\0';
+#if defined(__APPLE__)
+    {
+        uint32_t cap = sizeof(path);
+        if (_NSGetExecutablePath(path, &cap) != 0) path[0] = '\0';
+    }
+#elif defined(__linux__)
+    {
+        ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+        path[n > 0 ? n : 0] = '\0';
+    }
+#endif
+    execv(path[0] ? path : argv[0], argv);
+}
+#endif
