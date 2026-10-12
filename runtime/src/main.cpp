@@ -16498,6 +16498,13 @@ int main(int argc, char** argv) {
             force_launcher = true;
         } else if (std::strcmp(argv[i], "--launcher") == 0) {
             force_launcher = true;
+            /* Launchers that boot into the game (pages in the in-game menu)
+             * show their pre-game window again when asked for explicitly. */
+#if defined(_WIN32)
+            _putenv_s("RECOMP_LAUNCHER_PREGAME", "1");
+#else
+            setenv("RECOMP_LAUNCHER_PREGAME", "1", 1);
+#endif
         } else if (std::strcmp(argv[i], "--no-launcher") == 0) {
             force_no_launcher = true;
         } else if (std::strcmp(argv[i], "--headless-opengl") == 0) {
