@@ -3466,6 +3466,10 @@ static std::filesystem::path default_memcard_dir(const char* argv0) {
 
 static void close_controller(void);
 static void shutdown_runtime(void);
+/* The in-game menu's lobby started a match while a local game ran: the game
+ * session ends but the pending launch (and its seats/signals) must survive
+ * into the launcher loop that starts it. */
+static int g_ovl_launch_to_start = 0;
 
 /* Set when this process started netplay from the lobby room — soft-exit returns
  * there instead of killing the process. */
@@ -4014,13 +4018,15 @@ static void teardown_game_session_keep_lobby(void) {
     s_netplay_sim_native_scale = 0;
     gl_renderer_set_cpu_auth_dual(0);
     sw_set_faithful_authority(0);
-    psx_lobby_set_ready(0);
-    psx_lobby_clear_launch_pending();
+    if (!g_ovl_launch_to_start) {
+        psx_lobby_set_ready(0);
+        psx_lobby_clear_launch_pending();
 #if defined(PSX_HAS_LOBBY_CLIENT)
-    /* Drop prior-match ICE SDP/candidates; ignore new ones until next launch. */
-    psx_lobby_clear_signals();
-    psx_lobby_set_ice_signal_accept(0);
+        /* Drop prior-match ICE SDP/candidates; ignore new ones until next launch. */
+        psx_lobby_clear_signals();
+        psx_lobby_set_ice_signal_accept(0);
 #endif
+    }
     psx_clear_return_to_lobby();
 }
 
@@ -16299,10 +16305,15 @@ static void host_pause_service(void) {
         load_input_config(g_ovl_argv0.c_str());
     }
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
-    /* The in-game menu's lobby view needs the lobby pumped while it is open
-     * (the launcher loop is not running during a game). */
-    if (recomp_overlay_is_open() && g_ovl_gi.netplay && g_ovl_gi.netplay->pump)
-        g_ovl_gi.netplay->pump(g_ovl_gi.netplay->ctx);
+    /* The launcher loop is not running during a game: pump the lobby here. */
+    if (g_ovl_gi.netplay && !psx_netplay_active()) {
+        /* Keep the lobby the menu joined alive while the menu is closed,
+         * and start its match when the host starts it. */
+        if (g_ovl_gi.netplay->pump) g_ovl_gi.netplay->pump(g_ovl_gi.netplay->ctx);
+        if (g_ovl_gi.netplay->launch_pending && g_ovl_gi.netplay->launch_pending(g_ovl_gi.netplay->ctx) &&
+            !g_ovl_exit.load())
+            g_ovl_exit = 2; /* to launcher: it starts the match */
+    }
 #endif
     if (const int how = g_ovl_exit.exchange(0)) {
         if (how == 2 /* to launcher */) {
@@ -16314,6 +16325,7 @@ static void host_pause_service(void) {
                  * whatever the menu asked for, e.g. the lobby's match. */
                 std::fprintf(stdout, "psxrecomp: in-game menu -> launcher loop\n");
                 g_netplay_from_lobby = 1;
+                g_ovl_launch_to_start = 1;
                 psx_request_return_to_lobby();
             }
             return;
@@ -20574,7 +20586,8 @@ soft_return_lobby:
     teardown_game_session_keep_lobby();
     PSXRecompV4::mod_runtime_end_netplay();
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)
-    ae_np_prepare_lobby_rematch();
+    if (!g_ovl_launch_to_start) ae_np_prepare_lobby_rematch();
+    g_ovl_launch_to_start = 0;
     /* Say why the match ended on the launcher's status line; the
      * room and browser views both show last_error. Cleared when the player
      * ended the match themselves. */
