@@ -1456,6 +1456,12 @@ bool mod_runtime_netplay_content_negotiation() {
     return netplay_content_negotiation_enabled;
 }
 
+/* Live option overrides (psx_mod_set_option_live) belong to one session's
+ * plan: initialising the runtime, committing a plan or switching to the
+ * netplay plan drops them, so a new plan's committed values are what the
+ * API answers (defined with the overrides below). */
+void reset_live_option_overrides();
+
 bool mod_runtime_initialize(const std::filesystem::path& root,
                             const std::string& game_id,
                             uint32_t game_entry_pc,
@@ -1474,6 +1480,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     s.validation = {};
     s.raw_disc_index.clear();
     s.user_disc_index.clear();
@@ -1580,6 +1587,7 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     s.validation = {};
     s.raw_disc_index.clear();
     s.user_disc_index.clear();
@@ -1734,6 +1742,7 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
     if (renderer) plan.plugins.push_back({renderer, "", ""});
     s.disc_path = disc_path;
     s.plan = std::move(plan);
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     mod_runtime_set_session_plan_fp({});
     psx_mod_netplay_set_active(1);
     std::fprintf(stdout, "psxrecomp: title netplay profile %s (%s)\n",
@@ -2061,6 +2070,7 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = std::move(plan);
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     {
         HostLaunchTimingScope index_timing(HOST_LAUNCH_BUILD_DISC_INDEX);
         build_disc_index(s);
@@ -2862,6 +2872,10 @@ extern "C" int psx_mod_save_selection(void) {
     }
     return 1;
 }
+
+namespace PSXRecompV4 {
+void reset_live_option_overrides() { live_option_values().clear(); }
+}  // namespace PSXRecompV4
 
 extern "C" int psx_mod_set_option_live(const char* package_id, const char* feature_id,
                                        const char* option_id, const char* value) {

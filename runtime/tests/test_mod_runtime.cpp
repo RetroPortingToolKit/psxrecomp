@@ -1122,6 +1122,17 @@ int main(int argc, char** argv) {
                   std::string(value) == "four",
               "a refused live set must not change the value later reads see");
         option_changed_refuse = 0;
+        /* A new session (initialise + commit) answers its own committed
+         * plan, not the previous session's live override. */
+        check(PSXRecompV4::mod_runtime_initialize(
+                  req_root, "SLUS-REQ", 0x80002000, {}, &error),
+              error.c_str());
+        check(PSXRecompV4::mod_runtime_commit(stock_path, &error),
+              "the second session must commit");
+        mod_runtime_activate_plugins();
+        check(psx_mod_option_value("runtime.ram", "big-ram", "size", value, sizeof(value)) == 1 &&
+                  std::string(value) == "eight",
+              "a live override must not outlive its session's plan");
         check(psx_mod_set_option_live("runtime.ram", "no-such-feature", "size", "x") == 0,
               "features outside the plan are not live-settable");
         check(psx_mod_save_selection() == 1, "saving the selection mid-session must succeed");
