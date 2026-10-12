@@ -110,3 +110,8 @@ unsigned psx_host_video_restart_bits(const PsxHostVideoSettings *boot,
         m |= PSX_VIDEO_RESTART_THREADS;
     return m;
 }
+
+int psx_texture_filter_from_ui(int value) {
+    return (value >= PSX_TEXTURE_FILTER_NEAREST && value <= PSX_TEXTURE_FILTER_XBR)
+               ? value : PSX_TEXTURE_FILTER_NEAREST;
+}

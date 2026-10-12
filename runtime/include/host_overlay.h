@@ -57,7 +57,7 @@ int  psx_host_ui_capture_active(void);
  * thread only. */
 typedef struct PsxHostVideoSettings {
     int fullscreen;            /* 0 windowed, 1 borderless, 2 exclusive */
-    int texture_filter;        /* 0 nearest, 1 bilinear */
+    int texture_filter;        /* PSX_TEXTURE_FILTER_* (the [video] enum) */
     int fmv_filter;            /* VIDEO_FMV_FILTER_* (config value) */
     int scanlines;             /* 0/1 */
     int scanline_strength_pct; /* 0..100 */
@@ -70,6 +70,18 @@ typedef struct PsxHostVideoSettings {
     int render_thread;         /* restart */
     int present_thread;        /* restart */
 } PsxHostVideoSettings;
+
+/* Texture filter: ONE enum for settings.toml, the launcher handoff and the
+ * in-game menu, so they cannot drift apart (#586 added xBR; a boolean UI
+ * cannot represent it). Values match [video] texture_filtering and
+ * gr_set_texture_filter(). STABLE_WORLD is set by mods, not by settings. */
+#define PSX_TEXTURE_FILTER_NEAREST      0
+#define PSX_TEXTURE_FILTER_BILINEAR     1
+#define PSX_TEXTURE_FILTER_STABLE_WORLD 2
+#define PSX_TEXTURE_FILTER_XBR          3
+/* A launcher / menu value to the enum: in-range values pass through, and
+ * anything else is nearest (the native default). Older launchers send 0/1. */
+int psx_texture_filter_from_ui(int value);
 
 #define PSX_VIDEO_RESTART_RENDERER    (1u << 0)
 #define PSX_VIDEO_RESTART_RESOLUTION  (1u << 1)

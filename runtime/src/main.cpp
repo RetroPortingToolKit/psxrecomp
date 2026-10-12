@@ -9752,7 +9752,7 @@ extern "C" unsigned psx_video_apply_live(const PsxHostVideoSettings *next) {
     if (m & PSX_VIDEO_LIVE_FULLSCREEN)
         (void)psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, next->fullscreen);
     if (m & PSX_VIDEO_LIVE_TEXTURE_FILTER) {
-        g_video_texfilter = next->texture_filter ? 1 : 0;
+        g_video_texfilter = psx_texture_filter_from_ui(next->texture_filter);
         if (g_mod_texfilter < 0) gr_set_texture_filter(g_video_texfilter);
     }
     if (m & PSX_VIDEO_LIVE_FMV_FILTER) {
@@ -18152,7 +18152,7 @@ int main(int argc, char** argv) {
                  * ls.texture_filter directly (0=nearest,1=bilinear); ls.linear_filter
                  * is the legacy fallback field for consoles without the cap and is
                  * left unused here. */
-                seed.texture_filter = ls.texture_filter ? 1 : 0; seed.has_texture_filter = true;
+                seed.texture_filter = psx_texture_filter_from_ui(ls.texture_filter); seed.has_texture_filter = true;
                 seed.fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
                 seed.has_fmv_filter = true;
                 {
@@ -20765,7 +20765,7 @@ soft_return_lobby:
 #endif
                 us.antialiasing = ls.antialiasing != 0;
                 us.has_antialiasing = true;
-                us.texture_filter = ls.texture_filter;
+                us.texture_filter = psx_texture_filter_from_ui(ls.texture_filter);
                 us.has_texture_filter = true;
                 us.fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
                 us.has_fmv_filter = true;
@@ -20841,7 +20841,7 @@ soft_return_lobby:
             g_video_internal_res = ir.preset;
             g_video_scale = ir.scale;
             g_video_aa = ls.antialiasing;
-            g_video_texfilter = ls.texture_filter;
+            g_video_texfilter = psx_texture_filter_from_ui(ls.texture_filter);
             g_video_fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
             g_video_geometry_correction = ls.geometry_correction ? 1 : 0;
             g_video_perspective_texturing = ls.perspective_texturing ? 1 : 0;
