@@ -16560,6 +16560,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    /* Test hook: a hidden game window that still runs the launcher (and its
+     * in-game menu), unlike --hidden-window. */
+    if (const char *e = std::getenv("PSX_HIDDEN_WINDOW")) {
+        if (*e && *e != '0') g_hidden_window = 1;
+    }
+
     std::string default_game_config_storage;
     if (!game_config_path) {
         std::filesystem::path default_game_config =
