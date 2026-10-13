@@ -11,6 +11,7 @@
  */
 
 #include "gpu.h"
+#include "gte_nclip_stats.h"
 #include "gpu_gl_renderer.h"
 #include "mod_texture_banks.h"
 #include "display_scanout.h"
