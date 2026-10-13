@@ -40,6 +40,9 @@ uint32_t g_debug_last_store_pc;
 uint32_t g_dirty_ram_code_gen;
 uint64_t g_dispatch_static_hits;
 uint32_t g_psx_mod_instruction_hooks;
+uint32_t psx_mod_memory_address(const CPUState *cpu, uint32_t pc, uint32_t word, uint32_t address) {
+    (void)cpu; (void)pc; (void)word; return address;
+}
 void psx_mod_instruction(CPUState *cpu, uint32_t pc, uint32_t instruction) {
     (void)cpu; (void)pc; (void)instruction; abort();
 }

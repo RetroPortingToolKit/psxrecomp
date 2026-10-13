@@ -223,11 +223,11 @@ std::string CodeGenerator::translate_lui(uint32_t instr) {
                        reg_name(rt), imm, ((uint32_t)imm) << 16);
 }
 
-std::string CodeGenerator::translate_lw(uint32_t instr) {
+std::string CodeGenerator::translate_lw(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
-    std::string addr = (offset == 0) ? reg_name(rs)
+    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                                      : fmt::format("{} + {}", reg_name(rs), offset);
     uint32_t mask = 1u << rs;   /* GPR_DEP rs (load: dest rt armed via LDWhich) */
 
@@ -239,11 +239,12 @@ std::string CodeGenerator::translate_lw(uint32_t instr) {
                        reg_name(rt), addr, rt, mask);
 }
 
-std::string CodeGenerator::translate_sw(uint32_t instr) {
+std::string CodeGenerator::translate_sw(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_word({}, {});", memory_addr, reg_name(rt));
     if (offset == 0) {
         return fmt::format("psx_store_cycle_barrier(); cpu->write_word({}, {});", reg_name(rs), reg_name(rt));
     } else {
@@ -385,11 +386,11 @@ std::string CodeGenerator::translate_sub(uint32_t instr) {
     return translate_subu(instr);
 }
 
-std::string CodeGenerator::translate_lb(uint32_t instr) {
+std::string CodeGenerator::translate_lb(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
-    std::string addr = (offset == 0) ? reg_name(rs)
+    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                                      : fmt::format("{} + {}", reg_name(rs), offset);
     uint32_t mask = 1u << rs;
 
@@ -400,11 +401,11 @@ std::string CodeGenerator::translate_lb(uint32_t instr) {
                        reg_name(rt), addr, rt, mask);
 }
 
-std::string CodeGenerator::translate_lbu(uint32_t instr) {
+std::string CodeGenerator::translate_lbu(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
-    std::string addr = (offset == 0) ? reg_name(rs)
+    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                                      : fmt::format("{} + {}", reg_name(rs), offset);
     uint32_t mask = 1u << rs;
 
@@ -415,11 +416,11 @@ std::string CodeGenerator::translate_lbu(uint32_t instr) {
                        reg_name(rt), addr, rt, mask);
 }
 
-std::string CodeGenerator::translate_lh(uint32_t instr) {
+std::string CodeGenerator::translate_lh(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
-    std::string addr = (offset == 0) ? reg_name(rs)
+    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                                      : fmt::format("{} + {}", reg_name(rs), offset);
     uint32_t mask = 1u << rs;
 
@@ -430,11 +431,11 @@ std::string CodeGenerator::translate_lh(uint32_t instr) {
                        reg_name(rt), addr, rt, mask);
 }
 
-std::string CodeGenerator::translate_lhu(uint32_t instr) {
+std::string CodeGenerator::translate_lhu(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
-    std::string addr = (offset == 0) ? reg_name(rs)
+    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                                      : fmt::format("{} + {}", reg_name(rs), offset);
     uint32_t mask = 1u << rs;
 
@@ -445,19 +446,15 @@ std::string CodeGenerator::translate_lhu(uint32_t instr) {
                        reg_name(rt), addr, rt, mask);
 }
 
-std::string CodeGenerator::translate_lwl(uint32_t instr) {
+std::string CodeGenerator::translate_lwl(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (config_.optimize_zero_reg && rt == 0) {
-        return "/* nop: load to $zero */";
-    }
-
     // LWL: Load Word Left - merges high bytes from the aligned word into rt.
     // psx_lwl runs the full R3000A load interlock on the aligned address (GPR_DEP rs,
     // arm LDWhich=rt) and returns the merged value.
-    std::string addr = (offset == 0) ? reg_name(rs)
+    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                                      : fmt::format("{} + {}", reg_name(rs), (int32_t)offset);
     uint32_t mask = 1u << rs;
     if (config_.optimize_zero_reg && rt == 0) {
@@ -467,17 +464,13 @@ std::string CodeGenerator::translate_lwl(uint32_t instr) {
                        reg_name(rt), addr, lwlr_merge_operand(rt), rt, mask);
 }
 
-std::string CodeGenerator::translate_lwr(uint32_t instr) {
+std::string CodeGenerator::translate_lwr(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
-    if (config_.optimize_zero_reg && rt == 0) {
-        return "/* nop: load to $zero */";
-    }
-
     // LWR: Load Word Right - merges low bytes from the aligned word into rt.
-    std::string addr = (offset == 0) ? reg_name(rs)
+    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                                      : fmt::format("{} + {}", reg_name(rs), (int32_t)offset);
     uint32_t mask = 1u << rs;
     if (config_.optimize_zero_reg && rt == 0) {
@@ -487,13 +480,14 @@ std::string CodeGenerator::translate_lwr(uint32_t instr) {
                        reg_name(rt), addr, lwlr_merge_operand(rt), rt, mask);
 }
 
-std::string CodeGenerator::translate_swl(uint32_t instr) {
+std::string CodeGenerator::translate_swl(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
     // SWL: Store Word Left - stores rt into memory using addr, MSB side
     // Generate a helper call: psx_swl(cpu, addr, cpu->rt)
+    if (!memory_addr.empty()) return fmt::format("psx_swl(cpu, {}, {});", memory_addr, reg_name(rt));
     if (offset == 0) {
         return fmt::format("psx_swl(cpu, {}, {});", reg_name(rs), reg_name(rt));
     } else {
@@ -502,13 +496,14 @@ std::string CodeGenerator::translate_swl(uint32_t instr) {
     }
 }
 
-std::string CodeGenerator::translate_swr(uint32_t instr) {
+std::string CodeGenerator::translate_swr(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
     // SWR: Store Word Right - stores rt into memory using addr, LSB side
     // Generate a helper call: psx_swr(cpu, addr, cpu->rt)
+    if (!memory_addr.empty()) return fmt::format("psx_swr(cpu, {}, {});", memory_addr, reg_name(rt));
     if (offset == 0) {
         return fmt::format("psx_swr(cpu, {}, {});", reg_name(rs), reg_name(rt));
     } else {
@@ -517,11 +512,12 @@ std::string CodeGenerator::translate_swr(uint32_t instr) {
     }
 }
 
-std::string CodeGenerator::translate_sb(uint32_t instr) {
+std::string CodeGenerator::translate_sb(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({}, (uint8_t){});", memory_addr, reg_name(rt));
     if (offset == 0) {
         return fmt::format("psx_store_cycle_barrier(); cpu->write_byte({}, (uint8_t){});", reg_name(rs), reg_name(rt));
     } else {
@@ -530,11 +526,12 @@ std::string CodeGenerator::translate_sb(uint32_t instr) {
     }
 }
 
-std::string CodeGenerator::translate_sh(uint32_t instr) {
+std::string CodeGenerator::translate_sh(uint32_t instr, const std::string& memory_addr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
     int16_t offset = get_imm16(instr);
 
+    if (!memory_addr.empty()) return fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t){});", memory_addr, reg_name(rt));
     if (offset == 0) {
         return fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t){});", reg_name(rs), reg_name(rt));
     } else {
@@ -951,7 +948,7 @@ std::string CodeGenerator::mod_immediate_translation(
     for (size_t i = 0; i < site.values.size(); ++i) {
         const uint32_t word = (instr & 0xFFFF0000u) | site.values[i];
         out += ind + fmt::format("case {}u: {{ /* 0x{:08X} */\n", i + 1u, word);
-        out += translate_instruction_core(addr, word) + "\n";
+        out += translate_instruction_core(addr, word, "", instr) + "\n";
         out += ind + "    break;\n" + ind + "}\n";
     }
     out += ind + "default: {\n";
@@ -1009,9 +1006,20 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
     return hook + config_.indent + clamp + "\n" + body;
 }
 
-std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t instr) {
+std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t instr,
+    const std::string& memory_addr, uint32_t original_instruction) {
     uint32_t opcode = (instr >> 26) & 0x3F;
     uint32_t funct = instr & 0x3F;
+    const bool memory = (opcode >= 0x20 && opcode <= 0x26) || opcode == 0x28 || opcode == 0x29 ||
+        opcode == 0x2a || opcode == 0x2b || opcode == 0x2e || opcode == 0x32 || opcode == 0x3a;
+    if (memory && memory_addr.empty() && !mod_instruction_call(addr, instr).empty()) {
+        const uint32_t guard = original_instruction ? original_instruction : instr;
+        const std::string raw = fmt::format("(uint32_t)({} + {})", reg_name(get_rs(instr)), (int)get_imm16(instr));
+        return config_.indent + fmt::format(
+            "{{ uint32_t _mod_ea = psx_mod_memory_address(cpu, 0x{:08X}u, 0x{:08X}u, {});\n",
+            runtime_pc(addr), guard, raw) +
+            translate_instruction_core(addr, instr, "_mod_ea", guard) + "\n" + config_.indent + "}";
+    }
 
     // Instruction comment (if enabled)
     std::string comment;
@@ -1274,7 +1282,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                                config_.ws_cull_bias_lower_sites.count(addr) ? "-" : "+", margin);
             // Preserve the ordinary ALU shadow update, including source capture
             // before an in-place add. Margin zero must also be a PGXP identity.
-            PSXRecomp::append_pgxp_hooks(instr, code);
+            PSXRecomp::append_pgxp_hooks(instr, code, memory_addr);
             return config_.indent + code + comment;
         } else if (!config_.overlay_mode) {
             fmt::print(stderr, "ERROR: [widescreen.cull] bias site 0x{:08X} is not "
@@ -1324,7 +1332,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
         if (opcode == 0x23) {  // lw
             uint32_t rs = get_rs(instr), rt = get_rt(instr);
             int16_t offset = get_imm16(instr);
-            std::string laddr = (offset == 0)
+            std::string laddr = !memory_addr.empty() ? memory_addr : (offset == 0)
                 ? reg_name(rs)
                 : fmt::format("{} + {}", reg_name(rs), (int)offset);
             uint32_t mask = 1u << rs;
@@ -1349,7 +1357,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
         if (opcode == 0x23) {  // lw
             uint32_t rs = get_rs(instr), rt = get_rt(instr);
             int16_t offset = get_imm16(instr);
-            std::string laddr = (offset == 0)
+            std::string laddr = !memory_addr.empty() ? memory_addr : (offset == 0)
                 ? reg_name(rs)
                 : fmt::format("{} + {}", reg_name(rs), (int)offset);
             uint32_t mask = 1u << rs;
@@ -1379,7 +1387,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             get_rt(instr) != 0) {
             uint32_t rs = get_rs(instr), rt = get_rt(instr);
             int16_t offset = get_imm16(instr);
-            std::string laddr = (offset == 0)
+            std::string laddr = !memory_addr.empty() ? memory_addr : (offset == 0)
                 ? reg_name(rs)
                 : fmt::format("{} + {}", reg_name(rs), (int)offset);
             uint32_t mask = 1u << rs;
@@ -1415,7 +1423,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
         if (opcode == 0x23) {  // lw
             uint32_t rs = get_rs(instr), rt = get_rt(instr);
             int16_t offset = get_imm16(instr);
-            std::string laddr = (offset == 0)
+            std::string laddr = !memory_addr.empty() ? memory_addr : (offset == 0)
                 ? reg_name(rs)
                 : fmt::format("{} + {}", reg_name(rs), (int)offset);
             uint32_t mask = 1u << rs;
@@ -1592,6 +1600,9 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             uint32_t rs = get_rs(instr), rt = get_rt(instr);
             int16_t offset = get_imm16(instr);
             std::string store_pc = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr));
+            if (!memory_addr.empty())
+                return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
+                                   memory_addr, reg_name(rt), comment);
             if (offset == 0)
                 return store_pc + fmt::format("psx_store_cycle_barrier(); cpu->write_half({}, (uint16_t)psx_ws_backdrop_x((int16_t){}));{}",
                                    reg_name(rs), reg_name(rt), comment);
@@ -1727,7 +1738,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
     if (config_.persist_init_store_sites.count(addr)) {
         uint32_t rs = get_rs(instr), rt = get_rt(instr);
         int16_t offset = get_imm16(instr);
-        std::string aexpr = (offset != 0)
+        std::string aexpr = !memory_addr.empty() ? memory_addr : (offset != 0)
             ? fmt::format("({} + {})", reg_name(rs), offset)
             : std::string(reg_name(rs));
         std::string store_pc = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr));
@@ -1890,23 +1901,23 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                     }
                 }
                 break;
-            case 0x20: code = translate_lb(instr); break;     // lb
-            case 0x21: code = translate_lh(instr); break;     // lh
-            case 0x22: code = translate_lwl(instr); break;    // lwl
-            case 0x23: code = translate_lw(instr); break;     // lw
-            case 0x24: code = translate_lbu(instr); break;    // lbu
-            case 0x25: code = translate_lhu(instr); break;    // lhu
-            case 0x26: code = translate_lwr(instr); break;    // lwr
+            case 0x20: code = translate_lb(instr, memory_addr); break;     // lb
+            case 0x21: code = translate_lh(instr, memory_addr); break;     // lh
+            case 0x22: code = translate_lwl(instr, memory_addr); break;    // lwl
+            case 0x23: code = translate_lw(instr, memory_addr); break;     // lw
+            case 0x24: code = translate_lbu(instr, memory_addr); break;    // lbu
+            case 0x25: code = translate_lhu(instr, memory_addr); break;    // lhu
+            case 0x26: code = translate_lwr(instr, memory_addr); break;    // lwr
             // Stores: stamp the EXACT executing store PC before the write so
             // wtrace/readtrace producer attribution is correct for game code.
             // (The BIOS emitter does the same in strict_translator.cpp; the game
             // emitter previously left g_debug_last_store_pc holding a STALE pc —
             // the last BIOS store — which mis-attributed game writes to BIOS.)
-            case 0x28: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_sb(instr); break;     // sb
-            case 0x29: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_sh(instr); break;     // sh
-            case 0x2A: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_swl(instr); break;    // swl
-            case 0x2B: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_sw(instr); break;     // sw
-            case 0x2E: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_swr(instr); break;    // swr
+            case 0x28: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_sb(instr, memory_addr); break;     // sb
+            case 0x29: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_sh(instr, memory_addr); break;     // sh
+            case 0x2A: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_swl(instr, memory_addr); break;    // swl
+            case 0x2B: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_sw(instr, memory_addr); break;     // sw
+            case 0x2E: code = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr)) + translate_swr(instr, memory_addr); break;    // swr
             case 0x2F:                                         // CACHE - cache op (no-op for static recomp)
                 code = "/* cache (no-op: static recompilation has no I/D cache) */";
                 break;
@@ -1922,7 +1933,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                     // (op 0x32 is non-load), the GTE deadline stall via psx_gte_stall,
                     // then psx_cyc_lwc2_read does the ReadMemory timing (completion +1,
                     // no LDWhich arm — the dest is a GTE register).
-                    std::string addr = (offset == 0)
+                    std::string addr = !memory_addr.empty() ? memory_addr : (offset == 0)
                         ? reg_name(rs)
                         : fmt::format("{} + {}", reg_name(rs), offset);
                     bool special = PSXRecompGTERegisters::data_write_needs_helper(static_cast<uint8_t>(rt));
@@ -1954,7 +1965,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                         ? fmt::format("gte_read_data(cpu, {})", rt)
                         : fmt::format("cpu->gte_data[{}]", rt);
                     std::string swc2_store_pc = fmt::format("g_debug_last_store_pc = 0x{:08X}u; ", runtime_pc(addr));
-                    std::string swc2_addr = (offset == 0)
+                    std::string swc2_addr = !memory_addr.empty() ? memory_addr : (offset == 0)
                         ? reg_name(rs)
                         : fmt::format("{} + {}", reg_name(rs), offset);
                     code = gte_stall + swc2_store_pc + fmt::format(
@@ -1970,7 +1981,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
         }
     }
 
-    PSXRecomp::append_pgxp_hooks(instr, code);
+    PSXRecomp::append_pgxp_hooks(instr, code, memory_addr);
     /* The trailing disassembly comment must not land ON a preprocessor
      * directive line -- it would be swallowed as extra tokens and dropped,
      * costing the annotation and emitting -Wendif-labels noise. Reachable
@@ -3656,6 +3667,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern int  psx_game_text_native_ok(uint32_t addr);  /* stale-static guard (dispatch shard) */\n";
     ss << "extern int  psx_datashard_enter(CPUState* cpu, uint32_t key);  /* data-shard replay/capture (data_shards.c) */\n";
     ss << "extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);\n";
+    ss << "extern uint32_t psx_mod_memory_address(const CPUState*, uint32_t, uint32_t, uint32_t);\n";
     if (!config_.mod_immediate_sites.empty())
         ss << "extern uint32_t psx_mod_immediate_select(uint32_t group);  /* [[mod_immediate.sites]] selector (mod_immediate.c) */\n";
     ss << "extern int psx_mod_function_entry(CPUState* cpu, uint32_t address);  /* trusted opt-in game-mod hook */\n";

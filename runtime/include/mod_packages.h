@@ -606,11 +606,14 @@ std::vector<ModFunctionEntryHook> mod_function_entry_hooks(const std::string& id
 std::vector<ModFunctionEntryHook> mod_guest_functions(const std::string& id);
 struct ModInstructionHook {
     uint32_t address, expected;
-    PSXModFunctionEntryCallback callback;
+    PSXModFunctionEntryCallback callback = nullptr;
+    PSXModMemoryAddressCallback memory_address = nullptr;
 };
 bool mod_register_instruction_plugin(const std::string& id, uint32_t address,
                                       uint32_t expected, PSXModFunctionEntryCallback callback);
 std::vector<ModInstructionHook> mod_instruction_hooks(const std::string& id);
+bool mod_register_memory_address_plugin(const std::string& id, uint32_t address,
+    uint32_t expected, PSXModMemoryAddressCallback callback);
 void mod_clear_plugins_for_tests();
 
 /* Every id a trusted implementation registered (activation, vblank or

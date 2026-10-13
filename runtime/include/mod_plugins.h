@@ -53,6 +53,19 @@ int psx_mod_register_instruction_plugin(const char* id, uint32_t address,
                                          uint32_t expected, PSXModFunctionEntryCallback callback);
 void psx_mod_instruction(struct CPUState* cpu, uint32_t address, uint32_t instruction);
 extern uint32_t g_psx_mod_instruction_hooks;
+/* Redirect one audited load/store's effective address without changing its
+ * base register, destination, data, branch state or timing. Registration and
+ * live RAM must match the complete instruction. Native code instruments sites
+ * listed in mod_instruction_sites; dirty-RAM execution uses the same table.
+ * Return the original address to decline. Callbacks run in plan order, cannot
+ * re-enter guest execution, and must preserve the low two address bits (also
+ * preserving unaligned merge lanes). The CPU argument is read-only. */
+typedef uint32_t (*PSXModMemoryAddressCallback)(const struct CPUState* cpu,
+    uint32_t pc, uint32_t instruction, uint32_t effective_address);
+int psx_mod_register_memory_address_plugin(const char* id, uint32_t pc,
+    uint32_t expected, PSXModMemoryAddressCallback callback);
+uint32_t psx_mod_memory_address(const struct CPUState* cpu, uint32_t pc,
+    uint32_t instruction, uint32_t effective_address);
 /* Called from generated functions listed by the game config and from every
  * interpreted entry, so the hook contract does not depend on the backend.
  * Hooks match by code address (segment bits ignored) and run only for plugins

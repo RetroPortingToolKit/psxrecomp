@@ -42,7 +42,8 @@ namespace PSXRecomp {
 " + indent instead of a space when this returns true. */
 bool emission_ends_on_preprocessor_directive(const std::string& code);
 
-void append_pgxp_hooks(uint32_t instr, std::string& code);
+void append_pgxp_hooks(uint32_t instr, std::string& code,
+                       const std::string& memory_addr = "");
 
 } // namespace PSXRecomp
 

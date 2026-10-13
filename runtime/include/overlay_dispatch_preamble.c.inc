@@ -266,6 +266,10 @@ void psx_mod_instruction(CPUState *cpu, uint32_t address, uint32_t word) {
     overlay_flush_cycles();
     if (g_cbs.mod_instruction) g_cbs.mod_instruction(cpu, address, word);
 }
+uint32_t psx_mod_memory_address(const CPUState *cpu, uint32_t pc, uint32_t word, uint32_t address) {
+    overlay_flush_cycles();
+    return g_cbs.mod_memory_address ? g_cbs.mod_memory_address(cpu, pc, word, address) : address;
+}
 uint32_t psx_mod_immediate_select(uint32_t group) {
     return g_cbs.mod_immediate_select ? g_cbs.mod_immediate_select(group) : 0u;
 }

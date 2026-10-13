@@ -322,6 +322,37 @@ static void test_flag_clears_on_write(void) {
     EXPECT_EQ("post_write.flag_clear",   0x00, card_xchg(0x52, 0));
 }
 
+static int accept_extension(int card, const uint8_t* base, const uint8_t* tail,
+                            uint32_t size) {
+    (void)card; (void)base; (void)tail; (void)size;
+    return 0;
+}
+static int refuse_extension_save(int card, const uint8_t* base, uint8_t* tail,
+                                 uint32_t capacity) {
+    (void)card; (void)base; (void)tail; (void)capacity;
+    return -1;
+}
+
+static void test_rejected_save_reports_failure(void) {
+    uint8_t before[128], after[128], data[128], rx[140];
+    sio_init();
+    memcard_set_extension_codec(accept_extension, refuse_extension_save);
+    memcard_init("test_dir");
+    FILE* f = fopen("test_dir/card1.mcd", "rb");
+    EXPECT_EQ("rejected.before_read", 128, f ? fread(before, 1, 128, f) : 0);
+    if (f) fclose(f);
+    memset(data, 0x92, sizeof data);
+    EXPECT_EQ("rejected.count", 138, run_card_write(0, 0, data, rx));
+    EXPECT_EQ("rejected.end", 0x4E, rx[137]);
+    EXPECT_EQ("rejected.flush_result", -2, memcard_last_flush_result(0));
+    f = fopen("test_dir/card1.mcd", "rb");
+    EXPECT_EQ("rejected.after_read", 128, f ? fread(after, 1, 128, f) : 0);
+    if (f) fclose(f);
+    EXPECT_EQ("rejected.disk_unchanged", 0, memcmp(before, after, 128));
+    memcard_set_extension_codec(NULL, NULL);
+    memcard_init("test_dir");
+}
+
 /* Test 3: pad-poll mid-card-read — does our SIO model preserve card state? */
 static void test_pad_poll_during_card_read(void) {
     sio_init();
@@ -498,6 +529,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "test_flag_clears_on_write:          %d/%d ok\n",
             (g_checks - prev_checks) - (g_failures - prev_fails),
             g_checks - prev_checks);
+
+    test_rejected_save_reports_failure();
 
     prev_checks = g_checks; prev_fails = g_failures;
     test_pad_poll_during_card_read();

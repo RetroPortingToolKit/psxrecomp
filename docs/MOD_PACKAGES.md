@@ -757,6 +757,24 @@ some selections of one feature is a `[[requirement]]`, not a dependency.
 
 ## Implicit requirements across packages
 
+Game-owned save metadata can use the memory-card extension transport in
+`memcard.h`. A trusted activation plugin registers both load and save callbacks
+with `memcard_set_extension_codec()`. Initialization/reload passes the standard
+128 KiB base plus its optional tail to the loader. A flush gives the encoder the
+current base and publishes both parts together through an exclusive temporary
+and atomic replacement. Tails are bounded to 64 KiB; rejected load/encode,
+oversized tails and I/O errors leave the original file intact and writes dirty.
+`memcard_last_flush_result()` and debug `mc_status` expose failure.
+SIO reports a failed write to the guest instead of acknowledging a rejected
+flush as saved.
+
+Each mod session clears the codec before activation. Without a codec, loaded
+tails are preserved opaquely; their game-specific binding can become stale when
+native saves change. Raw export exposes only the standard base, and explicit
+raw import replaces the image and clears its tail. The title owns format
+validation, save-slot identity, native fallback characters, and restore/rewind
+synchronization. Transport alone does not make additional party members safe.
+
 Trusted graphics plugins can call `psx_mod_set_internal_resolution(lines)` to
 request a rendering height for their session. Values from 120 through 8192 use
 the existing integer-scale resolver and backend allocation limits; zero clears

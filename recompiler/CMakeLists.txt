@@ -625,6 +625,7 @@ if(BUILD_TESTING)
     if(NOT MSVC)
         add_executable(ws_cull_edge_interp_test
             ../runtime/tests/test_ws_cull_edge_interp.c
+            ../runtime/src/mod_immediate.c
             ../runtime/src/ws_aspect_cone_math.c)
         target_include_directories(ws_cull_edge_interp_test PRIVATE
             ../runtime/include
@@ -652,6 +653,7 @@ if(BUILD_TESTING)
     if(NOT MSVC)
         add_executable(draw_distance_interp_test
             ../runtime/tests/test_draw_distance_interp.c
+            ../runtime/src/mod_immediate.c
             ../runtime/src/ws_aspect_cone_math.c)
         target_include_directories(draw_distance_interp_test PRIVATE
             ../runtime/include

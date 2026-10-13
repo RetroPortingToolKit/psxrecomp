@@ -493,7 +493,8 @@ private:
 
     // Instruction translation
     std::string translate_instruction(uint32_t addr, uint32_t instr);
-    std::string translate_instruction_core(uint32_t addr, uint32_t instr);
+    std::string translate_instruction_core(uint32_t addr, uint32_t instr,
+        const std::string& memory_addr = "", uint32_t original_instruction = 0);
     // The [[draw_distance.clamp]] statement for (addr, instr), or "".
     std::string draw_distance_clamp_prefix(uint32_t addr, uint32_t instr) const;
     std::string mod_instruction_call(uint32_t addr, uint32_t instr) const;
@@ -558,14 +559,14 @@ private:
     std::string translate_srav(uint32_t instr);
 
     // Load/store instructions
-    std::string translate_lw(uint32_t instr);
-    std::string translate_sw(uint32_t instr);
-    std::string translate_lb(uint32_t instr);
-    std::string translate_lbu(uint32_t instr);
-    std::string translate_lh(uint32_t instr);
-    std::string translate_lhu(uint32_t instr);
-    std::string translate_lwl(uint32_t instr);
-    std::string translate_lwr(uint32_t instr);
+    std::string translate_lw(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_sw(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lb(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lbu(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lh(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lhu(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lwl(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lwr(uint32_t instr, const std::string& memory_addr = "");
     //
     // LWL/LWR take their destination register as BOTH input (the merge base)
     // and output. Unlike every other load, they read that input late enough to
@@ -595,10 +596,10 @@ private:
     }
     uint32_t    lwlr_merge_reg_ = 0xFFFFFFFFu;
     std::string lwlr_merge_temp_;
-    std::string translate_swl(uint32_t instr);
-    std::string translate_swr(uint32_t instr);
-    std::string translate_sb(uint32_t instr);
-    std::string translate_sh(uint32_t instr);
+    std::string translate_swl(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_swr(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_sb(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_sh(uint32_t instr, const std::string& memory_addr = "");
 
     // Immediate instructions
     std::string translate_addiu(uint32_t instr);

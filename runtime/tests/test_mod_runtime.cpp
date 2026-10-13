@@ -235,6 +235,12 @@ static int test_inactive_filter(CPUState*, uint32_t) {
 }
 static int guest_function_hits;
 static int instruction_hits;
+static int memory_hits;
+static uint32_t memory_delta = 0x1000u;
+static uint32_t test_memory_address(const CPUState*, uint32_t, uint32_t, uint32_t address) {
+    ++memory_hits;
+    return address + memory_delta;
+}
 static void test_instruction(CPUState* cpu, uint32_t) {
     instruction_hits++;
     cpu->gpr[5] = 0x80301008u;
@@ -647,6 +653,17 @@ int main(int argc, char** argv) {
           !psx_mod_register_instruction_plugin("runtime.other", 0x80003005u,
               0x90A30014u, test_instruction), "reject aliased duplicate and unaligned sites");
     psx_mod_write_word(0x80003004u, 0x90A30014u);
+    check(psx_mod_register_memory_address_plugin("runtime.test-vblank", 0x80003008u,
+              0x8CA30014u, test_memory_address), "register effective address callback");
+    check(!psx_mod_register_memory_address_plugin("runtime.test-vblank", 0xA0003008u,
+              0x8CA30014u, test_memory_address) &&
+          !psx_mod_register_memory_address_plugin("runtime.test-vblank", 0x80003009u,
+              0x8CA30014u, test_memory_address) &&
+          !psx_mod_register_memory_address_plugin("runtime.test-vblank", 0x8000300cu,
+              0x24020001u, test_memory_address), "reject duplicate, unaligned and non-memory adapters");
+    check(psx_mod_register_memory_address_plugin("runtime.unselected-entry", 0x80003008u,
+              0x8CA30014u, test_memory_address), "register inactive adapter");
+    psx_mod_write_word(0x80003008u, 0x8CA30014u);
     check(psx_mod_register_guest_function_plugin(
               "runtime.test-vblank", 0x8FFF0000u, test_guest_function),
           "trusted callback registers outside the hardware map");
@@ -673,6 +690,8 @@ int main(int argc, char** argv) {
     /* Committed but not yet activated: no hook may run. */
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 0 && !g_psx_mod_instruction_hooks, "instruction hooks await activation");
+    check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30014u, 0x80004000u) == 0x80004000u &&
+          !memory_hits, "address adapters await activation");
     check(!psx_mod_dispatch_guest_function(&entry_cpu, 0x8FFF0000u) &&
               g_psx_mod_guest_functions == 0,
           "committed guest functions remain unavailable until activation");
@@ -683,6 +702,21 @@ int main(int argc, char** argv) {
     check(activation_calls == 1,
           "resolved trusted plugin must activate before runtime startup");
     entry_cpu.pc = 0x80004000u;
+    const CPUState memory_before = entry_cpu;
+    check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30014u, 0x80004000u) == 0x80005000u &&
+          psx_mod_memory_address(&entry_cpu, 0xA0003008u, 0x8CA30014u, 0x80004003u) == 0x80005003u &&
+          memory_hits == 2 && !std::memcmp(&entry_cpu, &memory_before, sizeof entry_cpu),
+          "active adapter handles aliases and preserves CPU and merge lanes");
+    check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30015u, 0x80004000u) == 0x80004000u,
+          "address adapter rejects wrong emitted word");
+    psx_mod_write_word(0x80003008u, 0x8CA30015u);
+    check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30014u, 0x80004000u) == 0x80004000u &&
+          memory_hits == 2, "address adapter rejects changed overlay word");
+    psx_mod_write_word(0x80003008u, 0x8CA30014u);
+    memory_delta = 1;
+    check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30014u, 0x80004000u) == 0x80004000u,
+          "misaligned adapter result is ignored");
+    memory_delta = 0x1000u;
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     psx_mod_instruction(&entry_cpu, 0xA0003004u, 0x90A30014u);
     check(instruction_hits == 2 && entry_cpu.gpr[5] == 0x80301008u &&
@@ -714,6 +748,8 @@ int main(int argc, char** argv) {
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 2 && !g_psx_mod_instruction_hooks, "clearing removes instruction hooks");
+    check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30014u, 0x80004000u) == 0x80004000u,
+          "clearing removes address adapters");
     check(!psx_mod_dispatch_guest_function(&entry_cpu, 0x8FFF0000u) &&
               g_psx_mod_guest_functions == 0,
           "clearing the plan drops guest callback availability");
@@ -1156,11 +1192,16 @@ int main(int argc, char** argv) {
     check(PSXRecompV4::mod_runtime_initialize(disc_root,"READER",0,{},&error),"reader initialize");
     check(PSXRecompV4::mod_runtime_commit(iso_path,&error),"reader mount original ISO");
     uint32_t bytes=0;
+    static unsigned host_read_progress = 0;
+    mod_runtime_set_progress_hook([] { ++host_read_progress; });
     check(psx_mod_read_disc_file("S0/LEVEL.NSF",nullptr,0,&bytes) && bytes==3000,"query original nested file size");
     std::vector<uint8_t> result(3000);
     check(!psx_mod_read_disc_file("S0/LEVEL.NSF",result.data(),2999,&bytes) && bytes==0,"undersized destination rejected");
+    check(host_read_progress == 0, "size query and rejected destination do not report reading");
     check(psx_mod_read_disc_file("S0/LEVEL.NSF",result.data(),(uint32_t)result.size(),&bytes) &&
           bytes==3000 && std::equal(result.begin(),result.end(),iso.begin()+22*2048),"complete original file bytes");
+    check(host_read_progress >= 2, "whole-file plugin reads report progress and completion");
+    mod_runtime_set_progress_hook(nullptr);
     check(!psx_mod_read_disc_file("S0/MISSING.NSF",nullptr,0,&bytes) && bytes==0,"missing file explicit");
     check(!psx_mod_read_disc_file("S0",nullptr,0,&bytes),"directory rejected");
     std::vector<uint8_t> raw_iso(24*2352);

@@ -51,6 +51,12 @@ uint32_t i_mask;
 uint64_t psx_cycle_count;
 uint32_t g_psx_mod_function_entry_hooks;
 uint32_t g_psx_mod_instruction_hooks;
+static uint32_t address_calls, shadow_address;
+uint32_t psx_mod_memory_address(const CPUState *cpu, uint32_t pc, uint32_t word, uint32_t address) {
+    (void)cpu; (void)pc; (void)word;
+    ++address_calls;
+    return address + 0x1000u;
+}
 void psx_mod_instruction(CPUState *cpu, uint32_t pc, uint32_t instruction) {
     (void)cpu; (void)pc; (void)instruction;
 }
@@ -76,9 +82,9 @@ int mdec_recently_active(uint32_t f) { (void)f; return 0; }
 void gte_execute(CPUState *cpu, uint32_t cmd) { (void)cpu; (void)cmd; }
 void gte_precision_store_word(uint32_t a, uint8_t r) { (void)a; (void)r; }
 uint32_t gte_read_ctrl(CPUState *cpu, uint8_t r) { (void)cpu; (void)r; return 0; }
-uint32_t gte_read_data(CPUState *cpu, uint8_t r) { (void)cpu; (void)r; return 0; }
+uint32_t gte_read_data(CPUState *cpu, uint8_t r) { return cpu->gte_data[r]; }
 void gte_write_ctrl(CPUState *cpu, uint8_t r, uint32_t v) { (void)cpu; (void)r; (void)v; }
-void gte_write_data(CPUState *cpu, uint8_t r, uint32_t v) { (void)cpu; (void)r; (void)v; }
+void gte_write_data(CPUState *cpu, uint8_t r, uint32_t v) { cpu->gte_data[r] = v; }
 int overlay_loader_call_native(CPUState *cpu, uint32_t a) { (void)cpu; (void)a; return 0; }
 void psx_bail_record(uint32_t ra, uint32_t sp, uint32_t pc, uint32_t gsp) {
     (void)ra; (void)sp; (void)pc; (void)gsp;
@@ -97,17 +103,17 @@ void psx_pgxp_alu(struct CPUState *c, uint32_t i, uint32_t r, uint32_t a, uint32
     (void)c; (void)i; (void)r; (void)a; (void)b;
 }
 void psx_pgxp_cop2(struct CPUState *c, uint32_t i, uint32_t v, uint32_t a) {
-    (void)c; (void)i; (void)v; (void)a;
+    (void)c; (void)i; (void)v; shadow_address = a;
 }
 void psx_pgxp_load(struct CPUState *c, uint32_t i, uint32_t a, uint32_t v) {
-    (void)c; (void)i; (void)a; (void)v;
+    (void)c; (void)i; (void)v; shadow_address = a;
 }
 void psx_pgxp_muldiv(struct CPUState *c, uint32_t i, uint32_t h, uint32_t l,
                      uint32_t a, uint32_t b) {
     (void)c; (void)i; (void)h; (void)l; (void)a; (void)b;
 }
 void psx_pgxp_store(struct CPUState *c, uint32_t i, uint32_t a, uint32_t v) {
-    (void)c; (void)i; (void)a; (void)v;
+    (void)c; (void)i; (void)v; shadow_address = a;
 }
 void psx_rfe_mark_escape(void) {}
 int psx_syscall(CPUState *cpu, uint32_t code) { (void)cpu; (void)code; return 0; }
@@ -312,11 +318,52 @@ static void test_interpreter(void) {
     CHECK(cpu.gpr[V0] == 0x900u && cpu.gpr[AT] == 0u, "off again: vanilla");
 }
 
+static void write_byte(uint32_t a, uint8_t v) { test_ram[a & 0x1fffffu] = v; }
+static void write_half(uint32_t a, uint16_t v) { memcpy(test_ram + (a & 0x1fffffu), &v, 2); }
+static void test_memory_addresses(void) {
+    const uint32_t ops[] = {0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x28,0x29,0x2a,0x2b,0x2e,0x32,0x3a};
+    /* Compare real interpreted instructions on relocated memory against the
+     * same instructions on the original memory, including unaligned lanes. */
+    for (unsigned i = 0; i < sizeof ops / sizeof ops[0]; ++i) {
+        for (unsigned lane = 0; lane < 4; ++lane) {
+            uint32_t op = ops[i];
+            if (lane && op != 0x22 && op != 0x26 && op != 0x2a && op != 0x2e) continue;
+            CPUState vanilla = {0}, adapted = {0};
+            vanilla.read_word = psx_read_word; vanilla.read_half = psx_read_half;
+            vanilla.read_byte = psx_read_byte;
+            vanilla.write_word = put_word; vanilla.write_half = write_half; vanilla.write_byte = write_byte;
+            vanilla.gpr[5] = 0x80008004u;
+            vanilla.gpr[3] = 0x87654321u; vanilla.gte_data[3] = 0x87654321u;
+            adapted = vanilla;
+            put_word(0x80008000u, 0xabcdef01u); put_word(0x80009000u, 0xabcdef01u);
+            const uint32_t word = (op << 26) | (5u << 21) | (3u << 16) | (0xfffcu + lane);
+            g_psx_mod_instruction_hooks = 0;
+            step(&vanilla, TEXT_LO, word);
+            const uint32_t expected = psx_read_word(0x80008000u);
+            address_calls = 0; g_psx_mod_instruction_hooks = 1;
+            step(&adapted, TEXT_LO, word);
+            CHECK(adapted.gpr[3] == vanilla.gpr[3] && adapted.gte_data[3] == vanilla.gte_data[3],
+                  "adapted load/merge/GTE result op=%x lane=%u", op, lane);
+            CHECK(psx_read_word(0x80009000u) == expected && psx_read_word(0x80008000u) == expected,
+                  "adapted store/merge result op=%x lane=%u", op, lane);
+            CHECK(adapted.gpr[5] == 0x80008004u && address_calls == 1 && shadow_address == 0x80009000u + lane,
+                  "adapter preserves base and PGXP address op=%x lane=%u", op, lane);
+        }
+    }
+    CPUState cpu = {0}; cpu.read_word = psx_read_word;
+    cpu.gpr[5] = 0x80008000u; put_word(0x80009000u, 0x12345678u);
+    step(&cpu, TEXT_LO, 0x8ca50000u); /* lw a1,0(a1) */
+    CHECK(cpu.gpr[5] == 0x12345678u && shadow_address == 0x80009000u,
+          "load destination may alias original base register");
+    g_psx_mod_instruction_hooks = 0;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) s_capture_path = argv[1];
     test_store();
     test_switch();
     test_interpreter();
+    test_memory_addresses();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

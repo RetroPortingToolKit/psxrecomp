@@ -292,6 +292,7 @@ struct ActiveInstructionHook {
     uint32_t key, expected;
     PSXModFunctionEntryCallback callback;
     const ModResolution::Plugin* plugin;
+    PSXModMemoryAddressCallback memory_address;
 };
 std::vector<ActiveInstructionHook>& active_instruction_hooks() {
     static std::vector<ActiveInstructionHook> value;
@@ -347,7 +348,7 @@ void build_function_entry_hooks(const RuntimeMods& s) {
     auto& instructions = active_instruction_hooks();
     for (const auto& plugin : s.plan.plugins)
         for (const auto& hook : mod_instruction_hooks(plugin.id))
-            instructions.push_back({hook.address, hook.expected, hook.callback, &plugin});
+            instructions.push_back({hook.address, hook.expected, hook.callback, &plugin, hook.memory_address});
     std::stable_sort(instructions.begin(), instructions.end(),
                     [](const auto& a, const auto& b) { return a.key < b.key; });
     g_psx_mod_instruction_hooks = (uint32_t)instructions.size();
@@ -2755,10 +2756,15 @@ extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
         if (capacity < bytes) return 0;
         uint8_t sector[2048];
         for (uint32_t offset = 0; offset < bytes; offset += 2048u) {
+            /* Plugin callbacks may read a large archive during gameplay.
+             * Account for host I/O just as the resident-sector reader does;
+             * otherwise its first guest instruction can trip the watchdog. */
+            if (g_progress_hook && !(offset & ((2048u * 1024u) - 1u))) g_progress_hook();
             if (!read_effective_user_sector(reader, lba + offset / 2048u, sector)) return 0;
             const uint32_t count = std::min(2048u, bytes - offset);
             std::memcpy(static_cast<uint8_t*>(buffer) + offset, sector, count);
         }
+        if (g_progress_hook) g_progress_hook();
         *size = bytes;
         return 1;
     } catch (...) { return 0; }
@@ -3175,13 +3181,40 @@ extern "C" void psx_mod_instruction(CPUState* cpu, uint32_t address, uint32_t in
     auto it = std::lower_bound(hooks.begin(), hooks.end(), key,
                               [](const auto& h, uint32_t k) { return h.key < k; });
     for (; it != hooks.end() && it->key == key; ++it) {
-        if (it->expected != instruction || psx_mod_read_word(address) != instruction) continue;
+        if (!it->callback || it->expected != instruction || psx_mod_read_word(address) != instruction) continue;
         PluginCallbackScope scope(state(), it->plugin, nullptr);
         const uint32_t pc = cpu->pc;
         it->callback(cpu, address);
         if (cpu->pc != pc) std::abort();
         cpu->gpr[0] = 0;
     }
+}
+
+extern "C" int psx_mod_register_memory_address_plugin(const char* id, uint32_t pc,
+    uint32_t expected, PSXModMemoryAddressCallback callback) {
+    return id && PSXRecompV4::mod_register_memory_address_plugin(id, pc, expected, callback);
+}
+
+extern "C" uint32_t psx_mod_memory_address(const CPUState* cpu, uint32_t pc,
+    uint32_t instruction, uint32_t address) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_instruction_hooks || !cpu || pc >= 0xC0000000u || mod_plan_hooks_parked())
+        return address;
+    const auto& hooks = active_instruction_hooks();
+    const uint32_t key = function_entry_key(pc);
+    auto it = std::lower_bound(hooks.begin(), hooks.end(), key,
+                              [](const auto& h, uint32_t k) { return h.key < k; });
+    for (; it != hooks.end() && it->key == key; ++it) {
+        if (!it->memory_address || it->expected != instruction || psx_mod_read_word(pc) != instruction) continue;
+        PluginCallbackScope scope(state(), it->plugin, nullptr);
+        const uint32_t next = it->memory_address(cpu, pc, instruction, address);
+        if ((next ^ address) & 3u) {
+            psx_mod_counter_add("mod.memory_address.bad_alignment", 1);
+            continue;
+        }
+        address = next;
+    }
+    return address;
 }
 
 static int game_netplay_function_entry(CPUState* cpu, uint32_t address);

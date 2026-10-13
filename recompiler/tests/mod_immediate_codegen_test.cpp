@@ -292,6 +292,42 @@ void guards() {
           "a main-EXE word mismatch fails generation");
 }
 
+void memory_addresses() {
+    const uint32_t ops[] = {0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x28,0x29,0x2a,0x2b,0x2e,0x32,0x3a};
+    for (bool overlay : {false, true}) {
+        PSXRecomp::CodeGenConfig config{};
+        config.overlay_mode = overlay;
+        config.mod_instruction_sites.insert(kBase);
+        for (uint32_t op : ops) {
+            const uint32_t word = (op << 26) | (5u << 21) | (3u << 16) | 0xfffcu;
+            const auto code = generate({word, 0u}, config).full_code;
+            check(code.find("psx_mod_memory_address(cpu, 0x80010000u,") != std::string::npos,
+                  "configured load/store computes one guarded address");
+            check(count_of(code, "psx_mod_memory_address(cpu,") == 1,
+                  "address callback is evaluated once, including PGXP");
+            check(code.find("_pgxa = _mod_ea") != std::string::npos,
+                  "PGXP and guest access share the redirected address");
+            check(code.find("cpu->gpr[5] =") == std::string::npos,
+                  "address adaptation never overwrites the base register");
+        }
+        config.mod_instruction_sites.clear(); config.mod_instruction_sites.insert(kBase + 4);
+        const auto delay = generate({0x10000001u, 0x8ca30014u, 0u}, config).full_code;
+        check(delay.find("psx_mod_memory_address(cpu, 0x80010004u,") != std::string::npos,
+              "branch delay-slot memory access is adapted");
+        const auto zero = generate({0u, 0x88a00000u, 0u}, config).full_code;
+        check(zero.find("(void)psx_lwl(cpu, _mod_ea") != std::string::npos,
+              "unaligned load to zero still performs the access");
+    }
+    PSXRecomp::CodeGenConfig plain{};
+    check(generate({0x8ca30014u, 0u}, plain).full_code.find("psx_mod_memory_address(cpu,") == std::string::npos,
+          "unconfigured load has no address adapter cost");
+    auto both = with_sites({make(kBase, 0x8ca30014u, 1, {0x18})});
+    both.mod_instruction_sites.insert(kBase);
+    const auto code = generate({0x8ca30014u, 0u}, both).full_code;
+    check(count_of(code, "0x8CA30014u, (uint32_t)(cpu->gpr[5] +") == 2,
+          "immediate variants retain the original instruction guard");
+}
+
 void shared_decls() {
     PSXRecomp::PS1Executable exe{};
     exe.header.load_address = kBase;
@@ -334,6 +370,7 @@ int main(int argc, char** argv) {
     if (argc >= 3 && std::string(argv[1]) == "--exit-probe") g_exit_probe = std::atoi(argv[2]);
     loader();
     emission();
+    memory_addresses();
     guards();
     shared_decls();
     overlay_identity();

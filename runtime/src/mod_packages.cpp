@@ -1565,6 +1565,21 @@ std::vector<ModInstructionHook> mod_instruction_hooks(const std::string& id) {
         ? std::vector<ModInstructionHook>{} : found->second.instructions;
 }
 
+bool mod_register_memory_address_plugin(const std::string& id, uint32_t address,
+    uint32_t expected, PSXModMemoryAddressCallback callback) {
+    const uint32_t op = expected >> 26;
+    const bool memory = (op >= 0x20 && op <= 0x26) || op == 0x28 || op == 0x29 ||
+        op == 0x2a || op == 0x2b || op == 0x2e || op == 0x32 || op == 0x3a;
+    if (!memory || !valid_id(id) || !callback || (address & 3u) ||
+        address >= 0xC0000000u || (address & 0x1FFFFFFFu) >= 0x00800000u) return false;
+    auto& hooks = registered_plugins()[id].instructions;
+    const uint32_t key = address & 0x1FFFFFFFu;
+    for (const auto& hook : hooks)
+        if (hook.address == key && hook.expected == expected && hook.memory_address) return false;
+    hooks.push_back({key, expected, nullptr, callback});
+    return true;
+}
+
 bool mod_register_savestate_plugin(const std::string& id, void (*callback)(void)) {
     if (!valid_id(id) || !callback) return false;
     RegisteredPlugin& plugin = registered_plugins()[id];
