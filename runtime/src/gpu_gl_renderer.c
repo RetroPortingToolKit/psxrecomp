@@ -90,6 +90,7 @@
 #include "mod_plugins.h"      /* PSX_MOD_RENDER_PASS_* reasons */
 #include "host_osd.h"
 #include "psx_savestate_menu.h"
+#include "psx_host_menu.h"
 #include "host_time.h"
 #include "latency_ring.h"
 #include "gpu_timeline.h"
@@ -9155,7 +9156,7 @@ static int ov_image(int i, const uint32_t **px, int *w, int *h) {
     case 0: return host_osd_image(px, w, h);
     case 1: return host_osd_volume_image(px, w, h);
     case 2: return psx_rewind_overlay_image(px, w, h);
-    default: return psx_savestate_menu_overlay_image(px, w, h);
+    default: return psx_host_menu_overlay_image(px, w, h);
     }
 }
 static float ov_rewind_slide(void) {
@@ -9395,6 +9396,13 @@ int gl_renderer_present_thread_json(char *out, size_t cap) {
 static void gl_swap_now(int generated);
 static int  fg_keep_real(void);      /* frame generation */
 static void fg_note_swap(uint64_t ns);
+static void (*s_host_overlay_draw)(void*);
+static void *s_host_overlay_context;
+void gl_renderer_set_host_overlay(void (*draw)(void*), void *context) {
+    s_host_overlay_draw = draw;
+    s_host_overlay_context = context;
+}
+
 static void gl_swap_with_osd(void) {
     openxr_present_native(); /* Copy guest content before host-only overlays. */
     s_native_surface_pending=0; /* Hold-last/resim cannot reuse a native source. */
@@ -9435,6 +9443,7 @@ static void gl_swap_with_osd(void) {
                 gl_draw_osd_image(px, ow, oh, ww, wh, 0, 0, ww, wh);
         }
     }
+    if (s_host_overlay_draw) s_host_overlay_draw(s_host_overlay_context);
     if (!rth_replaying()) host_osd_present_done();   /* replay: done at record */
     /* present_shot (GL backend): the default framebuffer now holds the composed
      * frame — display quad fitted to the window, plus OSD — so this is the only

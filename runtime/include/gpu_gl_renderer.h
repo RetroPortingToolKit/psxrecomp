@@ -191,6 +191,8 @@ double gl_renderer_post_aa_gpu_us(void);   /* debug builds, PSX_POST_AA_TIME=N: 
 
 /* Clear to black + swap (display-disabled frame). */
 void gl_renderer_present_blank(void);
+/* Set only with the render/present workers stopped; drawn after guest capture. */
+void gl_renderer_set_host_overlay(void (*draw)(void*), void *context);
 
 /* §33: re-present the last Live frame captured before Swap (or from a VRAM
  * snapshot when interpolation owned the last present). Used during rollback

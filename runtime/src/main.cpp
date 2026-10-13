@@ -37,6 +37,8 @@
 #include "psx_rewind.h"
 #include "psx_savestate_menu.h"
 #include "host_osd.h"
+#include "psx_disc_tray.h"
+#include "psx_runtime_menu.h"
 #include "local_mouse_sdl.h"
 #include "pad_external_input.h"
 #include "host_keymap.h"
@@ -2374,7 +2376,9 @@ extern "C" void psx_video_resolution_info(int *preset, int *ref_lines, int *requ
 extern "C" int present_shot_request(const char *path)
 {
     if (!path || !*path) return 0;
-    if (g_headless)  return 0;   /* no present surface to read back */
+    /* A headless GL menu test has a real hidden presentation surface. Ordinary
+     * headless frames still use the display ring, not an unpresented buffer. */
+    if (g_headless && !(g_headless_opengl && psx_runtime_menu_is_open())) return 0;
     /* Vulkan owns its own swapchain present (see the g_vk_active branch in
      * sdl_vblank_present_body) and has no readback hook, so nothing would ever
      * fulfil the request. Refuse honestly instead of accepting a shot that can
@@ -7950,7 +7954,7 @@ static void rewind_pause_present(void) {
 #ifndef PSX_SDL_NO_RENDER
     if (g_gl_active) {
         gl_renderer_set_interpolation_suspended(1);
-        (void)gl_renderer_present_hold_last();
+        if (!gl_renderer_present_hold_last()) gl_renderer_present_blank();
     } else if (g_vk_active) {
         vk_renderer_present_blank();
     } else if (sdl_renderer) {
@@ -7963,6 +7967,100 @@ static void rewind_pause_present(void) {
         SDL_RenderPresent(sdl_renderer);
     }
 #endif
+}
+
+/* Menu actions execute at a VBlank boundary without resetting the guest. */
+static int runtime_menu_chord_down(void) {
+    return p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_BACK) &&
+           p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_LEFTSTICK);
+}
+static int runtime_menu_chord_was;
+static void runtime_menu_poll_toggle(void) {
+    const int down = runtime_menu_chord_down();
+    if (down && !runtime_menu_chord_was && host_hotkey_input_focused() && !savestate_menu_open &&
+        !psx_rewind_is_open()) psx_runtime_menu_open();
+    runtime_menu_chord_was = down;
+}
+static void runtime_menu_host_loop(void) {
+    if (!psx_runtime_menu_is_open()) return;
+    psx_local_mouse_begin(sdl_window, false);
+    psx_local_mouse_reset();
+    freeze_heartbeat_set_paused(1);
+    int restart_worker = 0;
+#ifndef PSX_SDL_NO_RENDER
+    if (g_gl_active) {
+        restart_worker = gl_renderer_render_thread_active();
+        gl_renderer_render_thread_stop();
+        gl_renderer_set_interpolation_suspended(1);
+        if (psx_runtime_menu_gl_begin(g_headless_opengl ? s_headless_gl_window : sdl_window,
+                                     SDL_GL_GetCurrentContext()))
+            gl_renderer_set_host_overlay(psx_runtime_menu_gl_draw, nullptr);
+    }
+#endif
+    const int buttons[] = { SDL_CONTROLLER_BUTTON_B, SDL_CONTROLLER_BUTTON_DPAD_UP,
+        SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+        SDL_CONTROLLER_BUTTON_DPAD_RIGHT, SDL_CONTROLLER_BUTTON_A };
+    int held[6];
+    for (int i = 0; i < 6; ++i) held[i] = p1_host_button_down(nullptr, buttons[i]);
+    int chord_was = runtime_menu_chord_down();
+    while (psx_runtime_menu_is_open()) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        debug_server_poll();
+#endif
+        SDL_Event ev;
+        while (!g_headless && SDL_PollEvent(&ev)) {
+            psx_runtime_menu_gl_event(&ev);
+            if (ev.type == SDL_QUIT) {
+                psx_runtime_menu_close();
+                psx_crash_trace_set_exit_origin("sdl_window_close");
+                shutdown_runtime();
+                std::exit(0);
+            } else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
+                refresh_player_devices();
+            } else if (ev.type == SDL_CONTROLLERDEVICEREMOVED) {
+                close_controller();
+                refresh_player_devices();
+            } else if (ev.type == SDL_KEYDOWN) {
+#if defined(PSX_SDL3)
+                const SDL_Keycode key = ev.key.key;
+                const int mod = ev.key.mod, scan = ev.key.scancode, repeat = ev.key.repeat;
+#else
+                const SDL_Keycode key = ev.key.keysym.sym;
+                const int mod = ev.key.keysym.mod, scan = ev.key.keysym.scancode, repeat = ev.key.repeat;
+#endif
+                if (!repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scan, mod))
+                    psx_runtime_menu_close();
+                else if (key == SDLK_ESCAPE || key == SDLK_BACKSPACE) psx_runtime_menu_input(PSX_MENU_BACK, repeat);
+                else if (key == SDLK_UP) psx_runtime_menu_input(PSX_MENU_UP, repeat);
+                else if (key == SDLK_DOWN) psx_runtime_menu_input(PSX_MENU_DOWN, repeat);
+                else if (key == SDLK_LEFT) psx_runtime_menu_input(PSX_MENU_LEFT, repeat);
+                else if (key == SDLK_RIGHT) psx_runtime_menu_input(PSX_MENU_RIGHT, repeat);
+                else if (key == SDLK_RETURN || key == SDLK_SPACE) psx_runtime_menu_input(PSX_MENU_ACCEPT, repeat);
+            }
+        }
+        const int chord = runtime_menu_chord_down();
+        if (chord && !chord_was) psx_runtime_menu_close();
+        chord_was = chord;
+        for (int i = 0; i < 6; ++i) {
+            const int down = p1_host_button_down(nullptr, buttons[i]);
+            if (down && !held[i]) psx_runtime_menu_input(PSX_MENU_BACK + i, 0);
+            held[i] = down;
+        }
+        if (!g_headless || g_headless_opengl) rewind_pause_present();
+        starvation_watchdog_heartbeat();
+        SDL_Delay(g_headless ? 1 : 8);
+    }
+#ifndef PSX_SDL_NO_RENDER
+    if (g_gl_active) {
+        gl_renderer_set_host_overlay(nullptr, nullptr);
+        psx_runtime_menu_gl_end();
+        gl_renderer_set_interpolation_suspended(0);
+        if (restart_worker) gl_renderer_render_thread_start(g_render_thread_frames);
+    }
+#endif
+    runtime_menu_chord_was = runtime_menu_chord_down();
+    freeze_heartbeat_set_paused(0);
+    savestate_input_guard_arm();
 }
 
 /* Freeze guest in vblank present while the rewind filmstrip is open. */
@@ -8205,6 +8303,10 @@ static bool drain_host_events() {
                 netplay_soft_exit("netplay_escape");
                 return false;
             }
+            if (!key_repeat && !savestate_menu_open && !psx_rewind_is_open() &&
+                host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, (int)key,
+                                        (int)scancode, (int)mod) &&
+                psx_runtime_menu_open()) continue;
 #ifndef PSX_NO_DEBUG_TOOLS
             /* Debug-tools builds: live rendering A/B keys 0-9 (consumed). */
             if (!key_repeat && !(mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) &&
@@ -8225,9 +8327,9 @@ static bool drain_host_events() {
                 savestate_menu_toggle(key);
             }
             else if (key == SDLK_c && (mod & KMOD_CTRL)) {
-                std::fprintf(stdout, "[DEBUG] Forzando reinserción de CD...\n");
-                debug_force_cd_reinsert();
-                host_osd_push("CD reinsert", 1500);
+                const int result = psx_disc_tray_cycle(0, PSX_DISC_TRAY_ORIGIN_HOTKEY_REINSERT);
+                host_osd_push(result == PSX_DISC_TRAY_OK ? "CD reinsert" :
+                              "Disc changes are unavailable in this game mode", 1500);
             }
             else if (!key_repeat &&
                      host_keymap_match_event(HOST_KEYMAP_TURBO_TOGGLE,
@@ -8487,6 +8589,16 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                                  &g_runtime_perf.provider_poll_ticks);
     }
 
+    /* Title-owned request detection, shared tray policy, emulation-thread only.
+     * Run even when presentation is skipped by headless/turbo paths. */
+    {
+        int ready = 0;
+        const int requested = mod_runtime_disc_request(&ready);
+        const int result = psx_disc_tray_auto_poll(requested, ready);
+        if (result > PSX_DISC_TRAY_OK)
+            host_osd_push("Automatic disc change failed. Open the game menu to choose a disc.", 5000);
+    }
+
     /* Direct-shortcut claims are settled before any shortcut poll or pad
      * sample this frame (no-op unless a title allowed a direct shortcut). */
     direct_shortcut_claim_update();
@@ -8494,6 +8606,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         /* Pump SDL events to prevent window freeze. */
         psx_local_mouse_begin(sdl_window, local_mouse_live(override));
         if (!drain_host_events()) return ep;
+        runtime_menu_poll_toggle();
+        if (psx_runtime_menu_is_open()) runtime_menu_host_loop();
         savestate_menu_poll_toggle_buttons();
         rewind_poll_toggle_buttons();
         fast_forward_toggle_poll_buttons();
@@ -8513,6 +8627,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         if (psx_rewind_is_open())
             rewind_host_pause_loop();
     }
+
+    if (psx_runtime_menu_is_open()) runtime_menu_host_loop();
 
     /* Sample each player's device and feed the matching SIO pad slot.
      * Debug server input override (when active) drives port 1 only. With
@@ -8887,6 +9003,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
                 if (!drain_host_events()) return ep;
                 // A hotkey acquired during pacing may open a host menu.
+                if (psx_runtime_menu_is_open()) runtime_menu_host_loop();
                 if (savestate_menu_open) savestate_menu_host_pause_loop();
                 if (psx_rewind_is_open()) rewind_host_pause_loop();
                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
@@ -16191,6 +16308,12 @@ int main(int argc, char** argv) {
     /* 1-based selected disc, from settings.toml [disc] selected. Kept at main
      * scope because it round-trips through both launcher entry points. */
     int selected_disc_index = 1;
+    struct DiscMenuSession {
+        int *selected;
+        std::string *mounted;
+        std::filesystem::path *resolved;
+        std::filesystem::path settings;
+    } disc_menu_session{};
     std::string window_title = PSX_WINDOW_TITLE;
     uint16_t   debug_port    = (uint16_t)DEFAULT_DEBUG_PORT;
     std::string game_name;
@@ -17831,6 +17954,7 @@ int main(int argc, char** argv) {
                 rui_lang_labels.empty() ? nullptr : rui_lang_labels.data(),
                 (int)rui_lang_labels.size(),
                 /*resume_netplay_room=*/0);
+            gi.has_open_launcher_hotkey = game_discs.size() > 1;
             gi.discs = rui_discs.empty() ? nullptr : rui_discs.data();
             gi.num_discs = (int)rui_discs.size();
 #if defined(PSX_HAS_SETUP_WIZARD)
@@ -19028,6 +19152,26 @@ session_reboot:
          * which is the mix-up savestate_set_disc_scope() exists to prevent. */
         if (mounted >= 0) selected_disc_index = mounted + 1;
     }
+    disc_menu_session = { &selected_disc_index, &disc_path_str, &resolved_disc,
+                          exe_dir_from_argv(argv[0]) / "settings.toml" };
+    psx_disc_tray_set_host_hook([](void *ctx, int disc, const char *path) {
+        auto &session = *static_cast<DiscMenuSession*>(ctx);
+        *session.selected = disc;
+        *session.mounted = path;
+        *session.resolved = path;
+        auto settings = PSXRecompV4::load_user_settings(session.settings);
+        if (!settings.parse_error) {
+            settings.disc_index = disc;
+            settings.has_disc_index = true;
+            settings.disc_path = path;
+            settings.has_disc_path = true;
+            PSXRecompV4::save_user_settings(session.settings, settings);
+        }
+        char message[64];
+        snprintf(message, sizeof message, "Disc %d inserted", disc);
+        host_osd_push(message, 2500);
+    }, &disc_menu_session);
+    psx_runtime_menu_init();
     for (const auto& route : warm_cd_routes) {
         cdrom_register_warm_route(route.arm_lba, route.lbas.data(),
                                   (int)route.lbas.size(),
@@ -20354,6 +20498,7 @@ soft_return_lobby:
             rui_lang_labels.empty() ? nullptr : rui_lang_labels.data(),
             (int)rui_lang_labels.size(),
             /*resume_netplay_room=*/rui_resume_room);
+        gi.has_open_launcher_hotkey = game_discs.size() > 1;
         gi.discs = rui_discs.empty() ? nullptr : rui_discs.data();
         gi.num_discs = (int)rui_discs.size();
 #if defined(PSX_HAS_SETUP_WIZARD) && defined(PSX_HAS_CODEGEN_SETUP_HOST)

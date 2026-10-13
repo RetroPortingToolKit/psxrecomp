@@ -122,6 +122,7 @@ void psx_rewind_configure(uint32_t bios_checksum, uint32_t entry_pc)
     (void)entry_pc;
 }
 void psx_rewind_shutdown(void) {}
+uint32_t psx_rewind_discard_history(void) { return 0; }
 int  psx_rewind_enabled(void) { return 0; }
 int  psx_rewind_is_open(void) { return 0; }
 int  psx_rewind_needs_present(void) { return 0; }
@@ -461,6 +462,19 @@ void psx_rewind_shutdown(void)
     s_anim_dir = 0;
     s_load_pending = 0;
     s_capture_due = 0;
+}
+
+uint32_t psx_rewind_discard_history(void)
+{
+    uint32_t dropped = s_count;
+    if (!s_configured || !s_ring) return 0;
+    rbe_snap_ring_clear(s_ring);
+    s_count = 0;
+    s_sel = 0;
+    s_load_pending = 0;
+    s_last_capture_frame = 0xffffffffu;
+    s_panel_dirty = 1;
+    return dropped;
 }
 
 int psx_rewind_enabled(void)

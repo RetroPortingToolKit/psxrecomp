@@ -108,6 +108,8 @@ void mod_runtime_on_savestate_loaded(void);
  * launcher commit and before renderer/window initialization. */
 void mod_runtime_activate_plugins(void);
 void mod_runtime_on_vblank(void);
+/* Host VBlank query for the active title's optional disc-request provider. */
+int mod_runtime_disc_request(int *ready);
 /* Host-side disc reads for plugins (psx_mod_read_disc_file and friends) follow
  * the image the guest drive has mounted. `path` returns the mounted image's
  * path, `index` its 1-based roster position. NULL restores the boot disc. */

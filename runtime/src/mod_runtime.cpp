@@ -62,6 +62,17 @@ extern "C" const char* host_launch_timing_stage_name(uint32_t stage) {
 #include <unistd.h>
 #endif
 
+static PSXModDiscRequestProvider g_disc_request_provider;
+extern "C" void psx_mod_set_disc_request_provider(PSXModDiscRequestProvider provider) {
+    g_disc_request_provider = provider;
+}
+extern "C" int mod_runtime_disc_request(int *ready) {
+    if (!ready) return 0;
+    *ready = 0;
+    if (!g_disc_request_provider || psx_netplay_active() || !psx_mod_game_started()) return 0;
+    return g_disc_request_provider(ready);
+}
+
 extern "C" uint8_t psx_read_byte(uint32_t addr);
 extern "C" void psx_write_byte(uint32_t addr, uint8_t value);
 extern "C" uint16_t psx_read_half(uint32_t addr);
@@ -1467,6 +1478,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
                             uint32_t game_entry_pc,
                             const std::filesystem::path& exe_path,
                             std::string* error) {
+    psx_mod_set_disc_request_provider(nullptr);
     psx_mod_netplay_set_active(0);
     (void)psx_mod_netplay_set_options_identity("");
     RuntimeMods& s = state();
@@ -2818,6 +2830,7 @@ extern "C" void mod_runtime_activate_plugins(void) {
     HostLaunchTimingScope timing(HOST_LAUNCH_PLUGIN_ACTIVATION);
     RuntimeMods& s = state();
     s.ticket_ready = false;
+    psx_mod_set_disc_request_provider(nullptr);
     psx_projection_reset_session();
     gpu_ws_set_native_scene_predicate(nullptr);
     psx_ram_reset_size_request();
