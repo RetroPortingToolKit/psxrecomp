@@ -757,6 +757,9 @@ if(BUILD_TESTING)
     add_test(NAME pad_external_input_test COMMAND pad_external_input_test)
     add_executable(host_overlay_test tests/test_host_overlay.c src/host_overlay.c)
     target_include_directories(host_overlay_test PRIVATE include src)
+    if(WIN32)
+        target_link_libraries(host_overlay_test PRIVATE shell32)
+    endif()
     add_test(NAME host_overlay_test COMMAND host_overlay_test)
 
     add_executable(gte_register_access_test

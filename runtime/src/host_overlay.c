@@ -117,30 +117,123 @@ int psx_texture_filter_from_ui(int value) {
 }
 
 /* ---- seamless relaunch ----------------------------------------------------- */
-#if defined(_WIN32)
-#include <process.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
-/* The CRT joins argv with spaces and does not quote, so quote each entry
- * (enough for paths with spaces; no embedded quotes in our arguments). */
-void psx_relaunch_self(int argc, char** argv) {
-    char exe[MAX_PATH];
-    char* q[64];
-    int i, n = 0;
-    if (!argv || !argv[0]) return;
-    if (!GetModuleFileNameA(NULL, exe, sizeof(exe))) strncpy(exe, argv[0], sizeof(exe) - 1), exe[sizeof(exe) - 1] = 0;
-    for (i = 0; i < argc && n < 63; ++i) {
-        size_t len = strlen(argv[i]);
-        char* a = (char*)malloc(len + 3);
-        if (!a) return;
-        a[0] = '"'; memcpy(a + 1, argv[i], len); a[len + 1] = '"'; a[len + 2] = 0;
-        q[n++] = a;
+
+/* Windows command-line quoting (the rules CommandLineToArgvW and the MSVC CRT
+ * parse with): an argument is quoted when empty or holding a space, tab or
+ * quote; inside quotes, backslashes are literal except before a quote, so a
+ * run of n backslashes before a quote becomes 2n+1 plus the quote, and a run
+ * before the closing quote becomes 2n. */
+size_t psx_win_cmdline_quote(const char* arg, char* out, size_t cap) {
+    size_t n = 0, i, bs;
+    const char* p;
+#define PUT(c) do { if (out && n + 1 < cap) out[n] = (c); ++n; } while (0)
+    if (!arg) arg = "";
+    if (*arg && !strpbrk(arg, " \t\n\v\"")) {
+        for (p = arg; *p; ++p) PUT(*p);
+    } else {
+        PUT('"');
+        for (p = arg;; ++p) {
+            bs = 0;
+            while (*p == '\\') { ++bs; ++p; }
+            if (!*p) { for (i = 0; i < bs * 2; ++i) PUT('\\'); break; }
+            if (*p == '"') { for (i = 0; i < bs * 2 + 1; ++i) PUT('\\'); PUT('"'); continue; }
+            for (i = 0; i < bs; ++i) PUT('\\');
+            PUT(*p);
+        }
+        PUT('"');
     }
-    q[n] = NULL;
-    fflush(NULL);
-    if (_spawnv(_P_NOWAIT, exe, (const char* const*)q) != -1) _exit(0);
+#undef PUT
+    if (out && cap) out[n < cap ? n : cap - 1] = '\0';
+    return n;
+}
+
+char* psx_win_cmdline_join(int argc, const char* const* argv) {
+    size_t total = 1;
+    int i;
+    char* out;
+    char* w;
+    for (i = 0; i < argc; ++i) total += psx_win_cmdline_quote(argv[i], NULL, 0) + 1;
+    out = (char*)malloc(total);
+    if (!out) return NULL;
+    w = out;
+    for (i = 0; i < argc; ++i) {
+        if (i) *w++ = ' ';
+        w += psx_win_cmdline_quote(argv[i], w, total - (size_t)(w - out));
+    }
+    *w = '\0';
+    return out;
+}
+
+#if defined(_WIN32)
+#include <stdio.h>
+#include <windows.h>
+#include <shellapi.h>
+/* Re-run this exe with the original arguments. The arguments come from
+ * GetCommandLineW (full Unicode, no ANSI code-page loss, any count or length),
+ * are re-quoted by the rules above, and the new process is started before
+ * this one exits. argc/argv are only a fallback. */
+static wchar_t* utf8_to_wide(const char* s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    wchar_t* w = n > 0 ? (wchar_t*)malloc(sizeof(wchar_t) * (size_t)n) : NULL;
+    if (w && MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n) <= 0) { free(w); w = NULL; }
+    return w;
+}
+static char* wide_to_utf8(const wchar_t* s) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
+    char* u = n > 0 ? (char*)malloc((size_t)n) : NULL;
+    if (u && WideCharToMultiByte(CP_UTF8, 0, s, -1, u, n, NULL, NULL) <= 0) { free(u); u = NULL; }
+    return u;
+}
+void psx_relaunch_self(int argc, char** argv) {
+    int wargc = 0, i, ok = 1;
+    wchar_t** wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    const char** args = NULL;
+    char* line = NULL;
+    wchar_t* wline = NULL;
+    wchar_t* exe = NULL;
+    DWORD cap = MAX_PATH, got = 0;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    if (wargv && wargc > 0) {
+        args = (const char**)calloc((size_t)wargc, sizeof(*args));
+        for (i = 0; args && i < wargc; ++i)
+            if (!(args[i] = wide_to_utf8(wargv[i]))) ok = 0;
+        if (args && ok) line = psx_win_cmdline_join(wargc, args);
+        for (i = 0; args && i < wargc; ++i) free((void*)args[i]);
+        free((void*)args);
+        LocalFree(wargv);
+    } else if (argv) {
+        line = psx_win_cmdline_join(argc, (const char* const*)argv);
+    }
+    if (!line) return;
+    wline = utf8_to_wide(line);
+    free(line);
+    for (;;) {  /* long paths: grow until the module path fits */
+        free(exe);
+        exe = (wchar_t*)malloc(sizeof(wchar_t) * cap);
+        if (!exe) break;
+        got = GetModuleFileNameW(NULL, exe, cap);
+        if (got && got < cap) break;
+        if (!got || cap >= 32768) { free(exe); exe = NULL; break; }
+        cap *= 2;
+    }
+    if (wline && exe) {
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        memset(&pi, 0, sizeof(pi));
+        fflush(NULL);
+        if (CreateProcessW(exe, wline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            free(wline);
+            free(exe);
+            _exit(0);
+        }
+    }
+    free(wline);
+    free(exe);
 }
 #else
 #include <signal.h>

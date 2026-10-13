@@ -2,6 +2,11 @@
 #include "host_overlay.h"
 
 #include <stdio.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <shellapi.h>
+#endif
+#include <stdlib.h>
 #include <string.h>
 
 static int g_fail = 0;
@@ -94,7 +99,85 @@ static void test_texture_filter(void) {
     CHECK(psx_texture_filter_from_ui(-1) == PSX_TEXTURE_FILTER_NEAREST);
 }
 
+/* Windows relaunch quoting: a parser for the CommandLineToArgvW rules (the
+ * real one too, on Windows) must give every argument back unchanged. */
+static int parse_cmdline(const char* line, char out[][256], int max) {
+    int n = 0;
+    const char* p = line;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') ++p;
+        if (!*p || n >= max) break;
+        char* o = out[n];
+        size_t len = 0;
+        int inq = 0;
+        for (;;) {
+            size_t bs = 0;
+            while (*p == '\\') { ++bs; ++p; }
+            if (*p == '"') {
+                for (size_t i = 0; i < bs / 2; ++i) o[len++] = '\\';
+                if (bs & 1) { o[len++] = '"'; ++p; continue; }
+                ++p;
+                if (inq && *p == '"') { o[len++] = '"'; ++p; continue; }
+                inq = !inq;
+                continue;
+            }
+            for (size_t i = 0; i < bs; ++i) o[len++] = '\\';
+            if (!*p || (!inq && (*p == ' ' || *p == '\t'))) break;
+            o[len++] = *p++;
+        }
+        o[len] = '\0';
+        ++n;
+    }
+    return n;
+}
+
+static void test_cmdline_quote(void) {
+    const char* args[] = {
+        "C:\\Games\\R4 Recomp\\r4-runtime.exe",
+        "--disc",
+        "D:\\Discs\\R4 - Ridge Racer Type 4 (USA).cue",
+        "--memcard-dir",
+        "C:\\Users\\Me\\Saved Games\\R4\\",          /* trailing separator */
+        "C:\\path\\with \"quote\".bin",                 /* embedded quote */
+        "C:\\a\\b\\\\\"c",                            /* backslashes before a quote */
+        "",                                                   /* empty argument */
+        "plain",
+        "tab\there",
+        "trailing\\\\",                                    /* backslashes, no spaces */
+    };
+    const int n = (int)(sizeof(args) / sizeof(args[0]));
+    char* line = psx_win_cmdline_join(n, args);
+    char got[16][256];
+    CHECK(line != NULL);
+    CHECK(parse_cmdline(line, got, 16) == n);
+    for (int i = 0; i < n; ++i) CHECK(strcmp(got[i], args[i]) == 0);
+    /* No quoting when not needed; measuring matches writing. */
+    char small[8];
+    CHECK(psx_win_cmdline_quote("abc", small, sizeof small) == 3 && strcmp(small, "abc") == 0);
+    CHECK(psx_win_cmdline_quote("a b", NULL, 0) == 5);
+    CHECK(psx_win_cmdline_quote("", NULL, 0) == 2);
+#if defined(_WIN32)
+    {
+        int wn = 0;
+        int len = MultiByteToWideChar(CP_UTF8, 0, line, -1, NULL, 0);
+        wchar_t* wl = (wchar_t*)malloc(sizeof(wchar_t) * (size_t)len);
+        MultiByteToWideChar(CP_UTF8, 0, line, -1, wl, len);
+        wchar_t** wv = CommandLineToArgvW(wl, &wn);
+        CHECK(wv && wn == n);
+        for (int i = 1; wv && i < n && i < wn; ++i) {  /* argv[0] has its own rules; no quotes in exe paths */
+            char u[512];
+            WideCharToMultiByte(CP_UTF8, 0, wv[i], -1, u, sizeof u, NULL, NULL);
+            CHECK(strcmp(u, args[i]) == 0);
+        }
+        LocalFree(wv);
+        free(wl);
+    }
+#endif
+    free(line);
+}
+
 int main(void) {
+    test_cmdline_quote();
     test_video();
     test_texture_filter();
     test_sink();

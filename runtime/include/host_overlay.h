@@ -7,6 +7,7 @@
 #ifndef PSX_HOST_OVERLAY_H
 #define PSX_HOST_OVERLAY_H
 
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -113,6 +114,12 @@ void     psx_video_current(PsxHostVideoSettings *out);
  * (the in-game menu's quick relaunch for restart-only settings). Returns only
  * on failure. */
 void psx_relaunch_self(int argc, char** argv);
+/* Windows command-line quoting for one argument (CommandLineToArgvW rules);
+ * returns the quoted length, writing at most cap-1 chars plus NUL to out
+ * (out may be NULL to measure). Portable, for tests. */
+size_t psx_win_cmdline_quote(const char* arg, char* out, size_t cap);
+/* All arguments quoted and space-joined; malloc'd (free it), NULL on OOM. */
+char* psx_win_cmdline_join(int argc, const char* const* argv);
 
 #ifdef __cplusplus
 }
