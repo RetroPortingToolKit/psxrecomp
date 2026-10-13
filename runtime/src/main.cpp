@@ -7727,6 +7727,27 @@ static int savestate_submit_slot(int slot, int save) {
         host_osd_push(msg, 1200);
         return 0;
     }
+    if (!save && !psx_netplay_active()) {
+        /* Saved under another mod set: mods can change RAM layout, hooks and
+         * plugin state, so such a load may misbehave. Warn; loading the same
+         * slot again within a few seconds confirms. */
+        static int s_confirm_slot = -1;
+        static uint64_t s_confirm_until = 0;
+        const uint64_t now = SDL_GetTicks();
+        if (savestate_slot_mods_differ(slot, mod_runtime_plan_fingerprint(), nullptr, 0) &&
+            !(s_confirm_slot == slot && now < s_confirm_until)) {
+            s_confirm_slot = slot;
+            s_confirm_until = now + 5000;
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "Slot %d was saved with different mods and may not load correctly. "
+                     "Load it again to continue.", slot + 1);
+            host_osd_push(msg, 5000);
+            std::fprintf(stdout, "psxrecomp: savestate slot %d mod set differs; confirm to load\n", slot);
+            return 0;
+        }
+        s_confirm_slot = -1;
+    }
     if (!save)
         savestate_input_guard_arm();
     if (psx_netplay_active()) {

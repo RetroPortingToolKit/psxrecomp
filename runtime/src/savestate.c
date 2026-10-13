@@ -7,6 +7,7 @@
  * restores the full machine then unwinds to the scheduler and re-dispatches. */
 
 #include "savestate.h"
+#include "mod_runtime.h"
 #include "mod_netplay.h"
 #include "boot_state.h"
 #include "cdrom.h"
@@ -523,6 +524,40 @@ static int savestate_hd_path(int slot, char* out, size_t cap) {
              s_disc_token, slot);
     return 1;
 }
+/* Mod-set sidecar: the applied plan's fingerprint at save time. Host
+ * metadata like .hdres; the .pst format is unchanged. */
+static int savestate_mods_path(int slot, char* out, size_t cap) {
+    if (!s_configured || !out || cap == 0) return 0;
+    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
+    snprintf(out, cap, "%s%sstate_%08X%s_slot%02d.mods",
+             s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
+             s_disc_token, slot);
+    return 1;
+}
+static void savestate_write_mods(int slot) {
+    char path[600];
+    const char* fp = mod_runtime_plan_fingerprint();
+    if (!savestate_mods_path(slot, path, sizeof(path))) return;
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "%s\n", fp ? fp : "");
+    if (fclose(f) != 0) remove(path);
+}
+int savestate_slot_mods_differ(int slot, const char* current, char* out, size_t cap) {
+    char path[600], rec[160];
+    FILE* f;
+    int differ;
+    if (out && cap) out[0] = '\0';
+    if (!savestate_mods_path(slot, path, sizeof(path))) return 0;
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    if (!fgets(rec, sizeof(rec), f)) rec[0] = '\0';
+    fclose(f);
+    differ = savestate_mods_record_differs(rec, current);
+    if (differ && out && cap) snprintf(out, cap, "%s", rec);
+    return differ;
+}
+
 static void savestate_write_hd_residency(int slot) {
     char path[600];
     uint8_t* data = NULL;
@@ -957,6 +992,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                     s_save_failed = 0;
                     (void)savestate_capture_thumb(slot);
                     savestate_write_hd_residency(slot);
+                    savestate_write_mods(slot);
                 } else {
                     s_last_save_pc = 0;
                     s_save_failed = 1;

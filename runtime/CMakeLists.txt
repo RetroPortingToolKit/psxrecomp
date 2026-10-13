@@ -761,6 +761,9 @@ if(BUILD_TESTING)
         target_link_libraries(host_overlay_test PRIVATE shell32)
     endif()
     add_test(NAME host_overlay_test COMMAND host_overlay_test)
+    add_executable(savestate_mods_test tests/test_savestate_mods.c src/savestate_mods.c)
+    target_include_directories(savestate_mods_test PRIVATE include src)
+    add_test(NAME savestate_mods_test COMMAND savestate_mods_test)
 
     add_executable(gte_register_access_test
         tests/test_gte_register_access.cpp

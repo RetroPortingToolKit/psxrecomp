@@ -2434,6 +2434,13 @@ extern "C" void mod_runtime_on_dispatch(uint32_t target) {
                      s.plan.fingerprint.c_str());
 }
 
+extern "C" const char* mod_runtime_plan_fingerprint(void) {
+    using namespace PSXRecompV4;
+    RuntimeMods& s = state();
+    if (!s.initialized || !s.plan.ok || (s.plan.writes.empty() && s.plan.plugins.empty())) return "";
+    return s.plan.fingerprint.c_str();
+}
+
 extern "C" void mod_runtime_on_savestate_loaded(void) {
     using namespace PSXRecompV4;
     RuntimeMods& s = state();

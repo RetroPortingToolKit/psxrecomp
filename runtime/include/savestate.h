@@ -99,6 +99,12 @@ int savestate_read_thumb(int slot, uint32_t* out_argb,
  * codegen). 0 + optional reason when missing or stale — use before netplay
  * load probe so incompatible saves never enter the post-load barrier. */
 int savestate_slot_compatible(int slot, char* reason, size_t reason_cap);
+/* Mod set a slot was saved under (its ".mods" sidecar, written at save).
+ * Returns 1 when the slot records a mod set that differs from `current`
+ * (saved copied to out), 0 when it matches or the slot predates the record. */
+int savestate_slot_mods_differ(int slot, const char* current, char* out, size_t cap);
+/* The pure comparison (tests): sidecar text vs the current fingerprint. */
+int savestate_mods_record_differs(const char* record, const char* current);
 
 /* Stage a save/load of slot [0..SAVESTATE_SLOTS-1]. Executed at the next safe
  * boundary by savestate_poll (called every block from psx_check_interrupts).
