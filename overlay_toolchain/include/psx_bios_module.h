@@ -72,6 +72,8 @@ extern uint64_t *g_psx_bm_bail_flattened_p;
 #  define g_psx_bail_flattened      (*g_psx_bm_bail_flattened_p)
 #  define g_psx_ram_mask            (*g_psx_bm_ram_mask_p)
 #  define s_frame_count             (*g_psx_bm_frame_count_p)
+#  define g_psx_mod_guest_functions (*g_psx_bm_mod_guest_functions_p)
+#  define psx_mod_dispatch_guest_function g_psx_bm_mod_dispatch_guest
 #endif
 
 #ifdef __cplusplus
@@ -82,7 +84,7 @@ struct CPUState;
 struct OverlayCallbacks;
 struct PsxBiosBackend;
 
-#define PSX_BIOS_MODULE_ABI_VERSION 1
+#define PSX_BIOS_MODULE_ABI_VERSION 2
 
 /* Combined tag: ABI version (low 16) | codegen flavor (high 16), like
  * PSX_OVERLAY_ABI_TAG. The flavor comes from the same -DPSX_OVERLAY_FLAVOR
@@ -130,6 +132,12 @@ typedef struct PsxBiosModuleCallbacks {
     uint64_t  *bail_flattened;      /* traps.c */
     uint32_t  *ram_mask;            /* psx_ram_geometry.c (live 2/8 MiB) */
     uint64_t  *frame_count;         /* debug_server.c s_frame_count (miss records) */
+    /* Mod-defined guest function table (mod_runtime.cpp). The generated
+     * dispatch consults the registration count at the top of every
+     * iteration. Added in ABI 2 alongside the emitter's mod-guest-function
+     * template. */
+    uint32_t *mod_guest_functions;  /* registration count */
+    int (*mod_dispatch_guest_function)(struct CPUState *cpu, uint32_t addr);
 } PsxBiosModuleCallbacks;
 
 /* ---- Host side (runtime/src/psx_bios_module.c) ----------------------------- */

@@ -34,6 +34,7 @@ static uint32_t s_func_addr_dummy;
 static uint64_t s_flattened_dummy;
 static uint32_t s_ram_mask_dummy = 0x1FFFFFu;
 static uint64_t s_frame_count_dummy;
+static uint32_t s_mod_guest_count_dummy;
 
 /* The pointers the generated C declares (via the psx_bios_module.h name
  * mappings): `extern int g_psx_dispatch_depth;` became
@@ -45,6 +46,7 @@ uint32_t  *g_psx_bm_current_func_addr_p = &s_func_addr_dummy;
 uint64_t  *g_psx_bm_bail_flattened_p    = &s_flattened_dummy;
 uint32_t  *g_psx_bm_ram_mask_p          = &s_ram_mask_dummy;
 uint64_t  *g_psx_bm_frame_count_p       = &s_frame_count_dummy;
+uint32_t  *g_psx_bm_mod_guest_functions_p = &s_mod_guest_count_dummy;
 
 /* ---- Forwarders for what OverlayCallbacks does not carry ----------------- */
 void psx_arith_overflow(CPUState *cpu) {
@@ -97,6 +99,12 @@ void psx_segment_miss_record_kind(uint32_t addr, uint32_t home, uint32_t ra,
         g_bcbs.segment_miss_record_kind(addr, home, ra, sp, frame, kind);
 }
 
+int g_psx_bm_mod_dispatch_guest(CPUState *cpu, uint32_t addr) {
+    overlay_flush_cycles();
+    return g_bcbs.mod_dispatch_guest_function
+               ? g_bcbs.mod_dispatch_guest_function(cpu, addr) : 0;
+}
+
 /* ---- Exports ------------------------------------------------------------- */
 PSX_OVERLAY_EXPORT int psx_bios_module_abi(void) {
     return PSX_BIOS_MODULE_ABI_TAG;
@@ -120,6 +128,7 @@ PSX_OVERLAY_EXPORT int psx_bios_module_init(const OverlayCallbacks *cbs,
     if (g_bcbs.bail_flattened)    g_psx_bm_bail_flattened_p    = g_bcbs.bail_flattened;
     if (g_bcbs.ram_mask)          g_psx_bm_ram_mask_p          = g_bcbs.ram_mask;
     if (g_bcbs.frame_count)       g_psx_bm_frame_count_p       = g_bcbs.frame_count;
+    if (g_bcbs.mod_guest_functions) g_psx_bm_mod_guest_functions_p = g_bcbs.mod_guest_functions;
     return 1;
 }
 PSX_OVERLAY_EXPORT const PsxBiosBackend *psx_bios_module_backend(void) {
