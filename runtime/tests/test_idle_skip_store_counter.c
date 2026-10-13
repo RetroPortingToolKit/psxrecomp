@@ -123,6 +123,17 @@ int main(void) {
     psx_idle_skip_set_store_tracker(&g_psx_track_last_store, &g_guest_last_store_addr,
                                     &g_guest_last_store_val);
 
+    /* No audited site: the extension never skips. */
+    psx_idle_skip_set_store_counter_sites(NULL, 0);
+    check(run(1, 0, 64, 100000u) == 0, "no audited site listed: no skip");
+    /* A different audited site: this loop is still not eligible. */
+    const uint32_t other[] = {0x80012340u};
+    psx_idle_skip_set_store_counter_sites(other, 1);
+    check(run(1, 0, 64, 100000u) == 0, "loop not at a listed site: no skip");
+    /* R4's audited v_wait site (both block edges of the loop). */
+    const uint32_t sites[] = {ANCHOR, EDGE2};
+    psx_idle_skip_set_store_counter_sites(sites, 2);
+
     uint64_t skips = run(1, 0, 64, 100000u);
     check(skips > 0, "v_wait: passes are skipped");
     check(s_host_writes > 0, "v_wait: the counter is lowered through the host writer");

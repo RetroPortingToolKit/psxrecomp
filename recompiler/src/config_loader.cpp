@@ -548,6 +548,12 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         rt.idle_skip_store_counters =
             toml::find<bool>(runtime, "idle_skip_store_counters");
     }
+    if (runtime.contains("idle_skip_store_counter_sites")) {
+        for (const auto& a : toml::find<std::vector<std::string>>(
+                 runtime, "idle_skip_store_counter_sites"))
+            rt.idle_skip_store_counter_sites.push_back(
+                parse_hex(a, "runtime.idle_skip_store_counter_sites"));
+    }
     if (runtime.contains("idle_skip")) {
         rt.idle_skip = toml::find<bool>(runtime, "idle_skip");
     }

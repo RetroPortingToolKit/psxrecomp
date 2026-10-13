@@ -16357,9 +16357,16 @@ int main(int argc, char** argv) {
                 const char *ext_env = std::getenv("PSX_IDLE_SKIP_EXT");
                 g_idle_skip_ext = ext_env ? (ext_env[0] == '1' ? 1 : 0)
                                           : (gc.runtime.idle_skip_store_counters ? 1 : 0);
+                psx_idle_skip_set_store_counter_sites(
+                    gc.runtime.idle_skip_store_counter_sites.data(),
+                    (int)gc.runtime.idle_skip_store_counter_sites.size());
                 if (g_idle_skip_enabled && g_idle_skip_ext)
-                    std::fprintf(stdout, "psxrecomp: idle_skip store-counter loops on%s\n",
-                                 ext_env ? " (environment override)" : "");
+                    std::fprintf(stdout, "psxrecomp: idle_skip store-counter loops on%s, "
+                                 "%zu audited site(s)%s\n",
+                                 ext_env ? " (environment override)" : "",
+                                 gc.runtime.idle_skip_store_counter_sites.size(),
+                                 gc.runtime.idle_skip_store_counter_sites.empty()
+                                     ? " -- none listed, so nothing is skipped" : "");
                 psx_precise_slice_init_from_env();
             }
             for (uint32_t site : gc.vsync_event_horizon_sites)

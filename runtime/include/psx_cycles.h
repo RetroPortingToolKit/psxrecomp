@@ -259,6 +259,9 @@ uint32_t psx_idle_cycles_to_next_observable_event(void);
 extern int      g_idle_skip_enabled;
 /* [runtime] idle_skip_store_counters (psx_cycles.c): 1 on, 0 off, -1 env. */
 extern int      g_idle_skip_ext;
+/* [runtime] idle_skip_store_counter_sites: the audited anchor PCs where the
+ * store-counter extension may skip (at most 16). Unlisted sites never are. */
+void psx_idle_skip_set_store_counter_sites(const uint32_t *pcs, int n);
 /* The host write that lowers a skipped loop counter (psx_host_write_word);
  * the store-counter extension stays off until one is installed. */
 void psx_idle_skip_set_host_writer(void (*w)(uint32_t addr, uint32_t val));

@@ -654,7 +654,24 @@ void psx_idle_skip_set_store_tracker(int *gate, const uint32_t *addr, const uint
     s_last_addr = addr ? addr : &s_no_store;
     s_last_val = val ? val : &s_no_store;
 }
-enum { IDLE_EDGES_MAX = 8 };
+enum { IDLE_EDGES_MAX = 8, IDLE_SITES_MAX = 16 };
+/* Audited sites. The detector proves the loop's shape over the passes it
+ * sees; it cannot prove that no later counter-dependent exit exists (an exit
+ * at counter == 500 would be skipped over). Only sites a developer audited
+ * and declared are eligible. */
+static uint32_t s_idle_sites[IDLE_SITES_MAX];
+static int      s_idle_site_count = 0;
+void psx_idle_skip_set_store_counter_sites(const uint32_t *pcs, int n) {
+    if (n < 0 || !pcs) n = 0;
+    if (n > IDLE_SITES_MAX) n = IDLE_SITES_MAX;
+    for (int i = 0; i < n; i++) s_idle_sites[i] = pcs[i];
+    s_idle_site_count = n;
+}
+static int idle_site_listed(uint32_t pc) {
+    for (int i = 0; i < s_idle_site_count; i++)
+        if (s_idle_sites[i] == pc) return 1;
+    return 0;
+}
 static uint32_t s_idle_edges = 0;          /* non-anchor edges since the anchor */
 static uint32_t s_idle_iter_edges = 0;     /* edges in the last whole iteration */
 static uint32_t s_idle_store_addr = 0xFFFFFFFFu;
@@ -716,7 +733,10 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
         s_idle_edges = 0;
         return;
     }
-    const int ext = idle_skip_ext_on();
+    /* The extension applies only at an audited site: the anchor while
+     * counting its inner edges, else the PC being checked. */
+    const uint32_t site = (s_idle_pc != 0 && check_pc != s_idle_pc) ? s_idle_pc : check_pc;
+    const int ext = idle_skip_ext_on() && idle_site_listed(site);
 
     /* Extension: an edge inside the anchor's iteration. Only MMIO is checked
      * here; stores are counted over the whole iteration at the anchor. */

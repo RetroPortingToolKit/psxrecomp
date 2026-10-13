@@ -359,6 +359,10 @@ struct RuntimeConfig {
     // PsyQ libetc's v_wait, the VSync(0) spin. Bit-exact (psx_cycles.c);
     // PSX_IDLE_SKIP_EXT=0/1 overrides it for one run.
     bool                  idle_skip_store_counters = false;
+    // idle_skip_store_counter_sites: the audited loop sites (block-edge PCs
+    // the detector anchors on) where the store-counter extension may skip.
+    // Unlisted sites are never skipped; an empty list disables the extension.
+    std::vector<uint32_t> idle_skip_store_counter_sites;
 
     // overlay_autocompile_cmd: variant-capture automation (step 2.8). A
     // shell command (run via cmd.exe /C, cwd = project root) that compiles
