@@ -3408,6 +3408,12 @@ static uint16_t vram_write_pixels[1024 * 512];
  * gpu_depth24_rgb_limit — declared early so gpu_reset_state can clear it. */
 static uint32_t s_d24_upload_x1 = 0;
 static int      s_d24_present_hold = 0; /* vblanks to skip Swap after GP1(07h) */
+/* Host side of the hold: whether the present after the latest guest VBlank
+ * skips its Swap. The count itself is guest state (in the GPU snap) and moves
+ * only at guest VBlank, so a live run, a rollback replay and a headless run
+ * all hold the same span (#636: a present-ticked hold stuck at 3 in headless
+ * live play and was zeroed by a rollback load, so replay != live). */
+static int      s_d24_present_skip = 0;
 static uint32_t s_d24_prev_disp_h = 0;  /* last GP1(07h) band height */
 static void depth24_note_upload(uint32_t x, uint32_t w);
 
@@ -3880,6 +3886,7 @@ static void gpu_reset_state(int clear_vram) {
     ws_scene_hold_reset(&s_ws_scene_hold);
     s_d24_upload_x1 = 0;
     s_d24_present_hold = 0;
+    s_d24_present_skip = 0;
     s_d24_prev_disp_h = 0;
 }
 
@@ -4145,6 +4152,9 @@ void gpu_vblank_tick(void) {
      * poll first became reachable in this runtime. */
     if (vertical_interlace)
         interlace_field = (lcf ^ 1) & 1;
+    s_d24_present_skip = s_d24_present_hold > 0;
+    if (s_d24_present_hold > 0)
+        s_d24_present_hold--;
     /* snapshot per-frame draw-offset-Y range for the strobe instrumentation */
     if (g_doff_cnt_this) {
         g_doff_min_last = g_doff_min_this;
@@ -4232,15 +4242,16 @@ void gpu_depth24_upload_span_reset(void) {
 }
 
 int gpu_depth24_present_hold_tick(void) {
-    if (s_d24_present_hold <= 0) return 0;
-    s_d24_present_hold--;
-    return 1;
+    int skip = s_d24_present_skip;
+    s_d24_present_skip = 0; /* one skipped Swap per guest VBlank */
+    return skip;
 }
 
 void gpu_depth24_on_savestate_loaded(void) {
     /* Hold skips Swap — after restore we want the restored VRAM visible now.
      * Upload span / prev_h were restored from the GPU snap. */
     s_d24_present_hold = 0;
+    s_d24_present_skip = 0;
 }
 
 /* ---- Present-time screen-colour LUT (verified-enhancement, opt-in) -------
