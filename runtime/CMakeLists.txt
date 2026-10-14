@@ -1892,6 +1892,13 @@ if(BUILD_TESTING)
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_rb_session_reset.py
                              --compiler ${CMAKE_C_COMPILER})
+            if(PSXRECOMP_TEST_HAS_RBENGINE)
+                add_test(NAME netplay_rb_verify_lost_post_test
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_rb_verify_lost_post.py
+                        --compiler ${CMAKE_C_COMPILER}
+                        --recomp-net ${_RNET_ROOT})
+            endif()
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
