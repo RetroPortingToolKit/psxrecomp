@@ -16516,6 +16516,21 @@ void debug_server_init(int port)
      * 16 leaves room for a few probes to queue while we investigate. This
      * is observability infrastructure, not a freeze fix. */
     listen(s_listen, 16);
+    /* Bounded accept(): close() of a socket blocked in accept() does NOT
+     * reliably wake the sleeper on Linux (the fd number can even be recycled
+     * under us), so the close-to-break-accept + SDL_WaitThread dance in
+     * debug_server_shutdown() could hang window-close forever. A receive
+     * timeout makes accept() return EWOULDBLOCK/EINTR periodically; the loop
+     * re-checks s_io_running, so shutdown joins within ~200 ms. */
+#ifdef _WIN32
+    { DWORD accept_to = 200;
+      setsockopt(s_listen, SOL_SOCKET, SO_RCVTIMEO, (const char *)&accept_to,
+                 sizeof(accept_to)); }
+#else
+    { struct timeval accept_to = { 0, 200 * 1000 };
+      setsockopt(s_listen, SOL_SOCKET, SO_RCVTIMEO, &accept_to,
+                 sizeof(accept_to)); }
+#endif
     fprintf(stdout, "psxrecomp: debug server LISTENING on 127.0.0.1:%d\n",
             s_port);
 
