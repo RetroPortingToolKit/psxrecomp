@@ -797,6 +797,10 @@ if(BUILD_TESTING)
         tests/test_depth24_present_hold_exec.c src/ws_ui_group.c
         src/psx_video_timing.c src/gpu_timeline.c)
     target_include_directories(depth24_present_hold_exec_test PRIVATE include src)
+    if(MINGW)
+        target_compile_options(depth24_present_hold_exec_test PRIVATE -flto)
+        target_link_options(depth24_present_hold_exec_test PRIVATE -flto)
+    endif()
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(depth24_present_hold_exec_test PRIVATE -ffunction-sections -fdata-sections)
         target_link_options(depth24_present_hold_exec_test PRIVATE -Wl,--gc-sections)
@@ -1855,6 +1859,11 @@ if(BUILD_TESTING)
             add_test(NAME menu_video_snapshot_test COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_menu_video_snapshot.py
                 --cxx ${CMAKE_CXX_COMPILER})
+        endif()
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME netplay_rb_verify_deadline_test COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_rb_verify_deadline.py
+                --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME restore_edge_irq_check_test
                  COMMAND ${Python3_EXECUTABLE}
