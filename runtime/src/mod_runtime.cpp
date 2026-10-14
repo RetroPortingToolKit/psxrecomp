@@ -927,6 +927,53 @@ bool materialize_derived_disc(RuntimeMods& s, const ModResolution& plan,
     return true;
 }
 
+template <typename Callback>
+int mutate(Callback callback) {
+    state().ticket_ready = false;
+    ++state().preparation_revision;
+    std::string error;
+    if (!callback(error)) {
+        set_error(error);
+        return 0;
+    }
+    if (!state().disc_path.empty())
+        state().validation = state().manager.resolve(
+            state().game_id, state().exe_sha256, state().disc_sha256, true);
+    else
+        state().validation = {};
+    state().error.clear();
+    return 1;
+}
+
+/* Feature switch / option edits shared by the launcher ABI provider and the
+ * in-game menu host (psx_mod_feature_enable / psx_mod_feature_set_option). */
+int feature_enable_impl(const char* package_id, const char* feature_id, int enabled) {
+    if (!package_id || !feature_id) return 0;
+    return mutate([&](std::string& error) {
+        const ModFeature* feature =
+            state().manager.selected_feature(package_id, feature_id);
+        if (feature && feature->legacy)
+            return state().manager.set_enabled(
+                package_id, enabled != 0, &error);
+        return state().manager.set_feature_enabled(
+            package_id, feature_id, enabled != 0, &error);
+    });
+}
+
+int feature_set_option_impl(const char* package_id, const char* feature_id,
+                            const char* option_id, const char* value) {
+    if (!package_id || !feature_id || !option_id || !value) return 0;
+    return mutate([&](std::string& error) {
+        const ModFeature* feature =
+            state().manager.selected_feature(package_id, feature_id);
+        if (feature && feature->legacy)
+            return state().manager.set_option(
+                package_id, option_id, value, &error);
+        return state().manager.set_feature_option(
+            package_id, feature_id, option_id, value, &error);
+    });
+}
+
 #if defined(RECOMP_LAUNCHER)
 void copy_text(char* out, size_t capacity, const std::string& value) {
     if (!out || capacity == 0) return;
@@ -1166,32 +1213,14 @@ int provider_feature_choice_get(void*, const char* package_id,
 
 int provider_feature_enable(void*, const char* package_id,
                             const char* feature_id, int enabled) {
-    if (!package_id || !feature_id) return 0;
-    return mutate([&](std::string& error) {
-        const ModFeature* feature =
-            state().manager.selected_feature(package_id, feature_id);
-        if (feature && feature->legacy)
-            return state().manager.set_enabled(
-                package_id, enabled != 0, &error);
-        return state().manager.set_feature_enabled(
-            package_id, feature_id, enabled != 0, &error);
-    });
+    return feature_enable_impl(package_id, feature_id, enabled);
 }
 
 int provider_feature_set_option(void*, const char* package_id,
                                 const char* feature_id,
                                 const char* option_id,
                                 const char* value) {
-    if (!package_id || !feature_id || !option_id || !value) return 0;
-    return mutate([&](std::string& error) {
-        const ModFeature* feature =
-            state().manager.selected_feature(package_id, feature_id);
-        if (feature && feature->legacy)
-            return state().manager.set_option(
-                package_id, option_id, value, &error);
-        return state().manager.set_feature_option(
-            package_id, feature_id, option_id, value, &error);
-    });
+    return feature_set_option_impl(package_id, feature_id, option_id, value);
 }
 
 int provider_feature_resource_count(void*, const char* package_id,
@@ -1317,23 +1346,6 @@ int provider_version_get(void*, const char* package_id, int index,
     return 1;
 }
 
-template <typename Callback>
-int mutate(Callback callback) {
-    state().ticket_ready = false;
-    ++state().preparation_revision;
-    std::string error;
-    if (!callback(error)) {
-        set_error(error);
-        return 0;
-    }
-    if (!state().disc_path.empty())
-        state().validation = state().manager.resolve(
-            state().game_id, state().exe_sha256, state().disc_sha256, true);
-    else
-        state().validation = {};
-    state().error.clear();
-    return 1;
-}
 
 int provider_install(void*, const char* path) {
     if (!path) return 0;
@@ -1462,6 +1474,12 @@ bool mod_runtime_netplay_content_negotiation() {
     return netplay_content_negotiation_enabled;
 }
 
+/* Live option overrides (psx_mod_set_option_live) belong to one session's
+ * plan: initialising the runtime, committing a plan or switching to the
+ * netplay plan drops them, so a new plan's committed values are what the
+ * API answers (defined with the overrides below). */
+void reset_live_option_overrides();
+
 bool mod_runtime_initialize(const std::filesystem::path& root,
                             const std::string& game_id,
                             uint32_t game_entry_pc,
@@ -1480,6 +1498,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     s.validation = {};
     s.raw_disc_index.clear();
     s.user_disc_index.clear();
@@ -1586,6 +1605,7 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     s.validation = {};
     s.raw_disc_index.clear();
     s.user_disc_index.clear();
@@ -1740,6 +1760,7 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
     if (renderer) plan.plugins.push_back({renderer, "", ""});
     s.disc_path = disc_path;
     s.plan = std::move(plan);
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     mod_runtime_set_session_plan_fp({});
     psx_mod_netplay_set_active(1);
     std::fprintf(stdout, "psxrecomp: title netplay profile %s (%s)\n",
@@ -2067,6 +2088,7 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = std::move(plan);
+    reset_live_option_overrides();  /* a new plan ends the last session's live values */
     {
         HostLaunchTimingScope index_timing(HOST_LAUNCH_BUILD_DISC_INDEX);
         build_disc_index(s);
@@ -2824,6 +2846,92 @@ extern "C" int psx_mod_game_started(void) {
     return fntrace_is_game_started();
 }
 
+/* ---- Live option overrides (in-game overlay P5) ------------------------- */
+namespace {
+std::map<std::string, std::string>& live_option_values() {
+    static std::map<std::string, std::string> m;
+    return m;
+}
+std::map<std::string, PSXModOptionChangedCallback>& option_changed_plugins() {
+    static std::map<std::string, PSXModOptionChangedCallback> m;
+    return m;
+}
+std::string live_option_key(const char* p, const char* f, const char* o) {
+    return std::string(p) + '\x1f' + f + '\x1f' + o;
+}
+}  // namespace
+
+extern "C" int psx_mod_register_option_changed_plugin(const char* id,
+                                                      PSXModOptionChangedCallback cb) {
+    if (!id || !*id || !cb) return 0;
+    option_changed_plugins()[id] = cb;
+    return 1;
+}
+
+extern "C" int psx_mod_option_live_capable(const char* package_id, const char* feature_id) {
+    using namespace PSXRecompV4;
+    if (!package_id || !feature_id) return 0;
+    RuntimeMods& s = state();
+    if (!s.initialized || !s.plan.ok) return 0;
+    for (const ModResolution::Plugin& plugin : s.plan.plugins)
+        if (plugin.package_id == package_id && plugin.feature_id == feature_id &&
+            option_changed_plugins().count(plugin.id))
+            return 1;
+    return 0;
+}
+
+extern "C" int psx_mod_save_selection(void) {
+    using namespace PSXRecompV4;
+    RuntimeMods& s = state();
+    if (!s.initialized) return 0;
+    std::string error;
+    if (!s.manager.save_state(&error)) {
+        std::fprintf(stderr, "psxrecomp: mods: could not save state.toml: %s\n", error.c_str());
+        return 0;
+    }
+    return 1;
+}
+
+namespace PSXRecompV4 {
+void reset_live_option_overrides() { live_option_values().clear(); }
+}  // namespace PSXRecompV4
+
+extern "C" int psx_mod_set_option_live(const char* package_id, const char* feature_id,
+                                       const char* option_id, const char* value) {
+    using namespace PSXRecompV4;
+    if (!package_id || !feature_id || !option_id || !value) return 0;
+    if (psx_netplay_active()) return -1;
+    RuntimeMods& s = state();
+    if (!s.initialized || !s.plan.ok) return 0;
+    bool in_plan = false;
+    for (const ModResolution::Plugin& plugin : s.plan.plugins)
+        if (plugin.package_id == package_id && plugin.feature_id == feature_id) in_plan = true;
+    if (!in_plan || !psx_mod_option_live_capable(package_id, feature_id)) return 0;
+    /* The value is visible to the callbacks while they run (a plugin may
+     * re-read it through psx_mod_current_option_value), but it is kept only
+     * if one of them accepts. Refused by all = nothing changes this session:
+     * the previous value (live or committed) is restored. */
+    auto& values = live_option_values();
+    const std::string key = live_option_key(package_id, feature_id, option_id);
+    auto prev_it = values.find(key);
+    const bool had_prev = prev_it != values.end();
+    const std::string prev = had_prev ? prev_it->second : std::string();
+    values[key] = value;
+    int live = 0;
+    for (const ModResolution::Plugin& plugin : s.plan.plugins) {
+        if (plugin.package_id != package_id || plugin.feature_id != feature_id) continue;
+        auto it = option_changed_plugins().find(plugin.id);
+        if (it == option_changed_plugins().end()) continue;
+        PluginCallbackScope scope(s, &plugin);
+        if (it->second(option_id, value)) live = 1;
+    }
+    if (!live) {
+        if (had_prev) values[key] = prev;
+        else values.erase(key);
+    }
+    return live;
+}
+
 extern "C" int psx_mod_option_value(const char* package_id,
                                     const char* feature_id,
                                     const char* option_id,
@@ -2839,9 +2947,11 @@ extern "C" int psx_mod_option_value(const char* package_id,
      * treat an empty string as a value. */
     if (!s.initialized || !s.plan.ok) return 0;
     /* Read the committed plan's selection, which includes features its
-     * [[requirement]]s activated, not live launcher state. */
-    const std::string value = s.manager.feature_option_value(
-        s.plan, package_id, feature_id, option_id);
+     * [[requirement]]s activated, not live launcher state -- unless the
+     * in-game menu changed it this session (psx_mod_set_option_live). */
+    auto live = live_option_values().find(live_option_key(package_id, feature_id, option_id));
+    const std::string value = live != live_option_values().end() ? live->second :
+        s.manager.feature_option_value(s.plan, package_id, feature_id, option_id);
     if (value.empty()) return 0;
     if (value.size() + 1 > (size_t)out_size) return 0;
     std::memcpy(out, value.c_str(), value.size() + 1);
@@ -3418,4 +3528,14 @@ extern "C" void mod_runtime_patch_disc_sector(uint32_t lba, int raw_sector,
                                                uint8_t* bytes, uint32_t size) {
     if (!PSXRecompV4::state().disc_enabled) return;
     patch_committed_disc_sector(lba, raw_sector, bytes, size);
+}
+
+/* In-game menu host (psx_menu_host.h): the same feature edits as the launcher
+ * ABI provider, without its types. Main thread. */
+extern "C" int psx_mod_feature_enable(const char* package_id, const char* feature_id, int enabled) {
+    return PSXRecompV4::feature_enable_impl(package_id, feature_id, enabled);
+}
+extern "C" int psx_mod_feature_set_option(const char* package_id, const char* feature_id,
+                                          const char* option_id, const char* value) {
+    return PSXRecompV4::feature_set_option_impl(package_id, feature_id, option_id, value);
 }
