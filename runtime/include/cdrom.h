@@ -8,6 +8,8 @@ extern "C" {
 #endif
 
 void cdrom_init(const char* cue_path);
+uint32_t cdrom_snapshot_bytes(void);
+int cdrom_snapshot_validate(const uint8_t *p, uint32_t len);
 
 /* Did cdrom_init() actually mount an image? 0 = the drive is empty.
  *

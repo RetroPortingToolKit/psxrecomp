@@ -78,6 +78,7 @@ extern int      spu_snapshot_len_ok(uint32_t len);
 extern uint8_t* spu_get_ram_ptr(void);
 extern uint32_t spu_get_ram_bytes(void);
 extern uint32_t cdrom_snapshot_bytes(void);
+extern int      cdrom_snapshot_validate(const uint8_t* p, uint32_t len);
 extern void     cdrom_snapshot_write(uint8_t* p);
 extern int      cdrom_snapshot_read(const uint8_t* p, uint32_t len);
 extern uint32_t dma_snapshot_bytes(void);
@@ -861,7 +862,7 @@ static int validate_section(uint32_t tag, const uint8_t* p, uint32_t len) {
     case BS_SEC_VRAM:   return len == VRAM_SIZE;
     case BS_SEC_SPU:    return spu_snapshot_len_ok(len);
     case BS_SEC_SPURAM: return len == spu_get_ram_bytes();
-    case BS_SEC_CDROM:  return len == cdrom_snapshot_bytes();
+    case BS_SEC_CDROM:  return cdrom_snapshot_validate(p, len);
     case BS_SEC_DMA:    return len == dma_snapshot_bytes();
     case BS_SEC_SIO:    return sio_snapshot_validate(p, len);
     case BS_SEC_MDEC:   return mdec_snapshot_validate(p, len);
