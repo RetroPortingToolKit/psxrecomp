@@ -793,6 +793,16 @@ if(BUILD_TESTING)
         tests/test_pad_external_input.c src/pad_external_input.c)
     target_include_directories(pad_external_input_test PRIVATE include src)
     add_test(NAME pad_external_input_test COMMAND pad_external_input_test)
+    add_executable(depth24_present_hold_exec_test
+        tests/test_depth24_present_hold_exec.c src/ws_ui_group.c
+        src/psx_video_timing.c src/gpu_timeline.c)
+    target_include_directories(depth24_present_hold_exec_test PRIVATE include src)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(depth24_present_hold_exec_test PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(depth24_present_hold_exec_test PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME depth24_present_hold_exec_test COMMAND depth24_present_hold_exec_test)
+
     add_executable(debug_socket_shutdown_test tests/test_debug_socket_shutdown.cpp)
     target_include_directories(debug_socket_shutdown_test PRIVATE src)
     find_package(Threads REQUIRED)
@@ -1841,6 +1851,11 @@ if(BUILD_TESTING)
         add_test(NAME netplay_load_apply_flow_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_netplay_load_apply_flow.py)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            add_test(NAME menu_video_snapshot_test COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_menu_video_snapshot.py
+                --cxx ${CMAKE_CXX_COMPILER})
+        endif()
         add_test(NAME restore_edge_irq_check_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_restore_edge_irq_check.py)

@@ -109,6 +109,16 @@ int main(void) {
         CHECK(psx_bios_registry[1] == b, "registered after the builtin");
         CHECK(psx_bios_has_selectable(), "a non-bundled backend is now selectable");
         CHECK(psx_bios_find("FAKE-0001") == b, "find() by id");
+        {
+            CPUState cpu = {0};
+            b->dispatch(&cpu, 0x80010000u);
+            CHECK(cpu.gpr[2] == 0x80010000u, "loaded module calls new mod callback");
+            g_psx_mod_guest_functions = 0;
+            cpu.gpr[2] = 0;
+            b->dispatch(&cpu, 0x80020000u);
+            CHECK(cpu.gpr[2] == 0, "loaded module observes live registration count");
+            g_psx_mod_guest_functions = 1;
+        }
         CHECK(psx_bios_activate(b) == 1, "activate");
         CHECK(psx_bios_active == b, "active pointer");
         CHECK(psx_bios_image.image_crc32 == 0xDEADBEEFu, "published image copied");

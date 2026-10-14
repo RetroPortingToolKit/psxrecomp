@@ -16142,6 +16142,25 @@ std::atomic<int> g_ovl_reload_binds{0};
 std::atomic<int> g_ovl_exit{0};            /* PSX_MENU_EXIT_* + 1; 0 = none */
 bool g_ovl_video_pending = false;
 PsxHostVideoSettings g_ovl_video_post{};
+PsxHostVideoSettings g_ovl_video_current{}, g_ovl_video_boot{};
+bool g_ovl_netplay = false;
+
+/* Only the main thread reads live runtime state. Provider draw callbacks
+ * consume a coherent snapshot under the same mutex as their posted edits. */
+void mh_refresh_snapshot() {
+    PsxHostVideoSettings current;
+    psx_video_current(&current);
+    const bool netplay = psx_netplay_active() != 0;
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    g_ovl_video_current = current;
+    g_ovl_video_boot = g_video_boot;
+    g_ovl_netplay = netplay;
+}
+int mh_netplay_active(void) {
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    return g_ovl_netplay ? 1 : 0;
+}
+
 #if defined(RECOMP_LAUNCHER)
 bool g_ovl_ls_pending = false;
 RecompLauncherCSettings g_ovl_ls_post{};
@@ -16151,19 +16170,22 @@ std::string g_ovl_argv0, g_ovl_name, g_ovl_keybinds, g_ovl_config, g_ovl_assets;
 bool ovl_open(void) { return g_ovl && g_ovl->is_open && g_ovl->is_open(g_ovl->ctx); }
 
 int mh_set_paused(int paused) {
-    if (paused && psx_netplay_active()) return 0;
+    if (paused && mh_netplay_active()) return 0;
     g_ovl_pause_wanted = paused ? 1 : 0;
     return 1;
 }
-int mh_netplay_active(void) { return psx_netplay_active() ? 1 : 0; }
-void mh_video_get(PsxHostVideoSettings* out) { if (out) psx_video_current(out); }
+void mh_video_get(PsxHostVideoSettings* out) {
+    if (!out) return;
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    *out = g_ovl_video_current;
+}
 unsigned mh_restart_bits(const PsxHostVideoSettings& next) {
-    PsxHostVideoSettings now;
-    psx_video_current(&now);
-    unsigned out = psx_host_video_restart_bits(&g_video_boot, &next);
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    const PsxHostVideoSettings now = g_ovl_video_current;
+    unsigned out = psx_host_video_restart_bits(&g_ovl_video_boot, &next);
     /* In a netplay match only presentation applies live (psx_video_apply_live);
      * the rest waits for the next session. */
-    if (psx_netplay_active() &&
+    if (g_ovl_netplay &&
         (psx_host_video_live_changes(&now, &next) &
          ~(PSX_VIDEO_LIVE_FULLSCREEN | PSX_VIDEO_LIVE_SCANLINES | PSX_VIDEO_LIVE_PRESENT_LINEAR)))
         out |= PSX_MENU_RESTART_AFTER_MATCH;
@@ -16234,8 +16256,8 @@ int mh_disc_insert(int n) {
 const char* const kOvlRenderers[] = {"Software", "OpenGL", "Vulkan"};
 PsxHostVideoSettings ovl_video_from(const RecompLauncherCSettings& ls) {
     PsxHostVideoSettings v;
-    psx_video_current(&v);  /* keeps fields the menu does not show */
-    v.fullscreen = ls.fullscreen ? (g_fullscreen ? g_fullscreen : 1) : 0;
+    mh_video_get(&v);  /* keeps fields the menu does not show */
+    v.fullscreen = ls.fullscreen ? (v.fullscreen ? v.fullscreen : 1) : 0;
     v.texture_filter = psx_texture_filter_from_ui(ls.texture_filter);
     v.fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
     v.scanlines = ls.scanlines ? 1 : 0;
@@ -16251,7 +16273,7 @@ PsxHostVideoSettings ovl_video_from(const RecompLauncherCSettings& ls) {
 void mh_launcher_settings_get(RecompLauncherCSettings* out) {
     if (!out) return;
     PsxHostVideoSettings v;
-    psx_video_current(&v);
+    mh_video_get(&v);
     RecompLauncherCSettings& ls = *out;
     ls.fullscreen = v.fullscreen;
     ls.texture_filter = v.texture_filter;
@@ -16337,6 +16359,7 @@ static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     g_ovl_config = (dir / "config.ini").string();
     g_ovl_assets = (dir / "assets").string();
     g_menu_host.assets_dir = g_ovl_assets.c_str();
+    mh_refresh_snapshot();
     if (!p->attach || !p->attach(p->ctx, sdl_window, SDL_GL_GetCurrentContext(), &g_menu_host)) return;
     g_ovl = p;
     psx_host_set_input_sink(ovl_sink, nullptr);
@@ -16362,6 +16385,7 @@ static void recomp_overlay_detach(void) {
 
 static void host_pause_service(void) {
     if (!g_ovl_on) return;
+    mh_refresh_snapshot();
     psx_host_set_ui_capture(ovl_open());
     const bool want = g_ovl_pause_wanted != 0 && ovl_open();
     if (want && !g_ovl_pause_held) g_ovl_pause_held = psx_host_pause_push("overlay") != 0;
@@ -16435,6 +16459,7 @@ static void host_pause_service(void) {
         }
     }
 #endif
+    mh_refresh_snapshot();
     if (const int code = g_ovl_exit.exchange(0)) {
         const int how = code - 1;
         if (how == PSX_MENU_EXIT_TO_FRONTEND) {

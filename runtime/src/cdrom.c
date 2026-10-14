@@ -2118,6 +2118,17 @@ static void exec_command(uint8_t cmd) {
 
     case 0x02: /* SetLoc */
         if (param_count >= 3) {
+            /* Invalid BCD/ranges report INT5(10h) and preserve the existing
+             * target, matching the controller and Beetle Command_Setloc.
+             * They are not an XA successful-stream sentinel. */
+            if ((param_fifo[0] & 0x0Fu) > 9u || param_fifo[0] > 0x99u ||
+                (param_fifo[1] & 0x0Fu) > 9u || param_fifo[1] > 0x59u ||
+                (param_fifo[2] & 0x0Fu) > 9u || param_fifo[2] > 0x74u) {
+                response_push(stat_reg | 1u);
+                response_push(0x10u);
+                set_irq(CDIRQ_ERROR);
+                break;
+            }
             int current_lba = (last_sector_lba >= 0)
                 ? last_sector_lba
                 : msf_to_lba(seek_min, seek_sec, seek_sect);

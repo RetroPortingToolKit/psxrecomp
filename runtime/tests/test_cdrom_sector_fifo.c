@@ -147,7 +147,29 @@ static void snapshot_between_request_and_dma(void) {
     drain(100, 505);
     free(wire); free(after);
 }
+static void invalid_setloc_preserves_target(void) {
+    const uint8_t invalid[][3] = {
+        {0xC0,0,0}, {0x0A,0,0}, {0,0x60,0}, {0,0x0A,0},
+        {0,0,0x75}, {0,0,0x0A}, {0xFF,0xFF,0xFF}
+    };
+    for (unsigned n=0;n<sizeof invalid/sizeof invalid[0];++n) {
+        setup();
+        param_count=3;
+        param_fifo[0]=0; param_fifo[1]=3; param_fifo[2]=0x25;
+        exec_command(0x02);
+        CHECK(irq_flag==CDIRQ_ACK && s_setloc_lba==100 && setloc_pending);
+        ack();
+        const int pending=setloc_pending, seek_far=setloc_seek_far;
+        memcpy(param_fifo,invalid[n],3); param_count=3;
+        exec_command(0x02);
+        CHECK(irq_flag==CDIRQ_ERROR && response_count==2 && response_fifo[1]==0x10);
+        CHECK((response_fifo[0]&1u)!=0);
+        CHECK(s_setloc_lba==100 && seek_min==0 && seek_sec==3 && seek_sect==25);
+        CHECK(setloc_pending==pending && setloc_seek_far==seek_far);
+    }
+}
 int main(void) {
+    invalid_setloc_preserves_target();
     delayed_notification();
     dma_continuation();
     dma_arrival_mid_drain();
