@@ -1878,6 +1878,9 @@ if(BUILD_TESTING)
             add_test(NAME menu_video_snapshot_test COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_menu_video_snapshot.py
                 --cxx ${CMAKE_CXX_COMPILER})
+            add_test(NAME host_pause_first_present_test COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_host_pause_first_present.py
+                --cxx ${CMAKE_CXX_COMPILER})
         endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME netplay_rb_verify_deadline_test COMMAND ${Python3_EXECUTABLE}

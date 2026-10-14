@@ -7941,7 +7941,10 @@ static void rewind_pause_present(void) {
 #ifndef PSX_SDL_NO_RENDER
     if (g_gl_active) {
         gl_renderer_set_interpolation_suspended(1);
-        (void)gl_renderer_present_hold_last();
+        /* A menu can pause before the first guest present. Give its draw
+         * callback a blank host frame when no held frame exists, or input
+         * handled during draw (including Resume) can never release pause. */
+        if (!gl_renderer_present_hold_last()) gl_renderer_present_blank();
     } else if (g_vk_active) {
         vk_renderer_present_blank();
     } else if (sdl_renderer) {
