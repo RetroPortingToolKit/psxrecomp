@@ -1074,6 +1074,19 @@ if(BUILD_TESTING)
             SKIP_REGULAR_EXPRESSION "^SKIP:")
     endif()
 
+    # #636 / PR #660: restore-vs-live IRQ delivery at the restore edge, over
+    # the real scheduler (traps.c) and IRQ delivery (interrupts.c). Compiled
+    # game, BIOS ROM, CPS continuation and interpreted resumes; no pending
+    # IRQ; I_MASK/SR gating; same-edge dedup; null-PC recovery.
+    add_executable(restore_edge_irq_replay_test
+        tests/test_restore_edge_irq_replay.c
+        tests/restore_edge_irq_stubs.c
+        src/traps.c
+        src/interrupts.c)
+    target_include_directories(restore_edge_irq_replay_test PRIVATE include src)
+    add_test(NAME restore_edge_irq_replay_test COMMAND restore_edge_irq_replay_test)
+    set_tests_properties(restore_edge_irq_replay_test PROPERTIES TIMEOUT 60)
+
     add_executable(dma_gpu_linked_list_timing_test
         tests/test_dma_gpu_linked_list_timing.c
         src/dma_gpu_ll.c)
