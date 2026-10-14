@@ -15,6 +15,12 @@ def main():
     source = (Path(__file__).resolve().parents[1] / "src/psx_netplay_rb.c").read_text()
     reset = function_body(source, "static void rb_reset_session_peer_state(void)")
     progress = function_body(source, "static int rb_owing_seats_progressed(uint32_t owing)")
+    replaying = function_body(source, "static int rb_owing_seats_replaying(uint32_t owing, uint32_t cap)")
+    verify = source[source.index("/* Retransmit POST while Verify waits for peer"):]
+    verify = verify[:verify.index("poll_tip_hold_finalize();")]
+    # A Live seat past the episode target must not keep re-arming the POST wait.
+    assert "rb_owing_seats_replaying(rnet_rb_quorum_missing(&g_post_q)," in verify
+    assert "rnet_rb_get_target_tick(g_rb)" in verify
     # Verify the executable helper is wired into shutdown/cold reset, not into
     # per-episode clearing: early BASELINE packets must survive opening BEGIN.
     enabled = source.index("void psx_netplay_rb_start(void)\n{")
@@ -41,7 +47,8 @@ static int rnet_session_remote_tip(RNetSession *s, int seat, rnet_u32 *tip) {
     *tip = s->tip[seat]; return 1;
 }
 ''' + declarations + "\nstatic void rb_reset_session_peer_state(void) {" + reset + "}\n" + \
-        "static int rb_owing_seats_progressed(uint32_t owing) {" + progress + r'''}
+        "static int rb_owing_seats_progressed(uint32_t owing) {" + progress + "}\n" + \
+        "static int rb_owing_seats_replaying(uint32_t owing, uint32_t cap) {" + replaying + r'''}
 int main(void) {
     for (int seat = 0; seat < 4; ++seat) {
         g_stash_bl_seat[seat].valid = 1;
@@ -67,6 +74,12 @@ int main(void) {
         assert(rb_owing_seats_progressed(1u << seat));
     }
     assert(!rb_owing_seats_progressed(15));
+    /* Verify wait: progress up to the target re-arms, a seat already past
+     * the target (Live, its POST lost) does not. */
+    s_session.tip[1] = 100; assert(rb_owing_seats_replaying(2u, 200));
+    s_session.tip[1] = 150; assert(rb_owing_seats_replaying(2u, 200));
+    s_session.tip[1] = 250; assert(!rb_owing_seats_replaying(2u, 200));
+    s_session.tip[1] = 260; assert(!rb_owing_seats_replaying(2u, 200));
     rb_reset_session_peer_state();
     rb_reset_session_peer_state(); /* shutdown/reset is idempotent */
     return 0;

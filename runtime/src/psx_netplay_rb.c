@@ -4408,6 +4408,32 @@ static int rb_owing_seats_progressed(uint32_t owing)
     return moved;
 }
 
+/* As rb_owing_seats_progressed, but a seat whose tip has passed `cap` is not
+ * "still replaying": it finished the episode (went Live) and the message it
+ * owes was lost, so its progress must not keep re-arming a wait timeout
+ * (#636: a 3-seat Verify waited for a POST from a seat already running Live
+ * past the target until the liveness timeout ended the match; with the
+ * timeout honoured the episode aborts and realigns instead). */
+static int rb_owing_seats_replaying(uint32_t owing, uint32_t cap)
+{
+    RNetSession *s = sess();
+    int seat, moved = 0;
+    if (!s)
+        return 0;
+    for (seat = 0; seat < (int)RNET_RB_QUORUM_SEATS; ++seat) {
+        rnet_u32 tip = 0;
+        if (!(owing & (1u << seat)))
+            continue;
+        (void)rnet_session_remote_tip(s, seat, &tip);
+        if (tip > g_peer_progress_tip[seat]) {
+            if (g_peer_progress_tip[seat] != 0u && tip <= cap)
+                moved = 1;
+            g_peer_progress_tip[seat] = tip;
+        }
+    }
+    return moved;
+}
+
 static void accept_peer_baseline(int from, uint32_t epoch, uint32_t load, uint32_t dig_m,
                                  uint32_t dig_a, uint32_t dig_b, uint32_t dig_c)
 {
@@ -9712,7 +9738,8 @@ void psx_netplay_rb_pump(void)
                                         1u);
         if (g_verify_wait_ms == 0ull)
             g_verify_wait_ms = now;
-        else if (rb_owing_seats_progressed(rnet_rb_quorum_missing(&g_post_q)))
+        else if (rb_owing_seats_replaying(rnet_rb_quorum_missing(&g_post_q),
+                                          rnet_rb_get_target_tick(g_rb)))
             g_verify_wait_ms = now; /* a slow seat is still replaying */
         else if (now >= g_verify_wait_ms &&
                  (now - g_verify_wait_ms) >= (uint64_t)RB_VERIFY_TIMEOUT_MS) {
