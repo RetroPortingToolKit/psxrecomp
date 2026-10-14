@@ -720,6 +720,8 @@ void psx_scheduler_top_level_resume_clear(void)
     g_sched_top_level_resume = 0;
 }
 
+static int g_sched_restore_edge_check = 0;
+
 void psx_scheduler_resume_at(uint32_t resume_pc)
 {
     if (!psx_is_dispatchable(resume_pc)) {
@@ -735,6 +737,13 @@ void psx_scheduler_resume_at(uint32_t resume_pc)
     /* longjmp abandons every mid-block CPS frame — sentinel RFE must not
      * treat the new top-level dispatch as a continuable live chain. */
     g_sched_top_level_resume = 1;
+    /* Every caller is a state restore (savestate, rewind, selfcheck, rollback
+     * load). The snap was taken by a poll inside psx_check_interrupts at this
+     * very block edge, and the live run went on to evaluate delivery at that
+     * same edge. The resumed run must do the same before the block executes,
+     * or a pending IRQ (VBlank at a tick boundary) is taken one block later
+     * at a different PC than live (#636). */
+    g_sched_restore_edge_check = 1;
     /* Publish before the longjmp lands in dispatch: sticky I_STAT can deliver
      * on the first edge with take_pc=0 otherwise (LEGACY_SENTINEL fork). */
     {
@@ -893,6 +902,13 @@ void psx_scheduler_run(CPUState* cpu)
         if (from_top_resume) {
             extern void psx_irq_arm_compiled_resume_pc(uint32_t pc);
             psx_irq_arm_compiled_resume_pc(run_pc);
+            if (g_sched_restore_edge_check) {
+                g_sched_restore_edge_check = 0;
+                /* Same edge check the dispatch entry runs (deduped there by
+                 * cycle+PC), so compiled-game entries are not checked twice;
+                 * BIOS ROM and continuation resumes get the check they lacked. */
+                psx_check_interrupts_dispatch_entry(cpu, run_pc);
+            }
         }
         psx_dispatch(cpu, run_pc);
 
