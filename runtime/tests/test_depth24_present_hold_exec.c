@@ -312,7 +312,23 @@ static void check_rollback_and_disk(void) {
     assert(r == live[RETARGET_1 + 3].presented && h == live[RETARGET_1 + 3].frame_hash);
 }
 
+static void check_pre_vblank_snapshot(void) {
+    reset_gpu();
+    for (int f = 0; f < RETARGET_1; f++) { guest_frame(f); gpu_vblank_tick(); }
+    guest_frame(RETARGET_1); /* GP1 arms a count before the first held VBlank. */
+    assert(s_d24_present_hold == 3 && s_d24_present_skip == 0);
+    const uint32_t n = gpu_snapshot_bytes();
+    uint8_t *snap = (uint8_t *)malloc(n);
+    assert(snap);
+    gpu_snapshot_write(snap);
+    s_d24_present_hold = s_d24_present_skip = 0;
+    assert(gpu_snapshot_read(snap, n));
+    assert(s_d24_present_hold == 3 && s_d24_present_skip == 0);
+    free(snap);
+}
+
 int main(void) {
+    check_pre_vblank_snapshot();
     check_policies_agree();
     check_hold_is_needed();
     check_rollback_and_disk();

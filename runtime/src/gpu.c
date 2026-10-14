@@ -7886,7 +7886,7 @@ static int gpu_snap_emit(PstW *w) {
     WI(vram_read_active); WH(vram_read_x); WH(vram_read_y); WH(vram_read_w); WH(vram_read_h);
     WH(vram_read_col); WH(vram_read_row);
     /* Depth24 present helpers (MotK FMV) — must resume with upload span. */
-    WU(s_d24_upload_x1); WI(s_d24_present_hold | (s_d24_present_skip ? 0x100 : 0));
+    WU(s_d24_upload_x1); WI(s_d24_present_hold | 0x200 | (s_d24_present_skip ? 0x100 : 0));
     WU(s_d24_prev_disp_h);
 #undef WU
 #undef WI
@@ -7921,9 +7921,12 @@ static int gpu_snap_parse(PstR *r) {
     RI(vram_read_active); RH(vram_read_x); RH(vram_read_y); RH(vram_read_w); RH(vram_read_h);
     RH(vram_read_col); RH(vram_read_row);
     RU(s_d24_upload_x1); RI(s_d24_present_hold); RU(s_d24_prev_disp_h);
-    /* Bit 8: the latest VBlank was held. Older snaps lack it; a positive
-     * count after a VBlank implies the VBlank was held. */
-    s_d24_present_skip = (s_d24_present_hold & 0x100) || (s_d24_present_hold & 0xFF) > 0;
+    /* Bit 9 marks an explicit skip flag (bit 8). GP1 can arm a positive
+     * count before VBlank, when skip is still false: that state must round
+     * trip exactly. Older snaps without the marker infer skip from count. */
+    s_d24_present_skip = (s_d24_present_hold & 0x200)
+        ? (s_d24_present_hold & 0x100) != 0
+        : (s_d24_present_hold & 0x100) || (s_d24_present_hold & 0xFF) > 0;
     s_d24_present_hold &= 0xFF;
 #undef RU
 #undef RI
