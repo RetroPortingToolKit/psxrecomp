@@ -16,13 +16,13 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 def main():
-    gpu = (SRC / "gpu.c").read_text()
+    gpu = (SRC / "gpu.c").read_text(encoding="utf-8")
     vblank = function_body(gpu, "void gpu_vblank_tick(void)")
     assert "s_d24_present_hold--" in vblank
     tick = function_body(gpu, "int gpu_depth24_present_hold_tick(void)")
     assert "s_d24_present_hold" not in tick, "the hold must not move at host present"
 
-    main_cpp = (SRC / "main.cpp").read_text()
+    main_cpp = (SRC / "main.cpp").read_text(encoding="utf-8")
     rb_loaded = function_body(main_cpp, 'extern "C" void psx_frontend_on_rb_snap_loaded(void)')
     assert "gpu_depth24_on_savestate_loaded" not in rb_loaded
     print("depth24 present hold: ok")

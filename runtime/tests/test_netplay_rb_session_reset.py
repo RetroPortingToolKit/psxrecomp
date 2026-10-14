@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--compiler", required=True)
     args = parser.parse_args()
-    source = (Path(__file__).resolve().parents[1] / "src/psx_netplay_rb.c").read_text()
+    source = (Path(__file__).resolve().parents[1] / "src/psx_netplay_rb.c").read_text(encoding="utf-8")
     reset = function_body(source, "static void rb_reset_session_peer_state(void)")
     progress = function_body(source, "static int rb_owing_seats_progressed(uint32_t owing)")
     replaying = function_body(source, "static int rb_owing_seats_replaying(uint32_t owing, uint32_t cap)")

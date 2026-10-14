@@ -23,7 +23,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 def main():
-    traps = (SRC / "traps.c").read_text()
+    traps = (SRC / "traps.c").read_text(encoding="utf-8")
     resume = function_body(traps, "void psx_scheduler_resume_at(uint32_t resume_pc)")
     assert "g_sched_restore_edge_check = 1;" in resume
     assert resume.index("g_sched_restore_edge_check = 1;") < resume.index("longjmp(")

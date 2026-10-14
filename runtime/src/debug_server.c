@@ -113,6 +113,7 @@
 #endif
 
 #include "psx_sdl.h"
+#include "debug_socket_io.h"
 
 /* ---- Externs from runtime ---- */
 extern uint32_t i_stat;
@@ -148,7 +149,15 @@ static SDL_mutex  *s_io_mutex    = NULL;
 static SDL_cond   *s_io_req_cv   = NULL;   /* emu waits on this for a request   */
 static SDL_cond   *s_io_resp_cv  = NULL;   /* I/O waits on this for a response  */
 static volatile int s_io_state   = IO_IDLE;
-static volatile int s_io_running  = 0;
+#if defined(PSX_SDL3)
+static SDL_AtomicInt s_io_running;
+static int io_is_running(void *ctx) { (void)ctx; return SDL_GetAtomicInt(&s_io_running); }
+static void io_set_running(int on) { SDL_SetAtomicInt(&s_io_running, on); }
+#else
+static SDL_atomic_t s_io_running;
+static int io_is_running(void *ctx) { (void)ctx; return SDL_AtomicGet(&s_io_running); }
+static void io_set_running(int on) { SDL_AtomicSet(&s_io_running, on); }
+#endif
 static char  s_io_req[RECV_BUF_SIZE];      /* request line (I/O -> emu)         */
 static char *s_resp_buf = NULL;            /* response bytes (emu -> I/O)       */
 static size_t s_resp_len = 0, s_resp_cap = 0;
@@ -16516,28 +16525,19 @@ void debug_server_init(int port)
      * 16 leaves room for a few probes to queue while we investigate. This
      * is observability infrastructure, not a freeze fix. */
     listen(s_listen, 16);
-    /* Bounded accept(): close() of a socket blocked in accept() does NOT
-     * reliably wake the sleeper on Linux (the fd number can even be recycled
-     * under us), so the close-to-break-accept + SDL_WaitThread dance in
-     * debug_server_shutdown() could hang window-close forever. A receive
-     * timeout makes accept() return EWOULDBLOCK/EINTR periodically; the loop
-     * re-checks s_io_running, so shutdown joins within ~200 ms. */
-#ifdef _WIN32
-    { DWORD accept_to = 200;
-      setsockopt(s_listen, SOL_SOCKET, SO_RCVTIMEO, (const char *)&accept_to,
-                 sizeof(accept_to)); }
-#else
-    { struct timeval accept_to = { 0, 200 * 1000 };
-      setsockopt(s_listen, SOL_SOCKET, SO_RCVTIMEO, &accept_to,
-                 sizeof(accept_to)); }
-#endif
+    if (!psx_debug_socket_nonblocking(s_listen, 1)) {
+        s_listen_err = sock_error();
+        sock_close(s_listen);
+        s_listen = SOCK_INVALID;
+        return;
+    }
     fprintf(stdout, "psxrecomp: debug server LISTENING on 127.0.0.1:%d\n",
             s_port);
 
     /* Always-on wall-time phase sampler (phase_profile). Own thread: the
      * server pumps on the main thread, so sampling must not live there. */
     phase_sampler_start();
-    /* Blocking accept — the dedicated I/O thread waits on it (no busy-poll). */
+    /* The I/O worker waits for readiness with bounded cancellation. */
 
     /* Start the TCP I/O thread + its handoff primitives. */
     s_io_mutex   = SDL_CreateMutex();
@@ -16546,9 +16546,9 @@ void debug_server_init(int port)
     s_resp_cap   = 65536;
     s_resp_buf   = (char *)malloc(s_resp_cap);
     if (s_io_mutex && s_io_req_cv && s_io_resp_cv && s_resp_buf) {
-        s_io_running = 1;
+        io_set_running(1);
         s_io_thread = SDL_CreateThread(io_thread_main, "psx-dbg-io", NULL);
-        if (!s_io_thread) s_io_running = 0;
+        if (!s_io_thread) io_set_running(0);
     }
 
     if (!s_frame_history) {
@@ -16888,17 +16888,7 @@ void debug_server_init(int port)
  * line length (NUL-terminated, newline stripped), or -1 on close/error. */
 static int recv_line(sock_t c, char *buf, int cap)
 {
-    int len = 0;
-    while (len < cap - 1) {
-        int n = recv(c, buf + len, cap - 1 - len, 0);
-        if (n <= 0) return -1;
-        len += n;
-        buf[len] = '\0';
-        char *nl = strchr(buf, '\n');
-        if (nl) { *nl = '\0'; return (int)(nl - buf); }
-    }
-    buf[cap - 1] = '\0';
-    return cap - 1;   /* over-long line: take what we have */
+    return psx_debug_socket_recv_line(c, buf, cap, io_is_running, NULL);
 }
 
 /* The TCP I/O thread: owns accept/recv/send. Hands each request to the emu
@@ -16908,11 +16898,9 @@ static int recv_line(sock_t c, char *buf, int cap)
 static int io_thread_main(void *arg)
 {
     (void)arg;
-    while (s_io_running) {
-        struct sockaddr_in caddr;
-        int clen = sizeof(caddr);
-        sock_t c = accept(s_listen, (struct sockaddr *)&caddr, &clen);
-        if (c == SOCK_INVALID) { if (!s_io_running) break; SDL_Delay(5); continue; }
+    while (io_is_running(NULL)) {
+        sock_t c = psx_debug_socket_accept(s_listen, io_is_running, NULL);
+        if (c == SOCK_INVALID) { if (!io_is_running(NULL)) break; SDL_Delay(5); continue; }
 
         char req[RECV_BUF_SIZE];
         int rl = recv_line(c, req, sizeof(req));
@@ -16934,7 +16922,7 @@ static int io_thread_main(void *arg)
         s_io_state = IO_REQ;
         SDL_CondSignal(s_io_req_cv);
         int waited = 0;
-        while (s_io_state != IO_RESP && s_io_running) {
+        while (s_io_state != IO_RESP && io_is_running(NULL)) {
             if (SDL_CondWaitTimeout(s_io_resp_cv, s_io_mutex, 1000) == SDL_MUTEX_TIMEDOUT) {
                 waited += 1000;
                 if (waited >= 30000) break;   /* emu wedged: give up on this one */
@@ -17115,17 +17103,17 @@ void debug_server_check_watchpoints(void)
 
 void debug_server_shutdown(void)
 {
-    /* Stop the I/O thread: clear the flag, close the listen socket to break the
-     * blocking accept(), then join. */
-    s_io_running = 0;
-    if (s_listen != SOCK_INVALID) {
-        sock_close(s_listen);
-        s_listen = SOCK_INVALID;
-    }
+    /* Join before closing: the worker keeps sole ownership of its sockets
+     * while its cancellable waits are active. */
+    io_set_running(0);
     if (s_io_thread) {
         if (s_io_mutex) { SDL_LockMutex(s_io_mutex); SDL_CondSignal(s_io_resp_cv); SDL_UnlockMutex(s_io_mutex); }
         SDL_WaitThread(s_io_thread, NULL);
         s_io_thread = NULL;
+    }
+    if (s_listen != SOCK_INVALID) {
+        sock_close(s_listen);
+        s_listen = SOCK_INVALID;
     }
     if (s_client != SOCK_INVALID) {
         sock_close(s_client);

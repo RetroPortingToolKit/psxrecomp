@@ -40,6 +40,11 @@ void debug_server_trace_dispatch(uint32_t f) { (void)f; }
 void debug_server_log_probe(uint32_t pc, CPUState *cpu) { (void)pc; (void)cpu; }
 void psx_segment_miss_record_kind(uint32_t a, uint32_t h, uint32_t r, uint32_t s, uint32_t f, uint32_t k) { (void)a; (void)h; (void)r; (void)s; (void)f; (void)k; }
 uint64_t s_frame_count = 0;
+uint32_t g_psx_mod_guest_functions = 1;
+int psx_mod_dispatch_guest_function(struct CPUState *cpu, uint32_t address) {
+    cpu->gpr[2] = address;
+    return 1;
+}
 int (*g_psx_bios_hle_hook)(struct CPUState *cpu, uint32_t phys) = 0;
 uint64_t g_dispatch_static_hits = 0;
 uint32_t g_debug_current_func_addr = 0;
@@ -115,6 +120,10 @@ int main(void) {
             CHECK(probe.dispatch_depth == &g_psx_dispatch_depth, "depth pointer aliases host");
             CHECK(probe.hle_hook == &g_psx_bios_hle_hook, "hle hook pointer aliases host");
             CHECK(probe.ram_mask == &g_psx_ram_mask, "ram mask pointer aliases host");
+            CHECK(probe.mod_guest_functions == &g_psx_mod_guest_functions,
+                  "mod count aliases host");
+            CHECK(probe.mod_dispatch_guest_function == psx_mod_dispatch_guest_function,
+                  "mod callback forwards to host");
         }
     }
 
@@ -131,7 +140,7 @@ int main(void) {
         char path[512];
         CHECK(psx_bios_module_cache_path("/x", "SCPH1001", 0x37157331u, path, sizeof(path)),
               "cache path fits");
-        CHECK(strstr(path, "/x/cache/bios/test-arch/bm1_") == path, "cache path root: %s", path);
+        CHECK(strstr(path, "/x/cache/bios/test-arch/bm2_") == path, "cache path root: %s", path);
         CHECK(strstr(path, "/SCPH1001_37157331.") != 0, "cache path stem+crc: %s", path);
     }
 
