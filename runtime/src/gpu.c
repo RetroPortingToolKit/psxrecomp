@@ -3435,11 +3435,13 @@ static uint16_t vram_write_pixels[1024 * 512];
  * gpu_depth24_rgb_limit — declared early so gpu_reset_state can clear it. */
 static uint32_t s_d24_upload_x1 = 0;
 static int      s_d24_present_hold = 0; /* vblanks to skip Swap after GP1(07h) */
-/* Host side of the hold: whether the present after the latest guest VBlank
- * skips its Swap. The count itself is guest state (in the GPU snap) and moves
- * only at guest VBlank, so a live run, a rollback replay and a headless run
- * all hold the same span (#636: a present-ticked hold stuck at 3 in headless
- * live play and was zeroed by a rollback load, so replay != live). */
+/* Whether the latest guest VBlank was held: presents after it skip their
+ * Swap. Both the count and this flag are guest state, set only at guest
+ * VBlank and carried in the GPU snap (packed into the hold word), and a
+ * present only reads them, so a windowed, headless or frame-skipping run and
+ * a rollback replay hold the same span and restore the same output (#636: a
+ * present-ticked hold stuck at 3 in headless live play and was zeroed by a
+ * rollback load, so replay != live). */
 static int      s_d24_present_skip = 0;
 static uint32_t s_d24_prev_disp_h = 0;  /* last GP1(07h) band height */
 static void depth24_note_upload(uint32_t x, uint32_t w);
@@ -4269,9 +4271,7 @@ void gpu_depth24_upload_span_reset(void) {
 }
 
 int gpu_depth24_present_hold_tick(void) {
-    int skip = s_d24_present_skip;
-    s_d24_present_skip = 0; /* one skipped Swap per guest VBlank */
-    return skip;
+    return s_d24_present_skip;
 }
 
 void gpu_depth24_on_savestate_loaded(void) {
@@ -4418,6 +4418,42 @@ void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out
     }
     for (; x < count; x++)
         out[x] = 0xFF000000u;
+}
+
+/* Depth24 present staging, shared by every CPU present path: compose the
+ * GP1(07h) intersection with active video into the PAL/NTSC canvas (rows
+ * off-screen are clipping, not a shift), then black-fill the trailing RGB
+ * columns no CPU->VRAM upload has covered since the last span reset, so stale
+ * VRAM from a prior movie never shows past the new blit. With no span yet
+ * (lim == 0) only the last `margin` columns are blanked: blanking [0..w) left
+ * MotK's FMV permanently black after the GP1(07h) hold reset the span.
+ * Returns the source rows staged. */
+uint32_t gpu_depth24_stage_scanout(const GpuDisplayInfo *di, uint32_t *buf,
+                                   uint32_t w, uint32_t margin) {
+    if (!di || !buf || w == 0u || di->screen_height == 0u)
+        return 0u;
+    const size_t count = (size_t)w * di->screen_height;
+    for (size_t i = 0; i < count; i++)
+        buf[i] = 0xFF000000u;
+    if (di->screen_origin_y >= di->screen_height)
+        return 0u;
+    uint32_t rows = di->height;
+    if (rows > di->screen_height - di->screen_origin_y)
+        rows = di->screen_height - di->screen_origin_y;
+    uint32_t *source = buf + (size_t)di->screen_origin_y * w;
+    for (uint32_t y = 0; y < rows; y++)
+        gpu_depth24_present_row(di, di->screen_source_skip_y + y,
+                                source + (size_t)y * w, w);
+    if (rows == 0u || w < 8u || margin == 0u || margin >= w)
+        return rows;
+    uint32_t start = w - margin;
+    uint32_t lim = gpu_depth24_rgb_limit(di->display_x, w);
+    if (lim > 0u && lim < w && lim < start)
+        start = lim;
+    for (uint32_t y = 0; y < rows; y++)
+        for (uint32_t x = start; x < w; x++)
+            source[(size_t)y * w + x] = 0xFF000000u;
+    return rows;
 }
 
 int gpu_display_is_depth24(void) {
@@ -7850,7 +7886,8 @@ static int gpu_snap_emit(PstW *w) {
     WI(vram_read_active); WH(vram_read_x); WH(vram_read_y); WH(vram_read_w); WH(vram_read_h);
     WH(vram_read_col); WH(vram_read_row);
     /* Depth24 present helpers (MotK FMV) — must resume with upload span. */
-    WU(s_d24_upload_x1); WI(s_d24_present_hold); WU(s_d24_prev_disp_h);
+    WU(s_d24_upload_x1); WI(s_d24_present_hold | (s_d24_present_skip ? 0x100 : 0));
+    WU(s_d24_prev_disp_h);
 #undef WU
 #undef WI
 #undef WH
@@ -7884,6 +7921,10 @@ static int gpu_snap_parse(PstR *r) {
     RI(vram_read_active); RH(vram_read_x); RH(vram_read_y); RH(vram_read_w); RH(vram_read_h);
     RH(vram_read_col); RH(vram_read_row);
     RU(s_d24_upload_x1); RI(s_d24_present_hold); RU(s_d24_prev_disp_h);
+    /* Bit 8: the latest VBlank was held. Older snaps lack it; a positive
+     * count after a VBlank implies the VBlank was held. */
+    s_d24_present_skip = (s_d24_present_hold & 0x100) || (s_d24_present_hold & 0xFF) > 0;
+    s_d24_present_hold &= 0xFF;
 #undef RU
 #undef RI
 #undef RH

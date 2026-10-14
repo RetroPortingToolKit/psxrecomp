@@ -7483,55 +7483,20 @@ static void depth24_cutover_tick(int depth24) {
  *
  * Optional short cutover blank: full-frame black for 1–2 presents on movie
  * start / long idle resume only (see depth24_cutover_tick). */
-static void depth24_fix_trailing_margin(uint32_t *buf, uint32_t w, uint32_t h,
-                                          uint32_t display_x) {
-    if (!buf || w < 8u || h == 0u) return;
-
-    if (s_d24_cutover_blank > 0) {
-        s_d24_cutover_blank--;
-        const uint32_t n = w * h;
-        for (uint32_t i = 0; i < n; i++)
-            buf[i] = 0xFF000000u;
-        return;
-    }
-
-    /* Default: last 8 columns. If the upload span is known and ends earlier
-     * inside that margin, start blanking from the span edge instead. */
-    const uint32_t margin = (uint32_t)g_video_depth24_trailing_margin;
-    if (margin == 0u || margin >= w) return;
-    uint32_t start = w - margin;
-    uint32_t lim = gpu_depth24_rgb_limit(display_x, w);
-    if (lim > 0u && lim < w && lim < start)
-        start = lim;
-    for (uint32_t y = 0; y < h; y++) {
-        for (uint32_t x = start; x < w; x++)
-            buf[y * w + x] = 0xFF000000u;
-    }
-}
-
-/* Compose visible depth24 rows into the PAL/NTSC active canvas. Decode only
- * the GP1(07h) intersection with active video. This preserves every visible
- * source row and represents off-screen rows as clipping, not as an in-place
- * shift that discards additional FMV content. */
 static void depth24_stage_scanout(const GpuDisplayInfo *di, uint32_t *buf,
                                   uint32_t w) {
-    if (!di || !buf || w == 0u || di->screen_height == 0u)
+    if (!di || !buf || w == 0u)
         return;
-
+    /* gpu.c stages the visible rows and black-fills the uncovered trailing
+     * columns (the same code depth24_present_hold_exec_test renders). */
+    const uint32_t rows = gpu_depth24_stage_scanout(
+        di, buf, w, (uint32_t)g_video_depth24_trailing_margin);
+    if (rows == 0u || w < 8u || s_d24_cutover_blank <= 0)
+        return;
+    s_d24_cutover_blank--;
     const size_t count = (size_t)w * di->screen_height;
     for (size_t i = 0; i < count; i++)
         buf[i] = 0xFF000000u;
-
-    if (di->screen_origin_y >= di->screen_height)
-        return;
-    uint32_t rows = di->height;
-    if (rows > di->screen_height - di->screen_origin_y)
-        rows = di->screen_height - di->screen_origin_y;
-    uint32_t *source = buf + (size_t)di->screen_origin_y * w;
-    for (uint32_t y = 0; y < rows; y++)
-        gpu_depth24_present_row(di, di->screen_source_skip_y + y,
-                                source + (size_t)y * w, w);
-    depth24_fix_trailing_margin(source, w, rows, di->display_x);
 }
 
 enum {

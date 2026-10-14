@@ -75,15 +75,22 @@ uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y
  * overhead. `out` must hold at least `count` uint32_t ARGB entries. */
 void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out,
                              uint32_t count);
+/* Stage a depth24 frame into a w x di->screen_height ARGB canvas and
+ * black-fill trailing columns no upload covered (see gpu.c). Returns the
+ * source rows staged. */
+uint32_t gpu_depth24_stage_scanout(const GpuDisplayInfo* di, uint32_t* buf,
+                                   uint32_t w, uint32_t margin);
 /* Depth24: RGB columns covered by CPU→VRAM uploads since the last reset.
  * Returns 0 when no uploads yet, crtc_w when coverage is full/unknown-beyond,
  * else the covered RGB width. Present black-fills [limit, crtc_w) without
  * shrinking the CRTC-derived draw width (avoids a flickering black pillar). */
 uint32_t gpu_depth24_rgb_limit(uint32_t display_x, uint32_t crtc_w);
 void     gpu_depth24_upload_span_reset(void);
-/* MotK intro cuts retarget GP1(07h). While hold > 0, present should skip
- * Swap (keep prior frame) so stale trailing VRAM never flashes. One tick
- * per vblank; returns non-zero while the hold is still active after tick. */
+/* MotK intro cuts retarget GP1(07h): the guest-state hold counts down at
+ * guest VBlank (gpu_vblank_tick). Returns non-zero while the latest guest
+ * VBlank was held (read-only; guest state in the GPU snap): presents should
+ * skip Swap (keep the prior frame) so stale trailing
+ * VRAM never flashes. */
 int      gpu_depth24_present_hold_tick(void);
 /* After savestate restore: clear ephemeral hold so the restored depth24
  * frame can present immediately (span/prev_h come from the GPU snap). */
