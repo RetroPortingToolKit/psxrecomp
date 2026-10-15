@@ -8,6 +8,7 @@
 #include "interrupts.h"
 #include "debug_server.h"
 #include "psx_cycles.h"
+#include "overlay_unit_defer.h"
 
 /* Out-of-line copy of the header-inline CPU charge for the overlay callback
  * table: overlay DLLs publish their accumulated CPU charge here, into the
@@ -2283,12 +2284,17 @@ extern uint32_t i_mask;
  * nested unit suspended the interrupted thread with an INCONSISTENT snapshot
  * (resume PC at the caller's post-call point, sp still mid-callee) -> a leaked
  * stack frame that compounded across cooperative cycles into a smeared jumptable
- * index (the Ape "Checking MEMORY CARD" softlock/fatal). While this depth is >0
- * both backends defer the IRQ check; the callee runs to completion, then the
- * enclosing top-level dirty pump / outermost dispatch return delivers the IRQ at
- * a consistent (pc, sp) boundary. The TOP-LEVEL flow (depth 0) still pumps IRQs,
- * so the consumer's poll loop and long overlay game-loops keep their
- * responsiveness. Incremented only when the A/B toggle is on (below). */
+ * index (the Ape "Checking MEMORY CARD" softlock/fatal). The depth is what
+ * psx_check_interrupts keys its deferred cooperative-switch path on (a switch
+ * is honored only at depth 0, the outermost dispatch boundary, where the
+ * outgoing thread's state is fully materialized).
+ *
+ * The overlay CI wrappers used to ALSO skip every interrupt check while depth
+ * > 0. That starves a callee that polls for an IRQ-set flag (libcard
+ * MemCardSync: LoD "Checking MEMORY CARD" hang), so IRQs are now delivered
+ * inside units; the blanket skip survives only behind
+ * PSX_OVERLAY_UNIT_IRQ_DEFER=1 for A/B bisection (overlay_unit_defer.h).
+ * Incremented only when the A/B toggle is on (below). */
 int g_call_unit_depth = 0;
 
 /* A/B toggle for the nested-unit IRQ deferral (PSX_OVERLAY_UNIT_DEFER, default
@@ -2300,6 +2306,18 @@ int overlay_unit_defer_enabled(void) {
     if (cached < 0) {
         const char *e = getenv("PSX_OVERLAY_UNIT_DEFER");
         cached = (e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N')) ? 0 : 1;
+    }
+    return cached;
+}
+
+/* Legacy blanket IRQ deferral inside call units (overlay_unit_defer.h): default
+ * OFF; PSX_OVERLAY_UNIT_IRQ_DEFER=1 restores it for A/B bisection. */
+static int overlay_unit_irq_defer_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("PSX_OVERLAY_UNIT_IRQ_DEFER");
+        cached = (e && e[0]) ? (e[0] == '1' || e[0] == 'y' || e[0] == 'Y')
+                             : OVERLAY_UNIT_IRQ_DEFER_DEFAULT;
     }
     return cached;
 }
@@ -2383,9 +2401,12 @@ static int overlay_irq_suppressed_now(void) {
 }
 
 static void overlay_ci_wrapper(CPUState *cpu) {
-    /* Defer while inside a nested call unit — a callee must not interrupt
-     * mid-call (static-call atomicity). See g_call_unit_depth. */
-    if (g_call_unit_depth > 0) { s_ci_skip_unit++; return; }
+    /* Legacy blanket deferral inside a nested call unit (A/B knob only; default
+     * is to deliver — see g_call_unit_depth / overlay_unit_defer.h). */
+    if (overlay_unit_irq_must_defer(g_call_unit_depth, overlay_unit_irq_defer_enabled())) {
+        s_ci_skip_unit++;
+        return;
+    }
     if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; return; }
     /* psx_advance_cycles() has already raised every device edge due at this
      * block. Avoid entering the full scheduler/diagnostic path when COP0 could
@@ -2426,10 +2447,13 @@ static int overlay_idle_note_is_internal_or_return(const CPUState *cpu,
 }
 
 static void overlay_ci_at_wrapper(CPUState *cpu, uint32_t resume_pc) {
-    /* Defer while inside a nested call unit (see g_call_unit_depth): suspending
-     * here would save resume_pc at the callee's block leader while the enclosing
-     * dirty caller expects an atomic unit — the resume-desync bug. */
-    if (g_call_unit_depth > 0) { s_ci_skip_unit++; return; }
+    /* Legacy blanket deferral inside a nested call unit (A/B knob only; default
+     * is to deliver — see g_call_unit_depth / overlay_unit_defer.h). A thread
+     * switch landing here is deferred by psx_check_interrupts, not by skipping. */
+    if (overlay_unit_irq_must_defer(g_call_unit_depth, overlay_unit_irq_defer_enabled())) {
+        s_ci_skip_unit++;
+        return;
+    }
     if (overlay_irq_suppressed_now()) { s_ci_skip_supp++; return; }
     if ((i_stat & i_mask) == 0) { s_ci_skip_none++; return; }
     if ((cpu->cop0[12] & ((1u << 10) | 1u)) != ((1u << 10) | 1u)) {
