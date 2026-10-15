@@ -81,6 +81,23 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
     // does not use the feature keeps the hash (and every overlay cache) it had.
     if (!c.mod_instruction_sites.empty())
         h.words("mod_instruction_sites", c.mod_instruction_sites);
+    if (!c.mod_immediate_sites.empty()) {
+        // Appended only when used (same rule as above). Order-independent.
+        auto sites = c.mod_immediate_sites;
+        std::sort(sites.begin(), sites.end(), [](const auto& x, const auto& y) {
+            const uint32_t ax = x.address & 0x1FFFFFFFu, ay = y.address & 0x1FFFFFFFu;
+            return ax != ay ? ax < ay : x.expected < y.expected;
+        });
+        h.tag("mod_immediate_sites");
+        h.u32((uint32_t)sites.size());
+        for (const auto& site : sites) {
+            h.u32(site.address & 0x1FFFFFFFu);
+            h.u32(site.expected);
+            h.u32(site.group);
+            h.u32((uint32_t)site.values.size());
+            for (const uint16_t v : site.values) h.u32(v);
+        }
+    }
     h.words("cull_bias", c.ws_cull_bias_sites);
     if (!c.ws_cull_bias_lower_sites.empty())
         h.words("cull_bias_lower", c.ws_cull_bias_lower_sites);
@@ -1154,6 +1171,60 @@ bool draw_distance_clamp_reads(uint32_t instr, uint32_t reg) {
     if (funct >= 0x20u && funct <= 0x2Bu && funct != 0x28u && funct != 0x29u)
         return rs == reg || rt == reg;
     return false;
+}
+
+std::string mod_immediate_site_error(const ModImmediateSite& site) {
+    if ((site.address & 3u) != 0u) return "address is not instruction-aligned";
+    if ((site.address & 0x1FFFFFFFu) >= 0x00800000u || site.address >= 0xC0000000u)
+        return "address is not main RAM";
+    const uint32_t op = site.expected >> 26;
+    const bool alu_imm = op >= 0x08u && op <= 0x0Fu;
+    const bool load_store = op >= 0x20u && op <= 0x2Bu && op != 0x27u;
+    if (!alu_imm && !load_store)
+        return "expected is not an I-type ALU/load/store instruction "
+               "(ADDI..LUI or LB..SW)";
+    if (site.group >= 64u) return "group must be 0..63";
+    if (site.values.empty()) return "values must list at least one immediate";
+    if (site.values.size() > 15u) return "at most 15 values";
+    return {};
+}
+
+// [[mod_immediate.sites]] (docs/config_schema.md "Mod immediates").
+static std::vector<ModImmediateSite> parse_mod_immediate_sites(
+    const toml::value& cfg, const fs::path& config_path) {
+    std::vector<ModImmediateSite> sites;
+    if (!cfg.contains("mod_immediate")) return sites;
+    const toml::value& mi = toml::find(cfg, "mod_immediate");
+    if (!mi.contains("sites")) return sites;
+    std::set<std::pair<uint32_t, uint32_t>> seen;
+    for (const auto& item : toml::find<toml::array>(mi, "sites")) {
+        ModImmediateSite site;
+        site.address = parse_hex(toml::find<std::string>(item, "address"),
+                                 "mod_immediate.sites.address");
+        site.expected = parse_hex(toml::find<std::string>(item, "expected"),
+                                  "mod_immediate.sites.expected");
+        site.group = (uint32_t)toml::find<int64_t>(item, "group");
+        for (const auto& v : toml::find<toml::array>(item, "values")) {
+            const int64_t n = v.as_integer();
+            if (n < -32768 || n > 65535)
+                throw std::runtime_error(fmt::format(
+                    "{}: mod_immediate site 0x{:08X}: value {} does not fit "
+                    "16 bits", config_path.string(), site.address, n));
+            site.values.push_back((uint16_t)n);
+        }
+        if (const std::string why = mod_immediate_site_error(site); !why.empty())
+            throw std::runtime_error(fmt::format(
+                "{}: mod_immediate site 0x{:08X}: {}", config_path.string(),
+                site.address, why));
+        // Overlays share load addresses, so one address may carry several
+        // sites; only the (address, word) pair must be unique.
+        if (!seen.insert({site.address & 0x1FFFFFFFu, site.expected}).second)
+            throw std::runtime_error(fmt::format(
+                "{}: duplicate mod_immediate site 0x{:08X}",
+                config_path.string(), site.address));
+        sites.push_back(std::move(site));
+    }
+    return sites;
 }
 
 // [[draw_distance.clamp]] (docs/config_schema.md "Draw-distance clamps").
@@ -2780,6 +2851,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     loaded.ws_cull_masked_reject_sites = std::move(ws_cull_masked_reject_sites);
     loaded.draw_distance_clamp_sites =
         parse_draw_distance_clamps(cfg, config_path);
+    loaded.mod_immediate_sites = parse_mod_immediate_sites(cfg, config_path);
     return loaded;
 }
 

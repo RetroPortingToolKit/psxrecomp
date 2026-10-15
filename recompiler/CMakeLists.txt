@@ -588,6 +588,35 @@ if(BUILD_TESTING)
     add_test(NAME draw_distance_codegen_test
              COMMAND draw_distance_codegen_test)
 
+    # [[mod_immediate.sites]]: config rules, the per-selector switch emitted
+    # for loads, stores, ALU immediates and delay slots, the guards and the
+    # overlay-cache identity.
+    add_executable(mod_immediate_codegen_test
+        tests/mod_immediate_codegen_test.cpp
+        src/ps1_exe_parser.cpp
+        src/mips_decoder.cpp
+        src/control_flow.cpp
+        src/function_analysis.cpp
+        src/code_generator.cpp
+        src/pgxp_hook_emitter.cpp
+        src/annotations.cpp
+        src/bios_address_model.cpp
+        src/config_loader.cpp
+        src/recompiler_patch.cpp
+    )
+    target_include_directories(mod_immediate_codegen_test PRIVATE
+        include
+        src
+        lib/rabbitizer/include
+        lib/rabbitizer/cplusplus/include
+        lib/fmt/include
+        lib/toml11
+        lib/ELFIO
+    )
+    target_link_libraries(mod_immediate_codegen_test PRIVATE fmt rabbitizer)
+    add_test(NAME mod_immediate_codegen_test
+             COMMAND mod_immediate_codegen_test)
+
     # The same explicit cull kinds in the dirty-RAM interpreter: gpu.c's
     # sorted, capped site store and real interpreted bgez/bltz/branch-keep/
     # clip-edge instructions at margin 0 and at a forced margin. The test
@@ -643,6 +672,18 @@ if(BUILD_TESTING)
                  COMMAND draw_distance_interp_test
                          ${CMAKE_CURRENT_BINARY_DIR}/draw_distance_interp_stderr.txt)
     endif()
+
+    # [[mod_immediate.sites]] runtime store, selectors and word substitution
+    # (mod_immediate.c). The interpreter call site is pinned by
+    # runtime/tests/test_interp_mod_immediate_guards.py.
+    add_executable(mod_immediate_unit_test
+        ../runtime/tests/test_mod_immediate.c)
+    target_include_directories(mod_immediate_unit_test PRIVATE
+        ../runtime/include
+        ../runtime/src)
+    add_test(NAME mod_immediate_unit_test
+             COMMAND mod_immediate_unit_test
+                     ${CMAKE_CURRENT_BINARY_DIR}/mod_immediate_unit_stderr.txt)
 
     # Uncached (KSEG1) code charges a fetch before every instruction; cached
     # code keeps the line-leader rule (test_uncached_fetch_charge.py checks

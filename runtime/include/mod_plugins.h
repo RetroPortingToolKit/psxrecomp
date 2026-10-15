@@ -882,6 +882,20 @@ int psx_mod_set_disc_speed(uint32_t divisor,
 int psx_mod_set_draw_distance_clamp(int enabled);
 int psx_mod_draw_distance_clamp_enabled(void);
 
+/*
+ * Select the immediate variant of one [[mod_immediate.sites]] group
+ * (mod_immediate.h). Selector 0 runs the stock instructions; N runs
+ * values[N-1] of every site in `group`. The instruction bytes in RAM never
+ * change, so static and cached native code stay valid. Returns 1 when the
+ * title configured sites, 0 otherwise (nothing the guest sees changes), and
+ * rejects a group >= 64 or a selector > 15. Reset to 0 at every session start:
+ * call it from activation, before the guest runs. The caller owns the memory
+ * layout the selector implies (a savestate or card written under another
+ * selector is not interchangeable).
+ */
+int psx_mod_set_immediate_selector(uint32_t group, uint32_t selector);
+uint32_t psx_mod_immediate_selector(uint32_t group);
+
 /* Controller presentation values exposed to trusted game-owned plugins. */
 enum {
     PSX_MOD_CONTROLLER_ANALOG = 1,

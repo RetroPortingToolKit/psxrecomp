@@ -49,6 +49,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "overlay_backend.h"
 #include "gpu.h"
 #include "draw_distance.h"
+#include "mod_immediate.h"
 #include "display_scanout.h"
 #include "pgxp.h"
 #include "pgxp_session.h"
@@ -1810,6 +1811,7 @@ static void reset_mod_owned_presentation(void) {
     psx_mod_set_retained_scene_predicate(nullptr);
     psx_mod_set_adaptive_backdrop_preload(0);
     (void)psx_mod_set_draw_distance_clamp(0);
+    psx_mod_immediate_reset();  /* [[mod_immediate.sites]] selectors */
     /* [timing] guest_cycle_scale mod gate: shut until this session's
      * activation opens it (an online match clears the plan, so a mod-gated
      * scale never carries into netplay). */
@@ -17167,6 +17169,24 @@ int main(int argc, char** argv) {
                                      site.max});
                 (void)psx_draw_distance_set_clamp_sites(sites.data(),
                                                         (int)sites.size());
+            }
+            {
+                /* [[mod_immediate.sites]]: the interpreter's copy of the
+                 * sites the generated code switches on. */
+                std::vector<PSXModImmediateSite> sites;
+                sites.reserve(gc.mod_immediate_sites.size());
+                for (const auto& site : gc.mod_immediate_sites) {
+                    PSXModImmediateSite out{};
+                    out.address = site.address;
+                    out.expected = site.expected;
+                    out.group = site.group;
+                    out.count = (uint32_t)site.values.size();
+                    for (size_t i = 0; i < site.values.size() &&
+                                       i < PSX_MOD_IMMEDIATE_VALUES_MAX; i++)
+                        out.values[i] = site.values[i];
+                    sites.push_back(out);
+                }
+                (void)psx_mod_immediate_set_sites(sites.data(), (int)sites.size());
             }
             {
                 std::vector<uint32_t> addresses, expected, thresholds;

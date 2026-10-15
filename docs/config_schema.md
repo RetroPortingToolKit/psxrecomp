@@ -447,6 +447,49 @@ max      = 0x1BF
 - Regenerate after changing the list. With no sites the generated code is
   unchanged.
 
+## Mod immediates (`[mod_immediate]`)
+
+A trusted mod sometimes needs the same compiled instruction to behave
+differently from one session to the next without changing the guest bytes
+(a capacity compared against `slti v0, a0, 32`, a table address formed by
+`addiu a1, a1, 0x6988`, a struct offset in `lbu v0, 0x2E9(v1)`). Patching RAM
+fails for statically compiled code: every function carries a CRC of its
+original bytes and a patched function drops to the interpreter. Listing the
+instruction as a mod immediate site keeps the bytes and the CRC, and moves the
+choice into the generated code:
+
+```toml
+[mod_immediate]
+sites = [
+  { address = "0x80023500", expected = "0x28820020", group = 1, values = [0x40, 0x80] },  # slti v0, a0, 0x20
+  { address = "0x80023B14", expected = "0x24A5AEB1", group = 1, values = [0xAEB1, 0x9000] },
+]
+```
+
+- `expected` is the complete word at `address` and must be an I-type ALU
+  instruction (`ADDI`..`LUI`, opcodes 0x08-0x0F) or a byte/half/word load or
+  store (`LB`..`SW`, 0x20-0x2B). Branches, jumps and R-type instructions are
+  refused. `group` is 0..63; `values` lists up to 15 replacement 16-bit
+  immediates (decimal, hex, or negative), selector 1 first.
+- Selector 0 is the original instruction. A trusted plugin selects variant N of
+  every site in a group with `psx_mod_set_immediate_selector(group, N)` from its
+  activation callback; the selector is 0 again at every session start, so an
+  inactive mod, a disabled feature and netplay all run the stock code.
+- Generated code emits `switch (psx_mod_immediate_select(group))` with one case
+  per value, each translated exactly like the instruction it stands for
+  (cycle accounting, PGXP hooks, load-delay handling), plus the original as the
+  default. The dirty-RAM interpreter substitutes the same word
+  (`psx_mod_immediate_patch`), so native and interpreted execution agree. The
+  forwarder is part of the overlay ABI (v31).
+- A site is keyed by physical address and word. Overlays share load addresses,
+  so one address may carry several sites with different words; a variant whose
+  word differs is left alone in overlay mode and is an error in a main EXE.
+- The sites enter the overlay-cache identity (the hash changes only when the list
+  is non-empty). Regenerate after changing the list; with no sites the generated
+  code is unchanged.
+- The mod owns the consequences: a relocated table needs its own free memory and
+  a save written under one selector is not interchangeable with another's.
+
 ## Runtime block
 
 Consumed by the cmake macro `psxrecomp_v4_add_runtime_target` (eventually)
