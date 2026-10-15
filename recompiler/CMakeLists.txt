@@ -782,6 +782,25 @@ if(BUILD_TESTING)
     target_link_libraries(rewind_settings_test PRIVATE fmt)
     add_test(NAME rewind_settings_test COMMAND rewind_settings_test)
 
+    # Graphics presets: [quality.*] parsing, detection rules, the
+    # detect/keep/Custom decision and settings round trip.
+    add_executable(quality_presets_test
+        tests/quality_presets_test.cpp
+        src/config_loader.cpp
+        src/ps1_exe_parser.cpp
+        ../runtime/src/quality_presets.cpp
+        ../runtime/src/quality_tier.c
+    )
+    target_include_directories(quality_presets_test PRIVATE
+        include
+        src
+        ../runtime/include
+        lib/fmt/include
+        lib/toml11
+    )
+    target_link_libraries(quality_presets_test PRIVATE fmt)
+    add_test(NAME quality_presets_test COMMAND quality_presets_test)
+
     # Launcher-saved paths stay relative inside a portable game folder.
     add_executable(portable_settings_paths_test
         tests/portable_settings_paths_test.cpp
