@@ -53,6 +53,8 @@ static int failures;
 
 /* ---- runtime globals the units share with the rest of the runtime ----- */
 int      g_ls_replay_active = 0;
+int      g_boot_state_cpu_timing_restored = 0;
+int psx_mod_host_output_scope(void) { return 0; }
 int      g_ls_mode = 0;
 int      g_precise_mode = 0;
 int      g_psx_call_bail = 0;
@@ -279,6 +281,10 @@ int gl_renderer_stereo_end(uint32_t eye, int keep) {
     return 1;
 }
 void gl_renderer_stereo_stage_reset(void) { s_stereo_mask = 0; }
+int gl_renderer_stereo_stage_readback(uint32_t eye,uint32_t w,uint32_t h,uint8_t *rgba) {
+    if(!(s_stereo_mask & (1u<<eye))) return 0;
+    memset(rgba,0x5A,(size_t)w*h*4);return 1;
+}
 void gl_renderer_stereo_reset(void) { s_stereo_mask = 0; s_stereo_published = 0; }
 int gl_renderer_stereo_set_presentation(uint32_t mode) { return mode <= 1; }
 static int32_t s_view[3];
@@ -845,12 +851,34 @@ static void test_texture_stream_journal(void) {
     render_pass_journal_free(&j);
 }
 
+static int isolated_draw(CPUState *cpu,void *user,uint32_t alpha) {
+    (void)user;
+    CHECK(alpha==0,"isolated capture has no temporal phase");
+    cpu->gpr[8]=0x1234;s_ram[0x456]=0x42;psx_advance_cycles(5000);
+    return 1;
+}
+static void test_isolated_capture(void) {
+    CPUState cpu={0};PSXModRenderPass rect={sizeof rect,0,0,0,2,2};
+    uint8_t pixels[16]={0};
+    render_pass_reset_session();s_gl_status=0;s_begin_ok=1;s_netplay=0;
+    cpu.gpr[8]=123;s_ram[0x456]=0x77;
+    uint64_t cycle=psx_cycle_count,published=s_stereo_published;
+    CHECK(psx_mod_render_capture_rgba(&cpu,&rect,isolated_draw,NULL,pixels,sizeof pixels),
+          "isolated capture succeeds without publishing a stereo pair");
+    CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle,
+          "isolated capture restores CPU, RAM and the guest clock");
+    CHECK(s_stereo_published==published && s_stereo_mask==0 && pixels[0]==0x5A,
+          "isolated pixels copied and temporary staging discarded");
+    CHECK(!psx_mod_render_capture_rgba(&cpu,&rect,isolated_draw,NULL,pixels,sizeof pixels-1),
+          "undersized pixel buffer refused");
+}
 int main(void) {
     test_store_policy();
     test_pass();
     test_ram_8mb();
     test_journal();
     test_stereo();
+    test_isolated_capture();
     test_local_view();
     test_texture_stream_journal();
     CHECK(s_prec_open == 0, "precision checkpoints balanced");
