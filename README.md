@@ -50,6 +50,7 @@ coverage continue to improve per title.
 | *Mega Man X6* | [MegaManX6Recomp](https://github.com/mstan/MegaManX6Recomp) | [releases](https://github.com/mstan/MegaManX6Recomp/releases/latest) | Playable; stages, controller, save/load; 2D widescreen to 21:9. |
 | *Tsumu Light* | [TsumuLightRecomp](https://github.com/mstan/TsumuLightRecomp) | [releases](https://github.com/mstan/TsumuLightRecomp/releases/latest) | Japanese-only title (SLPS-02253); first consumer of [live language switching](#swap-language-on-the-fly). |
 | *Xenogears* — **community** | [OpokXeno/xenogears-recomp](https://github.com/OpokXeno/xenogears-recomp) | — | Independent project by [@OpokXeno](https://github.com/OpokXeno), who also contributed widescreen cull-site work upstream. |
+| *Mega Man Legends* — **community** | [VuloB1/MegaManLegendsRecomp](https://github.com/VuloB1/MegaManLegendsRecomp) | [releases](https://github.com/VuloB1/MegaManLegendsRecomp/releases/latest) | Native 16:9 widescreen, analog movement with right-stick camera, 60/120 Hz presentation, skip FMVs, PGXP precision. |
 
 Each game repo carries its own build/run instructions, keyboard/controller
 mappings, and per-game settings. **This repository builds the framework and a

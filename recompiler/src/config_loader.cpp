@@ -1115,6 +1115,12 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.direct_shortcut_button =
                 toml::find<std::string>(ct, "direct_shortcut_button");
         }
+        if (ct.contains("experimental_jogcon_force_feedback"))
+            rt.experimental_jogcon_force_feedback =
+                toml::find<bool>(ct, "experimental_jogcon_force_feedback");
+        if (ct.contains("experimental_jogcon_force_feedback_invert"))
+            rt.experimental_jogcon_force_feedback_invert =
+                toml::find<bool>(ct, "experimental_jogcon_force_feedback_invert");
         if (ct.contains("anti_deadzone")) {
             const auto n = toml::find<int64_t>(ct, "anti_deadzone");
             if (n < 0 || n > 32767)
@@ -3235,6 +3241,10 @@ UserSettings load_user_settings(const fs::path& path) {
             s.multitap_analog = toml::find<bool>(ct, "multitap_analog");
             s.has_multitap_analog = true;
         });
+        if (ct.contains("jogcon_force_feedback")) try_get([&]{
+            s.jogcon_force_feedback = toml::find<bool>(ct, "jogcon_force_feedback");
+            s.has_jogcon_force_feedback = true;
+        });
         if (ct.contains("deadzone")) try_get([&]{
             const auto n = toml::find<int64_t>(ct, "deadzone");
             if (n >= 0 && n <= 32767) {
@@ -3431,7 +3441,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
 
     {
         bool any_ctrl = s.has_deadzone || s.has_multitap_enabled ||
-                        s.has_multitap_analog;
+                        s.has_multitap_analog || s.has_jogcon_force_feedback;
         for (int i = 0; i < UserSettings::kMaxControllerPlayers; ++i) {
             if (s.has_p_device[i] || s.has_p_mode[i] || s.has_p_deadzone[i])
                 any_ctrl = true;
@@ -3460,6 +3470,9 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             if (s.has_multitap_analog)
                 f << "multitap_analog = "
                   << (s.multitap_analog ? "true" : "false") << "\n";
+            if (s.has_jogcon_force_feedback)
+                f << "jogcon_force_feedback = "
+                  << (s.jogcon_force_feedback ? "true" : "false") << "\n";
             /* Keep a global deadzone= for older readers (mirrors P1). */
             if (s.has_deadzone || s.has_p_deadzone[0])
                 f << "deadzone  = "
