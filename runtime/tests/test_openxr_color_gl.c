@@ -4,6 +4,12 @@
 #include <assert.h>
 static PSXOpenXRStats fixture_xr;
 void psx_openxr_stats(PSXOpenXRStats *out) { *out=fixture_xr; }
+static PSXModOpenXRSurface fixture_surface;
+static int fixture_surface_active;
+int psx_openxr_surface_get(uint32_t id,PSXModOpenXRSurface *out) {
+    if (id || !fixture_surface_active) return 0;
+    *out=fixture_surface;return 1;
+}
 static double decode(double x) {return x<=.04045?x/12.92:pow((x+.055)/1.055,2.4);}
 static void check_pixels(const unsigned char *got,const unsigned char *src,int flip,
                          double gamma,int linear,int alpha) {
@@ -71,5 +77,37 @@ int main(void) {
         check_pixels(got,native,0,1,linear,0);assert(glGetError()==GL_NO_ERROR);
         p_glBindFramebuffer(PSXGL_FRAMEBUFFER,0);p_glDeleteFramebuffers(1,&fbo);glDeleteTextures(1,&target);
     }
+    /* Execute the actual surface shader, rather than only its projection math.
+     * A centered translucent red panel covers a source-owned blue scene. */
+    unsigned char red[4]={255,0,0,128};
+    for(int i=0;i<256*2;i++){src[i*4]=0;src[i*4+1]=0;src[i*4+2]=255;src[i*4+3]=255;}
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER,0);glDisable(GL_SCISSOR_TEST);glDisable(0x8DB9);
+    glBindTexture(GL_TEXTURE_2D,pair->tex[0]);
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,256,2,GL_RGBA,GL_UNSIGNED_BYTE,src);
+    fixture_surface.struct_size=sizeof fixture_surface;fixture_surface.width_px=fixture_surface.height_px=1;
+    fixture_surface.rgba=red;fixture_surface.position_m[2]=-1;fixture_surface.orientation_xyzw[3]=1;
+    fixture_surface.size_m[0]=fixture_surface.size_m[1]=2;
+    fixture_surface.flags=PSX_MOD_OPENXR_SURFACE_FACE_HEAD;
+    for(int eye=0;eye<2;eye++){
+        fixture_xr.pose[eye][6]=1;
+        fixture_xr.fov[eye][0]=fixture_xr.fov[eye][3]=-.785398163f;
+        fixture_xr.fov[eye][1]=fixture_xr.fov[eye][2]=.785398163f;
+    }
+    fixture_xr.swapchain_format=PSX_XR_SRGB8_ALPHA8;s_present_gamma=1;fixture_surface_active=1;
+    GLuint target=make_tex(GL_RGBA8,256,2,GL_RGBA,GL_UNSIGNED_BYTE),fbo=0;
+    assert(make_fbo(&fbo,target,0));p_glBindFramebuffer(PSXGL_FRAMEBUFFER,0);
+    assert(openxr_copy_eye(0,target,256,2));assert(glGetError()==GL_NO_ERROR);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,fbo);glReadPixels(0,0,256,2,GL_RGBA,GL_UNSIGNED_BYTE,got);
+    for(int i=0;i<256*2;i++){
+        assert(abs(got[i*4]-128)<=1 && got[i*4+1]==0 && abs(got[i*4+2]-127)<=1);
+    }
+    fixture_surface_active=0;
+    /* A fresh published pair without a surface returns to the scene alone. */
+    glBindTexture(GL_TEXTURE_2D,pair->tex[0]);
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,256,2,GL_RGBA,GL_UNSIGNED_BYTE,src);
+    assert(openxr_copy_eye(0,target,256,2));
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,fbo);glReadPixels(0,0,256,2,GL_RGBA,GL_UNSIGNED_BYTE,got);
+    check_pixels(got,src,1,1,0,1);
+    assert(glGetError()==GL_NO_ERROR);
     SDL_GL_DeleteContext(s_ctx);SDL_DestroyWindow(win);SDL_Quit();return 0;
 }
