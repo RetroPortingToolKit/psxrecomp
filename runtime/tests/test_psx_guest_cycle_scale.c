@@ -129,6 +129,11 @@ static void check_batch_ignores_host_stack(uint32_t scale, uint32_t charges, uin
 }
 
 int main(void) {
+    assert(psx_gcs_session_profile(1, 0) == 0u);
+    assert(psx_gcs_session_profile(1, 1) == 0u); /* no scaled path */
+    assert(psx_gcs_session_profile(2, 0) == (0x6C000000u | 2u));
+    assert(psx_gcs_session_profile(2, 1) != psx_gcs_session_profile(2, 0));
+    assert(psx_gcs_session_profile(3, 1) != psx_gcs_session_profile(2, 1));
     assert(psx_gcs_recip_for(1) == 65536u);
     assert(psx_gcs_recip_for(0) == 65536u);          /* never slower than faithful */
     assert(psx_gcs_recip_for(2) == 32768u);

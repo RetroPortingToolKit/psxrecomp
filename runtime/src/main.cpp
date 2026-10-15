@@ -20703,7 +20703,8 @@ session_reboot:
         // exactly as before.
         if (psx_guest_cycle_scale_config() != 1u) {
             char tag[9];
-            std::snprintf(tag, sizeof tag, "%08x", 0x6C000000u | psx_guest_cycle_scale_config());
+            std::snprintf(tag, sizeof tag, "%08x",
+                          psx_gcs_session_profile(psx_guest_cycle_scale_config(), g_psx_gcs_batch));
             if (std::strlen(net_cfg.content_fingerprint) != 64)
                 std::snprintf(net_cfg.content_fingerprint, sizeof(net_cfg.content_fingerprint),
                               "%s", "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00000000");
@@ -20712,8 +20713,8 @@ session_reboot:
                 auto hv = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
                 *d = "0123456789abcdef"[hv(*d) ^ hv(tag[i])];
             }
-            std::printf("psxrecomp: netplay requires guest_cycle_scale %u on every peer\n",
-                        psx_guest_cycle_scale_config());
+            std::printf("psxrecomp: netplay requires guest_cycle_scale %u, batch profile %d on every peer\n",
+                        psx_guest_cycle_scale_config(), g_psx_gcs_batch != 0);
         }
         const int nrc = psx_netplay_start(&net_cfg);
         if (nrc != 0) {

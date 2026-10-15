@@ -1094,6 +1094,12 @@ race) agree on `cyc`, `mmio` and `mc` on every frame. They also end with
 identical ordered write hashes. The only differences are one-frame VBlank
 straddles of `wc`/`sc`, as documented for batched code.
 
+The scale and selected batching profile are fixed at session startup and
+included in the existing netplay compatibility fingerprint. Peers with
+different batching choices cannot start together. Both paths use portable C;
+this does not authorize compatibility between otherwise different builds or
+replace the existing game/core/config identity checks.
+
 Gates (all present gates must be open; with none the scale always applies):
 
 - `guest_cycle_scale_gate` — RAM predicates on aligned main-RAM words

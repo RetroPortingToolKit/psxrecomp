@@ -124,6 +124,13 @@ static inline uint32_t psx_gcs_recip_for(uint32_t scale) {
 }
 /* [timing] guest_cycle_scale_batch: batch scaled CPU charges (psx_cyc.h). */
 extern int g_psx_gcs_batch;
+/* Fixed session timing profile. Both implementations are portable C and are
+ * present in every build; peers must agree on the selected one before frame 0.
+ * Preserve the existing scale-only tag for the unbatched path. */
+static inline uint32_t psx_gcs_session_profile(uint32_t scale, int batch) {
+    if (scale <= 1u) return 0u;
+    return 0x6C000000u | (batch ? 0x00800000u : 0u) | scale;
+}
 static inline uint32_t psx_gcs_scale(uint32_t cpu_cycles) {
     uint64_t t = (uint64_t)cpu_cycles * g_psx_gcs_recip_q16 + g_psx_gcs_frac;
     g_psx_gcs_frac = (uint32_t)(t & 0xFFFFu);
