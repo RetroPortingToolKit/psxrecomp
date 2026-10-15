@@ -610,6 +610,9 @@ static GLuint        s_osd_tex = 0;
 static int           s_osd_tw = 0, s_osd_th = 0;
 static GLuint        s_present_prog = 0, s_present_vao = 0;
 static GLuint        s_xr_color_prog = 0, s_xr_native_tex = 0;
+static GLuint s_xr_surface_program,s_xr_surface_vao,s_xr_surface_vbo,s_xr_surface_tex[2];
+static GLuint s_capture_read_tex,s_capture_read_fbo;
+static int s_capture_read_w,s_capture_read_h;
 static void          gl_swap_with_osd(void);
 static int           s_post_aa = 0;   /* GL_POST_AA_*; post-process AA (post_aa_apply) */
 static int s_native_surface_enabled, s_native_surface_pending;
@@ -8332,7 +8335,16 @@ static void pass_resources_release(void) {
         if(s_xr_color_prog && p_glDeleteProgram) p_glDeleteProgram(s_xr_color_prog);
         if(s_xr_native_tex) glDeleteTextures(1,&s_xr_native_tex);
     }
+    if(s_ctx) {
+        if(s_xr_surface_program && p_glDeleteProgram)p_glDeleteProgram(s_xr_surface_program);
+        if(s_xr_surface_vao && p_glDeleteVertexArrays)p_glDeleteVertexArrays(1,&s_xr_surface_vao);
+        if(s_xr_surface_vbo && p_glDeleteBuffers)p_glDeleteBuffers(1,&s_xr_surface_vbo);
+        glDeleteTextures(2,s_xr_surface_tex);
+    }
+    s_xr_surface_program=s_xr_surface_vao=s_xr_surface_vbo=0;
+    s_xr_surface_tex[0]=s_xr_surface_tex[1]=0;
     s_xr_color_prog=s_xr_native_tex=0;
+    pass_free_color_fbo(&s_capture_read_tex,NULL,&s_capture_read_fbo,&s_capture_read_w,&s_capture_read_h);
     stereo_resources_release();
     for(int gi=0;gi<PASS_GENERATIONS;++gi)pass_gen_release(gi);
     pass_gens_invalidate();
@@ -8675,6 +8687,34 @@ void gl_renderer_stereo_stage_reset(void) {
     GL_RT_SYNC("stereo_stage_reset");
     s_stereo_pair[1 - s_stereo_current].mask = 0;
 }
+int gl_renderer_stereo_stage_readback(uint32_t eye,uint32_t w,uint32_t h,uint8_t *rgba) {
+    GL_RT_SYNC("capture_readback");
+    if(eye>=2 || !rgba || !w || !h || w>1024 || h>512)return 0;
+    StereoPair *pair=&s_stereo_pair[1-s_stereo_current];
+    if(!(pair->mask&(1u<<eye)))return 0;
+    GLint read,draw,texture,pack,pbo,row,skipr,skipp;
+    GLboolean scissor=glIsEnabled(GL_SCISSOR_TEST),srgb=glIsEnabled(0x8DB9);
+    glGetIntegerv(0x8CAA,&read);glGetIntegerv(0x8CA6,&draw);glGetIntegerv(GL_TEXTURE_BINDING_2D,&texture);
+    glGetIntegerv(GL_PACK_ALIGNMENT,&pack);glGetIntegerv(0x88ED,&pbo);glGetIntegerv(GL_PACK_ROW_LENGTH,&row);
+    glGetIntegerv(GL_PACK_SKIP_ROWS,&skipr);glGetIntegerv(GL_PACK_SKIP_PIXELS,&skipp);
+    int ok=pass_make_color_fbo(&s_capture_read_tex,NULL,&s_capture_read_fbo,&s_capture_read_w,&s_capture_read_h,
+                              w,h,GL_RGBA8,GL_RGBA,GL_UNSIGNED_BYTE);
+    if(ok) {
+        glDisable(GL_SCISSOR_TEST);glDisable(0x8DB9);
+        p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,pair->fbo[eye]);
+        p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER,s_capture_read_fbo);
+        p_glBlitFramebuffer(0,0,pair->tw[eye],pair->th[eye],0,0,w,h,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+        p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,s_capture_read_fbo);
+        p_glBindBuffer(0x88EB,0);glPixelStorei(GL_PACK_ALIGNMENT,1);glPixelStorei(GL_PACK_ROW_LENGTH,0);
+        glPixelStorei(GL_PACK_SKIP_ROWS,0);glPixelStorei(GL_PACK_SKIP_PIXELS,0);
+        glReadPixels(0,0,w,h,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+    }
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,read);p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER,draw);
+    glBindTexture(GL_TEXTURE_2D,texture);glPixelStorei(GL_PACK_ALIGNMENT,pack);
+    glPixelStorei(GL_PACK_ROW_LENGTH,row);glPixelStorei(GL_PACK_SKIP_ROWS,skipr);glPixelStorei(GL_PACK_SKIP_PIXELS,skipp);
+    p_glBindBuffer(0x88EB,pbo);if(scissor)glEnable(GL_SCISSOR_TEST);if(srgb)glEnable(0x8DB9);
+    return ok;
+}
 static void stereo_invalidate(void) {
     s_stereo_valid = 0;
     s_stereo_pair[0].mask = s_stereo_pair[1].mask = 0;
@@ -8804,6 +8844,11 @@ int psx_mod_openxr_quad(double distance,double width,double height) {
     if(s_pass_active)return 0;
     return psx_openxr_quad(distance,width,height);
 }
+int psx_mod_openxr_surface(const PSXModOpenXRSurface *surface) {
+    GL_RT_SYNC("openxr_surface");
+    if(s_pass_active)return 0;
+    return psx_openxr_surface(surface); /* CPU copy only; upload after eye replay. */
+}
 int psx_mod_openxr_native_surface(double distance,double width,double units) {
     GL_RT_SYNC("openxr_native_surface");
     PSXOpenXRStats stats;psx_openxr_stats(&stats);
@@ -8870,7 +8915,68 @@ static int openxr_color_draw(GLuint source, int w, int h, int flip, float gamma,
     glBindTexture(GL_TEXTURE_2D,(GLuint)binding);p_glActiveTexture((GLenum)active);
     return 1;
 }
+#include "xr_surface_math.h"
+static int openxr_surface_draw(uint32_t eye) {
+    PSXModOpenXRSurface surface[2];int present[2];
+    for(int i=0;i<2;i++)present[i]=psx_openxr_surface_get(i,&surface[i]);
+    if(!present[0] && !present[1])return 1;
+    PSXOpenXRStats xr;psx_openxr_stats(&xr);
+    GLint program,vao,vbo,active,texture,fbo,viewport[4],unpack,pbo,row,skipr,skipp;
+    GLint bs,bd,bas,bad,be,bae;GLboolean mask[4];
+    const GLenum caps[]={GL_BLEND,GL_DEPTH_TEST,GL_STENCIL_TEST,GL_CULL_FACE,GL_SCISSOR_TEST,0x8DB9};
+    GLboolean enabled[6];
+    glGetIntegerv(0x8B8D,&program);glGetIntegerv(0x85B5,&vao);glGetIntegerv(0x8894,&vbo);
+    glGetIntegerv(0x84E0,&active);p_glActiveTexture(PSXGL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D,&texture);glGetIntegerv(0x8CA6,&fbo);
+    glGetIntegerv(GL_VIEWPORT,viewport);glGetBooleanv(GL_COLOR_WRITEMASK,mask);
+    glGetIntegerv(0x80C9,&bs);glGetIntegerv(0x80C8,&bd);glGetIntegerv(0x80CB,&bas);glGetIntegerv(0x80CA,&bad);
+    glGetIntegerv(0x8009,&be);glGetIntegerv(0x883D,&bae);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT,&unpack);glGetIntegerv(0x88EF,&pbo);
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH,&row);glGetIntegerv(GL_UNPACK_SKIP_ROWS,&skipr);glGetIntegerv(GL_UNPACK_SKIP_PIXELS,&skipp);
+    for(int i=0;i<6;i++){enabled[i]=glIsEnabled(caps[i]);glDisable(caps[i]);}
+    int ok=1;
+    if(!s_xr_surface_program)s_xr_surface_program=build_program(
+        "#version 330\nlayout(location=0) in vec4 p; layout(location=1) in vec2 uv; out vec2 v_uv; void main(){gl_Position=vec4(p.x,-p.y,p.z,p.w);v_uv=uv;}\n",
+        "#version 330\nin vec2 v_uv; uniform sampler2D u_tex; out vec4 frag; void main(){frag=texture(u_tex,v_uv);}\n");
+    if(!s_xr_surface_program){ok=0;goto restore;}
+    if(!s_xr_surface_vao)p_glGenVertexArrays(1,&s_xr_surface_vao);
+    if(!s_xr_surface_vbo)p_glGenBuffers(1,&s_xr_surface_vbo);
+    if(!s_xr_surface_tex[0])glGenTextures(2,s_xr_surface_tex);
+    StereoPair *pair=&s_stereo_pair[s_stereo_current];
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER,pair->fbo[eye]);
+    glViewport(0,0,pair->tw[eye],pair->th[eye]);glColorMask(1,1,1,1);
+    glEnable(GL_BLEND);p_glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+    p_glBlendEquationSeparate(0x8006,0x8006);
+    p_glUseProgram(s_xr_surface_program);p_glUniform1i(p_glGetUniformLocation(s_xr_surface_program,"u_tex"),0);
+    p_glBindVertexArray(s_xr_surface_vao);p_glBindBuffer(PSXGL_ARRAY_BUFFER,s_xr_surface_vbo);
+    p_glEnableVertexAttribArray(0);p_glEnableVertexAttribArray(1);
+    p_glVertexAttribPointer(0,4,GL_FLOAT,GL_FALSE,6*sizeof(float),(void*)0);
+    p_glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,6*sizeof(float),(void*)(4*sizeof(float)));
+    p_glBindBuffer(0x88EC,0);glPixelStorei(GL_UNPACK_ALIGNMENT,1);glPixelStorei(GL_UNPACK_ROW_LENGTH,0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS,0);glPixelStorei(GL_UNPACK_SKIP_PIXELS,0);
+    for(int i=0;i<2;i++)if(present[i]) {
+        float head[3];for(int j=0;j<3;j++)head[j]=(xr.pose[0][j]+xr.pose[1][j])*.5f;
+        float vertices[36];if(!xr_surface_vertices_head(&surface[i],xr.pose[eye],xr.fov[eye],head,vertices))continue;
+        glBindTexture(GL_TEXTURE_2D,s_xr_surface_tex[i]);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,surface[i].width_px,surface[i].height_px,0,GL_RGBA,GL_UNSIGNED_BYTE,surface[i].rgba);
+        p_glBufferData(PSXGL_ARRAY_BUFFER,sizeof vertices,vertices,PSXGL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES,0,6);
+    }
+restore:
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER,fbo);glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);
+    glColorMask(mask[0],mask[1],mask[2],mask[3]);
+    p_glBlendFuncSeparate(bs,bd,bas,bad);p_glBlendEquationSeparate(be,bae);
+    for(int i=0;i<6;i++)if(enabled[i])glEnable(caps[i]);else glDisable(caps[i]);
+    p_glBindVertexArray(vao);p_glBindBuffer(PSXGL_ARRAY_BUFFER,vbo);p_glUseProgram(program);
+    glBindTexture(GL_TEXTURE_2D,texture);p_glActiveTexture(active);
+    glPixelStorei(GL_UNPACK_ALIGNMENT,unpack);glPixelStorei(GL_UNPACK_ROW_LENGTH,row);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS,skipr);glPixelStorei(GL_UNPACK_SKIP_PIXELS,skipp);p_glBindBuffer(0x88EC,pbo);
+    return ok;
+}
 static int openxr_copy_eye(uint32_t eye, uint32_t texture, int w, int h) {
+    if(!openxr_surface_draw(eye))return 0;
     StereoPair *p = &s_stereo_pair[s_stereo_current];
     GLint read_fbo, draw_fbo; GLuint target = 0;
     GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);

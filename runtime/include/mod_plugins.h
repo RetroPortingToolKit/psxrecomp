@@ -600,6 +600,14 @@ uint32_t psx_mod_render_pass_plan(uint32_t period_vblanks,
  * partially updated plugin state) across guest code, or tolerate the abort. */
 int psx_mod_render_pass(struct CPUState* cpu, const PSXModRenderPass* pass,
                         PSXModRenderPassFn fn, void* user);
+/* Isolated draw/readback using the stereo-capable rollback transaction.
+ * Never publishes an eye pair or changes presentation. Returns native-sized
+ * top-to-bottom RGBA8 pixels (alpha remains the PSX mask bit, not coverage).
+ * Call outside another pass. rgba_bytes must cover rect->w*rect->h*4. */
+int psx_mod_render_capture_rgba(struct CPUState *cpu,const PSXModRenderPass *rect,
+                               PSXModRenderPassFn fn,void *user,
+                               uint8_t *rgba,uint32_t rgba_bytes);
+#define PSX_MOD_RENDER_CAPTURE_RGBA 1
 /*
  * Why passes cannot run right now, the host-time budget aside (a plan that
  * returns 0 while this says READY was shed for time). A plugin that relies on
@@ -709,6 +717,21 @@ int psx_mod_openxr_end(int pair_rendered);
  * Dimensions and distance are meters; zero distance restores projection.
  * Requests reset at begin/end and never affect faithful guest rendering. */
 int psx_mod_openxr_quad(double distance_m, double width_m, double height_m);
+/* Additive, frame-local LOCAL-space surface. Called between XR begin/end and
+ * outside guest replay. Pixels are tightly packed bottom-to-top sRGB RGBA8,
+ * straight alpha, copied synchronously; caller retains ownership. IDs 0..1.
+ * Pose is raw XR LOCAL meters/quaternion x,y,z,w, not recentered game units.
+ * Missing requests disappear next frame. Returns 0 without replacing scene UI. */
+typedef struct PSXModOpenXRSurface {
+    uint32_t struct_size, id, width_px, height_px, flags;
+    float position_m[3], orientation_xyzw[4], size_m[2];
+    const uint8_t *rgba;
+} PSXModOpenXRSurface;
+#define PSX_MOD_OPENXR_SURFACES 1
+/* Ignore surface orientation: aim at predicted eye midpoint, upright in LOCAL
+ * space. Both eyes use the same plane. Position remains caller-controlled. */
+#define PSX_MOD_OPENXR_SURFACE_FACE_HEAD 1u
+int psx_mod_openxr_surface(const PSXModOpenXRSurface *surface);
 /* Opt-in native presentation surface for boot, videos and menus. Copies the
  * freshly drawn desktop content before host overlays, without guest replay.
  * Zero distance disables it. Applications disable it before scene begin and

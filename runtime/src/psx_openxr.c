@@ -13,6 +13,11 @@
 #include <stdlib.h>
 #include <math.h>
 static PSXOpenXRStats s_stats;
+static PSXModOpenXRSurface s_surfaces[2];
+static uint8_t *s_surface_pixels[2];
+static size_t s_surface_capacity[2];
+static unsigned s_surface_mask;
+
 static uint64_t s_pair_id,s_pair_cycle;
 static uint32_t s_source;
 static uint64_t s_native_frame;
@@ -77,6 +82,17 @@ int psx_openxr_input_override(const PSXModOpenXRInput *input) {
 void psx_openxr_input_snapshot(PSXModOpenXRInput *out) { if(out)*out=s_input; }
 void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;s_source=1;s_native_frame=0;}
 void psx_openxr_native_metadata(uint64_t frame){s_pair_id=s_pair_cycle=0;s_source=2;s_native_frame=frame;}
+int psx_openxr_surface_valid(const PSXModOpenXRSurface *v) {
+    if(!v || v->struct_size!=sizeof *v || v->id>=2 || !v->rgba ||
+       !v->width_px || !v->height_px || v->width_px>1024 || v->height_px>1024)return 0;
+    if(v->flags&~PSX_MOD_OPENXR_SURFACE_FACE_HEAD)return 0;
+    double norm=0;
+    for(int i=0;i<3;i++)if(!isfinite(v->position_m[i]) || fabs(v->position_m[i])>100)return 0;
+    for(int i=0;i<4;i++){if(!isfinite(v->orientation_xyzw[i]))return 0;norm+=v->orientation_xyzw[i]*v->orientation_xyzw[i];}
+    if(fabs(norm-1)>.01)return 0;
+    for(int i=0;i<2;i++)if(!isfinite(v->size_m[i]) || v->size_m[i]<.001f || v->size_m[i]>2)return 0;
+    return 1;
+}
 #if defined(PSX_OPENXR)
 #include "host_time.h"
 #define WIN32_LEAN_AND_MEAN
@@ -418,6 +434,8 @@ void psx_openxr_shutdown(void) {
     xr_destroy();
     s_reset_pending=s_exit_pending=s_recovering=0;s_reset_stage=NULL;s_retry_ms=0;
 #endif
+    for(int i=0;i<2;i++){free(s_surface_pixels[i]);s_surface_pixels[i]=NULL;s_surface_capacity[i]=0;}
+    s_surface_mask=0;
     s_stats.enabled=0;
     s_quad_distance=s_quad_width=s_quad_height=0;
     memset(&s_input,0,sizeof s_input);
@@ -505,6 +523,7 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
 int psx_openxr_begin(int width,int height,double units) {
 #if defined(PSX_OPENXR)
     if(!s_stats.enabled || s_stats.frame_open)return 0;
+    s_surface_mask=0;
     s_quad_distance=s_quad_width=s_quad_height=0;
     s_pair_id=s_pair_cycle=s_native_frame=0;s_source=0;
     hands_clear();
@@ -648,6 +667,7 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
     end.layerCount=complete?1:0;end.layers=complete?layers:NULL;
     int ok=check(xrEndFrame(s_session,&end),"end_frame");s_stats.frame_open=0;
     if(ok && complete) {
+        s_stats.submitted_surfaces=quad?0:((s_surface_mask&1)!=0)+((s_surface_mask&2)!=0);
         s_stats.submitted++;s_stats.submitted_pair_id=s_pair_id;
         s_stats.submitted_guest_cycle=s_pair_cycle;s_stats.submitted_predicted_time=(uint64_t)s_time;
         s_stats.submitted_layer=quad?2:1;
@@ -655,7 +675,7 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
         if(s_source==2)s_stats.native_submitted++;
         if(quad){s_stats.quad_submitted++;s_stats.quad_distance_m=s_quad_distance;
             s_stats.quad_width_m=s_quad_width;s_stats.quad_height_m=s_quad_height;}
-    } else s_stats.empty++;
+    } else {s_stats.empty++;s_stats.submitted_surfaces=0;}
     if(ok && complete)s_stats.stage="submitted";
     s_quad_distance=s_quad_width=s_quad_height=0;
     (void)service_loss(); /* after the frame is closed: lost session / bad swapchain */
@@ -663,4 +683,22 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
 #else
     return 0;
 #endif
+}
+
+int psx_openxr_surface(const PSXModOpenXRSurface *v) {
+    if(!psx_openxr_surface_valid(v))return 0;
+    if(!s_stats.frame_open || !s_stats.tracking || s_quad_distance>0)return 0;
+    size_t bytes=(size_t)v->width_px*v->height_px*4;
+    if(s_surface_capacity[v->id]<bytes) {
+        uint8_t *buffer=realloc(s_surface_pixels[v->id],bytes);
+        if(!buffer){s_stats.surface_failures++;return 0;}
+        s_surface_pixels[v->id]=buffer;s_surface_capacity[v->id]=bytes;
+    }
+    memcpy(s_surface_pixels[v->id],v->rgba,bytes);
+    s_surfaces[v->id]=*v;s_surfaces[v->id].rgba=s_surface_pixels[v->id];
+    s_surface_mask|=1u<<v->id;s_stats.surface_uploads++;return 1;
+}
+int psx_openxr_surface_get(uint32_t id,PSXModOpenXRSurface *out) {
+    if(!out || id>=2 || !(s_surface_mask&(1u<<id)) || !s_stats.frame_open || s_quad_distance>0)return 0;
+    *out=s_surfaces[id];return 1;
 }

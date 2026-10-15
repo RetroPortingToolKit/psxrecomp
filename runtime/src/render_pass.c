@@ -979,3 +979,19 @@ int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
     s_pair_busy = 0;
     return ok;
 }
+
+int psx_mod_render_capture_rgba(CPUState *cpu,const PSXModRenderPass *rect,
+                               PSXModRenderPassFn fn,void *user,
+                               uint8_t *rgba,uint32_t bytes) {
+    if(s_pair_busy || !cpu || !rect || !fn || !rgba || rect->struct_size<sizeof *rect ||
+       !rect->w || !rect->h || rect->x+rect->w>1024 || rect->y+rect->h>512 ||
+       (uint64_t)rect->w*rect->h*4>bytes || transaction_status(1)!=PSX_MOD_RENDER_PASS_READY)return 0;
+    if(g_overlay_flush_pending_cycles)g_overlay_flush_pending_cycles();
+    s_pair_busy=1;s_plan_serial++;
+    gl_renderer_stereo_stage_reset();
+    PSXModRenderPass capture=*rect;capture.alpha_q16=0;
+    int ok=render_transaction(cpu,&capture,fn,user,0);
+    if(ok)ok=gl_renderer_stereo_stage_readback(0,rect->w,rect->h,rgba);
+    gl_renderer_stereo_stage_reset();s_pair_busy=0;
+    return ok;
+}

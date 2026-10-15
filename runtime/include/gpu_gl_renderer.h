@@ -136,6 +136,7 @@ uint32_t gl_renderer_stereo_unavailable(void);
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse_backup);
 int gl_renderer_stereo_end(uint32_t eye, int keep);
 void gl_renderer_stereo_stage_reset(void);
+int gl_renderer_stereo_stage_readback(uint32_t eye,uint32_t width,uint32_t height,uint8_t *rgba);
 int gl_renderer_stereo_publish(uint64_t pair_id, uint64_t guest_cycle,
                                 const int32_t eye_view[2][3]);
 void gl_renderer_stereo_reset(void);

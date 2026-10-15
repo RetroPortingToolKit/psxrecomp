@@ -1,6 +1,7 @@
 #include "psx_openxr.h"
 #include <stdio.h>
 #include <math.h>
+#include "xr_surface_math.h"
 /* Evaluate side effects and failures even when NDEBUG is defined. */
 #define CHECK(expr) do { \
     if (!(expr)) { \
@@ -9,6 +10,43 @@
     } \
 } while (0)
 int main(void) {
+    /* Shared head center gives coherent binocular geometry. Billboarding must
+     * ignore attachment roll, respond to head motion, and reject near-plane
+     * crossings. Common translation of eye/head/surface preserves projection. */
+    PSXModOpenXRSurface plane={0};plane.orientation_xyzw[3]=1;
+    plane.position_m[2]=-1;plane.size_m[0]=plane.size_m[1]=.2f;
+    float eye[7]={-.03f,0,0,0,0,0,1},head[3]={0,0,0};
+    const float fov[4]={-.785398f,.785398f,.785398f,-.785398f};
+    float left[36],right[36],other[36];
+    CHECK(xr_surface_vertices_head(&plane,eye,fov,head,left));
+    eye[0]=.03f;CHECK(xr_surface_vertices_head(&plane,eye,fov,head,right));
+    CHECK(left[0]>right[0]);
+    plane.flags=PSX_MOD_OPENXR_SURFACE_FACE_HEAD;
+    CHECK(xr_surface_vertices_head(&plane,eye,fov,head,left));
+    plane.orientation_xyzw[0]=1;plane.orientation_xyzw[3]=0;
+    CHECK(xr_surface_vertices_head(&plane,eye,fov,head,right));
+    for(int i=0;i<36;i++)CHECK(fabsf(left[i]-right[i])<.00001f);
+    head[0]=.5f;CHECK(xr_surface_vertices_head(&plane,eye,fov,head,other));
+    CHECK(fabsf(left[0]-other[0])+fabsf(left[3]-other[3])>.001f);
+    head[0]=0;plane.position_m[0]+=2;plane.position_m[1]+=3;
+    eye[0]+=2;eye[1]+=3;head[0]+=2;head[1]+=3;
+    CHECK(xr_surface_vertices_head(&plane,eye,fov,head,other));
+    for(int i=0;i<36;i++)CHECK(fabsf(left[i]-other[i])<.00001f);
+    plane.position_m[2]=.1f;CHECK(!xr_surface_vertices_head(&plane,eye,fov,head,other));
+    plane.position_m[0]=head[0];plane.position_m[1]=head[1];plane.position_m[2]=head[2];
+    CHECK(!xr_surface_vertices_head(&plane,eye,fov,head,other));
+    uint8_t pixel[4]={255,0,0,255};
+    PSXModOpenXRSurface surface={0};surface.struct_size=sizeof surface;
+    surface.width_px=surface.height_px=1;surface.rgba=pixel;
+    surface.size_m[0]=surface.size_m[1]=.1f;surface.orientation_xyzw[3]=1;
+    CHECK(psx_openxr_surface_valid(&surface));CHECK(!psx_openxr_surface(&surface));
+    surface.flags=PSX_MOD_OPENXR_SURFACE_FACE_HEAD;CHECK(psx_openxr_surface_valid(&surface));
+    surface.flags=2;CHECK(!psx_openxr_surface_valid(&surface));surface.flags=0;
+    surface.id=2;CHECK(!psx_openxr_surface_valid(&surface));surface.id=0;
+    surface.position_m[0]=NAN;CHECK(!psx_openxr_surface_valid(&surface));surface.position_m[0]=0;
+    surface.orientation_xyzw[3]=0;CHECK(!psx_openxr_surface_valid(&surface));surface.orientation_xyzw[3]=1;
+    surface.width_px=1025;CHECK(!psx_openxr_surface_valid(&surface));surface.width_px=1;
+    surface.rgba=NULL;CHECK(!psx_openxr_surface_valid(&surface));
     /* Interpolation gate: only a compiled, enabled, initialized, RUNNING session
      * suspends presentation interpolation; every other state is a no-op. */
     CHECK(psx_openxr_interp_gate(1,1,1,1));
