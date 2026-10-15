@@ -493,6 +493,93 @@ overlay_region_floor = "0x10000"   # optional: lowest RAM address treated as ove
                                     # eligible. Clamped >= 0x10000; PSX_OVERLAY_REGION_FLOOR overrides.
 ```
 
+`idle_skip` only elides loops with no stores and one interrupt-check edge.
+`idle_skip_store_counters = true` (with `idle_skip`; `PSX_IDLE_SKIP_EXT=0/1`
+overrides it for one run) also elides loops that count a stack timeout down
+by one each pass and span up to eight block edges: PsyQ libetc's `v_wait`,
+the `VSync(0)`/`VSync(n)` spin most PsyQ titles run every frame. The skip
+lowers the counter by the number of passes it skips (several edges per pass are
+accepted only together with such a counter store; the device distance is
+measured from the current cycle, not from the devices' last service) (never to 1 or below, so
+the real timeout test still runs) and lands on the loop's first edge strictly
+before the next device event, so an interrupt is taken at the same edge as
+without it. Guest cycles, device-register writes and scratchpad writes are
+unchanged; the only difference is that the skipped passes' stores to the
+counter word are not individually made (`frame_fingerprint` `wc`/`ws` count
+fewer writes, its judge columns match). In R4 races it removes about a quarter
+of the emulation thread's time. Off under netplay, like `idle_skip`.
+
+#### Developer contract for `idle_skip_store_counters`
+
+**Eligibility is an audited allowlist, not an automatic guarantee.** The
+detector can check a loop's shape over the passes it observes. It cannot prove
+that the loop has no later exit that depends on the counter (for example, an
+exit at `counter == 500`): a skip would jump past it. So the extension only
+skips at sites the title's developer has audited and declared:
+
+```toml
+[runtime]
+idle_skip = true
+idle_skip_store_counters = true
+# Block-edge PCs of each audited loop (the detector anchors on either).
+idle_skip_store_counter_sites = ["0x8008B4D0", "0x8008B518"]
+```
+
+Unlisted sites are never skipped. An empty or missing list turns the
+extension off, and the runtime log says so. Before adding a site, read the
+loop's code and record its exit structure next to the list: every exit that
+depends on the counter must be the final timeout test (the counter reaching
+the value the skip stops short of), and no other code may read the counter.
+
+R4 (SLUS-00797) is the reference audit. PsyQ libetc `v_wait` sits at
+`0x8008B4A8`:
+
+1. It stores `timeout << 15` to `0x10(sp)` and returns at once if the VSync
+   count at `0x800A6548` has already reached the target.
+2. **`0x8008B4D0`:** it loads the counter, subtracts 1, stores it and reloads
+   it. If it equals -1 it takes the timeout path (`0x8008B4F0`: prints
+   "VSync: timeout", calls `ChangeClearPAD(0)` and `ChangeClearRCnt(3, 0)`,
+   then jumps to the exit).
+3. **`0x8008B518`:** it reloads the VSync count and branches back to
+   `0x8008B4D0` while the count is still below the target.
+4. **`0x8008B530`:** the exit.
+
+The only exit that depends on the counter is the `== -1` timeout test. The skip
+never takes the counter to 1 or below, so that test always runs for real. The
+counter is a private stack slot of this frame.
+
+A skip leaves out stores to the counter word that the guest would have made.
+That is invisible only if nothing observes the word between those stores. The
+assumptions, and how each one is enforced:
+
+| Assumption | Enforced by |
+|---|---|
+| The loop makes exactly one guest store per pass: a 4-byte-aligned word in RAM or the scratchpad, at the same address every pass, one lower each pass. | `idle_stores_ok` plus the address/value check at the anchor. Any other store count, any device or BIOS-area address, or a changed pattern resets the detector. |
+| The loop touches no MMIO, so it cannot start DMA, acknowledge an IRQ or poll a device mid-span. | `g_mmio_access_count` must be unchanged across the pass. |
+| Everything else in the pass is a pure function of the registers. Only the counter register and the counter word progress; every other GPR is invariant at the anchor. | The register snapshot is compared at the anchor; one progress register is allowed, and only if it moves in step with the word. |
+| No other observer (IRQ handler, DMA, timer, SPU, CD, GPU, host-side mod or debugger code) runs between two device events. | The skip lands on the anchor strictly before the next scheduled device event, measured from the current cycle. Every IRQ, DMA completion and VBlank callback therefore sees the counter value that unskipped execution would have stored at that same edge. Host mod hooks run only at VBlank or at function entry, and neither happens inside the span. |
+| The loop has no exit that depends on the counter, except the final timeout test. | **Not checkable by the detector.** It is the caller's audit: only the sites listed in `idle_skip_store_counter_sites` are eligible. |
+| The loop's own exit test still runs. | The counter is never lowered to 1 or below, so the `--timeout == -1` path executes for real. |
+| The game does not read the counter word through another pointer, inside or outside the loop. | Partly checked: a read that changes a register or the edge count resets the detector. Otherwise this is part of the site audit. |
+
+What differs from unskipped execution: the guest store count (`frame_fingerprint`
+`wc`/`ws`) and the host time. Guest cycles, device-register writes, scratchpad
+and RAM contents at every device event are the same. That is why the judge
+columns `cyc`, `mmio`, `mc`, `sp`, `sc` and `qc` must match. A title that
+breaks one of the assumptions in a way the detector cannot see (for example, a
+second CPU-side writer driven by a device it does not schedule) must leave
+the key off.
+
+Evidence (R4, OpenBIOS, M4 release build with debug tools, `frame_fingerprint`, key off vs on):
+
+- boot into attract: 9000 frames
+- race from a savestate: 3600 frames
+- all judge columns identical, 0 dispatch misses
+- `wc`/`ws` lower with the key on
+
+The other psxrecomp titles have no disc in this test setup, so they keep the
+key off until they are run the same way.
+
 ### `turbo_loads` / `offer_turbo_loads` — deprecated and ignored
 
 **Do not use these keys.** Load acceleration is owned by the Mods catalog:
