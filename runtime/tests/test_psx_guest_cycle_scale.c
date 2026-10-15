@@ -107,6 +107,12 @@ static void check_batch_ignores_host_stack(uint32_t scale, uint32_t charges, uin
     uint64_t t0 = run_checks(scale, 1, charges, every);
     int n0 = s_services;
     for (int i = 0; i < n0 && i < 64; i++) { c0[i] = s_service_cycle[i]; k0[i] = s_service_check[i]; }
+    /* Diagnostic shadow replay is CPU-clock-only, not netplay rollback.
+     * It deliberately uses the slow clock double without servicing devices. */
+    g_ls_replay_active = 1;
+    uint64_t replay = run_checks(scale, 1, charges, every);
+    g_ls_replay_active = 0;
+    assert(replay == t0 && s_services == 0);
     g_psx_cyc_bb_defer = 338;
     uint64_t t1 = run_checks(scale, 1, charges, every);
     g_psx_cyc_bb_defer = 0;
