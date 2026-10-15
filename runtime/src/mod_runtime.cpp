@@ -87,6 +87,14 @@ static uint64_t g_mod_vblanks = 0;
 
 namespace PSXRecompV4 {
 namespace {
+thread_local const ModPrepareProgress* active_prepare_progress = nullptr;
+
+bool preparation_continues(float fraction, const char* text, std::string* error) {
+    if (!active_prepare_progress || !*active_prepare_progress ||
+        (*active_prepare_progress)(fraction,text)) return true;
+    if (error) *error = "Preparation canceled.";
+    return false;
+}
 
 struct RuntimeMods {
     struct DiscExtent { uint32_t lba, count; const uint8_t* data; };
@@ -1980,7 +1988,8 @@ bool mod_runtime_prepare_resources(const std::filesystem::path& disc_path, std::
     RuntimeMods& s = state();
     if (!s.initialized) { timing.success(); return true; }
     const auto media_cache = media_cache_root();
-    if (!s.manager.prepare_resources(s.game_id, disc_path, media_cache, &s.error, s.cached_prepare)) {
+    if (!s.manager.prepare_resources(s.game_id, disc_path, media_cache, &s.error, s.cached_prepare,
+            active_prepare_progress ? *active_prepare_progress : ModPrepareProgress{})) {
         if (error) *error = s.error;
         return false;
     }
@@ -2073,6 +2082,10 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
         dependency_files(s, inputs->disc_path, after_resolve) &&
         inputs->dependencies == after_resolve;
 #endif
+    if (!preparation_continues(1.0f,"Content ready",&s.error)) {
+        if (error) *error = s.error;
+        return false;
+    }
     if (save_selection) {
         HostLaunchTimingScope save_timing(HOST_LAUNCH_SAVE_STATE);
         if (!s.manager.save_state(&s.error)) {
@@ -2112,6 +2125,7 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
     RuntimeMods& s = state();
     s.netplay_view_plan = false;
     if (!s.initialized) { timing.success(); return true; }
+    if (!preparation_continues(-1.0f,"Checking selected content",error)) return false;
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     std::map<std::filesystem::path, std::string> catalog;
     if (s.catalog_stamped && (!catalog_files(s, catalog) || catalog != s.loaded_catalog)) {
@@ -2174,7 +2188,15 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
     return ok;
 }
 
-bool mod_runtime_prepare_for_launcher(const std::filesystem::path& disc_path, std::string* error) {
+bool mod_runtime_prepare_for_launcher(const std::filesystem::path& disc_path, std::string* error,
+                                      const ModPrepareProgress& progress) {
+    struct Scope {
+        const ModPrepareProgress* previous;
+        explicit Scope(const ModPrepareProgress& current) : previous(active_prepare_progress) {
+            active_prepare_progress = &current;
+        }
+        ~Scope() { active_prepare_progress = previous; }
+    } scope(progress);
     ScopedFlag flag(state().provider_preparing);
     return mod_runtime_commit(disc_path, error, true);
 }
@@ -2410,6 +2432,21 @@ const RecompLauncherCModProvider* mod_runtime_launcher_provider() {
         return prepared_ticket_matches(path ? std::filesystem::path(path) : std::filesystem::path()) ? 1 : 0;
     };
     provider.preparation_revision = [](void*) -> unsigned long long { return state().preparation_revision; };
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_MOD_PREPARATION_PROGRESS)
+    provider.commit_with_progress = [](void*, const char* path,
+        int (*report)(void*,float,const char*), void* ctx) -> int {
+        ModPrepareProgress progress;
+        if (report) progress=[=](float fraction,const std::string& text) {
+            return report(ctx,fraction,text.c_str())!=0;
+        };
+        std::string reason;
+        if (!mod_runtime_prepare_for_launcher(path ? std::filesystem::path(path) :
+                std::filesystem::path(), &reason, progress)) {
+            set_error(reason); return 0;
+        }
+        state().error.clear(); return 1;
+    };
 #endif
 #endif
     return &provider;

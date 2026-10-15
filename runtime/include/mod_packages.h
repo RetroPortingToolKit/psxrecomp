@@ -196,6 +196,9 @@ struct ModOverlay {
     ModPatchTarget target = ModPatchTarget::DiscRaw;
     uint64_t location = 0;
     std::filesystem::path file;
+    // Format 10: verified same-feature derived resource instead of a package file.
+    std::string resource_id;
+    uint64_t resource_offset = 0;
     std::string sha256;
     std::string expected_sha256;
     uint64_t size = 0;
@@ -315,6 +318,9 @@ struct ModPackage {
     std::vector<ModDerivedDisc> derived_discs;
 };
 
+// False requests cancellation. Providers report between bounded work units
+// and before publishing outputs; no UI code runs on the preparation worker.
+using ModPrepareProgress = std::function<bool(float, const std::string&)>;
 struct ModPrepareContext {
     const ModPackage& package;
     std::string feature_id;
@@ -322,6 +328,7 @@ struct ModPrepareContext {
     std::filesystem::path cache_root;
     std::filesystem::path application_dir;
     std::map<std::string, std::filesystem::path> inputs;
+    ModPrepareProgress progress;
 };
 using ModMediaPreparer = std::function<bool(const ModPrepareContext&,
     std::map<std::string, std::filesystem::path>&, std::string&)>;
@@ -469,7 +476,8 @@ public:
     bool prepare_resources(const std::string& game_id,
                            const std::filesystem::path& disc_path,
                            const std::filesystem::path& cache_root,
-                           std::string* error = nullptr, bool cached_only = false);
+                           std::string* error = nullptr, bool cached_only = false,
+                           const ModPrepareProgress& progress = {});
 
     bool install_archive(const std::filesystem::path& archive,
                          std::string* installed_id = nullptr,

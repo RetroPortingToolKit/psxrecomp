@@ -25,7 +25,7 @@ namespace PSXRecompV4 {
 namespace {
 
 constexpr uint32_t kMinFormatVersion = 1;
-constexpr uint32_t kMaxFormatVersion = 9;
+constexpr uint32_t kMaxFormatVersion = 10;
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
 
@@ -2504,11 +2504,29 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 if (offset < 0)
                     throw std::runtime_error("overlay offset is negative");
                 overlay.location = (uint64_t)offset;
-                const std::string relative_file =
-                    toml::find<std::string>(v, "file");
-                if (!safe_archive_name(relative_file))
-                    throw std::runtime_error("overlay file path is unsafe");
-                overlay.file = out.root / fs::path(relative_file);
+                if (v.contains("file") == v.contains("resource"))
+                    throw std::runtime_error("overlay requires exactly one file or resource");
+                if (v.contains("resource")) {
+                    if (out.format_version < 10)
+                        throw std::runtime_error("resource overlays require format_version 10");
+                    overlay.resource_id = toml::find<std::string>(v, "resource");
+                    const auto* resource = find_resource(out, overlay.feature_id, overlay.resource_id);
+                    if (!resource || resource->input_only || resource->format != "file" ||
+                        resource->size == 0 || !valid_sha256(resource->sha256))
+                        throw std::runtime_error("overlay requires a verified same-feature file resource");
+                    const int64_t source_offset = toml::find_or<int64_t>(v, "resource_offset", 0);
+                    const int64_t size = toml::find<int64_t>(v, "size");
+                    if (source_offset < 0 || size <= 0 || uint64_t(source_offset) > resource->size ||
+                        uint64_t(size) > resource->size - uint64_t(source_offset))
+                        throw std::runtime_error("overlay resource slice is out of bounds");
+                    overlay.resource_offset = uint64_t(source_offset);
+                    overlay.size = uint64_t(size);
+                } else {
+                    const std::string relative_file = toml::find<std::string>(v, "file");
+                    if (!safe_archive_name(relative_file))
+                        throw std::runtime_error("overlay file path is unsafe");
+                    overlay.file = out.root / fs::path(relative_file);
+                }
                 overlay.sha256 = toml::find<std::string>(v, "sha256");
                 overlay.expected_sha256 = v.contains("expected_sha256")
                     ? toml::find<std::string>(v, "expected_sha256") : "";
@@ -2517,17 +2535,21 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                      !valid_sha256(overlay.expected_sha256)))
                     throw std::runtime_error(
                         "overlay hashes must be lowercase SHA-256");
-                std::string file_error;
-                std::vector<uint8_t> payload;
-                if (!read_file(overlay.file, payload, &file_error))
-                    throw std::runtime_error(file_error);
-                if (payload.empty())
-                    throw std::runtime_error("overlay payload is empty");
-                const std::string actual = fingerprint_text(std::string(
-                    (const char*)payload.data(), payload.size()));
-                if (actual != overlay.sha256)
-                    throw std::runtime_error("overlay payload checksum failed");
-                overlay.size = payload.size();
+                if (overlay.resource_id.empty()) {
+                    std::string file_error;
+                    std::vector<uint8_t> payload;
+                    if (!read_file(overlay.file, payload, &file_error))
+                        throw std::runtime_error(file_error);
+                    if (payload.empty())
+                        throw std::runtime_error("overlay payload is empty");
+                    const std::string actual = fingerprint_text(std::string(
+                        (const char*)payload.data(), payload.size()));
+                    if (actual != overlay.sha256)
+                        throw std::runtime_error("overlay payload checksum failed");
+                    overlay.size = payload.size();
+                } else if (overlay.expected_sha256.empty()) {
+                    throw std::runtime_error("resource overlay requires expected_sha256");
+                }
                 if (overlay.location >
                     std::numeric_limits<uint64_t>::max() - overlay.size)
                     throw std::runtime_error("overlay range overflows");
@@ -3475,7 +3497,8 @@ std::string ModPackageManager::feature_option_value(
 }
 
 bool ModPackageManager::prepare_resources(const std::string& game_id,
-    const fs::path& disc_path, const fs::path& cache_root, std::string* error, bool cached_only) {
+    const fs::path& disc_path, const fs::path& cache_root, std::string* error, bool cached_only,
+    const ModPrepareProgress& progress) {
     auto effective = effective_selections(nullptr, nullptr, nullptr);
     auto pending = selections_;
     try {
@@ -3491,7 +3514,9 @@ bool ModPackageManager::prepare_resources(const std::string& game_id,
                 const auto provider = media_preparers().find(package->prepare);
                 if (provider == media_preparers().end())
                     throw std::runtime_error(package->name + ": media preparer is not installed");
-                ModPrepareContext context{*package, feature.id, disc_path, cache_root, root_.parent_path(), {}};
+                if (progress && !progress(-1.0f,"Preparing " + feature.name))
+                    throw std::runtime_error("Preparation canceled.");
+                ModPrepareContext context{*package, feature.id, disc_path, cache_root, root_.parent_path(), {}, progress};
                 for (const auto& r : package->resources) if (r.feature_id == feature.id && r.input_only) {
                     auto path = feature_resource_path(id, feature.id, r.id);
                     if (path.empty() && r.required)
@@ -3520,6 +3545,9 @@ bool ModPackageManager::prepare_resources(const std::string& game_id,
             }
         }
     } catch (const std::exception& ex) { set_error(error, ex.what()); return false; }
+    if (progress && !progress(-1.0f,"Verifying prepared content")) {
+        set_error(error,"Preparation canceled."); return false;
+    }
     selections_ = std::move(pending);
     return true;
 }
@@ -3649,6 +3677,20 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
         const ModSelection blank;
         const ModSelection& selected =
             selected_it == selections.end() ? blank : selected_it->second;
+        std::map<std::pair<std::string,std::string>,
+                 std::shared_ptr<const std::vector<uint8_t>>> resource_snapshots;
+        auto load_resource = [&](const ModResource& resource,
+                                 std::shared_ptr<const std::vector<uint8_t>>& bytes,
+                                 std::string& reason) {
+            const auto key=std::make_pair(resource.feature_id,resource.id);
+            const auto found=resource_snapshots.find(key);
+            if(found!=resource_snapshots.end()) { bytes=found->second; return true; }
+            const auto path=effective_resource_path(*package,selected,resource.feature_id,resource.id);
+            if(!load_mod_media(path,resource.format,resource.size,resource.sha256,bytes,&reason))
+                return false;
+            resource_snapshots.emplace(key,bytes);
+            return true;
+        };
         if (package->resolver == "declarative") {
             for (const ModDerivedDisc& derived : package->derived_discs) {
                 const ModFeature& legacy = package->features.front();
@@ -3874,6 +3916,8 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
         std::vector<const ModOverlay*> overlays;
         overlays.reserve(package->overlays.size());
         for (const ModOverlay& overlay : package->overlays) {
+            if (defer_prepared_resources && !package->prepare.empty() && !overlay.resource_id.empty())
+                continue;
             const ModFeature* feature =
                 find_feature(*package, overlay.feature_id);
             if (!feature ||
@@ -3892,7 +3936,22 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
         for (const ModOverlay* overlay : overlays) {
             std::vector<uint8_t> payload;
             std::string payload_error;
-            if (!read_file(overlay->file, payload, &payload_error)) {
+            bool loaded = false;
+            if (overlay->resource_id.empty()) {
+                loaded = read_file(overlay->file, payload, &payload_error);
+            } else {
+                const auto* resource = find_resource(*package, overlay->feature_id, overlay->resource_id);
+                std::shared_ptr<const std::vector<uint8_t>> bytes;
+                if (resource && load_resource(*resource, bytes, payload_error) && bytes &&
+                    overlay->resource_offset <= bytes->size() &&
+                    overlay->size <= bytes->size() - overlay->resource_offset) {
+                    const auto begin = bytes->begin() + size_t(overlay->resource_offset);
+                    payload.assign(begin, begin + size_t(overlay->size));
+                    loaded = true;
+                }
+                if (!loaded && payload_error.empty()) payload_error = "overlay resource is unavailable or out of bounds";
+            }
+            if (!loaded) {
                 result.errors.push_back(
                     package->id + "/" + overlay->feature_id + ": " +
                     payload_error);
@@ -3980,8 +4039,7 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
             resolved.sha256 = resource.sha256;
             if (!resource.sha256.empty()) {
                 std::string media_error;
-                if (!load_mod_media(path, resource.format, resource.size,
-                                    resource.sha256, resolved.bytes, &media_error)) {
+                if (!load_resource(resource, resolved.bytes, media_error)) {
                     result.errors.push_back(package->id + "/" + resource.feature_id +
                                             ": " + resource.id + ": " + media_error);
                     continue;

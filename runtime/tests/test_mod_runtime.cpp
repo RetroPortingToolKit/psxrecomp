@@ -1238,6 +1238,45 @@ int main(int argc, char** argv) {
     check(PSXRecompV4::mod_runtime_commit(raw_path,&error),"reader mount raw disc");
     check(psx_mod_read_disc_file("S0/LEVEL.NSF",result.data(),(uint32_t)result.size(),&bytes) &&
           std::equal(result.begin(),result.end(),iso.begin()+22*2048),"raw and ISO reads identical");
+    {
+        const auto folder=root/"prepared-overlay";
+        const auto pack_path=folder/"local.pack";
+        std::vector<uint8_t> pack(3016,0x42),payload(3000);
+        for(size_t i=0;i<payload.size();++i)payload[i]=uint8_t(i*11+5);
+        std::copy(payload.begin(),payload.end(),pack.begin()+16);
+        const uint64_t offset=21*2352+2000;
+        const std::vector<uint8_t> expected(raw_iso.begin()+offset,raw_iso.begin()+offset+payload.size());
+        check(PSXRecompV4::mod_register_media_preparer("test.overlay.prepare",
+            [&](const PSXRecompV4::ModPrepareContext& context,std::map<std::string,fs::path>& outputs,std::string&) {
+                if(context.progress && !context.progress(0.5f,"Building local pack"))return false;
+                write_bytes(pack_path,pack);outputs["pack"]=pack_path;return true;
+            }),"register prepared overlay fixture");
+        write_text(folder/"bundled/prepared.overlay/1.0.0/manifest.toml",
+            "format_version = 10\nid = \"prepared.overlay\"\nversion = \"1.0.0\"\nname = \"Prepared overlay\"\nprepare = \"test.overlay.prepare\"\n"
+            "[[target]]\ngame_id = \"READER\"\ndisc_sha256 = \""+sha256_hex(raw_iso)+"\"\n"
+            "[[feature]]\nid = \"audio\"\nname = \"Audio\"\ndefault_enabled = true\n"
+            "[[resource]]\nfeature = \"audio\"\nid = \"pack\"\nlabel = \"Pack\"\nformat = \"file\"\nhidden = true\nrequired = true\nsize = 3016\nsha256 = \""+sha256_hex(pack)+"\"\n"
+            "[[overlay]]\nfeature = \"audio\"\ntarget = \"disc_raw\"\noffset = "+std::to_string(offset)+"\n"
+            "resource = \"pack\"\nresource_offset = 16\nsize = 3000\nsha256 = \""+sha256_hex(payload)+"\"\nexpected_sha256 = \""+sha256_hex(expected)+"\"\n");
+        check(PSXRecompV4::mod_runtime_initialize(folder,"READER",0,{},&error),"initialize prepared overlay");
+        int reports=0;
+        check(!PSXRecompV4::mod_runtime_prepare_for_launcher(raw_path,&error,
+            [&](float fraction,const std::string&){++reports;return fraction<1.0f;}),"cancel before installing prepared plan");
+        check(reports>1 && error=="Preparation canceled.","runtime propagates cooperative cancellation");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(raw_path,&error),"prepare verified resource-backed overlay");
+        mod_runtime_enable_disc_patches();
+        fs::remove(pack_path,ec); // Committed bytes must remain immutable and resident.
+        for(unsigned lba=21;lba<=23;++lba) {
+            std::array<uint8_t,2352> sector;
+            std::copy_n(raw_iso.begin()+lba*2352,2352,sector.begin());
+            auto wanted=sector;
+            const uint64_t start=std::max<uint64_t>(offset,lba*2352);
+            const uint64_t end=std::min<uint64_t>(offset+payload.size(),(lba+1)*2352);
+            std::copy(payload.begin()+start-offset,payload.begin()+end-offset,wanted.begin()+start-lba*2352);
+            mod_runtime_patch_disc_sector(lba,1,sector.data(),sector.size());
+            check(sector==wanted,"resource overlay crosses sectors with exact untouched surroundings");
+        }
+    }
     /* Verified bytes are scoped to the committed feature, and do not depend
      * on reopening an owner file after launch. No launcher is needed here. */
     const auto media_root = root / "verified-media";

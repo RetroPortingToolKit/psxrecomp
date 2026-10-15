@@ -675,6 +675,23 @@ direct indexed lookup rather than scanning every installed mod.
 Feature disc overlays require an exact `disc_sha256` on every target entry.
 `expected_sha256` can additionally guard the replaced stock range.
 
+Format 10 also supports an overlay sourced from a verified same-feature
+`[[resource]]` with `format = "file"`. Declare exactly one of `file` or
+`resource`. Resource overlays require `size`, a nonnegative `resource_offset`
+(default zero), the slice's `sha256`, and the stock range's `expected_sha256`.
+The source must have a fixed nonzero size and SHA-256 and cannot be input-only.
+The complete resource is verified once into immutable bytes during resolution;
+all its slices and the runtime resource share that snapshot. Slices may span
+sectors. A diagnostic launcher preview defers preparer-owned resource overlays,
+while execution rejects missing, corrupt, out-of-range or mismatched content.
+No generated media needs to be written into a bundled package directory.
+
+Trusted preparers may use `ModPrepareContext::progress(fraction, message)` when
+it is provided. A false result requests cancellation: stop between bounded work
+units and before publishing outputs. Keep previously verified cache entries and
+publish new entries atomically. The manager checks cancellation before applying
+derived resource bindings. Older preparers may leave this callback unused.
+
 ## State and migration
 
 `mods/state.toml` format 2 stores selected package versions separately from

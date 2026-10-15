@@ -24,7 +24,8 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path = {},
                         bool save_selection = true);
 /* Prepare a preboot launcher selection; the audited runtime retains a ticket. */
 bool mod_runtime_prepare_for_launcher(const std::filesystem::path& disc_path,
-                                      std::string* error = nullptr);
+                                      std::string* error = nullptr,
+                                      const ModPrepareProgress& progress = {});
 
 /* Audited preboot only: load and verify a plan using existing receipts.
  * A miss never invokes a media converter or computes a disc digest. */
