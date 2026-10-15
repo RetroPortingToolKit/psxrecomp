@@ -12,6 +12,21 @@ The player selects a verified stock BIN/CUE. Resolution produces guarded native
 operations and sparse disc overlays without rewriting or replacing that stock
 image.
 
+## Save-state isolation
+
+An active package with `save_compatibility = "isolated"` gives normal save slots
+and their thumbnail/HD-residency sidecars a namespace derived from the complete
+committed, verified content-plan fingerprint. Disabling it returns to the
+historical slot paths; a different plan uses different slots. Memory-card files
+are unaffected. Preparation and preview do not establish a save-state scope.
+
+The runtime refuses to start an isolated session without a qualified content
+identity. Invalid scopes and truncated paths fail closed, and changing scope
+cancels pending slot operations. There is no automatic import from ordinary
+slots. This is filename isolation, not a new state-header compatibility guard;
+explicit developer blob/path loading and manually copied files are outside it.
+Packages using the default compatibility policy retain their existing paths.
+
 ## Where packages live
 
 Two catalog roots sit beside the executable, split by who owns the files:

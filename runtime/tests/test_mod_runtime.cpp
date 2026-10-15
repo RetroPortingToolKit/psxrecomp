@@ -1252,7 +1252,7 @@ int main(int argc, char** argv) {
                 write_bytes(pack_path,pack);outputs["pack"]=pack_path;return true;
             }),"register prepared overlay fixture");
         write_text(folder/"bundled/prepared.overlay/1.0.0/manifest.toml",
-            "format_version = 10\nid = \"prepared.overlay\"\nversion = \"1.0.0\"\nname = \"Prepared overlay\"\nprepare = \"test.overlay.prepare\"\n"
+            "format_version = 10\nid = \"prepared.overlay\"\nversion = \"1.0.0\"\nname = \"Prepared overlay\"\nprepare = \"test.overlay.prepare\"\nsave_compatibility = \"isolated\"\n"
             "[[target]]\ngame_id = \"READER\"\ndisc_sha256 = \""+sha256_hex(raw_iso)+"\"\n"
             "[[feature]]\nid = \"audio\"\nname = \"Audio\"\ndefault_enabled = true\n"
             "[[resource]]\nfeature = \"audio\"\nid = \"pack\"\nlabel = \"Pack\"\nformat = \"file\"\nhidden = true\nrequired = true\nsize = 3016\nsha256 = \""+sha256_hex(pack)+"\"\n"
@@ -1263,9 +1263,44 @@ int main(int argc, char** argv) {
         check(!PSXRecompV4::mod_runtime_prepare_for_launcher(raw_path,&error,
             [&](float fraction,const std::string&){++reports;return fraction<1.0f;}),"cancel before installing prepared plan");
         check(reports>1 && error=="Preparation canceled.","runtime propagates cooperative cancellation");
+        check(PSXRecompV4::mod_runtime_initialize(folder,"READER",0,{},&error),"cold offer overlay initialize");
+        std::string save_scope;
+        check(!PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error) && save_scope.empty(),
+              "uncommitted isolated plan cannot fall back to shared save states");
+        check(PSXRecompV4::mod_runtime_prepare_resources(raw_path,&error),"cold offer prepares exact-disc resources without commit");
+        check(!PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error),
+              "resource preparation does not install a save-state scope");
+        const auto offer_fp=PSXRecompV4::mod_runtime_plan_fingerprint_portable();
+        check(offer_fp.size()==64 && PSXRecompV4::mod_runtime_fingerprint().empty(),"cold offer qualifies disc without installing a plan");
+        check(PSXRecompV4::mod_runtime_initialize(folder,"READER",0,{},&error),"cold LAN overlay initialize");
+        test_match_caps={};
+        check(PSXRecompV4::mod_runtime_commit_for_direct_netplay(raw_path,&error),"cold LAN accepts exact-disc resource overlay");
+        check(PSXRecompV4::mod_runtime_session_plan_fp()==offer_fp &&
+              PSXRecompV4::mod_runtime_plan_fingerprint_portable()==offer_fp &&
+              PSXRecompV4::mod_runtime_fingerprint()==offer_fp,"offer and committed exact-disc identities agree");
+        check(PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error) && save_scope==offer_fp,
+              "direct netplay scopes isolated save states by its installed verified plan");
+        PSXRecompV4::mod_runtime_end_netplay();
+        check(PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error) && save_scope.empty(),
+              "intentional netplay clear retires isolated save scope");
+        const auto changed_disc=folder/"offered.bin";
+        write_bytes(changed_disc,raw_iso);
+        check(PSXRecompV4::mod_runtime_initialize(folder,"READER",0,{},&error),"changed offer overlay initialize");
+        check(PSXRecompV4::mod_runtime_prepare_resources(changed_disc,&error),"prepare source before same-path mutation");
+        auto changed_bytes=raw_iso;changed_bytes[10]^=1; // Outside every stock overlay guard range.
+        write_bytes(changed_disc,changed_bytes);
+        check(!PSXRecompV4::mod_runtime_commit_for_direct_netplay(changed_disc,&error),"final LAN commit rejects same-path changed source identity");
+        check(PSXRecompV4::mod_runtime_session_plan_fp().empty(),"changed offer cannot install session identity");
+        check(!PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error),
+              "failed required plan cannot select shared save-state slots");
+        check(PSXRecompV4::mod_runtime_initialize(folder,"READER",0,{},&error),"restore original overlay selection");
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(raw_path,&error),"prepare verified resource-backed overlay");
+        check(PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error) && save_scope==offer_fp,
+              "offline isolated plan restores the same verified save-state scope");
         mod_runtime_enable_disc_patches();
         fs::remove(pack_path,ec); // Committed bytes must remain immutable and resident.
+        check(PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error) && save_scope==offer_fp,
+              "isolated scope uses committed immutable content after source removal");
         for(unsigned lba=21;lba<=23;++lba) {
             std::array<uint8_t,2352> sector;
             std::copy_n(raw_iso.begin()+lba*2352,2352,sector.begin());
@@ -1307,6 +1342,11 @@ int main(int argc, char** argv) {
     check(psx_mod_register_activation_plugin("media.test.plugin", test_media_plugin), "register media consumer");
     check(PSXRecompV4::mod_runtime_initialize(media_root, "READER", 0, {}, &error), "media initialize");
     check(PSXRecompV4::mod_runtime_commit(iso_path, &error), "verify and commit owner media");
+    {
+        std::string save_scope;
+        check(PSXRecompV4::mod_runtime_savestate_scope(save_scope,&error) && save_scope.empty(),
+              "shared packages retain historical save-state paths");
+    }
     const std::string host_media_fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable();
     check(host_media_fp.size() == 64, "verified external media has a portable netplay identity");
     test_match_caps = {};
@@ -1427,11 +1467,8 @@ int main(int argc, char** argv) {
     check(PSXRecompV4::mod_runtime_plan_fingerprint_portable().empty(), "unverified resource has no online fingerprint");
     const auto rejected_commit_timing = launch_timing_total();
     check(!PSXRecompV4::mod_runtime_commit(iso_path, &error, false), "online commit rejects unverified resource");
-#if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
+    // Netplay remeasures the source in both worker and legacy configurations.
     check_commit_timing(rejected_commit_timing, false, true);
-#else
-    check_commit_timing(rejected_commit_timing, false, false);
-#endif
     check(!PSXRecompV4::mod_runtime_commit_for_direct_netplay(iso_path, &error), "LAN also refuses unverified resources");
     test_match_caps = {};
     test_match_caps.valid = 1;
@@ -1763,6 +1800,12 @@ int main(int argc, char** argv) {
               "cold cached-only launch does not prepare missing receipt");
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == 1,
               "cold launcher creates verified preparation");
+        std::string input_stamp, output_stamp, disc_stamp, manifest_stamp;
+        const bool qualified_stamps = PSXRecompV4::host_file_identity(input_path,input_stamp) &&
+            PSXRecompV4::host_file_identity(output_path,output_stamp) &&
+            PSXRecompV4::host_file_identity(disc,disc_stamp) &&
+            PSXRecompV4::host_file_identity(manifest_path,manifest_stamp);
+        if (qualified_stamps) {
         const auto reused = startup_counter("startup.plan_reuse");
         const auto hashed = startup_counter("startup.disc_hash");
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
@@ -1795,6 +1838,29 @@ int main(int argc, char** argv) {
               "missing output fails without invoking converter");
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == 4,
               "full preparation repairs missing output");
+        } else {
+            const auto hashed = startup_counter("startup.disc_hash");
+            const auto reused = startup_counter("startup.plan_reuse");
+            const auto before = prepare_calls;
+            check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc,&error) &&
+                  PSXRecompV4::mod_runtime_commit(disc,&error) && prepare_calls==before+2 &&
+                  startup_counter("startup.disc_hash")==hashed+2 &&
+                  startup_counter("startup.plan_reuse")==reused,
+                  "unqualified identities retain full preparation and hashing without tickets");
+            check(PSXRecompV4::mod_runtime_initialize(cached_root,"READER",0,{},&error) &&
+                  !PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls==before+2,
+                  "unqualified warm startup never invokes the converter or claims readiness");
+            const auto input_time=fs::last_write_time(input_path);
+            write_bytes(input_path,{4,3,2,1});fs::last_write_time(input_path,input_time);
+            check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc,&error) && prepare_calls==before+3,
+                  "restored-mtime source still goes through full preparation");
+            auto corrupt=rom;corrupt[32]^=1;write_bytes(output_path,corrupt);
+            check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls==before+3,
+                  "unqualified corrupt output never obtains cached readiness");
+            fs::remove(output_path);
+            check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc,&error) && prepare_calls==before+4,
+                  "unqualified full preparation repairs missing content");
+        }
         throw_probe = true;
         check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc), "throwing cached probe fails safely");
         throw_probe = false;
@@ -1826,6 +1892,7 @@ int main(int argc, char** argv) {
         mutate_on_resolve = false;
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == before_mutation + 2,
               "unstable resolve never publishes a reusable ticket");
+        if (qualified_stamps) {
         // Altering a syntactically valid digest must fail its receipt checksum.
         std::filesystem::path cache_dir;
 #if defined(_WIN32)
@@ -1851,6 +1918,7 @@ int main(int argc, char** argv) {
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
               startup_counter("startup.disc_hash") == before_corrupt_hash + 1,
               "full launch repairs corrupted digest with authoritative source hash");
+        }
         // Catalog changes cannot certify stale in-memory parsed manifests.
         write_text(manifest_path, manifest + "\n# external catalog mutation\n");
         check(!PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&

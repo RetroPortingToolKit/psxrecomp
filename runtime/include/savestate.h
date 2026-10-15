@@ -62,6 +62,12 @@ void savestate_configure(const char* dir, uint32_t bios_checksum, uint32_t entry
  * so their existing paths are untouched. */
 void savestate_set_disc_scope(int disc_number);
 
+/* Namespace slot files and their sidecars by a committed content-plan SHA-256.
+ * NULL/empty restores historical paths; invalid input blocks saves/loads rather
+ * than falling back to shared slots. Changing scope cancels pending requests.
+ * Memory-card paths and the configured save root are unaffected. */
+int savestate_set_content_scope(const char* fingerprint);
+
 /* Current slot directory (empty if not configured). */
 const char* savestate_dir(void);
 

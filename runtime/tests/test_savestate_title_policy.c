@@ -98,6 +98,45 @@ int main(void) {
     assert(savestate_request_save_protocol(1));
     savestate_set_title_blocked(1);
     assert(!savestate_pending());
+    /* Isolated scopes affect slot sidecars, never the save root. Formatting
+     * only: no files or device serializers are touched here. */
+    {
+        char shared[700], scoped[700], thumb[700], hd[700], tiny[16];
+        const char* first = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        const char* second = "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        savestate_set_title_blocked(0);
+        s_entry_pc = 0x80010000u;
+        strcpy(s_dir, "saves/openbios");
+        strcpy(s_root, "saves");
+        assert(savestate_set_content_scope(NULL));
+        assert(savestate_slot_path(2, shared, sizeof(shared)));
+        assert(!strcmp(shared, "saves/openbios/state_80010000_slot02.pst"));
+        assert(savestate_request_load_blob_protocol(&blob, 1));
+        assert(savestate_set_content_scope(first));
+        assert(!savestate_pending() && !s_load_blob && savestate_take_load_failed());
+        assert(savestate_slot_path(2, scoped, sizeof(scoped)));
+        assert(strstr(scoped, first) && strcmp(shared, scoped));
+        assert(!strcmp(savestate_root_dir(), "saves") && !strcmp(savestate_dir(), "saves/openbios"));
+        assert(savestate_thumb_path(2, thumb, sizeof(thumb)) && strstr(thumb, first));
+        assert(savestate_hd_path(2, hd, sizeof(hd)) && strstr(hd, first));
+        assert(strstr(thumb, ".thumb") && strstr(hd, ".hdres"));
+        assert(!savestate_slot_path(2, tiny, sizeof(tiny)) && !tiny[0]);
+        savestate_set_disc_scope(2);
+        assert(savestate_slot_path(2, scoped, sizeof(scoped)) && strstr(scoped, "_disc2_mods_"));
+        savestate_set_disc_scope(0);
+        assert(savestate_request_save(2));
+        s_save_defer_slot = 3;
+        assert(savestate_set_content_scope(second));
+        assert(!savestate_pending() && s_save_defer_slot == -1 && savestate_take_save_failed());
+        assert(savestate_slot_path(2, scoped, sizeof(scoped)) && strstr(scoped, second));
+        assert(!savestate_set_content_scope("../invalid"));
+        assert(!savestate_slot_path(2, scoped, sizeof(scoped)) && !scoped[0]);
+        assert(!savestate_request_save(2) && !savestate_request_load(2));
+        assert(!savestate_request_load_blob_protocol(&blob, 1));
+        assert(strstr(refusal_reason, "verified content plan"));
+        assert(savestate_set_content_scope(""));
+        assert(savestate_slot_path(2, scoped, sizeof(scoped)) && !strcmp(shared, scoped));
+    }
     puts("savestate title policy tests passed");
     return 0;
 }
