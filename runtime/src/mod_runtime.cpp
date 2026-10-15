@@ -187,6 +187,8 @@ bool dependency_files(RuntimeMods& s, const std::filesystem::path& disc,
     return add(s.effective_disc_path);
 }
 
+bool sha256_file(const std::filesystem::path&, std::string&, std::string*);
+
 bool catalog_files(RuntimeMods& s, std::map<std::filesystem::path, std::string>& files) {
     files.clear();
     std::error_code ec;
@@ -197,7 +199,10 @@ bool catalog_files(RuntimeMods& s, std::map<std::filesystem::path, std::string>&
         if (++entries > 4096) return false;
         if (it->path().filename() != "manifest.toml") continue;
         std::string stamp;
-        if (!host_file_identity(it->path(), stamp)) return false;
+        if (!host_file_identity(it->path(), stamp)) {
+            if (!sha256_file(it->path(), stamp, nullptr)) return false;
+            stamp = "sha256:" + stamp;
+        }
         files[it->path()] = std::move(stamp);
     }
     return !ec;

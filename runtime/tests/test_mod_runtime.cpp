@@ -1763,6 +1763,12 @@ int main(int argc, char** argv) {
               "cold cached-only launch does not prepare missing receipt");
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == 1,
               "cold launcher creates verified preparation");
+        std::string input_stamp, output_stamp, disc_stamp, manifest_stamp;
+        const bool qualified_stamps = PSXRecompV4::host_file_identity(input_path,input_stamp) &&
+            PSXRecompV4::host_file_identity(output_path,output_stamp) &&
+            PSXRecompV4::host_file_identity(disc,disc_stamp) &&
+            PSXRecompV4::host_file_identity(manifest_path,manifest_stamp);
+        if (qualified_stamps) {
         const auto reused = startup_counter("startup.plan_reuse");
         const auto hashed = startup_counter("startup.disc_hash");
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
@@ -1795,6 +1801,29 @@ int main(int argc, char** argv) {
               "missing output fails without invoking converter");
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == 4,
               "full preparation repairs missing output");
+        } else {
+            const auto hashed = startup_counter("startup.disc_hash");
+            const auto reused = startup_counter("startup.plan_reuse");
+            const auto before = prepare_calls;
+            check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc,&error) &&
+                  PSXRecompV4::mod_runtime_commit(disc,&error) && prepare_calls==before+2 &&
+                  startup_counter("startup.disc_hash")==hashed+2 &&
+                  startup_counter("startup.plan_reuse")==reused,
+                  "unqualified identities retain full preparation and hashing without tickets");
+            check(PSXRecompV4::mod_runtime_initialize(cached_root,"READER",0,{},&error) &&
+                  !PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls==before+2,
+                  "unqualified warm startup never invokes the converter or claims readiness");
+            const auto input_time=fs::last_write_time(input_path);
+            write_bytes(input_path,{4,3,2,1});fs::last_write_time(input_path,input_time);
+            check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc,&error) && prepare_calls==before+3,
+                  "restored-mtime source still goes through full preparation");
+            auto corrupt=rom;corrupt[32]^=1;write_bytes(output_path,corrupt);
+            check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc) && prepare_calls==before+3,
+                  "unqualified corrupt output never obtains cached readiness");
+            fs::remove(output_path);
+            check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc,&error) && prepare_calls==before+4,
+                  "unqualified full preparation repairs missing content");
+        }
         throw_probe = true;
         check(!PSXRecompV4::mod_runtime_try_prepare_cached(disc), "throwing cached probe fails safely");
         throw_probe = false;
@@ -1826,6 +1855,7 @@ int main(int argc, char** argv) {
         mutate_on_resolve = false;
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) && prepare_calls == before_mutation + 2,
               "unstable resolve never publishes a reusable ticket");
+        if (qualified_stamps) {
         // Altering a syntactically valid digest must fail its receipt checksum.
         std::filesystem::path cache_dir;
 #if defined(_WIN32)
@@ -1851,6 +1881,7 @@ int main(int argc, char** argv) {
         check(PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
               startup_counter("startup.disc_hash") == before_corrupt_hash + 1,
               "full launch repairs corrupted digest with authoritative source hash");
+        }
         // Catalog changes cannot certify stale in-memory parsed manifests.
         write_text(manifest_path, manifest + "\n# external catalog mutation\n");
         check(!PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
