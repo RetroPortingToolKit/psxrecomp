@@ -1019,6 +1019,24 @@ pad with the louder of that and the guest's SIO motors; a value lapses 8
 VBlanks after the last call and all are cleared at every mod/session reset.
 `PSX_RUMBLE_TRACE=1` logs every change, headless included.
 
+**EXPERIMENTAL:** JogCon wheel force feedback is a player setting,
+`settings.toml [controller] jogcon_force_feedback` (off by default; the
+launcher / in-game menu toggle writes it via
+`RecompLauncherCSettings.jogcon_force_feedback` (recomp-launcher; read behind
+`RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK`, so other providers still build), applied live through
+`psx_jogcon_ffb_set_player_enabled`). A title may set its default with
+`game.toml [controller] experimental_jogcon_force_feedback` (off when
+absent); the player's setting always wins. When on, it drives a host
+force-feedback wheel's SDL haptics from a presented JogCon's motor commands: a constant force for turn commands 1 and 2, and a centring
+spring for hold. It is off by default. Gamepads and devices without constant
+or spring haptics are never driven. Every force has a 120 ms lifetime and is
+renewed each VBlank, so a pause, stall or crash leaves the wheel slack. The
+Rewind and save-state pause menus, disconnects and session end also stop it
+explicitly. The turn direction has not been checked on JogCon hardware or a
+physical wheel; `experimental_jogcon_force_feedback_invert = true` flips it.
+SDL has no virtual haptic device, so CI covers the driver with a recording
+backend and the SDL backend only against an SDL3 virtual wheel (no haptics).
+
 Bezel artwork is intentionally not a `[video]` key. It is exposed as the
 disabled-by-default `psx.presentation.bezel` mod package, which draws a
 user-selected image resource behind the game image in OpenGL letterbox or

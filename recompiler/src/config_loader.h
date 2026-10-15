@@ -830,6 +830,13 @@ struct RuntimeConfig {
     std::string           direct_shortcut;
     std::string           direct_shortcut_button;
 
+    // experimental_jogcon_force_feedback: EXPERIMENTAL. Drive a host wheel's
+    // SDL haptics (constant force / centring spring) from a presented
+    // JogCon's motor commands. Opt-in; gamepads are never driven; direction
+    // unverified on hardware (_invert flips it).
+    bool                  experimental_jogcon_force_feedback = false;
+    bool                  experimental_jogcon_force_feedback_invert = false;
+
     // multitap_analog: DualShock-on-tap hack (default true). When true,
     // multitap bulk seats may report 0x73 + stick bytes; when false (faithful),
     // tap seats stay plain digital. Overridable by settings.toml / match_caps.
@@ -1665,6 +1672,10 @@ struct UserSettings {
     // DualShock-on-tap hack (settings.toml [controller] multitap_analog).
     // Default on when unset; game.toml / global prefs may override.
     bool has_multitap_analog = false; bool multitap_analog = true;
+    // EXPERIMENTAL JogCon wheel force feedback, the player's choice
+    // (settings.toml [controller] jogcon_force_feedback). Unset = the title's
+    // game.toml experimental_jogcon_force_feedback default (off).
+    bool has_jogcon_force_feedback = false; bool jogcon_force_feedback = false;
     // Localization: the launcher's chosen language code (feeds RuntimeConfig
     // .language / g_lang). "off"/"jp"/"" = untranslated native game. Persisted to
     // settings.toml [localization].language.

@@ -71,6 +71,8 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "latency_ring.h"
 #include "sio.h"
 #include "psx_host_rumble.h"
+#include "psx_jogcon_ffb.h"
+#include "psx_jogcon_ffb_sdl.h"
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
 #endif
@@ -440,7 +442,15 @@ struct PlayerInput {
     bool    rumble_known = false;
     bool    rumble_warned = false;
     bool    steering_wheel = false;
+    /* EXPERIMENTAL JogCon force feedback on this pad's SDL haptics
+     * ([controller] experimental_jogcon_force_feedback; psx_jogcon_ffb.h). */
+    PsxJogconHaptic    ffb_haptic = {nullptr, -1, -1};
+    PsxJogconFfbDriver ffb = {{0, 0}, 0};
+    bool               ffb_probed = false;
 };
+/* game.toml [controller] experimental_jogcon_force_feedback(_invert). */
+static bool g_jogcon_ffb = false;
+static bool g_jogcon_ffb_invert = false;
 static PlayerInput g_players[PSX_MAX_PLAYERS];
 /* Offline SIO sample loop bound (from game.toml players; clamped). */
 static int g_offline_pad_count = 2;
@@ -5320,7 +5330,41 @@ static void load_input_config(const char* argv0) {
     psx_keybinds_init(argv0);
 }
 
+static PsxJogconFfbBackend player_ffb_backend(PlayerInput& p) {
+    return psx_jogcon_haptic_backend(&p.ffb_haptic);
+}
+
+/* Pause / disconnect / session end: the wheel goes neutral now. */
+static void jogcon_ffb_neutral_all(void) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        PsxJogconFfbBackend b = player_ffb_backend(g_players[s]);
+        psx_jogcon_ffb_neutral(&g_players[s].ffb, &b);
+    }
+}
+
+/* The player's EXPERIMENTAL wheel force-feedback setting, live: takes effect
+ * on the next VBlank; turning it off makes every wheel neutral now. Callers
+ * (launcher exits, the in-game menu's settings apply) also persist it to
+ * settings.toml [controller] jogcon_force_feedback. */
+extern "C" void psx_jogcon_ffb_set_player_enabled(int on) {
+    const bool was = g_jogcon_ffb;
+    g_jogcon_ffb = on != 0;
+    if (was && !g_jogcon_ffb) jogcon_ffb_neutral_all();
+    if (was != g_jogcon_ffb)
+        std::fprintf(stdout, "psxrecomp: EXPERIMENTAL JogCon wheel force "
+                     "feedback %s (player setting)\n", g_jogcon_ffb ? "on" : "off");
+}
+extern "C" int psx_jogcon_ffb_player_enabled(void) { return g_jogcon_ffb ? 1 : 0; }
+
+static void close_player_haptic(PlayerInput& p) {
+    PsxJogconFfbBackend b = player_ffb_backend(p);
+    psx_jogcon_ffb_neutral(&p.ffb, &b);
+    psx_jogcon_haptic_close(&p.ffb_haptic);
+    p.ffb_probed = false;
+}
+
 static void close_player(PlayerInput& p) {
+    close_player_haptic(p);
     if (p.handle) {
         if (p.rumble_small || p.rumble_large)
             (void)SDL_GameControllerRumble(p.handle, 0, 0, 0);
@@ -5421,6 +5465,39 @@ static void open_player(PlayerInput& p, int self_slot) {
  * the small motor is fixed-strength/high-frequency. Active effects are renewed
  * every VBlank with a short lifetime so a crash or unplug cannot leave a host
  * controller vibrating indefinitely. */
+/* EXPERIMENTAL JogCon force feedback: the guest's motor command and
+ * strength drive a host wheel's SDL haptics through psx_jogcon_ffb.h, which
+ * renews a finite-lifetime force each VBlank and goes neutral otherwise.
+ * Pads without constant / spring haptics (gamepads) are left alone. */
+static void update_jogcon_ffb(int s, PlayerInput& p, bool trace) {
+    uint8_t command = 0, strength = 0;
+    const int enabled = g_jogcon_ffb && sio_get_pad_analog(s) == SIO_PAD_JOGCON;
+    if (enabled) {
+        sio_get_pad_jogcon_motor(s, &command, &strength);
+        if (!p.ffb_probed && p.handle) {
+            p.ffb_probed = true;
+            if (psx_jogcon_haptic_open(&p.ffb_haptic,
+                                       SDL_GameControllerGetJoystick(p.handle)))
+                std::fprintf(stdout,
+                    "psxrecomp runtime: EXPERIMENTAL JogCon force feedback on "
+                    "slot %d (constant %s, spring %s)\n", s + 1,
+                    p.ffb_haptic.constant >= 0 ? "yes" : "no",
+                    p.ffb_haptic.spring >= 0 ? "yes" : "no");
+        }
+    }
+    const PsxJogconFfb before = p.ffb.last;
+    PsxJogconFfbBackend b = player_ffb_backend(p);
+    psx_jogcon_ffb_tick(&p.ffb, &b, enabled, command, strength,
+                        g_jogcon_ffb_invert ? 1 : 0);
+    if (trace && (before.constant != p.ffb.last.constant ||
+                  before.spring != p.ffb.last.spring))
+        std::fprintf(stdout,
+            "psxrecomp ffb: slot=%d jogcon cmd=%u strength=%u constant=%d "
+            "spring=%u host=%s\n", s + 1, (unsigned)command, (unsigned)strength,
+            (int)p.ffb.last.constant, (unsigned)p.ffb.last.spring,
+            p.ffb_haptic.haptic ? "wheel" : "none");
+}
+
 static void update_controller_rumble(void) {
     static const bool trace = [] {
         const char* e = std::getenv("PSX_RUMBLE_TRACE");
@@ -5429,6 +5506,7 @@ static void update_controller_rumble(void) {
     ++g_rumble_vblank;
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
         PlayerInput& p = g_players[s];
+        update_jogcon_ffb(s, p, trace);
         uint8_t small = 0, large = 0;
         sio_get_pad_rumble(s, &small, &large);
         psx_host_rumble_merge(&g_mod_rumble[s], g_rumble_vblank, &small, &large);
@@ -8077,6 +8155,7 @@ static void rewind_pause_present(void) {
 
 /* Freeze guest in vblank present while the rewind filmstrip is open. */
 static void rewind_host_pause_loop(void) {
+    jogcon_ffb_neutral_all();   /* the wheel goes slack while paused */
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
     freeze_heartbeat_set_paused(1);
@@ -8242,6 +8321,7 @@ static int host_pause_refuse_netplay(void) { return psx_netplay_active() ? 1 : 0
 
 /* Freeze guest in vblank present while the save-state slot menu is open. */
 static void savestate_menu_host_pause_loop(void) {
+    jogcon_ffb_neutral_all();   /* the wheel goes slack while paused */
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
     freeze_heartbeat_set_paused(1);
@@ -17512,6 +17592,13 @@ int main(int argc, char** argv) {
             g_auto_skip_fmv    = gc.runtime.video_auto_skip_fmv ? 1 : 0;
             /* [controller] game-declared input defaults (settings.toml/launcher
              * still override below). */
+            g_jogcon_ffb = gc.runtime.experimental_jogcon_force_feedback;
+            g_jogcon_ffb_invert =
+                gc.runtime.experimental_jogcon_force_feedback_invert;
+            if (g_jogcon_ffb)
+                std::fprintf(stdout, "psxrecomp: EXPERIMENTAL JogCon force "
+                             "feedback on by the title's default (wheels "
+                             "only; the player setting overrides)\n");
             if (!gc.runtime.direct_shortcut.empty())
                 apply_title_direct_shortcut(gc.runtime.direct_shortcut,
                                             gc.runtime.direct_shortcut_button);
@@ -17843,6 +17930,8 @@ int main(int argc, char** argv) {
         if (us.has_memcard1_enabled) memcard1_enabled = us.memcard1_enabled;
         if (us.has_memcard2_enabled) memcard2_enabled = us.memcard2_enabled;
         if (us.has_multitap_enabled) multitap_enabled = us.multitap_enabled;
+        if (us.has_jogcon_force_feedback)
+            psx_jogcon_ffb_set_player_enabled(us.jogcon_force_feedback ? 1 : 0);
         if (us.has_multitap_analog) {
             multitap_analog = us.multitap_analog;
             sio_set_multitap_analog(multitap_analog ? 1 : 0);
@@ -18646,6 +18735,9 @@ int main(int argc, char** argv) {
             ls.multitap_analog = seed.multitap_analog ? 1 : 0;
             g_lnch_multitap_analog = seed.multitap_analog ? 1 : 0;
 #endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+            ls.jogcon_force_feedback = psx_jogcon_ffb_player_enabled();
+#endif
 
             /* Region badge: game.toml [game] region wins verbatim; otherwise derive
              * from the game_id serial prefix (SCUS/SLUS/LSP -> USA, SCES/SLES ->
@@ -19027,6 +19119,14 @@ int main(int argc, char** argv) {
                     (void)PSXRecompV4::upsert_game_toml_controller_bool(
                         game_config_path, "multitap_analog", multitap_analog);
                 }
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+                if ((ls.jogcon_force_feedback != 0) != (psx_jogcon_ffb_player_enabled() != 0) ||
+                    seed.has_jogcon_force_feedback) {
+                    seed.jogcon_force_feedback = ls.jogcon_force_feedback != 0;
+                    seed.has_jogcon_force_feedback = true;
+                }
+                psx_jogcon_ffb_set_player_enabled(ls.jogcon_force_feedback);
 #endif
                 if (ls.memcard_path[0][0]) { seed.memcard1_path = ls.memcard_path[0]; seed.has_memcard1_path = true; }
                 if (ls.memcard_path[1][0]) { seed.memcard2_path = ls.memcard_path[1]; seed.has_memcard2_path = true; }
@@ -21180,6 +21280,9 @@ soft_return_lobby:
         ls.multitap_analog = multitap_analog ? 1 : 0;
         g_lnch_multitap_analog = multitap_analog ? 1 : 0;
 #endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+        ls.jogcon_force_feedback = psx_jogcon_ffb_player_enabled();
+#endif
         /* Preserve input devices across soft-return. A zeroed ls left every
          * player_src at None, so the rematch UI (and a subsequent writeback)
          * looked like netplay had wiped the pad assignment. */
@@ -21430,6 +21533,14 @@ soft_return_lobby:
                 us.multitap_enabled = multitap_enabled;
                 us.has_multitap_enabled = true;
                 apply_offline_pad_count(game_players, multitap_enabled);
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+                if ((ls.jogcon_force_feedback != 0) != (psx_jogcon_ffb_player_enabled() != 0) ||
+                    us.has_jogcon_force_feedback) {
+                    us.jogcon_force_feedback = ls.jogcon_force_feedback != 0;
+                    us.has_jogcon_force_feedback = true;
+                }
+                psx_jogcon_ffb_set_player_enabled(ls.jogcon_force_feedback);
 #endif
 #if defined(RECOMP_LAUNCHER_HAS_MULTITAP_ANALOG)
                 multitap_analog = ls.multitap_analog != 0;
