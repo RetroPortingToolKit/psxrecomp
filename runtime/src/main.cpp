@@ -3603,6 +3603,9 @@ static void shutdown_runtime(void);
  * session ends but the pending launch (and its seats/signals) must survive
  * into the launcher loop that starts it. */
 static int g_ovl_launch_to_start = 0;
+/* The in-game menu asked to go back to the frontend from a local game (not a
+ * match, no pending launch): the launcher opens normally, not on the lobby. */
+static int g_ovl_frontend_from_local = 0;
 static void recomp_overlay_detach(void);  /* in-game menu host, below */
 
 /* Set when this process started netplay from the lobby room — soft-exit returns
@@ -16476,7 +16479,13 @@ void mh_video_get(PsxHostVideoSettings* out) {
 unsigned mh_restart_bits(const PsxHostVideoSettings& next) {
     std::lock_guard<std::mutex> lk(g_ovl_mu);
     const PsxHostVideoSettings now = g_ovl_video_current;
-    unsigned out = psx_host_video_restart_bits(&g_ovl_video_boot, &next);
+    /* A restart group waits only when this edit touches it (next differs from
+     * the live value) and the result differs from what the session booted
+     * with. The live internal resolution moves under dynamic resolution, so
+     * comparing with boot alone flagged edits that never touched it (an
+     * in-game texture filter change relaunched the game). */
+    unsigned out = psx_host_video_restart_bits(&g_ovl_video_boot, &next) &
+                   psx_host_video_restart_bits(&now, &next);
     /* In a netplay match only presentation applies live (psx_video_apply_live);
      * the rest waits for the next session. */
     if (g_ovl_netplay &&
@@ -16635,6 +16644,7 @@ PsxMenuHost g_menu_host = {
     nullptr, nullptr, nullptr,
 #endif
     nullptr,
+    0,
 };
 
 int ovl_sink(const void* ev, void*) { return g_ovl && g_ovl->event ? g_ovl->event(g_ovl->ctx, ev) : 0; }
@@ -16642,9 +16652,25 @@ void ovl_draw(int w, int h, void*) { if (g_ovl && g_ovl->draw) g_ovl->draw(g_ovl
 }  // namespace
 
 /* Main thread, once per GL context (windowed OpenGL only). */
+#if defined(__has_include)
+#if __has_include("recomp_ui_psx_menu.h")
+#include "recomp_ui_psx_menu.h"   /* the maintained UI's provider: the default */
+#define PSX_MENU_HAS_DEFAULT_PROVIDER 1
+#endif
+#endif
+
 static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     const char* e = std::getenv("PSX_OVERLAY");
     const PsxMenuProvider* p = psx_menu_provider();
+    g_menu_host.default_selection = 0;
+#if defined(PSX_MENU_HAS_DEFAULT_PROVIDER)
+    /* No title choice: the UI the title is built with (recomp-ui) provides the
+     * menu, and decides from default_selection what to offer by default. */
+    if (!p) {
+        p = recomp_ui_psx_menu_provider();
+        g_menu_host.default_selection = 1;
+    }
+#endif
     if (!p || g_ovl_on || !g_gl_active || g_headless || (e && *e == '0')) return;
     const std::filesystem::path dir = exe_dir_from_argv(argv0);
     g_ovl_name = title;
@@ -16660,6 +16686,23 @@ static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     psx_host_overlay_set_draw_cb(ovl_draw, nullptr);
     g_ovl_on = true;
     std::fprintf(stdout, "psxrecomp: in-game menu ready (%s)\n", p->name ? p->name : "provider");
+}
+
+/* Debug server: menu host state (provider, open, pause, capture, snapshot). */
+extern "C" int psx_debug_menu_host_json(char* out, size_t cap) {
+    PsxHostVideoSettings v;
+    mh_video_get(&v);
+    const PsxMenuProvider* p = g_ovl ? g_ovl : psx_menu_provider();
+    return std::snprintf(out, cap,
+        "\"provider\":\"%s\",\"attached\":%d,\"default_selection\":%d,\"open\":%d,"
+        "\"paused\":%d,\"pause_depth\":%d,\"ui_capture\":%d,\"netplay\":%d,"
+        "\"texture_filter\":%d,\"fmv_filter\":%d,\"present_linear\":%d,\"fullscreen\":%d,"
+        "\"render_thread\":%d,\"frame_generation\":%d,\"disc_count\":%d,\"disc_mounted\":%d",
+        p && p->name ? p->name : "", g_ovl_on ? 1 : 0, g_menu_host.default_selection,
+        ovl_open() ? 1 : 0, g_ovl_pause_held ? 1 : 0, psx_host_pause_depth(),
+        psx_host_ui_capture_active(), mh_netplay_active(), v.texture_filter, v.fmv_filter,
+        v.present_linear, v.fullscreen, v.render_thread, v.frame_generation, mh_disc_count(),
+        mh_disc_mounted());
 }
 
 /* Before the GL context goes away (session teardown), with it current: the
@@ -16762,15 +16805,26 @@ static void host_pause_service(void) {
             g_ovl_pause_wanted = 0;
             if (g_ovl_pause_held) { psx_host_pause_pop(); g_ovl_pause_held = false; }
             if (g_ovl->set_open) g_ovl->set_open(g_ovl->ctx, 0);
+            /* A lobby match start (the runtime's pending-launch exit, or the
+             * provider's own lobby view asking once its match started) keeps
+             * the launch and resumes the room; any other request from a local
+             * game is a plain return: the launcher opens as at boot. */
+            bool for_launch = false;
+#if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
+            for_launch = g_lnch_netplay_available && g_lnch_netplay_callbacks.launch_pending &&
+                         g_lnch_netplay_callbacks.launch_pending(g_lnch_netplay_callbacks.ctx);
+#endif
             if (psx_netplay_active()) {
                 netplay_soft_exit("menu_to_frontend");
             } else {
                 /* End this session and re-enter the frontend loop in-process
                  * (the netplay soft-return path); it then starts whatever the
                  * menu asked for, e.g. the lobby's match. */
-                std::fprintf(stdout, "psxrecomp: in-game menu -> frontend loop\n");
+                std::fprintf(stdout, "psxrecomp: in-game menu -> frontend loop%s\n",
+                             for_launch ? " (lobby match)" : "");
                 g_netplay_from_lobby = 1;
-                g_ovl_launch_to_start = 1;
+                g_ovl_launch_to_start = for_launch ? 1 : 0;
+                g_ovl_frontend_from_local = for_launch ? 0 : 1;
                 psx_request_return_to_lobby();
             }
             return;
@@ -21141,7 +21195,8 @@ soft_return_lobby:
          * happens; an automatch room is the server's and cannot. Leave it
          * here, and reopen the launcher on the browser instead. */
         const int rui_resume_room =
-            ae_np_leave_automatch_room_after_match() ? 0 : 1;
+            (ae_np_leave_automatch_room_after_match() || g_ovl_frontend_from_local) ? 0 : 1;
+        g_ovl_frontend_from_local = 0;
 
         ae_rui_set_sidecar_paths(argv[0]);
         g_lnch_expected_serial = game_id;

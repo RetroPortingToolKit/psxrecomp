@@ -52,7 +52,7 @@ int main() {
             assert(got.fullscreen==got.texture_filter && got.texture_filter==got.renderer &&
               got.renderer==got.frame_generation && got.frame_generation==got.supersampling &&
               got.supersampling==got.render_thread && got.render_thread==got.present_thread);
-            const auto next=values(2);
+            const auto next=values(9);   /* differs from every live and boot value */
             const unsigned restart=mh_video_apply(&next);
             assert(restart & PSX_VIDEO_RESTART_RENDERER);
             ++reads;
@@ -61,6 +61,15 @@ int main() {
     for (int i=0;i<50000;++i) { live=values(1+i%8); netplay=i%2; mh_refresh_snapshot(); }
     draw.join();
     assert(reads==50000 && wrong_thread_reads==0 && g_ovl_video_pending);
+    /* Restart bits only for groups the edit touches: when the live value has
+     * moved off boot (dynamic resolution moves the internal resolution), an
+     * edit that leaves that group at its live value asks for no restart; one
+     * that changes it does. */
+    live=values(1); live.renderer=3; g_video_boot=values(1); netplay=0; mh_refresh_snapshot();
+    PsxHostVideoSettings same=live; same.texture_filter=5;
+    assert(mh_restart_bits(same)==0);
+    PsxHostVideoSettings changed=live; changed.renderer=4;
+    assert(mh_restart_bits(changed) & PSX_VIDEO_RESTART_RENDERER);
     puts("menu video snapshot: coherent draw-thread reads and main-thread ownership PASS");
 }
 '''

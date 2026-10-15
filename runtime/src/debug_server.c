@@ -9267,6 +9267,17 @@ static void handle_host_pause(int id, const char *json)
              psx_host_pause_depth());
 }
 
+/* menu_host: in-game menu host state (psx_menu_host.h): provider, attached,
+ * open, pause, ui capture, and the video/netplay snapshot. */
+extern int psx_debug_menu_host_json(char *out, size_t cap);
+static void handle_menu_host(int id, const char *json)
+{
+    char body[768];
+    (void)json;
+    psx_debug_menu_host_json(body, sizeof body);
+    send_fmt("{\"id\":%d,\"ok\":true,%s}", id, body);
+}
+
 /* host_key name=<SDL scancode name> down=<1|0> (both when omitted). */
 extern int psx_debug_push_host_key(const char *name, int down);
 static void handle_host_key(int id, const char *json)
@@ -15952,6 +15963,7 @@ static const CmdEntry s_commands[] = {
     { "debug_key",         handle_debug_key },
     { "host_pause",        handle_host_pause },
     { "host_key",          handle_host_key },
+    { "menu_host",         handle_menu_host },
     { "host_mouse",        handle_host_mouse },
     { "scanline",          handle_scanline },
     { "ws_backdrop_ring",  handle_ws_backdrop_ring },

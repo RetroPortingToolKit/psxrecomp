@@ -25,6 +25,8 @@ extern "C" {
 #endif
 
 #define PSX_MENU_ABI_VERSION 1
+/* PsxMenuHost.default_selection is present (appended, ABI-compatible). */
+#define PSX_MENU_HOST_HAS_DEFAULT_SELECTION 1
 
 /* request_exit */
 enum {
@@ -77,6 +79,11 @@ typedef struct PsxMenuHost {
     void     (*launcher_settings_get)(struct RecompLauncherCSettings *out);
     unsigned (*launcher_settings_apply)(const struct RecompLauncherCSettings *next);
     const char *assets_dir;          /* the title's assets folder */
+    /* 1 when the runtime chose this provider because the title chose none
+     * (the UI library's default provider, recomp_ui_psx_menu.h). Such a
+     * provider keeps the title's default presentation: it may decline to
+     * attach when it would only add a menu the title did not have. */
+    int default_selection;
 } PsxMenuHost;
 
 typedef struct PsxMenuProvider {

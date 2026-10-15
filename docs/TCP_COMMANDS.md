@@ -493,9 +493,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**375 commands registered** — 362 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**376 commands registered** — 363 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-84 of 375 have prose above; **291 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+84 of 376 have prose above; **292 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -687,6 +687,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `mdec_trace` | ✓ |  |  |
 | `mdec_trace_clear` | ✓ |  |  |
 | `mem_words` | ✓ |  |  |
+| `menu_host` | ✓ |  |  |
 | `mmio_clear` | ✓ |  | ✓ |
 | `mmio_dump` | ✓ |  | ✓ |
 | `mmx6_freshfix` | ✓ |  |  |
