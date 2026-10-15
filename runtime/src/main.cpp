@@ -1284,6 +1284,23 @@ static inline int launcher_fmv_filter_to_cfg(int ls_value) {
         return PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
     return ls_value - 1;
 }
+/* Texture filtering offered to every frontend (pre-game launcher and in-game
+ * menu providers): the [video] texture_filtering enum, PSX_TEXTURE_FILTER_*.
+ * Stable world (2) is set by mods, never offered. With the catalog, frontends
+ * keep any of these values across startup and soft return instead of
+ * collapsing them to Nearest/Bilinear. */
+#if defined(RECOMP_LAUNCHER) && defined(RECOMP_LAUNCHER_HAS_TEXTURE_FILTER_CATALOG)
+static const char* const kPsxTextureFilterLabels[] = {"Nearest", "Bilinear", "xBR"};
+static const int kPsxTextureFilterValues[] = {
+    PSX_TEXTURE_FILTER_NEAREST, PSX_TEXTURE_FILTER_BILINEAR, PSX_TEXTURE_FILTER_XBR};
+static void psx_launcher_texture_filter_catalog(RecompLauncherCGameInfo* gi) {
+    gi->texture_filter_labels = kPsxTextureFilterLabels;
+    gi->texture_filter_values = kPsxTextureFilterValues;
+    gi->num_texture_filters = 3;
+}
+#elif defined(RECOMP_LAUNCHER)
+static void psx_launcher_texture_filter_catalog(RecompLauncherCGameInfo*) {}
+#endif
 static inline int cfg_fmv_filter_to_launcher(int cfg_value) {
     if (cfg_value < 0 || cfg_value >= PSXRecompV4::VIDEO_FMV_FILTER_COUNT)
         cfg_value = PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
@@ -16285,6 +16302,7 @@ namespace {
         (void)ws_offered_b;
         (void)ws_ultrawide_offered_b;
         launcher_profile_apply("psx", gi);
+        psx_launcher_texture_filter_catalog(gi);
         gi->name = game_name_c;
         gi->region = region_c;
         gi->keybinds_path =
@@ -16708,6 +16726,7 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
     if (!out) return;
     RecompLauncherCGameInfo& gi = *out;
     launcher_profile_apply("psx", &gi);
+    psx_launcher_texture_filter_catalog(&gi);
     gi.name = g_ovl_name.c_str();
     gi.keybinds_path = g_ovl_keybinds.c_str();
     gi.config_path = g_ovl_config.c_str();
