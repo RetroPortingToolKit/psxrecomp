@@ -25,8 +25,8 @@ int psx_game_mode_detect(const PsxGameModeEnv *e, const char **why) {
         *why = "gamescope session";
         return 1;
     }
-    if (on(e->steam_deck)) {
-        *why = "Steam Deck";
+    if (e->steam_gamepad_ui && strcmp(e->steam_gamepad_ui, "1") == 0) {
+        *why = "Steam gamepad session";
         return 1;
     }
     *why = "desktop";

@@ -14,12 +14,13 @@ typedef struct PsxGameModeEnv {
     const char *psx_game_mode;      /* PSX_GAME_MODE: "1" on, "0" off, NULL auto */
     const char *xdg_current_desktop;/* "gamescope" in a gamescope session */
     const char *gamescope_display;  /* GAMESCOPE_WAYLAND_DISPLAY */
-    const char *steam_deck;         /* SteamDeck=1: Steam set it for a game on a Steam Deck */
+    const char *steam_gamepad_ui;   /* SteamGamepadUI=1: the active Steam gamepad session */
     int         cli_game_mode;      /* --game-mode: 1, --no-game-mode: 0, else -1 */
 } PsxGameModeEnv;
 
 /* 1 when Game Mode applies. Precedence: the command line, then
- * PSX_GAME_MODE, then detection (a gamescope session, or SteamDeck=1). */
+ * PSX_GAME_MODE, then detection (gamescope or SteamGamepadUI=1).
+ * SteamDeck identifies hardware and also exists in Desktop Mode. */
 int psx_game_mode_detect(const PsxGameModeEnv *env, const char **why);
 
 #ifdef __cplusplus

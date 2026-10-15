@@ -10,16 +10,14 @@ the game, borderless fullscreen.
 | `--game-mode` / `--no-game-mode` | on / off (wins over everything) |
 | `PSX_GAME_MODE=1` / `=0` | on / off |
 | `XDG_CURRENT_DESKTOP` contains `gamescope`, or `GAMESCOPE_WAYLAND_DISPLAY` is set | on (detected) |
-| `SteamDeck=1` (Steam sets it for games on a Steam Deck) | on (detected) |
+| `SteamGamepadUI=1` | on (detected Steam gamepad session) |
 | none of the above | off: desktop behaviour, unchanged |
 
-Detection is an environment check, not a session check. Steam sets
-`SteamDeck=1` for every game it starts on a Deck, so a game launched through
-Steam in the Deck's **Desktop Mode** also boots straight into the game,
-fullscreen. Use `--no-game-mode` (or `PSX_GAME_MODE=0`) in the launch options
-to keep the desktop behaviour there, or `--launcher` to reach the launcher
-for one run. Started outside Steam (no `SteamDeck`, no gamescope), the game
-behaves as on any desktop.
+Detection follows the active session. `SteamDeck=1` identifies hardware and
+is also set in Desktop Mode; it does not enable Game Mode. Desktop sessions
+without gamescope or `SteamGamepadUI=1` keep their usual launcher and window
+behavior. Use `--no-game-mode` (or `PSX_GAME_MODE=0`) to disable detection, or
+`--launcher` to reach the launcher for one run.
 
 When it is on:
 
