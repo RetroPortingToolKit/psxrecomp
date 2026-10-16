@@ -2003,6 +2003,23 @@ int psx_ws_cull_sltiu(uint32_t sx, uint32_t imm) {
             < (uint32_t)((int32_t)imm + 2 * m)) ? 1 : 0;
 }
 
+/* [widescreen.cull] screen_x_sites on `sltu rd, SX, W` with W in a register:
+ * SX is a 16-bit screen X (typically `andi SX, sxy, 0xffff`), W the width the
+ * guest loaded (pair with clip_edge_x_load_sites so W already carries the right
+ * margin). The unsigned compare rejects negative X; while widened the verdict is
+ * -k*m <= (int16)SX < W, so the left band passes too. Identity at margin 0.
+ * These tests check single vertices, so a large near polygon whose corners all
+ * lie past the reveal would still drop: k = 4 margins keeps them (Kula World's
+ * level quads), while an unbounded left side lets every off-screen polygon
+ * through and overflows renderers with fixed primitive lists. */
+#define WS_SLTU_BAND_LEFT_REACH 4
+int psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound) {
+    int m = psx_ws_x_margin();
+    if (m <= 0) return sx < bound ? 1 : 0;
+    int32_t x = (int32_t)(int16_t)(uint16_t)sx;
+    return (x >= -WS_SLTU_BAND_LEFT_REACH * m && x < (int32_t)bound) ? 1 : 0;
+}
+
 /* Signed right-edge widen for the min/max funnel idiom (`slti v, minSX, W`):
  * the paired LEFT edge is a separate bltz (psx_ws_cull_bltz below), so this
  * bound moves out by ONE margin only. Operand is an already sign-extended /

@@ -203,6 +203,13 @@ int psx_ws_cull_sltiu(uint32_t sx, uint32_t imm) {
     return ((uint32_t)((int32_t)(int16_t)(uint16_t)sx + m)
             < (uint32_t)((int32_t)imm + 2 * m)) ? 1 : 0;
 }
+/* MUST stay byte-for-byte identical to gpu.c psx_ws_cull_sltu_band. */
+int psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound) {
+    int m = psx_ws_x_margin();
+    if (m <= 0) return sx < bound ? 1 : 0;
+    int32_t x = (int32_t)(int16_t)(uint16_t)sx;
+    return (x >= -4 * m && x < (int32_t)bound) ? 1 : 0;  /* WS_SLTU_BAND_LEFT_REACH */
+}
 /* Signed-funnel variants (min/max + center±halfwidth idioms). Same contract:
  * self-contained, identity at margin 0, MUST stay byte-for-byte identical to
  * the gpu.c implementations. */

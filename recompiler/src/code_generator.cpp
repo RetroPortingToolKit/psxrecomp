@@ -1445,6 +1445,13 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             return fmt::format("{} = psx_ws_cull_sltiu({}, {});"
                                " /* ws explicit screen-x cull */{}",
                                reg_name(rt), reg_name(rs), imm, comment);
+        } else if (opcode == 0x00 && (instr & 0x3Fu) == 0x2Bu && get_rd(instr) != 0) {
+            // sltu rd,SX,W: the width held in a register (often a loaded
+            // clip bound); SX is a 16-bit screen X. Accept the left band too.
+            return fmt::format("{} = psx_ws_cull_sltu_band({}, {});"
+                               " /* ws explicit screen-x band */{}",
+                               reg_name(get_rd(instr)), reg_name(get_rs(instr)),
+                               reg_name(get_rt(instr)), comment);
         } else if (opcode == 0x0F && get_rt(instr) != 0) {
             // lui rt,W: a screen edge kept in the high half of a register
             // (compared with `SX << 16`). Move it out by the live margin.
@@ -1455,7 +1462,7 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                                reg_name(rt), imm, comment);
         } else if (!config_.overlay_mode) {
             fmt::print(stderr, "ERROR: [widescreen.cull] screen_x site 0x{:08X} "
-                       "is not sltiu, lui or bltz (0x{:08X})\n", addr, instr);
+                       "is not sltiu, sltu, lui or bltz (0x{:08X})\n", addr, instr);
             std::exit(1);
         }
         // Overlay variant: the configured main-EXE PC holds different code.
@@ -3626,6 +3633,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     if (!config_.ws_cull_screen_x_sites.empty()) {
         ss << "extern uint32_t psx_ws_cull_lui_hi(uint32_t imm);          /* ws screen-x edge in the high half (gpu.c) */\n";
         ss << "extern int  psx_ws_cull_bltz_hi(uint32_t v);               /* ws cull left edge, X in the high half (gpu.c) */\n";
+        ss << "extern int  psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound); /* ws screen-x band, W in a register (gpu.c) */\n";
     }
     ss << "extern int  psx_ws_cull_vxrange(uint32_t x, uint32_t imm); /* ws masked-u16 X window */\n";
     ss << "extern int32_t psx_ws_depth_bound(int32_t imm);            /* ws aspect-scaled far bound */\n";

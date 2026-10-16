@@ -110,6 +110,7 @@ bool exits_with_failure(F&& body) {
 }
 
 constexpr uint32_t kSltiuV0 = 0x2C620200u;   // sltiu v0, v1, 0x200
+constexpr uint32_t kSltuV0 = 0x0064102Bu;    // sltu v0, v1, a0 (width in a register)
 constexpr uint32_t kLuiS6 = 0x3C160200u;     // lui   s6, 0x200
 constexpr uint32_t kLuiZero = 0x3C000200u;   // lui   zero, 0x200
 constexpr uint32_t kBltzT0 = 0x05000002u;    // bltz  t0, +2
@@ -163,6 +164,22 @@ void listed_sites_emit_the_helpers() {
               "cpu->gpr[2] = psx_ws_cull_sltiu(cpu->gpr[3], 512); "
               "/* ws explicit screen-x cull */"),
           "a screen_x site on sltiu still routes through psx_ws_cull_sltiu");
+}
+
+// sltu with the width in a register: the unsigned compare rejects negative X,
+// the band helper also accepts the left reveal.
+void listed_sltu_emits_the_band_helper() {
+    PSXRecomp::CodeGenConfig config{};
+    config.emit_comments = true;
+    check(!has(generate_first_instruction(kSltuV0, config), "psx_ws_cull_sltu_band"),
+          "an unlisted sltu stays vanilla");
+    config.ws_cull_screen_x_sites.insert(kBase);
+    check(has(generate_first_instruction(kSltuV0, config),
+              "cpu->gpr[2] = psx_ws_cull_sltu_band(cpu->gpr[3], cpu->gpr[4]); "
+              "/* ws explicit screen-x band */"),
+          "a screen_x site on sltu routes through psx_ws_cull_sltu_band");
+    check(!exits_with_failure([&] { generate_first_instruction(kSltuV0, config); }),
+          "a screen_x site on sltu generates");
 }
 
 // bltz_sites is the low-half form and keeps its meaning when an address is in
@@ -283,6 +300,7 @@ int main(int argc, char** argv) {
     }
     unlisted_instructions_stay_vanilla();
     listed_sites_emit_the_helpers();
+    listed_sltu_emits_the_band_helper();
     bltz_sites_wins_over_screen_x_sites();
     main_exe_guard_and_overlay_variants();
     declarations_only_when_the_key_is_used();

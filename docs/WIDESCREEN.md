@@ -299,13 +299,28 @@ are non-empty, so titles that do not use them keep their caches.
 
 `screen_x_sites` is the explicit form of the `auto_screen_x` compare, for a
 title whose width is not in `screen_w_imms` or whose function has no paired
-height compare. It takes three instructions:
+height compare. It takes four instructions:
 
 | Instruction at the site | While widened |
 |---|---|
 | `sltiu rt, SX, W` | `rt = -m <= SX < W + m` |
 | `lui rt, W` (a screen edge kept as `W << 16`) | `rt = (W + m) << 16`; a negative `W` moves left instead |
 | `bltz x, outside` where `x` is `SX << 16` | taken while `SX < -m` |
+| `sltu rd, SX, W` with `W` in a register | `rd = -4m <= (int16)SX < W` |
+
+The `sltu` form covers a renderer that compares a 16-bit screen X
+(`andi SX, sxy, 0xffff`) against a width it keeps in a register, typically a
+clip bound loaded from RAM. The unsigned compare rejects every negative X, so
+widening the bound (`clip_edge_x_load_sites`) only reveals the right band; the
+band helper `psx_ws_cull_sltu_band` also accepts negative X. Its left reach
+is four margins: these tests check single vertices, so a large near polygon
+whose corners all lie past one margin would still drop, while an unbounded
+left side lets every off-screen polygon through and overflows a renderer's
+fixed primitive lists (Kula World's world-10 intro stalled for 5 s). Pair it with the
+load site so `W` already carries the right margin. A bound derived from the
+loaded one (`x + r < W + 2r` bounding-sphere tests) works the same way.
+Kula World (SCES-01000) is the first user: its object, level-quad and sky
+tests use this shape, and forcing them true instead overflowed its renderer.
 
 The last two cover a renderer that keeps a screen X in the high half of a
 register (`sll x, sx, 16`), tests the sign of differences against a `lui`-held

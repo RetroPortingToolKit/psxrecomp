@@ -426,6 +426,8 @@ int32_t psx_ws_screen_x_bound(int32_t vanilla);
  * `sltiu rt, sx, 0x140/0x141` through this one helper so every overlay execution
  * path widens identically. Returns the sltiu verdict (1 = keep). 0 at 4:3. */
 int  psx_ws_cull_sltiu(uint32_t sx, uint32_t imm);
+/* screen_x_sites on `sltu rd, SX, W` (W in a register): -4m <= SX < W. */
+int  psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound);
 /* Signed-funnel variants (min/max + center±halfwidth idioms — see
  * ws_cull_detect.h): right-edge widen for `slti v, minSX, W` and left-edge
  * widen for the paired `bltz maxSX` reject. Identity at 4:3. */
