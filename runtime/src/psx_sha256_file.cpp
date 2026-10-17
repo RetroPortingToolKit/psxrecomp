@@ -86,7 +86,13 @@ bool try_native(std::ifstream& file, std::vector<uint8_t>& buffer,
 template<class Hash>
 PsxFileHashResult hash_file(const std::filesystem::path& path,
                            uint8_t out[32], Hash& native) {
-    std::ifstream file(path, std::ios::binary);
+    // Some filebuf implementations otherwise turn each 1 MiB read into many
+    // small CRT reads. Keep this separate buffer alive until after file closes.
+    std::vector<char> file_buffer(1024 * 1024);
+    std::ifstream file;
+    file.rdbuf()->pubsetbuf(file_buffer.data(),
+                          static_cast<std::streamsize>(file_buffer.size()));
+    file.open(path, std::ios::binary);
     if (!file) return PsxFileHashResult::OpenError;
     std::vector<uint8_t> buffer(1024 * 1024);
     uint8_t digest[32];
