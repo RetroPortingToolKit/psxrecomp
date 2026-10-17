@@ -6,6 +6,9 @@
 #include "mod_plugins.h"
 #include "psx_sha256.h"
 #include "psx_lobby_client.h"
+#if defined(RECOMP_LAUNCHER)
+#include "recomp_launcher.h"
+#endif
 
 #include "gpu.h"
 #include "gpu_hd_textures.h"
@@ -666,6 +669,29 @@ int main(int argc, char** argv) {
     check(PSXRecompV4::mod_runtime_initialize(
               root, "SLUS-RUNTIME", 0x80002000, {}, &error),
           error.c_str());
+#if defined(RECOMP_LAUNCHER)
+    {
+        const auto *provider=PSXRecompV4::mod_runtime_launcher_provider();
+        check(provider && provider->feature_enable && provider->feature_set_option,
+              "launcher preference provider exists before PLAY");
+        check(provider->feature_enable(provider->ctx,"runtime.test","entry-disabled",1),
+              "enable persists without preparing/committing content");
+        PSXRecompV4::ModPackageManager reopened;reopened.set_root(root);
+        check(reopened.scan(&error) && reopened.load_state(&error) &&
+              reopened.feature_enabled("runtime.test","entry-disabled"),
+              "a fresh manager sees edits after launcher closes without PLAY");
+        check(provider->feature_set_option(provider->ctx,"runtime.test","vblank-plugin","cameras","split"),
+              "option edits persist without PLAY");
+        PSXRecompV4::ModPackageManager options;options.set_root(root);
+        check(options.scan(&error) && options.load_state(&error) &&
+              options.feature_option_value("runtime.test","vblank-plugin","cameras")=="split",
+              "a fresh manager sees edited option values before PLAY");
+        check(provider->feature_set_option(provider->ctx,"runtime.test","vblank-plugin","cameras","unified"),
+              "restore fixture option");
+        check(provider->feature_enable(provider->ctx,"runtime.test","entry-disabled",0),
+              "restore disabled fixture selection");
+    }
+#endif
     const auto first_commit_timing = launch_timing_total();
     check(PSXRecompV4::mod_runtime_commit(cue_path, &error),
           "CUE and its data-track BIN must have the same mod target identity");

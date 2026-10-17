@@ -1214,6 +1214,10 @@ if(BUILD_TESTING)
         include
         ../recompiler/include
         ../recompiler/lib/toml11)
+    if(PSX_RECOMP_UI AND EXISTS "${RECOMP_UI_ROOT}/src/recomp_launcher.h")
+        target_compile_definitions(mod_runtime_test PRIVATE RECOMP_LAUNCHER=1)
+        target_include_directories(mod_runtime_test PRIVATE "${RECOMP_UI_ROOT}/src")
+    endif()
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
     psxrecomp_sha256_file(mod_runtime_test)
     # Match the runtime's stack allowance for the remaining disc/mod helpers.

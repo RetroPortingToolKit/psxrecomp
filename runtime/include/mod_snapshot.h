@@ -44,6 +44,17 @@ typedef struct PSXModSnapshotProvider {
  * or '_', without a leading/trailing '.'. Registration cannot be replaced. */
 int psx_mod_register_snapshot_provider(const char *package_id,
                                       const PSXModSnapshotProvider *provider);
+/* A native-RAM-only mod can guard a live host stack without inventing host
+ * state. New snapshots omit these guards, so enabling/disabling them does not
+ * change the layout. An optional legacy schema/validator accepts and discards
+ * the mod's former constant payload, even when it is currently disabled.
+ * This is only for stateless mods: never register mutable state this way.
+ * At most eight guards can declare legacy schemas (bounded cookie migration).
+ * legacy_version and legacy_validate must either both be present or both zero.
+ */
+int psx_mod_register_snapshot_guard(const char *package_id, int (*ready)(void),
+                                   uint32_t legacy_version,
+                                   int (*legacy_validate)(const uint8_t *, uint32_t));
 int psx_mod_snapshot_ready(void);
 
 /* Runtime serializer helpers. No active provider => capture succeeds with
@@ -55,6 +66,9 @@ int psx_mod_snapshot_ready(void);
  */
 int psx_mod_snapshot_capture(uint8_t **out_data, uint32_t *out_len);
 uint32_t psx_mod_snapshot_layout_cookie(void);
+/* Accept the current layout or a known legacy stateless-guard subset only.
+ * Exact mutable-provider IDs, schemas and payloads are still prevalidated. */
+int psx_mod_snapshot_layout_cookie_matches(uint32_t cookie);
 int psx_mod_snapshot_validate(const uint8_t *data, uint32_t len);
 void psx_mod_snapshot_read(const uint8_t *data, uint32_t len);
 

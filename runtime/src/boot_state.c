@@ -961,7 +961,9 @@ int boot_state_check_buffer(const uint8_t* file, size_t file_len,
                  (unsigned)h.magic, (unsigned)BOOT_STATE_MAGIC);
         boot_state_append_reason(reason, reason_cap, part);
     }
-    if (h.reserved != boot_state_layout_cookie()) {
+    const uint32_t non_provider_cookie = boot_state_layout_cookie() ^
+                                        psx_mod_snapshot_layout_cookie();
+    if (!psx_mod_snapshot_layout_cookie_matches(h.reserved ^ non_provider_cookie)) {
         if ((h.reserved ^ BOOT_STATE_RAM_8MB_COOKIE) == boot_state_layout_cookie()) {
             snprintf(part, sizeof(part), "main_ram=%uMiB(want %uMiB)",
                      psx_ram_8mb_active() ? 2u : 8u,

@@ -12946,8 +12946,26 @@ namespace {
      * thread and the device key. Nothing here blocks a frame except the
      * rename, which is one round trip and wants a verdict for its modal. */
     int ae_np_account_available(void*) { return rnet_account_available(); }
-    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
-    int ae_np_account_state(void*) { return rnet_account_state(); }
+    int ae_np_account_login_begin(void*) {
+        int accepted=rnet_account_login_begin();
+        std::fprintf(stderr,"netplay.account: sign-in request accepted=%d\n",accepted);
+        std::fflush(stderr);
+        return accepted;
+    }
+    int ae_np_account_state(void*) {
+        int current=rnet_account_state();
+        static int previous=-1;
+        if(current!=previous) {
+            previous=current;
+            std::fprintf(stderr,"netplay.account: state=%d\n",current);
+            if(current==RNET_ACCOUNT_FAILED) {
+                const char *error=rnet_account_error();
+                std::fprintf(stderr,"netplay.account: failure=%s\n",error?error:"");
+            }
+            std::fflush(stderr);
+        }
+        return current;
+    }
     const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
     const char* ae_np_account_username(void*) { return rnet_account_username(); }
     const char* ae_np_account_error(void*) { return rnet_account_error(); }
@@ -15016,7 +15034,7 @@ namespace {
         psx_lobby_json_str(req.c_str(), "handoff_query", op, sizeof(op));
         psx_lobby_json_str(req.c_str(), "handoff_disc", disc, sizeof(disc));
         std::string ans = "{\"v\":1,\"engine\":\"psxrecomp\",\"handoff\":1";
-        char msg[1024] = {};
+        char msg[PSX_LOBBY_START_JSON_CAP] = {};
         ae_np_refresh_bios_offer_for(settings);
         if (std::strcmp(op, "identity") == 0) {
             const std::string d = disc[0] ? std::string(disc) : initial_disc;
