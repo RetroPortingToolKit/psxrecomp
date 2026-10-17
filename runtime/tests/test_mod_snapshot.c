@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int enable_a, enable_b, ready_a = 1, writer_fails, unstable_size;
+static int enable_a, enable_b, enable_guard, ready_guard=1, ready_a = 1, writer_fails, unstable_size;
 static uint32_t size_calls, a_value = 42, b_value = 71, b_size = 4;
 static int a_reads, b_reads, a_validations, b_validations, observed;
 static const uint8_t *observed_data;
@@ -15,6 +15,7 @@ static uint32_t observed_len;
 int mod_runtime_snapshot_package_active(const char *id) {
     if (!strcmp(id, "test.a")) return enable_a;
     if (!strcmp(id, "test.b")) return enable_b;
+    if (!strcmp(id, "test.guard")) return enable_guard;
     return 0;
 }
 static uint32_t a_bytes(void) { return unstable_size ? ++size_calls : 4; }
@@ -41,6 +42,8 @@ static void b_read(const uint8_t *p, uint32_t len) {
     PstR r; pst_r_init(&r, p, len); assert(pst_r_u32(&r, &b_value)); ++b_reads;
 }
 static int a_ready(void) { return ready_a; }
+static int guard_ready(void) { return ready_guard; }
+static int guard_validate(const uint8_t *p,uint32_t len) { return p && len==1 && p[0]==1; }
 static void observe(const uint8_t *p, uint32_t len) {
     ++observed; observed_data = p; observed_len = len;
 }
@@ -133,6 +136,39 @@ int main(void) {
     psx_mod_snapshot_notify_loaded(saved, len);
     assert(observed == 1);
     free(broken); free(saved);
+    assert(!psx_mod_register_snapshot_guard("Test.guard",guard_ready,1,guard_validate));
+    assert(!psx_mod_register_snapshot_guard("test.guard",guard_ready,0,guard_validate));
+    assert(!psx_mod_register_snapshot_guard("test.guard",guard_ready,1,NULL));
+    assert(psx_mod_register_snapshot_guard("test.guard",guard_ready,1,guard_validate));
+    assert(!psx_mod_register_snapshot_guard("test.guard",guard_ready,1,guard_validate));
+    assert(!psx_mod_register_snapshot_provider("test.guard",&b));
+    enable_guard=1;ready_guard=0;
+    assert(!psx_mod_snapshot_ready());expect_capture_failure();
+    enable_guard=0;assert(psx_mod_snapshot_ready());
+    ready_guard=1;enable_guard=1;saved=capture(&len);
+    assert(!saved && !len && psx_mod_snapshot_layout_cookie()==0);
+    /* Former constant provider: accepts only its known schema/payload, even
+     * while disabled. Unknown or inactive mutable providers remain rejected. */
+    uint8_t old_guard[39]={0};
+    put_u32(old_guard,0x504e534d);put_u32(old_guard+4,1);put_u32(old_guard+8,1);
+    put_u32(old_guard+16,1);put_u32(old_guard+20,10);put_u32(old_guard+24,1);
+    memcpy(old_guard+28,"test.guard",10);old_guard[38]=1;
+    assert(psx_mod_snapshot_validate(old_guard,sizeof old_guard));
+    enable_guard=0;assert(psx_mod_snapshot_validate(old_guard,sizeof old_guard));
+    psx_mod_snapshot_read(old_guard,sizeof old_guard);
+    uint32_t old_cookie=2166136261u;
+    const char *guard_id="test.guard";
+    do {old_cookie=(old_cookie^(uint8_t)*guard_id)*16777619u;} while(*guard_id++);
+    for(unsigned i=0;i<4;++i)old_cookie=(old_cookie^(uint8_t)(1u>>(8*i)))*16777619u;
+    assert(psx_mod_snapshot_layout_cookie_matches(old_cookie));
+    assert(psx_mod_snapshot_layout_cookie_matches(0));
+    assert(!psx_mod_snapshot_layout_cookie_matches(old_cookie^123));
+    old_guard[38]=0;assert(!psx_mod_snapshot_validate(old_guard,sizeof old_guard));
+    old_guard[38]=1;old_guard[16]=2;
+    assert(!psx_mod_snapshot_validate(old_guard,sizeof old_guard));
+    old_guard[16]=1;enable_a=1;
+    assert(!psx_mod_snapshot_validate(old_guard,sizeof old_guard));
+    assert(!psx_mod_snapshot_layout_cookie_matches(old_cookie));
     puts("mod snapshot registry, framing, quiescence and observer checks passed");
     return 0;
 }
