@@ -6,6 +6,8 @@ int g_ls_replay_active = 0;
 int g_ls_mode = 0;
 int g_precise_mode = 0;
 int g_psx_call_bail = 0;
+int g_boot_state_cpu_timing_restored = 0; /* no restored boot state in this fixture */
+int psx_mod_host_output_scope(void) { return 0; } /* no host-output mod callback */
 uint32_t i_mask = 0;
 uint64_t g_guest_store_count = 0;
 uint64_t g_mmio_access_count = 0;
