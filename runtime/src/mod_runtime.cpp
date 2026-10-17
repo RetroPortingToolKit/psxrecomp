@@ -1320,6 +1320,13 @@ int mutate(Callback callback) {
         set_error(error);
         return 0;
     }
+    /* Preferences survive closing the launcher, independently of whether the
+     * selected content can be prepared or the player chooses PLAY. This saves
+     * only the selection; the running simulation keeps its committed plan. */
+    if (!state().manager.save_state(&error)) {
+        set_error(error);
+        return 0;
+    }
     if (!state().disc_path.empty())
         state().validation = state().manager.resolve(
             state().game_id, state().exe_sha256, state().disc_sha256, true);

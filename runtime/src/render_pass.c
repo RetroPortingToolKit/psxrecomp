@@ -62,7 +62,6 @@ extern int      psx_get_in_exception(void);
 extern int      psx_netplay_active(void);
 extern int      psx_netplay_is_resimulating(void);
 extern void     psx_netplay_local_view_clear(void);
-extern int      psx_netplay_local_view_shed(void);
 extern void     gpu_ws_set_local_view_scope(int on);
 extern int      psx_selfcheck_resim_active(void);
 extern int      psx_rewind_is_open(void);
@@ -370,10 +369,10 @@ static uint32_t transaction_status(int kind) {
         g_ls_mode || g_ls_replay_active)
         return PSX_MOD_RENDER_PASS_SESSION;
     if (psx_presentation_fast_forward()) return PSX_MOD_RENDER_PASS_FAST_FORWARD;
-    /* A peer behind the match catches up first: its own view is the first
-     * thing to go (presentation only), like any other fast-forward. */
-    if (kind == 2 && psx_netplay_local_view_shed())
-        return PSX_MOD_RENDER_PASS_FAST_FORWARD;
+    /* A local view selects the player's camera and HUD. Refusing only that
+     * redraw during catch-up exposes the canonical peer's image. Any load
+     * shedding must skip a whole presentation, preserving the last displayed
+     * local image, rather than substitute the shared frame here. */
     gl = kind == 2 ? gl_renderer_local_view_unavailable()
        : kind == 1 ? gl_renderer_stereo_unavailable() : gl_renderer_pass_unavailable();
     if (gl != PSX_MOD_RENDER_PASS_READY) return gl;

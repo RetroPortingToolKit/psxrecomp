@@ -5,7 +5,7 @@
 #include "test_boot_state_handoff.c"
 #undef main
 
-static int packages_active, providers_ready = 1, writes_fail;
+static int packages_active, guard_active, providers_ready = 1, writes_fail;
 static uint32_t a_value = 42, b_value = 71;
 static int a_reads, b_reads, observers;
 static CPUState *restoring_cpu;
@@ -20,8 +20,10 @@ static int refuse_restored_pc(uint32_t pc) {
 }
 
 int mod_runtime_snapshot_package_active(const char *id) {
+    if(!strcmp(id,"test.guard"))return guard_active;
     return packages_active && (!strcmp(id,"test.a") || !strcmp(id,"test.b"));
 }
+static int guard_validate(const uint8_t *p,uint32_t len) {return p&&len==1&&p[0]==1;}
 static uint32_t a_bytes(void) { return 4; }
 static uint32_t b_bytes(void) { return 1024; } /* Large enough to exercise zlib. */
 static int provider_write(uint8_t *out, uint32_t len, uint32_t value) {
@@ -74,6 +76,31 @@ int main(void) {
     cpu.pc=0x80050044;
     assert(boot_state_save_buffer_raw(&cpu,123,0x801b0000,&legacy,&legacy_len));
     assert(legacy[4]==9);
+    assert(psx_mod_register_snapshot_guard("test.guard",NULL,1,guard_validate));
+    for(unsigned enabled=0;enabled<2;++enabled) {
+        guard_active=enabled;
+        assert(boot_state_load_buffer(legacy,legacy_len,123,0x801b0000,&cpu));
+    }
+    /* Import an actual old-format host section and its layout cookie, without
+     * retaining the constant provider in new saves. Corrupt imports stay atomic. */
+    uint8_t *old=malloc(legacy_len+55);assert(old);memcpy(old,legacy,legacy_len);
+    uint8_t *section=old+legacy_len,*payload=section+16;
+    memset(section,0,55);u32(section,BS_SEC_MOD_HOST);u32(section+8,39);
+    u32(payload,0x504e534du);u32(payload+4,1);u32(payload+8,1);
+    u32(payload+16,1);u32(payload+20,10);u32(payload+24,1);
+    memcpy(payload+28,"test.guard",10);payload[38]=1;
+    u32(old+4,10);u32(old+28,test_u32(old+28)+1);
+    uint32_t guard_cookie=2166136261u;const char *id="test.guard";
+    do {guard_cookie=(guard_cookie^(uint8_t)*id)*16777619u;}while(*id++);
+    for(unsigned i=0;i<4;++i)guard_cookie=(guard_cookie^(uint8_t)(1u>>(8*i)))*16777619u;
+    u32(old+32,test_u32(legacy+32)^guard_cookie);
+    for(unsigned enabled=0;enabled<2;++enabled) {
+        guard_active=enabled;cpu.pc=0;
+        assert(boot_state_load_buffer(old,legacy_len+55,123,0x801b0000,&cpu));
+        assert(cpu.pc==0x80050044);
+        payload[38]=0;assert_refused_untouched(old,legacy_len+55,&cpu);payload[38]=1;
+    }
+    free(old);
     assert(psx_mod_register_snapshot_provider("test.b",&b));
     assert(psx_mod_register_snapshot_provider("test.a",&a));
     assert(psx_mod_register_snapshot_loaded_observer("test.a",observe));

@@ -12946,8 +12946,26 @@ namespace {
      * thread and the device key. Nothing here blocks a frame except the
      * rename, which is one round trip and wants a verdict for its modal. */
     int ae_np_account_available(void*) { return rnet_account_available(); }
-    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
-    int ae_np_account_state(void*) { return rnet_account_state(); }
+    int ae_np_account_login_begin(void*) {
+        int accepted=rnet_account_login_begin();
+        std::fprintf(stderr,"netplay.account: sign-in request accepted=%d\n",accepted);
+        std::fflush(stderr);
+        return accepted;
+    }
+    int ae_np_account_state(void*) {
+        int current=rnet_account_state();
+        static int previous=-1;
+        if(current!=previous) {
+            previous=current;
+            std::fprintf(stderr,"netplay.account: state=%d\n",current);
+            if(current==RNET_ACCOUNT_FAILED) {
+                const char *error=rnet_account_error();
+                std::fprintf(stderr,"netplay.account: failure=%s\n",error?error:"");
+            }
+            std::fflush(stderr);
+        }
+        return current;
+    }
     const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
     const char* ae_np_account_username(void*) { return rnet_account_username(); }
     const char* ae_np_account_error(void*) { return rnet_account_error(); }
