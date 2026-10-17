@@ -1403,7 +1403,8 @@ static void pad_process_byte(uint8_t tx_byte) {
          * normal mode ID (0x41 digital / 0x73 DualShock / 0xE3 JogCon). */
         const uint8_t cur_id = pad_protocol_id(lp);
         /* A plain digital controller (SCPH-1080) answers ONLY the 0x42 poll; it
-         * ignores every config-mode command (returns hi-z, no ACK). A driver
+         * rejects config commands without ACK or further reply; the ID has
+         * already shifted out during the command byte. A driver
          * that probes with 0x43 to detect a DualShock then classifies it as
          * digital-only and just polls. Gate all config branches on this so a
          * digital-mode pad behaves like real hardware (see pad_supports_config). */
@@ -1582,13 +1583,18 @@ static void pad_process_byte(uint8_t tx_byte) {
             sio_rx_data = pad_response[0];
             sio_stat |= SIO_STAT_ACK;
         } else {
-            /* Unknown command, or a config command issued OUTSIDE config mode:
-             * a real pad does not respond — return hi-z and end the transaction. */
+            /* Unsupported command: end the transaction without ACK. A plain
+             * digital pad still returns the ID shifted during this byte. */
             pad_state = PAD_IDLE;
             pad_response_len = 0;
             pad_response_idx = 0;
             pad_current_cmd = 0;
-            sio_rx_data = 0xFF;
+            /* A plain digital pad has already shifted its ID while receiving
+             * the command. Unsupported commands terminate without ACK, but
+             * cannot replace that byte with hi-z. Config-capable devices and
+             * multitap transactions retain their own command behavior. */
+            sio_rx_data = (!ds && pad_analog[lp] == SIO_PAD_DIGITAL &&
+                           !selected_is_mtap_port()) ? cur_id : 0xFF;
         }
         }
         break;

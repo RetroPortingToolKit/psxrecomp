@@ -731,6 +731,27 @@ if(BUILD_TESTING)
 
     # Standalone serial-pad protocol tests use explicit SIO/device stubs; they
     # cover both DualShock rumble and JogCon wire/state behavior.
+    add_executable(sio_digital_command_test
+        tests/test_sio_digital_command.c
+        src/sio.c)
+    target_include_directories(sio_digital_command_test PRIVATE include)
+    add_test(NAME sio_digital_command_test COMMAND sio_digital_command_test)
+    add_executable(sio_digital_command_multitap_test
+        tests/test_sio_digital_command.c
+        src/sio.c)
+    target_include_directories(sio_digital_command_multitap_test PRIVATE include)
+    target_compile_definitions(sio_digital_command_multitap_test PRIVATE
+        PSX_MAX_PLAYERS=5)
+    add_test(NAME sio_digital_command_multitap_test
+             COMMAND sio_digital_command_multitap_test)
+    add_executable(sio_digital_command_dual_multitap_test
+        tests/test_sio_digital_command.c
+        src/sio.c)
+    target_include_directories(sio_digital_command_dual_multitap_test PRIVATE include)
+    target_compile_definitions(sio_digital_command_dual_multitap_test PRIVATE
+        PSX_MAX_PLAYERS=8)
+    add_test(NAME sio_digital_command_dual_multitap_test
+             COMMAND sio_digital_command_dual_multitap_test)
     add_executable(sio_dualshock_rumble_test
         tests/test_sio_dualshock_rumble.c
         src/sio.c)
