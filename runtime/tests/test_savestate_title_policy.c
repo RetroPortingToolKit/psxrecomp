@@ -5,6 +5,9 @@
 
 static int refusals;
 static char refusal_reason[128];
+static int snapshot_ready = 1;
+static int context_safe = 1;
+int psx_mod_snapshot_ready(void) { return snapshot_ready; }
 void psx_frontend_on_savestate_refused(int load, int slot, const char* reason) {
     (void)load; (void)slot;
     ++refusals;
@@ -19,7 +22,7 @@ uint32_t psx_last_irq_check_pc(void) { return 0; }
 uint32_t psx_compiled_irq_resume_pc(void) { return 0; }
 uint32_t psx_irq_resume_context_snapshot_pc(void) { return 0; }
 uint32_t psx_netplay_rb_sticky_bb_pc(void) { return 0; }
-int psx_irq_resume_context_snapshot_safe_at(uint32_t pc) { (void)pc; return 1; }
+int psx_irq_resume_context_snapshot_safe_at(uint32_t pc) { (void)pc; return context_safe; }
 int psx_irq_resume_context_snapshot_site(void) { return 0; }
 void interrupts_resync_after_restore(void) { assert(0); }
 void psx_cycles_resync_after_restore(struct CPUState* cpu) { (void)cpu; assert(0); }
@@ -30,17 +33,28 @@ void psx_frontend_on_savestate_notify(int load, int slot, int ok) {
     (void)load; (void)slot; (void)ok; assert(0);
 }
 void gpu_get_display_info(GpuDisplayInfo* out) { (void)out; assert(0); }
+int gpu_hd_textures_residency_save(uint8_t **data, size_t *size) {
+    (void)data; (void)size; assert(0); return 0;
+}
+int gpu_hd_textures_residency_load(const uint8_t *data, size_t size) {
+    (void)data; (void)size; assert(0); return 0;
+}
 uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* out, uint32_t x, uint32_t y) {
     (void)out; (void)x; (void)y; assert(0); return 0;
 }
 int boot_state_save(const CPUState* cpu, uint32_t bios, uint32_t entry, const char* path) {
     (void)cpu; (void)bios; (void)entry; (void)path; assert(0); return 0;
 }
-int boot_state_load(const char* path, uint32_t bios, uint32_t entry, CPUState* cpu) {
-    (void)path; (void)bios; (void)entry; (void)cpu; assert(0); return 0;
+int boot_state_load_checked(const char* path, uint32_t bios, uint32_t entry,
+                           CPUState* cpu, BootStateResumeAccept accept) {
+    (void)path; (void)bios; (void)entry; (void)cpu; (void)accept; assert(0); return 0;
 }
-int boot_state_load_buffer(const uint8_t* data, size_t size, uint32_t bios,
-                            uint32_t entry, CPUState* cpu) {
+int boot_state_load_buffer_checked(const uint8_t* data, size_t size, uint32_t bios,
+                            uint32_t entry, CPUState* cpu, BootStateResumeAccept accept) {
+    (void)data; (void)size; (void)bios; (void)entry; (void)cpu; (void)accept; assert(0); return 0;
+}
+int boot_state_load_buffer_quiet(const uint8_t* data, size_t size, uint32_t bios,
+                                 uint32_t entry, CPUState* cpu) {
     (void)data; (void)size; (void)bios; (void)entry; (void)cpu; assert(0); return 0;
 }
 int boot_state_save_buffer_raw(const CPUState* cpu, uint32_t bios, uint32_t entry,
@@ -63,6 +77,14 @@ int main(void) {
     s_configured = 1; /* No configure/filesystem needed to test request staging. */
     assert(!savestate_title_blocked());
     assert(savestate_request_save(2) && savestate_pending());
+    snapshot_ready = 0;
+    savestate_poll(&cpu, 0x80010000); /* Defer without touching the serializer. */
+    assert(savestate_pending() && s_save_pending == 2);
+    snapshot_ready = 1;
+    context_safe = 0;
+    savestate_poll(&cpu, 0x80010000);
+    assert(s_save_pending == 2 && savestate_pending());
+    context_safe = 1;
     savestate_set_title_blocked(1);
     assert(savestate_title_blocked() && !savestate_pending());
     assert(savestate_take_save_failed());
@@ -76,6 +98,14 @@ int main(void) {
     savestate_set_title_blocked(0);
     assert(savestate_request_load_blob_protocol(&blob, 1));
     assert(s_load_blob && s_load_blob_len == 1 && savestate_pending());
+    snapshot_ready = 0;
+    savestate_poll(&cpu, 0x80010000);
+    assert(s_load_blob && s_load_blob_len == 1 && savestate_pending());
+    snapshot_ready = 1;
+    context_safe = 0;
+    savestate_poll(&cpu, 0x80010000);
+    assert(s_load_blob && s_load_blob_len == 1 && savestate_pending());
+    context_safe = 1;
     savestate_set_title_blocked(1);
     assert(!s_load_blob && s_load_blob_len == 0 && !savestate_pending());
     assert(savestate_take_load_failed());

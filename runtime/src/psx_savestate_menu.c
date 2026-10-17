@@ -57,6 +57,7 @@ static const uint8_t FONT8[59][8] = {
 static int s_open;
 static int s_selected;
 static int s_dirty = 1;
+static char s_unavailable[96];
 static uint32_t s_panel[SSM_W * SSM_H];
 static uint32_t s_thumbs[SAVESTATE_SLOTS][SAVESTATE_THUMB_W * SAVESTATE_THUMB_H];
 static int s_have_thumb[SAVESTATE_SLOTS];
@@ -279,13 +280,14 @@ static void rasterize_panel(void)
     draw_psx_button(s_panel, 32, 424, 'd');
     draw_text(s_panel, 56, 428, "SLOT", 0xFFE2E5EBu, 1);
     draw_psx_button(s_panel, 132, 424, 'x');
-    draw_text(s_panel, 156, 428, "LOAD", 0xFFE2E5EBu, 1);
+    draw_text(s_panel, 156, 428, "LOAD", s_unavailable[0] ? 0xFF707887u : 0xFFE2E5EBu, 1);
     draw_psx_button(s_panel, 230, 424, 's');
-    draw_text(s_panel, 254, 428, "SAVE", 0xFFE2E5EBu, 1);
+    draw_text(s_panel, 254, 428, "SAVE", s_unavailable[0] ? 0xFF707887u : 0xFFE2E5EBu, 1);
     draw_psx_button(s_panel, 328, 424, 'o');
     draw_text(s_panel, 352, 428, "BACK", 0xFFE2E5EBu, 1);
-    draw_text(s_panel, 32, 454, "KEYS: ARROWS SLOT  ENTER/L LOAD  SHIFT+ENTER/S SAVE  ESC BACK",
-              0xFFB8BDC8u, 1);
+    draw_text(s_panel, 32, 454, s_unavailable[0] ? s_unavailable :
+              "KEYS: ARROWS SLOT  ENTER/L LOAD  SHIFT+ENTER/S SAVE  ESC BACK",
+              s_unavailable[0] ? 0xFFFFD24Du : 0xFFB8BDC8u, 1);
     s_dirty = 0;
 }
 
@@ -297,6 +299,21 @@ void psx_savestate_menu_set_state(int open, int selected_slot)
         s_dirty = 1;
     s_open = open ? 1 : 0;
     s_selected = selected_slot;
+}
+
+void psx_savestate_menu_set_unavailable(const char *reason)
+{
+    const char *text = reason ? reason : "";
+    if (!strcmp(s_unavailable, text)) return;
+    snprintf(s_unavailable, sizeof(s_unavailable), "%s", text);
+    s_dirty = 1;
+}
+
+void psx_savestate_menu_get_state(int *open, int *selected_slot, int *unavailable)
+{
+    if (open) *open = s_open;
+    if (selected_slot) *selected_slot = s_selected;
+    if (unavailable) *unavailable = s_unavailable[0] != '\0';
 }
 
 void psx_savestate_menu_note_slots_changed(void)

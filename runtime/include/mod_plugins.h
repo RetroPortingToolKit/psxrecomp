@@ -123,6 +123,10 @@ int psx_mod_texture_banks_supported(void);
 int psx_mod_define_texture_bank(uint16_t id, uint32_t width, uint32_t height,
                                 const uint16_t* pixels);
 void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver);
+/* Forget only the caller's owned ID range when restoring a timeline. Pending
+ * GL submissions are drained first; a registered resolver can rebuild saved
+ * IDs before drawing. Never use this from inside a bank resolver. */
+int psx_mod_forget_texture_bank_range(uint16_t first, uint32_t count);
 /* Default-off GL optimization: batch immutable-bank semi triangles in painter
  * order on the single-pass dual-source path only. Ordinary VRAM, subtractive
  * blending and destination-mask checks retain per-primitive isolation. Call
@@ -208,6 +212,8 @@ int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
  * into or expand the 512 KiB hardware RAM. Bind before the original driver
  * queues a voice; the bank is latched when its next KEYON reaches the SPU. */
 int psx_mod_spu_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
+/* Immutable banks prepared before hardware init must bind after this changes. */
+uint32_t psx_mod_spu_sample_bank_epoch(void);
 int psx_mod_spu_bind_voice_bank(unsigned voice, uint32_t bank);
 int psx_mod_spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
 void psx_mod_spu_private_voice_stop(uint32_t mask);

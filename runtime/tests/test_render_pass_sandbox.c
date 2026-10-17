@@ -72,6 +72,7 @@ int      g_dma_cur_ch = -1;
 uint32_t g_dma_cur_madr = 0, g_dma_cur_bcr = 0, g_dma_initiator_pc = 0;
 int      g_dirty_interp_active = 0;
 int      g_exec_phase = 0;
+int      g_boot_state_cpu_timing_restored = 0;
 uint32_t g_dirty_safe_resume_pc = 0;
 
 /* ---- memory and the MMIO devices a pass may reach ----------------------- */
@@ -798,9 +799,12 @@ static void test_local_view(void) {
           "no local view while resimulating");
     s_resim = 0;
     s_view_shed = 1;
-    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_FAST_FORWARD &&
-          !psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
-          "a peer behind the match sheds its own view first");
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_READY,
+          "catch-up pressure cannot replace the local seat with the shared view");
+    CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
+          "independent view commits while the peer is behind");
+    CHECK(cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "catch-up redraw preserves the authoritative guest state");
     s_view_shed = 0;
     s_local_status = PSX_MOD_RENDER_PASS_BACKEND;
     CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_BACKEND &&
@@ -811,8 +815,8 @@ static void test_local_view(void) {
     CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
           "local view committed");
     render_pass_get_stats(&st);
-    CHECK(st.local_views == 1 && s_local_kept == 1 && s_open_passes == 0 &&
-          st.passes == 0, "one kept local image, transaction closed");
+    CHECK(st.local_views == 2 && s_local_kept == 2 && s_open_passes == 0 &&
+          st.passes == 0, "both local images kept, transactions closed");
     CHECK(s_crop_clears == 1, "the committed image cancels the crop request");
     CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0,
           "own-view scope closed after the local view");

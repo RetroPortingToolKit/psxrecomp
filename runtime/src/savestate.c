@@ -8,6 +8,7 @@
 
 #include "savestate.h"
 #include "mod_netplay.h"
+#include "mod_snapshot.h"
 #include "boot_state.h"
 #include "cdrom.h"
 #include "gpu.h"
@@ -887,6 +888,10 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
     if (s_save_pending < 0 && s_load_pending < 0) return;   /* hot path: nothing staged */
     extern int psx_mod_function_entry_active(void);
     if (psx_mod_function_entry_active()) return;
+    /* A title may temporarily project another actor into guest globals.
+     * Its C callback cannot be resumed by loading a block-leader PC. Keep
+     * both requests pending until the title restores the canonical context. */
+    if (!psx_mod_snapshot_ready()) return;
 
     if (s_save_pending >= 0) {
         int slot = s_save_pending;
@@ -979,6 +984,11 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
     }
 
     if (s_load_pending >= 0) {
+        /* The provider and function-entry guards do not cover every guest
+         * adapter stack. Wait until the shared continuation context can be
+         * abandoned safely before consuming a pending restore. */
+        const uint32_t pc = savestate_resolve_resume_pc(cpu, resume_pc);
+        if (!psx_irq_resume_context_snapshot_safe_at(pc)) return;
         int slot = s_load_pending;
         int loaded = 0;
 #if defined(PSX_HAS_RECOMP_NET)
@@ -1005,10 +1015,16 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
         savestate_load_trace("before_apply", load_trace_generation, slot,
                              load_trace_source, cpu);
 #endif
-        if (s_load_blob && s_load_blob_len > 0) {
+        if (!have_rollback) {
+            clear_load_blob();
+            s_load_failed = 1;
+            fprintf(stderr, "savestate: LOAD FAILED slot %d (cannot capture rollback)\n", slot);
+            psx_frontend_on_savestate_notify(1, slot, 0);
+        } else if (s_load_blob && s_load_blob_len > 0) {
             const size_t blob_len = s_load_blob_len;
-            loaded = boot_state_load_buffer(s_load_blob, blob_len,
-                                            s_bios_checksum, s_entry_pc, cpu);
+            loaded = boot_state_load_buffer_checked(s_load_blob, blob_len,
+                                            s_bios_checksum, s_entry_pc, cpu,
+                                            savestate_resume_pc_ok);
             clear_load_blob();
             if (!loaded) {
                 fprintf(stderr,
@@ -1018,7 +1034,8 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                 psx_frontend_on_savestate_notify(1, slot, 0);
             }
         } else if (savestate_slot_path(slot, path, sizeof(path))) {
-            loaded = boot_state_load(path, s_bios_checksum, s_entry_pc, cpu);
+            loaded = boot_state_load_checked(path, s_bios_checksum, s_entry_pc,
+                                             cpu, savestate_resume_pc_ok);
             if (!loaded) {
                 fprintf(stderr,
                         "savestate: LOAD FAILED slot %d %s\n",
@@ -1031,20 +1048,11 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             s_load_failed = 1;
             psx_frontend_on_savestate_notify(1, slot, 0);
         }
-        if (loaded && !savestate_resume_pc_ok(cpu->pc)) {
-            fprintf(stderr,
-                    "savestate: LOAD FAILED slot %d — resume pc=0x%08X "
-                    "(null/undispatchable)%s\n",
-                    slot, (unsigned)cpu->pc, path[0] ? "" : " [blob]");
-            loaded = 0;
-            s_load_failed = 1;
-            /* Restoring this build's own just-written state cannot fail short
-             * of allocation failure; s_load_failed already reports the load. */
-            if (have_rollback)
-                (void)boot_state_load_buffer(rollback, rollback_len,
-                                             s_bios_checksum, s_entry_pc, cpu);
-            psx_frontend_on_savestate_notify(1, slot, 0);
-        }
+        /* A post-apply resume-PC refusal has not notified observers. Restore
+         * the original machine silently, without splitting its input stream. */
+        if (!loaded && have_rollback)
+            (void)boot_state_load_buffer_quiet(rollback, rollback_len,
+                                              s_bios_checksum, s_entry_pc, cpu);
 #if defined(PSX_HAS_RECOMP_NET)
         if (loaded)
             savestate_load_trace("after_restore", load_trace_generation, slot,

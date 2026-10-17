@@ -23,6 +23,18 @@ There are **two live** servers, both implementing this protocol with overlapping
 
 The `debug_client.py` CLI can target either, or `compare` two at once to diff state live — that's how divergence hunts work.
 
+For hidden host-menu tests, send `set_input` with `layer="host"` and active-low
+PSX buttons. Default Select+R1 opens F7 (`0xF7FE`), Square saves (`0x7FFF`),
+Cross loads (`0xBFFF`), and Circle goes back (`0xDFFF`). Directional buttons
+select slots. Neutral `0xFFFF` releases each action. These controls use the
+player's configured PSX bindings; raw controller A/B/X do not override remaps.
+Keyboard controls remain arrows for selection, S or Shift+Enter for Save,
+L or Enter for Load, and Escape for Back. A title's save-state restriction is
+displayed in the menu and still enforced. Default Select+R3 (`0xFFFA`) opens
+rewind when enabled and supported; Left/Right select, Cross accepts, Circle
+cancels. `overlay_status` and `overlay_image` inspect these actual panels
+while the guest is paused.
+
 ```bash
 python tools/debug_client.py <cmd> [args]           # native (port 4370)
 python tools/debug_client.py --port 4380 <cmd>      # psx-beetle
@@ -87,6 +99,8 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `set_input` | ✓ | ✓ | `buttons`, optional `frames`, optional `lx`, `ly`, `rx`, `ry`, `pad_type`, optional `port` | Override pad1 buttons and optional analog axes (PS1 inverted bitmask, 0 = pressed; axes 0-255). Debug builds also accept `pad_type` (0 digital, 1 DualShock, 2 JogCon) to test an emulated device identity. Holds until `clear_input` on both backends; pass `frames=N` (beetle) to auto-release after N frames. Runtime: `layer="host"` instead arms a virtual P1 gamepad (`buttons`, `lx`..`ry`, `lt`/`rt` 0-255) that feeds the normal offline input path (controller source, title pad transform, trigger values) and host shortcut polling, also headless; a plain override still wins while armed; `clear_input` disarms it. `port=2` (psx-runtime) drives pad 2 instead (digital buttons; plugs a digital pad into port 2 while driven) for headless two-player modes; `press` takes `port` too |
 | `clear_input` | ✓ | ✓ | optional `port` | Remove input and analog axis overrides (`port` 1 or 2 clears one port; default both) |
 | `rewind_status` | ✓ |   | — | Local Rewind: `enabled`, `open`, `title_blocked` (`psx_mod_set_rewind_blocked`) and `snaps` held in the ring |
+| `overlay_status` | ✓ |   | — | Actual host menu state: `save_menu_open`, zero-based `save_slot`, `save_unavailable`, `rewind_open`, and `rewind_blocked`. Available while the F7 menu pauses the guest |
+| `overlay_image` | ✓ |   | `panel`, `path` | Export the open host overlay bitmap as a PNG. `panel` is `save_states` or `rewind`; closed panels return an error. Uses the actual rasterized menu, so hidden tests can inspect labels without desktop focus |
 | `snapshot_status` | ✓ |   | — | Shared save/rewind capture guards: `callback_active`, `host_call_depth`, resume `site`/`pc`, and `safe`. A busy boundary can legitimately report unsafe; use `savestate_status` to check whether a requested operation completed |
 | `turbo` | ✓ |   | `enabled` | Enable/disable TCP-controlled frontend turbo for fast-forward validation |
 | `turbo_state` | ✓ |   | — | Query TCP-controlled turbo state |
@@ -754,6 +768,8 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `restore_trace_clear` | ✓ |  |  |
 | `restore_trace_window` | ✓ |  |  |
 | `rewind_status` | ✓ |  | ✓ |
+| `overlay_status` | ✓ |  | ✓ |
+| `overlay_image` | ✓ |  | ✓ |
 | `rtrace_arm` | ✓ | ✓ |  |
 | `rtrace_clear` | ✓ |  |  |
 | `rtrace_disarm` |  | ✓ |  |

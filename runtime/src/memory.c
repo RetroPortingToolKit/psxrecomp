@@ -1932,6 +1932,20 @@ void render_pass_mod_arenas_rollback(void) {
     s_rp_mod_lossy = 0;
 }
 
+int psx_mod_memory_reset_session(void) {
+    if (g_psx_render_pass_active) return 0;
+    /* An interrupted previous draw can leave journal pages behind. Retire
+     * them before reusing their addresses, so a future pass cannot restore
+     * the previous session's primitives over its replacement allocations. */
+    render_pass_mod_arenas_rollback();
+    memset(s_rp_mod_bits, 0, sizeof s_rp_mod_bits);
+    memset(mod_memory, 0, sizeof mod_memory);
+    memset(mod_gpu_dma_memory, 0, sizeof mod_gpu_dma_memory);
+    mod_memory_used = mod_gpu_dma_memory_used = 0;
+    g_render_pass_mod_pages = 0;
+    return 1;
+}
+
 /* FNV-1a over the used part of both arenas (PSX_RENDER_PASS_VERIFY). */
 uint64_t render_pass_mod_arenas_hash(void) {
     uint64_t h = 1469598103934665603ULL;

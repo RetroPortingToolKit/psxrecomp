@@ -156,6 +156,8 @@ const uint8_t* spu_get_ram(void);
  * Bank addresses are byte offsets (the voice registers still use /8 units).
  * Both active and pending bindings are part of the SPU snapshot wire. */
 int spu_register_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
+/* Host residency generation; zero before init, changes when banks are freed. */
+uint32_t spu_sample_bank_epoch(void);
 int spu_bind_next_voice_bank(unsigned voice, uint32_t bank);
 /* Optional title-owned voices, independent of all 24 hardware channels.
  * Register order is VOL_L, VOL_R, PITCH, START, ADSR_LO, ADSR_HI, ENV, LOOP.

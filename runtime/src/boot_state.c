@@ -2,6 +2,7 @@
 #include "execution_profile.h"
 #include "fntrace.h"
 #include "mod_memory.h"
+#include "mod_snapshot.h"
 #include "overlay_api.h"   /* PSX_OVERLAY_CODEGEN_HASH / _ABI_TAG / _CODEGEN_VER */
 
 /* Build-selected HLE may use private execution boundaries. Zero preserves
@@ -95,14 +96,15 @@ extern int      sio_snapshot_validate(const uint8_t* p, uint32_t len);
 extern int      mdec_snapshot_validate(const uint8_t* p, uint32_t len);
 
 /* Header compatibility cookie (h.reserved): enhancement-memory layout, live
- * RAM geometry and the fixed execution implementation. Reject incompatible
- * snapshots in the header, before any section changes the live machine. */
+ * RAM geometry, execution implementation and enabled host-provider schemas.
+ * Reject incompatible snapshots before any section changes the live machine. */
 #define BOOT_STATE_RAM_8MB_COOKIE 0x384D4252u  /* "RBM8" */
 static uint32_t boot_state_ram_cookie(void) {
     return psx_ram_8mb_active() ? BOOT_STATE_RAM_8MB_COOKIE : 0u;
 }
 static uint32_t boot_state_layout_cookie(void) {
-    return psx_mod_memory_layout_cookie() ^ boot_state_ram_cookie() ^ PSX_EXECUTION_COOKIE;
+    return psx_mod_memory_layout_cookie() ^ boot_state_ram_cookie() ^ PSX_EXECUTION_COOKIE ^
+           psx_mod_snapshot_layout_cookie();
 }
 
 /* CPU regs wire: 32+3+32+32+32 LE u32 = 131 * 4 = 524 bytes (no padding). */
@@ -405,10 +407,13 @@ static int write_vram_section_full(BsOut *o)
 static int boot_state_save_to(BsOut* o, const CPUState* cpu,
                               uint32_t bios_checksum, uint32_t entry_pc) {
     BootStateHeader h;
+    uint8_t *host_state = NULL;
+    uint32_t host_bytes = 0;
     int ok;
+    if (!psx_mod_snapshot_ready()) return 0;
     memset(&h, 0, sizeof h);
     h.magic         = BOOT_STATE_MAGIC;
-    h.version       = BOOT_STATE_VERSION;
+    h.version       = BOOT_STATE_VERSION_WITHOUT_HOST;
     h.reserved      = boot_state_layout_cookie();
     h.bios_checksum = bios_checksum;
     h.entry_pc      = entry_pc;
@@ -435,6 +440,14 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
      * SPU access asks; between those it lags the clock by a path-dependent
      * amount (live pumps at VBlank, rollback replay suppresses output). */
     { extern void spu_catch_up(void); spu_catch_up(); }
+
+    /* Measure/write/validate the complete host payload before emitting any
+     * section. Failed providers cannot leave a usable partial snapshot. */
+    if (!psx_mod_snapshot_capture(&host_state, &host_bytes)) return 0;
+    if (host_bytes) {
+        h.version = BOOT_STATE_VERSION;
+        ++h.section_count;
+    }
 
     ok = write_header_le(o, &h);
 
@@ -568,12 +581,15 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
         ok = pst_w_u32(&w, g[0]) && pst_w_u32(&w, g[1]) && pst_w_u32(&w, g[2]) &&
              write_section(o, BS_SEC_GCS, gb, sizeof gb);
     }
+    if (ok && host_bytes) ok = write_section(o, BS_SEC_MOD_HOST, host_state, host_bytes);
+    free(host_state);
     return ok;
 }
 
 int boot_state_save(const CPUState* cpu, uint32_t bios_checksum,
                     uint32_t entry_pc, const char* path) {
     BsOut o;
+    if (!psx_mod_snapshot_ready()) return 0;
     FILE* f = fopen(path, "wb");
     int ok;
     if (!f) return 0;
@@ -870,6 +886,7 @@ static int validate_section(uint32_t tag, const uint8_t* p, uint32_t len) {
     case BS_SEC_DIRTY:  return len % 4u == 0u &&
                                len / 4u <= dirty_ram_get_bitmap_word_count();
     case BS_SEC_MODMEM: return psx_mod_memory_snapshot_validate(p, len);
+    case BS_SEC_MOD_HOST: return psx_mod_snapshot_validate(p, len);
     case BS_SEC_GAME_START:
         return len == 4u && p[0] <= 1u && !p[1] && !p[2] && !p[3];
     case BS_SEC_ICACHE: return len == 1024u * 4u;
@@ -944,14 +961,16 @@ int boot_state_check_buffer(const uint8_t* file, size_t file_len,
                  (unsigned)h.magic, (unsigned)BOOT_STATE_MAGIC);
         boot_state_append_reason(reason, reason_cap, part);
     }
-    if (h.reserved != boot_state_layout_cookie()) {
+    const uint32_t non_provider_cookie = boot_state_layout_cookie() ^
+                                        psx_mod_snapshot_layout_cookie();
+    if (!psx_mod_snapshot_layout_cookie_matches(h.reserved ^ non_provider_cookie)) {
         if ((h.reserved ^ BOOT_STATE_RAM_8MB_COOKIE) == boot_state_layout_cookie()) {
             snprintf(part, sizeof(part), "main_ram=%uMiB(want %uMiB)",
                      psx_ram_8mb_active() ? 2u : 8u,
                      (unsigned)(memory_get_ram_bytes() >> 20));
             boot_state_append_reason(reason, reason_cap, part);
         } else {
-            boot_state_append_reason(reason, reason_cap, "enhancement_memory_layout_or_execution_profile");
+            boot_state_append_reason(reason, reason_cap, "enhancement_memory_layout_or_execution_profile_or_host_provider");
         }
         return 0;
     }
@@ -994,9 +1013,10 @@ int boot_state_check_buffer(const uint8_t* file, size_t file_len,
     return 1;
 }
 
-int boot_state_load_buffer(const uint8_t* file, size_t file_len,
-                           uint32_t bios_checksum, uint32_t entry_pc,
-                           CPUState* cpu) {
+static int boot_state_load_buffer_impl(const uint8_t* file, size_t file_len,
+                            uint32_t bios_checksum, uint32_t entry_pc,
+                            CPUState* cpu, BootStateResumeAccept accept,
+                            int notify_loaded) {
     const uint8_t* cur;
     const uint8_t* end;
     BootStateHeader h;
@@ -1006,7 +1026,8 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
         (1u<<BS_SEC_TIMER)|(1u<<BS_SEC_CLOCK)|(1u<<BS_SEC_GPU)|(1u<<BS_SEC_VRAM)|
         (1u<<BS_SEC_SPU)|(1u<<BS_SEC_SPURAM)|(1u<<BS_SEC_CDROM)|(1u<<BS_SEC_DMA)|
         (1u<<BS_SEC_SIO)|(1u<<BS_SEC_MDEC)|(1u<<BS_SEC_DIRTY)|
-        (psx_mod_memory_snapshot_bytes() ? (1u<<BS_SEC_MODMEM) : 0u);
+        (psx_mod_memory_snapshot_bytes() ? (1u<<BS_SEC_MODMEM) : 0u) |
+        (psx_mod_snapshot_layout_cookie() ? (1u<<BS_SEC_MOD_HOST) : 0u);
     uint32_t seen = 0;
     int ok = 1;
     const double t0 = boot_state_mono_ms();
@@ -1016,8 +1037,10 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
     double apply_spuram_ms = 0.0;
     double apply_other_ms = 0.0;
     BsSection* sections = NULL;
+    const BsSection* host_section = NULL;
     uint32_t n_sections = 0;
 
+    if (!psx_mod_snapshot_ready()) return 0;
     if (!boot_state_check_buffer(file, file_len, bios_checksum, entry_pc,
                                  reject, sizeof(reject))) {
         fprintf(stderr, "boot_state: reject — %s\n",
@@ -1095,6 +1118,10 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
             s->len = (uint32_t)len;
         }
         s->tag = tag;
+        if (tag == BS_SEC_MOD_HOST) {
+            if (h.version < 10u || host_section) { ok = 0; break; }
+            host_section = s;
+        }
         if (!validate_section(tag, s->p, s->len)) { ok = 0; break; }
         if (tag == BS_SEC_GAME_START && (seen & (1u << tag))) {
             ok = 0; break;
@@ -1105,6 +1132,8 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
         ok = 0;
     if (ok && h.version >= 9u && !(seen & (1u << BS_SEC_GAME_START)))
         ok = 0;
+    if (ok && h.version >= 10u && !host_section)
+        ok = 0;
 
     /* PASS 2 -- apply. Every section passed validate_section, whose checks
      * are exactly the preconditions apply_section can fail on, so this pass
@@ -1112,6 +1141,7 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
      * backstop. test_boot_state_load_atomic pins both passes. */
     for (uint32_t i = 0; ok && i < n_sections; i++) {
         const double t_sec = boot_state_mono_ms();
+        if (sections[i].tag == BS_SEC_MOD_HOST) continue;
         if (!apply_section(sections[i].tag, sections[i].p, sections[i].len,
                            cpu, entry_pc))
             ok = 0;
@@ -1123,6 +1153,10 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
             else apply_other_ms += dt;
         }
     }
+    /* Host providers consume only prevalidated bytes, after every guest and
+     * device section, regardless of where the input placed the host section. */
+    if (ok && host_section)
+        psx_mod_snapshot_read(host_section->p, host_section->len);
     for (uint32_t i = 0; i < n_sections; i++)
         free(sections[i].owned);
     free(sections);
@@ -1131,6 +1165,15 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
 
     /* RAM was memcpy'd; force overlay revalidation before resume. */
     overlay_watch_invalidate_after_ram_restore();
+    /* Dispatchability can depend on the restored RAM. Transactional callers
+     * hold a rollback image and decide acceptance before observers see a
+     * successful load. Rollback itself must never create a new input segment. */
+    if (accept && !accept(cpu->pc)) {
+        fprintf(stderr, "boot_state: reject restored resume pc=0x%08X\n", cpu->pc);
+        return 0;
+    }
+    if (notify_loaded)
+        psx_mod_snapshot_notify_loaded(file, (uint32_t)file_len);
 
     {
         const double total_ms = boot_state_mono_ms() - t0;
@@ -1145,8 +1188,30 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
     return 1;
 }
 
-int boot_state_load(const char* path, uint32_t bios_checksum,
-                    uint32_t entry_pc, CPUState* cpu) {
+int boot_state_load_buffer(const uint8_t* file, size_t file_len,
+                           uint32_t bios_checksum, uint32_t entry_pc,
+                           CPUState* cpu) {
+    return boot_state_load_buffer_impl(file, file_len, bios_checksum, entry_pc,
+                                       cpu, NULL, 1);
+}
+
+int boot_state_load_buffer_checked(const uint8_t* file, size_t file_len,
+                                   uint32_t bios_checksum, uint32_t entry_pc,
+                                   CPUState* cpu, BootStateResumeAccept accept) {
+    return boot_state_load_buffer_impl(file, file_len, bios_checksum, entry_pc,
+                                       cpu, accept, 1);
+}
+
+int boot_state_load_buffer_quiet(const uint8_t* file, size_t file_len,
+                                 uint32_t bios_checksum, uint32_t entry_pc,
+                                 CPUState* cpu) {
+    return boot_state_load_buffer_impl(file, file_len, bios_checksum, entry_pc,
+                                       cpu, NULL, 0);
+}
+
+int boot_state_load_checked(const char* path, uint32_t bios_checksum,
+                            uint32_t entry_pc, CPUState* cpu,
+                            BootStateResumeAccept accept) {
     FILE* f = fopen(path, "rb");
     long sz;
     uint8_t* file = NULL;
@@ -1182,9 +1247,15 @@ int boot_state_load(const char* path, uint32_t bios_checksum,
     (void)t0;
     (void)t_after_read;
 
-    ok = boot_state_load_buffer(file, file_len, bios_checksum, entry_pc, cpu);
+    ok = boot_state_load_buffer_checked(file, file_len, bios_checksum, entry_pc,
+                                        cpu, accept);
     free(file);
     return ok;
+}
+
+int boot_state_load(const char* path, uint32_t bios_checksum,
+                    uint32_t entry_pc, CPUState* cpu) {
+    return boot_state_load_checked(path, bios_checksum, entry_pc, cpu, NULL);
 }
 
 void boot_state_set_capture(const char* path, uint32_t bios_checksum,

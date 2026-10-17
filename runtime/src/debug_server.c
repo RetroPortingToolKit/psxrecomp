@@ -68,6 +68,7 @@
 #include "frame_fingerprint.h"
 #include "psx_segment_miss.h"
 #include "psx_rewind.h"
+#include "psx_savestate_menu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8194,6 +8195,18 @@ static void handle_rewind_status(int id, const char *json)
              (unsigned)psx_rewind_snap_count());
 }
 
+static void handle_overlay_status(int id, const char *json)
+{
+    int open, slot, unavailable;
+    (void)json;
+    psx_savestate_menu_get_state(&open, &slot, &unavailable);
+    send_fmt("{\"id\":%d,\"ok\":true,\"save_menu_open\":%s,\"save_slot\":%d,"
+             "\"save_unavailable\":%s,\"rewind_open\":%s,\"rewind_blocked\":%s}",
+             id, open ? "true" : "false", slot, unavailable ? "true" : "false",
+             psx_rewind_is_open() ? "true" : "false",
+             psx_rewind_title_blocked() ? "true" : "false");
+}
+
 static void handle_pad_status(int id, const char *json)
 {
     (void)json;
@@ -9906,6 +9919,40 @@ static void handle_get_snapshots(int id, const char *json)
  * viewer (and the harness Read tool) accepts, and nothing new to link against
  * — which keeps the self-contained static runtime self-contained. */
 #include "png_write.h"   /* png_write_rgb + zlib/CRC helpers (shared with Beetle) */
+
+/* Capture the actual host overlay bitmap without opening or focusing a
+ * desktop window. Input still comes through the normal host pad path. */
+static void handle_overlay_image(int id, const char *json)
+{
+    char panel[32], path[1024];
+    const uint32_t *pixels = NULL;
+    int w = 0, h = 0, present;
+    if (!json_get_str(json, "panel", panel, sizeof(panel)) ||
+        !json_get_str(json, "path", path, sizeof(path))) {
+        send_err(id, "panel and path required"); return;
+    }
+    if (!strcmp(panel, "save_states"))
+        present = psx_savestate_menu_overlay_image(&pixels, &w, &h);
+    else if (!strcmp(panel, "rewind"))
+        present = psx_rewind_overlay_image(&pixels, &w, &h);
+    else { send_err(id, "panel must be save_states or rewind"); return; }
+    if (!present || !pixels || w <= 0 || h <= 0 || w > 2048 || h > 2048) {
+        send_err(id, "overlay is not open"); return;
+    }
+    uint8_t *rgb = (uint8_t *)malloc((size_t)w * h * 3u);
+    if (!rgb) { send_err(id, "overlay allocation failed"); return; }
+    for (int i = 0; i < w * h; ++i) {
+        rgb[i*3] = (uint8_t)(pixels[i] >> 16);
+        rgb[i*3+1] = (uint8_t)(pixels[i] >> 8);
+        rgb[i*3+2] = (uint8_t)pixels[i];
+    }
+    FILE *file = fopen(path, "wb");
+    int ok = file && png_write_rgb(file, rgb, (uint32_t)w, (uint32_t)h);
+    if (file) { if (fclose(file)) ok = 0; }
+    free(rgb);
+    if (!ok) { send_err(id, "overlay PNG write failed"); return; }
+    send_fmt("{\"id\":%d,\"ok\":true,\"width\":%d,\"height\":%d}", id, w, h);
+}
 
 /* Canonical screenshot: writes an 8-bit RGB PNG of the current PSX display to
  * "path" (default psx_screenshot.png in the runtime cwd) and answers with a
@@ -16083,6 +16130,8 @@ static const CmdEntry s_commands[] = {
     { "press",             handle_press },
     { "pad_status",        handle_pad_status },
     { "rewind_status",     handle_rewind_status },
+    { "overlay_status",    handle_overlay_status },
+    { "overlay_image",     handle_overlay_image },
     { "clear_input",       handle_clear_input },
     { "input_route_clear", handle_input_route_clear },
     { "input_route_append",handle_input_route_append },

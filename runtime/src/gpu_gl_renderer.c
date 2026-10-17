@@ -6235,6 +6235,24 @@ int gl_renderer_select_texture_bank_live_clut(uint16_t id) {
     return 1;
 }
 
+void gl_renderer_forget_texture_bank_range(uint16_t first, uint32_t count) {
+    if (!first || !count || count > 65536u - first) return;
+    GL_RT_SYNC("forget_texture_bank_range");
+    if (s_ctx) { flush_flat_batch(); flush_tex_batch(); hiw_flush_queue(); }
+    for (uint32_t id = first; id < (uint32_t)first + count; ++id) {
+        GLuint texture = s_bank_tex[id];
+        if (!texture) continue;
+        if (s_selected_bank_tex == texture) {
+            s_selected_bank_tex = 0; s_selected_bank_live_clut = 0;
+        }
+        if (s_tb_bank_tex == texture) {
+            s_tb_bank_tex = 0; s_tb_bank_live_clut = 0;
+        }
+        if (s_ctx) glDeleteTextures(1, &texture);
+        s_bank_tex[id] = 0;
+    }
+}
+
 int gl_renderer_init_context(SDL_Window *win) {
     s_win = win;
     s_present_w = 0;
