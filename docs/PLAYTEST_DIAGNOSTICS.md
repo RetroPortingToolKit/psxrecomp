@@ -67,8 +67,8 @@ offline recorder does not claim to reproduce network sessions.
 
 ## Replay
 
-Use Python 3.11+ with the recording's original native executable, disc and game
-configuration. The tool copies the executable, runtime dependencies and
+Use Python 3.8+ (install `tomli` before Python 3.11) with the recording's original
+native executable, disc and game configuration. The tool copies the executable, runtime dependencies and
 starting state into a newly created private directory. Personal settings/cards
 and the original installation are untouched.
 

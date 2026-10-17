@@ -22,6 +22,8 @@
 #     [--project-file REL]... [--project-dir REL]... \
 #     [--runtime-dir NAME]... [--runtime-dir-optional NAME]... \
 #     [--disc-hint "your legally owned disc"] \
+#     [--bios-hint "an optional retail SCPH-1001 BIOS; otherwise OpenBIOS"] \
+#     [--omit-openbios]     # retail-BIOS-only titles; game.toml openbios=false
 #     [--version-env BPE_RELEASE_VERSION] \
 #     [--embed-toolchain]   # optional: copy PSXRECOMP_TOOLCHAIN_DIR into zip
 #
@@ -69,6 +71,8 @@ DISPLAY_NAME=""
 RECOMPILER_BUILD="build-recompiler"
 VERSION_ENV="RELEASE_VERSION"
 DISC_HINT="your legally owned game disc"
+BIOS_HINT=""
+OMIT_OPENBIOS=0
 # Wave-5 F4: a packaged game.toml without `overlay_cache = true` ships a runtime that never
 # initialises the overlay loader, so every streamed overlay runs on the interpreter (78 of
 # 105 releases measured 2026-09-16). Refuse unless the caller states why.
@@ -113,6 +117,8 @@ while [[ $# -gt 0 ]]; do
     --recompiler-build) RECOMPILER_BUILD="${2:?}"; shift 2 ;;
     --version-env) VERSION_ENV="${2:?}"; shift 2 ;;
     --disc-hint) DISC_HINT="${2:?}"; shift 2 ;;
+    --bios-hint) BIOS_HINT="${2:?}"; shift 2 ;;
+    --omit-openbios) OMIT_OPENBIOS=1; shift ;;
     --project-file) PROJECT_FILES+=("${2:?}"); shift 2 ;;
     --project-dir) PROJECT_DIRS+=("${2:?}"); shift 2 ;;
     --no-mods) STAGE_MODS=0; shift ;;
@@ -131,6 +137,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "${BIOS_HINT}" ]]; then
+  if [[ "${OMIT_OPENBIOS}" -eq 1 ]]; then
+    BIOS_HINT="a legal retail SCPH-1001 BIOS dump (required)"
+  else
+    BIOS_HINT="an optional retail SCPH-1001 BIOS; otherwise OpenBIOS is regenerated locally"
+  fi
+fi
 
 # Default the mods catalog into the required set unless the caller already
 # named it (in either list) or opted out. Appending rather than overriding
@@ -485,6 +499,9 @@ stage_args=(
   --host-exe "${STAGE}/${EXE_BASENAME}"
   --recompiler-build "${RECOMPILER_BUILD}"
 )
+if [[ "${OMIT_OPENBIOS}" -eq 1 ]]; then
+  stage_args+=(--omit-openbios)
+fi
 if [[ "${EMBED_TOOLCHAIN}" -eq 1 ]]; then
   if [[ -z "${PSXRECOMP_TOOLCHAIN_DIR:-${TOOLCHAIN_DIR:-${BPE_TOOLCHAIN_DIR:-}}}" ]]; then
     echo "error: --embed-toolchain requires PSXRECOMP_TOOLCHAIN_DIR (or TOOLCHAIN_DIR)" >&2
@@ -519,8 +536,7 @@ BIOS dumps, pre-generated game C, or a portable cmake/clang pack. Emitters
 Standalone:
 1. Install Python 3.
 2. Run ${EXE_BASENAME}.
-3. Provide ${DISC_HINT} (and optional retail SCPH-1001 BIOS; otherwise
-   OpenBIOS is regenerated locally).
+3. Provide ${DISC_HINT} and ${BIOS_HINT}.
 4. Follow the Generate & rebuild wizard. On first rebuild the host downloads
    cmake-clang-v1 from RetroPortingToolKit/RetroPorting-Toolchains (or you can
    pick a local cmake-clang-v1-*.zip for offline builds). System cmake/ninja

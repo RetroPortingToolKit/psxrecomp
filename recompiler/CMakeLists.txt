@@ -1136,6 +1136,7 @@ if(BUILD_TESTING)
         # template, scaffold, check_generated.sh, Project Studio audit/ops).
         foreach(_t IN ITEMS
                 aligned_lzss_banks
+                audit_playtest_diagnostics_package
                 bundled_release_layout
                 collect_game_misses
                 cursor_writers

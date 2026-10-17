@@ -29,7 +29,10 @@ import re
 import shutil
 import subprocess
 import time
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 FORMATS = (b'# psxrecomp-input-v1', b'# psxrecomp-input-v2')
 ENV_PREFIXES = ('PSX_', 'RNET_', 'LNG_', 'PSX_DIAGNOSTIC_', 'RECOMP_')

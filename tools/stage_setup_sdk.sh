@@ -19,6 +19,7 @@
 #   --runtime-bin DIR       MinGW runtime DLL search dir (repeatable)
 #   --search-dir DIR        Extra DLL search dir (repeatable)
 #   --require-cli           Require psxrecomp_cli.py after overlays (default on)
+#   --omit-openbios         Remove OpenBIOS assets for a retail-BIOS-only recipe
 #
 # Env aliases for toolchain dir (first wins):
 #   PSXRECOMP_TOOLCHAIN_DIR, TOOLCHAIN_DIR, BPE_TOOLCHAIN_DIR
@@ -39,6 +40,7 @@ HOST_EXE=""
 RUNTIME_BINS=()
 SEARCH_DIRS=()
 REQUIRE_CLI=1
+OMIT_OPENBIOS=0
 
 usage() {
   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
@@ -59,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --search-dir) SEARCH_DIRS+=("${2:?}"); shift 2 ;;
     --require-cli) REQUIRE_CLI=1; shift ;;
     --no-require-cli) REQUIRE_CLI=0; shift ;;
+    --omit-openbios) OMIT_OPENBIOS=1; shift ;;
     *)
       echo "error: unknown arg: $1" >&2
       usage
@@ -209,7 +212,16 @@ else
   echo "error: Python is required to check the staged BIOS policy" >&2
   exit 1
 fi
-"${SDK_PYTHON}" "${SCRIPT_DIR}/check_setup_bios_assets.py" "${STAGE}"
+bios_args=()
+if [[ "${OMIT_OPENBIOS}" -eq 1 ]]; then
+  # Run after overlays so they cannot restore an unwanted BIOS surface.
+  for bios_root in "${STAGE}/bios" "${STAGE}/psxrecomp/bios"; do
+    rm -f "${bios_root}/openbios.bin" "${bios_root}/OpenBIOS.toml" \
+          "${bios_root}/OpenBIOS.LICENSE"
+  done
+  bios_args+=(--omit-openbios)
+fi
+"${SDK_PYTHON}" "${SCRIPT_DIR}/check_setup_bios_assets.py" "${STAGE}" "${bios_args[@]}"
 
 if [[ "${REQUIRE_CLI}" -eq 1 && ! -f "${STAGE}/psxrecomp/psxrecomp_cli.py" ]]; then
   echo "error: missing psxrecomp/psxrecomp_cli.py in staged tree" >&2

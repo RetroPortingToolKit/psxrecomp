@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Require BIOS assets selected by the staged title recipe."""
+import argparse
 import sys
 from pathlib import Path
 try:
@@ -8,7 +9,7 @@ except ModuleNotFoundError:
     import tomli as tomllib
 
 
-def check(stage):
+def check(stage, omit_openbios=False):
     stage = Path(stage).resolve()
     recipe = stage / "game.toml"
     if not recipe.is_file():
@@ -18,6 +19,13 @@ def check(stage):
     openbios = config.get("runtime", {}).get("openbios", True)
     if not isinstance(openbios, bool):
         raise ValueError("runtime.openbios must be a boolean")
+    if omit_openbios and openbios:
+        raise ValueError("--omit-openbios requires runtime.openbios=false")
+    if omit_openbios:
+        for root in (stage / "bios", stage / "psxrecomp/bios"):
+            for name in ("OpenBIOS.toml", "openbios.bin", "OpenBIOS.LICENSE"):
+                if (root / name).exists():
+                    raise ValueError("OpenBIOS asset survived --omit-openbios: " + str(root / name))
     profile = config.get("recompiler", {}).get("bios_config")
     required = []
     if profile:
@@ -40,7 +48,11 @@ def check(stage):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("stage")
+    parser.add_argument("--omit-openbios", action="store_true")
+    args = parser.parse_args()
     try:
-        print("staged BIOS policy: " + ", ".join(check(sys.argv[1])))
+        print("staged BIOS policy: " + ", ".join(check(args.stage, args.omit_openbios)))
     except (ValueError, OSError) as error:
         sys.exit("error: " + str(error))
