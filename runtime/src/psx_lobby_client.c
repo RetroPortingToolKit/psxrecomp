@@ -282,7 +282,7 @@ typedef struct {
     char rx_http[4096];
     size_t rx_http_len;
     /* Bytes that arrived with the HTTP 101 response after the header end. */
-    uint8_t ws_pending[4096];
+    uint8_t ws_pending[PSX_LOBBY_MESSAGE_JSON_CAP + 16];
     size_t ws_pending_len;
     PsxLobbyRow list[PSX_LOBBY_MAX_LIST];
     int list_count;
@@ -324,7 +324,7 @@ typedef struct {
     int schat_head;
     int schat_count;
     uint32_t schat_seq;
-    char pending_tx[8][8192];
+    char pending_tx[8][PSX_LOBBY_MESSAGE_JSON_CAP];
     int pending_n;
     /* Inbound ICE signals (WS op:signal). */
     struct {
@@ -371,7 +371,7 @@ static uint64_t lobby_mono_ms(void)
 int psx_lobby_send_signal(int type, int flag, const char *text);
 static int endpoint_port_is_zero(const char *ep);
 static int using_server_input_relay(const PsxLobbyJoinInfo *j);
-static void queue_send(const char *msg);
+static int queue_send(const char *msg);
 static void flush_pending(void);
 static void lobby_rtt_close(void);
 static void lobby_ice_rtt_close(void);
@@ -1088,7 +1088,7 @@ static int list_filter_version_strict(void)
     return gv && gv[0] && strcmp(gv, "dev") != 0;
 }
 
-static void queue_send(const char *json);
+static int queue_send(const char *json);
 static void clear_turn_credentials(void);
 static int queue_turn_credentials_request(void);
 
@@ -1849,7 +1849,7 @@ static int json_extract_array(const char *json, const char *key, char *out, size
 {
     char pat[80];
     const char *q;
-    int depth;
+    int depth, in_string = 0, escaped = 0;
     size_t n;
     if (!json || !key || !out || out_cap < 3) return 0;
     out[0] = '\0';
@@ -1864,62 +1864,134 @@ static int json_extract_array(const char *json, const char *key, char *out, size
     depth = 0;
     n = 0;
     do {
-        if (*q == '[') ++depth;
+        if (in_string) {
+            if (escaped) escaped = 0;
+            else if (*q == '\\') escaped = 1;
+            else if (*q == '"') in_string = 0;
+        } else if (*q == '"') in_string = 1;
+        else if (*q == '[') ++depth;
         else if (*q == ']') --depth;
-        if (n + 1 >= out_cap) return 0;
+        if (n + 1 >= out_cap) { out[0] = '\0'; return 0; }
         out[n++] = *q++;
     } while (*q && depth > 0);
     out[n] = '\0';
-    return depth == 0 && n > 1;
+    if (depth != 0 || in_string || n <= 1) { out[0] = '\0'; return 0; }
+    return 1;
+}
+
+/* Mod settings must never become a shorter, different plan after parsing.
+ * Unlike display-only json_get_str, refuse incomplete/overlong fields. */
+static int json_get_mod_str(const char *json, const char *key, char *out, size_t cap)
+{
+    char pat[80];
+    const char *p;
+    size_t o = 0;
+    if (!json || !out || !cap) return 0;
+    out[0] = '\0';
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    p = strstr(json, pat);
+    if (!p) return 1; /* Legacy optional metadata can be absent. */
+    p = strchr(p + strlen(pat), ':');
+    if (!p) return 0;
+    do { ++p; } while (isspace((unsigned char)*p));
+    if (*p++ != '"') return 0;
+    while (*p && *p != '"') {
+        unsigned char c = (unsigned char)*p++;
+        if (c == '\\') {
+            c = (unsigned char)*p++;
+            switch (c) {
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            case '"': case '\\': case '/': break;
+            default: out[0] = '\0'; return 0;
+            }
+        } else if (c < 0x20) { out[0] = '\0'; return 0; }
+        if (!c || o + 1 >= cap) { out[0] = '\0'; return 0; }
+        out[o++] = (char)c;
+    }
+    if (*p != '"') { out[0] = '\0'; return 0; }
+    out[o] = '\0';
+    return 1;
 }
 
 static int parse_one_mod_pkg(const char *obj, PsxLobbyModPkg *out)
 {
     if (!obj || !out || obj[0] != '{') return 0;
     memset(out, 0, sizeof(*out));
-    json_get_str(obj, "id", out->id, sizeof(out->id));
-    json_get_str(obj, "ver", out->ver, sizeof(out->ver));
-    json_get_str(obj, "name", out->name, sizeof(out->name));
-    json_get_str(obj, "feats", out->feats, sizeof(out->feats));
+    if (!json_get_mod_str(obj, "id", out->id, sizeof(out->id)) ||
+        !json_get_mod_str(obj, "ver", out->ver, sizeof(out->ver)) ||
+        !json_get_mod_str(obj, "name", out->name, sizeof(out->name)) ||
+        !json_get_mod_str(obj, "feats", out->feats, sizeof(out->feats))) return 0;
     out->builtin = json_get_bool(obj, "builtin", 0);
-    out->size = (uint32_t)json_get_int(obj, "size", 0);
-    if (!json_token_ok(out->id)) out->id[0] = '\0';
-    if (out->ver[0] && !json_token_ok(out->ver)) out->ver[0] = '\0';
-    if (out->feats[0] && !json_feats_ok(out->feats)) out->feats[0] = '\0';
-    return out->id[0] ? 1 : 0;
+    {
+        const char *size = strstr(obj, "\"size\"");
+        if (size) {
+            char *end;
+            unsigned long long value;
+            size = strchr(size + 6, ':');
+            if (!size) return 0;
+            do { ++size; } while (isspace((unsigned char)*size));
+            if (*size < '0' || *size > '9') return 0;
+            errno = 0;
+            value = strtoull(size, &end, 10);
+            while (isspace((unsigned char)*end)) ++end;
+            if (errno == ERANGE || value > UINT32_MAX || (*end != ',' && *end != '}')) return 0;
+            out->size = (uint32_t)value;
+        }
+    }
+    return json_token_ok(out->id) && (!out->ver[0] || json_token_ok(out->ver)) &&
+        json_feats_ok(out->feats);
 }
 
 static int parse_mod_pkg_array(const char *json, const char *key,
                                PsxLobbyModPkg *out, int cap)
 {
-    char arr[4096];
+    char arr[PSX_LOBBY_MOD_ARRAY_JSON_CAP];
     const char *q;
     int n = 0;
     if (!out || cap <= 0) return 0;
     memset(out, 0, sizeof(PsxLobbyModPkg) * (size_t)cap);
-    if (!json_extract_array(json, key, arr, sizeof(arr))) return 0;
-    q = arr;
-    while (*q && n < cap) {
+    if (!json_extract_array(json, key, arr, sizeof(arr))) {
+        char pat[80];snprintf(pat, sizeof(pat), "\"%s\"", key);
+        return json && strstr(json, pat) ? -1 : 0;
+    }
+    q = arr + 1;
+    while (*q) {
         const char *obj, *end;
-        int depth = 0;
-        char chunk[768];
+        int depth = 0, in_string = 0, escaped = 0;
+        char chunk[PSX_LOBBY_MOD_PKG_JSON_CAP];
         size_t len;
-        while (*q && *q != '{' && *q != ']') ++q;
-        if (*q != '{') break;
+        while (isspace((unsigned char)*q)) ++q;
+        if (*q == ']') return n;
+        if (*q != '{' || n >= cap) return -1;
         obj = end = q;
         do {
-            if (*end == '{') ++depth;
+            if (in_string) {
+                if (escaped) escaped = 0;
+                else if (*end == '\\') escaped = 1;
+                else if (*end == '"') in_string = 0;
+            } else if (*end == '"') in_string = 1;
+            else if (*end == '{') ++depth;
             else if (*end == '}') --depth;
             ++end;
         } while (*end && depth > 0);
+        if (depth || in_string) return -1;
         len = (size_t)(end - obj);
-        if (len >= sizeof(chunk)) len = sizeof(chunk) - 1;
+        if (len >= sizeof(chunk)) return -1;
         memcpy(chunk, obj, len);
         chunk[len] = '\0';
-        if (parse_one_mod_pkg(chunk, &out[n])) ++n;
+        if (!parse_one_mod_pkg(chunk, &out[n])) return -1;
+        ++n;
         q = end;
+        while (isspace((unsigned char)*q)) ++q;
+        if (*q == ']') return n;
+        if (*q != ',') return -1;
+        ++q;
+        while (isspace((unsigned char)*q)) ++q;
+        if (*q == ']') return -1;
     }
-    return n;
+    return -1;
 }
 
 static int append_mod_pkg_array(char *dst, size_t dst_cap,
@@ -1927,23 +1999,28 @@ static int append_mod_pkg_array(char *dst, size_t dst_cap,
 {
     size_t o = 0;
     int i;
-    if (!dst || dst_cap < 3) return 0;
+    if (!dst || !dst_cap) return 0;
+    dst[0] = '\0';
+    if (dst_cap < 3 || count < 0 || count > PSX_LOBBY_MAX_MODS || (!pkgs && count)) return 0;
     dst[o++] = '[';
     for (i = 0; pkgs && i < count && i < PSX_LOBBY_MAX_MODS; ++i) {
         const PsxLobbyModPkg *pkg = &pkgs[i];
+        char name[JSON_ESC_CAP(PSX_LOBBY_MOD_NAME_LEN)];
         int n;
-        if (!pkg->id[0] || !json_token_ok(pkg->id)) continue;
-        if (pkg->ver[0] && !json_token_ok(pkg->ver)) continue;
-        if (pkg->feats[0] && !json_feats_ok(pkg->feats)) continue;
+        if (!memchr(pkg->id, 0, sizeof(pkg->id)) || !memchr(pkg->ver, 0, sizeof(pkg->ver)) ||
+            !memchr(pkg->name, 0, sizeof(pkg->name)) || !memchr(pkg->feats, 0, sizeof(pkg->feats)) ||
+            !json_token_ok(pkg->id) || (pkg->ver[0] && !json_token_ok(pkg->ver)) ||
+            !json_feats_ok(pkg->feats)) { dst[0] = '\0'; return 0; }
+        json_escape(pkg->name, name, sizeof(name));
         n = snprintf(dst + o, dst_cap - o,
                      "%s{\"id\":\"%s\",\"ver\":\"%s\",\"name\":\"%s\","
                      "\"feats\":\"%s\",\"builtin\":%s,\"size\":%u}",
-                     o > 1 ? "," : "", pkg->id, pkg->ver, pkg->name,
+                     o > 1 ? "," : "", pkg->id, pkg->ver, name,
                      pkg->feats, pkg->builtin ? "true" : "false", (unsigned)pkg->size);
-        if (n < 0 || (size_t)n >= dst_cap - o) return 0;
+        if (n < 0 || (size_t)n >= dst_cap - o) { dst[0] = '\0'; return 0; }
         o += (size_t)n;
     }
-    if (o + 2 > dst_cap) return 0;
+    if (o + 2 > dst_cap) { dst[0] = '\0'; return 0; }
     dst[o++] = ']';
     dst[o] = '\0';
     return 1;
@@ -1953,7 +2030,7 @@ static int json_extract_object(const char *json, const char *key, char *out, siz
 {
     char pat[80];
     const char *p;
-    int depth;
+    int depth, in_string = 0, escaped = 0;
     size_t n;
     if (!json || !key || !out || out_cap < 3) return 0;
     out[0] = '\0';
@@ -1968,13 +2045,19 @@ static int json_extract_object(const char *json, const char *key, char *out, siz
     depth = 0;
     n = 0;
     do {
-        if (*p == '{') ++depth;
+        if (in_string) {
+            if (escaped) escaped = 0;
+            else if (*p == '\\') escaped = 1;
+            else if (*p == '"') in_string = 0;
+        } else if (*p == '"') in_string = 1;
+        else if (*p == '{') ++depth;
         else if (*p == '}') --depth;
-        if (n + 1 >= out_cap) return 0;
+        if (n + 1 >= out_cap) { out[0] = '\0'; return 0; }
         out[n++] = *p++;
     } while (*p && depth > 0);
     out[n] = '\0';
-    return depth == 0 && n > 1;
+    if (depth || in_string || n <= 1) { out[0] = '\0'; return 0; }
+    return 1;
 }
 
 static void parse_match_caps_object(const char *obj, PsxLobbyMatchCaps *out)
@@ -2019,6 +2102,7 @@ static void parse_match_caps_object(const char *obj, PsxLobbyMatchCaps *out)
     if (out->mod_plan_fp[0] && !json_hex_ok(out->mod_plan_fp))
         out->mod_plan_fp[0] = '\0';
     out->mod_count = parse_mod_pkg_array(obj, "mods", out->mods, PSX_LOBBY_MAX_MODS);
+    if (out->mod_count < 0) { out->mod_count = 0; return; }
     /* Normalize settled BIOS id. */
     if (out->session_bios[0] &&
         strcmp(out->session_bios, "openbios") != 0 &&
@@ -2038,7 +2122,7 @@ static void parse_match_caps_object(const char *obj, PsxLobbyMatchCaps *out)
 
 static void ingest_match_caps_from_json(const char *json)
 {
-    char obj[4096];
+    char obj[PSX_LOBBY_MATCH_CAPS_JSON_CAP];
     if (json_extract_object(json, "match_caps", obj, sizeof(obj)))
         parse_match_caps_object(obj, &g_lc.match_caps);
 }
@@ -2046,11 +2130,16 @@ static void ingest_match_caps_from_json(const char *json)
 static int append_match_caps_json(char *dst, size_t dst_cap, const PsxLobbyMatchCaps *caps)
 {
     char lang[PSX_LOBBY_LANG_LEN];
-    char mods_json[4096];
-    char plan_json[4096 + 96];
+    char mods_json[PSX_LOBBY_MOD_ARRAY_JSON_CAP];
+    char plan_json[PSX_LOBBY_MOD_ARRAY_JSON_CAP + 128];
     size_t i, o = 0;
     int n;
-    if (!dst || dst_cap < 8 || !caps || !caps->valid) return 0;
+    if (!dst || !dst_cap) return 0;
+    dst[0] = '\0';
+    if (dst_cap < 8 || !caps || !caps->valid ||
+        !memchr(caps->language, 0, sizeof(caps->language)) ||
+        !memchr(caps->session_bios, 0, sizeof(caps->session_bios)) ||
+        !memchr(caps->mod_plan_fp, 0, sizeof(caps->mod_plan_fp))) return 0;
     /* Sanitize language for JSON string (alnum / _ / - only). */
     for (i = 0; caps->language[i] && o + 1 < sizeof(lang); ++i) {
         char ch = caps->language[i];
@@ -2073,9 +2162,11 @@ static int append_match_caps_json(char *dst, size_t dst_cap, const PsxLobbyMatch
         /* Only a published mod plan (content negotiation) adds plan fields;
          * a vanilla host's caps stay byte-identical to the pre-plan wire. */
         plan_json[0] = '\0';
-        if (fp[0] || caps->mod_count > 0)
-            snprintf(plan_json, sizeof(plan_json),
+        if (fp[0] || caps->mod_count > 0) {
+            n = snprintf(plan_json, sizeof(plan_json),
                      ",\"mod_plan_fp\":\"%s\",\"mods\":%s", fp, mods_json);
+            if (n < 0 || (size_t)n >= sizeof(plan_json)) return 0;
+        }
         n = snprintf(dst, dst_cap,
                      ",\"match_caps\":{\"v\":1,\"aspect_num\":%d,\"aspect_den\":%d,"
                      "\"turbo_loads\":%s,\"bios_hle\":%s,\"fast_boot\":%s,"
@@ -2105,13 +2196,16 @@ static int append_match_caps_json(char *dst, size_t dst_cap, const PsxLobbyMatch
                      caps->guest_memcard ? "true" : "false",
                      caps->guest_memcard_active ? "true" : "false",
                      lang, sb, crc, plan_json);
+        if (n < 0 || (size_t)n >= dst_cap) { dst[0] = '\0'; return 0; }
         return n;
     }
 }
 int psx_lobby_encode_match_caps(char *out, size_t cap, const PsxLobbyMatchCaps *caps)
 {
     int n;
-    if (!out || cap < 16) return 0;
+    if (!out || !cap) return 0;
+    out[0] = '\0';
+    if (cap < 16) return 0;
     strcpy(out, "{\"v\":1");
     n = append_match_caps_json(out + 6, cap - 7, caps);
     if (n <= 0 || (size_t)n >= cap - 7) { out[0] = '\0'; return 0; }
@@ -2121,7 +2215,7 @@ int psx_lobby_encode_match_caps(char *out, size_t cap, const PsxLobbyMatchCaps *
 
 int psx_lobby_decode_match_caps(const char *json, PsxLobbyMatchCaps *out)
 {
-    char obj[4096];
+    char obj[PSX_LOBBY_MATCH_CAPS_JSON_CAP];
     PsxLobbyMatchCaps caps = {0};
     if (!out || !json || !json_extract_object(json, "match_caps", obj, sizeof(obj)))
         return 0;
@@ -2137,14 +2231,12 @@ void psx_lobby_set_local_match_caps(const PsxLobbyMatchCaps *caps)
     else match_caps_clear(&g_lc.match_caps);
 }
 
-static void queue_send(const char *json)
+static int queue_send(const char *json)
 {
-    if (g_lc.pending_n >= 8) {
-        return;
-    }
-    strncpy(g_lc.pending_tx[g_lc.pending_n], json, sizeof(g_lc.pending_tx[0]) - 1);
-    g_lc.pending_tx[g_lc.pending_n][sizeof(g_lc.pending_tx[0]) - 1] = '\0';
+    if (!json || g_lc.pending_n >= 8 || strlen(json) >= sizeof(g_lc.pending_tx[0])) return 0;
+    strcpy(g_lc.pending_tx[g_lc.pending_n], json);
     g_lc.pending_n++;
+    return 1;
 }
 
 static void flush_pending(void)
@@ -3120,8 +3212,8 @@ static void drain_ws_pending(void)
         if (g_lc.ws_pending_len < i + plen) {
             return;
         }
-        if (opcode == 0x1 && plen + 1 < sizeof(g_lc.rx_http)) {
-            char text[4096];
+        if (opcode == 0x1 && plen < PSX_LOBBY_MESSAGE_JSON_CAP) {
+            char text[PSX_LOBBY_MESSAGE_JSON_CAP];
             memcpy(text, g_lc.ws_pending + i, plen);
             text[plen] = '\0';
             handle_server_json(text);
@@ -3813,6 +3905,10 @@ static void handle_server_json(const char *json)
                                                        g_lc.need_mods,
                                                        PSX_LOBBY_MAX_MODS);
             g_lc.need_mods_can_transfer = json_get_bool(json, "can_transfer", 0);
+            if (g_lc.need_mod_count < 0) {
+                g_lc.need_mod_count = 0;
+                g_lc.need_mods_can_transfer = 0;
+            }
         } else {
             g_lc.need_mod_count = 0;
             g_lc.need_mods_can_transfer = 0;
@@ -4786,8 +4882,8 @@ int psx_lobby_create(const char *name, const char *game_name, const char *game_v
                      const char *password, const char *host_bind,
                      const PsxLobbyMatchCaps *match_caps)
 {
-    char msg[8192];
-    char caps_json[4096];
+    char msg[PSX_LOBBY_MESSAGE_JSON_CAP];
+    char caps_json[PSX_LOBBY_MATCH_CAPS_JSON_CAP];
     char name_esc[JSON_ESC_CAP(128)];
     char gn_esc[JSON_ESC_CAP(PSX_LOBBY_NAME_LEN)];
     char gv_esc[JSON_ESC_CAP(PSX_LOBBY_VERSION_LEN)];
@@ -4814,8 +4910,7 @@ int psx_lobby_create(const char *name, const char *game_name, const char *game_v
     g_lc.need_mods_can_transfer = 0;
     caps_json[0] = '\0';
     if (match_caps && match_caps->valid) {
-        g_lc.match_caps = *match_caps;
-        append_match_caps_json(caps_json, sizeof(caps_json), match_caps);
+        if (!append_match_caps_json(caps_json, sizeof(caps_json), match_caps)) return -1;
     }
     json_escape(name && name[0] ? name : "Lobby", name_esc, sizeof(name_esc));
     json_escape(gn, gn_esc, sizeof(gn_esc));
@@ -4835,14 +4930,15 @@ int psx_lobby_create(const char *name, const char *game_name, const char *game_v
                  g_allow_spectators_pref ? "true" : "false", bind_esc,
                  dn_esc, fp_esc, caps_json);
     if (n < 0 || (size_t)n >= sizeof(msg)) return -1;
-    queue_send(msg);
+    if (!queue_send(msg)) return -1;
+    if (match_caps && match_caps->valid) g_lc.match_caps = *match_caps;
     flush_pending();
     return 0;
 }
 
 int psx_lobby_join(const char *lobby_id, const char *password, const char *guest_bind)
 {
-    char msg[8192];
+    char msg[PSX_LOBBY_MESSAGE_JSON_CAP];
     char lid_esc[JSON_ESC_CAP(PSX_LOBBY_ID_LEN)];
     char pw_esc[JSON_ESC_CAP(128)];
     char bind_esc[JSON_ESC_CAP(PSX_LOBBY_ENDPOINT_LEN)];
@@ -4850,7 +4946,7 @@ int psx_lobby_join(const char *lobby_id, const char *password, const char *guest
     char gn_esc[JSON_ESC_CAP(PSX_LOBBY_NAME_LEN)];
     char gv_esc[JSON_ESC_CAP(PSX_LOBBY_VERSION_LEN)];
     char fp_esc[JSON_ESC_CAP(72)];
-    char offer_json[4096];
+    char offer_json[PSX_LOBBY_MOD_ARRAY_JSON_CAP + 64];
     const char *gn;
     const char *gv;
     int n;
@@ -4865,12 +4961,13 @@ int psx_lobby_join(const char *lobby_id, const char *password, const char *guest
     g_lc.need_mod_count = 0;
     g_lc.need_mods_can_transfer = 0;
     offer_json[0] = '\0';
+    if (g_lc.mod_offer.valid && g_lc.mod_offer.count < 0) return -1;
     if (g_lc.mod_offer.valid && g_lc.mod_offer.count > 0) {
-        char pkgs[4096];
-        if (append_mod_pkg_array(pkgs, sizeof(pkgs), g_lc.mod_offer.pkgs,
-                                 g_lc.mod_offer.count))
-            snprintf(offer_json, sizeof(offer_json),
-                     ",\"mod_offer\":{\"pkgs\":%s}", pkgs);
+        char pkgs[PSX_LOBBY_MOD_ARRAY_JSON_CAP];
+        if (!append_mod_pkg_array(pkgs, sizeof(pkgs), g_lc.mod_offer.pkgs,
+                                  g_lc.mod_offer.count)) return -1;
+        n = snprintf(offer_json, sizeof(offer_json), ",\"mod_offer\":{\"pkgs\":%s}", pkgs);
+        if (n < 0 || (size_t)n >= sizeof(offer_json)) return -1;
     }
     json_escape(lobby_id, lid_esc, sizeof(lid_esc));
     json_escape(password ? password : "", pw_esc, sizeof(pw_esc));
@@ -4888,7 +4985,7 @@ int psx_lobby_join(const char *lobby_id, const char *password, const char *guest
     /* A truncated frame is a frame the server drops whole, so the join would
      * silently never happen. create checked this; join did not. */
     if (n < 0 || (size_t)n >= sizeof(msg)) return -1;
-    queue_send(msg);
+    if (!queue_send(msg)) return -1;
     flush_pending();
     return 0;
 }
@@ -5092,18 +5189,18 @@ int psx_lobby_mod_xfer_failed(char *err, size_t err_cap)
 
 int psx_lobby_set_match_caps(const PsxLobbyMatchCaps *caps)
 {
-    char msg[6144];
-    char caps_json[4096];
+    char msg[PSX_LOBBY_MESSAGE_JSON_CAP];
+    char caps_json[PSX_LOBBY_MATCH_CAPS_JSON_CAP];
     int n;
     if (!psx_lobby_connected() || !g_lc.in_lobby || !g_lc.is_host || !caps || !caps->valid)
         return -1;
-    g_lc.match_caps = *caps;
     caps_json[0] = '\0';
-    append_match_caps_json(caps_json, sizeof(caps_json), caps);
+    if (!append_match_caps_json(caps_json, sizeof(caps_json), caps)) return -1;
     /* caps_json begins with a comma — strip it for a standalone object field. */
     n = snprintf(msg, sizeof(msg), "{\"op\":\"set_match_caps\"%s}", caps_json);
     if (n < 0 || (size_t)n >= sizeof(msg)) return -1;
-    queue_send(msg);
+    if (!queue_send(msg)) return -1;
+    g_lc.match_caps = *caps;
     flush_pending();
     return 0;
 }
@@ -5462,19 +5559,20 @@ int psx_lobby_set_ready(int ready)
  * hands a Retro hub that hosts the room. */
 int psx_lobby_start_message(const PsxLobbyMatchCaps *caps, char *msg, size_t cap)
 {
-    char caps_json[640];
+    char caps_json[PSX_LOBBY_MATCH_CAPS_JSON_CAP];
     int n;
     if (!msg || cap == 0) return -1;
+    msg[0] = '\0';
     caps_json[0] = '\0';
-    if (caps && caps->valid)
-        append_match_caps_json(caps_json, sizeof(caps_json), caps);
+    if (caps && caps->valid && !append_match_caps_json(caps_json, sizeof(caps_json), caps)) return -1;
     n = snprintf(msg, cap, "{\"op\":\"start\"%s}", caps_json);
-    return (n < 0 || (size_t)n >= cap) ? -1 : 0;
+    if (n < 0 || (size_t)n >= cap) { msg[0] = '\0'; return -1; }
+    return 0;
 }
 
 int psx_lobby_request_start(const PsxLobbyMatchCaps *match_caps)
 {
-    char msg[6144];
+    char msg[PSX_LOBBY_START_JSON_CAP];
     PsxLobbyMatchCaps caps_local;
     const PsxLobbyMatchCaps *send = NULL;
     if (!psx_lobby_connected() || !g_lc.in_lobby || !g_lc.is_host) {
@@ -5498,11 +5596,11 @@ int psx_lobby_request_start(const PsxLobbyMatchCaps *match_caps)
          * it here destroys the completed agents before LAUNCH can take them. */
         caps_local.relay_via_ice = caps_local.relay_host &&
             g_relay_via_ice_pref && rnet_host_ice_available();
-        g_lc.match_caps = caps_local;
         send = &caps_local;
     }
     if (psx_lobby_start_message(send, msg, sizeof(msg)) != 0) return -1;
-    queue_send(msg);
+    if (!queue_send(msg)) return -1;
+    if (send) g_lc.match_caps = caps_local;
     flush_pending();
     return 0;
 }
@@ -5519,10 +5617,8 @@ static int g_handoff_active = 0;
 
 static char *handoff_object(const char *record, const char *key)
 {
-    /* Not json_extract_object: that one counts braces inside strings too,
-     * and a room or player name with a brace in it would cut the message
-     * short. A quoted key cannot occur inside a JSON string (its quotes would
-     * be escaped), so the search for it is exact. */
+    /* Handoff records can be larger than the bounded capability messages;
+     * allocate their exact object size, retaining braces inside strings. */
     char pat[64];
     const char *p;
     char *buf;

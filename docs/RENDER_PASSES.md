@@ -276,7 +276,10 @@ authoritative CPU VRAM never sees them. A committed image cancels any
 
 It needs a netplay session on a forward frame and the OpenGL dual-raster
 presenter (a surface separate from the authoritative VRAM); it does not need
-frame interpolation. The status is `SESSION` offline, while resimulating, in
+frame interpolation. Catch-up pressure alone does not refuse a local view:
+that redraw selects the local player's camera and HUD, and refusing it would
+expose the canonical peer's image. A future catch-up optimization must preserve
+the local image when dropping a whole presentation. The status is `SESSION` offline, while resimulating, in
 rewind or lockstep replay; `BACKEND` without dual raster or in the
 high-resolution window; `NO_PRESENTER` without an OpenGL surface or with
 24-bit scanout; plus the usual `FAST_FORWARD`, `DISABLED` and `BUSY`.

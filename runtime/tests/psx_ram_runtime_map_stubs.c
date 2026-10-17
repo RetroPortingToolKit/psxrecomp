@@ -77,6 +77,8 @@ void psx_guest_cycle_scale_snapshot(uint32_t out[3]) { out[0] = out[1] = out[2] 
 void psx_guest_cycle_scale_restore(const uint32_t in[3]) { (void)in; }
 void psx_devices_mmio_sync(void) {}
 void psx_devices_service_to_now(void) {}
+void spu_catch_up(void) {}
+int mod_runtime_snapshot_package_active(const char *id) { (void)id; return 0; }
 int  psx_get_in_exception(void) { return 0; }
 void psx_irq_raise(uint32_t bit, uint32_t detail) { (void)bit; (void)detail; }
 void psx_irq_refresh_cause_ip2(void) {}
@@ -161,6 +163,8 @@ STUB_SECTION(spu, 80u)
 STUB_SECTION(cdrom, 64u)
 STUB_SECTION(sio, 48u)
 STUB_SECTION(mdec, 400u)
+STUB_SECTION(spu_cd, 4u)
+int spu_snapshot_len_ok(uint32_t len) { return len == 80u; }
 int sio_snapshot_validate(const uint8_t *p, uint32_t len) { return p && len == 48u; }
 int mdec_snapshot_validate(const uint8_t *p, uint32_t len) { return p && len == 400u; }
 

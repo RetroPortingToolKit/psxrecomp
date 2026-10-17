@@ -7,6 +7,8 @@
 
 #include "cpu_state.h"
 #include "mod_netplay.h"
+#include "mod_memory.h"
+#include "mod_texture_banks.h"
 #include "execution_profile.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
@@ -1745,8 +1747,9 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
  * Fit and fixed aspect apply_netplay_local_viewport_aspect() set, into an
  * offline rematch. The rest is defensive, for the state listed here only; see
  * docs/MOD_PACKAGES.md "Session starts" for what is exempt and why (the
- * renderer and fixed aspect are launcher controls; guest/GPU-DMA memory,
- * texture-packet arenas and defined texture banks live for the process).
+ * renderer and fixed aspect are launcher controls; enhancement guest/GPU-DMA
+ * arenas, texture-packet registrations and retained texture banks are retired
+ * separately at start_mod_session before the new activation).
  *
  * Function-entry hooks need nothing here: the commit or netplay clear empties
  * upstream's hook table, and only activation rebuilds it.
@@ -12943,8 +12946,26 @@ namespace {
      * thread and the device key. Nothing here blocks a frame except the
      * rename, which is one round trip and wants a verdict for its modal. */
     int ae_np_account_available(void*) { return rnet_account_available(); }
-    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
-    int ae_np_account_state(void*) { return rnet_account_state(); }
+    int ae_np_account_login_begin(void*) {
+        int accepted=rnet_account_login_begin();
+        std::fprintf(stderr,"netplay.account: sign-in request accepted=%d\n",accepted);
+        std::fflush(stderr);
+        return accepted;
+    }
+    int ae_np_account_state(void*) {
+        int current=rnet_account_state();
+        static int previous=-1;
+        if(current!=previous) {
+            previous=current;
+            std::fprintf(stderr,"netplay.account: state=%d\n",current);
+            if(current==RNET_ACCOUNT_FAILED) {
+                const char *error=rnet_account_error();
+                std::fprintf(stderr,"netplay.account: failure=%s\n",error?error:"");
+            }
+            std::fflush(stderr);
+        }
+        return current;
+    }
     const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
     const char* ae_np_account_username(void*) { return rnet_account_username(); }
     const char* ae_np_account_error(void*) { return rnet_account_error(); }
@@ -15013,7 +15034,7 @@ namespace {
         psx_lobby_json_str(req.c_str(), "handoff_query", op, sizeof(op));
         psx_lobby_json_str(req.c_str(), "handoff_disc", disc, sizeof(disc));
         std::string ans = "{\"v\":1,\"engine\":\"psxrecomp\",\"handoff\":1";
-        char msg[1024] = {};
+        char msg[PSX_LOBBY_START_JSON_CAP] = {};
         ae_np_refresh_bios_offer_for(settings);
         if (std::strcmp(op, "identity") == 0) {
             const std::string d = disc[0] ? std::string(disc) : initial_disc;
@@ -18424,7 +18445,7 @@ int main(int argc, char** argv) {
      * renderer and window creation only after session_reboot, so activation
      * precedes them either way. A netplay clear leaves no plan, so nothing
      * activates and the session stays vanilla. */
-    auto start_mod_session = [&](bool netplay) {
+    auto start_mod_session = [&](bool netplay) -> bool {
         /* Clear game-owned controller overrides/policies and load/disc-speed
          * choices first so disabling a package cannot leave its prior state
          * latched across a soft return. */
@@ -18454,6 +18475,15 @@ int main(int argc, char** argv) {
                       "reset_mod_owned_presentation() would clobber a launcher "
                       "setting; restore only when the feature is mod-owned");
         reset_mod_owned_presentation();
+        /* Cold boot has no renderer yet. A lobby rematch reaches here only
+         * after scheduler unwind and renderer/audio/window teardown. Retire
+         * texture IDs and packet registrations before reusing guest addresses;
+         * memory_init below must preserve the new activation's allocations. */
+        if (!mod_texture_banks_reset_session() || !psx_mod_memory_reset_session()) {
+            std::fprintf(stderr,
+                         "psxrecomp: cannot reset enhancement resources at session start\n");
+            return false;
+        }
         /* Netplay own-view mods: the widescreen margin follows them into the
          * sandboxed own view only; the shared game keeps the stock cull. */
         gpu_ws_set_local_view_only(
@@ -18492,8 +18522,12 @@ int main(int argc, char** argv) {
                     g_turbo_load_release_frames);
             }
         }
+        return true;
     };
-    start_mod_session(net_cfg.enabled);
+    if (!start_mod_session(net_cfg.enabled)) {
+        SDL_Quit();
+        return 1;
+    }
 
     /* Re-apply the resolved language to the translation layer. text_xlate_init
      * (at config load) only saw the game.toml default; this folds in the
@@ -20767,7 +20801,10 @@ soft_return_lobby:
                 g_video_aspect_num = 4;
                 g_video_aspect_den = 3;
             }
-            start_mod_session(net_cfg.enabled);
+            if (!start_mod_session(net_cfg.enabled)) {
+                SDL_Quit();
+                return 1;
+            }
             disc_path_str = session_disc_path(resolved_disc);
             std::printf("psxrecomp: rematch from lobby (netplay=%d)\n",
                         net_cfg.enabled ? 1 : 0);

@@ -77,6 +77,13 @@ uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address);
  * Unallocated bytes, BIOS aliases and a range crossing its end are refused. */
 int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes);
 uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment);
+/* Runtime session boundary only, after guest/render stacks and renderer work
+ * have stopped, before any plugin activation. Discard the previous session's
+ * page journal and zero both enhancement arenas, restoring allocation bases.
+ * Reject an active render pass without changing bytes/layout. Texture-bank
+ * and packet registrations must be retired first. Ordinary memory_init()
+ * deliberately preserves the new session's already-activated allocations. */
+int psx_mod_memory_reset_session(void);
 /* Allocations are fixed during activation. Snapshot allocated bytes, never
  * host pointers; immutable host assets are reconstructed separately. */
 uint32_t psx_mod_memory_snapshot_bytes(void);

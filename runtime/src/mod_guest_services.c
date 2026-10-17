@@ -120,6 +120,7 @@ int psx_mod_host_write_ram(uint32_t address, const void* data, uint32_t bytes) {
 int psx_mod_spu_sample_bank(uint32_t bank,const void *adpcm,uint32_t bytes) {
     return spu_register_sample_bank(bank,adpcm,bytes);
 }
+uint32_t psx_mod_spu_sample_bank_epoch(void) {return spu_sample_bank_epoch();}
 int psx_mod_spu_bind_voice_bank(unsigned voice,uint32_t bank) {
     return spu_bind_next_voice_bank(voice,bank);
 }

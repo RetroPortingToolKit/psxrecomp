@@ -486,6 +486,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_runtime.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/mod_snapshot.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_netplay.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_resident.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_guest_services.c

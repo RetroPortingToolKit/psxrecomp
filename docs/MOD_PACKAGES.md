@@ -605,8 +605,12 @@ Not reset, and why:
 - **Guest memory, GPU-DMA memory, texture-packet arenas and defined texture
   banks** (`psx_mod_alloc_guest_memory`, `psx_mod_alloc_gpu_dma_memory`,
   `psx_mod_alloc_texture_packet_memory`, `psx_mod_define_texture_bank`) live
-  for the process. A bank ID is read only from packets in a plugin's own arena,
-  which stock game code does not use.
+  for one session. After renderer teardown, their registrations and enhancement
+  arenas reset before every plugin activation, including lobby rematches.
+  Plugins recreate their allocations and resources during activation; ordinary
+  `memory_init()` runs later and leaves those allocations intact. A bank ID is
+  read only from packets in a plugin's own arena, which stock game code does
+  not use.
 
 **A rematch is a full session start.** It re-enters below the first session's
 setup block, so after its commit or netplay clear it runs the same sequence as
