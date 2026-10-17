@@ -2,8 +2,9 @@
 
 #include "psx_sdl.h"
 
-/* On Windows/SDL3, borderless stays a normal desktop-sized window. Other
- * window managers retain native desktop fullscreen (Wayland owns placement). */
+/* On Windows, borderless stays a normal desktop-sized window with either SDL
+ * backend. Other window managers retain native desktop fullscreen (Wayland
+ * owns placement). */
 struct PsxWindowFullscreen {
     int mode = 0;
     int x = 0, y = 0, width = 0, height = 0;
@@ -61,12 +62,14 @@ static inline int psx_window_fullscreen_set(SDL_Window* window,
     SDL_SyncWindow(window);
 #endif
     if (mode == 1) {
-#if defined(_WIN32) && defined(PSX_SDL3)
+#if defined(_WIN32)
         SDL_SetWindowBordered(window, SDL_FALSE);
         SDL_SetWindowResizable(window, SDL_FALSE);
         SDL_SetWindowPosition(window, desktop.x, desktop.y);
         SDL_SetWindowSize(window, desktop.w, desktop.h);
+#if defined(PSX_SDL3)
         SDL_SyncWindow(window);
+#endif
 #elif defined(PSX_SDL3)
         if (!SDL_SetWindowFullscreen(window, true)) return -1;
 #else
