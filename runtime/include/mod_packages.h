@@ -595,6 +595,8 @@ private:
 bool mod_register_builtin_resolver(const std::string& id, ModBuiltinResolver resolver);
 void mod_clear_builtin_resolvers_for_tests();
 bool mod_register_activation_plugin(const std::string& id, void (*callback)(void));
+bool mod_register_session_reset_plugin(const std::string& id, void (*callback)(void));
+void mod_reset_plugin_sessions();
 bool mod_register_vblank_plugin(const std::string& id, void (*callback)(void));
 bool mod_register_savestate_plugin(const std::string& id, void (*callback)(void));
 void mod_invoke_savestate_plugin(const std::string& id);

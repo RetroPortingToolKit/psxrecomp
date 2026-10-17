@@ -43,6 +43,7 @@ std::map<std::string, MediaPreparer>& media_preparers() {
 struct RegisteredPlugin {
     void (*savestate)(void) = nullptr;
     PSXModActivationCallback activation = nullptr;
+    PSXModActivationCallback session_reset = nullptr;
     PSXModVBlankCallback vblank = nullptr;
     /* Generated-function entry hooks, keyed by guest address. One id may
      * observe several functions. */
@@ -1491,6 +1492,19 @@ bool mod_register_activation_plugin(const std::string& id, void (*callback)(void
     return true;
 }
 
+bool mod_register_session_reset_plugin(const std::string& id, void (*callback)(void)) {
+    if (!valid_id(id) || !callback) return false;
+    RegisteredPlugin& plugin = registered_plugins()[id];
+    if (plugin.session_reset) return false;
+    plugin.session_reset = callback;
+    return true;
+}
+
+void mod_reset_plugin_sessions() {
+    for (const auto& entry : registered_plugins())
+        if (entry.second.session_reset) entry.second.session_reset();
+}
+
 bool mod_register_vblank_plugin(const std::string& id, void (*callback)(void)) {
     if (!valid_id(id) || !callback) return false;
     RegisteredPlugin& plugin = registered_plugins()[id];
@@ -1523,7 +1537,7 @@ bool mod_register_function_filter_plugin(const std::string& id, uint32_t address
 bool mod_plugin_registered(const std::string& id) {
     const auto found = registered_plugins().find(id);
     return found != registered_plugins().end() &&
-        (found->second.activation || found->second.vblank || found->second.savestate ||
+        (found->second.activation || found->second.session_reset || found->second.vblank || found->second.savestate ||
          !found->second.function_entries.empty() || !found->second.guest_functions.empty() ||
          !found->second.instructions.empty());
 }
@@ -1605,7 +1619,7 @@ void mod_clear_plugins_for_tests() {
 std::vector<std::string> mod_registered_plugin_ids() {
     std::vector<std::string> ids;
     for (const auto& entry : registered_plugins())
-        if (entry.second.activation || entry.second.vblank ||
+        if (entry.second.activation || entry.second.session_reset || entry.second.vblank ||
             !entry.second.function_entries.empty() || !entry.second.guest_functions.empty())
             ids.push_back(entry.first);
     return ids;  /* std::map keeps them sorted */
@@ -4257,6 +4271,12 @@ extern "C" int psx_mod_register_activation_plugin(
     const char* id, PSXModActivationCallback callback) {
     return id &&
         PSXRecompV4::mod_register_activation_plugin(id, callback) ? 1 : 0;
+}
+
+extern "C" int psx_mod_register_session_reset_plugin(
+    const char* id, PSXModActivationCallback callback) {
+    return id &&
+        PSXRecompV4::mod_register_session_reset_plugin(id, callback) ? 1 : 0;
 }
 
 extern "C" int psx_mod_register_savestate_plugin(

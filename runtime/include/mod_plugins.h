@@ -25,6 +25,11 @@ typedef int (*PSXModFunctionFilterCallback)(struct CPUState* cpu,
  */
 int psx_mod_register_activation_plugin(const char* id,
                                        PSXModActivationCallback callback);
+/* Host-only cleanup before each plan activates, including plans that omit this
+ * plugin, and when netplay clears the offline plan. Runs with emulation stopped
+ * and without a current feature/resource context. Never mutate guest state. */
+int psx_mod_register_session_reset_plugin(const char* id,
+                                          PSXModActivationCallback callback);
 int psx_mod_register_vblank_plugin(const char* id,
                                    PSXModVBlankCallback callback);
 /* Runs after successful guest-state restore, before the restored PC resumes.

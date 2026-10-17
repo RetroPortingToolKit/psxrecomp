@@ -65,6 +65,7 @@ std::ifstream replay;
 Row pending{};               // replay row the next VBlank verifies
 bool pending_valid;
 uint32_t sequence;
+uint32_t osd_sequence;
 bool started, replaying, replay_failed, recording_failed, owns_sources, osd_enabled;
 bool baseline_loaded;
 bool input_only, legacy_route;
@@ -453,7 +454,7 @@ void restored() {
     psx_mod_counter_add("psxrecomp.diagnostics.state-segments", 1);
 }
 
-std::string input_line(unsigned seat, uint16_t buttons) {
+std::string input_line(unsigned seat, uint16_t buttons, uint32_t frame) {
     static const char *names[] = {"Se", "L3", "R3", "St", "U", "R", "D", "L", "L2", "R2", "L1", "R1", "T", "O", "X", "[]"};
     std::string text = "P" + std::to_string(seat + 1) + ":";
     bool held = false;
@@ -461,17 +462,24 @@ std::string input_line(unsigned seat, uint16_t buttons) {
         text += ' '; text += names[bit]; held = true;
     }
     if (!held) text += " -";
-    text += "  F" + std::to_string(sequence);
+    text += "  F" + std::to_string(frame);
     if (replay_failed || recording_failed) text += " ERROR";
     else if (replaying) text += input_only ? " ROUTE" : " PLAY";
     else if (recording.is_open()) text += " REC";
     return text;
 }
 
-void show(const Row& row) {
-    if (!osd_enabled) return;
-    auto first = input_line(0, (uint16_t)row[ColButtons]), second = input_line(1, (uint16_t)row[ColButtons + 1]);
+void tick_osd() {
+    if (!osd_enabled || psx_mod_netplay_is_active()) {
+        host_osd_set_diagnostics(nullptr, nullptr);
+        return;
+    }
+    // Input Display is independent of Recording. Only sample the accepted
+    // button words; do not hash RAM, enqueue rows or create session files.
+    auto first = input_line(0, sio_get_pad_buttons_slot(0), osd_sequence);
+    auto second = input_line(1, sio_get_pad_buttons_slot(1), osd_sequence);
     host_osd_set_diagnostics(first.c_str(), second.c_str());
+    ++osd_sequence;
 }
 
 const char *column_name(unsigned column) {
@@ -513,7 +521,6 @@ void tick() {
         verify(row);
         if (replaying) {
             psx_mod_counter_add(input_only ? "psxrecomp.diagnostics.route-inputs" : "psxrecomp.diagnostics.replayed-inputs", 1);
-            show(row);
             const uint32_t verified = sequence + 1;
             if (!next_row()) {
                 replay.close(); replaying = false; pending_valid = false;
@@ -533,7 +540,6 @@ void tick() {
             recording_location(std::string("Recording FAILED: ") + recording.error_text());
             fprintf(stderr, "psxrecomp.diagnostics: %s\n", recording.error_text());
         }
-        show(row);
     }
     ++sequence;
     const uint64_t ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -543,13 +549,21 @@ void tick() {
     if (ns > 1000000) ++stats.slow;
 }
 
-void activate() {
+void reset_session() {
     release_sources();
     close_recording(); replay.close(); recording.clear(); replay.clear();
     started = replaying = replay_failed = recording_failed = pending_valid = false;
     baseline_loaded = pending_baseline_unavailable = false;
     input_only = legacy_route = false;
     legacy_connected = 4;
+    osd_enabled = false;
+    sequence = osd_sequence = 0; last_generation = 0;
+    pending_baseline.clear(); expected_baseline.clear();
+    replay_path.clear(); baseline_path.clear();
+    host_osd_set_diagnostics(nullptr, nullptr);
+}
+
+void activate() {
 #ifndef PSX_NO_DEBUG_TOOLS
     const char* route = getenv("PSX_DIAGNOSTIC_INPUT_ONLY");
     input_only = route && !strcmp(route,"1");
@@ -564,9 +578,6 @@ void activate() {
         started = true; fail("input-only routes require a developer build"); return;
     }
 #endif
-    osd_enabled = false;
-    sequence = 0; last_generation = 0;
-    pending_baseline.clear(); expected_baseline.clear();
     const char *path = getenv("PSX_DIAGNOSTIC_REPLAY");
     replay_path = path ? path : "";
     const char *baseline = getenv("PSX_DIAGNOSTIC_BASELINE");
@@ -605,14 +616,18 @@ void activate() {
     host_osd_set_diagnostics(nullptr, nullptr);
 }
 
-/* The input display is its own feature so it can be switched off while
- * recording stays on. Activation order follows the manifest. */
-void activate_osd() { osd_enabled = true; }
+void activate_osd() {
+    osd_enabled = true;
+    osd_sequence = 0;
+    host_osd_set_diagnostics(nullptr, nullptr);
+}
 }
 
 PSX_MOD_CONSTRUCTOR(psx_register_playtest_diagnostics) {
+    psx_mod_register_session_reset_plugin(PSX_DIAGNOSTIC_MOD_ID, reset_session);
     psx_mod_register_activation_plugin(PSX_DIAGNOSTIC_MOD_ID, activate);
     psx_mod_register_vblank_plugin(PSX_DIAGNOSTIC_MOD_ID, tick);
     psx_mod_register_savestate_plugin(PSX_DIAGNOSTIC_MOD_ID, restored);
     psx_mod_register_activation_plugin(PSX_DIAGNOSTIC_MOD_ID ".osd", activate_osd);
+    psx_mod_register_vblank_plugin(PSX_DIAGNOSTIC_MOD_ID ".osd", tick_osd);
 }

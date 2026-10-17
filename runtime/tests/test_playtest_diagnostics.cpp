@@ -37,17 +37,27 @@ static int status_ok=1,status_slot=-1;
 static const char *status_op="save";
 static std::vector<uint8_t> slot_image;
 static std::string plan_text="fixture-plan";
-static void (*activation)(),(*vblank)(),(*savestate)(),(*osd_activation)();
+static void (*activation)(),(*vblank)(),(*savestate)(),(*osd_activation)(),(*osd_vblank)(),(*session_reset)();
+static void (*recording_activation)();
+static uint64_t ram_reads;
+
+static void activate_recording_plan() {session_reset();recording_activation();}
 
 uint32_t psx_mod_read_word(uint32_t a) {
+    ++ram_reads;
     uint32_t v;memcpy(&v,&memory[a&0x1FFFFC],4);return v;
 }
 int psx_mod_register_activation_plugin(const char *id,PSXModActivationCallback cb) {
-    if(!strcmp(id,"psxrecomp.diagnostics"))activation=cb;
+    if(!strcmp(id,"psxrecomp.diagnostics")) {recording_activation=cb;activation=activate_recording_plan;}
     else if(!strcmp(id,"psxrecomp.diagnostics.osd"))osd_activation=cb;
     return 1;
 }
-int psx_mod_register_vblank_plugin(const char*,PSXModVBlankCallback cb) {vblank=cb;return 1;}
+int psx_mod_register_session_reset_plugin(const char*,PSXModActivationCallback cb) {session_reset=cb;return 1;}
+int psx_mod_register_vblank_plugin(const char *id,PSXModVBlankCallback cb) {
+    if(!strcmp(id,"psxrecomp.diagnostics"))vblank=cb;
+    else if(!strcmp(id,"psxrecomp.diagnostics.osd"))osd_vblank=cb;
+    return 1;
+}
 int psx_mod_register_savestate_plugin(const char*,PSXModActivationCallback cb) {savestate=cb;return 1;}
 int psx_mod_netplay_is_active(void) {return online;}
 int psx_mod_set_controller_source(uint32_t seat,PSXModControllerSource source) {sources.at(seat)=source;source_connected.at(seat)=1;return 1;}
@@ -144,6 +154,7 @@ static void guest_frame(unsigned t) {
 static void run_frames(unsigned from,unsigned to,int tamper=-1) {
     for(unsigned t=from;t<to;++t) {
         vblank();
+        if(osd_enabled)osd_vblank();
         if((int)t==tamper)memory[0x80000]^=1;
         guest_frame(t);boundary_sample(script(t));
     }
@@ -172,13 +183,37 @@ int main(int argc,char **argv) {
     std::filesystem::create_directories(PSXRecompV4::mod_runtime_root());
     {std::ofstream state(PSXRecompV4::mod_runtime_root()/"state.toml");state<<"format_version = 2\n";}
     {std::ofstream settings(std::filesystem::path(application_root)/"settings.toml");settings<<"[video]\n";}
-    CHECK(activation && vblank && savestate && osd_activation);
+    CHECK(activation && vblank && savestate && osd_activation && osd_vblank && session_reset);
+
+    // Display-only plans invoke their own callback: accepted input changes
+    // are visible without creating files, hashing RAM or taking pad ownership.
+    reset_machine();session_reset();osd_activation();
+    const auto display_reads=ram_reads;
+    sio_buttons[0]=0xBFFF;osd_vblank();
+    CHECK(shown[0].find(" X ")!=std::string::npos && shown[0].find("F0")!=std::string::npos);
+    CHECK(shown[0].find("REC")==std::string::npos && !recording.is_open() && !telemetry.is_open());
+    sio_buttons[0]=0xFFFF;sio_buttons[1]=0x7FFF;osd_vblank();
+    CHECK(shown[0].find(" X ")==std::string::npos && shown[1].find(" [] ")!=std::string::npos);
+    CHECK(shown[1].find("F1")!=std::string::npos && ram_reads==display_reads);
+    CHECK(!sources[0] && !sources[1] && sequence==0);
+    CHECK(!std::filesystem::exists(std::filesystem::path(application_root)/"saves/diagnostics"));
+    // Reactivation starts at F0; online suspension clears stale text and
+    // offline resumption does not count the suspended network frames.
+    osd_activation();CHECK(shown[0].empty());osd_vblank();
+    CHECK(shown[0].find("F0")!=std::string::npos);
+    online=true;osd_vblank();CHECK(shown[0].empty() && shown[1].empty());
+    online=false;osd_vblank();CHECK(shown[0].find("F1")!=std::string::npos);
+    session_reset();CHECK(shown[0].empty() && shown[1].empty() && !osd_enabled);
 
     // ---- Record 200 frames of scripted two-seat input --------------------------
     env("PSX_DIAGNOSTIC_REPLAY","");env("PSX_DIAGNOSTIC_BASELINE","");
-    reset_machine();activation();osd_activation();
+    // The two features may activate in either order after the engine reset.
+    reset_machine();session_reset();osd_activation();recording_activation();
+    CHECK(osd_enabled);
     CHECK(!sources[0] && !sources[1]);
+    const auto recording_reads=ram_reads;
     run_frames(0,200);
+    CHECK(ram_reads-recording_reads==200*DigestWords); // display never adds RAM sampling
     CHECK(shown[0].find("REC")!=std::string::npos && shown[0].find("F199")!=std::string::npos);
     recording.flush();
     telemetry.flush();
@@ -297,7 +332,7 @@ int main(int argc,char **argv) {
     {auto before=std::distance(std::filesystem::directory_iterator(std::filesystem::path(application_root)/"saves/diagnostics"),
                                std::filesystem::directory_iterator{});
      online=true;reset_machine();activation();osd_activation();
-     for(unsigned t=0;t<5;++t)vblank();
+     for(unsigned t=0;t<5;++t) {vblank();osd_vblank();}
      CHECK(!recording.is_open() && shown[0].empty() && sequence==0);
      CHECK(std::distance(std::filesystem::directory_iterator(std::filesystem::path(application_root)/"saves/diagnostics"),
                          std::filesystem::directory_iterator{})==before);
@@ -359,6 +394,14 @@ int main(int argc,char **argv) {
     auto location=slurp(std::filesystem::path(application_root)/"diagnostics-location.txt");
     CHECK(location.find("Recording: ")!=std::string::npos);
     CHECK(location.find("psxrecomp-diagnostics")!=std::string::npos);
-    close_recording();
+    // Play Again with Recording disabled must release the previous capture
+    // and clear its REC label before a new display-only plan starts.
+    session_reset();
+    CHECK(!recording.is_open() && !telemetry.is_open() && shown[0].empty());
+    const auto restarted_reads=ram_reads;
+    osd_activation();osd_vblank();
+    CHECK(shown[0].find("F0")!=std::string::npos && shown[0].find("REC")==std::string::npos);
+    CHECK(ram_reads==restarted_reads && !recording.is_open() && !sources[0]);
+    session_reset();
     printf("diagnostic recording/replay boundary checks passed\n");return 0;
 }

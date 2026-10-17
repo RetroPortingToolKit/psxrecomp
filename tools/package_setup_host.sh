@@ -280,6 +280,9 @@ else
 fi
 EXE_BASENAME="$(basename "${EXE}")"
 EXE_DIR="$(dirname "${EXE}")"
+if [[ -f "${EXE_DIR}/replay-diagnostics.py" ]]; then
+  cp -a "${EXE_DIR}/replay-diagnostics.py" "${STAGE}/replay-diagnostics.py"
+fi
 
 # Windows: CMake may already have placed imported runtime DLLs (zlib1.dll)
 # next to the host. Copy siblings into the stage before MinGW bundling —

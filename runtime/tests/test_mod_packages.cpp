@@ -14,6 +14,7 @@ namespace fs = std::filesystem;
 using namespace PSXRecompV4;
 
 static int failures;
+static int session_resets;
 
 static void check(bool value, const char* message) {
     if (!value) {
@@ -321,6 +322,16 @@ int main() {
     check(mod_register_vblank_plugin(
               "test.vblank", +[]() {}),
           "test plugin must register");
+    check(mod_register_session_reset_plugin(
+              "test.vblank", +[]() { ++session_resets; }),
+          "session cleanup must register independently of active features");
+    check(!mod_register_session_reset_plugin("test.vblank", +[]() {}),
+          "duplicate session cleanup must be rejected");
+    // No manifest or active plan exists yet: deselected plugins still clean
+    // up the host state left by the previous session.
+    mod_reset_plugin_sessions();
+    mod_reset_plugin_sessions();
+    check(session_resets == 2, "each session boundary must invoke registered cleanup");
     write_text(root / "packages/plugin.mod/1.0.0/manifest.toml",
                "format_version = 5\n"
                "id = \"plugin.mod\"\n"

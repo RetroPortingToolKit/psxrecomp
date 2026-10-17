@@ -29,7 +29,10 @@ Create a title mod package with a recording feature whose plugin is
 `game.diagnostics.osd`. The package controls their defaults. The helper also
 covers an existing `psx-runtime-pgxp` sibling and stages `replay-diagnostics.py`
 beside both executables. The bundled-release packager includes this script when
-present; AppImage wrapping preserves it in the payload. No texture feature,
+present, as does the setup-host kit packager; AppImage wrapping preserves it in
+the payload. Input Display also works with Recording disabled, with no RAM
+digest or file capture. Session changes and netplay suspension clear the display.
+No texture feature,
 texture package or other enhancement is enabled or exposed by this helper.
 
 The implementation reads no title-specific addresses. `telemetry.csv` stores

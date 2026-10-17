@@ -1599,6 +1599,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
 }
 
 bool mod_runtime_clear_for_netplay(std::string* error) {
+    mod_reset_plugin_sessions();
     psx_mod_netplay_set_active(0);
     (void)psx_mod_netplay_set_options_identity("");
     state().ticket_ready = false;
@@ -2844,6 +2845,7 @@ bool mod_runtime_read_disc_file_sectors(const std::string& path, uint32_t max_by
 extern "C" void mod_runtime_activate_plugins(void) {
     using namespace PSXRecompV4;
     HostLaunchTimingScope timing(HOST_LAUNCH_PLUGIN_ACTIVATION);
+    mod_reset_plugin_sessions();
     RuntimeMods& s = state();
     s.ticket_ready = false;
     psx_projection_reset_session();
