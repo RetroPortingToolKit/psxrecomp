@@ -256,8 +256,12 @@ void psx_mod_set_native_wide_projection_correction(int enabled);
  * signed projection through exact PGXP word transport; 4:3, software and
  * untracked UI stay on their existing paths. No guest GTE/gameplay changes. */
 void psx_mod_set_native_wide_near_clip(int enabled);
+/* For a verified textured render path: all three live SXY words must carry
+ * intact signed projection provenance and the active renderer must support
+ * host clipping. This query never changes guest registers or GTE flags. */
+int psx_mod_projected_triangle_clipping_supported(const struct CPUState* cpu);
 /* Bind render-only NCLIP branch consumers to full instruction words. These
- * recover winding only when valid horizontal projections saturated; guest
+ * recover winding for proven saturated projections or camera crossings; guest
  * MAC0 and flags remain architectural. Empty registration disables the sites. */
 void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
     const uint32_t* expected, int count);
@@ -265,6 +269,12 @@ void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
  * preceding NCLIP result. Exact address/word must match an existing site;
  * registering the base site list again resets every site to the latest result. */
 void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expected);
+/* A verified instruction hook can supply the original renderer's conditional
+ * MAC0 negation before this branch executes. This preserves both exact raw
+ * provenance and the game's winding convention, including raw MAC0 == 0.
+ * Base registration resets negation; address/word must match a bound site. */
+void psx_mod_set_native_wide_nclip_negated_site(uint32_t address, uint32_t expected,
+                                               int negated);
 
 /* Mark a guest GPU packet (P_TAG address) as persistent screen-space HUD.
  * edge = -1 left, +1 right, 0 clears a reused packet's tag. The native-wide
@@ -286,6 +296,18 @@ void psx_mod_anchor_hud_primitive(uint32_t primitive, int edge);
  * Both services are render-only, word guarded and inert at native 4:3. */
 void psx_mod_tag_screen_mask_quad(uint32_t primitive);
 void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale);
+/* A verified CPU near-clip producer may publish its unclamped screen point.
+ * The original aligned RAM word must equal the producer's +/-1023 clamp;
+ * the complete word is rechecked through cpu->read_word. Metadata follows
+ * ordinary tracked loads/stores and is invalidated by every later writer.
+ * This records presentation provenance only; RAM and CPU state are untouched. */
+int psx_mod_record_cpu_projected_vertex(const struct CPUState* cpu,
+    uint32_t address, uint32_t expected, int32_t x, int32_t y,
+    uint16_t depth, uint16_t near_depth);
+/* A verified quad renderer may prove its fourth source corner lies in front
+ * when the three current NCLIP corners are behind the near plane. This only
+ * supplements the current full-word winding proof; guest registers stay stock. */
+int psx_mod_extend_nclip_for_quad_vertex(const struct CPUState* cpu, uint32_t vertex);
 /* Exclude a known world packet from screen-space backdrop stretching, even
  * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
 void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
@@ -876,6 +898,8 @@ int psx_mod_set_bezel_artwork(const char* path);
  * uncapped host speed (1 is a no-op, i.e. authentic pacing).
  * release_frames controls how many guest frames acceleration may remain active
  * after the load predicate clears; zero is the precise/speedrun-safe policy.
+ * Applies immediately, including at VBlank boundaries; 1 restores normal
+ * pacing and presentation, and 0 selects uncapped loading.
  */
 int psx_mod_set_load_acceleration(uint32_t wall_clock_multiplier,
                                   uint32_t release_frames);

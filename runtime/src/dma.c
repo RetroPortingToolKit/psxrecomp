@@ -1019,7 +1019,9 @@ static void execute_ch6_otc(void) {
      * BCR bits 0-15 = number of entries. */
     uint32_t num_entries = channels[6].bcr & 0xFFFF;
     if (num_entries == 0) num_entries = 0x10000;
-    uint32_t addr = DMA_RAM_ADDR(channels[6].madr);
+    /* Trusted enhanced OTs share the GPU linked-list DMA aperture. Folding
+     * their addresses through retail RAM would clear unrelated guest data. */
+    uint32_t addr = psx_mod_gpu_dma_resolve_address(channels[6].madr);
 
     for (uint32_t i = 0; i < num_entries; i++) {
         uint32_t val;
@@ -1031,7 +1033,7 @@ static void execute_ch6_otc(void) {
             val = (addr - 4) & 0x00FFFFFFu;
         }
         psx_write_word(addr, val);
-        addr = DMA_RAM_ADDR((addr - 4));
+        addr = psx_mod_gpu_dma_resolve_address(addr - 4u);
     }
 
     complete_transfer(6);

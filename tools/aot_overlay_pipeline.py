@@ -24,6 +24,7 @@ from packed_sector_table import extract_members as extract_sector_members
 from sector_extent_archive import extract_members as extract_extent_members
 from aligned_lzss_banks import banks as extract_lzss_banks
 from indexed_lzss_pack import members as extract_pack_members
+from flagged_lz_archive import members as extract_flagged_members, decode as decode_flagged_lz
 from mips_tagged_relocations import parse as parse_tagged_relocations, relocate as relocate_tagged_image
 from counted_mips_relocations import parse as parse_counted_relocations, relocate as relocate_counted_image
 from mod_package_images import ModPackageView
@@ -370,6 +371,8 @@ def positioned_sources(disc, specifications, views=None, ram_bytes=RETAIL_RAM_BY
 def spec_sources(disc, spec):
     sources = []
     method = spec['method']
+    if method == 'flagged_lz_archive':
+        return flagged_archive_sources(disc, spec)
     if method == 'counted_relocated_members':
         return counted_relocated_sources(disc, spec)
     if method == 'fixed_address_extents':
@@ -469,6 +472,53 @@ def spec_sources(disc, spec):
                     aliases.append(other)
         sources.append(dict(name=name.upper(), base=base, body=body, spec=spec,
                             source_offset=offset, aliases=aliases))
+    return sources
+
+
+def flagged_archive_sources(disc, spec):
+    """Verified selected code from a completely classified archive directory."""
+    members = extract_flagged_members(disc.read(spec['file']), count=number(spec['count']),
+                                     alignment=number(spec.get('alignment', 2048)))
+    configured = {number(item['index']): item for item in spec['members']}
+    excluded = {number(item['index']): item for item in spec.get('excluded_members', [])}
+    require(len(configured) == len(spec['members']) and
+            len(excluded) == len(spec.get('excluded_members', [])), 'Duplicate member classification')
+    require(not configured.keys() & excluded.keys() and
+            configured.keys() | excluded.keys() == set(range(len(members))),
+            'Archive inventory has missing or conflicting classifications')
+    require(all(item.get('reason', '').strip() for item in excluded.values()),
+            'Excluded archive member needs a reason')
+    sources = []
+    for member in members:
+        item = configured.get(member.index)
+        if item is None:
+            continue
+        require(member.decoded_size <= 0x80800000 - 0x80000000,
+                'Decoded code image exceeds the RAM window')
+        body = (decode_flagged_lz(member.payload, member.decoded_size)
+                if member.stored_size else bytes(member.payload))
+        require(hashlib.sha256(body).hexdigest() == item['decoded_sha256'],
+                'Decoded archive member changed')
+        offset = 0
+        if item.get('psx_exe'):
+            require(body[:8] == b'PS-X EXE' and len(body) >= 0x800,
+                    'Archive member has no PS-X EXE header')
+            base, size = struct.unpack_from('<II', body, 0x18)
+            require(base == number(item['load_addr']) and size <= len(body) - 0x800,
+                    'Archive EXE placement or text size changed')
+            offset = 0x800
+            body = body[offset:offset + size]
+        else:
+            base = number(item['load_addr'])
+            offset = number(item.get('image_offset', 0))
+            size = number(item.get('image_size', len(body) - offset))
+            require(0 <= offset < offset + size <= len(body),
+                    'Archive executable slice outside decoded member')
+            body = body[offset:offset + size]
+        require(base % 4 == 0 and in_ram(base, len(body)), 'Archive code image outside RAM')
+        sources.append(dict(name=f"{spec['file'].upper()}:ENTRY_{member.index:04X}",
+            base=base, body=body, spec={**spec, **item}, source_file=spec['file'].upper(),
+            source_offset=member.source_offset, aliases=[]))
     return sources
 
 
@@ -641,7 +691,7 @@ def prepare(profile, disc, records, output, views=None):
             if (lo, hi) == (source['base'], source['base'] + len(source['body'])):
                 singles[source['name']] = record
     for source in sources:
-        if source['spec']['method'] in ('fixed_address_files', 'fixed_address_extents', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'indexed_lzss_members', 'tagged_relocated_files', 'counted_relocated_members') and source['name'] not in singles:
+        if source['spec']['method'] in ('fixed_address_files', 'fixed_address_extents', 'packed_sector_members', 'sector_extent_members', 'aligned_lzss_banks', 'indexed_lzss_members', 'flagged_lz_archive', 'tagged_relocated_files', 'counted_relocated_members') and source['name'] not in singles:
             record = make_fixed_record(source, disc)
             singles[source['name']] = record
             records.append(record)
@@ -744,6 +794,20 @@ def game_disc(game_toml, config, cue=None):
     return Path(cue).resolve() if cue else (Path(game_toml).parent / config['game']['disc']).resolve()
 
 
+def generic_exclusion_arguments(profile, disc):
+    """Explicit original-file exclusions, e.g. unrelated playable demos."""
+    arguments, seen = [], set()
+    for item in profile.get('excluded_files', []):
+        name = item['file'].replace('\\', '/').strip('/').upper()
+        require(name and name not in seen and item.get('reason', '').strip(),
+                'Excluded original file needs a unique name and reason')
+        require(hashlib.sha256(disc.read(name)).hexdigest() == item['sha256'],
+                f'Excluded original file changed: {name}')
+        seen.add(name)
+        arguments += ['--exclude-file', name]
+    return arguments
+
+
 def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, profile=None):
     import tomllib
     config = tomllib.loads(game_toml.read_text(encoding='utf-8-sig'))
@@ -761,6 +825,7 @@ def extract(profile_path, game_toml, recompiler, output, cue=None, disc=None, pr
                '--out', str(output / 'generic.json'), '--tmp', str(output / 'extract-tmp'),
                '--project-root', str(FRAMEWORK)]
     command += ['--require-bios-resident'] if profile.get('bios_resident') else ['--no-bios-resident']
+    command += generic_exclusion_arguments(profile, disc)
     with (output / 'extract.log').open('w') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:

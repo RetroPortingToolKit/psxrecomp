@@ -74,11 +74,15 @@ int mdec_recently_active(uint32_t f) { (void)f; return 0; }
 void gte_execute(CPUState *cpu, uint32_t cmd) { (void)cpu; (void)cmd; }
 static int precise_sign_valid, precise_sign;
 static int previous_sign_valid, previous_sign;
+static int enforce_raw_mac0;
+static int32_t expected_raw_mac0;
 int gte_nclip_native_wide_sign(int32_t mac0, int* sign) {
-    (void)mac0; *sign = precise_sign; return precise_sign_valid;
+    *sign = precise_sign;
+    return precise_sign_valid && (!enforce_raw_mac0 || mac0 == expected_raw_mac0);
 }
 int gte_nclip_native_wide_previous_sign(int32_t mac0, int* sign) {
-    (void)mac0; *sign = previous_sign; return previous_sign_valid;
+    *sign = previous_sign;
+    return previous_sign_valid && (!enforce_raw_mac0 || mac0 == expected_raw_mac0);
 }
 void gte_precision_store_word(uint32_t a, uint8_t r) { (void)a; (void)r; }
 uint32_t gte_read_ctrl(CPUState *cpu, uint8_t r) { (void)cpu; (void)r; return 0; }
@@ -459,6 +463,31 @@ static void test_wide_nclip_branches(void) {
     gpu_ws_set_margin_override(53);
     psx_mod_set_native_wide_nclip_sites(sites,words,3);
     CHECK(!branch_taken(&cpu,sites[1],words[1]), "registration resets preceding-result bindings");
+    /* Gex-style handedness reversal must undo the operand negation for raw
+     * provenance, then reverse the precise sign for the original predicate. */
+    enforce_raw_mac0=1; expected_raw_mac0=19; precise_sign=-1;
+    cpu.gpr[A0]=(uint32_t)-19;
+    CHECK(!branch_taken(&cpu,sites[2],words[2]), "unproven negation stays native");
+    psx_mod_set_native_wide_nclip_negated_site(sites[2],words[2],1);
+    CHECK(branch_taken(&cpu,sites[2],words[2]), "negated operand retains raw provenance and reversed sign");
+    CHECK(cpu.gpr[A0]==(uint32_t)-19, "negation recovery leaves guest operand untouched");
+    cpu.gpr[A0]=(uint32_t)-20;
+    CHECK(!branch_taken(&cpu,sites[2],words[2]), "stale raw operand cannot recover");
+    cpu.gpr[A0]=0; expected_raw_mac0=0; precise_sign=1;
+    CHECK(!branch_taken(&cpu,sites[2],words[2]), "zero raw MAC0 still uses proven negative winding");
+    psx_mod_set_native_wide_nclip_negated_site(sites[2],words[2],0);
+    CHECK(branch_taken(&cpu,sites[2],words[2]), "zero raw MAC0 with original polarity");
+    psx_mod_set_native_wide_nclip_negated_site(sites[2],words[2],1);
+    gpu_ws_set_margin_override(0);
+    CHECK(branch_taken(&cpu,sites[2],words[2]), "negation recovery inactive at native aspect");
+    gpu_ws_set_margin_override(53);
+    psx_mod_set_native_wide_nclip_sites(sites,words,3);
+    CHECK(branch_taken(&cpu,sites[2],words[2]), "base registration resets negation");
+    psx_mod_set_native_wide_nclip_previous_site(sites[2],words[2]);
+    psx_mod_set_native_wide_nclip_negated_site(sites[2],words[2],1);
+    previous_sign=-1;
+    CHECK(branch_taken(&cpu,sites[2],words[2]), "negation and preceding-result provenance compose");
+    enforce_raw_mac0=0;
     psx_mod_set_native_wide_nclip_sites(NULL,NULL,0);
     ws_precise_nclip_cfg=0; ws_xnum=ws_xden=1;
     gpu_ws_set_margin_override(-1);

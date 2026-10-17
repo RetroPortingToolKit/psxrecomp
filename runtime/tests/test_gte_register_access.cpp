@@ -7,6 +7,7 @@
 #include "gte_view.h"
 #include "gte_nclip_stats.h"
 #include "render_pass_projection.h"
+#include "mod_plugins.h"
 #include <limits>
 extern "C" void gte_set_fov_scale(int, int);
 
@@ -62,6 +63,15 @@ extern "C" void gte_test_execute_reference(CPUState *cpu, uint32_t cmd);
 /* gte.cpp runtime dependencies that are irrelevant to register-transfer tests. */
 extern "C" int gpu_ws_present_native_43(void) { return 0; }
 static int g_test_precise_nclip_enabled;
+static int g_test_projective_supported = 1;
+static uint32_t g_test_cpu_projection_word;
+static uint32_t g_test_quad_vertex[2];
+static uint32_t cpu_projection_read(uint32_t address) {
+    if (address==0x80019000u) return g_test_quad_vertex[0];
+    if (address==0x80019004u) return g_test_quad_vertex[1];
+    return g_test_cpu_projection_word;
+}
+extern "C" int gpu_ws_projective_clipping_supported(void) { return g_test_projective_supported; }
 extern "C" int gpu_ws_precise_nclip_enabled(void) {
     return g_test_precise_nclip_enabled;
 }
@@ -801,6 +811,96 @@ int test_saturated_nclip_keeps_architectural_result() {
     gte_execute(&cpu, 6);
     if (gte_nclip_native_wide_sign(0, &sign))
         return fail_value("stale NCLIP projection refuses rescue",0,6,0,0,1);
+    /* A large sky face can saturate vertically with no X saturation. The
+     * host clips this positive-depth face, so retain its original winding. */
+    for (unsigned i=0;i<3;i++) {
+        const uint32_t packed=(uint32_t)py[i] | (1023u<<16);
+        cpu.gte_data[12+i]=packed; cpu.gte_data[17+i]=1000;
+        gte_test_seed_precise_projection(i,packed,py[i]*65536,px[i]*65536,1000);
+    }
+    gte_execute(&cpu,6);
+    if (cpu.gte_data[24]!=0 || !gte_nclip_native_wide_sign(0,&sign) || sign!=-1)
+        return fail_value("vertical saturation preserves proven render winding",0,6,0,0,1);
+    gte_test_seed_precise_projection(0,cpu.gte_data[12],py[0]*65536,1000*65536,1000);
+    gte_execute(&cpu,6);
+    if (gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign))
+        return fail_value("mismatched vertical rail refuses render winding",0,6,0,0,1);
+    const int old_tracking = pgxp_projection_tracking();
+    pgxp_set_projection_tracking(1);
+    cpu = CPUState{};
+    cpu.gte_ctrl[0]=4096; cpu.gte_ctrl[2]=4096; cpu.gte_ctrl[4]=4096;
+    cpu.gte_ctrl[26]=300;
+    cpu.gte_data[0]=10u|(10u<<16); cpu.gte_data[1]=(uint32_t)(uint16_t)-200;
+    cpu.gte_data[2]=(uint16_t)-100|(100u<<16); cpu.gte_data[3]=1000;
+    cpu.gte_data[4]=100u|(100u<<16); cpu.gte_data[5]=1000;
+    gte_execute(&cpu,0x80030u);
+    gte_execute(&cpu,6);
+    const int32_t native=(int32_t)cpu.gte_data[24];
+    if (native >= 0 || !gte_nclip_native_wide_sign(native,&sign) || sign!=1 ||
+        gte_nclip_native_wide_sign(native+1,&sign))
+        return fail_value("camera crossing uses proven homogeneous winding",0,6,0,1,sign);
+    const uint32_t flags=cpu.gte_ctrl[31], mac0=cpu.gte_data[24];
+    (void)gte_nclip_native_wide_sign(native,&sign);
+    if (cpu.gte_ctrl[31]!=flags || cpu.gte_data[24]!=mac0)
+        return fail_value("homogeneous render query leaves GTE architectural state intact",0,6,0,mac0,cpu.gte_data[24]);
+    g_test_projective_supported=0;
+    gte_execute(&cpu,6);
+    if (gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign))
+        return fail_value("unsupported renderer retains native near rejection",0,6,0,0,1);
+    g_test_projective_supported=1;
+    /* A same-coordinate word written without its projection provenance must
+     * not inherit the corner's signed camera-space source. */
+    gte_write_data(&cpu,12,cpu.gte_data[12]);
+    gte_execute(&cpu,6);
+    if (gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign))
+        return fail_value("camera crossing refuses missing source projection",0,6,0,0,1);
+    pgxp_set_projection_tracking(old_tracking);
+    pgxp_set_projection_tracking(1);
+    cpu.gte_data[1]=1000;
+    gte_execute(&cpu,0x80030u);
+    if (!psx_mod_projected_triangle_clipping_supported(&cpu))
+        return fail_value("positive-depth triangle proves host clipping",0,0x30,0,1,0);
+    g_test_projective_supported=0;
+    if (psx_mod_projected_triangle_clipping_supported(&cpu))
+        return fail_value("background clipping refuses unsupported renderer",0,0x30,0,0,1);
+    g_test_projective_supported=1;
+    /* All corners remain forward, but their screen projections exceed the
+     * 16.16 transport window and collapse onto one hardware corner. */
+    cpu.gte_data[0]=8000u|(8000u<<16); cpu.gte_data[1]=300;
+    cpu.gte_data[2]=9000u|(7000u<<16); cpu.gte_data[3]=300;
+    cpu.gte_data[4]=10000u|(9000u<<16); cpu.gte_data[5]=300;
+    gte_execute(&cpu,0x80030u);
+    gte_execute(&cpu,6);
+    if (cpu.gte_data[24]!=0 || !gte_nclip_native_wide_sign(0,&sign) || sign!=1)
+        return fail_value("forward winding beyond fixed-point transport",0,6,0,1,sign);
+    g_test_projective_supported=0;
+    gte_execute(&cpu,6);
+    if (gte_nclip_native_wide_sign(0,&sign))
+        return fail_value("unbounded winding requires host clipper",0,6,0,0,1);
+    g_test_projective_supported=1;
+    cpu.gte_data[12]^=1u;
+    if (psx_mod_projected_triangle_clipping_supported(&cpu))
+        return fail_value("background clipping requires all original SXY words",0,0x30,0,0,1);
+    /* The first triangle of a crossing quad may be wholly behind. Only its
+     * actual fourth source vertex can establish a front component. */
+    cpu.gte_data[0]=0;cpu.gte_data[1]=(uint16_t)-300;
+    cpu.gte_data[2]=100;cpu.gte_data[3]=(uint16_t)-300;
+    cpu.gte_data[4]=100u<<16;cpu.gte_data[5]=(uint16_t)-300;
+    cpu.read_word=cpu_projection_read;g_test_quad_vertex[0]=0;g_test_quad_vertex[1]=300;
+    gte_execute(&cpu,0x80030u);gte_execute(&cpu,6);
+    CHECK(!gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign));
+    const CPUState quad_before=cpu;
+    CHECK(psx_mod_extend_nclip_for_quad_vertex(&cpu,0x80019000u));
+    CHECK(gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign) && sign==-1);
+    CHECK(!std::memcmp(&quad_before,&cpu,sizeof cpu));
+    gte_execute(&cpu,6);g_test_quad_vertex[1]=(uint16_t)-300;
+    CHECK(!psx_mod_extend_nclip_for_quad_vertex(&cpu,0x80019000u));
+    CHECK(!gte_nclip_native_wide_sign((int32_t)cpu.gte_data[24],&sign));
+    g_test_quad_vertex[1]=300;g_test_projective_supported=0;
+    CHECK(!psx_mod_extend_nclip_for_quad_vertex(&cpu,0x80019000u));g_test_projective_supported=1;
+    CHECK(!psx_mod_extend_nclip_for_quad_vertex(&cpu,0x80019001u));
+    cpu.gte_data[12]^=1u;CHECK(!psx_mod_extend_nclip_for_quad_vertex(&cpu,0x80019000u));
+    pgxp_set_projection_tracking(old_tracking);
     g_test_precise_nclip_enabled = 0;
     return 0;
 }
@@ -1413,6 +1513,31 @@ int main() {
     }
     gte_set_fov_scale(1,1);
     pgxp_set_projection_tracking(0);
+    /* Explicit CPU-generated intersections retain their original word while
+     * carrying full unclamped projection through ordinary memory transport. */
+    pgxp_set_enabled(1); pgxp_set_projection_tracking(1);
+    CPUState clipped_cpu{}; clipped_cpu.read_word=cpu_projection_read;
+    const uint32_t clipped_addr=0x80018000u, copied_addr=clipped_addr+4;
+    const uint32_t clipped_word=(uint16_t)-1023|((uint32_t)(uint16_t)1023<<16);
+    g_test_cpu_projection_word=clipped_word;
+    CHECK(psx_mod_record_cpu_projected_vertex(&clipped_cpu,clipped_addr,clipped_word,-6000,8000,320,320));
+    PGXPProjection cp;
+    CHECK(pgxp_load_projection(clipped_addr,clipped_word,&cp));
+    CHECK(cp.x==-6000.f*320.f && cp.y==8000.f*320.f && cp.z==320 && cp.near_z==320);
+    psx_pgxp_load(&clipped_cpu,0x8c020000u,clipped_addr,clipped_word);
+    psx_pgxp_store(&clipped_cpu,0xac020000u,copied_addr,clipped_word);
+    CHECK(pgxp_load_projection(copied_addr,clipped_word,&cp));
+    CHECK(!pgxp_load_projection(copied_addr,clipped_word^1,&cp));
+    CHECK(!psx_mod_record_cpu_projected_vertex(&clipped_cpu,clipped_addr+1,clipped_word,-6000,8000,320,320));
+    CHECK(!psx_mod_record_cpu_projected_vertex(&clipped_cpu,clipped_addr,clipped_word,-200,8000,320,320));
+    CHECK(!psx_mod_record_cpu_projected_vertex(&clipped_cpu,clipped_addr,clipped_word,-6000,8000,319,320));
+    CHECK(!psx_mod_record_cpu_projected_vertex(&clipped_cpu,clipped_addr,clipped_word,-1048577,8000,320,320));
+    g_test_cpu_projection_word^=1;
+    CHECK(!psx_mod_record_cpu_projected_vertex(&clipped_cpu,clipped_addr,clipped_word,-6000,8000,320,320));
+    pgxp_invalidate_word(copied_addr);CHECK(!pgxp_load_projection(copied_addr,clipped_word,&cp));
+    pgxp_invalidate_all();CHECK(!pgxp_load_projection(clipped_addr,clipped_word,&cp));
+    pgxp_set_projection_tracking(0);
+    std::puts("PASS: CPU near intersections preserve full-word projection and writer invalidation");
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
     return 0;
 }

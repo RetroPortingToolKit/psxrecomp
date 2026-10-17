@@ -69,6 +69,8 @@ Profiles declare these reusable methods:
 | `images[].method = sector_extent_members` | Decode `{sector offset, byte size}` pairs in an archive. Use archive-relative offsets, verify the exact count and terminator, reject gaps/overlaps, and account for every member after sector rounding. Each member needs a verified load address or an explicit exclusion. |
 | `images[].method = aligned_lzss_banks` | Read aligned stored-size pairs, decode the metadata and its tagged bank members using parameterized LZSS, verify every container and bank classification, and deduplicate exact decoded images at verified destinations. External-RAM references fail extraction. |
 | `images[].method = indexed_lzss_members` | Read a u32 count and `{offset, size, stored}` descriptors, decode every member (verbatim when `size == stored`, otherwise bit-stream LZSS with declared parameters), require exact sizes, zero padding and a fully accounted file, and classify every member as an executable image at a verified `load_addr` or an explained exclusion. |
+| `images[].method = flagged_lz_archive` | Verify a u32 count and six-word directory with aligned, non-overlapping extents; `stored_size == 0` is plain data. Decode 16-bit LSB-first flag groups with 12-bit backward distances and overlapping copies. Classify every member, pin each selected member's `decoded_sha256` and separately established `load_addr`. `psx_exe` verifies its placement/text header; raw images may declare bounded `image_offset`/`image_size`. Missing images require `allow_missing` for normal static discovery; runtime captures never provide bytes. |
+
 | `checks[].method = words` | Verify loader instructions or descriptors at explicit file offsets / virtual addresses. |
 | `checks[].method = tagged_relocations` | Validate a complete relocation stream, retained `image_size` and `relocation_count`, including modules whose heap placement remains unresolved and which are excluded from native production. |
 | `checks[].method = pointer_strings` | Verify a pointer-indexed filename table against exact expected strings. |
@@ -78,6 +80,11 @@ Profiles declare these reusable methods:
 | `expected_records` | Stop on inventory drift, including unexpected additions requiring review. Every configured image must be represented. |
 | `strict_bounds` | Require emission to remain inside established producer intervals. |
 | `images[].excluded_ranges` | Explicit fallback intervals with aligned start/end, original-byte SHA-256 and a reason. Requires strict bounds; required loader entries cannot be excluded. |
+
+An optional top-level `excluded_files` list omits separately included programs
+from generic discovery. Every entry must pin `file`, original `sha256`, and a
+nonempty `reason`; changed bytes fail the profile. This is separate from archive
+member classification and executable-range exclusions.
 
 Image addresses must lie in the KSEG0 main-RAM decode window
 `0x80000000..0x80800000`. Extraction recipes describe bytes and KSEG0 entries,

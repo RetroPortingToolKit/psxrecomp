@@ -165,6 +165,21 @@ int main(void) {
     fixture_projective_supported=1;gp0_cmd_source_addr=UINT32_MAX;
     assert(!native_wide_projective_draw());
     assert(fixture_projective_draws==2);
+    /* The retail CPU clipper uses -1023, with an explicit full projection
+     * supplied by its verified producer. It must reach normal host clipping. */
+    fixture_projective_draws=0;gp0_cmd_source_addr=0x10004u;
+    for(unsigned i=0;i<4;++i) {
+        unsigned k=1+3*i;
+        gp0_cmd_buf[k]=pack_vertex(i==1?-1023:100+i*30,40+i*20);
+        fixture_homogeneous[i].addr=gp0_cmd_source_addr+4*k;
+        fixture_homogeneous[i].word=gp0_cmd_buf[k];
+        fixture_homogeneous[i].p=(PGXPProjection){(i==1?-6000.f:100.f+i*30.f)*500.f,
+            (40.f+i*20.f)*500.f,500,320};fixture_homogeneous[i].valid=1;
+    }
+    assert(native_wide_projective_draw() && fixture_projective_draws==2);
+    assert(fixture_projective_vertices[1].x==-6000.f*500.f);
+    fixture_homogeneous[3].valid=0;assert(!native_wide_projective_draw());
+    assert(fixture_projective_draws==2);
     puts("native_wide_projection_test: PASS");
     return 0;
 }

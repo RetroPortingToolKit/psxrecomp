@@ -1752,6 +1752,7 @@ static uint32_t      g_mod_native_vblank_fps = 0;
 /* Activation-time request. -1 means no enabled mod owns load acceleration. */
 static int           g_mod_load_wall_multiplier = -1;
 static int           g_mod_load_release_frames = -1;
+static void apply_mod_load_acceleration(uint32_t multiplier, uint32_t release_frames);
 static int           g_mod_disc_speed_divisor = -1;
 static int           g_mod_disc_instant_rate = -1;
 
@@ -2166,6 +2167,7 @@ extern "C" int psx_mod_set_load_acceleration(
     }
     g_mod_load_wall_multiplier = (int)wall_clock_multiplier;
     g_mod_load_release_frames = (int)release_frames;
+    apply_mod_load_acceleration(wall_clock_multiplier, release_frames);
     return 1;
 }
 
@@ -2837,6 +2839,14 @@ static int g_turbo_audio_sink_config_enabled = 0;
 /* Zero multiplier retains the historical uncapped turbo behavior. */
 static int g_turbo_load_wall_multiplier = 0;
 static int g_turbo_load_release_frames = TURBO_LOADS_RELEASE_FRAMES;
+static void apply_mod_load_acceleration(uint32_t multiplier, uint32_t release_frames) {
+    g_turbo_load_wall_multiplier = (int)multiplier;
+    g_turbo_load_release_frames = (int)release_frames;
+    /* 1x means authentic pacing and every normal presentation. Uncapped (0)
+     * and bounded acceleration both discard accelerated host audio. */
+    g_turbo_loads_enabled = multiplier != 1u;
+    g_turbo_audio_sink_enabled = multiplier != 1u;
+}
 static SDL_AudioDeviceID sdl_audio_device;
 static int16_t       sdl_audio_buf[2048 * 2];
 
@@ -19813,7 +19823,7 @@ int main(int argc, char** argv) {
                 player_mode[i] = g_mod_controller_mode_override[i];
         }
         if (g_mod_load_wall_multiplier >= 0) {
-            g_turbo_loads_enabled = 1;
+            g_turbo_loads_enabled = g_mod_load_wall_multiplier != 1;
             g_turbo_load_wall_multiplier = g_mod_load_wall_multiplier;
             g_turbo_load_release_frames = g_mod_load_release_frames;
             /* Fast Loading advances the guest at a host rate greater than real
@@ -19821,7 +19831,7 @@ int main(int argc, char** argv) {
              * accelerated presentation-side audio until pacing resumes;
              * otherwise the SDL bridge overflows and the load becomes
              * observably unstable. */
-            g_turbo_audio_sink_enabled = g_turbo_load_wall_multiplier > 1;
+            g_turbo_audio_sink_enabled = g_turbo_load_wall_multiplier != 1;
             if (g_turbo_load_wall_multiplier) {
                 std::fprintf(stdout,
                     "psxrecomp: mod selected %dx load acceleration "
