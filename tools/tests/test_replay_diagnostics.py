@@ -209,11 +209,15 @@ class Preparation(unittest.TestCase):
                     'RECOMP_DATA_DIR': '/personal/data', 'RECOMP_SEED_ONLY': '1',
                     'LD_LIBRARY_PATH': '/personal/lib', 'PSX_LOAD_SLOT': '7', 'PSX_SPEED': '2',
                     'PSX_DIAGNOSTIC_REPLAY': '/personal/inputs.csv', 'PATH': 'system path'}
+        original['PSX_OVERLAY_CAPTURES'] = '/personal/overlay_captures.json'
         trace = output / 'replay-inputs.csv'
         env = replay.replay_environment(output, trace, original)
         self.assertEqual(env['SDL_AUDIODRIVER'], 'dummy')
         self.assertEqual(env['SDL_AUDIO_DRIVER'], 'dummy')
         self.assertEqual(env['PSX_DIAGNOSTIC_REPLAY'], str(trace))
+        self.assertEqual(env['PSX_OVERLAY_CAPTURES'], str(output / 'overlay_captures.json'))
+        clean = replay.replay_environment(output, trace, {'PATH': 'system path'})
+        self.assertEqual(clean['PSX_OVERLAY_CAPTURES'], str(output / 'overlay_captures.json'))
         self.assertEqual(env['LD_LIBRARY_PATH'], os.pathsep.join((str(output / 'lib'), str(output))))
         self.assertEqual(env['PSX_LOAD_SLOT'], '0')
         self.assertEqual(env['PATH'], 'system path')

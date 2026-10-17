@@ -78,6 +78,8 @@ def replay_environment(output, trace, source_env):
     env['SDL_AUDIODRIVER'] = 'dummy'
     env['SDL_AUDIO_DRIVER'] = 'dummy'
     env['PSX_DIAGNOSTIC_REPLAY'] = str(trace)
+    # The runtime can otherwise inherit capture paths from parent env files.
+    env['PSX_OVERLAY_CAPTURES'] = str(output / 'overlay_captures.json')
     # Use copied libraries before normal system libraries, without inheriting
     # dependencies from another AppImage mount or a developer installation.
     env['LD_LIBRARY_PATH'] = os.pathsep.join((str(output / 'lib'), str(output)))
