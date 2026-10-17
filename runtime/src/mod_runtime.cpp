@@ -962,6 +962,11 @@ int mutate(Callback callback) {
         set_error(error);
         return 0;
     }
+    /* Persist pending preferences independently of the running plan. */
+    if (!state().manager.save_state(&error)) {
+        set_error(error);
+        return 0;
+    }
     if (!state().disc_path.empty())
         state().validation = state().manager.resolve(
             state().game_id, state().exe_sha256, state().disc_sha256, true);
