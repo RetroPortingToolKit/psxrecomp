@@ -1108,6 +1108,18 @@ if(BUILD_TESTING)
     # the real scheduler (traps.c) and IRQ delivery (interrupts.c). Compiled
     # game, BIOS ROM, CPS continuation and interpreted resumes; no pending
     # IRQ; I_MASK/SR gating; same-edge dedup; null-PC recovery.
+    add_executable(same_thread_rfe_k0_test
+        tests/test_same_thread_rfe_k0.c
+        tests/restore_edge_irq_stubs.c
+        src/traps.c
+        src/interrupts.c)
+    target_include_directories(same_thread_rfe_k0_test PRIVATE include src)
+    foreach(_rfe_mode RANGE 0 3)
+        add_test(NAME same_thread_rfe_k0_mode${_rfe_mode}
+            COMMAND same_thread_rfe_k0_test ${_rfe_mode})
+        set_tests_properties(same_thread_rfe_k0_mode${_rfe_mode} PROPERTIES
+            ENVIRONMENT "PSX_SAME_THREAD_RESTORE=${_rfe_mode}" TIMEOUT 30)
+    endforeach()
     add_executable(restore_edge_irq_replay_test
         tests/test_restore_edge_irq_replay.c
         tests/restore_edge_irq_stubs.c

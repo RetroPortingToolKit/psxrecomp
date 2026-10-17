@@ -1686,12 +1686,15 @@ irq_deliver_eval:
         }
     }
 
+    /* Keep this delivery's EPC stable across nested handler dispatches. */
+    const uint32_t delivered_epc = g_exception_real_epc;
+
     /* Save the interrupted code's full register state.
      *
-     * On real hardware, the exception handler saves all GPRs to the
-     * TCB save area at entry, and ReturnFromException restores them
-     * before jumping back to EPC.  The interrupted code always gets
-     * its exact pre-exception register values back.
+     * The BIOS handler saves the interrupted context to the TCB and restores
+     * it before returning to EPC. Kernel scratch registers may instead retain
+     * the handler's architectural result: the qualified real-RFE path below
+     * keeps its post-handler k0. Other host-restored values use this snapshot.
      *
      * In our model, the recompiled handler runs as a C function and
      * its `return;` goes back here — not to EPC.  The handler's
@@ -1699,9 +1702,9 @@ irq_deliver_eval:
      * kernel jmpbuf (intended for longjmp to WaitEvent's caller),
      * which corrupts the interrupted code's registers.
      *
-     * We save all GPRs/HI/LO before the handler and restore them
-     * after, so the interrupted code resumes with its original state
-     * — matching real hardware behaviour. */
+     * Save all GPRs/HI/LO before the handler for the host restore policy
+     * below. Its qualified RFE path preserves the actual handler k0 result
+     * rather than overwriting it with the interrupted snapshot. */
     uint32_t saved_gpr[32];
     uint32_t saved_hi, saved_lo;
     for (int i = 0; i < 32; i++) saved_gpr[i] = cpu->gpr[i];
@@ -1907,9 +1910,9 @@ irq_deliver_eval:
      * interrupted — either the LEGACY sentinel exit, OR a real-EPC RFE that
      * resumes at exactly the PC we installed as EPC (no ChangeThread happened).
      *
-     * Real hardware saves and restores ALL GPRs across every exception, so a
-     * transparent same-thread interrupt must give the interrupted code its exact
-     * pre-exception registers back. The original Fix B skipped this for all
+     * The host restore preserves the interrupted context across a transparent
+     * same-thread interrupt, except for architectural post-handler k0 on the
+     * qualified real-RFE path below. The original Fix B skipped this for all
      * real-EPC resumes, trusting the recompiled BIOS handler's TCB restore — but
      * for a same-thread compiled resume that restore is incomplete, so a live
      * value held in a register across a block-leader IRQ check gets clobbered by
@@ -2040,8 +2043,20 @@ irq_deliver_eval:
             }
         }
     }
+    /* A real same-thread RFE leaves the handler's jump register live.
+     * Preserve its actual result only for the primary mode-1 return; legacy,
+     * syscall, nested, changed-target/global-EPC and other restore modes keep
+     * the old copy. A RestoreState redirect that returns to the original EPC
+     * with the same TCB can still qualify. */
+    const int keep_handler_k0 = do_restore && s_str_mode == 1 &&
+        same_thread_resume && g_exc_escape_reason == PSX_EXC_ESCAPE_RFE_RETURN &&
+        prev_in_exception == 0 && entry_tcb != 0u && entry_tcb == exit_tcb &&
+        delivered_epc != 0u && delivered_epc != (uint32_t)PSX_EXC_SENTINEL_PC &&
+        same_guest_pc(cpu->pc, delivered_epc) &&
+        same_guest_pc(g_exception_real_epc, delivered_epc);
     if (do_restore) {
-        for (int i = 0; i < 32; i++) cpu->gpr[i] = saved_gpr[i];
+        for (int i = 0; i < 32; i++)
+            if (i != 26 || !keep_handler_k0) cpu->gpr[i] = saved_gpr[i];
         cpu->hi = saved_hi;
         cpu->lo = saved_lo;
     }
