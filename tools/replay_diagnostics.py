@@ -162,7 +162,9 @@ def prepare(args):
     for dependency in executable.parent.glob('*.dll'):
         shutil.copy2(dependency, output / dependency.name)
     copy_native_libraries(executable, output)
-    for name in ('assets', 'mods', 'bios'):
+    # Keep the original package's qualified native overlays and compiler
+    # payloads too. Dereference links into private copies, as for other data.
+    for name in ('assets', 'mods', 'bios', 'cache', 'overlay_toolchain'):
         # Extracted AppImages place the ELF under usr/bin and the title
         # resources beside the explicitly supplied payload game.toml.
         for root in (executable.parent, game.parent):

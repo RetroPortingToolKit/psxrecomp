@@ -111,6 +111,45 @@ class Preparation(unittest.TestCase):
             replay.prepare(self.args)
         self.assertFalse(self.args.output.exists())
 
+    def test_adjacent_overlay_cache_and_toolchain_are_independent_private_copies(self):
+        cache = self.root / 'cache/game/native/module.dll'
+        compiler = self.root / 'overlay_toolchain/bin/compiler'
+        for path, content in ((cache, b'qualified native overlay'), (compiler, b'packaged compiler')):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(content)
+        output, _, _ = replay.prepare(self.args)
+        self.assertEqual((output / 'cache/game/native/module.dll').read_bytes(), b'qualified native overlay')
+        self.assertEqual((output / 'overlay_toolchain/bin/compiler').read_bytes(), b'packaged compiler')
+        # Neither direction may retain a reference to the original payload.
+        (output / 'cache/game/native/module.dll').write_bytes(b'private cache edit')
+        self.assertEqual(cache.read_bytes(), b'qualified native overlay')
+        cache.unlink()
+        compiler.unlink()
+        self.assertEqual((output / 'cache/game/native/module.dll').read_bytes(), b'private cache edit')
+        self.assertEqual((output / 'overlay_toolchain/bin/compiler').read_bytes(), b'packaged compiler')
+
+    def test_overlay_payload_links_are_dereferenced_into_private_files(self):
+        original = self.root / 'original-payload'
+        (original / 'cache').mkdir(parents=True)
+        (original / 'toolchain/bin').mkdir(parents=True)
+        module = original / 'cache/module.so'
+        module.write_bytes(b'qualified module')
+        compiler = original / 'compiler'
+        compiler.write_bytes(b'packaged compiler')
+        try:
+            (self.root / 'cache').symlink_to(original / 'cache', target_is_directory=True)
+            (self.root / 'overlay_toolchain').symlink_to(original / 'toolchain', target_is_directory=True)
+            (original / 'toolchain/bin/compiler').symlink_to(compiler)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest('symlink creation unavailable: ' + str(error))
+        output, _, _ = replay.prepare(self.args)
+        for name in ('cache', 'overlay_toolchain', 'overlay_toolchain/bin/compiler'):
+            self.assertFalse((output / name).is_symlink())
+        module.unlink()
+        compiler.unlink()
+        self.assertEqual((output / 'cache/module.so').read_bytes(), b'qualified module')
+        self.assertEqual((output / 'overlay_toolchain/bin/compiler').read_bytes(), b'packaged compiler')
+
     def test_extracted_linux_runtime_uses_copied_payload_and_recorded_choices(self):
         self.metadata({'netplay': False})
         image = self.root / 'squashfs-root/usr'
@@ -129,6 +168,10 @@ class Preparation(unittest.TestCase):
         (payload / 'assets/icon.png').write_bytes(b'icon')
         (payload / 'bios').mkdir()
         (payload / 'bios/openbios.bin').write_bytes(b'openbios')
+        (payload / 'cache/game/native').mkdir(parents=True)
+        (payload / 'cache/game/native/module.so').write_bytes(b'qualified overlay')
+        (payload / 'overlay_toolchain/bin').mkdir(parents=True)
+        (payload / 'overlay_toolchain/bin/compiler').write_bytes(b'packaged compiler')
         (self.session / 'settings.toml').write_text('[video]\nvsync = false\n[memcard]\ndir = "personal"\n')
         (image / 'lib').mkdir()
         (image / 'lib/libSDL3.so.0').write_bytes(b'packaged library')
@@ -142,7 +185,13 @@ class Preparation(unittest.TestCase):
         self.assertEqual((output / 'mods/bundled/package').read_text(), 'bundled mod')
         self.assertEqual((output / 'assets/icon.png').read_bytes(), b'icon')
         self.assertEqual((output / 'bios/openbios.bin').read_bytes(), b'openbios')
+        self.assertEqual((output / 'cache/game/native/module.so').read_bytes(), b'qualified overlay')
+        self.assertEqual((output / 'overlay_toolchain/bin/compiler').read_bytes(), b'packaged compiler')
         self.assertEqual((output / 'lib/libSDL3.so.0').read_bytes(), b'packaged library')
+        (payload / 'cache/game/native/module.so').unlink()
+        (payload / 'overlay_toolchain/bin/compiler').unlink()
+        self.assertEqual((output / 'cache/game/native/module.so').read_bytes(), b'qualified overlay')
+        self.assertEqual((output / 'overlay_toolchain/bin/compiler').read_bytes(), b'packaged compiler')
         self.assertEqual((output / 'lib/libadjacent.so.1').read_bytes(), b'adjacent library')
         settings = (output / 'settings.toml').read_text()
         self.assertIn('vsync = false', settings)
