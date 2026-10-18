@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace PSXRecompV4 {
@@ -512,6 +513,14 @@ public:
     std::string feature_option_value(const std::string& package_id,
                                      const std::string& feature_id,
                                      const std::string& option_id) const;
+    /* Runtime-derived defaults are not player selections and are never saved.
+     * relative_path is rooted at this manager's mods root, captured as an
+     * absolute path at registration so subsequent cwd changes cannot rebase it.
+     * Existing explicit selections (including legacy absolute paths) win. */
+    bool set_generated_feature_resource_default(const std::string& package_id,
+        const std::string& feature_id, const std::string& resource_id,
+        const std::filesystem::path& relative_path, std::string* error = nullptr);
+
     std::filesystem::path feature_resource_path(
         const std::string& package_id,
         const std::string& feature_id,
@@ -570,6 +579,10 @@ private:
         std::vector<ModResolution::Diagnostic>* diagnostics,
         std::vector<std::string>* errors) const;
 
+    std::filesystem::path generated_resource_default(const std::string& package_id,
+        const std::string& feature_id, const std::string& resource_id) const;
+    std::map<std::tuple<std::string, std::string, std::string>, std::filesystem::path>
+        generated_resource_defaults_;
     std::filesystem::path root_;
     bool developer_channel_ = kDeveloperChannelDefault;
     std::vector<std::string> scan_errors_;

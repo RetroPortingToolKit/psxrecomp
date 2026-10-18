@@ -2053,6 +2053,84 @@ int main(int argc, char** argv) {
     check(!psx_mod_netplay_is_active() && psx_mod_netplay_savestates_supported() &&
           PSXRecompV4::mod_runtime_fingerprint().empty(), "profile end clears hooks and snapshot policy");
     check(read_selection() == offline_selection, "profile end preserves offline selection file");
+
+    {
+        const auto a = root / "portable-default-a";
+        const auto b = root / "portable-default-b";
+        const auto manifest = a / "bundled/portable.hd/1.0.0/manifest.toml";
+        write_text(manifest,
+            "format_version = 5\nid = \"portable.hd\"\nversion = \"1.0.0\"\nname = \"Portable HD fixture\"\nresolver = \"declarative\"\nsave_compatibility = \"shared\"\n"
+            "[[target]]\ngame_id = \"SLUS-PORTABLE\"\n"
+            "[[feature]]\nid = \"hd\"\nname = \"HD\"\ndefault_enabled = false\n"
+            "[[resource]]\nfeature = \"hd\"\nid = \"pack\"\nlabel = \"Pack\"\nformat = \"directory\"\nrequired = true\n"
+            "[[option]]\nfeature = \"hd\"\nid = \"replacements\"\nlabel = \"Load\"\ntype = \"boolean\"\ndefault = \"true\"\n"
+            "[[option]]\nfeature = \"hd\"\nid = \"dump\"\nlabel = \"Dump\"\ntype = \"boolean\"\ndefault = \"false\"\n"
+            "[[plugin]]\nfeature = \"hd\"\nid = \"psx.hd-textures\"\n");
+        check(PSXRecompV4::mod_runtime_initialize(a, "SLUS-PORTABLE", 0x80002000, {}, &error), error.c_str());
+        check(fs::is_directory(a / "texture-packs/SLUS-PORTABLE/replacements"), "disabled default was actually initialized");
+        check(PSXRecompV4::mod_runtime_commit({}, &error), error.c_str());
+        fs::copy(a, b, fs::copy_options::recursive, ec);
+        check(!ec, "copy default-disabled fixture to relocated root");
+        fs::rename(a, root / "unavailable-default-a", ec);
+        check(!ec && !fs::exists(a), "old install root is unavailable");
+        check(PSXRecompV4::mod_runtime_initialize(b, "SLUS-PORTABLE", 0x80002000, {}, &error), error.c_str());
+#if defined(RECOMP_LAUNCHER)
+        const auto* portable_provider = PSXRecompV4::mod_runtime_launcher_provider();
+        RecompLauncherCModResource portable_resource{};
+        check(portable_provider && portable_provider->feature_resource_get(portable_provider->ctx,
+              "portable.hd", "hd", 0, &portable_resource) &&
+              fs::path(portable_resource.path) == fs::absolute(b / "texture-packs/SLUS-PORTABLE"),
+              "live launcher getter exposes exact relocated B default while disabled");
+#endif
+        check(PSXRecompV4::mod_runtime_commit({}, &error), error.c_str());
+        PSXRecompV4::ModPackageManager readback(b);
+        check(readback.scan(&error) && readback.load_state(&error), error.c_str());
+        check(readback.selected_package("portable.hd") != nullptr, "portable fixture package remains selected");
+        const auto retained = readback.feature_resource_path("portable.hd", "hd", "pack");
+        check(retained.empty() || retained.lexically_relative(a).empty() ||
+              *retained.lexically_relative(a).begin() == "..",
+              "disabled generated default must not retain unavailable install root");
+        check(!fs::exists(a), "relocation does not recreate unavailable old root");
+        check(readback.set_feature_enabled("portable.hd", "hd", true, &error) && readback.save_state(&error), error.c_str());
+        check(PSXRecompV4::mod_runtime_initialize(b, "SLUS-PORTABLE", 0x80002000, {}, &error), error.c_str());
+        const auto before_cwd = fs::current_path();
+        fs::current_path(root);
+        check(PSXRecompV4::mod_runtime_commit({}, &error), error.c_str());
+        mod_runtime_activate_plugins();
+        check(fs::path(hd_root) == fs::absolute(b / "texture-packs/SLUS-PORTABLE"),
+              "enabled relocated plugin receives B default despite changed cwd");
+        fs::current_path(before_cwd);
+
+        PSXRecompV4::ModPackageManager generated(b);
+        check(generated.scan(&error) && generated.load_state(&error), error.c_str());
+        check(generated.set_generated_feature_resource_default("portable.hd", "hd", "pack",
+              "texture-packs/SLUS-PORTABLE", &error), error.c_str());
+        const auto expected = fs::absolute(b / "texture-packs/SLUS-PORTABLE");
+        check(generated.feature_resource_path("portable.hd", "hd", "pack") == expected,
+              "manager getter returns exact relocated default");
+        const auto resolved = generated.resolve("SLUS-PORTABLE");
+        check(resolved.ok && resolved.resources.size() == 1 && resolved.resources[0].path == expected,
+              "committed resolver and getter agree on B");
+        for (const auto& invalid : {fs::path("../escape"), fs::path("./escape"), expected})
+            check(!generated.set_generated_feature_resource_default("portable.hd", "hd", "pack", invalid, &error),
+                  "generated defaults reject rooted or traversal paths");
+        const auto external = root / "explicit-external-pack";
+        fs::create_directories(external);
+        check(generated.set_feature_resource_path("portable.hd", "hd", "pack", external, &error) &&
+              generated.save_state(&error), error.c_str());
+        fs::rename(external, root / "unavailable-external-pack", ec);
+        check(!ec, "explicit external fixture made unavailable");
+        PSXRecompV4::ModPackageManager legacy(b);
+        check(legacy.scan(&error) && legacy.load_state(&error) &&
+              legacy.set_generated_feature_resource_default("portable.hd", "hd", "pack",
+                  "texture-packs/SLUS-PORTABLE", &error), error.c_str());
+        check(legacy.feature_resource_path("portable.hd", "hd", "pack") == external,
+              "missing legacy absolute user selection remains unchanged");
+        const auto missing_plan = legacy.resolve("SLUS-PORTABLE");
+        check(missing_plan.resources.size() == 1 && missing_plan.resources[0].path == external,
+              "resolver preserves missing selection for existing downstream validation");
+    }
+
     fs::remove_all(root, ec);
     if (failures) return 1;
     std::cout << "mod runtime tests passed\n";
