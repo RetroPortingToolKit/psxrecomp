@@ -22,6 +22,8 @@
 #include "playtest_diagnostic_telemetry.h"
 #include "cdrom.h"
 #include "render_pass.h"
+#include "gpu.h"
+#include "video_telemetry.h"
 #include "psx_sha256_file.h"
 #include <array>
 #include <algorithm>
@@ -61,6 +63,7 @@ psx_playtest_diagnostic::Writer<4096, psx_playtest_diagnostic::TelemetryRow> tel
 std::chrono::steady_clock::time_point telemetry_start, telemetry_last;
 unsigned incident;
 bool incident_held, telemetry_failed;
+std::filesystem::path recording_folder;
 std::ifstream replay;
 Row pending{};               // replay row the next VBlank verifies
 bool pending_valid;
@@ -285,7 +288,8 @@ void seed_first_row() {
 std::string session_json(bool netplay) {
     std::ostringstream out;
     out << "{\n  \"format_version\": 1,\n  \"input_format\": \"" PSX_DIAGNOSTIC_INPUT_FORMAT "\",\n"
-        << "  \"telemetry_format\": \"psxrecomp-telemetry-v1\",\n"
+        << "  \"telemetry_format\": \"psxrecomp-telemetry-v2\",\n"
+        << "  \"visual_verification\": \"unavailable: no independent pixel comparison\",\n"
         << "  \"game_id\": \"" PSX_DIAGNOSTIC_GAME_ID "\",\n"
         << "  \"boundary\": \"guest-vblank-sio-pad-state\",\n"
         << "  \"digest\": \"fnv-mix over " << DigestWords << " main-RAM words per VBlank, stride "
@@ -309,6 +313,7 @@ void begin_recording() {
             std::chrono::system_clock::now().time_since_epoch()).count();
         const auto folder = psx_playtest_diagnostic_session_directory(
             application_directory(), PSX_DIAGNOSTIC_GAME_ID, "session-" + std::to_string(stamp));
+        recording_folder = folder;
         recording.open(folder / "inputs.csv", std::string("# " PSX_DIAGNOSTIC_INPUT_FORMAT "\n# execution ") +
             PSX_EXECUTION_ID + "\n# plan " + plan_identity() + "\n# build " + build_identity() + "\n");
         if (!recording) throw std::runtime_error(recording.error_text());
@@ -384,8 +389,11 @@ void capture_telemetry(const Row& input) {
     row[2] = sequence ? std::chrono::duration_cast<std::chrono::microseconds>(now - telemetry_last).count() : 0;
     telemetry_last = now;
     const bool held = (input[ColButtons] & 6) == 0;
+    row[34] = -1; // No capture requested on this sample.
     if (held && !incident_held) {
         ++incident;
+        const auto image = recording_folder / ("incident-" + std::to_string(incident) + ".png");
+        row[34] = psx_video_telemetry_capture(psx_playtest_diagnostic_utf8(image).c_str()) ? 1 : 0;
         host_osd_push(("Playtest incident " + std::to_string(incident) + " marked").c_str(), 2000);
     }
     incident_held = held; row[3] = incident;
@@ -396,6 +404,21 @@ void capture_telemetry(const Row& input) {
     RenderPassStats render{}; render_pass_get_stats(&render);
     row[9] = render.passes; row[10] = render.aborted;
     row[11] = render.verify_checks; row[12] = render.verify_mismatch;
+    uint64_t nop = 0, fill = 0, draw_commands = 0, environment = 0, copy = 0;
+    gpu_get_gp0_stats(&nop, &fill, &draw_commands, &environment, &copy);
+    PsxVideoTelemetry video{}; psx_video_telemetry_snapshot(&video);
+    PsxVideoConfigTelemetry config{}; psx_video_config_telemetry(&config);
+    row[13] = draw_commands; row[14] = video.presents; row[15] = video.present_errors;
+    row[16] = video.valid; row[17] = config.renderer;
+    row[18] = config.resolution_preset;
+    row[19] = config.aspect_num; row[20] = config.aspect_den; row[21] = config.widescreen;
+    row[22] = video.renderer; row[23] = video.internal_scale;
+    row[24] = video.source_width; row[25] = video.source_height;
+    row[26] = video.drawable_width; row[27] = video.drawable_height;
+    row[28] = video.viewport_width; row[29] = video.viewport_height;
+    row[30] = render_pass_verification_enabled(); row[31] = render.verify_checks != 0;
+    row[32] = 0; row[33] = 0; // No independent visual oracle is wired here.
+    row[35] = video.present_status_available;
     telemetry.native(row);
     if (!telemetry) {
         telemetry_failed = true;

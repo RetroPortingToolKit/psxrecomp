@@ -1524,6 +1524,17 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     s.disc_enabled = false;
     s.disc_guard_failed = false;
     s.manager.set_root(root);
+    // Optional comma-separated trusted title policy, stronger than omitting
+    // bundled manifests: stale/installed copies cannot reactivate these ids.
+#ifdef PSX_MOD_DISABLED_PACKAGES
+    std::vector<std::string> disabled_packages;
+    std::istringstream disabled_stream(PSX_MOD_DISABLED_PACKAGES);
+    for (std::string id; std::getline(disabled_stream, id, ','); )
+        if (!id.empty()) disabled_packages.push_back(id);
+    s.manager.set_disabled_packages(std::move(disabled_packages));
+#else
+    s.manager.set_disabled_packages({});
+#endif
     s.game_id = game_id;
     s.entry_phys = game_entry_pc & 0x1FFFFFFFu;
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)

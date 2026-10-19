@@ -20,6 +20,7 @@
 #include "gpu.h"
 #include "gpu_render.h"
 #include "gpu_vk_renderer.h"
+#include "video_telemetry.h"
 #include "gpu_sw_renderer.h"
 #include "host_osd.h"
 #include "psx_savestate_menu.h"
@@ -1675,7 +1676,10 @@ static void submit_present(VkCommandBuffer cb, uint32_t img_idx, uint32_t fr) {
     pi.swapchainCount = 1; pi.pSwapchains = &s_swapchain;
     pi.pImageIndices = &img_idx;
     uint64_t present_start = SDL_GetPerformanceCounter();
-    p_vkQueuePresentKHR(s_queue, &pi);
+    psx_video_telemetry_compose(PSX_VIDEO_VULKAN, s_scale, 0, 0,
+                               (int)s_sc_extent.width, (int)s_sc_extent.height, 0, 0);
+    const VkResult present_result = p_vkQueuePresentKHR(s_queue, &pi);
+    psx_video_telemetry_present(present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR);
     s_perf_cur.present_us += perf_elapsed_us(present_start);
     s_frame_idx++;
 }

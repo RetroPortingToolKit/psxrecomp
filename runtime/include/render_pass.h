@@ -75,6 +75,9 @@ typedef struct RenderPassStats {
 } RenderPassStats;
 
 void render_pass_get_stats(RenderPassStats *out);
+/* Whether optional state-preservation verification is enabled. Zero executed
+ * checks still means no coverage even when this is enabled. Not a pixel test. */
+int render_pass_verification_enabled(void);
 /* Clears counters and the sticky fault latch (new mod session). */
 void render_pass_reset_session(void);
 typedef struct RenderStereoStats {

@@ -97,6 +97,9 @@ extern "C" int psx_mod_set_local_mouse_policy(const PSXModMousePolicy* policy) {
 extern "C" int psx_mod_set_local_mouse_persistent_capture(int enabled) {
     return (enabled == 0 || enabled == 1) && state().persistent_capture(enabled != 0);
 }
+extern "C" int psx_mod_set_local_mouse_capture_across_transitions(int enabled) {
+    return (enabled == 0 || enabled == 1) && state().capture_across_transitions(enabled != 0);
+}
 void psx_local_mouse_clear() { state().clear(); host_ = {}; window_ = nullptr; }
 bool psx_local_mouse_installed() { return state().installed(); }
 void psx_local_mouse_reset() {

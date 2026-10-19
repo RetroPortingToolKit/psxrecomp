@@ -23,12 +23,18 @@ void LocalMousePolicy::clear() {
     clock_valid_ = false;
     clock_ = event_clock_ = release_clock_ = 0;
     conflict_noticed_ = capture_failure_noticed_ = false;
-    persistent_ = false;
+    persistent_ = transitions_ = suspended_ = false;
 }
 bool LocalMousePolicy::persistent_capture(bool enabled) {
     if (!installed()) return false;
     reset();
     persistent_ = enabled;
+    return true;
+}
+bool LocalMousePolicy::capture_across_transitions(bool enabled) {
+    if (!installed()) return false;
+    reset();
+    transitions_ = enabled;
     return true;
 }
 void LocalMousePolicy::dispatch(uint32_t type, uint64_t t, double dx, double dy) {
@@ -39,6 +45,7 @@ void LocalMousePolicy::dispatch(uint32_t type, uint64_t t, double dx, double dy)
 void LocalMousePolicy::reset() {
     if (captured_) backend_.capture(backend_.context, false);
     captured_ = false;
+    suspended_ = false;
     release_clock_ = clock_;
     event_valid_ = false;
     hold_blocked_ = hold_down_;
@@ -54,12 +61,33 @@ bool LocalMousePolicy::allowed() const {
     return installed() && host_.live && host_.focused && host_.connected &&
         host_.analog && !host_.native_right && !host_.start && policy_.eligible(host_.buttons);
 }
+bool LocalMousePolicy::capture_allowed() const {
+    return installed() && host_.live && host_.focused && host_.connected &&
+        host_.analog && !host_.native_right;
+}
+void LocalMousePolicy::suspend() {
+    release_clock_ = clock_;
+    event_valid_ = false;
+    hold_blocked_ = hold_down_;
+    hold_active_ = false;
+    if (!suspended_) dispatch(PSX_MOD_MOUSE_RESET);
+    suspended_ = true;
+}
 void LocalMousePolicy::update(uint64_t now, LocalMouseHost host) {
     const bool stalled = clock_valid_ && (now < clock_ || now - clock_ > StallNs);
     clock_ = now;
     clock_valid_ = true;
     host_ = host;
-    if (stalled || !allowed()) reset();
+    if (transitions_ && persistent_ && captured_ && capture_allowed()) {
+        if (stalled || !allowed()) suspend();
+        else if (suspended_) {
+            // Reject motion queued during the transition; resuming never
+            // replays an old camera target or requires another click.
+            release_clock_ = now;
+            event_valid_ = false;
+            suspended_ = false;
+        }
+    } else if (stalled || !allowed()) reset();
     if (host.hold_conflict && !conflict_noticed_) {
         backend_.notice(backend_.context, "Mouse hold disabled: control is bound to P1");
         conflict_noticed_ = true;
@@ -91,12 +119,13 @@ bool LocalMousePolicy::control(uint64_t t, uint64_t now, MouseControl control,
         const bool fresh = down && !activation_down_ && !repeat;
         activation_down_ = down;
         if (!down) {
-            if (persistent_ && captured_ && allowed()) {
+            if (persistent_ && captured_ && (allowed() ||
+                    (transitions_ && capture_allowed()))) {
                 const bool owned = activation_owned_;
                 activation_owned_ = false;
                 // t=0 is the backend's release reconciliation, not a queued
                 // event. Malformed real event times still release capture.
-                if (t) (void)valid_time(t, now);
+                if (t && !(transitions_ && t < release_clock_)) (void)valid_time(t, now);
                 return owned;
             }
             // Release is unconditional: a future/backwards event time cannot
@@ -150,7 +179,7 @@ bool LocalMousePolicy::control(uint64_t t, uint64_t now, MouseControl control,
                 event_clock_ = std::max(event_clock_, release_time);
                 event_valid_ = true;
             }
-        } else if (captured_ && fresh && !host_.hold_conflict && !hold_blocked_) {
+        } else if (captured_ && allowed() && fresh && !host_.hold_conflict && !hold_blocked_) {
             if (valid_time(t, now)) {
                 hold_active_ = true;
                 dispatch(PSX_MOD_MOUSE_HOLD_PRESS, t);
@@ -170,14 +199,24 @@ void LocalMousePolicy::sync_left(uint64_t now, bool physically_down) {
 }
 void LocalMousePolicy::motion(uint64_t t, uint64_t now, double dx, double dy) {
     if (!captured_) return;
-    if (!allowed() || !std::isfinite(dx) || !std::isfinite(dy) ||
+    if (!allowed()) {
+        if (transitions_ && persistent_ && capture_allowed()) suspend();
+        else reset();
+        return;
+    }
+    if (transitions_ && t < release_clock_) return;
+    if (!std::isfinite(dx) || !std::isfinite(dy) ||
         std::abs(dx) > 1e9 || std::abs(dy) > 1e9) { reset(); return; }
     if (!valid_time(t, now) || (dx == 0.0 && dy == 0.0)) return;
     dispatch(PSX_MOD_MOUSE_MOTION, t, dx, dy);
 }
 void LocalMousePolicy::sample(uint64_t now, uint8_t& rx, uint8_t& ry) {
     if (!captured_) return;
-    if (!allowed()) { reset(); return; }
+    if (!allowed()) {
+        if (transitions_ && persistent_ && capture_allowed()) suspend();
+        else reset();
+        return;
+    }
     PSXModMouseOutput out{sizeof(PSXModMouseOutput), 0, 128, 128};
     policy_.sample(now, &out);
     if (out.struct_size != sizeof(out) || out.override_right > 1 || out.rx > 255 || out.ry > 255) {

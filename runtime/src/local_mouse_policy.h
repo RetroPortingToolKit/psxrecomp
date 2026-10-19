@@ -22,6 +22,7 @@ public:
     explicit LocalMousePolicy(LocalMouseBackend backend) : backend_(backend) {}
     bool install(const PSXModMousePolicy* policy);
     bool persistent_capture(bool enabled);
+    bool capture_across_transitions(bool enabled);
     void clear();
     void reset();
     void update(uint64_t now, LocalMouseHost host);
@@ -35,6 +36,8 @@ public:
     MouseControl hold_control() const;
 private:
     bool allowed() const;
+    bool capture_allowed() const;
+    void suspend();
     bool valid_time(uint64_t t, uint64_t now);
     void dispatch(uint32_t type, uint64_t t = 0, double dx = 0, double dy = 0);
     LocalMouseBackend backend_;
@@ -47,5 +50,6 @@ private:
     bool hold_active_ = false; // accepted interpretation, separate from physical state
     bool conflict_noticed_ = false, capture_failure_noticed_ = false;
     bool persistent_ = false;
+    bool transitions_ = false, suspended_ = false;
 };
 } // namespace psx

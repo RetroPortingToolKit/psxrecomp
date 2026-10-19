@@ -79,6 +79,7 @@
 #include "gl_scale_limits.h"
 #include "gpu_sw_renderer.h"
 #include "gpu_gl_renderer.h"
+#include "video_telemetry.h"
 #include "gpu_hd_textures.h"
 #include "mod_texture_banks.h"
 #include "gl_batch_policy.h"
@@ -1401,6 +1402,10 @@ static int  postfx_active(void);
 static void postfx_present(int fresh, int with_aa, int lx, int ly, int lw, int lh);
 static void pres_record(int path, int dx, int dy, int w, int h,
                         int lx, int ly, int lw, int lh) {
+    int drawable_w = 0, drawable_h = 0;
+    SDL_GL_GetDrawableSize(s_win, &drawable_w, &drawable_h);
+    psx_video_telemetry_compose(PSX_VIDEO_OPENGL, s_out_scale, w, h,
+                               drawable_w, drawable_h, lw, lh);
     /* The composed game image, before hold-last capture and the OSD: the
      * post-effect chains (bloom, [video] post_shader, AA; gl_postfx.inc). */
     if ((path == GL_PRES_VRAM || path == GL_PRES_WIDE || path == GL_PRES_INTERP) && postfx_active())
@@ -9606,7 +9611,14 @@ static int pt_cb_ctx(void *user, int current) {
 
 /* The one owned swap call: the composing thread's (direct) or the present
  * thread's. */
-static void gl_window_swap(void) { SDL_GL_SwapWindow(s_win); }
+static void gl_window_swap(void) {
+#if defined(PSX_SDL3)
+    psx_video_telemetry_present(SDL_GL_SwapWindow(s_win) ? 1 : 0);
+#else
+    SDL_GL_SwapWindow(s_win);
+    psx_video_telemetry_present(-1); // SDL2 exposes no swap result.
+#endif
+}
 
 static void *pt_cb_present(void *user, int slot, void *ready) {
     (void)user;

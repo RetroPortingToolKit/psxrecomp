@@ -39,6 +39,7 @@ static void pad_ext_transform(const PadExtHooks *h, int s, int guarded,
         }
     }
     if (h->host_extras) h->host_extras(h->ctx, s, &f.host_flags, &f.host_lt, &f.host_rt);
+    if (from_source) f.host_flags |= PSX_MOD_PAD_HOST_SOURCE;
     if (guarded) f.host_lt = f.host_rt = 0;
     if (!h->pad_transform(h->ctx, s, &f, &stock, &o)) return;
     if (guarded) {

@@ -1809,6 +1809,21 @@ int main() {
               "both absent packages must be reported as dormant selections");
         check(std::find(dormant.begin(), dormant.end(), "kept.mod") == dormant.end(),
               "a present package is never dormant");
+        // Strong title policy also suppresses stale bundles and installed
+        // copies. Preserve the user's choice and files for a later re-enable.
+        write_text(stale_root / "installed/kept.mod/1.0.0/manifest.toml", kept);
+        stale.set_disabled_packages({"kept.mod"});
+        check(stale.scan(&error), error.c_str());
+        const auto disabled = stale.resolve("SLUS-TEST");
+        check(disabled.ok && disabled.ordered.empty() && disabled.writes.empty(),
+              "a title-disabled package must not resolve from either catalog");
+        check(stale.packages().count("kept.mod") == 0 && stale.dormant_selections().size() == 3,
+              "title-disabled packages must be hidden and their saved choices dormant");
+        check(fs::exists(stale_root / "bundled/kept.mod/1.0.0/manifest.toml") &&
+              fs::exists(stale_root / "installed/kept.mod/1.0.0/manifest.toml"),
+              "disabling never deletes catalog files");
+        stale.set_disabled_packages({});
+        check(stale.scan(&error), error.c_str());
 
         /* Saving (every launch commit does) must keep the dormant choices. */
         check(stale.save_state(&error), error.c_str());

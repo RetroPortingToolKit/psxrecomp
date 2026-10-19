@@ -12,6 +12,8 @@
 #include "sio.h"
 #include "cdrom.h"
 #include "render_pass.h"
+#include "gpu.h"
+#include "video_telemetry.h"
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +42,9 @@ static std::string plan_text="fixture-plan";
 static void (*activation)(),(*vblank)(),(*savestate)(),(*osd_activation)(),(*osd_vblank)(),(*session_reset)();
 static void (*recording_activation)();
 static uint64_t ram_reads;
+static uint64_t ordinary_draws;
+static PsxVideoConfigTelemetry video_config{PSX_VIDEO_OPENGL, 1, 4, 3, 0};
+static std::vector<std::string> incident_images;
 
 static void activate_recording_plan() {session_reset();recording_activation();}
 
@@ -78,6 +83,13 @@ void cdrom_debug_snapshot(CDROMDebugState *out) {*out={};}
 int cdrom_data_read_active(void) {return 0;}
 int cdrom_xa_stream_active(void) {return 0;}
 void render_pass_get_stats(RenderPassStats *out) {*out={};}
+int render_pass_verification_enabled(void) {return 0;}
+void gpu_get_gp0_stats(uint64_t *nop, uint64_t *fill, uint64_t *draw,
+                       uint64_t *environment, uint64_t *copy) {
+    *nop = *fill = *environment = *copy = 0; *draw = ordinary_draws;
+}
+void psx_video_config_telemetry(PsxVideoConfigTelemetry *out) {*out=video_config;}
+int psx_video_telemetry_capture(const char *path) {incident_images.emplace_back(path);return 1;}
 void savestate_status_json(char *buf,size_t cap) {
     snprintf(buf,cap,"\"generation\":%u,\"pending\":%u,\"last_ok\":%d,\"last_op\":\"%s\",\"last_slot\":%d",
              status_generation,status_pending,status_ok,status_op,status_slot);
@@ -153,6 +165,13 @@ static void guest_frame(unsigned t) {
 // VBlank of that frame to model a diverging guest.
 static void run_frames(unsigned from,unsigned to,int tamper=-1) {
     for(unsigned t=from;t<to;++t) {
+        ordinary_draws += 17;
+        if (t == 50) video_config = {PSX_VIDEO_OPENGL, 1080, 16, 9, 1};
+        psx_video_telemetry_compose(PSX_VIDEO_OPENGL, t < 50 ? 1 : 5,
+                                   t < 50 ? 320 : 426, 240,
+                                   t < 50 ? 640 : 1920, t < 50 ? 480 : 1080,
+                                   t < 50 ? 640 : 1920, t < 50 ? 480 : 1080);
+        psx_video_telemetry_present(1);
         vblank();
         if(osd_enabled)osd_vblank();
         if((int)t==tamper)memory[0x80000]^=1;
@@ -229,6 +248,26 @@ int main(int argc,char **argv) {
     auto timings=slurp(session/"telemetry.csv");
     CHECK(timings.rfind("sequence,host_elapsed_us,host_interval_us,",0)==0);
     CHECK(std::count(timings.begin(),timings.end(),'\n')==201);
+    CHECK(timings.find("gpu_draw_commands,host_presents,host_present_errors")!=std::string::npos);
+    CHECK(timings.find("visual_verify_available,visual_verify_checks")!=std::string::npos);
+    // Ordinary frames are observable with no optional render passes/checks.
+    // Runtime changes must be sampled, rather than copied from saved settings.
+    {std::istringstream csv(timings);std::string line;std::getline(csv,line);unsigned capture_requests=0;
+     for(unsigned n=0;n<200;++n) {
+         CHECK(bool(std::getline(csv,line)));std::replace(line.begin(),line.end(),',',' ');
+         std::istringstream values(line);psx_playtest_diagnostic::TelemetryRow row{};
+         for(auto& value:row)CHECK(bool(values>>value));
+         std::string extra;CHECK(!(values>>extra));
+         CHECK(row[9]==0 && row[11]==0 && row[12]==0);
+         CHECK(row[13]>0 && row[14]>0 && row[16]==1);
+         CHECK(row[18]==(n<50?1:1080) && row[19]==(n<50?4:16));
+         CHECK(row[23]==(n<50?1:5) && row[26]==(n<50?640:1920));
+         CHECK(row[30]==0 && row[31]==0 && row[32]==0 && row[33]==0);
+         CHECK(row[34]==-1 || row[34]==1);capture_requests+=row[34]==1;
+         CHECK(row[35]==1);
+     }
+     CHECK(capture_requests==1 && incident_images.size()==1);
+     CHECK(std::filesystem::u8path(incident_images[0])==(session/"incident-1.png"));}
     CHECK(incident==1); // holding the chord across five frames marks once
     // Row 0 is the initial SIO state; row 11 shows Cross, which the model's
     // script first sampled at the boundary after frame 10... recorded one
@@ -239,6 +278,7 @@ int main(int argc,char **argv) {
     CHECK(std::filesystem::exists(session/"card2.absent"));
     CHECK(std::filesystem::exists(session/"mods-state.toml") && std::filesystem::exists(session/"settings.toml"));
     CHECK(slurp(session/"session.json").find("\"netplay\": false")!=std::string::npos);
+    CHECK(slurp(session/"session.json").find("psxrecomp-telemetry-v2")!=std::string::npos);
     CHECK(slurp(session/"session.json").find("baseline")==std::string::npos);
     {auto location=slurp(std::filesystem::path(save_root)/"diagnostics-location.txt");
      CHECK(location.find(psx_playtest_diagnostic_utf8(std::filesystem::absolute(session).make_preferred()))!=std::string::npos &&

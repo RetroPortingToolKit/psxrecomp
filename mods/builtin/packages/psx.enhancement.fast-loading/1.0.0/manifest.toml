@@ -18,6 +18,7 @@ name = "Fast Loading (host pacing)"
 description = "Deprecated and disabled by default. This compatibility feature accelerates host pacing when a generic heuristic detects loading. It does not implement a game-specific loading contract."
 group = "Quality of Life"
 default_enabled = false
+hidden = true
 
 [[option]]
 feature = "fast-loading"

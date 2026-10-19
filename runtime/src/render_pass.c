@@ -324,6 +324,8 @@ void render_pass_get_stats(RenderPassStats *out) {
         out->dropped[i] = g_render_pass_dropped_writes[i];
 }
 
+int render_pass_verification_enabled(void) { return verify_on(); }
+
 void render_pass_reset_session(void) {
     s_netplay_allowed = 0;
     memset(&s_stats, 0, sizeof s_stats);

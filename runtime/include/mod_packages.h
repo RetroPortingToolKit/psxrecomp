@@ -464,6 +464,10 @@ public:
         developer_channel_ = visible;
     }
     bool developer_channel_visible() const { return developer_channel_; }
+    /* Trusted title policy: hide and deactivate these ids even when an old
+     * bundle or an installed copy survives an update. Saved choices stay
+     * dormant and files remain untouched. Set before scan(). */
+    void set_disabled_packages(std::vector<std::string> ids) { disabled_packages_ = std::move(ids); }
 
     /* Build-owned catalog: wiped and re-staged by every build. */
     std::filesystem::path bundled_root() const { return root_ / "bundled"; }
@@ -588,6 +592,7 @@ private:
     bool developer_channel_ = kDeveloperChannelDefault;
     std::vector<std::string> scan_errors_;
     std::map<std::string, std::map<std::string, ModPackage>> packages_;
+    std::vector<std::string> disabled_packages_;
     std::map<std::string, ModSelection> selections_;
     std::map<std::string, std::filesystem::path> sources_;
 };

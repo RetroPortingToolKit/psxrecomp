@@ -956,6 +956,30 @@ def ensure_toolchain(
     Installs always land under the shared Retro cache; the project only gets
     a stamp file pointing at that pack.
     """
+    if not sys_platform_is_windows() and from_zip is None:
+        # Setup/rebuild on Linux and macOS uses native tools. Do not turn a
+        # missing dependency into an unsolicited portable-pack download.
+        groups = (("cmake",), ("ninja",), ("python3", "python"),
+                  ("cc", "gcc", "clang"), ("c++", "g++", "clang++"))
+        resolved = []
+        for names in groups:
+            command = next(filter(None, (shutil.which(name) for name in names)), None)
+            if command:
+                try:
+                    result = subprocess.run([command, "--version"], capture_output=True,
+                                            text=True, timeout=30, check=False)
+                    if result.returncode == 0:
+                        resolved.append(command)
+                        continue
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            raise RuntimeError("Native build tools are missing or unusable: {}. Install CMake, "
+                               "Ninja, Python 3 and C/C++ compilers with your package manager."
+                               .format("/".join(names)))
+        if log:
+            log("Using native build tools on PATH")
+        return Path(resolved[0]).parent
+
     need = min_version or default_min_version()
     if is_windows_store_python() and log:
         log(

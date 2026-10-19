@@ -62,6 +62,8 @@ def activate_embedded_toolchain(
     project_root: Path, progress: Optional[ProgressReporter] = None
 ) -> bool:
     """Prepend resolved toolchain bin/ to PATH for cmake/ninja/clang."""
+    if sys.platform != "win32":
+        return False
     log = progress.log if progress else None
     bin_dir = resolve_toolchain_bin(project_root)
     if not bin_dir or not toolchain_bin_runs(bin_dir, log=log):

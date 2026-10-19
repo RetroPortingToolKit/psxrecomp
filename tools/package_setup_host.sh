@@ -480,6 +480,12 @@ copy_tree_filtered "${ROOT}/recomp-ui" "${STAGE}/recomp-ui" \
   --exclude 'build' \
   --exclude '__pycache__'
 
+# The UI checkout carries launcher state and standalone demo ROM fixtures.
+# Neither is a source input for a player's game rebuild. Apply this after
+# copying so the rsync and portable cp paths obey the same SDK policy.
+rm -f "${STAGE}/recomp-ui/keybinds.ini"
+rm -rf "${STAGE}/recomp-ui/test_data"
+
 # Never ship game generated C or common disc working trees.
 rm -rf "${STAGE}/generated" "${STAGE}/bpe" "${STAGE}/motk" "${STAGE}/disc"
 
@@ -530,9 +536,13 @@ ${DISPLAY_NAME} ${VERSION} — setup package
 Platform: ${ARTIFACT}
 
 One zip for first install and updates. Does NOT include disc images, retail
-BIOS dumps, pre-generated game C, or a portable cmake/clang pack. Emitters
+BIOS dumps, pre-generated game C, or a bundled build-tool pack. Emitters
 (psxrecomp-game / psxrecomp-bios) and the CLI are inside psxrecomp/.
+EOF
 
+case "${ARTIFACT}" in
+  windows-*)
+    cat >>"${STAGE}/README-SETUP.txt" <<EOF
 Standalone:
 1. Install Python 3.
 2. Run ${EXE_BASENAME}.
@@ -546,6 +556,28 @@ Retro uses this same zip: it harvests emitters into a shared SDK cache,
 downloads the toolchain pack (or uses RETCOMM_TOOLCHAIN_DIR), and preserves
 saves/user config across updates.
 EOF
+    ;;
+  linux-*|macos-*)
+    cat >>"${STAGE}/README-SETUP.txt" <<EOF
+Standalone:
+1. Install CMake, Ninja, Python 3, and a C/C++ compiler with your system
+   package manager.
+2. Make sure cmake, ninja, python3, and either clang/clang++ or gcc/g++ are
+   available on PATH.
+3. Run ${EXE_BASENAME}.
+4. Provide ${DISC_HINT} and ${BIOS_HINT}.
+5. Follow the Generate & rebuild wizard. The host checks the native build
+   tools before it continues.
+
+Retro uses this same zip. It uses the same native build tools and preserves
+saves/user config across updates.
+EOF
+    ;;
+  *)
+    echo "error: unsupported setup README platform: ${ARTIFACT}" >&2
+    exit 1
+    ;;
+esac
 
 # --- Gate: the staged tree must be able to configure itself ----------------
 # The project file/dir list is an allowlist, so any path a project adds to

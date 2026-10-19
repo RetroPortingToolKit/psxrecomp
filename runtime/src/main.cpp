@@ -123,6 +123,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "mod_session_baseline.h"
 #include "mod_runtime.h"
 #include "video_texture_filter.h"
+#include "video_telemetry.h"
 #include "host_launch_timing.h"
 #include "mod_packages.h"
 #include "present_image_ring.h"
@@ -2555,6 +2556,38 @@ extern "C" void psx_video_resolution_info(int *preset, int *ref_lines, int *requ
     if (px_h) *px_h = ph;
 }
 
+extern "C" void psx_video_config_telemetry(PsxVideoConfigTelemetry *out) {
+    if (!out) return;
+    *out = {};
+    out->renderer = g_gl_active ? PSX_VIDEO_OPENGL : g_vk_active ? PSX_VIDEO_VULKAN
+                    : g_headless ? PSX_VIDEO_NONE : PSX_VIDEO_SOFTWARE;
+    out->resolution_preset = effective_internal_resolution();
+    out->aspect_num = g_video_aspect_num;
+    out->aspect_den = g_video_aspect_den;
+    out->widescreen = g_ws_engaged && g_video_aspect_num * 3 != g_video_aspect_den * 4;
+}
+
+#ifndef PSX_SDL_NO_RENDER
+/* All software swaps, including display-disabled and held frames. Query only
+ * the owning SDL renderer; never synchronize another render thread. */
+static void software_present_with_telemetry(SDL_Renderer *renderer) {
+    int width = 0, height = 0;
+#if defined(PSX_SDL3)
+    SDL_GetRenderOutputSize(renderer, &width, &height);
+#else
+    SDL_GetRendererOutputSize(renderer, &width, &height);
+#endif
+    psx_video_telemetry_compose(PSX_VIDEO_SOFTWARE, gr_scale(), 0, 0,
+                               width, height, 0, 0);
+#if defined(PSX_SDL3)
+    psx_video_telemetry_present(SDL_RenderPresent(renderer) ? 1 : 0);
+#else
+    SDL_RenderPresent(renderer);
+    psx_video_telemetry_present(-1); // SDL2's API has no return status.
+#endif
+}
+#endif
+
 extern "C" int present_shot_request(const char *path)
 {
     if (!path || !*path) return 0;
@@ -2574,6 +2607,11 @@ extern "C" int present_shot_request(const char *path)
 
 /* Backend hook: atomically claim a staged shot (returns 1 and fills `out`),
  * then call present_shot_done(ok) once the PNG is written — or not written. */
+extern "C" int psx_video_telemetry_capture(const char *path) {
+    if (!path || std::strlen(path) >= sizeof(s_present_shot_path)) return 0;
+    return present_shot_request(path);
+}
+
 extern "C" int present_shot_take(char *out, int n)
 {
     if (!out || n <= 0) return 0;
@@ -7558,7 +7596,7 @@ static void netplay_hold_last_present_tick(void) {
         SDL_RenderClear(sdl_renderer);
         SDL_RenderCopy(sdl_renderer, sdl_texture, &s_sw_hold_src, &s_sw_hold_dst);
         host_osd_draw_sdl(sdl_renderer);
-        SDL_RenderPresent(sdl_renderer);
+        software_present_with_telemetry(sdl_renderer);
         did = 1;
     }
 #endif
@@ -8263,7 +8301,7 @@ static void rewind_pause_present(void) {
             SDL_RenderCopy(sdl_renderer, sdl_texture, &s_sw_hold_src,
                            &s_sw_hold_dst);
         host_osd_draw_sdl(sdl_renderer);
-        SDL_RenderPresent(sdl_renderer);
+        software_present_with_telemetry(sdl_renderer);
     }
 #endif
 }
@@ -9404,7 +9442,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                         SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
                         SDL_RenderClear(sdl_renderer);
                         host_osd_draw_sdl(sdl_renderer);
-                        SDL_RenderPresent(sdl_renderer);
+                        software_present_with_telemetry(sdl_renderer);
                     }
                 }
             }
@@ -9884,7 +9922,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     {
         latency_ring_mark(LAT_SWAP_BEGIN);
         const Uint64 t0 = SDL_GetPerformanceCounter();
-        SDL_RenderPresent(sdl_renderer);
+        software_present_with_telemetry(sdl_renderer);
         const Uint64 t1 = SDL_GetPerformanceCounter();
         latency_ring_mark(LAT_SWAP_END);
         netplay_note_present();

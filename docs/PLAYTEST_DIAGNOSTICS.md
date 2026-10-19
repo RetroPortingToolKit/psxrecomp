@@ -36,9 +36,12 @@ No texture feature,
 texture package or other enhancement is enabled or exposed by this helper.
 
 The implementation reads no title-specific addresses. `telemetry.csv` stores
-host intervals, incident markers, CD activity and render-pass counters. These
-are passive evidence and never feed replay or simulation. Press L3 + R3 together
-to mark an incident; holding the chord produces one marker. Game-specific
+host intervals, incident markers, CD activity, ordinary GP0 draw commands,
+host presentation calls, effective video configuration and optional render-pass
+state-verification counters. These are passive evidence and never feed replay
+or simulation. Press L3 + R3 together
+to mark an incident and queue a composed screenshot on supported presenters;
+holding the chord produces one marker/request. Game-specific
 gameplay samplers remain separate, validated adapters.
 
 ## Feedback bundle
@@ -55,6 +58,9 @@ Quit normally after reproducing a problem and zip the complete session folder:
 
 - `inputs.csv` and `session.json` describe inputs and execution/build identity.
 - `telemetry.csv` contains timing, incident, CD and renderer evidence.
+- `incident-<number>.png`, when the presenter completed an incident capture,
+  shows composed output rather than only native VRAM. OpenGL and software
+  support this path; headless and Vulkan currently reject it explicitly.
 - `mods-state.toml`, optional `settings.toml`, and starting cards or explicit
   absence markers preserve the original choices and save data.
 - A slot-state restore starts a new segment with its complete `baseline.pst`.
@@ -64,6 +70,78 @@ Discs and BIOS images are never copied into feedback bundles. Starting cards
 contain the player's saves. Recording and input display are independently
 controlled by the title's mod features. Netplay frames are skipped; this
 offline recorder does not claim to reproduce network sessions.
+
+## Coverage and effective video state
+
+`psxrecomp-telemetry-v2` preserves the original thirteen CSV columns and appends
+the following evidence. Input-v2 and strict replay checks are unchanged.
+
+- `gpu_draw_commands`: cumulative ordinary GP0 drawing commands observed by the
+  GPU front end. This is command activity, not a count of correct rendered pixels.
+- `host_presents` / `host_present_errors`: cumulative returned/failed calls
+  from the actual host present API. OpenGL's direct and threaded paths, Vulkan,
+  and software presentation publish these without requiring debug tools.
+  `host_present_status_available` says whether the latest host present API
+  supplied a result. SDL2 has no return status, so its activity counter only
+  proves the call returned; zero errors under SDL2 is missing error coverage. Vulkan
+  success includes `VK_SUBOPTIMAL_KHR`. Neither API proves monitor scanout.
+  Counts include repeated images, pause/overlay presents and generated frames;
+  do not label them unique game frames. GP0 commands and presents need not be 1:1.
+- `video_renderer`: the active backend, after fallback (`0` none/headless,
+  `1` software, `2` OpenGL, `3` Vulkan). `video_resolution_preset`,
+  `video_aspect_num/den` and `video_widescreen` sample the emulation owner's
+  settings after mod overrides, including changes during the session.
+- `video_snapshot_valid`: whether a coherent passive backend snapshot was
+  available. `composed_*` fields describe the last composed image's backend,
+  actual internal scale, native source dimensions, drawable dimensions and
+  fitted viewport dimensions. Dimensions unavailable on a path are zero.
+  A threaded renderer can compose ahead of the swap counter; these fields do
+  not identify the exact image a particular swap displayed. FMV/menus may use
+  a narrower viewport than the configured widescreen mode.
+- `render_verify_enabled`, existing `render_verify_checks/mismatch`, and
+  `render_verify_ever_executed`: enablement, cumulative checks/failures and
+  whether any optional extra render-pass state-preservation check has run.
+  These do not monitor ordinary rendering or texture correctness. An enabled
+  check that never executes supplies no coverage. To measure a recording
+  interval, compare the counter increase, not just a preexisting nonzero value.
+- `visual_verify_available` / `visual_verify_checks`: currently zero because
+  this recorder has no independent pixel oracle. This is explicit missing
+  coverage, never a successful texture test. Screenshots/clips and matched
+  original-game comparisons remain necessary for visible defects.
+- `incident_capture_request`: `-1` means no request on this row, `0` rejected,
+  and `1` queued on the existing composed-output capture path. The next
+  presented image is written as `incident-<number>.png` if capture succeeds;
+  an accepted request alone is not a completed screenshot. The analyzer lists
+  accepted/rejected requests separately from image files present in the bundle.
+  Capturing on an explicit incident may cost a readback/PNG write; ordinary
+  frames do not request pixel capture. A pending diagnostic request can be
+  replaced by a later explicit screenshot request before it is fulfilled.
+
+The backend observer does not read pixels, query GL errors, synchronize the
+render thread or change guest state. Its snapshot makes at most three attempts
+and reports unavailable if a coherent publication cannot be sampled.
+
+Analyze either v1 or v2 without launching a game:
+
+```text
+python replay-diagnostics.py <session-dir> --analyze
+```
+
+The JSON report separates activity, optional state checks and visual coverage.
+Old v1 bundles explicitly report absent ordinary-renderer/effective-mode data.
+Missing probes, zero executed checks, sequence discontinuities and counter
+resets are visible; zero mismatches alone is never presented as a pass. A torn
+final row is ignored, while a malformed complete row is rejected.
+
+A diagnostic recording is helpful for exact input/state reproduction, but is
+not a prerequisite for investigating a visual report. Reproduce known menu,
+attract-demo, transition and resize cases directly with a fresh private save
+directory and muted automated output. Capture the composed presentation, since
+raw/native VRAM screenshots can omit the very widescreen/HD transformation at
+issue. Preserve location, camera direction, effective mode and before/after
+images. Escalate to an incident-marked recording when the trigger is unclear
+or depends on intermittent timing; do not classify an untried case as
+improbable merely because the reporter supplied no log.
 
 ## Replay
 
@@ -114,3 +192,7 @@ debouncing, first divergence, identity mismatches, save-state baselines, readonl
 output fallback, release-build input-only rejection and isolated replay setup.
 They establish the shared engine-boundary contract. Actual title/disc playtests
 are still needed to qualify each game's original-build replay.
+The video tests additionally cover concurrent passive snapshots, composition
+versus completed presentation, failed presents, live scale/aspect changes,
+ordinary activity with no optional checks, legacy coverage reporting and the
+analysis-only CLI.

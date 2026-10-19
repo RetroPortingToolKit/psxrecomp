@@ -79,6 +79,33 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("audit passed", result.stdout)
 
+    def test_complete_native_macos_archives(self):
+        del self.files["Game.exe"]
+        self.files[SOURCE] = TEXT
+        self.files["game.toml"] += '[runtime]\nopenbios=false\n'
+        for magic in (b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+                      b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+                      b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+                      b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"):
+            for prefix in ("", "Release/"):
+                with self.subTest(magic=magic.hex(), prefix=prefix):
+                    self.files["Game"] = magic + b"synthetic Mach-O fixture"
+                    self.write(prefix)
+                    self.assertEqual(audit.audit(self.zip, GAME, DIAG), 1)
+
+    def test_plain_truncated_or_nested_binaries_are_not_adjacent_executables(self):
+        del self.files["Game.exe"]
+        for name, content in (("Game", b"ordinary text"),
+                              ("Game", b"\xcf\xfa\xed"),
+                              ("Game", b"\x89PNGfixture"),
+                              ("tools/Game", b"\xcf\xfa\xed\xfefixture"),
+                              ("tools/Game.exe", b"MZfixture")):
+            with self.subTest(name=name, content=content):
+                self.files[name] = content
+                with self.assertRaisesRegex(ValueError, "no executable adjacent"):
+                    self.check()
+                del self.files[name]
+
     def test_python38_syntax_and_tomli_fallback(self):
         original_import = builtins.__import__
 

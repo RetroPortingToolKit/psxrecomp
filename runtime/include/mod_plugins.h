@@ -1052,7 +1052,8 @@ int psx_mod_set_controller_source_connected(uint32_t player, int connected);
  * host_flags bit 0 = a
  * gamepad is assigned, bit 1 / bit 2 = it has a left / right trigger axis;
  * host_lt / host_rt are those triggers, 0 released .. 255 fully pressed
- * (0 when absent or while the savestate input guard is armed).
+ * (0 when absent or while the savestate input guard is armed). Bit 3 marks
+ * axes/type supplied by an offline input source (PSX_MOD_PAD_HOST_SOURCE).
  *
  * The output arrives pre-filled with the stock pad (what the player gets
  * without a transform, so a digital pad keeps its fold and centred sticks;
@@ -1079,7 +1080,10 @@ enum {
 enum {
     PSX_MOD_PAD_HOST_GAMEPAD = 1u << 0,
     PSX_MOD_PAD_HOST_LT = 1u << 1,
-    PSX_MOD_PAD_HOST_RT = 1u << 2
+    PSX_MOD_PAD_HOST_RT = 1u << 2,
+    /* Axes/type came from an offline input source, rather than the host.
+     * Transforms can preserve already transformed diagnostic recordings. */
+    PSX_MOD_PAD_HOST_SOURCE = 1u << 3
 };
 typedef struct PSXModPadFrame {
     uint32_t struct_size, player, buttons, lx, ly, rx, ry, type;
@@ -1176,6 +1180,11 @@ int psx_mod_set_local_mouse_policy(const PSXModMousePolicy* policy);
 /* Optional action-game capture: click once to capture, Escape to release.
  * Later clicks reach the normal bindings. Existing hold-to-look is default. */
 int psx_mod_set_local_mouse_persistent_capture(int enabled);
+/* Optional persistent-capture companion: keep existing capture through title
+ * eligibility changes (menus/cutscenes/loading), Start and host stalls, while
+ * clearing mouse motion and suspending output. Focus loss, host UI, disconnect,
+ * native right-stick takeover and Escape still release. Never auto-acquires. */
+int psx_mod_set_local_mouse_capture_across_transitions(int enabled);
 
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.

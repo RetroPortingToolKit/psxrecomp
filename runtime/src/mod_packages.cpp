@@ -2779,6 +2779,8 @@ bool ModPackageManager::scan_root(const fs::path& packages_root,
                     ": package path does not match manifest id/version");
                 continue;
             }
+            if (std::find(disabled_packages_.begin(), disabled_packages_.end(), package.id) != disabled_packages_.end())
+                continue;
             if (!developer_channel_ && !strip_developer_features(package)) {
                 /* Every feature was developer-channel, so on this build the
                  * package has nothing to offer. Not an error: it is the

@@ -186,7 +186,7 @@ int main(void) {
         CHECK(pad_ext_resolve(&hx, 0, &o) == 1);
         CHECK(T.xf_seen.struct_size == sizeof T.xf_seen && T.xf_seen.player == 0);
         CHECK(T.xf_seen.buttons == (0xfeff & 0xfffe) && T.xf_seen.lx == 200 &&
-              T.xf_seen.type == 1 && T.xf_seen.host_flags == 7 &&
+              T.xf_seen.type == 1 && T.xf_seen.host_flags == (7 | PSX_MOD_PAD_HOST_SOURCE) &&
               T.xf_seen.host_lt == 60 && T.xf_seen.host_rt == 250);
         CHECK(o.analog == PSX_MOD_PAD_NEGCON && o.buttons == 0xbfff &&
               o.lx == 0x30 && o.rx == 250 && o.ry == 60 && o.ly == 5);

@@ -62,7 +62,16 @@ def audit(path, game_id, diagnostics_id):
             if name.lower().endswith(".exe"):
                 return entry.file_size > 0
             with archive.open(entry) as stream:
-                return stream.read(4) == b"\x7fELF"
+                magic = stream.read(4)
+            return magic in {
+                b"\x7fELF",
+                # Thin Mach-O 32/64-bit, both byte orders.
+                b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+                b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+                # Universal Mach-O fat/fat64, both byte orders.
+                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+                b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
+            }
 
         recipe = tomllib.loads(read("game.toml").decode("utf-8-sig"))
         if recipe.get("game", {}).get("id") != game_id:
