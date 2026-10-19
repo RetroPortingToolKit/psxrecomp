@@ -7185,17 +7185,22 @@ static const char *FB_FS =
     "uniform vec2 u_src_delta;  /* source minus target, native px */\n"
     "uniform vec3 u_mod;        /* 8-bit modulation colour */\n"
     "uniform int u_raw;\n"
+    "uniform int u_accurate;    /* the surfaces' colour basis, as TEX_FS */\n"
     "void main(){\n"
     "  vec2 n = gl_FragCoord.xy / u_dst_scale + u_src_delta;\n"
     "  float ss = float(textureSize(u_src, 0).y) / 512.0;\n"
     "  vec4 c = texelFetch(u_src, ivec2(n * ss), 0);\n"
     "  if (c.a < 0.5 && c.rgb == vec3(0.0)) discard;   /* texel 0x0000 */\n"
-    "  vec3 col = u_raw != 0 ? c.rgb : min(c.rgb * u_mod / 128.0, vec3(1.0));\n"
-    "  frag = vec4(col, 1.0);\n"
+    "  /* The centre samples packed 5-bit VRAM (PACK_FS); truncating the same\n"
+    "   * way keeps the bands from drifting brighter across feedback frames. */\n"
+    "  vec3 k = floor(floor(c.rgb * 255.0 + 0.5) / 8.0);\n"
+    "  vec3 rgb = u_accurate != 0 ? k * (8.0 / 255.0) : k / 31.0;\n"
+    "  if (u_raw == 0) rgb = clamp(rgb * u_mod / 255.0 * 2.0, 0.0, 1.0);\n"
+    "  frag = vec4(rgb, 1.0);\n"
     "}\n";
 static GLuint s_fb_prog = 0;
 static GLint  s_fb_uRect, s_fb_uSize, s_fb_uSrc, s_fb_uDstScale, s_fb_uSrcDelta,
-              s_fb_uMod, s_fb_uRaw;
+              s_fb_uMod, s_fb_uRaw, s_fb_uAccurate;
 
 static int fb_prog_ready(void) {
     if (s_fb_prog) return 1;
@@ -7208,6 +7213,7 @@ static int fb_prog_ready(void) {
     s_fb_uSrcDelta  = p_glGetUniformLocation(s_fb_prog, "u_src_delta");
     s_fb_uMod       = p_glGetUniformLocation(s_fb_prog, "u_mod");
     s_fb_uRaw       = p_glGetUniformLocation(s_fb_prog, "u_raw");
+    s_fb_uAccurate  = p_glGetUniformLocation(s_fb_prog, "u_accurate");
     return 1;
 }
 
@@ -7225,6 +7231,7 @@ static void fb_bind(GLuint src_tex, int dl, int dy, int w, int h, int sl, int sy
     p_glUniform2f(s_fb_uSrcDelta, (float)(sl - dl), (float)(sy - dy));
     p_glUniform3f(s_fb_uMod, (float)r, (float)g, (float)b);
     p_glUniform1i(s_fb_uRaw, raw);
+    p_glUniform1i(s_fb_uAccurate, s_accurate_blend);
 }
 
 /* An existing wide surface for base_x; never allocates (nothing to copy yet). */
