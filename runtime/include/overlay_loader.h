@@ -119,6 +119,10 @@ void overlay_loader_resync_validation_after_restore(void);
  * (loaded DLLs stay loaded); emu thread only. */
 void overlay_loader_rescan(void);
 
+/* The codegen hash this runtime was built with (PSX_OVERLAY_CODEGEN_HASH, 0 if unknown). It names the
+ * shard cache directory, so a toolchain staged from a different emitter writes where nobody reads. */
+unsigned overlay_loader_codegen_hash(void);
+
 /* Two-phase live publication: the compile-output watcher maps a freshly
  * published image off the emulation thread, then the emulation thread performs
  * callback wiring, manifest validation, and candidate registration. The opaque

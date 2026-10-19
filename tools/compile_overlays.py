@@ -7095,6 +7095,22 @@ def _runtime_valid_shard_pair_locked(dll: str, ranges: str,
         {entry for entry, _crc, _ranges in funcs}))
 
 
+def announce_published_shard(dll: str) -> None:
+    """Tell a live runtime that `dll` (with its .ranges) is committed and loadable.
+
+    The runtime's autocompile pipeline (runtime/src/autocompile.c) maps each announced
+    shard on a worker thread while the compiler is still running and commits it between
+    frames. Without this line every shard compiled during play is first mapped by the
+    EMULATION thread at its first dispatch miss: a synchronous LoadLibrary (measured
+    300 ms on a cold Windows file, antivirus included) plus the batch-end cache rescan.
+    Only a runtime that asked for it (PSX_OVERLAY_LIVE_AUTOCOMPILE=1, set by
+    autocompile_request) receives the line; offline builds keep a quiet stdout.
+    """
+    if os.environ.get('PSX_OVERLAY_LIVE_AUTOCOMPILE') != '1':
+        return
+    print(f'PSX_SHARD_PUBLISHED {os.path.abspath(dll)}', flush=True)
+
+
 def publish_shard_pair(staged_dll: str, staged_ranges: str,
                        final_dll: str, preserve_existing: bool = False,
                        expected_existing_abi: int | None = None,
@@ -7181,6 +7197,7 @@ def publish_shard_pair(staged_dll: str, staged_ranges: str,
             except BaseException:
                 _recover_shard_pair_locked(dll)
                 raise
+    announce_published_shard(dll)
     return True
 
 

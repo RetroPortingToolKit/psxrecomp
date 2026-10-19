@@ -1,5 +1,6 @@
 #include "overlay_capture.h"
 #include "overlay_loader.h"
+#include "host_span_ring.h"
 #include "dirty_ram_interp.h"
 #include "code_provider.h"
 #include "crc32.h"
@@ -257,8 +258,18 @@ void overlay_capture_configure_history(int enabled, const char *persist_dir,
     }
 }
 
+static void overlay_capture_on_dma_impl(uint32_t load_addr, uint32_t size,
+                                        const uint8_t *bytes);
 void overlay_capture_on_dma(uint32_t load_addr, uint32_t size,
                              const uint8_t *bytes)
+{
+    const uint64_t span_t0 = host_span_begin();
+    overlay_capture_on_dma_impl(load_addr, size, bytes);
+    host_span_end(HSPAN_CAPTURE_ON_DMA, span_t0, load_addr);
+}
+
+static void overlay_capture_on_dma_impl(uint32_t load_addr, uint32_t size,
+                                        const uint8_t *bytes)
 {
     int i;
     OvEntry *e;
@@ -891,7 +902,15 @@ void overlay_capture_write_json(void)
                                         0, psx_ram_live_bytes(), 0);
 }
 
+static void overlay_capture_before_dma_impl(uint32_t load_addr, uint32_t size);
 void overlay_capture_before_dma(uint32_t load_addr, uint32_t size)
+{
+    const uint64_t span_t0 = host_span_begin();
+    overlay_capture_before_dma_impl(load_addr, size);
+    host_span_end(HSPAN_CAPTURE_BEFORE_DMA, span_t0, load_addr);
+}
+
+static void overlay_capture_before_dma_impl(uint32_t load_addr, uint32_t size)
 {
     if (!s_enabled || !s_active || size == 0) return;
     uint32_t lo = psx_ram_canonical_offset(load_addr);

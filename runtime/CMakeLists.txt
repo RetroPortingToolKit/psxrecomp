@@ -206,7 +206,7 @@ if(BUILD_TESTING)
         add_test(NAME boot_state_execution_test COMMAND boot_state_execution_test)
 
         add_executable(static_match_cache_test tests/test_static_match_cache.c
-            src/overlay_loader.c src/crc32.c)
+            src/overlay_loader.c src/host_span_ring.c src/crc32.c)
         target_include_directories(static_match_cache_test PRIVATE include)
         target_compile_definitions(static_match_cache_test PRIVATE
             PSX_HAS_OVERLAY_DISPATCH PSX_NO_DEBUG_TOOLS)
@@ -1198,6 +1198,7 @@ if(BUILD_TESTING)
     add_executable(overlay_capture_retry_test
         tests/test_overlay_capture_retry.cpp
         src/overlay_capture.c
+        src/host_span_ring.c
         src/psx_ram_geometry.c)
     target_include_directories(overlay_capture_retry_test PRIVATE
         include ${PSX_SDL_INCLUDE_DIRS})
@@ -1375,6 +1376,7 @@ if(BUILD_TESTING)
     add_executable(mod_runtime_test
         tests/test_mod_runtime.cpp
         src/iso_reader_c.cpp
+        src/host_span_ring.c
         src/mod_runtime.cpp
         src/mod_netplay.c
         src/mod_packages.cpp
@@ -1421,6 +1423,7 @@ if(BUILD_TESTING)
     add_executable(netplay_view_mods_test
         tests/test_netplay_view_mods.cpp
         src/iso_reader_c.cpp
+        src/host_span_ring.c
         src/mod_runtime.cpp
         src/mod_netplay.c
         src/mod_packages.cpp
@@ -1492,7 +1495,8 @@ if(BUILD_TESTING)
     if(WIN32)
         add_executable(autocompile_publication_test
             tests/test_autocompile_publication.c
-            src/autocompile.c)
+            src/autocompile.c
+            src/host_span_ring.c)
         target_include_directories(autocompile_publication_test PRIVATE include)
         target_compile_definitions(autocompile_publication_test PRIVATE
             PSX_AUTOCOMPILE_TEST=1)
@@ -1504,11 +1508,34 @@ if(BUILD_TESTING)
         # broken autocompile silently degrades the whole run to the interpreter.
         add_executable(autocompile_degraded_test
             tests/test_autocompile_degraded.c
-            src/autocompile.c)
+            src/autocompile.c
+            src/host_span_ring.c)
         target_include_directories(autocompile_degraded_test PRIVATE include)
         add_test(NAME autocompile_degraded_test
                  COMMAND autocompile_degraded_test)
+
+        # A toolchain staged from a different emitter writes shards into a cache directory the
+        # runtime never reads (LoD playtest 2026-10-12); the runtime must refuse it loudly.
+        add_executable(autocompile_toolchain_hash_test
+            tests/test_autocompile_toolchain_hash.c
+            src/autocompile.c
+            src/host_span_ring.c)
+        target_include_directories(autocompile_toolchain_hash_test PRIVATE include)
+        add_test(NAME autocompile_toolchain_hash_test
+                 COMMAND autocompile_toolchain_hash_test)
     endif()
+
+    # Always-on wall-time frame/span rings (host_span_ring.h): the hitch-attribution
+    # rings every runtime stall probe reads.
+    add_executable(host_span_ring_test
+        tests/test_host_span_ring.c
+        src/host_span_ring.c)
+    target_include_directories(host_span_ring_test PRIVATE include)
+    if(UNIX)
+        find_package(Threads REQUIRED)
+        target_link_libraries(host_span_ring_test PRIVATE Threads::Threads)
+    endif()
+    add_test(NAME host_span_ring_test COMMAND host_span_ring_test)
 
     # ---- previously-unregistered standalone tests -------------------------
     # These 16 existed in runtime/tests/ with no add_test() entry. Their only
@@ -2006,6 +2033,7 @@ if(BUILD_TESTING)
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
+        add_test(NAME compile_overlays_publish_marker_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compile_overlays_publish_marker.py)
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME launch_disc_path_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launch_disc_path.py --compiler ${CMAKE_CXX_COMPILER})
             add_test(NAME persisted_settings_paths_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_persisted_settings_paths.py --compiler ${CMAKE_CXX_COMPILER})
