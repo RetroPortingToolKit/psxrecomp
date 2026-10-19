@@ -75,6 +75,9 @@ bool mod_runtime_netplay_input_active();
 /* "package/feature" keys of `plan` that qualify as own-view features. */
 std::vector<std::string> mod_runtime_netplay_view_features(const ModResolution& plan);
 const std::string& mod_runtime_fingerprint();
+/* Empty scope preserves existing slots. Isolated packages require a committed,
+ * verified content plan; resource preparation/preview alone establishes none. */
+bool mod_runtime_savestate_scope(std::string& scope, std::string* error = nullptr);
 /* Host diagnostics may copy the persisted offline selection from this root. */
 const std::filesystem::path& mod_runtime_root();
 const std::filesystem::path& mod_runtime_effective_disc_path();

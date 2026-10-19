@@ -19804,7 +19804,14 @@ int main(int argc, char** argv) {
      * renderer and window creation only after session_reboot, so activation
      * precedes them either way. A netplay clear leaves no plan, so nothing
      * activates and the session stays vanilla. */
-    auto start_mod_session = [&](bool netplay) {
+    auto start_mod_session = [&](bool netplay) -> bool {
+        std::string save_scope, save_error;
+        if (!PSXRecompV4::mod_runtime_savestate_scope(save_scope, &save_error) ||
+            !savestate_set_content_scope(save_scope.c_str())) {
+            (void)savestate_set_content_scope("invalid");
+            std::fprintf(stderr, "psxrecomp: cannot establish save-state scope: %s\n", save_error.c_str());
+            return false;
+        }
         /* Clear game-owned controller overrides/policies and load/disc-speed
          * choices first so disabling a package cannot leave its prior state
          * latched across a soft return. */
@@ -19872,8 +19879,9 @@ int main(int argc, char** argv) {
                     g_turbo_load_release_frames);
             }
         }
+        return true;
     };
-    start_mod_session(net_cfg.enabled);
+    if (!start_mod_session(net_cfg.enabled)) return 1;
 
     /* Re-apply the resolved language to the translation layer. text_xlate_init
      * (at config load) only saw the game.toml default; this folds in the
@@ -22176,7 +22184,7 @@ soft_return_lobby:
                 g_video_aspect_num = 4;
                 g_video_aspect_den = 3;
             }
-            start_mod_session(net_cfg.enabled);
+            if (!start_mod_session(net_cfg.enabled)) return 1;
             disc_path_str = session_disc_path(resolved_disc);
             std::printf("psxrecomp: rematch from lobby (netplay=%d)\n",
                         net_cfg.enabled ? 1 : 0);

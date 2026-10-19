@@ -126,6 +126,7 @@ struct RuntimeMods {
     bool cached_prepare = false;
     bool provider_preparing = false;
     bool initialized = false;
+    bool plan_committed = false;
     bool main_applied = false;
     bool disc_enabled = false;
     bool disc_guard_failed = false;
@@ -187,6 +188,8 @@ bool dependency_files(RuntimeMods& s, const std::filesystem::path& disc,
     return add(s.effective_disc_path);
 }
 
+bool sha256_file(const std::filesystem::path&, std::string&, std::string*);
+
 bool catalog_files(RuntimeMods& s, std::map<std::filesystem::path, std::string>& files) {
     files.clear();
     std::error_code ec;
@@ -197,7 +200,10 @@ bool catalog_files(RuntimeMods& s, std::map<std::filesystem::path, std::string>&
         if (++entries > 4096) return false;
         if (it->path().filename() != "manifest.toml") continue;
         std::string stamp;
-        if (!host_file_identity(it->path(), stamp)) return false;
+        if (!host_file_identity(it->path(), stamp)) {
+            if (!sha256_file(it->path(), stamp, nullptr)) return false;
+            stamp = "sha256:" + stamp;
+        }
         files[it->path()] = std::move(stamp);
     }
     return !ec;
@@ -1506,6 +1512,7 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
+    s.plan_committed = false;
     reset_live_option_overrides();  /* a new plan ends the last session's live values */
     s.validation = {};
     s.raw_disc_index.clear();
@@ -1629,6 +1636,7 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
+    s.plan_committed = true; // Explicit vanilla session, not unresolved preparation.
     reset_live_option_overrides();  /* a new plan ends the last session's live values */
     s.validation = {};
     s.raw_disc_index.clear();
@@ -1784,6 +1792,7 @@ bool mod_runtime_commit_netplay(const std::filesystem::path& disc_path,
     if (renderer) plan.plugins.push_back({renderer, "", ""});
     s.disc_path = disc_path;
     s.plan = std::move(plan);
+    s.plan_committed = true;
     reset_live_option_overrides();  /* a new plan ends the last session's live values */
     mod_runtime_set_session_plan_fp({});
     psx_mod_netplay_set_active(1);
@@ -2003,6 +2012,17 @@ bool mod_runtime_prepare_resources(const std::filesystem::path& disc_path, std::
     HostLaunchTimingScope timing(HOST_LAUNCH_PREPARE_RESOURCES);
     RuntimeMods& s = state();
     if (!s.initialized) { timing.success(); return true; }
+    // Cold lobby offers prepare without committing a plan. Establish their
+    // selected disc identity too; final commit independently revalidates it.
+    if (!disc_path.empty() && (disc_path != s.disc_path || s.disc_sha256.empty())) {
+        std::string digest;
+        if (!measured_disc_digest(disc_path, digest, &s.error)) {
+            if (error) *error = s.error;
+            return false;
+        }
+        s.disc_path = disc_path;
+        s.disc_sha256 = std::move(digest);
+    }
     const auto media_cache = media_cache_root();
     if (!s.manager.prepare_resources(s.game_id, disc_path, media_cache, &s.error, s.cached_prepare,
             active_prepare_progress ? *active_prepare_progress : ModPrepareProgress{})) {
@@ -2117,6 +2137,7 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = std::move(plan);
+    s.plan_committed = true;
     reset_live_option_overrides();  /* a new plan ends the last session's live values */
     {
         HostLaunchTimingScope index_timing(HOST_LAUNCH_BUILD_DISC_INDEX);
@@ -2170,7 +2191,9 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
          host_file_identity(resolve_disc_path(disc_path).data, inputs.data_identity));
 #endif
 #if !defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
-    if (disc_path != s.disc_path)
+    // Offline legacy commits retain path-based digest reuse. A netplay commit
+    // must remeasure even after a same-path lobby offer was prepared.
+    if (!save_selection || disc_path != s.disc_path)
 #endif
     {
         std::string hash_error, digest;
@@ -2254,7 +2277,9 @@ const std::string& mod_runtime_session_plan_fp() {
 std::string mod_runtime_plan_fingerprint_portable() {
     RuntimeMods& s = state();
     if (!s.initialized) return {};
-    ModResolution plan = s.manager.resolve(s.game_id, s.exe_sha256, std::string());
+    // Portable means independent of machine-local paths, not disc identity.
+    // Exact-disc overlays must retain the source qualification used at commit.
+    ModResolution plan = s.manager.resolve(s.game_id, s.exe_sha256, s.disc_sha256);
     if (!plan.ok || !netplay_resources_verified(plan)) return {};
     return plan.fingerprint;
 }
@@ -2429,6 +2454,34 @@ bool mod_runtime_commit_netplay_view(const std::filesystem::path& disc_path,
 }
 const std::string& mod_runtime_fingerprint() {
     return state().plan.fingerprint;
+}
+
+bool mod_runtime_savestate_scope(std::string& scope, std::string* error) {
+    scope.clear();
+    if (error) error->clear();
+    const RuntimeMods& s = state();
+    if (!s.initialized) {
+        if (s.manager.root().empty()) return true;
+        if (error) *error = "Save-state mod catalog is unavailable";
+        return false;
+    }
+    if (!s.plan_committed) {
+        if (error) *error = "Save-state content plan has not been committed";
+        return false;
+    }
+    const bool isolated = std::any_of(s.plan.ordered.begin(), s.plan.ordered.end(),
+        [](const ModPackage* package) { return package->save_compatibility == "isolated"; });
+    if (!isolated) return true;
+    const std::string& fingerprint = s.plan.fingerprint;
+    if (!s.plan.ok || fingerprint.size() != 64 ||
+        !std::all_of(fingerprint.begin(), fingerprint.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }) || !netplay_resources_verified(s.plan)) {
+        if (error && error->empty()) *error = "Isolated save states require a verified content plan";
+        return false;
+    }
+    scope = fingerprint;
+    return true;
 }
 
 const std::filesystem::path& mod_runtime_root() {
