@@ -280,6 +280,11 @@ uint32_t gl_renderer_stereo_unavailable(void) { return s_gl_status; }
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     return gl_renderer_pass_begin(x, y, w, h, 0, 0, reuse);
 }
+uint32_t gl_renderer_local_pair_unavailable(void) { return s_local_status; }
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
+    return gl_renderer_pass_begin(x,y,w,h,0,0,reuse);
+}
+int gl_renderer_local_pair_set_presentation(int enabled) { (void)enabled;return 1; }
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
     gl_renderer_pass_end(0, keep);
     if (keep && (int)eye == s_capture_fail_eye) return 0;
@@ -994,6 +999,37 @@ static int local_draw(CPUState *cpu, void *user, uint32_t alpha) {
     psx_advance_cycles(5000u);
     return 1;
 }
+static int local_pair_draw(CPUState *cpu,void *user,uint32_t seat) {
+    CHECK(psx_mod_local_view_scope() && s_ws_scope,
+          "both local multiplayer views run in the own-view scope");
+    return pair_draw(cpu,user,seat);
+}
+static void test_local_pair(void) {
+    CPUState cpu={0};PSXModStereoFrame f={sizeof f,1,0,240,320,240};
+    uint64_t cycle=psx_cycle_count,published;
+    render_pass_reset_session();s_netplay_active=0;s_eye_calls=0;
+    s_gl_status=PSX_MOD_RENDER_PASS_BACKEND;s_local_status=0;s_begin_ok=1;
+    cpu.gpr[8]=123;s_ram[0x456]=0x77;
+    CHECK(psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL),
+          "dual raster supports a local pair when ordinary stereo is unavailable");
+    CHECK(s_eye_calls==2 && cpu.gpr[8]==123 && s_ram[0x456]==0x77 &&
+          psx_cycle_count==cycle && !psx_mod_local_view_scope(),
+          "two local views restore one common simulation checkpoint and close their scopes");
+    published=s_stereo_published;s_eye_decline=1;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) &&
+          s_stereo_published==published && !s_stereo_mask,
+          "failed second local view cannot publish a partial frame");
+    CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle,
+          "failed local pair preserves live state");
+    s_eye_decline=-1;s_netplay_active=1;psx_mod_set_render_pass_netplay(1);
+    int calls=s_eye_calls;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,
+          "offline local pair is refused online even if temporal replay was permitted");
+    s_netplay_active=0;s_local_status=PSX_MOD_RENDER_PASS_BACKEND;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,
+          "unsupported local presenter refuses before guest drawing");
+    s_gl_status=s_local_status=0;
+}
 
 /* Netplay local view: forward netplay frames only; guest state restored
  * exactly; a committed image cancels the crop request. */
@@ -1132,6 +1168,7 @@ int main(void) {
     test_isolated_capture();
     test_trace_substages();
     test_local_view();
+    test_local_pair();
     test_texture_stream_journal();
     CHECK(s_prec_open == 0, "precision checkpoints balanced");
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
