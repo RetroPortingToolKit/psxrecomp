@@ -70,6 +70,7 @@ static uint64_t cycles;
 extern "C" uint64_t psx_get_cycle_count(void) { return cycles; }
 extern "C" void gpu_ws_tag_radial_screen_mask_quad(uint32_t, float) {}
 extern "C" void gpu_ws_tag_feedback_rect(uint32_t) {}
+extern "C" int psx_netplay_active(void) { return 0; }
 /* mod_runtime.cpp's lobby netplay commit reads the negotiated match caps.
  * No lobby match is negotiated in this test. */
 static PsxLobbyMatchCaps no_match_caps;

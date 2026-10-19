@@ -921,7 +921,7 @@ if(BUILD_TESTING)
     endforeach()
 
     foreach(_pgxp_isolated_test
-            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_session_test)
+            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_session_test pgxp_session_hooks_test)
         target_sources(${_pgxp_isolated_test} PRIVATE tests/pgxp_test_mod_memory.cpp)
     endforeach()
 
