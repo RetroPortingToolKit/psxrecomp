@@ -39,6 +39,62 @@ int freeze_dump_policy_observe(FreezeDumpPolicy *policy, uint32_t wedge_kind,
  * bounded number of failed attempts before the policy consumes that slot. */
 void freeze_dump_policy_record_result(FreezeDumpPolicy *policy, int written);
 
+/* Wedge kinds reported by freeze_wedge_classify (0 = healthy). */
+#define FREEZE_WEDGE_HARD          1u  /* frame_count did not advance */
+#define FREEZE_WEDGE_REENTRY_STORM 2u  /* exception re-entries per frame over threshold */
+#define FREEZE_WEDGE_SLOW_FRAMES   3u  /* frames advanced below the slow-frames floor */
+#define FREEZE_WEDGE_SPIN          5u  /* guest pinned in one loop while frames advance */
+
+#define FREEZE_WEDGE_EXC_REENTRY_PER_FRAME_THRESHOLD 20000u /* ~10x chronic 2K/frame */
+#define FREEZE_WEDGE_SLOW_FRAMES_MAX_DELTA 10u   /* <5 fps avg over the 2s window */
+
+/* One heartbeat sample, as far as wedge classification needs it. */
+typedef struct FreezeWedgeSample {
+    uint64_t frame_count;
+    uint64_t exc_reentry;
+    uint64_t dirty_ram_insns;
+    uint32_t current_func;
+    uint32_t last_store_pc;
+} FreezeWedgeSample;
+
+/* A spinning guest enters only its wait loop plus whatever the interrupt
+ * handlers last stamped; a running game loop enters dozens of functions per
+ * window (LoD title/field/battle >= 13 per 120 frames, measured 2026-10-12). */
+#define FREEZE_WEDGE_SPIN_MAX_FNS 8u
+#define FREEZE_WEDGE_FN_DIVERSITY_UNKNOWN UINT32_MAX
+
+/* Distinct-value counter that stops counting past its capacity. */
+typedef struct FreezeDistinct {
+    uint32_t values[FREEZE_WEDGE_SPIN_MAX_FNS + 1u];
+    uint32_t count;
+} FreezeDistinct;
+
+/* Add one value; returns nonzero once more than FREEZE_WEDGE_SPIN_MAX_FNS
+ * distinct values have been seen (the caller can stop scanning). */
+int freeze_distinct_add(FreezeDistinct *set, uint32_t value);
+
+/* Distinct functions entered outside exceptions over profile samples
+ * [lo, hi), clamped to oldest (the ring's oldest held sample). get() returns
+ * 0 for an evicted/unavailable sample. Stops counting past
+ * FREEZE_WEDGE_SPIN_MAX_FNS; FREEZE_WEDGE_FN_DIVERSITY_UNKNOWN when no
+ * non-exception sample covers the window. */
+uint32_t freeze_window_fn_diversity(uint64_t lo, uint64_t hi, uint64_t oldest,
+                                    int (*get)(uint64_t seq, uint32_t *fn,
+                                               int *in_exception));
+/* Classify a window of consecutive samples, oldest first. A spin requires the
+ * executing function, last store PC and dirty-RAM instruction count to hold
+ * one value at EVERY sample, AND (when known) at most FREEZE_WEDGE_SPIN_MAX_FNS
+ * distinct guest functions entered outside exceptions over the window.
+ * Statically compiled code stamps neither current_func nor dirty_ram_insns, so
+ * the pinned signature alone also matches a healthy static main loop; the
+ * function-entry stamp is maintained by all generated code. fn_diversity is
+ * FREEZE_WEDGE_FN_DIVERSITY_UNKNOWN when no profile samples cover the window.
+ * mdec_recently_active (may be NULL) vetoes a spin while FMV decoding parks
+ * the guest in BIOS MDEC code. */
+uint32_t freeze_wedge_classify(const FreezeWedgeSample *window, uint32_t count,
+                               uint32_t fn_diversity,
+                               int (*mdec_recently_active)(uint32_t frames));
+
 /* Format a unique dump path. The sequence prevents same-second truncation. */
 int freeze_dump_format_path(char *out, size_t cap, const char *backend,
                             long long wall, uint32_t sequence);
