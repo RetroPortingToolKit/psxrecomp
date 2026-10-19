@@ -5,6 +5,7 @@
 #include "ws_screen_mask.h"
 #include "ws_hud_anchor.h"
 #include "ws_radial_screen_mask.h"
+#include "fixtures/gex2_radial_mask_layout.inc"
 int main(void) {
     int32_t x[4]={-96,160,-96,68},y[4]={0,0,240,240};
     WsScreenMaskBand b;
@@ -87,4 +88,18 @@ int main(void) {
     assert(rx[3]==832 && ry[3]==408);
     ws_radial_mask_clear(radial);
     assert(!ws_radial_mask_lookup(radial,0x4a68b4,words,5,20,&scale));
+    /* The prior double-buffer layout remains fresh when a new mask is
+     * published. A full 256-entry/eight-probe cache dropped live segments
+     * in this observed Chinese-attract layout, opening holes in the iris.
+     * Use synthetic packet words: only the producer address layout matters. */
+    const uint32_t mask_words[5]={0x28000000u,0u,512u,0x00f00000u,0x00f00200u};
+    const WsPrepassPacketGuard mask_guard=ws_prepass_packet_guard(mask_words,5u);
+    for(unsigned i=0;i<sizeof radial_previous_keys/sizeof radial_previous_keys[0];++i)
+        ws_radial_mask_insert(radial,radial_previous_keys[i],&mask_guard,100u,2.f);
+    for(unsigned i=0;i<sizeof radial_current_keys/sizeof radial_current_keys[0];++i)
+        ws_radial_mask_insert(radial,radial_current_keys[i],&mask_guard,101u,2.f);
+    for(unsigned i=0;i<sizeof radial_drawn_keys/sizeof radial_drawn_keys[0];++i) {
+        assert(ws_radial_mask_lookup(radial,radial_drawn_keys[i],mask_words,5u,101u,&scale));
+        assert(scale==2.f);
+    }
 }

@@ -6,7 +6,12 @@
 /* Explicit title-owned screen-space rings, never a world-geometry heuristic.
  * Independent packet guards let adjacent solid and feathered ring segments
  * share one scale without allowing an arena's next use to inherit the effect. */
-#define WS_RADIAL_MASK_TAG_COUNT 256u
+/* Match the bounded HUD/producer metadata budget. A 256-entry cache fills
+ * with just two 128-quad iris buffers; still-fresh prior packet addresses
+ * then collide with and evict pieces of the mask being submitted. Keep room
+ * for both buffers and their short-lived predecessors without weakening the
+ * packet guards or extending tag lifetime. */
+#define WS_RADIAL_MASK_TAG_COUNT 4096u
 typedef struct {
     WsHudAnchorTag packet;
     float scale;
