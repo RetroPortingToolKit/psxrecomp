@@ -20,6 +20,7 @@ include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
 include("${PSXRECOMP_ROOT}/cmake/psx_dependency_archive.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_windows_manifest.cmake")
 include("${PSXRECOMP_ROOT}/runtime/chd_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/openxr_dependency.cmake")
 include("${PSXRECOMP_ROOT}/runtime/overlay_static_sources.cmake")
@@ -1623,6 +1624,7 @@ function(psxrecomp_add_runtime_target target)
         ${PSXRT_EXTRAS_SOURCES}
     )
     target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode)
+    psxrecomp_windows_manifest(${target})
     psxrecomp_sha256_file(${target})
     set(_execution_contract
         "${PSXRECOMP_ROOT}/runtime/src/gte.cpp"

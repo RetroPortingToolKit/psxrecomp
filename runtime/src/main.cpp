@@ -205,6 +205,7 @@ extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 #include <iphlpapi.h>
 #include <windows.h>
 #include <commdlg.h>
+#include "psx_win_utf8.h"
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -3061,21 +3062,31 @@ static bool pick_runtime_file(const char* title, const char* filter,
         return false;
     }
 #ifdef _WIN32
-    char path_buf[4096];
+    // Wide API on purpose: `title` is UTF-8 ("... — Step 2 of 2 ..."), and the
+    // ANSI entry point decodes it in the process code page. The manifest makes
+    // that UTF-8 on Windows 10 1903+, but older Windows keeps the legacy code
+    // page and the em dash renders as kanji on CP932 (issue #371).
+    const std::wstring wtitle = psx_win_utf8::from_utf8(title);
+    const std::wstring wfilter = psx_win_utf8::multi_sz_from_utf8(filter);
+    wchar_t path_buf[4096];
     std::memset(path_buf, 0, sizeof(path_buf));
 
-    OPENFILENAMEA ofn;
+    OPENFILENAMEW ofn;
     std::memset(&ofn, 0, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = NULL;
-    ofn.lpstrFilter = filter;
+    ofn.lpstrFilter = wfilter.c_str();
     ofn.lpstrFile = path_buf;
-    ofn.nMaxFile = (DWORD)sizeof(path_buf);
-    ofn.lpstrTitle = title;
+    ofn.nMaxFile = (DWORD)(sizeof(path_buf) / sizeof(path_buf[0]));
+    ofn.lpstrTitle = wtitle.c_str();
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
 
-    if (!GetOpenFileNameA(&ofn)) return false;
-    out = path_buf;
+    if (!GetOpenFileNameW(&ofn)) return false;
+
+    // Keep the path wide. Narrowing it through a legacy code page would lose
+    // characters that page lacks, and libstdc++ reads narrow paths as UTF-8
+    // anyway, so Shift-JIS bytes would throw in std::filesystem::path.
+    out = std::filesystem::path(path_buf);
     return true;
 #else
     (void)filter;
@@ -17138,6 +17149,18 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);
     std::fprintf(stderr, "psxrecomp: main() entered\n");
+#ifdef _WIN32
+    /* The embedded manifest's UTF-8 code page needs Windows 10 1903+. Say so
+     * when it is not in effect: narrow file calls then disagree with the
+     * UTF-8 paths SDL, the launcher and std::filesystem use, so a non-ASCII
+     * path may fail to open. First thing to know about a path bug. */
+    if (!psx_win_utf8::utf8_code_page_active()) {
+        std::fprintf(stderr,
+            "psxrecomp: UTF-8 code page not active (ANSI code page %u, "
+            "Windows 10 1903+ needed); non-ASCII file paths may fail\n",
+            (unsigned)GetACP());
+    }
+#endif
     std::fprintf(stderr, "psxrecomp: execution=%s identity=%s\n",
                  PSX_EXECUTION_NAME, PSX_EXECUTION_ID);
     std::fflush(stderr);

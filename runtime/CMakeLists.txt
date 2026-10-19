@@ -23,6 +23,19 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    # Windows UTF-8 text boundary (issue #371): the helpers legacy Windows
+    # relies on, and — with the shipped manifest — a UTF-8 process code page.
+    if(WIN32)
+        add_executable(win_utf8_helpers_test tests/test_win_utf8.cpp)
+        target_include_directories(win_utf8_helpers_test PRIVATE include)
+        add_test(NAME win_utf8_helpers_test COMMAND win_utf8_helpers_test)
+        add_executable(win_utf8_manifest_test tests/test_win_utf8.cpp)
+        target_include_directories(win_utf8_manifest_test PRIVATE include)
+        psxrecomp_windows_manifest(win_utf8_manifest_test)
+        add_test(NAME win_utf8_manifest_test
+                 COMMAND win_utf8_manifest_test --expect-utf8-acp)
+    endif()
+
     add_executable(debug_socket_shutdown_test tests/test_debug_socket_shutdown.cpp)
     target_include_directories(debug_socket_shutdown_test PRIVATE src)
     find_package(Threads REQUIRED)
