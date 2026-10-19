@@ -116,6 +116,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include "png_write.h"   /* png_write_rgb — present_shot readback */
+#include "video_recorder.h"   /* video_record: per-present PBO readback */
 static uint64_t s_fg_flips;   /* frame generation (below): game frames seen */
 
 #ifndef GL_BGRA
@@ -618,6 +619,8 @@ static GLuint s_xr_surface_program,s_xr_surface_vao,s_xr_surface_vbo,s_xr_surfac
 static GLuint s_capture_read_tex,s_capture_read_fbo;
 static int s_capture_read_w,s_capture_read_h;
 static void          gl_swap_with_osd(void);
+static void          gl_video_capture_release(void);   /* video_record */
+static float         s_vrec_alpha;                     /* video_record */
 static int           s_post_aa = 0;   /* GL_POST_AA_*; post-process AA (post_aa_apply) */
 static int s_native_surface_enabled, s_native_surface_pending;
 static int s_native_surface_rect[4]; /* Fresh native backbuffer content, GL coordinates. */
@@ -6585,6 +6588,7 @@ void gl_renderer_shutdown(void) {
     /* After the worker has stopped (it presents, and captures, on its own
      * thread) and before the context dies: forget the ring's GL names. */
     present_image_ring_gl_forget();
+    gl_video_capture_release();
     s_native_surface_enabled=s_native_surface_pending=0;
     gl_renderer_clear_hd_texture_cache();
     pass_resources_release();
@@ -7715,6 +7719,16 @@ void gl_renderer_set_interpolation(int enabled, double host_hz, double target_hz
                 "(host %.1f Hz)\n", host_hz);
 }
 
+int gl_renderer_interpolation_rates(double *target_hz, double *source_hz) {
+    /* Read-only (no XR-transition side effect): called off the GL thread. */
+    if (!s_interp_enabled || s_interp_suspended || psx_openxr_session_active() ||
+        s_interp_source_hz < 1.0)
+        return 0;
+    if (target_hz) *target_hz = s_interp_target_hz;
+    if (source_hz) *source_hz = s_interp_source_hz;
+    return 1;
+}
+
 void gl_renderer_set_interpolation_blend(int blend_mode) {
     GL_RT_SYNC("set_interpolation_blend");
     s_interp_blend_mode = blend_mode == 1 ? 1 : 0;
@@ -7907,7 +7921,9 @@ static int interp_present_pair(GLuint a, GLuint b, float t, int blend_mode) {
     pres_record(GL_PRES_INTERP, 0, 0, s_interp_w, s_interp_h,
                 lx, ly, lw, lh);
     s_dyn_last_swap_ticks = 0;
+    s_vrec_alpha = t;          /* video_record stamps the in-between time */
     gl_swap_with_osd();
+    s_vrec_alpha = -1.f;
     s_interp_swaps++;
     {
         uint64_t spent = SDL_GetPerformanceCounter() - present_t0;
@@ -9913,6 +9929,162 @@ int gl_renderer_present_thread_json(char *out, size_t cap) {
         st.presents ? (double)st.present_ns / (double)st.presents / 1e6 : 0.0,
         st.present_max_ns / 1e6, st.queued_high);
 }
+/* video_record (GL backend): read back EVERY composed present — the default
+ * framebuffer after the display quad, bezel and OSD, exactly what present_shot
+ * reads — without stalling the GPU. Each present's glReadPixels lands in a
+ * pixel-pack buffer (async DMA); the previous present's buffer is mapped and
+ * handed to the recorder one present later, by which time the copy has
+ * finished. Ring of 3 so a slot is never re-targeted while still mapped.
+ * Stamps travel with the slot: guest cycle at this present, pulled back by
+ * (1 - alpha) of a source frame for interpolated in-between presents. */
+#define VREC_PBO_SLOTS 3
+static GLuint   s_vrec_pbo[VREC_PBO_SLOTS];
+static size_t   s_vrec_pbo_bytes[VREC_PBO_SLOTS];
+static int      s_vrec_w[VREC_PBO_SLOTS], s_vrec_h[VREC_PBO_SLOTS];
+static int      s_vrec_pending[VREC_PBO_SLOTS];
+static uint64_t s_vrec_seq[VREC_PBO_SLOTS];
+static uint64_t s_vrec_cycle[VREC_PBO_SLOTS];
+static uint32_t s_vrec_session[VREC_PBO_SLOTS];
+static uint64_t s_vrec_next_seq = 1;
+static float    s_vrec_alpha = -1.f;   /* >=0 while interp_present_pair swaps */
+
+static int vrec_pbo_supported(void) {
+    return p_glGenBuffers && p_glBindBuffer && p_glBufferData &&
+           p_glMapBuffer && p_glUnmapBuffer;
+}
+
+static uint64_t vrec_present_cycle(void) {
+    uint64_t c = psx_cycle_count;
+    if (s_vrec_alpha >= 0.f && s_vrec_alpha < 1.f && s_interp_source_hz >= 1.0) {
+        const double period = PSX_GUEST_CPU_HZ / s_interp_source_hz;
+        const uint64_t back = (uint64_t)((1.0 - (double)s_vrec_alpha) * period);
+        c = c > back ? c - back : 0;
+    }
+    return c;
+}
+
+/* Map one pending slot and hand it to the recorder. */
+static void vrec_submit_slot(int i) {
+    if (!s_vrec_pending[i]) return;
+    s_vrec_pending[i] = 0;
+    GLint prev = 0;
+    glGetIntegerv(0x88ED /* PIXEL_PACK_BUFFER_BINDING */, &prev);
+    p_glBindBuffer(0x88EB /* PIXEL_PACK_BUFFER */, s_vrec_pbo[i]);
+    const void *px = p_glMapBuffer(0x88EB, 0x88B8 /* READ_ONLY */);
+    if (px) {
+        video_recorder_submit_frame(s_vrec_session[i], px, s_vrec_w[i], s_vrec_h[i],
+                                    s_vrec_w[i] * 4, 1 /* GL rows bottom-up */,
+                                    s_vrec_cycle[i]);
+        p_glUnmapBuffer(0x88EB);
+    } else {
+        video_recorder_note_lost_frame(s_vrec_session[i]);
+    }
+    p_glBindBuffer(0x88EB, (GLuint)prev);
+}
+
+/* Submit every pending slot oldest-first, optionally keeping the newest. */
+static void vrec_submit_pending(int keep_newest) {
+    for (;;) {
+        int oldest = -1, n = 0;
+        for (int i = 0; i < VREC_PBO_SLOTS; i++) {
+            if (!s_vrec_pending[i]) continue;
+            n++;
+            if (oldest < 0 || s_vrec_seq[i] < s_vrec_seq[oldest]) oldest = i;
+        }
+        if (oldest < 0 || (keep_newest && n <= 1)) return;
+        vrec_submit_slot(oldest);
+    }
+}
+
+static void gl_video_capture(int ww, int wh) {
+    uint32_t session = 0;
+    const int action = video_recorder_present_poll(&session);
+    if (action == VREC_PRESENT_IDLE) {
+        /* A session that ended without a flush (stop timed out): drop. */
+        for (int i = 0; i < VREC_PBO_SLOTS; i++) s_vrec_pending[i] = 0;
+        return;
+    }
+    for (int i = 0; i < VREC_PBO_SLOTS; i++)
+        if (s_vrec_pending[i] && s_vrec_session[i] != session) s_vrec_pending[i] = 0;
+    if (action == VREC_PRESENT_FLUSH) {
+        vrec_submit_pending(0);
+        video_recorder_flush_done(session);
+        return;
+    }
+    const uint64_t cycle = vrec_present_cycle();
+    if (ww <= 0 || wh <= 0) { video_recorder_note_lost_frame(session); return; }
+    GLint read_fbo = 0, pack_buffer = 0, pack_row = 0, pack_align = 4;
+    glGetIntegerv(0x8CAA /* READ_FRAMEBUFFER_BINDING */, &read_fbo);
+    glGetIntegerv(0x88ED /* PIXEL_PACK_BUFFER_BINDING */, &pack_buffer);
+    glGetIntegerv(PSXGL_PACK_ROW_LENGTH, &pack_row);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack_align);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+    glPixelStorei(PSXGL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    if (!vrec_pbo_supported()) {
+        /* No pixel-pack buffers: synchronous readback (correct, slower). */
+        if (p_glBindBuffer) p_glBindBuffer(0x88EB, 0);
+        uint8_t *buf = (uint8_t *)malloc((size_t)ww * (size_t)wh * 4u);
+        if (buf) {
+            glReadPixels(0, 0, ww, wh, GL_BGRA, GL_UNSIGNED_BYTE, buf);
+            video_recorder_submit_frame(session, buf, ww, wh, ww * 4, 1, cycle);
+            free(buf);
+        } else {
+            video_recorder_note_lost_frame(session);
+        }
+    } else {
+        /* Slot for this present: a free one, else the oldest (submit first). */
+        int slot = -1;
+        for (int i = 0; i < VREC_PBO_SLOTS && slot < 0; i++)
+            if (!s_vrec_pending[i]) slot = i;
+        if (slot < 0) {
+            slot = 0;
+            for (int i = 1; i < VREC_PBO_SLOTS; i++)
+                if (s_vrec_seq[i] < s_vrec_seq[slot]) slot = i;
+            vrec_submit_slot(slot);
+        }
+        const size_t bytes = (size_t)ww * (size_t)wh * 4u;
+        if (!s_vrec_pbo[slot]) p_glGenBuffers(1, &s_vrec_pbo[slot]);
+        p_glBindBuffer(0x88EB, s_vrec_pbo[slot]);
+        if (s_vrec_pbo_bytes[slot] != bytes) {
+            p_glBufferData(0x88EB, (GLsizeiptr)bytes, NULL, 0x88E1 /* STREAM_READ */);
+            s_vrec_pbo_bytes[slot] = bytes;
+        }
+        glReadPixels(0, 0, ww, wh, GL_BGRA, GL_UNSIGNED_BYTE, (void *)0);
+        s_vrec_w[slot] = ww;
+        s_vrec_h[slot] = wh;
+        s_vrec_cycle[slot] = cycle;
+        s_vrec_session[slot] = session;
+        s_vrec_seq[slot] = s_vrec_next_seq++;
+        s_vrec_pending[slot] = 1;
+        p_glBindBuffer(0x88EB, (GLuint)pack_buffer);
+        /* One present of latency: everything older than this one is done. */
+        vrec_submit_pending(1);
+    }
+    glPixelStorei(PSXGL_PACK_ROW_LENGTH, pack_row);
+    glPixelStorei(GL_PACK_ALIGNMENT, pack_align);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, (GLuint)read_fbo);
+    if (p_glBindBuffer) p_glBindBuffer(0x88EB, (GLuint)pack_buffer);
+}
+
+/* Context teardown / process exit: hand over what is still in flight (the
+ * newest present's readback) when a stop is pending, so a stop issued just
+ * before exit loses nothing, then release the buffers with the context.
+ * GL thread only. */
+static void gl_video_capture_release(void) {
+    uint32_t session = 0;
+    if (s_ctx && video_recorder_flush_wanted(&session)) {
+        vrec_submit_pending(0);
+        video_recorder_flush_done(session);
+    }
+    for (int i = 0; i < VREC_PBO_SLOTS; i++) {
+        if (s_ctx && s_vrec_pbo[i]) p_glDeleteBuffers(1, &s_vrec_pbo[i]);
+        s_vrec_pbo[i] = 0;
+        s_vrec_pbo_bytes[i] = 0;
+        s_vrec_pending[i] = 0;
+    }
+}
+
 static void gl_swap_now(int generated);
 static int  fg_keep_real(void);      /* frame generation */
 static void fg_note_swap(uint64_t ns);
@@ -10085,6 +10257,15 @@ static void gl_swap_now(int generated) {
     GL_PRESENT_TEST_HOOK(generated);
 #endif
     s_swaps_total++;
+    {
+        /* video_record: the window-bound framebuffer (or present-thread
+         * slot) holds exactly the image this swap shows, in display order —
+         * frame-generation real frames included, which are composed early
+         * and only swapped here later. */
+        int ww = 0, wh = 0;
+        SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+        gl_video_capture(ww, wh);
+    }
     uint64_t t0 = s_dyn_on ? SDL_GetPerformanceCounter() : 0;
     const uint64_t rthf_t0 = rth_replaying() ? host_now_ns_rthf() : 0;
     gl_present_swap();

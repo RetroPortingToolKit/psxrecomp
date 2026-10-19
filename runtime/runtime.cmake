@@ -478,6 +478,8 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/spu_shadow.c
     ${PSXRECOMP_ROOT}/runtime/src/audio_shadow.c
     ${PSXRECOMP_ROOT}/runtime/src/audio_trace.c
+    ${PSXRECOMP_ROOT}/runtime/src/video_recorder.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/input_route.c
     ${PSXRECOMP_ROOT}/runtime/src/color_lut.c
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader.cpp
     ${PSXRECOMP_ROOT}/runtime/src/iso_reader_c.cpp

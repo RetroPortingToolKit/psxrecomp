@@ -68,8 +68,16 @@ static uint32_t s_queue_lowater = 0xFFFFFFFFu;
 static uint64_t s_mute_events;
 static uint64_t s_unmute_events;
 
+/* Seqlock-published (head, guest_cycle) pair: one writer (the emulation
+ * thread's audio pump), readers on any thread. */
+static _Atomic uint32_t s_clock_seq;
+static _Atomic uint64_t s_clock_head;
+static _Atomic uint64_t s_clock_cycle;
+static _Atomic int      s_clock_valid;
+
 void audio_trace_init(void)
 {
+    atomic_store(&s_clock_valid, 0);
     for (int t = 0; t < AUDIO_TAP_COUNT; t++) {
         atomic_store(&s_taps[t].head, 0);
         s_taps[t].nonzero = 0;
@@ -188,6 +196,64 @@ uint32_t audio_trace_events_get(AudioTraceEvent *out, uint32_t max)
     for (uint32_t i = 0; i < max; i++)
         out[i] = s_events[(uint32_t)((first + i) & EV_RING_MASK)];
     return max;
+}
+
+int64_t audio_trace_read_pcm(int tap, uint64_t start, uint64_t count,
+                             int16_t *out)
+{
+    if (tap < 0 || tap >= AUDIO_TAP_COUNT || !out) return -1;
+    PcmTap *t = &s_taps[tap];
+    uint64_t head = atomic_load_explicit(&t->head, memory_order_acquire);
+    uint64_t oldest = head > (uint64_t)PCM_RING_FRAMES
+                    ? head - (uint64_t)PCM_RING_FRAMES : 0;
+    if (start < oldest) return -1;
+    if (start >= head) return 0;
+    if (count > head - start) count = head - start;
+    uint64_t done = 0;
+    while (done < count) {
+        uint32_t pos   = (uint32_t)((start + done) & PCM_RING_MASK);
+        uint32_t chunk = PCM_RING_FRAMES - pos;
+        if ((uint64_t)chunk > count - done) chunk = (uint32_t)(count - done);
+        memcpy(out + done * 2u, &t->pcm[(size_t)pos * 2u],
+               (size_t)chunk * 4u);
+        done += chunk;
+    }
+    /* The single writer may have lapped the slice while we copied it: if the
+     * oldest retained frame moved past `start`, part of the copy is torn. */
+    head = atomic_load_explicit(&t->head, memory_order_acquire);
+    oldest = head > (uint64_t)PCM_RING_FRAMES
+           ? head - (uint64_t)PCM_RING_FRAMES : 0;
+    if (start < oldest) return -1;
+    return (int64_t)count;
+}
+
+void audio_trace_note_spu_clock(uint64_t head, uint64_t guest_cycle)
+{
+    uint32_t seq = atomic_load_explicit(&s_clock_seq, memory_order_relaxed);
+    atomic_store_explicit(&s_clock_seq, seq + 1u, memory_order_release);
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&s_clock_head, head, memory_order_relaxed);
+    atomic_store_explicit(&s_clock_cycle, guest_cycle, memory_order_relaxed);
+    atomic_store_explicit(&s_clock_seq, seq + 2u, memory_order_release);
+    atomic_store_explicit(&s_clock_valid, 1, memory_order_release);
+}
+
+int audio_trace_spu_clock(uint64_t *head, uint64_t *guest_cycle)
+{
+    if (!atomic_load_explicit(&s_clock_valid, memory_order_acquire)) return 0;
+    for (;;) {
+        uint32_t s0 = atomic_load_explicit(&s_clock_seq, memory_order_acquire);
+        if (s0 & 1u) continue;
+        uint64_t h = atomic_load_explicit(&s_clock_head, memory_order_relaxed);
+        uint64_t c = atomic_load_explicit(&s_clock_cycle, memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        uint32_t s1 = atomic_load_explicit(&s_clock_seq, memory_order_acquire);
+        if (s0 == s1) {
+            if (head) *head = h;
+            if (guest_cycle) *guest_cycle = c;
+            return 1;
+        }
+    }
 }
 
 /* ---- WAV dump --------------------------------------------------------- */

@@ -114,6 +114,21 @@ uint64_t audio_trace_events_total(void);
 void     audio_trace_set_tap_rate(int tap, uint32_t rate);
 uint32_t audio_trace_tap_rate(int tap);
 
+/* Copy `count` stereo frames of tap `tap` starting at absolute frame index
+ * `start` into out (count*2 int16). Returns frames copied: fewer when the
+ * slice runs past the head, -1 when its start was already evicted (lapped)
+ * or arguments are bad. */
+int64_t  audio_trace_read_pcm(int tap, uint64_t start, uint64_t count,
+                              int16_t *out);
+
+/* SPU guest-clock anchor: "the AUDIO_TAP_SPU_OUT head (frames ever recorded)
+ * covers guest time up to `guest_cycle`". Noted by the host pump after each
+ * guest-budget render (768 guest cycles per frame), so a consumer can locate
+ * the sample rendered at any guest cycle: head + (cycle - guest_cycle) / 768.
+ * Returns 0 when nothing was noted yet (e.g. psx-beetle). */
+void     audio_trace_note_spu_clock(uint64_t head, uint64_t guest_cycle);
+int      audio_trace_spu_clock(uint64_t *head, uint64_t *guest_cycle);
+
 /* Copy the most recent `max` events, oldest first. Returns count copied. */
 uint32_t audio_trace_events_get(AudioTraceEvent *out, uint32_t max);
 

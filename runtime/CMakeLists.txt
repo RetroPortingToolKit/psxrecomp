@@ -1697,6 +1697,32 @@ if(BUILD_TESTING)
     add_test(NAME frame_interpolation_schedule_test
              COMMAND frame_interpolation_schedule_test)
 
+    add_executable(input_route_test
+        tests/test_input_route.c
+        src/input_route.c)
+    target_include_directories(input_route_test PRIVATE include)
+    add_test(NAME input_route_test COMMAND input_route_test)
+
+    # video_record: options / helpers / state machine (no ffmpeg needed), and
+    # the real ffmpeg pipeline end to end (skips with 77 without ffmpeg).
+    find_package(Threads REQUIRED)
+    foreach(_vrec_test video_recorder_test video_recorder_e2e_test)
+        if(_vrec_test STREQUAL "video_recorder_test")
+            set(_vrec_src tests/test_video_recorder.cpp)
+        else()
+            set(_vrec_src tests/test_video_recorder_e2e.cpp)
+        endif()
+        add_executable(${_vrec_test} ${_vrec_src}
+            src/video_recorder.cpp
+            src/audio_trace.c)
+        target_include_directories(${_vrec_test} PRIVATE include)
+        target_link_libraries(${_vrec_test} PRIVATE Threads::Threads)
+        add_test(NAME ${_vrec_test}
+                 COMMAND ${_vrec_test} ${CMAKE_CURRENT_BINARY_DIR})
+    endforeach()
+    set_tests_properties(video_recorder_e2e_test PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 180)
+
     add_executable(render_pass_plan_test
         tests/test_render_pass_plan.c
         src/render_pass_plan.c)

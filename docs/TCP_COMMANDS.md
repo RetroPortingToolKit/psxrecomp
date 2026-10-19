@@ -60,6 +60,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `screenshot_wide_hires` | ✓ |   | `path`, `base_x` | The displayed band of the native-wide surface at internal resolution (`wide_w×S` by `height×S`). `present_shot` is capped at the window; this checks a widescreen + internal-resolution combination at full size |
 | `present_shot` | ✓ |   | `path` | PNG of the **composed present surface** — the frame after the backend fits the display buffer to the window, so it carries the presented aspect. ⚠ every other capture resolves the display buffer *before* that fit: on a 508×256 display in a 4:3 window they answer 508×256 while the player sees 640×480. Use this one for anything aspect-shaped (widescreen, letterbox), where a pre-fit buffer would hide the very stage the change touches. Staged and fulfilled on the next present, so the ack means *queued* — poll `present_shot_seq`. Unavailable headless and on the Vulkan backend (its swapchain has no readback hook) |
 | `present_shot_seq` | ✓ |   | — | Completion counter for `present_shot`, plus `wrote` (1 = that completion produced a PNG). Sample before staging, poll until `seq` moves. Advances on success *and* failure, so the poll always terminates |
+| `video_record` | ✓ |   | `op`: `start` (`path` *.mp4, optional `fps` (0 = measured present rate), `crf`, `encoder`, `preset`, `encoder_args`, `width`+`height`, `audio`, `audio_bitrate_k`, `queue_frames`, `keep_intermediates`, `ffmpeg`), `stop`, `status` | Record **every composed present** (the `present_shot` image: aspect fit, widescreen, internal resolution, OSD) plus the SPU final mix (voices, reverb, CD-DA, XA) to an H.264/AAC MP4 through ffmpeg. Frames are never dropped (backpressure slows the game instead); A/V sync comes from the guest clock, not wall time. `stop` returns `stopping`; poll `status` until `done`/`error` (it reports frames/presents, dropped, fps, audio frames, `max_av_skew_ms`, bytes). Refused headless (use `--offscreen-window`) and on Vulkan. Forward slashes in `path`. See [VIDEO_RECORDING.md](VIDEO_RECORDING.md) |
 | `fmv_chroma` | ✓ |   | `on` (optional: 0/1) | Read or set `[video] fmv_chroma_smoothing` live. Replies `on` and `frames` (24-bit presents smoothed so far) |
 | `texture_lod` | ✓ |   | `mode` (optional: 0 off, 1 mipmap), `aniso` (optional: 1..16) | Read or set `[video] texture_lod` / `anisotropic_filtering` live. Replies `mode`, `aniso` |
 | `bloom` | ✓ |   | `strength` (0..2), `threshold`, `time` (0/1), all optional | Read or set bloom live (`[video] bloom`). Replies the settings, `passes` and, while `time` is on, `us_mean`: the mean `glFinish`-fenced pass time over `timed` passes since the last query |
@@ -114,6 +115,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `gp1_dump` | ✓ |   | optional `frame_lo`, `frame_hi`, `count`, `newest` | Dump the dedicated ALWAYS-ON GP1 (0x1F801814 display control) ring — 512K entries ≈ 15 min of gameplay (Tomba writes ~10 GP1/frame), survives the general MMIO ring's eviction. Frame filter is server-side over the full ring. Each entry: val + func/pc/cpu_pc/ra/sp/a0/a1/sr/epc/frame |
 | `gcp_ring` | ✓ |   | `frame_lo`, `frame_hi`, then `path` or `key` + `top` | Always-on guest-cycle profile ring (512K samples, one every `period` = 4096 guest cycles by default, `PSX_GCP_PERIOD`; about 63 guest seconds). Each sample: cycle, frame, `weight` (sample periods crossed, so idle-skipped waits stay credited to the waiting code), backend `phase`, exception flag, last block leader (`block`, debug-tools builds), last function entered (`fn`), guest `$ra`, native shard in progress, static-dispatch stamp. No args: ring stats. `path`: write the window as CSV. `key` = `fn`/`block`/`ra`/`native`/`disp`: top `top` keys by guest-cycle share in the window |
 | `input_route_start` | ✓ |   | optional `at_frame` | Start the route queued with `input_route_append` (`buttons`, `frames` per step, counted per pad poll). With `at_frame` the route waits for that vblank count, so it replays on the same guest frames in every run (frame-exact A/B with input) |
+| `input_route_append` | ✓ |   | `frames`, `buttons`, optional `lx`, `ly`, `rx`, `ry` (0..255, `0x80` = centre) | Queue one route step while the route is stopped. Axes are per step and use the same stick override as `press lx/ly/rx/ry`; an axis left out of a step that gives any other axis is centred, and a step with no axes leaves the sticks alone (as before axes existed). `input_route_status` reports `axes_live` and the axes of the step that drove the last pad poll |
 | `batch_sites` | ✓ |   | — | Always-on OpenGL batch-flush attribution: cumulative flushes of non-empty batches by caller source line in `gpu_gl_renderer.c`, as `tex` and `flat` arrays of `[line, count]`. Diff two reads to attribute a window (every flush call site is covered by the `flush_*_batch()` macros) |
 | `pc_break` |   | ✓² | `addr` | DS execute breakpoint, state captured on hit (via `pc_hit_last`) |
 | `pc_unbreak` |   | ✓² | `addr` | Remove an execute breakpoint |
@@ -673,7 +675,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `input_route_append` | ✓ |  | ✓ |
 | `input_route_clear` | ✓ |  |  |
 | `input_route_start` | ✓ |  | ✓ |
-| `input_route_status` | ✓ |  |  |
+| `input_route_status` | ✓ |  | ✓ |
 | `input_route_stop` | ✓ |  |  |
 | `insn_freeze` | ✓ |  |  |
 | `insn_freeze_snapshot` | ✓ |  |  |
@@ -838,6 +840,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `vblank_rate` | ✓ |  |  |
 | `video_info` | ✓ |  | ✓ |
 | `video_set` | ✓ |  |  |
+| `video_record` | ✓ |  | ✓ |
 | `vk_perf` | ✓ |  |  |
 | `vram_peek` | ✓ | ✓ | ✓ |
 | `vsync_query_hle` | ✓ |  |  |
