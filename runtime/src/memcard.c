@@ -52,8 +52,11 @@ void memcard_set_extension_codec(MemcardExtensionLoad load,
                                 MemcardExtensionSave save) {
     extension_load = load && save ? load : NULL;
     extension_save = load && save ? save : NULL;
+    /* A newly selected codec has not validated any currently mounted card.
+     * Registration must not turn a rejected load into permission to encode.
+     * Session initialization/reload runs the loader before publication. */
     for (int i = 0; i < MAX_CARDS; ++i)
-        cards[i].extension_codec_failed = 0;
+        cards[i].extension_codec_failed = extension_load && cards[i].present;
 }
 
 int memcard_last_flush_result(int card) {

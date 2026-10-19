@@ -762,7 +762,7 @@ Game-owned save metadata can use the memory-card extension transport in
 with `memcard_set_extension_codec()`. Initialization/reload passes the standard
 128 KiB base plus its optional tail to the loader. A flush gives the encoder the
 current base and publishes both parts together through an exclusive temporary
-and atomic replacement. Tails are bounded to 64 KiB; rejected load/encode,
+and atomic replacement. Tails are bounded to 128 KiB; rejected load/encode,
 oversized tails and I/O errors leave the original file intact and writes dirty.
 `memcard_last_flush_result()` and debug `mc_status` expose failure.
 SIO reports a failed write to the guest instead of acknowledging a rejected

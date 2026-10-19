@@ -19,6 +19,8 @@ extern "C" {
  * load: zero accepts, negative blocks flushing until a successful reload.
  * save: return tail byte count (zero = raw card), negative aborts the flush.
  * Both callbacks are required. Reset before each mod session's activation.
+ * Selecting a codec blocks existing cards until initialization/reload has
+ * successfully validated them with that codec's load callback.
  * The codec must define native save fallback, slot identity and restore policy;
  * this transport cannot infer those from an opaque tail. */
 typedef int (*MemcardExtensionLoad)(int card, const uint8_t* base,

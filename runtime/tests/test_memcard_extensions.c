@@ -148,6 +148,12 @@ int main(void) {
     CHECK(memcard_last_flush_result(0) == -2 && dirty());
     read_base(base);
     CHECK(memcmp(base, saved, sizeof base) == 0);
+    /* Re-registering the same codec cannot bypass its rejected load. */
+    memcard_set_extension_codec(codec_load, codec_save);
+    memcard_flush(0);
+    CHECK(memcard_last_flush_result(0) == -2 && dirty());
+    read_base(base);
+    CHECK(memcmp(base, saved, sizeof base) == 0);
     load_reject = 0;
     CHECK(memcard_reload_bound() == 0);
 
