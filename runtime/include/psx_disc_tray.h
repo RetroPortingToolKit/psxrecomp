@@ -61,6 +61,9 @@ int psx_disc_tray_cycle(int disc_1based, int origin);
  * may change without rearming it. Returns -1 when no attempt was made, else
  * PsxDiscTrayResult. Same mounted disc never cycles automatically. */
 int psx_disc_tray_auto_poll(int requested, int ready);
+/* Begin a new emulation session. Clear request suppression, preserving the
+ * process-lifetime diagnostic ring. Call with emulation stopped. */
+void psx_disc_tray_reset_session(void);
 
 /* Host notification after a successful DISC CHANGE (not after a same-media
  * reinsert). path is the roster entry now mounted. Called on the emu thread,

@@ -61,3 +61,7 @@ not trigger a change. Providers clear when the mod session resets or activates.
 `disc_tray_log` reads the always-on ring, including `origin: auto` events.
 
 Tracked by `beads-eio.3.342`.
+
+Automatic request suppression is session-local. The host calls
+`psx_disc_tray_reset_session()` before each boot, including a soft restart; the
+process-lifetime tray event ring remains available for diagnosis.

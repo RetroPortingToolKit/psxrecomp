@@ -76,6 +76,17 @@ int main(void) {
     online = 0;
     psx_disc_tray_auto_poll(0, 0);
     assert(psx_disc_tray_auto_poll(1, 1) == PSX_DISC_TRAY_OK && mounted == 1);
+    /* A failed request stays suppressed within a session, but the same
+     * request must be attempted after a soft session restart. */
+    psx_disc_tray_auto_poll(0, 0);
+    missing = 1;
+    assert(psx_disc_tray_auto_poll(2, 1) == PSX_DISC_TRAY_ERR_OPEN_FAILED);
+    before = opens;
+    missing = 0;
+    assert(psx_disc_tray_auto_poll(2, 1) == -1 && opens == before);
+    psx_disc_tray_reset_session();
+    assert(psx_disc_tray_auto_poll(2, 1) == PSX_DISC_TRAY_OK);
+    assert(opens == before + 1 && mounted == 2);
     /* Always-on ring wraps and retains the latest result in sequence order. */
     for (int i = 0; i < 40; ++i) psx_disc_tray_cycle(5, PSX_DISC_TRAY_ORIGIN_DEBUG_SELECT);
     const PsxDiscTrayEvent *events;

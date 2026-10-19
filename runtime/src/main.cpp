@@ -19154,6 +19154,7 @@ session_reboot:
     }
     disc_menu_session = { &selected_disc_index, &disc_path_str, &resolved_disc,
                           exe_dir_from_argv(argv[0]) / "settings.toml" };
+    psx_disc_tray_reset_session();
     psx_disc_tray_set_host_hook([](void *ctx, int disc, const char *path) {
         auto &session = *static_cast<DiscMenuSession*>(ctx);
         *session.selected = disc;

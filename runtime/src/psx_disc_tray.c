@@ -17,6 +17,12 @@
 
 static PsxDiscTrayHostHook s_hook;
 static void *s_hook_ctx;
+static int s_episode_disc, s_attempted;
+
+void psx_disc_tray_reset_session(void)
+{
+    s_episode_disc = s_attempted = 0;
+}
 
 static PsxDiscTrayEvent s_log[PSX_DISC_TRAY_LOG_CAP];
 static uint64_t s_log_total;
@@ -108,14 +114,13 @@ int psx_disc_tray_cycle(int disc_1based, int origin)
 
 int psx_disc_tray_auto_poll(int requested, int ready)
 {
-    static int episode_disc, attempted;
-    if (requested != episode_disc) {
-        episode_disc = requested;
-        attempted = 0;
+    if (requested != s_episode_disc) {
+        s_episode_disc = requested;
+        s_attempted = 0;
     }
-    if (requested <= 0 || !ready || attempted) return -1;
+    if (requested <= 0 || !ready || s_attempted) return -1;
     if (requested == psx_disc_tray_mounted_disc()) return -1;
-    attempted = 1;
+    s_attempted = 1;
     return psx_disc_tray_cycle(requested, PSX_DISC_TRAY_ORIGIN_AUTO);
 }
 
