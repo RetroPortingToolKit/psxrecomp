@@ -20,13 +20,13 @@ static inline int ws_feedback_rect_spans(int32_t x, int32_t w, int32_t src_x0,
                                          int32_t margin, WsFeedbackSpan out[2]) {
     if (w <= 0 || width <= 0 || margin <= 0) return 0;
     int count = 0;
-    if (x <= left) {
+    if (x <= left && x + w > left) {
         out[count].dst_x = left - margin;
         out[count].src_x = src_x0 + (left - margin - x);
         out[count].w = margin;
         count++;
     }
-    if (x + w >= left + width) {
+    if (x < left + width && x + w >= left + width) {
         out[count].dst_x = left + width;
         out[count].src_x = src_x0 + (left + width - x);
         out[count].w = margin;

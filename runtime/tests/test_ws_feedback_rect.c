@@ -38,6 +38,14 @@ static void test_inner_sprite_gets_no_band(void) {
     assert(ws_feedback_rect_spans(400, 64, 80, LEFT, WIDTH, MARGIN, spans) == 0);
 }
 
+static void test_offscreen_sprite_gets_no_band(void) {
+    WsFeedbackSpan spans[2];
+    assert(ws_feedback_rect_spans(LEFT - 64, 32, 0, LEFT, WIDTH, MARGIN, spans) == 0);
+    assert(ws_feedback_rect_spans(LEFT - 32, 32, 0, LEFT, WIDTH, MARGIN, spans) == 0);
+    assert(ws_feedback_rect_spans(LEFT + WIDTH, 32, 0, LEFT, WIDTH, MARGIN, spans) == 0);
+    assert(ws_feedback_rect_spans(LEFT + WIDTH + 16, 32, 0, LEFT, WIDTH, MARGIN, spans) == 0);
+}
+
 static void test_zero_margin_gets_no_band(void) {
     WsFeedbackSpan spans[2];
     assert(ws_feedback_rect_spans(320, 320, 0, LEFT, WIDTH, 0, spans) == 0);
@@ -53,6 +61,7 @@ int main(void) {
     test_right_edge_sprite_gets_right_band();
     test_full_width_sprite_gets_both_bands();
     test_inner_sprite_gets_no_band();
+    test_offscreen_sprite_gets_no_band();
     test_zero_margin_gets_no_band();
     test_empty_sprite_rejected();
     puts("ws_feedback_rect: all tests passed");

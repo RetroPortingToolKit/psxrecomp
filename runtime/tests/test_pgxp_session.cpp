@@ -143,6 +143,7 @@ extern "C" int gpu_ws_configured_x_reveal(void) { return 0; }
 extern "C" void gpu_ws_tag_hud_prim(uint32_t, int) {}
 extern "C" void gpu_ws_tag_screen_mask_quad(uint32_t) {}
 extern "C" void gpu_ws_tag_radial_screen_mask_quad(uint32_t, float) {}
+extern "C" void gpu_ws_tag_feedback_rect(uint32_t) {}
 /* mod_runtime.cpp's lobby netplay commit reads the negotiated match caps.
  * This test drives netplay through mod_runtime_clear_for_netplay, so no
  * lobby match is ever negotiated. */
