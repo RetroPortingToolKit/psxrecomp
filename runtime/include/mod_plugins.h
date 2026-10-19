@@ -294,6 +294,10 @@ void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale);
 /* Exclude a known world packet from screen-space backdrop stretching, even
  * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
 void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
+/* A 15-bit sprite (P_TAG address) that copies a framebuffer 1:1, such as a
+ * motion trail: native-wide continues it into the bands. Tag it each frame
+ * after the title built it; inert at native 4:3. */
+void psx_mod_tag_feedback_rect(uint32_t primitive);
 /* Enable aspect-derived column selection for a title that opted into the
  * auto_backdrop detector. No effect on titles that did not opt in. */
 void psx_mod_set_adaptive_backdrop_preload(int enabled);

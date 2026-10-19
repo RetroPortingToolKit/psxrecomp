@@ -466,7 +466,7 @@ enum {
     RTH_WIDE_DISABLE, RTH_WIDE_CLEAR, RTH_WIDE_CLEAR_MARGINS, RTH_PROJ_TRI,
     RTH_WIDE_RECOVERY, RTH_INTERP_SUSPENDED, RTH_PRESENT_VRAM,
     RTH_PRESENT_WIDE, RTH_STATE, RTH_PEEK, RTH_RING_CAPTURE, RTH_DYN_STEP,
-    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER
+    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER, RTH_WIDE_FEEDBACK
 };
 /* GP0(A0) whose payload gpu.c is still streaming into its array (the
  * facade's vram_upload_open, emulation thread), tracked whatever the HD
@@ -7164,6 +7164,104 @@ static void glb_wide_clear_margins(int base_x, int y, int h, uint16_t color, int
     s_cw_wide_ms += cw_ms() - t0;
 }
 
+/* Framebuffer feedback into the bands (gr_wide_feedback_rect): a 15-bit
+ * sprite copying another framebuffer, sampled from that buffer's wide surface
+ * because its band columns exist nowhere in VRAM. Band texels count as bit 15
+ * set, as in sw_wide_feedback_rect: the band's own bit 15 is not
+ * authoritative, and the centre sits at bit 15 once the trail blends. */
+static const char *FB_VS =
+    "#version 330\n"
+    "uniform vec4 u_rect;   /* wide-local native px: x0, y0, x1, y1 */\n"
+    "uniform vec2 u_size;   /* wide surface in native px */\n"
+    "void main(){\n"
+    "  vec2 c = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));\n"
+    "  vec2 p = mix(u_rect.xy, u_rect.zw, c);\n"
+    "  gl_Position = vec4(p / u_size * 2.0 - 1.0, 0.0, 1.0); }\n";
+static const char *FB_FS =
+    "#version 330\n"
+    "out vec4 frag;\n"
+    "uniform sampler2D u_src;\n"
+    "uniform float u_dst_scale; /* target px per native px */\n"
+    "uniform vec2 u_src_delta;  /* source minus target, native px */\n"
+    "uniform vec3 u_mod;        /* 8-bit modulation colour */\n"
+    "uniform int u_raw;\n"
+    "void main(){\n"
+    "  vec2 n = gl_FragCoord.xy / u_dst_scale + u_src_delta;\n"
+    "  float ss = float(textureSize(u_src, 0).y) / 512.0;\n"
+    "  vec4 c = texelFetch(u_src, ivec2(n * ss), 0);\n"
+    "  if (c.a < 0.5 && c.rgb == vec3(0.0)) discard;   /* texel 0x0000 */\n"
+    "  vec3 col = u_raw != 0 ? c.rgb : min(c.rgb * u_mod / 128.0, vec3(1.0));\n"
+    "  frag = vec4(col, 1.0);\n"
+    "}\n";
+static GLuint s_fb_prog = 0;
+static GLint  s_fb_uRect, s_fb_uSize, s_fb_uSrc, s_fb_uDstScale, s_fb_uSrcDelta,
+              s_fb_uMod, s_fb_uRaw;
+
+static int fb_prog_ready(void) {
+    if (s_fb_prog) return 1;
+    s_fb_prog = build_program(FB_VS, FB_FS);
+    if (!s_fb_prog) return 0;
+    s_fb_uRect      = p_glGetUniformLocation(s_fb_prog, "u_rect");
+    s_fb_uSize      = p_glGetUniformLocation(s_fb_prog, "u_size");
+    s_fb_uSrc       = p_glGetUniformLocation(s_fb_prog, "u_src");
+    s_fb_uDstScale  = p_glGetUniformLocation(s_fb_prog, "u_dst_scale");
+    s_fb_uSrcDelta  = p_glGetUniformLocation(s_fb_prog, "u_src_delta");
+    s_fb_uMod       = p_glGetUniformLocation(s_fb_prog, "u_mod");
+    s_fb_uRaw       = p_glGetUniformLocation(s_fb_prog, "u_raw");
+    return 1;
+}
+
+/* Program, source texture and uniforms for one band copy (wide-local px). */
+static void fb_bind(GLuint src_tex, int dl, int dy, int w, int h, int sl, int sy,
+                    int r, int g, int b, int raw) {
+    p_glUseProgram(s_fb_prog);
+    p_glBindVertexArray(s_empty_vao);
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, src_tex);
+    p_glUniform1i(s_fb_uSrc, 0);
+    p_glUniform4f(s_fb_uRect, (float)dl, (float)dy, (float)(dl + w), (float)(dy + h));
+    p_glUniform2f(s_fb_uSize, (float)g_wide_w, (float)VRAM_H);
+    p_glUniform1f(s_fb_uDstScale, (float)s_out_scale);
+    p_glUniform2f(s_fb_uSrcDelta, (float)(sl - dl), (float)(sy - dy));
+    p_glUniform3f(s_fb_uMod, (float)r, (float)g, (float)b);
+    p_glUniform1i(s_fb_uRaw, raw);
+}
+
+/* An existing wide surface for base_x; never allocates (nothing to copy yet). */
+static int wide_index_existing(int base_x) {
+    for (int i = 0; i < WIDE_MAX_SURF; i++)
+        if (s_wide_fbo[i] && s_wide_base[i] == base_x) return i;
+    return -1;
+}
+
+static void glb_wide_feedback_rect(int src_base, int src_x, int src_y, int dst_x, int dst_y,
+                                   int w, int h, int r, int g, int b, int raw, int semi) {
+    if (!s_raster_ok || !g_wide_cur || w <= 0 || h <= 0 || g_wide_w <= 0) return;
+    flush_flat_batch();
+    flush_tex_batch();
+    hiw_flush_queue();   /* queued mirrors land in both surfaces first */
+    const int si = wide_index_existing(src_base);
+    if (si < 0 || s_wide_fbo[si] == g_wide_cur || !fb_prog_ready()) return;
+    const int dl = dst_x + wide_dx();
+    const int sl = src_x - src_base + g_wide_off + view_shift;
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, g_wide_cur);
+    glViewport(0, 0, g_wide_w * s_out_scale, VRAM_H * s_out_scale);
+    wide_band_scissor_x(view_pad_left, g_wide_w - view_pad_left - view_pad_right);
+    glDisable(GL_STENCIL_TEST);
+    fb_bind(s_wide_tex[si], dl, dst_y, w, h, sl, src_y, r, g, b, raw);
+    if (semi >= 0) apply_psx_blend(semi);
+    else glDisable(GL_BLEND);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);   /* the source surface is a render target too */
+    glDisable(GL_BLEND);
+    p_glBlendEquationSeparate(PSXGL_FUNC_ADD, PSXGL_FUNC_ADD);
+    glDisable(GL_SCISSOR_TEST);
+    p_glBindVertexArray(0);
+    p_glUseProgram(0);
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    wst_add(wide_index(g_wide_cur), dl, dst_y, dl + w, dst_y + h);
+}
+
 /* Present source: read the wide FBO for the displayed buffer (base_x) into the
  * CPU present buffer as ARGB8888, byte-identical to sw_render_wide_display's
  * output so the shared CPU present path consumes it the same way. Output is
@@ -7257,7 +7355,8 @@ static int glb_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh,
     /* Same orientation reasoning as glb_render_wide_display: glReadPixels row 0 =
      * PS1 top scanline, so copy straight (top-down). */
     int count = 0;
-    for (int i = 0; i < W * H; i++) { out[i] = tmp[i] | 0xFF000000u; count++; }
+    /* Alpha is the surface's bit 15 (mask/STP); wide_full can show it. */
+    for (int i = 0; i < W * H; i++) { out[i] = tmp[i]; count++; }
     free(tmp);
     if (ow) *ow = W;
     if (oh) *oh = H;
@@ -11016,6 +11115,7 @@ static const GpuRenderBackend GL_BACKEND = {
     .render_wide_display = glb_render_wide_display,
     .wide_dump_full = glb_wide_dump_full,
     .set_depth_triangle = glb_set_depth_triangle,
+    .wide_feedback_rect = glb_wide_feedback_rect,
 };
 
 /* ==== Render thread: recording, replay, hand-off ===========================
@@ -13803,6 +13903,16 @@ static void rtb_wide_clear_margins(int base_x, int y, int h, uint16_t color, int
     }
     glb_wide_clear_margins(base_x, y, h, color, sides);
 }
+
+static void rtb_wide_feedback_rect(int src_base, int src_x, int src_y, int dst_x, int dst_y,
+                                   int w, int h, int r, int g, int b, int raw, int semi) {
+    if (rth_record_mode()) {
+        RTH_REC(RTH_WIDE_FEEDBACK, 0, src_base, src_x, src_y, dst_x, dst_y, w, h,
+                r, g, b, raw, semi);
+        return;
+    }
+    glb_wide_feedback_rect(src_base, src_x, src_y, dst_x, dst_y, w, h, r, g, b, raw, semi);
+}
 static int rtb_render_wide_display(uint32_t *out, int pitch, int base_x, int disp_y, int disp_h) {
     GL_RT_SYNC("render_wide_display");
     return glb_render_wide_display(out, pitch, base_x, disp_y, disp_h);
@@ -13844,6 +13954,7 @@ static const GpuRenderBackend GL_RT_BACKEND = {
     .set_depth_triangle = rtb_set_depth_triangle,
     .hd_texture_note = rtb_hd_texture_note,
     .vram_upload_open = rtb_vram_upload_open,
+    .wide_feedback_rect = rtb_wide_feedback_rect,
 };
 
 /* ---- replay (render thread) ---------------------------------------------- */
@@ -13918,6 +14029,10 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     case RTH_WIDE_DISABLE: glb_wide_disable_target(); break;
     case RTH_WIDE_CLEAR: glb_wide_clear(v[0], v[1], v[2], (uint16_t)v[3]); break;
     case RTH_WIDE_CLEAR_MARGINS: glb_wide_clear_margins(v[0], v[1], v[2], (uint16_t)v[3], v[4]); break;
+    case RTH_WIDE_FEEDBACK:
+        glb_wide_feedback_rect(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9],
+                               v[10], v[11]);
+        break;
     case RTH_PROJ_TRI: {
         PSXProjectedVertex vx[3];
         memcpy(vx, payload, sizeof vx);

@@ -3234,6 +3234,9 @@ extern "C" void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float sc
 extern "C" void psx_mod_tag_world_primitive(uint32_t primitive, int is_world) {
     gpu_ws_tag_world_primitive(primitive, is_world);
 }
+extern "C" void psx_mod_tag_feedback_rect(uint32_t primitive) {
+    gpu_ws_tag_feedback_rect(primitive);
+}
 
 extern "C" void psx_mod_set_adaptive_backdrop_preload(int enabled) {
     gpu_ws_set_adaptive_backdrop_preload(enabled);

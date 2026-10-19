@@ -321,7 +321,9 @@ static inline void put_textured(const RTarget *t, int x, int y, uint16_t texel,
         color = blend_pixels(t->buf[idx], color, g_semi_trans_mode);
     }
 
-    /* Mask bit set */
+    /* The texel's bit 15 reaches the framebuffer, forced on by mask set
+     * (canonical VRAM shows it; framebuffer-feedback copies depend on it). */
+    color |= (uint16_t)(texel & 0x8000);
     if (g_mask_set_bit) color |= 0x8000;
 
     t->buf[idx] = color;
@@ -1866,6 +1868,47 @@ void sw_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides) 
         if (sides & 1) for (int col = 0; col < margin; col++) dst[col] = color;
         if (sides & 2) for (int col = W - margin; col < W; col++) dst[col] = color;
     }
+}
+
+/* An existing wide surface for base_x (never allocates: a source that was not
+ * drawn yet has nothing to copy). */
+static uint16_t *wide_surf_existing(int base_x) {
+    if (g_wide_w <= 0) return NULL;
+    for (int i = 0; i < WIDE_MAX_SURF; i++)
+        if (g_wide_surf[i] && g_wide_base[i] == base_x) return g_wide_surf[i];
+    return NULL;
+}
+
+/* Band texels count as bit 15 set: the band columns' own bit 15 is not
+ * authoritative (margin fills write 0), and a framebuffer trail keeps the
+ * centre at bit 15 once it blends, so the bands blend exactly like it. */
+void sw_wide_feedback_rect(int src_base, int src_x, int src_y, int dst_x, int dst_y,
+                           int w, int h, int r, int g, int b, int raw, int semi) {
+    const uint16_t *src = wide_surf_existing(src_base);
+    if (!src || !g_wide_cur || src == g_wide_cur || w <= 0 || h <= 0) return;
+    RTarget t = rt_wide();
+    const int s = t.s;
+    const int sx0 = (src_x - src_base + g_wide_off + view_shift) * s;
+    const int dx0 = (dst_x + wide_dx()) * s;
+    const int saved_enabled = g_semi_trans_enabled, saved_mode = g_semi_trans_mode;
+    g_semi_trans_enabled = semi >= 0;
+    g_semi_trans_mode = semi >= 0 ? semi : saved_mode;
+    for (int row = 0; row < h * s; row++) {
+        const int sy = src_y * s + row;
+        if (sy < 0 || sy >= t.h) continue;
+        for (int col = 0; col < w * s; col++) {
+            const int sx = sx0 + col;
+            if (sx < 0 || sx >= t.w) continue;
+            const uint16_t texel = src[(size_t)sy * t.w + sx];
+            if (texel == 0x0000) continue;
+            /* Bit 15 is forced: see sw_wide_feedback_rect's comment. put_textured
+             * takes the factor sw_set_color_modulation stores. */
+            put_textured(&t, dx0 + col, dst_y * s + row, (uint16_t)(texel | 0x8000),
+                         r >> 3, g >> 3, b >> 3, raw);
+        }
+    }
+    g_semi_trans_enabled = saved_enabled;
+    g_semi_trans_mode = saved_mode;
 }
 
 /* Present source: convert the wide surface for the displayed buffer (base_x) to

@@ -415,6 +415,11 @@ void gr_wide_clear(int base_x, int y, int h, uint16_t color) {
 void gr_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides) {
     (void)base_x; (void)y; (void)h; (void)color; (void)sides;
 }
+void gr_wide_feedback_rect(int src_base, int src_x, int src_y, int dst_x, int dst_y,
+                           int w, int h, int r, int g, int b, int raw, int semi) {
+    (void)src_base; (void)src_x; (void)src_y; (void)dst_x; (void)dst_y;
+    (void)w; (void)h; (void)r; (void)g; (void)b; (void)raw; (void)semi;
+}
 int gr_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh, int base_x) {
     (void)out; (void)cap_pixels; (void)ow; (void)oh; (void)base_x;
     return 0;

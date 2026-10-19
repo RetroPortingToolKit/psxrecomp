@@ -57,6 +57,7 @@ static const GpuRenderBackend SW_BACKEND = {
     .wide_clear_margins            = sw_wide_clear_margins,
     .render_wide_display           = sw_render_wide_display,
     .wide_dump_full                = sw_wide_dump_full,
+    .wide_feedback_rect            = sw_wide_feedback_rect,
 };
 
 /* Supplied by gpu_gl_renderer.c; returns NULL until the GL backend is ready. */
@@ -292,6 +293,12 @@ void gr_wide_clear(int base_x, int y, int h, uint16_t color) {
 void gr_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides) {
     if (g_b->wide_clear_margins)
         g_b->wide_clear_margins(base_x, y, h, color, sides);
+}
+void gr_wide_feedback_rect(int src_base, int src_x, int src_y, int dst_x, int dst_y,
+                           int w, int h, int r, int g, int b, int raw, int semi) {
+    if (g_b->wide_feedback_rect)
+        g_b->wide_feedback_rect(src_base, src_x, src_y, dst_x, dst_y, w, h, r, g, b,
+                                raw, semi);
 }
 int gr_render_wide_display(uint32_t *out, int pitch, int base_x,
                            int disp_y, int disp_h) {

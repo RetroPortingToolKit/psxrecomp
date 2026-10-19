@@ -44,6 +44,7 @@
 #include "ws_prepass_guard.h"
 #include "ws_hud_anchor.h"
 #include "ws_repeat_rect.h"
+#include "ws_feedback_rect.h"
 #include "ws_screen_mask.h"
 #include "ws_radial_screen_mask.h"
 #include <stdint.h>
@@ -243,6 +244,7 @@ static WsHudAnchorTag ws_reveal_clear_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsRadialScreenMaskTag ws_radial_screen_mask_tags[WS_RADIAL_MASK_TAG_COUNT];
 static WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
+static WsRepeatRectTag ws_feedback_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
 static uint32_t ws_last_tag_stamp = (uint32_t)-1000; /* frame of newest tag */
 static uint32_t ws_last_3d_stamp  = (uint32_t)-1000; /* frame of newest shaded prim (diagnostic) */
 extern uint64_t s_frame_count;               /* defined in debug_server.c */
@@ -2593,6 +2595,18 @@ void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period) {
                               period, &guard, (uint32_t)s_frame_count);
 }
 
+void gpu_ws_tag_feedback_rect(uint32_t prim) {
+    if (!ws_native_wide_configured() || (prim & 3u) || prim > UINT32_MAX - 4u)
+        return;
+    uint32_t words[12], count = 0;
+    if (!ws_hud_command_words(prim + 4u, words, &count)) return;
+    if ((words[0] >> 24) < 0x64u || (words[0] >> 24) > 0x67u) return;
+    WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
+    /* The table only marks the packet; period 1 is the "present" value. */
+    ws_repeat_rect_tag_insert(ws_feedback_rect_tags, GPU_RAM_KEY((prim + 4u)),
+                              1, &guard, (uint32_t)s_frame_count);
+}
+
 void gpu_ws_tag_screen_mask_quad(uint32_t prim) {
     if (!ws_native_wide_configured() || (prim & 3u) || prim > UINT32_MAX - 4u)
         return;
@@ -3820,6 +3834,7 @@ static void gpu_reset_state(int clear_vram) {
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
+    ws_repeat_rect_tag_clear(ws_feedback_rect_tags);
     polyline_color = 0;
     polyline_prev_x = polyline_prev_y = 0;
     polyline_prev_c = 0;
@@ -5732,6 +5747,46 @@ static void ws_repeat_textured_rect_reveal(int x, int y, int w, int h,
     }
 }
 
+/* The framebuffer whose canonical columns hold VRAM x, or -1. */
+static int ws_fb_base_holding(int32_t vram_x, int width) {
+    for (int i = 0; i < ws_fb_n; i++)
+        if (vram_x >= (int32_t)ws_fb_base[i] && vram_x < (int32_t)ws_fb_base[i] + width)
+            return (int)ws_fb_base[i];
+    return -1;
+}
+
+/* A tagged 15-bit sprite copying another framebuffer continues into the
+ * bands from that buffer's wide surface (it has no band columns in VRAM). */
+static void ws_feedback_rect_reveal(int x, int y, int w, int h, int u, int v,
+                                    uint32_t color24, int semi_trans,
+                                    int raw_texture) {
+    int margin = draw_area_wide_x_margin();
+    int width = (int)ws_disp_w();
+    if (margin <= 0 || gp0_cmd_source_addr == UINT32_MAX ||
+        draw_area_right < draw_area_left ||
+        draw_area_right - draw_area_left + 1u != (uint32_t)width)
+        return;
+    uint32_t address = gp0_cmd_source_addr & 0x1FFFFFFFu;
+    if (address >= psx_ram_live_bytes() || (address & 3u)) return;
+    if (!ws_repeat_rect_tag_lookup(ws_feedback_rect_tags, address, gp0_cmd_buf,
+                                   (uint32_t)gp0_words_needed, (uint32_t)s_frame_count))
+        return;
+    uint16_t tp = current_texpage();
+    if (((tp >> 7) & 3) != 2) return;
+    int32_t src_x0 = (int32_t)(tp & 0xF) * 64 + u;
+    int src_base = ws_fb_base_holding(src_x0, width);
+    if (src_base < 0) return;
+    int32_t src_y = (int32_t)((tp >> 4) & 1) * 256 + v;
+    WsFeedbackSpan spans[2];
+    int count = ws_feedback_rect_spans(x, w, src_x0, (int32_t)draw_area_left,
+                                       width, margin, spans);
+    for (int i = 0; i < count; ++i)
+        gr_wide_feedback_rect(src_base, spans[i].src_x, src_y, spans[i].dst_x, y,
+                              spans[i].w, h, (int)(color24 & 0xFF),
+                              (int)((color24 >> 8) & 0xFF), (int)((color24 >> 16) & 0xFF),
+                              raw_texture, semi_trans ? (int)semi_transparency : -1);
+}
+
 /* Execute textured rectangle (GP0 0x64-0x67) */
 static void gp0_exec_textured_rect(void) {
     uint32_t color24 = gp0_cmd_buf[0] & 0xFFFFFFu;
@@ -5819,6 +5874,7 @@ static void gp0_exec_textured_rect(void) {
     else
         gr_draw_textured_rect(x0, y0, w, h, u0, v0, clut_x, clut_y, current_texpage());
     ws_repeat_textured_rect_reveal(x0, y0, w, h, u0, v0, clut_x, clut_y);
+    ws_feedback_rect_reveal(x0, y0, w, h, u0, v0, color24, semi_trans, raw_texture);
 }
 
 /* Execute 1x1 dot (GP0 0x68-0x6B) */
@@ -7974,6 +8030,7 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
+    ws_repeat_rect_tag_clear(ws_feedback_rect_tags);
     /* Sync renderer clip/scissor to restored GP0(E3/E4); vars alone leave GL
      * on a stale draw area after savestate load. */
     gr_set_draw_area((int)draw_area_left, (int)draw_area_top,
@@ -8002,6 +8059,7 @@ typedef struct {
     WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
     WsRadialScreenMaskTag ws_radial_screen_mask_tags[WS_RADIAL_MASK_TAG_COUNT];
     WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
+    WsRepeatRectTag ws_feedback_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
     WsPrimitiveRole ws_primitive_roles[WS_ROLE_BUCKETS];
     WsUiPrepassItem ws_ui_prepass[WS_UI_PREPASS_MAX];
     WsUiPrepassNode ws_ui_prepass_nodes[WS_UI_PREPASS_NODE_MAX];
@@ -8045,6 +8103,7 @@ static void gpu_pass_provenance_transfer(int restore) {
     PASS_ARRAY(ws_screen_mask_tags);
     PASS_ARRAY(ws_radial_screen_mask_tags);
     PASS_ARRAY(ws_repeat_rect_tags);
+    PASS_ARRAY(ws_feedback_rect_tags);
     PASS_ARRAY(ws_primitive_roles);
     PASS_VALUE(ws_ui_prepass_count);
     PASS_VALUE(ws_ui_prepass_node_count);

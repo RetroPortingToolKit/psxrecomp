@@ -399,6 +399,10 @@ void gr_wide_set_view(int active, int shift, int pad_left, int pad_right)
 { (void)active; (void)shift; (void)pad_left; (void)pad_right; }
 void gr_wide_clear_margins(int base, int y, int h, uint16_t color, int mode)
 { (void)base; (void)y; (void)h; (void)color; (void)mode; }
+void gr_wide_feedback_rect(int sb, int sx, int sy, int dx, int dy, int w, int h,
+                           int r, int g, int b, int raw, int semi)
+{ (void)sb; (void)sx; (void)sy; (void)dx; (void)dy; (void)w; (void)h;
+  (void)r; (void)g; (void)b; (void)raw; (void)semi; }
 void gr_set_draw_area(int l, int t, int r, int b) { (void)l; (void)t; (void)r; (void)b; }
 void gr_set_draw_offset(int x, int y) { (void)x; (void)y; }
 void gr_set_mask_bits(int set, int check) { (void)set; (void)check; }

@@ -533,6 +533,11 @@ void gpu_ws_tag_black_reveal_rect(uint32_t prim);
  * reveal margins only. The caller verifies the composite's source period.
  * Original UVs, texel density, and canonical VRAM writes are unchanged. */
 void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period);
+/* Title-identified 15-bit sprite (0x64-0x67) that copies a framebuffer 1:1,
+ * e.g. a motion trail. Where it touches the draw area's edge, native-wide
+ * continues it into the bands from the source buffer's wide surface.
+ * Packet-guarded for the current frame; canonical VRAM is untouched. */
+void gpu_ws_tag_feedback_rect(uint32_t prim);
 /* Title-identified flat screen mask: extend vertical sides or horizontal
  * letterbox panels to adaptive edges, preserving the interior opening.
  * Packet guarded, cleared on reset/load, inert outside native-wide gameplay. */

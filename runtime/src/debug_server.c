@@ -10906,6 +10906,8 @@ static void handle_wide_full(int id, const char *json)
     extern void gl_renderer_sync_cpu(void);
     gl_renderer_sync_cpu();   /* no-op on SW; ensures pending GL frame is flushed */
     int base_x = json_get_int(json, "base_x", 0);
+    /* "alpha":1 writes bit 15 (GL: the surface alpha) as white/black. */
+    int show_alpha = json_get_int(json, "alpha", 0);
     char path[512];
     if (!json_get_str(json, "path", path, sizeof(path)))
         strncpy(path, "psx_wide_full.png", sizeof(path) - 1);
@@ -10924,6 +10926,10 @@ static void handle_wide_full(int id, const char *json)
         for (int x = 0; x < W; x++) {
             uint32_t px = buf[(size_t)y * W + x];
             uint8_t *p = rgb + ((size_t)y * W + x) * 3;
+            if (show_alpha) {
+                p[0] = p[1] = p[2] = (uint8_t)(px >> 24);
+                continue;
+            }
             p[0] = (uint8_t)((px >> 16) & 0xFF);
             p[1] = (uint8_t)((px >> 8) & 0xFF);
             p[2] = (uint8_t)(px & 0xFF);
