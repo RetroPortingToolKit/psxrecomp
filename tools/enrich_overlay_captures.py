@@ -13,8 +13,11 @@ start only in a sibling image. A candidate is STRONG when this image's bytes
 bound it (a non-delay-slot stack-frame prologue, or a preceding ``jr $ra``
 plus the bounded CFG probe) and WEAK when only the CFG probe accepts it; a
 weak candidate is kept only if no possible function start below it reaches
-it (compile_overlays.derive_enrichment_roots). compile_overlays.py
-additionally applies the no-split guard to every root, derived or not.
+it (compile_overlays.derive_enrichment_roots). A jal in another record of
+the same file, or in the main EXE (--exe), nominates its target here on the
+same terms as compile_overlays (CrossImageCalls): strong evidence only.
+compile_overlays.py additionally applies the no-split guard to every root,
+derived or not.
 """
 
 import argparse
@@ -29,14 +32,20 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import compile_overlays as CO  # noqa: E402
 
 
-def derived_roots(data, base, explicit=(), sources=None, stats=None):
-    """The compiler's own enrichment roots for one captured image."""
+def derived_roots(data, base, explicit=(), sources=None, stats=None,
+                  external=(), guard_bytes=0):
+    """The compiler's own enrichment roots for one captured image. The
+    trailing delay-slot guard word (guard_bytes) is never analysed."""
+    hi = base + len(data) - guard_bytes
     roots, info = CO.derive_enrichment_roots(data, base, len(data),
-                                             explicit=explicit)
+                                             analysis_hi=hi,
+                                             explicit=explicit,
+                                             external_call_targets=external)
     if sources is not None:
         weak = set()
-        CO.derive_static_roots(data, base, len(data), sources=sources,
-                               weak_out=weak)
+        CO.derive_static_roots(data, base, len(data), analysis_hi=hi,
+                               sources=sources, weak_out=weak,
+                               external_call_targets=external)
     if stats is not None:
         stats.update(info)
     return sorted(roots)
@@ -48,8 +57,9 @@ def explicit_roots(record):
         'static_discovery_entry_pcs', 'seeds')))
 
 
-def enrich_record(record):
-    """Return a copy of *record* with discovered roots unioned into it."""
+def enrich_record(record, external=()):
+    """Return a copy of *record* with discovered roots unioned into it.
+    ``external``: jal targets from other images (CrossImageCalls)."""
     out = dict(record)
     try:
         base = CO._parse_addr(record['load_addr'])
@@ -60,8 +70,9 @@ def enrich_record(record):
     if size != len(data) or base & 3 or len(data) & 3:
         raise ValueError('capture bytes must be a word-aligned image matching size')
     prior = CO._parse_addr_list(record.get('static_discovery_entry_pcs', []))
-    roots = sorted(prior | set(derived_roots(data, base,
-                                             explicit_roots(record))))
+    roots = sorted(prior | set(derived_roots(
+        data, base, explicit_roots(record), external=external,
+        guard_bytes=CO.capture_guard_bytes(record, size))))
     out['static_discovery_entry_pcs'] = [f'0x{addr:08X}' for addr in roots]
     return out, len(roots) - len(prior)
 
@@ -72,17 +83,31 @@ def main(argv=None):
     parser.add_argument('--out', help='write an enriched JSON copy here')
     parser.add_argument('--list', action='store_true',
                         help='print every derived root and its evidence sources')
+    parser.add_argument('--exe', help='boot PS-X EXE whose jal targets count '
+                                      'as cross-image call evidence')
     args = parser.parse_args(argv)
     with open(args.captures, encoding='utf-8') as src:
         records = json.load(src)
     if not isinstance(records, list):
         raise SystemExit('captures must contain a JSON array')
+    calls = CO.CrossImageCalls(
+        [r for r in records if isinstance(r, dict)],
+        CO.load_main_exe_image({}, None, None, args.exe) if args.exe else None)
+
+    def external_for(record):
+        try:
+            base = CO._parse_addr(record['load_addr'])
+            size = int(record.get('size', 0))
+        except (KeyError, TypeError, ValueError):
+            return set()
+        return calls.targets_for(
+            base, size, base + size - CO.capture_guard_bytes(record, size))
     enriched, added = [], 0
     for index, record in enumerate(records):
         if not isinstance(record, dict):
             raise SystemExit(f'capture {index} is not an object')
         try:
-            item, count = enrich_record(record)
+            item, count = enrich_record(record, external_for(record))
         except ValueError as exc:
             raise SystemExit(f'capture {index}: {exc}') from exc
         if args.list:
@@ -90,7 +115,8 @@ def main(argv=None):
             data = base64.b64decode(record['bytes_b64'])
             sources, stats = {}, {}
             roots = derived_roots(data, base, explicit_roots(record),
-                                  sources, stats)
+                                  sources, stats, external_for(record),
+                                  CO.capture_guard_bytes(record, len(data)))
             print(f'capture {index} load=0x{base:08X}: {len(roots)} derived '
                   f'root(s) {stats}')
             for addr in roots:

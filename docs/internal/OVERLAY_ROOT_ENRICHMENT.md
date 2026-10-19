@@ -204,6 +204,49 @@ Now nothing names the guard word:
 No coverage is lost: the neighbour variant that holds the word as code
 serves it.
 
+## Cross-image calls (beads-eio.3.191, category a)
+
+A jal in the main EXE or in another captured image that does not overlap
+this one (an overlapping image is an alternative occupant of the same RAM,
+never co-resident) nominates its target as an enrichment candidate
+(`CrossImageCalls`, fed to `derive_static_roots` as
+`external_call_targets`). It is STRONG evidence only: the target is rooted
+only when this image's own bytes prove the boundary
+(`image_local_entry_proven`: a prologue at a boundary, or `jr $ra` before
+it plus the bounded CFG probe). A target mid-way through a function in
+this image (Tomba's shared-engine `jal 0x8011B1CC` in X00) is not rooted
+and is not weak evidence either. A call into a stack adjust whose loads
+come first roots nothing new: the late-prologue rule already roots the
+true start. Captures with `strict_producer_ranges` (the AOT records) take
+no cross-image evidence, as they take no cross-producer calls.
+
+The main EXE is `[game] exe` resolved against the game.toml directory,
+then `--project-root`, or `--main-exe`. Every capture in the file is a
+source, including those `--only-region` leaves out.
+
+Measured:
+
+- **Ace Combat 3** (73 captures, vs the guard-word branch): walk roots
+  3616 to 3931 (+315, all frameless starts after `jr $ra`, 229 executed,
+  none reached by the root below or inside its branch span), late-prologue
+  roots 1 and 1, rootless 0, capacity skips 0, failures 0. Callable entries
+  per capture +317 with none lost; captured dispatch entries served 6122 in
+  both. Shards 413 vs 890 (the new roots build in region shards instead of
+  supplement fragments), cache 262.6 vs 321.3 MiB.
+- **Tomba, MMX6, Ape** (AOT records, strict producer ranges): shards
+  byte-identical to the previous branch; runs reproduce the previous gate's
+  rings exactly.
+- **Tomba 2** (23 captures, main EXE as a source): +38 roots, 873
+  cross-image-proven roots (92 with no other evidence). Against master:
+  interpreter fallback lower on route and attract, 0 shard failures, all
+  route and attract screenshots identical, the route fork at 6798 is the
+  known master-split class. The attract fork moves from 7170 to 7169: four
+  functions the old guard and master interpret now run native
+  (0x8011534C, 0x8010F174, 0x8012F89C, 0x8013FB4C); nothing else changes
+  execution mode, cycles per frame never differ, and the fork stays with
+  the nested-unit IRQ deferral off, so it is the interpreted-to-native class
+  seen on MMX6 and Ape.
+
 ## Gate used, and what is left
 
 The gate the four titles passed is **no regression against master**:
