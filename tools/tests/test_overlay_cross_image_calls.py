@@ -252,12 +252,19 @@ class CompileOverlaysWiringTests(unittest.TestCase):
                             'entry_pc = "0x80010000"\ntext_size = "0x10"\n'
                             'stack_base = "0x801FFFF0"\n\n[recompiler]\n'
                             'seeds = "seeds.txt"\nout_dir = "generated"\n')
+            # Stage the real source-derived hash; keep stale-binary checks active.
+            import shutil
+            import aot_overlay_pipeline as pipeline
+            runtime_include = tmp / 'runtime-include'
+            shutil.copytree(ROOT / 'runtime' / 'include', runtime_include)
+            pipeline.write_codegen_hash_header(
+                shutil.which('cmake') or 'cmake', runtime_include / 'overlay_codegen_hash.h')
             proc = subprocess.run(
                 [sys.executable, str(ROOT / 'tools' / 'compile_overlays.py'),
                  '--static', '--captures', str(caps),
                  '--out-dir', str(tmp / 'out'), '--game-toml', str(toml),
                  '--recompiler', RECOMPILER, '--project-root', str(ROOT),
-                 '--runtime-include', str(ROOT / 'runtime' / 'include'),
+                 '--runtime-include', str(runtime_include),
                  *extra],
                 capture_output=True, text=True, timeout=300, cwd=str(ROOT))
             return proc
