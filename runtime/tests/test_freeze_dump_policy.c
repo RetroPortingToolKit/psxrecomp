@@ -39,7 +39,15 @@ static void spin_window(FreezeWedgeSample *w, uint32_t n) {
     }
 }
 
-int main(void) {    FreezeDumpPolicy policy = {0};
+static int sample_profile(uint64_t seq, uint32_t *fn, int *exception) {
+    if (seq >= 12u) return 0;
+    *fn = (uint32_t)seq;
+    *exception = seq == 2u;
+    return 1;
+}
+
+int main(void) {
+    FreezeDumpPolicy policy = {0};
 
     /* Authorization does not consume a slot until the file reaches disk. */
     EXPECT_EQ(observe(&policy, 5), 1);
@@ -134,6 +142,13 @@ int main(void) {    FreezeDumpPolicy policy = {0};
     spin_window(w, 20);
     EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_idle), FREEZE_WEDGE_SPIN);
     EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, NULL), FREEZE_WEDGE_SPIN);
+    /* A busy native window is healthy, while a small wait-loop remains detectable. */
+    EXPECT_EQ(freeze_wedge_classify(w, 20, 9u, mdec_idle), 0);
+    EXPECT_EQ(freeze_wedge_classify(w, 20, 8u, mdec_idle), FREEZE_WEDGE_SPIN);
+    EXPECT_EQ(freeze_window_fn_diversity(0, 12, 0, sample_profile), 9u);
+    EXPECT_EQ(freeze_window_fn_diversity(0, 8, 5, sample_profile), 3u);
+    EXPECT_EQ(freeze_window_fn_diversity(2, 3, 0, sample_profile), UNK);
+    EXPECT_EQ(freeze_window_fn_diversity(20, 30, 0, sample_profile), UNK);
     /* FMV decode parks the guest the same way; MDEC activity vetoes it. */
     EXPECT_EQ(freeze_wedge_classify(w, 20, UNK, mdec_busy), 0);
     /* Static-code main loop (LoD 2026-10-12 dump): the window ends agree but
