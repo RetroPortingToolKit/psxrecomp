@@ -33,6 +33,9 @@
 extern "C" {
 uint32_t g_dirty_ram_exec_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS]{};
 uint32_t g_dirty_ram_dispatch_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS]{};
+uint32_t g_dirty_ram_dispatch_seg_bitmap[PSX_CODE_SEGMENT_COUNT][DIRTY_RAM_EXEC_BITMAP_WORDS]{};
+uint32_t g_psx_ram_size = 2u * 1024u * 1024u;
+uint32_t g_psx_ram_mask = 2u * 1024u * 1024u - 1u;
 uint32_t g_dirty_ram_exec_page_bitmap[DIRTY_RAM_EXEC_PAGE_BITMAP_WORDS]{};
 uint64_t g_dirty_ram_insns_run = 0;
 uint64_t g_dirty_window_dispatches = 0;
@@ -62,6 +65,8 @@ void set_bit(uint32_t *bitmap, uint32_t phys) {
 void set_exec(uint32_t phys) {
     set_bit(g_dirty_ram_exec_pc_bitmap, phys);
     set_bit(g_dirty_ram_dispatch_pc_bitmap, phys);
+    for (int seg = 0; seg < PSX_CODE_SEGMENT_COUNT; ++seg)
+        set_bit(g_dirty_ram_dispatch_seg_bitmap[seg], phys);
     const uint32_t page = phys >> 12;
     g_dirty_ram_exec_page_bitmap[page >> 5] |= 1u << (page & 31u);
     g_dirty_pages[page >> 5] |= 1u << (page & 31u);
@@ -80,7 +85,19 @@ std::string region(const std::string &json, uint32_t virt) {
     const size_t at = json.find(key);
     if (at == std::string::npos) return std::string();
     const size_t open = json.rfind('{', at);
-    const size_t close = json.find('}', at);
+    size_t close = open;
+    unsigned depth = 0;
+    bool quoted = false, escaped = false;
+    for (; close < json.size(); ++close) {
+        const char c = json[close];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') quoted = false;
+        } else if (c == '"') quoted = true;
+        else if (c == '{') ++depth;
+        else if (c == '}' && --depth == 0) break;
+    }
     return json.substr(open, close - open + 1);
 }
 
@@ -150,6 +167,8 @@ int main() {
     set_exec(0x30000u);
     set_exec(0x30FFCu);
     set_bit(g_dirty_ram_dispatch_pc_bitmap, 0x31000u);
+    for (int seg = 0; seg < PSX_CODE_SEGMENT_COUNT; ++seg)
+        set_bit(g_dirty_ram_dispatch_seg_bitmap[seg], 0x31000u);
     /* B: kernel run [0xF000, 0x10000) + guard 0x10000; boot run
      * [0x10000, 0x11000) whose first word is executed. */
     set_exec(0x0F000u);
@@ -190,6 +209,13 @@ int main() {
     expect(lists(boot, "executed_pcs", 0x80010000u) &&
            lists(boot, "dispatch_entry_pcs", 0x80010000u),
            "B: the boot run still owns its first word");
+
+    const size_t segment_map = kernel.find("\"dispatch_entry_segments\"");
+    expect(segment_map != std::string::npos, "B: segment evidence exists");
+    expect(kernel.substr(segment_map).find("0x00010000") == std::string::npos &&
+           kernel.substr(segment_map).find("0x80010000") == std::string::npos &&
+           kernel.substr(segment_map).find("0xA0010000") == std::string::npos,
+           "B: no segment claims the next run guard word");
 
     overlay_capture_wait_pending();
     std::filesystem::remove_all(root, ignored);
