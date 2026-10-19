@@ -654,6 +654,9 @@ int psx_mod_render_stereo(struct CPUState *cpu, const PSXModStereoFrame *frame,
  * Unsupported backends refuse and leave ordinary presentation available. */
 int psx_mod_render_local_pair(struct CPUState *cpu, const PSXModStereoFrame *frame,
                               PSXModStereoFn fn, void *user);
+/* Keep an 8:3 session canvas until disabled/reset. A fresh complete pair uses
+ * its two views; canonical menu, movie and unavailable-pair frames are shown
+ * in both 4:3 panes. Does not change the guest's aspect or retain stale views. */
 int psx_mod_set_local_pair_presentation(int enabled);
 uint32_t psx_mod_render_stereo_status(void);
 /* 0 disables stereo output; 1 shows a complete pair side by side. Capture

@@ -1373,11 +1373,17 @@ static GlPresEvent s_pres_ring[GL_PRES_RING_CAP];
 static uint64_t    s_pres_seq = 0;
 
 static void post_aa_apply(int lx, int ly, int lw, int lh);
+static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh);
 static void pres_record(int path, int dx, int dy, int w, int h,
                         int lx, int ly, int lw, int lh) {
     /* The composed game image, before hold-last capture and the OSD. */
     if (s_post_aa && (path == GL_PRES_VRAM || path == GL_PRES_WIDE || path == GL_PRES_INTERP))
         post_aa_apply(lx, ly, lw, lh);
+    /* Local split is a session layout, not just the availability of a fresh
+     * pair. Menus, 24-bit movies and refused/stale pairs retain two native
+     * panes. Compose before capture/OSD so screenshots and hold-last agree. */
+    if (path != GL_PRES_STEREO)
+        local_pair_present_shared(&lx, &ly, &lw, &lh);
     s_native_surface_pending=s_native_surface_enabled &&
         (path==GL_PRES_VRAM || path==GL_PRES_WIDE || path==GL_PRES_CPU || path==GL_PRES_BLANK);
     s_native_surface_rect[0]=lx;s_native_surface_rect[1]=ly;
@@ -7713,6 +7719,8 @@ typedef struct StereoPair {
 } StereoPair;
 static StereoPair s_stereo_pair[2];
 static int s_stereo_current, s_stereo_valid, s_stereo_mode;
+static GLuint s_local_shared_tex;
+static int s_local_shared_w, s_local_shared_h;
 static uint64_t s_stereo_presents;
 static char s_stereo_dump_dir[400];
 static int s_stereo_dump_left;
@@ -8545,6 +8553,9 @@ int gl_renderer_local_pair_set_presentation(int enabled) {
     return 1;
 }
 static void stereo_resources_release(void) {
+    if (s_local_shared_tex) glDeleteTextures(1, &s_local_shared_tex);
+    s_local_shared_tex = 0;
+    s_local_shared_w = s_local_shared_h = 0;
     for (int gi = 0; gi < 2; gi++) for (int eye = 0; eye < 2; eye++) {
         StereoPair *p = &s_stereo_pair[gi];
         pass_free_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
@@ -8823,6 +8834,39 @@ static void openxr_present_native(void) {
     }
     psx_openxr_native_metadata(s_frame_count);
     (void)psx_openxr_end(1,openxr_copy_native);
+}
+
+/* Copy only the composed native viewport, never the guest's texture VRAM or
+ * an earlier pair. This also serves CPU FMV presents with no raster backend.
+ * Gamma, scanlines and post-AA are already baked into the copied pixels. */
+static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh) {
+    int ww = 0, wh = 0, x = *lx, y = *ly, w = *lw, h = *lh;
+    if (s_stereo_mode != 2 || s_pass_active || !s_ctx || !s_win) return;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    if (w < 1 || h < 1 || x < 0 || y < 0 || x + w > ww || y + h > wh) return;
+    if (!s_local_shared_tex) glGenTextures(1, &s_local_shared_tex);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, s_local_shared_tex);
+    if (s_local_shared_w != w || s_local_shared_h != h) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, x, y, w, h, 0);
+        s_local_shared_w = w; s_local_shared_h = h;
+    } else {
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
+    }
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST); glDisable(GL_BLEND);
+    glViewport(0, 0, ww, wh);
+    glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
+    letterbox_rect_aspect(ww, wh, 8, 3, lx, ly, lw, lh);
+    for (int seat = 0; seat < 2; ++seat) {
+        int start = seat ? *lw / 2 : 0;
+        int width = seat ? *lw - *lw / 2 : *lw / 2;
+        present_target_quad(s_local_shared_tex, w, h, 0, 0, w, h, 0,
+                            *lx + start, *ly, width, *lh, 0, 0, 1);
+    }
 }
 
 static int stereo_present(int w, int h) {
@@ -9806,6 +9850,7 @@ int gl_renderer_present_hold_last(void) {
         present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
                             0, 0, s_hold_tw, s_hold_th, s_hold_linear,
                             lx, ly, lw, lh, 1, 1, 1);
+        local_pair_present_shared(&lx, &ly, &lw, &lh);
         /* Upgrade to drawable after letterboxing once. Live+interp leaves
          * HOLD_NATIVE (no Swap on main); drawable path is the soak-proven
          * full-window image (GL without interp). */
