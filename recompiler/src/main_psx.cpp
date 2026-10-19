@@ -588,6 +588,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
     if (!exe->header.entry_in_range()) {
         fmt::print(stderr, "⚠ Warning: Entry point 0x{:08X} is outside loaded code range!\n\n",
                    exe->header.initial_pc);
+    } else if (exe->header.initial_pc >= exe->analysis_end_address()) {
+        fmt::print("WARNING: entry point 0x{:08X} is at or past Analysis End 0x{:08X} (delay-slot guard bytes, not analysable); it cannot produce a function\n", exe->header.initial_pc, exe->analysis_end_address());
     }
 
     // Config code sites are code identities, and code identity is the full
@@ -817,6 +819,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
         if (ef.is_open()) {
             const uint32_t seed_lo = exe->header.load_address;
             const uint32_t seed_hi = exe->analysis_end_address();
+            std::vector<uint32_t> dropped_past_analysis_end;
+            std::vector<uint32_t> dropped_outside_image;
             // The directive lines below name code by PC too, so they follow
             // the seed rule (§5.3): an address that names this image's bytes
             // in another segment is refused with its link-segment spelling,
@@ -965,6 +969,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
                 if (phys < (seed_lo & PSXRecomp::kPhysMask) ||
                     phys >= (seed_lo & PSXRecomp::kPhysMask) + (seed_hi - seed_lo)) {
                     ++outside_seeds;
+                    if (exe->contains_phys(addr)) dropped_past_analysis_end.push_back(addr);
+                    else dropped_outside_image.push_back(addr);
                 } else if (!PSXRecomp::maps_physical(addr)) {
                     // Only KUSEG below 0x20000000, KSEG0 and KSEG1 alias the
                     // image's bytes; a variant in any other segment would
@@ -991,6 +997,27 @@ static int psxrecomp_game_main(int argc, char** argv) {
                     file_seeds.push_back(addr);
                     exact_entries.push_back(addr);
                 }
+            }
+            auto list_seeds = [](const std::vector<uint32_t>& seeds) {
+                std::string text;
+                for (size_t i = 0; i < seeds.size() && i < 16; i++)
+                    text += fmt::format("{}0x{:08X}", i ? ", " : "", seeds[i]);
+                if (seeds.size() > 16) text += ", ...";
+                return text;
+            };
+            if (!dropped_past_analysis_end.empty()) {
+                fmt::print("WARNING: dropped {} requested seed(s) at or past "
+                           "Analysis End 0x{:08X} (delay-slot guard bytes, "
+                           "not analysable): {}\n",
+                           dropped_past_analysis_end.size(), seed_hi,
+                           list_seeds(dropped_past_analysis_end));
+            }
+            if (!dropped_outside_image.empty()) {
+                fmt::print("WARNING: dropped {} requested seed(s) outside the "
+                           "image 0x{:08X}..0x{:08X}: {}\n",
+                           dropped_outside_image.size(), seed_lo,
+                           exe->end_address(),
+                           list_seeds(dropped_outside_image));
             }
             std::sort(producer_ranges.begin(), producer_ranges.end());
             for (size_t i = 1; i < producer_ranges.size(); i++) {

@@ -366,10 +366,13 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
             uint32_t virt = PSX_OVERLAY_CODE_SEGMENT | psx_ram_canonical_offset(phys);
             in_run = 0;
 
+            /* The readable delay-slot guard is not executable evidence. */
+            const uint32_t pc_hi = phys + size - guard_bytes;
+
             /* Seeds: only per-PC interpreter hits — execution-verified. */
             int nexec = 0;
             int ndisp = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if ((dispatch_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u)
                     ndisp++;
@@ -414,7 +417,7 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
 
             fprintf(f, "    \"executed_pcs\": [");
             int emitted_exec = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if (!((exec_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u))
                     continue;
@@ -426,7 +429,7 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
 
             fprintf(f, "    \"dispatch_entry_pcs\": [");
             int emitted_dispatch = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if (!((dispatch_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u))
                     continue;
@@ -448,7 +451,7 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
                 int emitted_seg = 0;
                 fprintf(f, "%s\"%s\": [", seg ? ", " : "",
                         psx_code_segment_name(seg));
-                for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+                for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                     uint32_t wi = ep >> 2;
                     if (!((dispatch_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u) ||
                         !((seg_bitmap[wi >> 5] >> (wi & 31u)) & 1u))
@@ -464,7 +467,7 @@ static void write_json_window(FILE *f, uint32_t win_lo_page,
 
             fprintf(f, "    \"seeds\": [");
             emitted_dispatch = 0;
-            for (uint32_t ep = phys; ep < phys + size; ep += 4u) {
+            for (uint32_t ep = phys; ep < pc_hi; ep += 4u) {
                 uint32_t wi = ep >> 2;
                 if (!((dispatch_pc_bitmap[wi >> 5] >> (wi & 31u)) & 1u))
                     continue;
