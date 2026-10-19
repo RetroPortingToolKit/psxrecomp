@@ -1148,6 +1148,59 @@ class CrossImageRootsTests(unittest.TestCase):
         self.assertEqual(pipeline.foreign_call_roots(data, [data, self.caller]), [])
 
 
+class DispatchEntryTests(unittest.TestCase):
+    """An observed switch case is not a new function boundary."""
+
+    def setUp(self):
+        self.base = base = 0x80100000
+        self.body = bytearray(0x100)
+        words = {0x00: 0x27BDFFF0, 0x04: 0x3C088010, 0x08: 0x250800C0,
+                 0x0C: 0x2C810002, 0x10: 0x10200013, 0x18: 0x00044880,
+                 0x1C: 0x01094021, 0x20: 0x8D0A0000, 0x28: 0x01400008,
+                 0x40: 0x24020001, 0x44: 0x08000000 | ((base + 0x60) >> 2 & 0x3FFFFFF),
+                 0x50: 0x24020002, 0x54: 0x08000000 | ((base + 0x60) >> 2 & 0x3FFFFFF),
+                 0x60: 0x03E00008, 0x64: 0x27BD0010,
+                 0xC0: base + 0x40, 0xC4: base + 0x50}
+        for offset, word in words.items():
+            struct.pack_into('<I', self.body, offset, word)
+        self.body = bytes(self.body)
+        self.spec = dict(method='fixed_address_files', files=['CODE'], load_addr=hex(base),
+                         entries=[hex(base)], dispatch_entries=[hex(base + 0x50)])
+
+    def test_required_case_keeps_host_and_other_cases_reachable(self):
+        import compile_overlays as compiler
+        with tempfile.TemporaryDirectory() as directory:
+            disc = SectorDisc(directory, {'CODE': self.body})
+            record = pipeline.extractor.rec(self.base, self.body, [self.base])
+            result = pipeline.prepare(dict(game_id='TEST', images=[self.spec], expected_records=1),
+                                      disc, [record], Path(directory))
+            job = result['jobs'][0]
+            self.assertEqual(job['required_entries'], [self.base, self.base + 0x50])
+            capture = json.loads(Path(job['input']).read_text())[0]
+            target = self.base + 0x50
+            for key in ('function_entry_pcs', 'static_discovery_entry_pcs', 'seeds'):
+                self.assertNotIn(target, {int(x, 16) for x in capture.get(key, [])})
+            seeds, audit = compiler.classify_overlay_seeds(
+                capture, self.body, self.base, len(self.body), 0, {})
+            self.assertIn(f'interior 0x{target:08X}', seeds)
+            self.assertEqual(audit['included_reasons'][target], 'DISPATCH_INTERIOR')
+
+    def test_invalid_dispatch_declaration_is_rejected(self):
+        source = dict(name='CODE', base=self.base, body=self.body, spec=self.spec)
+        for target in (self.base - 4, self.base + 1, self.base + len(self.body)):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'Dispatch entry outside'):
+                pipeline.required_entries({**source, 'spec': {**self.spec,
+                                          'dispatch_entries': [hex(target)]}}, None)
+
+    def test_exclusion_cannot_hide_required_dispatch(self):
+        spec = {**self.spec, 'excluded_ranges': [dict(start=self.base + 0x50, end=self.base + 0x54,
+                reason='invented fallback', sha256=sha(self.body[0x50:0x54]))]}
+        record = pipeline.extractor.rec(self.base, self.body, [self.base])
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'required loader entry'):
+            pipeline.prepare(dict(images=[spec], expected_records=1, strict_bounds=True),
+                             FakeDisc({'CODE': self.body}), [record], Path(directory))
+
+
 class StaticGenerationTest(unittest.TestCase):
     """The `static` action as `psxrecomp_cli.py generate` drives it."""
 

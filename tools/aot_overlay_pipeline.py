@@ -427,6 +427,9 @@ def spec_sources(disc, spec):
                     grouped[key]['aliases'].append(name)
                     require(grouped[key]['spec']['entries'] == placement.get('entries', []),
                             'Duplicate bank has conflicting declared entries')
+                    require(grouped[key]['spec'].get('dispatch_entries', []) ==
+                            placement.get('dispatch_entries', spec.get('dispatch_entries', [])),
+                            'Duplicate bank has conflicting dispatch entries')
                     continue
                 source = dict(name=name, base=base, body=body,
                     spec={**spec, **placement, 'entries': placement.get('entries', []),
@@ -579,6 +582,19 @@ def declared_entries(source, disc):
     return entries
 
 
+def declared_dispatch_entries(source):
+    """Required PCs whose observation does not establish a function boundary."""
+    entries = {number(x) for x in source['spec'].get('dispatch_entries', [])}
+    base, size = source['base'], len(source['body'])
+    require(all(base <= entry < base + size and entry % 4 == 0 for entry in entries),
+            f"Dispatch entry outside image: {source['name']}")
+    return entries
+
+
+def required_entries(source, disc):
+    return declared_entries(source, disc) | declared_dispatch_entries(source)
+
+
 def foreign_call_roots(source, sources):
     """Entries of `source` that other images call directly (`jal`).
 
@@ -612,7 +628,7 @@ def make_fixed_record(source, disc, sources=(), cross_image=False):
     seeds |= entries
     require(seeds, f"No static entries: {source['name']}")
     page, data = extractor.page_aligned_region(base, body)
-    return extractor.rec(page, data, sorted(seeds), dispatch_extra=sorted(entries),
+    return extractor.rec(page, data, sorted(seeds), dispatch_extra=sorted(required_entries(source, disc)),
                          producer_ranges=[(base, base + len(body))], static_discovery=direct | entries)
 
 
@@ -693,11 +709,13 @@ def prepare(profile, disc, records, output, views=None):
     # found the image without finding that particular callable entry.
     for source in sources:
         entries = declared_entries(source, disc)
-        if entries:
+        dispatch = required_entries(source, disc)
+        if dispatch:
             require(source['name'] in singles, 'Declared entries need a complete source recipe')
             record = singles[source['name']]
             for key in ('function_entry_pcs', 'dispatch_entry_pcs', 'static_dispatch_entry_pcs', 'seeds'):
-                record[key] = [hex(pc) for pc in sorted(entries | {number(pc) for pc in record[key]})]
+                extra = dispatch if key in ('dispatch_entry_pcs', 'static_dispatch_entry_pcs') else entries
+                record[key] = [hex(pc) for pc in sorted(extra | {number(pc) for pc in record[key]})]
             record['static_discovery_entry_pcs'] = [hex(pc) for pc in sorted(entries |
                 {number(pc) for pc in record.get('static_discovery_entry_pcs', [])})]
     by_name = {source['name']: source for source in sources}
@@ -730,7 +748,7 @@ def prepare(profile, disc, records, output, views=None):
                 if any(lo <= number(alias['start']) <= number(alias['entry']) < number(alias['end']) <= hi
                        for lo, hi in bounds)]
             require(all(eligible(entry) for source, _, _ in matches
-                        for entry in declared_entries(source, disc)), 'Excluded required loader entry')
+                        for entry in required_entries(source, disc)), 'Excluded required loader entry')
         if record.get('producer') == 'bios_resident_manifest':
             names = ['BIOS resident manifest']
             bounds = [(number(r['start']), number(r['end'])) for r in record['producer_ranges']]
@@ -746,7 +764,7 @@ def prepare(profile, disc, records, output, views=None):
         write_json(path, [record])
         jobs.append(dict(name=f'{index:03d}-' + '+'.join(names), sources=names,
                          required_entries=sorted({entry for source, _, _ in matches
-                                                  for entry in declared_entries(source, disc)}),
+                                                  for entry in required_entries(source, disc)}),
                          known_ranges=bounds, input=str(path.resolve()), load_addr=hex(load),
                          size=len(data), sha256=hashlib.sha256(data).hexdigest(),
                          recipe_sha256=hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest(),

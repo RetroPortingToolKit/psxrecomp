@@ -102,6 +102,12 @@ generic detector misses it. `entry_word` or `entries` can supply independently
 verified loader entry points. These facts do not turn every plausible code word
 into a proven function. There is no recipe option to ignore a failed compiler.
 
+Use `dispatch_entries` for independently verified dispatch PCs that may be inside
+an existing function, such as jump-table case labels. They are required by the
+coverage audit but do not force new function boundaries. The existing decoder and
+reachability checks decide whether each PC is a callable root or a hosted interior;
+an interior declaration cannot truncate the function that owns it.
+
 Each recipe compiles in an isolated cache. `tools/audit_aot_cache.py` checks every
 native pair's ABI/exports, every manifest guard against known original bytes,
 and nonzero native coverage for every recipe. Loader entry points supplied by
