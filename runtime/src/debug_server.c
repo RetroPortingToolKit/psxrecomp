@@ -14317,6 +14317,19 @@ static void handle_overlay_loader_status(int id, const char *json)
             (unsigned long long)nd, (unsigned long long)ni,
             (unsigned long long)sn, (unsigned long long)ss,
             (unsigned long long)sc, (unsigned long long)sx);
+        {
+            /* Call-unit IRQ starvation signature: call_unit_depth stuck > 0 with
+             * ci_skip_unit climbing while an unmasked IRQ stays pending. */
+            uint64_t cu=0, cs=0, cn=0, cr=0, cd=0, ce=0;
+            overlay_loader_get_ci_skip_diag(&cu, &cs, &cn, &cr, &cd, &ce);
+            n += snprintf(buf + n, sizeof(buf) - n,
+                ",\"ci_skip_unit\":%llu,\"ci_skip_supp\":%llu,\"ci_skip_none\":%llu,"
+                "\"ci_skip_sr\":%llu,\"ci_skip_deliv\":%llu,\"ci_enter\":%llu,"
+                "\"call_unit_depth\":%d",
+                (unsigned long long)cu, (unsigned long long)cs, (unsigned long long)cn,
+                (unsigned long long)cr, (unsigned long long)cd, (unsigned long long)ce,
+                overlay_loader_call_unit_depth());
+        }
         extern volatile long g_overlay_image_warm_loaded;
         extern volatile long g_overlay_image_warm_pending;
         n += snprintf(buf + n, sizeof(buf) - n,

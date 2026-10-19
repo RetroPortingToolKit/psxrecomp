@@ -265,6 +265,8 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mirror_pc_preserved_guards.py")
         add_test(NAME segment_miss_wiring_test COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_segment_miss_wiring.py")
+        add_test(NAME overlay_unit_defer_wiring_test COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_unit_defer_wiring.py")
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME ws_screen_tags_exec_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ws_screen_tags_exec.py"
@@ -1849,6 +1851,13 @@ if(BUILD_TESTING)
         target_link_libraries(netplay_input_hist_test PRIVATE recomp_net)
         add_test(NAME netplay_input_hist_test COMMAND netplay_input_hist_test)
     endif()
+
+    # IRQ policy for nested overlay call units: IRQs are delivered inside a
+    # unit (a callee that polls for an IRQ-set flag, libcard MemCardSync, must
+    # not starve: LoD "Checking MEMORY CARD" hang). Header-only, no runtime link.
+    add_executable(overlay_unit_defer_test tests/test_overlay_unit_defer.c)
+    target_include_directories(overlay_unit_defer_test PRIVATE src)
+    add_test(NAME overlay_unit_defer_test COMMAND overlay_unit_defer_test)
 
     add_executable(overlay_store_cycle_barrier_test
         tests/test_overlay_store_cycle_barrier.c)
