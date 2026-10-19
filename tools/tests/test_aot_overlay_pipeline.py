@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import aot_overlay_pipeline as pipeline
 import audit_aot_cache as auditor
 import indexed_lzss_pack as lzss_pack
+import prepared_files
+from test_bpe_container import MAGIC as BPE_MAGIC, container as bpe_container_bytes, encode_block
 
 
 class PgxpReleaseNamespaceTests(unittest.TestCase):
@@ -902,6 +904,248 @@ class IndexedLzssPackTest(unittest.TestCase):
         for change, error in cases:
             with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
                 pipeline.positioned_sources(disc, [self.spec(**change)])
+
+
+class PreparedImageTests(unittest.TestCase):
+    """Images a loader unpacks: derived files, per-disc aliases, disc sets."""
+    CODE = bytes.fromhex('27bdffe8afbf001000000000') * 4          # invented words
+    OVERLAY = bytes.fromhex('3c028001244200108c430000') * 3
+
+    def boot(self):
+        """A launcher: 8 bytes of header, then a container holding CODE."""
+        packed = bpe_container_bytes([encode_block(list(self.CODE), len(self.CODE))], len(self.CODE))
+        return b'LAUNCH!!' + packed + b'tail', 8, len(packed), packed
+
+    def profile(self, **overrides):
+        boot, offset, consumed, packed = self.boot()
+        profile = dict(
+            game_id='TEST',
+            file_aliases={'BOOT.EXE': ['SLUS_001.01', 'SLUS_002.02']},
+            prepared_files=[dict(name='PREPARED/ENGINE', method='bpe_container',
+                                 source=dict(file='BOOT.EXE', file_offset=offset), magic=hex(BPE_MAGIC),
+                                 consumed=consumed, source_sha256=sha(packed), size=len(self.CODE),
+                                 sha256=sha(self.CODE))])
+        return {**profile, **overrides}
+
+    def disc(self, boot_name='SLUS_001.01', extra=None):
+        return FakeDisc({boot_name: self.boot()[0], **(extra or {})})
+
+    def test_prepared_file_reads_like_a_disc_file_for_images_and_evidence(self):
+        view = prepared_files.prepare(self.disc(), self.profile())
+        self.assertEqual(view.read('prepared/engine'), self.CODE)
+        self.assertEqual(view.read('BOOT.EXE'), self.boot()[0])
+        self.assertEqual(view.receipts[0]['sha256'], sha(self.CODE))
+        source, = pipeline.positioned_sources(view, [dict(
+            method='fixed_address_files', files=['PREPARED/ENGINE'], load_addr='0x80010000')])
+        self.assertEqual((source['name'], source['base'], source['body']),
+                         ('PREPARED/ENGINE', 0x80010000, self.CODE))
+        first, second = struct.unpack_from('<II', self.CODE)
+        pipeline.verify_evidence(view, [dict(method='words', file='PREPARED/ENGINE', base='0x80010000',
+                                             values={'0x80010004': hex(second), '0x80010000': hex(first)})])
+        with self.assertRaisesRegex(ValueError, 'Loader evidence changed'):
+            pipeline.verify_evidence(view, [dict(method='words', file='PREPARED/ENGINE', base='0x80010000',
+                                                 values={'0x80010000': hex(first + 1)})])
+
+    def test_alias_names_one_file_per_disc_and_is_never_a_real_name(self):
+        for name in ('SLUS_001.01', 'SLUS_002.02'):
+            with self.subTest(name=name):
+                view = prepared_files.prepare(self.disc(name), self.profile())
+                self.assertEqual(view.read('BOOT.EXE'), self.boot()[0])
+                self.assertEqual(view.read('PREPARED/ENGINE'), self.CODE)
+        cases = [(self.disc('OTHER.EXE'), self.profile(), 'exactly one'),
+                 (FakeDisc({'SLUS_001.01': b'a', 'SLUS_002.02': b'b'}), self.profile(), 'exactly one'),
+                 (self.disc(extra={'BOOT.EXE': b'x'}), self.profile(), 'real disc file'),
+                 (self.disc(), self.profile(file_aliases={'BOOT.EXE': []}), 'candidate')]
+        for disc, profile, error in cases:
+            with self.subTest(error=error), self.assertRaisesRegex(prepared_files.PreparedError, error):
+                prepared_files.prepare(disc, profile)
+
+    def test_prepared_files_fail_closed_on_any_drift(self):
+        good = self.profile()['prepared_files'][0]
+
+        def with_change(**change):
+            return self.profile(prepared_files=[{**good, **change}])
+        cases = [
+            (with_change(consumed=good['consumed'] - 4), 'consumed'),
+            (with_change(source_sha256='0' * 64), 'source bytes changed'),
+            (with_change(size=good['size'] + 4), 'profile pins'),
+            (with_change(sha256='0' * 64), 'decoded bytes changed'),
+            (with_change(magic='0x12345678'), 'does not decode'),
+            (with_change(method='lzss_container'), 'Unknown prepared file method'),
+            (with_change(source=dict(file='BOOT.EXE', file_offset=1 << 20)), 'outside'),
+            (with_change(source=dict(file='BOOT.EXE', file_offset=12)), 'does not decode'),
+            (self.profile(prepared_files=[good, good]), 'not unique'),
+            (with_change(name='SLUS_001.01'), 'not unique'),
+            (with_change(name='BOOT.EXE'), 'not unique'),
+            (self.profile(prepared_files=[{k: v for k, v in good.items() if k != 'magic'}]), 'lacks'),
+        ]
+        for profile, error in cases:
+            with self.subTest(error=error), self.assertRaisesRegex(prepared_files.PreparedError, error):
+                prepared_files.prepare(self.disc(), profile)
+
+    def test_prepared_files_can_be_built_from_earlier_prepared_files(self):
+        inner = self.OVERLAY
+        packed = bpe_container_bytes([encode_block(list(inner), len(inner))], len(inner))
+        spec = dict(name='PREPARED/OVERLAY', method='bpe_container', source=dict(file='PACK.BIN'),
+                    magic=hex(BPE_MAGIC), consumed=len(packed), source_sha256=sha(packed),
+                    size=len(inner), sha256=sha(inner))
+        view = prepared_files.prepare(FakeDisc({'PACK.BIN': packed + self.CODE}), dict(prepared_files=[spec]))
+        self.assertEqual(view.read('PREPARED/OVERLAY'), inner)
+        chained = dict(spec, name='PREPARED/AGAIN', source=dict(file='PREPARED/OVERLAY'),
+                       consumed=0, source_sha256=sha(b''), size=0)
+        with self.assertRaises(prepared_files.PreparedError):
+            prepared_files.prepare(FakeDisc({'PACK.BIN': packed}), dict(prepared_files=[spec, chained]))
+
+    def test_disc_set_accepts_any_listed_disc_and_rejects_others_naming_all(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / 'track.bin'
+            track.write_bytes(b'second disc')
+            disc = mock.Mock(binary=track)
+            discs = [dict(name='Disc 1', disc_hashes=dict(sha256='ab' * 32)),
+                     dict(name='Disc 2', disc_hashes=dict(sha256=sha(track.read_bytes())))]
+            profile = dict(game_id='TEST', disc_set=discs)
+            self.assertEqual(pipeline.check_disc(profile, disc, 'd2.cue'),
+                             dict(sha256=sha(track.read_bytes())))
+            profile['disc_set'] = discs[:1] + [dict(name='Disc 3', disc_hashes=dict(sha256='cd' * 32))]
+            with self.assertRaises(pipeline.DiscNotApplicable) as caught:
+                pipeline.check_disc(profile, disc, 'd2.cue')
+            text = str(caught.exception)
+            self.assertTrue('ab' * 32 in text and 'cd' * 32 in text and sha(track.read_bytes()) in text, text)
+            self.assertIn('d2.cue', text)
+
+    def test_profile_declares_one_disc_or_a_disc_set(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'overlays.json'
+            config = dict(game=dict(id='TEST'))
+            base = dict(schema='psxrecomp AOT methods v1', game_id='TEST')
+            one = dict(name='d', disc_hashes=dict(sha256='a'))
+            for extra, ok in [(dict(disc_hashes=dict(sha256='a')), True), (dict(disc_set=[one]), True),
+                              ({}, False), (dict(disc_hashes=dict(sha256='a'), disc_set=[one]), False)]:
+                path.write_text(json.dumps({**base, **extra}))
+                with self.subTest(keys=sorted(extra)):
+                    if ok:
+                        pipeline.load_profile(path, config)
+                    else:
+                        with self.assertRaisesRegex(pipeline.ProfileError, 'exactly one'):
+                            pipeline.load_profile(path, config)
+            bad = [dict(disc_set=[]), dict(disc_set=[dict(name='d')]),
+                   dict(disc_set=[one, dict(name='d', disc_hashes=dict(sha256='b'))])]
+            for extra in bad:
+                with self.subTest(extra=extra), self.assertRaises(pipeline.ProfileError):
+                    pipeline.disc_identities({**base, **extra})
+
+    def test_generation_inputs_do_not_depend_on_which_disc_of_a_set_was_read(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / 'game.toml').write_text('[game]\nid = "TEST"\n')
+        (root / 'overlays.json').write_text('{}')
+        recompiler = root / 'emitter'
+        recompiler.write_bytes(b'emitter')
+        sets = dict(disc_set=[dict(name='a', disc_hashes=dict(sha256='1')),
+                              dict(name='b', disc_hashes=dict(sha256='2'))])
+
+        def inputs(profile, digests):
+            with mock.patch.object(pipeline.compiler, 'cache_tag', return_value='tag'):
+                return pipeline.generation_inputs(root / 'overlays.json', profile, root / 'game.toml',
+                                                  recompiler, digests, 'gcc', True)[1]
+        self.assertEqual(inputs(sets, dict(sha256='1')), inputs(sets, dict(sha256='2')))
+        single = dict(disc_hashes=dict(sha256='1'))
+        self.assertNotEqual(inputs(single, dict(sha256='1')), inputs(single, dict(sha256='2')))
+
+    def test_pointer_strings_stride_reads_interleaved_tables(self):
+        # {id, name*} records: the pointers sit every eight bytes.
+        base = 0x80010000
+        data = bytearray(64)
+        struct.pack_into('<IIII', data, 0, 0xFFFF, base + 32, 0xFFFF, base + 40)
+        data[32:36], data[40:44] = b'ONE\0', b'TWO\0'
+        disc = FakeDisc({'IMG.BIN': bytes(data)})
+        check = dict(method='pointer_strings', file='IMG.BIN', base=hex(base), table=hex(base + 4),
+                     stride=8, strings=['ONE', 'TWO'])
+        pipeline.verify_evidence(disc, [check])
+        for change, error in [(dict(strings=['TWO', 'ONE']), 'Filename table changed'),
+                              (dict(stride=3), 'stride'), (dict(stride=4), 'Filename table changed|outside')]:
+            with self.subTest(change=change), self.assertRaisesRegex(Exception, error):
+                pipeline.verify_evidence(disc, [{**check, **change}])
+
+    def test_generic_detector_is_told_which_files_the_profile_owns(self):
+        profile = self.profile(generic_exclude_files=[dict(files=['OVL/A.OV_', 'ovl/b.ov_'],
+                                                           reason='compressed on disc')])
+        self.assertEqual(pipeline.generic_exclusions(profile),
+                         ['OVL/A.OV_', 'OVL/B.OV_', 'SLUS_001.01', 'SLUS_002.02'])
+        for bad in (dict(files=['X'], reason=' '), dict(files=[], reason='r'), dict(reason='r')):
+            with self.subTest(bad=bad), self.assertRaisesRegex(pipeline.ProfileError, 'reason'):
+                pipeline.generic_exclusions(dict(generic_exclude_files=[bad]))
+        with tempfile.TemporaryDirectory() as directory:
+            commands = []
+
+            def fail(command, **kwargs):
+                commands.append(command)
+                return mock.Mock(returncode=1)
+            work = Path(directory)
+            (work / 'game.toml').write_text('[game]\nid = "TEST"\n')
+            with mock.patch.object(pipeline.subprocess, 'run', side_effect=fail), \
+                 contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(pipeline.subprocess.CalledProcessError):
+                pipeline.extract(None, work / 'game.toml', work / 'emitter', work / 'out',
+                                 cue=work / 'game.cue', disc=self.disc(), profile=profile)
+            command = commands[0]
+            excluded = [command[i + 1] for i, word in enumerate(command) if word == '--exclude-file']
+            self.assertEqual(excluded, pipeline.generic_exclusions(profile))
+
+    def test_inventory_carries_the_prepared_file_receipts(self):
+        profile = dict(game_id='TEST', expected_records=1, strict_bounds=True,
+                       file_aliases=self.profile()['file_aliases'],
+                       prepared_files=self.profile()['prepared_files'],
+                       images=[dict(method='fixed_address_files', files=['PREPARED/ENGINE'],
+                                    load_addr='0x80010000', allow_missing=True, entries=['0x80010000'])])
+        with tempfile.TemporaryDirectory() as directory:
+            disc = self.disc()
+            disc.binary = Path(directory) / 'track.bin'
+            disc.binary.write_bytes(b'synthetic disc')
+            view = prepared_files.prepare(disc, profile)
+            inventory = pipeline.prepare(profile, view, [], Path(directory))
+        self.assertEqual(inventory['required_images'], ['PREPARED/ENGINE'])
+        self.assertEqual([item['sha256'] for item in inventory['prepared_files']], [sha(self.CODE)])
+        self.assertEqual(inventory['source_images'][0]['sha256'], sha(self.CODE))
+
+
+class CrossImageRootsTests(unittest.TestCase):
+    """Calls made from one image into another are entries of the callee image."""
+
+    @staticmethod
+    def image(name, base, words):
+        body = b''.join(struct.pack('<I', w) for w in words)
+        return dict(name=name, base=base, body=body, spec=dict(method='fixed_address_files',
+                                                               allow_missing=True), aliases=[])
+
+    def setUp(self):
+        nop, ret = 0, 0x03E00008
+        prologue = 0x27BDFFE8                          # addiu sp, sp, -0x18
+        # Engine: data-free code with a routine at +0x10 nothing inside it calls.
+        self.engine = self.image('ENGINE', 0x80010000,
+                                 [ret, nop, nop, nop, prologue, 0, ret, nop])
+        self.target = 0x80010010
+        jal = lambda t: 0x0C000000 | ((t & 0x0FFFFFFF) >> 2)
+        self.caller = self.image('CALLER', 0x80100000, [jal(self.target), nop, ret, nop])
+
+    def test_a_target_only_another_image_calls_becomes_a_root(self):
+        engine, caller = self.engine, self.caller
+        self.assertEqual(pipeline.foreign_call_roots(engine, [engine, caller]), [self.target])
+        self.assertEqual(pipeline.foreign_call_roots(caller, [engine, caller]), [])
+        local = pipeline.make_fixed_record(engine, None, [engine, caller], False)
+        cross = pipeline.make_fixed_record(engine, None, [engine, caller], True)
+        self.assertNotIn(hex(self.target), local.get('static_discovery_entry_pcs', []))
+        self.assertIn(hex(self.target), cross['static_discovery_entry_pcs'])
+
+    def test_an_address_several_images_occupy_names_no_one_of_them(self):
+        engine = self.engine
+        twin = self.image('TWIN', 0x80010000, [0x03E00008, 0, 0, 0, 0x27BDFFE8, 0, 0x03E00008, 0])
+        self.assertEqual(pipeline.foreign_call_roots(engine, [engine, twin, self.caller]), [])
+
+    def test_a_target_without_boundary_evidence_is_not_a_root(self):
+        data = self.image('DATA', 0x80010000, [0x11111111] * 8)
+        self.assertEqual(pipeline.foreign_call_roots(data, [data, self.caller]), [])
 
 
 class StaticGenerationTest(unittest.TestCase):

@@ -216,10 +216,13 @@ def jal_targets(data):
             ts.add(0x80000000 | ((w & 0x03FFFFFF) << 2))
     return ts
 
-def direct_jal_roots(data, base):
-    """Locally bounded call targets with independent boundary evidence."""
+def direct_jal_roots(data, base, targets=None):
+    """Call targets inside [base, base+len) with independent boundary evidence.
+
+    `targets` are the jal targets to consider: this image's own by default; an
+    AOT profile can pass the targets other images call into this one."""
     lo,hi=base,base+len(data)
-    return sorted(t for t in jal_targets(data)
+    return sorted(t for t in (jal_targets(data) if targets is None else targets)
                   if lo <= t < hi and (t&3)==0 and
                   not _dense_local_pointer_table(data,base,t-base) and
                   (_callable_boundary(data,t-base) or
@@ -975,6 +978,9 @@ def main():
     ap.add_argument('--project-root', default=None,
                     help='root holding bios/SCPH1001.toml for normal-mode discovery '
                          '(default: this framework)')
+    ap.add_argument('--exclude-file', action='append', default=[],
+                    help='disc file the detector must not consider (an AOT profile '
+                         'declares it another way); repeatable')
     ap.add_argument('--bios', default=None,
                     help='BIOS ROM for exact-hash resident-code recipes (default: '
                          'PSXRECOMP_BIOS_ROM or framework bios/SCPH1001.BIN)')
@@ -1036,8 +1042,11 @@ def main():
     records=[]; np=nh=nr=na=ne=nc=0; seen_crc=set(); header_files=[]; raw_files=[]
     relocatable=[]
     positioned=[]
+    excluded={name.replace('\\','/').lstrip('/').upper() for name in a.exclude_file}
     for p,l,s in sorted(files):
         if p.upper() in hed_consumed:
+            continue
+        if p.replace('\\','/').lstrip('/').upper() in excluded:
             continue
         if s<8 or s>2_000_000: continue
         if exe_base and os.path.basename(p).upper()==exe_base:
