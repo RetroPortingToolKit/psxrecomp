@@ -1884,6 +1884,11 @@ if(BUILD_TESTING)
     # not starve: LoD "Checking MEMORY CARD" hang). Header-only, no runtime link.
     add_executable(overlay_unit_defer_test tests/test_overlay_unit_defer.c)
     target_include_directories(overlay_unit_defer_test PRIVATE src)
+    if(MSVC)
+        target_compile_options(overlay_unit_defer_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(overlay_unit_defer_test PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME overlay_unit_defer_test COMMAND overlay_unit_defer_test)
 
     add_executable(overlay_store_cycle_barrier_test
