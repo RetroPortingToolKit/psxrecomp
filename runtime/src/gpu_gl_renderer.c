@@ -8654,14 +8654,16 @@ static void pass_journal_rollback(void) {
     render_pass_journal_rollback(&s_pj_cpu, s_vram, VRAM_W);
 }
 
-/* kind: 0 temporal pass, 1 stereo eye, 2 netplay local view. */
+/* kind: 0 temporal, 1 stereo, 2 netplay own view, 3 offline view pair. */
 static int transaction_begin(int x, int y, int w, int h, int open_gen,
                               uint32_t period_vblanks, int reuse_backup, int kind) {
-    const int stereo = kind == 1, local = kind == 2;
+    const int stereo = kind == 1 || kind == 3;
+    const int local = kind == 2 || (kind == 3 && s_cpu_auth_dual);
     int S = s_hr_scale, gi, wide, tw, th;
     PassGen *g;
     memset(&s_pass_begin_diag, 0, sizeof s_pass_begin_diag);
-    s_pass_begin_diag.status = local ? gl_renderer_local_view_unavailable()
+    s_pass_begin_diag.status = kind == 3 ? gl_renderer_local_pair_unavailable()
+                             : local ? gl_renderer_local_view_unavailable()
                              : stereo ? gl_renderer_stereo_unavailable()
                                       : gl_renderer_pass_unavailable();
     s_pass_begin_diag.active = s_pass_active;
@@ -8714,7 +8716,7 @@ static int transaction_begin(int x, int y, int w, int h, int open_gen,
     s_pass_begin_diag.requested_h = th;
     gi = s_pgen_write;
     g = &s_pgen[gi];
-    if (local) {
+    if (local && !stereo) {
         /* No generation: the image stays in the presenter surface. */
     } else if (stereo) {
         StereoPair *pair = &s_stereo_pair[1 - s_stereo_current];
@@ -8905,6 +8907,28 @@ int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     GL_RT_SYNC("stereo_begin");
     return transaction_begin(x, y, w, h, 0, 0, reuse, 1);
 }
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
+    GL_RT_SYNC("local_pair_begin");
+    /* Offline GL may still own newer native textures/CLUTs. Own-view game
+     * renderers read CPU VRAM while rebuilding authored tile/sprite banks;
+     * synchronize the canonical image before freezing either view. Netplay's
+     * dual raster already keeps this mirror current. */
+    if (!s_pass_active && gl_renderer_local_pair_unavailable()==PSX_MOD_RENDER_PASS_READY)
+        ensure_cpu();
+    return transaction_begin(x, y, w, h, 0, 0, reuse, 3);
+}
+uint32_t gl_renderer_local_pair_unavailable(void) {
+    GL_RT_SYNC("local_pair_unavailable");
+    pass_refusal_init();
+    if (!s_ctx || !s_raster_ok || !s_hr_fbo || gpu_display_is_depth24())
+        return PSX_MOD_RENDER_PASS_NO_PRESENTER;
+    /* The reversible transaction journals the wide surface too. The pair
+     * captures each native rect after an own-view draw, so an allocated wide
+     * surface is not itself a reason to refuse offline side-by-side. */
+    if (s_hd_native_authority || s_hiw || s_pass_force_refuse > 0)
+        return PSX_MOD_RENDER_PASS_BACKEND;
+    return PSX_MOD_RENDER_PASS_READY;
+}
 void gl_renderer_pass_end(uint32_t alpha_q16, int keep) {
     GL_RT_SYNC("pass_end");
     int gi = s_pgen_write;
@@ -8989,6 +9013,13 @@ int gl_renderer_stereo_set_presentation(uint32_t mode) {
     GL_RT_SYNC("stereo_set_presentation");
     if (mode > 1u) return 0;
     s_stereo_mode = (int)mode;
+    return 1;
+}
+int gl_renderer_local_pair_set_presentation(int enabled) {
+    GL_RT_SYNC("local_pair_set_presentation");
+    int mode = enabled ? 2 : 0;
+    if (s_stereo_mode != mode) stereo_invalidate();
+    s_stereo_mode = mode;
     return 1;
 }
 static void stereo_resources_release(void) {
@@ -9349,18 +9380,20 @@ static int stereo_present(int w, int h) {
         return 0;
     if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
         p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
-        gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY) return 0;
+        (s_stereo_mode == 2 ? gl_renderer_local_pair_unavailable() :
+                             gl_renderer_stereo_unavailable()) != PSX_MOD_RENDER_PASS_READY) return 0;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     gl_perf_present_enter();
     /* Desktop spectator layout while XR runs: default single left eye filled to
      * the window, PSX_VR_DESKTOP_MIRROR selects 0 legacy / 1 left / 2 SBS / 3 right. */
-    const int mirror = xr_mirror_active() ? xr_mirror_mode() : 0;
+    const int mirror = (s_stereo_mode == 1 && xr_mirror_active()) ? xr_mirror_mode() : 0;
     const int solo = (mirror == 1 || mirror == 3);
     const int solo_eye = (mirror == 3) ? 1 : 0;
     if (solo)
         letterbox_rect_aspect(ww, wh, p->tw[solo_eye], p->th[solo_eye], &lx, &ly, &lw, &lh);
     else
-        letterbox_rect_aspect(ww, wh, s_aspect_num * 2, s_aspect_den, &lx, &ly, &lw, &lh);
+        letterbox_rect_aspect(ww, wh, s_stereo_mode == 2 ? 8 : s_aspect_num * 2,
+                              s_stereo_mode == 2 ? 3 : s_aspect_den, &lx, &ly, &lw, &lh);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);

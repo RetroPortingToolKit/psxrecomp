@@ -137,6 +137,8 @@ int gl_renderer_local_view_end(int keep);
 /* Stereo shares the VRAM transaction, not the temporal generation/schedule. */
 uint32_t gl_renderer_stereo_unavailable(void);
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse_backup);
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse_backup);
+uint32_t gl_renderer_local_pair_unavailable(void);
 int gl_renderer_stereo_end(uint32_t eye, int keep);
 void gl_renderer_stereo_stage_reset(void);
 int gl_renderer_stereo_stage_readback_pair(uint32_t width,uint32_t height,uint8_t *rgba);
@@ -144,6 +146,7 @@ int gl_renderer_stereo_publish(uint64_t pair_id, uint64_t guest_cycle,
                                 const int32_t eye_view[2][3]);
 void gl_renderer_stereo_reset(void);
 int gl_renderer_stereo_set_presentation(uint32_t mode);
+int gl_renderer_local_pair_set_presentation(int enabled);
 void gl_renderer_stereo_dump_arm(const char *dir, int pairs);
 /* Bounded metadata for explicitly requested PNG evidence, queried over TCP. */
 typedef struct GLRenderStereoCapture {
