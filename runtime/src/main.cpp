@@ -1771,6 +1771,7 @@ static int present_effective_swap_interval(void);
 static int present_should_wall_pace(void);
 static void apply_present_cadence(void);
 static void refresh_host_display_cadence(int force_log, int force_probe);
+static void log_present_cadence(void);
 
 
 /* FMV auto-skip detection hooks (cdrom.c / mdec.c). */
@@ -3939,8 +3940,14 @@ static void sync_guest_cadence_to_video_standard(void) {
                 psx_video_timing_is_pal() ? "PAL" : "NTSC",
                 1000.0 / period_ms);
 #ifndef PSX_SDL_NO_RENDER
-    if (sdl_window)
-        refresh_host_display_cadence(1, 0);
+    /* Force the probe too: the once-a-second probe throttle returns before
+     * force_log is looked at, so a standard switch inside that second (PAL
+     * boot -> NTSC title) kept the boot decision -- driver vsync off with a
+     * matching 60 Hz panel, an unsynchronised present for the whole session. */
+    if (sdl_window) {
+        refresh_host_display_cadence(1, 1);
+        log_present_cadence();
+    }
     if (g_frame_interpolation && g_gl_active)
         gl_renderer_set_interpolation(g_frame_interpolation, g_host_refresh_hz,
                                       (double)g_frame_interpolation_fps,
