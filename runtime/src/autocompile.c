@@ -1133,6 +1133,16 @@ static int autocompile_request_impl(void) {
     if (s_cache_dir[0]) SetEnvironmentVariableA("PSX_OVERLAY_CACHE_DIR", s_cache_dir);
     if (s_captures[0])  SetEnvironmentVariableA("PSX_OVERLAY_CAPTURES",  s_captures);
     SetEnvironmentVariableA("PSX_OVERLAY_LIVE_AUTOCOMPILE", "1");
+    /* Scratch files of the compile (patched C, temporary DLLs) beside the
+     * cache, on the game's own drive, not in the user's %TEMP% (often a
+     * nearly full system drive). */
+    if (s_cache_dir[0]) {
+        char tmp_dir[MAX_PATH];
+        snprintf(tmp_dir, sizeof tmp_dir, "%s\\tmp", s_cache_dir);
+        CreateDirectoryA(tmp_dir, NULL);
+        SetEnvironmentVariableA("TMP", tmp_dir);
+        SetEnvironmentVariableA("TEMP", tmp_dir);
+    }
     /* Pin the FLAVOR the same way: the tool's --flavor defaults to 0 (play),
      * so an instrumented (flavor 2) runtime spawned a compile whose shards it
      * could never load — the loader's flavor guard rejected them and EVERY
