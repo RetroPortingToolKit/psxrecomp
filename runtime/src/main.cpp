@@ -82,6 +82,9 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
 #endif
+#ifndef PSX_MEMCARD_SLOTS
+#define PSX_MEMCARD_SLOTS 2   /* runtime.cmake MEMCARD_SLOTS */
+#endif
 #include "psx_netplay.h"
 #include "psx_stick.h"       /* radial SDL-stick -> DualShock response transform */
 #include "psx_trigger.h"     /* continuous SDL trigger -> 0..255 magnitude */
@@ -16552,6 +16555,9 @@ namespace {
          * the generic Display -> View mode launcher row. */
         gi->widescreen_supported = 0;
         gi->num_players = game_players_n;
+#if defined(RECOMP_LAUNCHER_HAS_MEMCARD_SLOTS)
+        gi->memcard_slots = PSX_MEMCARD_SLOTS;
+#endif
 #if defined(RECOMP_LAUNCHER_HAS_SHARED_GAMEPAD) && !defined(PSX_NO_DEBUG_TOOLS)
         gi->allow_shared_gamepad = 1;
 #endif
@@ -20715,9 +20721,12 @@ session_reboot:
     {
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
+        /* A one-slot title (MEMCARD_SLOTS 1) never reads port 2: leave it empty
+         * whatever settings.toml or the launcher stored. */
+        const bool slot2_on = memcard2_enabled && PSX_MEMCARD_SLOTS >= 2;
         const MemcardSlotConfig slots[2] = {
             { mc1.empty() ? nullptr : mc1.c_str(), memcard1_enabled ? 1 : 0 },
-            { mc2.empty() ? nullptr : mc2.c_str(), memcard2_enabled ? 1 : 0 },
+            { mc2.empty() ? nullptr : mc2.c_str(), slot2_on ? 1 : 0 },
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
     }
