@@ -8757,6 +8757,17 @@ static void handle_bloom(int id, const char *json)
              bi.gen_us_mean, (unsigned long long)bi.reused);
 }
 
+/* post_shader: {"cmd":"post_shader"} reads the user chain (path, load outcome, live
+ * uniforms); "path" sets it, "" turns it off, the same path reloads it (shader edits). */
+static void handle_post_shader(int id, const char *json)
+{
+    char path[512];
+    if (json_get_str(json, "path", path, sizeof path)) gl_renderer_set_post_shader(path);
+    char info[1536];
+    gl_renderer_post_shader_debug(info, (int)sizeof info);
+    send_fmt("{\"id\":%d,\"ok\":true,\"loaded\":%d,%s}", id, gl_renderer_post_shader_loaded(), info);
+}
+
 static void handle_post_aa(int id, const char *json)
 {
     int mode = json_get_int(json, "mode", -1);
@@ -16212,6 +16223,7 @@ static const CmdEntry s_commands[] = {
     { "frame_perf",        handle_frame_perf },
     { "batch_sites",       handle_batch_sites },
     { "post_aa",           handle_post_aa },
+    { "post_shader",       handle_post_shader },
     { "fmv_chroma",        handle_fmv_chroma },
     { "texture_lod",       handle_texture_lod },
     { "accurate_blending", handle_accurate_blending },

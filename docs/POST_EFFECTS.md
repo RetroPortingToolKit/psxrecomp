@@ -92,6 +92,19 @@ Bloom uses the mask at both ends: only lit pixels feed its bright pass, and
 only lit pixels take the glow back. HUD pixels are therefore never changed,
 even next to a lamp.
 
+## Depth, history, time and live uniforms
+
+- `input <sampler> depth`: view depth `sz` (GTE screen z) of the presented frame, R32F at window
+  size, rebuilt from the surfaces' PGXP depth (`zn = 1 - 512/(sz + 256)`); 0 where nothing 3D drew.
+  Only built while a loaded chain reads it.
+- `input <sampler> history`: this pass's own target from the last real frame (trails, temporal
+  filters). Generated frames do not update it.
+- `u_time` (seconds since the chain loaded) and `u_proj` (latest GTE projection: `240/H`, screen
+  centre in uv, aspect) are declared in every pass.
+- Live uniforms: a title sets a preset `uniform` from game state with
+  `psx_host_set_post_uniform(name, x, y, z, w)` (`host_overlay.h`), e.g. a light source projected
+  to the screen; the preset value is the default until the first call.
+
 ## Tests
 
 - `postfx_chain_test`: the format, built-in presets, errors and file import.

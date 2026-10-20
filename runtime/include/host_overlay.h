@@ -46,6 +46,13 @@ void psx_host_overlay_set_draw_cb(PsxHostOverlayDrawFn fn, void *ctx);
 int  psx_host_overlay_has_draw(void);
 void psx_host_overlay_draw(int width, int height);  /* renderer side */
 
+/* ---- Post-effect live uniforms ------------------------------------------
+ * Sets the value of a `uniform <name> ...` line of the loaded post-effect chain
+ * ([video] post_shader, postfx_chain.h) from game state, e.g. a light source
+ * projected to the screen. Any thread; effective at the next present; the
+ * preset default applies until the first call. Up to 16 names. */
+void psx_host_set_post_uniform(const char *name, float x, float y, float z, float w);
+
 /* ---- P3: input sink -----------------------------------------------------
  * The sink sees every host SDL event first (main thread), in the normal event
  * drain and in the host pause loop. Returning non-zero consumes the event.
