@@ -102,6 +102,14 @@ extern uint32_t g_psx_mod_function_entry_hooks;
  * kept, further names are counted in an overflow bucket. Emulation-thread only.
  * TCP: {"cmd":"mod_counters"} lists every counter with its last frame. */
 void psx_mod_counter_add(const char* name, uint32_t delta);
+/* Named debug commands for trusted plugins (test benches, tuning): `fn` gets the
+ * argument string and writes a short text reply (truncated to `cap`); it runs on
+ * the debug-server thread, so it must only touch state it guards itself. Up to 16
+ * names. TCP: {"cmd":"mod_cmd","name":"<name>","args":"..."}. */
+typedef int (*PSXModCommandFn)(const char* args, char* reply, int cap);
+int psx_mod_register_command(const char* name, PSXModCommandFn fn);
+/* Runs a registered command; -1 if `name` is unknown, else the command's result. */
+int psx_mod_run_command(const char* name, const char* args, char* reply, int cap);
 /* Presentation-only filtering: 0 nearest, 1 bilinear, 2 stable minification.
  * Mode 2 uses a bounded palette-aware footprint for proven 3D polygons on
  * OpenGL; untracked UI stays nearest. Other backends use bilinear. A session

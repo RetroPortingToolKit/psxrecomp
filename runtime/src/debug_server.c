@@ -8543,6 +8543,26 @@ static void handle_host_launch_timings(int id, const char *json)
     free(events);
 }
 
+/* mod_cmd: {"cmd":"mod_cmd","name":"...","args":"..."} runs a plugin's named
+ * debug command (psx_mod_register_command) and returns its text reply. */
+static void handle_mod_cmd(int id, const char *json)
+{
+    extern int psx_mod_run_command(const char *name, const char *args, char *reply, int cap);
+    char name[64], args[1024], reply[1024], esc[2048];
+    if (!json_get_str(json, "name", name, sizeof name)) { send_err(id, "name required"); return; }
+    if (!json_get_str(json, "args", args, sizeof args)) args[0] = '\0';
+    const int r = psx_mod_run_command(name, args, reply, (int)sizeof reply);
+    if (r == -1) { send_err(id, "unknown mod command"); return; }
+    size_t e = 0;
+    for (const char *p = reply; *p && e + 3 < sizeof esc; p++) {
+        if (*p == '"' || *p == '\\') esc[e++] = '\\';
+        if ((unsigned char)*p >= 0x20) esc[e++] = *p;
+        else if (*p == '\n') { esc[e++] = '\\'; esc[e++] = 'n'; }
+    }
+    esc[e] = '\0';
+    send_fmt("{\"id\":%d,\"ok\":true,\"result\":%d,\"reply\":\"%s\"}\n", id, r, esc);
+}
+
 static void handle_mod_counters(int id, const char *json)
 {
     extern int psx_mod_counters_snapshot(const char **names, uint64_t *counts,
@@ -16168,6 +16188,7 @@ static const CmdEntry s_commands[] = {
     { "ws_hud_mode",       handle_ws_hud_mode },
     { "ws_tag_stats",      handle_ws_tag_stats },
     { "mod_counters",      handle_mod_counters },
+    { "mod_cmd",           handle_mod_cmd },
     { "host_launch_timings", handle_host_launch_timings },
     { "resident_status",   handle_resident_status },
     { "netplay_status",    handle_netplay_status },
