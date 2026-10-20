@@ -702,7 +702,15 @@ player's `settings.toml`, and a game may ship a default the same way:
 [video]
 internal_resolution = "4k"          # native | 720p | 1080p | 1440p | 4k | 5k | 8k | display, or a number of lines
 resolution_reference_lines = 240    # game.toml only: the title's usual display height (120..1024)
+match_display_max_lines = 0         # game.toml only: cap on the display height Match display uses (0 = none, 240..8640)
 ```
+
+`match_display_max_lines` caps the monitor height that Match display, its
+dynamic-resolution floor (`display`) and graphics-preset detection resolve
+against. With no cap, an 8K panel asks 18x (27x with `supersample = 1.5`), which is
+past the full-VRAM surface. The high-resolution window then engages, and
+dynamic resolution cannot step there. A title whose GPU budget is set for
+4K lines sets 2160.
 
 A preset is a target height. The runtime renders at the integer scale
 `S = ceil(target / resolution_reference_lines)`: at the default 240 lines,

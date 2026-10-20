@@ -469,6 +469,9 @@ struct RuntimeConfig {
     // preset divides into (S = ceil(target / reference)). 240 for NTSC
     // 320x240 games; 120..1024.
     int                   video_resolution_reference_lines = 240;
+    /* [video] match_display_max_lines: cap on the display height Match
+     * display (and its dynamic-resolution floor) resolves against; 0 = none. */
+    int                   video_match_display_max_lines = 0;
 
     // Optional initial window width declared by the title profile. Zero keeps
     // the historical fit-to-display behavior; player settings may override it.
