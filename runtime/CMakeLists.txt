@@ -688,6 +688,22 @@ if(BUILD_TESTING)
         add_test(NAME bios_module_host_test COMMAND bios_module_host_test)
     endif()
 
+    if(EXISTS "${RECOMP_UI_ROOT}/src/recomp_runtime_ui.h")
+        add_executable(runtime_disc_menu_test
+            tests/test_runtime_disc_menu.c src/psx_runtime_menu.c src/psx_disc_tray.c
+            "${RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c")
+        target_include_directories(runtime_disc_menu_test PRIVATE
+            include "${RECOMP_UI_ROOT}/src")
+        target_compile_definitions(runtime_disc_menu_test PRIVATE RECOMP_LAUNCHER=1)
+        # Assertions are the test oracle even in a Release validation build.
+        if(MSVC)
+            target_compile_options(runtime_disc_menu_test PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(runtime_disc_menu_test PRIVATE -UNDEBUG)
+        endif()
+        add_test(NAME runtime_disc_menu_test COMMAND runtime_disc_menu_test)
+    endif()
+
     add_executable(host_keymap_test
         tests/test_host_keymap.c
         src/host_keymap.c)

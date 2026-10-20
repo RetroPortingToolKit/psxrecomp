@@ -128,6 +128,21 @@ int psx_mod_game_started(void);
  * otherwise capacity must hold the entire file. Active sector mods apply. */
 int psx_mod_read_disc_file(const char* path, void* buffer, uint32_t capacity,
                            uint32_t* size);
+/* 1-based roster index of the disc image the guest drive has mounted, or 0
+ * for a single-image session. It changes when the player swaps discs; the
+ * psx_mod_read_disc_file / psx_mod_disc_file_extent calls read that image. */
+int psx_mod_mounted_disc(void);
+/* Optional automatic disc changes. A trusted title provider reads its verified
+ * guest request state: return a 1-based roster disc throughout the request
+ * episode, or 0 when no request exists. Set *ready only once the guest is
+ * waiting for the lid, after its old-disc reads finish. Do not write guest RAM.
+ * The host polls at VBlank, attempts once per episode, and preserves manual
+ * switching after failure. A readiness change does not rearm a failed request.
+ * Register only from an active offline plugin's activation callback.
+ * NULL clears the provider; a new plan or activation clears it too.
+ * Providers are never called in netplay or before the game starts. */
+typedef int (*PSXModDiscRequestProvider)(int *ready);
+void psx_mod_set_disc_request_provider(PSXModDiscRequestProvider provider);
 /* Effective-disc LBA and byte size of a file (directory records patched by
  * active mods apply, so a relocated file reports its new extent). */
 int psx_mod_disc_file_extent(const char* path, uint32_t* lba, uint32_t* size);

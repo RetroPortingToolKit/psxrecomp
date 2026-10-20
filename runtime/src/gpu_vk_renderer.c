@@ -24,6 +24,7 @@
 #include "gpu_sw_renderer.h"
 #include "host_osd.h"
 #include "psx_savestate_menu.h"
+#include "psx_host_menu.h"
 #include "psx_rewind.h"
 #include "crash_trace.h"
 #include "gpu_vk_upload.h"
@@ -1577,7 +1578,7 @@ static void vk_osd_blit(VkCommandBuffer cb, VkImage sc) {
     const int have_vol = host_osd_volume_image(&vol_px, &vw, &vh) && vol_px;
     const int have_rw = psx_rewind_overlay_image(&rw_px, &rw, &rh) && rw_px;
     const int have_ssm =
-        psx_savestate_menu_overlay_image(&ssm_px, &sw, &sh) && ssm_px;
+        psx_host_menu_overlay_image(&ssm_px, &sw, &sh) && ssm_px;
     if (!have_text && !have_vol && !have_rw && !have_ssm) {
         host_osd_present_done();
         return;

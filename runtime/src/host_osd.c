@@ -6,6 +6,7 @@
 #include "host_osd.h"
 #include "psx_rewind.h"
 #include "psx_savestate_menu.h"
+#include "psx_host_menu.h"
 #include "psx_sdl.h"
 
 #include <stdio.h>
@@ -534,7 +535,7 @@ void host_osd_draw_sdl(struct SDL_Renderer *renderer) {
             sdl_blit_argb(renderer, &s_sdl_rw_tex, &s_sdl_rw_tw, &s_sdl_rw_th,
                           px, w, h, 0, y, dw, dh);
         }
-        if (psx_savestate_menu_overlay_image(&px, &w, &h) && px) {
+        if (psx_host_menu_overlay_image(&px, &w, &h) && px) {
             int lw = 640, lh = 480;
             sdl_logical_size(renderer, &lw, &lh);
             sdl_blit_argb(renderer, &s_sdl_ssm_tex, &s_sdl_ssm_tw,

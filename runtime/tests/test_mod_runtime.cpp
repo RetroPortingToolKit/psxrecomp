@@ -150,7 +150,11 @@ extern "C" void gpu_get_display_info(GpuDisplayInfo* out) {
 }
 
 extern "C" void dirty_ram_mark_executable_range(uint32_t, uint32_t) {}
-extern "C" int fntrace_is_game_started(void) { return 1; }
+static int test_game_started = 1;
+extern "C" int fntrace_is_game_started(void) { return test_game_started; }
+static int disc_request_calls;
+static int test_disc_request(int *ready) { ++disc_request_calls; *ready = 1; return 2; }
+static void test_disc_request_activate(void) { psx_mod_set_disc_request_provider(test_disc_request); }
 /* Widescreen tag passthroughs mod_runtime forwards to the GPU; unused here. */
 extern "C" void gpu_ws_tag_hud_primitive(uint32_t, int) {}
 extern "C" void gpu_ws_tag_world_primitive(uint32_t, int) {}
@@ -1273,6 +1277,74 @@ int main(int argc, char** argv) {
     mod_runtime_set_progress_hook(nullptr);
     check(!psx_mod_read_disc_file("S0/MISSING.NSF",nullptr,0,&bytes) && bytes==0,"missing file explicit");
     check(!psx_mod_read_disc_file("S0",nullptr,0,&bytes),"directory rejected");
+    {
+        int ready = 99;
+        psx_mod_set_disc_request_provider(test_disc_request);
+        check(mod_runtime_disc_request(&ready) == 0 && ready == 0,
+              "disc provider registration outside activation is ignored");
+        const auto request_root = disc_root / "request-provider";
+        write_text(request_root / "bundled/disc.request/1.0.0/manifest.toml",
+            "format_version = 5\nid = \"disc.request\"\nversion = \"1.0.0\"\nname = \"Disc requests\"\n"
+            "[[target]]\ngame_id = \"READER\"\n"
+            "[[feature]]\nid = \"auto\"\nname = \"Auto\"\ndefault_enabled = true\n"
+            "[[plugin]]\nfeature = \"auto\"\nid = \"test.disc-request\"\n");
+        check(psx_mod_register_activation_plugin("test.disc-request", test_disc_request_activate),
+              "register disc request fixture");
+        check(PSXRecompV4::mod_runtime_initialize(request_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_commit(iso_path, &error), "commit disc request plan");
+        mod_runtime_activate_plugins();
+        test_game_started = 0;
+        check(mod_runtime_disc_request(&ready) == 0 && ready == 0 && disc_request_calls == 0,
+              "boot does not invoke automatic disc request callbacks");
+        test_game_started = 1; test_netplay_active = 1;
+        check(mod_runtime_disc_request(&ready) == 0 && ready == 0 && disc_request_calls == 0,
+              "online mode does not invoke automatic disc request callbacks");
+        test_netplay_active = 0;
+        check(mod_runtime_disc_request(&ready) == 2 && ready == 1 && disc_request_calls == 1,
+              "active offline plugin supplies a disc request");
+        check(PSXRecompV4::mod_runtime_commit(iso_path, &error) &&
+              mod_runtime_disc_request(&ready) == 0 && ready == 0,
+              "a new plan clears the previous activation's disc provider");
+        check(PSXRecompV4::mod_runtime_initialize(disc_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_commit(iso_path, &error), "restore reader plan");
+    }
+    {
+        // Swapping media must change both host lookup and bytes. An empty
+        // drive must fail instead of quietly reading the boot image.
+        const auto other_path = disc_root / "other.iso";
+        auto other_iso = iso;
+        other_iso.resize(25 * 2048);
+        other_iso[21 * 2048 + 2] = 23;
+        std::fill_n(other_iso.begin() + 23 * 2048, 3000, uint8_t(0x65));
+        write_bytes(other_path, other_iso);
+        static std::string mounted_path;
+        static int mounted_index = 1;
+        mounted_path = iso_path.string();
+        mod_runtime_set_mounted_disc_resolver(
+            [] { return mounted_path.c_str(); }, [] { return mounted_index; });
+        check(psx_mod_mounted_disc() == 1, "mounted query follows host roster");
+        mounted_path = other_path.string(); mounted_index = 2;
+        uint32_t mounted_lba = 0;
+        check(psx_mod_mounted_disc() == 2 &&
+              psx_mod_disc_file_extent("S0/LEVEL.NSF", &mounted_lba, &bytes) &&
+              mounted_lba == 23 && bytes == 3000, "host extent follows changed disc");
+        check(psx_mod_read_disc_file("S0/LEVEL.NSF", result.data(), 3000, &bytes) &&
+              std::all_of(result.begin(), result.end(), [](auto b) { return b == 0x65; }),
+              "host file bytes follow changed disc");
+        std::vector<uint8_t> padded;
+        check(PSXRecompV4::mod_runtime_read_disc_file_sectors("S0/LEVEL.NSF", 4000,
+                  padded, mounted_lba, bytes, &error) && mounted_lba == 23 &&
+                  padded.size() == 4096 && padded[2999] == 0x65,
+              "resident sector reads follow changed disc");
+        mounted_path.clear(); mounted_index = 0;
+        check(!psx_mod_read_disc_file("S0/LEVEL.NSF", nullptr, 0, &bytes) && bytes == 0,
+              "empty drive refuses boot-disc fallback");
+        mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
+        check(psx_mod_mounted_disc() == 0 &&
+              psx_mod_read_disc_file("S0/LEVEL.NSF", result.data(), 3000, &bytes) &&
+              std::equal(result.begin(), result.end(), iso.begin() + 22 * 2048),
+              "cleared resolver restores single-disc host reads");
+    }
     std::vector<uint8_t> raw_iso(24*2352);
     for(unsigned i=0;i<24;++i) {
         /* A raw sector starts with the CD sync pattern; geometry is read from

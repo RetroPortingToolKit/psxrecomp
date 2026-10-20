@@ -447,6 +447,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_savestate_menu.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_rewind.c
     ${PSXRECOMP_ROOT}/runtime/src/host_osd.c
+    ${PSXRECOMP_ROOT}/runtime/src/psx_disc_tray.c
+    ${PSXRECOMP_ROOT}/runtime/src/psx_runtime_menu.c
+    ${PSXRECOMP_ROOT}/runtime/src/psx_host_menu.c
     ${PSXRECOMP_ROOT}/runtime/src/host_keymap.c
     ${PSXRECOMP_ROOT}/runtime/src/cosim_state.c
     ${PSXRECOMP_ROOT}/runtime/src/cosim.c

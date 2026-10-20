@@ -63,6 +63,9 @@ extern "C" const char* host_launch_timing_stage_name(uint32_t stage) {
 #include <unistd.h>
 #endif
 
+static PSXModDiscRequestProvider g_disc_request_provider;
+static const PSXRecompV4::ModResolution::Plugin* g_disc_request_owner;
+
 extern "C" uint8_t psx_read_byte(uint32_t addr);
 extern "C" void psx_write_byte(uint32_t addr, uint8_t value);
 extern "C" uint16_t psx_read_half(uint32_t addr);
@@ -1506,6 +1509,8 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
                             uint32_t game_entry_pc,
                             const std::filesystem::path& exe_path,
                             std::string* error) {
+    psx_mod_set_disc_request_provider(nullptr);
+    mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
     psx_mod_netplay_set_active(0);
     (void)psx_mod_netplay_set_options_identity("");
     RuntimeMods& s = state();
@@ -2137,6 +2142,7 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
         }
         save_timing.success();
     }
+    psx_mod_set_disc_request_provider(nullptr);
     /* Hooks follow activation, never a bare commit: a new plan runs none of
      * its function-entry hooks until mod_runtime_activate_plugins(). */
     clear_function_entry_hooks();
@@ -2836,6 +2842,31 @@ static bool find_effective_file(PS1::ISOReader& reader, const std::string& path,
     return true;
 }
 
+/* Host queries are installed after mounting and cleared at session teardown.
+ * A mounted drive with no readable image must never fall back to the boot CD. */
+static const char* (*g_mounted_disc_path)(void) = nullptr;
+static int (*g_mounted_disc_index)(void) = nullptr;
+extern "C" void mod_runtime_set_mounted_disc_resolver(const char* (*path)(void),
+                                                      int (*index)(void)) {
+    g_mounted_disc_path = path;
+    g_mounted_disc_index = index;
+}
+extern "C" int psx_mod_mounted_disc(void) {
+    return g_mounted_disc_index ? g_mounted_disc_index() : 0;
+}
+static std::filesystem::path mounted_disc_path(const PSXRecompV4::RuntimeMods& s) {
+    if (g_mounted_disc_path) {
+        const char* p = g_mounted_disc_path();
+        if (!p || !*p) return {};
+        // Keep the prepared boot image only while that disc is still mounted.
+        std::error_code ec;
+        if (!s.effective_disc_path.empty() && std::filesystem::equivalent(p, s.disc_path, ec))
+            return s.effective_disc_path;
+        return p;
+    }
+    return s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+}
+
 extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
                                       uint32_t capacity, uint32_t* size) {
     using namespace PSXRecompV4;
@@ -2843,7 +2874,7 @@ extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
     if (!path || !*path || !size || (!buffer && capacity)) return 0;
     try {
         const auto& s = state();
-        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        const auto mount = mounted_disc_path(s);
         if (mount.empty()) return 0;
         PS1::ISOReader reader;
         uint32_t lba = 0, bytes = 0;
@@ -2878,7 +2909,7 @@ extern "C" int psx_mod_disc_file_extent(const char* path, uint32_t* lba,
     if (!path || !*path || !lba || !size) return 0;
     try {
         const auto& s = state();
-        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        const auto mount = mounted_disc_path(s);
         if (mount.empty()) return 0;
         PS1::ISOReader reader;
         uint32_t first = 0, bytes = 0;
@@ -2908,7 +2939,7 @@ bool mod_runtime_read_disc_file_sectors(const std::string& path, uint32_t max_by
     };
     try {
         const auto& s = state();
-        const auto& mount = s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+        const auto mount = mounted_disc_path(s);
         if (mount.empty()) return fail("no disc mounted");
         PS1::ISOReader reader;
         bool directory = false;
@@ -2935,6 +2966,7 @@ extern "C" void mod_runtime_activate_plugins(void) {
     mod_reset_plugin_sessions();
     RuntimeMods& s = state();
     s.ticket_ready = false;
+    psx_mod_set_disc_request_provider(nullptr);
     psx_projection_reset_session();
     gpu_ws_set_native_scene_predicate(nullptr);
     psx_ram_reset_size_request();
@@ -2956,6 +2988,31 @@ extern "C" void mod_runtime_activate_plugins(void) {
     s.activating = false;
     build_function_entry_hooks(s);
     timing.success();
+}
+
+extern "C" void psx_mod_set_disc_request_provider(PSXModDiscRequestProvider provider) {
+    using namespace PSXRecompV4;
+    if (!provider) {
+        g_disc_request_provider = nullptr;
+        g_disc_request_owner = nullptr;
+        return;
+    }
+    RuntimeMods& s = state();
+    if (!s.initialized || !s.plan.ok || !s.activating || !s.current_plugin ||
+        s.netplay_view_plan || psx_netplay_active()) return;
+    g_disc_request_provider = provider;
+    g_disc_request_owner = s.current_plugin;
+}
+
+extern "C" int mod_runtime_disc_request(int *ready) {
+    using namespace PSXRecompV4;
+    if (!ready) return 0;
+    *ready = 0;
+    RuntimeMods& s = state();
+    if (!g_disc_request_provider || !s.initialized || !s.plan.ok ||
+        s.netplay_view_plan || psx_netplay_active() || !psx_mod_game_started()) return 0;
+    PluginCallbackScope scope(s, g_disc_request_owner);
+    return g_disc_request_provider(ready);
 }
 
 extern "C" void mod_runtime_on_vblank(void) {

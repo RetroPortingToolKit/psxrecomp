@@ -140,6 +140,9 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
 #include "psx_keybinds.h"
 #include "host_overlay.h"
+#include "psx_disc_tray.h"
+#include "psx_runtime_menu.h"
+#include "psx_host_menu.h"
 #include "psx_menu_host.h"     /* optional in-game menu hooks (P1 pause, ...) */    /* configurable keyboard->DualShock keybinds (keybinds.ini) */
 #include "psx_window_icon.h"
 
@@ -2539,6 +2542,9 @@ static char             s_present_shot_path[512];
 static bool             s_present_shot_pending = false;
 static std::atomic<int> s_present_shot_seq{0};   /* bumps on every completion */
 static std::atomic<int> s_present_shot_ok{0};    /* 1 = last completion wrote a PNG */
+#ifndef PSX_NO_DEBUG_TOOLS
+static std::atomic<int> s_debug_restart_disc{0}; /* roster index + 1; 0 = none */
+#endif
 
 /* video_info (debug server): the Internal resolution state as main.cpp sees
  * it, plus the game window's size in points and in pixels. */
@@ -2576,7 +2582,9 @@ extern "C" void psx_video_config_telemetry(PsxVideoConfigTelemetry *out) {
 #ifndef PSX_SDL_NO_RENDER
 /* All software swaps, including display-disabled and held frames. Query only
  * the owning SDL renderer; never synchronize another render thread. */
+static void software_present_capture(SDL_Renderer *renderer);
 static void software_present_with_telemetry(SDL_Renderer *renderer) {
+    software_present_capture(renderer);
     int width = 0, height = 0;
 #if defined(PSX_SDL3)
     SDL_GetRenderOutputSize(renderer, &width, &height);
@@ -2638,6 +2646,73 @@ extern "C" void present_shot_done(int ok)
 
 extern "C" int present_shot_seq(void) { return s_present_shot_seq.load(std::memory_order_acquire); }
 extern "C" int present_shot_ok(void)  { return s_present_shot_ok.load(std::memory_order_acquire); }
+
+#ifndef PSX_SDL_NO_RENDER
+/* All SDL presents, including a paused host menu, serve composed captures. */
+static void software_present_capture(SDL_Renderer *renderer) {
+    /* Fulfil a staged present_shot here: after RenderCopy + OSD, before
+     * RenderPresent, the renderer holds exactly the composed frame the player
+     * sees — including the logical-size aspect fit that every buffer-level
+     * capture misses. Reading back costs a GPU sync, so it only runs when a
+     * shot was explicitly requested. */
+    char shot_path[512];
+    if (present_shot_take(shot_path, (int)sizeof(shot_path))) {
+        int ow = 0, oh = 0;
+        uint8_t *packed = NULL;
+#if defined(PSX_SDL3)
+        SDL_Surface *surf = SDL_RenderReadPixels(renderer, NULL);
+        if (surf) {
+            SDL_Surface *conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGB24);
+            SDL_DestroySurface(surf);
+            if (conv) {
+                ow = conv->w; oh = conv->h;
+                packed = (uint8_t *)std::malloc((size_t)ow * oh * 3);
+                if (packed) {
+                    /* SDL rows are pitch-aligned; png_write_rgb wants packed. */
+                    for (int y = 0; y < oh; y++)
+                        std::memcpy(packed + (size_t)y * ow * 3,
+                                    (const uint8_t *)conv->pixels + (size_t)y * conv->pitch,
+                                    (size_t)ow * 3);
+                }
+                SDL_DestroySurface(conv);
+            }
+        }
+#else
+        /* Size the buffer from the renderer's REAL output, not from a
+         * viewport*scale reconstruction: SDL_RenderReadPixels(NULL) fills the
+         * current viewport, and deriving that region from
+         * SDL_RenderGetViewport x SDL_RenderGetScale rounds independently of
+         * what SDL actually writes. The output size is a hard upper bound, so
+         * a full-output allocation cannot be overrun whatever SDL picks. */
+        int rw = 0, rh = 0;
+        if (SDL_GetRendererOutputSize(renderer, &rw, &rh) == 0 && rw > 0 && rh > 0) {
+            SDL_Rect vp; SDL_RenderGetViewport(renderer, &vp);
+            float sx = 1.0f, sy = 1.0f; SDL_RenderGetScale(renderer, &sx, &sy);
+            ow = (int)(vp.w * sx); oh = (int)(vp.h * sy);
+            if (ow <= 0 || ow > rw) ow = rw;
+            if (oh <= 0 || oh > rh) oh = rh;
+            packed = (uint8_t *)std::malloc((size_t)rw * rh * 3);   /* upper bound */
+            if (packed && SDL_RenderReadPixels(renderer, NULL,
+                                               SDL_PIXELFORMAT_RGB24,
+                                               packed, ow * 3) != 0) {
+                std::free(packed); packed = NULL;
+            }
+        }
+#endif
+        int wrote = 0;
+        if (packed && ow > 0 && oh > 0) {
+            FILE *pf = std::fopen(shot_path, "wb");
+            if (pf) {
+                wrote = png_write_rgb(pf, packed, (uint32_t)ow, (uint32_t)oh);
+                std::fclose(pf);
+            }
+        }
+        std::free(packed);
+        present_shot_done(wrote);
+    }
+}
+#endif
+
 /* Present straight from the FBO (fast, no readback). Set PSX_GL_FORCE_CPU_PRESENT=1
  * to force the software readout path instead — a diagnostic/fallback that also
  * keeps CPU VRAM current every frame (so screenshots reflect the screen). */
@@ -8314,6 +8389,85 @@ static void rewind_pause_present(void) {
 #endif
 }
 
+/* Menu actions execute at a VBlank boundary without resetting the guest. */
+static int runtime_menu_chord_down(void) {
+    return p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_BACK) &&
+           p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_LEFTSTICK);
+}
+static int runtime_menu_chord_was;
+static void runtime_menu_poll_toggle(void) {
+    const int down = runtime_menu_chord_down();
+    if (down && !runtime_menu_chord_was && host_hotkey_input_focused() && !savestate_menu_open &&
+        !psx_rewind_is_open()) psx_runtime_menu_open();
+    runtime_menu_chord_was = down;
+}
+static void runtime_menu_host_loop(void) {
+    if (!psx_runtime_menu_is_open()) return;
+    psx_local_mouse_begin(sdl_window, false);
+    psx_local_mouse_reset();
+    freeze_heartbeat_set_paused(1);
+    psx_sdl_audio_set_paused(sdl_audio_device, 1);
+    const int buttons[] = { SDL_CONTROLLER_BUTTON_B, SDL_CONTROLLER_BUTTON_DPAD_UP,
+        SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+        SDL_CONTROLLER_BUTTON_DPAD_RIGHT, SDL_CONTROLLER_BUTTON_A };
+    int held[6];
+    for (int i = 0; i < 6; ++i) held[i] = p1_host_button_down(nullptr, buttons[i]);
+    int chord_was = runtime_menu_chord_down();
+    while (psx_runtime_menu_is_open()) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        debug_server_poll();
+#endif
+        SDL_Event ev;
+        while (!g_headless && SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_QUIT) {
+                psx_runtime_menu_close();
+                psx_crash_trace_set_exit_origin("sdl_window_close");
+                shutdown_runtime();
+                std::exit(0);
+            } else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
+                refresh_player_devices();
+            } else if (ev.type == SDL_CONTROLLERDEVICEREMOVED) {
+                close_controller();
+                refresh_player_devices();
+            } else if (ev.type == SDL_KEYDOWN) {
+#if defined(PSX_SDL3)
+                const SDL_Keycode key = ev.key.key;
+                const int mod = ev.key.mod, scan = ev.key.scancode, repeat = ev.key.repeat;
+#else
+                const SDL_Keycode key = ev.key.keysym.sym;
+                const int mod = ev.key.keysym.mod, scan = ev.key.keysym.scancode, repeat = ev.key.repeat;
+#endif
+                if (!repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scan, mod))
+                    psx_runtime_menu_close();
+                else if (key == SDLK_ESCAPE || key == SDLK_BACKSPACE) psx_runtime_menu_input(PSX_MENU_BACK, repeat);
+                else if (key == SDLK_UP) psx_runtime_menu_input(PSX_MENU_UP, repeat);
+                else if (key == SDLK_DOWN) psx_runtime_menu_input(PSX_MENU_DOWN, repeat);
+                else if (key == SDLK_LEFT) psx_runtime_menu_input(PSX_MENU_LEFT, repeat);
+                else if (key == SDLK_RIGHT) psx_runtime_menu_input(PSX_MENU_RIGHT, repeat);
+                else if (key == SDLK_RETURN || key == SDLK_SPACE) psx_runtime_menu_input(PSX_MENU_ACCEPT, repeat);
+            }
+        }
+        const int chord = runtime_menu_chord_down();
+        if (chord && !chord_was) psx_runtime_menu_close();
+        chord_was = chord;
+        for (int i = 0; i < 6; ++i) {
+            const int down = p1_host_button_down(nullptr, buttons[i]);
+            if (down && !held[i]) psx_runtime_menu_input(PSX_MENU_BACK + i, 0);
+            held[i] = down;
+        }
+        if (!g_headless || g_headless_opengl) rewind_pause_present();
+        starvation_watchdog_heartbeat();
+        SDL_Delay(g_headless ? 1 : 8);
+    }
+    runtime_menu_chord_was = runtime_menu_chord_down();
+    psx_sdl_audio_set_paused(sdl_audio_device, 0);
+    freeze_heartbeat_set_paused(0);
+    present_session_reset();
+    g_audio_cycle_resync = 1;
+    dynres_note_savestate_loaded();
+    savestate_input_guard_arm();
+}
+
 /* Freeze guest in vblank present while the rewind filmstrip is open. */
 static void rewind_host_pause_loop(void) {
     jogcon_ffb_neutral_all();   /* the wheel goes slack while paused */
@@ -8447,6 +8601,31 @@ extern "C" int psx_debug_push_host_key(const char *name, int down) {
     ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
 #endif
     return SDL_PushEvent(&ev) ? 1 : 0;
+}
+
+/* Debug: use the same SDL controller-event path as a physical P1 button,
+ * rather than setting guest pad RAM or invoking a menu action directly. */
+extern "C" int psx_debug_push_host_button(const char *name, int down) {
+#if defined(PSX_SDL3)
+    const int button = SDL_GetGamepadButtonFromString(name ? name : "");
+#else
+    const int button = SDL_GameControllerGetButtonFromString(name ? name : "");
+#endif
+    if (button < 0) return 0;
+    SDL_Event ev;
+    SDL_zero(ev);
+#if defined(PSX_SDL3)
+    ev.type = down ? SDL_EVENT_GAMEPAD_BUTTON_DOWN : SDL_EVENT_GAMEPAD_BUTTON_UP;
+    ev.gbutton.which = g_players[0].instance;
+    ev.gbutton.button = (Uint8)button;
+    ev.gbutton.down = down != 0;
+#else
+    ev.type = down ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+    ev.cbutton.which = g_players[0].instance;
+    ev.cbutton.button = (Uint8)button;
+    ev.cbutton.state = down ? SDL_PRESSED : SDL_RELEASED;
+#endif
+    return SDL_PushEvent(&ev) > 0;
 }
 
 /* Debug: inject a mouse click (x, y in window points) or wheel step. */
@@ -8661,6 +8840,8 @@ static bool drain_host_events() {
             const SDL_Scancode scancode = ev.key.keysym.scancode;
             const int key_repeat = ev.key.repeat ? 1 : 0;
 #endif
+            if (!key_repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scancode, mod) &&
+                !savestate_menu_open && !psx_rewind_is_open() && psx_runtime_menu_open()) continue;
             if (key == SDLK_ESCAPE && psx_netplay_active()) {
                 netplay_soft_exit("netplay_escape");
                 return false;
@@ -8685,9 +8866,9 @@ static bool drain_host_events() {
                 savestate_menu_toggle(key);
             }
             else if (key == SDLK_c && (mod & KMOD_CTRL)) {
-                std::fprintf(stdout, "[DEBUG] Forzando reinserción de CD...\n");
-                debug_force_cd_reinsert();
-                host_osd_push("CD reinsert", 1500);
+                const int rc = psx_disc_tray_cycle(0, PSX_DISC_TRAY_ORIGIN_HOTKEY_REINSERT);
+                host_osd_push(rc == PSX_DISC_TRAY_OK ? "CD reinsert" :
+                              "Disc changes are unavailable in this game mode.", 1500);
             }
             else if (!key_repeat &&
                      host_keymap_match_event(HOST_KEYMAP_TURBO_TOGGLE,
@@ -8948,6 +9129,24 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                                  &g_runtime_perf.provider_poll_ticks);
     }
 
+    {
+        int ready = 0;
+        const int requested = mod_runtime_disc_request(&ready);
+        const int rc = psx_disc_tray_auto_poll(requested, ready);
+        if (rc >= 0 && rc != PSX_DISC_TRAY_OK)
+            host_osd_push("Disc unavailable. Open game menu to choose another.", 5000);
+    }
+    if (g_headless && psx_runtime_menu_is_open()) runtime_menu_host_loop();
+#ifndef PSX_NO_DEBUG_TOOLS
+    /* Publish after the debug handler has replied, at the same host boundary
+     * as other posted menu actions. Never abandon a live command callback. */
+    if (s_debug_restart_disc.load()) {
+        g_netplay_from_lobby = 1;
+        psx_request_return_to_lobby();
+        return ep;
+    }
+#endif
+
     /* Direct-shortcut claims are settled before any shortcut poll or pad
      * sample this frame (no-op unless a title allowed a direct shortcut). */
     direct_shortcut_claim_update();
@@ -8956,11 +9155,13 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_local_mouse_begin(sdl_window, local_mouse_live(override));
         if (!drain_host_events()) return ep;
         host_pause_service();
+        runtime_menu_poll_toggle();
         savestate_menu_poll_toggle_buttons();
         rewind_poll_toggle_buttons();
         fast_forward_toggle_poll_buttons();
         psx_rewind_note_frame();
         psx_rewind_present_tick((uint32_t)SDL_GetTicks());
+        if (psx_runtime_menu_is_open()) runtime_menu_host_loop();
         if (savestate_menu_open)
             savestate_menu_host_pause_loop();
         if (psx_rewind_is_open())
@@ -9869,66 +10070,6 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     SDL_RenderClear(sdl_renderer);
     SDL_RenderCopy(sdl_renderer, sdl_texture, &src, &dst);
     host_osd_draw_sdl(sdl_renderer);
-    /* Fulfil a staged present_shot here: after RenderCopy + OSD, before
-     * RenderPresent, the renderer holds exactly the composed frame the player
-     * sees — including the logical-size aspect fit that every buffer-level
-     * capture misses. Reading back costs a GPU sync, so it only runs when a
-     * shot was explicitly requested. */
-    char shot_path[512];
-    if (present_shot_take(shot_path, (int)sizeof(shot_path))) {
-        int ow = 0, oh = 0;
-        uint8_t *packed = NULL;
-#if defined(PSX_SDL3)
-        SDL_Surface *surf = SDL_RenderReadPixels(sdl_renderer, NULL);
-        if (surf) {
-            SDL_Surface *conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGB24);
-            SDL_DestroySurface(surf);
-            if (conv) {
-                ow = conv->w; oh = conv->h;
-                packed = (uint8_t *)std::malloc((size_t)ow * oh * 3);
-                if (packed) {
-                    /* SDL rows are pitch-aligned; png_write_rgb wants packed. */
-                    for (int y = 0; y < oh; y++)
-                        std::memcpy(packed + (size_t)y * ow * 3,
-                                    (const uint8_t *)conv->pixels + (size_t)y * conv->pitch,
-                                    (size_t)ow * 3);
-                }
-                SDL_DestroySurface(conv);
-            }
-        }
-#else
-        /* Size the buffer from the renderer's REAL output, not from a
-         * viewport*scale reconstruction: SDL_RenderReadPixels(NULL) fills the
-         * current viewport, and deriving that region from
-         * SDL_RenderGetViewport x SDL_RenderGetScale rounds independently of
-         * what SDL actually writes. The output size is a hard upper bound, so
-         * a full-output allocation cannot be overrun whatever SDL picks. */
-        int rw = 0, rh = 0;
-        if (SDL_GetRendererOutputSize(sdl_renderer, &rw, &rh) == 0 && rw > 0 && rh > 0) {
-            SDL_Rect vp; SDL_RenderGetViewport(sdl_renderer, &vp);
-            float sx = 1.0f, sy = 1.0f; SDL_RenderGetScale(sdl_renderer, &sx, &sy);
-            ow = (int)(vp.w * sx); oh = (int)(vp.h * sy);
-            if (ow <= 0 || ow > rw) ow = rw;
-            if (oh <= 0 || oh > rh) oh = rh;
-            packed = (uint8_t *)std::malloc((size_t)rw * rh * 3);   /* upper bound */
-            if (packed && SDL_RenderReadPixels(sdl_renderer, NULL,
-                                               SDL_PIXELFORMAT_RGB24,
-                                               packed, ow * 3) != 0) {
-                std::free(packed); packed = NULL;
-            }
-        }
-#endif
-        int wrote = 0;
-        if (packed && ow > 0 && oh > 0) {
-            FILE *pf = std::fopen(shot_path, "wb");
-            if (pf) {
-                wrote = png_write_rgb(pf, packed, (uint32_t)ow, (uint32_t)oh);
-                std::fclose(pf);
-            }
-        }
-        std::free(packed);
-        present_shot_done(wrote);
-    }
     /* §33: remember active rect for resim hold-last (not full 640x512). */
     s_sw_hold_src = src;
     s_sw_hold_dst = dst;
@@ -16961,6 +17102,11 @@ static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     /* No title choice: the UI the title is built with (recomp-ui) provides the
      * menu, and decides from default_selection what to offer by default. */
     if (!p) {
+#if !defined(PSX_SDL3)
+        /* The maintained provider's SDL event adapter needs SDL3. SDL2 keeps
+         * the shared framebuffer menu as its single input/render owner. */
+        return;
+#endif
         p = recomp_ui_psx_menu_provider();
         g_menu_host.default_selection = 1;
     }
@@ -16979,6 +17125,7 @@ static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     psx_host_set_input_sink(ovl_sink, nullptr);
     psx_host_overlay_set_draw_cb(ovl_draw, nullptr);
     g_ovl_on = true;
+    psx_runtime_menu_set_fallback_enabled(0);
     std::fprintf(stdout, "psxrecomp: in-game menu ready (%s)\n", p->name ? p->name : "provider");
 }
 
@@ -16999,6 +17146,17 @@ extern "C" int psx_debug_menu_host_json(char* out, size_t cap) {
         mh_disc_mounted());
 }
 
+#ifndef PSX_NO_DEBUG_TOOLS
+/* Exercise the normal teardown/commit/activation/boot boundary in one
+ * process, without requiring an online lobby or editing guest state. */
+extern "C" int psx_debug_restart_session(int disc) {
+    if (psx_netplay_active() || psx_host_pause_depth() || psx_runtime_menu_is_open()) return 0;
+    if (disc < 0 || disc > cdrom_disc_roster_count()) return 0;
+    s_debug_restart_disc = disc + 1;
+    return 1;
+}
+#endif
+
 /* Before the GL context goes away (session teardown), with it current: the
  * draw hook is removed first (it waits for an in-flight draw), then the
  * provider frees its GL objects. setup attaches again on the next context. */
@@ -17012,11 +17170,20 @@ static void recomp_overlay_detach(void) {
     if (g_ovl->detach) g_ovl->detach(g_ovl->ctx);
     g_ovl = nullptr;
     g_ovl_on = false;
+    psx_runtime_menu_set_fallback_enabled(1);
 }
 
 static void host_pause_service(void) {
     if (!g_ovl_on) return;
     mh_refresh_snapshot();
+    if (const int disc = g_ovl_disc_req.exchange(0)) {
+        const int rc = disc_cycle_now(disc);
+        if (rc != PSX_DISC_TRAY_OK) {
+            host_osd_push("Disc unavailable. Check files and choose again.", 5000);
+            if (g_ovl->set_open) g_ovl->set_open(g_ovl->ctx, 1);
+        }
+        std::fprintf(stdout, "psxrecomp: in-game menu disc %d -> %d\n", disc, rc);
+    }
     psx_host_set_ui_capture(ovl_open());
     const bool want = g_ovl_pause_wanted != 0 && ovl_open();
     if (want && !g_ovl_pause_held) g_ovl_pause_held = psx_host_pause_push("overlay") != 0;
@@ -17088,10 +17255,6 @@ static void host_pause_service(void) {
             }
         }
         (void)psx_mod_save_selection();
-    }
-    if (const int disc = g_ovl_disc_req.exchange(0)) {
-        const int rc = disc_cycle_now(disc);
-        std::fprintf(stdout, "psxrecomp: in-game menu disc %d -> %d\n", disc, rc);
     }
     if (g_ovl_reload_binds.exchange(0)) {
         psx_keybinds_init(g_ovl_argv0.c_str());
@@ -20001,7 +20164,17 @@ int main(int argc, char** argv) {
     std::string memcard_dir_str  = memcard_dir.string();
     std::string disc_path_str = session_disc_path(resolved_disc);
 
+    struct DiscMenuSession {
+        int *selected;
+        std::string *mounted;
+        std::filesystem::path *resolved;
+        std::filesystem::path settings;
+    };
+    DiscMenuSession disc_menu_session{};
+
 session_reboot:
+    mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
+    psx_disc_tray_reset_session();
     /* Rematch after lobby soft-return re-enters here with updated net_cfg. */
     static int s_emu_session = 0;
     const bool rematch_session = (++s_emu_session > 1);
@@ -20441,6 +20614,31 @@ session_reboot:
          * which is the mix-up savestate_set_disc_scope() exists to prevent. */
         if (mounted >= 0) selected_disc_index = mounted + 1;
     }
+    if (game_discs.size() > 1) {
+        mod_runtime_set_mounted_disc_resolver(
+            [](void) -> const char* { return cdrom_disc_roster_path(cdrom_disc_selected()); },
+            [](void) -> int { return cdrom_disc_selected(); });
+    }
+    disc_menu_session = { &selected_disc_index, &disc_path_str, &resolved_disc,
+                          exe_dir_from_argv(argv[0]) / "settings.toml" };
+    psx_disc_tray_set_host_hook([](void *ctx, int disc, const char *path) {
+        auto &session = *static_cast<DiscMenuSession*>(ctx);
+        *session.selected = disc;
+        *session.mounted = path;
+        *session.resolved = path;
+        auto settings = PSXRecompV4::load_user_settings(session.settings);
+        if (!settings.parse_error) {
+            settings.disc_index = disc;
+            settings.has_disc_index = true;
+            settings.disc_path = path;
+            settings.has_disc_path = true;
+            PSXRecompV4::save_user_settings(session.settings, settings);
+        }
+        char message[64];
+        snprintf(message, sizeof message, "Disc %d inserted", disc);
+        host_osd_push(message, 2500);
+    }, &disc_menu_session);
+    psx_runtime_menu_init();
     for (const auto& route : warm_cd_routes) {
         cdrom_register_warm_route(route.arm_lba, route.lbas.data(),
                                   (int)route.lbas.size(),
@@ -21561,6 +21759,27 @@ soft_return_lobby:
      * the launcher on the LOBBY room so every peer can rematch. */
     teardown_game_session_keep_lobby();
     PSXRecompV4::mod_runtime_end_netplay();
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (const int restart = s_debug_restart_disc.exchange(0)) {
+        if (const int disc = restart - 1) {
+            const char* path = cdrom_disc_roster_path(disc);
+            if (!path || !*path) return 1;
+            selected_disc_index = disc;
+            resolved_disc = path;
+        }
+        mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
+        std::string error;
+        if (!PSXRecompV4::mod_runtime_commit(resolved_disc, &error)) {
+            std::fprintf(stderr, "psxrecomp: restart preparation failed: %s\n", error.c_str());
+            return 1;
+        }
+        if (!start_mod_session(false)) return 1;
+        disc_path_str = session_disc_path(resolved_disc);
+        g_netplay_from_lobby = 0;
+        std::fprintf(stdout, "psxrecomp: debug soft session restart (disc %d)\n", selected_disc_index);
+        goto session_reboot;
+    }
+#endif
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)
     if (!g_ovl_launch_to_start) ae_np_prepare_lobby_rematch();
     g_ovl_launch_to_start = 0;

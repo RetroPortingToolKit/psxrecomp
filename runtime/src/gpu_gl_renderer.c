@@ -92,6 +92,7 @@
 #include "mod_plugins.h"      /* PSX_MOD_RENDER_PASS_* reasons */
 #include "host_osd.h"
 #include "psx_savestate_menu.h"
+#include "psx_host_menu.h"
 #include "host_time.h"
 #include "latency_ring.h"
 #include "gpu_timeline.h"
@@ -9622,7 +9623,7 @@ static int ov_image(int i, const uint32_t **px, int *w, int *h) {
     case 0: return host_osd_image(px, w, h);
     case 1: return host_osd_volume_image(px, w, h);
     case 2: return psx_rewind_overlay_image(px, w, h);
-    default: return psx_savestate_menu_overlay_image(px, w, h);
+    default: return psx_host_menu_overlay_image(px, w, h);
     }
 }
 static float ov_rewind_slide(void) {

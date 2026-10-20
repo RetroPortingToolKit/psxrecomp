@@ -49,6 +49,8 @@
 #include "present_image_ring.h"
 #include "load_transition_ring.h"
 #include "cdrom.h"
+#include "psx_disc_tray.h"
+#include "psx_runtime_menu.h"
 #include "sio.h"
 #include "memcard.h"
 #include "spu.h"
@@ -9420,6 +9422,28 @@ static void handle_host_key(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":%s}", id, ok ? "true" : "false");
 }
 
+extern int psx_debug_restart_session(int disc);
+static void handle_session_restart(int id, const char *json)
+{
+    if (!psx_debug_restart_session(json_get_int(json, "n", 0))) {
+        send_err(id, "restart requires an unpaused offline session and a valid roster disc");
+        return;
+    }
+    send_ok(id);
+}
+
+/* host_button name=<SDL gamepad button> down=<1|0>, both when omitted. */
+extern int psx_debug_push_host_button(const char *name, int down);
+static void handle_host_button(int id, const char *json)
+{
+    char name[64] = "";
+    json_get_str(json, "name", name, sizeof name);
+    int down = json_get_int(json, "down", -1);
+    int ok = down < 0 ? (psx_debug_push_host_button(name, 1) && psx_debug_push_host_button(name, 0))
+                      : psx_debug_push_host_button(name, down);
+    send_fmt("{\"id\":%d,\"ok\":%s}", id, ok ? "true" : "false");
+}
+
 /* host_mouse x=<pt> y=<pt> [wheel=<steps>]: click (or scroll) at a window point. */
 extern int psx_debug_push_host_mouse(float x, float y, int wheel);
 static void handle_host_mouse(int id, const char *json)
@@ -14026,6 +14050,50 @@ static void handle_cd_read_log(int id, const char *json)
  * pure query. Selecting the already-mounted disc still cycles the tray, which
  * is what a player pressing eject would get.
  */
+
+static void handle_disc_tray_log(int id, const char *json)
+{
+    (void)json;
+    const PsxDiscTrayEvent *events;
+    const uint64_t total = psx_disc_tray_log(&events);
+    const uint64_t first = total > PSX_DISC_TRAY_LOG_CAP ? total - PSX_DISC_TRAY_LOG_CAP : 0;
+    char buf[12288];
+    int w = snprintf(buf, sizeof buf, "{\"id\":%d,\"ok\":true,\"total\":%llu,\"events\":[",
+                     id, (unsigned long long)total);
+    for (uint64_t n = first; n < total; ++n) {
+        const PsxDiscTrayEvent *e = &events[n % PSX_DISC_TRAY_LOG_CAP];
+        w += snprintf(buf + w, sizeof buf - (size_t)w,
+            "%s{\"seq\":%llu,\"cycle\":%llu,\"origin\":\"%s\",\"requested\":%d,"
+            "\"from\":%d,\"to\":%d,\"result\":\"%s\",\"rewind_dropped\":%d}",
+            n == first ? "" : ",", (unsigned long long)e->seq,
+            (unsigned long long)e->cycle, psx_disc_tray_origin_name(e->origin),
+            e->requested, e->from_disc, e->to_disc, psx_disc_tray_result_name(e->result),
+            e->rewind_dropped);
+    }
+    snprintf(buf + w, sizeof buf - (size_t)w, "]}");
+    send_fmt("%s", buf);
+}
+
+static void handle_runtime_menu(int id, const char *json)
+{
+    char op[32] = {0};
+    json_get_str(json, "op", op, sizeof op);
+    int ok = 1;
+    if (!strcmp(op, "open")) ok = psx_runtime_menu_open();
+    else if (!strcmp(op, "close")) psx_runtime_menu_close();
+    else if (!strcmp(op, "select")) ok = psx_runtime_menu_select_disc(json_get_int(json, "n", 0));
+    else if (!strcmp(op, "insert")) ok = psx_runtime_menu_insert();
+    else if (!strcmp(op, "input")) psx_runtime_menu_input(json_get_int(json, "button", -1), 0);
+    else if (op[0] && strcmp(op, "status")) ok = 0;
+    const PsxDiscTrayEvent *events;
+    uint64_t total = psx_disc_tray_log(&events);
+    const PsxDiscTrayEvent *last = total ? &events[(total - 1) % PSX_DISC_TRAY_LOG_CAP] : NULL;
+    send_fmt("{\"id\":%d,\"ok\":%s,\"open\":%s,\"selected\":%d,\"mounted\":%d,"
+             "\"tray_events\":%llu,\"last_result\":%d}", id, ok ? "true" : "false",
+             psx_runtime_menu_is_open() ? "true" : "false", psx_runtime_menu_selected_disc(),
+             psx_disc_tray_mounted_disc(), (unsigned long long)total, last ? last->result : 0);
+}
+
 static void handle_disc_select(int id, const char *json)
 {
     int n = json_get_int(json, "n", 0);
@@ -14040,7 +14108,7 @@ static void handle_disc_select(int id, const char *json)
     /* Any supplied "n" is a select attempt, including an out-of-range one.
      * Only an absent key (0) is a pure query, so a bad index reports the
      * failure instead of passing as a successful read-back. */
-    if (n != 0) ok = cdrom_disc_select(n);
+    if (n != 0) ok = psx_disc_tray_cycle(n, PSX_DISC_TRAY_ORIGIN_DEBUG_SELECT) == PSX_DISC_TRAY_OK;
 
     /* One buffer, one send: send_fmt terminates a line per call, so emitting
      * the roster incrementally would split the response across lines. */
@@ -14070,9 +14138,9 @@ static void handle_disc_select(int id, const char *json)
 static void handle_cd_reinsert(int id, const char *json)
 {
     (void)json;
-    debug_force_cd_reinsert();
-    send_fmt("{\"id\":%d,\"ok\":true,\"has_disc\":%s}",
-             id, cdrom_has_disc() ? "true" : "false");
+    int ok = psx_disc_tray_cycle(0, PSX_DISC_TRAY_ORIGIN_DEBUG_REINSERT) == PSX_DISC_TRAY_OK;
+    send_fmt("{\"id\":%d,\"ok\":%s,\"has_disc\":%s}",
+             id, ok ? "true" : "false", cdrom_has_disc() ? "true" : "false");
 }
 
 /* cdrom_instant_rate: get/set the 'instant' per-frame sector-IRQ budget
@@ -16114,6 +16182,8 @@ static const CmdEntry s_commands[] = {
     { "debug_key",         handle_debug_key },
     { "host_pause",        handle_host_pause },
     { "host_key",          handle_host_key },
+    { "session_restart",   handle_session_restart },
+    { "host_button",       handle_host_button },
     { "menu_host",         handle_menu_host },
     { "host_mouse",        handle_host_mouse },
     { "scanline",          handle_scanline },
@@ -16387,6 +16457,8 @@ static const CmdEntry s_commands[] = {
     { "fn_exit_dump",      handle_fn_exit_dump },
     { "overlay_dump",      handle_overlay_dump },
     { "cd_read_log",       handle_cd_read_log },
+    { "runtime_menu",      handle_runtime_menu },
+    { "disc_tray_log",     handle_disc_tray_log },
     { "disc_select",       handle_disc_select },
     { "cd_reinsert",       handle_cd_reinsert },
     { "overlay_loader_status", handle_overlay_loader_status },

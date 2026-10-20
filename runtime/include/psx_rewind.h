@@ -38,6 +38,8 @@ void psx_rewind_set_enabled(int enabled);
 
 void psx_rewind_configure(uint32_t bios_checksum, uint32_t entry_pc);
 void psx_rewind_shutdown(void);
+/* A different mounted disc invalidates every earlier rewind snapshot. */
+uint32_t psx_rewind_discard_history(void);
 
 int  psx_rewind_enabled(void);
 /* Title block (mod API psx_mod_set_rewind_blocked): while set, Rewind refuses
