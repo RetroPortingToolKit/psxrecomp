@@ -198,6 +198,7 @@ typedef void   (APIENTRY *PFN_glBlendEquationSeparate)(GLenum, GLenum);
 typedef void   (APIENTRY *PFN_glGenVertexArrays)(GLsizei, GLuint *);
 typedef void   (APIENTRY *PFN_glBindVertexArray)(GLuint);
 typedef void   (APIENTRY *PFN_glActiveTexture)(GLenum);
+typedef void   (APIENTRY *PFN_glGenerateMipmap)(GLenum);
 typedef void   (APIENTRY *PFN_glGenBuffers)(GLsizei, GLuint *);
 typedef void   (APIENTRY *PFN_glDeleteBuffers)(GLsizei, const GLuint *);
 typedef void   (APIENTRY *PFN_glDeleteVertexArrays)(GLsizei, const GLuint *);
@@ -271,6 +272,7 @@ static PFN_glBlendEquationSeparate p_glBlendEquationSeparate;
 static PFN_glGenVertexArrays   p_glGenVertexArrays;
 static PFN_glBindVertexArray   p_glBindVertexArray;
 static PFN_glActiveTexture     p_glActiveTexture;
+static PFN_glGenerateMipmap    p_glGenerateMipmap;
 static PFN_glGenBuffers        p_glGenBuffers;
 static PFN_glDeleteBuffers     p_glDeleteBuffers;
 static PFN_glDeleteVertexArrays p_glDeleteVertexArrays;
@@ -352,6 +354,7 @@ static int load_modern_gl(void) {
     LOAD(p_glBlendEquationSeparate, "glBlendEquationSeparate");
     LOAD(p_glGenVertexArrays, "glGenVertexArrays"); LOAD(p_glBindVertexArray, "glBindVertexArray");
     LOAD(p_glActiveTexture, "glActiveTexture");  LOAD(p_glGenBuffers, "glGenBuffers");
+    LOAD(p_glGenerateMipmap, "glGenerateMipmap");
     LOAD(p_glDeleteBuffers, "glDeleteBuffers"); LOAD(p_glDeleteVertexArrays, "glDeleteVertexArrays");
     LOAD(p_glBindBuffer, "glBindBuffer");        LOAD(p_glBufferData, "glBufferData");
     LOAD(p_glVertexAttribPointer, "glVertexAttribPointer");
@@ -2011,11 +2014,31 @@ static const char *TEX_FS =
     "  p &= ivec2(255);\n"
     "  ivec4 tw=ivec4(v_twin&31,(v_twin>>5)&31,(v_twin>>10)&31,(v_twin>>15)&31);\n"
     "  if((tw.x|tw.y)!=0) p=(p & ~(tw.xy*8)) | ((tw.zw & tw.xy)*8);\n"
-    "  else p=clamp(p,v_limits.xy,v_limits.zw);\n"
+    "  else {\n"
+    /* Clamped to the primitive's UV bounds: the sub-texel position goes to
+     * the clamped edge too. Keeping the fraction of an outside sample
+     * (u=39.99 -> texel 40 at 0.99) reads the replacement deep inside the
+     * edge texel, a 1px sliver of the next glyph at the sprite border. */
+    "    ivec2 q=clamp(p,v_limits.xy,v_limits.zw);\n"
+    "    f=vec2(q.x>p.x?0.0:(q.x<p.x?0.999:f.x), q.y>p.y?0.0:(q.y<p.y?0.999:f.y));\n"
+    "    p=q;\n"
+    "  }\n"
     "  vec2 t=(vec2(p)+f-v_hd_source.xy)/v_hd_source.zw;\n"
     "  ivec2 size=textureSize(u_hd_texture,0);\n"
     "  ivec2 at=clamp(ivec2(floor(t*vec2(size))),ivec2(0),size-ivec2(1));\n"
     "  return texelFetch(u_hd_texture,at,0);\n"
+    "}\n"
+    /* Filtered replacement sampling (any texture filter but nearest): the
+     * replacement's mip chain through textureGrad, the footprint clamped to the
+     * primitive's own UV bounds so atlas neighbours cannot bleed in. A texture
+     * window (repeat) or a UV outside the page stays on hd_texel. */
+    "vec4 hd_texel_filtered(vec2 uv, vec2 dx, vec2 dy){\n"
+    "  if((v_twin&1023)!=0 || any(lessThan(uv,vec2(0.0))) || any(greaterThanEqual(uv,vec2(256.0)))) return hd_texel(uv);\n"
+    "  vec2 sz=vec2(textureSize(u_hd_texture,0));\n"
+    "  vec2 lo=(vec2(v_limits.xy)-v_hd_source.xy)/v_hd_source.zw+0.5/sz;\n"
+    "  vec2 hi=(vec2(v_limits.zw)+1.0-v_hd_source.xy)/v_hd_source.zw-0.5/sz;\n"
+    "  vec2 t=clamp((uv-v_hd_source.xy)/v_hd_source.zw,lo,max(lo,hi));\n"
+    "  return textureGrad(u_hd_texture,t,dx/v_hd_source.zw,dy/v_hd_source.zw);\n"
     "}\n"
     /* [video] texture_lod: mip-level emulation for CLUT/15-bit pages, which
      * have no GL mip chain (they are decoded per fetch from raw VRAM). The
@@ -2098,8 +2121,26 @@ static const char *TEX_FS =
     "  vec2 uv = (v_persp != 0) ? v_uv_p : v_uv;\n"
     "  vec2 dx=dFdx(uv), dy=dFdy(uv);\n"
     "  vec2 uv0=uv, dx0=dx, dy0=dy;   /* the PS1 sample point (texture_lod) */\n"
-    "  if (v_hd_mode != 0) {\n"
-    "    vec4 hd=hd_texel(uv);\n"
+    "  if (v_hd_mode == 5) {\n"
+    "    /* Indexed replacement: red = CLUT index (alpha 0 = transparent),\n"
+    "     * resolved through this draw's live CLUT. Index channels cannot be\n"
+    "     * filtered, so a footprint over several replacement texels takes up\n"
+    "     * to 4x4 nearest taps, each resolved, and averages the opaque ones;\n"
+    "     * under half coverage is cutout, as for any PS1 texel. */\n"
+    "    vec2 hs=vec2(textureSize(u_hd_texture,0))/v_hd_source.zw;\n"
+    "    vec2 fx=abs(dx)*hs, fy=abs(dy)*hs;\n"
+    "    int n=clamp(int(ceil(max(max(fx.x+fy.x,fx.y+fy.y),1.0))),1,4);\n"
+    "    vec3 sum=vec3(0.0); int hit=0; stp=0;\n"
+    "    for(int j=0;j<n;++j) for(int i=0;i<n;++i){\n"
+    "      vec2 o=dx*((float(i)+0.5)/float(n)-0.5)+dy*((float(j)+0.5)/float(n)-0.5);\n"
+    "      vec4 t=hd_texel(uv+o);\n"
+    "      int raw=t.a<0.5 ? 0 : palette_at(v_clut.x+int(t.r*255.0+0.5),v_clut.y);\n"
+    "      if(raw!=0){ sum+=col5(raw); if(hit==0) stp=(raw>>15)&1; ++hit; }\n"
+    "    }\n"
+    "    if(hit*2<n*n) discard;\n"
+    "    rgb=sum/float(hit);\n"
+    "  } else if (v_hd_mode != 0) {\n"
+    "    vec4 hd=fmode!=0 ? hd_texel_filtered(uv,dx,dy) : hd_texel(uv);\n"
     "    rgb=hd.rgb;\n"
     "    if(v_hd_mode==1){\n"
     "      if(hd.a==0.0) discard;\n"
@@ -3497,8 +3538,24 @@ static int   s_tb_mask = 0, s_tb_filter = 0;
 static GLuint s_tb_bank_tex;
 static GLuint s_tb_hd_tex;
 
-#define HD_GL_CACHE_CAP 256
-#define HD_GL_CACHE_BUDGET (128u * 1024u * 1024u)
+/* A 4x pack of a whole race scene is several hundred textures and several hundred
+ * MiB with mips; a cache smaller than one scene re-uploads (and re-mips) every
+ * frame. Budget: PSX_HD_GL_CACHE_MIB (default 2048). Lookups go through a
+ * direct-mapped hint table so a draw does not scan every slot. */
+#define HD_GL_CACHE_CAP 4096
+#define HD_GL_HINTS 8192
+static size_t hd_gl_cache_budget(void) {
+    static size_t budget;
+    if (!budget) {
+        const char* e = getenv("PSX_HD_GL_CACHE_MIB");
+        long mib = e ? atol(e) : 2048;
+        if (mib < 64) mib = 64;
+        if (mib > 16384) mib = 16384;
+        budget = (size_t)mib * 1024u * 1024u;
+    }
+    return budget;
+}
+#define HD_GL_CACHE_BUDGET hd_gl_cache_budget()
 typedef struct HdGlTexture {
     uint64_t generation, key;
     uint64_t last_use;
@@ -3509,6 +3566,24 @@ typedef struct HdGlTexture {
 static HdGlTexture s_hd_gl_cache[HD_GL_CACHE_CAP];
 static size_t s_hd_gl_cache_bytes;
 static uint64_t s_hd_gl_cache_clock;
+static int16_t s_hd_gl_hint[HD_GL_HINTS];   /* slot + 1, 0 = none */
+static unsigned hd_gl_hint_of(uint64_t key, uint64_t generation) {
+    uint64_t h = (key ^ (generation * 0x9E3779B97F4A7C15ull)) * 0xD6E8FEB86659FD93ull;
+    return (unsigned)(h >> 51) & (HD_GL_HINTS - 1);
+}
+static int hd_gl_find(uint64_t key, uint64_t generation) {
+    const unsigned h = hd_gl_hint_of(key, generation);
+    const int hinted = s_hd_gl_hint[h] - 1;
+    if (hinted >= 0 && s_hd_gl_cache[hinted].texture && s_hd_gl_cache[hinted].key == key &&
+        s_hd_gl_cache[hinted].generation == generation) return hinted;
+    for (int i = 0; i < HD_GL_CACHE_CAP; ++i) {
+        const HdGlTexture* texture = &s_hd_gl_cache[i];
+        if (texture->texture && texture->key == key && texture->generation == generation) {
+            s_hd_gl_hint[h] = (int16_t)(i + 1); return i;
+        }
+    }
+    return -1;
+}
 
 void gl_renderer_clear_hd_texture_cache(void) {
     /* Pack (re)configuration: the render thread must be idle before the
@@ -3520,28 +3595,23 @@ void gl_renderer_clear_hd_texture_cache(void) {
             glDeleteTextures(1, &s_hd_gl_cache[i].texture);
     }
     memset(s_hd_gl_cache, 0, sizeof(s_hd_gl_cache));
+    memset(s_hd_gl_hint, 0, sizeof(s_hd_gl_hint));
     s_hd_gl_cache_bytes = 0; s_tb_hd_tex = 0;
 }
 int gl_renderer_hd_texture_cached(uint64_t key, uint64_t generation,
                                  uint32_t* width, uint32_t* height) {
-    for (int i = 0; i < HD_GL_CACHE_CAP; ++i) {
-        const HdGlTexture* texture = &s_hd_gl_cache[i];
-        if (texture->texture && texture->key == key && texture->generation == generation) {
-            *width = texture->width; *height = texture->height; return 1;
-        }
-    }
-    return 0;
+    const int i = hd_gl_find(key, generation);
+    if (i < 0) return 0;
+    *width = s_hd_gl_cache[i].width; *height = s_hd_gl_cache[i].height; return 1;
 }
 static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
     int free_slot = -1;
-    for (int i = 0; i < HD_GL_CACHE_CAP; ++i) {
-        HdGlTexture* texture = &s_hd_gl_cache[i];
-        if (texture->texture && texture->key == image->cache_key &&
-            texture->generation == image->generation) {
-            texture->last_use = ++s_hd_gl_cache_clock; return texture->texture;
-        }
-        if (!texture->texture && free_slot < 0) free_slot = i;
+    const int found = hd_gl_find(image->cache_key, image->generation);
+    if (found >= 0) {
+        s_hd_gl_cache[found].last_use = ++s_hd_gl_cache_clock; return s_hd_gl_cache[found].texture;
     }
+    for (int i = 0; i < HD_GL_CACHE_CAP && free_slot < 0; ++i)
+        if (!s_hd_gl_cache[i].texture) free_slot = i;
     if (!image->rgba || !image->width || !image->height || !image->source_width ||
         !image->source_height || image->stride != (uint64_t)image->width * 4u ||
         image->width > (uint32_t)s_gl_max_dim || image->height > (uint32_t)s_gl_max_dim)
@@ -3567,19 +3637,25 @@ static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
     glGenTextures(1, &texture->texture);
     p_glActiveTexture(PSXGL_TEXTURE0 + 2);
     glBindTexture(GL_TEXTURE_2D, texture->texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    /* Mip chain + linear filters: the shader samples them only when a texture
+     * filter is selected (hd_texel_filtered); nearest keeps texelFetch. */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (s_tex_aniso > 1)
+        glTexParameterf(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, (float)s_tex_aniso);
     glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, 0);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, image->width, image->height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, image->rgba);
+    if (p_glGenerateMipmap) p_glGenerateMipmap(GL_TEXTURE_2D);
     p_glActiveTexture(PSXGL_TEXTURE0);
     if (glGetError() != GL_NO_ERROR) {
         glDeleteTextures(1, &texture->texture); texture->texture = 0; return 0;
     }
     texture->key = image->cache_key; texture->generation = image->generation;
     texture->last_use = ++s_hd_gl_cache_clock;
+    s_hd_gl_hint[hd_gl_hint_of(texture->key, texture->generation)] = (int16_t)(free_slot + 1);
     texture->bytes = bytes; s_hd_gl_cache_bytes += bytes;
     texture->width = image->width; texture->height = image->height;
     gpu_hd_textures_note_gl_cache(0);

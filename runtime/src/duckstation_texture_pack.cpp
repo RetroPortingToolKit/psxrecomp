@@ -827,6 +827,29 @@ void duck_texture_pack_invalidate(DuckTexturePack* p, uint16_t x, uint16_t y, ui
     const unsigned w0 = std::min(unsigned(w), 1024 - px), h0 = std::min(unsigned(h), 512 - py);
     const std::array<Rect, 4> regions{{{px,py,w0,h0},{0,py,unsigned(w)-w0,h0},
                                     {px,0,w0,unsigned(h)-h0},{0,0,unsigned(w)-w0,unsigned(h)-h0}}};
+    /* Under HD authority every native draw lands here, almost always on the
+     * frame buffer, which no tracked texture overlaps: leave without touching
+     * (or allocating) anything when no residency or cache entry intersects. */
+    const auto touches = [&](const Rect& x) {
+        for (const auto& r : regions) if (r.w && r.h && intersects(x,r)) return true;
+        return false;
+    };
+    bool hit = false;
+    for (const auto& upload : p->uploads) if (touches(upload.active)) { hit = true; break; }
+    if (!hit) for (const auto& page : p->pages) {
+        if (touches(page.source->rect)) { hit = true; break; }
+        for (const auto& record : page.source->records)
+            if (record.depth < 2 && touches({record.clut_x,record.clut_y,record.palette_size,1})) { hit = true; break; }
+        if (hit) break;
+    }
+    if (!hit) for (const auto& v : p->rect_cache) if (touches(v.rect)) { hit = true; break; }
+    if (!hit) for (const auto& c : p->match_cache) {
+        const auto& q = c.query;
+        const Rect page{q.page_x,q.page_y,256 / expansion(q.depth),256};
+        const Rect clut{q.clut_x,q.clut_y,std::min(q.depth == 0 ? 16u : 256u,1024u-q.clut_x),1};
+        if (touches(page) || (q.depth < 2 && touches(clut))) { hit = true; break; }
+    }
+    if (!hit) return;
     ++p->revision;
     bool released = false;   /* a residency record dropped or split */
     for (const auto& r : regions) if (r.w && r.h) {

@@ -396,6 +396,10 @@ extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) {
         session->diagnostics.push_back(std::move(diagnostic));
     out->diagnostic = session->diagnostics.back().c_str();
 }
+extern "C" int gpu_hd_textures_debug_uploads_at(int x, int y, char* out, size_t cap) {
+    if (out && cap) out[0] = ' ';
+    return session ? hd_texture_pack_debug_uploads_at(session->beetle, (unsigned)x, (unsigned)y, out, cap) : 0;
+}
 extern "C" void gpu_hd_textures_note_applied(void) { if (session) ++session->diag.applied_draws; }
 extern "C" void gpu_hd_textures_note_gl_cache(int eviction) {
     if (session) {
@@ -557,7 +561,7 @@ static int acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
         image->origin_u = query.u_first - (match.source_word_x * pixels_per_word + (query.u_first % pixels_per_word));
         image->origin_v = query.v_first - match.source_y;
         image->cache_key = (static_cast<uint64_t>(match.entry.texture_hash) << 32) | match.entry.palette_hash;
-        image->alpha_mode = 1;
+        image->alpha_mode = match.entry.palette_hash == HD_TEXTURE_PALETTE_INDEXED ? 5 : 1;
     } else {
         try {
             std::array<DuckTextureMatch,kMaxParts> matches{}; size_t count = 0;

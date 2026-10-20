@@ -113,6 +113,10 @@ bool parse_key_text(const std::string& text,
     const size_t dash = text.find('-');
     if (dash == std::string::npos || text.find('-', dash + 1) != std::string::npos)
         return false;
+    if (ascii_lower(text.substr(dash + 1)) == "index") {
+        *palette_hash = HD_TEXTURE_PALETTE_INDEXED;
+        return parse_hex_component(text.substr(0, dash), texture_hash);
+    }
     return parse_hex_component(text.substr(0, dash), texture_hash) &&
            parse_hex_component(text.substr(dash + 1), palette_hash);
 }
@@ -1070,6 +1074,35 @@ int hd_texture_pack_track_upload(HdTexturePack* pack,
     return 1;
 }
 
+/* Debug: uploads whose live fragments cover VRAM (x, y), newest first, as
+ * JSON objects: serial, texture hash, size, fragment rect and source offset,
+ * and whether the pack holds any replacement for that hash. */
+int hd_texture_pack_debug_uploads_at(const HdTexturePack* pack, unsigned x, unsigned y,
+                                     char* out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    size_t pos = 0;
+    int n = 0;
+    out[0] = ' ';
+    if (!pack) return 0;
+    for (auto it = pack->uploads.rbegin(); it != pack->uploads.rend(); ++it) {
+        for (const Fragment& f : it->fragments) {
+            if (x < f.rect.x || x >= f.rect.x + f.rect.width ||
+                y < f.rect.y || y >= f.rect.y + f.rect.height) continue;
+            const int w = std::snprintf(out + pos, cap - pos,
+                "%s{\"serial\":%llu,\"hash\":\"%08x\",\"w\":%u,\"h\":%u,"
+                "\"rect\":[%u,%u,%u,%u],\"src\":[%u,%u],\"in_pack\":%d}",
+                n ? "," : "", (unsigned long long)it->serial, it->hash,
+                it->width, it->height, f.rect.x, f.rect.y, f.rect.width, f.rect.height,
+                f.source_x, f.source_y, pack->texture_hashes.count(it->hash) ? 1 : 0);
+            if (w < 0 || (size_t)w >= cap - pos) return n;
+            pos += (size_t)w;
+            ++n;
+            break;
+        }
+    }
+    return n;
+}
+
 void hd_texture_pack_reset_tracking(HdTexturePack* pack) {
     if (pack) {
         pack->uploads.clear();
@@ -1212,7 +1245,9 @@ int hd_texture_pack_match(HdTexturePack* pack,
         if (indexed == pack->upload_by_serial.end() || !indexed->second)
             continue;
         const Upload& upload = *indexed->second;
-        const auto record = pack->entries.find(make_key(upload.hash, palette_hash));
+        auto record = pack->entries.find(make_key(upload.hash, palette_hash));
+        if (record == pack->entries.end() && query->depth != HD_TEXTURE_DEPTH_16BPP)
+            record = pack->entries.find(make_key(upload.hash, HD_TEXTURE_PALETTE_INDEXED));
         if (record == pack->entries.end()) continue;
         if (!covered_by_upload(upload, wanted)) continue;
         if (record->second.ambiguous) return HD_TEXTURE_LOOKUP_AMBIGUOUS;
