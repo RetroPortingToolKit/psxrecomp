@@ -389,6 +389,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_gen.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/gpu_fmv_hd.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_lle.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_hle.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_select.c

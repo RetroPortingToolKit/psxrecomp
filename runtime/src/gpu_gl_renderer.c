@@ -78,6 +78,7 @@
 #include "gpu_render.h"
 #include "gl_scale_limits.h"
 #include "gpu_sw_renderer.h"
+#include "gpu_fmv_hd.h"
 #include "gpu_gl_renderer.h"
 #include "video_telemetry.h"
 #include "gpu_hd_textures.h"
@@ -6635,10 +6636,59 @@ void gl_renderer_shutdown(void) {
  * force_4_3 pins the rect to native 4:3 regardless of the display aspect —
  * FMVs are authored 4:3 and have no GTE squash to compensate a stretch, so
  * widescreen presents them pillarboxed instead of distorted. */
+/* HD replacement of a movie frame (gpu_fmv_hd): presented at its own aspect ratio
+ * (the pack's, e.g. 16:9), bilinear filtering, no chroma smoothing. */
+static GLuint s_fmvhd_tex = 0;
+static int s_fmvhd_w = 0, s_fmvhd_h = 0;
+static void present_fmv_hd(const FmvHdImage *hd) {
+    interp_reset_history();
+    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, ww, wh);
+    glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
+    int lx, ly, lw, lh;
+    letterbox_rect_aspect(ww, wh, hd->w, hd->h, &lx, &ly, &lw, &lh);
+    glViewport(lx, ly, lw, lh);
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    if (!s_fmvhd_tex) glGenTextures(1, &s_fmvhd_tex);
+    glBindTexture(GL_TEXTURE_2D, s_fmvhd_tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    static uint64_t s_fmvhd_serial = 0;
+    if (hd->w != s_fmvhd_w || hd->h != s_fmvhd_h) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, hd->w, hd->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, hd->rgba);
+        s_fmvhd_w = hd->w; s_fmvhd_h = hd->h; s_fmvhd_serial = hd->serial;
+    } else if (hd->serial != s_fmvhd_serial) {  /* 25 fps movie on a 60 Hz screen: upload on change only */
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, hd->w, hd->h, GL_RGBA, GL_UNSIGNED_BYTE, hd->rgba);
+        s_fmvhd_serial = hd->serial;
+    }
+    p_glUseProgram(s_present_prog); p_glUniform1i(s_present_uTex, 0);
+    present_set_gamma(s_present_uGamma, 1);
+    present_set_sharp(0, hd->w, hd->h, lw, lh);
+    PRESENT_SCANLINE(hd->h, hd->h, lh);
+    p_glUniform4f(s_present_uUvRect, 0.5f / hd->w, 0.5f / hd->h, 1.f - 0.5f / hd->w, 1.f - 0.5f / hd->h);
+    p_glBindVertexArray(s_present_vao); glDrawArrays(GL_TRIANGLES, 0, 3);
+    p_glBindVertexArray(0); p_glUseProgram(0);
+    pres_record(GL_PRES_CPU, 0, 0, hd->w, hd->h, lx, ly, lw, lh);
+    hold_capture_drawable();
+    latency_ring_mark(LAT_SWAP_BEGIN);
+    gl_swap_with_osd();
+    latency_ring_mark(LAT_SWAP_END);
+    s_probe_swap++;
+    present_force_consumed();
+    s_last_present_path = GL_PRES_CPU;
+}
+
 void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linear,
                          int force_4_3, int content_w) {
     GL_RT_SYNC("present");
     if (!s_ctx) return;
+    if (s_present_d24) {
+        FmvHdImage hd;
+        if (gpu_fmv_hd_lookup(pixels, src_w, src_h, content_w, &hd)) { present_fmv_hd(&hd); return; }
+    }
     interp_reset_history();
     int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     glDisable(GL_SCISSOR_TEST);
