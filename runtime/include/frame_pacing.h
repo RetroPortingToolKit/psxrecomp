@@ -45,14 +45,9 @@ uint32_t frame_pacing_sleep_ms(uint64_t now, uint64_t deadline,
  * period in milliseconds (e.g. 1000.0 / 59.94). */
 void frame_pacer_wait(FramePacer *p, double period_ms);
 
-/* 1 when the panel matches guest cadence and synchronized swaps can supply
- * the guest's VBlank clock (present_vsync_owns_cadence() in main.cpp). The
- * deadline pacer still caps speed if the driver does not actually block.
- * Faster panels can also synchronize swaps while the pacer owns guest timing;
- * this query then returns 0.
- *
- * A renderer that elides a redundant swap (unchanged front buffer) must
- * therefore retain it while this is 1 to preserve display-clock pacing. */
+/* 1 only when eliding a swap would remove the guest's cadence source.
+ * A running deadline pacer makes unchanged-buffer skips safe even when the
+ * panel and driver vsync match the guest. Interpolation has its own guard. */
 int psx_present_vsync_owns_cadence(void);
 
 #ifdef __cplusplus

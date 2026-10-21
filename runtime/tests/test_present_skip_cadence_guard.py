@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Every GL present-skip site must be gated on the vsync-cadence query.
+"""Present skips retain a clock and honor explicit consecutive-frame capture.
 
-The renderer may elide a swap whose front buffer is unchanged. The frontend
-calls present once per guest vblank, so eliding a swap also elides whatever
-that swap was blocking on. When driver vsync owns the guest cadence the
-wall-clock pacer is deliberately not run (they are XOR), which makes the swap
-block the ONLY throttle -- and an elided frame is then unthrottled. A game that
-presents every other vblank (BoF3, and any other 30 Hz-presenting title) ran at
-exactly 2x on a ~60 Hz panel until each skip site consulted this query.
+The frontend's deadline pacer now runs alongside driver vsync. The renderer
+must preserve swaps only when that independent cap is absent, and must still
+compose every frame for a requested diagnostic burst.
 """
 
 from pathlib import Path
@@ -38,10 +34,11 @@ assert RENDERER.count("!ov_needs_present() &&") == skips
 assert ": host_osd_needs_present();" in RENDERER
 assert RENDERER.count("!gl_renderer_interpolation_owns_cadence()) {") == skips
 
-# The query is declared beside the pacer it is the XOR partner of, and defined
+# The query is declared beside the independent pacer, and defined
 # in the frontend that owns the cadence decision.
 assert "int psx_present_vsync_owns_cadence(void);" in PACING
 assert 'extern "C" int psx_present_vsync_owns_cadence(void) {' in MAIN
-assert "return present_vsync_owns_cadence();" in MAIN
+assert "return present_vsync_owns_cadence() && !present_should_wall_pace();" in MAIN
+assert RENDERER.count("!present_burst_count() && !s_native_surface_enabled && s_force_present_remaining <= 0 &&") == skips
 
 print("present-skip cadence guard passed (%d skip sites gated)" % skips)
