@@ -39,6 +39,7 @@
 
 extern uint8_t *memory_get_ram_ptr(void);
 extern uint8_t *memory_get_scratchpad_ptr(void);
+extern uint16_t *gpu_get_vram_ptr(void);
 /* Live main-RAM geometry (psx_ram_geometry.c): 2 MiB retail, or 8 MiB with
  * the opt-in 8 MB RAM mod. Latched by memory_init() once per boot, so it
  * cannot change inside a pass, but it can between sessions. */
@@ -260,6 +261,9 @@ static uint8_t *s_ram_copy;          /* s_ram_copy_cap bytes */
 static uint32_t s_ram_copy_cap;
 static uint8_t *s_dma_copy;
 static RenderPassCheckpoint s_ck;
+/* The renderer worker has its own native VRAM. CPU-side GP0 uploads during
+ * a recorded pass must also roll back gpu.c's public copy. */
+static uint16_t s_pass_cpu_vram[1024u * 512u];
 static PsxCycleFreeze s_freeze;
 static jmp_buf s_abort_jmp;
 static volatile int s_abort_armed;
@@ -320,6 +324,7 @@ static int verify_on(void) {
 void render_pass_get_stats(RenderPassStats *out) {
     if (!out) return;
     *out = s_stats;
+    out->passes += gl_renderer_recorded_pass_count();
     for (int i = 0; i < RENDER_PASS_DROP_CLASSES; i++)
         out->dropped[i] = g_render_pass_dropped_writes[i];
 }
@@ -555,6 +560,7 @@ static int checkpoint_save(const CPUState *cpu) {
         return 0;
     }
     s_ck.cpu = *cpu;
+    memcpy(s_pass_cpu_vram, gpu_get_vram_ptr(), sizeof s_pass_cpu_vram);
     s_ck.ram_bytes = ram_bytes;
     memcpy(s_ram_copy, memory_get_ram_ptr(), ram_bytes);
     memcpy(s_ck.spad, memory_get_scratchpad_ptr(), RP_SPAD_SIZE);
@@ -579,6 +585,7 @@ static int checkpoint_save(const CPUState *cpu) {
 }
 
 static void checkpoint_restore(CPUState *cpu) {
+    memcpy(gpu_get_vram_ptr(), s_pass_cpu_vram, sizeof s_pass_cpu_vram);
     gpu_pass_checkpoint_restore();
     (void)dma_snapshot_read(s_dma_copy, s_ck.dma_len);
     timers_set_snapshot(s_ck.t_counter, s_ck.t_mode, s_ck.t_target,

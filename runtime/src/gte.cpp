@@ -1257,16 +1257,24 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
         if (!proj_override && pgxp_projection_tracking() && shift == 12 && !lm) {
             const double z = (double)(mac3 >> 12);
             const double h_proj = (double)gte_h_scaled(gte);
-            double hx = (double)gte->MAC1 * h_proj;
+            double hx = (double)(mac1 >> 12) * h_proj;
             if (do_squash) hx = hx * s_ws_xnum / s_ws_xden;
             else if (s_ws_dome_on && s_ws_dome_num != s_ws_dome_den &&
                      !gpu_ws_present_native_43() && gte->SZ[3] >= s_ws_far_threshold)
                 hx = hx * s_ws_dome_num / s_ws_dome_den;
             PGXPProjection projection = {
                 (float)(gte->OFX / 65536.0 * z + hx),
-                (float)(gte->OFY / 65536.0 * z + (double)gte->MAC2 * h_proj),
+                (float)(gte->OFY / 65536.0 * z + (double)(mac2 >> 12) * h_proj),
                 (float)z, (float)h_proj / 2.0f};
             pgxp_gte_set_projection(&projection);
+            unsigned vi = V == gte->V1 ? 1u : V == gte->V2 ? 2u : 0u;
+            uint32_t id = pgxp_gte_input_identity(vi);
+            /* The address disambiguates identical local coordinates in
+             * different course meshes. Values also validate reused storage. */
+            id = (id ^ (uint16_t)V[0]) * 16777619u;
+            id = (id ^ (uint16_t)V[1]) * 16777619u;
+            id = (id ^ (uint16_t)V[2]) * 16777619u;
+            pgxp_gte_projection_identity(id ? id : 1u);
         }
     }
     geom_note((uint32_t)gte->SXY[2], sx16, sy16);

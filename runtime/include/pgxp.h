@@ -182,6 +182,11 @@ int pgxp_projection_tracking(void);
 void pgxp_gte_set_projection(const PGXPProjection *projection);
 int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out);
 int pgxp_get_gte_projection(uint32_t index, uint32_t packed, PGXPProjection *out);
+/* Exact full-word dataflow provenance for recorded temporal redraws. */
+uint32_t pgxp_gte_input_identity(uint32_t vertex);
+void pgxp_gte_projection_identity(uint32_t identity);
+int pgxp_load_temporal_projection(uint32_t addr, uint32_t packed,
+                                 PGXPProjection *out, uint32_t *identity);
 
 /* Current SXY FIFO shadow (index 0..3 selects GTE data regs 12..15).
  * Returns nonzero when the shadow is live and carries X/Y precision. */

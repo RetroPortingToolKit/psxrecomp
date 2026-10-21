@@ -73,6 +73,7 @@ struct PGXPValue {
     uint16_t flags;
     uint32_t value;      /* the guest word this shadow describes              */
     uint32_t gen;        /* valid iff == s_gen (O(1) invalidate-all)          */
+    uint32_t identity;   /* projected vertex identity (valid with PROJECTION) */
     PGXPProjection projection;
 };
 
@@ -95,6 +96,7 @@ static PGXPValue *s_ram = nullptr;            /* lazily allocated: RAM + mod reg
 static PGXPValue  s_scratch[PGXP_SCRATCH_WORDS];
 static PGXPValue  s_gpr[34];                  /* 32 GPRs + HI + LO            */
 static PGXPValue  s_gte[32];                  /* GTE data registers           */
+static uint32_t s_model_origin[6];           /* only the six model input words */
 static PGXPValue  s_gtc[32];                  /* GTE control registers (CTC2) */
 
 /* Scalar tier (cpu-mode). Engines also use the GTE as a multiplier for
@@ -144,6 +146,7 @@ static void ck_wrapped(void);
 
 extern "C" void pgxp_invalidate_all(void) {
     if (s_suppress != 0) { s_deferred_invalidate = 1; return; }
+    std::memset(s_model_origin, 0, sizeof s_model_origin);
     if (++s_gen == 0) {
         ck_wrapped();
         /* generation wrapped: physically clear so stale slots can't revive */
@@ -382,6 +385,7 @@ static PGXPJournalEntry *s_ck_log = nullptr;
 static size_t            s_ck_n = 0, s_ck_cap = 0;
 static int               s_ck_lossy = 0;
 static PGXPValue         s_ck_gpr[34], s_ck_gte[32], s_ck_gtc[32];
+static uint32_t          s_ck_model_origin[6];
 static PGXPScalar        s_ck_gpr_s[34], s_ck_gte_s[32], s_ck_gtc_s[32];
 static uint32_t          s_ck_gen = 0, s_ck_suppress = 0;
 static int               s_ck_deferred = 0;
@@ -519,6 +523,7 @@ extern "C" void pgxp_checkpoint_begin(void) {
     s_ck_n = 0;
     std::memcpy(s_ck_gpr, s_gpr, sizeof s_gpr);
     std::memcpy(s_ck_gte, s_gte, sizeof s_gte);
+    std::memcpy(s_ck_model_origin, s_model_origin, sizeof s_model_origin);
     std::memcpy(s_ck_gtc, s_gtc, sizeof s_gtc);
     std::memcpy(s_ck_gpr_s, s_gpr_s, sizeof s_gpr_s);
     std::memcpy(s_ck_gte_s, s_gte_s, sizeof s_gte_s);
@@ -540,6 +545,7 @@ extern "C" void pgxp_checkpoint_rollback(void) {
     s_ck_n = 0;
     std::memcpy(s_gpr, s_ck_gpr, sizeof s_gpr);
     std::memcpy(s_gte, s_ck_gte, sizeof s_gte);
+    std::memcpy(s_model_origin, s_ck_model_origin, sizeof s_model_origin);
     std::memcpy(s_gtc, s_ck_gtc, sizeof s_gtc);
     std::memcpy(s_gpr_s, s_ck_gpr_s, sizeof s_gpr_s);
     std::memcpy(s_gte_s, s_ck_gte_s, sizeof s_gte_s);
@@ -841,6 +847,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
         } else {
             pv_reset(dst, value);
         }
+        if (s_projection_tracking && f_rt(instr) < 6u) s_model_origin[f_rt(instr)] = addr & 0x1FFFFFFFu;
         sc_kill(&s_gte_s[f_rt(instr)]);        /* memory carries no scalars   */
         gte_sxy2_mirror(f_rt(instr));
         return;
@@ -881,6 +888,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
         case 0x04: {                           /* MTC2: gte[rd] <- gpr[rt]    */
             uint32_t rt = f_rt(instr);
             uint32_t rd = f_rd(instr);
+            if (rd < 6u) s_model_origin[rd] = 0;
             PGXPValue *dst = &s_gte[rd];
             if (rt != 0 && s_gpr[rt].gen == s_gen) {
                 pv_validate(&s_gpr[rt], value);
@@ -1612,6 +1620,7 @@ extern "C" int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16) {
 extern "C" void pgxp_gte_set_projection(const PGXPProjection *projection) {
     if (!g_pgxp_active || !s_projection_tracking || !projection) return;
     s_gte[14].projection = *projection;
+    s_gte[14].identity = 0; /* a projection has no model identity until its producer supplies one */
     s_gte[14].flags |= PGXP_F_PROJECTION;
     s_gte[15] = s_gte[14];
 }
@@ -1624,6 +1633,20 @@ static int projection_read(const PGXPValue *pv, uint32_t packed, PGXPProjection 
 }
 extern "C" int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out) {
     return projection_read(pgxp_ptr(addr), packed, out);
+}
+extern "C" uint32_t pgxp_gte_input_identity(uint32_t vertex) {
+    return vertex < 3u ? s_model_origin[vertex * 2u] : 0;
+}
+extern "C" void pgxp_gte_projection_identity(uint32_t identity) {
+    s_gte[14].identity = identity;
+    s_gte[15].identity = identity;
+}
+extern "C" int pgxp_load_temporal_projection(uint32_t addr, uint32_t packed,
+                                              PGXPProjection *out, uint32_t *identity) {
+    const PGXPValue *v = pgxp_ptr(addr);
+    if (!projection_read(v, packed, out)) return 0;
+    *identity = v->identity;
+    return *identity != 0;
 }
 extern "C" int pgxp_get_gte_projection(uint32_t index, uint32_t packed, PGXPProjection *out) {
     return index < 4 ? projection_read(&s_gte[12+index], packed, out) : 0;
@@ -1678,6 +1701,7 @@ extern "C" void pgxp_gte_reg_written(int reg, uint32_t value) {
      * machine state back, so its writes must not stick to the shadows). */
     if (s_suppress != 0) return;
     if (reg < 0 || reg > 31) return;
+    if (reg < 6) s_model_origin[reg] = 0;
     if (reg == 15) {
         /* SXYP is a FIFO push: SXY1 moves to SXY0, SXY2 to SXY1, the value
          * lands in SXY2 (psx-spx GTE "SXYP"). Engines draw quads from a

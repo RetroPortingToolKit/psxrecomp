@@ -923,3 +923,59 @@ int fg_view_affine(const FgCamFit *fit, int vi, double t, float A[9], float b[3]
         b[r] = (float)(t * v->t[r] - (Am[3 * r] * v->t[0] + Am[3 * r + 1] * v->t[1] + Am[3 * r + 2] * v->t[2]));
     return 1;
 }
+
+/* Identity buckets preserve separate instances of a shared mesh. Repeated
+ * corners within an instance are harmless; choose its closest previous
+ * projection in the same view, bounded against cuts and teleports. */
+uint32_t fg_dataflow_match(const FgPrimList *a, const FgPrimList *b, FgVert *out) {
+    uint32_t cap = 16, count = a->n * 3u, matched = 0;
+    while (cap < count * 2u && cap < (1u << 29)) cap <<= 1;
+    uint32_t *head = (uint32_t *)calloc(cap, sizeof *head);
+    uint32_t *next = (uint32_t *)calloc(count ? count : 1u, sizeof *next);
+    memset(out, 0, (size_t)b->n * 3u * sizeof *out);
+    if (!head || !next) { free(head); free(next); return 0; }
+    for (uint32_t i = 0; i < count; i++) {
+        const FgPrim *p = &a->v[i/3u]; uint32_t k = i%3u;
+        if (!p->vid[k] || !(p->p[k][2] > 0.f)) continue;
+        uint32_t h = (p->vid[k] * 2654435761u ^ p->view) & (cap-1u);
+        next[i] = head[h]; head[h] = i+1u;
+    }
+    for (uint32_t i = 0; i < b->n * 3u; i++) {
+        const FgPrim *p = &b->v[i/3u]; uint32_t k = i%3u;
+        if (!p->vid[k] || !(p->p[k][2] > 0.f)) continue;
+        uint32_t h = (p->vid[k] * 2654435761u ^ p->view) & (cap-1u);
+        float best = 96.f * 96.f; uint32_t at = UINT32_MAX;
+        for (uint32_t n = head[h]; n; n = next[n-1u]) {
+            uint32_t j = n-1u; const FgPrim *q = &a->v[j/3u]; uint32_t v = j%3u;
+            if (q->vid[v] != p->vid[k] || q->view != p->view) continue;
+            float dx = q->x[v]-p->x[k], dy = q->y[v]-p->y[k];
+            float d = dx*dx+dy*dy;
+            /* Depth disambiguates overlapping instances, while allowing
+             * ordinary camera travel through the near scene. */
+            float ratio = q->p[v][2] / p->p[k][2];
+            if (ratio < .25f || ratio > 4.f) continue;
+            if (d < best) { best = d; at = j; }
+        }
+        if (at != UINT32_MAX) {
+            out[i].paired = 1;
+            memcpy(out[i].a, a->v[at/3u].p[at%3u], sizeof out[i].a);
+            matched++;
+        }
+    }
+    free(head); free(next); return matched;
+}
+void fg_dataflow_place(const FgPrimList *b, const FgVert *v, double phase,
+                       float *x, float *y) {
+    float t = (float)phase;
+    for (uint32_t i=0;i<b->n*3u;i++) {
+        const FgPrim *p=&b->v[i/3u]; uint32_t k=i%3u;
+        x[i]=p->x[k]; y[i]=p->y[k];
+        if (!v[i].paired || !(p->p[k][2]>0.f)) continue;
+        float z=v[i].a[2]+(p->p[k][2]-v[i].a[2])*t;
+        if (!(z>0.f)) continue;
+        float hx=v[i].a[0]+(p->p[k][0]-v[i].a[0])*t;
+        float hy=v[i].a[1]+(p->p[k][1]-v[i].a[1])*t;
+        x[i]+=hx/z-p->p[k][0]/p->p[k][2];
+        y[i]+=hy/z-p->p[k][1]/p->p[k][2];
+    }
+}

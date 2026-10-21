@@ -32,11 +32,13 @@ static long present_us = 0;
 static _Atomic int disposed;
 static uintptr_t last_done[PT_MAX_SLOTS];
 static _Atomic int order_bad;
+static _Atomic int hold_present;
 
 static int fake_ctx(void *u, int cur) { (void)u; if (cur) { ctx_on++; return ctx_ok; } ctx_off++; return 1; }
 static void *fake_present(void *u, int slot, void *ready) {
     (void)u;
     if (!atomic_load(&slot_busy[slot])) atomic_store(&order_bad, 1);
+    while (atomic_load(&hold_present)) sleep_us(100);
     int i = atomic_fetch_add(&n_presented, 1);
     if (i < N_FRAMES + 8) presented[i] = (uintptr_t)ready;
     if (present_us) sleep_us(present_us + (rand() % 3) * present_us / 2);
@@ -108,7 +110,30 @@ static void run(int slots, long us, int expect_waits) {
     check(!pt_running() && pt_submit(NULL, NULL, NULL) == -1, "stopped");
 }
 
+static void test_optional_submit(void) {
+    reset(); present_us=0;
+    atomic_store(&hold_present,1);
+    PtConfig c=cfg(2);
+    check(pt_start(&c),"optional start");
+    atomic_store(&slot_busy[pt_current()],1);
+    void *done=NULL;
+    check(pt_try_submit((void *)1,&done)==1,"first optional frame reserves free slot");
+    int current=pt_current();
+    check(pt_try_submit((void *)2,&done)==-1 && pt_current()==current && !done,
+          "full optional queue returns immediately without publishing or changing ownership");
+    PtStats st; pt_get_stats(&st);
+    check(st.submits==1 && st.waits==0,"optional submission never waits");
+    atomic_store(&hold_present,0); pt_drain();
+    atomic_store(&slot_busy[pt_current()],1);
+    check(pt_try_submit((void *)2,&done)==0 && (uintptr_t)done==0x180u,
+          "optional retry reuses only completed slot and returns its token");
+    pt_stop();
+    check(atomic_load(&n_presented)==2 && presented[0]==1 && presented[1]==2,
+          "rejected optional frame did not enter presentation order");
+}
+
 int main(void) {
+    test_optional_submit();
     srand(7);
     run(3, 0, 0);
     run(3, 1500, 1);

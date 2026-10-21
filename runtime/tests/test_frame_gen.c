@@ -492,7 +492,32 @@ static void test_small_view_policy(void) {
     check(fit.freeze_small_views, "fit propagates explicit reprojection policy");
 }
 
+
+static void test_dataflow_projection(void) {
+    FgPrim a[2]={0},b[2]={0}; FgVert v[6]; float x[6],y[6];
+    for(int j=0;j<2;j++) for(int k=0;k<3;k++) {
+        a[j].view=b[j].view=j+1;
+        a[j].vid[k]=b[j].vid[k]=k+1;
+        a[j].x[k]=100.f+j*200+k; b[j].x[k]=110.f+j*200+k;
+        a[j].y[k]=b[j].y[k]=30.f+k;
+        a[j].p[k][2]=150000.f; b[j].p[k][2]=160000.f;
+        a[j].p[k][0]=a[j].x[k]*a[j].p[k][2]; b[j].p[k][0]=b[j].x[k]*b[j].p[k][2];
+        a[j].p[k][1]=a[j].y[k]*a[j].p[k][2]; b[j].p[k][1]=b[j].y[k]*b[j].p[k][2];
+    }
+    FgPrimList old={a,2,2},cur={b,2,2};
+    check(fg_dataflow_match(&old,&cur,v)==6,"exact source identities pair separate views at full depth");
+    fg_dataflow_place(&cur,v,.5,x,y);
+    check(fabsf(x[0]-(100.f*150000.f+110.f*160000.f)/310000.f)<.001f,
+          "middle phase interpolates homogeneous geometry beyond hardware SZ range");
+    check(fabsf(x[3]-x[0]-200.f)<.001f,"identical model ids do not cross views");
+    fg_dataflow_place(&cur,v,1.,x,y);
+    check(x[0]==b[0].x[0] && y[0]==b[0].y[0],"new endpoint stays exact");
+    b[0].vid[0]=0;
+    fg_dataflow_match(&old,&cur,v); fg_dataflow_place(&cur,v,.5,x,y);
+    check(x[0]==b[0].x[0] && !v[0].paired,"unproven vertices are never guessed");
+}
 int main(void) {
+    test_dataflow_projection();
     test_small_view_policy();
     test_view_affine();
     test_hud_lerp();

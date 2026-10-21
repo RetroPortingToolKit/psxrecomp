@@ -490,6 +490,7 @@ int psx_mod_set_render_pass_flip(uint32_t mode);
  */
 int psx_mod_activate_render_pass_rate(const char* package, const char* feature,
                                       const char* option, uint32_t flip_mode);
+int psx_mod_set_recorded_render_passes(int enabled);
 typedef struct PSXModRenderPassFrame {
     uint32_t struct_size;          /* sizeof(PSXModRenderPassFrame) */
     uint32_t period_vblanks;       /* VBlanks this game frame stays on screen */

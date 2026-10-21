@@ -16,6 +16,10 @@ struct SDL_Window;
 #ifdef __cplusplus
 extern "C" {
 #endif
+void gl_renderer_set_recorded_passes(int enabled);
+int gl_renderer_recorded_passes_enabled(void);
+uint64_t gl_renderer_recorded_pass_count(void);
+void gl_renderer_recorded_sources(const float projection[9], const uint32_t identity[3]);
 
 /* Create the GL context on a window made with SDL_WINDOW_OPENGL.
  * Returns 1 on success, 0 to fall back to the SDL_Renderer present path. */

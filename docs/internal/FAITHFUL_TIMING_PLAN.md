@@ -213,6 +213,16 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-4 Stage 3 continuation: temporal GPU transactions now stay
+  on the render context owner. Recorded redraws carry exact PGXP model-word
+  provenance and homogeneous geometry, avoiding a second guest draw and the
+  prior camera-fitting generator. Optional presents use a nonblocking queue
+  and readiness polling; missed extras are dropped. CPU-transaction identity
+  matches 4,501 off/on entries. GPU dataflow acceptance remains open: quiet
+  has three >25ms gaps, p99 70.1%, and deficient physical cadence. Correcting
+  source PTS scheduling and limiting input-origin bookkeeping to GTE words;
+  the faithful guest timing path and R4's 40-section choice are unchanged.
+
 - 2026-10-21 BRIEF-4 Stage 3 WIP: restore asynchronous temporal eligibility,
   queue presentation deadlines on the presenter, release rejected plans, and
   credit frontend deadline sleep without adding overlapping renderer idle.

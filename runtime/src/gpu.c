@@ -4598,7 +4598,7 @@ void psx_mod_set_native_wide_projection_correction(int enabled) {
     s_native_wide_projection_vertices = 0;
     /* Signed camera-space provenance is required for correct native-wide
      * faces, including corners behind the camera. Arm it with the mode. */
-    pgxp_set_projection_tracking(s_native_wide_projection_correction);
+    pgxp_set_projection_tracking(s_native_wide_projection_correction || gl_renderer_recorded_passes_enabled());
     gpu_pgxp_rederive_enable();
 }
 
@@ -4702,6 +4702,10 @@ uint32_t gpu_texture_correction_hits(void) {
  * caller. */
 static void prepare_precise_triangle(int i0, int i1, int i2,
                                      const int32_t vx[3], const int32_t vy[3]) {
+    const int recorded = gl_renderer_recorded_passes_enabled();
+    float temporal_projection[9] = {0};
+    uint32_t temporal_id[3] = {0};
+    if (recorded) gl_renderer_recorded_sources(NULL, NULL);
     if (gr_backend() == GR_BACKEND_OPENGL) {
         const int indices[3] = {i0,i1,i2};
         int32_t raw_x[3], raw_y[3];
@@ -4767,6 +4771,14 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         uint32_t addr = (gp0_cmd_source_addr == 0xFFFFFFFFu)
                             ? 0xFFFFFFFFu
                             : gp0_cmd_source_addr + (uint32_t)idx[i] * 4u;
+        if (recorded) {
+            PGXPProjection p;
+            if (pgxp_load_temporal_projection(addr, word, &p, &temporal_id[i])) {
+                temporal_projection[3*i] = p.x;
+                temporal_projection[3*i+1] = p.y;
+                temporal_projection[3*i+2] = p.z;
+            }
+        }
         int32_t px, py;
         uint16_t sz;
         int src = PGXP_SRC_NATIVE;
@@ -4800,6 +4812,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         rec.y16[i] = fy[i];
         rec.z[i] = sz; /* receipt retains the hardware SZ, not the visual depth */
     }
+    if (recorded) gl_renderer_recorded_sources(temporal_projection, temporal_id);
     if (geometry) {
         pgxp_note_triangle(n_precise);   /* G1.1 crack exposure: mixed share */
         rec.frame = (uint32_t)s_frame_count;

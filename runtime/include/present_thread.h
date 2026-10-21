@@ -65,6 +65,9 @@ int  pt_current(void);
  * if none); *wait_ns the time spent blocked. Returns the new current slot, or
  * -1 when not running. */
 int  pt_submit(void *ready, void **next_done, uint64_t *wait_ns);
+/* Optional frame: publish only if another slot is already free. Returns -1
+ * without changing the current slot or taking ownership of ready otherwise. */
+int  pt_try_submit(void *ready, void **next_done);
 /* Producer: wait until nothing is queued or presenting. */
 void pt_drain(void);
 

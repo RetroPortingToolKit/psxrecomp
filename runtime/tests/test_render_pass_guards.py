@@ -216,4 +216,20 @@ for header in re.findall(r"runtime/include/([\w.]+)", hash_list):
 assert "psx_cycle_freeze.h" not in hash_list, (
     "psx_cycle_freeze.h is runtime-only; keep it out of the codegen hash")
 
+# Temporal GPU work must stay on the context-owning worker. These guards
+# catch accidental synchronous fallbacks in the producer/presenter hot path.
+for sig, opcode in (
+    ("int gl_renderer_pass_begin(", "RTH_PASS_BEGIN"),
+    ("void gl_renderer_pass_end(", "RTH_PASS_END"),
+    ("void gl_renderer_pass_note_cost(", "RTH_PASS_COST"),
+    ("void gl_renderer_pass_set_flip_shown(", "RTH_PASS_SHOWN")):
+    b = body(gl, sig)
+    assert b.index("temporal_recording()") < b.index("GL_RT_SYNC(")
+    assert opcode in b
+b = body(gl, "static void *pt_cb_present(")
+assert "p_glGetSynciv(" in b and "return NULL;" in b
+assert "glClientWaitSync" not in b and "p_glWaitSync" not in b and "glFinish" not in b
+b = body(gl, "static void gl_rth_exec(")
+assert "if (pass_rejected) return;" in b and "RTH_PASS_END" in b
+assert "memcpy(gpu_get_vram_ptr(), s_pass_cpu_vram" in rp
 print("render-pass sandbox guards passed")

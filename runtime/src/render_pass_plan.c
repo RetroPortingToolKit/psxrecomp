@@ -143,8 +143,17 @@ int render_pass_gen_select(const uint32_t *phases, uint32_t n, double p,
 
 int render_pass_gen_select_mode(const uint32_t *phases, uint32_t n, double p,
                                 int hold, uint32_t *lo, uint32_t *hi, float *t) {
+    /* Planned phases are Q16. Quantize the sampled clock to that same grid:
+     * a rounded host tick just below 1/2 must not repeat phase zero. */
+    if (hold) {
+        if (!phases || !n || !isfinite(p) || p > RENDER_PASS_GEN_HOLD_MAX) return 0;
+        double q = floor(p * Q16 + 0.5);
+        uint32_t i = 0;
+        while (i + 1u < n && (double)phases[i + 1u] <= q) i++;
+        *lo = *hi = i; *t = 0.f;
+        return 1;
+    }
     if (!render_pass_gen_select(phases, n, p, lo, hi, t)) return 0;
-    if (hold) { *hi = *lo; *t = 0.0f; }
     return 1;
 }
 

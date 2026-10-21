@@ -165,6 +165,9 @@ uint64_t render_pass_mod_arenas_hash(void) { return 0; }
 uint64_t gpu_pass_state_hash(void) { return 42; }
 int gpu_pass_checkpoint_save(void) { return 1; }
 void gpu_pass_checkpoint_restore(void) {}
+static uint16_t s_public_vram[1024u * 512u];
+uint16_t *gpu_get_vram_ptr(void) { return s_public_vram; }
+uint64_t gl_renderer_recorded_pass_count(void) { return 0; }
 static uint64_t s_ticks;
 uint64_t gl_renderer_perf_ticks(void) { return s_ticks += 1000; }
 uint64_t gl_renderer_perf_frequency(void) { return 1000000000u; }

@@ -853,6 +853,9 @@ int psx_mod_set_render_pass_netplay(int enabled);
  */
 int psx_mod_activate_render_pass_rate(const char* package, const char* feature,
                                       const char* option, uint32_t flip_mode);
+/* Render-thread redraw from value-validated PGXP geometry. Requires the
+ * render thread; returns zero so a plugin can retain its CPU replay fallback. */
+int psx_mod_set_recorded_render_passes(int enabled);
 typedef struct PSXModRenderPassFrame {
     uint32_t struct_size;          /* sizeof(PSXModRenderPassFrame) */
     uint32_t period_vblanks;       /* VBlanks this game frame stays on screen */

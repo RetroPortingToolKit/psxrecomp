@@ -434,6 +434,10 @@ int main(void) {
               lo == 1 && hi == 1 && blend == 0.0f, "HOLD keeps a native sample between phases");
         CHECK(render_pass_gen_select_mode(phases, 4, 0.5, 1, &lo, &hi, &blend) &&
               lo == 2 && hi == 2 && blend == 0.0f, "HOLD advances at the next native phase");
+        CHECK(render_pass_gen_select_mode(phases,4,0.5-1e-10,1,&lo,&hi,&blend) && lo==2 && hi==2,
+              "rounded host tick selects the planned Q16 halfway image");
+        CHECK(render_pass_gen_select_mode(phases,4,0.5-0.75/65536.,1,&lo,&hi,&blend) && lo==1,
+              "a genuinely earlier tick still holds the prior phase");
         CHECK(render_pass_gen_select_mode(phases, 4, 0.375, 0, &lo, &hi, &blend) &&
               lo == 1 && hi == 2 && blend == 0.5f, "explicit blending remains supported");
         CHECK(render_pass_gen_select_mode(phases, 4, 2.0, 1, &lo, &hi, &blend) &&

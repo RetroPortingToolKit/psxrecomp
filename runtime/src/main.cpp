@@ -1985,6 +1985,7 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
 static PSXModSessionBaseline g_mod_owned_baseline;
 
 static void reset_mod_owned_presentation(void) {
+    gl_renderer_set_recorded_passes(0);
     psx_mod_internal_resolution_reset();
     memcard_set_extension_codec(nullptr, nullptr);
     psx_local_mouse_clear();
@@ -4065,6 +4066,14 @@ static int present_should_wall_pace(void) {
      * vsync works and supplies the cap where it does not, which also means it
      * cannot add latency to the healthy path. */
     return g_frame_period_ms > 0.0;
+}
+
+extern "C" int psx_mod_set_recorded_render_passes(int enabled) {
+    /* Activation precedes window/context creation and application of the
+     * render-thread preference. Record the request just like interpolation. */
+    if (enabled && psx_netplay_active()) return 0;
+    gl_renderer_set_recorded_passes(enabled);
+    return 1;
 }
 
 static void apply_present_cadence(void) {

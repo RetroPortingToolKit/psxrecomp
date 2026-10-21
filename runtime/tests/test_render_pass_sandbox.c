@@ -219,6 +219,9 @@ uint64_t gpu_pass_state_hash(void) { return 42; }
 static int s_checkpoint_ok = 1;
 int gpu_pass_checkpoint_save(void) { return s_checkpoint_ok; }
 void gpu_pass_checkpoint_restore(void) {}
+static uint16_t s_public_vram[1024u * 512u];
+uint16_t *gpu_get_vram_ptr(void) { return s_public_vram; }
+uint64_t gl_renderer_recorded_pass_count(void) { return 0; }
 static uint64_t s_ticks;
 uint64_t gl_renderer_perf_ticks(void) { return s_ticks += 1000; }
 uint64_t gl_renderer_perf_frequency(void) { return 1000000000u; }
@@ -373,6 +376,8 @@ static void test_store_policy(void) {
 /* ---- 2. a real pass ------------------------------------------------------ */
 static int pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
     (void)user; (void)alpha_q16;
+    s_public_vram[0] = 0x1234;
+    s_public_vram[1024u * 512u - 1u] = 0x5678;
     cpu->gpr[8] = 0xDEADu;
     guest_store(0x80010000u, 0x12345678u, 4);        /* RAM */
     guest_store(0x1F800020u, 0x99u, 1);              /* scratchpad */
@@ -444,7 +449,11 @@ static void test_pass(void) {
     irqs0 = s_irqs_raised;
     s_mmio_calls = 0;
 
+    s_public_vram[0] = 0xA55A;
+    s_public_vram[1024u * 512u - 1u] = 0x5AA5;
     CHECK(psx_mod_render_pass(&cpu, &pass, pass_fn, NULL) == 1, "the pass ran and was kept");
+    CHECK(s_public_vram[0] == 0xA55A && s_public_vram[1024u * 512u - 1u] == 0x5AA5,
+          "queued GPU uploads restore the entire public VRAM copy");
     render_pass_get_stats(&st);
     CHECK(st.passes == 1 && s_kept == 1 && s_open_passes == 0, "one image, pass closed");
     CHECK(st.dropped[RENDER_PASS_DROP_SPU] == 2, "2 SPU stores dropped and counted");

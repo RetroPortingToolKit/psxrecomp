@@ -216,6 +216,30 @@ int pt_submit(void *ready, void **next_done, uint64_t *wait_ns) {
     return next;
 }
 
+int pt_try_submit(void *ready, void **next_done) {
+    if (next_done) *next_done = NULL;
+    if (!P.running) return -1;
+    mtx_lock(&P.mtx);
+    const int cur = P.current;
+    int next = -1;
+    for (int k=1;k<P.cfg.slots;k++) {
+        const int s=(cur+k)%P.cfg.slots;
+        if (P.state[s]==S_FREE) { next=s; break; }
+    }
+    if (next<0) { mtx_unlock(&P.mtx); return -1; }
+    P.ready[cur]=ready; P.state[cur]=S_QUEUED;
+    P.queue[(P.q_head+P.q_len)%PT_MAX_SLOTS]=cur;
+    P.q_len++; P.st.submits++;
+    if (P.q_len>P.st.queued_high) P.st.queued_high=P.q_len;
+    P.state[next]=S_COMPOSING; P.current=next;
+    if (next_done) *next_done=P.done[next];
+    else if (P.done[next] && P.cfg.dispose) P.cfg.dispose(P.cfg.user,P.done[next]);
+    P.done[next]=NULL;
+    cnd_bcast(&P.cv);
+    mtx_unlock(&P.mtx);
+    return next;
+}
+
 void pt_drain(void) {
     if (!P.running) return;
     mtx_lock(&P.mtx);

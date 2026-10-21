@@ -115,6 +115,11 @@ typedef struct FgVert {
     float    a[3];           /* FG_PLACE_OBJECT: the older camera-space position */
 } FgVert;
 enum { FG_PLACE_UNCHANGED = 0, FG_PLACE_CAMERA, FG_PLACE_OBJECT, FG_PLACE_NEIGHBOUR };
+/* Recorded-pass path: exact, value-validated model identities and homogeneous
+ * projections. No position-cache guessing or fitted camera. */
+uint32_t fg_dataflow_match(const FgPrimList *older, const FgPrimList *newer, FgVert *vertices);
+void fg_dataflow_place(const FgPrimList *newer, const FgVert *vertices,
+                       double phase, float *x, float *y);
 
 /* Fits the camera motion older -> newer per view and decides each newer
  * vertex's placement; returns fit->ok (the verdict). */

@@ -882,13 +882,24 @@ int main(void) {
     {
         PGXPProjection p={12345.5f,-7311.0f,-62.0f,150.0f}, out;
         pgxp_set_projection_tracking(1);
+        psx_pgxp_cop2(nullptr,enc_i(0x32,0,0,0),0x01020304u,0x8020A000u);
+        CHECK(pgxp_gte_input_identity(0)==0x0020A000u);
+        pgxp_checkpoint_begin();
+        psx_pgxp_cop2(nullptr,enc_i(0x32,0,0,0),0x01020304u,0x8020B000u);
+        CHECK(pgxp_gte_input_identity(0)==0x0020B000u);
+        pgxp_checkpoint_rollback();
+        CHECK(pgxp_gte_input_identity(0)==0x0020A000u);
         pgxp_gte_push_sxy(X16,Y16,0,PACKED);
         pgxp_gte_set_projection(&p);
+        pgxp_gte_projection_identity(0x12345678u);
         CHECK(pgxp_get_gte_projection(2,PACKED,&out) && out.z==-62.0f);
         CHECK(!pgxp_get_gte_projection(2,PACKED^1,&out));
         psx_pgxp_cop2(nullptr,MFC2(9,14),PACKED,0);
         psx_pgxp_store(nullptr,SW(1,9),ADDR_B,PACKED);
         CHECK(pgxp_load_projection(ADDR_B,PACKED,&out) && out.x==p.x && out.z==p.z);
+        uint32_t identity=0;
+        CHECK(pgxp_load_temporal_projection(ADDR_B,PACKED,&out,&identity) && identity==0x12345678u);
+        CHECK(!pgxp_load_temporal_projection(ADDR_B,PACKED^1,&out,&identity));
         CHECK(!pgxp_load_projection(ADDR_B,PACKED^1,&out));
         pgxp_checkpoint_begin();
         psx_pgxp_store(nullptr,SB(1,9),ADDR_B,PACKED&255);

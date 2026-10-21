@@ -285,23 +285,23 @@ int main(void) {
           "output below source cadence should be rejected");
 
     frame_interpolation_schedule_reset(&schedule);
-    schedule.queued = 1;
-    for (int i = 1; i <= 6; ++i) {
-        uint64_t deadline;
+    for (int i=1;i<=6;i++) {
+        uint64_t published=(uint64_t)(1000000.0+(i-1)*1000000.0/60.0+.5), deadline;
         float alpha;
-        CHECK(frame_interpolation_schedule_begin(&schedule, 1000000u,
-                  1000000u, 60.0, 60.0), "queued interval accepted");
-        CHECK(frame_interpolation_schedule_next(&schedule, 1000000u,
-                  &deadline, &alpha), "queued interval has one output");
-        CHECK(fabs((double)deadline - (1000000.0 + i * 1000000.0 / 60.0)) < 1.0,
-              "early producer retains every presentation deadline");
-        CHECK(!frame_interpolation_schedule_next(&schedule, 1000000u,
-                   &deadline, &alpha), "queued interval has no duplicate output");
+        CHECK(frame_interpolation_schedule_begin(&schedule,published,1000000u,60.,60.),
+              "producer PTS plans an asynchronous interval");
+        CHECK(frame_interpolation_schedule_next(&schedule,published+2000u,&deadline,&alpha),
+              "replay arrival does not replace source PTS");
+        CHECK(fabs((double)deadline-(1000000.0+i*1000000.0/60.0))<1.0,
+              "published source clock keeps the display grid stable");
     }
-    CHECK(frame_interpolation_schedule_begin(&schedule, 2000000u,
-              1000000u, 60.0, 60.0), "queued clock recovers after sustained stall");
-    CHECK(frame_interpolation_schedule_end(&schedule) == 2016667u,
-          "late queued producer reanchors after sustained stall");
+    frame_interpolation_schedule_reset(&schedule);
+    for (int i=0;i<12;i++) {
+        CHECK(frame_interpolation_schedule_begin(&schedule,1000000u,1000000u,60.,60.),
+              "unpaced startup source accepted");
+        CHECK(frame_interpolation_schedule_end(&schedule)<=1033334u,
+              "startup replay cannot accumulate arbitrarily future presents");
+    }
 
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;
