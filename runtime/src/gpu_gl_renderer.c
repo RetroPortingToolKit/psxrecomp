@@ -9993,6 +9993,17 @@ int gl_renderer_present_thread_json(char *out, size_t cap) {
         st.present_max_ns / 1e6, st.queued_high);
 }
 static void gl_swap_now(int generated);
+static uint64_t s_capture_source_sequence;
+static int present_burst_count(void) {
+    static int count = -1;
+    if (count < 0) {
+        const char *e = getenv("PSX_PRESENT_SHOT_BURST");
+        count = e ? atoi(e) : 0;
+        if (count < 0) count = 0;
+        if (count > 240) count = 240;
+    }
+    return count;
+}
 static int  fg_keep_real(void);      /* frame generation */
 static void fg_note_swap(uint64_t ns);
 static void gl_swap_with_osd(void) {
@@ -10064,10 +10075,7 @@ static void gl_swap_with_osd(void) {
         static uint8_t **b_px = NULL; static char *b_kind = NULL; static uint64_t b_flip[240];
         static char b_path[512];
         if (burst < 0) {
-            const char *e = getenv("PSX_PRESENT_SHOT_BURST");
-            burst = e ? atoi(e) : 0;
-            if (burst < 0) burst = 0;
-            if (burst > 240) burst = 240;
+            burst = present_burst_count();
             if (burst) {
                 b_px = (uint8_t **)calloc((size_t)burst, sizeof *b_px);
                 b_kind = (char *)calloc((size_t)burst, 1);
@@ -10081,7 +10089,7 @@ static void gl_swap_with_osd(void) {
                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
                 glReadPixels(0, 0, ww, wh, GL_RGB, GL_UNSIGNED_BYTE, b_px[b_i]);
                 b_kind[b_i] = s_fg_presenting ? 'g' : 'r';
-                b_flip[b_i] = s_fg_flips;
+                b_flip[b_i] = s_fg_on ? s_fg_flips : s_capture_source_sequence;
                 b_i++;
             } else {
                 b_i = burst;   /* resized: end it */
@@ -10113,7 +10121,7 @@ static void gl_swap_with_osd(void) {
                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
                 glReadPixels(0, 0, b_w, b_h, GL_RGB, GL_UNSIGNED_BYTE, b_px[0]);
                 b_kind[0] = s_fg_presenting ? 'g' : 'r';
-                b_flip[0] = s_fg_flips;
+                b_flip[0] = s_fg_on ? s_fg_flips : s_capture_source_sequence;
                 b_i = 1;
             } else {
                 present_shot_done(0);
@@ -11512,8 +11520,11 @@ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
 
 static void rth_present_payload(uint16_t op, const uint8_t *p);
 static void rth_replay_present(const RtCmd *c, const uint8_t *p) {
+    s_capture_source_sequence++;
     static int skipped_last = 0;
-    const int stale = rt_frames_ahead() >= 2 && !skipped_last;
+    /* Readback deliberately slows diagnostic captures. Do not let that
+     * workload discard the intervening frames the burst was asked to show. */
+    const int stale = !present_burst_count() && rt_frames_ahead() >= 2 && !skipped_last;
     /* Frame generation schedules (or drops) presents itself. */
     if (s_fg_on && fg_on_present(c->op, p, c->payload, stale)) { skipped_last = 0; return; }
     if (stale) {
