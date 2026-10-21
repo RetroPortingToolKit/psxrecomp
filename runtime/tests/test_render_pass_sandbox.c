@@ -776,6 +776,11 @@ static int local_draw(CPUState *cpu, void *user, uint32_t alpha) {
     return 1;
 }
 
+static int local_temporal_draw(CPUState *cpu, void *user, uint32_t alpha) {
+    CHECK(alpha == 32768u, "temporal local view receives its phase");
+    return local_draw(cpu, user, 0);
+}
+
 /* Netplay local view: forward netplay frames only; guest state restored
  * exactly; a committed image cancels the crop request. */
 static void test_local_view(void) {
@@ -824,6 +829,17 @@ static void test_local_view(void) {
           "own-view scope closed after the local view");
     CHECK(cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
           "guest state restored after the local view");
+    psx_mod_set_render_pass_netplay(1);
+    r.alpha_q16 = 32768u;
+    CHECK(psx_mod_render_pass(&cpu, &r, local_temporal_draw, NULL) == 1,
+          "opted-in temporal pass uses own-view scope");
+    CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0 &&
+          cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "temporal local pass restores scope, RAM, registers and clock");
+    s_resim = 1;
+    CHECK(!psx_mod_render_pass(&cpu, &r, never_fn, NULL),
+          "temporal local rendering never runs during rollback replay");
+    s_resim = 0;
     r.x = 900;
     CHECK(!psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
           "rect outside VRAM refused");

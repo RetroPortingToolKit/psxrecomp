@@ -8321,8 +8321,10 @@ uint32_t gl_renderer_pass_unavailable(void) {
      * pass backs up and restores (rect rows, journaled out-of-rect writes),
      * and the FBO it presents is the one passes capture.
      * PSX_RENDER_PASS_VERIFY=1 checks the whole CPU VRAM after each pass.
-     * HD native authority and the debug refusal decline. */
-    if (s_hd_native_authority || (s_cpu_auth_dual && !render_pass_netplay_enabled()) || s_pass_force_refuse)
+     * HD replacements use the same CPU-authoritative/GPU-presentation split.
+     * cpu_raster_required() already excludes pass draws from CPU VRAM;
+     * the transaction restores uploads and both GPU surfaces. */
+    if ((s_cpu_auth_dual && !render_pass_netplay_enabled()) || s_pass_force_refuse)
         return PSX_MOD_RENDER_PASS_BACKEND;
     /* Windowed high-resolution mode: the presented surfaces are the window
      * tiles at s_out_scale, which a pass (backing up s_hr_fbo at

@@ -255,6 +255,13 @@ on a fixed region -> next.
 - **2026-10-21 (BRIEF-4 Stage 1):** Reused #722 display-height cap and added opt-in `supersample_disable_at_lines`; unchanged defaults for other titles. Resolution, replay, config-parser and R4 default checks pass on Windows and macOS. R4 fullscreen 8K route cap restores 60 Hz but completion gaps remain (6 quiet / 7 loaded); no stage acceptance claimed. See R4 `analysis/STATUS.md`.
 
 - **2026-10-21 (BRIEF-4 Stage 1):** Port recorded-route measurement support from `a9da7fce`; validation pending. No guest timing changes.
+- **2026-10-21 (`feat/render-60fps`):** Admit opt-in render passes with HD
+  CPU-authoritative textures and give opted-in netplay temporal passes the
+  restored own-view scope. Sandbox tests and hidden GL pass fixture pass.
+  R4 delay-netplay: 120 common core digests identical with frame-rate on only
+  on one peer; 14 temporal passes, no restore mismatches or dispatch misses.
+  R4 performance/visual acceptance remains open; see its
+  `analysis/render-60fps/REPORT.md`.
 
 - **2026-10-07 — DuckStation texture authoring fidelity (beads-qi66).**
   The early Tomba capture report exposed per-draw crops and automatic page

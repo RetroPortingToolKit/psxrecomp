@@ -765,9 +765,12 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     }
     (void)psx_cycle_freeze_begin(&s_freeze, watchdog_cycles(),
                                  watchdog_overrun);
-    /* A netplay local view is the one place a peer's presentation-only mods
-     * act on guest code (own-view plugins, widescreen cull margin). */
-    if (eye == RP_EYE_LOCAL) local_scope_set(1);
+    /* Explicitly opted-in temporal passes of an own-view image need the
+     * same presentation-only hooks as its base local draw. Both execute in
+     * this restored transaction; rollback resimulation is refused above. */
+    if (eye == RP_EYE_LOCAL ||
+        (eye == RP_EYE_PASS && s_netplay_allowed && psx_netplay_active()))
+        local_scope_set(1);
     if (setjmp(s_abort_jmp) == 0) {
         s_pass_cpu = cpu;
         s_abort_armed = 1;
