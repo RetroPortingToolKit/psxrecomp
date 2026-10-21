@@ -359,6 +359,7 @@ int main(int argc, char **argv) {
         double gpu_ms = co.gpu_frames ? (double)co.gpu_ns / co.gpu_frames * 1e-6 : 0.0;
         printf("idle_gpu_ms=%.3f gpu_frames=%llu\n", gpu_ms, (unsigned long long)co.gpu_frames);
         check(co.gpu_frames > 0, "idle timing has completed GPU samples");
+        check(co.present_wait_ns > 0, "composer wait published independently of render cost");
         if (rthf_active_segments())
             check(gpu_ms < 15.0, "GPU work excludes the 30ms producer wait");
     }

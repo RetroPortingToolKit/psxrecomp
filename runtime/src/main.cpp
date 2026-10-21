@@ -10627,7 +10627,20 @@ static void dynres_tick_rt(double now_s, double wall, double period, int held,
     const int frames = (int)(co.frames - c0.frames);
     const double cost = (double)(co.cost_ns - c0.cost_ns) * 1e-9;
     const uint64_t bp_ns = rs.backpressure_ns + rs.ring_full_ns;
-    const double bp = (double)(bp_ns - g_dynres.last_bp_ns) * 1e-9;
+    uint64_t work_bp_ns = bp_ns - g_dynres.last_bp_ns;
+    /* A bounded presenter intentionally holds the renderer at display rate.
+     * That wait propagates to the guest queue even with ample render headroom;
+     * it is not evidence that lowering resolution would help. GPU/CPU work
+     * remains measured separately and still drives overload decisions. */
+    static const bool account_present = [] {
+        const char *e = std::getenv("PSX_DYNRES_PRESENT_WAIT_ACCOUNTING");
+        return !(e && e[0] == '0');
+    }();
+    if (account_present) {
+        const uint64_t present_ns = co.present_wait_ns - c0.present_wait_ns;
+        work_bp_ns = work_bp_ns > present_ns ? work_bp_ns - present_ns : 0;
+    }
+    const double bp = (double)work_bp_ns * 1e-9;
     g_dynres.rt_acc_cpu += (double)(co.cpu_ns - c0.cpu_ns) * 1e-6;
     g_dynres.rt_acc_gpu += (double)(co.gpu_ns - c0.gpu_ns) * 1e-6;
     g_dynres.rt_acc_frames += co.frames - c0.frames;

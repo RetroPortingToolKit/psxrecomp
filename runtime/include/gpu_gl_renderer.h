@@ -457,6 +457,7 @@ void gl_renderer_host_ledger(GlHostLedger *out);
  * gl_renderer_render_thread_measure(1) (dynamic resolution on). */
 typedef struct GlRthCosts {
     uint64_t frames, cost_ns, cpu_ns, gpu_ns, gpu_frames, dropped;
+    uint64_t present_wait_ns; /* composer blocked on swap / a free present slot */
 } GlRthCosts;
 void gl_renderer_render_thread_measure(int on);
 void gl_renderer_render_thread_costs(GlRthCosts *out);
