@@ -2501,7 +2501,7 @@ static int depth_state_fast(void) {
     }
     return enabled;
 }
-static void depth_restore_ex(int mode, int tex, int n, int semi, int mask, int check) {
+static void depth_restore_ex(int mode, int tex, int n, int semi, int mask, int check, int first) {
     if (mode == 0) return;
     if (mode == 1) {
         p_glUniform1f(tex ? s_tex_uZbias : s_geo_uZbias, 0.0f);
@@ -2517,7 +2517,7 @@ static void depth_restore_ex(int mode, int tex, int n, int semi, int mask, int c
         if (tex) p_glUniform1i(s_uSemipass, 0);
         /* Coverage keeps native/HD cutouts; colour filtering cannot affect depth. */
         if (tex && coverage_fast_enabled()) p_glUniform1i(s_tex_uBcls, 3);
-        glDrawArrays(GL_TRIANGLES, 0, n);
+        glDrawArrays(GL_TRIANGLES, first, n);
         if (tex && coverage_fast_enabled()) p_glUniform1i(s_tex_uBcls, 0);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         if (st) glEnable(GL_STENCIL_TEST);
@@ -3812,7 +3812,7 @@ static int bcls_fuse_begin(int semi, int dmode, int mask, int check, int b3d) {
  * drawn under; track_stencil lets the canonical pass record deferred stencil
  * (a replay into the high-resolution window must not touch that flag). */
 static void tex_draw_passes_ex(int nverts, int semi, int tb_mask, int check,
-                               int track_stencil, int b3d, int dmode) {
+                               int track_stencil, int b3d, int dmode, int first) {
     int fused = 0;
     p_glUniform1i(s_uSemimode, semi < 0 ? 0 : semi);
     if (semi < 0) {
@@ -3820,12 +3820,12 @@ static void tex_draw_passes_ex(int nverts, int semi, int tb_mask, int check,
         mask_stencil_ex(tb_mask, check);
         p_glUniform1i(s_uSemipass, 0);                 /* all texels, one ordered colour pass */
         fused = bcls_fuse_begin(semi, dmode, tb_mask, check, b3d);
-        glDrawArrays(GL_TRIANGLES, 0, nverts);
+        glDrawArrays(GL_TRIANGLES, first, nverts);
         if (check) {
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);  /* stencil-only fixup */
             mask_stencil_ex(1, check);
             p_glUniform1i(s_uSemipass, 2);             /* STP=1 texels set the mask bit */
-            glDrawArrays(GL_TRIANGLES, 0, nverts);
+            glDrawArrays(GL_TRIANGLES, first, nverts);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         } else if (!tb_mask) {
             /* Alpha is already exact; defer its duplicate stencil encoding
@@ -3842,24 +3842,24 @@ static void tex_draw_passes_ex(int nverts, int semi, int tb_mask, int check,
         p_glBlendFuncSeparate(GL_ONE, PSXGL_SRC1_ALPHA, GL_ONE, GL_ZERO);
         if (tb_mask) mask_stencil_ex(1, check); else glDisable(GL_STENCIL_TEST);
         p_glUniform1i(s_uSemipass, 0);
-        glDrawArrays(GL_TRIANGLES, 0, nverts);
+        glDrawArrays(GL_TRIANGLES, first, nverts);
         if (!tb_mask && track_stencil) s_stencil_valid = 0;
     } else {
         glDisable(GL_BLEND);                           /* Pass 1: STP=0 texels (opaque) */
         mask_stencil_ex(tb_mask, check);
         p_glUniform1i(s_uSemipass, 1);
-        glDrawArrays(GL_TRIANGLES, 0, nverts);
+        glDrawArrays(GL_TRIANGLES, first, nverts);
         apply_psx_blend(semi);                         /* Pass 2: STP=1 texels (blended) */
         mask_stencil_ex(1, check);
         p_glUniform1i(s_uSemipass, 2);
-        glDrawArrays(GL_TRIANGLES, 0, nverts);
+        glDrawArrays(GL_TRIANGLES, first, nverts);
     }
     if (fused) mask_stencil_ex(tb_mask, check);
     else if (s_bcls_on && !s_fg_drawing) {
         const int bp = bcls_passes(semi, b3d);
         bcls_begin(1, 0);
-        if (bp & BCLS_CLEAR) { bcls_pass(1, 2); glDrawArrays(GL_TRIANGLES, 0, nverts); }
-        if (bp & BCLS_SET)   { bcls_pass(1, 1); glDrawArrays(GL_TRIANGLES, 0, nverts); }
+        if (bp & BCLS_CLEAR) { bcls_pass(1, 2); glDrawArrays(GL_TRIANGLES, first, nverts); }
+        if (bp & BCLS_SET)   { bcls_pass(1, 1); glDrawArrays(GL_TRIANGLES, first, nverts); }
         /* Back to the state the branch above ended in. */
         p_glUniform1i(s_tex_uBcls, 0);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -3881,7 +3881,7 @@ static void tex_draw_passes_ex(int nverts, int semi, int tb_mask, int check,
     }
 }
 static void tex_batch_draw_passes(int nverts, int semi) {
-    tex_draw_passes_ex(nverts, semi, s_tb_mask, s_mask_check, 1, s_tb_b3d, s_tb_depth);
+    tex_draw_passes_ex(nverts, semi, s_tb_mask, s_mask_check, 1, s_tb_b3d, s_tb_depth, 0);
 }
 
 /* ---- frame_perf CPU attribution (native-wide wedge hunt) ----------------- *
@@ -3969,17 +3969,55 @@ static float  *s_hq_v = NULL;
 static size_t  s_hq_vn = 0, s_hq_vcap = 0;
 static uint64_t s_hq_flushes = 0, s_hq_cmds = 0;
 
+static uint64_t s_hq_uploads, s_hq_saved_uploads;
+static int hiw_upload_fast(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_QUEUE_UPLOAD_FAST");
+        enabled = !(e && e[0] == '0');
+    }
+    return enabled;
+}
+/* Each VAO retains its existing vertex layout/buffer. Upload the packed queue
+ * once to each used buffer, then reuse it for every tile and wide target.
+ * Entries start at a multiple of their stride, so DrawArrays can select them
+ * without changing attribute pointers or orphaning a buffer per batch. */
+static void hiw_upload_queue(void) {
+    if (!hiw_upload_fast()) return;
+    int used[3] = {0};
+    for (int i = 0; i < s_hq_n; ++i) used[s_hq[i].kind] = 1;
+    for (int kind = HQ_TEX; kind <= HQ_GEO; ++kind) {
+        if (!used[kind]) continue;
+        p_glBindBuffer(PSXGL_ARRAY_BUFFER, kind == HQ_TEX ? s_tex_vbo : s_geo_vbo);
+        p_glBufferData(PSXGL_ARRAY_BUFFER, (ptrdiff_t)(s_hq_vn * sizeof(float)),
+                       s_hq_v, PSXGL_STREAM_DRAW);
+        s_hq_uploads++;
+    }
+}
+static int hiw_upload_cmd(const HiCmd *c) {
+    int stride = c->kind == HQ_TEX ? TEXV : 6;
+    if (hiw_upload_fast()) {
+        s_hq_saved_uploads++;
+        return (int)(c->vfirst / (size_t)stride);
+    }
+    p_glBufferData(PSXGL_ARRAY_BUFFER, (ptrdiff_t)((size_t)c->vcount * stride * sizeof(float)),
+                   s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
+    s_hq_uploads++;
+    return 0;
+}
+
 static HiCmd *hiw_enqueue(int kind, const float *verts, int nverts, int stride) {
     size_t nf = (size_t)nverts * (size_t)stride;
+    size_t first = (s_hq_vn + (size_t)stride - 1) / (size_t)stride * (size_t)stride;
     if (s_hq_n == s_hq_cap) {
         int cap = s_hq_cap ? s_hq_cap * 2 : 256;
         HiCmd *q = (HiCmd *)realloc(s_hq, (size_t)cap * sizeof(HiCmd));
         if (!q) return NULL;
         s_hq = q; s_hq_cap = cap;
     }
-    if (s_hq_vn + nf > s_hq_vcap) {
+    if (first + nf > s_hq_vcap) {
         size_t cap = s_hq_vcap ? s_hq_vcap : 65536;
-        while (cap < s_hq_vn + nf) cap *= 2;
+        while (cap < first + nf) cap *= 2;
         float *v = (float *)realloc(s_hq_v, cap * sizeof(float));
         if (!v) return NULL;
         s_hq_v = v; s_hq_vcap = cap;
@@ -3987,10 +4025,11 @@ static HiCmd *hiw_enqueue(int kind, const float *verts, int nverts, int stride) 
     HiCmd *c = &s_hq[s_hq_n++];
     memset(c, 0, sizeof *c);
     c->kind = (uint8_t)kind;
-    c->vfirst = s_hq_vn;
+    c->vfirst = first;
     c->vcount = nverts;
-    memcpy(s_hq_v + s_hq_vn, verts, nf * sizeof(float));
-    s_hq_vn += nf;
+    memset(s_hq_v + s_hq_vn, 0, (first - s_hq_vn) * sizeof(float));
+    memcpy(s_hq_v + first, verts, nf * sizeof(float));
+    s_hq_vn = first + nf;
     c->check = (uint8_t)s_mask_check;
     c->depth = (uint8_t)s_hq_depth_cur;
     c->ax0 = s_area_x1; c->ay0 = s_area_y1; c->ax1 = s_area_x2; c->ay1 = s_area_y2;
@@ -4107,11 +4146,10 @@ static void hiw_replay_wide(void) {
             p_glUniform1f(s_tex_uXcenter, c->wcenter);
             bind_textured_resources(c->tex, c->palette, c->hd_tex);
             p_glUniform1i(s_uMaskset, c->mask);
-            p_glBufferData(PSXGL_ARRAY_BUFFER, (ptrdiff_t)((size_t)c->vcount * TEXV * sizeof(float)),
-                           s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
+            int first = hiw_upload_cmd(c);
             depth_apply_ex(c->depth, 1);
-            tex_draw_passes_ex(c->vcount, c->semi, c->mask, c->check, 0, c->b3d, c->depth);
-            depth_restore_ex(c->depth, 1, c->vcount, c->semi, c->mask, c->check);
+            tex_draw_passes_ex(c->vcount, c->semi, c->mask, c->check, 0, c->b3d, c->depth, first);
+            depth_restore_ex(c->depth, 1, c->vcount, c->semi, c->mask, c->check, first);
         } else {
             if (cur != HQ_GEO) {
                 p_glUseProgram(s_geo_prog);
@@ -4124,11 +4162,10 @@ static void hiw_replay_wide(void) {
             p_glUniform1f(s_geo_uXcenter, c->wcenter);
             if (c->semi >= 0) apply_psx_blend(c->semi); else glDisable(GL_BLEND);
             mask_stencil_ex(c->mask, c->check);
-            p_glBufferData(PSXGL_ARRAY_BUFFER, (ptrdiff_t)((size_t)c->vcount * 6 * sizeof(float)),
-                           s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
+            int first = hiw_upload_cmd(c);
             depth_apply_ex(c->depth, 0);
-            BCLS_DRAW(c->semi, c->depth, c->mask, c->check, c->b3d, glDrawArrays(GL_TRIANGLES, 0, c->vcount));
-            depth_restore_ex(c->depth, 0, c->vcount, c->semi, c->mask, c->check);
+            BCLS_DRAW(c->semi, c->depth, c->mask, c->check, c->b3d, glDrawArrays(GL_TRIANGLES, first, c->vcount));
+            depth_restore_ex(c->depth, 0, c->vcount, c->semi, c->mask, c->check, first);
         }
     }
     if (!any) return;
@@ -4147,6 +4184,7 @@ static void hiw_replay_wide(void) {
 static void hiw_flush_tail(void);
 static void hiw_flush_queue(void) {
     if (s_hq_n == 0) return;
+    hiw_upload_queue();
     if (!hiw_on()) {   /* native-wide mirrors only (wide_queue_live) */
         s_hq_flushes++;
         hiw_flush_tail();
@@ -4191,11 +4229,10 @@ static void hiw_flush_queue(void) {
                 }
                 bind_textured_resources(c->tex, c->palette, c->hd_tex);
                 p_glUniform1i(s_uMaskset, c->mask);
-                p_glBufferData(PSXGL_ARRAY_BUFFER, (ptrdiff_t)((size_t)c->vcount * TEXV * sizeof(float)),
-                               s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
+                int first = hiw_upload_cmd(c);
                 depth_apply_ex(c->depth, 1);
-                tex_draw_passes_ex(c->vcount, c->semi, c->mask, c->check, 0, c->b3d, c->depth);
-                depth_restore_ex(c->depth, 1, c->vcount, c->semi, c->mask, c->check);
+                tex_draw_passes_ex(c->vcount, c->semi, c->mask, c->check, 0, c->b3d, c->depth, first);
+                depth_restore_ex(c->depth, 1, c->vcount, c->semi, c->mask, c->check, first);
             } else {
                 if (cur != HQ_GEO) {
                     p_glUseProgram(s_geo_prog);
@@ -4205,11 +4242,10 @@ static void hiw_flush_queue(void) {
                 }
                 if (c->semi >= 0) apply_psx_blend(c->semi); else glDisable(GL_BLEND);
                 mask_stencil_ex(c->mask, c->check);
-                p_glBufferData(PSXGL_ARRAY_BUFFER, (ptrdiff_t)((size_t)c->vcount * 6 * sizeof(float)),
-                               s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
+                int first = hiw_upload_cmd(c);
                 depth_apply_ex(c->depth, 0);
-                BCLS_DRAW(c->semi, c->depth, c->mask, c->check, c->b3d, glDrawArrays(GL_TRIANGLES, 0, c->vcount));
-                depth_restore_ex(c->depth, 0, c->vcount, c->semi, c->mask, c->check);
+                BCLS_DRAW(c->semi, c->depth, c->mask, c->check, c->b3d, glDrawArrays(GL_TRIANGLES, first, c->vcount));
+                depth_restore_ex(c->depth, 0, c->vcount, c->semi, c->mask, c->check, first);
             }
         }
     }
@@ -4256,7 +4292,7 @@ static void flush_tex_batch_impl(void) {
 
     depth_apply_ex(dmode, 1);
     tex_batch_draw_passes(nverts, semi);
-    depth_restore_ex(dmode, 1, nverts, semi, s_tb_mask, s_mask_check);
+    depth_restore_ex(dmode, 1, nverts, semi, s_tb_mask, s_mask_check, 0);
 
     /* Native-wide mirror — skipped for a batch fully inside the 4:3 frame (its
      * centre content comes from the present-time canonical blit; nothing to add
@@ -4285,7 +4321,7 @@ static void flush_tex_batch_impl(void) {
         wide_set_bd_scale(s_tex_uXscale, s_tex_uXcenter);
         depth_apply_ex(dmode, 1);
         if (s_ws_ablate != 2) tex_batch_draw_passes(nverts, semi);
-        depth_restore_ex(dmode, 1, nverts, semi, s_tb_mask, s_mask_check);
+        depth_restore_ex(dmode, 1, nverts, semi, s_tb_mask, s_mask_check, 0);
         wide_clear_bd_scale(s_tex_uXscale, s_tex_uXcenter);
         wide_target_end(s_tex_uXoff, s_tex_uXhalf);
         gl_perf_mirror_end();
@@ -4397,7 +4433,7 @@ static void flush_flat_batch_impl(void) {
     depth_apply_ex(dmode, 0);
     BCLS_DRAW(semi, dmode, mask, s_mask_check, b3d, if (nl) flat_batch_draw_hr_lines(nverts, nl);
                        else glDrawArrays(fmode, 0, nverts));
-    depth_restore_ex(dmode, 0, nverts, semi, mask, s_mask_check);
+    depth_restore_ex(dmode, 0, nverts, semi, mask, s_mask_check, 0);
     int mirror = g_wide_cur && !s_wide_suppress && s_ws_ablate != 1 &&
                  !(!g_ws_bd_stretch_on && mirror_flat_batch_center_only(nverts));
     if (mirror) {
@@ -4418,7 +4454,7 @@ static void flush_flat_batch_impl(void) {
         wide_set_bd_scale(s_geo_uXscale, s_geo_uXcenter);
         depth_apply_ex(dmode, 0);
         if (s_ws_ablate != 2) BCLS_DRAW(semi, dmode, mask, s_mask_check, b3d, glDrawArrays(fmode, 0, nverts));
-        depth_restore_ex(dmode, 0, nverts, semi, mask, s_mask_check);
+        depth_restore_ex(dmode, 0, nverts, semi, mask, s_mask_check, 0);
         wide_clear_bd_scale(s_geo_uXscale, s_geo_uXcenter);
         wide_target_end(s_geo_uXoff, s_geo_uXhalf);
         gl_perf_mirror_end();
