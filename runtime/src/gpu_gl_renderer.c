@@ -1987,7 +1987,8 @@ static const char *TEX_FS =
     PSX_DITHER_GLSL
     "out vec4 frag; out vec4 blend_factor;\n"
     "noperspective in float v_b3d;\n"
-    "uniform int u_bcls;      /* bloom source pass (gl_postfx.inc): 0 off, 2 clear, 1 mark */\n"
+    "uniform int u_bcls;      /* 0 colour, 1 bloom mark, 2 bloom clear, 3 depth coverage */\n"
+    "uniform int u_coverage_fast;\n"
     "flat in ivec2 v_tpage;   /* texture page base, VRAM px */\n"
     "flat in ivec2 v_clut;    /* CLUT base, VRAM px */\n"
     "flat in int v_depth;     /* 0=4bit 1=8bit 2=15bit */\n"
@@ -2142,6 +2143,7 @@ static const char *TEX_FS =
     "void main(){\n"
     "  int stp; vec3 rgb;\n"
     "  int fmode = v_filter & 15;\n"
+    "  bool need_color = u_bcls == 0 || u_coverage_fast == 0;\n"
     "  /* v_persp is 0 for every prim unless [video] perspective_texturing is on\n"
     "   * AND this prim's packet carried full GTE projection provenance, so the\n"
     "   * default is the PS1's affine (noperspective) mapping. */\n"
@@ -2173,10 +2175,12 @@ static const char *TEX_FS =
     "    int raw = stable_texel(ivec2(floor(uv)));\n"
     "    if (raw == 0) discard;\n"
     "    stp = (raw >> 15) & 1;\n"
-    "    rgb = xbr_sample(uv, raw, abs(dx) + abs(dy));\n"
+    "    rgb = need_color ? xbr_sample(uv, raw, abs(dx) + abs(dy)) : vec3(0.0);\n"
     "  } else if (fmode == 2) {\n"
     "    uv+=vec2(u_shift); int raw=stable_texel(ivec2(floor(uv)));\n"
     "    if(raw==0) discard; stp=(raw>>15)&1;\n"
+    "    rgb=vec3(0.0);\n"
+    "    if(need_color){\n"
     "    float lx=length(dx), ly=length(dy);\n"
     "    dx*=min(1.0,8.0/max(lx,0.001)); dy*=min(1.0,8.0/max(ly,0.001));\n"
     "    int nx=clamp(int(ceil(lx)),1,4), ny=clamp(int(ceil(ly)),1,4);\n"
@@ -2187,6 +2191,7 @@ static const char *TEX_FS =
     "      sum+=stable_bilinear(uv+offset,stp);\n"
     "    }\n"
     "    rgb=sum.a>0.00001 ? sum.rgb/sum.a : col5(raw);\n"
+    "    }\n"
     "  } else {\n"
     "    /* Bilinear, Beetle-PSX formulation: the NEAREST texel is the base\n"
     "     * (cutout + STP authority), the neighbours lie toward the sub-texel\n"
@@ -2215,7 +2220,7 @@ static const char *TEX_FS =
     "                + float((c01 >> 15) & 1) * w01 + float((c11 >> 15) & 1) * w11) / opac;\n"
     "    stp = stpf >= 0.5 ? 1 : 0;\n"
     "  }\n"
-    "  if ((v_filter & 16) != 0 && v_hd_mode == 0) rgb = lod_sample(uv0, dx0, dy0, stp, rgb);\n"
+    "  if (need_color && (v_filter & 16) != 0 && v_hd_mode == 0) rgb = lod_sample(uv0, dx0, dy0, stp, rgb);\n"
     "  if (u_bcls != 0) {   /* 3D, or additive (modes 1 and 3) semi texels */\n"
     "    if (u_bcls == 1 && !(v_b3d > 0.999 || ((v_semi == 2 || v_semi == 4) && stp == 1))) discard;\n"
     "    if (u_bcls == 2 && v_semi != 0 && stp == 1) discard;   /* see-through: keeps what is under */\n"
@@ -2449,6 +2454,16 @@ static void hr_end(void) {
  * decal problem; this tolerance is our own. Every caller that applies 1 or 2
  * calls depth_restore after its draw (tex: textured program bound). */
 static GLint s_geo_uZbias = -1, s_tex_uZbias = -1;
+static GLint s_tex_uBcls = -1, s_geo_uBcls = -1, s_geo_uBadd = -1;
+static int coverage_fast_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_COVERAGE_FAST");
+        enabled = !(e && e[0] == '0');
+    }
+    return enabled;
+}
+
 static float s_pgxp_depth_tol = -1.0f;
 static float pgxp_depth_tol(void) {
     if (s_pgxp_depth_tol < 0.0f) {
@@ -2497,7 +2512,10 @@ static void depth_restore_ex(int mode, int tex, int n, int semi, int mask, int c
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         glDepthMask(GL_TRUE);
         if (tex) p_glUniform1i(s_uSemipass, 0);
+        /* Coverage keeps native/HD cutouts; colour filtering cannot affect depth. */
+        if (tex && coverage_fast_enabled()) p_glUniform1i(s_tex_uBcls, 3);
         glDrawArrays(GL_TRIANGLES, 0, n);
+        if (tex && coverage_fast_enabled()) p_glUniform1i(s_tex_uBcls, 0);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         if (st) glEnable(GL_STENCIL_TEST);
         if (bl) glEnable(GL_BLEND);
@@ -3713,7 +3731,6 @@ void gl_renderer_batch_diag(uint64_t out[9]) {
  * Opaque 2D, sprites and the HUD therefore clear it wherever they draw,
  * painter ordered like the colour; semi-transparent texels and primitives
  * leave it as it was. Bloom off: none of this runs and no state changes. */
-static GLint s_tex_uBcls = -1, s_geo_uBcls = -1, s_geo_uBadd = -1;
 /* No glGet here: on a threaded driver every query is a round trip, and these
  * run per batch. The passes set what they need; the caller's draw state is
  * then put back from what the caller knows (bcls_end_geo / tex_bcls_end).
@@ -6179,6 +6196,8 @@ static int init_gpu_raster(void) {
     s_uLimits   = p_glGetUniformLocation(s_tex_prog, "u_limits");
     s_uHdTexture = p_glGetUniformLocation(s_tex_prog, "u_hd_texture");
     s_tex_uBcls = p_glGetUniformLocation(s_tex_prog, "u_bcls");
+    p_glUseProgram(s_tex_prog);
+    p_glUniform1i(p_glGetUniformLocation(s_tex_prog, "u_coverage_fast"), coverage_fast_enabled());
     s_geo_uBcls = p_glGetUniformLocation(s_geo_prog, "u_bcls");
     s_geo_uBadd = p_glGetUniformLocation(s_geo_prog, "u_badd");
     s_uBlitSrc     = p_glGetUniformLocation(s_blit_prog, "u_src");
