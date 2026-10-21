@@ -213,6 +213,13 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-4 Stage 2: opt-in exact PGXP projection retains positive,
+  unwrapped MAC3 beyond hardware SZ saturation. GPU perspective/depth paths
+  carry the validated full depth; guest GTE state and legacy depth APIs stay
+  unchanged. Mac production PGXP numeric checks pass. R4 acceptance is pending
+  full-distance timing; see R4 `analysis/STATUS.md`.
+
+
 - **2026-10-21 (BRIEF-4 full-range work):** Removed the unsuccessful indexed-decode and PGXP ALU experiments after regressive full-circuit R4 measurements. Runtime source matches `4b2fdfad`: qualified far projection, material recording cache and opaque bloom fusion remain. R4 Stage 2 is not accepted (performance and reported-building visual gate open); Stage 1 remains pushed and accepted. See R4 `analysis/STATUS.md`.
 
 - **2026-10-21 (BRIEF-4 far projection):** Opt-in preserve-projection can recover IR-saturated X/Y from qualified unshifted MACs. A new intact-word tag requires validated GTE dataflow; modified words, half writes, cache fallback, lm sign clamps and accumulator/SZ overflow keep rejection. Guest registers and the faithful default are unchanged. R4 maximum-range visual/performance acceptance remains pending.

@@ -1253,7 +1253,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
             }
         }
         pgxp_gte_push_sxy(px16, py16, gte->SZ[3], (uint32_t)gte->SXY[2]);
-        if (unclamped_projection) pgxp_gte_mark_unclamped();
+        if (unclamped_projection) pgxp_gte_mark_unclamped((uint32_t)(mac3 >> 12));
         if (!proj_override && pgxp_projection_tracking() && shift == 12 && !lm) {
             const double z = (double)(mac3 >> 12);
             const double h_proj = (double)gte_h_scaled(gte);

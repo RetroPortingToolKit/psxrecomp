@@ -1523,7 +1523,11 @@ extern "C" int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3,
      * divide overflow (the GTE saturates the quotient when H >= 2*SZ3). */
     if (shift != 12 || x_den <= 0) return 0;
     const int64_t ix = mac1 >> 12, iy = mac2 >> 12;
-    const bool unclamped = ix != ir1 || iy != ir2;
+    const int64_t z_int = mac3 >> 12;
+    if (z_int <= 0) return 0;
+    const bool xy_clamped = ix != ir1 || iy != ir2;
+    const bool z_clamped = z_int > 0xFFFF;
+    const bool unclamped = xy_clamped || z_clamped;
     if (unclamped) {
         /* Only the opt-in exact projection may bypass IR saturation. Reject
          * wrapped accumulators, lm=1 sign clamps and every other mismatch. */
@@ -1531,10 +1535,10 @@ extern "C" int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3,
         const int64_t cx = ix < -32768 ? -32768 : ix > 32767 ? 32767 : ix;
         const int64_t cy = iy < -32768 ? -32768 : iy > 32767 ? 32767 : iy;
         if (!s_preserve_projection || mac1 < lo || mac1 > hi ||
-            mac2 < lo || mac2 > hi || cx != ir1 || cy != ir2) return 0;
+            mac2 < lo || mac2 > hi || mac3 < lo || mac3 > hi ||
+            cx != ir1 || cy != ir2) return 0;
     }
-    const int64_t z_int = mac3 >> 12;
-    if (z_int <= 0 || z_int > 0xFFFF || (uint32_t)z_int != sz3) return 0;
+    if ((uint32_t)(z_clamped ? 0xFFFF : z_int) != sz3) return 0;
     if ((int64_t)h >= 2 * z_int) return 0;
     /* (MAC/4096) * H / (MAC3/4096): the 4096s cancel. Double keeps ~52 bits,
      * far below the 1/65536 px the shadow carries. Host-only and visual-only,
@@ -1586,10 +1590,19 @@ extern "C" void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3,
     s_gte[15] = *pv;                           /* SXYP mirrors SXY2           */
 }
 
-extern "C" void pgxp_gte_mark_unclamped(void) {
+extern "C" void pgxp_gte_mark_unclamped(uint32_t depth) {
     if (!g_pgxp_active) return;
     s_gte[14].flags |= PGXP_F_UNCLAMPED;
+    s_gte[14].projection.z = (float)depth;
     s_gte[15] = s_gte[14];
+}
+
+extern "C" float pgxp_get_unclamped_depth(uint32_t addr, uint32_t word) {
+    if (!g_pgxp_active || !s_preserve_projection) return 0.0f;
+    const PGXPValue *pv = pgxp_ptr(addr);
+    if (!pv || pv->gen != s_gen || pv->value != word ||
+        !(pv->flags & PGXP_F_UNCLAMPED) || !(pv->flags & PGXP_F_VZ)) return 0.0f;
+    return pv->projection.z;
 }
 
 extern "C" int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16) {
