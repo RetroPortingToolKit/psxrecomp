@@ -66,6 +66,9 @@ typedef struct RtConfig {
     RtCtxFn  ctx;
     void    *user;
     RtTickFn tick;         /* optional (NULL) */
+    /* Optional: before a command wait, on the render thread with its context
+     * current and no queue mutex held (e.g. end a GPU timing bracket). */
+    void (*idle)(void *user);
 } RtConfig;
 
 /* Start: the context must be current on the calling thread; on success it is

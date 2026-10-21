@@ -170,6 +170,11 @@ def main():
                 print(f"FAIL scale {s} dynres: {k} differs with the render thread on "
                       f"({runs[0][k]} off, {runs[1][k]} on)")
                 ok = False
+    # A paced producer must not turn an inexpensive draw into 30ms GPU work.
+    r = run([probe, 4, 1, args.frames, "idle"])
+    print("producer-idle timing:", r.returncode, r.stdout.strip().splitlines()[-8:], r.stderr[-800:])
+    if r.returncode or parse(r.stdout)["failures"] != 0:
+        ok = False
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
