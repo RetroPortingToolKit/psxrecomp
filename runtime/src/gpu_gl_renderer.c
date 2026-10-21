@@ -395,6 +395,60 @@ static int load_modern_gl(void) {
 
 /* ---- state ------------------------------------------------------------- */
 static SDL_Window   *s_win = NULL;
+static uint64_t s_window_owner;
+static _Atomic uint64_t s_drawable_extent;
+static uint64_t s_drawable_queries;
+#if defined(PSX_SDL3)
+static _Atomic uint32_t s_drawable_window_id;
+static int s_drawable_watch;
+static bool SDLCALL drawable_event_watch(void *unused, SDL_Event *event) {
+    (void)unused;
+    if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED &&
+        event->window.windowID == atomic_load_explicit(&s_drawable_window_id, memory_order_relaxed) &&
+        event->window.data1 >= 0 && event->window.data2 >= 0)
+        atomic_store_explicit(&s_drawable_extent,
+            ((uint64_t)(uint32_t)event->window.data1 << 32) | (uint32_t)event->window.data2,
+            memory_order_release);
+    return true;
+}
+#endif
+static int drawable_events_enabled(void) {
+#if defined(PSX_SDL3)
+    if (!s_drawable_watch) return 0;
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_DRAWABLE_EVENTS");
+        enabled = !(e && e[0] == '0');
+    }
+    return enabled;
+#else
+    return 0; /* SDL2 resize events are logical, not drawable-pixel extents. */
+#endif
+}
+static uint64_t window_thread_id(void) {
+#if defined(PSX_SDL3)
+    return (uint64_t)SDL_GetCurrentThreadID();
+#else
+    return (uint64_t)SDL_ThreadID();
+#endif
+}
+/* Query only at context creation (or in the legacy control). SDL3 pixel-size
+ * events publish one consistent pair without taking SDL's window-properties
+ * lock, which the swapping thread can hold. No worker queries the window. */
+static void gl_drawable_refresh(void) {
+    if (!s_win || window_thread_id() != s_window_owner) return;
+    int w = 0, h = 0;
+    SDL_GL_GetDrawableSize(s_win, &w, &h);
+    s_drawable_queries++;
+    atomic_store_explicit(&s_drawable_extent,
+        ((uint64_t)(uint32_t)w << 32) | (uint32_t)h, memory_order_release);
+}
+static void gl_drawable_size(int *w, int *h) {
+    if (!drawable_events_enabled()) gl_drawable_refresh();
+    uint64_t extent = atomic_load_explicit(&s_drawable_extent, memory_order_acquire);
+    if (w) *w = (int)(extent >> 32);
+    if (h) *h = (int)(uint32_t)extent;
+}
 static SDL_GLContext s_ctx = NULL;
 static uint16_t     *s_vram = NULL;       /* CPU VRAM array (gpu.c's storage) */
 static int           s_swap_interval = 1; /* SDL_GL swap interval (vsync mode) */
@@ -1295,7 +1349,7 @@ static void hold_capture_drawable(void) {
     int ww = 0, wh = 0;
     if (!s_ctx || !s_win)
         return;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     if (ww < 1 || wh < 1)
         return;
     hold_ensure_tex(ww, wh);
@@ -1326,7 +1380,7 @@ static void hiw_capture_size(int sw, int sh, int force_4_3, int *cw, int *ch) {
     int ww = 0, wh = 0, lx, ly, lw, lh;
     *cw = sw; *ch = sh;
     if (!s_hiw || !s_win) return;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     if (ww < 1 || wh < 1) return;
     if (force_4_3) letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
     else letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
@@ -1406,7 +1460,7 @@ static void postfx_present(int fresh, int with_aa, int lx, int ly, int lw, int l
 static void pres_record(int path, int dx, int dy, int w, int h,
                         int lx, int ly, int lw, int lh) {
     int drawable_w = 0, drawable_h = 0;
-    SDL_GL_GetDrawableSize(s_win, &drawable_w, &drawable_h);
+    gl_drawable_size( &drawable_w, &drawable_h);
     psx_video_telemetry_compose(PSX_VIDEO_OPENGL, s_out_scale, w, h,
                                drawable_w, drawable_h, lw, lh);
     /* The composed game image, before hold-last capture and the OSD: the
@@ -1538,7 +1592,7 @@ static int    s_post_copy_w = 0, s_post_copy_h = 0;
 /* Clip [lx,ly,lw,lh] to the drawable; 0 when less than min px remain. */
 static int post_clip_rect(int *lx, int *ly, int *lw, int *lh, int min) {
     int ww = 0, wh = 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     if (*lx < 0) { *lw += *lx; *lx = 0; }
     if (*ly < 0) { *lh += *ly; *ly = 0; }
     if (*lx + *lw > ww) *lw = ww - *lx;
@@ -6337,7 +6391,7 @@ int gl_renderer_scale_info(GlScaleInfo *out) {
         int wmax = s_gl_max_dim / VRAM_H;
         out->max_scale = wmax > GL_MAX_INTERNAL_SCALE ? GL_MAX_INTERNAL_SCALE : wmax;
     }
-    if (s_ctx && s_win) SDL_GL_GetDrawableSize(s_win, &out->drawable_w, &out->drawable_h);
+    if (s_ctx && s_win) gl_drawable_size( &out->drawable_w, &out->drawable_h);
     return s_raster_ok;
 }
 
@@ -6446,6 +6500,13 @@ int gl_renderer_select_texture_bank_live_clut(uint16_t id) {
 
 int gl_renderer_init_context(SDL_Window *win) {
     s_win = win;
+    s_window_owner = window_thread_id();
+#if defined(PSX_SDL3)
+    if (s_drawable_watch) SDL_RemoveEventWatch(drawable_event_watch, NULL);
+    atomic_store(&s_drawable_window_id, SDL_GetWindowID(win));
+    s_drawable_watch = SDL_AddEventWatch(drawable_event_watch, NULL) ? 1 : 0;
+#endif
+    gl_drawable_refresh();
     s_present_w = 0;
     s_present_h = 0;
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
@@ -6565,6 +6626,11 @@ static void pass_resources_release(void);
 static void present_image_ring_gl_forget(void);
 void gl_renderer_shutdown(void) {
     gl_renderer_render_thread_stop();   /* drains; the context comes back to this thread */
+#if defined(PSX_SDL3)
+    if (s_drawable_watch) SDL_RemoveEventWatch(drawable_event_watch, NULL);
+    s_drawable_watch = 0;
+    atomic_store(&s_drawable_window_id, 0);
+#endif
     /* After the worker has stopped (it presents, and captures, on its own
      * thread) and before the context dies: forget the ring's GL names. */
     present_image_ring_gl_forget();
@@ -6623,7 +6689,7 @@ void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linea
     GL_RT_SYNC("present");
     if (!s_ctx) return;
     interp_reset_history();
-    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    int ww = 0, wh = 0; gl_drawable_size( &ww, &wh);
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, ww, wh);
     glClearColor(0.f,0.f,0.f,1.f); glClear(GL_COLOR_BUFFER_BIT);
@@ -6725,7 +6791,7 @@ void gl_renderer_present_blank(void) {
     GL_RT_SYNC("present_blank");
     if (!s_ctx) return;
     interp_reset_history();
-    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    int ww = 0, wh = 0; gl_drawable_size( &ww, &wh);
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, ww, wh); glClearColor(0.f,0.f,0.f,1.f); glClear(GL_COLOR_BUFFER_BIT);
     pres_record(GL_PRES_BLANK, 0, 0, 0, 0, 0, 0, ww, wh);
@@ -7865,7 +7931,7 @@ static int interp_present_pair(GLuint a, GLuint b, float t, int blend_mode) {
     if (!s_ctx || !s_interp_enabled || interp_suspended_now() || s_interp_valid < 1)
         return 0;
     uint64_t present_t0 = SDL_GetPerformanceCounter();
-    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    int ww = 0, wh = 0; gl_drawable_size( &ww, &wh);
     int lx, ly, lw, lh;
     if (s_interp_force_4_3)
         letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
@@ -9189,7 +9255,7 @@ static void openxr_present_native(void) {
     int ww=0,wh=0,*r=s_native_surface_rect;
     if(!s_native_surface_enabled || !s_native_surface_pending || s_pass_active)return;
     s_native_surface_pending=0;
-    SDL_GL_GetDrawableSize(s_win,&ww,&wh);
+    gl_drawable_size(&ww,&wh);
     if(r[0]<0 || r[1]<0 || r[2]<1 || r[3]<1 || r[0]+r[2]>ww || r[1]+r[3]>wh)return;
     /* No replay or retained pair: this exact native present is the source.
      * Direct lifecycle permits native 24-bit videos as well as 15-bit UI. */
@@ -9217,7 +9283,7 @@ static int stereo_present(int w, int h) {
     if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
         p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
         gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY) return 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     gl_perf_present_enter();
     /* Desktop spectator layout while XR runs: default single left eye filled to
      * the window, PSX_VR_DESKTOP_MIRROR selects 0 legacy / 1 left / 2 SBS / 3 right. */
@@ -9554,7 +9620,7 @@ static void present_image_ring_capture_gl(void) {
     if (s_pir_disabled || !p_glMapBuffer || !p_glUnmapBuffer) return;
     if (!present_image_ring_accepting()) return;
     int ww = 0, wh = 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     const int tw = present_image_ring_thumb_w(ww, wh);
     const int th = PRESENT_IMAGE_RING_H;
     if (tw <= 0) return;
@@ -9683,7 +9749,7 @@ static GLuint pt_target_fbo(void) {
     const int i = pt_current();
     if (i < 0) return 0;
     int ww = 0, wh = 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     if (ww < 1) ww = 1;
     if (wh < 1) wh = 1;
     if (s_pts_fbo[i] && s_pts_w[i] == ww && s_pts_h[i] == wh) return s_pts_fbo[i];
@@ -9759,7 +9825,7 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     }
     const int sw = s_pts_w[slot], sh = s_pts_h[slot];
     int ww = 0, wh = 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     p_glBindFramebuffer_raw(PSXGL_READ_FRAMEBUFFER, s_ptp_fbo[slot]);
     p_glBindFramebuffer_raw(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
@@ -9895,7 +9961,7 @@ static void gl_swap_with_osd(void) {
 #endif
     if (s_present_prog && s_ctx) {
         int ww = 0, wh = 0;
-        SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+        gl_drawable_size( &ww, &wh);
         if (ww > 0 && wh > 0) {
             const uint32_t *px = NULL;
             int ow = 0, oh = 0;
@@ -9968,7 +10034,7 @@ static void gl_swap_with_osd(void) {
         }
         if (burst && b_i > 0) {
             int ww = 0, wh = 0;
-            SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+            gl_drawable_size( &ww, &wh);
             if (ww == b_w && wh == b_h && (b_px[b_i] = (uint8_t *)malloc((size_t)ww * wh * 3))) {
                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
                 glReadPixels(0, 0, ww, wh, GL_RGB, GL_UNSIGNED_BYTE, b_px[b_i]);
@@ -9999,7 +10065,7 @@ static void gl_swap_with_osd(void) {
                 present_shot_done(ok);
             }
         } else if (burst && present_shot_take(shot_path, (int)sizeof(shot_path))) {
-            SDL_GL_GetDrawableSize(s_win, &b_w, &b_h);
+            gl_drawable_size( &b_w, &b_h);
             snprintf(b_path, sizeof b_path, "%s", shot_path);
             if (b_w > 0 && b_h > 0 && (b_px[0] = (uint8_t *)malloc((size_t)b_w * b_h * 3))) {
                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -10014,7 +10080,7 @@ static void gl_swap_with_osd(void) {
             present_shot_take(shot_path, (int)sizeof(shot_path))) {
             int ww = 0, wh = 0;
             int wrote = 0;
-            SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+            gl_drawable_size( &ww, &wh);
             if (ww > 0 && wh > 0) {
                 uint8_t *rows = (uint8_t *)malloc((size_t)ww * wh * 3);
                 uint8_t *flip = rows ? (uint8_t *)malloc((size_t)ww * wh * 3) : NULL;
@@ -10210,7 +10276,7 @@ int gl_renderer_present_hold_last(void) {
     int lx, ly, lw, lh;
     if (!s_ctx || !s_win || s_hold_kind == HOLD_NONE || !s_hold_tex)
         return 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     if (ww < 1 || wh < 1)
         return 0;
     glDisable(GL_SCISSOR_TEST);
@@ -10311,7 +10377,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
         return;
     }
     gl_perf_present_enter();   /* per-frame backdrop-phase reset + dbg snapshot live in here */
-    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    int ww = 0, wh = 0; gl_drawable_size( &ww, &wh);
     int lx, ly, lw, lh;
     if (force_4_3)
         letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
@@ -10515,7 +10581,7 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
         return 1;
     }
     gl_perf_present_enter();
-    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    int ww = 0, wh = 0; gl_drawable_size( &ww, &wh);
     int lx, ly, lw, lh;
     letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
     wide_blit_center(fbo, disp_x, disp_y, disp_h);   /* fast-path: authoritative centre */
@@ -12485,7 +12551,7 @@ static void fg_replay(const FgList *a, const FgList *b, double t, GLuint gen_wid
  * interpolation capture, no present bookkeeping), then swapped. */
 static void fg_compose(const FgList *b, GLuint wide_fbo, GLuint wide_tex, int linear,
                        int force_4_3) {
-    int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    int ww = 0, wh = 0; gl_drawable_size( &ww, &wh);
     int lx, ly, lw, lh;
     if (b->wide) {
         letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
@@ -13300,7 +13366,7 @@ static void fg_generate_timed(double t) {
 /* Keep the composed back buffer (a real frame) for later. 1 when kept. */
 static int fg_keep_real(void) {
     int ww = 0, wh = 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     if (ww <= 0 || wh <= 0) return 0;
     if (!s_fg_real_fbo || s_fg_real_w != ww || s_fg_real_h != wh) {
         if (s_fg_real_fbo) { p_glDeleteFramebuffers(1, &s_fg_real_fbo); glDeleteTextures(1, &s_fg_real_tex); }
@@ -13328,7 +13394,7 @@ static void fg_present_real(void) {
     if (!s_fg_real_kept) return;   /* nothing changed: the present was skipped */
     s_fg_real_kept = 0;
     int ww = 0, wh = 0;
-    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    gl_drawable_size( &ww, &wh);
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, s_fg_real_fbo);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
@@ -14261,6 +14327,7 @@ int gl_renderer_render_thread_active(void) { return s_rth_on; }
  * to the render thread when the frame may run asynchronously, take it when it
  * may not, then close the frame (the in-flight bound applies here). */
 void gl_renderer_render_thread_frame_boundary(void) {
+    if (!drawable_events_enabled()) gl_drawable_refresh();
     if (!s_rth_on) return;
     fg_note_guest_frame();
     if (rt_held()) {
