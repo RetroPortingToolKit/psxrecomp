@@ -1182,7 +1182,18 @@ static int alu_scalar(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2,
 
 static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
 
-extern "C" void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
+/* Keep the memory-only fast path out of each generated instruction body.
+ * GCC LTO otherwise partially inlines/specializes it across the large title,
+ * increasing the hot code footprint instead of reducing instruction work. */
+extern "C"
+#if defined(PSX_NO_DEBUG_TOOLS) && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, noclone))
+#elif defined(PSX_NO_DEBUG_TOOLS) && defined(__clang__)
+__attribute__((noinline))
+#elif defined(PSX_NO_DEBUG_TOOLS) && defined(_MSC_VER)
+__declspec(noinline)
+#endif
+void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
                              uint32_t result, uint32_t s1, uint32_t s2) {
     (void)cpu;
     if (!g_pgxp_active) return;
