@@ -11541,7 +11541,7 @@ typedef struct {
 } FgList;
 static int rp_is_car(const FgList *L, uint32_t pi);
 /* Raw triangle captured while recording a list (absolute coords). */
-typedef struct { uint32_t rec, key0, vid[3]; float x[3], y[3], p[3][3], h[3]; int area[4]; } FgRaw;
+typedef struct { uint32_t rec, key0, vid[3]; float x[3], y[3], p[3][3], h[3], pz[3]; int area[4]; } FgRaw;
 
 static int       s_fg_on = 0;                 /* configured (any thread reads) */
 static int       s_fg_force = 0;              /* PSX_FRAME_GEN_FORCE: tests */
@@ -11554,6 +11554,7 @@ static int       s_fg_older = 0, s_fg_newer = 1, s_fg_cur = 2;
 static int       s_fg_pa = -1, s_fg_pb = -1;  /* the pair a schedule draws from */
 static FgRaw    *s_fg_raw = NULL; static uint32_t s_fg_nraw = 0, s_fg_rawcap = 0;
 static int       s_fg_pc_valid = 0; static int32_t s_fg_pc[6];   /* pending PRECISE */
+static int       s_fg_dz_valid = 0; static float s_fg_dz[3];     /* pending PGXP DEPTH */
 static int       s_fg_have_last = 0, s_fg_last_dx = 0, s_fg_last_dy = 0;
 /* Display buffers seen in presents (x, y, w, h), and the one the capturing
  * list draws into: a list is one game frame's drawing into one buffer, closed
@@ -11949,9 +11950,17 @@ static void fg_capture(const RtCmd *c, const void *payload) {
         if (s_fg_pc_valid) memcpy(s_fg_pc, v + 1, sizeof s_fg_pc);
         return;
     }
+    if (c->op == RTH_DEPTH) {   /* PGXP per-vertex depth of the next triangle */
+        const int32_t *v = (const int32_t *)payload;
+        s_fg_dz_valid = v[0] != 0;
+        if (s_fg_dz_valid) memcpy(s_fg_dz, v + 1, sizeof s_fg_dz);
+        return;
+    }
     FgRaw raw;
     if (fg_tri_geom(c->op, payload, s_fg_pc_valid ? s_fg_pc : NULL, raw.x, raw.y, &raw.key0)) {
         raw.rec = (uint32_t)r;
+        for (int k = 0; k < 3; k++)
+            raw.pz[k] = (s_fg_dz_valid && s_fg_dz[k] >= 1.0f) ? s_fg_dz[k] : 0.0f;
         /* The identities belong to this triangle only if it is drawn where
          * they were looked up (a culled triangle leaves its record behind). */
         for (int k = 0; k < 3; k++) raw.vid[k] = 0;
@@ -11974,6 +11983,7 @@ static void fg_capture(const RtCmd *c, const void *payload) {
     case RTH_FLAT_TRI: case RTH_GOURAUD_TRI: case RTH_TEX_TRI:
     case RTH_SHADED_TEX_TRI: case RTH_PROJ_TRI:
         s_fg_pc_valid = 0;
+        s_fg_dz_valid = 0;
         s_fg_src_valid = 0;
         break;
     default: break;
@@ -12011,6 +12021,7 @@ static void fg_list_close(FgList *l, const int disp[4]) {
             p.vid[k] = r->vid[k];
             memcpy(p.p[k], r->p[k], sizeof p.p[k]);
             p.h[k] = r->h[k];
+            p.pz[k] = r->pz[k];
         }
         for (int k = 0; k < 3; k++) { p.x[k] = r->x[k] - (float)disp[0]; p.y[k] = r->y[k] - (float)disp[1]; }
         if (!fg_prims_add(&l->prims, &p)) { l->valid = 0; return; }
@@ -12657,6 +12668,42 @@ static int rp_is_car(const FgList *L, uint32_t pi) {
  * surface; the region is (x0, y0, W, H) native px, rel x = x - ox. */
 static double s_rp_t_snap = 0, s_rp_t_z = 0, s_rp_t_w = 0;
 static uint32_t s_rp_zn = 0;
+/* Geometry without a projection source (a game's own near-plane
+ * subdivision) is world when the renderer had its PGXP depth: the view is the
+ * fitted one of its draw area. -1 otherwise. */
+/* PGXP depth is the GTE's SZ, which a game may scale against the camera
+ * space its projected vertices carry: the scale is measured per list as the
+ * median camera-z / SZ over vertices that have both (1 when none do). */
+static float *s_rp_pzr = NULL; static size_t s_rp_pzr_cap = 0;
+static float  s_rp_pzs_last = 0.0f;   /* diagnostics: the newer list's scale */
+static int rp_float_cmp(const void *a, const void *b) {
+    const float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? -1 : x > y;
+}
+static float rp_pz_scale(const FgList *L) {
+    size_t n = 0;
+    if ((size_t)L->prims.n * 3u > s_rp_pzr_cap) {
+        float *nb = (float *)realloc(s_rp_pzr, (size_t)L->prims.n * 3u * sizeof *nb);
+        if (!nb) return 1.0f;
+        s_rp_pzr = nb; s_rp_pzr_cap = (size_t)L->prims.n * 3u;
+    }
+    for (uint32_t j = 0; j < L->prims.n; j++) {
+        const FgPrim *p = &L->prims.v[j];
+        for (int k = 0; k < 3; k++)
+            if (p->vid[k] && p->p[k][2] >= 1.0f && p->pz[k] >= 1.0f) s_rp_pzr[n++] = p->p[k][2] / p->pz[k];
+    }
+    if (n < 16) return 1.0f;
+    qsort(s_rp_pzr, n, sizeof *s_rp_pzr, rp_float_cmp);
+    return s_rp_pzr[n / 2];
+}
+static int rp_pgxp_world_view(const FgPrim *p) {
+    if (p->vid[0] || p->vid[1] || p->vid[2]) return -1;
+    if (p->pz[0] < 1.0f || p->pz[1] < 1.0f || p->pz[2] < 1.0f) return -1;
+    for (uint32_t vi = 0; vi < s_fg_fit.nviews && vi < FG_MAX_VIEWS; vi++)
+        if (s_fg_fit.v[vi].view == p->view && s_fg_fit.v[vi].ok) return (int)vi;
+    return -1;
+}
+
 /* Two-frame warp: the older frame's own depth image. Its world is what the
  * fit explains by the camera: a vertex with a projection in a fitted view,
  * not one the fit called an object in the newer frame (cars are drawn again
@@ -12701,6 +12748,7 @@ static int rp_build_older(const FgList *L, const FgList *O, float qox, int zw, i
         s_rp_zw2 = zw; s_rp_zh2 = zh;
     }
     size_t n = 0;
+    const float pzs_old = rp_pz_scale(O);
     for (uint32_t r = 0; r < O->n; r++) {
         FgRec h;
         memcpy(&h, O->buf + O->off[r], sizeof h);
@@ -12717,7 +12765,8 @@ static int rp_build_older(const FgList *L, const FgList *O, float qox, int zw, i
         if (pi < 0) continue;
         const FgPrim *p = &O->prims.v[pi];
         int world = 1, view = -1, objv = 0;
-        for (int k = 0; k < 3; k++) {
+        const int pgv = rp_pgxp_world_view(p);
+        for (int k = 0; k < 3 && pgv < 0; k++) {
             if (!p->vid[k] || p->p[k][2] < 1.0f) { world = 0; break; }
             RpVidMode key; key.vid = p->vid[k];
             const RpVidMode *m = (const RpVidMode *)bsearch(&key, s_rp_vm, nvm, sizeof *s_rp_vm, rp_vm_cmp);
@@ -12732,6 +12781,7 @@ static int rp_build_older(const FgList *L, const FgList *O, float qox, int zw, i
             if (vk < 0) { world = 0; break; }
             if (view < 0) view = vk; else if (view != vk) { world = 0; break; }
         }
+        if (pgv >= 0) view = pgv;
         if (world && (view < 0 || view >= FG_MAX_VIEWS || !s_fg_fit.v[view].ok)) world = 0;
         if (world) {
             const float *ar = s_fg_fit.v[view].area;
@@ -12750,7 +12800,7 @@ static int rp_build_older(const FgList *L, const FgList *O, float qox, int zw, i
         const float id = world ? 1.0f : far_obj ? 4.0f : objv ? 2.0f : 0.0f;
         for (int k = 0; k < 3; k++)
             if (!rp_push(&n, (p->x[k] + qox) * RP_ZS, p->y[k] * RP_ZS,
-                         world ? 1.0f / p->p[k][2] : far_obj ? 1e-6f : 0.0f, id,
+                         world ? 1.0f / (pgv >= 0 ? p->pz[k] * pzs_old : p->p[k][2]) : far_obj ? 1e-6f : 0.0f, id,
                          world ? (float)view : far_obj ? (float)fview : 0.0f)) return 0;
     }
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_rp_zfbo2);
@@ -12836,6 +12886,8 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
         }
         fg_hud_match(&L->prims, O ? &O->prims : NULL, 24.0f, s_rp_needle);
         s_rp_needle_n = L->prims.n;
+        const float pzs_new = rp_pz_scale(L);
+        s_rp_pzs_last = pzs_new;
         for (uint32_t r = 0; r < L->n; r++) {
             FgRec h;
             memcpy(&h, L->buf + L->off[r], sizeof h);
@@ -12858,6 +12910,9 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
                 }
                 if (world && (view < 0 || view >= FG_MAX_VIEWS || !vp[view][3] ||
                               !s_fg_fit.v[view].ok)) world = 0;
+                /* Source-less geometry with PGXP depth: world at that depth. */
+                const int pgv = world ? -1 : rp_pgxp_world_view(p);
+                if (pgv >= 0 && vp[pgv][3]) { world = 1; view = pgv; }
                 if (world) {
                     const float *ar = s_fg_fit.v[view].area;
                     if ((ar[2] - ar[0]) * (ar[3] - ar[1]) < 0.15f * big) world = 0;
@@ -12887,7 +12942,7 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
                 const float id = world ? 1.0f : far_obj ? 4.0f : obj ? 2.0f : s_rp_needle[pi] ? 3.0f : 0.0f;
                 for (int k = 0; k < 3; k++)
                     if (!rp_push(&n, (p->x[k] + ox) * RP_ZS, p->y[k] * RP_ZS,
-                                 world ? 1.0f / p->p[k][2] : far_obj ? 1e-6f : 0.0f, id,
+                                 world ? 1.0f / (pgv >= 0 ? p->pz[k] * pzs_new : p->p[k][2]) : far_obj ? 1e-6f : 0.0f, id,
                                  world ? (float)view : far_obj ? (float)fview : 0.0f)) goto fail;
                 break;
             }
@@ -13175,6 +13230,7 @@ static void rp_free(void) {
     if (s_rp_zrb2) p_glDeleteRenderbuffers(1, &s_rp_zrb2);
     s_rp_zfbo2 = s_rp_ztex2 = s_rp_zrb2 = 0; s_rp_zw2 = s_rp_zh2 = 0; s_rp_key2 = 0;
     free(s_rp_vm); s_rp_vm = NULL; s_rp_vmcap = 0;
+    free(s_rp_pzr); s_rp_pzr = NULL; s_rp_pzr_cap = 0;
     s_rp_zfbo = s_rp_ztex = 0; s_rp_zw = s_rp_zh = 0; s_rp_key = 0;
     if (s_rp_vbo) p_glDeleteBuffers(1, &s_rp_vbo);
     if (s_rp_vao) p_glDeleteVertexArrays(1, &s_rp_vao);
@@ -13203,7 +13259,8 @@ static int rp_allocated(void) {
  * computes those vertices without the GTE). Their depth is unknown, so
  * neither a warp nor a redraw can move them with the camera; left in place
  * they split from the moving geometry around them (doubled text on a
- * passing billboard). Small 2D pieces (HUD) are not counted. */
+ * passing billboard). Small 2D pieces (HUD) are not counted, nor geometry
+ * with PGXP depth (the depth images place it). */
 static uint64_t s_fg_skip_unplaced = 0;
 static double fg_unplaced_share(const FgList *L) {
     if (!L || !L->valid || !L->rec2prim || !s_fg_fit.nviews) return 0.0;
@@ -13225,6 +13282,7 @@ static double fg_unplaced_share(const FgList *L) {
         const FgPrim *p = &L->prims.v[pi];
         const int proj = p->vid[0] || p->vid[1] || p->vid[2];
         if (proj) { seen3d = 1; continue; }
+        if (p->pz[0] >= 1.0f && p->pz[1] >= 1.0f && p->pz[2] >= 1.0f) continue;   /* PGXP depth */
         if (!seen3d) continue;                    /* a backdrop under the scene */
         const float bw = fmaxf(p->x[0], fmaxf(p->x[1], p->x[2])) - fminf(p->x[0], fminf(p->x[1], p->x[2]));
         const float bh = fmaxf(p->y[0], fmaxf(p->y[1], p->y[2])) - fminf(p->y[0], fminf(p->y[1], p->y[2]));
@@ -13977,7 +14035,7 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         "\"real_cpu_ms\":%.3f,\"real_gpu_ms\":%.3f,\"ceiling\":%d,"
         "\"trips_late\":%u,\"trips_backed_up\":%u,\"trips_behind\":%u,"
         "\"place_camera\":%u,\"place_object\":%u,\"place_neighbour\":%u,"
-        "\"place_unchanged\":%u,\"skip_unplaced\":%llu,\"rp_older\":%llu,\"cam_angle_deg\":%.3f,\"cam_shift\":%.1f,"
+        "\"place_unchanged\":%u,\"skip_unplaced\":%llu,\"rp_older\":%llu,\"pz_scale\":%.4f,\"cam_angle_deg\":%.3f,\"cam_shift\":%.1f,"
         "\"clamped\":%u,\"guessed\":%u,\"verdict_ok\":%d,\"rejected\":%llu,\"reject_why\":\"%s\",\"noplan_why\":\"%s\",\"rp_ms\":[%.3f,%.3f,%.3f],\"rp_zn\":%u,\"reprojected\":%llu,\"reproject_fallback\":%llu,\"reproject\":%d,\"np\":[%llu,%llu,%llu,%llu],\"end_ahead\":%llu,\"end_bp\":%llu,\"end_phase\":%llu",
         s_fg_on, s_fg_on && s_rth_on && open, s_fg_force,
         (unsigned long long)s_fg_generated, (unsigned long long)s_fg_real_presents,
@@ -13998,7 +14056,7 @@ int gl_renderer_frame_gen_json(char *out, int cap) {
         s_fg_real_ema * 1e3, s_fg_real_gpu_ema * 1e3, fg_ceil()->cap,
         s_fg_trip_late, s_fg_trip_bp, s_fg_trip_behind,
         s_fg_fit.camera, s_fg_fit.object, s_fg_fit.neighbour, s_fg_fit.unchanged,
-        (unsigned long long)s_fg_skip_unplaced, (unsigned long long)s_rp_older_frames,
+        (unsigned long long)s_fg_skip_unplaced, (unsigned long long)s_rp_older_frames, (double)s_rp_pzs_last,
         2.0 * acos(fmin(1.0, fabs(s_fg_fit.v[0].q[0]))) * 57.29578,
         sqrt(s_fg_fit.v[0].t[0] * s_fg_fit.v[0].t[0] + s_fg_fit.v[0].t[1] * s_fg_fit.v[0].t[1] +
              s_fg_fit.v[0].t[2] * s_fg_fit.v[0].t[2]),

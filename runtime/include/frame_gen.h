@@ -57,6 +57,8 @@ typedef struct FgPrim {
     float    x[3], y[3]; /* native px, relative to the list's display origin */
     float    p[3][3];    /* camera-space positions (GTE units) */
     float    h[3];       /* projection distance */
+    float    pz[3];      /* PGXP depth (GTE SZ) per vertex when the renderer had it, else 0:
+                          * depth for geometry without a projection source */
 } FgPrim;
 
 typedef struct FgPrimList {
