@@ -213,7 +213,23 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+<<<<<<< HEAD
 - **2026-10-21 (BRIEF-4 drawable cache):** Reuse `8ed11cc7`/`ad173490` drawable caching and SDL3 pixel-size event publication. Seven query/event hardware controls match all output hashes; resize and zero-per-frame-query checks pass on Windows and Mac. A loaded repeat before this fix has a 51.795ms host-event span; final performance validation remains open.
+=======
+- **2026-10-21 (Windows sleep concurrency):** Concurrent guest/render pacers
+  exposed a shared auto-reset waitable timer: one caller cancels/consumes the
+  other's wake. Replaced it with FLS-owned timers and synchronized QPC setup.
+  Eight-sleeper regression fails old source at 10 s and passes the fix in
+  0.49 s, including timer-handle cleanup. No guest time model changed.
+
+- **2026-10-21 (production R4 follow-up):** Removed debug-only PGXP receipt
+  writes from no-debug-tools builds; numeric PGXP and word-shadow suites pass.
+  Added disk-state-anchored applied-input replay and bounded frame/work/span
+  exports for production measurements. Five focused framework CTests and 26
+  R4 checks pass on Windows. The owner's stricter default-Ultra acceptance bar
+  remains open; evidence is in R4 `analysis/render-60fps/SLOWDOWNS.md`. No guest
+  timing or projection arithmetic changed.
+>>>>>>> 2ca004ba (Give concurrent Windows sleepers independent timers)
 
 - **2026-10-21 (BRIEF-4 cap edges):** Apply the display ceiling after supersampling and resolve the physical-monitor supersample policy after creating the window, including fixed presets. Saved large factors cannot exceed the Match display ceiling; legacy unset scales stay intact. Resolution tests pass on Windows/Mac; all 21 R4 production-build CTests pass. Final regeneration and receipt verification pending.
 
