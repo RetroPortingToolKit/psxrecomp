@@ -1452,6 +1452,11 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL 
         COMMAND ${Python3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_dma_gpu_list_cpu_hold.py"
             --cc ${CMAKE_C_COMPILER})
+    add_test(NAME memory_backing
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_memory_backing.py"
+            --cc ${CMAKE_C_COMPILER})
+    set_tests_properties(memory_backing PROPERTIES TIMEOUT 60)
 endif()
 
 # Mult/div deadline ownership: the same rule for MULT/DIV and MFLO/MFHI.

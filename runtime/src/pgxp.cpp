@@ -33,6 +33,7 @@
  */
 
 #include "pgxp.h"
+#include "psx_thread_local.h"
 #include "pgxp_hooks.h"
 #include "cpu_state.h"
 #include "psx_memory.h"
@@ -41,6 +42,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 /* gte.cpp — position-cache fallback tier (ambiguity-gated, G1.4 exact table) */
 extern "C" int gte_geometry_correction_lookup(uint32_t packed,
@@ -92,12 +94,28 @@ struct PGXPValue {
 #define PGXP_REG_HI        32
 #define PGXP_REG_LO        33
 
-static PGXPValue *s_ram = nullptr;            /* lazily allocated: RAM + mod regions */
-static PGXPValue  s_scratch[PGXP_SCRATCH_WORDS];
-static PGXPValue  s_gpr[34];                  /* 32 GPRs + HI + LO            */
-static PGXPValue  s_gte[32];                  /* GTE data registers           */
-static uint32_t s_model_origin[6];           /* only the six model input words */
-static PGXPValue  s_gtc[32];                  /* GTE control registers (CTC2) */
+static PSX_THREAD_LOCAL PGXPValue *s_ram = nullptr;            /* lazily allocated: RAM + mod regions */
+enum { PGXP_EXEC_PAGE_WORDS = 256,
+       PGXP_EXEC_PAGES = (PGXP_SHADOW_WORDS + PGXP_EXEC_PAGE_WORDS - 1) / PGXP_EXEC_PAGE_WORDS };
+/* Tracking starts only when a replay consumer requests a snapshot. Ordinary
+ * execution does not allocate version tables. A replay marks its modified
+ * snapshot pages invalid, so their next publication recopies even when the
+ * corresponding live page has not changed. */
+static PSX_THREAD_LOCAL uint64_t *s_exec_versions;
+static PSX_THREAD_LOCAL uint64_t *s_bound_versions;
+static inline PGXPValue *execution_word(PGXPValue *word) {
+    if (word && (s_exec_versions || s_bound_versions)) {
+        const size_t page = (size_t)(word - s_ram) / PGXP_EXEC_PAGE_WORDS;
+        if (s_bound_versions) s_bound_versions[page] = 0;
+        else ++s_exec_versions[page];
+    }
+    return word;
+}
+static PSX_THREAD_LOCAL PGXPValue  s_scratch[PGXP_SCRATCH_WORDS];
+static PSX_THREAD_LOCAL PGXPValue  s_gpr[34];                  /* 32 GPRs + HI + LO            */
+static PSX_THREAD_LOCAL PGXPValue  s_gte[32];                  /* GTE data registers           */
+static PSX_THREAD_LOCAL uint32_t s_model_origin[6];           /* only the six model input words */
+static PSX_THREAD_LOCAL PGXPValue  s_gtc[32];                  /* GTE control registers (CTC2) */
 
 /* Scalar tier (cpu-mode). Engines also use the GTE as a multiplier for
  * vertex arithmetic: Ape Escape's terrain subdivider packs two projected X
@@ -114,29 +132,29 @@ struct PGXPScalar {
     uint32_t value;      /* the register value it describes                   */
     uint32_t gen;
 };
-static PGXPScalar s_gpr_s[34];                /* GPRs + HI + LO               */
-static PGXPScalar s_gte_s[32];                /* GTE data registers (IR, MAC) */
-static PGXPScalar s_gtc_s[32];                /* GTE control (TR / BK words)  */
+static PSX_THREAD_LOCAL PGXPScalar s_gpr_s[34];                /* GPRs + HI + LO               */
+static PSX_THREAD_LOCAL PGXPScalar s_gte_s[32];                /* GTE data registers (IR, MAC) */
+static PSX_THREAD_LOCAL PGXPScalar s_gtc_s[32];                /* GTE control (TR / BK words)  */
 
-static uint32_t s_gen = 1;
-static int      s_enabled = 0;
-static int      s_cpu_mode = 0;
-static int      s_projection_tracking = 0;
-static float    s_tolerance = 0.5f;   /* user-validated seam clamp (G1.10) */
-static int      s_position_fallback = 1;   /* G1.4 cache tier (G1.11 switch) */
-static int      s_preserve_projection = 0; /* exact-projection shadows (G1.11) */
-static int      s_culling = 0;             /* precise NCLIP sign (G1.12)   */
-static uint32_t s_suppress = 0;
-static int      s_deferred_invalidate = 0;
+static PSX_THREAD_LOCAL uint32_t s_gen = 1;
+static PSX_THREAD_LOCAL int      s_enabled = 0;
+static PSX_THREAD_LOCAL int      s_cpu_mode = 0;
+static PSX_THREAD_LOCAL int      s_projection_tracking = 0;
+static PSX_THREAD_LOCAL float    s_tolerance = 0.5f;   /* user-validated seam clamp (G1.10) */
+static PSX_THREAD_LOCAL int      s_position_fallback = 1;   /* G1.4 cache tier (G1.11 switch) */
+static PSX_THREAD_LOCAL int      s_preserve_projection = 0; /* exact-projection shadows (G1.11) */
+static PSX_THREAD_LOCAL int      s_culling = 0;             /* precise NCLIP sign (G1.12)   */
+static PSX_THREAD_LOCAL uint32_t s_suppress = 0;
+static PSX_THREAD_LOCAL int      s_deferred_invalidate = 0;
 
 /* Single hot-path gate for every hook. */
-static int g_pgxp_active = 0;
+static PSX_THREAD_LOCAL int g_pgxp_active = 0;
 static inline void recompute_active(void) {
     g_pgxp_active = (s_enabled && s_suppress == 0) ? 1 : 0;
 }
 
-static PGXPStats s_stats;
-static PGXPStoreRecord *s_store_ring = nullptr;   /* pgxp_store_ring; with s_ram */
+static PSX_THREAD_LOCAL PGXPStats s_stats;
+static PSX_THREAD_LOCAL PGXPStoreRecord *s_store_ring = nullptr;   /* pgxp_store_ring; with s_ram */
 
 /* ------------------------------------------------------------------------- */
 /* Lifecycle                                                                  */
@@ -150,7 +168,13 @@ extern "C" void pgxp_invalidate_all(void) {
     if (++s_gen == 0) {
         ck_wrapped();
         /* generation wrapped: physically clear so stale slots can't revive */
-        if (s_ram) std::memset(s_ram, 0, PGXP_SHADOW_WORDS * sizeof(PGXPValue));
+        if (s_ram) {
+            std::memset(s_ram, 0, PGXP_SHADOW_WORDS * sizeof(PGXPValue));
+            for (size_t page = 0; page < PGXP_EXEC_PAGES; ++page) {
+                if (s_bound_versions) s_bound_versions[page] = 0;
+                else if (s_exec_versions) ++s_exec_versions[page];
+            }
+        }
         std::memset(s_scratch, 0, sizeof(s_scratch));
         std::memset(s_gpr, 0, sizeof(s_gpr));
         std::memset(s_gte, 0, sizeof(s_gte));
@@ -216,9 +240,9 @@ extern "C" int pgxp_preserve_projection(void) { return s_preserve_projection; }
 extern "C" void pgxp_set_culling(int enabled) { s_culling = enabled ? 1 : 0; }
 extern "C" int pgxp_culling(void) { return s_culling; }
 
-static int s_mod_request = 0;
-static int s_mod_request_cpu = 0;
-static int s_mod_request_cull = 0;
+static PSX_THREAD_LOCAL int s_mod_request = 0;
+static PSX_THREAD_LOCAL int s_mod_request_cpu = 0;
+static PSX_THREAD_LOCAL int s_mod_request_cull = 0;
 
 extern "C" void pgxp_mod_request(int enabled, int cpu_mode, int culling) {
     s_mod_request = enabled ? 1 : 0;
@@ -273,8 +297,8 @@ extern "C" void pgxp_note_triangle(int precise) {
     else                  s_stats.tri_native++;
 }
 
-static PGXPTriRecord s_tri_ring[PGXP_TRI_RING_CAP];
-static uint64_t      s_tri_seq = 0;
+static PSX_THREAD_LOCAL PGXPTriRecord s_tri_ring[PGXP_TRI_RING_CAP];
+static PSX_THREAD_LOCAL uint64_t      s_tri_seq = 0;
 
 static int ck_in_pass(void);                  /* render-pass checkpoint open */
 
@@ -298,9 +322,9 @@ extern "C" uint64_t pgxp_tri_ring(const PGXPTriRecord **ring, uint32_t *cap) {
 /* Store PC and frame counter belong to the host (debug server); it hands
  * their addresses over once (pgxp_set_trace_sources) so the engine stays
  * linkable on its own in the white-box tests. */
-static const uint32_t  *s_trace_pc = nullptr;
-static const uint64_t  *s_trace_frame = nullptr;
-static uint64_t         s_store_seq = 0;
+static PSX_THREAD_LOCAL const uint32_t  *s_trace_pc = nullptr;
+static PSX_THREAD_LOCAL const uint64_t  *s_trace_frame = nullptr;
+static PSX_THREAD_LOCAL uint64_t         s_store_seq = 0;
 
 extern "C" void pgxp_set_trace_sources(const uint32_t *store_pc,
                                        const uint64_t *frame) {
@@ -347,13 +371,13 @@ extern "C" uint64_t pgxp_store_ring(const PGXPStoreRecord **ring, uint32_t *cap)
 static inline PGXPValue *pgxp_ptr(uint32_t addr) {
     uint32_t m = addr & 0x1FFFFFFFu;
     if (m < PSX_MAIN_RAM_WINDOW_BYTES)         /* RAM + its mirrors (live map) */
-        return s_ram ? &s_ram[psx_ram_canonical_offset(m) >> 2] : nullptr;
+        return execution_word(s_ram ? &s_ram[psx_ram_canonical_offset(m) >> 2] : nullptr);
     if (m - PSX_MOD_GPU_DMA_APERTURE_BASE < PSX_MOD_GPU_DMA_APERTURE_SIZE)
-        return s_ram ? &s_ram[PGXP_RAM_WORDS +
-                              ((m - PSX_MOD_GPU_DMA_APERTURE_BASE) >> 2)] : nullptr;
+        return execution_word(s_ram ? &s_ram[PGXP_RAM_WORDS +
+                              ((m - PSX_MOD_GPU_DMA_APERTURE_BASE) >> 2)] : nullptr);
     if (m - PSX_MOD_MEMORY_BASE < PSX_MOD_MEMORY_SIZE)
-        return s_ram ? &s_ram[PGXP_RAM_WORDS + PGXP_APERTURE_WORDS +
-                              ((m - PSX_MOD_MEMORY_BASE) >> 2)] : nullptr;
+        return execution_word(s_ram ? &s_ram[PGXP_RAM_WORDS + PGXP_APERTURE_WORDS +
+                              ((m - PSX_MOD_MEMORY_BASE) >> 2)] : nullptr);
     if ((m & 0xFFFFFC00u) == 0x1F800000u)      /* scratchpad                  */
         return &s_scratch[(m & 0x3FCu) >> 2];
     return nullptr;
@@ -378,17 +402,17 @@ struct PGXPJournalEntry {
     PGXPValue old;
 };
 
-static uint32_t          s_ck_depth = 0;
-static uint8_t          *s_ck_bits = nullptr;     /* one bit per shadow slot */
-static PGXPValue        *s_ck_ram = nullptr;      /* s_ram the bits index    */
-static PGXPJournalEntry *s_ck_log = nullptr;
-static size_t            s_ck_n = 0, s_ck_cap = 0;
-static int               s_ck_lossy = 0;
-static PGXPValue         s_ck_gpr[34], s_ck_gte[32], s_ck_gtc[32];
-static uint32_t          s_ck_model_origin[6];
-static PGXPScalar        s_ck_gpr_s[34], s_ck_gte_s[32], s_ck_gtc_s[32];
-static uint32_t          s_ck_gen = 0, s_ck_suppress = 0;
-static int               s_ck_deferred = 0;
+static PSX_THREAD_LOCAL uint32_t          s_ck_depth = 0;
+static PSX_THREAD_LOCAL uint8_t          *s_ck_bits = nullptr;     /* one bit per shadow slot */
+static PSX_THREAD_LOCAL PGXPValue        *s_ck_ram = nullptr;      /* s_ram the bits index    */
+static PSX_THREAD_LOCAL PGXPJournalEntry *s_ck_log = nullptr;
+static PSX_THREAD_LOCAL size_t            s_ck_n = 0, s_ck_cap = 0;
+static PSX_THREAD_LOCAL int               s_ck_lossy = 0;
+static PSX_THREAD_LOCAL PGXPValue         s_ck_gpr[34], s_ck_gte[32], s_ck_gtc[32];
+static PSX_THREAD_LOCAL uint32_t          s_ck_model_origin[6];
+static PSX_THREAD_LOCAL PGXPScalar        s_ck_gpr_s[34], s_ck_gte_s[32], s_ck_gtc_s[32];
+static PSX_THREAD_LOCAL uint32_t          s_ck_gen = 0, s_ck_suppress = 0;
+static PSX_THREAD_LOCAL int               s_ck_deferred = 0;
 
 static inline size_t ck_index(const PGXPValue *pv) {
     if (pv >= s_scratch && pv < s_scratch + PGXP_SCRATCH_WORDS)
@@ -1994,8 +2018,8 @@ extern "C" void pgxp_test_set_generation(uint32_t gen) { s_gen = gen; }
  * the shadow at its address held, and why it was refused. Join it with
  * wtrace_dump (writer PC per address) to find the guest code path that drops
  * provenance. */
-static PGXPWordMiss s_miss_ring[PGXP_MISS_RING_CAP];
-static uint64_t     s_miss_seq = 0;
+static PSX_THREAD_LOCAL PGXPWordMiss s_miss_ring[PGXP_MISS_RING_CAP];
+static PSX_THREAD_LOCAL uint64_t     s_miss_seq = 0;
 
 static void note_word_miss(uint32_t addr, uint32_t packed, const PGXPValue *pv,
                            uint8_t reason) {
@@ -2051,3 +2075,78 @@ extern "C" int pgxp_load_precise_word(uint32_t addr, uint32_t packed,
     s_stats.word_hit++;
     return 1;
 }
+
+
+/* Only architectural precision state/configuration crosses the publication
+ * boundary. Journals, diagnostic rings and their allocations stay local to
+ * each executing thread. */
+#define PGXP_EXEC_FIELDS(X) \
+    X(s_scratch) X(s_gpr) X(s_gte) X(s_gtc) X(s_model_origin) \
+    X(s_gpr_s) X(s_gte_s) X(s_gtc_s) X(s_gen) X(s_enabled) X(s_cpu_mode) \
+    X(s_projection_tracking) X(s_tolerance) X(s_position_fallback) \
+    X(s_preserve_projection) X(s_culling)
+struct PGXPExecutionSnapshot {
+#define EXEC_FIELD(name) decltype(::name) name{};
+    PGXP_EXEC_FIELDS(EXEC_FIELD)
+#undef EXEC_FIELD
+    PGXPValue *words = nullptr;
+    uint64_t versions[PGXP_EXEC_PAGES]{};
+    bool ready = false;
+};
+extern "C" PGXPExecutionSnapshot *pgxp_execution_snapshot_create(void) {
+    return new (std::nothrow) PGXPExecutionSnapshot;
+}
+extern "C" void pgxp_execution_snapshot_destroy(PGXPExecutionSnapshot *snapshot) {
+    if (!snapshot) return;
+    if (s_bound_versions == snapshot->versions) std::abort();
+    std::free(snapshot->words);
+    delete snapshot;
+}
+extern "C" int pgxp_execution_snapshot_capture(PGXPExecutionSnapshot *snapshot) {
+    if (!snapshot || s_bound_versions || s_ck_depth || s_suppress) return 0;
+    snapshot->ready = false;
+    if (s_ram) {
+        if (!s_exec_versions) {
+            s_exec_versions = (uint64_t *)std::calloc(PGXP_EXEC_PAGES, sizeof(uint64_t));
+            if (!s_exec_versions) return 0;
+            for (size_t page = 0; page < PGXP_EXEC_PAGES; ++page) s_exec_versions[page] = 1;
+        }
+        if (!snapshot->words) {
+            snapshot->words = (PGXPValue *)std::calloc(PGXP_SHADOW_WORDS, sizeof(PGXPValue));
+            if (!snapshot->words) return 0;
+        }
+        for (size_t page = 0; page < PGXP_EXEC_PAGES; ++page) {
+            if (snapshot->versions[page] == s_exec_versions[page]) continue;
+            const size_t first = page * PGXP_EXEC_PAGE_WORDS;
+            const size_t count = PGXP_SHADOW_WORDS - first < PGXP_EXEC_PAGE_WORDS
+                ? PGXP_SHADOW_WORDS - first : PGXP_EXEC_PAGE_WORDS;
+            std::memcpy(snapshot->words + first, s_ram + first, count * sizeof(PGXPValue));
+            snapshot->versions[page] = s_exec_versions[page];
+        }
+    }
+#define EXEC_SAVE(name) std::memcpy(&snapshot->name, &name, sizeof name);
+    PGXP_EXEC_FIELDS(EXEC_SAVE)
+#undef EXEC_SAVE
+    snapshot->ready = true;
+    return 1;
+}
+extern "C" int pgxp_execution_snapshot_bind(PGXPExecutionSnapshot *snapshot) {
+    if (!snapshot || !snapshot->ready || s_ck_depth || s_suppress) return 0;
+#define EXEC_LOAD(name) std::memcpy(&name, &snapshot->name, sizeof name);
+    PGXP_EXEC_FIELDS(EXEC_LOAD)
+#undef EXEC_LOAD
+    s_ram = snapshot->words;
+    s_bound_versions = snapshot->versions;
+    s_deferred_invalidate = 0;
+    recompute_active();
+    return 1;
+}
+extern "C" void pgxp_execution_snapshot_unbind(void) {
+    if (!s_bound_versions) return;
+    if (s_ck_depth || s_suppress) std::abort();
+    s_ram = nullptr;
+    s_bound_versions = nullptr;
+    s_enabled = 0;
+    recompute_active();
+}
+#undef PGXP_EXEC_FIELDS

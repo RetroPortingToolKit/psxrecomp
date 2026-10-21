@@ -213,6 +213,12 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-5 runtime isolation: thread-selected RAM/scratchpad/arena
+  backing and private PGXP state with page-versioned snapshot publication.
+  Concurrent production memory/PGXP fixtures pass on Windows and macOS;
+  existing production PGXP and packet-shadow checks pass on Windows. Worker,
+  device/dispatch isolation and the ordered route gates remain in progress.
+
 - 2026-10-21 BRIEF-5 prerequisite: compiled-overlay callback tables, pending
   cycle charges and host dispatch pointers now bind per executing thread.
   The production-shim two-thread test and existing store-PC/shim compilation

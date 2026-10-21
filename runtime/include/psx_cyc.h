@@ -261,7 +261,7 @@ static inline void psx_cyc_step(CPUState* cpu, uint32_t reg_mask) {
 
 /* Main-RAM base + load-delay gate (memory.c). Inlined load helpers use these
  * so MotK VLC / decode hot paths avoid an out-of-line call per LW/LH. */
-extern uint8_t *g_psx_ram;
+extern PSX_THREAD_LOCAL uint8_t *g_psx_ram;
 extern int      g_psx_load_delay;
 extern int      g_ls_mode;
 extern volatile int g_ds_recording;

@@ -942,6 +942,14 @@ if(BUILD_TESTING)
     target_include_directories(pgxp_word_shadow_test PRIVATE include)
     add_test(NAME pgxp_word_shadow_test COMMAND pgxp_word_shadow_test)
 
+    add_executable(pgxp_execution_snapshot_test tests/test_pgxp_execution_snapshot.cpp
+        src/pgxp.cpp src/psx_ram_geometry.c)
+    target_include_directories(pgxp_execution_snapshot_test PRIVATE include)
+    target_compile_definitions(pgxp_execution_snapshot_test PRIVATE PSX_NO_DEBUG_TOOLS)
+    target_link_libraries(pgxp_execution_snapshot_test PRIVATE Threads::Threads)
+    add_test(NAME pgxp_execution_snapshot_test COMMAND pgxp_execution_snapshot_test)
+    set_tests_properties(pgxp_execution_snapshot_test PROPERTIES TIMEOUT 30)
+
     # psx.enhancement.pgxp at session start (docs/ENHANCEMENTS.md G1.11): the
     # real builtin activation (mod API stubbed) and the pgxp_session.h
     # resolver main.cpp's renderer setup uses, in main.cpp's order. Pins that

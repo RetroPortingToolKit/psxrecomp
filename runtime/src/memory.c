@@ -45,13 +45,52 @@
 static int rp_mod_journal(uint8_t *base, uint32_t page_base, uint32_t off,
                           uint32_t width);
 
-static uint8_t ram[RAM_SIZE];
-static uint8_t scratchpad[SCRATCHPAD_SIZE];
+struct PsxMemoryBacking {
+    uint8_t ram[RAM_SIZE];
+    uint8_t scratchpad[SCRATCHPAD_SIZE];
+    uint8_t mod_memory[MOD_MEMORY_SIZE];
+    uint32_t mod_memory_used;
+    uint8_t mod_gpu_dma_memory[PSX_MOD_GPU_DMA_APERTURE_SIZE];
+    uint32_t mod_gpu_dma_memory_used;
+};
+static PsxMemoryBacking s_live_backing;
+static PSX_THREAD_LOCAL PsxMemoryBacking *s_backing = &s_live_backing;
+PSX_THREAD_LOCAL uint8_t *g_psx_ram = s_live_backing.ram;
+static PSX_THREAD_LOCAL uint8_t *ram = s_live_backing.ram;
+static PSX_THREAD_LOCAL uint8_t *scratchpad = s_live_backing.scratchpad;
+
+PsxMemoryBacking *memory_backing_create(void) {
+    return (PsxMemoryBacking *)calloc(1, sizeof(PsxMemoryBacking));
+}
+void memory_backing_destroy(PsxMemoryBacking *backing) {
+    if (!backing || backing == &s_live_backing) return;
+    /* A bound backing is owned by its executing thread until unbound. */
+    if (backing == s_backing) abort();
+    free(backing);
+}
+void memory_backing_capture(PsxMemoryBacking *destination) {
+    if (!destination || destination == s_backing) return;
+    memcpy(destination->ram, s_backing->ram, psx_ram_live_bytes());
+    memcpy(destination->scratchpad, s_backing->scratchpad, SCRATCHPAD_SIZE);
+    memcpy(destination->mod_memory, s_backing->mod_memory, s_backing->mod_memory_used);
+    destination->mod_memory_used = s_backing->mod_memory_used;
+    memcpy(destination->mod_gpu_dma_memory, s_backing->mod_gpu_dma_memory,
+           s_backing->mod_gpu_dma_memory_used);
+    destination->mod_gpu_dma_memory_used = s_backing->mod_gpu_dma_memory_used;
+}
+PsxMemoryBacking *memory_backing_bind(PsxMemoryBacking *backing) {
+    PsxMemoryBacking *previous = s_backing;
+    s_backing = backing ? backing : &s_live_backing;
+    g_psx_ram = s_backing->ram;
+    ram = s_backing->ram;
+    scratchpad = s_backing->scratchpad;
+    return previous == &s_live_backing ? NULL : previous;
+}
+#define mod_memory (s_backing->mod_memory)
+#define mod_memory_used (s_backing->mod_memory_used)
+#define mod_gpu_dma_memory (s_backing->mod_gpu_dma_memory)
+#define mod_gpu_dma_memory_used (s_backing->mod_gpu_dma_memory_used)
 static uint8_t bios_rom[BIOS_ROM_SIZE];
-static uint8_t mod_memory[MOD_MEMORY_SIZE];
-static uint32_t mod_memory_used;
-static uint8_t mod_gpu_dma_memory[PSX_MOD_GPU_DMA_APERTURE_SIZE];
-static uint32_t mod_gpu_dma_memory_used;
 uint32_t psx_mod_memory_snapshot_bytes(void) {
     return mod_memory_used || mod_gpu_dma_memory_used
         ? 16u + mod_memory_used + mod_gpu_dma_memory_used : 0u;
@@ -165,7 +204,6 @@ uint32_t psx_gpu_packet_key(uint32_t address) {
 }
 
 /* Exposed for inlined main-RAM load helpers in psx_cyc.h (VLC/decode hot path). */
-uint8_t *g_psx_ram = ram;
 /* PSX_LOAD_DELAY gate (default on). −1 = unread; 0/1 after first resolve. */
 int g_psx_load_delay = -1;
 
@@ -1206,8 +1244,8 @@ uint32_t memory_get_bios_checksum(void) { return s_bios_checksum; }
 
 void memory_init(const char* bios_path) {
     psx_ram_apply_size_request();
-    memset(ram, 0, sizeof(ram));
-    memset(scratchpad, 0, sizeof(scratchpad));
+    memset(ram, 0, RAM_SIZE);
+    memset(scratchpad, 0, SCRATCHPAD_SIZE);
     /* Rematch re-enters without process exit — wipe sticky I/O regs that
      * live outside device *_init (I_STAT/I_MASK cleared in interrupts_init). */
     memset(mem_ctrl, 0, sizeof(mem_ctrl));

@@ -18,7 +18,7 @@
 #include <string.h>
 
 volatile int g_ds_recording = 0;
-uint8_t *g_psx_ram = 0;
+PSX_THREAD_LOCAL uint8_t *g_psx_ram = 0;
 uint32_t g_psx_ram_mask = 0x1FFFFFu;
 int g_psx_load_delay = 1;
 

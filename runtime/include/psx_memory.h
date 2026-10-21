@@ -2,6 +2,7 @@
 #define PSXRECOMP_PSX_MEMORY_H
 
 #include <stdint.h>
+#include "psx_thread_local.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +48,15 @@ extern uint32_t g_psx_ram_size;
 extern uint32_t g_psx_ram_mask;
 
 uint32_t memory_get_ram_bytes(void);
+/* Backing selection is local to the executing host thread. Capture is called
+ * by the owner of the source backing, with exclusive ownership of destination.
+ * No device/dispatch state is switched by this low-level memory interface. */
+typedef struct PsxMemoryBacking PsxMemoryBacking;
+PsxMemoryBacking *memory_backing_create(void);
+void memory_backing_destroy(PsxMemoryBacking *backing);
+void memory_backing_capture(PsxMemoryBacking *destination);
+PsxMemoryBacking *memory_backing_bind(PsxMemoryBacking *backing);
+extern PSX_THREAD_LOCAL uint8_t *g_psx_ram;
 int      psx_ram_8mb_active(void);
 void     psx_ram_reset_size_request(void);
 /* memory_init(): latch the requested geometry for this boot. */

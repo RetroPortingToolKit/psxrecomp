@@ -65,7 +65,7 @@ static const char *kBuildId = PSX_BUILD_REV " (" __DATE__ " " __TIME__ ")";
 extern CPUState *debug_cpu_ptr;
 
 /* Main RAM (2 MiB) and scratchpad — peeks in the crash report, no MMIO. */
-extern uint8_t *g_psx_ram;
+extern PSX_THREAD_LOCAL uint8_t *g_psx_ram;
 extern uint8_t *memory_get_scratchpad_ptr(void);
 
 /* Overlay loader snapshot (post-FMV splash miss vs resim load freeze). */

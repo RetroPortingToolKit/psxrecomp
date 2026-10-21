@@ -21,6 +21,16 @@
 extern "C" {
 #endif
 
+/* Execution snapshots own their shadow backing. Capture runs on the live
+ * execution thread into an exclusively owned destination. Bind runs on a
+ * dedicated replay thread; it never borrows the live machine's shadows. */
+typedef struct PGXPExecutionSnapshot PGXPExecutionSnapshot;
+PGXPExecutionSnapshot *pgxp_execution_snapshot_create(void);
+void pgxp_execution_snapshot_destroy(PGXPExecutionSnapshot *snapshot);
+int pgxp_execution_snapshot_capture(PGXPExecutionSnapshot *snapshot);
+int pgxp_execution_snapshot_bind(PGXPExecutionSnapshot *snapshot);
+void pgxp_execution_snapshot_unbind(void);
+
 /* --- lifecycle / configuration ------------------------------------------ */
 
 /* Master arm. Allocates the RAM shadow lazily; fails closed (stays disabled)

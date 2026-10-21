@@ -75,7 +75,7 @@ extern int      g_present_vsync_disabled;
  * debug_cpu_ptr (CPUState*) is declared in debug_server.h; CPUState layout
  * (gpr[32], pc) in cpu_state.h — both already included above. */
 extern uint8_t *memory_get_scratchpad_ptr(void);   /* memory.c */
-extern uint8_t *g_psx_ram;                         /* memory.c — 2 MiB DRAM */
+extern PSX_THREAD_LOCAL uint8_t *g_psx_ram;
 
 static int s_started = 0;
 static char s_backend[32] = "psx-runtime";
