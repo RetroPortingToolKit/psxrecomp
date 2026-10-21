@@ -82,6 +82,8 @@ and testing limits; source projects do not all provide finished downloads.
 | *Wipeout 3: Special Edition* | [Wipeout-3-Special-Edition-Recomp](https://github.com/mstan/Wipeout-3-Special-Edition-Recomp) | Source development project; consult its current build and qualification notes. |
 | *Mega Man Legends — community* | [MegaManLegendsRecomp](https://github.com/VuloB1/MegaManLegendsRecomp) · [downloads](https://github.com/VuloB1/MegaManLegendsRecomp/releases) | Independent port with 16:9, analog movement/right-stick camera and enhanced presentation. |
 | *Xenogears — community* | [xenogears-recomp](https://github.com/OpokXeno/xenogears-recomp) | Independent development project; also contributed widescreen cull-site work upstream. |
+| *Gran Turismo 2 (Arcade Mode) — community* | [GranTurismo2Recomp](https://github.com/VuloB1/GranTurismo2Recomp) | Early: menus through a race. Experimental 16:9, analog pad, optional PGXP; no release builds yet. |
+| *Gran Turismo 2 (Simulation Mode) — community* | [GranTurismo2SimRecomp](https://github.com/VuloB1/GranTurismo2SimRecomp) | Separate Simulation-disc program. Builds; not yet tested in play. |
 
 <p align="center">
   <img src="docs/assets/games/final-bout-ultrawide.png" alt="Dragon Ball GT Final Bout combat with additional stage scenery and edge-positioned HUD" width="800">
