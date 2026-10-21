@@ -632,21 +632,37 @@ int main(void) {
         CHECK(pgxp_project_precise(INT64_C(40000)*4096, INT64_C(-35000)*4096,
               INT64_C(60000)*4096, 12, 32767, -32768, 60000, 300,
               160<<16, 120<<16, 1, 1, &x, &y) == 2);
-        CHECK(x == 360*65536 && y == -55*65536);
+        /* Fused/non-fused host arithmetic may straddle the final floor by
+         * one 16.16 quantum (less than 0.00002 pixel). */
+        CHECK(std::abs(x - 360*65536) <= 1 && std::abs(y + 55*65536) <= 1);
         const uint32_t packed = (uint16_t)323 | ((uint32_t)(uint16_t)-44 << 16);
         pgxp_gte_push_sxy(x, y, 60000, packed);
-        pgxp_gte_mark_unclamped();
+        pgxp_gte_mark_unclamped(60000);
         pgxp_store_gte_reg(0x80005000, 14);
         int32_t px, py; uint16_t z;
         CHECK(pgxp_get_precise_vertex(0x80005000, packed, 323, -44, &px, &py, &z));
         CHECK(px == x && py == y && z == 60000);
+        CHECK(pgxp_get_unclamped_depth(0x80005000, packed) == 60000.0f);
         CHECK(!pgxp_get_precise_vertex(0x80005000, packed^1u, 322, -44, &px, &py, &z));
         psx_pgxp_cop2(nullptr, MFC2(2, 14), packed, 0);
         psx_pgxp_store(nullptr, SH(1, 2), 0x80005000, packed);
         CHECK(!pgxp_get_precise_vertex(0x80005000, packed, 323, -44, &px, &py, &z));
         CHECK(pgxp_project_precise(-4096, 0, INT64_C(60000)*4096, 12, 0, 0,
               60000, 300, 0, 0, 1, 1, &x, &y) == 0);
+        CHECK(pgxp_project_precise(INT64_C(40000)*4096, INT64_C(20000)*4096,
+              INT64_C(100000)*4096, 12, 32767, 20000, 65535, 300,
+              160<<16, 120<<16, 1, 1, &x, &y) == 2);
+        CHECK(x == 280*65536 && y == 180*65536);
+        const uint32_t far_word = 310u | (211u << 16);
+        pgxp_gte_push_sxy(x, y, 65535, far_word);
+        pgxp_gte_mark_unclamped(100000);
+        pgxp_store_gte_reg(0x80005004, 14);
+        CHECK(pgxp_get_precise_vertex(0x80005004, far_word, 310, 211, &px, &py, &z));
+        CHECK(px == x && py == y && z == 65535);
+        CHECK(pgxp_get_unclamped_depth(0x80005004, far_word) == 100000.0f);
+        CHECK(pgxp_get_unclamped_depth(0x80005004, far_word^1) == 0.0f);
         pgxp_set_preserve_projection(0);
+        CHECK(pgxp_get_unclamped_depth(0x80005004, far_word) == 0.0f);
         CHECK(pgxp_project_precise(INT64_C(40000)*4096, 0, INT64_C(60000)*4096,
               12, 32767, 0, 60000, 300, 0, 0, 1, 1, &x, &y) == 0);
         pgxp_set_preserve_projection(saved_preserve);

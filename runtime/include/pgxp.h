@@ -167,7 +167,10 @@ void pgxp_suppress_end(void);
  * coordinates, the projected depth (SZ3), and the packed SXY word the guest
  * sees. Shifts the shadow FIFO exactly like push_sxy (regs 12..15). */
 /* Tag only immediately after push_sxy of a qualified unclamped projection. */
-void pgxp_gte_mark_unclamped(void);
+void pgxp_gte_mark_unclamped(uint32_t depth);
+/* Full positive MAC3 depth of an intact, validated exact-projection word;
+ * zero when unavailable. The legacy SZ APIs keep their hardware u16 value. */
+float pgxp_get_unclamped_depth(uint32_t addr, uint32_t word);
 void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3, uint32_t packed);
 
 /* Host-only homogeneous screen projection, before SZ/SXY/divider saturation.

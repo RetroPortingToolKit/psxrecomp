@@ -4756,7 +4756,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
     }
     const int idx[3] = { i0, i1, i2 };
     int32_t fx[3], fy[3];
-    uint16_t vz[3] = {0, 0, 0};
+    float vz[3] = {0, 0, 0};
     int any_precise = 0, n_precise = 0;
     PGXPTriRecord rec;
     memset(&rec, 0, sizeof rec);
@@ -4782,6 +4782,10 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         /* PGXP depth (G1.14): only a value-validated dataflow shadow carries
          * SZ, also when the seam clamp kept the native position. */
         vz[i] = sz;
+        if (sz == 65535u) {
+            float full = pgxp_get_unclamped_depth(addr, word);
+            if (full > 0.0f) vz[i] = full;
+        }
         /* Native-wide edge recovery is not PGXP: it does not count in n_precise. */
         if (native_wide_projection_x(addr, word, raw_x, raw_y, &px))
             any_precise = 1;
@@ -4794,7 +4798,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         rec.word[i] = word;
         rec.x16[i] = fx[i];
         rec.y16[i] = fy[i];
-        rec.z[i] = vz[i];
+        rec.z[i] = sz; /* receipt retains the hardware SZ, not the visual depth */
     }
     if (geometry) {
         pgxp_note_triangle(n_precise);   /* G1.1 crack exposure: mixed share */
@@ -4882,6 +4886,7 @@ static void prepare_texture_triangle(int i0, int i1, int i2) {
     if (gp0_cmd_source_addr == 0xFFFFFFFFu) { s_texcorr.no_source++; return; }
     int indices[3] = { i0, i1, i2 };
     uint16_t z[3];
+    float depth[3];
     for (int i = 0; i < 3; i++) {
         uint32_t addr = GPU_RAM_KEY((gp0_cmd_source_addr + (uint32_t)indices[i] * 4u));
         if (!gte_precision_load_word(addr, gp0_cmd_buf[indices[i]], NULL, NULL, &z[i]) ||
@@ -4889,8 +4894,13 @@ static void prepare_texture_triangle(int i0, int i1, int i2) {
             s_texcorr.no_depth++;
             return;
         }
+        depth[i] = z[i];
+        if (z[i] == 65535u) {
+            float full = pgxp_get_unclamped_depth(addr, gp0_cmd_buf[indices[i]]);
+            if (full > 0.0f) depth[i] = full;
+        }
     }
-    float q[3] = { 1.0f / (float)z[0], 1.0f / (float)z[1], 1.0f / (float)z[2] };
+    float q[3] = { 1.0f / depth[0], 1.0f / depth[1], 1.0f / depth[2] };
     float qmax = q[0];
     if (q[1] > qmax) qmax = q[1];
     if (q[2] > qmax) qmax = q[2];
