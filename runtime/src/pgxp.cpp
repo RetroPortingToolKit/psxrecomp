@@ -160,9 +160,14 @@ extern "C" void pgxp_invalidate_all(void) {
 
 extern "C" void pgxp_set_enabled(int enabled) {
     int resized = 0;
+    /* Writer/triangle/miss receipts are consumed only by debug commands.
+     * Production still propagates every precision shadow and keeps summary
+     * counters, but does not copy a diagnostic record for each guest store. */
+#ifndef PSX_NO_DEBUG_TOOLS
     if (enabled && !s_store_ring)
         s_store_ring = (PGXPStoreRecord *)std::calloc(PGXP_STORE_RING_CAP,
                                                       sizeof(PGXPStoreRecord));
+#endif
     if (enabled && !s_ram) {
         s_ram = (PGXPValue *)std::calloc(PGXP_SHADOW_WORDS, sizeof(PGXPValue));
         if (s_ram)
@@ -270,10 +275,14 @@ static uint64_t      s_tri_seq = 0;
 static int ck_in_pass(void);                  /* render-pass checkpoint open */
 
 extern "C" void pgxp_note_triangle_detail(const PGXPTriRecord *rec) {
+#ifndef PSX_NO_DEBUG_TOOLS
     PGXPTriRecord *r = &s_tri_ring[s_tri_seq % PGXP_TRI_RING_CAP];
     *r = *rec;
     r->seq = s_tri_seq++;
     r->pass = ck_in_pass() ? 1u : 0u;
+#else
+    (void)rec;
+#endif
 }
 
 extern "C" uint64_t pgxp_tri_ring(const PGXPTriRecord **ring, uint32_t *cap) {
@@ -297,6 +306,7 @@ extern "C" void pgxp_set_trace_sources(const uint32_t *store_pc,
 
 static void note_store(uint32_t op, uint32_t reg, const PGXPValue *src,
                        uint32_t addr, uint32_t value, const PGXPValue *dst) {
+#ifndef PSX_NO_DEBUG_TOOLS
     if (!s_store_ring) return;
     PGXPStoreRecord *r = &s_store_ring[s_store_seq % PGXP_STORE_RING_CAP];
     r->seq = s_store_seq++;
@@ -312,6 +322,9 @@ static void note_store(uint32_t op, uint32_t reg, const PGXPValue *src,
     r->dst_flags = (dst && dst->gen == s_gen) ? dst->flags : 0u;
     r->dst_x16 = dst ? dst->x16 : 0;
     r->dst_y16 = dst ? dst->y16 : 0;
+#else
+    (void)op; (void)reg; (void)src; (void)addr; (void)value; (void)dst;
+#endif
 }
 
 extern "C" uint64_t pgxp_store_ring(const PGXPStoreRecord **ring, uint32_t *cap) {
@@ -1928,6 +1941,7 @@ static uint64_t     s_miss_seq = 0;
 
 static void note_word_miss(uint32_t addr, uint32_t packed, const PGXPValue *pv,
                            uint8_t reason) {
+#ifndef PSX_NO_DEBUG_TOOLS
     PGXPWordMiss *m = &s_miss_ring[s_miss_seq % PGXP_MISS_RING_CAP];
     m->seq = s_miss_seq++;
     m->addr = addr;
@@ -1936,6 +1950,9 @@ static void note_word_miss(uint32_t addr, uint32_t packed, const PGXPValue *pv,
     m->shadow_flags = pv ? (uint8_t)pv->flags : 0;
     m->live = (pv && pv->gen == s_gen) ? 1 : 0;
     m->reason = reason;
+#else
+    (void)addr; (void)packed; (void)pv; (void)reason;
+#endif
 }
 
 extern "C" uint64_t pgxp_word_miss_ring(const PGXPWordMiss **ring,

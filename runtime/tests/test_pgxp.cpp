@@ -1002,6 +1002,19 @@ int main(void) {
         CHECK(st.value_mismatch > 0);
     }
 
+#ifdef PSX_NO_DEBUG_TOOLS
+    /* Diagnostic-only receipts must stay empty while the numeric tests above
+     * exercise real stores, projections and word-shadow misses. */
+    {
+        const PGXPStoreRecord *stores;
+        const PGXPTriRecord *triangles;
+        const PGXPWordMiss *misses;
+        uint32_t capacity;
+        CHECK(pgxp_store_ring(&stores, &capacity) == 0);
+        CHECK(pgxp_tri_ring(&triangles, &capacity) == 0);
+        CHECK(pgxp_word_miss_ring(&misses, &capacity) == 0);
+    }
+#endif
     if (g_failures) {
         std::fprintf(stderr, "test_pgxp: %d FAILURES\n", g_failures);
         return 1;
