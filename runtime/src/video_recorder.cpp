@@ -958,6 +958,11 @@ int video_recorder_start(const VrecOptions *in, char *err, int errcap)
                     "--renderer opengl or software");
     default: break;
     }
+#ifdef PSX_NO_DEBUG_TOOLS
+    if (o.audio)
+        return fail("recording audio requires PSX_DEBUG_TOOLS=ON (PCM history); "
+                    "use audio=0 for video-only recording in this build");
+#endif
     char ff[VREC_PATH_MAX];
     if (!video_recorder_find_ffmpeg(o.ffmpeg, ff, (int)sizeof ff)) {
         if (o.ffmpeg[0]) return fail(std::string("ffmpeg not found at ") + o.ffmpeg);

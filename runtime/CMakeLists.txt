@@ -1720,6 +1720,13 @@ if(BUILD_TESTING)
         add_test(NAME ${_vrec_test}
                  COMMAND ${_vrec_test} ${CMAKE_CURRENT_BINARY_DIR})
     endforeach()
+    add_executable(video_recorder_production_test
+        tests/test_video_recorder.cpp src/video_recorder.cpp src/audio_trace.c)
+    target_include_directories(video_recorder_production_test PRIVATE include)
+    target_compile_definitions(video_recorder_production_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
+    target_link_libraries(video_recorder_production_test PRIVATE Threads::Threads)
+    add_test(NAME video_recorder_production_test
+             COMMAND video_recorder_production_test ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(video_recorder_e2e_test PROPERTIES
         SKIP_RETURN_CODE 77 TIMEOUT 180)
 

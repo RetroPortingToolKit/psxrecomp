@@ -39,6 +39,11 @@ hosts: `popen`). Its messages go to `<path>.ffmpeg.log`.
 | `queue_frames` | `8` | Frames buffered before the game waits for the encoder |
 | `keep_intermediates` | `0` | Keep `<path>.part.video.nut` / `.part.audio.wav` after the mux |
 
+Audio currently requires a build with `PSX_DEBUG_TOOLS=ON`, which retains the
+PCM history tap. Builds with debug tools disabled support video-only recording
+(`audio: 0`) and explicitly refuse audio instead of silently writing silence.
+Production audio capture remains a merge gate for this draft.
+
 ## What is recorded
 
 **Video.** The backend that owns the present reads back every swap:

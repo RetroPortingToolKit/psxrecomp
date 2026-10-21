@@ -114,6 +114,11 @@ int main(int argc, char **argv)
     video_recorder_set_backend(VREC_BACKEND_VULKAN);
     CHECK(!video_recorder_start(&s, err, sizeof err) && contains(err, "Vulkan"), "vulkan refused explicitly");
     video_recorder_set_backend(VREC_BACKEND_SOFTWARE);
+#ifdef PSX_NO_DEBUG_TOOLS
+    CHECK(!video_recorder_start(&s, err, sizeof err) && contains(err, "PSX_DEBUG_TOOLS=ON"),
+          "production audio refusal explains the missing PCM tap");
+    s.audio = 0;
+#endif
     std::snprintf(s.ffmpeg, sizeof s.ffmpeg, "%s/definitely-not-here/ffmpeg.exe", dir.c_str());
     CHECK(!video_recorder_start(&s, err, sizeof err) && contains(err, "ffmpeg not found at"),
           "missing explicit ffmpeg is a clear error");

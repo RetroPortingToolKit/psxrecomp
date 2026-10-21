@@ -34,7 +34,11 @@ static std::vector<uint8_t> run_capture(const std::string &cmd)
 #else
     const std::string line = cmd;
 #endif
+#if defined(_WIN32)
     FILE *p = popen(line.c_str(), "rb");
+#else
+    FILE *p = popen(line.c_str(), "r");
+#endif
     if (!p) return out;
     uint8_t buf[65536];
     size_t n;

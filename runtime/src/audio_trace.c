@@ -201,6 +201,10 @@ uint32_t audio_trace_events_get(AudioTraceEvent *out, uint32_t max)
 int64_t audio_trace_read_pcm(int tap, uint64_t start, uint64_t count,
                              int16_t *out)
 {
+#ifdef PSX_NO_DEBUG_TOOLS
+    (void)tap; (void)start; (void)count; (void)out;
+    return -1;
+#else
     if (tap < 0 || tap >= AUDIO_TAP_COUNT || !out) return -1;
     PcmTap *t = &s_taps[tap];
     uint64_t head = atomic_load_explicit(&t->head, memory_order_acquire);
@@ -225,6 +229,7 @@ int64_t audio_trace_read_pcm(int tap, uint64_t start, uint64_t count,
            ? head - (uint64_t)PCM_RING_FRAMES : 0;
     if (start < oldest) return -1;
     return (int64_t)count;
+#endif
 }
 
 void audio_trace_note_spu_clock(uint64_t head, uint64_t guest_cycle)
