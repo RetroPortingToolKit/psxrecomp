@@ -928,6 +928,11 @@ if(BUILD_TESTING)
     target_include_directories(pgxp_test PRIVATE include)
     add_test(NAME pgxp_test COMMAND pgxp_test)
 
+    add_executable(pgxp_production_test tests/test_pgxp.cpp src/pgxp.cpp src/psx_ram_geometry.c)
+    target_include_directories(pgxp_production_test PRIVATE include)
+    target_compile_definitions(pgxp_production_test PRIVATE PSX_NO_DEBUG_TOOLS)
+    add_test(NAME pgxp_production_test COMMAND pgxp_production_test)
+
     add_executable(pgxp_word_shadow_test tests/test_pgxp_word_shadow.cpp
         src/pgxp.cpp src/psx_ram_geometry.c)
     target_include_directories(pgxp_word_shadow_test PRIVATE include)
@@ -978,7 +983,7 @@ if(BUILD_TESTING)
     endforeach()
 
     foreach(_pgxp_isolated_test
-            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_session_test pgxp_session_hooks_test)
+            gte_register_access_test gte_hle_contract_test pgxp_test pgxp_production_test pgxp_session_test pgxp_session_hooks_test)
         target_sources(${_pgxp_isolated_test} PRIVATE tests/pgxp_test_mod_memory.cpp)
     endforeach()
 
@@ -1666,6 +1671,10 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME frame_interpolation_schedule_test
              COMMAND frame_interpolation_schedule_test)
+
+    add_executable(input_replay_test tests/test_input_replay.c src/input_replay.c)
+    target_include_directories(input_replay_test PRIVATE include)
+    add_test(NAME input_replay_test COMMAND input_replay_test "${CMAKE_CURRENT_BINARY_DIR}/input_replay_fixture.txt")
 
     add_executable(render_pass_plan_test
         tests/test_render_pass_plan.c
