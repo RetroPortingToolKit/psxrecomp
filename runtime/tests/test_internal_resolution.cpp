@@ -222,6 +222,11 @@ int main() {
     expect("ss clamps to the ceiling", psx_resolve_internal_scale_ss(4320, 240, 0, 32, 4000), 32);
     expect("ss unknown display stays 1", psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, 240, 0, 32, 2000), 1);
 
+    expect("ss policy opt-out", psx_ir_display_supersample(1500, 4320, 0), 1500);
+    expect("ss below threshold", psx_ir_display_supersample(1500, 2159, 2160), 1500);
+    expect("ss at threshold", psx_ir_display_supersample(1500, 2160, 2160), 1000);
+    expect("ss on 8K", psx_ir_display_supersample(1500, 4320, 2160), 1000);
+    expect("ss unknown display", psx_ir_display_supersample(1500, 0, 2160), 1500);
     launcher_round_trips();
 
     if (g_failures) return 1;
