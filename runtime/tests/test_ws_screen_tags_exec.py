@@ -44,6 +44,12 @@ static int gp0_words_needed = 5;
 static int ws_engaged(void) { return engaged; }
 static int ws_active(void) { return active; }
 static uint32_t psx_ram_live_bytes(void) { return sizeof(ram); }
+/* This fixture owns only ordinary RAM, with no extended GPU-DMA arena. */
+static int psx_mod_gpu_dma_memory_contains(uint32_t address, uint32_t bytes) {
+    (void)address;
+    (void)bytes;
+    return 0;
+}
 static uint32_t psx_read_word(uint32_t address) {
     uint32_t phys = address & 0x1fffffffu;
     assert(!(phys & 3) && phys < sizeof(ram));
