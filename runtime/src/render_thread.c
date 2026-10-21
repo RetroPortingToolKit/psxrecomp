@@ -204,6 +204,12 @@ static void *render_main(void *arg)
 #endif
 {
     (void)arg;
+#ifdef _WIN32
+    /* This thread feeds the above-normal presenter and gates emulation on
+     * the bounded command ring. Give it the same latency priority; normal
+     * background CPU workers must not hold both consumers off a deadline. */
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
     t_render = 1;
     R.ctx(R.user, 1);
     uint64_t r = atomic_load(&R.rpos);
