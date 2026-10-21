@@ -213,6 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (BRIEF-4 full-range work):** Reuse exact indexed 1555 page decoding and epoch lookup from `ab784091`/`341a3598`, restricted to raw VRAM-backed source/palette to avoid mutable bank-name reuse. Coherency writes and transaction restoration invalidate affected regions. Skip debug-only NCLIP hash-table receipts in production; retain culling math and summary counters. R4 failing quiet/loaded acceptance cases will be repeated after these fixes.
+
 - **2026-10-21 (BRIEF-4 far projection):** Opt-in preserve-projection can recover IR-saturated X/Y from qualified unshifted MACs. A new intact-word tag requires validated GTE dataflow; modified words, half writes, cache fallback, lm sign clamps and accumulator/SZ overflow keep rejection. Guest registers and the faithful default are unchanged. R4 maximum-range visual/performance acceptance remains pending.
 
 - **2026-10-21 (BRIEF-4 production follow-up):** Remove production-only PGXP diagnostic receipt copies and reuse the FLS-owned Windows sleep timer fix from `2ca004ba`. The PGXP quiet repeat reduces p99 busy from 70.6% to 50.5%, but two >25ms completion gaps remain. Only failing acceptance runs are repeated under the owner minimum-testing rule.
