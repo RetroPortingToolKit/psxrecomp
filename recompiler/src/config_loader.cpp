@@ -780,6 +780,13 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             }
             rt.video_match_display_max_lines = static_cast<int>(n);
         }
+        if (video.contains("supersample_disable_at_lines")) {
+            const auto n = toml::find<int64_t>(video, "supersample_disable_at_lines");
+            if (n != 0 && (n < 240 || n > 8640))
+                throw std::runtime_error(fmt::format(
+                    "[video] supersample_disable_at_lines must be 0 or 240..8640: {}", n));
+            rt.video_supersample_disable_at_lines = static_cast<int>(n);
+        }
         if (video.contains("window_width")) {
             const auto n = toml::find<int64_t>(video, "window_width");
             if (n < 640 || n > 7680) {
