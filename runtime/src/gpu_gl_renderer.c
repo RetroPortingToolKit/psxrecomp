@@ -12440,7 +12440,7 @@ static void fg_compose(const FgList *b, GLuint wide_fbo, GLuint wide_tex, int li
  * allocates none of this. The object rules below (cars, needles, small
  * views) were tuned on R4 (docs/FRAME_GENERATION.md). */
 static GLuint s_rp_zprog = 0, s_rp_wprog = 0, s_rp_vao = 0, s_rp_vbo = 0, s_rp_evao = 0;
-static GLuint s_rp_ztex = 0, s_rp_zfbo = 0;
+static GLuint s_rp_ztex = 0, s_rp_zfbo = 0, s_rp_zrb = 0;   /* zrb: the depth image's own depth test */
 static int    s_rp_zw = 0, s_rp_zh = 0;
 static float *s_rp_v = NULL; static size_t s_rp_vcap = 0;
 static uint64_t s_rp_key = 0;   /* the game frame the depth image is of */
@@ -12463,7 +12463,8 @@ static const char *RP_Z_VS =
     "uniform vec2 u_size;\n"
     "out float v_iz; flat out float v_id; flat out float v_view;\n"
     "void main(){ v_iz=a.z; v_id=a.w; v_view=av;\n"
-    "  gl_Position=vec4(a.x/u_size.x*2.0-1.0, a.y/u_size.y*2.0-1.0, 0.0, 1.0); }\n";
+    "  float d = a.z > 0.0 ? clamp((1.0/a.z)/262144.0, 0.0, 1.0) : 0.0;\n"
+    "  gl_Position=vec4(a.x/u_size.x*2.0-1.0, a.y/u_size.y*2.0-1.0, d*2.0-1.0, 1.0); }\n";
 static const char *RP_Z_FS =
     "#version 330\n"
     "in float v_iz; flat in float v_id; flat in float v_view; out vec4 frag;\n"
@@ -12674,9 +12675,14 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
     if (key != s_rp_key || zw != s_rp_zw || zh != s_rp_zh) {
         if (zw != s_rp_zw || zh != s_rp_zh) {
             if (s_rp_zfbo) { p_glDeleteFramebuffers(1, &s_rp_zfbo); glDeleteTextures(1, &s_rp_ztex); }
+            if (s_rp_zrb) { p_glDeleteRenderbuffers(1, &s_rp_zrb); s_rp_zrb = 0; }
             fg_cost_cold(fg_cost(), 3);
             s_rp_ztex = make_tex(0x8814 /* GL_RGBA32F */, zw, zh, GL_RGBA, GL_FLOAT);
-            if (!make_fbo(&s_rp_zfbo, s_rp_ztex, 0)) { s_rp_zfbo = 0; s_rp_zw = s_rp_zh = 0; goto fail; }
+            p_glGenRenderbuffers(1, &s_rp_zrb);
+            p_glBindRenderbuffer(PSXGL_RENDERBUFFER, s_rp_zrb);
+            p_glRenderbufferStorage(PSXGL_RENDERBUFFER, PSXGL_DEPTH24_STENCIL8, zw, zh);
+            p_glBindRenderbuffer(PSXGL_RENDERBUFFER, 0);
+            if (!make_fbo(&s_rp_zfbo, s_rp_ztex, s_rp_zrb)) { s_rp_zfbo = 0; s_rp_zw = s_rp_zh = 0; goto fail; }
             s_rp_zw = zw; s_rp_zh = zh;
         }
         size_t n = 0;
@@ -12788,14 +12794,38 @@ static int fg_reproject(const FgList *L, const FgList *O, double t, GLuint dst_f
         p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_rp_zfbo);
         glViewport(0, 0, zw, zh);
         glClearColor(0.f, 0.f, 0.f, 0.f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClearDepth(1.0);
+        glDepthMask(GL_TRUE);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         if (n) {
             p_glUseProgram(s_rp_zprog);
             p_glUniform2f(s_rp_z_uSize, (float)zw, (float)zh);
             p_glBindVertexArray(s_rp_vao);
             p_glBindBuffer(PSXGL_ARRAY_BUFFER, s_rp_vbo);
             p_glBufferData(PSXGL_ARRAY_BUFFER, (GLsizeiptr)(n * 5 * sizeof(float)), s_rp_v, PSXGL_STREAM_DRAW);
-            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)n);
+            /* World triangles take the nearest depth, like the PGXP depth
+             * buffer the real frame was drawn with: in painter order a far
+             * section drawn after a near wall (the game's own sort, or Max
+             * Detail's far sections) left far depth on the wall's pixels,
+             * and the warp moved them as distant scenery (objects showing
+             * through walls, doubled signs, sheared lane lines). Everything
+             * else keeps painter order: it always passes and writes no depth
+             * (a backdrop under the world, a car over the road, the HUD and
+             * mirror overlay last). Drawn in runs of the same kind. */
+            glEnable(GL_DEPTH_TEST);
+            size_t r0 = 0;
+            while (r0 < n) {
+                const int w0 = s_rp_v[r0 * 5 + 3] == 1.0f;
+                size_t r1 = r0 + 3;
+                while (r1 < n && (s_rp_v[r1 * 5 + 3] == 1.0f) == w0) r1 += 3;
+                glDepthFunc(w0 ? GL_LESS : GL_ALWAYS);
+                glDepthMask(w0 ? GL_TRUE : GL_FALSE);
+                glDrawArrays(GL_TRIANGLES, (GLint)r0, (GLsizei)(r1 - r0));
+                r0 = r1;
+            }
+            glDepthMask(GL_TRUE);
+            glDepthFunc(GL_LESS);
+            glDisable(GL_DEPTH_TEST);
         }
         s_rp_key = key;
         s_rp_zn = (uint32_t)n;
@@ -12911,6 +12941,8 @@ static void rp_free(void) {
     }
     if (s_rp_zfbo) p_glDeleteFramebuffers(1, &s_rp_zfbo);
     if (s_rp_ztex) glDeleteTextures(1, &s_rp_ztex);
+    if (s_rp_zrb) p_glDeleteRenderbuffers(1, &s_rp_zrb);
+    s_rp_zrb = 0;
     s_rp_zfbo = s_rp_ztex = 0; s_rp_zw = s_rp_zh = 0; s_rp_key = 0;
     if (s_rp_vbo) p_glDeleteBuffers(1, &s_rp_vbo);
     if (s_rp_vao) p_glDeleteVertexArrays(1, &s_rp_vao);

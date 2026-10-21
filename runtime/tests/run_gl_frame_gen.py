@@ -176,6 +176,23 @@ def main():
                         or (pan == "1" and p["real"] != runs[0]["real"])):
                     print(f"FAIL scale {s} {path} {timing} reprojection pgxp={pgxp} pan={pan}")
                     ok = False
+            # Occlusion (FG_OCCLUDE=1): a far quad drawn after a near wall,
+            # hidden in the real frames by PGXP depth; no reprojected frame
+            # may show it through the wall (the depth image takes the nearest
+            # world depth, not painter order).
+            if path == "vram":   # the occlusion scene draws through VRAM only
+                env = dict(os.environ, FG_METHOD="reprojection", FG_OCCLUDE="1")
+                command = [str(c) for c in (probe, s, 1, path, args.frames, timing)]
+                r = subprocess.run(command, cwd=dest, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", env=env)
+                receipt.append({"cmd": command, "env": {"FG_METHOD": "reprojection", "FG_OCCLUDE": "1"},
+                                "exit": r.returncode, "stdout": r.stdout, "stderr": r.stderr[-4000:]})
+                occl = [l for l in r.stdout.splitlines() if l.startswith("occlusion")]
+                print(f"scale {s} {path} {timing} reprojection occlusion: exit={r.returncode}", occl,
+                      r.stderr.strip()[-800:])
+                if r.returncode or not occl:
+                    print(f"FAIL scale {s} {path} {timing} reprojection occlusion")
+                    ok = False
             # Present thread ([video] present_thread): the fixture checks the
             # window shows every composed image bit for bit, in order. The real
             # images match the direct-swap run: bit for bit, except that
