@@ -46,7 +46,10 @@ def main() -> int:
              ("1", "1", "a port-1-only title gets one slot"),
              ("2", "2", "two slots pass through"),
              ("3", None, "three slots fail the configure"),
-             ("0", None, "zero slots fail the configure"))
+             ("0", None, "zero slots fail the configure"),
+             ("1.5", None, "fractional slots fail the configure"),
+             ("one", None, "non-numeric slots fail the configure"),
+             ("1;2", None, "lists fail the configure"))
     failures = 0
     for value, want, what in cases:
         ok = resolve(args.cmake, body, value) == want
