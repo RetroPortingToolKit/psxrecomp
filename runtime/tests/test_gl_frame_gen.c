@@ -622,6 +622,15 @@ int main(int argc, char **argv) {
                       "reprojection: the warp follows the camera (under half the newer frame's difference)");
             }
             check(none * 100 < (long)ww * wh, "reprojection: no holes, every pixel from a real frame or the redraw (<1%)");
+            /* Edge disocclusion (FG_PAN > 1: near triangles over a backdrop
+             * with parallax): what the in-between camera uncovers at a near
+             * object's trailing edge comes from the older frame's own warp
+             * (two-frame reprojection), not the newer frame's pixels
+             * un-warped. The single-frame warp left 0.5 % here. */
+            if (g_pan > 1) {
+                check(s_rp_older_frames > 0, "reprojection: the older frame was warped too");
+                check(none * 300 < (long)ww * wh, "reprojection: uncovered edges filled by the older frame's warp (<0.33%)");
+            }
             check(hud > 0 && hud_bad == 0, "reprojection: HUD exactly the newer frame's");
             free(ref);
         }

@@ -923,3 +923,23 @@ int fg_view_affine(const FgCamFit *fit, int vi, double t, float A[9], float b[3]
         b[r] = (float)(t * v->t[r] - (Am[3 * r] * v->t[0] + Am[3 * r + 1] * v->t[1] + Am[3 * r + 2] * v->t[2]));
     return 1;
 }
+
+/* The older frame's camera at phase t: P_t = Rt P_old + t T (the fit's
+ * rotation interpolated from identity, its translation scaled), so the
+ * older frame's own pixels can be warped to the in-between camera too. */
+int fg_view_affine_older(const FgCamFit *fit, int vi, double t, float A[9], float b[3]) {
+    if (!fit || vi < 0 || (uint32_t)vi >= fit->nviews) return 0;
+    const FgView *v = &fit->v[vi];
+    const double w = fmin(1.0, fabs(v->q[0]));
+    const double ang = 2.0 * acos(w), sn = sqrt(fmax(0.0, 1.0 - w * w));
+    double qt[4] = { 1, 0, 0, 0 }, Rt[9];
+    if (sn > 1e-9) {
+        const double sg = v->q[0] < 0 ? -1.0 : 1.0;
+        qt[0] = cos(0.5 * ang * t);
+        for (int k = 0; k < 3; k++) qt[k + 1] = sg * v->q[k + 1] / sn * sin(0.5 * ang * t);
+    }
+    q_to_m(qt, Rt);
+    for (int k = 0; k < 9; k++) A[k] = (float)Rt[k];
+    for (int r = 0; r < 3; r++) b[r] = (float)(t * v->t[r]);
+    return 1;
+}

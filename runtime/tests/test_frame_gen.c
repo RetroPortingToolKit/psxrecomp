@@ -445,6 +445,34 @@ static void test_view_affine(void) {
     const double c = cos(2 * a), sn = sin(2 * a), dx = P[0] - 30, dz = P[2] - 400;
     check(fabs(o0 - (c * dx - sn * dz)) < 1e-2 && fabs(o2 - (sn * dx + c * dz)) < 1e-2,
           "t = 0: the older frame's position");
+    /* Older frame (two-frame warp): t = 0 is the older camera itself, t = 1
+     * the newer one (P_new = M P_old + T), and at any t an older point lands
+     * where the same point seen from the newer frame lands. */
+    float Ao[9], bo[3];
+    check(fg_view_affine_older(&f, 0, 0.0, Ao, bo) &&
+          fabsf(Ao[0] - 1) < 1e-5f && fabsf(Ao[4] - 1) < 1e-5f && fabsf(Ao[8] - 1) < 1e-5f &&
+          fabsf(bo[0]) < 1e-5f && fabsf(bo[2]) < 1e-5f, "older, t = 0: the older camera itself");
+    for (int k = 0; k <= 4; k++) {
+        const double t = k / 4.0;
+        const float Po[3] = { -50, 10, 900 };
+        double M[9];
+        { const double w = f.v[0].q[0], x = f.v[0].q[1], y = f.v[0].q[2], z = f.v[0].q[3];
+          M[0] = 1 - 2*(y*y + z*z); M[1] = 2*(x*y - w*z);     M[2] = 2*(x*z + w*y);
+          M[3] = 2*(x*y + w*z);     M[4] = 1 - 2*(x*x + z*z); M[5] = 2*(y*z - w*x);
+          M[6] = 2*(x*z - w*y);     M[7] = 2*(y*z + w*x);     M[8] = 1 - 2*(x*x + y*y); }
+        float Pn[3];
+        for (int r = 0; r < 3; r++)
+            Pn[r] = (float)(M[3*r] * Po[0] + M[3*r+1] * Po[1] + M[3*r+2] * Po[2] + f.v[0].t[r]);
+        fg_view_affine(&f, 0, t, A, b);
+        fg_view_affine_older(&f, 0, t, Ao, bo);
+        int same = 1;
+        for (int r = 0; r < 3; r++) {
+            const float vn = A[3*r] * Pn[0] + A[3*r+1] * Pn[1] + A[3*r+2] * Pn[2] + b[r];
+            const float vo = Ao[3*r] * Po[0] + Ao[3*r+1] * Po[1] + Ao[3*r+2] * Po[2] + bo[r];
+            same &= fabsf(vn - vo) < 0.05f;
+        }
+        check(same, "older and newer warps agree on the same point at every phase");
+    }
 }
 
 /* A 320x240 main view and a 64x48 inset with the same valid camera motion.

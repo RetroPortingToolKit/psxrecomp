@@ -151,6 +151,9 @@ double fg_step_s(double flip_s, double refresh_hz, int n);
 double fg_clock_phase(uint64_t since_real_ns, uint64_t step_ns, uint64_t flip_ns);
 /* View vi's in-between camera at phase t as P_t = A P + b (row-major A). */
 int fg_view_affine(const FgCamFit *fit, int vi, double t, float A[9], float b[3]);
+/* The older frame's camera at phase t (P_t = A P_old + b): for warping the
+ * older frame's own pixels to the in-between camera. */
+int fg_view_affine_older(const FgCamFit *fit, int vi, double t, float A[9], float b[3]);
 void fg_hud_match(const FgPrimList *L, const FgPrimList *O, float max_px, uint8_t *moved);
 /* HUD motion between two frames' 2D triangles (frame_gen.c). */
 void fg_hud_lerp(const FgPrimList *L, const FgPrimList *O, double u, float *x, float *y,
