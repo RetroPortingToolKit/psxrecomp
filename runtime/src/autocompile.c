@@ -46,6 +46,9 @@ static char s_cwd[512];
  * the loader's READ location, regardless of what the configured command says. */
 static char s_cache_dir[512];
 static char s_captures[512];
+#ifdef _WIN32
+#include "autocompile_child_env.h"
+#endif
 
 enum { AC_IDLE = 0, AC_RUNNING = 1, AC_DONE = 2 };
 #ifdef _WIN32
@@ -1133,16 +1136,6 @@ static int autocompile_request_impl(void) {
     if (s_cache_dir[0]) SetEnvironmentVariableA("PSX_OVERLAY_CACHE_DIR", s_cache_dir);
     if (s_captures[0])  SetEnvironmentVariableA("PSX_OVERLAY_CAPTURES",  s_captures);
     SetEnvironmentVariableA("PSX_OVERLAY_LIVE_AUTOCOMPILE", "1");
-    /* Scratch files of the compile (patched C, temporary DLLs) beside the
-     * cache, on the game's own drive, not in the user's %TEMP% (often a
-     * nearly full system drive). */
-    if (s_cache_dir[0]) {
-        char tmp_dir[MAX_PATH];
-        snprintf(tmp_dir, sizeof tmp_dir, "%s\\tmp", s_cache_dir);
-        CreateDirectoryA(tmp_dir, NULL);
-        SetEnvironmentVariableA("TMP", tmp_dir);
-        SetEnvironmentVariableA("TEMP", tmp_dir);
-    }
     /* Pin the FLAVOR the same way: the tool's --flavor defaults to 0 (play),
      * so an instrumented (flavor 2) runtime spawned a compile whose shards it
      * could never load — the loader's flavor guard rejected them and EVERY
@@ -1201,10 +1194,18 @@ static int autocompile_request_impl(void) {
     /* Compilation is opportunistic: it must never outrank the interpreter that
      * keeps the current frame alive. cmd -> python -> gcc inherit below-normal
      * priority, while the live compile script also defaults to one worker. */
+    char *child_env = s_cache_dir[0] ? ac_child_environment(s_cache_dir) : NULL;
+    if (s_cache_dir[0] && !child_env) {
+        if (job) CloseHandle(job);
+        CloseHandle(rd); CloseHandle(wr);
+        autocompile_note_failure();
+        return 0;
+    }
     BOOL ok = CreateProcessA(NULL, full, NULL, NULL, TRUE,
                              CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS |
                                  CREATE_SUSPENDED,
-                             NULL, s_cwd[0] ? s_cwd : NULL, &si, &pi);
+                             child_env, s_cwd[0] ? s_cwd : NULL, &si, &pi);
+    free(child_env);
     CloseHandle(wr);
     if (!ok) {
         if (job) CloseHandle(job);

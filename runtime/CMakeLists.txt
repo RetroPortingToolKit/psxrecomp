@@ -1515,6 +1515,10 @@ if(BUILD_TESTING)
     add_test(NAME mod_resident_test COMMAND mod_resident_test)
 
     if(WIN32)
+        add_executable(autocompile_child_env_test tests/test_autocompile_child_env.c)
+        target_include_directories(autocompile_child_env_test PRIVATE src)
+        add_test(NAME autocompile_child_env_test COMMAND autocompile_child_env_test)
+
         add_executable(autocompile_publication_test
             tests/test_autocompile_publication.c
             src/autocompile.c
