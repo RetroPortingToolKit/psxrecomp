@@ -39,6 +39,11 @@ int main() {
     check(atlas.packed[4*16+10]==0x33 && atlas.packed[5*16+10]==0x23,"base glyph palette and outline copied exactly");
     const auto composed=atlas.packed;
     check(!native_font_compose(atlas,0,1,NativeGlyphMark::Tilde,error) && atlas.packed==composed,"occupied glyph cannot be overwritten");
+    NativeFontAtlas dotted;dotted.width=32;dotted.height=16;dotted.packed.resize(256);
+    dotted.packed[2*16+2]=0x33;dotted.packed[7*16+2]=0x23;
+    check(native_font_compose(dotted,0,1,NativeGlyphMark::Acute,error,4),"native i dot can be omitted before accenting");
+    check(dotted.packed[2*16+2]==0x33 && dotted.packed[2*16+10]==0 && dotted.packed[7*16+10]==0x23,
+          "dot removal preserves source and destination stem");
     std::cout<<(failures?"FAIL":"PASS")<<": native translation catalog, Unicode, layout and font composition\n";
     return failures?1:0;
 }

@@ -2204,8 +2204,10 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
         if (!s.provider_preparing) s.ticket_ready = false;
         clear_function_entry_hooks();
         s.disc_extents.clear();
-    s.derived_disc_patches.clear();
-    s.derived_disc_storage.clear(); s.audio_tracks.clear(); s.extent_start = 0;
+        s.derived_disc_patches.clear();
+        s.derived_disc_storage.clear();
+        s.audio_tracks.clear();
+        s.extent_start = 0;
         s.main_applied = false;
         s.error.clear();
         psx_mod_counter_add("startup.plan_reuse", 1);

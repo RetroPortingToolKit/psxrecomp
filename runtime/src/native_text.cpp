@@ -109,14 +109,14 @@ bool native_text_encode(const std::string& text,const NativeGlyphMap& glyphs,
 }
 
 bool native_font_compose(NativeFontAtlas& a,uint16_t base,uint16_t dest,
-        NativeGlyphMark mark,std::string& error) {
+        NativeGlyphMark mark,std::string& error,uint32_t omit_top_rows) {
     error.clear();
     if(!a.width || !a.height || !a.cell_width || !a.cell_height ||
        a.width%a.cell_width || a.height%a.cell_height || a.width%2 ||
        uint64_t(a.width)*a.height!=uint64_t(a.packed.size())*2 ||
        a.cell_width>64 || a.cell_height>64) {error="Invalid native font atlas";return false;}
     const uint32_t cols=a.width/a.cell_width,cells=cols*(a.height/a.cell_height);
-    if(base>=cells || dest>=cells || base==dest) {error="Glyph cell outside native atlas";return false;}
+    if(base>=cells || dest>=cells || base==dest || omit_top_rows>=a.cell_height) {error="Glyph cell outside native atlas";return false;}
     auto get=[&](unsigned id,unsigned x,unsigned y) {
         const size_t p=((id/cols)*a.cell_height+y)*a.width+(id%cols)*a.cell_width+x;
         return uint8_t((a.packed[p/2]>>((p&1)*4))&15);
@@ -128,6 +128,14 @@ bool native_font_compose(NativeFontAtlas& a,uint16_t base,uint16_t dest,
         if(get(dest,x,y)) {error="Destination glyph cell is occupied";return false;}
         const auto v=get(base,x,y);cell[y*a.cell_width+x]=v;
         if(v) {++colors[v];top=std::min(top,y);bottom=std::max(bottom,y);}
+    }
+    // Adapter-owned metrics can omit the dot of i before adding an accent.
+    // Only the copied destination shape changes; source pixels stay intact.
+    if(omit_top_rows) {
+        std::fill_n(cell.begin(),omit_top_rows*a.cell_width,0);
+        top=a.cell_height;bottom=0;
+        for(unsigned y=omit_top_rows;y<a.cell_height;++y)for(unsigned x=0;x<a.cell_width;++x)
+            if(cell[y*a.cell_width+x]) {top=std::min(top,y);bottom=std::max(bottom,y);}
     }
     if(top==a.cell_height) {error="Source font glyph is blank";return false;}
     const auto original=cell;

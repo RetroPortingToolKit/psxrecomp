@@ -335,6 +335,22 @@ static void test_media_plugin(void) {
 
 }
 
+static int derived_reset_calls;
+static uint32_t derived_first, derived_second;
+static void test_derived_reset(void) { ++derived_reset_calls; }
+static void test_derived_plugin(void) {
+    uint32_t size=0;
+    if(!psx_mod_read_disc_file("S0/LEVEL.NSF",nullptr,0,&size) || size!=3000) ++failures;
+    const uint8_t* catalog=nullptr;uint64_t length=0;
+    if(!psx_mod_current_resource_bytes("catalog",&catalog,&length) || length!=3 || catalog[0]!='e') ++failures;
+    std::vector<uint8_t> first(5000,0x36),second(7000,0x79);
+    if(!psx_mod_replace_disc_file("S0/LEVEL.NSF",first.data(),uint32_t(first.size()),&derived_first)) ++failures;
+    if(!psx_mod_replace_disc_file("S0/LEVEL.NSF",second.data(),uint32_t(second.size()),&derived_second)) ++failures;
+    uint32_t invalid=99;
+    if(psx_mod_replace_disc_file("S0",first.data(),uint32_t(first.size()),&invalid) || invalid) ++failures;
+    if(psx_mod_replace_disc_file("S0/MISSING",first.data(),uint32_t(first.size()),&invalid) || invalid) ++failures;
+}
+
 extern "C" {
 void* iso_open(const char*);
 void iso_close(void*);
@@ -1523,6 +1539,63 @@ int main(int argc, char** argv) {
             mod_runtime_patch_disc_sector(lba,1,sector.data(),sector.size());
             check(sector==wanted,"resource overlay crosses sectors with exact untouched surroundings");
         }
+    }
+    /* Derived native files layer without changing owner media. The host and
+     * emulated drive must agree on the final ISO directory and file bytes. */
+    {
+        const auto derived_root=root/"derived-native-file";
+        const std::vector<uint8_t> bundled_catalog{'e','s','!'};
+        write_bytes(derived_root/"packages/derived.test/1.0.0/catalog/es.json",bundled_catalog);
+        write_text(derived_root/"packages/derived.test/1.0.0/manifest.toml",
+            "format_version = 9\nid = \"derived.test\"\nversion = \"1.0.0\"\nname = \"Derived\"\n"
+            "[[target]]\ngame_id = \"READER\"\n[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n"
+            "[[resource]]\nfeature = \"active\"\nid = \"catalog\"\nlabel = \"Catalog\"\nformat = \"file\"\nrequired = true\n"
+            "default = \"catalog/es.json\"\nsize = 3\nsha256 = \""+sha256_hex(bundled_catalog)+"\"\n"
+            "[[plugin]]\nfeature = \"active\"\nid = \"derived.test.plugin\"\n");
+        check(psx_mod_register_activation_plugin("derived.test.plugin",test_derived_plugin),"register derived file preparation");
+        check(psx_mod_register_session_reset_plugin("derived.test.plugin",test_derived_reset),"register session retirement");
+        check(PSXRecompV4::mod_runtime_initialize(derived_root,"READER",0,{},&error) &&
+              PSXRecompV4::mod_runtime_commit(raw_path,&error),"verified bundled catalog commits");
+        const auto resets=derived_reset_calls;
+        mod_runtime_activate_plugins();
+        check(derived_reset_calls==resets+1,"retire previous plugin session before preparing assets");
+        check(derived_first==24 && derived_second==27,"layered native files append stable extents");
+        std::vector<uint8_t> derived(7000);
+        check(psx_mod_read_disc_file("S0/LEVEL.NSF",derived.data(),uint32_t(derived.size()),&bytes) &&
+              bytes==7000 && std::all_of(derived.begin(),derived.end(),[](auto b){return b==0x79;}),"host sees final derived file before drive activation");
+        uint32_t refused=99;
+        check(!psx_mod_replace_disc_file("S0/LEVEL.NSF",derived.data(),7000,&refused) && !refused,"replacement is activation only");
+        mod_runtime_enable_disc_patches();
+        void* derived_mount=iso_open(raw_path.string().c_str());
+        std::array<uint8_t,2352> derived_sector{};
+        check(derived_mount && iso_sector_count(derived_mount)==31,"drive includes both derived layers");
+        check(iso_read_sector(derived_mount,21,derived_sector.data(),derived_sector.size()) &&
+              derived_sector[2]==27 && derived_sector[9]==27 && derived_sector[10]==0x58 && derived_sector[11]==0x1b &&
+              derived_sector[16]==0x1b && derived_sector[17]==0x58,"guest ISO record has final little and big endian extent and size");
+        check(iso_read_raw_sector(derived_mount,27,derived_sector.data(),derived_sector.size()) &&
+              derived_sector[15]==2 && derived_sector[18]==8 && derived_sector[22]==8 && derived_sector[24]==0x79,
+              "guest reads native Mode-2 Form-1 derived data");
+        check(iso_read_sector(derived_mount,30,derived_sector.data(),derived_sector.size()) &&
+              derived_sector[855]==0x79 && derived_sector[856]==0,"derived final sector is padded");
+        mod_runtime_activate_plugins();
+        check(derived_first==24 && derived_second==27 && iso_sector_count(derived_mount)==31,"reactivation retires old derived state");
+        check(PSXRecompV4::mod_runtime_clear_for_netplay(&error),"clear derived native files");
+        check(iso_sector_count(derived_mount)==24 && psx_mod_read_disc_file("S0/LEVEL.NSF",nullptr,0,&bytes) && bytes==3000,
+              "clearing restores original host and guest extents");
+        iso_close(derived_mount);PSXRecompV4::mod_runtime_end_netplay();
+        std::ifstream unchanged(raw_path,std::ios::binary);
+        check(std::vector<uint8_t>(std::istreambuf_iterator<char>(unchanged),{})==raw_iso,"owner disc remains byte identical");
+        // scan() migrates legacy packages/ into installed/. Mutate the active
+        // payload, rather than recreating the retired migration source.
+        write_bytes(derived_root/"installed/derived.test/1.0.0/catalog/es.json",{'b','a','d'});
+        write_text(derived_root/"state.toml","format_version = 2\n[[feature]]\npackage_id = \"derived.test\"\nid = \"active\"\nenabled = true\n");
+        PSXRecompV4::ModPackageManager selected_derived;selected_derived.set_root(derived_root);
+        check(selected_derived.scan(&error) && selected_derived.load_state(&error) &&
+              selected_derived.feature_enabled("derived.test","active"),"tampered catalog feature remains selected for verification");
+        const auto tampered=selected_derived.resolve("READER",{},{});
+        check(!tampered.ok,"tampered bundled catalog fails resolution");
+        check(PSXRecompV4::mod_runtime_initialize(derived_root,"READER",0,{},&error),"reload selected bundled catalog");
+        check(!PSXRecompV4::mod_runtime_commit(raw_path,&error),"modified bundled catalog rejected by SHA-256");
     }
     /* Verified bytes are scoped to the committed feature, and do not depend
      * on reopening an owner file after launch. No launcher is needed here. */
