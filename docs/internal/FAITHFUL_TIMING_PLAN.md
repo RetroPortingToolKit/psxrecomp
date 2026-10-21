@@ -213,6 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (BRIEF-4 far projection):** Opt-in preserve-projection can recover IR-saturated X/Y from qualified unshifted MACs. A new intact-word tag requires validated GTE dataflow; modified words, half writes, cache fallback, lm sign clamps and accumulator/SZ overflow keep rejection. Guest registers and the faithful default are unchanged. R4 maximum-range visual/performance acceptance remains pending.
+
 - **2026-10-21 (BRIEF-4 production follow-up):** Remove production-only PGXP diagnostic receipt copies and reuse the FLS-owned Windows sleep timer fix from `2ca004ba`. The PGXP quiet repeat reduces p99 busy from 70.6% to 50.5%, but two >25ms completion gaps remain. Only failing acceptance runs are repeated under the owner minimum-testing rule.
 
 - **2026-10-21 (BRIEF-4 drawable cache):** Reuse `8ed11cc7`/`ad173490` drawable caching and SDL3 pixel-size event publication. Seven query/event hardware controls match all output hashes; resize and zero-per-frame-query checks pass on Windows and Mac. A loaded repeat before this fix has a 51.795ms host-event span; final performance validation remains open.
