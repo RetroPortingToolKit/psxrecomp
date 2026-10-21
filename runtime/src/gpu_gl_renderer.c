@@ -485,6 +485,7 @@ static int s_hd_authority_pending = 0;
 
 static int  rth_record_mode(void);
 /* Render-thread frame cost (dynamic resolution; defined with GL_RT_BACKEND). */
+static _Atomic uint64_t s_rth_present_wait_ns;
 static uint64_t s_rthf_swap_ns = 0;        /* render thread: time in the swap */
 static uint64_t host_now_ns_rthf(void);
 /* The SW rasterizer and the HD texture residency read the same native VRAM
@@ -10059,6 +10060,7 @@ static void gl_swap_now(int generated) {
     if (rthf_t0) {
         const uint64_t sw = host_now_ns_rthf() - rthf_t0;
         s_rthf_swap_ns += sw;
+        atomic_fetch_add_explicit(&s_rth_present_wait_ns, sw, memory_order_relaxed);
         fg_note_swap(sw);
     }
     if (s_dyn_on) {
@@ -11552,6 +11554,7 @@ void gl_renderer_render_thread_costs(GlRthCosts *out) {
     out->gpu_ns = atomic_load(&s_rthf_gpu_ns);
     out->gpu_frames = atomic_load(&s_rthf_gpu_frames);
     out->dropped = atomic_load(&s_rthf_dropped);
+    out->present_wait_ns = atomic_load_explicit(&s_rth_present_wait_ns, memory_order_relaxed);
 }
 
 /* ---- frame generation ([video] frame_generation) ---------------------------
