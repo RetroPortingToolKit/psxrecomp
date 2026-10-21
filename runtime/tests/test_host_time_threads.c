@@ -17,10 +17,8 @@ static DWORD WINAPI sleeper(void *arg) {
     }
     return 0;
 }
-int main(void) {
+static int run_wave(void) {
     HANDLE threads[8];
-    DWORD before, after;
-    if (!GetProcessHandleCount(GetCurrentProcess(), &before)) return 2;
     start_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!start_event) return 2;
     for (unsigned i=0; i<8; ++i) {
@@ -35,8 +33,22 @@ int main(void) {
     }
     for (unsigned i=0; i<8; ++i) CloseHandle(threads[i]);
     CloseHandle(start_event);
+    return errors ? 1 : 0;
+}
+int main(void) {
+    /* The cold wave still tests concurrent InitOnce initialization. Measure
+     * handle growth only after process/CRT/Windows lazy initialization, then
+     * repeat whole thread lifetimes: a leaked caller timer grows every wave. */
+    int result = run_wave();
+    if (result) return result;
+    DWORD before, after;
+    if (!GetProcessHandleCount(GetCurrentProcess(), &before)) return 2;
+    for (int wave = 0; wave < 3; ++wave) {
+        result = run_wave();
+        if (result) return result;
+    }
     if (!GetProcessHandleCount(GetCurrentProcess(), &after) || after > before) {
-        puts("FAIL: sleeper timer handles leaked after thread exit");
+        printf("FAIL: sleeper timer handles leaked after thread exit: before=%lu after=%lu\n", before, after);
         return 1;
     }
     if (errors) return 1;
