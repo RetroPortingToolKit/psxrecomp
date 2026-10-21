@@ -4811,29 +4811,44 @@ static uint64_t g_frame_report_wait_ticks = 0;   /* offline pacer waits */
 /* Explicit, file-driven production benchmark. No debug server, sampler or
  * per-instruction tracing is needed. Capture outside the measured interval;
  * export the existing frame ring before requesting the normal quit path. */
+struct ReplayWorkSample { uint64_t frame, guest, pacer, queue, completed; };
+static std::vector<ReplayWorkSample> g_replay_work;
+static void input_replay_frame_completed(uint64_t frame) {
+    if (g_replay_work.empty()) return;
+    auto &sample = g_replay_work[frame % HOST_FRAME_STAMP_CAP];
+    if (sample.frame == frame) sample.completed = host_clock_us();
+}
 static void input_replay_frontend_tick(uint64_t frame) {
     uint64_t relative = input_replay_frame(frame);
     if (relative == UINT64_MAX) return;
-    static uint64_t stop = 0;
+    static uint64_t stop = 0, seconds = 0, deadline_us = 0;
     static const char *report = nullptr, *shots = nullptr;
     static bool initialized = false, finished = false;
-    struct WorkSample { uint64_t frame, guest, pacer, queue; };
-    static std::vector<WorkSample> work;
+    auto &work = g_replay_work;
     if (!initialized) {
         if (const char *e = std::getenv("PSX_INPUT_REPLAY_STOP")) stop = std::strtoull(e, nullptr, 10);
+        if (const char *e = std::getenv("PSX_INPUT_REPLAY_SECONDS")) {
+            char *end = nullptr;
+            seconds = std::strtoull(e, &end, 10);
+            if (!seconds || seconds > 60 || !end || *end || stop)
+                throw std::runtime_error("replay seconds must be 1..60, without replay stop");
+        }
         report = std::getenv("PSX_INPUT_REPLAY_REPORT");
         shots = std::getenv("PSX_INPUT_REPLAY_SHOTS");
         if (report && *report) work.resize(HOST_FRAME_STAMP_CAP);
         initialized = true;
     }
     if (finished) return;
+    if (seconds && relative >= 900 && !deadline_us)
+        deadline_us = host_clock_us() + seconds * 1000000;
+    if (deadline_us && !stop && host_clock_us() >= deadline_us) stop = relative;
     if (report && *report) {
         RtStats rs{};
         rt_get_stats(&rs);
         const uint64_t hz = SDL_GetPerformanceFrequency();
         work[frame % HOST_FRAME_STAMP_CAP] = {frame, g_runtime_perf.guest_work_ticks * 1000000 / hz,
                         g_runtime_perf.pacer_ticks * 1000000 / hz,
-                        (rs.backpressure_ns + rs.ring_full_ns + rs.acquire_ns) / 1000};
+                        (rs.backpressure_ns + rs.ring_full_ns + rs.acquire_ns) / 1000, 0};
     }
     if (shots && (relative == 800 || (stop > 0 && relative == stop+2))) {
         char path[512];
@@ -4845,7 +4860,7 @@ static void input_replay_frontend_tick(uint64_t frame) {
     if (report && *report) {
         FILE *f = std::fopen(report, "w");
         if (!f) throw std::runtime_error("cannot write input replay frame report");
-        std::fputs("frame,relative,us,interp,checks,faults,io_kb,guest_us,pacer_us,queue_us\n", f);
+        std::fputs("frame,relative,us,interp,checks,faults,io_kb,guest_us,pacer_us,queue_us,completed_us\n", f);
         uint64_t total = host_frame_stamp_total();
         uint64_t first = total > HOST_FRAME_STAMP_CAP ? total-HOST_FRAME_STAMP_CAP : 0;
         for (uint64_t i=first; i<total; i++) {
@@ -4855,10 +4870,10 @@ static void input_replay_frontend_tick(uint64_t frame) {
             if (rel == UINT64_MAX) continue;
             const auto &w = work[fr % HOST_FRAME_STAMP_CAP];
             if (w.frame != fr) continue;
-            std::fprintf(f, "%u,%llu,%llu,%u,%u,%u,%u,%llu,%llu,%llu\n", fr,
+            std::fprintf(f, "%u,%llu,%llu,%u,%u,%u,%u,%llu,%llu,%llu,%llu\n", fr,
                          (unsigned long long)rel, (unsigned long long)us, ii, ck, pf, io,
                          (unsigned long long)w.guest, (unsigned long long)w.pacer,
-                         (unsigned long long)w.queue);
+                         (unsigned long long)w.queue, (unsigned long long)w.completed);
         }
         if (std::fclose(f) != 0) throw std::runtime_error("cannot finish input replay frame report");
         std::string span_path = std::string(report) + ".spans.csv";
@@ -10909,6 +10924,12 @@ extern "C" int psx_dynres_status_json(char *out, int cap) {
 
 
 static void sdl_vblank_present(void) {
+    struct ReplayCompletion {
+        ~ReplayCompletion() {
+            extern uint64_t s_frame_count;
+            input_replay_frame_completed(s_frame_count);
+        }
+    } completion;
     sync_guest_cadence_to_video_standard();
     NetplayVblankEpilogue ep = sdl_vblank_present_body();
     render_thread_vblank();
