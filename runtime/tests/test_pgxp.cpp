@@ -622,6 +622,36 @@ int main(void) {
                                    &x, &y) == 1);
     }
 
+    /* Far-world projection: exact dataflow may recover IR saturation, while
+     * stale words, lm sign clamps and half writes must stay rejected. */
+    {
+        const int saved_preserve = pgxp_preserve_projection();
+        pgxp_set_preserve_projection(1);
+        pgxp_set_tolerance(-1.0f);
+        int32_t x, y;
+        CHECK(pgxp_project_precise(INT64_C(40000)*4096, INT64_C(-35000)*4096,
+              INT64_C(60000)*4096, 12, 32767, -32768, 60000, 300,
+              160<<16, 120<<16, 1, 1, &x, &y) == 2);
+        CHECK(x == 360*65536 && y == -55*65536);
+        const uint32_t packed = (uint16_t)323 | ((uint32_t)(uint16_t)-44 << 16);
+        pgxp_gte_push_sxy(x, y, 60000, packed);
+        pgxp_gte_mark_unclamped();
+        pgxp_store_gte_reg(0x80005000, 14);
+        int32_t px, py; uint16_t z;
+        CHECK(pgxp_get_precise_vertex(0x80005000, packed, 323, -44, &px, &py, &z));
+        CHECK(px == x && py == y && z == 60000);
+        CHECK(!pgxp_get_precise_vertex(0x80005000, packed^1u, 322, -44, &px, &py, &z));
+        psx_pgxp_cop2(nullptr, MFC2(2, 14), packed, 0);
+        psx_pgxp_store(nullptr, SH(1, 2), 0x80005000, packed);
+        CHECK(!pgxp_get_precise_vertex(0x80005000, packed, 323, -44, &px, &py, &z));
+        CHECK(pgxp_project_precise(-4096, 0, INT64_C(60000)*4096, 12, 0, 0,
+              60000, 300, 0, 0, 1, 1, &x, &y) == 0);
+        pgxp_set_preserve_projection(0);
+        CHECK(pgxp_project_precise(INT64_C(40000)*4096, 0, INT64_C(60000)*4096,
+              12, 32767, 0, 60000, 300, 0, 0, 1, 1, &x, &y) == 0);
+        pgxp_set_preserve_projection(saved_preserve);
+    }
+
     /* --- probe: the same decision, not counted --- */
     {
         produce_at(ADDR_A);

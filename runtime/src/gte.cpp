@@ -1232,6 +1232,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
         int64_t cx16 = sx16 < -kLim ? -kLim : (sx16 > kLim - 1 ? kLim - 1 : sx16);
         int64_t cy16 = sy16 < -kLim ? -kLim : (sy16 > kLim - 1 ? kLim - 1 : sy16);
         int32_t px16 = (int32_t)cx16, py16 = (int32_t)cy16;
+        bool unclamped_projection = false;
         /* Preserve projection precision (G1.11): shadow the exact projection
          * instead when the vertex qualifies and it lies inside the GPU's
          * truncation-agreement window; outside it the IR path's shadow is
@@ -1241,15 +1242,18 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
          * passes), where the shadow would be dropped anyway. */
         if (!proj_override && pgxp_preserve_projection() && pgxp_active()) {
             int32_t ex16, ey16;
-            if (pgxp_project_precise(mac1, mac2, mac3, shift, gte->IR1, gte->IR2,
-                                     gte->SZ[3], gte_h_scaled(gte), gte->OFX, gte->OFY,
-                                     x_num, x_den, &ex16, &ey16) &&
-                pgxp_ppp_accept(ex16, ey16, (uint32_t)gte->SXY[2])) {
+            const int precise = pgxp_project_precise(mac1, mac2, mac3, shift,
+                                     gte->IR1, gte->IR2, gte->SZ[3], gte_h_scaled(gte),
+                                     gte->OFX, gte->OFY, x_num, x_den, &ex16, &ey16);
+            if (precise == 2 || (precise == 1 &&
+                pgxp_ppp_accept(ex16, ey16, (uint32_t)gte->SXY[2]))) {
+                unclamped_projection = precise == 2;
                 px16 = ex16;
                 py16 = ey16;
             }
         }
         pgxp_gte_push_sxy(px16, py16, gte->SZ[3], (uint32_t)gte->SXY[2]);
+        if (unclamped_projection) pgxp_gte_mark_unclamped();
         if (!proj_override && pgxp_projection_tracking() && shift == 12 && !lm) {
             const double z = (double)(mac3 >> 12);
             const double h_proj = (double)gte_h_scaled(gte);
