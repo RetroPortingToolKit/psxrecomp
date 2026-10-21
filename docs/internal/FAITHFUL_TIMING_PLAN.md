@@ -213,6 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (BRIEF-4 drawable cache):** Reuse `8ed11cc7`/`ad173490` drawable caching and SDL3 pixel-size event publication. Seven query/event hardware controls match all output hashes; resize and zero-per-frame-query checks pass on Windows and Mac. A loaded repeat before this fix has a 51.795ms host-event span; final performance validation remains open.
+
 - **2026-10-21 (BRIEF-4 cap edges):** Apply the display ceiling after supersampling and resolve the physical-monitor supersample policy after creating the window, including fixed presets. Saved large factors cannot exceed the Match display ceiling; legacy unset scales stay intact. Resolution tests pass on Windows/Mac; all 21 R4 production-build CTests pass. Final regeneration and receipt verification pending.
 
 - **2026-10-21 (BRIEF-4 storage reuse):** Desktop GL retains ceiling storage and rescales in place, preserving cleared depth/stencil and unwritten wide regions. Apple keeps level-sized allocations by default. Windows old/new output controls and forced-reuse Mac fixtures pass. With corrected presenter accounting, R4 60s fullscreen quiet/loaded runs have zero completion gaps >25ms, p99 busy 44.6/48.8%, 17x..18x scales. R4 final pin/default checks remain in progress.
