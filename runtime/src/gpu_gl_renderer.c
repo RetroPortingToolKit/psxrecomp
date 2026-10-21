@@ -1256,10 +1256,9 @@ static uint64_t   s_coh_seq = 0;
  *
  * INVARIANT: eliding a swap also elides whatever that swap was blocking on.
  * The frontend calls present once per guest vblank, so when the driver's swap
- * block owns the guest cadence (psx_present_vsync_owns_cadence(), the XOR
- * partner of the wall-clock pacer) an elided frame is an unthrottled frame:
- * a 30 Hz-presenting game then advances two vblanks per block and runs at 2x.
- * Every skip site below is therefore gated on that query. */
+ * block is the only guest cadence source, an elided frame is unthrottled.
+ * The cadence query accounts for the independent deadline pacer; explicit
+ * captures still compose every frame. Every skip site checks both. */
 #define PRES_TILE 16
 #define PRES_ROWS (VRAM_H / PRES_TILE)
 static uint64_t s_present_dirty[PRES_ROWS];
@@ -10434,7 +10433,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
     flush_tex_batch();
     flush_cpu_upload();
     if (stereo_present(w, h)) return;
-    if (!s_native_surface_enabled && s_force_present_remaining <= 0 &&
+    if (!present_burst_count() && !s_native_surface_enabled && s_force_present_remaining <= 0 &&
         s_last_present_path == GL_PRES_VRAM &&
         s_last_dx == disp_x && s_last_dy == disp_y &&
         s_last_dw == w && s_last_dh == h &&
@@ -10638,7 +10637,7 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
     flush_tex_batch();
     flush_cpu_upload();
     hiw_flush_queue();   /* windowed: queued wide mirrors */
-    if (!s_native_surface_enabled && s_force_present_remaining <= 0 &&
+    if (!present_burst_count() && !s_native_surface_enabled && s_force_present_remaining <= 0 &&
         s_last_present_path == GL_PRES_WIDE &&
         s_last_dx == disp_x && s_last_dy == disp_y &&
         s_last_dw == g_wide_w && s_last_dh == disp_h &&

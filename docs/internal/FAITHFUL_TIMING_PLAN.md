@@ -213,6 +213,13 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-4 Stage 2 pacing: the renderer's mandatory-swap query now
+  accounts for the frontend's always-running deadline cap. Existing dirty
+  regions can elide unchanged front buffers without free-running the guest;
+  explicit capture bursts still compose every VBlank. Cadence guard and R4
+  title tests pass on Windows and Mac; final completion timing is pending.
+
+
 - 2026-10-21 BRIEF-4 Stage 2: opt-in exact PGXP projection retains positive,
   unwrapped MAC3 beyond hardware SZ saturation. GPU perspective/depth paths
   carry the validated full depth; guest GTE state and legacy depth APIs stay

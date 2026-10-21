@@ -4023,10 +4023,13 @@ static int present_vsync_owns_cadence(void) {
     return host_refresh_matches_guest_cadence();
 }
 
-/* C accessor for the renderers (frame_pacing.h). The GL present-skip
- * optimisation must consult this before eliding a swap. */
+static int present_should_wall_pace(void);
+/* A swap is mandatory for cadence only without an independent deadline cap.
+ * The frontend now runs that cap even alongside driver vsync; reporting the
+ * old XOR ownership here forces unchanged 30 Hz front buffers through the
+ * renderer/presenter queues at 60 Hz. */
 extern "C" int psx_present_vsync_owns_cadence(void) {
-    return present_vsync_owns_cadence();
+    return present_vsync_owns_cadence() && !present_should_wall_pace();
 }
 
 static int present_effective_swap_interval(void) {
