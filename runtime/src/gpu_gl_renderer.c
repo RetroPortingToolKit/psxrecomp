@@ -433,6 +433,7 @@ static void      fg_flush(void);
 static void      fg_invalidate(void);
 static uint64_t  fg_tick(void *user, uint64_t now);
 static void      fg_note_guest_frame(void);
+static void      rthf_gpu_pause(void);
 extern int psx_ws_prim_is_tagged(void);   /* gpu.c: is the current GP0 prim sprite-tagged? */
 extern int psx_ws_prim_in_backdrop(void); /* gpu.c: is its source addr in the flower-field struct? */
 extern int gpu_ws_nw_flat_backdrop_enabled(void); /* gpu.c: per-title flat backdrop opt-in */
@@ -9851,6 +9852,8 @@ static void pt_end(void) {
 
 /* The swap: direct, or queued to the present thread. */
 static void gl_present_swap(void) {
+    /* Swap/slot waits are host pacing, not execution time on the GPU. */
+    rthf_gpu_pause();
     if (!s_pt_on) { gl_window_swap(); return; }
     (void)pt_target_fbo();   /* a frame that never bound 0 still has its slot */
     void *ready = p_glFenceSync(PT_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -11373,12 +11376,13 @@ static void rth_present_payload(uint16_t op, const uint8_t *p) {
 #define RTHF_Q 8
 /* Frame generation pauses a frame's measurement while it draws (the frame
  * then has up to RTHF_SEG queries, summed). */
-#define RTHF_SEG 4
+#define RTHF_SEG 64
 static _Atomic int s_rthf_want = 0;          /* host: measure (dynres active) */
 static int      s_rthf_qok = -1;             /* render thread: queries usable */
 static GLuint   s_rthf_q[RTHF_Q][RTHF_SEG];
 static int      s_rthf_nseg[RTHF_Q];
 static uint64_t s_rthf_slot_cpu[RTHF_Q];
+static int      s_rthf_gpu_active = 0;
 static int      s_rthf_paused = 0;           /* a pause ended this frame's query */
 static uint64_t s_rthf_pause_t0 = 0, s_rthf_pause_swap = 0, s_rthf_excl = 0;
 static void     fg_note_real_cost(uint64_t cpu_ns, uint64_t gpu_ns, int has_gpu);   /* frame generation */
@@ -11426,6 +11430,37 @@ static void rthf_poll(void) {
     }
 }
 
+/* TIME_ELAPSED includes wall time when the command stream is starved.
+ * Close it before host waits and reopen only for a subsequent record. */
+static int rthf_active_segments(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_GPU_ACTIVE_SEGMENTS");
+        enabled = !(e && e[0] == '0');
+    }
+    return enabled;
+}
+static void rthf_gpu_pause(void) {
+    if (!s_rthf_open || !s_rthf_has_q || !s_rthf_gpu_active ||
+        !rthf_active_segments()) return;
+    p_glEndQuery(GL_TIME_ELAPSED);
+    s_rthf_gpu_active = 0;
+}
+static void rthf_gpu_resume(void) {
+    if (!s_rthf_open || !s_rthf_has_q || s_rthf_gpu_active || s_rthf_paused) return;
+    const unsigned i = s_rthf_head % RTHF_Q;
+    if (s_rthf_nseg[i] == RTHF_SEG) { s_rthf_taint = 1; return; }
+    p_glBeginQuery(GL_TIME_ELAPSED, s_rthf_q[i][s_rthf_nseg[i]++]);
+    s_rthf_gpu_active = 1;
+}
+static void gl_rth_idle(void *user) {
+    (void)user;
+    int active = s_rthf_gpu_active;
+    rthf_gpu_pause();
+    /* Submit the end marker before sleeping; it must reach the GPU now. */
+    if (active && !s_rthf_gpu_active) glFlush();
+}
+
 static void rthf_begin(void) {
     if (s_rthf_qok < 0) {
         s_rthf_qok = (p_glGenQueries && p_glBeginQuery && p_glEndQuery &&
@@ -11434,6 +11469,7 @@ static void rthf_begin(void) {
         if (s_rthf_qok) p_glGenQueries(RTHF_Q * RTHF_SEG, &s_rthf_q[0][0]);
     }
     s_rthf_open = 1;
+    s_rthf_gpu_active = 0;
     s_rthf_taint = 0;
     s_rthf_paused = 0;
     s_rthf_excl = 0;
@@ -11444,8 +11480,8 @@ static void rthf_begin(void) {
     if (s_rthf_has_q) {
         gl_perf_yield();   /* close frame_perf's open bracket, if any */
         const unsigned i = s_rthf_head % RTHF_Q;
-        s_rthf_nseg[i] = 1;
-        p_glBeginQuery(GL_TIME_ELAPSED, s_rthf_q[i][0]);
+        s_rthf_nseg[i] = 0;
+        rthf_gpu_resume();
     }
 }
 
@@ -11457,23 +11493,16 @@ static void rthf_pause(void) {
     s_rthf_paused = 1;
     s_rthf_pause_t0 = host_now_ns_rthf();
     s_rthf_pause_swap = s_rthf_swap_ns;
-    if (s_rthf_has_q) p_glEndQuery(GL_TIME_ELAPSED);
+    if (s_rthf_has_q && s_rthf_gpu_active) {
+        p_glEndQuery(GL_TIME_ELAPSED); s_rthf_gpu_active = 0;
+    }
 }
 static void rthf_resume(void) {
     if (!s_rthf_open || !s_rthf_paused) return;
     s_rthf_paused = 0;
     s_rthf_excl += host_now_ns_rthf() - s_rthf_pause_t0;
     s_rthf_swap_ns = s_rthf_pause_swap;   /* the generated frames' swaps */
-    if (s_rthf_has_q) {
-        const unsigned i = s_rthf_head % RTHF_Q;
-        if (s_rthf_nseg[i] < RTHF_SEG) {
-            p_glBeginQuery(GL_TIME_ELAPSED, s_rthf_q[i][s_rthf_nseg[i]++]);
-        } else {
-            /* Out of segments: the rest of the frame goes unmeasured. */
-            s_rthf_taint = 1;
-            p_glBeginQuery(GL_TIME_ELAPSED, s_rthf_q[i][RTHF_SEG - 1]);
-        }
-    }
+    rthf_gpu_resume();
 }
 
 static void rthf_end(void) {
@@ -11484,7 +11513,8 @@ static void rthf_end(void) {
         /* The query pair is still issued so the ring stays in order; the
          * frame is not published. */
         if (s_rthf_has_q) {
-            p_glEndQuery(GL_TIME_ELAPSED);
+            if (s_rthf_gpu_active) p_glEndQuery(GL_TIME_ELAPSED);
+            s_rthf_gpu_active = 0;
             s_rthf_tail = ++s_rthf_head;   /* drop it and anything older */
         }
         atomic_fetch_add(&s_rthf_dropped, 1);
@@ -11498,7 +11528,8 @@ static void rthf_end(void) {
     const uint64_t cpu = span > skip ? span - skip : 0;
     if (s_rthf_has_q) {
         const unsigned i = s_rthf_head % RTHF_Q;
-        p_glEndQuery(GL_TIME_ELAPSED);
+        if (s_rthf_gpu_active) p_glEndQuery(GL_TIME_ELAPSED);
+        s_rthf_gpu_active = 0;
         s_rthf_slot_cpu[i] = cpu;
         s_rthf_head++;
     } else {
@@ -13988,6 +14019,7 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     if (c->op == RTH_FRAME) { rthf_end(); return; }
     if (!s_rthf_open && (atomic_load_explicit(&s_rthf_want, memory_order_relaxed) || s_fg_on))
         rthf_begin();
+    rthf_gpu_resume();
     if (s_fg_on) fg_capture(c, payload);
     switch (c->op) {
     case RTH_SEMI:      glb_set_semi_transparency(v[0], v[1]); break;
@@ -14134,6 +14166,7 @@ int gl_renderer_render_thread_start(int max_frames) {
     cfg.exec = gl_rth_exec;
     cfg.ctx = gl_rth_ctx;
     cfg.user = NULL;
+    cfg.idle = gl_rth_idle;
     cfg.tick = fg_tick;
     fg_invalidate();
     (void)pt_begin();   /* [video] present_thread; falls back to direct swaps */
