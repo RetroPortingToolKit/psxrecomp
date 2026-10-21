@@ -213,6 +213,13 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-4 Stage 2: match Windows emulation priority to render/present
+  workers and reuse packed vertex uploads across queued wide/window draws
+  (from `910eef11`, retaining current depth/coverage behavior). R4 at the
+  owner-selected 40 sections ahead passes completion timing: quiet 60.000 Hz,
+  zero >25 ms gaps, p99 busy 56.0%; loaded 60.000 Hz, zero gaps, 58.7%.
+  Windows/Mac title ctest 21/21. Receipts: R4 `analysis/STATUS.md`.
+
 - 2026-10-21 BRIEF-4 Stage 2 pacing: the renderer's mandatory-swap query now
   accounts for the frontend's always-running deadline cap. Existing dirty
   regions can elide unchanged front buffers without free-running the guest;

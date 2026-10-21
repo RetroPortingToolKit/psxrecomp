@@ -17525,6 +17525,9 @@ int main(int argc, char** argv) {
     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);
     std::fprintf(stderr, "psxrecomp: main() entered\n");
 #ifdef _WIN32
+    /* Emulation produces the deadline-bound work consumed by the render and
+     * presenter threads. Match their latency priority under background load. */
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     /* The embedded manifest's UTF-8 code page needs Windows 10 1903+. Say so
      * when it is not in effect: narrow file calls then disagree with the
      * UTF-8 paths SDL, the launcher and std::filesystem use, so a non-ASCII
