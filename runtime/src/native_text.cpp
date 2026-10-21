@@ -140,7 +140,18 @@ bool native_font_compose(NativeFontAtlas& a,uint16_t base,uint16_t dest,
     if(top==a.cell_height) {error="Source font glyph is blank";return false;}
     const auto original=cell;
     if(mark==NativeGlyphMark::Inverted) std::reverse(cell.begin(),cell.end());
-    else {
+    else if(mark==NativeGlyphMark::Cedilla) {
+        if(a.cell_width<8 || a.cell_height<12 || bottom+3>=a.cell_height) {
+            error="No native-font room for cedilla";return false;
+        }
+        unsigned ink=1;
+        for(unsigned c=2;c<16;++c)if(colors[c]>colors[ink])ink=c;
+        const unsigned x=a.cell_width/2;
+        cell[(bottom+1)*a.cell_width+x]=uint8_t(ink);
+        cell[(bottom+2)*a.cell_width+x+1]=uint8_t(ink);
+        cell[(bottom+3)*a.cell_width+x]=uint8_t(ink);
+        cell[(bottom+3)*a.cell_width+x-1]=uint8_t(ink);
+    } else {
         if(a.cell_width<8 || a.cell_height<12) {error="Native cell too small for an accent";return false;}
         // Keep the native shape and baseline whenever the cell already has
         // headroom. Capitals with less than three rows borrow bottom padding.
@@ -158,6 +169,8 @@ bool native_font_compose(NativeFontAtlas& a,uint16_t base,uint16_t dest,
         auto dot=[&](unsigned px,unsigned py){cell[py*a.cell_width+px]=uint8_t(ink);};
         if(mark==NativeGlyphMark::Acute) {dot(x+2,y);dot(x+3,y);dot(x+1,y+1);dot(x+2,y+1);}
         else if(mark==NativeGlyphMark::Tilde) {dot(x,y+1);dot(x+1,y);dot(x+2,y);dot(x+3,y+1);dot(x+4,y+1);dot(x+5,y);}
+        else if(mark==NativeGlyphMark::Grave) {dot(x,y);dot(x+1,y);dot(x+1,y+1);dot(x+2,y+1);}
+        else if(mark==NativeGlyphMark::Circumflex) {dot(x+2,y);dot(x+3,y);dot(x+1,y+1);dot(x+4,y+1);}
         else {dot(x,y);dot(x+1,y);dot(x+4,y);dot(x+5,y);}
     }
     for(unsigned y=0;y<a.cell_height;++y)for(unsigned x=0;x<a.cell_width;++x) {

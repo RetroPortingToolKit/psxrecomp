@@ -44,6 +44,13 @@ int main() {
     check(native_font_compose(dotted,0,1,NativeGlyphMark::Acute,error,4),"native i dot can be omitted before accenting");
     check(dotted.packed[2*16+2]==0x33 && dotted.packed[2*16+10]==0 && dotted.packed[7*16+10]==0x23,
           "dot removal preserves source and destination stem");
+    for(auto mark:{NativeGlyphMark::Grave,NativeGlyphMark::Circumflex,NativeGlyphMark::Cedilla}) {
+        NativeFontAtlas portuguese;portuguese.width=32;portuguese.height=16;portuguese.packed=original;
+        check(native_font_compose(portuguese,0,1,mark,error),"Portuguese diacritic fits native cell");
+        for(unsigned row=0;row<16;++row)for(unsigned x=0;x<8;++x)
+            check(portuguese.packed[row*16+x]==original[row*16+x],"Portuguese composition preserves source cell");
+        check(portuguese.packed[4*16+10]==0x33 && portuguese.packed[5*16+10]==0x23,"Portuguese glyph retains source pixels and palette");
+    }
     std::cout<<(failures?"FAIL":"PASS")<<": native translation catalog, Unicode, layout and font composition\n";
     return failures?1:0;
 }

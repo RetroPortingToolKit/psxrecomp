@@ -18,7 +18,9 @@ they never silently become spaces. A title owns its dimensions, style bits,
 source record inventory, buffer capacity and alignment requirements.
 
 `native_font_compose` copies a cell in the original indexed 4-bpp font to an
-unused cell and composes an acute accent, tilde, diaeresis or inverted mark.
+unused cell and composes an acute/grave accent, circumflex, tilde, diaeresis,
+cedilla or inverted mark. Cedillas use the native cell's bottom padding;
+accents use its headroom. Composition fails when the mark cannot fit.
 Native palette indices, base shape and baseline are retained. The adapter can
 omit top rows of the copied shape to remove i's dot before composing í. Original
 cells remain unchanged, and occupied destinations are refused. Other native
