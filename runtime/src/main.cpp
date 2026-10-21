@@ -4825,7 +4825,7 @@ static void input_replay_frame_completed(uint64_t frame) {
 static void input_replay_frontend_tick(uint64_t frame) {
     uint64_t relative = input_replay_frame(frame);
     if (relative == UINT64_MAX) return;
-    static uint64_t stop = 0, seconds = 0, deadline_us = 0, shot_frame = 800;
+    static uint64_t stop = 0, seconds = 0, deadline_us = 0, shot_frame = 800, shot_step = 0;
     static bool custom_shot_frame = false;
     static const char *report = nullptr, *shots = nullptr;
     static bool initialized = false, finished = false;
@@ -4847,6 +4847,12 @@ static void input_replay_frontend_tick(uint64_t frame) {
                 throw std::runtime_error("invalid replay shot frame");
             custom_shot_frame = true;
         }
+        if (const char *e = std::getenv("PSX_INPUT_REPLAY_SHOT_STEP")) {
+            char *end = nullptr;
+            shot_step = std::strtoull(e, &end, 10);
+            if (!shot_step || !end || *end || !stop)
+                throw std::runtime_error("replay shot step needs a positive interval and replay stop");
+        }
         if (report && *report) work.resize(HOST_FRAME_STAMP_CAP);
         initialized = true;
     }
@@ -4862,7 +4868,9 @@ static void input_replay_frontend_tick(uint64_t frame) {
                         g_runtime_perf.pacer_ticks * 1000000 / hz,
                         (rs.backpressure_ns + rs.ring_full_ns + rs.acquire_ns) / 1000, 0};
     }
-    if (shots && (relative == shot_frame || (!custom_shot_frame && stop > 0 && relative == stop+2))) {
+    if (shots && (relative == shot_frame ||
+                  (shot_step && relative > shot_frame && relative <= stop && (relative-shot_frame) % shot_step == 0) ||
+                  (!custom_shot_frame && !shot_step && stop > 0 && relative == stop+2))) {
         char path[512];
         std::snprintf(path, sizeof path, "%s-%llu.png", shots, (unsigned long long)relative);
         present_shot_request(path);
