@@ -1,0 +1,17 @@
+name: BIOS emitter stamps
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bios-stamps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check committed BIOS emitter stamps
+        shell: bash
+        run: bash tools/ci/check_bios_stamps.sh --framework .

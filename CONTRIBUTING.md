@@ -82,6 +82,26 @@ written — is likely to be rejected if it:
 - Contains code the contributor cannot reasonably explain, or whose verification
   cannot be stated.
 
+### Commit messages
+
+Use a subject only by default. Add a body only when the reason is not clear
+from the diff, and keep it to 1-3 lines. Do not add per-file changelogs or
+repeat the diff or PR description.
+
+### BIOS emitter changes
+
+After changing a BIOS fingerprint input, run
+`bash tools/regen_bios.sh --config bios/OpenBIOS.toml` and commit the regenerated
+OpenBIOS output and stamp together. PR CI checks the committed stamps without
+requiring a retail BIOS dump. Never update a stamp without regenerating.
+
+Retail-dump users must also regenerate each linked retail stem, for example
+`bash tools/regen_bios.sh --config bios/SCPH1001.toml`. Retail dumps and generated
+retail C/stamps stay local and gitignored. In the PR validation notes, name the
+BIOS stems checked and whether their output changed; explicitly say when a
+retail stem was not checked. Unchanged OpenBIOS output does not establish
+unchanged SCPH1001 output.
+
 ## Game-specific work belongs in game repos
 
 The framework stays game-agnostic. Per-game patches, launcher UI, assets, memory

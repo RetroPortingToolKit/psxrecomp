@@ -907,6 +907,13 @@ if(NOT PSXRECOMP_SKIP_BIOS_STALE_CHECK AND _psxrt_bios_linked)
                     else()
                         set(_psxrt_stale_sev WARNING)
                     endif()
+                    if(_psxrt_chk_stem MATCHES "^SCPH")
+                        set(_psxrt_stale_publish
+                            "Retail dump/generated outputs stay local and gitignored; do not commit them.")
+                    else()
+                        set(_psxrt_stale_publish
+                            "Commit the regenerated ${_psxrt_chk_stem}_*.c and .emitter.sha together.")
+                    endif()
                     message(${_psxrt_stale_sev}
                         "BIOS generated/${_psxrt_chk_stem}_*.c is STALE vs the recompiler "
                         "emitter (fingerprint mismatch).\n"
@@ -915,7 +922,7 @@ if(NOT PSXRECOMP_SKIP_BIOS_STALE_CHECK AND _psxrt_bios_linked)
                         "  The committed C may not match the current emitter source, "
                         "seeds or profile.\n"
                         "  Fix:  tools/regen_bios.sh --config bios/${_psxrt_chk_stem}.toml "
-                        "and commit generated/${_psxrt_chk_stem}_*.c + .emitter.sha\n"
+                        "\n  ${_psxrt_stale_publish}\n"
                         "  (Suppress locally: -DPSXRECOMP_SKIP_BIOS_STALE_CHECK=ON)")
                 endif()
             endif()

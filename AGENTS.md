@@ -13,3 +13,7 @@ shared HLE work is `beads-wuhs`. Do not initialize a local issue database.
 Work solo unless the owner authorizes delegation for the task. For the approved
 parity campaign, serialize title builds and game runs: two compile jobs per
 build, one game instance, and preserve the owner's sessions and personal saves.
+
+Commit messages use a subject only by default. Add a body only when the reason
+is not clear from the diff, and keep it to 1-3 lines. Do not add per-file
+changelogs or repeat the diff or PR description.
