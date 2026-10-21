@@ -10809,6 +10809,49 @@ static void dyn_stats_lock(void) { while (atomic_flag_test_and_set_explicit(&s_d
 static void dyn_stats_unlock(void) { atomic_flag_clear_explicit(&s_dyn_stats_lock, memory_order_release); }
 static int s_rthm_scale = 1;                /* emulation-side level (recording) */
 
+/* Desktop immediate-mode GL can reuse the ceiling allocation. On Apple's
+ * GL-on-Metal, attachment load/store bandwidth scales with allocation size,
+ * so keep allocating at the active level there. The control retains the old
+ * allocation path for exact image comparisons on either backend. */
+static int dyn_reuse_storage(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_DYNRES_REUSE_STORAGE");
+#ifdef __APPLE__
+        enabled = e && e[0] == '1';
+#else
+        enabled = !(e && e[0] == '0');
+#endif
+    }
+    return enabled;
+}
+static void dyn_clear_wide_rest(GLuint fbo, const int (*cols)[2], int ncols,
+                                 int y0, int y1, int scale) {
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, fbo);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0, 0, 0, 0);
+    glEnable(GL_SCISSOR_TEST);
+    if (y0 > 0) {
+        glScissor(0, 0, g_wide_w * scale, y0 * scale); glClear(GL_COLOR_BUFFER_BIT);
+    }
+    if (y1 < VRAM_H) {
+        glScissor(0, y1 * scale, g_wide_w * scale, (VRAM_H - y1) * scale);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    int x = 0;
+    for (int c = 0; c <= ncols; ++c) {
+        int end = c < ncols ? cols[c][0] : g_wide_w;
+        if (end > x) {
+            glScissor(x * scale, y0 * scale, (end - x) * scale, (y1 - y0) * scale);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        if (c < ncols) x = cols[c][1];
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glStencilMask(0xFF); glClearStencil(0); glClear(GL_STENCIL_BUFFER_BIT);
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+}
+
 static int dyn_apply(int snew) {
     /* Never in the windowed high-resolution mode (s_hiw): dyn_eligible keeps
      * s_alloc_scale 0 there; refuse here too rather than step its tiles. */
@@ -10904,7 +10947,14 @@ static int dyn_apply(int snew) {
      *    step down reseeds the old surface's corner in place; a step up past
      *    the old allocation is refused. */
     GLuint ntex = 0, nrb = 0, nfbo = 0;
-    if (!hr_alloc_surface(snew, &ntex, &nrb, &nfbo)) {
+    if (dyn_reuse_storage() && snew <= s_hr_alloc) {
+        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_hr_fbo);
+        glDisable(GL_SCISSOR_TEST);
+        glDepthMask(GL_TRUE); glClearDepth(1.0);
+        glStencilMask(0xFF); glClearStencil(0);
+        glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    } else if (!hr_alloc_surface(snew, &ntex, &nrb, &nfbo)) {
         if (snew > s_hr_alloc) {
             s_dyn_stats.refused++;
             fprintf(stdout, "psxrecomp: dynamic resolution %dx -> %dx refused (the "
@@ -10960,7 +11010,11 @@ static int dyn_apply(int snew) {
              * before and the surface keeps its larger allocation; a step up
              * past it drops the surface (recreated at the next target). */
             GLuint ntex = 0, nrb = 0, nfbo = 0;
-            if (wide_alloc_surface(snew, &ntex, &nrb, &nfbo)) {
+            if (dyn_reuse_storage() && snew <= s_wide_as[i]) {
+                dyn_rescale_in_place(s_wide_fbo[i], g_wide_w, (const int (*)[2])cols, nc,
+                                     y0, y1, sold, snew);
+                dyn_clear_wide_rest(s_wide_fbo[i], (const int (*)[2])cols, nc, y0, y1, snew);
+            } else if (wide_alloc_surface(snew, &ntex, &nrb, &nfbo)) {
                 for (int c = 0; c < nc; c++)
                     if (cols[c][1] > cols[c][0])
                         dyn_rescale_rect(s_wide_tex[i], cols[c][0] * sold, y0 * sold, sold,
@@ -10993,7 +11047,7 @@ static int dyn_apply(int snew) {
         int hw = VRAM_W * snew, hh = VRAM_H * snew;
         int sw = snew <= 2 ? hw : (hw < GL_SCRATCH_TILE ? hw : GL_SCRATCH_TILE);
         int sh = snew <= 2 ? hh : (hh < GL_SCRATCH_TILE ? hh : GL_SCRATCH_TILE);
-        if (s_scratch_w > sw || s_scratch_h > sh) {
+        if (!dyn_reuse_storage() && (s_scratch_w > sw || s_scratch_h > sh)) {
             p_glActiveTexture(PSXGL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, s_scratch_tex);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, sw, sh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);

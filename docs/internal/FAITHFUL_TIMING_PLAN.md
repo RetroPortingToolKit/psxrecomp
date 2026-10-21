@@ -213,6 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (BRIEF-4 storage reuse):** Desktop GL retains ceiling storage and rescales in place, preserving cleared depth/stencil and unwritten wide regions. Apple keeps level-sized allocations by default. Windows old/new output controls and forced-reuse Mac fixtures pass. With corrected presenter accounting, R4 60s fullscreen quiet/loaded runs have zero completion gaps >25ms, p99 busy 44.6/48.8%, 17x..18x scales. R4 final pin/default checks remain in progress.
+
 - **2026-10-21 (BRIEF-4 presenter accounting):** Publish composer swap/slot wait separately and exclude that pacing from dynamic-resolution work backpressure. Windows and Mac real-context checks pass. Quiet fullscreen route: 60.020 Hz, four completion gaps >25ms, p99 busy 48.0%; allocation stalls remain. Raw completion and queue-wait metrics are unchanged.
 
 - **2026-10-21 (BRIEF-4 GPU timing):** Split TIME_ELAPSED brackets around command starvation and presentation waits. Real-context 30ms producer-idle control reports 35.141ms with the old bracket / 5.620ms active GPU work; Windows and Mac GL fixtures and render-thread unit checks pass. Completion stalls remain; dynamic-resolution reallocations are the next target. No guest or completion-clock changes.
