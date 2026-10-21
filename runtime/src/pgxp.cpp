@@ -710,7 +710,7 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
          * cpu-mode keeps working. */
         dst->y16 = ((int32_t)value >> 16) << 16;
         dst->flags = PGXP_F_VY;
-        if (src && src->gen == s_gen) {
+        if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED)) {
             uint32_t actual_half = (value & 0xFFFFu) << (hi_half ? 16 : 0);
             uint32_t mask = hi_half ? 0xFFFF0000u : 0x0000FFFFu;
             uint16_t want = hi_half ? PGXP_F_VY : PGXP_F_VX;
@@ -796,7 +796,8 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
              * coordinate half here. */
             if (hi_half) { dst->y16 = v16; dst->flags |= (uint16_t)(PGXP_F_VY | (derived ? PGXP_F_DY : 0)); }
             else         { dst->x16 = v16; dst->flags |= (uint16_t)(PGXP_F_VX | (derived ? PGXP_F_DX : 0)); }
-        } else if (src && src->gen == s_gen && (src->flags & PGXP_F_VX) &&
+        } else if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED) &&
+                   (src->flags & PGXP_F_VX) &&
                    ((src->value ^ value) & 0xFFFFu) == 0) {
             const uint16_t d = (src->flags & PGXP_F_DX) ? (hi_half ? PGXP_F_DY : PGXP_F_DX) : 0;
             if (hi_half) { dst->y16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VY | d); }
@@ -951,7 +952,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
  * sub-pixel value; an untracked half contributes its exact integer value
  * (adding an exact offset to a tracked coordinate keeps the fraction). */
 static inline int32_t comp16(const PGXPValue *pv, uint32_t value, int hi_half) {
-    if (pv && pv->gen == s_gen) {
+    if (pv && pv->gen == s_gen && !(pv->flags & PGXP_F_UNCLAMPED)) {
         if (!hi_half && (pv->flags & PGXP_F_VX) &&
             ((pv->value ^ value) & 0x0000FFFFu) == 0)
             return pv->x16;
@@ -965,7 +966,7 @@ static inline int32_t comp16(const PGXPValue *pv, uint32_t value, int hi_half) {
 /* The derived-half marks (PGXP_F_DX / DY) an operand contributes through
  * comp16: a tracked derived half keeps its rounding window in the sum. */
 static inline uint16_t derived_bits(const PGXPValue *pv, uint32_t value) {
-    if (!pv || pv->gen != s_gen) return 0;
+    if (!pv || pv->gen != s_gen || (pv->flags & PGXP_F_UNCLAMPED)) return 0;
     uint16_t d = 0;
     if ((pv->flags & PGXP_F_DX) && (pv->flags & PGXP_F_VX) &&
         ((pv->value ^ value) & 0x0000FFFFu) == 0) d |= PGXP_F_DX;
@@ -975,7 +976,7 @@ static inline uint16_t derived_bits(const PGXPValue *pv, uint32_t value) {
 }
 
 static inline int comp_tracked(const PGXPValue *pv, uint32_t value, int hi_half) {
-    if (!pv || pv->gen != s_gen) return 0;
+    if (!pv || pv->gen != s_gen || (pv->flags & PGXP_F_UNCLAMPED)) return 0;
     if (!hi_half)
         return (pv->flags & PGXP_F_VX) &&
                ((pv->value ^ value) & 0x0000FFFFu) == 0;
