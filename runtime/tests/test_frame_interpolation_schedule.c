@@ -284,6 +284,25 @@ int main(void) {
                &schedule, 0u, 1000000u, 60.0, 59.0),
           "output below source cadence should be rejected");
 
+    frame_interpolation_schedule_reset(&schedule);
+    schedule.queued = 1;
+    for (int i = 1; i <= 6; ++i) {
+        uint64_t deadline;
+        float alpha;
+        CHECK(frame_interpolation_schedule_begin(&schedule, 1000000u,
+                  1000000u, 60.0, 60.0), "queued interval accepted");
+        CHECK(frame_interpolation_schedule_next(&schedule, 1000000u,
+                  &deadline, &alpha), "queued interval has one output");
+        CHECK(fabs((double)deadline - (1000000.0 + i * 1000000.0 / 60.0)) < 1.0,
+              "early producer retains every presentation deadline");
+        CHECK(!frame_interpolation_schedule_next(&schedule, 1000000u,
+                   &deadline, &alpha), "queued interval has no duplicate output");
+    }
+    CHECK(frame_interpolation_schedule_begin(&schedule, 2000000u,
+              1000000u, 60.0, 60.0), "queued clock recovers after sustained stall");
+    CHECK(frame_interpolation_schedule_end(&schedule) == 2016667u,
+          "late queued producer reanchors after sustained stall");
+
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;
 }

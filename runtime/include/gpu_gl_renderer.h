@@ -95,7 +95,11 @@ void     gl_renderer_pass_set_flip_shown(int shown);
 void     gl_renderer_pass_end(uint32_t alpha_q16, int keep);
 uint32_t gl_renderer_pass_leaks(void);
 int      gl_renderer_pass_verify_vram(void);
+/* Relinquish the synchronous context after refusing a temporal plan. */
+void     gl_renderer_pass_cancel_plan(void);
 void     gl_renderer_pass_note_cost(uint64_t ticks);
+/* Actual frontend deadline sleep; admission uses max with renderer idle. */
+void     gl_renderer_pass_note_frontend_idle(uint64_t ticks);
 /* Present output deadlines that fell due while guest code ran. */
 void     gl_renderer_pass_service_presents(void);
 /* promotions, presents, blended presents, expired, unmatched flips, presents

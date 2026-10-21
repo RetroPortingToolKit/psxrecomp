@@ -4045,6 +4045,7 @@ static int present_should_wall_pace(void) {
     /* The single-context temporal-blend path subdivides this same stock frame
      * interval. Do not run the outer pacer as well or guest timing doubles. */
     if (g_frame_interpolation && g_gl_active &&
+        !gl_renderer_render_thread_active() &&
         gl_renderer_interpolation_owns_cadence())
         return 0;
     /* Run the pacer even when driver vsync is SUPPOSED to own the cadence.
@@ -4924,7 +4925,21 @@ static void input_replay_frontend_tick(uint64_t frame) {
         int bytes = gl_renderer_render_thread_json(renderer, sizeof renderer);
         if (bytes > 0 && bytes < (int)sizeof renderer) {
             std::ofstream detail(std::string(report) + ".renderer.json");
-            detail << "{" << renderer << "}";
+            char generation[8192];
+            int generated_bytes = gl_renderer_frame_gen_json(generation, sizeof generation);
+            RenderPassStats rp{}; render_pass_get_stats(&rp);
+            detail << "{" << renderer << ",\"render_pass\":{\"passes\":" << rp.passes
+                   << ",\"wanted\":" << rp.wanted << ",\"planned\":" << rp.planned
+                   << ",\"refused\":" << rp.refused << ",\"aborted\":" << rp.aborted
+                   << ",\"status_refused\":" << rp.status_refused << ",\"last_status\":" << rp.last_failure.status
+                   << ",\"discarded\":" << rp.discarded << ",\"verify_checks\":" << rp.verify_checks
+                   << ",\"verify_mismatch\":" << rp.verify_mismatch
+                   << ",\"avg_pass_ms\":" << rp.avg_pass_ms << ",\"avg_guest_ms\":" << rp.avg_guest_ms
+                   << ",\"avg_begin_ms\":" << rp.avg_begin_ms << ",\"avg_end_ms\":" << rp.avg_end_ms
+                   << ",\"avg_restore_ms\":" << rp.avg_restore_ms << "}";
+            if (generated_bytes > 0 && generated_bytes < (int)sizeof generation)
+                detail << ",\"frame_generation\":{" << generation << "}";
+            detail << "}";
             if (!detail) throw std::runtime_error("cannot write input replay renderer report");
         }
     }
@@ -9712,6 +9727,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             const uint64_t waited = SDL_GetPerformanceCounter() - dyn_t0;
             if (g_dynres.active) g_dynres.pacer_ticks += waited;
             g_frame_report_wait_ticks += waited;
+            if (g_frame_interpolation) gl_renderer_pass_note_frontend_idle(waited);
         }
         runtime_perf_section_end(perf_start, &g_runtime_perf.pacer_ticks);
         latency_ring_mark(LAT_PACED);
@@ -10296,8 +10312,7 @@ static void render_thread_vblank(void) {
             }
         } else {
             std::fprintf(stdout, "psxrecomp: render thread requested but not started "
-                         "(needs the OpenGL backend without netplay, frame interpolation "
-                         "or a 24-bit display)\n");
+                         "(needs the OpenGL backend without netplay or a 24-bit display)\n");
             if (g_frame_generation)
                 std::fprintf(stdout, "psxrecomp: Smooth motion (frame generation) needs the render thread; off\n");
         }

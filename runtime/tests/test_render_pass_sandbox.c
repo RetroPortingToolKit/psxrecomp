@@ -254,6 +254,7 @@ void gl_renderer_pass_end(uint32_t alpha_q16, int keep) {
 }
 uint32_t gl_renderer_pass_leaks(void) { return 0; }
 int gl_renderer_pass_verify_vram(void) { return 1; }
+void gl_renderer_pass_cancel_plan(void) {}
 void gl_renderer_pass_note_cost(uint64_t t) { (void)t; }
 void gl_renderer_pass_service_presents(void) {}
 static uint32_t s_local_status = PSX_MOD_RENDER_PASS_READY;

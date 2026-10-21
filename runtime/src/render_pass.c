@@ -414,10 +414,6 @@ int psx_mod_render_view(const PSXModRenderView *view) {
     return 1;
 }
 
-static int passes_allowed(void) {
-    return pass_status() == PSX_MOD_RENDER_PASS_READY;
-}
-
 uint32_t psx_mod_render_pass_status(void) {
     return pass_status();
 }
@@ -440,7 +436,14 @@ uint32_t psx_mod_render_pass_plan(uint32_t period_vblanks,
     if (!alpha_q16 || max == 0 || period_vblanks == 0 || period_vblanks > 8 ||
         shown_after_vblanks > 8)
         return 0;
-    if (!passes_allowed()) return 0;
+    {
+        uint32_t status = pass_status();
+        if (status != PSX_MOD_RENDER_PASS_READY) {
+            s_stats.status_refused++;
+            gl_renderer_pass_cancel_plan();
+            return pass_refuse("plan_status", status);
+        }
+    }
     n = gl_renderer_pass_plan(period_vblanks, shown_after_vblanks,
                               alpha_q16, max, &wanted);
     s_stats.wanted += wanted;

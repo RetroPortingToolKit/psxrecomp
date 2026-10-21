@@ -213,6 +213,18 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-4 Stage 3 WIP: restore asynchronous temporal eligibility,
+  queue presentation deadlines on the presenter, release rejected plans, and
+  credit frontend deadline sleep without adding overlapping renderer idle.
+  A bounded size-aware image budget admits two images per generation at 8K
+  (1 GiB ceiling). Title tests pass Windows/Mac 25/25; schedule/guard checks
+  pass. R4 guest off/on identity matches 4,501 frames with 735 temporal passes.
+  Acceptance still FAILS: full-8K transactional redraw quiet 58.528 Hz,
+  311 >25 ms completion gaps, p99 busy 65.0%; 33.8 s context-acquire waits.
+  GPU recorded redraw experiment also failed timing/distinct-frame coverage
+  and was removed. Queued GPU transactions remain necessary; no Stage 3 push.
+  R4 `analysis/STATUS.md` links local receipts. Stage 2 remains pushed/accepted.
+
 - 2026-10-21 BRIEF-4 Stage 2: match Windows emulation priority to render/present
   workers and reuse packed vertex uploads across queued wide/window draws
   (from `910eef11`, retaining current depth/coverage behavior). R4 at the

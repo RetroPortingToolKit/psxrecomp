@@ -510,6 +510,7 @@ static int ctx_bg_full(void) {
  * sync point (the emulation thread draws those frames itself). */
 static int ctx_depth24(void) { return rth_replaying() ? 0 : gpu_display_is_depth24(); }
 static void gl_rth_acquire(const char *reason);
+static void gl_rth_release(void);
 #define GL_RT_SYNC(reason) \
     do { if (s_rth_on && !rt_on_render_thread()) gl_rth_acquire(reason); } while (0)
 /* Recording (defined with GL_RT_BACKEND at the end of the file). */
@@ -522,7 +523,7 @@ enum {
     RTH_WIDE_DISABLE, RTH_WIDE_CLEAR, RTH_WIDE_CLEAR_MARGINS, RTH_PROJ_TRI,
     RTH_WIDE_RECOVERY, RTH_INTERP_SUSPENDED, RTH_PRESENT_VRAM,
     RTH_PRESENT_WIDE, RTH_STATE, RTH_PEEK, RTH_RING_CAPTURE, RTH_DYN_STEP,
-    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER, RTH_WIDE_FEEDBACK
+    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER, RTH_WIDE_FEEDBACK, RTH_PASS_SERVICE
 };
 /* GP0(A0) whose payload gpu.c is still streaming into its array (the
  * facade's vram_upload_open, emulation thread), tracked whatever the HD
@@ -714,6 +715,8 @@ static double        s_interp_host_hz = 0.0;
 static double        s_interp_target_hz = 0.0;
 static double        s_interp_source_hz = 0.0;
 static FrameInterpolationSchedule s_interp_schedule;
+static uint64_t s_interp_pending_deadline;
+static _Atomic uint64_t s_pass_frontend_idle;
 /* Blend source (psx_mod_set_frame_interpolation_source). VBLANK (0, the
  * default) treats every guest VBlank present as a new frame, exactly as
  * before. FLIP (1) rotates history only on a real flip -- the display origin
@@ -8069,7 +8072,7 @@ static int interp_present(float alpha) {
                                s_interp_blend_mode);
 }
 
-static void interp_wait_until(uint64_t deadline, uint64_t frequency) {
+static void interp_wait_until_ex(uint64_t deadline, uint64_t frequency, int render_idle) {
     uint64_t now, start;
     if (!deadline || !frequency) return;
     start = SDL_GetPerformanceCounter();
@@ -8077,8 +8080,10 @@ static void interp_wait_until(uint64_t deadline, uint64_t frequency) {
         now = SDL_GetPerformanceCounter();
         if (now >= deadline) {
             /* Idle host time feeds the render-pass budget. */
-            (void)s_idle_ticks_accum_fwd(now - start);
-            if (s_dyn_on) s_dyn_ledger.idle_ticks += now - start;
+            if (render_idle) {
+                (void)s_idle_ticks_accum_fwd(now - start);
+                if (s_dyn_on) s_dyn_ledger.idle_ticks += now - start;
+            }
             return;
         }
         uint64_t remain = deadline - now;
@@ -8091,8 +8096,17 @@ static void interp_wait_until(uint64_t deadline, uint64_t frequency) {
     }
 }
 
+static void interp_wait_until(uint64_t deadline, uint64_t frequency) {
+    interp_wait_until_ex(deadline, frequency, 1);
+}
+void gl_renderer_pass_note_frontend_idle(uint64_t ticks) {
+    atomic_fetch_add_explicit(&s_pass_frontend_idle, ticks, memory_order_relaxed);
+}
+
 static void interp_present_source_interval(void) {
     static uint64_t diag_start, diag_swaps, diag_captures;
+    const int asynchronous = s_interp_hold && s_pt_on && s_rth_on && rt_on_render_thread();
+    s_interp_schedule.queued = asynchronous;
     uint64_t frequency = SDL_GetPerformanceFrequency();
     uint64_t now = SDL_GetPerformanceCounter();
     uint64_t deadline;
@@ -8108,14 +8122,16 @@ static void interp_present_source_interval(void) {
     while (frame_interpolation_schedule_next(
                &s_interp_schedule, SDL_GetPerformanceCounter(),
                &deadline, &alpha)) {
-        interp_wait_until(deadline, frequency);
+        if (!asynchronous) interp_wait_until(deadline, frequency);
+        s_interp_pending_deadline = asynchronous ? deadline : 0;
         latency_ring_mark(LAT_SWAP_BEGIN);
         if (!pass_gen_present(deadline))
             (void)interp_present(alpha);
         latency_ring_mark(LAT_SWAP_END);
+        s_interp_pending_deadline = 0;
     }
-    interp_wait_until(frame_interpolation_schedule_end(&s_interp_schedule),
-                      frequency);
+    if (!asynchronous)
+        interp_wait_until(frame_interpolation_schedule_end(&s_interp_schedule), frequency);
 
     now = SDL_GetPerformanceCounter();
     if (!diag_start) {
@@ -8343,13 +8359,23 @@ int gl_renderer_pass_ready(void) {
     return gl_renderer_pass_unavailable() == PSX_MOD_RENDER_PASS_READY;
 }
 
-/* Slots per generation that fit a 256 MiB budget for the whole queue. */
+/* Keep the historical 256 MiB queue budget, but permit two images per
+ * generation at the requested capture size, up to a 1 GiB hard ceiling.
+ * Eight-kilopixel output needs about 760 MiB for those six images; the old
+ * cap silently disabled temporal rendering above roughly 1440 lines. */
 static uint32_t pass_slot_cap(int tex_w, int tex_h) {
     double bytes = (double)tex_w * (double)tex_h * 4.0 * PASS_GENERATIONS;
-    uint32_t cap = bytes > 0.0 ? (uint32_t)((256.0 * 1024.0 * 1024.0) / bytes)
+    double budget = 256.0 * 1024.0 * 1024.0;
+    if (2.0 * bytes > budget) budget = 2.0 * bytes;
+    if (budget > 1024.0 * 1024.0 * 1024.0) budget = 1024.0 * 1024.0 * 1024.0;
+    uint32_t cap = bytes > 0.0 ? (uint32_t)(budget / bytes)
                                : PASS_SLOTS;
     if (cap > PASS_SLOTS) cap = PASS_SLOTS;
     return cap;
+}
+
+void gl_renderer_pass_cancel_plan(void) {
+    if (s_rth_on && !rt_on_render_thread()) gl_rth_release();
 }
 
 uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
@@ -8365,15 +8391,17 @@ uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
     if (wanted) *wanted = 0;
     /* One plan per game frame: close the previous frame's host-time books. */
     s_idle_ticks_last = s_idle_ticks_accum;
+    uint64_t frontend_idle = atomic_exchange_explicit(&s_pass_frontend_idle, 0, memory_order_relaxed);
+    if (frontend_idle > s_idle_ticks_last) s_idle_ticks_last = frontend_idle;
     s_pass_ticks_last = s_pass_ticks_accum;
     s_present_ticks_last = s_present_ticks_accum;
     s_idle_ticks_accum = s_pass_ticks_accum = s_present_ticks_accum = 0;
     live = s_intervals_since_plan > 0;   /* turbo/headless present nothing */
     s_intervals_since_plan = 0;
-    if (!gl_renderer_pass_ready() || !live || !alpha_q16 || max == 0) return 0;
+    if (!gl_renderer_pass_ready() || !live || !alpha_q16 || max == 0) { gl_renderer_pass_cancel_plan(); return 0; }
     if (s_interp_schedule.target_period <= 0.0 ||
         s_interp_schedule.source_deadline <= 0.0)
-        return 0;
+        { gl_renderer_pass_cancel_plan(); return 0; }
     if (s_pass_budget_pct < 0) {
         const char *e = getenv("PSX_RENDER_PASS_BUDGET");
         int v = e ? atoi(e) : 0;
@@ -8382,7 +8410,7 @@ uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
     freq = (double)SDL_GetPerformanceFrequency();
     sp = freq / s_interp_source_hz;
     cap = pass_slot_cap(s_interp_w, s_interp_h);
-    if (cap < 2) return 0;
+    if (cap < 2) { gl_renderer_pass_cancel_plan(); return 0; }
     memset(&in, 0, sizeof in);
     in.next_deadline = s_interp_schedule.next_present_deadline;
     in.target_period = s_interp_schedule.target_period;
@@ -8432,6 +8460,7 @@ uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
             if (want && !n && !(in.budget > 0.0))
                 s_pass_plan_diag.zero_credit_refusals++;
         }
+        if (!n) gl_renderer_pass_cancel_plan();
         return n;
     }
 }
@@ -9483,6 +9512,13 @@ static int pass_gen_present(uint64_t deadline) {
 }
 
 void gl_renderer_pass_service_presents(void) {
+    /* The transaction has restored guest/GPU state. Resume queued rendering
+     * before servicing presentation so emulation never owns its deadline wait. */
+    if (s_rth_on && !rt_on_render_thread()) {
+        gl_rth_release();
+        RTH_REC(RTH_PASS_SERVICE, 0, 0);
+        return;
+    }
     GL_RT_SYNC("pass_service_presents");
     uint64_t deadline;
     double sp;
@@ -9833,6 +9869,7 @@ static int           s_pt_want = 0, s_pt_slots = 3;
 static GLenum        s_pt_format = GL_RGBA8;   /* the window's: no alpha -> GL_RGB8 */
 static SDL_GLContext s_pt_ctx = NULL;
 static GLuint        s_pts_tex[PT_MAX_SLOTS], s_pts_rb[PT_MAX_SLOTS], s_pts_fbo[PT_MAX_SLOTS];
+static uint64_t s_pts_deadline[PT_MAX_SLOTS];
 static int           s_pts_w[PT_MAX_SLOTS], s_pts_h[PT_MAX_SLOTS];
 static unsigned      s_pts_gen[PT_MAX_SLOTS];
 /* present thread's own objects (FBOs are per-context) */
@@ -9944,6 +9981,7 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     GL_PRESENT_THREAD_TEST_HOOK(slot);
 #endif
     void *done = p_glFenceSync(PT_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    interp_wait_until_ex(s_pts_deadline[slot], SDL_GetPerformanceFrequency(), 0);
     gl_window_swap();
     return done;
 }
@@ -10025,6 +10063,7 @@ static void gl_present_swap(void) {
     rthf_gpu_pause();
     if (!s_pt_on) { gl_window_swap(); return; }
     (void)pt_target_fbo();   /* a frame that never bound 0 still has its slot */
+    s_pts_deadline[pt_current()] = s_interp_pending_deadline;
     void *ready = p_glFenceSync(PT_SYNC_GPU_COMMANDS_COMPLETE, 0);
     glFlush();
     void *done = NULL;
@@ -11492,7 +11531,7 @@ static int gl_rth_eligible(void) {
     extern int psx_netplay_active(void);
     return s_raster_ok && s_ctx && !s_cpu_auth_dual && !s_depth24_skip_up &&
            !(s_hd_native_authority && s_rth_a0_open) &&
-           !gpu_display_is_depth24() && !s_interp_enabled && !s_pass_active &&
+           !gpu_display_is_depth24() && !s_pass_active &&
            !psx_netplay_active() && !psx_openxr_session_active() &&
            gr_backend() == GR_BACKEND_OPENGL;
 }
@@ -14285,6 +14324,7 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     s_rthx_tagged = (c->flags & RTHF_TAGGED) != 0;
     s_rthx_backdrop = (c->flags >> RTHF_BD_SHIFT) & 3;
     if (c->op == RTH_FRAME) { rthf_end(); return; }
+    if (c->op == RTH_PASS_SERVICE) { gl_renderer_pass_service_presents(); return; }
     if (!s_rthf_open && (atomic_load_explicit(&s_rthf_want, memory_order_relaxed) || s_fg_on))
         rthf_begin();
     rthf_gpu_resume();

@@ -45,7 +45,7 @@ int frame_interpolation_schedule_begin_phase(FrameInterpolationSchedule *schedul
      * Normal guest work lands after the prior deadline but before the next one;
      * retaining the old anchor makes that work consume the pacing budget. */
     if (schedule->source_deadline <= 0.0 ||
-        now_d + source_period < schedule->source_deadline ||
+          (!schedule->queued && now_d + source_period < schedule->source_deadline) ||
         now_d > schedule->source_deadline + source_period * 4.0) {
         schedule->frame_start = now_d;
         schedule->source_deadline = now_d + source_period;

@@ -17,6 +17,9 @@ typedef struct FrameInterpolationSchedule {
      * plans the whole 0..1 window, which is the historical behaviour. */
     double phase_lo;
     double phase_hi;
+    /* Bounded asynchronous producer: preparing several frames ahead is normal,
+     * so an early arrival must not reset the presentation clock. */
+    int queued;
 } FrameInterpolationSchedule;
 
 /* Plan one stock guest-frame interval. Presentation deadlines remain anchored
