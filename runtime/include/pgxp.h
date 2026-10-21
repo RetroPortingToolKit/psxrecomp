@@ -62,7 +62,8 @@ int  pgxp_position_fallback(void);
  * near geometry. Guest-visible SXY, MAC0 and FLAG are unchanged either way.
  * Because that position can then differ from the guest integer by more than
  * the fraction, truncation agreement becomes a window (PGXP_PPP_AGREE_*) and
- * a vertex at the GTE's saturation limit must still agree exactly. One
+ * unclamped IR projections need an intact, value-validated GTE word; halves
+ * and cache fallbacks keep the strict saturation checks. One
  * consumer is not visual: [widescreen] precise_nclip takes its branch sign
  * from these shadows, so in a title that sets both, that (already
  * non-faithful) widescreen sign follows the exact projection too. */
@@ -91,6 +92,7 @@ int  pgxp_preserve_projection(void);
  * when none). Returns 1 with the position in x16/y16 when the vertex
  * qualifies (sf=1, IR1/IR2 not saturated, SZ3 not saturated and nonzero, and
  * no divide overflow: H < 2*SZ3), else 0 and the caller keeps the IR path. */
+/* Return 2 for an opt-in IR-unclamped projection, 1 for ordinary precision. */
 int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3, int shift,
                          int32_t ir1, int32_t ir2, uint32_t sz3, uint32_t h,
                          int32_t ofx, int32_t ofy, int64_t x_num, int64_t x_den,
@@ -164,6 +166,8 @@ void pgxp_suppress_end(void);
 /* Called at the RTPS/RTPT projection with the pre-truncation 16.16 screen
  * coordinates, the projected depth (SZ3), and the packed SXY word the guest
  * sees. Shifts the shadow FIFO exactly like push_sxy (regs 12..15). */
+/* Tag only immediately after push_sxy of a qualified unclamped projection. */
+void pgxp_gte_mark_unclamped(void);
 void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3, uint32_t packed);
 
 /* Host-only homogeneous screen projection, before SZ/SXY/divider saturation.
