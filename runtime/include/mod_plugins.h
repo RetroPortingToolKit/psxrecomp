@@ -493,6 +493,13 @@ int psx_mod_current_resource_bytes(const char* resource_id,
  * no host path or donor data is saved into guest RAM/savestates. */
 int psx_mod_append_disc_extent(const char* resource_id, uint64_t byte_offset,
                                uint32_t sector_count, uint32_t* first_lba);
+/* Activation-only derived assets. Copies the payload into an immutable mounted
+ * Mode-2 extent and updates its ISO directory record. Host asset readers and
+ * the guest CD controller see the same replacement. Title adapters must update
+ * any private LBA/size tables of their own. Derived bytes must depend only on
+ * the committed resources and trusted adapter, never on host clocks/paths. */
+int psx_mod_replace_disc_file(const char* path, const void* bytes, uint32_t size,
+                               uint32_t* first_lba);
 
 /* Optional CD-DA playlist, built only during activation. Audio has a separate
  * TOC/timeline (track 1 is a data placeholder); data/XA LBAs are unchanged.

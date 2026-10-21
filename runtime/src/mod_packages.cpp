@@ -1978,15 +1978,16 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 resource.required =
                     toml::find_or<bool>(v, "required", false);
                 if (v.contains("size") || v.contains("sha256") ||
-                    resource.format == "n64-rom" || resource.format == "psx-disc") {
+                    resource.format == "n64-rom" || resource.format == "psx-disc" || resource.format == "psx-mode2") {
                     if (out.format_version < 8)
                         throw std::runtime_error("verified media requires format_version 8");
                     const int64_t size = toml::find<int64_t>(v, "size");
                     resource.sha256 = toml::find<std::string>(v, "sha256");
-                    if (size <= 0 || size > 512ll * 1024 * 1024 ||
+                    const int64_t limit = resource.format == "psx-mode2" ? 450000ll * 2336 : 512ll * 1024 * 1024;
+                    if (size <= 0 || size > limit ||
                         !valid_sha256(resource.sha256) ||
                         (resource.format != "file" && resource.format != "n64-rom" &&
-                         resource.format != "psx-disc"))
+                         resource.format != "psx-disc" && resource.format != "psx-mode2"))
                         throw std::runtime_error("invalid verified media identity or format");
                     resource.size = static_cast<uint64_t>(size);
                 }
@@ -1996,7 +1997,7 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 resource.default_path = toml::find_or<std::string>(v, "default", "");
                 if (!resource.default_path.empty() &&
                     (!safe_archive_name(resource.default_path) ||
-                     !resource.sha256.empty() || resource.input_only ||
+                     resource.input_only ||
                      !resource.shared_source.empty() ||
                      (resource.format != "file" && resource.format != "directory" &&
                       resource.format != "folder")))
@@ -2022,7 +2023,7 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                     resource.format != "directory" &&
                     resource.format != "folder" &&
                     resource.format != "n64-rom" &&
-                    resource.format != "psx-disc")
+                    resource.format != "psx-disc" && resource.format != "psx-mode2")
                     throw std::runtime_error(
                         "unsupported resource format");
                 out.resources.push_back(std::move(resource));

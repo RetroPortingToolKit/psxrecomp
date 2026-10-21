@@ -110,6 +110,9 @@ bool preparation_continues(float fraction, const char* text, std::string* error)
 struct RuntimeMods {
     struct DiscExtent { uint32_t lba, count; const uint8_t* data; };
     std::vector<DiscExtent> disc_extents;
+    struct DerivedDiscPatch { uint64_t offset; std::vector<uint8_t> bytes; };
+    std::vector<DerivedDiscPatch> derived_disc_patches;
+    std::vector<std::vector<uint8_t>> derived_disc_storage;
     struct AudioTrack { uint32_t lba, count, source_lba; const uint8_t* data; };
     std::vector<AudioTrack> audio_tracks;
     uint32_t extent_start = 0;
@@ -1483,7 +1486,7 @@ RecompLauncherCModProvider provider = {
     provider_feature_set_option,
     provider_diagnostic_count,
     provider_diagnostic_get,
-    nullptr, /* archive_extension — PSX defaults */
+    nullptr, /* archive_extension â€” PSX defaults */
     nullptr, /* archive_description */
     provider_commit_netplay,
     provider_feature_resource_count,
@@ -1528,6 +1531,8 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
     s.manager.set_root({});
     clear_function_entry_hooks();
     s.disc_extents.clear();
+    s.derived_disc_patches.clear();
+    s.derived_disc_storage.clear();
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
@@ -1652,6 +1657,8 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     }
     clear_function_entry_hooks();
     s.disc_extents.clear();
+    s.derived_disc_patches.clear();
+    s.derived_disc_storage.clear();
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = {};
@@ -2154,6 +2161,8 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
      * its function-entry hooks until mod_runtime_activate_plugins(). */
     clear_function_entry_hooks();
     s.disc_extents.clear();
+    s.derived_disc_patches.clear();
+    s.derived_disc_storage.clear();
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.plan = std::move(plan);
@@ -2194,7 +2203,9 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
     if (save_selection && prepared_ticket_matches(disc_path)) {
         if (!s.provider_preparing) s.ticket_ready = false;
         clear_function_entry_hooks();
-        s.disc_extents.clear(); s.audio_tracks.clear(); s.extent_start = 0;
+        s.disc_extents.clear();
+    s.derived_disc_patches.clear();
+    s.derived_disc_storage.clear(); s.audio_tracks.clear(); s.extent_start = 0;
         s.main_applied = false;
         s.error.clear();
         psx_mod_counter_add("startup.plan_reuse", 1);
@@ -2795,6 +2806,12 @@ static constexpr uint32_t kMaxDiscFileBytes = 360000u * 2048u;
  * raw and user-data writes/overlays applied. Form 2 (XA) sectors are refused. */
 static bool read_effective_user_sector(PS1::ISOReader& reader, uint32_t lba,
                                        uint8_t* sector) {
+    for (const auto& extent : PSXRecompV4::state().disc_extents)
+        if (lba >= extent.lba && lba-extent.lba < extent.count) {
+            std::memcpy(sector, extent.data+uint64_t(lba-extent.lba)*2336+8, 2048);
+            patch_committed_disc_sector(lba, 0, sector, 2048);
+            return !PSXRecompV4::state().disc_guard_failed;
+        }
     uint8_t raw[2352];
     if (reader.ReadRawSector(lba, raw)) {
         if (raw[15] != 1 && (raw[15] != 2 || (raw[18] & 0x20u))) return false;
@@ -2814,7 +2831,8 @@ static bool read_effective_user_sector(PS1::ISOReader& reader, uint32_t lba,
  * patched records, so host reads must resolve paths through them too. Names
  * compare case-insensitively without the ";1" version suffix. */
 static bool find_effective_file(PS1::ISOReader& reader, const std::string& path,
-                                uint32_t& lba, uint32_t& bytes, bool& directory) {
+                                uint32_t& lba, uint32_t& bytes, bool& directory,
+                                uint64_t* record_offset = nullptr) {
     uint8_t sector[2048];
     auto le32 = [](const uint8_t* p) {
         return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
@@ -2851,6 +2869,7 @@ static bool find_effective_file(PS1::ISOReader& reader, const std::string& path,
                 if (sector[p + 32] == 1 && (sector[p + 33] == 0 || sector[p + 33] == 1))
                     name.clear();
                 if (!name.empty() && name == want) {
+                    if (record_offset) *record_offset = uint64_t(lba+i)*2048+p;
                     lba = le32(sector + p + 2);
                     bytes = le32(sector + p + 10);
                     directory = (sector[p + 25] & 2u) != 0;
@@ -2887,6 +2906,60 @@ static std::filesystem::path mounted_disc_path(const PSXRecompV4::RuntimeMods& s
         return p;
     }
     return s.effective_disc_path.empty() ? s.disc_path : s.effective_disc_path;
+}
+extern "C" int psx_mod_replace_disc_file(const char* path, const void* bytes,
+                                         uint32_t size, uint32_t* first_lba) {
+    using namespace PSXRecompV4;
+    if (first_lba) *first_lba=0;
+    auto& s=state();
+    if (!s.activating || !s.current_plugin || !path || !*path || !bytes ||
+        !size || size>kMaxDiscFileBytes || !first_lba) return 0;
+    try {
+        PS1::ISOReader reader;
+        const auto& mount=s.effective_disc_path.empty()?s.disc_path:s.effective_disc_path;
+        uint32_t old_lba=0, old_size=0; bool directory=false; uint64_t record=0;
+        if (mount.empty() || !reader.Open(mount.string()) ||
+            !find_effective_file(reader,path,old_lba,old_size,directory,&record) || directory) return 0;
+        const uint32_t start=s.disc_extents.empty()?reader.GetSectorCount():s.extent_start;
+        const uint32_t lba=s.disc_extents.empty()?start:s.disc_extents.back().lba+s.disc_extents.back().count;
+        const uint32_t count=(size+2047u)/2048u;
+        if (!start || uint64_t(lba)+count+150>450000) return 0;
+        size_t existing=s.derived_disc_patches.size();
+        for (size_t i=0;i<s.derived_disc_patches.size();++i) {
+            const auto& p=s.derived_disc_patches[i];
+            if (record+2 < p.offset+p.bytes.size() && p.offset < record+18) {
+                if(p.offset!=record+2 || p.bytes.size()!=16)return 0;
+                existing=i;
+            }
+        }
+        std::vector<uint8_t> sectors(size_t(count)*2336,0);
+        for (uint32_t i=0;i<count;++i) {
+            auto* sector=sectors.data()+size_t(i)*2336;
+            sector[2]=sector[6]=8;
+            const uint32_t n=std::min(2048u,size-i*2048u);
+            std::memcpy(sector+8,static_cast<const uint8_t*>(bytes)+size_t(i)*2048,n);
+            uint32_t edc=0;
+            for (unsigned j=0;j<2056;++j) {
+                edc^=sector[j];
+                for(unsigned bit=0;bit<8;++bit) edc=(edc>>1)^((edc&1)?0xd8018001u:0);
+            }
+            for(unsigned j=0;j<4;++j) sector[2056+j]=uint8_t(edc>>(j*8));
+        }
+        RuntimeMods::DerivedDiscPatch patch{record+2,std::vector<uint8_t>(16)};
+        for(unsigned j=0;j<4;++j) {
+            patch.bytes[j]=uint8_t(lba>>(j*8)); patch.bytes[7-j]=uint8_t(lba>>(j*8));
+            patch.bytes[8+j]=uint8_t(size>>(j*8)); patch.bytes[15-j]=uint8_t(size>>(j*8));
+        }
+        s.derived_disc_storage.reserve(s.derived_disc_storage.size()+1);
+        s.disc_extents.reserve(s.disc_extents.size()+1);
+        s.derived_disc_patches.reserve(s.derived_disc_patches.size()+1);
+        s.derived_disc_storage.push_back(std::move(sectors));
+        s.disc_extents.push_back({lba,count,s.derived_disc_storage.back().data()});
+        if(existing<s.derived_disc_patches.size())s.derived_disc_patches[existing]=std::move(patch);
+        else s.derived_disc_patches.push_back(std::move(patch));
+        s.extent_start=start; *first_lba=lba;
+        return 1;
+    } catch(...) { return 0; }
 }
 
 extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
@@ -2997,6 +3070,8 @@ extern "C" void mod_runtime_activate_plugins(void) {
     gpu_hd_textures_shutdown();
     if (!s.initialized || !s.plan.ok) { timing.success(); return; }
     s.disc_extents.clear();
+    s.derived_disc_patches.clear();
+    s.derived_disc_storage.clear();
     s.audio_tracks.clear();
     s.extent_start = 0;
     s.activating = true;
@@ -3721,6 +3796,13 @@ static void patch_committed_disc_sector(uint32_t lba, int raw_sector,
     using namespace PSXRecompV4;
     RuntimeMods& s = state();
     if (!s.initialized || s.disc_guard_failed || !bytes || size == 0) return;
+    if (!raw_sector) for (const auto& patch:s.derived_disc_patches) {
+        const uint64_t base=uint64_t(lba)*2048;
+        const uint64_t begin=std::max(base,patch.offset);
+        const uint64_t end=std::min(base+size,patch.offset+patch.bytes.size());
+        if(begin<end) std::memcpy(bytes+size_t(begin-base),
+            patch.bytes.data()+size_t(begin-patch.offset),size_t(end-begin));
+    }
     /* Raw Mode2 Form1 reads are also the source of the 2048-byte logical
      * stream consumed by the emulated CD controller. Apply raw claims to the
      * complete sector, then user-data claims to its payload window. Form2/XA
