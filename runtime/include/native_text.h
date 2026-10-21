@@ -43,6 +43,9 @@ struct NativeFontAtlas {
     std::vector<uint8_t> packed;
 };
 enum class NativeGlyphMark { Acute, Tilde, Diaeresis, Inverted };
+// omit_top_rows is an adapter-provided crop of the copied glyph, for example
+// to remove i's dot before composing í. The source atlas cell is preserved.
 bool native_font_compose(NativeFontAtlas& atlas, uint16_t base, uint16_t destination,
-                          NativeGlyphMark mark, std::string& error);
+                          NativeGlyphMark mark, std::string& error,
+                          uint32_t omit_top_rows=0);
 } // namespace PSXRecompV4
