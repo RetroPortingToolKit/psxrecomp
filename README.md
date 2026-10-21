@@ -2,7 +2,7 @@
   <img src="docs/assets/psxrecomp-logo.png" alt="PSXRecomp" width="640">
 </p>
 
-# PSXRecomp — Beta
+# PSXRecomp
 
 > ℹ️ **Note from mstan:** This repo and I are now part of [RetroPortingToolkit](https://retroportingtoolkit.com/). I remain a primary maintainer of psxrecomp alongside the team. [More info](https://1379.tech/forming-a-collective-retro-porting-toolkit/).
 
@@ -237,7 +237,7 @@ python3 tools/new_project_layout/update_disc_set.py --game-toml ~/src/MyGameReco
 ```
 
 Then build with the generated `build.ps1` / `build.sh` in the new project.
-Full flow, every flag, CI, and the release checklist:
+Full flow, every flag, and the release checklist:
 [`docs/GAME_PROJECT_SETUP.md`](docs/GAME_PROJECT_SETUP.md).
 
 #### Project Folder Structure
@@ -266,9 +266,8 @@ These are the 3 most important folders to be aware of:
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | **AOT overlay sharding** (disc discovery, per-game recipes, validation) | [`docs/AOT_SHARDING.md`](docs/AOT_SHARDING.md) |
 | Build the framework | [`docs/BUILDING.md`](docs/BUILDING.md) |
-| **Ship a game repo** (submodules + CI + release checklist) | [`docs/GAME_PROJECT_SETUP.md`](docs/GAME_PROJECT_SETUP.md) |
+| **Ship a game repo** (submodules + release checklist) | [`docs/GAME_PROJECT_SETUP.md`](docs/GAME_PROJECT_SETUP.md) |
 | **Netplay** (rollback, SFU/ICE, dual-raster, disc gates) | [`docs/NETPLAY.md`](docs/NETPLAY.md) |
-| Bundled-release CI template | [`docs/ci/templates/game-release.yml`](docs/ci/templates/game-release.yml) |
 | Local Generate & rebuild CLI | [`docs/LOCAL_CODEGEN_SDK.md`](docs/LOCAL_CODEGEN_SDK.md) |
 | Make mods by hand | [`psxmod.md`](psxmod.md) |
 | Mod schema and integration | [`docs/MOD_PACKAGES.md`](docs/MOD_PACKAGES.md) |
