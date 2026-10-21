@@ -13307,7 +13307,7 @@ static int fg_generate(double t, int swap) {
     if (b->wide && (g_wide_w <= 0 || g_wide_w != b->wide_w)) return 0;
     /* No visible artifact first: geometry the camera cannot place covers
      * too much of the view, so this step shows the real frame. */
-    if (s_fg_fit.ok && fg_unplaced_share(b) > fg_max_unplaced()) { s_fg_skip_unplaced++; return 0; }
+    if (s_fg_reproject && s_fg_fit.ok && fg_unplaced_share(b) > fg_max_unplaced()) { s_fg_skip_unplaced++; return 0; }
     int iw = -1;
     if (b->wide) {
         for (int i = 0; i < WIDE_MAX_SURF; i++)

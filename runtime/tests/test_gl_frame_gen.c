@@ -643,6 +643,46 @@ int main(int argc, char **argv) {
         check(memcmp(before, s_vram, sizeof before) == 0,
               "generated frame leaves native VRAM unchanged under HD authority");
         gl_renderer_set_hd_texture_mode(0);
+        /* A large unprojected triangle after projected geometry must reject
+         * reprojection, while preserving the pre-existing redraw route. */
+        {
+            FgList *b = &s_fg_l[s_fg_pb];
+            FgPrim *unplaced = NULL;
+            int seen = 0;
+            double view_area = 0;
+            for (uint32_t vi = 0; vi < s_fg_fit.nviews; ++vi) {
+                const float *a = s_fg_fit.v[vi].area;
+                double area = (double)(a[2]-a[0])*(a[3]-a[1]);
+                if (area > view_area) view_area = area;
+            }
+            for (uint32_t i = 0; i < b->n; ++i) {
+                int pi = b->rec2prim[i];
+                if (pi < 0) continue;
+                FgPrim *p = &b->prims.v[pi];
+                if (!(p->vid[0] || p->vid[1] || p->vid[2])) continue;
+                double area = 0.5*fabs((double)(p->x[1]-p->x[0])*(p->y[2]-p->y[0])-
+                                      (double)(p->x[2]-p->x[0])*(p->y[1]-p->y[0]));
+                if (seen) { unplaced = p; break; }
+                seen = 1;
+            }
+            check(unplaced != NULL && view_area > 0, "method scope: large geometry witness");
+            if (unplaced) {
+                FgPrim saved = *unplaced;
+                int saved_method = s_fg_reproject;
+                const float *a = s_fg_fit.v[0].area;
+                unplaced->x[0] = a[0]; unplaced->x[1] = a[2]; unplaced->x[2] = a[0];
+                unplaced->y[0] = a[1]; unplaced->y[1] = a[1]; unplaced->y[2] = a[3];
+                memset(unplaced->vid, 0, sizeof(unplaced->vid));
+                memset(unplaced->pz, 0, sizeof(unplaced->pz));
+                check(fg_unplaced_share(b) > fg_max_unplaced(), "method scope: unplaced geometry exceeds threshold");
+                s_fg_reproject = 1;
+                check(fg_generate(0.5, 0) == 0, "method scope: reprojection refuses unplaceable geometry");
+                s_fg_reproject = 0;
+                check(fg_generate(0.5, 0) == 1, "method scope: redraw keeps its original route");
+                *unplaced = saved;
+                s_fg_reproject = saved_method;
+            }
+        }
         free(img);
         check(n_gen > 0, "generated frames were presented");
     }
