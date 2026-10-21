@@ -213,6 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (BRIEF-4 cap edges):** Apply the display ceiling after supersampling and resolve the physical-monitor supersample policy after creating the window, including fixed presets. Saved large factors cannot exceed the Match display ceiling; legacy unset scales stay intact. Resolution tests pass on Windows/Mac; all 21 R4 production-build CTests pass. Final regeneration and receipt verification pending.
+
 - **2026-10-21 (BRIEF-4 storage reuse):** Desktop GL retains ceiling storage and rescales in place, preserving cleared depth/stencil and unwritten wide regions. Apple keeps level-sized allocations by default. Windows old/new output controls and forced-reuse Mac fixtures pass. With corrected presenter accounting, R4 60s fullscreen quiet/loaded runs have zero completion gaps >25ms, p99 busy 44.6/48.8%, 17x..18x scales. R4 final pin/default checks remain in progress.
 
 - **2026-10-21 (BRIEF-4 presenter accounting):** Publish composer swap/slot wait separately and exclude that pacing from dynamic-resolution work backpressure. Windows and Mac real-context checks pass. Quiet fullscreen route: 60.020 Hz, four completion gaps >25ms, p99 busy 48.0%; allocation stalls remain. Raw completion and queue-wait metrics are unchanged.

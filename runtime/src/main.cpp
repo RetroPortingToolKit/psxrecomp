@@ -1466,9 +1466,8 @@ static int effective_internal_resolution(void) {
 static void apply_internal_resolution(int display_px_h) {
     const int preset = effective_internal_resolution();
     if (preset == PSX_IR_UNSET) return;
-    g_video_scale = psx_resolve_internal_scale_ss(preset, g_video_ref_lines,
-                                                  display_px_h, video_scale_ceiling(),
-                                                  display_supersample(nullptr));
+    g_video_scale = psx_resolve_internal_scale_ss_cap(preset, g_video_ref_lines,
+        display_px_h, video_scale_ceiling(), display_supersample(nullptr), g_video_match_max_lines);
 }
 
 /* The value the launcher row starts on: the preset, or the legacy factor shown
@@ -20482,7 +20481,7 @@ session_reboot:
         else std::fprintf(stdout, "psxrecomp: PSX_AA_MODE=%s not understood (off, fxaa, fxaa_hq)\n", e);
     }
     const int effective_ss = display_supersample(nullptr);
-    if (effective_ss != 1000 || effective_ss != g_video_ss_milli)
+    if (!g_video_ss_disable_at_lines && effective_ss != 1000)
         std::fprintf(stdout, "psxrecomp: supersample %.3gx on the internal-resolution target\n",
                      effective_ss / 1000.0);
     apply_internal_resolution(match_display_px_h(nullptr));
@@ -21128,17 +21127,22 @@ session_reboot:
         /* Match display: the monitor's pixel height, now that the window says
          * which monitor. glb_set_scale only records the request; the hr
          * surface is allocated at context init below. */
-        if (effective_internal_resolution() == PSX_IR_DISPLAY && g_video_scale_applies) {
+        const int ir = effective_internal_resolution();
+        if (g_video_scale_applies && ir != PSX_IR_UNSET &&
+            (ir == PSX_IR_DISPLAY || g_video_ss_disable_at_lines > 0)) {
             const int dh = match_display_px_h(sdl_window);
-            const int s = psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, g_video_ref_lines,
-                                                        dh, GL_MAX_INTERNAL_SCALE,
-                                                        display_supersample(sdl_window));
+            const int ss = display_supersample(sdl_window);
+            const int s = psx_resolve_internal_scale_ss_cap(ir, g_video_ref_lines,
+                dh, GL_MAX_INTERNAL_SCALE, ss, g_video_match_max_lines);
             gr_set_scale(s);
             g_video_requested_scale = s;
-            std::fprintf(stdout, "psxrecomp: internal resolution Match display: "
-                         "%d px -> %dx requested\n", dh, s);
+            const char *label = psx_ir_label_for(ir);
+            std::fprintf(stdout, "psxrecomp: internal resolution %s: "
+                         "%d px -> %dx requested (supersample %.3gx)\n",
+                         label ? label : "custom", dh, s, ss / 1000.0);
         }
         gl_renderer_set_swap_interval(present_effective_swap_interval()); /* applied at context init */
+
         /* Dynamic resolution: the surfaces are allocated at the scale above
          * (the ceiling) and the level steps under it (dynres_setup). */
 #ifndef PSX_NO_DEBUG_TOOLS
