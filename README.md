@@ -2,21 +2,45 @@
   <img src="docs/assets/psxrecomp-logo.png" alt="PSXRecomp" width="640">
 </p>
 
-# PSXRecomp
+# PSXRecomp — Beta
 
 > ℹ️ **Note from mstan:** This repo and I are now part of [RetroPortingToolkit](https://retroportingtoolkit.com/). I remain a primary maintainer of psxrecomp alongside the team. [More info](https://1379.tech/forming-a-collective-retro-porting-toolkit/).
 
-**A general-purpose static recompiler for the PlayStation 1.** It turns a PS1
-disc into a native executable — MIPS R3000A translated to C, compiled to x64,
-linked against a hardware-accurate runtime. Not an emulator: the game becomes a
-program your CPU runs directly.
+**A beta static-recompilation framework for the PlayStation 1.** PSXRecomp
+translates MIPS R3000A programs into C and builds native applications around
+a shared PS1 hardware runtime. Streamed overlays can be captured, compiled
+and cached; unresolved code has an interpreter fallback.
 
-Titles brought up on it ship as standalone builds with widescreen, mods, live
-language switching and a launcher. They can run on either the bundled,
-open-source **OpenBIOS** or a compatible **retail BIOS** supplied by the player;
-OpenBIOS is the default, so a retail BIOS dump is not normally required. The
-framework is general-purpose: bringing up a new game is a matter of
-configuration and reverse engineering, not new engine work.
+Game projects add **adaptive widescreen, higher-resolution rendering, local
+and online multiplayer, runtime translations, mods and modern launchers**.
+Bundled open-source **OpenBIOS** is the default; a compatible retail BIOS is
+optional. Each game verifies the player's own disc image. No commercial
+disc or BIOS data is included.
+
+**[Play a game](#games)** · **[Create your first port](docs/GETTING_STARTED.md)**
+— a focused Windows setup with no AI required.
+
+## Mega Man X4: X and Zero in co-op
+
+Take X and Zero through the same campaign with **two-player local co-op or
+netplay**. The host chooses the shared options. Unified camera is the
+default; independent online views and local side-by-side views are
+experimental. **The X4 co-op mod remains an alpha playtest**, independently
+of the framework's beta status, and requires OpenGL and a fresh boot.
+
+<p align="center">
+  <a href="https://github.com/mstan/MegaManX4Recomp"><img src="docs/assets/games/mega-man-x4-coop.png" alt="X and Zero together at the Jungle waterfall, with separate lifebars" width="800"></a>
+  <br><sub><b>Mega Man X4 — X + Zero Co-op.</b> Local play and online rooms from the launcher.</sub>
+</p>
+
+<details>
+<summary>See the online and LAN launcher</summary>
+
+<img src="docs/assets/games/mega-man-x4-netplay.png" alt="Mega Man X4 launcher offering LAN / Direct IP and Online Netplay" width="800">
+
+</details>
+
+## More of the PlayStation world
 
 <table>
   <tr>
@@ -36,32 +60,40 @@ Background on the original prototype:
 
 ## Games
 
-Each game is its own repository that pins a framework commit as a submodule and
-ships its own playable release with an in-app launcher. Validation and feature
-coverage continue to improve per title.
+Each project pins its framework revision and owns its disc support, platforms
+and validation. **Beta describes the framework; individual ports and mods
+can still be previews.** This list was checked against public documentation
+and release notes on **21 October 2026**. Open each project for current setup
+and testing limits; source projects do not all provide finished downloads.
 
-| Game | Repository | Latest build | Notes |
-|---|---|---|---|
-| *Tomba!* | [TombaRecomp](https://github.com/mstan/TombaRecomp) | [releases](https://github.com/mstan/TombaRecomp/releases/latest) | Widescreen, supersampling, save/load, mod packages. |
-| *Tomba! 2* | [Tomba2Recomp](https://github.com/mstan/Tomba2Recomp) | [releases](https://github.com/mstan/Tomba2Recomp/releases/latest) | Multi-track disc support; adaptive widescreen through 21:9. |
-| *Ape Escape* | [ApeEscapeRecomp](https://github.com/mstan/ApeEscapeRecomp) | [releases](https://github.com/mstan/ApeEscapeRecomp/releases/latest) | Widescreen to 21:9, memory-card save/load, dual-analog. |
-| *Mega Man X4* | [MegaManX4Recomp](https://github.com/mstan/MegaManX4Recomp) | [releases](https://github.com/mstan/MegaManX4Recomp/releases/latest) | Playable; 2D widescreen. |
-| *Mega Man X5* | [MegaManX5Recomp](https://github.com/mstan/MegaManX5Recomp) | [releases](https://github.com/mstan/MegaManX5Recomp/releases/latest) | Playable; 2D widescreen. |
-| *Mega Man X6* | [MegaManX6Recomp](https://github.com/mstan/MegaManX6Recomp) | [releases](https://github.com/mstan/MegaManX6Recomp/releases/latest) | Playable; stages, controller, save/load; 2D widescreen to 21:9. |
-| *Tsumu Light* | [TsumuLightRecomp](https://github.com/mstan/TsumuLightRecomp) | [releases](https://github.com/mstan/TsumuLightRecomp/releases/latest) | Japanese-only title (SLPS-02253); first consumer of [live language switching](#swap-language-on-the-fly). |
-| *Xenogears* — **community** | [OpokXeno/xenogears-recomp](https://github.com/OpokXeno/xenogears-recomp) | — | Independent project by [@OpokXeno](https://github.com/OpokXeno), who also contributed widescreen cull-site work upstream. |
-| *Mega Man Legends* — **community** | [VuloB1/MegaManLegendsRecomp](https://github.com/VuloB1/MegaManLegendsRecomp) | [releases](https://github.com/VuloB1/MegaManLegendsRecomp/releases/latest) | Native 16:9 widescreen, analog movement with right-stick camera, 60/120 Hz presentation, skip FMVs, PGXP precision. |
+| Game | Project / downloads | Features and scope |
+|---|---|---|
+| *Mega Man X4* | [MegaManX4Recomp](https://github.com/mstan/MegaManX4Recomp) · [downloads](https://github.com/mstan/MegaManX4Recomp/releases) | X/Zero local and online co-op alpha, optional widescreen, experimental independent cameras, offline save states and rewind. |
+| *Mega Man X5* | [MegaManX5Recomp](https://github.com/mstan/MegaManX5Recomp) · [downloads](https://github.com/mstan/MegaManX5Recomp/releases) | Preview with 2D widescreen, launcher and native gameplay. |
+| *Mega Man X6* | [MegaManX6Recomp](https://github.com/mstan/MegaManX6Recomp) · [downloads](https://github.com/mstan/MegaManX6Recomp/releases) | 2D widescreen, controller support, save/load and game-specific mods. |
+| *Tomba!* | [TombaRecomp](https://github.com/mstan/TombaRecomp) · [downloads](https://github.com/mstan/TombaRecomp/releases) | Widescreen, supersampling, save/load and mod packages; per-title release remains a preview. |
+| *Tomba! 2* | [Tomba2Recomp](https://github.com/mstan/Tomba2Recomp) · [downloads](https://github.com/mstan/Tomba2Recomp/releases) | Multi-track disc support and adaptive widescreen through 21:9. |
+| *Ape Escape* | [ApeEscapeRecomp](https://github.com/mstan/ApeEscapeRecomp) · [downloads](https://github.com/mstan/ApeEscapeRecomp/releases) | Dual-analog controls, memory-card saves and widened 3D views. |
+| *Tsumu Light* | [TsumuLightRecomp](https://github.com/mstan/TsumuLightRecomp) · [downloads](https://github.com/mstan/TsumuLightRecomp/releases) | Japanese title with runtime language switching. |
+| *Jersey Devil* | [JerseyDevilRecomp](https://github.com/mstan/JerseyDevilRecomp) · [downloads](https://github.com/mstan/JerseyDevilRecomp/releases) | Native desktop port with disc-verifying setup, controllers and game-specific presentation work. |
+| *Um Jammer Lammy* | [UmJammerLammyRecomp](https://github.com/mstan/UmJammerLammyRecomp) · [downloads](https://github.com/mstan/UmJammerLammyRecomp/releases) | Initial preview: adaptive widescreen, higher internal resolution and optional rhythm timing/latency assist. |
+| *Battle Arena Toshinden* | [BattleArenaToshindenRecomp](https://github.com/mstan/BattleArenaToshindenRecomp) · [downloads](https://github.com/mstan/BattleArenaToshindenRecomp/releases) | Adaptive combat view, expanded-roster mods and two-player rollback netplay. |
+| *Dragon Ball GT: Final Bout* | [DragonBallGTFinalBoutRecomp](https://github.com/mstan/DragonBallGTFinalBoutRecomp) · [downloads](https://github.com/mstan/DragonBallGTFinalBoutRecomp/releases) | Adaptive combat view, online/LAN versus and an optional donor-disc English voice mod. |
+| *Wipeout 3: Special Edition* | [Wipeout-3-Special-Edition-Recomp](https://github.com/mstan/Wipeout-3-Special-Edition-Recomp) | Source development project; consult its current build and qualification notes. |
+| *Mega Man Legends — community* | [MegaManLegendsRecomp](https://github.com/VuloB1/MegaManLegendsRecomp) · [downloads](https://github.com/VuloB1/MegaManLegendsRecomp/releases) | Independent port with 16:9, analog movement/right-stick camera and enhanced presentation. |
+| *Xenogears — community* | [xenogears-recomp](https://github.com/OpokXeno/xenogears-recomp) | Independent development project; also contributed widescreen cull-site work upstream. |
 
-Each game repo carries its own build/run instructions, keyboard/controller
-mappings, and per-game settings. **This repository builds the framework and a
-standalone BIOS runtime supporting OpenBIOS and a compatible retail BIOS** —
-see [Release Package](#release-package) below.
+<p align="center">
+  <img src="docs/assets/games/final-bout-ultrawide.png" alt="Dragon Ball GT Final Bout combat with additional stage scenery and edge-positioned HUD" width="800">
+  <br><sub><b>Dragon Ball GT: Final Bout</b> — adaptive combat framing.</sub>
+</p>
 
-Bringing up a title of your own? Start with
-[`docs/GAME_PROJECT_SETUP.md`](docs/GAME_PROJECT_SETUP.md) (submodules,
-bundled-release CI template, release checklist), then
-[`CONTRIBUTING.md`](CONTRIBUTING.md). Community projects are listed here
-alongside the rest.
+Each game supplies its own disc identity and controls. This repository also
+builds a standalone BIOS runtime for OpenBIOS or a compatible retail BIOS;
+that runtime is separate from the game downloads.
+
+Screenshot provenance and feature qualifications are recorded in
+[the showcase sources](docs/SHOWCASE_SOURCES.md).
 
 ## What It Is
 
@@ -107,6 +139,11 @@ and game code (`game.toml`, seeds, CMake) at the repo root. See
 [`docs/GAME_PROJECT_SETUP.md`](docs/GAME_PROJECT_SETUP.md).
 
 ## Getting Started
+
+For one recommended setup and a first game project, follow
+[Your first PSXRecomp port](docs/GETTING_STARTED.md). It uses the bundled
+toolchain and OpenBIOS, and keeps advanced choices for later. The sections
+below are the broader reference.
 
 ### Build requirements
 
@@ -219,7 +256,7 @@ These are the 3 most important folders to be aware of:
 
 **Other Folders** the other folders produced are generated from template files by the setup script run above, which provide various features and tools specific to the title itself and might be referenced by the compiler, or by diagnostics/dev software.
 
-### New here? 
+### New here?
 
 **The fastest way in:**
 
@@ -236,7 +273,7 @@ These are the 3 most important folders to be aware of:
 | Make mods by hand | [`psxmod.md`](psxmod.md) |
 | Mod schema and integration | [`docs/MOD_PACKAGES.md`](docs/MOD_PACKAGES.md) |
 | Widescreen / native-wide | [`docs/WIDESCREEN.md`](docs/WIDESCREEN.md) |
-| Enhancement tier (PGXP, renderers, load accel) | [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md) |
+| Enhancement tier (PGXP and renderers) | [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md) |
 | TCP debug command reference | [`docs/TCP_COMMANDS.md`](docs/TCP_COMMANDS.md) |
 | Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
@@ -471,19 +508,6 @@ new packages. It remains conversion scaffolding only.
   features, controller policy, and skip-FMV behavior; its
   [CMake file](https://github.com/mstan/TombaRecomp/blob/master/CMakeLists.txt)
   shows how to compile the plugin sources and preload the package catalog.
-- [Mega Man X6's unmerged Tweaks package branch](https://github.com/mstan/MegaManX6Recomp/tree/integrate/mmx6-mod-packages-current)
-  is the large conversion example. The
-  [package generators](https://github.com/mstan/MegaManX6Recomp/tree/integrate/mmx6-mod-packages-current/tools)
-  preserve patcher parity while producing guarded stock-targeted operations and
-  content-addressed assets; the
-  [trusted resolvers](https://github.com/mstan/MegaManX6Recomp/tree/integrate/mmx6-mod-packages-current/src/mods)
-  demonstrate deterministic composition of shared records and injected code.
-  The earlier
-  [`feature/mmx6-tweaks`](https://github.com/mstan/MegaManX6Recomp/tree/feature/mmx6-tweaks)
-  branch records the patcher-parity and write-classification work that feeds
-  this conversion; its patched-disc/pre-bake experiments are history, not the
-  recommended package delivery model. Both branches are review material rather
-  than a released compatibility promise.
 
 ## Swap language on the fly
 
@@ -624,8 +648,8 @@ a game is played; this branch is where that machinery is being built.
 
 ## Status
 
-The LLE recompiled BIOS — either bundled OpenBIOS or the compatible retail
-backend — boots and hands off to the game across supported projects. Games run
+PSXRecomp is **beta software**. The recompiled BIOS — either bundled
+OpenBIOS or the compatible retail backend — boots and hands off to the game across supported projects. Games run
 as majority-native code, with the capture-and-compile pipeline filling overlays
 as they're reached. The breadth-first push is essentially done; work now is
 depth and optimization.
@@ -746,41 +770,14 @@ and deep design notes (`PLAN.md`, `FAITHFUL_TIMING_PLAN.md`, …).
 
 ## Load Times
 
-The runtime models **authentic 1× CD-ROM timing by default** — the same read and
-seek delays as real hardware. On top of that faithful baseline, load-time
-acceleration is **opt-in**, per game, so the accurate path is never compromised:
+The normal runtime models the disc's read, seek and streaming behavior.
+Release packages exclude the CD Speed and Fast Loading/host-pacing packages;
+their controls are not part of the player-facing release catalog. Developer
+catalogs keep those experiments hidden and disabled by default.
 
-- **Turbo** — a hold-to-fast-forward key that compresses loads on demand
-  (keyboard `[KeyMap] Turbo`, default Tab; controller `[hotkeys]
-  fast_forward_pad`, default Select+L1, rebindable under the launcher's
-  Controller → Host Shortcuts alongside Rewind and Save states). A
-  press-to-latch twin, **Turbo toggle** (`[KeyMap] TurboToggle`, default F9;
-  `[hotkeys] fast_forward_toggle_pad`, unbound by default), locks the same
-  speed until pressed again. Controller host shortcuts bound to a single
-  button or trigger are chords with Select — the launcher shows them as
-  `select + …`; only a two-button capture replaces the implicit Select.
-  Backspace while the launcher is listening clears a shortcut; in the files
-  that is `0` for a `[hotkeys]` pad value and `None` for a `[KeyMap]` key (a
-  present-but-empty or `None` line is an explicit unbind, a missing line
-  keeps the built-in default).
-- **The "Fast Loading (host pacing)" and "CD Speed" mods** — automatic
-  acceleration during load waits, shipped with every title and **off by
-  default**, with `turbo_audio_sink` keeping the SPU timeline coherent through
-  the burst. Host pacing only changes how fast real time is fed to a load, so
-  the guest cannot desync; CD speed changes when the game receives CD
-  interrupts. The former `[runtime] turbo_loads` config key is deprecated and
-  ignored — see `docs/config_schema.md`.
-- **`[runtime] idle_skip`** — proof-gated fast-forward through idle polling
-  loops, with guest time and device events still advancing exactly.
-- **Warm CD routes (`[[runtime.warm_cd_routes]]`)** — narrowly-scoped fast
-  read cadence armed on a specific `SetLoc`, restoring authentic timing the
-  moment the read pattern diverges.
-
-FMV/XA and CDDA streaming, seek, and motor timing always stay authentic
-regardless of the accelerators. Driving load times toward zero (via data
-sharding) is an active depth-phase effort — see
-[`docs/LOAD_TIME_ZERO.md`](docs/LOAD_TIME_ZERO.md) and
-[`docs/disc-speed.md`](docs/disc-speed.md).
+Title-specific resource caching and overlay compilation have separate
+compatibility requirements. See [overlay sharding](docs/AOT_SHARDING.md)
+for the native-code cache and each game's notes for its resource behavior.
 
 ## Help make your game faster — just by playing it
 
