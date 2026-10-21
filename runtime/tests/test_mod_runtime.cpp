@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <filesystem>
 #include <fstream>
@@ -438,7 +439,55 @@ static uint64_t startup_counter(const char* requested) {
     return 0;
 }
 
+static int test_command_calls;
+static int command_fill_reply(const char* args, char* reply, int cap) {
+    ++test_command_calls;
+    std::memset(reply, 'x', (size_t)cap); // deliberately fills the entire bound
+    return std::strcmp(args, "test") == 0 ? 17 : 11;
+}
+static int command_replacement(const char*, char* reply, int) { reply[0] = 0; return 99; }
+static void test_commands(void) {
+    char name[] = "qa.owned";
+    check(psx_mod_register_command(name, command_fill_reply) == 1, "register owned command name");
+    std::memset(name, '?', sizeof(name)-1);
+    struct { char reply[8]; char guard; } buffer = {{0}, 'g'};
+    check(psx_mod_run_command("qa.owned", "test", buffer.reply, sizeof(buffer.reply)) == 17,
+          "command owns name and forwards args/result");
+    check(buffer.reply[7] == 0 && std::strlen(buffer.reply) == 7 && buffer.guard == 'g',
+          "full-capacity reply is bounded and terminated");
+    check(psx_mod_run_command("qa.owned", nullptr, buffer.reply, 1) == 11 && buffer.reply[0] == 0,
+          "one-byte reply and null args are bounded");
+    const int before = test_command_calls;
+    check(psx_mod_run_command("qa.owned", "", nullptr, 8) == -1 &&
+          psx_mod_run_command("qa.owned", "", buffer.reply, 0) == -1 &&
+          psx_mod_run_command("missing", "", buffer.reply, 8) == -1 &&
+          test_command_calls == before, "invalid or unknown command does not invoke callback");
+    check(!psx_mod_register_command(nullptr, command_fill_reply) &&
+          !psx_mod_register_command("", command_fill_reply) &&
+          !psx_mod_register_command("missing.callback", nullptr) &&
+          !psx_mod_register_command(std::string(64, 'a').c_str(), command_fill_reply),
+          "invalid and unreachable names are refused");
+    check(psx_mod_register_command("qa.owned", command_replacement) &&
+          psx_mod_run_command("qa.owned", "", buffer.reply, 8) == 99,
+          "duplicate registration explicitly replaces callback");
+    const auto maximum = std::string(63, 'b');
+    check(psx_mod_register_command(maximum.c_str(), command_replacement) == 1,
+          "63-byte command name is reachable");
+    for (int i = 0; i < 14; ++i)
+        check(psx_mod_register_command(("qa.extra." + std::to_string(i)).c_str(), command_replacement) == 1,
+              "temporary names fill bounded registry");
+    check(!psx_mod_register_command("qa.overflow", command_replacement) &&
+          psx_mod_run_command("qa.extra.13", "", buffer.reply, 8) == 99 &&
+          psx_mod_run_command("qa.owned", "", buffer.reply, 8) == 99,
+          "overflow preserves existing owned registrations");
+}
+
 int main(int argc, char** argv) {
+    test_commands();
+    if (argc > 1 && std::string(argv[1]) == "--commands-only") {
+        std::cout << "mod command tests: " << failures << " failures\n";
+        return failures ? 1 : 0;
+    }
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     const fs::path root = fs::temp_directory_path() / "psxrecomp-mod-runtime-cache-test";
     const auto isolated_cache = root / "test-cache";

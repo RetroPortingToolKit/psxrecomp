@@ -493,9 +493,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**376 commands registered** — 363 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**383 commands registered** — 370 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-84 of 376 have prose above; **292 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+85 of 383 have prose above; **298 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -574,6 +574,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `dirty_ram_unsupported` | ✓ |  |  |
 | `disasm` | ✓ |  |  |
 | `disc_select` | ✓ |  |  |
+| `disc_tray_log` | ✓ |  |  |
 | `disp_ring` | ✓ |  |  |
 | `dispatch_check` | ✓ |  |  |
 | `dispatch_stats` | ✓ |  |  |
@@ -626,6 +627,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `frame_perf` | ✓ |  |  |
 | `frame_range` | ✓ | ✓ | ✓ |
 | `frame_timeseries` | ✓ | ✓ | ✓ |
+| `frame_wall_ring` | ✓ |  |  |
 | `freeze_check` | ✓ |  |  |
 | `game_options` | ✓ |  |  |
 | `gcp_ring` | ✓ |  | ✓ |
@@ -657,12 +659,14 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `hd_textures` | ✓ |  | ✓ |
 | `history` | ✓ | ✓ | ✓ |
 | `hle_dump` | ✓ |  | ✓ |
+| `host_button` | ✓ |  |  |
 | `host_key` | ✓ |  |  |
 | `host_launch_timings` | ✓ |  | ✓ |
 | `host_mouse` | ✓ |  |  |
 | `host_osd_shot` | ✓ |  |  |
 | `host_pause` | ✓ |  |  |
 | `host_profile` | ✓ |  |  |
+| `host_span_ring` | ✓ |  |  |
 | `idle_skip` | ✓ |  |  |
 | `imask_trace` | ✓ |  |  |
 | `input_route_append` | ✓ |  | ✓ |
@@ -691,6 +695,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `mmio_clear` | ✓ |  | ✓ |
 | `mmio_dump` | ✓ |  | ✓ |
 | `mmx6_freshfix` | ✓ |  |  |
+| `mod_cmd` | ✓ |  | ✓ |
 | `mod_counters` | ✓ |  |  |
 | `nclip_stats` | ✓ |  |  |
 | `netplay_status` | ✓ |  |  |
@@ -772,6 +777,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `rtrace_reset` |  | ✓ |  |
 | `rtrace_stats` | ✓ | ✓ |  |
 | `run_to_frame` | ✓ |  | ✓ |
+| `runtime_menu` | ✓ |  |  |
 | `s3_smear_watch` | ✓ |  | ✓ |
 | `savestate` | ✓ |  |  |
 | `savestate_status` | ✓ |  | ✓ |
@@ -781,6 +787,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `screenshot_hires` | ✓ |  | ✓ |
 | `screenshot_wide_hires` | ✓ |  | ✓ |
 | `segment_misses` | ✓ |  |  |
+| `session_restart` | ✓ |  |  |
 | `set_input` | ✓ | ✓ | ✓ |
 | `set_snapshot` | ✓ | ✓ | ✓ |
 | `sio_arm_audit` | ✓ |  |  |
@@ -882,3 +889,16 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 
 `wtrace_dump pc_lo=<hex> pc_hi=<hex>` filters the recorded producer PC, masked to the physical address (KSEG0/KSEG1/KUSEG alias, like `addr_lo`/`addr_hi`), with inclusive lower and exclusive upper bounds, before limiting results. Omitted bounds match every entry; DMA entries use their recorded initiator, and a DMA whose initiator is unknown (0) never matches an explicit PC bound. Address/frame/order filters still apply.
 `disasm addr=<hex> count=<1..256>` inspects aligned guest instructions; default count is 16. Resolved targets use the guest PC. Unknown words are shown verbatim.
+
+## Trusted mod tuning commands
+
+| Command | Parameters | Behavior |
+|---|---|---|
+| `mod_cmd` | `name`, optional `args` | Calls a statically linked trusted debug callback and returns its integer `result` and escaped text `reply`. |
+
+The process owns up to 16 names, each 1-63 bytes. Registering the same name
+replaces its callback. Registration is independent of package activation;
+this is a debug-control registry, not a way to activate a disabled mod.
+Callbacks run on the debug-server thread and may only touch state guarded
+against its other owners. Guest/shared-state changes must be requested through
+the plugin's existing emulation callback and obey its session/netplay policy.

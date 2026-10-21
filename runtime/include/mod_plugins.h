@@ -105,10 +105,16 @@ void psx_mod_counter_add(const char* name, uint32_t delta);
 /* Named debug commands for trusted plugins (test benches, tuning): `fn` gets the
  * argument string and writes a short text reply (truncated to `cap`); it runs on
  * the debug-server thread, so it must only touch state it guards itself. Up to 16
- * names. TCP: {"cmd":"mod_cmd","name":"<name>","args":"..."}. */
+ * names (1..63 bytes, copied by the registry); callbacks have process lifetime.
+ * Re-registering a name replaces its callback, allowing restart registration.
+ * This debug-control registry is independent of package activation. It must
+ * not directly mutate guest/shared simulation state from the server thread:
+ * signal a guarded control request for the plugin's existing emulation hook.
+ * Callbacks must not throw. TCP: {"cmd":"mod_cmd","name":"<name>","args":"..."}. */
 typedef int (*PSXModCommandFn)(const char* args, char* reply, int cap);
 int psx_mod_register_command(const char* name, PSXModCommandFn fn);
-/* Runs a registered command; -1 if `name` is unknown, else the command's result. */
+/* Runs a registered command; -1 for unknown name/invalid output, otherwise the
+ * callback result. Valid replies are always terminated within cap bytes. */
 int psx_mod_run_command(const char* name, const char* args, char* reply, int cap);
 /* Presentation-only filtering: 0 nearest, 1 bilinear, 2 stable minification.
  * Mode 2 uses a bounded palette-aware footprint for proven 3D polygons on
