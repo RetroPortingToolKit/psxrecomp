@@ -213,6 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (BRIEF-4 depth state):** Removed per-batch GL state round trips, including the mask-check exception absent in the old experiment. Real-context state restoration and image/readback controls pass on Windows and Mac. Fullscreen quiet route remains unaccepted (8 completion gaps, 53.2% p99 busy). Investigating GPU query spans that include host pacing and provoke expensive dynamic-resolution reallocations.
+
 - **2026-10-21 (BRIEF-4 Stage 1):** Reused #722 display-height cap and added opt-in `supersample_disable_at_lines`; unchanged defaults for other titles. Resolution, replay, config-parser and R4 default checks pass on Windows and macOS. R4 fullscreen 8K route cap restores 60 Hz but completion gaps remain (6 quiet / 7 loaded); no stage acceptance claimed. See R4 `analysis/STATUS.md`.
 
 - **2026-10-21 (BRIEF-4 Stage 1):** Port recorded-route measurement support from `a9da7fce`; validation pending. No guest timing changes.
