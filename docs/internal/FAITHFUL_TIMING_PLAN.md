@@ -213,6 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (BRIEF-4 Stage 1):** Port recorded-route measurement support from `a9da7fce`; validation pending. No guest timing changes.
+
 - **2026-10-07 — DuckStation texture authoring fidelity (beads-qi66).**
   The early Tomba capture report exposed per-draw crops and automatic page
   fallback in the opt-in HD texture enhancement. An independent synthetic
