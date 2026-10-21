@@ -110,6 +110,11 @@ static void check(int ok, const char *label) {
     checks++;
     if (!ok) { fprintf(stderr, "FAIL %s\n", label); failures++; }
 }
+static int drawable_worker(void *data) {
+    int *size = data;
+    gl_drawable_size(&size[0], &size[1]);
+    return 0;
+}
 static uint64_t fnv(const void *pp, size_t n, uint64_t h) {
     const uint8_t *p = (const uint8_t *)pp;
     for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
@@ -319,6 +324,7 @@ int main(int argc, char **argv) {
     if (timing_idle && threaded) gl_renderer_render_thread_measure(1);
     static const int levels[] = { 2, 1, 3, 1, 4, 2 };
     int nsteps = 0, level = scale;
+    const uint64_t drawable_queries_before = s_drawable_queries;
     for (int f = 0; f < frames; f++) {
         frame(f, (f & 1) ? 512 : 0);
         if (dynres && f % 7 == 6) {   /* includes frames held at a sync point */
@@ -402,6 +408,22 @@ int main(int argc, char **argv) {
         check(st.acquires >= 2 && st.acquires <= (uint64_t)frames + 4, "acquires bounded");
         check(st.bytes > ((uint64_t)32 << 20), "ring wrapped (more than its size recorded)");
     }
+    if (drawable_events_enabled())
+        check(s_drawable_queries == drawable_queries_before, "no per-frame drawable queries");
+    /* Pixel-size events publish resizes without querying the window on a
+     * worker or taking its property lock on every frame boundary. */
+    for (int k = 0; k < 2; ++k) {
+        SDL_SetWindowSize(win, 400 + k * 80, 300 + k * 60);
+        SDL_PumpEvents();
+        gl_renderer_render_thread_frame_boundary();
+        int expected[2] = {0}, seen[2] = {0};
+        SDL_GL_GetDrawableSize(win, &expected[0], &expected[1]);
+        SDL_Thread *worker = SDL_CreateThread(drawable_worker, "drawable-test", seen);
+        check(worker != NULL, "drawable reader thread created");
+        if (worker) SDL_WaitThread(worker, NULL);
+        check(seen[0] == expected[0] && seen[1] == expected[1], "worker sees resized drawable");
+    }
+    gl_renderer_render_thread_sync("test_done");
     check(glGetError() == GL_NO_ERROR, "GL error");
     printf("rb=%016llx\n", (unsigned long long)rb_digest);
     printf("digest=%016llx\n", (unsigned long long)digest);
