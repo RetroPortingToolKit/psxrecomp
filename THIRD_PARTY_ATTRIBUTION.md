@@ -1,5 +1,13 @@
 # Third-Party Attribution
 
+## json11 — native translation catalogs
+
+[json11](https://github.com/dropbox/json11), Copyright (c) 2013 Dropbox, Inc.,
+is licensed **MIT**. The vendored sources in `runtime/third_party/json11/`
+parse native text catalogs. A direct `<cstdint>` include supplies the integer
+types required by current compilers. The license is also staged through
+`runtime/licenses/json11-LICENSE.txt` for every linked runtime release.
+
 ## OpenBIOS — PCSX-Redux's free PS1 BIOS
 
 [OpenBIOS](https://github.com/grumpycoders/pcsx-redux) (src/mips/openbios) by
