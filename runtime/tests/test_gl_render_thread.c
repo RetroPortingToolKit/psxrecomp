@@ -341,6 +341,11 @@ int main(int argc, char **argv) {
         gl_renderer_dynres_stats(&ds);
         printf("dyn_steps=%llu asked=%d\n", (unsigned long long)ds.steps, nsteps);
         check(ds.steps == (uint64_t)nsteps && ds.level == scale, "every step applied");
+        printf("dyn_allocs hr=%llu wide=%llu\n", (unsigned long long)ds.hr_reallocs,
+               (unsigned long long)ds.wide_reallocs);
+        if (dyn_reuse_storage())
+            check(ds.hr_reallocs == 0 && ds.wide_reallocs == 0,
+                  "ceiling storage reused at every level");
         if (threaded) {
             GlRthCosts co;
             gl_renderer_render_thread_costs(&co);
