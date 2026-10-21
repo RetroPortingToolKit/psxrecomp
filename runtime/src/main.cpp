@@ -4818,12 +4818,18 @@ static uint64_t g_frame_report_wait_ticks = 0;   /* offline pacer waits */
 /* Explicit, file-driven production benchmark. No debug server, sampler or
  * per-instruction tracing is needed. Capture outside the measured interval;
  * export the existing frame ring before requesting the normal quit path. */
-struct ReplayWorkSample { uint64_t frame, guest, pacer, queue, completed; };
+struct ReplayWorkSample { uint64_t frame, guest, pacer, queue, completed, bp, ring, acquire; };
 static std::vector<ReplayWorkSample> g_replay_work;
 static void input_replay_frame_completed(uint64_t frame) {
     if (g_replay_work.empty()) return;
     auto &sample = g_replay_work[frame % HOST_FRAME_STAMP_CAP];
-    if (sample.frame == frame) sample.completed = host_clock_us();
+    if (sample.frame == frame) {
+        sample.completed = host_clock_us();
+        RtStats rs{}; rt_get_stats(&rs);
+        sample.bp = rs.backpressure_ns / 1000;
+        sample.ring = rs.ring_full_ns / 1000;
+        sample.acquire = rs.acquire_ns / 1000;
+    }
 }
 static void input_replay_frontend_tick(uint64_t frame) {
     uint64_t relative = input_replay_frame(frame);
@@ -4883,7 +4889,7 @@ static void input_replay_frontend_tick(uint64_t frame) {
     if (report && *report) {
         FILE *f = std::fopen(report, "w");
         if (!f) throw std::runtime_error("cannot write input replay frame report");
-        std::fputs("frame,relative,us,interp,checks,faults,io_kb,guest_us,pacer_us,queue_us,completed_us\n", f);
+        std::fputs("frame,relative,us,interp,checks,faults,io_kb,guest_us,pacer_us,queue_us,completed_us,completed_bp_us,completed_ring_us,completed_acquire_us\n", f);
         uint64_t total = host_frame_stamp_total();
         uint64_t first = total > HOST_FRAME_STAMP_CAP ? total-HOST_FRAME_STAMP_CAP : 0;
         for (uint64_t i=first; i<total; i++) {
@@ -4893,10 +4899,12 @@ static void input_replay_frontend_tick(uint64_t frame) {
             if (rel == UINT64_MAX) continue;
             const auto &w = work[fr % HOST_FRAME_STAMP_CAP];
             if (w.frame != fr) continue;
-            std::fprintf(f, "%u,%llu,%llu,%u,%u,%u,%u,%llu,%llu,%llu,%llu\n", fr,
+            std::fprintf(f, "%u,%llu,%llu,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", fr,
                          (unsigned long long)rel, (unsigned long long)us, ii, ck, pf, io,
                          (unsigned long long)w.guest, (unsigned long long)w.pacer,
-                         (unsigned long long)w.queue, (unsigned long long)w.completed);
+                         (unsigned long long)w.queue, (unsigned long long)w.completed,
+                         (unsigned long long)w.bp, (unsigned long long)w.ring,
+                         (unsigned long long)w.acquire);
         }
         if (std::fclose(f) != 0) throw std::runtime_error("cannot finish input replay frame report");
         std::string span_path = std::string(report) + ".spans.csv";
@@ -4912,6 +4920,13 @@ static void input_replay_frontend_tick(uint64_t frame) {
                              s.dur_us, s.frame, host_span_kind_name(s.kind), s.emu, s.arg);
         }
         if (std::fclose(f) != 0) throw std::runtime_error("cannot finish input replay span report");
+        char renderer[16384];
+        int bytes = gl_renderer_render_thread_json(renderer, sizeof renderer);
+        if (bytes > 0 && bytes < (int)sizeof renderer) {
+            std::ofstream detail(std::string(report) + ".renderer.json");
+            detail << "{" << renderer << "}";
+            if (!detail) throw std::runtime_error("cannot write input replay renderer report");
+        }
     }
     SDL_Event event{}; event.type = SDL_QUIT; SDL_PushEvent(&event);
 }
