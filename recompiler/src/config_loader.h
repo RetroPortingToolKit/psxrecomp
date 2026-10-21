@@ -472,6 +472,8 @@ struct RuntimeConfig {
     /* [video] match_display_max_lines: cap on the display height Match
      * display (and its dynamic-resolution floor) resolves against; 0 = none. */
     int                   video_match_display_max_lines = 0;
+    /* Disable target supersampling on displays at least this tall (0 = off). */
+    int                   video_supersample_disable_at_lines = 0;
 
     // Optional initial window width declared by the title profile. Zero keeps
     // the historical fit-to-display behavior; player settings may override it.

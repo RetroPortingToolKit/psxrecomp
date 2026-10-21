@@ -143,6 +143,13 @@ static inline int psx_ss_parse_milli(const char *s) {
     return (int)m;
 }
 
+/* Opt-in display policy; keep the saved factor intact for smaller displays. */
+static inline int psx_ir_display_supersample(int ss_milli, int display_px_h,
+                                            int disable_at_lines) {
+    return disable_at_lines > 0 && display_px_h >= disable_at_lines
+        ? PSX_SS_MILLI_MIN : ss_milli;
+}
+
 /* psx_resolve_internal_scale with the supersample factor on the target. */
 static inline int psx_resolve_internal_scale_ss(int value, int ref_lines,
                                                 int display_px_h, int s_max,
