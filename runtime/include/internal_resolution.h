@@ -167,6 +167,18 @@ static inline int psx_resolve_internal_scale_ss(int value, int ref_lines,
     return psx_resolve_internal_scale(value, ref_lines, display_px_h, s_max);
 }
 
+/* A Match display cap bounds the final target, including supersampling.
+ * Fixed presets and the legacy integer scale retain their own ceilings. */
+static inline int psx_resolve_internal_scale_ss_cap(int value, int ref_lines,
+        int display_px_h, int s_max, int ss_milli, int max_display_lines) {
+    int s = psx_resolve_internal_scale_ss(value, ref_lines, display_px_h, s_max, ss_milli);
+    if (value == PSX_IR_DISPLAY && max_display_lines > 0) {
+        int cap = psx_resolve_internal_scale(max_display_lines, ref_lines, 0, s_max);
+        if (s > cap) s = cap;
+    }
+    return s;
+}
+
 /* A legacy [video] supersampling factor as a value the launcher can show:
  * the preset that resolves to the same scale (1 -> Native, 3 -> 720p,
  * 5 -> 1080p, 6 -> 1440p, 9 -> 4K, 12 -> 5K, 18 -> 8K at 240 lines),

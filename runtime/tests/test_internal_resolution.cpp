@@ -227,6 +227,16 @@ int main() {
     expect("ss at threshold", psx_ir_display_supersample(1500, 2160, 2160), 1000);
     expect("ss on 8K", psx_ir_display_supersample(1500, 4320, 2160), 1000);
     expect("ss unknown display", psx_ir_display_supersample(1500, 0, 2160), 1500);
+    expect("cap includes SS below threshold", psx_resolve_internal_scale_ss_cap(
+        PSX_IR_DISPLAY, 240, 1440, 32, 4000, 4320), 18);
+    expect("cap below 8K", psx_resolve_internal_scale_ss_cap(
+        PSX_IR_DISPLAY, 240, 1080, 32, 1500, 4320), 7);
+    expect("8K capped after SS", psx_resolve_internal_scale_ss_cap(
+        PSX_IR_DISPLAY, 240, 8640, 32, 4000, 4320), 18);
+    expect("fixed preset keeps own ceiling", psx_resolve_internal_scale_ss_cap(
+        4320, 240, 8640, 32, 4000, 4320), 32);
+    expect("cap opt-out", psx_resolve_internal_scale_ss_cap(
+        PSX_IR_DISPLAY, 240, 4320, 32, 1500, 0), 27);
     launcher_round_trips();
 
     if (g_failures) return 1;

@@ -708,7 +708,9 @@ match_display_max_lines = 0         # game.toml only: cap on the display height 
 
 `match_display_max_lines` caps the monitor height that Match display, its
 dynamic-resolution floor (`display`) and graphics-preset detection resolve
-against. With no cap, an 8K panel asks 18x (27x with `supersample = 1.5`), which is
+against. It also caps the final Match display target after supersampling,
+so a larger saved factor cannot exceed it. Fixed presets keep their own target.
+With no cap, an 8K panel asks 18x (27x with `supersample = 1.5`), which is
 past the full-VRAM surface. The high-resolution window then engages, and
 dynamic resolution cannot step there. A title whose GPU budget is set for
 4K lines sets 2160.
