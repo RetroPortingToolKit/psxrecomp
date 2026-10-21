@@ -316,6 +316,16 @@ int main(int argc, char **argv) {
     if (threaded) {
         check(gl_renderer_render_thread_start(2) == 1, "render thread started");
         check(gl_renderer_render_thread_active(), "render thread active");
+        gr_set_semi_transparency(0, 0); gr_set_mask_bits(0, 0);
+        gr_set_texture_window(0); gr_set_color_modulation(128, 128, 128, 0);
+        RtStats before, after;
+        rt_get_stats(&before);
+        gr_set_semi_transparency(0, 0); gr_set_mask_bits(0, 0);
+        gr_set_texture_window(0); gr_set_color_modulation(128, 128, 128, 0);
+        rt_get_stats(&after);
+        const char *cache = getenv("PSX_GL_RECORD_STATE_CACHE");
+        check(after.records - before.records == (cache && cache[0] == '0' ? 4u : 0u),
+              "identical material state records only with cache disabled");
     }
     if (dynres) {
         check(gl_renderer_dynamic_resolution_ceiling() == scale, "dynres ceiling");

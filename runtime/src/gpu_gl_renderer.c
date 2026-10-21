@@ -11301,7 +11301,15 @@ static uint64_t s_rth_presents = 0, s_rth_presents_stale = 0;
 #define RTHF_TAGGED    0x0002u
 #define RTHF_BD_SHIFT  2          /* bits 2-3: psx_ws_prim_in_backdrop() 0..3 */
 
+/* Producer-owned values last published for idempotent material setters.
+ * Context handoff and stream barriers invalidate them. Area/offset setters
+ * deliberately flush primitive batches, so they must never be elided. */
+static int32_t s_rth_material[4][4];
+static unsigned s_rth_material_valid;
+static uint8_t s_rth_material_n[4];
+
 static void rth_mirror_resync(void) {
+    s_rth_material_valid = 0;
     s_rthm_scale = s_out_scale;
     s_rthm_wide_w = g_wide_w;
     s_rthm_wide_off = g_wide_off;
@@ -11334,10 +11342,33 @@ static int rth_mirror_wide_present_ok(int base_x) {
 }
 
 static int rth_rec_ints(uint16_t op, uint16_t flags, int n, const int32_t *v) {
+    static int cache = -1;
+    if (cache < 0) {
+        const char *e = getenv("PSX_GL_RECORD_STATE_CACHE");
+        cache = !(e && e[0] == '0');
+    }
+    int material = -1;
+    if (cache && !flags && op >= RTH_SEMI && op <= RTH_MOD && n > 0 && n <= 4) {
+        material = op - RTH_SEMI;
+        if ((s_rth_material_valid & (1u << material)) &&
+            s_rth_material_n[material] == n &&
+            !memcmp(s_rth_material[material], v, (size_t)n * 4u))
+            return 1;
+    } else if (op != RTH_PRECISE && op != RTH_PERSP && op != RTH_DEPTH &&
+               op != RTH_PROJ_TRI && op != RTH_WIDE_RECOVERY &&
+               op != RTH_AREA && op != RTH_OFFSET &&
+               !(op >= RTH_FLAT_TRI && op <= RTH_SHADED_LINE)) {
+        s_rth_material_valid = 0;
+    }
     int32_t *p = (int32_t *)rt_cmd_begin(op, flags, (uint32_t)n * 4u);
     if (!p) return 0;
     memcpy(p, v, (size_t)n * 4u);
     rt_cmd_commit();
+    if (material >= 0) {
+        memcpy(s_rth_material[material], v, (size_t)n * 4u);
+        s_rth_material_n[material] = (uint8_t)n;
+        s_rth_material_valid |= 1u << material;
+    }
     return 1;
 }
 
@@ -11422,6 +11453,7 @@ typedef struct RthOvHdr {
 } RthOvHdr;
 
 static int rth_record_present(uint16_t op, int n, const int32_t *v) {
+    s_rth_material_valid = 0; /* presentation may replay historical material */
     const uint32_t *px[4] = { NULL, NULL, NULL, NULL };
     int w[4] = { 0 }, h[4] = { 0 };
     RthOvHdr hd;
