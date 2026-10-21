@@ -49,7 +49,9 @@ static void replay(void) {
     cbs.last_store_pc = 0;
     cbs.bail_first = 0;
     cbs.bail_resolved = 0;
+    psx_cpu_charge(13);
     overlay_init(&cbs);
+    assert(replay_cycles == 24);
     g_psx_call_bail = 99;
     g_debug_last_store_pc = 99;
     signal_phase(3);

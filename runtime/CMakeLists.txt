@@ -1981,6 +1981,7 @@ if(BUILD_TESTING)
 
     find_package(Threads REQUIRED)
     add_executable(overlay_thread_binding_test tests/test_overlay_thread_binding.c)
+    set_target_properties(overlay_thread_binding_test PROPERTIES C_STANDARD 11)
     target_include_directories(overlay_thread_binding_test PRIVATE include)
     target_compile_definitions(overlay_thread_binding_test PRIVATE
         PSX_OVERLAY_DLL_BUILD PSX_NO_DEBUG_TOOLS PSX_ENABLE_BLOCK_CYCLES=1)

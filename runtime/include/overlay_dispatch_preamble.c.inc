@@ -34,10 +34,8 @@ PSX_OVERLAY_EXPORT int overlay_abi(void) {
 }
 
 PSX_OVERLAY_EXPORT void overlay_init(const OverlayCallbacks *cbs) {
-    /* Binding is done on the thread that will execute the shard, before any
-     * guest call. Never carry a previous context's unpublished cycles into a
-     * new binding. The host must flush before rebinding a running context. */
-    s_pending_cycles = 0;
+    /* Settle the old binding before changing its callbacks or host pointers. */
+    overlay_flush_cycles();
     g_cbs = *cbs;
     g_psx_call_bail_p = g_cbs.call_bail_flag ? g_cbs.call_bail_flag : &s_bound_bail_dummy;
     g_psx_bail_first_p = g_cbs.bail_first ? g_cbs.bail_first : &s_bound_ctr_dummy0;

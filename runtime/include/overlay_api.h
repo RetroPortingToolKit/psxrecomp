@@ -402,8 +402,8 @@ extern "C" {
 
 /* Exported by every overlay DLL. Call on each executing thread before guest
  * entry. The table, cycle accumulator and host-state pointers are thread-local;
- * loading a shard does not bind it on other threads. Flush pending cycles
- * before rebinding this thread to a different execution context. */
+ * loading a shard does not bind it on other threads. Rebinding first flushes
+ * pending cycles through this thread's previous callback table. */
 #ifdef _WIN32
 __declspec(dllexport)
 #else
