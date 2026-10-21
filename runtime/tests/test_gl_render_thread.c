@@ -115,6 +115,7 @@ static uint64_t fnv(const void *pp, size_t n, uint64_t h) {
     for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
     return h;
 }
+static int timing_idle;
 static uint64_t rb_digest = 0xcbf29ce484222325ull;
 static uint32_t rng = 0x2468ace1u;
 static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
@@ -235,6 +236,10 @@ static void frame(int f, int buf_x) {
         rb_digest = fnv(out, sizeof out, rb_digest);
     }
     gl_renderer_present_vram(buf_x, 0, FRAME_W, FRAME_H, 0, 0);
+    if (timing_idle && rt_running()) {
+        rt_drain();
+        SDL_Delay(30); /* producer pacing after the rendered image is submitted */
+    }
     gl_renderer_render_thread_frame_boundary();
 }
 
@@ -243,6 +248,7 @@ int main(int argc, char **argv) {
     int threaded = argc > 2 && argv[2][0] == '1';
     int frames = argc > 3 ? atoi(argv[3]) : 80;
     int dynres = argc > 4 && !strcmp(argv[4], "dynres");
+    timing_idle = argc > 4 && !strcmp(argv[4], "idle");
     /* No video device, window or GL context (headless, Windows over SSH):
      * exit 77, which the harness reports as a CTest skip. */
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -310,6 +316,7 @@ int main(int argc, char **argv) {
         check(gl_renderer_dynamic_resolution_ceiling() == scale, "dynres ceiling");
         if (threaded) gl_renderer_render_thread_measure(1);
     }
+    if (timing_idle && threaded) gl_renderer_render_thread_measure(1);
     static const int levels[] = { 2, 1, 3, 1, 4, 2 };
     int nsteps = 0, level = scale;
     for (int f = 0; f < frames; f++) {
@@ -343,6 +350,17 @@ int main(int argc, char **argv) {
                    co.frames ? (double)co.cost_ns / (double)co.frames * 1e-6 : 0.0);
             check(co.frames > 0, "render-thread frame costs measured");
         }
+    }
+
+    if (timing_idle && threaded) {
+        gl_renderer_render_thread_sync("idle timing check");
+        GlRthCosts co;
+        gl_renderer_render_thread_costs(&co);
+        double gpu_ms = co.gpu_frames ? (double)co.gpu_ns / co.gpu_frames * 1e-6 : 0.0;
+        printf("idle_gpu_ms=%.3f gpu_frames=%llu\n", gpu_ms, (unsigned long long)co.gpu_frames);
+        check(co.gpu_frames > 0, "idle timing has completed GPU samples");
+        if (rthf_active_segments())
+            check(gpu_ms < 15.0, "GPU work excludes the 30ms producer wait");
     }
 
     /* Guest-visible VRAM, the frame at internal resolution, the wide surface. */

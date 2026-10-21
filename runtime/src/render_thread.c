@@ -99,6 +99,7 @@ static struct {
     RtCtxFn  ctx;
     void    *user;
     RtTickFn tick;
+    void (*idle)(void *user);
     uint64_t tick_at;          /* consumer: next tick deadline (0 = none) */
 
     /* shared positions / counters */
@@ -218,6 +219,7 @@ static void *render_main(void *arg)
                 spun++;
             }
             if (atomic_load_explicit(&R.wpos, memory_order_acquire) != r) continue;
+            if (R.idle) R.idle(R.user);
             uint64_t t0 = now_ns();
             mtx_lock(&R.mtx);
             atomic_store(&R.render_sleeping, 1);
@@ -434,6 +436,7 @@ int rt_start(const RtConfig *cfg) {
     R.ctx = cfg->ctx;
     R.user = cfg->user;
     R.tick = cfg->tick;
+    R.idle = cfg->idle;
     R.tick_at = 0;
     mtx_init(&R.mtx);
     cnd_init(&R.cv_work);
