@@ -1182,51 +1182,10 @@ static int alu_scalar(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2,
 
 static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2);
 
-/* Keep the memory-only fast path out of each generated instruction body.
- * GCC LTO otherwise partially inlines/specializes it across the large title,
- * increasing the hot code footprint instead of reducing instruction work. */
-extern "C"
-#if defined(PSX_NO_DEBUG_TOOLS) && defined(__GNUC__) && !defined(__clang__)
-__attribute__((noinline, noclone))
-#elif defined(PSX_NO_DEBUG_TOOLS) && defined(__clang__)
-__attribute__((noinline))
-#elif defined(PSX_NO_DEBUG_TOOLS) && defined(_MSC_VER)
-__declspec(noinline)
-#endif
-void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
+extern "C" void psx_pgxp_alu(struct CPUState *cpu, uint32_t instr,
                              uint32_t result, uint32_t s1, uint32_t s2) {
     (void)cpu;
     if (!g_pgxp_active) return;
-#ifdef PSX_NO_DEBUG_TOOLS
-    if (!s_cpu_mode) {
-        /* In memory-only mode these opcodes can only discard precision.
-         * An already-untracked destination needs no value/zero writes: every
-         * consumer requires live flags, and later tracking overwrites the
-         * complete shadow. Keep MOVE, bitwise repacking and LUI on the full
-         * path: they can carry/create exact halves even in memory-only mode. */
-        const uint32_t op = f_op(instr);
-        uint32_t target = f_rt(instr);
-        bool clears = ((op == 0x08 || op == 0x09) && f_simm(instr) != 0) ||
-                      op == 0x0A || op == 0x0B;
-        if (op == 0) {
-            const uint32_t fn = f_funct(instr);
-            target = f_rd(instr);
-            clears = fn == 0 || fn == 2 || fn == 3 || fn == 4 || fn == 6 || fn == 7 ||
-                     fn == 0x10 || fn == 0x12 || fn == 0x2A || fn == 0x2B ||
-                     ((fn == 0x20 || fn == 0x21) && f_rs(instr) && f_rt(instr)) ||
-                     ((fn == 0x22 || fn == 0x23) && f_rt(instr));
-            if (fn == 0x11 || fn == 0x13) {
-                target = fn == 0x11 ? PGXP_REG_HI : PGXP_REG_LO;
-                clears = true;
-            }
-        }
-        if (clears) {
-            if (target && s_gpr[target].gen == s_gen && s_gpr[target].flags)
-                pv_reset(&s_gpr[target], result);
-            return;
-        }
-    }
-#endif
     int dst = -1;
     double v = 0.0;
     const int has = s_cpu_mode && alu_scalar(instr, result, s1, s2, &dst, &v);
