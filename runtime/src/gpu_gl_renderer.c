@@ -2419,11 +2419,24 @@ static void depth_apply_ex(int mode, int tex) {
 }
 /* After the colour pass of mode 1: the depth-only pass (n vertices of the
  * bound buffer), then back to the default state. */
-static void depth_restore_ex(int mode, int tex, int n) {
+static int depth_state_fast(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_STATE_QUERY_FAST");
+        enabled = !(e && e[0] == '0');
+    }
+    return enabled;
+}
+static void depth_restore_ex(int mode, int tex, int n, int semi, int mask, int check) {
     if (mode == 0) return;
     if (mode == 1) {
         p_glUniform1f(tex ? s_tex_uZbias : s_geo_uZbias, 0.0f);
-        GLboolean st = glIsEnabled(GL_STENCIL_TEST), bl = glIsEnabled(GL_BLEND);
+        /* The preceding colour pass establishes these states. Avoid two
+         * synchronous queries to the threaded driver for every depth batch. */
+        GLboolean st = !(tex && semi == 4 && !mask && !check), bl = semi >= 0;
+        if (!depth_state_fast()) {
+            st = glIsEnabled(GL_STENCIL_TEST); bl = glIsEnabled(GL_BLEND);
+        }
         glDisable(GL_STENCIL_TEST); glDisable(GL_BLEND);
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         glDepthMask(GL_TRUE);
@@ -3999,7 +4012,7 @@ static void hiw_replay_wide(void) {
                            s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
             depth_apply_ex(c->depth, 1);
             tex_draw_passes_ex(c->vcount, c->semi, c->mask, c->check, 0, -1);
-            depth_restore_ex(c->depth, 1, c->vcount);
+            depth_restore_ex(c->depth, 1, c->vcount, c->semi, c->mask, c->check);
         } else {
             if (cur != HQ_GEO) {
                 p_glUseProgram(s_geo_prog);
@@ -4016,7 +4029,7 @@ static void hiw_replay_wide(void) {
                            s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
             depth_apply_ex(c->depth, 0);
             BCLS_DRAW(c->semi, c->depth, c->mask, c->check, -1, glDrawArrays(GL_TRIANGLES, 0, c->vcount));
-            depth_restore_ex(c->depth, 0, c->vcount);
+            depth_restore_ex(c->depth, 0, c->vcount, c->semi, c->mask, c->check);
         }
     }
     if (!any) return;
@@ -4083,7 +4096,7 @@ static void hiw_flush_queue(void) {
                                s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
                 depth_apply_ex(c->depth, 1);
                 tex_draw_passes_ex(c->vcount, c->semi, c->mask, c->check, 0, -1);
-                depth_restore_ex(c->depth, 1, c->vcount);
+                depth_restore_ex(c->depth, 1, c->vcount, c->semi, c->mask, c->check);
             } else {
                 if (cur != HQ_GEO) {
                     p_glUseProgram(s_geo_prog);
@@ -4097,7 +4110,7 @@ static void hiw_flush_queue(void) {
                                s_hq_v + c->vfirst, PSXGL_STREAM_DRAW);
                 depth_apply_ex(c->depth, 0);
                 BCLS_DRAW(c->semi, c->depth, c->mask, c->check, -1, glDrawArrays(GL_TRIANGLES, 0, c->vcount));
-                depth_restore_ex(c->depth, 0, c->vcount);
+                depth_restore_ex(c->depth, 0, c->vcount, c->semi, c->mask, c->check);
             }
         }
     }
@@ -4144,7 +4157,7 @@ static void flush_tex_batch_impl(void) {
 
     depth_apply_ex(dmode, 1);
     tex_batch_draw_passes(nverts, semi);
-    depth_restore_ex(dmode, 1, nverts);
+    depth_restore_ex(dmode, 1, nverts, semi, s_tb_mask, s_mask_check);
 
     /* Native-wide mirror — skipped for a batch fully inside the 4:3 frame (its
      * centre content comes from the present-time canonical blit; nothing to add
@@ -4173,7 +4186,7 @@ static void flush_tex_batch_impl(void) {
         wide_set_bd_scale(s_tex_uXscale, s_tex_uXcenter);
         depth_apply_ex(dmode, 1);
         if (s_ws_ablate != 2) tex_batch_draw_passes(nverts, semi);
-        depth_restore_ex(dmode, 1, nverts);
+        depth_restore_ex(dmode, 1, nverts, semi, s_tb_mask, s_mask_check);
         wide_clear_bd_scale(s_tex_uXscale, s_tex_uXcenter);
         wide_target_end(s_tex_uXoff, s_tex_uXhalf);
         gl_perf_mirror_end();
@@ -4285,7 +4298,7 @@ static void flush_flat_batch_impl(void) {
     depth_apply_ex(dmode, 0);
     BCLS_DRAW(semi, dmode, mask, s_mask_check, b3d, if (nl) flat_batch_draw_hr_lines(nverts, nl);
                        else glDrawArrays(fmode, 0, nverts));
-    depth_restore_ex(dmode, 0, nverts);
+    depth_restore_ex(dmode, 0, nverts, semi, mask, s_mask_check);
     int mirror = g_wide_cur && !s_wide_suppress && s_ws_ablate != 1 &&
                  !(!g_ws_bd_stretch_on && mirror_flat_batch_center_only(nverts));
     if (mirror) {
@@ -4306,7 +4319,7 @@ static void flush_flat_batch_impl(void) {
         wide_set_bd_scale(s_geo_uXscale, s_geo_uXcenter);
         depth_apply_ex(dmode, 0);
         if (s_ws_ablate != 2) BCLS_DRAW(semi, dmode, mask, s_mask_check, b3d, glDrawArrays(fmode, 0, nverts));
-        depth_restore_ex(dmode, 0, nverts);
+        depth_restore_ex(dmode, 0, nverts, semi, mask, s_mask_check);
         wide_clear_bd_scale(s_geo_uXscale, s_geo_uXcenter);
         wide_target_end(s_geo_uXoff, s_geo_uXhalf);
         gl_perf_mirror_end();

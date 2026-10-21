@@ -85,6 +85,11 @@ void host_osd_present_done(void){}
 int psx_rewind_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
 float psx_rewind_slide(void){return 0.0f;}
 int psx_savestate_menu_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
+/* No frontend menu or telemetry consumer in this renderer-only fixture. */
+int psx_host_menu_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
+void psx_video_telemetry_compose(int r,int s,int w,int h,int dw,int dh,int vw,int vh){
+    (void)r;(void)s;(void)w;(void)h;(void)dw;(void)dh;(void)vw;(void)vh;}
+void psx_video_telemetry_present(int result){(void)result;}
 int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
 void present_shot_done(int ok){(void)ok;}
 void psx_host_sleep_ms(uint32_t ms){(void)ms;}
@@ -272,6 +277,29 @@ int main(int argc, char **argv) {
     gl_renderer_set_swap_interval(0);
     if (!gl_renderer_init_context(win)) { fprintf(stderr, "FAIL context\n"); return 2; }
     check(gr_backend() == GR_BACKEND_OPENGL, "OpenGL backend");
+    /* Compare restoration with real GL state after every colour-pass branch,
+     * including mask-check, dual-source blending and bloom marking. */
+    for (int bloom = 0; bloom <= 1; ++bloom)
+    for (int tex = 0; tex <= 1; ++tex)
+    for (int semi = -1; semi <= (tex ? 4 : 3); ++semi)
+    for (int mask = 0; mask <= 1; ++mask)
+    for (int check_mask = 0; check_mask <= 1; ++check_mask) {
+        s_bcls_on = bloom;
+        p_glUseProgram(tex ? s_tex_prog : s_geo_prog);
+        p_glBindVertexArray(tex ? s_tex_vao : s_geo_vao);
+        depth_apply_ex(1, tex);
+        if (tex) tex_draw_passes_ex(0, semi, mask, check_mask, 0, -1);
+        else {
+            if (semi >= 0) apply_psx_blend(semi); else glDisable(GL_BLEND);
+            mask_stencil_ex(mask, check_mask);
+            BCLS_DRAW(semi, 1, mask, check_mask, -1, glDrawArrays(GL_TRIANGLES, 0, 0));
+        }
+        GLboolean stencil = glIsEnabled(GL_STENCIL_TEST), blend = glIsEnabled(GL_BLEND);
+        depth_restore_ex(1, tex, 0, semi, mask, check_mask);
+        check(glIsEnabled(GL_STENCIL_TEST) == stencil, "depth pass restores stencil");
+        check(glIsEnabled(GL_BLEND) == blend, "depth pass restores blend");
+    }
+    s_bcls_on = 0;
     textures();
     gr_wide_configure(426, 53);
     if (threaded) {
