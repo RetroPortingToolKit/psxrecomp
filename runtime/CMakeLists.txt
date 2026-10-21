@@ -1461,6 +1461,10 @@ if(BUILD_TESTING)
         include
         ../recompiler/lib/toml11)
     add_test(NAME text_xlate_fix_only_test COMMAND text_xlate_fix_only_test)
+    add_executable(native_text_test tests/test_native_text.cpp
+        src/native_text.cpp third_party/json11/json11.cpp)
+    target_include_directories(native_text_test PRIVATE include)
+    add_test(NAME native_text_test COMMAND native_text_test)
 
     add_executable(netplay_peer_frontier_test tests/test_netplay_peer_frontier.c)
     target_include_directories(netplay_peer_frontier_test PRIVATE include)

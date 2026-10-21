@@ -89,6 +89,25 @@ int main(int argc, char** argv) {
         write(root / "disc.bin", raw);
         check(load_mod_media(root / "disc.bin", "psx-disc", iso.size(), iso_hash, bytes, &error) && *bytes == iso,
               "Mode 1/2 raw BIN canonical identity");
+        std::vector<uint8_t> mode2;
+        for (unsigned i = 0; i < 24; ++i)
+            mode2.insert(mode2.end(), raw.begin()+i*2352+16, raw.begin()+(i+1)*2352);
+        check(load_mod_media(root / "disc.bin", "psx-mode2", mode2.size(), hash(mode2), bytes, &error) == (mode == 2),
+              "raw XA resource accepts Mode 2 and refuses Mode 1");
+        if (mode == 2) {
+            // Same ISO user data, different XA channel: these are different media.
+            raw[16] = raw[20] = 9;
+            write(root / "disc.bin", raw);
+            check(!load_mod_media(root / "disc.bin", "psx-mode2", mode2.size(), hash(mode2), bytes, &error),
+                  "XA subheader participates in identity");
+            raw[16] = raw[20] = 0;
+            raw[20] = 1;
+            write(root / "disc.bin", raw);
+            check(!load_mod_media(root / "disc.bin", "psx-mode2", mode2.size(), hash(mode2), bytes, &error),
+                  "duplicated XA subheader validated");
+            raw[20] = 0;
+            write(root / "disc.bin", raw);
+        }
         write(root / "audio.bin", std::vector<uint8_t>(2352, 0x5a));
         const auto cue = root / "disc.cue";
         {
