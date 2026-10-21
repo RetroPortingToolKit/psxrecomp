@@ -21,31 +21,49 @@
 #endif
 
 static LARGE_INTEGER s_qpc_freq;
-static int s_qpc_freq_init;
-static HANDLE s_sleep_timer;
-static int s_sleep_timer_init;
+static INIT_ONCE s_time_once = INIT_ONCE_STATIC_INIT;
+static DWORD s_sleep_timer_slot = FLS_OUT_OF_INDEXES;
 
-static void sleep_timer_ensure(void)
+static void CALLBACK sleep_timer_close(void *timer)
 {
-    if (s_sleep_timer_init)
-        return;
-    s_sleep_timer_init = 1;
-    s_sleep_timer =
+    if (timer) CloseHandle((HANDLE)timer);
+}
+
+static BOOL CALLBACK time_initialize(PINIT_ONCE once, PVOID parameter, PVOID *context)
+{
+    (void)once; (void)parameter; (void)context;
+    if (!QueryPerformanceFrequency(&s_qpc_freq)) s_qpc_freq.QuadPart = 0;
+    /* An auto-reset timer has one pending deadline and wakes one waiter.
+     * Sharing it lets a render/present worker cancel the guest pacer's wait.
+     * FLS also releases the handle when its thread/guest fiber is destroyed. */
+    s_sleep_timer_slot = FlsAlloc(sleep_timer_close);
+    return TRUE;
+}
+
+static HANDLE sleep_timer_get(void)
+{
+    HANDLE timer;
+    if (!InitOnceExecuteOnce(&s_time_once, time_initialize, NULL, NULL) ||
+        s_sleep_timer_slot == FLS_OUT_OF_INDEXES)
+        return NULL;
+    timer = (HANDLE)FlsGetValue(s_sleep_timer_slot);
+    if (timer) return timer;
+    timer =
         CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                TIMER_ALL_ACCESS);
-    if (!s_sleep_timer)
-        s_sleep_timer = CreateWaitableTimerW(NULL, FALSE, NULL);
+    if (!timer) timer = CreateWaitableTimerW(NULL, FALSE, NULL);
+    if (timer && !FlsSetValue(s_sleep_timer_slot, timer)) {
+        CloseHandle(timer);
+        return NULL;
+    }
+    return timer;
 }
 
 uint64_t psx_host_mono_ms(void)
 {
     LARGE_INTEGER counter;
 
-    if (!s_qpc_freq_init) {
-        if (!QueryPerformanceFrequency(&s_qpc_freq))
-            s_qpc_freq.QuadPart = 0;
-        s_qpc_freq_init = 1;
-    }
+    InitOnceExecuteOnce(&s_time_once, time_initialize, NULL, NULL);
     if (s_qpc_freq.QuadPart == 0)
         return (uint64_t)GetTickCount64();
     if (!QueryPerformanceCounter(&counter))
@@ -57,18 +75,19 @@ void psx_host_sleep_micros(unsigned usec)
 {
     LARGE_INTEGER due;
     LONGLONG hundred_ns;
+    HANDLE timer;
 
     if (usec == 0u)
         return;
 
-    sleep_timer_ensure();
-    if (s_sleep_timer) {
+    timer = sleep_timer_get();
+    if (timer) {
         hundred_ns = -((LONGLONG)usec * 10LL);
         if (hundred_ns >= 0)
             hundred_ns = -1LL;
         due.QuadPart = hundred_ns;
-        if (SetWaitableTimer(s_sleep_timer, &due, 0, NULL, NULL, FALSE)) {
-            (void)WaitForSingleObject(s_sleep_timer, INFINITE);
+        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE) &&
+            WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0) {
             return;
         }
     }
