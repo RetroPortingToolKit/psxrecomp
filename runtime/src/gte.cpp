@@ -1368,6 +1368,7 @@ extern "C" int32_t gte_nclip_exact_sign(int32_t native_mac0, uint32_t pc) {
     const bool usable = s_nclip_exact_enabled && s_nclip_last_precise_valid &&
                         native_mac0 == s_nclip_last_native;
     const int32_t sign = usable ? s_nclip_last_precise_sign : native;
+#ifndef PSX_NO_DEBUG_TOOLS
     if (!s_gte_replay_sandbox && s_speculative_depth == 0) {
         if (GteNclipSiteStat *e = nclip_find(s_nclip_site, pc,
                                              &GteNclipSiteStat::pc,
@@ -1378,6 +1379,9 @@ extern "C" int32_t gte_nclip_exact_sign(int32_t native_mac0, uint32_t pc) {
             e->last_frame = (uint32_t)s_frame_count;
         }
     }
+#else
+    (void)pc;
+#endif
     return sign;
 }
 extern "C" int gte_nclip_native_wide_sign(int32_t native_mac0, int* sign) {
@@ -1487,6 +1491,7 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
         const bool disagree = (cross > 0 && out <= 0) || (cross < 0 && out >= 0);
         if (disagree)
             s_nclip_disagreements++;
+#ifndef PSX_NO_DEBUG_TOOLS
         /* Last guest store before this NCLIP: codegen stamps it on every
          * store, so it lands inside the emitter that issued the NCLIP (the
          * function stamp is not maintained for static code). */
@@ -1502,6 +1507,7 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
                 e->saturated++;
             e->last_frame = (uint32_t)s_frame_count;
         }
+#endif
     } else if (gpu_ws_precise_nclip_enabled() &&
                !s_gte_replay_sandbox && s_speculative_depth == 0) {
         s_nclip_fallbacks++;
