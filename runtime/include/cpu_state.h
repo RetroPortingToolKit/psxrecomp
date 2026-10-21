@@ -290,16 +290,30 @@ extern int32_t  gte_nclip_exact_sign(int32_t native_mac0, uint32_t pc);
  * PSX_OVERLAY_DLL_BUILD branch; see overlay_api.h / compile_overlays.py).
  * ========================================================================== */
 #ifdef PSX_OVERLAY_DLL_BUILD
-extern int      *g_psx_call_bail_p;
-extern uint64_t *g_psx_bail_first_p;
-extern uint64_t *g_psx_bail_resolved_p;
+/* Each executing host thread binds its own overlay callback table. A shard
+ * can be entered concurrently by live execution and a private replay. */
+#if defined(_MSC_VER)
+#define PSX_OVERLAY_THREAD_LOCAL __declspec(thread)
+#else
+#define PSX_OVERLAY_THREAD_LOCAL __thread
+#endif
+extern PSX_OVERLAY_THREAD_LOCAL int      *g_psx_call_bail_p;
+extern PSX_OVERLAY_THREAD_LOCAL uint64_t *g_psx_bail_first_p;
+extern PSX_OVERLAY_THREAD_LOCAL uint64_t *g_psx_bail_resolved_p;
 #define g_psx_call_bail     (*g_psx_call_bail_p)
 #define g_psx_bail_first    (*g_psx_bail_first_p)
 #define g_psx_bail_resolved (*g_psx_bail_resolved_p)
 /* The store-PC breadcrumb the emitter writes before every guest store is the
  * runtime's, not the DLL's (ABI v24, overlay_api.h last_store_pc). */
-extern uint32_t *g_psx_last_store_pc_p;
-#define g_debug_last_store_pc (*g_psx_last_store_pc_p)
+extern PSX_OVERLAY_THREAD_LOCAL uint32_t *g_psx_last_store_pc_p;
+/* Generated shards also declare `extern uint32_t g_debug_last_store_pc`.
+ * Map that declaration to a pointer-returning function, rather than a second
+ * pointer declaration that would lose its thread-local storage qualifier.
+ * The inline accessor leaves the store path as a direct TLS pointer load. */
+static inline uint32_t *psx_overlay_last_store_pc(void) {
+    return g_psx_last_store_pc_p;
+}
+#define g_debug_last_store_pc (*psx_overlay_last_store_pc())
 #else
 extern int      g_psx_call_bail;
 extern uint64_t g_psx_bail_first;      /* contract violations detected      */

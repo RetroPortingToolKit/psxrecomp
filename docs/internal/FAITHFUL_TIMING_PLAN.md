@@ -213,6 +213,12 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-5 prerequisite: compiled-overlay callback tables, pending
+  cycle charges and host dispatch pointers now bind per executing thread.
+  The production-shim two-thread test and existing store-PC/shim compilation
+  checks pass on Windows and macOS. This does not isolate the runtime or move
+  replay to a worker; Stage 3 acceptance gates have not been run.
+
 - 2026-10-21 BRIEF-4 Stage 3 continuation: temporal GPU transactions now stay
   on the render context owner. Recorded redraws carry exact PGXP model-word
   provenance and homogeneous geometry, avoiding a second guest draw and the

@@ -2,8 +2,8 @@
 #include "ws_cull_edge.h"   /* psx_ws_cull_bgez / psx_ws_clip_edge_x math */
 
 /* ---- Overlay dispatch shim (inserted by compile_overlays.py) ----------- */
-static OverlayCallbacks g_cbs;
-static uint32_t s_pending_cycles;
+static PSX_OVERLAY_THREAD_LOCAL OverlayCallbacks g_cbs;
+static PSX_OVERLAY_THREAD_LOCAL uint32_t s_pending_cycles;
 
 PSX_OVERLAY_EXPORT void overlay_flush_cycles(void) {
     uint32_t cycles = s_pending_cycles;
@@ -16,27 +16,34 @@ PSX_OVERLAY_EXPORT void overlay_flush_cycles(void) {
  * branch).  They start at local dummies so a pre-init call can't fault. */
 static int      s_bail_dummy;
 static uint64_t s_ctr_dummy0, s_ctr_dummy1;
-int      *g_psx_call_bail_p    = &s_bail_dummy;
-uint64_t *g_psx_bail_first_p   = &s_ctr_dummy0;
-uint64_t *g_psx_bail_resolved_p = &s_ctr_dummy1;
+static PSX_OVERLAY_THREAD_LOCAL int s_bound_bail_dummy;
+static PSX_OVERLAY_THREAD_LOCAL uint64_t s_bound_ctr_dummy0, s_bound_ctr_dummy1;
+PSX_OVERLAY_THREAD_LOCAL int      *g_psx_call_bail_p    = &s_bail_dummy;
+PSX_OVERLAY_THREAD_LOCAL uint64_t *g_psx_bail_first_p   = &s_ctr_dummy0;
+PSX_OVERLAY_THREAD_LOCAL uint64_t *g_psx_bail_resolved_p = &s_ctr_dummy1;
 /* g_debug_last_store_pc (ABI v24): cpu_state.h maps the emitter's writes to
  * *g_psx_last_store_pc_p. The runtime reads the value in every build (memory.c
  * store filters, write attribution), so overlay_init points this at the host's
  * copy; the local one only catches a store made before init or on a NULL host. */
 static uint32_t s_last_store_pc_local;
-uint32_t *g_psx_last_store_pc_p = &s_last_store_pc_local;
+static PSX_OVERLAY_THREAD_LOCAL uint32_t s_bound_last_store_pc;
+PSX_OVERLAY_THREAD_LOCAL uint32_t *g_psx_last_store_pc_p = &s_last_store_pc_local;
 
 PSX_OVERLAY_EXPORT int overlay_abi(void) {
     return PSX_OVERLAY_ABI_VERSION | (PSX_OVERLAY_FLAVOR << 16);
 }
 
 PSX_OVERLAY_EXPORT void overlay_init(const OverlayCallbacks *cbs) {
+    /* Binding is done on the thread that will execute the shard, before any
+     * guest call. Never carry a previous context's unpublished cycles into a
+     * new binding. The host must flush before rebinding a running context. */
+    s_pending_cycles = 0;
     g_cbs = *cbs;
-    if (g_cbs.call_bail_flag) g_psx_call_bail_p    = g_cbs.call_bail_flag;
-    if (g_cbs.bail_first)     g_psx_bail_first_p   = g_cbs.bail_first;
-    if (g_cbs.bail_resolved)  g_psx_bail_resolved_p = g_cbs.bail_resolved;
+    g_psx_call_bail_p = g_cbs.call_bail_flag ? g_cbs.call_bail_flag : &s_bound_bail_dummy;
+    g_psx_bail_first_p = g_cbs.bail_first ? g_cbs.bail_first : &s_bound_ctr_dummy0;
+    g_psx_bail_resolved_p = g_cbs.bail_resolved ? g_cbs.bail_resolved : &s_bound_ctr_dummy1;
     g_psx_last_store_pc_p = g_cbs.last_store_pc ? g_cbs.last_store_pc
-                                                : &s_last_store_pc_local;
+                                                : &s_bound_last_store_pc;
 }
 
 void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t ra) {

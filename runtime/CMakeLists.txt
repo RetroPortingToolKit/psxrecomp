@@ -1979,6 +1979,15 @@ if(BUILD_TESTING)
     add_test(NAME overlay_store_pc_forwarding_test
              COMMAND overlay_store_pc_forwarding_test)
 
+    find_package(Threads REQUIRED)
+    add_executable(overlay_thread_binding_test tests/test_overlay_thread_binding.c)
+    target_include_directories(overlay_thread_binding_test PRIVATE include)
+    target_compile_definitions(overlay_thread_binding_test PRIVATE
+        PSX_OVERLAY_DLL_BUILD PSX_NO_DEBUG_TOOLS PSX_ENABLE_BLOCK_CYCLES=1)
+    target_link_libraries(overlay_thread_binding_test PRIVATE Threads::Threads)
+    add_test(NAME overlay_thread_binding_test COMMAND overlay_thread_binding_test)
+    set_tests_properties(overlay_thread_binding_test PROPERTIES TIMEOUT 20)
+
     # frame_fingerprint judge columns are blind to device-write service order.
     add_executable(frame_fingerprint_test tests/test_frame_fingerprint.c)
     target_include_directories(frame_fingerprint_test PRIVATE include)
