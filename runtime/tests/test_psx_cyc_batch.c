@@ -25,9 +25,18 @@ PSX_THREAD_LOCAL uint32_t g_psx_gcs_frac = 0u;
 PSX_THREAD_LOCAL int g_psx_gcs_batch = 0;
 
 static int service_count;
+static CPUState *service_cpu;
 
 void psx_devices_service_to_now(void) {
     service_count++;
+    /* Event/IRQ callbacks can change the pipeline before this instruction's
+     * dependency/LDS phase. Check that inlining preserves that ordering. */
+    if (service_cpu) {
+        service_cpu->read_absorb[service_cpu->read_absorb_which] = 17;
+        service_cpu->ld_which_t = 4;
+        service_cpu->ld_absorb = 7;
+        service_cpu->gpr[3] ^= 0x19u;
+    }
     psx_next_service_cycle = psx_cycle_count + 1000u;
 }
 
@@ -82,6 +91,7 @@ static void test_one_cycle_specialization(void) {
             CPUState reference = cpu;
             uint64_t before[7], expected[7], actual[7];
             clock_receipt(before, local);
+            service_cpu = instruction % 3u ? NULL : &reference;
             /* Keep the reference independent of the optimized base helper. */
             if (reference.read_absorb[reference.read_absorb_which])
                 --reference.read_absorb[reference.read_absorb_which];
@@ -89,7 +99,9 @@ static void test_one_cycle_specialization(void) {
             psx_cyc_deps(&reference, mask); psx_cyc_lds(&reference);
             clock_receipt(expected, local);
             restore_receipt(before, &local);
+            service_cpu = instruction % 3u ? NULL : &cpu;
             psx_cyc_step(&cpu, mask);
+            service_cpu = NULL;
             clock_receipt(actual, local);
             assert(!memcmp(expected, actual, sizeof expected));
             assert(!memcmp(&reference, &cpu, sizeof cpu));

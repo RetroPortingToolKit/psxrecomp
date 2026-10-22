@@ -216,37 +216,27 @@ static inline void psx_cyc_charge(uint32_t cycles) {
  * A successful fast charge performs exactly the original charge's stores;
  * refusal changes nothing, so the complete helper remains authoritative. */
 PSX_CYC_COLD_CALL void psx_cyc_charge_one_slow(void) { psx_cyc_charge(1u); }
-PSX_CYC_HOT_INLINE int psx_cyc_try_charge_one(void) {
-    if (g_ls_replay_active || g_event_step_conservative || psx_in_device_service) return 0;
-    if (PSX_GCS_ACTIVE()) {
-        if (!g_psx_gcs_batch) return 0;
+/* The scaled path returns before device-service checks when this instruction
+ * contributes no whole guest cycle, exactly like psx_cyc_charge. Keep only this
+ * compact common path inline; all other modes use the complete charge helper. */
+PSX_CYC_HOT_INLINE void psx_cyc_charge_one(void) {
+    if (PSX_GCS_ACTIVE() && g_psx_gcs_batch) {
         const uint64_t fraction = (uint64_t)g_psx_gcs_recip_q16 + g_psx_gcs_frac;
         const uint32_t scaled = (uint32_t)(fraction >> 16);
-        const uint32_t prior = g_psx_cyc_batch, sum = prior + scaled;
-        if (!scaled || (prior && sum >= prior && sum < g_psx_cyc_batch_limit)) {
+        if (!scaled) {
             g_psx_gcs_frac = (uint32_t)(fraction & 0xFFFFu);
-            if (scaled) g_psx_cyc_batch = sum;
-            return 1;
+            return;
         }
-        return 0;
+        if (!g_ls_replay_active && !g_event_step_conservative && !psx_in_device_service) {
+            const uint32_t prior = g_psx_cyc_batch, sum = prior + scaled;
+            if (prior && sum >= prior && sum < g_psx_cyc_batch_limit) {
+                g_psx_gcs_frac = (uint32_t)(fraction & 0xFFFFu);
+                g_psx_cyc_batch = sum;
+                return;
+            }
+        }
     }
-    if (g_psx_cyc_local_acc) {
-        const uint32_t prior = *g_psx_cyc_local_acc;
-        if (prior >= (1u << 28) - 1u) return 0;
-        *g_psx_cyc_local_acc = prior + 1u;
-        return 1;
-    }
-    const uint32_t prior = g_psx_cyc_batch, sum = prior + 1u;
-    if (sum && (g_psx_cyc_bb_defer > 0 || (prior && sum < g_psx_cyc_batch_limit))) {
-        g_psx_cyc_batch = sum;
-        return 1;
-    }
-    return 0;
-}
-/* Share the clock body across generated instructions. Keep dependency masks
- * in the caller, but do not duplicate the TLS/deadline branches at every PC. */
-PSX_CYC_COLD_CALL void psx_cyc_charge_one(void) {
-    if (!psx_cyc_try_charge_one()) psx_cyc_charge_one_slow();
+    psx_cyc_charge_one_slow();
 }
 #else
 #define PSX_CYC_HOT_INLINE static inline

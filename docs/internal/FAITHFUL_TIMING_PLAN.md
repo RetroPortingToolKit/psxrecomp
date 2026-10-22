@@ -2175,3 +2175,11 @@ constant register-dependency folding while sharing the repeated one-cycle
 clock body out of line. Independent charge/interlock, scale/gate and event
 boundary checks pass. SPU idle-boundary theory is ruled out by the state
 (I_MASK 0x10d masks IRQ9). Production refresh/qualification continues on PC.
+
+2026-10-21 BRIEF-5 shared-clock candidate: same-build 4,511-row identity
+passes; quiet 60.002 Hz / zero >25 ms gaps / p99 100% still fails. Compact
+inline scaled charges now return on zero whole-cycle contribution before
+checking service modes (the full helper ordering), with other cases delegated.
+Cycle/scale/gate/event checks pass; the equivalence matrix also mutates CPU
+pipeline state from service callbacks to cover ordering across the charge.
+Production refresh continues, no acceptance/push.
