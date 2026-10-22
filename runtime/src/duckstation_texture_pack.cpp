@@ -828,11 +828,21 @@ void duck_texture_pack_invalidate(DuckTexturePack* p, uint16_t x, uint16_t y, ui
     const std::array<Rect, 4> regions{{{px,py,w0,h0},{0,py,unsigned(w)-w0,h0},
                                     {px,0,w0,unsigned(h)-h0},{0,0,unsigned(w)-w0,unsigned(h)-h0}}};
     ++p->revision;
+    bool released = false;   /* a residency record dropped or split */
     for (const auto& r : regions) if (r.w && r.h) {
+        /* Most writes (render targets, CLUT animation) touch no tracked
+         * upload: skip rebuilding the list then. */
+        const bool upload_hit = std::any_of(p->uploads.begin(), p->uploads.end(),
+            [&](const Upload& u) { const Rect c = intersection(u.active, r); return c.w && c.h; });
+        if (upload_hit) {
         std::vector<Upload> survivors; survivors.reserve(p->uploads.size());
         for (const auto& upload : p->uploads) {
             const Rect cut = intersection(upload.active,r);
-            if (!cut.w || !cut.h) { if (survivors.size() < kMaxUploads) survivors.push_back(upload); continue; }
+            if (!cut.w || !cut.h) {
+                if (survivors.size() < kMaxUploads) survivors.push_back(upload); else released = true;
+                continue;
+            }
+            released = true;
             if (upload.splits >= p->config.max_vram_write_splits || contains(r,upload.active)) continue;
             const Rect a = upload.active;
             const Rect fragments[] = {
@@ -844,12 +854,15 @@ void duck_texture_pack_invalidate(DuckTexturePack* p, uint16_t x, uint16_t y, ui
                 survivors.push_back({upload.source,fragment,upload.splits+1});
         }
         p->uploads.swap(survivors);
+        }
+        const size_t pages_before = p->pages.size();
         p->pages.erase(std::remove_if(p->pages.begin(),p->pages.end(),[&](const PageSource& page) {
             if (intersects(page.source->rect,r)) return true;
             for (const auto& record : page.source->records)
                 if (record.depth < 2 && intersects({record.clut_x,record.clut_y,record.palette_size,1},r)) return true;
             return false;
         }),p->pages.end());
+        released = released || p->pages.size() != pages_before;
         p->rect_cache.erase(std::remove_if(p->rect_cache.begin(), p->rect_cache.end(), [&](const RectHash& v){ return intersects(v.rect,r); }), p->rect_cache.end());
         p->match_cache.erase(std::remove_if(p->match_cache.begin(), p->match_cache.end(), [&](const MatchCache& c) {
             const auto& q = c.query;
@@ -858,7 +871,8 @@ void duck_texture_pack_invalidate(DuckTexturePack* p, uint16_t x, uint16_t y, ui
             return intersects(page,r) || (q.depth < 2 && intersects(clut,r));
         }), p->match_cache.end());
     }
-    retire_unused(*p);
+    /* Only a dropped record can leave a source unreferenced. */
+    if (released) retire_unused(*p);
     } catch (...) {
         /* Allocation/finalization failure must never preserve stale residency
          * after a native write. Pending immutable observations remain owned. */
