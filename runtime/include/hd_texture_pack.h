@@ -180,9 +180,24 @@ typedef struct HdTexturePixels {
 
 void hd_texture_pack_set_decode_budget(HdTexturePack* pack,
                                        size_t budget_bytes);
-/* Decode every unambiguous replacement now (all cores) and pin it in RAM.
- * Returns the count loaded, -1 on error; bytes_out gets the RGBA total. */
-int hd_texture_pack_preload(HdTexturePack* pack, size_t* bytes_out);
+/* Elective full preload: decode unambiguous replacements up front and pin
+ * them, bounded by max_bytes of decoded RGBA in aggregate and by max_threads
+ * concurrent decodes (the caller's thread included). Pinned images are kept
+ * outside the on-demand decode budget, which stays as configured. Images not
+ * preloaded (over the cap, unreadable, malformed, a worker failure) are left
+ * to the normal asynchronous, budgeted decode path; nothing is marked failed
+ * by the preload. Returns 1 when every image was preloaded, 0 for a partial
+ * preload (see out), -1 on error. */
+typedef struct HdTexturePreloadResult {
+    int requested;      /* unambiguous replacements considered */
+    int loaded;         /* decoded and pinned */
+    int over_budget;    /* skipped: the aggregate max_bytes was reached */
+    int failed;         /* unreadable, malformed, too large, or worker error */
+    int worker_errors;  /* of failed: a decode that threw (caught) */
+    size_t bytes;       /* decoded RGBA pinned */
+} HdTexturePreloadResult;
+int hd_texture_pack_preload(HdTexturePack* pack, size_t max_bytes,
+                            unsigned max_threads, HdTexturePreloadResult* out);
 int hd_texture_pack_request_decode(HdTexturePack* pack,
                                    uint32_t texture_hash,
                                    uint32_t palette_hash);

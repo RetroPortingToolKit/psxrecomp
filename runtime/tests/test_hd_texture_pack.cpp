@@ -1,6 +1,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "../third_party/stb_image.h"
 #include "hd_texture_pack.h"
+#include "texture_pack_preload.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -512,6 +513,54 @@ void test_bounded_async_decode(Fixture& fixture) {
     hd_texture_pixels_release(&pixels);
 }
 
+void test_bounded_preload(Fixture& fixture) {
+    namespace tp = psx_texpreload;
+    {
+        HdTexturePack* pack = open_pack(fixture.root);
+        if (!pack) return;
+        HdTexturePreloadResult r{};
+        /* One valid 64x8 PNG; the other keys are empty (malformed) files. */
+        const int status = hd_texture_pack_preload(pack, size_t{64} << 20, 4, &r);
+        check(status >= 0 && r.loaded == 1 && r.bytes == 64u * 8u * 4u,
+              "preload pins the valid replacement");
+        check(r.requested == r.loaded + r.failed + r.over_budget &&
+                  (r.requested == 1 ? status == 1 : (status == 0 && r.failed >= 1)),
+              "malformed replacements are reported, not counted as preloaded");
+        hd_texture_pack_set_decode_budget(pack, 1);
+        check(hd_texture_pack_track_upload(pack, 10, 20, 8, 4,
+                                           fixture.upload_words.data(),
+                                           fixture.upload_words.size(), nullptr) == 1,
+              "preload fixture upload tracks");
+        HdTexturePixels pixels{};
+        check(hd_texture_pack_acquire_decoded(pack, fixture.upload_hash, fixture.palette4_hash,
+                                              &pixels) == HD_TEXTURE_LOOKUP_FOUND &&
+                  pixels.width == 64,
+              "a preloaded image is resident and survives budget eviction");
+        hd_texture_pixels_release(&pixels);
+        hd_texture_pack_destroy(pack);
+    }
+    {
+        HdTexturePack* pack = open_pack(fixture.root);
+        if (!pack) return;
+        HdTexturePreloadResult r{};
+        check(hd_texture_pack_preload(pack, 64, 4, &r) == 0 && r.loaded == 0 &&
+                  r.over_budget == 1 && r.bytes == 0,
+              "the aggregate cap skips an oversized image");
+        hd_texture_pack_destroy(pack);
+    }
+    {
+        HdTexturePack* pack = open_pack(fixture.root);
+        if (!pack) return;
+        tp::fault_mode() = 1;
+        HdTexturePreloadResult r{};
+        const int status = hd_texture_pack_preload(pack, size_t{64} << 20, 4, &r);
+        tp::fault_mode() = 0;
+        check(status == 0 && r.worker_errors == 1 && r.loaded + 1 + r.over_budget <= r.requested,
+              "an injected worker failure is caught and reported as partial");
+        hd_texture_pack_destroy(pack);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -523,6 +572,7 @@ int main() {
     test_wrapping(fixture);
     test_ambiguity_fallback();
     test_bounded_async_decode(fixture);
+    test_bounded_preload(fixture);
 
     if (failures) {
         std::fprintf(stderr, "test_hd_texture_pack: %d failure(s)\n", failures);

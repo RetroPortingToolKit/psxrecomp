@@ -1,5 +1,6 @@
 #include "duckstation_texture_pack.h"
 #include "texture_image_decode.h"
+#include "texture_pack_preload.hpp"
 #define XXH_INLINE_ALL
 #include "../third_party/xxhash.h"
 #include "png_write.h"
@@ -232,6 +233,7 @@ struct Worker {
     size_t dump_bytes = 0;
     uint64_t tick = 0;
     uint64_t decoded_images = 0, decode_evictions = 0;
+    size_t pinned_count = 0;   /* preloaded entries: outside the 512-entry cap */
     bool stop = false;
     bool dump_busy = false;
     std::string dump_error;
@@ -1119,7 +1121,7 @@ int duck_texture_pack_request_decode(DuckTexturePack* p, uint64_t id) {
         }
         if (!w.budget) return HD_TEXTURE_LOOKUP_ERROR;
         if (w.decode_queue.size() >= kMaxDecodeQueue) return HD_TEXTURE_LOOKUP_NONE;
-        if (w.decoded.size() >= 512) {
+        if (w.decoded.size() - w.pinned_count >= 512) {
             auto victim = w.decoded.end();
             for (auto item = w.decoded.begin(); item != w.decoded.end(); ++item)
                 if ((item->second.status == DecodeStatus::Ready || item->second.status == DecodeStatus::Failed) &&
@@ -1133,53 +1135,73 @@ int duck_texture_pack_request_decode(DuckTexturePack* p, uint64_t id) {
         w.wake.notify_one(); return HD_TEXTURE_LOOKUP_NONE;
     } catch (...) { return HD_TEXTURE_LOOKUP_ERROR; }
 }
-int duck_texture_pack_preload(DuckTexturePack* p, size_t* bytes_out) {
-    if (bytes_out) *bytes_out = 0;
+int duck_texture_pack_preload(DuckTexturePack* p, size_t max_bytes, unsigned max_threads,
+                              HdTexturePreloadResult* out) {
+    HdTexturePreloadResult r{};
+    if (out) *out = r;
     if (!p) return -1;
     try {
-        /* Decode every replacement before the game runs, across all cores,
-         * so no draw ever waits for (or misses) an image mid-game. */
+        namespace tp = psx_texpreload;
         std::vector<uint64_t> ids;
         for (size_t i = 0; i < p->entries.size(); ++i)
             if (!p->entries[i].ambiguous) ids.push_back(i + 1);
-        std::vector<std::shared_ptr<Image>> images(ids.size());
-        std::atomic<size_t> next{0};
-        auto work = [&] {
-            for (size_t k; (k = next++) < ids.size();) {
-                try {
-                    const std::string& path = p->entries[ids[k] - 1].path;
-                    std::ifstream input(fs::u8path(path), std::ios::binary | std::ios::ate);
-                    const auto length = input ? input.tellg() : std::streampos(-1);
-                    if (length <= 0 || static_cast<uint64_t>(length) > kMaxEncoded) continue;
-                    std::vector<uint8_t> encoded(static_cast<size_t>(length));
-                    input.seekg(0);
-                    DecodedTextureImage decoded; std::string error;
-                    if (!input.read(reinterpret_cast<char*>(encoded.data()), length) ||
-                        !texture_image_decode(encoded.data(), encoded.size(), SIZE_MAX, decoded, error)) continue;
-                    auto image = std::make_shared<Image>(); image->w = decoded.width; image->h = decoded.height;
-                    image->rgba = std::move(decoded.rgba); images[k] = std::move(image);
-                } catch (...) {}
-            }
-        };
-        unsigned threads = std::max(1u, std::min(std::thread::hardware_concurrency(), 16u));
-        std::vector<std::thread> pool;
-        for (unsigned t = 1; t < threads && t < ids.size(); ++t) pool.emplace_back(work);
-        work();
-        for (auto& t : pool) t.join();
-        Worker& w = p->worker; std::lock_guard<std::mutex> lock(w.mutex);
-        int loaded = 0; size_t bytes = 0;
-        for (size_t k = 0; k < ids.size(); ++k) {
-            Decode& d = w.decoded[ids[k]];
-            d.path = p->entries[ids[k] - 1].path;
-            if (!images[k]) { d.status = DecodeStatus::Failed; continue; }
-            if (d.image) w.used -= d.image->rgba.size();
-            bytes += images[k]->rgba.size(); w.used += images[k]->rgba.size();
-            d.image = std::move(images[k]); d.status = DecodeStatus::Ready; d.pinned = true; ++loaded;
+        size_t per_image = 0;
+        {
+            std::lock_guard<std::mutex> lock(p->worker.mutex);
+            per_image = p->worker.budget;
         }
-        if (w.budget < w.used) w.budget = w.used;
-        w.decoded_images += loaded;
-        if (bytes_out) *bytes_out = bytes;
-        return loaded;
+        std::vector<std::shared_ptr<Image>> images(ids.size());
+        std::vector<unsigned char> status(ids.size(), tp::kPending);
+        tp::Budget budget(max_bytes);
+        r.worker_errors = static_cast<int>(tp::run(ids.size(), max_threads, [&](size_t k) {
+            status[k] = tp::kFailed;
+            const std::string& path = p->entries[ids[k] - 1].path;
+            std::ifstream input(fs::u8path(path), std::ios::binary | std::ios::ate);
+            const auto length = input ? input.tellg() : std::streampos(-1);
+            if (length <= 0 || static_cast<uint64_t>(length) > kMaxEncoded) return;
+            std::vector<uint8_t> encoded(static_cast<size_t>(length));
+            input.seekg(0);
+            if (!input.read(reinterpret_cast<char*>(encoded.data()), length)) return;
+            TextureImageProbe probe; std::string error;
+            if (!texture_image_probe(encoded.data(), encoded.size(), per_image, probe, error)) return;
+            const size_t need = static_cast<size_t>(probe.width) * probe.height * 4u;
+            if (!budget.reserve(need)) { status[k] = tp::kOverBudget; return; }
+            struct Reservation {
+                tp::Budget& b; size_t n; bool keep = false;
+                ~Reservation() { if (!keep) b.release(n); }
+            } reservation{budget, need};
+            DecodedTextureImage decoded;
+            if (!texture_image_decode(encoded.data(), encoded.size(), need, decoded, error) ||
+                decoded.rgba.size() != need) return;
+            auto image = std::make_shared<Image>(); image->w = decoded.width; image->h = decoded.height;
+            image->rgba = std::move(decoded.rgba);
+            images[k] = std::move(image);
+            reservation.keep = true;
+            status[k] = tp::kLoaded;
+        }));
+        r.requested = static_cast<int>(ids.size());
+        Worker& w = p->worker; std::lock_guard<std::mutex> lock(w.mutex);
+        for (size_t k = 0; k < ids.size(); ++k) {
+            if (status[k] == tp::kOverBudget) { ++r.over_budget; continue; }
+            if (status[k] != tp::kLoaded) continue;
+            auto it = w.decoded.find(ids[k]);
+            if (it != w.decoded.end()) {
+                /* Already pinned, or an on-demand decode in flight: leave it. */
+                if (it->second.pinned || it->second.status == DecodeStatus::Queued ||
+                    it->second.status == DecodeStatus::Loading) continue;
+                if (it->second.image) w.used -= it->second.image->rgba.size();
+            }
+            Decode& entry = w.decoded[ids[k]];
+            entry.path = p->entries[ids[k] - 1].path;
+            r.bytes += images[k]->rgba.size();
+            entry.image = std::move(images[k]); entry.status = DecodeStatus::Ready;
+            entry.pinned = true; entry.use = ++w.tick;
+            ++w.pinned_count; ++r.loaded;
+        }
+        w.decoded_images += static_cast<uint64_t>(r.loaded);
+        r.failed = r.requested - r.loaded - r.over_budget;
+        if (out) *out = r;
+        return r.loaded == r.requested ? 1 : 0;
     } catch (...) { return -1; }
 }
 int duck_texture_pack_acquire_decoded(DuckTexturePack* p, uint64_t id, DuckTexturePixels* out) {
