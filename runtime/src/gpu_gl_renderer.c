@@ -105,6 +105,7 @@
 #include "present_thread.h"
 
 #include "psx_sdl.h"
+#include "gl_dxgi_present.h"
 #if defined(PSX_SDL3)
 #include <SDL3/SDL_opengl.h>
 #else
@@ -10195,6 +10196,9 @@ static int pt_cb_ctx(void *user, int current) {
         s_ptp_fbo[i] = 0;
         s_ptp_gen[i] = 0;
     }
+#ifdef _WIN32
+    dxp_shutdown();
+#endif
     glFlush();
     SDL_GL_MakeCurrent(s_win, NULL);
     return 1;
@@ -10210,6 +10214,29 @@ static void gl_window_swap(void) {
     psx_video_telemetry_present(-1); // SDL2 exposes no swap result.
 #endif
 }
+
+#ifdef _WIN32
+#include "gl_dxgi_present.h"
+#if defined(PSX_SDL3)
+static void *pt_hwnd(void) {
+    return SDL_GetPointerProperty(SDL_GetWindowProperties(s_win), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+}
+#else
+#include <SDL_syswm.h>
+static void *pt_hwnd(void) {
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    return SDL_GetWindowWMInfo(s_win, &info) ? (void *)info.info.win.window : NULL;
+}
+#endif
+/* The DXGI flip-model swapchain (gl_dxgi_present.c), set up on the present
+ * thread at its first frame: 1 when active. */
+static int pt_dxgi(int ww, int wh) {
+    static int tried;
+    if (!tried) { tried = 1; void *h = pt_hwnd(); if (h) (void)dxp_init(h, ww, wh); }
+    return dxp_active();
+}
+#endif
 
 static void *pt_cb_present(void *user, int slot, void *ready) {
     (void)user;
@@ -10263,23 +10290,36 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     const int sw = s_pts_w[slot], sh = s_pts_h[slot];
     int ww = 0, wh = 0;
     gl_drawable_size( &ww, &wh);
+    GLuint dx_fbo = 0;
+#ifdef _WIN32
+    if (pt_dxgi(ww, wh)) dx_fbo = dxp_begin(ww, wh);
+#endif
+    /* The DXGI back buffer's origin is the top: blit Y-flipped into it. */
+    const int y0 = dx_fbo ? wh : 0, y1 = dx_fbo ? 0 : wh;
     p_glBindFramebuffer_raw(PSXGL_READ_FRAMEBUFFER, s_ptp_fbo[slot]);
-    p_glBindFramebuffer_raw(PSXGL_DRAW_FRAMEBUFFER, 0);
+    p_glBindFramebuffer_raw(PSXGL_DRAW_FRAMEBUFFER, dx_fbo);
     glDisable(GL_SCISSOR_TEST);
     if (ww == sw && wh == sh) {
-        p_glBlitFramebuffer(0, 0, sw, sh, 0, 0, sw, sh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        p_glBlitFramebuffer(0, 0, sw, sh, 0, y0, sw, y1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     } else {
         /* The window changed after this frame was composed: fit it. */
         glViewport(0, 0, ww, wh);
         glClearColor(0.f, 0.f, 0.f, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
-        p_glBlitFramebuffer(0, 0, sw, sh, 0, 0, ww, wh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        p_glBlitFramebuffer(0, 0, sw, sh, 0, y0, ww, y1, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     }
 #ifdef GL_PRESENT_THREAD_TEST_HOOK
     GL_PRESENT_THREAD_TEST_HOOK(slot);
 #endif
     void *done = p_glFenceSync(PT_SYNC_GPU_COMMANDS_COMPLETE, 0);
     uint64_t swap_start=SDL_GetPerformanceCounter();
+#ifdef _WIN32
+    if (dx_fbo) {
+        p_glBindFramebuffer_raw(PSXGL_DRAW_FRAMEBUFFER, 0);
+        glFlush();
+        psx_video_telemetry_present(dxp_present());
+    } else
+#endif
     gl_window_swap();
     atomic_fetch_add(&s_pt_window_ticks,SDL_GetPerformanceCounter()-swap_start);
     if (s_recorded_passes || s_interp_enabled) present_sample(s_pts_identity[slot],s_pts_deadline[slot]);

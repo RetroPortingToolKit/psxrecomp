@@ -389,6 +389,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_gen.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
+    ${PSXRECOMP_ROOT}/runtime/src/gl_dxgi_present.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_lle.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_hle.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_select.c
@@ -2320,7 +2321,7 @@ function(psxrecomp_add_runtime_target target)
         # by opengl32; Phase 2b will load modern GL via SDL_GL_GetProcAddress.
         # iphlpapi: GetAdaptersAddresses in the launcher's netplay
         # local-address discovery (MSVC does not link it implicitly).
-        target_link_libraries(${target} PRIVATE ws2_32 iphlpapi dbghelp comdlg32 opengl32 shell32)
+        target_link_libraries(${target} PRIVATE ws2_32 iphlpapi dbghelp comdlg32 opengl32 shell32 d3d11 dxgi)
         # Newer mingw-w64 maps clock_gettime → clock_gettime64 in libwinpthread.
         # Link it even when netplay code prefers Win32 clocks, so any residual
         # POSIX time refs (third-party / debug tools) resolve under -static.
