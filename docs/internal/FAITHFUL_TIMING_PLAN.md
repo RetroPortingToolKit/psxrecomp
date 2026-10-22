@@ -2183,3 +2183,15 @@ checking service modes (the full helper ordering), with other cases delegated.
 Cycle/scale/gate/event checks pass; the equivalence matrix also mutates CPU
 pipeline state from service callbacks to cover ordering across the charge.
 Production refresh continues, no acceptance/push.
+
+2026-10-21 evening redirect: stop general hot-path work. One source-thread
+profile per setting covers the same route window (~1500..2400), with identical
+native source calls. The setting-1-only stack is async snapshot publication
+(~1.8% of samples), dominated by the 8 MiB RAM copy. Sampled mean source CPU is
+50.2% off / 44.2% on, so the profiles do not establish a 36-point added CPU
+workload (sampling is not an acceptance timing run). Remove unqualified general
+cycle/ALU experiments and retain worker-specific publication tracking. RAM
+publication now uses streaming stores on SSE2 to avoid populating source-owner
+caches with the private image; other targets retain memcpy. O0/O2 concurrent
+full-RAM/reuse checks and PC cycle/PGXP checks pass. Profile receipts are R4
+local brief5-setting-profile-diff. Ordered qualification continues; no push.

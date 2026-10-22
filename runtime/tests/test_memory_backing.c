@@ -31,6 +31,8 @@ static void replay(void) {
     CHECK(psx_read_word(0x1F801074u) == 0x17);
     i_stat = 0x62;
     CHECK(g_psx_ram != live && g_psx_ram == memory_get_ram_ptr());
+    for (size_t i = 0; i < PSX_MAIN_RAM_EXPANDED_BYTES; ++i)
+        CHECK(g_psx_ram[i] == (i == 0x700000u ? 37u : (uint8_t)(i * 13u + 7u)));
     CHECK(g_psx_ram[0x700000] == 37);
     CHECK(memory_get_scratchpad_ptr()[17] == 19);
     g_psx_ram[0x700000] = 71;
@@ -49,6 +51,8 @@ static void *entry(void *p) { (void)p; replay(); return NULL; }
 #endif
 int main(void) {
     live = memory_get_ram_ptr();
+    for (size_t i = 0; i < PSX_MAIN_RAM_EXPANDED_BYTES; ++i)
+        live[i] = (uint8_t)(i * 13u + 7u);
     live[0x700000] = 37;
     memory_get_scratchpad_ptr()[17] = 19;
     copy = memory_backing_create();
@@ -84,6 +88,11 @@ int main(void) {
     CHECK(memory_get_scratchpad_ptr()[17] == 91);
     CHECK(memory_backing_bind(NULL) == copy);
     CHECK(i_stat == 0x43 && i_mask == 0x29);
+    memory_backing_capture(copy);
+    CHECK(memory_backing_bind(copy) == NULL);
+    CHECK(g_psx_ram[0x700000] == 41);
+    CHECK(memory_get_scratchpad_ptr()[17] == 19);
+    CHECK(memory_backing_bind(NULL) == copy);
     memory_execution_destroy(metadata);
     memory_backing_destroy(copy);
     return 0;

@@ -201,57 +201,10 @@ static inline void psx_cyc_charge(uint32_t cycles) {
 }
 
 /* §1 base (Beetle cpu.cpp:795-798). */
-#if defined(PSX_ENABLE_BLOCK_CYCLES) && !defined(PSX_OVERLAY_DLL_BUILD) && !defined(PSX_COSIM)
-#if defined(_MSC_VER)
-#define PSX_CYC_HOT_INLINE static __forceinline
-#define PSX_CYC_COLD_CALL static __declspec(noinline)
-#elif defined(__GNUC__) || defined(__clang__)
-#define PSX_CYC_HOT_INLINE static inline __attribute__((always_inline))
-#define PSX_CYC_COLD_CALL static __attribute__((noinline))
-#else
-#define PSX_CYC_HOT_INLINE static inline
-#define PSX_CYC_COLD_CALL static
-#endif
-/* Keep the full publication/exception path out of each generated instruction.
- * A successful fast charge performs exactly the original charge's stores;
- * refusal changes nothing, so the complete helper remains authoritative. */
-PSX_CYC_COLD_CALL void psx_cyc_charge_one_slow(void) { psx_cyc_charge(1u); }
-/* The scaled path returns before device-service checks when this instruction
- * contributes no whole guest cycle, exactly like psx_cyc_charge. Keep only this
- * compact common path inline; all other modes use the complete charge helper. */
-PSX_CYC_HOT_INLINE void psx_cyc_charge_one(void) {
-    if (PSX_GCS_ACTIVE() && g_psx_gcs_batch) {
-        const uint64_t fraction = (uint64_t)g_psx_gcs_recip_q16 + g_psx_gcs_frac;
-        const uint32_t scaled = (uint32_t)(fraction >> 16);
-        if (!scaled) {
-            g_psx_gcs_frac = (uint32_t)(fraction & 0xFFFFu);
-            return;
-        }
-        if (!g_ls_replay_active && !g_event_step_conservative && !psx_in_device_service) {
-            const uint32_t prior = g_psx_cyc_batch, sum = prior + scaled;
-            if (prior && sum >= prior && sum < g_psx_cyc_batch_limit) {
-                g_psx_gcs_frac = (uint32_t)(fraction & 0xFFFFu);
-                g_psx_cyc_batch = sum;
-                return;
-            }
-        }
-    }
-    psx_cyc_charge_one_slow();
-}
-#else
-#define PSX_CYC_HOT_INLINE static inline
-#endif
-
-PSX_CYC_HOT_INLINE void psx_cyc_base(CPUState* cpu) {
+static inline void psx_cyc_base(CPUState* cpu) {
     uint8_t w = cpu->read_absorb_which;
     if (cpu->read_absorb[w]) cpu->read_absorb[w]--;
-    else {
-#if defined(PSX_ENABLE_BLOCK_CYCLES) && !defined(PSX_OVERLAY_DLL_BUILD) && !defined(PSX_COSIM)
-        psx_cyc_charge_one();
-#else
-        psx_cyc_charge(1u);
-#endif
-    }
+    else                     psx_cyc_charge(1u);
 }
 
 /* GPR_DEPRES (Beetle cpu.cpp:702-705): zero ReadAbsorb[n] for every source/dest
@@ -296,7 +249,7 @@ static inline void psx_cyc_lds(CPUState* cpu) {
  * branch, jump, store, COP control, LWC2/SWC2 pre-step, mult/div, mfhi/mflo, ...).
  * reg_mask from psx_cyc_dep_res_mask(). MUST be emitted BEFORE the instruction
  * body so §1 precedes any muldiv/GTE deadline stall in the body (Beetle order). */
-PSX_CYC_HOT_INLINE void psx_cyc_step(CPUState* cpu, uint32_t reg_mask) {
+static inline void psx_cyc_step(CPUState* cpu, uint32_t reg_mask) {
     psx_cyc_base(cpu);
     psx_cyc_deps(cpu, reg_mask);
     psx_cyc_lds(cpu);
@@ -405,6 +358,4 @@ extern uint32_t psx_cyc_lwc2_read(CPUState* cpu, uint32_t addr);
 }
 #endif
 
-#undef PSX_CYC_HOT_INLINE
-#undef PSX_CYC_COLD_CALL
 #endif /* PSX_CYC_H */

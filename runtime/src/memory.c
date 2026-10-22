@@ -37,6 +37,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
 
 #define RAM_SIZE        PSX_MAIN_RAM_BACKING_BYTES
 #define SCRATCHPAD_SIZE 1024
@@ -70,9 +73,43 @@ void memory_backing_destroy(PsxMemoryBacking *backing) {
     if (backing == s_backing) abort();
     free(backing);
 }
+/* The source owner publishes a large immutable RAM image, then keeps running.
+ * Do not allocate the worker's entire image in the source owner's caches.
+ * This is used only for snapshot publication, never ordinary guest accesses. */
+static void snapshot_copy_ram(uint8_t *destination, const uint8_t *source, size_t bytes) {
+#if defined(__SSE2__) || defined(_M_X64)
+    if (bytes >= 16384u) {
+        while (((uintptr_t)destination & 15u) && bytes) {
+            *destination++ = *source++; --bytes;
+        }
+        while (bytes >= 128u) {
+            const __m128i a = _mm_loadu_si128((const __m128i *)(source + 0));
+            const __m128i b = _mm_loadu_si128((const __m128i *)(source + 16));
+            const __m128i c = _mm_loadu_si128((const __m128i *)(source + 32));
+            const __m128i d = _mm_loadu_si128((const __m128i *)(source + 48));
+            const __m128i e = _mm_loadu_si128((const __m128i *)(source + 64));
+            const __m128i f = _mm_loadu_si128((const __m128i *)(source + 80));
+            const __m128i g = _mm_loadu_si128((const __m128i *)(source + 96));
+            const __m128i h = _mm_loadu_si128((const __m128i *)(source + 112));
+            _mm_stream_si128((__m128i *)(destination + 0), a);
+            _mm_stream_si128((__m128i *)(destination + 16), b);
+            _mm_stream_si128((__m128i *)(destination + 32), c);
+            _mm_stream_si128((__m128i *)(destination + 48), d);
+            _mm_stream_si128((__m128i *)(destination + 64), e);
+            _mm_stream_si128((__m128i *)(destination + 80), f);
+            _mm_stream_si128((__m128i *)(destination + 96), g);
+            _mm_stream_si128((__m128i *)(destination + 112), h);
+            destination += 128u; source += 128u; bytes -= 128u;
+        }
+        /* Complete streaming writes before publishing ownership to the worker. */
+        _mm_sfence();
+    }
+#endif
+    if (bytes) memcpy(destination, source, bytes);
+}
 void memory_backing_capture(PsxMemoryBacking *destination) {
     if (!destination || destination == s_backing) return;
-    memcpy(destination->ram, s_backing->ram, psx_ram_live_bytes());
+    snapshot_copy_ram(destination->ram, s_backing->ram, psx_ram_live_bytes());
     memcpy(destination->scratchpad, s_backing->scratchpad, SCRATCHPAD_SIZE);
     memcpy(destination->mod_memory, s_backing->mod_memory, s_backing->mod_memory_used);
     destination->mod_memory_used = s_backing->mod_memory_used;

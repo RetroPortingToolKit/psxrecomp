@@ -1123,14 +1123,11 @@ static void alu_bitwise(PGXPValue *dst, const PGXPValue *a, uint32_t s1,
 
 static const PGXPValue kNoShadow = { 0, 0, 0, 0, 0, 0 };
 
-/* Snapshot only an aliased source; other registers and $zero stay immutable
- * while the destination is updated. The destination may alias a source (in-place
+/* Snapshot a source GPR shadow: the destination may alias a source (in-place
  * ops such as `or t2, t2, t9` or `addiu t0, t0, 4`), and it is reset before
  * the sources are read. */
-static inline const PGXPValue *gpr_shadow(uint32_t r, uint32_t destination, PGXPValue *copy) {
-    if (r == 0) return &kNoShadow;
-    if (r != destination) return &s_gpr[r];
-    *copy = s_gpr[r];
+static inline const PGXPValue *gpr_shadow(uint32_t r, PGXPValue *copy) {
+    *copy = (r != 0) ? s_gpr[r] : kNoShadow;
     return copy;
 }
 
@@ -1266,11 +1263,11 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         case 0x00: case 0x02: case 0x03:       /* SLL / SRL / SRA             */
         case 0x04: case 0x06: case 0x07: {     /* SLLV / SRLV / SRAV          */
             uint32_t sh = (funct < 4) ? f_shamt(instr) : (s2 & 31u);
-            if (!s_cpu_mode || sh != 16) { pv_reset(dst, result); return; }
-            const PGXPValue *src = gpr_shadow(rt, dst_reg, &ca);
+            const PGXPValue *src = gpr_shadow(rt, &ca);
             int right = (funct & 3u) != 0;
             pv_reset(dst, result);
-            if (src->gen != s_gen) return;
+            if (!s_cpu_mode || sh != 16 || src->gen != s_gen)
+                return;
             if (!right) {                      /* << 16: low comp -> Y        */
                 if (comp_tracked(src, s1, 0)) {
                     dst->y16 = src->x16;
@@ -1291,8 +1288,8 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
             return;
         }
         case 0x24: case 0x25: case 0x26: case 0x27: {  /* AND/OR/XOR/NOR     */
-            const PGXPValue *a = gpr_shadow(rs, dst_reg, &ca);
-            const PGXPValue *b = gpr_shadow(rt, dst_reg, &cb);
+            const PGXPValue *a = gpr_shadow(rs, &ca);
+            const PGXPValue *b = gpr_shadow(rt, &cb);
             /* OR with $zero is the MOVE idiom: the whole shadow, depth too. */
             if (funct == 0x25 && (rs == 0 || rt == 0)) {
                 const PGXPValue *m = (rt == 0) ? a : b;
@@ -1307,8 +1304,8 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         }
         case 0x20: case 0x21:                  /* ADD / ADDU                  */
         case 0x22: case 0x23: {                /* SUB / SUBU                  */
-            const PGXPValue *a = gpr_shadow(rs, dst_reg, &ca);
-            const PGXPValue *b = gpr_shadow(rt, dst_reg, &cb);
+            const PGXPValue *a = gpr_shadow(rs, &ca);
+            const PGXPValue *b = gpr_shadow(rt, &cb);
             int is_sub = (funct == 0x22 || funct == 0x23);
             /* MOVE idioms first - exact, so they run in both tiers. */
             if (rt == 0 || (!is_sub && rs == 0)) {
@@ -1351,6 +1348,7 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
     uint32_t dst_reg = f_rt(instr);
     if (dst_reg == 0) return;
     PGXPValue *dst = &s_gpr[dst_reg];
+    const PGXPValue *a = gpr_shadow(f_rs(instr), &ca);
 
     switch (op) {
     case 0x0F: {                               /* LUI: both halves exact      */
@@ -1361,7 +1359,6 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         return;
     }
     case 0x08: case 0x09: {                    /* ADDI / ADDIU                */
-        const PGXPValue *a = gpr_shadow(f_rs(instr), dst_reg, &ca);
         int32_t imm = f_simm(instr);
         if (imm == 0) {                        /* MOVE idiom                  */
             if (a->gen == s_gen) {
@@ -1390,7 +1387,6 @@ static void alu_halves(uint32_t instr, uint32_t result, uint32_t s1, uint32_t s2
         return;
     }
     case 0x0C: case 0x0D: case 0x0E: {         /* ANDI / ORI / XORI           */
-        const PGXPValue *a = gpr_shadow(f_rs(instr), dst_reg, &ca);
         uint32_t imm = instr & 0xFFFFu;
         alu_bitwise(dst, a, s1, nullptr, imm, result);
         /* ORI into a zero low half writes an exact constant there (the
