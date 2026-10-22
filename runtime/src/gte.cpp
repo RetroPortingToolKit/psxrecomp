@@ -19,6 +19,8 @@ extern "C" int gpu_ws_precise_nclip_enabled(void);
  * plus native replay of one candidate) is running. */
 extern "C" int psx_overlay_shadow_diff_active(void);
 extern "C" uint64_t s_frame_count;            /* debug_server.c */
+/* Latest projection (H, OFX, OFY in 16.16), read by the post-effect executor. */
+extern "C" { volatile int32_t g_gte_last_h = 0, g_gte_last_ofx = 0, g_gte_last_ofy = 0; }
 extern "C" uint32_t g_debug_last_store_pc;     /* debug_server.c */
 extern "C" { int (*g_psx_projection_command)(CPUState*, uint32_t) = nullptr; }
 
@@ -1190,6 +1192,9 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
         }
     }
     dome_probe_note(gte->SZ[3]);   /* locate the dome draw fn (far-vertex tally) */
+    if (!s_gte_replay_sandbox) {   /* projection of the latest 3D draw, for post effects (u_proj) */
+        g_gte_last_h = gte->H; g_gte_last_ofx = gte->OFX; g_gte_last_ofy = gte->OFY;
+    }
     int64_t sx16 = gte->OFX + xterm;
     int64_t sy16 = gte->OFY + (int64_t)gte->IR2 * h_div_sz;
     /* Render-view projection override (psx_mod_render_view, projection=1).

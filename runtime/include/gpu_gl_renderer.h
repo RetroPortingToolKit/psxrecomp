@@ -196,6 +196,8 @@ float gl_renderer_get_bloom(void);
  * compile is logged and skipped. */
 void  gl_renderer_set_post_shader(const char *path);
 int   gl_renderer_post_shader_loaded(void);
+/* Debug: path, last load outcome and live uniforms of the user chain (JSON members). */
+int   gl_renderer_post_shader_debug(char *out, int cap);
 typedef struct {
     float strength, threshold;
     uint64_t passes, us_n;
