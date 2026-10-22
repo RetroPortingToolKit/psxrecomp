@@ -243,6 +243,11 @@ PSX_CYC_HOT_INLINE int psx_cyc_try_charge_one(void) {
     }
     return 0;
 }
+/* Share the clock body across generated instructions. Keep dependency masks
+ * in the caller, but do not duplicate the TLS/deadline branches at every PC. */
+PSX_CYC_COLD_CALL void psx_cyc_charge_one(void) {
+    if (!psx_cyc_try_charge_one()) psx_cyc_charge_one_slow();
+}
 #else
 #define PSX_CYC_HOT_INLINE static inline
 #endif
@@ -252,7 +257,7 @@ PSX_CYC_HOT_INLINE void psx_cyc_base(CPUState* cpu) {
     if (cpu->read_absorb[w]) cpu->read_absorb[w]--;
     else {
 #if defined(PSX_ENABLE_BLOCK_CYCLES) && !defined(PSX_OVERLAY_DLL_BUILD) && !defined(PSX_COSIM)
-        if (!psx_cyc_try_charge_one()) psx_cyc_charge_one_slow();
+        psx_cyc_charge_one();
 #else
         psx_cyc_charge(1u);
 #endif

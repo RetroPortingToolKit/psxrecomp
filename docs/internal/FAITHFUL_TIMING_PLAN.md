@@ -2167,3 +2167,11 @@ cost. Operand shadows now copy only when the destination aliases the source;
 unused LUI/default/non-repack shift copies are avoided. PGXP in-place/repack,
 production, word-shadow, independent snapshot and cycle checks pass on PC.
 Production refresh and failing quiet gate continue; no acceptance/push.
+
+2026-10-21 BRIEF-5: PGXP operand changes retain 4,511 identity rows, but quiet
+still fails (85.6% p99, two >25 ms gaps). Forced full-load expansion grew
+.text from about 98 to 116 MiB and regressed cost; it was removed. Retain
+constant register-dependency folding while sharing the repeated one-cycle
+clock body out of line. Independent charge/interlock, scale/gate and event
+boundary checks pass. SPU idle-boundary theory is ruled out by the state
+(I_MASK 0x10d masks IRQ9). Production refresh/qualification continues on PC.
