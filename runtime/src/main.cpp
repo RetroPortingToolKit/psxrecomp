@@ -70,6 +70,9 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "gpu_render.h"
 #include "gpu_gl_renderer.h"
 #include "render_pass.h"
+#include "render_pass_worker.h"
+#include "netplay_state_digest.h"
+#include "psx_segment_miss.h"
 /* Declarations only: STB_IMAGE_IMPLEMENTATION lives in psx_window_icon.cpp. */
 #define STBI_NO_STDIO
 #include "../third_party/stb_image.h"
@@ -4831,6 +4834,13 @@ static uint64_t g_frame_report_wait_ticks = 0;   /* offline pacer waits */
  * export the existing frame ring before requesting the normal quit path. */
 struct ReplayWorkSample { uint64_t frame, guest, pacer, queue, completed, bp, ring, acquire; };
 static std::vector<ReplayWorkSample> g_replay_work;
+struct ReplayIdentitySample {
+    uint64_t relative, cycle;
+    NetplayCoreParts core;
+    uint32_t spad, dma, sio, cd, spu, mdec, gpu;
+};
+static std::vector<ReplayIdentitySample> g_replay_identity;
+
 static void input_replay_frame_completed(uint64_t frame) {
     if (g_replay_work.empty()) return;
     auto &sample = g_replay_work[frame % HOST_FRAME_STAMP_CAP];
@@ -4848,7 +4858,8 @@ static void input_replay_frontend_tick(uint64_t frame) {
     static uint64_t stop = 0, seconds = 0, deadline_us = 0, shot_frame = 800, shot_step = 0;
     static bool custom_shot_frame = false;
     static const char *report = nullptr, *shots = nullptr;
-    static bool initialized = false, finished = false;
+    static bool initialized = false, finished = false, identity = false;
+    static uint64_t native_start = 0, interp_start = 0, dirty_start = 0, miss_start = 0, segment_start = 0;
     auto &work = g_replay_work;
     if (!initialized) {
         if (const char *e = std::getenv("PSX_INPUT_REPLAY_STOP")) stop = std::strtoull(e, nullptr, 10);
@@ -4873,10 +4884,31 @@ static void input_replay_frontend_tick(uint64_t frame) {
             if (!shot_step || !end || *end || !stop)
                 throw std::runtime_error("replay shot step needs a positive interval and replay stop");
         }
+        if (const char *e = std::getenv("PSX_INPUT_REPLAY_FINGERPRINT")) identity = e[0] == '1';
+        if (identity && (!report || !*report))
+            throw std::runtime_error("replay fingerprint needs a replay report");
+        if (identity) g_replay_identity.reserve(HOST_FRAME_STAMP_CAP);
+        overlay_loader_get_counters(nullptr, nullptr, nullptr, &native_start, &interp_start,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        dirty_start = g_dirty_ram_insns_run;
+        miss_start = debug_server_dispatch_miss_total();
+        segment_start = psx_segment_miss_total();
         if (report && *report) work.resize(HOST_FRAME_STAMP_CAP);
         initialized = true;
     }
     if (finished) return;
+    if (identity) {
+        if (!debug_cpu_ptr || g_replay_identity.size() >= HOST_FRAME_STAMP_CAP)
+            throw std::runtime_error("replay fingerprint has no CPU or exceeded its bounded capacity");
+        ReplayIdentitySample sample{};
+        sample.relative = relative; sample.cycle = psx_cycle_count;
+        netplay_core_digest_parts(debug_cpu_ptr, &sample.core);
+        sample.spad = netplay_spad_digest(); sample.dma = netplay_dma_digest();
+        sample.sio = netplay_sio_digest(); sample.cd = netplay_cdrom_digest();
+        sample.spu = netplay_spu_digest(); sample.mdec = netplay_mdec_digest();
+        sample.gpu = netplay_av_digest();
+        g_replay_identity.push_back(sample);
+    }
     if (seconds && relative >= 900 && !deadline_us)
         deadline_us = host_clock_us() + seconds * 1000000;
     if (deadline_us && !stop && host_clock_us() >= deadline_us) stop = relative;
@@ -4931,6 +4963,35 @@ static void input_replay_frontend_tick(uint64_t frame) {
                              s.dur_us, s.frame, host_span_kind_name(s.kind), s.emu, s.arg);
         }
         if (std::fclose(f) != 0) throw std::runtime_error("cannot finish input replay span report");
+        if (identity) {
+            std::ofstream fingerprints(std::string(report) + ".fingerprints.csv");
+            fingerprints << "relative,cycle,cpu,clock_irq,timers,ram,dirty,spad,dma,sio,cdrom,spu,mdec,gpu\n";
+            for (const auto &sample : g_replay_identity) {
+                const auto &c = sample.core;
+                /* The optional mod-plan CRC is host policy, not guest state. */
+                fingerprints << sample.relative << ',' << sample.cycle << ',' << c.cpu << ','
+                    << c.clock_irq << ',' << c.timers << ',' << c.ram << ',' << c.dirty << ','
+                    << sample.spad << ',' << sample.dma << ',' << sample.sio << ',' << sample.cd << ','
+                    << sample.spu << ',' << sample.mdec << ',' << sample.gpu << '\n';
+            }
+            if (!fingerprints) throw std::runtime_error("cannot write replay fingerprints");
+        }
+        uint64_t native = 0, interpreted = 0;
+        overlay_loader_get_counters(nullptr, nullptr, nullptr, &native, &interpreted,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        RenderPassWorkerStats worker{}; render_pass_worker_stats(&worker);
+        std::ofstream proof(std::string(report) + ".native.json");
+        proof << "{\"native\":" << native-native_start << ",\"interp\":" << interpreted-interp_start
+              << ",\"dirty_instructions\":" << g_dirty_ram_insns_run-dirty_start
+              << ",\"dispatch_misses\":" << debug_server_dispatch_miss_total()-miss_start
+              << ",\"segment_misses\":" << psx_segment_miss_total()-segment_start
+              << ",\"worker\":{\"published\":" << worker.published
+              << ",\"completed\":" << worker.completed << ",\"late\":" << worker.late
+              << ",\"aborted\":" << worker.aborted << ",\"refused\":" << worker.refused
+              << ",\"dispatch_misses\":" << worker.dispatch_misses
+              << ",\"native_calls\":" << worker.native_calls << ",\"last_address\":" << worker.last_address
+              << ",\"last_failure\":\"" << (worker.last_failure ? worker.last_failure : "") << "\"}}\n";
+        if (!proof) throw std::runtime_error("cannot write replay native proof");
         char renderer[16384];
         int bytes = gl_renderer_render_thread_json(renderer, sizeof renderer);
         if (bytes > 0 && bytes < (int)sizeof renderer) {
@@ -22730,6 +22791,7 @@ soft_return_lobby:
         }
     }
 #endif
+    render_pass_worker_stop();
     psx_lobby_disconnect();
     SDL_Quit();
     return 0;

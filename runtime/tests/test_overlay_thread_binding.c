@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include "overlay_dispatch_preamble.c.inc"
+#include "psx_runtime.h"
+#include "debug_server.h"
 /* Checks and thread creation must still execute in Release builds. */
 #define assert(condition) do { if (!(condition)) abort(); } while (0)
 #ifdef _WIN32

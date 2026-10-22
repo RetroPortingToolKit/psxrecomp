@@ -158,7 +158,9 @@ void debug_server_log_call_entry_fn(uint32_t func_addr);
  * store (sb/sh/sw/swl/swr/swc2).  Read by SIO/MMIO write handlers to
  * attribute the writing instruction without needing a full call-stack
  * walk.  Stale across non-store instructions but every store updates it. */
+#ifndef PSX_OVERLAY_DLL_BUILD
 extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
+#endif
 
 /* SIO write PC tracer ring — records (pc, addr, value, byte_seq) for every
  * write to SIO_DATA / SIO_CTRL / SIO_STAT.  Always-on; pulled via TCP cmd
@@ -239,6 +241,7 @@ void debug_server_set_cpu(CPUState *cpu);
  * hardware simulation modules that need to read CPU state (e.g. GPU
  * capturing stack values during A0 uploads). */
 extern CPUState *debug_cpu_ptr;
+uint64_t debug_server_dispatch_miss_total(void);
 
 void debug_server_send_line(const char *json);
 void debug_server_send_fmt(const char *fmt, ...);

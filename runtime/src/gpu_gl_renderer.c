@@ -11814,6 +11814,7 @@ typedef struct RthOvHdr {
 } RthOvHdr;
 
 static int rth_record_present(uint16_t op, int n, const int32_t *v) {
+    render_pass_worker_flush();
     s_rth_material_valid = 0; /* presentation may replay historical material */
     const uint32_t *px[4] = { NULL, NULL, NULL, NULL };
     int w[4] = { 0 }, h[4] = { 0 };

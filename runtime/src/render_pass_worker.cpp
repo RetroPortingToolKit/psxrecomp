@@ -192,6 +192,13 @@ bool start() {
         slot.reset(new (std::nothrow) Job);
         if (!slot || !slot->valid()) { for (auto &other : W.jobs) other.reset(); return false; }
     }
+    static bool exit_registered = false;
+    if (!exit_registered) {
+        if (std::atexit(render_pass_worker_stop) != 0) {
+            for (auto &slot : W.jobs) slot.reset(); return false;
+        }
+        exit_registered = true;
+    }
     W.stop = false;
     W.thread = std::thread(run);
     return true;

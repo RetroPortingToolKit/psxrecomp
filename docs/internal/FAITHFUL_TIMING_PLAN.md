@@ -2105,3 +2105,14 @@ native lookup has no interpreted fallback. Windows five focused checks pass
 plugin/memory/capture fixtures and GTE reference pass, with worker/plugin syntax
 checks. Release integration is building. Final route identity, quiet, loaded,
 and distinct-frame gates remain pending; no acceptance or push.
+
+2026-10-21 BRIEF-5 qualification checkpoint: rebuilt captured native overlays
+(14 built, zero failures), fixed the SDK store-PC declaration guard, and added
+opt-in production replay fingerprints using existing netplay CPU/RAM/device
+partition digests. The first off/on route collected 4,511 identical rows and
+zero source/worker dispatch misses, but fails acceptance: zero extras consumed
+because handoff depended on the old transaction-service path; exit also left a
+joinable worker. Handoff now runs at canonical present submission, with explicit
+normal/atexit shutdown. Rebuild and repeat the failed identity gate before any
+quiet/loaded/cadence measurement. SDK binding checks pass on Windows and Mac;
+worker lifecycle syntax passes on Mac. No acceptance or push.

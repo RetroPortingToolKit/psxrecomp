@@ -67,6 +67,7 @@
 #include "crash_trace.h"
 #include "gpu_gl_renderer.h"
 #include "render_pass.h"
+#include "render_pass_worker.h"
 #include "mod_plugins.h"   /* psx_mod_render_pass_status */
 #include "lockstep.h"
 #include "guest_tty.h"
@@ -8928,6 +8929,21 @@ static void handle_gl_interp(int id, const char *json)
 /* render_pass_stats: host-timed render passes (docs/RENDER_PASSES.md).
  * Counters are per mod session; `dropped` counts device stores a pass tried
  * to make (SPU key-ons, CD, timers, ...), which never reach the device. */
+static void handle_render_pass_worker(int id, const char *json) {
+    (void)json;
+    RenderPassWorkerStats worker;
+    char reason[256];
+    render_pass_worker_stats(&worker);
+    json_escape_string(reason, sizeof reason, worker.last_failure ? worker.last_failure : "");
+    send_fmt("{\"id\":%d,\"ok\":true,\"published\":%llu,\"completed\":%llu,"
+             "\"late\":%llu,\"aborted\":%llu,\"refused\":%llu,\"dispatch_misses\":%llu,"
+             "\"native_calls\":%llu,\"last_address\":\"0x%08X\",\"last_failure\":\"%s\"}",
+             id, (unsigned long long)worker.published, (unsigned long long)worker.completed,
+             (unsigned long long)worker.late, (unsigned long long)worker.aborted,
+             (unsigned long long)worker.refused, (unsigned long long)worker.dispatch_misses,
+             (unsigned long long)worker.native_calls, worker.last_address, reason);
+}
+
 static void handle_render_pass_stats(int id, const char *json)
 {
     (void)json;
@@ -16223,6 +16239,7 @@ static const CmdEntry s_commands[] = {
     { "dithering",         handle_dithering },
     { "gl_ws_ablate",      handle_gl_ws_ablate },
     { "gl_interp",         handle_gl_interp },
+    { "render_pass_worker", handle_render_pass_worker },
     { "render_pass_stats", handle_render_pass_stats },
     { "openxr_stats", handle_openxr_stats },
     { "openxr_views", handle_openxr_views },
@@ -17438,3 +17455,5 @@ int debug_server_turbo_enabled(void)
 {
     return s_turbo_enabled != 0;
 }
+
+uint64_t debug_server_dispatch_miss_total(void) { return s_unknown_seq; }
