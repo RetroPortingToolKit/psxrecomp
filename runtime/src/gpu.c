@@ -9599,6 +9599,7 @@ static int gpu_snap_parse(PstR *r) {
 #undef RU
 #undef RI
 #undef RH
+    gpu_display_state_changed();
     return 1;
 }
 
