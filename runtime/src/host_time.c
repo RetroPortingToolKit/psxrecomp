@@ -86,8 +86,10 @@ void psx_host_sleep_micros(unsigned usec)
         if (hundred_ns >= 0)
             hundred_ns = -1LL;
         due.QuadPart = hundred_ns;
-        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE) &&
-            WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0) {
+        /* Bounded: a missed signal costs at most the sleep plus 2 ms, never
+         * an indefinitely parked thread. */
+        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+            (void)WaitForSingleObject(timer, (DWORD)(usec / 1000u) + 2u);
             return;
         }
     }
