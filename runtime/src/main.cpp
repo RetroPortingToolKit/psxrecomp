@@ -3977,7 +3977,18 @@ static void sync_guest_cadence_to_video_standard(void) {
 
 static int host_driver_vsync_unreliable(void) {
 #ifdef _WIN32
-    return 0;
+    /* Windows OpenGL, windowed or borderless: DWM composes the window and
+     * owns the display's vsync, so a driver swap interval adds nothing but a
+     * stall. On NVIDIA (R4 0.8, RTX 4080, 610.88) a vsync'd SwapBuffers holds
+     * the GPU queue the render thread submits to: the render thread's frame
+     * then costs a whole refresh (16.7 ms "GPU" at any internal scale,
+     * render_busy 100 %), back-pressure slows the guest to 52-57 Hz, and
+     * dynamic resolution drops for nothing. Swap interval 0 under the
+     * wall-clock pacer: 60.0 Hz, 4.4 ms. Exclusive fullscreen (2) keeps
+     * driver vsync. PSX_TRUST_DRIVER_VSYNC=1 restores it everywhere. */
+    if (const char *e = std::getenv("PSX_TRUST_DRIVER_VSYNC"); e && e[0] && e[0] != '0')
+        return 0;
+    return (g_video_renderer == 1 && g_fullscreen != 2) ? 1 : 0;
 #else
     static int cached = -1;
     if (cached >= 0)
@@ -4088,8 +4099,14 @@ static void log_present_cadence(void) {
             !g_netplay_vsync_forced_off) {
             if (host_driver_vsync_unreliable()) {
                 std::printf("psxrecomp: present cadence: wall-clock pacer "
-                            "(%.4f ms/frame); driver vsync off under WSL\n",
-                            g_frame_period_ms);
+                            "(%.4f ms/frame); driver vsync off (%s)\n",
+                            g_frame_period_ms,
+#ifdef _WIN32
+                            "Windows GL: DWM composes"
+#else
+                            "under WSL"
+#endif
+                            );
             } else if (present_effective_swap_interval() != 0) {
                 std::printf("psxrecomp: present cadence: wall-clock pacer "
                             "(%.4f ms/frame); synchronized swaps on %.0f Hz panel\n",
