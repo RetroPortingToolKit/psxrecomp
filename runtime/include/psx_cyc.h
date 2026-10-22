@@ -332,7 +332,7 @@ uint16_t psx_cyc_load_half(CPUState* cpu, uint32_t addr,
 #else
 /* CPU data load value+timing. Full Beetle sequence for main RAM is inlined;
  * MMIO / lockstep / data-shard fall through to *_slow in memory.c. */
-PSX_CYC_HOT_INLINE uint32_t psx_cyc_load_word(CPUState* cpu, uint32_t addr,
+static inline uint32_t psx_cyc_load_word(CPUState* cpu, uint32_t addr,
                                           uint32_t rt, uint32_t reg_mask) {
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     uint32_t phys = addr & 0x1FFFFFFFu;
@@ -362,7 +362,7 @@ PSX_CYC_HOT_INLINE uint32_t psx_cyc_load_word(CPUState* cpu, uint32_t addr,
 #endif
 }
 
-PSX_CYC_HOT_INLINE uint16_t psx_cyc_load_half(CPUState* cpu, uint32_t addr,
+static inline uint16_t psx_cyc_load_half(CPUState* cpu, uint32_t addr,
                                           uint32_t rt, uint32_t reg_mask) {
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     uint32_t phys = addr & 0x1FFFFFFFu;

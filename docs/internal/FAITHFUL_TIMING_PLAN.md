@@ -2159,3 +2159,11 @@ busy 81.1% (still failed). Sampling identifies timed loads among remaining
 costs; share the checked base fastpath with loads and inline constant load
 operands. Independent full-charge/interlock matrix, scale/gate and cross-device
 event-boundary fixtures pass on PC. Refresh/qualification continues. No push.
+
+2026-10-21 BRIEF-5: forced full-load inlining regresses quiet p99 to 92.1%
+(60.000 Hz, no >25 ms gaps); remove that forced expansion while retaining the
+checked shared base charge. Heavy-route source sampling confirms PGXP arithmetic
+cost. Operand shadows now copy only when the destination aliases the source;
+unused LUI/default/non-repack shift copies are avoided. PGXP in-place/repack,
+production, word-shadow, independent snapshot and cycle checks pass on PC.
+Production refresh and failing quiet gate continue; no acceptance/push.
