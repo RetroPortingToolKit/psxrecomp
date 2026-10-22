@@ -2245,3 +2245,18 @@ source pacing waits, with a conservative measured cost estimate and private
 host-deadline cancellation. Source guest hot paths are unchanged. Use the same
 below-normal Windows scheduling policy as other optional workers. Production
 build/ordered gates continue; no push or acceptance.
+
+2026-10-21 BRIEF-5 scope blocker after idle scheduling: identity passes original
+4,511 rows; quiet passes 60.000 Hz, zero >25 ms gaps, p99 58.4%. Loaded fails
+(one 79.635 ms completion gap, p99 92.6%). The controlled loaded profile pair
+has identical 67,568 native source calls and zero interpretation/misses. Source
+CPU is 59.39% off / 59.75% on; publication is the only setting-1-only stack
+(0.603% samples). Before sampling, frames 900..3439 show off p99 65.9% with
+18 windows >=60 (seventh-highest 64.2%); on p99 67.1% with 21 such windows.
+Thus the common loaded baseline already exceeds the acceptance bar, outside the
+latest instruction to change exactly setting-1-only work and stop general hot-
+path optimization. R4 STATUS records the scope decision required: authorize
+common emulation/context regression work while retaining the bar, or explicitly
+revise load/bar. No further code changes or pushes; all code is committed.
+Receipts: R4 local brief5-worker-idle and brief5-loaded-profile-diff (including
+unprofiled-prefix-proof.json). Cadence, title ctest and both pushes remain pending.
