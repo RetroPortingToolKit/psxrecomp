@@ -430,9 +430,9 @@ typedef struct {
     GLint viewport[4];
 } PfxGlState;
 static void pfx_state_save(PfxGlState *st) {
-    st->blend = glIsEnabled(GL_BLEND); st->depth = glIsEnabled(GL_DEPTH_TEST);
-    st->scissor = glIsEnabled(GL_SCISSOR_TEST); st->stencil = glIsEnabled(GL_STENCIL_TEST);
-    glGetIntegerv(GL_VIEWPORT, st->viewport);
+    st->blend = present_cap_get(GL_BLEND); st->depth = present_cap_get(GL_DEPTH_TEST);
+    st->scissor = present_cap_get(GL_SCISSOR_TEST); st->stencil = present_cap_get(GL_STENCIL_TEST);
+    present_viewport_get(st->viewport);
 }
 static void pfx_state_restore(const PfxGlState *st) {
     if (st->blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);

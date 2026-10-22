@@ -2127,3 +2127,15 @@ remain eligible through the duplicate VBlank rather than being rejected before
 their deadline. Windows/Mac component tests and both Release runtime builds
 pass; updated identity and quiet qualification are continuing. No acceptance
 or push. Receipts: R4 local brief5-worker-production and brief5-worker-retained.
+
+2026-10-21 BRIEF-5 rendering-cost checkpoint: post-effect state preservation
+now tracks composing-owner capabilities/viewport, invalidated on GL ownership
+changes, avoiding a sampled per-present driver synchronization. Private passes
+open the GPU timer before backup/capture and bound optional GPU work with a
+readiness-only fence. Windows/Mac real-GL state restoration, render equivalence,
+dynamic-resolution and idle-producer checks pass; both Release runtimes build.
+R4 per-cache publication revisions preserve 4,511 production identity rows with
+zero native misses. Latest quiet gate still fails: 59.802 Hz, one 25.018 ms gap,
+p99 busy 100%. Loaded/cadence remain pending. Source-thread sampling continues;
+no blocker or acceptance. R4 local receipts: brief5-worker-admission,
+brief5-gpu-accounting-check and brief5-mac-gpu-accounting-check.txt.

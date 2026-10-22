@@ -76,6 +76,10 @@ void psx_ws_dbg_gate_frame_snapshot(void){}
 void gpu_depth24_upload_span_reset(void){}
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
 int render_pass_netplay_enabled(void){return 0;}
+/* No guest draw worker is installed in this renderer-only fixture. */
+void render_pass_worker_flush(void){}
+void render_pass_worker_stop(void){}
+PSX_THREAD_LOCAL PsxExecutionAbort g_psx_execution_abort;
 PSX_THREAD_LOCAL uint64_t psx_cycle_count=0;
 uint32_t g_psx_vblank_cycles=564480u;
 /* Frontend hooks of the present path (host overlays, pacing, rings). */
@@ -110,6 +114,28 @@ static int checks, failures;
 static void check(int ok, const char *label) {
     checks++;
     if (!ok) { fprintf(stderr, "FAIL %s\n", label); failures++; }
+}
+static void check_present_state(void *unused) {
+    (void)unused;
+    const GLenum caps[4] = {GL_BLEND, GL_DEPTH_TEST, GL_SCISSOR_TEST, GL_STENCIL_TEST};
+    for (unsigned mask = 0; mask < 16; ++mask) {
+        for (unsigned i = 0; i < 4; ++i) {
+            if (mask & (1u << i)) glEnable(caps[i]); else glDisable(caps[i]);
+        }
+        glViewport(3, 5, 131, 113);
+        if (mask & 1u) present_state_forget(); /* context acquisition / unknown state */
+        PfxGlState saved;
+        pfx_state_save(&saved);
+        for (unsigned i = 0; i < 4; ++i) glDisable(caps[i]);
+        glViewport(0, 0, 17, 19);
+        pfx_state_restore(&saved);
+        for (unsigned i = 0; i < 4; ++i)
+            check(!!glIsEnabled(caps[i]) == !!(mask & (1u << i)), "post-effect restores capability");
+        GLint viewport[4]; glGetIntegerv(GL_VIEWPORT, viewport);
+        check(viewport[0] == 3 && viewport[1] == 5 && viewport[2] == 131 && viewport[3] == 113,
+              "post-effect restores viewport");
+    }
+    for (unsigned i = 0; i < 4; ++i) glDisable(caps[i]);
 }
 static int drawable_worker(void *data) {
     int *size = data;
@@ -300,14 +326,14 @@ int main(int argc, char **argv) {
         p_glUseProgram(tex ? s_tex_prog : s_geo_prog);
         p_glBindVertexArray(tex ? s_tex_vao : s_geo_vao);
         depth_apply_ex(1, tex);
-        if (tex) tex_draw_passes_ex(0, semi, mask, check_mask, 0, -1);
+        if (tex) tex_draw_passes_ex(0, semi, mask, check_mask, 0, -1, 1, 0);
         else {
             if (semi >= 0) apply_psx_blend(semi); else glDisable(GL_BLEND);
             mask_stencil_ex(mask, check_mask);
             BCLS_DRAW(semi, 1, mask, check_mask, -1, glDrawArrays(GL_TRIANGLES, 0, 0));
         }
         GLboolean stencil = glIsEnabled(GL_STENCIL_TEST), blend = glIsEnabled(GL_BLEND);
-        depth_restore_ex(1, tex, 0, semi, mask, check_mask);
+        depth_restore_ex(1, tex, 0, semi, mask, check_mask, 0);
         check(glIsEnabled(GL_STENCIL_TEST) == stencil, "depth pass restores stencil");
         check(glIsEnabled(GL_BLEND) == blend, "depth pass restores blend");
     }
@@ -328,6 +354,10 @@ int main(int argc, char **argv) {
         check(after.records - before.records == (cache && cache[0] == '0' ? 4u : 0u),
               "identical material state records only with cache disabled");
     }
+    if (threaded) {
+        check(gl_renderer_execution_enqueue(check_present_state, &checks), "queue post-effect state check");
+        rt_drain();
+    } else check_present_state(NULL);
     if (dynres) {
         check(gl_renderer_dynamic_resolution_ceiling() == scale, "dynres ceiling");
         if (threaded) gl_renderer_render_thread_measure(1);

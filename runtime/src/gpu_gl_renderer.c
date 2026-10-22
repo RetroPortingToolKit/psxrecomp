@@ -475,6 +475,64 @@ static int           s_swap_interval = 1; /* SDL_GL swap interval (vsync mode) *
  * recorded and read back through the ctx_* accessors below during replay. */
 #include "render_thread.h"
 #include "psx_thread_local.h"
+
+/* The composing owner changes these states itself. Querying them at each
+ * post-effect entry drains a threaded driver's outstanding GPU work. Other
+ * context owners keep their own cache, invalidated whenever ownership changes.
+ * Host-overlay callbacks already contractually preserve their incoming state. */
+static PSX_THREAD_LOCAL struct {
+    unsigned known, enabled;
+    int viewport_known;
+    GLint viewport[4];
+} s_present_state;
+static unsigned present_cap_bit(GLenum cap) {
+    switch (cap) {
+    case GL_BLEND: return 1u;
+    case GL_DEPTH_TEST: return 2u;
+    case GL_SCISSOR_TEST: return 4u;
+    case GL_STENCIL_TEST: return 8u;
+    default: return 0;
+    }
+}
+static void present_state_forget(void) { memset(&s_present_state, 0, sizeof s_present_state); }
+static void present_gl_enable(GLenum cap) {
+    glEnable(cap);
+    unsigned bit = present_cap_bit(cap);
+    s_present_state.known |= bit; s_present_state.enabled |= bit;
+}
+static void present_gl_disable(GLenum cap) {
+    glDisable(cap);
+    unsigned bit = present_cap_bit(cap);
+    s_present_state.known |= bit; s_present_state.enabled &= ~bit;
+}
+static void present_gl_viewport(GLint x, GLint y, GLsizei w, GLsizei h) {
+    glViewport(x, y, w, h);
+    if (w < 0 || h < 0) return;
+    s_present_state.viewport[0] = x; s_present_state.viewport[1] = y;
+    s_present_state.viewport[2] = w; s_present_state.viewport[3] = h;
+    s_present_state.viewport_known = 1;
+}
+static GLboolean present_cap_get(GLenum cap) {
+    unsigned bit = present_cap_bit(cap);
+    if (!rt_on_render_thread() || !bit) return glIsEnabled(cap);
+    if (!(s_present_state.known & bit)) {
+        if (glIsEnabled(cap)) s_present_state.enabled |= bit;
+        else s_present_state.enabled &= ~bit;
+        s_present_state.known |= bit;
+    }
+    return (s_present_state.enabled & bit) ? GL_TRUE : GL_FALSE;
+}
+static void present_viewport_get(GLint *out) {
+    if (!rt_on_render_thread() || !s_present_state.viewport_known) {
+        glGetIntegerv(GL_VIEWPORT, out);
+        return;
+    }
+    memcpy(out, s_present_state.viewport, sizeof s_present_state.viewport);
+}
+#define glEnable(cap) present_gl_enable(cap)
+#define glDisable(cap) present_gl_disable(cap)
+#define glViewport(x,y,w,h) present_gl_viewport(x,y,w,h)
+
 #include "psx_execution.h"
 #include "render_pass_worker.h"
 static int       s_rth_on = 0;
@@ -8251,6 +8309,7 @@ typedef struct PassGen {
 static int      s_pass_flip_shown = 0;
 static PassGen  s_pgen[PASS_GENERATIONS];
 static uint64_t s_pgen_order;
+static void *s_execution_gpu_fence;
 /* Double-buffer complete pairs: the unpublished set may be overwritten while
  * the last complete pair remains visible. No temporal phases or generation. */
 typedef struct StereoPair {
@@ -8792,6 +8851,8 @@ static void pass_free_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
 /* Context teardown (gl_renderer_shutdown): free the pass images, backups
  * and journal, and forget their names so a new context makes fresh ones. */
 static void pass_resources_release(void) {
+    if (s_execution_gpu_fence && s_ctx) p_glDeleteSync(s_execution_gpu_fence);
+    s_execution_gpu_fence = NULL;
     psx_openxr_shutdown();
     if(s_ctx) {
         if(s_xr_color_prog && p_glDeleteProgram) p_glDeleteProgram(s_xr_color_prog);
@@ -10196,7 +10257,7 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     uint64_t swap_start=SDL_GetPerformanceCounter();
     gl_window_swap();
     atomic_fetch_add(&s_pt_window_ticks,SDL_GetPerformanceCounter()-swap_start);
-    if (s_recorded_passes) present_sample(s_pts_identity[slot],s_pts_deadline[slot]);
+    if (s_recorded_passes || s_interp_enabled) present_sample(s_pts_identity[slot],s_pts_deadline[slot]);
     if (s_pts_extra[slot]) atomic_fetch_add(&s_temporal_presented, 1);
     glFlush();
     return done;
@@ -14708,6 +14769,13 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     static uint32_t pass_leaks_before;
     (void)user;
     const int32_t *v = (const int32_t *)payload;
+    if (c->op == RTH_PRIVATE_EXECUTION || c->op == RTH_PASS_BEGIN) {
+        /* Include backup/capture/restore, not just the nested primitive draw
+         * commands. Otherwise optional work is invisible to dynamic resolution. */
+        if (!s_rthf_open && (atomic_load_explicit(&s_rthf_want, memory_order_relaxed) || s_fg_on))
+            rthf_begin();
+        rthf_gpu_resume();
+    }
     if (c->op == RTH_PRIVATE_EXECUTION) {
         const PrivateExecutionCommand *command = (const PrivateExecutionCommand *)payload;
         command->consume(command->job); return;
@@ -14850,6 +14918,7 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
 
 static void gl_rth_ctx(void *user, int current) {
     (void)user;
+    present_state_forget();
     if (current) {
         SDL_GL_MakeCurrent(s_win, s_ctx);
     } else {
@@ -15097,8 +15166,19 @@ void gl_renderer_execution_bind(const GlExecutionProducerState *state) {
 }
 int gl_renderer_execution_consume(const RtCommandList *list) {
     if (!rt_on_render_thread()) abort();
+    /* Bound optional GPU work as well as CPU jobs. An unsignalled previous
+     * pass means this extra is dropped before issuing its copies and draws. */
+    if (!p_glFenceSync || !p_glGetSynciv || !p_glDeleteSync) return 0;
+    if (s_execution_gpu_fence) {
+        GLint ready = 0;
+        p_glGetSynciv(s_execution_gpu_fence, 0x9114 /* SYNC_STATUS */, 1, NULL, &ready);
+        if (ready != 0x9119 /* SIGNALED */) return 0;
+        p_glDeleteSync(s_execution_gpu_fence); s_execution_gpu_fence = NULL;
+    }
     uint64_t before = atomic_load(&s_temporal_completed);
     rt_list_execute(list, gl_rth_exec, NULL);
+    s_execution_gpu_fence = p_glFenceSync(0x9117 /* GPU_COMMANDS_COMPLETE */, 0);
+    glFlush();
     return atomic_load(&s_temporal_completed) > before;
 }
 int gl_renderer_execution_enqueue(void (*consume)(void *), void *job) {
