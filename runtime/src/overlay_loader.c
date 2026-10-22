@@ -548,11 +548,19 @@ static uint32_t s_last_write_size = 0;
  * DLL glue directly. */
 static OverlayFlushFn s_dll_flush[4096];
 static OverlayExecutionInitFn s_dll_init[4096];
+static PSX_THREAD_LOCAL OverlayExecutionInitFn t_source_init[4096];
 PSX_THREAD_LOCAL OverlayFlushFn g_overlay_flush_pending_cycles = NULL;
 
 static OverlayFlushFn overlay_flush_enter(const Candidate *c) {
     OverlayFlushFn prev = g_overlay_flush_pending_cycles;
     if (prev) prev();
+    /* A module may have been loaded by the initializer. Its TLS callbacks and
+     * host TLS pointers must be bound on the thread that actually executes it. */
+    if (c->dll >= 0 && c->dll < 4096 && s_dll_init[c->dll] &&
+        t_source_init[c->dll] != s_dll_init[c->dll]) {
+        s_dll_init[c->dll](overlay_loader_callbacks());
+        t_source_init[c->dll] = s_dll_init[c->dll];
+    }
     g_overlay_flush_pending_cycles =
         (c->dll >= 0 && c->dll < (int)(sizeof(s_dll_flush) / sizeof(s_dll_flush[0])))
         ? s_dll_flush[c->dll] : NULL;
@@ -2247,7 +2255,7 @@ extern int psx_syscall(CPUState *cpu, uint32_t code);
 extern void psx_unknown_dispatch(CPUState *cpu, uint32_t addr, uint32_t phys);
 extern void debug_server_log_call_entry_fn(uint32_t func_addr);
 
-static OverlayCallbacks s_callbacks;
+static PSX_THREAD_LOCAL OverlayCallbacks s_callbacks;
 
 /* Timing-hypothesis probe: native overlay code calls psx_check_interrupts at
  * EVERY block (up to ~100x/function), whereas the dirty-RAM interpreter checks
@@ -2829,7 +2837,7 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
         FreeLibrary(h);
         return 0;
     }
-    init_fn(&s_callbacks);
+    init_fn(overlay_loader_callbacks());
     s_dll_flush[dll] = flush_fn;
     s_dll_init[dll] = init_fn;
     IMAGE_EXPORT_DIRECTORY *exp =
@@ -2956,7 +2964,7 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
         psx_overlay_posix_library_close(h);
         return 0;
     }
-    init_fn(&s_callbacks);
+    init_fn(overlay_loader_callbacks());
     s_dll_flush[dll] = flush_fn;
     s_dll_init[dll] = init_fn;
 

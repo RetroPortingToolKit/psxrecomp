@@ -2204,3 +2204,12 @@ worker bootstrap; reject extras until both slots are ready and alternate reuse.
 Seal plugin descriptors before bootstrap. Cross-thread PGXP/GTE/plugin creation,
 private GPU, command capture and O0/O2 full-RAM checks pass on PC. Production
 qualification continues; no push or acceptance.
+
+2026-10-21 BRIEF-5 worker preparation: original-off 4,511-row identity passes;
+quiet improves to 60.000 Hz, zero >25 ms gaps (max 19.545), p99 69.4% (still
+fails). Late-window profile off completes natively; on exposes a startup access
+violation: source shard stores through an initializer thread's expired TLS
+breadcrumb pointer. Make host callback tables thread-owned and bind each DLL
+on its executing source thread, as the worker already does. Production-loader
+cross-thread lifetime checks pass O0/O2. Refresh and ordered gates continue;
+no push. Invalid cache/profile attempts are retained separately in R4 receipts.
