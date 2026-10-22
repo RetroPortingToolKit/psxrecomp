@@ -10225,7 +10225,13 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     atomic_fetch_add(&s_pt_clock_ticks,SDL_GetPerformanceCounter()-wait_start);
     int late = s_pts_extra[slot] && s_pts_deadline[slot] &&
         SDL_GetPerformanceCounter() > s_pts_deadline[slot] + SDL_GetPerformanceFrequency() / 1000u;
-    if (ready) {
+    if (ready && !s_pts_extra[slot]) {
+        /* A guest frame is never dropped: the presenter's GPU queue waits
+         * for the composing context's commands, the CPU does not. Dropping
+         * it left the previous image on screen while emulation ran on. */
+        p_glWaitSync(ready, 0, PT_TIMEOUT_IGNORED);
+        p_glDeleteSync(ready);
+    } else if (ready) {
         GLint status = 0;
         p_glGetSynciv(ready, 0x9114 /* SYNC_STATUS */, 1, NULL, &status);
         p_glDeleteSync(ready);
@@ -10376,10 +10382,11 @@ int gl_renderer_present_thread_json(char *out, size_t cap) {
     PtStats st;
     pt_get_stats(&st);
     return snprintf(out, cap,
-        "\"present_thread\":{\"active\":%d,\"slots\":%d,\"submits\":%llu,\"presents\":%llu,"
+        "\"present_thread\":{\"active\":%d,\"slots\":%d,\"submits\":%llu,\"presents\":%llu,\"dropped\":%llu,"
         "\"waits\":%llu,\"wait_ms\":%.3f,\"swap_ms_avg\":%.3f,\"swap_ms_max\":%.3f,"
         "\"queued_high\":%d,\"clock_wait_ms\":%.3f,\"window_swap_ms\":%.3f,\"late_drops\":%llu,\"unready_drops\":%llu}",
         s_pt_on, st.slots, (unsigned long long)st.submits, (unsigned long long)st.presents,
+        (unsigned long long)st.dropped,
         (unsigned long long)st.waits, st.wait_ns / 1e6,
         st.presents ? (double)st.present_ns / (double)st.presents / 1e6 : 0.0,
         st.present_max_ns / 1e6, st.queued_high,

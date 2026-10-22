@@ -87,7 +87,8 @@ static void *present_loop(void) {
         void *done = P.cfg.present(P.cfg.user, slot, ready);
         const uint64_t dt = now_ns() - t0;
         mtx_lock(&P.mtx);
-        P.st.presents++;
+        if (done) P.st.presents++;   /* a swap; a NULL return dropped the image */
+        else P.st.dropped++;
         P.st.present_ns += dt;
         if (dt > P.st.present_max_ns) P.st.present_max_ns = dt;
         P.done[slot] = done;

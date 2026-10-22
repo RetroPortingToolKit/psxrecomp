@@ -72,7 +72,7 @@ int  pt_try_submit(void *ready, void **next_done);
 void pt_drain(void);
 
 typedef struct PtStats {
-    uint64_t submits, presents, waits, wait_ns, present_ns, present_max_ns;
+    uint64_t submits, presents, dropped, waits, wait_ns, present_ns, present_max_ns;
     int      slots, queued_high;
 } PtStats;
 void pt_get_stats(PtStats *out);

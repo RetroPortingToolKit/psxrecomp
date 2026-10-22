@@ -93,7 +93,7 @@ static void run(int slots, long us, int expect_waits) {
     check(!atomic_load(&order_bad), "present sees only queued slots");
     PtStats st;
     pt_get_stats(&st);
-    check(st.submits == N_FRAMES && st.presents == N_FRAMES, "stats count");
+    check(st.submits == N_FRAMES && st.presents == N_FRAMES && st.dropped == 0, "stats count");
     check(st.queued_high <= slots, "bounded queue");
     if (expect_waits > 0) check(st.waits > 0 && st.wait_ns > 0, "slow display blocks the producer");
     /* stop with frames queued: they are presented, leftover tokens disposed */
