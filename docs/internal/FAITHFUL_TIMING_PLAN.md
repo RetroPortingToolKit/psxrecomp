@@ -2152,3 +2152,10 @@ conservative/device service, wrap/deadline edges) and scale/gate tests pass on
 Windows/Mac with assertions enabled. Release rebuild and native-cache refresh
 precede updated ordered qualification. Presenter lead fits the three slots and
 source identities now cover actual worker generations. No acceptance/push.
+
+2026-10-21 BRIEF-5 PC-only continuation: same-build production off/on identity
+matches 4,511 rows. Cycle fastpath quiet: 60.000 Hz, zero gaps >25 ms, p99
+busy 81.1% (still failed). Sampling identifies timed loads among remaining
+costs; share the checked base fastpath with loads and inline constant load
+operands. Independent full-charge/interlock matrix, scale/gate and cross-device
+event-boundary fixtures pass on PC. Refresh/qualification continues. No push.

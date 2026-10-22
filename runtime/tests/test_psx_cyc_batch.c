@@ -82,7 +82,11 @@ static void test_one_cycle_specialization(void) {
             CPUState reference = cpu;
             uint64_t before[7], expected[7], actual[7];
             clock_receipt(before, local);
-            psx_cyc_base(&reference); psx_cyc_deps(&reference, mask); psx_cyc_lds(&reference);
+            /* Keep the reference independent of the optimized base helper. */
+            if (reference.read_absorb[reference.read_absorb_which])
+                --reference.read_absorb[reference.read_absorb_which];
+            else psx_cyc_charge(1u);
+            psx_cyc_deps(&reference, mask); psx_cyc_lds(&reference);
             clock_receipt(expected, local);
             restore_receipt(before, &local);
             psx_cyc_step(&cpu, mask);
