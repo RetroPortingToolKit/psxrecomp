@@ -10122,7 +10122,7 @@ static GLuint        s_pts_tex[PT_MAX_SLOTS], s_pts_rb[PT_MAX_SLOTS], s_pts_fbo[
 static uint64_t s_pts_deadline[PT_MAX_SLOTS];
 static uint64_t s_pts_identity[PT_MAX_SLOTS];
 typedef struct PresentSample { uint64_t ticks, identity, deadline; } PresentSample;
-static _Atomic uint64_t s_pt_clock_ticks, s_pt_window_ticks, s_pt_late_drops, s_pt_unready_drops;
+static _Atomic uint64_t s_pt_clock_ticks, s_pt_window_ticks, s_pt_late_drops, s_pt_unready_drops, s_pt_far_deadlines;
 static PresentSample s_present_samples[128];
 static uint64_t s_present_sample_count;
 static atomic_flag s_present_sample_lock = ATOMIC_FLAG_INIT;
@@ -10221,7 +10221,18 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     /* Never make a late temporal image stall a present. The fence is only
      * a readiness test (zero timeout), after the CPU deadline wait. */
     uint64_t wait_start=SDL_GetPerformanceCounter();
-    interp_wait_until_ex(s_pts_deadline[slot], SDL_GetPerformanceFrequency(), 0);
+    /* A present deadline is at most a frame or two ahead. One further out was
+     * anchored to a stale clock (savestate load, cadence change) and parked
+     * this thread for seconds with nothing swapped: present now instead. */
+    uint64_t deadline = s_pts_deadline[slot];
+    const uint64_t pt_freq = SDL_GetPerformanceFrequency();
+    if (deadline > wait_start + pt_freq / 20u) {
+        deadline = 0;
+        if (atomic_fetch_add(&s_pt_far_deadlines, 1) == 0)
+            fprintf(stdout, "psxrecomp: present thread: deadline %.0f ms ahead ignored\n",
+                    (double)(s_pts_deadline[slot] - wait_start) * 1000.0 / (double)pt_freq);
+    }
+    interp_wait_until_ex(deadline, pt_freq, 0);
     atomic_fetch_add(&s_pt_clock_ticks,SDL_GetPerformanceCounter()-wait_start);
     int late = s_pts_extra[slot] && s_pts_deadline[slot] &&
         SDL_GetPerformanceCounter() > s_pts_deadline[slot] + SDL_GetPerformanceFrequency() / 1000u;
