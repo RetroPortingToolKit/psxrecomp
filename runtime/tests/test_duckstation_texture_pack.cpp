@@ -1,6 +1,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "../third_party/stb_image.h"
 #include "duckstation_texture_pack.h"
+#include "texture_pack_preload.hpp"
+#include <stdexcept>
+#include <atomic>
 #include "../src/png_write.h"
 
 #include <array>
@@ -110,23 +113,78 @@ bool decode_fails(DuckTexturePack* pack, uint64_t id) {
 }
 
 void preload(const fs::path& root) {
+    namespace tp = psx_texpreload;
     const char* name = "texpage-P4-3631D2A04EC85311-9CBCDEA9305D7528-64x256-4-2-8x2-P0-15.png";
     png(root/"replacements"/name,16,4);
     std::vector<uint16_t> vram(1024*512);
     place(vram,65,258,2,words(4)); place(vram,512,400,16,words(16));
-    auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
-    size_t bytes = 0;
-    check(duck_texture_pack_preload(pack.get(),&bytes) == 1 && bytes == 16*4*4,"preload decodes the pack");
-    DuckTextureMatch match{};
-    check(duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND,"preloaded fixture matches");
-    DuckTexturePixels pixels{};
-    check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND &&
-          pixels.width == 16,"preloaded image is resident without a decode request");
-    duck_texture_pixels_release(&pixels);
-    duck_texture_pack_set_decode_budget(pack.get(),1);
-    check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND,
-          "a preloaded image survives budget eviction");
-    duck_texture_pixels_release(&pixels);
+    {
+        auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
+        HdTexturePreloadResult r{};
+        check(duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r) == 1 && r.loaded == 1 &&
+              r.requested == 1 && r.bytes == 16*4*4 && r.failed == 0,"preload decodes the pack");
+        DuckTextureMatch match{};
+        check(duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND,"preloaded fixture matches");
+        DuckTexturePixels pixels{};
+        check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND &&
+              pixels.width == 16,"preloaded image is resident without a decode request");
+        duck_texture_pixels_release(&pixels);
+        duck_texture_pack_set_decode_budget(pack.get(),1);
+        check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND,
+              "a preloaded image survives budget eviction");
+        duck_texture_pixels_release(&pixels);
+    }
+    {   /* Over the aggregate cap: partial, nothing pinned, async path still decodes. */
+        auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
+        HdTexturePreloadResult r{};
+        check(duck_texture_pack_preload(pack.get(),16,4,&r) == 0 && r.loaded == 0 && r.over_budget == 1 &&
+              r.bytes == 0,"oversized image is skipped by the preload cap");
+        DuckTextureMatch match{};
+        check(duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND,"capped fixture matches");
+        DuckTexturePixels pixels = decoded(pack.get(),match.entry_id);
+        check(pixels.width == 16,"an image the preload skipped decodes on demand");
+        duck_texture_pixels_release(&pixels);
+    }
+    {   /* Injected worker failure: caught, reported, image left to the async path. */
+        auto pack = create(root);
+        tp::fault_mode() = 1;
+        HdTexturePreloadResult r{};
+        const int status = duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r);
+        tp::fault_mode() = 0;
+        check(status == 0 && r.worker_errors == 1 && r.failed == 1 && r.loaded == 0,
+              "a throwing decode is caught and reported as a partial preload");
+    }
+    {   /* Malformed image: failed, not pinned, async decode reports failure. */
+        std::ofstream(root/"replacements"/name,std::ios::binary|std::ios::trunc) << "not a png";
+        auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
+        HdTexturePreloadResult r{};
+        check(duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r) == 0 && r.failed == 1 &&
+              r.worker_errors == 0,"malformed image fails the preload item");
+        DuckTextureMatch match{};
+        if (duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND)
+            check(decode_fails(pack.get(),match.entry_id),"malformed image still fails on demand");
+    }
+}
+
+void preload_pool() {
+    namespace tp = psx_texpreload;
+    std::atomic<int> ran{0};
+    tp::fault_mode() = 2;   /* the second thread cannot be created */
+    size_t errors = tp::run(32,8,[&](size_t){ ++ran; });
+    check(errors == 0 && ran == 32,"thread creation failure lowers concurrency, all items still run");
+    tp::fault_mode() = 1;   /* the first item throws bad_alloc */
+    ran = 0;
+    errors = tp::run(32,8,[&](size_t){ ++ran; });
+    tp::fault_mode() = 0;
+    check(errors == 1 && ran == 31,"a throwing item is caught and counted");
+    ran = 0;
+    errors = tp::run(32,8,[&](size_t k){ if (k % 4 == 0) throw std::runtime_error("x"); ++ran; });
+    check(errors == 8 && ran == 24,"item exceptions never escape a pool thread");
+    tp::Budget budget(100);
+    check(budget.reserve(60) && !budget.reserve(41) && budget.reserve(40) && !budget.reserve(1),
+          "aggregate budget reservations are bounded");
+    budget.release(50);
+    check(budget.reserve(50),"released bytes are reusable");
 }
 
 void fixed_hash_vectors() {
@@ -624,7 +682,7 @@ int main(int argc, char** argv) {
         palettes(root/"palettes"); st_alias_duplicates(root/"keys"); failed_payloads(root/"invalid"); dumping(root/"dump");
         official_binary_oracle(root/"official-oracle"); defaults_and_options(root/"defaults");
         immutable_palettes_and_pages(root/"snapshots"); split_coalesce_copy_parts(root/"lifecycle"); copied_pack_ownership(root/"ownership");
-        resident_checkpoint(root/"resident"); preload(root/"preload");
+        resident_checkpoint(root/"resident"); preload(root/"preload"); preload_pool();
         /* Every artifact is created beneath this fresh, explicitly named test
          * root. No user-provided paths participate in recursive cleanup. */
         if (argc > 1 && !std::strcmp(argv[1],"--keep-artifacts")) std::printf("ARTIFACT_ROOT: %s\n",root.u8string().c_str());

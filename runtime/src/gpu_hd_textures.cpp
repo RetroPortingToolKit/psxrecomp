@@ -26,6 +26,11 @@ constexpr size_t kCompositionBudget = 64u * 1024u * 1024u;
 constexpr size_t kCompositionCount = 256;
 constexpr uint32_t kCompositionDimension = 8192;
 constexpr size_t kMaxParts = 64;
+/* Elective full preload of an installed pack: at most this much decoded RGBA
+ * pinned across both formats, decoded by at most this many threads. Anything
+ * beyond decodes on demand under the normal budget. */
+constexpr size_t kPreloadMaxBytes = size_t{512} * 1024u * 1024u;
+constexpr unsigned kPreloadThreads = 4;
 struct Composition {
     std::vector<uint64_t> signature;
     std::vector<uint8_t> rgba;
@@ -291,19 +296,30 @@ extern "C" int gpu_hd_textures_configure(const char* root, int replacements,
         }
         if (!duck_texture_pack_create(root, &next->duck, error, capacity)) return 0;
         if (next->replacements) {
-            /* Every replacement decoded and resident before the game draws. */
+            /* Replacements decoded and resident before the game draws, within
+             * kPreloadMaxBytes; the rest stays on the budgeted async path. */
             const auto t0 = std::chrono::steady_clock::now();
-            size_t bytes = 0, beetle_bytes = 0;
-            int loaded = duck_texture_pack_preload(next->duck, &bytes);
+            HdTexturePreloadResult dr{}, br{};
+            const int dstatus = duck_texture_pack_preload(next->duck, kPreloadMaxBytes,
+                                                          kPreloadThreads, &dr);
+            int bstatus = 1;
             if (next->beetle) {
-                const int beetle_loaded = hd_texture_pack_preload(next->beetle, &beetle_bytes);
-                if (beetle_loaded > 0) { loaded = (loaded > 0 ? loaded : 0) + beetle_loaded; bytes += beetle_bytes; }
+                const size_t left = dr.bytes < kPreloadMaxBytes ? kPreloadMaxBytes - dr.bytes : 0;
+                bstatus = hd_texture_pack_preload(next->beetle, left, kPreloadThreads, &br);
             }
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t0).count();
-            if (loaded > 0)
-                std::fprintf(stdout, "psxrecomp: texture pack: %d images preloaded (%.1f MiB) in %lld ms\n",
-                             loaded, bytes / 1048576.0, static_cast<long long>(ms));
+            const int requested = dr.requested + br.requested;
+            if (requested > 0 || dstatus < 0 || bstatus < 0)
+                std::fprintf(stdout, "psxrecomp: texture pack: preloaded %d/%d images (%.1f MiB) in %lld ms"
+                             "%s; %d over the %u MiB preload cap, %d failed (%d worker errors);"
+                             " the rest decode on demand\n",
+                             dr.loaded + br.loaded, requested, (dr.bytes + br.bytes) / 1048576.0,
+                             static_cast<long long>(ms),
+                             (dstatus < 0 || bstatus < 0) ? " (preload error)" :
+                             (dstatus == 1 && bstatus == 1) ? " (complete)" : " (partial)",
+                             dr.over_budget + br.over_budget, static_cast<unsigned>(kPreloadMaxBytes / (1024u * 1024u)),
+                             dr.failed + br.failed, dr.worker_errors + br.worker_errors);
         }
         /* Quiesce renderer users (GL render thread: dump_draw appends to the
          * old session's sources) before flushing its dumps or reading its
