@@ -176,7 +176,9 @@ void execute(Job &job) {
 }
 void run() {
 #ifdef _WIN32
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    /* Its window is short (the emulation thread's pacing idle time): below
+     * normal lost those slices to desktop work and the extra came in late. */
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 #endif
     /* Allocation and page commitment belong to the optional worker. The source
      * drops extras until both complete private contexts are ready. */
