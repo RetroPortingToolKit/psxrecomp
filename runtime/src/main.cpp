@@ -10694,7 +10694,10 @@ static void dynres_tick(void) {
      * load re-anchors pacing, the game's first seconds). */
     bool soft_tail = !held && tail > 0.0 && why && std::strcmp(why, "game entry") == 0;
     if (g_dynres.hold_request_s > 0.0) {
-        if (g_dynres.hold_request_s > tail) { tail = g_dynres.hold_request_s; soft_tail = !held; }
+        /* A load is not a heavy scene: its first frames re-stage VRAM, the
+         * HD cache and pacing. Hold the level for the whole request (hard),
+         * so that transient does not drop the resolution for seconds. */
+        if (g_dynres.hold_request_s > tail) { tail = g_dynres.hold_request_s; soft_tail = false; }
         why = "savestate load";
         g_dynres.hold_request_s = 0.0;
     }
@@ -10735,8 +10738,7 @@ static void dynres_tick(void) {
         /* A new scene: let the first sustained overrun jump several levels
          * (fast descent, dynamic_resolution.h). Render-thread start and a
          * new resolution re-initialize, which arms too. */
-        if (why && (std::strcmp(why, "savestate load") == 0 ||
-                    std::strcmp(why, "game entry") == 0 ||
+        if (why && (std::strcmp(why, "game entry") == 0 ||
                     std::strcmp(why, "window resize") == 0))
             dynrt_arm_descent(&g_dynres.rt);
         dynres_tick_rt(now_s, wall, period, held, tail, why);
