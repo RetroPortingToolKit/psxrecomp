@@ -50,6 +50,7 @@
 #include "ws_screen_mask.h"
 #include "ws_radial_screen_mask.h"
 #include <stdint.h>
+#include <stdatomic.h>
 #include <math.h>
 #include <limits.h>
 #include <stdio.h>
@@ -69,14 +70,30 @@ extern uint32_t psx_read_word(uint32_t addr);
 /* ---- VRAM ---- */
 /* Default execution and render-thread queries keep the live objects. Only
  * a bound replay thread selects private regions; no live state is swapped. */
+typedef struct GpuDisplayCache {
+    uint64_t epoch;
+    GpuDisplayInfo info;
+} GpuDisplayCache;
 struct GpuExecutionSnapshot {
     uint64_t frame;
     int recent_mdec;
     void *slots[323];
     void *storage;
     int ready;
+    uint64_t display_epoch;
+    GpuDisplayCache display_cache;
 };
 static PSX_THREAD_LOCAL GpuExecutionSnapshot *s_gpu_execution;
+/* Display registers change at GP1/state boundaries, not per primitive. Keep
+ * the derived view local to its reader; worker invalidation never touches the
+ * source epoch. The epoch also invalidates other live readers' local caches. */
+static _Atomic uint64_t s_display_epoch = 1;
+static PSX_THREAD_LOCAL GpuDisplayCache t_display_cache;
+static void gpu_display_state_changed(void) {
+    if (s_gpu_execution) ++s_gpu_execution->display_epoch;
+    else atomic_fetch_add_explicit(&s_display_epoch, 1, memory_order_release);
+}
+
 static uint16_t vram[1024 * 512];
 typedef uint16_t GpuContextType_vram[524288];
 static inline GpuContextType_vram *gpu_context_vram(void) {
@@ -5265,6 +5282,7 @@ static inline GpuContextType_g_pollhack_vblank_count *gpu_context_g_pollhack_vbl
 /* ---- Initialization ---- */
 
 static void gpu_reset_state(int clear_vram) {
+    gpu_display_state_changed();
     ws_reset_scene_history();
     if (clear_vram) {
         memset((*gpu_context_vram()), 0, sizeof((*gpu_context_vram())));
@@ -5365,12 +5383,15 @@ void gpu_init(void) {
     gpu_reset_state(1);
     (*gpu_context_video_mode()) = (*gpu_context_s_power_on_video_mode());
     (void)psx_video_timing_set_pal((int)(*gpu_context_video_mode()));
+    gpu_display_state_changed();
 }
 
 void gpu_set_power_on_video_mode(int pal) {
+    gpu_display_state_changed();
     (*gpu_context_s_power_on_video_mode()) = pal ? 1u : 0u;
     (*gpu_context_video_mode()) = (*gpu_context_s_power_on_video_mode());
     (void)psx_video_timing_set_pal((int)(*gpu_context_video_mode()));
+    gpu_display_state_changed();
 }
 
 /* ---- GPUSTAT read (0x1F801814) ---- */
@@ -5932,7 +5953,7 @@ int gpu_display_is_depth24(void) {
     return (int)((*gpu_context_display_depth()) & 1u);
 }
 
-void gpu_get_display_info(GpuDisplayInfo* out) {
+static void gpu_build_display_info(GpuDisplayInfo* out) {
     out->display_x = (*gpu_context_display_area_x());
     out->display_y = (*gpu_context_display_area_y());
     out->depth24   = (int)((*gpu_context_display_depth()) & 1u);
@@ -6010,6 +6031,18 @@ void gpu_get_display_info(GpuDisplayInfo* out) {
     out->screen_source_skip_y = screen_source_skip_y;
     out->screen_offset_y = vertical.valid ? vertical.offset_y : 0;
     if ((*gpu_context_vres())) out->screen_offset_y *= 2;
+}
+
+void gpu_get_display_info(GpuDisplayInfo* out) {
+    GpuExecutionSnapshot *execution = s_gpu_execution;
+    uint64_t epoch = execution ? execution->display_epoch :
+        atomic_load_explicit(&s_display_epoch, memory_order_acquire);
+    GpuDisplayCache *cache = execution ? &execution->display_cache : &t_display_cache;
+    if (cache->epoch != epoch) {
+        gpu_build_display_info(&cache->info);
+        cache->epoch = epoch;
+    }
+    *out = cache->info;
 }
 
 /* Debug accessors for GP1 display-range / mode (TCP gpu_state). */
@@ -9421,6 +9454,7 @@ static inline GpuContextType_gpu_local_gpu_write_gp1_reason *gpu_context_gpu_loc
     return s_gpu_execution ? (GpuContextType_gpu_local_gpu_write_gp1_reason *)s_gpu_execution->slots[322] : &gpu_local_gpu_write_gp1_reason;
 }
 void gpu_write_gp1(uint32_t val) {
+    gpu_display_state_changed();
     uint32_t cmd = (val >> 24) & 0x3F;
 
     switch (cmd) {
@@ -9445,6 +9479,7 @@ void gpu_write_gp1(uint32_t val) {
             psx_fatal_halt((*gpu_context_gpu_local_gpu_write_gp1_reason()));
         }
     }
+    gpu_display_state_changed();
 }
 
 /* ---- boot snapshot: complete GPU register state (see boot_state.h) ---- */
@@ -9526,6 +9561,7 @@ static int gpu_snap_emit(PstW *w) {
     return 1;
 }
 static int gpu_snap_parse(PstR *r) {
+    gpu_display_state_changed();
     uint32_t u; int32_t i; uint16_t h;
 #define RU(f) do { if (!pst_r_u32(r, &u)) return 0; (f) = u; } while (0)
 #define RI(f) do { if (!pst_r_i32(r, &i)) return 0; (f) = i; } while (0)
@@ -10225,6 +10261,7 @@ int gpu_execution_snapshot_capture(GpuExecutionSnapshot *snapshot) {
     ColorLut **lut = (ColorLut **)gpu_execution_region(snapshot, &s_screen_lut);
     if (*lut) color_lut_destroy(*lut);
     snapshot->ready = 0;
+    ++snapshot->display_epoch;
     snapshot->frame = s_frame_count;
     snapshot->recent_mdec = mdec_recently_active(WS_FMV_HYSTERESIS);
     for (size_t i = 0; i < sizeof s_gpu_execution_regions / sizeof s_gpu_execution_regions[0]; ++i) {

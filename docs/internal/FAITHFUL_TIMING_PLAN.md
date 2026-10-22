@@ -2260,3 +2260,20 @@ common emulation/context regression work while retaining the bar, or explicitly
 revise load/bar. No further code changes or pushes; all code is committed.
 Receipts: R4 local brief5-worker-idle and brief5-loaded-profile-diff (including
 unprofiled-prefix-proof.json). Cadence, title ctest and both pushes remain pending.
+
+2026-10-21 BRIEF-5 scope resumed: Claude authorizes the common-cost comparison.
+An exact da09fac/8130e6fd archive build with production options, loaded setting 0,
+frames 3450..4350, has 60.96% sampled source CPU and unprofiled-prefix p99 67.4%
+(32 windows >=60), versus current 59.39% / 65.9% (18). Native execution is
+positive with zero interpreted calls/misses; the historical 58.7% is not
+reproduced. Reuse the existing current profile rather than repeat it. The initial
+archive profile used netplay OFF and a wrong stop variable; exclude it.
+The paired profile shows gpu_get_display_info at 1.003% current wall samples
+versus zero separate old leaf samples. Cache the derived display geometry per
+execution context/reader until GP1, reset or snapshot restore changes registers;
+private invalidation does not touch live readers. The production GPU fixture
+checks all resolution modes, repeated queries, private/source separation,
+recapture, checkpoint and savestate restore, reset and power-on PAL. It passes.
+Continue failing loaded gate, cadence, title ctest and both pushes; quiet remains
+passed. No acceptance or current blocker. Receipts: R4 local
+brief5-stage2-regression/valid-* (first run explicitly INVALID).
