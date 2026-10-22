@@ -8,6 +8,9 @@ void render_pass_worker_stop(void);
 /* Stop executing before replacing immutable activation tables. */
 void render_pass_worker_quiesce(void);
 void render_pass_worker_flush(void);
+/* Optional guest replay borrows a declared source-owner pacing wait. Deadlines
+ * use host_clock_us(); zero withdraws the window. Source execution never waits. */
+void render_pass_worker_idle_until(uint64_t deadline_us);
 uint32_t render_pass_worker_take_plan(uint32_t *period);
 typedef struct RenderPassWorkerStats {
     uint64_t published, completed, late, aborted, refused, dispatch_misses, native_calls;

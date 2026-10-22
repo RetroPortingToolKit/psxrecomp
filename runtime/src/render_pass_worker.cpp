@@ -29,6 +29,12 @@
 #include <cstring>
 #include <cstdlib>
 #include <csetjmp>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 extern "C" {
 uint32_t dma_snapshot_bytes(void);
 void dma_snapshot_write(uint8_t *);
@@ -91,10 +97,13 @@ struct Worker {
     std::atomic<uint32_t> address{0};
     std::atomic<const char *> failure{nullptr};
     uint64_t serial = 0;
+    uint64_t idle_until = 0, failed_window = 0, estimated_us = 3000;
 };
 Worker W;
 thread_local std::jmp_buf landing;
-thread_local bool armed;
+thread_local bool armed, deadline_expired;
+thread_local uint64_t execution_deadline;
+thread_local unsigned deadline_checks;
 void fault(const char *reason, uint32_t addr) {
     W.failure.store(reason); W.address.store(addr);
     if (!std::strcmp(reason, "dispatch_miss")) ++W.misses;
@@ -105,6 +114,11 @@ void overrun() { if (armed) fault("watchdog", 0); }
 void capture_fault(const char *reason) { fault(reason, 0); }
 int lookup(void *user, CPUState *cpu, uint32_t addr, PsxExecutionCode *code, void (**flush)(void)) {
     Job *job = static_cast<Job *>(user);
+    /* Private dispatch supplies an inexpensive host-budget cancellation point.
+     * Source dispatch and the faithful cycle helpers do not pay for this. */
+    if (armed && (++deadline_checks % 32u) == 0 && host_clock_us() >= execution_deadline) {
+        deadline_expired = true; ++W.late; std::longjmp(landing, 1);
+    }
     if (overlay_execution_lookup(job->overlays, addr, code, flush) ||
         psx_game_execution_lookup(addr, code)) { ++W.calls; return 1; }
     uint32_t phys = addr & 0x1FFFFFFFu;
@@ -147,7 +161,7 @@ void execute(Job &job) {
         job.ok = job.draw(&job.cpu, job.payload, job.pass.alpha_q16) != 0;
         armed = false;
     } else {
-        armed = false; ++W.aborted;
+        armed = false; if (!deadline_expired) ++W.aborted;
         g_psx_cyc_local_acc = nullptr; g_psx_cyc_bb_defer = 0; g_psx_cyc_batch = 0;
     }
     psx_execution_end();
@@ -161,6 +175,9 @@ void execute(Job &job) {
     psx_irq_set_cause_ptr(nullptr);
 }
 void run() {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
     /* Allocation and page commitment belong to the optional worker. The source
      * drops extras until both complete private contexts are ready. */
     std::unique_ptr<Job> prepared[2];
@@ -180,16 +197,33 @@ void run() {
         Job *job = nullptr;
         {
             std::unique_lock<std::mutex> lock(W.mutex);
-            W.wake.wait(lock, [] { return W.stop ||
-                W.jobs[0]->queued.load() || W.jobs[1]->queued.load(); });
+            W.wake.wait(lock, [] {
+                return W.stop || (W.idle_until > W.failed_window &&
+                    (W.jobs[0]->queued.load() || W.jobs[1]->queued.load()));
+            });
             if (W.stop) return;
+            const uint64_t now = host_clock_us();
+            if (now + W.estimated_us + 500u >= W.idle_until) {
+                W.failed_window = W.idle_until; continue;
+            }
+            execution_deadline = W.idle_until - 500u;
             for (auto &slot : W.jobs)
                 if (slot->queued.load(std::memory_order_acquire) &&
                     (!job || slot->serial < job->serial)) job = slot.get();
             if (job) job->queued.store(false);
         }
         if (!job) continue;
-        execute(*job);
+        if (!job->consumer_done.load(std::memory_order_acquire)) {
+            const uint64_t began = host_clock_us();
+            deadline_expired = false; deadline_checks = 0;
+            execute(*job);
+            const uint64_t elapsed = host_clock_us() - began;
+            host_span_record(HSPAN_MOD_WORK, began, elapsed, 0x5257524Bu);
+            const uint64_t observed = deadline_expired ? elapsed + elapsed / 4u : elapsed;
+            const uint64_t smoothed = (W.estimated_us * 7u + observed) / 8u;
+            W.estimated_us = observed > smoothed ? observed : smoothed;
+            if (W.estimated_us > 12000u) W.estimated_us = 12000u;
+        }
         job->worker_done.store(true, std::memory_order_release);
     }
 }
@@ -215,6 +249,7 @@ bool start() {
     }
     mod_execution_seal();
     W.stop = false; W.next_slot = 0;
+    W.idle_until = W.failed_window = 0; W.estimated_us = 3000;
     W.ready.store(false);
     W.thread = std::thread(run);
     return true;
@@ -282,6 +317,14 @@ extern "C" int psx_mod_render_pass_async(CPUState *cpu, const PSXModRenderPass *
         job->queued.store(true, std::memory_order_release);
     }
     ++W.published; W.wake.notify_one(); return 1;
+}
+extern "C" void render_pass_worker_idle_until(uint64_t deadline_us) {
+    if (!W.enabled.load() || !W.ready.load(std::memory_order_acquire)) return;
+    {
+        std::lock_guard<std::mutex> lock(W.mutex);
+        W.idle_until = deadline_us;
+    }
+    if (deadline_us) W.wake.notify_one();
 }
 extern "C" void render_pass_worker_flush(void) {
     if (!W.enabled.load() || !W.ready.load(std::memory_order_acquire)) return;

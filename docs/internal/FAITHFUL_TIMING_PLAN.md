@@ -2233,3 +2233,15 @@ now tag source publication and its RAM/precision/GPU stages so the high-percenti
 window can be attributed directly rather than inferred from a sampled mean.
 PGXP boundary/reuse checks pass after restoring 256-word pages. Continue ordered
 production gates; no general guest hot-path work, no push.
+
+2026-10-21 BRIEF-5 publication attribution: original-off identity passes; quiet
+60.000 Hz, one 29.901 ms gap, p99 64.7%. RPUB averages 0.488 ms/job, p99
+0.667/max 0.813; subtracting measured publication leaves residual p99 63.3%.
+The hitch overlaps emulation-thread disc reads (8.2/13.0 ms), not publication.
+Unprofiled prefix of the paired run has p99 58.1% off (zero windows >=60) versus
+65.5% on (12 windows >=60), indicating optional-worker contention rather than
+36 points of source publication. Run optional native draws only in declared
+source pacing waits, with a conservative measured cost estimate and private
+host-deadline cancellation. Source guest hot paths are unchanged. Use the same
+below-normal Windows scheduling policy as other optional workers. Production
+build/ordered gates continue; no push or acceptance.

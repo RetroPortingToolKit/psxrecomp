@@ -9794,7 +9794,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         uint64_t perf_start = runtime_perf_section_begin();
         if (!manual_turbo_active && !turbo_load_paced && present_should_wall_pace()) {
             const uint64_t dyn_t0 = SDL_GetPerformanceCounter();
+            const uint64_t idle_us = s_frame_pacer.next_deadline > dyn_t0
+                ? (s_frame_pacer.next_deadline - dyn_t0) * 1000000u / SDL_GetPerformanceFrequency() : 0;
+            if (idle_us) render_pass_worker_idle_until(host_clock_us() + idle_us);
             frame_pacer_wait(&s_frame_pacer, g_frame_period_ms);
+            render_pass_worker_idle_until(0);
             const uint64_t waited = SDL_GetPerformanceCounter() - dyn_t0;
             if (g_dynres.active) g_dynres.pacer_ticks += waited;
             g_frame_report_wait_ticks += waited;
