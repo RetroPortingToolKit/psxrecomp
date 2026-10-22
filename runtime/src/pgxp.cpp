@@ -63,6 +63,7 @@ enum {
      * precise value may sit up to one pixel below or two above it. */
     PGXP_F_DX = 1u << 4,
     PGXP_F_DY = 1u << 5,
+    PGXP_F_UNCLAMPED = 1u << 6, /* exact GTE projection; intact word only */
     PGXP_F_VXY = PGXP_F_VX | PGXP_F_VY,
 };
 
@@ -551,7 +552,7 @@ static inline int pv_live(const PGXPValue *pv) {
 static inline void pv_validate(PGXPValue *pv, uint32_t actual) {
     if (pv->gen != s_gen) return;
     uint32_t diff = pv->value ^ actual;
-    if (diff) pv->flags &= (uint16_t)~PGXP_F_PROJECTION;
+    if (diff) pv->flags &= (uint16_t)~(PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
     if ((pv->flags & PGXP_F_VX) && (diff & 0x0000FFFFu))
         pv->flags &= (uint16_t)~(PGXP_F_VX | PGXP_F_DX | PGXP_F_VZ);
     if ((pv->flags & PGXP_F_VY) && (diff & 0xFFFF0000u))
@@ -696,7 +697,7 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
          * cpu-mode keeps working. */
         dst->y16 = ((int32_t)value >> 16) << 16;
         dst->flags = PGXP_F_VY;
-        if (src && src->gen == s_gen) {
+        if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED)) {
             uint32_t actual_half = (value & 0xFFFFu) << (hi_half ? 16 : 0);
             uint32_t mask = hi_half ? 0xFFFF0000u : 0x0000FFFFu;
             uint16_t want = hi_half ? PGXP_F_VY : PGXP_F_VX;
@@ -768,7 +769,7 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         if (hi_half) dst->value = (dst->value & 0x0000FFFFu) | (half << 16);
         else         dst->value = (dst->value & 0xFFFF0000u) | half;
         dst->flags &= (uint16_t)~((hi_half ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
-                                  PGXP_F_VZ | PGXP_F_PROJECTION);
+                                  PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
         dst->z = 0;
         int ok = 0, derived = 0;
         int32_t v16 = 0;
@@ -782,7 +783,8 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
              * coordinate half here. */
             if (hi_half) { dst->y16 = v16; dst->flags |= (uint16_t)(PGXP_F_VY | (derived ? PGXP_F_DY : 0)); }
             else         { dst->x16 = v16; dst->flags |= (uint16_t)(PGXP_F_VX | (derived ? PGXP_F_DX : 0)); }
-        } else if (src && src->gen == s_gen && (src->flags & PGXP_F_VX) &&
+        } else if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED) &&
+                   (src->flags & PGXP_F_VX) &&
                    ((src->value ^ value) & 0xFFFFu) == 0) {
             const uint16_t d = (src->flags & PGXP_F_DX) ? (hi_half ? PGXP_F_DY : PGXP_F_DX) : 0;
             if (hi_half) { dst->y16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VY | d); }
@@ -797,7 +799,7 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         dst->value = (dst->value & ~(0xFFu << shift)) |
                      ((value & 0xFFu) << shift);
         dst->flags &= (uint16_t)~(((addr & 2u) ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
-                                  PGXP_F_VZ | PGXP_F_PROJECTION);
+                                  PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
         dst->z = 0;
         return;
     }
@@ -937,7 +939,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
  * sub-pixel value; an untracked half contributes its exact integer value
  * (adding an exact offset to a tracked coordinate keeps the fraction). */
 static inline int32_t comp16(const PGXPValue *pv, uint32_t value, int hi_half) {
-    if (pv && pv->gen == s_gen) {
+    if (pv && pv->gen == s_gen && !(pv->flags & PGXP_F_UNCLAMPED)) {
         if (!hi_half && (pv->flags & PGXP_F_VX) &&
             ((pv->value ^ value) & 0x0000FFFFu) == 0)
             return pv->x16;
@@ -951,7 +953,7 @@ static inline int32_t comp16(const PGXPValue *pv, uint32_t value, int hi_half) {
 /* The derived-half marks (PGXP_F_DX / DY) an operand contributes through
  * comp16: a tracked derived half keeps its rounding window in the sum. */
 static inline uint16_t derived_bits(const PGXPValue *pv, uint32_t value) {
-    if (!pv || pv->gen != s_gen) return 0;
+    if (!pv || pv->gen != s_gen || (pv->flags & PGXP_F_UNCLAMPED)) return 0;
     uint16_t d = 0;
     if ((pv->flags & PGXP_F_DX) && (pv->flags & PGXP_F_VX) &&
         ((pv->value ^ value) & 0x0000FFFFu) == 0) d |= PGXP_F_DX;
@@ -961,7 +963,7 @@ static inline uint16_t derived_bits(const PGXPValue *pv, uint32_t value) {
 }
 
 static inline int comp_tracked(const PGXPValue *pv, uint32_t value, int hi_half) {
-    if (!pv || pv->gen != s_gen) return 0;
+    if (!pv || pv->gen != s_gen || (pv->flags & PGXP_F_UNCLAMPED)) return 0;
     if (!hi_half)
         return (pv->flags & PGXP_F_VX) &&
                ((pv->value ^ value) & 0x0000FFFFu) == 0;
@@ -1504,13 +1506,26 @@ extern "C" int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3,
                                     int64_t x_num, int64_t x_den,
                                     int32_t *x16, int32_t *y16) {
     /* Qualify exactly the vertices whose guest projection is the plain
-     * IR * (H / SZ3) of the continuous one: sf=1, no IR1/IR2 clamp (the
-     * stored IR equals MAC >> 12), SZ3 unclamped and nonzero, and no UNR
+     * IR * (H / SZ3) of the continuous one: sf=1, verified IR1/IR2 conversion, SZ3 unclamped and nonzero, and no UNR
      * divide overflow (the GTE saturates the quotient when H >= 2*SZ3). */
     if (shift != 12 || x_den <= 0) return 0;
-    if ((mac1 >> 12) != (int64_t)ir1 || (mac2 >> 12) != (int64_t)ir2) return 0;
+    const int64_t ix = mac1 >> 12, iy = mac2 >> 12;
     const int64_t z_int = mac3 >> 12;
-    if (z_int <= 0 || z_int > 0xFFFF || (uint32_t)z_int != sz3) return 0;
+    if (z_int <= 0) return 0;
+    const bool xy_clamped = ix != ir1 || iy != ir2;
+    const bool z_clamped = z_int > 0xFFFF;
+    const bool unclamped = xy_clamped || z_clamped;
+    if (unclamped) {
+        /* Only the opt-in exact projection may bypass IR saturation. Reject
+         * wrapped accumulators, lm=1 sign clamps and every other mismatch. */
+        const int64_t lo = -(INT64_C(1) << 43), hi = (INT64_C(1) << 43) - 1;
+        const int64_t cx = ix < -32768 ? -32768 : ix > 32767 ? 32767 : ix;
+        const int64_t cy = iy < -32768 ? -32768 : iy > 32767 ? 32767 : iy;
+        if (!s_preserve_projection || mac1 < lo || mac1 > hi ||
+            mac2 < lo || mac2 > hi || mac3 < lo || mac3 > hi ||
+            cx != ir1 || cy != ir2) return 0;
+    }
+    if ((uint32_t)(z_clamped ? 0xFFFF : z_int) != sz3) return 0;
     if ((int64_t)h >= 2 * z_int) return 0;
     /* (MAC/4096) * H / (MAC3/4096): the 4096s cancel. Double keeps ~52 bits,
      * far below the 1/65536 px the shadow carries. Host-only and visual-only,
@@ -1528,7 +1543,7 @@ extern "C" int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3,
     if (fy > lim - 1.0) fy = lim - 1.0;
     *x16 = (int32_t)std::floor(fx);
     *y16 = (int32_t)std::floor(fy);
-    return 1;
+    return unclamped ? 2 : 1;
 }
 
 /* Defined below with the GPU consumer. */
@@ -1560,6 +1575,21 @@ extern "C" void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3,
     pv->value = packed;
     pv->gen = s_gen;
     s_gte[15] = *pv;                           /* SXYP mirrors SXY2           */
+}
+
+extern "C" void pgxp_gte_mark_unclamped(uint32_t depth) {
+    if (!g_pgxp_active) return;
+    s_gte[14].flags |= PGXP_F_UNCLAMPED;
+    s_gte[14].projection.z = (float)depth;
+    s_gte[15] = s_gte[14];
+}
+
+extern "C" float pgxp_get_unclamped_depth(uint32_t addr, uint32_t word) {
+    if (!g_pgxp_active || !s_preserve_projection) return 0.0f;
+    const PGXPValue *pv = pgxp_ptr(addr);
+    if (!pv || pv->gen != s_gen || pv->value != word ||
+        !(pv->flags & PGXP_F_UNCLAMPED) || !(pv->flags & PGXP_F_VZ)) return 0.0f;
+    return pv->projection.z;
 }
 
 extern "C" int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16) {
@@ -1695,8 +1725,12 @@ static inline int pgxp_accept(int32_t px, int32_t py, int32_t int_x,
                               int32_t int_y, uint32_t word, uint16_t flags) {
     const int dx_derived = (flags & PGXP_F_DX) != 0;
     const int dy_derived = (flags & PGXP_F_DY) != 0;
-    if (!pgxp_agrees(px, int_x, (int16_t)(word & 0xFFFFu), dx_derived) ||
-        !pgxp_agrees(py, int_y, (int16_t)(word >> 16), dy_derived))
+    /* This tag can only ride an intact, value-validated GTE word. Arithmetic
+     * constructs new flags and loses it; the position-cache tier never has it.
+     * Clamped IR is an integer hardware limit, not the enhanced visual vertex. */
+    if (!(s_preserve_projection && (flags & PGXP_F_UNCLAMPED)) &&
+        (!pgxp_agrees(px, int_x, (int16_t)(word & 0xFFFFu), dx_derived) ||
+        !pgxp_agrees(py, int_y, (int16_t)(word >> 16), dy_derived)))
         return 1;
     if (s_tolerance >= 0.0f) {
         if (pgxp_moved(px, int_x, dx_derived) > s_tolerance ||
