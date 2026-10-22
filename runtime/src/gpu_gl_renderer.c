@@ -10420,7 +10420,23 @@ static int present_burst_count(void) {
 }
 static int  fg_keep_real(void);      /* frame generation */
 static void fg_note_swap(uint64_t ns);
+/* Present watchdog: when interpolation has swapped nothing for 100 ms the
+ * next guest frame bypasses it and presents plainly. In-between frames are
+ * optional; the game's own frame always reaches the screen. */
+static uint64_t s_last_swap_ticks;
+static uint64_t s_interp_bypasses;
+static int present_starved(void) {
+    const uint64_t now = SDL_GetPerformanceCounter();
+    if (!s_last_swap_ticks || now - s_last_swap_ticks < SDL_GetPerformanceFrequency() / 10u)
+        return 0;
+    if (s_interp_bypasses++ == 0)
+        fprintf(stdout, "psxrecomp: interpolation presented nothing for %.0f ms: presenting the guest frame directly\n",
+                (double)(now - s_last_swap_ticks) * 1000.0 / (double)SDL_GetPerformanceFrequency());
+    return 1;
+}
+
 static void gl_swap_with_osd(void) {
+    s_last_swap_ticks = SDL_GetPerformanceCounter();
     openxr_present_native(); /* Copy guest content before host-only overlays. */
     s_native_surface_pending=0; /* Hold-last/resim cannot reuse a native source. */
 #ifndef PSX_NO_DEBUG_TOOLS
@@ -10879,7 +10895,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
         interp_fbo, src_x, disp_y, w, h, linear, force_4_3, GL_PRES_VRAM,
         disp_x, disp_y,
         present_dirty_test(disp_x, disp_y, disp_x + w - 1, disp_y + h - 1));
-    if (interp_pair) {
+    if (interp_pair && !present_starved()) {
         /* Temporal blending owns this stock frame interval. Capture hold-last
          * before pacing; every blend and Swap remains on this context/thread. */
         hold_capture_native_fbo(src_fbo, src_x, disp_y, w, h, force_4_3, linear);
@@ -11060,7 +11076,7 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
         fbo, 0, disp_y, g_wide_w, disp_h, linear, 0, GL_PRES_WIDE,
         disp_x, disp_y,
         present_dirty_test(0, disp_y, VRAM_W - 1, disp_y + disp_h - 1));
-    if (interp_pair) {
+    if (interp_pair && !present_starved()) {
         hold_capture_native_fbo(fbo, 0, disp_y, g_wide_w, disp_h, 0, linear);
         interp_present_source_interval();
         gl_perf_present_exit(1);
