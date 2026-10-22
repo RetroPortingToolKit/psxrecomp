@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * Pin cross-device causality at a scheduler deadline.
  *
@@ -12,8 +13,8 @@
 int g_ls_replay_active = 0;
 int g_ls_mode = 0;
 int g_precise_mode = 0;
-int g_psx_call_bail = 0;
-uint32_t i_mask = 0;
+PSX_THREAD_LOCAL int g_psx_call_bail = 0;
+PSX_THREAD_LOCAL uint32_t i_mask = 0;
 uint64_t g_guest_store_count = 0;
 uint64_t g_mmio_access_count = 0;
 

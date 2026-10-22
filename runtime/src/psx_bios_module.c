@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* psx_bios_module.c — host side of loadable BIOS backends (psx_bios_module.h).
  *
  * A bundled release links OpenBIOS only. When the player picks a retail dump
@@ -203,7 +204,7 @@ int psx_bios_module_cache_path(const char *exe_dir, const char *stem,
 void psx_bios_module_fill_callbacks(PsxBiosModuleCallbacks *out) {
     extern int (*g_psx_bios_hle_hook)(struct CPUState *cpu, uint32_t phys);
     extern uint64_t g_dispatch_static_hits;
-    extern uint64_t g_psx_bail_flattened;
+    extern PSX_THREAD_LOCAL uint64_t g_psx_bail_flattened;
     extern int psx_game_address_in_text(uint32_t addr);
     extern uint64_t s_frame_count;
     extern uint32_t g_psx_mod_guest_functions;

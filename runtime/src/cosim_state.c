@@ -33,8 +33,8 @@ static inline uint64_t fnv_u64(uint64_t h, uint64_t v) { return fnv(h, &v, 8); }
 extern CPUState *debug_cpu_ptr;
 extern uint8_t  *memory_get_ram_ptr(void);
 extern uint8_t  *memory_get_scratchpad_ptr(void);
-extern uint32_t  i_stat;
-extern uint32_t  i_mask;
+extern PSX_THREAD_LOCAL uint32_t  i_stat;
+extern PSX_THREAD_LOCAL uint32_t  i_mask;
 extern PSX_THREAD_LOCAL uint64_t  psx_cycle_count;
 extern uint32_t  dirty_ram_get_bitmap_word(uint32_t word_index);
 extern uint32_t  dirty_ram_get_bitmap_word_count(void);

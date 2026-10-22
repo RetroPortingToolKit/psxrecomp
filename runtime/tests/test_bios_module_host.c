@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* test_bios_module_host.c — the host side of loadable BIOS backends
  * (runtime/src/psx_bios_module.c) against fake modules built by
  * runtime/CMakeLists.txt from tests/bios_module_fake.c.
@@ -47,8 +48,8 @@ int psx_mod_dispatch_guest_function(struct CPUState *cpu, uint32_t address) {
 }
 int (*g_psx_bios_hle_hook)(struct CPUState *cpu, uint32_t phys) = 0;
 uint64_t g_dispatch_static_hits = 0;
-uint32_t g_debug_current_func_addr = 0;
-uint64_t g_psx_bail_flattened = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_flattened = 0;
 uint32_t g_psx_ram_mask = 0x1FFFFFu;
 void psx_bios_hle_configure(uint32_t a, uint32_t b) { (void)a; (void)b; }
 int  autocompile_toolchain_available(void) { return 0; }

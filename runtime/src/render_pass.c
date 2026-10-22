@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* render_pass.c - host-timed render passes (psx_mod_render_pass_plan /
  * psx_mod_render_pass, mod_plugins.h). See docs/RENDER_PASSES.md.
  *
@@ -44,8 +45,8 @@ extern uint16_t *gpu_get_vram_ptr(void);
  * the opt-in 8 MB RAM mod. Latched by memory_init() once per boot, so it
  * cannot change inside a pass, but it can between sessions. */
 extern uint32_t memory_get_ram_bytes(void);
-extern uint32_t i_stat;
-extern uint32_t i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_mask;
 /* gte.cpp: precision-tracking shadows (PGXP + the position cache) roll back
  * with the machine, or they describe the words a pass wrote. */
 extern void gte_precision_checkpoint_begin(void);
@@ -70,22 +71,22 @@ extern int      psx_rewind_is_open(void);
 extern int      psx_presentation_fast_forward(void);
 extern uint64_t g_guest_store_count;
 extern uint64_t g_mmio_access_count;
-extern uint32_t g_debug_last_store_pc;
-extern uint32_t g_debug_current_func_addr;
-extern int      g_psx_dispatch_depth;
-extern int      g_psx_call_bail;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL int      g_psx_dispatch_depth;
+extern PSX_THREAD_LOCAL int      g_psx_call_bail;
 extern int      g_ls_mode;
 extern int      g_ls_replay_active;
 static int      s_netplay_allowed;
-extern void   (*g_overlay_flush_pending_cycles)(void);
+extern PSX_THREAD_LOCAL void   (*g_overlay_flush_pending_cycles)(void);
 /* Host nesting that runtime frames set on entry and put back on exit. */
-extern int      g_call_unit_depth;        /* overlay_loader_call_native */
-extern int      g_dma_exec_depth;         /* dma.c kick / async writes */
-extern int      g_host_store_depth;       /* memory.c psx_host_write_* */
-extern int      g_dma_cur_ch;
-extern uint32_t g_dma_cur_madr;
-extern uint32_t g_dma_cur_bcr;
-extern uint32_t g_dma_initiator_pc;
+extern PSX_THREAD_LOCAL int      g_call_unit_depth;        /* overlay_loader_call_native */
+extern PSX_THREAD_LOCAL int      g_dma_exec_depth;         /* dma.c kick / async writes */
+extern PSX_THREAD_LOCAL int      g_host_store_depth;       /* memory.c psx_host_write_* */
+extern PSX_THREAD_LOCAL int      g_dma_cur_ch;
+extern PSX_THREAD_LOCAL uint32_t g_dma_cur_madr;
+extern PSX_THREAD_LOCAL uint32_t g_dma_cur_bcr;
+extern PSX_THREAD_LOCAL uint32_t g_dma_initiator_pc;
 extern int      g_dirty_interp_active;    /* dirty-RAM interpreter */
 extern int      g_exec_phase;
 extern int      g_precise_mode;

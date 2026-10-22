@@ -229,7 +229,7 @@ STUBS_C = r"""
 
 uint64_t s_frame_count = 0;
 PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
-uint32_t g_debug_last_store_pc = 0x80012340u;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc = 0x80012340u;
 uint32_t g_psx_ram_size = 0x00200000u;
 uint32_t g_psx_ram_mask = 0x001FFFFFu;
 void psx_video_timing_set_pal(int pal) { (void)pal; }
@@ -256,10 +256,10 @@ uint16_t mod_texture_packet_bank(uint32_t p, const uint32_t *words, uint32_t n)
 int mod_texture_packet_precision(uint32_t p, float q[3], float xy[6])
 { (void)p; (void)q; (void)xy; return 0; }
 void psx_host_write_half(uint32_t addr, uint16_t val) { (void)addr; (void)val; }
-uint32_t g_debug_current_func_addr = 0x80045670u;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0x80045670u;
 CPUState *debug_cpu_ptr = 0;
-uint32_t i_stat = 0;
-uint32_t i_mask = 0;
+PSX_THREAD_LOCAL uint32_t i_stat = 0;
+PSX_THREAD_LOCAL uint32_t i_mask = 0;
 static uint16_t *g_vram;
 
 uint32_t debug_guest_ra(void) { return 0x8000AAAAu; }

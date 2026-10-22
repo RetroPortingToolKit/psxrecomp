@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* guest_cycle_profile.c - always-on guest-cycle profile ring.
  *
  * Answers "where did the guest CPU spend its cycles between frame A and
@@ -35,7 +36,7 @@
 extern uint64_t s_frame_count;
 extern volatile uint32_t g_psx_last_fn_entry;
 extern volatile uint32_t g_psx_last_block;
-extern uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
 extern uint32_t debug_guest_ra(void);
 extern uint32_t overlay_loader_native_inprogress(void);
 extern int psx_exec_phase(void);

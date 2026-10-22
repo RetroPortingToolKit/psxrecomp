@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * debug_server.c -- TCP debug server for PSX recomp v4
  *
@@ -119,8 +120,8 @@
 #include "debug_socket_io.h"
 
 /* ---- Externs from runtime ---- */
-extern uint32_t i_stat;
-extern uint32_t i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_mask;
 
 /* Memory access (from memory.c) */
 extern uint32_t psx_read_word(uint32_t addr);
@@ -491,10 +492,10 @@ static struct { uint32_t lo, hi; } s_wtrace_trans_ranges[WTRACE_TRANS_MAX_RANGES
 static int s_wtrace_trans_range_count = 0;
 
 /* Function attribution global — set by psx_dispatch() before each call. */
-uint32_t g_debug_current_func_addr = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0;
 
 /* Last store PC — set by recompiler emitter before every store instruction. */
-uint32_t g_debug_last_store_pc = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc = 0;
 
 /* Static dispatch hit counter — incremented by generated dispatch code on
  * every binary-search hit (i.e. successfully dispatched to static C). */
@@ -11391,9 +11392,9 @@ static void wtrace_fill_entry(WriteTraceEntry *e, uint64_t seq,
                               uint32_t phys, uint32_t old_val,
                               uint32_t new_val, uint8_t width)
 {
-    extern int      g_dma_exec_depth;   /* >0 while a DMA moves data (dma.c) */
-    extern int      g_dma_cur_ch;       /* in-flight DMA channel, or -1 */
-    extern uint32_t g_dma_initiator_pc; /* guest PC that kicked the DMA */
+    extern PSX_THREAD_LOCAL int      g_dma_exec_depth;   /* >0 while a DMA moves data (dma.c) */
+    extern PSX_THREAD_LOCAL int      g_dma_cur_ch;       /* in-flight DMA channel, or -1 */
+    extern PSX_THREAD_LOCAL uint32_t g_dma_initiator_pc; /* guest PC that kicked the DMA */
     uint32_t ra = debug_cpu_ptr ? debug_cpu_ptr->gpr[31] : 0;
     e->seq       = seq;
     e->addr      = phys;

@@ -1,9 +1,10 @@
+#include "psx_thread_local.h"
 #include "interrupts.c"
 
 int psx_mod_function_entry_active(void) { return 0; }
 int g_cosim_dirty_pump_site;
-int g_call_unit_depth;
-int g_psx_dispatch_depth;
+PSX_THREAD_LOCAL int g_call_unit_depth;
+PSX_THREAD_LOCAL int g_psx_dispatch_depth;
 uint32_t g_dirty_safe_resume_pc;
 
 static void check(int ok, const char* message) {

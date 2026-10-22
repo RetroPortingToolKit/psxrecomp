@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #include "mod_runtime.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
@@ -42,8 +43,8 @@ extern "C" void gpu_hd_textures_set_dump_enabled(int) {}
 extern "C" int gpu_hd_textures_reload(char*, size_t) { return 0; }
 /* sio.c's environment (as in test_sio_jogcon_protocol.c). */
 extern "C" {
-uint32_t i_stat = 0, i_mask = 0;
-uint32_t g_debug_current_func_addr = 0, g_debug_last_store_pc = 0;
+PSX_THREAD_LOCAL uint32_t i_stat = 0, i_mask = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0, g_debug_last_store_pc = 0;
 int psx_get_in_exception(void) { return 0; }
 uint64_t psx_get_cycle_count(void) { static uint64_t t; return t += 64; }
 uint32_t memory_get_sr(void) { return 0; }

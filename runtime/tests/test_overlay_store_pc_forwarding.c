@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Overlay DLLs must update the runtime's store-PC breadcrumb (ABI v24).
  *
  * This TU is an overlay DLL in miniature: it is built with the same defines
@@ -14,7 +15,7 @@
 
 /* Verbatim from code_generator.cpp's emitted extern block. Must still compile
  * once cpu_state.h has mapped the name onto the host pointer. */
-extern uint32_t g_debug_last_store_pc;  /* exact PC of the executing SW/SH/SB — wtrace/readtrace producer attribution (debug_server.c) */
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;  /* exact PC of the executing SW/SH/SB — wtrace/readtrace producer attribution (debug_server.c) */
 
 static uint32_t host_last_store_pc;
 static uint32_t host_ram_word;

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * event_ring.c — always-on unified event-timeline ring. See event_ring.h.
  *
@@ -13,10 +14,10 @@
 #include <string.h>
 
 /* ---- runtime globals captured at record time ---- */
-extern uint32_t i_stat;                     /* memory.c     */
-extern uint32_t i_mask;                     /* memory.c     */
-extern uint32_t g_debug_current_func_addr;  /* debug_server */
-extern uint32_t g_debug_last_store_pc;      /* debug_server */
+extern PSX_THREAD_LOCAL uint32_t i_stat;                     /* memory.c     */
+extern PSX_THREAD_LOCAL uint32_t i_mask;                     /* memory.c     */
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;  /* debug_server */
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;      /* debug_server */
 
 /* Execution-mode sources (see overlay_loader.c / dirty_ram_interp.c). */
 extern uint32_t overlay_loader_get_inprogress(void); /* in-progress native ovl fn, 0 if none */

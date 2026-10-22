@@ -142,10 +142,19 @@ struct RuntimeMods {
     /* The plan is a netplay match's own-view set: its hooks run only inside
      * psx_mod_render_local_view, its vblank/savestate callbacks not at all. */
     bool netplay_view_plan = false;
+};
+
+/* Callback ownership belongs to the guest execution thread. The active
+ * plan and its hook tables remain immutable until all executions stop. */
+struct ModExecutionContext {
     const ModResolution::Plugin* current_plugin = nullptr;
     CPUState* current_function_cpu = nullptr;
     bool current_function_finished = false;
 };
+ModExecutionContext& execution() {
+    static thread_local ModExecutionContext value;
+    return value;
+}
 
 RuntimeMods& state() {
     static RuntimeMods value;
@@ -253,23 +262,22 @@ public:
  * only entry hooks would let VBlank erase the interrupted plugin or complete
  * a function that belongs to another callback. */
 class PluginCallbackScope {
-    RuntimeMods& runtime;
     const ModResolution::Plugin* previous_plugin;
     CPUState* previous_cpu;
     bool previous_finished;
 public:
     PluginCallbackScope(RuntimeMods& s, const ModResolution::Plugin* plugin,
                         CPUState* cpu = nullptr)
-        : runtime(s), previous_plugin(s.current_plugin),
-          previous_cpu(s.current_function_cpu), previous_finished(s.current_function_finished) {
-        s.current_plugin = plugin;
-        s.current_function_cpu = cpu;
-        s.current_function_finished = false;
+        : previous_plugin(execution().current_plugin),
+          previous_cpu(execution().current_function_cpu), previous_finished(execution().current_function_finished) {
+        execution().current_plugin = plugin;
+        execution().current_function_cpu = cpu;
+        execution().current_function_finished = false;
     }
     ~PluginCallbackScope() {
-        runtime.current_plugin = previous_plugin;
-        runtime.current_function_cpu = previous_cpu;
-        runtime.current_function_finished = previous_finished;
+        execution().current_plugin = previous_plugin;
+        execution().current_function_cpu = previous_cpu;
+        execution().current_function_finished = previous_finished;
     }
     PluginCallbackScope(const PluginCallbackScope&) = delete;
     PluginCallbackScope& operator=(const PluginCallbackScope&) = delete;
@@ -293,7 +301,7 @@ std::vector<ActiveFunctionEntryHook>& active_function_entry_hooks() {
     static std::vector<ActiveFunctionEntryHook> value;
     return value;
 }
-unsigned function_entry_depth;
+thread_local unsigned function_entry_depth;
 
 std::vector<ActiveFunctionEntryHook>& active_guest_functions() {
     static std::vector<ActiveFunctionEntryHook> value;
@@ -2603,9 +2611,9 @@ extern "C" void mod_runtime_on_savestate_loaded(void) {
     }
     s.main_applied = true;
     for (const ModResolution::Plugin& plugin : s.plan.plugins) {
-        s.current_plugin = &plugin;
+        execution().current_plugin = &plugin;
         mod_invoke_savestate_plugin(plugin.id);
-        s.current_plugin = nullptr;
+        execution().current_plugin = nullptr;
     }
     if (applied)
         std::fprintf(stdout,
@@ -2998,10 +3006,10 @@ extern "C" void psx_mod_set_disc_request_provider(PSXModDiscRequestProvider prov
         return;
     }
     RuntimeMods& s = state();
-    if (!s.initialized || !s.plan.ok || !s.activating || !s.current_plugin ||
+    if (!s.initialized || !s.plan.ok || !s.activating || !execution().current_plugin ||
         s.netplay_view_plan || psx_netplay_active()) return;
     g_disc_request_provider = provider;
-    g_disc_request_owner = s.current_plugin;
+    g_disc_request_owner = execution().current_plugin;
 }
 
 extern "C" int mod_runtime_disc_request(int *ready) {
@@ -3150,10 +3158,10 @@ extern "C" int psx_mod_current_resource_path(const char* resource_id,
     if (!resource_id || !resource_id[0] || !out || out_size == 0)
         return 0;
     RuntimeMods& s = state();
-    if (!s.initialized || !s.plan.ok || !s.current_plugin) return 0;
+    if (!s.initialized || !s.plan.ok || !execution().current_plugin) return 0;
     for (const ModResolution::Resource& resource : s.plan.resources) {
-        if (resource.package_id != s.current_plugin->package_id ||
-            resource.feature_id != s.current_plugin->feature_id ||
+        if (resource.package_id != execution().current_plugin->package_id ||
+            resource.feature_id != execution().current_plugin->feature_id ||
             resource.id != resource_id)
             continue;
         const std::string text = resource.path.u8string();
@@ -3168,7 +3176,7 @@ extern "C" int psx_mod_current_option_value(const char* option_id,
                                              char* out, uint32_t out_size) {
     using namespace PSXRecompV4;
     if (out && out_size) out[0] = '\0';
-    const auto* plugin = state().current_plugin;
+    const auto* plugin = execution().current_plugin;
     if (!plugin) return 0;
     return psx_mod_option_value(plugin->package_id.c_str(), plugin->feature_id.c_str(),
                                option_id, out, out_size);
@@ -3239,10 +3247,10 @@ extern "C" int psx_mod_current_resource_bytes(const char* resource_id,
     if (size) *size = 0;
     if (!resource_id || !*resource_id || !bytes || !size) return 0;
     const auto& s = state();
-    if (!s.initialized || !s.plan.ok || !s.current_plugin) return 0;
+    if (!s.initialized || !s.plan.ok || !execution().current_plugin) return 0;
     for (const auto& resource : s.plan.resources) {
-        if (resource.package_id == s.current_plugin->package_id &&
-            resource.feature_id == s.current_plugin->feature_id &&
+        if (resource.package_id == execution().current_plugin->package_id &&
+            resource.feature_id == execution().current_plugin->feature_id &&
             resource.id == resource_id && resource.bytes) {
             *bytes = resource.bytes->data();
             *size = resource.bytes->size();
@@ -3416,8 +3424,8 @@ extern "C" int psx_mod_finish_function(CPUState* cpu) {
     using namespace PSXRecompV4;
     RuntimeMods& s = state();
     if (psx_mod_host_output_scope()) return 0;
-    if (!cpu || s.current_function_cpu != cpu || !s.current_plugin) return 0;
-    s.current_function_finished = true;
+    if (!cpu || execution().current_function_cpu != cpu || !execution().current_plugin) return 0;
+    execution().current_function_finished = true;
     return 1;
 }
 
@@ -3535,7 +3543,7 @@ static void run_host_output_hooks(CPUState* cpu, uint32_t address) {
         ++s_host_output_depth;
         it->callback(&view, address);
         --s_host_output_depth;
-        s.current_function_finished = false;
+        execution().current_function_finished = false;
     }
 }
 
@@ -3544,8 +3552,8 @@ static void run_host_output_hooks(CPUState* cpu, uint32_t address) {
 static bool mod_host_output_write_blocked(void) {
     const auto& s = PSXRecompV4::state();
     return psx_mod_host_output_scope() ||
-           (s.netplay_view_plan && s.current_plugin &&
-            s.current_plugin->netplay_host_output);
+           (s.netplay_view_plan && PSXRecompV4::execution().current_plugin &&
+            PSXRecompV4::execution().current_plugin->netplay_host_output);
 }
 
 extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
@@ -3567,7 +3575,7 @@ extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
         if (it->callback) it->callback(cpu, address);
         /* Either completion form skips the body: an entry callback that
          * called psx_mod_finish_function(), or a filter returning nonzero. */
-        const bool handled = s.current_function_finished ||
+        const bool handled = execution().current_function_finished ||
             (it->filter && it->filter(cpu, address));
         --function_entry_depth;
         if (handled) {
@@ -3640,17 +3648,17 @@ extern "C" int psx_mod_function_entry_active(void) {
 
 extern "C" void mod_runtime_function_entry_context_save(ModFunctionEntryContext *out) {
     out->depth = PSXRecompV4::function_entry_depth;
-    out->plugin = PSXRecompV4::state().current_plugin;
-    out->cpu = PSXRecompV4::state().current_function_cpu;
-    out->finished = PSXRecompV4::state().current_function_finished;
+    out->plugin = PSXRecompV4::execution().current_plugin;
+    out->cpu = PSXRecompV4::execution().current_function_cpu;
+    out->finished = PSXRecompV4::execution().current_function_finished;
 }
 
 extern "C" void mod_runtime_function_entry_context_restore(const ModFunctionEntryContext *in) {
     PSXRecompV4::function_entry_depth = in->depth;
-    PSXRecompV4::state().current_plugin =
+    PSXRecompV4::execution().current_plugin =
         static_cast<const PSXRecompV4::ModResolution::Plugin *>(in->plugin);
-    PSXRecompV4::state().current_function_cpu = in->cpu;
-    PSXRecompV4::state().current_function_finished = in->finished != 0;
+    PSXRecompV4::execution().current_function_cpu = in->cpu;
+    PSXRecompV4::execution().current_function_finished = in->finished != 0;
 }
 
 /* Apply the committed plan's disc writes and overlays to one sector. The

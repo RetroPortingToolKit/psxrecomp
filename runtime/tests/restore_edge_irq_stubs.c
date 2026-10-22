@@ -16,8 +16,8 @@ struct CPUState;
 uint8_t  g_test_ram[0x200000];
 PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
 PSX_THREAD_LOCAL uint64_t psx_next_service_cycle = 0;
-uint32_t i_stat = 0;
-uint32_t i_mask = 0;
+PSX_THREAD_LOCAL uint32_t i_stat = 0;
+PSX_THREAD_LOCAL uint32_t i_mask = 0;
 uint32_t g_psx_ram_size = 0x200000u;
 uint32_t g_psx_vblank_cycles = 564480u;
 
@@ -46,11 +46,11 @@ int psx_netplay_rb_recover_null_pc(struct CPUState *c, uint32_t *out_pc)
 /* ---- Runtime globals the two units reference ---- */
 uint64_t g_async_rfe_fire_count = 0;
 uint32_t g_async_rfe_resume_pc = 0;
-int      g_call_unit_depth = 0;
+PSX_THREAD_LOCAL int      g_call_unit_depth = 0;
 int      g_cosim_dirty_pump_site = 0;
 int      g_dirty_interp_active = 0;
 uint32_t g_dirty_safe_resume_pc = 0;
-int      g_dma_exec_depth = 0;
+PSX_THREAD_LOCAL int      g_dma_exec_depth = 0;
 int      g_event_step_conservative = 0;
 int      g_exec_phase = 0;
 int      g_idle_skip_enabled = 0;
@@ -60,7 +60,7 @@ PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch = 0;
 PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit = 0;
 PSX_THREAD_LOCAL int      g_psx_cyc_bb_defer = 0;
 PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc = NULL;
-int      g_psx_dispatch_depth = 0;
+PSX_THREAD_LOCAL int      g_psx_dispatch_depth = 0;
 PSX_THREAD_LOCAL int      g_psx_guest_time_frozen = 0;
 uint32_t g_sentinel_reach_async = 0;
 uint64_t g_sentinel_reach_traps = 0;

@@ -320,7 +320,7 @@ static uint32_t devices_cycles_to_next_internal_event(void) {
  * tens of thousands of host-side re-detections per second. VBlank remains an
  * unconditional ceiling so frame pacing is never crossed in one jump. */
 static uint32_t devices_cycles_to_next_idle_event(void) {
-    extern uint32_t i_mask;
+    extern PSX_THREAD_LOCAL uint32_t i_mask;
     uint32_t best = interrupts_cycles_to_vblank();
     uint32_t t = timers_cycles_to_irq(i_mask);  if (t < best) best = t;
     uint32_t c = cdrom_cycles_to_irq(i_mask);   if (c < best) best = c;
@@ -723,7 +723,8 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
     (void)cpu; (void)check_pc;
     return;
 #else
-    extern int g_psx_call_bail, g_precise_mode, g_ls_mode, g_ls_replay_active;
+    extern PSX_THREAD_LOCAL int g_psx_call_bail;
+    extern int g_precise_mode, g_ls_mode, g_ls_replay_active;
     extern int psx_get_in_exception(void);
     extern uint64_t g_guest_store_count, g_mmio_access_count;
 

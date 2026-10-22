@@ -21,7 +21,7 @@ extern void psx_restore_state_escape(void);
 extern void gte_execute(CPUState* cpu, uint32_t cmd);
 extern void gte_write_data(CPUState* cpu, uint8_t reg, uint32_t val);
 extern uint32_t gte_read_data(CPUState* cpu, uint8_t reg);
-extern uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
 extern void debug_server_trace_dispatch(uint32_t func_addr);
 /* BIOS HLE tier (CLAUDE.md §0 amendment 2026-07-02): null-by-default
  * hook consulted at the top of every dispatch iteration, BEFORE any
@@ -9057,13 +9057,30 @@ static PsxRecompFunc psx_bios_hit_body(CPUState* cpu, uint32_t addr, uint32_t ke
     return home;
 }
 
+extern int psx_kernel_bless_dispatchable(uint32_t phys);
+static int psx_bios_execution_lookup(CPUState* cpu, uint32_t addr, PsxExecutionCode* code) {
+    if (psx_bios_try_native_call_stub(cpu, addr)) { code->function = 0; code->resume_pc = cpu->pc; return 2; }
+    const uint32_t key = normalize(addr);
+    int lo = 0, hi = (int)(sizeof(dispatch_table) / sizeof(dispatch_table[0])) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (dispatch_table[mid].addr == key) {
+            if (key - 0x500u < 0x46A0u && !psx_kernel_bless_dispatchable(key)) return 0;
+            code->function = psx_bios_hit_body(cpu, addr, key, dispatch_table[mid].func);
+            code->resume_pc = addr; return 1;
+        }
+        if (dispatch_table[mid].addr < key) lo = mid + 1; else hi = mid - 1;
+    }
+    return 0;
+}
+
 extern int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr);
 extern int dirty_ram_is_dirty(uint32_t phys);
 extern int psx_kernel_bless_dispatchable(uint32_t phys);
 extern void fntrace_record(CPUState* cpu, uint32_t target);
 extern uint64_t g_dispatch_static_hits;
 
-extern int g_psx_dispatch_depth;  /* runtime-owned: shared dispatch state, not per-image */
+extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;  /* execution-thread dispatch state */
 
 static void psx_dispatch_check_return_boundary(CPUState* cpu, uint32_t stop_addr) {
     if (stop_addr != 0u) {
@@ -9328,4 +9345,5 @@ const PsxBiosBackend OpenBIOS_psx_bios_backend = {
     OpenBIOS_psx_bios_kernel_body_count,
     OpenBIOS_psx_bios_kernel_patch_ranges,
     OpenBIOS_psx_bios_kernel_patch_range_count,
+    psx_bios_execution_lookup,
 };

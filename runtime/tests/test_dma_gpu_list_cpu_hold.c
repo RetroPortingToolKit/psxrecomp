@@ -81,9 +81,9 @@ void gpu_ws_validate_linked_list_header(uint32_t addr, uint32_t h) { (void)addr;
 void gpu_ws_validate_linked_list_node(uint32_t addr, uint32_t n) { (void)addr; (void)n; }
 
 /* ---- observers and IRQ (inert) ----------------------------------------- */
-uint32_t i_stat;
-uint32_t g_debug_current_func_addr;
-uint32_t g_debug_last_store_pc;
+PSX_THREAD_LOCAL uint32_t i_stat;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 uint64_t s_frame_count;
 uint64_t g_io_openbus_reads;
 uint64_t g_io_openbus_writes;

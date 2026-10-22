@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * cdrom.c — PS1 CD-ROM controller (adapted from psxrecomp-v3)
  *
@@ -53,11 +54,11 @@ extern uint32_t iso_cdda_track_pregap_lba(void* handle, int track);
 extern int iso_cdda_track_is_audio(void* handle, int track);
 
 /* I_STAT owned by memory.c — set bit 2 for CDROM IRQ */
-extern uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
 /* Central IRQ-raise choke point (interrupts.c) — also records the device ring. */
 extern void psx_irq_raise(uint32_t bit, uint32_t detail);
-extern uint32_t g_debug_current_func_addr;
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 extern uint64_t s_frame_count;
 
 /* CD-ROM state */

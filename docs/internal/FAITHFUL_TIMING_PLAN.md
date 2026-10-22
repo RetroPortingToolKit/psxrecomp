@@ -2080,3 +2080,15 @@ Guest-frame lookup merged multiple extra presentations and could not verify
 HUD stability. Added duplicate-frame/freeze/eviction regression coverage and
 retained legacy frame lookup. Six focused framework checks and all 21 title
 checks pass on Windows and Linux, and both runtime builds link successfully.
+
+
+2026-10-21 BRIEF-5 continuation: private execution now owns IRQ/DMA/timer,
+I-cache and callback nesting state, with code-validation/MMIO metadata captured
+beside RAM. Generated game and built-in BIOS expose native code lookup for a
+sealed worker dispatcher; loadable BIOS ABI advances to 3. Added bounded,
+thread-local immutable render command capture, independent of the live SPSC
+producer. Concurrent memory/IRQ and capture/consumer fixtures pass on Windows
+and Mac; Mac syntax checks pass for the changed device modules, mod runtime,
+and regenerated OpenBIOS. Worker scheduling/plugin host-state/GL handoff remain
+in progress. No Stage 3 acceptance or push; ordered route/performance gates have
+not started for this implementation.

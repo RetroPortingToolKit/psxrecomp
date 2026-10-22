@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* starvation_ring.c — diagnostic-only.
  *
  * Always-on ring of the last 16K SIO/MMIO events with full SIO state
@@ -38,10 +39,10 @@ static uint64_t host_us_now(void) {
 }
 #endif
 
-extern uint32_t g_debug_current_func_addr;
-extern uint32_t g_debug_last_store_pc;
-extern uint32_t i_stat;
-extern uint32_t i_mask;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_mask;
 extern int psx_get_in_exception(void);
 
 #if STARVATION_RING_ENABLED

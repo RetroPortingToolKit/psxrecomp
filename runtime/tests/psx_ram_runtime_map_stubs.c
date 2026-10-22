@@ -15,15 +15,15 @@ int g_stub_device_restores;
 
 /* ---- data ---------------------------------------------------------------- */
 CPUState *debug_cpu_ptr;
-uint32_t g_debug_current_func_addr;
-uint32_t g_debug_last_store_pc;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 volatile int g_ds_recording;
 int g_event_step_conservative;
 int g_ls_mode;
 int g_ls_replay_active;
 int g_ls_suppress_record;
 int g_ram_read_watch_active;
-void (*g_overlay_flush_pending_cycles)(void);
+PSX_THREAD_LOCAL void (*g_overlay_flush_pending_cycles)(void);
 PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
 PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit;
 PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc;
@@ -34,7 +34,7 @@ void pgxp_invalidate_word(uint32_t addr) { (void)addr; }
 #endif
 #ifndef PSX_STUBS_REAL_ICACHE
 /* The I-cache model (psx_icache.c). isc_store_test links the real one. */
-uint32_t g_psx_icache_tv[1024];
+PSX_THREAD_LOCAL uint32_t g_psx_icache_tv[1024];
 void psx_icache_isc_store(uint32_t biu, uint32_t addr, uint32_t value) {
     (void)biu; (void)addr; (void)value; __builtin_trap();   /* SR.IsC is never set here */
 }

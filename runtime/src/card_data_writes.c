@@ -1,11 +1,12 @@
+#include "psx_thread_local.h"
 /* card_data_writes.c — capture BIOS RAM destination of card data bytes. */
 
 #include "card_data_writes.h"
 #include "psx_cycles.h"
 #include <string.h>
 
-extern uint32_t g_debug_current_func_addr;
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 
 /* "Armed" byte from the most recent SIO_RX_DATA read inside a card
  * data phase. The next matching RAM write captures it. */

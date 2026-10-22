@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #ifndef PSXRECOMP_PSX_ICACHE_H
 #define PSXRECOMP_PSX_ICACHE_H
 
@@ -7,8 +8,8 @@
 extern "C" {
 #endif
 
-extern uint32_t g_psx_icache_tv[1024];
-extern int g_psx_icache_active;
+extern PSX_THREAD_LOCAL uint32_t g_psx_icache_tv[1024];
+extern PSX_THREAD_LOCAL int g_psx_icache_active;
 extern int g_ls_replay_active;
 void psx_icache_reset(void);
 void psx_icache_fetch(CPUState *cpu, uint32_t addr);

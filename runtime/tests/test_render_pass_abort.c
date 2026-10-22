@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Render-pass watchdog abort (render_pass.c psx_mod_render_pass).
  *
  * A pass that runs away is cut off by a longjmp from the frozen clock's
@@ -43,21 +44,21 @@ int      g_boot_state_cpu_timing_restored = 0;
 int psx_mod_host_output_scope(void) { return 0; }
 int      g_ls_mode = 0;
 int      g_precise_mode = 0;
-int      g_psx_call_bail = 0;
-int      g_psx_dispatch_depth = 0;
-uint32_t i_stat = 0, i_mask = 0;
+PSX_THREAD_LOCAL int      g_psx_call_bail = 0;
+PSX_THREAD_LOCAL int      g_psx_dispatch_depth = 0;
+PSX_THREAD_LOCAL uint32_t i_stat = 0, i_mask = 0;
 uint64_t g_guest_store_count = 0;
 uint64_t g_mmio_access_count = 0;
-uint32_t g_debug_last_store_pc = 0;
-uint32_t g_debug_current_func_addr = 0;
-uint32_t g_psx_icache_tv[1024];
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_icache_tv[1024];
 uint64_t g_render_pass_dropped_writes[RENDER_PASS_DROP_CLASSES];
-void   (*g_overlay_flush_pending_cycles)(void) = NULL;
-int      g_call_unit_depth = 0;
-int      g_dma_exec_depth = 0;
-int      g_host_store_depth = 0;
-int      g_dma_cur_ch = -1;
-uint32_t g_dma_cur_madr = 0, g_dma_cur_bcr = 0, g_dma_initiator_pc = 0;
+PSX_THREAD_LOCAL void   (*g_overlay_flush_pending_cycles)(void) = NULL;
+PSX_THREAD_LOCAL int      g_call_unit_depth = 0;
+PSX_THREAD_LOCAL int      g_dma_exec_depth = 0;
+PSX_THREAD_LOCAL int      g_host_store_depth = 0;
+PSX_THREAD_LOCAL int      g_dma_cur_ch = -1;
+PSX_THREAD_LOCAL uint32_t g_dma_cur_madr = 0, g_dma_cur_bcr = 0, g_dma_initiator_pc = 0;
 int      g_dirty_interp_active = 0;
 int      g_exec_phase = 0;
 uint32_t g_dirty_safe_resume_pc = 0;

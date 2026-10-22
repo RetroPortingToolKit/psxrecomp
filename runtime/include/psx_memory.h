@@ -57,6 +57,15 @@ void memory_backing_destroy(PsxMemoryBacking *backing);
 void memory_backing_capture(PsxMemoryBacking *destination);
 PsxMemoryBacking *memory_backing_bind(PsxMemoryBacking *backing);
 extern PSX_THREAD_LOCAL uint8_t *g_psx_ram;
+/* Code-validity and MMIO metadata accompanies the backing snapshot. Capture
+ * on the source owner; bind only on a dedicated worker after backing_bind.
+ * The active code image remains immutable until that worker has stopped. */
+typedef struct PsxMemoryExecutionState PsxMemoryExecutionState;
+PsxMemoryExecutionState *memory_execution_create(void);
+void memory_execution_destroy(PsxMemoryExecutionState *state);
+void memory_execution_capture(PsxMemoryExecutionState *state);
+void memory_execution_bind(const PsxMemoryExecutionState *state, const uint32_t *status);
+
 int      psx_ram_8mb_active(void);
 void     psx_ram_reset_size_request(void);
 /* memory_init(): latch the requested geometry for this boot. */

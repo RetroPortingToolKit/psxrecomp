@@ -10,7 +10,7 @@
 #include <string.h>
 extern uint8_t g_test_ram[0x200000];
 extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
-extern uint32_t i_stat, i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_stat, i_mask;
 extern uint32_t psx_read_word(uint32_t);
 extern void psx_host_write_word(uint32_t, uint32_t);
 #define HANDLER 0x80001000u

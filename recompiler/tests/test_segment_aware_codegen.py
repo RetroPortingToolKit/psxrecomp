@@ -149,8 +149,8 @@ CONTRACT_HARNESS = r"""
 #include "cpu_state.h"
 #include <stdio.h>
 #include <string.h>
-int g_psx_call_bail;
-uint64_t g_psx_bail_first, g_psx_bail_resolved, g_psx_bail_flattened, g_psx_bail_anomaly;
+PSX_THREAD_LOCAL int g_psx_call_bail;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_first, g_psx_bail_resolved, g_psx_bail_flattened, g_psx_bail_anomaly;
 void psx_bail_record(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
     (void)a; (void)b; (void)c; (void)d;
 }

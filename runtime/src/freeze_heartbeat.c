@@ -24,10 +24,10 @@
 /* State accessors. All defined in other compilation units; declared here
  * to avoid pulling in heavy headers. */
 extern uint64_t s_frame_count;                 /* debug_server.c */
-extern uint32_t g_debug_current_func_addr;     /* debug_server.c */
-extern uint32_t g_debug_last_store_pc;         /* debug_server.c */
-extern uint32_t i_stat;                        /* memory.c */
-extern uint32_t i_mask;                        /* memory.c */
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;     /* debug_server.c */
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;         /* debug_server.c */
+extern PSX_THREAD_LOCAL uint32_t i_stat;                        /* memory.c */
+extern PSX_THREAD_LOCAL uint32_t i_mask;                        /* memory.c */
 
 extern uint64_t psx_get_cycle_count(void);
 extern void     psx_get_freeze_diag(uint64_t *total_checks,
@@ -150,7 +150,7 @@ static int    s_sym_initialized = 0;
 #define RING_CAP 64
 typedef struct {
     uint64_t frame_count;
-    PSX_THREAD_LOCAL uint64_t psx_cycle_count;
+    uint64_t psx_cycle_count;
     uint64_t exc_reentry;
     uint64_t dirty_ram_insns;
     uint32_t current_func;

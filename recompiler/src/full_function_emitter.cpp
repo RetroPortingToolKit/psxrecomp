@@ -1826,7 +1826,7 @@ void FullFunctionEmitter::emit_dispatch(
     out += "extern void gte_execute(CPUState* cpu, uint32_t cmd);\n";
     out += "extern void gte_write_data(CPUState* cpu, uint8_t reg, uint32_t val);\n";
     out += "extern uint32_t gte_read_data(CPUState* cpu, uint8_t reg);\n";
-    out += "extern uint32_t g_debug_current_func_addr;\n";
+    out += "extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;\n";
     out += "extern void debug_server_trace_dispatch(uint32_t func_addr);\n";
     out += "/* BIOS HLE tier (CLAUDE.md \xC2\xA7""0 amendment 2026-07-02): null-by-default\n";
     out += " * hook consulted at the top of every dispatch iteration, BEFORE any\n";
@@ -2229,6 +2229,23 @@ void FullFunctionEmitter::emit_dispatch(
     out += "    }\n";
     out += "    return home;\n";
     out += "}\n\n";
+    out += "extern int psx_kernel_bless_dispatchable(uint32_t phys);\n";
+    out += "static int psx_bios_execution_lookup(CPUState* cpu, uint32_t addr, PsxExecutionCode* code) {\n";
+    out += "    if (psx_bios_try_native_call_stub(cpu, addr)) { code->function = 0; code->resume_pc = cpu->pc; return 2; }\n";
+    out += "    const uint32_t key = normalize(addr);\n";
+    out += "    int lo = 0, hi = (int)(sizeof(dispatch_table) / sizeof(dispatch_table[0])) - 1;\n";
+    out += "    while (lo <= hi) {\n";
+    out += "        int mid = (lo + hi) / 2;\n";
+    out += "        if (dispatch_table[mid].addr == key) {\n";
+    if (addr_model().has_kbless()) {
+        out += fmt::format("            if (key - 0x{:X}u < 0x{:X}u && !psx_kernel_bless_dispatchable(key)) return 0;\n",
+            addr_model().kbless_ram_lo(), addr_model().kbless_ram_hi() - addr_model().kbless_ram_lo());
+    }
+    out += "            code->function = psx_bios_hit_body(cpu, addr, key, dispatch_table[mid].func);\n";
+    out += "            code->resume_pc = addr; return 1;\n";
+    out += "        }\n";
+    out += "        if (dispatch_table[mid].addr < key) lo = mid + 1; else hi = mid - 1;\n";
+    out += "    }\n    return 0;\n}\n\n";
 
     out += "extern int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr);\n";
     out += "extern int dirty_ram_is_dirty(uint32_t phys);\n";
@@ -2236,7 +2253,7 @@ void FullFunctionEmitter::emit_dispatch(
     out += "extern void fntrace_record(CPUState* cpu, uint32_t target);\n";
     out += "extern uint64_t g_dispatch_static_hits;\n";
     out += "\n";
-    out += "extern int g_psx_dispatch_depth;  /* runtime-owned: shared dispatch state, not per-image */\n\n";
+    out += "extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;  /* execution-thread dispatch state */\n\n";
     // Return PCs are compared in full, segment included, as psx_call_contract
     // does (docs/SEGMENT_AWARE_CODE.md §5.5): stop_addr is the link the call
     // wrote, in its body's segment.
@@ -2536,6 +2553,7 @@ void FullFunctionEmitter::emit_dispatch(
         "    {0}psx_bios_kernel_body_count," "\n"
         "    {0}psx_bios_kernel_patch_ranges," "\n"
         "    {0}psx_bios_kernel_patch_range_count," "\n"
+        "    psx_bios_execution_lookup," "\n"
         "}};" "\n",
         g_sym_prefix);
 }
@@ -2639,7 +2657,7 @@ EmitStats FullFunctionEmitter::emit(
     full_c += "extern void debug_server_log_call_entry(uint32_t func_addr);\n";
     full_c += "extern void debug_server_cyc_observe(uint32_t block_leader_phys);\n";
     full_c += "#endif\n";
-    full_c += "extern uint32_t g_debug_last_store_pc;\n";
+    full_c += "#ifndef PSX_OVERLAY_DLL_BUILD\nextern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;\n#endif\n";
     full_c += "/* Phase 1.0e-d: per-block guest cycle accounting.\n";
     full_c += " * Compile generated code with -DPSX_ENABLE_BLOCK_CYCLES=1 to\n";
     full_c += " * activate cycle advancement at every block leader. */\n";

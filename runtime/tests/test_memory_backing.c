@@ -17,10 +17,19 @@ extern uint8_t *memory_get_ram_ptr(void);
 extern uint8_t *memory_get_scratchpad_ptr(void);
 static atomic_int phase;
 static PsxMemoryBacking *copy;
+static PsxMemoryExecutionState *metadata;
+extern PSX_THREAD_LOCAL uint32_t i_stat, i_mask;
+extern uint32_t psx_read_word(uint32_t);
+static uint32_t worker_status;
 static uint8_t *live;
 static void replay(void) {
     CHECK(memory_get_ram_ptr() == live);
     CHECK(memory_backing_bind(copy) == NULL);
+    memory_execution_bind(metadata, &worker_status);
+    g_psx_render_pass_active = 1;
+    CHECK(psx_read_word(0x1F801070u) == 0x35);
+    CHECK(psx_read_word(0x1F801074u) == 0x17);
+    i_stat = 0x62;
     CHECK(g_psx_ram != live && g_psx_ram == memory_get_ram_ptr());
     CHECK(g_psx_ram[0x700000] == 37);
     CHECK(memory_get_scratchpad_ptr()[17] == 19);
@@ -29,6 +38,7 @@ static void replay(void) {
     atomic_store_explicit(&phase, 1, memory_order_release);
     while (atomic_load_explicit(&phase, memory_order_acquire) != 2) { }
     CHECK(g_psx_ram[0x700000] == 71);
+    CHECK(i_stat == 0x62 && i_mask == 0x17);
     CHECK(memory_backing_bind(NULL) == copy);
     CHECK(g_psx_ram == live && live[0x700000] == 41);
 }
@@ -44,6 +54,10 @@ int main(void) {
     copy = memory_backing_create();
     CHECK(copy);
     memory_backing_capture(copy);
+    metadata = memory_execution_create();
+    CHECK(metadata);
+    i_stat = 0x35; i_mask = 0x17;
+    memory_execution_capture(metadata);
 #ifdef _WIN32
     HANDLE thread = CreateThread(NULL, 0, entry, NULL, 0, NULL);
     CHECK(thread);
@@ -55,6 +69,8 @@ int main(void) {
     CHECK(g_psx_ram == live && live[0x700000] == 37);
     CHECK(memory_get_scratchpad_ptr()[17] == 19);
     live[0x700000] = 41;
+    CHECK(i_stat == 0x35 && i_mask == 0x17);
+    i_stat = 0x43; i_mask = 0x29;
     atomic_store_explicit(&phase, 2, memory_order_release);
 #ifdef _WIN32
     CHECK(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0);
@@ -67,6 +83,8 @@ int main(void) {
     CHECK(psx_peek_word(0x80700000, &word) && (word & 255) == 71);
     CHECK(memory_get_scratchpad_ptr()[17] == 91);
     CHECK(memory_backing_bind(NULL) == copy);
+    CHECK(i_stat == 0x43 && i_mask == 0x29);
+    memory_execution_destroy(metadata);
     memory_backing_destroy(copy);
     return 0;
 }

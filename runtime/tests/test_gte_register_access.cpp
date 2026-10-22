@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #include "cpu_state.h"
 #include "gte.h"
 #include "hle_gte.h"
@@ -76,7 +77,7 @@ static int g_test_netplay_active = 0;
 extern "C" int psx_netplay_active(void) { return g_test_netplay_active; }
 extern "C" {
 uint64_t s_frame_count = 0;
-uint32_t g_debug_last_store_pc = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc = 0;
 }
 
 uint64_t g_test_cycle = 0;

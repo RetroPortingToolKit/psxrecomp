@@ -84,7 +84,7 @@ struct CPUState;
 struct OverlayCallbacks;
 struct PsxBiosBackend;
 
-#define PSX_BIOS_MODULE_ABI_VERSION 2
+#define PSX_BIOS_MODULE_ABI_VERSION 3
 
 /* Combined tag: ABI version (low 16) | codegen flavor (high 16), like
  * PSX_OVERLAY_ABI_TAG. The flavor comes from the same -DPSX_OVERLAY_FLAVOR

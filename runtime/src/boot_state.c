@@ -58,8 +58,8 @@ static double boot_state_mono_ms(void) {
 extern uint8_t*  memory_get_ram_ptr(void);
 extern uint32_t  memory_get_ram_bytes(void);
 extern uint8_t*  memory_get_scratchpad_ptr(void);
-extern uint32_t  i_stat;
-extern uint32_t  i_mask;
+extern PSX_THREAD_LOCAL uint32_t  i_stat;
+extern PSX_THREAD_LOCAL uint32_t  i_mask;
 extern PSX_THREAD_LOCAL uint64_t  psx_cycle_count;
 extern void timers_get_snapshot(uint16_t counter[3], uint32_t mode[3],
                                 uint16_t target[3], int32_t irq_line[3],

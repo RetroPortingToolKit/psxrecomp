@@ -37,8 +37,8 @@
 
 /* ---- link stubs for code reachable from exec_one_fetched ------------------ */
 uint64_t s_frame_count;
-uint32_t g_debug_current_func_addr;
-uint32_t g_debug_last_store_pc;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 uint32_t g_dirty_ram_code_gen;
 uint64_t g_dispatch_static_hits;
 uint32_t g_psx_mod_instruction_hooks;
@@ -50,11 +50,11 @@ void psx_mod_instruction(CPUState *cpu, uint32_t pc, uint32_t instruction) {
 }
 int      g_rfe_escape_pending;
 int      g_exc_escape_reason;
-int      g_psx_call_bail;
-uint64_t g_psx_bail_first;
-uint64_t g_psx_bail_resolved;
-uint32_t i_stat;
-uint32_t i_mask;
+PSX_THREAD_LOCAL int      g_psx_call_bail;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_first;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_resolved;
+PSX_THREAD_LOCAL uint32_t i_stat;
+PSX_THREAD_LOCAL uint32_t i_mask;
 PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 /* Live RAM geometry (memory.c): retail 2 MiB, as the stub RAM below. */
 uint32_t g_psx_ram_size = PSX_MAIN_RAM_RETAIL_BYTES;

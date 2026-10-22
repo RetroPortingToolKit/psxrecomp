@@ -1,4 +1,5 @@
-﻿/*
+#include "psx_thread_local.h"
+/*
  * debug_server.h -- TCP debug server for PSX recomp v4
  *
  * Non-blocking TCP server on localhost (default port 4370).
@@ -127,7 +128,7 @@ int debug_server_is_connected(void);
 
 /* Current dispatch target — set by psx_dispatch() before each call.
  * Captured by the write-trace hook for function attribution. */
-extern uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
 
 /* Multi-range write-trace check.  Called from memory.c write paths.
  * Iterates up to 8 configurable address ranges; records matching
@@ -157,7 +158,7 @@ void debug_server_log_call_entry_fn(uint32_t func_addr);
  * store (sb/sh/sw/swl/swr/swc2).  Read by SIO/MMIO write handlers to
  * attribute the writing instruction without needing a full call-stack
  * walk.  Stale across non-store instructions but every store updates it. */
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 
 /* SIO write PC tracer ring — records (pc, addr, value, byte_seq) for every
  * write to SIO_DATA / SIO_CTRL / SIO_STAT.  Always-on; pulled via TCP cmd

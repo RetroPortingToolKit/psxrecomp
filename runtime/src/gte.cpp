@@ -21,7 +21,7 @@ extern "C" int gpu_ws_precise_nclip_enabled(void);
  * plus native replay of one candidate) is running. */
 extern "C" int psx_overlay_shadow_diff_active(void);
 extern "C" uint64_t s_frame_count;            /* debug_server.c */
-extern "C" uint32_t g_debug_last_store_pc;     /* debug_server.c */
+extern "C" PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;     /* debug_server.c */
 extern "C" { PSX_THREAD_LOCAL int (*g_psx_projection_command)(CPUState*, uint32_t) = nullptr; }
 
 namespace PSXRecomp {
@@ -686,7 +686,7 @@ extern "C" void gte_ws_set_dome_expand(int on, int aspect_num, int aspect_den) {
 // projects FAR (SZ >= threshold) vertices, so the sky-dome draw function can be
 // identified as the top far-vertex emitter — the target for the per-function
 // dome-expand bracket (the clean alternative to the scene-dependent depth gate).
-extern "C" { extern uint32_t g_debug_current_func_addr; }
+extern "C" { extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr; }
 static PSX_THREAD_LOCAL uint32_t s_gte_caller_ra = 0;   /* guest ra at gte_execute = return into the GAME fn that issued the projection (not the libgte leaf) */
 #define WS_DOME_CALL_SITES_MAX 32
 static PSX_THREAD_LOCAL uint32_t s_ws_dome_call_sites[WS_DOME_CALL_SITES_MAX];

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * test_sio_card_protocol.c — pin SIO memory card protocol against no$psx spec.
  *
@@ -43,10 +44,10 @@
 #endif
 
 /* ---- Stubs for sio.c's external dependencies ---- */
-uint32_t i_stat = 0;
-uint32_t i_mask = 0;
-uint32_t g_debug_current_func_addr = 0;
-uint32_t g_debug_last_store_pc = 0;
+PSX_THREAD_LOCAL uint32_t i_stat = 0;
+PSX_THREAD_LOCAL uint32_t i_mask = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc = 0;
 int psx_get_in_exception(void) { return 0; }
 uint8_t psx_read_byte(uint32_t addr) { (void)addr; return 0; }
 uint32_t psx_read_word(uint32_t addr) { (void)addr; return 0; }

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* psx_bios_backend.c — routing between the runtime and the active BIOS.
  *
  * A build links every recompiled BIOS it ships (bundled OpenBIOS plus a retail
@@ -19,6 +20,7 @@
 #include "bios_hle.h"
 #include "cpu_state.h"
 #include "psx_bios_backend.h"
+#include "psx_execution.h"
 
 /* ── State published to the rest of the runtime ─────────────────────────── */
 
@@ -37,7 +39,7 @@ uint32_t                   psx_bios_kernel_patch_range_count = 0;
 /* Dispatch nesting depth. Shared dispatch state, not per-image: each generated
  * dispatch used to define its own copy, which is precisely why two of them
  * could not be linked together. */
-int g_psx_dispatch_depth = 0;
+PSX_THREAD_LOCAL int g_psx_dispatch_depth = 0;
 
 /* ── Registry ───────────────────────────────────────────────────────────────
  *
@@ -99,14 +101,19 @@ __attribute__((constructor)) static void psx_bios_registry_ctor(void) { registry
  * The generated BIOS C defines <STEM>_psx_dispatch; these keep the unprefixed
  * names that ~66 runtime call sites and the game's generated C already use. */
 
+PSX_THREAD_LOCAL PsxExecutionDispatch g_psx_execution_dispatch;
+PSX_THREAD_LOCAL PsxExecutionAbort g_psx_execution_abort;
+
 void psx_dispatch(CPUState *cpu, uint32_t addr)
 {
+    if (g_psx_execution_dispatch) { g_psx_execution_dispatch(cpu, addr, 0); return; }
     if (!psx_bios_active || !psx_bios_active->dispatch) return;
     psx_bios_active->dispatch(cpu, addr);
 }
 
 void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_addr)
 {
+    if (g_psx_execution_dispatch) { g_psx_execution_dispatch(cpu, addr, return_addr); return; }
     if (!psx_bios_active || !psx_bios_active->dispatch_call) return;
     psx_bios_active->dispatch_call(cpu, addr, return_addr);
 }

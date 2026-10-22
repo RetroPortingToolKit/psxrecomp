@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #define PSX_OVERLAY_DLL_BUILD 1
 #include "overlay_loader.h"
 #undef PSX_OVERLAY_DLL_BUILD
@@ -27,15 +28,15 @@ static uint8_t s_scratch[1024];
 uint32_t g_psx_ram_size = RAM_SIZE;
 uint32_t g_psx_ram_mask = RAM_SIZE - 1u;
 
-uint32_t g_debug_current_func_addr;
-uint32_t g_debug_last_store_pc;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 uint32_t g_overlay_region_floor;
-uint32_t i_stat, i_mask;
+PSX_THREAD_LOCAL uint32_t i_stat, i_mask;
 int g_exec_phase;
 int g_idle_note_suppress;
-int g_psx_call_bail;
+PSX_THREAD_LOCAL int g_psx_call_bail;
 uint32_t g_dirty_ram_code_gen;
-uint64_t g_psx_bail_first, g_psx_bail_resolved;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_first, g_psx_bail_resolved;
 uint64_t s_frame_count;
 int g_shadow_mmio_watch;
 uint64_t g_shadow_mmio_hits;

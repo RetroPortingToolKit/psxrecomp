@@ -80,10 +80,10 @@ static uint32_t s_wtrace_head=2;
 typedef struct { uint32_t pc; uint32_t gpr[32]; } CPUState;
 static CPUState *debug_cpu_ptr = NULL;
 static uint32_t s_frame_count = 0;
-uint32_t g_debug_current_func_addr = 0;
-uint32_t g_debug_last_store_pc = 0;
-int g_dma_exec_depth = 0, g_dma_cur_ch = -1;
-uint32_t g_dma_initiator_pc = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc = 0;
+PSX_THREAD_LOCAL int g_dma_exec_depth = 0, g_dma_cur_ch = -1;
+PSX_THREAD_LOCAL uint32_t g_dma_initiator_pc = 0;
 static void debug_server_send_line(const char *line) { puts(line); }
 static void send_err(int id, const char *error) { (void)id; (void)error; abort(); }
 """

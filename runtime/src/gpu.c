@@ -4912,7 +4912,7 @@ static inline GpuContextType_lcf *gpu_context_lcf(void) {
  * raise the VBLANK bit when a synthetic vblank fires from a tight
  * BIOS-shell GPUSTAT poll loop, without going through the
  * vblank-callback path (which would call SDL_Delay/Sleep). */
-extern uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
 /* Central IRQ-raise choke point (interrupts.c) — also records the device ring. */
 extern void psx_irq_raise(uint32_t bit, uint32_t detail);
 
@@ -8468,8 +8468,8 @@ uint32_t gpu_get_opcode_count(uint8_t op) { return (*gpu_context_gp0_opcode_coun
 
 extern uint64_t s_frame_count;  /* defined in debug_server.c */
 #ifndef PSX_NO_DEBUG_TOOLS
-extern uint32_t g_debug_last_store_pc;  /* defined in debug_server.c */
-extern uint32_t g_debug_current_func_addr;  /* defined in debug_server.c */
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;  /* defined in debug_server.c */
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;  /* defined in debug_server.c */
 uint32_t debug_guest_ra(void);  /* accessor in debug_server.c (guest $ra) */
 uint32_t debug_guest_sp(void);  /* accessor in debug_server.c (guest $sp) */
 extern uint8_t *memory_get_ram_ptr(void); /* raw 2MB main-RAM base (no lockstep) */

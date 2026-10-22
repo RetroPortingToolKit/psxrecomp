@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Device-level regression: guest RAM is not SIO hardware state.
  * Uses production SIO with a synthetic clock/card, no BIOS or retail data.
  * Independent references: Beetle frontio.cpp DoDSRIRQ/Write and irq.cpp
@@ -7,7 +8,7 @@
 #include "../src/sio.c"
 #include <stdio.h>
 
-uint32_t i_stat, i_mask, g_debug_current_func_addr, g_debug_last_store_pc;
+PSX_THREAD_LOCAL uint32_t i_stat, i_mask, g_debug_current_func_addr, g_debug_last_store_pc;
 static uint64_t clock_now;
 static int card_present;
 static int checks, failures;

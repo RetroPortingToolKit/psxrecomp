@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* psx_interpreter.c — Minimal R3000A interpreter for oracle builds.
  *
  * Implements the full MIPS I instruction set used by the PSX BIOS:
@@ -22,11 +23,11 @@
 #include <stdlib.h>
 
 /* I_STAT and I_MASK are owned by memory.c */
-extern uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
 /* Central IRQ-raise choke point (interrupts.c) — also records the device ring. */
 extern void psx_irq_raise(uint32_t bit, uint32_t detail);
 extern void psx_irq_refresh_cause_ip2(void);  /* interrupts.c — CAUSE.IP2 mirror */
-extern uint32_t i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_mask;
 
 #define COP0_SR    12
 #define COP0_CAUSE 13

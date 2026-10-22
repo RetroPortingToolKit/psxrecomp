@@ -283,8 +283,8 @@ static inline void exec_pc_table_record(uint32_t pc) {
 }
 
 /* From debug_server.c — keep our outer-frame attribution coherent. */
-extern uint32_t g_debug_current_func_addr;
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 
 /* Execution-mode tag for the event-timeline ring: 1 while a dirty_ram_dispatch
  * call is on the stack. Cleared defensively at the psx_check_interrupts longjmp
@@ -1128,8 +1128,8 @@ int dirty_ram_re954_json(char *out, int cap) {
  * so the real driver address is not pre-assumed. NB: there is no due-cycle event
  * scheduler in this build (psx_cycles.c), so "next scheduled event cycle" is N/A;
  * cycles-advanced-per-frame + I_STAT/I_MASK cover event progress instead. */
-extern uint32_t i_stat;   /* owned by memory.c */
-extern uint32_t i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_stat;   /* owned by memory.c */
+extern PSX_THREAD_LOCAL uint32_t i_mask;
 
 enum { XOP_JAL = 0, XOP_JALR = 1, XOP_JR = 2, XOP_J = 3, XOP_DD = 4, XOP_BR = 5,
        XOP_RES = 6 /* watched-target call RESOLUTION: site = path code (XRES_*),
@@ -2570,7 +2570,7 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
  * still needs the oracle; this converts a hard crash into a catchable, diagnosed
  * bail (Rule 15: make the failure observable). */
 int dirty_ram_dispatch(CPUState* cpu, uint32_t addr, uint32_t stop_addr) {
-    extern int g_psx_dispatch_depth;
+    extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;
     extern void psx_fatal_halt(const char *reason);
     /* `addr` is architectural: the interpreter runs at exactly this PC, so a
      * retail RAM-mirror PC (0x807xxxxx) keeps its own $ra/EPC while fetch_word
@@ -2759,7 +2759,7 @@ int dirty_ram_run_span(CPUState* cpu, uint32_t start_pc, uint32_t stop_pc,
  * boundary? Mirrors the gate in psx_check_interrupts: a pending+unmasked I_STAT
  * bit, COP0 IEc + IM2 set, and not already inside the exception handler. */
 static int precise_irq_deliverable(CPUState *cpu) {
-    extern uint32_t i_stat;
+    extern PSX_THREAD_LOCAL uint32_t i_stat;
     uint32_t sr = cpu->cop0[12];
     /* COP0 software interrupts (CAUSE.IP0/IP1 & SR.IM0/IM1): guest-raised via
      * mtc0 to CAUSE, independent of the INTC line (see psx_check_interrupts). */
@@ -2832,7 +2832,7 @@ static void psx_run_precise(CPUState *cpu, uint32_t bcyc, int deadline_entry) {
     for (int i = 0; i < MAX_PRECISE_INSNS; i++) {
         if (!irq_taken && precise_irq_deliverable(cpu)) {
             uint32_t committed = pc;
-            extern uint32_t i_stat;
+            extern PSX_THREAD_LOCAL uint32_t i_stat;
             g_slice_last_committed = committed;
             g_slice_last_istat = i_stat;
             g_slice_last_imask = i_mask;
@@ -2896,7 +2896,7 @@ static void psx_run_precise(CPUState *cpu, uint32_t bcyc, int deadline_entry) {
          * after a take re-fires an IRQ the handler has not acked yet (an
          * 8-takes-in-11-insns storm), so gate on !irq_taken. */
         if (!irq_taken && precise_irq_deliverable(cpu)) {
-            extern uint32_t i_stat;
+            extern PSX_THREAD_LOCAL uint32_t i_stat;
             g_slice_last_committed = committed;
             g_slice_last_istat = i_stat;
             g_slice_last_imask = i_mask;
@@ -3281,7 +3281,7 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
             s_entry_poll_enabled = (e && e[0] == '0') ? 0 : 1;
         }
         if (s_entry_poll_enabled) {
-            extern uint32_t i_stat;
+            extern PSX_THREAD_LOCAL uint32_t i_stat;
             uint32_t sr = cpu->cop0[12];
             int deliverable =
                 ((i_stat & i_mask) != 0u) &&

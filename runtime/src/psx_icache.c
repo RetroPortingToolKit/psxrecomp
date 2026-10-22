@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* psx_icache.c — R3000A instruction-cache FETCH cost model (faithful).
  *
  * FAITHFUL_TIMING_PLAN.md axis-2 (I-cache). Transcribed from the in-tree Beetle
@@ -14,7 +15,7 @@
 #include <string.h>
 
 int psx_icache_enabled(void) {
-    static int s = -1;
+    static PSX_THREAD_LOCAL int s = -1;
     if (s < 0) {
         const char* e = getenv("PSX_ICACHE");
         s = (e == NULL || e[0] == '\0') ? 1 : (e[0] != '0');
@@ -25,16 +26,16 @@ int psx_icache_enabled(void) {
 /* Per-word tag+validity, mirroring Beetle ICache[idx].TV. Init to a value that can
  * never equal an aligned fetch address (aligned addrs have bits 0-1 = 0), so every
  * line starts cold (miss). */
-uint32_t g_psx_icache_tv[1024];
-int g_psx_icache_active = -1;
+PSX_THREAD_LOCAL uint32_t g_psx_icache_tv[1024];
+PSX_THREAD_LOCAL int g_psx_icache_active = -1;
 
 /* Whole-call shadow: a transactional view of the cache tags so an AOT/diff
  * shadow replay can evolve the cache from the recorded entry state and then
  * restore the live view (master's shadow machinery, retargeted at the global
  * tag array the interpreter fast path exports). */
-static uint32_t s_icache_shadow_entry[1024];
-static uint32_t s_icache_shadow_live[1024];
-static int      s_icache_shadow_state = 0; /* 0 none, 1 recorded, 2 replay */
+static PSX_THREAD_LOCAL uint32_t s_icache_shadow_entry[1024];
+static PSX_THREAD_LOCAL uint32_t s_icache_shadow_live[1024];
+static PSX_THREAD_LOCAL int s_icache_shadow_state = 0; /* 0 none, 1 recorded, 2 replay */
 
 int psx_icache_shadow_record_begin(void) {
     if (s_icache_shadow_state != 0) return 0;

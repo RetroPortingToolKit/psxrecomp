@@ -36,7 +36,7 @@ typedef int sock_t;
 #define COSIM_SLEEP(ms) usleep((ms)*1000)
 #endif
 
-extern uint32_t i_stat, i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_stat, i_mask;
 extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 
 /* EXPERIMENTAL input-driven cosim: held pad state applied every frame by the headless

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * sio.c -- PS1 Serial I/O (SIO0) controller
  *
@@ -21,7 +22,7 @@
 #include <string.h>
 
 /* I_STAT is owned by memory.c */
-extern uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
 /* Central IRQ-raise choke point (interrupts.c) — also records the device ring. */
 extern void psx_irq_raise(uint32_t bit, uint32_t detail);
 
@@ -492,9 +493,9 @@ static int s_card_handoff_count = 0;
 static int s_card_handoff_armed = 0; /* set after LOAD-style probe abort */
 
 static void card_handoff_push(uint8_t kind, uint8_t byte) {
-    extern uint32_t g_debug_current_func_addr;
-    extern uint32_t g_debug_last_store_pc;
-    extern uint32_t i_mask;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
+    extern PSX_THREAD_LOCAL uint32_t i_mask;
     extern uint64_t psx_get_cycle_count(void);
     SioCardHandoffEntry *e = &s_card_handoff[s_card_handoff_idx];
     e->kind  = kind;
@@ -1959,7 +1960,7 @@ static void mc_process_byte(uint8_t tx_byte) {
 
 static void sio_process_byte(uint8_t tx_byte) {
     /* ---- Trace: capture pre-state ---- */
-    extern uint32_t g_debug_current_func_addr;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
     uint8_t trace_mc_pre = (uint8_t)mc_state;
     uint8_t trace_dev_pre = (uint8_t)active_device;
     uint8_t trace_irq_cd = (uint8_t)(sio_irq_countdown > 255 ? 255 : sio_irq_countdown);
@@ -2398,7 +2399,7 @@ void sio_write(uint32_t addr, uint32_t value) {
                 sio_mc_abort_ctrl = (uint16_t)value;
             }
             if (sio_txn_open) {
-                extern uint32_t g_debug_current_func_addr;
+                extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
                 txn_close(SIO_TXN_END_ABORT_RESET, mc_state, g_debug_current_func_addr);
             }
             sio_stat = SIO_STAT_TX_RDY | SIO_STAT_TX_EMPTY;
@@ -2479,7 +2480,7 @@ void sio_write(uint32_t addr, uint32_t value) {
             /* SELECT deassertion cancels the device's pending DSR pulse.
              * It cannot create an ACK or preserve one for later delivery. */
             if (active_device == DEV_MEMCARD && mc_state != MC_IDLE && sio_txn_open) {
-                extern uint32_t g_debug_current_func_addr;
+                extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
                 txn_close(SIO_TXN_END_ABORT_OTHER, mc_state, g_debug_current_func_addr);
             }
             /* Persist mc_flag back to the active slot before resetting. mc_flag
@@ -2707,7 +2708,7 @@ static void sio_fire_ack_irq(void) {
             card_handoff_push(5, 0);
     }
 
-    extern uint32_t g_debug_current_func_addr;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
     extern uint8_t psx_read_byte(uint32_t addr);
     SioIrqEntry *e = &sio_irq_buf[sio_irq_idx];
     e->seq            = sio_irq_seq;
@@ -2876,7 +2877,7 @@ void sio_tick(int cycles) {
             event_ring_record_aux(EV_DEQ, (uint8_t)SRC_SIO, 1u); /* SIO shift IRQ fired */
 
             /* SIO IRQ ring capture. */
-            extern uint32_t g_debug_current_func_addr;
+            extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
             extern uint8_t psx_read_byte(uint32_t addr);
             SioIrqEntry *e = &sio_irq_buf[sio_irq_idx];
             e->seq            = sio_irq_seq;

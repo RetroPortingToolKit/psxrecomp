@@ -1,4 +1,3 @@
-#include "psx_thread_local.h"
 /*
  * card_data_writes.h — always-on capture of where the BIOS stores
  * incoming SIO data bytes during memory-card READ_DATA.
@@ -33,7 +32,7 @@ extern "C" {
 
 typedef struct {
     uint64_t seq;                 /* monotonic across all entries */
-    PSX_THREAD_LOCAL uint64_t psx_cycle_count;
+    uint64_t psx_cycle_count;
     uint32_t addr;                /* dest physical RAM address */
     uint32_t store_pc;            /* g_debug_last_store_pc when stored */
     uint32_t func_addr;           /* g_debug_current_func_addr */

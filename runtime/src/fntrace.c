@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* fntrace.c — runtime side of psx_dispatch call ring. See fntrace.h. */
 
 #include "fntrace.h"
@@ -192,8 +193,8 @@ void fntrace_record(CPUState* cpu, uint32_t target) {
      * bail_top_wild_pc) so the dominant wild-returning function is readable even
      * when the bail storm makes the window "Not Responding". */
     {
-        extern uint64_t g_psx_bail_flattened;
-        extern uint32_t g_debug_current_func_addr;
+        extern PSX_THREAD_LOCAL uint64_t g_psx_bail_flattened;
+        extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
         extern void psx_bail_record(uint32_t site_ra, uint32_t site_sp,
                                     uint32_t wild_pc, uint32_t guest_sp);
         static uint64_t s_last_flat = 0;

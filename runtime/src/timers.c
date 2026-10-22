@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * timers.c — PS1 root counters (3 timers), v4 clean port.
  *
@@ -47,8 +48,8 @@ typedef struct {
     int      irq_line; /* toggle mode state */
 } Timer;
 
-static Timer timers[3];
-static uint32_t timer_frac[3];
+static PSX_THREAD_LOCAL Timer timers[3];
+static PSX_THREAD_LOCAL uint32_t timer_frac[3];
 
 /* Always-on RootCounter/Timer IRQ-fire telemetry (Tomba 2 RCnt-wait diag):
  * counts how many times each timer raised its IRQ. If a game spins on an
@@ -67,7 +68,7 @@ void timers_get_debug(int t, uint16_t *counter, uint16_t *target,
 }
 
 /* I_STAT is owned by memory.c — we poke it directly via this extern. */
-extern uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
 /* Central IRQ-raise choke point (interrupts.c) — also records the device ring. */
 extern void psx_irq_raise(uint32_t bit, uint32_t detail);
 

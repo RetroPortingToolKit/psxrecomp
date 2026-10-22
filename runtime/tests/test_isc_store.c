@@ -38,12 +38,12 @@
 extern void     psx_write_word(uint32_t addr, uint32_t val);
 extern void     psx_write_half(uint32_t addr, uint16_t val);
 extern void     psx_write_byte(uint32_t addr, uint8_t val);
-extern int      g_host_store_depth;
+extern PSX_THREAD_LOCAL int      g_host_store_depth;
 extern uint32_t psx_read_word(uint32_t addr);
 extern uint8_t *memory_get_ram_ptr(void);
 extern uint8_t *memory_get_scratchpad_ptr(void);
 extern void     memory_set_sr_ptr(const uint32_t *p);
-extern int      g_dma_exec_depth;
+extern PSX_THREAD_LOCAL int      g_dma_exec_depth;
 extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 
 /* BIU values the kernel and the tests use (Beetle cpu.cpp BIU_* bits). */

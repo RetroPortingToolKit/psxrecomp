@@ -1654,6 +1654,11 @@ if(BUILD_TESTING)
         find_package(Threads REQUIRED)
         target_link_libraries(render_thread_test PRIVATE Threads::Threads)
         add_test(NAME render_thread_test COMMAND render_thread_test)
+        add_executable(render_capture_test tests/test_render_capture.c src/render_thread.c)
+        target_include_directories(render_capture_test PRIVATE include)
+        target_link_libraries(render_capture_test PRIVATE Threads::Threads)
+        add_test(NAME render_capture_test COMMAND render_capture_test)
+
         # Present thread core ([video] present_thread): submission order is
         # presentation order, slots are never composed while queued or on
         # screen, done tokens reach the next composer, stop drains.

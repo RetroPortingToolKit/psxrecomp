@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* NeGcon wire protocol regression: ID 0x23 poll layout (twist, I, II, L),
  * no config mode, device-swap edges against the 0x44 mode lock, deferred type
  * requests during config, 0x44 keeping the device, snapshot of the pad mode,
@@ -13,10 +14,10 @@ uint32_t sio_snapshot_bytes(void);
 void sio_snapshot_write(uint8_t *p);
 int sio_snapshot_read(const uint8_t *p, uint32_t len);
 
-uint32_t i_stat = 0;
-uint32_t i_mask = 0;
-uint32_t g_debug_current_func_addr = 0;
-uint32_t g_debug_last_store_pc = 0;
+PSX_THREAD_LOCAL uint32_t i_stat = 0;
+PSX_THREAD_LOCAL uint32_t i_mask = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr = 0;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc = 0;
 int psx_get_in_exception(void) { return 0; }
 uint8_t psx_read_byte(uint32_t addr) { (void)addr; return 0; }
 uint32_t psx_read_word(uint32_t addr) { (void)addr; return 0; }

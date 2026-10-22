@@ -1,4 +1,5 @@
-﻿/* ============================================================================
+#include "psx_thread_local.h"
+/* ============================================================================
  * cpu_state.h  —  Phase 2 runtime version
  * ----------------------------------------------------------------------------
  * This is the RUNTIME version of the CPUState header. It has the same struct
@@ -315,11 +316,11 @@ static inline uint32_t *psx_overlay_last_store_pc(void) {
 }
 #define g_debug_last_store_pc (*psx_overlay_last_store_pc())
 #else
-extern int      g_psx_call_bail;
-extern uint64_t g_psx_bail_first;      /* contract violations detected      */
-extern uint64_t g_psx_bail_resolved;   /* unwinds resolved at a call site   */
-extern uint64_t g_psx_bail_flattened;  /* unwinds flattened at outermost    */
-extern uint64_t g_psx_bail_anomaly;    /* bail flag seen where impossible   */
+extern PSX_THREAD_LOCAL int      g_psx_call_bail;
+extern PSX_THREAD_LOCAL uint64_t g_psx_bail_first;      /* contract violations detected      */
+extern PSX_THREAD_LOCAL uint64_t g_psx_bail_resolved;   /* unwinds resolved at a call site   */
+extern PSX_THREAD_LOCAL uint64_t g_psx_bail_flattened;  /* unwinds flattened at outermost    */
+extern PSX_THREAD_LOCAL uint64_t g_psx_bail_anomaly;    /* bail flag seen where impossible   */
 #endif
 
 /* Deduped wild-return source ledger (traps.c). Not present in overlay DLLs

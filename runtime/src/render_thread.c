@@ -10,6 +10,7 @@
  * can never fall between a check and a wait. */
 
 #include "render_thread.h"
+#include "psx_thread_local.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -78,6 +79,70 @@ static void cpu_relax(void) {
 #  endif
 }
 #endif
+
+/* List capture is independent of the live producer and every ring counter. */
+struct RtCommandList {
+    unsigned char *data;
+    size_t capacity, used, pending;
+    int sealed;
+};
+static PSX_THREAD_LOCAL RtCommandList *t_capture;
+static PSX_THREAD_LOCAL RtCaptureAbort t_capture_abort;
+static void capture_fail(const char *reason) {
+    if (t_capture_abort) t_capture_abort(reason);
+    abort();
+}
+RtCommandList *rt_list_create(size_t capacity) {
+    if (capacity < RT_ALIGN || capacity > UINT32_MAX) return NULL;
+    RtCommandList *list = (RtCommandList *)calloc(1, sizeof(*list));
+    if (!list) return NULL;
+    list->data = (unsigned char *)malloc(capacity);
+    if (!list->data) { free(list); return NULL; }
+    list->capacity = capacity;
+    return list;
+}
+void rt_list_destroy(RtCommandList *list) {
+    if (!list) return;
+    if (list == t_capture) abort();
+    free(list->data); free(list);
+}
+void rt_capture_begin(RtCommandList *list, RtCaptureAbort failure) {
+    if (!list || t_capture) abort();
+    list->used = list->pending = 0;
+    list->sealed = 0;
+    t_capture = list; t_capture_abort = failure;
+}
+void rt_capture_end(void) {
+    if (!t_capture) return;
+    /* An abort can abandon the last uncommitted record. It is never visible. */
+    t_capture->pending = 0;
+    t_capture->sealed = 1;
+    t_capture = NULL; t_capture_abort = NULL;
+}
+int rt_capture_active(void) { return t_capture != NULL; }
+size_t rt_list_bytes(const RtCommandList *list) {
+    return list && list->sealed ? list->used : 0;
+}
+static void *capture_record(uint16_t op, uint16_t flags, uint32_t payload) {
+    RtCommandList *list = t_capture;
+    size_t size = (sizeof(RtCmd) + (uint64_t)payload + RT_ALIGN - 1u) & ~(uint64_t)(RT_ALIGN - 1u);
+    if (!op || list->pending) capture_fail("command_order");
+    if (size > list->capacity - list->used) capture_fail("command_capacity");
+    RtCmd *cmd = (RtCmd *)(list->data + list->used);
+    *cmd = (RtCmd){(uint32_t)size, op, flags, payload, 0};
+    list->pending = size;
+    return cmd + 1;
+}
+void rt_list_execute(const RtCommandList *list, RtExecFn exec, void *user) {
+    if (!list || !list->sealed || !exec || t_capture) abort();
+    for (size_t offset = 0; offset < list->used;) {
+        const RtCmd *cmd = (const RtCmd *)(list->data + offset);
+        if (cmd->size < sizeof(*cmd) || cmd->size % RT_ALIGN ||
+            cmd->size > list->used - offset || cmd->payload > cmd->size - sizeof(*cmd)) abort();
+        exec(user, cmd, cmd + 1);
+        offset += cmd->size;
+    }
+}
 
 #define OP_PAD   0u      /* filler to the ring end; consumer skips it  */
 #define F_FRAME  0x8000u /* op 0 with this flag: frame marker          */
@@ -306,6 +371,7 @@ static int pred_frames(uint64_t limit) {
 static int pred_released(uint64_t unused) { (void)unused; return atomic_load(&R.released); }
 
 void *rt_cmd_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes) {
+    if (t_capture) return capture_record(op, flags, payload_bytes);
     if (!rt_running() || R.pending || op == OP_PAD) return NULL;
     uint64_t size = align_up(sizeof(RtCmd) + (uint64_t)payload_bytes);
     if (size > R.cap / 2) { R.oversize++; return NULL; }
@@ -338,6 +404,10 @@ void *rt_cmd_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes) {
 }
 
 void rt_cmd_commit(void) {
+    if (t_capture) {
+        if (!t_capture->pending) capture_fail("command_commit");
+        t_capture->used += t_capture->pending; t_capture->pending = 0; return;
+    }
     if (!R.pending) return;
     R.pending = 0;
     uint64_t end = R.pend_start + R.pend_size;
@@ -362,6 +432,7 @@ static void commit_marker(uint16_t flags) {
 }
 
 void rt_frame_end(void) {
+    if (t_capture) capture_fail("live_render_sync");
     if (!rt_running()) return;
     if (R.held) {
         /* Nothing is queued while the context is held; count the frame as
@@ -389,12 +460,14 @@ int rt_frames_ahead(void) {
 }
 
 void rt_drain(void) {
+    if (t_capture) capture_fail("live_render_sync");
     if (!rt_running() || R.held) return;
     uint64_t w = atomic_load(&R.wpos);
     emu_wait(pred_drained, w);
 }
 
 void rt_acquire(const char *reason) {
+    if (t_capture) capture_fail("live_render_sync");
     if (!rt_running() || R.held) return;
     uint64_t t0 = now_ns();
     rt_drain();
@@ -415,6 +488,7 @@ void rt_acquire(const char *reason) {
 }
 
 void rt_release(void) {
+    if (t_capture) capture_fail("live_render_sync");
     if (!rt_running() || !R.held) return;
     R.ctx(R.user, 0);
     mtx_lock(&R.mtx);
@@ -476,6 +550,7 @@ int rt_start(const RtConfig *cfg) {
 }
 
 void rt_stop(void) {
+    if (t_capture) capture_fail("live_render_sync");
     if (!rt_running()) return;
     int was_held = R.held;
     if (!was_held) rt_drain();

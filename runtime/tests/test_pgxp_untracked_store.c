@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* DMA and host stores against the PGXP shadow, end to end through the REAL
  * memory.c store paths and the REAL pgxp.cpp engine.
  *
@@ -22,8 +23,8 @@
 extern void psx_write_word(uint32_t addr, uint32_t val);
 extern void psx_write_half(uint32_t addr, uint16_t val);
 extern void psx_write_byte(uint32_t addr, uint8_t val);
-extern int  g_dma_exec_depth;
-extern int  g_host_store_depth;
+extern PSX_THREAD_LOCAL int  g_dma_exec_depth;
+extern PSX_THREAD_LOCAL int  g_host_store_depth;
 extern void memory_set_sr_ptr(const uint32_t *p);
 
 /* gte.cpp position cache: off here, so only the dataflow shadow can answer. */

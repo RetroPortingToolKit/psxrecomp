@@ -26,7 +26,9 @@ extern void cosim_instr(uint32_t pc);
 extern void debug_server_log_call_entry(uint32_t func_addr);
 extern void debug_server_cyc_observe(uint32_t block_leader_phys);
 #endif
-extern uint32_t g_debug_last_store_pc;
+#ifndef PSX_OVERLAY_DLL_BUILD
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
+#endif
 /* Phase 1.0e-d: per-block guest cycle accounting.
  * Compile generated code with -DPSX_ENABLE_BLOCK_CYCLES=1 to
  * activate cycle advancement at every block leader. */

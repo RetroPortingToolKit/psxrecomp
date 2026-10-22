@@ -3724,7 +3724,7 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
     ss << "extern void gte_ws_set_suppress(int on);  /* widescreen far-backdrop un-squash (gte.cpp) */\n";
     if (!config_.overlay_mode && !config_.draw_distance_clamp_sites.empty())
         ss << "extern uint32_t g_psx_draw_distance_clamp;  /* [[draw_distance.clamp]] switch (draw_distance.c) */\n";
-    ss << "extern uint32_t g_debug_last_store_pc;  /* exact PC of the executing SW/SH/SB — wtrace/readtrace producer attribution (debug_server.c) */\n\n";
+    ss << "#ifndef PSX_OVERLAY_DLL_BUILD\nextern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;\n#endif\n\n";
 }
 
 void CodeGenerator::emit_unaligned_helpers(std::ostream& ss, bool as_inline) const {

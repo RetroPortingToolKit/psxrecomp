@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* dma.c — PS1 DMA controller simulation (Phase 3).
  *
  * Implements all 7 channel register reads/writes, DPCR, DICR,
@@ -52,11 +53,11 @@ extern uint32_t psx_read_word(uint32_t addr);
 extern void     psx_write_word(uint32_t addr, uint32_t val);
 
 /* Interrupt status — defined in memory.c */
-extern uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
 /* Central IRQ-raise choke point (interrupts.c) — also records the device ring. */
 extern void psx_irq_raise(uint32_t bit, uint32_t detail);
-extern uint32_t g_debug_current_func_addr;
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 extern uint64_t s_frame_count;
 
 /* ---- Per-channel registers ---- */
@@ -67,7 +68,7 @@ typedef struct {
     uint32_t chcr;  /* +0x08: Channel control */
 } DMAChannel;
 
-static DMAChannel channels[7];
+static PSX_THREAD_LOCAL DMAChannel channels[7];
 
 typedef struct {
     uint8_t active;
@@ -78,12 +79,12 @@ typedef struct {
     uint32_t start_addr;   /* madr at transfer start (CD overlay capture) */
 } DMAAsyncChannel;
 
-static DMAAsyncChannel mdec_async[2];
-static DMAAsyncChannel cdrom_async;
-static DMAGPULinkedList gpu_linked_list;
-static DMAGpuOtStats gpu_ot_stats;
-static uint64_t gpu_ot_start_cycle;
-static uint32_t gpu_ot_polls_this_walk;
+static PSX_THREAD_LOCAL DMAAsyncChannel mdec_async[2];
+static PSX_THREAD_LOCAL DMAAsyncChannel cdrom_async;
+static PSX_THREAD_LOCAL DMAGPULinkedList gpu_linked_list;
+static PSX_THREAD_LOCAL DMAGpuOtStats gpu_ot_stats;
+static PSX_THREAD_LOCAL uint64_t gpu_ot_start_cycle;
+static PSX_THREAD_LOCAL uint32_t gpu_ot_polls_this_walk;
 
 /* ---- CD DMA transfer log ---- */
 /* Every forward CH3 DMA that lands below 0x1C0000 (game data region) records
@@ -93,9 +94,9 @@ static uint32_t gpu_ot_polls_this_walk;
  * overlay regions back to disc positions for extract_overlays.py. */
 #define CD_DMA_LOG_CAP 65536
 typedef struct { int lba; uint32_t dest; uint32_t size; } CdDmaEntry;
-static CdDmaEntry cd_dma_log[CD_DMA_LOG_CAP];
-static uint32_t   cd_dma_log_head  = 0;
-static uint32_t   cd_dma_log_total = 0;
+static PSX_THREAD_LOCAL CdDmaEntry cd_dma_log[CD_DMA_LOG_CAP];
+static PSX_THREAD_LOCAL uint32_t   cd_dma_log_head  = 0;
+static PSX_THREAD_LOCAL uint32_t   cd_dma_log_total = 0;
 
 static void cd_dma_log_push(int lba, uint32_t dest, uint32_t size) {
     cd_dma_log[cd_dma_log_head % CD_DMA_LOG_CAP].lba  = lba;
@@ -138,18 +139,18 @@ void     cd_dma_log_get_entry(uint32_t idx, int *lba, uint32_t *dest, uint32_t *
  * DMA-sourced (not a CPU/dirty-interp store, whose g_debug_last_store_pc is accurate).
  * cur_ch/cur_madr/cur_bcr name the in-flight channel + its destination, so a wrong
  * DMA destination clobbering kernel data becomes directly visible. */
-int      g_dma_exec_depth = 0;
-int      g_dma_cur_ch     = -1;
-uint32_t g_dma_cur_madr   = 0;
-uint32_t g_dma_cur_bcr    = 0;
+PSX_THREAD_LOCAL int      g_dma_exec_depth = 0;
+PSX_THREAD_LOCAL int      g_dma_cur_ch     = -1;
+PSX_THREAD_LOCAL uint32_t g_dma_cur_madr   = 0;
+PSX_THREAD_LOCAL uint32_t g_dma_cur_bcr    = 0;
 /* Guest PC that kicked the in-flight DMA (the CHCR store that set start/busy),
  * so write-provenance (wtrace / parity note_write) attributes DMA-sourced RAM
  * writes to the code that INITIATED the transfer, not to g_debug_last_store_pc
  * (which for an async transfer is a stale, unrelated CPU store). Captured at the
  * kick in trigger_dma_transfer and re-published for async channels whose RAM
  * writes run in a later advance_*() step. 0 = unknown. */
-uint32_t g_dma_initiator_pc = 0;
-static uint32_t s_dma_ch_initiator_pc[7] = {0};
+PSX_THREAD_LOCAL uint32_t g_dma_initiator_pc = 0;
+static PSX_THREAD_LOCAL uint32_t s_dma_ch_initiator_pc[7] = {0};
 
 typedef struct {
     uint8_t active;
@@ -157,22 +158,22 @@ typedef struct {
     uint32_t cycles_remaining;
 } DMADelayedComplete;
 
-static DMADelayedComplete delayed_complete[7];
+static PSX_THREAD_LOCAL DMADelayedComplete delayed_complete[7];
 
 /* ---- Global registers ---- */
 
-static uint32_t dpcr;  /* 0x1F8010F0: DMA control (enable bits) */
-static uint32_t dicr;  /* 0x1F8010F4: DMA interrupt control */
+static PSX_THREAD_LOCAL uint32_t dpcr;  /* 0x1F8010F0: DMA control (enable bits) */
+static PSX_THREAD_LOCAL uint32_t dicr;  /* 0x1F8010F4: DMA interrupt control */
 
 #define DICR_WRITE_MASK 0x00FF807Fu
 #define DICR_RESET_MASK 0x7F000000u
 
-static DMATraceEntry dma_trace[DMA_TRACE_CAP];
-static uint64_t dma_trace_seq;
-static DMACDROMHistoryEntry cdrom_dma_history[DMA_CDROM_HISTORY_CAP];
-static uint64_t cdrom_dma_history_seq;
-static DMACDROMHistoryEntry cdrom_dma_active_entry;
-static uint8_t cdrom_dma_history_active;
+static PSX_THREAD_LOCAL DMATraceEntry dma_trace[DMA_TRACE_CAP];
+static PSX_THREAD_LOCAL uint64_t dma_trace_seq;
+static PSX_THREAD_LOCAL DMACDROMHistoryEntry cdrom_dma_history[DMA_CDROM_HISTORY_CAP];
+static PSX_THREAD_LOCAL uint64_t cdrom_dma_history_seq;
+static PSX_THREAD_LOCAL DMACDROMHistoryEntry cdrom_dma_active_entry;
+static PSX_THREAD_LOCAL uint8_t cdrom_dma_history_active;
 
 static uint32_t dicr_read_value(uint32_t v);
 
@@ -823,8 +824,8 @@ static void start_async_gpu_linked_list(void) {
  * whole walk (and the GPU work it feeds) with in_exception set, which is what
  * the phase profiler's exc_share then measures. */
 extern int psx_get_in_exception(void);
-static DMAGpuHoldEntry s_hold_ring[DMA_GPU_HOLD_RING_CAP];
-static DMAGpuHoldStats s_hold_stats;
+static PSX_THREAD_LOCAL DMAGpuHoldEntry s_hold_ring[DMA_GPU_HOLD_RING_CAP];
+static PSX_THREAD_LOCAL DMAGpuHoldStats s_hold_stats;
 
 static uint64_t hold_host_ticks(void) {
 #ifdef _WIN32

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* crash_trace.c — unified crash diagnostic dump.
  *
  * Writes a single JSON report file (psx_last_run_report.json) on:
@@ -94,15 +95,15 @@ extern int      psx_netplay_is_resimulating(void);
 extern uint64_t s_frame_count;
 
 /* Globals from debug_server.c we want to capture. */
-extern uint32_t g_debug_current_func_addr;
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 
 /* Native dispatch nesting depth (generated/SCPH1001_dispatch.c). Incremented per
  * nested psx_dispatch_call, decremented on return. A huge value at crash time is
  * the direct fingerprint of runaway recursion (the host C stack mirrors the guest
  * call graph, so an unbounded call chain overflows it -> STATUS_STACK_OVERFLOW
  * 0xC00000FD). Pairs with the dirty_block tail, which names the recursing PCs. */
-extern int g_psx_dispatch_depth;
+extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;
 
 /* Dispatch ring — accessor wrappers exported by debug_server.c. */
 #define DISPATCH_TRACE_CAP (1 << 16)

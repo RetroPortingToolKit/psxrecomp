@@ -1,8 +1,9 @@
+#include "psx_thread_local.h"
 /* Synthetic-sector integration tests for the actual CD controller. */
 #include "../src/cdrom.c"
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
-uint32_t i_stat, g_debug_current_func_addr, g_debug_last_store_pc;
+PSX_THREAD_LOCAL uint32_t i_stat, g_debug_current_func_addr, g_debug_last_store_pc;
 uint64_t s_frame_count, psx_cycle_count;
 static int test_dma_active;
 int dma_cdrom_transfer_active(void) { return test_dma_active; }

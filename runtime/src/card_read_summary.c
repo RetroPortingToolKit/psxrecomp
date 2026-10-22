@@ -1,11 +1,12 @@
+#include "psx_thread_local.h"
 /* card_read_summary.c — non-evicting first-32 completed card reads. */
 
 #include "card_read_summary.h"
 #include "psx_cycles.h"
 #include <string.h>
 
-extern uint32_t g_debug_current_func_addr;
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 
 static CardReadSummary s_ring[CARD_READ_SUMMARY_CAP];
 static uint32_t        s_count = 0;

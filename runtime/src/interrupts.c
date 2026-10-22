@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * interrupts.c — v4 interrupt delivery for recompiled BIOS.
  *
@@ -124,8 +125,8 @@ static void irq_record_outcome(uint8_t kind, uint8_t detail, uint32_t aux) {
 #define COP0_EPC   14
 
 /* I_STAT and I_MASK are owned by memory.c */
-extern uint32_t i_stat;
-extern uint32_t i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_mask;
 
 /* Device-event cycle ring (device_trace.c): every hardware IRQ-raise edge is
  * recorded here with its guest cycle. */
@@ -159,7 +160,7 @@ extern uint32_t i_mask;
  *
  * Derived from PR #102 by Alexandros Mandravillis; the mirror call sites and
  * the single-owner refactor are ours. */
-static uint32_t *s_cause_ptr;
+static PSX_THREAD_LOCAL uint32_t *s_cause_ptr;
 
 void psx_irq_refresh_cause_ip2(void)
 {
@@ -186,7 +187,7 @@ void psx_irq_raise(uint32_t bit, uint32_t detail)
 {
     i_stat |= (1u << bit);
     psx_irq_refresh_cause_ip2();
-    device_trace_note(bit, detail);
+    if (!g_psx_render_pass_active) device_trace_note(bit, detail);
 }
 
 /* Dispatch counter for vblank scheduling. */
@@ -235,7 +236,7 @@ typedef struct {
 static CosimIrqEntry s_cosim_irq_ring[COSIM_IRQ_RING_CAP];
 static uint64_t s_cosim_irq_seq;
 extern int g_cosim_dirty_pump_site;
-extern uint32_t g_debug_current_func_addr;
+extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
 extern uint32_t cosim_last_block(void);
 extern uint32_t overlay_loader_get_inprogress(void);
 
@@ -625,7 +626,7 @@ uint64_t psx_exception_setjmp_epoch(void) { return g_exc_setjmp_epoch; }
  * the thread scheduler is fiber-based everywhere. */
 void* g_exception_owner_fiber = NULL;
 int   g_pending_exception_longjmp = 0;
-extern int g_psx_dispatch_depth;
+extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;
 
 /* Set by psx_check_interrupts_at while a compiled block-leader interrupt check
  * is in progress. If the delivered handler later RFEs to the sentinel outside
@@ -676,7 +677,7 @@ int psx_irq_resume_context_snapshot_safe_at(uint32_t resume_pc)
      * dirty resume PC is the same PC the caller intends to serialize. Keep
      * call-return and precise-IRQ pump sites rejected; those are the contexts
      * that can pair a plausible resume PC with stale nested-call registers. */
-    extern int g_call_unit_depth;
+    extern PSX_THREAD_LOCAL int g_call_unit_depth;
     if (in_exception || g_call_unit_depth != 0 || g_psx_dispatch_depth > 1)
         return 0;
     if (resume_pc == 0u || (resume_pc & 3u) != 0u)
@@ -1553,7 +1554,7 @@ irq_deliver_eval:
      * clobber window because the CPU isn't stalled / the event wasn't torn down. */
     {
         extern int dma_cdrom_transfer_active(void);
-        extern int g_dma_exec_depth;
+        extern PSX_THREAD_LOCAL int g_dma_exec_depth;
         extern uint64_t s_frame_count;
         g_irqctx_ring[g_irqctx_seq & (IRQCTX_RING_CAP - 1u)] = (IrqCtxEntry){
             .seq = g_irqctx_seq, .cycle = psx_get_cycle_count(),
@@ -2146,7 +2147,7 @@ irq_deliver_eval:
              * live GPRs when the IRQ was taken deep inside a nested call (the
              * async-poll callback) — switching there commits a poisoned TCB context
              * and the resumed thread faults on a smeared jumptable index. */
-            extern int g_call_unit_depth;
+            extern PSX_THREAD_LOCAL int g_call_unit_depth;
             int at_outermost = (g_psx_dispatch_depth == 0 && g_call_unit_depth == 0);
             /* Defer only when nested AND the outgoing thread has a valid resume PC
              * of its OWN (g_exception_real_epc — the architectural EPC latched for

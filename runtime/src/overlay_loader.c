@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #include "overlay_loader.h"
 #include "overlay_api.h"
 #include "overlay_path_canon.h"
@@ -543,7 +544,7 @@ static uint32_t s_last_write_size = 0;
  * before the guest-visible write; block/device boundaries flush through the
  * DLL glue directly. */
 static OverlayFlushFn s_dll_flush[4096];
-OverlayFlushFn g_overlay_flush_pending_cycles = NULL;
+PSX_THREAD_LOCAL OverlayFlushFn g_overlay_flush_pending_cycles = NULL;
 
 static OverlayFlushFn overlay_flush_enter(const Candidate *c) {
     OverlayFlushFn prev = g_overlay_flush_pending_cycles;
@@ -2268,8 +2269,8 @@ static int      s_irq_suppress_cdrom_only = 0;
 static int      s_irq_post_dispatch_pump = 0;
 static int      s_irq_defer_cdrom = 0;
 
-extern uint32_t i_stat;
-extern uint32_t i_mask;
+extern PSX_THREAD_LOCAL uint32_t i_stat;
+extern PSX_THREAD_LOCAL uint32_t i_mask;
 
 /* Nested call-unit depth (Ape memcard native<->interp resume-desync fix).
  *
@@ -2296,7 +2297,7 @@ extern uint32_t i_mask;
  * inside units; the blanket skip survives only behind
  * PSX_OVERLAY_UNIT_IRQ_DEFER=1 for A/B bisection (overlay_unit_defer.h).
  * Incremented only when the A/B toggle is on (below). */
-int g_call_unit_depth = 0;
+PSX_THREAD_LOCAL int g_call_unit_depth = 0;
 
 /* A/B toggle for the nested-unit IRQ deferral (PSX_OVERLAY_UNIT_DEFER, default
  * ON). Gates the depth INCREMENTS (so =0 leaves g_call_unit_depth at 0 and
@@ -2553,7 +2554,7 @@ static void init_callbacks(void) {
      * static and interpreted stores do, in every build, because memory.c's
      * store filters read it as well as the debug tooling. */
     {
-        extern uint32_t g_debug_last_store_pc;
+        extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
         s_callbacks.last_store_pc = &g_debug_last_store_pc;
     }
     /* Widescreen hooks (ABI v3): overlay-emitted psx_ws_* calls forward to
@@ -4271,7 +4272,7 @@ retry_candidates:
  * the current activation, so we permanently demote that entry to interp. Called
  * from memory.c only when the written page is watched. */
 void overlay_loader_active_write_check(uint32_t phys, uint32_t size) {
-    extern uint32_t g_debug_last_store_pc;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
     uint32_t p = phys & 0x1FFFFFFFu;
     for (int d = 0; d < s_active_depth; d++) {
         Candidate *c = &s_cand[s_active_stack[d]];
@@ -4713,7 +4714,7 @@ static void run_shadow_diff(CPUState *cpu, Candidate *c, uint32_t addr) {
     extern void psx_dispatch_call(CPUState *cpu, uint32_t addr, uint32_t return_addr);
     extern int gte_replay_side_effects_begin(void);
     extern void gte_replay_side_effects_end(void);
-    extern uint32_t g_debug_current_func_addr;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
     extern uint64_t psx_exception_setjmp_epoch(void);
     extern int g_shadow_mmio_watch;
 
@@ -4912,7 +4913,7 @@ static void shadow_escape_cleanup(void) {
     s_suppress_irq = s_shadow_saved_supp;
     g_exec_phase   = s_shadow_saved_exec_phase;
     g_psx_call_bail = s_shadow_saved_call_bail;
-    { extern uint32_t g_debug_current_func_addr;
+    { extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
       g_debug_current_func_addr = s_shadow_saved_debug_func; }
     s_irq_callcount = s_shadow_saved_irq_calls;
     s_irq_suppressed = s_shadow_saved_irq_supp;

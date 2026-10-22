@@ -8,7 +8,7 @@
 static uint8_t ram[2*1024*1024], spad[1024], spuram[512*1024];
 static uint16_t vram[1024*512];
 static int boot_clears, cd_handoffs;
-uint32_t i_stat, i_mask, g_psx_icache_tv[1024];
+PSX_THREAD_LOCAL uint32_t i_stat, i_mask, g_psx_icache_tv[1024];
 PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 PSX_THREAD_LOCAL uint32_t g_psx_gcs_frac;
 uint32_t psx_guest_cycle_scale_config(void) { return 1; }

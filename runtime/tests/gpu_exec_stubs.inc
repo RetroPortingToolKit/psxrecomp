@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Shared link stubs for tests that compile runtime/src/gpu.c directly and
  * execute GP0 packets without a GL context, mod bank or emulator core.
  * Include right after "../src/gpu.c". Define GPU_EXEC_REAL_UI_GROUP before
@@ -7,8 +8,8 @@
 uint64_t s_frame_count;
 PSX_THREAD_LOCAL uint64_t psx_cycle_count;          /* gpu_timeline.c stamps notes with it */
 int g_exec_phase;
-uint32_t g_debug_current_func_addr;
-uint32_t g_debug_last_store_pc;
+PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 CPUState *debug_cpu_ptr;
 int g_psx_vram_dirty_tracking;
 uint32_t g_psx_ram_size = 0x00200000u;

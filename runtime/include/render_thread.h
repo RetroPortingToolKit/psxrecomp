@@ -89,6 +89,21 @@ int  rt_on_render_thread(void);
 void *rt_cmd_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes);
 void  rt_cmd_commit(void);
 
+/* A dedicated guest worker records into its own bounded list. It never writes
+ * the SPSC ring. Ownership transfers only after end; the consumer executes a
+ * sealed list on the render thread, or drops it when its generation is late.
+ * Allocation happens before publication, never while guest code is running. */
+typedef struct RtCommandList RtCommandList;
+typedef void (*RtCaptureAbort)(const char *reason);
+RtCommandList *rt_list_create(size_t capacity);
+void rt_list_destroy(RtCommandList *list);
+void rt_capture_begin(RtCommandList *list, RtCaptureAbort failure);
+void rt_capture_end(void);
+int rt_capture_active(void);
+size_t rt_list_bytes(const RtCommandList *list);
+void rt_list_execute(const RtCommandList *list, RtExecFn exec, void *user);
+
+
 /* Close a guest frame: enqueue a frame marker, then block while more than
  * max_frames closed frames are unconsumed. */
 void rt_frame_end(void);

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* psx_bios_backend.h — the routing seam between the runtime and whichever
  * recompiled BIOS is active.
  *
@@ -25,6 +26,7 @@
 #include <stdint.h>
 
 #include "psx_bios_image.h"
+#include "psx_execution.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,10 +58,13 @@ typedef struct PsxBiosBackend {
      * each range's hi. Null/0 for an image that declares no slots. */
     const PsxKernelPatchRange *kernel_patch_ranges;
     uint32_t                   kernel_patch_range_count;
+    /* Side-effect-free code selection for an isolated execution context.
+     * 1: function/resume_pc; 2: native vector instructions ran and set pc. */
+    int (*execution_lookup)(struct CPUState *, uint32_t, PsxExecutionCode *);
 } PsxBiosBackend;
 
 /* Dispatch nesting depth, shared by every backend (psx_bios_backend.c). */
-extern int g_psx_dispatch_depth;
+extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;
 
 /* The backend in use. Null before psx_bios_select() runs; every forwarder and
  * every consumer of psx_bios_image depends on it being set first. */

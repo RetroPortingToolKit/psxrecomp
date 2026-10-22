@@ -267,7 +267,7 @@ extern "C" {
     extern uint32_t g_slice_exit_pc, g_slice_exit_reason, g_slice_exit_iter;
     extern uint32_t g_slice_exit_dispatchable, g_slice_exit_dirty, g_slice_exit_in_text, g_slice_exit_want;
     /* memory.c */
-    extern uint32_t i_stat, i_mask;
+    extern PSX_THREAD_LOCAL uint32_t i_stat, i_mask;
     extern uint64_t g_guest_store_count;
     extern uint64_t g_vblank_ack_count;
     /* interrupts.c */
@@ -276,9 +276,9 @@ extern "C" {
     extern uint64_t g_dirty_ram_blocks_run;
     extern uint64_t g_dirty_pump_count;
     /* overlay_loader.c */
-    extern int      g_call_unit_depth;
+    extern PSX_THREAD_LOCAL int      g_call_unit_depth;
     /* psx_bios_backend.c */
-    extern int      g_psx_dispatch_depth;
+    extern PSX_THREAD_LOCAL int      g_psx_dispatch_depth;
 }
 
 /* memory.c */
@@ -844,7 +844,7 @@ static void post_load_probe_on_vblank(int turbo_active, int present_reached) {
 
     extern uint64_t g_vblank_raise_count, g_vblank_deliver_count, g_vblank_ack_count;
     extern uint64_t g_dirty_ram_blocks_run;
-    extern uint32_t i_stat, i_mask;
+    extern PSX_THREAD_LOCAL uint32_t i_stat, i_mask;
     extern CPUState *debug_cpu_ptr;
     const uint64_t vb_r = g_vblank_raise_count - s_post_load_probe_vb_raise0;
     const uint64_t vb_d = g_vblank_deliver_count - s_post_load_probe_vb_deliv0;
@@ -963,9 +963,9 @@ static void post_load_probe_on_vblank(int turbo_active, int present_reached) {
 
     const uint32_t irq_pc = psx_last_irq_check_pc();
     const uint32_t resume_pc = psx_compiled_irq_resume_pc();
-    extern uint32_t g_debug_current_func_addr;
-    extern uint32_t g_debug_last_store_pc;
-    extern int g_psx_dispatch_depth;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+    extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
+    extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;
     const uint32_t func = g_debug_current_func_addr;
     const uint32_t store_pc = g_debug_last_store_pc;
     const uint32_t live_pc = debug_cpu_ptr ? debug_cpu_ptr->pc : 0u;
@@ -20412,10 +20412,10 @@ session_reboot:
     psx_netplay_cold_reset();
     {
         extern uint64_t s_frame_count;
-        extern uint32_t g_debug_current_func_addr;
-        extern uint32_t g_debug_last_store_pc;
-        extern int g_call_unit_depth;
-        extern int g_psx_dispatch_depth;
+        extern PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;
+        extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
+        extern PSX_THREAD_LOCAL int g_call_unit_depth;
+        extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;
         s_frame_count = 0;
         g_debug_current_func_addr = 0;
         g_debug_last_store_pc = 0;
@@ -21890,7 +21890,7 @@ session_reboot:
          * longjmp fixup). */
         if (rematch_session) {
             extern PSX_THREAD_LOCAL int psx_in_device_service;
-            extern int g_call_unit_depth;
+            extern PSX_THREAD_LOCAL int g_call_unit_depth;
             char stall[96];
             uint32_t sim = 0;
             int lead = 0;

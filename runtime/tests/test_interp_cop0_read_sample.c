@@ -36,8 +36,8 @@ PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
 PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit;
 PSX_THREAD_LOCAL int      g_psx_cyc_bb_defer;
 PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc;
-int      g_psx_icache_active;          /* 0: no fetch cost */
-uint32_t g_psx_icache_tv[1024];
+PSX_THREAD_LOCAL int g_psx_icache_active;          /* 0: no fetch cost */
+PSX_THREAD_LOCAL uint32_t g_psx_icache_tv[1024];
 
 static CPUState *s_device_cpu;
 static unsigned  s_services;

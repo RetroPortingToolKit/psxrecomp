@@ -18,6 +18,7 @@
 # overlay-cache hazard (same class as the "ws emission not in cg hash" gap).
 set(PSXRECOMP_CODEGEN_HASH_SRCS
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_thread_local.h
+    ${PSXRECOMP_CODEGEN_HASH_ROOT}/runtime/include/psx_execution.h
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/code_generator.cpp
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/mips_decoder.cpp
     ${PSXRECOMP_CODEGEN_HASH_ROOT}/recompiler/src/control_flow.cpp

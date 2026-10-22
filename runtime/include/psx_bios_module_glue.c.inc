@@ -40,9 +40,9 @@ static uint32_t s_mod_guest_count_dummy;
  * mappings): `extern int g_psx_dispatch_depth;` became
  * `extern int (*g_psx_bm_dispatch_depth_p);`, and so on. Defined here. */
 int      (**g_psx_bm_hle_hook_p)(CPUState *cpu, uint32_t phys) = &s_hle_hook_dummy;
-int       *g_psx_bm_dispatch_depth_p    = &s_depth_dummy;
+PSX_THREAD_LOCAL int *g_psx_bm_dispatch_depth_p = &s_depth_dummy;
 uint64_t  *g_psx_bm_static_hits_p       = &s_hits_dummy;
-uint32_t  *g_psx_bm_current_func_addr_p = &s_func_addr_dummy;
+PSX_THREAD_LOCAL uint32_t *g_psx_bm_current_func_addr_p = &s_func_addr_dummy;
 uint64_t  *g_psx_bm_bail_flattened_p    = &s_flattened_dummy;
 uint32_t  *g_psx_bm_ram_mask_p          = &s_ram_mask_dummy;
 uint64_t  *g_psx_bm_frame_count_p       = &s_frame_count_dummy;

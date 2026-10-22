@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * Validate that COP0.CAUSE bit 10 (IP2) behaves as a COMBINATIONAL mirror of
  * the interrupt-controller line, not as a latch.
@@ -34,8 +35,8 @@
 /* ---- The unit under test -------------------------------------------------
  * Mirrors runtime/src/interrupts.c. Kept in lockstep with it; if the two ever
  * disagree this test is the thing that should be updated last, not first. */
-uint32_t i_stat;
-uint32_t i_mask;
+PSX_THREAD_LOCAL uint32_t i_stat;
+PSX_THREAD_LOCAL uint32_t i_mask;
 
 static uint32_t *s_cause_ptr;
 

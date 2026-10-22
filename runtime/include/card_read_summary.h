@@ -1,4 +1,3 @@
-#include "psx_thread_local.h"
 /*
  * card_read_summary.h — non-evicting evidence ring for the first 32
  * completed memory-card reads.
@@ -27,7 +26,7 @@ extern "C" {
 
 typedef struct {
     uint64_t seq;                 /* monotonic; first record = 0 */
-    PSX_THREAD_LOCAL uint64_t psx_cycle_count;     /* guest cycle clock at completion */
+    uint64_t psx_cycle_count;     /* guest cycle clock at completion */
     uint32_t current_func;        /* g_debug_current_func_addr at MC_READ_END */
     uint32_t last_store_pc;       /* g_debug_last_store_pc at MC_READ_END */
     uint16_t sector;

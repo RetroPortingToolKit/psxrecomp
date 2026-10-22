@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* load_accel.c -- verified enhancement-phase load-time acceleration.
  *
  * PsyQ's VSync(-1) is used as a timeout clock by CD_sync/CD_ready loops.  The
@@ -23,7 +24,7 @@
 
 #include <stdio.h>
 
-extern uint32_t g_debug_last_store_pc;
+extern PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;
 extern int g_precise_mode;
 
 static int s_enabled = 1;

@@ -10,7 +10,7 @@
  * the trusted plugin's host-state partition, without creating a game/window. */
 static uint8_t ram[2048], scratchpad[1024], spu_ram[16];
 static uint16_t vram[1024 * 512];
-uint32_t i_stat, i_mask, g_psx_icache_tv[1024];
+PSX_THREAD_LOCAL uint32_t i_stat, i_mask, g_psx_icache_tv[1024];
 PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 uint8_t* memory_get_ram_ptr(void) { return ram; }
 uint32_t memory_get_ram_bytes(void) { return sizeof(ram); }

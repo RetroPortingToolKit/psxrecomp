@@ -100,11 +100,11 @@ int psx_is_dispatchable(uint32_t pc)
 }
 
 /* Dispatch call contract state (see cpu_state.h for the model). */
-int      g_psx_call_bail      = 0;
-uint64_t g_psx_bail_first     = 0;
-uint64_t g_psx_bail_resolved  = 0;
-uint64_t g_psx_bail_flattened = 0;
-uint64_t g_psx_bail_anomaly   = 0;
+PSX_THREAD_LOCAL int      g_psx_call_bail      = 0;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_first     = 0;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_resolved  = 0;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_flattened = 0;
+PSX_THREAD_LOCAL uint64_t g_psx_bail_anomaly   = 0;
 
 /* ---- Deduped bail-source ledger (Tomba 2 wild-return / splash-spin diag) ----
  * psx_call_contract (cpu_state.h) calls psx_bail_record() at each FIRST-detected
@@ -818,7 +818,7 @@ void psx_request_return_to_lobby(void)
 
 void psx_scheduler_run(CPUState* cpu)
 {
-    extern int g_psx_dispatch_depth;
+    extern PSX_THREAD_LOCAL int g_psx_dispatch_depth;
     g_in_scheduler_run = 1;
     g_sched_escape.reason = PSX_RUN_CONTINUE;
     for (;;) {
@@ -844,7 +844,7 @@ void psx_scheduler_run(CPUState* cpu)
              * or dispatch_nonlocal_call) would skip its depth restore; clear the
              * nested-unit gate so IRQ checks are not wedged-off after the escape
              * (backstop for the Ape memcard native<->interp fix). */
-            { extern int g_call_unit_depth; g_call_unit_depth = 0; }
+            { extern PSX_THREAD_LOCAL int g_call_unit_depth; g_call_unit_depth = 0; }
             /* flush_resume / savestate longjmp skips generated bb_defer cleanup. */
             {
                 extern PSX_THREAD_LOCAL int g_psx_cyc_bb_defer;
