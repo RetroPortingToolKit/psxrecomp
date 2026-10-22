@@ -96,8 +96,7 @@ struct PGXPValue {
 #define PGXP_REG_LO        33
 
 static PSX_THREAD_LOCAL PGXPValue *s_ram = nullptr;            /* lazily allocated: RAM + mod regions */
-/* Fine publication pages avoid copying 10 KiB for one changed shadow word. */
-enum { PGXP_EXEC_PAGE_WORDS = 64,
+enum { PGXP_EXEC_PAGE_WORDS = 256,
        PGXP_EXEC_PAGES = (PGXP_SHADOW_WORDS + PGXP_EXEC_PAGE_WORDS - 1) / PGXP_EXEC_PAGE_WORDS };
 /* Tracking starts only when a replay consumer requests a snapshot. Ordinary
  * execution does not allocate version tables. A replay marks its modified

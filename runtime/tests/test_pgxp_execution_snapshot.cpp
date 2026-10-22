@@ -88,19 +88,19 @@ int main() {
     invalidated.join();
     /* Adjacent words across a publication-page boundary remain independent,
      * including worker writes to a page the source has not changed. */
-    seed(8 << 16, address + 252); seed(9 << 16, address + 256);
+    seed(8 << 16, address + 1020); seed(9 << 16, address + 1024);
     CHECK(pgxp_execution_snapshot_capture(snapshot));
     std::thread boundary([&] {
         CHECK(pgxp_execution_snapshot_bind(snapshot));
-        check(8 << 16, address + 252); check(9 << 16, address + 256);
-        seed(10 << 16, address + 252); seed(11 << 16, address + 256);
+        check(8 << 16, address + 1020); check(9 << 16, address + 1024);
+        seed(10 << 16, address + 1020); seed(11 << 16, address + 1024);
         pgxp_execution_snapshot_unbind();
     }); boundary.join();
-    seed(12 << 16, address + 256);
+    seed(12 << 16, address + 1024);
     CHECK(pgxp_execution_snapshot_capture(snapshot));
     std::thread recapture([&] {
         CHECK(pgxp_execution_snapshot_bind(snapshot));
-        check(8 << 16, address + 252); check(12 << 16, address + 256);
+        check(8 << 16, address + 1020); check(12 << 16, address + 1024);
         pgxp_execution_snapshot_unbind();
     }); recapture.join();
     pgxp_execution_snapshot_destroy(other);

@@ -2,6 +2,7 @@
  * values, the worker owns guest execution, and only the render owner consumes
  * the sealed GPU list. Neither owner waits for an extra frame. */
 #include "render_pass_worker.h"
+#include "host_span_ring.h"
 #include "mod_plugins.h"
 #include "mod_execution.h"
 #include "mod_runtime.h"
@@ -248,10 +249,23 @@ extern "C" int psx_mod_render_pass_async(CPUState *cpu, const PSXModRenderPass *
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     job->cpu = *cpu; job->pass = *pass; job->draw = draw; job->bios = psx_bios_active;
     if (bytes) std::memcpy(job->payload, payload, bytes);
+    /* Existing host-span receipts separate publication from guest execution.
+     * Tags: RRAM, RPRE (precision), RGPU, RPUB (whole publication). */
+    struct PublicationSpan {
+        uint64_t start = host_span_begin();
+        ~PublicationSpan() { host_span_end(HSPAN_MOD_WORK, start, 0x52505542u); }
+    } publication_span;
+    uint64_t stage = host_span_begin();
     memory_backing_capture(job->memory); memory_execution_capture(job->metadata);
-    if (!pgxp_execution_snapshot_capture(job->pgxp) || !gte_execution_snapshot_capture(job->gte) ||
-        !gpu_execution_snapshot_capture(job->gpu) || !gl_renderer_execution_capture(job->gl) ||
-        !overlay_execution_capture(job->overlays)) { ++W.refused; return 0; }
+    host_span_end(HSPAN_MOD_WORK, stage, 0x5252414Du);
+    stage = host_span_begin();
+    int precision_ok = pgxp_execution_snapshot_capture(job->pgxp) && gte_execution_snapshot_capture(job->gte);
+    host_span_end(HSPAN_MOD_WORK, stage, 0x52505245u);
+    if (!precision_ok) { ++W.refused; return 0; }
+    stage = host_span_begin();
+    int gpu_ok = gpu_execution_snapshot_capture(job->gpu) && gl_renderer_execution_capture(job->gl);
+    host_span_end(HSPAN_MOD_WORK, stage, 0x52475055u);
+    if (!gpu_ok || !overlay_execution_capture(job->overlays)) { ++W.refused; return 0; }
     mod_execution_capture(job->mods);
     dma_snapshot_write(job->dma.get());
     timers_get_snapshot(job->timer_counter, job->timer_mode, job->timer_target, job->timer_irq, job->timer_frac);

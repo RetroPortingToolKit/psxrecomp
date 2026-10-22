@@ -2225,3 +2225,11 @@ active checkpoint. Narrow PGXP publication pages from 256 to 64 words to avoid
 page-boundary/reuse and O0/O2 upload history tests pass. Correct the shared GPU
 fixture TLS declaration found by that check. No general hot-path changes. Continue
 ordered production qualification; no push.
+
+2026-10-21 BRIEF-5 footprint candidate: original-off identity passes, but quiet
+regresses to p99 100% (60.000 Hz, zero >25 ms gaps). Revert the smaller PGXP
+page size first; keep derived GPU scratch private. Existing host-span receipts
+now tag source publication and its RAM/precision/GPU stages so the high-percentile
+window can be attributed directly rather than inferred from a sampled mean.
+PGXP boundary/reuse checks pass after restoring 256-word pages. Continue ordered
+production gates; no general guest hot-path work, no push.
