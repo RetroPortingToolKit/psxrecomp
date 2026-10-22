@@ -101,6 +101,20 @@ void psx_host_overlay_draw(int width, int height) {
     atomic_fetch_sub(&s_draw_inflight, 1);
 }
 
+/* ---- Game HUD layer ------------------------------------------------------- */
+static PsxHostOverlayDrawFn s_hud_fn = NULL;
+static void *s_hud_ctx = NULL;
+
+void psx_host_set_hud_draw_cb(PsxHostOverlayDrawFn fn, void *ctx) {
+    s_hud_ctx = ctx;
+    s_hud_fn = fn;
+}
+
+void psx_host_hud_draw(int width, int height) {
+    PsxHostOverlayDrawFn fn = s_hud_fn;
+    if (fn && width > 0 && height > 0) fn(width, height, s_hud_ctx);
+}
+
 /* ---- P3: input sink -------------------------------------------------------- */
 static PsxHostInputSinkFn s_sink_fn = NULL;
 static void *s_sink_ctx = NULL;
