@@ -589,14 +589,16 @@ bool finalize_source(DuckTexturePack& p, Source& source, bool keep_observations 
     }
     return success;
 }
-bool has_residency(const DuckTexturePack& p, const Source* source) {
-    for (const auto& upload : p.uploads) if (upload.source.get() == source) return true;
-    for (const auto& page : p.pages) if (page.source.get() == source) return true;
-    return false;
-}
 void retire_unused(DuckTexturePack& p) {
+    /* One pass over the residency records, then one over the sources: this
+     * runs on every VRAM write, and a per-source scan of up to kMaxUploads
+     * records each cost ~140 ms a frame after a course load filled them. */
+    std::unordered_set<const Source*> resident;
+    resident.reserve(p.uploads.size() + p.pages.size());
+    for (const auto& upload : p.uploads) resident.insert(upload.source.get());
+    for (const auto& page : p.pages) resident.insert(page.source.get());
     for (auto it = p.sources.begin(); it != p.sources.end();) {
-        if (has_residency(p,it->get())) { ++it; continue; }
+        if (resident.count(it->get())) { ++it; continue; }
         if (!finalize_source(p,**it)) {
             /* Keep failed pending records bounded and visible to the caller. */
             p.lifecycle_error = p.lifecycle_error.empty() ? "texture dump could not be finalized" : p.lifecycle_error;
