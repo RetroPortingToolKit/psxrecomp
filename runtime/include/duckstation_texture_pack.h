@@ -170,6 +170,10 @@ int duck_texture_pack_match_parts(DuckTexturePack* pack,
  * Release the lease even after pack destruction. */
 void duck_texture_pack_set_decode_budget(DuckTexturePack* pack, size_t bytes);
 int duck_texture_pack_request_decode(DuckTexturePack* pack, uint64_t entry_id);
+/* Decode every unambiguous replacement now (all cores) and pin it in RAM, so
+ * no draw waits for or evicts an image. Returns the count loaded, -1 on error;
+ * bytes_out gets the decoded RGBA total. */
+int duck_texture_pack_preload(DuckTexturePack* pack, size_t* bytes_out);
 int duck_texture_pack_acquire_decoded(DuckTexturePack* pack, uint64_t entry_id,
                                      DuckTexturePixels* out_pixels);
 void duck_texture_pixels_release(DuckTexturePixels* pixels);
