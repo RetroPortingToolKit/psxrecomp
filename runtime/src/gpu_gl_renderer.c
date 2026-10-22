@@ -720,6 +720,7 @@ static float         s_scanline_strength = 0.5f;
 static GLint         s_present_uScanline = -1, s_present_uScanStrength = -1;
 static GLint         s_present_uScanLines = -1, s_present_uScanScale = -1;
 static GLuint        s_interp_prog = 0, s_interp_tex[3];
+static int           s_interp_alloc_w = 0, s_interp_alloc_h = 0;
 static GLint         s_interp_uPrev = -1, s_interp_uCurr = -1;
 static GLint         s_interp_uAlpha = -1, s_interp_uUvRect = -1;
 static GLint         s_interp_uBlendMode = -1, s_interp_uGamma = -1;
@@ -6723,6 +6724,7 @@ int gl_renderer_init_context(SDL_Window *win) {
             s_interp_uGamma =
                 p_glGetUniformLocation(s_interp_prog, "u_gamma");
             glGenTextures(3, s_interp_tex);
+            s_interp_alloc_w = s_interp_alloc_h = 0;
             for (int i = 0; i < 3; i++) {
                 glBindTexture(GL_TEXTURE_2D, s_interp_tex[i]);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -7998,10 +8000,18 @@ static int interp_capture(GLuint fbo, int x, int y, int w, int h,
         s_interp_w = pw; s_interp_h = ph;
         s_interp_src_w = sw; s_interp_src_h = sh;
         s_interp_prev = s_interp_cur = 0;
-        for (int i = 0; i < 3; i++) {
-            glBindTexture(GL_TEXTURE_2D, s_interp_tex[i]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pw, ph, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        /* A dynamic-resolution reduction changes the active rectangle, not
+         * storage capacity. Reallocating three in-flight images here stalls
+         * the render owner and consequently the bounded emulation queue. */
+        int aw = s_recorded_passes ? pw : (pw > s_interp_alloc_w ? pw : s_interp_alloc_w);
+        int ah = s_recorded_passes ? ph : (ph > s_interp_alloc_h ? ph : s_interp_alloc_h);
+        if (aw != s_interp_alloc_w || ah != s_interp_alloc_h) {
+            for (int i = 0; i < 3; i++) {
+                glBindTexture(GL_TEXTURE_2D, s_interp_tex[i]);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, aw, ah, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            }
+            s_interp_alloc_w = aw; s_interp_alloc_h = ah;
         }
     }
 
@@ -8110,9 +8120,13 @@ static int interp_present_pair(GLuint a, GLuint b, float t, int blend_mode) {
 
 static int interp_present(float alpha) {
     if (s_interp_hold) alpha = 1.0f;
-    return interp_present_pair(s_interp_tex[s_interp_prev],
+    s_interp_uv_x = (float)s_interp_w / s_interp_alloc_w;
+    s_interp_uv_y = (float)s_interp_h / s_interp_alloc_h;
+    int presented = interp_present_pair(s_interp_tex[s_interp_prev],
                                s_interp_tex[s_interp_cur], alpha,
                                s_interp_blend_mode);
+    s_interp_uv_x = s_interp_uv_y = 1.f;
+    return presented;
 }
 
 static void interp_wait_until_ex(uint64_t deadline, uint64_t frequency, int render_idle) {

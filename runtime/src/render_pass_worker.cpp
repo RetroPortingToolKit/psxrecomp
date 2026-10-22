@@ -46,7 +46,7 @@ struct Job {
     std::atomic<bool> queued{false}, worker_done{true}, consumer_done{true};
     bool posted = true, ok = false;
     uint64_t serial = 0, cycle = 0;
-    uint32_t period = 2, open = 0, vblank = 0, gcs[3]{}, icache[1024]{};
+    uint32_t period = 2, boundaries = 0, open = 0, vblank = 0, gcs[3]{}, icache[1024]{};
     int icache_active = -1;
     CPUState cpu{};
     PSXModRenderPass pass{};
@@ -178,7 +178,8 @@ void run() {
 }
 void consume(void *user) {
     Job &job = *static_cast<Job *>(user);
-    if (!W.enabled.load() || rt_frames_ahead() > 0 ||
+    /* Queue markers are VBlanks; one pending duplicate is still this game frame. */
+    if (!W.enabled.load() || rt_frames_ahead() >= static_cast<int>(job.period) ||
         !job.worker_done.load(std::memory_order_acquire)) ++W.late;
     else if (job.ok) {
         if (gl_renderer_execution_consume(job.commands)) ++W.completed;
@@ -240,7 +241,7 @@ extern "C" int psx_mod_render_pass_async(CPUState *cpu, const PSXModRenderPass *
     std::memcpy(job->icache, g_psx_icache_tv, sizeof job->icache);
     job->icache_active = g_psx_icache_active;
     job->open = render_pass_worker_take_plan(&job->period);
-    job->serial = ++W.serial; job->posted = false; job->ok = false;
+    job->serial = ++W.serial; job->boundaries = 0; job->posted = false; job->ok = false;
     job->worker_done.store(false); job->consumer_done.store(false);
     {
         std::lock_guard<std::mutex> lock(W.mutex);
@@ -258,6 +259,11 @@ extern "C" void render_pass_worker_flush(void) {
             if (!slot->posted && !slot->consumer_done.load(std::memory_order_acquire) &&
                 (!next || slot->serial < next->serial)) next = slot.get();
         if (!next) break;
+        /* Publication can precede the real present. An unfinished extra still
+         * has the duplicate VBlank before its next game-frame deadline. */
+        ++next->boundaries;
+        if (!next->worker_done.load(std::memory_order_acquire) && next->boundaries < next->period)
+            break;
         if (gl_renderer_execution_enqueue(consume, next)) next->posted = true;
         else { next->posted = true; next->consumer_done.store(true, std::memory_order_release); ++W.late; }
     }

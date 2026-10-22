@@ -9,7 +9,18 @@
 static PSX_THREAD_LOCAL struct { int enabled; unsigned values[256]; } state;
 static ModExecutionSnapshot *image;
 static atomic_int phase;
-static void capture(void *out) { memcpy(out, &state, sizeof state); }
+static unsigned captures;
+static void capture(void *out) {
+    /* Publication buffers are persistent private images. Plugins may use the
+     * previous image's generation to avoid recopying immutable cache pages. */
+    if (!captures) {
+        const unsigned char *bytes = out;
+        for (size_t i = 0; i < sizeof state; ++i) CHECK(bytes[i] == 0);
+    } else {
+        CHECK(((const unsigned *)out)[94] == 17);
+    }
+    memcpy(out, &state, sizeof state); ++captures;
+}
 static void bind(const void *in) { memcpy(&state, in, sizeof state); }
 static void *worker(void *unused) {
     (void)unused;

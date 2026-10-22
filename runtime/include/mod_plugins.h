@@ -674,8 +674,10 @@ uint32_t psx_mod_render_pass_status(void);
 
 /* Trusted native plugins whose entry hooks run in a guest draw worker register
  * their host state once at startup. capture runs on the emulation owner; bind
- * installs independent state on the dedicated worker. Images must contain no
- * borrowed mutable host memory; immutable activation data outlives the worker. */
+ * installs independent state on the dedicated worker. Capture storage starts
+ * zeroed and retains its previous image between captures, permitting versioned
+ * copies. Images must contain no borrowed mutable host memory; immutable
+ * activation data outlives the worker. */
 typedef struct PSXModExecutionState {
     uint32_t struct_size;
     const char *plugin_id;

@@ -40,7 +40,7 @@ ModExecutionSnapshot *mod_execution_create(void) {
         if (bytes > SIZE_MAX - snapshot->bytes) { free(snapshot); return NULL; }
         snapshot->bytes += bytes;
     }
-    snapshot->data = (unsigned char *)malloc(snapshot->bytes ? snapshot->bytes : 1);
+    snapshot->data = (unsigned char *)calloc(1, snapshot->bytes ? snapshot->bytes : 1);
     if (!snapshot->data) { free(snapshot); return NULL; }
     return snapshot;
 }

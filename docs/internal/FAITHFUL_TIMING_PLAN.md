@@ -2116,3 +2116,14 @@ joinable worker. Handoff now runs at canonical present submission, with explicit
 normal/atexit shutdown. Rebuild and repeat the failed identity gate before any
 quiet/loaded/cadence measurement. SDK binding checks pass on Windows and Mac;
 worker lifecycle syntax passes on Mac. No acceptance or push.
+
+2026-10-21 BRIEF-5 timing follow-up: corrected present handoff passes production
+identity (4,511 matching rows, 1,423 private draws, clean shutdown, no native
+misses). First quiet run fails: 6 completion gaps >25 ms, p99 busy 68.9%.
+Sampling attributes substantial publication work to unchanged plugin course
+caches; source images now retain versioned private cache copies. Temporal
+history textures retain capacity across resolution reductions. Unfinished jobs
+remain eligible through the duplicate VBlank rather than being rejected before
+their deadline. Windows/Mac component tests and both Release runtime builds
+pass; updated identity and quiet qualification are continuing. No acceptance
+or push. Receipts: R4 local brief5-worker-production and brief5-worker-retained.
