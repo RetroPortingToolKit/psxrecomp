@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 typedef struct ModExecutionSnapshot ModExecutionSnapshot;
+void mod_execution_seal(void);
 ModExecutionSnapshot *mod_execution_create(void);
 void mod_execution_destroy(ModExecutionSnapshot *snapshot);
 void mod_execution_capture(ModExecutionSnapshot *snapshot);

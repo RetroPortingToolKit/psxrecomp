@@ -1,3 +1,4 @@
+#include "execution_storage.h"
 /* pgxp.cpp — PGXP value-propagation engine (docs/ENHANCEMENTS.md G1.2/G1.3).
  *
  * CLEAN-ROOM implementation of the publicly documented PGXP technique
@@ -2097,7 +2098,11 @@ struct PGXPExecutionSnapshot {
     bool ready = false;
 };
 extern "C" PGXPExecutionSnapshot *pgxp_execution_snapshot_create(void) {
-    return new (std::nothrow) PGXPExecutionSnapshot;
+    auto *snapshot = new (std::nothrow) PGXPExecutionSnapshot;
+    if (!snapshot) return nullptr;
+    snapshot->words = (PGXPValue *)execution_storage_calloc(PGXP_SHADOW_WORDS * sizeof(PGXPValue));
+    if (!snapshot->words) { delete snapshot; return nullptr; }
+    return snapshot;
 }
 extern "C" void pgxp_execution_snapshot_destroy(PGXPExecutionSnapshot *snapshot) {
     if (!snapshot) return;
@@ -2113,10 +2118,6 @@ extern "C" int pgxp_execution_snapshot_capture(PGXPExecutionSnapshot *snapshot) 
             s_exec_versions = (uint64_t *)std::calloc(PGXP_EXEC_PAGES, sizeof(uint64_t));
             if (!s_exec_versions) return 0;
             for (size_t page = 0; page < PGXP_EXEC_PAGES; ++page) s_exec_versions[page] = 1;
-        }
-        if (!snapshot->words) {
-            snapshot->words = (PGXPValue *)std::calloc(PGXP_SHADOW_WORDS, sizeof(PGXPValue));
-            if (!snapshot->words) return 0;
         }
         for (size_t page = 0; page < PGXP_EXEC_PAGES; ++page) {
             if (snapshot->versions[page] == s_exec_versions[page]) continue;

@@ -1,3 +1,4 @@
+#include "execution_storage.h"
 /* gpu_gl_renderer.c — hardware OpenGL renderer backend.
  *
  * ARCHITECTURE (v2 — GPU-authoritative VRAM)
@@ -15141,7 +15142,7 @@ struct GlExecutionProducerState {
     int projective, banks, pgxp, upload_open;
 };
 GlExecutionProducerState *gl_renderer_execution_create(void) {
-    return (GlExecutionProducerState *)calloc(1, sizeof(GlExecutionProducerState));
+    return (GlExecutionProducerState *)execution_storage_calloc(sizeof(GlExecutionProducerState));
 }
 void gl_renderer_execution_destroy(GlExecutionProducerState *state) { free(state); }
 int gl_renderer_execution_capture(GlExecutionProducerState *state) {

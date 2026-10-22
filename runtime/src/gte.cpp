@@ -1,3 +1,4 @@
+#include "execution_storage.h"
 #include "gte.h"
 #include "psx_thread_local.h"
 #include "gte_view.h"
@@ -2818,7 +2819,12 @@ struct GTEExecutionSnapshot {
     bool ready = false;
 };
 extern "C" GTEExecutionSnapshot *gte_execution_snapshot_create(void) {
-    return new (std::nothrow) GTEExecutionSnapshot;
+    using namespace PSXRecomp::GTE;
+    auto *snapshot = new (std::nothrow) GTEExecutionSnapshot;
+    if (!snapshot) return nullptr;
+    snapshot->words = (GeomVertex *)execution_storage_calloc(GEOM_CACHE_SIZE * sizeof(GeomVertex));
+    if (!snapshot->words) { delete snapshot; return nullptr; }
+    return snapshot;
 }
 extern "C" void gte_execution_snapshot_destroy(GTEExecutionSnapshot *snapshot) {
     if (!snapshot) return;
@@ -2839,10 +2845,6 @@ extern "C" int gte_execution_snapshot_capture(GTEExecutionSnapshot *snapshot) {
             s_exec_versions = (uint64_t *)std::calloc(GEOM_EXEC_PAGES, sizeof(uint64_t));
             if (!s_exec_versions) return 0;
             for (size_t page = 0; page < GEOM_EXEC_PAGES; ++page) s_exec_versions[page] = 1;
-        }
-        if (!snapshot->words) {
-            snapshot->words = (GeomVertex *)std::calloc(GEOM_CACHE_SIZE, sizeof(GeomVertex));
-            if (!snapshot->words) return 0;
         }
         for (size_t page = 0; page < GEOM_EXEC_PAGES; ++page) {
             if (snapshot->versions[page] == s_exec_versions[page]) continue;

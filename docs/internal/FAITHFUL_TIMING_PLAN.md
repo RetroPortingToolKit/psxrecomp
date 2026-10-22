@@ -2195,3 +2195,12 @@ publication now uses streaming stores on SSE2 to avoid populating source-owner
 caches with the private image; other targets retain memcpy. O0/O2 concurrent
 full-RAM/reuse checks and PC cycle/PGXP checks pass. Profile receipts are R4
 local brief5-setting-profile-diff. Ordered qualification continues; no push.
+
+2026-10-21 BRIEF-5 publication follow-up: original-helper identity matches all
+4,511 original off rows; quiet still fails (60.000 Hz, one 31.474 ms gap,
+p99 100%). The gap carries 71,712 page faults. Replay slots and lazy PGXP/GTE
+storage were created on the source. Move allocation and page commitment to
+worker bootstrap; reject extras until both slots are ready and alternate reuse.
+Seal plugin descriptors before bootstrap. Cross-thread PGXP/GTE/plugin creation,
+private GPU, command capture and O0/O2 full-RAM checks pass on PC. Production
+qualification continues; no push or acceptance.

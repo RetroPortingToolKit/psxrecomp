@@ -84,7 +84,8 @@ struct Worker {
     std::mutex mutex;
     std::condition_variable wake;
     bool stop = false;
-    std::atomic<bool> enabled{false};
+    std::atomic<bool> enabled{false}, ready{false};
+    unsigned next_slot = 0;
     std::atomic<uint64_t> published{0}, completed{0}, late{0}, aborted{0}, refused{0}, misses{0}, calls{0};
     std::atomic<uint32_t> address{0};
     std::atomic<const char *> failure{nullptr};
@@ -159,6 +160,21 @@ void execute(Job &job) {
     psx_irq_set_cause_ptr(nullptr);
 }
 void run() {
+    /* Allocation and page commitment belong to the optional worker. The source
+     * drops extras until both complete private contexts are ready. */
+    std::unique_ptr<Job> prepared[2];
+    for (auto &slot : prepared) {
+        slot.reset(new (std::nothrow) Job);
+        if (!slot || !slot->valid()) {
+            W.failure.store("snapshot_allocation"); return;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(W.mutex);
+        if (W.stop) return;
+        for (unsigned i = 0; i < 2; ++i) W.jobs[i] = std::move(prepared[i]);
+        W.ready.store(true, std::memory_order_release);
+    }
     for (;;) {
         Job *job = nullptr;
         {
@@ -189,10 +205,6 @@ void consume(void *user) {
 }
 bool start() {
     if (W.thread.joinable()) return true;
-    for (auto &slot : W.jobs) {
-        slot.reset(new (std::nothrow) Job);
-        if (!slot || !slot->valid()) { for (auto &other : W.jobs) other.reset(); return false; }
-    }
     static bool exit_registered = false;
     if (!exit_registered) {
         if (std::atexit(render_pass_worker_stop) != 0) {
@@ -200,14 +212,16 @@ bool start() {
         }
         exit_registered = true;
     }
-    W.stop = false;
+    mod_execution_seal();
+    W.stop = false; W.next_slot = 0;
+    W.ready.store(false);
     W.thread = std::thread(run);
     return true;
 }
 }
 extern "C" int psx_mod_set_worker_render_passes(int enabled) {
     if (!enabled) { render_pass_worker_stop(); return 1; }
-    W.enabled.store(true); return 1;
+    W.enabled.store(true); return start() ? 1 : 0;
 }
 extern "C" int psx_mod_render_pass_async(CPUState *cpu, const PSXModRenderPass *pass,
     PSXModRenderPassFn draw, const void *payload, size_t bytes) {
@@ -219,11 +233,17 @@ extern "C" int psx_mod_render_pass_async(CPUState *cpu, const PSXModRenderPass *
     bool builtin = false;
     for (uint32_t i = 0; i < psx_bios_builtin_registry_count; ++i)
         if (psx_bios_builtin_registry[i] == psx_bios_active) builtin = true;
-    if (!builtin || !psx_bios_active->execution_lookup || !start()) { ++W.refused; return 0; }
+    if (!builtin || !psx_bios_active->execution_lookup || !start() ||
+        !W.ready.load(std::memory_order_acquire)) { ++W.refused; return 0; }
     Job *job = nullptr;
-    for (auto &slot : W.jobs)
+    for (unsigned n = 0; n < 2; ++n) {
+        unsigned index = (W.next_slot + n) % 2;
+        auto &slot = W.jobs[index];
         if (slot->worker_done.load(std::memory_order_acquire) &&
-            slot->consumer_done.load(std::memory_order_acquire)) { job = slot.get(); break; }
+            slot->consumer_done.load(std::memory_order_acquire)) {
+            job = slot.get(); W.next_slot = (index + 1) % 2; break;
+        }
+    }
     if (!job) { ++W.late; return 0; }
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     job->cpu = *cpu; job->pass = *pass; job->draw = draw; job->bios = psx_bios_active;
@@ -250,7 +270,7 @@ extern "C" int psx_mod_render_pass_async(CPUState *cpu, const PSXModRenderPass *
     ++W.published; W.wake.notify_one(); return 1;
 }
 extern "C" void render_pass_worker_flush(void) {
-    if (!W.enabled.load() || !W.thread.joinable()) return;
+    if (!W.enabled.load() || !W.ready.load(std::memory_order_acquire)) return;
     /* The canonical presentation boundary is the extra's admission deadline.
      * Process publication order even when the two reusable slots alternate. */
     for (unsigned n = 0; n < 2; ++n) {
@@ -274,6 +294,7 @@ extern "C" void render_pass_worker_stop(void) {
     { std::lock_guard<std::mutex> lock(W.mutex); W.stop = true; }
     W.wake.notify_one(); W.thread.join();
     rt_drain();
+    W.ready.store(false, std::memory_order_release);
     for (auto &slot : W.jobs) slot.reset();
 }
 extern "C" void render_pass_worker_stats(RenderPassWorkerStats *out) {

@@ -1362,7 +1362,9 @@ static int test_execution_snapshot() {
     gte_geometry_correction_set(1);
     pgxp_set_position_fallback(1);
     gte_test_seed_geometry(packed, (8 << 16) + 16384, 12 << 16);
-    GTEExecutionSnapshot *snapshot = gte_execution_snapshot_create();
+    GTEExecutionSnapshot *snapshot = nullptr;
+    std::thread prepare([&] { snapshot = gte_execution_snapshot_create(); });
+    prepare.join();
     CHECK(snapshot && gte_execution_snapshot_capture(snapshot));
     std::atomic<int> phase{0};
     auto verify = [&](int32_t expected) {

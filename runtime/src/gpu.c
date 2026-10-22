@@ -1,3 +1,4 @@
+#include "execution_storage.h"
 /* gpu.c — PS1 GPU hardware simulation (Phase 3, Step 1).
  *
  * Implements:
@@ -10202,7 +10203,7 @@ GpuExecutionSnapshot *gpu_execution_snapshot_create(void) {
     size_t bytes = 0;
     for (size_t i = 0; i < sizeof s_gpu_execution_regions / sizeof s_gpu_execution_regions[0]; ++i)
         bytes += (s_gpu_execution_regions[i].bytes + 15u) & ~(size_t)15u;
-    snapshot->storage = calloc(1, bytes);
+    snapshot->storage = execution_storage_calloc(bytes);
     if (!snapshot->storage) { free(snapshot); return NULL; }
     bytes = 0;
     for (size_t i = 0; i < sizeof s_gpu_execution_regions / sizeof s_gpu_execution_regions[0]; ++i) {

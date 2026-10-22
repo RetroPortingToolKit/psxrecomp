@@ -1,3 +1,4 @@
+#include "execution_storage.h"
 #include "psx_thread_local.h"
 /* memory.c — Phase 2 PS1 memory system.
  *
@@ -65,7 +66,7 @@ static PSX_THREAD_LOCAL uint8_t *ram = s_live_backing.ram;
 static PSX_THREAD_LOCAL uint8_t *scratchpad = s_live_backing.scratchpad;
 
 PsxMemoryBacking *memory_backing_create(void) {
-    return (PsxMemoryBacking *)calloc(1, sizeof(PsxMemoryBacking));
+    return (PsxMemoryBacking *)execution_storage_calloc(sizeof(PsxMemoryBacking));
 }
 void memory_backing_destroy(PsxMemoryBacking *backing) {
     if (!backing || backing == &s_live_backing) return;
@@ -2790,7 +2791,7 @@ PsxMemoryExecutionState *memory_execution_create(void) {
     MemoryExecutionRegion regions[64];
     size_t n = memory_execution_regions(regions), bytes = 0;
     for (size_t i = 0; i < n; ++i) bytes += regions[i].bytes;
-    PsxMemoryExecutionState *state = (PsxMemoryExecutionState *)malloc(sizeof(*state) + bytes);
+    PsxMemoryExecutionState *state = (PsxMemoryExecutionState *)execution_storage_calloc(sizeof(*state) + bytes);
     if (state) state->bytes = bytes;
     return state;
 }

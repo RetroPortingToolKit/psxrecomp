@@ -22,7 +22,9 @@ int main() {
     pgxp_set_enabled(1);
     pgxp_set_cpu_mode(1);
     seed(8 << 16);
-    PGXPExecutionSnapshot *snapshot = pgxp_execution_snapshot_create();
+    PGXPExecutionSnapshot *snapshot = nullptr;
+    std::thread prepare([&] { snapshot = pgxp_execution_snapshot_create(); });
+    prepare.join();
     CHECK(snapshot && pgxp_execution_snapshot_capture(snapshot));
     std::atomic<int> phase{0};
     std::thread worker([&] {

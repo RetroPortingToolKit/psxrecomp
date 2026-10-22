@@ -22,6 +22,9 @@ static void capture(void *out) {
     memcpy(out, &state, sizeof state); ++captures;
 }
 static void bind(const void *in) { memcpy(&state, in, sizeof state); }
+static void *prepare(void *unused) {
+    (void)unused; image = mod_execution_create(); return NULL;
+}
 static void *worker(void *unused) {
     (void)unused;
     mod_execution_bind(image);
@@ -41,7 +44,11 @@ int main(void) {
     CHECK(psx_mod_register_execution_state(&stateless));
     CHECK(!psx_mod_register_execution_state(&callbacks));
     state.enabled = 1; state.values[93] = 17;
-    image = mod_execution_create(); CHECK(image);
+    mod_execution_seal();
+    CHECK(!psx_mod_register_execution_state(&callbacks));
+    pthread_t preparation;
+    CHECK(!pthread_create(&preparation, NULL, prepare, NULL));
+    CHECK(!pthread_join(preparation, NULL)); CHECK(image);
     mod_execution_capture(image);
     pthread_t thread; CHECK(!pthread_create(&thread, NULL, worker, NULL));
     while (!atomic_load_explicit(&phase, memory_order_acquire)) { }

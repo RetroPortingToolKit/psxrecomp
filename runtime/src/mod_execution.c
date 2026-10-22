@@ -1,12 +1,14 @@
+#include "execution_storage.h"
 /* Trusted plugin execution images, separate from savestates and guest state. */
 #include "mod_execution.h"
 #include "mod_plugins.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #define CONTEXT_CAP 32
 static PSXModExecutionState s_contexts[CONTEXT_CAP];
 static size_t s_context_count;
-static int s_sealed;
+static atomic_int s_sealed;
 struct ModExecutionSnapshot {
     PSXModExecutionState contexts[CONTEXT_CAP];
     size_t count, bytes;
@@ -29,10 +31,11 @@ static size_t aligned_size(size_t bytes) {
     if (bytes > SIZE_MAX - 15u) abort();
     return (bytes + 15u) & ~(size_t)15u;
 }
+void mod_execution_seal(void) { s_sealed = 1; }
 ModExecutionSnapshot *mod_execution_create(void) {
     ModExecutionSnapshot *snapshot = (ModExecutionSnapshot *)calloc(1, sizeof(*snapshot));
     if (!snapshot) return NULL;
-    s_sealed = 1;
+    mod_execution_seal();
     snapshot->count = s_context_count;
     memcpy(snapshot->contexts, s_contexts, s_context_count * sizeof(s_contexts[0]));
     for (size_t i = 0; i < snapshot->count; ++i) {
@@ -40,7 +43,7 @@ ModExecutionSnapshot *mod_execution_create(void) {
         if (bytes > SIZE_MAX - snapshot->bytes) { free(snapshot); return NULL; }
         snapshot->bytes += bytes;
     }
-    snapshot->data = (unsigned char *)calloc(1, snapshot->bytes ? snapshot->bytes : 1);
+    snapshot->data = (unsigned char *)execution_storage_calloc(snapshot->bytes ? snapshot->bytes : 1);
     if (!snapshot->data) { free(snapshot); return NULL; }
     return snapshot;
 }

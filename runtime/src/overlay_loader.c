@@ -1,3 +1,4 @@
+#include "execution_storage.h"
 #include "psx_thread_local.h"
 #include "overlay_loader.h"
 #include "psx_cycle_freeze.h"
@@ -5282,7 +5283,7 @@ static PSX_THREAD_LOCAL OverlayExecutionInitFn t_execution_init[4096];
 OverlayExecutionSnapshot *overlay_execution_create(void) {
     OverlayExecutionSnapshot *snapshot = (OverlayExecutionSnapshot *)calloc(1, sizeof(*snapshot));
     if (!snapshot) return NULL;
-    snapshot->entries = (Candidate *)malloc(sizeof(Candidate) * CAND_CAP);
+    snapshot->entries = (Candidate *)execution_storage_calloc(sizeof(Candidate) * CAND_CAP);
     if (!snapshot->entries) { free(snapshot); return NULL; }
     return snapshot;
 }

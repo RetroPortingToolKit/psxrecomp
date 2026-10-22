@@ -1,3 +1,4 @@
+#include "execution_storage.h"
 /* render_thread.c — render thread core. See render_thread.h and
  * docs/RENDER_THREAD.md.
  *
@@ -96,7 +97,7 @@ RtCommandList *rt_list_create(size_t capacity) {
     if (capacity < RT_ALIGN || capacity > UINT32_MAX) return NULL;
     RtCommandList *list = (RtCommandList *)calloc(1, sizeof(*list));
     if (!list) return NULL;
-    list->data = (unsigned char *)malloc(capacity);
+    list->data = (unsigned char *)execution_storage_calloc(capacity);
     if (!list->data) { free(list); return NULL; }
     list->capacity = capacity;
     return list;
