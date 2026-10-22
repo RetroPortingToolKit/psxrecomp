@@ -143,6 +143,13 @@ static inline int psx_ss_parse_milli(const char *s) {
     return (int)m;
 }
 
+/* Opt-in display policy; keep the saved factor intact for smaller displays. */
+static inline int psx_ir_display_supersample(int ss_milli, int display_px_h,
+                                            int disable_at_lines) {
+    return disable_at_lines > 0 && display_px_h >= disable_at_lines
+        ? PSX_SS_MILLI_MIN : ss_milli;
+}
+
 /* psx_resolve_internal_scale with the supersample factor on the target. */
 static inline int psx_resolve_internal_scale_ss(int value, int ref_lines,
                                                 int display_px_h, int s_max,
@@ -158,6 +165,18 @@ static inline int psx_resolve_internal_scale_ss(int value, int ref_lines,
         }
     }
     return psx_resolve_internal_scale(value, ref_lines, display_px_h, s_max);
+}
+
+/* A Match display cap bounds the final target, including supersampling.
+ * Fixed presets and the legacy integer scale retain their own ceilings. */
+static inline int psx_resolve_internal_scale_ss_cap(int value, int ref_lines,
+        int display_px_h, int s_max, int ss_milli, int max_display_lines) {
+    int s = psx_resolve_internal_scale_ss(value, ref_lines, display_px_h, s_max, ss_milli);
+    if (value == PSX_IR_DISPLAY && max_display_lines > 0) {
+        int cap = psx_resolve_internal_scale(max_display_lines, ref_lines, 0, s_max);
+        if (s > cap) s = cap;
+    }
+    return s;
 }
 
 /* A legacy [video] supersampling factor as a value the launcher can show:

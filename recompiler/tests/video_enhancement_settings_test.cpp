@@ -226,14 +226,17 @@ static void test_internal_resolution_game_toml() {
           "resolution_reference_lines defaults to 240");
     check(gc.runtime.video_match_display_max_lines == 0,
           "match_display_max_lines defaults to 0 (no cap)");
+    check(gc.runtime.video_supersample_disable_at_lines == 0, "display SS policy defaults off");
     fs::remove(p);
 
     p = write_game_toml("psxrecomp_ir_match_cap.toml",
         "[video]\n"
         "internal_resolution = \"display\"\n"
-        "match_display_max_lines = 2160\n");
+        "match_display_max_lines = 2160\n"
+        "supersample_disable_at_lines = 2160\n");
     gc = PSXRecompV4::load_game_config(p);
     check(gc.runtime.video_match_display_max_lines == 2160, "match_display_max_lines parses");
+    check(gc.runtime.video_supersample_disable_at_lines == 2160, "display SS policy parses");
     fs::remove(p);
 
     p = write_game_toml("psxrecomp_ir_4k.toml",
@@ -257,6 +260,7 @@ static void test_internal_resolution_game_toml() {
                              "internal_resolution = 1\n",
                              "resolution_reference_lines = 50\n",
                              "match_display_max_lines = 100\n",
+                             "supersample_disable_at_lines = 100\n",
                              "supersampling = 33\n" }) {
         p = write_game_toml("psxrecomp_ir_bad.toml", std::string("[video]\n") + bad);
         bool rejected = false;

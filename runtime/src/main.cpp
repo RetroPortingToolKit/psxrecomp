@@ -1272,6 +1272,11 @@ static int           g_video_ss_milli = 1000; /* [video] supersample / PSX_SUPER
  * full-VRAM surface, where the high-resolution window engages and dynamic
  * resolution cannot step; a title can cap it at, say, 4K lines. */
 static int g_video_match_max_lines = 0;
+static int g_video_ss_disable_at_lines = 0;
+static int display_supersample(SDL_Window *window) {
+    return psx_ir_display_supersample(g_video_ss_milli,
+        psx_sdl_display_pixel_height(window), g_video_ss_disable_at_lines);
+}
 static int match_display_px_h(SDL_Window *window) {
     const int h = psx_sdl_display_pixel_height(window);
     return (g_video_match_max_lines > 0 && h > g_video_match_max_lines)
@@ -1454,9 +1459,8 @@ static int effective_internal_resolution(void) {
 static void apply_internal_resolution(int display_px_h) {
     const int preset = effective_internal_resolution();
     if (preset == PSX_IR_UNSET) return;
-    g_video_scale = psx_resolve_internal_scale_ss(preset, g_video_ref_lines,
-                                                  display_px_h, video_scale_ceiling(),
-                                                  g_video_ss_milli);
+    g_video_scale = psx_resolve_internal_scale_ss_cap(preset, g_video_ref_lines,
+        display_px_h, video_scale_ceiling(), display_supersample(nullptr), g_video_match_max_lines);
 }
 
 /* The value the launcher row starts on: the preset, or the legacy factor shown
@@ -17860,6 +17864,7 @@ int main(int argc, char** argv) {
             g_video_internal_res = gc.runtime.video_internal_resolution;
             g_video_ref_lines    = gc.runtime.video_resolution_reference_lines;
             g_video_match_max_lines = gc.runtime.video_match_display_max_lines;
+            g_video_ss_disable_at_lines = gc.runtime.video_supersample_disable_at_lines;
             g_video_dynres       = gc.runtime.video_dynamic_resolution ? 1 : 0;
             g_video_dynres_min   = gc.runtime.video_dynamic_resolution_min;
             if (gc.runtime.video_window_width > 0) {
@@ -20353,9 +20358,10 @@ session_reboot:
         else if (!std::strcmp(e, "fxaa_hq")) g_video_post_aa = GL_POST_AA_FXAA_HQ;
         else std::fprintf(stdout, "psxrecomp: PSX_AA_MODE=%s not understood (off, fxaa, fxaa_hq)\n", e);
     }
-    if (g_video_ss_milli != 1000)
+    const int effective_ss = display_supersample(nullptr);
+    if (!g_video_ss_disable_at_lines && effective_ss != 1000)
         std::fprintf(stdout, "psxrecomp: supersample %.3gx on the internal-resolution target\n",
-                     g_video_ss_milli / 1000.0);
+                     effective_ss / 1000.0);
     apply_internal_resolution(match_display_px_h(nullptr));
     if (g_video_scale < 1) g_video_scale = 1;
     if (const char* e = std::getenv("PSX_DYNRES"))
@@ -20996,17 +21002,22 @@ session_reboot:
         /* Match display: the monitor's pixel height, now that the window says
          * which monitor. glb_set_scale only records the request; the hr
          * surface is allocated at context init below. */
-        if (effective_internal_resolution() == PSX_IR_DISPLAY && g_video_scale_applies) {
+        const int ir = effective_internal_resolution();
+        if (g_video_scale_applies && ir != PSX_IR_UNSET &&
+            (ir == PSX_IR_DISPLAY || g_video_ss_disable_at_lines > 0)) {
             const int dh = match_display_px_h(sdl_window);
-            const int s = psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, g_video_ref_lines,
-                                                        dh, GL_MAX_INTERNAL_SCALE,
-                                                        g_video_ss_milli);
+            const int ss = display_supersample(sdl_window);
+            const int s = psx_resolve_internal_scale_ss_cap(ir, g_video_ref_lines,
+                dh, GL_MAX_INTERNAL_SCALE, ss, g_video_match_max_lines);
             gr_set_scale(s);
             g_video_requested_scale = s;
-            std::fprintf(stdout, "psxrecomp: internal resolution Match display: "
-                         "%d px -> %dx requested\n", dh, s);
+            const char *label = psx_ir_label_for(ir);
+            std::fprintf(stdout, "psxrecomp: internal resolution %s: "
+                         "%d px -> %dx requested (supersample %.3gx)\n",
+                         label ? label : "custom", dh, s, ss / 1000.0);
         }
         gl_renderer_set_swap_interval(present_effective_swap_interval()); /* applied at context init */
+
         /* Dynamic resolution: the surfaces are allocated at the scale above
          * (the ceiling) and the level steps under it (dynres_setup). */
 #ifndef PSX_NO_DEBUG_TOOLS
