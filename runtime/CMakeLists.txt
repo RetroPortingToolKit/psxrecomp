@@ -1113,6 +1113,23 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME depth24_present_hold_exec_test COMMAND depth24_present_hold_exec_test)
 
+    add_executable(gpu_snapshot_scratch_test
+        tests/test_gpu_snapshot_scratch.c
+        src/psx_video_timing.c
+        src/gpu_timeline.c)
+    target_include_directories(gpu_snapshot_scratch_test PRIVATE include src)
+    if(MINGW)
+        target_compile_options(gpu_snapshot_scratch_test PRIVATE -flto)
+        target_link_options(gpu_snapshot_scratch_test PRIVATE -flto)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(gpu_snapshot_scratch_test PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(gpu_snapshot_scratch_test PRIVATE
+            $<IF:$<PLATFORM_ID:Darwin>,-Wl$<COMMA>-dead_strip,-Wl$<COMMA>--gc-sections>)
+    endif()
+    add_test(NAME gpu_snapshot_scratch_test COMMAND gpu_snapshot_scratch_test)
+
     add_executable(ws_view_anchor_test tests/test_ws_view_anchor.c)
     add_executable(ws_view_anchor_gpu_test tests/test_ws_view_anchor_gpu.c
         src/psx_video_timing.c

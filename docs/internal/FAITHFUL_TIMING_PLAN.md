@@ -2213,3 +2213,15 @@ breadcrumb pointer. Make host callback tables thread-owned and bind each DLL
 on its executing source thread, as the worker already does. Production-loader
 cross-thread lifetime checks pass O0/O2. Refresh and ordered gates continue;
 no push. Invalid cache/profile attempts are retained separately in R4 receipts.
+
+2026-10-21 BRIEF-5 critical-window profile: callback fix retains original-off
+identity; quiet 60.000 Hz / zero hitches / 64.0% p99 remains failed. The paired
+3000..4200 source profiles have identical native calls, zero misses, mean CPU
+53.63% off / 52.05% on. Publication alone adds 2.375% wall samples: RAM streaming
+copy, PGXP pages and GPU regions. Remove the GPU upload/checkpoint scratch
+copies (2.38 MiB; both are fully populated before use); refuse capture of an
+active checkpoint. Narrow PGXP publication pages from 256 to 64 words to avoid
+10 KiB copies per isolated store. Partial-transfer/private-checkpoint, provenance,
+page-boundary/reuse and O0/O2 upload history tests pass. Correct the shared GPU
+fixture TLS declaration found by that check. No general hot-path changes. Continue
+ordered production qualification; no push.

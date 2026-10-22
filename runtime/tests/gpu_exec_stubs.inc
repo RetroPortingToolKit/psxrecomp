@@ -6,6 +6,7 @@
  * Draw calls that tests observe are recorded below. */
 
 uint64_t s_frame_count;
+PSX_THREAD_LOCAL int g_psx_render_pass_active;
 PSX_THREAD_LOCAL uint64_t psx_cycle_count;          /* gpu_timeline.c stamps notes with it */
 int g_exec_phase;
 PSX_THREAD_LOCAL uint32_t g_debug_current_func_addr;

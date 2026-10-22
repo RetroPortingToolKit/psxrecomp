@@ -8,14 +8,14 @@ extern "C" int gte_geometry_correction_lookup(uint32_t, int32_t*, int32_t*) { re
 extern "C" int gte_geometry_correction_lookup_probe(uint32_t, int32_t*, int32_t*) { return 0; }
 extern "C" int psx_mod_gpu_dma_memory_contains(uint32_t, uint32_t) { return 0; }
 static constexpr uint32_t address = 0x80001000, packed = 0x000C0008;
-static void seed(int32_t x) {
+static void seed(int32_t x, uint32_t at = address) {
     pgxp_gte_push_sxy(x, 12 << 16, 300, packed);
-    pgxp_store_gte_reg(address, 15);
+    pgxp_store_gte_reg(at, 15);
 }
-static void check(int32_t x) {
+static void check(int32_t x, uint32_t at = address) {
     int32_t actual_x, y;
     uint16_t z;
-    CHECK(pgxp_load_precise_word(address, packed, &actual_x, &y, &z));
+    CHECK(pgxp_load_precise_word(at, packed, &actual_x, &y, &z));
     CHECK(actual_x == x && y == 12 << 16 && z == 300);
 }
 int main() {
@@ -86,6 +86,23 @@ int main() {
         pgxp_execution_snapshot_unbind();
     });
     invalidated.join();
+    /* Adjacent words across a publication-page boundary remain independent,
+     * including worker writes to a page the source has not changed. */
+    seed(8 << 16, address + 252); seed(9 << 16, address + 256);
+    CHECK(pgxp_execution_snapshot_capture(snapshot));
+    std::thread boundary([&] {
+        CHECK(pgxp_execution_snapshot_bind(snapshot));
+        check(8 << 16, address + 252); check(9 << 16, address + 256);
+        seed(10 << 16, address + 252); seed(11 << 16, address + 256);
+        pgxp_execution_snapshot_unbind();
+    }); boundary.join();
+    seed(12 << 16, address + 256);
+    CHECK(pgxp_execution_snapshot_capture(snapshot));
+    std::thread recapture([&] {
+        CHECK(pgxp_execution_snapshot_bind(snapshot));
+        check(8 << 16, address + 252); check(12 << 16, address + 256);
+        pgxp_execution_snapshot_unbind();
+    }); recapture.join();
     pgxp_execution_snapshot_destroy(other);
     pgxp_execution_snapshot_destroy(snapshot);
     return 0;

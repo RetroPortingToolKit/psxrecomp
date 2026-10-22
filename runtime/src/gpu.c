@@ -10221,14 +10221,23 @@ void gpu_execution_snapshot_destroy(GpuExecutionSnapshot *snapshot) {
     free(snapshot);
 }
 int gpu_execution_snapshot_capture(GpuExecutionSnapshot *snapshot) {
-    if (!snapshot || s_gpu_execution) return 0;
+    if (!snapshot || s_gpu_execution || s_pass_regs_len) return 0;
     ColorLut **lut = (ColorLut **)gpu_execution_region(snapshot, &s_screen_lut);
     if (*lut) color_lut_destroy(*lut);
     snapshot->ready = 0;
     snapshot->frame = s_frame_count;
     snapshot->recent_mdec = mdec_recently_active(WS_FMV_HYSTERESIS);
-    for (size_t i = 0; i < sizeof s_gpu_execution_regions / sizeof s_gpu_execution_regions[0]; ++i)
-        memcpy(snapshot->slots[i], s_gpu_execution_regions[i].live, s_gpu_execution_regions[i].bytes);
+    for (size_t i = 0; i < sizeof s_gpu_execution_regions / sizeof s_gpu_execution_regions[0]; ++i) {
+        const void *live = s_gpu_execution_regions[i].live;
+        /* Derived working storage belongs to the consumer: CPU upload commit
+         * fills every used pixel from VRAM, and checkpoint save fills the
+         * provenance image before restore can read it. Do not publish either
+         * multi-megabyte scratch buffer from the source owner. */
+        if (live == &vram_write_pixels || live == &s_pass_presentation || live == &s_pass_regs)
+            continue;
+        memcpy(snapshot->slots[i], live, s_gpu_execution_regions[i].bytes);
+    }
+    *(uint32_t *)gpu_execution_region(snapshot, &s_pass_regs_len) = 0;
     /* Host allocations are not machine registers. Build a private colour LUT
      * lazily if a replay requests scanout, and omit the live diagnostic census.
      * The scene predicate is immutable code and executes against bound state. */
