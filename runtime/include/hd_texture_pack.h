@@ -180,6 +180,9 @@ typedef struct HdTexturePixels {
 
 void hd_texture_pack_set_decode_budget(HdTexturePack* pack,
                                        size_t budget_bytes);
+/* Decode every unambiguous replacement now (all cores) and pin it in RAM.
+ * Returns the count loaded, -1 on error; bytes_out gets the RGBA total. */
+int hd_texture_pack_preload(HdTexturePack* pack, size_t* bytes_out);
 int hd_texture_pack_request_decode(HdTexturePack* pack,
                                    uint32_t texture_hash,
                                    uint32_t palette_hash);

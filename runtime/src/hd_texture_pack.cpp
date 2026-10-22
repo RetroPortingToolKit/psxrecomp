@@ -5,6 +5,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <condition_variable>
 #include <cctype>
@@ -448,6 +449,7 @@ struct DecodeItem {
     std::shared_ptr<DecodedImage> image;
     size_t bytes = 0;
     uint64_t last_used = 0;
+    bool pinned = false;   /* preloaded: never evicted */
 };
 
 struct DecodeCache {
@@ -480,7 +482,7 @@ void evict_decode_cache(DecodeCache& cache, size_t incoming = 0) {
     while (cache.used + incoming > cache.budget) {
         auto victim = cache.items.end();
         for (auto it = cache.items.begin(); it != cache.items.end(); ++it) {
-            if (it->second.state != DecodeState::Ready) continue;
+            if (it->second.state != DecodeState::Ready || it->second.pinned) continue;
             if (victim == cache.items.end() ||
                 it->second.last_used < victim->second.last_used)
                 victim = it;
@@ -1280,6 +1282,67 @@ void hd_texture_pack_set_decode_budget(HdTexturePack* pack,
     std::lock_guard<std::mutex> lock(pack->decode.mutex);
     pack->decode.budget = budget_bytes;
     evict_decode_cache(pack->decode);
+}
+
+int hd_texture_pack_preload(HdTexturePack* pack, size_t* bytes_out) {
+    if (bytes_out) *bytes_out = 0;
+#ifdef HD_TEXTURE_PACK_DISABLE_PNG_DECODE
+    (void)pack;
+    return -1;
+#else
+    if (!pack) return -1;
+    try {
+        /* Decode every replacement before the game runs, across all cores. */
+        std::vector<std::pair<uint64_t, std::string>> work_items;
+        for (const auto& entry : pack->entries)
+            if (!entry.second.ambiguous)
+                work_items.emplace_back(entry.first, entry.second.replacement_path);
+        std::vector<std::shared_ptr<DecodedImage>> images(work_items.size());
+        std::atomic<size_t> next{0};
+        auto work = [&] {
+            for (size_t k; (k = next++) < work_items.size();) {
+                std::ifstream input(work_items[k].second, std::ios::binary | std::ios::ate);
+                const std::streamoff length = input ? static_cast<std::streamoff>(input.tellg()) : -1;
+                if (length <= 0 || static_cast<uint64_t>(length) > kMaxPngFileBytes) continue;
+                std::vector<uint8_t> encoded(static_cast<size_t>(length));
+                input.seekg(0);
+                if (!input.read(reinterpret_cast<char*>(encoded.data()), length)) continue;
+                int width = 0, height = 0, components = 0;
+                stbi_uc* loaded = stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()),
+                                                       &width, &height, &components, 4);
+                if (!loaded) continue;
+                if (width > 0 && height > 0) {
+                    auto image = std::make_shared<DecodedImage>();
+                    image->width = static_cast<uint32_t>(width);
+                    image->height = static_cast<uint32_t>(height);
+                    image->rgba.assign(loaded, loaded + static_cast<size_t>(width) * height * 4);
+                    images[k] = std::move(image);
+                }
+                stbi_image_free(loaded);
+            }
+        };
+        const unsigned threads = std::max(1u, std::min(std::thread::hardware_concurrency(), 16u));
+        std::vector<std::thread> pool;
+        for (unsigned t = 1; t < threads && t < work_items.size(); ++t) pool.emplace_back(work);
+        work();
+        for (auto& t : pool) t.join();
+        std::lock_guard<std::mutex> lock(pack->decode.mutex);
+        int loaded = 0; size_t bytes = 0;
+        for (size_t k = 0; k < work_items.size(); ++k) {
+            DecodeItem& item = pack->decode.items[work_items[k].first];
+            item.path = work_items[k].second;
+            if (!images[k]) { item.state = DecodeState::Failed; continue; }
+            if (item.state == DecodeState::Ready) pack->decode.used -= item.bytes;
+            item.bytes = images[k]->rgba.size();
+            item.image = std::move(images[k]);
+            item.state = DecodeState::Ready; item.pinned = true;
+            pack->decode.used += item.bytes; bytes += item.bytes; ++loaded;
+        }
+        if (pack->decode.budget < pack->decode.used) pack->decode.budget = pack->decode.used;
+        if (bytes_out) *bytes_out = bytes;
+        return loaded;
+    } catch (...) { return -1; }
+#endif
 }
 
 int hd_texture_pack_request_decode(HdTexturePack* pack,

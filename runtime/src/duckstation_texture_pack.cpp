@@ -183,6 +183,7 @@ struct Decode {
     std::string path;
     std::shared_ptr<Image> image;
     uint64_t use = 0;
+    bool pinned = false;   /* preloaded: never evicted */
 };
 struct Dump { fs::path path; std::shared_ptr<Image> image; };
 struct DumpHistory { std::unordered_set<std::string> names; std::deque<std::string> order; };
@@ -243,7 +244,7 @@ struct Worker {
         while (used + incoming > budget) {
             auto candidate = decoded.end();
             for (auto it = decoded.begin(); it != decoded.end(); ++it)
-                if (it->second.status == DecodeStatus::Ready &&
+                if (it->second.status == DecodeStatus::Ready && !it->second.pinned &&
                     (candidate == decoded.end() || it->second.use < candidate->second.use)) candidate = it;
             if (candidate == decoded.end()) break;
             used -= candidate->second.image->rgba.size();
@@ -1106,7 +1107,7 @@ int duck_texture_pack_request_decode(DuckTexturePack* p, uint64_t id) {
             auto victim = w.decoded.end();
             for (auto item = w.decoded.begin(); item != w.decoded.end(); ++item)
                 if ((item->second.status == DecodeStatus::Ready || item->second.status == DecodeStatus::Failed) &&
-                    (victim == w.decoded.end() || item->second.use < victim->second.use)) victim = item;
+                    !item->second.pinned && (victim == w.decoded.end() || item->second.use < victim->second.use)) victim = item;
             if (victim == w.decoded.end()) return HD_TEXTURE_LOOKUP_NONE;
             if (victim->second.image) w.used -= victim->second.image->rgba.size();
             w.decoded.erase(victim);
@@ -1115,6 +1116,55 @@ int duck_texture_pack_request_decode(DuckTexturePack* p, uint64_t id) {
         w.decoded[id].path = p->entries[id-1].path; w.decode_queue.push_back(id);
         w.wake.notify_one(); return HD_TEXTURE_LOOKUP_NONE;
     } catch (...) { return HD_TEXTURE_LOOKUP_ERROR; }
+}
+int duck_texture_pack_preload(DuckTexturePack* p, size_t* bytes_out) {
+    if (bytes_out) *bytes_out = 0;
+    if (!p) return -1;
+    try {
+        /* Decode every replacement before the game runs, across all cores,
+         * so no draw ever waits for (or misses) an image mid-game. */
+        std::vector<uint64_t> ids;
+        for (size_t i = 0; i < p->entries.size(); ++i)
+            if (!p->entries[i].ambiguous) ids.push_back(i + 1);
+        std::vector<std::shared_ptr<Image>> images(ids.size());
+        std::atomic<size_t> next{0};
+        auto work = [&] {
+            for (size_t k; (k = next++) < ids.size();) {
+                try {
+                    const std::string& path = p->entries[ids[k] - 1].path;
+                    std::ifstream input(fs::u8path(path), std::ios::binary | std::ios::ate);
+                    const auto length = input ? input.tellg() : std::streampos(-1);
+                    if (length <= 0 || static_cast<uint64_t>(length) > kMaxEncoded) continue;
+                    std::vector<uint8_t> encoded(static_cast<size_t>(length));
+                    input.seekg(0);
+                    DecodedTextureImage decoded; std::string error;
+                    if (!input.read(reinterpret_cast<char*>(encoded.data()), length) ||
+                        !texture_image_decode(encoded.data(), encoded.size(), SIZE_MAX, decoded, error)) continue;
+                    auto image = std::make_shared<Image>(); image->w = decoded.width; image->h = decoded.height;
+                    image->rgba = std::move(decoded.rgba); images[k] = std::move(image);
+                } catch (...) {}
+            }
+        };
+        unsigned threads = std::max(1u, std::min(std::thread::hardware_concurrency(), 16u));
+        std::vector<std::thread> pool;
+        for (unsigned t = 1; t < threads && t < ids.size(); ++t) pool.emplace_back(work);
+        work();
+        for (auto& t : pool) t.join();
+        Worker& w = p->worker; std::lock_guard<std::mutex> lock(w.mutex);
+        int loaded = 0; size_t bytes = 0;
+        for (size_t k = 0; k < ids.size(); ++k) {
+            Decode& d = w.decoded[ids[k]];
+            d.path = p->entries[ids[k] - 1].path;
+            if (!images[k]) { d.status = DecodeStatus::Failed; continue; }
+            if (d.image) w.used -= d.image->rgba.size();
+            bytes += images[k]->rgba.size(); w.used += images[k]->rgba.size();
+            d.image = std::move(images[k]); d.status = DecodeStatus::Ready; d.pinned = true; ++loaded;
+        }
+        if (w.budget < w.used) w.budget = w.used;
+        w.decoded_images += loaded;
+        if (bytes_out) *bytes_out = bytes;
+        return loaded;
+    } catch (...) { return -1; }
 }
 int duck_texture_pack_acquire_decoded(DuckTexturePack* p, uint64_t id, DuckTexturePixels* out) {
     if (out) *out = {};

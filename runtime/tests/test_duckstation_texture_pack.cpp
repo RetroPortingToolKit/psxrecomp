@@ -109,6 +109,26 @@ bool decode_fails(DuckTexturePack* pack, uint64_t id) {
     return status == HD_TEXTURE_LOOKUP_ERROR;
 }
 
+void preload(const fs::path& root) {
+    const char* name = "texpage-P4-3631D2A04EC85311-9CBCDEA9305D7528-64x256-4-2-8x2-P0-15.png";
+    png(root/"replacements"/name,16,4);
+    std::vector<uint16_t> vram(1024*512);
+    place(vram,65,258,2,words(4)); place(vram,512,400,16,words(16));
+    auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
+    size_t bytes = 0;
+    check(duck_texture_pack_preload(pack.get(),&bytes) == 1 && bytes == 16*4*4,"preload decodes the pack");
+    DuckTextureMatch match{};
+    check(duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND,"preloaded fixture matches");
+    DuckTexturePixels pixels{};
+    check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND &&
+          pixels.width == 16,"preloaded image is resident without a decode request");
+    duck_texture_pixels_release(&pixels);
+    duck_texture_pack_set_decode_budget(pack.get(),1);
+    check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND,
+          "a preloaded image survives budget eviction");
+    duck_texture_pixels_release(&pixels);
+}
+
 void fixed_hash_vectors() {
     /* Independently produced by Python xxhash 3.6.0's native wheel. These
      * literal expectations cover XXH3's short/medium/long-input boundaries. */
@@ -604,7 +624,7 @@ int main(int argc, char** argv) {
         palettes(root/"palettes"); st_alias_duplicates(root/"keys"); failed_payloads(root/"invalid"); dumping(root/"dump");
         official_binary_oracle(root/"official-oracle"); defaults_and_options(root/"defaults");
         immutable_palettes_and_pages(root/"snapshots"); split_coalesce_copy_parts(root/"lifecycle"); copied_pack_ownership(root/"ownership");
-        resident_checkpoint(root/"resident");
+        resident_checkpoint(root/"resident"); preload(root/"preload");
         /* Every artifact is created beneath this fresh, explicitly named test
          * root. No user-provided paths participate in recursive cleanup. */
         if (argc > 1 && !std::strcmp(argv[1],"--keep-artifacts")) std::printf("ARTIFACT_ROOT: %s\n",root.u8string().c_str());
