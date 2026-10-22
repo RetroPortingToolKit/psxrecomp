@@ -4,6 +4,9 @@
 #undef NDEBUG   /* the checks below must run in Release too */
 #include "psx_cyc.h"
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <stdint.h>
 

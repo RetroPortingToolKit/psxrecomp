@@ -8226,8 +8226,14 @@ static void interp_present_source_interval(void) {
     uint64_t deadline;
     float alpha;
 
+    uint64_t source_ticks = asynchronous && s_interp_input_ticks ? s_interp_input_ticks : now;
+    /* The GPU must finish composition before the present thread's readiness
+     * test. Half an output period of lead fits the existing three slots;
+     * source execution and its completion clock never wait for this latency. */
+    if (asynchronous && s_interp_target_hz > 0.0)
+        source_ticks += (uint64_t)((double)frequency / (2.0 * s_interp_target_hz));
     if (!frame_interpolation_schedule_begin_phase(
-            &s_interp_schedule, asynchronous && s_interp_input_ticks ? s_interp_input_ticks : now, frequency,
+            &s_interp_schedule, source_ticks, frequency,
             s_interp_source_hz, s_interp_target_hz,
             s_interp_phase_lo, s_interp_phase_hi))
         return;
@@ -9887,6 +9893,7 @@ static void pass_apply_promotion(void) {
         PassGen *g = &s_pgen[s_pgen_cur];
         double sp = s_interp_schedule.frame_end - s_interp_schedule.frame_start;
         g->promoted = 1;
+        g->base_identity = s_interp_captures;
         /* The first output deadline displays phase zero. Starting at the
          * interval boundary instead selects the half-phase immediately at
          * 60 Hz, then repeats it on the second VBlank of a 30 Hz source. */

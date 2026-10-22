@@ -239,12 +239,13 @@ static PSX_THREAD_LOCAL GeomVertex *s_geom_cache = nullptr;
 enum { GEOM_EXEC_PAGE_WORDS = 256,
        GEOM_EXEC_PAGES = GEOM_CACHE_SIZE / GEOM_EXEC_PAGE_WORDS };
 static PSX_THREAD_LOCAL uint64_t *s_exec_versions;
+static PSX_THREAD_LOCAL uint64_t s_exec_epoch = 1;
 static PSX_THREAD_LOCAL uint64_t *s_bound_versions;
 static inline void geom_exec_note(const GeomVertex *slot) {
     if (!s_exec_versions && !s_bound_versions) return;
     const size_t page = (size_t)(slot - s_geom_cache) / GEOM_EXEC_PAGE_WORDS;
     if (s_bound_versions) s_bound_versions[page] = 0;
-    else ++s_exec_versions[page];
+    else if (s_exec_versions[page] != s_exec_epoch) s_exec_versions[page] = s_exec_epoch;
 }
 static PSX_THREAD_LOCAL uint32_t s_geom_generation = 1;
 static PSX_THREAD_LOCAL int s_geom_enabled = 0;
@@ -273,7 +274,7 @@ static void gte_geom_generation_advance(void) {
             std::memset(s_geom_cache, 0, GEOM_CACHE_SIZE * sizeof(GeomVertex));
             for (size_t page = 0; page < GEOM_EXEC_PAGES; ++page) {
                 if (s_bound_versions) s_bound_versions[page] = 0;
-                else if (s_exec_versions) ++s_exec_versions[page];
+                else if (s_exec_versions) s_exec_versions[page] = s_exec_epoch;
             }
         }
         s_geom_generation = 1;
@@ -2854,6 +2855,7 @@ extern "C" int gte_execution_snapshot_capture(GTEExecutionSnapshot *snapshot) {
 #define EXEC_SAVE(name) std::memcpy(&snapshot->name, &name, sizeof name);
     GTE_EXEC_FIELDS(EXEC_SAVE)
 #undef EXEC_SAVE
+    if (++s_exec_epoch == 0) std::abort();
     snapshot->ready = true;
     return 1;
 }

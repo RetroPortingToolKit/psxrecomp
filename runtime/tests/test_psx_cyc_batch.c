@@ -1,6 +1,9 @@
 #include "psx_thread_local.h"
 #include "psx_cyc.h"
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <stdint.h>
 
@@ -42,7 +45,58 @@ static void reset_clock(uint64_t deadline) {
     service_count = 0;
 }
 
+static void clock_receipt(uint64_t out[7], uint32_t local) {
+    out[0] = psx_cycle_count; out[1] = psx_next_service_cycle;
+    out[2] = g_psx_cyc_batch; out[3] = g_psx_cyc_batch_limit;
+    out[4] = g_psx_gcs_frac; out[5] = (uint64_t)service_count; out[6] = local;
+}
+static void restore_receipt(const uint64_t in[7], uint32_t *local) {
+    psx_cycle_count = in[0]; psx_next_service_cycle = in[1];
+    g_psx_cyc_batch = (uint32_t)in[2]; g_psx_cyc_batch_limit = (uint32_t)in[3];
+    g_psx_gcs_frac = (uint32_t)in[4]; service_count = (int)in[5]; *local = (uint32_t)in[6];
+}
+static void test_one_cycle_specialization(void) {
+    static const uint32_t scales[] = {1, 2, 3, 64};
+    uint32_t random = 0x514A7u;
+    for (unsigned scale = 0; scale < 4; ++scale)
+    for (unsigned mode = 0; mode < 128; ++mode) {
+        reset_clock((mode % 11u) * 7u);
+        g_psx_gcs_recip_q16 = psx_gcs_recip_for(scales[scale]);
+        g_psx_gcs_frac = mode * 509u;
+        g_psx_gcs_batch = !!(mode & 1u);
+        g_ls_replay_active = !!(mode & 2u);
+        g_event_step_conservative = !!(mode & 4u);
+        psx_in_device_service = !!(mode & 8u);
+        g_psx_cyc_bb_defer = !!(mode & 16u);
+        uint32_t local = (mode & 64u) ? UINT32_MAX - 2u : 17u;
+        g_psx_cyc_local_acc = (mode & 32u) ? &local : NULL;
+        CPUState cpu = {0};
+        cpu.ld_which_t = 0x20u;
+        for (unsigned instruction = 0; instruction < 128; ++instruction) {
+            random = random * 1664525u + 1013904223u;
+            uint32_t mask = random & 0xFFFFFFFEu;
+            cpu.read_absorb_which = (uint8_t)((random >> 16) % 33u);
+            cpu.read_absorb[cpu.read_absorb_which] = (uint8_t)((random >> 24) & 3u);
+            cpu.ld_which_t = (uint8_t)((random >> 8) % 33u);
+            cpu.ld_absorb = (random >> 4) & 7u;
+            CPUState reference = cpu;
+            uint64_t before[7], expected[7], actual[7];
+            clock_receipt(before, local);
+            psx_cyc_base(&reference); psx_cyc_deps(&reference, mask); psx_cyc_lds(&reference);
+            clock_receipt(expected, local);
+            restore_receipt(before, &local);
+            psx_cyc_step(&cpu, mask);
+            clock_receipt(actual, local);
+            assert(!memcmp(expected, actual, sizeof expected));
+            assert(!memcmp(&reference, &cpu, sizeof cpu));
+        }
+    }
+    g_psx_gcs_recip_q16 = 65536u; g_psx_gcs_frac = 0; g_psx_gcs_batch = 0;
+    g_ls_replay_active = g_event_step_conservative = psx_in_device_service = 0;
+    reset_clock(1000u);
+}
 int main(void) {
+    test_one_cycle_specialization();
     reset_clock(5u);
     for (int i = 0; i < 4; i++) psx_cyc_charge(1u);
     assert(psx_cycle_count == 0u);

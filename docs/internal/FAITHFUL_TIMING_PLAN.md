@@ -2139,3 +2139,16 @@ zero native misses. Latest quiet gate still fails: 59.802 Hz, one 25.018 ms gap,
 p99 busy 100%. Loaded/cadence remain pending. Source-thread sampling continues;
 no blocker or acceptance. R4 local receipts: brief5-worker-admission,
 brief5-gpu-accounting-check and brief5-mac-gpu-accounting-check.txt.
+
+2026-10-21 BRIEF-5 source-cost checkpoint: PGXP read-only lookups no longer dirty
+snapshot pages; PGXP/GTE writes stamp once per publication epoch. Independent
+snapshot/validation tests and GTE corpus checks pass on Windows/Mac. Identity
+still matches 4,511 rows; quiet reaches 60.000 Hz and zero gaps >25 ms, but p99
+busy remains 100%, so it fails. Visible-fullscreen sampling points to cycle
+helpers; source counter ownership was checked (no worker-time contamination).
+A small inlined one-cycle path now preserves the complete helper as the slow
+fallback. A 65,536-step equivalence matrix (scales, local/batch/defer modes,
+conservative/device service, wrap/deadline edges) and scale/gate tests pass on
+Windows/Mac with assertions enabled. Release rebuild and native-cache refresh
+precede updated ordered qualification. Presenter lead fits the three slots and
+source identities now cover actual worker generations. No acceptance/push.

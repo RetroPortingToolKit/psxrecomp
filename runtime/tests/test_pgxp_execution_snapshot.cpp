@@ -58,6 +58,33 @@ int main() {
         pgxp_execution_snapshot_unbind();
     });
     unchanged.join();
+    /* Independent consumers retain their publication even after several
+     * source stores to the same page in one epoch. */
+    PGXPExecutionSnapshot *other = pgxp_execution_snapshot_create();
+    CHECK(other);
+    seed((8 << 16) + 32768);
+    CHECK(pgxp_execution_snapshot_capture(snapshot));
+    seed((8 << 16) + 49152);
+    CHECK(pgxp_execution_snapshot_capture(other));
+    std::thread consumers([&] {
+        CHECK(pgxp_execution_snapshot_bind(snapshot)); check((8 << 16) + 32768);
+        pgxp_execution_snapshot_unbind();
+        CHECK(pgxp_execution_snapshot_bind(other)); check((8 << 16) + 49152);
+        pgxp_execution_snapshot_unbind();
+    });
+    consumers.join();
+    /* A load that invalidates precision really does mutate a RAM shadow;
+     * unlike a matching read, that mutation must reach the next publication. */
+    psx_pgxp_load(nullptr, (0x23u << 26) | (2u << 16), address, packed ^ 1u);
+    CHECK(pgxp_execution_snapshot_capture(snapshot));
+    std::thread invalidated([&] {
+        CHECK(pgxp_execution_snapshot_bind(snapshot));
+        int32_t x, y; uint16_t z;
+        CHECK(!pgxp_load_precise_word(address, packed ^ 1u, &x, &y, &z));
+        pgxp_execution_snapshot_unbind();
+    });
+    invalidated.join();
+    pgxp_execution_snapshot_destroy(other);
     pgxp_execution_snapshot_destroy(snapshot);
     return 0;
 }

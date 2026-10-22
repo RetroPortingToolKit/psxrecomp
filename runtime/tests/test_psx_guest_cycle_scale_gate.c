@@ -31,6 +31,9 @@ int g_psx_load_delay = 1;
 #include <stdint.h>
 #include <stdio.h>
 
+/* No boot-state restore or host-output plugin in this clock-only fixture. */
+int g_boot_state_cpu_timing_restored;
+int psx_mod_host_output_scope(void) { return 0; }
 int g_ls_replay_active = 0;
 int g_ls_mode = 0;
 int g_precise_mode = 0;

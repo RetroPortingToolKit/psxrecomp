@@ -249,11 +249,64 @@ static inline void psx_cyc_lds(CPUState* cpu) {
  * branch, jump, store, COP control, LWC2/SWC2 pre-step, mult/div, mfhi/mflo, ...).
  * reg_mask from psx_cyc_dep_res_mask(). MUST be emitted BEFORE the instruction
  * body so §1 precedes any muldiv/GTE deadline stall in the body (Beetle order). */
+#if defined(PSX_ENABLE_BLOCK_CYCLES) && !defined(PSX_OVERLAY_DLL_BUILD) && !defined(PSX_COSIM)
+#if defined(_MSC_VER)
+#define PSX_CYC_HOT_INLINE static __forceinline
+#define PSX_CYC_COLD_CALL static __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define PSX_CYC_HOT_INLINE static inline __attribute__((always_inline))
+#define PSX_CYC_COLD_CALL static __attribute__((noinline))
+#else
+#define PSX_CYC_HOT_INLINE static inline
+#define PSX_CYC_COLD_CALL static
+#endif
+/* Keep the full publication/exception path out of each generated instruction.
+ * A successful fast charge performs exactly the original charge's stores;
+ * refusal changes nothing, so the complete helper remains authoritative. */
+PSX_CYC_COLD_CALL void psx_cyc_charge_one_slow(void) { psx_cyc_charge(1u); }
+PSX_CYC_HOT_INLINE int psx_cyc_try_charge_one(void) {
+    if (g_ls_replay_active || g_event_step_conservative || psx_in_device_service) return 0;
+    if (PSX_GCS_ACTIVE()) {
+        if (!g_psx_gcs_batch) return 0;
+        const uint64_t fraction = (uint64_t)g_psx_gcs_recip_q16 + g_psx_gcs_frac;
+        const uint32_t scaled = (uint32_t)(fraction >> 16);
+        const uint32_t prior = g_psx_cyc_batch, sum = prior + scaled;
+        if (!scaled || (prior && sum >= prior && sum < g_psx_cyc_batch_limit)) {
+            g_psx_gcs_frac = (uint32_t)(fraction & 0xFFFFu);
+            if (scaled) g_psx_cyc_batch = sum;
+            return 1;
+        }
+        return 0;
+    }
+    if (g_psx_cyc_local_acc) {
+        const uint32_t prior = *g_psx_cyc_local_acc;
+        if (prior >= (1u << 28) - 1u) return 0;
+        *g_psx_cyc_local_acc = prior + 1u;
+        return 1;
+    }
+    const uint32_t prior = g_psx_cyc_batch, sum = prior + 1u;
+    if (sum && (g_psx_cyc_bb_defer > 0 || (prior && sum < g_psx_cyc_batch_limit))) {
+        g_psx_cyc_batch = sum;
+        return 1;
+    }
+    return 0;
+}
+PSX_CYC_HOT_INLINE void psx_cyc_step(CPUState* cpu, uint32_t reg_mask) {
+    const uint8_t w = cpu->read_absorb_which;
+    if (cpu->read_absorb[w]) --cpu->read_absorb[w];
+    else if (!psx_cyc_try_charge_one()) psx_cyc_charge_one_slow();
+    psx_cyc_deps(cpu, reg_mask);
+    psx_cyc_lds(cpu);
+}
+#undef PSX_CYC_HOT_INLINE
+#undef PSX_CYC_COLD_CALL
+#else
 static inline void psx_cyc_step(CPUState* cpu, uint32_t reg_mask) {
     psx_cyc_base(cpu);
     psx_cyc_deps(cpu, reg_mask);
     psx_cyc_lds(cpu);
 }
+#endif
 
 /* The GPR dep+res bitmask used by psx_cyc_step lives in psx_instr_cost.h
  * (psx_cyc_dep_res_mask) — a standalone pure function shared by the emitters

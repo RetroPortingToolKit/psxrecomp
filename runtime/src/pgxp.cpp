@@ -102,12 +102,14 @@ enum { PGXP_EXEC_PAGE_WORDS = 256,
  * snapshot pages invalid, so their next publication recopies even when the
  * corresponding live page has not changed. */
 static PSX_THREAD_LOCAL uint64_t *s_exec_versions;
+static PSX_THREAD_LOCAL uint64_t s_exec_epoch = 1;
 static PSX_THREAD_LOCAL uint64_t *s_bound_versions;
 static inline PGXPValue *execution_word(PGXPValue *word) {
-    if (word && (s_exec_versions || s_bound_versions)) {
+    if (word && (s_exec_versions || s_bound_versions) &&
+        (uintptr_t)word - (uintptr_t)s_ram < PGXP_SHADOW_WORDS * sizeof(PGXPValue)) {
         const size_t page = (size_t)(word - s_ram) / PGXP_EXEC_PAGE_WORDS;
         if (s_bound_versions) s_bound_versions[page] = 0;
-        else ++s_exec_versions[page];
+        else if (s_exec_versions[page] != s_exec_epoch) s_exec_versions[page] = s_exec_epoch;
     }
     return word;
 }
@@ -172,7 +174,7 @@ extern "C" void pgxp_invalidate_all(void) {
             std::memset(s_ram, 0, PGXP_SHADOW_WORDS * sizeof(PGXPValue));
             for (size_t page = 0; page < PGXP_EXEC_PAGES; ++page) {
                 if (s_bound_versions) s_bound_versions[page] = 0;
-                else if (s_exec_versions) ++s_exec_versions[page];
+                else if (s_exec_versions) s_exec_versions[page] = s_exec_epoch;
             }
         }
         std::memset(s_scratch, 0, sizeof(s_scratch));
@@ -371,13 +373,13 @@ extern "C" uint64_t pgxp_store_ring(const PGXPStoreRecord **ring, uint32_t *cap)
 static inline PGXPValue *pgxp_ptr(uint32_t addr) {
     uint32_t m = addr & 0x1FFFFFFFu;
     if (m < PSX_MAIN_RAM_WINDOW_BYTES)         /* RAM + its mirrors (live map) */
-        return execution_word(s_ram ? &s_ram[psx_ram_canonical_offset(m) >> 2] : nullptr);
+        return s_ram ? &s_ram[psx_ram_canonical_offset(m) >> 2] : nullptr;
     if (m - PSX_MOD_GPU_DMA_APERTURE_BASE < PSX_MOD_GPU_DMA_APERTURE_SIZE)
-        return execution_word(s_ram ? &s_ram[PGXP_RAM_WORDS +
-                              ((m - PSX_MOD_GPU_DMA_APERTURE_BASE) >> 2)] : nullptr);
+        return s_ram ? &s_ram[PGXP_RAM_WORDS +
+                              ((m - PSX_MOD_GPU_DMA_APERTURE_BASE) >> 2)] : nullptr;
     if (m - PSX_MOD_MEMORY_BASE < PSX_MOD_MEMORY_SIZE)
-        return execution_word(s_ram ? &s_ram[PGXP_RAM_WORDS + PGXP_APERTURE_WORDS +
-                              ((m - PSX_MOD_MEMORY_BASE) >> 2)] : nullptr);
+        return s_ram ? &s_ram[PGXP_RAM_WORDS + PGXP_APERTURE_WORDS +
+                              ((m - PSX_MOD_MEMORY_BASE) >> 2)] : nullptr;
     if ((m & 0xFFFFFC00u) == 0x1F800000u)      /* scratchpad                  */
         return &s_scratch[(m & 0x3FCu) >> 2];
     return nullptr;
@@ -455,7 +457,7 @@ static int ck_in_pass(void) { return s_ck_depth != 0; }
 static inline PGXPValue *pgxp_ptr_w(uint32_t addr) {
     PGXPValue *pv = pgxp_ptr(addr);
     ck_note(pv, addr);
-    return pv;
+    return execution_word(pv);
 }
 
 static int packet_shadow_address(uint32_t addr, uint32_t *canonical) {
@@ -506,10 +508,9 @@ static int restore_word_shadow(uint32_t addr, uint32_t expected,
         in->value != expected || in->valid > 1u ||
         in->source_generation != s_ck_gen) return 0;
     if (in->valid && !s_enabled) return 0;
-    PGXPValue *destination = pgxp_ptr(addr);
+    PGXPValue *destination = pgxp_ptr_w(addr);
     // With PGXP disabled/unallocated, there is already no RAM shadow to clear.
     if (!destination) return in->valid == 0u;
-    ck_note(destination, addr);
     if (s_ck_lossy) return 0;
     PGXPValue restored{};
     if (in->valid) {
@@ -721,8 +722,9 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
         lop = 0x23;
     switch (lop) {
     case 0x23: {                               /* LW                          */
-        PGXPValue *src = pgxp_ptr_w(addr);     /* validation may mutate it    */
+        PGXPValue *src = pgxp_ptr(addr);       /* reads alone do not dirty a page */
         if (src && src->gen == s_gen) {
+            if (src->value != value) { ck_note(src, addr); execution_word(src); }
             pv_validate(src, value);
             *dst = *src;
         } else {
@@ -863,9 +865,10 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
 
     switch (f_op(instr)) {
     case 0x32: {                               /* LWC2: gte[rt] <- [addr]     */
-        PGXPValue *src = pgxp_ptr_w(addr);     /* validation may mutate it    */
+        PGXPValue *src = pgxp_ptr(addr);       /* reads alone do not dirty a page */
         PGXPValue *dst = &s_gte[f_rt(instr)];
         if (src && src->gen == s_gen) {
+            if (src->value != value) { ck_note(src, addr); execution_word(src); }
             pv_validate(src, value);
             *dst = *src;
         } else {
@@ -2127,6 +2130,7 @@ extern "C" int pgxp_execution_snapshot_capture(PGXPExecutionSnapshot *snapshot) 
 #define EXEC_SAVE(name) std::memcpy(&snapshot->name, &name, sizeof name);
     PGXP_EXEC_FIELDS(EXEC_SAVE)
 #undef EXEC_SAVE
+    if (++s_exec_epoch == 0) std::abort();
     snapshot->ready = true;
     return 1;
 }
