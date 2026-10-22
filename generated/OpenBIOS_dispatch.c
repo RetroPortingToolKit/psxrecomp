@@ -9046,9 +9046,10 @@ static uint32_t psx_bios_key_home_pc(uint32_t key) {
 
 extern uint64_t s_frame_count;
 static PsxRecompFunc psx_bios_hit_body(CPUState* cpu, uint32_t addr, uint32_t key,
-                                       PsxRecompFunc home) {
+                                       PsxRecompFunc home, int observe) {
     {
         const uint32_t home_pc = psx_bios_key_home_pc(key);
+        if (home_pc != 0u && ((addr ^ home_pc) & 0xE0000000u) != 0u && !observe) return 0;
         if (home_pc != 0u && ((addr ^ home_pc) & 0xE0000000u) != 0u)
             psx_segment_miss_record_kind(addr, home_pc, cpu->gpr[31], cpu->gpr[29],
                                          (uint32_t)s_frame_count,
@@ -9066,8 +9067,8 @@ static int psx_bios_execution_lookup(CPUState* cpu, uint32_t addr, PsxExecutionC
         int mid = (lo + hi) / 2;
         if (dispatch_table[mid].addr == key) {
             if (key - 0x500u < 0x46A0u && !psx_kernel_bless_dispatchable(key)) return 0;
-            code->function = psx_bios_hit_body(cpu, addr, key, dispatch_table[mid].func);
-            code->resume_pc = addr; return 1;
+            code->function = psx_bios_hit_body(cpu, addr, key, dispatch_table[mid].func, 0);
+            code->resume_pc = addr; return code->function != 0;
         }
         if (dispatch_table[mid].addr < key) lo = mid + 1; else hi = mid - 1;
     }
@@ -9193,7 +9194,7 @@ static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) 
                     break; /* found stays 0 -> dirty_ram_dispatch */
                 g_debug_current_func_addr = phys;
                 debug_server_trace_dispatch(phys);
-                psx_bios_hit_body(cpu, addr, phys, dispatch_table[mid].func)(cpu);
+                psx_bios_hit_body(cpu, addr, phys, dispatch_table[mid].func, 1)(cpu);
                 g_dispatch_static_hits++;
                 found = 1;
                 break;

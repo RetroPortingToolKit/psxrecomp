@@ -179,6 +179,7 @@ static uint32_t dicr_read_value(uint32_t v);
 
 static void trace_dma(uint32_t kind, int ch, uint32_t total_words,
                       uint32_t dicr_before, uint32_t i_stat_before) {
+    if (g_psx_render_pass_active) return;
     DMATraceEntry *e = &dma_trace[dma_trace_seq % DMA_TRACE_CAP];
     e->seq = dma_trace_seq++;
     e->frame = (uint32_t)s_frame_count;
@@ -203,6 +204,7 @@ static void trace_dma(uint32_t kind, int ch, uint32_t total_words,
 static void trace_dma_reg_write(uint32_t addr, uint32_t val, uint32_t mask,
                                 uint32_t dicr_before,
                                 uint32_t i_stat_before) {
+    if (g_psx_render_pass_active) return;
     DMATraceEntry *e = &dma_trace[dma_trace_seq % DMA_TRACE_CAP];
     e->seq = dma_trace_seq++;
     e->frame = (uint32_t)s_frame_count;

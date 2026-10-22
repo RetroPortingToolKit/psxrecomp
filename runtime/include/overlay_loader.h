@@ -13,6 +13,7 @@
  */
 
 #include "cpu_state.h"
+#include "psx_execution.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -44,6 +45,18 @@ static inline int psx_overlay_code_segment_pc(uint32_t pc) {
  * modules alike). Safe before overlay_loader_init. */
 struct OverlayCallbacks;
 const struct OverlayCallbacks *overlay_loader_callbacks(void);
+
+/* Seal validated native code on the source owner, then bind DLL callbacks on
+ * a dedicated execution thread. The snapshot never calls the live loader.
+ * Loaded code and immutable manifests outlive the worker. */
+typedef struct OverlayExecutionSnapshot OverlayExecutionSnapshot;
+OverlayExecutionSnapshot *overlay_execution_create(void);
+void overlay_execution_destroy(OverlayExecutionSnapshot *snapshot);
+int overlay_execution_capture(OverlayExecutionSnapshot *snapshot);
+void overlay_execution_bind(const OverlayExecutionSnapshot *snapshot);
+int overlay_execution_lookup(const OverlayExecutionSnapshot *snapshot,
+    uint32_t addr, PsxExecutionCode *code, void (**flush)(void));
+
 
 /* Canonical cache arch-abi tag (caches are namespaced per backend AND per
  * target so a Windows-x64 gcc DLL and, later, a same-OS arm64 build for the

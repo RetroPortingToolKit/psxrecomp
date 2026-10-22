@@ -11,6 +11,7 @@
  * so the software path is byte-for-byte unchanged. */
 
 #include "gpu_render.h"
+#include "psx_thread_local.h"
 #include "gpu_sw_renderer.h"
 #include "gpu_hd_textures.h"
 #include "gpu_uv.h"
@@ -68,9 +69,9 @@ extern const GpuRenderBackend *vk_backend_get(void);
 
 static const GpuRenderBackend *g_b         = &SW_BACKEND;
 static GrBackend               g_effective = GR_BACKEND_SOFTWARE;
-static int g_hd_offset_x, g_hd_offset_y;
-static uint32_t g_hd_texture_window;
-static int g_hd_semi, g_hd_perspective;
+static PSX_THREAD_LOCAL int g_hd_offset_x, g_hd_offset_y;
+static PSX_THREAD_LOCAL uint32_t g_hd_texture_window;
+static PSX_THREAD_LOCAL int g_hd_semi, g_hd_perspective;
 static void hd_observe_triangle(int x0,int y0,int u0,int v0,int x1,int y1,int u1,int v1,
     int x2,int y2,int u2,int v2,uint16_t cx,uint16_t cy,uint16_t tp) {
     if (g_effective == GR_BACKEND_OPENGL || !gpu_hd_textures_dump_enabled()) return;
@@ -310,4 +311,15 @@ int gr_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh, int base_
     if (g_b->wide_dump_full)
         return g_b->wide_dump_full(out, cap_pixels, ow, oh, base_x);
     return 0;
+}
+
+void gr_execution_capture(GrExecutionState *state) {
+    state->offset_x = g_hd_offset_x; state->offset_y = g_hd_offset_y;
+    state->semi = g_hd_semi; state->perspective = g_hd_perspective;
+    state->texture_window = g_hd_texture_window;
+}
+void gr_execution_bind(const GrExecutionState *state) {
+    g_hd_offset_x = state->offset_x; g_hd_offset_y = state->offset_y;
+    g_hd_semi = state->semi; g_hd_perspective = state->perspective;
+    g_hd_texture_window = state->texture_window;
 }

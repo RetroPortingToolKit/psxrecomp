@@ -412,6 +412,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/frame_pacing.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_interpolation.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass.c
+    ${PSXRECOMP_ROOT}/runtime/src/psx_execution.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_execution.c
+    ${PSXRECOMP_ROOT}/runtime/src/render_pass_worker.cpp
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_plan.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_motion.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_projection.cpp

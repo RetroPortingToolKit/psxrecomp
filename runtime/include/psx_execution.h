@@ -16,6 +16,13 @@ typedef void (*PsxExecutionAbort)(const char *, uint32_t);
  * NULL selects the ordinary runtime. Never replace these on another thread. */
 extern PSX_THREAD_LOCAL PsxExecutionDispatch g_psx_execution_dispatch;
 extern PSX_THREAD_LOCAL PsxExecutionAbort g_psx_execution_abort;
+/* Lookup: 1 selects a native body, 2 executed a native vector transfer and
+ * set code->resume_pc, 0 refuses this extra frame. No interpreted fallback. */
+typedef int (*PsxExecutionLookup)(void *user, struct CPUState *, uint32_t,
+    PsxExecutionCode *code, void (**flush)(void));
+void psx_execution_begin(void *user, PsxExecutionLookup lookup, PsxExecutionAbort failure);
+void psx_execution_end(void);
+
 #ifdef __cplusplus
 }
 #endif

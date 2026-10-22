@@ -26,6 +26,15 @@ typedef enum {
 void      gr_set_backend(GrBackend backend);  /* call before gr_init() */
 GrBackend gr_backend(void);                   /* effective backend after init */
 void      gr_refresh_backend(void);           /* re-fetch the GL table (render thread) */
+/* Small per-execution facade metadata; the configured backend table is
+ * immutable for the session and remains owned by the render thread. */
+typedef struct GrExecutionState {
+    int offset_x, offset_y, semi, perspective;
+    uint32_t texture_window;
+} GrExecutionState;
+void gr_execution_capture(GrExecutionState *state);
+void gr_execution_bind(const GrExecutionState *state);
+
 
 /* Lifecycle / global state */
 void gr_init(uint16_t *vram);

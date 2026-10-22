@@ -69,6 +69,8 @@ extern uint32_t psx_read_word(uint32_t addr);
 /* Default execution and render-thread queries keep the live objects. Only
  * a bound replay thread selects private regions; no live state is swapped. */
 struct GpuExecutionSnapshot {
+    uint64_t frame;
+    int recent_mdec;
     void *slots[323];
     void *storage;
     int ready;
@@ -524,7 +526,11 @@ static inline GpuContextType_ws_last_3d_stamp *gpu_context_ws_last_3d_stamp(void
     return s_gpu_execution ? (GpuContextType_ws_last_3d_stamp *)s_gpu_execution->slots[54] : &ws_last_3d_stamp;
 }
  /* frame of newest shaded prim (diagnostic) */
-extern uint64_t s_frame_count;               /* defined in debug_server.c */
+extern uint64_t s_frame_count;
+static uint64_t gpu_execution_frame(void) {
+    return s_gpu_execution ? s_gpu_execution->frame : s_frame_count;
+}
+               /* defined in debug_server.c */
 extern int      mdec_recently_active(uint32_t within_frames);  /* mdec.c */
 
 static int ws_configured(void) { return (*gpu_context_ws_xnum()) != (*gpu_context_ws_xden()); }
@@ -781,7 +787,7 @@ static inline GpuContextType_ws_sust_ovh_stamp *gpu_context_ws_sust_ovh_stamp(vo
 
 
 void psx_ws_note_gte_project(int nverts) {
-    uint32_t f = (uint32_t)s_frame_count;
+    uint32_t f = (uint32_t)gpu_execution_frame();
     if (f != (*gpu_context_ws_gte_frame())) {
         if (f == (*gpu_context_ws_gte_frame()) + 1u) (*gpu_context_ws_gte_prev_verts()) = (*gpu_context_ws_gte_count());
         else                        (*gpu_context_ws_gte_prev_verts()) = 0;
@@ -828,8 +834,8 @@ static int ws_game_mode(void) {
     if (state_match >= 0) return state_match;
     if (ws_full_2d_mode()) return 1;
     if ((*gpu_context_ws_gte_game_mode_cfg()) &&
-        (uint32_t)s_frame_count - (*gpu_context_ws_last_gte_stamp()) <= WS_GTE_GAME_MODE_HYSTERESIS) return 1;
-    return (uint32_t)s_frame_count - (*gpu_context_ws_last_tag_stamp()) <= 2;
+        (uint32_t)gpu_execution_frame() - (*gpu_context_ws_last_gte_stamp()) <= WS_GTE_GAME_MODE_HYSTERESIS) return 1;
+    return (uint32_t)gpu_execution_frame() - (*gpu_context_ws_last_tag_stamp()) <= 2;
 }
 
 /* True when the current frame is presented at native 4:3 (NOT stretched), so
@@ -879,7 +885,7 @@ static int ws_2d_only_scene(void) {
     if (ws_mod_world_scene()) return 0;
     if (ws_local_native_split()) return 0;
     if (ws_full_2d_mode() || (*gpu_context_ws_gte_game_mode_cfg())) return 0;
-    uint32_t f = (uint32_t)s_frame_count;
+    uint32_t f = (uint32_t)gpu_execution_frame();
     if (ws_bdx_veto(&(*gpu_context_ws_bdx()), f, WS_2D_SCENE_HYSTERESIS)) {
         (*gpu_context_ws_scene_latch()).confirmed = 0;   /* affirmatively 2D: relearn on exit */
         return 1;
@@ -892,7 +898,7 @@ static int ws_2d_only_scene(void) {
 /* Host-derived presentation evidence is not serialized guest state. Relearn it
  * after reset/load instead of carrying the old scene's classification over. */
 static void ws_reset_scene_history(void) {
-    uint32_t expired = (uint32_t)s_frame_count - 1000u;
+    uint32_t expired = (uint32_t)gpu_execution_frame() - 1000u;
     memset(&(*gpu_context_ws_scene_latch()), 0, sizeof (*gpu_context_ws_scene_latch()));
     ws_bdx_reset(&(*gpu_context_ws_bdx()));
     (*gpu_context_ws_last_tag_stamp()) = (*gpu_context_ws_last_3d_stamp()) = (*gpu_context_ws_last_gte_stamp()) = expired;
@@ -952,11 +958,11 @@ int gpu_ws_present_native_43(void) {
     int native_43 = !game_mode || ws_2d_only_scene();
     int hold_enabled = (*gpu_context_ws_mode()) == 2 && (*gpu_context_s_ws_retained_scene_predicate()) != NULL;
     if (!hold_enabled && native_43) return 1;      /* unchanged default */
-    uint32_t f = (uint32_t)s_frame_count;
+    uint32_t f = (uint32_t)gpu_execution_frame();
     if (f != (*gpu_context_s_ws_fmv_frame_cache())) {
         (*gpu_context_s_ws_fmv_frame_cache()) = f;
         GpuDisplayInfo di; gpu_get_display_info(&di);
-        (*gpu_context_s_ws_fmv_cached()) = di.depth24 || mdec_recently_active(WS_FMV_HYSTERESIS);
+        (*gpu_context_s_ws_fmv_cached()) = di.depth24 || (s_gpu_execution ? s_gpu_execution->recent_mdec : mdec_recently_active(WS_FMV_HYSTERESIS));
     }
     if (hold_enabled)
         return ws_scene_hold_classify(&(*gpu_context_s_ws_scene_hold()),
@@ -1152,7 +1158,7 @@ static int ws_view_enabled(void) {
 }
 static WsViewAnchor ws_view_current(void) {
     WsViewAnchor centered = {ws_nw_offset(), ws_nw_offset(), 0, 0, 0};
-    if (!ws_view_enabled() || (uint32_t)s_frame_count - (*gpu_context_ws_view_frame()) > 1u)
+    if (!ws_view_enabled() || (uint32_t)gpu_execution_frame() - (*gpu_context_ws_view_frame()) > 1u)
         return centered;
     return (*gpu_context_ws_view());
 }
@@ -1168,7 +1174,7 @@ static void ws_view_sample(void) {
         (*gpu_context_ws_view()).left = (*gpu_context_ws_view()).right = ws_nw_offset();
         (*gpu_context_ws_view()).shift = (*gpu_context_ws_view()).pad_left = (*gpu_context_ws_view()).pad_right = 0;
     }
-    (*gpu_context_ws_view_frame()) = (uint32_t)s_frame_count;
+    (*gpu_context_ws_view_frame()) = (uint32_t)gpu_execution_frame();
 }
 
 int ws_nw_present_width(void) {
@@ -1999,7 +2005,7 @@ static WsAspectConeSite *ws_aspect_cone_find(uint32_t address,
 
 static WsAspectConeState *ws_aspect_cone_object_state(uint32_t site,
                                                        uint32_t object) {
-    const uint32_t now = (uint32_t)s_frame_count;
+    const uint32_t now = (uint32_t)gpu_execution_frame();
     uint32_t slot = (((object >> 2) * 2654435761u) ^
                      ((site >> 2) * 2246822519u)) &
                     (WS_ASPECT_CONE_STATE_CAP - 1u);
@@ -2425,7 +2431,7 @@ void gpu_ws_bg2d_begin_view_layer(unsigned layer, uint32_t packet, unsigned inde
     (*gpu_context_ws_view_layer()) = (int)layer;
     (*gpu_context_ws_view_layers())[layer].begin = packet & 0x1fffffffu;
     (*gpu_context_ws_view_layers())[layer].end = (*gpu_context_ws_view_layers())[layer].begin;
-    (*gpu_context_ws_view_layers())[layer].frame = (uint32_t)s_frame_count;
+    (*gpu_context_ws_view_layers())[layer].frame = (uint32_t)gpu_execution_frame();
 }
 int gpu_ws_bg2d_get_view(unsigned layer, WsViewAnchor *view) {
     if (!view || !ws_native_wide_active() || ws_disp_w() > 384) return 0;
@@ -2454,7 +2460,7 @@ static WsViewAnchor ws_view_packet(void) {
     if (!ws_view_enabled()) return ws_view_current();
     uint32_t addr = (*gpu_context_gp0_cmd_source_addr()) & 0x1fffffffu;
     for (unsigned i = 0; i < WS_VIEW_LAYERS; i++)
-        if ((uint32_t)s_frame_count - (*gpu_context_ws_view_layers())[i].frame <= 1u &&
+        if ((uint32_t)gpu_execution_frame() - (*gpu_context_ws_view_layers())[i].frame <= 1u &&
             addr >= (*gpu_context_ws_view_layers())[i].begin && addr < (*gpu_context_ws_view_layers())[i].end)
             return (*gpu_context_ws_view_layers())[i].view;
     return ws_view_current();
@@ -2550,7 +2556,7 @@ static inline GpuContextType_gpu_local_psx_ws_mmx6_bg_stage_init_last_frame *gpu
 }
 void psx_ws_mmx6_bg_stage_init(void) {
 
-    uint32_t frame = (uint32_t)s_frame_count;
+    uint32_t frame = (uint32_t)gpu_execution_frame();
     if (!(*gpu_context_ws_clear_reveal()) || (*gpu_context_ws_mode()) != 2 || frame == (*gpu_context_gpu_local_psx_ws_mmx6_bg_stage_init_last_frame())) return;
     (*gpu_context_gpu_local_psx_ws_mmx6_bg_stage_init_last_frame()) = frame;
     (*gpu_context_g_mmx6_void_generation())++;
@@ -2769,7 +2775,7 @@ void psx_ws_mmx6_bg_refill_all(void) {
  * this so differing instruction order between games still refreshes the ring before
  * the first widened column is consumed. */
 static void mmx6_bg_refill_tick(void) {
-    uint32_t f = (uint32_t)s_frame_count;
+    uint32_t f = (uint32_t)gpu_execution_frame();
     if (f == (*gpu_context_g_mmx6_refill_frame())) return;
     (*gpu_context_g_mmx6_refill_frame()) = f;
     ws_view_sample();
@@ -3093,7 +3099,7 @@ void psx_ws_backdrop_ring_note(uint32_t pc, int kind, int wcols, uint32_t orig,
                                uint32_t finalv, int extent, int camx, int count,
                                uint32_t base, uint32_t dl) {
     WsBdRingEnt *e = &(*gpu_context_s_bd_ring())[(*gpu_context_s_bd_ring_seq()) & (WS_BD_RING_CAP - 1)];
-    e->frame  = (uint32_t)s_frame_count; e->pc = pc; e->kind = kind; e->wcols = wcols;
+    e->frame  = (uint32_t)gpu_execution_frame(); e->pc = pc; e->kind = kind; e->wcols = wcols;
     e->orig   = orig; e->finalv = finalv; e->extent = extent; e->camx = camx; e->count = count;
     e->base   = base; e->dl = dl;
     (*gpu_context_s_bd_ring_seq())++;
@@ -3226,7 +3232,7 @@ void gpu_ws_get_debug(GpuWsDebug* out) {
     out->view_left = view.left; out->view_right = view.right;
     out->view_shift = view.shift;
     out->view_pad_left = view.pad_left; out->view_pad_right = view.pad_right;
-    out->cur_frame         = s_frame_count;
+    out->cur_frame         = gpu_execution_frame();
     out->bg2d_generations  = (*gpu_context_g_bg2d_host_generation());
     out->last_tag_frame    = (*gpu_context_ws_last_tag_stamp());
     out->last_3d_frame     = (*gpu_context_ws_last_3d_stamp());
@@ -3258,7 +3264,7 @@ void gpu_ws_get_debug(GpuWsDebug* out) {
     out->angle_43_identity = (*gpu_context_ws_angle_43_identity());
     out->angle_max_vanilla = (*gpu_context_ws_angle_max_vanilla());
     out->angle_max_widened = (*gpu_context_ws_angle_max_widened());
-    out->bd_veto = ws_bdx_veto(&(*gpu_context_ws_bdx()), (uint32_t)s_frame_count,
+    out->bd_veto = ws_bdx_veto(&(*gpu_context_ws_bdx()), (uint32_t)gpu_execution_frame(),
                                WS_2D_SCENE_HYSTERESIS);
     out->bd_eval_frame = (*gpu_context_ws_bdx()).eval_frame;
     out->bd_rects = (*gpu_context_ws_bdx()).eval_rects;
@@ -3326,7 +3332,7 @@ void psx_ws_sprite_tag(CPUState* cpu) {
     if (!key) return;
     uint32_t sxy = cpu->read_word((*gpu_context_ws_anchor_addr()));
     int32_t  ax  = (int32_t)(int16_t)(sxy & 0xFFFFu);
-    uint32_t now = (uint32_t)s_frame_count;
+    uint32_t now = (uint32_t)gpu_execution_frame();
     uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
     uint32_t victim = idx;
     for (int i = 0; i < WS_TAG_PROBES; i++) {
@@ -3389,7 +3395,7 @@ static void ws_tag_stats_note_lookup(GpuWsTagStats *stats, int result) {
     switch (result) {
     case WS_HUD_ANCHOR_HIT:
         stats->hit++;
-        stats->last_hit_frame = (uint32_t)s_frame_count;
+        stats->last_hit_frame = (uint32_t)gpu_execution_frame();
         break;
     case WS_HUD_ANCHOR_STALE:          stats->stale++; break;
     case WS_HUD_ANCHOR_GUARD_MISMATCH: stats->guard_mismatch++; break;
@@ -3413,8 +3419,8 @@ void gpu_ws_tag_hud_prim(uint32_t prim, int anchor) {
         ws_prepass_packet_guard(words, word_count);
     ws_hud_anchor_insert((*gpu_context_ws_hud_anchor_tags()), WS_HUD_ANCHOR_TABLE_SIZE,
                          GPU_RAM_KEY(command_addr), anchor, &guard,
-                         (uint32_t)s_frame_count);
-    (*gpu_context_ws_hud_tag_stats()).last_tag_frame = (uint32_t)s_frame_count;
+                         (uint32_t)gpu_execution_frame());
+    (*gpu_context_ws_hud_tag_stats()).last_tag_frame = (uint32_t)gpu_execution_frame();
 }
 
 void gpu_ws_tag_background_prim(uint32_t prim) {
@@ -3435,14 +3441,14 @@ void gpu_ws_tag_background_prim(uint32_t prim) {
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     ws_hud_anchor_insert((*gpu_context_ws_background_tags()), WS_HUD_ANCHOR_TABLE_SIZE,
                          GPU_RAM_KEY((prim + 4u)), 0, &guard,
-                         (uint32_t)s_frame_count);
+                         (uint32_t)gpu_execution_frame());
     (*gpu_context_ws_background_tags_used()) = 1;
-    (*gpu_context_ws_background_tag_frame()) = (uint32_t)s_frame_count;
-    (*gpu_context_ws_background_tag_stats()).last_tag_frame = (uint32_t)s_frame_count;
+    (*gpu_context_ws_background_tag_frame()) = (uint32_t)gpu_execution_frame();
+    (*gpu_context_ws_background_tag_stats()).last_tag_frame = (uint32_t)gpu_execution_frame();
 }
 
 int gpu_ws_background_stretch_active(void) {
-    uint32_t frame = (uint32_t)s_frame_count;
+    uint32_t frame = (uint32_t)gpu_execution_frame();
     return (*gpu_context_ws_background_tags_used()) && ws_native_wide_active() &&
            frame >= (*gpu_context_ws_background_tag_frame()) &&
            frame - (*gpu_context_ws_background_tag_frame()) <= WS_HUD_ANCHOR_FRESH_FRAMES;
@@ -3465,7 +3471,7 @@ static int ws_nw_explicit_background(void) {
     if (addr >= 0x00200000u || (addr & 3u)) return 0;
     int result = ws_hud_anchor_lookup_result(
         (*gpu_context_ws_background_tags()), WS_HUD_ANCHOR_TABLE_SIZE, addr, (*gpu_context_gp0_cmd_buf()),
-        (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)s_frame_count, NULL);
+        (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)gpu_execution_frame(), NULL);
     ws_tag_stats_note_lookup(&(*gpu_context_ws_background_tag_stats()), result);
     return result == WS_HUD_ANCHOR_HIT;
 }
@@ -3480,7 +3486,7 @@ void gpu_ws_tag_black_reveal_rect(uint32_t prim) {
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     ws_hud_anchor_insert((*gpu_context_ws_reveal_clear_tags()), WS_HUD_ANCHOR_TABLE_SIZE,
                          GPU_RAM_KEY((prim + 4u)), 0, &guard,
-                         (uint32_t)s_frame_count);
+                         (uint32_t)gpu_execution_frame());
 }
 
 void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period) {
@@ -3495,7 +3501,7 @@ void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period) {
         return;
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     ws_repeat_rect_tag_insert((*gpu_context_ws_repeat_rect_tags()), GPU_RAM_KEY((prim + 4u)),
-                              period, &guard, (uint32_t)s_frame_count);
+                              period, &guard, (uint32_t)gpu_execution_frame());
 }
 
 void gpu_ws_tag_feedback_rect(uint32_t prim) {
@@ -3507,7 +3513,7 @@ void gpu_ws_tag_feedback_rect(uint32_t prim) {
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     /* The table only marks the packet; period 1 is the "present" value. */
     ws_repeat_rect_tag_insert((*gpu_context_ws_feedback_rect_tags()), GPU_RAM_KEY((prim + 4u)),
-                              1, &guard, (uint32_t)s_frame_count);
+                              1, &guard, (uint32_t)gpu_execution_frame());
 }
 
 void gpu_ws_tag_screen_mask_quad(uint32_t prim) {
@@ -3519,7 +3525,7 @@ void gpu_ws_tag_screen_mask_quad(uint32_t prim) {
     WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
     ws_hud_anchor_insert((*gpu_context_ws_screen_mask_tags()), WS_HUD_ANCHOR_TABLE_SIZE,
                          GPU_RAM_KEY(prim + 4u), 0, &guard,
-                         (uint32_t)s_frame_count);
+                         (uint32_t)gpu_execution_frame());
 }
 
 void gpu_ws_tag_radial_screen_mask_quad(uint32_t prim, float scale) {
@@ -3532,7 +3538,7 @@ void gpu_ws_tag_radial_screen_mask_quad(uint32_t prim, float scale) {
           (count==8u && (op&0xfdu)==0x38u))) return;
     WsPrepassPacketGuard guard=ws_prepass_packet_guard(words,count);
     ws_radial_mask_insert((*gpu_context_ws_radial_screen_mask_tags()),GPU_RAM_KEY(prim+4u),
-                          &guard,(uint32_t)s_frame_count,scale);
+                          &guard,(uint32_t)gpu_execution_frame(),scale);
 }
 
 static int ws_nw_radial_mask_transform(int32_t x[4], int32_t y[4]) {
@@ -3541,7 +3547,7 @@ static int ws_nw_radial_mask_transform(int32_t x[4], int32_t y[4]) {
     float scale;
     if (!ws_radial_mask_lookup((*gpu_context_ws_radial_screen_mask_tags()),
         GPU_RAM_KEY((*gpu_context_gp0_cmd_source_addr())),(*gpu_context_gp0_cmd_buf()),(uint32_t)(*gpu_context_gp0_words_needed()),
-        (uint32_t)s_frame_count,&scale)) return 0;
+        (uint32_t)gpu_execution_frame(),&scale)) return 0;
     ws_radial_mask_transform(x,y,ws_disp_w(),ws_disp_h(),scale);
     return 1;
 }
@@ -3558,7 +3564,7 @@ static int ws_explicit_hud_anchor(int *out_anchor) {
     int anchor = 0;
     int result = ws_hud_anchor_lookup_result(
         (*gpu_context_ws_hud_anchor_tags()), WS_HUD_ANCHOR_TABLE_SIZE, GPU_RAM_KEY(command_addr),
-        (*gpu_context_gp0_cmd_buf()), (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)s_frame_count,
+        (*gpu_context_gp0_cmd_buf()), (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)gpu_execution_frame(),
         &anchor);
     ws_tag_stats_note_lookup(&(*gpu_context_ws_hud_tag_stats()), result);
     if (result != WS_HUD_ANCHOR_HIT)
@@ -3603,7 +3609,7 @@ static WsTag *ws_tag_screen_packet(uint32_t prim, int32_t anchor,
         !ws_hud_command_words(prim + 4u, words, &count)) return NULL;
     uint32_t key = GPU_RAM_KEY(prim);
     if (!key) return NULL;
-    uint32_t now = (uint32_t)s_frame_count;
+    uint32_t now = (uint32_t)gpu_execution_frame();
     uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
     uint32_t victim = idx;
     for (int i = 0; i < WS_TAG_PROBES; ++i) {
@@ -3655,7 +3661,7 @@ void gpu_ws_tag_stretched_prim(uint32_t prim, int32_t left, int32_t right,
 static const WsTag *ws_screen_tag(void) {
     if ((*gpu_context_ws_mode()) != 1 || !ws_active() || (*gpu_context_gp0_cmd_source_addr()) == 0xFFFFFFFFu)
         return NULL;
-    uint32_t now = (uint32_t)s_frame_count;
+    uint32_t now = (uint32_t)gpu_execution_frame();
     /* Explicit tags use the P_TAG address, never the first command address. */
     uint32_t key = GPU_RAM_KEY((*gpu_context_gp0_cmd_source_addr()) - 4u);
     uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
@@ -3693,7 +3699,7 @@ static int ws_tagged_anchor(int32_t *out_ax) {
     /* Explicit screen-space ownership wins over a recycled billboard tag.
      * The regular UI transform below will apply it exactly once. */
     if (ws_projection_hud_anchor(NULL)) return 0;
-    uint32_t now = (uint32_t)s_frame_count;
+    uint32_t now = (uint32_t)gpu_execution_frame();
     for (int variant = 0; variant < 2; variant++) {
         uint32_t key = GPU_RAM_KEY(((*gpu_context_gp0_cmd_source_addr()) - (variant ? 0u : 4u)));
         uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
@@ -3879,7 +3885,7 @@ static inline GpuContextType_s_bg_phase_over *gpu_context_s_bg_phase_over(void) 
 }
 
 void ws_bg_phase_note(uint32_t op) {
-    uint32_t f = (uint32_t)s_frame_count;
+    uint32_t f = (uint32_t)gpu_execution_frame();
     if (f != (*gpu_context_s_bg_phase_frame())) { (*gpu_context_s_bg_phase_frame()) = f; (*gpu_context_s_bg_phase_over()) = 0; }
     if (op >= 0x30u && op <= 0x3Fu) {
         (*gpu_context_s_bg_phase_over()) = 1;   /* shaded = 3D world (within-frame draw order) */
@@ -3888,7 +3894,7 @@ void ws_bg_phase_note(uint32_t op) {
     }
 }
 static int ws_bg_phase_over(void) {
-    uint32_t f = (uint32_t)s_frame_count;
+    uint32_t f = (uint32_t)gpu_execution_frame();
     if (f != (*gpu_context_s_bg_phase_frame())) { (*gpu_context_s_bg_phase_frame()) = f; (*gpu_context_s_bg_phase_over()) = 0; }
     return (*gpu_context_s_bg_phase_over());
 }
@@ -3898,7 +3904,7 @@ int psx_ws_prim_in_backdrop(void) {
     /* Explicit title proof is independent of heuristic draw-order phases. */
     if (ws_nw_explicit_background()) return 1;
     if ((*gpu_context_gp0_cmd_source_addr()) != 0xFFFFFFFFu) {
-        uint32_t f = (uint32_t)s_frame_count;
+        uint32_t f = (uint32_t)gpu_execution_frame();
         if (f != (*gpu_context_bdg_src_frame())) { (*gpu_context_bdg_src_frame()) = f; (*gpu_context_g_bdg_src_lo()) = 0xFFFFFFFFu; (*gpu_context_g_bdg_src_hi()) = 0; }
         if ((*gpu_context_gp0_cmd_source_addr()) < (*gpu_context_g_bdg_src_lo())) (*gpu_context_g_bdg_src_lo()) = (*gpu_context_gp0_cmd_source_addr());
         if ((*gpu_context_gp0_cmd_source_addr()) > (*gpu_context_g_bdg_src_hi())) (*gpu_context_g_bdg_src_hi()) = (*gpu_context_gp0_cmd_source_addr());
@@ -3923,7 +3929,7 @@ int psx_ws_prim_in_backdrop(void) {
 
 int psx_ws_prim_is_tagged(void) {
     if (!ws_engaged() || (*gpu_context_gp0_cmd_source_addr()) == 0xFFFFFFFFu) return 0;
-    uint32_t now = (uint32_t)s_frame_count;
+    uint32_t now = (uint32_t)gpu_execution_frame();
     for (int variant = 0; variant < 2; variant++) {
         uint32_t key = GPU_RAM_KEY(((*gpu_context_gp0_cmd_source_addr()) - (variant ? 0u : 4u)));
         uint32_t idx = (key >> 2) & (WS_TAG_BUCKETS - 1);
@@ -4281,22 +4287,22 @@ static inline GpuContextType_ws_primitive_roles *gpu_context_ws_primitive_roles(
 
 void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge) {
     WsPrimitiveRole* tag = ws_role_write((*gpu_context_ws_primitive_roles()), primitive,
-                                        (uint32_t)s_frame_count);
+                                        (uint32_t)gpu_execution_frame());
     if (tag) tag->hud_edge = edge < 0 ? -1 : edge > 0 ? 1 : 0;
 }
 void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world) {
     WsPrimitiveRole* tag = ws_role_write((*gpu_context_ws_primitive_roles()), primitive,
-                                        (uint32_t)s_frame_count);
+                                        (uint32_t)gpu_execution_frame());
     if (tag) tag->world = is_world != 0;
 }
 static int ws_tagged_world_primitive(void) {
     const WsPrimitiveRole* tag = ws_role_read((*gpu_context_ws_primitive_roles()),
-        (*gpu_context_gp0_cmd_source_addr()), (uint32_t)s_frame_count);
+        (*gpu_context_gp0_cmd_source_addr()), (uint32_t)gpu_execution_frame());
     return tag && tag->world;
 }
 static int ws_tagged_hud_edge(void) {
     const WsPrimitiveRole* tag = ws_role_read((*gpu_context_ws_primitive_roles()),
-        (*gpu_context_gp0_cmd_source_addr()), (uint32_t)s_frame_count);
+        (*gpu_context_gp0_cmd_source_addr()), (uint32_t)gpu_execution_frame());
     return tag ? tag->hud_edge : 0;
 }
 void gpu_ws_set_nw_hud_corners(int on) { (*gpu_context_ws_nw_hud_corners()) = on ? 1 : 0; }
@@ -5096,7 +5102,7 @@ static void ws_clear_tagged_rect_reveal(int y, int h) {
     if (address >= psx_ram_live_bytes() || (address & 3u) ||
         !ws_hud_anchor_lookup((*gpu_context_ws_reveal_clear_tags()), WS_HUD_ANCHOR_TABLE_SIZE,
                               address, (*gpu_context_gp0_cmd_buf()), (uint32_t)(*gpu_context_gp0_words_needed()),
-                              (uint32_t)s_frame_count, NULL)) return;
+                              (uint32_t)gpu_execution_frame(), NULL)) return;
     int base = 0;
     if (!ws_local_viewport_draw_target(&base)) {
         if ((*gpu_context_ws_local_viewport_cfg())) return;
@@ -6289,7 +6295,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
     if (recorded) gl_renderer_recorded_sources(temporal_projection, temporal_id);
     if (geometry) {
         pgxp_note_triangle(n_precise);   /* G1.1 crack exposure: mixed share */
-        rec.frame = (uint32_t)s_frame_count;
+        rec.frame = (uint32_t)gpu_execution_frame();
         rec.src_addr = (*gpu_context_gp0_cmd_source_addr());
         rec.op = (uint8_t)((*gpu_context_gp0_cmd_buf())[0] >> 24);
         pgxp_note_triangle_detail(&rec);
@@ -6633,7 +6639,7 @@ static void gp0_exec_mono_quad(void) {
     int screen_mask=ws_native_wide_active() && (*gpu_context_gp0_cmd_source_addr()) != UINT32_MAX &&
         ws_hud_anchor_lookup((*gpu_context_ws_screen_mask_tags()), WS_HUD_ANCHOR_TABLE_SIZE,
             GPU_RAM_KEY((*gpu_context_gp0_cmd_source_addr())), (*gpu_context_gp0_cmd_buf()), 5u,
-            (uint32_t)s_frame_count, NULL);
+            (uint32_t)gpu_execution_frame(), NULL);
     if (!radial_mask && !screen_mask) ws_auto_ui_transform_quad(vx, vy);
 
     /* Each added band is outside the original screen and executes in the
@@ -7252,7 +7258,7 @@ static void ws_repeat_textured_rect_reveal(int x, int y, int w, int h,
     uint32_t address = (*gpu_context_gp0_cmd_source_addr()) & 0x1FFFFFFFu;
     if (address >= psx_ram_live_bytes() || (address & 3u)) return;
     int32_t period = ws_repeat_rect_tag_lookup((*gpu_context_ws_repeat_rect_tags()), address,
-        (*gpu_context_gp0_cmd_buf()), (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)s_frame_count);
+        (*gpu_context_gp0_cmd_buf()), (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)gpu_execution_frame());
     if (!period) return;
     WsRepeatSpan spans[128];
     int count = ws_repeat_rect_spans(x, u, w, period, (int)(*gpu_context_draw_area_left()),
@@ -7288,7 +7294,7 @@ static void ws_feedback_rect_reveal(int x, int y, int w, int h, int u, int v,
     uint32_t address = (*gpu_context_gp0_cmd_source_addr()) & 0x1FFFFFFFu;
     if (address >= psx_ram_live_bytes() || (address & 3u)) return;
     if (!ws_repeat_rect_tag_lookup((*gpu_context_ws_feedback_rect_tags()), address, (*gpu_context_gp0_cmd_buf()),
-                                   (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)s_frame_count))
+                                   (uint32_t)(*gpu_context_gp0_words_needed()), (uint32_t)gpu_execution_frame()))
         return;
     uint16_t tp = current_texpage();
     if (((tp >> 7) & 3) != 2) return;
@@ -7652,7 +7658,7 @@ typedef struct {
     uint32_t s2_val;       /* CPU $s2 = TRUE source pixel ptr (`move s2,a1` at entry) */
     uint32_t a0_val;       /* CPU $a0 at capture (RECT arg; may be clobbered) */
     uint32_t a1_val;       /* CPU $a1 at capture (source arg; may be clobbered) */
-    uint32_t frame_stamp;  /* s_frame_count at the upload — for load-vs-upload ordering */
+    uint32_t frame_stamp;  /* gpu_execution_frame() at the upload — for load-vs-upload ordering */
     uint32_t stack[10];    /* first 10 words from sp (sp+32=saved $s1, sp+36=saved $ra) */
 } A0HistEntry;
 static A0HistEntry a0_history[A0_HISTORY_CAP];
@@ -7743,7 +7749,7 @@ static void gp0_exec_cpu_to_vram(void) {
         (*gpu_context_a0_history())[slot].s2_val = 0;
         (*gpu_context_a0_history())[slot].a0_val = 0;
         (*gpu_context_a0_history())[slot].a1_val = 0;
-        (*gpu_context_a0_history())[slot].frame_stamp = (uint32_t)s_frame_count;
+        (*gpu_context_a0_history())[slot].frame_stamp = (uint32_t)gpu_execution_frame();
         memset((*gpu_context_a0_history())[slot].stack, 0, sizeof((*gpu_context_a0_history())[slot].stack));
         if (debug_cpu_ptr) {
             uint32_t sp = debug_cpu_ptr->gpr[29];
@@ -7821,7 +7827,7 @@ static void gp0_exec_vram_to_cpu(void) {
     /* Record for debug */
     {
         int slot = (int)(c0_history_count++ % C0_HISTORY_CAP);
-        c0_history[slot].frame = (uint32_t)s_frame_count;
+        c0_history[slot].frame = (uint32_t)gpu_execution_frame();
         c0_history[slot].x = (*gpu_context_vram_read_x());
         c0_history[slot].y = (*gpu_context_vram_read_y());
         c0_history[slot].w = (*gpu_context_vram_read_w());
@@ -8528,7 +8534,7 @@ static void gp0_ring_record(const uint32_t *words, int n) {
         if (!gp0_ring) return;  /* OOM — capture disabled, no other effect */
     }
     GpuGp0RingEntry *e = &gp0_ring[gp0_ring_head];
-    e->frame   = (uint32_t)s_frame_count;
+    e->frame   = (uint32_t)gpu_execution_frame();
     e->seq     = (uint32_t)gp0_ring_seq;
     e->src_addr = gp0_cmd_source_addr;
     e->pc      = g_debug_last_store_pc;
@@ -8689,7 +8695,7 @@ static void ws_note_overhang(uint8_t op) {
     prim_sx_extent(op, &xmn, &xmx);
     int32_t W = ws_disp_w();
     if (xmn >= -WS_OVERHANG_DEEP_PX && xmx <= W + WS_OVERHANG_DEEP_PX) return;
-    uint32_t f = (uint32_t)s_frame_count;
+    uint32_t f = (uint32_t)gpu_execution_frame();
     if (f != (*gpu_context_ws_ovh_frame())) {
         (*gpu_context_ws_ovh_prev())  = (f == (*gpu_context_ws_ovh_frame()) + 1u) ? (*gpu_context_ws_ovh_count()) : 0;
         (*gpu_context_ws_ovh_frame()) = f; (*gpu_context_ws_ovh_count()) = 0;
@@ -8714,7 +8720,7 @@ static void ws_note_backdrop(uint8_t op) {
     if ((*gpu_context_ws_mode()) != 2) return;
     int32_t reveal = ws_nw_configured_offset();
     if (reveal <= 0) return;
-    ws_bdx_frame(&(*gpu_context_ws_bdx()), (uint32_t)s_frame_count, ws_disp_w(), ws_disp_h(), reveal);
+    ws_bdx_frame(&(*gpu_context_ws_bdx()), (uint32_t)gpu_execution_frame(), ws_disp_w(), ws_disp_h(), reveal);
     if (op < 0x60) { ws_bdx_close(&(*gpu_context_ws_bdx())); return; }
     if (!(op & 0x04)) return;
     if (psx_ws_prim_is_tagged() || psx_ws_prim_in_backdrop() || ws_bg2d_host_packet())
@@ -8740,7 +8746,7 @@ static void ws_census_record(uint8_t opcode, int32_t x, int32_t y) {
     int32_t xmn, xmx;
     prim_sx_extent(opcode, &xmn, &xmx);
     WsCensusEntry *e = &(*gpu_context_ws_census())[(*gpu_context_ws_census_seq()) & (WS_CENSUS_CAP - 1)];
-    e->frame    = (uint32_t)s_frame_count;
+    e->frame    = (uint32_t)gpu_execution_frame();
     e->src_addr = (*gpu_context_gp0_cmd_source_addr());
     e->cam_x    = (int16_t)psx_read_half(0x1F800176);
     e->cam_y    = (int16_t)psx_read_half(0x1F800186);
@@ -8809,9 +8815,9 @@ static void gp0_execute_command(void) {
             ((*gpu_context_g_bg2d_host_size()) || v.pad_left || v.pad_right) && (*gpu_context_draw_area_top()) < 512 &&
             ((*gpu_context_g_bg2d_host_size())
                 ? (*gpu_context_gpu_local_gp0_execute_command_clear_generation())[(*gpu_context_draw_area_top())] != (*gpu_context_g_bg2d_host_generation())
-                : (*gpu_context_gpu_local_gp0_execute_command_clear_frame())[(*gpu_context_draw_area_top())] != (uint32_t)s_frame_count + 1u) &&
+                : (*gpu_context_gpu_local_gp0_execute_command_clear_frame())[(*gpu_context_draw_area_top())] != (uint32_t)gpu_execution_frame() + 1u) &&
             ws_is_fb_base((*gpu_context_draw_area_left()))) {
-            (*gpu_context_gpu_local_gp0_execute_command_clear_frame())[(*gpu_context_draw_area_top())] = (uint32_t)s_frame_count + 1u;
+            (*gpu_context_gpu_local_gp0_execute_command_clear_frame())[(*gpu_context_draw_area_top())] = (uint32_t)gpu_execution_frame() + 1u;
             (*gpu_context_gpu_local_gp0_execute_command_clear_generation())[(*gpu_context_draw_area_top())] = (*gpu_context_g_bg2d_host_generation());
             gr_wide_clear_margins((int)(*gpu_context_draw_area_left()), (int)(*gpu_context_draw_area_top()),
                 (int)(*gpu_context_draw_area_bottom()) - (int)(*gpu_context_draw_area_top()) + 1, 0, 3);
@@ -10218,6 +10224,8 @@ int gpu_execution_snapshot_capture(GpuExecutionSnapshot *snapshot) {
     ColorLut **lut = (ColorLut **)gpu_execution_region(snapshot, &s_screen_lut);
     if (*lut) color_lut_destroy(*lut);
     snapshot->ready = 0;
+    snapshot->frame = s_frame_count;
+    snapshot->recent_mdec = mdec_recently_active(WS_FMV_HYSTERESIS);
     for (size_t i = 0; i < sizeof s_gpu_execution_regions / sizeof s_gpu_execution_regions[0]; ++i)
         memcpy(snapshot->slots[i], s_gpu_execution_regions[i].live, s_gpu_execution_regions[i].bytes);
     /* Host allocations are not machine registers. Build a private colour LUT

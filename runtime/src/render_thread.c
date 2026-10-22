@@ -211,7 +211,7 @@ static __thread int t_render;
 
 int rt_running(void)          { return atomic_load(&R.running); }
 int rt_on_render_thread(void) { return t_render; }
-int rt_held(void)             { return R.held; }
+int rt_held(void)             { return t_capture ? 0 : R.held; }
 uint64_t rt_render_idle_ns(void) { return atomic_load(&R.idle_ns); }
 uint64_t rt_now_ns(void) { return now_ns(); }
 uint64_t rt_backpressure_events(void) { return atomic_load(&R.bp_events); }
@@ -401,6 +401,18 @@ void *rt_cmd_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes) {
     R.pend_size = size;
     R.pending = 1;
     return (uint8_t *)c + sizeof(RtCmd);
+}
+
+void *rt_cmd_try_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes) {
+    if (t_capture) return capture_record(op, flags, payload_bytes);
+    if (!rt_running()) return NULL;
+    uint64_t size = align_up(sizeof(RtCmd) + (uint64_t)payload_bytes);
+    if (size > R.cap / 2) return NULL;
+    uint64_t w = atomic_load_explicit(&R.wpos, memory_order_relaxed);
+    uint64_t off = w & R.mask;
+    uint64_t pad = off + size > R.cap ? R.cap - off : 0;
+    if (!pred_space(w + pad + size)) return NULL;
+    return rt_cmd_begin(op, flags, payload_bytes);
 }
 
 void rt_cmd_commit(void) {

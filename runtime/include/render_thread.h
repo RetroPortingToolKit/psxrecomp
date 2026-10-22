@@ -88,6 +88,8 @@ int  rt_on_render_thread(void);
  * rt_* call. op 0 is reserved. */
 void *rt_cmd_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes);
 void  rt_cmd_commit(void);
+/* Optional producers may shed a record rather than wait for ring space. */
+void *rt_cmd_try_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes);
 
 /* A dedicated guest worker records into its own bounded list. It never writes
  * the SPSC ring. Ownership transfers only after end; the consumer executes a

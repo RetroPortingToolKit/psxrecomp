@@ -1,5 +1,6 @@
 #include "psx_thread_local.h"
 #include "overlay_loader.h"
+#include "psx_cycle_freeze.h"
 #include "overlay_api.h"
 #include "overlay_path_canon.h"
 #include "code_provider.h"
@@ -71,6 +72,7 @@ extern void overlay_watch_set_range(uint32_t phys, uint32_t len);
 
 typedef void (*OverlayFn)(CPUState *);
 typedef void (*OverlayFlushFn)(void);
+typedef void (*OverlayExecutionInitFn)(const OverlayCallbacks *);
 
 #define MAX_CODE_RANGES 16   /* code ranges per function (coalesced; usually 1) */
 
@@ -544,6 +546,7 @@ static uint32_t s_last_write_size = 0;
  * before the guest-visible write; block/device boundaries flush through the
  * DLL glue directly. */
 static OverlayFlushFn s_dll_flush[4096];
+static OverlayExecutionInitFn s_dll_init[4096];
 PSX_THREAD_LOCAL OverlayFlushFn g_overlay_flush_pending_cycles = NULL;
 
 static OverlayFlushFn overlay_flush_enter(const Candidate *c) {
@@ -2827,6 +2830,7 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
     }
     init_fn(&s_callbacks);
     s_dll_flush[dll] = flush_fn;
+    s_dll_init[dll] = init_fn;
     IMAGE_EXPORT_DIRECTORY *exp =
         (IMAGE_EXPORT_DIRECTORY *)(base + exp_dd->VirtualAddress);
     DWORD *names    = (DWORD *)(base + exp->AddressOfNames);
@@ -2869,6 +2873,7 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
          * not leak a LoadLibrary reference on every retry after CAND_CAP is
          * exhausted (or when every export lacks a usable manifest record). */
         s_dll_flush[dll] = NULL;
+        s_dll_init[dll] = NULL;
         FreeLibrary(h);
     }
     return registered;
@@ -2952,6 +2957,7 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
     }
     init_fn(&s_callbacks);
     s_dll_flush[dll] = flush_fn;
+    s_dll_init[dll] = init_fn;
 
     /* ELF/Mach-O do not expose a portable export-table walker. The range
      * manifest is already the loader's authority, so resolve only its exact
@@ -2979,6 +2985,7 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
         loader_log("loaded %s -> %d manifest candidates", dll_path, registered);
     if (registered == 0) {
         s_dll_flush[dll] = NULL;
+        s_dll_init[dll] = NULL;
         psx_overlay_posix_library_close(h);
     }
     /* A successful handle intentionally stays open for process lifetime: the
@@ -5260,4 +5267,102 @@ void overlay_loader_get_status(int *active, int *registered,
     }
     if (last_crc_out)        *last_crc_out        = s_last_crc;
     if (last_file_found_out) *last_file_found_out = s_last_file_found;
+}
+
+/* Private dispatch contains only byte-validated executable identities. Copying
+ * a candidate does not change source validation generations or diagnostics. */
+struct OverlayExecutionSnapshot {
+    Candidate *entries;
+    uint32_t count;
+    OverlayCallbacks callbacks;
+    OverlayExecutionInitFn init[4096];
+    OverlayFlushFn flush[4096];
+};
+static PSX_THREAD_LOCAL OverlayExecutionInitFn t_execution_init[4096];
+OverlayExecutionSnapshot *overlay_execution_create(void) {
+    OverlayExecutionSnapshot *snapshot = (OverlayExecutionSnapshot *)calloc(1, sizeof(*snapshot));
+    if (!snapshot) return NULL;
+    snapshot->entries = (Candidate *)malloc(sizeof(Candidate) * CAND_CAP);
+    if (!snapshot->entries) { free(snapshot); return NULL; }
+    return snapshot;
+}
+void overlay_execution_destroy(OverlayExecutionSnapshot *snapshot) {
+    if (!snapshot) return;
+    free(snapshot->entries); free(snapshot);
+}
+int overlay_execution_capture(OverlayExecutionSnapshot *snapshot) {
+    if (!snapshot || g_psx_render_pass_active) return 0;
+    snapshot->count = 0;
+    snapshot->callbacks = *overlay_loader_callbacks();
+    memset(snapshot->init, 0, sizeof snapshot->init);
+    memset(snapshot->flush, 0, sizeof snapshot->flush);
+    for (int i = 0; i < s_cand_n; ++i) {
+        const Candidate *candidate = &s_cand[i];
+        uint32_t live;
+        if (candidate->state == ENTRY_BLACKLIST || candidate->device_touch ||
+            !candidate->fn || candidate->dll < 0 || candidate->dll >= 4096 ||
+            !s_dll_init[candidate->dll]) continue;
+        if (!(candidate->state == ENTRY_VALID && candidate->val_gen == cand_gensum(candidate))) {
+            if (!cand_live_crc(candidate, &live) || live != candidate->crc_code ||
+                !cand_delay_slots_hashed(candidate)) continue;
+        }
+        snapshot->entries[snapshot->count++] = *candidate;
+        snapshot->init[candidate->dll] = s_dll_init[candidate->dll];
+        snapshot->flush[candidate->dll] = s_dll_flush[candidate->dll];
+    }
+    return 1;
+}
+static void execution_unknown(CPUState *cpu, uint32_t addr, uint32_t phys) {
+    (void)cpu; (void)phys;
+    if (g_psx_execution_abort) g_psx_execution_abort("dispatch_miss", addr);
+    abort();
+}
+void overlay_execution_bind(const OverlayExecutionSnapshot *snapshot) {
+    if (!snapshot || !g_psx_execution_dispatch) abort();
+    OverlayCallbacks callbacks = snapshot->callbacks;
+    callbacks.dispatch_call = psx_dispatch_call;
+    callbacks.call_bail_flag = &g_psx_call_bail;
+    callbacks.bail_first = &g_psx_bail_first;
+    callbacks.bail_resolved = &g_psx_bail_resolved;
+    callbacks.last_store_pc = &g_debug_last_store_pc;
+    callbacks.log_call_entry = NULL;
+    callbacks.psx_unknown_dispatch = execution_unknown;
+    for (unsigned i = 0; i < 4096; ++i) {
+        if (snapshot->init[i] && t_execution_init[i] != snapshot->init[i]) {
+            snapshot->init[i](&callbacks);
+            t_execution_init[i] = snapshot->init[i];
+        }
+    }
+}
+int overlay_execution_lookup(const OverlayExecutionSnapshot *snapshot,
+    uint32_t addr, PsxExecutionCode *code, void (**flush)(void)) {
+    if (!snapshot || !code || !flush) return 0;
+    uint32_t phys = addr & 0x1FFFFFFFu, segment = addr & 0xE0000000u;
+    const Candidate *selected = NULL;
+    int exact = 0;
+    for (uint32_t i = 0; i < snapshot->count; ++i) {
+        const Candidate *candidate = &snapshot->entries[i];
+        if (candidate->seg != segment) continue;
+        int this_exact = candidate->addr == phys, contains = this_exact;
+        if (!contains && g_psx_cps_mode) {
+            for (int r = 0; r < candidate->nranges; ++r) {
+                if (phys >= candidate->range_lo[r] &&
+                    phys - candidate->range_lo[r] < candidate->range_len[r]) {
+                    contains = 1; break;
+                }
+            }
+        }
+        if (!contains || (exact && !this_exact)) continue;
+        if (!selected || this_exact > exact || candidate->tier >= selected->tier) {
+            selected = candidate; exact = this_exact;
+        }
+    }
+    if (!selected) return 0;
+    if (selected->val_gen != cand_gensum(selected)) {
+        uint32_t live;
+        if (!cand_live_crc(selected, &live) || live != selected->crc_code) return 0;
+    }
+    code->function = selected->fn; code->resume_pc = addr;
+    *flush = snapshot->flush[selected->dll];
+    return 1;
 }

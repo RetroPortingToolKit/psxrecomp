@@ -2018,6 +2018,20 @@ static void render_pass_store(uint32_t addr, uint32_t val, uint32_t width) {
     RenderPassStoreTarget t;
     int cls;
     if (render_pass_mod_store(addr, val, width)) return;
+    if (s_backing != &s_live_backing) {
+        uint32_t off;
+        if (psx_ram_resolve(addr, width, &off)) {
+            text_guard_note_write(off, val, (int)width);
+            kbless_note_write(off);
+            uint32_t first = off >> DIRTY_RAM_PAGE_SHIFT;
+            uint32_t last = (off + width - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+            for (uint32_t page = first; page <= last; ++page) {
+                dirty_ram_bitmap[page >> 5] |= 1u << (page & 31u);
+                overlay_page_gen[page]++;
+            }
+        }
+    }
+
     t.ram = ram;
     t.ram_size = psx_ram_live_bytes();   /* live geometry, as psx_ram_map_write */
     t.scratchpad = scratchpad;

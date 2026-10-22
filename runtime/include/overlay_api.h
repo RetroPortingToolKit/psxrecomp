@@ -127,8 +127,10 @@
  *      v28 or v29 are rejected and recompiled.
  * v31/v32: reserved for the experimental selector/adapter stack.
  * v33: guarded load/store effective-address adapter on the master layout.
- * v34: frozen, activation-only immediate selectors on the v33 layout. */
-#define PSX_OVERLAY_ABI_VERSION 34
+ * v34: frozen, activation-only immediate selectors on the v33 layout.
+ * v35: per-executing-thread callbacks, cycle accumulation and bailout pointers;
+ *      each entering host thread binds overlay_init before calling guest code. */
+#define PSX_OVERLAY_ABI_VERSION 35
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical

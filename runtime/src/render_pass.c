@@ -18,6 +18,7 @@
  * (psx_mod_render_pass_status says which). */
 
 #include "render_pass.h"
+#include "render_pass_worker.h"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -326,6 +327,13 @@ void render_pass_get_stats(RenderPassStats *out) {
     if (!out) return;
     *out = s_stats;
     out->passes += gl_renderer_recorded_pass_count();
+    RenderPassWorkerStats worker;
+    render_pass_worker_stats(&worker);
+    out->passes += worker.completed;
+    out->pass_attempts += worker.published;
+    out->aborted += worker.aborted;
+    out->discarded += worker.late;
+
     for (int i = 0; i < RENDER_PASS_DROP_CLASSES; i++)
         out->dropped[i] = g_render_pass_dropped_writes[i];
 }
@@ -333,6 +341,7 @@ void render_pass_get_stats(RenderPassStats *out) {
 int render_pass_verification_enabled(void) { return verify_on(); }
 
 void render_pass_reset_session(void) {
+    render_pass_worker_stop();
     s_netplay_allowed = 0;
     memset(&s_stats, 0, sizeof s_stats);
     memset(g_render_pass_dropped_writes, 0, sizeof g_render_pass_dropped_writes);
@@ -1010,4 +1019,11 @@ int psx_mod_render_capture_rgba(CPUState *cpu,const PSXModRenderPass *rect,
     if(ok)ok=gl_renderer_stereo_stage_readback(0,rect->w,rect->h,rgba);
     gl_renderer_stereo_stage_reset();s_pair_busy=0;
     return ok;
+}
+
+uint32_t render_pass_worker_take_plan(uint32_t *period) {
+    uint32_t open = (uint32_t)s_open_generation;
+    if (period) *period = s_plan_period;
+    s_open_generation = 0;
+    return open;
 }

@@ -2093,6 +2093,7 @@ void debug_server_log_call_entry_fn(uint32_t func_addr) {
 /* Release: inlined in cpu_state.h for every generated TU. */
 #else
 void debug_server_log_call_entry(uint32_t func_addr) {
+    if (g_psx_render_pass_active) return;
     /* Whole-call native replay is diagnostic and must not double-consume or
      * overwrite live trace/stack-watch state. Architectural CPU state is
      * compared by the caller; these observers are intentionally inert. */

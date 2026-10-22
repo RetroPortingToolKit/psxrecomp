@@ -387,11 +387,12 @@ static inline int psx_call_contract(CPUState* cpu, uint32_t site_ra,
 extern "C" {
 #endif
 extern volatile uint32_t g_psx_last_fn_entry;
+extern PSX_THREAD_LOCAL int g_psx_render_pass_active;
 #ifdef PSX_OVERLAY_DLL_BUILD
 void debug_server_log_call_entry(uint32_t func_addr);
 #else
 static inline void debug_server_log_call_entry(uint32_t func_addr) {
-    g_psx_last_fn_entry = func_addr;
+    if (!g_psx_render_pass_active) g_psx_last_fn_entry = func_addr;
 }
 #endif
 #ifdef __cplusplus

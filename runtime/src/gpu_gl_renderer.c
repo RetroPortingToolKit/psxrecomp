@@ -474,6 +474,9 @@ static int           s_swap_interval = 1; /* SDL_GL swap interval (vsync mode) *
  * the native-wide fast-path latch, depth24) is captured when a call is
  * recorded and read back through the ctx_* accessors below during replay. */
 #include "render_thread.h"
+#include "psx_thread_local.h"
+#include "psx_execution.h"
+#include "render_pass_worker.h"
 static int       s_rth_on = 0;
 static uint16_t *s_rth_vram_pub = NULL;   /* gpu.c's VRAM (guest-visible)      */
 static uint16_t *s_rth_vram_priv = NULL;  /* render thread's upload source     */
@@ -493,7 +496,7 @@ static uint64_t  fg_tick(void *user, uint64_t now);
 static void      fg_note_guest_frame(void);
 static int s_recorded_passes;
 typedef struct RecordedProjection { float p[9]; uint32_t id[3]; } RecordedProjection;
-static RecordedProjection s_recorded_source;
+static PSX_THREAD_LOCAL RecordedProjection s_recorded_source;
 static void recorded_note_present(uint16_t op, const uint8_t *payload);
 static void recorded_prepare_generation(void);
 static int s_recorded_replaying;
@@ -538,9 +541,11 @@ enum {
     RTH_WIDE_RECOVERY, RTH_INTERP_SUSPENDED, RTH_PRESENT_VRAM,
     RTH_PRESENT_WIDE, RTH_STATE, RTH_PEEK, RTH_RING_CAPTURE, RTH_DYN_STEP,
     RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER, RTH_WIDE_FEEDBACK, RTH_PASS_SERVICE,
-    RTH_PASS_BEGIN, RTH_PASS_END, RTH_PASS_COST, RTH_PASS_SHOWN
+    RTH_PASS_BEGIN, RTH_PASS_END, RTH_PASS_COST, RTH_PASS_SHOWN, RTH_BANK, RTH_PRIVATE_EXECUTION
 };
+typedef struct { void (*consume)(void *); void *job; } PrivateExecutionCommand;
 static int temporal_recording(void) {
+    if (rt_capture_active()) return 1;
     return s_rth_on && !rt_on_render_thread() && !rt_held();
 }
 /* GP0(A0) whose payload gpu.c is still streaming into its array (the
@@ -549,7 +554,7 @@ static int temporal_recording(void) {
  * header, or from the authority switch, to the commit. A residency note
  * (even a full-VRAM TRACK_UPLOAD) never ends it; only the commit, GP1(01h),
  * a reset or a savestate restored outside A0 do. */
-static int s_rth_a0_open = 0;
+static PSX_THREAD_LOCAL int s_rth_a0_open = 0;
 /* HD authority requested while an A0 streams under GPU authority: its
  * received words exist only in gpu.c's array (the FBO gets the whole rect at
  * the commit), so ensure_cpu's readback would overwrite them. The switch
@@ -574,7 +579,8 @@ static int  rth_record_present(uint16_t op, int n, const int32_t *v);
 static int  rth_mirror_wide_present_ok(int base_x);
 static void rth_ring_capture_now(const int32_t *a);
 /* Emulation-side mirror: the recorded wide target is a live surface. */
-static int  s_rthm_cur = 0;
+static PSX_THREAD_LOCAL int  s_rthm_cur = 0;
+static PSX_THREAD_LOCAL int s_capture_projective, s_capture_banks, s_capture_pgxp;
 #define RTH_REC(op, fl, ...) do { const int32_t rth_v_[] = { __VA_ARGS__ }; \
     rth_rec_ints((op), (fl), (int)(sizeof rth_v_ / sizeof rth_v_[0]), rth_v_); } while (0)
 
@@ -3483,6 +3489,7 @@ static void pgxp_render_wanted_update(void) {
                      __ATOMIC_RELEASE);
 }
 int gl_renderer_pgxp_render_wanted(void) {
+    if (rt_capture_active()) return s_capture_pgxp;
     return __atomic_load_n(&s_pgxp_render_wanted, __ATOMIC_ACQUIRE);
 }
 void gl_renderer_set_pgxp_depth(int on) {
@@ -5525,6 +5532,7 @@ static void native_draw_end(int previous) { sw_set_faithful_authority(previous);
 static inline void precise_consumed(void) { s_pc_valid = 0; s_pq_valid = 0; s_projected_uv_valid = 0; s_pz_valid = 0; }
 
 int gl_renderer_projective_supported(void) {
+    if (rt_capture_active()) return s_capture_projective;
     if (s_rth_on && !rt_on_render_thread() && !rt_held())
         return s_raster_ok && s_rthm_cur && !cpu_vram_authoritative();
     return s_raster_ok && g_wide_cur && !cpu_vram_authoritative();
@@ -6462,6 +6470,7 @@ static int init_gpu_raster(void) {
 }
 
 int gl_renderer_texture_banks_supported(void) {
+    if (rt_capture_active()) return s_capture_banks;
     /* A trusted title's bank pixels affect GL presentation only. Keep the
      * existing software @1x VRAM authority during its delay-sync session. */
     return s_raster_ok && !s_hd_native_authority &&
@@ -6585,6 +6594,10 @@ int gl_renderer_read_display_hires(int x, int y, int w, int h, uint32_t *out,
 }
 
 int gl_renderer_select_texture_bank(uint16_t id) {
+    if (rt_capture_active()) {
+        if (id && !s_capture_banks) return 0;
+        RTH_REC(RTH_BANK, 0, id, 0); return 1;
+    }
     GL_RT_SYNC("select_texture_bank");
     uint32_t width, height;
     const uint16_t* pixels;
@@ -6620,6 +6633,10 @@ int gl_renderer_select_texture_bank(uint16_t id) {
 }
 
 int gl_renderer_select_texture_bank_live_clut(uint16_t id) {
+    if (rt_capture_active()) {
+        if (id && !s_capture_banks) return 0;
+        RTH_REC(RTH_BANK, 0, id, 1); return 1;
+    }
     GL_RT_SYNC("select_texture_bank_live_clut");
     if (!gl_renderer_select_texture_bank(id)) return 0;
     s_selected_bank_live_clut = id != 0;
@@ -9654,6 +9671,7 @@ void gl_renderer_pass_service_presents(void) {
      * before servicing presentation so emulation never owns its deadline wait. */
     if (s_rth_on && !rt_on_render_thread()) {
         gl_rth_release();
+        render_pass_worker_flush();
         RTH_REC(RTH_PASS_SERVICE, 0, 0);
         return;
     }
@@ -11218,7 +11236,7 @@ static int s_dyn_rth_disp_valid = 0, s_dyn_rth_disp[5];
 static atomic_flag s_dyn_stats_lock = ATOMIC_FLAG_INIT;   /* s_dyn_stats: render thread writes */
 static void dyn_stats_lock(void) { while (atomic_flag_test_and_set_explicit(&s_dyn_stats_lock, memory_order_acquire)) {} }
 static void dyn_stats_unlock(void) { atomic_flag_clear_explicit(&s_dyn_stats_lock, memory_order_release); }
-static int s_rthm_scale = 1;                /* emulation-side level (recording) */
+static PSX_THREAD_LOCAL int s_rthm_scale = 1;                /* emulation-side level (recording) */
 
 /* Desktop immediate-mode GL can reuse the ceiling allocation. On Apple's
  * GL-on-Metal, attachment load/store bandwidth scales with allocation size,
@@ -11616,11 +11634,11 @@ static const GpuRenderBackend GL_BACKEND = {
  * without a sync point. They follow the recorded calls exactly as the backend
  * will apply them, and are re-read from the backend whenever the emulation
  * thread holds the context (rth_mirror_resync). */
-static int s_rthm_wide_w = 0, s_rthm_wide_off = 0;
-static int s_rthm_base[WIDE_MAX_SURF];
-static int s_rthm_area[4] = { 0, 0, VRAM_W - 1, VRAM_H - 1 };
+static PSX_THREAD_LOCAL int s_rthm_wide_w = 0, s_rthm_wide_off = 0;
+static PSX_THREAD_LOCAL int s_rthm_base[WIDE_MAX_SURF];
+static PSX_THREAD_LOCAL int s_rthm_area[4] = { 0, 0, VRAM_W - 1, VRAM_H - 1 };
 /* Last stream state sent (RTH_STATE); -1 forces the first send. */
-static int s_rthe_flat_bd = -1, s_rthe_vp_w = -1, s_rthe_bg_full = -1;
+static PSX_THREAD_LOCAL int s_rthe_flat_bd = -1, s_rthe_vp_w = -1, s_rthe_bg_full = -1;
 static void rth_pass_boundary(void) {
     s_rthe_flat_bd = s_rthe_vp_w = s_rthe_bg_full = -1;
 }
@@ -11633,9 +11651,9 @@ static uint64_t s_rth_presents = 0, s_rth_presents_stale = 0;
 /* Producer-owned values last published for idempotent material setters.
  * Context handoff and stream barriers invalidate them. Area/offset setters
  * deliberately flush primitive batches, so they must never be elided. */
-static int32_t s_rth_material[4][4];
-static unsigned s_rth_material_valid;
-static uint8_t s_rth_material_n[4];
+static PSX_THREAD_LOCAL int32_t s_rth_material[4][4];
+static PSX_THREAD_LOCAL unsigned s_rth_material_valid;
+static PSX_THREAD_LOCAL uint8_t s_rth_material_n[4];
 
 static void rth_mirror_resync(void) {
     s_rth_material_valid = 0;
@@ -11671,7 +11689,7 @@ static int rth_mirror_wide_present_ok(int base_x) {
 }
 
 static int rth_rec_ints(uint16_t op, uint16_t flags, int n, const int32_t *v) {
-    static int cache = -1;
+    static PSX_THREAD_LOCAL int cache = -1;
     if (cache < 0) {
         const char *e = getenv("PSX_GL_RECORD_STATE_CACHE");
         cache = !(e && e[0] == '0');
@@ -11753,6 +11771,10 @@ static void rth_hd_publish_private(void) {
 }
 
 static void gl_rth_acquire(const char *reason) {
+    if (rt_capture_active()) {
+        if (g_psx_execution_abort) g_psx_execution_abort(reason, 0);
+        abort();
+    }
     if (!s_rth_on || rt_on_render_thread() || rt_held()) return;
     rt_acquire(reason);
     if (s_recorded_passes) s_fg_broken = 1;
@@ -11776,6 +11798,7 @@ static void gl_rth_release(void) {
  * the render thread itself (replay), or while the emulation thread holds the
  * context. A depth24 display turns the call into a sync point first. */
 static int rth_record_mode(void) {
+    if (rt_capture_active()) { rth_send_state(); return 1; }
     if (!s_rth_on || rt_on_render_thread() || rt_held()) return 0;
     if (gpu_display_is_depth24()) { gl_rth_acquire("depth24"); return 0; }
     rth_send_state();
@@ -14534,6 +14557,7 @@ static void hd_note_exec(int op, int x, int y, int w, int h, int sx, int sy) {
 }
 /* After the upload/draw it follows, in command order, against s_vram. */
 static void rtb_vram_upload_open(int open) {
+    if (rt_capture_active()) { s_rth_a0_open = open; return; }
     s_rth_a0_open = open;
     if (!open && s_hd_authority_pending) gl_renderer_set_hd_texture_mode(1);
     /* gpu.c streams the payload into its array and reads it back for
@@ -14669,6 +14693,10 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     static uint32_t pass_leaks_before;
     (void)user;
     const int32_t *v = (const int32_t *)payload;
+    if (c->op == RTH_PRIVATE_EXECUTION) {
+        const PrivateExecutionCommand *command = (const PrivateExecutionCommand *)payload;
+        command->consume(command->job); return;
+    }
     if (c->op == RTH_PASS_BEGIN) {
         pass_rejected = !gl_renderer_pass_begin(v[0], v[1], v[2], v[3],
                                                 v[4], (uint32_t)v[5], v[6]);
@@ -14703,6 +14731,10 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     rthf_gpu_resume();
     if (s_fg_on || s_recorded_passes) fg_capture(c, payload);
     switch (c->op) {
+    case RTH_BANK:
+        if (v[1]) gl_renderer_select_texture_bank_live_clut((uint16_t)v[0]);
+        else gl_renderer_select_texture_bank((uint16_t)v[0]);
+        break;
     case RTH_SEMI:      glb_set_semi_transparency(v[0], v[1]); break;
     case RTH_DITHER:    glb_set_dither(v[0]); break;
     case RTH_MASK:      glb_set_mask_bits(v[0], v[1]); break;
@@ -14865,6 +14897,7 @@ int gl_renderer_render_thread_start(int max_frames) {
 }
 
 void gl_renderer_render_thread_stop(void) {
+    render_pass_worker_stop();
     if (!s_rth_on) return;
     const int held = rt_held();
     rt_stop();                       /* drains; the context is current here again */
@@ -15010,3 +15043,54 @@ static void rth_ring_capture_now(const int32_t *a) { (void)a; }
 #endif
 
 const GpuRenderBackend *gl_backend_get(void) { return s_rth_on ? &GL_RT_BACKEND : &GL_BACKEND; }
+
+struct GlExecutionProducerState {
+    GrExecutionState facade;
+    int cur, scale, wide_w, wide_off, base[WIDE_MAX_SURF], area[4];
+    int projective, banks, pgxp, upload_open;
+};
+GlExecutionProducerState *gl_renderer_execution_create(void) {
+    return (GlExecutionProducerState *)calloc(1, sizeof(GlExecutionProducerState));
+}
+void gl_renderer_execution_destroy(GlExecutionProducerState *state) { free(state); }
+int gl_renderer_execution_capture(GlExecutionProducerState *state) {
+    if (!state || rt_capture_active() || !s_rth_on || rt_held() ||
+        s_recorded_passes || s_fg_on || gpu_display_is_depth24()) return 0;
+    gr_execution_capture(&state->facade);
+    state->cur = s_rthm_cur; state->scale = s_rthm_scale;
+    state->wide_w = s_rthm_wide_w; state->wide_off = s_rthm_wide_off;
+    memcpy(state->base, s_rthm_base, sizeof state->base);
+    memcpy(state->area, s_rthm_area, sizeof state->area);
+    state->projective = gl_renderer_projective_supported();
+    state->banks = gl_renderer_texture_banks_supported();
+    state->pgxp = gl_renderer_pgxp_render_wanted();
+    state->upload_open = s_rth_a0_open;
+    return 1;
+}
+void gl_renderer_execution_bind(const GlExecutionProducerState *state) {
+    if (!state || !rt_capture_active()) abort();
+    gr_execution_bind(&state->facade);
+    s_rthm_cur = state->cur; s_rthm_scale = state->scale;
+    s_rthm_wide_w = state->wide_w; s_rthm_wide_off = state->wide_off;
+    memcpy(s_rthm_base, state->base, sizeof state->base);
+    memcpy(s_rthm_area, state->area, sizeof state->area);
+    s_capture_projective = state->projective; s_capture_banks = state->banks;
+    s_capture_pgxp = state->pgxp; s_rth_a0_open = state->upload_open;
+    s_rth_material_valid = 0;
+    memset(&s_recorded_source, 0, sizeof s_recorded_source);
+    rth_pass_boundary();
+}
+int gl_renderer_execution_consume(const RtCommandList *list) {
+    if (!rt_on_render_thread()) abort();
+    uint64_t before = atomic_load(&s_temporal_completed);
+    rt_list_execute(list, gl_rth_exec, NULL);
+    return atomic_load(&s_temporal_completed) > before;
+}
+int gl_renderer_execution_enqueue(void (*consume)(void *), void *job) {
+    if (!consume || !job || !s_rth_on || rt_on_render_thread() || rt_held() || rt_capture_active()) return 0;
+    PrivateExecutionCommand *command = (PrivateExecutionCommand *)rt_cmd_try_begin(
+        RTH_PRIVATE_EXECUTION, 0, sizeof(PrivateExecutionCommand));
+    if (!command) return 0;
+    command->consume = consume; command->job = job;
+    rt_cmd_commit(); return 1;
+}

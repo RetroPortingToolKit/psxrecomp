@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -670,6 +671,28 @@ enum {
     PSX_MOD_RENDER_PASS_BUSY = 6
 };
 uint32_t psx_mod_render_pass_status(void);
+
+/* Trusted native plugins whose entry hooks run in a guest draw worker register
+ * their host state once at startup. capture runs on the emulation owner; bind
+ * installs independent state on the dedicated worker. Images must contain no
+ * borrowed mutable host memory; immutable activation data outlives the worker. */
+typedef struct PSXModExecutionState {
+    uint32_t struct_size;
+    const char *plugin_id;
+    size_t bytes;
+    void (*capture)(void *destination);
+    void (*bind)(const void *image);
+} PSXModExecutionState;
+/* bytes == 0 declares a stateless plugin; its capture/bind may be NULL. */
+int psx_mod_register_execution_state(const PSXModExecutionState *state);
+/* Optional draw-worker path. The source copies the complete payload before
+ * publishing. Payloads must own their values; pointers to source state are not
+ * permitted. A busy/late extra is dropped and never waits for guest replay. */
+int psx_mod_set_worker_render_passes(int enabled);
+int psx_mod_render_pass_async(struct CPUState *cpu, const PSXModRenderPass *pass,
+    PSXModRenderPassFn fn, const void *payload, size_t bytes);
+
+
 /*
  * Netplay local view: this peer's own image of a display rect, drawn by the
  * game's code inside the render-pass sandbox, replaces what the presenter

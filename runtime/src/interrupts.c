@@ -197,12 +197,12 @@ void psx_irq_raise(uint32_t bit, uint32_t detail)
  * NTSC 564480 cycles (60 Hz), PAL 677376 (50 Hz). See psx_video_timing.h. */
 static uint32_t dispatch_count;
 static uint64_t total_checks;
-static uint32_t cycles_since_vblank;  /* incremented by interrupts_advance_cycles */
+static PSX_THREAD_LOCAL uint32_t cycles_since_vblank;  /* incremented by interrupts_advance_cycles */
 extern uint64_t g_vblank_raise_count;
 extern int g_cosim_dirty_pump_site;
 
 /* Reentrancy guard: prevent interrupt handler from triggering interrupts. */
-static int in_exception;
+static PSX_THREAD_LOCAL int in_exception;
 /* Guest-cycle deadline: IRQ delivery is blocked while psx_get_cycle_count() is
  * below this. 0 = no cooldown active. Counted in guest cycles (not calls) so both
  * backends make the identical delivery decision — see the cooldown constants. */
@@ -649,7 +649,7 @@ int psx_irq_resume_context_snapshot_site(void)
     return g_cosim_dirty_pump_site;
 }
 
-static unsigned s_snapshot_host_call_depth;
+static PSX_THREAD_LOCAL unsigned s_snapshot_host_call_depth;
 void psx_snapshot_host_call_begin(void) { ++s_snapshot_host_call_depth; }
 void psx_snapshot_host_call_end(void) {
     if (s_snapshot_host_call_depth) --s_snapshot_host_call_depth;
@@ -2237,6 +2237,7 @@ irq_deliver_eval:
  * here gives the mmx6 baseline interrupt behavior — sufficient to build+run the
  * current generated code on the good baseline for instrumented comparison. */
 void psx_check_interrupts_at(CPUState* cpu, uint32_t resume_pc) {
+    if (g_psx_guest_time_frozen) return;
     uint32_t prev = s_compiled_interrupt_resume_pc;
     s_compiled_interrupt_resume_pc = resume_pc;
     psx_check_interrupts(cpu); /* flushes load-charge batch on entry */

@@ -2208,7 +2208,7 @@ void FullFunctionEmitter::emit_dispatch(
     out += addr_model().emit_key_home_pc_c(base_addr);
     out += "extern uint64_t s_frame_count;\n";
     out += "static PsxRecompFunc psx_bios_hit_body(CPUState* cpu, uint32_t addr, uint32_t key,\n";
-    out += "                                       PsxRecompFunc home) {\n";
+    out += "                                       PsxRecompFunc home, int observe) {\n";
     if (!variant_rows.empty()) {
         out += "    /* A segment variant compiled for this exact PC. */\n";
         out += fmt::format("    for (int lo_ = 0, hi_ = {} - 1; lo_ <= hi_;) {{\n",
@@ -2222,6 +2222,7 @@ void FullFunctionEmitter::emit_dispatch(
     }
     out += "    {\n";
     out += "        const uint32_t home_pc = psx_bios_key_home_pc(key);\n";
+    out += "        if (home_pc != 0u && ((addr ^ home_pc) & 0xE0000000u) != 0u && !observe) return 0;\n";
     out += "        if (home_pc != 0u && ((addr ^ home_pc) & 0xE0000000u) != 0u)\n";
     out += "            psx_segment_miss_record_kind(addr, home_pc, cpu->gpr[31], cpu->gpr[29],\n";
     out += "                                         (uint32_t)s_frame_count,\n";
@@ -2241,8 +2242,8 @@ void FullFunctionEmitter::emit_dispatch(
         out += fmt::format("            if (key - 0x{:X}u < 0x{:X}u && !psx_kernel_bless_dispatchable(key)) return 0;\n",
             addr_model().kbless_ram_lo(), addr_model().kbless_ram_hi() - addr_model().kbless_ram_lo());
     }
-    out += "            code->function = psx_bios_hit_body(cpu, addr, key, dispatch_table[mid].func);\n";
-    out += "            code->resume_pc = addr; return 1;\n";
+    out += "            code->function = psx_bios_hit_body(cpu, addr, key, dispatch_table[mid].func, 0);\n";
+    out += "            code->resume_pc = addr; return code->function != 0;\n";
     out += "        }\n";
     out += "        if (dispatch_table[mid].addr < key) lo = mid + 1; else hi = mid - 1;\n";
     out += "    }\n    return 0;\n}\n\n";
@@ -2390,7 +2391,7 @@ void FullFunctionEmitter::emit_dispatch(
     out += "                debug_server_trace_dispatch(phys);\n";
     // The exact PC picks the body: a segment variant, or the home body
     // (recorded when the PC is in another segment than it, §5.4).
-    out += "                psx_bios_hit_body(cpu, addr, phys, dispatch_table[mid].func)(cpu);\n";
+    out += "                psx_bios_hit_body(cpu, addr, phys, dispatch_table[mid].func, 1)(cpu);\n";
     out += "                g_dispatch_static_hits++;\n";
     out += "                found = 1;\n";
     out += "                break;\n";

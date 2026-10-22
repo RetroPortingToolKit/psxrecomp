@@ -9,6 +9,7 @@
  */
 #include "event_ring.h"
 #include "psx_cycles.h"
+#include "psx_cycle_freeze.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -33,6 +34,7 @@ static uint8_t current_mode(void) {
 }
 
 void event_ring_record_aux(uint16_t kind, uint8_t detail, uint32_t aux) {
+    if (g_psx_render_pass_active) return;
 #if EVENT_RING_ENABLED
     EventEntry *e = &s_ring[s_seq & (EVENT_RING_CAP - 1u)];
     e->seq        = s_seq++;

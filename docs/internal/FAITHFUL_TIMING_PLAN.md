@@ -2092,3 +2092,16 @@ and Mac; Mac syntax checks pass for the changed device modules, mod runtime,
 and regenerated OpenBIOS. Worker scheduling/plugin host-state/GL handoff remain
 in progress. No Stage 3 acceptance or push; ordered route/performance gates have
 not started for this implementation.
+
+2026-10-21 BRIEF-5 worker integration checkpoint: R4 now publishes owned blend
+endpoint images to a double-buffered native draw worker. Its isolated CPU,
+RAM/code metadata, GTE/PGXP/GPU, DMA/timers/IRQ and plugin host state record a
+bounded immutable GPU list. The existing emulation producer alone queues the
+render-owner handoff; unfinished or stale extras are dropped at the canonical
+presentation boundary. Session/activation changes quiesce the worker before
+changing callback tables. Overlay ABI 35 requires thread-bound callback tables;
+native lookup has no interpreted fallback. Windows five focused checks pass
+(GTE reference/enhanced, dispatch, plugin state, command capture); Mac dispatch,
+plugin/memory/capture fixtures and GTE reference pass, with worker/plugin syntax
+checks. Release integration is building. Final route identity, quiet, loaded,
+and distinct-frame gates remain pending; no acceptance or push.

@@ -6,6 +6,7 @@
  */
 
 #include "cpu_state.h"
+#include "psx_execution.h"
 #include "psx_memory.h"
 #include "interrupts.h"
 #include "mod_runtime.h"
@@ -242,7 +243,7 @@ enum {
     PSX_PC0_CRIT_SECTION = 3,   /* EnterCriticalSection/ExitCriticalSection */
     PSX_PC0_DISPATCH_MISS = 4,  /* psx_unknown_dispatch couldn't resolve a target */
 };
-uint32_t g_pc0_reason = PSX_PC0_GUEST_RETURN;
+PSX_THREAD_LOCAL uint32_t g_pc0_reason = PSX_PC0_GUEST_RETURN;
 
 static uint32_t psx_current_tcb_ptr(CPUState* cpu)
 {
@@ -961,6 +962,9 @@ int psx_syscall(CPUState* cpu, uint32_t code) {
      * saved SR which carries IM[2]).
      */
     uint32_t func = cpu->gpr[4]; /* $a0 = syscall function number */
+    if (g_psx_execution_abort && func != 1 && func != 2) {
+        g_psx_execution_abort("draw_syscall", func); abort();
+    }
     uint32_t sr = cpu->cop0[12];
 
     switch (func) {
@@ -1133,6 +1137,7 @@ void psx_unaligned_access(CPUState* cpu, uint32_t addr, uint32_t pc) {
 }
 
 void psx_unknown_dispatch(CPUState* cpu, uint32_t addr, uint32_t phys) {
+    if (g_psx_execution_abort) { g_psx_execution_abort("dispatch_miss", addr); abort(); }
     /* NULL dispatch: address 0 is never a valid function target.
      * Silently absorb — this can happen when a corrupt function pointer
      * or uninitialized callback slot is dispatched. */

@@ -1658,6 +1658,15 @@ if(BUILD_TESTING)
         target_include_directories(render_capture_test PRIVATE include)
         target_link_libraries(render_capture_test PRIVATE Threads::Threads)
         add_test(NAME render_capture_test COMMAND render_capture_test)
+        add_executable(execution_dispatch_test tests/test_execution_dispatch.c src/psx_execution.c)
+        target_include_directories(execution_dispatch_test PRIVATE include)
+        add_test(NAME execution_dispatch_test COMMAND execution_dispatch_test)
+        add_executable(mod_execution_test tests/test_mod_execution.c src/mod_execution.c)
+        target_include_directories(mod_execution_test PRIVATE include)
+        target_link_libraries(mod_execution_test PRIVATE Threads::Threads)
+        add_test(NAME mod_execution_test COMMAND mod_execution_test)
+
+
 
         # Present thread core ([video] present_thread): submission order is
         # presentation order, slots are never composed while queued or on

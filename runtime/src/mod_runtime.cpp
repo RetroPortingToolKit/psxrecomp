@@ -1,4 +1,7 @@
 #include "mod_runtime.h"
+#include "mod_execution.h"
+#include "psx_execution.h"
+#include "render_pass_worker.h"
 #include "host_launch_timing.h"
 #include "cpu_state.h"
 
@@ -337,6 +340,7 @@ void update_function_entry_count() {
 }
 
 void clear_function_entry_hooks() {
+    render_pass_worker_quiesce();
     active_function_entry_hooks().clear();
     update_function_entry_count();
     active_guest_functions().clear();
@@ -3570,6 +3574,7 @@ extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
         table.begin(), table.end(), key,
         [](const ActiveFunctionEntryHook& hook, uint32_t k) { return hook.key < k; });
     for (; it != table.end() && it->key == key; ++it) {
+        if (g_psx_execution_dispatch && it->plugin && it->plugin->netplay_host_output) continue;
         PluginCallbackScope scope(s, it->plugin, cpu);
         ++function_entry_depth;
         if (it->callback) it->callback(cpu, address);
@@ -3761,4 +3766,18 @@ extern "C" int psx_mod_feature_enable(const char* package_id, const char* featur
 extern "C" int psx_mod_feature_set_option(const char* package_id, const char* feature_id,
                                           const char* option_id, const char* value) {
     return PSXRecompV4::feature_set_option_impl(package_id, feature_id, option_id, value);
+}
+
+extern "C" int mod_runtime_execution_ready(void) {
+    using namespace PSXRecompV4;
+    for (const auto& hook : active_function_entry_hooks())
+        if (hook.plugin && !hook.plugin->netplay_host_output &&
+            !mod_execution_registered(hook.plugin->id.c_str())) return 0;
+    for (const auto& hook : active_guest_functions())
+        if (hook.plugin && !hook.plugin->netplay_host_output &&
+            !mod_execution_registered(hook.plugin->id.c_str())) return 0;
+    for (const auto& hook : active_instruction_hooks())
+        if (hook.plugin && !hook.plugin->netplay_host_output &&
+            !mod_execution_registered(hook.plugin->id.c_str())) return 0;
+    return 1;
 }

@@ -1,6 +1,7 @@
 /* GPU frame timeline ring — see gpu_timeline.h. */
 #include "gpu_timeline.h"
 #include "psx_cycles.h"
+#include "psx_cycle_freeze.h"
 
 extern uint64_t s_frame_count;  /* debug_server.c */
 
@@ -9,7 +10,7 @@ static uint64_t s_total = 0;
 static int s_frozen = 0;
 
 void gpu_timeline_note(uint8_t kind, uint32_t a, uint32_t b) {
-    if (s_frozen) return;
+    if (g_psx_render_pass_active || s_frozen) return;
     GpuTimelineEntry *e = &s_ring[s_total & (GPU_TIMELINE_CAP - 1u)];
     e->cyc = psx_cycle_count;
     e->frame = (uint32_t)s_frame_count;

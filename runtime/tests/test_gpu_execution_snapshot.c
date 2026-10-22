@@ -7,6 +7,9 @@
 #include <pthread.h>
 #endif
 #define CHECK(c) do { if (!(c)) abort(); } while (0)
+/* This fixture has no decoder traffic; frame/classification are input state. */
+uint64_t s_frame_count = 17;
+int mdec_recently_active(uint32_t within_frames) { (void)within_frames; return 0; }
 static atomic_int phase;
 static GpuExecutionSnapshot *snapshot;
 static uint16_t *live;

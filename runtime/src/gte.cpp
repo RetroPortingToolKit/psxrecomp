@@ -20,7 +20,13 @@ extern "C" int gpu_ws_precise_nclip_enabled(void);
 /* overlay_loader.c: nonzero while an overlay shadow diff (interpreter record
  * plus native replay of one candidate) is running. */
 extern "C" int psx_overlay_shadow_diff_active(void);
-extern "C" uint64_t s_frame_count;            /* debug_server.c */
+extern "C" uint64_t s_frame_count;
+static PSX_THREAD_LOCAL int s_execution_frame_bound;
+static PSX_THREAD_LOCAL uint64_t s_execution_frame_value;
+static uint64_t gte_execution_frame(void) {
+    return s_execution_frame_bound ? s_execution_frame_value : s_frame_count;
+}
+            /* debug_server.c */
 extern "C" PSX_THREAD_LOCAL uint32_t g_debug_last_store_pc;     /* debug_server.c */
 extern "C" { PSX_THREAD_LOCAL int (*g_psx_projection_command)(CPUState*, uint32_t) = nullptr; }
 
@@ -458,7 +464,7 @@ extern "C" void gte_fg_source_set(int enabled) {
 
 extern "C" int gte_fg_source_enabled(void) { return s_fgsrc != nullptr; }
 
-static inline uint32_t fgsrc_frame(void) { return (uint32_t)(s_frame_count + 1u) & 0x7FFFFFFFu; }
+static inline uint32_t fgsrc_frame(void) { return (uint32_t)(gte_execution_frame() + 1u) & 0x7FFFFFFFu; }
 
 static void fgsrc_note(const GTEState *g, int32_t packed, uint32_t ra, const int16_t v[3]) {
     const int64_t slot = geom_slot((uint32_t)packed);
@@ -813,7 +819,7 @@ static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     }
     GteRtpRec* e = &s_gte_rtp_ring[s_gte_rtp_seq % GTE_RTP_RING_CAP];
     e->seq = (uint32_t)s_gte_rtp_seq;
-    e->frame = (uint32_t)s_frame_count;
+    e->frame = (uint32_t)gte_execution_frame();
     e->caller_ra = s_gte_caller_ra;
     e->cmd = cmd;
     e->render_view = s_render_pose.struct_size || s_render_view[0] || s_render_view[1] || s_render_view[2];
@@ -835,7 +841,7 @@ static void gte_rtp_record(const GTEState* g, uint32_t cmd) {
     int flat = (area2==0) ? 1 : 0;   /* three output verts exactly collinear */
 
     /* per-frame stats */
-    uint32_t f=(uint32_t)s_frame_count;
+    uint32_t f=(uint32_t)gte_execution_frame();
     if (!s_gte_fstat_valid || s_gte_fstat[s_gte_fstat_head].frame != f) {
         s_gte_fstat_head = s_gte_fstat_valid ? (s_gte_fstat_head+1)%GTE_FSTAT_CAP : 0;
         s_gte_fstat_valid = 1;
@@ -893,7 +899,7 @@ static void gte_intpl_record(const GTEState* g,
     }
     GteIntplRec* e = &s_gte_intpl_ring[s_gte_intpl_seq % GTE_INTPL_RING_CAP];
     e->seq = (uint32_t)s_gte_intpl_seq;
-    e->frame = (uint32_t)s_frame_count;
+    e->frame = (uint32_t)gte_execution_frame();
     e->caller_ra = s_gte_caller_ra;
     e->ir0 = pre_ir[0]; e->in1 = pre_ir[1]; e->in2 = pre_ir[2]; e->in3 = pre_ir[3];
     for (int i = 0; i < 3; i++) e->fc[i] = pre_fc[i];
@@ -904,7 +910,7 @@ static void gte_intpl_record(const GTEState* g,
 
     /* per-frame stats (shares the fstat ring; nintpl_tiny = all outputs small
      * while at least one input was not — the collapse signature) */
-    uint32_t f=(uint32_t)s_frame_count;
+    uint32_t f=(uint32_t)gte_execution_frame();
     if (!s_gte_fstat_valid || s_gte_fstat[s_gte_fstat_head].frame != f) {
         s_gte_fstat_head = s_gte_fstat_valid ? (s_gte_fstat_head+1)%GTE_FSTAT_CAP : 0;
         s_gte_fstat_valid = 1;
@@ -1401,7 +1407,7 @@ extern "C" int32_t gte_nclip_exact_sign(int32_t native_mac0, uint32_t pc) {
             e->evals++;
             if (!usable) e->fallbacks++;
             else if (sign != native) e->flips++;
-            e->last_frame = (uint32_t)s_frame_count;
+            e->last_frame = (uint32_t)gte_execution_frame();
         }
     }
     return sign;
@@ -1526,7 +1532,7 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
                 sx1 == -0x400 || sx1 == 0x3FF || sy1 == -0x400 || sy1 == 0x3FF ||
                 sx2 == -0x400 || sx2 == 0x3FF || sy2 == -0x400 || sy2 == 0x3FF)
                 e->saturated++;
-            e->last_frame = (uint32_t)s_frame_count;
+            e->last_frame = (uint32_t)gte_execution_frame();
         }
     } else if (gpu_ws_precise_nclip_enabled() &&
                !s_gte_replay_sandbox && s_speculative_depth == 0) {
@@ -2802,6 +2808,7 @@ extern "C" void gte_test_seed_geometry(uint32_t packed, int32_t x16,
     X(s_nclip_previous_precise_sign) X(s_nclip_previous_precise_valid) \
     X(s_nclip_previous_horizontal_saturated) X(s_nclip_previous_generation)
 struct GTEExecutionSnapshot {
+    uint64_t frame = 0;
 #define EXEC_FIELD(name) decltype(PSXRecomp::GTE::name) name{};
     GTE_EXEC_FIELDS(EXEC_FIELD)
 #undef EXEC_FIELD
@@ -2825,6 +2832,7 @@ extern "C" int gte_execution_snapshot_capture(GTEExecutionSnapshot *snapshot) {
     if (!snapshot || s_bound_versions || s_gck_depth || s_speculative_depth ||
         s_gte_replay_sandbox || s_fgsrc || g_psx_projection_command) return 0;
     snapshot->ready = false;
+    snapshot->frame = ::s_frame_count;
     if (s_geom_enabled && s_geom_cache) {
         if (!s_exec_versions) {
             s_exec_versions = (uint64_t *)std::calloc(GEOM_EXEC_PAGES, sizeof(uint64_t));
@@ -2858,9 +2866,11 @@ extern "C" int gte_execution_snapshot_bind(GTEExecutionSnapshot *snapshot) {
 #undef EXEC_LOAD
     s_geom_cache = snapshot->words;
     s_bound_versions = snapshot->versions;
+    s_execution_frame_bound = 1; s_execution_frame_value = snapshot->frame;
     return 1;
 }
 extern "C" void gte_execution_snapshot_unbind(void) {
+    s_execution_frame_bound = 0;
     using namespace PSXRecomp::GTE;
     if (!s_bound_versions) return;
     if (s_gck_depth || s_speculative_depth || s_gte_replay_sandbox) std::abort();

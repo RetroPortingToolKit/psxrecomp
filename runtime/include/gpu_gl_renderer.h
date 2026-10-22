@@ -16,6 +16,15 @@ struct SDL_Window;
 #ifdef __cplusplus
 extern "C" {
 #endif
+typedef struct GlExecutionProducerState GlExecutionProducerState;
+struct RtCommandList;
+GlExecutionProducerState *gl_renderer_execution_create(void);
+void gl_renderer_execution_destroy(GlExecutionProducerState *state);
+int gl_renderer_execution_capture(GlExecutionProducerState *state);
+void gl_renderer_execution_bind(const GlExecutionProducerState *state);
+int gl_renderer_execution_consume(const struct RtCommandList *list);
+int gl_renderer_execution_enqueue(void (*consume)(void *), void *job);
+
 void gl_renderer_set_recorded_passes(int enabled);
 int gl_renderer_recorded_passes_enabled(void);
 uint64_t gl_renderer_recorded_pass_count(void);
