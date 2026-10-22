@@ -39,6 +39,7 @@
 #include "psx_savestate_menu.h"
 #include "host_osd.h"
 #include "local_mouse_sdl.h"
+#include "present_thread.h"
 #include "pad_external_input.h"
 #include "host_keymap.h"
 #include "png_write.h"       /* png_write_rgb — present_shot readback */
@@ -5052,16 +5053,28 @@ static void frame_report_tick(uint64_t frames) {
     gl_renderer_frame_gen_counts(&gen, &real);
     GlDynresStats ds;
     gl_renderer_dynres_stats(&ds);
+    /* What the present thread really swapped and dropped this window, and
+     * its longest present: a frozen screen shows up here, not in fps. */
+    PtStats pts;
+    pt_get_stats(&pts);
+    static uint64_t last_pt_presents, last_pt_dropped;
+    const uint64_t pt_swaps = pts.presents - last_pt_presents;
+    const uint64_t pt_drops = pts.dropped - last_pt_dropped;
+    last_pt_presents = pts.presents;
+    last_pt_dropped = pts.dropped;
     std::fprintf(stdout,
                  "psxrecomp: frames=%llu elapsed_ms=%llu fps=%.1f avg_fps=%.1f "
-                 "emu_busy=%.1f%% render_busy=%.1f%% dynres=%d load=%.2f gen_fps=%.1f real_fps=%.1f\n",
+                 "emu_busy=%.1f%% render_busy=%.1f%% dynres=%d load=%.2f gen_fps=%.1f real_fps=%.1f "
+                 "swaps=%llu drops=%llu present_max_ms=%.1f\n",
                  (unsigned long long)frames,
                  (unsigned long long)(now - first_ticks),
                  win_s > 0.0 ? (double)(frames - last_frames) / win_s : 0.0,
                  all_s > 0.0 ? (double)frames / all_s : 0.0,
                  emu_busy, rt_busy, ds.level, g_dynres.rt.last_load,
                  pc_s > 0.0 ? (double)(gen - last_gen) / pc_s : 0.0,
-                 pc_s > 0.0 ? (double)(real - last_real) / pc_s : 0.0);
+                 pc_s > 0.0 ? (double)(real - last_real) / pc_s : 0.0,
+                 (unsigned long long)pt_swaps, (unsigned long long)pt_drops,
+                 pts.present_max_ns / 1e6);
     std::fflush(stdout);
     last_ticks = now;
     last_frames = frames;
