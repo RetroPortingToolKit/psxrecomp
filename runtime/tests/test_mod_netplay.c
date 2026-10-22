@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #include "mod_netplay.h"
 #include "netplay_state_digest.h"
 #include "crc32.h"
@@ -10,7 +11,7 @@
 static uint8_t ram[2048], scratchpad[1024], spu_ram[16];
 static uint16_t vram[1024 * 512];
 uint32_t i_stat, i_mask, g_psx_icache_tv[1024];
-uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 uint8_t* memory_get_ram_ptr(void) { return ram; }
 uint32_t memory_get_ram_bytes(void) { return sizeof(ram); }
 uint8_t* memory_get_scratchpad_ptr(void) { return scratchpad; }

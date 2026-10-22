@@ -1,4 +1,5 @@
-﻿#ifndef PSXRECOMP_PSX_CYCLES_H
+#include "psx_thread_local.h"
+#ifndef PSXRECOMP_PSX_CYCLES_H
 #define PSXRECOMP_PSX_CYCLES_H
 
 #include <stddef.h>
@@ -10,12 +11,12 @@ extern "C" {
 
 /* PSX guest CPU cycle clock — the single source of truth for guest-
  * visible time. Peripherals derive all schedules from this counter. */
-extern uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 
 /* Deadline-device model bookkeeping (written by psx_cycles.c). Hot path
  * reads these from the inlined psx_advance_cycles below. */
-extern uint64_t psx_next_service_cycle; /* absolute; 0 = dirty / recompute */
-extern int      psx_in_device_service;  /* re-entrancy guard */
+extern PSX_THREAD_LOCAL uint64_t psx_next_service_cycle; /* absolute; 0 = dirty / recompute */
+extern PSX_THREAD_LOCAL int      psx_in_device_service;  /* re-entrancy guard */
 extern int      g_event_step_conservative;
 
 /* Diagnostic replay clock: advance the CPU-visible guest clock without
@@ -54,17 +55,17 @@ extern int g_ls_replay_active;
  * psx_cyc_charge accumulates here; publish via psx_cyc_batch_flush /
  * psx_advance_cycles before IRQ checks, MMIO, or any cycle read that must
  * match the published counter. Guest totals at those barriers are unchanged. */
-extern uint32_t g_psx_cyc_batch;
-extern uint32_t g_psx_cyc_batch_limit;
+extern PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
+extern PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit;
 
 /* GCC/Clang-generated functions can defer deadline probes within a basic
  * block. Interrupt/MMIO edges still publish the accumulated guest cycles. */
-extern int g_psx_cyc_bb_defer;
+extern PSX_THREAD_LOCAL int g_psx_cyc_bb_defer;
 
 /* Emitter-level VLC load-charge batching: when non-NULL, psx_cyc_charge
  * accumulates into *g_psx_cyc_local_acc instead of g_psx_cyc_batch. Publish
  * via psx_cyc_local_publish / psx_cyc_batch_flush before IRQ/MMIO barriers. */
-extern uint32_t *g_psx_cyc_local_acc;
+extern PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc;
 
 /* [timing] guest_cycle_scale — a title constant, not a player setting.
  * No CPU is emulated: recompiled code charges the guest clock a fixed number
@@ -88,8 +89,8 @@ extern uint32_t *g_psx_cyc_local_acc;
  *                          waits). Never scaled.
  * Mul/div and GTE latencies are CPU work too: psx_cpu_cycles() scales the
  * deadline they set, so the later stall waits the scaled time. */
-extern uint32_t g_psx_gcs_recip_q16;
-extern uint32_t g_psx_gcs_frac;
+extern PSX_THREAD_LOCAL uint32_t g_psx_gcs_recip_q16;
+extern PSX_THREAD_LOCAL uint32_t g_psx_gcs_frac;
 void     psx_guest_cycle_scale_set(uint32_t scale);  /* 1..64; 1 = faithful */
 /* Live scale: the configured one, or 1 while gated and the gate is shut. */
 uint32_t psx_guest_cycle_scale(void);
@@ -123,7 +124,7 @@ static inline uint32_t psx_gcs_recip_for(uint32_t scale) {
     return (uint32_t)((65536u + scale / 2u) / scale);
 }
 /* [timing] guest_cycle_scale_batch: batch scaled CPU charges (psx_cyc.h). */
-extern int g_psx_gcs_batch;
+extern PSX_THREAD_LOCAL int g_psx_gcs_batch;
 /* Fixed session timing profile. Both implementations are portable C and are
  * present in every build; peers must agree on the selected one before frame 0.
  * Preserve the existing scale-only tag for the unbatched path. */

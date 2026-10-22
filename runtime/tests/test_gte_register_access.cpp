@@ -15,6 +15,9 @@ extern "C" void gte_set_fov_scale(int, int);
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <cstdlib>
+#include <thread>
 
 #define CHECK(expr) do { \
     if (!(expr)) { \
@@ -1352,6 +1355,45 @@ int test_projection_scale() {
     return 0;
 }
 
+
+static int test_execution_snapshot() {
+    constexpr uint32_t packed = 0x000C0008u;
+    gte_geometry_correction_set(1);
+    pgxp_set_position_fallback(1);
+    gte_test_seed_geometry(packed, (8 << 16) + 16384, 12 << 16);
+    GTEExecutionSnapshot *snapshot = gte_execution_snapshot_create();
+    CHECK(snapshot && gte_execution_snapshot_capture(snapshot));
+    std::atomic<int> phase{0};
+    auto verify = [&](int32_t expected) {
+        int32_t x, y;
+        if (!gte_geometry_correction_lookup(packed, &x, &y) || x != expected || y != (12 << 16))
+            std::abort();
+    };
+    std::thread worker([&] {
+        if (!gte_execution_snapshot_bind(snapshot)) std::abort();
+        verify((8 << 16) + 16384);
+        gte_test_seed_geometry(packed, (8 << 16) + 32768, 12 << 16);
+        phase.store(1, std::memory_order_release);
+        while (phase.load(std::memory_order_acquire) != 2) { }
+        verify((8 << 16) + 32768);
+        gte_execution_snapshot_unbind();
+    });
+    while (phase.load(std::memory_order_acquire) != 1) { }
+    verify((8 << 16) + 16384);
+    phase.store(2, std::memory_order_release);
+    worker.join();
+    // Worker mutations cannot survive re-publication of an unchanged live page.
+    CHECK(gte_execution_snapshot_capture(snapshot));
+    std::thread next([&] {
+        if (!gte_execution_snapshot_bind(snapshot)) std::abort();
+        verify((8 << 16) + 16384);
+        gte_execution_snapshot_unbind();
+    });
+    next.join();
+    gte_execution_snapshot_destroy(snapshot);
+    return 0;
+}
+
 int main() {
     if (int rc = test_projection_scale()) return rc;
     if (int rc = test_hardware_register_semantics()) return rc;
@@ -1413,6 +1455,7 @@ int main() {
     }
     gte_set_fov_scale(1,1);
     pgxp_set_projection_tracking(0);
+    if (int rc = test_execution_snapshot()) return rc;
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
     return 0;
 }

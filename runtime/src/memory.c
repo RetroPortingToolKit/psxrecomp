@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* memory.c — Phase 2 PS1 memory system.
  *
  * Physical address routing:
@@ -2366,7 +2367,7 @@ static uint8_t psx_read_byte_raw(uint32_t addr) {
  * flush their local pending-cycle accumulator before entering these host
  * helpers, so this stays on the host side of that ABI boundary. */
 #if defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_COSIM) && !STARVATION_RING_ENABLED
-extern uint64_t g_psx_cycle_fast_limit;
+extern PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit;
 extern int g_event_step_conservative;
 extern int g_ls_replay_active;
 static inline void psx_load_charge_cycles(uint32_t cycles) {

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #ifdef PSX_COSIM
 /* cosim_state.c — full guest-architectural-state canonical hash. See COSIM_ORACLE.md
  * and cosim_state.h. Active ONLY in the PSX_COSIM build; empty TU otherwise (safe in
@@ -34,7 +35,7 @@ extern uint8_t  *memory_get_ram_ptr(void);
 extern uint8_t  *memory_get_scratchpad_ptr(void);
 extern uint32_t  i_stat;
 extern uint32_t  i_mask;
-extern uint64_t  psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t  psx_cycle_count;
 extern uint32_t  dirty_ram_get_bitmap_word(uint32_t word_index);
 extern uint32_t  dirty_ram_get_bitmap_word_count(void);
 extern void timers_get_snapshot(uint16_t counter[3], uint32_t mode[3],

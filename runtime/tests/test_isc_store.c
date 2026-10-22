@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Cache-isolated (SR.IsC) CPU stores, end to end through the REAL memory.c
  * store paths and the REAL psx_icache.c tag model, against Beetle's
  * PS_CPU::WriteMemory IsC branch (mednafen/psx/cpu.cpp:482-512):
@@ -43,7 +44,7 @@ extern uint8_t *memory_get_ram_ptr(void);
 extern uint8_t *memory_get_scratchpad_ptr(void);
 extern void     memory_set_sr_ptr(const uint32_t *p);
 extern int      g_dma_exec_depth;
-extern uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 
 /* BIU values the kernel and the tests use (Beetle cpu.cpp BIU_* bits). */
 #define BIU_FLUSH_TAGS  0x804u    /* I-cache on + tag-test (boot / FlushCache) */

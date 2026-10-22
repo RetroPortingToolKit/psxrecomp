@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Link fixture for restore_edge_irq_replay_test: the device, debug, mod and
  * host collaborators of the REAL traps.c (scheduler) and interrupts.c (IRQ
  * delivery). Everything the scheduler/IRQ decision reads that matters to the
@@ -13,8 +14,8 @@ struct CPUState;
 
 /* ---- Guest state owned by the fixture (memory.c / psx_cycles.c in the runtime) ---- */
 uint8_t  g_test_ram[0x200000];
-uint64_t psx_cycle_count = 0;
-uint64_t psx_next_service_cycle = 0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
+PSX_THREAD_LOCAL uint64_t psx_next_service_cycle = 0;
 uint32_t i_stat = 0;
 uint32_t i_mask = 0;
 uint32_t g_psx_ram_size = 0x200000u;
@@ -55,16 +56,16 @@ int      g_exec_phase = 0;
 int      g_idle_skip_enabled = 0;
 int      g_ls_replay_active = 0;
 int      g_ls_suppress_record = 0;
-uint32_t g_psx_cyc_batch = 0;
-uint32_t g_psx_cyc_batch_limit = 0;
-int      g_psx_cyc_bb_defer = 0;
-uint32_t *g_psx_cyc_local_acc = NULL;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit = 0;
+PSX_THREAD_LOCAL int      g_psx_cyc_bb_defer = 0;
+PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc = NULL;
 int      g_psx_dispatch_depth = 0;
-int      g_psx_guest_time_frozen = 0;
+PSX_THREAD_LOCAL int      g_psx_guest_time_frozen = 0;
 uint32_t g_sentinel_reach_async = 0;
 uint64_t g_sentinel_reach_traps = 0;
 volatile int g_sio_timing_active = 0;
-int      psx_in_device_service = 0;
+PSX_THREAD_LOCAL int      psx_in_device_service = 0;
 uint64_t s_frame_count = 0;
 struct CPUState *debug_cpu_ptr = NULL;
 

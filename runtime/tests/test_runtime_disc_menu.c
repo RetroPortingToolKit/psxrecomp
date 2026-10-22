@@ -1,10 +1,11 @@
+#include "psx_thread_local.h"
 #include "psx_runtime_menu.h"
 #include "psx_disc_tray.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
 
-uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 static int count = 4, mounted = 1, online, missing, opens, reinserts, drops, notices, persisted;
 int psx_netplay_active(void) { return online; }
 int cdrom_disc_roster_count(void) { return count; }

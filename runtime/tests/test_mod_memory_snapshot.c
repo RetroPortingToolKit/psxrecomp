@@ -1,7 +1,8 @@
+#include "psx_thread_local.h"
 /* Include implementation to inspect owned backing storage without pulling in
  * hardware routing. Section GC discards unrelated memory access functions. */
 #include "memory.c"
-int g_psx_render_pass_active = 0;
+PSX_THREAD_LOCAL int g_psx_render_pass_active = 0;
 static void check(int ok,const char* text){if(!ok){fprintf(stderr,"FAIL %s\n",text);exit(1);}}
 int main(void){
     check(psx_mod_memory_snapshot_bytes()==0 && psx_mod_memory_layout_cookie()==0,"vanilla unchanged");

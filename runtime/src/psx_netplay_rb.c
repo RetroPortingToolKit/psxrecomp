@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #include "psx_netplay_rb.h"
 #include "psx_memory.h"
 #include "cpu_state.h" /* full CPUState — stub path assigns *out = *in */
@@ -7248,9 +7249,9 @@ void psx_netplay_rb_flush_resume(void)
         gpu_vblank_clear_deferred_present();
         /* longjmp also skips generated bb_defer cleanup — zero the nest. */
         {
-            extern int g_psx_cyc_bb_defer;
-            extern uint32_t g_psx_cyc_batch;
-            extern uint32_t *g_psx_cyc_local_acc;
+            extern PSX_THREAD_LOCAL int g_psx_cyc_bb_defer;
+            extern PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
+            extern PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc;
             if (g_psx_cyc_local_acc) *g_psx_cyc_local_acc = 0;
             g_psx_cyc_local_acc = NULL;
             g_psx_cyc_bb_defer = 0;

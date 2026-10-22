@@ -1,0 +1,14 @@
+{
+  "source": "runtime/src/gpu.c",
+  "sha256": "bd3364af8bbcb3966e601a48cccffbba85e50988c02d107d64582fb1229822a6",
+  "compiler": "clang 22, x86_64-w64-windows-gnu",
+  "configuration": "PSX_NO_DEBUG_TOOLS",
+  "registered_live_regions": 323,
+  "unselected_region_references_in_guest_gpu_functions": [],
+  "concurrent_tests": [
+    "test_gpu_execution_snapshot.py O0/O2 on Windows and macOS",
+    "test_gte_register_access.cpp reference/enhanced on Windows; reference on macOS",
+    "test_replay_clock_context.py O0/O2 on Windows and macOS"
+  ],
+  "scope": "Fixed GPU state is instance selected. Immutable activated cull tables are shared; live debug GP0 recording is suppressed for bound replay. DMA/dispatch/worker acceptance remains open."
+}

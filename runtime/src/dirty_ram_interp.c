@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* dirty_ram_interp.c — small MIPS interpreter for install-at-runtime RAM.
  *
  * See CLAUDE.md Rule 18, docs/dynamic_handler_install.md, and the inline
@@ -94,7 +95,7 @@ extern int g_ls_replay_active;     /* defined in the lockstep section; used by e
  * generated overlay DLLs deliberately batch psx_advance_cycles() through a
  * DLL-local accumulator and must never bind directly to runtime cycle state. */
 #if defined(PSX_NO_DEBUG_TOOLS) && !defined(PSX_COSIM) && !STARVATION_RING_ENABLED
-extern uint64_t g_psx_cycle_fast_limit;
+extern PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit;
 extern int g_event_step_conservative;
 
 static inline void interp_cyc_step(CPUState *cpu, uint32_t reg_mask) {
@@ -464,7 +465,7 @@ enum { CRES_PLAIN = 1,
        CRES_NL_BAIL = 11, CRES_NL_PC = 12, CRES_NL_RET = 13,
        CRES_PCCHAIN = 14 };
 extern uint64_t g_dispatch_static_hits;   /* debug_server.c; bumped by generated dispatch */
-extern uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 static uint32_t callret_begin(CPUState *cpu, uint32_t pc, uint32_t target) {
     if (g_callret_hi <= g_callret_lo || pc < g_callret_lo ||
         pc >= g_callret_hi)
@@ -1056,7 +1057,7 @@ static size_t psx_mixed_stack_watermark(void) {
  * (count goes unbounded), or a brand-new edge — and whether cycles advance.
  * Only the INTERP->compiled re-entry passes through here; the normal compiled
  * per-frame entry to func_8001A954 does not, so this isolates the suspect edge. */
-extern uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 #define SITE_CAP 32u   /* 3 sites x 256 overflowed crash_trace's 8KB sub-buffer; 32 frames of lead-up is plenty */
 typedef struct { uint32_t frame; uint32_t count; uint64_t cycle; } SiteEntry;
 typedef struct { SiteEntry ring[SITE_CAP]; uint64_t seq; uint32_t cur;

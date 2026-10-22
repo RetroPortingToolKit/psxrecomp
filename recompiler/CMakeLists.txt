@@ -1457,6 +1457,16 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL 
             "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_memory_backing.py"
             --cc ${CMAKE_C_COMPILER})
     set_tests_properties(memory_backing PROPERTIES TIMEOUT 60)
+    add_test(NAME gpu_execution_snapshot
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_gpu_execution_snapshot.py"
+            --cc ${CMAKE_C_COMPILER})
+    set_tests_properties(gpu_execution_snapshot PROPERTIES TIMEOUT 60)
+    add_test(NAME replay_clock_context
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_replay_clock_context.py"
+            --cc ${CMAKE_C_COMPILER})
+    set_tests_properties(replay_clock_context PROPERTIES TIMEOUT 60)
 endif()
 
 # Mult/div deadline ownership: the same rule for MULT/DIV and MFLO/MFHI.

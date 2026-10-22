@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* [timing] guest_cycle_scale: instruction charges reach the guest clock at
  * 1/N of their cost; 1 leaves every charge exactly as it was. */
 #undef NDEBUG   /* the checks below must run in Release too */
@@ -6,22 +7,22 @@
 #include <assert.h>
 #include <stdint.h>
 
-uint64_t psx_cycle_count = 0;
-uint64_t psx_next_service_cycle = 0;
-uint32_t g_psx_cyc_batch = 0;
-uint32_t g_psx_cyc_batch_limit = 0;
-int g_psx_cyc_bb_defer = 0;
-uint32_t *g_psx_cyc_local_acc = 0;
-int psx_in_device_service = 0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
+PSX_THREAD_LOCAL uint64_t psx_next_service_cycle = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit = 0;
+PSX_THREAD_LOCAL int g_psx_cyc_bb_defer = 0;
+PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc = 0;
+PSX_THREAD_LOCAL int psx_in_device_service = 0;
 int g_event_step_conservative = 0;
 int g_ls_replay_active = 0;
 int g_ls_mode = 0;
 volatile int g_ds_recording = 0;
 PSX_THREAD_LOCAL uint8_t *g_psx_ram = 0;
 int g_psx_load_delay = 1;
-uint32_t g_psx_gcs_recip_q16 = 65536u;
-uint32_t g_psx_gcs_frac = 0u;
-int g_psx_gcs_batch = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_gcs_recip_q16 = 65536u;
+PSX_THREAD_LOCAL uint32_t g_psx_gcs_frac = 0u;
+PSX_THREAD_LOCAL int g_psx_gcs_batch = 0;
 
 /* Device service: records the guest cycle and the observation point (the
  * "interrupt check" index below) at which each deadline was serviced. */

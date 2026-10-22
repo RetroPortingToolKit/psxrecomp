@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* restore_edge_irq_replay_test (#636, PR #660 review).
  *
  * Executable restore-vs-live regression over the REAL scheduler (traps.c:
@@ -35,7 +36,7 @@
 #include <string.h>
 
 extern uint8_t  g_test_ram[0x200000];
-extern uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 extern uint32_t i_stat, i_mask;
 extern uint32_t g_dirty_safe_resume_pc;
 extern int (*g_test_recover_null_pc)(CPUState *, uint32_t *);

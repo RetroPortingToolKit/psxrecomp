@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* psx_cycles.c — PSX guest CPU cycle clock. */
 
 #include "psx_cycles.h"
@@ -21,20 +22,20 @@
 #include "cosim_state.h"
 #endif
 
-uint64_t psx_cycle_count = 0;
-uint32_t g_psx_gcs_recip_q16 = 65536u;
-uint32_t g_psx_gcs_frac = 0u;
-int g_psx_gcs_batch = 0;   /* [timing] guest_cycle_scale_batch */
-static uint32_t s_psx_gcs_cfg = 1u;     /* [timing] guest_cycle_scale */
-static uint32_t s_psx_gcs_live = 1u;
-static int      s_psx_gcs_gated = 0;    /* guest_cycle_scale_gated (mod gate) */
-static int      s_psx_gcs_open = 0;     /* mod gate state */
+PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_gcs_recip_q16 = 65536u;
+PSX_THREAD_LOCAL uint32_t g_psx_gcs_frac = 0u;
+PSX_THREAD_LOCAL int g_psx_gcs_batch = 0;   /* [timing] guest_cycle_scale_batch */
+static PSX_THREAD_LOCAL uint32_t s_psx_gcs_cfg = 1u;     /* [timing] guest_cycle_scale */
+static PSX_THREAD_LOCAL uint32_t s_psx_gcs_live = 1u;
+static PSX_THREAD_LOCAL int      s_psx_gcs_gated = 0;    /* guest_cycle_scale_gated (mod gate) */
+static PSX_THREAD_LOCAL int      s_psx_gcs_open = 0;     /* mod gate state */
 /* [timing] guest_cycle_scale_gate: RAM predicates, all must hold. */
 typedef struct { uint32_t phys, size, mask, value; } PsxGcsRamPred;
-static PsxGcsRamPred s_psx_gcs_ram[PSX_GCS_RAM_GATE_MAX];
-static uint32_t s_psx_gcs_ram_n = 0;
-static int      s_psx_gcs_ram_open = 0; /* last VBlank's verdict */
-static uint32_t (*s_psx_gcs_ram_read)(uint32_t phys, uint32_t size) = NULL;
+static PSX_THREAD_LOCAL PsxGcsRamPred s_psx_gcs_ram[PSX_GCS_RAM_GATE_MAX];
+static PSX_THREAD_LOCAL uint32_t s_psx_gcs_ram_n = 0;
+static PSX_THREAD_LOCAL int      s_psx_gcs_ram_open = 0; /* last VBlank's verdict */
+static PSX_THREAD_LOCAL uint32_t (*s_psx_gcs_ram_read)(uint32_t phys, uint32_t size) = NULL;
 
 static void psx_guest_cycle_scale_apply(void) {
     const int open = (!s_psx_gcs_gated || s_psx_gcs_open) &&
@@ -127,25 +128,25 @@ void psx_guest_cycle_scale_restore(const uint32_t in[3]) {
 
 uint32_t psx_guest_cycle_scale(void) { return s_psx_gcs_live; }
 uint32_t psx_guest_cycle_scale_config(void) { return s_psx_gcs_cfg; }
-uint32_t g_psx_cyc_batch = 0;
-uint32_t g_psx_cyc_batch_limit = 0;
-int      g_psx_cyc_bb_defer = 0;
-uint32_t *g_psx_cyc_local_acc = NULL;
-static int      s_cycle_replay_active = 0;
-static uint64_t s_cycle_replay_live = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch = 0;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit = 0;
+PSX_THREAD_LOCAL int      g_psx_cyc_bb_defer = 0;
+PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc = NULL;
+static PSX_THREAD_LOCAL int      s_cycle_replay_active = 0;
+static PSX_THREAD_LOCAL uint64_t s_cycle_replay_live = 0;
 
 /* ---- guest-time freeze: render passes and uncharged calls
  * (see psx_cycle_freeze.h) ---- */
-int g_psx_render_pass_active = 0;
-int g_psx_guest_time_frozen = 0;
-static uint64_t s_freeze_start = 0;
-static uint64_t s_freeze_limit = 0;
-static void   (*s_freeze_overrun)(void) = 0;
-static int      s_uncharged_active = 0;
-static int      s_uncharged_thawed = 0;
+PSX_THREAD_LOCAL int g_psx_render_pass_active = 0;
+PSX_THREAD_LOCAL int g_psx_guest_time_frozen = 0;
+static PSX_THREAD_LOCAL uint64_t s_freeze_start = 0;
+static PSX_THREAD_LOCAL uint64_t s_freeze_limit = 0;
+static PSX_THREAD_LOCAL void   (*s_freeze_overrun)(void) = 0;
+static PSX_THREAD_LOCAL int      s_uncharged_active = 0;
+static PSX_THREAD_LOCAL int      s_uncharged_thawed = 0;
 
 static void psx_cycle_freeze_tick(void) {
-    extern uint64_t g_psx_cycle_fast_limit;
+    extern PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit;
     /* Come back at most every 16K cycles for the watchdog; never service. */
     psx_next_service_cycle = psx_cycle_count + 16384u;
     g_psx_cycle_fast_limit = 0;
@@ -251,8 +252,8 @@ static void advance_devices(uint32_t c) {
 
 static uint64_t s_devices_synced_cycle = 0;  /* devices are advanced up to here */
 /* Exported for the inlined psx_advance_cycles / psx_cyc_charge hot path. */
-uint64_t psx_next_service_cycle = 0;         /* absolute; 0 = dirty, recompute  */
-int      psx_in_device_service  = 0;         /* re-entrancy guard               */
+PSX_THREAD_LOCAL uint64_t psx_next_service_cycle = 0;         /* absolute; 0 = dirty, recompute  */
+PSX_THREAD_LOCAL int      psx_in_device_service  = 0;         /* re-entrancy guard               */
 int      g_plp_cycle_diag       = 0;
 uint64_t g_plp_adv_calls        = 0;
 uint32_t g_plp_adv_max_chunk    = 0;
@@ -292,7 +293,7 @@ static void psx_cycle_sample_check(uint64_t target) {
 
 /* Absolute inclusive limit for dirty_ram_interp.c's exact one-cycle path.
  * Zero means that the next charge must visit psx_advance_cycles(). */
-uint64_t g_psx_cycle_fast_limit = 0;
+PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit = 0;
 
 /* Distance to the nearest INTERNAL device event, mask-blind (i_mask =
  * all-unmasked). This is the chunking bound for catch-up: the sio/cdrom/dma
@@ -1131,7 +1132,7 @@ void psx_gte_stall(CPUState* cpu) {
 }
 
 static void freeze_save(PsxCycleFreeze *save) {
-    extern uint64_t g_psx_cycle_fast_limit;
+    extern PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit;
     save->cycle_count = psx_cycle_count;
     save->next_service = psx_next_service_cycle;
     save->fast_limit = g_psx_cycle_fast_limit;
@@ -1163,7 +1164,7 @@ static void freeze_restore_deferred(const PsxCycleFreeze *save) {
 }
 
 static void freeze_restore_clock(const PsxCycleFreeze *save) {
-    extern uint64_t g_psx_cycle_fast_limit;
+    extern PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit;
     psx_cycle_count = save->cycle_count;
     psx_next_service_cycle = save->next_service;
     g_psx_cycle_fast_limit = save->fast_limit;

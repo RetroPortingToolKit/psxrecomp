@@ -225,7 +225,7 @@ enum {
  *               unknown (immediate GP0 writes) — skips the dataflow tier.
  *   packet_word the actual word (validation key).
  *   int_x/int_y the natively parsed 11-bit positions (pre-draw-offset).
- * On DATAFLOW/FALLBACK, *x16/*y16 hold the sub-pixel position (16.16, same
+ * On DATAFLOW/FALLBACK, *x16 and *y16 hold the sub-pixel position (16.16, same
  * coordinate space as the packet halves); *sz is the projected depth or 0.
  * Safeguards applied here: the integer part must match the native parse
  * (truncation agreement; a bounded window under preserve-projection) and the

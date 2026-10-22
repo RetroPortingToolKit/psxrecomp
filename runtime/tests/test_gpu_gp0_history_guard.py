@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -227,16 +228,25 @@ STUBS_C = r"""
 #include <string.h>
 
 uint64_t s_frame_count = 0;
-uint64_t psx_cycle_count = 0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
 uint32_t g_debug_last_store_pc = 0x80012340u;
 uint32_t g_psx_ram_size = 0x00200000u;
 uint32_t g_psx_ram_mask = 0x001FFFFFu;
 void psx_video_timing_set_pal(int pal) { (void)pal; }
 GrBackend gr_backend(void) { return GR_BACKEND_SOFTWARE; }
+int gl_renderer_recorded_passes_enabled(void) { return 0; }
+void gl_renderer_recorded_sources(const float projection[9], const uint32_t identity[3])
+{ if (projection || identity) abort(); }
+int psx_mod_gpu_dma_memory_contains(uint32_t address, uint32_t bytes)
+{ (void)address; (void)bytes; return 0; }
+float pgxp_get_unclamped_depth(uint32_t address, uint32_t word)
+{ (void)address; (void)word; return 0; }
+int pgxp_load_temporal_projection(uint32_t address, uint32_t packed,
+                                  PGXPProjection *out, uint32_t *identity)
+{ (void)address; (void)packed; (void)out; (void)identity; abort(); }
 int gl_renderer_texture_banks_supported(void) { return 0; }
 int gl_renderer_select_texture_bank(uint16_t id) { return id == 0; }
 int gl_renderer_select_texture_bank_live_clut(uint16_t id) { return id == 0; }
-void gl_renderer_note_wide_triangle_recovery(int enabled) { (void)enabled; }
 int gl_renderer_projective_supported(void) { return 0; }
 void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
     uint16_t texpage, uint16_t clut_x, uint16_t clut_y, int raw, int semi, int perspective)
@@ -291,10 +301,6 @@ void pgxp_set_projection_tracking(int enabled)
 { if (enabled) abort(); }
 int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out)
 { (void)addr; (void)packed; (void)out; abort(); }
-int gl_renderer_projective_supported(void) { abort(); }
-void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
-    uint16_t texpage, uint16_t cx, uint16_t cy, int raw, int semi, int perspective)
-{ (void)vertices; (void)texpage; (void)cx; (void)cy; (void)raw; (void)semi; (void)perspective; abort(); }
 void gl_renderer_note_wide_triangle_recovery(int enabled)
 { if (enabled) abort(); }
 /* Smooth motion vertex sources are an OpenGL path: never reached here. */
@@ -308,10 +314,6 @@ int gte_fg_source_enabled(void) { return 0; }
 int gte_fg_source_lookup(uint32_t packed, GteFgSrc out[2])
 { (void)packed; (void)out; abort(); }
 void pgxp_set_enabled(int enabled) { (void)enabled; }
-void pgxp_set_projection_tracking(int enabled) { (void)enabled; }
-int pgxp_projection_tracking(void) { return 0; }
-int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out)
-{ (void)addr; (void)packed; (void)out; return 0; }
 int pgxp_get_gte_sxy_checked(uint32_t slot, uint32_t packed, int require_valid,
                              int32_t *x16, int32_t *y16)
 { (void)slot; (void)packed; (void)require_valid; (void)x16; (void)y16; return 0; }
@@ -470,6 +472,9 @@ def function_body(source: str, signature: str) -> str:
 
 
 def assert_source_shape(gpu: str) -> None:
+    # The ordering check concerns operations, independently of instance lookup.
+    # The executable test below still compiles and runs unmodified gpu.c.
+    gpu = re.sub(r"\(\*gpu_context_(\w+)\(\)\)", r"\1", gpu)
     guard = gpu.index("#ifndef PSX_NO_DEBUG_TOOLS", gpu.index("debug tools only"))
     alt = gpu.index("#else", guard)
     end = gpu.index("#endif", alt)

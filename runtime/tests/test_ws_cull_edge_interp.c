@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Explicit [widescreen.cull] sites in the dirty-RAM interpreter.
  *
  * Native code compiles bltz_sites, bgez_sites, branch_keep_sites and
@@ -54,7 +55,7 @@ uint64_t g_psx_bail_first;
 uint64_t g_psx_bail_resolved;
 uint32_t i_stat;
 uint32_t i_mask;
-uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 /* Live RAM geometry (memory.c): retail 2 MiB, as the stub RAM below. */
 uint32_t g_psx_ram_size = PSX_MAIN_RAM_RETAIL_BYTES;
 uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;

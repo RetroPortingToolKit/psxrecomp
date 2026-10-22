@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* host_sampler.c - always-on host CPU sampler for the emulation thread
  * (debug-tools builds; TCP host_profile, tools/host_profile.py).
  *
@@ -22,7 +23,7 @@
 #include <stdint.h>
 #include <string.h>
 
-extern int g_psx_render_pass_active;
+extern PSX_THREAD_LOCAL int g_psx_render_pass_active;
 extern uint64_t s_frame_count;
 
 static HostSample s_ring[HOST_SAMPLER_CAP];

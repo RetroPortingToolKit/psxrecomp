@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #ifdef PSX_COSIM
 /* cosim.c — first-divergence co-simulation engine + minimal TCP server.
  * See COSIM_ORACLE.md. Active ONLY in the clean `psx-cosim` target (PSX_COSIM); the
@@ -36,7 +37,7 @@ typedef int sock_t;
 #endif
 
 extern uint32_t i_stat, i_mask;
-extern uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 
 /* EXPERIMENTAL input-driven cosim: held pad state applied every frame by the headless
  * sampler (main.cpp). 0xFFFF = all released (PSX pad active-low). Set via `setpad`.

@@ -40,8 +40,8 @@ extern uint64_t s_frame_count;
 extern uint32_t g_overlay_region_floor;
 extern uint32_t g_text_image_lo;
 extern int g_ram_read_watch_active;
-extern uint64_t psx_cycle_count;
-extern uint64_t g_psx_cycle_fast_limit;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit;
 extern int g_event_step_conservative;
 extern int g_ls_replay_active;
 extern CPUState *debug_cpu_ptr;
@@ -127,8 +127,8 @@ uint64_t s_frame_count = 0;
 uint32_t g_overlay_region_floor = 0x200000u;
 uint32_t g_text_image_lo = 0x10000u;
 int g_ram_read_watch_active = 0;
-uint64_t psx_cycle_count = 0;
-uint64_t g_psx_cycle_fast_limit = 0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
+PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit = 0;
 int g_event_step_conservative = 0;
 int g_ls_replay_active = 0;
 CPUState *debug_cpu_ptr = 0;
@@ -137,7 +137,7 @@ uint32_t g_dirty_ram_exec_page_bitmap[DIRTY_RAM_EXEC_PAGE_BITMAP_WORDS] = {0};
 uint32_t g_dirty_ram_exec_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS] = {0};
 uint32_t g_dirty_ram_dispatch_pc_bitmap[DIRTY_RAM_EXEC_BITMAP_WORDS] = {0};
 uint32_t g_dirty_ram_dispatch_seg_bitmap[PSX_CODE_SEGMENT_COUNT][DIRTY_RAM_EXEC_BITMAP_WORDS] = {{0}};
-int g_psx_render_pass_active = 0;
+PSX_THREAD_LOCAL int g_psx_render_pass_active = 0;
 
 /* These services are inactive in the ordinary RAM/scratchpad trace probes. */
 void psx_icache_isc_store(uint32_t biu, uint32_t addr, uint32_t value) {

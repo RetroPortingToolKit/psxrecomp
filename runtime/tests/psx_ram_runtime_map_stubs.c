@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Link doubles for psx_ram_runtime_map_test: everything the REAL memory.c,
  * dma.c and boot_state.c call outside themselves. RAM, the DMA engine and the
  * savestate format are the code under test and are never stubbed. Device
@@ -23,9 +24,9 @@ int g_ls_replay_active;
 int g_ls_suppress_record;
 int g_ram_read_watch_active;
 void (*g_overlay_flush_pending_cycles)(void);
-uint32_t g_psx_cyc_batch;
-uint32_t g_psx_cyc_batch_limit;
-uint32_t *g_psx_cyc_local_acc;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit;
+PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc;
 #ifndef PSX_STUBS_REAL_PGXP
 /* memory.c drops the PGXP shadow of a DMA / host store (pgxp.cpp).
  * pgxp_untracked_store_test links the real engine. */
@@ -38,10 +39,10 @@ void psx_icache_isc_store(uint32_t biu, uint32_t addr, uint32_t value) {
     (void)biu; (void)addr; (void)value; __builtin_trap();   /* SR.IsC is never set here */
 }
 #endif
-uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 uint64_t s_frame_count;
-uint64_t psx_next_service_cycle;
-int psx_in_device_service;
+PSX_THREAD_LOCAL uint64_t psx_next_service_cycle;
+PSX_THREAD_LOCAL int psx_in_device_service;
 uint32_t g_dirty_ram_dispatch_pc_bitmap[(0x00800000u / 4u + 31u) / 32u];
 uint32_t g_dirty_ram_dispatch_seg_bitmap[3][(0x00800000u / 4u + 31u) / 32u];
 uint32_t g_dirty_ram_exec_pc_bitmap[(0x00800000u / 4u + 31u) / 32u];
@@ -70,8 +71,8 @@ void gte_canonicalize_cpu_state(CPUState *cpu) { (void)cpu; }
 /* ---- scheduler / interrupts ------------------------------------------------ */
 void psx_advance_cycles_slow(uint32_t c) { psx_cycle_count += c; }
 /* [timing] guest_cycle_scale at 1 (faithful) for the real memory.c/icache. */
-uint32_t g_psx_gcs_recip_q16 = 65536u;
-uint32_t g_psx_gcs_frac = 0u;
+PSX_THREAD_LOCAL uint32_t g_psx_gcs_recip_q16 = 65536u;
+PSX_THREAD_LOCAL uint32_t g_psx_gcs_frac = 0u;
 uint32_t psx_guest_cycle_scale_config(void) { return 1u; }
 void psx_guest_cycle_scale_snapshot(uint32_t out[3]) { out[0] = out[1] = out[2] = 0u; }
 void psx_guest_cycle_scale_restore(const uint32_t in[3]) { (void)in; }
@@ -123,9 +124,9 @@ void gpu_ws_restore_linked_list_rank(uint32_t r) { (void)r; }
 /* memory.c routes stores through the pass store policy and dma.c walks a GPU
  * linked list synchronously while a pass runs; with the flag at 0 neither
  * path is taken, so the doubles trap if they ever are. */
-int g_psx_render_pass_active;
+PSX_THREAD_LOCAL int g_psx_render_pass_active;
 int render_pass_mmio_read_allowed(uint32_t a, uint32_t w) { (void)a; (void)w; return 1; }
-int g_psx_guest_time_frozen;
+PSX_THREAD_LOCAL int g_psx_guest_time_frozen;
 int render_pass_store_to(const void *t, uint32_t a, uint32_t v, uint32_t w) {
     (void)t; (void)a; (void)v; (void)w; __builtin_trap();
 }

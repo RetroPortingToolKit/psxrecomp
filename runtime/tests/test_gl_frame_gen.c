@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Frame generation on a real, hidden OpenGL context
  * (docs/FRAME_GENERATION.md). Run by run_gl_frame_gen.py with the render
  * thread on and frame generation off (argv[2] == 0) or on (1, forced: every
@@ -79,7 +80,7 @@ void psx_ws_dbg_gate_frame_snapshot(void){}
 void gpu_depth24_upload_span_reset(void){}
 int gpu_ws_netplay_local_viewport_width(void){return 0;}
 int render_pass_netplay_enabled(void){return 0;}
-uint64_t psx_cycle_count=0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count=0;
 uint32_t g_psx_vblank_cycles=564480u;
 /* Frontend hooks of the present path (host overlays, pacing, rings). */
 int host_osd_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}

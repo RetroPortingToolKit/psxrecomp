@@ -1,4 +1,5 @@
 #include "gte.h"
+#include "psx_thread_local.h"
 #include "gte_view.h"
 #include "cpu_state.h"
 #include "execution_profile.h"
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <new>
 extern "C" int psx_netplay_active(void);
 
 extern "C" uint32_t psx_read_word(uint32_t addr);
@@ -20,7 +22,7 @@ extern "C" int gpu_ws_precise_nclip_enabled(void);
 extern "C" int psx_overlay_shadow_diff_active(void);
 extern "C" uint64_t s_frame_count;            /* debug_server.c */
 extern "C" uint32_t g_debug_last_store_pc;     /* debug_server.c */
-extern "C" { int (*g_psx_projection_command)(CPUState*, uint32_t) = nullptr; }
+extern "C" { PSX_THREAD_LOCAL int (*g_psx_projection_command)(CPUState*, uint32_t) = nullptr; }
 
 namespace PSXRecomp {
 namespace GTE {
@@ -39,8 +41,8 @@ namespace GTE {
 // inputs, which is enough to flip games' distance/intensity threshold branches
 // (e.g. Ape Escape's additive-glow CLUT semi-transparency bit). This is the
 // faithful hardware algorithm, shared by every RTPS/RTPT caller.
-static uint8_t s_gte_div_table[0x101];
-static bool    s_gte_div_table_init = false;
+static PSX_THREAD_LOCAL uint8_t s_gte_div_table[0x101];
+static PSX_THREAD_LOCAL bool    s_gte_div_table_init = false;
 static void gte_init_div_table() {
     for (uint32_t divisor = 0x8000; divisor < 0x10000; divisor += 0x80) {
         uint32_t xa = 512;
@@ -200,10 +202,10 @@ static void depth_cue_from_ir(GTEState* gte, uint32_t instr) {
 // games' post-projection screen-bounds culls (which read SXY back from us)
 // stay aligned with the visible frame.
 // ---------------------------------------------------------------------------
-static int32_t s_ws_xnum = 1, s_ws_xden = 1;
+static PSX_THREAD_LOCAL int32_t s_ws_xnum = 1, s_ws_xden = 1;
 extern "C" int gpu_ws_present_native_43(void);  /* gpu.c — suppress on 4:3 frames */
 extern "C" void psx_ws_note_gte_project(int nverts);  /* gpu.c — gte_game_mode stamp */
-static int s_gte_replay_sandbox = 0;
+static PSX_THREAD_LOCAL int s_gte_replay_sandbox = 0;
 
 /* Optional visual-only geometry precision cache. The PS1-visible SXY FIFO
  * remains integer and fully faithful; this side cache retains the discarded
@@ -227,15 +229,25 @@ struct GeomVertex {
     uint32_t generation;
     uint32_t ambiguous;   /* two DIFFERENT sub-pixel values seen at this pixel */
 };
-static GeomVertex *s_geom_cache = nullptr;
-static uint32_t s_geom_generation = 1;
-static int s_geom_enabled = 0;
-static uint32_t s_geom_hits = 0;
+static PSX_THREAD_LOCAL GeomVertex *s_geom_cache = nullptr;
+enum { GEOM_EXEC_PAGE_WORDS = 256,
+       GEOM_EXEC_PAGES = GEOM_CACHE_SIZE / GEOM_EXEC_PAGE_WORDS };
+static PSX_THREAD_LOCAL uint64_t *s_exec_versions;
+static PSX_THREAD_LOCAL uint64_t *s_bound_versions;
+static inline void geom_exec_note(const GeomVertex *slot) {
+    if (!s_exec_versions && !s_bound_versions) return;
+    const size_t page = (size_t)(slot - s_geom_cache) / GEOM_EXEC_PAGE_WORDS;
+    if (s_bound_versions) s_bound_versions[page] = 0;
+    else ++s_exec_versions[page];
+}
+static PSX_THREAD_LOCAL uint32_t s_geom_generation = 1;
+static PSX_THREAD_LOCAL int s_geom_enabled = 0;
+static PSX_THREAD_LOCAL uint32_t s_geom_hits = 0;
 /* Lookup outcome census — this is what says whether coverage is limited by the
  * cache or by projections never reaching the packet in a matchable form. */
-static uint32_t s_geom_lookups = 0;      /* lookups attempted                  */
-static uint32_t s_geom_miss_unrec = 0;   /* nothing was ever recorded here     */
-static uint32_t s_geom_miss_ambig = 0;   /* recorded, but not unambiguously    */
+static PSX_THREAD_LOCAL uint32_t s_geom_lookups = 0;      /* lookups attempted                  */
+static PSX_THREAD_LOCAL uint32_t s_geom_miss_unrec = 0;   /* nothing was ever recorded here     */
+static PSX_THREAD_LOCAL uint32_t s_geom_miss_ambig = 0;   /* recorded, but not unambiguously    */
 
 /* Exact GTE projection provenance now lives in the PGXP value-propagation
  * engine (pgxp.cpp): per-word RAM/scratchpad shadows plus per-GPR and per-GTE-
@@ -244,15 +256,20 @@ static uint32_t s_geom_miss_ambig = 0;   /* recorded, but not unambiguously    *
  * (v14 swc2 sites, tests) and forward into that engine. The hashed
  * s_precision_store table and the s_precise_sxy FIFO it fed are retired —
  * the GTE register shadows ARE the FIFO now. */
-static uint32_t s_speculative_depth = 0;
-static int s_speculative_timeline_invalidated = 0;
+static PSX_THREAD_LOCAL uint32_t s_speculative_depth = 0;
+static PSX_THREAD_LOCAL int s_speculative_timeline_invalidated = 0;
 
 static void gte_nclip_precision_invalidate();
 static void gte_geom_generation_advance(void) {
     gte_nclip_precision_invalidate();
     if (++s_geom_generation == 0) {
-        if (s_geom_cache)
+        if (s_geom_cache) {
             std::memset(s_geom_cache, 0, GEOM_CACHE_SIZE * sizeof(GeomVertex));
+            for (size_t page = 0; page < GEOM_EXEC_PAGES; ++page) {
+                if (s_bound_versions) s_bound_versions[page] = 0;
+                else if (s_exec_versions) ++s_exec_versions[page];
+            }
+        }
         s_geom_generation = 1;
     }
 }
@@ -420,9 +437,9 @@ extern "C" int gte_geometry_correction_lookup_probe(uint32_t packed,
 struct FgSrcEntry { uint32_t seq, seq2; uint32_t gen; };   /* gen: frame << 1 | ambiguous; seq2: a second point */
 struct FgSrcRec { uint32_t seq, id, ra; int32_t p[3]; int32_t h; };
 #define FGSRC_RING (1u << 17)
-static FgSrcEntry *s_fgsrc = nullptr;
-static FgSrcRec   *s_fgsrc_ring = nullptr;
-static uint32_t    s_fgsrc_seq = 0;
+static PSX_THREAD_LOCAL FgSrcEntry *s_fgsrc = nullptr;
+static PSX_THREAD_LOCAL FgSrcRec   *s_fgsrc_ring = nullptr;
+static PSX_THREAD_LOCAL uint32_t    s_fgsrc_seq = 0;
 #define FGSRC_MAX_AGE 4u
 extern "C" { extern uint64_t s_frame_count; }
 static int32_t gte_h_scaled(const GTEState* gte);
@@ -521,18 +538,19 @@ extern "C" int gte_fg_source_lookup(uint32_t packed, GteFgSrc out[2]) {
  * speculative bracket depth is restored (a watchdog abort can leave one open).
  * The PGXP shadows roll back through pgxp_checkpoint_*. */
 struct GeomJournalEntry { GeomVertex *slot; GeomVertex old; };
-static uint32_t          s_gck_depth = 0;
-static GeomJournalEntry *s_gck_log = nullptr;
-static size_t            s_gck_n = 0, s_gck_cap = 0;
-static int               s_gck_lossy = 0;
-static uint32_t          s_gck_generation = 0;
-static GeomVertex       *s_gck_cache = nullptr;
-static uint32_t          s_gck_spec_depth = 0;
-static int               s_gck_spec_invalidated = 0;
+static PSX_THREAD_LOCAL uint32_t          s_gck_depth = 0;
+static PSX_THREAD_LOCAL GeomJournalEntry *s_gck_log = nullptr;
+static PSX_THREAD_LOCAL size_t            s_gck_n = 0, s_gck_cap = 0;
+static PSX_THREAD_LOCAL int               s_gck_lossy = 0;
+static PSX_THREAD_LOCAL uint32_t          s_gck_generation = 0;
+static PSX_THREAD_LOCAL GeomVertex       *s_gck_cache = nullptr;
+static PSX_THREAD_LOCAL uint32_t          s_gck_spec_depth = 0;
+static PSX_THREAD_LOCAL int               s_gck_spec_invalidated = 0;
 
-static uint8_t *s_gck_bits = nullptr;          /* one bit per cache slot */
+static PSX_THREAD_LOCAL uint8_t *s_gck_bits = nullptr;          /* one bit per cache slot */
 
 static inline void geom_ck_note(GeomVertex *slot) {
+    geom_exec_note(slot);
     if (s_gck_depth == 0) return;
     if (s_geom_cache != s_gck_cache || !s_gck_bits) { s_gck_lossy = 1; return; }
     size_t i = (size_t)(slot - s_geom_cache);
@@ -627,14 +645,14 @@ static inline void geom_note(uint32_t packed, int64_t x16, int64_t y16) {
 // un-squashed while suppress is active; nearer props keep the squash. Threshold
 // tuned live via the ws_far_threshold TCP cmd; SZ stats below characterize the
 // driver's depth range so the split is set from data, not a guess.
-static int s_ws_suppress = 0;
-static int32_t s_ws_far_threshold = 900;  /* SZ split: near props squashed, far backdrop un-squashed (8C, tunable via ws_far_threshold) */
+static PSX_THREAD_LOCAL int s_ws_suppress = 0;
+static PSX_THREAD_LOCAL int32_t s_ws_far_threshold = 900;  /* SZ split: near props squashed, far backdrop un-squashed (8C, tunable via ws_far_threshold) */
 extern "C" void gte_ws_set_suppress(int on) { s_ws_suppress = on ? 1 : 0; }
 extern "C" void gte_ws_set_far_threshold(int t) { s_ws_far_threshold = t; }
 extern "C" int  gte_ws_get_far_threshold(void) { return (int)s_ws_far_threshold; }
 /* SZ stats observed while suppress is active (one frame window, reset on read). */
-static int32_t s_ws_sz_min = 0x7FFFFFFF, s_ws_sz_max = 0;
-static uint32_t s_ws_sz_n = 0, s_ws_sz_far = 0;
+static PSX_THREAD_LOCAL int32_t s_ws_sz_min = 0x7FFFFFFF, s_ws_sz_max = 0;
+static PSX_THREAD_LOCAL uint32_t s_ws_sz_n = 0, s_ws_sz_far = 0;
 extern "C" void gte_ws_get_sz_stats(int* mn, int* mx, unsigned* n, unsigned* far_n) {
     if (mn) *mn = (s_ws_sz_n ? s_ws_sz_min : 0);
     if (mx) *mx = s_ws_sz_max;
@@ -653,8 +671,8 @@ extern "C" void gte_ws_get_sz_stats(int* mn, int* mx, unsigned* n, unsigned* far
 // (SZ >= s_ws_far_threshold) so only the farthest layer (the sky) expands while
 // nearer world geometry stays put. On + ratio set from main.cpp when native-
 // wide engages; threshold tuned live via ws_far_threshold. Off => identity.
-static int      s_ws_dome_on  = 0;
-static int32_t  s_ws_dome_num = 1, s_ws_dome_den = 1;  // expand = num/den (>1)
+static PSX_THREAD_LOCAL int      s_ws_dome_on  = 0;
+static PSX_THREAD_LOCAL int32_t  s_ws_dome_num = 1, s_ws_dome_den = 1;  // expand = num/den (>1)
 extern "C" void gte_ws_set_dome_expand(int on, int aspect_num, int aspect_den) {
     s_ws_dome_on = on ? 1 : 0;
     // widen ratio = wide_w / disp_w = (aspect/(4:3)) = (3*num)/(4*den).
@@ -669,10 +687,10 @@ extern "C" void gte_ws_set_dome_expand(int on, int aspect_num, int aspect_den) {
 // identified as the top far-vertex emitter — the target for the per-function
 // dome-expand bracket (the clean alternative to the scene-dependent depth gate).
 extern "C" { extern uint32_t g_debug_current_func_addr; }
-static uint32_t s_gte_caller_ra = 0;   /* guest ra at gte_execute = return into the GAME fn that issued the projection (not the libgte leaf) */
+static PSX_THREAD_LOCAL uint32_t s_gte_caller_ra = 0;   /* guest ra at gte_execute = return into the GAME fn that issued the projection (not the libgte leaf) */
 #define WS_DOME_CALL_SITES_MAX 32
-static uint32_t s_ws_dome_call_sites[WS_DOME_CALL_SITES_MAX];
-static int      s_ws_dome_call_sites_n = 0;
+static PSX_THREAD_LOCAL uint32_t s_ws_dome_call_sites[WS_DOME_CALL_SITES_MAX];
+static PSX_THREAD_LOCAL int      s_ws_dome_call_sites_n = 0;
 extern "C" void gte_ws_configure_dome_sites(const uint32_t* sites, int count) {
     if (count < 0) count = 0;
     if (count > WS_DOME_CALL_SITES_MAX) count = WS_DOME_CALL_SITES_MAX;
@@ -688,9 +706,9 @@ static inline bool ws_dome_call_matches(void) {
     return false;
 }
 #define DOME_PROBE_SLOTS 48
-static struct { uint32_t func; uint32_t count; int32_t max_sz; } s_dome_probe[DOME_PROBE_SLOTS];
-static int     s_dome_probe_on  = 0;
-static int32_t s_dome_probe_thr = 4000;
+static PSX_THREAD_LOCAL struct { uint32_t func; uint32_t count; int32_t max_sz; } s_dome_probe[DOME_PROBE_SLOTS];
+static PSX_THREAD_LOCAL int     s_dome_probe_on  = 0;
+static PSX_THREAD_LOCAL int32_t s_dome_probe_thr = 4000;
 extern "C" void gte_dome_probe(int on, int thr) {
     s_dome_probe_on = on ? 1 : 0;
     if (thr > 0) s_dome_probe_thr = thr;
@@ -742,8 +760,8 @@ struct GteRtpRec {
     uint32_t FLAG;
 };
 #define GTE_RTP_RING_CAP (1u << 18)   /* 256K raw entries (~a few seconds) */
-static GteRtpRec* s_gte_rtp_ring = nullptr;
-static uint64_t   s_gte_rtp_seq  = 0;
+static PSX_THREAD_LOCAL GteRtpRec* s_gte_rtp_ring = nullptr;
+static PSX_THREAD_LOCAL uint64_t   s_gte_rtp_seq  = 0;
 
 /* Per-frame aggregate stats (retained ring over recent distinct frames). Lets a
  * probe see the alternating flat/normal render pattern without shipping 84k
@@ -752,23 +770,23 @@ static uint64_t   s_gte_rtp_seq  = 0;
  * (area 0) = a flattened triangle. */
 #define GTE_FSTAT_CAP 512
 struct GteFStat { uint32_t frame, nproj, nsat, nflat, nintpl, nintpl_tiny; };
-static GteFStat s_gte_fstat[GTE_FSTAT_CAP];
-static uint32_t s_gte_fstat_head = 0;   /* index of most-recent frame slot */
-static int      s_gte_fstat_valid = 0;
+static PSX_THREAD_LOCAL GteFStat s_gte_fstat[GTE_FSTAT_CAP];
+static PSX_THREAD_LOCAL uint32_t s_gte_fstat_head = 0;   /* index of most-recent frame slot */
+static PSX_THREAD_LOCAL int      s_gte_fstat_valid = 0;
 
 /* Degenerate-latch: full records of flat/saturated projections, retained (small
  * ring) so intermittent flat frames are caught regardless of raw-ring roll. */
 #define GTE_LATCH_CAP (1u << 13)   /* 8192 */
-static GteRtpRec* s_gte_latch = nullptr;
-static uint64_t   s_gte_latch_seq = 0;
+static PSX_THREAD_LOCAL GteRtpRec* s_gte_latch = nullptr;
+static PSX_THREAD_LOCAL uint64_t   s_gte_latch_seq = 0;
 
 static inline int gte_sxx(int32_t p){ int v=p&0xFFFF; return v>=0x8000? v-0x10000:v; }
 static inline int gte_syy(int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-0x10000:v; }
 
 static int32_t gte_h_scaled(const GTEState* gte);
-static int32_t s_render_view[3];
-static PSXModRenderView s_render_pose;
-static bool s_render_rotate;
+static PSX_THREAD_LOCAL int32_t s_render_view[3];
+static PSX_THREAD_LOCAL PSXModRenderView s_render_pose;
+static PSX_THREAD_LOCAL bool s_render_rotate;
 extern "C" void gte_render_pose_get(PSXModRenderView *view) { *view = s_render_pose; }
 extern "C" void gte_render_pose_set(const PSXModRenderView *view) {
     s_render_pose = *view;
@@ -863,8 +881,8 @@ struct GteIntplRec {
     uint32_t flag;
 };
 #define GTE_INTPL_RING_CAP (1u << 17)   /* 128K entries (~4s at menu rates) */
-static GteIntplRec* s_gte_intpl_ring = nullptr;
-static uint64_t     s_gte_intpl_seq  = 0;
+static PSX_THREAD_LOCAL GteIntplRec* s_gte_intpl_ring = nullptr;
+static PSX_THREAD_LOCAL uint64_t     s_gte_intpl_seq  = 0;
 
 static void gte_intpl_record(const GTEState* g,
                              const int16_t pre_ir[4], const int32_t pre_fc[3]) {
@@ -1049,8 +1067,8 @@ extern "C" void gte_set_display_aspect(int num, int den) {
 // recompiled constant. Identity (num==den) by default, so the faithful path is
 // unchanged. Set from PSX_GTE_FOV_SCALE (float) or gte_set_fov_scale(num, den).
 // ---------------------------------------------------------------------------
-static int32_t s_h_scale_num = 1;
-static int32_t s_h_scale_den = 1;
+static PSX_THREAD_LOCAL int32_t s_h_scale_num = 1;
+static PSX_THREAD_LOCAL int32_t s_h_scale_den = 1;
 
 extern "C" void gte_set_fov_scale(int num, int den) {
     if (num <= 0 || den <= 0) { s_h_scale_num = s_h_scale_den = 1; return; }
@@ -1307,19 +1325,19 @@ void gte_rtpt(GTEState* gte, uint32_t instr) {
 // ---------------------------------------------------------------------------
 // NCLIP (0x06) — Normal Clipping (2D cross product for backface culling)
 // ---------------------------------------------------------------------------
-static uint64_t s_nclip_precise_hits = 0;
-static uint64_t s_nclip_fallbacks = 0;
-static uint64_t s_nclip_disagreements = 0;
-static int32_t s_nclip_last_native = 0;
-static int8_t s_nclip_last_precise_sign = 0;
-static bool s_nclip_last_precise_valid = false;
-static bool s_nclip_last_horizontal_saturated = false;
-static uint32_t s_nclip_last_generation;
-static int32_t s_nclip_previous_native;
-static int8_t s_nclip_previous_precise_sign;
-static bool s_nclip_previous_precise_valid;
-static bool s_nclip_previous_horizontal_saturated;
-static uint32_t s_nclip_previous_generation;
+static PSX_THREAD_LOCAL uint64_t s_nclip_precise_hits = 0;
+static PSX_THREAD_LOCAL uint64_t s_nclip_fallbacks = 0;
+static PSX_THREAD_LOCAL uint64_t s_nclip_disagreements = 0;
+static PSX_THREAD_LOCAL int32_t s_nclip_last_native = 0;
+static PSX_THREAD_LOCAL int8_t s_nclip_last_precise_sign = 0;
+static PSX_THREAD_LOCAL bool s_nclip_last_precise_valid = false;
+static PSX_THREAD_LOCAL bool s_nclip_last_horizontal_saturated = false;
+static PSX_THREAD_LOCAL uint32_t s_nclip_last_generation;
+static PSX_THREAD_LOCAL int32_t s_nclip_previous_native;
+static PSX_THREAD_LOCAL int8_t s_nclip_previous_precise_sign;
+static PSX_THREAD_LOCAL bool s_nclip_previous_precise_valid;
+static PSX_THREAD_LOCAL bool s_nclip_previous_horizontal_saturated;
+static PSX_THREAD_LOCAL uint32_t s_nclip_previous_generation;
 static void gte_nclip_precision_invalidate() {
     s_nclip_last_precise_valid = false;
     s_nclip_previous_precise_valid = false;
@@ -1333,9 +1351,9 @@ extern "C" void gte_nclip_precise_stats(uint64_t *hits, uint64_t *fallbacks,
 /* Always-on attribution tables (gte_nclip_stats.h): producers by guest
  * function, consumers by branch PC. Open addressing; a full table drops new
  * keys (counted in s_nclip_*_dropped) rather than evicting. */
-static GteNclipFuncStat s_nclip_func[GTE_NCLIP_STAT_CAP];  /* key 1 = unknown */
-static GteNclipSiteStat s_nclip_site[GTE_NCLIP_STAT_CAP];
-static uint32_t s_nclip_func_dropped = 0, s_nclip_site_dropped = 0;
+static PSX_THREAD_LOCAL GteNclipFuncStat s_nclip_func[GTE_NCLIP_STAT_CAP];  /* key 1 = unknown */
+static PSX_THREAD_LOCAL GteNclipSiteStat s_nclip_site[GTE_NCLIP_STAT_CAP];
+static PSX_THREAD_LOCAL uint32_t s_nclip_func_dropped = 0, s_nclip_site_dropped = 0;
 static inline uint32_t nclip_slot(uint32_t key) {
     return (key * 2654435761u) >> 24;   /* GTE_NCLIP_STAT_CAP == 256 */
 }
@@ -1368,7 +1386,7 @@ extern "C" void gte_nclip_stats_reset(void) {
     memset(s_nclip_site, 0, sizeof s_nclip_site);
     s_nclip_func_dropped = s_nclip_site_dropped = 0;
 }
-static int s_nclip_exact_enabled = 1;
+static PSX_THREAD_LOCAL int s_nclip_exact_enabled = 1;
 extern "C" void gte_nclip_exact_set_enabled(int on) { s_nclip_exact_enabled = on ? 1 : 0; }
 extern "C" int gte_nclip_exact_enabled(void) { return s_nclip_exact_enabled; }
 extern "C" int32_t gte_nclip_exact_sign(int32_t native_mac0, uint32_t pc) {
@@ -2138,9 +2156,9 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
 // ---------------------------------------------------------------------------
 // gte_execute — C-linkage bridge called from generated code
 // ---------------------------------------------------------------------------
-static uint64_t s_gte_exec_count = 0;
+static PSX_THREAD_LOCAL uint64_t s_gte_exec_count = 0;
 extern "C" uint64_t gte_get_exec_count(void) { return s_gte_exec_count; }
-static uint32_t s_gte_replay_saved_caller_ra = 0;
+static PSX_THREAD_LOCAL uint32_t s_gte_replay_saved_caller_ra = 0;
 extern "C" int gte_replay_side_effects_begin(void) {
     using namespace PSXRecomp::GTE;
     if (s_gte_replay_sandbox) return 0;
@@ -2763,9 +2781,91 @@ extern "C" void gte_test_seed_geometry(uint32_t packed, int32_t x16,
     int64_t slot = PSXRecomp::GTE::geom_slot(packed);
     if (slot < 0) return;
     auto &entry = PSXRecomp::GTE::s_geom_cache[slot];
+    PSXRecomp::GTE::geom_exec_note(&entry);
     entry.x16 = x16;
     entry.y16 = y16;
     entry.ambiguous = 0;
     entry.generation = PSXRecomp::GTE::s_geom_generation;
 }
 #endif
+
+
+#define GTE_EXEC_FIELDS(X) \
+    X(s_ws_xnum) X(s_ws_xden) X(s_ws_suppress) X(s_ws_far_threshold) \
+    X(s_ws_dome_on) X(s_ws_dome_num) X(s_ws_dome_den) \
+    X(s_ws_dome_call_sites) X(s_ws_dome_call_sites_n) X(s_gte_caller_ra) \
+    X(s_render_view) X(s_render_pose) X(s_render_rotate) \
+    X(s_h_scale_num) X(s_h_scale_den) X(s_geom_generation) X(s_geom_enabled) \
+    X(s_nclip_exact_enabled) X(s_nclip_last_native) X(s_nclip_last_precise_sign) \
+    X(s_nclip_last_precise_valid) X(s_nclip_last_horizontal_saturated) \
+    X(s_nclip_last_generation) X(s_nclip_previous_native) \
+    X(s_nclip_previous_precise_sign) X(s_nclip_previous_precise_valid) \
+    X(s_nclip_previous_horizontal_saturated) X(s_nclip_previous_generation)
+struct GTEExecutionSnapshot {
+#define EXEC_FIELD(name) decltype(PSXRecomp::GTE::name) name{};
+    GTE_EXEC_FIELDS(EXEC_FIELD)
+#undef EXEC_FIELD
+    PSXRecomp::GTE::GeomVertex *words = nullptr;
+    uint64_t versions[PSXRecomp::GTE::GEOM_EXEC_PAGES]{};
+    bool ready = false;
+};
+extern "C" GTEExecutionSnapshot *gte_execution_snapshot_create(void) {
+    return new (std::nothrow) GTEExecutionSnapshot;
+}
+extern "C" void gte_execution_snapshot_destroy(GTEExecutionSnapshot *snapshot) {
+    if (!snapshot) return;
+    if (PSXRecomp::GTE::s_bound_versions == snapshot->versions) std::abort();
+    std::free(snapshot->words);
+    delete snapshot;
+}
+extern "C" int gte_execution_snapshot_capture(GTEExecutionSnapshot *snapshot) {
+    using namespace PSXRecomp::GTE;
+    /* An attached projection observer owns opaque live history. Do not publish
+     * that observer or its borrowed buffers into a concurrent replay. */
+    if (!snapshot || s_bound_versions || s_gck_depth || s_speculative_depth ||
+        s_gte_replay_sandbox || s_fgsrc || g_psx_projection_command) return 0;
+    snapshot->ready = false;
+    if (s_geom_enabled && s_geom_cache) {
+        if (!s_exec_versions) {
+            s_exec_versions = (uint64_t *)std::calloc(GEOM_EXEC_PAGES, sizeof(uint64_t));
+            if (!s_exec_versions) return 0;
+            for (size_t page = 0; page < GEOM_EXEC_PAGES; ++page) s_exec_versions[page] = 1;
+        }
+        if (!snapshot->words) {
+            snapshot->words = (GeomVertex *)std::calloc(GEOM_CACHE_SIZE, sizeof(GeomVertex));
+            if (!snapshot->words) return 0;
+        }
+        for (size_t page = 0; page < GEOM_EXEC_PAGES; ++page) {
+            if (snapshot->versions[page] == s_exec_versions[page]) continue;
+            const size_t first = page * GEOM_EXEC_PAGE_WORDS;
+            std::memcpy(snapshot->words + first, s_geom_cache + first,
+                        GEOM_EXEC_PAGE_WORDS * sizeof(GeomVertex));
+            snapshot->versions[page] = s_exec_versions[page];
+        }
+    }
+#define EXEC_SAVE(name) std::memcpy(&snapshot->name, &name, sizeof name);
+    GTE_EXEC_FIELDS(EXEC_SAVE)
+#undef EXEC_SAVE
+    snapshot->ready = true;
+    return 1;
+}
+extern "C" int gte_execution_snapshot_bind(GTEExecutionSnapshot *snapshot) {
+    using namespace PSXRecomp::GTE;
+    if (!snapshot || !snapshot->ready || s_gck_depth || s_speculative_depth ||
+        s_gte_replay_sandbox || s_fgsrc || g_psx_projection_command) return 0;
+#define EXEC_LOAD(name) std::memcpy(&name, &snapshot->name, sizeof name);
+    GTE_EXEC_FIELDS(EXEC_LOAD)
+#undef EXEC_LOAD
+    s_geom_cache = snapshot->words;
+    s_bound_versions = snapshot->versions;
+    return 1;
+}
+extern "C" void gte_execution_snapshot_unbind(void) {
+    using namespace PSXRecomp::GTE;
+    if (!s_bound_versions) return;
+    if (s_gck_depth || s_speculative_depth || s_gte_replay_sandbox) std::abort();
+    s_geom_cache = nullptr;
+    s_bound_versions = nullptr;
+    s_geom_enabled = 0;
+}
+#undef GTE_EXEC_FIELDS

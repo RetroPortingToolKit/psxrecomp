@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* main.cpp — Phase 3 runtime entry point.
  *
  * Loads BIOS ROM, initializes CPU state + SDL display, calls into
@@ -256,7 +257,7 @@ extern "C" uint64_t gte_get_exec_count(void);
  * not mangle namespace-scope variables, so this is a no-op there. The existing
  * block-scope `extern` redeclarations inside functions inherit this C linkage. */
 extern "C" {
-    extern uint64_t psx_cycle_count;
+    extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
     extern uint64_t s_frame_count;
     extern uint32_t g_overlay_region_floor;
     extern uint32_t g_text_image_lo;
@@ -18108,7 +18109,7 @@ int main(int argc, char** argv) {
              * testing only. */
             psx_guest_cycle_scale_set_gated(gc.runtime.guest_cycle_scale_gated ? 1 : 0);
             {
-                extern int g_psx_gcs_batch;
+                extern PSX_THREAD_LOCAL int g_psx_gcs_batch;
                 const char *gb = getenv("PSX_GCS_BATCH");
                 g_psx_gcs_batch = gb ? (gb[0] == '1') : (gc.runtime.guest_cycle_scale_batch ? 1 : 0);
             }
@@ -21888,7 +21889,7 @@ session_reboot:
          * leave device_service / call_unit elevated if a path skipped the
          * longjmp fixup). */
         if (rematch_session) {
-            extern int psx_in_device_service;
+            extern PSX_THREAD_LOCAL int psx_in_device_service;
             extern int g_call_unit_depth;
             char stall[96];
             uint32_t sim = 0;

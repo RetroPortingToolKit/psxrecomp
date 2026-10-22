@@ -5,7 +5,7 @@
  * Draw calls that tests observe are recorded below. */
 
 uint64_t s_frame_count;
-uint64_t psx_cycle_count;          /* gpu_timeline.c stamps notes with it */
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;          /* gpu_timeline.c stamps notes with it */
 int g_exec_phase;
 uint32_t g_debug_current_func_addr;
 uint32_t g_debug_last_store_pc;
@@ -441,6 +441,20 @@ void gl_renderer_note_wide_triangle_recovery(int enabled) {
 }
 /* Smooth motion (frame generation) vertex sources: off in these fixtures. */
 int gl_renderer_frame_generation(void) { return 0; }
+int gl_renderer_recorded_passes_enabled(void) { return 0; }
+void gl_renderer_recorded_sources(const float projection[9], const uint32_t identity[3]) {
+    if (projection || identity) abort();
+}
+float pgxp_get_unclamped_depth(uint32_t address, uint32_t word) {
+    PGXPProjection projection;
+    return pgxp_load_projection(address, word, &projection) && projection.z > 0
+        ? projection.z : 0;
+}
+int pgxp_load_temporal_projection(uint32_t address, uint32_t word,
+                                  PGXPProjection *out, uint32_t *identity) {
+    (void)address; (void)word; (void)out; (void)identity;
+    abort();
+}
 /* PGXP renderer features: off in these fixtures. */
 int gl_renderer_pgxp_render_wanted(void) { return 0; }
 void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],

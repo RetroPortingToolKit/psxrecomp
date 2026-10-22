@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * Solo rollback resim self-check — see psx_selfcheck.h.
  *
@@ -44,7 +45,7 @@
 #include "spu.h"
 
 extern int fntrace_is_game_started(void);
-extern uint64_t psx_cycle_count;
+extern PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 extern uint64_t s_frame_count;
 
 #define SC_MAX_SLOTS 8

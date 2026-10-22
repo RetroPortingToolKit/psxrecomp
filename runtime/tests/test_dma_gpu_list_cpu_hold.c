@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* The store that kicks a GPU linked-list DMA returns only when the walk ends.
  *
  * PSX-SPX "CPU Operation during DMA": the CPU waits while DMA moves data. A
@@ -30,15 +31,15 @@ int      dma_gpu_linked_list_active(void);
 uint32_t dma_cycles_to_internal_event(void);
 
 /* ---- clock and device service ------------------------------------------ */
-uint64_t psx_cycle_count;
-uint64_t psx_next_service_cycle;
-int      psx_in_device_service;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_next_service_cycle;
+PSX_THREAD_LOCAL int      psx_in_device_service;
 int      g_event_step_conservative;
 int      g_ls_replay_active;
-int      g_psx_render_pass_active;
-int      g_psx_guest_time_frozen;
-uint32_t g_psx_cyc_batch;
-uint32_t g_psx_cyc_batch_limit;
+PSX_THREAD_LOCAL int      g_psx_render_pass_active;
+PSX_THREAD_LOCAL int      g_psx_guest_time_frozen;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit;
 
 static uint64_t s_serviced_to;
 void psx_devices_service_to_now(void) {

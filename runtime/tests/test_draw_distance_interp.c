@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* [[draw_distance.clamp]] in the dirty-RAM interpreter.
  *
  * Generated main-EXE code clamps a listed site's register before the guard
@@ -49,7 +50,7 @@ uint64_t g_psx_bail_first;
 uint64_t g_psx_bail_resolved;
 uint32_t i_stat;
 uint32_t i_mask;
-uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 uint32_t g_psx_mod_function_entry_hooks;
 uint32_t g_psx_mod_instruction_hooks;
 static uint32_t address_calls, shadow_address, address_word;

@@ -1,10 +1,11 @@
+#include "psx_thread_local.h"
 #include "cpu_state.h"
 #include "render_pass_projection.h"
 #include <cmath>
 #include <cstdio>
 
 extern "C" {
-int g_psx_render_pass_active=0;
+PSX_THREAD_LOCAL int g_psx_render_pass_active=0;
 int (*g_psx_projection_command)(CPUState*,uint32_t)=nullptr;
 uint16_t psx_mod_read_half(uint32_t) { return 0; }
 uint32_t psx_mod_read_word(uint32_t) { return 0; }

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #include "psx_memory.h"
 #include "mod_memory.h"
 #include <stdlib.h>
@@ -11,7 +12,7 @@
 #define CHECK(c) do { if (!(c)) abort(); } while (0)
 uint32_t g_psx_ram_size = PSX_MAIN_RAM_EXPANDED_BYTES;
 uint32_t g_psx_ram_mask = PSX_MAIN_RAM_EXPANDED_BYTES - 1;
-int g_psx_render_pass_active;
+PSX_THREAD_LOCAL int g_psx_render_pass_active;
 extern uint8_t *memory_get_ram_ptr(void);
 extern uint8_t *memory_get_scratchpad_ptr(void);
 static atomic_int phase;

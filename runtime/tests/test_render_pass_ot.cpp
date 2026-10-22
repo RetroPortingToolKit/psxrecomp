@@ -1,10 +1,11 @@
+#include "psx_thread_local.h"
 #include "render_pass_ot.hpp"
 #include <cstdio>
 #include <cstdlib>
 static uint32_t ram[2*1024*1024/4];
 static uint32_t aperture[256/4];
 extern "C" {
-int g_psx_render_pass_active=1;
+PSX_THREAD_LOCAL int g_psx_render_pass_active=1;
 uint32_t memory_get_ram_bytes(){return sizeof ram;}
 int psx_mod_gpu_dma_memory_contains(uint32_t p,uint32_t bytes){return bytes && psx_mod_gpu_dma_aperture_offset_for(p,bytes,sizeof aperture,nullptr);}
 uint32_t psx_mod_read_word(uint32_t p){p&=0x1FFFFFFF;return p>=0x800000 ? aperture[(p-0x800000)/4] : ram[p/4];}

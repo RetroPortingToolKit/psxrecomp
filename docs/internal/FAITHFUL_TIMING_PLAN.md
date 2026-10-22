@@ -213,6 +213,15 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-10-21 BRIEF-5 continuation: private GTE precision snapshots and frozen
+  clock state; GPU machine/presentation regions select a bound instance while
+  ordinary execution and render-thread queries keep the live objects. GPU/GTE
+  and clock concurrent fixtures pass on Windows/macOS. Existing GP0 history
+  and upload-retention fixtures now run against the full GPU source. Apple
+  fixture linking excludes tentative fixture globals before generating abort
+  seams. DMA, dispatch and asynchronous command-list publication remain open;
+  no route acceptance gate has run for this implementation.
+
 - 2026-10-21 BRIEF-5 runtime isolation: thread-selected RAM/scratchpad/arena
   backing and private PGXP state with page-versioned snapshot publication.
   Concurrent production memory/PGXP fixtures pass on Windows and macOS;

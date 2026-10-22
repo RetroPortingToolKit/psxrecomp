@@ -3,34 +3,18 @@ import argparse
 from pathlib import Path
 import subprocess
 import tempfile
+import platform
+
 
 p=argparse.ArgumentParser()
 p.add_argument('--cc',default='gcc')
 p.add_argument('--source',type=Path,default=Path(__file__).resolve().parents[1]/'src/gpu.c')
 a=p.parse_args()
-s=a.source.read_text()
-start=s.index('/* A0 upload history for debug inspection */')
-end=s.index('/* C0 (VRAM',start)
-production=s[start:end]
+s=a.source.read_text(encoding='utf-8')
 start=s.index('        /* Capture first few data words for debug */')
 end=s.index('        /* Each word contains two',start)
 capture=s[start:end]
-harness=r"""
-#include <stdint.h>
-#include <string.h>
-#include <assert.h>
-#include <stdio.h>
-#include "psx_memory.h"
-uint32_t g_psx_ram_size=PSX_MAIN_RAM_RETAIL_BYTES,g_psx_ram_mask=PSX_MAIN_RAM_RETAIL_BYTES-1u;
-static uint32_t gp0_cmd_buf[16],g_debug_current_func_addr;
-static uint16_t vram_write_x,vram_write_y,vram_write_w,vram_write_h,vram_write_col,vram_write_row;
-static unsigned vram_write_remaining,s_frame_count;
-static int gp0_state;
-enum {GP0_VRAM_WRITE=2};
-static struct {uint32_t gpr[32];} *debug_cpu_ptr;
-uint32_t psx_read_word(uint32_t addr){(void)addr;assert(0);return 0;}
-void gr_vram_upload_begin(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
-"""+production+'\nstatic void capture(uint32_t val) {\n'+capture+'}\n'+r"""
+harness='#include <assert.h>\n#include "'+a.source.resolve().as_posix()+'"\n#include "'+str(Path(__file__).resolve().parent/'gpu_exec_stubs.inc').replace('\\','/')+'"\n' +'\nstatic void capture(uint32_t val) {\n'+capture+'}\n'+r"""
 int main(void) {
  gp0_cmd_buf[1]=7|(9u<<16);gp0_cmd_buf[2]=4|(1u<<16);
  for(int i=0;i<A0_HISTORY_CAP;i++) {
@@ -55,10 +39,12 @@ int main(void) {
 }
 """
 with tempfile.TemporaryDirectory() as d:
- root=Path(d);c=root/'history.c';c.write_text(harness)
+ root=Path(d);c=root/'history.c';c.write_text(harness,encoding='utf-8')
  for opt in ('-O0','-O2'):
   exe=root/(opt+'.exe')
-  subprocess.run([a.cc,opt,'-std=c11','-Wall','-Wextra','-Werror',
+  subprocess.run([a.cc,opt,'-std=c11','-ffunction-sections','-fdata-sections','-Wall','-Wextra','-Werror','-Wno-unused-function',
                   '-I',str(a.source.resolve().parents[1]/'include'),
-                  str(c),'-o',str(exe)],check=True)
+                  str(c),str(a.source.parent/'gpu_timeline.c'),str(a.source.parent/'psx_video_timing.c'),
+                  '-Wl,-dead_strip' if platform.system() == 'Darwin' else '-Wl,--gc-sections',
+                  '-o',str(exe)],check=True)
   subprocess.run([str(exe)],check=True)

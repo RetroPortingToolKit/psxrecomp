@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* MFC0/CFC0 in the dirty-RAM interpreter read COP0 as it stood when the
  * instruction began.
  *
@@ -26,15 +27,15 @@ uint32_t g_psx_mod_instruction_hooks = 0;
 int interp_test_step(CPUState *cpu, uint32_t pc, uint32_t insn, uint32_t *next);
 
 /* Clock, cache and device seams read on the charged path. */
-uint64_t psx_cycle_count;
-uint64_t psx_next_service_cycle;
-uint64_t g_psx_cycle_fast_limit;
-int      psx_in_device_service;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_next_service_cycle;
+PSX_THREAD_LOCAL uint64_t g_psx_cycle_fast_limit;
+PSX_THREAD_LOCAL int      psx_in_device_service;
 int      g_event_step_conservative;
-uint32_t g_psx_cyc_batch;
-uint32_t g_psx_cyc_batch_limit;
-int      g_psx_cyc_bb_defer;
-uint32_t *g_psx_cyc_local_acc;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
+PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch_limit;
+PSX_THREAD_LOCAL int      g_psx_cyc_bb_defer;
+PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc;
 int      g_psx_icache_active;          /* 0: no fetch cost */
 uint32_t g_psx_icache_tv[1024];
 

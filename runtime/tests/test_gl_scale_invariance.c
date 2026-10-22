@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Internal-resolution invariance on a real, hidden OpenGL context.
  *
  * Run once per scale (and mode) by run_gl_scale_invariance.py, which compares
@@ -144,7 +145,7 @@ int gpu_ws_netplay_local_viewport_width(void){return 0;}
 int render_pass_netplay_enabled(void){return 0;}
 /* Guest clock the renderer's stereo-pair freshness reads; test stand-ins, as
  * in test_gl_readback_region.c. */
-uint64_t psx_cycle_count=0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count=0;
 uint32_t g_psx_vblank_cycles=564480u;
 static uint16_t vram[1024*512], peek[1024*512];
 static int si_max_dim(void) { return s_gl_max_dim > 0 ? s_gl_max_dim : 1 << 30; }

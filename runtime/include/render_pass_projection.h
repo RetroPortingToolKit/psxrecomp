@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "psx_thread_local.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,7 +27,7 @@ void psx_projection_stats(const PSXProjectionHistory* history, PSXProjectionStat
  * when a render pass temporarily replaced rotation/translation. The bridge
  * restores those eight control registers after exporting command results. */
 int psx_projection_command(struct CPUState* cpu, uint32_t command);
-extern int (*g_psx_projection_command)(struct CPUState*, uint32_t);
+extern PSX_THREAD_LOCAL int (*g_psx_projection_command)(struct CPUState*, uint32_t);
 #ifdef __cplusplus
 }
 #endif

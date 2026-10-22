@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #ifndef PSX_CYCLE_FREEZE_H
 #define PSX_CYCLE_FREEZE_H
 
@@ -24,11 +25,11 @@
 extern "C" {
 #endif
 
-extern int g_psx_render_pass_active;
+extern PSX_THREAD_LOCAL int g_psx_render_pass_active;
 /* Set while guest time is frozen, by a render pass or an uncharged call:
  * devices are not serviced and no interrupt is delivered. Pass-only effects
  * (rolled-back stores, synchronous DMA) key on g_psx_render_pass_active. */
-extern int g_psx_guest_time_frozen;
+extern PSX_THREAD_LOCAL int g_psx_guest_time_frozen;
 typedef struct PsxCycleFreeze {
     uint64_t cycle_count;
     uint64_t next_service;

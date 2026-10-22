@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* traps.c — Phase 2 trap handlers.
  *
  * All traps abort with a diagnostic message.
@@ -838,7 +839,7 @@ void psx_scheduler_run(CPUState* cpu)
             /* Soft-exit / yield longjmps out of vblank inside
              * psx_devices_service_to_now; without this the re-entrancy guard
              * stays set and every later advance skips device service forever. */
-            { extern int psx_in_device_service; psx_in_device_service = 0; }
+            { extern PSX_THREAD_LOCAL int psx_in_device_service; psx_in_device_service = 0; }
             /* A longjmp-out through a nested call unit (overlay_loader_call_native
              * or dispatch_nonlocal_call) would skip its depth restore; clear the
              * nested-unit gate so IRQ checks are not wedged-off after the escape
@@ -846,9 +847,9 @@ void psx_scheduler_run(CPUState* cpu)
             { extern int g_call_unit_depth; g_call_unit_depth = 0; }
             /* flush_resume / savestate longjmp skips generated bb_defer cleanup. */
             {
-                extern int g_psx_cyc_bb_defer;
-                extern uint32_t g_psx_cyc_batch;
-                extern uint32_t *g_psx_cyc_local_acc;
+                extern PSX_THREAD_LOCAL int g_psx_cyc_bb_defer;
+                extern PSX_THREAD_LOCAL uint32_t g_psx_cyc_batch;
+                extern PSX_THREAD_LOCAL uint32_t *g_psx_cyc_local_acc;
                 if (g_psx_cyc_local_acc) *g_psx_cyc_local_acc = 0;
                 g_psx_cyc_local_acc = NULL;
                 g_psx_cyc_bb_defer = 0;

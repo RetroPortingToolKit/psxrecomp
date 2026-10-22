@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* Original source-owned GL readback-coherence regression. No retail payload. */
 #include "gpu_gl_renderer.c"
 #include "gpu_hd_texture_stubs.inc"
@@ -10,7 +11,7 @@ GlBatchClass gl_batch_classify(int semi,int mask_check,int bank_batch){
  return test_batch_hle?gl_batch_policy_hle(semi,mask_check,bank_batch):gl_batch_policy_lle(semi,mask_check,bank_batch);}
 const char *gl_batch_policy_name(void){return test_batch_hle?"HLE":"LLE";}
 #include "gpu_timeline.c"
-uint64_t psx_cycle_count=0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count=0;
 static int test_full_composite;
 int gpu_ws_background_requires_full_composite(void){return test_full_composite;}
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t n,uint32_t a){(void)n;(void)a;return 0;}

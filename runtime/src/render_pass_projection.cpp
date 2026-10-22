@@ -73,7 +73,7 @@ struct PSXProjectionHistory {
     bool capturing = false, replaying = false, history_valid = false;
     double alpha = 1;
 };
-static PSXProjectionHistory* active = nullptr;
+static PSX_THREAD_LOCAL PSXProjectionHistory* active = nullptr;
 // Intrusive list has no global destructor: title replay objects may release
 // their histories from static destructors, in either link initialization order.
 static PSXProjectionHistory* histories = nullptr;

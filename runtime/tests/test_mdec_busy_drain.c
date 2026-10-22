@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /*
  * MDEC status bit 29 (Command Busy) across output drain.
  *
@@ -20,7 +21,7 @@
 #include <stdio.h>
 
 uint64_t s_frame_count = 0;
-uint64_t psx_cycle_count = 0;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count = 0;
 int debug_server_fmv_quiet(void) { return 0; }
 
 #define MDEC_DATA   0x1F801820u

@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 #undef NDEBUG /* the Release test target must execute its assertions */
 /* The MDEC FMV-activity stamp survives a snapshot round trip as itself:
  * "never decoded" stays never (issue #475: it used to load as "decoded 1000
@@ -9,7 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-uint64_t psx_cycle_count;
+PSX_THREAD_LOCAL uint64_t psx_cycle_count;
 uint64_t s_frame_count;
 int debug_server_fmv_quiet(void) { return 1; }
 

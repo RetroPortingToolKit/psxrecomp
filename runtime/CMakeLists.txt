@@ -912,6 +912,7 @@ if(BUILD_TESTING)
         PSX_GTE_REGISTER_TEST=1
         PSX_ENABLE_BLOCK_CYCLES=1)
     add_test(NAME gte_register_access_test COMMAND gte_register_access_test)
+    target_link_libraries(gte_register_access_test PRIVATE Threads::Threads)
     # Same ABI/result corpus for the native operation entry and the reference.
     add_executable(gte_hle_contract_test
         tests/test_gte_register_access.cpp src/gte.cpp src/pgxp.cpp src/psx_ram_geometry.c)
@@ -920,6 +921,7 @@ if(BUILD_TESTING)
         PSX_NO_DEBUG_TOOLS=1 PSX_GTE_REGISTER_TEST=1 PSX_ENABLE_BLOCK_CYCLES=1)
     psxrecomp_execution_profile(gte_hle_contract_test PROFILE ENHANCED)
     add_test(NAME gte_hle_contract_test COMMAND gte_hle_contract_test)
+    target_link_libraries(gte_hle_contract_test PRIVATE Threads::Threads)
 
     # PGXP value-propagation engine (docs/ENHANCEMENTS.md G1.2/G1.3): shadow
     # load/store/COP2 roundtrips, half-word semantics, validate-on-read

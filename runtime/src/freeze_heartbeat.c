@@ -1,3 +1,4 @@
+#include "psx_thread_local.h"
 /* freeze_heartbeat.c — see header for rationale. */
 
 #include "mdec.h"   /* mdec_recently_active: FMV parks the guest in BIOS MDEC code */
@@ -149,7 +150,7 @@ static int    s_sym_initialized = 0;
 #define RING_CAP 64
 typedef struct {
     uint64_t frame_count;
-    uint64_t psx_cycle_count;
+    PSX_THREAD_LOCAL uint64_t psx_cycle_count;
     uint64_t exc_reentry;
     uint64_t dirty_ram_insns;
     uint32_t current_func;

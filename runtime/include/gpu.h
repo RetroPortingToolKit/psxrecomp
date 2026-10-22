@@ -16,6 +16,13 @@ extern "C" {
 #endif
 
 void     gpu_init(void);
+typedef struct GpuExecutionSnapshot GpuExecutionSnapshot;
+GpuExecutionSnapshot *gpu_execution_snapshot_create(void);
+void gpu_execution_snapshot_destroy(GpuExecutionSnapshot *snapshot);
+int gpu_execution_snapshot_capture(GpuExecutionSnapshot *snapshot);
+int gpu_execution_snapshot_bind(GpuExecutionSnapshot *snapshot);
+void gpu_execution_snapshot_unbind(void);
+uint16_t *gpu_get_vram_ptr(void);
 uint32_t gpu_read_gpustat(void);   /* 0x1F801814 read */
 uint32_t gpu_read_gpuread(void);   /* 0x1F801810 read */
 void     gpu_write_gp0(uint32_t val);  /* 0x1F801810 write */

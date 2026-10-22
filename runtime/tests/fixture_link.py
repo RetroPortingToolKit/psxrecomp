@@ -4,16 +4,23 @@ build_and_run() compiles the named runtime/src modules and the fixture, then
 links them. Every symbol the modules need but neither they, the fixture nor
 the C library define becomes a stub that calls abort(), so a fixture only
 defines the seams its path really uses and an unexpected call fails loudly.
-GNU toolchains only (nm, GNU ld diagnostics).
+GNU and Apple toolchains (nm and their linker diagnostics).
 """
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MULTIPLE = re.compile(r"multiple definition of [`']([^`']+)[`']")
 UNDEFINED = re.compile(r"undefined reference to [`']([^`']+)[`']")
+APPLE_MULTIPLE = re.compile(r"duplicate symbol '([^']+)'")
+APPLE_UNDEFINED = re.compile(r'"(_[A-Za-z_][A-Za-z0-9_]*)", referenced from:')
+
+
+def source_symbol(symbol):
+    return symbol[1:] if sys.platform == 'darwin' and symbol.startswith('_') else symbol
 
 # A stub would silently override a symbol the C library would otherwise
 # provide from an archive or shared object, so anything libc, the CRT or the
@@ -30,6 +37,12 @@ ISO_C_FALLBACK = {
     "strncmp", "strncpy", "strstr", "strtol", "strtoll", "strtoul",
     "strtoull", "time", "vfprintf", "vsnprintf",
 }
+ISO_C_FALLBACK.update({
+    'sin', 'sinf', 'cos', 'cosf', 'tan', 'tanf', 'sqrt', 'sqrtf', 'pow', 'powf',
+    'floor', 'floorf', 'ceil', 'ceilf', 'round', 'roundf', 'lround', 'lroundf',
+    'lrint', 'lrintf', 'fmod', 'fmodf', 'fabs', 'fabsf', 'fmin', 'fminf',
+    'fmax', 'fmaxf', 'ldexp', 'ldexpf', 'exp', 'expf', 'log', 'logf',
+})
 
 
 def _run(args, **kwargs):
@@ -46,7 +59,7 @@ def library_symbols(cc):
         for line in _run(["nm", out]).stdout.splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[-2] != "U" and SYMBOL.match(parts[-1]):
-                provided.add(parts[-1])
+                provided.add(source_symbol(parts[-1]))
     return provided
 
 
@@ -57,7 +70,7 @@ def nm_symbols(objs):
             parts = line.split()
             if len(parts) < 2:
                 continue
-            sym, typ = parts[-1], parts[-2]
+            sym, typ = source_symbol(parts[-1]), parts[-2]
             if not SYMBOL.match(sym):
                 continue
             (undefined if typ == "U" else defined).add(sym)
@@ -65,8 +78,10 @@ def nm_symbols(objs):
 
 
 def write_stubs(path, symbols):
-    lines = ["#include <stdlib.h>", "/* Unrelated link seams must not execute. */"]
-    lines += ["void %s(void) { abort(); }" % s for s in sorted(symbols)]
+    lines = ["#include <stdlib.h>", "#include <stdio.h>",
+             "/* Unrelated link seams must not execute. */"]
+    lines += ['void %s(void) { fputs("unexpected fixture seam: %s\\n", stderr); abort(); }'
+              % (s, s) for s in sorted(symbols)]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -93,6 +108,11 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=())
     subprocess.run([cc, "-std=c11", opt, "-Wall", "-Wextra", "-Werror",
                     "-I", include, "-c", str(here / test_name), "-o", str(test_o)],
                    check=True)
+    # On Apple toolchains a tentative fixture global can be a common symbol.
+    # A strong function stub would override it without a duplicate-symbol
+    # error. Exclude fixture definitions before the first link on every host.
+    fixture_defined, _ = nm_symbols([test_o])
+    stubs.difference_update(fixture_defined)
     exe = work / ("fixture" + tag + (".exe" if os.name == "nt" else ""))
 
     for _ in range(40):
@@ -104,11 +124,15 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=())
         if result.returncode == 0:
             break
         changed = False
-        for sym in MULTIPLE.findall(result.stderr):
+        multiple = MULTIPLE.findall(result.stderr)
+        multiple += [source_symbol(s) for s in APPLE_MULTIPLE.findall(result.stderr)]
+        for sym in multiple:
             if sym in stubs:
                 stubs.discard(sym)
                 changed = True
-        for sym in UNDEFINED.findall(result.stderr):
+        undefined = UNDEFINED.findall(result.stderr)
+        undefined += [source_symbol(s) for s in APPLE_UNDEFINED.findall(result.stderr)]
+        for sym in undefined:
             if sym not in defined and sym not in provided and sym not in stubs:
                 stubs.add(sym)
                 changed = True
