@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <vector>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -289,6 +290,21 @@ extern "C" int gpu_hd_textures_configure(const char* root, int replacements,
             std::filesystem::create_directories(directory / "dumps");
         }
         if (!duck_texture_pack_create(root, &next->duck, error, capacity)) return 0;
+        if (next->replacements) {
+            /* Every replacement decoded and resident before the game draws. */
+            const auto t0 = std::chrono::steady_clock::now();
+            size_t bytes = 0, beetle_bytes = 0;
+            int loaded = duck_texture_pack_preload(next->duck, &bytes);
+            if (next->beetle) {
+                const int beetle_loaded = hd_texture_pack_preload(next->beetle, &beetle_bytes);
+                if (beetle_loaded > 0) { loaded = (loaded > 0 ? loaded : 0) + beetle_loaded; bytes += beetle_bytes; }
+            }
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            if (loaded > 0)
+                std::fprintf(stdout, "psxrecomp: texture pack: %d images preloaded (%.1f MiB) in %lld ms\n",
+                             loaded, bytes / 1048576.0, static_cast<long long>(ms));
+        }
         /* Quiesce renderer users (GL render thread: dump_draw appends to the
          * old session's sources) before flushing its dumps or reading its
          * residency; the cache is rebuilt from the new session. */
