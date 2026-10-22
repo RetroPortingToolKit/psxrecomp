@@ -10630,6 +10630,25 @@ static void handle_dynres_check(int id, const char *json)
              "\"restored\":%d,\"steps\":%s}", id, (unsigned long long)h0, bad, start, out);
 }
 
+/* {"cmd":"video_set","internal_resolution":N,"supersample":M} - change the
+ * Internal resolution preset (lines, 1 native, -1 match display) and/or the
+ * supersample (thousandths) through the in-game menu's live path. Returns the
+ * restart bits the change still needs (0 = fully live). */
+static void handle_video_set(int id, const char *json)
+{
+    extern void psx_video_current(PsxHostVideoSettings *v);
+    extern unsigned psx_video_apply_live(const PsxHostVideoSettings *next);
+    PsxHostVideoSettings v;
+    psx_video_current(&v);
+    const int ir = json_get_int(json, "internal_resolution", 0);
+    const int ss = json_get_int(json, "supersample", 0);
+    if (ir) v.internal_resolution = ir;
+    if (ss) v.supersample_milli = ss;
+    const unsigned restart = psx_video_apply_live(&v);
+    send_fmt("{\"id\":%d,\"ok\":true,\"restart\":%u,\"internal_resolution\":%d,"
+             "\"supersample\":%d}\n", id, restart, v.internal_resolution, v.supersample_milli);
+}
+
 static void handle_video_info(int id, const char *json)
 {
     (void)json;
@@ -16446,6 +16465,7 @@ static const CmdEntry s_commands[] = {
     { "dump_buffer",       handle_dump_buffer },
     { "wide_full",         handle_wide_full },
     { "video_info",        handle_video_info },
+    { "video_set",         handle_video_set },
     { "hd_textures",       handle_hd_textures },
     { "dynres",            handle_dynres },
     { "dynres_force",      handle_dynres_force },

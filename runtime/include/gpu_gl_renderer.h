@@ -395,6 +395,10 @@ int  gl_renderer_request_internal_scale(int scale);
  * 0 when refused or deferred (inside a render pass; it then applies after
  * the next present). Never call it inside a render pass. */
 int  gl_renderer_step_internal_scale_now(int scale);
+/* Live Internal resolution / Supersampling change: the scale to step to at
+ * the next frame boundary (the new ceiling). Returns the scale applied, 0 when
+ * the backend cannot change it live. */
+int  gl_renderer_set_internal_scale_live(int scale);
 typedef struct GlDynresStats {
     int      level, ceiling, pending;   /* pending: requested level, 0 = none */
     uint64_t steps, deferred, refused;

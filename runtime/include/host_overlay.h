@@ -75,10 +75,11 @@ typedef struct PsxHostVideoSettings {
     int dynamic_resolution;    /* 0/1 */
     int frame_generation;      /* 0/1 */
     int renderer;              /* restart */
-    int internal_resolution;   /* restart */
-    int supersampling;         /* restart */
+    int internal_resolution;   /* live (psx_video_apply_live) */
+    int supersampling;         /* legacy factor; restart */
     int render_thread;         /* restart */
     int present_thread;        /* restart */
+    int supersample_milli;     /* live: 1000 off, 1250, 1500, 2000 */
 } PsxHostVideoSettings;
 
 /* Texture filter values: PSX_TEXTURE_FILTER_* and psx_texture_filter_from_ui
@@ -99,6 +100,8 @@ typedef struct PsxHostVideoSettings {
 #define PSX_VIDEO_LIVE_PRESENT_LINEAR (1u << 4)
 #define PSX_VIDEO_LIVE_DYNRES         (1u << 5)
 #define PSX_VIDEO_LIVE_FRAME_GEN      (1u << 6)
+/* Internal resolution or supersampling: the scale moves at the next frame. */
+#define PSX_VIDEO_LIVE_RESOLUTION     (1u << 7)
 
 /* Pure helpers (unit-tested): which live fields differ, and which restart
  * fields differ from the values the session booted with. */

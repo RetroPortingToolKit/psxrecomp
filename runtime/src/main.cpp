@@ -10258,9 +10258,12 @@ extern "C" void psx_video_current(PsxHostVideoSettings *v) {
     v->frame_generation = g_frame_generation ? 1 : 0;
     v->renderer = g_video_renderer;
     v->internal_resolution = g_video_internal_res;
-    v->supersampling = g_video_scale;
+    /* The legacy factor as booted: the live scale moves with the internal
+     * resolution and supersample, which apply without a relaunch. */
+    v->supersampling = g_video_boot_valid ? g_video_boot.supersampling : g_video_scale;
     v->render_thread = g_render_thread ? 1 : 0;
     v->present_thread = g_present_thread ? 1 : 0;
+    v->supersample_milli = g_video_ss_milli;
     if (!g_video_boot_valid) { g_video_boot = *v; g_video_boot_valid = true; }
 }
 
@@ -10302,6 +10305,22 @@ extern "C" unsigned psx_video_apply_live(const PsxHostVideoSettings *next) {
         if (!g_video_dynres) g_dynres.active = false;
         else { dynres_setup(); if (!g_dynres.active && gl_renderer_dynamic_resolution_ceiling() >= 2) g_dynres.active = true; }
     }
+    if (m & PSX_VIDEO_LIVE_RESOLUTION) {
+        /* Internal resolution / Supersampling: the scale moves at the next
+         * frame (gl_renderer_set_internal_scale_live), no relaunch. */
+        if (next->internal_resolution != PSX_IR_UNSET)
+            g_video_internal_res = next->internal_resolution;
+        if (next->supersample_milli >= 1000 && next->supersample_milli <= 4000)
+            g_video_ss_milli = next->supersample_milli;
+        apply_internal_resolution(match_display_px_h(sdl_window));
+        if (g_gl_active && g_video_scale_applies) {
+            const int applied = gl_renderer_set_internal_scale_live(g_video_scale);
+            if (applied) {
+                std::fprintf(stdout, "psxrecomp: internal scale %dx (live)\n", applied);
+                dynres_setup();   /* the new scale is the controller's ceiling */
+            }
+        }
+    }
     if ((m & PSX_VIDEO_LIVE_FRAME_GEN) && g_gl_active) {
         g_frame_generation = next->frame_generation ? 1 : 0;
         gl_renderer_set_frame_generation(g_frame_generation);
@@ -10323,6 +10342,8 @@ extern "C" unsigned psx_video_apply_live(const PsxHostVideoSettings *next) {
             us.render_thread = next->render_thread != 0;       us.has_render_thread = true;
             us.present_thread = next->present_thread != 0;     us.has_present_thread = true;
             us.internal_resolution = next->internal_resolution; us.has_internal_resolution = true;
+            us.supersample_milli = next->supersample_milli;
+            us.has_supersample = next->supersample_milli >= 1000;
             (void)quality_save_user_settings(g_overlay_settings_path, us);
         } catch (...) {
         }
@@ -16989,6 +17010,10 @@ PsxHostVideoSettings ovl_video_from(const RecompLauncherCSettings& ls) {
     v.renderer = ls.renderer;
     v.render_thread = ls.render_thread ? 1 : 0;
     v.present_thread = ls.present_thread ? 1 : 0;
+    if (ls.internal_resolution != 0) v.internal_resolution = ls.internal_resolution;
+#if defined(RECOMP_LAUNCHER_HAS_SUPERSAMPLE)
+    if (ls.supersample_milli >= 1000) v.supersample_milli = ls.supersample_milli;
+#endif
     return v;
 }
 void mh_launcher_settings_get(RecompLauncherCSettings* out) {
@@ -17007,6 +17032,10 @@ void mh_launcher_settings_get(RecompLauncherCSettings* out) {
     ls.renderer = v.renderer;
     ls.render_thread = v.render_thread;
     ls.present_thread = v.present_thread;
+    ls.internal_resolution = internal_resolution_for_launcher();
+#if defined(RECOMP_LAUNCHER_HAS_SUPERSAMPLE)
+    ls.supersample_milli = v.supersample_milli;
+#endif
 #if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
     /* Every row a preset governs, the hidden ones included, as the player
      * selected them (main-thread snapshot): a pick's next-launch rows and
@@ -17054,6 +17083,9 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
     gi.num_renderers = 2;
     gi.has_supersampling = 0;            /* restart-only; set before boot */
     gi.has_dynamic_resolution = 1;
+#if defined(RECOMP_LAUNCHER_HAS_SUPERSAMPLE)
+    gi.has_supersample = 1;              /* live with Internal resolution */
+#endif
     gi.has_render_pipeline = 1;
     gi.has_vsync = 0;
     gi.has_rewind_depth = 0;
@@ -18412,6 +18444,7 @@ int main(int argc, char** argv) {
             g_video_internal_res = PSX_IR_UNSET;
         }
         if (us.has_internal_resolution) g_video_internal_res = us.internal_resolution;
+        if (us.has_supersample) g_video_ss_milli = us.supersample_milli;
         if (us.has_dynamic_resolution) g_video_dynres = us.dynamic_resolution ? 1 : 0;
         if (us.has_dynamic_resolution_min) g_video_dynres_min = us.dynamic_resolution_min;
         if (us.has_window_width)   g_video_win_w     = us.window_width;

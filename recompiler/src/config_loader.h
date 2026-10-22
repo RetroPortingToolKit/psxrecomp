@@ -1563,6 +1563,9 @@ struct UserSettings {
     // it wins over supersampling, which is still written (capped at 4) so an
     // older runtime reading the same file degrades gracefully.
     bool has_internal_resolution = false; int internal_resolution = 0;
+    // Supersampling on top of the internal resolution, in thousandths
+    // (1000 off .. 4000), the player's pick of [video] supersample.
+    bool has_supersample = false; int supersample_milli = 1000;
     // Dynamic resolution (RuntimeConfig::video_dynamic_resolution, _min).
     // Written only once the player changed them, so a title's default can
     // still move in a later release.

@@ -3040,6 +3040,15 @@ UserSettings load_user_settings(const fs::path& path) {
             const auto n = toml::find<int64_t>(v, "supersampling");
             if (n >= 1 && n <= 32) { s.supersampling = (int)n; s.has_supersampling = true; }
         });
+        if (v.contains("supersample")) try_get([&]{
+            const toml::value& ss = toml::find(v, "supersample");
+            const double f = ss.is_integer() ? static_cast<double>(ss.as_integer())
+                                             : toml::get<double>(ss);
+            if (f >= 1.0 && f <= 4.0) {
+                s.supersample_milli = static_cast<int>(f * 1000.0 + 0.5);
+                s.has_supersample = true;
+            }
+        });
         if (v.contains("internal_resolution")) try_get([&]{
             const toml::value& ir = toml::find(v, "internal_resolution");
             int value = 0;
@@ -3492,6 +3501,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         else
             f << "internal_resolution = " << s.internal_resolution << "\n";
     }
+    if (s.has_supersample)
+        f << "supersample       = " << (s.supersample_milli / 1000.0) << "\n";
     if (s.has_dynamic_resolution)
         f << "dynamic_resolution = " << (s.dynamic_resolution ? "true" : "false") << "\n";
     if (s.has_dynamic_resolution_min &&

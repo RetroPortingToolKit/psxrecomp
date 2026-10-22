@@ -11079,6 +11079,30 @@ int gl_renderer_request_internal_scale(int scale) {
     return 1;
 }
 
+/* Settings -> Internal resolution / Supersampling changed in game: move to
+ * the new scale at the next frame boundary, without a relaunch. The step
+ * machinery dynamic resolution uses does the work; this only moves its
+ * ceiling (clamped like the boot scale to the full-VRAM limit) and queues the
+ * step. Returns the scale that will apply, 0 when not possible (windowed
+ * high-resolution mode, CPU-authoritative dual rendering, no context). */
+int gl_renderer_set_internal_scale_live(int scale) {
+    if (s_ctx) GL_RT_SYNC("set_internal_scale_live");
+    if (!s_ctx || !s_raster_ok || s_hiw || s_cpu_auth_dual) return 0;
+    int reason = 0;
+    if (scale < 1) scale = 1;
+    scale = psx_gl_clamp_full_vram_scale(scale, GL_MAX_INTERNAL_SCALE, s_gl_max_dim,
+                                         s_vram_budget, &reason);
+    if (!s_alloc_scale) {
+        if (!dyn_resources()) return 0;
+        s_alloc_scale = s_hr_scale;
+    }
+    s_alloc_scale = scale;   /* dyn_apply allocates beyond the old surface */
+    s_req_scale = scale;
+    /* Recorded in stream order with the render thread, else queued for the
+     * next present. */
+    return gl_renderer_request_internal_scale(scale) ? scale : 0;
+}
+
 int gl_renderer_step_internal_scale_now(int scale) {
     if (!s_alloc_scale || !s_raster_ok) return 0;
     if (scale > s_alloc_scale) scale = s_alloc_scale;

@@ -143,7 +143,10 @@ static void test_video(void) {
     CHECK(psx_host_video_live_changes(&a, &b) ==
           (PSX_VIDEO_LIVE_SCANLINES | PSX_VIDEO_LIVE_PRESENT_LINEAR | PSX_VIDEO_LIVE_FULLSCREEN));
     CHECK(psx_host_video_restart_bits(&a, &b) == 0);
-    b.internal_resolution = 4; b.present_thread = 1;
+    b.internal_resolution = 4; b.supersample_milli = 1500; b.present_thread = 1;
+    CHECK(psx_host_video_live_changes(&a, &b) & PSX_VIDEO_LIVE_RESOLUTION);
+    CHECK(psx_host_video_restart_bits(&a, &b) == PSX_VIDEO_RESTART_THREADS);
+    b.supersampling = 2;
     CHECK(psx_host_video_restart_bits(&a, &b) == (PSX_VIDEO_RESTART_RESOLUTION | PSX_VIDEO_RESTART_THREADS));
     b.renderer = 0;
     CHECK(psx_host_video_restart_bits(&a, &b) & PSX_VIDEO_RESTART_RENDERER);
