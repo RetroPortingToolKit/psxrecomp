@@ -2320,6 +2320,8 @@ int main() {
         }
         ModPackageManager manager(folder);
         check(manager.scan(&error) && manager.scan_errors().empty(), "source/preparation catalog parses");
+        check(!manager.set_generated_feature_resource_default("cars", "content", "source", "generated/source", &error),
+              "generated defaults cannot appoint shared user sources");
         check(manager.set_feature_resource_path("cars", "content", "source", source, &error), error.c_str());
         check(manager.feature_resource_path("music", "content", "source") == source, "source picker prefills sibling package");
         check(manager.set_feature_resource_path("music", "content", "source", replacement, &error), error.c_str());
