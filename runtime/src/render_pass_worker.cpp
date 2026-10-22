@@ -2,6 +2,7 @@
  * values, the worker owns guest execution, and only the render owner consumes
  * the sealed GPU list. Neither owner waits for an extra frame. */
 #include "render_pass_worker.h"
+#include "gpu_vram_dirty.h"
 #include "host_span_ring.h"
 #include "mod_plugins.h"
 #include "mod_execution.h"
@@ -180,6 +181,7 @@ void run() {
      * normal lost those slices to desktop work and the extra came in late. */
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 #endif
+    gpu_vram_dirty_set_private_thread(1);
     /* Allocation and page commitment belong to the optional worker. The source
      * drops extras until both complete private contexts are ready. */
     std::unique_ptr<Job> prepared[2];
@@ -200,19 +202,18 @@ void run() {
         {
             std::unique_lock<std::mutex> lock(W.mutex);
             W.wake.wait(lock, [] {
-                return W.stop || (W.idle_until > W.failed_window &&
-                    (W.jobs[0]->queued.load() || W.jobs[1]->queued.load()));
+                return W.stop || W.jobs[0]->queued.load() || W.jobs[1]->queued.load();
             });
             if (W.stop) return;
-            const uint64_t now = host_clock_us();
-            if (now + W.estimated_us + 500u >= W.idle_until) {
-                W.failed_window = W.idle_until; continue;
-            }
-            execution_deadline = W.idle_until - 500u;
             for (auto &slot : W.jobs)
                 if (slot->queued.load(std::memory_order_acquire) &&
                     (!job || slot->serial < job->serial)) job = slot.get();
             if (job) job->queued.store(false);
+            /* Runs at once on its own core, concurrently with the emulation
+             * thread (its execution is private: memory, GPU/GTE/PGXP
+             * snapshots, thread-local abort and dirty state). It has until
+             * its own presentation period ends; a later image is dropped. */
+            if (job) execution_deadline = host_clock_us() + 16683u * (job->period ? job->period : 2u);
         }
         if (!job) continue;
         if (!job->consumer_done.load(std::memory_order_acquire)) {

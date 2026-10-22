@@ -39,6 +39,10 @@ uint32_t gpu_vram_dirty_row_count(void);
 /* 512-bit mask: bit y set ⇒ scanline y dirty. Non-owning. */
 const uint64_t *gpu_vram_dirty_mask(void);
 
+/* The calling thread runs a private execution (render-pass worker): its marks
+ * are dropped. */
+void gpu_vram_dirty_set_private_thread(int on);
+
 /* 1 if PSX_NET_VRAM_DIRTY_VERIFY is set (non-zero). */
 int gpu_vram_dirty_verify_enabled(void);
 

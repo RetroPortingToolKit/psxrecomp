@@ -1,4 +1,5 @@
 #include "gpu_vram_dirty.h"
+#include "psx_thread_local.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,10 @@ int g_psx_vram_dirty_tracking = 0;
 /* All-dirty until the first successful incremental checkpoint (while on). */
 static uint64_t s_mask[GPU_VRAM_DIRTY_H / 64u];
 static int      s_all = 1;
+/* Set on the render-pass worker: its VRAM writes land in a private snapshot
+ * and must not mark (or race on) the live machine's mask. */
+static PSX_THREAD_LOCAL int s_private;
+void gpu_vram_dirty_set_private_thread(int on) { s_private = on ? 1 : 0; }
 static int      s_verify = -1; /* -1 = unread env */
 
 static void ensure_verify_env(void)
@@ -40,6 +45,7 @@ int gpu_vram_dirty_tracking(void)
 
 void gpu_vram_dirty_mark_row_impl(uint32_t y)
 {
+    if (s_private) return;
     y &= (GPU_VRAM_DIRTY_H - 1u);
     s_mask[y >> 6] |= (uint64_t)1u << (y & 63u);
 }
@@ -47,7 +53,7 @@ void gpu_vram_dirty_mark_row_impl(uint32_t y)
 void gpu_vram_dirty_mark_rows(uint32_t y0, uint32_t h)
 {
     uint32_t i;
-    if (!g_psx_vram_dirty_tracking || h == 0u)
+    if (!g_psx_vram_dirty_tracking || h == 0u || s_private)
         return;
     if (h >= GPU_VRAM_DIRTY_H) {
         gpu_vram_dirty_mark_all();
@@ -71,7 +77,7 @@ void gpu_vram_dirty_mark_rect(int x, int y, int w, int h)
 
 void gpu_vram_dirty_mark_all(void)
 {
-    if (!g_psx_vram_dirty_tracking)
+    if (!g_psx_vram_dirty_tracking || s_private)
         return;
     memset(s_mask, 0xff, sizeof s_mask);
     s_all = 1;

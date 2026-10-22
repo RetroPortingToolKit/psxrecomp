@@ -19,6 +19,7 @@
 
 #include "render_pass.h"
 #include "render_pass_worker.h"
+#include "psx_execution.h"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -267,11 +268,11 @@ static RenderPassCheckpoint s_ck;
  * a recorded pass must also roll back gpu.c's public copy. */
 static uint16_t s_pass_cpu_vram[1024u * 512u];
 static PsxCycleFreeze s_freeze;
-static jmp_buf s_abort_jmp;
-static volatile int s_abort_armed;
-static const CPUState* s_pass_cpu;
+static PSX_THREAD_LOCAL jmp_buf s_abort_jmp;   /* per thread: the render-pass worker runs alongside */
+static PSX_THREAD_LOCAL volatile int s_abort_armed;
+static PSX_THREAD_LOCAL const CPUState* s_pass_cpu;
 static int s_nesting;
-static int s_device_read_fault;
+static PSX_THREAD_LOCAL int s_device_read_fault;
 
 static RenderPassStats s_stats;
 static int s_verify = -1;
@@ -283,7 +284,7 @@ static uint32_t s_plan_period = 2;
 static uint64_t s_plan_serial, s_restored_plan;
 static uint64_t s_restored_cycle, s_restored_stores;
 static int s_restored_valid;
-static RenderPassFailure s_attempt;
+static PSX_THREAD_LOCAL RenderPassFailure s_attempt;
 static const char *s_checkpoint_failure;
 static RenderStereoStats s_stereo;
 static int s_pair_busy;
@@ -646,6 +647,9 @@ int render_pass_mmio_read_allowed(uint32_t phys, uint32_t width) {
           (phys >= 0x1F801820u && phys <= 0x1F801827u) || /* MDEC */
           (phys >= 0x1F801C00u && phys <= 0x1F801FFFu)))  /* SPU */
         return 1;
+    /* A private execution (the render-pass worker) aborts its own job; it
+     * must never touch the synchronous pass's state or jump buffer. */
+    if (g_psx_execution_abort) g_psx_execution_abort("device_read", phys);
     s_device_read_fault = 1;
     s_stats.device_reads++;
     s_stats.last_device_read = phys;
