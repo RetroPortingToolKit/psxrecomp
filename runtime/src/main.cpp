@@ -144,6 +144,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "gpu_timeline.h"
 #include "crc32.h"
 #include "disc_identity.h"
+#include "disc_content_hash.h"
 #include "sbi_setup.h"
 #include "disc_path.h"
 #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
@@ -3311,6 +3312,12 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
 
 static bool validate_disc_for_launch(const std::filesystem::path& path,
                                      const std::string& game_id) {
+    std::string identity_error;
+    if (!PSXRecompV4::required_disc_content_matches(path,
+            PSXRecompV4::required_disc_sha256(), &identity_error)) {
+        std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
+        return false;
+    }
     const DiscValidation v = validate_disc_image(path, game_id);
     if (!v.opened) {
         launcher_warning("Disc Image Not Found", v.detail + "\n\nSelected path:\n" + path.string());
@@ -11518,6 +11525,17 @@ namespace {
         } else {
             last_companion_warning.clear();
         }
+        // Enforce original image policy in the selection badge, including
+        // when every mod is disabled. PLAY is guarded again before boot.
+        std::string identity_error;
+        if (!PSXRecompV4::required_disc_content_matches(disc_path,
+                PSXRecompV4::required_disc_sha256(), &identity_error)) {
+            out->verdict = 3;
+            out->netplay_ok = 0;
+            g_session_netplay_disc_ok = false;
+            std::snprintf(out->netplay_detail, sizeof(out->netplay_detail),
+                          "%s", identity_error.c_str());
+        }
         return 1;
     }
 
@@ -18050,6 +18068,7 @@ int main(int argc, char** argv) {
             apply_offline_pad_count(game_players, multitap_enabled);
             game_has_disc_crc = gc.has_disc_crc;
             game_disc_crc     = gc.disc_crc;
+            PSXRecompV4::required_disc_sha256() = gc.required_disc_sha256;
             resolved_audio_buffer_ms = gc.runtime.audio_buffer_ms;
             g_netplay_disc_expect.require_cue = gc.netplay_require_cue;
             g_netplay_disc_expect.required_tracks = gc.netplay_required_tracks;
@@ -20547,6 +20566,16 @@ session_reboot:
         g_openxr_ready_execution_generation = 1;
     mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
     psx_disc_tray_reset_session();
+    // Check the untouched base, never a mod's derived private image. Covers
+    // CLI, no-launcher, zero-mod builds, and a changed disc on lobby rematch.
+    {
+        std::string identity_error;
+        if (!PSXRecompV4::required_disc_content_matches(resolved_disc,
+                PSXRecompV4::required_disc_sha256(), &identity_error)) {
+            std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
+            return 1;
+        }
+    }
     /* Rematch after lobby soft-return re-enters here with updated net_cfg. */
     static int s_emu_session = 0;
     const bool rematch_session = (++s_emu_session > 1);
