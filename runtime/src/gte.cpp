@@ -5,6 +5,7 @@
 #include "cpu_state.h"
 #include "execution_profile.h"
 #include "hle_gte.h"
+#include "mod_plugins.h"
 #include "nd_intro_ot.h"
 #include "pgxp.h"
 #include "gte_nclip_stats.h"
@@ -1594,18 +1595,32 @@ void gte_nclip(GTEState* gte, uint32_t instr) {
     }
     /* Screen-coordinate saturation can reverse winding at an eye's near
      * plane. The signed homogeneous determinant keeps the true facing even
-     * when one or two corners lie behind the eye. Scope to the render pass. */
+     * when one or two corners lie behind the eye. Scope to the render pass.
+     * Keep the final sign and correction totals observable without requiring
+     * widescreen precise-NCLIP telemetry to be armed. */
     if (s_render_pose.projection && gpu_render_projective_enabled()) {
         PGXPProjection p[3];
+        psx_mod_counter_add("vr.nclip.render.total", 1);
         if (pgxp_get_gte_projection(0, gte->SXY[0], &p[0]) &&
             pgxp_get_gte_projection(1, gte->SXY[1], &p[1]) &&
             pgxp_get_gte_projection(2, gte->SXY[2], &p[2])) {
+            psx_mod_counter_add("vr.nclip.render.precise", 1);
             const double det = (double)p[0].x*((double)p[1].y*p[2].z-(double)p[2].y*p[1].z)
                 -(double)p[0].y*((double)p[1].x*p[2].z-(double)p[2].x*p[1].z)
                 +(double)p[0].z*((double)p[1].x*p[2].y-(double)p[2].x*p[1].y);
             const int sign = (det > 0) - (det < 0);
-            if (sign && sign != ((out > 0) - (out < 0))) out = sign;
+            if (sign && sign != ((out > 0) - (out < 0))) {
+                out = sign;
+                psx_mod_counter_add("vr.nclip.render.corrected", 1);
+            }
+        } else {
+            psx_mod_counter_add("vr.nclip.render.miss", 1);
         }
+        psx_mod_counter_add(
+            out > 0 ? "vr.nclip.render.positive"
+                    : out < 0 ? "vr.nclip.render.negative"
+                              : "vr.nclip.render.zero",
+            1);
     }
     gte->MAC0 = out;
     gte->set_error_flag();
