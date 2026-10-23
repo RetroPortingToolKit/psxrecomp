@@ -1363,20 +1363,32 @@ int hd_texture_pack_preload(HdTexturePack* pack, size_t max_bytes, unsigned max_
                 /* Already pinned, or an on-demand decode in flight: leave it. */
                 if (it->second.pinned || it->second.state == DecodeState::Queued ||
                     it->second.state == DecodeState::Loading) continue;
-                if (it->second.state == DecodeState::Ready) pack->decode.used -= it->second.bytes;
             }
-            DecodeItem& item = pack->decode.items[work_items[k].first];
+            const size_t previous_bytes = it != pack->decode.items.end() &&
+                it->second.state == DecodeState::Ready ? it->second.bytes : 0;
+            DecodeItem item;
+            /* Prepare throwing metadata before touching an existing entry. */
             item.path = work_items[k].second;
             item.bytes = images[k]->rgba.size();
             item.image = std::move(images[k]);
             item.state = DecodeState::Ready; item.pinned = true;
             item.last_used = ++pack->decode.tick;
-            r.bytes += item.bytes; ++r.loaded;
+            const size_t bytes = item.bytes;
+            if (it == pack->decode.items.end())
+                pack->decode.items.emplace(work_items[k].first, std::move(item));
+            else it->second = std::move(item);
+            pack->decode.used -= previous_bytes;
+            r.bytes += bytes; ++r.loaded;
+            tp::after_publish(r.loaded);
         }
         r.failed = r.requested - r.loaded - r.over_budget;
         if (out) *out = r;
         return r.loaded == r.requested ? 1 : 0;
-    } catch (...) { return -1; }
+    } catch (...) {
+        r.failed = r.requested - r.loaded - r.over_budget;
+        if (out) *out = r;  /* Account the pinned prefix even on publication failure. */
+        return -1;
+    }
 #endif
 }
 

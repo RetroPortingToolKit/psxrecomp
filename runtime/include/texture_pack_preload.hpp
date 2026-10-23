@@ -17,10 +17,14 @@
 namespace psx_texpreload {
 
 /* Test-only fault injection. 1: the first item's decode throws
- * std::bad_alloc. 2: creating the second pool thread throws std::system_error. */
+ * std::bad_alloc. 2: creating the second pool thread throws std::system_error.
+ * 3: publication fails after the first pinned image. */
 inline std::atomic<int>& fault_mode() {
     static std::atomic<int> mode{0};
     return mode;
+}
+inline void after_publish(size_t count) {
+    if (count == 1 && fault_mode().load() == 3) throw std::bad_alloc();
 }
 
 /* Aggregate decoded bytes, reserved before an image is decoded. */
