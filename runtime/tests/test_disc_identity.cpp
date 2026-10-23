@@ -82,6 +82,29 @@ int main() {
             std::string chd_digest;
             assert(PSXRecompV4::disc_content_sha256(chd,chd_digest,&error) && chd_digest==digest);
             assert(PSXRecompV4::required_disc_content_matches(chd,required,&error));
+            const std::vector<std::string> required_fps{id.disc_fp};
+            assert(!id.disc_fp.empty());
+            assert(PSXRecompV4::identify_disc(cue,"",0,false,false).disc_fp==id.disc_fp);
+            assert(PSXRecompV4::identify_disc(chd,"",0,false,false).disc_fp==id.disc_fp);
+            assert(PSXRecompV4::required_disc_content_matches(image,required,&error,required_fps));
+            assert(PSXRecompV4::required_disc_content_matches(cue,required,&error,required_fps));
+            assert(PSXRecompV4::required_disc_content_matches(chd,required,&error,required_fps));
+            auto write_cue=[&](const std::string& body){std::ofstream file(cue);file<<body;};
+            const std::string original_cue="FILE \"disc.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
+            auto audio=root/"extra-audio.bin";
+            {std::ofstream f(audio,std::ios::binary);std::vector<char> silence(2352*2);f.write(silence.data(),silence.size());}
+            write_cue(original_cue+"FILE \"extra-audio.bin\" BINARY\n TRACK 02 AUDIO\n INDEX 01 00:00:00\n");
+            // Data-track bytes still match; the altered mounted disc must not.
+            assert(PSXRecompV4::required_disc_content_matches(cue,required,&error));
+            assert(!PSXRecompV4::required_disc_content_matches(cue,required,&error,required_fps));
+            write_cue("FILE \"disc.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:01\n");
+            assert(!PSXRecompV4::required_disc_content_matches(cue,required,&error,required_fps));
+            // The current CUE reader treats data-track MODE1/2352 as the
+            // same raw2352 mount; descriptive text alone is not content.
+            write_cue("FILE \"disc.bin\" BINARY\n TRACK 01 MODE1/2352\n INDEX 01 00:00:00\n");
+            assert(PSXRecompV4::required_disc_content_matches(cue,required,&error,required_fps));
+            write_cue(original_cue);fs::remove(audio);
+            assert(PSXRecompV4::required_disc_content_matches(cue,required,&error,required_fps));
             // A decoded-sector read failure must reject instead of accepting
             // a hash of the readable prefix.
             fs::resize_file(chd,fs::file_size(chd)-1000);

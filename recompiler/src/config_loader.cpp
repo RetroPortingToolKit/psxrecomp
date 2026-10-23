@@ -1911,18 +1911,20 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     }
 
     // Mandatory original content, independent of selected mods.
-    std::vector<std::string> required_disc_sha256;
-    if (game.contains("required_disc_sha256")) {
-        required_disc_sha256 = toml::find<std::vector<std::string>>(game, "required_disc_sha256");
-        if (required_disc_sha256.empty())
-            throw std::runtime_error("game.required_disc_sha256 must not be empty");
-        for (auto& hash : required_disc_sha256) {
-            if (hash.size() != 64 || !std::all_of(hash.begin(), hash.end(), [](unsigned char c) {
-                    return std::isxdigit(c) != 0;
-                })) throw std::runtime_error("game.required_disc_sha256 requires 64 hexadecimal characters per hash");
-            for (char& c : hash) c = (char)std::tolower((unsigned char)c);
+    auto required_hashes = [&](const char* key) {
+        std::vector<std::string> hashes;
+        if (!game.contains(key)) return hashes;
+        hashes = toml::find<std::vector<std::string>>(game, key);
+        if (hashes.empty()) throw std::runtime_error(std::string("game.")+key+" must not be empty");
+        for (auto& hash : hashes) {
+            if (hash.size()!=64 || !std::all_of(hash.begin(),hash.end(),[](unsigned char c){return std::isxdigit(c)!=0;}))
+                throw std::runtime_error(std::string("game.")+key+" requires 64 hexadecimal characters per hash");
+            for(char& c:hash)c=(char)std::tolower((unsigned char)c);
         }
-    }
+        return hashes;
+    };
+    auto required_disc_sha256=required_hashes("required_disc_sha256");
+    auto required_disc_fps=required_hashes("required_disc_fps");
 
     // [netplay] mount / TOC policy for online (see DiscIdentity::disc_fp).
     bool netplay_require_cue = false;
@@ -3002,6 +3004,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*disc_crc*/         disc_crc,
         /*disc_sha1*/        disc_sha1,
         /*required_disc_sha256*/ required_disc_sha256,
+        /*required_disc_fps*/ required_disc_fps,
         /*netplay_require_cue*/ netplay_require_cue,
         /*netplay_required_tracks*/ netplay_required_tracks,
         /*has_netplay_required_leadout*/ has_netplay_required_leadout,

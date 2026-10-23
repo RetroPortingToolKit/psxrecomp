@@ -1519,8 +1519,8 @@ int provider_commit(void*, const char* image_path) {
 int provider_commit_netplay(void*, const char* image_path) {
     HostLaunchTimingScope timing(HOST_LAUNCH_PROVIDER_NETPLAY_COMMIT);
     std::string error;
-    if (!required_disc_content_matches(image_path ? std::filesystem::path(image_path) :
-            std::filesystem::path(), required_disc_sha256(), &error)) {
+    if (!required_original_disc_matches(image_path ? std::filesystem::path(image_path) :
+            std::filesystem::path(), &error)) {
         set_error(error);
         return 0;
     }
@@ -2296,7 +2296,7 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
     HostLaunchTimingScope timing(HOST_LAUNCH_COMMIT);
     RuntimeMods& s = state();
     // Base-disc policy cannot be bypassed by disabling every package.
-    if (!required_disc_content_matches(disc_path, required_disc_sha256(), error)) return false;
+    if (!required_original_disc_matches(disc_path, error)) return false;
     s.netplay_view_plan = false;
     if (!s.initialized) { timing.success(); return true; }
     if (!preparation_continues(-1.0f,"Checking selected content",error)) return false;
