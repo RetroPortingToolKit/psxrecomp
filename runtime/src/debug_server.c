@@ -16988,6 +16988,9 @@ void debug_server_poll(void)
     s_in_command = 1;
     if (req[0]) process_command(req);
     s_in_command = 0;
+    /* A completed diagnostic request may block on host readback or file I/O.
+     * Nonreturning guest work cannot reach this refresh. */
+    starvation_watchdog_heartbeat();
 
     SDL_LockMutex(s_io_mutex);
     /* Only deliver if the I/O thread is still waiting (it may have timed out and
@@ -17072,6 +17075,10 @@ void debug_server_record_frame(void)
     /* Always-on display ring: raw display-area pixels for THIS frame number
      * (pre-increment, matching what the `frame` command reports right now). */
     disp_ring_capture();
+    /* The synchronous forensic readback is host work after this completed
+     * frame. Keep its evidence and start the next guest interval afterward. */
+    extern void starvation_watchdog_heartbeat(void);
+    starvation_watchdog_heartbeat();
 
     s_history_count = s_frame_count + 1;
     s_frame_count++;
