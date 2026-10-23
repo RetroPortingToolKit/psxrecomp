@@ -1059,6 +1059,8 @@ struct GameConfig {
     // Mandatory original-disc SHA-256 allowlist, independent of mods. An absent
     // key leaves older titles unchanged; a present key must name valid hashes.
     std::vector<std::string> required_disc_sha256;
+    // Optional original mount/TOC identities; same canonical disc_fp as netplay.
+    std::vector<std::string> required_disc_fps;
 
     // [netplay] disc mount policy (portable across psxrecomp titles).
     // Data-track CRC proves "right game"; these prove "same CD geometry"

@@ -3313,8 +3313,7 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
 static bool validate_disc_for_launch(const std::filesystem::path& path,
                                      const std::string& game_id) {
     std::string identity_error;
-    if (!PSXRecompV4::required_disc_content_matches(path,
-            PSXRecompV4::required_disc_sha256(), &identity_error)) {
+    if (!PSXRecompV4::required_original_disc_matches(path, &identity_error)) {
         std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
         return false;
     }
@@ -11528,8 +11527,7 @@ namespace {
         // Enforce original image policy in the selection badge, including
         // when every mod is disabled. PLAY is guarded again before boot.
         std::string identity_error;
-        if (!PSXRecompV4::required_disc_content_matches(disc_path,
-                PSXRecompV4::required_disc_sha256(), &identity_error)) {
+        if (!PSXRecompV4::required_original_disc_matches(disc_path, &identity_error)) {
             out->verdict = 3;
             out->netplay_ok = 0;
             g_session_netplay_disc_ok = false;
@@ -18069,6 +18067,7 @@ int main(int argc, char** argv) {
             game_has_disc_crc = gc.has_disc_crc;
             game_disc_crc     = gc.disc_crc;
             PSXRecompV4::required_disc_sha256() = gc.required_disc_sha256;
+            PSXRecompV4::required_disc_fps() = gc.required_disc_fps;
             resolved_audio_buffer_ms = gc.runtime.audio_buffer_ms;
             g_netplay_disc_expect.require_cue = gc.netplay_require_cue;
             g_netplay_disc_expect.required_tracks = gc.netplay_required_tracks;
@@ -20570,8 +20569,7 @@ session_reboot:
     // CLI, no-launcher, zero-mod builds, and a changed disc on lobby rematch.
     {
         std::string identity_error;
-        if (!PSXRecompV4::required_disc_content_matches(resolved_disc,
-                PSXRecompV4::required_disc_sha256(), &identity_error)) {
+        if (!PSXRecompV4::required_original_disc_matches(resolved_disc, &identity_error)) {
             std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
             return 1;
         }
