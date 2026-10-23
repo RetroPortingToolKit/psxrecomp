@@ -559,6 +559,17 @@ void test_bounded_preload(Fixture& fixture) {
               "an injected worker failure is caught and reported as partial");
         hd_texture_pack_destroy(pack);
     }
+    {
+        HdTexturePack* pack = open_pack(fixture.root);
+        if (!pack) return;
+        tp::fault_mode() = 3;
+        HdTexturePreloadResult r{};
+        const int status = hd_texture_pack_preload(pack, size_t{64} << 20, 4, &r);
+        tp::fault_mode() = 0;
+        check(status == -1 && r.loaded == 1 && r.bytes == 64u * 8u * 4u,
+              "publication failure still accounts the retained pinned image");
+        hd_texture_pack_destroy(pack);
+    }
 }
 
 } // namespace

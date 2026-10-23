@@ -154,6 +154,15 @@ void preload(const fs::path& root) {
         check(status == 0 && r.worker_errors == 1 && r.failed == 1 && r.loaded == 0,
               "a throwing decode is caught and reported as a partial preload");
     }
+    {   /* Publication can fail after retaining a pinned prefix. */
+        auto pack = create(root);
+        tp::fault_mode() = 3;
+        HdTexturePreloadResult r{};
+        const int status = duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r);
+        tp::fault_mode() = 0;
+        check(status == -1 && r.loaded == 1 && r.bytes == 16*4*4,
+              "publication failure still reports every retained byte");
+    }
     {   /* Malformed image: failed, not pinned, async decode reports failure. */
         std::ofstream(root/"replacements"/name,std::ios::binary|std::ios::trunc) << "not a png";
         auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);

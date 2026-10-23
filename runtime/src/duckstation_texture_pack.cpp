@@ -1189,20 +1189,31 @@ int duck_texture_pack_preload(DuckTexturePack* p, size_t max_bytes, unsigned max
                 /* Already pinned, or an on-demand decode in flight: leave it. */
                 if (it->second.pinned || it->second.status == DecodeStatus::Queued ||
                     it->second.status == DecodeStatus::Loading) continue;
-                if (it->second.image) w.used -= it->second.image->rgba.size();
             }
-            Decode& entry = w.decoded[ids[k]];
+            const size_t previous_bytes = it != w.decoded.end() && it->second.image
+                ? it->second.image->rgba.size() : 0;
+            Decode entry;
+            /* Prepare throwing metadata before touching an existing entry. */
             entry.path = p->entries[ids[k] - 1].path;
-            r.bytes += images[k]->rgba.size();
             entry.image = std::move(images[k]); entry.status = DecodeStatus::Ready;
             entry.pinned = true; entry.use = ++w.tick;
+            const size_t bytes = entry.image->rgba.size();
+            if (it == w.decoded.end()) w.decoded.emplace(ids[k], std::move(entry));
+            else it->second = std::move(entry);
+            w.used -= previous_bytes;
+            r.bytes += bytes;
             ++w.pinned_count; ++r.loaded;
+            ++w.decoded_images;
+            tp::after_publish(r.loaded);
         }
-        w.decoded_images += static_cast<uint64_t>(r.loaded);
         r.failed = r.requested - r.loaded - r.over_budget;
         if (out) *out = r;
         return r.loaded == r.requested ? 1 : 0;
-    } catch (...) { return -1; }
+    } catch (...) {
+        r.failed = r.requested - r.loaded - r.over_budget;
+        if (out) *out = r;  /* Account the pinned prefix even on publication failure. */
+        return -1;
+    }
 }
 int duck_texture_pack_acquire_decoded(DuckTexturePack* p, uint64_t id, DuckTexturePixels* out) {
     if (out) *out = {};
