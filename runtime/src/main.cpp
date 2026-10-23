@@ -19854,6 +19854,9 @@ session_reboot:
     uint64_t total_executed = 0;
     const uint64_t max_total = 100000000ULL; /* 100M instructions */
     uint32_t vsync_hits = 0;
+    /* Frontend/driver initialization may outlast the gameplay deadline.
+     * Arm it once at actual guest entry; retain diagnostics and thresholds. */
+    starvation_watchdog_heartbeat();
     for (;;) {
         uint32_t ran = interp_step(&cpu, 1000000);
         total_executed += ran;
@@ -20031,6 +20034,9 @@ session_reboot:
      * Go back to the room; do not boot the game offline. */
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
         goto soft_return_lobby;
+    /* Frontend/driver initialization may outlast the gameplay deadline.
+     * Arm it once at actual guest entry; retain diagnostics and thresholds. */
+    starvation_watchdog_heartbeat();
     psx_scheduler_run(&cpu);
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
         goto soft_return_lobby;
