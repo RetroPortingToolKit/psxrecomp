@@ -2724,6 +2724,33 @@ id = "override.test"
         check(!mod_runtime_activation_error() && func_override_count()==1,"vanilla session clears failure and retains direct tier");
     }
 
+#ifdef RECOMP_LAUNCHER
+    {
+        const auto folder=root/"conditional-picker";
+        write_text(folder/"bundled/picker/1.0.0/manifest.toml",
+            "format_version = 10\nid = \"picker\"\nversion = \"1.0.0\"\nname = \"Picker\"\n"
+            "[[target]]\ngame_id = \"SLUS-RUNTIME\"\n"
+            "[[feature]]\nid = \"media\"\nname = \"Media\"\n"
+            "[[option]]\nfeature = \"media\"\nid = \"language\"\nlabel = \"Language\"\n"
+            "type = \"choice\"\ndefault = \"en\"\n"
+            "[[option.choice]]\nvalue = \"en\"\nlabel = \"English\"\n"
+            "[[option.choice]]\nvalue = \"es\"\nlabel = \"Spanish\"\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"english\"\nlabel = \"English\"\nwhen = { language = \"en\" }\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"spanish\"\nlabel = \"Spanish\"\nwhen = { language = \"es\" }\n");
+        check(PSXRecompV4::mod_runtime_initialize(folder,"SLUS-RUNTIME",0x80002000,{},&error),error.c_str());
+        const auto* provider=PSXRecompV4::mod_runtime_launcher_provider();
+        RecompLauncherCModResource resource{};
+        check(provider->feature_resource_count(provider->ctx,"picker","media")==1 &&
+              provider->feature_resource_get(provider->ctx,"picker","media",0,&resource) &&
+              std::string(resource.id)=="english","only selected resource picker shown while feature is off");
+        check(provider->feature_set_option(provider->ctx,"picker","media","language","es"),"change picker language");
+        check(provider->feature_resource_count(provider->ctx,"picker","media")==1 &&
+              provider->feature_resource_get(provider->ctx,"picker","media",0,&resource) &&
+              std::string(resource.id)=="spanish" &&
+              !provider->feature_resource_get(provider->ctx,"picker","media",1,&resource),
+              "changing dropdown replaces the picker instead of exposing both");
+    }
+#endif
     fs::remove_all(root, ec);
     if (failures) return 1;
     std::cout << "mod runtime tests passed\n";

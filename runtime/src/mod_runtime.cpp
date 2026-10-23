@@ -208,6 +208,7 @@ bool dependency_files(RuntimeMods& s, const std::filesystem::path& disc,
         for (const auto& resource : package->resources) {
             if (!s.manager.feature_enabled(id, resource.feature_id) &&
                 !s.manager.feature_implicitly_enabled(id, resource.feature_id)) continue;
+            if (!s.manager.feature_resource_active(id, resource.feature_id, resource.id)) continue;
             const auto path = s.manager.feature_resource_path(id, resource.feature_id, resource.id);
             if (!add(path)) return false;
         }
@@ -1320,7 +1321,8 @@ int provider_feature_resource_count(void*, const char* package_id,
     return (int)std::count_if(
         package->resources.begin(), package->resources.end(),
         [&](const ModResource& resource) {
-            return resource.feature_id == feature_id && !resource.hidden;
+            return resource.feature_id == feature_id && !resource.hidden &&
+                state().manager.feature_resource_active(package_id, feature_id, resource.id);
         });
 }
 
@@ -1331,7 +1333,8 @@ int provider_feature_resource_get(void*, const char* package_id,
     const ModPackage* package = selected_package(package_id);
     if (!package) return 0;
     for (const ModResource& resource : package->resources) {
-        if (resource.feature_id != feature_id || resource.hidden) continue;
+        if (resource.feature_id != feature_id || resource.hidden ||
+            !state().manager.feature_resource_active(package_id, feature_id, resource.id)) continue;
         if (index-- != 0) continue;
         const std::filesystem::path path =
             state().manager.feature_resource_path(
