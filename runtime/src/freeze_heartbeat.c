@@ -642,6 +642,29 @@ static int freeze_dump_write(long long wall, uint64_t frame, uint64_t cyc,
     }
     fputs("  ],\n", f);
 
+    /* Capture the existing host samples before serializing the large rings.
+     * A watchdog exit can truncate that output before late stack sampling,
+     * losing the only observation of the host that preceded the exit. */
+#ifdef _WIN32
+    /* Hard freezes use one stack; still-running wedges use the same eight
+     * samples as before. Suspension guards and heartbeat policy are unchanged. */
+    fputs("  \"main_stack\":", f);
+    if (wedge_kind == 1) {
+        freeze_dump_main_stack_json(f);
+    } else {
+        fputs("[]", f);
+    }
+    fputs(",\n  \"main_stack_samples\":", f);
+    if (wedge_kind == 2 || wedge_kind == 3 || wedge_kind == 5) {
+        freeze_dump_main_stack_samples_json(f, 8);
+    } else {
+        fputs("[]", f);
+    }
+#else
+    fputs("  \"main_stack\":[]", f);
+#endif
+    fputs(",\n", f);
+
     fputs("  \"wtrace_all\":", f);
     debug_server_freeze_dump_wtrace_all_json(f, DUMP_CAP_WTRACE_ALL);
     fputs(",\n", f);
@@ -674,33 +697,9 @@ static int freeze_dump_write(long long wall, uint64_t frame, uint64_t cyc,
     debug_server_freeze_dump_dirty_block_json(f, DUMP_CAP_DIRTY_BLOCK);
     fputs(",\n", f);
 
-#ifdef _WIN32
-    /* Main-thread call stack. Hard freeze (wedge_kind==1): one snapshot of the
-     * wedged thread in `main_stack`. Still-running wedges (kind 2 reentry
-     * storm, kind 3 slow frames): a single frame is noise — take multiple
-     * samples in `main_stack_samples` to expose the recurring wait (the
-     * dispatch/handler chain, or a driver present block). */
-    fputs("  \"main_stack\":", f);
-    if (wedge_kind == 1) {
-        freeze_dump_main_stack_json(f);
-    } else {
-        fputs("[]", f);
-    }
-    fputs(",\n  \"main_stack_samples\":", f);
-    if (wedge_kind == 2 || wedge_kind == 3 || wedge_kind == 5) {
-        freeze_dump_main_stack_samples_json(f, 8);
-    } else {
-        fputs("[]", f);
-    }
-    fputs("\n", f);
-#else
-    fputs("  \"main_stack\":[]\n", f);
-#endif
-
     {
         static char cs_buf[6144];
         hb_format_cpu_scratchpad(cs_buf, sizeof(cs_buf));
-        fputs(",\n", f);
         fputs(cs_buf, f);
         fputs("\n", f);
     }
