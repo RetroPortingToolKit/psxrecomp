@@ -1,5 +1,6 @@
 #include "mod_runtime.h"
 #include "func_override.h"
+#include "disc_content_hash.h"
 #include "mod_netplay.h"
 #include "host_launch_timing.h"
 #include "host_overlay.h"
@@ -835,6 +836,19 @@ int main(int argc, char** argv) {
           "restore callback must register through the C API");
     check(!psx_mod_register_savestate_plugin("runtime.test-vblank", test_restore_plugin),
           "duplicate restore callback must be rejected");
+    // The original-disc gate precedes mod-runtime initialization and remains
+    // effective for a completely empty/offline package plan.
+    PSXRecompV4::required_disc_sha256() = {sha256_hex(stock)};
+    const auto altered_path = root / "same-game-modified.bin";
+    auto altered_bytes = stock; altered_bytes.back() = 1;
+    write_bytes(altered_path, altered_bytes);
+    check(!PSXRecompV4::mod_runtime_commit(altered_path, &error),
+          "modified base is rejected independently of selected mods");
+    check(!PSXRecompV4::mod_runtime_commit(root / "missing-original.bin", &error),
+          "unreadable required base fails closed");
+    check(PSXRecompV4::mod_runtime_commit(stock_path, &error),
+          "verified original is accepted without an initialized mod catalog");
+    PSXRecompV4::required_disc_sha256().clear();
     check(PSXRecompV4::mod_runtime_initialize(
               root, "SLUS-RUNTIME", 0x80002000, {}, &error),
           error.c_str());

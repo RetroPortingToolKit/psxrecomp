@@ -1910,7 +1910,21 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         for (char& c : disc_sha1) c = (char)std::tolower((unsigned char)c);
     }
 
-    // [netplay] — mount / TOC policy for online (see DiscIdentity::disc_fp).
+    // Mandatory original content, independent of selected mods.
+    std::vector<std::string> required_disc_sha256;
+    if (game.contains("required_disc_sha256")) {
+        required_disc_sha256 = toml::find<std::vector<std::string>>(game, "required_disc_sha256");
+        if (required_disc_sha256.empty())
+            throw std::runtime_error("game.required_disc_sha256 must not be empty");
+        for (auto& hash : required_disc_sha256) {
+            if (hash.size() != 64 || !std::all_of(hash.begin(), hash.end(), [](unsigned char c) {
+                    return std::isxdigit(c) != 0;
+                })) throw std::runtime_error("game.required_disc_sha256 requires 64 hexadecimal characters per hash");
+            for (char& c : hash) c = (char)std::tolower((unsigned char)c);
+        }
+    }
+
+    // [netplay] mount / TOC policy for online (see DiscIdentity::disc_fp).
     bool netplay_require_cue = false;
     int netplay_required_tracks = 0;
     bool has_netplay_required_leadout = false;
@@ -2987,6 +3001,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*has_disc_crc*/     has_disc_crc,
         /*disc_crc*/         disc_crc,
         /*disc_sha1*/        disc_sha1,
+        /*required_disc_sha256*/ required_disc_sha256,
         /*netplay_require_cue*/ netplay_require_cue,
         /*netplay_required_tracks*/ netplay_required_tracks,
         /*has_netplay_required_leadout*/ has_netplay_required_leadout,

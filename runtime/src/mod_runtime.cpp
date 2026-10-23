@@ -5,6 +5,7 @@
 #include "spu.h"
 
 #include "disc_path.h"
+#include "disc_content_hash.h"
 #include "host_file_identity.h"
 #include "func_override.h"
 #include "host_sha256.h"
@@ -564,58 +565,7 @@ bool restored_main_matches_plan(const RuntimeMods& s, uint32_t& failed_at) {
 
 bool sha256_file(const std::filesystem::path& path, std::string& out,
                  std::string* error) {
-    out.clear();
-    if (path.empty()) return true;
-    const DiscPathResolution resolved = resolve_disc_path(path);
-    const std::filesystem::path input = resolved.data;
-    std::string extension = resolved.mount.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-        [](unsigned char c) { return (char)std::tolower(c); });
-    if (extension == ".chd") {
-        psx_sha256_ctx hash;
-        psx_sha256_init(&hash);
-        PS1::ISOReader disc;
-        if (!disc.Open(resolved.mount.string())) {
-            if (error) *error =
-                "cannot decode image fingerprint: " + resolved.mount.string();
-            return false;
-        }
-        std::array<uint8_t, 2352> sector{};
-        for (uint32_t lba = 0; lba < disc.GetSectorCount(); ++lba) {
-            if (!disc.ReadRawSector(lba, sector.data())) {
-                if (error) *error =
-                    "cannot finish decoding image fingerprint: " +
-                    resolved.mount.string();
-                return false;
-            }
-            psx_sha256_update(&hash, sector.data(), sector.size());
-        }
-        uint8_t digest[32];
-        psx_sha256_final(&hash, digest);
-        std::ostringstream text;
-        for (uint8_t byte : digest)
-            text << std::hex << std::setw(2) << std::setfill('0')
-                 << (unsigned)byte;
-        out = text.str();
-        return true;
-    }
-
-    uint8_t digest[32];
-    const auto result = psx_sha256_file(input, digest);
-    if (result == PsxFileHashResult::OpenError) {
-        if (error) *error = "cannot fingerprint image: " + input.string();
-        return false;
-    }
-    if (result != PsxFileHashResult::Ok) {
-        if (error) *error =
-            "cannot finish fingerprinting image: " + input.string();
-        return false;
-    }
-    std::ostringstream text;
-    for (uint8_t byte : digest)
-        text << std::hex << std::setw(2) << std::setfill('0') << (unsigned)byte;
-    out = text.str();
-    return true;
+    return disc_content_sha256(path, out, error);
 }
 
 bool measured_disc_digest(const std::filesystem::path& path, std::string& digest, std::string* error) {
@@ -1569,6 +1519,11 @@ int provider_commit(void*, const char* image_path) {
 int provider_commit_netplay(void*, const char* image_path) {
     HostLaunchTimingScope timing(HOST_LAUNCH_PROVIDER_NETPLAY_COMMIT);
     std::string error;
+    if (!required_disc_content_matches(image_path ? std::filesystem::path(image_path) :
+            std::filesystem::path(), required_disc_sha256(), &error)) {
+        set_error(error);
+        return 0;
+    }
     /* Trusted title profiles take precedence over optional package negotiation. */
     if (!(psx_mod_netplay_profile()
             ? mod_runtime_commit_netplay(image_path ? std::filesystem::path(image_path) :
@@ -2340,6 +2295,8 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
 bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* error, bool save_selection) {
     HostLaunchTimingScope timing(HOST_LAUNCH_COMMIT);
     RuntimeMods& s = state();
+    // Base-disc policy cannot be bypassed by disabling every package.
+    if (!required_disc_content_matches(disc_path, required_disc_sha256(), error)) return false;
     s.netplay_view_plan = false;
     if (!s.initialized) { timing.success(); return true; }
     if (!preparation_continues(-1.0f,"Checking selected content",error)) return false;
