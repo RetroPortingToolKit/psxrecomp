@@ -65,7 +65,13 @@ static inline int psx_window_fullscreen_set(SDL_Window* window,
         SDL_SetWindowBordered(window, SDL_FALSE);
         SDL_SetWindowResizable(window, SDL_FALSE);
         SDL_SetWindowPosition(window, desktop.x, desktop.y);
-        SDL_SetWindowSize(window, desktop.w, desktop.h);
+        /* One row taller than the display: a window exactly covering it is
+         * promoted by Windows to a direct/independent flip, and OpenGL swaps
+         * from the render thread then stop reaching the screen (NVIDIA: the
+         * image freezes while the game runs; any overlay -- taskbar, another
+         * window -- forces composition and the frames reappear). The extra
+         * row is off-screen; the window stays composed. */
+        SDL_SetWindowSize(window, desktop.w, desktop.h + 1);
         SDL_SyncWindow(window);
 #elif defined(PSX_SDL3)
         if (!SDL_SetWindowFullscreen(window, true)) return -1;
