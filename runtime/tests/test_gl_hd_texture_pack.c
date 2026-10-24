@@ -426,7 +426,7 @@ static void composition_scene(const char* root) {
     }
 }
 
-static void cache_eviction_scene(const char* root) {
+static void cache_pressure_scene(const char* root) {
     uint16_t pressure_words[16]; for(int i=0;i<16;++i) pressure_words[i]=0x1234;
     DuckTextureKey key={0}; key.kind=DUCK_TEXTURE_UPLOAD;key.depth=HD_TEXTURE_DEPTH_16BPP;
     key.source_hash=duck_texture_hash_words_le(pressure_words,16);
@@ -447,7 +447,7 @@ static void cache_eviction_scene(const char* root) {
             composed_key=image.cache_key;
         gpu_hd_textures_release_image(&image);if(!composed_key) SDL_Delay(1);
     }
-    check(composed_key!=0,"complete composition ready before decoder eviction");
+    check(composed_key!=0,"complete composition ready before cache pressure");
     gr_fill_rect(0,0,16,16,0x03e0);gr_draw_textured_rect(2,2,4,4,0,0,0,0,texture_page);capture();
     GpuHdTextureDiag before,after;gpu_hd_textures_get_diag(&before);
     gr_vram_transfer_in(640,64,16,1,pressure_words);int ready=0;
@@ -456,17 +456,22 @@ static void cache_eviction_scene(const char* root) {
         gpu_hd_textures_release_image(&image);if(!ready) SDL_Delay(1);
     }
     check(ready,"full CPU budget pressure image decoded");gpu_hd_textures_get_diag(&after);
-    check(after.decoded_bytes==1024*1024 && after.decode_evictions>before.decode_evictions,
-          "pressure image evicts original decoded replacements");
+    /* All fixture images fit in the bounded preload and remain pinned.
+     * The configured 1 MiB on-demand budget must not evict that preload. */
+    check(before.decoded_bytes>1024*1024 &&
+          after.decoded_bytes==before.decoded_bytes &&
+          after.decoded_images==before.decoded_images &&
+          after.decode_evictions==before.decode_evictions,
+          "cache pressure retains pinned preloaded replacements");
     check(gpu_hd_textures_acquire_gl_draw(texture_page,0,0,bounds,0,0,&image) && !image.rgba,
-          "GPU-resident replacement remains ready after CPU eviction");gpu_hd_textures_release_image(&image);
+          "GPU-resident replacement remains ready under cache pressure");gpu_hd_textures_release_image(&image);
     check(gpu_hd_textures_acquire_draw(tp,0,0,parts,0,1,&image) && image.cache_key==composed_key,
-          "complete composition survives eviction of all source PNGs");gpu_hd_textures_release_image(&image);
+          "complete composition remains warm under cache pressure");gpu_hd_textures_release_image(&image);
     gr_draw_textured_rect(2,2,4,4,0,0,0,0,texture_page);capture();
     check(sample(8,8)[0]>200,"GPU-resident replacement still draws original HD detail");
     SDL_Delay(20);gpu_hd_textures_get_diag(&before);
     check(before.decoded_images==after.decoded_images && before.gl_uploads==after.gl_uploads,
-          "warm draws do not decode or upload again after CPU eviction");
+          "warm draws do not decode or upload again under cache pressure");
     pack_config(root,0);check(gpu_hd_textures_reload(error,sizeof(error)),"eviction fixture cleanup reload");
     state();gr_vram_transfer_in(512,0,4,4,source_words);wait_ready(0);wait_ready(1);
 }
@@ -538,7 +543,7 @@ int main(int argc,char** argv) {
           "ST black alpha127 remains occupied semitransparent black");
     gr_set_semi_transparency(0,0);
     composition_scene(argv[1]);state();wait_ready(0);wait_ready(1);
-    cache_eviction_scene(argv[1]);
+    cache_pressure_scene(argv[1]);
 
     /* A queued draw must consume its source before a later source overwrite.
      * The next draw falls back because upload identity has been invalidated. */
