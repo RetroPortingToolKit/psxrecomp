@@ -148,6 +148,7 @@ struct RuntimeMods {
     /* The plan is a netplay match's own-view set: its hooks run only inside
      * psx_mod_render_local_view, its vblank/savestate callbacks not at all. */
     bool netplay_view_plan = false;
+    bool launcher_netplay_context = false;
     const ModResolution::Plugin* current_plugin = nullptr;
     CPUState* current_function_cpu = nullptr;
     bool current_function_finished = false;
@@ -960,6 +961,14 @@ int feature_set_option_impl(const char* package_id, const char* feature_id,
 }
 
 #if defined(RECOMP_LAUNCHER)
+std::vector<const ModOption*> provider_options(const ModPackage& package) {
+    std::vector<const ModOption*> out;
+    const bool online = state().launcher_netplay_context || psx_mod_netplay_is_active();
+    for (const ModOption& option : package.options)
+        if (option.visible_in(online)) out.push_back(&option);
+    return out;
+}
+
 void copy_text(char* out, size_t capacity, const std::string& value) {
     if (!out || capacity == 0) return;
     std::snprintf(out, capacity, "%s", value.c_str());
@@ -995,7 +1004,7 @@ int provider_package_get(void*, int index, RecompLauncherCModPackage* out) {
     copy_text(out->source_name, sizeof(out->source_name), package->source_name);
     copy_text(out->source_url, sizeof(out->source_url), package->source_url);
     out->enabled = package_has_enabled_feature(*package);
-    out->option_count = (int)package->options.size();
+    out->option_count = (int)provider_options(*package).size();
     /* A bundled package is build output. Offering to remove it would succeed
      * and then be silently undone by the next build. */
     out->removable = !package_in_use(*package) &&
@@ -1007,8 +1016,10 @@ int provider_option_get(void*, const char* package_id, int index,
                         RecompLauncherCModOption* out) {
     if (!package_id || !out || index < 0) return 0;
     const ModPackage* package = selected_package(package_id);
-    if (!package || (size_t)index >= package->options.size()) return 0;
-    const ModOption& option = package->options[(size_t)index];
+    if (!package) return 0;
+    const auto options = provider_options(*package);
+    if ((size_t)index >= options.size()) return 0;
+    const ModOption& option = *options[(size_t)index];
     std::memset(out, 0, sizeof(*out));
     copy_text(out->id, sizeof(out->id), option.id);
     copy_text(out->label, sizeof(out->label), option.label);
@@ -1065,8 +1076,8 @@ bool provider_feature_at(int index, const ModPackage*& package,
 std::vector<const ModOption*> provider_feature_options(
     const ModPackage& package, const std::string& feature_id) {
     std::vector<const ModOption*> out;
-    for (const ModOption& option : package.options)
-        if (option.feature_id == feature_id) out.push_back(&option);
+    for (const ModOption* option : provider_options(package))
+        if (option->feature_id == feature_id) out.push_back(option);
     return out;
 }
 
@@ -1481,6 +1492,10 @@ unsigned requested_netplay_players() {
 int mod_runtime_netplay_player_limit(int fallback) {
     const unsigned count=psx_mod_netplay_player_count();
     return count?(int)count:fallback;
+}
+
+void mod_runtime_set_launcher_netplay_context(bool online) {
+    state().launcher_netplay_context = online;
 }
 
 static std::optional<ModPackageManager> offline_manager_before_netplay;

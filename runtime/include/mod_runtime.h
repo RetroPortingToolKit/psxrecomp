@@ -53,6 +53,8 @@ bool mod_runtime_netplay_settings_fingerprint(const PsxLobbyMatchCaps& caps,
                                                std::string* error = nullptr);
 /* Profile-specific lobby capacity, including an optional last roster seat. */
 int mod_runtime_netplay_player_limit(int fallback);
+/* Launcher presentation only; never changes selection or simulation policy. */
+void mod_runtime_set_launcher_netplay_context(bool online);
 /* [netplay] content_negotiation from game.toml. Off (default): clear package
  * simulation mods; an executable-owned profile takes precedence when present. */
 void mod_runtime_set_netplay_content_negotiation(bool enabled);

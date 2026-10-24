@@ -1916,6 +1916,14 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 option.group = v.contains("group") ? toml::find<std::string>(v, "group") : "General";
                 option.disabled_by =
                     v.contains("disabled_by") ? toml::find<std::string>(v, "disabled_by") : "";
+                const std::string display_context = v.contains("display_context")
+                    ? toml::find<std::string>(v, "display_context") : "any";
+                if (display_context == "online")
+                    option.display_context = ModOptionDisplayContext::Online;
+                else if (display_context == "offline")
+                    option.display_context = ModOptionDisplayContext::Offline;
+                else if (display_context != "any")
+                    throw std::runtime_error("option display_context must be any, offline or online");
                 const std::string type = toml::find<std::string>(v, "type");
                 if (!find_feature(out, option.feature_id))
                     throw std::runtime_error("option references unknown feature");
