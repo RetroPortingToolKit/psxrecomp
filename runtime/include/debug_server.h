@@ -89,6 +89,9 @@ void debug_server_init(int port);
  * Reset the mod request before activating each new session's plugins. */
 void debug_server_request(int enabled);
 int debug_server_requested(void);
+/* Reconcile listener policy after every session's mod activation. Keeps an
+ * enabled listener, starts a newly enabled one, and closes a disabled one. */
+void debug_server_apply_request(int port);
 
 /* Current listener status for heartbeat diagnostics. error is the platform
  * socket error captured by init, or 0 when the listener is active. */
