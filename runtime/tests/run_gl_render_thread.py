@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--sdl-library", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--fixture", type=pathlib.Path)
+    ap.add_argument("--batch-impl", choices=("LLE", "HLE"), default="LLE",
+                    help="Build the same GL batching policy as the game under test")
     ap.add_argument("--scales", default="1,4")
     ap.add_argument("--frames", default="80")
     ap.add_argument("--single", action="store_true",
@@ -100,6 +102,7 @@ def main():
     for name, path in sources:
         o = dest / (name + ".o")
         r = run([args.cc, "-std=gnu11", "-O1", "-DPSX_SDL3=1", "-DPSX_NO_DEBUG_TOOLS=1",
+                 "-DPSX_GL_BATCH_HLE=" + str(int(args.batch_impl == "HLE")),
                  "-DGL_SILENCE_DEPRECATION=1", "-w", *sections, *includes, "-c", path, "-o", o])
         if r.returncode:
             print(r.stderr[-3000:])
