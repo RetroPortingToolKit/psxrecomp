@@ -139,6 +139,34 @@ static uint64_t fnv(const void *pp, size_t n, uint64_t h) {
     return h;
 }
 static uint64_t rb_digest = 0xcbf29ce484222325ull;
+/* Read the pre-swap composition before final resolution cleanup invalidates
+ * hold-last. Backing wide textures may have unused canonical-centre pixels. */
+static uint64_t composed_digest(int scale, int threaded, int dynres) {
+    gl_renderer_render_thread_sync("fixture_composed_frame");
+    uint64_t result = 0;
+    check(s_hold_kind == HOLD_DRAWABLE && s_hold_tw > 0 && s_hold_th > 0,
+          "composed frame retained before swap");
+    if (s_hold_kind == HOLD_DRAWABLE && s_hold_tw > 0 && s_hold_th > 0) {
+        const size_t bytes = (size_t)s_hold_tw * s_hold_th * 4u;
+        uint8_t *pixels = (uint8_t *)malloc(bytes);
+        check(pixels != NULL, "composed frame allocation");
+        if (pixels) {
+            p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_hold_fbo);
+            glReadPixels(0, 0, s_hold_tw, s_hold_th, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            result = fnv(pixels, bytes, 0xcbf29ce484222325ull);
+            if (getenv("PSX_TEST_GL_DUMP")) {
+                char path[96];
+                snprintf(path, sizeof path, "composed-%d-%d-%d-%dx%d.rgba",
+                         scale, threaded, dynres, s_hold_tw, s_hold_th);
+                FILE *dump = fopen(path, "wb");
+                check(dump != NULL, "composed frame dump");
+                if (dump) { fwrite(pixels, 1, bytes, dump); fclose(dump); }
+            }
+            free(pixels);
+        }
+    }
+    return result;
+}
 static uint32_t rng = 0x2468ace1u;
 static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
 
@@ -329,6 +357,7 @@ int main(int argc, char **argv) {
             check(gr_scale() == l, "gr_scale follows the level");
         }
     }
+    const uint64_t composed = composed_digest(scale, threaded, dynres);
     if (dynres) {
         if (level != scale) nsteps++;
         check(gl_renderer_step_internal_scale_now(scale) == 1, "dynres back to the ceiling");
@@ -387,6 +416,7 @@ int main(int argc, char **argv) {
     printf("digest=%016llx\n", (unsigned long long)digest);
     printf("hires=%016llx\n", (unsigned long long)hires);
     printf("wide=%016llx\n", (unsigned long long)wide);
+    printf("composed=%016llx\n", (unsigned long long)composed);
     printf("checks=%d failures=%d\n", checks, failures);
     gl_renderer_shutdown();
     check(!gl_renderer_render_thread_active(), "stopped by shutdown");
