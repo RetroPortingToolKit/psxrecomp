@@ -637,6 +637,16 @@ int main(void) {
             render_pass_get_stats(&st);
             CHECK(st.device_reads==i+1 && st.aborted==i+1 && st.watchdog==0,
                   "device read refusal is distinct from a watchdog");
+            CHECK(st.timed_passes==i+1 && st.max_pass_ms>0,
+                  "timing resets per session and includes aborted passes");
+            {
+                double parts = st.total_gl_begin_ms + st.total_checkpoint_ms +
+                    st.total_verify_before_ms + st.total_guest_ms + st.total_gl_end_ms +
+                    st.total_restore_ms + st.total_verify_after_ms;
+                CHECK(parts >= st.total_pass_ms - 0.000001 &&
+                      parts <= st.total_pass_ms + 0.000001,
+                      "phase wall times account for the entire transaction");
+            }
             CHECK(st.last_device_read==reads[i][0] && st.last_device_read_width==reads[i][1],
                   "device read diagnostic identifies the access");
             CHECK(st.last_failure.reason && strcmp(st.last_failure.reason,"device_read")==0,

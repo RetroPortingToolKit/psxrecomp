@@ -142,6 +142,8 @@ const char *host_span_kind_name(unsigned kind) {
         "none", "autocapture_tick", "provider_poll", "publish_commit", "loader_rescan",
         "dll_register", "lazy_load", "capture_on_dma", "capture_before_dma", "ac_request", "ac_done_join",
         "ac_prepare_image", "ac_child", "overlay_dispatch", "mod_work", "frame_present", "disc_read",
+        "host_events", "rewind_capture",
+        "display_probe", "audio_update",
     };
     return kind < HSPAN_KIND_COUNT ? names[kind] : "?";
 }

@@ -9067,6 +9067,9 @@ static void handle_render_pass_stats(int id, const char *json)
              "\"last_pass_ms\":%.3f,\"avg_pass_ms\":%.3f,"
              "\"avg_begin_ms\":%.3f,\"avg_guest_ms\":%.3f,"
              "\"avg_end_ms\":%.3f,\"avg_restore_ms\":%.3f,"
+             "\"timing\":{\"count\":%llu,\"gl_begin_ms\":%.3f,\"checkpoint_ms\":%.3f,"
+             "\"verify_before_ms\":%.3f,\"guest_ms\":%.3f,\"gl_end_ms\":%.3f,"
+             "\"restore_ms\":%.3f,\"verify_after_ms\":%.3f,\"total_ms\":%.3f,\"max_ms\":%.3f},"
              "\"guest_cycles_last\":%llu,\"disabled\":%d,"
              "\"promotions\":%llu,\"pass_presents\":%llu,"
              "\"blended_presents\":%llu,\"expired\":%llu,\"late_presents\":%llu,"
@@ -9100,6 +9103,10 @@ static void handle_render_pass_stats(int id, const char *json)
              (unsigned long long)st.dropped[RENDER_PASS_DROP_OTHER],
              st.last_pass_ms, st.avg_pass_ms,
              st.avg_begin_ms, st.avg_guest_ms, st.avg_end_ms, st.avg_restore_ms,
+             (unsigned long long)st.timed_passes, st.total_gl_begin_ms,
+             st.total_checkpoint_ms, st.total_verify_before_ms, st.total_guest_ms,
+             st.total_gl_end_ms, st.total_restore_ms, st.total_verify_after_ms,
+             st.total_pass_ms, st.max_pass_ms,
              (unsigned long long)st.guest_cycles_last, st.disabled,
              (unsigned long long)gd[0], (unsigned long long)gd[1],
              (unsigned long long)gd[2], (unsigned long long)gd[3],

@@ -754,6 +754,29 @@ static int passes_main(int scale, int window) {
               "window mode: pass_begin opens nothing");
     } else {
         check(why == PSX_MOD_RENDER_PASS_READY, "full-VRAM surface offers render passes");
+        gl_renderer_set_hd_texture_mode(1);
+        check(s_hd_native_authority, "HD authority enabled");
+        check(gl_renderer_pass_unavailable() == PSX_MOD_RENDER_PASS_READY,
+              "HD presentation surface offers render passes");
+        s_interp_w = FRAME_W * scale;
+        s_interp_h = FRAME_H * scale;
+        s_interp_source_path = GL_PRES_VRAM;
+        s_pass_verify = 1;
+        uint64_t before = fnv(vram, sizeof vram, 0xcbf29ce484222325ull);
+        int opened = gl_renderer_pass_begin(0, 0, FRAME_W, FRAME_H, 1, 2, 0);
+        check(opened, "HD pass opens");
+        if (opened) {
+            glb_set_draw_area(0, 0, FRAME_W - 1, FRAME_H - 1);
+            glb_draw_flat_rect(10, 10, 40, 40, 0x7fff);
+            flush_flat_batch();
+            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
+                  "HD pass draw leaves authoritative CPU VRAM untouched");
+            gl_renderer_pass_end(32768, 1);
+            check(gl_renderer_pass_verify_vram(), "HD pass restores GPU and CPU VRAM");
+            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
+                  "HD pass leaves native VRAM identical");
+        }
+        gl_renderer_set_hd_texture_mode(0);
     }
     check(glGetError() == GL_NO_ERROR, "GL error");
     printf("checks=%d failures=%d\n", checks, failures);

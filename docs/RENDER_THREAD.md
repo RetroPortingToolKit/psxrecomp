@@ -184,8 +184,8 @@ resolution (below), not of this layer.
 |---|---|
 | savestates / rewind | load and save are sync points; the frame stays synchronous, the next frame boundary releases |
 | netplay / rollback resimulation | `psx_netplay_active()` or dual-raster makes every frame ineligible: the emulation thread holds the context (synchronous path). Not started when netplay is configured at boot |
-| render passes | first `gl_renderer_pass_*` call in a frame is a sync point; the rest of that frame is synchronous. Recommended: leave `render_thread` off with the frame-rate mod |
-| frame interpolation | ineligible (held) while enabled; not started when it is on at boot |
+| render passes | a transaction is a sync point; the rest of that frame is synchronous. An allocation-mode refusal needs no queue drain |
+| frame interpolation | eligible; temporal composition uses the renderer's existing context. The guest keeps its own deadline cap while the context is on the render thread |
 | HD texture replacements / texture dumping | eligible; held only from a GP0(A0) header to its commit |
 | OpenXR | ineligible while a session is active |
 | Smooth motion (frame generation) | `[video] frame_generation`: in-between frames drawn by the render thread from recorded lists, docs/FRAME_GENERATION.md |
@@ -404,6 +404,13 @@ means), `guest_bound`, the step counters and `up_blocked`.
   savestate at Native, 4K and Match display, 4:3 and widescreen.
 
 ## Debug server
+
+Drawable pixel dimensions are queried on the window's owning thread and
+published as one atomic width/height pair before each frame handoff. Render
+and present workers read that pair; they do not call SDL3's main-thread-only
+`SDL_GetWindowSizeInPixels`. Synchronous rendering still refreshes directly.
+The hardware fixture verifies two resizes from a worker as well as image,
+guest-readback and stencil equivalence with temporal presentation enabled.
 
 `{"cmd":"render_thread"}` — active, held, max_frames, records, bytes,
 frames produced/consumed, presents and `presents_stale` (skipped), acquires

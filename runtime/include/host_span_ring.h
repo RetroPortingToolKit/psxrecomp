@@ -45,6 +45,10 @@ typedef enum HostSpanKind {
     HSPAN_MOD_WORK,           /* emu: resident pack / mod host work               */
     HSPAN_FRAME_PRESENT,      /* emu: frontend present for the frame              */
     HSPAN_DISC_READ,          /* emu: one sector read from the disc image (arg lba) */
+    HSPAN_HOST_EVENTS,        /* emu: pump and dispatch host window events */
+    HSPAN_REWIND_CAPTURE,     /* emu: snapshot, store and thumbnail */
+    HSPAN_DISPLAY_PROBE,      /* emu: host refresh/mode query */
+    HSPAN_AUDIO_UPDATE,       /* emu: host audio pump */
     HSPAN_KIND_COUNT
 } HostSpanKind;
 
