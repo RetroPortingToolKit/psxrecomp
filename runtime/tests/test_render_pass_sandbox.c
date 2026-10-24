@@ -76,6 +76,7 @@ int      g_dma_cur_ch = -1;
 uint32_t g_dma_cur_madr = 0, g_dma_cur_bcr = 0, g_dma_initiator_pc = 0;
 int      g_dirty_interp_active = 0;
 int      g_exec_phase = 0;
+
 uint32_t g_dirty_safe_resume_pc = 0;
 
 /* ---- memory and the MMIO devices a pass may reach ----------------------- */
@@ -278,6 +279,17 @@ static int s_capture_fail_eye = -1;
 uint32_t gl_renderer_stereo_unavailable(void) { return s_gl_status; }
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     return gl_renderer_pass_begin(x, y, w, h, 0, 0, reuse);
+}
+uint32_t gl_renderer_local_pair_unavailable(void) { return s_local_status; }
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
+    return gl_renderer_pass_begin(x,y,w,h,0,0,reuse);
+}
+int gl_renderer_local_pair_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_grid_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_grid_publish(uint64_t id,uint64_t cycle,const int32_t view[4][3]) {
+    (void)cycle;(void)view;
+    if(s_stereo_mask!=15u)return 0;
+    s_stereo_published=id;return 1;
 }
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
     gl_renderer_pass_end(0, keep);
@@ -993,6 +1005,63 @@ static int local_draw(CPUState *cpu, void *user, uint32_t alpha) {
     psx_advance_cycles(5000u);
     return 1;
 }
+static int local_pair_draw(CPUState *cpu,void *user,uint32_t seat) {
+    CHECK(psx_mod_local_view_scope() && s_ws_scope,
+          "both local multiplayer views run in the own-view scope");
+    return pair_draw(cpu,user,seat);
+}
+static void test_local_pair(void) {
+    CPUState cpu={0};PSXModStereoFrame f={sizeof f,1,0,240,320,240};
+    uint64_t cycle=psx_cycle_count,published;
+    render_pass_reset_session();s_netplay_active=0;s_eye_calls=0;
+    s_gl_status=PSX_MOD_RENDER_PASS_BACKEND;s_local_status=0;s_begin_ok=1;
+    cpu.gpr[8]=123;s_ram[0x456]=0x77;
+    CHECK(psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL),
+          "dual raster supports a local pair when ordinary stereo is unavailable");
+    CHECK(s_eye_calls==2 && cpu.gpr[8]==123 && s_ram[0x456]==0x77 &&
+          psx_cycle_count==cycle && !psx_mod_local_view_scope(),
+          "two local views restore one common simulation checkpoint and close their scopes");
+    published=s_stereo_published;s_eye_decline=1;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) &&
+          s_stereo_published==published && !s_stereo_mask,
+          "failed second local view cannot publish a partial frame");
+    CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle,
+          "failed local pair preserves live state");
+    s_eye_decline=-1;s_netplay_active=1;psx_mod_set_render_pass_netplay(1);
+    int calls=s_eye_calls;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,
+          "offline local pair is refused online even if temporal replay was permitted");
+    s_netplay_active=0;s_local_status=PSX_MOD_RENDER_PASS_BACKEND;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,
+          "unsupported local presenter refuses before guest drawing");
+    s_gl_status=s_local_status=0;
+}
+static void test_local_grid(void) {
+    CPUState cpu={0};PSXModStereoFrame f={sizeof f,1,0,240,320,240};
+    render_pass_reset_session();s_netplay_active=0;s_local_status=0;s_begin_ok=1;
+    s_eye_calls=0;cpu.gpr[8]=123;s_ram[0x456]=0x77;
+    uint64_t cycle=psx_cycle_count;
+    CHECK(psx_mod_render_local_grid(&cpu,&f,local_pair_draw,NULL),"four restored views publish one grid");
+    CHECK(s_eye_calls==4 && s_stereo_mask==15 && !s_open_passes,"all four view slots are captured");
+    RenderStereoStats stats;render_stereo_get_stats(&stats);
+    for(unsigned i=0;i<4;++i)
+        CHECK(stats.eye_cycle[i]==cycle && stats.eye_hash[i]==stats.eye_hash[0],"every grid cell starts at the same checkpoint");
+    uint64_t published=s_stereo_published;
+    for(int i=0;i<4;++i) {
+        s_eye_decline=i;
+        CHECK(!psx_mod_render_local_grid(&cpu,&f,local_pair_draw,NULL) &&
+              s_stereo_published==published && !s_stereo_mask,"decline in any cell cannot publish an incomplete grid");
+        CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle &&
+              !psx_mod_local_view_scope(),"grid decline restores the world and closes its scope");
+    }
+    s_eye_decline=-1;s_capture_fail_eye=3;
+    CHECK(!psx_mod_render_local_grid(&cpu,&f,local_pair_draw,NULL) &&
+          s_stereo_published==published && !s_stereo_mask,"last-cell capture failure retains the last complete frame");
+    s_capture_fail_eye=-1;s_netplay_active=1;int calls=s_eye_calls;
+    CHECK(!psx_mod_render_local_grid(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,"offline grid refuses online before callbacks");
+    s_netplay_active=0;
+    CHECK(psx_mod_render_local_grid(&cpu,&f,local_pair_draw,NULL),"grid recovers after failures");
+}
 
 /* Netplay local view: forward netplay frames only; guest state restored
  * exactly; a committed image cancels the crop request. */
@@ -1022,9 +1091,12 @@ static void test_local_view(void) {
           "no local view while resimulating");
     s_resim = 0;
     s_view_shed = 1;
-    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_FAST_FORWARD &&
-          !psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
-          "a peer behind the match sheds its own view first");
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_READY,
+          "catch-up pressure cannot replace the local seat with the shared view");
+    CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
+          "independent view commits while the peer is behind");
+    CHECK(cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "catch-up redraw preserves the authoritative guest state");
     s_view_shed = 0;
     s_local_status = PSX_MOD_RENDER_PASS_BACKEND;
     CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_BACKEND &&
@@ -1035,8 +1107,8 @@ static void test_local_view(void) {
     CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
           "local view committed");
     render_pass_get_stats(&st);
-    CHECK(st.local_views == 1 && s_local_kept == 1 && s_open_passes == 0 &&
-          st.passes == 0, "one kept local image, transaction closed");
+    CHECK(st.local_views == 2 && s_local_kept == 2 && s_open_passes == 0 &&
+          st.passes == 0, "both local images kept, transactions closed");
     CHECK(s_crop_clears == 1, "the committed image cancels the crop request");
     CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0,
           "own-view scope closed after the local view");
@@ -1128,6 +1200,8 @@ int main(void) {
     test_isolated_capture();
     test_trace_substages();
     test_local_view();
+    test_local_pair();
+    test_local_grid();
     test_texture_stream_journal();
     CHECK(s_prec_open == 0, "precision checkpoints balanced");
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);

@@ -65,6 +65,11 @@ if(BUILD_TESTING)
     add_executable(overlay_memory_address_test tests/test_overlay_memory_address.c)
     target_include_directories(overlay_memory_address_test PRIVATE include)
     add_test(NAME overlay_memory_address_test COMMAND overlay_memory_address_test)
+    add_executable(mod_snapshot_test tests/test_mod_snapshot.c src/mod_snapshot.c)
+    target_include_directories(mod_snapshot_test PRIVATE include)
+    target_compile_options(mod_snapshot_test PRIVATE
+        $<IF:$<C_COMPILER_ID:MSVC>,/UNDEBUG,-UNDEBUG>)
+    add_test(NAME mod_snapshot_test COMMAND mod_snapshot_test)
     add_executable(mod_netplay_test tests/test_mod_netplay.c
         src/mod_netplay.c src/netplay_state_digest.c src/crc32.c src/psx_sha256.c)
     target_include_directories(mod_netplay_test PRIVATE include)
@@ -197,14 +202,23 @@ if(BUILD_TESTING)
         target_compile_options(ws_backdrop_scene_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections)
         target_link_options(ws_backdrop_scene_test PRIVATE -flto -Wl,--gc-sections)
         add_test(NAME ws_backdrop_scene_test COMMAND ws_backdrop_scene_test)
-        add_executable(boot_state_handoff_test tests/test_boot_state_handoff.c)
+        add_executable(boot_state_handoff_test tests/test_boot_state_handoff.c src/mod_snapshot.c)
         target_include_directories(boot_state_handoff_test PRIVATE include src)
         target_compile_definitions(boot_state_handoff_test PRIVATE PSX_COSIM=1)
         target_compile_options(boot_state_handoff_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
         target_link_options(boot_state_handoff_test PRIVATE -flto -Wl,--gc-sections)
         target_link_libraries(boot_state_handoff_test PRIVATE ZLIB::ZLIB)
         add_test(NAME boot_state_handoff_test COMMAND boot_state_handoff_test)
-        add_executable(boot_state_impl_tag_test tests/test_boot_state_handoff.c)
+        add_executable(mod_snapshot_boot_state_test
+            tests/test_mod_snapshot_boot_state.c src/mod_snapshot.c)
+        target_include_directories(mod_snapshot_boot_state_test PRIVATE include src)
+        target_compile_definitions(mod_snapshot_boot_state_test PRIVATE PSX_COSIM=1)
+        target_compile_options(mod_snapshot_boot_state_test PRIVATE
+            -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
+        target_link_options(mod_snapshot_boot_state_test PRIVATE -flto -Wl,--gc-sections)
+        target_link_libraries(mod_snapshot_boot_state_test PRIVATE ZLIB::ZLIB)
+        add_test(NAME mod_snapshot_boot_state_test COMMAND mod_snapshot_boot_state_test)
+        add_executable(boot_state_impl_tag_test tests/test_boot_state_handoff.c src/mod_snapshot.c)
         target_include_directories(boot_state_impl_tag_test PRIVATE include src)
         target_compile_definitions(boot_state_impl_tag_test PRIVATE PSX_COSIM=1 PSX_SAVESTATE_IMPL_TAG=0x54474801u)
         target_compile_options(boot_state_impl_tag_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
@@ -212,7 +226,7 @@ if(BUILD_TESTING)
         target_link_libraries(boot_state_impl_tag_test PRIVATE ZLIB::ZLIB)
         add_test(NAME boot_state_impl_tag_test COMMAND boot_state_impl_tag_test)
 
-        add_executable(boot_state_execution_test tests/test_boot_state_handoff.c)
+        add_executable(boot_state_execution_test tests/test_boot_state_handoff.c src/mod_snapshot.c)
         target_include_directories(boot_state_execution_test PRIVATE include src)
         target_compile_definitions(boot_state_execution_test PRIVATE PSX_COSIM=1)
         target_compile_options(boot_state_execution_test PRIVATE -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
@@ -613,6 +627,7 @@ if(BUILD_TESTING)
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
+            src/mod_snapshot.c
             src/psx_ram_geometry.c)
         target_include_directories(psx_ram_runtime_map_test PRIVATE include src)
         target_compile_options(psx_ram_runtime_map_test PRIVATE
@@ -634,6 +649,7 @@ if(BUILD_TESTING)
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
+            src/mod_snapshot.c
             src/psx_icache.c
             src/psx_ram_geometry.c)
         target_include_directories(isc_store_test PRIVATE include src)
@@ -657,6 +673,7 @@ if(BUILD_TESTING)
             src/dma.c
             src/gpu_timeline.c
             src/boot_state.c
+            src/mod_snapshot.c
             src/pgxp.cpp
             src/psx_ram_geometry.c)
         target_include_directories(pgxp_untracked_store_test PRIVATE include src)
@@ -1368,6 +1385,11 @@ if(BUILD_TESTING)
     target_link_libraries(mod_packages_test PRIVATE chdr-static)
     add_test(NAME mod_packages_test COMMAND mod_packages_test)
 
+      add_executable(mod_netplay_profiles_test tests/test_mod_netplay_profiles.c
+          src/mod_netplay.c src/psx_sha256.c)
+      target_include_directories(mod_netplay_profiles_test PRIVATE include)
+      add_test(NAME mod_netplay_profiles_test COMMAND mod_netplay_profiles_test)
+
     add_executable(builtin_mod_manifests_test
         tests/test_builtin_mod_manifests.cpp
         src/mod_packages.cpp
@@ -1398,6 +1420,10 @@ if(BUILD_TESTING)
         include
         ../recompiler/lib/toml11)
     add_test(NAME text_xlate_fix_only_test COMMAND text_xlate_fix_only_test)
+    add_executable(native_text_test tests/test_native_text.cpp
+        src/native_text.cpp third_party/json11/json11.cpp)
+    target_include_directories(native_text_test PRIVATE include)
+    add_test(NAME native_text_test COMMAND native_text_test)
 
     add_executable(netplay_peer_frontier_test tests/test_netplay_peer_frontier.c)
     target_include_directories(netplay_peer_frontier_test PRIVATE include)
@@ -1426,6 +1452,10 @@ if(BUILD_TESTING)
         include
         ../recompiler/include
         ../recompiler/lib/toml11)
+    if(PSX_RECOMP_UI AND EXISTS "${RECOMP_UI_ROOT}/src/recomp_launcher.h")
+        target_compile_definitions(mod_runtime_test PRIVATE RECOMP_LAUNCHER=1)
+        target_include_directories(mod_runtime_test PRIVATE "${RECOMP_UI_ROOT}/src")
+    endif()
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
     psxrecomp_sha256_file(mod_runtime_test)
     # Match the runtime's stack allowance for the remaining disc/mod helpers.
@@ -1901,6 +1931,16 @@ if(BUILD_TESTING)
     add_test(NAME netplay_load_probe_test COMMAND netplay_load_probe_test)
 
     if(PSXRECOMP_TEST_HAS_RBENGINE)
+        if(NOT MSVC)
+            add_executable(rewind_load_context_test tests/test_rewind_load_context.c)
+            target_include_directories(rewind_load_context_test PRIVATE include src)
+            target_compile_definitions(rewind_load_context_test PRIVATE PSX_HAS_RBENGINE_SNAP=1)
+            target_compile_options(rewind_load_context_test PRIVATE
+                -O2 -flto -ffunction-sections -fdata-sections -UNDEBUG)
+            target_link_options(rewind_load_context_test PRIVATE -flto -Wl,--gc-sections)
+            target_link_libraries(rewind_load_context_test PRIVATE retcomm_rbengine)
+            add_test(NAME rewind_load_context_test COMMAND rewind_load_context_test)
+        endif()
         add_executable(netplay_hash_confirm_test
             tests/test_netplay_hash_confirm.c)
         target_include_directories(netplay_hash_confirm_test PRIVATE include)
@@ -2066,6 +2106,10 @@ if(BUILD_TESTING)
             add_test(NAME gpu_gp0_history_guard_test
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_gp0_history_guard.py
+                             --cc ${CMAKE_C_COMPILER})
+            add_test(NAME debug_input_route_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_debug_input_route.py
                              --cc ${CMAKE_C_COMPILER})
             add_test(NAME memory_debug_trace_guard_test
                      COMMAND ${Python3_EXECUTABLE}

@@ -39,6 +39,23 @@ An optional read-only callback contributes canonical host-owned gameplay state
 to the existing core CRC; digest logs report this as `mod=`. The callback must
 exclude pointers, padding, rendering caches and local-only input state.
 
+A title may register several profiles and mark an alternative with
+`select_when_feature_enabled`. The mod runtime selects that profile when its
+declared settings feature is requested; otherwise it uses the unconditional
+default. Selection freezes at session commit. Existing one-profile titles keep
+their behavior and zero-initialized trailing fields retain the old identity.
+
+`min_players`/`max_players` constrain the admitted seated count. A zero maximum
+inherits the configured title capacity; a title can advertise four control rows
+while its ordinary co-op profile limits rooms to two seats. An
+`optional_last_seat_option` with value `none` removes the final seat from the
+chosen profile. Lobby capacity uses `mod_runtime_netplay_player_limit`, while
+session start checks the committed roster count before frame zero. Bounds,
+optional-seat policy and selected player count enter the profile identity in
+addition to its canonical option tuple. Committed options, rather than later
+offline preference edits, supply the live session count. This does not change
+CPU capability negotiation or permit mid-match profile switching.
+
 `requires_retained_texture_banks` opts a trusted profile into retained GL
 textures during dual-raster netplay. It requires a working OpenGL backend;
 software/Vulkan selections and an unavailable bank implementation are rejected
