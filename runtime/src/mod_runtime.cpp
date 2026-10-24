@@ -1509,15 +1509,19 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
                 });
             if (resource == package->resources.end()) continue;
             std::error_code ec;
-            const auto pack = std::filesystem::absolute(
-                root / "texture-packs" / texture_game_id, ec);
+            std::string directory_error;
+            if (!s.manager.set_generated_feature_resource_default(package->id,
+                    plugin.feature_id, "pack", std::filesystem::path("texture-packs") / texture_game_id,
+                    &directory_error)) {
+                std::fprintf(stderr, "psxrecomp: texture pack folder: %s\n", directory_error.c_str());
+                continue;
+            }
+            const auto pack = s.manager.feature_resource_path(package->id, plugin.feature_id, "pack");
             if (!ec) std::filesystem::create_directories(pack / "replacements", ec);
             if (!ec) std::filesystem::create_directories(pack / "dumps", ec);
-            std::string directory_error;
-            if (ec || !s.manager.set_feature_resource_path(package->id,
-                    plugin.feature_id, "pack", pack, &directory_error)) {
+            if (ec) {
                 std::fprintf(stderr, "psxrecomp: texture pack folder: %s\n",
-                    ec ? ec.message().c_str() : directory_error.c_str());
+                    ec.message().c_str());
             }
         }
     }
