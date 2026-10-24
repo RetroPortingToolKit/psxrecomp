@@ -65,6 +65,7 @@
 #include "card_data_writes.h"
 #include "crash_trace.h"
 #include "gpu_gl_renderer.h"
+#include "gpu_fmv_hd.h"
 #include "render_pass.h"
 #include "frame_trace.h"
 #include "mod_plugins.h"   /* psx_mod_render_pass_status */
@@ -9456,6 +9457,13 @@ static void handle_perf(int id, const char *json) {
     send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf);
 }
 
+static void handle_fmv_hd(int id, const char *json) {
+    (void)json;
+    char buf[512];
+    gl_renderer_fmv_hd_debug_json(buf, sizeof buf);
+    send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf);
+}
+
 static void handle_display_aspect(int id, const char *json) {
     int num=json_get_int(json,"num",-1), den=json_get_int(json,"den",-1);
     int adaptive=json_get_int(json,"adaptive",0);
@@ -16325,6 +16333,7 @@ static const CmdEntry s_commands[] = {
     { "ws_aspect",         handle_ws_aspect },
     { "display_aspect",    handle_display_aspect },
     { "perf",              handle_perf },
+    { "fmv_hd",            handle_fmv_hd },
     { "window_size",       handle_window_size },
     { "ws_nw",             handle_ws_nw },
     { "debug_key",         handle_debug_key },
