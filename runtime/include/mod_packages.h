@@ -552,6 +552,8 @@ bool mod_register_builtin_resolver(const std::string& id, ModBuiltinResolver res
 void mod_clear_builtin_resolvers_for_tests();
 bool mod_register_activation_plugin(const std::string& id, void (*callback)(void));
 bool mod_register_vblank_plugin(const std::string& id, void (*callback)(void));
+bool mod_register_pcm_plugin(const std::string& id, PSXModPCMCallback callback);
+PSXModPCMCallback mod_pcm_callback(const std::string& id);
 bool mod_register_savestate_plugin(const std::string& id, void (*callback)(void));
 void mod_invoke_savestate_plugin(const std::string& id);
 /* A function-entry hook is a trusted implementation like the others: manifests

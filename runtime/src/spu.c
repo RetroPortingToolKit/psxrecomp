@@ -983,6 +983,11 @@ void spu_init(void) {
     spu_shadow_reset();
 }
 
+static void (*pcm_overlay)(int16_t*, uint32_t);
+void spu_set_pcm_overlay(void (*callback)(int16_t*, uint32_t)) {
+    pcm_overlay = callback;
+}
+
 void spu_render(int16_t* out_stereo, int frames) {
     if (!out_stereo || frames <= 0) return;
 
@@ -1112,6 +1117,7 @@ void spu_render(int16_t* out_stereo, int frames) {
         last_peak = block_peak;
         if (block_peak > peak) peak = block_peak;
         spu_shadow_process(out_stereo, frames);
+        if (pcm_overlay) pcm_overlay(out_stereo, (uint32_t)frames);
         audio_trace_pcm(AUDIO_TAP_SPU_OUT, out_stereo, frames);
         return;
     }
@@ -1305,6 +1311,7 @@ void spu_render(int16_t* out_stereo, int frames) {
      * while proven. No-op (byte-identical) when disabled. The canon mix above
      * stays the authoritative output AND the verify oracle. */
     spu_shadow_process(out_stereo, frames);
+    if (pcm_overlay) pcm_overlay(out_stereo, (uint32_t)frames);
 
     /* T1 tap: the SPU's final output block as handed to the host layer
      * (post-shadow, pre host fade/mute). Placed here so every spu_render

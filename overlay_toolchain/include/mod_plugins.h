@@ -8,7 +8,15 @@ extern "C" {
 
 typedef void (*PSXModVBlankCallback)(void);
 typedef void (*PSXModActivationCallback)(void);
+/* Emulation-thread stereo S16 at 44100 Hz, after SPU/shadow synthesis, before
+ * capture/host mute. Called for every rendered block, including discarded
+ * turbo/rollback output. Add with saturation; never call guest code here.
+ * Keep mutable cursors in allocated guest memory for save/rewind/rollback.
+ * Host audio/device state must not affect sample generation. */
+typedef void (*PSXModPCMCallback)(int16_t* stereo, uint32_t frames);
 struct CPUState;
+/* A callback that runs guest code inside psx_mod_render_pass() can be
+ * abandoned by a watchdog longjmp; see the note at psx_mod_render_pass(). */
 typedef void (*PSXModFunctionEntryCallback)(struct CPUState* cpu,
                                             uint32_t address);
 /* Return nonzero to finish this opt-in function with the callback's return
@@ -25,6 +33,7 @@ int psx_mod_register_activation_plugin(const char* id,
                                        PSXModActivationCallback callback);
 int psx_mod_register_vblank_plugin(const char* id,
                                    PSXModVBlankCallback callback);
+int psx_mod_register_pcm_plugin(const char* id, PSXModPCMCallback callback);
 /* Runs after successful guest-state restore, before the restored PC resumes.
  * Rebind host hooks here; do not advance guest gameplay as a VBlank would. */
 int psx_mod_register_savestate_plugin(const char* id,
@@ -82,6 +91,16 @@ void psx_mod_set_texture_filter(int mode);
  * Save/load and rewind must wait until that host context has returned. */
 int psx_mod_function_entry_active(void);
 
+/* [timing] guest_cycle_scale mod gate (docs/config_schema.md, Timing block).
+ * With guest_cycle_scale_gated = true in game.toml the scale applies only
+ * while a trusted plugin holds this gate open (and any declarative
+ * guest_cycle_scale_gate RAM predicates hold). Every mod session reset
+ * shuts it; open it from the activation callback. Mod plans are cleared
+ * online, so this gate keeps a scale that depends on a mod out of netplay.
+ * The gate state is part of savestates and the netplay rollback snapshot. */
+void psx_mod_set_guest_cycle_scale_gate(int open);
+/* Live scale: the configured one while every gate is open, else 1. */
+uint32_t psx_mod_guest_cycle_scale(void);
 /* Narrow guest services available to trusted plugin callbacks. */
 int psx_mod_game_started(void);
 /* Read an original mounted-disc file without changing guest CD state/timing.
@@ -89,6 +108,9 @@ int psx_mod_game_started(void);
  * otherwise capacity must hold the entire file. Active sector mods apply. */
 int psx_mod_read_disc_file(const char* path, void* buffer, uint32_t capacity,
                            uint32_t* size);
+/* Effective-disc LBA and byte size of a file (directory records patched by
+ * active mods apply, so a relocated file reports its new extent). */
+int psx_mod_disc_file_extent(const char* path, uint32_t* lba, uint32_t* size);
 /* Experimental retained-texture service (currently OpenGL only). IDs are
  * nonzero, stable game-owned identities, NOT GL names. Banks are immutable
  * 16-bit PS1 texels/indices with a caller-selected row pitch (width).
@@ -125,6 +147,59 @@ void psx_mod_write_word(uint32_t address, uint32_t value);
  * restored save state cannot leave the compiled instruction stale.
  */
 void psx_mod_write_code_word(uint32_t address, uint32_t value);
+
+/*
+ * Services shared by seamless-loading adapters (resident disc data: see
+ * mod_resident.h). Emulation-thread callbacks only.
+ *
+ * Run a guest function to completion from a hook: a0..a3 and $ra are set,
+ * control returns when the guest reaches return_address, and the caller's
+ * GPRs, PC, HI and LO are restored. COP0, GTE and timing deadlines keep the
+ * callee's effects, as they would after an ordinary call. Snapshots wait
+ * until the call returns (the host stack holds the continuation). Returns v0.
+ */
+uint32_t psx_mod_call_guest(struct CPUState* cpu, uint32_t function,
+                            uint32_t return_address, uint32_t a0, uint32_t a1,
+                            uint32_t a2, uint32_t a3);
+/* psx_mod_call_guest in zero guest time, for CPU/RAM work a game spends guest
+ * time on while it loads (allocators, decoders, table builds). Every RAM,
+ * register and device effect of the callee is kept, as if it executed in an
+ * instant at the call's guest cycle: none of its cycles are charged, no
+ * device advances and no interrupt is taken while it runs, and the caller's
+ * pending mult/div, GTE and load-pipeline timing is as it was before the
+ * call. Device work the callee starts (a DMA, a CD command) proceeds in guest
+ * time after the return. A callee that executes more than budget_cycles
+ * (0 = no limit) is charged in full from then on, so one that waits on a
+ * device still completes; *charged (optional) is then set to 1. Inside a
+ * render pass or another uncharged call, time is already frozen and this is
+ * psx_mod_call_guest. The outcome depends only on guest state, so netplay
+ * peers and rollback re-simulation agree. Returns v0. */
+uint32_t psx_mod_call_guest_uncharged(struct CPUState* cpu, uint32_t function,
+                                      uint32_t return_address, uint32_t a0,
+                                      uint32_t a1, uint32_t a2, uint32_t a3,
+                                      uint32_t budget_cycles, int* charged);
+/* Deliver disc sectors into RAM exactly as a completed CD-ROM DMA would
+ * (overlay capture, executable-page invalidation, CD DMA log when lba >= 0).
+ * Word-aligned address and length. Returns 0 when the span leaves RAM. */
+int psx_mod_dma_write_ram(uint32_t address, const void* data, uint32_t bytes,
+                          int lba);
+/* Store bytes through the CPU store path (any alignment): for data the
+ * original code produces with CPU stores, e.g. a decompressor's output. */
+int psx_mod_host_write_ram(uint32_t address, const void* data, uint32_t bytes);
+/* PsyQ SpuWrite by DMA, completed synchronously: transfer address, DMA-write
+ * transfer mode, the words through the SPU's DMA write path (address
+ * advance and sample-IRQ checks), then transfer mode stop when stop_after.
+ * spu_address 8-aligned, guest_source/bytes word aligned, at most 512 KiB;
+ * the transfer address wraps at the end of SPU RAM as on hardware.
+ * Library bookkeeping (transfer callbacks, busy flags) stays the caller's. */
+int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
+                       uint32_t bytes, int stop_after);
+/* PsyQ LoadImage completed synchronously: texture-cache flush, GP0 A0h
+ * rectangle copy of w*h 16-bit pixels from guest RAM (provenance attributed
+ * per word), then GP1(04h) DMA direction CPU->GP0 for uploads the library
+ * would DMA (16 words or more). Caller drains earlier GPU work first. */
+int psx_mod_psyq_load_image(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                            uint32_t guest_source);
 
 /*
  * Allocate opt-in enhancement memory from Expansion 1. Until the first
@@ -180,8 +255,12 @@ void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expe
 void psx_mod_tag_hud_primitive(uint32_t primitive, int edge);
 /* Packet-guarded screen-space anchor: -1 left, +1 right, 0 stays centred.
  * Unlike the legacy role tag above, zero explicitly protects centred text
- * from automatic layout transforms. Word immediately before the GP0 colour
- * command; for a compound E1+SPRT packet this is its E1 word (P_TAG+4). */
+ * from automatic layout transforms. Native-wide translates the group;
+ * projection-and-stretch squashes around the selected screen anchor. This
+ * works across separate DMA lists and is inert at native 4:3. Title code
+ * owns classification and must tag each completed packet. Pass the word
+ * immediately before the GP0 colour command; for a compound E1+SPRT packet
+ * this is its E1 word (P_TAG+4). */
 void psx_mod_anchor_hud_primitive(uint32_t primitive, int edge);
 /* Screen-space masks identified by their title's producer, P_TAG addresses.
  * Flat panels extend only their exterior boundaries. Radial flat/Gouraud
@@ -294,6 +373,22 @@ int psx_mod_current_resource_bytes(const char* resource_id,
 int psx_mod_append_disc_extent(const char* resource_id, uint64_t byte_offset,
                                uint32_t sector_count, uint32_t* first_lba);
 
+/* Optional CD-DA playlist, built only during activation. Audio has a separate
+ * TOC/timeline (track 1 is a data placeholder); data/XA LBAs are unchanged.
+ * Sources are verified immutable raw 2352-byte stereo PCM sectors, or audio
+ * tracks on the mounted disc. Playback, reports and saves use the native CD
+ * controller. No conversion, resampling or host clock is involved. */
+typedef struct PSXModCDDATrack {
+    const char* resource_id; /* non-NULL: verified external raw PCM */
+    uint64_t byte_offset;
+    uint32_t sector_count;
+    uint32_t disc_track;    /* resource_id == NULL: mounted audio track */
+} PSXModCDDATrack;
+/* Append the whole group atomically. Both output arrays have count elements;
+ * failure leaves the previous playlist intact and clears all outputs. */
+int psx_mod_append_cdda_tracks(const PSXModCDDATrack* tracks, uint32_t count,
+                              uint32_t* first_lbas, uint32_t* sector_counts);
+
 /* Display aspects have no framework ceiling: the native-wide surfaces size
  * themselves from the live width, and each title caps its own view at what
  * it has validated (fixed ratio, or the adaptive maximum below). Requests
@@ -315,6 +410,15 @@ int psx_mod_set_fixed_display_aspect(uint32_t numerator,
  */
 int psx_mod_set_adaptive_display_aspect(uint32_t max_numerator,
                                         uint32_t max_denominator);
+/*
+ * HUD size for the auto-UI widescreen HUD ([widescreen] auto_ui_squash):
+ * 0 keeps it at the display height's scale ("original"), 1 makes it
+ * proportional (unchanged up to 16:9, shrinking by sqrt((16:9) / aspect)
+ * beyond, about each widget's anchors). Overrides game.toml
+ * [widescreen] auto_ui_size for the session; every session start restores the
+ * title's setting before activation.
+ */
+int psx_mod_set_widescreen_hud_size(int proportional);
 /*
  * Set the wall-clock cadence of simulated guest VBlanks. A value of zero
  * removes frontend pacing; 60 and higher request that many native guest
@@ -415,7 +519,14 @@ uint32_t psx_mod_render_pass_plan(uint32_t period_vblanks,
                                   uint32_t shown_after_vblanks,
                                   uint32_t* alpha_q16, uint32_t max);
 /* Returns 1 when the pass ran and its image was queued, 0 when it was refused
- * or rolled back (state is restored either way). */
+ * or rolled back (state is restored either way).
+ * A watchdog abort rolls the pass back by longjmp, past every frame between
+ * the watchdog and psx_mod_render_pass(): plugin callbacks, guest functions
+ * and function-entry hooks they called. Runtime nesting state (including the
+ * function-entry context) is restored, but plugin-owned state, held locks and
+ * C++ destructors in those frames are NOT unwound. A callback run inside a
+ * pass must keep nothing that needs cleanup (no locks, no RAII objects, no
+ * partially updated plugin state) across guest code, or tolerate the abort. */
 int psx_mod_render_pass(struct CPUState* cpu, const PSXModRenderPass* pass,
                         PSXModRenderPassFn fn, void* user);
 /*
@@ -443,6 +554,108 @@ enum {
     PSX_MOD_RENDER_PASS_BUSY = 6
 };
 uint32_t psx_mod_render_pass_status(void);
+/* Simultaneous stereo capture, independent of temporal interpolation. Each
+ * eye starts from the same guest state; CPU/RAM/devices/VRAM are restored
+ * before the other eye and on failure. Publish only after both succeed.
+ * The caller provides a draw-only callback at a main-thread frame boundary.
+ * period_vblanks (1..8) describes the game's draw cadence for whole-pair cost
+ * shedding. No alpha/time phase is used. Returns 1 for a published pair. */
+enum { PSX_MOD_EYE_LEFT = 0, PSX_MOD_EYE_RIGHT = 1 };
+typedef struct PSXModStereoFrame {
+    uint32_t struct_size;
+    uint32_t period_vblanks;
+    uint16_t x, y, w, h;
+} PSXModStereoFrame;
+typedef int (*PSXModStereoFn)(struct CPUState*, void*, uint32_t eye);
+int psx_mod_render_stereo(struct CPUState *cpu, const PSXModStereoFrame *frame,
+                          PSXModStereoFn fn, void *user);
+uint32_t psx_mod_render_stereo_status(void);
+/* 0 disables stereo output; 1 shows a complete pair side by side. Capture
+ * itself does not enable presentation. Default 0; applies to this session. */
+int psx_mod_set_stereo_presentation(uint32_t mode);
+/* Camera-space addition to RT*V+TR before RTPS/RTPT perspective division.
+ * Valid only inside a render callback. Replaces (never accumulates) the host
+ * offset and is restored automatically on completion or watchdog abort.
+ * Units are the game's GTE camera units; IPD/world-scale calibration is game
+ * specific. Zero is faithful. Guest TR registers are not modified. */
+int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z);
+/* Rigid camera transform after guest RT*V+TR, before division. Rotation is
+ * row-major Q12; translation uses camera units. Optional projection supplies
+ * focal lengths and centre deltas from guest OFX/OFY in Q16 pixel units.
+ * Identity rotation with projection=0 preserves the architectural path.
+ * projection=1 REPLACES the guest X/Y projection (guest H, widescreen squash and
+ * [video] fov_scale do not apply); projection_h_ref != 0 scales the focal lengths
+ * by (fov-scaled guest H)/ref. Valid only inside a render callback; restored with it. */
+typedef struct PSXModRenderView {
+    uint32_t struct_size;
+    int32_t rotation_q12[9], translation[3];
+    uint32_t projection;
+    uint32_t projection_h_ref; /* 0 absolute FOV; otherwise scale focal lengths by guest H/ref */
+    int32_t fx_q16, fy_q16, cx_delta_q16, cy_delta_q16;
+} PSXModRenderView;
+int psx_mod_render_view(const PSXModRenderView *view);
+/* Begin locates both views at one predicted time. End submits only a fresh
+ * complete pair; failed/shed redraws submit zero layers. */
+int psx_mod_openxr_enable(int enabled);
+int psx_mod_openxr_begin(uint32_t width, uint32_t height, double units_per_meter);
+int psx_mod_openxr_view(uint32_t eye, PSXModRenderView *view);
+int psx_mod_openxr_end(int pair_rendered);
+/* Frame-local UI surface: the fresh pair's left image is shown to both eyes
+ * on a head-relative quad. Call after begin, outside the draw transaction.
+ * Dimensions and distance are meters; zero distance restores projection.
+ * Requests reset at begin/end and never affect faithful guest rendering. */
+int psx_mod_openxr_quad(double distance_m, double width_m, double height_m);
+/* Opt-in native presentation surface for boot, videos and menus. Copies the
+ * freshly drawn desktop content before host overlays, without guest replay.
+ * Zero distance disables it. Applications disable it before scene begin and
+ * re-enable when their scene renderer is inactive. Dimensions are meters;
+ * height follows the presented content aspect. No retained stereo substitution. */
+int psx_mod_openxr_native_surface(double distance_m, double width_m,
+                                  double units_per_meter);
+void psx_mod_openxr_recenter(void);
+/* Fresh action sample at the offline input boundary, never in an eye replay.
+ * Positive Y is forward/up in XR. active[] refers only to thumbsticks;
+ * other actions have independent activity. Unavailable/unfocused actions
+ * return zero values. Click masks are active-high, unrelated to PSX pad bits. */
+#define PSX_MOD_XR_PRIMARY   1u /* left X / right A */
+#define PSX_MOD_XR_SECONDARY 2u /* left Y / right B */
+#define PSX_MOD_XR_MENU      4u /* Touch left Menu */
+#define PSX_MOD_XR_STICK     8u /* thumbstick click */
+#define PSX_MOD_XR_CLICKS   15u
+typedef struct PSXModOpenXRInput {
+    uint32_t struct_size, focused, active[2], synthetic;
+    float stick[2][2];
+    uint64_t sequence;
+    float trigger[2], squeeze[2]; /* [0,1] */
+    uint32_t trigger_active[2], squeeze_active[2];
+    uint32_t buttons[2], buttons_active[2]; /* PSX_MOD_XR_* masks */
+} PSXModOpenXRInput;
+int psx_mod_openxr_input(PSXModOpenXRInput *input);
+
+/* Read-only controller snapshot from the latest located XR frame. Grip and aim
+ * share the eye poses' predicted time and LOCAL space; no action sync or locate
+ * occurs here, including during eye replay. Positions are meters; quaternions
+ * are x,y,z,w. The origin matches the rendered view's recenter basis. Consumers
+ * must check focus, activity, validity and age before using a cached pose. */
+enum { PSX_MOD_XR_GRIP_POSE = 0, PSX_MOD_XR_AIM_POSE = 1 };
+#define PSX_MOD_XR_ORIENTATION_VALID   1u
+#define PSX_MOD_XR_POSITION_VALID      2u
+#define PSX_MOD_XR_ORIENTATION_TRACKED 4u
+#define PSX_MOD_XR_POSITION_TRACKED    8u
+typedef struct PSXModTrackedPose {
+    uint32_t active, flags;
+    float position_m[3], orientation_xyzw[4];
+} PSXModTrackedPose;
+typedef struct PSXModOpenXRHands {
+    uint32_t struct_size, focused, synthetic, origin_valid;
+    uint64_t sequence, predicted_time;
+    uint32_t age_ms; /* UINT32_MAX when no real frame has been located */
+    double origin_position_m[3], origin_orientation_xyzw[4];
+    PSXModTrackedPose pose[2][2]; /* [left/right][grip/aim] */
+} PSXModOpenXRHands;
+int psx_mod_openxr_hands(PSXModOpenXRHands *hands);
+
+
 
 /*
  * When the game flips relative to the pass point. PENDING (default, reset at
@@ -461,6 +674,10 @@ enum {
     PSX_MOD_RENDER_PASS_FLIP_SHOWN = 1
 };
 int psx_mod_set_render_pass_flip(uint32_t mode);
+/* A trusted title may opt into presentation-only passes during forward
+ * netplay. Resimulation and lockstep replay still refuse them. The backend
+ * restores authoritative CPU VRAM as well as the captured display surface. */
+int psx_mod_set_render_pass_netplay(int enabled);
 
 /*
  * The per-frame plumbing every frame-rate plugin repeats (render_pass_frame.c).
@@ -605,6 +822,86 @@ int psx_mod_set_controller_presentation_policy(
     PSXModControllerPresentationCallback callback,
     uint32_t initial_mode,
     int config_capable);
+
+/* ---- External offline input: ONE ordered resolution per player ----------
+ * Two optional, mod-supplied inputs can act on an offline player's pad. The
+ * runtime resolves them in a fixed order in pad_external_input.h:
+ *   1. physical/local capture (keyboard, controllers: buttons, sticks, type)
+ *   2. offline controller source (psx_mod_set_controller_source): buttons =
+ *      source AND physical; sticks/type come from the source, through the
+ *      same mode override / multitap rule / presentation policy as a physical
+ *      pad. A declined/invalid sample delivers neutral, not the last input.
+ *   3. local mouse policy (psx_mod_set_local_mouse_policy), P1 only: may
+ *      override ONLY the right analog axes of the pad resolved by 1-2. It sees
+ *      the final buttons/analog flag/right stick, so it composes with a
+ *      source (a source never suppresses it) and no capture is taken to be
+ *      discarded. A deflected source right stick, a digital pad, or Start
+ *      held disables it exactly as for a physical pad; a source release,
+ *      no device, or an armed input guard resets (releases) the capture.
+ * Gating. Neither input reaches the guest under netplay or rollback resim,
+ * selfcheck replay, headless, or a debug-server input override (which wins and
+ * is never mixed with external input). The mouse policy is additionally live
+ * only outside selfcheck input lock/resim, render passes, rewind, the
+ * savestate menu and the savestate input guard (pad_ext_live). A source is
+ * still sampled while the input guard is armed but its output is discarded
+ * (neutral). With no source and no mouse policy registered, pad bytes and
+ * host event handling are exactly the faithful defaults.
+ *
+ * ONE registration rule for both: call only on the main (emulation) thread;
+ * struct arguments are validated at registration (struct_size) and a bad one
+ * is rejected (return 0, logged to stderr); results of each callback are
+ * validated per use and fall back to neutral. These are mod-trusted APIs --
+ * arbitrary native code, no caller check -- not launcher settings. A source
+ * is per player (NULL detaches, with one neutral release frame); the mouse
+ * policy is one per session (a second registration returns 0). Callbacks run
+ * on the main thread only: sources once per frame, in the normal offline
+ * sampler.
+ * The source's `analog` is the pad capability; the final type still goes
+ * through the multitap rule, mod mode override and presentation policy.
+ */
+typedef struct PSXModControllerState {
+    uint32_t struct_size, buttons, lx, ly, rx, ry, analog;
+} PSXModControllerState;
+typedef int (*PSXModControllerSource)(PSXModControllerState *state);
+int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source);
+
+/* Local P1 mouse policy. The runtime delivers ordered events on the SDL owner
+ * (main) thread, owns relative capture and folds the resulting right-stick
+ * bytes after native input/presentation (and after any controller source),
+ * before normal SIO delivery. No SDL type, guest address, gesture, or game
+ * setting belongs in this interface. */
+enum {
+    PSX_MOD_MOUSE_HOLD_NONE = 0,
+    PSX_MOD_MOUSE_HOLD_RIGHT = 1, /* Mouse3 in keybinds.ini */
+    PSX_MOD_MOUSE_HOLD_LEFT_ALT = 2,
+    PSX_MOD_MOUSE_RESET = 0,
+    PSX_MOD_MOUSE_ACQUIRED = 1,
+    PSX_MOD_MOUSE_MOTION = 2,
+    PSX_MOD_MOUSE_HOLD_PRESS = 3,
+    PSX_MOD_MOUSE_HOLD_RELEASE = 4
+};
+typedef struct PSXModMouseEvent {
+    uint32_t struct_size;
+    uint32_t type;
+    uint64_t time_ns;
+    double dx, dy;
+} PSXModMouseEvent;
+typedef struct PSXModMouseOutput {
+    uint32_t struct_size;
+    uint32_t override_right;
+    uint32_t rx, ry;
+} PSXModMouseOutput;
+typedef struct PSXModMousePolicy {
+    uint32_t struct_size;
+    uint32_t hold_control;
+    /* Re-read persistent guest context, including pause/menus, on every event
+     * and local sample. Must not infer it from a host Start toggle. */
+    int (*eligible)(uint32_t native_buttons);
+    void (*event)(const PSXModMouseEvent* event);
+    /* A query: must not consume motion, change the event anchor or deadlines. */
+    void (*sample)(uint64_t now_ns, PSXModMouseOutput* output);
+} PSXModMousePolicy;
+int psx_mod_set_local_mouse_policy(const PSXModMousePolicy* policy);
 
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.

@@ -24,6 +24,11 @@ static int failures;
 static int activation_calls;
 static int plugin_calls;
 static int restore_calls;
+static PSXModPCMCallback pcm_callback;
+extern "C" void spu_set_pcm_overlay(PSXModPCMCallback callback) { pcm_callback = callback; }
+static void test_pcm(int16_t* samples, uint32_t frames) {
+    for (uint32_t i = 0; i < frames * 2; ++i) samples[i] += 12;
+}
 static PsxLobbyMatchCaps test_match_caps;
 extern "C" const PsxLobbyMatchCaps* psx_lobby_match_caps(void) {
     return &test_match_caps;
@@ -483,6 +488,12 @@ int main() {
 
     std::string error;
     PSXRecompV4::mod_clear_plugins_for_tests();
+    check(psx_mod_register_pcm_plugin("runtime.test-vblank", test_pcm) == 1,
+          "active PCM plugin registers");
+    check(psx_mod_register_pcm_plugin("runtime.test-disabled-entry", test_pcm) == 1,
+          "disabled PCM plugin registers");
+    check(!psx_mod_register_pcm_plugin("runtime.test-vblank", test_pcm),
+          "duplicate PCM callback is rejected");
     check(PSXRecompV4::mod_register_activation_plugin(
               "runtime.test-vblank", test_activation_plugin),
           "runtime test activation hook must register");
@@ -552,6 +563,11 @@ int main() {
     mod_runtime_on_vblank();
     check(plugin_calls == 1,
           "resolved trusted plugin must run on guest VBlank");
+    int16_t overlay_pcm[4] = {};
+    check(pcm_callback != nullptr, "active plan binds the SPU overlay");
+    if (pcm_callback) pcm_callback(overlay_pcm, 2);
+    check(overlay_pcm[0] == 12 && overlay_pcm[3] == 12,
+          "only active PCM plugins mix every stereo sample");
     check(g_psx_mod_function_entry_hooks == 1,
           "activation must flatten exactly the active plan's entry hooks");
     psx_mod_function_entry(&entry_cpu, 0x80003000u);
@@ -596,6 +612,7 @@ int main() {
     check(activation_calls == 2 && plugin_calls == 1 &&
               g_psx_mod_function_entry_hooks == 0 && active_entry_hits == 4,
           "a netplay session must stay vanilla: no activation, VBlank or hook");
+    check(!pcm_callback, "an empty session unbinds PCM overlays");
     check(PSXRecompV4::mod_runtime_commit(cue_path, &error), error.c_str());
     mod_runtime_activate_plugins();
     check(activation_calls == 3,

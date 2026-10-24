@@ -8,6 +8,12 @@ extern "C" {
 
 typedef void (*PSXModVBlankCallback)(void);
 typedef void (*PSXModActivationCallback)(void);
+/* Emulation-thread stereo S16 at 44100 Hz, after SPU/shadow synthesis, before
+ * capture/host mute. Called for every rendered block, including discarded
+ * turbo/rollback output. Add with saturation; never call guest code here.
+ * Keep mutable cursors in allocated guest memory for save/rewind/rollback.
+ * Host audio/device state must not affect sample generation. */
+typedef void (*PSXModPCMCallback)(int16_t* stereo, uint32_t frames);
 struct CPUState;
 /* A callback that runs guest code inside psx_mod_render_pass() can be
  * abandoned by a watchdog longjmp; see the note at psx_mod_render_pass(). */
@@ -27,6 +33,7 @@ int psx_mod_register_activation_plugin(const char* id,
                                        PSXModActivationCallback callback);
 int psx_mod_register_vblank_plugin(const char* id,
                                    PSXModVBlankCallback callback);
+int psx_mod_register_pcm_plugin(const char* id, PSXModPCMCallback callback);
 /* Runs after successful guest-state restore, before the restored PC resumes.
  * Rebind host hooks here; do not advance guest gameplay as a VBlank would. */
 int psx_mod_register_savestate_plugin(const char* id,

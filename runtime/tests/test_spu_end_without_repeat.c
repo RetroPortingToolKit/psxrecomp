@@ -129,9 +129,32 @@ static void test_end_with_repeat_keeps_playing(void) {
           "END with REPEAT records a loop event");
 }
 
+static uint32_t overlay_frames;
+static void test_overlay(int16_t* stereo, uint32_t frames) {
+    overlay_frames += frames;
+    for (uint32_t i = 0; i < frames * 2; ++i) stereo[i] = 1234;
+}
+static void test_pcm_overlay_paths(void) {
+    int16_t output[14];
+    spu_init();
+    spu_set_pcm_overlay(test_overlay);
+    spu_render(output, 7); /* disabled SPU / general path */
+    CHECK(overlay_frames == 7 && output[0] == 1234 && output[13] == 1234,
+          "overlay plays even with disabled native SPU");
+    spu_regs[reg_index(0x1F801DAAu)] = 0x8000;
+    spu_render(output, 7); /* enabled SPU without voices / fast path */
+    CHECK(overlay_frames == 14 && output[13] == 1234,
+          "voice-free SPU path also advances the overlay");
+    spu_set_pcm_overlay(NULL);
+    spu_render(output, 7);
+    CHECK(overlay_frames == 14 && output[0] == 0 && output[13] == 0,
+          "unbinding preserves native silence without advancing playback");
+}
+
 int main(void) {
     test_end_without_repeat_is_silent();
     test_end_with_repeat_keeps_playing();
+    test_pcm_overlay_paths();
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;
 }
