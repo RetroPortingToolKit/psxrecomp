@@ -1305,17 +1305,33 @@ int hd_texture_pack_preload(HdTexturePack* pack, size_t max_bytes, unsigned max_
     try {
         namespace tp = psx_texpreload;
         std::vector<std::pair<uint64_t, std::string>> work_items;
-        for (const auto& entry : pack->entries)
-            if (!entry.second.ambiguous)
-                work_items.emplace_back(entry.first, entry.second.replacement_path);
         size_t per_image = 0;
         {
             std::lock_guard<std::mutex> lock(pack->decode.mutex);
             per_image = pack->decode.budget;
+            for (const auto& item : pack->decode.items)
+                if (item.second.pinned) r.bytes += item.second.bytes;
+            for (const auto& entry : pack->entries) {
+                if (entry.second.ambiguous) continue;
+                ++r.requested;
+                const auto it = pack->decode.items.find(entry.first);
+                if (it != pack->decode.items.end() && it->second.pinned) ++r.loaded;
+            }
+            if (r.bytes > max_bytes) {
+                r.failed = r.requested - r.loaded;
+                if (out) *out = r;
+                return -1;
+            }
+            for (const auto& entry : pack->entries) {
+                if (entry.second.ambiguous) continue;
+                const auto it = pack->decode.items.find(entry.first);
+                if (it == pack->decode.items.end() || !it->second.pinned)
+                    work_items.emplace_back(entry.first, entry.second.replacement_path);
+            }
         }
         std::vector<std::shared_ptr<DecodedImage>> images(work_items.size());
         std::vector<unsigned char> status(work_items.size(), tp::kPending);
-        tp::Budget budget(max_bytes);
+        tp::Budget budget(max_bytes - r.bytes);
         r.worker_errors = static_cast<int>(tp::run(work_items.size(), max_threads, [&](size_t k) {
             status[k] = tp::kFailed;
             std::ifstream input(work_items[k].second, std::ios::binary | std::ios::ate);
@@ -1353,7 +1369,6 @@ int hd_texture_pack_preload(HdTexturePack* pack, size_t max_bytes, unsigned max_
             reservation.keep = true;
             status[k] = tp::kLoaded;
         }));
-        r.requested = static_cast<int>(work_items.size());
         std::lock_guard<std::mutex> lock(pack->decode.mutex);
         for (size_t k = 0; k < work_items.size(); ++k) {
             if (status[k] == tp::kOverBudget) { ++r.over_budget; continue; }

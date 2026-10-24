@@ -527,6 +527,14 @@ void test_bounded_preload(Fixture& fixture) {
                   (r.requested == 1 ? status == 1 : (status == 0 && r.failed >= 1)),
               "malformed replacements are reported, not counted as preloaded");
         hd_texture_pack_set_decode_budget(pack, 1);
+        HdTexturePreloadResult repeat{};
+        check(hd_texture_pack_preload(pack,64u*8u*4u,1,&repeat) >= 0 &&
+              repeat.loaded == 1 && repeat.bytes == 64u*8u*4u &&
+              repeat.failed == repeat.requested - 1,
+              "repeat counts pinned images without decoding them under a reduced budget");
+        check(hd_texture_pack_preload(pack,64u*8u*4u-1,1,&repeat) == -1 &&
+              repeat.bytes == 64u*8u*4u,
+              "a smaller lifetime cap rejects and reports retained residency");
         check(hd_texture_pack_track_upload(pack, 10, 20, 8, 4,
                                            fixture.upload_words.data(),
                                            fixture.upload_words.size(), nullptr) == 1,
@@ -568,6 +576,9 @@ void test_bounded_preload(Fixture& fixture) {
         tp::fault_mode() = 0;
         check(status == -1 && r.loaded == 1 && r.bytes == 64u * 8u * 4u,
               "publication failure still accounts the retained pinned image");
+        check(hd_texture_pack_preload(pack,64u*8u*4u,1,&r) >= 0 &&
+              r.loaded == 1 && r.bytes == 64u*8u*4u && r.failed == r.requested-1,
+              "publication retry accounts existing pinned residency");
         hd_texture_pack_destroy(pack);
     }
 }
