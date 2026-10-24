@@ -117,6 +117,8 @@ constexpr uint32_t kBltzT0 = 0x05000002u;    // bltz  t0, +2
 constexpr uint32_t kBgezT0 = 0x05010002u;    // bgez  t0, +2
 constexpr uint32_t kBltzalT0 = 0x05100002u;  // bltzal t0, +2
 constexpr uint32_t kAddiuV0 = 0x24820070u;   // addiu v0, a0, 0x70
+constexpr uint32_t kSltiAtS6 = 0x2AC10000u;  // slti  at, s6, 0 (s6 = SX << 16)
+constexpr uint32_t kSltiAtS6Imm = 0x2AC10010u; // slti at, s6, 0x10
 
 const char* const kLuiHelper =
     "cpu->gpr[22] = psx_ws_cull_lui_hi(0x0200u); "
@@ -180,6 +182,33 @@ void listed_sltu_emits_the_band_helper() {
           "a screen_x site on sltu routes through psx_ws_cull_sltu_band");
     check(!exits_with_failure([&] { generate_first_instruction(kSltuV0, config); }),
           "a screen_x site on sltu generates");
+}
+
+// slti rt,x,0 on `SX << 16` is the bltz sign test as a flag: set only while
+// SX < -margin through the same helper. Any other slti immediate is not this
+// form and fails the main-EXE build; an overlay variant keeps its code.
+void listed_slti_zero_emits_the_high_half_test() {
+    PSXRecomp::CodeGenConfig config{};
+    config.emit_comments = true;
+    const auto plain = generate_first_instruction(kSltiAtS6, config);
+    check(!has(plain, "psx_ws_cull_bltz_hi"), "an unlisted slti stays vanilla");
+    config.ws_cull_screen_x_sites.insert(kBase);
+    check(has(generate_first_instruction(kSltiAtS6, config),
+              "cpu->gpr[1] = (uint32_t)psx_ws_cull_bltz_hi(cpu->gpr[22]); "
+              "/* ws explicit screen-x left edge (high half) */"),
+          "a screen_x site on slti rt,rs,0 routes through psx_ws_cull_bltz_hi");
+    check(!exits_with_failure([&] { generate_first_instruction(kSltiAtS6, config); }),
+          "a screen_x site on slti rt,rs,0 generates");
+    check(exits_with_failure([&] { generate_first_instruction(kSltiAtS6Imm, config); }),
+          "a screen_x site on slti with a nonzero immediate fails main-EXE generation");
+    config.overlay_mode = true;
+    check(!has(generate_first_instruction(kSltiAtS6Imm, config), "psx_ws_cull_"),
+          "an overlay slti with a nonzero immediate at a screen_x site stays vanilla");
+    for (int32_t x : {-1000, -54, -53, -1, 0, 1, 319}) {
+        const uint32_t v = (uint32_t)x << 16;
+        check(psx_ws_cull_bltz_hi_value(v, 0) == (((int32_t)v < 0) ? 1 : 0),
+              "the slti form is the vanilla slti at margin 0");
+    }
 }
 
 // bltz_sites is the low-half form and keeps its meaning when an address is in
@@ -301,6 +330,7 @@ int main(int argc, char** argv) {
     unlisted_instructions_stay_vanilla();
     listed_sites_emit_the_helpers();
     listed_sltu_emits_the_band_helper();
+    listed_slti_zero_emits_the_high_half_test();
     bltz_sites_wins_over_screen_x_sites();
     main_exe_guard_and_overlay_variants();
     declarations_only_when_the_key_is_used();

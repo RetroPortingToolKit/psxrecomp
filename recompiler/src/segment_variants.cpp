@@ -190,8 +190,8 @@ CodeGenConfig move_exact_config_sites(const CodeGenConfig& cfg, At at) {
     v.ws_bg2d_bufbase_site = at(v.ws_bg2d_bufbase_site);
     v.ws_bg2d_cap_site = at(v.ws_bg2d_cap_site);
     // Physically matched, kept as written: ws_signed_x_bound_sites,
-    // ws_cull_keep_sites, ws_cull_angle_sites, ws_aspect_cone.sites,
-    // draw_distance_clamp_sites.
+    // ws_cull_keep_sites, ws_cull_sxy_sites, ws_cull_angle_sites,
+    // ws_aspect_cone.sites, draw_distance_clamp_sites.
     return v;
 }
 

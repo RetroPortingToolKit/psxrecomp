@@ -299,13 +299,14 @@ are non-empty, so titles that do not use them keep their caches.
 
 `screen_x_sites` is the explicit form of the `auto_screen_x` compare, for a
 title whose width is not in `screen_w_imms` or whose function has no paired
-height compare. It takes four instructions:
+height compare. It takes five instructions:
 
 | Instruction at the site | While widened |
 |---|---|
 | `sltiu rt, SX, W` | `rt = -m <= SX < W + m` |
 | `lui rt, W` (a screen edge kept as `W << 16`) | `rt = (W + m) << 16`; a negative `W` moves left instead |
 | `bltz x, outside` where `x` is `SX << 16` | taken while `SX < -m` |
+| `slti rt, x, 0` where `x` is `SX << 16` | `rt = SX < -m` (the `bltz` test as a flag) |
 | `sltu rd, SX, W` with `W` in a register | `rd = -4m <= (int16)SX < W` |
 
 The `sltu` form covers a renderer that compares a 16-bit screen X
@@ -343,11 +344,57 @@ screen_x_sites = [
 `screen_x_sites` is applied when code is generated (native code and overlay
 shards) and, at runtime, by the dirty-RAM interpreter: code that runs from
 RAM through the interpreter (including under `PSX_FORCE_INTERP=1`) widens the
-same four instruction forms at the listed addresses, with the same helpers and
+same five instruction forms at the listed addresses, with the same helpers and
 the same identity at 4:3. A listed `bltz` follows the precedence `bltz_sites`,
 then `screen_x_sites`, then the `auto_screen_x` classifier. In the main EXE
 a listed address holding another non-branch instruction is a hard build error;
-a branch other than `bltz` at a listed address is left as it is.
+a branch other than `bltz` at a listed address is left as it is, and a
+`slti` with a nonzero immediate is a build error (it is not this form).
+
+### Packed-SXY all-vertices reject (`[[widescreen.cull.sxy]]`)
+
+Some renderers trivially reject a whole triangle or quad by ANDing the packed
+GTE `SXY` words of its vertices (Y in the high half, X in the low half) with a
+sign mask and branching on the result:
+
+```
+and   at, t0, s1        ; s1 = 0x80008000
+and   at, s4, at
+and   at, t3, at        ; (and at, t1, at for a quad)
+bne   at, zero, reject  ; bit 31: all above, bit 15: all left of the screen
+```
+
+`screen_x_sites`, `bltz_sites` and the packed-coordinate helpers test one
+value at a time and cannot widen this fold. Listing it widens only the left
+reject: each AND of the fold becomes `psx_ws_cull_sxy_and(acc, sxy)`, the
+vanilla AND except that bit 15 also needs this vertex's `X < -m`. Bit 31 (the
+vertical reject) and every other bit are the vanilla AND, the guest's own
+branch decides, and right/bottom rejects (a separate chain) are untouched.
+At 4:3 (`m = 0`) every AND produces the vanilla word.
+
+```toml
+[[widescreen.cull.sxy]]
+kind = "tri"                                  # or "quad" (4 vertices)
+vertex_regs = [8, 20, 11]                     # the SXY operand of each AND
+fold_addresses = ["0x8001A7F0", "0x8001A7F8", "0x8001A800"]
+fold_expected  = ["0x01110824", "0x02810824", "0x01610824"]
+consumer_address  = "0x8001A808"
+consumer_expected = "0x14200034"              # bne at, zero, reject
+```
+
+The loader derives the shape from the words and refuses anything else: one
+AND per vertex, in increasing address order within 16 instructions, all into
+one register `r`; the first combines `vertex_regs[0]` with a separate mask
+register, each later one combines its vertex with `r`; the consumer is
+`beq`/`bne r, zero` within four instructions after the last AND. Every word
+of the fold and the consumer is part of the identity: the main-EXE build
+fails on any mismatch (checked against the image up front and again when the
+AND is emitted), and a captured overlay or interpreted variant with any other
+word in the fold is left vanilla. Native code, overlay shards and the
+dirty-RAM interpreter use the same helper and the same whole-fold check.
+Changing a site changes the overlay-cache identity; regenerate after a change.
+Wild 9 (SLUS-00425) is the first user: its triangle and quad rejects use this
+shape, and its shifted-X lower edge is the `slti` form of `screen_x_sites`.
 
 ---
 

@@ -293,6 +293,10 @@ int32_t psx_ws_plane_nx(int32_t nx) {
 uint32_t psx_ws_xclip_bound(uint32_t vanilla) {
     return g_cbs.ws_xclip_bound ? g_cbs.ws_xclip_bound(vanilla) : vanilla;
 }
+/* [[widescreen.cull.sxy]] fold AND (ws_cull_edge.h). MUST match gpu.c. */
+uint32_t psx_ws_cull_sxy_and(uint32_t acc, uint32_t sxy) {
+    return psx_ws_sxy_and_value(acc, sxy, psx_ws_x_margin());
+}
 uint32_t psx_ws_cull_keep_result(uint32_t vanilla, uint32_t forced) {
     return g_cbs.ws_cull_keep_result
         ? g_cbs.ws_cull_keep_result(vanilla, forced)

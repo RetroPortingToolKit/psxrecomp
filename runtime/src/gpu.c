@@ -1087,6 +1087,63 @@ int psx_ws_cull_keep_site(uint32_t pc, uint32_t instr, uint32_t vanilla,
 }
 
 typedef struct {
+    uint32_t vertices;
+    uint32_t fold_address[4];   /* physical */
+    uint32_t fold_expected[4];
+    uint32_t vertex_reg[4];
+    uint32_t consumer_address;  /* physical */
+    uint32_t consumer_expected;
+} WsSxyCullSite;
+static WsSxyCullSite ws_sxy_cull_sites[PSX_WS_SXY_CULL_SITES_MAX];
+int g_psx_ws_sxy_cull_n = 0;
+void gpu_ws_set_sxy_cull_sites(const uint32_t *vertices,
+                               const uint32_t *fold_addresses,
+                               const uint32_t *fold_expected,
+                               const uint32_t *vertex_regs,
+                               const uint32_t *consumer_addresses,
+                               const uint32_t *consumer_expected, int nsites) {
+    int n = 0;
+    if (nsites > PSX_WS_SXY_CULL_SITES_MAX) nsites = PSX_WS_SXY_CULL_SITES_MAX;
+    for (int i = 0; i < nsites; i++) {
+        WsSxyCullSite *site = &ws_sxy_cull_sites[n];
+        if (vertices[i] != 3u && vertices[i] != 4u) continue;
+        site->vertices = vertices[i];
+        for (uint32_t k = 0; k < site->vertices; k++) {
+            site->fold_address[k] = fold_addresses[i * 4 + k] & 0x1FFFFFFFu;
+            site->fold_expected[k] = fold_expected[i * 4 + k];
+            site->vertex_reg[k] = vertex_regs[i * 4 + k] & 31u;
+        }
+        site->consumer_address = consumer_addresses[i] & 0x1FFFFFFFu;
+        site->consumer_expected = consumer_expected[i];
+        n++;
+    }
+    g_psx_ws_sxy_cull_n = n;
+}
+uint32_t psx_ws_cull_sxy_and(uint32_t acc, uint32_t sxy) {
+    return psx_ws_sxy_and_value(acc, sxy, psx_ws_x_margin());
+}
+uint32_t psx_ws_sxy_cull_vertex_reg(uint32_t pc, uint32_t instr,
+                                    uint32_t (*read_word)(uint32_t phys)) {
+    const uint32_t phys = pc & 0x1FFFFFFFu;
+    for (int i = 0; i < g_psx_ws_sxy_cull_n; i++) {
+        const WsSxyCullSite *site = &ws_sxy_cull_sites[i];
+        uint32_t step = site->vertices;
+        for (uint32_t k = 0; k < site->vertices; k++)
+            if (site->fold_address[k] == phys && site->fold_expected[k] == instr)
+                step = k;
+        if (step == site->vertices) continue;
+        /* The rest of the fold and the consumer are part of the identity,
+         * exactly as the recompiler checks them before emitting the helper. */
+        int ok = read_word(site->consumer_address) == site->consumer_expected;
+        for (uint32_t k = 0; ok && k < site->vertices; k++)
+            if (k != step && read_word(site->fold_address[k]) != site->fold_expected[k])
+                ok = 0;
+        if (ok) return site->vertex_reg[step];
+    }
+    return 0;
+}
+
+typedef struct {
     uint32_t address;
     uint32_t expected;
     uint32_t operand;      /* 0 = rs, 1 = rt */

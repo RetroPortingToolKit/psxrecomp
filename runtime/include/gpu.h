@@ -346,6 +346,17 @@ void gpu_ws_set_clip_edge_x_load_sites(const uint32_t *sites, int nsites,
 void gpu_ws_set_cull_keep_sites(const uint32_t *addresses,
                                 const uint32_t *expected,
                                 const uint32_t *results, int nsites);
+/* [[widescreen.cull.sxy]]: packed-SXY all-vertices reject folds. Per site i,
+ * vertices[i] (3 or 4) ANDs at fold_addresses[i*4 + k] with words
+ * fold_expected[i*4 + k] and SXY operand vertex_regs[i*4 + k], then the
+ * beq/bne consumer. The recompiler config loader has validated the shape. */
+#define PSX_WS_SXY_CULL_SITES_MAX 64
+void gpu_ws_set_sxy_cull_sites(const uint32_t *vertices,
+                               const uint32_t *fold_addresses,
+                               const uint32_t *fold_expected,
+                               const uint32_t *vertex_regs,
+                               const uint32_t *consumer_addresses,
+                               const uint32_t *consumer_expected, int nsites);
 void gpu_ws_set_angle_sites(const uint32_t *addresses,
                             const uint32_t *expected, int nsites);
 /* [[widescreen.cull.scale]]: full-word-guarded SLT/SLTU sites whose rs (0) or
@@ -399,6 +410,14 @@ uint32_t psx_ws_clip_edge_width(void);
 uint32_t psx_ws_cull_keep_result(uint32_t vanilla, uint32_t forced);
 int psx_ws_cull_keep_site(uint32_t pc, uint32_t instr, uint32_t vanilla,
                           uint32_t *out);
+/* One AND of a [[widescreen.cull.sxy]] fold (ws_cull_edge.h); identity at 4:3. */
+uint32_t psx_ws_cull_sxy_and(uint32_t acc, uint32_t sxy);
+/* Interpreter lookup: the SXY operand register (1..31) when `instr` at `pc`
+ * is an AND of a configured fold and every fold and consumer word, read
+ * through `read_word` (physical address), matches; else 0. */
+extern int g_psx_ws_sxy_cull_n;
+uint32_t psx_ws_sxy_cull_vertex_reg(uint32_t pc, uint32_t instr,
+                                    uint32_t (*read_word)(uint32_t phys));
 uint32_t psx_ws_angle_widen(uint32_t vanilla);
 int psx_ws_angle_site(uint32_t pc, uint32_t instr, uint32_t *out);
 /* bound * (half_extent + margin) / half_extent; identity at 4:3. */
