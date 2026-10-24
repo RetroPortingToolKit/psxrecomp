@@ -313,6 +313,8 @@ static int s_input_frames   = 0;
  * for driving two-player modes headless. */
 static int s_input_override_p2 = -1;
 static int s_input_frames_p2   = 0;
+/* Additional digital test ports. Never alias an unknown port to P1. */
+static int s_extra_buttons[8],s_extra_frames[8],s_extra_active[8];
 /* Optional analog-stick override (set_input lx/ly/rx/ry, 0..255, 0x80 =
  * centre). Lets injected input drive analog-mode movement; consumed by the
  * pad sampler alongside the button word. */
@@ -8222,8 +8224,11 @@ static void handle_set_input(int id, const char *json)
     if (connected < -1 || connected > 1) {
         send_err(id, "connected must be -1 (automatic), 0, or 1"); return;
     }
+    const int port = json_get_int(json, "port", 1);
+    if(port<1 || port>8) {send_err(id,"port must be 1..8");return;}
     if (json_get_str(json, "layer", layer, sizeof(layer)) &&
         strcmp(layer, "host") == 0) {
+        if(port!=1) {send_err(id,"host input layer supports port 1 only");return;}
         s_host_buttons = json_get_str(json, "buttons", val_str, sizeof(val_str))
             ? (uint16_t)hex_to_u32(val_str) : (uint16_t)0xFFFF;
         s_host_axes[0] = clamp_u8_arg(json_get_int(json, "lx", -1), 0x80);
@@ -8241,6 +8246,11 @@ static void handle_set_input(int id, const char *json)
     }
     if (pad_type < -1 || pad_type > 2) {
         send_err(id, "pad_type must be -1 (automatic), 0, 1, or 2"); return;
+    }
+    if(port>=3) {
+        s_extra_buttons[port-1]=(int)(hex_to_u32(val_str)&0xFFFFu);
+        s_extra_frames[port-1]=0;s_extra_active[port-1]=1;
+        send_ok(id);return;
     }
     if (json_get_int(json, "port", 1) == 2) {
         s_pad_connected_override[1] = connected;
@@ -8290,9 +8300,16 @@ static void handle_press(int id, const char *json)
     if (connected < -1 || connected > 1) {
         send_err(id, "connected must be -1 (automatic), 0, or 1"); return;
     }
+    const int port = json_get_int(json, "port", 1);
+    if(port<1 || port>8) {send_err(id,"port must be 1..8");return;}
     if (buttons < 0) { send_err(id, "missing buttons"); return; }
     if (pad_type < -1 || pad_type > 2) {
         send_err(id, "pad_type must be -1 (automatic), 0, 1, or 2"); return;
+    }
+    if(port>=3) {
+        s_extra_buttons[port-1]=buttons&0xFFFF;
+        s_extra_frames[port-1]=frames;s_extra_active[port-1]=1;
+        send_ok(id);return;
     }
     if (json_get_int(json, "port", 1) == 2) {
         s_pad_connected_override[1] = connected;
@@ -8389,7 +8406,12 @@ static void handle_pad_status(int id, const char *json)
 
 static void handle_clear_input(int id, const char *json)
 {
-    const int port = json_get_int(json, "port", 0);   /* 0 = both */
+    const int port = json_get_int(json, "port", 0);   /* 0 = all */
+    if(port<0 || port>8) {send_err(id,"port must be 0..8");return;}
+    for(int i=2;i<8;++i)if(!port || port==i+1) {
+        s_extra_active[i]=s_extra_frames[i]=0;
+    }
+    if(port>=3) {send_ok(id);return;}
     if (port == 0 || port == (int)s_input_route_port) {
         s_input_route_active = 0;
         s_input_route_wait_load = 0;
@@ -17633,6 +17655,12 @@ int debug_server_get_input_override_port2(void)
             s_input_override_p2 = -1;
     }
     return current;
+}
+int debug_server_get_input_override_extra(unsigned slot) {
+    if(slot<2 || slot>=8 || !s_extra_active[slot])return -1;
+    int value=s_extra_buttons[slot];
+    if(s_extra_frames[slot]>0 && !--s_extra_frames[slot])s_extra_active[slot]=0;
+    return value;
 }
 
 int debug_server_get_axis_override(unsigned char st[4])

@@ -7725,30 +7725,30 @@ static PadExtHooks pad_ext_main_hooks(void) {
 /* TCP port-2 injection (set_input/press "port":2): a digital pad plugged
  * into port 2 for as long as a test drives it, so headless runs can reach and
  * play two-player modes. Applied after the normal sampling so it wins. */
-static void apply_input_override_port2(int override_word) {
-    static int s_was_driven;
+static void apply_input_override_port(int slot,int override_word) {
+    static int s_was_driven[PSX_MAX_PLAYERS];
     if (override_word < 0) {
 #ifndef PSX_NO_DEBUG_TOOLS
-        restore_input_override_profile(1);
+        if (slot < 2) restore_input_override_profile(slot);
 #endif
         /* Ending an injection releases its buttons: with no device in the
          * port, nothing else would write the word again. A real device in
          * port 2 is resampled each frame anyway. */
-        if (s_was_driven) sio_set_pad_state_slot(1, 0xFFFFu);
-        s_was_driven = 0;
+        if (s_was_driven[slot]) sio_set_pad_state_slot(slot, 0xFFFFu);
+        s_was_driven[slot] = 0;
         return;
     }
-    s_was_driven = 1;
-    if (!sio_get_pad_connected(1)) {
-        sio_set_pad_connected(1, 1);
-        sio_set_pad_analog(1, 0, 0x80, 0x80, 0x80, 0x80);
+    s_was_driven[slot] = 1;
+    if (!sio_get_pad_connected(slot)) {
+        sio_set_pad_connected(slot, 1);
+        sio_set_pad_analog(slot, 0, 0x80, 0x80, 0x80, 0x80);
     }
-    sio_set_pad_state_slot(1, (uint16_t)override_word);
+    sio_set_pad_state_slot(slot, (uint16_t)override_word);
 #ifndef PSX_NO_DEBUG_TOOLS
-    const int debug_connected = debug_server_get_pad_connected_override(1);
-    if (debug_connected >= 0) {
-        s_debug_profile_injected[1] = true;
-        sio_set_pad_connected(1, debug_connected);
+    const int debug_connected = debug_server_get_pad_connected_override(slot);
+    if (slot < 2 && debug_connected >= 0) {
+        s_debug_profile_injected[slot] = true;
+        sio_set_pad_connected(slot, debug_connected);
     }
 #endif
 }
@@ -9222,6 +9222,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     }
 #endif
     host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
+    int extra_overrides[PSX_MAX_PLAYERS];
+    for(unsigned slot=2;slot<PSX_MAX_PLAYERS;++slot) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        extra_overrides[slot]=debug_server_get_input_override_extra(slot);
+#else
+        extra_overrides[slot]=-1;
+#endif
+    }
 
     psx_local_mouse_begin(sdl_window, local_mouse_live(override));
     {
@@ -9449,7 +9457,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 sample_headless_pad_into_sio(override);
             else
                 sample_pad_into_sio(override);
-            apply_input_override_port2(override_p2);
+            apply_input_override_port(1,override_p2);
+            for(int slot=2;slot<PSX_MAX_PLAYERS;++slot)apply_input_override_port(slot,extra_overrides[slot]);
             env_pad_hold_apply();
         }
         /* Offline vblank boundary: record/replay/compare (PSX_RB_SELFCHECK).
@@ -9789,7 +9798,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 SDL_PumpEvents(); // retain native timing when no policy exists
             }
             sample_pad_into_sio(override);
-            apply_input_override_port2(override_p2);
+            apply_input_override_port(1,override_p2);
+            for(int slot=2;slot<PSX_MAX_PLAYERS;++slot)apply_input_override_port(slot,extra_overrides[slot]);
             env_pad_hold_apply();
             latency_ring_restamp_input();
         }

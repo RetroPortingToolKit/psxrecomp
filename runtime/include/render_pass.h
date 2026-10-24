@@ -82,9 +82,9 @@ int render_pass_verification_enabled(void);
 void render_pass_reset_session(void);
 typedef struct RenderStereoStats {
     uint64_t attempts, pairs, refused, failed, shed;
-    uint64_t last_pair_id, last_guest_cycle, eye_cycle[2];
-    uint64_t eye_hash[2]; /* measured entry state when VERIFY is enabled */
-    int32_t eye_view[2][3]; /* sampled from the actual projection ambient */
+    uint64_t last_pair_id, last_guest_cycle, eye_cycle[4];
+    uint64_t eye_hash[4]; /* measured entry state when VERIFY is enabled */
+    int32_t eye_view[4][3]; /* sampled from the actual projection ambient */
     double last_pair_ms, avg_pair_ms;
     int last_eye;
     const char *last_failure;

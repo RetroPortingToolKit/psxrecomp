@@ -216,6 +216,12 @@ int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
     return gl_renderer_pass_begin(x,y,w,h,0,0,reuse);
 }
 int gl_renderer_local_pair_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_grid_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_grid_publish(uint64_t id,uint64_t cycle,const int32_t view[4][3]) {
+    (void)cycle;(void)view;
+    if(s_stereo_mask!=15u)return 0;
+    s_stereo_published=id;return 1;
+}
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
     gl_renderer_pass_end(0, keep);
     if (keep) s_stereo_mask |= 1u << eye;
@@ -394,6 +400,10 @@ static int stereo_draw(struct CPUState *cpu, void *user, uint32_t eye) {
 
     guest_frame(cpu, &frames, 0);
     return 1;
+}
+static int grid_draw(struct CPUState *cpu,void *user,uint32_t seat) {
+    Frames frames={5,user && seat==3};
+    guest_frame(cpu,&frames,0);return 1;
 }
 
 typedef struct Live {
@@ -659,6 +669,12 @@ int main(void) {
         check_live(&live,"after local second-view watchdog");
         CHECK(psx_mod_render_local_pair(&cpu,&frame,stereo_draw,NULL)==1,
               "local pair recovers after watchdog");
+        CHECK(psx_mod_render_local_grid(&cpu,&frame,grid_draw,NULL)==1,"complete local grid publishes");
+        kept=s_stereo_published;
+        CHECK(!psx_mod_render_local_grid(&cpu,&frame,grid_draw,&runaway),"fourth-view watchdog discards the grid");
+        CHECK(s_stereo_published==kept && !s_stereo_mask && !psx_mod_local_view_scope(),"grid watchdog retains complete frame and closes scope");
+        check_live(&live,"after fourth-view watchdog");
+        CHECK(psx_mod_render_local_grid(&cpu,&frame,grid_draw,NULL)==1,"grid recovers after watchdog");
     }
 
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
