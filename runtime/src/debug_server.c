@@ -17,6 +17,7 @@
 #endif
 #include <time.h>
 #include "debug_server.h"
+#include "debug_bulk_write.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
 #include "psx_video_timing.h"
@@ -126,6 +127,9 @@ static sock_t s_listen  = SOCK_INVALID;
 static sock_t s_client  = SOCK_INVALID;
 static int    s_port    = DEFAULT_DEBUG_PORT;
 static int    s_listen_err = 0;   /* platform socket error captured by init */
+#ifdef _WIN32
+static int    s_wsa_started;
+#endif
 
 #define RECV_BUF_SIZE 8192
 static PSX_BSS char s_recv_buf[RECV_BUF_SIZE];
@@ -5317,6 +5321,13 @@ static void handle_write_ram(int id, const char *json)
     uint8_t val = (uint8_t)hex_to_u32(val_str);
     psx_host_write_byte(addr, val);
     send_ok(id);
+}
+
+static void handle_write_bulk(int id, const char *json)
+{
+    const char *error = debug_bulk_write(json);
+    if (error) send_err(id, error);
+    else send_ok(id);
 }
 
 /* geom_correction — is [video] geometry_correction / perspective_texturing
@@ -15640,6 +15651,7 @@ static const CmdEntry s_commands[] = {
     { "read_ram",          handle_read_ram },
     { "dump_ram",          handle_read_ram },   /* alias: one request, one response */
     { "write_ram",         handle_write_ram },
+    { "write_bulk",        handle_write_bulk },
     { "gpu_state",         handle_gpu_state },
     { "geom_correction",   handle_geom_correction },
     { "pgxp",              handle_pgxp },
@@ -16094,6 +16106,7 @@ malformed:
 
 void debug_server_init(int port)
 {
+    if (s_listen != SOCK_INVALID) return;
     if (port > 0) s_port = port;
 
     /* Deterministic cold-boot controller probe. Unlike a TCP set_input command,
@@ -16191,13 +16204,16 @@ void debug_server_init(int port)
 
 #ifdef _WIN32
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    s_listen_err = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (s_listen_err) return;
+    s_wsa_started = 1;
 #endif
 
     s_listen = socket(AF_INET, SOCK_STREAM, 0);
     if (s_listen == SOCK_INVALID) {
         s_listen_err = sock_error();
         fprintf(stdout, "psxrecomp: debug server socket() FAILED\n");
+        debug_server_shutdown();
         return;
     }
 #ifdef _WIN32
@@ -16221,6 +16237,7 @@ void debug_server_init(int port)
         fprintf(stdout, "psxrecomp: debug server bind(%d) FAILED\n", s_port);
         sock_close(s_listen);
         s_listen = SOCK_INVALID;
+        debug_server_shutdown();
         return;
     }
 
@@ -16248,6 +16265,10 @@ void debug_server_init(int port)
         s_io_running = 1;
         s_io_thread = SDL_CreateThread(io_thread_main, "psx-dbg-io", NULL);
         if (!s_io_thread) s_io_running = 0;
+    }
+    if (!s_io_thread) {
+        debug_server_shutdown();
+        return;
     }
 
     if (!s_frame_history) {
@@ -16702,8 +16723,10 @@ void debug_server_record_frame(void)
         s_frame_count++;
         return;
     }
-    if (!s_frame_history) return;
-    if (!s_cpu) return;
+    if (!s_frame_history || !s_cpu) {
+        ++s_frame_count;
+        return;
+    }
 
     uint32_t idx = (uint32_t)(s_frame_count % FRAME_HISTORY_CAP);
     PSXFrameRecord *r = &s_frame_history[idx];
@@ -16830,8 +16853,15 @@ void debug_server_shutdown(void)
         sock_close(s_client);
         s_client = SOCK_INVALID;
     }
+    if (s_io_mutex) { SDL_DestroyMutex(s_io_mutex); s_io_mutex = NULL; }
+    if (s_io_req_cv) { SDL_DestroyCond(s_io_req_cv); s_io_req_cv = NULL; }
+    if (s_io_resp_cv) { SDL_DestroyCond(s_io_resp_cv); s_io_resp_cv = NULL; }
+    free(s_resp_buf);
+    s_resp_buf = NULL;
+    s_resp_cap = s_resp_len = 0;
+    s_io_state = IO_IDLE;
 #ifdef _WIN32
-    WSACleanup();
+    if (s_wsa_started) { WSACleanup(); s_wsa_started = 0; }
 #endif
 }
 

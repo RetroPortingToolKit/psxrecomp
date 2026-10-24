@@ -31,6 +31,7 @@ int main(int argc, char** argv) {
     const fs::path root(argv[1]);
     int parsed = 0;
     bool saw_8mb = false;
+    bool saw_debug_server = false;
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
         if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml")
             continue;
@@ -45,6 +46,18 @@ int main(int argc, char** argv) {
               entry.path().string() + ": version does not match its directory");
         check(package.id == version_dir.parent_path().filename().string(),
               entry.path().string() + ": id does not match its directory");
+        if (package.id == "psx.integration.debug-server") {
+            saw_debug_server = true;
+            check(package.features.size() == 1 &&
+                      package.features[0].id == "debug-server" &&
+                      !package.features[0].default_enabled && !package.features[0].hidden,
+                  "TCP server is visible in the launcher and disabled by default");
+            check(package.plugins.size() == 1 && package.plugins[0].id == "psx.debug-server" &&
+                      package.plugins[0].feature_id == "debug-server",
+                  "TCP server feature activates the registered plugin");
+            check(package.targets.size() == 1 && package.targets[0].game_id == "*",
+                  "TCP server package applies to every game");
+        }
         if (package.id == "psx.enhancement.8mb-ram") {
             saw_8mb = true;
             check(package.features.size() == 1 && package.features[0].id == "8mb-ram",
@@ -62,6 +75,7 @@ int main(int argc, char** argv) {
     }
     check(parsed > 0, "no builtin manifests found under " + root.string());
     check(saw_8mb, "psx.enhancement.8mb-ram builtin package missing");
+    check(saw_debug_server, "psx.integration.debug-server builtin package missing");
     if (failures == 0)
         std::cout << "PASS builtin mod manifests (" << parsed << " packages)\n";
     return failures ? 1 : 0;
