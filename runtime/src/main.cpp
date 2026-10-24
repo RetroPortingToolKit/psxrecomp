@@ -134,6 +134,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "mod_plugins.h"
 #include "mod_local_input_policy.h"
 #include "mod_session_baseline.h"
+#include "func_override.h"
 #include "mod_runtime.h"
 #include "video_texture_filter.h"
 #include "video_telemetry.h"
@@ -20556,6 +20557,11 @@ int main(int argc, char** argv) {
             netplay && PSXRecompV4::mod_runtime_netplay_view_active() ? 1 : 0);
         psx_mod_immediate_begin_session(netplay ? 1 : 0);
         mod_runtime_activate_plugins();
+        if (const char* error = mod_runtime_activation_error()) {
+            std::fprintf(stderr,"psxrecomp: %s\n",error);
+            return false;
+        }
+        func_override_install();
         if (!psx_mod_immediate_session_valid()) {
             std::fprintf(stderr, "psxrecomp: immediate-selector enhancements are offline-only\n");
             return false;

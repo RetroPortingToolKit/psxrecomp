@@ -5,6 +5,7 @@
 
 #include "disc_path.h"
 #include "host_file_identity.h"
+#include "func_override.h"
 #include "iso_reader.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
@@ -366,6 +367,27 @@ void build_function_entry_hooks(const RuntimeMods& s) {
     std::stable_sort(instructions.begin(), instructions.end(),
                     [](const auto& a, const auto& b) { return a.key < b.key; });
     g_psx_mod_instruction_hooks = (uint32_t)instructions.size();
+}
+
+/* Function overrides queue here at constructor time and are ARMED into the
+ * func_override tier only for plugins the resolved package plan selects —
+ * the same gating as vblank/activation callbacks. `id` is the full
+ * registered name (may carry a ":label" suffix, kept for diagnostics);
+ * `plugin` is the manifest-facing part gating matches on. */
+struct FunctionOverridePlugin {
+    std::string id;
+    std::string plugin;
+    uint32_t address = 0;
+    PSXModFunctionOverrideFn fn = nullptr;
+    uint32_t guard[FO_MAX_GUARD_WORDS] = {0, 0, 0, 0};
+    int n_guard = 0;
+    int32_t credit = 0;
+    bool armed = false;
+};
+
+std::vector<FunctionOverridePlugin>& function_override_plugins() {
+    static std::vector<FunctionOverridePlugin> value;
+    return value;
 }
 
 const ModPackage* selected_package(const std::string& id) {
@@ -1663,6 +1685,20 @@ bool mod_runtime_clear_for_netplay(std::string* error) {
     s.disc_guard_failed = false;
     s.netplay_view_plan = false;
     s.error.clear();
+    /* Clearing s.plan is enough for activation/vblank callbacks — they only
+     * run while something iterates the plan. Function overrides are armed
+     * into func_override.c's own table with the dispatcher hook installed,
+     * so they survive a cleared plan and keep firing unless explicitly
+     * disarmed. That matters most on the rematch path (main.cpp jumps to
+     * session_reboot, which is PAST mod_runtime_activate_plugins and
+     * func_override_install), where a modded session entering netplay would
+     * otherwise print the vanilla banner and still run its overrides —
+     * diverging from a peer without the mod. Also re-arm-able: dropping the
+     * armed flag lets a later plan register the same override again. */
+    const int disarmed = func_override_reset_package_armed();
+    (void)disarmed;
+    for (FunctionOverridePlugin& pending : function_override_plugins())
+            pending.armed = false;
     if (error) error->clear();
     std::fprintf(stdout, "psxrecomp: mods cleared for netplay (vanilla session)\n");
     return true;
@@ -2962,6 +2998,11 @@ bool mod_runtime_read_disc_file_sectors(const std::string& path, uint32_t max_by
 }
 } // namespace PSXRecompV4
 
+static std::string s_override_activation_error;
+extern "C" const char* mod_runtime_activation_error(void) {
+    return s_override_activation_error.empty() ? nullptr : s_override_activation_error.c_str();
+}
+
 extern "C" void mod_runtime_activate_plugins(void) {
     using namespace PSXRecompV4;
     HostLaunchTimingScope timing(HOST_LAUNCH_PLUGIN_ACTIVATION);
@@ -2969,6 +3010,9 @@ extern "C" void mod_runtime_activate_plugins(void) {
     psx_host_set_hud_draw_cb(nullptr, nullptr);
     mod_reset_plugin_sessions();
     RuntimeMods& s = state();
+    s_override_activation_error.clear();
+    func_override_reset_package_armed();
+    for (auto& pending : function_override_plugins()) pending.armed = false;
     s.ticket_ready = false;
     psx_mod_set_disc_request_provider(nullptr);
     psx_projection_reset_session();
@@ -2979,6 +3023,27 @@ extern "C" void mod_runtime_activate_plugins(void) {
     s.disc_extents.clear();
     s.audio_tracks.clear();
     s.extent_start = 0;
+    /* Arm the entire tier before activation callbacks change host state. */
+    for (auto& pending : function_override_plugins()) {
+        const bool selected = std::any_of(s.plan.plugins.begin(),s.plan.plugins.end(),
+            [&](const ModResolution::Plugin& p) { return p.id == pending.plugin; });
+        if (!selected) continue;
+        const int rc = s.netplay_view_plan ? FO_ERR_ARGS : func_override_add_package(
+            pending.id.c_str(),pending.address,pending.fn,
+            pending.n_guard ? pending.guard : nullptr,pending.n_guard,pending.credit);
+        if (rc != FO_OK) {
+            s_override_activation_error = "Cannot arm function override " + pending.id +
+                " (registration error " + std::to_string(rc) + ")";
+            s.error = s_override_activation_error;
+            s.plan.ok = false;
+            func_override_reset_package_armed();
+            for (auto& item : function_override_plugins()) item.armed = false;
+            clear_function_entry_hooks();
+            return;
+        }
+        pending.armed = true;
+    }
+    func_override_install();
     s.activating = true;
     psx_mod_immediate_begin_activation();
     for (const ModResolution::Plugin& plugin : s.plan.plugins) {
@@ -3469,6 +3534,45 @@ extern "C" int psx_mod_local_view_scope(void);
  * shared simulation never runs them. */
 static int mod_plan_hooks_parked(void) {
     return PSXRecompV4::state().netplay_view_plan && !psx_mod_local_view_scope();
+}
+
+extern "C" int psx_mod_register_function_override(
+    const char* id, uint32_t address, PSXModFunctionOverrideFn fn,
+    const uint32_t* expected_words, int n_words, int32_t credit) {
+    using namespace PSXRecompV4;
+    if (!id || !*id || !(address & 0x1fffffffu) || (address & 3u) || !fn) return 0;
+    if (n_words < 0 || n_words > FO_MAX_GUARD_WORDS) return 0;
+    if (n_words > 0 && !expected_words) return 0;
+    if (credit < FO_CREDIT_SELF) return 0;
+    /* An optional ":label" suffix names this override in diagnostics (the
+     * `func_override` TCP command) without multiplying manifest plugin ids —
+     * gating and resolver availability use only the part before the ':'.
+     * "pkg.feature:aim" and "pkg.feature:fire" are two overrides under the
+     * one manifest plugin "pkg.feature". */
+    const char* colon = strchr(id, ':');
+    const std::string plugin_id = colon ? std::string(id, colon - id)
+                                        : std::string(id);
+    if (plugin_id.empty() || (colon && !colon[1])) return 0;
+    auto& plugins = function_override_plugins();
+    const auto duplicate = std::find_if(
+        plugins.begin(), plugins.end(),
+        [&](const FunctionOverridePlugin& item) {
+            return item.id == id && item.address == address;
+        });
+    if (duplicate != plugins.end()) return 0;
+    FunctionOverridePlugin plugin;
+    plugin.id = id;
+    plugin.plugin = plugin_id;
+    plugin.address = address;
+    plugin.fn = fn;
+    for (int i = 0; i < n_words; ++i) plugin.guard[i] = expected_words[i];
+    plugin.n_guard = n_words;
+    plugin.credit = credit;
+    plugins.push_back(plugin);
+    /* Mark the plugin id available to the package resolver so a manifest can
+     * gate an override-only plugin (multiple overrides may share one). */
+    mod_register_function_override_marker(plugin_id);
+    return 1;
 }
 
 extern "C" int psx_mod_dispatch_guest_function(CPUState* cpu, uint32_t address) {

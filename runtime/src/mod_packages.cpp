@@ -50,6 +50,10 @@ struct RegisteredPlugin {
     std::vector<ModFunctionEntryHook> function_entries;
     std::vector<ModFunctionEntryHook> guest_functions;
     std::vector<ModInstructionHook> instructions;
+    /* Set when a function override is queued under this id (the callback
+     * itself lives in mod_runtime's pending list) — participates in
+     * availability so a manifest can gate an override-only plugin. */
+    bool function_override = false;
 };
 
 std::map<std::string, RegisteredPlugin>& registered_plugins() {
@@ -1535,12 +1539,20 @@ bool mod_register_function_filter_plugin(const std::string& id, uint32_t address
     return true;
 }
 
+bool mod_register_function_override_marker(const std::string& id) {
+    if (!valid_id(id)) return false;
+    RegisteredPlugin& plugin = registered_plugins()[id];
+    if (plugin.function_override) return false;
+    plugin.function_override = true;
+    return true;
+}
+
 bool mod_plugin_registered(const std::string& id) {
     const auto found = registered_plugins().find(id);
     return found != registered_plugins().end() &&
         (found->second.activation || found->second.session_reset || found->second.vblank || found->second.savestate ||
          !found->second.function_entries.empty() || !found->second.guest_functions.empty() ||
-         !found->second.instructions.empty());
+         !found->second.instructions.empty() || found->second.function_override);
 }
 
 bool mod_register_guest_function_plugin(const std::string& id, uint32_t address,

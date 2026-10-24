@@ -113,6 +113,8 @@ void mod_runtime_set_progress_hook(void (*hook)(void));
 /* Invokes activation callbacks for the committed plan. Call after the final
  * launcher commit and before renderer/window initialization. */
 void mod_runtime_activate_plugins(void);
+/* NULL on success; a non-NULL arming failure requires refusing this launch. */
+const char* mod_runtime_activation_error(void);
 void mod_runtime_on_vblank(void);
 /* Host VBlank query for the active title's optional disc-request provider. */
 int mod_runtime_disc_request(int *ready);
