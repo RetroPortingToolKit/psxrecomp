@@ -6,6 +6,13 @@ Protocol: **JSON over newline**, one object per line, responses on same connecti
 - Success: `{"id": N, "ok": true, ...data}`
 - Failure: `{"id": N, "ok": false, "error": "<msg>"}`
 
+Production builds include the native server but leave its listener **off by
+default**. Enable **TCP Debug Server** under **Mods / Advanced** in a title
+that ships the builtin package, or set `PSX_DEBUG_SERVER=1` for a scripted
+launch. `PSX_DEBUG_SERVER=0` forces the listener off. The listener binds only
+to `127.0.0.1`; `[runtime] debug_port` or `--debug-port` selects its port without
+enabling it. `PSX_DEBUG_TOOLS=OFF` still strips development tracing and disassembly.
+
 There are **two live** servers, both implementing this protocol with overlapping command sets:
 
 | Server | Port | Source |
@@ -47,6 +54,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `get_registers` (`regs`) | ✓ | ✓ | — | All 32 GPRs + PC + HI + LO (native also: COP0 SR/Cause/EPC, I_STAT, I_MASK) |
 | `read_ram` | ✓ | ✓ | `addr`, `len` | Read bytes from PS1 address space as hex string — up to the full 2 MB in ONE response line. `dump_ram` is an alias (the old chunked multi-line variant is gone: it broke the one-request/one-response protocol and wedged the server) |
 | `write_ram` | ✓ | ✓ | `addr`, `val` | Write **one byte** to PS1 address space. Note the parameter is `val` (not `hex`), and the write is a single byte per call — this row previously documented both incorrectly |
+| `write_bulk` | ✓ | | `addr`, `hex` | Write 1–1024 bytes to contiguous main RAM in one request (Archipelago compatible). Quoted hex address and hex byte pairs; validates the whole run before any host store. Rejects invalid hex, oversized runs, MMIO/BIOS/scratchpad and spans across the live RAM boundary. |
 | `read_scratch` |   | ✓ | `addr`, `len` | Read PS1 scratchpad (0x1F800000 region) |
 | `read_vram` / `vram_peek` | ✓¹ | ✓ | `x`, `y`, `w`, `h` | Read 16-bit VRAM pixels (max 128×128) |
 | `gpu_state` | ✓ | ✓ | — | Display area, display depth, `screen_offset_y`, draw offset, GPUSTAT, clip rect, xfer state. A positive screen offset moves 24-bit scanout down from the PAL or NTSC broadcast centre |
@@ -481,9 +489,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**362 commands registered** — 349 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**365 commands registered** — 352 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-74 of 362 have prose above; **288 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+77 of 365 have prose above; **288 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -567,6 +575,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `display_ring_aux` | ✓ |  |  |
 | `display_ring_get` | ✓ |  |  |
 | `display_ring_stats` | ✓ |  |  |
+| `display_timing` | ✓ |  |  |
 | `dma_cdrom_history` | ✓ |  |  |
 | `dma_hold_ring` | ✓ |  | ✓ |
 | `dma_hold_stats` | ✓ |  | ✓ |
@@ -751,7 +760,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `run_to_frame` | ✓ |  | ✓ |
 | `s3_smear_watch` | ✓ |  | ✓ |
 | `savestate` | ✓ |  |  |
-| `savestate_status` | ✓ |  |  |
+| `savestate_status` | ✓ |  | ✓ |
 | `scanline` | ✓ |  | ✓ |
 | `screenshot` | ✓ | ✓ | ✓ |
 | `screenshot_file` | ✓ | ✓ | ✓ |
@@ -769,12 +778,12 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `sio_irq_window` | ✓ |  |  |
 | `sio_pc_trace` | ✓ |  |  |
 | `sio_pc_window` | ✓ |  |  |
-| `snapshot_status` | ✓ |  |  |
 | `sio_state` | ✓ |  | ✓ |
 | `sio_trace` | ✓ | ✓ |  |
 | `sio_trace_reset` |  | ✓ |  |
 | `sio_trace_window` | ✓ |  |  |
 | `sio_write_window` |  | ✓ |  |
+| `snapshot_status` | ✓ |  | ✓ |
 | `sp_ring` | ✓ |  |  |
 | `spu_events` | ✓ | ✓ |  |
 | `spu_events_reset` | ✓ |  |  |
@@ -811,6 +820,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `wide_full` | ✓ |  |  |
 | `wide_shot` | ✓ |  |  |
 | `window_size` | ✓ |  | ✓ |
+| `write_bulk` | ✓ |  | ✓ |
 | `write_ram` | ✓ |  | ✓ |
 | `ws_aspect` | ✓ |  |  |
 | `ws_aspect_cone_site` | ✓ |  |  |

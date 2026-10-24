@@ -23,6 +23,26 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(debug_bulk_write_test tests/test_debug_bulk_write.c src/debug_bulk_write.c)
+    target_include_directories(debug_bulk_write_test PRIVATE include)
+    add_test(NAME debug_bulk_write_test COMMAND debug_bulk_write_test)
+    # Run the real production executable, including persisted mod activation.
+    # A static Windows player can be copied to a disposable profile without
+    # inheriting the developer's settings, DLL lookup paths or native saves.
+    if(NOT PSX_DEBUG_TOOLS AND WIN32 AND PSX_STATIC_RUNTIME
+       AND "OpenBIOS" IN_LIST _psxrt_bios_linked)
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+        if(Python3_FOUND)
+            add_test(NAME debug_server_opt_in_test
+                COMMAND "${Python3_EXECUTABLE}" -I -B
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_debug_server_opt_in.py"
+                    --runtime "$<TARGET_FILE:psx-runtime>"
+                    --bios "${PSXRECOMP_ROOT}/bios/OpenBIOS.BIN"
+                    --manifest "${PSXRECOMP_ROOT}/mods/builtin/packages/psx.integration.debug-server/1.0.0/manifest.toml"
+                    --scratch "${CMAKE_CURRENT_BINARY_DIR}")
+            set_tests_properties(debug_server_opt_in_test PROPERTIES TIMEOUT 90)
+        endif()
+    endif()
     find_package(Threads REQUIRED)
     add_executable(host_launch_timing_test
         tests/test_host_launch_timing.cpp tests/host_launch_timing_helper.cpp)
