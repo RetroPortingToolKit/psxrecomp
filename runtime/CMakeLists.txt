@@ -23,6 +23,10 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(debug_server_policy_test tests/test_debug_server_policy.c src/debug_server_policy.c)
+    target_include_directories(debug_server_policy_test PRIVATE include)
+    target_compile_definitions(debug_server_policy_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
+    add_test(NAME debug_server_policy_test COMMAND debug_server_policy_test)
     add_executable(debug_bulk_write_test tests/test_debug_bulk_write.c src/debug_bulk_write.c)
     target_include_directories(debug_bulk_write_test PRIVATE include)
     add_test(NAME debug_bulk_write_test COMMAND debug_bulk_write_test)

@@ -18844,13 +18844,13 @@ session_reboot:
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
     }
+    debug_server_apply_request(debug_port);
     if (!rematch_session) {
         std::atexit(memcard_flush_all);
         /* Persist the game's native OPTION settings on any exit path (belt-and-
          * suspenders; save-on-change already persists them live). No-op if not yet
          * armed, so it can't overwrite the saved file with boot defaults. */
         std::atexit(game_options_save_now);
-        if (debug_server_requested()) debug_server_init(debug_port);
 #ifndef PSX_NO_DEBUG_TOOLS
         host_sampler_start();   /* this is the emulation thread */
 #endif

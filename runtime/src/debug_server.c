@@ -127,24 +127,9 @@ static sock_t s_listen  = SOCK_INVALID;
 static sock_t s_client  = SOCK_INVALID;
 static int    s_port    = DEFAULT_DEBUG_PORT;
 static int    s_listen_err = 0;   /* platform socket error captured by init */
-static int    s_requested = 0;
-
-void debug_server_request(int enabled)
-{
-    s_requested = enabled != 0;
-}
-
-int debug_server_requested(void)
-{
-    const char *env = getenv("PSX_DEBUG_SERVER");
-    if (env && strcmp(env, "0") == 0) return 0;
-    if (env && strcmp(env, "1") == 0) return 1;
-#ifdef PSX_NO_DEBUG_TOOLS
-    return s_requested;
-#else
-    return 1;
+#ifdef _WIN32
+static int    s_wsa_started;
 #endif
-}
 
 #define RECV_BUF_SIZE 8192
 static PSX_BSS char s_recv_buf[RECV_BUF_SIZE];
@@ -16121,6 +16106,7 @@ malformed:
 
 void debug_server_init(int port)
 {
+    if (s_listen != SOCK_INVALID) return;
     if (port > 0) s_port = port;
 
     /* Deterministic cold-boot controller probe. Unlike a TCP set_input command,
@@ -16218,13 +16204,16 @@ void debug_server_init(int port)
 
 #ifdef _WIN32
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    s_listen_err = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (s_listen_err) return;
+    s_wsa_started = 1;
 #endif
 
     s_listen = socket(AF_INET, SOCK_STREAM, 0);
     if (s_listen == SOCK_INVALID) {
         s_listen_err = sock_error();
         fprintf(stdout, "psxrecomp: debug server socket() FAILED\n");
+        debug_server_shutdown();
         return;
     }
 #ifdef _WIN32
@@ -16248,6 +16237,7 @@ void debug_server_init(int port)
         fprintf(stdout, "psxrecomp: debug server bind(%d) FAILED\n", s_port);
         sock_close(s_listen);
         s_listen = SOCK_INVALID;
+        debug_server_shutdown();
         return;
     }
 
@@ -16275,6 +16265,10 @@ void debug_server_init(int port)
         s_io_running = 1;
         s_io_thread = SDL_CreateThread(io_thread_main, "psx-dbg-io", NULL);
         if (!s_io_thread) s_io_running = 0;
+    }
+    if (!s_io_thread) {
+        debug_server_shutdown();
+        return;
     }
 
     if (!s_frame_history) {
@@ -16859,8 +16853,15 @@ void debug_server_shutdown(void)
         sock_close(s_client);
         s_client = SOCK_INVALID;
     }
+    if (s_io_mutex) { SDL_DestroyMutex(s_io_mutex); s_io_mutex = NULL; }
+    if (s_io_req_cv) { SDL_DestroyCond(s_io_req_cv); s_io_req_cv = NULL; }
+    if (s_io_resp_cv) { SDL_DestroyCond(s_io_resp_cv); s_io_resp_cv = NULL; }
+    free(s_resp_buf);
+    s_resp_buf = NULL;
+    s_resp_cap = s_resp_len = 0;
+    s_io_state = IO_IDLE;
 #ifdef _WIN32
-    WSACleanup();
+    if (s_wsa_started) { WSACleanup(); s_wsa_started = 0; }
 #endif
 }
 
