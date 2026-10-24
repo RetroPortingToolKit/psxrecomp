@@ -55,6 +55,8 @@
 #include "memcard.h"
 #include "spu.h"
 #include "audio_trace.h"
+#include "input_route.h"
+#include "video_recorder.h"
 #include "mdec.h"
 #include "interrupts.h"
 #include "psx_cycles.h"
@@ -325,24 +327,13 @@ static int s_pad_type_override = -1;
 static int s_pad_connected_override[2] = { -1, -1 };
 
 /*
- * Exact guest-VBlank input route. A client queues run-length encoded digital
- * pad segments while inactive, then starts the route atomically. Consuming the
- * queue in debug_server_get_input_override() avoids host/TCP timing gaps
- * between short presses and remains deterministic while turbo loads are active.
+ * Exact guest-VBlank input route (input_route.c). A client queues run-length
+ * encoded pad segments — buttons plus optional analog axes — while inactive,
+ * then starts the route atomically. Consuming the queue in
+ * debug_server_get_input_override() avoids host/TCP timing gaps between short
+ * presses and remains deterministic while turbo loads are active.
  */
-#define INPUT_ROUTE_MAX_STEPS 4096
-typedef struct {
-    uint32_t frames;
-    uint16_t buttons;
-} InputRouteStep;
-static PSX_BSS InputRouteStep s_input_route[INPUT_ROUTE_MAX_STEPS];
-static uint32_t s_input_route_count = 0;
-static uint32_t s_input_route_index = 0;
-static uint32_t s_input_route_remaining = 0;
-static int      s_input_route_active = 0;
-/* input_route_start at_frame: the route waits for this vblank count, so a
- * route replays on the same guest frames in every run (0 = start now). */
-static uint64_t s_input_route_start_frame = 0;
+static PSX_BSS InputRoute s_route;
 
 /* ---- Frontend turbo override ---- */
 static volatile int s_turbo_enabled = 0;
@@ -8380,9 +8371,7 @@ static void handle_clear_input(int id, const char *json)
         s_input_frames_p2 = 0;
     }
     if (port == 2) { send_ok(id); return; }
-    s_input_route_active = 0;
-    s_input_route_index = 0;
-    s_input_route_remaining = 0;
+    input_route_stop(&s_route);
     s_input_override = -1;
     s_input_frames   = 0;
     s_axis_override  = 0;
@@ -8399,73 +8388,67 @@ static void handle_clear_input(int id, const char *json)
 static void handle_input_route_clear(int id, const char *json)
 {
     (void)json;
-    s_input_route_active = 0;
-    s_input_route_count = 0;
-    s_input_route_index = 0;
-    s_input_route_remaining = 0;
+    input_route_clear(&s_route);
     send_ok(id);
 }
 
+/* {"cmd":"input_route_append","frames":N,"buttons":W[,"lx":0..255,"ly":..,
+ *  "rx":..,"ry":..]} — axes are optional per step (0x80 = centre; an omitted
+ * axis on a step that gives any other axis is centred). A step with axes
+ * drives the sticks through the same override `press lx/ly/rx/ry` uses; a
+ * step without axes leaves them alone, as before axes existed. */
 static void handle_input_route_append(int id, const char *json)
 {
     int frames = json_get_int(json, "frames", -1);
     int buttons = json_get_int(json, "buttons", -1);
-    if (s_input_route_active) {
-        send_err(id, "input route is active"); return;
+    int axes[4] = { json_get_int(json, "lx", -1), json_get_int(json, "ly", -1),
+                    json_get_int(json, "rx", -1), json_get_int(json, "ry", -1) };
+    int rc = input_route_append(&s_route, frames, buttons, axes);
+    if (rc != INPUT_ROUTE_OK) {
+        send_err(id, input_route_error_text(rc)); return;
     }
-    if (frames <= 0) {
-        send_err(id, "frames must be positive"); return;
-    }
-    if (buttons < 0 || buttons > 0xFFFF) {
-        send_err(id, "buttons must be a 16-bit pad word"); return;
-    }
-    if (s_input_route_count >= INPUT_ROUTE_MAX_STEPS) {
-        send_err(id, "input route is full"); return;
-    }
-    InputRouteStep *step = &s_input_route[s_input_route_count++];
-    step->frames = (uint32_t)frames;
-    step->buttons = (uint16_t)buttons;
-    send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u}\n",
-             id, (unsigned)s_input_route_count);
+    send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u,\"axes\":%s}\n",
+             id, (unsigned)s_route.count,
+             s_route.steps[s_route.count - 1].has_axes ? "true" : "false");
 }
 
 static void handle_input_route_start(int id, const char *json)
 {
-    if (s_input_route_count == 0) {
-        send_err(id, "input route is empty"); return;
+    const int at = json_get_int(json, "at_frame", 0);
+    int rc = input_route_start(&s_route, at > 0 ? (uint64_t)at : 0u, s_frame_count);
+    if (rc != INPUT_ROUTE_OK) {
+        send_err(id, input_route_error_text(rc)); return;
     }
     s_input_override = -1;
     s_input_frames = 0;
     s_axis_override = 0;
     s_pad_type_override = -1;
     s_pad_connected_override[0] = -1;
-    s_input_route_index = 0;
-    s_input_route_remaining = s_input_route[0].frames;
-    const int at = json_get_int(json, "at_frame", 0);
-    s_input_route_start_frame = at > 0 && (uint64_t)at > s_frame_count ? (uint64_t)at : 0u;
-    s_input_route_active = 1;
     send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u,\"start_frame\":%llu}\n",
-             id, (unsigned)s_input_route_count,
-             (unsigned long long)(s_input_route_start_frame ? s_input_route_start_frame
-                                                            : s_frame_count));
+             id, (unsigned)s_route.count,
+             (unsigned long long)(s_route.start_frame ? s_route.start_frame
+                                                      : s_frame_count));
 }
 
 static void handle_input_route_stop(int id, const char *json)
 {
     (void)json;
-    s_input_route_active = 0;
-    s_input_route_remaining = 0;
+    input_route_stop(&s_route);
     send_ok(id);
 }
 
 static void handle_input_route_status(int id, const char *json)
 {
     (void)json;
+    uint8_t ax[4] = { 0x80, 0x80, 0x80, 0x80 };
+    const int axes_live = input_route_frame_axes(&s_route, ax);
     send_fmt("{\"id\":%d,\"ok\":true,\"active\":%s,\"steps\":%u,"
-             "\"index\":%u,\"remaining\":%u}\n",
-             id, s_input_route_active ? "true" : "false",
-             (unsigned)s_input_route_count, (unsigned)s_input_route_index,
-             (unsigned)s_input_route_remaining);
+             "\"index\":%u,\"remaining\":%u,\"axes_live\":%s,"
+             "\"axes\":[%u,%u,%u,%u]}\n",
+             id, s_route.active ? "true" : "false",
+             (unsigned)s_route.count, (unsigned)s_route.index,
+             (unsigned)s_route.remaining, axes_live ? "true" : "false",
+             ax[0], ax[1], ax[2], ax[3]);
 }
 
 /* Live A/B for the native-wide HUD corner gate:
@@ -10901,6 +10884,134 @@ static void handle_present_shot_seq(int id, const char *json)
     (void)json;
     send_fmt("{\"id\":%d,\"ok\":true,\"seq\":%d,\"wrote\":%d}",
              id, present_shot_seq(), present_shot_ok());
+}
+
+/* video_record — record the COMPOSED present surface (what present_shot
+ * captures: after aspect fit + OSD, i.e. with widescreen and internal
+ * resolution applied) plus the SPU's final mix (voices + reverb + CD-DA + XA)
+ * to an H.264/AAC MP4 through ffmpeg. See video_recorder.h.
+ *   {"cmd":"video_record","op":"start","path":"F:/x/clip.mp4"
+ *     [,"fps":0 (measured present rate) | N][,"crf":18][,"encoder":"libx264"]
+ *     [,"preset":"veryfast"][,"encoder_args":"-tune film"][,"width":W,"height":H]
+ *     [,"audio":1][,"audio_bitrate_k":192][,"queue_frames":8]
+ *     [,"keep_intermediates":0][,"ffmpeg":"C:/ffmpeg/bin/ffmpeg.exe"]}
+ *   {"cmd":"video_record","op":"stop"}     -> state "stopping"; poll status
+ *   {"cmd":"video_record","op":"status"}   -> state idle|recording|stopping|
+ *                                             finalizing|done|error
+ * Not a blocking stop: the present that flushes the GL readback ring can run
+ * on this very thread, so the client polls status until done/error. */
+static int vrec_json_str(const char *json, const char *key, char *out, int cap)
+{
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return 0;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '"') return 0;
+    p++;
+    int i = 0;
+    while (*p && *p != '"' && i < cap - 1) {
+        if (*p == '\\' && p[1]) {
+            p++;
+            out[i++] = (*p == 'n') ? '\n' : (*p == 't') ? '\t' : *p;
+            p++;
+            continue;
+        }
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return 1;
+}
+
+static double vrec_json_num(const char *json, const char *key, double def)
+{
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return def;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p == '"') p++;
+    char *end = NULL;
+    double v = strtod(p, &end);
+    return end == p ? def : v;
+}
+
+static void send_video_record_status(int id)
+{
+    VrecStatus st;
+    video_recorder_get_status(&st);
+    char path_json[2 * VREC_PATH_MAX], err_json[1100];
+    json_escape_string(path_json, sizeof(path_json), st.path);
+    json_escape_string(err_json, sizeof(err_json), st.error);
+    static const char *backends[] = { "none", "software", "opengl", "vulkan" };
+    int b = (int)video_recorder_backend();
+    send_fmt("{\"id\":%d,\"ok\":true,\"state\":\"%s\",\"session\":%u,\"backend\":\"%s\","
+             "\"path\":\"%s\",\"error\":\"%s\",\"width\":%d,\"height\":%d,"
+             "\"fps\":%.6f,\"presents\":%llu,\"frames_written\":%llu,\"dropped\":%llu,"
+             "\"unflushed\":%llu,\"resized_frames\":%llu,\"backpressure_waits\":%llu,"
+             "\"backpressure_ms\":%.1f,\"queue_depth\":%d,\"audio_frames\":%llu,"
+             "\"audio_pad_frames\":%llu,\"audio_trim_frames\":%llu,\"audio_anchor\":%d,"
+             "\"audio_slip_frames\":%lld,\"guest_seconds\":%.4f,\"video_seconds\":%.4f,"
+             "\"max_av_skew_ms\":%.3f,\"min_present_ms\":%.3f,\"max_present_ms\":%.3f,"
+             "\"bytes_out\":%llu,\"ffmpeg_exit\":%d,\"mux_exit\":%d}\n",
+             id, video_recorder_state_name(st.state), (unsigned)st.session,
+             (b >= 0 && b < 4) ? backends[b] : "unknown",
+             path_json, err_json, st.width, st.height, st.fps,
+             (unsigned long long)st.presents, (unsigned long long)st.frames_written,
+             (unsigned long long)st.dropped, (unsigned long long)st.unflushed,
+             (unsigned long long)st.resized_frames,
+             (unsigned long long)st.backpressure_waits, st.backpressure_ms,
+             st.queue_depth, (unsigned long long)st.audio_frames,
+             (unsigned long long)st.audio_pad_frames,
+             (unsigned long long)st.audio_trim_frames, st.audio_anchor,
+             (long long)st.audio_slip_frames, st.guest_seconds, st.video_seconds,
+             st.max_av_skew_ms, st.min_present_ms, st.max_present_ms,
+             (unsigned long long)st.bytes_out, st.ffmpeg_exit, st.mux_exit);
+}
+
+static void handle_video_record(int id, const char *json)
+{
+    char op[16] = "status";
+    vrec_json_str(json, "op", op, (int)sizeof(op));
+    char err[512] = "";
+    if (strcmp(op, "start") == 0) {
+        VrecOptions o;
+        vrec_options_default(&o);
+        vrec_json_str(json, "path", o.path, (int)sizeof(o.path));
+        vrec_json_str(json, "ffmpeg", o.ffmpeg, (int)sizeof(o.ffmpeg));
+        vrec_json_str(json, "encoder", o.encoder, (int)sizeof(o.encoder));
+        vrec_json_str(json, "preset", o.preset, (int)sizeof(o.preset));
+        vrec_json_str(json, "encoder_args", o.encoder_args, (int)sizeof(o.encoder_args));
+        o.fps = vrec_json_num(json, "fps", 0.0);
+        o.crf = json_get_int(json, "crf", o.crf);
+        o.width = json_get_int(json, "width", 0);
+        o.height = json_get_int(json, "height", 0);
+        o.audio = json_get_int(json, "audio", 1);
+        o.audio_bitrate_k = json_get_int(json, "audio_bitrate_k", o.audio_bitrate_k);
+        o.queue_frames = json_get_int(json, "queue_frames", o.queue_frames);
+        o.keep_intermediates = json_get_int(json, "keep_intermediates", 0);
+        if (!video_recorder_start(&o, err, (int)sizeof(err))) {
+            char ej[1100];
+            json_escape_string(ej, sizeof(ej), err);
+            send_err(id, ej);
+            return;
+        }
+        send_video_record_status(id);
+    } else if (strcmp(op, "stop") == 0) {
+        if (!video_recorder_stop(err, (int)sizeof(err))) {
+            char ej[1100];
+            json_escape_string(ej, sizeof(ej), err);
+            send_err(id, ej);
+            return;
+        }
+        send_video_record_status(id);
+    } else if (strcmp(op, "status") == 0) {
+        send_video_record_status(id);
+    } else {
+        send_err(id, "op must be start, stop or status");
+    }
 }
 
 /* Capture host text independently of a visible present surface. This makes
@@ -16574,6 +16685,7 @@ static const CmdEntry s_commands[] = {
     { "screenshot_hires",  handle_screenshot_hires },
     { "present_shot",      handle_present_shot },
     { "present_shot_seq",  handle_present_shot_seq },
+    { "video_record",      handle_video_record },
     { "host_osd_shot",     handle_host_osd_shot },
     { "display_ring_get",  handle_display_ring_get },
     { "display_ring_aux",  handle_display_ring_aux },
@@ -17528,20 +17640,9 @@ int debug_server_is_connected(void)
 
 int debug_server_get_input_override(void)
 {
-    if (s_input_route_active && s_input_route_index < s_input_route_count &&
-        s_frame_count >= s_input_route_start_frame) {
-        int current = (int)s_input_route[s_input_route_index].buttons;
-        if (s_input_route_remaining > 0 && --s_input_route_remaining == 0) {
-            s_input_route_index++;
-            if (s_input_route_index < s_input_route_count) {
-                s_input_route_remaining =
-                    s_input_route[s_input_route_index].frames;
-            } else {
-                s_input_route_active = 0;
-            }
-        }
-        return current;
-    }
+    int route_buttons = 0;
+    if (input_route_next(&s_route, s_frame_count, &route_buttons))
+        return route_buttons;
     int current = s_input_override;
     if (s_input_override >= 0 && s_input_frames > 0) {
         if (--s_input_frames == 0)
@@ -17562,6 +17663,8 @@ int debug_server_get_input_override_port2(void)
 
 int debug_server_get_axis_override(unsigned char st[4])
 {
+    /* A route step with axes owns the sticks for the poll it drove. */
+    if (input_route_frame_axes(&s_route, st)) return 1;
     if (!s_axis_override) return 0;
     st[0] = s_axis_st[0]; st[1] = s_axis_st[1];
     st[2] = s_axis_st[2]; st[3] = s_axis_st[3];
