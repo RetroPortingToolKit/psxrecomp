@@ -17,6 +17,7 @@
 #endif
 #include <time.h>
 #include "debug_server.h"
+#include "debug_bulk_write.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
 #include "savestate.h"
@@ -138,6 +139,24 @@ static sock_t s_listen  = SOCK_INVALID;
 static sock_t s_client  = SOCK_INVALID;
 static int    s_port    = DEFAULT_DEBUG_PORT;
 static int    s_listen_err = 0;   /* platform socket error captured by init */
+static int    s_requested = 0;
+
+void debug_server_request(int enabled)
+{
+    s_requested = enabled != 0;
+}
+
+int debug_server_requested(void)
+{
+    const char *env = getenv("PSX_DEBUG_SERVER");
+    if (env && strcmp(env, "0") == 0) return 0;
+    if (env && strcmp(env, "1") == 0) return 1;
+#ifdef PSX_NO_DEBUG_TOOLS
+    return s_requested;
+#else
+    return 1;
+#endif
+}
 
 #define RECV_BUF_SIZE 8192
 static PSX_BSS char s_recv_buf[RECV_BUF_SIZE];
@@ -5344,6 +5363,13 @@ static void handle_write_ram(int id, const char *json)
     uint8_t val = (uint8_t)hex_to_u32(val_str);
     psx_host_write_byte(addr, val);
     send_ok(id);
+}
+
+static void handle_write_bulk(int id, const char *json)
+{
+    const char *error = debug_bulk_write(json);
+    if (error) send_err(id, error);
+    else send_ok(id);
 }
 
 /* geom_correction — is [video] geometry_correction / perspective_texturing
@@ -16575,6 +16601,7 @@ static const CmdEntry s_commands[] = {
     { "read_ram",          handle_read_ram },
     { "dump_ram",          handle_read_ram },   /* alias: one request, one response */
     { "write_ram",         handle_write_ram },
+    { "write_bulk",        handle_write_bulk },
     { "gpu_state",         handle_gpu_state },
     { "geom_correction",   handle_geom_correction },
     { "pgxp",              handle_pgxp },
@@ -17665,8 +17692,10 @@ void debug_server_record_frame(void)
         s_frame_count++;
         return;
     }
-    if (!s_frame_history) return;
-    if (!s_cpu) return;
+    if (!s_frame_history || !s_cpu) {
+        ++s_frame_count;
+        return;
+    }
 
     uint32_t idx = (uint32_t)(s_frame_count % FRAME_HISTORY_CAP);
     PSXFrameRecord *r = &s_frame_history[idx];

@@ -77,15 +77,16 @@ if(NOT DEFINED CMAKE_C_COMPILER_LAUNCHER)
     endif()
 endif()
 
-# PSX_DEBUG_TOOLS: TCP debug server + heartbeat + per-block recording.
+# PSX_DEBUG_TOOLS: development diagnostics and per-block recording.
 # Defaults ON for Debug/RelWithDebInfo, OFF for Release/MinSizeRel so
 # a plain cmake -DCMAKE_BUILD_TYPE=Release gives a lean production binary
-# with no TCP server and no debug console. Override explicitly with
+# with no automatic TCP listener and no debug console. Production can opt in
+# via the TCP Debug Server mod or PSX_DEBUG_SERVER=1. Override explicitly with
 # -DPSX_DEBUG_TOOLS=ON/OFF to force either way regardless of build type.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
-    option(PSX_DEBUG_TOOLS "Build with TCP debug server + heartbeat + per-block recording" OFF)
+    option(PSX_DEBUG_TOOLS "Build with development diagnostics + per-block recording" OFF)
 else()
-    option(PSX_DEBUG_TOOLS "Build with TCP debug server + heartbeat + per-block recording" ON)
+    option(PSX_DEBUG_TOOLS "Build with development diagnostics + per-block recording" ON)
 endif()
 
 # A title may opt in only after auditing every trusted media preparer used by
@@ -510,6 +511,8 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/func_override.c
     ${PSXRECOMP_ROOT}/runtime/src/game_options.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_speed.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_debug.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug_bulk_write.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_pgxp.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_internal_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_bezel.c
@@ -538,8 +541,8 @@ set(PSXRECOMP_RUNTIME_SOURCES
     # (sljit Tier-2 in-process JIT backend removed 2026-07-15 — was disabled by
     # default since 2026-06-25; gaps fall to the interpreter, gcc/tcc unaffected.)
 )
-# TCP `disasm` command only (debug_server.c); stripped with the rest of the TCP
-# server when PSX_DEBUG_TOOLS is OFF.
+# TCP `disasm` command only (debug_server.c); development-only even when the
+# production TCP listener is opted in.
 if(PSX_DEBUG_TOOLS)
     list(APPEND PSXRECOMP_RUNTIME_SOURCES
         ${PSXRECOMP_ROOT}/recompiler/src/mips_decoder.cpp
