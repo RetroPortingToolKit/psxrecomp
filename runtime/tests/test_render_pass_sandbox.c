@@ -76,7 +76,7 @@ int      g_dma_cur_ch = -1;
 uint32_t g_dma_cur_madr = 0, g_dma_cur_bcr = 0, g_dma_initiator_pc = 0;
 int      g_dirty_interp_active = 0;
 int      g_exec_phase = 0;
-int      g_boot_state_cpu_timing_restored = 0;
+
 uint32_t g_dirty_safe_resume_pc = 0;
 
 /* ---- memory and the MMIO devices a pass may reach ----------------------- */

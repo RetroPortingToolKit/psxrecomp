@@ -41,6 +41,8 @@ static PsxFrameFingerprint s_fp;
 static unsigned s_fp_head,s_fp_total;
 static int s_input_override=-1,s_input_override_p2=-1;
 static int s_input_frames,s_input_frames_p2,s_axis_override,s_pad_type_override=-1;
+static int s_pad_connected_override[2]={-1,-1};
+static int s_extra_active[8],s_extra_frames[8];
 static unsigned char s_axis_st[4],s_host_axes[4],s_host_lt,s_host_rt;
 static int s_host_layer;
 static uint16_t s_host_buttons;

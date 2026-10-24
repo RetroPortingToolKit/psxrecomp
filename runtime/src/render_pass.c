@@ -1276,10 +1276,17 @@ static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
      * pair refreshes the retained-pair age. Pair age is tracked separately from
      * the compute-time estimate so "how old is the picture" never hides behind
      * "how fast was the last attempt". */
-    if (!local) stereo_shed_policy_note_pair(&s_shed, elapsed, now_ms, ok);
-    s_stereo.avg_pair_ms = stereo_shed_policy_avg_ms(&s_shed);
-    s_stereo.last_pair_age_ms = stereo_shed_policy_pair_age_ms(&s_shed, now_ms);
-    s_stereo.shedding = s_shed.shedding;
+    if (local) {
+        s_stereo.avg_pair_ms = s_stereo.avg_pair_ms > 0.0
+            ? s_stereo.avg_pair_ms * 0.9 + elapsed * 0.1 : elapsed;
+        s_stereo.last_pair_age_ms = 0;
+        s_stereo.shedding = 0;
+    } else {
+        stereo_shed_policy_note_pair(&s_shed, elapsed, now_ms, ok);
+        s_stereo.avg_pair_ms = stereo_shed_policy_avg_ms(&s_shed);
+        s_stereo.last_pair_age_ms = stereo_shed_policy_pair_age_ms(&s_shed, now_ms);
+        s_stereo.shedding = s_shed.shedding;
+    }
     if (!ok) s_stereo.stale_frames++;
     if (trace_on) {
         psx_frame_trace_add(PSX_TRACE_PAIR_TOTAL, (uint64_t)(elapsed * 1000.0));
