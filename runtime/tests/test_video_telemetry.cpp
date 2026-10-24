@@ -52,6 +52,42 @@ int main() {
     CHECK(sample.valid && sample.internal_scale == 10000 && sample.presents == 10002);
     CHECK(sample.present_status_available);
     CHECK(sample.present_errors == 1);
+    PsxPresentCadence cadence{};
+    psx_video_telemetry_cadence(0,1,&cadence);
+    psx_video_telemetry_present_at(1,1000);
+    psx_video_telemetry_present_at(1,11000);
+    psx_video_telemetry_present_at(-1,21000);
+    psx_video_telemetry_present_at(1,51000);
+    psx_video_telemetry_cadence(0,0,&cadence);
+    CHECK(cadence.valid && cadence.count==3 && cadence.mean_us==16666);
+    CHECK(cadence.p50_us==10000 && cadence.max_us==30000 && cadence.hitches==1);
+    psx_video_telemetry_cadence(35,0,&cadence);
+    CHECK(cadence.valid && cadence.count==1 && cadence.max_us==30000);
+    psx_video_telemetry_cadence(0,1,&cadence);
+    psx_video_telemetry_cadence(0,0,&cadence);
+    CHECK(cadence.valid && !cadence.count);
+    psx_video_telemetry_present_at(1,100000);
+    psx_video_telemetry_cadence(0,0,&cadence);
+    CHECK(cadence.valid && !cadence.count); // producer reset re-anchors timing
+    std::atomic<bool> cadence_done{false};
+    std::atomic<bool> cadence_consistent{true};
+    std::thread presenter([&] {
+        for(uint64_t i=1;i<=20000;++i) psx_video_telemetry_present_at(1,100000+i*10000);
+        cadence_done=true;
+    });
+    auto reader=[&](bool resets) {
+        unsigned reads=0;
+        do {
+            PsxPresentCadence c{};
+            psx_video_telemetry_cadence(0,resets && (++reads%17==0),&c);
+            if(c.valid && c.count && (c.mean_us!=10000 || c.max_us!=10000 || c.hitches!=0))
+                cadence_consistent=false;
+        }while(!cadence_done.load());
+    };
+    std::thread other_reader([&]{reader(true);});
+    reader(false);
+    presenter.join();other_reader.join();
+    CHECK(cadence_consistent.load());
     psx_video_telemetry_snapshot(nullptr);
     return 0;
 }

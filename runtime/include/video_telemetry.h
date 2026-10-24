@@ -30,6 +30,18 @@ void psx_video_telemetry_present(int result);
  * Completion/error counters remain available in that case. */
 void psx_video_telemetry_snapshot(PsxVideoTelemetry *out);
 
+typedef struct PsxPresentCadence {
+    int valid;
+    uint32_t count, mean_us, p50_us, p95_us, p99_us, max_us, hitches;
+    double span_ms, fps;
+} PsxPresentCadence;
+/* Host API completion intervals, shared by all backends; no monitor-display
+ * guarantee. Bounded passive snapshot. reset is consumed by the presenter. */
+void psx_video_telemetry_cadence(int window_ms, int reset, PsxPresentCadence *out);
+int psx_video_telemetry_cadence_json(int window_ms, int reset, char *out, int capacity);
+/* Explicit monotonic host microseconds for adapters and deterministic tests. */
+void psx_video_telemetry_present_at(int result, uint64_t now_us);
+
 /* Emulation-owner settings after runtime mod overrides, sampled every VBlank.
  * Actual allocated scale/dimensions come from the separate backend snapshot. */
 typedef struct PsxVideoConfigTelemetry {

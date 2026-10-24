@@ -9262,6 +9262,15 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                     snprintf(title, sizeof(title), "%s  [Game %.0f fps %.2fx]",
                              s_fps_base_title.c_str(), fps, speed);
                 }
+                {
+                    PsxPresentCadence cadence{};
+                    psx_video_telemetry_cadence(1000, 0, &cadence);
+                    const double sfps = cadence.fps;
+                    const unsigned hitch = cadence.hitches, worst = cadence.max_us / 1000;
+                    size_t l = strlen(title);
+                    snprintf(title + l, sizeof(title) - l, " [Present %.1f fps, %u hitch, max %u ms]",
+                             sfps, hitch, worst);
+                }
                 SDL_SetWindowTitle(sdl_window, title);
             }
             if (!g_headless) {

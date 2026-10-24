@@ -9447,6 +9447,15 @@ static void handle_ws_aspect(int id, const char *json)
 }
 
 extern int psx_debug_display_aspect(int num, int den, int adaptive);
+/* perf: host API completion cadence across the active presentation backend. */
+extern int psx_video_telemetry_cadence_json(int window_ms, int reset, char *out, int cap);
+static void handle_perf(int id, const char *json) {
+    char buf[512];
+    psx_video_telemetry_cadence_json(json_get_int(json, "window_ms", 0), json_get_int(json, "reset", 0),
+                           buf, sizeof buf);
+    send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf);
+}
+
 static void handle_display_aspect(int id, const char *json) {
     int num=json_get_int(json,"num",-1), den=json_get_int(json,"den",-1);
     int adaptive=json_get_int(json,"adaptive",0);
@@ -16315,6 +16324,7 @@ static const CmdEntry s_commands[] = {
     { "kernel_bless",      handle_kernel_bless },
     { "ws_aspect",         handle_ws_aspect },
     { "display_aspect",    handle_display_aspect },
+    { "perf",              handle_perf },
     { "window_size",       handle_window_size },
     { "ws_nw",             handle_ws_nw },
     { "debug_key",         handle_debug_key },
