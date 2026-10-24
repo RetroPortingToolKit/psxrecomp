@@ -2694,6 +2694,35 @@ int main() {
         check(!ModPackageManager::read_manifest(a,malformed,&error),"duplicate default roster rejected");
     }
 
+    {
+        const fs::path path = root / "option-display-context.toml";
+        for (const char* context : {"any", "offline", "online", "invalid"}) {
+            write_text(path, manifest("context.mod", "1.0.0",
+                "[[option]]\nid = \"view\"\nlabel = \"View\"\n"
+                "type = \"boolean\"\ndefault = \"true\"\n"
+                "display_context = \"" + std::string(context) + "\"\n"));
+            ModPackage package;
+            const bool valid = ModPackageManager::read_manifest(path, package, &error);
+            if (std::string(context) == "invalid") {
+                check(!valid, "unknown option display context must be rejected");
+                continue;
+            }
+            check(valid && package.options.size() == 1,
+                  "option display context must parse");
+            if (!valid || package.options.empty()) continue;
+            const ModOption& option = package.options.front();
+            check(option.visible_in(false) == (std::string(context) != "online"),
+                  "offline option visibility must respect display context");
+            check(option.visible_in(true) == (std::string(context) != "offline"),
+                  "online option visibility must respect display context");
+            check(option.default_value == "true",
+                  "presentation context must not discard an option selection");
+        }
+        ModOption legacy;
+        check(legacy.visible_in(false) && legacy.visible_in(true),
+              "unspecified display context must preserve legacy visibility");
+    }
+
     fs::remove_all(root, ec);
     if (failures) {
         std::cerr << failures << " mod package test(s) failed\n";

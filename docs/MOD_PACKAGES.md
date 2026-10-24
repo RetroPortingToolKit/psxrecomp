@@ -252,6 +252,13 @@ feature-local: `when = { option = "value", ... }` requires every listed option
 to match. The legacy `when_option`/`when_value` pair remains accepted for a
 single condition.
 
+Options may declare `display_context = "online"` or `"offline"` to present
+their control only in that launcher flow. The default `"any"` preserves
+existing visibility. This is presentation metadata: hiding a control does not
+clear its value, change feature activation or remove it from the committed
+session identity. Entering Netplay reveals online controls; returning to the
+offline dashboard restores offline controls.
+
 Format10 also permits these conditions on `[[resource]]`. Only matching
 resources appear in the feature's file pickers, preparation inputs/outputs,
 and resolved plan. A required resource is required only while its condition

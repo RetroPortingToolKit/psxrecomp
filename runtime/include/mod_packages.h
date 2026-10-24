@@ -49,6 +49,8 @@ enum class ModOptionType {
     Integer,
 };
 
+enum class ModOptionDisplayContext { Any, Offline, Online };
+
 struct ModChoice {
     std::string value;
     std::string label;
@@ -71,6 +73,14 @@ struct ModOption {
      * it out and plugins ignore its value. Models "tick Instant and the speed
      * box stops mattering" without inventing a second widget type. */
     std::string disabled_by;
+    /* Presentation only: selections remain part of the committed plan even
+     * when their control is hidden outside its launcher context. */
+    ModOptionDisplayContext display_context = ModOptionDisplayContext::Any;
+    bool visible_in(bool online) const {
+        return display_context == ModOptionDisplayContext::Any ||
+            (online ? display_context == ModOptionDisplayContext::Online
+                    : display_context == ModOptionDisplayContext::Offline);
+    }
 };
 
 struct ModFeature {

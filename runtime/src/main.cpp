@@ -16809,6 +16809,12 @@ namespace {
 #endif
         gi->memcard_inspect = ae_memcard_inspect;
         gi->mods = PSXRecompV4::mod_runtime_launcher_provider();
+#if defined(RECOMP_LAUNCHER_HAS_NETPLAY_MODE_POLICY)
+        PSXRecompV4::mod_runtime_set_launcher_netplay_context(false);
+        gi->netplay_mode_changed = +[](int online) {
+            PSXRecompV4::mod_runtime_set_launcher_netplay_context(online != 0);
+        };
+#endif
         gi->bios_verify = ae_bios_verify;
         /* Launcher window icon: the SAME file psx_apply_window_icon() puts on
          * the game window (assets/psxrecomp.png beside the exe, which
