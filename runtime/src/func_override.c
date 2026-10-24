@@ -35,6 +35,8 @@ typedef struct {
     char           id[FO_MAX_ID];
     uint32_t       phys;         /* normalised: KSEG bits masked off */
     FuncOverrideFn fn;
+    FuncOverrideInvoker invoke;
+    const void *context;
     uint64_t       calls;
     uint64_t       guard_misses;
     uint32_t       guard[FO_MAX_GUARD_WORDS];
@@ -127,6 +129,22 @@ int func_override_add_package(const char *id, uint32_t addr, FuncOverrideFn fn,
                       1, credit);
 }
 
+int func_override_add_package_scoped(const char *id, uint32_t addr, FuncOverrideFn fn,
+    const uint32_t *expected_words, int n_words, int32_t credit,
+    FuncOverrideInvoker invoke, const void *context)
+{
+    if (!invoke || !context) return FO_ERR_ARGS;
+    const int rc = func_override_add_package(id,addr,fn,expected_words,n_words,credit);
+    if (rc == FO_OK) {
+        Entry *entry = &s_entries[s_count-1];
+        entry->invoke = invoke;
+        entry->context = context;
+    }
+    return rc;
+}
+
+int func_override_active(void) { return s_active_phys != 0; }
+
 /* The hook. Runs on EVERY dispatch, so the common path — nothing registered
  * for this address — must stay cheap. A linear scan over a handful of
  * entries beats a hash for realistic counts and keeps the code honest;
@@ -168,7 +186,7 @@ static int hook(CPUState *cpu, uint32_t phys)
         {
             const uint32_t saved_active = s_active_phys;
             s_active_phys = phys;
-            const int handled = e->fn(cpu) ? 1 : 0;
+            const int handled = (e->invoke ? e->invoke(cpu,e->fn,e->context) : e->fn(cpu)) ? 1 : 0;
             s_active_phys = saved_active;
             /* Charge the declared credit only when HANDLED: a decline runs
              * the original, which accrues its exact cycles by executing.

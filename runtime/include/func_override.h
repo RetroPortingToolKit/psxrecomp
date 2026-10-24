@@ -190,6 +190,17 @@ void func_override_call_original(struct CPUState *cpu);
 int func_override_add_package(const char *id, uint32_t addr, FuncOverrideFn fn,
                               const uint32_t *expected_words, int n_words,
                               int32_t credit);
+/* Scoped package variant. The owner supplies a stable plan context and
+ * invokes fn inside that plugin's resource/completion context. The plan must
+ * disarm package entries before replacing that context. */
+typedef int (*FuncOverrideInvoker)(struct CPUState *cpu, FuncOverrideFn fn,
+                                   const void *context);
+int func_override_add_package_scoped(const char *id, uint32_t addr, FuncOverrideFn fn,
+    const uint32_t *expected_words, int n_words, int32_t credit,
+    FuncOverrideInvoker invoke, const void *context);
+/* Nonzero while a native override stack is live, including nested guest
+ * calls. Save/load and rewind must defer until this returns to zero. */
+int func_override_active(void);
 
 /* Install the dispatcher hook. Call once at startup AFTER registering (the
  * mod runtime calls it again after arming package-gated overrides — safe).

@@ -3091,6 +3091,12 @@ extern "C" const char* mod_runtime_activation_error(void) {
     return s_override_activation_error.empty() ? nullptr : s_override_activation_error.c_str();
 }
 
+static int invoke_package_override(CPUState* cpu, FuncOverrideFn fn, const void* context) {
+    using namespace PSXRecompV4;
+    PluginCallbackScope scope(state(),static_cast<const ModResolution::Plugin*>(context),cpu);
+    return fn(cpu);
+}
+
 extern "C" void mod_runtime_activate_plugins(void) {
     using namespace PSXRecompV4;
     HostLaunchTimingScope timing(HOST_LAUNCH_PLUGIN_ACTIVATION);
@@ -3115,12 +3121,13 @@ extern "C" void mod_runtime_activate_plugins(void) {
     s.extent_start = 0;
     /* Arm the entire tier before activation callbacks change host state. */
     for (auto& pending : function_override_plugins()) {
-        const bool selected = std::any_of(s.plan.plugins.begin(),s.plan.plugins.end(),
+        const auto owner = std::find_if(s.plan.plugins.begin(),s.plan.plugins.end(),
             [&](const ModResolution::Plugin& p) { return p.id == pending.plugin; });
-        if (!selected) continue;
-        const int rc = s.netplay_view_plan ? FO_ERR_ARGS : func_override_add_package(
+        if (owner == s.plan.plugins.end()) continue;
+        const int rc = s.netplay_view_plan ? FO_ERR_ARGS : func_override_add_package_scoped(
             pending.id.c_str(),pending.address,pending.fn,
-            pending.n_guard ? pending.guard : nullptr,pending.n_guard,pending.credit);
+            pending.n_guard ? pending.guard : nullptr,pending.n_guard,pending.credit,
+            invoke_package_override,&*owner);
         if (rc != FO_OK) {
             s_override_activation_error = "Cannot arm function override " + pending.id +
                 " (registration error " + std::to_string(rc) + ")";
@@ -3867,7 +3874,7 @@ static int game_netplay_function_entry(CPUState* cpu, uint32_t address) {
 }
 
 extern "C" int psx_mod_function_entry_active(void) {
-    return PSXRecompV4::function_entry_depth != 0;
+    return PSXRecompV4::function_entry_depth != 0 || func_override_active();
 }
 
 extern "C" void mod_runtime_function_entry_context_save(ModFunctionEntryContext *out) {

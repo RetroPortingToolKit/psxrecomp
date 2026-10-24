@@ -145,7 +145,9 @@ uint32_t psx_mod_guest_cycle_scale(void);
  * selects that plugin — the same gating as vblank/activation callbacks. The
  * callback obeys the guest ABI (args cpu->gpr[4..7], result cpu->gpr[2]);
  * return 1 = handled (guest resumes at $ra), 0 = decline (original runs).
- * Wrap semantics via func_override_call_original(); optional residency
+ * The owning plugin resource context is active throughout the callback and
+ * restored across nested callbacks. Snapshots wait until its native stack
+ * unwinds. Wrap semantics via func_override_call_original(); optional residency
  * guard via expected_words (NULL/0 = unguarded).
  *
  * `id` may carry an optional ":label" suffix ("pkg.feature:aim") that names

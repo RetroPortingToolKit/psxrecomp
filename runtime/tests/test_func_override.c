@@ -98,6 +98,7 @@ static int s_impl_calls, s_decline_calls, s_wrap_calls;
 
 static int impl_handles(CPUState *cpu)
 {
+    CHECK(func_override_active(),"handled native override stack is active");
     s_impl_calls++;
     cpu->gpr[2] = 0x1234u;
     return 1;
@@ -106,6 +107,7 @@ static int impl_handles(CPUState *cpu)
 static int impl_declines(CPUState *cpu)
 {
     (void)cpu;
+    CHECK(func_override_active(),"declining native override stack is active");
     s_decline_calls++;
     return 0;   /* the decline-only probe idiom the TCP inventory relies on */
 }
@@ -135,7 +137,9 @@ static void reset_all(void)
 static int consult(CPUState *cpu, uint32_t addr)
 {
     if (!g_psx_func_override_hook) return 0;
-    return g_psx_func_override_hook(cpu, addr & 0x1FFFFFFFu);
+    const int handled = g_psx_func_override_hook(cpu, addr & 0x1FFFFFFFu);
+    CHECK(!func_override_active(),"top-level native override stack has unwound");
+    return handled;
 }
 
 /* ---- tests -------------------------------------------------------------- */

@@ -36,11 +36,21 @@
 namespace fs = std::filesystem;
 
 static std::array<uint8_t, 2 * 1024 * 1024> ram;
+extern "C" int (*g_psx_func_override_hook)(CPUState*, uint32_t);
 static int failures;
 static int activation_calls;
 static int override_activation_calls;
 static void override_activate() { ++override_activation_calls; }
-static int override_body(CPUState*) { return 1; }
+static int override_scope_checks;
+static int override_body(CPUState*) {
+    char option[16]{};
+    if (psx_mod_current_option_value("scope",option,sizeof option) &&
+        !std::strcmp(option,"owned") && psx_mod_function_entry_active()) ++override_scope_checks;
+    mod_runtime_on_vblank();
+    if (psx_mod_current_option_value("scope",option,sizeof option) &&
+        !std::strcmp(option,"owned") && psx_mod_function_entry_active()) ++override_scope_checks;
+    return 1;
+}
 static int plugin_calls;
 static int restore_calls;
 static int option_renderer_activations;
@@ -2573,6 +2583,18 @@ game_id = "SLUS-OVERRIDE"
 id = "replace"
 name = "Replace"
 default_enabled = true
+[[option]]
+feature = "replace"
+id = "scope"
+label = "Scope"
+type = "choice"
+default = "owned"
+[[option.choice]]
+value = "owned"
+label = "Owned"
+[[option.choice]]
+value = "other"
+label = "Other"
 [[plugin]]
 feature = "replace"
 id = "override.test"
@@ -2585,6 +2607,12 @@ id = "override.test"
         check(PSXRecompV4::mod_runtime_commit({},&error),error.c_str());
         mod_runtime_activate_plugins();
         check(!mod_runtime_activation_error() && func_override_count()==2 && override_activation_calls==1,"selected overrides arm together");
+        CPUState override_cpu{};
+        check(g_psx_func_override_hook && g_psx_func_override_hook(&override_cpu,0x6004),"invoke package override");
+        check(override_scope_checks==2 && !psx_mod_function_entry_active(),
+              "override owns its resource context across VBlank and blocks mid-stack snapshots");
+        char no_scope[16]{};
+        check(!psx_mod_current_option_value("scope",no_scope,sizeof no_scope),"override restores its caller's context");
         mod_runtime_activate_plugins();
         check(!mod_runtime_activation_error() && func_override_count()==2 && override_activation_calls==2,"session reactivation replaces entries without duplicates");
         check(PSXRecompV4::mod_runtime_clear_for_netplay(&error),error.c_str());
