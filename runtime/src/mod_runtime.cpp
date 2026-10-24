@@ -1579,7 +1579,35 @@ RecompLauncherCModProvider provider = {
 };
 #endif
 
+const PSXModNetplayProfile* requested_netplay_profile() {
+    const PSXModNetplayProfile* fallback=nullptr;
+    for(unsigned i=0;i<psx_mod_netplay_profile_count();++i) {
+        const auto* profile=psx_mod_netplay_profile_at(i);
+        if(!profile->select_when_feature_enabled) {if(!fallback)fallback=profile;continue;}
+        if(state().initialized && profile->settings_package_id &&
+           state().manager.feature_enabled(profile->settings_package_id,profile->settings_feature_id)) return profile;
+    }
+    return fallback;
+}
+unsigned requested_netplay_players() {
+    const auto* profile=psx_mod_netplay_profile();
+    if(!profile || !profile->max_players)return 0;
+    unsigned count=profile->max_players;
+    if(profile->optional_last_seat_option) {
+        const auto& s=state();
+        const auto value=psx_mod_netplay_is_active()
+            ? s.manager.feature_option_value(s.plan,profile->settings_package_id,profile->settings_feature_id,profile->optional_last_seat_option)
+            : s.manager.feature_option_value(profile->settings_package_id,profile->settings_feature_id,profile->optional_last_seat_option);
+        if(value=="none")--count;
+    }
+    return count;
+}
 } // namespace
+
+int mod_runtime_netplay_player_limit(int fallback) {
+    const unsigned count=psx_mod_netplay_player_count();
+    return count?(int)count:fallback;
+}
 
 static std::optional<ModPackageManager> offline_manager_before_netplay;
 static bool netplay_content_negotiation_enabled = false;
@@ -1725,6 +1753,8 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
         catalog_before == s.loaded_catalog;
 #endif
     s.initialized = true;
+    psx_mod_netplay_set_profile_selector(requested_netplay_profile);
+    psx_mod_netplay_set_player_count_selector(requested_netplay_players);
     return true;
 }
 
@@ -1804,7 +1834,9 @@ static bool prepare_profile_settings(const PSXModNetplayProfile* profile,
             return false;
         }
         ModPackageManager settings = s.manager;
-        if (!settings.set_feature_enabled(package->id, profile->settings_feature_id, true, error))
+        /* Install the complete tuple while inactive, then validate once. A
+         * valid roster permutation can have invalid intermediate choices. */
+        if (!settings.set_feature_enabled(package->id, profile->settings_feature_id, false, error))
             return false;
         const bool host_options = caps && caps->valid && caps->mod_count != 0;
         if (host_options) {
@@ -1830,6 +1862,7 @@ static bool prepare_profile_settings(const PSXModNetplayProfile* profile,
         }
         if (host_options && !feat_csv_apply_options(settings, package->id,
                 profile->settings_feature_id, caps->mods[0].feats, error)) return false;
+        if (!settings.set_feature_enabled(package->id, profile->settings_feature_id, true, error)) return false;
         ModSelection selection;
         selection.version = package->version;
         ModFeatureSelection& feature = selection.features[profile->settings_feature_id];

@@ -1430,6 +1430,11 @@ if(BUILD_TESTING)
     target_link_libraries(mod_packages_test PRIVATE chdr-static)
     add_test(NAME mod_packages_test COMMAND mod_packages_test)
 
+      add_executable(mod_netplay_profiles_test tests/test_mod_netplay_profiles.c
+          src/mod_netplay.c src/psx_sha256.c)
+      target_include_directories(mod_netplay_profiles_test PRIVATE include)
+      add_test(NAME mod_netplay_profiles_test COMMAND mod_netplay_profiles_test)
+
     add_executable(builtin_mod_manifests_test
         tests/test_builtin_mod_manifests.cpp
         src/mod_packages.cpp

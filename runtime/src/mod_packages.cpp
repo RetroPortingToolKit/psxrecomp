@@ -961,6 +961,23 @@ bool runtime_constraint_satisfied(
             },
             reason);
     }
+    if (constraint.kind == ModConstraintKind::DistinctValues) {
+        std::map<std::string,std::string> seen;
+        for (const auto& id : constraint.options) {
+            const auto value = prospective_option_value(package,selection,constraint.feature_id,id,
+                override_option_feature_id,override_option_id,override_value);
+            const auto previous = seen.find(value);
+            if (previous != seen.end()) {
+                const auto* first = find_option(package,constraint.feature_id,previous->second);
+                const auto* second = find_option(package,constraint.feature_id,id);
+                if (reason) *reason = (first ? first->label : previous->second) + " and " +
+                    (second ? second->label : id) + " must use different choices";
+                return false;
+            }
+            seen[value]=id;
+        }
+        return true;
+    }
     if (constraint.kind == ModConstraintKind::RequiresFeature) {
         const ModFeature* required =
             find_feature(package, constraint.required_feature_id);
@@ -1870,6 +1887,12 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
             out.conflicts = toml::find<std::vector<std::string>>(cfg, "conflicts");
         for (const std::string& id : out.conflicts)
             if (!valid_id(id)) throw std::runtime_error("invalid conflict id");
+        if (cfg.contains("disables")) {
+            if (out.format_version < 11) throw std::runtime_error("disables requires format_version 11");
+            out.disables = toml::find<std::vector<std::string>>(cfg,"disables");
+            for (const auto& id : out.disables)
+                if (!valid_id(id) || id==out.id) throw std::runtime_error("invalid disabled package id");
+        }
 
         const bool feature_style = cfg.contains("feature");
         if (feature_style) {
@@ -2136,6 +2159,19 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                             &reason))
                         throw std::runtime_error(
                             "constraint defaults are invalid: " + reason);
+                } else if (kind == "distinct_values") {
+                    if (out.format_version < 11) throw std::runtime_error("distinct_values requires format_version 11");
+                    constraint.kind = ModConstraintKind::DistinctValues;
+                    constraint.options = toml::find<std::vector<std::string>>(v,"options");
+                    if (constraint.options.size()<2) throw std::runtime_error("distinct_values requires at least two options");
+                    std::set<std::string> ids,defaults;
+                    for (const auto& id : constraint.options) {
+                        const auto* option = find_option(out,constraint.feature_id,id);
+                        if (!option || option->type!=ModOptionType::Choice || !ids.insert(id).second)
+                            throw std::runtime_error("distinct_values must reference distinct same-feature choice options");
+                        if (!defaults.insert(option->default_value).second)
+                            throw std::runtime_error("distinct_values defaults must be unique");
+                    }
                 } else if (kind == "requires_feature") {
                     if (out.format_version < 4)
                         throw std::runtime_error(
@@ -3332,6 +3368,17 @@ bool ModPackageManager::set_feature_enabled(const std::string& package_id,
     }
     ModSelection package_selection = selections_[package_id];
     if (enabled) {
+        for (const auto& entry : packages_) {
+            const auto* owner = selected_package(entry.first);
+            const auto current = selections_.find(entry.first);
+            const ModSelection blank;
+            if (owner && owner->id!=package_id &&
+                has_enabled_feature(*owner,current==selections_.end()?blank:current->second) &&
+                std::find(owner->disables.begin(),owner->disables.end(),package_id)!=owner->disables.end()) {
+                set_error(error,package->name + " is disabled by " + owner->name);
+                return false;
+            }
+        }
         std::set<std::string> visiting;
         if (!apply_feature_requirements(
                 *package, package_selection, feature_id, visiting, error))
@@ -3351,6 +3398,15 @@ bool ModPackageManager::set_feature_enabled(const std::string& package_id,
         return false;
     }
     selections_[package_id] = std::move(package_selection);
+    if (enabled) {
+        for (const auto& id : package->disables) {
+            const auto* other = selected_package(id);
+            if (!other) continue;
+            for (const auto& target : other->features)
+                set_feature_selected(selections_[id],target.id,false);
+            selections_[id].enabled=false;
+        }
+    }
     return true;
 }
 
@@ -3558,6 +3614,40 @@ std::map<std::string, ModSelection> ModPackageManager::effective_selections(
         const auto found = effective.find(id);
         return found == effective.end() ? blank : found->second;
     };
+    /* Compute suppression from the requested set before deriving dependencies.
+     * Never mutate stored preferences on load; a hand-edited state cannot
+     * bypass exclusivity. Reject suppression cycles rather than choose order. */
+    std::set<std::string> requested,suppressed;
+    for (const auto& entry : packages_) {
+        const auto* package = selected_package(entry.first);
+        if (package && has_enabled_feature(*package,selection_of(entry.first)))
+            requested.insert(entry.first);
+    }
+    std::map<std::string,unsigned> colors;
+    std::vector<std::string> order;
+    std::function<void(const std::string&)> visit = [&](const std::string& id) {
+        if (colors[id]==2) return;
+        if (colors[id]==1) {
+            if (errors) errors->push_back("cyclic package suppression: " + id);
+            return;
+        }
+        colors[id]=1;
+        for (const auto& target : selected_package(id)->disables)
+            if (requested.count(target)) visit(target);
+        colors[id]=2;order.push_back(id);
+    };
+    for (const auto& id : requested) visit(id);
+    for (auto it=order.rbegin();it!=order.rend();++it) {
+        if (suppressed.count(*it)) continue;
+        const auto* package=selected_package(*it);
+        suppressed.insert(package->disables.begin(),package->disables.end());
+    }
+    for (const auto& id : suppressed) {
+        const auto* package = selected_package(id);
+        if (!package) continue;
+        for (const auto& feature : package->features) set_feature_selected(effective[id],feature.id,false);
+        effective[id].enabled=false;
+    }
     /* Each requirement is evaluated once it is active; an unmet one is
      * reported once. Activation only ever turns features ON, so the loop
      * reaches a fixed point after at most one pass per derivable feature. */
@@ -3604,6 +3694,10 @@ std::map<std::string, ModSelection> ModPackageManager::effective_selections(
                          .second)
                     continue;
                 const auto provider = packages_.find(requirement.package_id);
+                if (suppressed.count(requirement.package_id)) {
+                    fail(id,requirement,"the package is disabled by an active mod");
+                    continue;
+                }
                 if (provider == packages_.end() || provider->second.empty()) {
                     fail(id, requirement,
                          "package " + requirement.package_id +
@@ -3640,6 +3734,19 @@ std::map<std::string, ModSelection> ModPackageManager::effective_selections(
                                        *required))
                     continue;
                 ModSelection derived = selection_of(requirement.package_id);
+                /* Dependency activation must not introduce an unprocessed
+                 * suppression edge. Fail closed when a dependency would
+                 * disable an already active package; selecting that provider
+                 * directly first applies its complete suppression graph. */
+                bool disabling_dependency = false;
+                for (const auto& blocked : target->disables) {
+                    const auto* other = selected_package(blocked);
+                    if (other && has_enabled_feature(*other,selection_of(blocked))) {
+                        fail(id,requirement,"the dependency would disable active package " + blocked);
+                        disabling_dependency = true;
+                    }
+                }
+                if (disabling_dependency) continue;
                 set_feature_selected(derived, required->id, true);
                 std::set<std::string> visiting;
                 std::string requirement_error;
@@ -3649,6 +3756,7 @@ std::map<std::string, ModSelection> ModPackageManager::effective_selections(
                     continue;
                 }
                 effective[requirement.package_id] = std::move(derived);
+                suppressed.insert(target->disables.begin(),target->disables.end());
                 if (implicit) {
                     implicit->push_back({requirement.package_id, required->id,
                                          id, requirement.feature_id});
