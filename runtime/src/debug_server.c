@@ -8416,10 +8416,8 @@ static void handle_clear_input(int id, const char *json)
     }
     if(port>=3) {send_ok(id);return;}
     if (port == 0 || port == (int)s_input_route_port) {
-        s_input_route_active = 0;
+        input_route_stop(&s_route);
         s_input_route_wait_load = 0;
-        s_input_route_index = 0;
-        s_input_route_remaining = 0;
     }
     if (port == 0 || port == 2) {
         s_pad_connected_override[1] = -1;
@@ -8502,10 +8500,10 @@ static void handle_input_route_status(int id, const char *json)
     uint8_t ax[4] = { 0x80, 0x80, 0x80, 0x80 };
     const int axes_live = input_route_frame_axes(&s_route, ax);
     send_fmt("{\"id\":%d,\"ok\":true,\"active\":%s,\"steps\":%u,"
-             "\"index\":%u,\"remaining\":%u,\"axes_live\":%s,"
+             "\"port\":%u,\"waiting_for_load\":%s,\"index\":%u,\"remaining\":%u,\"axes_live\":%s,"
              "\"axes\":[%u,%u,%u,%u]}\n",
              id, s_route.active ? "true" : "false",
-             (unsigned)s_route.count, (unsigned)s_route.index,
+             (unsigned)s_route.count, s_input_route_port, s_input_route_wait_load?"true":"false", (unsigned)s_route.index,
              (unsigned)s_route.remaining, axes_live ? "true" : "false",
              ax[0], ax[1], ax[2], ax[3]);
 }
@@ -17865,6 +17863,13 @@ int debug_server_get_input_override_port2(void)
             s_input_override_p2 = -1;
     }
     return current;
+}
+
+int debug_server_get_input_override_extra(unsigned slot) {
+    if(slot<2 || slot>=8 || !s_extra_active[slot])return -1;
+    int value=s_extra_buttons[slot];
+    if(s_extra_frames[slot]>0 && !--s_extra_frames[slot])s_extra_active[slot]=0;
+    return value;
 }
 
 int debug_server_get_axis_override(unsigned char st[4])
