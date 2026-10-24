@@ -8145,12 +8145,12 @@ static uint64_t s_pgen_order;
 /* Double-buffer complete pairs: the unpublished set may be overwritten while
  * the last complete pair remains visible. No temporal phases or generation. */
 typedef struct StereoPair {
-    GLuint tex[2], fbo[2];
-    int tw[2], th[2];
+    GLuint tex[4], fbo[4];
+    int tw[4], th[4];
     int x, y, w, h;
-    uint32_t mask;
+    uint32_t mask, views;
     uint64_t id, cycle;
-    int32_t view[2][3];
+    int32_t view[4][3];
 } StereoPair;
 static StereoPair s_stereo_pair[2];
 static int s_stereo_current, s_stereo_valid, s_stereo_mode;
@@ -9030,11 +9030,18 @@ int gl_renderer_local_pair_set_presentation(int enabled) {
     s_stereo_mode = mode;
     return 1;
 }
+int gl_renderer_local_grid_set_presentation(int enabled) {
+    GL_RT_SYNC("local_grid_set_presentation");
+    int mode = enabled ? 3 : 0;
+    if (s_stereo_mode != mode) stereo_invalidate();
+    s_stereo_mode = mode;
+    return 1;
+}
 static void stereo_resources_release(void) {
     if (s_local_shared_tex) glDeleteTextures(1, &s_local_shared_tex);
     s_local_shared_tex = 0;
     s_local_shared_w = s_local_shared_h = 0;
-    for (int gi = 0; gi < 2; gi++) for (int eye = 0; eye < 2; eye++) {
+    for (int gi = 0; gi < 2; gi++) for (int eye = 0; eye < 4; eye++) {
         StereoPair *p = &s_stereo_pair[gi];
         pass_free_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
                             &p->tw[eye], &p->th[eye]);
@@ -9048,7 +9055,7 @@ int gl_renderer_stereo_end(uint32_t eye, int keep) {
     int ok = 0, tw = s_pass_w * s_hr_scale, th = s_pass_h * s_hr_scale;
     if (!s_pass_active) return 0;
     flush_flat_batch(); flush_tex_batch(); flush_cpu_upload();
-    if (keep && eye < 2u && (double)tw * th * 16.0 <= 256.0 * 1024.0 * 1024.0 &&
+    if (keep && eye < 4u && (double)tw * th * 32.0 <= 256.0 * 1024.0 * 1024.0 &&
         pass_make_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
                             &p->tw[eye], &p->th[eye], tw, th,
                             GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE)) {
@@ -9125,10 +9132,21 @@ int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2
     GL_RT_SYNC("stereo_publish");
     StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
     if (p->mask != 3u || p->tw[0] != p->tw[1] || p->th[0] != p->th[1]) return 0;
-    p->id = id; p->cycle = cycle;
-    memcpy(p->view, view, sizeof p->view);
+    p->id = id; p->cycle = cycle; p->views = 2;
+    memcpy(p->view, view, 2 * sizeof p->view[0]);
     s_stereo_current = 1 - s_stereo_current; s_stereo_valid = 1;
     if (s_stereo_dump_left > 0) stereo_dump(p);
+    return 1;
+}
+int gl_renderer_local_grid_publish(uint64_t id, uint64_t cycle, const int32_t view[4][3]) {
+    GL_RT_SYNC("local_grid_publish");
+    StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
+    if (p->mask != 15u) return 0;
+    for (unsigned i = 1; i < 4; ++i)
+        if (p->tw[i] != p->tw[0] || p->th[i] != p->th[0]) return 0;
+    p->id = id; p->cycle = cycle; p->views = 4;
+    memcpy(p->view, view, sizeof p->view);
+    s_stereo_current = 1 - s_stereo_current; s_stereo_valid = 1;
     return 1;
 }
 
@@ -9385,7 +9403,7 @@ static void openxr_present_native(void) {
  * Gamma, scanlines and post-AA are already baked into the copied pixels. */
 static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh) {
     int ww = 0, wh = 0, x = *lx, y = *ly, w = *lw, h = *lh;
-    if (s_stereo_mode != 2 || s_pass_active || !s_ctx || !s_win) return;
+    if (s_stereo_mode < 2 || s_pass_active || !s_ctx || !s_win) return;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     if (w < 1 || h < 1 || x < 0 || y < 0 || x + w > ww || y + h > wh) return;
     if (!s_local_shared_tex) glGenTextures(1, &s_local_shared_tex);
@@ -9404,12 +9422,15 @@ static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh) {
     glDisable(GL_SCISSOR_TEST); glDisable(GL_BLEND);
     glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
-    letterbox_rect_aspect(ww, wh, 8, 3, lx, ly, lw, lh);
-    for (int seat = 0; seat < 2; ++seat) {
-        int start = seat ? *lw / 2 : 0;
-        int width = seat ? *lw - *lw / 2 : *lw / 2;
+    int rows = s_stereo_mode == 3 ? 2 : 1;
+    letterbox_rect_aspect(ww, wh, 8, 3 * rows, lx, ly, lw, lh);
+    for (int seat = 0; seat < 2 * rows; ++seat) {
+        int start = (seat & 1) ? *lw / 2 : 0;
+        int width = (seat & 1) ? *lw - *lw / 2 : *lw / 2;
+        int ystart = rows == 1 || seat >= 2 ? 0 : *lh / 2;
+        int height = rows == 1 ? *lh : seat >= 2 ? *lh / 2 : *lh - *lh / 2;
         present_target_quad(s_local_shared_tex, w, h, 0, 0, w, h, 0,
-                            *lx + start, *ly, width, *lh, 0, 0, 1);
+                            *lx + start, *ly + ystart, width, height, 0, 0, 1);
     }
 }
 
@@ -9423,21 +9444,23 @@ static int stereo_present(int w, int h) {
         !render_pass_stereo_pair_fresh(p->cycle, psx_cycle_count, g_psx_vblank_cycles))
         return 0;
     if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
+        p->views != (s_stereo_mode == 3 ? 4u : 2u) ||
         p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
-        (s_stereo_mode == 2 ? gl_renderer_local_pair_unavailable() :
+        (s_stereo_mode >= 2 ? gl_renderer_local_pair_unavailable() :
                              gl_renderer_stereo_unavailable()) != PSX_MOD_RENDER_PASS_READY) return 0;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     gl_perf_present_enter();
     /* Desktop spectator layout while XR runs: default single left eye filled to
      * the window, PSX_VR_DESKTOP_MIRROR selects 0 legacy / 1 left / 2 SBS / 3 right. */
+    const int rows = s_stereo_mode == 3 ? 2 : 1;
     const int mirror = (s_stereo_mode == 1 && xr_mirror_active()) ? xr_mirror_mode() : 0;
     const int solo = (mirror == 1 || mirror == 3);
     const int solo_eye = (mirror == 3) ? 1 : 0;
     if (solo)
         letterbox_rect_aspect(ww, wh, p->tw[solo_eye], p->th[solo_eye], &lx, &ly, &lw, &lh);
     else
-        letterbox_rect_aspect(ww, wh, s_stereo_mode == 2 ? 8 : s_aspect_num * 2,
-                              s_stereo_mode == 2 ? 3 : s_aspect_den, &lx, &ly, &lw, &lh);
+        letterbox_rect_aspect(ww, wh, s_stereo_mode >= 2 ? 8 : s_aspect_num * 2,
+                              s_stereo_mode >= 2 ? 3 * rows : s_aspect_den, &lx, &ly, &lw, &lh);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
@@ -9446,11 +9469,13 @@ static int stereo_present(int w, int h) {
                             0, 0, p->tw[solo_eye], p->th[solo_eye], 0,
                             lx, ly, lw, lh, 1, 1, 1);
     } else {
-        for (int eye = 0; eye < 2; eye++) {
-            int start = eye ? lw / 2 : 0, width = eye ? lw - lw / 2 : lw / 2;
+        for (unsigned eye = 0; eye < p->views; eye++) {
+            int start = (eye & 1) ? lw / 2 : 0, width = (eye & 1) ? lw - lw / 2 : lw / 2;
+            int ystart = rows == 1 || eye >= 2 ? 0 : lh / 2;
+            int height = rows == 1 ? lh : eye >= 2 ? lh / 2 : lh - lh / 2;
             present_target_quad(p->tex[eye], p->tw[eye], p->th[eye],
                                 0, 0, p->tw[eye], p->th[eye], 0,
-                                lx + start, ly, width, lh, 1, 1, 1);
+                                lx + start, ly + ystart, width, height, 1, 1, 1);
         }
     }
     pres_record(GL_PRES_STEREO, p->x, p->y, w, h, lx, ly, lw, lh);

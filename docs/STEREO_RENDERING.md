@@ -116,3 +116,27 @@ EMA/last milliseconds and rollback verification totals at its existing configure
 interval (`PSX_RUNTIME_PERF_DIAG_MS`). This exposes production behavior without
 per-instruction debug tracing. The pair average is an EMA, not a percentile.
 `PSX_FRAME_REPORT_MS` remains the production guest-frame cadence measurement.
+
+## Local multiplayer grids
+
+`psx_mod_render_local_pair` uses the reversible own-view scope offline and
+publishes two independent native 4:3 views on an 8:3 canvas.
+`psx_mod_render_local_grid` uses the same frame/callback interface, invoking
+indices 0 through 3 for top left, top right, bottom left and bottom right.
+Every callback starts at the same CPU/RAM/device/VRAM checkpoint. All four
+captures must succeed before publication; a declined callback, capture failure
+or watchdog abort discards the incomplete grid and restores simulation state.
+Games must restore their own host plugin contexts between callbacks too.
+
+`psx_mod_set_local_grid_presentation(1)` selects the 8:6 session canvas. Fresh
+complete grid frames use independent images; shared menus/movies or unavailable
+draws use fresh canonical images in all four cells. Zero disables the canvas.
+The older pair and stereo APIs retain their layouts. Grid output has diagnostic
+presentation mode 3; paired local output uses mode 2. Grids are offline only and
+refuse before callbacks online, during resimulation, rewind or fast-forward,
+or without a supported OpenGL presenter. Capture does not advance the world.
+
+A producer can join the two lower tiles into one wide camera for three players.
+Translate the existing camera/layer origins uniformly, draw adjacent world
+regions at native scale and emit only one HUD. Stretching a single native image
+across the bottom does not provide the additional world area.

@@ -200,6 +200,8 @@ void debug_server_check_watchpoints(void);
 int debug_server_get_input_override(void);
 /* Port-2 override word (set_input/press "port":2), or -1. */
 int debug_server_get_input_override_port2(void);
+/* Slots 2..7 (ports 3..8), sampled once per VBlank, or -1. */
+int debug_server_get_input_override_extra(unsigned slot);
 
 /* Optional analog-stick override set alongside set_input (lx/ly/rx/ry,
  * 0..255, 0x80 = centre). Returns 1 and fills st[lx,ly,rx,ry] when armed,
