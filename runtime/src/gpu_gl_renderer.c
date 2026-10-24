@@ -6580,8 +6580,10 @@ int gl_renderer_get_swap_interval(void) {
 static void pass_resources_release(void);
 
 static void present_image_ring_gl_forget(void);
+static void fmv_hd_release(void);
 void gl_renderer_shutdown(void) {
     gl_renderer_render_thread_stop();   /* drains; the context comes back to this thread */
+    fmv_hd_release();
     psx_host_set_hud_draw_cb(NULL, NULL);
     /* After the worker has stopped (it presents, and captures, on its own
      * thread) and before the context dies: forget the ring's GL names. */
@@ -6639,7 +6641,19 @@ void gl_renderer_shutdown(void) {
 /* HD replacement of a movie frame (gpu_fmv_hd): presented at its own aspect ratio
  * (the pack's, e.g. 16:9), bilinear filtering, no chroma smoothing. */
 static GLuint s_fmvhd_tex = 0;
+int gl_renderer_fmv_hd_debug_json(char *out, size_t capacity) {
+    GL_RT_SYNC("fmv_hd_debug_json");
+    return gpu_fmv_hd_debug_json(out, capacity);
+}
 static int s_fmvhd_w = 0, s_fmvhd_h = 0;
+static uint64_t s_fmvhd_serial = 0;
+static void fmv_hd_release(void) {
+    gpu_fmv_hd_shutdown();
+    if (s_ctx && s_fmvhd_tex) glDeleteTextures(1, &s_fmvhd_tex);
+    s_fmvhd_tex = 0;
+    s_fmvhd_w = s_fmvhd_h = 0;
+    s_fmvhd_serial = 0;
+}
 static void present_fmv_hd(const FmvHdImage *hd) {
     interp_reset_history();
     int ww = 0, wh = 0; SDL_GL_GetDrawableSize(s_win, &ww, &wh);
@@ -6656,7 +6670,6 @@ static void present_fmv_hd(const FmvHdImage *hd) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    static uint64_t s_fmvhd_serial = 0;
     if (hd->w != s_fmvhd_w || hd->h != s_fmvhd_h) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, hd->w, hd->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, hd->rgba);
         s_fmvhd_w = hd->w; s_fmvhd_h = hd->h; s_fmvhd_serial = hd->serial;

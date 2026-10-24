@@ -38,11 +38,15 @@ typedef struct FmvHdImage {
 /* A presented 24-bit frame (32-bit BGRA, src_w x src_h, content_w useful columns or 0).
  * Returns 1 and fills *out when an HD frame replaces it. Called by the presenter. */
 int gpu_fmv_hd_lookup(const uint32_t *bgra, int src_w, int src_h, int content_w, FmvHdImage *out);
+/* Presenter owner, after its render worker has drained and before SDL teardown.
+ * Joins decoders and releases pack/held-image state; the next lookup can reload. */
+void gpu_fmv_hd_shutdown(void);
 
-/* Statistics (debug): frames presented in HD, signatures computed, tracking losses. */
+/* Presenter-owner statistics: frames in HD, signatures, tracking losses. */
 void gpu_fmv_hd_stats(uint64_t *hd_frames, uint64_t *queries, uint64_t *misses);
 
-/* State for the debug server (fmv_hd command): JSON fields without braces. */
+/* Presenter-owner state: JSON fields without braces. Cross-thread callers
+ * use gl_renderer_fmv_hd_debug_json to synchronize with rendering. */
 int gpu_fmv_hd_debug_json(char *out, size_t cap);
 
 #ifdef __cplusplus

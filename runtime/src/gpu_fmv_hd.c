@@ -10,15 +10,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include "psx_sdl.h"
 
 #define STBI_NO_STDIO
 #include "../third_party/stb_image.h"
 
+#ifdef PSX_FMV_HD_TESTING
+extern void *fmv_hd_test_malloc(size_t);
+extern void *fmv_hd_test_realloc(void *, size_t);
+extern SDL_Thread *fmv_hd_test_start_thread(SDL_ThreadFunction, void *);
+#define malloc fmv_hd_test_malloc
+#define realloc fmv_hd_test_realloc
+#endif
+
 #define FMV_MAX_MOVIES   16
 #define FMV_RING         32
 #define FMV_WORKERS      6
+#define FMV_FILE_MAX     (64u * 1024u * 1024u)
+#define FMV_DECODE_MAX   (256u * 1024u * 1024u)
 #define FMV_HOLD_S       0.5    /* hold of the last HD frame (not recognised / not ready) */
 #define FMV_LOCAL_BACK   3
 #define FMV_LOCAL_AHEAD  16
@@ -39,14 +50,19 @@ typedef struct Slot {
     uint8_t *rgba;
     int w, h;
     uint64_t used;
+    size_t bytes;
 } Slot;
 
 static int s_init = 0, s_enabled = 0;
 static Movie s_movies[FMV_MAX_MOVIES];
 static int s_nmovies = 0;
 static Slot s_ring[FMV_RING];
-static SDL_Mutex *s_mutex;
-static SDL_Condition *s_cond;
+static SDL_mutex *s_mutex;
+static SDL_cond *s_cond;
+static SDL_Thread *s_workers[FMV_WORKERS];
+static int s_stopping;
+static size_t s_decoded_bytes;
+static size_t s_index_bytes;
 static uint64_t s_clock = 0;
 static int s_cur_movie = -1, s_cur_src = -1;
 static uint64_t s_cur_since = 0;          /* performance counter at the last frame change */
@@ -75,7 +91,7 @@ static int read_file(const char *path, uint8_t **out, size_t *len) {
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (n <= 0) { fclose(f); return 0; }
+    if (n <= 0 || (unsigned long)n > FMV_FILE_MAX) { fclose(f); return 0; }
     uint8_t *b = (uint8_t *)malloc((size_t)n);
     if (!b) { fclose(f); return 0; }
     if (fread(b, 1, (size_t)n, f) != (size_t)n) { free(b); fclose(f); return 0; }
@@ -97,9 +113,10 @@ static int worker(void *arg) {
         SDL_LockMutex(s_mutex);
         Slot *job = NULL;
         while (!job) {
+            if (s_stopping) { SDL_UnlockMutex(s_mutex); return 0; }
             for (int i = 0; i < FMV_RING; ++i)
                 if (s_ring[i].state == 1) { job = &s_ring[i]; break; }
-            if (!job) SDL_WaitCondition(s_cond, s_mutex);
+            if (!job) SDL_CondWait(s_cond, s_mutex);
         }
         job->state = 4;                    /* in progress */
         const int movie = job->movie, frame = job->frame;
@@ -110,18 +127,38 @@ static int worker(void *arg) {
         uint8_t *file = NULL; size_t len = 0;
         int w = 0, h = 0, n = 0;
         uint8_t *rgba = NULL;
+        size_t reserved = 0;
         if (read_file(path, &file, &len)) {
-            rgba = stbi_load_from_memory(file, (int)len, &w, &h, &n, 4);
+            if (stbi_info_from_memory(file, (int)len, &w, &h, &n) &&
+                w > 0 && h > 0 && w <= 8192 && h <= 8192 &&
+                (uint64_t)w * h * 4 <= FMV_DECODE_MAX) {
+                const size_t need = (size_t)w * h * 4;
+                SDL_LockMutex(s_mutex);
+                if (!s_stopping && need <= FMV_DECODE_MAX - s_decoded_bytes) {
+                    s_decoded_bytes += need;
+                    reserved = need;
+                }
+                SDL_UnlockMutex(s_mutex);
+                if (reserved) {
+                    int actual_w, actual_h;
+                    rgba = stbi_load_from_memory(file, (int)len, &actual_w, &actual_h, &n, 4);
+                    if (rgba && (actual_w != w || actual_h != h)) {
+                        stbi_image_free(rgba); rgba = NULL;
+                    }
+                }
+            }
             free(file);
         }
         SDL_LockMutex(s_mutex);
-        if (job->movie == movie && job->frame == frame && job->state == 4) {
-            if (job->rgba) stbi_image_free(job->rgba);
+        if (!s_stopping && job->movie == movie && job->frame == frame && job->state == 4) {
             job->rgba = rgba; job->w = w; job->h = h;
+            job->bytes = rgba ? reserved : 0;
             job->state = rgba ? 2 : 3;
         } else if (rgba) {
             stbi_image_free(rgba);
+            rgba = NULL;
         }
+        if (!rgba) s_decoded_bytes -= reserved;
         SDL_UnlockMutex(s_mutex);
     }
     return 0;
@@ -136,14 +173,22 @@ static void load_movie(const char *dir) {
     FmvHdIndexHeader h;
     if (len < sizeof h) { free(b); return; }
     memcpy(&h, b, sizeof h);
-    const size_t sig = (size_t)h.sig_w * h.sig_h;
-    if (memcmp(h.magic, "FMVHD002", 8) != 0 || !h.frames || !sig || !h.sub ||
-        len < sizeof h + sig * h.frames) { free(b); return; }
+    const uint64_t sig = (uint64_t)h.sig_w * h.sig_h;
+    const uint64_t bytes = sig * h.frames;
+    if (memcmp(h.magic, "FMVHD002", 8) != 0 || !h.frames || !h.sub ||
+        !h.sig_w || h.sig_w > 64 || !h.sig_h || h.sig_h > 64 ||
+        h.sub > INT_MAX / 2 || (uint64_t)h.frames * h.sub > INT_MAX - FMV_RING ||
+        h.src_w > 8192 || h.src_h > 8192 || h.disp_w > 8192 || h.disp_h > 8192 ||
+        h.off_x < -1 || h.off_x > 8192 || h.off_y < -1 || h.off_y > 8192 ||
+        bytes > FMV_FILE_MAX - sizeof h || bytes > len - sizeof h ||
+        bytes > FMV_FILE_MAX - s_index_bytes) { free(b); return; }
     Movie *m = &s_movies[s_nmovies];
     snprintf(m->dir, sizeof m->dir, "%s", dir);
     m->h = h;
-    m->sigs = (uint8_t *)malloc(sig * h.frames);
-    memcpy(m->sigs, b + sizeof h, sig * h.frames);
+    m->sigs = (uint8_t *)malloc((size_t)bytes);
+    if (!m->sigs) { free(b); return; }
+    memcpy(m->sigs, b + sizeof h, (size_t)bytes);
+    s_index_bytes += (size_t)bytes;
     free(b);
     ++s_nmovies;
 }
@@ -158,6 +203,9 @@ static void init_once(void) {
     else {
         const char *base = SDL_GetBasePath();
         snprintf(root, sizeof root, "%sfmv_hd", base ? base : "");
+#if !defined(PSX_SDL3)
+        SDL_free((void *)base);
+#endif
     }
     /* Movie folders: liste.txt (one name per line), portable without dirent. */
     char list[1100];
@@ -167,9 +215,12 @@ static void init_once(void) {
         return;
     }
     char *txt = (char *)realloc(b, len + 1);
+    if (!txt) { free(b); return; }
     txt[len] = 0;
     for (char *line = strtok(txt, "\r\n"); line; line = strtok(NULL, "\r\n")) {
         if (!line[0] || line[0] == '#') continue;
+        if (strchr(line, '/') || strchr(line, '\\') || strchr(line, ':') ||
+            !strcmp(line, ".") || !strcmp(line, "..")) continue;
         char dir[1100];
         snprintf(dir, sizeof dir, "%s/%s", root, line);
         load_movie(dir);
@@ -177,10 +228,45 @@ static void init_once(void) {
     free(txt);
     if (!s_nmovies) return;
     s_mutex = SDL_CreateMutex();
-    s_cond = SDL_CreateCondition();
+    s_cond = SDL_CreateCond();
+    if (!s_mutex || !s_cond) { gpu_fmv_hd_shutdown(); s_init = 1; return; }
     for (int i = 0; i < FMV_RING; ++i) { s_ring[i].movie = -1; s_ring[i].frame = -1; }
-    for (int i = 0; i < FMV_WORKERS; ++i) SDL_CreateThread(worker, "psx-fmv-hd", NULL);
+    for (int i = 0; i < FMV_WORKERS; ++i) {
+#ifdef PSX_FMV_HD_TESTING
+        s_workers[i] = fmv_hd_test_start_thread(worker, NULL);
+#else
+        s_workers[i] = SDL_CreateThread(worker, "psx-fmv-hd", NULL);
+#endif
+        if (!s_workers[i]) { gpu_fmv_hd_shutdown(); s_init = 1; return; }
+    }
     s_enabled = 1;
+}
+
+void gpu_fmv_hd_shutdown(void) {
+    s_enabled = 0;
+    if (s_mutex) {
+        SDL_LockMutex(s_mutex);
+        s_stopping = 1;
+        if (s_cond) SDL_CondBroadcast(s_cond);
+        SDL_UnlockMutex(s_mutex);
+    }
+    for (int i = 0; i < FMV_WORKERS; ++i) if (s_workers[i]) {
+        SDL_WaitThread(s_workers[i], NULL); s_workers[i] = NULL;
+    }
+    for (int i = 0; i < FMV_RING; ++i) {
+        if (s_ring[i].rgba) stbi_image_free(s_ring[i].rgba);
+    }
+    for (int i = 0; i < s_nmovies; ++i) free(s_movies[i].sigs);
+    memset(s_ring, 0, sizeof s_ring);
+    memset(s_movies, 0, sizeof s_movies);
+    if (s_cond) SDL_DestroyCond(s_cond);
+    if (s_mutex) SDL_DestroyMutex(s_mutex);
+    s_cond = NULL; s_mutex = NULL;
+    free(s_shown); s_shown = NULL;
+    s_shown_cap = s_decoded_bytes = s_index_bytes = 0;
+    s_shown_w = s_shown_h = s_nmovies = s_init = s_stopping = 0;
+    s_cur_movie = s_cur_src = s_shown_movie = s_shown_frame = -1;
+    s_cur_since = s_shown_at = s_shown_serial = s_clock = 0;
 }
 
 static void signature(const uint32_t *bgra, int src_w, int x0, int y0, int w, int h,
@@ -189,7 +275,8 @@ static void signature(const uint32_t *bgra, int src_w, int x0, int y0, int w, in
         const int ya = y0 + gy * h / sh, yb = y0 + (gy + 1) * h / sh;
         for (int gx = 0; gx < sw; ++gx) {
             const int xa = x0 + gx * w / sw, xb = x0 + (gx + 1) * w / sw;
-            uint32_t sum = 0, n = 0;
+            uint64_t sum = 0;
+            uint32_t n = 0;
             for (int y = ya; y < yb; ++y)
                 for (int x = xa; x < xb; ++x) {
                     const uint32_t p = bgra[(size_t)y * src_w + x];
@@ -220,8 +307,9 @@ static Slot *slot_for(int movie, int frame, int request) {
     if (victim < 0) return NULL;
     Slot *s = &s_ring[victim];
     if (s->rgba) { stbi_image_free(s->rgba); s->rgba = NULL; }
+    s_decoded_bytes -= s->bytes; s->bytes = 0;
     s->movie = movie; s->frame = frame; s->state = 1; s->used = ++s_clock;
-    SDL_SignalCondition(s_cond);
+    SDL_CondSignal(s_cond);
     return s;
 }
 
@@ -230,7 +318,8 @@ static int s_dbg_src_w, s_dbg_src_h, s_dbg_frame = -1;
 
 int gpu_fmv_hd_lookup(const uint32_t *bgra, int src_w, int src_h, int content_w, FmvHdImage *out) {
     init_once();
-    if (!s_enabled || !bgra || src_w <= 0 || src_h <= 0 || !out) return 0;
+    if (!s_enabled || !bgra || src_w <= 0 || src_h <= 0 ||
+        src_w > 16384 || src_h > 16384 || !out) return 0;
     ++s_queries;
     s_dbg_src_w = src_w; s_dbg_src_h = src_h; s_dbg_best = ~0u;
     const int cw = (content_w > 0 && content_w < src_w) ? content_w : src_w;
@@ -293,9 +382,9 @@ int gpu_fmv_hd_lookup(const uint32_t *bgra, int src_w, int src_h, int content_w,
     int k = 0;
     if (mv->h.sub > 1 && mv->h.fps_num) {
         const double t = (double)(now - s_cur_since) / (double)SDL_GetPerformanceFrequency();
-        k = (int)(t * mv->h.fps_num / (mv->h.fps_den ? mv->h.fps_den : 1) * mv->h.sub);
-        if (k >= (int)mv->h.sub) k = (int)mv->h.sub - 1;
-        if (k < 0) k = 0;
+        const double phase = t * mv->h.fps_num / (mv->h.fps_den ? mv->h.fps_den : 1) * mv->h.sub;
+        if (phase >= mv->h.sub) k = (int)mv->h.sub - 1;
+        else if (phase > 0) k = (int)phase;
     }
     const int hd = best_f * (int)mv->h.sub + k;
     const int last = (int)(mv->h.frames * mv->h.sub) - 1;
@@ -313,7 +402,11 @@ int gpu_fmv_hd_lookup(const uint32_t *bgra, int src_w, int src_h, int content_w,
         if (s->movie == s_shown_movie && s->frame == s_shown_frame && s_shown) {
             ok = 1;            /* same frame as the previous refresh: no copy */
         } else {
-            if (need > s_shown_cap) { free(s_shown); s_shown = (uint8_t *)malloc(need); s_shown_cap = need; }
+            if (need > s_shown_cap) {
+                uint8_t *next = (uint8_t *)realloc(s_shown, need);
+                if (next) { s_shown = next; s_shown_cap = need; }
+                else { SDL_UnlockMutex(s_mutex); return 0; }
+            }
             if (s_shown) {
                 memcpy(s_shown, s->rgba, need);
                 s_shown_w = s->w; s_shown_h = s->h;
