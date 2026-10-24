@@ -44,6 +44,7 @@
 #include "pad_external_input.h"
 #include "host_keymap.h"
 #include "png_write.h"       /* png_write_rgb — present_shot readback */
+#include "video_recorder.h"  /* video_record / --record-video */
 #include "overlay_capture.h"
 #include "overlay_loader.h"
 #include "autocompile.h"
@@ -1542,6 +1543,10 @@ static int           g_headless       = 0;   /* debug/CI frontend: no SDL window
  * presentation features without putting a window on the desktop; drive it
  * over TCP like --headless. */
 static int           g_hidden_window  = 0;
+/* --offscreen-window: g_hidden_window plus the guarantees a recording run
+ * needs (never shown, never focused, no taskbar entry, no wizard/modal). */
+static int           g_offscreen_window = 0;
+static const char*   g_record_video_path = nullptr;   /* --record-video */
 static int           g_headless_opengl = 0;   /* explicit GL validation; fail instead of fallback */
 static SDL_Window*   s_headless_gl_window = nullptr; /* separate from the host input/present window */
 
@@ -2604,11 +2609,60 @@ extern "C" void psx_video_config_telemetry(PsxVideoConfigTelemetry *out) {
 }
 
 #ifndef PSX_SDL_NO_RENDER
+/* video_record (SDL software renderer): every software swap below goes
+ * through software_present_with_telemetry, so reading the renderer back here
+ * records every composed present — after RenderCopy's aspect fit and the
+ * host OSD, the same image present_shot captures. SDL_RenderReadPixels is a
+ * synchronous GPU->CPU copy on accelerated SDL renderers (no async readback
+ * in the SDL_Renderer API); correct, and only paid while recording. */
+static void sw_video_capture(SDL_Renderer *renderer) {
+    uint32_t session = 0;
+    const int action = video_recorder_present_poll(&session);
+    if (action == VREC_PRESENT_IDLE) return;
+    if (action == VREC_PRESENT_FLUSH) {   /* synchronous: nothing pending */
+        video_recorder_flush_done(session);
+        return;
+    }
+    extern uint64_t psx_cycle_count;
+    const uint64_t cycle = psx_cycle_count;
+#if defined(PSX_SDL3)
+    SDL_Surface *surf = SDL_RenderReadPixels(renderer, NULL);
+    SDL_Surface *conv = surf ? SDL_ConvertSurface(surf, SDL_PIXELFORMAT_BGRA32) : NULL;
+    if (surf) SDL_DestroySurface(surf);
+    if (conv) {
+        video_recorder_submit_frame(session, conv->pixels, conv->w, conv->h,
+                                    conv->pitch, 0, cycle);
+        SDL_DestroySurface(conv);
+    } else {
+        video_recorder_note_lost_frame(session);
+    }
+#else
+    int rw = 0, rh = 0;
+    if (SDL_GetRendererOutputSize(renderer, &rw, &rh) != 0 || rw <= 0 || rh <= 0) {
+        video_recorder_note_lost_frame(session);
+        return;
+    }
+    SDL_Rect vp; SDL_RenderGetViewport(renderer, &vp);
+    float sx = 1.0f, sy = 1.0f; SDL_RenderGetScale(renderer, &sx, &sy);
+    int ow = (int)(vp.w * sx), oh = (int)(vp.h * sy);
+    if (ow <= 0 || ow > rw) ow = rw;
+    if (oh <= 0 || oh > rh) oh = rh;
+    static std::vector<uint8_t> buf;
+    buf.resize((size_t)rw * (size_t)rh * 4u);
+    if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_BGRA32,
+                             buf.data(), ow * 4) == 0)
+        video_recorder_submit_frame(session, buf.data(), ow, oh, ow * 4, 0, cycle);
+    else
+        video_recorder_note_lost_frame(session);
+#endif
+}
+
 /* All software swaps, including display-disabled and held frames. Query only
  * the owning SDL renderer; never synchronize another render thread. */
 static void software_present_capture(SDL_Renderer *renderer);
 static void software_present_with_telemetry(SDL_Renderer *renderer) {
     software_present_capture(renderer);
+    sw_video_capture(renderer);
     int width = 0, height = 0;
 #if defined(PSX_SDL3)
     SDL_GetRenderOutputSize(renderer, &width, &height);
@@ -4335,7 +4389,48 @@ static const char* netplay_start_failure(int nrc, const PsxNetplayConfig& cfg) {
     return why;
 }
 
+/* video_record host wiring. The nominal present rate seeds the live encode
+ * before the recorder measures the real one on the guest clock: one present
+ * per guest vblank (33868800 / vblank cycles = exactly 60 NTSC / 50 PAL),
+ * times the GL interpolation ratio when it presents in-between frames. */
+static double video_record_rate_hint(void) {
+    const double vblank_hz = PSX_GUEST_CPU_HZ / (double)g_psx_vblank_cycles;
+    double target = 0.0, source = 0.0;
+    if (g_gl_active && gl_renderer_interpolation_rates(&target, &source) && source > 0.0)
+        return vblank_hz * target / source;
+    return vblank_hz;
+}
+
+/* Backend that owns the present right now (asked on every start, so a
+ * renderer fallback or a lobby rematch is seen). */
+static VrecBackend video_record_backend_now(void) {
+    if (g_headless) return VREC_BACKEND_NONE;
+    if (g_vk_active) return VREC_BACKEND_VULKAN;
+    if (g_gl_active) return VREC_BACKEND_OPENGL;
+#ifndef PSX_SDL_NO_RENDER
+    if (sdl_renderer) return VREC_BACKEND_SOFTWARE;
+#endif
+    return VREC_BACKEND_NONE;
+}
+
+/* Any exit path: a recording still running is stopped and muxed so the MP4
+ * is complete (the in-flight GL readback is handed over by
+ * gl_renderer_shutdown when that runs first; otherwise the stop times out on
+ * it after 3 s and reports it as `unflushed`). */
+static void video_record_atexit(void) {
+    video_recorder_shutdown();
+}
+
 static void shutdown_runtime(void) {
+    {
+        char vr_err[128];
+        if (video_recorder_stop(vr_err, (int)sizeof vr_err) && !g_gl_active) {
+            /* Synchronous backends have nothing in flight. */
+            VrecStatus vs;
+            video_recorder_get_status(&vs);
+            video_recorder_flush_done(vs.session);
+        }
+    }
     psx_local_mouse_clear();
     /* (sljit removed 2026-07-15: overlay_compile_worker_stop joined the
      * off-thread JIT worker here; the worker no longer exists.) */
@@ -17788,6 +17883,13 @@ int main(int argc, char** argv) {
      *   --headless          skip SDL window/audio; use TCP screenshots/state
      *   --hidden-window     full presenter in a never-shown window (TCP-driven
      *                       tests of interpolation / render passes)
+     *   --offscreen-window  same never-shown presenter, for recording/capture
+     *                       runs: never on the desktop, never focused, no
+     *                       taskbar entry; GL readback of the composed frame
+     *                       works (measured, see docs/VIDEO_RECORDING.md)
+     *   --record-video <p>  record every composed present + the final audio
+     *                       mix to <p>.mp4 from boot (needs ffmpeg; same as
+     *                       the video_record debug command, op start)
      *   --headless-opengl   hidden GL context, no audio/controllers; require actual GL
      *   --netplay           enable delay-sync LAN (also PSX_NETPLAY=1)
      *   --net-slot N        local player slot (0|1)
@@ -17848,6 +17950,12 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--hidden-window") == 0) {
             g_hidden_window = 1;
             force_no_launcher = true;
+        } else if (std::strcmp(argv[i], "--offscreen-window") == 0) {
+            g_hidden_window = 1;
+            g_offscreen_window = 1;
+            force_no_launcher = true;
+        } else if (std::strcmp(argv[i], "--record-video") == 0 && i + 1 < argc) {
+            g_record_video_path = consume_path_arg(i);
         } else if (std::strcmp(argv[i], "--netplay") == 0) {
             net_cfg.enabled = 1;
         } else if (std::strcmp(argv[i], "--net-slot") == 0 && i + 1 < argc) {
@@ -17895,6 +18003,14 @@ int main(int argc, char** argv) {
      * in-game menu), unlike --hidden-window. */
     if (const char *e = std::getenv("PSX_HIDDEN_WINDOW")) {
         if (*e && *e != '0') g_hidden_window = 1;
+    }
+    video_recorder_set_rate_hint_fn(video_record_rate_hint);
+    video_recorder_set_backend_fn(video_record_backend_now);
+    std::atexit(video_record_atexit);
+    if (g_record_video_path && g_headless) {
+        std::fprintf(stdout, "psxrecomp: --record-video needs a present surface; "
+                             "--headless has none (use --offscreen-window)\n");
+        return 1;
     }
 
     std::string default_game_config_storage;
@@ -21265,6 +21381,21 @@ session_reboot:
         win_flags |= SDL_WINDOW_HIDDEN;
         g_fullscreen = 0;
     }
+    if (g_offscreen_window) {
+        /* Recording / capture runs: even if something later shows the
+         * window, it must not take focus or get a taskbar button. */
+#if defined(SDL_WINDOW_SKIP_TASKBAR)
+        win_flags |= SDL_WINDOW_SKIP_TASKBAR;
+#elif defined(SDL_WINDOW_UTILITY)
+        win_flags |= SDL_WINDOW_UTILITY;
+#endif
+#if defined(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN)
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+#endif
+#if defined(SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN)
+        SDL_SetHint(SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN, "1");
+#endif
+    }
     /* Fullscreen on launch (launcher's tri-state Fullscreen control): 1 =
      * borderless desktop fullscreen (keeps the desktop resolution, letterboxes
      * the image), 2 = exclusive fullscreen (real display-mode change), 0 =
@@ -21534,6 +21665,20 @@ session_reboot:
     }
     /* Register vblank presentation callback. */
     gpu_set_vblank_callback(sdl_vblank_present);
+
+    if (g_record_video_path) {
+        VrecOptions vo;
+        vrec_options_default(&vo);
+        std::snprintf(vo.path, sizeof vo.path, "%s", g_record_video_path);
+        char vr_err[512];
+        if (!video_recorder_start(&vo, vr_err, (int)sizeof vr_err)) {
+            std::fprintf(stdout, "psxrecomp: --record-video: %s\n", vr_err);
+            return 1;
+        }
+        std::fprintf(stdout, "psxrecomp: recording composed presents + SPU mix to %s\n",
+                     g_record_video_path);
+        g_record_video_path = nullptr;   /* once: a session reboot keeps recording */
+    }
 
     /* Delay-sync LAN (recomp-net). Menu/lobby UI is later work — CLI/env only.
      * Must start after SDL so local pad capture has devices; before the guest
@@ -22109,8 +22254,9 @@ session_reboot:
                    g_slice_exit_in_text, g_slice_exit_want); }
 
     shutdown_runtime();
-    if (g_gl_active) gl_renderer_shutdown();
+    if (g_gl_active) gl_renderer_shutdown();   /* hands over in-flight readbacks */
     if (g_vk_active) vk_renderer_shutdown();
+    video_recorder_shutdown();                  /* encoder drain + mux */
     SDL_DestroyTexture(sdl_texture);   /* NULL-safe in GL mode */
     SDL_DestroyRenderer(sdl_renderer); /* NULL-safe in GL mode */
     SDL_DestroyWindow(sdl_window);

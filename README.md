@@ -275,6 +275,7 @@ These are the 3 most important folders to be aware of:
 | Mod schema and integration | [`docs/MOD_PACKAGES.md`](docs/MOD_PACKAGES.md) |
 | Widescreen / native-wide | [`docs/WIDESCREEN.md`](docs/WIDESCREEN.md) |
 | Enhancement tier (PGXP and renderers) | [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md) |
+| Composed-frame and SPU audio recording (draft) | [`docs/VIDEO_RECORDING.md`](docs/VIDEO_RECORDING.md) |
 | TCP debug command reference | [`docs/TCP_COMMANDS.md`](docs/TCP_COMMANDS.md) |
 | Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 

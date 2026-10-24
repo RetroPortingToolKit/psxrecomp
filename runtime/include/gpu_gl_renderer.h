@@ -51,6 +51,10 @@ void gl_renderer_set_interpolation_blend(int blend_mode);
 /* Blend source: 0 = every guest VBlank is a source frame (default),
  * 1 = only real display flips are (psx_mod_set_frame_interpolation_source). */
 void gl_renderer_set_interpolation_source(int source);
+/* Temporal interpolation rates in effect: 1 with presents/s (target) and
+ * guest frames/s (source) when active and not suspended, else 0. Used by
+ * video_record for its nominal present rate. */
+int  gl_renderer_interpolation_rates(double *target_hz, double *source_hz);
 void gl_renderer_interpolation_source_diag(int *source, uint32_t *flip_period,
                                            uint64_t *captures,
                                            uint64_t *duplicates);

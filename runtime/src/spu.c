@@ -1495,6 +1495,10 @@ void spu_catch_up(void) {
         if (keep) spu_out_push(block, (uint32_t)n);
         frames -= (uint64_t)n;
     }
+    /* Publish the tap<->guest-clock mapping: every AUDIO_TAP_SPU_OUT frame
+     * up to the head now covers guest time up to s_clock (video_record cuts
+     * its audio slice sample-exactly from this). */
+    audio_trace_note_spu_clock(audio_trace_tap_total(AUDIO_TAP_SPU_OUT), s_clock);
     s_catching_up = 0;
 }
 
