@@ -105,6 +105,15 @@ int psx_netplay_active(void){return 0;}
 GrBackend gr_backend(void){return GR_BACKEND_OPENGL;}
 void gr_refresh_backend(void){}
 #endif
+/* These renderer-only fixtures have no frontend telemetry/menu consumer. */
+void psx_video_telemetry_compose(int r,int s,int sw,int sh,int dw,int dh,int vw,int vh) {
+    (void)r;(void)s;(void)sw;(void)sh;(void)dw;(void)dh;(void)vw;(void)vh;
+}
+void psx_video_telemetry_present(int result) {(void)result;}
+int psx_host_menu_overlay_image(const uint32_t **p,int *w,int *h) {
+    *p=NULL;*w=*h=0;return 0;
+}
+
 int gpu_display_is_depth24(void){return 0;}
 void gpu_get_display_info(GpuDisplayInfo *out){memset(out,0,sizeof(*out));out->width=320;out->height=240;}
 int psx_ws_prim_in_backdrop(void){return 0;}

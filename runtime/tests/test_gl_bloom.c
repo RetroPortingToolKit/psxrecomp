@@ -11,10 +11,17 @@
  * bottom-up) so a run against another tree can be compared byte for byte
  * (BLOOM_FIXTURE_NO_BLOOM builds it without the bloom API). */
 #define GL_PRESENT_TEST_HOOK(gen) bloom_capture_hook(gen)
+#include <stdint.h>
+static uint64_t pfx_fixture_clock(void);
+#define PFX_NOW_TICKS() pfx_fixture_clock()
 static void bloom_capture_hook(int gen);
 #define main scale_fixture_main
 #include "test_gl_scale_invariance.c"
 #undef main
+static uint64_t s_pfx_test_clock;
+static uint64_t pfx_fixture_clock(void) {
+    return s_pfx_test_clock ? s_pfx_test_clock : SDL_GetPerformanceCounter();
+}
 void gpu_hd_textures_begin_upload(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
 void gpu_hd_textures_track_upload(int x,int y,int w,int h,const uint16_t* p){(void)x;(void)y;(void)w;(void)h;(void)p;}
 void gpu_hd_textures_invalidate(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
@@ -54,6 +61,7 @@ static void bloom_capture_hook(int gen) {
 }
 
 enum { SC_2D, SC_ADD, SC_3D, SC_HUD_OVER_3D, SC_PARTIAL, SC_N };
+enum { SC_DEPTH_ONLY = 99 };
 static const char *k_scene[SC_N] = { "2d", "additive", "3d", "hud-over-3d", "partial" };
 /* SC_PARTIAL's grey HUD panels (native x, y, w, h): one beside the lamp, one
  * covering part of it. */
@@ -77,8 +85,10 @@ static uint8_t *frame(int scene, float bloom, uint64_t *vram_hash) {
     glb_set_mask_bits(0, 0); glb_set_semi_transparency(0, 0);
     glb_fill_rect(0, 0, FRAME_W, FRAME_H, 0x0000);
     /* A dark 3D ground everywhere: lit (may take a halo), below the threshold. */
-    tri3d(0, 0, FRAME_W, 0, 0, FRAME_H, 0x0842);
-    tri3d(FRAME_W, 0, FRAME_W, FRAME_H, 0, FRAME_H, 0x0842);
+    if (scene != SC_DEPTH_ONLY) {
+        tri3d(0, 0, FRAME_W, 0, 0, FRAME_H, 0x0842);
+        tri3d(FRAME_W, 0, FRAME_W, FRAME_H, 0, FRAME_H, 0x0842);
+    }
     switch (scene) {
     case SC_2D:     /* a white HUD panel */
         glb_draw_flat_rect(120, 90, 80, 60, 0x7fff);
@@ -88,6 +98,7 @@ static uint8_t *frame(int scene, float bloom, uint64_t *vram_hash) {
         glb_draw_flat_triangle(120, 150, 200, 150, 160, 80, 0x7fff);
         glb_set_semi_transparency(0, 0);
         break;
+    case SC_DEPTH_ONLY:
     case SC_3D:     /* a lit 3D polygon */
         tri3d(120, 150, 200, 150, 160, 80, 0x7fff);
         break;
@@ -234,6 +245,7 @@ int main(int argc, char **argv) {
         fputs("void main(){ o = this is not glsl; }\n", f);
         fclose(f);
     }
+    gl_renderer_render_thread_stop();
     for (int pass = 0; pass < 2; pass++) {   /* 0: this thread, 1: render thread */
         uint64_t h = 0;
         gl_renderer_set_post_shader("pfx_invert.pfx");
@@ -260,6 +272,69 @@ int main(int argc, char **argv) {
         check(hud_lit == 0, "mask input: HUD panels are unlit");
         check(lit > s_cap_w * s_cap_h / 2, "mask input: the 3D ground and lamp are lit");
         free(m);
+
+        /* A history input also works on the final window pass. The blue
+         * channel observes the shader clock, so reload must reset its origin. */
+        FILE *history_file=fopen("pfx_history.glsl","w");
+        check(history_file!=NULL,"open history shader");
+        if(history_file) {
+            fputs("void main(){ float r=texelFetch(u_prev,ivec2(gl_FragCoord.xy)-u_org,0).r;"
+                  "o=vec4(r*0.5+u_add,0.0,clamp(u_time/4.0,0.0,1.0),1.0); }\n",history_file);
+            fclose(history_file);
+        }
+        history_file=fopen("pfx_history.pfx","w");
+        if(history_file) {
+            fputs("pfx 1\npass history\n shader pfx_history.glsl\n input u_prev history\n uniform u_add 0.25\n",history_file);
+            fclose(history_file);
+        }
+        psx_host_set_post_uniform("u_add",0.25f,0,0,0);
+        s_pfx_test_clock=100*SDL_GetPerformanceFrequency();
+        gl_renderer_set_post_shader("pfx_history.pfx");
+        uint8_t *hist=frame(SC_PARTIAL,0,&h);
+        size_t center=((size_t)(s_cap_h/2)*s_cap_w+s_cap_w/2)*3;
+        check(abs(hist[center]-64)<=1 && hist[center+2]<=1,"first history frame is cleared and starts at time zero");
+        free(hist);
+        s_pfx_test_clock=102*SDL_GetPerformanceFrequency();
+        hist=frame(SC_PARTIAL,0,&h);
+        check(abs(hist[center]-96)<=1 && abs(hist[center+2]-128)<=1,"final pass samples the previous real image and its own elapsed time");
+        free(hist);
+        if(!s_rth_on) {
+            for(int repeat=0;repeat<2;++repeat) {
+                postfx_present(0,0,0,0,s_cap_w,s_cap_h);
+                bloom_capture_hook(1);
+                check(abs(s_cap[center]-112)<=1,"generated presents do not advance history");
+            }
+        }
+        psx_host_set_post_uniform("u_add",0.125f,0,0,0);
+        hist=frame(SC_PARTIAL,0,&h);
+        check(abs(hist[center]-80)<=1,"live uniform update reaches the actual shader");
+        free(hist);
+        s_pfx_test_clock=104*SDL_GetPerformanceFrequency();
+        gl_renderer_set_post_shader("pfx_history.pfx");
+        hist=frame(SC_PARTIAL,0,&h);
+        check(abs(hist[center]-32)<=1 && hist[center+2]<=1,"reload clears history and resets shader time while retaining live values");
+        free(hist);
+        s_pfx_test_clock=0;
+
+        FILE *depth_file=fopen("pfx_depth.glsl","w");
+        if(depth_file) {
+            fputs("void main(){ float d=texelFetch(u_depth,ivec2(gl_FragCoord.xy)-u_org,0).r;"
+                  "o=vec4(clamp(d/4000.0,0.0,1.0),0.0,0.0,1.0); }\n",depth_file);
+            fclose(depth_file);
+        }
+        depth_file=fopen("pfx_depth.pfx","w");
+        if(depth_file) {
+            fputs("pfx 1\npass depth\n shader pfx_depth.glsl\n input u_depth depth\n",depth_file);
+            fclose(depth_file);
+        }
+        gl_renderer_set_pgxp_depth(1);
+        gl_renderer_set_post_shader("pfx_depth.pfx");
+        uint8_t *depth=frame(SC_DEPTH_ONLY,0,&h);
+        size_t outside=((size_t)(s_cap_h-1-20)*s_cap_w+20)*3;
+        check(abs(depth[center]-128)<=3,"depth input reconstructs the triangle's GTE screen depth");
+        check(depth[outside]<=1,"depth input is zero where no 3D primitive drew");
+        free(depth);
+        gl_renderer_set_pgxp_depth(0);
 
         gl_renderer_set_post_shader("pfx_screen.pfx");
         check(gl_renderer_post_shader_loaded(), "source_down + blend screen chain loads");
