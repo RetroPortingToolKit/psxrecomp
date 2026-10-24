@@ -25,6 +25,13 @@ enum HdTextureLookupStatus {
     HD_TEXTURE_LOOKUP_AMBIGUOUS = 2
 };
 
+/* Palette identity of an indexed replacement, named TTTTTTTT-index.png: its
+ * red channel holds CLUT indices (alpha 0 = transparent) and the renderer
+ * resolves them through the live CLUT of each draw, so one image serves every
+ * palette the game draws the texture with (highlights, fades). An exact
+ * TTTTTTTT-PPPPPPPP image still wins for its own palette. */
+#define HD_TEXTURE_PALETTE_INDEXED 0xFFFFFFFFu
+
 typedef struct HdTexturePackInfo {
     const char* asset_root;       /* valid until hd_texture_pack_destroy */
     const char* replacement_root; /* valid until hd_texture_pack_destroy */
@@ -109,6 +116,8 @@ uint32_t hd_texture_hash_clut(const uint16_t* vram,
 /* Upload bytes are row-major logical upload words, independent of destination
  * wrapping. Tracking invalidates/splits every intersected older residency.
  * Width <= 1024 and height <= 512; X/Y may wrap. */
+int hd_texture_pack_debug_uploads_at(const HdTexturePack* pack, unsigned x, unsigned y,
+                                     char* out, size_t cap);
 int hd_texture_pack_track_upload(HdTexturePack* pack,
                                  uint16_t x,
                                  uint16_t y,

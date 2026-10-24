@@ -9447,6 +9447,16 @@ static void handle_fmv_hd(int id, const char *json) {
     send_fmt("{\"id\":%d,\"ok\":true,%s}", id, buf);
 }
 
+/* hd_uploads x=<vram x> y=<vram y> -- texture uploads covering that VRAM
+ * point (newest first): hash, size, fragment, whether the pack replaces it. */
+extern int gpu_hd_textures_debug_uploads_at(int x, int y, char *out, size_t cap);
+static void handle_hd_uploads(int id, const char *json) {
+    static char buf[16384];
+    int n = gpu_hd_textures_debug_uploads_at(json_get_int(json, "x", 0), json_get_int(json, "y", 0),
+                                             buf, sizeof buf);
+    send_fmt("{\"id\":%d,\"ok\":true,\"count\":%d,\"uploads\":[%s]}", id, n, buf);
+}
+
 static void handle_display_aspect(int id, const char *json) {
     int num=json_get_int(json,"num",-1), den=json_get_int(json,"den",-1);
     int adaptive=json_get_int(json,"adaptive",0);
@@ -16445,6 +16455,7 @@ static const CmdEntry s_commands[] = {
     { "display_aspect",    handle_display_aspect },
     { "perf",              handle_perf },
     { "fmv_hd",            handle_fmv_hd },
+    { "hd_uploads",        handle_hd_uploads },
     { "window_size",       handle_window_size },
     { "ws_nw",             handle_ws_nw },
     { "debug_key",         handle_debug_key },
