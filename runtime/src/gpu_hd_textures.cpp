@@ -397,7 +397,7 @@ extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) {
     out->diagnostic = session->diagnostics.back().c_str();
 }
 extern "C" int gpu_hd_textures_debug_uploads_at(int x, int y, char* out, size_t cap) {
-    if (out && cap) out[0] = ' ';
+    if (out && cap) out[0] = '\0';
     return session ? hd_texture_pack_debug_uploads_at(session->beetle, (unsigned)x, (unsigned)y, out, cap) : 0;
 }
 extern "C" void gpu_hd_textures_note_applied(void) { if (session) ++session->diag.applied_draws; }

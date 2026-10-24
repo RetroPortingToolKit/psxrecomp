@@ -538,6 +538,26 @@ void split_coalesce_copy_parts(const fs::path& root) {
     check(duck_texture_pack_match_draw(pack.get(),&q,0,&match) == HD_TEXTURE_LOOKUP_NONE,"single-cover API preserves native fallback for composed draw");
 }
 
+void release_while_another_source_splits(const fs::path& root) {
+    config(root,"MaxVRAMWriteSplits: 4\nDumpC16Textures: true\nDumpTextureWidthThreshold: 1\nDumpTextureHeightThreshold: 1\n");
+    std::vector<uint16_t> vram(1024*512);
+    place(vram,0,0,4,words(16)); place(vram,8,0,8,words(64));
+    auto pack=create(root); char error[512]{};
+    duck_texture_pack_track_upload(pack.get(),0,0,4,4,vram.data(),vram.size());
+    duck_texture_pack_track_upload(pack.get(),8,0,8,8,vram.data(),vram.size());
+    auto first=query(vram,0,0,2,0,3,0,3);
+    auto second=query(vram,0,0,2,8,15,0,7);
+    duck_texture_pack_dump_draw(pack.get(),&first,0,error,sizeof error);
+    duck_texture_pack_dump_draw(pack.get(),&second,0,error,sizeof error);
+    DuckTexturePackInfo before{},after{}; duck_texture_pack_get_info(pack.get(),&before);
+    check(before.pending_dump_sources==2,"both independent source observations are pending");
+    // Retires the first upload entirely, while the second keeps right and lower clips.
+    duck_texture_pack_invalidate(pack.get(),0,0,12,4);
+    duck_texture_pack_get_info(pack.get(),&after);
+    check(after.pending_dump_sources==1 && after.queued_dump_count==1,
+          "released source finalizes even when surviving upload splits keep the total count steady");
+}
+
 void resident_checkpoint(const fs::path& root) {
     std::vector<uint16_t> vram(1024*512);
     place(vram,0,0,8,std::vector<uint16_t>(8*16,0x3210));
@@ -604,7 +624,7 @@ int main(int argc, char** argv) {
         palettes(root/"palettes"); st_alias_duplicates(root/"keys"); failed_payloads(root/"invalid"); dumping(root/"dump");
         official_binary_oracle(root/"official-oracle"); defaults_and_options(root/"defaults");
         immutable_palettes_and_pages(root/"snapshots"); split_coalesce_copy_parts(root/"lifecycle"); copied_pack_ownership(root/"ownership");
-        resident_checkpoint(root/"resident");
+        resident_checkpoint(root/"resident"); release_while_another_source_splits(root/"release-split");
         /* Every artifact is created beneath this fresh, explicitly named test
          * root. No user-provided paths participate in recursive cleanup. */
         if (argc > 1 && !std::strcmp(argv[1],"--keep-artifacts")) std::printf("ARTIFACT_ROOT: %s\n",root.u8string().c_str());

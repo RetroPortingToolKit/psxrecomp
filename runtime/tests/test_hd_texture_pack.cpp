@@ -211,6 +211,24 @@ HdTextureDrawQuery query4(const std::vector<uint16_t>& vram,
     return query;
 }
 
+void test_indexed_palette_fallback() {
+    Fixture f;
+    std::ostringstream stem; stem<<std::hex<<f.upload_hash;
+    touch(f.replacements/(stem.str()+"-index.png"));
+    auto* pack=open_pack(f.root); if(!pack)return;
+    hd_texture_pack_track_upload(pack,10,20,8,4,f.upload_words.data(),f.upload_words.size(),nullptr);
+    auto q=query4(f.vram,0,31); HdTextureMatch match{};
+    check(hd_texture_pack_match(pack,&q,&match)==HD_TEXTURE_LOOKUP_FOUND &&
+          match.entry.palette_hash==f.palette4_hash,"exact palette wins over indexed fallback");
+    f.vram[7*1024+1020]^=1;
+    hd_texture_pack_invalidate(pack,1020,7,1,1);
+    check(hd_texture_pack_match(pack,&q,&match)==HD_TEXTURE_LOOKUP_FOUND &&
+          match.entry.palette_hash==HD_TEXTURE_PALETTE_INDEXED,"changed CLUT uses palette-independent index key");
+    q.depth=HD_TEXTURE_DEPTH_16BPP; q.u_last=7;
+    check(hd_texture_pack_match(pack,&q,&match)==HD_TEXTURE_LOOKUP_NONE,"16bpp never uses indexed palette fallback");
+    hd_texture_pack_destroy(pack);
+}
+
 void test_crc_exact_little_endian() {
     const uint16_t ascii_words[] = {0x3231, 0x3433, 0x3635, 0x3837};
     check(hd_texture_crc32_words_le(ascii_words, 4) == 0x9AE0DAAFu,
@@ -516,6 +534,7 @@ void test_bounded_async_decode(Fixture& fixture) {
 
 int main() {
     test_crc_exact_little_endian();
+    test_indexed_palette_fallback();
     Fixture fixture;
     test_scan_mapping(fixture);
     test_palette_match_and_invalidation(fixture);

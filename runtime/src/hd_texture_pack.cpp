@@ -1082,7 +1082,7 @@ int hd_texture_pack_debug_uploads_at(const HdTexturePack* pack, unsigned x, unsi
     if (!out || cap == 0) return 0;
     size_t pos = 0;
     int n = 0;
-    out[0] = ' ';
+    out[0] = '\0';
     if (!pack) return 0;
     for (auto it = pack->uploads.rbegin(); it != pack->uploads.rend(); ++it) {
         for (const Fragment& f : it->fragments) {
