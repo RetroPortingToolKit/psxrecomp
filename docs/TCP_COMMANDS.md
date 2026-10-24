@@ -507,9 +507,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**388 commands registered** — 375 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**395 commands registered** — 382 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-85 of 388 have prose above; **303 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+86 of 395 have prose above; **309 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -645,6 +645,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `frame_trace` | ✓ |  |  |
 | `frame_wall_ring` | ✓ |  |  |
 | `freeze_check` | ✓ |  |  |
+| `func_override` | ✓ |  |  |
 | `game_options` | ✓ |  |  |
 | `gcp_ring` | ✓ |  | ✓ |
 | `geom_correction` | ✓ |  | ✓ |
@@ -673,6 +674,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `gte_state` | ✓ |  |  |
 | `guest_tty_dump` | ✓ |  |  |
 | `hd_textures` | ✓ |  | ✓ |
+| `hd_uploads` | ✓ |  |  |
 | `history` | ✓ | ✓ | ✓ |
 | `hle_dump` | ✓ |  | ✓ |
 | `host_button` | ✓ |  |  |
@@ -685,7 +687,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `host_span_ring` | ✓ |  |  |
 | `idle_skip` | ✓ |  |  |
 | `imask_trace` | ✓ |  |  |
-| `input_route_append` | ✓ |  | ✓ |
+| `input_route_append` | ✓ |  |  |
 | `input_route_clear` | ✓ |  |  |
 | `input_route_start` | ✓ |  | ✓ |
 | `input_route_status` | ✓ |  |  |
@@ -730,6 +732,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `overlay_diff_on` | ✓ |  |  |
 | `overlay_dump` | ✓ |  |  |
 | `overlay_fp_dump` | ✓ |  |  |
+| `overlay_image` | ✓ |  | ✓ |
 | `overlay_irq_ratelimit` | ✓ |  |  |
 | `overlay_irq_suppress_off` | ✓ |  |  |
 | `overlay_irq_suppress_on` | ✓ |  |  |
@@ -743,6 +746,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `overlay_shadow_detail` | ✓ |  |  |
 | `overlay_shadow_dump` | ✓ |  |  |
 | `overlay_static_entries` | ✓ |  | ✓ |
+| `overlay_status` | ✓ |  | ✓ |
 | `pace_state` | ✓ |  |  |
 | `pad_status` | ✓ | ✓ |  |
 | `parity_ctl` | ✓ | ✓ |  |
@@ -761,6 +765,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `phase_profile` | ✓ |  | ✓ |
 | `ping` | ✓ | ✓ | ✓ |
 | `post_aa` | ✓ |  | ✓ |
+| `post_shader` | ✓ |  |  |
 | `present_image_ring_get` | ✓ |  |  |
 | `present_image_ring_stats` | ✓ |  |  |
 | `present_ring` | ✓ |  |  |
@@ -786,8 +791,6 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `restore_trace_clear` | ✓ |  |  |
 | `restore_trace_window` | ✓ |  |  |
 | `rewind_status` | ✓ |  | ✓ |
-| `overlay_status` | ✓ |  | ✓ |
-| `overlay_image` | ✓ |  | ✓ |
 | `rtrace_arm` | ✓ | ✓ |  |
 | `rtrace_clear` | ✓ |  |  |
 | `rtrace_disarm` |  | ✓ |  |
@@ -855,6 +858,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `unwatch` | ✓ |  | ✓ |
 | `vblank_rate` | ✓ |  |  |
 | `video_info` | ✓ |  | ✓ |
+| `video_record` | ✓ |  |  |
 | `video_set` | ✓ |  |  |
 | `vk_perf` | ✓ |  |  |
 | `vram_peek` | ✓ | ✓ | ✓ |
@@ -864,6 +868,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `wide_full` | ✓ |  |  |
 | `wide_shot` | ✓ |  |  |
 | `window_size` | ✓ |  | ✓ |
+| `write_bulk` | ✓ |  |  |
 | `write_ram` | ✓ |  | ✓ |
 | `ws_aspect` | ✓ |  |  |
 | `ws_aspect_cone_site` | ✓ |  |  |
