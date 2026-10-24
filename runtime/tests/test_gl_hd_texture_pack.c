@@ -359,8 +359,9 @@ static void composition_scene(const char* root) {
     check(sample(20,8)[0]>200 && sample(20,8)[2]<20,"composed all-zero ST cutout retains destination");
     check(sample(24,8)[0]>200 && sample(24,8)[1]<20,"native transparent hole remains cutout");
     check(sample(32,8)[0]<20 && sample(32,8)[2]>200,"uncovered native opaque texel retains native color");
+    /* Textured draws preserve the source STP bit in canonical guest VRAM. */
     uint16_t output[8];gr_vram_transfer_out(2,2,8,1,output);
-    check(output[0]==0x03e0 && output[2]==0x03ff && output[6]==0x7c00,
+    check(output[0]==0x03e0 && output[2]==0x83ff && output[6]==0x7c00,
           "composition does not change guest native draw or STP behavior");
     GpuHdTextureImage first={0},again={0};
     check(gpu_hd_textures_acquire_draw(tp,0,0,bounds,0,1,&first),"composed cache acquire");
@@ -602,7 +603,7 @@ int main(int argc,char** argv) {
     gr_fill_rect(0,0,16,16,0x03e0);
     gr_draw_textured_rect(4,4,2,4,5,0,0,0,texture_page); capture();
     check(sample(16,16)[2]>200 && sample(16,16)[0]<20,"Beetle partial draw keeps upload-relative UV origin");
-    check(vram[4*1024+4]==0x03e0 && vram[517]==0x83e0,
+    check(vram[4*1024+4]==0x83e0 && vram[517]==0x83e0,
           "Beetle image preserves native draw RGB and source STP");
     gr_draw_textured_rect(8,4,4,4,4,0,0,0,texture_page); capture();
     check(sample(44,16)[1]>200,"Beetle native transparent zero still cuts out replacement");
