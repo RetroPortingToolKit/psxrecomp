@@ -10,8 +10,9 @@ RENDERER = (ROOT / "runtime" / "src" / "gpu_gl_renderer.c").read_text(
 )
 
 # The only second context is the present thread's ([video] present_thread,
-# docs/RENDER_THREAD.md), created in pt_begin under the render thread, which
-# frame interpolation makes ineligible.
+# docs/RENDER_THREAD.md), created in pt_begin under the existing render thread.
+# Temporal composition stays on the renderer's original context, which that
+# thread may own; interpolation itself creates no thread or context.
 assert RENDERER.count("SDL_GL_CreateContext(") == 2, (
     "temporal blending must not create a second GL context"
 )
@@ -24,8 +25,14 @@ assert "SDL_CreateThread(" not in RENDERER, (
 assert "SDL_LockMutex(" not in RENDERER, (
     "the GL renderer must not hold an application mutex across driver work"
 )
-assert RENDERER.count("SDL_GL_SwapWindow(") == 1, (
-    "all OpenGL presentation must converge on one owned swap call"
+_swap = RENDERER[RENDERER.index("static void gl_window_swap(void) {"):]
+_swap = _swap[:_swap.index("\n}\n")]
+# SDL3 returns status and SDL2 returns void; both compile-time branches belong
+# to the same owner. Counting source occurrences alone mistakes these for two
+# independently owned swaps.
+assert 1 <= _swap.count("SDL_GL_SwapWindow(") <= 2
+assert RENDERER.count("SDL_GL_SwapWindow(") == _swap.count("SDL_GL_SwapWindow("), (
+    "all OpenGL presentation must converge on gl_window_swap"
 )
 assert "gl_renderer_interpolation_owns_cadence" in RENDERER
 assert "no motion vectors" in RENDERER

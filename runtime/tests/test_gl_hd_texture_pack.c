@@ -11,6 +11,8 @@ static void fg_fixture_present(int generated);
 #include "test_gl_scale_invariance.c"
 #undef main
 #include "gpu_render.c"
+/* This renderer fixture has no emulation-side render-pass transaction. */
+int g_psx_render_pass_active = 0;
 #include "duckstation_texture_pack.h"
 #include "hd_texture_pack.h"
 #include "png_write.h"

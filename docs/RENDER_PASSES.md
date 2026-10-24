@@ -196,6 +196,18 @@ example.
 
 ## Testing without a window
 
+`render_pass_stats.timing` contains cumulative milliseconds and a transaction
+count. Subtract two receipts and divide each time delta by the count delta for
+window means; `avg_*` fields are exponential estimates, not window averages.
+`gl_begin_ms` includes GPU backup and optional VRAM verification readback;
+`checkpoint_ms` is the CPU/device checkpoint; `verify_before_ms` is the optional
+pre-draw state hash. `gl_end_ms` includes GPU flush, image capture, restore and
+optional VRAM readback; `restore_ms` restores the CPU/device checkpoint;
+`verify_after_ms` includes the post-restore state hash. All buckets include host
+waits and scheduling, so they are wall time, not GPU execution time. Measure
+production cost with `PSX_RENDER_PASS_VERIFY=0`, and test restoration separately
+with verification enabled. Counts include discarded and aborted transactions.
+
 `--hidden-window` runs the full windowed runtime (presenter, interpolation,
 render passes) in a window that is never shown and never opens a modal or a
 file picker. `--headless` skips the presenter, so plans there are always

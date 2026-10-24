@@ -7,6 +7,7 @@
 #include "gpu.h"
 #include "host_keymap.h"
 #include "host_osd.h"
+#include "host_span_ring.h"
 #include "interrupts.h"
 #include "mdec.h"
 #include "psx_cycles.h"
@@ -583,8 +584,11 @@ void psx_rewind_poll(CPUState *cpu, uint32_t resume_pc)
         (void)do_load(cpu, tick);
         return;
     }
-    if (s_capture_due && !s_open && !psx_netplay_active() && !s_title_blocked)
-        (void)do_capture(cpu, resume_pc);
+    if (s_capture_due && !s_open && !psx_netplay_active() && !s_title_blocked) {
+        const uint64_t start = host_span_begin();
+        const int ok = do_capture(cpu, resume_pc);
+        host_span_end(HSPAN_REWIND_CAPTURE, start, (uint32_t)ok);
+    }
 }
 
 int psx_rewind_toggle(void)

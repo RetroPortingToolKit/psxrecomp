@@ -69,6 +69,13 @@ typedef struct RenderPassStats {
     double   avg_guest_ms;    /* smoothed: the plugin's guest draw code */
     double   avg_end_ms;      /* smoothed: GPU flush, capture, VRAM restore */
     double   avg_restore_ms;  /* smoothed: machine state restore */
+    /* Cumulative wall-time receipts, including discarded/aborted transactions.
+     * Difference two samples for actual window means (the avg_* fields above
+     * are exponential estimates). Verification is kept separate from copying. */
+    uint64_t timed_passes;
+    double total_gl_begin_ms, total_checkpoint_ms, total_verify_before_ms;
+    double total_guest_ms, total_gl_end_ms, total_restore_ms, total_verify_after_ms;
+    double total_pass_ms, max_pass_ms;
     uint64_t guest_cycles_last; /* guest cycles the last pass executed */
     int      disabled;        /* sticky: passes disabled after repeated faults */
     int      watchdog_flag;   /* internal: the current pass overran */

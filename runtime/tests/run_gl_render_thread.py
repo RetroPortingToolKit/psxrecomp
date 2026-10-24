@@ -34,7 +34,7 @@ WIN_LIBS = ["opengl32", "kernel32", "user32", "gdi32", "winmm", "imm32", "ole32"
             "oleaut32", "version", "uuid", "advapi32", "setupapi", "shell32", "dinput8"]
 SKIP_EXIT = 77
 WINDOWS = os.name == "nt" or platform.system().startswith(("MINGW", "MSYS", "CYGWIN"))
-KEYS = ("rb", "digest", "hires", "wide")
+KEYS = ("rb", "digest", "hires", "wide", "stencil")
 
 
 def parse(stdout):
@@ -56,6 +56,10 @@ def main():
     ap.add_argument("--fixture", type=pathlib.Path)
     ap.add_argument("--scales", default="1,4")
     ap.add_argument("--frames", default="80")
+    ap.add_argument("--interpolation", action="store_true",
+                    help="compare temporal hold presentation on the owning context")
+    ap.add_argument("--wide-present", action="store_true")
+    ap.add_argument("--quality", action="store_true", help="exercise bloom, PGXP depth and anisotropic LOD")
     ap.add_argument("--single", action="store_true",
                     help="run the fixture once with no arguments; its exit code is the result")
     args = ap.parse_args()
@@ -69,12 +73,14 @@ def main():
     print("Evidence directory:", dest)
     receipt = []
 
-    def run(command):
+    def run(command, overrides=None):
         command = [str(c) for c in command]
+        env = os.environ.copy()
+        if overrides: env.update(overrides)
         r = subprocess.run(command, cwd=dest, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
+                           encoding="utf-8", errors="replace", env=env)
         receipt.append({"cmd": command, "exit": r.returncode,
-                        "stdout": r.stdout, "stderr": r.stderr[-4000:]})
+                        "env": overrides or {}, "stdout": r.stdout, "stderr": r.stderr[-4000:]})
         (dest / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         return r
 
@@ -133,7 +139,10 @@ def main():
     for s in [int(v) for v in args.scales.split(",") if v]:
         runs = {}
         for threaded in (0, 1):
-            r = run([probe, s, threaded, args.frames])
+            mode = ["interp-wide"] if args.wide_present else ["interp"] if args.interpolation else []
+            if args.quality: mode = [*(mode or ["plain"]), "quality"]
+            r = run([probe, s, threaded, args.frames, *mode],
+                    {"PSX_GL_WIDE_MARGIN_SCISSOR": "1", "PSX_GL_COVERAGE_FAST": "1"} if args.wide_present else None)
             if first and r.returncode == SKIP_EXIT:
                 # No window/GL context on this host: skip. Only the first
                 # run may skip; after it, 77 is a failure like any other.
@@ -147,6 +156,26 @@ def main():
             if r.returncode or p["failures"] != 0 or any(p[k] is None for k in KEYS):
                 ok = False
             runs[threaded] = p
+            if args.wide_present:
+                flags = (
+                    "PSX_GL_WIDE_MARGIN_SCISSOR", "PSX_GL_COVERAGE_FAST",
+                    "PSX_GL_STATE_QUERY_FAST", "PSX_GL_QUEUE_UPLOAD_FAST",
+                    "PSX_GL_BLOOM_FUSE_EXTEND", "PSX_GL_TEXEL_CACHE",
+                    "PSX_GL_HIW_COPY_FAST", "PSX_GL_IDENTITY_COPY_FAST",
+                    "PSX_GL_DRAWABLE_EVENTS", "PSX_RENDER_QUEUE_BATCH",
+                    "PSX_GL_HIW_ASYNC_PACE")
+                controls = [{flag: "0" for flag in flags}]
+                controls += [{flag: "0"} for flag in flags]
+                controls += [{"PSX_GL_TEXEL_CACHE_LAYERS": "4"}]
+                for control in controls:
+                    overrides = {flag: "1" for flag in flags}
+                    overrides.update(control)
+                    reference = run([probe, s, threaded, args.frames, *mode], overrides)
+                    baseline = parse(reference.stdout)
+                    if reference.returncode or baseline["failures"] != 0 or any(baseline[k] != p[k] for k in KEYS):
+                        print(f"FAIL scale {s}: controls {control} changed rendered output", baseline, p)
+                        ok = False
+
         for k in KEYS:
             if runs[0][k] != runs[1][k]:
                 print(f"FAIL scale {s}: {k} differs with the render thread on "
@@ -154,7 +183,7 @@ def main():
                 ok = False
     # Dynamic resolution: the same level steps between frames, recorded with
     # the thread on (scales above 1 only; 1x has no levels below it).
-    for s in [int(v) for v in args.scales.split(",") if v and int(v) > 1]:
+    for s in [int(v) for v in args.scales.split(",") if v and int(v) > 1 and not args.interpolation and not args.wide_present]:
         runs = {}
         for threaded in (0, 1):
             r = run([probe, s, threaded, args.frames, "dynres"])

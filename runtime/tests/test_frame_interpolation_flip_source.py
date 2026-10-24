@@ -54,7 +54,9 @@ assert "if (source != s_interp_source) interp_reset_history_unlocked();" in sett
 assert "s_interp_source = source;" in setter
 
 # ---- interp_capture's FLIP branch (gpu_gl_renderer.c) -----------------------
-capture = function_body(GL, "static int interp_capture(GLuint fbo,")
+wrapper = function_body(GL, "static int interp_capture(GLuint fbo,")
+assert "interp_capture_timed_impl(" in wrapper, "timed wrapper must invoke the capture implementation"
+capture = function_body(GL, "static int interp_capture_timed_impl(GLuint fbo,")
 flip_at = capture.index("if (s_interp_source == 1) {")
 flip = capture[flip_at:capture.index("} else {", flip_at)]
 flat = squash(flip)

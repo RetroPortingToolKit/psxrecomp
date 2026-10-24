@@ -102,8 +102,11 @@ static struct {
     uint64_t tick_at;          /* consumer: next tick deadline (0 = none) */
 
     /* shared positions / counters */
-    _Atomic uint64_t wpos, rpos;
-    _Atomic uint64_t frames_produced, frames_consumed;
+    /* Single-writer publications must not invalidate each other's cache line. */
+    _Alignas(128) _Atomic uint64_t wpos;
+    _Atomic uint64_t frames_produced;
+    _Alignas(128) _Atomic uint64_t rpos;
+    _Atomic uint64_t frames_consumed;
     _Atomic int      render_sleeping, emu_sleeping;
     _Atomic int      running;
 
@@ -114,7 +117,7 @@ static struct {
     _Atomic int released;      /* read unlocked by emu_wait's first check */
 
     /* producer-only */
-    uint64_t pend_start, pend_size, pend_payload_off;
+    _Alignas(128) uint64_t pend_start, pend_size, pend_payload_off;
     uint16_t pend_op, pend_flags;
     uint32_t pend_payload;
     int      pending;
@@ -125,8 +128,8 @@ static struct {
     /* stats (producer unless noted) */
     uint64_t records, bytes, acquires, releases, oversize;
     uint64_t bp_waits, full_waits, bp_ns, full_ns, acq_ns, high_water;
-    _Atomic uint64_t busy_ns, idle_ns;   /* consumer */
-    _Atomic uint64_t bp_events;          /* producer writes, any thread reads */
+    _Alignas(128) _Atomic uint64_t busy_ns, idle_ns;   /* consumer */
+    _Alignas(128) _Atomic uint64_t bp_events;          /* producer writes, any thread reads */
     RtAcquireEvent acq_ring[ACQ_RING];
     uint64_t acq_n;
 
@@ -207,6 +210,8 @@ static void *render_main(void *arg)
     R.ctx(R.user, 1);
     uint64_t r = atomic_load(&R.rpos);
     int have_ctx = 1;
+    const char *batch_env = getenv("PSX_RENDER_QUEUE_BATCH");
+    const unsigned batch_limit = batch_env && batch_env[0] == '0' ? 1 : WAKE_RECORDS;
     for (;;) {
         run_tick();
         uint64_t w = atomic_load_explicit(&R.wpos, memory_order_acquire);
@@ -242,16 +247,23 @@ static void *render_main(void *arg)
             continue;
         }
         uint64_t t0 = now_ns();
-        const RtCmd *c = (const RtCmd *)(R.ring + (r & R.mask));
-        if (c->op == OP_PAD) {
-            if (c->flags & F_FRAME)
-                atomic_fetch_add(&R.frames_consumed, 1);
-        } else {
-            R.exec(R.user, c, (const uint8_t *)c + sizeof(RtCmd));
-        }
-        r += c->size;
-        atomic_store(&R.rpos, r);
-        atomic_fetch_add(&R.busy_ns, now_ns() - t0);
+        unsigned count = 0;
+        /* Time and publish a bounded ready prefix, not every state command.
+         * Stop at frame markers so producer backpressure is released at the
+         * same boundary. The acquire above covers every payload in this prefix. */
+        do {
+            const RtCmd *c = (const RtCmd *)(R.ring + (r & R.mask));
+            const int frame = c->op == OP_PAD && (c->flags & F_FRAME);
+            if (c->op == OP_PAD) {
+                if (frame) atomic_fetch_add_explicit(&R.frames_consumed, 1, memory_order_relaxed);
+            } else {
+                R.exec(R.user, c, (const uint8_t *)c + sizeof(RtCmd));
+            }
+            r += c->size;
+            if (frame) break;
+        } while (r != w && ++count < batch_limit);
+        atomic_store_explicit(&R.rpos, r, memory_order_release);
+        atomic_fetch_add_explicit(&R.busy_ns, now_ns() - t0, memory_order_relaxed);
         wake_emu();
     }
     if (have_ctx) R.ctx(R.user, 0);
@@ -333,7 +345,7 @@ void rt_cmd_commit(void) {
     if (!R.pending) return;
     R.pending = 0;
     uint64_t end = R.pend_start + R.pend_size;
-    atomic_store(&R.wpos, end);
+    atomic_store_explicit(&R.wpos, end, memory_order_release);
     R.records++;
     R.bytes += R.pend_size;
     uint64_t depth = end - atomic_load(&R.rpos);
@@ -350,7 +362,7 @@ static void commit_marker(uint16_t flags) {
     if (!pred_space(w + size)) emu_wait(pred_space, w + size);
     RtCmd *c = (RtCmd *)(R.ring + off);   /* 16 bytes always fit before the end */
     c->size = (uint32_t)size; c->op = OP_PAD; c->flags = flags; c->payload = 0; c->seq = R.seq++;
-    atomic_store(&R.wpos, w + size);
+    atomic_store_explicit(&R.wpos, w + size, memory_order_release);
 }
 
 void rt_frame_end(void) {

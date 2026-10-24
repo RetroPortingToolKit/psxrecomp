@@ -213,6 +213,58 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-21 (queued vertex uploads):** Pack replay vertices at offsets
+  aligned to each layout and upload once per used VBO per flush, reusing the
+  data across canonical tiles and wide mirrors. Native/readback/hires/wide
+  and stencil hashes match the per-batch upload control, 1x/4x, both allocation
+  modes and renderer thread off/on. R4's 30-second Ultra probe improves to
+  55.684 guest Hz / p99 busy 63.3%, still below the owner's acceptance bar.
+  Broader bloom fusion passes the same matrix for mask-set and translucent
+  sources; production timing is pending.
+
+- **2026-10-21 (render coverage and driver waits):** Enabled temporal
+  presentation on the existing renderer context/thread. Queued wide mirrors
+  retain bloom classification; eligible opaque marking is fused with colour,
+  colourless passes omit RGB-only filtering, and depth restoration derives
+  the preceding draw's enable state instead of querying the threaded driver.
+  Final-flush centre shading is elided only before the authoritative splice.
+  Native/readback/hires/wide and both stencil-bit hashes match all independent
+  controls at 1x/4x with threads off/on, native and forced-window hires.
+  Default-Ultra production acceptance remains open; R4's slowdown report
+  records failed route trials and profiling limitations. No guest time changes.
+
+- **2026-10-21 (Windows sleep concurrency):** Concurrent guest/render pacers
+  exposed a shared auto-reset waitable timer: one caller cancels/consumes the
+  other's wake. Replaced it with FLS-owned timers and synchronized QPC setup.
+  Eight-sleeper regression fails old source at 10 s and passes the fix in
+  0.49 s, including timer-handle cleanup. No guest time model changed.
+
+- **2026-10-21 (production R4 follow-up):** Removed debug-only PGXP receipt
+  writes from no-debug-tools builds; numeric PGXP and word-shadow suites pass.
+  Added disk-state-anchored applied-input replay and bounded frame/work/span
+  exports for production measurements. Five focused framework CTests and 26
+  R4 checks pass on Windows. The owner's stricter default-Ultra acceptance bar
+  remains open; evidence is in R4 `analysis/render-60fps/SLOWDOWNS.md`. No guest
+  timing or projection arithmetic changed.
+
+- **2026-10-21 (Windows continuation, `feat/render-60fps`):** Added cumulative
+  render-transaction wall-time buckets, separating checkpoint copying from
+  verification hashing. After the owner's moving-course correction, R4
+  same-state headless/turbo off/on: 2,701 guest fingerprints match (no temporal
+  passes in headless). Recorded driving route, 30-second 60 Hz windows: 51
+  normal passes average 11.060 ms (max 16.202); 17 verification passes average
+  18.227 ms, zero restoration mismatches. Earlier straight-acceleration timing
+  is excluded. Pass admission remains sparse; sustained 60 fps is unproven.
+  Windows build, nine R4 CTests, sandbox and
+  watchdog/abort tests pass. No faithful timing behavior changed.
+
+- **2026-10-21 (`feat/render-60fps`):** Admit opt-in render passes with HD
+  CPU-authoritative textures and give opted-in netplay temporal passes the
+  restored own-view scope. Sandbox tests and hidden GL pass fixture pass.
+  R4 delay-netplay: 120 common core digests identical with frame-rate on only
+  on one peer; 14 temporal passes, no restore mismatches or dispatch misses.
+  R4 performance/visual acceptance remains open; see its
+  `analysis/render-60fps/REPORT.md`.
 - **2026-10-23 — VR upstream split.** Precise projective replay reconstructed on
   current master; six focused runtime regressions and the GPU-history guard pass.
   Prior fork/headset acceptance remains historical. Other VR features are
@@ -1992,3 +2044,30 @@ Guest-frame lookup merged multiple extra presentations and could not verify
 HUD stability. Added duplicate-frame/freeze/eviction regression coverage and
 retained legacy frame lookup. Six focused framework checks and all 21 title
 checks pass on Windows and Linux, and both runtime builds link successfully.
+
+### 2026-10-21: Production indexed texture decode reuse
+
+Cache native 1555 indexed-page/CLUT decode results with raw-VRAM tile
+generations and deferred-draw layer pinning. No filtering or guest behavior
+changes. Hardware fixtures compare five hashes with cache off and forced
+eviction, normal/HiW allocation, 1x/4x, render thread off/on; all pass.
+R4 recorded-route production probe improves 53.371 to 57.472 guest Hz;
+zero-gap acceptance remains open. Matched GPU completion probes also reject
+a separate depth shader (no improvement); that experiment was removed.
+See title analysis/render-60fps/SLOWDOWNS.md for receipts and limitations.
+
+
+### 2026-10-21: Bounded asynchronous presentation pacing
+
+Publish drawable sizes from SDL3 pixel-size events instead of querying window
+properties per frame. Batch SPSC queue consumption/accounting on separated
+producer/consumer cache lines. For HiW hold output at guest rate, move deadline
+waits to the existing presenter; its bounded queue paces the guest without a
+second independent timer. Queued scheduling preserves early producer anchors.
+Guest device timing and quality settings are unchanged. Hardware image/mask,
+resize and scheduling controls pass. R4 Release default Ultra recorded drives
+cover 60 seconds at 60.000 guest Hz, p99 emulation busy 52.3% idle / 56.4% with
+23.61% total host CPU background load; zero presented gaps >25 ms, maxima
+17.286/17.567 ms. Internal callback/completion gaps are separately reported and
+are not claimed to pass that limit. See title SLOWDOWNS.md for attribution,
+receipts, and clock definitions. No release or main-branch landing.
