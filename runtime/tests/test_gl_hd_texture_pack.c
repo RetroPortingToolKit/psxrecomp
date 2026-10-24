@@ -455,8 +455,10 @@ static void cache_pressure_scene(const char* root) {
     }
     check(ready,"full CPU budget pressure image decoded");gpu_hd_textures_get_diag(&after);
     /* All fixture images fit in the bounded preload and remain pinned.
-     * The configured 1 MiB on-demand budget must not evict that preload. */
-    check(before.decoded_bytes>1024*1024 &&
+     * The configured 1 MiB on-demand budget must not evict that preload.
+     * decoded_bytes accounts only the on-demand cache; pinned bytes are
+     * separately bounded and are not charged against this budget. */
+    check(before.decoded_images>=7 && before.decoded_bytes==0 &&
           after.decoded_bytes==before.decoded_bytes &&
           after.decoded_images==before.decoded_images &&
           after.decode_evictions==before.decode_evictions,
