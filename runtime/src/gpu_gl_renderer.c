@@ -9440,7 +9440,10 @@ int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
      * renderers read CPU VRAM while rebuilding authored tile/sprite banks;
      * synchronize the canonical image before freezing either view. Netplay's
      * dual raster already keeps this mirror current. */
-    if (!s_pass_active && gl_renderer_local_pair_unavailable()==PSX_MOD_RENDER_PASS_READY)
+    /* Later cells reuse the exact restored checkpoint, including its CPU
+     * VRAM mirror. Re-reading the same GPU image for every cell serializes
+     * four readbacks per frame without providing fresher texture data. */
+    if (!reuse && !s_pass_active && gl_renderer_local_pair_unavailable()==PSX_MOD_RENDER_PASS_READY)
         ensure_cpu();
     return transaction_begin(x, y, w, h, 0, 0, reuse, 3);
 }
