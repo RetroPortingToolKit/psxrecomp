@@ -11,6 +11,8 @@ installation, version selection, and removal are a secondary management view.
 Feature identity is always `(package_id, feature_id)`. Player selections are
 independent. Explicit `[[requirement]]` declarations can additionally activate
 required features for a session without changing saved player selections.
+Format 11 also supports declared package suppression for mutually exclusive
+modes, while stored feature options remain independent.
 
 The player selects a verified stock BIN/CUE. Resolution produces guarded native
 operations and sparse disc overlays without rewriting or replacing that stock
@@ -1179,3 +1181,41 @@ existing post-commit path, not the preparation worker.
 The `prepare_resources` method is separate from read-only `resolve`, so editing
 launcher settings does not trigger conversions. Runtime activation still sees
 only fully verified immutable resources.
+
+## Exclusive modes and unique rosters (format 11)
+
+An active package may declare top-level `disables = ["other.package"]`.
+Enabling its feature through the manager clears the named packages' enabled
+features; trying to reenable a suppressed package returns a reason identifying
+the owner. Disabling the owner does not restore old enabled flags. Package
+option values are retained. Unlike `conflicts`, this implements an explicit
+mode switch rather than requiring the player to untick each incompatible mod.
+
+Resolution also computes suppression from loaded selections, so hand-edited
+state cannot run both native implementations. This effective copy does not
+rewrite stored preferences on load. Self-suppression and active suppression
+cycles are rejected. Dependencies cannot reenable a suppressed provider. An
+implicitly activated provider that would disable an already active package
+fails resolution; select that provider directly first to apply its declared
+mode switch. Suppression from an implicitly activated provider also blocks
+later dependency activation of its targets.
+
+Feature-local `distinct_values` constraints require different choice tokens:
+
+```toml
+format_version = 11
+disables = ["example.two-player", "example.standalone-armor"]
+
+[[constraint]]
+feature = "coop"
+kind = "distinct_values"
+options = ["p1", "p2", "p3", "p4"]
+```
+
+All referenced options must be distinct choice options in the same feature,
+with unique defaults. Invalid edits while enabled are rejected transactionally.
+Configure a whole tuple while inactive, then enable it once; the netplay host
+settings importer follows this rule so valid permutations do not fail at an
+invalid intermediate choice. A special `none` value has no implicit semantics
+here: a title can offer it only on its optional last seat, then interpret it
+through its trusted profile.

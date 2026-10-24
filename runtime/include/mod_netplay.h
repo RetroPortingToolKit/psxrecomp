@@ -33,10 +33,23 @@ typedef struct PSXModNetplayProfile {
     const char *settings_feature_id;
     const char *renderer_option_id;
     const char *renderer_option_value;
+    /* Optional alternative to the title's default profile. Select from Mods
+     * before joining a room; profile selection freezes at session commit. */
+    int select_when_feature_enabled;
+    unsigned min_players;
+    unsigned max_players; /* zero inherits the title's configured count */
+    const char *optional_last_seat_option; /* value "none" removes the last seat */
 } PSXModNetplayProfile;
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile);
 const PSXModNetplayProfile *psx_mod_netplay_profile(void);
+unsigned psx_mod_netplay_profile_count(void);
+const PSXModNetplayProfile *psx_mod_netplay_profile_at(unsigned index);
+typedef const PSXModNetplayProfile *(*PSXModNetplayProfileSelector)(void);
+void psx_mod_netplay_set_profile_selector(PSXModNetplayProfileSelector selector);
+typedef unsigned (*PSXModNetplayPlayerCountSelector)(void);
+void psx_mod_netplay_set_player_count_selector(PSXModNetplayPlayerCountSelector selector);
+unsigned psx_mod_netplay_player_count(void);
 const char *psx_mod_netplay_version(const char *vanilla_version);
 int psx_mod_netplay_rollback_supported(void);
 int psx_mod_netplay_savestates_supported(void);

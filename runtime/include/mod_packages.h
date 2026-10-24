@@ -88,6 +88,7 @@ struct ModFeature {
 enum class ModConstraintKind {
     OrderedInteger,
     RequiresFeature,
+    DistinctValues,
 };
 
 enum class ModConstraintDirection {
@@ -309,6 +310,8 @@ struct ModPackage {
     std::vector<ModTarget> targets;
     std::vector<ModRequirement> dependencies;
     std::vector<std::string> conflicts;
+    /* Active package suppresses these packages for the session. */
+    std::vector<std::string> disables;
     std::vector<ModFeature> features;
     std::vector<ModOption> options;
     std::vector<ModConstraint> constraints;

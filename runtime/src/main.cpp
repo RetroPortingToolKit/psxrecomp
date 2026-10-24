@@ -12606,7 +12606,7 @@ namespace {
         out->player_count = ae_np_lan_occupied(state);
         out->max_slots = state.max_slots >= 2 ? state.max_slots
             : (g_lnch_host_max_slots >= 2 ? g_lnch_host_max_slots
-               : (g_lnch_game_players >= 2 ? g_lnch_game_players : 2));
+               : (PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2)));
         if (out->max_slots > PSX_MAX_PLAYERS) out->max_slots = PSX_MAX_PLAYERS;
         if (out->max_slots > kAeLanMaxSlots) out->max_slots = kAeLanMaxSlots;
         out->has_password = state.password.empty() ? 0 : 1;
@@ -14531,13 +14531,13 @@ namespace {
     int ae_np_connect(void*) {
         psx_lobby_set_game_identity(g_lnch_netplay_game_name.c_str(), psx_lobby_game_version());
         psx_lobby_set_disc_fp(g_session_disc_fp.c_str());
-        psx_lobby_set_max_slots(g_lnch_game_players);
+        psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players));
         ae_np_refresh_mod_offer();
         const int rc = psx_lobby_connect(ae_np_default_url(nullptr));
         /* connect resets g_lc; re-apply so create/join never advertise "". */
         psx_lobby_set_game_identity(g_lnch_netplay_game_name.c_str(), psx_lobby_game_version());
         psx_lobby_set_disc_fp(g_session_disc_fp.c_str());
-        psx_lobby_set_max_slots(g_lnch_game_players);
+        psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players));
         ae_np_refresh_mod_offer();
         return rc;
     }
@@ -15536,7 +15536,7 @@ namespace {
                      const char* password,
                      const RecompLauncherCSettings* settings,
                      int lan_only, int max_slots) {
-        int game_max = g_lnch_game_players >= 2 ? g_lnch_game_players : 2;
+        int game_max = PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2);
         if (game_max > PSX_MAX_PLAYERS) game_max = PSX_MAX_PLAYERS;
         if (game_max > 8) game_max = 8;
         if (max_slots < 2) max_slots = 2;
@@ -16384,7 +16384,7 @@ namespace {
                 g_lnch_pending_direct_launch.max_slots =
                     state.max_slots >= 2 ? state.max_slots
                     : (g_lnch_host_max_slots >= 2 ? g_lnch_host_max_slots
-                       : (g_lnch_game_players >= 2 ? g_lnch_game_players : 2));
+                       : (PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2)));
                 if (g_lnch_pending_direct_launch.max_slots > PSX_MAX_PLAYERS)
                     g_lnch_pending_direct_launch.max_slots = PSX_MAX_PLAYERS;
                 if (g_lnch_pending_direct_launch.max_slots > kAeLanMaxSlots)
@@ -16522,7 +16522,7 @@ namespace {
         if (out->input_prediction < 2) out->input_prediction = 2;
         if (out->input_prediction > 16) out->input_prediction = 16;
         out->max_slots = ji->max_slots >= 2 ? ji->max_slots
-                         : (g_lnch_game_players >= 2 ? g_lnch_game_players : 2);
+                         : (PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2));
         if (out->max_slots > PSX_MAX_PLAYERS) out->max_slots = PSX_MAX_PLAYERS;
         out->max_slots += host_spectates; /* the host's silent slot 0 */
         /* Session slots from the seat table the start delivered: host first,
@@ -19832,7 +19832,7 @@ int main(int argc, char** argv) {
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
             g_lnch_netplay_game_name = game_name.empty() ? "PSX" : game_name;
             apply_offline_pad_count(game_players, multitap_enabled);
-            psx_lobby_set_max_slots(game_players);
+            psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(game_players));
 #endif
 
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
@@ -21671,7 +21671,7 @@ session_reboot:
                 net_cfg.input_player = 0;
         }
         if (net_cfg.slot_count < 2)
-            net_cfg.slot_count = game_players >= 2 ? game_players : 2;
+            net_cfg.slot_count = PSXRecompV4::mod_runtime_netplay_player_limit(game_players >= 2 ? game_players : 2);
         if (net_cfg.slot_count > PSX_MAX_PLAYERS)
             net_cfg.slot_count = PSX_MAX_PLAYERS;
         s_netplay_present_sim_watermark = 0; /* §74: sim restarts per session */
@@ -22230,7 +22230,7 @@ soft_return_lobby:
         g_lnch_has_crc = game_has_disc_crc;
         g_lnch_argv0 = argv[0];
         g_lnch_netplay_game_name = game_name.empty() ? "PSX" : game_name;
-        psx_lobby_set_max_slots(game_players);
+        psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(game_players));
 
         RecompLauncherCSettings ls{};
         ls.output_method = 2;

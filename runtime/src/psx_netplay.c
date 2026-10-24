@@ -4055,6 +4055,17 @@ int psx_netplay_start(const PsxNetplayConfig *cfg)
         fprintf(stderr, "psxrecomp: title netplay profile was not committed\n");
         return -1;
     }
+    const PSXModNetplayProfile *profile=psx_mod_netplay_profile();
+    if(profile && (profile->min_players || profile->max_players)) {
+        unsigned wanted=psx_mod_netplay_player_count();
+        unsigned seated=(unsigned)(cfg->player_count>0?cfg->player_count:
+            cfg->slot_count-(cfg->host_spectates?1:0));
+        if(seated<profile->min_players || (profile->max_players && seated>profile->max_players) ||
+           (profile->min_players && seated!=wanted)) {
+            fprintf(stderr,"psxrecomp: roster requires %u seated players (received %u)\n",wanted,seated);
+            return -1;
+        }
+    }
     if (cfg->rollback && !psx_mod_netplay_rollback_supported()) {
         trusted_cfg = *cfg;
         trusted_cfg.rollback = 0;

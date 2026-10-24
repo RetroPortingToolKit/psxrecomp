@@ -2519,6 +2519,56 @@ int main() {
         check(!manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error),"preparer may not emit an inactive output");
     }
 
+    {
+        const auto folder=root/"exclusive-rosters";
+        auto package=[&](const std::string& id,const std::string& extra,const std::string& tail) {
+            return "format_version = 11\nid = \""+id+"\"\nversion = \"1.0.0\"\nname = \""+id+"\"\n"+extra+
+                "\n[[target]]\ngame_id = \"SLUS-TEST\"\n[[feature]]\nid = \"mode\"\nname = \"Mode\"\ndefault_enabled = false\n"+tail;
+        };
+        const std::string choices=
+            "\n[[option]]\nfeature = \"mode\"\nid = \"a\"\nlabel = \"Seat A\"\ntype = \"choice\"\ndefault = \"x\"\n"
+            "[[option.choice]]\nvalue = \"x\"\nlabel = \"X\"\n[[option.choice]]\nvalue = \"zero\"\nlabel = \"Zero\"\n"
+            "[[option]]\nfeature = \"mode\"\nid = \"b\"\nlabel = \"Seat B\"\ntype = \"choice\"\ndefault = \"zero\"\n"
+            "[[option.choice]]\nvalue = \"x\"\nlabel = \"X\"\n[[option.choice]]\nvalue = \"zero\"\nlabel = \"Zero\"\n"
+            "[[constraint]]\nfeature = \"mode\"\nkind = \"distinct_values\"\noptions = [\"a\",\"b\"]\n";
+        const auto a=folder/"bundled/a/1.0.0/manifest.toml";
+        const auto b=folder/"bundled/b/1.0.0/manifest.toml";
+        write_text(a,package("a","disables = [\"b\"]\n",choices));
+        write_text(b,package("b","",""));
+        ModPackageManager manager(folder);
+        check(manager.scan(&error) && manager.scan_errors().empty(),"exclusive roster catalog parses");
+        check(manager.set_feature_enabled("b","mode",true,&error),error.c_str());
+        check(manager.set_feature_enabled("a","mode",true,&error),error.c_str());
+        check(!manager.feature_enabled("b","mode"),"enabling roster clears conflicting stored feature");
+        check(!manager.set_feature_enabled("b","mode",true,&error),"conflicting package cannot reenable");
+        check(!manager.set_feature_option("a","mode","b","x",&error),"duplicate form rejected while active");
+        check(manager.feature_option_value("a","mode","b")=="zero","failed change preserves valid tuple");
+        auto edited=manager.selections();edited["b"].features["mode"].enabled=true;
+        manager.exchange_selections(edited);
+        auto plan=manager.resolve("SLUS-TEST");
+        check(plan.ok && !plan.selections.at("b").features.at("mode").enabled,
+            "saved conflicting flags are suppressed in effective session");
+        write_text(b,package("b","disables = [\"a\"]\n",""));
+        ModPackageManager cycle(folder);check(cycle.scan(&error),error.c_str());cycle.exchange_selections(edited);
+        check(!cycle.resolve("SLUS-TEST").ok,"suppression cycles reject without order-dependent winner");
+        write_text(b,package("b","",""));
+        write_text(folder/"bundled/c/1.0.0/manifest.toml",package("c","",
+            "[[requirement]]\nfeature = \"mode\"\npackage = \"a\"\nrequires_feature = \"mode\"\n"));
+        ModPackageManager dependency(folder);check(dependency.scan(&error),error.c_str());
+        check(dependency.set_feature_enabled("b","mode",true,&error),error.c_str());
+        check(dependency.set_feature_enabled("c","mode",true,&error),error.c_str());
+        check(!dependency.resolve("SLUS-TEST").ok,"derived provider cannot silently introduce conflicting suppression");
+        ModPackage malformed;
+        auto invalid=package("a","disables = [\"b\"]\n",choices);
+        invalid.replace(invalid.find("= 11"),4,"= 10");write_text(a,invalid);
+        check(!ModPackageManager::read_manifest(a,malformed,&error),"new rules require manifest version11");
+        invalid=package("a","disables = [\"a\"]\n",choices);write_text(a,invalid);
+        check(!ModPackageManager::read_manifest(a,malformed,&error),"self suppression rejected");
+        invalid=package("a","",choices);auto pos=invalid.find("default = \"zero\"");
+        invalid.replace(pos,16,"default = \"x\"");write_text(a,invalid);
+        check(!ModPackageManager::read_manifest(a,malformed,&error),"duplicate default roster rejected");
+    }
+
     fs::remove_all(root, ec);
     if (failures) {
         std::cerr << failures << " mod package test(s) failed\n";
