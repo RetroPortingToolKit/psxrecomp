@@ -99,6 +99,21 @@ struct WidescreenCullKeepSite {
     uint32_t result = 0;   // forced comparison result (0 or 1)
 };
 
+// One packed-SXY all-vertices reject ([[widescreen.cull.sxy]]): an AND fold
+// over the projected SXY of every vertex of a triangle or quad, seeded with a
+// sign mask and consumed by `beq/bne r, zero`. Each AND is widened only in
+// its X-sign bit (ws_cull_edge.h psx_ws_sxy_and_value); the guest's own
+// branch still decides. Every word of the fold and of the consumer is part of
+// the identity: an overlay variant whose words differ anywhere is untouched.
+struct WidescreenSxyCullSite {
+    uint32_t vertices = 0;                 // 3 (kind = "tri") or 4 ("quad")
+    std::vector<uint32_t> fold_addresses;  // one AND per vertex, chain order
+    std::vector<uint32_t> fold_expected;   // the exact AND words
+    std::vector<uint32_t> vertex_regs;     // the SXY operand of each AND
+    uint32_t consumer_address = 0;         // beq/bne r, zero after the fold
+    uint32_t consumer_expected = 0;
+};
+
 // Aspect-scaled 12-bit angular half-extent. These sites load a positive angle
 // constant with `addi[u] rt,zero,imm`; the runtime widens tan(angle) by the
 // live horizontal reveal factor. Full-word guards prevent overlay-address
@@ -1276,6 +1291,8 @@ struct GameConfig {
     // where maximal overdraw is preferable to range guessing. Each entry is
     // guarded by the complete MIPS word; 4:3 executes the vanilla comparison.
     std::vector<WidescreenCullKeepSite> ws_cull_keep_sites;
+    // Packed-SXY all-vertices rejects widened only on the left edge.
+    std::vector<WidescreenSxyCullSite> ws_cull_sxy_sites;
     // Register-register frustum-edge compares whose bound operand scales
     // with the live reveal ([[widescreen.cull.scale]]).
     std::vector<WidescreenCullScaleSite> ws_cull_scale_sites;

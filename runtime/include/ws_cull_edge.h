@@ -47,6 +47,26 @@
  * The `lui` moves to (W + m) << 16 and the `bltz` is taken only while
  * SX < -m. bltz_sites does not fit this `bltz`: it compares the whole
  * register with -m, and every negative `SX << 16` is far below that.
+ * `slti rt, x, 0` on the same `SX << 16` value is the same sign test as a
+ * flag instead of a branch, and screen_x_sites widens it identically.
+ *
+ * [[widescreen.cull.sxy]] -- the all-vertices trivial reject over packed GTE
+ * SXY words (Y in the high half, X in the low half), folded with AND:
+ *
+ *     and   r, v0, mask   ; mask holds the sign bits 0x80008000
+ *     and   r, v1, r
+ *     and   r, v2, r      ; (and r, v3, r for a quad)
+ *     bne   r, zero, reject
+ *
+ * Bit 31 of r survives only if every Y is negative (all above the screen)
+ * and bit 15 only if every X is negative (all left of it). Each AND of the
+ * chain becomes psx_ws_sxy_and_value(acc, v, m): the vanilla AND, except that
+ * bit 15 also needs this vertex's X < -m. The fold then rejects to the left
+ * only when every vertex is left of the revealed edge. Every other bit,
+ * including the vertical bit 31, is the vanilla AND, and at m == 0 the whole
+ * word is the vanilla AND. Each step reads its operands when the guest's
+ * own AND does, so the chain stays exact whatever the guest does between
+ * steps.
  * ========================================================================== */
 #include <stdint.h>
 
@@ -90,6 +110,17 @@ static inline uint32_t psx_ws_cull_lui_hi_value(uint32_t imm, int32_t m)
 static inline int psx_ws_cull_bltz_hi_value(uint32_t v, int32_t m)
 {
     return (int32_t)v < -((m > 0 ? m : 0) * 65536);
+}
+
+/* One AND of a [[widescreen.cull.sxy]] fold: `acc & sxy`, keeping bit 15 (X
+ * sign) only while this vertex's X (low half of `sxy`) is left of -m. */
+static inline uint32_t psx_ws_sxy_and_value(uint32_t acc, uint32_t sxy,
+                                            int32_t m)
+{
+    const uint32_t r = acc & sxy;
+    if (m <= 0 || !(r & 0x8000u)) return r;
+    if ((int32_t)(int16_t)(uint16_t)sxy < -m) return r;
+    return r & ~0x8000u;
 }
 
 #ifdef __cplusplus

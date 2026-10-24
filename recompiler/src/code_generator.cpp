@@ -1143,6 +1143,55 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
                 site.y_reg, config_.ws_aspect_cone.y_reg)), comment);
     }
 
+    // [[widescreen.cull.sxy]]: one AND of a packed-SXY all-vertices reject
+    // fold. Emitted only when every AND word of the fold and the consumer
+    // branch word read back exactly from this image (in this instruction's
+    // segment); the AND keeps its vanilla value except that the X-sign bit
+    // also needs this vertex left of the revealed edge (identity at 4:3).
+    // An overlay variant with other words anywhere in the fold is untouched.
+    if (opcode == 0x00 && funct == 0x24 && !config_.ws_cull_sxy_sites.empty()) {
+        for (const auto& site : config_.ws_cull_sxy_sites) {
+            size_t step = site.vertices;
+            for (size_t i = 0; i < site.vertices; i++)
+                if ((site.fold_addresses[i] & 0x1FFFFFFFu) == (addr & 0x1FFFFFFFu))
+                    step = i;
+            if (step == site.vertices) continue;
+            const uint32_t segment = addr & ~0x1FFFFFFFu;
+            uint32_t bad_addr = 0, bad_want = 0, bad_got = 0;
+            bool ok = true;
+            auto verify = [&](uint32_t site_addr, uint32_t want) {
+                if (!ok) return;
+                const uint32_t a = segment | (site_addr & 0x1FFFFFFFu);
+                uint32_t got = ~want;
+                if (a == addr) got = instr;
+                else if (const auto w = exe_.read_word(a)) got = *w;
+                if (got != want) {
+                    ok = false;
+                    bad_addr = a; bad_want = want; bad_got = got;
+                }
+            };
+            for (size_t i = 0; i < site.vertices; i++)
+                verify(site.fold_addresses[i], site.fold_expected[i]);
+            verify(site.consumer_address, site.consumer_expected);
+            if (!ok) {
+                if (config_.overlay_mode) continue;
+                fmt::print(stderr,
+                           "ERROR: [[widescreen.cull.sxy]] expected 0x{:08X} at "
+                           "0x{:08X}, found 0x{:08X}\n",
+                           bad_want, bad_addr, bad_got);
+                std::exit(1);
+            }
+            const uint32_t vertex = site.vertex_regs[step];
+            const uint32_t other =
+                get_rs(instr) == vertex ? get_rt(instr) : get_rs(instr);
+            return fmt::format(
+                "{} = psx_ws_cull_sxy_and({}, {});"
+                "  /* ws SXY fold (left edge widened) */{}",
+                reg_name(get_rd(instr)), reg_name(other), reg_name(vertex),
+                comment);
+        }
+    }
+
     // Full-word-guarded object/model participation compares. At 4:3 the
     // helper returns the comparison's vanilla value; when widescreen reveals
     // extra world it returns the configured keep verdict. Overlay variants
@@ -1507,9 +1556,17 @@ std::string CodeGenerator::translate_instruction_core(uint32_t addr, uint32_t in
             return fmt::format("{} = psx_ws_cull_lui_hi(0x{:04X}u);"
                                " /* ws explicit screen-x edge (high half) */{}",
                                reg_name(rt), imm, comment);
+        } else if (opcode == 0x0A && get_imm16_u(instr) == 0 && get_rt(instr) != 0) {
+            // slti rt,x,0 on `SX << 16`: the bltz sign test as a flag. Set
+            // only while SX < -margin, exactly like the bltz form.
+            return fmt::format("{} = (uint32_t)psx_ws_cull_bltz_hi({});"
+                               " /* ws explicit screen-x left edge (high half) */{}",
+                               reg_name(get_rt(instr)), reg_name(get_rs(instr)),
+                               comment);
         } else if (!config_.overlay_mode) {
             fmt::print(stderr, "ERROR: [widescreen.cull] screen_x site 0x{:08X} "
-                       "is not sltiu, sltu, lui or bltz (0x{:08X})\n", addr, instr);
+                       "is not sltiu, sltu, lui, slti rt,rs,0 or bltz (0x{:08X})\n",
+                       addr, instr);
             std::exit(1);
         }
         // Overlay variant: the configured main-EXE PC holds different code.
@@ -3702,6 +3759,9 @@ void CodeGenerator::emit_runtime_externs(std::ostream& ss) const {
         ss << "extern int  psx_ws_cull_bltz_hi(uint32_t v);               /* ws cull left edge, X in the high half (gpu.c) */\n";
         ss << "extern int  psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound); /* ws screen-x band, W in a register (gpu.c) */\n";
     }
+    // Only for a config that lists [[widescreen.cull.sxy]] sites.
+    if (!config_.ws_cull_sxy_sites.empty())
+        ss << "extern uint32_t psx_ws_cull_sxy_and(uint32_t acc, uint32_t sxy); /* ws SXY reject fold, left edge (gpu.c) */\n";
     ss << "extern int  psx_ws_cull_vxrange(uint32_t x, uint32_t imm); /* ws masked-u16 X window */\n";
     ss << "extern int32_t psx_ws_depth_bound(int32_t imm);            /* ws aspect-scaled far bound */\n";
     ss << "extern int32_t psx_ws_plane_nx(int32_t nx);                /* ws side-plane normal-X scale (gpu.c) */\n";

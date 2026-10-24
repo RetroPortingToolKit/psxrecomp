@@ -415,6 +415,278 @@ reject_mask = "0xFFFF0000"
           "overlay with another instruction stays vanilla");
 }
 
+// ---- [[widescreen.cull.sxy]] ----------------------------------------------
+// The Wild 9 (SLUS-00425) shapes, relocated to kBase. Tri: the fold has GTE
+// reads and stores between its ANDs and one instruction before the consumer.
+//   +00 and at,t0,s1   +04 mfc2 t3,$14   +08 and at,s4,at   +0C sw t0,8(a0)
+//   +10 and at,t3,at   +14 sub t0,s0,t0  +18 bne at,zero,+1 ; nop ; jr ra ; nop
+// Quad: four contiguous ANDs, then the consumer.
+const std::vector<uint32_t> kTriWords = {
+    0x01110824u, 0x480B7000u, 0x02810824u, 0xAC880008u, 0x01610824u,
+    0x02084022u, 0x14200001u, 0x00000000u, 0x03E00008u, 0x00000000u};
+const std::vector<uint32_t> kQuadWords = {
+    0x01110824u, 0x02810824u, 0x01610824u, 0x01210824u, 0x14200001u,
+    0x00000000u, 0x03E00008u, 0x00000000u};
+
+PSXRecomp::GeneratedFunction generate_words(const std::vector<uint32_t>& words,
+                                            const PSXRecomp::CodeGenConfig& config) {
+    PSXRecomp::PS1Executable exe{};
+    exe.header.load_address = kBase;
+    exe.header.initial_pc = kBase;
+    exe.header.file_size = (uint32_t)(4 * words.size());
+    for (uint32_t w : words) append_word(exe.code_data, w);
+    PSXRecomp::Function function{};
+    function.start_addr = kBase;
+    function.end_addr = kBase + 4u * (uint32_t)words.size();
+    function.size = 4u * (uint32_t)words.size();
+    function.name = "ws_cull_sxy_test";
+    PSXRecomp::ControlFlowAnalyzer analyzer(exe);
+    const auto cfg = analyzer.analyze_function(function);
+    PSXRecomp::CodeGenerator generator(exe, config);
+    return generator.generate_function(function, cfg);
+}
+
+struct SxyToml {
+    std::string kind = "tri";
+    std::string vertex_regs = "[8, 20, 11]";
+    std::string fold_addresses = R"(["0x80010000", "0x80010008", "0x80010010"])";
+    std::string fold_expected = R"(["0x01110824", "0x02810824", "0x01610824"])";
+    std::string consumer_address = "0x80010018";
+    std::string consumer_expected = "0x14200001";
+    std::string str() const {
+        return "\n[[widescreen.cull.sxy]]\nkind = \"" + kind + "\"\n" +
+               "vertex_regs = " + vertex_regs + "\n" +
+               "fold_addresses = " + fold_addresses + "\n" +
+               "fold_expected = " + fold_expected + "\n" +
+               "consumer_address = \"" + consumer_address + "\"\n" +
+               "consumer_expected = \"" + consumer_expected + "\"\n";
+    }
+};
+
+SxyToml quad_toml() {
+    SxyToml q;
+    q.kind = "quad";
+    q.vertex_regs = "[8, 20, 11, 9]";
+    q.fold_addresses = R"(["0x80010000", "0x80010004", "0x80010008", "0x8001000C"])";
+    q.fold_expected = R"(["0x01110824", "0x02810824", "0x01610824", "0x01210824"])";
+    q.consumer_address = "0x80010010";
+    return q;
+}
+
+void sxy_loader() {
+    const auto tri = load(base_config() + SxyToml{}.str());
+    check(tri.ws_cull_sxy_sites.size() == 1, "loader reads a tri sxy site");
+    const auto& t = tri.ws_cull_sxy_sites.at(0);
+    check(t.vertices == 3 && t.vertex_regs == std::vector<uint32_t>({8, 20, 11}) &&
+              t.fold_addresses == std::vector<uint32_t>({0x80010000u, 0x80010008u, 0x80010010u}) &&
+              t.fold_expected == std::vector<uint32_t>({0x01110824u, 0x02810824u, 0x01610824u}) &&
+              t.consumer_address == 0x80010018u && t.consumer_expected == 0x14200001u,
+          "tri sxy site fields");
+    const auto quad = load(base_config() + quad_toml().str());
+    check(quad.ws_cull_sxy_sites.size() == 1 && quad.ws_cull_sxy_sites[0].vertices == 4,
+          "loader reads a quad sxy site");
+    check(load(base_config()).ws_cull_sxy_sites.empty(), "sxy defaults to empty");
+
+    // Operands may be written in either order; beq is a consumer as well.
+    SxyToml swapped;
+    swapped.fold_expected = R"(["0x02280824", "0x00340824", "0x002B0824"])";
+    swapped.consumer_expected = "0x10010001";
+    check(load(base_config() + swapped.str()).ws_cull_sxy_sites.size() == 1,
+          "swapped AND operands and a beq zero,at consumer are accepted");
+
+    auto bad = [&](SxyToml site, const char* needle, const char* what) {
+        check(load_throws_with(base_config() + site.str(), needle), what);
+    };
+    SxyToml s;
+    s = {}; s.kind = "pent";
+    bad(s, "kind must be", "unknown kind");
+    s = {}; s.vertex_regs = "[8, 20]";
+    bad(s, "needs exactly 3", "tri with two vertex_regs");
+    s = quad_toml(); s.fold_expected = R"(["0x01110824", "0x02810824", "0x01610824"])";
+    bad(s, "needs exactly 4", "quad with three AND words");
+    s = {}; s.vertex_regs = "[8, 8, 11]";
+    bad(s, "must be distinct", "repeated vertex register");
+    s = {}; s.vertex_regs = "[8, 20, 0]";
+    bad(s, "not a GPR", "$zero vertex register");
+    s = {}; s.vertex_regs = "[8, 20, 1]";
+    bad(s, "is the fold register", "vertex register equal to the fold register");
+    s = {}; s.vertex_regs = "[8, 20, 12]";
+    bad(s, "does not read vertex register 12", "AND does not read its vertex");
+    s = {}; s.vertex_regs = "[8, 20, 17]";
+    s.fold_expected = R"(["0x01140824", "0x02810824", "0x02210824"])";
+    bad(s, "separate mask register", "first AND combines two vertices");
+    s = {}; s.fold_expected = R"(["0x01110824", "0x02811024", "0x01610824"])";
+    bad(s, "same destination", "AND into another register");
+    s = {}; s.fold_expected = R"(["0x01110825", "0x02810824", "0x01610824"])";
+    bad(s, "must be `and r", "OR in the fold");
+    s = {}; s.fold_expected = R"(["0x01110824", "0x02910824", "0x01610824"])";
+    bad(s, "with the fold register", "later AND not chained through the fold register");
+    s = {}; s.fold_expected = R"(["0x01100024", "0x02800024", "0x01600024"])";
+    bad(s, "must not write $zero", "fold into $zero");
+    s = {}; s.consumer_expected = "0x14220001";
+    bad(s, "beq/bne of the fold register", "consumer compares with another register");
+    s = {}; s.consumer_expected = "0x04200001";
+    bad(s, "beq/bne of the fold register", "consumer is bltz");
+    s = {}; s.consumer_address = "0x8001002C";
+    bad(s, "within 4 instructions", "consumer too far from the fold");
+    s = {}; s.fold_addresses = R"(["0x80010008", "0x80010000", "0x80010010"])";
+    bad(s, "must follow", "fold addresses out of order");
+    s = {}; s.consumer_address = "0x80010010";
+    bad(s, "must follow", "consumer on the last AND");
+    s = {}; s.fold_addresses = R"(["0x80010000", "0xA0010008", "0x80010010"])";
+    bad(s, "segment of the first AND", "fold crossing segments");
+    s = {}; s.fold_addresses = R"(["0x80010000", "0x8001000A", "0x80010010"])";
+    bad(s, "word-aligned", "misaligned AND");
+    check(load_throws_with(base_config() + SxyToml{}.str() + quad_toml().str(),
+                           "already used by another sxy site"),
+          "two sites sharing a physical address");
+}
+
+void sxy_hash_identity() {
+    const auto plain = load(base_config());
+    const auto with = load(base_config() + SxyToml{}.str());
+    check(PSXRecompV4::overlay_codegen_config_hash(plain) !=
+              PSXRecompV4::overlay_codegen_config_hash(with),
+          "an sxy site changes the overlay-cache identity");
+    auto changed = with;
+    changed.ws_cull_sxy_sites[0].consumer_expected = 0x10200001u;
+    check(PSXRecompV4::overlay_codegen_config_hash(changed) !=
+              PSXRecompV4::overlay_codegen_config_hash(with),
+          "the consumer word is part of the overlay-cache identity");
+    changed = with;
+    changed.ws_cull_sxy_sites[0].vertex_regs[2] = 12u;
+    check(PSXRecompV4::overlay_codegen_config_hash(changed) !=
+              PSXRecompV4::overlay_codegen_config_hash(with),
+          "the vertex registers are part of the overlay-cache identity");
+}
+
+bool has_text(const std::string& code, const char* needle) {
+    return code.find(needle) != std::string::npos;
+}
+
+void sxy_codegen() {
+    PSXRecomp::CodeGenConfig config{};
+    const auto vanilla_tri = generate_words(kTriWords, config).full_code;
+    check(!has_text(vanilla_tri, "psx_ws_cull_sxy_and"), "no sxy site: vanilla ANDs");
+
+    config.ws_cull_sxy_sites = load(base_config() + SxyToml{}.str()).ws_cull_sxy_sites;
+    const auto tri = generate_words(kTriWords, config).full_code;
+    check(has_text(tri, "cpu->gpr[1] = psx_ws_cull_sxy_and(cpu->gpr[17], cpu->gpr[8]);"),
+          "tri AND 0 seeds from the mask with vertex t0");
+    check(has_text(tri, "cpu->gpr[1] = psx_ws_cull_sxy_and(cpu->gpr[1], cpu->gpr[20]);"),
+          "tri AND 1 folds vertex s4");
+    check(has_text(tri, "cpu->gpr[1] = psx_ws_cull_sxy_and(cpu->gpr[1], cpu->gpr[11]);"),
+          "tri AND 2 folds vertex t3");
+    check(!has_text(tri, "cpu->gpr[1] = cpu->gpr[8] & cpu->gpr[17];"),
+          "tri vanilla AND is replaced");
+    check(!exits_with_failure([&] { generate_words(kTriWords, config); }),
+          "a matching tri fold generates");
+
+    PSXRecomp::CodeGenConfig qconfig{};
+    qconfig.ws_cull_sxy_sites = load(base_config() + quad_toml().str()).ws_cull_sxy_sites;
+    const auto quad = generate_words(kQuadWords, qconfig).full_code;
+    check(has_text(quad, "cpu->gpr[1] = psx_ws_cull_sxy_and(cpu->gpr[17], cpu->gpr[8]);") &&
+              has_text(quad, "cpu->gpr[1] = psx_ws_cull_sxy_and(cpu->gpr[1], cpu->gpr[20]);") &&
+              has_text(quad, "cpu->gpr[1] = psx_ws_cull_sxy_and(cpu->gpr[1], cpu->gpr[11]);") &&
+              has_text(quad, "cpu->gpr[1] = psx_ws_cull_sxy_and(cpu->gpr[1], cpu->gpr[9]);"),
+          "quad folds all four vertices");
+
+    // The guest's own consumer branch is untouched.
+    check(has_text(quad, "cpu->gpr[1] != cpu->gpr[0]") || has_text(quad, "cpu->gpr[1] != 0"),
+          "the consumer bne is the vanilla branch");
+
+    // Any word of the fold or the consumer that differs: main EXE fails,
+    // an overlay variant keeps every AND vanilla.
+    for (size_t i : {size_t(1), size_t(2), size_t(6)}) {
+        auto words = kTriWords;
+        if (i == 1) words[2] = 0x02810825u;  // the second AND is an OR
+        if (i == 2) words[4] = 0x01710824u;  // the last AND reads s1
+        if (i == 6) words[6] = 0x10200001u;  // beq instead of bne
+        check(exits_with_failure([&] { generate_words(words, config); }),
+              "a mismatching tri fold fails main-EXE generation");
+        auto overlay = config;
+        overlay.overlay_mode = true;
+        const auto code = generate_words(words, overlay).full_code;
+        check(!has_text(code, "psx_ws_cull_sxy_and"),
+              "an overlay variant with any mismatching word stays vanilla");
+    }
+    auto overlay = config;
+    overlay.overlay_mode = true;
+    check(has_text(generate_words(kTriWords, overlay).full_code,
+                   "psx_ws_cull_sxy_and(cpu->gpr[17], cpu->gpr[8])"),
+          "an overlay with the exact fold emits the helper");
+
+    // Declared only for a config that lists sxy sites.
+    PSXRecomp::PS1Executable exe{};
+    exe.header.load_address = kBase;
+    std::vector<PSXRecomp::GeneratedFunction> functions;
+    check(!has_text(PSXRecomp::CodeGenerator(exe).build_shared_decls_header(functions),
+                    "psx_ws_cull_sxy_and"),
+          "a config without sxy sites does not declare the helper");
+    check(has_text(PSXRecomp::CodeGenerator(exe, config).build_shared_decls_header(functions),
+                   "extern uint32_t psx_ws_cull_sxy_and(uint32_t acc, uint32_t sxy);"),
+          "a config with sxy sites declares the helper");
+}
+
+uint32_t pack_sxy(int x, int y) {
+    return ((uint32_t)(uint16_t)(int16_t)y << 16) | (uint16_t)(int16_t)x;
+}
+
+uint32_t sxy_fold(const uint32_t* v, int n, uint32_t mask, int32_t m) {
+    uint32_t r = psx_ws_sxy_and_value(mask, v[0], m);
+    for (int k = 1; k < n; k++) r = psx_ws_sxy_and_value(r, v[k], m);
+    return r;
+}
+
+// Every tri (and a quad sweep) over the edge values: at margin 0 the fold is
+// the vanilla AND word for any mask; widened, it differs from vanilla only in
+// bit 15, which then means "every X < -m". Bit 31 (all Y above the screen)
+// and the right/bottom side (a separate chain in the guest) are unchanged.
+void sxy_runtime_math() {
+    const int xs[] = {-1024, -200, -54, -53, -52, -1, 0, 1, 160, 319, 320, 1023};
+    const int ys[] = {-1024, -1, 0, 1, 239, 240};
+    std::vector<uint32_t> pts;
+    for (int x : xs) for (int y : ys) pts.push_back(pack_sxy(x, y));
+    const uint32_t masks[] = {0x80008000u, 0xFFFFFFFFu, 0x00008000u, 0x80000000u};
+    int bad0 = 0, badm = 0;
+    for (uint32_t mask : masks)
+        for (uint32_t a : pts) for (uint32_t b : pts) for (uint32_t c : pts) {
+            const uint32_t v[3] = {a, b, c};
+            const uint32_t vanilla = mask & a & b & c;
+            if (sxy_fold(v, 3, mask, 0) != vanilla) bad0++;
+            for (int32_t m : {53, 192}) {
+                bool all_left = true;
+                for (uint32_t p : v) all_left &= (int16_t)(p & 0xFFFFu) < -m;
+                const uint32_t want = (vanilla & ~0x8000u) |
+                                      (all_left ? (vanilla & 0x8000u) : 0u);
+                if (sxy_fold(v, 3, mask, m) != want) badm++;
+            }
+        }
+    for (uint32_t a : pts) for (uint32_t d : pts) {
+        const uint32_t v[4] = {a, pack_sxy(-300, 10), pack_sxy(-60, -5), d};
+        const uint32_t vanilla = 0x80008000u & v[0] & v[1] & v[2] & v[3];
+        if (sxy_fold(v, 4, 0x80008000u, 0) != vanilla) bad0++;
+        bool all_left = true;
+        for (uint32_t p : v) all_left &= (int16_t)(p & 0xFFFFu) < -53;
+        const uint32_t want = (vanilla & ~0x8000u) | (all_left ? (vanilla & 0x8000u) : 0u);
+        if (sxy_fold(v, 4, 0x80008000u, 53) != want) badm++;
+    }
+    check(bad0 == 0, "the sxy fold is the vanilla AND at margin 0");
+    check(badm == 0, "widened, the sxy fold differs only in bit 15 = every X < -m");
+
+    // Spot checks at 16:9 on 320 wide (margin 53), mask 0x80008000.
+    const uint32_t mask = 0x80008000u;
+    uint32_t v[3] = {pack_sxy(-60, 10), pack_sxy(-54, 20), pack_sxy(-100, 30)};
+    check(sxy_fold(v, 3, mask, 53) == 0x8000u, "all vertices left of -m: rejected");
+    v[1] = pack_sxy(-53, 20);
+    check(sxy_fold(v, 3, mask, 53) == 0u, "one vertex in the revealed band: kept");
+    check(sxy_fold(v, 3, mask, 0) == 0x8000u, "the same triangle is rejected at 4:3");
+    uint32_t up[3] = {pack_sxy(-10, -1), pack_sxy(100, -5), pack_sxy(5, -9)};
+    check(sxy_fold(up, 3, mask, 53) == 0x80000000u, "all above the screen: still rejected");
+    check(psx_ws_sxy_and_value(0x8000u, pack_sxy(-5, 0), -7) == 0x8000u,
+          "a negative margin is treated as 0");
+}
+
 void runtime_math() {
     // Identity at 4:3 (margin 0) for every input.
     for (int32_t v : {-1000, -54, -53, -1, 0, 1, 98, 222, 319, 320, 321, 1000}) {
@@ -460,6 +732,10 @@ int main(int argc, char** argv) {
     shared_decls_include_new_helpers();
     runtime_math();
     masked_reject_sites();
+    sxy_loader();
+    sxy_hash_identity();
+    sxy_codegen();
+    sxy_runtime_math();
 
     if (g_exit_probe >= 0) return 3;  // no call had that probe index
     if (failures != 0) {

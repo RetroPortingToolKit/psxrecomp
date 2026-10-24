@@ -166,6 +166,27 @@ uint32_t overlay_codegen_config_hash(const GameConfig& c) {
         h.u32(site.result);
     }
 
+    // Appended only when used, so every other title's hash is unchanged.
+    if (!c.ws_cull_sxy_sites.empty()) {
+        std::vector<WidescreenSxyCullSite> sxy_sites = c.ws_cull_sxy_sites;
+        std::sort(sxy_sites.begin(), sxy_sites.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.fold_addresses.front() < b.fold_addresses.front();
+                  });
+        h.tag("cull_sxy");
+        h.u32((uint32_t)sxy_sites.size());
+        for (const auto& site : sxy_sites) {
+            h.u32(site.vertices);
+            for (size_t i = 0; i < site.vertices; i++) {
+                h.u32(site.fold_addresses[i]);
+                h.u32(site.fold_expected[i]);
+                h.u32(site.vertex_regs[i]);
+            }
+            h.u32(site.consumer_address);
+            h.u32(site.consumer_expected);
+        }
+    }
+
     std::vector<WidescreenCullScaleSite> scale_sites = c.ws_cull_scale_sites;
     std::sort(scale_sites.begin(), scale_sites.end(),
               [](const auto& a, const auto& b) { return a.address < b.address; });
@@ -311,6 +332,110 @@ static uint32_t parse_hex(const std::string& s, const std::string& field) {
             fmt::format("config field '{}': expected hex string, got '{}' ({})",
                         field, s, ex.what()));
     }
+}
+
+// One [[widescreen.cull.sxy]] entry. The fold and its consumer are identified
+// by their exact instruction words; everything the runtime relies on is
+// derived from those words and must agree with the declared registers:
+//   fold[0] = and r, v0, mask   (operands in either order)
+//   fold[k] = and r, vk, r      (k >= 1, operands in either order)
+//   consumer = beq/bne r, zero  (within 4 instructions after the last AND)
+// `seen` holds the physical addresses claimed by earlier entries.
+static WidescreenSxyCullSite parse_sxy_cull_site(const toml::value& item,
+                                                 const std::string& path,
+                                                 std::set<uint32_t>& seen) {
+    auto fail = [&](const std::string& why) {
+        return std::runtime_error(fmt::format(
+            "{}: [[widescreen.cull.sxy]] {}", path, why));
+    };
+    WidescreenSxyCullSite site;
+    const std::string kind = toml::find<std::string>(item, "kind");
+    if (kind == "tri") site.vertices = 3;
+    else if (kind == "quad") site.vertices = 4;
+    else throw fail("kind must be \"tri\" or \"quad\"");
+
+    for (int reg : toml::find<std::vector<int>>(item, "vertex_regs")) {
+        if (reg < 1 || reg > 31)
+            throw fail(fmt::format("vertex_regs: {} is not a GPR 1..31", reg));
+        site.vertex_regs.push_back((uint32_t)reg);
+    }
+    for (const auto& a : toml::find<std::vector<std::string>>(item, "fold_addresses"))
+        site.fold_addresses.push_back(parse_hex(a, "widescreen.cull.sxy.fold_addresses"));
+    for (const auto& e : toml::find<std::vector<std::string>>(item, "fold_expected"))
+        site.fold_expected.push_back(parse_hex(e, "widescreen.cull.sxy.fold_expected"));
+    site.consumer_address = parse_hex(toml::find<std::string>(item, "consumer_address"),
+                                      "widescreen.cull.sxy.consumer_address");
+    site.consumer_expected = parse_hex(toml::find<std::string>(item, "consumer_expected"),
+                                       "widescreen.cull.sxy.consumer_expected");
+
+    const size_t n = site.vertices;
+    if (site.vertex_regs.size() != n || site.fold_addresses.size() != n ||
+        site.fold_expected.size() != n)
+        throw fail(fmt::format("{} needs exactly {} vertex_regs, fold_addresses "
+                               "and fold_expected", kind, n));
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = i + 1; j < n; j++)
+            if (site.vertex_regs[i] == site.vertex_regs[j])
+                throw fail("vertex_regs must be distinct");
+
+    // Addresses: aligned, one segment, strictly increasing, and short.
+    const uint32_t segment = site.fold_addresses[0] & 0xE0000000u;
+    uint32_t prev = 0;
+    for (size_t i = 0; i <= n; i++) {
+        const uint32_t a = i < n ? site.fold_addresses[i] : site.consumer_address;
+        if ((a & 3u) != 0 || (a & 0xE0000000u) != segment)
+            throw fail(fmt::format("0x{:08X} must be word-aligned and in the "
+                                   "segment of the first AND", a));
+        if (i > 0 && a <= prev)
+            throw fail(fmt::format("0x{:08X} must follow 0x{:08X}", a, prev));
+        if (!seen.insert(a & 0x1FFFFFFFu).second)
+            throw fail(fmt::format("address 0x{:08X} is already used by "
+                                   "another sxy site", a));
+        prev = a;
+    }
+    if (site.fold_addresses[n - 1] - site.fold_addresses[0] > 4u * 15u)
+        throw fail("the AND fold spans more than 16 instructions");
+    if (site.consumer_address - site.fold_addresses[n - 1] > 16u)
+        throw fail("consumer_address must be within 4 instructions of the last AND");
+
+    // The words: one AND chain into a single register r.
+    auto rs_of = [](uint32_t w) { return (w >> 21) & 31u; };
+    auto rt_of = [](uint32_t w) { return (w >> 16) & 31u; };
+    const uint32_t r = (site.fold_expected[0] >> 11) & 31u;
+    if (r == 0) throw fail("the AND fold must not write $zero");
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t w = site.fold_expected[i];
+        const uint32_t v = site.vertex_regs[i];
+        if ((w >> 26) != 0u || (w & 0x7FFu) != 0x24u || ((w >> 11) & 31u) != r)
+            throw fail(fmt::format("fold_expected 0x{:08X} must be `and r, ...` "
+                                   "with the same destination as the first AND", w));
+        if (v == r)
+            throw fail(fmt::format("vertex register {} is the fold register", v));
+        const uint32_t other = rs_of(w) == v ? rt_of(w)
+                             : rt_of(w) == v ? rs_of(w) : 32u;
+        if (other == 32u)
+            throw fail(fmt::format("fold_expected 0x{:08X} does not read "
+                                   "vertex register {}", w, v));
+        if (i == 0) {
+            // The seed operand is the sign mask: a register of its own.
+            if (other == 0 || other == r ||
+                std::find(site.vertex_regs.begin(), site.vertex_regs.end(),
+                          other) != site.vertex_regs.end())
+                throw fail(fmt::format("first AND 0x{:08X} must combine vertex "
+                                       "register {} with a separate mask "
+                                       "register", w, v));
+        } else if (other != r) {
+            throw fail(fmt::format("fold_expected 0x{:08X} must combine vertex "
+                                   "register {} with the fold register {}", w, v, r));
+        }
+    }
+    const uint32_t c = site.consumer_expected;
+    const uint32_t c_op = c >> 26;
+    if ((c_op != 0x04u && c_op != 0x05u) ||
+        !((rs_of(c) == r && rt_of(c) == 0) || (rs_of(c) == 0 && rt_of(c) == r)))
+        throw fail(fmt::format("consumer_expected 0x{:08X} must be beq/bne of the "
+                               "fold register {} against $zero", c, r));
+    return site;
 }
 
 // Parse a display aspect "W:H" string (e.g. "4:3", "16:9", "21:9"). Accepts
@@ -2362,6 +2487,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     std::vector<uint32_t> ws_cull_clip_edge_x_load_sites;
     uint32_t ws_cull_clip_edge_width = 0;
     std::vector<WidescreenCullKeepSite> ws_cull_keep_sites;
+    std::vector<WidescreenSxyCullSite> ws_cull_sxy_sites;
     std::vector<WidescreenMaskedRejectSite> ws_cull_masked_reject_sites;
     std::vector<WidescreenCullScaleSite> ws_cull_scale_sites;
     std::vector<WidescreenAngleSite> ws_cull_angle_sites;
@@ -2460,6 +2586,17 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                             config_path.string(), site.address));
                     }
                     ws_cull_keep_sites.push_back(site);
+                }
+            }
+            if (cull.contains("sxy")) {
+                std::set<uint32_t> seen;
+                for (const auto& item : toml::find<toml::array>(cull, "sxy")) {
+                    ws_cull_sxy_sites.push_back(parse_sxy_cull_site(
+                        item, config_path.string(), seen));
+                    if (ws_cull_sxy_sites.size() > 64)
+                        throw std::runtime_error(fmt::format(
+                            "{}: [[widescreen.cull.sxy]] supports at most 64 sites",
+                            config_path.string()));
                 }
             }
             if (cull.contains("scale")) {
@@ -2904,6 +3041,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*ws_cull_nclip_exact_sites*/ ws_cull_nclip_exact_sites,
         /*ws_cull_branch_keep_sites*/ ws_cull_branch_keep_sites,
         /*ws_cull_keep_sites*/    ws_cull_keep_sites,
+        /*ws_cull_sxy_sites*/     ws_cull_sxy_sites,
         /*ws_cull_scale_sites*/   ws_cull_scale_sites,
         /*ws_cull_angle_sites*/   ws_cull_angle_sites,
         /*ws_aspect_cone*/         ws_aspect_cone,

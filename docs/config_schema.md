@@ -262,6 +262,29 @@ result = 1
   semantics.
 - Regenerate main/overlay native code after changing the list.
 
+### Packed-SXY all-vertices rejects
+
+```toml
+[[widescreen.cull.sxy]]
+kind = "quad"
+vertex_regs = [8, 20, 11, 9]
+fold_addresses = ["0x8001A9B4", "0x8001A9B8", "0x8001A9BC", "0x8001A9C0"]
+fold_expected  = ["0x01110824", "0x02810824", "0x01610824", "0x01210824"]
+consumer_address  = "0x8001A9C4"
+consumer_expected = "0x14200049"
+```
+
+- `kind` is `"tri"` (3 vertices) or `"quad"` (4); `vertex_regs`,
+  `fold_addresses` and `fold_expected` have one entry per vertex.
+- Every `fold_expected` is `and r, ...` into the same `r != $zero`; the first
+  reads `vertex_regs[0]` and a separate mask register, each later one reads
+  its vertex and `r`. `consumer_expected` is `beq`/`bne r, zero`.
+- Addresses are word-aligned, in one segment, strictly increasing, the fold
+  within 16 instructions and the consumer within 4 after it; no address is
+  shared with another sxy site. At most 64 sites.
+- Identity at 4:3; while widened only the X-sign bit of each AND changes. See
+  `docs/WIDESCREEN.md`.
+
 Prefer an aspect-derived cone over `keep` when the original predicate is a
 camera-frustum test. `keep` has no queue policy and is appropriate only for a
 separately proven binary verdict.

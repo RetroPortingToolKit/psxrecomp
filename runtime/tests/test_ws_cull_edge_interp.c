@@ -531,6 +531,96 @@ static void test_screen_x_precedence(void) {
     gpu_ws_set_signed_x_bound_sites(NULL, NULL, 0);
 }
 
+/* [[widescreen.cull.sxy]] and the screen_x `slti rt, x, 0` form through
+ * real interpreted instructions. The fold is Wild 9's triangle reject (with
+ * its interleaved mfc2/sw/sub left in RAM); the interpreter must produce the
+ * same word as the helper chain the recompiler emits, and treat a variant
+ * with any other fold or consumer word as vanilla code. */
+static uint32_t sxy(int x, int y) {
+    return ((uint32_t)(uint16_t)(int16_t)y << 16) | (uint16_t)(int16_t)x;
+}
+static void test_sxy_fold(void) {
+    CPUState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    memset(test_ram, 0, sizeof test_ram);
+    enum { AT = 1, T0 = 8, T3 = 11, S1 = 17, S4 = 20, S6 = 22 };
+    const uint32_t base = CODE + 0x300;
+    const uint32_t words[] = { 0x01110824u, 0x480B7000u, 0x02810824u, 0xAC880008u,
+                               0x01610824u, 0x02084022u, 0x14200001u };
+    for (uint32_t i = 0; i < 7; i++) put_word(base + 4u * i, words[i]);
+    const uint32_t vertices[] = { 3 };
+    const uint32_t fold_a[] = { base, base + 8u, base + 0x10u, 0 };
+    const uint32_t fold_e[] = { words[0], words[2], words[4], 0 };
+    const uint32_t regs[] = { T0, S4, T3, 0 };
+    const uint32_t cons_a[] = { base + 0x18u }, cons_e[] = { words[6] };
+    gpu_ws_set_sxy_cull_sites(vertices, fold_a, fold_e, regs, cons_a, cons_e, 1);
+    const uint32_t screen_x[] = { base + 0x40u };
+    gpu_ws_set_cull_screen_x_sites(screen_x, 1);
+    const uint32_t slti_at_s6 = i_type(0x0A, S6, AT, 0);
+
+    for (int pass = 0; pass < 2; pass++) {
+        const int m = pass ? 53 : 0;
+        gpu_ws_set_margin_override(m);
+        const uint32_t cases[][3] = {
+            { sxy(-60, 10), sxy(-53, 20), sxy(-100, 30) },  /* one in the band */
+            { sxy(-60, 10), sxy(-54, 20), sxy(-100, 30) },  /* all left of -m */
+            { sxy(-10, -1), sxy(100, -5), sxy(5, -9) },     /* all above */
+            { sxy(10, 10), sxy(400, 20), sxy(-5, 30) },     /* on screen */
+        };
+        for (int c = 0; c < 4; c++) {
+            cpu.gpr[S1] = 0x80008000u;
+            cpu.gpr[T0] = cases[c][0];
+            cpu.gpr[S4] = cases[c][1];
+            cpu.gpr[T3] = cases[c][2];
+            (void)step(&cpu, base, words[0]);
+            (void)step(&cpu, base + 8u, words[2]);
+            (void)step(&cpu, base + 0x10u, words[4]);
+            const uint32_t native = psx_ws_cull_sxy_and(psx_ws_cull_sxy_and(
+                psx_ws_cull_sxy_and(0x80008000u, cases[c][0]), cases[c][1]),
+                cases[c][2]);
+            const uint32_t vanilla = 0x80008000u & cases[c][0] & cases[c][1] & cases[c][2];
+            CHECK(cpu.gpr[AT] == native, "interp sxy fold == emitted helper chain, case %d m=%d", c, m);
+            if (m == 0)
+                CHECK(cpu.gpr[AT] == vanilla, "sxy fold vanilla at 4:3, case %d", c);
+        }
+        CHECK(m == 0 || psx_ws_cull_sxy_and(psx_ws_cull_sxy_and(psx_ws_cull_sxy_and(
+                  0x80008000u, sxy(-60, 10)), sxy(-53, 20)), sxy(-100, 30)) == 0u,
+              "the band vertex keeps the triangle while widened");
+
+        /* A variant whose consumer differs is vanilla code. */
+        put_word(base + 0x18u, 0x10200001u);
+        cpu.gpr[S1] = 0x80008000u;
+        cpu.gpr[T0] = sxy(-60, 10);
+        cpu.gpr[S4] = sxy(-53, 20);
+        cpu.gpr[T3] = sxy(-100, 30);
+        (void)step(&cpu, base, words[0]);
+        (void)step(&cpu, base + 8u, words[2]);
+        (void)step(&cpu, base + 0x10u, words[4]);
+        CHECK(cpu.gpr[AT] == 0x8000u, "sxy variant with another consumer stays vanilla, m=%d", m);
+        put_word(base + 0x18u, words[6]);
+
+        /* An unlisted AND is vanilla. */
+        cpu.gpr[S1] = 0x80008000u;
+        (void)step(&cpu, base + 0x100u, words[0]);
+        CHECK(cpu.gpr[AT] == (0x80008000u & cpu.gpr[T0]), "unlisted AND vanilla, m=%d", m);
+
+        /* screen_x slti rt,x,0 with x = SX << 16. */
+        cpu.gpr[S6] = (uint32_t)-5 << 16;
+        (void)step(&cpu, base + 0x40u, slti_at_s6);
+        CHECK(cpu.gpr[AT] == (m ? 0u : 1u), "screen_x slti keeps the band, m=%d", m);
+        cpu.gpr[S6] = (uint32_t)-54 << 16;
+        (void)step(&cpu, base + 0x40u, slti_at_s6);
+        CHECK(cpu.gpr[AT] == 1u, "screen_x slti rejects x < -m, m=%d", m);
+        cpu.gpr[S6] = (uint32_t)-5 << 16;
+        (void)step(&cpu, base + 0x140u, slti_at_s6);
+        CHECK(cpu.gpr[AT] == 1u, "unlisted slti vanilla, m=%d", m);
+    }
+    gpu_ws_set_margin_override(-1);
+    gpu_ws_set_sxy_cull_sites(NULL, NULL, NULL, NULL, NULL, NULL, 0);
+    gpu_ws_set_cull_screen_x_sites(NULL, 0);
+    CHECK(g_psx_ws_sxy_cull_n == 0, "sxy sites cleared");
+}
+
 static void test_masked_reject(void) {
     CPUState cpu = {0};
     memset(test_ram, 0, sizeof test_ram);
@@ -601,6 +691,7 @@ int main(int argc, char **argv) {
     test_interpreter();
     test_screen_x_precedence();
     test_masked_reject();
+    test_sxy_fold();
     test_wide_nclip_branches();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

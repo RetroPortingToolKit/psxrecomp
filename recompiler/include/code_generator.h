@@ -177,6 +177,8 @@ struct CodeGenConfig {
     // Exact, full-word-guarded comparison sites whose result is forced only
     // while widescreen reveals extra world. 4:3 evaluates the original compare.
     std::vector<PSXRecompV4::WidescreenCullKeepSite> ws_cull_keep_sites;
+    // [[widescreen.cull.sxy]] packed-SXY AND folds (left edge widened).
+    std::vector<PSXRecompV4::WidescreenSxyCullSite> ws_cull_sxy_sites;
     std::vector<PSXRecompV4::WidescreenMaskedRejectSite> ws_cull_masked_reject_sites;
     std::vector<PSXRecompV4::WidescreenCullScaleSite> ws_cull_scale_sites;
 
