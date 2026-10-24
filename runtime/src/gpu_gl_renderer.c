@@ -3269,6 +3269,27 @@ static void ensure_cpu(void) {
 
 static uint64_t s_scene_prims = 0;     /* frame_perf: scene primitives submitted (pre double-draw) */
 static uint64_t s_scene_prims_tex = 0; /* frame_perf: of which textured (vs flat geometry)         */
+static uint64_t s_clipped_prims = 0;
+/* gpu.c has already applied the drawing offset to these integer vertices.
+ * Reject only a wholly clipped native draw. Wide mirrors can reveal pixels
+ * outside the native area; precision/seam/windowed paths keep their existing
+ * clipping. A one-pixel guard also retains boundary lines/triangles. Fills
+ * and VRAM copies do not use this test: their writes ignore the draw area. */
+static int prim_wholly_clipped(const int *xs, const int *ys, int n) {
+    if (g_wide_cur || hiw_on() || s_pc_valid || s_pq_valid || s_pz_valid || s_pgxp_seam)
+        return 0;
+    int x0=xs[0],x1=xs[0],y0=ys[0],y1=ys[0];
+    for (int i=1;i<n;i++) {
+        if(xs[i]<x0)x0=xs[i];if(xs[i]>x1)x1=xs[i];
+        if(ys[i]<y0)y0=ys[i];if(ys[i]>y1)y1=ys[i];
+    }
+    if (x1 < s_area_x1-1 || x0 > s_area_x2+1 ||
+        y1 < s_area_y1-1 || y0 > s_area_y2+1) {
+        s_clipped_prims++;
+        return 1;
+    }
+    return 0;
+}
 static void mark_prim_dirty(const int *xs, const int *ys, int n, int textured) {
     s_scene_prims++;
     int x0 = xs[0], x1 = xs[0], y0 = ys[0], y1 = ys[0];
@@ -4645,6 +4666,7 @@ static void seam_sz(const float B[3][3], float z[3]) {
 
 static void gpu_geometry(GLenum mode, const int *xs, const int *ys,
                          const uint16_t *cs, int n, int semi) {
+    if (prim_wholly_clipped(xs,ys,n)) return;
     flush_tex_batch();   /* flat prim: drain textured draws first (order + program) */
     flush_cpu_upload();  /* also drains flat batch if an upload was pending */
     mark_prim_dirty(xs, ys, n, 0 /* flat */);
@@ -4896,6 +4918,7 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
                                   const float *col, uint16_t texpage,
                                   uint16_t clut_x, uint16_t clut_y, int rawtex,
                                   int semi, const int *lim) {
+    if (prim_wholly_clipped(xs,ys,3)) return;
     /* PS1 dithering: texture-modulated polygons only (never raw texels or
      * rectangles), while E1 bit 9 is set. */
     const int dither_tex = s_dither_mode && s_dither_bit && !rawtex && !s_prim_rect;
@@ -5408,11 +5431,20 @@ static void glb_set_depth_triangle(int enabled, float z0, float z1, float z2) {
     s_pz[0] = z0; s_pz[1] = z1; s_pz[2] = z2;
 }
 static void glb_set_draw_area(int x1,int y1,int x2,int y2) {
-    if (s_depth_used && (x1 != s_area_x1 || y1 != s_area_y1 || x2 != s_area_x2 || y2 != s_area_y2))
-        DEPTH_REQUEST_CLEAR(DCLR_AREA);   /* PGXP depth: a new drawing area starts clean */
-    flush_flat_batch(); flush_tex_batch(); s_area_x1=x1; s_area_y1=y1; s_area_x2=x2; s_area_y2=y2; sw_set_draw_area(x1,y1,x2,y2); }
+    if (x1 != s_area_x1 || y1 != s_area_y1 || x2 != s_area_x2 || y2 != s_area_y2) {
+        if (s_depth_used) DEPTH_REQUEST_CLEAR(DCLR_AREA);
+        flush_flat_batch(); flush_tex_batch();
+        s_area_x1=x1; s_area_y1=y1; s_area_x2=x2; s_area_y2=y2;
+    }
+    sw_set_draw_area(x1,y1,x2,y2);
+}
 static void glb_get_draw_area(int *x1,int *y1,int *x2,int *y2) { sw_get_draw_area(x1,y1,x2,y2); }
-static void glb_set_draw_offset(int x,int y) { flush_flat_batch(); flush_tex_batch(); s_off_x=x; s_off_y=y; sw_set_draw_offset(x,y); }
+static void glb_set_draw_offset(int x,int y) {
+    if (x != s_off_x || y != s_off_y) {
+        flush_flat_batch(); flush_tex_batch(); s_off_x=x; s_off_y=y;
+    }
+    sw_set_draw_offset(x,y);
+}
 
 /* Pre-context draws (s_raster_ok == 0) fall back to the software rasterizer
  * over CPU VRAM; the initial full-VRAM upload at context init folds them in.

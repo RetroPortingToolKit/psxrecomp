@@ -211,6 +211,47 @@ static void textures(void) {
     cpu_upload(512, 256, 16, 1, clut);
 }
 
+static void test_clipped_and_redundant_state(void) {
+    gr_wide_configure(0,0);
+    gr_wide_disable_target();
+    gr_set_draw_area(64,64,127,127);
+    gr_set_draw_offset(0,0);
+    gr_set_semi_transparency(0,0);
+    gr_set_color_modulation(128,128,128,0);
+    mask_bits(0,0);
+    gl_renderer_render_thread_sync("clipped_fixture_before");
+    flush_flat_batch();flush_tex_batch();flush_cpu_upload();
+    const uint64_t batches=s_batch_total,clipped=s_clipped_prims;
+    for(int i=0;i<16;i++) {
+        gr_draw_flat_rect(-100-i,-100,4,4,0x7fff);
+        gr_draw_textured_rect(200+i,200,8,8,0,0,512,256,0x0008);
+        gr_draw_line(-100,200+i,-80,220+i,0x7fff);
+    }
+    gl_renderer_render_thread_sync("clipped_fixture_after");
+    flush_flat_batch();flush_tex_batch();flush_cpu_upload();
+    check(s_batch_total==batches,"wholly clipped draws emit no GPU batches");
+    check(s_clipped_prims>clipped,"clipped primitive counter observes rejected work");
+    check(gr_vram_read(64,64)==0,"clipped draws preserve VRAM");
+    uint16_t page[8*8],palette[16]={0};
+    for(int i=0;i<8*8;i++)page[i]=0x1111;
+    palette[1]=0x7fff;
+    cpu_upload(512,0,8,8,page);cpu_upload(512,256,16,1,palette);
+    gr_set_color_modulation(128,128,128,1);
+    const uint64_t visible=s_batch_total;
+    gr_draw_textured_rect(64,64,8,8,0,0,512,256,0x0008);
+    gr_set_draw_area(64,64,127,127); /* repeated GP0 environment packets */
+    gr_set_draw_offset(0,0);
+    gr_draw_textured_rect(127,80,8,8,0,0,512,256,0x0008); /* retain the scissor-edge sliver */
+    gl_renderer_render_thread_sync("redundant_state_fixture");
+    flush_flat_batch();flush_tex_batch();flush_cpu_upload();
+    check(s_batch_total==visible+1,"redundant draw state preserves one painter-ordered batch");
+    check((gr_vram_read(64,64)&0x7fff)==0x7fff,"visible control draw survives");
+    check((gr_vram_read(127,80)&0x7fff)==0x7fff,"scissor-edge sliver survives");
+    check(gr_vram_read(128,80)==0,"draw area still clips the adjacent pixel");
+    gr_set_draw_area(0,0,1023,511);
+    textures();
+}
+
 static void frame(int f, int buf_x) {
     gr_set_draw_area(buf_x, 0, buf_x + FRAME_W - 1, FRAME_H - 1);
     gr_set_draw_offset(buf_x, 0);
@@ -329,6 +370,7 @@ int main(int argc, char **argv) {
     if (!gl_renderer_init_context(win)) { fprintf(stderr, "FAIL context\n"); return 2; }
     check(gr_backend() == GR_BACKEND_OPENGL, "OpenGL backend");
     textures();
+    test_clipped_and_redundant_state();
     gr_wide_configure(426, 53);
     if (threaded) {
         check(gl_renderer_render_thread_start(2) == 1, "render thread started");
