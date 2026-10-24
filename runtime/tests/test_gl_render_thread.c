@@ -30,6 +30,7 @@
  * surface), and with the thread on its record/acquire counters.
  * Original source-owned scene; no retail payload. */
 #include "gpu_gl_renderer.c"
+#include "gl_fmv_fixture.h"
 #include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
 #include "gl_batch_policy_lle.c"
