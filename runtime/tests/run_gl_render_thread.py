@@ -34,7 +34,7 @@ WIN_LIBS = ["opengl32", "kernel32", "user32", "gdi32", "winmm", "imm32", "ole32"
             "oleaut32", "version", "uuid", "advapi32", "setupapi", "shell32", "dinput8"]
 SKIP_EXIT = 77
 WINDOWS = os.name == "nt" or platform.system().startswith(("MINGW", "MSYS", "CYGWIN"))
-KEYS = ("rb", "digest", "hires", "wide")
+KEYS = ("rb", "digest", "hires", "wide", "composed")
 
 
 def parse(stdout):
