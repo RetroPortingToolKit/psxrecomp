@@ -40,7 +40,7 @@ static int failures;
 /* ---- runtime globals the two units share with the rest of the runtime -- */
 int      g_boot_state_cpu_timing_restored = 0;
 int      g_ls_replay_active = 0;
-int      g_boot_state_cpu_timing_restored = 0;
+
 int psx_mod_host_output_scope(void) { return 0; }
 int      g_ls_mode = 0;
 int      g_precise_mode = 0;

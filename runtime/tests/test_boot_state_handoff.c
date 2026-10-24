@@ -45,6 +45,7 @@ void timers_set_snapshot(const uint16_t c[3],const uint32_t m[3],const uint16_t 
 MODULE(gpu) MODULE(spu) MODULE(cdrom) MODULE(dma) MODULE(sio) MODULE(mdec) MODULE(spu_cd)
 int spu_snapshot_len_ok(uint32_t n){return n==4;}
 int sio_snapshot_validate(const uint8_t* p,uint32_t n){(void)p;return n==4;}
+int cdrom_snapshot_validate(const uint8_t* p,uint32_t n){return p && n==4;}
 int mdec_snapshot_validate(const uint8_t* p,uint32_t n){(void)p;return n==4;}
 uint8_t* spu_get_ram_ptr(void){return spuram;}
 uint32_t spu_get_ram_bytes(void){return sizeof spuram;}
