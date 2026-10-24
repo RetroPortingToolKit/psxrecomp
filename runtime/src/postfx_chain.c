@@ -238,13 +238,15 @@ int pfx_chain_parse(const char *text, const char *name, PfxShaderLoader load, vo
             if (!strcmp(f, "source")) from = PFX_IN_SOURCE;
             else if (!strcmp(f, "source_down")) from = PFX_IN_SOURCE_DOWN;
             else if (!strcmp(f, "mask")) { from = PFX_IN_MASK; out->uses_mask = 1; }
+            else if (!strcmp(f, "depth")) { from = PFX_IN_DEPTH; out->uses_depth = 1; }
+            else if (!strcmp(f, "history")) from = PFX_IN_HISTORY;
             else if (!strcmp(f, "previous")) {
                 if (self == 0) { pfx_chain_free(out); return pfx_fail(err, errlen, line, "the first pass has no previous"); }
                 from = self - 1;
             } else {
                 from = -100;
                 for (int i = 0; i < self; i++) if (!strcmp(out->pass[i].name, f)) from = i;
-                if (from == -100) { pfx_chain_free(out); return pfx_fail(err, errlen, line, "unknown input '%s' (source, mask, previous or an earlier pass)", f); }
+                if (from == -100) { pfx_chain_free(out); return pfx_fail(err, errlen, line, "unknown input '%s' (source, mask, depth, history, previous or an earlier pass)", f); }
             }
             snprintf(cur->in[cur->ninputs].sampler, PFX_NAME, "%s", s);
             cur->in[cur->ninputs++].from = from;

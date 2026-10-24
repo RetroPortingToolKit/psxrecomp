@@ -9,7 +9,10 @@
  *   pfx 1                              # format version (required first)
  *   pass <name>                        # starts a pass; the last pass writes the window
  *     shader <file.glsl|builtin:name>  # fragment body (see below)
- *     input <sampler> <source|source_down|mask|previous|<pass name>>
+ *     input <sampler> <source|source_down|mask|depth|history|previous|<pass name>>
+ *                                      # depth: PGXP view depth sz (GTE screen z, R32F;
+ *                                      # 0 where nothing 3D drew); history: this pass's
+ *                                      # own target from the last real frame (not last pass)
  *                                      # source_down: the image scaled to this pass's
  *                                      # target (one bilinear blit, no full-size copy)
  *     scale <f>                        # target size, fraction of the game rect (default 1)
@@ -27,6 +30,7 @@
  *   uniform vec2 u_rcp;   // 1 / this pass's target size in px
  *   uniform vec2 u_size;  // this pass's target size in px
  *   uniform ivec2 u_org;  // window origin of the game rect (gl_FragCoord - u_org = px in it)
+ *   uniform float u_time; // seconds since the chain loaded (real and generated frames)
  * plus one `uniform sampler2D <sampler>;` per input. v_uv is 0..1 over the
  * game rect, bottom-up like the window. */
 #ifndef PSX_POSTFX_CHAIN_H
@@ -38,7 +42,8 @@ extern "C" {
 
 enum { PFX_MAX_PASSES = 16, PFX_MAX_INPUTS = 4, PFX_MAX_UNIFORMS = 8, PFX_NAME = 32 };
 /* Input sources; a value >= 0 is an earlier pass's index. */
-enum { PFX_IN_SOURCE = -1, PFX_IN_MASK = -2, PFX_IN_SOURCE_DOWN = -3 };
+enum { PFX_IN_SOURCE = -1, PFX_IN_MASK = -2, PFX_IN_SOURCE_DOWN = -3, PFX_IN_DEPTH = -4,
+       PFX_IN_HISTORY = -5 };
 enum { PFX_BLEND_REPLACE = 0, PFX_BLEND_SCREEN = 1 };
 enum { PFX_FMT_RGBA8 = 0, PFX_FMT_RGBA16F = 1 };
 
@@ -69,6 +74,7 @@ typedef struct {
     char    name[PFX_NAME];
     int     npasses;
     int     uses_mask;               /* some pass reads `mask` */
+    int     uses_depth;              /* some pass reads `depth` */
     PfxPass pass[PFX_MAX_PASSES];
 } PfxChain;
 
