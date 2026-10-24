@@ -1725,6 +1725,16 @@ if(BUILD_TESTING)
     target_include_directories(video_recorder_production_test PRIVATE include)
     target_compile_definitions(video_recorder_production_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
     target_link_libraries(video_recorder_production_test PRIVATE Threads::Threads)
+    add_executable(video_recorder_stall_helper tests/video_recorder_stall_helper.cpp)
+    target_link_libraries(video_recorder_stall_helper PRIVATE Threads::Threads)
+    add_executable(video_recorder_cancel_test tests/test_video_recorder_cancel.cpp
+        src/video_recorder.cpp src/audio_trace.c)
+    target_include_directories(video_recorder_cancel_test PRIVATE include)
+    target_compile_definitions(video_recorder_cancel_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
+    target_link_libraries(video_recorder_cancel_test PRIVATE Threads::Threads)
+    add_test(NAME video_recorder_cancel_test COMMAND video_recorder_cancel_test
+        "$<TARGET_FILE:video_recorder_stall_helper>" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(video_recorder_cancel_test PROPERTIES TIMEOUT 25)
     add_test(NAME video_recorder_production_test
              COMMAND video_recorder_production_test ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(video_recorder_e2e_test PROPERTIES

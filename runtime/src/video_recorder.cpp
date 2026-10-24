@@ -6,7 +6,7 @@
  *   _WIN32                      CreateProcessW, CREATE_NO_WINDOW, explicit
  *                               handle list (only the pipe + log inherit)
  *   POSIX (Linux, macOS, BSD)   posix_spawnp
- *   anything else               popen()/pclose() — the portable fallback
+ *   other hosts                 recording reports unsupported process control
  */
 #include "video_recorder.h"
 #include "audio_trace.h"
@@ -54,6 +54,10 @@ extern char **environ;
 
 namespace {
 
+std::atomic<bool> cancel_children{false};
+constexpr auto kPipeStallLimit = std::chrono::seconds(2);
+constexpr auto kChildExitLimit = std::chrono::seconds(5);
+
 /* ===================================================================== */
 /* Child process                                                          */
 /* ===================================================================== */
@@ -66,7 +70,7 @@ struct Proc {
     pid_t pid = -1;
     int   in_fd = -1;
 #else
-    FILE *pipe = nullptr;
+    /* Optional recording is unavailable without bounded child control. */
 #endif
     bool running = false;
 };
@@ -100,18 +104,6 @@ void win_quote(std::wstring &cmd, const std::wstring &arg)
 }
 #endif
 
-#if defined(VREC_SPAWN_POPEN)
-std::string sh_quote(const std::string &a)
-{
-    std::string q = "'";
-    for (char c : a) {
-        if (c == '\'') q += "'\\''";
-        else q += c;
-    }
-    q += "'";
-    return q;
-}
-#endif
 
 /* Spawn argv with stdin = a pipe we write (want_stdin) or the null device,
  * stdout+stderr appended to log_path. Never opens a console window. */
@@ -119,6 +111,7 @@ bool proc_spawn(const std::vector<std::string> &argv, bool want_stdin,
                 const std::string &log_path, Proc *p, std::string *err)
 {
     *p = Proc();
+    if (cancel_children.load()) { *err = "recording canceled"; return false; }
 #if defined(VREC_SPAWN_WIN32)
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
@@ -140,6 +133,14 @@ bool proc_spawn(const std::vector<std::string> &argv, bool want_stdin,
             return false;
         }
         SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
+        // Synchronous bounded retries, rather than an uninterruptible full-pipe
+        // WriteFile. Byte pipes report the number of bytes accepted immediately.
+        DWORD mode = PIPE_NOWAIT;
+        if (!SetNamedPipeHandleState(in_w, &mode, nullptr, nullptr)) {
+            CloseHandle(in_r); CloseHandle(in_w); CloseHandle(log);
+            *err = "cannot configure bounded encoder pipe";
+            return false;
+        }
     } else {
         in_r = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            &sa, OPEN_EXISTING, 0, nullptr);
@@ -161,9 +162,18 @@ bool proc_spawn(const std::vector<std::string> &argv, bool want_stdin,
     std::vector<unsigned char> attr_buf(attr_size);
     LPPROC_THREAD_ATTRIBUTE_LIST attrs =
         reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
-    bool attrs_ok = InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size) &&
+    const bool attrs_initialized = InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size) != 0;
+    const bool attrs_ok = attrs_initialized &&
         UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                   inherit, n_inherit * sizeof(HANDLE), nullptr, nullptr);
+    if (!attrs_ok) {
+        if (attrs_initialized) DeleteProcThreadAttributeList(attrs);
+        if (in_r) CloseHandle(in_r);
+        if (in_w) CloseHandle(in_w);
+        CloseHandle(log);
+        *err = "cannot restrict encoder handle inheritance";
+        return false;
+    }
     STARTUPINFOEXW si{};
     si.StartupInfo.cb = sizeof(si);
     si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -198,7 +208,12 @@ bool proc_spawn(const std::vector<std::string> &argv, bool want_stdin,
 #elif defined(VREC_SPAWN_POSIX)
     int fds[2] = { -1, -1 };
     if (want_stdin && pipe(fds) != 0) { *err = "pipe() failed"; return false; }
-    if (want_stdin) fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    if (want_stdin && (fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0 ||
+                      fcntl(fds[1], F_SETFL, O_NONBLOCK) < 0)) {
+        close(fds[0]); close(fds[1]);
+        *err = "cannot configure bounded encoder pipe";
+        return false;
+    }
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     if (want_stdin) {
@@ -227,40 +242,45 @@ bool proc_spawn(const std::vector<std::string> &argv, bool want_stdin,
     p->running = true;
     return true;
 #else
-    std::string cmd;
-    for (size_t i = 0; i < argv.size(); ++i) {
-        if (i) cmd += ' ';
-        cmd += sh_quote(argv[i]);
-    }
-    cmd += " >>" + sh_quote(log_path) + " 2>&1";
-    if (!want_stdin) cmd += " </dev/null";
-    p->pipe = popen(cmd.c_str(), want_stdin ? "w" : "r");
-    if (!p->pipe) { *err = "popen failed"; return false; }
-    p->running = true;
-    return true;
+    (void)argv; (void)want_stdin; (void)log_path;
+    *err = "bounded encoder process control is unavailable on this platform";
+    return false;
 #endif
 }
 
 bool proc_write(Proc *p, const void *data, size_t n)
 {
     const unsigned char *b = static_cast<const unsigned char *>(data);
+    auto progress = std::chrono::steady_clock::now();
 #if defined(VREC_SPAWN_WIN32)
     while (n > 0) {
+        if (cancel_children.load() || std::chrono::steady_clock::now() - progress >= kPipeStallLimit)
+            return false;
         DWORD chunk = n > (1u << 30) ? (1u << 30) : (DWORD)n, wrote = 0;
-        if (!WriteFile(p->in_w, b, chunk, &wrote, nullptr) || wrote == 0) return false;
+        if (!WriteFile(p->in_w, b, chunk, &wrote, nullptr) && GetLastError() != ERROR_NO_DATA)
+            return false;
+        if (!wrote) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
         b += wrote; n -= wrote;
+        progress = std::chrono::steady_clock::now();
     }
     return true;
 #elif defined(VREC_SPAWN_POSIX)
     while (n > 0) {
+        if (cancel_children.load() || std::chrono::steady_clock::now() - progress >= kPipeStallLimit)
+            return false;
         ssize_t w = write(p->in_fd, b, n);
         if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue;
+        }
         if (w <= 0) return false;
         b += w; n -= (size_t)w;
+        progress = std::chrono::steady_clock::now();
     }
     return true;
 #else
-    return std::fwrite(b, 1, n, p->pipe) == n;
+    (void)p; (void)b; (void)n; (void)progress;
+    return false;
 #endif
 }
 
@@ -271,7 +291,17 @@ int proc_finish(Proc *p)
     p->running = false;
 #if defined(VREC_SPAWN_WIN32)
     if (p->in_w) { CloseHandle(p->in_w); p->in_w = nullptr; }
-    WaitForSingleObject(p->proc, INFINITE);
+    const auto deadline = std::chrono::steady_clock::now() + kChildExitLimit;
+    while (WaitForSingleObject(p->proc, 20) == WAIT_TIMEOUT) {
+        if (cancel_children.load() || std::chrono::steady_clock::now() >= deadline) {
+            TerminateProcess(p->proc, 1);
+            if (WaitForSingleObject(p->proc, 1000) != WAIT_OBJECT_0) {
+                CloseHandle(p->proc); p->proc = nullptr;
+                return -1;
+            }
+            break;
+        }
+    }
     DWORD code = 1;
     GetExitCodeProcess(p->proc, &code);
     CloseHandle(p->proc);
@@ -280,17 +310,23 @@ int proc_finish(Proc *p)
 #elif defined(VREC_SPAWN_POSIX)
     if (p->in_fd >= 0) { close(p->in_fd); p->in_fd = -1; }
     int status = 0;
-    while (waitpid(p->pid, &status, 0) < 0 && errno == EINTR) {}
+    bool killed = false;
+    auto deadline = std::chrono::steady_clock::now() + kChildExitLimit;
+    for (;;) {
+        const pid_t done = waitpid(p->pid, &status, WNOHANG);
+        if (done == p->pid) break;
+        if (done < 0 && errno != EINTR) { p->pid = -1; return -1; }
+        if ((!killed && cancel_children.load()) || std::chrono::steady_clock::now() >= deadline) {
+            if (killed) { p->pid = -1; return -1; }
+            kill(p->pid, SIGKILL); killed = true;
+            deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     p->pid = -1;
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
 #else
-    if (!p->pipe) return -1;
-    char sink[256];
-    /* A read-mode popen (mux) must be drained before pclose. */
-    while (std::fread(sink, 1, sizeof sink, p->pipe) > 0) {}
-    int rc = pclose(p->pipe);
-    p->pipe = nullptr;
-    return rc;
+    return -1;
 #endif
 }
 
@@ -323,6 +359,7 @@ constexpr uint64_t kCyclesPerSample = 768;   /* 33868800 / 44100 */
 constexpr int kAudioRate = 44100;
 
 struct Rec {
+    ~Rec() { video_recorder_shutdown(); }
     std::mutex mu;
     std::condition_variable cv_writer;   /* frames ready / stop / flush */
     std::condition_variable cv_space;    /* pool buffer freed */
@@ -728,10 +765,10 @@ void writer_main(uint32_t session)
         }
         ok = proc_write(&g.enc, f->px.data(), f->px.size());
         drain_audio(INT64_MAX);
+        const int code = ok ? 0 : proc_finish(&g.enc);
         std::lock_guard<std::mutex> lk(g.mu);
         release_frame_locked(f);
         if (!ok) {
-            int code = proc_finish(&g.enc);
             g.st.ffmpeg_exit = code;
             set_error_locked("ffmpeg encoder stopped accepting frames (exit " +
                              std::to_string(code) + "): " + log_tail(g.log_path));
@@ -1023,8 +1060,15 @@ int video_recorder_start(const VrecOptions *in, char *err, int errcap)
     g.session.store(session);
     g.st.session = session;
     g.st.state = VREC_RECORDING;
+    cancel_children.store(false);
     g.state.store(VREC_RECORDING);
-    g.writer = std::thread(writer_main, session);
+    try {
+        g.writer = std::thread(writer_main, session);
+    } catch (const std::exception&) {
+        if (g.wav) { std::fclose(g.wav); g.wav = nullptr; }
+        set_error_locked("writer failed");
+        return 0;
+    }
     return 1;
 }
 
@@ -1090,8 +1134,13 @@ void video_recorder_shutdown(void)
         uint32_t session = 0;
         if (video_recorder_flush_wanted(&session)) video_recorder_flush_done(session);
     }
-    if (active_state(g.state.load())) video_recorder_wait(120000);
-    if (g.writer.joinable() && !active_state(g.state.load())) g.writer.join();
+    if (active_state(g.state.load())) video_recorder_wait(2000);
+    if (active_state(g.state.load())) {
+        cancel_children.store(true);
+        g.cv_writer.notify_all();
+        g.cv_space.notify_all();
+    }
+    if (g.writer.joinable()) g.writer.join();
 }
 
 int video_recorder_present_poll(uint32_t *session)

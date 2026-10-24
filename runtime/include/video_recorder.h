@@ -41,10 +41,13 @@
  *   up, the presenting thread WAITS for a free buffer (the game slows down;
  *   guest-time stamps keep A/V exact). Nothing is ever dropped by design;
  *   `dropped` counts only readback failures and is expected to stay 0.
+ *   A pipe that makes no progress for 2 s fails the recording. Child exit
+ *   waits are limited to 5 s. Shutdown allows 2 s to finish, then cancels
+ *   and reaps its own encoder; partial files remain available for diagnosis.
  *
  * Pipeline: stage 1 streams raw BGRA frames to `ffmpeg -f rawvideo -i -`
  *   (no console window: CREATE_NO_WINDOW on Windows, posix_spawn elsewhere,
- *   popen as the portable fallback) encoding to <path>.part.video.nut, while
+ *   optional recording unavailable on other platforms) encoding to <path>.part.video.nut, while
  *   the writer thread appends the SPU tap to <path>.part.audio.wav. stop()
  *   finalises on the writer thread (status: stopping -> finalizing -> done):
  *   the audio slice is trimmed/padded to the video duration and a second

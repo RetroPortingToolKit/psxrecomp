@@ -495,9 +495,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**386 commands registered** — 373 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**387 commands registered** — 374 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-85 of 386 have prose above; **301 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+87 of 387 have prose above; **300 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -839,8 +839,8 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `unwatch` | ✓ |  | ✓ |
 | `vblank_rate` | ✓ |  |  |
 | `video_info` | ✓ |  | ✓ |
-| `video_set` | ✓ |  |  |
 | `video_record` | ✓ |  | ✓ |
+| `video_set` | ✓ |  |  |
 | `vk_perf` | ✓ |  |  |
 | `vram_peek` | ✓ | ✓ | ✓ |
 | `vsync_query_hle` | ✓ |  |  |

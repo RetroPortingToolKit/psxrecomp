@@ -126,3 +126,13 @@ is unchanged: it has no presenter at all.
 
 Measured on Windows 11 + NVIDIA (see the PR): GL readback of the default
 framebuffer of the never-shown window returns the real composed frames.
+
+## Encoder failures and shutdown
+
+A pipe that makes no progress for two seconds fails the recording. The
+writer allows five seconds for a child to exit after closing its input.
+Shutdown grants two seconds for finalization, then cancels and reaps the
+encoder it launched. A failed or interrupted recording reports `error`; its
+partial video, audio, and encoder log remain for diagnosis. Windows and
+POSIX use owned child processes with bounded waits. Other platforms build
+the engine with optional recording unavailable.
