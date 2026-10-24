@@ -646,10 +646,12 @@ int gpu_ws_configured_x_reveal(void) { return ws_nw_configured_offset(); }
 int ws_nw_extra(void) { return 2 * ws_nw_offset(); }
 
 static uint32_t ws_view_camera_addr, ws_view_min_addr, ws_view_max_addr, ws_view_active_addr;
+static int ws_view_manual;
 static int ws_view_bounds_override, ws_view_bounds_min, ws_view_bounds_max;
 static WsViewAnchor ws_view;
 static uint32_t ws_view_frame = UINT32_MAX;
 void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_t active) {
+    ws_view_manual = 0;
     ws_view_camera_addr = camera;
     ws_view_min_addr = min;
     ws_view_max_addr = max;
@@ -665,8 +667,27 @@ void gpu_ws_set_view_bounds_override(int enabled, int minimum, int maximum) {
     ws_view_bounds_max = maximum;
 }
 static int ws_view_enabled(void) {
-    return ws_view_camera_addr && ws_view_min_addr && ws_view_max_addr &&
-           ws_view_active_addr && ws_native_wide_active() && ws_disp_w() <= 384;
+    return (ws_view_manual || (ws_view_camera_addr && ws_view_min_addr &&
+           ws_view_max_addr && ws_view_active_addr)) &&
+           ws_native_wide_active() && ws_disp_w() <= 384;
+}
+void gpu_ws_set_manual_view_anchor(int enabled, int shift) {
+    int was_manual = ws_view_manual;
+    ws_view_manual = enabled != 0;
+    if (ws_view_manual) {
+        int extra = ws_nw_configured_offset();
+        if (shift < -extra) shift = -extra;
+        if (shift > extra) shift = extra;
+        ws_view = (WsViewAnchor){extra + shift, extra - shift, shift, 0, 0};
+        ws_view_frame = (uint32_t)s_frame_count;
+        /* Present can reuse an existing wide surface without new packets.
+         * Publish the origin now so its center cannot be replaced by native
+         * VRAM during that interval. Packet-specific HUD shifts stay separate. */
+        gr_wide_set_view(ws_view_enabled(), shift, 0, 0);
+    } else if (was_manual && !ws_view_camera_addr) {
+        ws_view_frame = UINT32_MAX;
+        gr_wide_set_view(0, 0, 0, 0);
+    }
 }
 static WsViewAnchor ws_view_current(void) {
     WsViewAnchor centered = {ws_nw_offset(), ws_nw_offset(), 0, 0, 0};
@@ -677,6 +698,7 @@ static WsViewAnchor ws_view_current(void) {
 /* Sample at the BG renderer setup, after guest camera clamp and before either
  * ring refill or packet generation. Intermediate camera writes are ignored. */
 static void ws_view_sample(void) {
+    if (ws_view_manual) return;
     if (!ws_view_enabled()) return;
     ws_view = ws_view_anchor(ws_nw_offset(),
         (int16_t)psx_read_half(ws_view_camera_addr),
@@ -1561,7 +1583,7 @@ int psx_ws_x_margin(void) {
     if (ws_native_wide_configured())
         /* A constant envelope covers both possible edge origins. Do not shrink
          * actor activation as the view slides, or prebuilt spawn lists go stale. */
-        return ws_nw_configured_offset() * (ws_view_camera_addr ? 2 : 1)
+        return ws_nw_configured_offset() * ((ws_view_camera_addr || ws_view_manual) ? 2 : 1)
                + ws_cull_guard_pixels;
     if (!ws_active()) return 0;
     return (160 * (ws_xden - ws_xnum) + ws_xnum / 2) / ws_xnum
@@ -3353,24 +3375,55 @@ static uint32_t ws_nw_left_hud_packet_hi = 0;
  * HUD can share the same builder, and either entry hook may run first. Clear
  * tags for recycled non-HUD packets; frame expiry protects unused addresses. */
 static WsPrimitiveRole ws_primitive_roles[WS_ROLE_BUCKETS];
+/* Producer-owned roles have a separate path from legacy packet-anchor tags.
+ * Debug counters establish that current title hooks reach actual rendering. */
+static GpuWsTagStats ws_hud_role_stats, ws_world_role_stats;
+void gpu_ws_get_role_stats(GpuWsTagStats *hud, GpuWsTagStats *world) {
+    if (hud) *hud = ws_hud_role_stats;
+    if (world) *world = ws_world_role_stats;
+}
 void gpu_ws_tag_hud_primitive(uint32_t primitive, int edge) {
     WsPrimitiveRole* tag = ws_role_write(ws_primitive_roles, primitive,
                                         (uint32_t)s_frame_count);
     if (tag) tag->hud_edge = edge < 0 ? -1 : edge > 0 ? 1 : 0;
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (tag && edge) {
+        ++ws_hud_role_stats.tag_calls;
+        ws_hud_role_stats.last_tag_frame = (uint32_t)s_frame_count;
+    }
+#endif
 }
 void gpu_ws_tag_world_primitive(uint32_t primitive, int is_world) {
     WsPrimitiveRole* tag = ws_role_write(ws_primitive_roles, primitive,
                                         (uint32_t)s_frame_count);
     if (tag) tag->world = is_world != 0;
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (tag && is_world) {
+        ++ws_world_role_stats.tag_calls;
+        ws_world_role_stats.last_tag_frame = (uint32_t)s_frame_count;
+    }
+#endif
 }
 static int ws_tagged_world_primitive(void) {
     const WsPrimitiveRole* tag = ws_role_read(ws_primitive_roles,
         gp0_cmd_source_addr, (uint32_t)s_frame_count);
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (tag && tag->world) {
+        ++ws_world_role_stats.hit;
+        ws_world_role_stats.last_hit_frame = (uint32_t)s_frame_count;
+    }
+#endif
     return tag && tag->world;
 }
 static int ws_tagged_hud_edge(void) {
     const WsPrimitiveRole* tag = ws_role_read(ws_primitive_roles,
         gp0_cmd_source_addr, (uint32_t)s_frame_count);
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (tag && tag->hud_edge) {
+        ++ws_hud_role_stats.hit;
+        ws_hud_role_stats.last_hit_frame = (uint32_t)s_frame_count;
+    }
+#endif
     return tag ? tag->hud_edge : 0;
 }
 void gpu_ws_set_nw_hud_corners(int on) { ws_nw_hud_corners = on ? 1 : 0; }
@@ -3393,7 +3446,9 @@ static int32_t ws_nw_hud_shift(int32_t x, int32_t w) {
     int32_t off = ws_nw_offset();
     if (off <= 0) return 0;
     int hud_edge = ws_tagged_hud_edge();
-    if (hud_edge) return hud_edge * off;
+    /* The compositor's anchor shifts the world origin too. Cancel that part
+     * for producer-owned HUD so both edges stay attached to the viewport. */
+    if (hud_edge) return hud_edge * off - ws_view_current().shift;
     int32_t explicit_delta = 0;
     if (ws_nw_explicit_hud_delta(&explicit_delta)) return explicit_delta;
     if (!ws_nw_left_hud_packet() && !ws_nw_hud_corners) return 0;
@@ -7348,7 +7403,7 @@ static void gp0_execute_command(void) {
     gp0_ring_record(gp0_cmd_buf, gp0_words_needed);
     extern void ws_bg_phase_note(uint32_t op);
     ws_bg_phase_note(opcode);   /* native-wide 2D-backdrop stretch: background-phase latch */
-    if (ws_view_camera_addr || g_bg2d_host_size) {
+    if (ws_view_camera_addr || ws_view_manual || g_bg2d_host_size) {
         WsViewAnchor v = ws_view_current();
         /* Draw env packets select the back-buffer band after linked-list
          * begin. Clear narrow-room padding at its first actual draw. */

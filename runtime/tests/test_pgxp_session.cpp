@@ -140,6 +140,13 @@ extern "C" void gpu_ws_set_adaptive_backdrop_preload(int) {}
 extern "C" void psx_projection_reset_session(void) {}
 extern "C" void gpu_ws_set_native_scene_predicate(int (*)(void)) {}
 extern "C" int gpu_ws_configured_x_reveal(void) { return 0; }
+extern "C" int psx_netplay_active(void) { return 0; }
+extern "C" void gpu_hd_textures_shutdown(void) {}
+extern "C" int gpu_hd_textures_configure(const char*, int, int, char*, size_t) { return 1; }
+extern "C" void gpu_hd_textures_set_dump_enabled(int) {}
+extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) { *out = {}; }
+extern "C" int gpu_hd_textures_reload(char*, size_t) { return 1; }
+extern "C" void gpu_ws_set_manual_view_anchor(int, int) {}
 extern "C" void gpu_ws_tag_hud_prim(uint32_t, int) {}
 extern "C" void gpu_ws_tag_screen_mask_quad(uint32_t) {}
 extern "C" void gpu_ws_tag_radial_screen_mask_quad(uint32_t, float) {}

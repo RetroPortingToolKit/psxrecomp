@@ -472,6 +472,10 @@ class AotMethodsTest(unittest.TestCase):
             pipeline.stage(cache, root / 'stage', receipt)
             staged = next((root / 'stage').rglob('*.resident'))
             self.assertEqual(staged.read_bytes(), library.with_suffix('.resident').read_bytes())
+            # Re-staging identical modules must work while Windows has a DLL
+            # mapped. Simulate the OS refusing every attempted replacement.
+            with mock.patch.object(pipeline.shutil, 'copy2', side_effect=PermissionError('loaded DLL')):
+                pipeline.stage(cache, root / 'stage', receipt)
             library.with_suffix('.resident').write_bytes(b'changed after audit')
             with self.assertRaisesRegex(ValueError, 'Audited artifact changed'):
                 pipeline.stage(cache, root / 'stage', receipt)

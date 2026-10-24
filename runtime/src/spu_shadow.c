@@ -5,9 +5,8 @@
  *
  * The enhancement vs the canon model:
  *   - 4-point cubic (Catmull-Rom) interpolation between decoded samples instead
- *     of the canon's nearest-sample pick (the PS1 hardware itself uses a 4-tap
- *     Gaussian that deliberately muffles highs; the canon model approximates
- *     that as nearest-sample). The cubic keeps high frequencies clean.
+ *     of the canon's PS1 Gaussian interpolation. The cubic preserves more
+ *     high-frequency detail for supported voices.
  *   - everything stays in float through the per-voice envelope+volume scaling
  *     and the mix, with no int16 truncation until the final clamp — no
  *     intermediate requantization noise.
@@ -28,6 +27,7 @@
 static int            s_enabled = -1;   /* -1 = not yet resolved */
 static int            s_cfg     = 0;    /* config/launcher gate (env overrides) */
 static ShadowVerifier s_verifier;
+static int s_cd_bypass;
 static SpuShadowInfo  s_info;
 
 void spu_shadow_set_enabled(int on) {
@@ -51,6 +51,7 @@ bool spu_shadow_enabled(void) {
 }
 
 void spu_shadow_reset(void) {
+    s_cd_bypass = 0;
     shadow_verifier_init(&s_verifier);
     memset(&s_info, 0, sizeof(s_info));
     s_info.enabled = spu_shadow_enabled() ? 1 : 0;
@@ -69,6 +70,27 @@ static float catmull_rom(const int16_t s[4], float t) {
 
 void spu_shadow_process(int16_t* canon, int frames) {
     if (!spu_shadow_enabled() || !canon || frames <= 0) return;
+
+    /* This shadow models voices only, not the CD/XA bus. A previously proven
+     * voice mix must not hide the first seconds of newly starting movie audio
+     * while the windowed verifier gathers strikes. Preserve the complete
+     * canonical mix immediately, and require fresh proof when CD is disabled. */
+    SpuGlobalState global;
+    spu_get_global_state(&global);
+    if (global.ctrl & 1u) {
+        if (!s_cd_bypass) {
+            shadow_verifier_init(&s_verifier);
+            s_info.proven = 0;
+            s_info.last_r = s_info.last_ratio = 0.0f;
+            s_info.gain = 1.0f;
+            snprintf(s_info.last_revert, sizeof(s_info.last_revert),
+                     "CD/XA input uses the complete canonical mix");
+            fprintf(stderr, "[spu_shadow] CD/XA input: canonical mix immediately\n");
+        }
+        s_cd_bypass = 1;
+        return;
+    }
+    s_cd_bypass = 0;
 
     const SpuShadowFrameTapPub* tap =
         (const SpuShadowFrameTapPub*)spu_shadow_tap_buffer();
@@ -102,8 +124,11 @@ void spu_shadow_process(int16_t* canon, int frames) {
             ml *= (float)fr->main_l * (1.0f / 16384.0f);
             mr *= (float)fr->main_r * (1.0f / 16384.0f);
         }
-        shadow_l[f] = ml * gain;
-        shadow_r[f] = mr * gain;
+        /* Decoded tap samples are int16-scale, just like canon. The verifier
+         * and output below both consume normalized floats; omitting this
+         * conversion left the level ratio near 32768 and could never prove. */
+        shadow_l[f] = ml * gain * SHADOW_NORM;
+        shadow_r[f] = mr * gain * SHADOW_NORM;
     }
 
     /* Feed (canon, shadow) to the verifier per output frame, in the canon's

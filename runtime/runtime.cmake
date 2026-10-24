@@ -392,6 +392,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_lle.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_hle.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_select.c
+    ${PSXRECOMP_ROOT}/runtime/src/texture_pack_install.cpp
     ${PSXRECOMP_ROOT}/runtime/src/gpu_hd_textures.cpp
     ${PSXRECOMP_ROOT}/runtime/src/hd_texture_pack.cpp
     ${PSXRECOMP_ROOT}/runtime/src/duckstation_texture_pack.cpp

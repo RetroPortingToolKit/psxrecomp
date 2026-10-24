@@ -199,6 +199,8 @@ void gpu_ws_set_full_2d(int on);
 /* Signed 16-bit camera/min/max; active is a nonzero byte. Requires bg2d hooks.
  * Zero addresses disable the feature. No guest memory is written. */
 void gpu_ws_set_view_anchor(uint32_t camera, uint32_t min, uint32_t max, uint32_t active);
+/* Explicit frame-local origin for titles without bg2d camera sampling hooks. */
+void gpu_ws_set_manual_view_anchor(int enabled, int shift);
 /* Optional authored scene bounds when native camera locks do not delimit
  * visible geometry. Set before layer setup; disable when leaving the scene.
  * Changes presentation only, and has no effect without view anchoring. */

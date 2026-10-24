@@ -9840,6 +9840,18 @@ static int pt_cb_ctx(void *user, int current) {
 
 /* The one owned swap call: the composing thread's (direct) or the present
  * thread's. */
+/* Optional CPU swap-completion histogram, not a claim about physical scanout.
+ * Cumulative buckets let read-only clients subtract two snapshots. */
+static _Atomic uint64_t s_swap_gap_ms[64];
+static uint64_t s_swap_last_tick;
+static _Atomic int s_swap_timing = -1;
+void gl_renderer_swap_timing_json(char *out, int cap) {
+    int used = snprintf(out, (size_t)cap, "\"measured\":%d,\"gap_ms\":[", s_swap_timing == 1);
+    for (int i = 0; i < 64 && used < cap; ++i)
+        used += snprintf(out + used, (size_t)(cap - used), "%s%llu", i ? "," : "",
+                         (unsigned long long)atomic_load(&s_swap_gap_ms[i]));
+    if (used < cap) snprintf(out + used, (size_t)(cap - used), "]");
+}
 static void gl_window_swap(void) {
 #if defined(PSX_SDL3)
     psx_video_telemetry_present(SDL_GL_SwapWindow(s_win) ? 1 : 0);
@@ -9847,6 +9859,18 @@ static void gl_window_swap(void) {
     SDL_GL_SwapWindow(s_win);
     psx_video_telemetry_present(-1); // SDL2 exposes no swap result.
 #endif
+    if (s_swap_timing < 0) {
+        const char *env = getenv("PSX_PRESENT_TIMING");
+        s_swap_timing = env && env[0] == '1';
+    }
+    if (s_swap_timing) {
+        const uint64_t now = SDL_GetPerformanceCounter();
+        if (s_swap_last_tick) {
+            uint64_t ms = (now - s_swap_last_tick) * 1000 / SDL_GetPerformanceFrequency();
+            atomic_fetch_add(&s_swap_gap_ms[ms < 63 ? ms : 63], 1);
+        }
+        s_swap_last_tick = now;
+    }
 }
 
 static void *pt_cb_present(void *user, int slot, void *ready) {

@@ -10,6 +10,43 @@ int main(void) {
     assert(textured_dot_regression_main() == 0);
     reset_gpu_state_for_test();
     configure_native_wide_16_9();
+    /* Explicit screen origins work without bg2d producers. The full reveal
+     * transfers right at a left edge, including at very wide aspect ratios. */
+    const int aspects[] = {16, 21, 32, 64};
+    for (unsigned i = 0; i < sizeof aspects / sizeof aspects[0]; ++i) {
+        ws_cfg_num = aspects[i];
+        int extra = gpu_ws_configured_x_reveal();
+        gpu_ws_set_manual_view_anchor(1, -extra);
+        assert(fixture_wide_view.enabled && fixture_wide_view.shift == -extra);
+        WsViewAnchor v = ws_view_current();
+        assert(ws_view_enabled() && v.left == 0 && v.right == 2 * extra);
+        assert(v.shift == -extra && v.pad_left == 0 && v.pad_right == 0);
+        assert(psx_ws_x_margin() == 2 * extra + ws_cull_guard_pixels);
+        /* A producer-owned HUD must cancel the screen-origin shift. The
+         * left-edge camera used to clip left HUD and leave right HUD inset. */
+        const uint32_t hud_packet = 0x80018000u;
+        gp0_cmd_source_addr = hud_packet + 4u;
+        gpu_ws_tag_world_primitive(hud_packet, 0);
+        gpu_ws_tag_hud_primitive(hud_packet, -1);
+        assert(ws_nw_hud_shift(32, 16) == 0);
+        gpu_ws_tag_hud_primitive(hud_packet, 1);
+        assert(ws_nw_hud_shift(264, 70) == 2 * extra);
+        gpu_ws_set_manual_view_anchor(1, extra);
+        assert(ws_nw_hud_shift(264, 70) == 0);
+        gpu_ws_tag_hud_primitive(hud_packet, -1);
+        assert(ws_nw_hud_shift(32, 16) == -2 * extra);
+        gpu_ws_set_manual_view_anchor(1, 0);
+        assert(ws_nw_hud_shift(32, 16) == -extra);
+        gpu_ws_tag_hud_primitive(hud_packet, 0);
+        assert(ws_nw_hud_shift(160, 16) == 0);
+        gpu_ws_set_manual_view_anchor(1, -extra);
+        s_frame_count += 2;
+        assert(ws_view_current().shift == 0); /* stale scene proof expires */
+        gpu_ws_set_manual_view_anchor(0, 0);
+        assert(!fixture_wide_view.enabled);
+        assert(!ws_view_enabled() && psx_ws_x_margin() == extra + ws_cull_guard_pixels);
+    }
+    configure_native_wide_16_9();
     const uint32_t lower_sites[] = {0x80029fd0u};
     assert(!psx_ws_is_cull_bias_lower_site(lower_sites[0]));
     gpu_ws_set_bias_lower_cull_sites(lower_sites, 1);

@@ -10,8 +10,8 @@
  * It is NOT ground truth. The canon spu.c mix stays the authoritative output
  * AND the verify oracle. The shadow is fed, sample-for-sample, into a
  * ShadowVerifier against the canon stream; it only substitutes after a proven
- * window and reverts LOUDLY (logs DEGRADED) the instant correlation/level
- * breaks. Opt-in via PSX_AUDIO_SHADOW=1, default OFF — with it off, spu_render
+ * window and reverts LOUDLY (logs DEGRADED) after failed comparison windows.
+ * CD/XA input bypasses the voice-only shadow immediately. Opt-in via PSX_AUDIO_SHADOW=1, default OFF — with it off, spu_render
  * output is byte-identical to upstream (this module is never entered).
  *
  * This file consumes the live per-voice state that spu.c already maintains via

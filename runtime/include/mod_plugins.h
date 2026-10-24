@@ -326,6 +326,11 @@ int32_t psx_mod_widescreen_x_margin(void);
 /* Configured per-side visible reveal, excluding culling guards; zero at 4:3.
  * Use for screen-space layout, including the first frame of a new scene. */
 int32_t psx_mod_widescreen_view_x_margin(void);
+/* Frame-local presentation origin for native-wide world primitives. Positive
+ * shifts move the world right; HUD tags retain their physical-frame anchors.
+ * Call after native camera update every frame; disable outside qualified scenes.
+ * No guest camera, projection or packet coordinates are changed. */
+void psx_mod_set_widescreen_view_anchor(int enabled, int32_t shift);
 
 /* Enable render-only recovery of saturated horizontal GTE projections and
  * camera-plane clipping in native-wide gameplay. Requires exact packet-address/

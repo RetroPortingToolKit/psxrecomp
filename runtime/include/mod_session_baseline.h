@@ -3,7 +3,7 @@
 
 /*
  * First-call capture / later-call restore for the scalar host settings a
- * trusted plugin's psx_mod_* setters can change and no launcher control owns
+ * trusted plugin's psx_mod_* setters can change
  * (vsync, frame interpolation and its rate, automatic FMV skipping, and the
  * frame periods native VBlank pacing overrides). reset_mod_owned_presentation()
  * in main.cpp runs this at every session start; it lives here so a unit test
@@ -13,6 +13,9 @@
  * overrides such as PSX_VSYNC, and the launcher are resolved by then -- and
  * writes nothing back, so the first session keeps exactly what the player
  * configured. Later calls write that record back over the live values.
+ * VSync now has a launcher control: its Apply path updates the stored
+ * preference before a subsequent session restore, independently of any
+ * temporary mod-forced swap mode.
  */
 
 typedef struct PSXModSessionScalars {

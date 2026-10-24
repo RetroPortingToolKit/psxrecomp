@@ -162,6 +162,13 @@ if(BUILD_TESTING)
     add_executable(mod_session_baseline_test tests/test_mod_session_baseline.c)
     target_include_directories(mod_session_baseline_test PRIVATE include)
     add_test(NAME mod_session_baseline_test COMMAND mod_session_baseline_test)
+    add_executable(spu_shadow_normalization_test tests/test_spu_shadow_normalization.c
+        src/spu_shadow.c src/audio_shadow.c)
+    target_include_directories(spu_shadow_normalization_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(spu_shadow_normalization_test PRIVATE m)
+    endif()
+    add_test(NAME spu_shadow_normalization_test COMMAND spu_shadow_normalization_test)
     # Netplay: libjuice resolves from third_party/ with the network sealed,
     # and a recomp-net pinning another libjuice stops the configure.
     foreach(_psx_juice_case same other)
@@ -1310,6 +1317,13 @@ if(BUILD_TESTING)
     target_link_libraries(disc_path_resolve_test PRIVATE chdr-static)
     add_test(NAME disc_path_resolve_test COMMAND disc_path_resolve_test)
 
+    add_executable(regional_selection_test tests/test_regional_selection.cpp)
+    target_compile_features(regional_selection_test PRIVATE cxx_std_17)
+    target_include_directories(regional_selection_test PRIVATE include
+        ${PSXRECOMP_ROOT}/recompiler/lib/toml11)
+    add_test(NAME regional_selection_test COMMAND regional_selection_test
+        ${CMAKE_CURRENT_BINARY_DIR}/regional-selection-fixture)
+
     # Both BIOS filename conventions (bare vs region-qualified) resolve, in
     # both directions, so a config and a dump folder may disagree.
     add_executable(bios_rom_alias_test tests/test_bios_rom_alias.cpp)
@@ -1652,6 +1666,9 @@ if(BUILD_TESTING)
     # Bug B: the pacing decision must take ONE counter sample, so the unsigned
     # subtraction cannot underflow into a ~24.7-day SDL_Delay.
     add_executable(frame_pacing_test tests/test_frame_pacing.c)
+    add_executable(launcher_vsync_test tests/test_launcher_vsync.c)
+    target_include_directories(launcher_vsync_test PRIVATE include)
+    add_test(NAME launcher_vsync_test COMMAND launcher_vsync_test)
     add_executable(present_sync_test tests/test_present_sync.c)
     target_include_directories(present_sync_test PRIVATE include)
     add_test(NAME present_sync_test COMMAND present_sync_test)
@@ -2371,4 +2388,12 @@ if(NOT MSVC AND EXISTS "${BEETLE_LIB}")
     endif()
 elseif(NOT MSVC)
     message(STATUS "psx-beetle: libmednafen_psx.a not found - skipping psx-beetle")
+endif()
+
+# Fixtures compiling the real mod runtime also need its read-only installer.
+if(BUILD_TESTING)
+    foreach(fixture pgxp_session_test mod_runtime_test netplay_view_mods_test mod_runtime_cache_test mod_resident_test)
+        target_sources(${fixture} PRIVATE src/texture_pack_install.cpp src/duckstation_texture_pack.cpp tests/texture_install_stb.cpp)
+        target_link_libraries(${fixture} PRIVATE psx_texture_image_decode Threads::Threads)
+    endforeach()
 endif()

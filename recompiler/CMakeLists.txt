@@ -1494,6 +1494,24 @@ if(BUILD_TESTING)
 endif()
 
 # ---- test-registration completeness guard -----------------------------------
+if(BUILD_TESTING)
+    add_executable(fast_forward_policy_test ../runtime/tests/test_fast_forward.c)
+    target_include_directories(fast_forward_policy_test PRIVATE ../runtime/include)
+    if(MSVC)
+        target_compile_options(fast_forward_policy_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(fast_forward_policy_test PRIVATE -UNDEBUG)
+    endif()
+    if(NOT WIN32)
+        target_link_libraries(fast_forward_policy_test PRIVATE m)
+    endif()
+    add_test(NAME fast_forward_policy_test COMMAND fast_forward_policy_test)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME overlay_export_declarations
+            COMMAND ${Python3_EXECUTABLE} -I
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_overlay_export_declarations.py)
+    endif()
+endif()
 if(BUILD_TESTING AND Python3_Interpreter_FOUND AND NOT MSVC)
     add_test(NAME gpu_upload_history
         COMMAND ${Python3_EXECUTABLE}

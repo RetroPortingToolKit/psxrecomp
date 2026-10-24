@@ -241,6 +241,7 @@ struct ModResource {
     std::string description;
     std::string file_patterns;
     std::string file_description;
+    std::string texture_game_id; // Optional title identity required for HD installation.
     std::string format = "file";
     bool required = false;
     uint64_t size = 0;

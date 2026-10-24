@@ -38,6 +38,7 @@ int gl_renderer_hd_texture_cached(uint64_t key, uint64_t generation,
  * Safe before or after context creation; applies live when a context exists. */
 void gl_renderer_set_swap_interval(int interval);
 int gl_renderer_get_swap_interval(void); /* Actual driver interval, -2 if unavailable. */
+void gl_renderer_swap_timing_json(char *out, int cap); /* Opt-in CPU completion gaps. */
 
 /* Presentation-only temporal blending. High-refresh sub-presents blend the two
  * most recent stable display images on the owning render thread/context; this

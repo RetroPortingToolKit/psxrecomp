@@ -661,6 +661,9 @@ struct RuntimeConfig {
     // Defaults false even for Vulkan-enabled builds; developers must opt in per
     // game once visuals are validated.
     bool                  video_offer_vulkan = false;
+    // Hide unqualified threading/frame-generation controls in player packages.
+    // Existing titles keep their current UI unless they opt out explicitly.
+    bool                  video_offer_render_pipeline = true;
 
     // texture_window_batching: OpenGL only. Let textured primitives with
     // different GP0(E2h) texture windows share one draw (the window rides in
@@ -1681,6 +1684,8 @@ struct UserSettings {
     // fast_forward_pad: hold-to-fast-forward, the controller twin of the
     // keyboard [KeyMap] Turbo (Tab). 0 = unbound.
     bool has_hotkey_pad_fast_forward = false; int hotkey_pad_fast_forward = 1528; /* select+l1 */
+    bool has_fast_forward_speed = false; double fast_forward_speed = 4.0;
+    bool has_fast_forward_mode = false; bool fast_forward_toggle_mode = false;
     bool has_hotkey_pad_fast_forward_toggle = false; int hotkey_pad_fast_forward_toggle = 0; /* unbound */
     // [audio]
     bool has_spu_hq         = false; bool spu_hq         = false;

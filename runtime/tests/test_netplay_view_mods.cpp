@@ -159,6 +159,7 @@ extern "C" void gpu_ws_tag_hud_primitive(uint32_t, int) {}
 extern "C" void gpu_ws_tag_world_primitive(uint32_t, int) {}
 extern "C" void gpu_ws_set_adaptive_backdrop_preload(int) {}
 extern "C" int gpu_ws_configured_x_reveal(void) { return 0; }
+extern "C" void gpu_ws_set_manual_view_anchor(int, int) {}
 extern "C" void gpu_ws_tag_hud_prim(uint32_t, int) {}
 extern "C" void gpu_ws_tag_screen_mask_quad(uint32_t) {}
 extern "C" void gpu_ws_tag_radial_screen_mask_quad(uint32_t, float) {}

@@ -12,6 +12,7 @@
 #include "mod_plugins.h"
 #include "mod_runtime.h"
 #include "psx_sha256.h"
+#include "host_sha256.h"
 
 #include <algorithm>
 #include <array>
@@ -87,7 +88,8 @@ std::vector<Record>& records() {
 
 Digest sha(const uint8_t* p, size_t n) {
     Digest d;
-    psx_sha256_compute(p, n, d.data());
+    if(!PSXRecompV4::host_sha256_bytes(p,n,d.data()))
+        psx_sha256_compute(p, n, d.data());
     return d;
 }
 std::string hex(const uint8_t* d, size_t n = 32) {

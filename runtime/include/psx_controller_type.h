@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <cstdint>
 #include <string>
 
 /* SDL2/3 does not expose a consistently useful wheel class for every mapping.
@@ -36,6 +37,16 @@ inline bool psx_controller_handle_needs_close(bool controller_selected,
     if (!handle_attached) return true;
     return selected_guid && selected_guid[0] && active_guid && active_guid[0] &&
            std::strcmp(selected_guid, active_guid) != 0;
+}
+
+/* Recover even if a removal/add event was lost. Healthy devices must not be
+ * reopened (that would reset the guest pad protocol). Retry absent devices
+ * at a bounded rate instead of enumerating joysticks every video frame. */
+inline bool psx_controller_recovery_needed(bool selected, bool open,
+                                         bool attached, uint64_t now_ms,
+                                         uint64_t last_retry_ms) {
+    return selected && ((open && !attached) ||
+                        (!open && now_ms - last_retry_ms >= 500));
 }
 
 #endif

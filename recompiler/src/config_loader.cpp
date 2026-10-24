@@ -16,6 +16,7 @@
 
 #include "bios_rom_alias.h"
 #include "../../runtime/include/internal_resolution.h"
+#include "../../runtime/include/fast_forward.h"
 #include "host_path.h"
 #include "fmt/format.h"
 #include "ps1_exe_parser.h"
@@ -1104,6 +1105,9 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         }
         if (video.contains("render_thread")) {
             rt.video_render_thread = toml::find<bool>(video, "render_thread");
+        }
+        if (video.contains("offer_render_pipeline")) {
+            rt.video_offer_render_pipeline = toml::find<bool>(video, "offer_render_pipeline");
         }
         if (video.contains("present_thread")) {
             rt.video_present_thread = toml::find<bool>(video, "present_thread");
@@ -3413,6 +3417,21 @@ UserSettings load_user_settings(const fs::path& path) {
                 s.has_hotkey_pad_save_state_menu = true;
             }
         });
+        if (h.contains("fast_forward_speed")) try_get([&]{
+            const auto& value = toml::find(h, "fast_forward_speed");
+            double speed = value.is_integer() ? (double)value.as_integer() : value.as_floating();
+            if (std::isfinite(speed) && speed >= 1.0 && speed <= 5.0) {
+                s.fast_forward_speed = psx_fast_forward_preference(speed);
+                s.has_fast_forward_speed = true;
+            }
+        });
+        if (h.contains("fast_forward_mode")) try_get([&]{
+            const auto mode = toml::find<std::string>(h, "fast_forward_mode");
+            if (mode == "hold" || mode == "toggle") {
+                s.fast_forward_toggle_mode = mode == "toggle";
+                s.has_fast_forward_mode = true;
+            }
+        });
         if (h.contains("fast_forward_pad")) try_get([&]{
             const auto n = toml::find<int64_t>(h, "fast_forward_pad");
             if (pad_bind_value_ok(n)) {
@@ -3728,13 +3747,18 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     if (s.has_spu_hq)
         f << "spu_hq = " << (s.spu_hq ? "true" : "false") << "\n";
     if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu ||
-        s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle) {
+        s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle ||
+        s.has_fast_forward_speed || s.has_fast_forward_mode) {
         f << "\n[hotkeys]\n";
         if (s.has_hotkey_pad_rewind)
             f << "rewind_pad = " << s.hotkey_pad_rewind << "\n";
         if (s.has_hotkey_pad_save_state_menu)
             f << "save_state_menu_pad = "
               << s.hotkey_pad_save_state_menu << "\n";
+        if (s.has_fast_forward_speed)
+            f << "fast_forward_speed = " << psx_fast_forward_preference(s.fast_forward_speed) << "\n";
+        if (s.has_fast_forward_mode)
+            f << "fast_forward_mode = \"" << (s.fast_forward_toggle_mode ? "toggle" : "hold") << "\"\n";
         if (s.has_hotkey_pad_fast_forward)
             f << "fast_forward_pad = " << s.hotkey_pad_fast_forward << "\n";
         if (s.has_hotkey_pad_fast_forward_toggle)

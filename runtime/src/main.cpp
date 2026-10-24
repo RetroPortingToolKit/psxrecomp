@@ -8,6 +8,7 @@
 #include "cpu_state.h"
 #include "mod_netplay.h"
 #include "execution_profile.h"
+#include "regional_launch.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
 #include "mod_controller_source.h"
@@ -129,6 +130,8 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "bios_rom_alias.h"
 #include "host_path.h"
 #include "launcher_device.h"
+#include "launcher_vsync.h"
+#include "fast_forward.h"
 #include "game_options.h"
 #include "mod_plugins.h"
 #include "mod_local_input_policy.h"
@@ -696,23 +699,11 @@ static bool host_hotkey_input_focused(void) {
     return (SDL_GetWindowFlags(sdl_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 }
 
-static int manual_fast_forward_multiplier(void) {
-    static int value = -2; /* -2 = unread, -1 = max/unbounded */
-    if (value == -2) {
-        const char *e = std::getenv("PSX_FAST_FORWARD_SPEED");
-        value = 4;
-        if (e && e[0]) {
-            if (std::strcmp(e, "max") == 0 || std::strcmp(e, "MAX") == 0 ||
-                std::strcmp(e, "0") == 0) {
-                value = -1;
-            } else {
-                int parsed = std::atoi(e);
-                if (parsed >= 2 && parsed <= 16)
-                    value = parsed;
-            }
-        }
-    }
-    return value;
+static double g_fast_forward_preference = 4.0;
+static bool g_fast_forward_toggle_mode = false;
+static double manual_fast_forward_multiplier(void) {
+    return psx_fast_forward_target(g_fast_forward_preference,
+                                  std::getenv("PSX_FAST_FORWARD_SPEED"));
 }
 
 static void post_load_probe_stall_pc_note(uint32_t pc) {
@@ -1579,6 +1570,7 @@ static int           g_low_latency_input = 1;
  * own thread. Started at the first vblank once the context and every startup
  * GL call are done; s_render_thread_tried keeps it to one attempt. */
 static int           g_render_thread = 0;
+static bool          g_offer_render_pipeline = true;
 static int           g_render_thread_frames = 2;
 /* [video] frame_generation (docs/FRAME_GENERATION.md), with the render thread. */
 static int           g_frame_generation = 0;
@@ -1981,6 +1973,9 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
  * resolver and batching flag, which a plugin sets in activation.
  */
 static PSXModSessionBaseline g_mod_owned_baseline;
+static int launcher_vsync_preference(void) {
+    return g_mod_owned_baseline.captured ? g_mod_owned_baseline.values.video_vsync : g_video_vsync;
+}
 
 static void reset_mod_owned_presentation(void) {
     psx_mod_internal_resolution_reset();
@@ -3086,8 +3081,8 @@ static std::filesystem::path resolve_existing_runtime_path(const char* requested
 
     std::error_code ec;
     fs::path p(requested);
-    if (fs::exists(p, ec)) return PSXRecompV4::host_absolute(p, ec);
-    if (PSXRecompV4::host_path_is_absolute(p)) return {};
+    if (PSXRecompV4::host_path_is_absolute(p))
+        return fs::exists(p, ec) ? PSXRecompV4::host_absolute(p, ec) : fs::path{};
 
     // Anchor exclusively on the exe directory — never cwd (see exe_dir_from_argv).
     const fs::path root = exe_dir_from_argv(argv0);
@@ -4054,6 +4049,27 @@ static int present_effective_swap_interval(void) {
     return psx_present_sync_interval(g_video_vsync, blocked,
         g_frame_period_ms > 0.0 ? 1000.0 / g_frame_period_ms : 0.0,
         g_host_refresh_hz);
+}
+
+extern "C" void psx_display_timing_json(char *out, int cap) {
+    SpuShadowInfo shadow{};
+    spu_shadow_get_info(&shadow);
+    char swaps[2048];
+    gl_renderer_swap_timing_json(swaps, sizeof(swaps));
+    std::snprintf(out, (size_t)cap,
+        "\"pal\":%d,\"guest_hz\":%.6f,\"pacer_hz\":%.6f,"
+        "\"host_hz\":%.3f,\"vsync_requested\":%d,\"swap_requested\":%d,"
+        "\"vsync_owns_clock\":%d,\"fast_forward\":%d,\"spu_hq_enabled\":%d,\"spu_hq_proven\":%d,"
+        "\"spu_hq_reverts\":%llu,\"spu_hq_correlation\":%.6f,"
+        "\"spu_hq_level_ratio\":%.6f,\"spu_hq_gain\":%.6f,"
+        "\"fast_forward_target\":%.1f,\"fast_forward_toggle_mode\":%d,\"swaps\":{%s}",
+        psx_video_timing_is_pal(), guest_video_standard_hz(),
+        g_frame_period_ms > 0.0 ? 1000.0 / g_frame_period_ms : 0.0,
+        g_host_refresh_hz, g_video_vsync, present_effective_swap_interval(),
+        present_vsync_owns_cadence(), s_presentation_fast_forward, shadow.enabled, shadow.proven,
+        (unsigned long long)shadow.pauses, (double)shadow.last_r,
+        (double)shadow.last_ratio, (double)shadow.gain,
+        manual_fast_forward_multiplier(), g_fast_forward_toggle_mode ? 1 : 0, swaps);
 }
 
 static int present_should_wall_pace(void) {
@@ -8513,17 +8529,26 @@ static void fast_forward_toggle_flip(void) {
         host_osd_push("Fast forward: off", 900);
         return;
     }
-    const int mult = manual_fast_forward_multiplier();
+    const double mult = manual_fast_forward_multiplier();
     if (mult < 0)
         snprintf(msg, sizeof(msg), "Fast forward: max (locked)");
     else
-        snprintf(msg, sizeof(msg), "Fast forward: %dx (locked)", mult);
+        snprintf(msg, sizeof(msg), "Fast forward: %.1fx (locked)", mult);
     host_osd_push(msg, 900);
 }
 
 static void fast_forward_toggle_poll_buttons(void) {
     static int was_down;
     int down = hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE, g_hotkey_pad_fast_forward_toggle);
+    static int primary_was_down;
+    uint8_t host_keys[SDL_NUM_SCANCODES];
+    psx_keybinds_host_keys(SDL_GetKeyboardState(NULL), host_keys);
+    int primary_down = (host_hotkey_input_focused() &&
+        host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState())) ||
+        hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD, g_hotkey_pad_fast_forward);
+    if (g_fast_forward_toggle_mode && primary_down && !primary_was_down && !down)
+        fast_forward_toggle_flip();
+    primary_was_down = primary_down;
     if (down && !was_down)
         fast_forward_toggle_flip();
     was_down = down;
@@ -9010,6 +9035,24 @@ static void headless_present_image_ring_capture(void) {
 static int debug_toggles_on(void);
 static int debug_toggle_key(int key, char *out, int cap);
 #endif
+static void recover_disconnected_controllers() {
+    static uint64_t last_retry_ms = 0;
+    const uint64_t now_ms = SDL_GetTicks64();
+    for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
+        const PlayerInput& p = g_players[s];
+        const bool attached = p.handle && SDL_GameControllerGetAttached(p.handle);
+        if (!psx_controller_recovery_needed(p.kind == 2, p.handle != nullptr,
+                                             attached, now_ms, last_retry_ms))
+            continue;
+        if (p.handle)
+            std::fprintf(stderr, "psxrecomp input: detached controller slot=%d instance=%d; recovering\n",
+                         s + 1, (int)p.instance);
+        last_retry_ms = now_ms;
+        refresh_player_devices();
+        break;
+    }
+}
+
 static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -9379,6 +9422,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         if (!drain_host_events()) return ep;
         host_pause_service();
         runtime_menu_poll_toggle();
+        recover_disconnected_controllers();
         savestate_menu_poll_toggle_buttons();
         rewind_poll_toggle_buttons();
         fast_forward_toggle_poll_buttons();
@@ -9634,7 +9678,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         static int turbo_was_down = 0;
         /* Keyboard ([KeyMap] Turbo, default Tab) or the controller host
          * shortcut ([hotkeys] fast_forward_pad, default select+L1). Both are
-         * hold-to-run; the pad chord goes through the same combo matcher as
+         * follow the persisted Hold/Toggle mode; the pad chord goes through the same combo matcher as
          * Rewind / Save states so the launcher's binding editor covers it.
          * g_manual_turbo_latched is the press-to-lock twin (TurboToggle /
          * fast_forward_toggle_pad) and drives the same path. */
@@ -9642,10 +9686,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_keybinds_host_keys(keys, host_keys);
         const bool kb_turbo = host_hotkey_input_focused() &&
             host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
-        if (kb_turbo || g_manual_turbo_latched ||
-            hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD, g_hotkey_pad_fast_forward)) {
-            const int mult = manual_fast_forward_multiplier();
-            const int present_every = (mult < 0) ? 4 : (mult <= 4 ? 2 : 4);
+        if (g_manual_turbo_latched || (!g_fast_forward_toggle_mode &&
+            (kb_turbo || hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD,
+                                             g_hotkey_pad_fast_forward)))) {
+            const double mult = manual_fast_forward_multiplier();
+            const int present_every = psx_fast_forward_present_every(mult);
             manual_turbo_active = true;
             s_presentation_fast_forward = 1;
             if (!turbo_was_down && !g_manual_turbo_latched) {
@@ -9653,11 +9698,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 if (mult < 0)
                     snprintf(msg, sizeof(msg), "Fast forward: max");
                 else
-                    snprintf(msg, sizeof(msg), "Fast forward: %dx", mult);
+                    snprintf(msg, sizeof(msg), "Fast forward: %.1fx", mult);
                 host_osd_push(msg, 900);
             }
             turbo_was_down = 1;
-            if (mult >= 2 && g_frame_period_ms > 0.0) {
+            if (mult >= 1.0 && g_frame_period_ms > 0.0) {
                 uint64_t perf_start = runtime_perf_section_begin();
                 frame_pacer_wait(&s_frame_pacer,
                                  g_frame_period_ms / (double)mult);
@@ -11467,6 +11512,12 @@ namespace {
         if (!disc_path || !disc_path[0] || !out) return 0;
         g_launcher_disc_path = disc_path;
         std::memset(out, 0, sizeof(*out));
+        const int profile_route = fntrace_is_game_started() ? 0 : PSXRecompV4::regional::picked(disc_path);
+        if (profile_route != 0) {
+            out->verdict = profile_route > 0 ? 1 : 3;
+            out->profile_handoff = profile_route > 0;
+            return 1;
+        }
         /* Which serial THIS disc should carry -- the set's per-disc value, or
          * the game's own for a single-disc title. The expected CRC is disc
          * 1's and is only consulted when the game supplied one, so a set that
@@ -16885,6 +16936,11 @@ namespace {
         gi->settings_bindings = 1;
         gi->assist_binding_labels = kPsxHostShortcutLabels;
         gi->assist_binding_count = PSX_ASSIST_BIND_COUNT;
+#if defined(RECOMP_LAUNCHER_HAS_FRACTIONAL_FAST_FORWARD)
+        gi->assist_fast_forward_min = 10;
+        gi->assist_fast_forward_max = 50;
+        gi->assist_fast_forward_divisor = 10;
+#endif
 #if defined(RECOMP_LAUNCHER_HAS_DIRECT_ASSIST_BIND)
         /* Title-declared direct shortcut: captured as one button, defaulted
          * to the title's button; the other shortcuts keep their defaults. */
@@ -16924,7 +16980,7 @@ namespace {
         gi->has_dynamic_resolution = 1;
 #endif
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
-        gi->has_render_pipeline = 1;   /* OpenGL rows; the launcher gates */
+        gi->has_render_pipeline = g_offer_render_pipeline ? 1 : 0;
 #endif
 #if defined(RECOMP_LAUNCHER_HAS_QUALITY_PRESETS)
         quality_fill_game_info(gi);
@@ -17666,6 +17722,8 @@ static void host_pause_service(void) {
 int main(int argc, char** argv) {
     g_main_argc = argc;
     g_main_argv = argv;
+    const int regional_result = PSXRecompV4::regional::startup(argc, argv);
+    if (regional_result >= 0) return regional_result;
     /* Force line-buffered output so messages appear even if killed. */
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);
@@ -17744,6 +17802,7 @@ int main(int argc, char** argv) {
     bool        force_no_launcher = false;
     /* --game-mode / --no-game-mode (game_mode.h): -1 = detect. */
     int         cli_game_mode     = -1;
+    bool        cli_launcher_disc_check = false;
     /* CLI overrides for running several instances side by side (soak fleet).
      * These win over any game-config value and, crucially, work for the BIOS
      * (which has no [game]-block config schema, so debug_port/renderer can't be
@@ -17833,6 +17892,8 @@ int main(int argc, char** argv) {
              * seeded with is resolved by then. */
             cli_netplay_query = argv[++i];
             force_launcher = true;
+        } else if (std::strcmp(argv[i], "--launcher-disc-check") == 0) {
+            cli_launcher_disc_check = true;
         } else if (std::strcmp(argv[i], "--launcher") == 0) {
             force_launcher = true;
             /* Launchers that boot into the game (pages in the in-game menu)
@@ -17908,6 +17969,21 @@ int main(int argc, char** argv) {
     }
 
     std::string default_game_config_storage;
+    if (!disc_override_path && !PSXRecompV4::regional::selected_disc.empty())
+        disc_override_path = PSXRecompV4::regional::selected_disc.c_str();
+    if (!game_config_path) {
+        /* A catalog backend must own its config. Never inherit another
+         * regional profile from cwd or a parent if its config is missing. */
+        if (!PSXRecompV4::regional::profiles.empty()) {
+            const auto own = PSXRecompV4::regional::self.parent_path() / "game.toml";
+            if (!std::filesystem::is_regular_file(own)) {
+                std::fprintf(stderr, "Missing regional backend game.toml\n");
+                return 1;
+            }
+            default_game_config_storage = own.string();
+            game_config_path = default_game_config_storage.c_str();
+        }
+    }
     if (!game_config_path) {
         std::filesystem::path default_game_config =
             resolve_existing_runtime_path(PSX_DEFAULT_GAME_CONFIG_PATH, argv[0]);
@@ -18220,6 +18296,7 @@ int main(int argc, char** argv) {
             gl_renderer_set_texture_window_batching(
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
+            g_offer_render_pipeline = gc.runtime.video_offer_render_pipeline;
             g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
             g_frame_generation_method = gc.runtime.video_frame_generation_method;
             /* [timing] guest_cycle_scale is a title constant from game.toml
@@ -18800,6 +18877,10 @@ int main(int argc, char** argv) {
             g_hotkey_pad_save_state_menu = normalize_hotkey_pad_binding(
                 us.hotkey_pad_save_state_menu,
                 PSX_HOTKEY_PAD_SELECT_R1);
+        if (us.has_fast_forward_speed)
+            g_fast_forward_preference = psx_fast_forward_preference(us.fast_forward_speed);
+        if (us.has_fast_forward_mode)
+            g_fast_forward_toggle_mode = us.fast_forward_toggle_mode;
         if (us.has_hotkey_pad_fast_forward)
             g_hotkey_pad_fast_forward = normalize_hotkey_pad_binding(
                 us.hotkey_pad_fast_forward,
@@ -19279,6 +19360,24 @@ int main(int argc, char** argv) {
     }
 
 #if defined(RECOMP_LAUNCHER)
+    /* Noninteractive acceptance of the real launcher callback AFTER config
+     * resolution. Regional routing probes intentionally return before here. */
+    if (cli_launcher_disc_check) {
+        if (overlay_init_thread.joinable()) overlay_init_thread.join();
+        g_lnch_expected_serial = game_id;
+        g_lnch_expected_crc = game_disc_crc;
+        g_lnch_has_crc = game_has_disc_crc;
+        g_lnch_argv0 = argv[0];
+        const auto disc = disc_override_path
+            ? normalize_disc_path_for_launch(disc_override_path) : resolved_disc;
+        RecompLauncherCDiscVerify verdict{};
+        const int handled = ae_disc_verify(disc.string().c_str(), &verdict);
+        std::printf("launcher-disc-check expected=%s serial=%s verdict=%d iso=%d handoff=%d crc_required=%d config=%s\n",
+            game_id.c_str(), verdict.serial, verdict.verdict, verdict.iso_ok,
+            verdict.profile_handoff, game_has_disc_crc ? 1 : 0,
+            game_config_path ? game_config_path : "");
+        return handled && verdict.verdict == 1 && verdict.iso_ok && !verdict.profile_handoff ? 0 : 1;
+    }
     /* Integrated recomp-ui launcher: shown in its own GL window before the emulator
      * boots. Seeded with the effective settings (game.toml ∪ settings.toml);
      * on LAUNCH the user's choices are persisted to settings.toml and applied.
@@ -19349,6 +19448,7 @@ int main(int argc, char** argv) {
             /* Netplay session BIOS is match-only; never overwrite seed/bios.cfg. */
             std::filesystem::path match_session_bios_path;
             bool match_session_bios_set = false;
+            seed.vsync = g_video_vsync; seed.has_vsync = true;
             seed.renderer = g_video_renderer;             seed.has_renderer = true;
             /* Internal resolution round trip (internal_resolution.h): only a
              * launcher with the row seeds and returns the preset. An older one
@@ -19415,6 +19515,10 @@ int main(int argc, char** argv) {
             seed.has_hotkey_pad_fast_forward = true;
             seed.hotkey_pad_fast_forward_toggle = g_hotkey_pad_fast_forward_toggle;
             seed.has_hotkey_pad_fast_forward_toggle = true;
+            seed.fast_forward_speed = g_fast_forward_preference;
+            seed.has_fast_forward_speed = true;
+            seed.fast_forward_toggle_mode = g_fast_forward_toggle_mode;
+            seed.has_fast_forward_mode = true;
             seed.skip_launcher = skip_launcher_setting;   seed.has_skip_launcher = true;
             if (has_netplay_player_name) {
                 seed.netplay_player_name = netplay_player_name;
@@ -19606,9 +19710,7 @@ int main(int argc, char** argv) {
             /* [video] vsync (1 on, 0 off/immediate, -1 adaptive, 2 VRR) <->
              * the launcher's V-Sync row (1 On, 2 Off, 3 Adaptive). VRR has no
              * row; it shows as On and is kept unless the player changes it. */
-            ls.vsync = g_video_vsync == 0 ? RECOMP_LAUNCHER_VSYNC_OFF
-                     : g_video_vsync == -1 ? RECOMP_LAUNCHER_VSYNC_ADAPTIVE
-                     : RECOMP_LAUNCHER_VSYNC_ON;
+            ls.vsync = psx_vsync_to_launcher(g_video_vsync);
 #endif
             ls.frame_interp       = seed.frame_interpolation ? 1 : 0;
             ls.frame_interp_fps   = seed.frame_interpolation_fps;
@@ -19627,6 +19729,8 @@ int main(int argc, char** argv) {
                     PSX_HOTKEY_PAD_SELECT_L1);
             ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE] =
                 normalize_hotkey_pad_binding(seed.hotkey_pad_fast_forward_toggle, 0);
+            ls.assist_fast_forward_multiplier = (int)std::lround(seed.fast_forward_speed * 10.0);
+            ls.fast_forward_toggle_mode = seed.fast_forward_toggle_mode ? 1 : 0;
             ls.auto_skip_fmv      = seed.auto_skip_fmv ? 1 : 0;
             ls.turbo_loads        = seed.turbo_loads ? 1 : 0;
             /* Localization: index of resolved_language within lang_menu_options
@@ -19851,6 +19955,11 @@ int main(int argc, char** argv) {
             launcher_boot_timing_mark("host:after_run_window");
 
             lr = rui_rc;
+            if (lr == RECOMP_LAUNCHER_RESULT_PROFILE) {
+                if (overlay_init_thread.joinable()) overlay_init_thread.join();
+                SDL_Quit();
+                return PSXRecompV4::regional::handoff();
+            }
 
             /* The launcher hands back the player's edits on Quit as well as on
              * Play (recomp_launcher.h: "*io still holds the edits"), so both
@@ -19978,10 +20087,7 @@ int main(int argc, char** argv) {
 #endif
 #if defined(RECOMP_LAUNCHER_VSYNC_ADAPTIVE)
                 if (ls.vsync >= RECOMP_LAUNCHER_VSYNC_ON && ls.vsync <= RECOMP_LAUNCHER_VSYNC_ADAPTIVE) {
-                    const int was = g_video_vsync;
-                    g_video_vsync = ls.vsync == RECOMP_LAUNCHER_VSYNC_OFF ? 0
-                                  : ls.vsync == RECOMP_LAUNCHER_VSYNC_ADAPTIVE ? -1
-                                  : (was == 2 ? 2 : 1);
+                    g_video_vsync = psx_vsync_from_launcher(ls.vsync, g_video_vsync);
                     seed.vsync = g_video_vsync;
                     seed.has_vsync = true;
                 }
@@ -20011,6 +20117,10 @@ int main(int argc, char** argv) {
                 seed.hotkey_pad_fast_forward_toggle = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE], 0);
                 seed.has_hotkey_pad_fast_forward_toggle = true;
+                seed.fast_forward_speed = psx_fast_forward_preference(ls.assist_fast_forward_multiplier / 10.0);
+                seed.has_fast_forward_speed = true;
+                seed.fast_forward_toggle_mode = ls.fast_forward_toggle_mode != 0;
+                seed.has_fast_forward_mode = true;
                 seed.auto_skip_fmv = ls.auto_skip_fmv != 0;
                 seed.has_auto_skip_fmv = skip_fmv_offered;
                 seed.turbo_loads = ls.turbo_loads != 0;
@@ -20249,6 +20359,7 @@ int main(int argc, char** argv) {
                 g_present_thread   = seed.present_thread ? 1 : 0;
                 g_frame_generation = seed.frame_generation ? 1 : 0;
 #endif
+                g_video_vsync = seed.vsync;
                 g_video_aa        = seed.antialiasing;
                 g_video_texfilter = seed.texture_filter;
                 g_video_fmv_filter = seed.fmv_filter;
@@ -20289,6 +20400,8 @@ int main(int argc, char** argv) {
                 g_hotkey_pad_fast_forward_toggle = seed.has_hotkey_pad_fast_forward_toggle
                     ? seed.hotkey_pad_fast_forward_toggle
                     : 0;
+                g_fast_forward_preference = psx_fast_forward_preference(seed.fast_forward_speed);
+                g_fast_forward_toggle_mode = seed.fast_forward_toggle_mode;
                 skip_launcher_setting = seed.skip_launcher;
                 if (seed.has_bios_path) {
                     settings_bios_storage = seed.bios_path.string();
@@ -22248,6 +22361,7 @@ soft_return_lobby:
         quality_seed_launcher(&ls);
 #endif
 #endif
+        ls.vsync = psx_vsync_to_launcher(launcher_vsync_preference());
         ls.antialiasing = g_video_aa ? 1 : 0;
         ls.texture_filter = g_video_texfilter;
         ls.fmv_filter = cfg_fmv_filter_to_launcher(g_video_fmv_filter);
@@ -22261,6 +22375,8 @@ soft_return_lobby:
         ls.frame_interp = g_frame_interpolation ? 1 : 0;
         ls.frame_interp_fps = g_frame_interpolation_fps;
         ls.spu_hq = g_audio_spu_hq ? 1 : 0;
+        ls.assist_fast_forward_multiplier = (int)std::lround(g_fast_forward_preference * 10.0);
+        ls.fast_forward_toggle_mode = g_fast_forward_toggle_mode ? 1 : 0;
         ls.auto_skip_fmv = (skip_fmv_offered && g_auto_skip_fmv) ? 1 : 0;
         ls.turbo_loads = (turbo_loads_offered && g_turbo_loads_enabled) ? 1 : 0;
         ls.rewind_enabled = g_rewind_enabled;
@@ -22659,6 +22775,7 @@ soft_return_lobby:
                 g_present_thread_pref   = ls.present_thread ? 1 : 0;
                 g_frame_generation_pref = ls.frame_generation ? 1 : 0;
 #endif
+                us.vsync = psx_vsync_from_launcher(ls.vsync, launcher_vsync_preference()); us.has_vsync = true;
                 us.antialiasing = ls.antialiasing != 0;
                 us.has_antialiasing = true;
                 us.texture_filter = psx_texture_filter_from_ui(ls.texture_filter);
@@ -22708,6 +22825,10 @@ soft_return_lobby:
                 us.hotkey_pad_fast_forward_toggle = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE], 0);
                 us.has_hotkey_pad_fast_forward_toggle = true;
+                us.fast_forward_speed = psx_fast_forward_preference(ls.assist_fast_forward_multiplier / 10.0);
+                us.has_fast_forward_speed = true;
+                us.fast_forward_toggle_mode = ls.fast_forward_toggle_mode != 0;
+                us.has_fast_forward_mode = true;
                 us.auto_skip_fmv = ls.auto_skip_fmv != 0;
                 us.has_auto_skip_fmv = skip_fmv_offered;
                 us.turbo_loads = ls.turbo_loads != 0;
@@ -22763,8 +22884,17 @@ soft_return_lobby:
             g_fullscreen = ls.fullscreen;
             g_frame_interpolation = ls.frame_interp ? 1 : 0;
             g_frame_interpolation_fps = ls.frame_interp_fps;
+            g_video_vsync = psx_vsync_from_launcher(ls.vsync, launcher_vsync_preference());
+            g_mod_owned_baseline.values.video_vsync = g_video_vsync;
+            apply_present_cadence();
             g_audio_freq = ls.audio_freq;
-            g_audio_spu_hq = ls.spu_hq != 0;
+            if (g_audio_spu_hq != (ls.spu_hq != 0)) {
+                g_audio_spu_hq = ls.spu_hq != 0;
+                spu_shadow_set_enabled(g_audio_spu_hq);
+                /* Re-prove only the optional output mix; preserve all guest
+                 * voices, SPU RAM, envelopes and timing. */
+                spu_shadow_reset();
+            }
             if (ls.rewind_depth > 0) {
                 g_rewind_depth = ls.rewind_depth;
                 psx_rewind_set_depth((uint32_t)g_rewind_depth);
@@ -22785,6 +22915,8 @@ soft_return_lobby:
                 else
                     psx_rewind_shutdown();
             }
+            g_fast_forward_preference = psx_fast_forward_preference(ls.assist_fast_forward_multiplier / 10.0);
+            g_fast_forward_toggle_mode = ls.fast_forward_toggle_mode != 0;
             g_hotkey_pad_rewind = normalize_hotkey_pad_binding(
                 ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND],
                 PSX_HOTKEY_PAD_SELECT_R3);

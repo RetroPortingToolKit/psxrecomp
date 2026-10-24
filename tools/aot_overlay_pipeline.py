@@ -981,7 +981,10 @@ def stage(cache, destination, receipt):
         for name, key in artifacts:
             expected.add(name)
             require(digest(source / name) == pair[key], f'Audited artifact changed: {name}')
-            shutil.copy2(source / name, target / name)
+            # Windows keeps loaded DLLs locked. An identical audited artifact
+            # needs no replacement (and must still pass the hash check below).
+            if not (target / name).exists() or digest(target / name) != pair[key]:
+                shutil.copy2(source / name, target / name)
             require(digest(target / name) == pair[key], f'Staged artifact changed: {name}')
     extras = {p.name for p in target.iterdir() if p.is_file()} - expected
     require(not extras, f'Stage contains unaudited files: {sorted(extras)}')

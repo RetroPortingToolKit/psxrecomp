@@ -6,6 +6,7 @@
 #include "disc_path.h"
 #include "host_file_identity.h"
 #include "func_override.h"
+#include "host_sha256.h"
 #include "iso_reader.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
@@ -993,6 +994,27 @@ int mutate(Callback callback) {
     return 1;
 }
 
+// Cache expensive image checks while drawing the launcher. Explicit folder
+// selection refreshes the result; activation always validates again.
+static std::map<std::string, std::pair<bool,std::string>> texture_install_status;
+static bool texture_install_check(const ModPackage& package,const std::string& feature,
+    std::string& error, bool fresh=false) {
+    if(state().manager.feature_option_value(package.id,feature,"replacements")=="false")return true;
+    for(const auto& resource:package.resources) {
+        if(resource.feature_id!=feature||resource.texture_game_id.empty())continue;
+        auto path=state().manager.feature_resource_path(package.id,feature,resource.id);
+        char resolved[4096]{},message[1024]{};
+        const std::string key=resource.texture_game_id+"\n"+path.u8string();
+        auto found=texture_install_status.find(key);
+        if(fresh||found==texture_install_status.end()) {
+            bool ok=gpu_hd_textures_validate_install(path.u8string().c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
+            found=texture_install_status.insert_or_assign(key,std::make_pair(ok,std::string(message))).first;
+        }
+        if(!found->second.first){error=found->second.second;return false;}
+    }
+    return true;
+}
+
 /* Feature switch / option edits shared by the launcher ABI provider and the
  * in-game menu host (psx_mod_feature_enable / psx_mod_feature_set_option). */
 int feature_enable_impl(const char* package_id, const char* feature_id, int enabled) {
@@ -1000,6 +1022,8 @@ int feature_enable_impl(const char* package_id, const char* feature_id, int enab
     return mutate([&](std::string& error) {
         const ModFeature* feature =
             state().manager.selected_feature(package_id, feature_id);
+        const auto* package=selected_package(package_id);
+        if(enabled && package && !texture_install_check(*package,feature_id,error))return false;
         if (feature && feature->legacy)
             return state().manager.set_enabled(
                 package_id, enabled != 0, &error);
@@ -1017,6 +1041,14 @@ int feature_set_option_impl(const char* package_id, const char* feature_id,
         if (feature && feature->legacy)
             return state().manager.set_option(
                 package_id, option_id, value, &error);
+        if(std::strcmp(option_id,"replacements")==0 && std::strcmp(value,"true")==0) {
+            const auto* package=selected_package(package_id);
+            if(package)for(const auto& r:package->resources)if(r.feature_id==feature_id&&!r.texture_game_id.empty()) {
+                auto path=state().manager.feature_resource_path(package_id,feature_id,r.id);
+                char resolved[4096]{},message[1024]{};
+                if(!gpu_hd_textures_validate_install(path.u8string().c_str(),r.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)){error=message;return false;}
+            }
+        }
         return state().manager.set_feature_option(
             package_id, feature_id, option_id, value, &error);
     });
@@ -1298,7 +1330,7 @@ int provider_feature_resource_get(void*, const char* package_id,
         std::error_code ec;
         const bool directory =
             resource.format == "directory" || resource.format == "folder";
-        const bool verified = !path.empty() &&
+        bool verified = !path.empty() &&
             (directory ? std::filesystem::is_directory(path, ec)
                        : std::filesystem::is_regular_file(path, ec));
         std::memset(out, 0, sizeof(*out));
@@ -1314,6 +1346,17 @@ int provider_feature_resource_get(void*, const char* package_id,
                   resource.file_patterns);
         copy_text(out->file_description, sizeof(out->file_description),
                   resource.file_description);
+        if(!resource.texture_game_id.empty()) {
+            const std::string key=resource.texture_game_id+"\n"+path.u8string();
+            auto found=texture_install_status.find(key);
+            if(found==texture_install_status.end()) {
+                char resolved[4096]{},message[1024]{};
+                bool ok=gpu_hd_textures_validate_install(path.u8string().c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
+                found=texture_install_status.emplace(key,std::make_pair(ok,std::string(message))).first;
+            }
+            verified=found->second.first;
+            copy_text(out->status,sizeof(out->status),found->second.second);
+        }
         out->required = resource.required ? 1 : 0;
         out->verified = verified ? 1 : 0;
         copy_text(out->format, sizeof(out->format), resource.format);
@@ -1328,9 +1371,19 @@ int provider_feature_resource_set_path(void*, const char* package_id,
                                        const char* path) {
     if (!package_id || !feature_id || !resource_id || !path) return 0;
     return mutate([&](std::string& error) {
+        std::string selected=path;
+        const auto* package=selected_package(package_id);
+        if(package && path[0])for(const auto& resource:package->resources) {
+            if(resource.feature_id!=feature_id||resource.id!=resource_id||resource.texture_game_id.empty())continue;
+            texture_install_status.clear();
+            if(state().manager.feature_option_value(package_id,feature_id,"replacements")=="false")continue;
+            char resolved[4096]{},message[1024]{};
+            if(!gpu_hd_textures_validate_install(path,resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)){error=message;return false;}
+            selected=resolved;
+        }
         return state().manager.set_feature_resource_path(
             package_id, feature_id, resource_id,
-            std::filesystem::u8path(path), &error);
+            std::filesystem::u8path(selected), &error);
     });
 }
 
@@ -2123,6 +2176,13 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
         }
         if (error) *error = s.error;
         return false;
+    }
+    for(const auto& plugin:plan.plugins) {
+        if(plugin.id!="psx.hd-textures")continue;
+        const auto* package=s.manager.selected_package(plugin.package_id);
+        if(package&&!texture_install_check(*package,plugin.feature_id,s.error,true)) {
+            if(error)*error=s.error;return false;
+        }
     }
     if (verify_netplay && (!netplay_resources_verified(plan, &s.error) ||
                            !mod_runtime_verify_session_plan_fp(&s.error))) {
@@ -3461,6 +3521,9 @@ extern "C" int32_t psx_mod_widescreen_x_margin(void) {
 }
 extern "C" int32_t psx_mod_widescreen_view_x_margin(void) {
     return (int32_t)gpu_ws_configured_x_reveal();
+}
+extern "C" void psx_mod_set_widescreen_view_anchor(int enabled, int32_t shift) {
+    gpu_ws_set_manual_view_anchor(enabled, shift);
 }
 
 extern "C" void psx_mod_tag_hud_primitive(uint32_t primitive, int edge) {

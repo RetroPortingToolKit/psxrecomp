@@ -43,5 +43,16 @@ int main() {
         }
     }
     std::puts("controller type classification: passed");
+    if (!psx_controller_recovery_needed(true, true, false, 10, 0) ||
+        psx_controller_recovery_needed(true, true, true, 1000, 0) ||
+        psx_controller_recovery_needed(false, false, false, 1000, 0) ||
+        psx_controller_recovery_needed(true, false, false, 499, 0) ||
+        !psx_controller_recovery_needed(true, false, false, 500, 0) ||
+        psx_controller_recovery_needed(true, false, false, 999, 500) ||
+        !psx_controller_recovery_needed(true, false, false, 1000, 500)) {
+        std::fprintf(stderr, "missed-event recovery/retry policy failed\n");
+        return 1;
+    }
+    std::puts("controller recovery: detached, healthy, keyboard and bounded retries passed");
     return 0;
 }

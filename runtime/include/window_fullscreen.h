@@ -1,6 +1,8 @@
 #pragma once
 
 #include "psx_sdl.h"
+#include <cstdlib>
+#include <cmath>
 
 /* On Windows/SDL3, borderless stays a normal desktop-sized window. Other
  * window managers retain native desktop fullscreen (Wayland owns placement). */
@@ -47,6 +49,20 @@ static inline int psx_window_fullscreen_set(SDL_Window* window,
         const SDL_DisplayMode* current = SDL_GetDesktopDisplayMode(display);
         if (!current || !SDL_GetClosestFullscreenDisplayMode(display, current->w,
                 current->h, current->refresh_rate, true, &exclusive)) return -1;
+        /* Optional presentation-only mode for an integer cadence (e.g. PAL
+         * 50 Hz on a 100 Hz panel). Never accept a driver's approximate mode,
+         * change resolution, or feed this rate into guest video timing. SDL
+         * restores the desktop mode when exclusive fullscreen is released. */
+        if (const char *text = std::getenv("PSX_EXCLUSIVE_REFRESH_HZ")) {
+            const double hz = std::atof(text);
+            SDL_DisplayMode requested{};
+            if (hz >= 30.0 && hz <= 1000.0 &&
+                SDL_GetClosestFullscreenDisplayMode(display, current->w, current->h,
+                    (float)hz, true, &requested) &&
+                requested.w == current->w && requested.h == current->h &&
+                std::fabs((double)requested.refresh_rate - hz) <= hz * 0.002)
+                exclusive = requested;
+        }
     }
     if (!SDL_SetWindowFullscreen(window, false)) return -1;
     if (!SDL_SetWindowFullscreenMode(window, mode == 2 ? &exclusive : nullptr)) return -1;

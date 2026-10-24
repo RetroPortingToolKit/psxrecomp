@@ -74,8 +74,10 @@ assert re.findall(r"^static PSXModSessionBaseline g_mod_owned_baseline;$",
 assert MAIN.index("static PSXModSessionBaseline g_mod_owned_baseline;") < helper_start
 assert MAIN.count("PSXModSessionBaseline") == 1, \
     "no other session baseline may exist (every call would be a first call)"
-assert MAIN.count("g_mod_owned_baseline") == 2, \
-    "only reset_mod_owned_presentation() may use the session baseline"
+assert MAIN.count("g_mod_owned_baseline") == 5, \
+    "only reset, the VSync preference reader and launcher VSync Apply may use the baseline"
+assert MAIN.count("g_mod_owned_baseline.values.video_vsync = g_video_vsync;") == 1
+assert "ls.vsync = psx_vsync_to_launcher(launcher_vsync_preference());" in MAIN
 
 # The call: the persistent baseline, and the native-pacing flag as it stands
 # (a plugin's psx_mod_set_native_vblank_rate owns the frame periods only then).
@@ -179,7 +181,8 @@ order = [session.index(step) for step in (
     "g_mod_disc_speed_divisor = -1;",
     "g_mod_disc_instant_rate = -1;",
     "g_turbo_load_wall_multiplier = 0;",
-    "reset_mod_owned_presentation();\n        mod_runtime_activate_plugins();",
+    "reset_mod_owned_presentation();",
+    "mod_runtime_activate_plugins();",
     "apply_netplay_local_viewport_aspect(netplay);",
     "player_mode[i] = g_mod_controller_mode_override[i];",
     "g_turbo_load_wall_multiplier = g_mod_load_wall_multiplier;",

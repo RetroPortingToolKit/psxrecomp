@@ -1985,6 +1985,7 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                     toml::find_or<std::string>(v, "file_patterns", "");
                 resource.file_description =
                     toml::find_or<std::string>(v, "file_description", "");
+                resource.texture_game_id = toml::find_or<std::string>(v, "texture_game_id", "");
                 resource.format =
                     toml::find_or<std::string>(v, "format", "file");
                 resource.required =

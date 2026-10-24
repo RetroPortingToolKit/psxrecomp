@@ -14,6 +14,10 @@ extern "C" {
  * Empty root with both options off clears the current session. */
 int gpu_hd_textures_configure(const char* root, int replacements_enabled,
                              int dump_enabled, char* error, size_t capacity);
+/* Installer-only scan; never changes the active renderer session or user files.
+ * Checks declared target and every replacement image; not full-game coverage. */
+int gpu_hd_textures_validate_install(const char* input, const char* game_id,
+    char* resolved, size_t resolved_capacity, char* message, size_t capacity);
 void gpu_hd_textures_shutdown(void);
 int gpu_hd_textures_reload(char* error, size_t capacity);
 void gpu_hd_textures_set_dump_enabled(int enabled);

@@ -1,7 +1,7 @@
 format_version = 5
 id = "psx.enhancement.pgxp"
 version = "1.0.0"
-name = "PGXP Precision (geometry + textures)"
+name = "PGXP Precision"
 author = "psxrecomp"
 description = "Sub-pixel vertex precision and perspective-correct texturing (the PGXP technique): the runtime shadows the GTE's full-precision projections and follows them to the GPU, so 3D polygons stop wobbling between whole pixels and large floor/wall textures stop warping. Visual-only unless its precise culling option is on: the game's own math, culling and readback see exactly what real hardware produces."
 resolver = "declarative"

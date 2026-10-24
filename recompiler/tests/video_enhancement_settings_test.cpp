@@ -599,7 +599,43 @@ static void test_timing_gate() {
     }
 }
 
+static void test_fractional_fast_forward() {
+    for (int tenth = 10; tenth <= 50; ++tenth) {
+        PSXRecompV4::UserSettings saved;
+        saved.has_fast_forward_speed = true;
+        saved.fast_forward_speed = tenth / 10.0;
+        saved.has_fast_forward_mode = true;
+        saved.fast_forward_toggle_mode = (tenth % 2) != 0;
+        auto p = fs::temp_directory_path() / "ves_ff_roundtrip.toml";
+        PSXRecompV4::save_user_settings(p, saved);
+        auto loaded = PSXRecompV4::load_user_settings(p);
+        check(loaded.has_fast_forward_speed && loaded.fast_forward_speed == saved.fast_forward_speed,
+              "all fractional FF speeds survive save/reload (including integer TOML)");
+        check(loaded.has_fast_forward_mode && loaded.fast_forward_toggle_mode == saved.fast_forward_toggle_mode,
+              "FF hold/toggle survives save/reload");
+        fs::remove(p);
+    }
+    for (const char* invalid : {"nan", "inf", "0.9", "5.1", "\"2x\""}) {
+        auto p = write_temp("ves_ff_bad.toml", std::string("[hotkeys]\nfast_forward_speed = ") + invalid + "\nfast_forward_mode = \"broken\"\n");
+        auto loaded = PSXRecompV4::load_user_settings(p);
+        check(!loaded.has_fast_forward_speed && !loaded.has_fast_forward_mode,
+              "invalid FF settings do not override defaults");
+        fs::remove(p);
+    }
+}
+
 int main() {
+    {
+        auto p = write_game_toml("ves_player_pipeline.toml", "[video]\noffer_render_pipeline = false\n");
+        check(!PSXRecompV4::load_game_config(p).runtime.video_offer_render_pipeline,
+              "title can hide unqualified render-pipeline controls");
+        fs::remove(p);
+        p = write_game_toml("ves_player_pipeline_default.toml", "");
+        check(PSXRecompV4::load_game_config(p).runtime.video_offer_render_pipeline,
+              "legacy titles retain render-pipeline controls");
+        fs::remove(p);
+    }
+    test_fractional_fast_forward();
     test_internal_resolution_game_toml();
     test_internal_resolution_settings();
     test_defaults_off();
