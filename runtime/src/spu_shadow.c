@@ -28,6 +28,7 @@ static int            s_enabled = -1;   /* -1 = not yet resolved */
 static int            s_cfg     = 0;    /* config/launcher gate (env overrides) */
 static ShadowVerifier s_verifier;
 static int s_cd_bypass;
+static uint64_t s_cd_consumed;
 static SpuShadowInfo  s_info;
 
 void spu_shadow_set_enabled(int on) {
@@ -52,6 +53,7 @@ bool spu_shadow_enabled(void) {
 
 void spu_shadow_reset(void) {
     s_cd_bypass = 0;
+    s_cd_consumed = 0;
     shadow_verifier_init(&s_verifier);
     memset(&s_info, 0, sizeof(s_info));
     s_info.enabled = spu_shadow_enabled() ? 1 : 0;
@@ -77,7 +79,16 @@ void spu_shadow_process(int16_t* canon, int frames) {
      * canonical mix immediately, and require fresh proof when CD is disabled. */
     SpuGlobalState global;
     spu_get_global_state(&global);
-    if (global.ctrl & 1u) {
+    /* A game may leave CD mixing enabled throughout voice-only gameplay.
+     * Gate on actual queued/consumed CD samples, including the LAST block
+     * draining the FIFO. push_frames - queued includes dropped frames too;
+     * treating an overflow/reset as activity is a conservative extra bypass. */
+    SpuDebugInfo cd;
+    spu_debug_info(&cd);
+    const uint64_t consumed = cd.cd_push_frames - cd.cd_frames;
+    const int cd_active = cd.cd_frames != 0 || consumed != s_cd_consumed;
+    s_cd_consumed = consumed;
+    if ((global.ctrl & 1u) && cd_active) {
         if (!s_cd_bypass) {
             shadow_verifier_init(&s_verifier);
             s_info.proven = 0;
