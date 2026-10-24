@@ -114,6 +114,10 @@ int savestate_request_load_blob_protocol(const void* data, size_t size);
 /* 1 while a staged save/load has not yet been consumed by savestate_poll. */
 int savestate_pending(void);
 
+/* Read-only hot-path hint for interrupt maintenance. Updated with staged
+ * requests; actual execution still passes every savestate_poll safety gate. */
+extern int g_psx_savestate_pending;
+
 /* Machine-readable lifecycle receipt for deterministic debug harnesses. */
 void savestate_status_json(char* buf, size_t cap);
 

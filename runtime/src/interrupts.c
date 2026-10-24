@@ -26,6 +26,7 @@
  */
 
 #include "interrupts.h"
+#include "savestate.h"
 #include "psx_memory.h"
 #include "sio.h"
 #include "timers.h"
@@ -1116,6 +1117,15 @@ int psx_interrupt_delivery_needed(const CPUState* cpu) {
     return 1;
 }
 
+static void poll_staged_user_snapshot(CPUState* cpu) {
+    extern uint32_t g_dirty_safe_resume_pc;
+    if (!in_exception && g_psx_savestate_pending) {
+        uint32_t pc = g_dirty_safe_resume_pc ? g_dirty_safe_resume_pc
+                                           : s_compiled_interrupt_resume_pc;
+        savestate_poll(cpu, pc);
+    }
+}
+
 void psx_check_interrupts(CPUState* cpu) {
     /* Frozen guest time (psx_cycle_freeze.h): no delivery, and no
      * check-boundary bookkeeping that the stock timeline would not do. */
@@ -1195,6 +1205,12 @@ void psx_check_interrupts(CPUState* cpu) {
         }
     }
 
+    /* Quiet native/HLE gameplay may execute far fewer than 0x4000 BB checks
+     * in a frame. A staged user snapshot must not wait for that amortized
+     * maintenance counter: short actions/voices can finish before capture.
+     * Keep exception, host-adapter and resume-PC gates in savestate_poll, and
+     * retain the canonical netplay edge gate above. Idle work stays amortized. */
+    poll_staged_user_snapshot(cpu);
     s_irq_path_entry++;
 
     /* MotK VLC / FMV hot edge: sticky unmasked I_STAT (CD/VBlank) while
