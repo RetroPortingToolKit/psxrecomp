@@ -84,6 +84,12 @@ typedef struct {
  * port=0 uses the default (4370). */
 void debug_server_init(int port);
 
+/* The launcher mod requests the listener before session startup. Release
+ * defaults off; PSX_DEBUG_SERVER=0/1 explicitly overrides the mod/build default.
+ * Reset the mod request before activating each new session's plugins. */
+void debug_server_request(int enabled);
+int debug_server_requested(void);
+
 /* Current listener status for heartbeat diagnostics. error is the platform
  * socket error captured by init, or 0 when the listener is active. */
 void debug_server_get_status(int *listening, int *port, int *error);

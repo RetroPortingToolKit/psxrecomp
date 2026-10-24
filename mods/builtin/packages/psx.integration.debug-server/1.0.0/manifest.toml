@@ -1,0 +1,22 @@
+format_version = 5
+id = "psx.integration.debug-server"
+version = "1.0.0"
+name = "TCP Debug Server"
+author = "psxrecomp"
+description = "Local TCP access for Archipelago and debugging tools."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "debug-server"
+name = "TCP Debug Server"
+description = "Allow local tools such as Archipelago to read and write game memory. Listens on localhost (127.0.0.1), port 4370 by default. Takes effect when you launch the game. Disabled by default."
+group = "Advanced"
+default_enabled = false
+
+[[plugin]]
+feature = "debug-server"
+id = "psx.debug-server"

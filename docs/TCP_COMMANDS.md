@@ -6,6 +6,13 @@ Protocol: **JSON over newline**, one object per line, responses on same connecti
 - Success: `{"id": N, "ok": true, ...data}`
 - Failure: `{"id": N, "ok": false, "error": "<msg>"}`
 
+Production builds include the native server but leave its listener **off by
+default**. Enable **TCP Debug Server** under **Mods / Advanced** in a title
+that ships the builtin package, or set `PSX_DEBUG_SERVER=1` for a scripted
+launch. `PSX_DEBUG_SERVER=0` forces the listener off. The listener binds only
+to `127.0.0.1`; `[runtime] debug_port` or `--debug-port` selects its port without
+enabling it. `PSX_DEBUG_TOOLS=OFF` still strips development tracing and disassembly.
+
 There are **two live** servers, both implementing this protocol with overlapping command sets:
 
 | Server | Port | Source |
@@ -64,6 +71,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `get_registers` (`regs`) | ✓ | ✓ | — | All 32 GPRs + PC + HI + LO (native also: COP0 SR/Cause/EPC, I_STAT, I_MASK) |
 | `read_ram` | ✓ | ✓ | `addr`, `len` | Read bytes from PS1 address space as hex string — up to the full 2 MB in ONE response line. `dump_ram` is an alias (the old chunked multi-line variant is gone: it broke the one-request/one-response protocol and wedged the server) |
 | `write_ram` | ✓ | ✓ | `addr`, `val` | Write **one byte** to PS1 address space. Note the parameter is `val` (not `hex`), and the write is a single byte per call — this row previously documented both incorrectly |
+| `write_bulk` | ✓ | | `addr`, `hex` | Write 1–1024 bytes to contiguous main RAM in one request (Archipelago compatible). Quoted hex address and hex byte pairs; validates the whole run before any host store. Rejects invalid hex, oversized runs, MMIO/BIOS/scratchpad and spans across the live RAM boundary. |
 | `read_scratch` |   | ✓ | `addr`, `len` | Read PS1 scratchpad (0x1F800000 region) |
 | `read_vram` / `vram_peek` | ✓¹ | ✓ | `x`, `y`, `w`, `h` | Read 16-bit VRAM pixels (max 128×128) |
 | `gpu_state` | ✓ | ✓ | — | Display area, display depth, `screen_offset_y`, draw offset, GPUSTAT, clip rect, xfer state. A positive screen offset moves 24-bit scanout down from the PAL or NTSC broadcast centre |
@@ -507,9 +515,9 @@ between Play and TCP availability.
 
 ## Complete command index (generated)
 
-**387 commands registered** — 374 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
+**395 commands registered** — 382 on the native server (`runtime/src/debug_server.c`), 61 on the Beetle server (`runtime/src/beetle_debug_server.c`).
 
-85 of 387 have prose above; **302 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
+87 of 395 have prose above; **308 are index-only**. An index-only command still works — it just has no description here yet. Send it `{"cmd":"<name>"}` and read the reply, or find its `handle_*` function in the server source.
 
 Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this block has drifted from the code.
 
@@ -597,6 +605,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `display_ring_aux` | ✓ |  |  |
 | `display_ring_get` | ✓ |  |  |
 | `display_ring_stats` | ✓ |  |  |
+| `display_timing` | ✓ |  |  |
 | `dithering` | ✓ |  | ✓ |
 | `dma_cdrom_history` | ✓ |  |  |
 | `dma_hold_ring` | ✓ |  | ✓ |
@@ -674,6 +683,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `gte_state` | ✓ |  |  |
 | `guest_tty_dump` | ✓ |  |  |
 | `hd_textures` | ✓ |  | ✓ |
+| `hd_uploads` | ✓ |  |  |
 | `history` | ✓ | ✓ | ✓ |
 | `hle_dump` | ✓ |  | ✓ |
 | `host_button` | ✓ |  |  |
@@ -686,7 +696,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `host_span_ring` | ✓ |  |  |
 | `idle_skip` | ✓ |  |  |
 | `imask_trace` | ✓ |  |  |
-| `input_route_append` | ✓ |  | ✓ |
+| `input_route_append` | ✓ |  |  |
 | `input_route_clear` | ✓ |  |  |
 | `input_route_start` | ✓ |  | ✓ |
 | `input_route_status` | ✓ |  |  |
@@ -731,6 +741,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `overlay_diff_on` | ✓ |  |  |
 | `overlay_dump` | ✓ |  |  |
 | `overlay_fp_dump` | ✓ |  |  |
+| `overlay_image` | ✓ |  | ✓ |
 | `overlay_irq_ratelimit` | ✓ |  |  |
 | `overlay_irq_suppress_off` | ✓ |  |  |
 | `overlay_irq_suppress_on` | ✓ |  |  |
@@ -744,6 +755,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `overlay_shadow_detail` | ✓ |  |  |
 | `overlay_shadow_dump` | ✓ |  |  |
 | `overlay_static_entries` | ✓ |  | ✓ |
+| `overlay_status` | ✓ |  | ✓ |
 | `pace_state` | ✓ |  |  |
 | `pad_status` | ✓ | ✓ |  |
 | `parity_ctl` | ✓ | ✓ |  |
@@ -762,6 +774,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `phase_profile` | ✓ |  | ✓ |
 | `ping` | ✓ | ✓ | ✓ |
 | `post_aa` | ✓ |  | ✓ |
+| `post_shader` | ✓ |  |  |
 | `present_image_ring_get` | ✓ |  |  |
 | `present_image_ring_stats` | ✓ |  |  |
 | `present_ring` | ✓ |  |  |
@@ -787,8 +800,6 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `restore_trace_clear` | ✓ |  |  |
 | `restore_trace_window` | ✓ |  |  |
 | `rewind_status` | ✓ |  | ✓ |
-| `overlay_status` | ✓ |  | ✓ |
-| `overlay_image` | ✓ |  | ✓ |
 | `rtrace_arm` | ✓ | ✓ |  |
 | `rtrace_clear` | ✓ |  |  |
 | `rtrace_disarm` |  | ✓ |  |
@@ -865,6 +876,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `wide_full` | ✓ |  |  |
 | `wide_shot` | ✓ |  |  |
 | `window_size` | ✓ |  | ✓ |
+| `write_bulk` | ✓ |  | ✓ |
 | `write_ram` | ✓ |  | ✓ |
 | `ws_aspect` | ✓ |  |  |
 | `ws_aspect_cone_site` | ✓ |  |  |
