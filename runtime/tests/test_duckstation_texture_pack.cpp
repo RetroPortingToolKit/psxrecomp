@@ -130,6 +130,11 @@ void preload(const fs::path& root) {
               pixels.width == 16,"preloaded image is resident without a decode request");
         duck_texture_pixels_release(&pixels);
         duck_texture_pack_set_decode_budget(pack.get(),1);
+        check(duck_texture_pack_preload(pack.get(),256,1,&r) == 1 && r.loaded == 1 &&
+              r.failed == 0 && r.bytes == 256 && r.worker_errors == 0,
+              "repeat counts existing residency without decoding under the reduced budget");
+        check(duck_texture_pack_preload(pack.get(),255,1,&r) == -1 && r.bytes == 256,
+              "a smaller lifetime cap rejects without hiding pinned residency");
         check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND,
               "a preloaded image survives budget eviction");
         duck_texture_pixels_release(&pixels);
@@ -162,6 +167,9 @@ void preload(const fs::path& root) {
         tp::fault_mode() = 0;
         check(status == -1 && r.loaded == 1 && r.bytes == 16*4*4,
               "publication failure still reports every retained byte");
+        check(duck_texture_pack_preload(pack.get(),256,1,&r) == 1 &&
+              r.loaded == 1 && r.failed == 0 && r.bytes == 256,
+              "publication retry accounts the retained prefix without decoding again");
     }
     {   /* Malformed image: failed, not pinned, async decode reports failure. */
         std::ofstream(root/"replacements"/name,std::ios::binary|std::ios::trunc) << "not a png";

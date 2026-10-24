@@ -1142,17 +1142,37 @@ int duck_texture_pack_preload(DuckTexturePack* p, size_t max_bytes, unsigned max
     if (!p) return -1;
     try {
         namespace tp = psx_texpreload;
+        Worker& w = p->worker;
         std::vector<uint64_t> ids;
-        for (size_t i = 0; i < p->entries.size(); ++i)
-            if (!p->entries[i].ambiguous) ids.push_back(i + 1);
         size_t per_image = 0;
         {
-            std::lock_guard<std::mutex> lock(p->worker.mutex);
-            per_image = p->worker.budget;
+            std::lock_guard<std::mutex> lock(w.mutex);
+            per_image = w.budget;
+            /* The cap and result describe the pack's total pinned residency,
+             * including earlier successful calls or publication prefixes. */
+            for (const auto& item : w.decoded)
+                if (item.second.pinned && item.second.image)
+                    r.bytes += item.second.image->rgba.size();
+            for (size_t i = 0; i < p->entries.size(); ++i) {
+                if (p->entries[i].ambiguous) continue;
+                ++r.requested;
+                const auto it = w.decoded.find(i + 1);
+                if (it != w.decoded.end() && it->second.pinned) ++r.loaded;
+            }
+            if (r.bytes > max_bytes) {
+                r.failed = r.requested - r.loaded;
+                if (out) *out = r;
+                return -1;  /* A smaller cap cannot discard live pinned data. */
+            }
+            for (size_t i = 0; i < p->entries.size(); ++i) {
+                if (p->entries[i].ambiguous) continue;
+                const auto it = w.decoded.find(i + 1);
+                if (it == w.decoded.end() || !it->second.pinned) ids.push_back(i + 1);
+            }
         }
         std::vector<std::shared_ptr<Image>> images(ids.size());
         std::vector<unsigned char> status(ids.size(), tp::kPending);
-        tp::Budget budget(max_bytes);
+        tp::Budget budget(max_bytes - r.bytes);
         r.worker_errors = static_cast<int>(tp::run(ids.size(), max_threads, [&](size_t k) {
             status[k] = tp::kFailed;
             const std::string& path = p->entries[ids[k] - 1].path;
@@ -1179,8 +1199,7 @@ int duck_texture_pack_preload(DuckTexturePack* p, size_t max_bytes, unsigned max
             reservation.keep = true;
             status[k] = tp::kLoaded;
         }));
-        r.requested = static_cast<int>(ids.size());
-        Worker& w = p->worker; std::lock_guard<std::mutex> lock(w.mutex);
+        std::lock_guard<std::mutex> lock(w.mutex);
         for (size_t k = 0; k < ids.size(); ++k) {
             if (status[k] == tp::kOverBudget) { ++r.over_budget; continue; }
             if (status[k] != tp::kLoaded) continue;

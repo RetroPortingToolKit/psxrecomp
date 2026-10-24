@@ -187,14 +187,17 @@ void hd_texture_pack_set_decode_budget(HdTexturePack* pack,
  * preloaded (over the cap, unreadable, malformed, a worker failure) are left
  * to the normal asynchronous, budgeted decode path; nothing is marked failed
  * by the preload. Returns 1 when every image was preloaded, 0 for a partial
- * preload (see out), -1 on error. */
+ * preload (see out), -1 on error. Repeated calls count already pinned images
+ * without reading/decoding them again; max_bytes caps the pack's total pinned
+ * residency. A cap smaller than existing residency is rejected with -1 and
+ * the existing residency reported; it does not discard live pinned images. */
 typedef struct HdTexturePreloadResult {
     int requested;      /* unambiguous replacements considered */
-    int loaded;         /* decoded and pinned */
+    int loaded;         /* resident and pinned, including earlier calls */
     int over_budget;    /* skipped: the aggregate max_bytes was reached */
     int failed;         /* unreadable, malformed, too large, or worker error */
     int worker_errors;  /* of failed: a decode that threw (caught) */
-    size_t bytes;       /* decoded RGBA pinned */
+    size_t bytes;       /* total decoded RGBA pinned by this pack */
 } HdTexturePreloadResult;
 int hd_texture_pack_preload(HdTexturePack* pack, size_t max_bytes,
                             unsigned max_threads, HdTexturePreloadResult* out);
