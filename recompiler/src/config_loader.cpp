@@ -1162,6 +1162,14 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         }
     }
 
+    // Optional [launcher] block — game-declared launcher surfaces.
+    if (cfg.contains("launcher")) {
+        const toml::value& launcher = toml::find(cfg, "launcher");
+        if (launcher.contains("quick_controls")) {
+            rt.launcher_quick_controls = toml::find<bool>(launcher, "quick_controls");
+        }
+    }
+
     // Optional [audio] block.
     if (cfg.contains("audio")) {
         const toml::value& audio = toml::find(cfg, "audio");

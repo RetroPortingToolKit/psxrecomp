@@ -1571,6 +1571,7 @@ static int           g_low_latency_input = 1;
  * GL call are done; s_render_thread_tried keeps it to one attempt. */
 static int           g_render_thread = 0;
 static bool          g_offer_render_pipeline = true;
+static bool          g_launcher_quick_controls = false;  /* game.toml [launcher] quick_controls */
 static int           g_render_thread_frames = 2;
 /* [video] frame_generation (docs/FRAME_GENERATION.md), with the render thread. */
 static int           g_frame_generation = 0;
@@ -16906,6 +16907,16 @@ namespace {
         (void)ws_ultrawide_offered_b;
         launcher_profile_apply("psx", gi);
         psx_launcher_texture_filter_catalog(gi);
+#if defined(RECOMP_LAUNCHER_HAS_ARTWORK_GALLERY)
+        /* A regional package keeps its covers beside the shared entry, not
+         * per backend; elsewhere the launcher uses <exe dir>/artwork. */
+        static std::string regional_artwork;
+        regional_artwork = PSXRecompV4::regional::root.empty()
+            ? std::string() : (PSXRecompV4::regional::root / "artwork").u8string();
+        gi->artwork_root = regional_artwork.empty() ? nullptr : regional_artwork.c_str();
+        gi->disc_selection_locked = PSXRecompV4::regional::disc_selection_locked ? 1 : 0;
+        gi->dashboard_quick_controls = g_launcher_quick_controls ? 1 : 0;
+#endif
         gi->name = game_name_c;
         gi->region = region_c;
         gi->keybinds_path =
@@ -18297,6 +18308,7 @@ int main(int argc, char** argv) {
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_offer_render_pipeline = gc.runtime.video_offer_render_pipeline;
+            g_launcher_quick_controls = gc.runtime.launcher_quick_controls;
             g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
             g_frame_generation_method = gc.runtime.video_frame_generation_method;
             /* [timing] guest_cycle_scale is a title constant from game.toml

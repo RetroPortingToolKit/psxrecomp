@@ -83,6 +83,9 @@ struct ModFeature {
     bool default_enabled = false;
     bool hidden = false;
     bool legacy = false;
+    /* Manifest `quick`: offered in the launcher's Quick Mods card by default.
+     * The player's own choice (state.toml [quick_mods]) overrides it. */
+    bool quick = false;
 };
 
 enum class ModConstraintKind {
@@ -479,6 +482,11 @@ public:
     bool scan(std::string* error = nullptr);
     bool load_state(std::string* error = nullptr);
     bool save_state(std::string* error = nullptr) const;
+    /* Quick Mods card membership: the saved player choice, else the
+     * manifest's quick flag. Never changes activation or the fingerprint. */
+    bool quick_visible(const std::string& package, const std::string& feature) const;
+    bool set_quick_visible(const std::string& package, const std::string& feature,
+                           bool visible, std::string* error = nullptr);
     bool prepare_resources(const std::string& game_id,
                            const std::filesystem::path& disc_path,
                            const std::filesystem::path& cache_root,
@@ -608,6 +616,7 @@ private:
     std::map<std::string, std::map<std::string, ModPackage>> packages_;
     std::vector<std::string> disabled_packages_;
     std::map<std::string, ModSelection> selections_;
+    std::map<std::string, bool> quick_visibility_;   /* "package/feature" */
     std::map<std::string, std::filesystem::path> sources_;
 };
 

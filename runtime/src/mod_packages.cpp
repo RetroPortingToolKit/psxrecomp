@@ -1862,6 +1862,7 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 feature.default_enabled =
                     toml::find_or<bool>(v, "default_enabled", false);
                 feature.hidden = toml::find_or<bool>(v, "hidden", false);
+                feature.quick = toml::find_or<bool>(v, "quick", false);
                 feature.channel = out.channel;
                 if (v.contains("channel")) {
                     if (out.format_version < 6)
@@ -2849,8 +2850,31 @@ bool ModPackageManager::scan(std::string* error) {
     return true;
 }
 
+bool ModPackageManager::quick_visible(const std::string& package,
+                                      const std::string& feature) const {
+    const auto found = quick_visibility_.find(package + "/" + feature);
+    if (found != quick_visibility_.end()) return found->second;
+    const ModFeature* manifest = selected_feature(package, feature);
+    return manifest && manifest->quick;
+}
+
+bool ModPackageManager::set_quick_visible(const std::string& package,
+                                          const std::string& feature,
+                                          bool visible, std::string* error) {
+    if (!selected_feature(package, feature)) {
+        set_error(error, "unknown feature: " + package + "/" + feature);
+        return false;
+    }
+    const auto previous = quick_visibility_;
+    quick_visibility_[package + "/" + feature] = visible;
+    if (save_state(error)) return true;
+    quick_visibility_ = previous;
+    return false;
+}
+
 bool ModPackageManager::load_state(std::string* error) {
     selections_.clear();
+    quick_visibility_.clear();
     sources_.clear();
     const fs::path path = root_ / "state.toml";
     if (!fs::exists(path)) return true;
@@ -2859,6 +2883,10 @@ bool ModPackageManager::load_state(std::string* error) {
         const int64_t version = toml::find<int64_t>(cfg, "format_version");
         if (version != 1 && version != 2)
             throw std::runtime_error("unsupported state format_version");
+        if (cfg.contains("quick_mods")) {
+            for (const auto& [key, value] : toml::find(cfg, "quick_mods").as_table())
+                if (value.is_boolean()) quick_visibility_[key] = value.as_boolean();
+        }
         if (cfg.contains("sources")) {
             for (const auto& [id, value] : toml::find(cfg, "sources").as_table()) {
                 if (!valid_id(id) || !value.is_string()) throw std::runtime_error("invalid shared source binding");
@@ -2954,6 +2982,11 @@ bool ModPackageManager::save_state(std::string* error) const {
         return false;
     }
     out << "format_version = 2\n";
+    if (!quick_visibility_.empty()) {
+        out << "\n[quick_mods]\n";
+        for (const auto& [key, value] : quick_visibility_)
+            out << quote_toml(key) << " = " << (value ? "true" : "false") << "\n";
+    }
     if (!sources_.empty()) {
         out << "\n[sources]\n";
         for (const auto& [id, path] : sources_)

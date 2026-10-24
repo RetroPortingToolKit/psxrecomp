@@ -468,6 +468,7 @@ int main() {
                    "id = \"retranslation\"\n"
                    "name = \"Retranslation\"\n"
                    "group = \"Localization\"\n"
+                   "quick = true\n"
                    "\n[[feature]]\n"
                    "id = \"title-collision\"\n"
                    "name = \"Title Collision\"\n"
@@ -602,6 +603,40 @@ int main() {
     check(feature_reload.resolve("SLUS-TEST").fingerprint ==
               partial_compatible.fingerprint,
           "feature state must resolve deterministically after reload");
+    {
+        /* Quick Mods membership: manifest default, then the player's saved
+         * choice; never activation or the execution fingerprint. */
+        const auto fingerprint = feature_reload.resolve("SLUS-TEST").fingerprint;
+        check(!feature_reload.quick_visible("features.mod", "title-screen") &&
+                  feature_reload.quick_visible("features.mod", "retranslation"),
+              "unsaved quick membership must follow the manifest quick flag");
+        check(feature_reload.set_quick_visible("features.mod", "title-screen", true, &error),
+              error.c_str());
+        check(feature_reload.set_quick_visible("features.mod", "retranslation", false, &error),
+              error.c_str());
+        check(!feature_reload.set_quick_visible("unknown.mod", "unknown", true, &error),
+              "quick membership of an unknown feature must be rejected");
+        ModPackageManager quick_reload(root);
+        check(quick_reload.scan(&error) && quick_reload.load_state(&error), error.c_str());
+        check(quick_reload.quick_visible("features.mod", "title-screen") &&
+                  !quick_reload.quick_visible("features.mod", "retranslation"),
+              "saved quick membership must survive reload and override the manifest");
+        check(quick_reload.feature_enabled("features.mod", "title-screen") &&
+                  quick_reload.feature_enabled("features.mod", "retranslation") &&
+                  quick_reload.resolve("SLUS-TEST").fingerprint == fingerprint,
+              "quick membership must not change activation or the fingerprint");
+        check(quick_reload.set_feature_enabled("features.mod", "title-screen", false, &error) &&
+                  quick_reload.save_state(&error),
+              error.c_str());
+        ModPackageManager after_toggle(root);
+        check(after_toggle.scan(&error) && after_toggle.load_state(&error), error.c_str());
+        check(after_toggle.quick_visible("features.mod", "title-screen") &&
+                  !after_toggle.feature_enabled("features.mod", "title-screen"),
+              "activation edits must preserve quick membership");
+        check(after_toggle.set_feature_enabled("features.mod", "title-screen", true, &error) &&
+                  after_toggle.save_state(&error),
+              error.c_str());
+    }
 
     fs::create_directories(root / "selected", ec);
     write_text(root / "selected/bezel.png", "not a decoded image");

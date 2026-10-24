@@ -259,6 +259,13 @@ feature is hidden is not listed under "Installed packages". Either way it runs
 exactly as `default_enabled` and `mods/state.toml` say, so a hidden default-on
 feature is simply active. (recomp-ui `launcher_mod_visibility.h`.)
 
+A feature with `quick = true` is offered in the launcher dashboard's Quick Mods
+card when the title enables `[launcher] quick_controls = true` in `game.toml`.
+The player can add or remove any listed feature from the Mods page ("Show in
+Quick Mods"); that choice is saved under `[quick_mods]` in `mods/state.toml`
+and overrides the manifest. Quick membership is presentation only: it never
+changes activation, preparation or the execution fingerprint.
+
 ## Bounded integer patches
 
 Package format 2 can encode a bounded integer option directly into a guarded

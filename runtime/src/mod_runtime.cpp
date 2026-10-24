@@ -1210,6 +1210,9 @@ int provider_feature_get(void*, int index, RecompLauncherCModFeature* out) {
     copy_text(out->source_url, sizeof(out->source_url), package->source_url);
     copy_text(out->group, sizeof(out->group), feature->group);
     out->hidden = feature->hidden ? 1 : 0;
+#if defined(RECOMP_LAUNCHER_HAS_QUICK_MODS)
+    out->quick = state().manager.quick_visible(package->id, feature->id) ? 1 : 0;
+#endif
     switch (feature->channel) {
         case ModChannel::Experimental:
             out->channel = RECOMP_MOD_CHANNEL_EXPERIMENTAL;
@@ -1302,6 +1305,21 @@ int provider_feature_set_option(void*, const char* package_id,
                                 const char* value) {
     return feature_set_option_impl(package_id, feature_id, option_id, value);
 }
+
+#if defined(RECOMP_LAUNCHER_HAS_QUICK_MODS)
+/* Quick Mods card membership only: saved to state.toml without touching
+ * activation, the preparation ticket or the execution fingerprint. */
+int provider_feature_set_quick(void*, const char* package_id,
+                               const char* feature_id, int quick) {
+    if (!package_id || !feature_id) return 0;
+    std::string error;
+    if (!state().manager.set_quick_visible(package_id, feature_id, quick != 0, &error)) {
+        set_error(error);
+        return 0;
+    }
+    return 1;
+}
+#endif
 
 int provider_feature_resource_count(void*, const char* package_id,
                                     const char* feature_id) {
@@ -2612,6 +2630,9 @@ const std::filesystem::path& mod_runtime_effective_disc_path() {
 
 #if defined(RECOMP_LAUNCHER)
 const RecompLauncherCModProvider* mod_runtime_launcher_provider() {
+#if defined(RECOMP_LAUNCHER_HAS_QUICK_MODS)
+    provider.feature_set_quick = provider_feature_set_quick;
+#endif
 #if defined(RECOMP_LAUNCHER_HAS_WORKER_MOD_COMMIT) && defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     provider.commit_worker_safe = 1;
 #if defined(RECOMP_LAUNCHER_HAS_PREPARED_MOD_COMMIT)
