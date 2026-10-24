@@ -23,6 +23,13 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(gpu_fmv_hd_test tests/test_gpu_fmv_hd.cpp src/gpu_fmv_hd.c)
+    target_include_directories(gpu_fmv_hd_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(gpu_fmv_hd_test PRIVATE SDL_MAIN_HANDLED PSX_FMV_HD_TESTING=1
+        $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(gpu_fmv_hd_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME gpu_fmv_hd_test COMMAND gpu_fmv_hd_test)
+    set_tests_properties(gpu_fmv_hd_test PROPERTIES TIMEOUT 20)
     # Windows UTF-8 text boundary (issue #371): the helpers legacy Windows
     # relies on, and — with the shipped manifest — a UTF-8 process code page.
     if(WIN32)
