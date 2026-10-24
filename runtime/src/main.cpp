@@ -7,6 +7,8 @@
 
 #include "cpu_state.h"
 #include "mod_netplay.h"
+#include "mod_memory.h"
+#include "mod_texture_banks.h"
 #include "execution_profile.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
@@ -144,6 +146,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "gpu_timeline.h"
 #include "crc32.h"
 #include "disc_identity.h"
+#include "disc_content_hash.h"
 #include "sbi_setup.h"
 #include "disc_path.h"
 #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
@@ -1972,8 +1975,9 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
  * Fit and fixed aspect apply_netplay_local_viewport_aspect() set, into an
  * offline rematch. The rest is defensive, for the state listed here only; see
  * docs/MOD_PACKAGES.md "Session starts" for what is exempt and why (the
- * renderer and fixed aspect are launcher controls; guest/GPU-DMA memory,
- * texture-packet arenas and defined texture banks live for the process).
+ * renderer and fixed aspect are launcher controls; enhancement guest/GPU-DMA
+ * arenas, texture-packet registrations and retained texture banks are retired
+ * separately at start_mod_session before the new activation).
  *
  * Function-entry hooks need nothing here: the commit or netplay clear empties
  * upstream's hook table, and only activation rebuilds it.
@@ -3363,6 +3367,11 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
 
 static bool validate_disc_for_launch(const std::filesystem::path& path,
                                      const std::string& game_id) {
+    std::string identity_error;
+    if (!PSXRecompV4::required_original_disc_matches(path, &identity_error)) {
+        std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
+        return false;
+    }
     const DiscValidation v = validate_disc_image(path, game_id);
     if (!v.opened) {
         launcher_warning("Disc Image Not Found", v.detail + "\n\nSelected path:\n" + path.string());
@@ -7812,30 +7821,30 @@ static PadExtHooks pad_ext_main_hooks(void) {
 /* TCP port-2 injection (set_input/press "port":2): a digital pad plugged
  * into port 2 for as long as a test drives it, so headless runs can reach and
  * play two-player modes. Applied after the normal sampling so it wins. */
-static void apply_input_override_port2(int override_word) {
-    static int s_was_driven;
+static void apply_input_override_port(int slot,int override_word) {
+    static int s_was_driven[PSX_MAX_PLAYERS];
     if (override_word < 0) {
 #ifndef PSX_NO_DEBUG_TOOLS
-        restore_input_override_profile(1);
+        if (slot < 2) restore_input_override_profile(slot);
 #endif
         /* Ending an injection releases its buttons: with no device in the
          * port, nothing else would write the word again. A real device in
          * port 2 is resampled each frame anyway. */
-        if (s_was_driven) sio_set_pad_state_slot(1, 0xFFFFu);
-        s_was_driven = 0;
+        if (s_was_driven[slot]) sio_set_pad_state_slot(slot, 0xFFFFu);
+        s_was_driven[slot] = 0;
         return;
     }
-    s_was_driven = 1;
-    if (!sio_get_pad_connected(1)) {
-        sio_set_pad_connected(1, 1);
-        sio_set_pad_analog(1, 0, 0x80, 0x80, 0x80, 0x80);
+    s_was_driven[slot] = 1;
+    if (!sio_get_pad_connected(slot)) {
+        sio_set_pad_connected(slot, 1);
+        sio_set_pad_analog(slot, 0, 0x80, 0x80, 0x80, 0x80);
     }
-    sio_set_pad_state_slot(1, (uint16_t)override_word);
+    sio_set_pad_state_slot(slot, (uint16_t)override_word);
 #ifndef PSX_NO_DEBUG_TOOLS
-    const int debug_connected = debug_server_get_pad_connected_override(1);
-    if (debug_connected >= 0) {
-        s_debug_profile_injected[1] = true;
-        sio_set_pad_connected(1, debug_connected);
+    const int debug_connected = debug_server_get_pad_connected_override(slot);
+    if (slot < 2 && debug_connected >= 0) {
+        s_debug_profile_injected[slot] = true;
+        sio_set_pad_connected(slot, debug_connected);
     }
 #endif
 }
@@ -8400,13 +8409,21 @@ static int savestate_menu_open = 0;
 static int savestate_menu_slot = 0;
 static int savestate_menu_ignore_toggle_release = 0;
 static SDL_Keycode savestate_menu_open_key = 0;
+static int savestate_menu_key_direction = 0;
 
 static void savestate_menu_sync_overlay(void) {
+    const char* unavailable = nullptr;
+    if (savestate_title_blocked() || !psx_mod_netplay_savestates_supported())
+        unavailable = "SAVE STATES ARE UNAVAILABLE IN THIS GAME MODE";
+    else if (psx_netplay_active() && !psx_netplay_is_host())
+        unavailable = "ONLY THE NETPLAY HOST CAN SAVE OR LOAD";
+    psx_savestate_menu_set_unavailable(unavailable);
     psx_savestate_menu_set_state(savestate_menu_open, savestate_menu_slot);
 }
 
 static void savestate_menu_close(void) {
     savestate_menu_open = 0;
+    savestate_menu_key_direction = 0;
     savestate_menu_sync_overlay();
     host_osd_push("Save states closed", 800);
 }
@@ -8500,9 +8517,9 @@ static void savestate_menu_handle_key(SDL_Keycode key, SDL_Scancode scancode,
         key == SDLK_ESCAPE || key == SDLK_BACKSPACE) {
         savestate_menu_close();
     } else if (key == SDLK_LEFT || key == SDLK_UP) {
-        savestate_menu_move(-1);
+        savestate_menu_key_direction = -1;
     } else if (key == SDLK_RIGHT || key == SDLK_DOWN) {
-        savestate_menu_move(+1);
+        savestate_menu_key_direction = +1;
     } else if (key == SDLK_s) {
         savestate_menu_submit(1);
     } else if (key == SDLK_l) {
@@ -8518,26 +8535,24 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
     int prev = 0, next = 0, load = 0, save = 0, cancel = 0;
     int dir = 0;
 
-    SDL_GameController *h = g_players[0].handle;
-    if (h) {
-        const Sint16 lx =
-            SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_LEFTX);
-        const int dz = 16000;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_UP) ||
-            lx < -dz)
-            prev = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
-            lx > dz)
-            next = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_A))
-            load = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_X))
-            save = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_B))
-            cancel = 1;
-    }
+    /* Match the displayed PSX labels and the player's actual bindings. This
+     * also includes keyboard-as-pad and the explicit TCP host input layer. */
+    uint16_t buttons = pad_buttons_for(g_players[0], 1, true);
+    uint16_t host_word;
+    uint8_t sticks[4], lt, rt;
+    if (host_pad_layer(&host_word, sticks, &lt, &rt)) buttons = host_word;
+    const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    /* Merge event taps and held keyboard-as-pad arrows before stepping.
+     * Moving in both the event handler and this poll skipped two slots. */
+    prev = savestate_menu_key_direction < 0 || keys[SDL_SCANCODE_LEFT] ||
+        keys[SDL_SCANCODE_UP] || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
+    next = savestate_menu_key_direction > 0 || keys[SDL_SCANCODE_RIGHT] ||
+        keys[SDL_SCANCODE_DOWN] || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
+    savestate_menu_key_direction = 0;
+    load = !(buttons & PAD_CROSS);
+    save = !(buttons & PAD_SQUARE);
+    cancel = !(buttons & PAD_CIRCLE);
 
     const int toggle = hotkey_shortcut_down(PSX_ASSIST_BIND_SAVE_STATE_MENU, g_hotkey_pad_save_state_menu);
     if (savestate_menu_ignore_toggle_release) {
@@ -8651,24 +8666,11 @@ static void rewind_poll_nav(uint32_t now_ms) {
     if ((btn & PAD_CIRCLE) == 0 || (btn & PAD_SELECT) == 0 ||
         (btn & PAD_R3) == 0)
         can = 1;
-    SDL_GameController *h = g_players[0].handle;
-    if (h) {
-        const Sint16 lx =
-            SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_LEFTX);
-        const int dz = 16000;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
-            lx < -dz)
-            left = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
-            lx > dz)
-            right = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_A))
-            acc = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_B) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_BACK) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_RIGHTSTICK))
-            can = 1;
-    }
+    /* Buttons above already honor the player's PSX bindings. A second raw
+     * A/B poll would override those mappings while showing Cross/Circle. */
+    const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
+    if (lx < -16000) left = 1;
+    if (lx > 16000) right = 1;
     psx_rewind_nav_held(left, right, acc, can, now_ms);
 }
 
@@ -8972,6 +8974,11 @@ static void savestate_menu_host_pause_loop(void) {
     psx_local_mouse_reset();
     freeze_heartbeat_set_paused(1);
     while (savestate_menu_open) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        /* The guest is paused here; keep loopback host controls and overlay
+         * inspection alive just as the rewind pause loop does. */
+        debug_server_poll();
+#endif
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             (void)psx_local_mouse_event(ev);
@@ -9311,6 +9318,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     }
 #endif
     host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
+    int extra_overrides[PSX_MAX_PLAYERS];
+    for(unsigned slot=2;slot<PSX_MAX_PLAYERS;++slot) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        extra_overrides[slot]=debug_server_get_input_override_extra(slot);
+#else
+        extra_overrides[slot]=-1;
+#endif
+    }
 
     psx_local_mouse_begin(sdl_window, local_mouse_live(override));
     {
@@ -9547,7 +9562,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 sample_headless_pad_into_sio(override);
             else
                 sample_pad_into_sio(override);
-            apply_input_override_port2(override_p2);
+            apply_input_override_port(1,override_p2);
+            for(int slot=2;slot<PSX_MAX_PLAYERS;++slot)apply_input_override_port(slot,extra_overrides[slot]);
             env_pad_hold_apply();
         }
         /* Offline vblank boundary: record/replay/compare (PSX_RB_SELFCHECK).
@@ -9887,7 +9903,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 SDL_PumpEvents(); // retain native timing when no policy exists
             }
             sample_pad_into_sio(override);
-            apply_input_override_port2(override_p2);
+            apply_input_override_port(1,override_p2);
+            for(int slot=2;slot<PSX_MAX_PLAYERS;++slot)apply_input_override_port(slot,extra_overrides[slot]);
             env_pad_hold_apply();
             latency_ring_restamp_input();
         }
@@ -11622,6 +11639,16 @@ namespace {
         } else {
             last_companion_warning.clear();
         }
+        // Enforce original image policy in the selection badge, including
+        // when every mod is disabled. PLAY is guarded again before boot.
+        std::string identity_error;
+        if (!PSXRecompV4::required_original_disc_matches(disc_path, &identity_error)) {
+            out->verdict = 3;
+            out->netplay_ok = 0;
+            g_session_netplay_disc_ok = false;
+            std::snprintf(out->netplay_detail, sizeof(out->netplay_detail),
+                          "%s", identity_error.c_str());
+        }
         return 1;
     }
 
@@ -12694,7 +12721,7 @@ namespace {
         out->player_count = ae_np_lan_occupied(state);
         out->max_slots = state.max_slots >= 2 ? state.max_slots
             : (g_lnch_host_max_slots >= 2 ? g_lnch_host_max_slots
-               : (g_lnch_game_players >= 2 ? g_lnch_game_players : 2));
+               : (PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2)));
         if (out->max_slots > PSX_MAX_PLAYERS) out->max_slots = PSX_MAX_PLAYERS;
         if (out->max_slots > kAeLanMaxSlots) out->max_slots = kAeLanMaxSlots;
         out->has_password = state.password.empty() ? 0 : 1;
@@ -14087,8 +14114,26 @@ namespace {
      * thread and the device key. Nothing here blocks a frame except the
      * rename, which is one round trip and wants a verdict for its modal. */
     int ae_np_account_available(void*) { return rnet_account_available(); }
-    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
-    int ae_np_account_state(void*) { return rnet_account_state(); }
+    int ae_np_account_login_begin(void*) {
+        int accepted=rnet_account_login_begin();
+        std::fprintf(stderr,"netplay.account: sign-in request accepted=%d\n",accepted);
+        std::fflush(stderr);
+        return accepted;
+    }
+    int ae_np_account_state(void*) {
+        int current=rnet_account_state();
+        static int previous=-1;
+        if(current!=previous) {
+            previous=current;
+            std::fprintf(stderr,"netplay.account: state=%d\n",current);
+            if(current==RNET_ACCOUNT_FAILED) {
+                const char *error=rnet_account_error();
+                std::fprintf(stderr,"netplay.account: failure=%s\n",error?error:"");
+            }
+            std::fflush(stderr);
+        }
+        return current;
+    }
     const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
     const char* ae_np_account_username(void*) { return rnet_account_username(); }
     const char* ae_np_account_error(void*) { return rnet_account_error(); }
@@ -14601,13 +14646,13 @@ namespace {
     int ae_np_connect(void*) {
         psx_lobby_set_game_identity(g_lnch_netplay_game_name.c_str(), psx_lobby_game_version());
         psx_lobby_set_disc_fp(g_session_disc_fp.c_str());
-        psx_lobby_set_max_slots(g_lnch_game_players);
+        psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players));
         ae_np_refresh_mod_offer();
         const int rc = psx_lobby_connect(ae_np_default_url(nullptr));
         /* connect resets g_lc; re-apply so create/join never advertise "". */
         psx_lobby_set_game_identity(g_lnch_netplay_game_name.c_str(), psx_lobby_game_version());
         psx_lobby_set_disc_fp(g_session_disc_fp.c_str());
-        psx_lobby_set_max_slots(g_lnch_game_players);
+        psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players));
         ae_np_refresh_mod_offer();
         return rc;
     }
@@ -15606,7 +15651,7 @@ namespace {
                      const char* password,
                      const RecompLauncherCSettings* settings,
                      int lan_only, int max_slots) {
-        int game_max = g_lnch_game_players >= 2 ? g_lnch_game_players : 2;
+        int game_max = PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2);
         if (game_max > PSX_MAX_PLAYERS) game_max = PSX_MAX_PLAYERS;
         if (game_max > 8) game_max = 8;
         if (max_slots < 2) max_slots = 2;
@@ -16157,7 +16202,7 @@ namespace {
         psx_lobby_json_str(req.c_str(), "handoff_query", op, sizeof(op));
         psx_lobby_json_str(req.c_str(), "handoff_disc", disc, sizeof(disc));
         std::string ans = "{\"v\":1,\"engine\":\"psxrecomp\",\"handoff\":1";
-        char msg[1024] = {};
+        char msg[PSX_LOBBY_START_JSON_CAP] = {};
         ae_np_refresh_bios_offer_for(settings);
         if (std::strcmp(op, "identity") == 0) {
             const std::string d = disc[0] ? std::string(disc) : initial_disc;
@@ -16454,7 +16499,7 @@ namespace {
                 g_lnch_pending_direct_launch.max_slots =
                     state.max_slots >= 2 ? state.max_slots
                     : (g_lnch_host_max_slots >= 2 ? g_lnch_host_max_slots
-                       : (g_lnch_game_players >= 2 ? g_lnch_game_players : 2));
+                       : (PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2)));
                 if (g_lnch_pending_direct_launch.max_slots > PSX_MAX_PLAYERS)
                     g_lnch_pending_direct_launch.max_slots = PSX_MAX_PLAYERS;
                 if (g_lnch_pending_direct_launch.max_slots > kAeLanMaxSlots)
@@ -16592,7 +16637,7 @@ namespace {
         if (out->input_prediction < 2) out->input_prediction = 2;
         if (out->input_prediction > 16) out->input_prediction = 16;
         out->max_slots = ji->max_slots >= 2 ? ji->max_slots
-                         : (g_lnch_game_players >= 2 ? g_lnch_game_players : 2);
+                         : (PSXRecompV4::mod_runtime_netplay_player_limit(g_lnch_game_players >= 2 ? g_lnch_game_players : 2));
         if (out->max_slots > PSX_MAX_PLAYERS) out->max_slots = PSX_MAX_PLAYERS;
         out->max_slots += host_spectates; /* the host's silent slot 0 */
         /* Session slots from the seat table the start delivered: host first,
@@ -18157,6 +18202,8 @@ int main(int argc, char** argv) {
             apply_offline_pad_count(game_players, multitap_enabled);
             game_has_disc_crc = gc.has_disc_crc;
             game_disc_crc     = gc.disc_crc;
+            PSXRecompV4::required_disc_sha256() = gc.required_disc_sha256;
+            PSXRecompV4::required_disc_fps() = gc.required_disc_fps;
             resolved_audio_buffer_ms = gc.runtime.audio_buffer_ms;
             g_netplay_disc_expect.require_cue = gc.netplay_require_cue;
             g_netplay_disc_expect.required_tracks = gc.netplay_required_tracks;
@@ -19941,7 +19988,7 @@ int main(int argc, char** argv) {
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
             g_lnch_netplay_game_name = game_name.empty() ? "PSX" : game_name;
             apply_offline_pad_count(game_players, multitap_enabled);
-            psx_lobby_set_max_slots(game_players);
+            psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(game_players));
 #endif
 
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
@@ -20551,6 +20598,15 @@ int main(int argc, char** argv) {
                       "reset_mod_owned_presentation() would clobber a launcher "
                       "setting; restore only when the feature is mod-owned");
         reset_mod_owned_presentation();
+        /* Cold boot has no renderer yet. A lobby rematch reaches here only
+         * after scheduler unwind and renderer/audio/window teardown. Retire
+         * texture IDs and packet registrations before reusing guest addresses;
+         * memory_init below must preserve the new activation's allocations. */
+        if (!mod_texture_banks_reset_session() || !psx_mod_memory_reset_session()) {
+            std::fprintf(stderr,
+                         "psxrecomp: cannot reset enhancement resources at session start\n");
+            return false;
+        }
         /* Netplay own-view mods: the widescreen margin follows them into the
          * sandboxed own view only; the shared game keeps the stock cull. */
         gpu_ws_set_local_view_only(
@@ -20613,7 +20669,10 @@ int main(int argc, char** argv) {
         }
         return true;
     };
-    if (!start_mod_session(net_cfg.enabled)) return 1;
+    if (!start_mod_session(net_cfg.enabled)) {
+        SDL_Quit();
+        return 1;
+    }
 
     /* Re-apply the resolved language to the translation layer. text_xlate_init
      * (at config load) only saw the game.toml default; this folds in the
@@ -20667,6 +20726,15 @@ session_reboot:
         g_openxr_ready_execution_generation = 1;
     mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
     psx_disc_tray_reset_session();
+    // Check the untouched base, never a mod's derived private image. Covers
+    // CLI, no-launcher, zero-mod builds, and a changed disc on lobby rematch.
+    {
+        std::string identity_error;
+        if (!PSXRecompV4::required_original_disc_matches(resolved_disc, &identity_error)) {
+            std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
+            return 1;
+        }
+    }
     /* Rematch after lobby soft-return re-enters here with updated net_cfg. */
     static int s_emu_session = 0;
     const bool rematch_session = (++s_emu_session > 1);
@@ -21793,7 +21861,7 @@ session_reboot:
                 net_cfg.input_player = 0;
         }
         if (net_cfg.slot_count < 2)
-            net_cfg.slot_count = game_players >= 2 ? game_players : 2;
+            net_cfg.slot_count = PSXRecompV4::mod_runtime_netplay_player_limit(game_players >= 2 ? game_players : 2);
         if (net_cfg.slot_count > PSX_MAX_PLAYERS)
             net_cfg.slot_count = PSX_MAX_PLAYERS;
         s_netplay_present_sim_watermark = 0; /* §74: sim restarts per session */
@@ -22353,7 +22421,7 @@ soft_return_lobby:
         g_lnch_has_crc = game_has_disc_crc;
         g_lnch_argv0 = argv[0];
         g_lnch_netplay_game_name = game_name.empty() ? "PSX" : game_name;
-        psx_lobby_set_max_slots(game_players);
+        psx_lobby_set_max_slots(PSXRecompV4::mod_runtime_netplay_player_limit(game_players));
 
         RecompLauncherCSettings ls{};
         ls.output_method = 2;
@@ -23036,7 +23104,10 @@ soft_return_lobby:
                 g_video_aspect_num = 4;
                 g_video_aspect_den = 3;
             }
-            if (!start_mod_session(net_cfg.enabled)) return 1;
+            if (!start_mod_session(net_cfg.enabled)) {
+                SDL_Quit();
+                return 1;
+            }
             disc_path_str = session_disc_path(resolved_disc);
             std::printf("psxrecomp: rematch from lobby (netplay=%d)\n",
                         net_cfg.enabled ? 1 : 0);

@@ -76,6 +76,7 @@
 #include "frame_fingerprint.h"
 #include "psx_segment_miss.h"
 #include "psx_rewind.h"
+#include "psx_savestate_menu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -315,6 +316,8 @@ static int s_input_frames   = 0;
  * for driving two-player modes headless. */
 static int s_input_override_p2 = -1;
 static int s_input_frames_p2   = 0;
+/* Additional digital test ports. Never alias an unknown port to P1. */
+static int s_extra_buttons[8],s_extra_frames[8],s_extra_active[8];
 /* Optional analog-stick override (set_input lx/ly/rx/ry, 0..255, 0x80 =
  * centre). Lets injected input drive analog-mode movement; consumed by the
  * pad sampler alongside the button word. */
@@ -334,6 +337,9 @@ static int s_pad_connected_override[2] = { -1, -1 };
  * presses and remains deterministic while turbo loads are active.
  */
 static PSX_BSS InputRoute s_route;
+static unsigned s_input_route_port = 1;
+static int s_input_route_wait_load;
+static void input_route_loaded(void);
 
 /* ---- Frontend turbo override ---- */
 static volatile int s_turbo_enabled = 0;
@@ -5047,6 +5053,7 @@ static void handle_frame(int id, const char *json)
 static int s_fp_reset_on_load = 0;
 void debug_server_note_savestate_loaded(void)
 {
+    input_route_loaded();
     if (!s_fp_reset_on_load) return;
     s_fp_reset_on_load = 0;
     s_fp = (PsxFrameFingerprint)PSX_FRAME_FINGERPRINT_INIT;
@@ -8209,8 +8216,11 @@ static void handle_set_input(int id, const char *json)
     if (connected < -1 || connected > 1) {
         send_err(id, "connected must be -1 (automatic), 0, or 1"); return;
     }
+    const int port = json_get_int(json, "port", 1);
+    if(port<1 || port>8) {send_err(id,"port must be 1..8");return;}
     if (json_get_str(json, "layer", layer, sizeof(layer)) &&
         strcmp(layer, "host") == 0) {
+        if(port!=1) {send_err(id,"host input layer supports port 1 only");return;}
         s_host_buttons = json_get_str(json, "buttons", val_str, sizeof(val_str))
             ? (uint16_t)hex_to_u32(val_str) : (uint16_t)0xFFFF;
         s_host_axes[0] = clamp_u8_arg(json_get_int(json, "lx", -1), 0x80);
@@ -8228,6 +8238,11 @@ static void handle_set_input(int id, const char *json)
     }
     if (pad_type < -1 || pad_type > 2) {
         send_err(id, "pad_type must be -1 (automatic), 0, 1, or 2"); return;
+    }
+    if(port>=3) {
+        s_extra_buttons[port-1]=(int)(hex_to_u32(val_str)&0xFFFFu);
+        s_extra_frames[port-1]=0;s_extra_active[port-1]=1;
+        send_ok(id);return;
     }
     if (json_get_int(json, "port", 1) == 2) {
         s_pad_connected_override[1] = connected;
@@ -8277,9 +8292,16 @@ static void handle_press(int id, const char *json)
     if (connected < -1 || connected > 1) {
         send_err(id, "connected must be -1 (automatic), 0, or 1"); return;
     }
+    const int port = json_get_int(json, "port", 1);
+    if(port<1 || port>8) {send_err(id,"port must be 1..8");return;}
     if (buttons < 0) { send_err(id, "missing buttons"); return; }
     if (pad_type < -1 || pad_type > 2) {
         send_err(id, "pad_type must be -1 (automatic), 0, 1, or 2"); return;
+    }
+    if(port>=3) {
+        s_extra_buttons[port-1]=buttons&0xFFFF;
+        s_extra_frames[port-1]=frames;s_extra_active[port-1]=1;
+        send_ok(id);return;
     }
     if (json_get_int(json, "port", 1) == 2) {
         s_pad_connected_override[1] = connected;
@@ -8324,6 +8346,18 @@ static void handle_rewind_status(int id, const char *json)
              (unsigned)psx_rewind_snap_count());
 }
 
+static void handle_overlay_status(int id, const char *json)
+{
+    int open, slot, unavailable;
+    (void)json;
+    psx_savestate_menu_get_state(&open, &slot, &unavailable);
+    send_fmt("{\"id\":%d,\"ok\":true,\"save_menu_open\":%s,\"save_slot\":%d,"
+             "\"save_unavailable\":%s,\"rewind_open\":%s,\"rewind_blocked\":%s}",
+             id, open ? "true" : "false", slot, unavailable ? "true" : "false",
+             psx_rewind_is_open() ? "true" : "false",
+             psx_rewind_title_blocked() ? "true" : "false");
+}
+
 static void handle_pad_status(int id, const char *json)
 {
     (void)json;
@@ -8364,14 +8398,25 @@ static void handle_pad_status(int id, const char *json)
 
 static void handle_clear_input(int id, const char *json)
 {
-    const int port = json_get_int(json, "port", 0);   /* 0 = both */
+    const int port = json_get_int(json, "port", 0);   /* 0 = all */
+    if(port<0 || port>8) {send_err(id,"port must be 0..8");return;}
+    for(int i=2;i<8;++i)if(!port || port==i+1) {
+        s_extra_active[i]=s_extra_frames[i]=0;
+    }
+    if(port>=3) {send_ok(id);return;}
+    if (port == 0 || port == (int)s_input_route_port) {
+        s_input_route_active = 0;
+        s_input_route_wait_load = 0;
+        s_input_route_index = 0;
+        s_input_route_remaining = 0;
+    }
     if (port == 0 || port == 2) {
         s_pad_connected_override[1] = -1;
         s_input_override_p2 = -1;
         s_input_frames_p2 = 0;
     }
     if (port == 2) { send_ok(id); return; }
-    input_route_stop(&s_route);
+    if ((unsigned)port == s_input_route_port) { input_route_stop(&s_route); s_input_route_wait_load=0; }
     s_input_override = -1;
     s_input_frames   = 0;
     s_axis_override  = 0;
@@ -8389,6 +8434,7 @@ static void handle_input_route_clear(int id, const char *json)
 {
     (void)json;
     input_route_clear(&s_route);
+    s_input_route_wait_load=0;
     send_ok(id);
 }
 
@@ -8414,26 +8460,28 @@ static void handle_input_route_append(int id, const char *json)
 
 static void handle_input_route_start(int id, const char *json)
 {
-    const int at = json_get_int(json, "at_frame", 0);
-    int rc = input_route_start(&s_route, at > 0 ? (uint64_t)at : 0u, s_frame_count);
-    if (rc != INPUT_ROUTE_OK) {
-        send_err(id, input_route_error_text(rc)); return;
+    const int port=json_get_int(json,"port",1), at=json_get_int(json,"at_frame",0);
+    const int after_load=json_get_int(json,"after_load",0);
+    if(port<1 || port>2){send_err(id,"port must be 1 or 2");return;}
+    if(after_load<0 || after_load>1 || (after_load && at>0)) {
+        send_err(id,"after_load must be 0 or 1 and cannot combine with at_frame");return;
     }
-    s_input_override = -1;
-    s_input_frames = 0;
-    s_axis_override = 0;
-    s_pad_type_override = -1;
-    s_pad_connected_override[0] = -1;
-    send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u,\"start_frame\":%llu}\n",
-             id, (unsigned)s_route.count,
-             (unsigned long long)(s_route.start_frame ? s_route.start_frame
-                                                      : s_frame_count));
+    int rc=input_route_start(&s_route,at>0?(uint64_t)at:0,s_frame_count);
+    if(rc!=INPUT_ROUTE_OK){send_err(id,input_route_error_text(rc));return;}
+    s_input_route_port=(unsigned)port;s_input_route_wait_load=after_load;
+    s_pad_connected_override[port-1]=-1;
+    if(port==2){s_input_override_p2=-1;s_input_frames_p2=0;}
+    else{s_input_override=-1;s_input_frames=0;s_axis_override=0;s_pad_type_override=-1;}
+    send_fmt("{\"id\":%d,\"ok\":true,\"steps\":%u,\"port\":%u,\"waiting_for_load\":%s,\"start_frame\":%llu}\n",
+        id,s_route.count,s_input_route_port,after_load?"true":"false",
+        (unsigned long long)(after_load?0:s_route.start_frame?s_route.start_frame:s_frame_count));
 }
 
 static void handle_input_route_stop(int id, const char *json)
 {
     (void)json;
     input_route_stop(&s_route);
+    s_input_route_wait_load=0;
     send_ok(id);
 }
 
@@ -10270,6 +10318,40 @@ static void handle_get_snapshots(int id, const char *json)
  * viewer (and the harness Read tool) accepts, and nothing new to link against
  * — which keeps the self-contained static runtime self-contained. */
 #include "png_write.h"   /* png_write_rgb + zlib/CRC helpers (shared with Beetle) */
+
+/* Capture the actual host overlay bitmap without opening or focusing a
+ * desktop window. Input still comes through the normal host pad path. */
+static void handle_overlay_image(int id, const char *json)
+{
+    char panel[32], path[1024];
+    const uint32_t *pixels = NULL;
+    int w = 0, h = 0, present;
+    if (!json_get_str(json, "panel", panel, sizeof(panel)) ||
+        !json_get_str(json, "path", path, sizeof(path))) {
+        send_err(id, "panel and path required"); return;
+    }
+    if (!strcmp(panel, "save_states"))
+        present = psx_savestate_menu_overlay_image(&pixels, &w, &h);
+    else if (!strcmp(panel, "rewind"))
+        present = psx_rewind_overlay_image(&pixels, &w, &h);
+    else { send_err(id, "panel must be save_states or rewind"); return; }
+    if (!present || !pixels || w <= 0 || h <= 0 || w > 2048 || h > 2048) {
+        send_err(id, "overlay is not open"); return;
+    }
+    uint8_t *rgb = (uint8_t *)malloc((size_t)w * h * 3u);
+    if (!rgb) { send_err(id, "overlay allocation failed"); return; }
+    for (int i = 0; i < w * h; ++i) {
+        rgb[i*3] = (uint8_t)(pixels[i] >> 16);
+        rgb[i*3+1] = (uint8_t)(pixels[i] >> 8);
+        rgb[i*3+2] = (uint8_t)pixels[i];
+    }
+    FILE *file = fopen(path, "wb");
+    int ok = file && png_write_rgb(file, rgb, (uint32_t)w, (uint32_t)h);
+    if (file) { if (fclose(file)) ok = 0; }
+    free(rgb);
+    if (!ok) { send_err(id, "overlay PNG write failed"); return; }
+    send_fmt("{\"id\":%d,\"ok\":true,\"width\":%d,\"height\":%d}", id, w, h);
+}
 
 /* Canonical screenshot: writes an 8-bit RGB PNG of the current PSX display to
  * "path" (default psx_screenshot.png in the runtime cwd) and answers with a
@@ -16735,6 +16817,8 @@ static const CmdEntry s_commands[] = {
     { "press",             handle_press },
     { "pad_status",        handle_pad_status },
     { "rewind_status",     handle_rewind_status },
+    { "overlay_status",    handle_overlay_status },
+    { "overlay_image",     handle_overlay_image },
     { "clear_input",       handle_clear_input },
     { "input_route_clear", handle_input_route_clear },
     { "input_route_append",handle_input_route_append },
@@ -17719,10 +17803,19 @@ int debug_server_is_connected(void)
     return s_client != SOCK_INVALID;
 }
 
+static void input_route_loaded(void) {
+    if(s_route.active && s_input_route_wait_load) {
+        s_input_route_wait_load=0; (void)input_route_start(&s_route,0,s_frame_count);
+    }
+}
+static int input_route_poll_port(unsigned port,int *buttons) {
+    return port==s_input_route_port && !s_input_route_wait_load &&
+        input_route_next(&s_route,s_frame_count,buttons);
+}
 int debug_server_get_input_override(void)
 {
     int route_buttons = 0;
-    if (input_route_next(&s_route, s_frame_count, &route_buttons))
+    if (input_route_poll_port(1, &route_buttons))
         return route_buttons;
     int current = s_input_override;
     if (s_input_override >= 0 && s_input_frames > 0) {
@@ -17734,6 +17827,8 @@ int debug_server_get_input_override(void)
 
 int debug_server_get_input_override_port2(void)
 {
+    int route_buttons=0;
+    if(input_route_poll_port(2,&route_buttons))return route_buttons;
     int current = s_input_override_p2;
     if (s_input_override_p2 >= 0 && s_input_frames_p2 > 0) {
         if (--s_input_frames_p2 == 0)
@@ -17745,7 +17840,7 @@ int debug_server_get_input_override_port2(void)
 int debug_server_get_axis_override(unsigned char st[4])
 {
     /* A route step with axes owns the sticks for the poll it drove. */
-    if (input_route_frame_axes(&s_route, st)) return 1;
+    if (s_input_route_port==1 && input_route_frame_axes(&s_route, st)) return 1;
     if (!s_axis_override) return 0;
     st[0] = s_axis_st[0]; st[1] = s_axis_st[1];
     st[2] = s_axis_st[2]; st[3] = s_axis_st[3];

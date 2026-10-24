@@ -11,6 +11,8 @@ installation, version selection, and removal are a secondary management view.
 Feature identity is always `(package_id, feature_id)`. Player selections are
 independent. Explicit `[[requirement]]` declarations can additionally activate
 required features for a session without changing saved player selections.
+Format 11 also supports declared package suppression for mutually exclusive
+modes, while stored feature options remain independent.
 
 The player selects a verified stock BIN/CUE. Resolution produces guarded native
 operations and sparse disc overlays without rewriting or replacing that stock
@@ -249,6 +251,15 @@ Option types are `boolean`, `choice`, and bounded `integer`. Conditions are
 feature-local: `when = { option = "value", ... }` requires every listed option
 to match. The legacy `when_option`/`when_value` pair remains accepted for a
 single condition.
+
+Format10 also permits these conditions on `[[resource]]`. Only matching
+resources appear in the feature's file pickers, preparation inputs/outputs,
+and resolved plan. A required resource is required only while its condition
+matches. Unselected media is not read, verified or added to the session
+identity; the selected option and active resource bytes identify the plan.
+For example, `when = { subtitles = "en" }` can select a verified English
+movie pack while keeping the Japanese donor and Spanish pack inactive.
+Conditions must refer to valid values of the owning feature's options.
 
 A feature with `hidden = true` is left out of the launcher's lists while it is
 disabled; while enabled it is listed so the player can turn it off. A title that
@@ -640,8 +651,12 @@ Not reset, and why:
 - **Guest memory, GPU-DMA memory, texture-packet arenas and defined texture
   banks** (`psx_mod_alloc_guest_memory`, `psx_mod_alloc_gpu_dma_memory`,
   `psx_mod_alloc_texture_packet_memory`, `psx_mod_define_texture_bank`) live
-  for the process. A bank ID is read only from packets in a plugin's own arena,
-  which stock game code does not use.
+  for one session. After renderer teardown, their registrations and enhancement
+  arenas reset before every plugin activation, including lobby rematches.
+  Plugins recreate their allocations and resources during activation; ordinary
+  `memory_init()` runs later and leaves those allocations intact. A bank ID is
+  read only from packets in a plugin's own arena, which stock game code does
+  not use.
 
 **A rematch is a full session start.** It re-enters below the first session's
 setup block, so after its commit or netplay clear it runs the same sequence as
@@ -1189,3 +1204,41 @@ callbacks. Address collisions or capacity failures reject the launch through
 always-on direct implementations. Every session rearms its selected plan.
 Replacement overrides cannot be selected as netplay local-view plugins: they
 change shared execution rather than only sandboxed presentation.
+
+## Exclusive modes and unique rosters (format 11)
+
+An active package may declare top-level `disables = ["other.package"]`.
+Enabling its feature through the manager clears the named packages' enabled
+features; trying to reenable a suppressed package returns a reason identifying
+the owner. Disabling the owner does not restore old enabled flags. Package
+option values are retained. Unlike `conflicts`, this implements an explicit
+mode switch rather than requiring the player to untick each incompatible mod.
+
+Resolution also computes suppression from loaded selections, so hand-edited
+state cannot run both native implementations. This effective copy does not
+rewrite stored preferences on load. Self-suppression and active suppression
+cycles are rejected. Dependencies cannot reenable a suppressed provider. An
+implicitly activated provider that would disable an already active package
+fails resolution; select that provider directly first to apply its declared
+mode switch. Suppression from an implicitly activated provider also blocks
+later dependency activation of its targets.
+
+Feature-local `distinct_values` constraints require different choice tokens:
+
+```toml
+format_version = 11
+disables = ["example.two-player", "example.standalone-armor"]
+
+[[constraint]]
+feature = "coop"
+kind = "distinct_values"
+options = ["p1", "p2", "p3", "p4"]
+```
+
+All referenced options must be distinct choice options in the same feature,
+with unique defaults. Invalid edits while enabled are rejected transactionally.
+Configure a whole tuple while inactive, then enable it once; the netplay host
+settings importer follows this rule so valid permutations do not fail at an
+invalid intermediate choice. A special `none` value has no implicit semantics
+here: a title can offer it only on its optional last seat, then interpret it
+through its trusted profile.

@@ -201,6 +201,10 @@ int psx_mod_texture_banks_supported(void);
 int psx_mod_define_texture_bank(uint16_t id, uint32_t width, uint32_t height,
                                 const uint16_t* pixels);
 void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver);
+/* Forget only the caller's owned ID range when restoring a timeline. Pending
+ * GL submissions are drained first; a registered resolver can rebuild saved
+ * IDs before drawing. Never use this from inside a bank resolver. */
+int psx_mod_forget_texture_bank_range(uint16_t first, uint32_t count);
 /* Default-off GL optimization: batch immutable-bank semi triangles in painter
  * order on the single-pass dual-source path only. Ordinary VRAM, subtractive
  * blending and destination-mask checks retain per-primitive isolation. Call
@@ -286,6 +290,8 @@ int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
  * into or expand the 512 KiB hardware RAM. Bind before the original driver
  * queues a voice; the bank is latched when its next KEYON reaches the SPU. */
 int psx_mod_spu_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
+/* Immutable banks prepared before hardware init must bind after this changes. */
+uint32_t psx_mod_spu_sample_bank_epoch(void);
 int psx_mod_spu_bind_voice_bank(unsigned voice, uint32_t bank);
 int psx_mod_spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
 void psx_mod_spu_private_voice_stop(uint32_t mask);
@@ -518,6 +524,13 @@ int psx_mod_current_resource_bytes(const char* resource_id,
  * no host path or donor data is saved into guest RAM/savestates. */
 int psx_mod_append_disc_extent(const char* resource_id, uint64_t byte_offset,
                                uint32_t sector_count, uint32_t* first_lba);
+/* Activation-only derived assets. Copies the payload into an immutable mounted
+ * Mode-2 extent and updates its ISO directory record. Host asset readers and
+ * the guest CD controller see the same replacement. Title adapters must update
+ * any private LBA/size tables of their own. Derived bytes must depend only on
+ * the committed resources and trusted adapter, never on host clocks/paths. */
+int psx_mod_replace_disc_file(const char* path, const void* bytes, uint32_t size,
+                               uint32_t* first_lba);
 
 /* Optional CD-DA playlist, built only during activation. Audio has a separate
  * TOC/timeline (track 1 is a data placeholder); data/XA LBAs are unchanged.
@@ -769,6 +782,25 @@ typedef struct PSXModStereoFrame {
 typedef int (*PSXModStereoFn)(struct CPUState*, void*, uint32_t eye);
 int psx_mod_render_stereo(struct CPUState *cpu, const PSXModStereoFrame *frame,
                           PSXModStereoFn fn, void *user);
+/* Offline local multiplayer: draw views0/1 from one checkpoint, using the
+ * reversible local-view sandbox. Both must succeed before publication.
+ * Callbacks run with psx_mod_local_view_scope()==1. This never advances the
+ * world or enables stereo/VR. Presentation uses two native4:3 views (8:3).
+ * Unsupported backends refuse and leave ordinary presentation available. */
+int psx_mod_render_local_pair(struct CPUState *cpu, const PSXModStereoFrame *frame,
+                              PSXModStereoFn fn, void *user);
+/* Keep an 8:3 session canvas until disabled/reset. A fresh complete pair uses
+ * its two views; canonical menu, movie and unavailable-pair frames are shown
+ * in both 4:3 panes. Does not change the guest's aspect or retain stale views. */
+int psx_mod_set_local_pair_presentation(int enabled);
+/* Four draw-only views from one checkpoint, atomically published in a 2x2
+ * grid (8:6 canvas). Callback indices are top left, top right, bottom left,
+ * bottom right. A producer may use two adjacent views for one wide camera.
+ * Shared menus/movies fill the same grid without retaining stale gameplay.
+ * Offline only; the same backend and sandbox rules as local pairs apply. */
+int psx_mod_render_local_grid(struct CPUState *cpu, const PSXModStereoFrame *frame,
+                              PSXModStereoFn fn, void *user);
+int psx_mod_set_local_grid_presentation(int enabled);
 uint32_t psx_mod_render_stereo_status(void);
 /* Annotate the current frame's trace record with a short tag (scene transition,
  * state change). Only meaningful while PSX_FRAME_TRACE is on and a traced frame
