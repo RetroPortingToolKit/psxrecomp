@@ -87,8 +87,9 @@ static int s_shell_skipped   = 0;   /* boot skip already fired */
  * delivery gives the callback, reused here so the dispatch return contract
  * matches. 0 = unknown for this BIOS: callback delivery stays LLE. */
 
-/* ── always-on ring ──────────────────────────────────────────────────────── */
+/* ── debug call-history ring ─────────────────────────────────────────────── */
 
+#ifndef PSX_NO_DEBUG_TOOLS
 static PsxHleCallEntry s_ring[PSX_HLE_RING_CAP];
 static uint64_t        s_ring_seq = 0;
 
@@ -153,6 +154,21 @@ const PsxHleCallEntry* psx_hle_ring_entry(uint64_t seq_index)
     if (s_ring_seq - seq_index > PSX_HLE_RING_CAP) return NULL; /* evicted */
     return &s_ring[seq_index & (PSX_HLE_RING_CAP - 1)];
 }
+#else
+/* The debug dump is the ring's only consumer. Keep functional BIOS handling
+ * independent of forensic reads, repeat scans and storage in production. */
+static inline void hle_record(uint32_t vector, uint32_t fn, const CPUState* cpu,
+                              uint32_t v0, uint8_t route)
+{
+    (void)vector; (void)fn; (void)cpu; (void)v0; (void)route;
+}
+uint64_t psx_hle_ring_seq(void) { return 0; }
+const PsxHleCallEntry* psx_hle_ring_entry(uint64_t seq_index)
+{
+    (void)seq_index;
+    return NULL;
+}
+#endif
 
 /* ── B0 event services (SCPH1001 kernel semantics, on real guest EvCBs) ──── */
 

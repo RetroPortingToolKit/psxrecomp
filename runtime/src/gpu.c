@@ -7299,7 +7299,7 @@ void gpu_set_gp0_source(uint32_t addr) {
     gp0_next_source_addr = addr;
 }
 
-/* ---- Draw census ring (ALWAYS-ON) -----------------------------------------
+/* ---- Draw census ring (explicit diagnostic capture) -----------------------
  * Every drawn primitive (GP0 opcode 0x20-0x7F) records: frame, the prim's DMA
  * source address, the live camera (scratchpad camX/camY), and the prim's first
  * vertex in DRAWING space (pre draw_offset). Purpose: see object spawn/despawn
@@ -7308,7 +7308,8 @@ void gpu_set_gp0_source(uint32_t addr) {
  * last recorded screen-x shows how far on-screen it still was — i.e. the
  * effective (4:3-sized) despawn margin, which the 16:9 view exceeds. A prim
  * present in the census but absent on screen would instead indict the renderer
- * gate. Query via TCP `ws_census` → CSV file (large dumps mustn't ride TCP). */
+ * gate. Arm via TCP `ws_census action=on`, then dump to CSV (large dumps
+ * mustn't ride TCP). No gameplay consumer depends on this forensic ring. */
 #define WS_CENSUS_CAP (1u << 21)            /* 2,097,152 entries * 24B = 48 MiB */
 typedef struct {
     uint32_t frame;
@@ -7322,7 +7323,7 @@ typedef struct {
 } WsCensusEntry;
 static WsCensusEntry *ws_census = NULL;
 static uint64_t       ws_census_seq = 0;
-static int            ws_census_on  = 1;     /* always-on; toggle via ws_census */
+static int            ws_census_on  = 0;     /* arm only for a diagnostic window */
 extern uint16_t       psx_read_half(uint32_t addr);
 
 /* Screen-X extent (raw vertex coords = SX, pre-draw_offset) across a prim's
@@ -7496,9 +7497,11 @@ static void gp0_execute_command(void) {
 
     /* Draw-census: capture every drawing primitive's first vertex + camera. */
     if (opcode >= 0x20 && opcode <= 0x7F) {
-        int32_t cvx, cvy;
-        parse_vertex(gp0_cmd_buf[1], &cvx, &cvy);
-        ws_census_record(opcode, cvx, cvy);
+        if (ws_census_on) {
+            int32_t cvx, cvy;
+            parse_vertex(gp0_cmd_buf[1], &cvx, &cvy);
+            ws_census_record(opcode, cvx, cvy);
+        }
         ws_note_overhang(opcode);   /* 2D-only-scene classifier world signal */
         ws_note_backdrop(opcode);   /* ...and its finite-backdrop veto */
     }

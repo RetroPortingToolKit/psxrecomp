@@ -263,6 +263,12 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        # fixture_link uses GNU nm/linker diagnostics for its unrelated seams.
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            add_test(NAME bios_hle_recording_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_hle_recording.py"
+                --cc "${CMAKE_C_COMPILER}")
+        endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME menu_video_snapshot_test COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_menu_video_snapshot.py
@@ -1131,8 +1137,10 @@ if(BUILD_TESTING)
         src/ws_ui_group.c
         src/psx_video_timing.c
         src/gpu_timeline.c)
+    add_executable(gpu_census_test tests/test_gpu_census.c
+        src/psx_video_timing.c src/gpu_timeline.c)
     foreach(_anchor_test ws_view_anchor ws_view_anchor_gpu native_wide_projection
-                         gpu_render_pass_provenance)
+                         gpu_render_pass_provenance gpu_census)
         target_include_directories(${_anchor_test}_test PRIVATE include src)
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
             target_compile_options(${_anchor_test}_test PRIVATE -ffunction-sections -fdata-sections)
@@ -1148,6 +1156,8 @@ if(BUILD_TESTING)
     add_test(NAME ws_view_anchor_gpu_test COMMAND ws_view_anchor_gpu_test)
     add_test(NAME native_wide_projection_test COMMAND native_wide_projection_test)
     add_test(NAME gpu_render_pass_provenance_test COMMAND gpu_render_pass_provenance_test)
+    add_test(NAME gpu_census_test COMMAND gpu_census_test
+        "${CMAKE_CURRENT_BINARY_DIR}/gpu-census-test.csv")
 
     add_executable(ws_repeat_rect_test tests/test_ws_repeat_rect.c)
     target_include_directories(ws_repeat_rect_test PRIVATE include)

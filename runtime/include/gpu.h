@@ -739,7 +739,8 @@ void gpu_ws_set_margin_override(int v);
  * through the tagged sprite funnel). */
 void gpu_ws_set_nw_hud_tag_rects(int on);
 
-/* Always-on draw-census ring: every drawn primitive records frame / source
+/* Explicit diagnostic draw-census ring: arm before the capture window.
+ * Every drawn primitive records frame / source
  * addr / camera / first-vertex screen pos, so object spawn/despawn and edge
  * culls are observable in data. Dump frames [f0,f1] to a CSV file. */
 int      gpu_ws_census_dump(uint32_t f0, uint32_t f1, const char *path);

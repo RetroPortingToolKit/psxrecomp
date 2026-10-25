@@ -110,8 +110,10 @@ typedef struct PsxHleCallEntry {
 
 #define PSX_HLE_RING_CAP 16384  /* power of two */
 
-/* Snapshot accessors: seq is the total number of records ever written; entry
- * i (seq-CAP .. seq-1 valid window) returns the ring slot for that sequence. */
+/* Debug builds only; PSX_NO_DEBUG_TOOLS returns an empty sequence/NULL and
+ * performs no diagnostic guest reads. Snapshot accessors: seq is the total
+ * number of records ever written; entry i (seq-CAP .. seq-1 valid window)
+ * returns the ring slot for that sequence. */
 uint64_t               psx_hle_ring_seq(void);
 const PsxHleCallEntry* psx_hle_ring_entry(uint64_t seq_index);
 
