@@ -79,6 +79,7 @@
 #include "gl_scale_limits.h"
 #include "gpu_sw_renderer.h"
 #include "gpu_gl_renderer.h"
+#include "local_multiplayer_layout.h"
 #include "video_telemetry.h"
 #include "gpu_hd_textures.h"
 #include "mod_texture_banks.h"
@@ -9072,6 +9073,13 @@ int gl_renderer_local_grid_set_presentation(int enabled) {
     s_stereo_mode = mode;
     return 1;
 }
+int gl_renderer_local_triple_set_presentation(int enabled) {
+    GL_RT_SYNC("local_triple_set_presentation");
+    int mode = enabled ? 4 : 0;
+    if (s_stereo_mode != mode) stereo_invalidate();
+    s_stereo_mode = mode;
+    return 1;
+}
 static void stereo_resources_release(void) {
     if (s_local_shared_tex) glDeleteTextures(1, &s_local_shared_tex);
     s_local_shared_tex = 0;
@@ -9173,14 +9181,14 @@ int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2
     if (s_stereo_dump_left > 0) stereo_dump(p);
     return 1;
 }
-int gl_renderer_local_grid_publish(uint64_t id, uint64_t cycle, const int32_t view[4][3]) {
+int gl_renderer_local_grid_publish(uint64_t id, uint64_t cycle, const int32_t view[4][3], unsigned views) {
     GL_RT_SYNC("local_grid_publish");
     StereoPair *p = &s_stereo_pair[1 - s_stereo_current];
-    if (p->mask != 15u) return 0;
-    for (unsigned i = 1; i < 4; ++i)
+    if ((views != 3u && views != 4u) || p->mask != (1u << views) - 1u) return 0;
+    for (unsigned i = 1; i < views; ++i)
         if (p->tw[i] != p->tw[0] || p->th[i] != p->th[0]) return 0;
-    p->id = id; p->cycle = cycle; p->views = 4;
-    memcpy(p->view, view, sizeof p->view);
+    p->id = id; p->cycle = cycle; p->views = views;
+    memcpy(p->view, view, views * sizeof p->view[0]);
     s_stereo_current = 1 - s_stereo_current; s_stereo_valid = 1;
     return 1;
 }
@@ -9457,15 +9465,13 @@ static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh) {
     glDisable(GL_SCISSOR_TEST); glDisable(GL_BLEND);
     glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
-    int rows = s_stereo_mode == 3 ? 2 : 1;
+    unsigned views = s_stereo_mode == 4 ? 3u : s_stereo_mode == 3 ? 4u : 2u;
+    int rows = views >= 3 ? 2 : 1;
     letterbox_rect_aspect(ww, wh, 8, 3 * rows, lx, ly, lw, lh);
-    for (int seat = 0; seat < 2 * rows; ++seat) {
-        int start = (seat & 1) ? *lw / 2 : 0;
-        int width = (seat & 1) ? *lw - *lw / 2 : *lw / 2;
-        int ystart = rows == 1 || seat >= 2 ? 0 : *lh / 2;
-        int height = rows == 1 ? *lh : seat >= 2 ? *lh / 2 : *lh - *lh / 2;
+    for (unsigned seat = 0; seat < views; ++seat) {
+        LocalMultiplayerRect r = local_multiplayer_rect(views, seat, *lw, *lh);
         present_target_quad(s_local_shared_tex, w, h, 0, 0, w, h, 0,
-                            *lx + start, *ly + ystart, width, height, 0, 0, 1);
+                            *lx + r.x, *ly + r.y, r.w, r.h, 0, 0, 1);
     }
 }
 
@@ -9479,7 +9485,7 @@ static int stereo_present(int w, int h) {
         !render_pass_stereo_pair_fresh(p->cycle, psx_cycle_count, g_psx_vblank_cycles))
         return 0;
     if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
-        p->views != (s_stereo_mode == 3 ? 4u : 2u) ||
+        p->views != (s_stereo_mode == 4 ? 3u : s_stereo_mode == 3 ? 4u : 2u) ||
         p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
         (s_stereo_mode >= 2 ? gl_renderer_local_pair_unavailable() :
                              gl_renderer_stereo_unavailable()) != PSX_MOD_RENDER_PASS_READY) return 0;
@@ -9487,7 +9493,7 @@ static int stereo_present(int w, int h) {
     gl_perf_present_enter();
     /* Desktop spectator layout while XR runs: default single left eye filled to
      * the window, PSX_VR_DESKTOP_MIRROR selects 0 legacy / 1 left / 2 SBS / 3 right. */
-    const int rows = s_stereo_mode == 3 ? 2 : 1;
+    const int rows = p->views >= 3 ? 2 : 1;
     const int mirror = (s_stereo_mode == 1 && xr_mirror_active()) ? xr_mirror_mode() : 0;
     const int solo = (mirror == 1 || mirror == 3);
     const int solo_eye = (mirror == 3) ? 1 : 0;
@@ -9505,12 +9511,10 @@ static int stereo_present(int w, int h) {
                             lx, ly, lw, lh, 1, 1, 1);
     } else {
         for (unsigned eye = 0; eye < p->views; eye++) {
-            int start = (eye & 1) ? lw / 2 : 0, width = (eye & 1) ? lw - lw / 2 : lw / 2;
-            int ystart = rows == 1 || eye >= 2 ? 0 : lh / 2;
-            int height = rows == 1 ? lh : eye >= 2 ? lh / 2 : lh - lh / 2;
+            LocalMultiplayerRect r = local_multiplayer_rect(p->views, eye, lw, lh);
             present_target_quad(p->tex[eye], p->tw[eye], p->th[eye],
                                 0, 0, p->tw[eye], p->th[eye], 0,
-                                lx + start, ly + ystart, width, height, 1, 1, 1);
+                                lx + r.x, ly + r.y, r.w, r.h, 1, 1, 1);
         }
     }
     pres_record(GL_PRES_STEREO, p->x, p->y, w, h, lx, ly, lw, lh);

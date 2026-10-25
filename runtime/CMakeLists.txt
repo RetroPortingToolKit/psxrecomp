@@ -1741,6 +1741,10 @@ if(BUILD_TESTING)
                    src/stereo_shed_policy.c)
     target_include_directories(stereo_shed_policy_test PRIVATE include)
     add_test(NAME stereo_shed_policy_test COMMAND stereo_shed_policy_test)
+
+    add_executable(local_multiplayer_layout_test tests/test_local_multiplayer_layout.c)
+    target_include_directories(local_multiplayer_layout_test PRIVATE include)
+    add_test(NAME local_multiplayer_layout_test COMMAND local_multiplayer_layout_test)
     # Render thread core ([video] render_thread, docs/RENDER_THREAD.md):
     # ordering across ring wraps, the frame bound, stale-frame detection and
     # the drain + context hand-off sync point, against a fake executor.

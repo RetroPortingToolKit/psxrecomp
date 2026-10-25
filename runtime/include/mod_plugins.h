@@ -829,6 +829,12 @@ int psx_mod_render_local_pair(struct CPUState *cpu, const PSXModStereoFrame *fra
  * its two views; canonical menu, movie and unavailable-pair frames are shown
  * in both 4:3 panes. Does not change the guest's aspect or retain stale views. */
 int psx_mod_set_local_pair_presentation(int enabled);
+/* Three native4:3 views on an 8:6 canvas: top left, top right, and bottom
+ * center with black side pillars. All three callbacks must succeed before
+ * publication. Shared menus/movies use the same three-pane arrangement. */
+int psx_mod_render_local_triple(struct CPUState *cpu, const PSXModStereoFrame *frame,
+                                PSXModStereoFn fn, void *user);
+int psx_mod_set_local_triple_presentation(int enabled);
 /* Four draw-only views from one checkpoint, atomically published in a 2x2
  * grid (8:6 canvas). Callback indices are top left, top right, bottom left,
  * bottom right. A producer may use two adjacent views for one wide camera.

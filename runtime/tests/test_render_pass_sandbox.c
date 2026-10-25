@@ -286,9 +286,10 @@ int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
 }
 int gl_renderer_local_pair_set_presentation(int enabled) { (void)enabled;return 1; }
 int gl_renderer_local_grid_set_presentation(int enabled) { (void)enabled;return 1; }
-int gl_renderer_local_grid_publish(uint64_t id,uint64_t cycle,const int32_t view[4][3]) {
+int gl_renderer_local_triple_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_grid_publish(uint64_t id,uint64_t cycle,const int32_t view[4][3],unsigned views) {
     (void)cycle;(void)view;
-    if(s_stereo_mask!=15u)return 0;
+    if(s_stereo_mask!=(1u<<views)-1u)return 0;
     s_stereo_published=id;return 1;
 }
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
@@ -1061,6 +1062,24 @@ static void test_local_grid(void) {
     CHECK(!psx_mod_render_local_grid(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,"offline grid refuses online before callbacks");
     s_netplay_active=0;
     CHECK(psx_mod_render_local_grid(&cpu,&f,local_pair_draw,NULL),"grid recovers after failures");
+    s_eye_calls=0;
+    CHECK(psx_mod_render_local_triple(&cpu,&f,local_pair_draw,NULL),"three restored views publish one frame");
+    CHECK(s_eye_calls==3 && s_stereo_mask==7 && !s_open_passes,"three-player frames capture exactly three seats");
+    published=s_stereo_published;
+    for(int i=0;i<3;++i) {
+        s_eye_decline=i;
+        CHECK(!psx_mod_render_local_triple(&cpu,&f,local_pair_draw,NULL) &&
+              s_stereo_published==published && !s_stereo_mask,"declined triple never publishes a partial frame");
+        CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle &&
+              !psx_mod_local_view_scope(),"three-player failure restores the common checkpoint");
+    }
+    s_eye_decline=-1;s_capture_fail_eye=2;
+    CHECK(!psx_mod_render_local_triple(&cpu,&f,local_pair_draw,NULL) &&
+          s_stereo_published==published && !s_stereo_mask,"third-seat capture failure preserves the complete frame");
+    s_capture_fail_eye=-1;s_netplay_active=1;calls=s_eye_calls;
+    CHECK(!psx_mod_render_local_triple(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,"offline triple refuses online before callbacks");
+    s_netplay_active=0;
+    CHECK(psx_mod_render_local_triple(&cpu,&f,local_pair_draw,NULL),"triple recovers after failures");
 }
 
 /* Netplay local view: forward netplay frames only; guest state restored

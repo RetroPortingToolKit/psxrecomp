@@ -494,6 +494,9 @@ int psx_mod_set_local_pair_presentation(int enabled) {
 int psx_mod_set_local_grid_presentation(int enabled) {
     return gl_renderer_local_grid_set_presentation(enabled);
 }
+int psx_mod_set_local_triple_presentation(int enabled) {
+    return gl_renderer_local_triple_set_presentation(enabled);
+}
 int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z) {
     int32_t xyz[3] = {x, y, z};
     if (!g_psx_render_pass_active) return 0;
@@ -1254,7 +1257,7 @@ static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
     elapsed = (double)(gl_renderer_perf_ticks() - t0) * 1000.0 /
               (double)gl_renderer_perf_frequency();
     s_stereo.last_pair_ms = elapsed;
-    if (ok && !(views == 4 ? gl_renderer_local_grid_publish(s_stereo.attempts, cycle, s_stereo.eye_view)
+    if (ok && !(views >= 3 ? gl_renderer_local_grid_publish(s_stereo.attempts, cycle, s_stereo.eye_view, views)
                           : gl_renderer_stereo_publish(s_stereo.attempts, cycle, s_stereo.eye_view))) {
         ok = 0; s_stereo.last_failure = "pair_publish";
     }
@@ -1366,4 +1369,8 @@ int psx_mod_render_local_pair(CPUState *cpu, const PSXModStereoFrame *frame,
 int psx_mod_render_local_grid(CPUState *cpu, const PSXModStereoFrame *frame,
                               PSXModStereoFn fn, void *user) {
     return render_pair(cpu,frame,fn,user,1,4);
+}
+int psx_mod_render_local_triple(CPUState *cpu, const PSXModStereoFrame *frame,
+                                PSXModStereoFn fn, void *user) {
+    return render_pair(cpu,frame,fn,user,1,3);
 }

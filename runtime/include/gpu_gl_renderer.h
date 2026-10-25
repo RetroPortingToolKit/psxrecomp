@@ -148,8 +148,9 @@ void gl_renderer_stereo_reset(void);
 int gl_renderer_stereo_set_presentation(uint32_t mode);
 int gl_renderer_local_pair_set_presentation(int enabled);
 int gl_renderer_local_grid_set_presentation(int enabled);
+int gl_renderer_local_triple_set_presentation(int enabled);
 int gl_renderer_local_grid_publish(uint64_t frame_id, uint64_t guest_cycle,
-                                   const int32_t view[4][3]);
+                                   const int32_t view[4][3], unsigned views);
 void gl_renderer_stereo_dump_arm(const char *dir, int pairs);
 /* Bounded metadata for explicitly requested PNG evidence, queried over TCP. */
 typedef struct GLRenderStereoCapture {
