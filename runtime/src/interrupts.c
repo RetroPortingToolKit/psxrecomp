@@ -28,7 +28,6 @@
 #include "interrupts.h"
 #include "savestate.h"
 #include "mod_runtime.h"
-#include "savestate.h"
 #include "psx_memory.h"
 #include "sio.h"
 #include "timers.h"
@@ -658,6 +657,13 @@ void psx_snapshot_host_call_reset(void) { s_snapshot_host_call_depth = 0; }
 unsigned psx_snapshot_host_call_depth(void) { return s_snapshot_host_call_depth; }
 void psx_snapshot_host_call_restore(unsigned depth) { s_snapshot_host_call_depth = depth; }
 
+static void reset_dirty_snapshot_scope(void)
+{
+    g_dirty_safe_resume_pc = 0;
+    /* A restore can abandon the dirty pump's scoped epilogue via longjmp. */
+    g_cosim_dirty_pump_site = 0;
+}
+
 uint32_t psx_irq_resume_context_snapshot_pc(void)
 {
     return g_dirty_safe_resume_pc;
@@ -893,10 +899,7 @@ void interrupts_init(void) {
     g_rfe_escape_pending = 0;
     g_pending_exception_longjmp = 0;
     s_fast_maintenance = 0;
-    {
-        extern uint32_t g_dirty_safe_resume_pc;
-        g_dirty_safe_resume_pc = 0;
-    }
+    reset_dirty_snapshot_scope();
 }
 
 void interrupts_resync_after_restore(void) {
@@ -938,10 +941,7 @@ void interrupts_resync_after_restore(void) {
     s_last_interrupt_check_cycle = UINT64_MAX;
     s_fast_maintenance = 0;
     total_checks = 0;
-    {
-        extern uint32_t g_dirty_safe_resume_pc;
-        g_dirty_safe_resume_pc = 0;
-    }
+    reset_dirty_snapshot_scope();
     /* Load longjmp from mid-path abandons PSX_CHECK_INTERRUPTS_RETURN's
      * g_ls_suppress_record-- — clamp so suppress cannot accumulate. */
     {
