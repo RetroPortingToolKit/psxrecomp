@@ -374,6 +374,7 @@ static int ws_gameplay_state_matches(void) {
 static uint32_t ws_gte_prev_verts     = 0;  /* final count of last completed frame */
 static uint32_t ws_last_world3d_stamp = (uint32_t)-1000;
 static uint32_t ws_sust_world3d_stamp = (uint32_t)-1000;
+static WsWorldScaleWitness ws_world_scale = { (uint32_t)-1000, (uint32_t)-1000 };
 
 /* Natural-overhang world signal — the classifier's actual input. GTE volume
  * above proved to be a SECOND false world signal: the task-found/task-clear
@@ -408,6 +409,7 @@ void psx_ws_note_gte_project(int nverts) {
         ws_gte_frame = f; ws_gte_count = 0;
     }
     ws_gte_count += (uint32_t)nverts;
+    ws_world_scale_note(&ws_world_scale, f, ws_gte_count);
     if (ws_gte_game_mode_cfg && ws_gte_count >= WS_GTE_GAME_MODE_MIN_VERTS)
         ws_last_gte_stamp = f;
     if (ws_gte_count >= WS_WORLD3D_MIN_VERTS && ws_last_world3d_stamp != f) {
@@ -473,14 +475,20 @@ static WsSceneLatch ws_scene_latch;
  * that ends inside the native-wide reveal outranks polygon overhang. Widened
  * 2D actor culls place sprite quads past the canonical edge, so such a scene
  * passes the overhang test while its ground stops at the image edge (Tomba's
- * overhead village: a 384px image, fence/sign quads out to x=428). */
+ * overhead village: a 384px image, fence/sign quads out to x=428). A mixed
+ * scene can also place a finite scrolling background behind real terrain;
+ * sustained world-scale projection plus natural overhang distinguishes that
+ * case from sparse props over a pre-rendered floor. */
 static WsBackdropExtent ws_bdx;
 static int ws_2d_only_scene(void) {
     if (ws_mod_world_scene()) return 0;
     if (ws_local_native_split()) return 0;
     if (ws_full_2d_mode() || ws_gte_game_mode_cfg) return 0;
     uint32_t f = (uint32_t)s_frame_count;
-    if (ws_bdx_veto(&ws_bdx, f, WS_2D_SCENE_HYSTERESIS)) {
+    int overhang = f - ws_sust_ovh_stamp <= WS_2D_SCENE_HYSTERESIS;
+    if (ws_backdrop_keeps_native_43(
+            ws_bdx_veto(&ws_bdx, f, WS_2D_SCENE_HYSTERESIS),
+            &ws_world_scale, f, overhang)) {
         ws_scene_latch.confirmed = 0;   /* affirmatively 2D: relearn on exit */
         return 1;
     }
@@ -492,6 +500,7 @@ static int ws_2d_only_scene(void) {
 /* Host-derived presentation evidence is not serialized guest state. Relearn it
  * after reset/load instead of carrying the old scene's classification over. */
 static void ws_reset_scene_history(void) {
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
     uint32_t expired = (uint32_t)s_frame_count - 1000u;
     memset(&ws_scene_latch, 0, sizeof ws_scene_latch);
     ws_bdx_reset(&ws_bdx);
@@ -512,6 +521,7 @@ static uint32_t ws_display_origin(void);
 void psx_mod_set_retained_scene_predicate(PSXModRetainedScenePredicate predicate) {
     s_ws_retained_scene_predicate = predicate;
     ws_scene_hold_reset(&s_ws_scene_hold);
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
 }
 
 void gpu_ws_set_native_scene_predicate(int (*predicate)(void)) {
@@ -522,10 +532,23 @@ int gpu_ws_present_native_43(void) {
     if (!ws_engaged()) return 0;
     if (s_ws_native_scene_predicate && s_ws_native_scene_predicate())
         return 1;
+    int hold_enabled = ws_mode == 2 && s_ws_retained_scene_predicate != NULL;
+    int hold = hold_enabled ? s_ws_retained_scene_predicate() : PSX_MOD_SCENE_RELEASE;
+    uint32_t origin = hold_enabled ? ws_display_origin() : 0;
+    if (hold_enabled && ws_scene_hold_releasing_43(&s_ws_scene_hold, hold, origin)) {
+        /* Do not let a retained UI effect establish world geometry after it
+         * disappears. Fresh scene submissions can immediately prove a world;
+         * already-wide retained scenes keep their existing evidence. */
+        uint32_t expired = (uint32_t)s_frame_count - 1000u;
+        ws_scene_latch.confirmed = 0;
+        ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
+        ws_last_ovh_stamp = ws_sust_ovh_stamp = expired;
+        ws_last_world3d_stamp = ws_sust_world3d_stamp = expired;
+        ws_ovh_count = 0;
+    }
     int game_mode = ws_game_mode();
     if (!game_mode) ws_scene_latch.confirmed = 0;
     int native_43 = !game_mode || ws_2d_only_scene();
-    int hold_enabled = ws_mode == 2 && s_ws_retained_scene_predicate != NULL;
     if (!hold_enabled && native_43) return 1;      /* unchanged default */
     uint32_t f = (uint32_t)s_frame_count;
     if (f != s_ws_fmv_frame_cache) {
@@ -535,8 +558,7 @@ int gpu_ws_present_native_43(void) {
     }
     if (hold_enabled)
         return ws_scene_hold_classify(&s_ws_scene_hold,
-            s_ws_retained_scene_predicate(), native_43, s_ws_fmv_cached,
-            ws_display_origin());
+            hold, native_43, s_ws_fmv_cached, origin);
     return s_ws_fmv_cached;
 }
 
@@ -4193,6 +4215,7 @@ static void gpu_reset_state(int clear_vram) {
     s_ws_fmv_frame_cache = 0xFFFFFFFFu;
     s_ws_fmv_cached = 0;
     ws_scene_hold_reset(&s_ws_scene_hold);
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
     s_d24_upload_x1 = 0;
     s_d24_present_hold = 0;
     s_d24_present_skip = 0;
@@ -8370,6 +8393,7 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     (void)psx_video_timing_set_pal((int)video_mode);
     ws_reset_scene_history();
     ws_scene_hold_reset(&s_ws_scene_hold);
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_background_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_background_tags_used = 0;
@@ -8424,6 +8448,7 @@ typedef struct {
     uint32_t ws_ovh_frame, ws_ovh_count, ws_ovh_prev;
     uint32_t ws_last_ovh_stamp, ws_sust_ovh_stamp;
     WsSceneLatch ws_scene_latch;
+    WsWorldScaleWitness ws_world_scale;
     WsBackdropExtent ws_bdx;
     WsSceneHold s_ws_scene_hold;
     uint32_t s_ws_fmv_frame_cache;
@@ -8494,6 +8519,7 @@ static void gpu_pass_scene_transfer(int restore) {
     PASS_VALUE(ws_last_ovh_stamp);
     PASS_VALUE(ws_sust_ovh_stamp);
     PASS_VALUE(ws_scene_latch);
+    PASS_VALUE(ws_world_scale);
     PASS_VALUE(ws_bdx);
     PASS_VALUE(s_ws_scene_hold);
     PASS_VALUE(s_ws_fmv_frame_cache);
