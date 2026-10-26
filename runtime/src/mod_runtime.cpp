@@ -9,6 +9,7 @@
 #include "func_override.h"
 #include "host_sha256.h"
 #include "iso_reader.h"
+#include "mod_disc_read_session.h"
 #include "mod_packages.h"
 #include "mod_plugins.h"
 #include "mod_netplay.h"
@@ -3063,11 +3064,13 @@ extern "C" int psx_mod_read_disc_file(const char* path, void* buffer,
         const auto& s = state();
         const auto mount = mounted_disc_path(s);
         if (mount.empty()) return 0;
-        PS1::ISOReader reader;
+        PS1::ISOReader fresh;
+        PS1::ISOReader* shared = mod_disc_read_reader(mount.string(), fresh);
+        if (!shared) return 0;
+        PS1::ISOReader& reader = *shared;
         uint32_t lba = 0, bytes = 0;
         bool directory = false;
-        if (!reader.Open(mount.string()) ||
-            !find_effective_file(reader, path, lba, bytes, directory) ||
+        if (!find_effective_file(reader, path, lba, bytes, directory) ||
             directory || !bytes || bytes > kMaxDiscFileBytes)
             return 0;
         if (!buffer) { *size = bytes; return 1; }
@@ -3098,11 +3101,13 @@ extern "C" int psx_mod_disc_file_extent(const char* path, uint32_t* lba,
         const auto& s = state();
         const auto mount = mounted_disc_path(s);
         if (mount.empty()) return 0;
-        PS1::ISOReader reader;
+        PS1::ISOReader fresh;
+        PS1::ISOReader* shared = mod_disc_read_reader(mount.string(), fresh);
+        if (!shared) return 0;
+        PS1::ISOReader& reader = *shared;
         uint32_t first = 0, bytes = 0;
         bool directory = false;
-        if (!reader.Open(mount.string()) ||
-            !find_effective_file(reader, path, first, bytes, directory) ||
+        if (!find_effective_file(reader, path, first, bytes, directory) ||
             directory || !bytes || bytes > kMaxDiscFileBytes)
             return 0;
         *lba = first;
@@ -3128,9 +3133,11 @@ bool mod_runtime_read_disc_file_sectors(const std::string& path, uint32_t max_by
         const auto& s = state();
         const auto mount = mounted_disc_path(s);
         if (mount.empty()) return fail("no disc mounted");
-        PS1::ISOReader reader;
+        PS1::ISOReader fresh;
+        PS1::ISOReader* shared = mod_disc_read_reader(mount.string(), fresh);
+        if (!shared) return fail("cannot open disc");
+        PS1::ISOReader& reader = *shared;
         bool directory = false;
-        if (!reader.Open(mount.string())) return fail("cannot open disc");
         if (!find_effective_file(reader, path, lba, size, directory) || directory)
             return fail("not found on the disc");
         if (!size || size > kMaxDiscFileBytes || (max_bytes && size > max_bytes))

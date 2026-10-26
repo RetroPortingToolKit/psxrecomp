@@ -11,6 +11,7 @@
 #include "mod_resident.h"
 #include "mod_plugins.h"
 #include "mod_runtime.h"
+#include "mod_disc_read_session.h"
 #include "psx_sha256.h"
 #include "host_sha256.h"
 
@@ -397,6 +398,7 @@ extern "C" const PSXResidentPack* psx_resident_prepare(const PSXResidentSpec* sp
         psx_mod_counter_add("resident.invalid_spec", 1);
         return nullptr;
     }
+    PSXRecompV4::ModDiscReadSession disc_reads;
     Record& rec = record_for(spec);
     rec.pack.reset();
     rec.error.clear();
