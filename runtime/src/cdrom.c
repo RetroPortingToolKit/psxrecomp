@@ -209,6 +209,7 @@ static uint64_t command_history_seq;
 /* Seek target */
 static uint8_t seek_min, seek_sec, seek_sect;
 static int     s_setloc_lba = -1;  /* LBA captured at SetLoc time */
+static uint64_t s_stream_generation = 1;
 static int     setloc_seek_far;
 static int     setloc_pending;   /* a Setloc has been issued and not consumed */
 
@@ -334,6 +335,10 @@ int cdrom_get_setloc_lba(void) { return s_setloc_lba; }
  * carrying sector 125113's bytes was read as "the game asked for 125113"
  * when the open question was precisely WHICH sector's data it drained. */
 int cdrom_get_delivered_lba(void) { return last_sector_lba; }
+uint64_t cdrom_get_stream_generation(void) { return s_stream_generation; }
+/* SetLoc is already reset and serialized with the controller. A second host
+ * copy would retain the newer movie after loading an earlier CD snapshot. */
+int cdrom_get_stream_start_lba(void) { return s_setloc_lba; }
 
 /* Frontend XA-stream probe (FMV auto-skip / turbo-load gating in main.cpp). */
 int cdrom_xa_stream_active(void) { return xa_stream_active; }
@@ -2158,6 +2163,7 @@ static void exec_command(uint8_t cmd) {
             seek_sec = bcd_to_bin(param_fifo[1]);
             seek_sect = bcd_to_bin(param_fifo[2]);
             s_setloc_lba = msf_to_lba(seek_min, seek_sec, seek_sect);
+            ++s_stream_generation;
             setloc_pending = 1;
             setloc_seek_far = (abs(current_lba - s_setloc_lba) > 16) ? 1 : 0;
             warm_route_on_setloc(s_setloc_lba);
@@ -2452,6 +2458,7 @@ static void exec_command(uint8_t cmd) {
             set_irq(CDIRQ_ERROR);
             break;
         }
+        ++s_stream_generation;
         stop_read_stream();
         xa_reset_decode();
         spu_cd_audio_reset();
@@ -3796,6 +3803,7 @@ int cdrom_disc_select(int index_1based) {
     last_sector_lba = -1;
     last_sector_size = 0;
     s_setloc_lba = -1;
+    ++s_stream_generation;
 
     /* A warm route tracks a position on the disc that is no longer mounted.
      * The registered table is configuration and stays; the arming is not. */

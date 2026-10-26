@@ -74,7 +74,7 @@ static void frame_src(void) {
 static uint8_t *present(int d24) {
     const int n0 = s_cap_n;
     gl_renderer_note_present_depth24(d24);
-    gl_renderer_present(src, SW, SH, 0, 1, 0);
+    gl_renderer_present(src, SW, SH, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1);
     check(s_cap_n == n0 + 1 && s_cap, "present captured");
     uint8_t *c = (uint8_t *)malloc((size_t)s_cap_w * s_cap_h * 3);
     memcpy(c, s_cap, (size_t)s_cap_w * s_cap_h * 3);

@@ -333,6 +333,26 @@ static void snapshot_setloc_and_paused_head(void) {
     CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
     free(wire);
 }
+static void snapshot_stream_identity(void) {
+    setup();
+    param_fifo[0]=0; param_fifo[1]=4; param_fifo[2]=0; param_count=3;
+    exec_command(0x02); ack();
+    CHECK(cdrom_get_stream_start_lba()==150);
+    const uint32_t size=cdrom_snapshot_bytes();
+    uint8_t* wire=malloc(size); CHECK(wire);
+    cdrom_snapshot_write(wire);
+    param_fifo[0]=0; param_fifo[1]=5; param_fifo[2]=0; param_count=3;
+    exec_command(0x02); ack();
+    CHECK(cdrom_get_stream_start_lba()==225);
+    CHECK(cdrom_snapshot_read(wire,size));
+    CHECK(cdrom_get_setloc_lba()==150);
+    CHECK(cdrom_get_stream_start_lba()==150);
+    free(wire);
+    cdrom_init("synthetic");
+    CHECK(cdrom_get_setloc_lba()==-1);
+    CHECK(cdrom_get_stream_start_lba()==-1);
+}
+
 int main(void) {
     resident_header_cursor_and_restore();
     resident_declines_atomically();
@@ -345,6 +365,7 @@ int main(void) {
     request_rearms_retained_sector();
     snapshot_between_request_and_dma();
     snapshot_pending_deadline();
+    snapshot_stream_identity();
     puts("PASS: CD FIFO latching, pending IRQ, DMA continuation, and state compatibility");
     return 0;
 }

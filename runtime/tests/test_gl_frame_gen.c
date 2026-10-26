@@ -35,6 +35,7 @@ static void fixture_window(int slot);
 #define GL_PRESENT_THREAD_TEST_HOOK(slot) fixture_window(slot)
 #include "gpu_gl_renderer.c"
 #include "gl_postfx_projection_fixture.h"
+#include "gl_fmv_fixture.h"
 #include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
 #include "gl_batch_policy_lle.c"

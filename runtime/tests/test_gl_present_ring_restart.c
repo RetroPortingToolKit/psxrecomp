@@ -81,7 +81,7 @@ int main(void) {
     /* 1. Direct presents (no render thread), then shutdown. */
     SDL_Window *win = open_ctx();
     if (!win) { fprintf(stderr, "SKIP no GL context\n"); return 77; }
-    for (int i = 0; i < 3; i++) gl_renderer_present(src, SW, SH, 0, 0, 0);
+    for (int i = 0; i < 3; i++) gl_renderer_present(src, SW, SH, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1);
     check(s_pir_fbo != 0 && s_pir_pbo[0] != 0, "ring objects made in the first context");
     gl_renderer_shutdown();
     /* A stale pack-buffer name made the next readback write through a null
@@ -96,13 +96,13 @@ int main(void) {
     if (!win) { fprintf(stderr, "SKIP no second GL context\n"); return 77; }
     if (gl_renderer_render_thread_start(2) == 1) {
         for (int i = 0; i < 6; i++) {
-            gl_renderer_present(src, SW, SH, 0, 0, 0);
+            gl_renderer_present(src, SW, SH, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1);
             gl_renderer_render_thread_frame_boundary();
         }
         gl_renderer_render_thread_sync("ring test drain");
         check(s_pir_fbo != 0 && s_pir_pbo[0] != 0, "ring objects made by the render thread");
         for (int i = 0; i < 3; i++) {  /* leave presents queued at shutdown */
-            gl_renderer_present(src, SW, SH, 0, 0, 0);
+            gl_renderer_present(src, SW, SH, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1);
             gl_renderer_render_thread_frame_boundary();
         }
         gl_renderer_shutdown();
@@ -117,7 +117,7 @@ int main(void) {
     /* 3. A fresh context rebuilds live objects. */
     win = open_ctx();
     if (!win) { fprintf(stderr, "SKIP no third GL context\n"); return 77; }
-    for (int i = 0; i < 3; i++) gl_renderer_present(src, SW, SH, 0, 0, 0);
+    for (int i = 0; i < 3; i++) gl_renderer_present(src, SW, SH, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1);
     check(s_pir_fbo != 0 && s_pir_pbo[0] != 0, "ring rebuilt in the new context");
     check(glIsTexture(s_pir_tex) == GL_TRUE, "ring texture is a live object of the new context");
     check(glGetError() == GL_NO_ERROR, "GL errors");

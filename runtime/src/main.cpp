@@ -283,6 +283,10 @@ extern "C" {
     extern int      g_psx_dispatch_depth;
 }
 
+/* Presentation-only movie timeline. Loads and rollback replace the guest
+ * history even when the restored cycle matches the last presented cycle. */
+static uint64_t s_fmv_timeline_epoch = 1;
+
 /* memory.c */
 extern "C" void     memory_init(const char* bios_path);
 /* psx_ram_geometry.c: drop a plugin's 8 MiB request before the next boot. */
@@ -1094,6 +1098,7 @@ extern "C" void psx_frontend_on_savestate_refused(int is_load, int slot,
 }
 
 extern "C" void psx_frontend_on_savestate_loaded(void) {
+    ++s_fmv_timeline_epoch;
     psx_projection_reset_session();
     psx_local_mouse_reset();
     mod_runtime_on_savestate_loaded();
@@ -1137,6 +1142,7 @@ extern "C" void psx_frontend_on_savestate_loaded(void) {
  * is already in FMV/media, mirror the disk cutover reset so resume into
  * FMV entry does not treat the tip as a fresh gap (permanent black blank). */
 extern "C" void psx_frontend_on_rb_snap_loaded(void) {
+    ++s_fmv_timeline_epoch;
     const int media = gpu_display_is_depth24() || mdec_recently_active(8) ||
                       cdrom_fmv_stream_pending() || cdrom_xa_stream_active();
     g_audio_cycle_resync = 1;
@@ -10152,7 +10158,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         gl_renderer_note_present_depth24(depth24_frame ? 1 : 0);
         gl_renderer_present(sdl_pixel_buf, src_w, src_h,
                             g_video_aa ? 1 : 0,
-                            pin_43 ? 1 : 0, 0 /* full width */);
+                            pin_43 ? 1 : 0, 0 /* full width */,
+                            psx_cycle_count, s_frame_count, s_fmv_timeline_epoch,
+                            cdrom_get_stream_generation(), cdrom_get_stream_start_lba(),
+                            cdrom_get_delivered_lba(),
+                            mdec_get_decode_count());
         netplay_note_present();
     } else {
     if ((!sdl_renderer || !sdl_texture) && ensure_sw_sdl_present() != 0)
