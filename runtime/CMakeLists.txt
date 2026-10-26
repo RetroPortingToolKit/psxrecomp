@@ -659,6 +659,13 @@ if(BUILD_TESTING)
     target_link_libraries(keyboard_pad_chord_test PRIVATE ${PSX_SDL_LIBRARIES})
     add_test(NAME keyboard_pad_chord_test COMMAND keyboard_pad_chord_test)
 
+    add_executable(keyboard_unbound_test tests/test_keyboard_unbound.c)
+    target_include_directories(keyboard_unbound_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(keyboard_unbound_test PRIVATE
+        SDL_MAIN_HANDLED $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(keyboard_unbound_test PRIVATE ${PSX_SDL_LIBRARIES})
+    add_test(NAME keyboard_unbound_test COMMAND keyboard_unbound_test)
+
     add_executable(mouse_binding_suppression_test tests/test_mouse_binding_suppression.c)
     target_include_directories(mouse_binding_suppression_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(mouse_binding_suppression_test PRIVATE

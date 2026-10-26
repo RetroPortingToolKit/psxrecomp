@@ -258,23 +258,6 @@ static void write_ini(const char *path) {
     printf("[Keybinds] Wrote %s\n", path);
 }
 
-static int player_all_unbound(const PsxPlayerBinds *pb) {
-    for (int i = 0; i < PSXKB_N; i++) {
-        SDL_Scancode sc = *(const SDL_Scancode *)((const char *)pb + s_buttons[i].offset);
-        if (sc != SDL_SCANCODE_UNKNOWN) return 0;
-    }
-    return 1;
-}
-
-/* Older keybinds.ini left P2+ fully unbound. Promote empty slots to the shared
- * default map so every player can Reset / use keyboard with the P1 layout. */
-static void promote_empty_players(void) {
-    for (int p = 0; p < PSXKB_MAX_PLAYERS; ++p) {
-        if (player_all_unbound(&s_binds.player[p]))
-            s_binds.player[p] = s_default_binds.player[0];
-    }
-}
-
 static void load_ini(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return;
@@ -319,7 +302,8 @@ static void load_ini(const char *path) {
         }
     }
     fclose(f);
-    promote_empty_players();
+    /* Missing entries already have defaults. Explicit None must survive,
+     * including a whole slot disabled to keep keyboard input off a gamepad. */
     printf("[Keybinds] Loaded %s\n", path);
 }
 
