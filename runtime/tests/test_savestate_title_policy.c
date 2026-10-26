@@ -1,5 +1,8 @@
 /* White-box policy coverage against the real user/protocol request handlers.
  * Device/serializer stubs must never be reached; no slot files are written. */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include "../src/savestate.c"
 
@@ -53,6 +56,17 @@ int boot_state_check_buffer(const uint8_t* data, size_t size, uint32_t bios,
     assert(0); return 0;
 }
 
+static void check_pending_status(int pending) {
+    PSXSavestateStatus status;
+    char json[512], expected[32];
+    savestate_get_status(&status);
+    assert(status.pending == pending);
+    savestate_status_json(json, sizeof(json));
+    snprintf(expected, sizeof(expected), "\"pending\":%d", pending);
+    assert(strstr(json, expected));
+    if (!pending) assert(strstr(json, "\"wait\":\"\""));
+}
+
 int main(void) {
     CPUState cpu;
     const uint8_t blob = 1;
@@ -63,8 +77,10 @@ int main(void) {
     s_configured = 1; /* No configure/filesystem needed to test request staging. */
     assert(!savestate_title_blocked());
     assert(savestate_request_save(2) && savestate_pending());
+    check_pending_status(1);
     savestate_set_title_blocked(1);
     assert(savestate_title_blocked() && !savestate_pending());
+    check_pending_status(0);
     assert(savestate_take_save_failed());
     assert(!savestate_request_save(2));
     assert(!savestate_request_load(2));
@@ -76,14 +92,17 @@ int main(void) {
     savestate_set_title_blocked(0);
     assert(savestate_request_load_blob_protocol(&blob, 1));
     assert(s_load_blob && s_load_blob_len == 1 && savestate_pending());
+    check_pending_status(1);
     savestate_set_title_blocked(1);
     assert(!s_load_blob && s_load_blob_len == 0 && !savestate_pending());
+    check_pending_status(0);
     assert(savestate_take_load_failed());
     savestate_set_title_blocked(0); /* The next session resets before activation. */
     assert(savestate_request_save_protocol(3));
     assert(savestate_request_load_protocol(3));
     savestate_set_title_blocked(1); /* Clear both staged operations. */
     assert(!savestate_pending());
+    check_pending_status(0);
     savestate_set_title_blocked(0);
     assert(psx_mod_register_netplay_profile(&profile));
     assert(savestate_request_save_protocol(1)); /* Registered, inactive: stock. */
