@@ -11,6 +11,10 @@ static uint32_t snapshot_pc;
 void savestate_poll(CPUState* cpu, uint32_t pc) {
     (void)cpu; ++snapshot_polls; snapshot_pc = pc;
 }
+uint32_t sio_get_seq(void) { return 0; }
+uint64_t psx_get_cycle_count(void) { return 0; }
+int g_ls_suppress_record;
+void gpu_vblank_clear_deferred_present(void) {}
 
 static void check(int ok, const char* message) {
     if (!ok) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
@@ -69,6 +73,16 @@ int main(void) {
     check(!psx_irq_resume_context_snapshot_safe_at(pc + 4), "existing resume-PC guard retained");
     g_call_unit_depth = 1;
     check(!psx_irq_resume_context_snapshot_safe_at(pc), "existing call-unit guard retained");
+    g_call_unit_depth = 0;
+    /* Model a restore's scheduler longjmp abandoning a dirty pump epilogue.
+     * The next native menu boundary has no dirty PC and must be admissible. */
+    g_cosim_dirty_pump_site = 1;
+    g_dirty_safe_resume_pc = pc;
+    interrupts_resync_after_restore();
+    check(g_dirty_safe_resume_pc == 0 && g_cosim_dirty_pump_site == 0,
+          "restore clears both abandoned dirty-pump scope fields");
+    check(psx_irq_resume_context_snapshot_safe_at(pc),
+          "native save after dirty load remains admissible");
     puts("host snapshot continuation checks passed");
     return 0;
 }
