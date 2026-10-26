@@ -994,6 +994,39 @@ static int local_draw(CPUState *cpu, void *user, uint32_t alpha) {
     return 1;
 }
 
+static int local_temporal_draw(CPUState *cpu, void *user, uint32_t alpha) {
+    CHECK(alpha == 32768u, "temporal local view receives its phase");
+    return local_draw(cpu, user, 0);
+}
+
+/* Shared-state digest deliberately excludes the local presentation image. */
+static uint64_t shared_digest(const CPUState *cpu) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    const uint8_t *parts[] = { (const uint8_t *)cpu->gpr, s_ram, s_spad };
+    const size_t sizes[] = { sizeof cpu->gpr, s_ram_live, sizeof s_spad };
+    for (size_t p = 0; p < sizeof parts / sizeof parts[0]; ++p)
+        for (size_t i = 0; i < sizes[p]; ++i) {
+            h ^= parts[p][i];
+            h *= 0x100000001b3ull;
+        }
+    h ^= psx_cycle_count;
+    h *= 0x100000001b3ull;
+    h ^= ((uint64_t)i_mask << 32) | i_stat;
+    return h * 0x100000001b3ull;
+}
+
+static int local_temporal_discard(CPUState *cpu, void *user, uint32_t alpha) {
+    (void)local_temporal_draw(cpu, user, alpha);
+    return 0;
+}
+
+static int local_temporal_abort(CPUState *cpu, void *user, uint32_t alpha) {
+    (void)local_temporal_draw(cpu, user, alpha);
+    (void)render_pass_mmio_read_allowed(0x1F801800u, 1);
+    CHECK(0, "device-read abort must not return to guest code");
+    return 0;
+}
+
 /* Netplay local view: forward netplay frames only; guest state restored
  * exactly; a committed image cancels the crop request. */
 static void test_local_view(void) {
@@ -1001,6 +1034,7 @@ static void test_local_view(void) {
     PSXModRenderPass r;
     RenderPassStats st;
     uint64_t cycle;
+    uint64_t digest;
     render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1;
     memset(&r, 0, sizeof r);
     r.struct_size = sizeof r;
@@ -1042,6 +1076,30 @@ static void test_local_view(void) {
           "own-view scope closed after the local view");
     CHECK(cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
           "guest state restored after the local view");
+    psx_mod_set_render_pass_netplay(1);
+    r.alpha_q16 = 32768u;
+    digest = shared_digest(&cpu);
+    CHECK(psx_mod_render_pass(&cpu, &r, local_temporal_draw, NULL) == 1,
+          "opted-in temporal pass uses own-view scope");
+    CHECK(shared_digest(&cpu) == digest,
+          "actual opted-in temporal pass preserves shared digest");
+    CHECK(!psx_mod_render_pass(&cpu, &r, local_temporal_discard, NULL) &&
+          shared_digest(&cpu) == digest,
+          "discarded temporal pass preserves shared digest");
+    CHECK(!psx_mod_render_pass(&cpu, &r, local_temporal_abort, NULL) &&
+          shared_digest(&cpu) == digest && s_open_passes == 0,
+          "aborted temporal pass restores shared state and closes transaction");
+    CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0 &&
+          cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "temporal local pass restores scope, RAM, registers and clock");
+    s_resim = 1;
+    CHECK(!psx_mod_render_pass(&cpu, &r, never_fn, NULL),
+          "temporal local rendering never runs during rollback replay");
+    s_resim = 0;
+    psx_mod_set_render_pass_netplay(0);
+    CHECK(!psx_mod_render_pass(&cpu, &r, never_fn, NULL) &&
+          shared_digest(&cpu) == digest,
+          "nonparticipating peer refuses temporal pass without shared-state change");
     r.x = 900;
     CHECK(!psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
           "rect outside VRAM refused");

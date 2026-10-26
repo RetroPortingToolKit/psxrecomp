@@ -765,6 +765,56 @@ static int passes_main(int scale, int window) {
               "window mode: pass_begin opens nothing");
     } else {
         check(why == PSX_MOD_RENDER_PASS_READY, "full-VRAM surface offers render passes");
+        gl_renderer_set_hd_texture_mode(1);
+        check(s_hd_native_authority, "HD authority enabled");
+        check(gl_renderer_pass_unavailable() == PSX_MOD_RENDER_PASS_READY,
+              "HD presentation surface offers render passes");
+        s_interp_w = FRAME_W * scale;
+        s_interp_h = FRAME_H * scale;
+        s_interp_source_path = GL_PRES_VRAM;
+        s_pass_verify = 1;
+        uint64_t before = fnv(vram, sizeof vram, 0xcbf29ce484222325ull);
+        int fw = FRAME_W * scale, fh = FRAME_H * scale, ow = 0, oh = 0;
+        uint32_t *pixels = (uint32_t *)malloc((size_t)fw * fh * 4u);
+        int count = pixels ? gl_renderer_read_display_hires(0, 0, FRAME_W,
+                         FRAME_H, pixels, fw * fh, &ow, &oh) : 0;
+        check(count == fw * fh && ow == fw && oh == fh,
+              "HD pass baseline display readback");
+        uint64_t frame_before = count == fw * fh
+            ? fnv(pixels, (size_t)fw * fh * 4u, 0xcbf29ce484222325ull) : 0;
+        int opened = gl_renderer_pass_begin(0, 0, FRAME_W, FRAME_H, 1, 2, 0);
+        check(opened, "HD pass opens");
+        if (opened) {
+            glb_set_draw_area(0, 0, FRAME_W - 1, FRAME_H - 1);
+            glb_draw_flat_rect(10, 10, 40, 40, 0x7fff);
+            flush_flat_batch();
+            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
+                  "HD pass draw leaves authoritative CPU VRAM untouched");
+            gl_renderer_pass_end(32768, 1);
+            check(gl_renderer_pass_verify_vram(), "HD pass restores GPU and CPU VRAM");
+            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
+                  "HD pass leaves native VRAM identical");
+        }
+        opened = gl_renderer_pass_begin(0, 0, FRAME_W, FRAME_H, 1, 2, 0);
+        check(opened, "HD discard pass opens");
+        if (opened) {
+            glb_draw_flat_rect(20, 20, 32, 32, 0x03e0);
+            flush_flat_batch();
+            gl_renderer_pass_end(0, 0); /* callback failed: keep no image */
+            check(gl_renderer_pass_verify_vram(),
+                  "discarded HD pass restores GPU and CPU VRAM");
+            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
+                  "discarded HD pass preserves authoritative CPU digest");
+            ow = oh = 0;
+            count = pixels ? gl_renderer_read_display_hires(0, 0, FRAME_W,
+                             FRAME_H, pixels, fw * fh, &ow, &oh) : 0;
+            check(count == fw * fh && ow == fw && oh == fh &&
+                  fnv(pixels, (size_t)fw * fh * 4u,
+                      0xcbf29ce484222325ull) == frame_before,
+                  "discarded HD pass restores presented pixel digest");
+        }
+        free(pixels);
+        gl_renderer_set_hd_texture_mode(0);
     }
     check(glGetError() == GL_NO_ERROR, "GL error");
     printf("checks=%d failures=%d\n", checks, failures);

@@ -213,6 +213,19 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-10-24 — scoped render-pass qualification.** The sandbox now compares
+  shared RAM/register/clock/interrupt digests before and after an actual
+  opted-in local temporal pass, discard, device-read abort, rollback refusal,
+  and a nonparticipating peer. The HD GL fixture separately opens a pass under
+  native authority. The R4 Link race receipt at
+  `tetrisgm/RidgeRacerType4Recomp` commit `82f0c247` records six actual
+  18x temporal passes with the local HD HUD active and 16/16 shared-state
+  digests per peer. Matched built-performance evidence remains required for
+  upstream promotion.
+- **2026-10-24 — render-pass HD/local-view scope.** Re-scope the fork's
+  permission change onto current master without replay controls or host tracing.
+  The focused sandbox covers abort/failure; the consuming-title positive
+  pass and digest receipt is linked above.
 - **2026-10-23 — VR upstream split.** Precise projective replay reconstructed on
   current master; six focused runtime regressions and the GPU-history guard pass.
   Prior fork/headset acceptance remains historical. Other VR features are
