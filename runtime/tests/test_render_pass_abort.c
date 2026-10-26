@@ -38,8 +38,9 @@ static int failures;
 #define CHECK(c, m) do { if (!(c)) { fprintf(stderr, "FAIL: %s\n", m); failures++; } } while (0)
 
 /* ---- runtime globals the two units share with the rest of the runtime -- */
-int      g_ls_replay_active = 0;
 int      g_boot_state_cpu_timing_restored = 0;
+int      g_ls_replay_active = 0;
+
 int psx_mod_host_output_scope(void) { return 0; }
 int      g_ls_mode = 0;
 int      g_precise_mode = 0;
@@ -112,7 +113,8 @@ int  psx_netplay_active(void) { return 0; }
 int  psx_netplay_is_resimulating(void) { return 0; }
 void psx_netplay_local_view_clear(void) {}
 int  psx_netplay_local_view_shed(void) { return 0; }
-void gpu_ws_set_local_view_scope(int on) { (void)on; }
+static int s_local_scope;
+void gpu_ws_set_local_view_scope(int on) { s_local_scope=on; }
 int  psx_selfcheck_resim_active(void) { return 0; }
 int  psx_selfcheck_enabled(void) { return 0; }
 int  psx_rewind_is_open(void) { return 0; }
@@ -208,6 +210,18 @@ int gl_renderer_local_view_end(int keep) { gl_renderer_pass_end(0, keep); return
 uint32_t gl_renderer_stereo_unavailable(void) { return 0; }
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     return gl_renderer_pass_begin(x, y, w, h, 0, 0, reuse);
+}
+uint32_t gl_renderer_local_pair_unavailable(void) { return 0; }
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
+    return gl_renderer_pass_begin(x,y,w,h,0,0,reuse);
+}
+int gl_renderer_local_pair_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_grid_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_triple_set_presentation(int enabled) { (void)enabled;return 1; }
+int gl_renderer_local_grid_publish(uint64_t id,uint64_t cycle,const int32_t view[4][3],unsigned views) {
+    (void)cycle;(void)view;
+    if(s_stereo_mask!=(1u<<views)-1u)return 0;
+    s_stereo_published=id;return 1;
 }
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
     gl_renderer_pass_end(0, keep);
@@ -387,6 +401,14 @@ static int stereo_draw(struct CPUState *cpu, void *user, uint32_t eye) {
 
     guest_frame(cpu, &frames, 0);
     return 1;
+}
+static int grid_draw(struct CPUState *cpu,void *user,uint32_t seat) {
+    Frames frames={5,user && seat==3};
+    guest_frame(cpu,&frames,0);return 1;
+}
+static int triple_draw(struct CPUState *cpu,void *user,uint32_t seat) {
+    Frames frames={5,user && seat==2};
+    guest_frame(cpu,&frames,0);return 1;
 }
 
 typedef struct Live {
@@ -632,6 +654,41 @@ int main(void) {
         }
         CHECK(psx_mod_render_pass(&cpu,&pass,pass_fn,&clean)==1,
               "normal drawing recovers after a rejected device read");
+    }
+
+    /* Offline view pairs use the same unwind protection, including the
+     * own-view scope which stereo rendering does not enter. */
+    {
+        PSXModStereoFrame frame={sizeof frame,1,0,0,320,240};
+        uint64_t kept;
+        snap(&live);
+        CHECK(psx_mod_render_local_pair(&cpu,&frame,stereo_draw,NULL)==1,
+              "complete local pair publishes");
+        kept=s_stereo_published;
+        CHECK(psx_mod_render_local_pair(&cpu,&frame,stereo_draw,&runaway)==0,
+              "local second-view watchdog discards the pair");
+        CHECK(s_stereo_published==kept && s_stereo_mask==0,
+              "local abort cannot publish half a pair");
+        CHECK(!s_local_scope && !psx_mod_local_view_scope(),
+              "local abort closes the own-view scope");
+        check_live(&live,"after local second-view watchdog");
+        CHECK(psx_mod_render_local_pair(&cpu,&frame,stereo_draw,NULL)==1,
+              "local pair recovers after watchdog");
+        CHECK(psx_mod_render_local_grid(&cpu,&frame,grid_draw,NULL)==1,"complete local grid publishes");
+        kept=s_stereo_published;
+        CHECK(!psx_mod_render_local_grid(&cpu,&frame,grid_draw,&runaway),"fourth-view watchdog discards the grid");
+        CHECK(s_stereo_published==kept && !s_stereo_mask && !psx_mod_local_view_scope(),"grid watchdog retains complete frame and closes scope");
+        check_live(&live,"after fourth-view watchdog");
+        CHECK(psx_mod_render_local_grid(&cpu,&frame,grid_draw,NULL)==1,"grid recovers after watchdog");
+        /* Isolate this failure case from the preceding seven deliberate
+         * faults; the session correctly disables passes on its eighth. */
+        render_pass_reset_session();snap(&live);
+        CHECK(psx_mod_render_local_triple(&cpu,&frame,triple_draw,NULL)==1,"complete local triple publishes");
+        kept=s_stereo_published;
+        CHECK(!psx_mod_render_local_triple(&cpu,&frame,triple_draw,&runaway),"third-view watchdog discards the triple");
+        CHECK(s_stereo_published==kept && !s_stereo_mask && !psx_mod_local_view_scope(),"triple watchdog retains complete frame and closes scope");
+        check_live(&live,"after third-view watchdog");
+        CHECK(psx_mod_render_local_triple(&cpu,&frame,triple_draw,NULL)==1,"triple recovers after watchdog");
     }
 
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);

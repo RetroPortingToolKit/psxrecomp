@@ -69,7 +69,6 @@ extern int      psx_get_in_exception(void);
 extern int      psx_netplay_active(void);
 extern int      psx_netplay_is_resimulating(void);
 extern void     psx_netplay_local_view_clear(void);
-extern int      psx_netplay_local_view_shed(void);
 extern void     gpu_ws_set_local_view_scope(int on);
 extern int      psx_selfcheck_resim_active(void);
 extern int      psx_rewind_is_open(void);
@@ -453,17 +452,18 @@ int psx_mod_set_render_pass_flip(uint32_t mode) {
 static uint32_t transaction_status(int kind) {
     uint32_t gl;
     if (s_stats.disabled) return PSX_MOD_RENDER_PASS_DISABLED;
-    if ((kind == 2 ? !psx_netplay_active() :
+    if ((kind == 2 ? !psx_netplay_active() : kind == 3 ? psx_netplay_active() :
          (psx_netplay_active() && !s_netplay_allowed)) || psx_netplay_is_resimulating() ||
         psx_selfcheck_resim_active() || psx_rewind_is_open() ||
         g_ls_mode || g_ls_replay_active)
         return PSX_MOD_RENDER_PASS_SESSION;
     if (psx_presentation_fast_forward()) return PSX_MOD_RENDER_PASS_FAST_FORWARD;
-    /* A peer behind the match catches up first: its own view is the first
-     * thing to go (presentation only), like any other fast-forward. */
-    if (kind == 2 && psx_netplay_local_view_shed())
-        return PSX_MOD_RENDER_PASS_FAST_FORWARD;
-    gl = kind == 2 ? gl_renderer_local_view_unavailable()
+    /* A local view selects the player's camera and HUD. Refusing only that
+     * redraw during catch-up exposes the canonical peer's image. Any load
+     * shedding must skip a whole presentation, preserving the last displayed
+     * local image, rather than substitute the shared frame here. */
+    gl = kind == 3 ? gl_renderer_local_pair_unavailable()
+       : kind == 2 ? gl_renderer_local_view_unavailable()
        : kind == 1 ? gl_renderer_stereo_unavailable() : gl_renderer_pass_unavailable();
     if (gl != PSX_MOD_RENDER_PASS_READY) return gl;
     if (s_nesting || g_psx_guest_time_frozen || psx_get_in_exception() ||
@@ -487,6 +487,15 @@ int psx_mod_set_stereo_presentation(uint32_t mode) {
 void psx_mod_frame_trace_note(const char *tag) {
     psx_frame_trace_note(tag);
     psx_frame_trace_flag(PSX_FRAME_TRACE_SCENE_TRANSITION);
+}
+int psx_mod_set_local_pair_presentation(int enabled) {
+    return gl_renderer_local_pair_set_presentation(enabled);
+}
+int psx_mod_set_local_grid_presentation(int enabled) {
+    return gl_renderer_local_grid_set_presentation(enabled);
+}
+int psx_mod_set_local_triple_presentation(int enabled) {
+    return gl_renderer_local_triple_set_presentation(enabled);
 }
 int psx_mod_render_view_offset(int32_t x, int32_t y, int32_t z) {
     int32_t xyz[3] = {x, y, z};
@@ -827,11 +836,11 @@ static void local_scope_set(int on) {
 int psx_mod_local_view_scope(void) { return s_local_scope; }
 
 static int transaction_kind(int eye) {
-    return eye >= 0 ? 1 : eye == RP_EYE_LOCAL ? 2 : 0;
+    return eye >= 2 ? 3 : eye >= 0 ? 1 : eye == RP_EYE_LOCAL ? 2 : 0;
 }
 
 static int transaction_end(int eye, uint32_t alpha, int keep) {
-    if (eye >= 0) return gl_renderer_stereo_end((uint32_t)eye, keep);
+    if (eye >= 0) return gl_renderer_stereo_end((uint32_t)(eye >= 2 ? eye - 2 : eye), keep);
     if (eye == RP_EYE_LOCAL) return gl_renderer_local_view_end(keep);
     gl_renderer_pass_end(alpha, keep);
     return 1;
@@ -890,7 +899,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     }
     /* Per-eye trace sampling (opt-in): primitive counts and upload pixels are
      * cumulative, so the eye's cost is the delta across its transaction. */
-    int trace_on = eye >= 0 && !s_capture_only && psx_frame_trace_enabled();
+    int trace_on = eye >= 0 && eye < 2 && !s_capture_only && psx_frame_trace_enabled();
     uint64_t trace_prims0 = 0, trace_tex0 = 0, trace_diag0[6] = {0,0,0,0,0,0};
     if (trace_on) {
         gl_renderer_scene_prim_counts(&trace_prims0, &trace_tex0);
@@ -903,7 +912,9 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
             s_restored_cycle == psx_cycle_count &&
             s_restored_stores == g_guest_store_count;
     /* Frame N's own image is captured by the first pass after a plan. */
-    if (!(eye >= 0 ? gl_renderer_stereo_begin(pass->x, pass->y, pass->w,
+    if (!(eye >= 2 ? gl_renderer_local_pair_begin(pass->x, pass->y, pass->w,
+                                                 pass->h, reuse)
+          : eye >= 0 ? gl_renderer_stereo_begin(pass->x, pass->y, pass->w,
                                                pass->h, reuse)
           : eye == RP_EYE_LOCAL ? gl_renderer_local_view_begin(pass->x, pass->y,
                                                                pass->w, pass->h)
@@ -945,14 +956,15 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     s_device_read_fault = 0;
     cycles_before = psx_cycle_count;
     if (eye >= 0) {
-        s_stereo.eye_cycle[eye] = cycles_before;
-        s_stereo.eye_hash[eye] = verify_on() ? hash_before : 0;
+        unsigned slot = (unsigned)(eye >= 2 ? eye - 2 : eye);
+        s_stereo.eye_cycle[slot] = cycles_before;
+        s_stereo.eye_hash[slot] = verify_on() ? hash_before : 0;
     }
     (void)psx_cycle_freeze_begin(&s_freeze, watchdog_cycles(),
                                  watchdog_overrun);
     /* A netplay local view is the one place a peer's presentation-only mods
      * act on guest code (own-view plugins, widescreen cull margin). */
-    if (eye == RP_EYE_LOCAL) local_scope_set(1);
+    if (eye == RP_EYE_LOCAL || eye >= 2) local_scope_set(1);
     if (setjmp(s_abort_jmp) == 0) {
         s_pass_cpu = cpu;
         s_abort_armed = 1;
@@ -986,7 +998,7 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
     sub_spans_forget();
     uint64_t guest_cycles = psx_cycle_count - cycles_before;
     s_stats.guest_cycles_last = guest_cycles;
-    if (eye >= 0) gte_render_view_get(s_stereo.eye_view[eye]);
+    if (eye >= 0) gte_render_view_get(s_stereo.eye_view[eye >= 2 ? eye - 2 : eye]);
     tg = gl_renderer_perf_ticks();
     s_pass_cpu = NULL;
 
@@ -1128,8 +1140,8 @@ static int stereo_eye_draw(CPUState *cpu, void *user, uint32_t unused) {
     return c->fn(cpu, c->user, c->eye);
 }
 
-int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
-                          PSXModStereoFn fn, void *user) {
+static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
+                        PSXModStereoFn fn, void *user, int local, unsigned views) {
     PSXModRenderPass rect;
     StereoCallback call;
     uint64_t t0, cycle, stores, mismatches, aborted;
@@ -1146,7 +1158,7 @@ int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
         (uint32_t)frame->y + frame->h > 512u) {
         s_stereo.refused++; s_stereo.last_failure = "arguments"; return 0;
     }
-    status = transaction_status(1);
+    status = transaction_status(local ? 3 : 1);
     if (status != PSX_MOD_RENDER_PASS_READY) {
         s_stereo.refused++; s_stereo.last_failure = "status"; return 0;
     }
@@ -1154,7 +1166,7 @@ int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
      * psx_openxr_begin() when a headset is active; opening here covers the
      * desktop stereo path, and the guest-sim gap is the host time since the
      * previous traced frame. */
-    int trace_on = psx_frame_trace_enabled();
+    int trace_on = !local && psx_frame_trace_enabled();
     int trace_opened = trace_on ? psx_frame_trace_open() : 0;
     uint64_t now_ms = psx_host_mono_ms();
     if (trace_on) {
@@ -1180,7 +1192,7 @@ int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
     stereo_shed_policy_set_budget(&s_shed, budget_ms);
     {
         int was_shedding = s_shed.shedding;
-        if (stereo_shed_policy_should_shed(&s_shed, now_ms)) {
+        if (!local && stereo_shed_policy_should_shed(&s_shed, now_ms)) {
             s_stereo.shed++;
             s_stereo.stale_frames++;
             s_stereo.shed_streak = stereo_shed_policy_streak_sheds(&s_shed);
@@ -1209,8 +1221,8 @@ int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
     cycle = psx_cycle_count; stores = g_guest_store_count;
     mismatches = s_stats.verify_mismatch; aborted = s_stats.aborted;
     s_stereo.last_failure = NULL;
-    s_stereo.eye_cycle[0] = s_stereo.eye_cycle[1] = 0;
-    s_stereo.eye_hash[0] = s_stereo.eye_hash[1] = 0;
+    memset(s_stereo.eye_cycle, 0, sizeof s_stereo.eye_cycle);
+    memset(s_stereo.eye_hash, 0, sizeof s_stereo.eye_hash);
     gl_renderer_stereo_stage_reset();
     memset(&rect, 0, sizeof rect);
     rect.struct_size = sizeof rect;
@@ -1223,28 +1235,30 @@ int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
      * what the first one captures. */
     s_baseline_ready = 0;
     t0 = gl_renderer_perf_ticks();
-    for (call.eye = 0; call.eye < 2u; call.eye++) {
+    for (call.eye = 0; call.eye < views; call.eye++) {
         s_stereo.last_eye = (int)call.eye;
         if (psx_cycle_count != cycle || g_guest_store_count != stores) {
             ok = 0; s_stereo.last_failure = "checkpoint_changed"; break;
         }
-        if (!render_transaction(cpu, &rect, stereo_eye_draw, &call, (int)call.eye)) {
+        if (!render_transaction(cpu, &rect, stereo_eye_draw, &call,
+                                (int)call.eye + (local ? 2 : 0))) {
             ok = 0;
             if (!s_stereo.last_failure) s_stereo.last_failure =
                 s_stats.aborted != aborted ? "eye_abort" : "eye_refused_or_discarded";
             break;
         }
     }
-    if (s_stats.verify_mismatch != mismatches ||
-        s_stereo.eye_cycle[0] != s_stereo.eye_cycle[1] ||
-        (verify_on() && s_stereo.eye_hash[0] != s_stereo.eye_hash[1])) {
+    for (unsigned i = 1; i < views; ++i) if (s_stereo.eye_cycle[0] != s_stereo.eye_cycle[i] ||
+        (verify_on() && s_stereo.eye_hash[0] != s_stereo.eye_hash[i])) {
         ok = 0;
         if (!s_stereo.last_failure) s_stereo.last_failure = "eye_checkpoint_mismatch";
     }
+    if (s_stats.verify_mismatch != mismatches) ok = 0;
     elapsed = (double)(gl_renderer_perf_ticks() - t0) * 1000.0 /
               (double)gl_renderer_perf_frequency();
     s_stereo.last_pair_ms = elapsed;
-    if (ok && !gl_renderer_stereo_publish(s_stereo.attempts, cycle, s_stereo.eye_view)) {
+    if (ok && !(views >= 3 ? gl_renderer_local_grid_publish(s_stereo.attempts, cycle, s_stereo.eye_view, views)
+                          : gl_renderer_stereo_publish(s_stereo.attempts, cycle, s_stereo.eye_view))) {
         ok = 0; s_stereo.last_failure = "pair_publish";
     }
     if (ok) {
@@ -1265,10 +1279,17 @@ int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
      * pair refreshes the retained-pair age. Pair age is tracked separately from
      * the compute-time estimate so "how old is the picture" never hides behind
      * "how fast was the last attempt". */
-    stereo_shed_policy_note_pair(&s_shed, elapsed, now_ms, ok);
-    s_stereo.avg_pair_ms = stereo_shed_policy_avg_ms(&s_shed);
-    s_stereo.last_pair_age_ms = stereo_shed_policy_pair_age_ms(&s_shed, now_ms);
-    s_stereo.shedding = s_shed.shedding;
+    if (local) {
+        s_stereo.avg_pair_ms = s_stereo.avg_pair_ms > 0.0
+            ? s_stereo.avg_pair_ms * 0.9 + elapsed * 0.1 : elapsed;
+        s_stereo.last_pair_age_ms = 0;
+        s_stereo.shedding = 0;
+    } else {
+        stereo_shed_policy_note_pair(&s_shed, elapsed, now_ms, ok);
+        s_stereo.avg_pair_ms = stereo_shed_policy_avg_ms(&s_shed);
+        s_stereo.last_pair_age_ms = stereo_shed_policy_pair_age_ms(&s_shed, now_ms);
+        s_stereo.shedding = s_shed.shedding;
+    }
     if (!ok) s_stereo.stale_frames++;
     if (trace_on) {
         psx_frame_trace_add(PSX_TRACE_PAIR_TOTAL, (uint64_t)(elapsed * 1000.0));
@@ -1336,4 +1357,20 @@ int psx_mod_render_capture_rgba_pair(CPUState *cpu,const PSXModRenderPass *rect,
     psx_frame_trace_add(PSX_TRACE_HUD_CAPTURE,
                         trace_ticks_to_us(gl_renderer_perf_ticks()-trace_t0));
     return ok;
+}
+int psx_mod_render_stereo(CPUState *cpu, const PSXModStereoFrame *frame,
+                          PSXModStereoFn fn, void *user) {
+    return render_pair(cpu,frame,fn,user,0,2);
+}
+int psx_mod_render_local_pair(CPUState *cpu, const PSXModStereoFrame *frame,
+                              PSXModStereoFn fn, void *user) {
+    return render_pair(cpu,frame,fn,user,1,2);
+}
+int psx_mod_render_local_grid(CPUState *cpu, const PSXModStereoFrame *frame,
+                              PSXModStereoFn fn, void *user) {
+    return render_pair(cpu,frame,fn,user,1,4);
+}
+int psx_mod_render_local_triple(CPUState *cpu, const PSXModStereoFrame *frame,
+                                PSXModStereoFn fn, void *user) {
+    return render_pair(cpu,frame,fn,user,1,3);
 }

@@ -7,6 +7,10 @@ static const PSXModNetplayProfile *title_profile;
 static int profile_active;
 static int profile_aspect;
 static char options_identity[65];
+static const PSXModNetplayProfile *profiles[8];
+static unsigned profile_count;
+static PSXModNetplayProfileSelector profile_selector;
+static PSXModNetplayPlayerCountSelector player_count_selector;
 
 int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile) {
     unsigned mask;
@@ -21,17 +25,47 @@ int psx_mod_register_netplay_profile(const PSXModNetplayProfile *profile) {
         (!!profile->renderer_option_id != !!profile->renderer_option_value) ||
         (profile->renderer_option_id && (!profile->renderer_option_id[0] ||
             !profile->renderer_option_value[0] || !profile->settings_package_id ||
-            !profile->widescreen_plugin_id)))
+            !profile->widescreen_plugin_id)) ||
+        profile->max_players>8 || profile->min_players>profile->max_players ||
+        (profile->select_when_feature_enabled && !profile->settings_package_id) ||
+        (profile->optional_last_seat_option && (!profile->optional_last_seat_option[0] ||
+            !profile->settings_package_id || profile->max_players<3)))
         return 0;
-    if (title_profile) return title_profile == profile;
-    title_profile = profile;
+    for (unsigned i=0;i<profile_count;++i)
+        if (!strcmp(profiles[i]->plugin_id,profile->plugin_id)) return profiles[i]==profile;
+    if (profile_count==8) return 0;
+    profiles[profile_count++]=profile;
+    if (title_profile && (profile->select_when_feature_enabled || !title_profile->select_when_feature_enabled)) return 1;
+    title_profile=profile;
     mask = profile->fixed_aspect_mask;
     /* Native is the default whenever supported; otherwise first allowed view. */
     profile_aspect = (mask && !(mask & 1u)) ? ((mask & 2u) ? 1 : 2) : 0;
     return 1;
 }
-const PSXModNetplayProfile *psx_mod_netplay_profile(void) { return title_profile; }
+unsigned psx_mod_netplay_profile_count(void) {return profile_count;}
+const PSXModNetplayProfile *psx_mod_netplay_profile_at(unsigned index) {return index<profile_count?profiles[index]:NULL;}
+void psx_mod_netplay_set_profile_selector(PSXModNetplayProfileSelector selector) {profile_selector=selector;}
+void psx_mod_netplay_set_player_count_selector(PSXModNetplayPlayerCountSelector selector) {player_count_selector=selector;}
+unsigned psx_mod_netplay_player_count(void) {
+    const PSXModNetplayProfile *profile=psx_mod_netplay_profile();
+    return player_count_selector?player_count_selector():(profile?profile->max_players:0);
+}
+const PSXModNetplayProfile *psx_mod_netplay_profile(void) {
+    if (!profile_active && profile_selector) {
+        const PSXModNetplayProfile *selected=profile_selector();
+        for(unsigned i=0;selected && i<profile_count;++i) if(profiles[i]==selected) {
+            if(title_profile!=selected) {
+                title_profile=selected;options_identity[0]=0;
+                unsigned mask=selected->fixed_aspect_mask;
+                profile_aspect=(mask && !(mask&1u))?((mask&2u)?1:2):0;
+            }
+            break;
+        }
+    }
+    return title_profile;
+}
 const char *psx_mod_netplay_version(const char *vanilla_version) {
+    (void)psx_mod_netplay_profile();
     return title_profile ? title_profile->compatibility_id : vanilla_version;
 }
 int psx_mod_netplay_rollback_supported(void) {
@@ -110,6 +144,13 @@ int psx_mod_netplay_content_identity(const char *execution_content, char out[65]
     psx_sha256_update(&ctx, (const uint8_t*)title_profile->compatibility_id,
                        strlen(title_profile->compatibility_id) + 1);
     psx_sha256_update(&ctx, policy, sizeof(policy));
+    if(title_profile->max_players) {
+        const uint8_t roster_policy[3]={(uint8_t)title_profile->min_players,
+            (uint8_t)title_profile->max_players,(uint8_t)psx_mod_netplay_player_count()};
+        psx_sha256_update(&ctx,roster_policy,sizeof roster_policy);
+        const char *option=title_profile->optional_last_seat_option?title_profile->optional_last_seat_option:"";
+        psx_sha256_update(&ctx,(const uint8_t*)option,strlen(option)+1);
+    }
     psx_sha256_update(&ctx, (const uint8_t*)renderer, strlen(renderer) + 1);
     if (title_profile->settings_package_id) {
         const char *fields[] = {title_profile->settings_package_id,

@@ -46,7 +46,11 @@ extern "C" {
  * v5 = v4 + CD-ROM Sub-Q replacement state;
  * v6 = v5 + per-word GPU DMA2 linked-list progress;
  * v7 = v6 + pending XA DATA_END IRQ state. */
-#define BOOT_STATE_VERSION 9u
+#define BOOT_STATE_VERSION 10u
+/* No host snapshot providers: keep the v9 writer and section layout exactly.
+ * v10 adds required trusted-title host state. Older readers must reject it
+ * rather than restoring guest RAM without its matching host state. */
+#define BOOT_STATE_VERSION_WITHOUT_HOST 9u
 /* v8 added allocated enhancement memory (vanilla v8-era writers kept v7); older
  * runtimes must not accept enhanced snapshots while ignoring their arenas. */
 /* v9 persists the BIOS-to-game handoff latch. Engine overlays may have
@@ -64,7 +68,7 @@ extern "C" {
  */
 typedef struct {
     uint32_t magic;          /* BOOT_STATE_MAGIC                                  */
-    uint32_t version;        /* BOOT_STATE_VERSION                                */
+    uint32_t version;        /* writer v9 without providers, v10 with host state */
     /* ---- integrity key (every field must match to accept) ---- */
     uint32_t bios_checksum;  /* sum of all uint32 words in the BIOS ROM           */
     uint32_t entry_pc;       /* game PS-EXE entry PC                              */
@@ -73,7 +77,7 @@ typedef struct {
     uint32_t codegen_ver;    /* codegen version XOR build PSX_SAVESTATE_IMPL_TAG  */
     /* ---- layout ---- */
     uint32_t section_count;  /* number of sections that follow                    */
-    uint32_t reserved;       /* enhancement-memory, RAM and execution cookie     */
+    uint32_t reserved;       /* enhancement-memory, RAM, execution and host cookie */
 } BootStateHeader;
 
 #define BOOT_STATE_HEADER_WIRE_BYTES 36u
@@ -90,6 +94,7 @@ typedef struct {
  * never allowed) -> normal boot + recapture.
  */
 enum {
+    BS_SEC_MOD_HOST = 0x16, /* enabled trusted-title host snapshot providers */
     BS_SEC_GAME_START = 0x12, /* u32 LE boolean: BIOS-to-game handoff completed */
     BS_SEC_MODMEM = 0x11,  /* allocated opt-in CPU/GPU enhancement arenas */
     BS_SEC_CPU    = 0x01,  /* CPUState: gpr/pc/hi/lo/cop0/gte_data/gte_ctrl       */
@@ -160,6 +165,22 @@ int  boot_state_load(const char* path, uint32_t bios_checksum,
 int  boot_state_load_buffer(const uint8_t* file, size_t file_len,
                             uint32_t bios_checksum, uint32_t entry_pc,
                             CPUState* cpu);
+
+/* Transactional frontend loads: judge the resume PC using restored RAM before
+ * notifying successful-load observers. If accept refuses, the machine has
+ * been applied; the caller MUST restore its pre-load rollback image quietly.
+ * Structural/integrity refusals still leave the machine untouched. */
+typedef int (*BootStateResumeAccept)(uint32_t pc);
+int boot_state_load_buffer_checked(const uint8_t* file, size_t file_len,
+                                   uint32_t bios_checksum, uint32_t entry_pc,
+                                   CPUState* cpu, BootStateResumeAccept accept);
+int boot_state_load_checked(const char* path, uint32_t bios_checksum,
+                            uint32_t entry_pc, CPUState* cpu,
+                            BootStateResumeAccept accept);
+/* Rollback restores state without announcing a user-visible timeline jump. */
+int boot_state_load_buffer_quiet(const uint8_t* file, size_t file_len,
+                                 uint32_t bios_checksum, uint32_t entry_pc,
+                                 CPUState* cpu);
 
 /* Header-only integrity check (no section inflate/apply). Returns 1 if this
  * build can load the image; 0 and fills reason (when non-NULL) on reject. */

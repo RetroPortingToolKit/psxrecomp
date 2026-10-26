@@ -8,6 +8,9 @@ extern "C" {
 #endif
 
 void psx_savestate_menu_set_state(int open, int selected_slot);
+/* A visible mode/ownership restriction; NULL clears it. */
+void psx_savestate_menu_set_unavailable(const char *reason);
+void psx_savestate_menu_get_state(int *open, int *selected_slot, int *unavailable);
 void psx_savestate_menu_note_slots_changed(void);
 int  psx_savestate_menu_needs_present(void);
 int  psx_savestate_menu_overlay_image(const uint32_t **pixels, int *w, int *h);

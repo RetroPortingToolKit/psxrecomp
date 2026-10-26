@@ -2552,6 +2552,177 @@ int main() {
                 "a host_only feature may not patch the game");
         mod_clear_plugins_for_tests();
     }
+    {
+        const auto folder=root/"conditional-resources";
+        const std::vector<uint8_t> english{1,2,3},spanish{4,5};
+        const auto en=folder/"english.dat",es=folder/"spanish.dat";
+        write_bytes(en,english);write_bytes(es,spanish);
+        const std::string manifest=
+            "format_version = 10\nid = \"movies\"\nversion = \"1.0.0\"\nname = \"Movies\"\n"
+            "[[target]]\ngame_id = \"SLUS-TEST\"\n"
+            "[[feature]]\nid = \"media\"\nname = \"Media\"\ndefault_enabled = true\n"
+            "[[option]]\nfeature = \"media\"\nid = \"language\"\nlabel = \"Language\"\n"
+            "type = \"choice\"\ndefault = \"none\"\n"
+            "[[option.choice]]\nvalue = \"none\"\nlabel = \"None\"\n"
+            "[[option.choice]]\nvalue = \"en\"\nlabel = \"English\"\n"
+            "[[option.choice]]\nvalue = \"es\"\nlabel = \"Spanish\"\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"english\"\nlabel = \"English\"\n"
+            "when = { language = \"en\" }\nrequired = true\nsize = 3\nsha256 = \""+sha256_hex(english)+"\"\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"spanish\"\nlabel = \"Spanish\"\n"
+            "when = { language = \"es\" }\nrequired = true\nsize = 2\nsha256 = \""+sha256_hex(spanish)+"\"\n";
+        const auto path=folder/"bundled/movies/1.0.0/manifest.toml";
+        write_text(path,manifest);
+        ModPackageManager manager(folder);
+        check(manager.scan(&error) && manager.scan_errors().empty(),"conditional resource catalog parses");
+        auto none=manager.resolve("SLUS-TEST");
+        check(none.ok && none.resources.empty(),"inactive required media is neither requested nor loaded");
+        check(!manager.feature_resource_active("movies","media","english"),"inactive picker hidden");
+        check(manager.set_feature_option("movies","media","language","en",&error),error.c_str());
+        check(manager.feature_resource_active("movies","media","english") &&
+              !manager.feature_resource_active("movies","media","spanish"),"only selected language picker active");
+        check(!manager.resolve("SLUS-TEST").ok,"selected required resource still required");
+        check(manager.set_feature_resource_path("movies","media","english",en,&error),error.c_str());
+        auto selected_en=manager.resolve("SLUS-TEST");
+        check(selected_en.ok && selected_en.resources.size()==1 &&
+              selected_en.resources[0].id=="english","only selected immutable movie data resolves");
+        check(manager.set_feature_resource_path("movies","media","spanish",es,&error),error.c_str());
+        fs::remove(es,ec);
+        check(manager.resolve("SLUS-TEST").fingerprint==selected_en.fingerprint,
+              "inactive missing file does not change selected session identity");
+        check(manager.set_feature_option("movies","media","language","es",&error),error.c_str());
+        check(!manager.resolve("SLUS-TEST").ok,"switching to missing selected media rejects");
+        write_bytes(es,spanish);
+        check(manager.set_feature_resource_path("movies","media","spanish",es,&error),error.c_str());
+        write_bytes(en,{9,9,9});
+        auto selected_es=manager.resolve("SLUS-TEST");
+        check(selected_es.ok && selected_es.resources.size()==1 && selected_es.resources[0].id=="spanish" &&
+              selected_es.fingerprint!=selected_en.fingerprint && selected_es.fingerprint!=none.fingerprint,
+              "inactive corruption ignored; active language and bytes identify session");
+        write_bytes(es,{0,0});check(!manager.resolve("SLUS-TEST").ok,"active corrupt media rejects");
+        ModPackage invalid;
+        auto malformed=manifest;malformed.replace(malformed.find("language = \"en\""),15,"unknown = \"en\"");
+        write_text(path,malformed);check(!ModPackageManager::read_manifest(path,invalid,&error),"unknown resource condition option rejects");
+        malformed=manifest;malformed.replace(malformed.find("language = \"en\""),15,"language = \"de\"");
+        write_text(path,malformed);check(!ModPackageManager::read_manifest(path,invalid,&error),"invalid resource condition value rejects");
+        malformed=manifest;malformed.replace(malformed.find("= 10"),4,"= 9");
+        write_text(path,malformed);check(!ModPackageManager::read_manifest(path,invalid,&error),"conditional resources require new manifest version");
+    }
+
+    {
+        const auto folder=root/"conditional-preparation";
+        const auto source=folder/"source.dat",asset=folder/"asset.dat";
+        const std::vector<uint8_t> bytes{6,7,8};
+        write_bytes(source,bytes);write_bytes(asset,bytes);
+        write_text(folder/"bundled/prepared/1.0.0/manifest.toml",
+            "format_version = 10\nid = \"prepared\"\nversion = \"1.0.0\"\nname = \"Prepared\"\nprepare = \"test.conditional\"\n"
+            "[[target]]\ngame_id = \"SLUS-TEST\"\n"
+            "[[feature]]\nid = \"media\"\nname = \"Media\"\ndefault_enabled = true\n"
+            "[[option]]\nfeature = \"media\"\nid = \"enabled\"\nlabel = \"Prepare\"\ntype = \"boolean\"\ndefault = false\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"source\"\nlabel = \"Source\"\ninput_only = true\nrequired = true\nwhen = { enabled = \"true\" }\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"asset\"\nlabel = \"Asset\"\nhidden = true\nrequired = true\n"
+            "when = { enabled = \"true\" }\nsize = 3\nsha256 = \""+sha256_hex(bytes)+"\"\n");
+        bool unexpected_output=false;
+        check(mod_register_media_preparer("test.conditional",[&](const ModPrepareContext& context,
+            std::map<std::string,fs::path>& output,std::string&) {
+            if(context.inputs.count("source"))check(context.inputs.at("source")==source,"only matching input passed to preparer");
+            if(!context.inputs.empty() || unexpected_output)output["asset"]=asset;
+            return true;
+        }),"conditional preparer registered");
+        ModPackageManager manager(folder);check(manager.scan(&error),error.c_str());
+        check(manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error) && manager.resolve("SLUS-TEST").ok,
+              "inactive preparation neither asks for inputs nor requires outputs");
+        check(manager.set_feature_option("prepared","media","enabled","true",&error),error.c_str());
+        check(!manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error),"matching input becomes required");
+        check(manager.set_feature_resource_path("prepared","media","source",source,&error),error.c_str());
+        check(manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error) &&
+              manager.resolve("SLUS-TEST").resources.size()==1,"matching prepared asset resolves");
+        check(manager.set_feature_option("prepared","media","enabled","false",&error),error.c_str());
+        fs::remove(asset,ec);
+        check(manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error) &&
+              manager.resolve("SLUS-TEST").resources.empty(),"inactive stale output is not read");
+        unexpected_output=true;
+        check(!manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error),"preparer may not emit an inactive output");
+    }
+
+    {
+        const auto folder=root/"exclusive-rosters";
+        auto package=[&](const std::string& id,const std::string& extra,const std::string& tail) {
+            return "format_version = 11\nid = \""+id+"\"\nversion = \"1.0.0\"\nname = \""+id+"\"\n"+extra+
+                "\n[[target]]\ngame_id = \"SLUS-TEST\"\n[[feature]]\nid = \"mode\"\nname = \"Mode\"\ndefault_enabled = false\n"+tail;
+        };
+        const std::string choices=
+            "\n[[option]]\nfeature = \"mode\"\nid = \"a\"\nlabel = \"Seat A\"\ntype = \"choice\"\ndefault = \"x\"\n"
+            "[[option.choice]]\nvalue = \"x\"\nlabel = \"X\"\n[[option.choice]]\nvalue = \"zero\"\nlabel = \"Zero\"\n"
+            "[[option]]\nfeature = \"mode\"\nid = \"b\"\nlabel = \"Seat B\"\ntype = \"choice\"\ndefault = \"zero\"\n"
+            "[[option.choice]]\nvalue = \"x\"\nlabel = \"X\"\n[[option.choice]]\nvalue = \"zero\"\nlabel = \"Zero\"\n"
+            "[[constraint]]\nfeature = \"mode\"\nkind = \"distinct_values\"\noptions = [\"a\",\"b\"]\n";
+        const auto a=folder/"bundled/a/1.0.0/manifest.toml";
+        const auto b=folder/"bundled/b/1.0.0/manifest.toml";
+        write_text(a,package("a","disables = [\"b\"]\n",choices));
+        write_text(b,package("b","",""));
+        ModPackageManager manager(folder);
+        check(manager.scan(&error) && manager.scan_errors().empty(),"exclusive roster catalog parses");
+        check(manager.set_feature_enabled("b","mode",true,&error),error.c_str());
+        check(manager.set_feature_enabled("a","mode",true,&error),error.c_str());
+        check(!manager.feature_enabled("b","mode"),"enabling roster clears conflicting stored feature");
+        check(!manager.set_feature_enabled("b","mode",true,&error),"conflicting package cannot reenable");
+        check(!manager.set_feature_option("a","mode","b","x",&error),"duplicate form rejected while active");
+        check(manager.feature_option_value("a","mode","b")=="zero","failed change preserves valid tuple");
+        auto edited=manager.selections();edited["b"].features["mode"].enabled=true;
+        manager.exchange_selections(edited);
+        auto plan=manager.resolve("SLUS-TEST");
+        check(plan.ok && !plan.selections.at("b").features.at("mode").enabled,
+            "saved conflicting flags are suppressed in effective session");
+        write_text(b,package("b","disables = [\"a\"]\n",""));
+        ModPackageManager cycle(folder);check(cycle.scan(&error),error.c_str());cycle.exchange_selections(edited);
+        check(!cycle.resolve("SLUS-TEST").ok,"suppression cycles reject without order-dependent winner");
+        write_text(b,package("b","",""));
+        write_text(folder/"bundled/c/1.0.0/manifest.toml",package("c","",
+            "[[requirement]]\nfeature = \"mode\"\npackage = \"a\"\nrequires_feature = \"mode\"\n"));
+        ModPackageManager dependency(folder);check(dependency.scan(&error),error.c_str());
+        check(dependency.set_feature_enabled("b","mode",true,&error),error.c_str());
+        check(dependency.set_feature_enabled("c","mode",true,&error),error.c_str());
+        check(!dependency.resolve("SLUS-TEST").ok,"derived provider cannot silently introduce conflicting suppression");
+        ModPackage malformed;
+        auto invalid=package("a","disables = [\"b\"]\n",choices);
+        invalid.replace(invalid.find("= 11"),4,"= 10");write_text(a,invalid);
+        check(!ModPackageManager::read_manifest(a,malformed,&error),"new rules require manifest version11");
+        invalid=package("a","disables = [\"a\"]\n",choices);write_text(a,invalid);
+        check(!ModPackageManager::read_manifest(a,malformed,&error),"self suppression rejected");
+        invalid=package("a","",choices);auto pos=invalid.find("default = \"zero\"");
+        invalid.replace(pos,16,"default = \"x\"");write_text(a,invalid);
+        check(!ModPackageManager::read_manifest(a,malformed,&error),"duplicate default roster rejected");
+    }
+
+    {
+        const fs::path path = root / "option-display-context.toml";
+        for (const char* context : {"any", "offline", "online", "invalid"}) {
+            write_text(path, manifest("context.mod", "1.0.0",
+                "[[option]]\nid = \"view\"\nlabel = \"View\"\n"
+                "type = \"boolean\"\ndefault = \"true\"\n"
+                "display_context = \"" + std::string(context) + "\"\n"));
+            ModPackage package;
+            const bool valid = ModPackageManager::read_manifest(path, package, &error);
+            if (std::string(context) == "invalid") {
+                check(!valid, "unknown option display context must be rejected");
+                continue;
+            }
+            check(valid && package.options.size() == 1,
+                  "option display context must parse");
+            if (!valid || package.options.empty()) continue;
+            const ModOption& option = package.options.front();
+            check(option.visible_in(false) == (std::string(context) != "online"),
+                  "offline option visibility must respect display context");
+            check(option.visible_in(true) == (std::string(context) != "offline"),
+                  "online option visibility must respect display context");
+            check(option.default_value == "true",
+                  "presentation context must not discard an option selection");
+        }
+        ModOption legacy;
+        check(legacy.visible_in(false) && legacy.visible_in(true),
+              "unspecified display context must preserve legacy visibility");
+    }
+
     fs::remove_all(root, ec);
     if (failures) {
         std::cerr << failures << " mod package test(s) failed\n";

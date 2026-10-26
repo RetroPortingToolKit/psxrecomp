@@ -139,6 +139,34 @@ static uint64_t fnv(const void *pp, size_t n, uint64_t h) {
     return h;
 }
 static uint64_t rb_digest = 0xcbf29ce484222325ull;
+/* Read the pre-swap composition before final resolution cleanup invalidates
+ * hold-last. Backing wide textures may have unused canonical-centre pixels. */
+static uint64_t composed_digest(int scale, int threaded, int dynres) {
+    gl_renderer_render_thread_sync("fixture_composed_frame");
+    uint64_t result = 0;
+    check(s_hold_kind == HOLD_DRAWABLE && s_hold_tw > 0 && s_hold_th > 0,
+          "composed frame retained before swap");
+    if (s_hold_kind == HOLD_DRAWABLE && s_hold_tw > 0 && s_hold_th > 0) {
+        const size_t bytes = (size_t)s_hold_tw * s_hold_th * 4u;
+        uint8_t *pixels = (uint8_t *)malloc(bytes);
+        check(pixels != NULL, "composed frame allocation");
+        if (pixels) {
+            p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_hold_fbo);
+            glReadPixels(0, 0, s_hold_tw, s_hold_th, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            result = fnv(pixels, bytes, 0xcbf29ce484222325ull);
+            if (getenv("PSX_TEST_GL_DUMP")) {
+                char path[96];
+                snprintf(path, sizeof path, "composed-%d-%d-%d-%dx%d.rgba",
+                         scale, threaded, dynres, s_hold_tw, s_hold_th);
+                FILE *dump = fopen(path, "wb");
+                check(dump != NULL, "composed frame dump");
+                if (dump) { fwrite(pixels, 1, bytes, dump); fclose(dump); }
+            }
+            free(pixels);
+        }
+    }
+    return result;
+}
 static uint32_t rng = 0x2468ace1u;
 static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
 
@@ -181,6 +209,47 @@ static void textures(void) {
     for (int i = 0; i < 16; i++) clut[i] = (uint16_t)(i ? (0x0421u * (uint16_t)i) | ((i & 1) << 15) : 0);
     cpu_upload(512, 0, 64, 64, page);
     cpu_upload(512, 256, 16, 1, clut);
+}
+
+static void test_clipped_and_redundant_state(void) {
+    gr_wide_configure(0,0);
+    gr_wide_disable_target();
+    gr_set_draw_area(64,64,127,127);
+    gr_set_draw_offset(0,0);
+    gr_set_semi_transparency(0,0);
+    gr_set_color_modulation(128,128,128,0);
+    mask_bits(0,0);
+    gl_renderer_render_thread_sync("clipped_fixture_before");
+    flush_flat_batch();flush_tex_batch();flush_cpu_upload();
+    const uint64_t batches=s_batch_total,clipped=s_clipped_prims;
+    for(int i=0;i<16;i++) {
+        gr_draw_flat_rect(-100-i,-100,4,4,0x7fff);
+        gr_draw_textured_rect(200+i,200,8,8,0,0,512,256,0x0008);
+        gr_draw_line(-100,200+i,-80,220+i,0x7fff);
+    }
+    gl_renderer_render_thread_sync("clipped_fixture_after");
+    flush_flat_batch();flush_tex_batch();flush_cpu_upload();
+    check(s_batch_total==batches,"wholly clipped draws emit no GPU batches");
+    check(s_clipped_prims>clipped,"clipped primitive counter observes rejected work");
+    check(gr_vram_read(64,64)==0,"clipped draws preserve VRAM");
+    uint16_t page[8*8],palette[16]={0};
+    for(int i=0;i<8*8;i++)page[i]=0x1111;
+    palette[1]=0x7fff;
+    cpu_upload(512,0,8,8,page);cpu_upload(512,256,16,1,palette);
+    gr_set_color_modulation(128,128,128,1);
+    const uint64_t visible=s_batch_total;
+    gr_draw_textured_rect(64,64,8,8,0,0,512,256,0x0008);
+    gr_set_draw_area(64,64,127,127); /* repeated GP0 environment packets */
+    gr_set_draw_offset(0,0);
+    gr_draw_textured_rect(127,80,8,8,0,0,512,256,0x0008); /* retain the scissor-edge sliver */
+    gl_renderer_render_thread_sync("redundant_state_fixture");
+    flush_flat_batch();flush_tex_batch();flush_cpu_upload();
+    check(s_batch_total==visible+1,"redundant draw state preserves one painter-ordered batch");
+    check((gr_vram_read(64,64)&0x7fff)==0x7fff,"visible control draw survives");
+    check((gr_vram_read(127,80)&0x7fff)==0x7fff,"scissor-edge sliver survives");
+    check(gr_vram_read(128,80)==0,"draw area still clips the adjacent pixel");
+    gr_set_draw_area(0,0,1023,511);
+    textures();
 }
 
 static void frame(int f, int buf_x) {
@@ -301,6 +370,7 @@ int main(int argc, char **argv) {
     if (!gl_renderer_init_context(win)) { fprintf(stderr, "FAIL context\n"); return 2; }
     check(gr_backend() == GR_BACKEND_OPENGL, "OpenGL backend");
     textures();
+    test_clipped_and_redundant_state();
     gr_wide_configure(426, 53);
     if (threaded) {
         check(gl_renderer_render_thread_start(2) == 1, "render thread started");
@@ -329,6 +399,7 @@ int main(int argc, char **argv) {
             check(gr_scale() == l, "gr_scale follows the level");
         }
     }
+    const uint64_t composed = composed_digest(scale, threaded, dynres);
     if (dynres) {
         if (level != scale) nsteps++;
         check(gl_renderer_step_internal_scale_now(scale) == 1, "dynres back to the ceiling");
@@ -387,6 +458,7 @@ int main(int argc, char **argv) {
     printf("digest=%016llx\n", (unsigned long long)digest);
     printf("hires=%016llx\n", (unsigned long long)hires);
     printf("wide=%016llx\n", (unsigned long long)wide);
+    printf("composed=%016llx\n", (unsigned long long)composed);
     printf("checks=%d failures=%d\n", checks, failures);
     gl_renderer_shutdown();
     check(!gl_renderer_render_thread_active(), "stopped by shutdown");

@@ -49,6 +49,8 @@ enum class ModOptionType {
     Integer,
 };
 
+enum class ModOptionDisplayContext { Any, Offline, Online };
+
 struct ModChoice {
     std::string value;
     std::string label;
@@ -71,6 +73,14 @@ struct ModOption {
      * it out and plugins ignore its value. Models "tick Instant and the speed
      * box stops mattering" without inventing a second widget type. */
     std::string disabled_by;
+    /* Presentation only: selections remain part of the committed plan even
+     * when their control is hidden outside its launcher context. */
+    ModOptionDisplayContext display_context = ModOptionDisplayContext::Any;
+    bool visible_in(bool online) const {
+        return display_context == ModOptionDisplayContext::Any ||
+            (online ? display_context == ModOptionDisplayContext::Online
+                    : display_context == ModOptionDisplayContext::Offline);
+    }
 };
 
 struct ModFeature {
@@ -102,6 +112,7 @@ struct ModFeature {
 enum class ModConstraintKind {
     OrderedInteger,
     RequiresFeature,
+    DistinctValues,
 };
 
 enum class ModConstraintDirection {
@@ -258,6 +269,7 @@ struct ModPlugin {
 
 struct ModResource {
     std::string feature_id;
+    std::map<std::string, std::string> when;
     std::string id;
     std::string label;
     std::string description;
@@ -331,6 +343,8 @@ struct ModPackage {
     std::vector<ModTarget> targets;
     std::vector<ModRequirement> dependencies;
     std::vector<std::string> conflicts;
+    /* Active package suppresses these packages for the session. */
+    std::vector<std::string> disables;
     std::vector<ModFeature> features;
     std::vector<ModOption> options;
     std::vector<ModConstraint> constraints;
@@ -572,6 +586,10 @@ public:
         const std::string& package_id,
         const std::string& feature_id,
         const std::string& resource_id) const;
+    // Conditions only: pickers stay configurable while the feature is off.
+    bool feature_resource_active(const std::string& package_id,
+                                 const std::string& feature_id,
+                                 const std::string& resource_id) const;
     /* True when an active [[requirement]] activates this feature for the
      * session although state.toml does not enable it. feature_enabled() keeps
      * answering for the player's own choice, which is what the launcher shows

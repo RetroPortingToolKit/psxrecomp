@@ -23,6 +23,18 @@ There are **two live** servers, both implementing this protocol with overlapping
 
 The `debug_client.py` CLI can target either, or `compare` two at once to diff state live — that's how divergence hunts work.
 
+For hidden host-menu tests, send `set_input` with `layer="host"` and active-low
+PSX buttons. Default Select+R1 opens F7 (`0xF7FE`), Square saves (`0x7FFF`),
+Cross loads (`0xBFFF`), and Circle goes back (`0xDFFF`). Directional buttons
+select slots. Neutral `0xFFFF` releases each action. These controls use the
+player's configured PSX bindings; raw controller A/B/X do not override remaps.
+Keyboard controls remain arrows for selection, S or Shift+Enter for Save,
+L or Enter for Load, and Escape for Back. A title's save-state restriction is
+displayed in the menu and still enforced. Default Select+R3 (`0xFFFA`) opens
+rewind when enabled and supported; Left/Right select, Cross accepts, Circle
+cancels. `overlay_status` and `overlay_image` inspect these actual panels
+while the guest is paused.
+
 ```bash
 python tools/debug_client.py <cmd> [args]           # native (port 4370)
 python tools/debug_client.py --port 4380 <cmd>      # psx-beetle
@@ -86,9 +98,11 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `cdrom_sector_history_clear` | ✓ |   | — | Reset the CD-ROM sector history ring |
 | `watch` | ✓ | ✓ | `addr` | Set byte-level memory watchpoint (fires per-frame on change) |
 | `unwatch` | ✓ | ✓ | `addr` | Remove memory watchpoint |
-| `set_input` | ✓ | ✓ | `buttons`, optional `frames`, optional `lx`, `ly`, `rx`, `ry`, `pad_type`, optional `port` | Override pad1 buttons and optional analog axes (PS1 inverted bitmask, 0 = pressed; axes 0-255). Debug builds also accept `pad_type` (0 digital, 1 DualShock, 2 JogCon) to test an emulated device identity. Holds until `clear_input` on both backends; pass `frames=N` (beetle) to auto-release after N frames. Runtime: `layer="host"` instead arms a virtual P1 gamepad (`buttons`, `lx`..`ry`, `lt`/`rt` 0-255) that feeds the normal offline input path (controller source, title pad transform, trigger values) and host shortcut polling, also headless; a plain override still wins while armed; `clear_input` disarms it. `port=2` (psx-runtime) drives pad 2 instead (digital buttons; plugs a digital pad into port 2 while driven) for headless two-player modes; `press` takes `port` too |
-| `clear_input` | ✓ | ✓ | optional `port` | Remove input and analog axis overrides (`port` 1 or 2 clears one port; default both) |
+| `set_input` | ✓ | ✓ | `buttons`, optional `frames`, optional `lx`, `ly`, `rx`, `ry`, `pad_type`, optional `port` | Override pad1 buttons and optional analog axes (PS1 inverted bitmask, 0 = pressed; axes 0-255). Debug builds also accept `pad_type` (0 digital, 1 DualShock, 2 JogCon) to test an emulated device identity. Holds until `clear_input` on both backends; pass `frames=N` (beetle) to auto-release after N frames. Runtime: `layer="host"` instead arms a virtual P1 gamepad (`buttons`, `lx`..`ry`, `lt`/`rt` 0-255) that feeds the normal offline input path (controller source, title pad transform, trigger values) and host shortcut polling, also headless; a plain override still wins while armed; `clear_input` disarms it. `port=2..8` (psx-runtime, bounded by the compiled player capacity) drives that digital pad instead; `press` takes `port` too. Invalid ports reject instead of aliasing P1. The host layer supports P1 only |
+| `clear_input` | ✓ | ✓ | optional `port` | Remove input and analog axis overrides (`port=1..8` clears one port; default/0 clears all ports) |
 | `rewind_status` | ✓ |   | — | Local Rewind: `enabled`, `open`, `title_blocked` (`psx_mod_set_rewind_blocked`) and `snaps` held in the ring |
+| `overlay_status` | ✓ |   | — | Actual host menu state: `save_menu_open`, zero-based `save_slot`, `save_unavailable`, `rewind_open`, and `rewind_blocked`. Available while the F7 menu pauses the guest |
+| `overlay_image` | ✓ |   | `panel`, `path` | Export the open host overlay bitmap as a PNG. `panel` is `save_states` or `rewind`; closed panels return an error. Uses the actual rasterized menu, so hidden tests can inspect labels without desktop focus |
 | `snapshot_status` | ✓ |   | — | Shared save/rewind capture guards: `callback_active`, `host_call_depth`, resume `site`/`pc`, and `safe`. A busy boundary can legitimately report unsafe; use `savestate_status` to check whether a requested operation completed |
 | `turbo` | ✓ |   | `enabled` | Enable/disable TCP-controlled frontend turbo for fast-forward validation |
 | `turbo_state` | ✓ |   | — | Query TCP-controlled turbo state |
@@ -113,7 +127,7 @@ Columns: **N** = native, **D** = DuckStation oracle.
 | `mmio_clear` | ✓ |   | — | Reset the MMIO write ring |
 | `gp1_dump` | ✓ |   | optional `frame_lo`, `frame_hi`, `count`, `newest` | Dump the dedicated ALWAYS-ON GP1 (0x1F801814 display control) ring — 512K entries ≈ 15 min of gameplay (Tomba writes ~10 GP1/frame), survives the general MMIO ring's eviction. Frame filter is server-side over the full ring. Each entry: val + func/pc/cpu_pc/ra/sp/a0/a1/sr/epc/frame |
 | `gcp_ring` | ✓ |   | `frame_lo`, `frame_hi`, then `path` or `key` + `top` | Always-on guest-cycle profile ring (512K samples, one every `period` = 4096 guest cycles by default, `PSX_GCP_PERIOD`; about 63 guest seconds). Each sample: cycle, frame, `weight` (sample periods crossed, so idle-skipped waits stay credited to the waiting code), backend `phase`, exception flag, last block leader (`block`, debug-tools builds), last function entered (`fn`), guest `$ra`, native shard in progress, static-dispatch stamp. No args: ring stats. `path`: write the window as CSV. `key` = `fn`/`block`/`ra`/`native`/`disp`: top `top` keys by guest-cycle share in the window |
-| `input_route_start` | ✓ |   | optional `at_frame` | Start the route queued with `input_route_append` (`buttons`, `frames` per step, counted per pad poll). With `at_frame` the route waits for that vblank count, so it replays on the same guest frames in every run (frame-exact A/B with input) |
+| `input_route_start` | ? |   | optional `at_frame`, `port`, `after_load` | Start queued segments (`buttons`, `frames`). `port` selects guest pad 1 (default) or 2; only that pad consumes segments, once per vblank. `at_frame` defers to the host debug vblank count, which does not restore with a savestate. `after_load: 1` instead waits for the next successful native load, then starts from that guest boundary; it cannot combine with a positive `at_frame`. Start/status report `waiting_for_load`. A failed load leaves the route waiting; stop or clear to cancel it. One route runs at a time. This overrides guest input, not authoritative netplay host input. Clearing the selected port (or both) stops it; clearing the other port preserves it. |
 | `batch_sites` | ✓ |   | — | Always-on OpenGL batch-flush attribution: cumulative flushes of non-empty batches by caller source line in `gpu_gl_renderer.c`, as `tex` and `flat` arrays of `[line, count]`. Diff two reads to attribute a window (every flush call site is covered by the `flush_*_batch()` macros) |
 | `pc_break` |   | ✓² | `addr` | DS execute breakpoint, state captured on hit (via `pc_hit_last`) |
 | `pc_unbreak` |   | ✓² | `addr` | Remove an execute breakpoint |
@@ -772,6 +786,8 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `restore_trace_clear` | ✓ |  |  |
 | `restore_trace_window` | ✓ |  |  |
 | `rewind_status` | ✓ |  | ✓ |
+| `overlay_status` | ✓ |  | ✓ |
+| `overlay_image` | ✓ |  | ✓ |
 | `rtrace_arm` | ✓ | ✓ |  |
 | `rtrace_clear` | ✓ |  |  |
 | `rtrace_disarm` |  | ✓ |  |
