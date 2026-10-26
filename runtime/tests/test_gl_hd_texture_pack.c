@@ -326,6 +326,69 @@ static void capture(void) {
 }
 static const uint8_t* sample(int x,int y) { return pixels+(y*64+x)*4; }
 
+static void replacement_pass_scene(void) {
+    if (s_hiw) return; /* Window surfaces deliberately refuse render passes. */
+    uint8_t baseline[sizeof pixels], retained[sizeof pixels];
+    memcpy(baseline,pixels,sizeof pixels);
+    const uint64_t native=fnv(vram,sizeof vram,0xcbf29ce484222325ull);
+    GpuHdTextureDiag before,after;
+    gpu_hd_textures_get_diag(&before);
+    gl_renderer_set_interpolation(1,120.0,120.0,60.0,2);
+    gl_renderer_set_interpolation_source(1);
+    s_interp_valid=2; /* The first real frame has been presented. */
+    s_interp_w=s_interp_h=64;
+    s_interp_source_path=GL_PRES_VRAM;
+    s_pass_verify=1;
+    int opened=gl_renderer_pass_begin(0,0,16,16,1,2,0);
+    check(opened,"replacement draw pass opens under HD authority");
+    if (!opened) {
+        gl_renderer_set_interpolation(0,120.0,120.0,60.0,2);
+        return;
+    }
+    gr_draw_textured_rect(8,4,4,4,0,0,0,0,texture_page); capture();
+    check(sample(32,16)[0]>200 && sample(33,16)[2]>200,
+          "draw inside the pass uses actual red/blue replacement pixels");
+    gpu_hd_textures_get_diag(&after);
+    check(after.applied_draws>before.applied_draws,
+          "pass draw applies a decoded replacement");
+    gl_renderer_pass_end(32768,1);
+    check(gl_renderer_pass_verify_vram() &&
+          fnv(vram,sizeof vram,0xcbf29ce484222325ull)==native,
+          "kept replacement pass restores GPU and native CPU VRAM");
+    capture();
+    check(memcmp(pixels,baseline,sizeof pixels)==0,
+          "kept replacement pass restores canonical display pixels");
+    PassGen* g=&s_pgen[s_pgen_write];
+    check(g->n==2,"replacement pass retains its subframe");
+    if (g->n==2) {
+        GLint bound=0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D,&bound);
+        glBindTexture(GL_TEXTURE_2D,s_pgen_tex[s_pgen_write][1]);
+        glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,retained);
+        glBindTexture(GL_TEXTURE_2D,(GLuint)bound);
+        int red=0,blue=0;
+        for(int y=0;y<64;++y) for(int x=32;x<48;++x) {
+            const uint8_t* p=retained+(y*64+x)*4;
+            red+=p[0]>200 && p[1]<20 && p[2]<20;
+            blue+=p[2]>200 && p[0]<20 && p[1]<20;
+        }
+        check(red>0 && blue>0,"retained subframe contains replacement detail");
+    }
+    opened=gl_renderer_pass_begin(0,0,16,16,0,2,0);
+    check(opened,"discarded replacement pass opens");
+    if (opened) {
+        gr_draw_textured_rect(8,8,4,4,0,0,0,0,texture_page);
+        gl_renderer_pass_end(49152,0);
+        check(gl_renderer_pass_verify_vram() && g->n==2 &&
+              fnv(vram,sizeof vram,0xcbf29ce484222325ull)==native,
+              "discarded replacement pass preserves native VRAM and retained frame");
+        capture();
+        check(memcmp(pixels,baseline,sizeof pixels)==0,
+              "discarded replacement pass restores canonical display pixels");
+    }
+    gl_renderer_set_interpolation(0,120.0,120.0,60.0,2);
+}
+
 static void composition_scene(const char* root) {
     const uint16_t tp=12u|(2u<<7);
     const int bounds[4]={0,0,7,1};
@@ -562,6 +625,7 @@ int main(int argc,char** argv) {
     check(sample(16,24)[1]>200,"non-ST alpha127 cuts out black");
     check(sample(17,24)[0]==0 && sample(17,24)[1]==0 && sample(17,24)[2]==0,
           "non-ST alpha128 retains opaque black");
+    replacement_pass_scene();
 
     /* ST alpha bytes encode PSX classes, including alpha0 with colored RGB.
      * Mode 1 is additive, so the green destination survives STP texels. */
