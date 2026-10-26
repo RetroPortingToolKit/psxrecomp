@@ -65,7 +65,6 @@ int g_psx_savestate_pending = 0;
 static int      s_load_completed = 0;
 static int      s_load_failed = 0;
 static uint32_t s_status_generation = 0;
-static int      s_status_pending = 0;
 static uint32_t s_status_polls;
 static const char* s_status_wait = "";
 static int      s_status_last_ok = 0;
@@ -794,7 +793,6 @@ static int request_save_inner(int slot) {
     s_status_polls = 0;
     s_status_wait = "boundary";
     g_psx_savestate_pending = 1;
-    s_status_pending = 1;
     s_status_last_load = 0;
     s_status_last_slot = slot;
     return 1;
@@ -823,7 +821,6 @@ static int request_load_inner(int slot) {
     s_status_polls = 0;
     s_status_wait = "boundary";
     g_psx_savestate_pending = 1;
-    s_status_pending = 1;
     s_status_last_load = 1;
     s_status_last_slot = slot;
     return 1;
@@ -898,9 +895,9 @@ void savestate_status_json(char* buf, size_t cap) {
              "\"generation\":%u,\"pending\":%d,\"last_ok\":%d,"
              "\"last_op\":\"%s\",\"last_slot\":%d,"
              "\"polls\":%u,\"wait\":\"%s\"",
-             (unsigned)s_status_generation, s_status_pending,
+             (unsigned)s_status_generation, g_psx_savestate_pending,
              s_status_last_ok, s_status_last_load ? "load" : "save",
-             s_status_last_slot, s_status_polls, s_status_pending ? s_status_wait : "");
+             s_status_last_slot, s_status_polls, g_psx_savestate_pending ? s_status_wait : "");
 }
 
 int savestate_take_load_completed(void) {
