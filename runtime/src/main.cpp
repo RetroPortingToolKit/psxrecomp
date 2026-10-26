@@ -1,3 +1,5 @@
+#include "audio_sync.h"
+#include "audio_catchup.h"
 /* main.cpp — Phase 3 runtime entry point.
  *
  * Loads BIOS ROM, initializes CPU state + SDL display, calls into
@@ -5084,6 +5086,27 @@ static void sdl_audio_pump_midframe(void) {
     }
 }
 
+static int sdl_audio_catchup_sink(int other_sink) {
+    static PsxAudioCatchup state{};
+    rab_stats stats{};
+    if (!sdl_audio_device || !s_drc_ready) {
+        state = PsxAudioCatchup{};
+        return 0;
+    }
+    psx_sdl_audio_lock(sdl_audio_device);
+    rab_get_stats(&s_drc, &stats);
+    const double fill_ms = rab_fill_ms(&s_drc);
+    const double target_ms = s_drc.cfg.target_ms;
+    psx_sdl_audio_unlock(sdl_audio_device);
+    const int active = psx_audio_catchup_update(&state,
+        psx_audio_sync_enabled() && !psx_netplay_active() && present_should_wall_pace(),
+        other_sink || (g_turbo_audio_sink_active && !state.active),
+        stats.underrun_events, SDL_GetPerformanceCounter(),
+        s_frame_pacer.next_deadline,
+        (uint64_t)((double)SDL_GetPerformanceFrequency() * g_frame_period_ms / 1000.0));
+    return psx_audio_catchup_discard(active, fill_ms, target_ms);
+}
+
 static void sdl_audio_update(int hard_mute_active, int turbo_sink_active) {
     {   /* Tag audio events with the vblank frame counter. */
         extern uint64_t s_frame_count;
@@ -5148,6 +5171,12 @@ static void sdl_audio_update(int hard_mute_active, int turbo_sink_active) {
     g_turbo_audio_sink_active = 0;
     if (sink_was_active) {
         sink_was_active = 0;
+        /* Preserve queued PCM; re-prime only when the sink depleted the ring. */
+        if (psx_audio_sync_enabled() && sdl_audio_device && s_drc_ready) {
+            psx_sdl_audio_lock(sdl_audio_device);
+            rab_resume_after_sink(&s_drc);
+            psx_sdl_audio_unlock(sdl_audio_device);
+        }
         sdl_audio_fadein_left = sdl_audio_fade_samples;
         audio_trace_event(AUDIO_EV_UNMUTE,
                           (uint32_t)sdl_audio_fadein_left, 2);
@@ -9494,6 +9523,24 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         }
     }
 
+    bool manual_turbo_requested = false;
+    {
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+        /* Keyboard ([KeyMap] Turbo, default Tab) or the controller host
+         * shortcut ([hotkeys] fast_forward_pad, default select+L1). Both are
+         * follow the persisted Hold/Toggle mode; the pad chord goes through the same combo matcher as
+         * Rewind / Save states so the launcher's binding editor covers it.
+         * g_manual_turbo_latched is the press-to-lock twin (TurboToggle /
+         * fast_forward_toggle_pad) and drives the same path. */
+        uint8_t host_keys[SDL_NUM_SCANCODES];
+        psx_keybinds_host_keys(keys, host_keys);
+        const bool kb_turbo = host_hotkey_input_focused() &&
+            host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
+        manual_turbo_requested = g_manual_turbo_latched || (!g_fast_forward_toggle_mode &&
+            (kb_turbo || hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD,
+                                             g_hotkey_pad_fast_forward)));
+    }
+
 #ifndef PSX_SDL_NO_AUDIO
     /* Optional turbo host sink advances the canonical SPU on the exact guest
      * sample budget but drops accelerated output before SDL. This is distinct
@@ -9502,8 +9549,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      * Rollback resim: skip host audio pump (uncapped frames) so SPU/CD audio
      * paths cannot fork peers during the episode window. */
     if (!psx_netplay_is_resimulating() && !psx_selfcheck_resim_active()) {
-        sdl_audio_update(fmv_skip_active,
-                         turbo_loads_active && g_turbo_audio_sink_enabled);
+        /* Drop host output only; the canonical SPU/CD simulation keeps running. */
+        const int accelerated_audio_sink = (psx_audio_sync_enabled() &&
+            (psx_bios_hle_boot_turbo_active() ||
+             (manual_turbo_requested && manual_fast_forward_multiplier() != 1.0))) ||
+            (turbo_loads_active && g_turbo_audio_sink_enabled);
+        const int catchup_audio_sink = sdl_audio_catchup_sink(
+            accelerated_audio_sink || fmv_skip_active);
+        sdl_audio_update(fmv_skip_active, accelerated_audio_sink || catchup_audio_sink);
     }
 #endif
 
@@ -9563,7 +9616,6 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      * audio is less hostile. PSX_FAST_FORWARD_SPEED=2..16 changes the cap;
      * PSX_FAST_FORWARD_SPEED=max restores the old unbounded simulation rate. */
     {
-        const Uint8* keys = SDL_GetKeyboardState(NULL);
         static int turbo_skip = 0;
         static int turbo_was_down = 0;
         /* Keyboard ([KeyMap] Turbo, default Tab) or the controller host
@@ -9572,13 +9624,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * Rewind / Save states so the launcher's binding editor covers it.
          * g_manual_turbo_latched is the press-to-lock twin (TurboToggle /
          * fast_forward_toggle_pad) and drives the same path. */
-        uint8_t host_keys[SDL_NUM_SCANCODES];
-        psx_keybinds_host_keys(keys, host_keys);
-        const bool kb_turbo = host_hotkey_input_focused() &&
-            host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
-        if (g_manual_turbo_latched || (!g_fast_forward_toggle_mode &&
-            (kb_turbo || hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD,
-                                             g_hotkey_pad_fast_forward)))) {
+        if (manual_turbo_requested) {
             const double mult = manual_fast_forward_multiplier();
             const int present_every = psx_fast_forward_present_every(mult);
             manual_turbo_active = true;
@@ -20028,11 +20074,13 @@ int main(int argc, char** argv) {
      * renderer and window creation only after session_reboot, so activation
      * precedes them either way. A netplay clear leaves no plan, so nothing
      * activates and the session stays vanilla. */
+    const int configured_audio_buffer_ms = resolved_audio_buffer_ms;
     auto start_mod_session = [&](bool netplay) -> bool {
         mod_runtime_set_progress_hook(starvation_watchdog_heartbeat);
         /* Clear game-owned controller overrides/policies and load/disc-speed
          * choices first so disabling a package cannot leave its prior state
          * latched across a soft return. */
+        psx_audio_sync_set_enabled(0);
         g_mod_controller_mode_override.fill(-1);
         mod_controller_source_reset();
         mod_pad_transform_reset();
@@ -20069,6 +20117,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr,"psxrecomp: %s\n",error);
             return false;
         }
+        resolved_audio_buffer_ms = psx_audio_sync_target(configured_audio_buffer_ms);
         func_override_install();
         if (!psx_mod_immediate_session_valid()) {
             std::fprintf(stderr, "psxrecomp: immediate-selector enhancements are offline-only\n");
