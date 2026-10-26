@@ -35,7 +35,8 @@ int main() {
         SDL_Rect bounds{};
         SDL_GetDisplayBounds(SDL_GetDisplayForWindow(window), &bounds);
         int full_w, full_h; SDL_GetWindowSize(window, &full_w, &full_h);
-        check(full_w == bounds.w && full_h == bounds.h, "borderless covers the current display");
+        check(full_w == bounds.w && full_h == bounds.h + 1,
+              "borderless covers the current display (one row over: stays composed)");
         check(!SDL_CursorVisible(), "fullscreen cursor hidden");
         SDL_DisplayMode current{};
         check(SDL_GetCurrentDisplayMode(original_display, &current) == 0 &&
