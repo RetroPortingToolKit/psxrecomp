@@ -16,6 +16,16 @@ int main(int argc,char**argv) {
     const auto dir=std::filesystem::path(argv[1])/std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count());
     assert(!std::filesystem::exists(dir));std::filesystem::create_directories(dir);
+    /* Declared before the readers, so their handles close before removal on
+     * Windows. Each successful run owns and removes only its unique fixture. */
+    struct FixtureCleanup {
+        std::filesystem::path dir;
+        ~FixtureCleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(dir,ec);
+            assert(!ec);
+        }
+    } cleanup{dir};
     {std::ofstream out(dir/"data.bin",std::ios::binary);std::vector<char> raw(2352*24,0);out.write(raw.data(),raw.size());}
     for(const char* name:{"first.cue","second.cue"}){
         std::ofstream out(dir/name);out<<"FILE \"data.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
