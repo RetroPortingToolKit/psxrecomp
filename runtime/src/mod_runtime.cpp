@@ -1018,6 +1018,11 @@ int mutate(Callback callback) {
         set_error(error);
         return 0;
     }
+    /* Persist pending preferences independently of the running plan. */
+    if (!state().manager.save_state(&error)) {
+        set_error(error);
+        return 0;
+    }
     if (!state().disc_path.empty())
         state().validation = state().manager.resolve(
             state().game_id, state().exe_sha256, state().disc_sha256, true);
@@ -2870,6 +2875,21 @@ extern "C" void mod_runtime_on_dispatch(uint32_t target) {
     if (!s.plan.writes.empty())
         std::fprintf(stdout, "psxrecomp: applied mod plan %s\n",
                      s.plan.fingerprint.c_str());
+}
+
+extern "C" int mod_runtime_snapshot_package_active(const char *package_id) {
+    using namespace PSXRecompV4;
+    const RuntimeMods& s = state();
+    if (!package_id || !s.initialized || !s.plan.ok || s.netplay_view_plan) return 0;
+    /* A forced executable-owned netplay profile need not have a catalog
+     * package in plan.ordered. Its host state still belongs in the initial
+     * complete-machine transfer, independently of user-save permissions. */
+    const PSXModNetplayProfile *profile = psx_mod_netplay_profile();
+    if (psx_mod_netplay_is_active() && profile)
+        return profile->plugin_id && !std::strcmp(profile->plugin_id, package_id);
+    for (const ModPackage *package : s.plan.ordered)
+        if (package && package->id == package_id) return 1;
+    return 0;
 }
 
 extern "C" void mod_runtime_on_savestate_loaded(void) {

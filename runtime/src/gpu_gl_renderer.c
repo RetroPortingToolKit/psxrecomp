@@ -1407,6 +1407,7 @@ static float s_bloom = 0.0f;           /* [video] bloom strength (gl_postfx.inc)
 static int   s_bcls_on = 0;            /* draws keep the "may glow" mask (a chain reads it) */
 static int  postfx_active(void);
 static void postfx_present(int fresh, int with_aa, int lx, int ly, int lw, int lh);
+static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh);
 static void pres_record(int path, int dx, int dy, int w, int h,
                         int lx, int ly, int lw, int lh) {
     int drawable_w = 0, drawable_h = 0;
@@ -1417,6 +1418,9 @@ static void pres_record(int path, int dx, int dy, int w, int h,
      * post-effect chains (bloom, [video] post_shader, AA; gl_postfx.inc). */
     if ((path == GL_PRES_VRAM || path == GL_PRES_WIDE || path == GL_PRES_INTERP) && postfx_active())
         postfx_present(path != GL_PRES_INTERP, 1, lx, ly, lw, lh);
+    /* Local split remains a paired canvas through shared/fallback frames. */
+    if (path != GL_PRES_STEREO)
+        local_pair_present_shared(&lx, &ly, &lw, &lh);
     s_native_surface_pending=s_native_surface_enabled &&
         (path==GL_PRES_VRAM || path==GL_PRES_WIDE || path==GL_PRES_CPU || path==GL_PRES_BLANK);
     s_native_surface_rect[0]=lx;s_native_surface_rect[1]=ly;
@@ -6541,6 +6545,24 @@ int gl_renderer_select_texture_bank_live_clut(uint16_t id) {
     return 1;
 }
 
+void gl_renderer_forget_texture_bank_range(uint16_t first, uint32_t count) {
+    if (!first || !count || count > 65536u - first) return;
+    GL_RT_SYNC("forget_texture_bank_range");
+    if (s_ctx) { flush_flat_batch(); flush_tex_batch(); hiw_flush_queue(); }
+    for (uint32_t id = first; id < (uint32_t)first + count; ++id) {
+        GLuint texture = s_bank_tex[id];
+        if (!texture) continue;
+        if (s_selected_bank_tex == texture) {
+            s_selected_bank_tex = 0; s_selected_bank_live_clut = 0;
+        }
+        if (s_tb_bank_tex == texture) {
+            s_tb_bank_tex = 0; s_tb_bank_live_clut = 0;
+        }
+        if (s_ctx) glDeleteTextures(1, &texture);
+        s_bank_tex[id] = 0;
+    }
+}
+
 int gl_renderer_init_context(SDL_Window *win) {
     s_win = win;
     s_present_w = 0;
@@ -8199,6 +8221,8 @@ typedef struct StereoPair {
 } StereoPair;
 static StereoPair s_stereo_pair[2];
 static int s_stereo_current, s_stereo_valid, s_stereo_mode;
+static GLuint s_local_shared_tex;
+static int s_local_shared_w, s_local_shared_h;
 static uint64_t s_stereo_presents;
 static char s_stereo_dump_dir[400];
 static int s_stereo_dump_left;
@@ -8707,14 +8731,16 @@ static void pass_journal_rollback(void) {
     render_pass_journal_rollback(&s_pj_cpu, s_vram, VRAM_W);
 }
 
-/* kind: 0 temporal pass, 1 stereo eye, 2 netplay local view. */
+/* kind: 0 temporal, 1 stereo, 2 netplay own view, 3 offline view pair. */
 static int transaction_begin(int x, int y, int w, int h, int open_gen,
                               uint32_t period_vblanks, int reuse_backup, int kind) {
-    const int stereo = kind == 1, local = kind == 2;
+    const int stereo = kind == 1 || kind == 3;
+    const int local = kind == 2 || (kind == 3 && s_cpu_auth_dual);
     int S = s_hr_scale, gi, wide, tw, th;
     PassGen *g;
     memset(&s_pass_begin_diag, 0, sizeof s_pass_begin_diag);
-    s_pass_begin_diag.status = local ? gl_renderer_local_view_unavailable()
+    s_pass_begin_diag.status = kind == 3 ? gl_renderer_local_pair_unavailable()
+                             : local ? gl_renderer_local_view_unavailable()
                              : stereo ? gl_renderer_stereo_unavailable()
                                       : gl_renderer_pass_unavailable();
     s_pass_begin_diag.active = s_pass_active;
@@ -8767,7 +8793,7 @@ static int transaction_begin(int x, int y, int w, int h, int open_gen,
     s_pass_begin_diag.requested_h = th;
     gi = s_pgen_write;
     g = &s_pgen[gi];
-    if (local) {
+    if (local && !stereo) {
         /* No generation: the image stays in the presenter surface. */
     } else if (stereo) {
         StereoPair *pair = &s_stereo_pair[1 - s_stereo_current];
@@ -8958,6 +8984,28 @@ int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     GL_RT_SYNC("stereo_begin");
     return transaction_begin(x, y, w, h, 0, 0, reuse, 1);
 }
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
+    GL_RT_SYNC("local_pair_begin");
+    /* Offline GL may still own newer native textures/CLUTs. Own-view game
+     * renderers read CPU VRAM while rebuilding authored tile/sprite banks;
+     * synchronize the canonical image before freezing either view. Netplay's
+     * dual raster already keeps this mirror current. */
+    if (!s_pass_active && gl_renderer_local_pair_unavailable()==PSX_MOD_RENDER_PASS_READY)
+        ensure_cpu();
+    return transaction_begin(x, y, w, h, 0, 0, reuse, 3);
+}
+uint32_t gl_renderer_local_pair_unavailable(void) {
+    GL_RT_SYNC("local_pair_unavailable");
+    pass_refusal_init();
+    if (!s_ctx || !s_raster_ok || !s_hr_fbo || gpu_display_is_depth24())
+        return PSX_MOD_RENDER_PASS_NO_PRESENTER;
+    /* The reversible transaction journals the wide surface too. The pair
+     * captures each native rect after an own-view draw, so an allocated wide
+     * surface is not itself a reason to refuse offline side-by-side. */
+    if (s_hd_native_authority || s_hiw || s_pass_force_refuse > 0)
+        return PSX_MOD_RENDER_PASS_BACKEND;
+    return PSX_MOD_RENDER_PASS_READY;
+}
 void gl_renderer_pass_end(uint32_t alpha_q16, int keep) {
     GL_RT_SYNC("pass_end");
     int gi = s_pgen_write;
@@ -9044,7 +9092,17 @@ int gl_renderer_stereo_set_presentation(uint32_t mode) {
     s_stereo_mode = (int)mode;
     return 1;
 }
+int gl_renderer_local_pair_set_presentation(int enabled) {
+    GL_RT_SYNC("local_pair_set_presentation");
+    int mode = enabled ? 2 : 0;
+    if (s_stereo_mode != mode) stereo_invalidate();
+    s_stereo_mode = mode;
+    return 1;
+}
 static void stereo_resources_release(void) {
+    if (s_local_shared_tex) glDeleteTextures(1, &s_local_shared_tex);
+    s_local_shared_tex = 0;
+    s_local_shared_w = s_local_shared_h = 0;
     for (int gi = 0; gi < 2; gi++) for (int eye = 0; eye < 2; eye++) {
         StereoPair *p = &s_stereo_pair[gi];
         pass_free_color_fbo(&p->tex[eye], NULL, &p->fbo[eye],
@@ -9391,6 +9449,39 @@ static void openxr_present_native(void) {
     (void)psx_openxr_end(1,openxr_copy_native);
 }
 
+/* Copy only the composed native viewport, never the guest's texture VRAM or
+ * an earlier pair. This also serves CPU FMV presents with no raster backend.
+ * Gamma, scanlines and post-AA are already baked into the copied pixels. */
+static void local_pair_present_shared(int *lx, int *ly, int *lw, int *lh) {
+    int ww = 0, wh = 0, x = *lx, y = *ly, w = *lw, h = *lh;
+    if (s_stereo_mode != 2 || s_pass_active || !s_ctx || !s_win) return;
+    SDL_GL_GetDrawableSize(s_win, &ww, &wh);
+    if (w < 1 || h < 1 || x < 0 || y < 0 || x + w > ww || y + h > wh) return;
+    if (!s_local_shared_tex) glGenTextures(1, &s_local_shared_tex);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+    p_glActiveTexture(PSXGL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, s_local_shared_tex);
+    if (s_local_shared_w != w || s_local_shared_h != h) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, x, y, w, h, 0);
+        s_local_shared_w = w; s_local_shared_h = h;
+    } else {
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
+    }
+    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST); glDisable(GL_BLEND);
+    glViewport(0, 0, ww, wh);
+    glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
+    letterbox_rect_aspect(ww, wh, 8, 3, lx, ly, lw, lh);
+    for (int seat = 0; seat < 2; ++seat) {
+        int start = seat ? *lw / 2 : 0;
+        int width = seat ? *lw - *lw / 2 : *lw / 2;
+        present_target_quad(s_local_shared_tex, w, h, 0, 0, w, h, 0,
+                            *lx + start, *ly, width, *lh, 0, 0, 1);
+    }
+}
+
 static int stereo_present(int w, int h) {
     StereoPair *p = &s_stereo_pair[s_stereo_current];
     int ww, wh, lx, ly, lw, lh;
@@ -9402,18 +9493,20 @@ static int stereo_present(int w, int h) {
         return 0;
     if (!s_stereo_mode || !s_stereo_valid || s_pass_active ||
         p->w != w || p->h != h || p->tw[0] != w * s_hr_scale ||
-        gl_renderer_stereo_unavailable() != PSX_MOD_RENDER_PASS_READY) return 0;
+        (s_stereo_mode == 2 ? gl_renderer_local_pair_unavailable() :
+                             gl_renderer_stereo_unavailable()) != PSX_MOD_RENDER_PASS_READY) return 0;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     gl_perf_present_enter();
     /* Desktop spectator layout while XR runs: default single left eye filled to
      * the window, PSX_VR_DESKTOP_MIRROR selects 0 legacy / 1 left / 2 SBS / 3 right. */
-    const int mirror = xr_mirror_active() ? xr_mirror_mode() : 0;
+    const int mirror = s_stereo_mode != 2 && xr_mirror_active() ? xr_mirror_mode() : 0;
     const int solo = (mirror == 1 || mirror == 3);
     const int solo_eye = (mirror == 3) ? 1 : 0;
     if (solo)
         letterbox_rect_aspect(ww, wh, p->tw[solo_eye], p->th[solo_eye], &lx, &ly, &lw, &lh);
     else
-        letterbox_rect_aspect(ww, wh, s_aspect_num * 2, s_aspect_den, &lx, &ly, &lw, &lh);
+        letterbox_rect_aspect(ww, wh, s_stereo_mode == 2 ? 8 : s_aspect_num * 2,
+                              s_stereo_mode == 2 ? 3 : s_aspect_den, &lx, &ly, &lw, &lh);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh);
     glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
@@ -10460,6 +10553,7 @@ int gl_renderer_present_hold_last(void) {
         present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
                             0, 0, s_hold_tw, s_hold_th, s_hold_linear,
                             lx, ly, lw, lh, 1, 1, 1);
+        local_pair_present_shared(&lx, &ly, &lw, &lh);
         /* Upgrade to drawable after letterboxing once. Live+interp leaves
          * HOLD_NATIVE (no Swap on main); drawable path is the soak-proven
          * full-window image (GL without interp). */

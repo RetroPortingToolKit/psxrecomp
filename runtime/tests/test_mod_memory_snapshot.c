@@ -63,5 +63,41 @@ int main(void){
         render_pass_mod_arenas_rollback();
         check(render_pass_mod_arenas_hash()==completed,"rollback restores complete live arena after earlier snapshot");
     }
-    free(saved);puts("enhancement snapshot checks passed");return 0;
+    /* Lobby rematches reuse the same process. Old packet pages and allocator
+     * high-water marks must not leak into the next activation. */
+    check(render_pass_mod_store(PSX_MOD_GPU_DMA_GUEST_BASE,0x11223344u,4)==1,
+          "old-session page journal staged");
+    const uint64_t before_reset=render_pass_mod_arenas_hash();
+    g_psx_render_pass_active=1;
+    check(!psx_mod_memory_reset_session() && render_pass_mod_arenas_hash()==before_reset &&
+          s_rp_mod_n!=0 && psx_mod_memory_snapshot_bytes()==size,
+          "active render pass refuses reset without mutation");
+    g_psx_render_pass_active=0;
+    ram[0]=0x73;scratchpad[0]=0x84;
+    check(psx_mod_memory_reset_session(),"session arenas reset");
+    check(!psx_mod_memory_snapshot_bytes() && !psx_mod_memory_layout_cookie() && !s_rp_mod_n,
+          "empty session has no arena snapshot or outstanding journal");
+    check(!psx_mod_memory_snapshot_validate(saved,size),"old allocation layout no longer active");
+    check(ram[0]==0x73 && scratchpad[0]==0x84,"arena reset leaves ordinary guest memory intact");
+    check(!psx_mod_gpu_dma_memory_contains(PSX_MOD_GPU_DMA_GUEST_BASE,4) &&
+          psx_mod_gpu_dma_resolve_address(0x800004u)==4u,
+          "retired packet aperture returns to native DMA folding");
+    uint32_t rematch_cookie=0;
+    for(unsigned session=0;session<5;++session) {
+        /* Each allocation is large enough that an accumulated second
+         * activation would exhaust the CPU arena. */
+        check(psx_mod_memory_alloc(0xE0000u,16)==0x9F000000u,"CPU allocation base reused");
+        check(psx_mod_gpu_dma_memory_alloc(3u*1024u*1024u,16)==PSX_MOD_GPU_DMA_GUEST_BASE,
+              "GPU allocation base reused");
+        uint32_t now=psx_mod_memory_layout_cookie();
+        if(!session)rematch_cookie=now;
+        check(now==rematch_cookie,"identical rematch allocation layout");
+        check(mod_memory[0]==0 && mod_gpu_dma_memory[0]==0,"new-session allocations are clean");
+        mod_memory[0]=0xCD;mod_gpu_dma_memory[0]=0xEF;
+        render_pass_mod_arenas_rollback();
+        check(mod_memory[0]==0xCD && mod_gpu_dma_memory[0]==0xEF,
+              "retired journal cannot overwrite new-session allocations");
+        check(psx_mod_memory_reset_session(),"next session reset");
+    }
+    free(saved);puts("enhancement snapshot and session allocation checks passed");return 0;
 }

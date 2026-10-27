@@ -36,6 +36,16 @@ extern "C" {
 #define PSX_LOBBY_MOD_VER_LEN 32
 #define PSX_LOBBY_MOD_NAME_LEN 64
 #define PSX_LOBBY_MOD_FEATS_LEN 384
+/* Complete JSON capacities, including the NUL. IDs/versions/features use
+ * the protocol token alphabet; display names may double when escaped.
+ * Keep transport, nested codecs and callers on the same declared bounds. */
+#define PSX_LOBBY_MOD_PKG_JSON_CAP (PSX_LOBBY_MOD_ID_LEN + PSX_LOBBY_MOD_VER_LEN + \
+                                   2 * PSX_LOBBY_MOD_NAME_LEN + PSX_LOBBY_MOD_FEATS_LEN + 96)
+#define PSX_LOBBY_MOD_ARRAY_JSON_CAP (3 + PSX_LOBBY_MAX_MODS * (PSX_LOBBY_MOD_PKG_JSON_CAP + 1))
+#define PSX_LOBBY_MATCH_CAPS_JSON_CAP (PSX_LOBBY_MOD_ARRAY_JSON_CAP + 768)
+#define PSX_LOBBY_START_JSON_CAP (PSX_LOBBY_MATCH_CAPS_JSON_CAP + 32)
+/* Room updates also include the player/spectator seat tables. */
+#define PSX_LOBBY_MESSAGE_JSON_CAP (PSX_LOBBY_MATCH_CAPS_JSON_CAP + 8192)
 
 #ifndef PSX_GAME_VERSION
 #define PSX_GAME_VERSION "dev"
@@ -530,6 +540,8 @@ int  psx_lobby_set_ready(int ready);
 /* The set_ready / start messages exactly as this client sends them (into msg,
  * 0 = ok). The Retro hub forwards them verbatim for a seat it holds. */
 int  psx_lobby_ready_message(int ready, char *msg, size_t cap);
+/* Returns 0 only for a complete message; on failure returns -1 and clears msg.
+ * PSX_LOBBY_START_JSON_CAP holds every supported match-capability plan. */
 int  psx_lobby_start_message(const PsxLobbyMatchCaps *caps, char *msg, size_t cap);
 /* A match the Retro hub negotiated (retcomm-launcher docs/NETPLAY_HANDOFF.md).
  * replay_room adopts the record's identity, seat and room messages as if they

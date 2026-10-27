@@ -9,6 +9,8 @@
 
 #include "cpu_state.h"
 #include "mod_netplay.h"
+#include "mod_memory.h"
+#include "mod_texture_banks.h"
 #include "execution_profile.h"
 #include "regional_launch.h"
 #include "projection_scale.hpp"
@@ -1840,8 +1842,9 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
  * Fit and fixed aspect apply_netplay_local_viewport_aspect() set, into an
  * offline rematch. The rest is defensive, for the state listed here only; see
  * docs/MOD_PACKAGES.md "Session starts" for what is exempt and why (the
- * renderer and fixed aspect are launcher controls; guest/GPU-DMA memory,
- * texture-packet arenas and defined texture banks live for the process).
+ * renderer and fixed aspect are launcher controls; enhancement guest/GPU-DMA
+ * arenas, texture-packet registrations and retained texture banks are retired
+ * separately at start_mod_session before the new activation).
  *
  * Function-entry hooks need nothing here: the commit or netplay clear empties
  * upstream's hook table, and only activation rebuilds it.
@@ -8240,13 +8243,21 @@ static int savestate_menu_open = 0;
 static int savestate_menu_slot = 0;
 static int savestate_menu_ignore_toggle_release = 0;
 static SDL_Keycode savestate_menu_open_key = 0;
+static int savestate_menu_key_direction = 0;
 
 static void savestate_menu_sync_overlay(void) {
+    const char* unavailable = nullptr;
+    if (savestate_title_blocked() || !psx_mod_netplay_savestates_supported())
+        unavailable = "SAVE STATES ARE UNAVAILABLE IN THIS GAME MODE";
+    else if (psx_netplay_active() && !psx_netplay_is_host())
+        unavailable = "ONLY THE NETPLAY HOST CAN SAVE OR LOAD";
+    psx_savestate_menu_set_unavailable(unavailable);
     psx_savestate_menu_set_state(savestate_menu_open, savestate_menu_slot);
 }
 
 static void savestate_menu_close(void) {
     savestate_menu_open = 0;
+    savestate_menu_key_direction = 0;
     savestate_menu_sync_overlay();
     host_osd_push("Save states closed", 800);
 }
@@ -8340,9 +8351,9 @@ static void savestate_menu_handle_key(SDL_Keycode key, SDL_Scancode scancode,
         key == SDLK_ESCAPE || key == SDLK_BACKSPACE) {
         savestate_menu_close();
     } else if (key == SDLK_LEFT || key == SDLK_UP) {
-        savestate_menu_move(-1);
+        savestate_menu_key_direction = -1;
     } else if (key == SDLK_RIGHT || key == SDLK_DOWN) {
-        savestate_menu_move(+1);
+        savestate_menu_key_direction = +1;
     } else if (key == SDLK_s) {
         savestate_menu_submit(1);
     } else if (key == SDLK_l) {
@@ -8358,26 +8369,24 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
     int prev = 0, next = 0, load = 0, save = 0, cancel = 0;
     int dir = 0;
 
-    SDL_GameController *h = g_players[0].handle;
-    if (h) {
-        const Sint16 lx =
-            SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_LEFTX);
-        const int dz = 16000;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_UP) ||
-            lx < -dz)
-            prev = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
-            lx > dz)
-            next = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_A))
-            load = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_X))
-            save = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_B))
-            cancel = 1;
-    }
+    /* Match the displayed PSX labels and the player's actual bindings. This
+     * also includes keyboard-as-pad and the explicit TCP host input layer. */
+    uint16_t buttons = pad_buttons_for(g_players[0], 1, true);
+    uint16_t host_word;
+    uint8_t sticks[4], lt, rt;
+    if (host_pad_layer(&host_word, sticks, &lt, &rt)) buttons = host_word;
+    const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    /* Merge event taps and held keyboard-as-pad arrows before stepping.
+     * Moving in both the event handler and this poll skipped two slots. */
+    prev = savestate_menu_key_direction < 0 || keys[SDL_SCANCODE_LEFT] ||
+        keys[SDL_SCANCODE_UP] || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
+    next = savestate_menu_key_direction > 0 || keys[SDL_SCANCODE_RIGHT] ||
+        keys[SDL_SCANCODE_DOWN] || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
+    savestate_menu_key_direction = 0;
+    load = !(buttons & PAD_CROSS);
+    save = !(buttons & PAD_SQUARE);
+    cancel = !(buttons & PAD_CIRCLE);
 
     const int toggle = hotkey_shortcut_down(PSX_ASSIST_BIND_SAVE_STATE_MENU, g_hotkey_pad_save_state_menu);
     if (savestate_menu_ignore_toggle_release) {
@@ -8500,24 +8509,11 @@ static void rewind_poll_nav(uint32_t now_ms) {
     if ((btn & PAD_CIRCLE) == 0 || (btn & PAD_SELECT) == 0 ||
         (btn & PAD_R3) == 0)
         can = 1;
-    SDL_GameController *h = g_players[0].handle;
-    if (h) {
-        const Sint16 lx =
-            SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_LEFTX);
-        const int dz = 16000;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
-            lx < -dz)
-            left = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
-            lx > dz)
-            right = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_A))
-            acc = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_B) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_BACK) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_RIGHTSTICK))
-            can = 1;
-    }
+    /* Buttons above already honor the player's PSX bindings. A second raw
+     * A/B poll would override those mappings while showing Cross/Circle. */
+    const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
+    if (lx < -16000) left = 1;
+    if (lx > 16000) right = 1;
     psx_rewind_nav_held(left, right, acc, can, now_ms);
 }
 
@@ -8821,6 +8817,11 @@ static void savestate_menu_host_pause_loop(void) {
     psx_local_mouse_reset();
     freeze_heartbeat_set_paused(1);
     while (savestate_menu_open) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        /* The guest is paused here; keep loopback host controls and overlay
+         * inspection alive just as the rewind pause loop does. */
+        debug_server_poll();
+#endif
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             (void)psx_local_mouse_event(ev);
@@ -14067,8 +14068,26 @@ namespace {
      * thread and the device key. Nothing here blocks a frame except the
      * rename, which is one round trip and wants a verdict for its modal. */
     int ae_np_account_available(void*) { return rnet_account_available(); }
-    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
-    int ae_np_account_state(void*) { return rnet_account_state(); }
+    int ae_np_account_login_begin(void*) {
+        int accepted=rnet_account_login_begin();
+        std::fprintf(stderr,"netplay.account: sign-in request accepted=%d\n",accepted);
+        std::fflush(stderr);
+        return accepted;
+    }
+    int ae_np_account_state(void*) {
+        int current=rnet_account_state();
+        static int previous=-1;
+        if(current!=previous) {
+            previous=current;
+            std::fprintf(stderr,"netplay.account: state=%d\n",current);
+            if(current==RNET_ACCOUNT_FAILED) {
+                const char *error=rnet_account_error();
+                std::fprintf(stderr,"netplay.account: failure=%s\n",error?error:"");
+            }
+            std::fflush(stderr);
+        }
+        return current;
+    }
     const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
     const char* ae_np_account_username(void*) { return rnet_account_username(); }
     const char* ae_np_account_error(void*) { return rnet_account_error(); }
@@ -16137,7 +16156,7 @@ namespace {
         psx_lobby_json_str(req.c_str(), "handoff_query", op, sizeof(op));
         psx_lobby_json_str(req.c_str(), "handoff_disc", disc, sizeof(disc));
         std::string ans = "{\"v\":1,\"engine\":\"psxrecomp\",\"handoff\":1";
-        char msg[1024] = {};
+        char msg[PSX_LOBBY_START_JSON_CAP] = {};
         ae_np_refresh_bios_offer_for(settings);
         if (std::strcmp(op, "identity") == 0) {
             const std::string d = disc[0] ? std::string(disc) : initial_disc;
@@ -20121,6 +20140,15 @@ int main(int argc, char** argv) {
                       "reset_mod_owned_presentation() would clobber a launcher "
                       "setting; restore only when the feature is mod-owned");
         reset_mod_owned_presentation();
+        /* Cold boot has no renderer yet. A lobby rematch reaches here only
+         * after scheduler unwind and renderer/audio/window teardown. Retire
+         * texture IDs and packet registrations before reusing guest addresses;
+         * memory_init below must preserve the new activation's allocations. */
+        if (!mod_texture_banks_reset_session() || !psx_mod_memory_reset_session()) {
+            std::fprintf(stderr,
+                         "psxrecomp: cannot reset enhancement resources at session start\n");
+            return false;
+        }
         /* Netplay own-view mods: the widescreen margin follows them into the
          * sandboxed own view only; the shared game keeps the stock cull. */
         gpu_ws_set_local_view_only(
@@ -20184,7 +20212,10 @@ int main(int argc, char** argv) {
         }
         return true;
     };
-    if (!start_mod_session(net_cfg.enabled)) return 1;
+    if (!start_mod_session(net_cfg.enabled)) {
+        SDL_Quit();
+        return 1;
+    }
 
     /* Re-apply the resolved language to the translation layer. text_xlate_init
      * (at config load) only saw the game.toml default; this folds in the
@@ -21600,6 +21631,9 @@ session_reboot:
     uint64_t total_executed = 0;
     const uint64_t max_total = 100000000ULL; /* 100M instructions */
     uint32_t vsync_hits = 0;
+    /* Frontend/driver initialization may outlast the gameplay deadline.
+     * Arm it once at actual guest entry; retain diagnostics and thresholds. */
+    starvation_watchdog_heartbeat();
     for (;;) {
         uint32_t ran = interp_step(&cpu, 1000000);
         total_executed += ran;
@@ -21777,6 +21811,9 @@ session_reboot:
      * Go back to the room; do not boot the game offline. */
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
         goto soft_return_lobby;
+    /* Frontend/driver initialization may outlast the gameplay deadline.
+     * Arm it once at actual guest entry; retain diagnostics and thresholds. */
+    starvation_watchdog_heartbeat();
     psx_scheduler_run(&cpu);
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
         goto soft_return_lobby;
@@ -22482,7 +22519,10 @@ soft_return_lobby:
                 g_video_aspect_num = 4;
                 g_video_aspect_den = 3;
             }
-            if (!start_mod_session(net_cfg.enabled)) return 1;
+            if (!start_mod_session(net_cfg.enabled)) {
+                SDL_Quit();
+                return 1;
+            }
             disc_path_str = session_disc_path(resolved_disc);
             std::printf("psxrecomp: rematch from lobby (netplay=%d)\n",
                         net_cfg.enabled ? 1 : 0);
