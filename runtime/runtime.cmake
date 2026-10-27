@@ -16,6 +16,7 @@ set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
 set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_native_idle_wait.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
@@ -1477,7 +1478,7 @@ function(psxrecomp_add_runtime_target target)
     # no bundled catalog ships, e.g. development-only packages. They are
     # audited, never staged.
     set(multiValueArgs EXTRAS_SOURCES GAME_GENERATED_FULL_C EXCLUDE_BUILTIN_MODS
-        AUDIT_MOD_DIRS)
+        AUDIT_MOD_DIRS NATIVE_IDLE_WAIT_SITES)
     cmake_parse_arguments(PSXRT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     # DEBUG_PORT and WINDOW_TITLE were previously required cmake-time defaults.
@@ -1628,6 +1629,7 @@ function(psxrecomp_add_runtime_target target)
     else()
         psxrecomp_execution_profile(${target} CONTRACT_FILES ${_execution_contract})
     endif()
+    psxrecomp_native_idle_wait(${target} ${PSXRT_NATIVE_IDLE_WAIT_SITES})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global
     # CMAKE_C_STANDARD setting. cxx_std_17 likewise — game CMakeLists may omit
@@ -2613,7 +2615,8 @@ function(psxrecomp_add_game_runtime target)
     # EXCLUDE_BUILTIN_MODS is parsed here (not left in the unparsed tail) for
     # the same reason as PRELOADED_MODS_DIR: an unknown keyword written after
     # CODEGEN_SETUP_SOURCES would otherwise be swallowed as more source files.
-    set(multiValueArgs GEN_FULL_GLOB CODEGEN_SETUP_SOURCES EXCLUDE_BUILTIN_MODS)
+    set(multiValueArgs GEN_FULL_GLOB CODEGEN_SETUP_SOURCES EXCLUDE_BUILTIN_MODS
+        NATIVE_IDLE_WAIT_SITES)
     cmake_parse_arguments(PSXG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if(NOT PSXRECOMP_ROOT)
@@ -2794,6 +2797,9 @@ function(psxrecomp_add_game_runtime target)
     endif()
 
     set(_psxg_forwarded_args ${PSXG_UNPARSED_ARGUMENTS})
+    if(PSXG_NATIVE_IDLE_WAIT_SITES)
+        list(APPEND _psxg_forwarded_args NATIVE_IDLE_WAIT_SITES ${PSXG_NATIVE_IDLE_WAIT_SITES})
+    endif()
     if(PSXG_PGXP)
         list(APPEND _psxg_forwarded_args PGXP)
     endif()

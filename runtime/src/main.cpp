@@ -16345,9 +16345,6 @@ int main(int argc, char** argv) {
                 g_idle_skip_enabled = idle_env
                     ? (idle_env[0] == '1' ? 1 : 0)
                     : (gc.runtime.idle_skip ? 1 : 0);
-                std::fprintf(stdout, "psxrecomp: idle_skip %s%s\n",
-                             g_idle_skip_enabled ? "enabled" : "disabled",
-                             idle_env ? " (environment override)" : "");
                 {
                     psx_idle_skip_set_host_writer(psx_host_write_word);
                     psx_idle_skip_set_store_tracker(&g_psx_track_last_store,
@@ -16360,12 +16357,19 @@ int main(int argc, char** argv) {
                 psx_idle_skip_set_store_counter_sites(
                     gc.runtime.idle_skip_store_counter_sites.data(),
                     (int)gc.runtime.idle_skip_store_counter_sites.size());
+                const int build_wait_sites = psx_build_idle_wait_configure();
+                std::fprintf(stdout, "psxrecomp: idle_skip %s%s\n",
+                             g_idle_skip_enabled ? "enabled" : "disabled",
+                             build_wait_sites >= 0 ? " (build-selected wait family)" :
+                             (idle_env ? " (environment override)" : ""));
                 if (g_idle_skip_enabled && g_idle_skip_ext)
                     std::fprintf(stdout, "psxrecomp: idle_skip store-counter loops on%s, "
                                  "%zu audited site(s)%s\n",
                                  ext_env ? " (environment override)" : "",
-                                 gc.runtime.idle_skip_store_counter_sites.size(),
-                                 gc.runtime.idle_skip_store_counter_sites.empty()
+                                 build_wait_sites >= 0 ? (size_t)build_wait_sites :
+                                     gc.runtime.idle_skip_store_counter_sites.size(),
+                                 build_wait_sites == 0 || (build_wait_sites < 0 &&
+                                     gc.runtime.idle_skip_store_counter_sites.empty())
                                      ? " -- none listed, so nothing is skipped" : "");
                 psx_precise_slice_init_from_env();
             }

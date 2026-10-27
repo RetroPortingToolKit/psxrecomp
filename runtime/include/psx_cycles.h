@@ -254,6 +254,11 @@ uint64_t psx_get_cycle_count(void);
 struct CPUState;
 void psx_idle_note_check(struct CPUState *cpu, uint32_t check_pc);
 int  psx_idle_skip_is_enabled(void);
+/* Target-generated build policy. Unbound titles retain their existing config;
+ * declared audited wait families select native induction or original polling
+ * through PSX_EXECUTION_PROFILE, with distinct execution identities. */
+/* Returns -1 for config-owned behavior, otherwise the selected anchor count. */
+int psx_build_idle_wait_configure(void);
 /* Cycles until the nearest IRQ-observable device event (mask-aware); the bound an idle skip may not cross. */
 uint32_t psx_idle_cycles_to_next_observable_event(void);
 extern int      g_idle_skip_enabled;

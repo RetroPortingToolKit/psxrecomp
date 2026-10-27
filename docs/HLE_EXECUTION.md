@@ -79,6 +79,23 @@ This is an integration primitive, not a standalone FPS improvement. Ape's
 packet producer is its first intended consumer. The original `gte_execute`
 always retains faithful timing in both profiles.
 
+## Audited native frame waits
+
+`psxrecomp_add_runtime_target(... NATIVE_IDLE_WAIT_SITES <anchor-PCs>...)`
+binds the existing native store-counter induction engine to title-audited loops.
+ENHANCED selects that policy; REFERENCE retains original polling. The selected
+sources, anchors and cycle-model contract are included in execution identity.
+Titles without a declaration retain their existing idle configuration.
+
+Audit the complete loop before declaring its anchors: exactly one decrementing
+timeout store, no other counter-dependent exit, and no MMIO or hidden work.
+The existing detector verifies the dynamic shape, advances whole iterations,
+updates the counter, and stops before the next observable event or timeout.
+The original final iteration delivers interrupts and callbacks. Netplay,
+selfcheck and precise diagnostic exclusions remain in effect. This removes
+host polling work; it does not accelerate the game's simulated clock or loads.
+Qualify actual caller outputs and built-game CPU benefit before adoption.
+
 ## Title-owned loading
 
 Generic host-pacing load detection is deprecated for new game integrations.
