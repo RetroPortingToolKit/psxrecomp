@@ -885,7 +885,8 @@ static fs::path package_default_path(const ModPackage& package, const ModResourc
 fs::path effective_resource_path(const ModPackage& package,
                                  const ModSelection& selection,
                                  const std::string& feature_id,
-                                 const std::string& id) {
+                                 const std::string& id,
+                                 const fs::path& generated_default = {}) {
     const ModFeature* feature = find_feature(package, feature_id);
     if (!feature || feature->legacy) return {};
     const ModFeatureSelection* selected =
@@ -898,7 +899,7 @@ fs::path effective_resource_path(const ModPackage& package,
     const ModResource* declared = find_resource(package, feature_id, id);
     if (declared && !declared->default_path.empty() && !package.root.empty())
         return package_default_path(package, *declared);
-    return {};
+    return generated_default;
 }
 
 bool prospective_feature_enabled(
@@ -1723,6 +1724,7 @@ void ModPackageManager::set_root(fs::path mods_root) {
     packages_.clear();
     selections_.clear();
     sources_.clear();
+    generated_resource_defaults_.clear();
 }
 
 bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
@@ -3334,6 +3336,35 @@ bool ModPackageManager::feature_resource_active(
                             feature_id, resource->when);
 }
 
+bool ModPackageManager::set_generated_feature_resource_default(
+    const std::string& package_id, const std::string& feature_id,
+    const std::string& resource_id, const fs::path& relative_path,
+    std::string* error) {
+    const auto* package = selected_package(package_id);
+    const auto* resource = package ? find_resource(*package, feature_id, resource_id) : nullptr;
+    if (!resource || !resource->shared_source.empty() || relative_path.empty() ||
+        relative_path.is_absolute() || relative_path.has_root_name() || relative_path.has_root_directory()) {
+        set_error(error, "invalid generated resource default");
+        return false;
+    }
+    for (const auto& component : relative_path) if (component == "." || component == ".." || component.empty()) {
+        set_error(error, "generated resource default must stay relative to mods root");
+        return false;
+    }
+    std::error_code ec;
+    const auto path = fs::absolute(root_ / relative_path, ec);
+    if (ec) { set_error(error, ec.message()); return false; }
+    generated_resource_defaults_[{package_id, feature_id, resource_id}] = path;
+    return true;
+}
+
+fs::path ModPackageManager::generated_resource_default(
+    const std::string& package_id, const std::string& feature_id,
+    const std::string& resource_id) const {
+    const auto found = generated_resource_defaults_.find({package_id, feature_id, resource_id});
+    return found == generated_resource_defaults_.end() ? fs::path() : found->second;
+}
+
 fs::path ModPackageManager::feature_resource_path(
     const std::string& package_id,
     const std::string& feature_id,
@@ -3353,7 +3384,8 @@ fs::path ModPackageManager::feature_resource_path(
             const auto selected = selections_.find(id);
             if (selected == selections_.end()) continue;
             for (const auto& r : other->resources) if(r.shared_source == resource->shared_source) {
-                auto path = effective_resource_path(*other, selected->second, r.feature_id, r.id);
+                auto path = effective_resource_path(*other, selected->second, r.feature_id, r.id,
+                    generated_resource_default(other->id, r.feature_id, r.id));
                 if (!path.empty()) return path;
             }
         }
@@ -3363,7 +3395,8 @@ fs::path ModPackageManager::feature_resource_path(
     const ModSelection blank;
     return effective_resource_path(
         *package, found == selections_.end() ? blank : found->second,
-        feature_id, resource_id);
+        feature_id, resource_id,
+        generated_resource_default(package_id, feature_id, resource_id));
 }
 
 std::map<std::string, ModSelection> ModPackageManager::effective_selections(
@@ -3992,7 +4025,8 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
                 !conditions_match(*package, selected, resource.feature_id, resource.when))
                 continue;
             const fs::path path = effective_resource_path(
-                *package, selected, resource.feature_id, resource.id);
+                *package, selected, resource.feature_id, resource.id,
+                generated_resource_default(package->id, resource.feature_id, resource.id));
             if (path.empty()) {
                 if (resource.required) {
                     result.errors.push_back(

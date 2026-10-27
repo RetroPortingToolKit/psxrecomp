@@ -2320,6 +2320,8 @@ int main() {
         }
         ModPackageManager manager(folder);
         check(manager.scan(&error) && manager.scan_errors().empty(), "source/preparation catalog parses");
+        check(!manager.set_generated_feature_resource_default("cars", "content", "source", "generated/source", &error),
+              "generated defaults cannot appoint shared user sources");
         check(manager.set_feature_resource_path("cars", "content", "source", source, &error), error.c_str());
         check(manager.feature_resource_path("music", "content", "source") == source, "source picker prefills sibling package");
         check(manager.set_feature_resource_path("music", "content", "source", replacement, &error), error.c_str());
@@ -2441,6 +2443,46 @@ int main() {
               manager.resolve("SLUS-TEST").resources.empty(),"inactive stale output is not read");
         unexpected_output=true;
         check(!manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error),"preparer may not emit an inactive output");
+    }
+
+
+    {
+        const auto old_root = root / "conditional-default-old";
+        const auto new_root = root / "conditional-default-new";
+        write_text(old_root / "bundled/conditional-default/1.0.0/manifest.toml",
+            "format_version = 10\nid = \"conditional-default\"\nversion = \"1.0.0\"\nname = \"Conditional default\"\n"
+            "[[target]]\ngame_id = \"SLUS-TEST\"\n"
+            "[[feature]]\nid = \"media\"\nname = \"Media\"\ndefault_enabled = true\n"
+            "[[option]]\nfeature = \"media\"\nid = \"language\"\nlabel = \"Language\"\n"
+            "type = \"choice\"\ndefault = \"en\"\n"
+            "[[option.choice]]\nvalue = \"en\"\nlabel = \"English\"\n"
+            "[[option.choice]]\nvalue = \"es\"\nlabel = \"Spanish\"\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"english\"\nlabel = \"English\"\nrequired = true\nwhen = { language = \"en\" }\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"spanish\"\nlabel = \"Spanish\"\nrequired = true\nwhen = { language = \"es\" }\n");
+        write_text(old_root / "english.dat", "English");
+        const auto register_defaults = [&](ModPackageManager& manager) {
+            check(manager.set_generated_feature_resource_default("conditional-default", "media", "english", "english.dat", &error), error.c_str());
+            check(manager.set_generated_feature_resource_default("conditional-default", "media", "spanish", "spanish.dat", &error), error.c_str());
+        };
+        ModPackageManager original(old_root);
+        check(original.scan(&error), error.c_str());
+        register_defaults(original);
+        check(original.resolve("SLUS-TEST").ok, "inactive missing generated default is not required");
+        fs::rename(old_root, new_root, ec);
+        check(!ec && !fs::exists(old_root), "old conditional default installation is unavailable");
+        ModPackageManager relocated(new_root);
+        check(relocated.scan(&error), error.c_str());
+        register_defaults(relocated);
+        const auto english = relocated.resolve("SLUS-TEST");
+        check(english.ok && english.resources.size() == 1 && english.resources[0].id == "english" &&
+              english.resources[0].path == fs::absolute(new_root / "english.dat"),
+              "only the selected generated default resolves at the moved root");
+        write_text(new_root / "spanish.dat", "Spanish");
+        check(relocated.set_feature_option("conditional-default", "media", "language", "es", &error), error.c_str());
+        const auto spanish = relocated.resolve("SLUS-TEST");
+        check(spanish.ok && spanish.resources.size() == 1 && spanish.resources[0].id == "spanish" &&
+              spanish.resources[0].path == fs::absolute(new_root / "spanish.dat"),
+              "changing the option selects the other relocated generated default");
     }
 
     fs::remove_all(root, ec);
