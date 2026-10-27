@@ -99,6 +99,15 @@ selfcheck and precise diagnostic exclusions remain in effect. This removes
 host polling work; it does not accelerate the game's simulated clock or loads.
 Qualify actual caller outputs and built-game CPU benefit before adoption.
 
+A title can also declare `NATIVE_IDLE_WAIT_EXCLUDE_DEBUG_TURBO`. This fixed
+build policy retains polling while the debugger's presentation-free turbo is
+active and discards detector observations on either mode transition, including
+an on/off round trip between checks. Induction retrains during normal play.
+The selected policy participates in execution identity. It leaves ordinary
+user fast-forward and consumers without this declaration unchanged. X4 uses
+the exclusion because its existing renderer/UI combination stalled during
+forced debugger turbo; normal pacing and the polling build passed.
+
 ## Title-owned loading
 
 Generic host-pacing load detection is deprecated for new game integrations.

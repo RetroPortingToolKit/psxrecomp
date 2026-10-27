@@ -54,6 +54,7 @@
 #include "mdec.h"
 #include "interrupts.h"
 #include "psx_cycles.h"
+#include "psx_native_idle_wait.h"
 #include "timers.h"
 #include "dirty_ram_interp.h"
 #include "psx_memory.h"
@@ -9573,7 +9574,11 @@ static void handle_turbo(int id, const char *json)
         send_err(id, "missing enabled");
         return;
     }
+    /* Stop induction before suppressing presentation; resume only after the
+     * host mode is normal. The detector resets itself at its next check. */
+    if (enabled) psx_idle_skip_set_debug_turbo(1);
     s_turbo_enabled = enabled ? 1 : 0;
+    if (!enabled) psx_idle_skip_set_debug_turbo(0);
     send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%d}", id, s_turbo_enabled);
 }
 
@@ -15799,11 +15804,15 @@ static void handle_idle_skip(int id, const char *json)
     if (en == 0 || en == 1) g_idle_skip_enabled = en;
     send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%d,"
              "\"skips\":%llu,\"cycles_skipped\":%llu,"
-             "\"last_pc\":\"0x%08X\",\"last_quantum\":%u}",
+             "\"last_pc\":\"0x%08X\",\"last_quantum\":%u,"
+             "\"eligible\":%d,\"debug_turbo_excluded\":%d,\"debug_turbo\":%d}",
              id, g_idle_skip_enabled,
              (unsigned long long)g_idle_skip_count,
              (unsigned long long)g_idle_skip_cycles,
-             g_idle_skip_last_pc, g_idle_skip_last_quantum);
+             g_idle_skip_last_pc, g_idle_skip_last_quantum,
+             psx_idle_skip_is_enabled(),
+             (int)(psx_idle_skip_debug_turbo_policy() & 1u),
+             (int)((psx_idle_skip_debug_turbo_policy() >> 1) & 1u));
 }
 
 /* starv_ring: query the always-on starvation/PC-sample ring (16K entries,

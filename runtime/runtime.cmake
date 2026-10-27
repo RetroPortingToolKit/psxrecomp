@@ -1436,7 +1436,7 @@ function(psxrecomp_add_runtime_target target)
     # PGXP_CLONE is internal: set only by the PSX_PGXP_VARIANT auto-clone at the
     # end of this function, to mark the sibling that needs a distinguishing exe
     # name. Callers pass PGXP alone.
-    set(options ORACLE COSIM PGXP PGXP_CLONE)
+    set(options ORACLE COSIM PGXP PGXP_CLONE NATIVE_IDLE_WAIT_EXCLUDE_DEBUG_TURBO)
     set(oneValueArgs
         GAME_GENERATED_DISPATCH_C
         GAME_OVERLAY_STATIC_C
@@ -1629,7 +1629,11 @@ function(psxrecomp_add_runtime_target target)
     else()
         psxrecomp_execution_profile(${target} CONTRACT_FILES ${_execution_contract})
     endif()
-    psxrecomp_native_idle_wait(${target} ${PSXRT_NATIVE_IDLE_WAIT_SITES})
+    set(_native_wait_policy_args "")
+    if(PSXRT_NATIVE_IDLE_WAIT_EXCLUDE_DEBUG_TURBO)
+        list(APPEND _native_wait_policy_args EXCLUDE_DEBUG_TURBO)
+    endif()
+    psxrecomp_native_idle_wait(${target} ${_native_wait_policy_args} ${PSXRT_NATIVE_IDLE_WAIT_SITES})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global
     # CMAKE_C_STANDARD setting. cxx_std_17 likewise — game CMakeLists may omit
@@ -2603,7 +2607,7 @@ function(psxrecomp_add_game_runtime target)
     # the compile define does. Parsed here rather than left to the unparsed
     # tail so it cannot be swallowed by a multi-value argument written before
     # it (CODEGEN_SETUP_SOURCES would take it as a source file).
-    set(options ENABLE_NETPLAY_IF_PRESENT ENABLE_SETUP_WIZARD PGXP)
+    set(options ENABLE_NETPLAY_IF_PRESENT ENABLE_SETUP_WIZARD PGXP NATIVE_IDLE_WAIT_EXCLUDE_DEBUG_TURBO)
     set(oneValueArgs
         GEN_MARKER
         GEN_FULL_FALLBACK
@@ -2797,6 +2801,9 @@ function(psxrecomp_add_game_runtime target)
     endif()
 
     set(_psxg_forwarded_args ${PSXG_UNPARSED_ARGUMENTS})
+    if(PSXG_NATIVE_IDLE_WAIT_EXCLUDE_DEBUG_TURBO)
+        list(APPEND _psxg_forwarded_args NATIVE_IDLE_WAIT_EXCLUDE_DEBUG_TURBO)
+    endif()
     if(PSXG_NATIVE_IDLE_WAIT_SITES)
         list(APPEND _psxg_forwarded_args NATIVE_IDLE_WAIT_SITES ${PSXG_NATIVE_IDLE_WAIT_SITES})
     endif()

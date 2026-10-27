@@ -4,7 +4,12 @@ include_guard(GLOBAL)
 # Selection is linked into the executable and its execution identity. No runtime
 # mode, new loop detector, or speculative guest implementation is introduced.
 function(psxrecomp_native_idle_wait target)
-    set(_sites ${ARGN})
+    cmake_parse_arguments(WAIT "EXCLUDE_DEBUG_TURBO" "" "" ${ARGN})
+    set(_sites ${WAIT_UNPARSED_ARGUMENTS})
+    set(_exclude_debug_turbo 0)
+    if(WAIT_EXCLUDE_DEBUG_TURBO)
+        set(_exclude_debug_turbo 1)
+    endif()
     list(REMOVE_DUPLICATES _sites)
     list(LENGTH _sites _count)
     if(_count GREATER 16)
@@ -34,9 +39,9 @@ function(psxrecomp_native_idle_wait target)
         return()
     endif()
     file(CONFIGURE OUTPUT "${_directory}/native.c" CONTENT
-        "${_prefix}int psx_build_idle_wait_configure(void) {\nstatic const uint32_t sites[] = {${_values}};\ng_idle_skip_enabled = 1;\ng_idle_skip_ext = 1;\npsx_idle_skip_set_store_counter_sites(sites, ${_count});\npsx_idle_skip_set_audited_only(1);\nreturn ${_count};\n}\n" @ONLY)
+        "${_prefix}int psx_build_idle_wait_configure(void) {\nstatic const uint32_t sites[] = {${_values}};\ng_idle_skip_enabled = 1;\ng_idle_skip_ext = 1;\npsx_idle_skip_set_store_counter_sites(sites, ${_count});\npsx_idle_skip_set_audited_only(1);\npsx_idle_skip_exclude_debug_turbo(${_exclude_debug_turbo});\nreturn ${_count};\n}\n" @ONLY)
     file(CONFIGURE OUTPUT "${_directory}/reference.c" CONTENT
-        "${_prefix}int psx_build_idle_wait_configure(void) {\ng_idle_skip_enabled = 0;\ng_idle_skip_ext = 0;\npsx_idle_skip_set_store_counter_sites(0, 0);\npsx_idle_skip_set_audited_only(0);\nreturn 0;\n}\n" @ONLY)
+        "${_prefix}int psx_build_idle_wait_configure(void) {\ng_idle_skip_enabled = 0;\ng_idle_skip_ext = 0;\npsx_idle_skip_set_store_counter_sites(0, 0);\npsx_idle_skip_set_audited_only(0);\npsx_idle_skip_exclude_debug_turbo(0);\nreturn 0;\n}\n" @ONLY)
     psxrecomp_add_implementation(${target}
         NAME idle-wait CONTRACT audited-store-counter-v2
         HLE_SOURCES "${_directory}/native.c"

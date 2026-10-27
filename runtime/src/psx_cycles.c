@@ -6,6 +6,7 @@
 #include "cpu_state.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #if defined(_MSC_VER)
 #include <intrin.h>       /* MSVC intrinsics: _BitScanReverse (no __builtin_clz) */
 #endif
@@ -601,7 +602,14 @@ static void idle_snapshot_regs(const CPUState *cpu) {
     s_idle_lo = cpu->lo;
 }
 
-static int idle_skip_on(void) {
+static int s_idle_exclude_debug_turbo = 0;
+/* The low bit is the mode; the rest is an epoch. An on/off round trip between
+ * checks must invalidate observations too. Only the emulation thread touches
+ * the detector; the debugger publishes mode changes through this atomic word. */
+static atomic_uint s_idle_debug_turbo_mode = ATOMIC_VAR_INIT(0);
+static unsigned s_idle_debug_turbo_seen = 0;
+
+static int idle_skip_base_on(void) {
     /* Cycle-skip is a host enhancement; under netplay it forks peers (detector
      * streak / skip quanta are not part of the shared snap). Same for the
      * solo resim self-check — keep the window on the faithful cycle path. */
@@ -619,7 +627,23 @@ static int idle_skip_on(void) {
     return g_idle_skip_enabled;
 }
 
-int psx_idle_skip_is_enabled(void) { return idle_skip_on(); }
+int psx_idle_skip_is_enabled(void) {
+    return idle_skip_base_on() && (!s_idle_exclude_debug_turbo ||
+        !(atomic_load_explicit(&s_idle_debug_turbo_mode, memory_order_acquire) & 1u));
+}
+
+void psx_idle_skip_set_debug_turbo(int active) {
+    unsigned previous = atomic_load_explicit(&s_idle_debug_turbo_mode, memory_order_relaxed);
+    const unsigned mode = active != 0;
+    while ((previous & 1u) != mode &&
+           !atomic_compare_exchange_weak_explicit(&s_idle_debug_turbo_mode,
+               &previous, previous + 1u, memory_order_release, memory_order_relaxed)) {}
+}
+
+uint32_t psx_idle_skip_debug_turbo_policy(void) {
+    return (s_idle_exclude_debug_turbo ? 1u : 0u) |
+        ((atomic_load_explicit(&s_idle_debug_turbo_mode, memory_order_acquire) & 1u) << 1);
+}
 
 /* Store-counter loops (opt-in on top of idle_skip: [runtime]
  * idle_skip_store_counters, PSX_IDLE_SKIP_EXT=1). PsyQ libetc's v_wait --
@@ -715,6 +739,20 @@ static void idle_reset_progress(void) {
     s_idle_mem_progress = 0;
 }
 
+static void idle_forget_training(void) {
+    s_idle_pc = 0;
+    s_idle_have_snap = 0;
+    s_idle_edges = 0;
+    idle_reset_progress();
+    *s_track = 0;
+}
+
+void psx_idle_skip_exclude_debug_turbo(int enabled) {
+    s_idle_exclude_debug_turbo = enabled != 0;
+    s_idle_debug_turbo_seen = atomic_load_explicit(&s_idle_debug_turbo_mode, memory_order_acquire);
+    idle_forget_training();
+}
+
 void psx_idle_skip_set_audited_only(int enabled) {
     s_idle_audited_only = enabled != 0;
     s_idle_pc = 0;
@@ -737,7 +775,15 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
      * detector. Its clock/device view is transactional and cannot be skipped. */
     if (g_ls_replay_active) return;
     if (g_idle_note_suppress) return;
-    if (!idle_skip_on()) {
+    if (s_idle_exclude_debug_turbo) {
+        const unsigned mode = atomic_load_explicit(&s_idle_debug_turbo_mode, memory_order_acquire);
+        if (mode != s_idle_debug_turbo_seen) {
+            s_idle_debug_turbo_seen = mode;
+            idle_forget_training();
+        }
+        if (mode & 1u) return;
+    }
+    if (!idle_skip_base_on()) {
         if (s_idle_audited_only && *s_track) *s_track = 0;
         return;
     }

@@ -65,7 +65,9 @@ void dirty_ram_irq_ambient_resync_after_restore(void) {}
 /* Guest RAM word the loop counts down, and the host writer under test. */
 static uint32_t s_counter;
 static int s_host_writes;
+static int s_iteration, s_first_skip_iteration;
 static void host_write(uint32_t addr, uint32_t val) {
+    if (!s_host_writes) s_first_skip_iteration = s_iteration;
     (void)addr; s_counter = val; s_host_writes++;
 }
 
@@ -73,7 +75,8 @@ static void host_write(uint32_t addr, uint32_t val) {
 #define EDGE2  0x8008B518u
 #define COUNTER_ADDR 0x801FFF10u   /* stack word in main RAM */
 
-enum { EXTRA_STORE = 1, MMIO_READ = 2, STEP2 = 4, MMIO_STORE = 8 };
+enum { EXTRA_STORE = 1, MMIO_READ = 2, STEP2 = 4, MMIO_STORE = 8,
+       TURBO_WINDOW = 16, TURBO_ROUND_TRIP = 32 };
 
 static void guest_store(uint32_t addr, uint32_t val) {
     g_guest_store_count++;
@@ -100,10 +103,17 @@ static uint64_t run(int ext, int quirks, int passes, uint32_t start_counter) {
     s_after_first_skip = 0;
     s_counter = start_counter;
     s_host_writes = 0;
+    s_first_skip_iteration = -1;
     g_idle_skip_enabled = 1;
     g_idle_skip_ext = ext;
     g_idle_skip_count = 0;
     for (int i = 0; i < passes && psx_get_cycle_count() < s_event_at; i++) {
+        s_iteration = i;
+        if (i == 2 && (quirks & (TURBO_WINDOW | TURBO_ROUND_TRIP))) {
+            psx_idle_skip_set_debug_turbo(1);
+            if (quirks & TURBO_ROUND_TRIP) psx_idle_skip_set_debug_turbo(0);
+        }
+        if (i == 30 && (quirks & TURBO_WINDOW)) psx_idle_skip_set_debug_turbo(0);
         psx_idle_note_check(&cpu, ANCHOR);
         if (g_idle_skip_count && !s_after_first_skip) {
             s_after_first_skip = psx_get_cycle_count();
@@ -193,6 +203,31 @@ int main(void) {
     check(run(1, 0, 64, 100000u) > 0, "declared wait retrains after active gameplay");
     psx_cycles_resync_after_restore(&cpu);
     check(!g_psx_track_last_store, "state restore clears transient store tracking");
+
+    psx_idle_skip_exclude_debug_turbo(0);
+    psx_idle_skip_set_debug_turbo(1);
+    check(run(1, 0, 64, 100000u) > 0 && psx_idle_skip_is_enabled(),
+          "default consumer policy retains induction during debugger turbo");
+    psx_idle_skip_exclude_debug_turbo(1);
+    check(psx_idle_skip_debug_turbo_policy() == 3u &&
+          run(1, 0, 64, 100000u) == 0 && !g_psx_track_last_store &&
+          !psx_idle_skip_is_enabled(),
+          "excluded debugger turbo uses polling without store tracking");
+    psx_idle_skip_set_debug_turbo(0);
+    check(run(1, 0, 64, 100000u) > 0 && psx_idle_skip_is_enabled(),
+          "normal pacing resumes induction");
+    const int normal_first_skip = s_first_skip_iteration;
+    check(run(1, TURBO_ROUND_TRIP, 64, 100000u) > 0 &&
+          s_first_skip_iteration >= normal_first_skip + 2,
+          "on/off round trip between checks discards prior observations");
+    check(run(1, TURBO_WINDOW, 64, 100000u) > 0 && s_first_skip_iteration >= 30,
+          "induction remains suspended until debugger turbo ends");
+    psx_idle_skip_exclude_debug_turbo(0);
+    check(run(1, TURBO_ROUND_TRIP, 64, 100000u) > 0 &&
+          s_first_skip_iteration == normal_first_skip,
+          "unselected policy leaves existing consumers' training unchanged");
+    psx_idle_skip_set_debug_turbo(0);
+
     g_precise_mode = 1;
     check(run(1, 0, 64, 100000u) == 0 && !g_psx_track_last_store,
           "precise execution keeps the original wait and no tracking");

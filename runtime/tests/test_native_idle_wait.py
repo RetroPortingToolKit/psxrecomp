@@ -29,6 +29,8 @@ def main():
 int g_idle_skip_enabled = 7, g_idle_skip_ext = 9;
 static int audited_only = 7;
 void psx_idle_skip_set_audited_only(int enabled) { audited_only = enabled; }
+static int exclude_turbo = 7;
+void psx_idle_skip_exclude_debug_turbo(int enabled) { exclude_turbo = enabled; }
 static int count = -1;
 static uint32_t first, last;
 void psx_idle_skip_set_store_counter_sites(const uint32_t *sites, int n) {
@@ -37,8 +39,8 @@ void psx_idle_skip_set_store_counter_sites(const uint32_t *sites, int n) {
 }
 int main(void) {
     int selected=psx_build_idle_wait_configure();
-    printf("%d %d %d %d %u %u %d\\n", selected, g_idle_skip_enabled, g_idle_skip_ext,
-           count, first, last, audited_only);
+    printf("%d %d %d %d %u %u %d %d\\n", selected, g_idle_skip_enabled, g_idle_skip_ext,
+           count, first, last, audited_only, exclude_turbo);
     return 0;
 }
 ''')
@@ -50,14 +52,15 @@ include("${{PSXRECOMP_ROOT}}/cmake/psx_native_idle_wait.cmake")
 add_executable(fixture main.c)
 target_include_directories(fixture PRIVATE "${{PSXRECOMP_ROOT}}/runtime/include")
 psxrecomp_execution_profile(fixture)
-psxrecomp_native_idle_wait(fixture ${{WAIT_SITES}})
+psxrecomp_native_idle_wait(fixture ${{WAIT_POLICY}} ${{WAIT_SITES}})
 ''')
 
-        def configure(name, profile, sites, ok=True):
+        def configure(name, profile, sites, ok=True, policy=''):
             build = Path(temp)/name
             run([args.cmake, '-S', str(source), '-B', str(build), '-G', 'Ninja',
                  '-DCMAKE_C_COMPILER='+args.cc, '-DCMAKE_MAKE_PROGRAM='+args.ninja,
-                 '-DPSX_EXECUTION_PROFILE='+profile, '-DWAIT_SITES='+sites], ok=ok)
+                 '-DPSX_EXECUTION_PROFILE='+profile, '-DWAIT_SITES='+sites,
+                 '-DWAIT_POLICY='+policy], ok=ok)
             return build
 
         def result(build):
@@ -69,13 +72,17 @@ psxrecomp_native_idle_wait(fixture ${{WAIT_SITES}})
 
         native, hle = result(configure('native', 'ENHANCED', '0x8002E6C0;0x8002E708'))
         reference, lle = result(configure('original', 'REFERENCE', '0x8002E6C0;0x8002E708'))
-        assert native == [2,1,1,2,0x8002E6C0,0x8002E708,1], native
-        assert reference == [0,0,0,0,0,0,0], reference
+        assert native == [2,1,1,2,0x8002E6C0,0x8002E708,1,0], native
+        assert reference == [0,0,0,0,0,0,0,0], reference
         assert hle['identity'] != lle['identity']
         assert hle['implementations'][0]['name'] == lle['implementations'][0]['name'] == 'idle-wait'
         untouched, unbound = result(configure('unbound', 'ENHANCED', ''))
-        assert untouched == [-1,7,9,-1,0,0,7], untouched
+        assert untouched == [-1,7,9,-1,0,0,7,7], untouched
         assert not unbound['implementations']
+        guarded, guarded_manifest = result(configure('guarded', 'ENHANCED',
+            '0x8002E6C0;0x8002E708', policy='EXCLUDE_DEBUG_TURBO'))
+        assert guarded == native[:-1] + [1], guarded
+        assert guarded_manifest['identity'] != hle['identity']
         _, changed = result(configure('different-anchor', 'ENHANCED', '0x8002E6C0'))
         assert changed['identity'] != hle['identity']
         for name, sites in [('unaligned','0x8002E6C1'), ('mmio','0x1F801810'),
