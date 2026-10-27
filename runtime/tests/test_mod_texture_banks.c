@@ -8,6 +8,7 @@
 static uint32_t memory[256], used, reads, resolves;
 static uint32_t forget_calls, forgot_first, forgot_count;
 int g_psx_render_pass_active;
+int psx_mod_host_output_scope(void) { return g_psx_render_pass_active; }
 void gl_renderer_forget_texture_bank_range(uint16_t first,uint32_t count) {
     ++forget_calls;forgot_first=first;forgot_count=count;
 }
