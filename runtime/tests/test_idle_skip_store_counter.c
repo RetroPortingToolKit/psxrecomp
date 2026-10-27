@@ -17,6 +17,7 @@
  */
 #include "cpu_state.h"
 #include "psx_cycles.h"
+#include "psx_native_idle_wait.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -163,6 +164,44 @@ int main(void) {
 
     psx_idle_skip_set_host_writer(NULL);
     check(run(1, 0, 64, 100000u) == 0, "no host writer installed: no skip");
+
+    /* The build-selected family must never train unrelated loops or keep
+     * last-store bookkeeping enabled throughout active gameplay. */
+    psx_idle_skip_set_host_writer(host_write);
+    psx_idle_skip_set_audited_only(1);
+    psx_idle_skip_set_store_counter_sites(other, 1);
+    check(run(1, 0, 64, 100000u) == 0 && !g_psx_track_last_store,
+          "audited-only policy: unlisted wait does not skip or track stores");
+    psx_idle_skip_set_store_counter_sites(sites, 2);
+    check(run(1, 0, 64, 100000u) > 0 && g_psx_track_last_store,
+          "audited-only policy: declared wait still accelerates");
+    CPUState cpu = {0};
+    psx_idle_note_check(&cpu, other[0]);
+    check(!g_psx_track_last_store,
+          "leaving a declared wait stops last-store tracking");
+    for (int i = 0; i < 64; ++i) {
+        psx_advance_cycles(16);
+        psx_idle_note_check(&cpu, other[0]);
+    }
+    uint64_t unrelated_skips = g_idle_skip_count;
+    for (int i = 0; i < 64; ++i) {
+        psx_advance_cycles(16);
+        psx_idle_note_check(&cpu, other[0]);
+    }
+    check(g_idle_skip_count == unrelated_skips && !g_psx_track_last_store,
+          "unlisted invariant register loop cannot train generic skipping");
+    check(run(1, 0, 64, 100000u) > 0, "declared wait retrains after active gameplay");
+    psx_cycles_resync_after_restore(&cpu);
+    check(!g_psx_track_last_store, "state restore clears transient store tracking");
+    g_precise_mode = 1;
+    check(run(1, 0, 64, 100000u) == 0 && !g_psx_track_last_store,
+          "precise execution keeps the original wait and no tracking");
+    g_precise_mode = 0;
+    g_ls_mode = 1;
+    check(run(1, 0, 64, 100000u) == 0 && !g_psx_track_last_store,
+          "lockstep execution keeps the original wait and no tracking");
+    g_ls_mode = 0;
+    psx_idle_skip_set_audited_only(0);
 
     printf("%s (%d failure%s)\n", fails ? "FAILED" : "passed", fails, fails == 1 ? "" : "s");
     return fails ? 1 : 0;

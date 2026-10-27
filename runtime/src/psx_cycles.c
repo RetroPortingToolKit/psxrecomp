@@ -1,6 +1,7 @@
 /* psx_cycles.c — PSX guest CPU cycle clock. */
 
 #include "psx_cycles.h"
+#include "psx_native_idle_wait.h"
 #include "psx_cycle_freeze.h"
 #include "cpu_state.h"
 #include <stdlib.h>
@@ -661,6 +662,7 @@ enum { IDLE_EDGES_MAX = 8, IDLE_SITES_MAX = 16 };
  * and declared are eligible. */
 static uint32_t s_idle_sites[IDLE_SITES_MAX];
 static int      s_idle_site_count = 0;
+static int      s_idle_audited_only = 0;
 void psx_idle_skip_set_store_counter_sites(const uint32_t *pcs, int n) {
     if (n < 0 || !pcs) n = 0;
     if (n > IDLE_SITES_MAX) n = IDLE_SITES_MAX;
@@ -712,6 +714,15 @@ static void idle_reset_progress(void) {
     s_idle_mem_progress = 0;
 }
 
+void psx_idle_skip_set_audited_only(int enabled) {
+    s_idle_audited_only = enabled != 0;
+    s_idle_pc = 0;
+    s_idle_have_snap = 0;
+    s_idle_edges = 0;
+    idle_reset_progress();
+    if (s_idle_audited_only) *s_track = 0;
+}
+
 void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
 #ifdef PSX_COSIM
     (void)cpu; (void)check_pc;
@@ -724,13 +735,30 @@ void psx_idle_note_check(CPUState *cpu, uint32_t check_pc) {
     /* A speculative replay must not clear or train the authoritative live idle
      * detector. Its clock/device view is transactional and cannot be skipped. */
     if (g_ls_replay_active) return;
-    if (!idle_skip_on() || g_idle_note_suppress) return;
+    if (g_idle_note_suppress) return;
+    if (!idle_skip_on()) {
+        if (s_idle_audited_only && *s_track) *s_track = 0;
+        return;
+    }
+    /* Build-declared waits do not train ordinary loops or track every store
+     * through active gameplay. Leave a wait once, then keep this path cheap. */
+    if (s_idle_audited_only && !idle_site_listed(check_pc)) {
+        if (s_idle_pc || s_idle_have_snap || s_idle_edges) {
+            s_idle_pc = 0;
+            s_idle_have_snap = 0;
+            s_idle_edges = 0;
+            idle_reset_progress();
+        }
+        if (*s_track) *s_track = 0;
+        return;
+    }
     if (check_pc == 0 || psx_get_in_exception() || g_psx_call_bail ||
         g_precise_mode || g_ls_mode != 0) {
         s_idle_pc = 0;
         s_idle_streak = 0;
         s_idle_have_snap = 0;
         s_idle_edges = 0;
+        if (s_idle_audited_only && *s_track) *s_track = 0;
         return;
     }
     /* The extension applies only at an audited site: the anchor while
@@ -908,6 +936,9 @@ void psx_cycles_resync_after_restore(CPUState *cpu) {
     s_idle_streak = 0;
     s_idle_have_snap = 0;
     s_idle_progress_reg = -2;
+    s_idle_edges = 0;
+    idle_reset_progress();
+    if (s_idle_audited_only) *s_track = 0;
     s_idle_last_cycle = psx_cycle_count;
     /* GTE/muldiv completion deadlines and load-absorb give-back are host-only
      * absolute cycle stamps (not in BS_SEC_CPU). After a warm load they still

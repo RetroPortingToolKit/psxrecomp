@@ -86,9 +86,12 @@ binds the existing native store-counter induction engine to title-audited loops.
 ENHANCED selects that policy; REFERENCE retains original polling. The selected
 sources, anchors and cycle-model contract are included in execution identity.
 Titles without a declaration retain their existing idle configuration.
+The selected policy limits detection and last-store tracking to declared edges;
+it never trains unrelated gameplay loops.
 
-Audit the complete loop before declaring its anchors: exactly one decrementing
-timeout store, no other counter-dependent exit, and no MMIO or hidden work.
+Audit the complete loop before declaring its anchors: either a read-only RAM
+poll with invariant registers or exactly one decrementing timeout store, no
+other counter-dependent exit, and no MMIO or hidden work.
 The existing detector verifies the dynamic shape, advances whole iterations,
 updates the counter, and stops before the next observable event or timeout.
 The original final iteration delivers interrupts and callbacks. Netplay,

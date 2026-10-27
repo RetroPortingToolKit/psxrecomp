@@ -26,7 +26,7 @@ function(psxrecomp_native_idle_wait target)
     endforeach()
     set(_directory "${CMAKE_CURRENT_BINARY_DIR}/native-idle-wait/${target}")
     file(MAKE_DIRECTORY "${_directory}")
-    set(_prefix "#include \"psx_cycles.h\"\n")
+    set(_prefix "#include \"psx_cycles.h\"\n#include \"psx_native_idle_wait.h\"\n")
     if(NOT _sites)
         file(CONFIGURE OUTPUT "${_directory}/unbound.c" CONTENT
             "${_prefix}int psx_build_idle_wait_configure(void) { return -1; }\n" @ONLY)
@@ -34,13 +34,14 @@ function(psxrecomp_native_idle_wait target)
         return()
     endif()
     file(CONFIGURE OUTPUT "${_directory}/native.c" CONTENT
-        "${_prefix}int psx_build_idle_wait_configure(void) {\nstatic const uint32_t sites[] = {${_values}};\ng_idle_skip_enabled = 1;\ng_idle_skip_ext = 1;\npsx_idle_skip_set_store_counter_sites(sites, ${_count});\nreturn ${_count};\n}\n" @ONLY)
+        "${_prefix}int psx_build_idle_wait_configure(void) {\nstatic const uint32_t sites[] = {${_values}};\ng_idle_skip_enabled = 1;\ng_idle_skip_ext = 1;\npsx_idle_skip_set_store_counter_sites(sites, ${_count});\npsx_idle_skip_set_audited_only(1);\nreturn ${_count};\n}\n" @ONLY)
     file(CONFIGURE OUTPUT "${_directory}/reference.c" CONTENT
-        "${_prefix}int psx_build_idle_wait_configure(void) {\ng_idle_skip_enabled = 0;\ng_idle_skip_ext = 0;\npsx_idle_skip_set_store_counter_sites(0, 0);\nreturn 0;\n}\n" @ONLY)
+        "${_prefix}int psx_build_idle_wait_configure(void) {\ng_idle_skip_enabled = 0;\ng_idle_skip_ext = 0;\npsx_idle_skip_set_store_counter_sites(0, 0);\npsx_idle_skip_set_audited_only(0);\nreturn 0;\n}\n" @ONLY)
     psxrecomp_add_implementation(${target}
-        NAME idle-wait CONTRACT audited-store-counter-v1
+        NAME idle-wait CONTRACT audited-store-counter-v2
         HLE_SOURCES "${_directory}/native.c"
         LLE_SOURCES "${_directory}/reference.c"
         CONTRACT_FILES "${PSXRECOMP_ROOT}/runtime/src/psx_cycles.c"
-                       "${PSXRECOMP_ROOT}/runtime/include/psx_cycles.h")
+                       "${PSXRECOMP_ROOT}/runtime/include/psx_cycles.h"
+                       "${PSXRECOMP_ROOT}/runtime/include/psx_native_idle_wait.h")
 endfunction()
