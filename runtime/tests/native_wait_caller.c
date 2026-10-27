@@ -49,10 +49,12 @@ void psx_check_interrupts_at(CPUState *cpu,uint32_t pc) {
 
 typedef struct Result {
     uint32_t regs[32], stack[128], calls[3], call_n, pc, vblanks;
+    uint32_t hi,lo,scale_fraction;
+    uint8_t absorb[33],which,ld,ld_absorb,fudge;
     uint64_t cycles, skips;
 } Result;
 static Result actual_run(int ext,uint32_t initial,uint32_t target,uint32_t budget,
-                         uint32_t event_cycle,uint32_t scale) {
+                         uint32_t event_cycle,uint32_t scale,int batch) {
     CPUState cpu; memset(&cpu,0,sizeof cpu);
     for (int i=1;i<32;i++) cpu.gpr[i]=0x13570000u+(uint32_t)i;
     cpu.gpr[4]=target; cpu.gpr[5]=budget;
@@ -63,6 +65,7 @@ static Result actual_run(int ext,uint32_t initial,uint32_t target,uint32_t budge
     counter=initial;callback_n=0;deliveries=0;
     psx_cycles_reset_for_boot();psx_cycles_resync_after_restore(&cpu);psx_icache_reset();
     psx_guest_cycle_scale_set(scale);
+    g_psx_gcs_batch=batch;
     g_psx_gcs_frac=0;
     g_idle_skip_enabled=ext;g_idle_skip_ext=ext;
     g_idle_skip_count=0;g_guest_store_count=0;g_mmio_access_count=0;
@@ -82,17 +85,20 @@ static Result actual_run(int ext,uint32_t initial,uint32_t target,uint32_t budge
     if (ext && g_psx_track_last_store) {
         fprintf(stderr,"store tracking leaked outside audited wait\n");abort();
     }
-    Result r={0};memcpy(r.regs,cpu.gpr,sizeof r.regs);memcpy(r.stack,ram,sizeof r.stack);
+    Result r;memset(&r,0,sizeof r);memcpy(r.regs,cpu.gpr,sizeof r.regs);memcpy(r.stack,ram,sizeof r.stack);
     memcpy(r.calls,callbacks,sizeof callbacks);r.call_n=callback_n;r.pc=cpu.pc;
+    r.hi=cpu.hi;r.lo=cpu.lo;r.scale_fraction=g_psx_gcs_frac;
+    memcpy(r.absorb,cpu.read_absorb,sizeof r.absorb);r.which=cpu.read_absorb_which;
+    r.ld=cpu.ld_which_t;r.ld_absorb=cpu.ld_absorb;r.fudge=cpu.read_fudge;
     r.vblanks=deliveries;r.cycles=psx_get_cycle_count();r.skips=g_idle_skip_count;return r;
 }
 int main(void) {
     unsigned cases=0, accelerated=0;
-    for (uint32_t scale=1;scale<=2;scale++) {
+    for (int batch=0;batch<=1;batch++) for (uint32_t scale=1;scale<=2;scale++) {
         const uint32_t events[]={1,127,4096,200003,400007};
         for(unsigned j=0;j<sizeof events/sizeof *events;j++) {
-            Result a=actual_run(0,10,11,1,events[j],scale);
-            Result b=actual_run(1,10,11,1,events[j],scale);
+            Result a=actual_run(0,10,11,1,events[j],scale,batch);
+            Result b=actual_run(1,10,11,1,events[j],scale,batch);
             uint64_t skips=b.skips;a.skips=b.skips=0;
             if (memcmp(&a,&b,sizeof a)) {
                 fprintf(stderr,"wait mismatch event=%u scale=%u cycles=%llu/%llu skips=%llu\n",
@@ -105,14 +111,14 @@ int main(void) {
             {10,11,1,4000000},{0xFFFFFFFEu,0xFFFFFFFFu,1,200003},
             {0x80000000u,0,1,200003},{10,11,0xFFFFu,200003}};
         for(unsigned j=0;j<sizeof args/sizeof *args;j++) {
-            Result a=actual_run(0,args[j][0],args[j][1],args[j][2],args[j][3],scale);
-            Result b=actual_run(1,args[j][0],args[j][1],args[j][2],args[j][3],scale);
+            Result a=actual_run(0,args[j][0],args[j][1],args[j][2],args[j][3],scale,batch);
+            Result b=actual_run(1,args[j][0],args[j][1],args[j][2],args[j][3],scale,batch);
             a.skips=b.skips=0;
             if(memcmp(&a,&b,sizeof a)) {fprintf(stderr,"edge mismatch case=%u scale=%u\n",j,scale);return 1;}
             cases++;
         }
     }
     if(!accelerated) return 1;
-    printf("PASS: %u actual-wait caller comparisons; %u accelerated; exact RAM/GPR/continuation/callback/event/cycle outputs\n",cases,accelerated);
+    printf("PASS: %u actual-wait caller comparisons; %u accelerated; exact RAM/GPR/pipeline/continuation/callback/event/cycle outputs; scaled-charge batching on/off\n",cases,accelerated);
     return 0;
 }
