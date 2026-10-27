@@ -66,6 +66,15 @@ uint32_t psx_read_word(uint32_t a) {
 }
 void psx_write_word(uint32_t a, uint32_t v) { memcpy(ram + (a & 0x1FFFFCu), &v, 4); }
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t a) { return a; }
+int psx_mod_host_output_scope(void) { return 0; }
+int psx_mod_gpu_dma_memory_contains(uint32_t a,uint32_t n) {
+    return a>=0x80800000u && a<=0x80801000u && n<=0x80801000u-a;
+}
+const uint8_t *psx_mod_gpu_dma_read_view(uint32_t a,uint32_t n) {
+    return psx_mod_gpu_dma_memory_contains(a,n)?ram+(a&0x1FFFFFu):NULL;
+}
+extern int psx_mod_set_host_gpu_draw_range(unsigned,uint32_t,uint32_t);
+extern void dma_debug_host_draw(uint64_t*,uint64_t*);
 
 /* ---- GPU ---------------------------------------------------------------- */
 static uint32_t s_gp0[64];
@@ -186,6 +195,60 @@ int main(void) {
     CHECK(kick(1), "a kick from inside the device service was held");
     finish_walk();
     CHECK(!dma_gpu_linked_list_active(), "control walk did not finish");
+
+    /* Mixed native/host/native chain: exact output and order, while only
+     * complete draw nodes in a declared aperture span consume host time. */
+    {
+        uint32_t expected[8];uint64_t native_cost,host_cost,nodes,words;
+        for(int host=0;host<5;++host) {
+            dma_init();s_gp0_n=0;psx_cycle_count=1000;s_serviced_to=1000;
+            psx_next_service_cycle=UINT64_MAX;build_list();
+            psx_write_word(NODE_A,(2u<<24)|0x00800040u);
+            psx_write_word(0x00800040u,(4u<<24)|NODE_C);
+            psx_write_word(0x00800044u,0x20010203u);
+            psx_write_word(0x00800048u,0x00100010u);
+            psx_write_word(0x0080004Cu,0x00200020u);
+            psx_write_word(0x00800050u,0x00300030u);
+            CHECK(!psx_mod_set_host_gpu_draw_range(2,0x80800040u,20),"invalid slot accepted");
+            CHECK(!psx_mod_set_host_gpu_draw_range(0,0x80000040u,20),"native RAM accepted");
+            CHECK(!psx_mod_set_host_gpu_draw_range(0,0x80800041u,20),"unaligned range accepted");
+            if(host)CHECK(psx_mod_set_host_gpu_draw_range(0,0x80800040u,host==3?16:20),"owned draw rejected");
+            if(host==4)dma_init(); /* Registration must not survive reset. */
+            if(host==2) {
+                /* A VRAM transfer is outside the host-draw contract. */
+                psx_write_word(0x00800044u,0xA0010203u);
+            }
+            dma_write(0x1F8010F0u,0x800);dma_write(0x1F8010A0u,NODE_A);
+            dma_write(0x1F8010A8u,0x01000401u);
+            CHECK(!dma_gpu_linked_list_active(),"mixed walk left active");
+            if(!host){native_cost=psx_cycle_count-1000;memcpy(expected,s_gp0,sizeof(expected));}
+            else if(host==1) {
+                host_cost=psx_cycle_count-1000;
+                CHECK(host_cost<native_cost,"host node charged native word cycles");
+                CHECK(s_gp0_n==6 && !memcmp(expected,s_gp0,6*sizeof(uint32_t)),"host path changed GP0 order/data");
+            }else CHECK(psx_cycle_count-1000==native_cost,"non-draw, crossing or reset range was accelerated");
+        }
+        dma_debug_host_draw(&nodes,&words);
+        CHECK(nodes==1 && words>0,"host draw not accounted");
+        /* Session init clears registration, so an unmodified next session
+         * cannot inherit an enhancement's timing declaration. */
+        dma_init();
+        CHECK(psx_mod_set_host_gpu_draw_range(0,0,0),"range clear failed");
+        /* Compound environment + polygon nodes must retain every command. */
+        s_gp0_n=0;psx_cycle_count=1000;s_serviced_to=1000;psx_next_service_cycle=UINT64_MAX;
+        psx_write_word(0x00800040u,(5u<<24)|END);
+        psx_write_word(0x00800044u,0xE1000200u);
+        psx_write_word(0x00800048u,0x20010203u);
+        psx_write_word(0x0080004Cu,0x00100010u);
+        psx_write_word(0x00800050u,0x00200020u);
+        psx_write_word(0x00800054u,0x00300030u);
+        CHECK(psx_mod_set_host_gpu_draw_range(1,0x80800040u,24),"second slot compound draw rejected");
+        dma_write(0x1F8010F0u,0x800);dma_write(0x1F8010A0u,0x00800040u);
+        dma_write(0x1F8010A8u,0x01000401u);
+        CHECK(!dma_gpu_linked_list_active() && s_gp0_n==5 && s_gp0[0]==0xE1000200u &&
+              s_gp0[1]==0x20010203u && s_gp0[4]==0x00300030u,"compound host node changed output");
+        CHECK(psx_cycle_count==1000,"compound host draw charged guest clock");
+    }
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

@@ -159,6 +159,21 @@ uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
 int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes) {
     return bytes!=0 && mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,NULL);
 }
+const uint8_t *psx_mod_gpu_dma_read_view(uint32_t address,uint32_t bytes) {
+    uint32_t offset;
+    if(!bytes || !mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,&offset))return NULL;
+    return mod_gpu_dma_memory+offset;
+}
+int psx_mod_write_gpu_draw_memory(uint32_t address,const void *data,uint32_t bytes) {
+    extern int psx_mod_host_output_scope(void);
+    uint32_t offset;
+    if(psx_mod_host_output_scope() || address>=0xC0000000u || !data || !bytes ||
+       !mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,&offset))return 0;
+    if(g_psx_render_pass_active && !rp_mod_journal(mod_gpu_dma_memory,
+            MOD_MEMORY_SIZE/RP_MOD_PAGE,offset,bytes))return 0;
+    memmove(mod_gpu_dma_memory+offset,data,bytes);
+    return 1;
+}
 
 uint32_t psx_gpu_packet_key(uint32_t address) {
     return psx_gpu_packet_key_for(address, mod_gpu_dma_memory_used);

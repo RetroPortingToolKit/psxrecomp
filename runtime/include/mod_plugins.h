@@ -320,6 +320,17 @@ uint32_t psx_mod_alloc_guest_memory(uint32_t size, uint32_t alignment);
  * without an allocation the aperture remains unmapped and DMA stays faithful.
  */
 uint32_t psx_mod_alloc_gpu_dma_memory(uint32_t size, uint32_t alignment);
+/* Declare complete, immutable host-rendered draw packets inside an owned GPU
+ * aperture allocation. Their GPU linked-list nodes are host work, so the CPU
+ * hold drains them without emulated word-transfer cycles. Ordinary packets,
+ * VRAM transfers and other devices retain their native paths. Two slots;
+ * bytes=0 clears one. Restore callbacks must republish snapshot-owned spans.
+ * Off by default and cleared by DMA/session initialization. */
+int psx_mod_set_host_gpu_draw_range(unsigned slot,uint32_t start,uint32_t bytes);
+/* Copy finished host packet bytes into allocated GPU-DMA backing storage.
+ * Never writes RAM/MMIO or advances guest time. Honors render-pass rollback;
+ * unavailable from a host-output callback. The caller owns packet metadata. */
+int psx_mod_write_gpu_draw_memory(uint32_t address,const void *data,uint32_t bytes);
 
 /*
  * Opt into expanded 8 MiB main RAM for this launch. Default runtime behavior

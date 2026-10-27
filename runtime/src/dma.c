@@ -17,6 +17,7 @@
 #include "crash_trace.h"
 #include "dirty_ram_interp.h"
 #include "dma_gpu_ll.h"
+#include "dma_host_draw.h"
 #include "gpu.h"
 #include "mdec.h"
 #include "mod_memory.h"
@@ -81,6 +82,24 @@ typedef struct {
 static DMAAsyncChannel mdec_async[2];
 static DMAAsyncChannel cdrom_async;
 static DMAGPULinkedList gpu_linked_list;
+static DMAHostDrawRange s_host_draw[2];
+static const uint8_t *s_host_draw_view[2];
+static uint64_t s_host_draw_nodes,s_host_draw_words;
+int psx_mod_set_host_gpu_draw_range(unsigned slot,uint32_t start,uint32_t bytes) {
+    extern int psx_mod_host_output_scope(void);
+    extern int psx_mod_gpu_dma_memory_contains(uint32_t,uint32_t);
+    extern const uint8_t *psx_mod_gpu_dma_read_view(uint32_t,uint32_t);
+    if(slot>=2 || start>=0xC0000000u || psx_mod_host_output_scope())return 0;
+    if(bytes && ((start&3u) || (bytes&3u) || !psx_mod_gpu_dma_memory_contains(start,bytes)))return 0;
+    const uint8_t *view=bytes?psx_mod_gpu_dma_read_view(start,bytes):NULL;
+    if(bytes && !view)return 0;
+    s_host_draw[slot].start=start&0x00FFFFFFu;s_host_draw[slot].bytes=bytes;s_host_draw_view[slot]=view;
+    return 1;
+}
+void dma_debug_host_draw(uint64_t *nodes,uint64_t *words) {
+    if(nodes)*nodes=s_host_draw_nodes;
+    if(words)*words=s_host_draw_words;
+}
 static DMAGpuOtStats gpu_ot_stats;
 static uint64_t gpu_ot_start_cycle;
 static uint32_t gpu_ot_polls_this_walk;
@@ -747,6 +766,13 @@ static uint32_t gpu_ll_resolve_address(void *opaque, uint32_t address) {
 
 static uint32_t gpu_ll_read_word(void *opaque, uint32_t address) {
     (void)opaque;
+    for(unsigned i=0;i<2;++i) {
+        if(s_host_draw_view[i] && address>=s_host_draw[i].start &&
+           address-s_host_draw[i].start<=s_host_draw[i].bytes-4u) {
+            const uint8_t*p=s_host_draw_view[i]+address-s_host_draw[i].start;
+            return p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;
+        }
+    }
     return psx_read_word(address);
 }
 
@@ -853,6 +879,11 @@ static void hold_cpu_for_gpu_linked_list(void) {
     while (gpu_linked_list.active && ((channels[2].chcr >> 24) & 1u) &&
            channel_enabled(2)) {
         const uint32_t moved = gpu_linked_list.total_words;
+        if((s_host_draw[0].bytes || s_host_draw[1].bytes) &&
+           dma_host_draw_drain(&gpu_linked_list,s_host_draw,&gpu_ll_ops,NULL)) {
+            ++s_host_draw_nodes;s_host_draw_words+=gpu_linked_list.total_words-moved;
+            continue;
+        }
         psx_advance_cycles(dma_gpu_ll_cycles_to_event(&gpu_linked_list));
         psx_devices_service_to_now();
         steps++;
@@ -1336,6 +1367,8 @@ void dma_advance(uint32_t cycles) {
 }
 
 void dma_init(void) {
+    memset(s_host_draw,0,sizeof(s_host_draw));
+    memset(s_host_draw_view,0,sizeof(s_host_draw_view));
     memset(channels, 0, sizeof(channels));
     memset(mdec_async, 0, sizeof(mdec_async));
     memset(&cdrom_async, 0, sizeof(cdrom_async));

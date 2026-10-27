@@ -83,9 +83,6 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=())
                        check=True)
         objs.append(obj)
 
-    defined, undefined = nm_symbols(objs)
-    provided = library_symbols(cc)
-    stubs = {s for s in undefined - defined - provided if not s.startswith("__")}
     stub_c = work / ("stubs" + tag + ".c")
     stub_o = work / ("stubs" + tag + ".o")
 
@@ -94,6 +91,11 @@ def build_and_run(cc, here, src_root, opt, work, modules, test_name, defines=())
                     "-I", include, "-c", str(here / test_name), "-o", str(test_o)],
                    check=True)
     exe = work / ("fixture" + tag + (".exe" if os.name == "nt" else ""))
+    # Include fixture seams before synthesizing stubs. Besides avoiding a
+    # needless duplicate-symbol link, this works with LLVM's diagnostics too.
+    defined, undefined = nm_symbols(objs + [test_o])
+    provided = library_symbols(cc)
+    stubs = {s for s in undefined - defined - provided if not s.startswith("__")}
 
     for _ in range(40):
         write_stubs(stub_c, stubs)

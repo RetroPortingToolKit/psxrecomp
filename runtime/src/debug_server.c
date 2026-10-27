@@ -12293,15 +12293,20 @@ static void handle_dma_hold_stats(int id, const char *json)
 {
     (void)json;
     DMAGpuHoldStats st;
+    uint64_t host_nodes,host_words;
+    extern void dma_debug_host_draw(uint64_t*,uint64_t*);
+    dma_debug_host_draw(&host_nodes,&host_words);
     dma_debug_get_gpu_hold(&st, NULL);
     send_fmt("{\"id\":%d,\"ok\":true,\"frame\":%llu,\"count\":%llu,\"held_cycles\":%llu,"
              "\"host_us\":%llu,\"words\":%llu,\"steps\":%llu,\"exc_count\":%llu,"
-             "\"exc_held_cycles\":%llu,\"exc_host_us\":%llu}",
+             "\"exc_held_cycles\":%llu,\"exc_host_us\":%llu,"
+             "\"host_draw_nodes\":%llu,\"host_draw_words\":%llu}",
              id, (unsigned long long)s_frame_count,
              (unsigned long long)st.count, (unsigned long long)st.held_cycles,
              (unsigned long long)st.host_us, (unsigned long long)st.words,
              (unsigned long long)st.steps, (unsigned long long)st.exc_count,
-             (unsigned long long)st.exc_held_cycles, (unsigned long long)st.exc_host_us);
+             (unsigned long long)st.exc_held_cycles, (unsigned long long)st.exc_host_us,
+             (unsigned long long)host_nodes,(unsigned long long)host_words);
 }
 
 /* dma_hold_ring: newest `count` held kicks (default 256, max ring cap),
