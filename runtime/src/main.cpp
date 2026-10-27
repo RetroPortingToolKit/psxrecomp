@@ -164,6 +164,9 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "recomp_launcher.h"   /* shared recomp-ui Dear ImGui launcher */
 #include "launcher_profile.h"  /* per-system variant profile (theme/caps bundle) */
 #include "launcher_boot_timing.h" /* PSX_LAUNCHER_BOOT_TIMING stamps */
+#if defined(PSX_MEMORY_CARD_MANAGER) && defined(RECOMP_LAUNCHER_HAS_CARD_MANAGER)
+#include "psx_card_manager/launcher_service.hpp"
+#endif
 #if defined(PSX_HAS_CODEGEN_SETUP_HOST)
 extern "C" void psx_game_codegen_setup_apply(RecompLauncherCGameInfo* gi);
 extern "C" void psx_game_codegen_relaunch_or_exit(const char* disc_path);
@@ -16829,6 +16832,9 @@ namespace {
         gi->import_sbi = ae_import_sbi;
 #endif
         gi->memcard_inspect = ae_memcard_inspect;
+#if defined(PSX_MEMORY_CARD_MANAGER) && defined(RECOMP_LAUNCHER_HAS_CARD_MANAGER)
+        gi->card_manager = psx_card_manager::launcher_service();
+#endif
         gi->mods = PSXRecompV4::mod_runtime_launcher_provider();
         gi->bios_verify = ae_bios_verify;
         /* Launcher window icon: the SAME file psx_apply_window_icon() puts on
