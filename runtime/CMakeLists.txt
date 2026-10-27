@@ -850,6 +850,27 @@ if(BUILD_TESTING)
         PSX_MAX_PLAYERS=5)
     add_test(NAME sio_negcon_protocol_multitap_test
              COMMAND sio_negcon_protocol_multitap_test)
+    # PlayStation Mouse (SCPH-1030, ID 0x12) wire protocol, also on a multitap
+    # build where tap seats must not present a mouse.
+    add_executable(sio_mouse_protocol_test
+        tests/test_sio_mouse_protocol.c
+        src/sio.c)
+    target_include_directories(sio_mouse_protocol_test PRIVATE include)
+    add_test(NAME sio_mouse_protocol_test COMMAND sio_mouse_protocol_test)
+    add_executable(sio_mouse_protocol_multitap_test
+        tests/test_sio_mouse_protocol.c
+        src/sio.c)
+    target_include_directories(sio_mouse_protocol_multitap_test PRIVATE include)
+    target_compile_definitions(sio_mouse_protocol_multitap_test PRIVATE
+        PSX_MAX_PLAYERS=5)
+    add_test(NAME sio_mouse_protocol_multitap_test
+             COMMAND sio_mouse_protocol_multitap_test)
+    # Host PlayStation Mouse accumulator (SDL motion -> per-frame deltas).
+    add_executable(ps_mouse_input_test
+        tests/test_ps_mouse_input.c
+        src/ps_mouse_input.c)
+    target_include_directories(ps_mouse_input_test PRIVATE include src)
+    add_test(NAME ps_mouse_input_test COMMAND ps_mouse_input_test)
     # The shared PsxNetPad -> SIO apply and normalization, over the real SIO.
     add_executable(psx_pad_apply_test
         tests/test_psx_pad_apply.c

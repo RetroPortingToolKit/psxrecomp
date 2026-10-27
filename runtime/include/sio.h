@@ -59,8 +59,16 @@ enum {
     SIO_PAD_DIGITAL = 0,
     SIO_PAD_DUALSHOCK = 1,
     SIO_PAD_JOGCON = 2,
-    SIO_PAD_NEGCON = 3   /* NPC-101: ID 0x23, twist + analog I/II/L, no config */
+    SIO_PAD_NEGCON = 3,  /* NPC-101: ID 0x23, twist + analog I/II/L, no config */
+    SIO_PAD_MOUSE = 4    /* SCPH-1030: ID 0x12, two buttons + relative X/Y */
 };
+
+/* PlayStation Mouse button bits in the 16-bit button halfword, active low
+ * (PSX-SPX controllersandmemorycards, "Mouse"; Mednafen psx/input/mouse.cpp).
+ * Bits 0-7 and 12-15 read 1, bits 8-9 read 0. */
+#define SIO_MOUSE_BTN_RIGHT 0x0400u
+#define SIO_MOUSE_BTN_LEFT  0x0800u
+#define SIO_MOUSE_BTN_IDLE  0xFCFFu
 
 /* Phase 1.0c-v2: cycle-paced SIO model. Default 1 enables the dispatch-
  * loop quantum tick (gated by g_sio_timing_active). Set to 0 to revert
@@ -163,15 +171,25 @@ void sio_set_pad_type(int slot, int type,
  * sio_set_pad_analog every frame for the type — that is for boot/hotplug only. */
 void sio_set_pad_sticks(int slot, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry);
 /* Request SIO_PAD_* at the next idle, non-config bus boundary. A game's 0x44
- * mode lock holds DualShock/digital/JogCon flips; entering or leaving NeGcon is
- * a device swap that applies anyway and clears the lock, config latch and
- * motor map (a different controller in the port). */
+ * mode lock holds DualShock/digital/JogCon flips; entering or leaving NeGcon or
+ * the mouse is a device swap that applies anyway and clears the lock, config
+ * latch, motor map and mouse motion (a different controller in the port).
+ * Multitap seats never present a mouse (no verified bulk framing). */
 void sio_request_pad_type(int slot, int type);
 /* NeGcon analog buttons I, II and L for the next poll (0 released .. 0xFF
  * fully pressed). Host input like the sticks; ignored unless the slot reports
  * SIO_PAD_NEGCON. */
 void sio_set_pad_negcon(int slot, uint8_t i, uint8_t ii, uint8_t l);
 void sio_get_pad_negcon(int slot, uint8_t out[3]);
+/* PlayStation Mouse host input for one frame: relative motion (mickeys,
+ * +X right, +Y down) is added to the device's accumulator, and `buttons`
+ * (SIO_MOUSE_BTN_* active low, other bits ignored) is the current button
+ * state. A button pressed at any point between two 0x42 polls is reported
+ * by the next poll even if it was released again (Mednafen mouse.cpp).
+ * Ignored unless the slot reports SIO_PAD_MOUSE. */
+void sio_set_pad_mouse(int slot, int dx, int dy, uint16_t buttons);
+/* Motion still owed to the guest (debug/tests). */
+void sio_get_pad_mouse(int slot, int *dx, int *dy);
 /* 1 while the game has locked the pad's analog mode (0x44 lock byte 0x03). */
 int sio_get_pad_mode_locked(int slot);
 

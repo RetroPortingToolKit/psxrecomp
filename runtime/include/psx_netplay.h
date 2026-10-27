@@ -37,6 +37,12 @@ extern "C" {
  * wheel position (0x80 centre). NeGcon: lx = twist (0x80 centre), rx = analog
  * I, ry = analog II, ly = analog L (0 released .. 0xFF pressed). The rollback
  * row carries only lx/ly (stick view), i.e. NeGcon twist and L.
+ *
+ * SIO_PAD_MOUSE (4) is local-only: offline capture hands it to
+ * psx_pad_apply_to_sio with lx/ly = this frame's signed motion (int8) and the
+ * buttons as SIO_MOUSE_BTN_* (active low). It is never captured for netplay
+ * and stays above PSX_NETPAD_TYPE_MAX, so a wire/replay blob carrying it
+ * still decodes as digital.
  */
 
 #define PSX_NETPLAY_PAD_BYTES 8

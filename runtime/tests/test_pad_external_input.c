@@ -1,5 +1,6 @@
 /* Resolution order of external offline input (physical -> source -> mouse). */
 #include "pad_external_input.h"
+#include "sio.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -271,6 +272,17 @@ int main(void) {
         /* No device and no source: the transform is not consulted. */
         reset(); T.have_device = 0; T.xf_ret = 1;
         CHECK(pad_ext_resolve(&hx, 0, &o) == 0 && T.xf_calls == 0);
+
+        /* A PlayStation Mouse port: the transform never sees it and the
+         * right-stick mouse policy is reset, not folded into the motion. */
+        reset();
+        T.local.analog = SIO_PAD_MOUSE; T.local.buttons = 0xf7ff;
+        T.local.lx = 0xFB; T.local.ly = 0x09; T.local.rx = T.local.ry = 0x80;
+        T.xf_ret = 1; T.mouse_override = 1; T.mouse_rx = 1; T.mouse_ry = 2;
+        CHECK(pad_ext_resolve(&hx, 0, &o) == 1 && T.xf_calls == 0);
+        CHECK(o.analog == SIO_PAD_MOUSE && o.buttons == 0xf7ff &&
+              o.lx == 0xFB && o.ly == 0x09 && o.rx == 0x80 && o.ry == 0x80);
+        CHECK(T.mouse_folds == 0 && T.mouse_resets == 1);
     }
 
     /* Gating predicate: live only when every blocking condition is clear. */

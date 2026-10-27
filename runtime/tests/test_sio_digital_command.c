@@ -56,6 +56,7 @@ int memcard_write_sector(int card, int sector, const uint8_t *buf) {
     (void)card; (void)sector; (void)buf; return -1;
 }
 void memcard_flush(int card) { (void)card; }
+int memcard_last_flush_result(int card) { (void)card; return -1; }
 
 
 #define DATA 0x1F801040u

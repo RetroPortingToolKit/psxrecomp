@@ -59,6 +59,7 @@ int memcard_write_sector(int card, int sector, const uint8_t *buf) {
     (void)card; (void)sector; (void)buf; return -1;
 }
 void memcard_flush(int card) { (void)card; }
+int memcard_last_flush_result(int card) { (void)card; return -1; }
 
 #define SIO_TX_DATA 0x1F801040u
 #define SIO_RX_DATA 0x1F801040u
@@ -276,7 +277,8 @@ static void set_mode_keeps_device(void) {
  * section still loads, unlocked. */
 static void snapshot_pad_mode(void) {
     uint8_t d[6];
-    const uint32_t mode_bytes = 2u * PSX_MAX_PLAYERS;
+    /* The pad-mode section precedes the trailing mouse section. */
+    const uint32_t mode_bytes = 2u * PSX_MAX_PLAYERS + 14u * PSX_MAX_PLAYERS;
     sio_init();
     sio_connect_pad(0);
     sio_set_pad_type(0, SIO_PAD_JOGCON, 0x80, 0x80, 0x80, 0x80);

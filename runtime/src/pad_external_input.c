@@ -1,5 +1,6 @@
 #include <string.h>
 #include "pad_external_input.h"
+#include "sio.h"
 
 int pad_ext_live(const PadExtGate *g) {
     return g && !g->injected_input && !g->headless && !g->netplay_active &&
@@ -15,6 +16,8 @@ static void pad_ext_transform(const PadExtHooks *h, int s, int guarded,
     PSXModPadFrame f;
     PSXModPadOutput stock, o;
     if (!h->pad_transform) return;
+    /* A PlayStation Mouse is not a pad the transform contract describes. */
+    if (out->analog == SIO_PAD_MOUSE) return;
     memset(&stock, 0, sizeof stock);
     stock.struct_size = sizeof stock;
     stock.buttons = out->buttons;
@@ -86,7 +89,10 @@ int pad_ext_resolve(const PadExtHooks *h, int s, PsxNetPad *out) {
     }
     pad_ext_transform(h, s, guarded, has_source, out);
     if (s == 0) {
-        if (guarded || out->analog == PSX_MOD_PAD_NEGCON) h->mouse_reset(h->ctx);
+        /* NeGcon pressure and PlayStation Mouse motion are not a right stick. */
+        if (guarded || out->analog == PSX_MOD_PAD_NEGCON ||
+            out->analog == SIO_PAD_MOUSE)
+            h->mouse_reset(h->ctx);
         else h->mouse_fold(h->ctx, out->connected, out->analog, out->buttons,
                            &out->rx, &out->ry);
     }

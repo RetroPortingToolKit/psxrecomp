@@ -836,7 +836,8 @@ struct RuntimeConfig {
 
     // p1_device / p2_device: optional per-game default input sources for
     // fresh settings and launcher-less boots. Same vocabulary as settings.toml:
-    // "none", "keyboard", "auto"/"gamepad"/"controller", or an SDL GUID.
+    // "none", "keyboard", "auto"/"gamepad"/"controller", "mouse" (PlayStation
+    // Mouse, docs/PS_MOUSE.md), or an SDL GUID.
     // Per-install settings.toml still overrides these defaults.
     bool                  has_default_p1_device = false;
     bool                  has_default_p2_device = false;
@@ -857,6 +858,12 @@ struct RuntimeConfig {
     // choice is pointless. Distinct from lock_mode (which only hides the pad-mode
     // segment but keeps the device dropdown). Default false.
     bool                  controller_lock_device = false;
+
+    // supports_ps_mouse: the title works with the PlayStation Mouse
+    // (SCPH-1030). The launcher then offers "PlayStation Mouse" as Player 1's
+    // input source (docs/PS_MOUSE.md). Default false: the source list is
+    // unchanged. settings.toml p1_device/p2_device = "mouse" works either way.
+    bool                  controller_supports_ps_mouse = false;
 
     // deadzone: default analog-stick deadzone in raw SDL axis units (0..32767).
     // Applied both to the stick->d-pad press threshold and the analog-axis centre
@@ -1665,6 +1672,8 @@ struct UserSettings {
     //   "none"     — no pad in this port (port not connected)
     //   "keyboard" — driven by the keyboard map (input.ini)
     //   "<GUID>"   — an SDL game-controller GUID (SDL_JoystickGetGUIDString)
+    //   "mouse"    — a PlayStation Mouse (SCPH-1030) driven by the host mouse
+    //                (docs/PS_MOUSE.md; offline only, not on multitap seats)
     // Modes (see PadMode): analog / digital. Hybrid is mod-only. Defaults: P1 keyboard,
     // P2–P5 none. Deadzone default is 10% (3277/32767). TOML keys:
     // pN_device / pN_mode / pN_deadzone (N=1..5). Legacy bare `deadzone`

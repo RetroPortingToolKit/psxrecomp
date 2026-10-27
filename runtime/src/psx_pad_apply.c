@@ -8,6 +8,16 @@ void psx_pad_apply_to_sio(int port, const PsxNetPad *pad)
     if (sio_pad_on_multitap(port) && !sio_get_multitap_analog())
         sio_set_pad_config_capable(port, 0);
     sio_set_pad_state_slot(port, pad->buttons);
+    if (pad->analog == SIO_PAD_MOUSE) {
+        /* Local-only type (never on the netplay wire, hence not under
+         * PSX_NETPAD_TYPE_MAX). The type request lands at the next idle bus
+         * boundary; motion sent before it is a mouse is dropped by SIO. */
+        sio_set_pad_sticks(port, 0x80, 0x80, 0x80, 0x80);
+        sio_set_pad_negcon(port, 0, 0, 0);
+        sio_request_pad_type(port, SIO_PAD_MOUSE);
+        sio_set_pad_mouse(port, (int8_t)pad->lx, (int8_t)pad->ly, pad->buttons);
+        return;
+    }
     if (pad->analog == SIO_PAD_NEGCON) {
         sio_set_pad_sticks(port, pad->lx, 0x80, 0x80, 0x80);
         sio_set_pad_negcon(port, pad->rx, pad->ry, pad->ly);

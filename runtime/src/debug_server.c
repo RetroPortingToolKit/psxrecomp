@@ -8339,15 +8339,18 @@ static void handle_pad_status(int id, const char *json)
     uint16_t pad0 = sio_get_pad_buttons_slot(0);
     uint16_t pad1 = sio_get_pad_buttons_slot(1);
     uint8_t sticks0[4], sticks1[4], neg0[3], neg1[3];
+    int mouse0[2], mouse1[2];
+    sio_get_pad_mouse(0, &mouse0[0], &mouse0[1]);
+    sio_get_pad_mouse(1, &mouse1[0], &mouse1[1]);
     sio_get_pad_sticks(0, sticks0);
     sio_get_pad_sticks(1, sticks1);
     sio_get_pad_negcon(0, neg0);
     sio_get_pad_negcon(1, neg1);
     send_fmt("{\"id\":%d,\"ok\":true,\"pad\":\"0x%04X\","
              "\"slot0\":{\"buttons\":\"0x%04X\",\"connected\":%s,\"analog\":%s,\"type\":%d,\"sticks\":[%u,%u,%u,%u],"
-             "\"negcon\":[%u,%u,%u],\"mode_locked\":%s},"
+             "\"negcon\":[%u,%u,%u],\"mode_locked\":%s,\"mouse_owed\":[%d,%d]},"
              "\"slot1\":{\"buttons\":\"0x%04X\",\"connected\":%s,\"analog\":%s,\"type\":%d,\"sticks\":[%u,%u,%u,%u],"
-             "\"negcon\":[%u,%u,%u],\"mode_locked\":%s},"
+             "\"negcon\":[%u,%u,%u],\"mode_locked\":%s,\"mouse_owed\":[%d,%d]},"
              "\"override\":%d,\"override_frames\":%d,\"override_pad_type\":%d,"
              "\"override_p2\":%d,\"override_p2_frames\":%d,"
              "\"override_axes\":[%u,%u,%u,%u],\"override_axes_valid\":%s,"
@@ -8358,10 +8361,12 @@ static void handle_pad_status(int id, const char *json)
              sio_get_pad_analog(0),
              sticks0[0], sticks0[1], sticks0[2], sticks0[3],
              neg0[0], neg0[1], neg0[2], sio_get_pad_mode_locked(0) ? "true" : "false",
+             mouse0[0], mouse0[1],
              pad1, sio_get_pad_connected(1) ? "true" : "false", sio_get_pad_analog(1) ? "true" : "false",
              sio_get_pad_analog(1),
              sticks1[0], sticks1[1], sticks1[2], sticks1[3],
              neg1[0], neg1[1], neg1[2], sio_get_pad_mode_locked(1) ? "true" : "false",
+             mouse1[0], mouse1[1],
              s_input_override, s_input_frames, s_pad_type_override,
              s_input_override_p2, s_input_frames_p2,
              s_axis_st[0], s_axis_st[1], s_axis_st[2], s_axis_st[3],

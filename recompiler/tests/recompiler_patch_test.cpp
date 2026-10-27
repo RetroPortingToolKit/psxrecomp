@@ -159,6 +159,16 @@ p2_mode = "digital"
           "parser preserves per-game controller device defaults");
     check(!controller_defaults_config.runtime.has_multitap_default,
           "offline multitap keeps the framework default when unset");
+    check(!controller_defaults_config.runtime.controller_supports_ps_mouse,
+          "a title without supports_ps_mouse offers no PlayStation Mouse");
+
+    const auto ps_mouse = write_config(root, "ps-mouse", R"toml(
+[controller]
+supports_ps_mouse = true
+)toml");
+    check(PSXRecompV4::load_game_config(ps_mouse)
+              .runtime.controller_supports_ps_mouse,
+          "parser preserves [controller] supports_ps_mouse");
 
     const auto no_multitap = write_config(root, "no-multitap", R"toml(
 [controller]

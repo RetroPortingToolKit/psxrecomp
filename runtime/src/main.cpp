@@ -44,6 +44,8 @@
 #include "psx_savestate_menu.h"
 #include "host_osd.h"
 #include "local_mouse_sdl.h"
+#include "ps_mouse_input.h"
+#include "ps_mouse_sdl.h"
 #include "pad_external_input.h"
 #include "host_keymap.h"
 #include "png_write.h"       /* png_write_rgb — present_shot readback */
@@ -447,7 +449,7 @@ static SDL_Texture*  sdl_texture;
  * [controller] settings the launcher writes; the runtime opens the matching
  * SDL controller (or uses the keyboard) and feeds each PSX pad slot. */
 struct PlayerInput {
-    int   kind = 0;            /* 0=none, 1=keyboard, 2=controller */
+    int   kind = 0;            /* 0=none, 1=keyboard, 2=controller, 3=PS mouse */
     char  guid[40] = {0};      /* SDL joystick GUID string when kind==controller */
     /* Pad input mode (PSXRecompV4::PadMode): 1=analog (default), 2=digital.
      * Game-owned plugins may register a trusted per-sample presentation policy
@@ -475,6 +477,9 @@ static bool g_jogcon_ffb_invert = false;
 static PlayerInput g_players[PSX_MAX_PLAYERS];
 /* Offline SIO sample loop bound (from game.toml players; clamped). */
 static int g_offline_pad_count = 2;
+/* game.toml [controller] supports_ps_mouse: offer "PlayStation Mouse" as
+ * Player 1's launcher source (docs/PS_MOUSE.md). */
+static bool g_ps_mouse_launcher_entry = false;
 /* Set when [controller] lock_mode pins every seat to digital — blocks the
  * DualShock-on-tap hack from settings.toml / Lobby Settings / match_caps. */
 static int g_force_digital_pads = 0;
@@ -1103,6 +1108,7 @@ extern "C" void psx_frontend_on_savestate_loaded(void) {
     ++s_fmv_timeline_epoch;
     psx_projection_reset_session();
     psx_local_mouse_reset();
+    ps_mouse_input_reset();
     mod_runtime_on_savestate_loaded();
     dynres_note_savestate_loaded();
 #ifndef PSX_NO_DEBUG_TOOLS
@@ -4241,6 +4247,7 @@ static const char* netplay_start_failure(int nrc, const PsxNetplayConfig& cfg) {
 
 static void shutdown_runtime(void) {
     psx_local_mouse_clear();
+    psx_ps_mouse_release();
     /* (sljit removed 2026-07-15: overlay_compile_worker_stop joined the
      * off-thread JIT worker here; the worker no longer exists.) */
     psx_netplay_shutdown();
@@ -5890,6 +5897,7 @@ static int pad_mode_boot_analog(int mode) {
 }
 
 static int pad_type_boot(const PlayerInput& p, int mode) {
+    if (p.kind == 3) return SIO_PAD_MOUSE;
     return p.steering_wheel ? SIO_PAD_JOGCON
          : (pad_mode_boot_analog(mode) ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 }
@@ -5897,6 +5905,8 @@ static int pad_type_boot(const PlayerInput& p, int mode) {
 /* Boot/hotplug type for slot s: a registered title pad transform names the
  * type it presents before its first frame; otherwise the device/mode type. */
 static int pad_type_boot_for_slot(int s, const PlayerInput& p, int mode) {
+    /* A PlayStation Mouse port is the mouse; title transforms describe pads. */
+    if (p.kind == 3) return SIO_PAD_MOUSE;
     const int initial = mod_pad_transform_initial_type((uint32_t)s);
     return initial >= 0 ? initial : pad_type_boot(p, mode);
 }
@@ -5933,10 +5943,22 @@ static int assert_sio_pad_profile(int s, bool dev_here) {
      * down the config path -> phantom 0x00 reads.
      * Multitap taps are always digital (see sio_pad_on_multitap). */
     sio_set_pad_config_capable(
-        s, policy.callback ? policy.config_capable
-                           : (p.steering_wheel ||
-                              mode != PSXRecompV4::PAD_MODE_DIGITAL));
+        s, p.kind == 3 ? 0
+           : policy.callback ? policy.config_capable
+                             : (p.steering_wheel ||
+                                mode != PSXRecompV4::PAD_MODE_DIGITAL));
     return boot_mode;
+}
+
+/* The host mouse drives every port configured as a PlayStation Mouse
+ * (device "mouse"). It is an offline device: netplay never samples it. */
+static bool ps_mouse_port_for(const PlayerInput& p) { return p.kind == 3; }
+
+static void sync_ps_mouse_enabled(void) {
+    bool any = false;
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++)
+        any = any || ps_mouse_port_for(g_players[s]);
+    psx_ps_mouse_set_enabled(any && !psx_netplay_active());
 }
 
 /* Open/close SDL handles so they match g_players, and (re)assert each slot's
@@ -5971,6 +5993,7 @@ static void refresh_player_devices(void) {
             sio_set_pad_config_capable(s, 1);
         sio_set_pad_type(s, boot_type, 0x80, 0x80, 0x80, 0x80);
     }
+    sync_ps_mouse_enabled();
 }
 
 /* Parse a [controller] device string into a player slot:
@@ -5981,6 +6004,10 @@ static void set_player_device(PlayerInput& p, const std::string& dev, int mode) 
     std::string d = lower_copy(trim_copy(dev));
     if (d.empty() || d == "none") { p.kind = 0; }
     else if (d == "keyboard")     { p.kind = 1; }
+    else if (PSXRecompV4::launcher_device_is_ps_mouse(d)) {
+        /* SCPH-1030 PlayStation Mouse driven by the host mouse. */
+        p.kind = 3;
+    }
     else if (d == "auto" || d == "gamepad" || d == "controller") {
         /* First available SDL game controller (guid empty -> open_player falls
          * back to the first connected pad). Lets a user default to "my
@@ -6471,6 +6498,7 @@ static void dev_any_controller_sticks(uint8_t st[4]) {
 
 static void savestate_input_guard_arm(void) {
     psx_local_mouse_reset();
+    ps_mouse_input_reset();
     uint32_t now = (uint32_t)SDL_GetTicks();
     g_savestate_input_guard_min_until = now + 90u;
     g_savestate_input_guard_max_until = now + 700u;
@@ -6761,6 +6789,20 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
      * controller (PSX_DEV_INPUT=1). Default is strict per-slot routing. */
     const bool dev_here = (dev_any_input_enabled() && s == 0);
     if (p.kind == 0 && !dev_here) return 0;  /* no device in this port */
+    if (ps_mouse_port_for(p)) {
+        /* This frame's latched host mouse (sample_pad_into_sio latches it
+         * once); reading it here consumes nothing. Guarded or overlay-owned
+         * frames see a still mouse with no buttons. */
+        PsMouseFrame m;
+        if (guarded) ps_mouse_input_neutral(&m);
+        else ps_mouse_input_frame(&m);
+        out->buttons = m.buttons;
+        out->lx = (uint8_t)m.dx; out->ly = (uint8_t)m.dy;
+        out->rx = out->ry = 0x80u;
+        out->analog = (uint8_t)SIO_PAD_MOUSE;
+        out->connected = 1;
+        return 1;
+    }
 
     /* Resolve the pad type this frame FIRST — the effective analog/digital
      * state gates how the left stick is read for BOTH the button word and the
@@ -6882,6 +6924,7 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     const int  player  = s + 1;             /* keybinds.ini section (1..5) */
     const bool dev_here = false;
     if (p.kind == 0) return 0;  /* no device in this port */
+    if (ps_mouse_port_for(p)) return 0;  /* PlayStation Mouse: offline only */
 
     /* Same predicate as capture_pad_slot, with dev-any-input disabled:
      * netplay must stay exclusive so peers hash-agree. */
@@ -7700,6 +7743,8 @@ static void sample_pad_into_sio(int override) {
     if (n > PSX_MAX_PLAYERS) n = PSX_MAX_PLAYERS;
     const uint32_t consumer_sim =
         psx_start_consumer_enabled() ? psx_start_consumer_offline_frame() : 0u;
+    /* One host-mouse share per sample; every mouse port reads the same one. */
+    ps_mouse_input_latch();
     PadExtHooks hooks = pad_ext_main_hooks();
     for (int s = 0; s < n; s++) {
         PsxNetPad pad;
@@ -8560,6 +8605,7 @@ static void runtime_menu_host_loop(void) {
     if (!psx_runtime_menu_is_open()) return;
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
+    psx_ps_mouse_release();
     freeze_heartbeat_set_paused(1);
     psx_sdl_audio_set_paused(sdl_audio_device, 1);
     const int buttons[] = { SDL_CONTROLLER_BUTTON_B, SDL_CONTROLLER_BUTTON_DPAD_UP,
@@ -8628,6 +8674,7 @@ static void rewind_host_pause_loop(void) {
     jogcon_ffb_neutral_all();   /* the wheel goes slack while paused */
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
+    psx_ps_mouse_release();
     freeze_heartbeat_set_paused(1);
     while (psx_rewind_is_open()) {
 #ifndef PSX_NO_DEBUG_TOOLS
@@ -8696,6 +8743,7 @@ static bool host_pause_event(const SDL_Event& ev) {
 static void host_pause_loop(void) {
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
+    psx_ps_mouse_release();
     freeze_heartbeat_set_paused(1);
     psx_sdl_audio_set_paused(sdl_audio_device, 1);
     while (psx_host_pause_depth() > 0) {
@@ -8819,6 +8867,7 @@ static void savestate_menu_host_pause_loop(void) {
     jogcon_ffb_neutral_all();   /* the wheel goes slack while paused */
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
+    psx_ps_mouse_release();
     freeze_heartbeat_set_paused(1);
     while (savestate_menu_open) {
         SDL_Event ev;
@@ -8975,6 +9024,7 @@ static void recover_disconnected_controllers() {
 static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
+        if (psx_ps_mouse_event(ev)) continue;
         if (psx_local_mouse_event(ev)) continue;
         /* In-game overlay provider sees events first (host_overlay.h P3). */
         if (psx_host_input_sink_dispatch(&ev)) continue;
@@ -9180,6 +9230,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
 
     psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+    psx_ps_mouse_begin(sdl_window, local_mouse_live(override));
     {
         /* Outside every debug guard on purpose: production must be measurable. */
         extern uint64_t s_frame_count;
@@ -9338,6 +9389,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     if (!g_headless) {
         /* Pump SDL events to prevent window freeze. */
         psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+        psx_ps_mouse_begin(sdl_window, local_mouse_live(override));
         if (!drain_host_events()) return ep;
         host_pause_service();
         runtime_menu_poll_toggle();
@@ -9757,8 +9809,9 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * semantics) — the mid-frame re-sample would fork the resim. */
         if (g_low_latency_input && !psx_selfcheck_input_locked()) {
             SDL_GameControllerUpdate();  /* refresh pad state after the wait */
-            if (psx_local_mouse_installed()) {
+            if (psx_local_mouse_installed() || psx_ps_mouse_enabled()) {
                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+                psx_ps_mouse_begin(sdl_window, local_mouse_live(override));
                 if (!drain_host_events()) return ep;
                 /* The overlay may have opened during the pacer wait (its
                  * Start+Select chord): settle ui_capture before the pad
@@ -9769,6 +9822,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 if (psx_rewind_is_open()) rewind_host_pause_loop();
                 if (psx_host_pause_depth() > 0) host_pause_loop();
                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+                psx_ps_mouse_begin(sdl_window, local_mouse_live(override));
             } else {
                 SDL_PumpEvents(); // retain native timing when no policy exists
             }
@@ -16722,6 +16776,39 @@ namespace {
         g_rui_config_ini_path = (exe / "config.ini").string();
     }
 
+    /* Player 1's "PlayStation Mouse" source entry: recomp-ui's mouse source
+     * as a host-emulated device (no mouse-aim card or defaults), only for a
+     * title that declares supports_ps_mouse. */
+    static void psx_launcher_offer_ps_mouse(RecompLauncherCGameInfo* gi) {
+#if defined(RECOMP_LAUNCHER_HAS_MOUSE_SOURCE)
+        if (!gi || !g_ps_mouse_launcher_entry) return;
+        gi->has_mouse_controls = 1;
+        gi->mouse_source_label = "PlayStation Mouse";
+        gi->mouse_source_only = 1;
+#else
+        (void)gi;
+#endif
+    }
+
+    /* Whether this launcher shows that entry, and the player's choice in it.
+     * An older recomp-ui has neither: the mouse is then settings.toml only. */
+    bool launcher_ps_mouse_entry() {
+#if defined(RECOMP_LAUNCHER_HAS_MOUSE_SOURCE)
+        return g_ps_mouse_launcher_entry;
+#else
+        return false;
+#endif
+    }
+
+    int launcher_mouse_enabled(const RecompLauncherCSettings& ls) {
+#if defined(RECOMP_LAUNCHER_HAS_MOUSE_SOURCE)
+        return ls.mouse_enabled;
+#else
+        (void)ls;
+        return 0;
+#endif
+    }
+
     void ae_fill_psx_launcher_game_info(
         RecompLauncherCGameInfo* gi,
         const char* game_name_c,
@@ -16778,6 +16865,7 @@ namespace {
         gi->pad_mode_selectable = ctrl_lock_mode_b ? 0 : 1;
         gi->locked_pad_mode = locked_pad_mode_i;
         gi->lock_device = ctrl_lock_device_b ? 1 : 0;
+        psx_launcher_offer_ps_mouse(gi);
         gi->aspect_mask = 0;
         const PSXModNetplayProfile *view_profile = psx_mod_netplay_profile();
         if (view_profile && view_profile->loading_plugin_id)
@@ -17148,9 +17236,14 @@ void mh_launcher_settings_get(RecompLauncherCSettings* out) {
     ls.jogcon_force_feedback = psx_jogcon_ffb_player_enabled();
 #endif
     for (int i = 0; i < PSX_MAX_PLAYERS && i < RECOMP_LAUNCHER_MAX_PLAYERS; ++i) {
-        ls.player_src[i] = g_players[i].kind;
+        /* recomp-ui knows None/Keyboard/Gamepad; a PlayStation Mouse port
+         * shows as Keyboard (launcher_source_from_device). */
+        ls.player_src[i] = ps_mouse_port_for(g_players[i]) ? 1 : g_players[i].kind;
         ls.pad_mode[i] = PSXRecompV4::PAD_MODE_ANALOG;
     }
+#if defined(RECOMP_LAUNCHER_HAS_MOUSE_SOURCE)
+    ls.mouse_enabled = ps_mouse_port_for(g_players[0]) ? 1 : 0;
+#endif
 }
 unsigned mh_launcher_settings_apply(const RecompLauncherCSettings* s) {
     if (!s) return 0;
@@ -17167,6 +17260,7 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
     RecompLauncherCGameInfo& gi = *out;
     launcher_profile_apply("psx", &gi);
     psx_launcher_hide_mod_owned_rows(&gi);
+    psx_launcher_offer_ps_mouse(&gi);
     gi.name = g_ovl_name.c_str();
     gi.keybinds_path = g_ovl_keybinds.c_str();
     gi.config_path = g_ovl_config.c_str();
@@ -18351,6 +18445,7 @@ int main(int argc, char** argv) {
                 ctrl_locked_mode[i] = player_mode[i];
             ctrl_lock_mode    = gc.runtime.controller_lock_mode;
             ctrl_lock_device  = gc.runtime.controller_lock_device;
+            g_ps_mouse_launcher_entry = gc.runtime.controller_supports_ps_mouse;
             if (gc.runtime.has_deadzone) {
                 resolved_deadzone = gc.runtime.deadzone;
                 for (int i = 0; i < PSX_MAX_PLAYERS; ++i)
@@ -19310,6 +19405,11 @@ int main(int argc, char** argv) {
                     const std::string& d = player_device[i];
                     ls.player_src[i] =
                         PSXRecompV4::launcher_source_from_device(d);
+#if defined(RECOMP_LAUNCHER_HAS_MOUSE_SOURCE)
+                    if (i == 0)
+                        ls.mouse_enabled =
+                            PSXRecompV4::launcher_mouse_enabled_from_device(d);
+#endif
                     /* Round to the nearest launcher percent. Truncation turned a
                      * saved 20% value (6553/32767) into 19%, which the launcher's
                      * 5% normalization then silently reduced to 15%. */
@@ -19647,7 +19747,11 @@ int main(int argc, char** argv) {
                             ? ls.player_gamepad_instance[i] : 0;
 #endif
                         if (ls.player_src[i] == 1) {
-                            player_device[i] = "keyboard";
+                            /* Player 1: the PlayStation Mouse entry when offered; otherwise
+                             * Keyboard keeps a mouse seat configured in settings.toml. */
+                            player_device[i] = PSXRecompV4::launcher_keyboard_device(
+                                i == 0 && launcher_ps_mouse_entry(), launcher_mouse_enabled(ls),
+                                player_device[i]);
                         } else if (ls.player_src[i] == 0) {
                             player_device[i] = "none";
                         } else if (ls.player_gamepad_guid[i][0]) {
@@ -20634,6 +20738,11 @@ session_reboot:
             const bool dev_p1 = (dev_any_input_enabled() && s == 0);
             const int mode = effective_player_mode_for_sio(g_players[s], s);
             sio_set_pad_connected(s, (g_players[s].kind != 0 || dev_p1) ? 1 : 0);
+            if (ps_mouse_port_for(g_players[s])) {
+                sio_set_pad_type(s, SIO_PAD_MOUSE, 0x80, 0x80, 0x80, 0x80);
+                sio_set_pad_config_capable(s, 0);
+                continue;
+            }
             sio_set_pad_analog(s, pad_mode_boot_analog(mode), 0x80, 0x80, 0x80, 0x80);
             sio_set_pad_config_capable(s, mode != PSXRecompV4::PAD_MODE_DIGITAL);
         }
@@ -22020,6 +22129,11 @@ soft_return_lobby:
                 const std::string& d = player_device[i];
                 ls.player_src[i] =
                     PSXRecompV4::launcher_source_from_device(d);
+#if defined(RECOMP_LAUNCHER_HAS_MOUSE_SOURCE)
+                if (i == 0)
+                    ls.mouse_enabled =
+                        PSXRecompV4::launcher_mouse_enabled_from_device(d);
+#endif
                 ls.deadzone[i] =
                     (player_deadzone[i] * 100 + 32767 / 2) / 32767;
                 /* Verbatim, as in the first launcher entry above. */
@@ -22202,7 +22316,11 @@ soft_return_lobby:
                         ? ls.player_gamepad_instance[i] : 0;
 #endif
                     if (ls.player_src[i] == 1) {
-                        player_device[i] = "keyboard";
+                        /* Player 1: the PlayStation Mouse entry when offered; otherwise
+                         * Keyboard keeps a mouse seat configured in settings.toml. */
+                        player_device[i] = PSXRecompV4::launcher_keyboard_device(
+                            i == 0 && launcher_ps_mouse_entry(), launcher_mouse_enabled(ls),
+                            player_device[i]);
                     } else if (ls.player_src[i] == 0) {
                         player_device[i] = "none";
                     } else if (ls.player_gamepad_guid[i][0]) {

@@ -24,6 +24,8 @@
 extern uint32_t i_stat;
 /* Central IRQ-raise choke point (interrupts.c) — also records the device ring. */
 extern void psx_irq_raise(uint32_t bit, uint32_t detail);
+/* Guest cycle clock (psx_cycles.h); paces the mouse's stale-motion clear. */
+extern uint64_t psx_get_cycle_count(void);
 
 /* IRQ bit for SIO0 */
 #define IRQ_SIO0 7
@@ -58,6 +60,22 @@ static uint8_t pad_stick[PSX_MAX_PLAYERS][4] = {
  * Host input like the sticks: refreshed before each guest poll, not device
  * state, so it is not part of the snapshot. */
 static PSX_BSS uint8_t pad_negcon_analog[PSX_MAX_PLAYERS][3];
+/* PlayStation Mouse device state, modelled on Mednafen psx/input/mouse.cpp.
+ * Motion accumulates between polls; each 0x42 sends at most one signed byte
+ * per axis and keeps the remainder for the next poll. pad_mouse_held is the
+ * current button state (bit 0 right, bit 1 left) and pad_mouse_btn every button
+ * pressed since the previous poll; a poll reports both, so a click shorter than
+ * a poll interval is reported once and a release shows on the next poll
+ * (Mednafen's latch reports a release one poll late). Without a poll for MOUSE_CLEAR_CYCLES the
+ * device drops stale motion and latched clicks. Guest-visible: snapshotted. */
+#define MOUSE_ACCUM_MAX (30 * 127)
+#define MOUSE_ACCUM_MIN (30 * -128)
+#define MOUSE_CLEAR_CYCLES (33868800u / 4u)
+static PSX_BSS int16_t pad_mouse_dx[PSX_MAX_PLAYERS];
+static PSX_BSS int16_t pad_mouse_dy[PSX_MAX_PLAYERS];
+static PSX_BSS uint8_t pad_mouse_btn[PSX_MAX_PLAYERS];
+static PSX_BSS uint8_t pad_mouse_held[PSX_MAX_PLAYERS];
+static PSX_BSS uint64_t pad_mouse_clear_ref[PSX_MAX_PLAYERS];
 /* The analog-capable device behind a config-mode pad: SIO_PAD_DUALSHOCK or
  * SIO_PAD_JOGCON. Command 0x44 switches that device between its analog mode
  * and digital mode (0x41); remembering the device keeps a JogCon that the game
@@ -270,8 +288,38 @@ static uint8_t pad_protocol_id(int logical) {
     if (pad_in_config[logical]) return 0xF3;
     if (pad_analog[logical] == SIO_PAD_JOGCON) return 0xE3;
     if (pad_analog[logical] == SIO_PAD_NEGCON) return 0x23;
+    if (pad_analog[logical] == SIO_PAD_MOUSE) return 0x12;
     if (pad_analog[logical] == SIO_PAD_DUALSHOCK) return 0x73;
     return 0x41;
+}
+
+static void pad_mouse_clear(int logical) {
+    pad_mouse_dx[logical] = 0;
+    pad_mouse_dy[logical] = 0;
+    pad_mouse_btn[logical] = 0;
+    pad_mouse_held[logical] = 0;
+    pad_mouse_clear_ref[logical] = 0;
+}
+
+static int8_t pad_mouse_take(int16_t *accum) {
+    const int v = *accum < -128 ? -128 : (*accum > 127 ? 127 : *accum);
+    *accum = (int16_t)(*accum - v);
+    return (int8_t)v;
+}
+
+/* PlayStation Mouse 0x42 payload: ID 5A12h, buttons, then signed X and Y
+ * motion (PSX-SPX "Mouse"). Builds the frame the moment the command byte
+ * arrives and consumes what it reports, as Mednafen mouse.cpp does. */
+static void pad_fill_mouse_poll(int logical, uint8_t out[6]) {
+    out[0] = 0x12;
+    out[1] = 0x5A;
+    out[2] = 0xFF;
+    out[3] = (uint8_t)(0xFCu ^
+        ((unsigned)(pad_mouse_btn[logical] | pad_mouse_held[logical]) << 2));
+    out[4] = (uint8_t)pad_mouse_take(&pad_mouse_dx[logical]);
+    out[5] = (uint8_t)pad_mouse_take(&pad_mouse_dy[logical]);
+    pad_mouse_btn[logical] = 0;
+    pad_mouse_clear_ref[logical] = psx_get_cycle_count();
 }
 
 /* NeGcon (NPC-101) poll payload: buttons, twist, then analog I, II and L
@@ -862,6 +910,7 @@ void sio_init(void) {
     memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
     memset(pad_negcon_analog, 0, sizeof(pad_negcon_analog));
     for (int i = 0; i < PSX_MAX_PLAYERS; i++) {
+        pad_mouse_clear(i);
         pad_analog_device[i] = SIO_PAD_DUALSHOCK;
         pad_buttons[i] = 0xFFFF;
         pad_analog[i] = 0;
@@ -936,6 +985,11 @@ void sio_set_multitap(int enabled) {
         mtap_next_mode[0] = mtap_next_mode[1] = MTAP_NEXT_SLOT_A;
         mtap_req_this[0] = mtap_req_this[1] = 0;
         mtap_returned[0] = mtap_returned[1] = MTAP_NEXT_SLOT_A;
+    }
+    /* A mouse cannot sit on a tap seat (see pad_type_for_slot). */
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        if (pad_analog[s] == SIO_PAD_MOUSE && sio_pad_on_multitap(s))
+            sio_request_pad_type(s, SIO_PAD_DIGITAL);
     }
 #else
     (void)enabled;
@@ -1068,6 +1122,7 @@ void sio_set_pad_connected(int slot, int connected) {
         pad_jogcon_last_steering[slot] = 0;
         pad_jogcon_motor_command[slot] = 0;
         pad_jogcon_motor_strength[slot] = 0;
+        pad_mouse_clear(slot);
     }
 }
 
@@ -1119,9 +1174,26 @@ void sio_set_pad_state_slot(int slot, uint16_t buttons) {
  * lock and the rumble map/motors exactly as unplugging one pad and plugging in
  * another would. A game-locked analog mode therefore never pins a DualShock in
  * place of a requested NeGcon (the lock belongs to the device that left), and a
- * DualShock that returns powers up unlocked with an unassigned motor map. */
+ * DualShock that returns powers up unlocked with an unassigned motor map.
+ * The PlayStation Mouse is a device of its own in the same sense: no config
+ * mode, no motors, and the motion it owed belongs to the mouse that left. */
+static int pad_device_class(uint8_t type) {
+    if (type == SIO_PAD_NEGCON || type == SIO_PAD_MOUSE) return type;
+    return SIO_PAD_DUALSHOCK; /* digital / DualShock / JogCon: one 0x44 device */
+}
+
 static int pad_type_is_device_swap(uint8_t from, uint8_t to) {
-    return (from == SIO_PAD_NEGCON) != (to == SIO_PAD_NEGCON);
+    return pad_device_class(from) != pad_device_class(to);
+}
+
+/* A multitap bulk frame carries 8-byte pad blocks; no reference documents how
+ * a 6-byte mouse appears there, so a tap seat presents a digital pad instead. */
+static int pad_type_for_slot(int slot, int type) {
+    if (type < SIO_PAD_DIGITAL || type > SIO_PAD_MOUSE)
+        return SIO_PAD_DIGITAL;
+    if (type == SIO_PAD_MOUSE && sio_pad_on_multitap(slot))
+        return SIO_PAD_DIGITAL;
+    return type;
 }
 
 static void pad_commit_type(int slot, uint8_t type) {
@@ -1137,6 +1209,7 @@ static void pad_commit_type(int slot, uint8_t type) {
         memset(pad_rumble_map[slot], 0xFF, sizeof(pad_rumble_map[slot]));
         pad_rumble_small[slot] = 0;
         pad_rumble_large[slot] = 0;
+        pad_mouse_clear(slot);
     }
     if (type == SIO_PAD_DUALSHOCK || type == SIO_PAD_JOGCON)
         pad_analog_device[slot] = type;
@@ -1155,8 +1228,7 @@ void sio_set_pad_type(int slot, int type,
         type = SIO_PAD_DIGITAL;
         lx = ly = rx = ry = 0x80;
     }
-    if (type < SIO_PAD_DIGITAL || type > SIO_PAD_NEGCON)
-        type = SIO_PAD_DIGITAL;
+    type = pad_type_for_slot(slot, type);
     if (type == SIO_PAD_JOGCON)
         pad_supports_config[slot] = 1;
     pad_commit_type(slot, (uint8_t)type);
@@ -1194,6 +1266,39 @@ void sio_get_pad_negcon(int slot, uint8_t out[3]) {
     memcpy(out, pad_negcon_analog[slot], 3);
 }
 
+static int16_t pad_mouse_accumulate(int16_t accum, int delta) {
+    int v = (int)accum + delta;
+    if (v > MOUSE_ACCUM_MAX) v = MOUSE_ACCUM_MAX;
+    if (v < MOUSE_ACCUM_MIN) v = MOUSE_ACCUM_MIN;
+    return (int16_t)v;
+}
+
+void sio_set_pad_mouse(int slot, int dx, int dy, uint16_t buttons) {
+    uint8_t held = 0;
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS || pad_analog[slot] != SIO_PAD_MOUSE)
+        return;
+    /* Unpolled for a quarter second: the device forgets what it owed. */
+    const uint64_t now = psx_get_cycle_count();
+    if (now - pad_mouse_clear_ref[slot] >= MOUSE_CLEAR_CYCLES) {
+        pad_mouse_clear_ref[slot] = now;
+        pad_mouse_dx[slot] = 0;
+        pad_mouse_dy[slot] = 0;
+        pad_mouse_btn[slot] = 0;
+    }
+    if (!(buttons & SIO_MOUSE_BTN_RIGHT)) held |= 0x01;
+    if (!(buttons & SIO_MOUSE_BTN_LEFT))  held |= 0x02;
+    pad_mouse_dx[slot] = pad_mouse_accumulate(pad_mouse_dx[slot], dx);
+    pad_mouse_dy[slot] = pad_mouse_accumulate(pad_mouse_dy[slot], dy);
+    pad_mouse_btn[slot] |= held;
+    pad_mouse_held[slot] = held;
+}
+
+void sio_get_pad_mouse(int slot, int *dx, int *dy) {
+    const int ok = slot >= 0 && slot < PSX_MAX_PLAYERS;
+    if (dx) *dx = ok ? pad_mouse_dx[slot] : 0;
+    if (dy) *dy = ok ? pad_mouse_dy[slot] : 0;
+}
+
 int sio_get_pad_mode_locked(int slot) {
     return (slot >= 0 && slot < PSX_MAX_PLAYERS) ? analog_mode_locked[slot] : 0;
 }
@@ -1204,8 +1309,7 @@ int sio_get_pad_mode_locked(int slot) {
 void sio_request_pad_type(int slot, int type) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
     if (sio_tap_force_digital(slot)) type = SIO_PAD_DIGITAL;
-    if (type < SIO_PAD_DIGITAL || type > SIO_PAD_NEGCON)
-        type = SIO_PAD_DIGITAL;
+    type = pad_type_for_slot(slot, type);
     /* A JogCon is a config-capable controller even when its type is selected
      * through this deferred per-frame path (debug injection / hot selection).
      * Otherwise it reports ID 0xE3 to 0x42 but silently ignores R4's 0x43
@@ -1427,6 +1531,25 @@ static void pad_process_byte(uint8_t tx_byte) {
                 pad_response_idx = 0;
                 pad_current_cmd = 0;
             }
+        } else if (pad_analog[lp] == SIO_PAD_MOUSE) {
+            /* The mouse shifts out its ID low byte (0x12) with the command
+             * byte whatever the command is. Only 0x42 continues: 5Ah, the
+             * button halfword and the two motion bytes, ACKing all but the
+             * last. Anything else gets no ACK and ends the transaction
+             * (Mednafen mouse.cpp command_phase -1). It never enters config
+             * mode, so 0x43..0x4F take this same path. */
+            sio_rx_data = 0x12;
+            if (tx_byte == 0x42) {
+                pad_fill_mouse_poll(lp, pad_response);
+                pad_response_len = 6;
+                pad_state = PAD_SEND_RESPONSE;
+                sio_stat |= SIO_STAT_ACK;
+            } else {
+                pad_state = PAD_IDLE;
+                pad_response_len = 0;
+                pad_response_idx = 0;
+                pad_current_cmd = 0;
+            }
         } else if (tx_byte == 0x42) {
             /* Read poll. Analog (or in-config) uses the 8-byte format with the
              * four stick axes; a plain digital pad uses the 4-byte format. */
@@ -1635,6 +1758,7 @@ static void pad_process_byte(uint8_t tx_byte) {
                 /* The six data bytes after 0x42's leading 0x00 occupy response
                  * indexes 2..7. Route each through the map negotiated by 0x4D. */
                 if (pad_current_cmd == 0x42 && pad_analog[rs] != SIO_PAD_NEGCON &&
+                    pad_analog[rs] != SIO_PAD_MOUSE &&
                     pad_response_idx >= 2 && pad_response_idx < 8) {
                     const unsigned map_index = (unsigned)pad_response_idx - 2u;
                     const uint8_t motor = pad_rumble_map[rs][map_index];
@@ -3043,6 +3167,24 @@ static int sio_snap_emit_pad_mode(PstW *w) {
            pst_w_bytes(w, pad_analog_device, sizeof(pad_analog_device));
 }
 
+/* PlayStation Mouse motion/buttons still owed to the guest and the clear
+ * timer reference; appended after the pad mode so older snapshots stay
+ * loadable (they restore a mouse that owes nothing). */
+static int sio_snap_emit_mouse(PstW *w) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        if (!pst_w_i16(w, pad_mouse_dx[s]) || !pst_w_i16(w, pad_mouse_dy[s]) ||
+            !pst_w_u8(w, pad_mouse_btn[s]) || !pst_w_u8(w, pad_mouse_held[s]) ||
+            !pst_w_u64(w, pad_mouse_clear_ref[s]))
+            return 0;
+    }
+    return 1;
+}
+
+static void sio_mouse_legacy_defaults(void) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++)
+        pad_mouse_clear(s);
+}
+
 static void sio_pad_mode_legacy_defaults(void) {
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
         analog_mode_locked[s] = 0;
@@ -3059,12 +3201,14 @@ static int sio_snap_emit_fsm(PstW *w) {
 static int sio_snap_emit(PstW *w) {
     return sio_snap_emit_regs(w) && sio_snap_emit_pads(w) &&
            sio_snap_emit_mc(w) && sio_snap_emit_fsm(w) && sio_snap_emit_rumble(w) &&
-           sio_snap_emit_jogcon(w) && sio_snap_emit_pad_mode(w);
+           sio_snap_emit_jogcon(w) && sio_snap_emit_pad_mode(w) &&
+           sio_snap_emit_mouse(w);
 }
 
 /* Cumulative section end offsets in the snapshot wire:
  * out[0]=regs, out[1]=pads, out[2]=memcard, out[3]=fsm_pace (netplay),
- * out[4]=full including fsm metadata, rumble, JogCon and pad-mode state. */
+ * out[4]=full including fsm metadata, rumble, JogCon, pad-mode and mouse
+ * state. */
 void sio_snapshot_section_ends(uint32_t out[5]) {
     PstW w;
     pst_w_init(&w, NULL, 0);
@@ -3080,6 +3224,7 @@ void sio_snapshot_section_ends(uint32_t out[5]) {
     (void)sio_snap_emit_rumble(&w);
     (void)sio_snap_emit_jogcon(&w);
     (void)sio_snap_emit_pad_mode(&w);
+    (void)sio_snap_emit_mouse(&w);
     out[4] = (uint32_t)w.written;
 }
 
@@ -3177,6 +3322,7 @@ static int sio_snap_parse(PstR *r) {
             pad_rumble_map[s][1] = 0x01;
         }
         sio_pad_mode_legacy_defaults();
+        sio_mouse_legacy_defaults();
         return 1;
     }
     if (!pst_r_bytes(r, pad_rumble_map, sizeof(pad_rumble_map)) ||
@@ -3190,6 +3336,7 @@ static int sio_snap_parse(PstR *r) {
         memset(pad_jogcon_motor_command, 0, sizeof(pad_jogcon_motor_command));
         memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
         sio_pad_mode_legacy_defaults();
+        sio_mouse_legacy_defaults();
         return 1;
     }
     if (!pst_r_bytes(r, pad_jogcon_last_steering,
@@ -3200,6 +3347,7 @@ static int sio_snap_parse(PstR *r) {
     /* Pre-pad-mode snapshots: unlocked, device inferred from the type. */
     if (r->p == r->end) {
         sio_pad_mode_legacy_defaults();
+        sio_mouse_legacy_defaults();
         return 1;
     }
     if (!pst_r_bytes(r, analog_mode_locked, sizeof(analog_mode_locked)) ||
@@ -3209,6 +3357,22 @@ static int sio_snap_parse(PstR *r) {
         analog_mode_locked[s] = analog_mode_locked[s] ? 1 : 0;
         if (pad_analog_device[s] != SIO_PAD_JOGCON)
             pad_analog_device[s] = SIO_PAD_DUALSHOCK;
+    }
+    /* Pre-mouse snapshots: no motion or clicks owed. */
+    if (r->p == r->end) {
+        sio_mouse_legacy_defaults();
+        return 1;
+    }
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        int16_t dx, dy;
+        if (!pst_r_i16(r, &dx) || !pst_r_i16(r, &dy) ||
+            !pst_r_u8(r, &pad_mouse_btn[s]) || !pst_r_u8(r, &pad_mouse_held[s]) ||
+            !pst_r_u64(r, &pad_mouse_clear_ref[s]))
+            return 0;
+        pad_mouse_dx[s] = pad_mouse_accumulate(0, dx);
+        pad_mouse_dy[s] = pad_mouse_accumulate(0, dy);
+        pad_mouse_btn[s] &= 0x03;
+        pad_mouse_held[s] &= 0x03;
     }
     if (r->p != r->end) return 0;
     return 1;
@@ -3240,11 +3404,15 @@ int sio_snapshot_validate(const uint8_t *p, uint32_t len) {
                                   sizeof(pad_jogcon_motor_command));
     const uint32_t mode_bytes = (uint32_t)(sizeof(analog_mode_locked) +
                                 sizeof(pad_analog_device));
+    const uint32_t mouse_bytes = (uint32_t)(PSX_MAX_PLAYERS * (2 + 2 + 1 + 1 + 8));
     return p && (len == current ||
-                 (len < current && len + mode_bytes == current) ||
-                 (len < current && len + mode_bytes + jogcon_bytes == current) ||
+                 (len < current && len + mouse_bytes == current) ||
+                 (len < current && len + mouse_bytes + mode_bytes == current) ||
                  (len < current &&
-                  len + mode_bytes + jogcon_bytes + rumble_bytes == current));
+                  len + mouse_bytes + mode_bytes + jogcon_bytes == current) ||
+                 (len < current &&
+                  len + mouse_bytes + mode_bytes + jogcon_bytes + rumble_bytes ==
+                      current));
 }
 
 int sio_snapshot_read(const uint8_t *p, uint32_t len) {

@@ -376,6 +376,8 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_jogcon_ffb_sdl.cpp
     ${PSXRECOMP_ROOT}/runtime/src/local_mouse_policy.cpp
     ${PSXRECOMP_ROOT}/runtime/src/local_mouse_sdl.cpp
+    ${PSXRECOMP_ROOT}/runtime/src/ps_mouse_input.c
+    ${PSXRECOMP_ROOT}/runtime/src/ps_mouse_sdl.cpp
     ${PSXRECOMP_ROOT}/runtime/src/memory.c
     ${PSXRECOMP_ROOT}/runtime/src/psx_ram_geometry.c
     ${PSXRECOMP_ROOT}/runtime/src/kernel_patch_ranges.c

@@ -1260,6 +1260,10 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
         if (ct.contains("lock_device")) {
             rt.controller_lock_device = toml::find<bool>(ct, "lock_device");
         }
+        if (ct.contains("supports_ps_mouse")) {
+            rt.controller_supports_ps_mouse =
+                toml::find<bool>(ct, "supports_ps_mouse");
+        }
         if (ct.contains("deadzone")) {
             const auto n = toml::find<int64_t>(ct, "deadzone");
             if (n < 0 || n > 32767)

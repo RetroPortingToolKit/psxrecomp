@@ -57,6 +57,7 @@ int memcard_write_sector(int card, int sector, const uint8_t *buf) {
     (void)card; (void)sector; (void)buf; return -1;
 }
 void memcard_flush(int card) { (void)card; }
+int memcard_last_flush_result(int card) { (void)card; return -1; }
 
 #define SIO_TX_DATA 0x1F801040u
 #define SIO_RX_DATA 0x1F801040u
@@ -170,19 +171,22 @@ int main(void) {
     EXPECT("snapshot.current.small", 0x01, small);
     EXPECT("snapshot.current.large", 0x80, large);
 
-    /* The pad-mode section (0x44 lock + device) and the JogCon rollback
-     * fields each add four bytes for a two-seat build. Removing them restores
-     * the preceding formats; removing all twenty-four trailing bytes models a
-     * pre-rumble state. */
+    /* The trailing mouse section adds 28 bytes for a two-seat build; the
+     * pad-mode section (0x44 lock + device) and the JogCon rollback fields
+     * each add four more. Removing them restores the preceding formats;
+     * removing the twenty-four bytes before the mouse section as well models
+     * a pre-rumble state. */
+    EXPECT("snapshot.pre-mouse.read", 1,
+           sio_snapshot_read(snapshot, snapshot_len - 28));
     EXPECT("snapshot.pre-pad-mode.read", 1,
-           sio_snapshot_read(snapshot, snapshot_len - 4));
+           sio_snapshot_read(snapshot, snapshot_len - 28 - 4));
     EXPECT("snapshot.pre-jogcon.read", 1,
-           sio_snapshot_read(snapshot, snapshot_len - 8));
+           sio_snapshot_read(snapshot, snapshot_len - 28 - 8));
     EXPECT("snapshot.pre-jogcon.small", 0x01,
            (sio_get_pad_rumble(0, &small, &large), small));
     EXPECT("snapshot.pre-jogcon.large", 0x80, large);
     EXPECT("snapshot.legacy.read", 1,
-           sio_snapshot_read(snapshot, snapshot_len - 24));
+           sio_snapshot_read(snapshot, snapshot_len - 28 - 24));
     sio_get_pad_rumble(0, &small, &large);
     EXPECT("snapshot.legacy.small", 0x00, small);
     EXPECT("snapshot.legacy.large", 0x00, large);

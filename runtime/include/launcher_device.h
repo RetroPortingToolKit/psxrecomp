@@ -28,17 +28,33 @@ inline std::string normalize_launcher_device(const std::string& device) {
     return normalized;
 }
 
+// "mouse" (aliases "ps_mouse", "playstation_mouse") puts an SCPH-1030
+// PlayStation Mouse driven by the host mouse in the port.
+inline bool launcher_device_is_ps_mouse(const std::string& device) {
+    const std::string normalized = normalize_launcher_device(device);
+    return normalized == "mouse" || normalized == "ps_mouse" ||
+           normalized == "playstation_mouse";
+}
+
+// recomp-ui offers None / Keyboard / Gamepad. A PlayStation Mouse seat is
+// shown as the host keyboard-and-mouse source (1), and keeping that source
+// keeps the mouse (see launcher_device_from_source); picking None or a
+// gamepad replaces it.
 inline int launcher_source_from_device(const std::string& device) {
     const std::string normalized = normalize_launcher_device(device);
     if (normalized.empty() || normalized == "none") return 0;
-    if (normalized == "keyboard") return 1;
+    if (normalized == "keyboard" || launcher_device_is_ps_mouse(normalized))
+        return 1;
     return 2;
 }
 
 inline std::string launcher_device_from_source(
     int source, const std::string& previous_device) {
     if (source <= 0) return "none";
-    if (source == 1) return "keyboard";
+    if (source == 1) {
+        return launcher_device_is_ps_mouse(previous_device)
+            ? trim_launcher_device(previous_device) : "keyboard";
+    }
 
     // recomp-ui's C ABI currently returns a source category, not the selected
     // controller GUID. Preserve an existing gamepad/GUID assignment; when the
@@ -47,6 +63,23 @@ inline std::string launcher_device_from_source(
         return trim_launcher_device(previous_device);
     }
     return "gamepad";
+}
+
+// Player 1's PlayStation Mouse entry (game.toml [controller]
+// supports_ps_mouse, recomp-ui RECOMP_LAUNCHER_HAS_MOUSE_SOURCE) is the
+// keyboard-family source with Settings.mouse_enabled = 1.
+inline int launcher_mouse_enabled_from_device(const std::string& device) {
+    return launcher_device_is_ps_mouse(device) ? 1 : 0;
+}
+
+// The keyboard-family source back to a device string. With the entry offered
+// the player's choice decides; without it an existing mouse seat (configured
+// in settings.toml) is kept, as launcher_device_from_source does.
+inline std::string launcher_keyboard_device(bool mouse_entry_offered,
+                                            int mouse_enabled,
+                                            const std::string& previous_device) {
+    if (mouse_entry_offered) return mouse_enabled ? "mouse" : "keyboard";
+    return launcher_device_from_source(1, previous_device);
 }
 
 // Pad mode for one seat on the way OUT of the launcher.

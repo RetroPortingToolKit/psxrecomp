@@ -57,6 +57,7 @@ int memcard_write_sector(int card, int sector, const uint8_t *buf) {
     (void)card; (void)sector; (void)buf; return -1;
 }
 void memcard_flush(int card) { (void)card; }
+int memcard_last_flush_result(int card) { (void)card; return -1; }
 
 #define SIO_TX_DATA 0x1F801040u
 #define SIO_RX_DATA 0x1F801040u
@@ -221,10 +222,11 @@ int main(void) {
     (void)xchg(0, 0x00);
 
     const uint32_t snapshot_len = sio_snapshot_bytes();
-    /* JogCon steering[0] sits before steering[1..], the motor bytes and the
-     * trailing pad-mode section (lock + device per pad). */
+    /* JogCon steering[0] sits before steering[1..], the motor bytes, the
+     * pad-mode section (lock + device per pad) and the trailing mouse section
+     * (14 bytes per pad). */
     const uint32_t steering_at = snapshot_len - 2u * PSX_MAX_PLAYERS -
-                                 2u * PSX_MAX_PLAYERS;
+                                 2u * PSX_MAX_PLAYERS - 14u * PSX_MAX_PLAYERS;
     uint8_t *snapshot = (uint8_t *)malloc(snapshot_len);
     if (!snapshot) return 1;
     sio_snapshot_write(snapshot);

@@ -57,6 +57,7 @@ int memcard_write_sector(int card, int sector, const uint8_t *buf) {
     (void)card; (void)sector; (void)buf; return -1;
 }
 void memcard_flush(int card) { (void)card; }
+int memcard_last_flush_result(int card) { (void)card; return -1; }
 
 #define SIO_TX_DATA 0x1F801040u
 #define SIO_RX_DATA 0x1F801040u
@@ -142,6 +143,46 @@ int main(void) {
         uint8_t p[3];
         sio_get_pad_negcon(0, p);
         EXPECT("back.pressure.cleared", 0, p[0] | p[1] | p[2]);
+    }
+
+    /* PlayStation Mouse: lx/ly carry this frame's signed motion and the
+     * buttons word the active-low mouse bits. The type request lands at the
+     * first idle boundary; each apply adds its motion exactly once. */
+    {
+        PsxNetPad m = { 0xFFFFu, 0x00, 0x00, 0x80, 0x80, SIO_PAD_MOUSE, 1 };
+        fresh();
+        psx_pad_apply_to_sio(0, &m);
+        poll_bytes(b);
+        EXPECT("mouse.id", 0x12, b[1]);
+        EXPECT("mouse.status", 0x5A, b[2]);
+        EXPECT("mouse.idle.high", 0xFC, b[4]);
+        EXPECT("mouse.frame.end", 0xFF, b[7]);
+        m.lx = (uint8_t)(int8_t)-7;
+        m.ly = 12;
+        m.buttons = (uint16_t)~SIO_MOUSE_BTN_LEFT;
+        psx_pad_apply_to_sio(0, &m);
+        psx_pad_apply_to_sio(0, &m);
+        (void)xchg(0x01); (void)xchg(0x42);
+        for (int i = 2; i < 7; i++) b[i] = xchg(0x00);
+        EXPECT("mouse.left", 0xF4, b[4]);
+        EXPECT("mouse.x.twice", (uint8_t)-14, b[5]);
+        EXPECT("mouse.y.twice", 24, b[6]);
+        EXPECT("mouse.no.sticks", 0x80, (sio_get_pad_sticks(0, a), a[2]));
+        /* Leaving the mouse drops what it still owed. */
+        m.lx = 100;
+        psx_pad_apply_to_sio(0, &m);
+        psx_pad_apply_to_sio(0, &ds);
+        poll_bytes(b);
+        EXPECT("mouse.to.ds", 0x73, b[1]);
+        {
+            int dx = 1, dy = 1;
+            sio_get_pad_mouse(0, &dx, &dy);
+            EXPECT("mouse.to.ds.cleared", 0, dx | dy);
+        }
+        /* Local-only: netplay normalization never yields a mouse. */
+        PsxNetPad w = m;
+        psx_netplay_normalize_pad(&w);
+        EXPECT("mouse.not.on.wire", 0, w.analog);
     }
 
     /* An out-of-range type applies as digital. */

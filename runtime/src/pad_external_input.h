@@ -13,7 +13,8 @@
  *         documents). Declining delivers the stock pad of (1)/(2).
  *   (3) local mouse policy (psx_mod_set_local_mouse_policy), P1 only: may
  *         override ONLY the right analog axes of whatever (1)-(2b) produced;
- *         a NeGcon result has no right stick, so it resets the mouse.
+ *         a NeGcon or PlayStation Mouse result has no right stick, so it
+ *         resets the mouse policy. A PlayStation Mouse port also skips (2b).
  *
  * Precedence: a source never suppresses the mouse policy. The mouse sees the
  * RESOLVED pad (final buttons, final analog flag, final right stick), so a
