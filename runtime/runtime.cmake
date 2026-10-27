@@ -357,6 +357,7 @@ endif()
 # PSX_RECOMP_UI: wire the shared Dear ImGui launcher from the *game* repo's
 # root recomp-ui submodule (CMAKE_SOURCE_DIR/recomp-ui). Not vendored in
 # psxrecomp — games that need the launcher own the pin.
+option(PSX_MEMORY_CARD_MANAGER "Offer the optional PS1 memory-card editor" OFF)
 option(PSX_RECOMP_UI "Build the shared recomp-ui Dear ImGui launcher" ON)
 option(PSX_SHELLWIN_INTERP "Default the shell-window dirty-RAM interpreter to ON ( BIOS without shell seeds )" OFF)
 set(RECOMP_UI_ROOT "" CACHE PATH
@@ -1677,6 +1678,12 @@ function(psxrecomp_add_runtime_target target)
         ${PSXRT_EXTRAS_SOURCES}
     )
     target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode)
+    if(PSX_MEMORY_CARD_MANAGER)
+        target_compile_definitions(${target} PRIVATE PSX_MEMORY_CARD_MANAGER=1)
+        if(WIN32)
+            target_link_libraries(${target} PRIVATE advapi32)
+        endif()
+    endif()
     psxrecomp_windows_manifest(${target})
     psxrecomp_sha256_file(${target})
     set(_execution_contract
