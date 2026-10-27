@@ -16,7 +16,12 @@ void psx_frontend_on_savestate_refused(int load, int slot, const char* reason) {
 int psx_netplay_active(void) { return 0; }
 int psx_netplay_is_host(void) { return 1; }
 int psx_hle_scheduler_enabled(void) { return 1; }
-int psx_mod_function_entry_active(void) { return 0; }
+static int mod_callback, override_callback;
+static unsigned host_depth;
+int g_psx_guest_time_frozen;
+int psx_mod_function_entry_active(void) { return mod_callback; }
+int func_override_active(void) { return override_callback; }
+unsigned psx_snapshot_host_call_depth(void) { return host_depth; }
 int psx_is_dispatchable(uint32_t pc) { return pc != 0; }
 uint32_t psx_last_irq_check_pc(void) { return 0; }
 uint32_t psx_compiled_irq_resume_pc(void) { return 0; }
@@ -156,6 +161,36 @@ int main(void) {
         assert(savestate_set_content_scope(""));
         assert(savestate_slot_path(2, scoped, sizeof(scoped)) && !strcmp(shared, scoped));
     }
-    puts("savestate title policy tests passed");
+    /* Exercise the real poller, not just its save resume-PC helper. Every
+     * serializer/device stub asserts if reached while a host scope is live.
+     * Check file saves/loads and protocol blobs retain their queued data. */
+    for (int guard = 0; guard < 4; ++guard) {
+        mod_callback = guard == 0;
+        host_depth = guard == 1 ? 2u : 0u;
+        override_callback = guard == 2;
+        g_psx_guest_time_frozen = guard == 3;
+        for (int operation = 0; operation < 4; ++operation) {
+            savestate_set_title_blocked(0);
+            if (operation == 0 || operation == 3)
+                assert(savestate_request_save_protocol(2));
+            if (operation == 1 || operation == 3)
+                assert(savestate_request_load(2));
+            if (operation == 2)
+                assert(savestate_request_load_blob_protocol(&blob, 1));
+            unsigned generation = s_status_generation;
+            uint8_t* queued_blob = s_load_blob;
+            savestate_poll(&cpu, 0x80010000u);
+            assert((operation == 0 || operation == 3) ? s_save_pending == 2 : s_save_pending < 0);
+            assert(operation == 0 ? s_load_pending < 0 : s_load_pending >= 0);
+            assert(s_status_generation == generation && savestate_pending());
+            assert(s_load_blob == queued_blob);
+            assert(!strcmp(s_status_wait, mod_callback ? "mod_callback" : "host_continuation"));
+            savestate_set_title_blocked(1); /* Cancel without touching disk. */
+        }
+    }
+    mod_callback = override_callback = g_psx_guest_time_frozen = 0;
+    host_depth = 0;
+    savestate_set_title_blocked(0);
+    puts("savestate title policy and save/load host-continuation tests passed");
     return 0;
 }
