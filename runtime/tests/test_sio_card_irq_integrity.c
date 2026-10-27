@@ -92,3 +92,9 @@ int main(int argc, char **argv) {
     printf("%d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }
+
+/* Standalone device test: not executing a render-only checkpoint. */
+int g_psx_render_pass_active;
+
+/* Match the current SIO flush-status query in this no-file fixture. */
+int memcard_last_flush_result(int card) { (void)card;return 0; }
