@@ -95,6 +95,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "psx_stick.h"       /* radial SDL-stick -> DualShock response transform */
 #include "psx_trigger.h"     /* continuous SDL trigger -> 0..255 magnitude */
 #include "mod_pad_transform.h"
+#include "digital_pad_snapshot.h"
 #include "psx_hotkey_pad.h"   /* host shortcut bindings, direct claims */
 #include "psx_stick_fold.h"   /* default-map digital stick fold (host layer) */
 #include "psx_controller_type.h" /* mapped wheel-name classification */
@@ -9130,6 +9131,27 @@ static bool local_mouse_live(int override_word) {
     g.input_guard = savestate_input_guard_active();
     g.ui_capture = psx_host_ui_capture_active();
     return pad_ext_live(&g) != 0;
+}
+
+extern "C" int psx_mod_read_digital_pad(uint32_t player,PSXModDigitalPadReader *reader,
+                                         uint32_t legacy_buttons,uint32_t *buttons) {
+    if(!reader || reader->struct_size!=sizeof *reader || !buttons)return 0;
+#ifndef PSX_NO_DEBUG_TOOLS
+    if(debug_server_get_input_override()>=0) {
+        digital_pad_reader_reset(reader);return 0;
+    }
+#endif
+    if(player!=0 || g_offline_pad_count!=1 || !local_mouse_live(-1) ||
+       psx_local_mouse_installed() || sio_get_multitap() ||
+       mod_controller_source_present(player) || mod_pad_transform_initial_type(player)>=0 ||
+       g_mod_controller_policy[player].callback || g_mod_controller_mode_override[player]>=0) {
+        digital_pad_reader_reset(reader);return 0;
+    }
+    PSXResolvedDigitalPad sample{};
+    if(!sio_get_resolved_digital_pad((int)player,&sample)) {
+        digital_pad_reader_reset(reader);return 0;
+    }
+    return digital_pad_reader_read(reader,&sample,s_frame_count,(uint16_t)legacy_buttons,buttons);
 }
 
 static NetplayVblankEpilogue sdl_vblank_present_body(void) {

@@ -1195,6 +1195,27 @@ typedef struct PSXModControllerState {
 } PSXModControllerState;
 typedef int (*PSXModControllerSource)(PSXModControllerState *state);
 int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source);
+
+/* Optional low-latency digital reader. Reads already resolved local SIO input;
+ * never polls SDL, writes a packet, changes controller routing or runs guest
+ * input/rumble code. Main thread, standalone offline digital P1 only. Other
+ * controller policies/sources, UI/input guards, resim and multitap decline.
+ * Caller initializes only struct_size (other fields zero), keeps one reader
+ * per input-consumer and does not persist/copy it into a savestate. Repeated
+ * reads within a guest frame are idempotent. Captured short taps are latched
+ * until the next original-rate read, with release/press separation; a skipped
+ * frame, device/session generation change or excessive backlog re-primes from
+ * legacy_buttons rather than replaying old actions. Return 0: keep the full
+ * original read result. Return 1: buttons receives active-high 16-bit buttons.
+ * This does not increase guest input/simulation frequency. */
+typedef struct PSXModDigitalPadReader {
+    uint32_t struct_size, generation, held, valid;
+    uint64_t frame;
+    uint32_t last_press[16], pending[16]; /* private reader state */
+} PSXModDigitalPadReader;
+int psx_mod_read_digital_pad(uint32_t player, PSXModDigitalPadReader *reader,
+                             uint32_t legacy_buttons, uint32_t *buttons);
+
 /* Presence of an attached offline source (default connected). A diagnostic
  * source may explicitly emulate an unplugged pad without falling back to a
  * physical controller assigned to that port. Cleared on detach/session reset. */

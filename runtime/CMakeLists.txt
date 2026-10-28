@@ -23,6 +23,14 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(digital_pad_snapshot_test tests/test_digital_pad_snapshot.c)
+    target_include_directories(digital_pad_snapshot_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(digital_pad_snapshot_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(digital_pad_snapshot_test PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME digital_pad_snapshot_test COMMAND digital_pad_snapshot_test)
     add_executable(gpu_fmv_hd_test tests/test_gpu_fmv_hd.cpp src/gpu_fmv_hd.c)
     target_include_directories(gpu_fmv_hd_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(gpu_fmv_hd_test PRIVATE SDL_MAIN_HANDLED PSX_FMV_HD_TESTING=1

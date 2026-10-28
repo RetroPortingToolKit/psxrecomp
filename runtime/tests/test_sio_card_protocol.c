@@ -566,3 +566,6 @@ int main(int argc, char **argv) {
             g_checks, g_failures);
     return g_failures > 0 ? 1 : 0;
 }
+
+/* Standalone device test: not executing a render-only checkpoint. */
+int g_psx_render_pass_active;

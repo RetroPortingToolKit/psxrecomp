@@ -1,6 +1,7 @@
 /* Plain digital pads shift their ID during every command byte.
  * Synthetic bus transactions over the real sio.c; no BIOS/disc/core fixture. */
 #include "sio.h"
+#include "digital_pad_snapshot.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,7 +95,39 @@ static void setup(unsigned slot) {
     sio_set_pad_config_capable(slot, 0);
     sio_set_pad_state_slot(slot, 0xABCD);
 }
+extern int g_psx_render_pass_active;
+static void test_host_history(void) {
+    setup(0);
+    sio_set_pad_state_slot(0,0xffff);
+    PSXResolvedDigitalPad a,b;
+    expect("digital snapshot available",1,sio_get_resolved_digital_pad(0,&a));
+    sio_set_pad_state_slot(0,0xffdf);sio_set_pad_state_slot(0,0xffff);
+    expect("released snapshot available",1,sio_get_resolved_digital_pad(0,&b));
+    expect("short tap counted",a.press[5]+1,b.press[5]);
+    expect("short tap released",0,b.held);
+    uint32_t size=sio_snapshot_bytes();uint8_t *bytes=malloc(size);
+    if(!bytes)exit(1);
+    sio_snapshot_write(bytes);
+    a=b;g_psx_render_pass_active=1;
+    expect("render checkpoint restore",1,sio_snapshot_read(bytes,size));
+    g_psx_render_pass_active=0;
+    expect("checkpoint history available",1,sio_get_resolved_digital_pad(0,&b));
+    expect("checkpoint preserves history",a.generation,b.generation);
+    expect("checkpoint preserves press",a.press[5],b.press[5]);
+    expect("real state restore",1,sio_snapshot_read(bytes,size));free(bytes);
+    expect("state-load history available",1,sio_get_resolved_digital_pad(0,&b));
+    expect("state load invalidates reader",1,a.generation!=b.generation);
+    sio_set_pad_connected(0,0);
+    expect("disconnected has no snapshot",0,sio_get_resolved_digital_pad(0,&b));
+    sio_set_pad_connected(0,1);
+    expect("reconnected snapshot available",1,sio_get_resolved_digital_pad(0,&b));
+    expect("reconnect advances generation",1,a.generation!=b.generation);
+    sio_set_pad_type(0,SIO_PAD_DUALSHOCK,128,128,128,128);
+    expect("analog has no digital snapshot",0,sio_get_resolved_digital_pad(0,&b));
+}
+
 int main(void) {
+    test_host_history();
     for (unsigned slot = 0; slot < 2; ++slot) {
         for (unsigned cmd = 0; cmd < 256; ++cmd) {
             setup(slot);
@@ -155,3 +188,9 @@ int main(void) {
     printf("digital command: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
+
+/* Standalone device test: not executing a render-only checkpoint. */
+int g_psx_render_pass_active;
+
+/* Match the current SIO flush-status query in this no-file fixture. */
+int memcard_last_flush_result(int card) { (void)card;return 0; }
