@@ -5172,12 +5172,15 @@ static void sdl_audio_update(int hard_mute_active, int turbo_sink_active) {
     if (sink_was_active) {
         sink_was_active = 0;
         /* Preserve queued PCM; re-prime only when the sink depleted the ring. */
-        if (psx_audio_sync_enabled() && sdl_audio_device && s_drc_ready) {
+        const bool bridge_resume = psx_audio_sync_enabled() && sdl_audio_device && s_drc_ready && !audio_legacy_mode();
+        if (bridge_resume) {
             psx_sdl_audio_lock(sdl_audio_device);
             rab_resume_after_sink(&s_drc);
             psx_sdl_audio_unlock(sdl_audio_device);
         }
-        sdl_audio_fadein_left = sdl_audio_fade_samples;
+        /* The bridge joins retained/resumed PCM and ramps its consumer gain.
+         * A second zero-start producer ramp would create a queued seam. */
+        sdl_audio_fadein_left = bridge_resume ? 0 : sdl_audio_fade_samples;
         audio_trace_event(AUDIO_EV_UNMUTE,
                           (uint32_t)sdl_audio_fadein_left, 2);
         g_audio_unmute_resync = 1;
