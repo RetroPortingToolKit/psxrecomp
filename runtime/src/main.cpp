@@ -2866,6 +2866,15 @@ static int g_turbo_audio_sink_config_enabled = 0;
 static int g_turbo_load_wall_multiplier = 0;
 static int g_turbo_load_release_frames = TURBO_LOADS_RELEASE_FRAMES;
 static SDL_AudioDeviceID sdl_audio_device;
+static uint64_t audio_host_closes, audio_stream_clears, audio_bridge_inits;
+static void audio_clear_tracked(SDL_AudioDeviceID device) {
+    ++audio_stream_clears;
+    psx_sdl_audio_clear(device);
+}
+static void audio_close_tracked(SDL_AudioDeviceID device) {
+    ++audio_host_closes;
+    psx_sdl_audio_close(device);
+}
 static int16_t       sdl_audio_buf[2048 * 2];
 
 /* DRC bridge. Producer (sdl_audio_pump) runs on the main loop thread under
@@ -4255,8 +4264,8 @@ static void shutdown_runtime(void) {
     overlay_capture_wait_pending();
     overlay_capture_write_json();
     if (sdl_audio_device) {
-        psx_sdl_audio_clear(sdl_audio_device);
-        psx_sdl_audio_close(sdl_audio_device);   /* stops the pull callback */
+        audio_clear_tracked(sdl_audio_device);
+        audio_close_tracked(sdl_audio_device);   /* stops the pull callback */
         sdl_audio_device = 0;
     }
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
@@ -4272,8 +4281,8 @@ static void teardown_game_session_keep_lobby(void) {
     psx_rewind_shutdown();
     memcard_flush_all();
     if (sdl_audio_device) {
-        psx_sdl_audio_clear(sdl_audio_device);
-        psx_sdl_audio_close(sdl_audio_device);
+        audio_clear_tracked(sdl_audio_device);
+        audio_close_tracked(sdl_audio_device);
         sdl_audio_device = 0;
     }
     if (s_drc_ready) { rab_free(&s_drc); s_drc_ready = false; }
@@ -4396,7 +4405,7 @@ static void sdl_audio_pump(bool discard_output = false) {
         spu_output_flush();
         g_audio_cycle_resync = 0;
         if (legacy && sdl_audio_device)
-            psx_sdl_audio_clear(sdl_audio_device);
+            audio_clear_tracked(sdl_audio_device);
         else
             g_audio_unmute_resync = 1; /* skip mute-drain underrun reports */
         return;
@@ -9135,6 +9144,28 @@ static bool local_mouse_live(int override_word) {
     return pad_ext_live(&g) != 0;
 }
 
+/* Opt-in host diagnostics: sampled at most once per second on the producer
+ * thread. No callback I/O, guest timing changes or extra audio queue. Counts
+ * are process-lifetime totals; underruns are depletion episodes, overflow is
+ * dropped frames, and closes do not include driver-internal resets. */
+static void audio_buffer_diagnostics_tick() {
+    if (!psx_audio_sync_diagnostics() || !sdl_audio_device || !s_drc_ready) return;
+    static uint64_t previous = 0;
+    const uint64_t now = SDL_GetPerformanceCounter();
+    const uint64_t freq = SDL_GetPerformanceFrequency();
+    if (previous && now - previous < freq) return;
+    previous = now;
+    psx_sdl_audio_lock(sdl_audio_device);
+    const double fill = rab_fill_ms(&s_drc), active = s_drc.cfg.target_ms;
+    const rab_stats stats = s_drc.stats;
+    psx_sdl_audio_unlock(sdl_audio_device);
+    std::fprintf(stderr, "audio-buffer time_ms=%.1f configured_target_ms=%d active_target_ms=%.1f fill_ms=%.2f underruns=%llu overflow_frames=%llu device_closes=%llu stream_clears=%llu bridge_initializations=%llu\n",
+        now * 1000.0 / freq, psx_audio_sync_target(180), active, fill,
+        (unsigned long long)stats.underrun_events, (unsigned long long)stats.overflow_drops,
+        (unsigned long long)audio_host_closes, (unsigned long long)audio_stream_clears,
+        (unsigned long long)audio_bridge_inits);
+}
+
 static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     NetplayVblankEpilogue ep{};
     /* Guest quantum for this vblank is complete. Drop top-level-resume armed
@@ -9192,6 +9223,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     runtime_perf_frame_begin();
     RuntimePerfFrameScope runtime_perf_frame_scope;
     runtime_perf_diag_tick();
+    audio_buffer_diagnostics_tick();
 
     /* Lightweight frontend telemetry from PR #13. Count simulated vblanks rather
      * than presents so turbo and skipped-frame modes still report game speed.
@@ -20964,7 +20996,7 @@ session_reboot:
                 cfg.source_rate = 44100.0;            /* SPU render rate */
                 cfg.host_rate   = (double)have.freq;  /* actual device rate */
                 cfg.target_ms   = (double)resolved_audio_buffer_ms;
-                if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;
+                if (rab_init(&s_drc, &cfg) == 0) { s_drc_ready = true; ++audio_bridge_inits; }
             }
             g_audio_host_rate = have.freq;
             audio_trace_set_tap_rate(AUDIO_TAP_HOST, (uint32_t)have.freq);

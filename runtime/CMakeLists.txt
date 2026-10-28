@@ -23,6 +23,9 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(audio_sync_target_test tests/test_audio_sync_target.c src/audio_sync.c)
+    target_include_directories(audio_sync_target_test PRIVATE include)
+    add_test(NAME audio_sync_target_test COMMAND audio_sync_target_test)
     add_executable(gpu_fmv_hd_test tests/test_gpu_fmv_hd.cpp src/gpu_fmv_hd.c)
     target_include_directories(gpu_fmv_hd_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(gpu_fmv_hd_test PRIVATE SDL_MAIN_HANDLED PSX_FMV_HD_TESTING=1
