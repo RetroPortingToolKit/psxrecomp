@@ -4567,6 +4567,7 @@ struct RuntimePerfSnapshot {
     uint64_t frame = 0;
     uint64_t guest_work_ticks = 0;
     uint64_t pacer_ticks = 0;
+    uint64_t canonical_ticks = 0;
     uint64_t autocapture_ticks = 0;
     uint64_t provider_poll_ticks = 0;
     uint64_t dirty_insns = 0;
@@ -4596,6 +4597,7 @@ struct RuntimePerfState {
     uint64_t last_frame_exit_counter = 0;
     uint64_t guest_work_ticks = 0;
     uint64_t pacer_ticks = 0;
+    uint64_t canonical_ticks = 0;
     uint64_t autocapture_ticks = 0;
     uint64_t provider_poll_ticks = 0;
     bool bench_configured = false;
@@ -4672,6 +4674,7 @@ static RuntimePerfSnapshot runtime_perf_snapshot(uint64_t now) {
     s.frame = s_frame_count;
     s.guest_work_ticks = g_runtime_perf.guest_work_ticks;
     s.pacer_ticks = g_runtime_perf.pacer_ticks;
+    s.canonical_ticks = g_runtime_perf.canonical_ticks;
     s.autocapture_ticks = g_runtime_perf.autocapture_ticks;
     s.provider_poll_ticks = g_runtime_perf.provider_poll_ticks;
     s.dirty_insns = g_dirty_ram_insns_run;
@@ -4710,10 +4713,18 @@ static void runtime_perf_bench_tick(uint64_t now) {
 
     RuntimePerfSnapshot end = runtime_perf_snapshot(now);
     const RuntimePerfSnapshot &start = g_runtime_perf.bench_start;
+    const double bench_work =
+        runtime_perf_ticks_ms(end.guest_work_ticks - start.guest_work_ticks);
+    const double bench_pacer =
+        runtime_perf_ticks_ms(end.pacer_ticks - start.pacer_ticks);
+    const double bench_canonical =
+        runtime_perf_ticks_ms(end.canonical_ticks - start.canonical_ticks);
+    /* guest_work is the guest-quantum interval; pacer/canonical are outside it. */
+    const double bench_sim = bench_work;
     std::fprintf(stdout,
         "[BENCH] window=%llu:%llu frames=%llu wall_ms=%.3f "
-        "guest_work_ms=%.3f pacer_ms=%.3f autocapture_main_ms=%.3f "
-        "provider_poll_ms=%.3f "
+        "guest_work_ms=%.3f pacer_ms=%.3f canonical_ms=%.3f sim_ms=%.3f "
+        "autocapture_main_ms=%.3f provider_poll_ms=%.3f "
         "dirty_insns=+%llu dirty_dispatches=+%llu "
         "overlay_native=+%llu overlay_interp=+%llu overlay_loads=+%u "
         "overlay_invalidations=+%u overlay_unregistered=+%u "
@@ -4723,8 +4734,7 @@ static void runtime_perf_bench_tick(uint64_t now) {
         (unsigned long long)start.frame, (unsigned long long)end.frame,
         (unsigned long long)(end.frame - start.frame),
         runtime_perf_ticks_ms(end.counter - start.counter),
-        runtime_perf_ticks_ms(end.guest_work_ticks - start.guest_work_ticks),
-        runtime_perf_ticks_ms(end.pacer_ticks - start.pacer_ticks),
+        bench_work, bench_pacer, bench_canonical, bench_sim,
         runtime_perf_ticks_ms(end.autocapture_ticks - start.autocapture_ticks),
         runtime_perf_ticks_ms(end.provider_poll_ticks - start.provider_poll_ticks),
         (unsigned long long)(end.dirty_insns - start.dirty_insns),
@@ -4774,6 +4784,16 @@ static void runtime_perf_section_end(uint64_t start, uint64_t *total) {
     uint64_t end = SDL_GetPerformanceCounter();
     if (end >= start) *total += end - start;
 }
+
+/* Scope helper: accumulates a section even when the surrounding function
+ * returns early (e.g. a skipped present). */
+struct RuntimePerfSectionScope {
+    uint64_t start;
+    uint64_t *total;
+    explicit RuntimePerfSectionScope(uint64_t *t)
+        : start(runtime_perf_section_begin()), total(t) {}
+    ~RuntimePerfSectionScope() { runtime_perf_section_end(start, total); }
+};
 
 /* Frame-rate readout available in EVERY product, release included.
  *
@@ -5024,12 +5044,24 @@ static void runtime_perf_diag_tick() {
 
     const double dt = (double)(current.counter - last.counter) /
                       (double)g_runtime_perf.frequency;
+    const double work_ms =
+        runtime_perf_ticks_ms(current.guest_work_ticks - last.guest_work_ticks) / dt;
+    const double pacer_ms =
+        runtime_perf_ticks_ms(current.pacer_ticks - last.pacer_ticks) / dt;
+    const double canonical_ms =
+        runtime_perf_ticks_ms(current.canonical_ticks - last.canonical_ticks) / dt;
+    /* guest_work is the interval from the previous present's exit to this
+     * present's entry: the guest quantum. Pacer and canonical present happen
+     * inside the present body afterwards, so they are NOT subtracted here.
+     * This is still an interval, not exclusive guest CPU time. */
+    const double sim_ms = work_ms;
     std::fprintf(stdout,
         "psxrecomp: runtime cadence: guest=%.2f Hz, spu=%.1f Hz, "
         "audio_fill=%.1f ms, underruns=+%llu, overflows=+%llu, corr=%+.5f; "
         "GL upload=%.1f calls/s %.1f rect/s %.2f Mpix/s, "
         "cpu=%.1f tex=%.1f draw=%.1f ms/s; "
-        "work guest=%.1f pacer=%.1f autocapture=%.1f provider_poll=%.1f ms/s, "
+        "work guest=%.1f pacer=%.1f canonical=%.1f sim=%.1f "
+        "autocapture=%.1f provider_poll=%.1f ms/s, "
         "dirty=%.0f insn/s %.0f dispatch/s; "
         "overlay native=+%llu interp=+%llu hot_native_owner=0x%08X/activations>=+%llu "
         "shadow=+%llu div=+%llu first_div=0x%08X "
@@ -5049,8 +5081,7 @@ static void runtime_perf_diag_tick() {
             (double)g_runtime_perf.frequency / dt,
         (double)(up[5] - last_up[5]) * 1000.0 /
             (double)g_runtime_perf.frequency / dt,
-        runtime_perf_ticks_ms(current.guest_work_ticks - last.guest_work_ticks) / dt,
-        runtime_perf_ticks_ms(current.pacer_ticks - last.pacer_ticks) / dt,
+        work_ms, pacer_ms, canonical_ms, sim_ms,
         runtime_perf_ticks_ms(current.autocapture_ticks - last.autocapture_ticks) / dt,
         runtime_perf_ticks_ms(current.provider_poll_ticks - last.provider_poll_ticks) / dt,
         (double)(current.dirty_insns - last.dirty_insns) / dt,
@@ -9955,6 +9986,9 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     }
 
     /* ---- Display from our VRAM ---- */
+    /* Canonical presentation/present span. It starts here and ends at function
+     * exit, so skipped presents still contribute; pacer is measured above. */
+    RuntimePerfSectionScope canonical_scope(&g_runtime_perf.canonical_ticks);
     probe_reached = 1;
     uint32_t w = 0, h = 0, present_h = 0;
     uint32_t present_w = 0;  /* display width actually presented (w + native-wide EXTRA) */
