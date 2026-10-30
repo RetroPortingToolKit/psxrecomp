@@ -752,6 +752,62 @@ static int wmask_main(int scale, int window, int fast) {
 }
 
 #if defined(PSX_TEST_RENDER_PASSES)
+/* Include the surrounding pixels: reusing a larger scratch target must copy
+ * only the current journal rectangle, including its stencil and raw mirror. */
+static uint64_t journal_region_digest(int scale) {
+    size_t hn = (size_t)96 * 64 * scale * scale;
+    uint8_t *pixels = malloc(hn * 4);
+    uint64_t hash = 0xcbf29ce484222325ull;
+    check(pixels != NULL, "journal readback buffer");
+    if (!pixels) return 0;
+    for (int y = 300; y < 364; y++)
+        hash = fnv(vram + y * 1024 + 400, 96 * sizeof(*vram), hash);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, s_hr_fbo);
+    glReadPixels(400 * scale, 300 * scale, 96 * scale, 64 * scale,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    hash = fnv(pixels, hn * 4, hash);
+    glReadPixels(400 * scale, 300 * scale, 96 * scale, 64 * scale,
+                 GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, pixels);
+    hash = fnv(pixels, hn, hash);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, s_raw_fbo);
+    glReadPixels(400, 300, 96, 64, PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT, pixels);
+    hash = fnv(pixels, 96 * 64 * sizeof(uint16_t), hash);
+    p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
+    free(pixels);
+    return hash;
+}
+
+static void journal_reuse_checks(int scale) {
+    const int sizes[][2] = {{80,48}, {40,24}, {72,40}, {88,32}, {56,20}};
+    pass_free_color_fbo(&s_pj[0].hr_tex, &s_pj[0].hr_rb, &s_pj[0].hr_fbo,
+                         &s_pj[0].hr_w, &s_pj[0].hr_h);
+    pass_free_color_fbo(&s_pj[0].raw_tex, NULL, &s_pj[0].raw_fbo,
+                         &s_pj[0].raw_w, &s_pj[0].raw_h);
+    glb_set_draw_area(0, 0, 1023, 511);
+    glb_set_mask_bits(1, 0);
+    glb_draw_flat_rect(400, 300, 96, 64, 0x1234);
+    gl_renderer_sync_cpu();
+    uint64_t before = journal_region_digest(scale);
+    for (unsigned i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        uint32_t allocations = s_pass_allocs;
+        int w = sizes[i][0], h = sizes[i][1];
+        check(pass_journal_protect(404, 304, w, h), "journal protects varying rect");
+        check(s_pass_allocs == allocations + ((i == 0 || i == 3) ? 2u : 0u),
+              "journal allocates only when current capacity is insufficient");
+        check(s_pj[0].raw_w == (i < 3 ? 80 : 88) &&
+              s_pj[0].raw_h == (i < 3 ? 48 : 32),
+              "journal growth uses an actual requested size");
+        glb_set_mask_bits(0, 0);
+        glb_draw_flat_rect(404, 304, w, h, 0x03e0);
+        gl_renderer_sync_cpu();
+        check(journal_region_digest(scale) != before, "journal mutation is visible");
+        pass_journal_rollback();
+        check(journal_region_digest(scale) == before,
+              "journal restores CPU, raw, color, stencil and neighboring pixels");
+    }
+    glb_set_mask_bits(0, 0);
+}
+
 /* Mode "passes": see the header. */
 static int passes_main(int scale, int window) {
     (void)scale;
@@ -816,6 +872,7 @@ static int passes_main(int scale, int window) {
         }
         free(pixels);
         gl_renderer_set_hd_texture_mode(0);
+        journal_reuse_checks(scale);
     }
     check(glGetError() == GL_NO_ERROR, "GL error");
     printf("checks=%d failures=%d\n", checks, failures);

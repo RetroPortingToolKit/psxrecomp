@@ -8534,6 +8534,19 @@ static int pass_make_color_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
     return 1;
 }
 
+/* Journal copies address only their active rectangle, without normalized UVs.
+ * Keep an existing allocation when it contains that rectangle: sprite uploads
+ * vary in size from frame to frame and exact-size recreation stalls the driver.
+ * On growth, allocate the requested size, never a cross-product of past maxima.
+ * Captured/presented images still use the exact-size helper above. */
+static int pass_make_journal_fbo(GLuint *tex, GLuint *rb, GLuint *fbo,
+                                 int *cur_w, int *cur_h, int w, int h,
+                                 GLenum internal, GLenum fmt, GLenum type) {
+    if (*fbo && *cur_w >= w && *cur_h >= h) return 1;
+    return pass_make_color_fbo(tex, rb, fbo, cur_w, cur_h, w, h,
+                               internal, fmt, type);
+}
+
 static void pass_gen_release(int gi) {
     if (s_ctx && s_pgen_alloc_n[gi])
         glDeleteTextures((GLsizei)s_pgen_alloc_n[gi], s_pgen_tex[gi]);
@@ -8699,10 +8712,10 @@ static int pass_journal_protect(int x, int y, int w, int h) {
     PassJournal *j;
     if (i >= PASS_JOURNAL_MAX) return 0;
     j = &s_pj[i];
-    if (!pass_make_color_fbo(&j->hr_tex, &j->hr_rb, &j->hr_fbo, &j->hr_w,
+    if (!pass_make_journal_fbo(&j->hr_tex, &j->hr_rb, &j->hr_fbo, &j->hr_w,
                              &j->hr_h, w * S, h * S, GL_RGBA8, GL_RGBA,
                              GL_UNSIGNED_BYTE) ||
-        !pass_make_color_fbo(&j->raw_tex, NULL, &j->raw_fbo, &j->raw_w,
+        !pass_make_journal_fbo(&j->raw_tex, NULL, &j->raw_fbo, &j->raw_w,
                              &j->raw_h, w, h, PSXGL_R16UI, PSXGL_RED_INTEGER,
                              GL_UNSIGNED_SHORT))
         return 0;

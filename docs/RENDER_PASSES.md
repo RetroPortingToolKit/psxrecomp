@@ -224,6 +224,14 @@ and GPU registers (without the widescreen side effects of a savestate load), the
 VRAM rect (hr colour, mask stencil, raw 16-bit mirror, native-wide band, CPU
 VRAM rows), the renderer's coherency bookkeeping, and every clock value.
 
+Out-of-rect journal targets retain their storage while a requested rectangle
+fits. Copies and rollback use the active rectangle, including its mask stencil
+and raw mirror; unused capacity is never copied back. Growth allocates exactly
+the requested dimensions rather than combining past width/height maxima. This
+avoids driver allocation/destruction stalls when sprite uploads change size.
+Presented/captured images still require exact dimensions, and context teardown
+releases the retained journal storage.
+
 RAM-keyed GPU presentation provenance is restored too: sprite/HUD/background
 tags, primitive roles, reveal-clear/repeat/mask proofs, and the automatic UI
 prepass. A synthetic draw can rewrite and retag the same packet addresses;
