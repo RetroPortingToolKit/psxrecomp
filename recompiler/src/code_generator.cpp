@@ -154,17 +154,22 @@ uint32_t CodeGenerator::partial_block_cycle_count(uint32_t addr,
 std::string CodeGenerator::emit_mid_block_cycle_charge(uint32_t addr,
                                                        const ControlFlowGraph& cfg,
                                                        const std::string& indent) const {
-    if (codegen_cycle_per_insn()) {
-        return "";
-    }
-
     uint32_t cycles = partial_block_cycle_count(addr, cfg);
     if (cycles == 0) {
         return "";
     }
 
     std::stringstream ss;
-    ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
+    uint32_t native_cycles = 0;
+    for (uint32_t a = addr, n = 0; n < cycles; ++n, a += 4u) {
+        auto word = exe_.read_word(a);
+        if (word) native_cycles += psx_native_instr_cycles(*word, runtime_pc(a));
+    }
+    ss << "#if defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_NATIVE_CPU_SPANS)\n";
+    ss << indent << fmt::format("psx_native_span_charge({}u);\n", native_cycles);
+    ss << "#endif\n";
+    if (codegen_cycle_per_insn()) return ss.str();
+    ss << "#if defined(PSX_ENABLE_BLOCK_CYCLES) && !defined(PSX_NATIVE_CPU_SPANS)\n";
     // The CPU charge (psx_cycles.h): the same call in native and overlay
     // DLL code; [timing] guest_cycle_scale is applied inside it.
     ss << indent << fmt::format("psx_cpu_charge({}u);\n", cycles);
@@ -2147,14 +2152,17 @@ std::string CodeGenerator::translate_basic_block(
     // instruction_count(+1 outside delay) exactly => byte-identical regen; Stage 2
     // edits ONLY psx_instr_base_cycles and both backends update together.
     uint32_t block_exec_cycles = 0;
+    uint32_t native_span_cycles = 0;
     for (uint32_t a = block.start_addr; a <= block.end_addr; a += 4) {
         auto w = exe_.read_word(a);
         if (!w.has_value()) break;
         block_exec_cycles += psx_instr_base_cycles(*w);
+        native_span_cycles += psx_native_instr_cycles(*w, runtime_pc(a));
     }
     if (exit_delay_slot_outside) {
         auto dw = exe_.read_word(block.end_addr + 4u);  // the delay-slot clone
         if (dw.has_value()) block_exec_cycles += psx_instr_base_cycles(*dw);
+        if (dw.has_value()) native_span_cycles += psx_native_instr_cycles(*dw, runtime_pc(block.end_addr + 4u));
     }
 
     {
@@ -2181,6 +2189,9 @@ std::string CodeGenerator::translate_basic_block(
     }
 
     const bool cycle_per_insn = codegen_cycle_per_insn();
+    ss << "#if defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_NATIVE_CPU_SPANS)\n";
+    ss << config_.indent << fmt::format("psx_native_span_charge({}u);\n", native_span_cycles);
+    ss << "#endif\n";
     // Per-instruction R3000A load-delay interlock (cycle_per_insn mode): §1 base +
     // GPR_DEPRES + DO_LDS, emitted BEFORE the instruction body so §1 precedes any
     // muldiv/GTE deadline stall the body applies (Beetle order). CPU loads (op
@@ -2226,7 +2237,7 @@ std::string CodeGenerator::translate_basic_block(
         ss << "#endif\n";
     };
     if (!cycle_per_insn && block_exec_cycles > 0) {
-        ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
+        ss << "#if defined(PSX_ENABLE_BLOCK_CYCLES) && !defined(PSX_NATIVE_CPU_SPANS)\n";
         ss << config_.indent << fmt::format("psx_cpu_charge({}u);\n",
                                             block_exec_cycles);
         ss << "#endif\n";
@@ -3923,6 +3934,7 @@ std::string CodeGenerator::generate_file(
     // Include the generic PSX runtime header.
     // This provides CPUState, GTE/trap declarations, and call_by_address().
     ss << "#include \"psx_runtime.h\"\n\n";
+    ss << "#include \"psx_native_span.h\"\n\n";
     emit_runtime_externs(ss);
     emit_unaligned_helpers(ss, /*as_inline=*/false);
 

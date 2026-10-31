@@ -15,15 +15,17 @@
  *   psx.feature.rewind               Rewind: the local rewind ring, its buffer
  *                                    depth and capture interval
  *   psx.enhancement.internal-resolution
- *                                    Internal Resolution: the render height
+ *                                    Internal Resolution: fixed 1x..32x or height
  *                                    ([video] internal_resolution), Auto
  *                                    (dynamic resolution) included
  *
  * These used to be player settings (settings.toml, the launcher's Display and
  * Audio cards, the in-game menu). The title's game.toml [video] / [audio] keys
- * stay its BASELINE: with a mod off the baseline applies unchanged; with it on
- * each option replaces its part, and an option left at "Game default" keeps
- * the baseline value (docs/MOD_PACKAGES.md "Built-in host enhancements").
+ * stay its BASELINE: each enabled option replaces its part, and an option
+ * left at "Game default" keeps the baseline value. Internal Resolution starts
+ * enabled at fixed 4x; disabling it selects native resolution with dynamic
+ * resolution off. The other mods leave the baseline unchanged when disabled
+ * (docs/MOD_PACKAGES.md "Built-in host enhancements").
  *
  * Lifecycle, the psx.enhancement.pgxp lesson (pgxp_session.h):
  *
@@ -102,6 +104,7 @@ typedef struct PsxHostResolution {
 #define PSX_HOST_ENH_STRENGTH_DEFAULT 50
 #define PSX_HOST_ENH_REWIND_DEPTH_DEFAULT 50
 #define PSX_HOST_ENH_REWIND_INTERVAL_DEFAULT 15
+#define PSX_HOST_ENH_RESOLUTION_DEFAULT PSX_IR_SCALE(4)
 
 /* The effective look: the baseline, with every part an enabled mod names
  * replaced. Pure. */
@@ -130,16 +133,21 @@ static inline PsxHostLook psx_host_enh_resolve(const PsxHostLook* baseline,
     return out;
 }
 
-/* The effective internal resolution: the title's (its internal_resolution and
- * dynamic_resolution) unless the Internal Resolution mod names one. Auto is
+/* The effective internal resolution: native when disabled, the saved title
+ * baseline for Game default, or the enabled mod's fixed scale/height choice. Auto is
  * Match display with dynamic resolution on; any fixed choice turns it off.
  * Pure. */
 static inline PsxHostResolution psx_host_enh_resolve_resolution(
         const PsxHostResolution* baseline, const PsxHostEnhRequests* req) {
-    PsxHostResolution out = *baseline;
-    if (req->resolution && req->resolution_value != PSX_IR_UNSET) {
-        out.internal_resolution = req->resolution_value;
-        out.dynamic_resolution = psx_ir_is_auto(req->resolution_value) ? 1 : 0;
+    /* Off is the native reference; an explicitly saved Game default still
+     * opts into the title baseline. Fresh enabled profiles select fixed 4x. */
+    PsxHostResolution out = {PSX_IR_NATIVE, 0};
+    if (req->resolution) {
+        out = *baseline;
+        if (req->resolution_value != PSX_IR_UNSET) {
+            out.internal_resolution = req->resolution_value;
+            out.dynamic_resolution = psx_ir_is_auto(req->resolution_value) ? 1 : 0;
+        }
     }
     return out;
 }
@@ -185,8 +193,8 @@ int psx_host_enh_parse_texture_filter(const char* text);/* default nearest bilin
 int psx_host_enh_parse_fmv_filter(const char* text);    /* default nearest bilinear sharp bicubic */
 int psx_host_enh_parse_rewind_depth(const char* text);  /* "50" "100" "150" "200" */
 int psx_host_enh_parse_rewind_interval(const char* text);/* "1" "4" "8" "12" "15" */
-/* "default" (and anything unknown) -> PSX_IR_UNSET; otherwise a preset id
- * of internal_resolution.h ("native", "720p", ..., "display", "auto"). */
+/* "default" -> PSX_IR_UNSET; fixed 1x..32x and legacy height ids are retained.
+ * Missing/unknown option text uses the shared 4x default. */
 int psx_host_enh_parse_internal_resolution(const char* text);
 
 #ifdef __cplusplus

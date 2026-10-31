@@ -73,10 +73,34 @@ cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release --target psx-runtime
 ```
 
-Releases: tag `vX.Y.Z` (or run the *Release builds* workflow). CI builds the
-committed `generated/` C on Linux, Windows and macOS and attaches
-`@ZIP_PREFIX@-<version>-<platform>.zip`, the compiled game. Locally:
-`scripts/package_release.sh build-release linux-x64`.
+Official optimized Windows/Linux releases use the maintained shared builder
+with the title disc available. Commit the desired `VERSION`, source and
+framework pins, then run:
+
+```bash
+scripts/package_release.sh --channel public
+# Use --channel playtest for a non-public package; --platform selects Windows/Linux.
+```
+
+On Windows PowerShell, use
+`psxrecomp/tools/package_title_release.ps1 --channel public`. The generated
+`packaging/release.toml` and player instructions define the title payload.
+The shared builder owns regeneration, qualified build defaults, fresh private
+PGO boot training on supported native toolchains, staging and verification.
+Boot training is a build step, not gameplay qualification or a performance
+claim. See `psxrecomp/docs/RELEASING_A_TITLE.md`.
+
+The separate *Release builds* CI workflow (tag `vX.Y.Z` or dispatch) builds
+committed `generated/` C without a disc on Linux, Windows and macOS. It uses
+`scripts/package_prebuilt_release.sh` and attaches compiled-game ZIPs. That
+explicit prebuilt path does not train selective PGO and is not the official
+optimized-release command. The common builder does not add macOS support.
+
+Studio's current Export action still uses the old prebuilt argument contract;
+use the shared command above for optimized releases until Studio adopts the
+recipe/channel interface. Its packager detection and `packaging/` warning also
+need that adoption; the generated recipe is maintained configuration, not a
+forked packager.
 
 ## Symbols
 

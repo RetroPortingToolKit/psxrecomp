@@ -26,6 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
+#ifndef PSX_NATIVE_CAPTURE_JOBS
+#define PSX_NATIVE_CAPTURE_JOBS 0
+#endif
 #if defined(_WIN32)
 #  include <windows.h>
 #else
@@ -228,10 +231,86 @@ typedef struct BsOut {
     int      no_zlib; /* 1 => always raw sections (netplay snap ring) */
 } BsOut;
 
+#if PSX_NATIVE_CAPTURE_JOBS
+/* Raw captures retain one ring-owned allocation rather than reserving 12 MiB
+ * and faulting a fresh allocation for every snapshot. Round growth modestly
+ * for changing CD/audio/arena lengths; never shrink a reusable spare. */
+static int bs_reserve(BsOut *o, size_t needed) {
+    size_t cap;
+    uint8_t *data;
+    if (needed <= o->cap) return 1;
+    cap = needed;
+    if (cap <= SIZE_MAX - 65535u) cap = (cap + 65535u) & ~(size_t)65535u;
+    data = (uint8_t *)realloc(o->data, cap);
+    if (!data) return 0;
+    o->data = data;
+    o->cap = cap;
+    return 1;
+}
+
+/* A pointer is exposed only after the complete header+payload is reserved.
+ * Writers finish before any later section can grow the allocation. */
+static uint8_t *bs_raw_payload(BsOut *o, uint32_t tag, size_t size) {
+    uint8_t *data;
+    PstW w;
+    if (o->len > SIZE_MAX - 16u || size > SIZE_MAX - o->len - 16u ||
+        !bs_reserve(o, o->len + 16u + size)) return NULL;
+    data = o->data + o->len;
+    pst_w_init(&w, data, 16u);
+    if (!pst_w_u32(&w, tag) || !pst_w_u32(&w, 0) || !pst_w_u64(&w, size))
+        return NULL;
+    o->len += 16u + size;
+    return data + 16u;
+}
+
+static int bs_raw_capture_reserve(BsOut *o, const CPUState *cpu,
+                                  uint32_t host_bytes) {
+    extern uint32_t spu_cd_snapshot_bytes(void);
+    size_t total = BOOT_STATE_HEADER_WIRE_BYTES;
+    uint32_t mod = psx_mod_memory_snapshot_bytes();
+    uint64_t sizes[] = {
+        CPU_REGS_WIRE_BYTES, memory_get_ram_bytes(), SPAD_SIZE,
+        12u, TIMER_REGS_WIRE_BYTES, 8u, gpu_snapshot_bytes(), VRAM_SIZE,
+        spu_snapshot_bytes(), spu_get_ram_bytes(), cdrom_snapshot_bytes(),
+        dma_snapshot_bytes(), sio_snapshot_bytes(), mdec_snapshot_bytes(),
+        1024u * 4u, (uint64_t)dirty_ram_get_bitmap_word_count() * 4u,
+        4u, spu_cd_snapshot_bytes()
+    };
+    size_t i;
+    for (i = 0; i < sizeof sizes / sizeof sizes[0]; ++i) {
+        if (total > SIZE_MAX - 16u || sizes[i] > SIZE_MAX - total - 16u) return 0;
+        total += 16u + (size_t)sizes[i];
+    }
+    if (mod) {
+        if (total > SIZE_MAX - 16u || mod > SIZE_MAX - total - 16u) return 0;
+        total += 16u + mod;
+    }
+    if (host_bytes) {
+        if (total > SIZE_MAX - 16u || host_bytes > SIZE_MAX - total - 16u) return 0;
+        total += 16u + host_bytes;
+    }
+    if (cpu) {
+        if (total > SIZE_MAX - 16u - BS_CPUTIM_BYTES) return 0;
+        total += 16u + BS_CPUTIM_BYTES;
+    }
+    if (psx_guest_cycle_scale_config() != 1u) {
+        if (total > SIZE_MAX - 16u - PSX_GCS_SNAPSHOT_BYTES) return 0;
+        total += 16u + PSX_GCS_SNAPSHOT_BYTES;
+    }
+    return bs_reserve(o, total);
+}
+#endif
+
 static int bs_write(BsOut* o, const void* p, size_t n) {
     if (!n) return 1;
     if (o->f)
         return fwrite(p, 1, n, o->f) == n;
+#if PSX_NATIVE_CAPTURE_JOBS
+    if (o->no_zlib) {
+        if (n > SIZE_MAX - o->len || !bs_reserve(o, o->len + n)) return 0;
+    } else
+#endif
+    {
     if (o->len + n > o->cap) {
         size_t nc = o->cap ? o->cap * 2u : (256u * 1024u);
         uint8_t* nd;
@@ -243,6 +322,7 @@ static int bs_write(BsOut* o, const void* p, size_t n) {
         if (!nd) return 0;
         o->data = nd;
         o->cap = nc;
+    }
     }
     memcpy(o->data + o->len, p, n);
     o->len += n;
@@ -310,6 +390,14 @@ static int write_module_section(BsOut* o, uint32_t tag,
                                 uint32_t (*bytes)(void),
                                 void (*write)(uint8_t*)) {
     uint32_t n = bytes();
+#if PSX_NATIVE_CAPTURE_JOBS
+    if (!o->f && o->no_zlib) {
+        uint8_t *payload = bs_raw_payload(o, tag, n);
+        if (!payload) return 0;
+        write(payload);
+        return 1;
+    }
+#endif
     uint8_t* buf = (uint8_t*)malloc(n ? n : 1);
     if (!buf) return 0;
     write(buf);
@@ -376,6 +464,16 @@ static int write_timer_section(BsOut* o) {
 /* Classic full VRAM section (offline / zlib / tracking off). */
 static int write_vram_section_full(BsOut *o)
 {
+#if PSX_NATIVE_CAPTURE_JOBS && defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    if (!o->f && o->no_zlib && (o->len & 1u) == 0u) {
+        uint8_t *payload = bs_raw_payload(o, BS_SEC_VRAM, VRAM_SIZE);
+        if (!payload) return 0;
+        gr_vram_transfer_out(0, 0, VRAM_W, VRAM_H, (uint16_t *)payload);
+        s_last_vram_dirty_rows = VRAM_H;
+        s_last_vram_incremental = 0;
+        return 1;
+    }
+#endif
     uint16_t *vbuf = (uint16_t *)malloc(VRAM_SIZE);
     int ok;
     if (!vbuf)
@@ -412,18 +510,6 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     uint32_t host_bytes = 0;
     int ok;
     if (!psx_mod_snapshot_ready()) return 0;
-    memset(&h, 0, sizeof h);
-    h.magic         = BOOT_STATE_MAGIC;
-    h.version       = BOOT_STATE_VERSION_WITHOUT_HOST;
-    h.reserved      = boot_state_layout_cookie();
-    h.bios_checksum = bios_checksum;
-    h.entry_pc      = entry_pc;
-    h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
-    h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
-    h.codegen_ver   = BOOT_STATE_IMPLEMENTATION_KEY;
-    h.section_count = 18 + (cpu ? 1u : 0u) + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
-                      (psx_guest_cycle_scale_config() != 1u ? 1u : 0u);
-
     /* Publish deferred cycle charges before ANY section: IRQ (cycles since
      * VBlank) and the root counters were written before the old flush point
      * (just ahead of CLOCK), so they lagged the saved clock by whatever batch
@@ -442,6 +528,19 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
      * amount (live pumps at VBlank, rollback replay suppresses output). */
     { extern void spu_catch_up(void); spu_catch_up(); }
 
+    /* Layout/identity describe the canonical state after service callbacks. */
+    memset(&h, 0, sizeof h);
+    h.magic         = BOOT_STATE_MAGIC;
+    h.version       = BOOT_STATE_VERSION_WITHOUT_HOST;
+    h.reserved      = boot_state_layout_cookie();
+    h.bios_checksum = bios_checksum;
+    h.entry_pc      = entry_pc;
+    h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
+    h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
+    h.codegen_ver   = BOOT_STATE_IMPLEMENTATION_KEY;
+    h.section_count = 18 + (cpu ? 1u : 0u) + (psx_mod_memory_snapshot_bytes() ? 1u : 0u) +
+                      (psx_guest_cycle_scale_config() != 1u ? 1u : 0u);
+
     /* Measure/write/validate the complete host payload before emitting any
      * section. Failed providers cannot leave a usable partial snapshot. */
     if (!psx_mod_snapshot_capture(&host_state, &host_bytes)) return 0;
@@ -449,6 +548,15 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
         h.version = BOOT_STATE_VERSION;
         ++h.section_count;
     }
+
+#if PSX_NATIVE_CAPTURE_JOBS
+    /* Dynamic lengths are queried only after canonical catch-up. Neither
+     * preallocation nor buffer reuse moves the caller's capture point. */
+    if (!o->f && o->no_zlib && !bs_raw_capture_reserve(o, cpu, host_bytes)) {
+        free(host_state);
+        return 0;
+    }
+#endif
 
     ok = write_header_le(o, &h);
 
@@ -527,6 +635,17 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     if (ok) {
         uint32_t wc = dirty_ram_get_bitmap_word_count();
         uint64_t nbytes = (uint64_t)wc * 4u;
+#if PSX_NATIVE_CAPTURE_JOBS
+        if (!o->f && o->no_zlib) {
+            uint8_t *db = nbytes <= SIZE_MAX ? bs_raw_payload(o, BS_SEC_DIRTY, (size_t)nbytes) : NULL;
+            PstW w;
+            if (!db) return 0;
+            pst_w_init(&w, db, (size_t)nbytes);
+            for (uint32_t i = 0; ok && i < wc; ++i)
+                ok = pst_w_u32(&w, dirty_ram_get_bitmap_word(i));
+        } else
+#endif
+        {
         uint8_t* db = (uint8_t*)malloc(nbytes ? (size_t)nbytes : 1);
         if (!db) ok = 0;
         else {
@@ -537,6 +656,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
                 ok = pst_w_u32(&w, dirty_ram_get_bitmap_word(i));
             if (ok) ok = write_section(o, BS_SEC_DIRTY, db, nbytes);
             free(db);
+        }
         }
     }
     if (ok) {
@@ -610,6 +730,16 @@ static int boot_state_save_buffer_ex(const CPUState* cpu, uint32_t bios_checksum
     if (!out_data || !out_len) return 0;
     *out_data = NULL;
     *out_len = 0;
+#if PSX_NATIVE_CAPTURE_JOBS
+    if (no_zlib) {
+        size_t capacity = 0;
+        if (boot_state_capture_raw(cpu, bios_checksum, entry_pc, out_data,
+                                   &capacity, out_len)) return 1;
+        free(*out_data);
+        *out_data = NULL;
+        return 0;
+    }
+#endif
     memset(&o, 0, sizeof o);
     o.no_zlib = no_zlib ? 1 : 0;
     /* Compressed MotK ~1.3-1.5 MiB; raw ~3.5-4 MiB (2 MB RAM) or ~9.5 MiB (8 MB). */
@@ -640,6 +770,35 @@ int boot_state_save_buffer_raw(const CPUState* cpu, uint32_t bios_checksum,
 }
 
 /* ============================ LOAD ============================ */
+
+int boot_state_capture_raw(const CPUState* cpu, uint32_t bios_checksum,
+                            uint32_t entry_pc, uint8_t** data,
+                            size_t* capacity, size_t* out_len) {
+    if (out_len) *out_len = 0;
+    if (!data || !capacity || !out_len || ((!*data) != (!*capacity))) return 0;
+#if PSX_NATIVE_CAPTURE_JOBS
+    BsOut o;
+    int ok;
+    memset(&o, 0, sizeof o);
+    o.data = *data;
+    o.cap = *capacity;
+    o.no_zlib = 1;
+    ok = boot_state_save_to(&o, cpu, bios_checksum, entry_pc);
+    *data = o.data;
+    *capacity = o.cap;
+    if (ok) *out_len = o.len;
+    return ok;
+#else
+    uint8_t *fresh = NULL;
+    size_t len = 0;
+    if (!boot_state_save_buffer_raw(cpu, bios_checksum, entry_pc, &fresh, &len)) return 0;
+    free(*data);
+    *data = fresh;
+    *capacity = len;
+    *out_len = len;
+    return 1;
+#endif
+}
 
 static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
                          CPUState* cpu, uint32_t entry_pc) {

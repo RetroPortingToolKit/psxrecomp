@@ -899,6 +899,38 @@ if(BUILD_TESTING)
                 --cmake ${CMAKE_COMMAND} --cc ${CMAKE_C_COMPILER}
                 --cxx ${CMAKE_CXX_COMPILER} --ninja ${CMAKE_MAKE_PROGRAM})
     endif()
+    if(Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND
+       CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        if(CMAKE_GENERATOR STREQUAL "Ninja")
+            set(_psx_hot_pgo_ninja "${CMAKE_MAKE_PROGRAM}")
+        else()
+            find_program(_psx_hot_pgo_ninja NAMES ninja ninja.exe)
+        endif()
+        if(_psx_hot_pgo_ninja)
+            set(PSX_RUNTIME_HOT_PGO_TEST_SCRATCH_ROOT
+                "${CMAKE_CURRENT_BINARY_DIR}/hot-pgo-fixture" CACHE PATH
+                "Retained PGO fixture runs; use a short path on Windows")
+            set(_psx_hot_pgo_tool_cmake "${CMAKE_COMMAND}")
+            set(_psx_hot_pgo_tool_gcc "${CMAKE_C_COMPILER}")
+            set(_psx_hot_pgo_tool_gxx "${CMAKE_CXX_COMPILER}")
+            set(_psx_hot_pgo_tool_ninja "${_psx_hot_pgo_ninja}")
+            set(_psx_hot_pgo_tools "{}")
+            foreach(_tool IN ITEMS cmake gcc gxx ninja)
+                string(REPLACE "\\" "\\\\" _value "${_psx_hot_pgo_tool_${_tool}}")
+                string(REPLACE "\"" "\\\"" _value "${_value}")
+                string(JSON _psx_hot_pgo_tools SET "${_psx_hot_pgo_tools}" "${_tool}" "\"${_value}\"")
+            endforeach()
+            set(_psx_hot_pgo_tools_file "${CMAKE_CURRENT_BINARY_DIR}/runtime-hot-pgo-tools.json")
+            file(GENERATE OUTPUT "${_psx_hot_pgo_tools_file}" CONTENT "${_psx_hot_pgo_tools}\n")
+            add_test(NAME runtime_hot_pgo_contract
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/tests/test_runtime_hot_pgo.py"
+                    --tools "${_psx_hot_pgo_tools_file}"
+                    --scratch-parent "${PSX_RUNTIME_HOT_PGO_TEST_SCRATCH_ROOT}")
+            set_tests_properties(runtime_hot_pgo_contract PROPERTIES
+                RUN_SERIAL TRUE PROCESSORS 2 LABELS "compiler;pgo")
+        endif()
+    endif()
     # MFC0/CFC0 read COP0 from before their own cycle charge: the production
     # interpreter decoder with cycle charging on, a device event that raises
     # CAUSE.IP2 on the read's own cycle, other seams stubbed to abort()

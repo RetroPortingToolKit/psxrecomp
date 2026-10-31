@@ -1843,8 +1843,8 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
  * offline rematch. The rest is defensive, for the state listed here only; see
  * docs/MOD_PACKAGES.md "Session starts" for what is exempt and why (the
  * renderer and fixed aspect are launcher controls; enhancement guest/GPU-DMA
- * arenas, texture-packet registrations and retained texture banks are retired
- * separately at start_mod_session before the new activation).
+ * arenas, texture-packet registrations and retained texture banks retain
+ * process lifetime unless the title explicitly declares session resources).
  *
  * Function-entry hooks need nothing here: the commit or netplay clear empties
  * upstream's hook table, and only activation rebuilds it.
@@ -20140,11 +20140,12 @@ int main(int argc, char** argv) {
                       "reset_mod_owned_presentation() would clobber a launcher "
                       "setting; restore only when the feature is mod-owned");
         reset_mod_owned_presentation();
-        /* Cold boot has no renderer yet. A lobby rematch reaches here only
-         * after scheduler unwind and renderer/audio/window teardown. Retire
-         * texture IDs and packet registrations before reusing guest addresses;
-         * memory_init below must preserve the new activation's allocations. */
-        if (!mod_texture_banks_reset_session() || !psx_mod_memory_reset_session()) {
+        /* Existing titles cache allocation handles across rematches. Preserve
+         * those process-lifetime resources by default. A title declaring the
+         * session-owned build contract recreates all handles on activation;
+         * retire registrations first, after renderer/audio/window teardown. */
+        if (!mod_texture_banks_begin_session(PSX_MOD_SESSION_RESOURCES) ||
+            !psx_mod_memory_begin_session(PSX_MOD_SESSION_RESOURCES)) {
             std::fprintf(stderr,
                          "psxrecomp: cannot reset enhancement resources at session start\n");
             return false;

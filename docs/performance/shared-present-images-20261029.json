@@ -1,0 +1,1644 @@
+{
+  "schema": 1,
+  "item": "G4",
+  "measured_code_head": "fac3396322aa41cbf6eff30edee5929e05af521e",
+  "base": "ffbd9d1ca4ee698866a2a9d7c58c3cc29a77f111",
+  "date_utc": "2026-10-29",
+  "host": {
+    "name": "DESKTOP-HN15M1H",
+    "cpu": "Ryzen7 9800X3D,8physical/16logical",
+    "gpu": "RTX3080Ti",
+    "driver": "616.86",
+    "backend": "Windows11 hidden OpenGL3.3"
+  },
+  "common_build": "QA debug interfaces ON, Release, IPO OFF, ENHANCED, one frozen engine snapshot; compile-time shared images OFF vs ON. No-query means PSX_GL_CAPTURE_PERF=0, whole-present timer0. No CPU cap during timing.",
+  "metric": "Buffered GPU timestamp scope covers capture+hold publication and ends BEFORE interval pacing; not GPU busy time or FPS. All accepted query samples supported, zero skips/unavailable. CPU and cadence from external owned-process observations.",
+  "games": [
+    {
+      "game": "Ape Escape SCUS-94423 USA",
+      "features": "PGXP ON, actual/requested9x, retained phase3 seed, existing2x gameplay cycle gate",
+      "package": "shared-completed-temporal-images-v1",
+      "same_on_both": "Private machine payload/config/settings; temporal120 existing QA environment overrides; hidden full OpenGL, dummy audio, original instruction timing, autocompileOFF/no native overlay cache.",
+      "machine_payload_sha256": "5d4e5954d462e14c24f683b2b39c7ccc48f7926efe582cc9b467b65c597760e3",
+      "config_text_sha256": "e2b1a81985b6d724da03cccf47121c5c4fc41d9c43873959873fa31cdd07c47a",
+      "config_file_sha256": "abdb6f472d334739cd47945d20f6795c291648dda5af62f32ba93026b56208e6",
+      "settings_text_sha256": "9142c90b9529c0bc1d3a706dd2a60817d219f5a49887d60e73e708c417563ff9",
+      "builds": [
+        {
+          "name": "g4-ape-control-qa",
+          "mode": "control",
+          "binary_sha256": "361adce0bc7549fe69103f049e9e13948579a80cc4460a27b3cea75b361ba1a0",
+          "engine_head": "fac3396322aa41cbf6eff30edee5929e05af521e",
+          "engine_source_sha256": {
+            "runtime/src/gpu_gl_renderer.c": "e2323ffa560b1d16c8b58c00c3ac202839c23f97cd95dbf835f3a187a4cbfc85",
+            "cmake/psx_present_images.cmake": "133ff2e8e9d11dd00b13de23ca9c3fa5d348169cd94d304ba720ff896bb81f1d",
+            "runtime/runtime.cmake": "784e28a4be9fcf560a2c9aa53955ff2176fc962cea6aeb6830fe440838e090e1"
+          },
+          "title_head": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+          "compiler_version": "15.2.0",
+          "build_selections": [
+            "CMAKE_BUILD_TYPE:STRING=Release",
+            "PSX_DEBUG_TOOLS:BOOL=ON",
+            "PSX_EXECUTION_PROFILE:STRING=ENHANCED",
+            "PSX_RUNTIME_IPO:BOOL=OFF",
+            "PSX_SHARED_PRESENT_IMAGES:BOOL=OFF"
+          ],
+          "settings_file_sha256": "ab0521e3217377e2a529b85d71d646d6d2622fe18cc80680996d3bd274b1b624",
+          "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89"
+        },
+        {
+          "name": "g4-ape-shared-qa",
+          "mode": "shared",
+          "binary_sha256": "165958fdd474f55ab0e2334e61710063f958224c4ba5e317845a8dec34eaab40",
+          "engine_head": "fac3396322aa41cbf6eff30edee5929e05af521e",
+          "engine_source_sha256": {
+            "runtime/src/gpu_gl_renderer.c": "e2323ffa560b1d16c8b58c00c3ac202839c23f97cd95dbf835f3a187a4cbfc85",
+            "cmake/psx_present_images.cmake": "133ff2e8e9d11dd00b13de23ca9c3fa5d348169cd94d304ba720ff896bb81f1d",
+            "runtime/runtime.cmake": "784e28a4be9fcf560a2c9aa53955ff2176fc962cea6aeb6830fe440838e090e1"
+          },
+          "title_head": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+          "compiler_version": "15.2.0",
+          "build_selections": [
+            "CMAKE_BUILD_TYPE:STRING=Release",
+            "PSX_DEBUG_TOOLS:BOOL=ON",
+            "PSX_EXECUTION_PROFILE:STRING=ENHANCED",
+            "PSX_RUNTIME_IPO:BOOL=OFF",
+            "PSX_SHARED_PRESENT_IMAGES:BOOL=ON"
+          ],
+          "settings_file_sha256": "ab0521e3217377e2a529b85d71d646d6d2622fe18cc80680996d3bd274b1b624",
+          "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89"
+        }
+      ],
+      "query_on_blocks": [
+        {
+          "block": 1,
+          "metrics": {
+            "cpu_ms_per_frame": {
+              "samples": {
+                "control": [
+                  9.319873208379272,
+                  10.301438053097344
+                ],
+                "shared": [
+                  10.018687707641195,
+                  10.359116022099448
+                ]
+              },
+              "control_mean": 9.810655630738308,
+              "shared_mean": 10.18890186487032,
+              "reduction_percent": -3.8554633693074214,
+              "ranges_overlap": true
+            },
+            "host_process_cycles_per_guest_frame": {
+              "samples": {
+                "control": [
+                  44161886.604189634,
+                  47868425.86283186
+                ],
+                "shared": [
+                  45287277.84053156,
+                  47776375.60220995
+                ]
+              },
+              "control_mean": 46015156.23351075,
+              "shared_mean": 46531826.72137076,
+              "reduction_percent": -1.1228267600311703,
+              "ranges_overlap": true
+            },
+            "capture_gpu_ms": {
+              "samples": {
+                "control": [
+                  0.1821442825607064,
+                  0.23179667256637168
+                ],
+                "shared": [
+                  0.06512095681063122,
+                  0.08817928476821192
+                ]
+              },
+              "control_mean": 0.20697047756353903,
+              "shared_mean": 0.07665012078942157,
+              "reduction_percent": 62.96567428758514,
+              "ranges_overlap": false
+            },
+            "capture_gpu_ms_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.18194346196251376,
+                  0.23179667256637168
+                ],
+                "shared": [
+                  0.06512095681063122,
+                  0.08827672044198895
+                ]
+              },
+              "control_mean": 0.20687006726444274,
+              "shared_mean": 0.07669883862631008,
+              "reduction_percent": 62.924148650144886,
+              "ranges_overlap": false
+            },
+            "timestamp_samples_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.9988974641675854,
+                  1.0
+                ],
+                "shared": [
+                  1.0,
+                  1.0011049723756906
+                ]
+              },
+              "control_mean": 0.9994487320837927,
+              "shared_mean": 1.0005524861878454,
+              "reduction_percent": -0.11043629038893776,
+              "ranges_overlap": true
+            },
+            "fresh_captures_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.9988974641675854,
+                  1.0
+                ],
+                "shared": [
+                  1.0,
+                  1.0011049723756906
+                ]
+              },
+              "control_mean": 0.9994487320837927,
+              "shared_mean": 1.0005524861878454,
+              "reduction_percent": -0.11043629038893776,
+              "ranges_overlap": true
+            },
+            "duplicate_captures_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.0,
+                  0.0
+                ],
+                "shared": [
+                  0.0,
+                  0.0
+                ]
+              },
+              "control_mean": 0.0,
+              "shared_mean": 0.0,
+              "reduction_percent": null,
+              "ranges_overlap": true
+            },
+            "swaps_per_guest_frame": {
+              "samples": {
+                "control": [
+                  1.6251378169790518,
+                  1.5774336283185841
+                ],
+                "shared": [
+                  1.5891472868217054,
+                  1.569060773480663
+                ]
+              },
+              "control_mean": 1.601285722648818,
+              "shared_mean": 1.5791040301511843,
+              "reduction_percent": 1.3852426324604372,
+              "ranges_overlap": true
+            },
+            "draws_per_frame": {
+              "samples": {
+                "control": [
+                  204.87210584343993,
+                  205.11283185840708
+                ],
+                "shared": [
+                  204.452934662237,
+                  204.9546961325967
+                ]
+              },
+              "control_mean": 204.9924688509235,
+              "shared_mean": 204.70381539741686,
+              "reduction_percent": 0.14081173573091688,
+              "ranges_overlap": true
+            },
+            "guest_cycles_per_frame": {
+              "samples": {
+                "control": [
+                  564472.8765159867,
+                  564719.9181415929
+                ],
+                "shared": [
+                  564480.0,
+                  565101.0453038674
+                ]
+              },
+              "control_mean": 564596.3973287898,
+              "shared_mean": 564790.5226519337,
+              "reduction_percent": -0.03438302547844607,
+              "ranges_overlap": true
+            },
+            "guest_hz": {
+              "samples": {
+                "control": [
+                  59.95881312158122,
+                  59.90228863252491
+                ],
+                "shared": [
+                  59.94324231262906,
+                  59.8842901849515
+                ]
+              },
+              "control_mean": 59.930550877053065,
+              "shared_mean": 59.91376624879028,
+              "reduction_percent": 0.028006797897150992,
+              "ranges_overlap": true
+            }
+          }
+        },
+        {
+          "block": 2,
+          "metrics": {
+            "cpu_ms_per_frame": {
+              "samples": {
+                "control": [
+                  9.388858093126386,
+                  9.101605758582503
+                ],
+                "shared": [
+                  9.475471175166296,
+                  9.101605758582503
+                ]
+              },
+              "control_mean": 9.245231925854444,
+              "shared_mean": 9.2885384668744,
+              "reduction_percent": -0.46842027725499946,
+              "ranges_overlap": true
+            },
+            "host_process_cycles_per_guest_frame": {
+              "samples": {
+                "control": [
+                  43675514.401330374,
+                  43407647.38648948
+                ],
+                "shared": [
+                  44390831.99556541,
+                  43699489.800664455
+                ]
+              },
+              "control_mean": 43541580.89390993,
+              "shared_mean": 44045160.898114935,
+              "reduction_percent": -1.156549656366379,
+              "ranges_overlap": false
+            },
+            "capture_gpu_ms": {
+              "samples": {
+                "control": [
+                  0.2170301019955654,
+                  0.19952560532150776
+                ],
+                "shared": [
+                  0.07724665038845728,
+                  0.07851764079822617
+                ]
+              },
+              "control_mean": 0.20827785365853657,
+              "shared_mean": 0.07788214559334172,
+              "reduction_percent": 62.60661216481207,
+              "ranges_overlap": false
+            },
+            "capture_gpu_ms_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.2170301019955654,
+                  0.19930464673311185
+                ],
+                "shared": [
+                  0.07716101108647451,
+                  0.0784306888150609
+                ]
+              },
+              "control_mean": 0.20816737436433863,
+              "shared_mean": 0.07779584995076771,
+              "reduction_percent": 62.62822155089112,
+              "ranges_overlap": false
+            },
+            "timestamp_samples_per_guest_frame": {
+              "samples": {
+                "control": [
+                  1.0,
+                  0.9988925802879292
+                ],
+                "shared": [
+                  0.9988913525498891,
+                  0.9988925802879292
+                ]
+              },
+              "control_mean": 0.9994462901439646,
+              "shared_mean": 0.9988919664189091,
+              "reduction_percent": 0.05546308296122682,
+              "ranges_overlap": true
+            },
+            "fresh_captures_per_guest_frame": {
+              "samples": {
+                "control": [
+                  1.0,
+                  0.9988925802879292
+                ],
+                "shared": [
+                  0.9988913525498891,
+                  0.9988925802879292
+                ]
+              },
+              "control_mean": 0.9994462901439646,
+              "shared_mean": 0.9988919664189091,
+              "reduction_percent": 0.05546308296122682,
+              "ranges_overlap": true
+            },
+            "duplicate_captures_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.0,
+                  0.0
+                ],
+                "shared": [
+                  0.0,
+                  0.0
+                ]
+              },
+              "control_mean": 0.0,
+              "shared_mean": 0.0,
+              "reduction_percent": null,
+              "ranges_overlap": true
+            },
+            "swaps_per_guest_frame": {
+              "samples": {
+                "control": [
+                  1.639689578713969,
+                  1.6600221483942414
+                ],
+                "shared": [
+                  1.606430155210643,
+                  1.6478405315614617
+                ]
+              },
+              "control_mean": 1.6498558635541052,
+              "shared_mean": 1.6271353433860525,
+              "reduction_percent": 1.377121521337532,
+              "ranges_overlap": true
+            },
+            "draws_per_frame": {
+              "samples": {
+                "control": [
+                  204.8968957871397,
+                  204.452934662237
+                ],
+                "shared": [
+                  204.2549889135255,
+                  204.82392026578074
+                ]
+              },
+              "control_mean": 204.67491522468833,
+              "shared_mean": 204.53945458965313,
+              "reduction_percent": 0.06618331068392047,
+              "ranges_overlap": true
+            },
+            "guest_cycles_per_frame": {
+              "samples": {
+                "control": [
+                  564475.0909090909,
+                  564291.2679955703
+                ],
+                "shared": [
+                  564480.0,
+                  564480.0
+                ]
+              },
+              "control_mean": 564383.1794523306,
+              "shared_mean": 564480.0,
+              "reduction_percent": -0.017155108655675377,
+              "ranges_overlap": false
+            },
+            "guest_hz": {
+              "samples": {
+                "control": [
+                  59.94380102506143,
+                  59.97867628518742
+                ],
+                "shared": [
+                  59.96412097981453,
+                  59.94555509662196
+                ]
+              },
+              "control_mean": 59.961238655124426,
+              "shared_mean": 59.95483803821824,
+              "reduction_percent": 0.010674590868609002,
+              "ranges_overlap": true
+            }
+          }
+        }
+      ],
+      "query_off_block": {
+        "cpu_ms_per_frame": {
+          "samples": {
+            "control": [
+              9.977827050997783,
+              9.603405315614618
+            ],
+            "shared": [
+              9.82389502762431,
+              9.694089900110988
+            ]
+          },
+          "control_mean": 9.7906161833062,
+          "shared_mean": 9.75899246386765,
+          "reduction_percent": 0.32300029790230944,
+          "ranges_overlap": true
+        },
+        "host_process_cycles_per_guest_frame": {
+          "samples": {
+            "control": [
+              47240964.62305987,
+              44489543.66555925
+            ],
+            "shared": [
+              44978034.55248619,
+              45665509.85571587
+            ]
+          },
+          "control_mean": 45865254.14430956,
+          "shared_mean": 45321772.204101026,
+          "reduction_percent": 1.1849535129545563,
+          "ranges_overlap": true
+        },
+        "fresh_captures_per_frame": {
+          "samples": {
+            "control": [
+              1.0,
+              0.9988925802879292
+            ],
+            "shared": [
+              1.0,
+              1.0011098779134295
+            ]
+          },
+          "control_mean": 0.9994462901439646,
+          "shared_mean": 1.0005549389567148,
+          "reduction_percent": -0.11092630226188227,
+          "ranges_overlap": true
+        },
+        "duplicates_per_frame": {
+          "samples": {
+            "control": [
+              0.0,
+              0.0
+            ],
+            "shared": [
+              0.0,
+              0.0
+            ]
+          },
+          "control_mean": 0.0,
+          "shared_mean": 0.0,
+          "reduction_percent": null,
+          "ranges_overlap": true
+        },
+        "swaps_per_frame": {
+          "samples": {
+            "control": [
+              1.5543237250554325,
+              1.6423034330011075
+            ],
+            "shared": [
+              1.594475138121547,
+              1.5871254162042174
+            ]
+          },
+          "control_mean": 1.5983135790282699,
+          "shared_mean": 1.5908002771628822,
+          "reduction_percent": 0.4700768337309369,
+          "ranges_overlap": true
+        },
+        "draws_per_frame": {
+          "samples": {
+            "control": [
+              204.67960088691797,
+              204.02879291251384
+            ],
+            "shared": [
+              204.37127071823204,
+              204.42397336293007
+            ]
+          },
+          "control_mean": 204.3541968997159,
+          "shared_mean": 204.39762204058104,
+          "reduction_percent": -0.02124993835406208,
+          "ranges_overlap": true
+        },
+        "guest_cycles_per_frame": {
+          "samples": {
+            "control": [
+              564480.0,
+              564480.0
+            ],
+            "shared": [
+              564464.11160221,
+              564480.0
+            ]
+          },
+          "control_mean": 564480.0,
+          "shared_mean": 564472.055801105,
+          "reduction_percent": 0.0014073481602538962,
+          "ranges_overlap": true
+        },
+        "guest_hz": {
+          "samples": {
+            "control": [
+              59.94568137043725,
+              59.95797205094671
+            ],
+            "shared": [
+              59.96977496840121,
+              59.96199860107354
+            ]
+          },
+          "control_mean": 59.951826710691975,
+          "shared_mean": 59.96588678473738,
+          "reduction_percent": -0.023452286305225556,
+          "ranges_overlap": false
+        }
+      },
+      "query_on_samples": [
+        {
+          "label": "g4-ape-block1-1-control",
+          "mode": "control",
+          "raw": "g4-ape-block1-1-control.json",
+          "raw_sha256": "e446c3bb05fa5e849214f85aefc64004941db3f3ede1236224c84a7edb53b846",
+          "frames": 907,
+          "metrics": {
+            "cpu_ms_per_frame": 9.319873208379272,
+            "host_process_cycles_per_guest_frame": 44161886.604189634,
+            "capture_gpu_ms": 0.1821442825607064,
+            "capture_gpu_ms_per_guest_frame": 0.18194346196251376,
+            "timestamp_samples_per_guest_frame": 0.9988974641675854,
+            "fresh_captures_per_guest_frame": 0.9988974641675854,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.6251378169790518,
+            "draws_per_frame": 204.87210584343993,
+            "guest_cycles_per_frame": 564472.8765159867,
+            "guest_hz": 59.95881312158122
+          },
+          "host_interval_cpu_min": 42.361111111111114,
+          "host_interval_cpu_max": 97.91666666666667,
+          "gpu_graphics_clock_range_mhz": [
+            1410.0,
+            1980.0
+          ],
+          "gpu_utilization_range": [
+            31.0,
+            43.0
+          ]
+        },
+        {
+          "label": "g4-ape-block1-2-shared",
+          "mode": "shared",
+          "raw": "g4-ape-block1-2-shared.json",
+          "raw_sha256": "5ac1579d87d211d82b6d9948e7cc4256bbd67a833d05d9d6a3d3a662872e69fd",
+          "frames": 903,
+          "metrics": {
+            "cpu_ms_per_frame": 10.018687707641195,
+            "host_process_cycles_per_guest_frame": 45287277.84053156,
+            "capture_gpu_ms": 0.06512095681063122,
+            "capture_gpu_ms_per_guest_frame": 0.06512095681063122,
+            "timestamp_samples_per_guest_frame": 1.0,
+            "fresh_captures_per_guest_frame": 1.0,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.5891472868217054,
+            "draws_per_frame": 204.452934662237,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.94324231262906
+          },
+          "host_interval_cpu_min": 41.40625,
+          "host_interval_cpu_max": 98.75,
+          "gpu_graphics_clock_range_mhz": [
+            1320.0,
+            1980.0
+          ],
+          "gpu_utilization_range": [
+            33.0,
+            42.0
+          ]
+        },
+        {
+          "label": "g4-ape-block1-3-shared",
+          "mode": "shared",
+          "raw": "g4-ape-block1-3-shared.json",
+          "raw_sha256": "f3b8957361d2006e2e6c1f3e2ba5e44cd245afb2593bcffa724a239a955bc111",
+          "frames": 905,
+          "metrics": {
+            "cpu_ms_per_frame": 10.359116022099448,
+            "host_process_cycles_per_guest_frame": 47776375.60220995,
+            "capture_gpu_ms": 0.08817928476821192,
+            "capture_gpu_ms_per_guest_frame": 0.08827672044198895,
+            "timestamp_samples_per_guest_frame": 1.0011049723756906,
+            "fresh_captures_per_guest_frame": 1.0011049723756906,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.569060773480663,
+            "draws_per_frame": 204.9546961325967,
+            "guest_cycles_per_frame": 565101.0453038674,
+            "guest_hz": 59.8842901849515
+          },
+          "host_interval_cpu_min": 56.25,
+          "host_interval_cpu_max": 100.0,
+          "gpu_graphics_clock_range_mhz": [
+            1230.0,
+            1815.0
+          ],
+          "gpu_utilization_range": [
+            25.0,
+            41.0
+          ]
+        },
+        {
+          "label": "g4-ape-block1-4-control",
+          "mode": "control",
+          "raw": "g4-ape-block1-4-control.json",
+          "raw_sha256": "269ee2a483f8c1dccbc0601d12bb7ddb42cd417029a1af7b89a6fdac4afd8436",
+          "frames": 904,
+          "metrics": {
+            "cpu_ms_per_frame": 10.301438053097344,
+            "host_process_cycles_per_guest_frame": 47868425.86283186,
+            "capture_gpu_ms": 0.23179667256637168,
+            "capture_gpu_ms_per_guest_frame": 0.23179667256637168,
+            "timestamp_samples_per_guest_frame": 1.0,
+            "fresh_captures_per_guest_frame": 1.0,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.5774336283185841,
+            "draws_per_frame": 205.11283185840708,
+            "guest_cycles_per_frame": 564719.9181415929,
+            "guest_hz": 59.90228863252491
+          },
+          "host_interval_cpu_min": 50.0,
+          "host_interval_cpu_max": 97.22222222222223,
+          "gpu_graphics_clock_range_mhz": [
+            1230.0,
+            1815.0
+          ],
+          "gpu_utilization_range": [
+            22.0,
+            42.0
+          ]
+        },
+        {
+          "label": "g4-ape-block2-1-control",
+          "mode": "control",
+          "raw": "g4-ape-block2-1-control.json",
+          "raw_sha256": "f045f769d262a6f500e80f52c17c8e9f6bae7fc81d0b7e048714bd7a2b9fb498",
+          "frames": 902,
+          "metrics": {
+            "cpu_ms_per_frame": 9.388858093126386,
+            "host_process_cycles_per_guest_frame": 43675514.401330374,
+            "capture_gpu_ms": 0.2170301019955654,
+            "capture_gpu_ms_per_guest_frame": 0.2170301019955654,
+            "timestamp_samples_per_guest_frame": 1.0,
+            "fresh_captures_per_guest_frame": 1.0,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.639689578713969,
+            "draws_per_frame": 204.8968957871397,
+            "guest_cycles_per_frame": 564475.0909090909,
+            "guest_hz": 59.94380102506143
+          },
+          "host_interval_cpu_min": 33.57142857142857,
+          "host_interval_cpu_max": 100.0,
+          "gpu_graphics_clock_range_mhz": [
+            1275.0,
+            1815.0
+          ],
+          "gpu_utilization_range": [
+            21.0,
+            43.0
+          ]
+        },
+        {
+          "label": "g4-ape-block2-2-shared",
+          "mode": "shared",
+          "raw": "g4-ape-block2-2-shared.json",
+          "raw_sha256": "119781bd44161e071dcf90290fff381a351ce21fedac063d5278e617d815c191",
+          "frames": 902,
+          "metrics": {
+            "cpu_ms_per_frame": 9.475471175166296,
+            "host_process_cycles_per_guest_frame": 44390831.99556541,
+            "capture_gpu_ms": 0.07724665038845728,
+            "capture_gpu_ms_per_guest_frame": 0.07716101108647451,
+            "timestamp_samples_per_guest_frame": 0.9988913525498891,
+            "fresh_captures_per_guest_frame": 0.9988913525498891,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.606430155210643,
+            "draws_per_frame": 204.2549889135255,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.96412097981453
+          },
+          "host_interval_cpu_min": 38.28125,
+          "host_interval_cpu_max": 100.0,
+          "gpu_graphics_clock_range_mhz": [
+            1185.0,
+            1815.0
+          ],
+          "gpu_utilization_range": [
+            20.0,
+            41.0
+          ]
+        },
+        {
+          "label": "g4-ape-block2-3-shared",
+          "mode": "shared",
+          "raw": "g4-ape-block2-3-shared.json",
+          "raw_sha256": "5dba72112bb291d524cde3edb9e426173a4cf54011c37f5bc676c2091e315b52",
+          "frames": 903,
+          "metrics": {
+            "cpu_ms_per_frame": 9.101605758582503,
+            "host_process_cycles_per_guest_frame": 43699489.800664455,
+            "capture_gpu_ms": 0.07851764079822617,
+            "capture_gpu_ms_per_guest_frame": 0.0784306888150609,
+            "timestamp_samples_per_guest_frame": 0.9988925802879292,
+            "fresh_captures_per_guest_frame": 0.9988925802879292,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.6478405315614617,
+            "draws_per_frame": 204.82392026578074,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.94555509662196
+          },
+          "host_interval_cpu_min": 42.361111111111114,
+          "host_interval_cpu_max": 94.4055944055944,
+          "gpu_graphics_clock_range_mhz": [
+            1245.0,
+            1815.0
+          ],
+          "gpu_utilization_range": [
+            27.0,
+            42.0
+          ]
+        },
+        {
+          "label": "g4-ape-block2-4-control",
+          "mode": "control",
+          "raw": "g4-ape-block2-4-control.json",
+          "raw_sha256": "4592d462b4b10f8963f9c374a357142c99fabb734934407546256b4322853391",
+          "frames": 903,
+          "metrics": {
+            "cpu_ms_per_frame": 9.101605758582503,
+            "host_process_cycles_per_guest_frame": 43407647.38648948,
+            "capture_gpu_ms": 0.19952560532150776,
+            "capture_gpu_ms_per_guest_frame": 0.19930464673311185,
+            "timestamp_samples_per_guest_frame": 0.9988925802879292,
+            "fresh_captures_per_guest_frame": 0.9988925802879292,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 1.6600221483942414,
+            "draws_per_frame": 204.452934662237,
+            "guest_cycles_per_frame": 564291.2679955703,
+            "guest_hz": 59.97867628518742
+          },
+          "host_interval_cpu_min": 38.80597014925373,
+          "host_interval_cpu_max": 95.83333333333333,
+          "gpu_graphics_clock_range_mhz": [
+            1110.0,
+            1815.0
+          ],
+          "gpu_utilization_range": [
+            24.0,
+            45.0
+          ]
+        }
+      ],
+      "query_off_samples": [
+        {
+          "mode": "control",
+          "label": "g4-ape-block4-1-control",
+          "raw": "g4-ape-block4-1-control.json",
+          "raw_sha256": "1ec9556bee24b2f17d6e92cc70f30abe4908cf0fe1744a60dc4ff01201145cb5",
+          "frames": 902,
+          "metrics": {
+            "cpu_ms_per_frame": 9.977827050997783,
+            "host_process_cycles_per_guest_frame": 47240964.62305987,
+            "fresh_captures_per_frame": 1.0,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 1.5543237250554325,
+            "draws_per_frame": 204.67960088691797,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.94568137043725
+          },
+          "host_cpu_mean": 79.23156801661474,
+          "host_cpu_range": [
+            47.794117647058826,
+            100.0
+          ],
+          "gpu_utilization_range": [
+            34.0,
+            76.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            615.0,
+            780.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2147.0,
+            2682.0
+          ],
+          "binary_sha256": "361adce0bc7549fe69103f049e9e13948579a80cc4460a27b3cea75b361ba1a0",
+          "capture_sizes": [
+            [
+              3456,
+              2160
+            ]
+          ]
+        },
+        {
+          "mode": "shared",
+          "label": "g4-ape-block4-2-shared",
+          "raw": "g4-ape-block4-2-shared.json",
+          "raw_sha256": "83c30354455cb68513414f2cdbda3670101d2ff1569a1b24c6cc6423141d0786",
+          "frames": 905,
+          "metrics": {
+            "cpu_ms_per_frame": 9.82389502762431,
+            "host_process_cycles_per_guest_frame": 44978034.55248619,
+            "fresh_captures_per_frame": 1.0,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 1.594475138121547,
+            "draws_per_frame": 204.37127071823204,
+            "guest_cycles_per_frame": 564464.11160221,
+            "guest_hz": 59.96977496840121
+          },
+          "host_cpu_mean": 70.02458592132506,
+          "host_cpu_range": [
+            45.138888888888886,
+            100.0
+          ],
+          "gpu_utilization_range": [
+            18.0,
+            77.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            525.0,
+            780.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2210.0,
+            2736.0
+          ],
+          "binary_sha256": "165958fdd474f55ab0e2334e61710063f958224c4ba5e317845a8dec34eaab40",
+          "capture_sizes": [
+            [
+              3456,
+              2160
+            ]
+          ]
+        },
+        {
+          "mode": "shared",
+          "label": "g4-ape-block4-3-shared",
+          "raw": "g4-ape-block4-3-shared.json",
+          "raw_sha256": "14978cd673df8f666a937b3ebdb9b43049bbaf36e14e6b6d89a57c155b8e6a8e",
+          "frames": 901,
+          "metrics": {
+            "cpu_ms_per_frame": 9.694089900110988,
+            "host_process_cycles_per_guest_frame": 45665509.85571587,
+            "fresh_captures_per_frame": 1.0011098779134295,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 1.5871254162042174,
+            "draws_per_frame": 204.42397336293007,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.96199860107354
+          },
+          "host_cpu_mean": 71.65410602910603,
+          "host_cpu_range": [
+            41.666666666666664,
+            100.0
+          ],
+          "gpu_utilization_range": [
+            24.0,
+            75.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            780.0,
+            1815.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2205.0,
+            2816.0
+          ],
+          "binary_sha256": "165958fdd474f55ab0e2334e61710063f958224c4ba5e317845a8dec34eaab40",
+          "capture_sizes": [
+            [
+              3456,
+              2160
+            ]
+          ]
+        },
+        {
+          "mode": "control",
+          "label": "g4-ape-block4-4-control",
+          "raw": "g4-ape-block4-4-control.json",
+          "raw_sha256": "3dd3524eb050d06d2119af21c015b09ee1f5ce30e0091b6b9080913557e28b6d",
+          "frames": 903,
+          "metrics": {
+            "cpu_ms_per_frame": 9.603405315614618,
+            "host_process_cycles_per_guest_frame": 44489543.66555925,
+            "fresh_captures_per_frame": 0.9988925802879292,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 1.6423034330011075,
+            "draws_per_frame": 204.02879291251384,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.95797205094671
+          },
+          "host_cpu_mean": 65.91026970954357,
+          "host_cpu_range": [
+            40.625,
+            93.75
+          ],
+          "gpu_utilization_range": [
+            16.0,
+            70.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            780.0,
+            1080.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2233.0,
+            2699.0
+          ],
+          "binary_sha256": "361adce0bc7549fe69103f049e9e13948579a80cc4460a27b3cea75b361ba1a0",
+          "capture_sizes": [
+            [
+              3456,
+              2160
+            ]
+          ]
+        }
+      ],
+      "disposition": "Narrow capture GPU win (~0.13ms/guestframe) twice; no-query CPU/cadence neutral/inconclusive."
+    },
+    {
+      "game": "Tomba SCUS-94236 USA",
+      "features": "PGXP OFF, actual/requested5x, retained gameplay seed, unchanged guest timing",
+      "package": "shared-completed-temporal-images-v1",
+      "same_on_both": "Private machine payload/config/settings; temporal120 existing QA environment overrides; hidden full OpenGL, dummy audio, original instruction timing, autocompileOFF/no native overlay cache.",
+      "machine_payload_sha256": "bea0125822d47ad87a49ce3616311dfbc9c640818a0425c5a175ed4b7c9e8dbd",
+      "config_text_sha256": "9b4b44f649849542dcef2aac9bcd0c3967a182c94ff10b1a768db62dc3324a17",
+      "config_file_sha256": "3c12f9b404c6fae46654aebeae328fbe79f810b23d87f32db9fb2dc5a105e082",
+      "settings_text_sha256": "b5627acc845f0677ff32e395804909afff727b4761ad50df224d8515c0fbc1ad",
+      "builds": [
+        {
+          "name": "g4-tomba-control-qa",
+          "mode": "control",
+          "binary_sha256": "ca6b447c50e26e9011a33d9b5fe871782a1b30b5435c6b2c32bcf0505a58339e",
+          "engine_head": "fac3396322aa41cbf6eff30edee5929e05af521e",
+          "engine_source_sha256": {
+            "runtime/src/gpu_gl_renderer.c": "e2323ffa560b1d16c8b58c00c3ac202839c23f97cd95dbf835f3a187a4cbfc85",
+            "cmake/psx_present_images.cmake": "133ff2e8e9d11dd00b13de23ca9c3fa5d348169cd94d304ba720ff896bb81f1d",
+            "runtime/runtime.cmake": "784e28a4be9fcf560a2c9aa53955ff2176fc962cea6aeb6830fe440838e090e1"
+          },
+          "title_head": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+          "compiler_version": "15.2.0",
+          "build_selections": [
+            "CMAKE_BUILD_TYPE:STRING=Release",
+            "PSX_DEBUG_TOOLS:BOOL=ON",
+            "PSX_EXECUTION_PROFILE:STRING=ENHANCED",
+            "PSX_RUNTIME_IPO:BOOL=OFF",
+            "PSX_SHARED_PRESENT_IMAGES:BOOL=OFF"
+          ],
+          "settings_file_sha256": "49da52e18be6eb17f42ac6fed817a1f2beab600ac3769c2dc9d89688c459b0cc",
+          "execution_identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc"
+        },
+        {
+          "name": "g4-tomba-shared-qa",
+          "mode": "shared",
+          "binary_sha256": "4d8138fa3fd4eb1209419b05e0b9423cb81f99254246660a88aaa2143a22a271",
+          "engine_head": "fac3396322aa41cbf6eff30edee5929e05af521e",
+          "engine_source_sha256": {
+            "runtime/src/gpu_gl_renderer.c": "e2323ffa560b1d16c8b58c00c3ac202839c23f97cd95dbf835f3a187a4cbfc85",
+            "cmake/psx_present_images.cmake": "133ff2e8e9d11dd00b13de23ca9c3fa5d348169cd94d304ba720ff896bb81f1d",
+            "runtime/runtime.cmake": "784e28a4be9fcf560a2c9aa53955ff2176fc962cea6aeb6830fe440838e090e1"
+          },
+          "title_head": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+          "compiler_version": "15.2.0",
+          "build_selections": [
+            "CMAKE_BUILD_TYPE:STRING=Release",
+            "PSX_DEBUG_TOOLS:BOOL=ON",
+            "PSX_EXECUTION_PROFILE:STRING=ENHANCED",
+            "PSX_RUNTIME_IPO:BOOL=OFF",
+            "PSX_SHARED_PRESENT_IMAGES:BOOL=ON"
+          ],
+          "settings_file_sha256": "49da52e18be6eb17f42ac6fed817a1f2beab600ac3769c2dc9d89688c459b0cc",
+          "execution_identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc"
+        }
+      ],
+      "query_on_blocks": [
+        {
+          "block": 1,
+          "metrics": {
+            "cpu_ms_per_frame": {
+              "samples": {
+                "control": [
+                  6.232734806629834,
+                  5.450581395348837
+                ],
+                "shared": [
+                  6.444013303769402,
+                  6.145833333333333
+                ]
+              },
+              "control_mean": 5.841658100989335,
+              "shared_mean": 6.294923318551367,
+              "reduction_percent": -7.759187712222793,
+              "ranges_overlap": true
+            },
+            "host_process_cycles_per_guest_frame": {
+              "samples": {
+                "control": [
+                  28376972.917127073,
+                  27302032.990033224
+                ],
+                "shared": [
+                  29014937.272727273,
+                  28997252.122222222
+                ]
+              },
+              "control_mean": 27839502.95358015,
+              "shared_mean": 29006094.697474748,
+              "reduction_percent": -4.190418722057587,
+              "ranges_overlap": false
+            },
+            "capture_gpu_ms": {
+              "samples": {
+                "control": [
+                  0.09706388508287293,
+                  0.21401146902654866
+                ],
+                "shared": [
+                  0.1333916270810211,
+                  0.15102293333333333
+                ]
+              },
+              "control_mean": 0.1555376770547108,
+              "shared_mean": 0.1422072802071772,
+              "reduction_percent": 8.57052586869006,
+              "ranges_overlap": true
+            },
+            "capture_gpu_ms_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.09706388508287293,
+                  0.21424846954595791
+                ],
+                "shared": [
+                  0.1332437427937916,
+                  0.15102293333333333
+                ]
+              },
+              "control_mean": 0.15565617731441542,
+              "shared_mean": 0.14213333806356246,
+              "reduction_percent": 8.687634171779568,
+              "ranges_overlap": true
+            },
+            "timestamp_samples_per_guest_frame": {
+              "samples": {
+                "control": [
+                  1.0,
+                  1.0011074197120708
+                ],
+                "shared": [
+                  0.9988913525498891,
+                  1.0
+                ]
+              },
+              "control_mean": 1.0005537098560353,
+              "shared_mean": 0.9994456762749446,
+              "reduction_percent": 0.11074203915051317,
+              "ranges_overlap": true
+            },
+            "fresh_captures_per_guest_frame": {
+              "samples": {
+                "control": [
+                  1.0,
+                  1.0011074197120708
+                ],
+                "shared": [
+                  0.9988913525498891,
+                  1.0
+                ]
+              },
+              "control_mean": 1.0005537098560353,
+              "shared_mean": 0.9994456762749446,
+              "reduction_percent": 0.11074203915051317,
+              "ranges_overlap": true
+            },
+            "duplicate_captures_per_guest_frame": {
+              "samples": {
+                "control": [
+                  0.0,
+                  0.0
+                ],
+                "shared": [
+                  0.0,
+                  0.0
+                ]
+              },
+              "control_mean": 0.0,
+              "shared_mean": 0.0,
+              "reduction_percent": null,
+              "ranges_overlap": true
+            },
+            "swaps_per_guest_frame": {
+              "samples": {
+                "control": [
+                  2.0011049723756904,
+                  2.001107419712071
+                ],
+                "shared": [
+                  2.0,
+                  2.0
+                ]
+              },
+              "control_mean": 2.0011061960438807,
+              "shared_mean": 2.0,
+              "reduction_percent": 0.055279227362725614,
+              "ranges_overlap": false
+            },
+            "draws_per_frame": {
+              "samples": {
+                "control": [
+                  439.19558011049725,
+                  439.25581395348837
+                ],
+                "shared": [
+                  439.2560975609756,
+                  439.2611111111111
+                ]
+              },
+              "control_mean": 439.2256970319928,
+              "shared_mean": 439.2586043360434,
+              "reduction_percent": -0.00749211721284837,
+              "ranges_overlap": false
+            },
+            "guest_cycles_per_frame": {
+              "samples": {
+                "control": [
+                  564429.6220994475,
+                  564480.0
+                ],
+                "shared": [
+                  564480.0,
+                  564480.0
+                ]
+              },
+              "control_mean": 564454.8110497238,
+              "shared_mean": 564480.0,
+              "reduction_percent": -0.0044625273419862665,
+              "ranges_overlap": true
+            },
+            "guest_hz": {
+              "samples": {
+                "control": [
+                  59.9473189586605,
+                  59.94773195106611
+                ],
+                "shared": [
+                  59.98673215863755,
+                  59.93860169355357
+                ]
+              },
+              "control_mean": 59.94752545486331,
+              "shared_mean": 59.962666926095565,
+              "reduction_percent": -0.02525787531240109,
+              "ranges_overlap": true
+            }
+          }
+        }
+      ],
+      "query_off_block": {
+        "cpu_ms_per_frame": {
+          "samples": {
+            "control": [
+              6.253445424476295,
+              6.04950221238938
+            ],
+            "shared": [
+              5.863686534216336,
+              6.347114317425083
+            ]
+          },
+          "control_mean": 6.151473818432837,
+          "shared_mean": 6.10540042582071,
+          "reduction_percent": 0.7489813656374356,
+          "ranges_overlap": true
+        },
+        "host_process_cycles_per_guest_frame": {
+          "samples": {
+            "control": [
+              29052618.864388093,
+              30910313.75
+            ],
+            "shared": [
+              27883231.41280353,
+              29722867.81354051
+            ]
+          },
+          "control_mean": 29981466.307194047,
+          "shared_mean": 28803049.61317202,
+          "reduction_percent": 3.9304838594210634,
+          "ranges_overlap": true
+        },
+        "fresh_captures_per_frame": {
+          "samples": {
+            "control": [
+              1.0011025358324146,
+              1.0
+            ],
+            "shared": [
+              1.0,
+              1.0011098779134295
+            ]
+          },
+          "control_mean": 1.0005512679162072,
+          "shared_mean": 1.0005549389567148,
+          "reduction_percent": -0.000366901789572438,
+          "ranges_overlap": true
+        },
+        "duplicates_per_frame": {
+          "samples": {
+            "control": [
+              0.0,
+              0.0
+            ],
+            "shared": [
+              0.0,
+              0.0
+            ]
+          },
+          "control_mean": 0.0,
+          "shared_mean": 0.0,
+          "reduction_percent": null,
+          "ranges_overlap": true
+        },
+        "swaps_per_frame": {
+          "samples": {
+            "control": [
+              1.9966923925027564,
+              2.0011061946902653
+            ],
+            "shared": [
+              2.001103752759382,
+              2.0033296337402886
+            ]
+          },
+          "control_mean": 1.9988992935965109,
+          "shared_mean": 2.002216693249835,
+          "reduction_percent": -0.16596132001005515,
+          "ranges_overlap": true
+        },
+        "draws_per_frame": {
+          "samples": {
+            "control": [
+              439.7431091510474,
+              439.2588495575221
+            ],
+            "shared": [
+              439.25938189845476,
+              439.2563817980022
+            ]
+          },
+          "control_mean": 439.50097935428477,
+          "shared_mean": 439.2578818482285,
+          "reduction_percent": 0.055312164813237086,
+          "ranges_overlap": true
+        },
+        "guest_cycles_per_frame": {
+          "samples": {
+            "control": [
+              564553.8643880927,
+              564480.0
+            ],
+            "shared": [
+              564480.0,
+              564480.0
+            ]
+          },
+          "control_mean": 564516.9321940463,
+          "shared_mean": 564480.0,
+          "reduction_percent": 0.006542265065956343,
+          "ranges_overlap": true
+        },
+        "guest_hz": {
+          "samples": {
+            "control": [
+              59.278642060824154,
+              59.9316904692321
+            ],
+            "shared": [
+              59.96715229743677,
+              59.91308068256064
+            ]
+          },
+          "control_mean": 59.60516626502813,
+          "shared_mean": 59.9401164899987,
+          "reduction_percent": -0.5619483107911272,
+          "ranges_overlap": true
+        }
+      },
+      "query_on_samples": [
+        {
+          "label": "g4-tomba-block1-1-control",
+          "mode": "control",
+          "raw": "g4-tomba-block1-1-control.json",
+          "raw_sha256": "8029efe77925bfcb5ec76ab6e280985450c21ca4d6f69396ac04c390b424edb8",
+          "frames": 905,
+          "metrics": {
+            "cpu_ms_per_frame": 6.232734806629834,
+            "host_process_cycles_per_guest_frame": 28376972.917127073,
+            "capture_gpu_ms": 0.09706388508287293,
+            "capture_gpu_ms_per_guest_frame": 0.09706388508287293,
+            "timestamp_samples_per_guest_frame": 1.0,
+            "fresh_captures_per_guest_frame": 1.0,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 2.0011049723756904,
+            "draws_per_frame": 439.19558011049725,
+            "guest_cycles_per_frame": 564429.6220994475,
+            "guest_hz": 59.9473189586605
+          },
+          "host_interval_cpu_min": 36.111111111111114,
+          "host_interval_cpu_max": 95.83333333333333,
+          "gpu_graphics_clock_range_mhz": [
+            555.0,
+            1980.0
+          ],
+          "gpu_utilization_range": [
+            17.0,
+            95.0
+          ]
+        },
+        {
+          "label": "g4-tomba-block1-2-shared",
+          "mode": "shared",
+          "raw": "g4-tomba-block1-2-shared.json",
+          "raw_sha256": "11fa38bda7469464921dc9cb751df675508701e567099b45ae8318a67fe26b8e",
+          "frames": 902,
+          "metrics": {
+            "cpu_ms_per_frame": 6.444013303769402,
+            "host_process_cycles_per_guest_frame": 29014937.272727273,
+            "capture_gpu_ms": 0.1333916270810211,
+            "capture_gpu_ms_per_guest_frame": 0.1332437427937916,
+            "timestamp_samples_per_guest_frame": 0.9988913525498891,
+            "fresh_captures_per_guest_frame": 0.9988913525498891,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 2.0,
+            "draws_per_frame": 439.2560975609756,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.98673215863755
+          },
+          "host_interval_cpu_min": 36.434108527131784,
+          "host_interval_cpu_max": 94.53125,
+          "gpu_graphics_clock_range_mhz": [
+            780.0,
+            780.0
+          ],
+          "gpu_utilization_range": [
+            49.0,
+            77.0
+          ]
+        },
+        {
+          "label": "g4-tomba-block1-3-shared",
+          "mode": "shared",
+          "raw": "g4-tomba-block1-3-shared.json",
+          "raw_sha256": "919d099a76d389a0dbe859220c8fb99c0d5c6d460e330c8f526f58d4fb9a1e89",
+          "frames": 900,
+          "metrics": {
+            "cpu_ms_per_frame": 6.145833333333333,
+            "host_process_cycles_per_guest_frame": 28997252.122222222,
+            "capture_gpu_ms": 0.15102293333333333,
+            "capture_gpu_ms_per_guest_frame": 0.15102293333333333,
+            "timestamp_samples_per_guest_frame": 1.0,
+            "fresh_captures_per_guest_frame": 1.0,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 2.0,
+            "draws_per_frame": 439.2611111111111,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.93860169355357
+          },
+          "host_interval_cpu_min": 28.90625,
+          "host_interval_cpu_max": 100.0,
+          "gpu_graphics_clock_range_mhz": [
+            780.0,
+            1365.0
+          ],
+          "gpu_utilization_range": [
+            30.0,
+            56.0
+          ]
+        },
+        {
+          "label": "g4-tomba-block1-4-control",
+          "mode": "control",
+          "raw": "g4-tomba-block1-4-control.json",
+          "raw_sha256": "09c1979bb6da9e433b5a0ae1cf29758806492f0c58bfd354e8c5bfce4a2681e4",
+          "frames": 903,
+          "metrics": {
+            "cpu_ms_per_frame": 5.450581395348837,
+            "host_process_cycles_per_guest_frame": 27302032.990033224,
+            "capture_gpu_ms": 0.21401146902654866,
+            "capture_gpu_ms_per_guest_frame": 0.21424846954595791,
+            "timestamp_samples_per_guest_frame": 1.0011074197120708,
+            "fresh_captures_per_guest_frame": 1.0011074197120708,
+            "duplicate_captures_per_guest_frame": 0.0,
+            "swaps_per_guest_frame": 2.001107419712071,
+            "draws_per_frame": 439.25581395348837,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.94773195106611
+          },
+          "host_interval_cpu_min": 36.71875,
+          "host_interval_cpu_max": 94.53125,
+          "gpu_graphics_clock_range_mhz": [
+            780.0,
+            780.0
+          ],
+          "gpu_utilization_range": [
+            17.0,
+            61.0
+          ]
+        }
+      ],
+      "query_off_samples": [
+        {
+          "mode": "control",
+          "label": "g4-tomba-block4-1-control",
+          "raw": "g4-tomba-block4-1-control.json",
+          "raw_sha256": "3249245e00fb1abba813b774a7816ab1967764d323168f4bf91db26cf2710a7a",
+          "frames": 907,
+          "metrics": {
+            "cpu_ms_per_frame": 6.253445424476295,
+            "host_process_cycles_per_guest_frame": 29052618.864388093,
+            "fresh_captures_per_frame": 1.0011025358324146,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 1.9966923925027564,
+            "draws_per_frame": 439.7431091510474,
+            "guest_cycles_per_frame": 564553.8643880927,
+            "guest_hz": 59.278642060824154
+          },
+          "host_cpu_mean": 62.0211950970378,
+          "host_cpu_range": [
+            38.297872340425535,
+            100.0
+          ],
+          "gpu_utilization_range": [
+            16.0,
+            58.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            645.0,
+            780.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2215.0,
+            2430.0
+          ],
+          "binary_sha256": "ca6b447c50e26e9011a33d9b5fe871782a1b30b5435c6b2c32bcf0505a58339e",
+          "capture_sizes": [
+            [
+              1600,
+              1120
+            ]
+          ]
+        },
+        {
+          "mode": "shared",
+          "label": "g4-tomba-block4-2-shared",
+          "raw": "g4-tomba-block4-2-shared.json",
+          "raw_sha256": "4037140c2b65e9ee8518804f46cea9765242fcdf87565daf808f7d37710aabe3",
+          "frames": 906,
+          "metrics": {
+            "cpu_ms_per_frame": 5.863686534216336,
+            "host_process_cycles_per_guest_frame": 27883231.41280353,
+            "fresh_captures_per_frame": 1.0,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 2.001103752759382,
+            "draws_per_frame": 439.25938189845476,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.96715229743677
+          },
+          "host_cpu_mean": 53.67114788004137,
+          "host_cpu_range": [
+            32.06106870229008,
+            96.09375
+          ],
+          "gpu_utilization_range": [
+            30.0,
+            55.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            630.0,
+            780.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2203.0,
+            2410.0
+          ],
+          "binary_sha256": "4d8138fa3fd4eb1209419b05e0b9423cb81f99254246660a88aaa2143a22a271",
+          "capture_sizes": [
+            [
+              1600,
+              1120
+            ]
+          ]
+        },
+        {
+          "mode": "shared",
+          "label": "g4-tomba-block4-3-shared",
+          "raw": "g4-tomba-block4-3-shared.json",
+          "raw_sha256": "02cd260aded9fd0c291e78d7b61b1ee8d8342a91f0a69ec3777608374725d150",
+          "frames": 901,
+          "metrics": {
+            "cpu_ms_per_frame": 6.347114317425083,
+            "host_process_cycles_per_guest_frame": 29722867.81354051,
+            "fresh_captures_per_frame": 1.0011098779134295,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 2.0033296337402886,
+            "draws_per_frame": 439.2563817980022,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.91308068256064
+          },
+          "host_cpu_mean": 61.74065420560748,
+          "host_cpu_range": [
+            39.0625,
+            92.36111111111111
+          ],
+          "gpu_utilization_range": [
+            30.0,
+            58.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            780.0,
+            780.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2200.0,
+            2407.0
+          ],
+          "binary_sha256": "4d8138fa3fd4eb1209419b05e0b9423cb81f99254246660a88aaa2143a22a271",
+          "capture_sizes": [
+            [
+              1600,
+              1120
+            ]
+          ]
+        },
+        {
+          "mode": "control",
+          "label": "g4-tomba-block4-4-control",
+          "raw": "g4-tomba-block4-4-control.json",
+          "raw_sha256": "ca39c64ac2c997e810068025edd6cadeb92082e184cd25926ccfe81d29e787c2",
+          "frames": 904,
+          "metrics": {
+            "cpu_ms_per_frame": 6.04950221238938,
+            "host_process_cycles_per_guest_frame": 30910313.75,
+            "fresh_captures_per_frame": 1.0,
+            "duplicates_per_frame": 0.0,
+            "swaps_per_frame": 2.0011061946902653,
+            "draws_per_frame": 439.2588495575221,
+            "guest_cycles_per_frame": 564480.0,
+            "guest_hz": 59.9316904692321
+          },
+          "host_cpu_mean": 65.63571659657069,
+          "host_cpu_range": [
+            37.3134328358209,
+            97.22222222222223
+          ],
+          "gpu_utilization_range": [
+            30.0,
+            55.0
+          ],
+          "gpu_graphics_clock_range_mhz": [
+            780.0,
+            780.0
+          ],
+          "gpu_vram_used_range_mib": [
+            2188.0,
+            2401.0
+          ],
+          "binary_sha256": "ca6b447c50e26e9011a33d9b5fe871782a1b30b5435c6b2c32bcf0505a58339e",
+          "capture_sizes": [
+            [
+              1600,
+              1120
+            ]
+          ]
+        }
+      ],
+      "disposition": "GPU scope inconclusive (overlapping ranges and different clocks); no-query CPU/cadence neutral/inconclusive. Query-ON adverse CPU/cycle observation retained."
+    }
+  ],
+  "limits": [
+    "No proven CPU gain; neutral/inconclusive costs within observed variation. Earlier adverse query-ON results remain in dataset; do not infer causation solely from query toggle because host exposure varies.",
+    "Tomba second query-ON block replaced with one no-query block to resolve concrete CPU concern; preregistered pivot under validator review.",
+    "Scope limited to existing active temporal presentation. Ordinary composed/movie/stereo captures retained; no elimination claim for them.",
+    "Current-build game save/load and real GL lifetime fixture are separate correctness evidence. Dummy audio does not establish speaker quality.",
+    "Owner adoption and combined current-base regression gate remain at campaign end. No merge authorization.",
+    "Full raw endpoints, GPU telemetry, configs, generated input identities, leases and logs retained in campaign workspace; chart rows and endpoint hashes above. Historical quiet-host gates unchanged."
+  ],
+  "retained_evidence_root": "G:/Temp/Codex/psxrecomp/shared-burndown-20261028"
+}

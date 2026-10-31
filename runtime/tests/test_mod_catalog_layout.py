@@ -290,7 +290,8 @@ def main() -> int:
         # fast loading, so it declines both framework builtins. Excluded means
         # ABSENT from mods/bundled, and a typo must never read as success.
         print("[9] EXCLUDE_BUILTIN_MODS builtin selection")
-        builtins = sorted(FW_IDS + ["psx.enhancement.8mb-ram"])
+        builtins = sorted(FW_IDS + ["psx.enhancement.8mb-ram",
+                                    "psx.enhancement.internal-resolution"])
         r, sel = run_select(args.cmake, tmp, available=builtins)
         check(r.returncode == 0 and sel == builtins,
               "no exclusion stages every builtin")
@@ -300,7 +301,7 @@ def main() -> int:
             title=["wipeout3.enhancement.bezel"])
         check(r.returncode == 0, "a valid exclusion configures")
         check(sel == ["psx.enhancement.8mb-ram", "psx.enhancement.cd-speed",
-                      "psx.enhancement.pgxp"],
+                      "psx.enhancement.internal-resolution", "psx.enhancement.pgxp"],
               f"excluded builtins are dropped, the rest kept in order (got {sel})")
         r, sel = run_select(
             args.cmake, tmp, available=builtins,
@@ -337,8 +338,15 @@ def main() -> int:
             args.cmake, tmp, available=builtins,
             allowlist=["psx.enhancement.pgxp", "psx.presentation.bezel"],
             exclude=["psx.presentation.bezel"])
-        check(r.returncode == 0 and sel == ["psx.enhancement.pgxp"],
-              f"exclusion applies on top of PSX_BUILTIN_MOD_ALLOWLIST (got {sel})")
+        check(r.returncode == 0 and sel == ["psx.enhancement.pgxp",
+                                             "psx.enhancement.internal-resolution"],
+              f"legacy allowlists still include shared Internal Resolution (got {sel})")
+        for kwargs in ({"exclude": ["psx.enhancement.internal-resolution"]},
+                       {"title": ["psx.enhancement.internal-resolution"]}):
+            r, sel = run_select(args.cmake, tmp, available=builtins, **kwargs)
+            check(r.returncode != 0 and sel is None
+                  and "framework-owned" in r.stdout + r.stderr,
+                  "shared Internal Resolution cannot be excluded or silently overridden")
         r, sel = run_select(
             args.cmake, tmp, available=[],
             exclude=["psx.presentation.bezel"])

@@ -1,0 +1,33 @@
+# Shared optimized release builder; run scripts/package_release.sh --channel public.
+# Requires the title disc for generation and fresh private boot training.
+schema = 1
+
+[product]
+name = "@ZIP_PREFIX@"
+display_name = "@GAME_NAME@"
+exe_name = "@EXE_BASENAME@"
+version_file = "VERSION"
+
+[build]
+cmake_args = ["-DPSX_SDL_BACKEND=SDL3", "-DPSX_PGXP_VARIANT=OFF"]
+# Selective PGO defaults on for supported native GNU/Ninja toolchains. Do not
+# add per-title profile paths or reuse another build's training data.
+
+[aot]
+mode = "none"
+# Add a reviewed title AOT profile when one exists; the generic scaffold does
+# not invent title-specific overlay coverage.
+
+[overlay_toolchain]
+ship = true
+
+[payload]
+start_here = "packaging/release/START_HERE.txt"
+files = ["README.md"]
+
+[linux]
+app_run = "packaging/linux/AppRun"
+desktop_file = "packaging/linux/@ZIP_PREFIX@.desktop"
+icon = "assets/psxrecomp.png"
+payload_dir = "@ZIP_PREFIX@"
+env_prefix = "@ENV_PREFIX@"

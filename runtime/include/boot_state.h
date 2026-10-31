@@ -148,6 +148,15 @@ int  boot_state_save_buffer_raw(const CPUState* cpu, uint32_t bios_checksum,
                                 uint32_t entry_pc, uint8_t** out_data,
                                 size_t* out_len);
 
+/* Capture into an unpublished owned allocation. The selected native writer
+ * reuses/grows *data; the reference writer replaces it after a successful save.
+ * On either outcome the data/capacity remain caller-owned and free-compatible;
+ * *out_len is zero on failure. Never pass a still-visible ring entry here.
+ * No pointer into the allocation survives a subsequent capture. */
+int boot_state_capture_raw(const CPUState* cpu, uint32_t bios_checksum,
+                            uint32_t entry_pc, uint8_t** data,
+                            size_t* capacity, size_t* out_len);
+
 /* §96 telemetry: after the latest save, how many VRAM scanlines were dirty
  * and whether the incremental mirror path patched (vs full memcpy). */
 uint32_t boot_state_last_vram_dirty_rows(void);

@@ -20,6 +20,13 @@ extern "C" {
 
 /* Trusted-mod guest memory in Expansion 1 (psx_mod_memory_alloc; KSEG0
  * 0x9F000000). Open bus until the first allocation. */
+/* Fixed title build contract, not a player preference. Legacy titles retain
+ * process-lifetime cached handles unless their runtime target declares that
+ * every plugin recreates its enhancement resources on each activation. */
+#ifndef PSX_MOD_SESSION_RESOURCES
+#define PSX_MOD_SESSION_RESOURCES 0
+#endif
+
 #define PSX_MOD_MEMORY_BASE 0x1F000000u
 #define PSX_MOD_MEMORY_SIZE (1u * 1024u * 1024u)
 
@@ -84,6 +91,9 @@ uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment);
  * and packet registrations must be retired first. Ordinary memory_init()
  * deliberately preserves the new session's already-activated allocations. */
 int psx_mod_memory_reset_session(void);
+/* Runtime session boundary: zero preserves process-lifetime allocations;
+ * nonzero selects the explicit session-owned contract and resets them. */
+int psx_mod_memory_begin_session(int session_owned);
 /* Allocations are fixed during activation. Snapshot allocated bytes, never
  * host pointers; immutable host assets are reconstructed separately. */
 uint32_t psx_mod_memory_snapshot_bytes(void);

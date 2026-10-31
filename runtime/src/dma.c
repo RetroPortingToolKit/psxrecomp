@@ -118,6 +118,12 @@ void     cd_dma_log_get_entry(uint32_t idx, int *lba, uint32_t *dest, uint32_t *
 
 #define DMA_MDEC_IN_CYCLES_PER_WORD   1u
 #define DMA_MDEC_OUT_CYCLES_PER_WORD 14u
+/* The maintained reference publishes each word. The selected media-job TU
+ * uses one output-FIFO-sized job; it does not change the word budget, data
+ * path, RAM observers, final completion or another device's deadlines. */
+#ifndef PSX_MDEC_WORDS_PER_JOB
+#define PSX_MDEC_WORDS_PER_JOB 1u
+#endif
 #define DMA_GPU_CYCLES_PER_WORD       1u
 #define DMA_CDROM_CYCLES_PER_WORD     1u
 /* SPU DMA (ch4) per-word cost. Faithful to the Beetle/mednafen oracle, which
@@ -622,7 +628,13 @@ static void advance_mdec_channel(int ch, uint32_t cycles) {
     }
 
     uint32_t words_budget = a->cycles_accum / cycles_per_word;
+#if PSX_MDEC_WORDS_PER_JOB > 1
+    const uint32_t job_words = a->remaining_words < PSX_MDEC_WORDS_PER_JOB
+                             ? a->remaining_words : PSX_MDEC_WORDS_PER_JOB;
+    if (words_budget < job_words) return;
+#else
     if (words_budget == 0) return;
+#endif
 
     uint32_t addr = DMA_RAM_ADDR(channels[ch].madr);
     uint32_t moved = 0;
@@ -1183,10 +1195,10 @@ uint32_t dma_cycles_to_irq(uint32_t i_mask) {
 uint32_t dma_cycles_to_internal_event(void) {
     uint32_t best = 0xFFFFFFFFu;
 
-    /* Async MDEC channels move one word whenever their cycle accumulator
-     * reaches the channel cost. Completion-only scheduling batches many RAM
-     * writes at a later service boundary, which is observably different when
-     * the CPU polls the destination buffer. */
+    /* MDEC's selected publication boundary: one word in REFERENCE, a bounded
+     * FIFO-sized job in ENHANCED. The tail keeps its original completion
+     * deadline; this is not completion-only scheduling of a whole frame.
+     * CPU polls can observe a partial destination up to one job later. */
     for (int ch = 0; ch < 2; ch++) {
         const DMAAsyncChannel *a = &mdec_async[ch];
         if (!a->active || a->remaining_words == 0 ||
@@ -1200,7 +1212,14 @@ uint32_t dma_cycles_to_internal_event(void) {
             continue;
         uint32_t cpw = ch == 0 ? DMA_MDEC_IN_CYCLES_PER_WORD
                                : DMA_MDEC_OUT_CYCLES_PER_WORD;
+#if PSX_MDEC_WORDS_PER_JOB > 1
+        const uint32_t words = a->remaining_words < PSX_MDEC_WORDS_PER_JOB
+                             ? a->remaining_words : PSX_MDEC_WORDS_PER_JOB;
+        const uint32_t cost = words * cpw;
+        uint32_t d = a->cycles_accum < cost ? cost - a->cycles_accum : 1u;
+#else
         uint32_t d = a->cycles_accum < cpw ? cpw - a->cycles_accum : 1u;
+#endif
         if (d < best) best = d;
     }
 

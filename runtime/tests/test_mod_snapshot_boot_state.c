@@ -188,6 +188,30 @@ int main(void) {
         writes_fail=0;
         free(broken); free(saved);
     }
+    /* The native ring adapter calls this writer synchronously before handing
+     * the immutable bytes to storage/compression. Provider data must be frozen
+     * with RAM, and a failed provider must not replace the last complete image. */
+    uint8_t *captured=NULL;
+    size_t capacity=0, captured_len=0;
+    cpu.pc=0x80050044; ram[0x100]=0xab; a_value=42; b_value=71;
+    assert(boot_state_capture_raw(&cpu,123,0x801b0000,&captured,&capacity,&captured_len));
+    assert(captured && captured_len && capacity>=captured_len && captured[4]==10);
+    const size_t first_len=captured_len, first_capacity=capacity;
+    uint8_t *first=captured, *copy=malloc(first_len); assert(copy);
+    memcpy(copy,captured,first_len);
+    cpu.pc=0; ram[0x100]=0; a_value=b_value=0;
+    expected_image=captured; expected_image_len=(uint32_t)captured_len;
+    assert(boot_state_load_buffer(captured,captured_len,123,0x801b0000,&cpu));
+    assert(cpu.pc==0x80050044 && ram[0x100]==0xab && a_value==42 && b_value==71);
+    writes_fail=1;
+    assert(!boot_state_capture_raw(&cpu,123,0x801b0000,&captured,&capacity,&captured_len));
+    assert(!captured_len && captured==first && capacity==first_capacity);
+    assert(!memcmp(captured,copy,first_len));
+    writes_fail=0;
+    assert(boot_state_capture_raw(&cpu,123,0x801b0000,&captured,&capacity,&captured_len));
+    assert(captured==first && capacity==first_capacity && captured_len==first_len);
+    assert(!memcmp(captured,copy,first_len));
+    free(copy); free(captured);
     puts("host snapshots: raw/zlib roundtrip, guest-before-host order, exact observers and atomic refusal passed");
     return 0;
 }

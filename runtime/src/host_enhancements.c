@@ -128,10 +128,11 @@ int psx_host_enh_parse_rewind_depth(const char* text) {
 
 /* Only the preset ids: a manifest choice is never a raw line count. */
 int psx_host_enh_parse_internal_resolution(const char* text) {
-    if (!text || is(text, "default")) return PSX_IR_UNSET;
+    if (is(text, "default")) return PSX_IR_UNSET;
+    if (!text) return PSX_HOST_ENH_RESOLUTION_DEFAULT;
     for (int i = 0; i < PSX_IR_PRESET_COUNT; i++)
         if (is(text, k_psx_ir_presets[i].id)) return k_psx_ir_presets[i].value;
-    return PSX_IR_UNSET;
+    return PSX_HOST_ENH_RESOLUTION_DEFAULT;
 }
 
 int psx_host_enh_parse_rewind_interval(const char* text) {

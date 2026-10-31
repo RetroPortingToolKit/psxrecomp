@@ -79,6 +79,48 @@ This is an integration primitive, not a standalone FPS improvement. Ape's
 packet producer is its first intended consumer. The original `gte_execute`
 always retains faithful timing in both profiles.
 
+## Generated CPU spans
+
+The ENHANCED profile selects the qualified generated native timing service
+for regenerated game and BIOS bodies by default (`PSX_NATIVE_CPU_SPANS=ON`).
+It has no runtime selector. `PSX_NATIVE_CPU_SPANS=OFF` retains the
+original instruction timing; REFERENCE also always retains that timing even
+when the option is ON. Other implementation families remain independent.
+
+Fresh ENHANCED builds also select ordered OpenGL batching
+(`PSX_GL_BATCH_IMPL=HLE`). Fresh REFERENCE builds select `LLE`; an explicit
+cache choice remains available in either profile. Use separate build
+directories for each profile so a previous cache choice stays intentional.
+
+Regenerate the game with the current `psxrecomp-game` and regenerate each linked
+BIOS with `tools/regen_bios.sh --config bios/<profile>.toml` before selecting it.
+Configure rejects game shards that lack the new source-local policy header.
+Exactly the same generated bodies support both build choices. The selected
+CPU-span family and its source/contract hashes enter execution identity.
+
+The native service owns one approximate CPU charge at a control-flow span's
+entry. Its initial budget is one cycle per instruction, two extra for CPU/GTE
+loads, and four extra for an uncached instruction address. It removes compiled
+instruction-cache tags and ReadAbsorb/dependency/load-timing bookkeeping from
+that span. Native RAM values use validated mirror ranges; observed reads,
+MMIO, unusual segments and mirror-edge crossings use the normal read callback.
+Actual instruction values, load and branch value delays, stores, PGXP,
+interrupt checks and device completion services remain functional. The timing
+budget is deliberately approximate, not a claim of cycle equivalence.
+
+The policy header is included only by generated translation units. Ordinary
+runtime services and the interpreter keep their existing timing helpers.
+Overlay DLLs currently retain their existing timing policy; this is not a
+claim that every execution tier has been consolidated. No additional host ISA
+or platform dependency is introduced.
+
+Qualification is still required: matched built-game work and CPU/frame costs,
+graphics and audio, callback/polling/transition progress, and current-build
+lifecycle behavior. Validate the actual native-overlay package separately
+from a cold-cache/static-code probe. Do not promote the experimental choice or
+claim netplay/platform qualification from compilation, a synthetic fixture,
+or one busy-host timing pair. Older snapshots may be rejected as usual.
+
 ## Audited native frame waits
 
 `psxrecomp_add_runtime_target(... NATIVE_IDLE_WAIT_SITES <anchor-PCs>...)`

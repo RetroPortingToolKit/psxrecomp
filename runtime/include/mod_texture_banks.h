@@ -9,6 +9,8 @@ int mod_texture_packet_precision(uint32_t source, float q[3], float xy[6]);
 int mod_texture_bank_batchable(int immutable, int mask_check, int semi);
 /* After renderer teardown and before allocator reset/new plugin activation. */
 int mod_texture_banks_reset_session(void);
+/* Same fixed lifetime contract as psx_mod_memory_begin_session. */
+int mod_texture_banks_begin_session(int session_owned);
 #ifdef __cplusplus
 }
 #endif

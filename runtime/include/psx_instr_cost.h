@@ -174,6 +174,17 @@ static inline int psx_fetch_uncached(uint32_t pc) {
     return pc >= 0xA0000000u;
 }
 
+/* Experimental native-span budget, not the faithful pipeline model. A span
+ * owns its base and estimated load work, so its loads do not run ReadAbsorb,
+ * dependency or cache-tag bookkeeping. Uncached BIOS execution still costs
+ * more than cached work. Device clocks and completion deadlines are separate.
+ */
+static inline uint32_t psx_native_instr_cycles(uint32_t insn, uint32_t pc) {
+    uint32_t op = insn >> 26;
+    uint32_t load = ((op >= 0x20u && op <= 0x26u) || op == 0x32u) ? 2u : 0u;
+    return 1u + load + (psx_fetch_uncached(pc) ? 4u : 0u);
+}
+
 #ifdef __cplusplus
 }
 #endif

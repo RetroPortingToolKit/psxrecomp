@@ -110,6 +110,10 @@ void check_segment(const char* name, uint32_t segment,
     std::vector<uint32_t> want;
     for (uint32_t off : want_offsets) want.push_back(base + off);
     const std::vector<uint32_t> got = fetch_tags(code);
+    const char* native_charge = segment == 0xA0000000u
+        ? "psx_native_span_charge(17u)" : "psx_native_span_charge(5u)";
+    check(code.find(native_charge) != std::string::npos,
+          std::string(name) + " native entry span includes its load and address policy");
     check(got == want, std::string(name) + " fetch tags: got [" + hex_list(got) +
                            "], want [" + hex_list(want) + "]");
 }

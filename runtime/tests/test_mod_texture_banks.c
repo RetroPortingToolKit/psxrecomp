@@ -74,13 +74,21 @@ int main(void){
     check(!mod_texture_packet_precision(arena+4,q,xy),"NaN rejected");
     memory[11]=bits(0);
     check(!mod_texture_packet_precision(arena+4,q,xy),"zero reciprocal depth rejected");
-    words[0]=0x34000000;g_psx_render_pass_active=1;
-    check(!mod_texture_banks_reset_session() && mod_texture_packet_bank(arena+4,words,9)==0x123 &&
+    words[0]=0x34000000;
+    const uint16_t *cached_pixels=mod_texture_bank_pixels(1,&w,&h);
+    const uint32_t cached_forgets=forget_calls;
+    check(mod_texture_banks_begin_session(0) &&
+          mod_texture_packet_bank(arena+4,words,9)==0x123 &&
+          mod_texture_bank_pixels(1,&w,&h)==cached_pixels && cached_pixels[0]==99 &&
+          forget_calls==cached_forgets,
+          "legacy rematch preserves cached bank pointers and packet registrations");
+    g_psx_render_pass_active=1;
+    check(!mod_texture_banks_begin_session(1) && mod_texture_packet_bank(arena+4,words,9)==0x123 &&
           mod_texture_bank_pixels(1,&w,&h)[0]==99,
           "active render pass cannot reset session");
     g_psx_render_pass_active=0;
     check(mod_texture_packet_bank(arena+4,words,9)==0x123,"old arena registered before reset");
-    check(mod_texture_banks_reset_session(),"session resets owned resources");
+    check(mod_texture_banks_begin_session(1),"session resets owned resources");
     check(!mod_texture_packet_bank(arena+4,words,9),"old packet registration removed");
     check(!mod_texture_bank_pixels(1,&w,&h) && !mod_texture_bank_pixels(2,&w,&h),
           "old CPU banks and lazy resolver removed");
@@ -90,7 +98,7 @@ int main(void){
         check(psx_mod_alloc_texture_packet_memory(80,16)==arena,"stable arena reuse after reset");
         check(psx_mod_define_texture_bank(1,2,2,data),"immutable ID reusable in new session");
         check(mod_texture_packet_bank(arena+4,words,9)==0x123,"new arena registered");
-        check(mod_texture_banks_reset_session(),"repeated session reset");used=0;
+        check(mod_texture_banks_begin_session(1),"repeated session reset");used=0;
     }
     puts("texture bank checks passed");return 0;
 }

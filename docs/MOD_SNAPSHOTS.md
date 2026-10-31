@@ -71,3 +71,12 @@ the real writer/loader with counted device doubles, raw/zlib round trips,
 provider-first section ordering, observer deduplication, malformed later
 providers and zero-mutation refusals. Existing handoff/RAM-geometry tests also
 link the registry to qualify no-provider compatibility.
+
+The native capture-ring adapter invokes `boot_state_capture_raw` synchronously
+on the emulation thread. Canonical device catch-up, provider readiness and the
+complete provider payload are captured at that boundary with guest RAM. The
+retained raw image contains only owned bytes; later storage/compression never
+calls a provider. Failed capture does not publish a ring entry. On load, every
+provider validates before any guest/device state is applied, provider reads run
+after guest/device restoration, and rejected dispatch checks roll back silently
+before successful-load observers can be notified.

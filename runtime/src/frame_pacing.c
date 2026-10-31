@@ -7,8 +7,11 @@
 /* FRAME_PACING_PURE_ONLY: tests compile only the SDL-free decision
  * function (tests/test_frame_pacing.c includes this file directly). */
 #ifndef FRAME_PACING_PURE_ONLY
+#ifndef PSX_HOST_DEADLINE_TESTING
 #include "psx_sdl.h"
+#endif
 #include "host_time.h"
+#include "host_deadline.h"
 #endif
 
 uint32_t frame_pacing_sleep_ms(uint64_t now, uint64_t deadline,
@@ -62,6 +65,9 @@ void frame_pacer_wait(FramePacer *p, double period_ms) {
         return;
     }
 
+#if PSX_NATIVE_HOST_PACING
+    (void)psx_host_wait_until(p->next_deadline, freq, period);
+#else
     for (;;) {
         now = SDL_GetPerformanceCounter();     /* ONE read per iteration */
         uint32_t ms = frame_pacing_sleep_ms(now, p->next_deadline, freq, period);
@@ -72,6 +78,7 @@ void frame_pacer_wait(FramePacer *p, double period_ms) {
     while (SDL_GetPerformanceCounter() < p->next_deadline) {
         /* final sub-ms spin */
     }
+#endif
     p->next_deadline += period;
 }
 #endif /* FRAME_PACING_PURE_ONLY */

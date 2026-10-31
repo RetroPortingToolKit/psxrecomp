@@ -16,7 +16,14 @@ set(PSX_PGO "" CACHE STRING "PGO mode: empty, generate, or use")
 set_property(CACHE PSX_PGO PROPERTY STRINGS "" generate use)
 include("${PSXRECOMP_ROOT}/cmake/psx_runtime_ipo.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_execution_profile.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_native_cpu_spans.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_capture_jobs.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_native_idle_wait.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_present_images.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_host_pacing.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_resident_preparation.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_openbios_read_job.cmake")
+include("${PSXRECOMP_ROOT}/cmake/psx_media_jobs.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_sha256_file.cmake")
 include("${PSXRECOMP_ROOT}/cmake/psx_build_revision.cmake")
 
@@ -650,7 +657,16 @@ endif()
 # primitive alone. HLE draws painter-ordered runs of opaque primitives and
 # blend modes 0/1/3 as one dual-source draw. Build-time only: use separate
 # build directories. Both tiers always compile.
-set(PSX_GL_BATCH_IMPL "LLE" CACHE STRING "OpenGL textured batching: LLE or HLE")
+# Fresh enhanced builds use the qualified ordered grouping policy. Keep a
+# separate reference build on the original policy and respect an explicit
+# cache choice supplied by the caller.
+if(PSX_EXECUTION_PROFILE STREQUAL "REFERENCE")
+    set(_psx_gl_batch_default "LLE")
+else()
+    set(_psx_gl_batch_default "HLE")
+endif()
+set(PSX_GL_BATCH_IMPL "${_psx_gl_batch_default}" CACHE STRING "OpenGL textured batching: LLE or HLE")
+unset(_psx_gl_batch_default)
 set_property(CACHE PSX_GL_BATCH_IMPL PROPERTY STRINGS LLE HLE)
 if(NOT PSX_GL_BATCH_IMPL MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "PSX_GL_BATCH_IMPL must be LLE or HLE")
@@ -1694,6 +1710,13 @@ function(psxrecomp_add_runtime_target target)
         psxrecomp_execution_profile(${target} CONTRACT_FILES ${_execution_contract})
     endif()
     psxrecomp_native_idle_wait(${target} ${PSXRT_NATIVE_IDLE_WAIT_SITES})
+    psxrecomp_present_images(${target})
+    psxrecomp_host_pacing(${target})
+    psxrecomp_resident_preparation(${target})
+    psxrecomp_native_cpu_spans(${target} ${PSXRT_GAME_GENERATED_FULL_C})
+    psxrecomp_openbios_read_job(${target})
+    psxrecomp_media_jobs(${target})
+    psxrecomp_capture_jobs(${target})
     # audio_trace.c uses C11 atomics. Make the runtime's actual language
     # requirement explicit instead of relying on a parent project's global
     # CMAKE_C_STANDARD setting. cxx_std_17 likewise — game CMakeLists may omit
@@ -2184,6 +2207,11 @@ function(psxrecomp_add_runtime_target target)
             PSX_ENABLE_BLOCK_CYCLES=1
         )
     endif()
+    # Resource lifetime is an authored title contract, never a player toggle.
+    # Resolve the property at generation time so a caller can set it after the
+    # runtime target is created. Unset preserves existing cached handles.
+    target_compile_definitions(${target} PRIVATE
+        "PSX_MOD_SESSION_RESOURCES=$<BOOL:$<TARGET_PROPERTY:PSX_MOD_SESSION_RESOURCES>>")
     if(PSX_SHELLWIN_INTERP)
         target_compile_definitions(${target} PRIVATE PSX_SHELLWIN_INTERP_DEFAULT=1)
     endif()

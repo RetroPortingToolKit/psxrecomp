@@ -30,6 +30,9 @@
 #include <string>
 #include <system_error>
 #include <vector>
+#ifndef PSX_NATIVE_RESIDENT_PREPARATION
+#define PSX_NATIVE_RESIDENT_PREPARATION 0
+#endif
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -61,6 +64,14 @@ struct Blob { uint64_t offset; uint32_t size; Digest sha; };
 
 struct PSXResidentPack {
     Bytes payload;
+#if PSX_NATIVE_RESIDENT_PREPARATION
+    /* Cold preparation owns each unique blob independently. Moving a vector
+     * preserves its input pointer while derive emits further blobs. Warm packs
+     * retain the original flat allocation after verification. */
+    std::vector<Bytes> owned_blobs;
+    uint64_t owned_bytes = 0;
+    bool owned = false;
+#endif
     std::vector<FileRec> files;
     std::vector<DerivedRec> derived;
     std::vector<Blob> blobs;
@@ -76,6 +87,19 @@ struct PSXResidentSink {
 };
 
 namespace {
+
+uint64_t payload_size(const PSXResidentPack& p) {
+#if PSX_NATIVE_RESIDENT_PREPARATION
+    if (p.owned) return p.owned_bytes;
+#endif
+    return p.payload.size();
+}
+const uint8_t* blob_data(const PSXResidentPack& p, uint32_t blob) {
+#if PSX_NATIVE_RESIDENT_PREPARATION
+    if (p.owned) return p.owned_blobs[blob].data();
+#endif
+    return p.payload.data() + p.blobs[blob].offset;
+}
 
 struct Record {
     std::string title, format, state, error, path;
@@ -163,15 +187,37 @@ std::filesystem::path cache_dir(const char* title) {
     return root / title / "seamless";
 }
 
-uint32_t add_blob(PSXResidentSink& sink, const uint8_t* p, uint32_t n) {
+uint32_t add_blob(PSXResidentSink& sink, const uint8_t* p, uint32_t n
+#if PSX_NATIVE_RESIDENT_PREPARATION
+                  , const Digest* verified = nullptr, Bytes* owner = nullptr
+#endif
+                  ) {
+#if PSX_NATIVE_RESIDENT_PREPARATION
+    const Digest d = verified ? *verified : sha(p, n);
+#else
     const Digest d = sha(p, n);
+#endif
     auto it = sink.index.find(d);
     if (it != sink.index.end()) return it->second;
     auto& pack = *sink.pack;
-    uint64_t offset = (pack.payload.size() + kBlobAlign - 1) & ~uint64_t(kBlobAlign - 1);
+    uint64_t offset = (payload_size(pack) + kBlobAlign - 1) & ~uint64_t(kBlobAlign - 1);
     if (offset + n > kMaxPackBytes) throw std::runtime_error("pack size limit");
-    pack.payload.resize(size_t(offset));
-    pack.payload.insert(pack.payload.end(), p, p + n);
+#if PSX_NATIVE_RESIDENT_PREPARATION
+    if (pack.owned) {
+        if (owner) pack.owned_blobs.push_back(std::move(*owner));
+        else {
+            Bytes bytes;
+            if (n) bytes.assign(p, p + n);
+            else bytes.resize(1); /* valid empty output is not a missing blob */
+            pack.owned_blobs.push_back(std::move(bytes));
+        }
+        pack.owned_bytes = offset + n;
+    } else
+#endif
+    {
+        pack.payload.resize(size_t(offset));
+        if (n) pack.payload.insert(pack.payload.end(), p, p + n);
+    }
     pack.blobs.push_back({offset, n, d});
     const uint32_t id = uint32_t(pack.blobs.size() - 1);
     sink.index.emplace(d, id);
@@ -189,6 +235,9 @@ void index_lba(PSXResidentPack& pack) {
 
 std::unique_ptr<PSXResidentPack> build(const PSXResidentSpec* s, std::string& error) {
     auto pack = std::make_unique<PSXResidentPack>();
+#if PSX_NATIVE_RESIDENT_PREPARATION
+    pack->owned = true;
+#endif
     PSXResidentSink sink{pack.get(), {}, s->file_count, {}};
     const uint32_t max = s->max_file_bytes ? s->max_file_bytes : kFullCd;
     Bytes data;
@@ -198,18 +247,33 @@ std::unique_ptr<PSXResidentPack> build(const PSXResidentSpec* s, std::string& er
         if (!PSXRecompV4::mod_runtime_read_disc_file_sectors(f.path, max, data, lba, size, &error))
             return nullptr;
         int stock = 0;
+#if PSX_NATIVE_RESIDENT_PREPARATION
+        /* The read's immutable owned bytes and digest flow through stock
+         * verification, dedup and final publication as one preparation job. */
+        const Digest source_digest = sha(data.data(), data.size());
+#endif
         if (f.stock_sha256)
             stock = (!f.stock_size || f.stock_size == size) &&
+#if PSX_NATIVE_RESIDENT_PREPARATION
+                    hex(source_digest.data()) == f.stock_sha256;
+#else
                     hex(sha(data.data(), data.size()).data()) == f.stock_sha256;
+#endif
         if (!stock && s->policy == PSX_RESIDENT_REQUIRE_STOCK && f.stock_sha256) {
             error = std::string(f.path) + ": differs from the original disc";
             return nullptr;
         }
-        const uint32_t blob = add_blob(sink, data.data(), uint32_t(data.size()));
-        pack->files.push_back({lba, size, uint32_t(data.size()), uint32_t(stock), blob});
+        const uint32_t padded = uint32_t(data.size());
+        const uint8_t* source = data.data();
+#if PSX_NATIVE_RESIDENT_PREPARATION
+        const uint32_t blob = add_blob(sink, source, padded, &source_digest, &data);
+#else
+        const uint32_t blob = add_blob(sink, source, padded);
+#endif
+        pack->files.push_back({lba, size, padded, uint32_t(stock), blob});
         if (s->derive) {
             const size_t before = pack->derived.size();
-            if (!s->derive(&sink, i, data.data(), uint32_t(data.size()), stock, s->derive_user)) {
+            if (!s->derive(&sink, i, source, padded, stock, s->derive_user)) {
                 error = sink.error.empty() ? std::string(f.path) + ": derive failed" : sink.error;
                 return nullptr;
             }
@@ -231,7 +295,7 @@ Bytes table(const PSXResidentPack& p, const Digest& key) {
     put32(t, uint32_t(p.derived.size()));
     put32(t, uint32_t(p.blobs.size()));
     t.insert(t.end(), key.begin(), key.end());
-    put64(t, p.payload.size());
+    put64(t, payload_size(p));
     for (const auto& f : p.files) {
         put32(t, f.lba); put32(t, f.size); put32(t, f.padded); put32(t, f.stock); put32(t, f.blob);
     }
@@ -261,6 +325,19 @@ void publish(const std::filesystem::path& path, const PSXResidentPack& p, const 
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(t.data()), std::streamsize(t.size()));
+#if PSX_NATIVE_RESIDENT_PREPARATION
+        if (p.owned) {
+            uint64_t cursor = 0;
+            const char zeros[kBlobAlign] = {};
+            for (uint32_t i = 0; i < p.blobs.size(); ++i) {
+                const auto& b = p.blobs[i];
+                const uint64_t padding = b.offset - cursor;
+                if (padding) out.write(zeros, std::streamsize(padding));
+                if (b.size) out.write(reinterpret_cast<const char*>(blob_data(p, i)), b.size);
+                cursor = b.offset + b.size;
+            }
+        } else
+#endif
         out.write(reinterpret_cast<const char*>(p.payload.data()), std::streamsize(p.payload.size()));
         out.close();
         if (!out) {
@@ -477,7 +554,7 @@ extern "C" const uint8_t* psx_resident_file(const PSXResidentPack* p, uint32_t f
     const auto& f = p->files[file];
     if (size) *size = f.size;
     if (padded) *padded = f.padded;
-    return p->payload.data() + p->blobs[f.blob].offset;
+    return blob_data(*p, f.blob);
 }
 
 extern "C" uint32_t psx_resident_file_lba(const PSXResidentPack* p, uint32_t file) {
@@ -504,7 +581,7 @@ extern "C" const uint8_t* psx_resident_find_lba(const PSXResidentPack* p, uint32
     const uint64_t offset = uint64_t(lba - f.lba) * 2048u;
     if (offset > f.padded || bytes > f.padded - offset) return nullptr;
     if (file) *file = i;
-    return p->payload.data() + p->blobs[f.blob].offset + offset;
+    return blob_data(*p, f.blob) + offset;
 }
 
 extern "C" uint32_t psx_resident_derived_count(const PSXResidentPack* p) {
@@ -520,7 +597,7 @@ extern "C" const uint8_t* psx_resident_derived(const PSXResidentPack* p, uint32_
     if (tag) *tag = d.tag;
     if (meta) std::memcpy(meta, d.meta, sizeof d.meta);
     if (size) *size = p->blobs[d.blob].size;
-    return p->payload.data() + p->blobs[d.blob].offset;
+    return blob_data(*p, d.blob);
 }
 
 extern "C" int psx_resident_guest_ranges_match(const PSXResidentRange* ranges, uint32_t count,
@@ -558,7 +635,7 @@ extern "C" int psx_resident_status_json(char* out, uint32_t capacity) {
                       ",\"files\":%u,\"modified\":%u,\"derived\":%u,\"blobs\":%u,\"bytes\":%llu,\"ms\":%.1f}",
                       p ? unsigned(p->files.size()) : 0u, p ? p->modified : 0u,
                       p ? unsigned(p->derived.size()) : 0u, p ? unsigned(p->blobs.size()) : 0u,
-                      p ? (unsigned long long)p->payload.size() : 0ull, r.ms);
+                       p ? (unsigned long long)payload_size(*p) : 0ull, r.ms);
         s += b;
     }
     s += ']';

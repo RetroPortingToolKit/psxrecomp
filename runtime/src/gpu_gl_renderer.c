@@ -102,6 +102,7 @@
 #include "psx_openxr.h"
 #include "openxr_color.h"
 #include "present_thread.h"
+#include "host_deadline.h"
 
 #include "psx_sdl.h"
 #if defined(PSX_SDL3)
@@ -733,6 +734,7 @@ static int pass_refuse_write(const char *what, int x, int y, int w, int h) {
     return 1;
 }
 static void interp_reset_history(void);
+static void completed_image_cost_reset(void);
 static int interp_present(float alpha);
 static void interp_present_source_interval(void);
 static void present_bezel(int ww, int wh, int lx, int ly, int lw, int lh);
@@ -1234,6 +1236,10 @@ static GLuint s_hold_fbo = 0;
 static int    s_hold_tw = 0, s_hold_th = 0; /* texture size in texels */
 static int    s_hold_force_4_3 = 0;
 static int    s_hold_linear = 0;
+/* Read-only completed image. Private s_hold_tex/FBO remain capture storage:
+ * upgrading a shared native hold to a composed drawable must never write into
+ * the temporal history texture it just sampled. All access is on the GL owner. */
+static struct { GLuint tex; int w, h; } s_hold_image;
 
 /* Post-load freeze probe (main.cpp): accumulate skip/swap/dirty marks. */
 static uint64_t s_probe_skip = 0;
@@ -1308,6 +1314,9 @@ static void hold_capture_drawable(void) {
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, ww, wh);
     glBindTexture(GL_TEXTURE_2D, 0);
     s_hold_kind = HOLD_DRAWABLE;
+    s_hold_image.tex = s_hold_tex;
+    s_hold_image.w = s_hold_tw;
+    s_hold_image.h = s_hold_th;
     s_hold_force_4_3 = 0;
     s_hold_linear = 0;
 }
@@ -1358,12 +1367,17 @@ static void hold_capture_native_fbo(GLuint src_fbo, int dx, int dy, int dw, int 
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     s_hold_kind = HOLD_NATIVE;
+    s_hold_image.tex = s_hold_tex;
+    s_hold_image.w = s_hold_tw;
+    s_hold_image.h = s_hold_th;
     s_hold_force_4_3 = force_4_3 ? 1 : 0;
     s_hold_linear = linear ? 1 : 0;
 }
 
 static void hold_invalidate(void) {
     s_hold_kind = HOLD_NONE;
+    s_hold_image.tex = 0;
+    s_hold_image.w = s_hold_image.h = 0;
 }
 
 /* Defined after present_target_quad / letterbox helpers. */
@@ -6730,6 +6744,7 @@ void gl_renderer_shutdown(void) {
     s_depth24_skip_up = 0;
     rect_clear(&s_d24_skip_fb);
     hold_invalidate();
+    completed_image_cost_reset();
     s_hold_tex = 0;
     s_hold_fbo = 0;
     s_hold_tw = 0;
@@ -7951,8 +7966,72 @@ void gl_renderer_interpolation_diag(int *enabled, int *suspended,
     if (swaps) *swaps = s_interp_swaps;
 }
 
+enum { INTERP_INACTIVE = 0, INTERP_REUSED = 1, INTERP_CAPTURED = 2 };
+/* Optional tight GPU attribution, ending before interval pacing. Timestamp
+ * pairs coexist with the scene timer and are harvested only when ready.
+ * Diagnostics layout: sequence, samples, total ns, unavailable polls,
+ * skipped scopes, supported. Release builds contain no queries/counters. */
+#ifndef PSX_NO_DEBUG_TOOLS
+static GLuint s_capture_gpu_q[4][2];
+static int s_capture_gpu_pending[4], s_capture_gpu_slot, s_capture_gpu_open = -1;
+static int s_capture_gpu_initialized;
+static _Atomic uint64_t s_capture_gpu_diag[6];
+static void completed_image_cost_begin(void) {
+    s_capture_gpu_open = -1;
+    if (!s_interp_enabled || s_interp_suspended) return;
+    if (!s_capture_gpu_initialized) {
+        s_capture_gpu_initialized = -1;
+        const char *enabled = getenv("PSX_GL_CAPTURE_PERF");
+        if (!enabled || enabled[0] != '1' || !p_glGenQueries ||
+            !p_glQueryCounter || !p_glGetQueryObjectiv || !p_glGetQueryObjectui64v) return;
+        p_glGenQueries(8, &s_capture_gpu_q[0][0]);
+        s_capture_gpu_initialized = 1;
+        atomic_store(&s_capture_gpu_diag[5], 1);
+    }
+    if (s_capture_gpu_initialized != 1) return;
+    int b = s_capture_gpu_slot;
+    if (s_capture_gpu_pending[b]) {
+        GLint ready = 0;
+        p_glGetQueryObjectiv(s_capture_gpu_q[b][1], GL_QUERY_RESULT_AVAILABLE, &ready);
+        if (!ready) {
+            atomic_fetch_add(&s_capture_gpu_diag[3], 1);
+            atomic_fetch_add(&s_capture_gpu_diag[4], 1);
+            return; /* Never reuse an unfinished query or wait for the GPU. */
+        }
+        GLuint64 start = 0, end = 0;
+        p_glGetQueryObjectui64v(s_capture_gpu_q[b][0], GL_QUERY_RESULT, &start);
+        p_glGetQueryObjectui64v(s_capture_gpu_q[b][1], GL_QUERY_RESULT, &end);
+        atomic_fetch_add(&s_capture_gpu_diag[0], 1);
+        atomic_fetch_add(&s_capture_gpu_diag[1], 1);
+        atomic_fetch_add(&s_capture_gpu_diag[2], end >= start ? end - start : 0);
+        atomic_fetch_add(&s_capture_gpu_diag[0], 1);
+        s_capture_gpu_pending[b] = 0;
+    }
+    p_glQueryCounter(s_capture_gpu_q[b][0], GL_TIMESTAMP);
+    s_capture_gpu_open = b;
+}
+static void completed_image_cost_end(void) {
+    if (s_capture_gpu_open < 0) return;
+    p_glQueryCounter(s_capture_gpu_q[s_capture_gpu_open][1], GL_TIMESTAMP);
+    s_capture_gpu_pending[s_capture_gpu_open] = 1;
+    s_capture_gpu_slot = (s_capture_gpu_open + 1) % 4;
+    s_capture_gpu_open = -1;
+}
+static void completed_image_cost_reset(void) {
+    memset(s_capture_gpu_q, 0, sizeof(s_capture_gpu_q));
+    memset(s_capture_gpu_pending, 0, sizeof(s_capture_gpu_pending));
+    for (int i = 0; i < 6; i++) atomic_store(&s_capture_gpu_diag[i], 0);
+    s_capture_gpu_initialized = s_capture_gpu_slot = 0;
+    s_capture_gpu_open = -1;
+}
+#else
+static void completed_image_cost_begin(void) {}
+static void completed_image_cost_end(void) {}
+static void completed_image_cost_reset(void) {}
+#endif
 /* Copy a stable display image out of the mutable VRAM/wide render target.
- * Returns true when temporal blending owns this source-frame interval. */
+ * Positive means temporal blending owns this source-frame interval. Reused
+ * FLIP history is distinct: hold-last must still capture the current source. */
 static int interp_capture(GLuint fbo, int x, int y, int w, int h,
                           int linear, int force_4_3, int source_path,
                           int origin_x, int origin_y, int redrawn) {
@@ -7975,7 +8054,7 @@ static int interp_capture(GLuint fbo, int x, int y, int w, int h,
                                         &s_interp_phase_lo, &s_interp_phase_hi);
         if (!new_frame) {
             s_interp_duplicates++;
-            return 1;
+            return INTERP_REUSED;
         }
         pass_note_new_frame(origin_x, origin_y, source_path, pw, ph);
     } else {
@@ -8027,7 +8106,31 @@ static int interp_capture(GLuint fbo, int x, int y, int w, int h,
     s_interp_force_4_3 = force_4_3;
     s_interp_source_path = source_path;
     s_interp_captures++;
-    return 1;
+    return INTERP_CAPTURED;
+}
+
+static void hold_publish_interpolated(int captured, GLuint source_fbo,
+                                      int x, int y, int w, int h,
+                                      int force_4_3, int linear) {
+#if defined(PSX_SHARED_PRESENT_IMAGES) && PSX_SHARED_PRESENT_IMAGES
+    if (captured == INTERP_CAPTURED) {
+        /* interp_capture is the sole history writer. Its two callers publish
+         * here immediately, without a yield or hold consumer in between.
+         * Rotation/reallocation on the next capture is followed by the same
+         * publication; reset alone leaves storage intact. No fence or copy is
+         * needed on this one ordered GL context. */
+        s_hold_image.tex = s_interp_tex[s_interp_cur];
+        s_hold_image.w = s_interp_w;
+        s_hold_image.h = s_interp_h;
+        s_hold_kind = HOLD_NATIVE;
+        s_hold_force_4_3 = force_4_3 ? 1 : 0;
+        s_hold_linear = linear ? 1 : 0;
+        return;
+    }
+#else
+    (void)captured;
+#endif
+    hold_capture_native_fbo(source_fbo, x, y, w, h, force_4_3, linear);
 }
 
 static void interp_draw_textures(GLuint prev_tex, GLuint curr_tex, float alpha,
@@ -8104,6 +8207,12 @@ static int interp_present(float alpha) {
 }
 
 static void interp_wait_until(uint64_t deadline, uint64_t frequency) {
+#if PSX_NATIVE_HOST_PACING
+    uint64_t waited = psx_host_wait_until(deadline, frequency, frequency);
+    if (!deadline || !frequency) return;
+    (void)s_idle_ticks_accum_fwd(waited);
+    if (s_dyn_on) s_dyn_ledger.idle_ticks += waited;
+#else
     uint64_t now, start;
     if (!deadline || !frequency) return;
     start = SDL_GetPerformanceCounter();
@@ -8123,6 +8232,7 @@ static void interp_wait_until(uint64_t deadline, uint64_t frequency) {
         uint64_t us = (remain * 1000000u) / frequency;
         if (us > 300u) psx_host_sleep_micros((unsigned)(us - 200u));
     }
+#endif
 }
 
 static void interp_present_source_interval(void) {
@@ -10523,7 +10633,7 @@ int gl_renderer_present_hold_last(void) {
     GL_RT_SYNC("present_hold_last");
     int ww = 0, wh = 0;
     int lx, ly, lw, lh;
-    if (!s_ctx || !s_win || s_hold_kind == HOLD_NONE || !s_hold_tex)
+    if (!s_ctx || !s_win || s_hold_kind == HOLD_NONE || !s_hold_image.tex)
         return 0;
     SDL_GL_GetDrawableSize(s_win, &ww, &wh);
     if (ww < 1 || wh < 1)
@@ -10539,16 +10649,16 @@ int gl_renderer_present_hold_last(void) {
         ly = 0;
         lw = ww;
         lh = wh;
-        if (s_hold_tw > 0 && s_hold_th > 0 &&
-            ((int64_t)s_hold_tw * wh != (int64_t)s_hold_th * ww)) {
-            if ((int64_t)ww * s_hold_th > (int64_t)wh * s_hold_tw) {
-                lw = (int)(((int64_t)wh * s_hold_tw) / s_hold_th);
+        if (s_hold_image.w > 0 && s_hold_image.h > 0 &&
+            ((int64_t)s_hold_image.w * wh != (int64_t)s_hold_image.h * ww)) {
+            if ((int64_t)ww * s_hold_image.h > (int64_t)wh * s_hold_image.w) {
+                lw = (int)(((int64_t)wh * s_hold_image.w) / s_hold_image.h);
                 if (lw < 1) lw = 1;
                 lx = (ww - lw) / 2;
                 lh = wh;
                 ly = 0;
             } else {
-                lh = (int)(((int64_t)ww * s_hold_th) / s_hold_tw);
+                lh = (int)(((int64_t)ww * s_hold_image.h) / s_hold_image.w);
                 if (lh < 1) lh = 1;
                 ly = (wh - lh) / 2;
                 lw = ww;
@@ -10556,15 +10666,15 @@ int gl_renderer_present_hold_last(void) {
             }
         }
         /* v_flip=0: drawable capture is already screen-oriented. */
-        present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
-                            0, 0, s_hold_tw, s_hold_th, 0, lx, ly, lw, lh, 0, 0, 1);
+        present_target_quad(s_hold_image.tex, s_hold_image.w, s_hold_image.h,
+                            0, 0, s_hold_image.w, s_hold_image.h, 0, lx, ly, lw, lh, 0, 0, 1);
     } else {
         if (s_hold_force_4_3)
             letterbox_rect_aspect(ww, wh, 4, 3, &lx, &ly, &lw, &lh);
         else
             letterbox_rect(ww, wh, &lx, &ly, &lw, &lh);
-        present_target_quad(s_hold_tex, s_hold_tw, s_hold_th,
-                            0, 0, s_hold_tw, s_hold_th, s_hold_linear,
+        present_target_quad(s_hold_image.tex, s_hold_image.w, s_hold_image.h,
+                            0, 0, s_hold_image.w, s_hold_image.h, s_hold_linear,
                             lx, ly, lw, lh, 1, 1, 1);
         local_pair_present_shared(&lx, &ly, &lw, &lh);
         /* Upgrade to drawable after letterboxing once. Live+interp leaves
@@ -10661,6 +10771,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
     if (lx != 0 || ly != 0 || lw != ww || lh != wh) {
         glClearColor(0.f,0.f,0.f,1.f); glClear(GL_COLOR_BUFFER_BIT);
     }
+    completed_image_cost_begin();
     int interp_pair = interp_capture(
         interp_fbo, src_x, disp_y, w, h, linear, force_4_3, GL_PRES_VRAM,
         disp_x, disp_y,
@@ -10668,7 +10779,8 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
     if (interp_pair) {
         /* Temporal blending owns this stock frame interval. Capture hold-last
          * before pacing; every blend and Swap remains on this context/thread. */
-        hold_capture_native_fbo(src_fbo, src_x, disp_y, w, h, force_4_3, linear);
+        hold_publish_interpolated(interp_pair, src_fbo, src_x, disp_y, w, h, force_4_3, linear);
+        completed_image_cost_end();
         interp_present_source_interval();
         gl_perf_present_exit(0);
         present_dirty_rect(disp_x, disp_y, disp_x + w - 1, disp_y + h - 1, 0);
@@ -10677,6 +10789,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
         s_last_dx = disp_x; s_last_dy = disp_y; s_last_dw = w; s_last_dh = h;
         return;
     }
+    completed_image_cost_end();
     present_bezel(ww, wh, lx, ly, lw, lh);
     {
         /* The hr surface may be allocated above the level it renders at
@@ -10842,12 +10955,14 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
     if (lx != 0 || ly != 0 || lw != ww || lh != wh) {
         glClearColor(0.f, 0.f, 0.f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
     }
+    completed_image_cost_begin();
     int interp_pair = interp_capture(
         fbo, 0, disp_y, g_wide_w, disp_h, linear, 0, GL_PRES_WIDE,
         disp_x, disp_y,
         present_dirty_test(0, disp_y, VRAM_W - 1, disp_y + disp_h - 1));
     if (interp_pair) {
-        hold_capture_native_fbo(fbo, 0, disp_y, g_wide_w, disp_h, 0, linear);
+        hold_publish_interpolated(interp_pair, fbo, 0, disp_y, g_wide_w, disp_h, 0, linear);
+        completed_image_cost_end();
         interp_present_source_interval();
         gl_perf_present_exit(1);
         present_dirty_rect(0, disp_y, VRAM_W - 1, disp_y + disp_h - 1, 0);
@@ -10857,6 +10972,7 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
         s_last_dw = g_wide_w; s_last_dh = disp_h;
         return 1;
     }
+    completed_image_cost_end();
     /* The surface is allocated at its own scale (s_wide_as), the level. */
     const float wext = (wide_as > s_out_scale && s_out_scale >= 1)
                            ? (float)wide_as / (float)s_out_scale : 1.0f;

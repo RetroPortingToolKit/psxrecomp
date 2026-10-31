@@ -17,6 +17,7 @@
  *   5. a game.toml with the retired [quality.*] presets fails to load.
  */
 #include "config_loader.h"
+#include "../../runtime/include/internal_resolution.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -264,9 +265,8 @@ static void test_user_settings_fov_scale() {
     fs::remove(p);
 }
 
-/* Internal resolution (Settings -> Display): game.toml shipped default,
- * settings.toml precedence over the legacy factor, stable-id round trip,
- * and the legacy supersampling range widened to the runtime's 1..32. */
+/* The title baseline accepts fixed scales and retained height presets.
+ * The shared mod chooses the fresh-profile default later, at session setup. */
 static void test_internal_resolution_game_toml() {
     fs::path p = write_game_toml("psxrecomp_ir_default.toml", "");
     auto gc = PSXRecompV4::load_game_config(p);
@@ -299,6 +299,20 @@ static void test_internal_resolution_game_toml() {
     check(gc.runtime.video_supersampling == 12, "supersampling accepts 12 (1..32)");
     fs::remove(p);
 
+    p = write_game_toml("psxrecomp_ir_fixed.toml",
+        "[video]\n"
+        "internal_resolution = \"32x\"\n"
+        "dynamic_resolution_min = \"4x\"\n"
+        "resolution_reference_lines = 480\n"
+        "supersampling = 12\n");
+    gc = PSXRecompV4::load_game_config(p);
+    check(gc.runtime.video_internal_resolution == PSX_IR_SCALE(32), "game.toml 32x parses");
+    check(gc.runtime.video_dynamic_resolution_min == PSX_IR_SCALE(4), "game.toml fixed 4x floor parses");
+    check(psx_resolve_internal_scale(gc.runtime.video_internal_resolution,
+              gc.runtime.video_resolution_reference_lines, 0, 32) == 32,
+          "fixed scale keeps its factor with a 480-line title reference");
+    fs::remove(p);
+
     p = write_game_toml("psxrecomp_ir_lines.toml",
         "[video]\n"
         "internal_resolution = 1600\n");
@@ -307,6 +321,7 @@ static void test_internal_resolution_game_toml() {
     fs::remove(p);
 
     for (const char* bad : { "internal_resolution = \"9k\"\n",
+                             "internal_resolution = \"33x\"\n",
                              "internal_resolution = 1\n",
                              "resolution_reference_lines = 50\n",
                              "match_display_max_lines = 100\n",

@@ -17,6 +17,10 @@ static PSXModTextureBankResolver resolve_bank;
 static int resolving;
 static int bank_batching;
 
+int mod_texture_banks_begin_session(int session_owned) {
+    return !session_owned || mod_texture_banks_reset_session();
+}
+
 int mod_texture_banks_reset_session(void) {
     /* Called after renderer teardown, before enhancement arenas are reused.
      * A callback or render pass must retain its current resource identities. */

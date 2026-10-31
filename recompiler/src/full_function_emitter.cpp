@@ -425,6 +425,7 @@ bool FullFunctionEmitter::emit_function(
     // memory stalls) is a future refinement. Includes terminator and
     // delay slot in the block before the next leader. */
     std::map<uint32_t, uint32_t> block_cycles;
+    std::map<uint32_t, uint32_t> native_span_cycles;
     for (auto it = addr_to_raw.begin(); it != addr_to_raw.end(); ++it) {
         uint32_t leader = it->first;
         if (!block_leaders.count(leader)) continue;
@@ -436,6 +437,7 @@ bool FullFunctionEmitter::emit_function(
              * this equals the old instruction count; Stage-2 real costs land in
              * that one function and every backend updates together. */
             count += psx_instr_base_cycles(walker->second);
+            native_span_cycles[leader] += psx_native_instr_cycles(walker->second, relocate_ra(walker->first));
             ++walker;
             if (walker == addr_to_raw.end()) break;
             if (block_leaders.count(walker->first)) break;
@@ -779,7 +781,12 @@ bool FullFunctionEmitter::emit_function(
     // any muldiv/GTE deadline stall (Beetle order). CPU loads (op 0x20-0x26) are
     // SKIPPED — psx_cyc_load_* runs their full interlock inside the body. The dep/res
     // mask is a gen-time literal. Replaces the old flat per-instruction +1.
-    auto emit_insn_interlock = [&](uint32_t w) {
+    auto emit_insn_interlock = [&](uint32_t w, uint32_t pc) {
+        if (!addr_to_raw.count(pc)) {
+            out += "#if defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_NATIVE_CPU_SPANS)\n";
+            out += fmt::format("    psx_native_span_charge({}u);\n", psx_native_instr_cycles(w, relocate_ra(pc)));
+            out += "#endif\n";
+        }
         if (!per_insn_cycles) return;
         uint32_t op = w >> 26;
         if (op >= 0x20u && op <= 0x26u) return;   // CPU load: interlock inside psx_cyc_load_*
@@ -948,12 +955,15 @@ bool FullFunctionEmitter::emit_function(
             // gated; when off, generated code matches pre-1.0e-d output.
             // In per-instruction mode the charge is emitted per instruction
             // below (so muldiv/GTE stalls absorb correctly), NOT block-up-front.
+            out += "#if defined(PSX_ENABLE_BLOCK_CYCLES) && defined(PSX_NATIVE_CPU_SPANS)\n";
+            out += fmt::format("    psx_native_span_charge({}u);\n", native_span_cycles[addr]);
+            out += "#endif\n";
             if (!per_insn_cycles) {
                 uint32_t bcyc = 0;
                 auto bcit = block_cycles.find(addr);
                 if (bcit != block_cycles.end()) bcyc = bcit->second;
                 if (bcyc > 0) {
-                    out += "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
+                    out += "#if defined(PSX_ENABLE_BLOCK_CYCLES) && !defined(PSX_NATIVE_CPU_SPANS)\n";
                     out += fmt::format("    psx_cpu_charge({}u);\n", bcyc);
                     out += "#endif\n";
                 }
@@ -970,7 +980,7 @@ bool FullFunctionEmitter::emit_function(
         // the completion-stall to absorb correctly. Orphaned (out-of-function)
         // delay slots are inlined elsewhere and charged at those sites.
         emit_icache_fetch(addr);
-        emit_insn_interlock(raw);
+        emit_insn_interlock(raw, addr);
 
         // Decode and translate.
         PSXRecomp::DecodedInstruction d = PSXRecomp::MipsDecoder::decode(raw, addr);
@@ -1122,7 +1132,7 @@ bool FullFunctionEmitter::emit_function(
                                 out += fmt::format("    /* DELAY (orphaned) 0x{:08X}: {:08X}  {} */\n",
                                                    ds_addr, ds_raw, ds_tr.comment);
                                 emit_icache_fetch(ds_addr);
-                                emit_insn_interlock(ds_raw);
+                                emit_insn_interlock(ds_raw, ds_addr);
                                 out += fmt::format("    {}\n", ds_tr.c_code);
                             } else if (ds_raw != 0u) {
                                 /* jr never falls through, so a slot we cannot
@@ -1167,7 +1177,7 @@ bool FullFunctionEmitter::emit_function(
                             // entry), so charge its interlock directly, BEFORE its body
                             // (block mode already counts it in the owning block_cycles).
                             emit_icache_fetch(ds_addr);
-                            emit_insn_interlock(ds_raw);
+                            emit_insn_interlock(ds_raw, ds_addr);
                             out += fmt::format("    {}\n", ds_tr.c_code);
                             ds_inlined = true;
                         }
@@ -1236,7 +1246,7 @@ bool FullFunctionEmitter::emit_function(
                             // entry), so charge its interlock directly, BEFORE its body
                             // (block mode already counts it in the owning block_cycles).
                             emit_icache_fetch(ds_addr);
-                            emit_insn_interlock(ds_raw);
+                            emit_insn_interlock(ds_raw, ds_addr);
                             out += fmt::format("    {}\n", ds_tr.c_code);
                         }
                     }
@@ -1266,7 +1276,7 @@ bool FullFunctionEmitter::emit_function(
                             // entry), so charge its interlock directly, BEFORE its body
                             // (block mode already counts it in the owning block_cycles).
                             emit_icache_fetch(ds_addr);
-                            emit_insn_interlock(ds_raw);
+                            emit_insn_interlock(ds_raw, ds_addr);
                             out += fmt::format("    {}\n", ds_tr.c_code);
                         }
                     }
@@ -1323,7 +1333,7 @@ bool FullFunctionEmitter::emit_function(
                             // entry), so charge its interlock directly, BEFORE its body
                             // (block mode already counts it in the owning block_cycles).
                             emit_icache_fetch(ds_addr);
-                            emit_insn_interlock(ds_raw);
+                            emit_insn_interlock(ds_raw, ds_addr);
                             out += fmt::format("    {}\n", ds_tr.c_code);
                         }
                     }
@@ -2638,6 +2648,7 @@ EmitStats FullFunctionEmitter::emit(
     full_c += fmt::format("#define psx_dispatch      {}psx_dispatch\n", g_sym_prefix);
     full_c += fmt::format("#define psx_dispatch_call {}psx_dispatch_call\n\n", g_sym_prefix);
     full_c += "#include \"cpu_state.h\"\n\n";
+    full_c += "#include \"psx_native_span.h\"\n\n";
 
     // Forward declare psx_dispatch, psx_unknown_dispatch, and interrupt check.
     full_c += "extern void psx_dispatch(CPUState* cpu, uint32_t addr);\n";

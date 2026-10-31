@@ -5,7 +5,8 @@
  *
  * Links the real plugins and host_enhancements.c against a fake mod runtime
  * (registration + option values), and pins:
- *   - resolve(): every mod off is exactly the title's baseline; an option at
+ *   - resolve(): disabled Internal Resolution is native; other disabled mods
+ *     keep the title's baseline; an option at
  *     Game default keeps the baseline value; an enabled option replaces it;
  *     the scanline strength belongs to the player's own scanlines;
  *   - each plugin's activation RECORDS a request from its options (unknown or
@@ -87,7 +88,7 @@ static void test_resolution(void) {
     /* A title shipping 1080p with dynamic resolution on under it. */
     const PsxHostResolution base = {1080, 1};
     PsxHostResolution r = psx_host_enh_resolve_resolution(&base, &req);
-    CHECK(r.internal_resolution == 1080 && r.dynamic_resolution == 1);   /* mod off */
+    CHECK(r.internal_resolution == PSX_IR_NATIVE && r.dynamic_resolution == 0); /* mod off */
     req.resolution = 1;
     req.resolution_value = PSX_IR_UNSET;                                 /* Game default */
     r = psx_host_enh_resolve_resolution(&base, &req);
@@ -109,26 +110,33 @@ static void test_resolution(void) {
     req.resolution = 0;
     req.resolution_value = PSX_IR_NATIVE;                                /* mod off again */
     r = psx_host_enh_resolve_resolution(&base, &req);
-    CHECK(r.internal_resolution == 1080 && r.dynamic_resolution == 1);
+    CHECK(r.internal_resolution == PSX_IR_NATIVE && r.dynamic_resolution == 0);
 
-    /* Every manifest choice parses; Game default and junk are unset. */
+    /* Old explicit choices keep their meaning; absent/invalid text uses 4x. */
     static const struct { const char* text; int value; } choices[] = {
         {"default", PSX_IR_UNSET}, {"native", PSX_IR_NATIVE}, {"720p", 720},
         {"1080p", 1080}, {"1440p", 1440}, {"4k", 2160}, {"5k", 2880}, {"8k", 4320},
         {"display", PSX_IR_DISPLAY}, {"auto", PSX_IR_AUTO},
-        {"", PSX_IR_UNSET}, {"1600", PSX_IR_UNSET}, {"4K", PSX_IR_UNSET},
+        {"4x", PSX_IR_SCALE(4)}, {"32x", PSX_IR_SCALE(32)},
+        {"", PSX_HOST_ENH_RESOLUTION_DEFAULT},
+        {"1600", PSX_HOST_ENH_RESOLUTION_DEFAULT}, {"4K", PSX_HOST_ENH_RESOLUTION_DEFAULT},
     };
     for (unsigned i = 0; i < sizeof choices / sizeof choices[0]; ++i)
         CHECK(psx_host_enh_parse_internal_resolution(choices[i].text) == choices[i].value);
-    CHECK(psx_host_enh_parse_internal_resolution(NULL) == PSX_IR_UNSET);
+    CHECK(psx_host_enh_parse_internal_resolution(NULL) == PSX_HOST_ENH_RESOLUTION_DEFAULT);
 
     /* The plugin: activation records, an option change asks the applier. */
     psx_host_enh_reset();
     psx_host_enh_requests(&req);
     CHECK(!req.resolution && req.resolution_value == PSX_IR_UNSET);
-    activate("psx.internal-resolution");                /* no value: Game default */
+    activate("psx.internal-resolution");                /* fresh profile: fixed 4x */
     psx_host_enh_requests(&req);
-    CHECK(req.resolution && req.resolution_value == PSX_IR_UNSET);
+    CHECK(req.resolution && req.resolution_value == PSX_IR_SCALE(4));
+    const PsxHostResolution old_4k = {2160, 1};
+    r = psx_host_enh_resolve_resolution(&old_4k, &req);
+    CHECK(r.internal_resolution == PSX_IR_SCALE(4) && r.dynamic_resolution == 0);
+    CHECK(psx_resolve_internal_scale(r.internal_resolution, 240, 0, 32) == 4);
+    CHECK(psx_resolve_internal_scale(r.internal_resolution, 480, 0, 32) == 4);
     set_opt(IR, "internal-resolution", "resolution", "auto");
     psx_host_enh_reset();
     activate("psx.internal-resolution");

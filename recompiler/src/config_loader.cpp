@@ -882,7 +882,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             }
             if (!ok) {
                 throw std::runtime_error(
-                    "[video] internal_resolution must be native, 720p, 1080p, "
+                    "[video] internal_resolution must be 1x..32x, native, 720p, 1080p, "
                     "1440p, 4k, 5k, 8k, display, auto, or a number of lines");
             }
             rt.video_internal_resolution = value;
@@ -905,7 +905,7 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             }
             if (!ok) {
                 throw std::runtime_error(
-                    "[video] dynamic_resolution_min must be native, 720p, 1080p, "
+                    "[video] dynamic_resolution_min must be 1x..32x, native, 720p, 1080p, "
                     "1440p, 4k, 5k, 8k, display, or a number of lines");
             }
             rt.video_dynamic_resolution_min = value;

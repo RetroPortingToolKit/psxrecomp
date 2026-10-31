@@ -1,0 +1,293 @@
+{
+  "schema": 1,
+  "item": "E3",
+  "status": "supporting-only-not-new-performance-or-correctness-qualification",
+  "engine_commit": "66388558b39da51db5d158733141186e4b36fa49",
+  "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+  "package": "Standalone native CPU spans OFF/ON; same old native waits/geometry, no later G4/H1/H2/E2/E1/S5/S7 packages",
+  "measurement_profile": {
+    "host": "windows-host-A",
+    "physical_cores": 8,
+    "logical_cpus": 16,
+    "cpu_cap_physical_core_equivalent": 0.25,
+    "windows_job_cpu_rate": 312,
+    "cap_applies_to": "Observer and all game/telemetry children",
+    "gpu_reserved_percent": 35,
+    "ram_reserved_gib": 3,
+    "actual_features": {
+      "pgxp": 1,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "gcs_batch": 0,
+      "backend": "OpenGL",
+      "interpolation": 0,
+      "rewind_ring_count": 0
+    },
+    "audio": "dummy output; no physical audio quality claim"
+  },
+  "games": [
+    {
+      "game": "Ape Escape USA",
+      "complete_launches": [
+        {
+          "block": "block1",
+          "order": 1,
+          "mode": "control",
+          "raw_receipt_sha256": "423cbe043050715d24e40024f32f167c15c230f8b8b23c33e8cb23780e233bdf",
+          "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+          "metrics": {
+            "frames": 902,
+            "cpu_seconds": 8.0625,
+            "wall_seconds": 22.710134700057097,
+            "cpu_ms_per_frame": 8.938470066518846,
+            "guest_hz": 39.717950241736446,
+            "host_process_cycles_per_guest_frame": 40581934.800443456,
+            "host_cpu_percent": 78.94442532690984,
+            "draws_per_frame": 204.07427937915742,
+            "guest_cycles_per_frame": 564480.0
+          },
+          "host_intervals": 99,
+          "fraction_host_intervals_above90": 0.2222222222222222,
+          "host_gate_pass": false,
+          "all_required_actual_feature_samples_pass": true,
+          "clean_owned_close_exit_code": 0,
+          "gpu_telemetry_samples": 12,
+          "quiet_by_compiler_presence": false
+        },
+        {
+          "block": "block1",
+          "order": 2,
+          "mode": "native",
+          "raw_receipt_sha256": "fda9eec5fe6556cdf85db16514010ec4a7e8dbf0c0522e0b8b480dbf233a2b73",
+          "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+          "metrics": {
+            "frames": 903,
+            "cpu_seconds": 6.703125,
+            "wall_seconds": 19.854798099957407,
+            "cpu_ms_per_frame": 7.423172757475083,
+            "guest_hz": 45.48019050377234,
+            "host_process_cycles_per_guest_frame": 34554245.41528239,
+            "host_cpu_percent": 82.27362204724409,
+            "draws_per_frame": 204.02879291251384,
+            "guest_cycles_per_frame": 564327.7574750831
+          },
+          "host_intervals": 86,
+          "fraction_host_intervals_above90": 0.23255813953488372,
+          "host_gate_pass": false,
+          "all_required_actual_feature_samples_pass": true,
+          "clean_owned_close_exit_code": 0,
+          "gpu_telemetry_samples": 11,
+          "quiet_by_compiler_presence": false
+        },
+        {
+          "block": "block1",
+          "order": 3,
+          "mode": "native",
+          "raw_receipt_sha256": "529cc026bb6105d59b3c95cb592e0ffb731bde5799c388747bc7dcb3a12b227b",
+          "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+          "metrics": {
+            "frames": 904,
+            "cpu_seconds": 6.703125,
+            "wall_seconds": 20.15031459997408,
+            "cpu_ms_per_frame": 7.414961283185841,
+            "guest_hz": 44.86282313434267,
+            "host_process_cycles_per_guest_frame": 34614014.092920355,
+            "host_cpu_percent": 74.42300232738557,
+            "draws_per_frame": 204.37942477876106,
+            "guest_cycles_per_frame": 564391.8440265487
+          },
+          "host_intervals": 90,
+          "fraction_host_intervals_above90": 0.06666666666666667,
+          "host_gate_pass": false,
+          "all_required_actual_feature_samples_pass": true,
+          "clean_owned_close_exit_code": 0,
+          "gpu_telemetry_samples": 11,
+          "quiet_by_compiler_presence": false
+        },
+        {
+          "block": "block1",
+          "order": 4,
+          "mode": "control",
+          "raw_receipt_sha256": "06cd3cac9ad282efd53c61aa6f2e7bdfca749d4810e90a2111826cd35648a673",
+          "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+          "metrics": {
+            "frames": 900,
+            "cpu_seconds": 8.703125,
+            "wall_seconds": 25.597411099937744,
+            "cpu_ms_per_frame": 9.67013888888889,
+            "guest_hz": 35.15980567277715,
+            "host_process_cycles_per_guest_frame": 45620986.05555555,
+            "host_cpu_percent": 80.87606837606837,
+            "draws_per_frame": 204.61666666666667,
+            "guest_cycles_per_frame": 564724.0455555556
+          },
+          "host_intervals": 108,
+          "fraction_host_intervals_above90": 0.21296296296296297,
+          "host_gate_pass": false,
+          "all_required_actual_feature_samples_pass": true,
+          "clean_owned_close_exit_code": 0,
+          "gpu_telemetry_samples": 14,
+          "quiet_by_compiler_presence": false
+        },
+        {
+          "block": "block2",
+          "order": 1,
+          "mode": "native",
+          "raw_receipt_sha256": "14a3be4f203382e0d3171e9f7a4099d333b4d25d79633aaf39c7d64b94ec0c3b",
+          "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+          "metrics": {
+            "frames": 914,
+            "cpu_seconds": 5.453125,
+            "wall_seconds": 17.11078180000186,
+            "cpu_ms_per_frame": 5.966219912472647,
+            "guest_hz": 53.416612442565345,
+            "host_process_cycles_per_guest_frame": 29188954.048140045,
+            "host_cpu_percent": 45.69063926940639,
+            "draws_per_frame": 204.08862144420132,
+            "guest_cycles_per_frame": 564480.0
+          },
+          "host_intervals": 93,
+          "fraction_host_intervals_above90": 0.010752688172043012,
+          "host_gate_pass": true,
+          "all_required_actual_feature_samples_pass": true,
+          "clean_owned_close_exit_code": 0,
+          "gpu_telemetry_samples": 10,
+          "quiet_by_compiler_presence": false
+        }
+      ],
+      "block1": {
+        "order": [
+          "control",
+          "native",
+          "native",
+          "control"
+        ],
+        "metrics": {
+          "cpu_ms_per_frame": {
+            "values": {
+              "control": [
+                8.938470066518846,
+                9.67013888888889
+              ],
+              "native": [
+                7.423172757475083,
+                7.414961283185841
+              ]
+            },
+            "means": {
+              "control": 9.304304477703868,
+              "native": 7.419067020330462
+            },
+            "reduction_percent": 20.261992305723087
+          },
+          "host_process_cycles_per_guest_frame": {
+            "values": {
+              "control": [
+                40581934.800443456,
+                45620986.05555555
+              ],
+              "native": [
+                34554245.41528239,
+                34614014.092920355
+              ]
+            },
+            "means": {
+              "control": 43101460.427999504,
+              "native": 34584129.75410137
+            },
+            "reduction_percent": 19.76111850809843
+          },
+          "guest_hz": {
+            "values": {
+              "control": [
+                39.717950241736446,
+                35.15980567277715
+              ],
+              "native": [
+                45.48019050377234,
+                44.86282313434267
+              ]
+            },
+            "means": {
+              "control": 37.4388779572568,
+              "native": 45.171506819057505
+            },
+            "reduction_percent": -20.654008035788074
+          },
+          "host_cpu_percent": {
+            "values": {
+              "control": [
+                78.94442532690984,
+                80.87606837606837
+              ],
+              "native": [
+                82.27362204724409,
+                74.42300232738557
+              ]
+            },
+            "means": {
+              "control": 79.9102468514891,
+              "native": 78.34831218731483
+            },
+            "reduction_percent": 1.9546112366253698
+          },
+          "draws_per_frame": {
+            "values": {
+              "control": [
+                204.07427937915742,
+                204.61666666666667
+              ],
+              "native": [
+                204.02879291251384,
+                204.37942477876106
+              ]
+            },
+            "means": {
+              "control": 204.34547302291205,
+              "native": 204.20410884563745
+            },
+            "reduction_percent": 0.06917901100689239
+          }
+        },
+        "choice_mean_host_delta_points": 1.5619346641742737,
+        "host_gate_pass": false,
+        "criteria": {
+          "mean_cpu_busy_max_percent": 70,
+          "interval_fraction_above90_max": 0.05,
+          "mean_choice_host_delta_max_points": 8
+        },
+        "disposition": "Observed lower CPU/frame and same-host process cycles/frame are supporting only; all four runs fail declared host limits, variable GPU clocks/load retained privately. No new proven win."
+      },
+      "block2": {
+        "planned_order": [
+          "native",
+          "control",
+          "control",
+          "native"
+        ],
+        "completed_order": [
+          "native"
+        ],
+        "next_control_status": "Required GPU telemetry subprocess timed out after10seconds; no complete raw timing receipt; exact owned close exit0",
+        "remaining_launches": 0,
+        "disposition": "Incomplete: no reverse-order A/B or gain claim. Do not pool its lone native sample with block1."
+      }
+    },
+    {
+      "game": "Tomba USA",
+      "new_game_launches": 0,
+      "retained_attribution": {
+        "evidence": "Existing32 retained full-RAM captures previously rehashed; attribution inputs unchanged at review",
+        "finding": "Observed differing words are confined to volatile saved registers of one inactive kernel thread. Saved continuation, stack and callee-saved values match. Two candidate-extra words at one boundary are overwritten before use on the observed resume path, and whole RAM converges at the next retained boundary.",
+        "scope": "Resolves location/ABI and observed caller-required live-in gap; no blanket harmlessness, causal proof, byte masking, strict-state equality or netplay qualification. Baseline shared capture/digest caveat tracked separately."
+      },
+      "performance": "Previously accepted Tomba performance/gameplay evidence unchanged; no new numeric claim or remeasurement in this packet"
+    }
+  ],
+  "publication_safety": "Contains no ROM/RAM contents, opcodes, disassembly, private paths, owner names, physical hostnames, PIDs or lease tokens. Source/binary/measurement-receipt identities and aggregate metrics only.",
+  "limits": [
+    "Historical unrestricted gate files unchanged and separately scoped.",
+    "No unrestricted wall/FPS, high-resolution visual or physical-audio quality extrapolation.",
+    "Actual native-card/current-build lifecycle/common-profile acceptance remains a separate decision; live parent card route not included here."
+  ]
+}

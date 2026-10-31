@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 static int g_failures = 0;
 
@@ -30,6 +31,25 @@ int main() {
         expect(t.id, psx_resolve_internal_scale(v, 480, 0, 32), t.s480);
         expect("id round trip", std::strcmp(psx_ir_id_for(v), t.id), 0);
     }
+    // Fixed scale choices are independent of title reference height and SSAA.
+    // The backend's admitted maximum still bounds every request.
+    for (int scale = 1; scale <= PSX_IR_MAX_SCALE; ++scale) {
+        char id[8];
+        std::snprintf(id, sizeof id, "%dx", scale);
+        int value = 0;
+        expect(id, psx_ir_parse(id, &value), 1);
+        expect("fixed encoding", value, PSX_IR_SCALE(scale));
+        expect("fixed valid", psx_ir_value_valid(value), 1);
+        expect("fixed id", std::strcmp(psx_ir_id_for(value), id), 0);
+        for (int reference : {0, 240, 256, 480})
+            expect("fixed reference", psx_resolve_internal_scale(value, reference, 8640, 32), scale);
+        expect("fixed ignores SSAA", psx_resolve_internal_scale_ss(value, 240, 1080, 32, 4000), scale);
+        expect("fixed portable clamp", psx_resolve_internal_scale(value, 240, 0, 4), scale > 4 ? 4 : scale);
+        expect("fixed texture clamp", psx_resolve_internal_scale(value, 240, 0, 16), scale > 16 ? 16 : scale);
+    }
+    expect("invalid fixed lower bound", psx_ir_value_valid(PSX_IR_SCALE_BASE), 0);
+    expect("invalid fixed upper bound", psx_ir_value_valid(PSX_IR_SCALE(33)), 0);
+
     // Backend maxima: software/Vulkan 4, full-VRAM GL at a 16384 limit 16.
     int v8k = 0;
     psx_ir_parse("8K", &v8k);
@@ -80,6 +100,9 @@ int main() {
     expect("reject junk", psx_ir_parse("4kk", &v), 0);
     expect("reject empty", psx_ir_parse("", &v), 0);
     expect("reject 1", psx_ir_parse("1", &v), 0);
+    expect("reject 0x", psx_ir_parse("0x", &v), 0);
+    expect("reject 33x", psx_ir_parse("33x", &v), 0);
+    expect("reject 999x", psx_ir_parse("999x", &v), 0);
     expect("reject huge", psx_ir_parse("99999", &v), 0);
     expect("untouched on reject", v, 77);
     expect("unset scale", psx_resolve_internal_scale(PSX_IR_UNSET, 240, 0, 32), 1);

@@ -3,6 +3,7 @@
 #include "psx_rewind.h"
 
 #include "boot_state.h"
+#include "capture_ring.h"
 #include "cdrom.h"
 #include "gpu.h"
 #include "host_keymap.h"
@@ -513,8 +514,10 @@ void psx_rewind_note_frame(void)
 
 static int do_capture(CPUState *cpu, uint32_t resume_pc)
 {
+#if !PSX_NATIVE_CAPTURE_JOBS
     uint8_t *blob = NULL;
     size_t len = 0;
+#endif
     uint32_t thumb[RW_THUMB_W * RW_THUMB_H];
     CPUState snap;
     uint32_t tick = s_frame;
@@ -527,6 +530,10 @@ static int do_capture(CPUState *cpu, uint32_t resume_pc)
         return 0;
     snap = *cpu;
     snap.pc = pc;
+#if PSX_NATIVE_CAPTURE_JOBS
+    if (!psx_capture_ring_save(s_ring, tick, &snap, s_bios, s_entry))
+        return 0;
+#else
     if (!boot_state_save_buffer_raw(&snap, s_bios, s_entry, &blob, &len) ||
         !blob || !len)
         return 0;
@@ -534,6 +541,7 @@ static int do_capture(CPUState *cpu, uint32_t resume_pc)
         free(blob);
         return 0;
     }
+#endif
     capture_thumb(thumb);
     list_push(tick, thumb);
     s_last_capture_frame = s_frame;

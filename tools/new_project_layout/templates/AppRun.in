@@ -1,0 +1,128 @@
+#!/bin/sh
+# AppImage entry point. Its placeholders (upper-case names between at-signs) are
+# stamped by psxrecomp/tools/package_title_release.py from packaging/release.toml,
+# so this file is title-neutral.
+#
+# psxrecomp anchors settings, assets, saves, cache, and mods to argv[0]. Inside
+# an AppImage that anchor is a read-only squashfs mount, so everything writable
+# is seeded into a per-user data directory and the runtime is invoked through a
+# symlink that lives there.
+set -eu
+
+if [ -z "${APPDIR:-}" ]; then
+    echo "@APP_NAME@: APPDIR is not set; launch this through the AppImage runtime." >&2
+    exit 1
+fi
+
+if [ -n "${@ENV_PREFIX@_DATA_DIR:-}" ]; then
+    data_dir=$@ENV_PREFIX@_DATA_DIR
+else
+    if [ -n "${XDG_DATA_HOME:-}" ]; then
+        data_home=$XDG_DATA_HOME
+    elif [ -n "${HOME:-}" ]; then
+        data_home=$HOME/.local/share
+    else
+        echo "@APP_NAME@: HOME is not set; set @ENV_PREFIX@_DATA_DIR explicitly." >&2
+        exit 1
+    fi
+    data_dir=$data_home/@ARTIFACT_NAME@
+fi
+
+payload=$APPDIR/usr/share/@PAYLOAD_DIR@
+runtime=$APPDIR/usr/bin/@EXE_NAME@
+
+if [ ! -x "$runtime" ] || [ ! -f "$payload/game.toml" ]; then
+    echo "@APP_NAME@: AppImage payload is incomplete." >&2
+    exit 1
+fi
+
+mkdir -p "$data_dir" "$data_dir/saves" "$data_dir/cache" "$data_dir/mods"
+
+# Release-owned resources: refreshed every launch so an AppImage update can
+# repair or extend its bundled catalog without touching user settings, memory
+# cards, installed third-party mods, or generated cache data.
+for tree in assets bios licenses docs; do
+    if [ -d "$payload/$tree" ]; then
+        mkdir -p "$data_dir/$tree"
+        cp -a "$payload/$tree/." "$data_dir/$tree/"
+        chmod -R u+rwX "$data_dir/$tree"
+    fi
+done
+if [ -d "$payload/mods" ]; then
+    cp -a "$payload/mods/." "$data_dir/mods/"
+    chmod -R u+rwX "$data_dir/mods"
+fi
+
+# The bundled overlay cache is a head start, but the cache is also written by
+# the running game as it discovers new code. Seed without clobbering: the
+# release's shards fill in what is missing, and anything the player has already
+# built stays. -n is essential here; -a alone would overwrite user shards on
+# every launch.
+if [ -d "$payload/cache" ]; then
+    mkdir -p "$data_dir/cache"
+    cp -a -n "$payload/cache/." "$data_dir/cache/" 2>/dev/null || true
+    chmod -R u+rwX "$data_dir/cache"
+fi
+
+# Link the read-only bundled overlay toolchain into the writable data directory.
+# The runtime looks beside argv[0], and argv[0] is the launcher symlink below.
+if [ -d "$payload/overlay_toolchain" ]; then
+    if [ -L "$data_dir/overlay_toolchain" ] || [ ! -e "$data_dir/overlay_toolchain" ]; then
+        ln -sfn "$payload/overlay_toolchain" "$data_dir/overlay_toolchain"
+    fi
+fi
+for file in game.toml game_options.toml LICENSE README.md START_HERE.txt AOT_CACHE_AUDIT.json VERSION RELEASE_NOTES.md RELEASE_MANIFEST.json; do
+    if [ -f "$payload/$file" ]; then
+        cp -f "$payload/$file" "$data_dir/$file"
+        chmod u+rw "$data_dir/$file"
+    fi
+done
+
+# input.ini and keybinds.ini become user-owned after first launch.
+if [ ! -f "$data_dir/input.ini" ] && [ -f "$payload/input.ini" ]; then
+    cp "$payload/input.ini" "$data_dir/input.ini"
+    chmod u+rw "$data_dir/input.ini"
+fi
+
+# Stamped by package_title_release.py from the title VERSION file so the layout
+# marker never drifts from the artifact name.
+printf '%s\n' "@VERSION@" > "$data_dir/.appimage-layout-version"
+
+if [ "${@ENV_PREFIX@_SEED_ONLY:-0}" = "1" ]; then
+    printf '%s\n' "$data_dir"
+    exit 0
+fi
+
+launcher=$data_dir/.@EXE_NAME@-runtime
+ln -sfn "$runtime" "$launcher"
+appimage_path=${APPIMAGE:-}
+export @ENV_PREFIX@_APPIMAGE_PATH=$appimage_path
+export RECOMP_APPIMAGE_PATH=$appimage_path
+
+# An explicit validation/runtime override may preselect a disc without baking
+# a developer path into the reproducible release configuration.
+disc_override=${@ENV_PREFIX@_DISC:-}
+if [ -n "$disc_override" ] && [ -f "$disc_override" ]; then
+    config_tmp=$data_dir/.game.toml.tmp
+    awk -v disc="$disc_override" '
+        BEGIN { inserted = 0 }
+        /^[[:space:]]*disc[[:space:]]*=/ { next }
+        /^\[/ && $0 != "[game]" && !inserted {
+            escaped = disc
+            gsub(/\\/, "\\\\", escaped)
+            gsub(/"/, "\\\"", escaped)
+            print "disc = \"" escaped "\""
+            inserted = 1
+        }
+        { print }
+    ' "$data_dir/game.toml" > "$config_tmp"
+    mv "$config_tmp" "$data_dir/game.toml"
+fi
+unset APPIMAGE
+
+export PATH="$APPDIR/usr/bin${PATH:+:$PATH}"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$APPDIR/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+
+cd "$data_dir"
+exec "$launcher" "$@"

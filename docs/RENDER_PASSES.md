@@ -444,3 +444,11 @@ saved context rather than resetting depth to zero. Normal-return verification
 also checks balance. This host context is never serialized in guest savestates.
 TCP render_pass_stats.last_abort_detail names skipped exits and remains latched
 across successes until session reset.
+
+Offline local-pair rendering retains the renderer's texture and memory admission
+limits. A selectable internal scale does not guarantee paired-view support:
+windowed high-resolution storage and other unsupported backends refuse the
+pair before invoking either view callback. The title must handle that refusal;
+ordinary/shared-frame duplication is presentation fallback, not proof that two
+independent player views rendered. The admitted full-VRAM path, including the
+4x default, uses the same all-or-nothing two-view transaction.

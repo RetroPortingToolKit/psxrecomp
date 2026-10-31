@@ -740,7 +740,8 @@ Vulkan after validating their visuals and stability.
 ### The game's look: title baseline and built-in mods
 
 These `[video]` / `[audio]` keys are the title's **baseline**: what a player
-sees and hears with the matching built-in mod off. They are not player
+sees and hears with the matching built-in mod at Game default (or off, except
+Internal Resolution, whose disabled state is native 1x). They are not player
 settings any more (no `settings.toml` key, no launcher Settings row, no
 in-game menu row); a player changes them through the framework's built-in
 mods on the Mods page, whose "Game default" option values keep the baseline
@@ -782,13 +783,16 @@ the table; delete it. No title shipped one.
 The internal resolution is the title's `game.toml` baseline, and the player
 changes it with the built-in **Internal Resolution** mod
 (`psx.enhancement.internal-resolution`, docs/MOD_PACKAGES.md "Built-in host
-enhancements"): Game default, Native, 720p, 1080p, 1440p, 4K, 5K, 8K, Match
-display or **Auto**. It is not a Settings row and not a `settings.toml` key.
-With the mod off, or at Game default, the title's keys apply unchanged:
+enhancements"). Fresh profiles enable it at **4x**, with fixed choices from
+**1x through 32x**. Saved selections keep their value, including the retained
+Game default, Native, 720p, 1080p, 1440p, 4K, 5K, 8K, Match display and **Auto**
+choices. It is not a Settings row and not a `settings.toml` key. Disabled means
+native 1x with dynamic resolution off. At Game default, the title's keys apply
+unchanged:
 
 ```toml
 [video]
-internal_resolution = "4k"          # native | 720p | 1080p | 1440p | 4k | 5k | 8k | display | auto, or a number of lines
+internal_resolution = "4x"          # 1x..32x | native | 720p | 1080p | 1440p | 4k | 5k | 8k | display | auto, or a number of lines
 resolution_reference_lines = 240    # the title's usual display height (120..1024)
 supersample_disable_at_lines = 0    # supersample 1.0 at/above this display height (0 = off, 240..8640)
 match_display_max_lines = 0         # cap on the display height Match display uses (0 = none, 240..8640)
@@ -806,7 +810,14 @@ dynamic resolution cannot step there. A title whose GPU budget is set for
 At or above its threshold the effective factor is 1.0; the configured factor is
 retained for smaller monitors. Zero preserves the default behaviour.
 
-A preset is a target height. The runtime renders at the integer scale
+A fixed `Nx` choice requests exactly N times native resolution per axis,
+independent of reference lines or the legacy supersample multiplier. The
+backend still enforces its texture-size limit and bounded allocation budget;
+32x is a selectable ceiling, not a hardware or frame-rate guarantee. The
+shared mod does not increase the memory budget for low-memory GPUs.
+
+A legacy height preset is a target height. The runtime renders at the integer
+scale
 `S = ceil(target / resolution_reference_lines)`: at the default 240 lines,
 720p is 3x, 1080p is 5x (1200 lines, area-resolved to 1080), 1440p 6x, 4K 9x,
 5K 12x and 8K 18x. A 480-line interlaced screen renders at twice the target
@@ -827,8 +838,10 @@ keeps either. `PSX_DYNRES=0|1` still overrides dynamic resolution for one run.
 
 Precedence for a session: `PSX_INTERNAL_RESOLUTION` (one run), then a title
 mod's `psx_mod_set_internal_resolution` request, then the Internal Resolution
-mod's choice, then the title's `internal_resolution` (or its legacy
-`supersampling` factor). Every session start restores the title's values before
+mod's effective choice (native when disabled), then the title's
+`internal_resolution` (or its legacy `supersampling` factor) only for an
+explicit Game default choice. Every session start restores the title's values
+before
 the mod's choice applies, so a rematch never inherits the last session's scale.
 The mod's option changes apply live from the in-game menu when the OpenGL
 backend can change its scale on a running game (otherwise at the next start),

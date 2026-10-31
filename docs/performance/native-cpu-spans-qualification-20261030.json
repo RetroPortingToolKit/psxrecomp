@@ -1,0 +1,710 @@
+{
+  "schema": 1,
+  "item": "E3",
+  "status": "qualified-scoped-checkpoint-experimental-defaultOFF",
+  "source_commit": "66388558b39da51db5d158733141186e4b36fa49",
+  "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+  "package": "Standalone CPUspans66388558b OFF/ON, same nativewaits/geometry; no G4/H1/H2/E2/E1/S5/S7",
+  "game": "Ape Escape USA SCUS94423",
+  "measurement_profile": {
+    "host": "windows-host-A",
+    "physical_cores": 8,
+    "logical_cpus": 16,
+    "cpu_cap_physical_core_equivalent": 0.25,
+    "windows_job_cpu_rate": 312,
+    "cap_applies_to": "Observer, game and telemetry children",
+    "gpu_reserved_percent": 35,
+    "ram_reserved_gib": 3,
+    "actual_features": {
+      "phase": 3,
+      "pgxp": 1,
+      "requested_scale": 9,
+      "video_scale": 9,
+      "gcs_batch": 0,
+      "backend": "OpenGL",
+      "interpolation": 0,
+      "rewind_count": 0
+    },
+    "order": [
+      "native",
+      "control",
+      "control",
+      "native"
+    ],
+    "warmup_guest_frames": 120,
+    "measured_guest_frames_minimum": 900
+  },
+  "gates": {
+    "mean_host_cpu_max_percent": 70,
+    "fraction_host_intervals_above90_max": 0.05,
+    "choice_mean_host_delta_max_points": 8
+  },
+  "block": {
+    "block": "reverse-replacement1",
+    "host_comparable": true,
+    "choice_mean_host_delta_points": 6.645090175988891,
+    "metrics": {
+      "cpu_ms_per_frame": {
+        "values": {
+          "control": [
+            7.803886438809261,
+            7.484823399558499
+          ],
+          "native": [
+            5.954861111111111,
+            5.945796460176991
+          ]
+        },
+        "means": {
+          "control": 7.64435491918388,
+          "native": 5.950328785644051
+        },
+        "reduction_percent": 22.16048510893428,
+        "ranges_overlap": false
+      },
+      "host_process_cycles_per_guest_frame": {
+        "values": {
+          "control": [
+            36393595.501653805,
+            35007037.494481236
+          ],
+          "native": [
+            27186598.533333335,
+            27771343.362831857
+          ]
+        },
+        "means": {
+          "control": 35700316.49806752,
+          "native": 27478970.948082596
+        },
+        "reduction_percent": 23.02877497018815,
+        "ranges_overlap": false
+      },
+      "guest_hz": {
+        "values": {
+          "control": [
+            47.4784816997512,
+            46.83855181330515
+          ],
+          "native": [
+            59.96534802424195,
+            58.29423460347927
+          ]
+        },
+        "means": {
+          "control": 47.15851675652817,
+          "native": 59.12979131386061
+        },
+        "reduction_percent": -25.38518041001627,
+        "ranges_overlap": false
+      },
+      "host_cpu_percent": {
+        "values": {
+          "control": [
+            36.512888707037646,
+            29.306340872374797
+          ],
+          "native": [
+            24.580460517757253,
+            27.94858870967742
+          ]
+        },
+        "means": {
+          "control": 32.909614789706225,
+          "native": 26.264524613717334
+        },
+        "reduction_percent": 20.191941529705794,
+        "ranges_overlap": false
+      },
+      "draws_per_frame": {
+        "values": {
+          "control": [
+            204.54244762954795,
+            204.1898454746137
+          ],
+          "native": [
+            204.6511111111111,
+            204.50110619469027
+          ]
+        },
+        "means": {
+          "control": 204.3661465520808,
+          "native": 204.5761086529007
+        },
+        "reduction_percent": -0.1027382002167343,
+        "ranges_overlap": true
+      }
+    }
+  },
+  "rows": [
+    {
+      "order": 1,
+      "mode": "native",
+      "raw_sha256": "f1c938ac577d27772225089b7c776cdf0d8b495e9c5d094913b6d692f9a35393",
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "settings_sha256": "66614ce662d0fee1101ac4a8c1436f41a732e4971e1ed449015743fde5a3d9e9",
+      "summary": {
+        "frames": 900,
+        "wall_seconds": 15.008667999994941,
+        "cpu_seconds": 5.359375,
+        "cpu_ms_per_frame": 5.954861111111111,
+        "guest_hz": 59.96534802424195,
+        "draws_per_frame": 204.6511111111111,
+        "host_cpu_percent": 24.580460517757253,
+        "startup_load_seconds": 34.28267190000042,
+        "skips": 1448,
+        "skipped_cycles": 380052930,
+        "video_scale": 9,
+        "requested_scale": 9,
+        "gcs_batch": 0,
+        "guest_cycles_per_frame": 564480.0,
+        "pgxp_active": 1,
+        "host_process_cycles_per_guest_frame": 27186598.533333335
+      },
+      "no_compiler_observed": true,
+      "host_intervals": 82,
+      "host_intervals_above90": 0,
+      "fraction_host_intervals_above90": 0.0,
+      "host_interval_max": 63.28125,
+      "gpu_samples": [
+        {
+          "utilization_percent": 31.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1260.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 94.7,
+          "temperature_c": 44.0
+        },
+        {
+          "utilization_percent": 48.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1245.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.76,
+          "temperature_c": 45.0
+        },
+        {
+          "utilization_percent": 30.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1455.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 97.12,
+          "temperature_c": 45.0
+        },
+        {
+          "utilization_percent": 21.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1515.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 99.8,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 27.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1485.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 97.46,
+          "temperature_c": 45.0
+        },
+        {
+          "utilization_percent": 32.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1230.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.37,
+          "temperature_c": 45.0
+        },
+        {
+          "utilization_percent": 21.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1425.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 96.52,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 24.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1500.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 91.72,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 36.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1500.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 98.41,
+          "temperature_c": 46.0
+        }
+      ],
+      "owned_process_exit_code": 0
+    },
+    {
+      "order": 2,
+      "mode": "control",
+      "raw_sha256": "9261b010e63c32c4e4b34683e11a5c54e9cfb2a8f81a67a9f443e6218781c529",
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "settings_sha256": "66614ce662d0fee1101ac4a8c1436f41a732e4971e1ed449015743fde5a3d9e9",
+      "summary": {
+        "frames": 907,
+        "wall_seconds": 19.103391000069678,
+        "cpu_seconds": 7.078125,
+        "cpu_ms_per_frame": 7.803886438809261,
+        "guest_hz": 47.4784816997512,
+        "draws_per_frame": 204.54244762954795,
+        "host_cpu_percent": 36.512888707037646,
+        "startup_load_seconds": 1.7640645999927074,
+        "skips": 1231,
+        "skipped_cycles": 353600048,
+        "video_scale": 9,
+        "requested_scale": 9,
+        "gcs_batch": 0,
+        "guest_cycles_per_frame": 564480.0,
+        "pgxp_active": 1,
+        "host_process_cycles_per_guest_frame": 36393595.501653805
+      },
+      "no_compiler_observed": true,
+      "host_intervals": 102,
+      "host_intervals_above90": 0,
+      "fraction_host_intervals_above90": 0.0,
+      "host_interval_max": 75.0,
+      "gpu_samples": [
+        {
+          "utilization_percent": 35.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1215.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 114.51,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 32.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1365.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.05,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 12.0,
+          "used_mib": 2399.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1950.0,
+          "memory_mhz": 9501.0,
+          "power_watts": 100.84,
+          "temperature_c": 49.0
+        },
+        {
+          "utilization_percent": 22.0,
+          "used_mib": 2397.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1440.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 104.51,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 34.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1275.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 96.0,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 39.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1170.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.22,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 27.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1305.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 94.36,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 31.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1455.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 97.1,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 16.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1530.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 92.81,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 28.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1215.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 94.57,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 19.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1215.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 94.19,
+          "temperature_c": 46.0
+        }
+      ],
+      "owned_process_exit_code": 0
+    },
+    {
+      "order": 3,
+      "mode": "control",
+      "raw_sha256": "63ec30bac014efd4b278a1408ae20d667d1a580178e699cfd6fde2f22aa1b74b",
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "settings_sha256": "66614ce662d0fee1101ac4a8c1436f41a732e4971e1ed449015743fde5a3d9e9",
+      "summary": {
+        "frames": 906,
+        "wall_seconds": 19.34304039995186,
+        "cpu_seconds": 6.78125,
+        "cpu_ms_per_frame": 7.484823399558499,
+        "guest_hz": 46.83855181330515,
+        "draws_per_frame": 204.1898454746137,
+        "host_cpu_percent": 29.306340872374797,
+        "startup_load_seconds": 1.8082102000480518,
+        "skips": 1229,
+        "skipped_cycles": 353380624,
+        "video_scale": 9,
+        "requested_scale": 9,
+        "gcs_batch": 0,
+        "guest_cycles_per_frame": 564480.0,
+        "pgxp_active": 1,
+        "host_process_cycles_per_guest_frame": 35007037.494481236
+      },
+      "no_compiler_observed": true,
+      "host_intervals": 104,
+      "host_intervals_above90": 0,
+      "fraction_host_intervals_above90": 0.0,
+      "host_interval_max": 57.333333333333336,
+      "gpu_samples": [
+        {
+          "utilization_percent": 32.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1245.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 135.79,
+          "temperature_c": 49.0
+        },
+        {
+          "utilization_percent": 21.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1470.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.81,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 16.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1410.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.57,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 35.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1260.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.64,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 24.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1305.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.83,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 26.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1230.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 94.3,
+          "temperature_c": 46.0
+        },
+        {
+          "utilization_percent": 34.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1320.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 94.85,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 16.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1320.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.18,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 15.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1500.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 98.97,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 19.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1830.0,
+          "memory_mhz": 9501.0,
+          "power_watts": 113.83,
+          "temperature_c": 50.0
+        },
+        {
+          "utilization_percent": 34.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1830.0,
+          "memory_mhz": 9501.0,
+          "power_watts": 141.13,
+          "temperature_c": 50.0
+        }
+      ],
+      "owned_process_exit_code": 0
+    },
+    {
+      "order": 4,
+      "mode": "native",
+      "raw_sha256": "55eb1f6069ddcc08fef801119b4a61120e2028e7877087bc6d172c63934c49a3",
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "settings_sha256": "66614ce662d0fee1101ac4a8c1436f41a732e4971e1ed449015743fde5a3d9e9",
+      "summary": {
+        "frames": 904,
+        "wall_seconds": 15.507536999997683,
+        "cpu_seconds": 5.375,
+        "cpu_ms_per_frame": 5.945796460176991,
+        "guest_hz": 58.29423460347927,
+        "draws_per_frame": 204.50110619469027,
+        "host_cpu_percent": 27.94858870967742,
+        "startup_load_seconds": 3.2972952000563964,
+        "skips": 1455,
+        "skipped_cycles": 381758300,
+        "video_scale": 9,
+        "requested_scale": 9,
+        "gcs_batch": 0,
+        "guest_cycles_per_frame": 564449.1327433628,
+        "pgxp_active": 1,
+        "host_process_cycles_per_guest_frame": 27771343.362831857
+      },
+      "no_compiler_observed": true,
+      "host_intervals": 87,
+      "host_intervals_above90": 0,
+      "fraction_host_intervals_above90": 0.0,
+      "host_interval_max": 85.15625,
+      "gpu_samples": [
+        {
+          "utilization_percent": 38.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1170.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 96.87,
+          "temperature_c": 48.0
+        },
+        {
+          "utilization_percent": 28.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1560.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 93.65,
+          "temperature_c": 48.0
+        },
+        {
+          "utilization_percent": 23.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1335.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 97.16,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 29.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1380.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 96.22,
+          "temperature_c": 48.0
+        },
+        {
+          "utilization_percent": 29.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1455.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 98.64,
+          "temperature_c": 48.0
+        },
+        {
+          "utilization_percent": 32.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1170.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 96.07,
+          "temperature_c": 47.0
+        },
+        {
+          "utilization_percent": 48.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1485.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 99.32,
+          "temperature_c": 48.0
+        },
+        {
+          "utilization_percent": 31.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1275.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 96.54,
+          "temperature_c": 48.0
+        },
+        {
+          "utilization_percent": 46.0,
+          "used_mib": 2395.0,
+          "total_mib": 12288.0,
+          "graphics_mhz": 1155.0,
+          "memory_mhz": 5001.0,
+          "power_watts": 95.56,
+          "temperature_c": 48.0
+        }
+      ],
+      "owned_process_exit_code": 0
+    }
+  ],
+  "prior_attempts": "The preceding capped ABBA block fails both host-load limits; the interrupted reverse block has no A/B result. Both remain excluded and unchanged in the earlier continuation dataset. The replacement changes only required GPU query timeout10->30seconds.",
+  "native_card_roundtrip": {
+    "binary_sha256": "acb6798daa3c61f11b729db7d2bddefe57624af1c49544321bd19582d538f465",
+    "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+    "route": "Current-build UI checkpoint only before Save. Native Save File1 Completed -> Continue game No -> title -> Load Game -> Load -> File1 -> Yes -> phase03 rendered gameplay -> at least300frames further progress. No subsequent execution-snapshot load or save.",
+    "frames": {
+      "after_native_load": 3839,
+      "post_load": 4143,
+      "post_load_progress": 304,
+      "final": 7733
+    },
+    "save_state_generations": [
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "owned_process_exit_code": 0,
+    "cards": [
+      {
+        "slot": 1,
+        "bytes": 131072,
+        "sha256": "bc3611b8e3b3e42e61c4b695049769fd4ac2ad4dd3e0fbfb136896a16d4a6d16",
+        "metadata_frame_xors_valid": 37,
+        "entries": [
+          {
+            "block": 1,
+            "state": 81,
+            "size": 8192,
+            "filename": "BASCUS-94423SYS",
+            "data_magic": "SC"
+          }
+        ]
+      },
+      {
+        "slot": 2,
+        "bytes": 131072,
+        "sha256": "7706c7d43edaf8cb7618e574f03457105153e3bdc196db803a600ad96a8f58e8",
+        "metadata_frame_xors_valid": 37,
+        "entries": []
+      }
+    ],
+    "screenshot_sha256": {
+      "roundtrip-save-completed.png": "dec727ee560e99b1740d1e5faef14ec30067d92a63f8b61b6b826ffd5dcdac35",
+      "roundtrip-continue-no-selected.png": "e65653e2a6a16de98827d61c994978db392b416513b4bb114f5e3c55f5f7a652",
+      "roundtrip-after-continue-no.png": "ad0005811e51d7b74909b08fb18ea0e373457e9cefb3c5b701be0b58af9a0698",
+      "roundtrip-title-load-selected.png": "05ffddd19d2dc8a625867d91f2a59fd5672d598d334a6c7c29bdd833c8ac4bcd",
+      "roundtrip-load-menu.png": "5db4758ba584694482dcdcf554d4b02f0cddf97b14a237fbd82fc24db8fe0719",
+      "native-load-selected.png": "69844672a01e87b083ce793b2d9bf8237e971f5f595f5be257e2bdf5346f2ac2",
+      "native-load-file1-selected.png": "f2b61ca46f84c1b6afc124e33dde8bd9188887a9937922b69c702bb43a51f57e",
+      "native-load-file1-result.png": "61a9359b9a5f5f84edce4a4c48fc83fc455571791f4c9d9fe7ba36e4418ad88c",
+      "native-load-file1-yes.png": "9785985920847dc1404dafff8abec567f845ec8e371be670924e2687547b711a",
+      "native-load-file1-completion.png": "ee916b39c2b01b550f150dc985b21f3d59a242d7bb0d5e1a25b93198f918e2a8",
+      "native-load-post-progress.png": "d18c62ed7feb4c65e1e32a99cb4ec8c533e81e4e94b37c0819293ef85c3199d0"
+    },
+    "receipt_sha256": "ffe6bdbf8c13831eaeb032f154c35c63ae26fd6614ba98c6c2248fe667de88d3",
+    "raw_harness_status": "inspection-deadline-no-qualification",
+    "raw_status_explanation": "All queued controller operations and post-load observations completed. No FINISH marker was sent, so the generic outer inspection deadline later closed the game; original raw status preserved."
+  },
+  "limits": [
+    "Ape original unrestricted comparable block observed20.98percent lower CPU; this separate capped profile observes22.16percent lower. These are not two blocks under one identical cap, and no aggregate effect is computed.",
+    "CPU/frame and process cycles support this checkpoint/profile only. No unrestricted FPS, GPU-speed or physical-speaker benefit is claimed.",
+    "Native card qualification is a same-process original game-menu Save/Load roundtrip. Initial current-build snapshot stages UI before Save only; no fresh-boot/card-reinsert or arbitrary-progress restoration claim.",
+    "Bounded protocol history does not establish complete fresh data I/O; native menu confirmation and actual return/progress are retained as the observed result.",
+    "The raw outer card harness reached its generic inspection deadline after all queued proof operations. Its status remains unchanged; the exact game still exited0.",
+    "Tomba accepted performance/gameplay is reused. Shared strict-digest caveat beads-eio.3.424 and final combined common-profile/owner adoption remain separate.",
+    "No default promotion, release or merge. The absence of observed compiler processes is not an idle-host claim."
+  ]
+}

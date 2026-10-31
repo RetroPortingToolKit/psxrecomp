@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "date": "2026-10-29",
+  "scope": "Remaining eight-operation OpenBIOS event/wait/callback family in one Ape Escape cold-start window, with existing native blocking-read selected.",
+  "package": "native-openbios-block-read-v1; existing pre-span generated title inputs; PGXP on and9x internal scale; no native CPU-span/geometry/precision-job package.",
+  "source_head": "ab106a9c76f22663a6daa5d16b5e6eacc818ba94",
+  "binary_built_commit": "ceaaab9c7ce2d57887a44e5ae0adfe599d4d72be",
+  "binary_sha256": "16406c9c317b618c77d2387b069177d2734d7048341c197ef98abac28c5fbd06",
+  "unchanged_native_read_body": true,
+  "diagnostic": {
+    "game": "Ape Escape (SCUS-94423 USA)",
+    "cold_start_no_state_load": true,
+    "host_os": "Windows x64",
+    "backend": "OpenGL",
+    "cpu_cap_physical_cores": 0.25,
+    "external_sampler_seconds": 30,
+    "audio_output": "dummy; audio emulation retained",
+    "full_original_contract": "FAIL-incomplete",
+    "failure": "Post-capture guest-cycle-profile export was refused: the production DEBUG_OFF binary exposed no debug endpoint.",
+    "callback_guest_context": "UNAVAILABLE, not zero",
+    "callback_exclusive_host_cost": "UNAVAILABLE, not zero",
+    "final_seven_field_GPU_snapshot": "UNAVAILABLE after export failure; initial full snapshot and final pool utilization retained",
+    "independently_validated_subset": "PASS: exact binary/source, host samples, native-read live overlap, coherent vector census, actual features/progress and clean owned close",
+    "independent_subset_review_sha256": "3aff69dbc5214db60624736f74cd7c4676f57254941216ec4685f687386474e4"
+  },
+  "live_window": {
+    "first_frame": 0,
+    "first_native_read_started": 0,
+    "first_native_read_finished": 0,
+    "last_frame": 1865,
+    "native_read_started": 13,
+    "native_read_finished": 13,
+    "native_read_errors": 0,
+    "deadline_wait_steps": 6401,
+    "simulated_deadline_wait_cycles": 93763111,
+    "CD_DMA_transfers": 1825,
+    "draws": 46130,
+    "owned_close_exit": 0
+  },
+  "host_sampling": {
+    "leaf_rows": 5103,
+    "recognized_guest_primary_body_rows": 35,
+    "sampled_thread_cycle_delta": 36032008560,
+    "per_operation": {
+      "CloseEvent": {
+        "direct_body_leaf_samples": 0,
+        "sampled_thread_cycle_weight": 0,
+        "sampled_thread_cycle_weight_percent": 0.0,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      },
+      "DeliverEvent": {
+        "direct_body_leaf_samples": 1,
+        "sampled_thread_cycle_weight": 14236770,
+        "sampled_thread_cycle_weight_percent": 0.03951145264714602,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      },
+      "DisableEvent": {
+        "direct_body_leaf_samples": 0,
+        "sampled_thread_cycle_weight": 0,
+        "sampled_thread_cycle_weight_percent": 0.0,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      },
+      "EnableEvent": {
+        "direct_body_leaf_samples": 0,
+        "sampled_thread_cycle_weight": 0,
+        "sampled_thread_cycle_weight_percent": 0.0,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      },
+      "OpenEvent": {
+        "direct_body_leaf_samples": 0,
+        "sampled_thread_cycle_weight": 0,
+        "sampled_thread_cycle_weight_percent": 0.0,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      },
+      "TestEvent": {
+        "direct_body_leaf_samples": 0,
+        "sampled_thread_cycle_weight": 0,
+        "sampled_thread_cycle_weight_percent": 0.0,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      },
+      "UnDeliverEvent": {
+        "direct_body_leaf_samples": 0,
+        "sampled_thread_cycle_weight": 0,
+        "sampled_thread_cycle_weight_percent": 0.0,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      },
+      "WaitEvent": {
+        "direct_body_leaf_samples": 0,
+        "sampled_thread_cycle_weight": 0,
+        "sampled_thread_cycle_weight_percent": 0.0,
+        "continuation_thunk_leaf_samples": 0,
+        "continuation_thunk_sampled_weight": 0
+      }
+    },
+    "eight_family_primary_body_weight_percent": 0.03951145264714602,
+    "uncertain_nonadditive_ancestor_union_weight_percent": 0.5266576235515859,
+    "limits": [
+      "One DeliverEvent primary-body leaf; no other selected primary-body or continuation-thunk hits.",
+      "Most leaf addresses were in DLL/helper work. Sample endpoints and the unsampled startup prefix prevent an exact whole-family cost ceiling or a proven-zero claim.",
+      "Stack-return candidates are uncertain context, not extra exclusive time or causal callback attribution; never add them to leaf cost.",
+      "This diagnostic perturbs scheduling and is not a production performance comparison."
+    ]
+  },
+  "vector_census": {
+    "complete_fresh_process_ring": true,
+    "collapsed_records": 3247,
+    "call_counts_with_repeats": {
+      "OpenEvent": 19,
+      "EnableEvent": 19,
+      "UnDeliverEvent": 491,
+      "TestEvent": 19282,
+      "DeliverEvent": 162,
+      "CloseEvent": 5
+    },
+    "all_observed_family_routes": "generated LLE",
+    "limits": "Vector totals include repeats but exclude direct internal firmware calls; activity counts do not measure host cost."
+  },
+  "decision": "No material current exclusive host signal funds a large eight-service prototype in this observed Ape native-read cold window. No claim that all kernel work is complete, that callbacks are free, or that another workload cannot be material.",
+  "existing_native_read_qualification": "Retained: Tomba startup CPU benefit and Ape neutral/inconclusive from the original16matched intervals. Default selection, source/binary identities, historical raw results and shared lifecycle caveats remain unchanged.",
+  "remaining_handoff": "Combined regression/common-profile and normal-audio owner adoption remain the agreed final bundle checks; no new implementation, extra game run or separate PR resulted from this selector."
+}

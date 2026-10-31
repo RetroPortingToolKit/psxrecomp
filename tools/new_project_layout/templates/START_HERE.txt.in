@@ -1,0 +1,11 @@
+@GAME_NAME@ @VERSION@
+
+Launch @EXE_BASENAME@ on Windows, or the AppImage on Linux, and choose your
+legally owned @GAME_NAME@ disc when prompted. No game disc or retail BIOS
+image is included. OpenBIOS is bundled.
+
+Use the launcher to configure controls and mods. Internal Resolution starts
+at 4x on a fresh profile; its 1x through 32x choices remain subject to your
+GPU's texture and memory limits. Existing saved choices remain yours.
+
+Keep your native memory cards and settings when updating the application.

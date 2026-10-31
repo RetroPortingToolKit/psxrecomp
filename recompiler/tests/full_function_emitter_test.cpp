@@ -273,6 +273,22 @@ void mod_guest_dispatch_precedes_hardware_routes() {
            "no active mod guest functions keeps the dispatch path dormant");
 }
 
+void native_span_preserves_reference_body() {
+    const auto result = run_case("native-span", {
+        0x8C880000u, // lw t0,0(a0)
+        0x24090001u, // addiu t1,zero,1 (independent load successor)
+        0x03E00008u, 0u,
+    }, {function_at(kBase, kBase + 12u, {kBase})});
+    expect(result.stats.functions_emitted == 1, "span fixture stays native");
+    expect(result.full.find("psx_native_span_charge(6u)") != std::string::npos,
+           "one native span owns the four instructions and estimated load cost");
+    expect(result.full.find("psx_native_span.h") != std::string::npos,
+           "generated native body selects the source-local policy");
+    expect(result.full.find("psx_cyc_load_word") != std::string::npos &&
+           result.full.find("psx_cyc_step") != std::string::npos,
+           "faithful timing and load values remain in the same generated artifact");
+}
+
 int main() {
     BiosConfig config{};
     config.config_path = "test://full-function-emitter";
@@ -296,6 +312,7 @@ int main() {
     noncomplementary_lwl_falls_back();
     complementary_lwl_lwr_stays_native();
     mod_guest_dispatch_precedes_hardware_routes();
+    native_span_preserves_reference_body();
     patch_range_guards(config);
     patch_range_delay_boundaries(config);
 

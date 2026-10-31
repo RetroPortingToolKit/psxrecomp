@@ -40,6 +40,13 @@ Without `--allow-dirty`, uncommitted tracked changes, including a submodule
 moved off its pin, are refused. With it they are recorded in the manifest, so
 that package must not be published.
 
+`--recompiler-build-dir PATH` lets serial title builds reuse one native emitter
+build directory. Each invocation still configures it against the current
+framework and builds both emitter targets with the selected absolute tools.
+Use a separate directory per host/platform/toolchain. This option never shares
+title runtime objects, PGO profiles or per-title `--work-dir` data. A WSL build
+uses its own native emitter directory.
+
 `verify --channel C ARTIFACT...` extracts finished artifacts and re-runs every
 check. The command already does this after each package.
 
@@ -61,7 +68,11 @@ No step warns and then continues.
    (`PSXRECOMP_BIOS_STEMS=OpenBIOS`), `PSX_RELEASE_CHANNEL=<channel>`, and
    `PSX_GAME_VERSION` from the title's version file. Every flag the command
    owns is read back from `CMakeCache.txt`. A title's `cmake_args` may not set
-   any of them.
+   any of them. Native GNU C/C++ with Ninja defaults to the qualified selective
+   PGO workflow: baseline, generate, one muted hidden boot, then strict use.
+   Only the three shared runtime helpers are instrumented; generate/use rebuild
+   those helpers and relink. Other toolchains and cross builds retain an
+   explicitly recorded portable unprofiled build.
 5. **Stage.** Stages these items:
    - the executable and its version stamp
    - launcher assets
@@ -136,6 +147,8 @@ cmake_args = ["-DPSX_SDL_BACKEND=SDL3", "-DPSX_PGXP_VARIANT=OFF"]
 # windows_cmake_args / linux_cmake_args: per-platform extras
 # regenerate = true                   # psxrecomp-game --config game.toml first
 # binary_identity = "{version}+{commit12}"   # bytes the executable must contain
+# selective_pgo = true                # default for supported native GNU/Ninja
+# pgo_train_seconds = 10               # one real boot, integer 1..300
 
 [aot]
 mode = "cache"        # cache: ship the original-disc AOT cache
@@ -174,6 +187,32 @@ env_prefix = "JERSEYDEVIL_RECOMP"
 # command = ["{python}", "tools/check_my_payload.py", "{stage}"]
 # platforms = ["windows", "linux"]
 ```
+
+Selective PGO is a release **build step**, separate from gameplay regression
+tests. Each title gets fresh profiles from its own instrumented production
+binary and normal shutdown. Boot-only training does not establish gameplay
+correctness, representative coverage or a performance gain for that title.
+The strict [shared workflow](performance/runtime-hot-pgo.md) verifies the exact
+three source/object commands, actual headers, compiler and configuration, and
+rejects missing or incompatible profiles. It keeps DEBUG and IPO off and global
+`PSX_PGO` empty. Failed training never silently becomes an unprofiled release.
+
+Training uses a hidden normal SDL presenter, dummy host audio and private
+memory cards, data/cache and temporary paths. On Windows it sends `WM_CLOSE`
+only to the owned SDL window; on POSIX the enabled SDL signal handler converts
+the owned process's `SIGTERM` to a quit event. Only a normal exit and all three
+valid profiles permit the use build. No owner saves or desktop input are used.
+Run packaging under the appropriate shared capacity reservation when automated.
+
+Use a fresh, short `--work-dir` for each profile recipe; Windows GCC profile
+paths must stay below its existing path limit. Phase binaries, profiles,
+training logs/private data and receipts remain under that build workspace for
+review and cleanup. The player archive contains only the final use binary;
+`RELEASE_MANIFEST.json` records phase receipt hashes and profile hashes/sizes,
+without private build paths or profile blobs. Payload checks reject gcov and
+other compiler training files. `selective_pgo = false` explicitly selects the
+ordinary build and records that choice. Unsupported compiler/generator or
+cross-target combinations record `portable-unprofiled`; this is not a PGO claim.
 
 `aot.mode = "static"` checks `generated/AOT_STATIC_AUDIT.json` in these ways:
 every pair is valid, the recipe count matches `expected_records`, the

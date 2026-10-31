@@ -1949,6 +1949,10 @@ void render_pass_mod_arenas_rollback(void) {
     s_rp_mod_lossy = 0;
 }
 
+int psx_mod_memory_begin_session(int session_owned) {
+    return !session_owned || psx_mod_memory_reset_session();
+}
+
 int psx_mod_memory_reset_session(void) {
     if (g_psx_render_pass_active) return 0;
     /* An interrupted previous draw can leave journal pages behind. Retire

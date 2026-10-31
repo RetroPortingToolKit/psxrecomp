@@ -27,12 +27,16 @@
  * phase 0.5 image's digest (p05=) to compare with master.
  * Original source-owned scene; no retail payload. */
 static void fixture_present(int generated);
+#ifndef GL_PRESENT_TEST_HOOK
 #define GL_PRESENT_TEST_HOOK(gen) fixture_present(gen)
+#endif
 /* argv[6] == "pt": the present thread is on; every image it puts in the
  * window (read back after its copy, before its swap) must be the image the
  * composing side presented, in the same order. */
 static void fixture_window(int slot);
+#ifndef GL_PRESENT_THREAD_TEST_HOOK
 #define GL_PRESENT_THREAD_TEST_HOOK(slot) fixture_window(slot)
+#endif
 #include "gpu_gl_renderer.c"
 #include "gl_postfx_projection_fixture.h"
 #include "gl_fmv_fixture.h"

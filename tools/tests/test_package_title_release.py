@@ -12,9 +12,12 @@ import io
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -155,10 +158,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([rel for _, rel in config.files], ['README.md', 'input.ini'])
         self.assertEqual(config.aot_mode, 'none')
         self.assertTrue(config.diagnostics['replay_helper'])
+        self.assertTrue(config.selective_pgo)
+        self.assertEqual(config.pgo_train_seconds, 10)
+
+    def test_pgo_options_are_explicit_and_bounded(self):
+        path = self.fixture.root / 'release.toml'
+        path.write_text(CONFIG.format(extra='').replace(
+            '[build]', '[build]\nselective_pgo = false\npgo_train_seconds = 3'))
+        self.assertFalse(self.fixture.config().selective_pgo)
+        for value in ('0', '301', 'true', '"10"'):
+            path.write_text(CONFIG.format(extra='').replace(
+                '[build]', '[build]\npgo_train_seconds = ' + value))
+            with self.assertRaisesRegex(ptr.PackagingError, 'pgo_train_seconds'):
+                self.fixture.config()
 
     def test_owned_cmake_flags_are_refused(self):
         for flag in ('PSX_PUBLIC_RELEASE', 'PSX_RELEASE_CHANNEL', 'PSX_DEBUG_TOOLS',
-                     'PSXRECOMP_BIOS_STEMS', 'CMAKE_BUILD_TYPE'):
+                     'PSXRECOMP_BIOS_STEMS', 'CMAKE_BUILD_TYPE', 'PSX_PGO',
+                     'PSX_RUNTIME_IPO', 'CMAKE_PROJECT_INCLUDE',
+                     'PSX_RUNTIME_HOT_PGO_MODE', 'PSX_RUNTIME_HOT_PGO_TARGET'):
             text = CONFIG.format(extra='').replace(
                 '"-DPSX_PGXP_VARIANT=OFF"', '"-D%s=ON"' % flag)
             (self.fixture.root / 'release.toml').write_text(text)
@@ -229,6 +247,8 @@ class GateTests(unittest.TestCase):
         self.assert_refused('state.pst', message='disc')
         self.assert_refused('lib/game_full_1.c', message='source')
         self.assert_refused('generated/x.h', message='build-kit')
+        for name in ('memory.gcda', 'memory.gcno', 'default.profraw', 'default.profdata', 'libgcov.dll'):
+            self.assert_refused(name, message='profile/training')
 
     def test_toolchain_sources_are_allowed(self):
         (self.stage / 'overlay_toolchain/tcc/examples').mkdir(parents=True)
@@ -270,6 +290,214 @@ class GateTests(unittest.TestCase):
             ptr.render_template(template, {'VERSION': '1'})
         template.write_text('echo @VERSION@\n')
         self.assertEqual(ptr.render_template(template, {'VERSION': '1'}), 'echo 1\n')
+
+
+class SelectiveReleasePgoTests(unittest.TestCase):
+    """Mock orchestration only: no compiler, profile producer or game is run."""
+
+    def setUp(self):
+        self.fixture = Fixture()
+        self.addCleanup(self.fixture.close)
+        root = self.fixture.root
+        self.ctx = SimpleNamespace(root=root, work=root / 'work', runtime_build=root / 'work/runtime',
+                                   config=self.fixture.config(), channel='public', platform='windows',
+                                   version='v1.2.3', jobs=6, prov={'source_commit': 'fixture'},
+                                   tc=SimpleNamespace(cmake='cmake', exe_suffix='.exe', generator='Ninja',
+                                                      gcc='gcc', gxx='g++', make='ninja',
+                                                      env={'PATH': 'fixture', 'PSX_LOAD_SLOT': '9'}))
+        self.ctx.runtime_build.mkdir(parents=True)
+
+    def test_detects_the_current_compiler_file(self):
+        build = self.ctx.runtime_build
+        (build / 'CMakeCache.txt').write_text(
+            'CMAKE_CACHE_MAJOR_VERSION:INTERNAL=3\nCMAKE_CACHE_MINOR_VERSION:INTERNAL=31\n'
+            'CMAKE_CACHE_PATCH_VERSION:INTERNAL=7\n')
+        for version, compiler in [('3.30.0', 'Clang'), ('3.31.7', 'GNU')]:
+            path = build / 'CMakeFiles' / version / 'CMakeCCompiler.cmake'
+            path.parent.mkdir(parents=True)
+            path.write_text('set(CMAKE_C_COMPILER_ID "%s")\n' % compiler)
+        self.assertEqual(ptr.configured_cmake_value(
+            build, 'CMakeCCompiler.cmake', 'CMAKE_C_COMPILER_ID'), 'GNU')
+
+    def configure(self, enabled=True, generator='Ninja', cross=False):
+        ctx = self.ctx
+        ctx.config.selective_pgo = enabled
+        ctx.tc.generator = generator
+        cache = {}
+
+        def command(argv, what, **kwargs):
+            if what == 'runtime configure':
+                cache.update(arg[2:].split('=', 1) for arg in argv
+                             if str(arg).startswith('-D'))
+                cache['CMAKE_GENERATOR'] = generator
+                cache['PSX_PUBLIC_RELEASE'] = 'ON' if ctx.channel == 'public' else 'OFF'
+
+        def detection(build, filename, key):
+            return ('TRUE' if cross else 'FALSE') if key == 'CMAKE_CROSSCOMPILING' else 'GNU'
+
+        def pgo(*args):
+            ctx.runtime_pgo = {'status': 'selective-use'}
+
+        with mock.patch.object(ptr, 'run', side_effect=command) as commands, \
+                mock.patch.object(ptr, 'cmake_cache', side_effect=lambda _: dict(cache)), \
+                mock.patch.object(ptr, 'configured_cmake_value', side_effect=detection), \
+                mock.patch.object(ptr, 'build_selective_pgo', side_effect=pgo) as selected:
+            ptr.configure_and_build(ctx)
+        return commands, selected
+
+    def test_native_gnu_ninja_defaults_to_qualified_workflow(self):
+        commands, selected = self.configure()
+        self.assertEqual(selected.call_count, 1)
+        self.assertEqual([call.args[1] for call in commands.call_args_list], ['runtime configure'])
+
+    def test_shared_emitters_still_configure_and_build_current_sources(self):
+        ctx = self.ctx
+        ctx.recompiler_build = ctx.root / 'shared-emitters'
+        ctx.recompiler_build.mkdir()
+        for name in ('psxrecomp-game.exe', 'psxrecomp-bios.exe'):
+            (ctx.recompiler_build / name).write_bytes(b'unit fixture, never run')
+        with mock.patch.object(ptr, 'run') as commands:
+            ptr.build_emitters(ctx)
+        configure = commands.call_args_list[0].args[0]
+        self.assertEqual(configure[configure.index('-B') + 1], ctx.recompiler_build)
+        self.assertEqual(configure[configure.index('-S') + 1], ptr.FRAMEWORK / 'recompiler')
+        self.assertIn('-DCMAKE_C_COMPILER=gcc', configure)
+        self.assertEqual(commands.call_args_list[1].args[1], 'emitter build')
+        self.assertEqual(ctx.recompiler_dir, ctx.recompiler_build)
+
+    def test_portable_and_explicit_off_build_without_training(self):
+        for enabled, generator, cross, status in [
+                (False, 'Ninja', False, 'disabled-explicit'),
+                (True, 'Unix Makefiles', False, 'portable-unprofiled'),
+                (True, 'Ninja', True, 'portable-unprofiled')]:
+            commands, selected = self.configure(enabled, generator, cross)
+            selected.assert_not_called()
+            self.assertEqual(self.ctx.runtime_pgo['status'], status)
+            self.assertEqual(commands.call_args_list[-1].args[1], 'runtime build')
+
+    def test_delegates_all_phases_and_binds_the_exact_training_profiles(self):
+        ctx = self.ctx
+        directory = ctx.runtime_build / 'runtime-hot-pgo/psx-runtime'
+        directory.mkdir(parents=True)
+        profiles = {source: dict(path='private/' + source, bytes=24, sha256='a' * 64)
+                    for source in ptr.runtime_hot_pgo.SOURCES}
+        phases = []
+
+        def command(argv, what, **kwargs):
+            phase = argv[2]
+            phases.append(phase)
+            self.assertEqual(argv[-1], 2)
+            (directory / (phase + '.json')).write_text(json.dumps(dict(
+                status='built', profiles=profiles,
+                selected_sources=list(ptr.runtime_hot_pgo.SOURCES))))
+
+        def training(*args):
+            (directory / 'training.json').write_text('{}')
+            return dict(profiles=profiles)
+
+        cache = dict(CMAKE_COMMAND='cmake', CMAKE_GENERATOR='Ninja', CMAKE_C_COMPILER='gcc',
+                     CMAKE_CXX_COMPILER='g++', CMAKE_MAKE_PROGRAM='ninja')
+        with mock.patch.object(ptr, 'run', side_effect=command), \
+                mock.patch.object(ptr, 'train_release_pgo', side_effect=training):
+            ptr.build_selective_pgo(ctx, ['-DPSX_DEBUG_TOOLS=OFF', '-DPSX_SOURCE_COMMIT=fixture'], cache)
+        self.assertEqual(phases, ['baseline', 'generate', 'use'])
+        recipe = json.loads((ctx.work / 'runtime-pgo-recipe.json').read_text())
+        self.assertFalse(any('PSX_DEBUG_TOOLS' in arg for arg in recipe['configure_args']))
+        self.assertTrue(any('PSX_SOURCE_COMMIT' in arg for arg in recipe['configure_args']))
+        self.assertTrue(all('path' not in row for row in ctx.runtime_pgo['profiles'].values()))
+        self.assertEqual(set(ctx.runtime_pgo['receipts']), {'baseline', 'generate', 'training', 'use'})
+
+    def training_files(self):
+        build = self.ctx.runtime_build
+        (build / 'psxrecomp_exe_name-psx-runtime.txt').write_text('Fixture')
+        (build / 'Fixture.exe').write_bytes(b'unit-test executable, never run')
+        (build / 'bios').mkdir()
+        (build / 'bios/openbios.bin').write_bytes(b'\0' * ptr.OPENBIOS_SIZE)
+        directory = build / 'runtime-hot-pgo/psx-runtime'
+        directory.mkdir(parents=True)
+        (directory / 'generate.json').write_text('{}')
+        return directory
+
+    def test_linux_dotted_basename_keeps_the_full_execution_sidecar_name(self):
+        ctx = self.ctx
+        ctx.tc.exe_suffix = ''
+        (ctx.runtime_build / 'psxrecomp_exe_name-psx-runtime.txt').write_text('Game.v2')
+        cache = dict(CMAKE_COMMAND='cmake', CMAKE_GENERATOR='Ninja', CMAKE_C_COMPILER='gcc',
+                     CMAKE_CXX_COMPILER='g++', CMAKE_MAKE_PROGRAM='ninja')
+        with mock.patch.object(ptr, 'run', side_effect=ptr.PackagingError('stop before any builder')):
+            with self.assertRaisesRegex(ptr.PackagingError, 'stop before any builder'):
+                ptr.build_selective_pgo(ctx, [], cache)
+        recipe = json.loads((ctx.work / 'runtime-pgo-recipe.json').read_text())
+        self.assertEqual(recipe['binary'], 'Game.v2')
+        self.assertEqual(recipe['companions'], ['Game.v2.execution.json'])
+
+    def test_boot_profiles_require_normal_close_and_real_profile_validation(self):
+        directory = self.training_files()
+        process = mock.Mock(pid=123, returncode=None)
+        process.wait.side_effect = subprocess.TimeoutExpired('fixture', 10)
+        process.poll.side_effect = lambda: process.returncode
+
+        def close(child):
+            child.returncode = 0
+            return dict(method='mock normal close', exit_code=0)
+
+        with mock.patch.object(ptr.subprocess, 'Popen', return_value=process) as launch, \
+                mock.patch.object(ptr, 'close_training_game', side_effect=close), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'verify_inputs') as inputs, \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles', return_value={'validated': True}) as profiles:
+            result = ptr.train_release_pgo(self.ctx, {'commands': 'fixture commands'})
+        self.assertEqual(result['status'], 'trained-boot-only')
+        self.assertEqual(result['profiles'], {'validated': True})
+        inputs.assert_called_once()
+        profiles.assert_called_once_with(self.ctx.runtime_build, 'psx-runtime', 'fixture commands')
+        env = launch.call_args.kwargs['env']
+        self.assertNotIn('PSX_LOAD_SLOT', env)
+        self.assertEqual(env['SDL_AUDIODRIVER'], 'dummy')
+        self.assertTrue((directory / 'training.json').is_file())
+
+    def test_early_exit_is_not_training_even_with_exit_zero(self):
+        directory = self.training_files()
+        process = mock.Mock(returncode=0)
+        process.wait.return_value = 0
+        process.poll.return_value = 0
+        with mock.patch.object(ptr.subprocess, 'Popen', return_value=process), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles') as profiles:
+            with self.assertRaisesRegex(ptr.PackagingError, 'exited early'):
+                ptr.train_release_pgo(self.ctx, {})
+        profiles.assert_not_called()
+        self.assertEqual(json.loads((directory / 'training.json').read_text())['status'], 'failed')
+
+    def test_normal_exit_without_three_valid_profiles_still_fails(self):
+        directory = self.training_files()
+        process = mock.Mock(pid=123, returncode=None)
+        process.wait.side_effect = subprocess.TimeoutExpired('fixture', 10)
+        process.poll.side_effect = lambda: process.returncode
+
+        def close(child):
+            child.returncode = 0
+            return dict(exit_code=0)
+
+        with mock.patch.object(ptr.subprocess, 'Popen', return_value=process), \
+                mock.patch.object(ptr, 'close_training_game', side_effect=close), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'verify_inputs'), \
+                mock.patch.object(ptr.runtime_hot_pgo, 'profiles', side_effect=RuntimeError('missing selected profile')):
+            with self.assertRaisesRegex(RuntimeError, 'missing selected profile'):
+                ptr.train_release_pgo(self.ctx, {'commands': {}})
+        self.assertEqual(json.loads((directory / 'training.json').read_text())['status'], 'failed')
+
+    def test_cleanup_failure_does_not_hide_close_failure_or_raw_receipt(self):
+        directory = self.training_files()
+        process = mock.Mock(pid=123, returncode=None)
+        process.wait.side_effect = subprocess.TimeoutExpired('fixture', 10)
+        process.poll.return_value = None
+        process.kill.side_effect = OSError('cleanup fixture failed')
+        with mock.patch.object(ptr.subprocess, 'Popen', return_value=process), \
+                mock.patch.object(ptr, 'close_training_game', side_effect=ptr.PackagingError('close fixture failed')):
+            with self.assertRaisesRegex(ptr.PackagingError, 'close fixture failed'):
+                ptr.train_release_pgo(self.ctx, {})
+        record = json.loads((directory / 'training.json').read_text())
+        self.assertEqual(record['status'], 'failed')
+        self.assertIn('cleanup fixture failed', record['cleanup_error'])
 
 
 class DiagnosticsTests(unittest.TestCase):

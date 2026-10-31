@@ -58,9 +58,11 @@ import platform as _platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 try:
@@ -71,6 +73,7 @@ except ModuleNotFoundError:  # Python < 3.11
 TOOLS = Path(__file__).resolve().parent
 FRAMEWORK = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
+import runtime_hot_pgo
 
 CHANNELS = ('public', 'playtest')
 PLATFORMS = ('windows', 'linux')
@@ -83,7 +86,9 @@ CREATE_NO_WINDOW = 0x08000000
 # Flags the packager owns. A title's [build].cmake_args may not set them.
 OWNED_CMAKE = ('CMAKE_BUILD_TYPE', 'PSX_DEBUG_TOOLS', 'PSX_RELEASE_CHANNEL',
                'PSX_PUBLIC_RELEASE', 'PSXRECOMP_BIOS_STEMS', 'PSX_GAME_VERSION',
-               'PSX_SOURCE_COMMIT', 'PSXRECOMP_ROOT')
+               'PSX_SOURCE_COMMIT', 'PSXRECOMP_ROOT', 'PSX_RUNTIME_IPO', 'PSX_PGO',
+               'CMAKE_EXPORT_COMPILE_COMMANDS', 'CMAKE_PROJECT_INCLUDE',
+               'PSX_RUNTIME_HOT_PGO_MODE', 'PSX_RUNTIME_HOT_PGO_TARGET')
 
 # Windows system DLLs a self-contained release executable may import.
 SYSTEM_DLLS = frozenset('''
@@ -182,7 +187,7 @@ class Config:
         'product': {'name', 'display_name', 'exe_name', 'version_file', 'game_toml',
                     'player_game_toml', 'runtime_target', 'zip_folder', 'launcher_boxart'},
         'build': {'cmake_args', 'linux_cmake_args', 'windows_cmake_args', 'regenerate',
-                  'binary_identity'},
+                  'binary_identity', 'selective_pgo', 'pgo_train_seconds'},
         'aot': {'mode', 'profile', 'cps'},
         'overlay_toolchain': {'ship'},
         'diagnostics': {'game_id', 'package_id', 'replay_helper'},
@@ -226,6 +231,11 @@ class Config:
                                     'windows': self._args(build, 'windows_cmake_args')}
         self.regenerate = self._bool(build, 'regenerate', True)
         self.binary_identity = self._str(build, 'binary_identity', '')
+        self.selective_pgo = self._bool(build, 'selective_pgo', True)
+        self.pgo_train_seconds = build.get('pgo_train_seconds', 10)
+        if (type(self.pgo_train_seconds) is not int or
+                not 1 <= self.pgo_train_seconds <= 300):
+            fail('%s: pgo_train_seconds must be an integer from 1 to 300' % self.path)
 
         aot = self._table(data, 'aot')
         self.aot_mode = self._str(aot, 'mode', 'none')
@@ -427,20 +437,26 @@ class Toolchain:
         self.platform = plat
         self.env = dict(os.environ)
         if plat == 'windows':
-            self.bin = Path(toolchain_bin)
-            for tool in ('cmake.exe', 'ninja.exe', 'gcc.exe', 'objdump.exe'):
+            self.bin = Path(toolchain_bin).resolve()
+            for tool in ('cmake.exe', 'ninja.exe', 'gcc.exe', 'g++.exe', 'objdump.exe'):
                 if not (self.bin / tool).is_file():
                     fail('%s missing from %s (pass --toolchain-bin)' % (tool, self.bin))
             self.env['PATH'] = str(self.bin) + os.pathsep + self.env.get('PATH', '')
             self.cmake = str(self.bin / 'cmake.exe')
             self.gcc = str(self.bin / 'gcc.exe')
+            self.gxx = str(self.bin / 'g++.exe')
+            self.make = str(self.bin / 'ninja.exe')
             self.objdump = str(self.bin / 'objdump.exe')
             self.exe_suffix = '.exe'
         else:
-            for tool in ('cmake', 'gcc'):
+            for tool in ('cmake', 'gcc', 'g++'):
                 if not shutil.which(tool):
                     fail('%s not found on PATH' % tool)
-            self.cmake, self.gcc, self.objdump = 'cmake', 'gcc', None
+            self.cmake, self.gcc, self.gxx = [shutil.which(tool) for tool in ('cmake', 'gcc', 'g++')]
+            self.make = shutil.which('ninja') or shutil.which('make')
+            if not self.make:
+                fail('ninja or make not found on PATH')
+            self.objdump = None
             self.exe_suffix = ''
         self.generator = 'Ninja' if (plat == 'windows' or shutil.which('ninja')) else 'Unix Makefiles'
 
@@ -473,9 +489,10 @@ class Context:
 
 
 def build_emitters(ctx):
-    build = ctx.work / 'recompiler'
+    build = getattr(ctx, 'recompiler_build', None) or ctx.work / 'recompiler'
     run([ctx.tc.cmake, '-S', FRAMEWORK / 'recompiler', '-B', build, '-G', ctx.tc.generator,
-         '-DCMAKE_BUILD_TYPE=Release'], 'emitter configure', env=ctx.tc.env)
+         '-DCMAKE_BUILD_TYPE=Release'] + native_toolchain_args(ctx.tc),
+        'emitter configure', env=ctx.tc.env)
     run([ctx.tc.cmake, '--build', build, '--target', 'psxrecomp-game', 'psxrecomp-bios',
          '-j', ctx.jobs], 'emitter build', env=ctx.tc.env)
     for name in ('psxrecomp-game', 'psxrecomp-bios'):
@@ -543,6 +560,181 @@ def cmake_bool(value):
     return str(value).upper() in ('ON', '1', 'TRUE', 'YES', 'Y')
 
 
+def configured_cmake_value(build, filename, key):
+    """Read the current CMake detection file, ignoring any older cache versions."""
+    cache = cmake_cache(build)
+    version = '.'.join(cache.get('CMAKE_CACHE_%s_VERSION' % part, '')
+                       for part in ('MAJOR', 'MINOR', 'PATCH'))
+    path = Path(build) / 'CMakeFiles' / version / filename
+    if not path.is_file():
+        fail('CMake compiler identity is missing: %s' % path)
+    match = re.search(r'set\(%s "([^"]+)"\)' % re.escape(key), read_text(path))
+    if not match:
+        fail('CMake compiler identity is unreadable: %s' % path)
+    return match.group(1)
+
+
+def native_toolchain_args(toolchain):
+    return ['-DCMAKE_C_COMPILER=' + toolchain.gcc,
+            '-DCMAKE_CXX_COMPILER=' + toolchain.gxx,
+            '-DCMAKE_MAKE_PROGRAM=' + toolchain.make]
+
+
+def close_training_game(process, timeout=15):
+    """Request the exact owned SDL process to quit normally so gcov flushes."""
+    if process.poll() is not None:
+        fail('PGO training exited before its close request (%s)' % process.returncode)
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes as w
+        user = ctypes.WinDLL('user32', use_last_error=True)
+        callback_type = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+        user.EnumWindows.argtypes = [callback_type, w.LPARAM]
+        user.EnumWindows.restype = w.BOOL
+        user.GetWindowThreadProcessId.argtypes = [w.HWND, ctypes.POINTER(w.DWORD)]
+        user.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
+        user.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
+        user.PostMessageW.restype = w.BOOL
+        windows = []
+
+        @callback_type
+        def inspect(handle, unused):
+            owner = w.DWORD()
+            user.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+            if owner.value == process.pid:
+                name = ctypes.create_unicode_buffer(256)
+                user.GetClassNameW(handle, name, len(name))
+                if name.value.startswith('SDL'):
+                    windows.append(handle)
+            return True
+
+        if not user.EnumWindows(inspect, 0) or len(windows) != 1:
+            fail('PGO training needs one exact owned SDL window; found %d' % len(windows))
+        if not user.PostMessageW(windows[0], 0x0010, 0, 0):
+            fail('Cannot request normal PGO training window close')
+        method = 'WM_CLOSE to exact owned SDL window, no focus'
+    else:
+        # SDL's enabled POSIX signal handler converts SIGTERM to SDL_EVENT_QUIT.
+        # A signal termination/nonzero exit is a failure, never a flushed-profile pass.
+        process.send_signal(signal.SIGTERM)
+        method = 'SIGTERM converted by SDL signal handler to quit'
+    code = process.wait(timeout=timeout)
+    if code != 0:
+        fail('PGO training did not close normally (exit %s)' % code)
+    return dict(method=method, pid=process.pid, exit_code=code)
+
+
+def train_release_pgo(ctx, generated):
+    """One isolated real boot for build profiles, not a gameplay QA/gain claim."""
+    directory = ctx.runtime_build / 'runtime-hot-pgo' / ctx.config.runtime_target
+    receipt = directory / 'training.json'
+    private = ctx.work / 'pgo-training'
+    if receipt.exists() or private.exists():
+        fail('Preserve existing PGO training; choose a fresh --work-dir')
+    private.mkdir()
+    for name in ('state', 'resident-cache', 'temp', 'userdata'):
+        (private / name).mkdir()
+    exe = locate_executable(ctx)
+    bios = exe.parent / 'bios/openbios.bin'
+    if not bios.is_file() or bios.stat().st_size != OPENBIOS_SIZE:
+        fail('PGO boot training needs the build-staged OpenBIOS')
+    env = {key: value for key, value in ctx.tc.env.items()
+           if not key.startswith(('PSX_', 'SDL_', 'GCOV_', 'LLVM_PROFILE_'))}
+    env.update(SDL_AUDIODRIVER='dummy', SDL_NO_SIGNAL_HANDLERS='0',
+               PSX_RESIDENT_CACHE=str(private / 'resident-cache'),
+               PSX_OVERLAY_CACHE_DIR=str(exe.parent / 'cache'),
+               TEMP=str(private / 'temp'), TMP=str(private / 'temp'),
+               TMPDIR=str(private / 'temp'), APPDATA=str(private / 'userdata'),
+               LOCALAPPDATA=str(private / 'userdata'),
+               XDG_DATA_HOME=str(private / 'userdata'),
+               XDG_CONFIG_HOME=str(private / 'userdata'))
+    argv = [str(exe), '--game', str(ctx.config.game_toml), '--bios', str(bios),
+            '--memcard-dir', str(private / 'state'), '--no-launcher', '--hidden-window']
+    record = dict(status='training', purpose='Build-stage boot profiles only; no gameplay QA or performance qualification',
+                  binary_sha256=sha256(exe), config_sha256=sha256(ctx.config.game_toml),
+                  generate_receipt_sha256=sha256(directory / 'generate.json'),
+                  seconds=ctx.config.pgo_train_seconds, argv=argv, private=str(private))
+    log('Build-stage PGO boot profiles: %ds, hidden and muted; no gameplay QA claim'
+        % ctx.config.pgo_train_seconds)
+    process = None
+    try:
+        with (private / 'stdout.log').open('wb') as out, (private / 'stderr.log').open('wb') as err:
+            process = subprocess.Popen(argv, cwd=exe.parent, env=env, stdin=subprocess.DEVNULL,
+                                       stdout=out, stderr=err)
+            started = time.monotonic()
+            try:
+                code = process.wait(timeout=ctx.config.pgo_train_seconds)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                fail('PGO boot exited early (exit %s); no training qualification' % code)
+            record['close'] = close_training_game(process)
+            record['elapsed_seconds'] = time.monotonic() - started
+        runtime_hot_pgo.verify_inputs(generated)
+        record['profiles'] = runtime_hot_pgo.profiles(
+            ctx.runtime_build, ctx.config.runtime_target, generated['commands'])
+        if sha256(exe) != record['binary_sha256'] or sha256(ctx.config.game_toml) != record['config_sha256']:
+            fail('PGO training binary/configuration changed')
+        record['status'] = 'trained-boot-only'
+    except BaseException as error:
+        record.update(status='failed', failure=str(error))
+        raise
+    finally:
+        try:
+            if process is not None and process.poll() is None:
+                # Cleanup is never credited as a successful profile flush.
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    process.kill()
+                    process.wait(timeout=5)
+                record['cleanup_exit_code'] = process.returncode
+        except BaseException as cleanup_error:
+            record['cleanup_error'] = str(cleanup_error)
+        finally:
+            receipt.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8', newline='\n')
+    return record
+
+
+def build_selective_pgo(ctx, args, cache):
+    """Delegate strict three-TU phases to the qualified shared workflow."""
+    marker = ctx.runtime_build / ('psxrecomp_exe_name-%s.txt' % ctx.config.runtime_target)
+    basename = read_text(marker).strip() if marker.is_file() else ctx.config.runtime_target
+    binary = basename + ctx.tc.exe_suffix
+    controlled = runtime_hot_pgo.CONTROLLED
+    configure_args = [arg for arg in args if not any(
+        re.match(r'-[DU]' + re.escape(key) + r'(?::|=|$)', arg) for key in controlled)]
+    for key in ('CMAKE_C_COMPILER', 'CMAKE_CXX_COMPILER', 'CMAKE_MAKE_PROGRAM'):
+        configure_args.append('-D%s=%s' % (key, cache[key]))
+    recipe = dict(source=str(ctx.root), build=str(ctx.runtime_build), framework=str(FRAMEWORK),
+                  cmake=cache['CMAKE_COMMAND'], target=ctx.config.runtime_target, binary=binary,
+                  companions=[basename + '.execution.json'],
+                  configure_args=['-G', cache['CMAKE_GENERATOR']] + configure_args)
+    recipe_path = ctx.work / 'runtime-pgo-recipe.json'
+    if recipe_path.exists():
+        fail('Preserve existing PGO recipe; choose a fresh --work-dir')
+    recipe_path.write_text(json.dumps(recipe, indent=2) + '\n', encoding='utf-8', newline='\n')
+    directory = ctx.runtime_build / 'runtime-hot-pgo' / ctx.config.runtime_target
+    for phase in ('baseline', 'generate'):
+        run([sys.executable, TOOLS / 'runtime_hot_pgo.py', phase, '--config', recipe_path,
+             '--jobs', min(2, ctx.jobs)], 'selective PGO ' + phase, cwd=ctx.root, env=ctx.tc.env)
+    generated = json.loads(read_text(directory / 'generate.json'))
+    training = train_release_pgo(ctx, generated)
+    run([sys.executable, TOOLS / 'runtime_hot_pgo.py', 'use', '--config', recipe_path,
+         '--jobs', min(2, ctx.jobs)], 'strict selective PGO use', cwd=ctx.root, env=ctx.tc.env)
+    used = json.loads(read_text(directory / 'use.json'))
+    if used['status'] != 'built' or used['profiles'] != training['profiles']:
+        fail('Strict PGO use did not retain the actual boot training profiles')
+    ctx.runtime_pgo = dict(status='selective-use', training_scope='boot-only; not gameplay QA or a per-title gain claim',
+                           selected_sources=used['selected_sources'], profiles=used['profiles'],
+                           receipts={phase: sha256(directory / (phase + '.json'))
+                                     for phase in ('baseline', 'generate', 'training', 'use')})
+    # The player manifest needs identities, not private build paths or gcda blobs.
+    ctx.runtime_pgo['profiles'] = {name: {key: row[key] for key in ('sha256', 'bytes')}
+                                   for name, row in used['profiles'].items()}
+
+
 def configure_and_build(ctx):
     owned = {
         'CMAKE_BUILD_TYPE': 'Release',
@@ -553,8 +745,10 @@ def configure_and_build(ctx):
         'PSX_SOURCE_COMMIT': ctx.prov['source_commit'],
         # The framework running this script is the framework that gets built.
         'PSXRECOMP_ROOT': FRAMEWORK.as_posix(),
+        'PSX_RUNTIME_IPO': 'OFF', 'PSX_PGO': '',
+        'CMAKE_EXPORT_COMPILE_COMMANDS': 'ON', 'CMAKE_PROJECT_INCLUDE': '',
     }
-    args = ['-D%s=%s' % kv for kv in owned.items()]
+    args = ['-D%s=%s' % kv for kv in owned.items()] + native_toolchain_args(ctx.tc)
     args += ctx.config.cmake_args + ctx.config.platform_cmake_args[ctx.platform]
     if ctx.platform == 'linux':
         # The interpreter running this script; WSL otherwise finds the Windows
@@ -584,8 +778,20 @@ def configure_and_build(ctx):
                  % (key, want, got))
     if cache.get('PSX_RECOMP_UI', 'ON').upper() == 'OFF':
         fail('PSX_RECOMP_UI=OFF: a player release needs the recomp-ui launcher')
-    run([ctx.tc.cmake, '--build', ctx.runtime_build, '--target', ctx.config.runtime_target,
-         '-j', ctx.jobs], 'runtime build', env=ctx.tc.env)
+    if not ctx.config.selective_pgo:
+        ctx.runtime_pgo = dict(status='disabled-explicit', requested=False)
+    elif (cache.get('CMAKE_GENERATOR') == 'Ninja' and
+          configured_cmake_value(ctx.runtime_build, 'CMakeCCompiler.cmake', 'CMAKE_C_COMPILER_ID') == 'GNU' and
+          configured_cmake_value(ctx.runtime_build, 'CMakeCXXCompiler.cmake', 'CMAKE_CXX_COMPILER_ID') == 'GNU' and
+          not cmake_bool(configured_cmake_value(ctx.runtime_build, 'CMakeSystem.cmake', 'CMAKE_CROSSCOMPILING'))):
+        build_selective_pgo(ctx, args, cache)
+    else:
+        ctx.runtime_pgo = dict(status='portable-unprofiled', requested=True,
+                               reason='Selective PGO requires native GNU C/C++ and Ninja')
+        log('Selective PGO unavailable for this toolchain; building the portable unprofiled runtime')
+    if ctx.runtime_pgo['status'] != 'selective-use':
+        run([ctx.tc.cmake, '--build', ctx.runtime_build, '--target', ctx.config.runtime_target,
+             '-j', ctx.jobs], 'runtime build', env=ctx.tc.env)
     ctx.cache = cmake_cache(ctx.runtime_build)
 
 
@@ -872,6 +1078,9 @@ def payload_gates(stage, plat, exe_name):
         rel = path.relative_to(stage).as_posix()
         lower, leaf = rel.lower(), path.name.lower()
         suffix = path.suffix.lower()
+        if (suffix in ('.gcda', '.gcno', '.profraw', '.profdata') or
+                (leaf.startswith('libgcov') and not lower.startswith('overlay_toolchain/'))):
+            fail('compiler profile/training data in package: %s' % rel)
         if suffix in DISC_SUFFIXES:
             fail('disc/save data in package: %s' % rel)
         if (suffix in ('.bin', '.rom') and lower != 'bios/openbios.bin' and
@@ -938,6 +1147,8 @@ def write_manifest(ctx, extra):
         mod_packages=ctx.mod_packages, aot_mode=ctx.config.aot_mode,
         overlay_toolchain=ctx.config.ship_toolchain, signed=getattr(ctx, 'signed', False),
         packager='psxrecomp/tools/package_title_release.py')
+    if hasattr(ctx, 'runtime_pgo'):
+        manifest['runtime_pgo'] = ctx.runtime_pgo
     if getattr(ctx, 'static_audit', None):
         manifest['static_aot'] = ctx.static_audit
     manifest.update(extra)
@@ -1224,6 +1435,8 @@ def make_context(args, plat):
     ctx.work = base / plat
     ctx.work.mkdir(parents=True, exist_ok=True)
     ctx.runtime_build = ctx.work / 'runtime'
+    shared_emitters = getattr(args, 'recompiler_build_dir', None)
+    ctx.recompiler_build = Path(shared_emitters).resolve() if shared_emitters else None
     ctx.stage = ctx.work / 'stage'
     ctx.dl_cache = base / 'dl-cache'
     return ctx
@@ -1365,6 +1578,8 @@ def parse_args(argv):
                      help='parallel jobs (default min(6, cores-2))')
     pkg.add_argument('--out-dir', help='artifact directory (default <root>/dist)')
     pkg.add_argument('--work-dir', help='build/stage directory (default <root>/build-package)')
+    pkg.add_argument('--recompiler-build-dir',
+                     help='shared native emitter build directory; reconfigured/rebuilt against current framework each run')
     pkg.add_argument('--allow-dirty', action='store_true',
                      help='package uncommitted tracked changes (recorded; not for publication)')
     pkg.add_argument('--sources-prepared', action='store_true', help=argparse.SUPPRESS)

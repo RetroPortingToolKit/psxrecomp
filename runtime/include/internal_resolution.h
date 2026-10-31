@@ -15,8 +15,8 @@
  *       while the game would miss frames). Every scale helper below resolves
  *       it exactly like Match display; only the dynamic-resolution switch
  *       differs, and that is the caller's (psx_ir_is_auto).
- *   N   (N >= 2) a target output height in lines (720, 1080, ... or a
- *       legacy "Nx" entry expressed as reference_lines * N)
+ *  -101..-132 fixed integer scales 1x..32x, independent of reference height
+ *   N   (N >= 2) a target output height in lines (720, 1080, ...)
  *
  * SCALE. The renderer only does integer scales (the pack of the hr surface
  * back to native VRAM is exact only then), so a target height becomes
@@ -35,6 +35,9 @@
 #define PSX_IR_DISPLAY  (-1)
 #define PSX_IR_AUTO     (-2)
 #define PSX_IR_DEFAULT_REF_LINES 240
+#define PSX_IR_MAX_SCALE 32
+#define PSX_IR_SCALE_BASE (-100)
+#define PSX_IR_SCALE(scale) (PSX_IR_SCALE_BASE - (scale))
 /* Custom line counts accepted from config (a 16K panel is 8640 lines). */
 #define PSX_IR_MIN_LINES 2
 #define PSX_IR_MAX_LINES 8640
@@ -46,6 +49,39 @@ typedef struct PsxIrPreset {
 } PsxIrPreset;
 
 static const PsxIrPreset k_psx_ir_presets[] = {
+    /* Fixed scales come first; legacy height ids below remain valid saved choices. */
+    { "1x", "1x (Native)", PSX_IR_SCALE(1) },
+    { "2x", "2x", PSX_IR_SCALE(2) },
+    { "3x", "3x", PSX_IR_SCALE(3) },
+    { "4x", "4x", PSX_IR_SCALE(4) },
+    { "5x", "5x", PSX_IR_SCALE(5) },
+    { "6x", "6x", PSX_IR_SCALE(6) },
+    { "7x", "7x", PSX_IR_SCALE(7) },
+    { "8x", "8x", PSX_IR_SCALE(8) },
+    { "9x", "9x", PSX_IR_SCALE(9) },
+    { "10x", "10x", PSX_IR_SCALE(10) },
+    { "11x", "11x", PSX_IR_SCALE(11) },
+    { "12x", "12x", PSX_IR_SCALE(12) },
+    { "13x", "13x", PSX_IR_SCALE(13) },
+    { "14x", "14x", PSX_IR_SCALE(14) },
+    { "15x", "15x", PSX_IR_SCALE(15) },
+    { "16x", "16x", PSX_IR_SCALE(16) },
+    { "17x", "17x", PSX_IR_SCALE(17) },
+    { "18x", "18x", PSX_IR_SCALE(18) },
+    { "19x", "19x", PSX_IR_SCALE(19) },
+    { "20x", "20x", PSX_IR_SCALE(20) },
+    { "21x", "21x", PSX_IR_SCALE(21) },
+    { "22x", "22x", PSX_IR_SCALE(22) },
+    { "23x", "23x", PSX_IR_SCALE(23) },
+    { "24x", "24x", PSX_IR_SCALE(24) },
+    { "25x", "25x", PSX_IR_SCALE(25) },
+    { "26x", "26x", PSX_IR_SCALE(26) },
+    { "27x", "27x", PSX_IR_SCALE(27) },
+    { "28x", "28x", PSX_IR_SCALE(28) },
+    { "29x", "29x", PSX_IR_SCALE(29) },
+    { "30x", "30x", PSX_IR_SCALE(30) },
+    { "31x", "31x", PSX_IR_SCALE(31) },
+    { "32x", "32x", PSX_IR_SCALE(32) },
     { "native",  "Native",        PSX_IR_NATIVE  },
     { "720p",    "720p",          720            },
     { "1080p",   "1080p",         1080           },
@@ -66,9 +102,14 @@ static inline int psx_ir_lower_eq(const char *a, const char *b) {
     return *a == 0 && *b == 0;
 }
 
+/* Fixed scale values do not depend on a title's reference lines or SSAA target. */
+static inline int psx_ir_is_scale(int value) {
+    return value <= PSX_IR_SCALE(1) && value >= PSX_IR_SCALE(PSX_IR_MAX_SCALE);
+}
+
 /* 1 if value is a legal encoding (unset excluded). */
 static inline int psx_ir_value_valid(int value) {
-    return value == PSX_IR_NATIVE || value == PSX_IR_DISPLAY || value == PSX_IR_AUTO ||
+    return psx_ir_is_scale(value) || value == PSX_IR_NATIVE || value == PSX_IR_DISPLAY || value == PSX_IR_AUTO ||
            (value >= PSX_IR_MIN_LINES && value <= PSX_IR_MAX_LINES);
 }
 
@@ -84,7 +125,7 @@ static inline int psx_ir_ceiling(int value) {
 /* Parse a persisted value: a preset id (case-insensitive, "auto" included) or
  * a decimal line count in [PSX_IR_MIN_LINES, PSX_IR_MAX_LINES]. Returns 1 and
  * stores the value on success; 0 for anything else (the caller keeps its
- * default). A dynamic-resolution floor is a fixed height: its callers reject
+ * default). A dynamic-resolution floor is a fixed scale/height: callers reject
  * PSX_IR_AUTO themselves. */
 static inline int psx_ir_parse(const char *s, int *out) {
     if (!s || !*s) return 0;
@@ -116,6 +157,7 @@ static inline const char *psx_ir_label_for(int value) {
 /* Unclamped scale a value asks for. display_px_h <= 0 (unknown) makes Match
  * display 1 until the caller can measure the monitor. */
 static inline int psx_ir_scale_for(int value, int ref_lines, int display_px_h) {
+    if (psx_ir_is_scale(value)) return PSX_IR_SCALE_BASE - value;
     if (ref_lines < 1) ref_lines = PSX_IR_DEFAULT_REF_LINES;
     value = psx_ir_ceiling(value);
     int target;

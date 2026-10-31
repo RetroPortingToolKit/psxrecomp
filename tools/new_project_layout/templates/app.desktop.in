@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=@GAME_NAME@
+Exec=@EXE_BASENAME@
+Icon=@ZIP_PREFIX@
+Categories=Game;
+Terminal=false

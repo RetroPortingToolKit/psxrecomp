@@ -3,37 +3,162 @@ id = "psx.enhancement.internal-resolution"
 version = "1.0.0"
 name = "Internal Resolution"
 author = "psxrecomp"
-description = "The height the 3D picture is rendered at before it is scaled to the window: Native is the console's own, higher settings render sharper geometry. Auto renders at your display's resolution and steps down only while the game would otherwise miss frames. Presentation only: the game runs exactly the same, and in netplay each player keeps their own choice."
+description = "Render the 3D picture at a selected internal scale before fitting it to the window. Defaults to 4x. Higher choices render sharper geometry and use more GPU memory; the renderer reduces the effective scale when hardware or memory limits require it. Presentation only: each player keeps their own choice in netplay."
 resolver = "declarative"
 save_compatibility = "shared"
 
-# The render height is a property of the host renderer, not of any particular
-# disc, so this ships with the framework and applies to every game. The
-# title's [video] internal_resolution (or its legacy supersampling factor) and
-# dynamic_resolution stay its baseline: with the feature off they apply
-# unchanged, and "Game default" keeps them.
+# Framework-owned host display control for every title, including legacy
+# builtin allowlists. Saved choices override these fresh-profile defaults.
 [[target]]
 game_id = "*"
 
 [[feature]]
 id = "internal-resolution"
 name = "Internal Resolution"
-description = "Disabled by default: the game keeps its own resolution. Turn it on to choose one. PGXP Precision needs 2x or more (720p and up) to be visible."
+description = "Enabled at 4x by default. Disable for native resolution, or select 1x through 32x. The effective scale remains subject to GPU and memory limits."
 group = "Visual"
-default_enabled = false
+default_enabled = true
 
 [[option]]
 feature = "internal-resolution"
 id = "resolution"
 label = "Internal resolution"
-description = "Native is the console's own resolution. 720p through 8K render that many lines (rounded up to a whole multiple of the game's own lines). Match display renders at your monitor's height. Auto is Match display that steps down to the game's minimum only while frames would be missed."
+description = "1x is native; 4x is the default. Fixed scales through 32x use the same factor for every title. Height presets, Match display, Auto and Game default remain available for saved choices. Hardware and memory limits may reduce the effective scale."
 group = "Visual"
 type = "choice"
-default = "default"
+default = "4x"
 
 [[option.choice]]
 value = "default"
 label = "Game default"
+
+[[option.choice]]
+value = "1x"
+label = "1x (Native)"
+
+[[option.choice]]
+value = "2x"
+label = "2x"
+
+[[option.choice]]
+value = "3x"
+label = "3x"
+
+[[option.choice]]
+value = "4x"
+label = "4x"
+
+[[option.choice]]
+value = "5x"
+label = "5x"
+
+[[option.choice]]
+value = "6x"
+label = "6x"
+
+[[option.choice]]
+value = "7x"
+label = "7x"
+
+[[option.choice]]
+value = "8x"
+label = "8x"
+
+[[option.choice]]
+value = "9x"
+label = "9x"
+
+[[option.choice]]
+value = "10x"
+label = "10x"
+
+[[option.choice]]
+value = "11x"
+label = "11x"
+
+[[option.choice]]
+value = "12x"
+label = "12x"
+
+[[option.choice]]
+value = "13x"
+label = "13x"
+
+[[option.choice]]
+value = "14x"
+label = "14x"
+
+[[option.choice]]
+value = "15x"
+label = "15x"
+
+[[option.choice]]
+value = "16x"
+label = "16x"
+
+[[option.choice]]
+value = "17x"
+label = "17x"
+
+[[option.choice]]
+value = "18x"
+label = "18x"
+
+[[option.choice]]
+value = "19x"
+label = "19x"
+
+[[option.choice]]
+value = "20x"
+label = "20x"
+
+[[option.choice]]
+value = "21x"
+label = "21x"
+
+[[option.choice]]
+value = "22x"
+label = "22x"
+
+[[option.choice]]
+value = "23x"
+label = "23x"
+
+[[option.choice]]
+value = "24x"
+label = "24x"
+
+[[option.choice]]
+value = "25x"
+label = "25x"
+
+[[option.choice]]
+value = "26x"
+label = "26x"
+
+[[option.choice]]
+value = "27x"
+label = "27x"
+
+[[option.choice]]
+value = "28x"
+label = "28x"
+
+[[option.choice]]
+value = "29x"
+label = "29x"
+
+[[option.choice]]
+value = "30x"
+label = "30x"
+
+[[option.choice]]
+value = "31x"
+label = "31x"
+
+[[option.choice]]
+value = "32x"
+label = "32x"
 
 [[option.choice]]
 value = "native"

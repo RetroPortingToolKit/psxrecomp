@@ -1,13 +1,13 @@
 /*
  * Framework-owned Internal Resolution mod, available to every game.
  *
- * The height the host renders the 3D picture at -- Native, a line count
- * preset, Match display, or Auto (Match display with dynamic resolution) --
+ * The host's 3D render scale -- fixed 1x..32x, a legacy height preset,
+ * Match display, or Auto (Match display with dynamic resolution) --
  * is a property of the host renderer, not of any particular disc, so it ships
  * here and mods/builtin/packages/psx.enhancement.internal-resolution targets
- * game_id "*". Default off: the title's [video] internal_resolution (or its
- * legacy supersampling factor) and dynamic_resolution stay its baseline, and
- * "Game default" keeps them (host_enhancements.h).
+ * game_id "*". Fresh profiles default to fixed 4x, independent of the title's
+ * old height preset. Saved scales/presets and Game default remain explicit
+ * choices. Disabling the feature selects Native (host_enhancements.h).
  *
  * Activation only RECORDS the request (psx_host_enh_request_resolution); the
  * renderer setup in main.cpp resolves it over the baseline after activation

@@ -10,6 +10,7 @@
 
 #include "netplay_snap_ring.h"
 #include "boot_state.h"
+#include "capture_ring.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,7 +100,10 @@ int netplay_snap_ring_save(NetplaySnapRing *r, uint32_t tick,
                            const CPUState *cpu, uint32_t bios_checksum,
                            uint32_t entry_pc)
 {
-    uint8_t *data = NULL;
+#if !PSX_NATIVE_CAPTURE_JOBS
+    uint8_t *owned = NULL;
+#endif
+    const uint8_t *data;
     size_t len = 0;
     double t0, dt;
     static uint32_t s_tele_n;
@@ -109,8 +113,15 @@ int netplay_snap_ring_save(NetplaySnapRing *r, uint32_t tick,
     static uint32_t s_tele_incr_n;
     if (!r || !cpu) return 0;
     t0 = snap_mono_ms();
-    if (!boot_state_save_buffer_raw(cpu, bios_checksum, entry_pc, &data, &len))
+#if PSX_NATIVE_CAPTURE_JOBS
+    if (!psx_capture_ring_save(r, tick, cpu, bios_checksum, entry_pc))
         return 0;
+    data = netplay_snap_ring_peek(r, tick, &len);
+#else
+    if (!boot_state_save_buffer_raw(cpu, bios_checksum, entry_pc, &owned, &len))
+        return 0;
+    data = owned;
+#endif
     dt = snap_mono_ms() - t0;
     s_tele_n++;
     s_tele_ms_sum += dt;
@@ -132,8 +143,10 @@ int netplay_snap_ring_save(NetplaySnapRing *r, uint32_t tick,
         fflush(stderr);
     }
     netplay_snap_audit_note(tick, data, len);
-    if (!netplay_snap_ring_store(r, tick, data, len))
+#if !PSX_NATIVE_CAPTURE_JOBS
+    if (!netplay_snap_ring_store(r, tick, owned, len))
         return 0;
+#endif
     return 1;
 }
 

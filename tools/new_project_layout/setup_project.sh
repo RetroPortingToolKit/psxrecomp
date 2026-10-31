@@ -700,7 +700,12 @@ fi
 echo "== Packager stub =="
 fill_template "$TEMPLATE_DIR/package_release.sh.in" \
     "$ROOT/scripts/package_release.sh"
-chmod +x "$ROOT/scripts/package_release.sh"
+fill_template "$TEMPLATE_DIR/package_prebuilt_release.sh.in" "$ROOT/scripts/package_prebuilt_release.sh"
+fill_template "$TEMPLATE_DIR/release.toml.in" "$ROOT/packaging/release.toml"
+fill_template "$TEMPLATE_DIR/START_HERE.txt.in" "$ROOT/packaging/release/START_HERE.txt"
+fill_template "$TEMPLATE_DIR/AppRun.in" "$ROOT/packaging/linux/AppRun"
+fill_template "$TEMPLATE_DIR/app.desktop.in" "$ROOT/packaging/linux/$ZIP_PREFIX.desktop"
+chmod +x "$ROOT/scripts/package_release.sh" "$ROOT/scripts/package_prebuilt_release.sh" "$ROOT/packaging/linux/AppRun"
 
 CI_WORKFLOW_OK=0
 if [ "$ENABLE_CI" -eq 1 ]; then

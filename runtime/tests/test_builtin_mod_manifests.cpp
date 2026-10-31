@@ -9,6 +9,7 @@
 #include "host_enhancements.h"
 #include "internal_resolution.h"
 
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -36,7 +37,8 @@ int main(int argc, char** argv) {
     bool saw_8mb = false;
     /* The host enhancements that used to be Settings rows (beads-eio.3.398):
      * package id -> {feature id, plugin id, option id -> default}. Each is
-     * default-off, targets every game, and is host-only (netplay =
+     * host-only; Internal Resolution defaults on at 4x, the others off.
+     * Each targets every game (netplay =
      * "host_only"): the player's own in a match, never in the fingerprint. */
     struct HostEnhancement {
         std::string feature, plugin;
@@ -54,7 +56,7 @@ int main(int argc, char** argv) {
         {"psx.feature.rewind", {"rewind", "psx.rewind",
             {{"buffer", "50"}, {"interval", "15"}}}},
         {"psx.enhancement.internal-resolution", {"internal-resolution",
-            "psx.internal-resolution", {{"resolution", "default"}}}},
+            "psx.internal-resolution", {{"resolution", "4x"}}}},
     };
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
         if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml")
@@ -91,8 +93,9 @@ int main(int argc, char** argv) {
             const std::string who = package.id + ": ";
             check(package.features.size() == 1 && package.features[0].id == want.feature,
                   who + "exposes exactly its one feature");
-            check(!package.features.empty() && !package.features[0].default_enabled,
-                  who + "is default-off (the title's baseline applies)");
+            const bool default_on = package.id == "psx.enhancement.internal-resolution";
+            check(!package.features.empty() && package.features[0].default_enabled == default_on,
+                  who + "has its documented feature default");
             check(!package.features.empty() && package.features[0].host_only,
                   who + "is host-only");
             check(package.targets.size() == 1 && package.targets[0].game_id == "*",
@@ -134,6 +137,55 @@ int main(int argc, char** argv) {
     check(saw_8mb, "psx.enhancement.8mb-ram builtin package missing");
     for (const auto& [id, want] : host_enhancements)
         check(want.seen, id + " builtin package missing");
+    // Use the real shared manifest and state writer: defaults only apply to
+    // fresh profiles, never overwrite an explicit saved enable/option choice.
+    const fs::path scratch = fs::temp_directory_path() /
+        ("psxrecomp-ir-default-test-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    const fs::path fixture = scratch / "bundled/psx.enhancement.internal-resolution/1.0.0";
+    fs::create_directories(fixture);
+    fs::copy_file(root / "psx.enhancement.internal-resolution/1.0.0/manifest.toml",
+                  fixture / "manifest.toml");
+    const std::string id = "psx.enhancement.internal-resolution";
+    const std::string feature = "internal-resolution";
+    std::string error;
+    {
+        ModPackageManager fresh(scratch);
+        check(fresh.scan(&error) && fresh.load_state(&error), "fresh IR profile loads: " + error);
+        check(fresh.feature_enabled(id, feature), "fresh IR profile is enabled");
+        check(fresh.feature_option_value(id, feature, "resolution") == "4x", "fresh IR profile uses 4x");
+        check(fresh.set_feature_enabled(id, feature, false, &error) &&
+              fresh.set_feature_option(id, feature, "resolution", "4k", &error) &&
+              fresh.save_state(&error), "save explicit disabled legacy choice: " + error);
+    }
+    std::string previous = "4k";
+    for (const std::string choice : {"default", "32x"}) {
+        ModPackageManager saved(scratch);
+        check(saved.scan(&error) && saved.load_state(&error), "saved IR profile loads: " + error);
+        check(!saved.feature_enabled(id, feature), "saved disabled choice survives new defaults");
+        check(saved.feature_option_value(id, feature, "resolution") == previous,
+              "saved legacy/default choice survives reload");
+        check(saved.set_feature_option(id, feature, "resolution", choice, &error) &&
+              saved.save_state(&error), "save retained IR option: " + error);
+        previous = choice;
+    }
+    {
+        ModPackageManager saved(scratch);
+        check(saved.scan(&error) && saved.load_state(&error), "32x IR profile loads: " + error);
+        check(!saved.feature_enabled(id, feature) &&
+              saved.feature_option_value(id, feature, "resolution") == "32x",
+              "saved disabled 32x choice survives reload");
+        check(saved.set_feature_enabled(id, feature, true, &error) && saved.save_state(&error),
+              "save explicit enabled 32x choice: " + error);
+    }
+    {
+        ModPackageManager saved(scratch);
+        check(saved.scan(&error) && saved.load_state(&error), "enabled IR profile loads: " + error);
+        check(saved.feature_enabled(id, feature) &&
+              saved.feature_option_value(id, feature, "resolution") == "32x",
+              "saved enabled 32x choice survives reload");
+    }
+    fs::remove_all(scratch); // Only this test's unique fixture and state.
     if (failures == 0)
         std::cout << "PASS builtin mod manifests (" << parsed << " packages)\n";
     return failures ? 1 : 0;

@@ -515,6 +515,11 @@ if ($useNetplay -and -not (Test-Path "psxrecomp\lib\recomp-net\CMakeLists.txt"))
 
 Write-Host "== Packager stub =="
 Fill-Template (Join-Path $TemplateDir "package_release.sh.in") (Join-Path $Root "scripts\package_release.sh")
+Fill-Template (Join-Path $TemplateDir "package_prebuilt_release.sh.in") (Join-Path $Root "scripts\package_prebuilt_release.sh")
+Fill-Template (Join-Path $TemplateDir "release.toml.in") (Join-Path $Root "packaging\release.toml")
+Fill-Template (Join-Path $TemplateDir "START_HERE.txt.in") (Join-Path $Root "packaging\release\START_HERE.txt")
+Fill-Template (Join-Path $TemplateDir "AppRun.in") (Join-Path $Root "packaging\linux\AppRun")
+Fill-Template (Join-Path $TemplateDir "app.desktop.in") (Join-Path $Root "packaging\linux\${ZipPrefix}.desktop")
 
 if ($useCi) {
     Write-Host "== CI release workflow =="

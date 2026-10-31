@@ -165,6 +165,13 @@ STUB_SECTION(sio, 48u)
 STUB_SECTION(mdec, 400u)
 STUB_SECTION(spu_cd, 4u)
 int spu_snapshot_len_ok(uint32_t len) { return len == 80u; }
+/* This fixture's CD writer emits exactly 64 bytes of 0xA5. Validate that
+ * wire without counting a restore or mutating any device. */
+int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
+    if (!p || len != 64u) return 0;
+    for (uint32_t i = 0; i < len; ++i) if (p[i] != 0xA5) return 0;
+    return 1;
+}
 int sio_snapshot_validate(const uint8_t *p, uint32_t len) { return p && len == 48u; }
 int mdec_snapshot_validate(const uint8_t *p, uint32_t len) { return p && len == 400u; }
 
