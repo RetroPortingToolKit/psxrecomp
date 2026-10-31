@@ -7,6 +7,10 @@
 if(NOT DEFINED PSXRECOMP_ROOT)
     get_filename_component(PSXRECOMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
+# Standalone callers may provide runtime/.. while execution-contract helpers
+# register the normalized path. Ninja treats both as the same output, so use
+# one spelling for source files and their configure dependencies throughout.
+get_filename_component(PSXRECOMP_ROOT "${PSXRECOMP_ROOT}" ABSOLUTE)
 
 # The rebuild CLI configures this as `generate` for its instrumented pass and
 # `use` after it has merged the collected profile.  Keep the switch here,
