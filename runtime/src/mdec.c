@@ -1167,7 +1167,9 @@ int mdec_snapshot_validate(const uint8_t *p, uint32_t len) {
         mdec_wire_u32(p, 0u) != MDEC_SNAP_VER_V1) return 0;
     input_count = mdec_wire_u32(p, MDEC_SNAP_OFF_COUNTS);
     output_size = mdec_wire_u32(p, MDEC_SNAP_OFF_COUNTS + 4u);
-    if (input_count > MDEC_SNAP_INPUT_MAX || output_size > MDEC_SNAP_OUTPUT_MAX)
+    if (input_count > MDEC_SNAP_INPUT_MAX ||
+        mdec_wire_u32(p, 8u) > MDEC_SNAP_INPUT_MAX || /* expected_halfwords */
+        output_size > MDEC_SNAP_OUTPUT_MAX)
         return 0;
     if (mdec_wire_u32(p, MDEC_SNAP_OFF_OUTPUT_POS) > output_size) return 0;
     return (uint64_t)len - mdec_snap_fixed_bytes() >=
@@ -1223,7 +1225,11 @@ int mdec_snapshot_read(const uint8_t *p, uint32_t len) {
     if ((size_t)(r.end - r.p) <
         (size_t)input_count * 2u + (size_t)output_size)
         return 0;
-    if (!ensure_input_capacity(input_count ? input_count : 1u)) return 0;
+    /* Continued MMIO/DMA writes fill the complete command, not just the
+     * prefix already present when the snapshot was saved. */
+    uint32_t input_capacity = input_count > mdec.expected_halfwords
+                            ? input_count : mdec.expected_halfwords;
+    if (!ensure_input_capacity(input_capacity ? input_capacity : 1u)) return 0;
     if (!ensure_output_capacity(output_size ? output_size : 1u)) return 0;
     mdec.input_count = input_count;
     mdec.output_size = output_size;
