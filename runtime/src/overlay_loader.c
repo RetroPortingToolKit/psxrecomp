@@ -6,6 +6,7 @@
 #include "crc32.h"
 #include "dirty_ram_interp.h"
 #include "interrupts.h"
+#include "mod_plugins.h"
 #include "debug_server.h"
 #include "psx_cycles.h"
 #include "overlay_unit_defer.h"
@@ -3940,6 +3941,13 @@ static int overlay_loader_dispatch_seg(CPUState *cpu, uint32_t addr) {
     const uint32_t phys = addr & 0x1FFFFFFFu;
     const uint32_t seg = addr & 0xE0000000u;
     if (psx_code_segment_index(addr) < 0) {
+        s_disp_interp++;
+        return 0;
+    }
+    /* Generated and interpreted backends both invoke configured function-entry
+     * hooks, but cached overlay shards predate that contract. Keep a hooked
+     * entry on the interpreter so native overlay execution cannot bypass it. */
+    if (psx_mod_function_entry_has_hook(addr)) {
         s_disp_interp++;
         return 0;
     }
