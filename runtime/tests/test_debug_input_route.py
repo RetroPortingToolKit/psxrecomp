@@ -40,6 +40,7 @@ static int s_fp_reset_on_load;
 static PsxFrameFingerprint s_fp;
 static unsigned s_fp_head,s_fp_total;
 static int s_input_override=-1,s_input_override_p2=-1;
+static int s_pad_connected_override[2]={-1,-1};
 static int s_input_frames,s_input_frames_p2,s_axis_override,s_pad_type_override=-1;
 static unsigned char s_axis_st[4],s_host_axes[4],s_host_lt,s_host_rt;
 static int s_host_layer;
@@ -68,9 +69,11 @@ static void queue(void){
 }
 int main(void){
     queue();s_input_override=123;s_input_override_p2=456;
+    s_pad_connected_override[0]=1;s_pad_connected_override[1]=0;
     handle_input_route_start(1,"{\"port\":2,\"at_frame\":10}");
     assert(strstr(response,"\"port\":2"));
     assert(s_input_override==123&&s_input_override_p2==-1);
+    assert(s_pad_connected_override[0]==1&&s_pad_connected_override[1]==-1);
     s_frame_count=9;
     assert(debug_server_get_input_override_port2()==-1);
     assert(s_input_route_remaining==2);
@@ -88,8 +91,11 @@ int main(void){
     assert(!s_input_route_active);
     assert(debug_server_get_input_override_port2()==-1);
     queue();handle_input_route_start(1,"{\"port\":2}");
+    s_pad_connected_override[0]=0;s_pad_connected_override[1]=1;
     handle_clear_input(1,"{\"port\":1}");assert(s_input_route_active);
+    assert(s_pad_connected_override[0]==-1&&s_pad_connected_override[1]==1);
     handle_clear_input(1,"{\"port\":2}");assert(!s_input_route_active);
+    assert(s_pad_connected_override[1]==-1);
     queue();handle_input_route_start(1,"{}");
     assert(s_input_route_port==1);s_input_override_p2=456;
     assert(debug_server_get_input_override_port2()==456&&s_input_route_remaining==2);
