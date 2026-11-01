@@ -43,6 +43,10 @@ uint32_t dma_get_dicr(void);
 uint32_t dma_get_dpcr(void);
 int      dma_cdrom_transfer_active(void);
 int      dma_gpu_linked_list_active(void);
+/* Future guest-RAM ownership, distinct from a completion-only busy bit.
+ * Conservative for pending/async transfers; false after synchronous payload
+ * movement even while its authentic completion IRQ is still delayed. */
+int      dma_channel_retains_ram(unsigned channel);
 /* RAM-side effects of a completed CD-ROM (ch3) transfer of host-supplied
  * sector data, for seamless-loading adapters serving a game's own CdGetSector
  * or read loop: overlay capture before the first word, per-word RAM stores

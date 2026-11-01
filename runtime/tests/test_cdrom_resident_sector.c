@@ -162,9 +162,13 @@ static void explicit_consumer_hold(void) {
         (void)cdrom_read(0x1F801801); ack();
         psx_cycle_count += 10000000; process_pending(0);
         CHECK(irq_flag == CDIRQ_COMPLETE);
+        uint8_t* before = malloc(size); uint8_t* after = malloc(size);
+        CHECK(before && after); cdrom_snapshot_write(before);
         wire[size - 1] = 2;
         CHECK(!cdrom_snapshot_validate(wire, size));
-        free(wire);
+        CHECK(!cdrom_snapshot_read(wire, size));
+        cdrom_snapshot_write(after); CHECK(!memcmp(before, after, size));
+        free(before); free(after); free(wire);
     }
 }
 
