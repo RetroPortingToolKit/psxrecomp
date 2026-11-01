@@ -70,6 +70,8 @@ uint32_t psx_mod_gpu_dma_resolve_address(uint32_t a) { return a; }
 /* ---- GPU ---------------------------------------------------------------- */
 static uint32_t s_gp0[64];
 static unsigned s_gp0_n;
+static unsigned s_spu_words;
+void spu_dma_write(uint32_t value) { (void)value; ++s_spu_words; }
 void gpu_write_gp0(uint32_t val) { if (s_gp0_n < 64u) s_gp0[s_gp0_n] = val; ++s_gp0_n; }
 void gpu_set_gp0_source(uint32_t addr) { (void)addr; }
 void gpu_set_gp0_linked_list_node(uint32_t addr, uint32_t n) { (void)addr; (void)n; }
@@ -90,6 +92,7 @@ void event_ring_record_aux(uint16_t kind, uint8_t detail, uint32_t aux) {
     (void)kind; (void)detail; (void)aux;
 }
 void psx_irq_raise(uint32_t bit, uint32_t detail) { (void)bit; (void)detail; }
+void audio_trace_event(uint16_t kind, uint32_t a, uint32_t b) { (void)kind; (void)a; (void)b; }
 static int s_in_exception;
 int psx_get_in_exception(void) { return s_in_exception; }
 
@@ -184,8 +187,30 @@ int main(void) {
 
     /* Control: a kick from inside the device service is not held. */
     CHECK(kick(1), "a kick from inside the device service was held");
+    CHECK(dma_channel_retains_ram(2), "active linked list lost RAM ownership");
     finish_walk();
+    CHECK(!dma_channel_retains_ram(2), "finished list retains RAM");
     CHECK(!dma_gpu_linked_list_active(), "control walk did not finish");
+
+    /* Block GPU and SPU payloads already moved while CHCR and completion
+     * timing remain active. A disabled pending kick still owns future RAM. */
+    dma_init(); s_gp0_n = s_spu_words = 0;
+    for (unsigned i = 0; i < 4; ++i) psx_write_word(NODE_A + i * 4, i + 7);
+    dma_write(0x1F8010F0u, 0);
+    dma_write(0x1F8010A0u, NODE_A); dma_write(0x1F8010A4u, 0x00010004u);
+    dma_write(0x1F8010A8u, 0x01000201u);
+    CHECK(dma_channel_retains_ram(2), "disabled pending GPU kick lost source");
+    dma_write(0x1F8010F0u, 0x00080800u);
+    dma_write(0x1F8010A8u, 0x01000201u);
+    CHECK(s_gp0_n == 4 && s_gp0[3] == 10, "GPU payload not copied");
+    CHECK(dma_read(0x1F8010A8u) & 0x01000000u, "GPU completion was forced");
+    CHECK(!dma_channel_retains_ram(2), "completion-only GPU timer retains source");
+    dma_write(0x1F8010C0u, NODE_A); dma_write(0x1F8010C4u, 4);
+    dma_write(0x1F8010C8u, 0x01000001u);
+    CHECK(s_spu_words == 4, "SPU payload not copied");
+    CHECK(dma_read(0x1F8010C8u) & 0x01000000u, "SPU completion was forced");
+    CHECK(!dma_channel_retains_ram(4), "completion-only SPU timer retains source");
+    CHECK(dma_channel_retains_ram(7), "invalid channel must fail closed");
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

@@ -1508,6 +1508,19 @@ void dma_debug_clear_cdrom_history(void) {
     cdrom_dma_history_active = 0;
 }
 
+int dma_channel_retains_ram(unsigned channel) {
+    if (channel >= 7u) return 1;
+    if ((channel < 2u && mdec_async[channel].active) ||
+        (channel == 2u && gpu_linked_list.active) ||
+        (channel == 3u && cdrom_async.active)) return 1;
+    if (!(channels[channel].chcr & 0x01000000u)) return 0;
+    /* A disabled pending kick may still read RAM when enabled later. */
+    if (!channel_enabled((int)channel)) return 1;
+    /* GPU block/SPU payloads are already copied when this completion-only
+     * timer is installed. Never clear their CHCR, advance time or raise IRQ. */
+    return !delayed_complete[channel].active;
+}
+
 void dma_debug_get_state(DMADebugState* out) {
     if (!out) return;
     out->dpcr = dpcr;
