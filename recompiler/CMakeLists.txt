@@ -385,6 +385,8 @@ if(BUILD_TESTING)
             $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
             $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
         target_link_libraries(disc_identity_test PRIVATE chdr-static)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/psx_sha256_file.cmake")
+        psxrecomp_sha256_file(disc_identity_test)
         add_test(NAME disc_identity_test COMMAND disc_identity_test)
     endif()
     add_executable(host_path_test tests/host_path_test.cpp)
@@ -865,6 +867,13 @@ if(BUILD_TESTING)
     )
     target_link_libraries(jogcon_ffb_settings_test PRIVATE fmt)
     add_test(NAME jogcon_ffb_settings_test COMMAND jogcon_ffb_settings_test)
+
+    add_executable(required_disc_config_test
+        tests/required_disc_config_test.cpp src/config_loader.cpp src/ps1_exe_parser.cpp)
+    target_include_directories(required_disc_config_test PRIVATE
+        include src lib/fmt/include lib/toml11)
+    target_link_libraries(required_disc_config_test PRIVATE fmt)
+    add_test(NAME required_disc_config_test COMMAND required_disc_config_test)
 
     # Launcher-saved paths stay relative inside a portable game folder.
     add_executable(portable_settings_paths_test

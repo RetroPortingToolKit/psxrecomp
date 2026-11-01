@@ -258,6 +258,15 @@ feature-local: `when = { option = "value", ... }` requires every listed option
 to match. The legacy `when_option`/`when_value` pair remains accepted for a
 single condition.
 
+Format10 also permits these conditions on `[[resource]]`. Only matching
+resources appear in the feature's file pickers, preparation inputs/outputs,
+and resolved plan. A required resource is required only while its condition
+matches. Unselected media is not read, verified or added to the session
+identity; the selected option and active resource bytes identify the plan.
+For example, `when = { subtitles = "en" }` can select a verified English
+movie pack while keeping the Japanese donor and Spanish pack inactive.
+Conditions must refer to valid values of the owning feature's options.
+
 A feature with `hidden = true` is left out of the launcher's lists while it is
 disabled; while enabled it is listed so the player can turn it off. A title that
 sets `[runtime] hide_hidden_mod_features = true` in `game.toml` never shows it:
