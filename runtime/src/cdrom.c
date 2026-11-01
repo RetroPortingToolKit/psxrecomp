@@ -222,6 +222,8 @@ static int read_min, read_sec, read_sect;
 static uint8_t mode_reg;
 static uint8_t read_cmd;
 static int read_delay;
+/* Explicit title-owned resident stream grant; no host pointer/cursor. */
+static uint8_t s_resident_read_held;
 
 /* ---- Sector deadline/exposure telemetry (L1.5, passive) -----------------
  * One record per physical sector deadline. It separates drive scheduling
@@ -364,6 +366,7 @@ void cdrom_resync_deadlines_after_restore(void)
         s_cd_timing_next_due = psx_cycle_count + (uint64_t)read_delay;
     else if (!reading)
         s_cd_timing_next_due = 0;
+    if (s_resident_read_held) s_cd_timing_next_due = 0;
     /* Disc reinsertion is disabled in netplay. Reset the host-side lid timer
      * when a rollback snapshot restores the shared controller wire state. */
     cdrom_lid_reset(&s_lid);
@@ -1668,6 +1671,7 @@ static void start_read_stream(uint8_t cmd) {
     }
     setloc_pending = 0;
     read_cmd = cmd;
+    s_resident_read_held = 0;
     read_delay = initial_read_delay_cycles();
     s_cd_probe_read_start_count++;
     s_cd_probe_read_start_cycles += (uint64_t)read_delay;
@@ -1702,6 +1706,7 @@ static void start_read_stream(uint8_t cmd) {
 }
 
 static void stop_read_stream(void) {
+    s_resident_read_held = 0;
     reading = 0;
     read_cmd = 0;
     read_delay = 0;
@@ -2735,7 +2740,7 @@ static int accelerated_consumer_blocked(void) {
 }
 
 static void process_read_stream(uint32_t cycles) {
-    if (!reading) return;
+    if (!reading || s_resident_read_held) return;
 
     if (warm_route_consumer_blocked()) {
         s_warm_route_consumer_waits++;
@@ -3099,7 +3104,7 @@ uint32_t cdrom_cycles_to_irq(uint32_t i_mask) {
         if (d < best) best = d;
     }
     /* Active sector read: next data-ready in read_delay cycles. */
-    if (reading && !warm_route_consumer_blocked() &&
+    if (reading && !s_resident_read_held && !warm_route_consumer_blocked() &&
         read_delay > 0 && (uint32_t)read_delay < best)
         best = (uint32_t)read_delay;
     return best;
@@ -3383,6 +3388,18 @@ int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
     return 1;
 }
 
+void cdrom_resident_release_stream(void) {
+    s_resident_read_held = 0;
+    if (reading) s_cd_timing_next_due = psx_cycle_count + (uint64_t)read_delay;
+}
+
+int cdrom_resident_feed_sector_held(uint32_t lba, const uint8_t* user_data) {
+    if (!cdrom_resident_feed_sector(lba, user_data)) return 0;
+    s_resident_read_held = 1;
+    s_cd_timing_next_due = 0;
+    return 1;
+}
+
 int cdrom_resident_feed_sector(uint32_t lba, const uint8_t* user_data) {
     uint8_t raw[RAW_SECTOR_SIZE];
     uint64_t timing_seq;
@@ -3561,6 +3578,10 @@ static int cdrom_snap_emit(PstW *w, int extended) {
             W8(setloc_pending);
             W8(last_sector_header_stale);
         }
+        if (extended >= 3) {
+            WU(0x35464443u); /* CDF5: explicit resident physical-stream hold */
+            W8(s_resident_read_held);
+        }
     }
 
 #undef W8
@@ -3578,6 +3599,7 @@ static int cdrom_snap_parse(PstR *r, int extended) {
     uint64_t u64;
     int present_rem = 0;
     int pending_rem = 0;
+    s_resident_read_held = 0;
 #define R8(f)  do { if (!pst_r_u8(r, &b)) return 0; (f) = b; } while (0)
 #define RI(f)  do { if (!pst_r_i32(r, &i)) return 0; (f) = (int)i; } while (0)
 #define RU(f)  do { if (!pst_r_u32(r, &u)) return 0; (f) = u; } while (0)
@@ -3636,6 +3658,10 @@ static int cdrom_snap_parse(PstR *r, int extended) {
             R8(setloc_pending);
             R8(last_sector_header_stale);
         }
+        if (extended >= 3) {
+            RU(u); /* validated CDF5 marker */
+            R8(s_resident_read_held);
+        }
     }
 
 #undef R8
@@ -3663,7 +3689,7 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
     const uint32_t current = cdrom_snapshot_bytes();
     if (!p) return 0;
     if (len == legacy) return 1;
-    if (len != current && len != current - 6u) return 0; /* CDF4 or CDF2 */
+    if (len != current && len != current - 5u && len != current - 11u) return 0; /* CDF5, CDF4 or CDF2 */
     PstR r;
     uint32_t magic;
     int32_t index, pos, size, delay;
@@ -3681,11 +3707,16 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
             size < 0 || size > SECTOR_BUFFER_SIZE || pos < 0 || pos > size)
             return 0;
     }
-    if (len == current) {
+    if (len >= current - 5u) {
         uint8_t pending_loc, stale_header;
         if (!pst_r_u32(&r, &magic) || magic != 0x34464443u ||
             !pst_r_u8(&r, &pending_loc) || pending_loc > 1 ||
             !pst_r_u8(&r, &stale_header) || stale_header > 1) return 0;
+    }
+    if (len == current) {
+        uint8_t held;
+        if (!pst_r_u32(&r, &magic) || magic != 0x35464443u ||
+            !pst_r_u8(&r, &held) || held > 1) return 0;
     }
     return r.p == r.end;
 }
@@ -3693,21 +3724,22 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
 uint32_t cdrom_snapshot_bytes(void) {
     PstW w;
     pst_w_init(&w, NULL, 0);
-    (void)cdrom_snap_emit(&w, 2);
+    (void)cdrom_snap_emit(&w, 3);
     return (uint32_t)w.written;
 }
 void cdrom_snapshot_write(uint8_t *p) {
     PstW w;
     uint32_t n = cdrom_snapshot_bytes();
     pst_w_init(&w, p, n);
-    (void)cdrom_snap_emit(&w, 2);
+    (void)cdrom_snap_emit(&w, 3);
 }
 int cdrom_snapshot_read(const uint8_t *p, uint32_t len) {
     PstR r;
     if (!cdrom_snapshot_validate(p, len)) return 0;
     pst_r_init(&r, p, len);
     const int extended = len == cdrom_snapshot_legacy_bytes() ? 0 :
-                         len == cdrom_snapshot_bytes() ? 2 : 1;
+                         len == cdrom_snapshot_bytes() ? 3 :
+                         len == cdrom_snapshot_bytes() - 5u ? 2 : 1;
     if (!cdrom_snap_parse(&r, extended))
         return 0;
     /* Absolute host deadlines are not on the wire — rebuild from restored

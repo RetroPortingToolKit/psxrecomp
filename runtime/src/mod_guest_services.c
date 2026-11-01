@@ -39,6 +39,14 @@ int psx_mod_resident_cd_sector(uint32_t lba, const void* user_data) {
     return cdrom_resident_feed_sector(lba, (const uint8_t*)user_data);
 }
 
+int psx_mod_resident_cd_sector_held(uint32_t lba, const void* user_data) {
+    if (psx_mod_host_output_scope()) return 0;
+    return cdrom_resident_feed_sector_held(lba, (const uint8_t*)user_data);
+}
+void psx_mod_resident_cd_release(void) {
+    if (!psx_mod_host_output_scope()) cdrom_resident_release_stream();
+}
+
 uint32_t psx_mod_call_guest(struct CPUState* cpu, uint32_t function,
                             uint32_t return_address, uint32_t a0, uint32_t a1,
                             uint32_t a2, uint32_t a3) {

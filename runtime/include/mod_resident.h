@@ -68,6 +68,14 @@ int psx_mod_resident_cd_read(uint32_t address, const void* data,
  * original consumers, publish completion, or replace a final Pause ack. */
 int psx_mod_resident_cd_sector(uint32_t lba, const void* user_data);
 
+/* Consumer-paced variant: successful delivery also holds physical ReadN
+ * continuation, preventing it from racing a title ring refill. The title
+ * must keep granting from audited mainline/IRQ sites or release on fallback.
+ * Original IRQ, DMA, consumers and final Pause are never held. Current-build
+ * snapshots retain this pointer-free controller hold. */
+int psx_mod_resident_cd_sector_held(uint32_t lba, const void* user_data);
+void psx_mod_resident_cd_release(void);
+
 typedef struct PSXResidentSink PSXResidentSink;
 
 /* Store one derived blob (decoded asset, table, ...) for source file `file`.
