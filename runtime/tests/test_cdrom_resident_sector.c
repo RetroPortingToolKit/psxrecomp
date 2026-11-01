@@ -132,11 +132,48 @@ static void decline_without_mutation(void) {
     }
 }
 
+static void explicit_consumer_hold(void) {
+    for (unsigned k = 0; k < 2; ++k) {
+        const uint8_t mode = k ? 0xA0 : 0x80;
+        setup_resident(mode);
+        CHECK(cdrom_resident_feed_sector_held(100, resident_data));
+        CHECK(s_resident_read_held && !s_cd_timing_next_due);
+        consume_resident(100, mode);
+        const uint32_t size = cdrom_snapshot_bytes();
+        uint8_t* wire = malloc(size); CHECK(wire);
+        cdrom_snapshot_write(wire);
+        process_read_stream(10000000);
+        CHECK(last_sector_lba == 100 && !irq_flag);
+        cdrom_resident_release_stream();
+        CHECK(!s_resident_read_held);
+        CHECK(cdrom_snapshot_read(wire, size) && s_resident_read_held);
+        process_read_stream(10000000);
+        CHECK(last_sector_lba == 100 && !irq_flag);
+        memset(resident_data, 101, sizeof resident_data);
+        CHECK(cdrom_resident_feed_sector_held(101, resident_data));
+        consume_resident(101, mode);
+        cdrom_resident_release_stream();
+        sector(); consume_resident(102, mode);
+        memset(resident_data, 103, sizeof resident_data);
+        CHECK(cdrom_resident_feed_sector_held(103, resident_data));
+        consume_resident(103, mode);
+        exec_command(0x09);
+        CHECK(!reading && !s_resident_read_held && pending.pending);
+        (void)cdrom_read(0x1F801801); ack();
+        psx_cycle_count += 10000000; process_pending(0);
+        CHECK(irq_flag == CDIRQ_COMPLETE);
+        wire[size - 1] = 2;
+        CHECK(!cdrom_snapshot_validate(wire, size));
+        free(wire);
+    }
+}
+
 int main(void) {
     CHECK(fifo_baseline_main() == 0);
     original_continuation_and_pause();
     repeated_one_sector_and_snapshot();
     decline_without_mutation();
+    explicit_consumer_hold();
     puts("PASS: resident single-sector FIFO/IRQ, 24 snapshot restores, original continuation/Pause, 33 atomic declines");
     return 0;
 }

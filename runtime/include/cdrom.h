@@ -48,6 +48,11 @@ int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
  * and matching pure-data raw bytes. Never stops the stream or calls a guest
  * callback. The title must separately prove its destination/upload ownership. */
 int cdrom_resident_feed_sector(uint32_t lba, const uint8_t* user_data);
+/* Same atomic delivery, then hold only physical ReadN continuation until the
+ * title grants another sector or explicitly releases. IRQ/DMA/commands keep
+ * running. Hold is serialized; stop/reset/Pause releases it. */
+int cdrom_resident_feed_sector_held(uint32_t lba, const uint8_t* user_data);
+void cdrom_resident_release_stream(void);
 
 /* 'instant' per-frame sector-IRQ budget (step 3). Clamped to [1, 4096];
  * the per-sector period additionally floors at CDROM_MIN_DELAY. Writers:
