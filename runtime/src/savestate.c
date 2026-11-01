@@ -936,7 +936,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
     if (!psx_mod_snapshot_ready()) { s_status_wait = "mod_snapshot"; return; }
     /* Both operations must wait for host continuations. Loading here can
      * longjmp past a caller's register/clock restore, leaking frozen time.
-     * The save-only resume-PC check below does not protect loads. */
+     * Title overrides can freeze time outside snapshot host-call scopes. */
     if (psx_snapshot_host_call_depth() || func_override_active() ||
         g_psx_guest_time_frozen) {
         s_status_wait = "host_continuation";
