@@ -583,7 +583,7 @@ static void decode_block(SpuVoice *v) {
             int sample4 = (n == 0) ? (packed & 0x0F) : (packed >> 4);
             if (sample4 & 0x08) sample4 -= 0x10;
 
-            int32_t s = sample4 << 12;
+            int32_t s = sample4 * 4096;
             s >>= shift;
             s += ((int32_t)v->hist1 * f0[filter] +
                   (int32_t)v->hist2 * f1[filter] + 32) >> 6;
