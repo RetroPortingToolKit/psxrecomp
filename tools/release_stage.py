@@ -63,6 +63,7 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -609,10 +610,43 @@ def _extract_tar_top_level(archive, parent, expect_top):
         # filter='data' refuses absolute paths, `..` escapes, device nodes and
         # symlinks pointing out of the tree. Python 3.14 makes it the default;
         # being explicit keeps 3.9-3.13 from trusting the archive.
+        # Case-only aliases (notably terminfo names in standalone Python)
+        # overwrite their own targets on case-insensitive mounted filesystems.
+        # Materialize these aliases as data after the normal safe extraction.
+        aliases = []
+        members = []
+        for member in t.getmembers():
+            target = posixpath.normpath(posixpath.join(
+                posixpath.dirname(member.name), member.linkname))
+            if (member.issym() and target != member.name and
+                    target.casefold() == member.name.casefold()):
+                aliases.append(member)
+            else:
+                members.append(member)
         try:
-            t.extractall(parent, filter='data')
+            t.extractall(parent, members=members, filter='data')
         except TypeError:
-            t.extractall(parent)
+            t.extractall(parent, members=members)
+        for member in aliases:
+            destination = Path(parent) / member.name
+            if not destination.resolve().is_relative_to(Path(parent).resolve()):
+                _die('case alias escapes the extraction directory: ' + member.name)
+            if destination.is_symlink():
+                destination.unlink()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with t.extractfile(member) as source, destination.open('wb') as output:
+                shutil.copyfileobj(source, output)
+            source_info = member
+            seen = set()
+            while source_info.issym() or source_info.islnk():
+                if source_info.name in seen:
+                    _die('cyclic archive alias: ' + member.name)
+                seen.add(source_info.name)
+                target = source_info.linkname
+                if source_info.issym():
+                    target = posixpath.join(posixpath.dirname(source_info.name), target)
+                source_info = t.getmember(posixpath.normpath(target))
+            os.chmod(destination, (source_info.mode & 0o755) | 0o600)
     out = os.path.join(parent, expect_top)
     if not os.path.isdir(out):
         _die('extracting %s did not produce %s' % (archive, out))
