@@ -1445,6 +1445,9 @@ if(BUILD_TESTING)
     add_executable(spu_fidelity_test tests/test_spu_fidelity.c src/crc32.c)
     target_include_directories(spu_fidelity_test PRIVATE include)
     add_test(NAME spu_fidelity_test COMMAND spu_fidelity_test)
+    add_executable(spu_signed_nibble_test tests/test_spu_signed_nibble.c src/crc32.c)
+    target_include_directories(spu_signed_nibble_test PRIVATE include)
+    add_test(NAME spu_signed_nibble_test COMMAND spu_signed_nibble_test)
     # Same story as sio_dualshock_rumble_test: registered but unlinkable on
     # origin/master (crc32_update undefined), so it never ran. With crc32 linked
     # it now runs 137 checks and fails 4, all in one ADSR sweep region

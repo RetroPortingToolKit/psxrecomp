@@ -68,6 +68,15 @@ and catch whole regression classes without running a game. Registered from
 runtime tree cannot configure until a BIOS has been generated, and these need
 neither.
 
+### SPU block decoding
+
+`spu_signed_nibble_test` runs the production ADPCM block decoder on all 16
+four-bit samples and shifts 0 through 12, using filter zero. It checks all
+5,824 decoded amplitudes. For the signed-shift regression, also compile this
+fixture as C11 with Clang `-fsanitize=shift -fno-sanitize-recover=shift` at
+O0 and O2. This covers the default block decoder; it does not establish
+listening quality or complete SPU behaviour.
+
 ## Known-failing tests (not registered)
 
 Three tests exist and are **deliberately left out of `ctest`** because they fail
