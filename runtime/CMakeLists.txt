@@ -409,6 +409,11 @@ if(BUILD_TESTING)
                 --cc "${CMAKE_C_COMPILER}")
             set_tests_properties(dma_mdec_jobs_test PROPERTIES RUN_SERIAL TRUE)
         endif()
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME resolved_pad_guard_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resolved_pad_guard.py"
+                --cxx "${CMAKE_CXX_COMPILER}")
+        endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME menu_video_snapshot_test COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_menu_video_snapshot.py
