@@ -1865,6 +1865,7 @@ static int launcher_vsync_preference(void) {
 static void reset_mod_owned_presentation(void) {
     psx_mod_internal_resolution_reset();
     memcard_set_extension_codec(nullptr, nullptr);
+    debug_server_request(0);
     psx_local_mouse_clear();
     psx_keybinds_clear_session_players();
     PSXModSessionScalars live;
@@ -9167,8 +9168,9 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     int override = debug_server_get_input_override();
     int override_p2 = debug_server_get_input_override_port2();
 #else
-    /* Production: skip debug server. Still need to advance frame counter
-     * locally so anything else that reads it continues to work. */
+    /* Release keeps TCP commands available without per-frame trace recording.
+     * An unrequested server has no mutex/thread and polling returns at once. */
+    debug_server_poll();
     extern uint64_t s_frame_count;
     s_frame_count++;
     int override = -1;
@@ -20856,6 +20858,7 @@ session_reboot:
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
     }
+    debug_server_apply_request(debug_port);
     if (!rematch_session) {
         std::atexit(memcard_flush_all);
         /* Persist the game's native OPTION settings on any exit path (belt-and-
@@ -20863,10 +20866,7 @@ session_reboot:
          * armed, so it can't overwrite the saved file with boot defaults. */
         std::atexit(game_options_save_now);
 #ifndef PSX_NO_DEBUG_TOOLS
-        debug_server_init(debug_port);
         host_sampler_start();   /* this is the emulation thread */
-#else
-        (void)debug_port;
 #endif
 #ifdef PSX_COSIM
         cosim_init();  /* first-divergence oracle server */
