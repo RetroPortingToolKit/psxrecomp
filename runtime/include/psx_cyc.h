@@ -279,12 +279,12 @@ uint16_t psx_cyc_load_half(CPUState* cpu, uint32_t addr,
                            uint32_t rt, uint32_t reg_mask);
 #else
 /* CPU data load value+timing. Full Beetle sequence for main RAM is inlined;
- * MMIO / lockstep / data-shard fall through to *_slow in memory.c. */
+ * KSEG2 / MMIO / lockstep / data-shard fall through to *_slow in memory.c. */
 static inline uint32_t psx_cyc_load_word(CPUState* cpu, uint32_t addr,
                                           uint32_t rt, uint32_t reg_mask) {
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (g_ls_mode == 0 && !g_ds_recording && phys < 0x00800000u) {
+    if (addr < 0xC0000000u && g_ls_mode == 0 && !g_ds_recording && phys < 0x00800000u) {
         if (g_psx_load_delay < 0) (void)psx_load_delay_enabled();
         if (g_psx_load_delay) {
             psx_cyc_base(cpu);
@@ -314,7 +314,7 @@ static inline uint16_t psx_cyc_load_half(CPUState* cpu, uint32_t addr,
                                           uint32_t rt, uint32_t reg_mask) {
 #ifdef PSX_ENABLE_BLOCK_CYCLES
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (g_ls_mode == 0 && !g_ds_recording && phys < 0x00800000u) {
+    if (addr < 0xC0000000u && g_ls_mode == 0 && !g_ds_recording && phys < 0x00800000u) {
         if (g_psx_load_delay < 0) (void)psx_load_delay_enabled();
         if (g_psx_load_delay) {
             psx_cyc_base(cpu);
