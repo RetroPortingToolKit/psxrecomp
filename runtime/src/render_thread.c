@@ -87,6 +87,20 @@ static void cpu_relax(void) {
 #define WAKE_BYTES   (128u * 1024u)
 #define WAKE_RECORDS 256u
 #define SPIN_LOOPS   4096   /* consumer polls this long before sleeping */
+/* Producer-side publish batching: committed records become visible to the
+ * render thread (one release store of wpos) every this many records / bytes,
+ * and always before the producer waits, at a frame end, drain or sync point.
+ * One store per record made the emulation thread and the render thread trade
+ * the position cache line ~12,000 times a frame on R4's race. */
+#define PUBLISH_BYTES   (16u * 1024u)
+#define PUBLISH_RECORDS 32u   /* PSX_RENDER_THREAD_PUBLISH=N overrides; 1 = every record */
+/* Consumer: busy time is published once per this many records (and when it
+ * goes idle), not timed per record. */
+#define BUSY_RECORDS    64u
+
+/* The two sides write different cache lines: wpos and the producer's own
+ * state on one set, rpos and the consumer's counters on another. */
+#define RT_LINE _Alignas(64)
 
 #define ACQ_RING 64
 
@@ -101,10 +115,14 @@ static struct {
     RtTickFn tick;
     uint64_t tick_at;          /* consumer: next tick deadline (0 = none) */
 
-    /* shared positions / counters */
-    _Atomic uint64_t wpos, rpos;
-    _Atomic uint64_t frames_produced, frames_consumed;
-    _Atomic int      render_sleeping, emu_sleeping;
+    /* shared positions / counters, grouped by the side that writes them */
+    RT_LINE _Atomic uint64_t wpos;       /* producer: published write position */
+    _Atomic uint64_t frames_produced;    /* producer */
+    RT_LINE _Atomic uint64_t rpos;       /* consumer */
+    _Atomic uint64_t frames_consumed;    /* consumer */
+    _Atomic uint64_t busy_ns, idle_ns;   /* consumer */
+    RT_LINE _Atomic int render_sleeping; /* consumer */
+    RT_LINE _Atomic int emu_sleeping;    /* producer */
     _Atomic int      running;
 
     /* hand-off + lifecycle, guarded by mtx */
@@ -114,6 +132,10 @@ static struct {
     _Atomic int released;      /* read unlocked by emu_wait's first check */
 
     /* producer-only */
+    RT_LINE uint64_t wlocal;   /* committed write position, published or not */
+    uint64_t rcache;           /* the producer's last read of rpos (<= rpos) */
+    uint64_t unpub_bytes, unpub_records;
+    uint64_t publish_records;  /* PUBLISH_RECORDS or PSX_RENDER_THREAD_PUBLISH */
     uint64_t pend_start, pend_size, pend_payload_off;
     uint16_t pend_op, pend_flags;
     uint32_t pend_payload;
@@ -125,7 +147,6 @@ static struct {
     /* stats (producer unless noted) */
     uint64_t records, bytes, acquires, releases, oversize;
     uint64_t bp_waits, full_waits, bp_ns, full_ns, acq_ns, high_water;
-    _Atomic uint64_t busy_ns, idle_ns;   /* consumer */
     _Atomic uint64_t bp_events;          /* producer writes, any thread reads */
     RtAcquireEvent acq_ring[ACQ_RING];
     uint64_t acq_n;
@@ -207,10 +228,15 @@ static void *render_main(void *arg)
     R.ctx(R.user, 1);
     uint64_t r = atomic_load(&R.rpos);
     int have_ctx = 1;
+    uint64_t burst_t0 = 0, burst_n = 0;   /* busy time of the current burst */
     for (;;) {
         run_tick();
         uint64_t w = atomic_load_explicit(&R.wpos, memory_order_acquire);
         if (r == w) {
+            if (burst_n) {
+                atomic_fetch_add(&R.busy_ns, now_ns() - burst_t0);
+                burst_n = 0;
+            }
             int spun = 0;
             while (spun < SPIN_LOOPS &&
                    atomic_load_explicit(&R.wpos, memory_order_acquire) == r) {
@@ -241,7 +267,7 @@ static void *render_main(void *arg)
             if (done) break;
             continue;
         }
-        uint64_t t0 = now_ns();
+        if (!burst_n) burst_t0 = now_ns();
         const RtCmd *c = (const RtCmd *)(R.ring + (r & R.mask));
         if (c->op == OP_PAD) {
             if (c->flags & F_FRAME)
@@ -250,8 +276,13 @@ static void *render_main(void *arg)
             R.exec(R.user, c, (const uint8_t *)c + sizeof(RtCmd));
         }
         r += c->size;
-        atomic_store(&R.rpos, r);
-        atomic_fetch_add(&R.busy_ns, now_ns() - t0);
+        atomic_store(&R.rpos, r);   /* seq_cst: pairs with wake_emu's load */
+        if (++burst_n >= BUSY_RECORDS) {
+            const uint64_t t1 = now_ns();
+            atomic_fetch_add(&R.busy_ns, t1 - burst_t0);
+            burst_t0 = t1;
+            burst_n = 1;
+        }
         wake_emu();
     }
     if (have_ctx) R.ctx(R.user, 0);
@@ -265,7 +296,17 @@ static void *render_main(void *arg)
 
 /* ---- producer ------------------------------------------------------------ */
 
+/* Make every committed record visible to the render thread. */
+static void publish(void) {
+    if (!R.unpub_records && !R.unpub_bytes) return;
+    /* seq_cst, not release: with wake_render's load of render_sleeping it
+     * is the store-then-load pair the sleep handshake relies on. */
+    atomic_store(&R.wpos, R.wlocal);
+    R.unpub_bytes = R.unpub_records = 0;
+}
+
 static void wake_render(int force) {
+    if (force) publish();
     if (!force && R.unwoken_bytes < WAKE_BYTES && R.unwoken_records < WAKE_RECORDS)
         return;
     R.unwoken_bytes = R.unwoken_records = 0;
@@ -289,7 +330,9 @@ static void emu_wait(Pred pred, uint64_t arg) {
 }
 
 static int pred_space(uint64_t need_end) {   /* need_end: wpos after the write */
-    return need_end - atomic_load(&R.rpos) <= R.cap;
+    if (need_end - R.rcache <= R.cap) return 1;
+    R.rcache = atomic_load_explicit(&R.rpos, memory_order_acquire);
+    return need_end - R.rcache <= R.cap;
 }
 static int pred_drained(uint64_t w) { return atomic_load(&R.rpos) == w; }
 static int pred_frames(uint64_t limit) {
@@ -301,7 +344,7 @@ void *rt_cmd_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes) {
     if (!rt_running() || R.pending || op == OP_PAD) return NULL;
     uint64_t size = align_up(sizeof(RtCmd) + (uint64_t)payload_bytes);
     if (size > R.cap / 2) { R.oversize++; return NULL; }
-    uint64_t w = atomic_load_explicit(&R.wpos, memory_order_relaxed);
+    uint64_t w = R.wlocal;
     uint64_t off = w & R.mask;
     uint64_t pad = (off + size > R.cap) ? R.cap - off : 0;
     if (!pred_space(w + pad + size)) {
@@ -333,24 +376,32 @@ void rt_cmd_commit(void) {
     if (!R.pending) return;
     R.pending = 0;
     uint64_t end = R.pend_start + R.pend_size;
-    atomic_store(&R.wpos, end);
+    R.unpub_bytes += end - R.wlocal;   /* includes a pad record before it */
+    R.unpub_records++;
+    R.wlocal = end;
     R.records++;
     R.bytes += R.pend_size;
-    uint64_t depth = end - atomic_load(&R.rpos);
+    /* Against the producer's last view of rpos: an upper bound. */
+    uint64_t depth = end - R.rcache;
     if (depth > R.high_water) R.high_water = depth;
     R.unwoken_bytes += R.pend_size;
     R.unwoken_records++;
+    if (R.unpub_records >= R.publish_records || R.unpub_bytes >= PUBLISH_BYTES)
+        publish();
     wake_render(0);
 }
 
 static void commit_marker(uint16_t flags) {
-    uint64_t w = atomic_load_explicit(&R.wpos, memory_order_relaxed);
+    uint64_t w = R.wlocal;
     uint64_t off = w & R.mask;
     uint64_t size = sizeof(RtCmd);
     if (!pred_space(w + size)) emu_wait(pred_space, w + size);
     RtCmd *c = (RtCmd *)(R.ring + off);   /* 16 bytes always fit before the end */
     c->size = (uint32_t)size; c->op = OP_PAD; c->flags = flags; c->payload = 0; c->seq = R.seq++;
-    atomic_store(&R.wpos, w + size);
+    R.wlocal = w + size;
+    R.unpub_bytes += size;
+    R.unpub_records++;
+    publish();
 }
 
 void rt_frame_end(void) {
@@ -382,7 +433,8 @@ int rt_frames_ahead(void) {
 
 void rt_drain(void) {
     if (!rt_running() || R.held) return;
-    uint64_t w = atomic_load(&R.wpos);
+    publish();
+    uint64_t w = R.wlocal;
     emu_wait(pred_drained, w);
 }
 
@@ -435,6 +487,12 @@ int rt_start(const RtConfig *cfg) {
     R.user = cfg->user;
     R.tick = cfg->tick;
     R.tick_at = 0;
+    R.publish_records = PUBLISH_RECORDS;
+    {
+        const char *e = getenv("PSX_RENDER_THREAD_PUBLISH");
+        const long n = (e && *e) ? strtol(e, NULL, 10) : 0;
+        if (n >= 1 && n <= 4096) R.publish_records = (uint64_t)n;
+    }
     mtx_init(&R.mtx);
     cnd_init(&R.cv_work);
     cnd_init(&R.cv_emu);
