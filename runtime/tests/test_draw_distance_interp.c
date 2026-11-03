@@ -52,6 +52,8 @@ uint32_t i_mask;
 uint64_t psx_cycle_count;
 uint32_t g_psx_mod_function_entry_hooks;
 uint32_t g_psx_mod_instruction_hooks;
+/* The interpreter consults the optional override tier; none registered here. */
+int (*g_psx_func_override_hook)(CPUState *, uint32_t);
 static uint32_t address_calls, shadow_address, address_word;
 uint32_t psx_mod_memory_address(const CPUState *cpu, uint32_t pc, uint32_t word, uint32_t address) {
     (void)cpu; (void)pc; (void)word;

@@ -4639,10 +4639,11 @@ static void gpu_rgb555_to_rgb888(uint16_t c, uint8_t* r, uint8_t* g, uint8_t* b)
         color_lut_map555(s_screen_lut, c, r, g, b);
         return;
     }
-    /* Default raw path — byte-identical to upstream. */
-    *r = (uint8_t)((c & 0x1Fu) << 3);
-    *g = (uint8_t)(((c >> 5) & 0x1Fu) << 3);
-    *b = (uint8_t)(((c >> 10) & 0x1Fu) << 3);
+    /* Match the raw ColorLut's full-range 5-to-8 expansion. */
+    uint32_t red = c & 0x1Fu, green = (c >> 5) & 0x1Fu, blue = (c >> 10) & 0x1Fu;
+    *r = (uint8_t)((red << 3) | (red >> 2));
+    *g = (uint8_t)((green << 3) | (green >> 2));
+    *b = (uint8_t)((blue << 3) | (blue >> 2));
 }
 
 void gpu_display_pixel_rgb_in(const uint16_t* image, const GpuDisplayInfo* di,
