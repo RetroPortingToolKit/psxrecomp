@@ -417,6 +417,52 @@ class MigrateBundledHelpers(unittest.TestCase):
             self.assertIn(flag, r.stdout)
 
 
+class NativeToolchainArchiveTests(unittest.TestCase):
+    def test_case_aliases_preserve_the_canonical_file(self):
+        import io
+        import tarfile
+        sys.path.insert(0, str(FW / "tools"))
+        import release_stage
+        with tempfile.TemporaryDirectory(prefix="psx-python-alias-") as directory:
+            root = Path(directory)
+            archive = root / "python.tar"
+            payload = b"synthetic terminfo data"
+            with tarfile.open(archive, "w") as tar:
+                entry = tarfile.TarInfo("python/share/terminfo/n/NCR260")
+                entry.size = len(payload)
+                entry.mode = 0o755
+                tar.addfile(entry, io.BytesIO(payload))
+                for name, target in (("ncr260", "NCR260"), ("other", "ncr260")):
+                    entry = tarfile.TarInfo("python/share/terminfo/n/" + name)
+                    entry.type = tarfile.SYMTYPE
+                    entry.linkname = target
+                    tar.addfile(entry)
+            stale = root / "out/python/share/terminfo/n/ncr260"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"obsolete alias")
+            extracted = Path(release_stage._extract_tar_top_level(str(archive), str(root / "out"), "python"))
+            for name in ("NCR260", "ncr260", "other"):
+                self.assertEqual((extracted / "share/terminfo/n" / name).read_bytes(), payload)
+            self.assertFalse((extracted / "share/terminfo/n/ncr260").is_symlink())
+            self.assertEqual((extracted / "share/terminfo/n/ncr260").stat().st_mode,
+                             (extracted / "share/terminfo/n/NCR260").stat().st_mode)
+
+    def test_external_symlink_is_still_refused(self):
+        import tarfile
+        sys.path.insert(0, str(FW / "tools"))
+        import release_stage
+        with tempfile.TemporaryDirectory(prefix="psx-python-escape-") as directory:
+            root = Path(directory)
+            archive = root / "python.tar"
+            with tarfile.open(archive, "w") as tar:
+                entry = tarfile.TarInfo("python/bad")
+                entry.type = tarfile.SYMTYPE
+                entry.linkname = "../../outside"
+                tar.addfile(entry)
+            with self.assertRaises(tarfile.FilterError):
+                release_stage._extract_tar_top_level(str(archive), str(root / "out"), "python")
+
+
 if __name__ == "__main__":
     if GIT is None or BASH is None:
         print("git and bash are required", file=sys.stderr)
