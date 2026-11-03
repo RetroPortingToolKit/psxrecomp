@@ -42,6 +42,44 @@ int main(void) {
     CHECK(psx_keybinds_get_button(1, PSX_KB_CROSS) == left);
     CHECK(psx_keybinds_get_button_alt(1, PSX_KB_CIRCLE) == left);
     CHECK(psx_keybinds_get_button(1, PSX_KB_RS_RIGHT) == left);
+    /* A routed keyboard owns its actual sources, in either seat. Button,
+     * analog and policy detection must agree; saved maps stay unchanged. */
+    keys[SDL_SCANCODE_RIGHT] = 1;
+    psx_keybinds_set_keyboard_owners(1u);
+    CHECK(psx_keybinds_pad_word(keys, 1) == 0xFFDF);
+    CHECK(psx_keybinds_pad_word(keys, 2) == 0xFFFF);
+    CHECK(!psx_keybinds_dpad_active(keys, 2));
+    uint8_t owned_axes[4] = {128,128,128,128};
+    psx_keybinds_sticks(keys, 2, owned_axes);
+    CHECK(owned_axes[0] == 128);
+    psx_keybinds_set_keyboard_owners(2u);
+    CHECK(psx_keybinds_pad_word(keys, 1) == 0xFFFF);
+    CHECK(psx_keybinds_pad_word(keys, 2) == 0xFFDF);
+    CHECK(!psx_keybinds_dpad_active(keys, 1));
+    keys[SDL_SCANCODE_RIGHT] = 0;
+    /* Hybrid mouse bindings not claimed by the keyboard still work. A
+     * primary or alternate source claimed by the keyboard does not leak. */
+    psx_keybinds_set_keyboard_owners(1u);
+    mouse_buttons = SDL_BUTTON(SDL_BUTTON_LEFT);
+    CHECK(psx_keybinds_pad_word(keys, 1) == 0x9FFF);
+    CHECK(psx_keybinds_pad_word(keys, 2) == 0xFFFF);
+    psx_keybinds_set_button_alt(2, PSX_KB_CROSS, PSXKB_MOUSE_SC(SDL_BUTTON_MIDDLE));
+    mouse_buttons = SDL_BUTTON(SDL_BUTTON_MIDDLE);
+    CHECK(psx_keybinds_pad_word(keys, 2) == 0xBFFF);
+    psx_keybinds_set_button_alt(2, PSX_KB_CROSS, SDL_SCANCODE_UNKNOWN);
+    /* Temporary title profiles own their live bindings, not the user's
+     * stored defaults. Clearing the profile releases those claims. */
+    PsxPlayerBinds temporary = {0};
+    temporary.up = SDL_SCANCODE_W;
+    CHECK(psx_keybinds_set_session_player(1, &temporary));
+    mouse_buttons = 0;
+    keys[SDL_SCANCODE_W] = keys[SDL_SCANCODE_RIGHT] = 1;
+    CHECK(psx_keybinds_pad_word(keys, 2) == 0xFFDF);
+    psx_keybinds_clear_session_players();
+    CHECK(psx_keybinds_pad_word(keys, 2) == 0xF7FF); /* P1 rebound W to Mouse3. */
+    psx_keybinds_set_keyboard_owners(0);
+    CHECK(psx_keybinds_pad_word(keys, 2) == 0xF7DF);
+    memset(keys, 0, sizeof keys);
     mouse_buttons = SDL_BUTTON(SDL_BUTTON_LEFT);
     CHECK(psx_keybinds_pad_word(keys, 1) == 0x9FFF);
     psx_keybinds_suppress_control(1, left);

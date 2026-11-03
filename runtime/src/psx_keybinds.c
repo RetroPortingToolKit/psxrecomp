@@ -279,23 +279,6 @@ static void write_ini(const char *path) {
     printf("[Keybinds] Wrote %s\n", path);
 }
 
-static int player_all_unbound(const PsxPlayerBinds *pb) {
-    for (int i = 0; i < PSXKB_N; i++) {
-        SDL_Scancode sc = *(const SDL_Scancode *)((const char *)pb + s_buttons[i].offset);
-        if (sc != SDL_SCANCODE_UNKNOWN) return 0;
-    }
-    return 1;
-}
-
-/* Older keybinds.ini left P2+ fully unbound. Promote empty slots to the shared
- * default map so every player can Reset / use keyboard with the P1 layout. */
-static void promote_empty_players(void) {
-    for (int p = 0; p < PSXKB_MAX_PLAYERS; ++p) {
-        if (player_all_unbound(&s_binds.player[p]))
-            s_binds.player[p] = s_default_binds.player[0];
-    }
-}
-
 static void load_ini(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return;
@@ -340,7 +323,8 @@ static void load_ini(const char *path) {
         }
     }
     fclose(f);
-    promote_empty_players();
+    /* Missing entries retain the initialized defaults. Explicit None entries,
+     * including an entirely empty player map, must remain unbound. */
     printf("[Keybinds] Loaded %s\n", path);
 }
 
@@ -368,6 +352,28 @@ static PsxPlayerBinds *player_binds(int player) {
  * Mouse pseudo-scancodes MUST be checked before indexing keys[] — they sit
  * beyond the keyboard state array (SDL_NUM_SCANCODES entries). */
 static uint8_t s_suppressed[PSXKB_MAX_PLAYERS][PSXKB_MOUSE_SC_BASE + 6];
+static uint32_t s_keyboard_owners;
+
+void psx_keybinds_set_keyboard_owners(uint32_t players) {
+    s_keyboard_owners = players & ((1u << PSXKB_MAX_PLAYERS) - 1u);
+}
+
+static int owned_by_keyboard(SDL_Scancode sc, int slot) {
+    if (!s_keyboard_owners || (s_keyboard_owners & (1u << slot))) return 0;
+    for (int p = 0; p < PSXKB_MAX_PLAYERS; ++p) {
+        if (!(s_keyboard_owners & (1u << p))) continue;
+        const PsxPlayerBinds *primary = s_session_active[p]
+            ? &s_session_binds[p] : &s_binds.player[p];
+        for (int i = 0; i < PSXKB_N; ++i) {
+            const size_t offset = s_buttons[i].offset;
+            if (*(const SDL_Scancode *)((const char *)primary + offset) == sc ||
+                (!s_session_active[p] &&
+                 *(const SDL_Scancode *)((const char *)&s_alt_binds.player[p] + offset) == sc))
+                return 1;
+        }
+    }
+    return 0;
+}
 
 void psx_keybinds_suppress_control(int player, SDL_Scancode sc) {
     if (player >= 1 && player <= PSXKB_MAX_PLAYERS && (int)sc > 0 &&
@@ -403,7 +409,7 @@ static int held_sc(const uint8_t *keys, SDL_Scancode sc, int slot) {
         if (!down) psx_keybinds_release_control(slot + 1, sc);
         return 0;
     }
-    return down;
+    return down && !owned_by_keyboard(sc, slot);
 }
 
 /* Is the input at button-def index i held for this player, via either its

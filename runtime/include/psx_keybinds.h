@@ -79,6 +79,12 @@ const PsxKeyBinds *psx_keybinds_get(void);
 int psx_keybinds_set_session_player(int player, const PsxPlayerBinds *profile);
 void psx_keybinds_clear_session_players(void);
 
+/* Active local slots explicitly routed to Keyboard (bit 0 = P1). Their
+ * bound sources belong to those slots, rather than also feeding a controller
+ * slot's keyboard/mouse overlay. Unclaimed hybrid bindings remain available.
+ * This sampling policy never changes the saved bindings. Zero clears it. */
+void psx_keybinds_set_keyboard_owners(uint32_t players);
+
 /* Runtime-owned host controls consumed by optional local input capture.
  * Suppression is per source/player, before PSX folding, and lasts through
  * release. It never clears a merged PSX button held by another source. */

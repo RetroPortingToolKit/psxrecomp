@@ -6255,24 +6255,18 @@ struct PadSources {
 static PadSources pad_sources_for(const PlayerInput& p, bool dev_here) {
     PadSources s;
     s.device   = (p.kind != 0);
-    /* Keybinds are ALWAYS live, including alongside a routed gamepad: that is
-     * the whole point of binding a mouse button for aiming while holding a
-     * pad. Routing a player to a controller used to discard every
-     * keybinds.ini/mouse bind silently.
-     *
-     * Widening this ONE line is safe precisely because every consumer reads
-     * it — the button merge, mod policy detectors and the stick
-     * fold all learn about the keyboard in the same instant. Widening the
-     * button merge alone (the original shape of this change) let a keyboard
-     * D-pad press assert the D-pad bits while policy detection never saw
-     * them, leaving a policy-driven pad reporting D-pad input while still
-     * presenting ANALOG.
-     *
-     * The PSX pad word is active-low and the merge is an AND, so an unpressed
-     * source is a no-op: a pad-only player is unaffected. kind==1 already
-     * consumes the binds through pad_buttons_for/pad_sticks_for, and applying
-     * them twice is idempotent. */
-    (void)dev_here;
+    /* Keep hybrid keyboard/mouse + gamepad controls, but a source bound by an
+     * active Keyboard-routed local player belongs to that player. Otherwise
+     * identical default maps make its keys control the gamepad player too.
+     * All button, stick and presentation-policy reads use the same filtered
+     * keybind fold. Netplay captures one local human device, so unused offline
+     * cards must not reserve keys there. Dev-any remains explicitly shared. */
+    uint32_t keyboard_owners = 0;
+    if (!dev_here && !psx_netplay_active()) {
+        for (int slot = 0; slot < g_offline_pad_count; ++slot)
+            if (g_players[slot].kind == 1) keyboard_owners |= 1u << slot;
+    }
+    psx_keybinds_set_keyboard_owners(keyboard_owners);
     s.keybinds = true;
     s.all_pads = dev_here;
     return s;

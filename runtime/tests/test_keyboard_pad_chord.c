@@ -130,6 +130,28 @@ int main(int argc, char **argv) {
         psx_keybinds_init("keyboard_pad_chord_fixture.v1/fixture");
         expect_scancode("extensionless executable saves and reloads", SDL_SCANCODE_V,
                         psx_keybinds_get_button(1, PSX_KB_UP));
+        for (int i = 0; i < PSX_KB_COUNT; ++i) {
+            psx_keybinds_set_button(2, i, SDL_SCANCODE_UNKNOWN);
+            psx_keybinds_set_button_alt(2, i, SDL_SCANCODE_UNKNOWN);
+        }
+        psx_keybinds_save();
+        psx_keybinds_reset_player(2);
+        psx_keybinds_init("keyboard_pad_chord_fixture.v1/fixture");
+        for (int i = 0; i < PSX_KB_COUNT; ++i)
+            expect_scancode("explicit None survives reload", SDL_SCANCODE_UNKNOWN,
+                            psx_keybinds_get_button(2, i));
+        psx_keybinds_set_button_alt(2, PSX_KB_CROSS, SDL_SCANCODE_G);
+        psx_keybinds_save();
+        psx_keybinds_reset_player(2);
+        psx_keybinds_init("keyboard_pad_chord_fixture.v1/fixture");
+        expect_scancode("alternate-only map keeps primary unbound", SDL_SCANCODE_UNKNOWN,
+                        psx_keybinds_get_button(2, PSX_KB_CROSS));
+        expect_scancode("alternate-only map survives reload", SDL_SCANCODE_G,
+                        psx_keybinds_get_button_alt(2, PSX_KB_CROSS));
+        /* Restore the fixture's explicit Escape binding for the suppression
+         * checks below; the all-None and alternate-only cases are complete. */
+        psx_keybinds_reset_player(2);
+        psx_keybinds_set_button(2, PSX_KB_CROSS, SDL_SCANCODE_ESCAPE);
         remove("keyboard_pad_chord_fixture.v1/fixture");
         remove("keyboard_pad_chord_fixture.v1/keybinds.ini");
 #ifdef _WIN32
