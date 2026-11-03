@@ -22,7 +22,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cc', required=True)
     args = parser.parse_args()
-    source = (Path(__file__).resolve().parents[1] / 'src/debug_server.c').read_text()
+    runtime = Path(__file__).resolve().parents[1]
+    source = (runtime / 'src/debug_server.c').read_text(encoding='utf-8')
+    frontend = (runtime / 'src/main.cpp').read_text(encoding='utf-8')
+    vblank = frontend[frontend.index('static NetplayVblankEpilogue sdl_vblank_present_body(void) {'):]
+    poll_start = vblank.index('#ifndef PSX_NO_DEBUG_TOOLS\n    debug_server_set_fmv_quiet')
+    poll_end = vblank.index('    /* Always-on wall-time stamp', poll_start)
+    input_poll = vblank[poll_start:poll_end]
     declarations = source.split('#define INPUT_ROUTE_MAX_STEPS', 1)[1].split(
         'static uint64_t s_input_route_start_frame = 0;', 1)[0]
     preamble = r'''
@@ -41,10 +47,20 @@ static PsxFrameFingerprint s_fp;
 static unsigned s_fp_head,s_fp_total;
 static int s_input_override=-1,s_input_override_p2=-1;
 static int s_input_frames,s_input_frames_p2,s_axis_override,s_pad_type_override=-1;
+static int s_pad_connected_override[2]={-1,-1};
 static unsigned char s_axis_st[4],s_host_axes[4],s_host_lt,s_host_rt;
 static int s_host_layer;
 static uint16_t s_host_buttons;
 static char response[512];
+static unsigned poll_calls, record_calls, watch_calls;
+static void debug_server_poll(void){++poll_calls;}
+#ifndef PSX_NO_DEBUG_TOOLS
+static int mdec_recently_active(int frames){(void)frames;return 0;}
+static void debug_server_set_fmv_quiet(int quiet){(void)quiet;}
+static void debug_server_wait_if_paused(void){}
+static void debug_server_record_frame(void){++record_calls;++s_frame_count;}
+static void debug_server_check_watchpoints(void){++watch_calls;}
+#endif
 static void send_ok(int id){(void)id;strcpy(response,"ok");}
 static void send_err(int id,const char *text){(void)id;snprintf(response,sizeof response,"ERROR:%s",text);}
 static void send_fmt(const char *format,...){va_list v;va_start(v,format);vsnprintf(response,sizeof response,format,v);va_end(v);}
@@ -131,6 +147,21 @@ int main(void){
     handle_input_route_start(1,"{\"after_load\":1,\"at_frame\":10}");assert(strstr(response,"ERROR")&&!s_input_route_active);
     handle_input_route_start(1,"{\"after_load\":1}");s_fp_reset_on_load=1;s_fp_head=4;s_fp_total=5;
     debug_server_note_savestate_loaded();assert(!s_input_route_wait_load&&!s_fp_reset_on_load&&!s_fp_head&&!s_fp_total);
+    /* Compile the actual VBlank frontend branch in both release/debug modes.
+     * A successful command must reach both pads for exactly its frame count. */
+    handle_input_route_clear(1,"{}");s_frame_count=100;
+    s_input_override=0xfff7;s_input_frames=2;
+    s_input_override_p2=0xbfff;s_input_frames_p2=1;
+    int p1,p2;
+    vblank_input_poll(&p1,&p2);assert(p1==0xfff7&&p2==0xbfff);
+    vblank_input_poll(&p1,&p2);assert(p1==0xfff7&&p2==-1);
+    vblank_input_poll(&p1,&p2);assert(p1==-1&&p2==-1);
+    assert(poll_calls==3&&s_frame_count==103);
+#ifdef PSX_NO_DEBUG_TOOLS
+    assert(record_calls==0&&watch_calls==0);
+#else
+    assert(record_calls==3&&watch_calls==3);
+#endif
     puts("debug input route: P2 timing, isolation, deferred start, clearing and legacy P1 pass");
     return 0;
 }
@@ -138,11 +169,15 @@ int main(void){
     with tempfile.TemporaryDirectory(prefix='psx-input-route-') as directory:
         path = Path(directory) / 'route.c'
         path.write_text(preamble + '\n#define INPUT_ROUTE_MAX_STEPS' + declarations +
-                        'static uint64_t s_input_route_start_frame = 0;\n' + body + checks)
+                        'static uint64_t s_input_route_start_frame = 0;\n' + body +
+                        '\nstatic void vblank_input_poll(int *p1,int *p2){\n' +
+                        input_poll + '\n*p1=override;*p2=override_p2;\n}\n' + checks)
         executable = Path(directory) / 'route.exe'
-        subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', str(path),
-                        '-o', str(executable)], check=True)
-        subprocess.run([str(executable)], check=True)
+        for lean in (False, True):
+            subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            *(['-DPSX_NO_DEBUG_TOOLS=1'] if lean else []), str(path),
+                            '-o', str(executable)], check=True)
+            subprocess.run([str(executable)], check=True)
 
 
 if __name__ == '__main__':

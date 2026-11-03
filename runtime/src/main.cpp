@@ -9164,18 +9164,17 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     debug_server_record_frame();
     debug_server_check_watchpoints();
 
-    /* Check debug server input override. */
-    int override = debug_server_get_input_override();
-    int override_p2 = debug_server_get_input_override_port2();
 #else
     /* Release keeps TCP commands available without per-frame trace recording.
      * An unrequested server has no mutex/thread and polling returns at once. */
     debug_server_poll();
     extern uint64_t s_frame_count;
     s_frame_count++;
-    int override = -1;
-    int override_p2 = -1;
 #endif
+    /* TCP input commands are available in lean builds too. Consume each
+     * port once per guest frame so acknowledged presses reach the pads. */
+    int override = debug_server_get_input_override();
+    int override_p2 = debug_server_get_input_override_port2();
     /* Always-on wall-time stamp for this guest frame (host_span_ring.h). */
     extern uint64_t s_frame_count;
     uint32_t stamp_static_checks = 0;
