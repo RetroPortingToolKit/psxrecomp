@@ -39,6 +39,7 @@ static int status_ok=1,status_slot=-1;
 static const char *status_op="save";
 static std::vector<uint8_t> slot_image;
 static std::string plan_text="fixture-plan";
+static unsigned portable_requests;
 static void (*activation)(),(*vblank)(),(*savestate)(),(*osd_activation)(),(*osd_vblank)(),(*session_reset)();
 static void (*recording_activation)();
 static uint64_t ram_reads;
@@ -100,8 +101,8 @@ int savestate_read_slot(int,uint8_t **data,size_t *size) {
     *size=slot_image.size();return 1;
 }
 namespace PSXRecompV4 {
-std::string mod_runtime_plan_fingerprint_portable() {return plan_text;}
-const std::string& mod_runtime_fingerprint() {static const std::string fp="fixture-plan";return fp;}
+std::string mod_runtime_plan_fingerprint_portable() {++portable_requests;return plan_text;}
+const std::string& mod_runtime_fingerprint() {return plan_text;}
 const std::filesystem::path& mod_runtime_root() {
     static std::filesystem::path root;
     root=std::filesystem::path(application_root)/"mods";return root;
@@ -232,6 +233,7 @@ int main(int argc,char **argv) {
     CHECK(!sources[0] && !sources[1]);
     const auto recording_reads=ram_reads;
     run_frames(0,200);
+    CHECK(portable_requests==0); // recording observes the committed plan without disc hashing
     CHECK(ram_reads-recording_reads==200*DigestWords); // display never adds RAM sampling
     CHECK(shown[0].find("REC")!=std::string::npos && shown[0].find("F199")!=std::string::npos);
     recording.flush();
@@ -443,5 +445,6 @@ int main(int argc,char **argv) {
     CHECK(shown[0].find("F0")!=std::string::npos && shown[0].find("REC")==std::string::npos);
     CHECK(ram_reads==restarted_reads && !recording.is_open() && !sources[0]);
     session_reset();
+    CHECK(portable_requests==0); // replay/metadata paths remain observational too
     printf("diagnostic recording/replay boundary checks passed\n");return 0;
 }
