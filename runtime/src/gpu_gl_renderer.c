@@ -118,6 +118,47 @@
 #include <string.h>
 #include <stdatomic.h>
 #include "png_write.h"   /* png_write_rgb — present_shot readback */
+
+/* GL_BLEND / GL_STENCIL_TEST enable state, cached. A glIsEnabled() is a
+ * round trip to the driver: with NVIDIA's threaded optimization it waits for
+ * the driver's worker thread to drain every command queued before it. The
+ * PGXP depth pass (depth_restore_ex) asked for both caps after each batch, and
+ * on R4's 18x race that wait was ~45% of the render thread's wall time. Every
+ * toggle of these two caps on the main context goes through this file (the
+ * #defines below; gl_postfx.inc is included here; the present thread's context
+ * never touches them; ImGui restores what it changes), so a cached value is
+ * exact. -1 = unknown: the next query asks GL once. Reset on context creation.
+ * PSX_GL_CAP_CACHE=0 asks GL every time, as before. */
+static signed char s_glcap_blend = -1, s_glcap_stencil = -1;
+static int s_glcap_on = -1;
+static signed char *glcap_slot(GLenum cap) {
+    if (s_glcap_on < 0) {
+        const char *e = getenv("PSX_GL_CAP_CACHE");
+        s_glcap_on = (e && *e) ? (*e != '0') : 1;
+    }
+    if (!s_glcap_on) return NULL;
+    return cap == GL_BLEND ? &s_glcap_blend : cap == GL_STENCIL_TEST ? &s_glcap_stencil : NULL;
+}
+static inline void glcap_enable(GLenum cap) {
+    signed char *c = glcap_slot(cap);
+    glEnable(cap);
+    if (c) *c = 1;
+}
+static inline void glcap_disable(GLenum cap) {
+    signed char *c = glcap_slot(cap);
+    glDisable(cap);
+    if (c) *c = 0;
+}
+static inline GLboolean glcap_is_enabled(GLenum cap) {
+    signed char *c = glcap_slot(cap);
+    if (!c) return glIsEnabled(cap);
+    if (*c < 0) *c = glIsEnabled(cap) ? 1 : 0;
+    return (GLboolean)*c;
+}
+static inline void glcap_forget(void) { s_glcap_blend = s_glcap_stencil = -1; }
+#define glEnable(cap)    glcap_enable(cap)
+#define glDisable(cap)   glcap_disable(cap)
+#define glIsEnabled(cap) glcap_is_enabled(cap)
 static uint64_t s_fg_flips;   /* frame generation (below): game frames seen */
 
 #ifndef GL_BGRA
@@ -6584,6 +6625,7 @@ int gl_renderer_init_context(SDL_Window *win) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     s_ctx = SDL_GL_CreateContext(win);
+    glcap_forget();
     if (!s_ctx) { fprintf(stdout, "psxrecomp: GL context creation failed (%s)\n", SDL_GetError()); return 0; }
     if (SDL_GL_MakeCurrent(win, s_ctx) != 0) { fprintf(stdout, "psxrecomp: MakeCurrent failed (%s)\n", SDL_GetError()); SDL_GL_DeleteContext(s_ctx); s_ctx=NULL; return 0; }
     /* Swap interval: 1=vsync (tear-free, default), 0=immediate (lowest display
