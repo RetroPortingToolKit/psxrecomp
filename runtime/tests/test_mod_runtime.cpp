@@ -2461,7 +2461,7 @@ int main(int argc, char** argv) {
         // Catalog changes cannot certify stale in-memory parsed manifests.
         write_text(manifest_path, manifest + "\n# external catalog mutation\n");
         check(!PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
-              error.find("catalog changed") != std::string::npos,
+              error.find("reopen the launcher") != std::string::npos,
               "changed manifest requires rescan instead of resealing stale package");
         check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error), "explicit initialize rescans changed catalog");
         const int before_netplay = prepare_calls;
