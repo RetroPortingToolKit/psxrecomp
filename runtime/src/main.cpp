@@ -9144,14 +9144,15 @@ static bool local_mouse_live(int override_word) {
     return pad_ext_live(&g) != 0;
 }
 
+/* Retain the sampled frame even after the final timed override is consumed. */
+static bool s_digital_pad_injected_frame = false;
+
 extern "C" int psx_mod_read_digital_pad(uint32_t player,PSXModDigitalPadReader *reader,
                                          uint32_t legacy_buttons,uint32_t *buttons) {
     if(!reader || reader->struct_size!=sizeof *reader || !buttons)return 0;
-#ifndef PSX_NO_DEBUG_TOOLS
-    if(debug_server_get_input_override()>=0) {
+    if(s_digital_pad_injected_frame || debug_server_input_override_active()) {
         digital_pad_reader_reset(reader);return 0;
     }
-#endif
     if(player!=0 || g_offline_pad_count!=1 || !local_mouse_live(-1) ||
        psx_local_mouse_installed() || sio_get_multitap() ||
        mod_controller_source_present(player) || mod_pad_transform_initial_type(player)>=0 ||
@@ -9200,6 +9201,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      * port once per guest frame so acknowledged presses reach the pads. */
     int override = debug_server_get_input_override();
     int override_p2 = debug_server_get_input_override_port2();
+    s_digital_pad_injected_frame = override >= 0;
     /* Always-on wall-time stamp for this guest frame (host_span_ring.h). */
     extern uint64_t s_frame_count;
     uint32_t stamp_static_checks = 0;

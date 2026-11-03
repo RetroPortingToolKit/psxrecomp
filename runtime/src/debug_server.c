@@ -17778,6 +17778,14 @@ static int input_route_next(unsigned port)
     return -1;
 }
 
+/* Read-only admission check: guest observers must never advance timed input.
+ * Keep deferred routes excluded too; they belong to an injected-input session. */
+int debug_server_input_override_active(void)
+{
+    return s_input_override >= 0 || s_axis_override || s_host_layer ||
+        (s_input_route_active && s_input_route_port == 1);
+}
+
 int debug_server_get_input_override(void)
 {
     int current = input_route_next(1);
