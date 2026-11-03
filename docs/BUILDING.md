@@ -44,24 +44,26 @@ the bundled `tcc` matters only for end-user release packages.
 
 ### Get the source
 
-This repository has two submodules, **neither of which is required** for the
-recompiler and runtime builds described below:
+The recompiler needs no submodules. Runtime features use these dependencies:
 
-| Submodule | Needed when |
+| Dependency | Needed when |
 |---|---|
-| `recomp-ui` | `-DPSX_RECOMP_UI=ON` (the launcher UI). Configure **fails** with a `FATAL_ERROR` if this is ON and the submodule is absent. |
+| A downstream game's pinned `recomp-ui` | `-DPSX_RECOMP_UI=ON` (the launcher UI). Configure fails if the UI source is absent. It is not a submodule of this framework repository. |
 | `lib/recomp-net` | `-DPSX_NETPLAY=ON` (netplay). |
+| `lib/retcomm-rbengine` | Netplay or `-DPSX_REWIND=ON` (local rewind, enabled by default). An external checkout can be supplied with `-DRECOMP_RBENGINE_ROOT=/path/to/retcomm-rbengine`. |
 
-A plain clone is enough to build the recompiler and the runtime:
+A plain clone is enough for the recompiler and the minimal runtime command
+below, which explicitly disables the launcher, netplay and rewind:
 
 ```sh
-git clone https://github.com/mstan/psxrecomp.git
+git clone https://github.com/RetroPortingToolKit/psxrecomp.git
 ```
 
-Add `--recurse-submodules` if you intend to build the launcher or netplay:
+Add `--recurse-submodules` for netplay or local rewind. Launcher builds also
+need the downstream game's pinned UI source:
 
 ```sh
-git clone --recurse-submodules https://github.com/mstan/psxrecomp.git
+git clone --recurse-submodules https://github.com/RetroPortingToolKit/psxrecomp.git
 ```
 
 ## Per-platform prerequisites
@@ -123,7 +125,7 @@ bash tools/regen_bios.sh --config bios/SCPH1001.toml   # optional, needs your ow
 
 # 3. Runtime → produces psx-runtime (BIOS-only for this repo)
 cmake -S runtime -B runtime/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DPSX_RECOMP_UI=OFF
+      -DPSX_RECOMP_UI=OFF -DPSX_NETPLAY=OFF -DPSX_REWIND=OFF
 cmake --build runtime/build --target psx-runtime
 ```
 
