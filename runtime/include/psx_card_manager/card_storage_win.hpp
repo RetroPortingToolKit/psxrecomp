@@ -27,7 +27,16 @@ struct Handle {
 inline std::runtime_error error(const char* text) {
     return std::runtime_error(std::string(text)+" (Windows error "+std::to_string(GetLastError())+")");
 }
-inline fs::path full_path(const fs::path& p) {return fs::absolute(p).lexically_normal();}
+inline fs::path full_path(const fs::path& p) {
+    // MinGW filesystem::absolute can turn a UNC path into a local-drive path.
+    // Resolve through Windows before classifying the volume or opening a file.
+    DWORD needed=GetFullPathNameW(p.c_str(),0,nullptr,nullptr);
+    if(!needed)throw error("Cannot resolve file path");
+    std::wstring result(needed,L'\0');
+    DWORD count=GetFullPathNameW(p.c_str(),needed,result.data(),nullptr);
+    if(!count || count>=needed)throw error("Cannot resolve file path");
+    result.resize(count);return fs::path(result);
+}
 inline std::wstring native(const fs::path& input) {
     auto s=full_path(input).wstring();
     if(s.rfind(L"\\\\?\\",0)==0)return s;

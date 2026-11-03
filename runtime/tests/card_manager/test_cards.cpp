@@ -77,6 +77,7 @@ int main(int argc,char** argv)try {
         SetFileAttributesW(cardstore::native(source).c_str(),FILE_ATTRIBUTE_NORMAL);
         rejected([&]{cardstore::read(root/"missing.mcd");},"Missing card not created");
         check(!fs::exists(root/"missing.mcd"),"Missing remains missing");
+        check(cardstore::full_path(LR"(\\invalid-test-host\missing\card.mcd)").wstring().rfind(L"\\\\",0)==0,"UNC identity preserved during path resolution");
         rejected([&]{cardstore::local_volume(L"\\\\invalid-test-host\\missing\\card.mcd");},"NAS output refused");
         auto export_path=root/"export.mcs";cardstore::export_save(snap,0,export_path);
         check(read_mcs(cardstore::read(export_path).data).data==b.saves[0].data,"Disk MCS round trip");
