@@ -210,6 +210,8 @@ void sio_get_pad_jogcon_motor(int slot, uint8_t *command, uint8_t *strength);
  * pad 0 .. PSX_MAX_PLAYERS-1. */
 uint16_t sio_get_pad_buttons(void);
 uint16_t sio_get_pad_buttons_slot(int slot);
+struct PSXResolvedDigitalPad;
+int sio_get_resolved_digital_pad(int slot, struct PSXResolvedDigitalPad *out);
 
 /* Side-effect-FREE SIO register peeks for the debug/observability path ONLY.
  * NEVER use these for the guest bus — the guest must call sio_read() (which keeps

@@ -23,6 +23,14 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(digital_pad_snapshot_test tests/test_digital_pad_snapshot.c)
+    target_include_directories(digital_pad_snapshot_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(digital_pad_snapshot_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(digital_pad_snapshot_test PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME digital_pad_snapshot_test COMMAND digital_pad_snapshot_test)
     foreach(_native IN ITEMS 0 1)
         add_executable(host_deadline_${_native}_test tests/test_host_deadline.c)
         target_include_directories(host_deadline_${_native}_test PRIVATE include)
