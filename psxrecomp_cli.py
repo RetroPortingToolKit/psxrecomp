@@ -631,6 +631,8 @@ def _build_recompiler_targets(
                     "or run: python3 psxrecomp/psxrecomp_cli.py ensure-toolchain"
                 )
             progress.log("Using system cmake/ninja on PATH for emitters")
+        elif sys.platform != "win32":
+            progress.log("Using system cmake/ninja on PATH for emitters")
         elif not activate_embedded_toolchain(project_root, progress):
             raise RuntimeError(
                 "Toolchain ensure succeeded but bin/ is not usable for emitters"
