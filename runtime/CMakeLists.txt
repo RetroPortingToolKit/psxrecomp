@@ -384,6 +384,12 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME display_ring_capture_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_ring_capture.py"
+                --cc "${CMAKE_C_COMPILER}" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/display-ring-fixture")
+            set_tests_properties(display_ring_capture_test PROPERTIES RUN_SERIAL TRUE)
+        endif()
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             add_test(NAME kseg2_inline_load_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kseg2_inline_load.py"

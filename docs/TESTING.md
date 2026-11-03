@@ -1,5 +1,15 @@
 # Testing
 
+`display_ring_capture_test` executes the production historical capture/get and
+scanout functions against authored full 480-line and packed 24-bit images at
+O0/O2. It checks every RGB byte, stored geometry after live state changes,
+CPU/FBO selection, stale-frame refusal and all 32,768 raw 15-bit colors. Raw
+scanout uses full-range bit replication (white is 255, not 248), matching the
+raw color table. PNG encoding, GL readback, configuration selection and RPC
+transport are boundary stubs; this does not qualify a title or GL presentation.
+The command-line fixture is registered for GNU-style compiler frontends only.
+
+
 ## Running the tests
 
 ```sh
