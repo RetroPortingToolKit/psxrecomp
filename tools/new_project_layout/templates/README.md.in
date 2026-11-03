@@ -69,8 +69,11 @@ git submodule update --init --recursive
 python3 psxrecomp/psxrecomp_cli.py generate \
   --config game.toml --project-root . --disc disc/<your>.cue
 git add generated && git commit -m "Regenerate game C"
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release --target psx-runtime
+# Configures, builds, and stages overlay_toolchain/ beside the runtime so
+# streamed overlays can be compiled to native shards (a bare cmake build
+# skips that stage and leaves every overlay gap interpreted).
+python3 psxrecomp/psxrecomp_cli.py rebuild \
+  --config game.toml --project-root . --build-dir build-release --no-pgo
 ```
 
 Official optimized Windows/Linux releases use the maintained shared builder
