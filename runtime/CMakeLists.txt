@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 # ---- Native/oracle runtime targets ----
 
-set(PSXRECOMP_ROOT "${CMAKE_SOURCE_DIR}/..")
+get_filename_component(PSXRECOMP_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
 include("${CMAKE_SOURCE_DIR}/runtime.cmake")
 
 psxrecomp_add_runtime_target(psx-runtime

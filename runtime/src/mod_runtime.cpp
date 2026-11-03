@@ -142,6 +142,7 @@ struct RuntimeMods {
     uint64_t preparation_revision = 1;
     uint64_t ticket_revision = 0;
     std::map<std::filesystem::path, std::string> ticket_files;
+    bool ticket_disc_independent = false;
     bool ticket_ready = false;
     bool catalog_stamped = false;
     std::map<std::filesystem::path, std::string> loaded_catalog;
@@ -186,9 +187,52 @@ std::filesystem::path media_cache_root() {
     return root / "psxrecomp/imports";
 }
 
+bool sha256_file(const std::filesystem::path&, std::string&, std::string*);
+
+/* A declarative offline selection with no disc target or source-backed
+ * contributions does not consume a whole-disc identity. Native plugins still
+ * validate their own runtime inputs; netplay always takes the full path. */
+bool offline_disc_independent(const RuntimeMods& s) {
+    if (!required_disc_sha256().empty()) return false;
+    for (const auto& entry : s.manager.packages()) {
+        const auto& id = entry.first;
+        const auto* package = s.manager.selected_package(id);
+        if (!package) continue;
+        bool matches_game = false;
+        for (const auto& target : package->targets) {
+            if (target.game_id != "*" && target.game_id != s.game_id) continue;
+            if (!target.disc_sha256.empty()) return false;
+            matches_game = true;
+        }
+        if (!matches_game) continue;
+        auto active = [&](const std::string& feature) {
+            return s.manager.feature_enabled(id, feature) ||
+                   s.manager.feature_implicitly_enabled(id, feature);
+        };
+        bool enabled = false;
+        for (const auto& feature : package->features) enabled |= active(feature.id);
+        if (!enabled) continue;
+        if (package->resolver != "declarative" || !package->prepare.empty() ||
+            !package->derived_discs.empty()) return false;
+        for (const auto& resource : package->resources)
+            if (active(resource.feature_id) && s.manager.feature_resource_active(
+                    id, resource.feature_id, resource.id)) return false;
+        for (const auto& overlay : package->overlays)
+            if (active(overlay.feature_id)) return false;
+        for (const auto& patch : package->patches)
+            if (active(patch.feature_id) && patch.target != ModPatchTarget::MainExe)
+                return false;
+    }
+    return true;
+}
+
+bool catalog_files(RuntimeMods&, std::map<std::filesystem::path, std::string>&);
+
 bool dependency_files(RuntimeMods& s, const std::filesystem::path& disc,
-                      std::map<std::filesystem::path, std::string>& files) {
+                      std::map<std::filesystem::path, std::string>& files,
+                      bool disc_independent = false) {
     files.clear();
+    if (disc_independent) return catalog_files(s, files);
     auto add = [&](const std::filesystem::path& path) {
         if (path.empty()) return true;
         std::string stamp;
@@ -220,7 +264,19 @@ bool dependency_files(RuntimeMods& s, const std::filesystem::path& disc,
     return add(s.effective_disc_path);
 }
 
-bool sha256_file(const std::filesystem::path&, std::string&, std::string*);
+bool record_selection_file(RuntimeMods& s,
+                           std::map<std::filesystem::path, std::string>& files) {
+    const auto path = s.manager.root() / "state.toml";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        files.erase(path);
+        return !ec;
+    }
+    std::string hash;
+    if (!sha256_file(path, hash, nullptr)) return false;
+    files[path] = "sha256:" + hash;
+    return true;
+}
 
 bool catalog_files(RuntimeMods& s, std::map<std::filesystem::path, std::string>& files) {
     files.clear();
@@ -238,7 +294,7 @@ bool catalog_files(RuntimeMods& s, std::map<std::filesystem::path, std::string>&
         }
         files[it->path()] = std::move(stamp);
     }
-    return !ec;
+    return !ec && record_selection_file(s, files);
 }
 
 bool prepared_ticket_matches(const std::filesystem::path& disc) {
@@ -247,7 +303,8 @@ bool prepared_ticket_matches(const std::filesystem::path& disc) {
         !mod_runtime_session_plan_fp().empty() ||
         disc != s.disc_path || s.ticket_revision != s.preparation_revision) return false;
     std::map<std::filesystem::path, std::string> files;
-    if (!dependency_files(s, disc, files) || files != s.ticket_files) return false;
+    if (s.ticket_disc_independent && !offline_disc_independent(s)) return false;
+    if (!dependency_files(s, disc, files, s.ticket_disc_independent) || files != s.ticket_files) return false;
     auto manager = s.manager;
     if (!manager.prepare_resources(s.game_id, disc, media_cache_root(), nullptr, true)) return false;
     for (const auto& [id, versions] : s.manager.packages()) {
@@ -979,6 +1036,8 @@ int mutate(Callback callback) {
         set_error(error);
         return 0;
     }
+    if (!record_selection_file(state(), state().loaded_catalog))
+        state().catalog_stamped = false;
     if (!state().disc_path.empty())
         state().validation = state().manager.resolve(
             state().game_id, state().exe_sha256, state().disc_sha256, true);
@@ -2234,13 +2293,15 @@ static bool netplay_resources_verified(const ModResolution& plan,
     return true;
 }
 
-bool mod_runtime_prepare_resources(const std::filesystem::path& disc_path, std::string* error) {
+static bool prepare_resources(const std::filesystem::path& disc_path, std::string* error,
+                              bool require_disc_identity) {
     HostLaunchTimingScope timing(HOST_LAUNCH_PREPARE_RESOURCES);
     RuntimeMods& s = state();
     if (!s.initialized) { timing.success(); return true; }
     // Cold lobby offers prepare without committing a plan. Establish their
     // selected disc identity too; final commit independently revalidates it.
-    if (!disc_path.empty() && (disc_path != s.disc_path || s.disc_sha256.empty())) {
+    if (require_disc_identity && !disc_path.empty() &&
+        (disc_path != s.disc_path || s.disc_sha256.empty())) {
         std::string digest;
         if (!measured_disc_digest(disc_path, digest, &s.error)) {
             if (error) *error = s.error;
@@ -2259,10 +2320,14 @@ bool mod_runtime_prepare_resources(const std::filesystem::path& disc_path, std::
     return true;
 }
 
+bool mod_runtime_prepare_resources(const std::filesystem::path& disc_path, std::string* error) {
+    return prepare_resources(disc_path, error, true);
+}
+
 bool mod_runtime_verify_session_plan_fp(std::string* error);
 
 static void note_disc(RuntimeMods& s, const std::filesystem::path& disc_path) {
-    if (disc_path == s.disc_path) return;
+    if (disc_path == s.disc_path && !s.disc_sha256.empty()) return;
     std::string hash_error, digest;
     if (!sha256_file(disc_path, digest, &hash_error)) digest.clear();
     s.disc_path = disc_path;
@@ -2275,6 +2340,7 @@ struct PreparedPlanInputs {
     std::string disc_identity, data_identity;
     std::map<std::filesystem::path, std::string> dependencies;
     bool disc_stamped = false, stable = false;
+    bool disc_independent = false;
 };
 
 static bool install_plan(RuntimeMods& s, ModResolution plan,
@@ -2342,13 +2408,13 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     std::map<std::filesystem::path, std::string> after_resolve;
     std::string disc_after, data_after;
-    const bool unchanged_disc = inputs && (inputs->disc_path.empty() ||
+    const bool unchanged_disc = inputs && (inputs->disc_independent || inputs->disc_path.empty() ||
         (inputs->disc_stamped && host_file_identity(inputs->disc_path, disc_after) &&
          inputs->disc_identity == disc_after &&
          host_file_identity(resolve_disc_path(inputs->disc_path).data, data_after) &&
          inputs->data_identity == data_after));
     const bool unchanged_inputs = unchanged_disc && inputs->stable &&
-        dependency_files(s, inputs->disc_path, after_resolve) &&
+        dependency_files(s, inputs->disc_path, after_resolve, inputs->disc_independent) &&
         inputs->dependencies == after_resolve;
 #endif
     if (!preparation_continues(1.0f,"Content ready",&s.error)) {
@@ -2361,6 +2427,7 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
             if (error) *error = s.error;
             return false;
         }
+        if (!record_selection_file(s, s.loaded_catalog)) s.catalog_stamped = false;
         save_timing.success();
     }
     psx_mod_set_disc_request_provider(nullptr);
@@ -2388,7 +2455,9 @@ static bool install_plan(RuntimeMods& s, ModResolution plan,
     if (save_selection && (s.provider_preparing || s.cached_prepare) &&
         s.catalog_stamped && unchanged_inputs && session_plan_fp().empty()) {
         s.ticket_revision = s.preparation_revision;
-        s.ticket_ready = dependency_files(s, inputs->disc_path, s.ticket_files);
+        s.ticket_disc_independent = inputs->disc_independent;
+        s.ticket_ready = dependency_files(s, inputs->disc_path, s.ticket_files,
+                                         s.ticket_disc_independent);
     }
 #endif
     return true;
@@ -2406,7 +2475,7 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
     std::map<std::filesystem::path, std::string> catalog;
     if (s.catalog_stamped && (!catalog_files(s, catalog) || catalog != s.loaded_catalog)) {
         s.ticket_ready = false;
-        s.error = "Mod catalog changed after loading; reopen the launcher to rescan it.";
+        s.error = "Mod catalog or saved selections changed after loading; reopen the launcher to reload them.";
         if (error) *error = s.error;
         return false;
     }
@@ -2429,6 +2498,8 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
     PreparedPlanInputs inputs;
     inputs.disc_path = disc_path;
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
+    inputs.disc_independent = save_selection && !psx_mod_netplay_is_active() &&
+        session_plan_fp().empty() && offline_disc_independent(s);
     inputs.disc_stamped = disc_path.empty() ||
         (host_file_identity(disc_path, inputs.disc_identity) &&
          host_file_identity(resolve_disc_path(disc_path).data, inputs.data_identity));
@@ -2436,9 +2507,11 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
 #if !defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     // Offline legacy commits retain path-based digest reuse. A netplay commit
     // must remeasure even after a same-path lobby offer was prepared.
-    if (!save_selection || disc_path != s.disc_path)
+    const bool need_hash = !save_selection || disc_path != s.disc_path;
+#else
+    const bool need_hash = !inputs.disc_independent;
 #endif
-    {
+    if (need_hash) {
         std::string hash_error, digest;
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
         const bool hashed = save_selection
@@ -2451,10 +2524,13 @@ bool mod_runtime_commit(const std::filesystem::path& disc_path, std::string* err
         if (!hashed) digest.clear();
         s.disc_path = disc_path;
         s.disc_sha256 = std::move(digest);
+    } else if (inputs.disc_independent) {
+        s.disc_path = disc_path;
+        s.disc_sha256.clear();
     }
-    if (!mod_runtime_prepare_resources(disc_path, error)) return false;
+    if (!prepare_resources(disc_path, error, !inputs.disc_independent)) return false;
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
-    inputs.stable = dependency_files(s, disc_path, inputs.dependencies);
+    inputs.stable = dependency_files(s, disc_path, inputs.dependencies, inputs.disc_independent);
 #else
     inputs.stable = false;
 #endif
@@ -2525,6 +2601,15 @@ std::string mod_runtime_plan_fingerprint_portable(const std::filesystem::path& d
     const auto* profile = psx_mod_netplay_profile();
     const bool title_loading = profile && profile->loading_plugin_id;
     if (title_loading && !verify_title_loading_disc(s, disc_path, error)) return {};
+    // An offline disc-independent plan deliberately has no whole-disc hash.
+    // A requested portable/netplay fingerprint still binds the actual disc.
+    if (!title_loading && !disc_path.empty() &&
+        (s.disc_path != disc_path || s.disc_sha256.empty())) {
+        std::string digest;
+        if (!measured_disc_digest(disc_path, digest, error)) return {};
+        s.disc_path = disc_path;
+        s.disc_sha256 = std::move(digest);
+    }
     auto manager = title_loading ? title_loading_selection(s.manager) : s.manager;
     ModResolution plan = manager.resolve(s.game_id, s.exe_sha256,
                                          s.disc_sha256);
@@ -3514,6 +3599,7 @@ extern "C" int psx_mod_save_selection(void) {
         std::fprintf(stderr, "psxrecomp: mods: could not save state.toml: %s\n", error.c_str());
         return 0;
     }
+    if (!record_selection_file(s, s.loaded_catalog)) s.catalog_stamped = false;
     return 1;
 }
 
