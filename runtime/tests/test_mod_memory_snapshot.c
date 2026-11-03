@@ -2,6 +2,8 @@
  * hardware routing. Section GC discards unrelated memory access functions. */
 #include "memory.c"
 int g_psx_render_pass_active = 0;
+static int host_output;
+int psx_mod_host_output_scope(void){return host_output;}
 static void check(int ok,const char* text){if(!ok){fprintf(stderr,"FAIL %s\n",text);exit(1);}}
 int main(void){
     check(psx_mod_memory_snapshot_bytes()==0 && psx_mod_memory_layout_cookie()==0,"vanilla unchanged");
@@ -26,6 +28,22 @@ int main(void){
     check(psx_mod_memory_layout_cookie()==cookie,"stable layout identity");
     check(psx_mod_gpu_dma_memory_alloc(16,16)!=0 && psx_mod_memory_layout_cookie()!=cookie,"layout change detected");
     check(!psx_mod_memory_snapshot_read(saved,size),"old layout rejected");
+    {
+        const uint8_t packet[]={0x40,0x30,0x20,0x10};
+        uint32_t a=PSX_MOD_GPU_DMA_GUEST_BASE+4;
+        check(psx_mod_write_gpu_draw_memory(a,packet,4),"host GPU bulk copy");
+        check(!memcmp(mod_gpu_dma_memory+4,packet,4),"host GPU copy bytes");
+        check(!psx_mod_write_gpu_draw_memory(0x80010000,packet,4),"host copy cannot write RAM");
+        check(!psx_mod_write_gpu_draw_memory(0xC0800000,packet,4),"host copy rejects KSEG2");
+        check(!psx_mod_write_gpu_draw_memory(PSX_MOD_GPU_DMA_GUEST_BASE+mod_gpu_dma_memory_used-2,packet,4),"host copy refuses allocation crossing");
+        host_output=1;
+        check(!psx_mod_write_gpu_draw_memory(a,packet,4),"host output scope cannot mutate GPU backing");
+        host_output=0;g_psx_render_pass_active=1;
+        check(psx_mod_write_gpu_draw_memory(a+4093,packet,4),"bulk copy across journal pages");
+        g_psx_render_pass_active=0;render_pass_mod_arenas_rollback();
+        check(mod_gpu_dma_memory[4097]==0x34 && mod_gpu_dma_memory[4100]==0x34,"bulk copy rolls back both pages");
+        memset(mod_gpu_dma_memory,0x34,mod_gpu_dma_memory_used);
+    }
     /* Render passes write mod arenas through a first-write page journal and
      * put them back with the rest of the pass restore. */
     {
