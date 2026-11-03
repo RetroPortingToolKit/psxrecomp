@@ -252,8 +252,10 @@ on the present thread), queue high water.
 
 ## Dynamic resolution (`[video] dynamic_resolution`)
 
-Opt-in as before (`dynamic_resolution = true`, `dynamic_resolution_min`;
-`PSX_DYNRES=0/1`, `PSX_DYNRES_MIN` for one run); no new keys. The level
+Opt-in: a player chooses Auto in the built-in Internal Resolution mod
+(`psx.enhancement.internal-resolution`), and a title ships `dynamic_resolution =
+true` (or `internal_resolution = "auto"`) with its `dynamic_resolution_min`
+floor in `game.toml`; `PSX_DYNRES=0/1`, `PSX_DYNRES_MIN` for one run. The level
 steps between the configured internal resolution (the ceiling, e.g. Match
 display, which the GPU limit and memory budget are checked against) and the
 minimum. Every surface (hr VRAM and native-wide) is allocated at the current

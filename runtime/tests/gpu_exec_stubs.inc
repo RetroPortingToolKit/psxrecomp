@@ -7,6 +7,28 @@
 uint64_t s_frame_count;
 uint64_t psx_cycle_count;          /* gpu_timeline.c stamps notes with it */
 int g_exec_phase;
+int g_psx_render_pass_active;
+void psx_mod_counter_add(const char *name, uint32_t delta) { (void)name; (void)delta; }
+static int fixture_pgxp_enabled;
+int pgxp_enabled(void) { return fixture_pgxp_enabled; }
+static int fixture_pgxp_cpu_mode;
+int pgxp_cpu_mode(void) { return fixture_pgxp_cpu_mode; }
+void pgxp_set_cpu_mode(int enabled) { fixture_pgxp_cpu_mode=enabled; }
+int pgxp_projective_scope_begin(PGXPProjectiveScope *scope) {
+    if (!scope || scope->active) return 0;
+    scope->saved_enabled=fixture_pgxp_enabled;
+    scope->saved_cpu_mode=fixture_pgxp_cpu_mode;
+    fixture_pgxp_enabled=1;
+    fixture_pgxp_cpu_mode=1;
+    scope->active=1;
+    return 1;
+}
+void pgxp_projective_scope_end(PGXPProjectiveScope *scope) {
+    if (!scope || !scope->active) return;
+    fixture_pgxp_cpu_mode=scope->saved_cpu_mode;
+    fixture_pgxp_enabled=scope->saved_enabled;
+    scope->active=0;
+}
 uint32_t g_debug_current_func_addr;
 uint32_t g_debug_last_store_pc;
 CPUState *debug_cpu_ptr;
@@ -37,6 +59,10 @@ int pgxp_load_projection(uint32_t addr, uint32_t word, PGXPProjection *out) {
         return 1;
     }
     return 0;
+}
+float pgxp_get_unclamped_depth(uint32_t addr, uint32_t word) {
+    PGXPProjection projection;
+    return pgxp_load_projection(addr, word, &projection) ? projection.z : 0.0f;
 }
 static int fixture_projection_tracking;
 int pgxp_projection_tracking(void) { return fixture_projection_tracking; }
@@ -141,7 +167,6 @@ void psx_fatal_halt(const char *reason) {
     assert(!"psx_fatal_halt called");
 }
 
-static int fixture_pgxp_enabled;
 void pgxp_set_enabled(int enabled) { fixture_pgxp_enabled = enabled; }
 int gte_geometry_correction_enabled(void) { return g_test_geometry_correction; }
 int pgxp_get_precise_vertex(uint32_t addr, uint32_t packet_word,
@@ -252,6 +277,10 @@ void color_lut_map555(const ColorLut *lut, uint16_t bgr555,
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
     return psx_mod_gpu_dma_resolve_address_for(address, test_aperture_used);
 }
+int psx_mod_gpu_dma_memory_contains(uint32_t address, uint32_t bytes) {
+    return bytes && psx_mod_gpu_dma_aperture_offset_for(
+        address, bytes, test_aperture_used, NULL);
+}
 uint32_t psx_gpu_packet_key(uint32_t address) {
     return psx_gpu_packet_key_for(address, test_aperture_used);
 }
@@ -268,6 +297,7 @@ int gr_scale(void) { return 1; }
 void gr_set_texture_filter(int bilinear) { (void)bilinear; }
 int gr_texture_filter(void) { return 0; }
 void gr_set_semi_transparency(int enabled, int mode) { (void)enabled; (void)mode; }
+void gr_set_dither(int enabled) { (void)enabled; }
 void gr_set_mask_bits(int set_bit, int check_bit) { (void)set_bit; (void)check_bit; }
 void gr_set_texture_window(uint32_t raw) { (void)raw; }
 void gr_set_color_modulation(int r, int g, int b, int raw_texture) {
@@ -395,10 +425,12 @@ void gr_get_draw_area(int *x1, int *y1, int *x2, int *y2) {
 void gr_set_draw_offset(int x, int y) { (void)x; (void)y; }
 int gr_wide_supported(void) { return 1; }
 void gr_wide_configure(int wide_w, int offset) { (void)wide_w; (void)offset; }
-static int g_test_view_enabled, g_test_view_shift;
+static struct { int enabled, shift, left, right; } fixture_wide_view;
 void gr_wide_set_view(int enabled, int shift, int left, int right) {
-    g_test_view_enabled = enabled; g_test_view_shift = shift;
-    (void)left; (void)right;
+    fixture_wide_view.enabled = enabled;
+    fixture_wide_view.shift = shift;
+    fixture_wide_view.left = left;
+    fixture_wide_view.right = right;
 }
 void gr_wide_set_target(int base_x) { (void)base_x; }
 void gr_wide_disable_target(void) {}
@@ -407,6 +439,11 @@ void gr_wide_clear(int base_x, int y, int h, uint16_t color) {
 }
 void gr_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides) {
     (void)base_x; (void)y; (void)h; (void)color; (void)sides;
+}
+void gr_wide_feedback_rect(int src_base, int src_x, int src_y, int dst_x, int dst_y,
+                           int w, int h, int r, int g, int b, int raw, int semi) {
+    (void)src_base; (void)src_x; (void)src_y; (void)dst_x; (void)dst_y;
+    (void)w; (void)h; (void)r; (void)g; (void)b; (void)raw; (void)semi;
 }
 int gr_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh, int base_x) {
     (void)out; (void)cap_pixels; (void)ow; (void)oh; (void)base_x;
@@ -422,6 +459,9 @@ int gte_nclip_native_wide_sign(int32_t mac0, int* sign) {
 }
 int gte_nclip_native_wide_previous_sign(int32_t mac0, int* sign) {
     (void)mac0; (void)sign; return 0;
+}
+int gte_nclip_zero_positive(int32_t mac0, uint32_t pc) {
+    (void)mac0; (void)pc; return 0;
 }
 static int fixture_triangle_recovered;
 void gl_renderer_note_wide_triangle_recovery(int enabled) {

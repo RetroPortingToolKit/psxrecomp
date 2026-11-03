@@ -30,8 +30,13 @@
  * surface), and with the thread on its record/acquire counters.
  * Original source-owned scene; no retail payload. */
 #include "gpu_gl_renderer.c"
+#include "gl_postfx_projection_fixture.h"
+#include "gl_fmv_fixture.h"
 #include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
+#include "gl_batch_policy_lle.c"
+#include "gl_batch_policy_hle.c"
+#include "gl_batch_policy_select.c"
 /* gpu_render.c (the facade) observes draws for HD texture packs: no pack here. */
 int gpu_hd_textures_active(void){return 0;}
 int gpu_hd_textures_dump_enabled(void){return 0;}
@@ -46,6 +51,8 @@ void gpu_hd_textures_begin_copy(int sx,int sy,int dx,int dy,int w,int h){
     (void)sx;(void)sy;(void)dx;(void)dy;(void)w;(void)h;}
 void gpu_hd_textures_end_copy(void){}
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t n,uint32_t a){(void)n;(void)a;return 0;}
+/* mod_texture_banks.c refuses inside a netplay host-output hook (mod_runtime.cpp); none here. */
+int psx_mod_host_output_scope(void){return 0;}
 uint32_t psx_mod_read_word(uint32_t a){(void)a;return 0;}
 int g_psx_vram_dirty_tracking=0;
 uint64_t s_frame_count=0;
@@ -80,9 +87,15 @@ void host_osd_present_done(void){}
 int psx_rewind_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
 float psx_rewind_slide(void){return 0.0f;}
 int psx_savestate_menu_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
+int psx_host_menu_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*w=*h=0;return 0;}
+void psx_video_telemetry_compose(int r,int s,int sw,int sh,int dw,int dh,int vw,int vh){
+    (void)r;(void)s;(void)sw;(void)sh;(void)dw;(void)dh;(void)vw;(void)vh;
+}
+void psx_video_telemetry_present(int result){(void)result;}
 int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
 void present_shot_done(int ok){(void)ok;}
 void psx_host_sleep_ms(uint32_t ms){(void)ms;}
+void psx_host_sleep_micros(unsigned us){(void)us;}
 /* Called on every present. On the render thread it also stands in for a slow
  * swap, so replay runs well behind recording and anything it read live from
  * the "guest" (instead of what was recorded) would be a later value. */
@@ -98,6 +111,28 @@ static int checks, failures;
 static void check(int ok, const char *label) {
     checks++;
     if (!ok) { fprintf(stderr, "FAIL %s\n", label); failures++; }
+}
+/* Force the real allocation-failure branch without exhausting VRAM. The
+ * fixture includes the backend, so no production fault-injection API is needed. */
+static void (APIENTRY *saved_renderbuffer_storage)(GLenum, GLenum, GLsizei, GLsizei);
+static void APIENTRY refuse_renderbuffer_storage(GLenum target, GLenum format,
+                                                  GLsizei w, GLsizei h) {
+    (void)format;
+    saved_renderbuffer_storage(target, 0 /* invalid format */, w, h);
+}
+static void test_live_resolution(int original_scale) {
+    check(gl_renderer_set_internal_scale_live(2) == 2, "live scale A applied");
+    check(gl_renderer_set_internal_scale_live(1) == 1, "live A to B applied");
+    gl_renderer_render_thread_sync("fixture_allocation_refusal");
+    saved_renderbuffer_storage = p_glRenderbufferStorage;
+    p_glRenderbufferStorage = refuse_renderbuffer_storage;
+    check(gl_renderer_set_internal_scale_live(2) == 0, "live B to A allocation refused");
+    p_glRenderbufferStorage = saved_renderbuffer_storage;
+    check(s_hr_scale == 1 && s_req_scale == 1 && s_alloc_scale == 1,
+          "refusal preserves applied scale and ceiling");
+    check(!s_dyn_pending, "refused live request cannot apply later");
+    check(gl_renderer_set_internal_scale_live(original_scale) == original_scale,
+          "live resolution recovers after refusal");
 }
 static uint64_t fnv(const void *pp, size_t n, uint64_t h) {
     const uint8_t *p = (const uint8_t *)pp;
@@ -272,6 +307,9 @@ int main(int argc, char **argv) {
         check(gl_renderer_render_thread_start(2) == 1, "render thread started");
         check(gl_renderer_render_thread_active(), "render thread active");
     }
+    test_live_resolution(scale);
+    GlDynresStats live_baseline;
+    gl_renderer_dynres_stats(&live_baseline);
     if (dynres) {
         check(gl_renderer_dynamic_resolution_ceiling() == scale, "dynres ceiling");
         if (threaded) gl_renderer_render_thread_measure(1);
@@ -298,8 +336,9 @@ int main(int argc, char **argv) {
         gl_renderer_render_thread_sync("test");
         GlDynresStats ds;
         gl_renderer_dynres_stats(&ds);
-        printf("dyn_steps=%llu asked=%d\n", (unsigned long long)ds.steps, nsteps);
-        check(ds.steps == (uint64_t)nsteps && ds.level == scale, "every step applied");
+        const uint64_t scripted_steps = ds.steps - live_baseline.steps;
+        printf("dyn_steps=%llu asked=%d\n", (unsigned long long)scripted_steps, nsteps);
+        check(scripted_steps == (uint64_t)nsteps && ds.level == scale, "every step applied");
         if (threaded) {
             GlRthCosts co;
             gl_renderer_render_thread_costs(&co);

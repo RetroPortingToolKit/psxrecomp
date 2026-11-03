@@ -36,6 +36,13 @@ extern int (*g_psx_bios_hle_hook)(CPUState* cpu, uint32_t phys);
 extern uint32_t g_psx_mod_guest_functions;
 extern int psx_mod_dispatch_guest_function(CPUState*, uint32_t);
 
+/* Game function-override tier (runtime/include/func_override.h):
+ * hand-written C registered against a guest address. NULL (the
+ * default) = no overrides, dispatch identical to a build without
+ * the tier. Returns 1 when the override handled the call; the
+ * guest resumes at $ra exactly as if the original ran jr $ra. */
+extern int (*g_psx_func_override_hook)(CPUState* cpu, uint32_t phys);
+
 #ifdef PSX_HAS_GAME_DISPATCH
 extern int psx_game_address_in_text(uint32_t addr);
 #endif
@@ -9111,6 +9118,18 @@ static void psx_dispatch_impl(CPUState* cpu, uint32_t addr, uint32_t stop_addr) 
         /* Byte-guarded A0/B0/C0 call-vector tail stubs. */
         if (!found && psx_bios_try_native_call_stub(cpu, addr))
             found = 1;
+        /* Function-override tier: AFTER the BIOS tiers (an override
+         * can never shadow a kernel service vector), BEFORE every
+         * game code backend, so one address-keyed hook covers the
+         * static EXE, runtime-loaded overlays and dirty RAM alike.
+         * Handled (rc 1) => the override completed against guest
+         * state; resume at $ra via the trampoline's normal
+         * return/tail contract. rc 0 => fall through untouched. */
+        if (!found && g_psx_func_override_hook &&
+            g_psx_func_override_hook(cpu, addr & 0x1FFFFFFFu)) {
+            cpu->pc = cpu->gpr[31];
+            found = 1;
+        }
 #ifdef PSX_HAS_GAME_DISPATCH
         /* Game EXEs can overlap the BIOS shell copy window at
          * physical 0x30000-0x5AFFF. If the target belongs to the

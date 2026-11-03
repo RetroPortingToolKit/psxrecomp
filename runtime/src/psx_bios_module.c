@@ -206,6 +206,8 @@ void psx_bios_module_fill_callbacks(PsxBiosModuleCallbacks *out) {
     extern uint64_t g_psx_bail_flattened;
     extern int psx_game_address_in_text(uint32_t addr);
     extern uint64_t s_frame_count;
+    extern uint32_t g_psx_mod_guest_functions;
+    extern int psx_mod_dispatch_guest_function(struct CPUState *cpu, uint32_t address);
     memset(out, 0, sizeof(*out));
     out->size = (uint32_t)sizeof(*out);
     out->arith_overflow            = psx_arith_overflow;
@@ -229,6 +231,8 @@ void psx_bios_module_fill_callbacks(PsxBiosModuleCallbacks *out) {
     out->bail_flattened            = &g_psx_bail_flattened;
     out->ram_mask                  = &g_psx_ram_mask;
     out->frame_count               = &s_frame_count;
+    out->mod_guest_functions       = &g_psx_mod_guest_functions;
+    out->mod_dispatch_guest_function = psx_mod_dispatch_guest_function;
 }
 
 /* ---- Loading -------------------------------------------------------------- */

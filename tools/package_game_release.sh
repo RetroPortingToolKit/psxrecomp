@@ -25,6 +25,7 @@
 #     [--overlay-cache-root DIR]         # ship a prebuilt overlay shard cache
 #     [--ship-without-overlay-cache-because REASON]
 #     [--no-overlay-toolchain]           # do not bundle overlay_toolchain/
+#     [--stage-only]                    # validate/stage, without ZIP compression
 #     [--disc-hint "your legally owned disc"] [--version-env RELEASE_VERSION]
 #
 # Overlay cache. The runtime's overlay shard cache is compiled FROM THE DISC,
@@ -37,6 +38,14 @@
 # cache the caller must say why, in words, and the reason is printed: this is
 # the same deliberately unwieldy switch release_stage.py exposes, because a
 # packager that quietly staged nothing once looked like a good release twice.
+#
+# RELEASE CHANNEL. The build tree must have been configured with
+# -DPSX_RELEASE_CHANNEL=public|playtest (runtime/psx_release_channel.cmake);
+# a tree without one is a dev build and is refused. playtest packages are
+# named <prefix>-<version>-playtest-<artifact>.zip, public packages always
+# drop developer-channel mods, and the staged Playtest Diagnostics defaults
+# must match the channel. Local title releases use
+# tools/package_title_release.py instead (docs/RELEASING_A_TITLE.md).
 #
 # DEVELOPER CHANNEL. mods with channel = "developer" are pruned from public
 # releases (EXCLUDE_DEV_MODS=1, which CI sets via $CI) and kept in local
@@ -74,6 +83,7 @@ OVERLAY_CACHE_ROOT=""
 SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE=""
 SHIP_WITHOUT_OVERLAY_CACHE_KEY_BECAUSE=""
 STAGE_OVERLAY_TOOLCHAIN=1
+STAGE_ONLY=0
 if [[ -z "${EXCLUDE_DEV_MODS:-}" ]]; then
   if [[ -n "${CI:-}" ]]; then EXCLUDE_DEV_MODS=1; else EXCLUDE_DEV_MODS=0; fi
 fi
@@ -103,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     --ship-without-overlay-cache-because) SHIP_WITHOUT_OVERLAY_CACHE_BECAUSE="${2:?}"; shift 2 ;;
     --ship-without-overlay-cache-key-because) SHIP_WITHOUT_OVERLAY_CACHE_KEY_BECAUSE="${2:?}"; shift 2 ;;
     --no-overlay-toolchain) STAGE_OVERLAY_TOOLCHAIN=0; shift ;;
+    --stage-only) STAGE_ONLY=1; shift ;;
     --exclude-dev-mods) EXCLUDE_DEV_MODS=1; shift ;;
     --include-dev-mods) EXCLUDE_DEV_MODS=0; shift ;;
     --runtime-bin) RUNTIME_BIN_DIR="${2:?}"; shift 2 ;;
@@ -195,6 +206,18 @@ if ! grep -qs 'PSX_HAS_GAME_DISPATCH' "${BUILD_DIR}/build.ninja" "${BUILD_DIR}/c
   exit 1
 fi
 
+# --- Release channel: from the build, never defaulted -------------------------
+CHANNEL="$(sed -n 's/^PSX_RELEASE_CHANNEL:[A-Z]*=//p' "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null | head -n1 || true)"
+case "${CHANNEL}" in
+  public) CHANNEL_SUFFIX=""; EXCLUDE_DEV_MODS=1 ;;
+  playtest) CHANNEL_SUFFIX="-playtest" ;;
+  *)
+    echo "error: ${BUILD_DIR} has no release channel (PSX_RELEASE_CHANNEL='${CHANNEL}')." >&2
+    echo "  Configure the release build with -DPSX_RELEASE_CHANNEL=public or =playtest." >&2
+    exit 1 ;;
+esac
+echo "release channel: ${CHANNEL}"
+
 normalize_ver() { local v; v="$(printf '%s' "${1:-}" | tr -d '[:space:]')"; printf '%s' "${v#v}"; }
 BUILT=""
 for stamp in "${EXE_DIR}/psx_game_version.txt" "${BUILD_DIR}/psx_game_version.txt" "${BUILD_DIR}/Release/psx_game_version.txt"; do
@@ -219,13 +242,18 @@ printf '%s\n' "${VERSION}" >"${ROOT}/VERSION"
 
 DIST="${ROOT:?}/dist"
 STAGE="${DIST:?}/stage-game-${ARTIFACT:?}"
-ZIP_NAME="${ZIP_PREFIX:?}-${VERSION:?}-${ARTIFACT:?}.zip"
+ZIP_NAME="${ZIP_PREFIX:?}-${VERSION:?}${CHANNEL_SUFFIX}-${ARTIFACT:?}.zip"
 rm -rf "${STAGE:?}"
 mkdir -p "${STAGE}" "${DIST}"
-rm -f "${DIST:?}/${ZIP_NAME:?}"
+if [[ "${STAGE_ONLY}" != 1 ]]; then rm -f "${DIST:?}/${ZIP_NAME:?}"; fi
 
 # --- The executable and what CMake staged beside it --------------------------
 cp -a "${EXE}" "${STAGE}/"
+# Opted-in title diagnostics stage this launcher beside the executable. Keep
+# it with the original binary so a feedback bundle can be replayed in isolation.
+if [[ -f "${EXE_DIR}/replay-diagnostics.py" ]]; then
+  cp -a "${EXE_DIR}/replay-diagnostics.py" "${STAGE}/replay-diagnostics.py"
+fi
 if [[ -f "${EXE_DIR}/psx_game_version.txt" ]]; then
   cp -a "${EXE_DIR}/psx_game_version.txt" "${STAGE}/psx_game_version.txt"
 else
@@ -328,6 +356,11 @@ else
   n=$( { grep -rlE '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"[[:space:]]*$' \
       "${STAGE}/mods" --include=manifest.toml 2>/dev/null || true; } | wc -l)
   [[ "${n}" -eq 0 ]] || echo "note: package includes ${n} developer-channel manifest(s); pass --exclude-dev-mods for a public release"
+fi
+
+if ! "${PY}" "${SCRIPT_DIR}/package_title_release.py" check-diagnostics      --channel "${CHANNEL}" "${STAGE}/mods/bundled"; then
+  echo "error: Playtest Diagnostics defaults do not match the ${CHANNEL} channel" >&2
+  exit 1
 fi
 
 # --- Overlay shard cache (developer-local only) and toolchain -----------------
@@ -473,7 +506,20 @@ if [[ "${EXE_BASENAME}" == *.exe ]]; then
   fi
 fi
 
+# --- Bind the final executable to its original build execution contract ----
+# Signing can change the PE bytes, so bind after it and before compression.
+# Do not accept a sidecar copied into the stage from an unrelated build.
+"${PY}" "${SCRIPT_DIR}/release_stage.py" stage-execution \
+  --binary "${STAGE}/${EXE_BASENAME}" \
+  --manifest "${EXE%.exe}.execution.json" \
+  --output "${STAGE}/${EXE_BASENAME%.exe}.execution.json"
+
 find "${STAGE}" -exec touch -c {} + 2>/dev/null || find "${STAGE}" -exec touch {} +
+
+if [[ "${STAGE_ONLY}" == 1 ]]; then
+  echo "Staged ${STAGE} (ZIP compression skipped)"
+  exit 0
+fi
 
 "${PY}" "${SCRIPT_DIR}/create_release_zip.py" --source "${STAGE}" --output "${DIST}/${ZIP_NAME}" >/dev/null
 echo "Wrote ${DIST}/${ZIP_NAME}"

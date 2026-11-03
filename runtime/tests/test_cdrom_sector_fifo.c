@@ -1,0 +1,394 @@
+/* Synthetic-sector integration tests for the actual CD controller. */
+#include "../src/cdrom.c"
+
+#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
+uint32_t i_stat, g_debug_current_func_addr, g_debug_last_store_pc;
+uint64_t s_frame_count, psx_cycle_count;
+static int test_dma_active;
+static int test_raw_fail, test_raw_bad_header, test_raw_bad_copy;
+static int test_copy_result = 1, test_copy_calls;
+static uint8_t test_raw_mode = 2, test_submode = 8;
+int dma_cdrom_transfer_active(void) { return test_dma_active; }
+void psx_irq_raise(uint32_t bit, uint32_t detail) { (void)detail; i_stat |= bit; }
+int iso_read_raw_sector(void* h, uint32_t lba, uint8_t* out, int size) {
+    int m, s, f;
+    (void)h; if (test_raw_fail) return 0;
+    memset(out, 0, size);
+    lba_to_msf((int)lba, 150, &m, &s, &f);
+    out[12]=bin_to_bcd(m); out[13]=bin_to_bcd(s);
+    out[14]=bin_to_bcd(f) ^ (test_raw_bad_header ? 1u : 0u);
+    out[15]=test_raw_mode; out[16]=out[20]=9; out[17]=out[21]=7;
+    out[18]=out[22]=test_submode;
+    if (test_raw_bad_copy) out[20]=1;
+    memset(out+24, (unsigned char)lba, 2048); return 1;
+}
+int iso_read_sector(void* h,uint32_t lba,uint8_t* out,int size) {(void)h;memset(out,(unsigned char)lba,size);return 1;}
+
+static void setup(void) {
+    test_dma_active = 0;
+    test_raw_fail = test_raw_bad_header = test_raw_bad_copy = 0;
+    test_raw_mode = 2; test_submode = 8;
+    test_copy_result = 1; test_copy_calls = 0;
+    psx_cycle_count = 1000000;
+    cdrom_init("synthetic");
+    setloc_pending = 0;
+    mode_reg = 0x80;
+    reading = 1;
+    read_min = 0; read_sec = 3; read_sect = 25; /* LBA 100 */
+}
+static void sector(void);
+static void ack(void);
+static void request(void);
+static void drain(unsigned lba, int words);
+static int resident_copy(void* context) {
+    CHECK(context == &test_copy_calls);
+    ++test_copy_calls;
+    return test_copy_result;
+}
+static void resident_setup(uint8_t mode) {
+    setup(); mode_reg=mode; reading=0;
+    seek_min=0; seek_sec=3; seek_sect=25;
+    s_setloc_lba=100; setloc_pending=1;
+    exec_command(6);
+    CHECK(irq_flag==CDIRQ_ACK && response_count==1);
+    (void)cdrom_read(0x1F801801);
+    CHECK(response_read==response_count && response_count!=0);
+    /* ReadN's consumed response and elapsed presentation deadline remain
+     * after the SDK acknowledges it; neither means there is pending work. */
+    psx_cycle_count+=CDROM_IRQ_PRESENT_DELAY;
+    cdrom_advance(0); ack(); i_stat=0;
+    CHECK(cdrom_irq_present_due!=0 && !irq_flag && reading);
+}
+static void resident_header_cursor_and_restore(void) {
+    const uint8_t modes[]={0x80,0xA0};
+    for(unsigned n=0;n<sizeof modes;++n) {
+        uint8_t payload[2048]; memset(payload,102,sizeof payload);
+        resident_setup(modes[n]);
+        CHECK(cdrom_resident_complete_read(100,3,payload,resident_copy,&test_copy_calls));
+        CHECK(test_copy_calls==1 && !reading && !irq_flag && !i_stat);
+        CHECK(last_sector_lba==102 && msf_to_lba(read_min,read_sec,read_sect)==103);
+        CHECK(s_setloc_lba==100 && !setloc_pending);
+        CHECK(s_ring_read==s_ring_write && s_ring_write==3);
+        CHECK(s_data_fifo.pos==((modes[n]&0x20)?2060:2048));
+        CHECK(last_sector_xa_file==9 && last_sector_xa_channel==7);
+        const uint32_t size=cdrom_snapshot_bytes();
+        uint8_t* wire=malloc(size);CHECK(wire);
+        cdrom_snapshot_write(wire);
+        setup(); CHECK(cdrom_snapshot_read(wire,size));free(wire);
+        CHECK(last_sector_lba==102 && msf_to_lba(read_min,read_sec,read_sect)==103);
+        CHECK(s_data_fifo.pos==((modes[n]&0x20)?2060:2048));
+        exec_command(0x10);
+        CHECK(response_count==8 && response_fifo[0]==0 && response_fifo[1]==3 &&
+              response_fifo[2]==0x27 && response_fifo[3]==2 &&
+              response_fifo[4]==9 && response_fifo[5]==7 && response_fifo[6]==8);
+        response_clear();ack();
+        exec_command(0x11);
+        CHECK(response_count==8 && response_fifo[5]==0 &&
+              response_fifo[6]==3 && response_fifo[7]==0x28);
+        response_clear();ack();
+        /* Original Pause/ack and a retail read with no new Setloc resume
+         * at the next sector, never the start or last-header sector. */
+        exec_command(9);response_clear();ack();
+        psx_cycle_count+=100000000;process_pending(0);response_clear();ack();
+        mode_reg=0x80;exec_command(6);response_clear();ack();
+        CHECK(msf_to_lba(read_min,read_sec,read_sect)==103);
+        sector();request();drain(103,512);
+    }
+}
+static void resident_declines_atomically(void) {
+    for(unsigned reason=0;reason<14;++reason) {
+        uint8_t payload[2048];memset(payload,102,sizeof payload);
+        resident_setup(0xA0);
+        switch(reason) {
+        case 0: reading=0;break;
+        case 1: read_sect++;break; /* A physical sector already arrived. */
+        case 2: irq_flag=3;break;
+        case 3: test_dma_active=1;break;
+        case 4: mode_reg=0xE0;break;
+        case 5: pending.pending=1;break;
+        case 6: queued_cmd.pending=1;break;
+        case 7: test_submode=0x24;break;
+        case 8: test_submode=0x0A;break;
+        case 9: test_raw_fail=1;break;
+        case 10: payload[42]^=1;break;
+        case 11: test_copy_result=0;break;
+        case 12: setloc_pending=1;break;
+        case 13: response_read=0;break; /* Unconsumed command response. */
+        }
+        const uint32_t size=cdrom_snapshot_bytes();
+        uint8_t *before=malloc(size),*after=malloc(size);CHECK(before&&after);
+        cdrom_snapshot_write(before);
+        CHECK(!cdrom_resident_complete_read(100,3,payload,resident_copy,&test_copy_calls));
+        CHECK(test_copy_calls==(reason==11?1:0));
+        cdrom_snapshot_write(after);CHECK(!memcmp(before,after,size));
+        free(before);free(after);
+    }
+}
+static void sector(void) {
+    psx_cycle_count += 225792;
+    read_delay = 0;
+    process_read_stream(0);
+}
+static void ack(void) {
+    cdrom_write(0x1f801800, 1);
+    cdrom_write(0x1f801803, 7);
+    cdrom_write(0x1f801800, 0);
+}
+static void request(void) {
+    cdrom_write(0x1f801800, 0);
+    cdrom_write(0x1f801803, 0);
+    cdrom_write(0x1f801803, 0x80);
+}
+static void drain(unsigned lba, int words) {
+    for (int n = 0; n < words; n++) {
+        CHECK(cdrom_dma_ready());
+        CHECK(cdrom_dma_read() == lba * 0x01010101u);
+    }
+}
+static void delayed_notification(void) {
+    setup(); sector(); sector(); /* 100 announced, 101 pending */
+    CHECK(pending_dataready && last_sector_lba == 101);
+    ack(); request();
+    psx_cycle_count += CDROM_PEND_PRESENT_DELAY;
+    cdrom_advance(0); /* 101 becomes visible between BFRD and DMA */
+    CHECK(irq_flag == CDIRQ_DATA_READY && !pending_dataready);
+    drain(100, 512);
+    CHECK(!cdrom_dma_ready());
+    ack(); request();
+    drain(101, 512);
+    CHECK(s_int1_lost == 0);
+}
+static void dma_continuation(void) {
+    setup(); sector(); request(); drain(100, 512);
+    test_dma_active = 1;
+    sector(); drain(101, 512);
+    sector(); drain(102, 512);
+    CHECK(!pending_dataready);
+    CHECK(s_int1_lost == 0);
+    test_dma_active = 0;
+}
+static void dma_arrival_mid_drain(void) {
+    setup(); sector(); request();
+    test_dma_active = 1;
+    drain(100, 17);
+    sector(); /* Decoder advances while the old FIFO still has unread bytes. */
+    drain(100, 495);
+    drain(101, 512);
+    CHECK(!cdrom_dma_ready());
+    CHECK(!pending_dataready && s_int1_lost == 0);
+    test_dma_active = 0;
+}
+static void request_rearms_retained_sector(void) {
+    setup(); sector(); request(); drain(100, 512); ack();
+    sector(); /* BFRD remains asserted and preloads 101. */
+    request(); /* BIOS clears BFRD before requesting that same sector. */
+    drain(101, 512);
+    CHECK(!cdrom_dma_ready());
+}
+static void snapshot_pending_deadline(void) {
+    setup(); sector(); request(); sector(); ack();
+    psx_cycle_count += 123;
+    const uint32_t size = cdrom_snapshot_bytes();
+    uint8_t *wire = malloc(size);
+    CHECK(wire);
+    cdrom_snapshot_write(wire);
+    setup();
+    psx_cycle_count = 0; /* Restore at a different cycle origin. */
+    CHECK(cdrom_snapshot_read(wire, size));
+    CHECK(pending_present_due == CDROM_PEND_PRESENT_DELAY - 123);
+    psx_cycle_count = pending_present_due - 1;
+    cdrom_advance(0);
+    CHECK(irq_flag == 0 && pending_dataready);
+    psx_cycle_count++;
+    cdrom_advance(0);
+    CHECK(irq_flag == CDIRQ_DATA_READY && !pending_dataready);
+    drain(100, 512);
+    request(); drain(101, 512);
+    free(wire);
+}
+static void snapshot_between_request_and_dma(void) {
+    setup(); sector(); request(); drain(100, 11); sector();
+    const uint32_t size = cdrom_snapshot_bytes();
+    uint8_t *wire = malloc(size), *after = malloc(size);
+    CHECK(wire && after);
+    cdrom_snapshot_write(wire);
+    CHECK(cdrom_snapshot_validate(wire, size));
+    setup();
+    CHECK(cdrom_snapshot_read(wire, size));
+    ack();
+    psx_cycle_count += CDROM_PEND_PRESENT_DELAY;
+    cdrom_advance(0);
+    drain(100, 501);
+    ack(); request(); drain(101, 512);
+
+    /* Malformed ring indices must be rejected before controller mutation. */
+    cdrom_snapshot_write(after);
+    const uint32_t legacy = cdrom_snapshot_legacy_bytes();
+    wire[legacy + 4] = 0xff;
+    CHECK(!cdrom_snapshot_validate(wire, size));
+    CHECK(!cdrom_snapshot_read(wire, size));
+    cdrom_snapshot_write(wire);
+    CHECK(!memcmp(wire, after, size));
+
+    CHECK(!cdrom_snapshot_validate(NULL, size));
+    CHECK(!cdrom_snapshot_validate(after, size - 1));
+    memcpy(wire, after, size);
+    memset(wire + legacy + 16, 0x7f, 4); /* Impossible pending delay. */
+    CHECK(!cdrom_snapshot_read(wire, size));
+    cdrom_snapshot_write(wire);
+    CHECK(!memcmp(wire, after, size));
+
+    /* Old states retain their original wire prefix and readable payload. */
+    setup(); sector(); request(); drain(100, 7);
+    PstW writer;
+    pst_w_init(&writer, wire, size);
+    CHECK(cdrom_snap_emit(&writer, 0));
+    CHECK(writer.written == legacy);
+    setup();
+    CHECK(cdrom_snapshot_validate(wire, legacy));
+    CHECK(cdrom_snapshot_read(wire, legacy));
+    drain(100, 505);
+    free(wire); free(after);
+}
+static void invalid_setloc_preserves_target(void) {
+    const uint8_t invalid[][3] = {
+        {0xC0,0,0}, {0x0A,0,0}, {0,0x60,0}, {0,0x0A,0},
+        {0,0,0x75}, {0,0,0x0A}, {0xFF,0xFF,0xFF}
+    };
+    for (unsigned n=0;n<sizeof invalid/sizeof invalid[0];++n) {
+        setup();
+        param_count=3;
+        param_fifo[0]=0; param_fifo[1]=3; param_fifo[2]=0x25;
+        exec_command(0x02);
+        CHECK(irq_flag==CDIRQ_ACK && s_setloc_lba==100 && setloc_pending);
+        ack();
+        const int pending=setloc_pending, seek_far=setloc_seek_far;
+        memcpy(param_fifo,invalid[n],3); param_count=3;
+        exec_command(0x02);
+        CHECK(irq_flag==CDIRQ_ERROR && response_count==2 && response_fifo[1]==0x10);
+        CHECK((response_fifo[0]&1u)!=0);
+        CHECK(s_setloc_lba==100 && seek_min==0 && seek_sec==3 && seek_sect==25);
+        CHECK(setloc_pending==pending && setloc_seek_far==seek_far);
+    }
+}
+static void pause_read_resumes_position(void) {
+    const uint8_t reads[] = {0x06, 0x1B};
+    for (unsigned n = 0; n < sizeof reads; ++n) {
+        setup();
+        seek_min = 0; seek_sec = 2; seek_sect = 0; /* stale target, LBA 0 */
+        sector(); ack(); /* delivered 100; drive will read 101 next */
+        exec_command(0x09); ack();
+        CHECK(!reading && msf_to_lba(read_min, read_sec, read_sect) == 101);
+        exec_command(reads[n]);
+        CHECK(reading && read_cmd == reads[n] && !setloc_pending);
+        CHECK(msf_to_lba(read_min, read_sec, read_sect) == 101);
+        ack(); sector(); request(); drain(101, 512);
+        ack();
+        /* Another pause cannot regress to the original target either. */
+        exec_command(0x09); ack(); exec_command(reads[n]);
+        CHECK(msf_to_lba(read_min, read_sec, read_sect) == 102);
+        ack();
+        /* An explicit new Setloc still takes precedence over the drive. */
+        exec_command(0x09); ack();
+        param_fifo[0] = 0; param_fifo[1] = 4; param_fifo[2] = 0; param_count = 3;
+        exec_command(0x02); ack(); exec_command(reads[n]);
+        CHECK(msf_to_lba(read_min, read_sec, read_sect) == 150);
+        CHECK(!setloc_pending);
+        ack(); sector(); request(); drain(150, 512);
+        /* A completed explicit seek retains its own destination too. */
+        ack(); exec_command(0x09); ack();
+        param_fifo[0] = 0; param_fifo[1] = 5; param_fifo[2] = 0; param_count = 3;
+        exec_command(0x02); ack(); exec_command(0x15); ack();
+        psx_cycle_count += 100000000; process_pending(0); ack();
+        exec_command(reads[n]);
+        CHECK(msf_to_lba(read_min, read_sec, read_sect) == 225);
+    }
+}
+static void snapshot_setloc_and_paused_head(void) {
+    setup(); sector(); ack(); exec_command(0x09); ack();
+    param_fifo[0]=0;param_fifo[1]=4;param_fifo[2]=0;param_count=3;
+    exec_command(0x02);ack();
+    const uint32_t size=cdrom_snapshot_bytes();
+    uint8_t* wire=malloc(size);CHECK(wire);
+    cdrom_snapshot_write(wire);
+    setloc_pending=0;read_sec=9;
+    CHECK(cdrom_snapshot_read(wire,size) && setloc_pending);
+    exec_command(0x1B);ack();
+    CHECK(msf_to_lba(read_min,read_sec,read_sect)==150);
+    sector();ack();exec_command(0x09);ack();
+    cdrom_snapshot_write(wire);
+    CHECK(!setloc_pending);
+    setloc_pending=1;read_sec=9;
+    CHECK(cdrom_snapshot_read(wire,size) && !setloc_pending);
+    exec_command(0x1B);ack();
+    CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
+    wire[size-1]=2;CHECK(!cdrom_snapshot_validate(wire,size));
+    /* CDF2 states remain readable and retain the paused drive position. */
+    exec_command(0x09);ack();
+    PstW writer;pst_w_init(&writer,wire,size);
+    CHECK(cdrom_snap_emit(&writer,1) && writer.written==size-5);
+    read_sec=9;
+    CHECK(cdrom_snapshot_read(wire,size-5));
+    exec_command(0x06);
+    CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
+    free(wire);
+}
+static void snapshot_stream_identity(void) {
+    setup();
+    param_fifo[0]=0; param_fifo[1]=4; param_fifo[2]=0; param_count=3;
+    exec_command(0x02); ack();
+    CHECK(cdrom_get_stream_start_lba()==150);
+    const uint32_t size=cdrom_snapshot_bytes();
+    uint8_t* wire=malloc(size); CHECK(wire);
+    cdrom_snapshot_write(wire);
+    param_fifo[0]=0; param_fifo[1]=5; param_fifo[2]=0; param_count=3;
+    exec_command(0x02); ack();
+    CHECK(cdrom_get_stream_start_lba()==225);
+    CHECK(cdrom_snapshot_read(wire,size));
+    CHECK(cdrom_get_setloc_lba()==150);
+    CHECK(cdrom_get_stream_start_lba()==150);
+    free(wire);
+    cdrom_init("synthetic");
+    CHECK(cdrom_get_setloc_lba()==-1);
+    CHECK(cdrom_get_stream_start_lba()==-1);
+}
+
+int main(void) {
+    resident_header_cursor_and_restore();
+    resident_declines_atomically();
+    pause_read_resumes_position();
+    snapshot_setloc_and_paused_head();
+    invalid_setloc_preserves_target();
+    delayed_notification();
+    dma_continuation();
+    dma_arrival_mid_drain();
+    request_rearms_retained_sector();
+    snapshot_between_request_and_dma();
+    snapshot_pending_deadline();
+    snapshot_stream_identity();
+    puts("PASS: CD FIFO latching, pending IRQ, DMA continuation, and state compatibility");
+    return 0;
+}
+
+void spu_cd_audio_reset(void) {}
+void spu_cd_audio_push(const int16_t* stereo,int frames) {(void)stereo;(void)frames;}
+void* iso_open(const char* p) {(void)p;return (void*)1;}
+void iso_close(void* h) {(void)h;}
+int iso_has_subq_replacements(void* h) {(void)h;return 0;}
+int iso_read_subq(void* h,uint32_t lba,uint8_t* b,int n,int* v) {(void)h;(void)lba;(void)b;(void)n;*v=0;return 0;}
+int iso_read_cdda_sector(void* h,uint32_t lba,uint8_t* b,int n) {(void)h;(void)lba;memset(b,0,n);return 0;}
+uint32_t iso_cdda_track_start_lba(void* h,int track) {(void)h;(void)track;return 0;}
+uint32_t iso_cdda_track_pregap_lba(void* h,int track) {(void)h;(void)track;return 0;}
+int iso_cdda_track_count(void* h) {(void)h;return 1;}
+uint32_t iso_cdda_sector_count(void* h) {(void)h;return 1000;}
+int iso_cdda_track_is_audio(void* h,int track) {(void)h;(void)track;return 0;}
+uint32_t iso_sector_count(void* h) {(void)h;return 1000;}
+int iso_track_count(void* h) {(void)h;return 1;}
+void event_ring_record_aux(uint16_t k,uint8_t d,uint32_t a) {(void)k;(void)d;(void)a;}
+void event_ring_record(uint16_t k,uint8_t d) {(void)k;(void)d;}
+void savestate_set_disc_scope(int n) {(void)n;}
+int psx_netplay_cd_bisect_active(void) {return 0;}
+uint32_t psx_netplay_sim_tick(void) {return 0;}
+uint32_t interrupts_get_cycles_since_vblank(void) {return 0;}
+int psx_netplay_is_resimulating(void) {return 0;}
+void audio_trace_event(uint16_t k,uint32_t a,uint32_t b) {(void)k;(void)a;(void)b;}

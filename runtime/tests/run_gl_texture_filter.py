@@ -13,7 +13,11 @@ def main():
     parser.add_argument('--sdl-include',required=True)
     parser.add_argument('--sdl-library',required=True)
     parser.add_argument('--output',required=True)
+    parser.add_argument('--debug-tools',action='store_true',help='build with the debug tools (present ring) compiled in')
     parser.add_argument('--fixture',type=Path)
+    parser.add_argument('--build-only',action='store_true',
+                        help='build the probe without starting a GL context')
+    parser.add_argument('--optimization',choices=['0','1','2','3'],default='1')
     parser.add_argument('--hd-pack', action='store_true')
     parser.add_argument('--cxx')
     parser.add_argument('--webp-include')
@@ -32,7 +36,7 @@ def main():
         (out/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
         print(r.stdout,r.stderr[-4000:],flush=True)
         if r.returncode: raise subprocess.CalledProcessError(r.returncode,command)
-    flags=['-std=gnu11','-O1','-DPSX_SDL3=1','-DPSX_NO_DEBUG_TOOLS=1',
+    flags=['-std=gnu11','-O'+args.optimization,'-DPSX_SDL3=1',*([] if args.debug_tools else ['-DPSX_NO_DEBUG_TOOLS=1']),
            '-ffunction-sections','-fdata-sections','-I',fw/'runtime/include','-I',fw/'runtime/src']
     for include in args.sdl_include.split(';'):
         if include: flags+=['-I',include]
@@ -48,6 +52,9 @@ def main():
     if (fw/'runtime/src/frame_gen.c').exists():
         sources.append(('fg',fw/'runtime/src/frame_gen.c'))
     objects=[]
+    # The renderer calls the in-game overlay hook (host_overlay.c) at present.
+    if (fw/'runtime/src' / "host_overlay.c").exists():
+        sources.append(("hov", fw/'runtime/src' / "host_overlay.c"))
     for name,source in sources:
         obj=out/(name+'.o'); run([args.cc,*flags,'-c',source,'-o',obj]); objects.append(obj)
     if args.hd_pack:
@@ -73,15 +80,16 @@ def main():
     else: libraries+=['-lGL','-ldl','-lpthread']
     if platform.system()!='Darwin': libraries+=['-Wl,--gc-sections']
     run([args.cxx if args.hd_pack else args.cc,*objects,args.sdl_library,'-o',exe,*libraries])
-    arguments=list(args.argument)
-    if args.hd_pack:
-        pack=out/'pack'; (pack/'replacements').mkdir(parents=True,exist_ok=True)
-        (pack/'beetle'/'demo-texture-replacements').mkdir(parents=True,exist_ok=True)
-        (pack/'beetle-other'/'demo-texture-replacements').mkdir(parents=True,exist_ok=True)
-        arguments=[pack]
-    run([exe,*arguments],{'PSX_GL_HIRES_WINDOW':'0'} if args.hd_pack else None)
-    if args.hd_pack: run([exe,*arguments],{'PSX_GL_HIRES_WINDOW':'1'})
-    if args.hd_pack: run([exe,'--native-baseline'],{'PSX_GL_HIRES_WINDOW':'1'})
+    if not args.build_only:
+        arguments=list(args.argument)
+        if args.hd_pack:
+            pack=out/'pack'; (pack/'replacements').mkdir(parents=True,exist_ok=True)
+            (pack/'beetle'/'demo-texture-replacements').mkdir(parents=True,exist_ok=True)
+            (pack/'beetle-other'/'demo-texture-replacements').mkdir(parents=True,exist_ok=True)
+            arguments=[pack]
+        run([exe,*arguments],{'PSX_GL_HIRES_WINDOW':'0'} if args.hd_pack else None)
+        if args.hd_pack: run([exe,*arguments],{'PSX_GL_HIRES_WINDOW':'1'})
+        if args.hd_pack: run([exe,'--native-baseline'],{'PSX_GL_HIRES_WINDOW':'1'})
     return 0
 
 if __name__=='__main__':

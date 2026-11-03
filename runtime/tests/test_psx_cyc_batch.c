@@ -18,6 +18,7 @@ uint8_t *g_psx_ram = 0;
 int g_psx_load_delay = 1;
 uint32_t g_psx_gcs_recip_q16 = 65536u;
 uint32_t g_psx_gcs_frac = 0u;
+int g_psx_gcs_batch = 0;
 
 static int service_count;
 

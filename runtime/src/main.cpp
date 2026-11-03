@@ -1,3 +1,5 @@
+#include "audio_sync.h"
+#include "audio_catchup.h"
 /* main.cpp — Phase 3 runtime entry point.
  *
  * Loads BIOS ROM, initializes CPU state + SDL display, calls into
@@ -6,12 +8,17 @@
  */
 
 #include "cpu_state.h"
+#include "mod_netplay.h"
+#include "mod_memory.h"
+#include "mod_texture_banks.h"
+#include "execution_profile.h"
 #include "regional_launch.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
 #include "mod_controller_source.h"
 #include "window_size.h"     /* default game-window size */
-#include "internal_resolution.h" /* Settings -> Display -> Internal resolution */
+#include "internal_resolution.h" /* the Internal Resolution mod and [video] internal_resolution */
+#include "mod_internal_resolution.h"
 #include "dynamic_resolution.h"  /* [video] dynamic_resolution: the step controller */
 #include "render_thread.h"        /* rt_get_stats: queue backpressure (dynres) */
 #include "psx_scheduler.h"   /* psx_scheduler_run — deterministic TCB scheduler */
@@ -32,6 +39,9 @@
 #include "starvation_ring.h"
 #include "load_accel.h"
 #include "savestate.h"
+#include "psx_openxr.h"
+#include "atomic_file_write.h"
+#include "openxr_ready_state.h"
 #include "psx_rewind.h"
 #include "psx_savestate_menu.h"
 #include "host_osd.h"
@@ -43,10 +53,18 @@
 #include "overlay_loader.h"
 #include "autocompile.h"
 #include "code_provider.h"
+#include "host_span_ring.h"
+#ifdef PSX_HAS_OVERLAY_DISPATCH
+extern "C" void psx_overlay_static_get_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *);
+#endif
 extern "C" void psx_event_step_conservative_env_init(void);
+/* memory.c's last-word-store record for the idle-loop detector. */
+extern "C" int g_psx_track_last_store;
+extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "overlay_backend.h"
 #include "gpu.h"
 #include "draw_distance.h"
+#include "mod_immediate.h"
 #include "display_scanout.h"
 #include "pgxp.h"
 #include "pgxp_session.h"
@@ -66,14 +84,21 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "present_sync.h"
 #include "latency_ring.h"
 #include "sio.h"
+#include "psx_host_rumble.h"
+#include "psx_jogcon_ffb.h"
+#include "psx_jogcon_ffb_sdl.h"
 #ifndef PSX_MAX_PLAYERS
 #define PSX_MAX_PLAYERS 2
+#endif
+#ifndef PSX_MEMCARD_SLOTS
+#define PSX_MEMCARD_SLOTS 2   /* runtime.cmake MEMCARD_SLOTS */
 #endif
 #include "psx_netplay.h"
 #include "psx_stick.h"       /* radial SDL-stick -> DualShock response transform */
 #include "psx_trigger.h"     /* continuous SDL trigger -> 0..255 magnitude */
 #include "mod_pad_transform.h"
 #include "psx_hotkey_pad.h"   /* host shortcut bindings, direct claims */
+#include "psx_stick_fold.h"   /* default-map digital stick fold (host layer) */
 #include "psx_controller_type.h" /* mapped wheel-name classification */
 #include "psx_netplay_rb.h"
 #include "psx_selfcheck.h"
@@ -83,7 +108,9 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "host_time.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "recomp_net/auth.h"
+#include "recomp_netplay_account.h"   /* shared recomp-ui account sync */
 #include "recomp_net/host_relay.h" /* RNetHostRelayStatus for the launcher relay line */
+#include "recomp_net/host_ice.h"   /* RNetHostIceStatus: host relay over ICE waiting-room line */
 #include "recomp_net/chat_filter.h" /* chat profanity mask, LAN rooms too */
 #endif
 #include "spu.h"
@@ -103,6 +130,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "crash_trace.h"
 #include "freeze_heartbeat.h"
 #include "config_loader.h"
+#include "game_mode.h"
 #include "bios_rom_alias.h"
 #include "host_path.h"
 #include "launcher_device.h"
@@ -112,28 +140,31 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "mod_plugins.h"
 #include "mod_local_input_policy.h"
 #include "mod_session_baseline.h"
+#include "host_enhancements.h"
+#include "func_override.h"
 #include "mod_runtime.h"
+#include "video_texture_filter.h"
+#include "video_telemetry.h"
 #include "host_launch_timing.h"
 #include "mod_packages.h"
 #include "present_image_ring.h"
 #include "gpu_timeline.h"
 #include "crc32.h"
 #include "disc_identity.h"
+#include "disc_content_hash.h"
 #include "sbi_setup.h"
 #include "disc_path.h"
 #include "iso_reader.h"      /* text-image guard: extract the boot EXE from the disc */
-#include "psx_keybinds.h"    /* configurable keyboard->DualShock keybinds (keybinds.ini) */
+#include "psx_keybinds.h"
+#include "host_overlay.h"
+#include "psx_disc_tray.h"
+#include "psx_runtime_menu.h"
+#include "psx_host_menu.h"
+#include "psx_menu_host.h"     /* optional in-game menu hooks (P1 pause, ...) */    /* configurable keyboard->DualShock keybinds (keybinds.ini) */
 #include "psx_window_icon.h"
 
 #if defined(RECOMP_LAUNCHER)
 #include "recomp_launcher.h"   /* shared recomp-ui Dear ImGui launcher */
-/* A recomp-ui that shows the Internal resolution row; an older one only has
- * the legacy Supersampling row (internal_resolution.h, launcher round trip). */
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-static constexpr int kLauncherHasInternalResolution = 1;
-#else
-static constexpr int kLauncherHasInternalResolution = 0;
-#endif
 #include "launcher_profile.h"  /* per-system variant profile (theme/caps bundle) */
 #include "launcher_boot_timing.h" /* PSX_LAUNCHER_BOOT_TIMING stamps */
 #if defined(PSX_HAS_CODEGEN_SETUP_HOST)
@@ -192,6 +223,7 @@ extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 #include <iphlpapi.h>
 #include <windows.h>
 #include <commdlg.h>
+#include "psx_win_utf8.h"
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -255,6 +287,10 @@ extern "C" {
     /* psx_bios_backend.c */
     extern int      g_psx_dispatch_depth;
 }
+
+/* Presentation-only movie timeline. Loads and rollback replace the guest
+ * history even when the restored cycle matches the last presented cycle. */
+static uint64_t s_fmv_timeline_epoch = 1;
 
 /* memory.c */
 extern "C" void     memory_init(const char* bios_path);
@@ -424,12 +460,21 @@ struct PlayerInput {
     int   deadzone = 3277;  /* raw SDL axis units, ~10% default */
     SDL_GameController* handle = nullptr;
     SDL_JoystickID      instance = -1;
+    SDL_JoystickID      preferred_instance = -1; /* live launcher choice only */
     uint8_t rumble_small = 0;
     uint8_t rumble_large = 0;
     bool    rumble_known = false;
     bool    rumble_warned = false;
     bool    steering_wheel = false;
+    /* EXPERIMENTAL JogCon force feedback on this pad's SDL haptics
+     * ([controller] experimental_jogcon_force_feedback; psx_jogcon_ffb.h). */
+    PsxJogconHaptic    ffb_haptic = {nullptr, -1, -1};
+    PsxJogconFfbDriver ffb = {{0, 0}, 0};
+    bool               ffb_probed = false;
 };
+/* game.toml [controller] experimental_jogcon_force_feedback(_invert). */
+static bool g_jogcon_ffb = false;
+static bool g_jogcon_ffb_invert = false;
 static PlayerInput g_players[PSX_MAX_PLAYERS];
 /* Offline SIO sample loop bound (from game.toml players; clamped). */
 static int g_offline_pad_count = 2;
@@ -1058,6 +1103,7 @@ extern "C" void psx_frontend_on_savestate_refused(int is_load, int slot,
 }
 
 extern "C" void psx_frontend_on_savestate_loaded(void) {
+    ++s_fmv_timeline_epoch;
     psx_projection_reset_session();
     psx_local_mouse_reset();
     mod_runtime_on_savestate_loaded();
@@ -1101,10 +1147,13 @@ extern "C" void psx_frontend_on_savestate_loaded(void) {
  * is already in FMV/media, mirror the disk cutover reset so resume into
  * FMV entry does not treat the tip as a fresh gap (permanent black blank). */
 extern "C" void psx_frontend_on_rb_snap_loaded(void) {
+    ++s_fmv_timeline_epoch;
     const int media = gpu_display_is_depth24() || mdec_recently_active(8) ||
                       cdrom_fmv_stream_pending() || cdrom_xa_stream_active();
     g_audio_cycle_resync = 1;
-    gpu_depth24_on_savestate_loaded();
+    /* The depth24 present hold came back with the GPU snap and is guest state
+     * now (ticked at guest VBlank): keep it, so the replay matches the live
+     * run of the same ticks. */
     s_d24_cutover_blank = 0;
     if (media) {
         s_d24_saw_gap = 0;
@@ -1211,16 +1260,38 @@ extern "C" EMSCRIPTEN_KEEPALIVE void psx_web_set_smooth_60fps(int enabled) {
 
 /* [video] options, resolved from the game config (defaults: native + AA). */
 static int           g_video_scale = 1;     /* internal-resolution SSAA factor */
-static bool          g_video_aa    = true;  /* linear present filtering */
+/* Linear present filtering for this session: the title's [video]
+ * antialiasing, or the Image Filtering mod's Smoothing (session_host_look). */
+static bool          g_video_aa    = true;
 static int           g_video_post_aa = 0;   /* [video] antialiasing_mode / PSX_AA_MODE (GL_POST_AA_*) */
+static float         g_video_bloom = 0.0f;  /* [video] bloom (PSX_BLOOM overrides) */
+static std::string   g_video_post_shader;   /* [video] post_shader (PSX_POST_SHADER overrides) */
 static int           g_video_ss_milli = 1000; /* [video] supersample / PSX_SUPERSAMPLE */
+
+/* [video] match_display_max_lines (0 = none): the display height Match
+ * display and its dynamic-resolution floor resolve
+ * against, capped. On an 8K panel Match display x1.5 asks 27x, past the
+ * full-VRAM surface, where the high-resolution window engages and dynamic
+ * resolution cannot step; a title can cap it at, say, 4K lines. */
+static int g_video_match_max_lines = 0;
+static int g_video_ss_disable_at_lines = 0;
+static int display_supersample(SDL_Window *window) {
+    return psx_ir_display_supersample(g_video_ss_milli,
+        psx_sdl_display_pixel_height(window), g_video_ss_disable_at_lines);
+}
+static int match_display_px_h(SDL_Window *window) {
+    const int h = psx_sdl_display_pixel_height(window);
+    return (g_video_match_max_lines > 0 && h > g_video_match_max_lines)
+               ? g_video_match_max_lines : h;
+}
 /* FMV present reconstruction (VIDEO_FMV_FILTER_*), pushed to the GL renderer
- * once the config is resolved. Only consulted while g_video_aa is on. */
+ * once the session's look is resolved. Only consulted while g_video_aa is on. */
 static int           g_video_fmv_filter = PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
-/* Scanline post-process (host display enhancement). Off by default; toggled by
- * the launcher Display card, the PSX_SCANLINES env override, the F6 hotkey, or
- * the `scanline` TCP command. Strength 0..1 is the dark-gap depth. Pushed to the
- * GL renderer each present alongside the FMV filter. */
+/* Scanline post-process (host display enhancement). Off by default; set for
+ * the session from the title's [video] scanlines and the CRT Filter mod, then
+ * changed for the session only by the PSX_SCANLINES env override, the F6
+ * hotkey, or the `scanline` TCP command. Strength 0..1 is the dark-gap depth.
+ * Pushed to the GL renderer each present alongside the FMV filter. */
 static bool          g_video_scanlines = false;
 static float         g_video_scanline_strength = 0.5f;
 
@@ -1239,19 +1310,8 @@ extern "C" int psx_video_get_scanlines(float *strength) {
     return g_video_scanlines ? 1 : 0;
 }
 
-/* recomp-ui stores this 1-based so a zero-initialized (older) host reads as
- * "unset" rather than pinning nearest; the config enum is 0-based. Convert at
- * the boundary, and treat anything out of range as the default. */
-static inline int launcher_fmv_filter_to_cfg(int ls_value) {
-    if (ls_value < 1 || ls_value > PSXRecompV4::VIDEO_FMV_FILTER_COUNT)
-        return PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
-    return ls_value - 1;
-}
-static inline int cfg_fmv_filter_to_launcher(int cfg_value) {
-    if (cfg_value < 0 || cfg_value >= PSXRecompV4::VIDEO_FMV_FILTER_COUNT)
-        cfg_value = PSXRecompV4::VIDEO_FMV_FILTER_DEFAULT;
-    return cfg_value + 1;
-}
+/* Texture filtering for this session (PSX_TEXTURE_FILTER_*): the title's
+ * [video] texture_filtering, or the Image Filtering mod's choice. */
 static int           g_video_texfilter = 0; /* 0=nearest, 1=bilinear */
 static int           g_mod_texfilter = -1;
 extern "C" void psx_mod_set_texture_filter(int mode) {
@@ -1259,6 +1319,41 @@ extern "C" void psx_mod_set_texture_filter(int mode) {
     g_mod_texfilter = mode;
     gr_set_texture_filter(mode);
 }
+#if defined(RECOMP_LAUNCHER)
+/* Rows that are not PSX Settings any more: what the built-in CRT Filter,
+ * Image Filtering, Enhanced Audio, Rewind and Internal Resolution mods
+ * replaced (host_enhancements.h), Perspective textures (psx.enhancement.pgxp)
+ * and the Dynamic resolution checkbox (Internal Resolution = Auto). recomp-ui's
+ * psx profile no longer offers them; clearing them here too keeps an older
+ * recomp-ui, whose profile still does, from drawing controls that nothing
+ * applies. (The Sample rate row is the profile's hide_audio_freq, which a
+ * GameInfo cannot clear: an older recomp-ui still draws it, and the runtime
+ * ignores what it returns.) */
+static void psx_launcher_hide_mod_owned_rows(RecompLauncherCGameInfo* gi) {
+    gi->has_supersampling = 0;       /* Internal Resolution (and the legacy
+                                      * Supersampling cycle) */
+    gi->has_antialiasing = 0;        /* Image Filtering: Smoothing */
+    gi->has_texture_filter = 0;      /* Image Filtering: Texture filtering */
+    gi->has_screen_kind = 0;         /* CRT Filter: Screen model */
+    gi->has_spu_hq = 0;              /* Enhanced Audio */
+    gi->has_geometry_precision = 0;  /* PGXP Precision: Perspective textures */
+#if defined(RECOMP_LAUNCHER_HAS_FMV_FILTER)
+    gi->has_fmv_filter = 0;          /* Image Filtering: FMV filtering */
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_SCANLINES)
+    gi->has_scanlines = 0;           /* CRT Filter: Scanlines */
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_REWIND_DEPTH)
+    gi->has_rewind_depth = 0;        /* Rewind */
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
+    gi->has_dynamic_resolution = 0;  /* Internal resolution = Auto */
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_LINEAR_FILTER_HIDDEN)
+    gi->linear_filter_hidden = 1;    /* no legacy Linear filtering row either */
+#endif
+}
+#endif
 /* Sub-pixel vertex precision + perspective-correct UVs (PGXP-style). Visual
  * only: the PS1-visible GTE SXY FIFO stays integer, so guest-side culling and
  * SXY readback are untouched. Default off = the faithful floor. */
@@ -1266,12 +1361,19 @@ static int           g_video_geometry_correction   = 0;
 static int           g_video_perspective_texturing = 0;
 static int           g_video_pgxp_cpu_mode         = 0;
 static float         g_video_pgxp_tolerance        = 0.5f;
-/* docs/ENHANCEMENTS.md G1.11: dataflow-only and exact-projection shadows.
- * Defaults keep the historical behaviour. game.toml [video] only. */
+/* game.toml [video] tuning. Session arming selects dataflow-only/no-clamp
+ * defaults in hook builds unless the title supplied an explicit value. */
+static int           g_video_pgxp_tolerance_set = 0;
+static int           g_video_pgxp_position_fallback_set = 0;
 static int           g_video_pgxp_position_fallback   = 1;
 static int           g_video_pgxp_preserve_projection = 0;
 /* PGXP renderer features (G1.14); PSX_PGXP_DEPTH / _COLOR / _SEAM override. */
 static int           g_video_pgxp_depth_buffer = 0;
+static int           g_video_fmv_chroma = 0;   /* [video] fmv_chroma_smoothing / PSX_FMV_CHROMA */
+/* [video] texture_lod / anisotropic_filtering; PSX_TEXTURE_LOD / PSX_ANISO. */
+static int           g_video_texture_lod = 0, g_video_aniso = 1;
+static int           g_video_accurate_blending = 1;   /* [video] accurate_blending / PSX_ACCURATE_BLENDING */
+static int           g_video_dithering = 1;   /* [video] dithering / PSX_DITHERING */
 static int           g_video_pgxp_color_correction = 0;
 static int           g_video_pgxp_seam = 0;
 static float         g_video_pgxp_depth_threshold = 4096.0f;
@@ -1282,20 +1384,30 @@ static float         g_video_pgxp_depth_threshold = 4096.0f;
 static int           g_video_pgxp_mod_only            = 0;
 static int           g_video_renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
 
-/* Settings -> Display -> Internal resolution (internal_resolution.h). The
- * preset supersedes the legacy supersampling factor once set; PSX_IR_UNSET
- * leaves the factor as the player (or game.toml) wrote it. This is the
- * configured preset (game.toml < settings.toml < launcher) and the only one
- * the launcher shows or settings.toml saves. PSX_INTERNAL_RESOLUTION lives
- * apart in g_video_internal_res_env: it wins for the run but is never
- * persisted, so two local peers sharing one settings.toml stay independent. */
+/* The session's internal resolution (internal_resolution.h): the title's
+ * [video] internal_resolution, or the built-in Internal Resolution mod's
+ * choice (session_internal_resolution). The value supersedes the legacy
+ * supersampling factor (g_video_scale) once set; PSX_IR_UNSET leaves the
+ * factor as game.toml wrote it. Auto (PSX_IR_AUTO) is Match display with
+ * dynamic resolution on. PSX_INTERNAL_RESOLUTION lives apart in
+ * g_video_internal_res_env: it wins for the run, so two local peers sharing
+ * one install stay independent. */
 static int           g_video_internal_res = PSX_IR_UNSET;
 static int           g_video_internal_res_env = PSX_IR_UNSET;
-/* Dynamic resolution ([video] dynamic_resolution, dynamic_resolution_min;
- * dynamic_resolution.h): the internal resolution above is the ceiling, and
- * the GL scale steps down to the floor only while the game would miss frames.
- * Same precedence as the preset (game.toml < settings.toml < launcher);
- * PSX_DYNRES=0/1 and PSX_DYNRES_MIN win for one run, never persisted. */
+/* The title's baseline, captured when the config loads: its internal
+ * resolution and dynamic resolution, its legacy supersampling factor and its
+ * [video] supersample. Every session start restores it before the mod's
+ * request applies, so a rematch never inherits the last session's scale. */
+static PsxHostResolution g_title_resolution = {PSX_IR_UNSET, 0};
+static int           g_title_scale = 1;
+static int           g_title_ss_milli = 1000;
+/* Dynamic resolution (dynamic_resolution.h): the internal resolution above is
+ * the ceiling, and the GL scale steps down to the floor only while the game
+ * would miss frames. The Internal Resolution mod turns it on with Auto and off
+ * with a fixed resolution; at Game default (or with the mod off) the title's
+ * [video] dynamic_resolution stands, over its own internal resolution. The
+ * floor is the title's [video] dynamic_resolution_min. PSX_DYNRES=0/1 and
+ * PSX_DYNRES_MIN win for one run. */
 static int           g_video_dynres = 0;
 static int           g_video_dynres_min = 720;
 static int           g_video_dynres_env = -1;
@@ -1347,18 +1459,19 @@ static int           g_video_requested_scale = 1;
 static bool          g_video_scale_applies = true;
 static bool          g_video_hidpi_window = false;
 
-static_assert(PSX_IR_LEGACY_SS_MAX == SW_MAX_INTERNAL_SCALE,
-              "settings.toml supersampling for an older runtime is the software ceiling");
-
 static int video_scale_ceiling(void) {
     return g_video_renderer == 1 ? GL_MAX_INTERNAL_SCALE : SW_MAX_INTERNAL_SCALE;
 }
 
-/* The preset in effect this run: the environment override, else the
- * configured one. */
+/* Session priority: environment override, a title mod's request
+ * (psx_mod_set_internal_resolution), then the session's choice: the Internal
+ * Resolution mod's, or the title's baseline.
+ * Auto renders at its ceiling, Match display; dynres_requested() says whether
+ * the scale may step down under it. */
 static int effective_internal_resolution(void) {
-    return g_video_internal_res_env != PSX_IR_UNSET ? g_video_internal_res_env
-                                                    : g_video_internal_res;
+    const uint32_t mod_lines = psx_mod_internal_resolution_request();
+    return psx_ir_ceiling(g_video_internal_res_env != PSX_IR_UNSET ? g_video_internal_res_env
+        : mod_lines ? (int)mod_lines : g_video_internal_res);
 }
 
 /* Resolve the Internal resolution preset into g_video_scale. display_px_h is
@@ -1367,30 +1480,33 @@ static int effective_internal_resolution(void) {
 static void apply_internal_resolution(int display_px_h) {
     const int preset = effective_internal_resolution();
     if (preset == PSX_IR_UNSET) return;
-    g_video_scale = psx_resolve_internal_scale_ss(preset, g_video_ref_lines,
-                                                  display_px_h, video_scale_ceiling(),
-                                                  g_video_ss_milli);
+    g_video_scale = psx_resolve_internal_scale_ss_cap(preset, g_video_ref_lines,
+        display_px_h, video_scale_ceiling(), display_supersample(nullptr), g_video_match_max_lines);
 }
 
-/* The value the launcher row starts on: the preset, or the legacy factor shown
- * as the preset it matches (3 -> 720p) or as its own "Nx" entry. */
-[[maybe_unused]] static int internal_resolution_for_launcher(void) {
-    if (g_video_internal_res != PSX_IR_UNSET) return g_video_internal_res;
-    return psx_ir_from_supersampling(g_video_scale < 1 ? 1 : g_video_scale, g_video_ref_lines);
-}
 static std::string   g_bezel_path;      /* mod-owned OpenGL margin artwork */
 static int           g_fullscreen     = 0;  /* tri-state: 0 windowed, 1 borderless (desktop)
                                               * fullscreen, 2 exclusive fullscreen */
-static int           g_video_screen   = 0;  /* 0=raw,1=crt,2=composite,3=trinitron */
+static int           g_video_screen   = 0;  /* 0=raw,1=crt,2=composite,3=trinitron (session) */
 static int           g_video_win_w    = 0;    /* 0 = fit the display; see clamp_window_aspect */
-static bool          g_audio_spu_hq   = false; /* SPU float-shadow (env overrides) */
-static int           g_audio_freq     = 44100; /* host device request */
+static bool          g_audio_spu_hq   = false; /* SPU float-shadow, session (env overrides) */
+/* The host audio device's sample rate: the runtime's built-in output rate
+ * (not a player setting; the SPU mixes at 44.1 kHz). */
+static constexpr int g_audio_freq     = 44100;
 static int           g_auto_skip_fmv  = 0;   /* skip FMVs the instant they're detected */
 /* Local rewind is opt-in: the snap ring is whole-machine state on a frame
- * cadence, too much to charge every host for a feature many never open. */
+ * cadence, too much to charge every host for a feature many never open. The
+ * session's values come from the built-in Rewind mod (psx.feature.rewind);
+ * session_host_look() sets them, off without it. */
 static int           g_rewind_enabled = 0;
 static int           g_rewind_depth  = 50;  /* local rewind snap count (50/100/150/200) */
 static int           g_rewind_interval = 15; /* frames between snaps (1/4/8/12/15) */
+/* The title's look: its game.toml [video] screen_kind / scanlines /
+ * scanline_strength / antialiasing / texture_filtering / fmv_filter and
+ * [audio] spu_hq, captured when the config loads. The CRT Filter, Image
+ * Filtering and Enhanced Audio mods resolve over it at every session start
+ * (session_host_look); with them off it is exactly what the title ships. */
+static PsxHostLook   g_title_look = {0, 0, 50, 1, 0, 0, 0};
 static int           g_hotkey_pad_rewind = 1272;       /* select + r3 */
 static int           g_hotkey_pad_save_state_menu = 2040;/* select + r1 */
 static int           g_hotkey_pad_fast_forward = 1528;   /* select + l1 (hold) */
@@ -1415,6 +1531,30 @@ extern "C" int psx_mod_allow_direct_shortcut(uint32_t shortcut) {
 
 extern "C" void psx_mod_set_rewind_blocked(int blocked) {
     psx_rewind_set_title_blocked(blocked);
+}
+
+/* psx_mod_set_host_rumble: per-seat title rumble, stamped with the rumble
+ * VBlank so a value the mod stops refreshing lapses (psx_host_rumble.h). */
+static PsxHostRumbleSlot g_mod_rumble[PSX_MAX_PLAYERS];
+static uint32_t          g_rumble_vblank = 0;
+
+extern "C" int psx_mod_set_host_rumble(uint32_t player, uint32_t small,
+                                       uint32_t large) {
+    if (player >= PSX_MAX_PLAYERS) return 0;
+    if (psx_netplay_active()) {
+        /* Online: only this peer's own guest port drives its own pad, once per
+         * real tick (a rollback resim replays ticks the pad already felt). */
+        if (psx_netplay_is_resimulating() ||
+            (int)player != psx_netplay_local_port())
+            return 1;
+        const int card = psx_netplay_input_player();
+        player = card >= 0 && card < PSX_MAX_PLAYERS ? (uint32_t)card : 0u;
+    }
+    psx_host_rumble_set(&g_mod_rumble[player], g_rumble_vblank, small, large);
+    return 1;
+}
+extern "C" void psx_mod_set_savestate_blocked(int blocked) {
+    savestate_set_title_blocked(blocked);
 }
 static uint32_t      g_savestate_input_guard_min_until = 0;
 static uint32_t      g_savestate_input_guard_max_until = 0;
@@ -1461,6 +1601,7 @@ static int           g_low_latency_input = 1;
  * GL call are done; s_render_thread_tried keeps it to one attempt. */
 static int           g_render_thread = 0;
 static bool          g_offer_render_pipeline = true;
+static bool          g_launcher_quick_controls = false;  /* game.toml [launcher] quick_controls */
 static int           g_render_thread_frames = 2;
 /* [video] frame_generation (docs/FRAME_GENERATION.md), with the render thread. */
 static int           g_frame_generation = 0;
@@ -1529,6 +1670,7 @@ static int present_effective_swap_interval(void);
 static int present_should_wall_pace(void);
 static void apply_present_cadence(void);
 static void refresh_host_display_cadence(int force_log, int force_probe);
+static void log_present_cadence(void);
 
 
 /* FMV auto-skip detection hooks (cdrom.c / mdec.c). */
@@ -1581,6 +1723,19 @@ static bool ensure_sdl_pixel_buf_capacity(size_t pixels) {
  * session vanilla (mods cleared), the LAN MOTK1 wire protocol, lobby caps
  * without mod fields, and the neutral headless idle pad. */
 static int g_netplay_content_negotiation = 0;
+static int title_netplay_aspect_index(int num, int den) {
+    if (num <= 0 || den <= 0) return 0;
+    return num * 9 == den * 21 ? 2 : num * 9 == den * 16 ? 1 : 0;
+}
+static void title_netplay_fix_caps_view(PsxLobbyMatchCaps* caps) {
+    const PSXModNetplayProfile* profile = psx_mod_netplay_profile();
+    if (!caps || !profile || !profile->fixed_aspect_mask) return;
+    const int index = title_netplay_aspect_index(caps->aspect_num, caps->aspect_den);
+    if (!psx_mod_netplay_set_aspect(index)) (void)psx_mod_netplay_set_aspect(0);
+    const int selected = psx_mod_netplay_aspect();
+    caps->aspect_num = selected == 2 ? 21 : selected == 1 ? 16 : 4;
+    caps->aspect_den = selected ? 9 : 3;
+}
 /* Install the netplay session's mod plan without touching the persisted
  * offline selection. Default: vanilla (clear every mod). Opted in: the
  * host-published lobby plan, or the locally selected verified plan for a
@@ -1588,6 +1743,14 @@ static int g_netplay_content_negotiation = 0;
  * fingerprint before guest execution). */
 static bool netplay_commit_mods(const std::filesystem::path& disc,
                                 std::string* error) {
+    if (psx_mod_netplay_profile()) {
+        const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+        const int num = caps && caps->valid ? caps->aspect_num : g_video_aspect_num;
+        const int den = caps && caps->valid ? caps->aspect_den : g_video_aspect_den;
+        const int index = title_netplay_aspect_index(num, den);
+        if (!psx_mod_netplay_set_aspect(index)) (void)psx_mod_netplay_set_aspect(0);
+        return PSXRecompV4::mod_runtime_commit_netplay(disc, error);
+    }
     if (!g_netplay_content_negotiation)
         return PSXRecompV4::mod_runtime_commit_netplay_view(disc, error);
     const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
@@ -1680,8 +1843,9 @@ extern "C" int psx_mod_set_adaptive_display_aspect(
  * Fit and fixed aspect apply_netplay_local_viewport_aspect() set, into an
  * offline rematch. The rest is defensive, for the state listed here only; see
  * docs/MOD_PACKAGES.md "Session starts" for what is exempt and why (the
- * renderer and fixed aspect are launcher controls; guest/GPU-DMA memory,
- * texture-packet arenas and defined texture banks live for the process).
+ * renderer and fixed aspect are launcher controls; enhancement guest/GPU-DMA
+ * arenas, texture-packet registrations and retained texture banks retain
+ * process lifetime unless the title explicitly declares session resources).
  *
  * Function-entry hooks need nothing here: the commit or netplay clear empties
  * upstream's hook table, and only activation rebuilds it.
@@ -1699,7 +1863,11 @@ static int launcher_vsync_preference(void) {
 }
 
 static void reset_mod_owned_presentation(void) {
+    psx_mod_internal_resolution_reset();
+    memcard_set_extension_codec(nullptr, nullptr);
+    debug_server_request(0);
     psx_local_mouse_clear();
+    psx_keybinds_clear_session_players();
     PSXModSessionScalars live;
     live.video_vsync = g_video_vsync;
     live.frame_interpolation = g_frame_interpolation;
@@ -1734,9 +1902,12 @@ static void reset_mod_owned_presentation(void) {
     gpu_ws_set_auto_ui_proportional(g_ws_auto_ui_proportional_cfg ? 1 : 0);
     psx_mod_set_world_scene_predicate(nullptr);
     gpu_ws_set_native_scene_predicate(nullptr);
+    /* Projection recovery and its clipping belong to this session's mod. */
+    psx_mod_set_native_wide_projection_correction(0);
     psx_mod_set_retained_scene_predicate(nullptr);
     psx_mod_set_adaptive_backdrop_preload(0);
     (void)psx_mod_set_draw_distance_clamp(0);
+    psx_mod_immediate_reset();  /* [[mod_immediate.sites]] selectors */
     /* [timing] guest_cycle_scale mod gate: shut until this session's
      * activation opens it (an online match clears the plan, so a mod-gated
      * scale never carries into netplay). */
@@ -1748,6 +1919,9 @@ static void reset_mod_owned_presentation(void) {
      * renderer setup takes it and combines it with the [video] baseline
      * (pgxp_session.h). */
     psx_pgxp_session_reset();
+    /* Likewise the CRT Filter, Image Filtering, Enhanced Audio and Rewind
+     * requests (host_enhancements.h), resolved at the renderer setup. */
+    psx_host_enh_reset();
     /* Render-pass counters, the disabled-after-faults latch and any open
      * plan generation belong to the session that made them. */
     render_pass_reset_session();
@@ -1786,8 +1960,10 @@ extern "C" int psx_mod_set_native_vblank_rate(
      * blocking would silently replace the requested guest cadence with the
      * display cadence. The frame pacer owns fixed-rate timing here.
      */
-    if (frames_per_second == 0 || frames_per_second > 60)
+    if (frames_per_second == 0 || frames_per_second > 60) {
         g_video_vsync = 0;
+        mod_runtime_note_vsync_forced_off();   /* the launcher's VSync row */
+    }
     if (frames_per_second) {
         std::fprintf(stdout,
             "psxrecomp: mod selected native guest VBlank pacing at %u FPS "
@@ -1817,6 +1993,7 @@ extern "C" int psx_mod_set_frame_interpolation(
      */
     g_video_renderer = 1;
     g_video_vsync = 0;
+    mod_runtime_note_vsync_forced_off();   /* the launcher's VSync row */
     g_frame_interpolation = 1;
     g_frame_interpolation_fps =
         frames_per_second ? (int)frames_per_second : 0;
@@ -2277,6 +2454,9 @@ static char             s_present_shot_path[512];
 static bool             s_present_shot_pending = false;
 static std::atomic<int> s_present_shot_seq{0};   /* bumps on every completion */
 static std::atomic<int> s_present_shot_ok{0};    /* 1 = last completion wrote a PNG */
+#ifndef PSX_NO_DEBUG_TOOLS
+static std::atomic<int> s_debug_restart_disc{0}; /* roster index + 1; 0 = none */
+#endif
 
 /* video_info (debug server): the Internal resolution state as main.cpp sees
  * it, plus the game window's size in points and in pixels. */
@@ -2300,6 +2480,40 @@ extern "C" void psx_video_resolution_info(int *preset, int *ref_lines, int *requ
     if (px_h) *px_h = ph;
 }
 
+extern "C" void psx_video_config_telemetry(PsxVideoConfigTelemetry *out) {
+    if (!out) return;
+    *out = {};
+    out->renderer = g_gl_active ? PSX_VIDEO_OPENGL : g_vk_active ? PSX_VIDEO_VULKAN
+                    : g_headless ? PSX_VIDEO_NONE : PSX_VIDEO_SOFTWARE;
+    out->resolution_preset = effective_internal_resolution();
+    out->aspect_num = g_video_aspect_num;
+    out->aspect_den = g_video_aspect_den;
+    out->widescreen = g_ws_engaged && g_video_aspect_num * 3 != g_video_aspect_den * 4;
+}
+
+#ifndef PSX_SDL_NO_RENDER
+/* All software swaps, including display-disabled and held frames. Query only
+ * the owning SDL renderer; never synchronize another render thread. */
+static void software_present_capture(SDL_Renderer *renderer);
+static void software_present_with_telemetry(SDL_Renderer *renderer) {
+    software_present_capture(renderer);
+    int width = 0, height = 0;
+#if defined(PSX_SDL3)
+    SDL_GetRenderOutputSize(renderer, &width, &height);
+#else
+    SDL_GetRendererOutputSize(renderer, &width, &height);
+#endif
+    psx_video_telemetry_compose(PSX_VIDEO_SOFTWARE, gr_scale(), 0, 0,
+                               width, height, 0, 0);
+#if defined(PSX_SDL3)
+    psx_video_telemetry_present(SDL_RenderPresent(renderer) ? 1 : 0);
+#else
+    SDL_RenderPresent(renderer);
+    psx_video_telemetry_present(-1); // SDL2's API has no return status.
+#endif
+}
+#endif
+
 extern "C" int present_shot_request(const char *path)
 {
     if (!path || !*path) return 0;
@@ -2319,6 +2533,11 @@ extern "C" int present_shot_request(const char *path)
 
 /* Backend hook: atomically claim a staged shot (returns 1 and fills `out`),
  * then call present_shot_done(ok) once the PNG is written — or not written. */
+extern "C" int psx_video_telemetry_capture(const char *path) {
+    if (!path || std::strlen(path) >= sizeof(s_present_shot_path)) return 0;
+    return present_shot_request(path);
+}
+
 extern "C" int present_shot_take(char *out, int n)
 {
     if (!out || n <= 0) return 0;
@@ -2339,6 +2558,73 @@ extern "C" void present_shot_done(int ok)
 
 extern "C" int present_shot_seq(void) { return s_present_shot_seq.load(std::memory_order_acquire); }
 extern "C" int present_shot_ok(void)  { return s_present_shot_ok.load(std::memory_order_acquire); }
+
+#ifndef PSX_SDL_NO_RENDER
+/* All SDL presents, including a paused host menu, serve composed captures. */
+static void software_present_capture(SDL_Renderer *renderer) {
+    /* Fulfil a staged present_shot here: after RenderCopy + OSD, before
+     * RenderPresent, the renderer holds exactly the composed frame the player
+     * sees — including the logical-size aspect fit that every buffer-level
+     * capture misses. Reading back costs a GPU sync, so it only runs when a
+     * shot was explicitly requested. */
+    char shot_path[512];
+    if (present_shot_take(shot_path, (int)sizeof(shot_path))) {
+        int ow = 0, oh = 0;
+        uint8_t *packed = NULL;
+#if defined(PSX_SDL3)
+        SDL_Surface *surf = SDL_RenderReadPixels(renderer, NULL);
+        if (surf) {
+            SDL_Surface *conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGB24);
+            SDL_DestroySurface(surf);
+            if (conv) {
+                ow = conv->w; oh = conv->h;
+                packed = (uint8_t *)std::malloc((size_t)ow * oh * 3);
+                if (packed) {
+                    /* SDL rows are pitch-aligned; png_write_rgb wants packed. */
+                    for (int y = 0; y < oh; y++)
+                        std::memcpy(packed + (size_t)y * ow * 3,
+                                    (const uint8_t *)conv->pixels + (size_t)y * conv->pitch,
+                                    (size_t)ow * 3);
+                }
+                SDL_DestroySurface(conv);
+            }
+        }
+#else
+        /* Size the buffer from the renderer's REAL output, not from a
+         * viewport*scale reconstruction: SDL_RenderReadPixels(NULL) fills the
+         * current viewport, and deriving that region from
+         * SDL_RenderGetViewport x SDL_RenderGetScale rounds independently of
+         * what SDL actually writes. The output size is a hard upper bound, so
+         * a full-output allocation cannot be overrun whatever SDL picks. */
+        int rw = 0, rh = 0;
+        if (SDL_GetRendererOutputSize(renderer, &rw, &rh) == 0 && rw > 0 && rh > 0) {
+            SDL_Rect vp; SDL_RenderGetViewport(renderer, &vp);
+            float sx = 1.0f, sy = 1.0f; SDL_RenderGetScale(renderer, &sx, &sy);
+            ow = (int)(vp.w * sx); oh = (int)(vp.h * sy);
+            if (ow <= 0 || ow > rw) ow = rw;
+            if (oh <= 0 || oh > rh) oh = rh;
+            packed = (uint8_t *)std::malloc((size_t)rw * rh * 3);   /* upper bound */
+            if (packed && SDL_RenderReadPixels(renderer, NULL,
+                                               SDL_PIXELFORMAT_RGB24,
+                                               packed, ow * 3) != 0) {
+                std::free(packed); packed = NULL;
+            }
+        }
+#endif
+        int wrote = 0;
+        if (packed && ow > 0 && oh > 0) {
+            FILE *pf = std::fopen(shot_path, "wb");
+            if (pf) {
+                wrote = png_write_rgb(pf, packed, (uint32_t)ow, (uint32_t)oh);
+                std::fclose(pf);
+            }
+        }
+        std::free(packed);
+        present_shot_done(wrote);
+    }
+}
+#endif
+
 /* Present straight from the FBO (fast, no readback). Set PSX_GL_FORCE_CPU_PRESENT=1
  * to force the software readout path instead — a diagnostic/fallback that also
  * keeps CPU VRAM current every frame (so screenshots reflect the screen). */
@@ -2770,21 +3056,31 @@ static bool pick_runtime_file(const char* title, const char* filter,
         return false;
     }
 #ifdef _WIN32
-    char path_buf[4096];
+    // Wide API on purpose: `title` is UTF-8 ("... — Step 2 of 2 ..."), and the
+    // ANSI entry point decodes it in the process code page. The manifest makes
+    // that UTF-8 on Windows 10 1903+, but older Windows keeps the legacy code
+    // page and the em dash renders as kanji on CP932 (issue #371).
+    const std::wstring wtitle = psx_win_utf8::from_utf8(title);
+    const std::wstring wfilter = psx_win_utf8::multi_sz_from_utf8(filter);
+    wchar_t path_buf[4096];
     std::memset(path_buf, 0, sizeof(path_buf));
 
-    OPENFILENAMEA ofn;
+    OPENFILENAMEW ofn;
     std::memset(&ofn, 0, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = NULL;
-    ofn.lpstrFilter = filter;
+    ofn.lpstrFilter = wfilter.c_str();
     ofn.lpstrFile = path_buf;
-    ofn.nMaxFile = (DWORD)sizeof(path_buf);
-    ofn.lpstrTitle = title;
+    ofn.nMaxFile = (DWORD)(sizeof(path_buf) / sizeof(path_buf[0]));
+    ofn.lpstrTitle = wtitle.c_str();
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
 
-    if (!GetOpenFileNameA(&ofn)) return false;
-    out = path_buf;
+    if (!GetOpenFileNameW(&ofn)) return false;
+
+    // Keep the path wide. Narrowing it through a legacy code page would lose
+    // characters that page lacks, and libstdc++ reads narrow paths as UTF-8
+    // anyway, so Shift-JIS bytes would throw in std::filesystem::path.
+    out = std::filesystem::path(path_buf);
     return true;
 #else
     (void)filter;
@@ -2900,6 +3196,11 @@ static DiscValidation validate_disc_image(const std::filesystem::path& selected_
 
 static bool validate_disc_for_launch(const std::filesystem::path& path,
                                      const std::string& game_id) {
+    std::string identity_error;
+    if (!PSXRecompV4::required_original_disc_matches(path, &identity_error)) {
+        std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
+        return false;
+    }
     const DiscValidation v = validate_disc_image(path, game_id);
     if (!v.opened) {
         launcher_warning("Disc Image Not Found", v.detail + "\n\nSelected path:\n" + path.string());
@@ -3400,6 +3701,14 @@ static std::filesystem::path default_memcard_dir(const char* argv0) {
 
 static void close_controller(void);
 static void shutdown_runtime(void);
+/* The in-game menu's lobby started a match while a local game ran: the game
+ * session ends but the pending launch (and its seats/signals) must survive
+ * into the launcher loop that starts it. */
+static int g_ovl_launch_to_start = 0;
+/* The in-game menu asked to go back to the frontend from a local game (not a
+ * match, no pending launch): the launcher opens normally, not on the lobby. */
+static int g_ovl_frontend_from_local = 0;
+static void recomp_overlay_detach(void);  /* in-game menu host, below */
 
 /* Set when this process started netplay from the lobby room — soft-exit returns
  * there instead of killing the process. */
@@ -3546,8 +3855,14 @@ static void sync_guest_cadence_to_video_standard(void) {
                 psx_video_timing_is_pal() ? "PAL" : "NTSC",
                 1000.0 / period_ms);
 #ifndef PSX_SDL_NO_RENDER
-    if (sdl_window)
-        refresh_host_display_cadence(1, 0);
+    /* Force the probe too: the once-a-second probe throttle returns before
+     * force_log is looked at, so a standard switch inside that second (PAL
+     * boot -> NTSC title) kept the boot decision -- driver vsync off with a
+     * matching 60 Hz panel, an unsynchronised present for the whole session. */
+    if (sdl_window) {
+        refresh_host_display_cadence(1, 1);
+        log_present_cadence();
+    }
     if (g_frame_interpolation && g_gl_active)
         gl_renderer_set_interpolation(g_frame_interpolation, g_host_refresh_hz,
                                       (double)g_frame_interpolation_fps,
@@ -3558,7 +3873,25 @@ static void sync_guest_cadence_to_video_standard(void) {
 
 static int host_driver_vsync_unreliable(void) {
 #ifdef _WIN32
-    return 0;
+    /* Windows OpenGL, windowed or borderless: DWM composes the window and
+     * owns the display's vsync, so a driver swap interval adds nothing but a
+     * stall. On NVIDIA (R4 0.8, RTX 4080, 610.88) a vsync'd SwapBuffers holds
+     * the GPU queue the render thread submits to: the render thread's frame
+     * then costs a whole refresh (16.7 ms "GPU" at any internal scale,
+     * render_busy 100 %), back-pressure slows the guest to 52-57 Hz, and
+     * dynamic resolution drops for nothing. Swap interval 0 under the
+     * wall-clock pacer: 60.0 Hz, 4.4 ms.
+     *
+     * Scope is the measured case only: GL renderer active, the render thread
+     * running, GL_VENDOR NVIDIA, and not exclusive fullscreen (2). Other
+     * driver families, the unthreaded path and exclusive fullscreen keep
+     * driver vsync. Re-evaluated per call, so runtime fullscreen/renderer
+     * changes take effect. PSX_TRUST_DRIVER_VSYNC=1 keeps driver vsync. */
+    if (const char *e = std::getenv("PSX_TRUST_DRIVER_VSYNC"); e && e[0] && e[0] != '0')
+        return 0;
+    return (g_video_renderer == 1 && g_gl_active && s_window_fullscreen.mode != 2 &&
+            gl_renderer_render_thread_active() &&
+            gl_renderer_vendor_is_nvidia()) ? 1 : 0;
 #else
     static int cached = -1;
     if (cached >= 0)
@@ -3690,8 +4023,14 @@ static void log_present_cadence(void) {
             !g_netplay_vsync_forced_off) {
             if (host_driver_vsync_unreliable()) {
                 std::printf("psxrecomp: present cadence: wall-clock pacer "
-                            "(%.4f ms/frame); driver vsync off under WSL\n",
-                            g_frame_period_ms);
+                            "(%.4f ms/frame); driver vsync off (%s)\n",
+                            g_frame_period_ms,
+#ifdef _WIN32
+                            "Windows GL, NVIDIA render thread: DWM composes"
+#else
+                            "under WSL"
+#endif
+                            );
             } else if (present_effective_swap_interval() != 0) {
                 std::printf("psxrecomp: present cadence: wall-clock pacer "
                             "(%.4f ms/frame); synchronized swaps on %.0f Hz panel\n",
@@ -3954,6 +4293,11 @@ static void teardown_game_session_keep_lobby(void) {
         g_vk_active = false;
     }
     if (g_gl_active) {
+        /* The in-game menu's GL objects belong to this context: stop the
+         * render thread (the context comes back here), let the provider free
+         * them, then shut the renderer down. The next session attaches again. */
+        gl_renderer_render_thread_stop();
+        recomp_overlay_detach();
         gl_renderer_shutdown();
         g_gl_active = false;
     }
@@ -3970,13 +4314,15 @@ static void teardown_game_session_keep_lobby(void) {
     s_netplay_sim_native_scale = 0;
     gl_renderer_set_cpu_auth_dual(0);
     sw_set_faithful_authority(0);
-    psx_lobby_set_ready(0);
-    psx_lobby_clear_launch_pending();
+    if (!g_ovl_launch_to_start) {
+        psx_lobby_set_ready(0);
+        psx_lobby_clear_launch_pending();
 #if defined(PSX_HAS_LOBBY_CLIENT)
-    /* Drop prior-match ICE SDP/candidates; ignore new ones until next launch. */
-    psx_lobby_clear_signals();
-    psx_lobby_set_ice_signal_accept(0);
+        /* Drop prior-match ICE SDP/candidates; ignore new ones until next launch. */
+        psx_lobby_clear_signals();
+        psx_lobby_set_ice_signal_accept(0);
 #endif
+    }
     psx_clear_return_to_lobby();
 }
 
@@ -4004,7 +4350,6 @@ static void sdl_audio_pump(bool discard_output = false) {
      * (queue full / !drc / no device) while the other kept advancing. */
     const uint32_t bytes_per_frame = sizeof(int16_t) * 2u;
     const bool legacy = audio_legacy_mode();
-    const int netplay = psx_netplay_active();
     static int had_audio = 0;
     uint32_t queued = 0;   /* RENDER event b: bytes (legacy) / fill ms (bridge) */
     int host_queue_ok = 0;
@@ -4050,20 +4395,15 @@ static void sdl_audio_pump(bool discard_output = false) {
         host_queue_ok = 1;
     }
 
-    /* Faithful sample budget: the SPU is clocked by the GUEST, not by host
-     * presents. 33.8688 MHz / 44100 Hz = exactly 768 guest cycles per output
-     * frame, so production tracks guest time precisely — including the real
-     * NTSC 59.94 Hz vblank — instead of assuming 60.00 Hz per present, which
-     * built in a systematic -0.1% production deficit (measured: 43950/s
-     * produced vs 44100/s consumed = recurring ring underruns no +/-0.5%
-     * DRC trim could absorb during jitter spikes). */
-    extern uint64_t psx_cycle_count;
-    static uint64_t last_cycles = 0;
-    static uint64_t cycle_carry = 0;
-    const uint64_t now_cycles = psx_cycle_count;
+    /* The SPU is clocked by the GUEST (spu.c spu_catch_up: 768 cycles per
+     * 44.1 kHz sample), and every SPU access already advanced it to the
+     * instruction that made it. The pump only brings it to "now" and drains
+     * the samples it produced; nothing here changes SPU state, so host
+     * backpressure, a missing device or a dropped burst cannot fork peers. */
+    spu_catch_up();
     if (g_audio_cycle_resync) {
-        last_cycles = now_cycles;
-        cycle_carry = 0;
+        /* Savestate/rewind load: queued output belongs to the old timeline. */
+        spu_output_flush();
         g_audio_cycle_resync = 0;
         if (legacy && sdl_audio_device)
             psx_sdl_audio_clear(sdl_audio_device);
@@ -4071,37 +4411,24 @@ static void sdl_audio_pump(bool discard_output = false) {
             g_audio_unmute_resync = 1; /* skip mute-drain underrun reports */
         return;
     }
-    if (last_cycles == 0) last_cycles = now_cycles;
-    uint64_t delta = (now_cycles - last_cycles) + cycle_carry;
-    last_cycles = now_cycles;
-    int frames = (int)(delta / 768u);
-    cycle_carry = delta % 768u;
+    int frames = (int)spu_output_available();
     if (frames <= 0) return;
-    if (frames > 2048 && !netplay) {
-        /* Offline: a burst beyond one buffer (e.g. right after an unmute or a
-         * long stall) renders one full buffer and DROPs the remainder of the
-         * debt — mute-model freeze rather than time-compressing a backlog.
-         * Netplay never drops: both peers must consume the same guest debt. */
-        frames = 2048;
-        cycle_carry = 0;
+    const int buf_frames = (int)(sizeof(sdl_audio_buf) / (2 * sizeof(int16_t)));
+    if (frames > buf_frames) {
+        /* A burst beyond one buffer (after an unmute or a long stall) hands the
+         * newest buffer to the host and drops the older output, never the
+         * SPU time it represents. */
+        if (discard_output) g_turbo_audio_sink_frames += (uint64_t)(frames - buf_frames);
+        spu_output_drop((uint32_t)(frames - buf_frames));
+        frames = buf_frames;
     }
 
     audio_trace_event(AUDIO_EV_RENDER, (uint32_t)frames, queued);
 
-    /* Catch up in ≤2048-frame chunks (sdl_audio_buf capacity). Only the last
-     * chunk may be handed to the host queue — earlier chunks advance state
-     * only (avoids dumping seconds of catch-up into the device ring). */
-    int remaining = frames;
-    int host_frames = 0;
-    while (remaining > 0) {
-        const int chunk = remaining > 2048 ? 2048 : remaining;
-        spu_render(sdl_audio_buf, chunk);
-        remaining -= chunk;
-        host_frames = chunk;
-        if (discard_output) {
-            g_turbo_audio_sink_frames += (uint64_t)chunk;
-            audio_trace_event(AUDIO_EV_SINK_DROP, (uint32_t)chunk, 0);
-        }
+    const int host_frames = (int)spu_output_pop(sdl_audio_buf, (uint32_t)frames);
+    if (discard_output) {
+        g_turbo_audio_sink_frames += (uint64_t)host_frames;
+        audio_trace_event(AUDIO_EV_SINK_DROP, (uint32_t)host_frames, 0);
     }
     if (discard_output)
         return;
@@ -4417,6 +4744,145 @@ static void runtime_perf_section_end(uint64_t start, uint64_t *total) {
  * waits on the render queue), the render thread's busy share, the dynamic
  * resolution level and Smooth motion's generated / real presents per second. */
 static uint64_t g_frame_report_wait_ticks = 0;   /* offline pacer waits */
+static uint64_t g_openxr_ready_execution_generation = 0;
+static PSXOpenXRReadyLoadRequest g_openxr_ready_load_request{};
+
+static void openxr_ready_record_load_request(int slot, const char *error) {
+    PSXSavestateStatus status{};
+    savestate_get_status(&status);
+    g_openxr_ready_load_request.sequence++;
+    if (g_openxr_ready_load_request.sequence == 0)
+        g_openxr_ready_load_request.sequence = 1;
+    g_openxr_ready_load_request.execution_generation =
+        g_openxr_ready_execution_generation;
+    g_openxr_ready_load_request.status_generation_before = status.generation;
+    g_openxr_ready_load_request.slot = slot;
+    g_openxr_ready_load_request.error = error;
+}
+
+/* One opt-in startup receipt per XR session, including production builds without
+ * debug TCP. The destination must not exist at process start. */
+static void openxr_ready_report_tick(uint64_t frames) {
+    static bool initialized = false;
+    static bool requested = false;
+    static PSXOpenXRReadyLoadState load_state{};
+    static uint64_t observed_execution = 0;
+    static uint64_t observed_session = 0, submission_floor = 0;
+    static bool published_for_session = false;
+    static uint64_t retry_at_ms = 0;
+    static std::filesystem::path path;
+
+    if (!initialized) {
+        initialized = true;
+        const char *env_path = std::getenv("PSX_OPENXR_READY_FILE");
+        if (!env_path || !*env_path) return;
+        path = env_path;
+        std::error_code ec;
+        const bool present = std::filesystem::exists(path, ec);
+        if (ec || present) {
+            std::fprintf(stderr,
+                "psxrecomp: refusing %s OpenXR readiness path '%s'\n",
+                ec ? "unreadable" : "existing", path.string().c_str());
+            return;
+        }
+        requested = true;
+        const char *load = std::getenv("PSX_LOAD_SLOT");
+        const bool load_expected = load && *load;
+        int load_slot = -1;
+        if (load_expected) {
+            char *end = nullptr;
+            const long parsed = std::strtol(load, &end, 10);
+            if (end && *end == '\0' && parsed >= 0 && parsed < SAVESTATE_SLOTS)
+                load_slot = static_cast<int>(parsed);
+        }
+        psx_openxr_ready_load_begin_execution(
+            &load_state, g_openxr_ready_execution_generation,
+            load_expected, load_slot);
+        if (load_expected && load_slot < 0)
+            openxr_ready_record_load_request(
+                -1, "state_load_request_invalid");
+        observed_execution = g_openxr_ready_execution_generation;
+    }
+    if (!requested) return;
+
+    bool execution_changed =
+        observed_execution != g_openxr_ready_execution_generation;
+    if (execution_changed) {
+        psx_openxr_ready_load_begin_execution(
+            &load_state, g_openxr_ready_execution_generation,
+            load_state.expected, load_state.slot);
+        observed_execution = g_openxr_ready_execution_generation;
+    }
+    psx_openxr_ready_load_observe_request(
+        &load_state, &g_openxr_ready_load_request);
+
+    PSXOpenXRStats xr{};
+    psx_openxr_stats(&xr);
+    if (execution_changed) {
+        submission_floor = xr.submitted;
+        published_for_session = false;
+    }
+    if (xr.session_generation && xr.session_generation != observed_session) {
+        if (observed_session != 0) {
+            psx_openxr_ready_load_begin_execution(
+                &load_state, g_openxr_ready_execution_generation,
+                load_state.expected, load_state.slot);
+            psx_openxr_ready_load_observe_request(
+                &load_state, &g_openxr_ready_load_request);
+        }
+        observed_session = xr.session_generation;
+        submission_floor = xr.submitted;
+        published_for_session = false;
+    }
+
+    PSXSavestateStatus current_state{};
+    savestate_get_status(&current_state);
+    PSXOpenXRReadyLoadStatus load_status = {
+        current_state.generation, current_state.pending, current_state.last_ok,
+        current_state.last_load, current_state.last_slot};
+    if (psx_openxr_ready_load_observe_status(&load_state, &load_status))
+        submission_floor = xr.submitted;
+
+    const uint64_t now = SDL_GetTicks();
+    if (now < retry_at_ms || published_for_session) return;
+
+    const bool load_ok = psx_openxr_ready_load_ok(&load_state);
+    const bool fresh_submission =
+        xr.session_generation != 0 &&
+        xr.submitted_session_generation == xr.session_generation &&
+        xr.submitted > submission_floor;
+    const bool load_failed = psx_openxr_ready_load_failed(&load_state);
+    if (!load_failed && (!load_ok || !xr.enabled || !xr.running || !fresh_submission))
+        return;
+
+    char state[512];
+    savestate_status_json(state, sizeof state);
+    char receipt[2048];
+    std::snprintf(receipt, sizeof receipt,
+        "{\"schema\":2,\"ready\":%d,\"error\":\"%s\",\"frame\":%llu,"
+        "\"openxr\":{\"session_generation\":%llu,\"submitted_session_generation\":%llu,"
+        "\"running\":%u,\"tracking\":%u,\"submitted\":%llu,"
+        "\"empty\":%llu,\"failures\":%llu},\"savestate\":{%s}}\n",
+        load_failed ? 0 : 1,
+        load_failed
+            ? (load_state.error ? load_state.error : "state_load_failed")
+            : "",
+        (unsigned long long)frames,
+        (unsigned long long)xr.session_generation,
+        (unsigned long long)xr.submitted_session_generation,
+        xr.running, xr.tracking, (unsigned long long)xr.submitted,
+        (unsigned long long)xr.empty, (unsigned long long)xr.failures, state);
+    std::string error;
+    if (psx::atomic_write_file(path, receipt, &error)) {
+        published_for_session = true;
+    } else {
+        retry_at_ms = now + 1000;
+        std::fprintf(stderr,
+            "psxrecomp: cannot publish OpenXR startup receipt '%s': %s\n",
+            path.string().c_str(), error.c_str());
+    }
+}
+
 static void frame_report_tick(uint64_t frames) {
     static int interval_ms = -1;
     static uint64_t first_ticks = 0, last_ticks = 0, last_frames = 0;
@@ -4560,6 +5026,22 @@ static void runtime_perf_diag_tick() {
         current.capture_triggers - last.capture_triggers,
         current.capture_overlays - last.capture_overlays,
         (unsigned long long)current.capture_last_dispatch_delta);
+    PSXOpenXRStats xr{};
+    psx_openxr_stats(&xr);
+    if (xr.enabled) {
+        RenderStereoStats stereo{};
+        RenderPassStats passes{};
+        render_stereo_get_stats(&stereo);
+        render_pass_get_stats(&passes);
+        std::fprintf(stdout,
+            "psxrecomp: VR pairs=%llu shed=%llu empty=%llu failures=%llu "
+            "avg_pair_ms=%.3f last_pair_ms=%.3f verify=%llu mismatch=%llu\n",
+            (unsigned long long)stereo.pairs, (unsigned long long)stereo.shed,
+            (unsigned long long)xr.empty, (unsigned long long)xr.failures,
+            stereo.avg_pair_ms, stereo.last_pair_ms,
+            (unsigned long long)passes.verify_checks,
+            (unsigned long long)passes.verify_mismatch);
+    }
     std::fflush(stdout);
     last = current;
     last_spu = audio.tap_frames[AUDIO_TAP_SPU_OUT];
@@ -4584,6 +5066,14 @@ static void runtime_perf_diag_tick() {
 enum AudioGate { AUDIO_GATE_NORMAL = 0, AUDIO_GATE_MUTED = 1, AUDIO_GATE_SINK = 2 };
 static AudioGate s_audio_gate = AUDIO_GATE_NORMAL;
 
+/* spu.c output gate: samples rendered during rollback resimulation (already
+ * heard once) and during the FMV-skip mute advance the SPU but are not
+ * queued for the host. */
+static int spu_output_suppressed(void) {
+    return psx_netplay_is_resimulating() || psx_selfcheck_resim_active() ||
+           s_audio_gate == AUDIO_GATE_MUTED;
+}
+
 /* Invoked from the guest-derived VBlank edge (interrupts.c). */
 static void sdl_audio_pump_midframe(void) {
     /* Device optional: SPU still advances from guest cycles (netplay-safe). */
@@ -4604,6 +5094,27 @@ static void sdl_audio_pump_midframe(void) {
         sdl_audio_pump(false);
         return;
     }
+}
+
+static int sdl_audio_catchup_sink(int other_sink) {
+    static PsxAudioCatchup state{};
+    rab_stats stats{};
+    if (!sdl_audio_device || !s_drc_ready) {
+        state = PsxAudioCatchup{};
+        return 0;
+    }
+    psx_sdl_audio_lock(sdl_audio_device);
+    rab_get_stats(&s_drc, &stats);
+    const double fill_ms = rab_fill_ms(&s_drc);
+    const double target_ms = s_drc.cfg.target_ms;
+    psx_sdl_audio_unlock(sdl_audio_device);
+    const int active = psx_audio_catchup_update(&state,
+        psx_audio_sync_enabled() && !psx_netplay_active() && present_should_wall_pace(),
+        other_sink || (g_turbo_audio_sink_active && !state.active),
+        stats.underrun_events, SDL_GetPerformanceCounter(),
+        s_frame_pacer.next_deadline,
+        (uint64_t)((double)SDL_GetPerformanceFrequency() * g_frame_period_ms / 1000.0));
+    return psx_audio_catchup_discard(active, fill_ms, target_ms);
 }
 
 static void sdl_audio_update(int hard_mute_active, int turbo_sink_active) {
@@ -4627,7 +5138,10 @@ static void sdl_audio_update(int hard_mute_active, int turbo_sink_active) {
             const float g0 = (1.0f - (float)sdl_audio_fadein_left
                                      / (float)sdl_audio_fade_samples) * vol;
             sdl_audio_fadein_left = 0;
-            spu_render(sdl_audio_buf, tail);
+            /* Fade out what the SPU has already produced; rendering ahead of
+             * the guest clock would advance SPU state out of guest time. */
+            spu_catch_up();
+            tail = (int)spu_output_pop(sdl_audio_buf, (uint32_t)tail);
             sdl_audio_gain_ramp(sdl_audio_buf, tail, g0, 0.0f);
             audio_trace_event(AUDIO_EV_MUTE, (uint32_t)tail, 0);
             if (sdl_audio_device && audio_legacy_mode()) {
@@ -4667,6 +5181,12 @@ static void sdl_audio_update(int hard_mute_active, int turbo_sink_active) {
     g_turbo_audio_sink_active = 0;
     if (sink_was_active) {
         sink_was_active = 0;
+        /* Preserve queued PCM; re-prime only when the sink depleted the ring. */
+        if (psx_audio_sync_enabled() && sdl_audio_device && s_drc_ready) {
+            psx_sdl_audio_lock(sdl_audio_device);
+            rab_resume_after_sink(&s_drc);
+            psx_sdl_audio_unlock(sdl_audio_device);
+        }
         sdl_audio_fadein_left = sdl_audio_fade_samples;
         audio_trace_event(AUDIO_EV_UNMUTE,
                           (uint32_t)sdl_audio_fadein_left, 2);
@@ -5149,7 +5669,41 @@ static void load_input_config(const char* argv0) {
     psx_keybinds_init(argv0);
 }
 
+static PsxJogconFfbBackend player_ffb_backend(PlayerInput& p) {
+    return psx_jogcon_haptic_backend(&p.ffb_haptic);
+}
+
+/* Pause / disconnect / session end: the wheel goes neutral now. */
+static void jogcon_ffb_neutral_all(void) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        PsxJogconFfbBackend b = player_ffb_backend(g_players[s]);
+        psx_jogcon_ffb_neutral(&g_players[s].ffb, &b);
+    }
+}
+
+/* The player's EXPERIMENTAL wheel force-feedback setting, live: takes effect
+ * on the next VBlank; turning it off makes every wheel neutral now. Callers
+ * (launcher exits, the in-game menu's settings apply) also persist it to
+ * settings.toml [controller] jogcon_force_feedback. */
+extern "C" void psx_jogcon_ffb_set_player_enabled(int on) {
+    const bool was = g_jogcon_ffb;
+    g_jogcon_ffb = on != 0;
+    if (was && !g_jogcon_ffb) jogcon_ffb_neutral_all();
+    if (was != g_jogcon_ffb)
+        std::fprintf(stdout, "psxrecomp: EXPERIMENTAL JogCon wheel force "
+                     "feedback %s (player setting)\n", g_jogcon_ffb ? "on" : "off");
+}
+extern "C" int psx_jogcon_ffb_player_enabled(void) { return g_jogcon_ffb ? 1 : 0; }
+
+static void close_player_haptic(PlayerInput& p) {
+    PsxJogconFfbBackend b = player_ffb_backend(p);
+    psx_jogcon_ffb_neutral(&p.ffb, &b);
+    psx_jogcon_haptic_close(&p.ffb_haptic);
+    p.ffb_probed = false;
+}
+
 static void close_player(PlayerInput& p) {
+    close_player_haptic(p);
     if (p.handle) {
         if (p.rumble_small || p.rumble_large)
             (void)SDL_GameControllerRumble(p.handle, 0, 0, 0);
@@ -5191,10 +5745,29 @@ static void open_player(PlayerInput& p, int self_slot) {
         SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
         char buf[40] = {0};
         SDL_JoystickGetGUIDString(g, buf, sizeof(buf));
-        /* Skip a device already opened by another player. */
+        /* Development seats may explicitly choose the same physical pad.
+         * Auto/fallback allocation still reserves a separate device per seat. */
         SDL_JoystickID inst = SDL_JoystickGetDeviceInstanceID(i);
-        if (device_claimed_by_other(self_slot, inst)) continue;
-        if (p.guid[0] && std::strcmp(buf, p.guid) == 0) { chosen = i; break; }
+        bool shared = false;
+#if !defined(PSX_NO_DEBUG_TOOLS)
+        shared = PSXRecompV4::launcher_controller_can_share(
+            true, p.guid[0] && std::strcmp(buf, p.guid) == 0);
+#endif
+        if (device_claimed_by_other(self_slot, inst) && !shared) continue;
+        /* Do not let an earlier seat's fallback steal a later seat's explicit
+         * selection. Two pads of the same model have the same GUID. */
+        bool reserved = false;
+        for (int o = 0; o < PSX_MAX_PLAYERS; ++o) {
+            if (o != self_slot && g_players[o].kind == 2 &&
+                g_players[o].preferred_instance == inst) reserved = true;
+        }
+        if (reserved && p.preferred_instance != inst && !shared) continue;
+        if (p.preferred_instance == inst &&
+            (!p.guid[0] || std::strcmp(buf, p.guid) == 0)) {
+            chosen = i;
+            break;
+        }
+        if (chosen < 0 && p.guid[0] && std::strcmp(buf, p.guid) == 0) chosen = i;
         if (fallback < 0) fallback = i;
     }
     if (chosen < 0) chosen = fallback;
@@ -5204,6 +5777,7 @@ static void open_player(PlayerInput& p, int self_slot) {
     if (p.handle) {
         SDL_Joystick* joy = SDL_GameControllerGetJoystick(p.handle);
         p.instance = joy ? SDL_JoystickInstanceID(joy) : -1;
+        p.preferred_instance = p.instance;
         /* Persist the GUID of the pad we actually opened so per-device
          * [mapping.<guid>] lookups match the live hardware (including the
          * first-available fallback when the saved GUID is offline). */
@@ -5213,7 +5787,8 @@ static void open_player(PlayerInput& p, int self_slot) {
         }
         const char* name = SDL_GameControllerName(p.handle);
         p.steering_wheel = psx_controller_name_is_wheel(name);
-        std::fprintf(stdout, "psxrecomp runtime: opened controller for slot: %s\n",
+        std::fprintf(stdout, "psxrecomp runtime: opened controller for slot %d (instance %d): %s\n",
+                     self_slot + 1, (int)p.instance,
                      name ? name : "(unnamed)");
         if (p.steering_wheel)
             std::fprintf(stdout,
@@ -5229,16 +5804,57 @@ static void open_player(PlayerInput& p, int self_slot) {
  * the small motor is fixed-strength/high-frequency. Active effects are renewed
  * every VBlank with a short lifetime so a crash or unplug cannot leave a host
  * controller vibrating indefinitely. */
+/* EXPERIMENTAL JogCon force feedback: the guest's motor command and
+ * strength drive a host wheel's SDL haptics through psx_jogcon_ffb.h, which
+ * renews a finite-lifetime force each VBlank and goes neutral otherwise.
+ * Pads without constant / spring haptics (gamepads) are left alone. */
+static void update_jogcon_ffb(int s, PlayerInput& p, bool trace) {
+    uint8_t command = 0, strength = 0;
+    const int enabled = g_jogcon_ffb && sio_get_pad_analog(s) == SIO_PAD_JOGCON;
+    if (enabled) {
+        sio_get_pad_jogcon_motor(s, &command, &strength);
+        if (!p.ffb_probed && p.handle) {
+            p.ffb_probed = true;
+            if (psx_jogcon_haptic_open(&p.ffb_haptic,
+                                       SDL_GameControllerGetJoystick(p.handle)))
+                std::fprintf(stdout,
+                    "psxrecomp runtime: EXPERIMENTAL JogCon force feedback on "
+                    "slot %d (constant %s, spring %s)\n", s + 1,
+                    p.ffb_haptic.constant >= 0 ? "yes" : "no",
+                    p.ffb_haptic.spring >= 0 ? "yes" : "no");
+        }
+    }
+    const PsxJogconFfb before = p.ffb.last;
+    PsxJogconFfbBackend b = player_ffb_backend(p);
+    psx_jogcon_ffb_tick(&p.ffb, &b, enabled, command, strength,
+                        g_jogcon_ffb_invert ? 1 : 0);
+    if (trace && (before.constant != p.ffb.last.constant ||
+                  before.spring != p.ffb.last.spring))
+        std::fprintf(stdout,
+            "psxrecomp ffb: slot=%d jogcon cmd=%u strength=%u constant=%d "
+            "spring=%u host=%s\n", s + 1, (unsigned)command, (unsigned)strength,
+            (int)p.ffb.last.constant, (unsigned)p.ffb.last.spring,
+            p.ffb_haptic.haptic ? "wheel" : "none");
+}
+
 static void update_controller_rumble(void) {
     static const bool trace = [] {
         const char* e = std::getenv("PSX_RUMBLE_TRACE");
         return e && e[0] && e[0] != '0';
     }();
+    ++g_rumble_vblank;
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
         PlayerInput& p = g_players[s];
+        update_jogcon_ffb(s, p, trace);
         uint8_t small = 0, large = 0;
         sio_get_pad_rumble(s, &small, &large);
+        psx_host_rumble_merge(&g_mod_rumble[s], g_rumble_vblank, &small, &large);
         if (!p.handle) {
+            if (trace && (!p.rumble_known || p.rumble_small != small ||
+                          p.rumble_large != large))
+                std::fprintf(stdout,
+                    "psxrecomp rumble: slot=%d small=%u large=%u host=none\n",
+                    s + 1, (unsigned)small, (unsigned)large);
             p.rumble_small = small;
             p.rumble_large = large;
             p.rumble_known = true;
@@ -5926,7 +6542,22 @@ static int savestate_input_guard_active(void) {
  * the resolved type goes through the same coherent request channel as real
  * sampling — never slammed mid-
  * handshake (the v0.5.0 phantom-input lesson). */
+#ifndef PSX_NO_DEBUG_TOOLS
+static bool s_debug_profile_injected[2]{};
+static void restore_input_override_profile(int slot) {
+    if (!s_debug_profile_injected[slot]) return;
+    assert_sio_pad_profile(slot, slot == 0 && dev_any_input_enabled());
+    s_debug_profile_injected[slot] = false;
+}
+#endif
 static void apply_input_override_to_sio(int override_word) {
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (debug_server_get_pad_type_override() < 0 &&
+        debug_server_get_pad_connected_override(0) < 0)
+        restore_input_override_profile(0);
+    else
+        s_debug_profile_injected[0] = true;
+#endif
     PlayerInput& p = g_players[0];
     const uint16_t w = (uint16_t)override_word;
     sio_set_pad_state_slot(0, w);
@@ -5980,10 +6611,16 @@ static void apply_input_override_to_sio(int override_word) {
                                          : (eff_analog ? SIO_PAD_DUALSHOCK
                                                        : SIO_PAD_DIGITAL);
 #ifndef PSX_NO_DEBUG_TOOLS
-    if (debug_type >= SIO_PAD_DIGITAL && debug_type <= SIO_PAD_JOGCON)
+    if (debug_type >= SIO_PAD_DIGITAL && debug_type <= SIO_PAD_JOGCON) {
         injected_type = debug_type;
+        sio_set_pad_config_capable(0, injected_type != SIO_PAD_DIGITAL);
+    }
 #endif
     sio_request_pad_type(0, injected_type);
+#ifndef PSX_NO_DEBUG_TOOLS
+    const int debug_connected = debug_server_get_pad_connected_override(0);
+    if (debug_connected >= 0) sio_set_pad_connected(0, debug_connected);
+#endif
     psx_selfcheck_note_pad(0, w, st[0], st[1], st[2], st[3],
                            (uint8_t)injected_type);
 }
@@ -6081,14 +6718,21 @@ static uint16_t host_layer_release_claimed(uint16_t word, uint32_t claimed) {
 
 /* Stage 1 for P1 while the host layer is armed: buttons less any claimed
  * shortcut button; DualShock with the layer's sticks unless P1 is digital
- * (host_view, the transform's host pad: the sticks in either mode). */
+ * (host_view, the transform's host pad: the sticks in either mode). A digital
+ * P1 folds the left stick onto the D-pad like a default-mapped controller
+ * (psx_stick_fold.h), so a digital-only game moves from the stick here too. */
 static int capture_host_layer_pad(PsxNetPad* out, uint16_t word,
                                   const uint8_t st[4], bool guarded,
-                                  bool host_view) {
-    const int mode = effective_player_mode_for_sio(g_players[0], 0);
+                                  bool host_view, int present_sio_slot = 0) {
+    const int present = present_sio_slot >= 0 && present_sio_slot < PSX_MAX_PLAYERS
+        ? present_sio_slot : 0;
+    const int mode = effective_player_mode_for_sio(g_players[0], present);
     const bool analog = mode != PSXRecompV4::PAD_MODE_DIGITAL;
     const bool sticks = analog || host_view;
     out->buttons = host_layer_release_claimed(word, g_p1_claimed_buttons);
+    if (!analog && !host_view)
+        out->buttons = psx_fold_left_stick_to_dpad(out->buttons, st[0], st[1],
+                                                   kDefaultDeadzoneRaw);
     out->lx = sticks ? st[0] : 0x80; out->ly = sticks ? st[1] : 0x80;
     out->rx = sticks ? st[2] : 0x80; out->ry = sticks ? st[3] : 0x80;
     out->analog = analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL;
@@ -6106,6 +6750,8 @@ static int capture_host_layer_pad(PsxNetPad* out, uint16_t word,
 static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
                                  bool host_view) {
     if (!out) return 0;
+    /* An open overlay menu owns the controls: the game sees released pads. */
+    if (psx_host_ui_capture_active()) guarded = true;
     out->buttons = 0xFFFFu;
     out->lx = out->ly = out->rx = out->ry = 0x80u;
     out->analog = 0;
@@ -6206,6 +6852,12 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
 
     out->buttons = btn;
     out->lx = st[0]; out->ly = st[1]; out->rx = st[2]; out->ry = st[3];
+    if (psx_host_ui_capture_active()) {
+        /* Overlay open during netplay: publish "nothing pressed", which every
+         * peer simulates identically. */
+        out->buttons = 0xFFFFu;
+        out->lx = out->ly = out->rx = out->ry = 0x80u;
+    }
     out->analog = (uint8_t)frame_type;
     out->connected = 1;
     return 1;
@@ -6225,6 +6877,16 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     out->lx = out->ly = out->rx = out->ry = 0x80u;
     out->analog = 0;
     out->connected = 0;
+
+    /* An explicit virtual host device follows the same local-device -> session
+     * seat route as a physical controller. It is not a simulation SIO override. */
+    if (s == 0) {
+        uint16_t word;
+        uint8_t sticks[4], lt, rt;
+        if (host_pad_layer(&word, sticks, &lt, &rt))
+            return capture_host_layer_pad(out, word, sticks, false, false,
+                                          present_sio_slot);
+    }
 
     PlayerInput& p = g_players[s];
     const int  player  = s + 1;             /* keybinds.ini section (1..5) */
@@ -6728,6 +7390,11 @@ static void netplay_barrier_admit(int override) {
                          (unsigned long long)(now_ms - clock0),
                          running ? "" : ", linking");
             last_stall_log_ms = now_ms;
+            if (!running) {
+                char link[320];
+                psx_netplay_link_diag(link, sizeof(link));
+                std::fprintf(stderr, "psxrecomp: netplay link not up: %s\n", link);
+            }
         }
         psx_lobby_pump();
         if (psx_netplay_input_desync(&dt, &lh, &rh)) {
@@ -6754,6 +7421,10 @@ static void netplay_barrier_admit(int override) {
             (tip_hold && !psx_start_bisect_no_tiphold_capture());
         if (need_sample) {
             PsxNetPad local{};
+            uint16_t host_word;
+            uint8_t host_sticks[4], host_lt, host_rt;
+            const bool virtual_host = g_headless &&
+                host_pad_layer(&host_word, host_sticks, &host_lt, &host_rt);
             /* An explicit debug-server override is the local player's input
              * windowed or headless: headless LAN peers are how netplay is
              * exercised without windows. With no override, headless has no
@@ -6761,8 +7432,11 @@ static void netplay_barrier_admit(int override) {
              * into content negotiation, whose headless fixtures use the same
              * negotiated pad mode and local-to-session routing as windowed
              * injected input. */
-            if (override >= 0 || (g_headless && g_netplay_content_negotiation)) {
+            if (override >= 0 || (g_headless && g_netplay_content_negotiation && !virtual_host)) {
                 capture_override_pad(override >= 0 ? override : 0xFFFF, &local);
+            } else if (virtual_host) {
+                capture_host_layer_pad(&local, host_word, host_sticks, false, false,
+                                      psx_netplay_local_slot());
             } else if (g_headless) {
                 local.buttons = 0xFFFFu;
                 local.lx = local.ly = local.rx = local.ry = 0x80u;
@@ -6802,6 +7476,10 @@ static void netplay_barrier_admit(int override) {
         if (!g_headless) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
+                /* The in-game overlay sees events first here too: the netplay
+                 * admit wait polls every frame, and an Esc meant for the menu
+                 * must not end the match. */
+                if (psx_host_input_sink_dispatch(&ev)) continue;
                 if (ev.type == SDL_QUIT) {
                     netplay_soft_exit("sdl_window_close");
                     if (psx_return_to_lobby_requested()) goto done;
@@ -6871,6 +7549,17 @@ static void pad_ext_source_release(void*, int s, PsxNetPad* pad) {
 }
 static void pad_ext_source_resolve(void*, int s, const PSXModControllerState* source,
                                    int guarded, PsxNetPad* pad) {
+    if (!mod_controller_source_connected((uint32_t)s)) {
+        /* Preserve recorded latch bytes/type even when the serial endpoint is
+         * absent. A real unplug can leave these at their last analog sample. */
+        pad->buttons = (uint16_t)source->buttons;
+        pad->lx = (uint8_t)source->lx; pad->ly = (uint8_t)source->ly;
+        pad->rx = (uint8_t)source->rx; pad->ry = (uint8_t)source->ry;
+        pad->analog = source->analog ? 1 : 0;
+        pad->connected = 0;
+        sio_set_pad_connected(s, 0);
+        return;
+    }
     const bool dev_here = (dev_any_input_enabled() && s == 0);
     pad->lx = (uint8_t)source->lx; pad->ly = (uint8_t)source->ly;
     pad->rx = (uint8_t)source->rx; pad->ry = (uint8_t)source->ry;
@@ -6976,6 +7665,9 @@ static PadExtHooks pad_ext_main_hooks(void) {
 static void apply_input_override_port2(int override_word) {
     static int s_was_driven;
     if (override_word < 0) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        restore_input_override_profile(1);
+#endif
         /* Ending an injection releases its buttons: with no device in the
          * port, nothing else would write the word again. A real device in
          * port 2 is resampled each frame anyway. */
@@ -6989,6 +7681,13 @@ static void apply_input_override_port2(int override_word) {
         sio_set_pad_analog(1, 0, 0x80, 0x80, 0x80, 0x80);
     }
     sio_set_pad_state_slot(1, (uint16_t)override_word);
+#ifndef PSX_NO_DEBUG_TOOLS
+    const int debug_connected = debug_server_get_pad_connected_override(1);
+    if (debug_connected >= 0) {
+        s_debug_profile_injected[1] = true;
+        sio_set_pad_connected(1, debug_connected);
+    }
+#endif
 }
 
 static void sample_pad_into_sio(int override) {
@@ -7003,6 +7702,9 @@ static void sample_pad_into_sio(int override) {
         apply_input_override_to_sio(override);
         return;
     }
+#ifndef PSX_NO_DEBUG_TOOLS
+    restore_input_override_profile(0);
+#endif
     int n = g_offline_pad_count;
     if (n < 1) n = 1;
     if (n > PSX_MAX_PLAYERS) n = PSX_MAX_PLAYERS;
@@ -7064,6 +7766,9 @@ static void sample_headless_pad_into_sio(int override) {
         apply_input_override_to_sio(override);
         return;
     }
+#ifndef PSX_NO_DEBUG_TOOLS
+    restore_input_override_profile(0);
+#endif
     if (host_pad_layer(nullptr, nullptr, nullptr, nullptr)) {
         /* Debug host layer: P1 goes through the full offline resolution
          * (source, title transform) exactly as a windowed gamepad would. */
@@ -7130,7 +7835,7 @@ static void netplay_hold_last_present_tick(void) {
         SDL_RenderClear(sdl_renderer);
         SDL_RenderCopy(sdl_renderer, sdl_texture, &s_sw_hold_src, &s_sw_hold_dst);
         host_osd_draw_sdl(sdl_renderer);
-        SDL_RenderPresent(sdl_renderer);
+        software_present_with_telemetry(sdl_renderer);
         did = 1;
     }
 #endif
@@ -7364,55 +8069,20 @@ static void depth24_cutover_tick(int depth24) {
  *
  * Optional short cutover blank: full-frame black for 1–2 presents on movie
  * start / long idle resume only (see depth24_cutover_tick). */
-static void depth24_fix_trailing_margin(uint32_t *buf, uint32_t w, uint32_t h,
-                                          uint32_t display_x) {
-    if (!buf || w < 8u || h == 0u) return;
-
-    if (s_d24_cutover_blank > 0) {
-        s_d24_cutover_blank--;
-        const uint32_t n = w * h;
-        for (uint32_t i = 0; i < n; i++)
-            buf[i] = 0xFF000000u;
-        return;
-    }
-
-    /* Default: last 8 columns. If the upload span is known and ends earlier
-     * inside that margin, start blanking from the span edge instead. */
-    const uint32_t margin = (uint32_t)g_video_depth24_trailing_margin;
-    if (margin == 0u || margin >= w) return;
-    uint32_t start = w - margin;
-    uint32_t lim = gpu_depth24_rgb_limit(display_x, w);
-    if (lim > 0u && lim < w && lim < start)
-        start = lim;
-    for (uint32_t y = 0; y < h; y++) {
-        for (uint32_t x = start; x < w; x++)
-            buf[y * w + x] = 0xFF000000u;
-    }
-}
-
-/* Compose visible depth24 rows into the PAL/NTSC active canvas. Decode only
- * the GP1(07h) intersection with active video. This preserves every visible
- * source row and represents off-screen rows as clipping, not as an in-place
- * shift that discards additional FMV content. */
 static void depth24_stage_scanout(const GpuDisplayInfo *di, uint32_t *buf,
                                   uint32_t w) {
-    if (!di || !buf || w == 0u || di->screen_height == 0u)
+    if (!di || !buf || w == 0u)
         return;
-
+    /* gpu.c stages the visible rows and black-fills the uncovered trailing
+     * columns (the same code depth24_present_hold_exec_test renders). */
+    const uint32_t rows = gpu_depth24_stage_scanout(
+        di, buf, w, (uint32_t)g_video_depth24_trailing_margin);
+    if (rows == 0u || w < 8u || s_d24_cutover_blank <= 0)
+        return;
+    s_d24_cutover_blank--;
     const size_t count = (size_t)w * di->screen_height;
     for (size_t i = 0; i < count; i++)
         buf[i] = 0xFF000000u;
-
-    if (di->screen_origin_y >= di->screen_height)
-        return;
-    uint32_t rows = di->height;
-    if (rows > di->screen_height - di->screen_origin_y)
-        rows = di->screen_height - di->screen_origin_y;
-    uint32_t *source = buf + (size_t)di->screen_origin_y * w;
-    for (uint32_t y = 0; y < rows; y++)
-        gpu_depth24_present_row(di, di->screen_source_skip_y + y,
-                                source + (size_t)y * w, w);
-    depth24_fix_trailing_margin(source, w, rows, di->display_x);
 }
 
 enum {
@@ -7580,13 +8250,21 @@ static int savestate_menu_open = 0;
 static int savestate_menu_slot = 0;
 static int savestate_menu_ignore_toggle_release = 0;
 static SDL_Keycode savestate_menu_open_key = 0;
+static int savestate_menu_key_direction = 0;
 
 static void savestate_menu_sync_overlay(void) {
+    const char* unavailable = nullptr;
+    if (savestate_title_blocked() || !psx_mod_netplay_savestates_supported())
+        unavailable = "SAVE STATES ARE UNAVAILABLE IN THIS GAME MODE";
+    else if (psx_netplay_active() && !psx_netplay_is_host())
+        unavailable = "ONLY THE NETPLAY HOST CAN SAVE OR LOAD";
+    psx_savestate_menu_set_unavailable(unavailable);
     psx_savestate_menu_set_state(savestate_menu_open, savestate_menu_slot);
 }
 
 static void savestate_menu_close(void) {
     savestate_menu_open = 0;
+    savestate_menu_key_direction = 0;
     savestate_menu_sync_overlay();
     host_osd_push("Save states closed", 800);
 }
@@ -7615,6 +8293,10 @@ static void savestate_menu_move(int delta) {
 }
 
 static int savestate_submit_slot(int slot, int save) {
+    if (savestate_title_blocked() || !psx_mod_netplay_savestates_supported()) {
+        host_osd_push("Save states are unavailable in this game mode", 1800);
+        return 0;
+    }
     if (!save && !savestate_slot_exists(slot)) {
         char msg[32];
         snprintf(msg, sizeof(msg), "Slot %d is empty", slot + 1);
@@ -7676,9 +8358,9 @@ static void savestate_menu_handle_key(SDL_Keycode key, SDL_Scancode scancode,
         key == SDLK_ESCAPE || key == SDLK_BACKSPACE) {
         savestate_menu_close();
     } else if (key == SDLK_LEFT || key == SDLK_UP) {
-        savestate_menu_move(-1);
+        savestate_menu_key_direction = -1;
     } else if (key == SDLK_RIGHT || key == SDLK_DOWN) {
-        savestate_menu_move(+1);
+        savestate_menu_key_direction = +1;
     } else if (key == SDLK_s) {
         savestate_menu_submit(1);
     } else if (key == SDLK_l) {
@@ -7694,26 +8376,24 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
     int prev = 0, next = 0, load = 0, save = 0, cancel = 0;
     int dir = 0;
 
-    SDL_GameController *h = g_players[0].handle;
-    if (h) {
-        const Sint16 lx =
-            SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_LEFTX);
-        const int dz = 16000;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_UP) ||
-            lx < -dz)
-            prev = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
-            lx > dz)
-            next = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_A))
-            load = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_X))
-            save = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_B))
-            cancel = 1;
-    }
+    /* Match the displayed PSX labels and the player's actual bindings. This
+     * also includes keyboard-as-pad and the explicit TCP host input layer. */
+    uint16_t buttons = pad_buttons_for(g_players[0], 1, true);
+    uint16_t host_word;
+    uint8_t sticks[4], lt, rt;
+    if (host_pad_layer(&host_word, sticks, &lt, &rt)) buttons = host_word;
+    const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    /* Merge event taps and held keyboard-as-pad arrows before stepping.
+     * Moving in both the event handler and this poll skipped two slots. */
+    prev = savestate_menu_key_direction < 0 || keys[SDL_SCANCODE_LEFT] ||
+        keys[SDL_SCANCODE_UP] || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
+    next = savestate_menu_key_direction > 0 || keys[SDL_SCANCODE_RIGHT] ||
+        keys[SDL_SCANCODE_DOWN] || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
+    savestate_menu_key_direction = 0;
+    load = !(buttons & PAD_CROSS);
+    save = !(buttons & PAD_SQUARE);
+    cancel = !(buttons & PAD_CIRCLE);
 
     const int toggle = hotkey_shortcut_down(PSX_ASSIST_BIND_SAVE_STATE_MENU, g_hotkey_pad_save_state_menu);
     if (savestate_menu_ignore_toggle_release) {
@@ -7836,24 +8516,11 @@ static void rewind_poll_nav(uint32_t now_ms) {
     if ((btn & PAD_CIRCLE) == 0 || (btn & PAD_SELECT) == 0 ||
         (btn & PAD_R3) == 0)
         can = 1;
-    SDL_GameController *h = g_players[0].handle;
-    if (h) {
-        const Sint16 lx =
-            SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_LEFTX);
-        const int dz = 16000;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
-            lx < -dz)
-            left = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
-            lx > dz)
-            right = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_A))
-            acc = 1;
-        if (SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_B) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_BACK) ||
-            SDL_GameControllerGetButton(h, SDL_CONTROLLER_BUTTON_RIGHTSTICK))
-            can = 1;
-    }
+    /* Buttons above already honor the player's PSX bindings. A second raw
+     * A/B poll would override those mappings while showing Cross/Circle. */
+    const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
+    if (lx < -16000) left = 1;
+    if (lx > 16000) right = 1;
     psx_rewind_nav_held(left, right, acc, can, now_ms);
 }
 
@@ -7862,7 +8529,10 @@ static void rewind_pause_present(void) {
 #ifndef PSX_SDL_NO_RENDER
     if (g_gl_active) {
         gl_renderer_set_interpolation_suspended(1);
-        (void)gl_renderer_present_hold_last();
+        /* A menu can pause before the first guest present. Give its draw
+         * callback a blank host frame when no held frame exists, or input
+         * handled during draw (including Resume) can never release pause. */
+        if (!gl_renderer_present_hold_last()) gl_renderer_present_blank();
     } else if (g_vk_active) {
         vk_renderer_present_blank();
     } else if (sdl_renderer) {
@@ -7872,13 +8542,93 @@ static void rewind_pause_present(void) {
             SDL_RenderCopy(sdl_renderer, sdl_texture, &s_sw_hold_src,
                            &s_sw_hold_dst);
         host_osd_draw_sdl(sdl_renderer);
-        SDL_RenderPresent(sdl_renderer);
+        software_present_with_telemetry(sdl_renderer);
     }
 #endif
 }
 
+/* Menu actions execute at a VBlank boundary without resetting the guest. */
+static int runtime_menu_chord_down(void) {
+    return p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_BACK) &&
+           p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_LEFTSTICK);
+}
+static int runtime_menu_chord_was;
+static void runtime_menu_poll_toggle(void) {
+    const int down = runtime_menu_chord_down();
+    if (down && !runtime_menu_chord_was && host_hotkey_input_focused() && !savestate_menu_open &&
+        !psx_rewind_is_open()) psx_runtime_menu_open();
+    runtime_menu_chord_was = down;
+}
+static void runtime_menu_host_loop(void) {
+    if (!psx_runtime_menu_is_open()) return;
+    psx_local_mouse_begin(sdl_window, false);
+    psx_local_mouse_reset();
+    freeze_heartbeat_set_paused(1);
+    psx_sdl_audio_set_paused(sdl_audio_device, 1);
+    const int buttons[] = { SDL_CONTROLLER_BUTTON_B, SDL_CONTROLLER_BUTTON_DPAD_UP,
+        SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+        SDL_CONTROLLER_BUTTON_DPAD_RIGHT, SDL_CONTROLLER_BUTTON_A };
+    int held[6];
+    for (int i = 0; i < 6; ++i) held[i] = p1_host_button_down(nullptr, buttons[i]);
+    int chord_was = runtime_menu_chord_down();
+    while (psx_runtime_menu_is_open()) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        debug_server_poll();
+#endif
+        SDL_Event ev;
+        while (!g_headless && SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_QUIT) {
+                psx_runtime_menu_close();
+                psx_crash_trace_set_exit_origin("sdl_window_close");
+                shutdown_runtime();
+                std::exit(0);
+            } else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
+                refresh_player_devices();
+            } else if (ev.type == SDL_CONTROLLERDEVICEREMOVED) {
+                close_controller();
+                refresh_player_devices();
+            } else if (ev.type == SDL_KEYDOWN) {
+#if defined(PSX_SDL3)
+                const SDL_Keycode key = ev.key.key;
+                const int mod = ev.key.mod, scan = ev.key.scancode, repeat = ev.key.repeat;
+#else
+                const SDL_Keycode key = ev.key.keysym.sym;
+                const int mod = ev.key.keysym.mod, scan = ev.key.keysym.scancode, repeat = ev.key.repeat;
+#endif
+                if (!repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scan, mod))
+                    psx_runtime_menu_close();
+                else if (key == SDLK_ESCAPE || key == SDLK_BACKSPACE) psx_runtime_menu_input(PSX_MENU_BACK, repeat);
+                else if (key == SDLK_UP) psx_runtime_menu_input(PSX_MENU_UP, repeat);
+                else if (key == SDLK_DOWN) psx_runtime_menu_input(PSX_MENU_DOWN, repeat);
+                else if (key == SDLK_LEFT) psx_runtime_menu_input(PSX_MENU_LEFT, repeat);
+                else if (key == SDLK_RIGHT) psx_runtime_menu_input(PSX_MENU_RIGHT, repeat);
+                else if (key == SDLK_RETURN || key == SDLK_SPACE) psx_runtime_menu_input(PSX_MENU_ACCEPT, repeat);
+            }
+        }
+        const int chord = runtime_menu_chord_down();
+        if (chord && !chord_was) psx_runtime_menu_close();
+        chord_was = chord;
+        for (int i = 0; i < 6; ++i) {
+            const int down = p1_host_button_down(nullptr, buttons[i]);
+            if (down && !held[i]) psx_runtime_menu_input(PSX_MENU_BACK + i, 0);
+            held[i] = down;
+        }
+        if (!g_headless || g_headless_opengl) rewind_pause_present();
+        starvation_watchdog_heartbeat();
+        SDL_Delay(g_headless ? 1 : 8);
+    }
+    runtime_menu_chord_was = runtime_menu_chord_down();
+    psx_sdl_audio_set_paused(sdl_audio_device, 0);
+    freeze_heartbeat_set_paused(0);
+    present_session_reset();
+    g_audio_cycle_resync = 1;
+    dynres_note_savestate_loaded();
+    savestate_input_guard_arm();
+}
+
 /* Freeze guest in vblank present while the rewind filmstrip is open. */
 static void rewind_host_pause_loop(void) {
+    jogcon_ffb_neutral_all();   /* the wheel goes slack while paused */
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
     freeze_heartbeat_set_paused(1);
@@ -7935,12 +8685,150 @@ static void rewind_host_pause_loop(void) {
     savestate_input_guard_arm();
 }
 
+/* Host pause (host_overlay.h, P1). Same freeze as the save-state menu: the
+ * guest is held at the vblank present, the last frame keeps presenting and
+ * audio is paused, until every psx_host_pause_push() has been popped. Nothing
+ * pushes unless an overlay provider is registered, so titles without one never
+ * enter this loop. */
+static void host_pause_service(void);  /* in-game overlay glue (P6), below */
+static bool host_pause_event(const SDL_Event& ev);  /* P3: input sink */
+static bool host_pause_event(const SDL_Event& ev) {
+    return psx_host_input_sink_dispatch(&ev) != 0;
+}
+
+static void host_pause_loop(void) {
+    psx_local_mouse_begin(sdl_window, false);
+    psx_local_mouse_reset();
+    freeze_heartbeat_set_paused(1);
+    psx_sdl_audio_set_paused(sdl_audio_device, 1);
+    while (psx_host_pause_depth() > 0) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        debug_server_poll();
+#endif
+        SDL_Event ev;
+        while (!g_headless && SDL_PollEvent(&ev)) {
+            (void)psx_local_mouse_event(ev);
+            if (host_pause_event(ev)) continue;
+            if (ev.type == SDL_QUIT) {
+                psx_crash_trace_set_exit_origin("sdl_window_close");
+                shutdown_runtime();
+                std::exit(0);
+            } else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
+                refresh_player_devices();
+            } else if (ev.type == SDL_CONTROLLERDEVICEREMOVED) {
+                close_controller();
+                refresh_player_devices();
+            }
+        }
+        host_pause_service();
+        if (!g_headless) rewind_pause_present();
+        starvation_watchdog_heartbeat();
+        SDL_Delay(g_headless ? 1 : 8);
+    }
+    psx_sdl_audio_set_paused(sdl_audio_device, 0);
+    freeze_heartbeat_set_paused(0);
+    /* Resume the way a savestate load does: the pacer's deadline is now in
+     * the past, and without a re-anchor it pays the pause back as up to ~12
+     * unpaced frames (a visible catch-up burst). Re-anchor presentation and
+     * the FPS baseline, resync guest-cycle audio budgeting, and hold dynamic
+     * resolution so the pause's wall time is not read as an overrun. */
+    present_session_reset();
+    g_audio_cycle_resync = 1;
+    dynres_note_savestate_loaded();
+    /* Swallow the still-held resume press so it doesn't reach the game. */
+    savestate_input_guard_arm();
+}
+
+/* Debug: inject a host key / gamepad button as an SDL event, so scripted
+ * runs can drive host UI (the overlay) through the real event path. */
+extern "C" int psx_debug_push_host_key(const char *name, int down) {
+    const SDL_Scancode sc = SDL_GetScancodeFromName(name ? name : "");
+    if (sc == SDL_SCANCODE_UNKNOWN) return 0;
+    SDL_Event ev;
+    SDL_zero(ev);
+#if defined(PSX_SDL3)
+    ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    ev.key.scancode = sc;
+    ev.key.key = SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false);
+    ev.key.down = down != 0;
+    ev.key.windowID = sdl_window ? SDL_GetWindowID(sdl_window) : 0;
+#else
+    ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    ev.key.keysym.scancode = sc;
+    ev.key.keysym.sym = SDL_GetKeyFromScancode(sc);
+    ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+#endif
+    return SDL_PushEvent(&ev) ? 1 : 0;
+}
+
+/* Debug: use the same SDL controller-event path as a physical P1 button,
+ * rather than setting guest pad RAM or invoking a menu action directly. */
+extern "C" int psx_debug_push_host_button(const char *name, int down) {
+#if defined(PSX_SDL3)
+    const int button = SDL_GetGamepadButtonFromString(name ? name : "");
+#else
+    const int button = SDL_GameControllerGetButtonFromString(name ? name : "");
+#endif
+    if (button < 0) return 0;
+    SDL_Event ev;
+    SDL_zero(ev);
+#if defined(PSX_SDL3)
+    ev.type = down ? SDL_EVENT_GAMEPAD_BUTTON_DOWN : SDL_EVENT_GAMEPAD_BUTTON_UP;
+    ev.gbutton.which = g_players[0].instance;
+    ev.gbutton.button = (Uint8)button;
+    ev.gbutton.down = down != 0;
+#else
+    ev.type = down ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+    ev.cbutton.which = g_players[0].instance;
+    ev.cbutton.button = (Uint8)button;
+    ev.cbutton.state = down ? SDL_PRESSED : SDL_RELEASED;
+#endif
+    return SDL_PushEvent(&ev) > 0;
+}
+
+/* Debug: inject a mouse click (x, y in window points) or wheel step. */
+extern "C" int psx_debug_push_host_mouse(float x, float y, int wheel) {
+    SDL_Event ev;
+    const Uint32 win = sdl_window ? SDL_GetWindowID(sdl_window) : 0;
+#if defined(PSX_SDL3)
+    SDL_zero(ev);
+    ev.type = SDL_EVENT_MOUSE_MOTION;
+    ev.motion.windowID = win; ev.motion.x = x; ev.motion.y = y;
+    if (!SDL_PushEvent(&ev)) return 0;
+    if (wheel) {
+        SDL_zero(ev);
+        ev.type = SDL_EVENT_MOUSE_WHEEL;
+        ev.wheel.windowID = win; ev.wheel.y = (float)wheel; ev.wheel.mouse_x = x; ev.wheel.mouse_y = y;
+        return SDL_PushEvent(&ev) ? 1 : 0;
+    }
+    for (int down = 1; down >= 0; --down) {
+        SDL_zero(ev);
+        ev.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        ev.button.windowID = win; ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.down = down != 0; ev.button.clicks = 1; ev.button.x = x; ev.button.y = y;
+        if (!SDL_PushEvent(&ev)) return 0;
+    }
+    return 1;
+#else
+    (void)ev; (void)win; (void)x; (void)y; (void)wheel;
+    return 0;
+#endif
+}
+
+static int host_pause_refuse_netplay(void) { return psx_netplay_active() ? 1 : 0; }
+
 /* Freeze guest in vblank present while the save-state slot menu is open. */
 static void savestate_menu_host_pause_loop(void) {
+    jogcon_ffb_neutral_all();   /* the wheel goes slack while paused */
     psx_local_mouse_begin(sdl_window, false);
     psx_local_mouse_reset();
     freeze_heartbeat_set_paused(1);
     while (savestate_menu_open) {
+#ifndef PSX_NO_DEBUG_TOOLS
+        /* The guest is paused here; keep loopback host controls and overlay
+         * inspection alive just as the rewind pause loop does. */
+        debug_server_poll();
+#endif
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             (void)psx_local_mouse_event(ev);
@@ -8096,6 +8984,8 @@ static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (psx_local_mouse_event(ev)) continue;
+        /* In-game overlay provider sees events first (host_overlay.h P3). */
+        if (psx_host_input_sink_dispatch(&ev)) continue;
         if (ev.type == SDL_QUIT) {
             if (psx_netplay_active()) {
                 netplay_soft_exit("sdl_window_close");
@@ -8131,6 +9021,8 @@ static bool drain_host_events() {
             const SDL_Scancode scancode = ev.key.keysym.scancode;
             const int key_repeat = ev.key.repeat ? 1 : 0;
 #endif
+            if (!key_repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scancode, mod) &&
+                !savestate_menu_open && !psx_rewind_is_open() && psx_runtime_menu_open()) continue;
             if (key == SDLK_ESCAPE && psx_netplay_active()) {
                 netplay_soft_exit("netplay_escape");
                 return false;
@@ -8155,9 +9047,9 @@ static bool drain_host_events() {
                 savestate_menu_toggle(key);
             }
             else if (key == SDLK_c && (mod & KMOD_CTRL)) {
-                std::fprintf(stdout, "[DEBUG] Forzando reinserción de CD...\n");
-                debug_force_cd_reinsert();
-                host_osd_push("CD reinsert", 1500);
+                const int rc = psx_disc_tray_cycle(0, PSX_DISC_TRAY_ORIGIN_HOTKEY_REINSERT);
+                host_osd_push(rc == PSX_DISC_TRAY_OK ? "CD reinsert" :
+                              "Disc changes are unavailable in this game mode.", 1500);
             }
             else if (!key_repeat &&
                      host_keymap_match_event(HOST_KEYMAP_TURBO_TOGGLE,
@@ -8216,9 +9108,11 @@ static bool drain_host_events() {
                                              (int)mod)) {
                 const int target = s_window_fullscreen.mode ? 0 :
                                    (g_fullscreen ? g_fullscreen : 1);
-                if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, target) == 0)
+                if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, target) == 0) {
+                    apply_present_cadence();
+                    log_present_cadence();
                     host_osd_push(target ? "Fullscreen" : "Windowed", 1500);
-                else
+                } else
                     host_osd_push("Fullscreen change failed", 1500);
             }
         }
@@ -8242,6 +9136,7 @@ static bool local_mouse_live(int override_word) {
     g.savestate_menu_open = savestate_menu_open;
     g.rewind_open = psx_rewind_is_open();
     g.input_guard = savestate_input_guard_active();
+    g.ui_capture = psx_host_ui_capture_active();
     return pad_ext_live(&g) != 0;
 }
 
@@ -8273,18 +9168,31 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     int override = debug_server_get_input_override();
     int override_p2 = debug_server_get_input_override_port2();
 #else
-    /* Production: skip debug server. Still need to advance frame counter
-     * locally so anything else that reads it continues to work. */
+    /* Release keeps TCP commands available without per-frame trace recording.
+     * An unrequested server has no mutex/thread and polling returns at once. */
+    debug_server_poll();
     extern uint64_t s_frame_count;
     s_frame_count++;
     int override = -1;
     int override_p2 = -1;
 #endif
+    /* Always-on wall-time stamp for this guest frame (host_span_ring.h). */
+    extern uint64_t s_frame_count;
+    uint32_t stamp_static_checks = 0;
+#ifdef PSX_HAS_OVERLAY_DISPATCH
+    {
+        uint64_t sc = 0, sh = 0, sv = 0, sa = 0;
+        psx_overlay_static_get_stats(&sc, &sh, &sv, &sa);
+        stamp_static_checks = (uint32_t)sc;
+    }
+#endif
+    host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
 
     psx_local_mouse_begin(sdl_window, local_mouse_live(override));
     {
         /* Outside every debug guard on purpose: production must be measurable. */
         extern uint64_t s_frame_count;
+        openxr_ready_report_tick(s_frame_count);
         frame_report_tick(s_frame_count);
     }
     runtime_perf_frame_begin();
@@ -8325,6 +9233,15 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 } else {
                     snprintf(title, sizeof(title), "%s  [Game %.0f fps %.2fx]",
                              s_fps_base_title.c_str(), fps, speed);
+                }
+                {
+                    PsxPresentCadence cadence{};
+                    psx_video_telemetry_cadence(1000, 0, &cadence);
+                    const double sfps = cadence.fps;
+                    const unsigned hitch = cadence.hitches, worst = cadence.max_us / 1000;
+                    size_t l = strlen(title);
+                    snprintf(title + l, sizeof(title) - l, " [Present %.1f fps, %u hitch, max %u ms]",
+                             sfps, hitch, worst);
                 }
                 SDL_SetWindowTitle(sdl_window, title);
             }
@@ -8389,7 +9306,9 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      * frontend is skipping presents. Both are cheap and emu-thread-only. */
     {
         uint64_t perf_start = runtime_perf_section_begin();
+        const uint64_t span_t0 = host_span_begin();
         overlay_autocapture_tick();
+        host_span_end(HSPAN_AUTOCAPTURE_TICK, span_t0, 0);
         runtime_perf_section_end(perf_start,
                                  &g_runtime_perf.autocapture_ticks);
     }
@@ -8397,10 +9316,30 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * cache rescan on done). */
         uint64_t perf_start = runtime_perf_section_begin();
         const CodeProvider *cp = code_provider_active();
+        const uint64_t span_t0 = host_span_begin();
         if (cp->poll_main) cp->poll_main();
+        host_span_end(HSPAN_PROVIDER_POLL, span_t0, 0);
         runtime_perf_section_end(perf_start,
                                  &g_runtime_perf.provider_poll_ticks);
     }
+
+    {
+        int ready = 0;
+        const int requested = mod_runtime_disc_request(&ready);
+        const int rc = psx_disc_tray_auto_poll(requested, ready);
+        if (rc >= 0 && rc != PSX_DISC_TRAY_OK)
+            host_osd_push("Disc unavailable. Open game menu to choose another.", 5000);
+    }
+    if (g_headless && psx_runtime_menu_is_open()) runtime_menu_host_loop();
+#ifndef PSX_NO_DEBUG_TOOLS
+    /* Publish after the debug handler has replied, at the same host boundary
+     * as other posted menu actions. Never abandon a live command callback. */
+    if (s_debug_restart_disc.load()) {
+        g_netplay_from_lobby = 1;
+        psx_request_return_to_lobby();
+        return ep;
+    }
+#endif
 
     /* Direct-shortcut claims are settled before any shortcut poll or pad
      * sample this frame (no-op unless a title allowed a direct shortcut). */
@@ -8409,16 +9348,21 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         /* Pump SDL events to prevent window freeze. */
         psx_local_mouse_begin(sdl_window, local_mouse_live(override));
         if (!drain_host_events()) return ep;
+        host_pause_service();
+        runtime_menu_poll_toggle();
         recover_disconnected_controllers();
         savestate_menu_poll_toggle_buttons();
         rewind_poll_toggle_buttons();
         fast_forward_toggle_poll_buttons();
         psx_rewind_note_frame();
         psx_rewind_present_tick((uint32_t)SDL_GetTicks());
+        if (psx_runtime_menu_is_open()) runtime_menu_host_loop();
         if (savestate_menu_open)
             savestate_menu_host_pause_loop();
         if (psx_rewind_is_open())
             rewind_host_pause_loop();
+        if (psx_host_pause_depth() > 0)
+            host_pause_loop();
     } else if (host_pad_layer(nullptr, nullptr, nullptr, nullptr)) {
         /* Headless with the debug host layer: the host shortcuts that need no
          * window (Rewind capture/open, fast-forward latch) poll as they would
@@ -8429,6 +9373,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         if (psx_rewind_is_open())
             rewind_host_pause_loop();
     }
+    /* Headless: a host pause (debug host_pause, scripted overlay tests)
+     * holds the guest exactly as it does windowed; the loop polls the debug
+     * server and needs no window. */
+    if (g_headless && psx_host_pause_depth() > 0)
+        host_pause_loop();
 
     /* Sample each player's device and feed the matching SIO pad slot.
      * Debug server input override (when active) drives port 1 only. With
@@ -8484,7 +9433,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         psx_selfcheck_finish_frame(
             (g_offline_pad_count >= 3 && !sio_get_multitap()) ? 1 : 0);
     }
-    if (!g_headless) update_controller_rumble();
+    /* Headless has no pads; PSX_RUMBLE_TRACE still logs what would be sent. */
+    if (!g_headless || std::getenv("PSX_RUMBLE_TRACE")) update_controller_rumble();
 
     /* Latency ring: open this present cycle's slot, stamping when input was
      * sampled into SIO.  Always-on; queried via the debug server "latency". */
@@ -8582,6 +9532,24 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         }
     }
 
+    bool manual_turbo_requested = false;
+    {
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+        /* Keyboard ([KeyMap] Turbo, default Tab) or the controller host
+         * shortcut ([hotkeys] fast_forward_pad, default select+L1). Both are
+         * follow the persisted Hold/Toggle mode; the pad chord goes through the same combo matcher as
+         * Rewind / Save states so the launcher's binding editor covers it.
+         * g_manual_turbo_latched is the press-to-lock twin (TurboToggle /
+         * fast_forward_toggle_pad) and drives the same path. */
+        uint8_t host_keys[SDL_NUM_SCANCODES];
+        psx_keybinds_host_keys(keys, host_keys);
+        const bool kb_turbo = host_hotkey_input_focused() &&
+            host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
+        manual_turbo_requested = g_manual_turbo_latched || (!g_fast_forward_toggle_mode &&
+            (kb_turbo || hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD,
+                                             g_hotkey_pad_fast_forward)));
+    }
+
 #ifndef PSX_SDL_NO_AUDIO
     /* Optional turbo host sink advances the canonical SPU on the exact guest
      * sample budget but drops accelerated output before SDL. This is distinct
@@ -8590,8 +9558,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      * Rollback resim: skip host audio pump (uncapped frames) so SPU/CD audio
      * paths cannot fork peers during the episode window. */
     if (!psx_netplay_is_resimulating() && !psx_selfcheck_resim_active()) {
-        sdl_audio_update(fmv_skip_active,
-                         turbo_loads_active && g_turbo_audio_sink_enabled);
+        /* Drop host output only; the canonical SPU/CD simulation keeps running. */
+        const int accelerated_audio_sink = (psx_audio_sync_enabled() &&
+            (psx_bios_hle_boot_turbo_active() ||
+             (manual_turbo_requested && manual_fast_forward_multiplier() != 1.0))) ||
+            (turbo_loads_active && g_turbo_audio_sink_enabled);
+        const int catchup_audio_sink = sdl_audio_catchup_sink(
+            accelerated_audio_sink || fmv_skip_active);
+        sdl_audio_update(fmv_skip_active, accelerated_audio_sink || catchup_audio_sink);
     }
 #endif
 
@@ -8651,7 +9625,6 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
      * audio is less hostile. PSX_FAST_FORWARD_SPEED=2..16 changes the cap;
      * PSX_FAST_FORWARD_SPEED=max restores the old unbounded simulation rate. */
     {
-        const Uint8* keys = SDL_GetKeyboardState(NULL);
         static int turbo_skip = 0;
         static int turbo_was_down = 0;
         /* Keyboard ([KeyMap] Turbo, default Tab) or the controller host
@@ -8660,13 +9633,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * Rewind / Save states so the launcher's binding editor covers it.
          * g_manual_turbo_latched is the press-to-lock twin (TurboToggle /
          * fast_forward_toggle_pad) and drives the same path. */
-        uint8_t host_keys[SDL_NUM_SCANCODES];
-        psx_keybinds_host_keys(keys, host_keys);
-        const bool kb_turbo = host_hotkey_input_focused() &&
-            host_keymap_down(HOST_KEYMAP_TURBO, host_keys, (int)SDL_GetModState());
-        if (g_manual_turbo_latched || (!g_fast_forward_toggle_mode &&
-            (kb_turbo || hotkey_shortcut_down(PSX_ASSIST_BIND_FAST_FORWARD,
-                                             g_hotkey_pad_fast_forward)))) {
+        if (manual_turbo_requested) {
             const double mult = manual_fast_forward_multiplier();
             const int present_every = psx_fast_forward_present_every(mult);
             manual_turbo_active = true;
@@ -8802,9 +9769,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             if (psx_local_mouse_installed()) {
                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
                 if (!drain_host_events()) return ep;
+                /* The overlay may have opened during the pacer wait (its
+                 * Start+Select chord): settle ui_capture before the pad
+                 * sample below, or the chord reaches the guest for a frame. */
+                host_pause_service();
                 // A hotkey acquired during pacing may open a host menu.
                 if (savestate_menu_open) savestate_menu_host_pause_loop();
                 if (psx_rewind_is_open()) rewind_host_pause_loop();
+                if (psx_host_pause_depth() > 0) host_pause_loop();
                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
             } else {
                 SDL_PumpEvents(); // retain native timing when no policy exists
@@ -8818,9 +9790,8 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 
     /* Depth24 GP1(07h) retarget (MotK intro→crawl): keep the prior Swap for a
      * few vblanks so stale trailing VRAM never flashes on the right edge.
-     * Must tick every present — gpu.c arms s_d24_present_hold and also
-     * freezes upload-span tracking while hold > 0; without this call the hold
-     * sticks and depth24_fix_trailing_margin blanks the whole FMV forever. */
+     * gpu.c counts the hold down at guest VBlank (it also freezes upload-span
+     * tracking while > 0); this skips the Swap of each held VBlank. */
     if (gpu_depth24_present_hold_tick())
         return ep;
 
@@ -8908,7 +9879,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                         SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
                         SDL_RenderClear(sdl_renderer);
                         host_osd_draw_sdl(sdl_renderer);
-                        SDL_RenderPresent(sdl_renderer);
+                        software_present_with_telemetry(sdl_renderer);
                     }
                 }
             }
@@ -9239,9 +10210,14 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * right-edge jump the old comment describes is 0 with filtering on.
          * Set video AA off to get nearest back. */
         gl_renderer_set_fmv_filter(g_video_fmv_filter);
+        gl_renderer_note_present_depth24(depth24_frame ? 1 : 0);
         gl_renderer_present(sdl_pixel_buf, src_w, src_h,
                             g_video_aa ? 1 : 0,
-                            pin_43 ? 1 : 0, 0 /* full width */);
+                            pin_43 ? 1 : 0, 0 /* full width */,
+                            psx_cycle_count, s_frame_count, s_fmv_timeline_epoch,
+                            cdrom_get_stream_generation(), cdrom_get_stream_start_lba(),
+                            cdrom_get_delivered_lba(),
+                            mdec_get_decode_count());
         netplay_note_present();
     } else {
     if ((!sdl_renderer || !sdl_texture) && ensure_sw_sdl_present() != 0)
@@ -9311,66 +10287,6 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     SDL_RenderClear(sdl_renderer);
     SDL_RenderCopy(sdl_renderer, sdl_texture, &src, &dst);
     host_osd_draw_sdl(sdl_renderer);
-    /* Fulfil a staged present_shot here: after RenderCopy + OSD, before
-     * RenderPresent, the renderer holds exactly the composed frame the player
-     * sees — including the logical-size aspect fit that every buffer-level
-     * capture misses. Reading back costs a GPU sync, so it only runs when a
-     * shot was explicitly requested. */
-    char shot_path[512];
-    if (present_shot_take(shot_path, (int)sizeof(shot_path))) {
-        int ow = 0, oh = 0;
-        uint8_t *packed = NULL;
-#if defined(PSX_SDL3)
-        SDL_Surface *surf = SDL_RenderReadPixels(sdl_renderer, NULL);
-        if (surf) {
-            SDL_Surface *conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGB24);
-            SDL_DestroySurface(surf);
-            if (conv) {
-                ow = conv->w; oh = conv->h;
-                packed = (uint8_t *)std::malloc((size_t)ow * oh * 3);
-                if (packed) {
-                    /* SDL rows are pitch-aligned; png_write_rgb wants packed. */
-                    for (int y = 0; y < oh; y++)
-                        std::memcpy(packed + (size_t)y * ow * 3,
-                                    (const uint8_t *)conv->pixels + (size_t)y * conv->pitch,
-                                    (size_t)ow * 3);
-                }
-                SDL_DestroySurface(conv);
-            }
-        }
-#else
-        /* Size the buffer from the renderer's REAL output, not from a
-         * viewport*scale reconstruction: SDL_RenderReadPixels(NULL) fills the
-         * current viewport, and deriving that region from
-         * SDL_RenderGetViewport x SDL_RenderGetScale rounds independently of
-         * what SDL actually writes. The output size is a hard upper bound, so
-         * a full-output allocation cannot be overrun whatever SDL picks. */
-        int rw = 0, rh = 0;
-        if (SDL_GetRendererOutputSize(sdl_renderer, &rw, &rh) == 0 && rw > 0 && rh > 0) {
-            SDL_Rect vp; SDL_RenderGetViewport(sdl_renderer, &vp);
-            float sx = 1.0f, sy = 1.0f; SDL_RenderGetScale(sdl_renderer, &sx, &sy);
-            ow = (int)(vp.w * sx); oh = (int)(vp.h * sy);
-            if (ow <= 0 || ow > rw) ow = rw;
-            if (oh <= 0 || oh > rh) oh = rh;
-            packed = (uint8_t *)std::malloc((size_t)rw * rh * 3);   /* upper bound */
-            if (packed && SDL_RenderReadPixels(sdl_renderer, NULL,
-                                               SDL_PIXELFORMAT_RGB24,
-                                               packed, ow * 3) != 0) {
-                std::free(packed); packed = NULL;
-            }
-        }
-#endif
-        int wrote = 0;
-        if (packed && ow > 0 && oh > 0) {
-            FILE *pf = std::fopen(shot_path, "wb");
-            if (pf) {
-                wrote = png_write_rgb(pf, packed, (uint32_t)ow, (uint32_t)oh);
-                std::fclose(pf);
-            }
-        }
-        std::free(packed);
-        present_shot_done(wrote);
-    }
     /* §33: remember active rect for resim hold-last (not full 640x512). */
     s_sw_hold_src = src;
     s_sw_hold_dst = dst;
@@ -9387,7 +10303,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     {
         latency_ring_mark(LAT_SWAP_BEGIN);
         const Uint64 t0 = SDL_GetPerformanceCounter();
-        SDL_RenderPresent(sdl_renderer);
+        software_present_with_telemetry(sdl_renderer);
         const Uint64 t1 = SDL_GetPerformanceCounter();
         latency_ring_mark(LAT_SWAP_END);
         netplay_note_present();
@@ -9416,6 +10332,10 @@ static void render_thread_vblank(void) {
         gl_renderer_set_present_thread(g_present_thread, g_present_thread_slots);
         if (g_gl_active && gr_backend() == GR_BACKEND_OPENGL &&
             gl_renderer_render_thread_start(g_render_thread_frames)) {
+            /* The NVIDIA policy only becomes eligible once the worker owns
+             * GL. Update the actual driver interval at that transition. */
+            apply_present_cadence();
+            log_present_cadence();
             std::fprintf(stdout, "psxrecomp: render thread on (OpenGL, %d frame(s) in flight)\n",
                          g_render_thread_frames);
             if (g_frame_generation) {
@@ -9483,7 +10403,7 @@ static void dynres_setup(void) {
     int floor_s = psx_dynres_floor_scale(dynres_min_value(),
                                          effective_internal_resolution(),
                                          g_video_ref_lines,
-                                         psx_sdl_display_pixel_height(nullptr),
+                                         match_display_px_h(nullptr),
                                          ceiling);
     if (floor_s > ceiling) floor_s = ceiling;
     DynresParams params;
@@ -9513,6 +10433,260 @@ static void dynres_setup(void) {
                  floor_s * g_video_ref_lines, ceiling * g_video_ref_lines);
 }
 
+/* ---- The session's look (host_enhancements.h) ---------------------------
+ * The title's baseline (g_title_look) with the CRT Filter, Image Filtering
+ * and Enhanced Audio requests this session's activation recorded, resolved
+ * at the renderer setup after start_mod_session -- never at activation, whose
+ * work that setup would undo. Rewind's request is taken here as well and
+ * armed when the session's machine is configured (psx_rewind_configure). */
+static void session_host_look(void) {
+    PsxHostEnhRequests req;
+    psx_host_enh_requests(&req);
+    const PsxHostLook look = psx_host_enh_resolve(&g_title_look, &req);
+    g_video_screen = look.screen_kind;
+    g_video_scanlines = look.scanlines != 0;
+    g_video_scanline_strength = look.scanline_strength_pct / 100.0f;
+    g_video_aa = look.present_linear != 0;
+    g_video_texfilter = look.texture_filter;
+    g_video_fmv_filter = look.fmv_filter;
+    g_audio_spu_hq = look.spu_hq != 0;
+    g_rewind_enabled = req.rewind ? 1 : 0;
+    g_rewind_depth = req.rewind ? req.rewind_depth : PSX_HOST_ENH_REWIND_DEPTH_DEFAULT;
+    g_rewind_interval = req.rewind ? req.rewind_interval
+                                   : PSX_HOST_ENH_REWIND_INTERVAL_DEFAULT;
+    if (req.crt || req.image || req.audio || req.rewind)
+        std::fprintf(stdout, "psxrecomp: host enhancements:%s%s%s%s\n",
+                     req.crt ? " CRT Filter" : "", req.image ? " Image Filtering" : "",
+                     req.audio ? " Enhanced Audio" : "", req.rewind ? " Rewind" : "");
+}
+
+/* The CRT Filter / Image Filtering plugins' live option changes (in-game
+ * menu): resolve again and push what changed to the renderer. */
+static void host_look_apply_live(void) {
+    PsxHostEnhRequests req;
+    psx_host_enh_requests(&req);
+    const PsxHostLook look = psx_host_enh_resolve(&g_title_look, &req);
+    psx_video_set_scanlines(look.scanlines, look.scanline_strength_pct / 100.0f);
+    g_video_screen = look.screen_kind;
+    gpu_set_screen_kind(g_video_screen);
+    g_video_aa = look.present_linear != 0;
+    g_video_texfilter = look.texture_filter;
+    if (g_mod_texfilter < 0) gr_set_texture_filter(g_video_texfilter);
+    g_video_fmv_filter = look.fmv_filter;
+    if (g_gl_active) gl_renderer_set_fmv_filter(g_video_fmv_filter);
+}
+
+/* ---- The session's internal resolution (host_enhancements.h) ------------
+ * The title's baseline (g_title_resolution, its legacy factor and supersample)
+ * restored at every session start, then the Internal Resolution mod's choice
+ * from this session's activation. Called at the renderer setup after
+ * start_mod_session, before the PSX_INTERNAL_RESOLUTION / PSX_SUPERSAMPLE
+ * env overrides and the scale resolution. */
+static void session_internal_resolution(void) {
+    PsxHostEnhRequests req;
+    psx_host_enh_requests(&req);
+    const PsxHostResolution r = psx_host_enh_resolve_resolution(&g_title_resolution, &req);
+    g_video_internal_res = r.internal_resolution;
+    g_video_dynres = r.dynamic_resolution;
+    g_video_scale = g_title_scale;
+    g_video_ss_milli = g_title_ss_milli;
+    if (req.resolution && req.resolution_value != PSX_IR_UNSET) {
+        const char* lbl = psx_ir_label_for(req.resolution_value);
+        std::fprintf(stdout, "psxrecomp: host enhancements: Internal Resolution %s\n",
+                     lbl ? lbl : "?");
+    }
+}
+
+/* ---- Live video apply (host_overlay.h P4) ------------------------------- */
+static std::filesystem::path g_overlay_settings_path;  /* settings.toml */
+static PsxHostVideoSettings g_video_boot;              /* as the session booted */
+static bool g_video_boot_valid = false;
+/* Live Internal resolution / Supersample. g_video_internal_res and
+ * g_video_ss_milli are what the player requested (shown and saved); these are
+ * what the backend last actually applied. g_video_res_live_failed holds a
+ * relaunch requirement after a live change the backend refused, and
+ * g_video_res_live_capable mirrors gl_renderer_internal_scale_live_capable()
+ * for the menu thread. */
+static int g_video_res_applied_ir = PSX_IR_UNSET;
+static int g_video_res_applied_ss = 1000;
+static std::mutex g_video_res_applied_mutex;
+static std::atomic<bool> g_video_res_live_failed{false};
+static std::atomic<bool> g_video_res_live_capable{false};
+
+static void video_res_set_applied(int ir, int ss) {
+    std::lock_guard<std::mutex> lock(g_video_res_applied_mutex);
+    g_video_res_applied_ir = ir;
+    g_video_res_applied_ss = ss;
+}
+
+static void video_res_refresh_capable(void) {
+    g_video_res_live_capable.store(g_gl_active && g_video_scale_applies &&
+                                   gl_renderer_internal_scale_live_capable() != 0);
+}
+
+/* Other restart-only settings still compare against boot. Resolution compares
+ * against its last confirmed application, including after a live A -> B. */
+static unsigned video_restart_bits(const PsxHostVideoSettings *boot,
+                                   const PsxHostVideoSettings *next) {
+    if (!boot || !next) return 0;
+    PsxHostVideoSettings applied = *boot;
+    {
+        std::lock_guard<std::mutex> lock(g_video_res_applied_mutex);
+        applied.internal_resolution = g_video_res_applied_ir;
+        applied.supersample_milli = g_video_res_applied_ss;
+    }
+    return psx_host_video_restart_bits_backend(
+        &applied, next, 0);
+}
+
+extern "C" void psx_video_resolution_applied(int *ir, int *ss_milli, int *live_capable,
+                                             int *restart_pending) {
+    {
+        std::lock_guard<std::mutex> lock(g_video_res_applied_mutex);
+        if (ir) *ir = g_video_res_applied_ir;
+        if (ss_milli) *ss_milli = g_video_res_applied_ss;
+    }
+    if (live_capable) *live_capable = g_video_res_live_capable.load() ? 1 : 0;
+    if (restart_pending) *restart_pending = g_video_res_live_failed.load() ? 1 : 0;
+}
+
+extern "C" void psx_video_current(PsxHostVideoSettings *v) {
+    if (!v) return;
+    std::memset(v, 0, sizeof *v);
+    v->fullscreen = s_window_fullscreen.mode;
+    v->frame_generation = g_frame_generation ? 1 : 0;
+    v->renderer = g_video_renderer;
+    /* The player's choice: Auto while dynamic resolution is on. */
+    v->internal_resolution = g_video_dynres ? PSX_IR_AUTO : g_video_internal_res;
+    /* The legacy factor as booted: the live scale moves with the internal
+     * resolution and supersample, which apply without a relaunch. */
+    v->supersampling = g_video_boot_valid ? g_video_boot.supersampling : g_video_scale;
+    v->render_thread = g_render_thread ? 1 : 0;
+    v->present_thread = g_present_thread ? 1 : 0;
+    v->supersample_milli = g_video_ss_milli;
+    video_res_refresh_capable();
+    if (!g_video_boot_valid) {
+        g_video_boot = *v; g_video_boot_valid = true;
+        video_res_set_applied(v->internal_resolution, v->supersample_milli);
+    }
+}
+
+/* Move the session to an internal resolution while the game runs: the value
+ * (PSX_IR_UNSET: the title's legacy supersampling factor), dynamic resolution
+ * under it, and the supersample factor (out of range: unchanged). The GL
+ * owner confirms allocation/application before this returns. The request is
+ * kept either way; the session's scale only moves when the backend takes it,
+ * otherwise the change waits for a relaunch and the restart bits say so.
+ * Returns 1 when the new scale applied now. Main thread. */
+static int video_resolution_apply_live(int ir, int dynres, int ss_milli) {
+    const int was_dynres = g_video_dynres;
+    g_video_internal_res = ir;
+    g_video_dynres = dynres ? 1 : 0;
+    if (ss_milli >= PSX_SS_MILLI_MIN && ss_milli <= PSX_SS_MILLI_MAX)
+        g_video_ss_milli = ss_milli;
+    const int shown = g_video_dynres ? PSX_IR_AUTO : g_video_internal_res;
+    const int prev_scale = g_video_scale;
+    video_res_refresh_capable();
+    int applied = 0;
+    if (g_video_res_live_capable.load()) {
+        /* No value anywhere: the title's legacy factor is the scale. */
+        if (effective_internal_resolution() == PSX_IR_UNSET) g_video_scale = g_title_scale;
+        apply_internal_resolution(match_display_px_h(sdl_window));
+        applied = gl_renderer_set_internal_scale_live(g_video_scale);
+    }
+    if (applied) {
+        std::fprintf(stdout, "psxrecomp: internal scale %dx (live)\n", applied);
+        g_video_scale = applied;
+        video_res_set_applied(shown, g_video_ss_milli);
+        g_video_res_live_failed.store(false);
+        dynres_setup();   /* the new scale is the controller's ceiling */
+    } else {
+        g_video_scale = prev_scale;
+        g_video_res_live_failed.store(true);
+        std::fprintf(stdout, "psxrecomp: internal resolution change needs a "
+                             "relaunch (live change unavailable)\n");
+    }
+    /* Into or out of Auto: the controller follows the choice. */
+    if (!dynres_requested()) {
+        g_dynres.active = false;
+    } else if (!was_dynres || !g_dynres.active) {
+        dynres_setup();
+        if (!g_dynres.active && gl_renderer_dynamic_resolution_ceiling() >= 2)
+            g_dynres.active = true;
+    }
+    return applied ? 1 : 0;
+}
+
+extern "C" unsigned psx_video_apply_live(const PsxHostVideoSettings *next) {
+    if (!next) return 0;
+    PsxHostVideoSettings cur;
+    psx_video_current(&cur);
+    unsigned m = psx_host_video_live_changes(&cur, next);
+    unsigned deferred = 0;
+    /* Netplay: the resolution and frame generation change how a peer renders
+     * mid-match; only the presentation of the frame we already show may
+     * change. The rest is saved for the next session. (Screen model,
+     * scanlines and filtering are host-only mods now, changed through the
+     * mod options: psx_mod_set_option_live.) */
+    if (psx_netplay_active()) {
+        const unsigned present_only = PSX_VIDEO_LIVE_FULLSCREEN;
+        if (m & ~present_only) deferred = PSX_VIDEO_RESTART_NETPLAY;
+        m &= present_only;
+    }
+    if ((m & PSX_VIDEO_LIVE_FULLSCREEN) &&
+        psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, next->fullscreen) == 0) {
+        apply_present_cadence();
+        log_present_cadence();
+    }
+    if (m & PSX_VIDEO_LIVE_RESOLUTION) {
+        /* Auto is Match display with dynamic resolution on; a fixed choice
+         * turns it off. Unchanged, the session's own choice stands. */
+        int ir = g_video_internal_res, dynres = g_video_dynres;
+        if (next->internal_resolution != PSX_IR_UNSET &&
+            next->internal_resolution != cur.internal_resolution) {
+            ir = next->internal_resolution;
+            dynres = psx_ir_is_auto(ir) ? 1 : 0;
+        }
+        (void)video_resolution_apply_live(ir, dynres, next->supersample_milli);
+    }
+    if ((m & PSX_VIDEO_LIVE_FRAME_GEN) && g_gl_active) {
+        g_frame_generation = next->frame_generation ? 1 : 0;
+        gl_renderer_set_frame_generation(g_frame_generation);
+    }
+    /* Persist the player settings the menu shows, live or not, like the
+     * launcher. The internal resolution and supersample are not player
+     * settings (the Internal Resolution mod and the title own them): a
+     * debug-server change lasts for this session only. */
+    if (!g_overlay_settings_path.empty()) {
+        try {
+            PSXRecompV4::UserSettings us = PSXRecompV4::load_user_settings(g_overlay_settings_path);
+            us.fullscreen = next->fullscreen;                  us.has_fullscreen = true;
+            us.frame_generation = next->frame_generation != 0; us.has_frame_generation = true;
+            us.renderer = next->renderer;                      us.has_renderer = true;
+            us.render_thread = next->render_thread != 0;       us.has_render_thread = true;
+            us.present_thread = next->present_thread != 0;     us.has_present_thread = true;
+            (void)PSXRecompV4::save_user_settings(g_overlay_settings_path, us);
+        } catch (...) {
+        }
+    }
+    return video_restart_bits(&g_video_boot, next) | deferred;
+}
+
+/* The Internal Resolution plugin's live option change (in-game menu): resolve
+ * again and move the scale now when the backend can. A netplay match holds
+ * the scale (psx_video_apply_live defers it the same way), and a backend
+ * without a live scale change waits for the next start: both return 0 and
+ * change nothing, so the plugin's choice applies at the next session. */
+static int host_resolution_apply_live(void) {
+    if (psx_netplay_active()) return 0;
+    video_res_refresh_capable();
+    if (!g_video_res_live_capable.load()) return 0;
+    PsxHostEnhRequests req;
+    psx_host_enh_requests(&req);
+    const PsxHostResolution r = psx_host_enh_resolve_resolution(&g_title_resolution, &req);
+    return video_resolution_apply_live(r.internal_resolution, r.dynamic_resolution, 0);
+}
+
 #ifndef PSX_NO_DEBUG_TOOLS
 /* ---- Live rendering A/B keys (debug-tools builds) --------------------------
  * PSX_DEBUG_TOGGLES=0 turns them off. Each key flips one rendering feature
@@ -9540,7 +10714,7 @@ static int debug_toggles_on(void) {
 }
 static int s_dbg_scale_target = 0;
 static const char *dbg_texfilter_name(int f) {
-    return f == 1 ? "bilinear" : f == 2 ? "stable world" : "nearest";
+    return f == 1 ? "bilinear" : f == 2 ? "stable world" : f == 3 ? "xbr" : "nearest";
 }
 static void debug_toggle_summary(char *buf, size_t cap) {
     GlDynresStats st; gl_renderer_dynres_stats(&st);
@@ -9596,7 +10770,7 @@ static int debug_toggle_key(int key, char *out, int cap) {
                       on && !g_render_thread ? " (inert: render thread off)" : "");
         break; }
     case SDLK_5: {
-        const int f = (gr_texture_filter() + 1) % 3;
+        const int f = (gr_texture_filter() + 1) % 4;
         gr_set_texture_filter(f);
         std::snprintf(msg, sizeof msg, "Texture filter: %s", dbg_texfilter_name(f));
         break; }
@@ -10427,6 +11601,16 @@ namespace {
         } else {
             last_companion_warning.clear();
         }
+        // Enforce original image policy in the selection badge, including
+        // when every mod is disabled. PLAY is guarded again before boot.
+        std::string identity_error;
+        if (!PSXRecompV4::required_original_disc_matches(disc_path, &identity_error)) {
+            out->verdict = 3;
+            out->netplay_ok = 0;
+            g_session_netplay_disc_ok = false;
+            std::snprintf(out->netplay_detail, sizeof(out->netplay_detail),
+                          "%s", identity_error.c_str());
+        }
         return 1;
     }
 
@@ -10456,6 +11640,11 @@ namespace {
      * (Network Settings / Lobby Settings, persisted there) and pushes it
      * through relay_host_set; default on. */
     int g_lnch_relay_host = 1;
+    /* Host relay over ICE (2026-10-03): with the host relay on, publish
+     * relay_via "ice" so guests reach the host through ICE and nobody forwards
+     * a port. Default on; the lobby client mirrors it (psx_lobby_set_
+     * relay_via_ice_pref) and only publishes it when the build can run ICE. */
+    int g_lnch_relay_via_ice = 1;
     /* Lobby default on; host “Disable Rollback” clears this → delay_sync. */
     int g_lnch_rollback = 1;
     int g_lnch_multitap_analog = 1;
@@ -11020,6 +12209,9 @@ namespace {
     }
 
     static void ae_np_lan_udp_close(void) {
+        if (std::getenv("PSX_NET_LOBBY_TRACE"))
+            std::fprintf(stderr, "LAN trace: close socket (host=%d guest=%d)\n",
+                         g_lnch_hosting_lan, g_lnch_joined_lan);
         ae_np_lan_sock_close(&g_lnch_lan_udp);
         for (int i = 0; i < kAeLanMaxSlots; ++i)
             g_lnch_lan_peer_ok[i] = false;
@@ -11266,6 +12458,10 @@ namespace {
     }
 
     static void ae_np_lan_udp_sendto(const sockaddr_in& to, const char* msg) {
+        if (std::getenv("PSX_NET_LOBBY_TRACE") && msg)
+            std::fprintf(stderr, "LAN trace: send %.*s to %08x:%u\n",
+                         (int)std::strcspn(msg, "\n"), msg,
+                         (unsigned)ntohl(to.sin_addr.s_addr), (unsigned)ntohs(to.sin_port));
         if (g_lnch_lan_udp == kAeLanSockInvalid || !msg) return;
         const int n = (int)std::strlen(msg);
 #ifdef _WIN32
@@ -12523,7 +13719,37 @@ namespace {
         caps->mod_plan_fp[0] = '\0';
         caps->mod_count = 0;
         std::memset(caps->mods, 0, sizeof(caps->mods));
-        if (!PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
+        const auto* title_profile = psx_mod_netplay_profile();
+        const bool title_loading = title_profile && title_profile->loading_plugin_id;
+        if (const PSXModNetplayProfile* profile = title_loading ? nullptr : title_profile) {
+            if (!profile->settings_package_id) return 1;
+            RecompLauncherCModPackage package{};
+            if (!mods || !mods->feature_count || !mods->feature_get ||
+                !ae_mod_package_get_by_id(profile->settings_package_id, &package)) {
+                g_lnch_mod_plan_error = "Title netplay settings package is unavailable";
+                return 0;
+            }
+            for (int index = 0; index < mods->feature_count(mods->ctx); ++index) {
+                RecompLauncherCModFeature feature{};
+                if (!mods->feature_get(mods->ctx, index, &feature) ||
+                    std::strcmp(feature.package_id, profile->settings_package_id) ||
+                    std::strcmp(feature.id, profile->settings_feature_id)) continue;
+                ae_fill_lobby_mod_pkg_from_package(&caps->mods[0], package);
+                char token[PSX_LOBBY_MOD_FEATS_LEN] = {};
+                ae_copy_lobby_text(token, sizeof(token), feature.id);
+                ae_append_feature_options(token, sizeof(token), mods, feature);
+                ae_copy_lobby_text(caps->mods[0].feats, sizeof(caps->mods[0].feats), token);
+                caps->mod_count = 1;
+                std::string fingerprint;
+                if (!PSXRecompV4::mod_runtime_netplay_settings_fingerprint(
+                        *caps, fingerprint, &g_lnch_mod_plan_error)) return 0;
+                ae_copy_lobby_text(caps->mod_plan_fp, sizeof(caps->mod_plan_fp), fingerprint.c_str());
+                return 1;
+            }
+            g_lnch_mod_plan_error = "Title netplay settings feature is unavailable";
+            return 0;
+        }
+        if (!title_loading && !PSXRecompV4::mod_runtime_prepare_resources(g_launcher_disc_path,
                                                        &g_lnch_mod_plan_error)) return 0;
         if (!mods || !mods->package_count || !mods->package_get)
             return 1;
@@ -12534,6 +13760,13 @@ namespace {
                 RecompLauncherCModFeature feature{};
                 if (!mods->feature_get(mods->ctx, i, &feature) || !feature.enabled)
                     continue;
+                /* Host-only features (CRT Filter, Image Filtering, ...) stay
+                 * each player's own: never part of the published plan. */
+                if (PSXRecompV4::mod_runtime_feature_host_only(feature.package_id,
+                                                               feature.id))
+                    continue;
+                if (title_loading && !psx_mod_netplay_loading_feature(
+                        feature.package_id, feature.id)) continue;
                 int pkg_index = -1;
                 for (int j = 0; j < caps->mod_count; ++j) {
                     if (std::strcmp(caps->mods[j].id, feature.package_id) == 0) {
@@ -12558,7 +13791,7 @@ namespace {
                 ae_append_feat_token(caps->mods[pkg_index].feats,
                                      sizeof(caps->mods[pkg_index].feats), token);
             }
-        } else {
+        } else if (!title_loading) {
             const int count = mods->package_count(mods->ctx);
             for (int i = 0; i < count && caps->mod_count < PSX_LOBBY_MAX_MODS; ++i) {
                 RecompLauncherCModPackage pkg{};
@@ -12570,7 +13803,8 @@ namespace {
         }
 
         if (caps->mod_count > 0) {
-            const std::string fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable();
+            const std::string fp = PSXRecompV4::mod_runtime_plan_fingerprint_portable(
+                g_launcher_disc_path, &g_lnch_mod_plan_error);
             if (fp.empty()) {
                 g_lnch_mod_plan_error =
                     "enabled mods did not produce a portable netplay fingerprint";
@@ -12589,6 +13823,7 @@ namespace {
             case 1:  caps.aspect_num = 16; caps.aspect_den = 9; break;
             default: caps.aspect_num = 4;  caps.aspect_den = 3; break;
         }
+        title_netplay_fix_caps_view(&caps);
         caps.turbo_loads   = s ? (s->turbo_loads != 0) : 0;
         caps.auto_skip_fmv = s ? (s->auto_skip_fmv != 0) : 0;
         caps.input_delay   = g_lnch_lobby_input_delay;
@@ -12600,7 +13835,7 @@ namespace {
         caps.force_input_relay = g_lnch_force_input_relay != 0;
         caps.relay_host = g_lnch_relay_host != 0;
         caps.force_turn = g_lnch_force_turn != 0;
-        caps.rollback = g_lnch_rollback != 0;
+        caps.rollback = g_lnch_rollback != 0 && psx_mod_netplay_rollback_supported();
         caps.multitap_analog = g_lnch_multitap_analog != 0;
         if (s) caps.multitap_analog = s->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
@@ -12651,6 +13886,7 @@ namespace {
             : ae_netplay_caps_from_settings(settings);
         caps.valid = 1;
         caps.input_delay = g_lnch_lobby_input_delay;
+        title_netplay_fix_caps_view(&caps);
         if (caps.input_delay < 2) caps.input_delay = 2;
         if (caps.input_delay > 20) caps.input_delay = 20;
         caps.input_prediction = g_lnch_lobby_input_prediction;
@@ -12659,7 +13895,7 @@ namespace {
         caps.force_input_relay = g_lnch_force_input_relay != 0;
         caps.relay_host = g_lnch_relay_host != 0;
         caps.force_turn = g_lnch_force_turn != 0;
-        caps.rollback = g_lnch_rollback != 0;
+        caps.rollback = g_lnch_rollback != 0 && psx_mod_netplay_rollback_supported();
         caps.multitap_analog = g_lnch_multitap_analog != 0;
         if (settings) caps.multitap_analog = settings->multitap_analog != 0;
         caps.guest_memcard = g_lnch_guest_memcard != 0;
@@ -12850,36 +14086,48 @@ namespace {
      * thread and the device key. Nothing here blocks a frame except the
      * rename, which is one round trip and wants a verdict for its modal. */
     int ae_np_account_available(void*) { return rnet_account_available(); }
-    int ae_np_account_login_begin(void*) { return rnet_account_login_begin(); }
-    int ae_np_account_state(void*) { return rnet_account_state(); }
+    int ae_np_account_login_begin(void*) {
+        int accepted=rnet_account_login_begin();
+        std::fprintf(stderr,"netplay.account: sign-in request accepted=%d\n",accepted);
+        std::fflush(stderr);
+        return accepted;
+    }
+    int ae_np_account_state(void*) {
+        int current=rnet_account_state();
+        static int previous=-1;
+        if(current!=previous) {
+            previous=current;
+            std::fprintf(stderr,"netplay.account: state=%d\n",current);
+            if(current==RNET_ACCOUNT_FAILED) {
+                const char *error=rnet_account_error();
+                std::fprintf(stderr,"netplay.account: failure=%s\n",error?error:"");
+            }
+            std::fflush(stderr);
+        }
+        return current;
+    }
     const char* ae_np_account_handle(void*) { return rnet_account_handle(); }
     const char* ae_np_account_username(void*) { return rnet_account_username(); }
     const char* ae_np_account_error(void*) { return rnet_account_error(); }
     int ae_np_account_sign_out(void*) { return rnet_account_sign_out(); }
     int ae_np_account_set_handle(void*, const char* h) { return rnet_account_set_handle(h); }
 
-    /* Point the account client at the lobby host -- once per URL, not once
-     * per pump: the login worker thread reads the host while a sign-in is in
-     * flight, and re-initialising it 60 times a second under that read is a
-     * data race for no gain. The secret is anchored to the EXECUTABLE
-     * directory before the first init: its default is the bare relative name
-     * "netplay_secret", resolved against the working directory, so the same
-     * install signed itself out depending on where it was launched from.
-     * rnet_auth migrates an old CWD-relative file into this path on first
-     * load, so nobody is signed out by the move. Same shape as the SNES
-     * host (snes_host_lobby.c cb_pump). */
+    /* Point the account client at the lobby host. The rule (resolved URL,
+     * once per URL, secret anchored to the exe dir) lives in recomp-ui, shared
+     * with recomp_netplay_host.c. The URL is ae_np_default_url, NOT the raw
+     * g_lnch_lobby_url: that is empty until a player saves one, which left the
+     * auth host blank and every sign-in "could not reach the lobby server". */
+    static int ae_np_exe_dir_path(void*, const char* leaf, char* out, size_t cap) {
+        const std::string p =
+            (exe_dir_from_argv(g_lnch_argv0 ? g_lnch_argv0 : "") / leaf).string();
+        if (p.size() + 1 > cap) return 0;
+        std::memcpy(out, p.c_str(), p.size() + 1);
+        return 1;
+    }
+    const char* ae_np_default_url(void*);  /* defined below */
     void ae_np_account_sync(void) {
-        static std::string s_auth_url;
-        const std::string& url = g_lnch_lobby_url;
-        if (url.empty() || url == s_auth_url) return;
-        if (s_auth_url.empty()) {
-            const std::string secret =
-                (exe_dir_from_argv(g_lnch_argv0 ? g_lnch_argv0 : "") /
-                 "netplay_secret").string();
-            rnet_account_set_secret_path(secret.c_str());
-        }
-        s_auth_url = url;
-        rnet_account_init(url.c_str());
+        recomp_netplay_account_sync(ae_np_default_url(nullptr),
+                                    ae_np_exe_dir_path, nullptr);
     }
 
 #endif /* PSX_HAS_RECOMP_NET: account client is not linked in offline builds */
@@ -13133,11 +14381,89 @@ namespace {
             ae_np_push_match_caps(nullptr); /* no-op unless hosting online */
         return 0;
     }
+#if defined(PSX_HAS_RECOMP_NET)
+    /* ICE-mode waiting-room text, from the agents' own state. Never says
+     * "port": no port is held in this mode. 1 = `out` holds the line. */
+    static const char* ae_np_ice_state_word(int state) {
+        switch (state) {
+            case RNET_ICE_STATE_COMPLETED: return "connected";
+            case RNET_ICE_STATE_FAILED:    return "failed";
+            default:                       return "connecting";
+        }
+    }
+    static void ae_np_ice_peer_text(const RNetHostIcePeerStatus& p, char* out, size_t cap) {
+        if (p.state == RNET_ICE_STATE_COMPLETED && p.path[0])
+            std::snprintf(out, cap, "connected (%s)", p.path);
+        else
+            std::snprintf(out, cap, "%s", ae_np_ice_state_word(p.state));
+    }
+    static int ae_np_ice_status_line(char* out, size_t out_cap) {
+        RNetHostIceStatus st;
+        std::memset(&st, 0, sizeof(st));
+        if (!psx_lobby_host_ice_status(&st)) return 0;
+        if (st.role == 2) {
+            char w[40];
+            if (st.peer_count < 1) {
+                std::snprintf(out, out_cap, "Connecting to the host...");
+                return 1;
+            }
+            ae_np_ice_peer_text(st.peer[0], w, sizeof(w));
+            if (st.peer[0].state == RNET_ICE_STATE_FAILED)
+                std::snprintf(out, out_cap,
+                              "Connection to the host failed. Check that your firewall "
+                              "allows the game, then rejoin.");
+            else
+                std::snprintf(out, out_cap, "Connection to the host: %s.", w);
+            return 1;
+        }
+        if (st.peer_count < 1) {
+            std::snprintf(out, out_cap, "Waiting for guests to connect through you...");
+            return 1;
+        }
+        size_t n = 0;
+        for (int i = 0; i < st.peer_count && i < RNET_HOST_ICE_MAX_PEERS; ++i) {
+            char w[40];
+            ae_np_ice_peer_text(st.peer[i], w, sizeof(w));
+            const int k = std::snprintf(out + n, out_cap - n, "%sSeat %d: %s",
+                                        i ? "\n" : "", st.peer[i].slot + 1, w);
+            if (k < 0 || (size_t)k >= out_cap - n) break;
+            n += (size_t)k;
+        }
+        if (st.completed < st.peer_count && n < out_cap)
+            std::snprintf(out + n, out_cap - n,
+                          "\nPlay starts once every seat is connected. A seat that stays "
+                          "on failed can't reach you; check its firewall.");
+        return 1;
+    }
+#endif
+    int ae_np_relay_via_ice_get(void*) {
+        if (g_lnch_hosting_lan || g_lnch_joined_lan || !psx_lobby_ice_available()) return 0;
+        if (psx_lobby_in_lobby()) {
+            const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
+            if (caps && caps->valid) return (caps->relay_host && caps->relay_via_ice) ? 1 : 0;
+        }
+        return g_lnch_relay_via_ice;
+    }
+    int ae_np_relay_via_ice_set(void*, int on) {
+        g_lnch_relay_via_ice = on ? 1 : 0;
+        psx_lobby_set_relay_via_ice_pref(g_lnch_relay_via_ice);
+        if (!g_lnch_hosting_lan && !g_lnch_joined_lan)
+            ae_np_push_match_caps(nullptr); /* no-op unless hosting online */
+        return 0;
+    }
     int ae_np_relay_status(void*, char* out, size_t out_cap) {
         if (!out || !out_cap) return 0;
         out[0] = '\0';
 #if defined(PSX_HAS_RECOMP_NET)
         if (g_lnch_hosting_lan || g_lnch_joined_lan || !psx_lobby_in_lobby()) return 0;
+        /* ICE mode replaces the port/reachability guidance entirely: the
+         * legacy status would talk about a forwarded port this room never opens. */
+        if (ae_np_ice_status_line(out, out_cap)) return 1;
+        {
+            const PsxLobbyMatchCaps* c = psx_lobby_match_caps();
+            if (c && c->valid && c->relay_host && c->relay_via_ice)
+                return 0; /* ICE room, agents not up yet: say nothing */
+        }
         RNetHostRelayStatus st;
         if (!psx_lobby_host_relay_status(&st)) return 0;
         if (st.role == 1) {
@@ -13193,6 +14519,7 @@ namespace {
         return 0;
     }
     int ae_np_rollback_get(void*) {
+        if (!psx_mod_netplay_rollback_supported()) return 0;
         if (!g_lnch_hosting_lan && !g_lnch_joined_lan) {
             const PsxLobbyMatchCaps* caps = psx_lobby_match_caps();
             if (caps && caps->valid)
@@ -13201,7 +14528,7 @@ namespace {
         return g_lnch_rollback;
     }
     int ae_np_rollback_set(void*, int enable) {
-        g_lnch_rollback = enable ? 1 : 0;
+        g_lnch_rollback = enable && psx_mod_netplay_rollback_supported();
         ae_np_push_match_caps(nullptr);
         return 0;
     }
@@ -13375,6 +14702,10 @@ namespace {
 
             /* Content negotiation: a guest accepts lobby datagrams (and so a
              * plan) only from the host endpoint it joined. */
+            if (std::getenv("PSX_NET_LOBBY_TRACE"))
+                std::fprintf(stderr, "LAN trace: receive %.*s from %08x:%u\n",
+                             (int)std::strcspn(buf, "\n"), buf,
+                             (unsigned)ntohl(from.sin_addr.s_addr), (unsigned)ntohs(from.sin_port));
             if (g_lnch_remote_lan && g_netplay_content_negotiation) {
                 char host[64]; in_addr expected{};
                 if (!ae_np_lan_endpoint_host(g_lnch_lan_endpoint, host, sizeof(host)) ||
@@ -13892,7 +15223,8 @@ namespace {
                 if (g_lnch_lan_start_plan_session == g_lnch_remote_lan_state.session_id &&
                     !g_lnch_remote_lan_state.mod_caps_json.empty()) {
                     PsxLobbyMatchCaps caps{};
-                    if (psx_lobby_decode_match_caps(g_lnch_remote_lan_state.mod_caps_json.c_str(), &caps))
+                    if (psx_lobby_decode_match_caps(g_lnch_remote_lan_state.mod_caps_json.c_str(), &caps) &&
+                        caps.session_bios[0])
                         ae_np_set_session_bios_token(caps.session_bios, caps.session_bios_crc);
                 }
                 continue;
@@ -13963,7 +15295,17 @@ namespace {
                  (!s_last_mc.valid || mc->has_card != s_last_mc.has_card ||
                   mc->share != s_last_mc.share)) ||
                 mod_offer_changed;
-            if (!psx_lobby_local_ready() || offer_changed) {
+            /* Re-assert ready at most once a second. This ran every frame
+             * until the server's echo arrived: each set_ready is a
+             * lobby_update broadcast to every seat, so two peers waiting on
+             * each other produced a storm that overran the server's
+             * per-connection queue -- the host then missed the seat update
+             * (seat 2 shown open, Start disabled) and even the launch. */
+            static uint32_t s_ready_sent_ms;
+            const uint32_t now_ms = SDL_GetTicks();
+            if (offer_changed ||
+                (!psx_lobby_local_ready() && now_ms - s_ready_sent_ms >= 1000u)) {
+                s_ready_sent_ms = now_ms;
                 (void)psx_lobby_set_ready(1);
                 if (cur) s_last_offer = *cur;
                 if (mc) s_last_mc = *mc;
@@ -13983,7 +15325,7 @@ namespace {
 
     void ae_np_request_list(void*) {
         ae_np_lan_rescan();
-        psx_lobby_request_list();
+        if (ae_np_list_want_online()) psx_lobby_request_list();
     }
 
     int ae_np_list_count(void*) {
@@ -14832,7 +16174,7 @@ namespace {
         psx_lobby_json_str(req.c_str(), "handoff_query", op, sizeof(op));
         psx_lobby_json_str(req.c_str(), "handoff_disc", disc, sizeof(disc));
         std::string ans = "{\"v\":1,\"engine\":\"psxrecomp\",\"handoff\":1";
-        char msg[1024] = {};
+        char msg[PSX_LOBBY_START_JSON_CAP] = {};
         ae_np_refresh_bios_offer_for(settings);
         if (std::strcmp(op, "identity") == 0) {
             const std::string d = disc[0] ? std::string(disc) : initial_disc;
@@ -14904,9 +16246,18 @@ namespace {
                                                         : "openbios",
                                          session_crc);
             ae_np_log_settled_bios("LAN");
+            ae_np_lan_sync_local_slot_memcard();
+            g_lnch_lan_guest_memcard_active = ae_np_lan_guest_memcard_effective(state);
             if (g_netplay_content_negotiation) {
                 PsxLobbyMatchCaps caps = ae_netplay_caps_from_settings(settings);
+                /* The START plan must carry the same settled boot image as
+                 * its legacy fields. An empty BIOS in the plan cleared the
+                 * guest's START token, leaving it in the lobby while the
+                 * host waited forever for tick zero. */
+                std::snprintf(caps.session_bios, sizeof(caps.session_bios),
+                              "%s", g_lnch_session_bios);
                 caps.session_bios_crc = session_crc;
+                caps.guest_memcard_active = g_lnch_lan_guest_memcard_active;
                 char caps_wire[8192];
                 if (!g_lnch_mod_plan_error.empty() ||
                     !psx_lobby_encode_match_caps(caps_wire, sizeof(caps_wire), &caps)) return -1;
@@ -14926,8 +16277,6 @@ namespace {
             if (delay > 20) delay = 20;
             if (pred < 2) pred = 2;
             if (pred > 16) pred = 16;
-            ae_np_lan_sync_local_slot_memcard();
-            g_lnch_lan_guest_memcard_active = ae_np_lan_guest_memcard_effective(state);
             std::fprintf(stdout, "psxrecomp: LAN guest memcard (P2 card as slot 2) = %s\n",
                          g_lnch_lan_guest_memcard_active ? "on" : "off");
             char session_crc_text[16];
@@ -15157,6 +16506,12 @@ namespace {
         return g_lnch_pending_direct_launch.enabled || psx_lobby_launch_pending();
     }
     void ae_np_clear_launch_pending(void*) {
+        /* Host relay over ICE: the connected agents must be TAKEN before the
+         * launch is cleared (the lobby destroys an untaken bundle after 60 s
+         * and the game boots well after this). Held by psx_netplay until
+         * psx_netplay_start adopts them. No-op for every other launch. */
+        if (!g_lnch_pending_direct_launch.enabled && psx_lobby_launch_pending())
+            (void)psx_netplay_ice_stash_from_lobby();
         g_lnch_pending_direct_launch = {};
         psx_lobby_clear_launch_pending();
     }
@@ -15190,6 +16545,16 @@ namespace {
 
     const char* ae_np_lan_endpoint_cstr(void) {
         return g_lnch_lan_endpoint.empty() ? nullptr : g_lnch_lan_endpoint.c_str();
+    }
+
+    /* Host relay over ICE: transport "host" + relay_via "ice". Decided from the
+     * lobby's launch (the same join info fill_launch read), and only for a
+     * launch the lobby filled: a LAN / direct launch is never an ICE hub, and
+     * transport_host is ALSO set for an ICE hub, so it gates the lobby read. */
+    static int ae_np_launch_is_ice_hub(const RecompLauncherCNetplayLaunch& l) {
+        if (!l.transport_host || g_lnch_hosting_lan || g_lnch_joined_lan) return 0;
+        const PsxLobbyJoinInfo* ji = psx_lobby_join_info();
+        return (ji && ji->ok && ji->transport_ice_hub) ? 1 : 0;
     }
 
     int ae_np_fill_launch(void*, RecompLauncherCNetplayLaunch* out) {
@@ -15293,13 +16658,14 @@ namespace {
          * §108's "always SFU"). Prefer caps.force_input_relay from the
          * relay_endpoint rewrite; also infer when host==guest advertise. */
         out->force_input_relay =
-            (g_lnch_hosting_lan || g_lnch_joined_lan || ji->transport_host)
+            (g_lnch_hosting_lan || g_lnch_joined_lan || ji->transport_host || ji->transport_ice)
                 ? 0
                 : (caps->force_input_relay ? 1 : 0);
 #if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY)
         out->transport_host = ji->transport_host ? 1 : 0;
 #endif
-        if (!out->force_input_relay && !ji->transport_host && !g_lnch_hosting_lan &&
+        if (!out->force_input_relay && !ji->transport_host && !ji->transport_ice &&
+            !g_lnch_hosting_lan &&
             !g_lnch_joined_lan && ji->host_endpoint[0] &&
             ji->guest_endpoint[0] &&
             std::strcmp(ji->host_endpoint, ji->guest_endpoint) == 0) {
@@ -15387,35 +16753,6 @@ namespace {
         "Fast-forward toggle",
     };
 
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-    /* Internal resolution vocabulary for the launcher's Display card: the
-     * presets, plus the player's current legacy factor as its own "Nx (L
-     * lines)" entry when no preset matches it, so nothing changes silently. */
-    static const char* g_ir_labels[PSX_IR_PRESET_COUNT + 1];
-    static int         g_ir_values[PSX_IR_PRESET_COUNT + 1];
-    static int         g_ir_count = 0;
-    static char        g_ir_custom_label[48];
-    static const char  kIrNote[] =
-        "Above 4x: OpenGL only. Past 16x on Apple GPUs only the displayed "
-        "frame is kept at full resolution.";
-    static void build_internal_resolution_vocab(int current) {
-        g_ir_count = 0;
-        for (int i = 0; i < PSX_IR_PRESET_COUNT; i++) {
-            g_ir_labels[g_ir_count] = k_psx_ir_presets[i].label;
-            g_ir_values[g_ir_count] = k_psx_ir_presets[i].value;
-            g_ir_count++;
-        }
-        if (current >= PSX_IR_MIN_LINES && !psx_ir_id_for(current)) {
-            int s = psx_ir_scale_for(current, g_video_ref_lines, 0);
-            std::snprintf(g_ir_custom_label, sizeof g_ir_custom_label,
-                          "%dx (%d lines)", s, current);
-            g_ir_labels[g_ir_count] = g_ir_custom_label;
-            g_ir_values[g_ir_count] = current;
-            g_ir_count++;
-        }
-    }
-#endif
-
     void ae_rui_set_sidecar_paths(const char* argv0) {
         const auto exe = exe_dir_from_argv(argv0 ? argv0 : "");
         g_rui_keybinds_path = (exe / "keybinds.ini").string();
@@ -15443,6 +16780,17 @@ namespace {
         (void)ws_offered_b;
         (void)ws_ultrawide_offered_b;
         launcher_profile_apply("psx", gi);
+        psx_launcher_hide_mod_owned_rows(gi);
+#if defined(RECOMP_LAUNCHER_HAS_ARTWORK_GALLERY)
+        /* A regional package keeps its covers beside the shared entry, not
+         * per backend; elsewhere the launcher uses <exe dir>/artwork. */
+        static std::string regional_artwork;
+        regional_artwork = PSXRecompV4::regional::root.empty()
+            ? std::string() : (PSXRecompV4::regional::root / "artwork").u8string();
+        gi->artwork_root = regional_artwork.empty() ? nullptr : regional_artwork.c_str();
+        gi->disc_selection_locked = PSXRecompV4::regional::disc_selection_locked ? 1 : 0;
+        gi->dashboard_quick_controls = g_launcher_quick_controls ? 1 : 0;
+#endif
         gi->name = game_name_c;
         gi->region = region_c;
         gi->keybinds_path =
@@ -15455,6 +16803,12 @@ namespace {
          * the generic Display -> View mode launcher row. */
         gi->widescreen_supported = 0;
         gi->num_players = game_players_n;
+#if defined(RECOMP_LAUNCHER_HAS_MEMCARD_SLOTS)
+        gi->memcard_slots = PSX_MEMCARD_SLOTS;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_SHARED_GAMEPAD) && !defined(PSX_NO_DEBUG_TOOLS)
+        gi->allow_shared_gamepad = 1;
+#endif
         gi->msu1_supported = 0;
         gi->sram_path = nullptr;
         gi->has_bios = psx_bios_has_selectable();
@@ -15462,6 +16816,11 @@ namespace {
         gi->locked_pad_mode = locked_pad_mode_i;
         gi->lock_device = ctrl_lock_device_b ? 1 : 0;
         gi->aspect_mask = 0;
+        const PSXModNetplayProfile *view_profile = psx_mod_netplay_profile();
+        if (view_profile && view_profile->loading_plugin_id)
+            gi->netplay_mode_changed = [](int active) {
+                PSXRecompV4::mod_runtime_set_netplay_lobby_view(active != 0);
+            };
         gi->renderer_labels = kPsxRendererLabels;
         gi->num_renderers = vulkan_offered_b ? 3 : 2;
         gi->settings_bindings = 1;
@@ -15492,24 +16851,6 @@ namespace {
 #endif
         gi->has_skip_fmv = skip_fmv_offered_b ? 1 : 0;
         gi->has_turbo_loads = turbo_loads_offered_b ? 1 : 0;
-        /* The Perspective textures row. Hidden for a title that ships PGXP
-         * through the psx.enhancement.pgxp mod ([video] pgxp_mod_only): the
-         * Mods page is then its one switch, and the row's value is not
-         * applied, so showing it would be a second control that does
-         * nothing. */
-        gi->has_geometry_precision = g_video_pgxp_mod_only ? 0 : 1;
-        gi->has_rewind_depth = 1;
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-        /* The Supersampling row becomes an Internal resolution list. */
-        build_internal_resolution_vocab(internal_resolution_for_launcher());
-        gi->internal_resolution_labels = g_ir_labels;
-        gi->internal_resolution_values = g_ir_values;
-        gi->num_internal_resolutions = g_ir_count;
-        gi->internal_resolution_note = kIrNote;
-#endif
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-        gi->has_dynamic_resolution = 1;
-#endif
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
         gi->has_render_pipeline = g_offer_render_pipeline ? 1 : 0;
 #endif
@@ -15549,6 +16890,10 @@ namespace {
         g_lnch_netplay_callbacks.relay_host_get = ae_np_relay_host_get;
         g_lnch_netplay_callbacks.relay_host_set = ae_np_relay_host_set;
         g_lnch_netplay_callbacks.relay_status = ae_np_relay_status;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY_ICE)
+        g_lnch_netplay_callbacks.relay_via_ice_get = ae_np_relay_via_ice_get;
+        g_lnch_netplay_callbacks.relay_via_ice_set = ae_np_relay_via_ice_set;
 #endif
         g_lnch_netplay_callbacks.memcard_offer_set = ae_np_memcard_offer_set;
         g_lnch_netplay_callbacks.guest_memcard_get = ae_np_guest_memcard_get;
@@ -15659,17 +17004,490 @@ static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
     return v;
 }
 
+/* ---- In-game menu host (psx_menu_host.h) -----------------------------------
+ * The runtime side of the provider-neutral in-game menu contract. A provider
+ * (registered by the title with psx_menu_set_provider; none by default) draws
+ * over the game (P2), takes input first (P3), and asks the host for pause (P1;
+ * refused, so non-pausing, in netplay), live video (P4), mod changes (P5),
+ * disc/tray actions, and session exits. Requests from the GL thread are posted
+ * here and applied on the main thread in host_pause_service(). The same
+ * policies apply to every provider. PSX_OVERLAY=0 turns the menu off. */
+#include <mutex>
+#if defined(__has_include)
+#if __has_include("psx_jogcon_ffb_sdl.h")
+#include "psx_jogcon_ffb_sdl.h"   /* psxrecomp#609: wheel FFB player setting */
+#endif
+#endif
+
+/* main()'s arguments, for the in-game menu's seamless relaunch. */
+static int g_main_argc = 0;
+static char** g_main_argv = nullptr;
+
+namespace {
+std::mutex g_ovl_mu;
+const PsxMenuProvider* g_ovl = nullptr;   /* attached provider */
+bool g_ovl_on = false;
+std::atomic<int> g_ovl_pause_wanted{0};
+bool g_ovl_pause_held = false;
+std::atomic<int> g_ovl_reload_binds{0};
+std::atomic<int> g_ovl_exit{0};            /* PSX_MENU_EXIT_* + 1; 0 = none */
+bool g_ovl_video_pending = false;
+PsxHostVideoSettings g_ovl_video_post{};
+PsxHostVideoSettings g_ovl_video_current{}, g_ovl_video_boot{};
+bool g_ovl_netplay = false;
+
+/* Only the main thread reads live runtime state. Provider draw callbacks
+ * consume a coherent snapshot under the same mutex as their posted edits. */
+void mh_refresh_snapshot() {
+    PsxHostVideoSettings current;
+    psx_video_current(&current);
+    const bool netplay = psx_netplay_active() != 0;
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    g_ovl_video_current = current;
+    g_ovl_video_boot = g_video_boot;
+    g_ovl_netplay = netplay;
+}
+int mh_netplay_active(void) {
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    return g_ovl_netplay ? 1 : 0;
+}
+
+#if defined(RECOMP_LAUNCHER)
+bool g_ovl_ls_pending = false;
+RecompLauncherCSettings g_ovl_ls_post{};
+#endif
+std::string g_ovl_argv0, g_ovl_name, g_ovl_keybinds, g_ovl_config, g_ovl_assets;
+
+bool ovl_open(void) { return g_ovl && g_ovl->is_open && g_ovl->is_open(g_ovl->ctx); }
+
+int mh_set_paused(int paused) {
+    if (paused && mh_netplay_active()) return 0;
+    g_ovl_pause_wanted = paused ? 1 : 0;
+    return 1;
+}
+void mh_video_get(PsxHostVideoSettings* out) {
+    if (!out) return;
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    *out = g_ovl_video_current;
+}
+unsigned mh_restart_bits(const PsxHostVideoSettings& next) {
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    const PsxHostVideoSettings now = g_ovl_video_current;
+    /* A restart group waits only when this edit touches it (next differs from
+     * the live value) and the result differs from what the session booted
+     * with. The live internal resolution moves under dynamic resolution, so
+     * comparing with boot alone flagged edits that never touched it (an
+     * in-game fullscreen change relaunched the game). */
+    unsigned out = video_restart_bits(&g_ovl_video_boot, &next) &
+                   psx_host_video_restart_bits(&now, &next);
+    /* A resolution edit the backend cannot apply live waits for a relaunch
+     * (the pure helper treats resolution as live). */
+    if ((now.internal_resolution != next.internal_resolution ||
+         now.supersample_milli != next.supersample_milli))
+        out |= video_restart_bits(&g_ovl_video_boot, &next) & PSX_VIDEO_RESTART_RESOLUTION;
+    /* In a netplay match only presentation applies live (psx_video_apply_live);
+     * the rest waits for the next session. */
+    if (g_ovl_netplay &&
+        (psx_host_video_live_changes(&now, &next) & ~PSX_VIDEO_LIVE_FULLSCREEN))
+        out |= PSX_MENU_RESTART_AFTER_MATCH;
+    return out;
+}
+unsigned mh_video_apply(const PsxHostVideoSettings* next) {
+    if (!next) return 0;
+    {
+        std::lock_guard<std::mutex> lk(g_ovl_mu);
+        g_ovl_video_post = *next;
+        g_ovl_video_pending = true;
+    }
+    return mh_restart_bits(*next);
+}
+struct OvlModSet { std::string p, f, o, v; };
+std::vector<OvlModSet> g_ovl_mod_posts;
+/* The provider never touches the mod catalogue itself (it may run on the GL
+ * thread): every change is posted here, recorded in the catalogue and saved
+ * to mods/state.toml on the main thread, and handed to a live-capable plugin.
+ * option == NULL is the feature switch (value "true"/"false"): restart.
+ * During netplay the plan is negotiated with the peers, so nothing changes --
+ * except an option of a host-only feature (CRT Filter, Image Filtering,
+ * Internal Resolution, ...), which is only this player's presentation or
+ * audio and is never part of the plan (psx_mod_option_live_host_only). */
+int mh_mod_set(const char* p, const char* f, const char* o, const char* v) {
+    if (!p || !f || !v) return 0;
+    if (psx_netplay_active() && !(o && psx_mod_option_live_host_only(p, f))) return 0;
+    std::lock_guard<std::mutex> lk(g_ovl_mu);
+    g_ovl_mod_posts.push_back({p, f, o ? o : "", v});
+    return o ? psx_mod_option_live_capable(p, f) : 0;
+}
+void mh_reload_bindings(void) { g_ovl_reload_binds = 1; }
+void mh_request_exit(int how) {
+    g_ovl_exit = (how < PSX_MENU_EXIT_QUIT || how > PSX_MENU_EXIT_RELAUNCH ? PSX_MENU_EXIT_QUIT : how) + 1;
+}
+/* Disc/tray: the runtime's production tray policy (psx_disc_tray.h, #652)
+ * when the build has it -- the same lid cycle, netplay refusal, persistence
+ * and event ring as the runtime's own disc menu and hotkeys -- else whatever
+ * published itself through psx_menu_set_disc_ops. */
+#if defined(__has_include)
+#if __has_include("psx_disc_tray.h")
+#include "psx_disc_tray.h"
+#define PSX_MENU_HAS_DISC_TRAY 1
+#endif
+#endif
+#if defined(PSX_MENU_HAS_DISC_TRAY)
+int mh_disc_count(void) { return psx_disc_tray_disc_count(); }
+int mh_disc_mounted(void) { return psx_disc_tray_mounted_disc(); }
+const char* mh_disc_path(int n) { return psx_disc_tray_disc_path(n); }
+int disc_cycle_now(int n) { return psx_disc_tray_cycle(n, PSX_DISC_TRAY_ORIGIN_MENU); }
+#else
+int mh_disc_count(void) { const PsxMenuDiscOps* d = psx_menu_disc_ops(); return d && d->count ? d->count() : 0; }
+int mh_disc_mounted(void) { const PsxMenuDiscOps* d = psx_menu_disc_ops(); return d && d->mounted ? d->mounted() : 0; }
+const char* mh_disc_path(int n) { const PsxMenuDiscOps* d = psx_menu_disc_ops(); return d && d->path ? d->path(n) : nullptr; }
+int disc_cycle_now(int n) { const PsxMenuDiscOps* d = psx_menu_disc_ops(); return d && d->insert ? d->insert(n) : -1; }
+#endif
+/* The provider may ask from its draw (GL) thread; the lid cycle runs on the
+ * main/emulation thread at the next host_pause_service. Returns 0 when
+ * queued, -1 when there is no disc to change to, or the policy's netplay
+ * refusal up front. */
+std::atomic<int> g_ovl_disc_req{0};
+int mh_disc_insert(int n) {
+    if (n < 1 || n > mh_disc_count()) return -1;
+    if (psx_netplay_active()) return 3;  /* PSX_DISC_TRAY_ERR_NETPLAY */
+    g_ovl_disc_req = n;
+    return 0;
+}
+
+#if defined(RECOMP_LAUNCHER)
+/* The launcher-Settings view of the in-game menu: the same rows as the
+ * pre-game launcher's Settings page. The internal resolution is not one of
+ * them: the Internal Resolution mod's option changes it live (Mods page). */
+const char* const kOvlRenderers[] = {"Software", "OpenGL", "Vulkan"};
+PsxHostVideoSettings ovl_video_from(const RecompLauncherCSettings& ls) {
+    PsxHostVideoSettings v;
+    mh_video_get(&v);  /* keeps fields the menu does not show */
+    v.fullscreen = ls.fullscreen ? (v.fullscreen ? v.fullscreen : 1) : 0;
+    v.frame_generation = ls.frame_generation ? 1 : 0;
+    v.renderer = ls.renderer;
+    v.render_thread = ls.render_thread ? 1 : 0;
+    v.present_thread = ls.present_thread ? 1 : 0;
+    return v;
+}
+void mh_launcher_settings_get(RecompLauncherCSettings* out) {
+    if (!out) return;
+    PsxHostVideoSettings v;
+    mh_video_get(&v);
+    RecompLauncherCSettings& ls = *out;
+    ls.fullscreen = v.fullscreen;
+    ls.frame_generation = v.frame_generation;
+    ls.renderer = v.renderer;
+    ls.render_thread = v.render_thread;
+    ls.present_thread = v.present_thread;
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK) && \
+    defined(PSX_HAS_JOGCON_FFB_PLAYER_SETTING)
+    ls.jogcon_force_feedback = psx_jogcon_ffb_player_enabled();
+#endif
+    for (int i = 0; i < PSX_MAX_PLAYERS && i < RECOMP_LAUNCHER_MAX_PLAYERS; ++i) {
+        ls.player_src[i] = g_players[i].kind;
+        ls.pad_mode[i] = PSXRecompV4::PAD_MODE_ANALOG;
+    }
+}
+unsigned mh_launcher_settings_apply(const RecompLauncherCSettings* s) {
+    if (!s) return 0;
+    const PsxHostVideoSettings next = ovl_video_from(*s);
+    {
+        std::lock_guard<std::mutex> lk(g_ovl_mu);
+        g_ovl_ls_post = *s;
+        g_ovl_ls_pending = true;
+    }
+    return mh_restart_bits(next);
+}
+void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
+    if (!out) return;
+    RecompLauncherCGameInfo& gi = *out;
+    launcher_profile_apply("psx", &gi);
+    psx_launcher_hide_mod_owned_rows(&gi);
+    gi.name = g_ovl_name.c_str();
+    gi.keybinds_path = g_ovl_keybinds.c_str();
+    gi.config_path = g_ovl_config.c_str();
+    gi.num_players = PSX_MAX_PLAYERS < 4 ? PSX_MAX_PLAYERS : 4;
+    gi.renderer_labels = kOvlRenderers;
+    gi.num_renderers = 2;
+    gi.has_render_pipeline = 1;
+    gi.has_vsync = 0;
+    gi.mods = PSXRecompV4::mod_runtime_launcher_provider();
+#if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
+    /* The same lobby the pre-game launcher drives, so the menu can host/join. */
+    gi.netplay_supported = g_lnch_netplay_available ? 1 : 0;
+    gi.netplay = g_lnch_netplay_available ? &g_lnch_netplay_callbacks : nullptr;
+#endif
+}
+#endif  /* RECOMP_LAUNCHER */
+
+PsxMenuHost g_menu_host = {
+    PSX_MENU_ABI_VERSION, mh_set_paused, mh_netplay_active, mh_video_get, mh_video_apply,
+    mh_mod_set, mh_reload_bindings, mh_request_exit,
+    mh_disc_count, mh_disc_mounted, mh_disc_path, mh_disc_insert,
+#if defined(RECOMP_LAUNCHER)
+    reinterpret_cast<void (*)(struct RecompLauncherCGameInfo*)>(mh_launcher_game_info),
+    reinterpret_cast<void (*)(struct RecompLauncherCSettings*)>(mh_launcher_settings_get),
+    reinterpret_cast<unsigned (*)(const struct RecompLauncherCSettings*)>(mh_launcher_settings_apply),
+#else
+    nullptr, nullptr, nullptr,
+#endif
+    nullptr,
+    0,
+};
+
+int ovl_sink(const void* ev, void*) { return g_ovl && g_ovl->event ? g_ovl->event(g_ovl->ctx, ev) : 0; }
+void ovl_draw(int w, int h, void*) { if (g_ovl && g_ovl->draw) g_ovl->draw(g_ovl->ctx, w, h); }
+}  // namespace
+
+/* Main thread, once per GL context (windowed OpenGL only). */
+#if defined(__has_include)
+#if __has_include("recomp_ui_psx_menu.h")
+#include "recomp_ui_psx_menu.h"   /* the maintained UI's provider: the default */
+#define PSX_MENU_HAS_DEFAULT_PROVIDER 1
+#endif
+#endif
+
+static void recomp_overlay_setup(const char* argv0, const std::string& title) {
+    const char* e = std::getenv("PSX_OVERLAY");
+    const PsxMenuProvider* p = psx_menu_provider();
+    g_menu_host.default_selection = 0;
+#if defined(PSX_MENU_HAS_DEFAULT_PROVIDER)
+    /* No title choice: the UI the title is built with (recomp-ui) provides the
+     * menu, and decides from default_selection what to offer by default. */
+    if (!p) {
+#if !defined(PSX_SDL3)
+        /* The maintained provider's SDL event adapter needs SDL3. SDL2 keeps
+         * the shared framebuffer menu as its single input/render owner. */
+        return;
+#endif
+        p = recomp_ui_psx_menu_provider();
+        g_menu_host.default_selection = 1;
+    }
+#endif
+    if (!p || g_ovl_on || !g_gl_active || g_headless || (e && *e == '0')) return;
+    const std::filesystem::path dir = exe_dir_from_argv(argv0);
+    g_ovl_name = title;
+    g_ovl_argv0 = argv0 ? argv0 : "";
+    g_ovl_keybinds = (dir / "keybinds.ini").string();
+    g_ovl_config = (dir / "config.ini").string();
+    g_ovl_assets = (dir / "assets").string();
+    g_menu_host.assets_dir = g_ovl_assets.c_str();
+    mh_refresh_snapshot();
+    if (!p->attach || !p->attach(p->ctx, sdl_window, SDL_GL_GetCurrentContext(), &g_menu_host)) return;
+    g_ovl = p;
+    psx_host_set_input_sink(ovl_sink, nullptr);
+    psx_host_overlay_set_draw_cb(ovl_draw, nullptr);
+    g_ovl_on = true;
+    psx_runtime_menu_set_fallback_enabled(0);
+    std::fprintf(stdout, "psxrecomp: in-game menu ready (%s)\n", p->name ? p->name : "provider");
+}
+
+/* Debug server: menu host state (provider, open, pause, capture, snapshot). */
+extern "C" int psx_debug_menu_host_json(char* out, size_t cap) {
+    PsxHostVideoSettings v;
+    mh_video_get(&v);
+    const PsxMenuProvider* p = g_ovl ? g_ovl : psx_menu_provider();
+    return std::snprintf(out, cap,
+        "\"provider\":\"%s\",\"attached\":%d,\"default_selection\":%d,\"open\":%d,"
+        "\"paused\":%d,\"pause_depth\":%d,\"ui_capture\":%d,\"netplay\":%d,"
+        "\"internal_resolution\":%d,\"fullscreen\":%d,"
+        "\"render_thread\":%d,\"frame_generation\":%d,\"disc_count\":%d,\"disc_mounted\":%d",
+        p && p->name ? p->name : "", g_ovl_on ? 1 : 0, g_menu_host.default_selection,
+        ovl_open() ? 1 : 0, g_ovl_pause_held ? 1 : 0, psx_host_pause_depth(),
+        psx_host_ui_capture_active(), mh_netplay_active(), v.internal_resolution,
+        v.fullscreen, v.render_thread, v.frame_generation, mh_disc_count(),
+        mh_disc_mounted());
+}
+
+#ifndef PSX_NO_DEBUG_TOOLS
+/* Exercise the normal teardown/commit/activation/boot boundary in one
+ * process, without requiring an online lobby or editing guest state. */
+extern "C" int psx_debug_restart_session(int disc) {
+    if (psx_netplay_active() || psx_host_pause_depth() || psx_runtime_menu_is_open()) return 0;
+    if (disc < 0 || disc > cdrom_disc_roster_count()) return 0;
+    s_debug_restart_disc = disc + 1;
+    return 1;
+}
+#endif
+
+/* Before the GL context goes away (session teardown), with it current: the
+ * draw hook is removed first (it waits for an in-flight draw), then the
+ * provider frees its GL objects. setup attaches again on the next context. */
+static void recomp_overlay_detach(void) {
+    if (!g_ovl_on) return;
+    psx_host_overlay_set_draw_cb(nullptr, nullptr);
+    psx_host_set_input_sink(nullptr, nullptr);
+    psx_host_set_ui_capture(0);
+    if (g_ovl_pause_held) { psx_host_pause_pop(); g_ovl_pause_held = false; }
+    g_ovl_pause_wanted = 0;
+    if (g_ovl->detach) g_ovl->detach(g_ovl->ctx);
+    g_ovl = nullptr;
+    g_ovl_on = false;
+    psx_runtime_menu_set_fallback_enabled(1);
+}
+
+static void host_pause_service(void) {
+    if (!g_ovl_on) return;
+    mh_refresh_snapshot();
+    if (const int disc = g_ovl_disc_req.exchange(0)) {
+        const int rc = disc_cycle_now(disc);
+        if (rc != PSX_DISC_TRAY_OK) {
+            host_osd_push("Disc unavailable. Check files and choose again.", 5000);
+            if (g_ovl->set_open) g_ovl->set_open(g_ovl->ctx, 1);
+        }
+        std::fprintf(stdout, "psxrecomp: in-game menu disc %d -> %d\n", disc, rc);
+    }
+    psx_host_set_ui_capture(ovl_open());
+    const bool want = g_ovl_pause_wanted != 0 && ovl_open();
+    if (want && !g_ovl_pause_held) g_ovl_pause_held = psx_host_pause_push("overlay") != 0;
+    else if (!want && g_ovl_pause_held) { psx_host_pause_pop(); g_ovl_pause_held = false; }
+    PsxHostVideoSettings video{};
+    bool have_video = false;
+#if defined(RECOMP_LAUNCHER)
+    RecompLauncherCSettings post{};
+    bool have_ls = false;
+#endif
+    std::vector<OvlModSet> mods;
+    {
+        std::lock_guard<std::mutex> lk(g_ovl_mu);
+        if (g_ovl_video_pending) { video = g_ovl_video_post; have_video = true; g_ovl_video_pending = false; }
+#if defined(RECOMP_LAUNCHER)
+        if (g_ovl_ls_pending) { post = g_ovl_ls_post; have_ls = true; g_ovl_ls_pending = false; }
+#endif
+        mods.swap(g_ovl_mod_posts);
+    }
+    if (have_video) (void)psx_video_apply_live(&video);
+#if defined(RECOMP_LAUNCHER)
+    if (have_ls) {
+        const PsxHostVideoSettings v = ovl_video_from(post);
+        (void)psx_video_apply_live(&v);
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK) && \
+    defined(PSX_HAS_JOGCON_FFB_PLAYER_SETTING)
+        /* Controls > Wheel force feedback (experimental): live, and saved to
+         * settings.toml [controller] jogcon_force_feedback when it changed. */
+        if ((post.jogcon_force_feedback != 0) != (psx_jogcon_ffb_player_enabled() != 0)) {
+            psx_jogcon_ffb_set_player_enabled(post.jogcon_force_feedback);
+            const auto settings_path =
+                exe_dir_from_argv(g_ovl_argv0.c_str()) / "settings.toml";
+            PSXRecompV4::UserSettings us = PSXRecompV4::load_user_settings(settings_path);
+            us.jogcon_force_feedback = post.jogcon_force_feedback != 0;
+            us.has_jogcon_force_feedback = true;
+            (void)PSXRecompV4::save_user_settings(settings_path, us);
+        }
+#endif
+    }
+#endif
+    if (!mods.empty()) {
+        for (const OvlModSet& m : mods) {
+            if (m.o.empty()) {
+                (void)psx_mod_feature_enable(m.p.c_str(), m.f.c_str(), m.v == "true");
+            } else {
+                (void)psx_mod_feature_set_option(m.p.c_str(), m.f.c_str(), m.o.c_str(), m.v.c_str());
+                (void)psx_mod_set_option_live(m.p.c_str(), m.f.c_str(), m.o.c_str(), m.v.c_str());
+            }
+        }
+        (void)psx_mod_save_selection();
+    }
+    if (g_ovl_reload_binds.exchange(0)) {
+        psx_keybinds_init(g_ovl_argv0.c_str());
+        load_input_config(g_ovl_argv0.c_str());
+    }
+#if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
+    /* The frontend loop is not running during a game: pump the lobby here,
+     * for every provider. Once a launch is pending, stop pumping: the pending
+     * check freed the lobby's UDP port for the match and a pump would bind it
+     * again; the session ends and the frontend loop starts the match. */
+    if (g_lnch_netplay_available && !psx_netplay_active() && !g_ovl_launch_to_start) {
+        const RecompLauncherCNetplayCallbacks* np = &g_lnch_netplay_callbacks;
+        if (np->launch_pending && np->launch_pending(np->ctx)) {
+            if (!g_ovl_exit.load()) g_ovl_exit = PSX_MENU_EXIT_TO_FRONTEND + 1;
+        } else if (np->pump) {
+            np->pump(np->ctx);
+        }
+    }
+#endif
+    mh_refresh_snapshot();
+    if (const int code = g_ovl_exit.exchange(0)) {
+        const int how = code - 1;
+        if (how == PSX_MENU_EXIT_TO_FRONTEND) {
+            /* The menu does not come along into the next session: close it
+             * and drop its pause, or the match would start paused. */
+            g_ovl_pause_wanted = 0;
+            if (g_ovl_pause_held) { psx_host_pause_pop(); g_ovl_pause_held = false; }
+            if (g_ovl->set_open) g_ovl->set_open(g_ovl->ctx, 0);
+            /* A lobby match start (the runtime's pending-launch exit, or the
+             * provider's own lobby view asking once its match started) keeps
+             * the launch and resumes the room; any other request from a local
+             * game is a plain return: the launcher opens as at boot. */
+            bool for_launch = false;
+#if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
+            for_launch = g_lnch_netplay_available && g_lnch_netplay_callbacks.launch_pending &&
+                         g_lnch_netplay_callbacks.launch_pending(g_lnch_netplay_callbacks.ctx);
+#endif
+            if (psx_netplay_active()) {
+                netplay_soft_exit("menu_to_frontend");
+            } else {
+                /* End this session and re-enter the frontend loop in-process
+                 * (the netplay soft-return path); it then starts whatever the
+                 * menu asked for, e.g. the lobby's match. */
+                std::fprintf(stdout, "psxrecomp: in-game menu -> frontend loop%s\n",
+                             for_launch ? " (lobby match)" : "");
+                g_netplay_from_lobby = 1;
+                g_ovl_launch_to_start = for_launch ? 1 : 0;
+                g_ovl_frontend_from_local = for_launch ? 0 : 1;
+                psx_request_return_to_lobby();
+            }
+            return;
+        }
+        if (how == PSX_MENU_EXIT_RELAUNCH) {
+            std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch for restart-only settings\n");
+            std::fflush(stdout);
+            psx_crash_trace_set_exit_origin("menu_relaunch");
+            shutdown_runtime();
+            std::fprintf(stderr, "psxrecomp: relaunching\n");
+            psx_relaunch_self(g_main_argc, g_main_argv);
+            std::fprintf(stderr, "psxrecomp: relaunch failed (%s)\n", std::strerror(errno));
+            std::exit(0); /* relaunch failed: leave rather than run torn down */
+        }
+        if (psx_netplay_active()) {
+            netplay_soft_exit("menu_quit");
+        } else {
+            psx_crash_trace_set_exit_origin("menu_quit");
+            shutdown_runtime();
+            std::exit(0);
+        }
+    }
+}
+
 int main(int argc, char** argv) {
+    g_main_argc = argc;
+    g_main_argv = argv;
     const int regional_result = PSXRecompV4::regional::startup(argc, argv);
     if (regional_result >= 0) return regional_result;
     /* Force line-buffered output so messages appear even if killed. */
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);
     std::fprintf(stderr, "psxrecomp: main() entered\n");
+#ifdef _WIN32
+    /* The embedded manifest's UTF-8 code page needs Windows 10 1903+. Say so
+     * when it is not in effect: narrow file calls then disagree with the
+     * UTF-8 paths SDL, the launcher and std::filesystem use, so a non-ASCII
+     * path may fail to open. First thing to know about a path bug. */
+    if (!psx_win_utf8::utf8_code_page_active()) {
+        std::fprintf(stderr,
+            "psxrecomp: UTF-8 code page not active (ANSI code page %u, "
+            "Windows 10 1903+ needed); non-ASCII file paths may fail\n",
+            (unsigned)GetACP());
+    }
+#endif
+    std::fprintf(stderr, "psxrecomp: execution=%s identity=%s\n",
+                 PSX_EXECUTION_NAME, PSX_EXECUTION_ID);
     std::fflush(stderr);
 #if defined(RECOMP_LAUNCHER)
     launcher_boot_timing_mark("host:main_enter");
 #endif
+    psx_host_pause_set_refuse_probe(host_pause_refuse_netplay);
 
     /* --audit-mod-plugins <manifest-root>...: build-time check, no emulation.
      * Every trusted implementation this executable registered must be named
@@ -15723,6 +17541,8 @@ int main(int argc, char** argv) {
      * PSX_NO_LAUNCHER env) forces it off. --launcher wins if both are given. */
     bool        force_launcher    = false;
     bool        force_no_launcher = false;
+    /* --game-mode / --no-game-mode (game_mode.h): -1 = detect. */
+    int         cli_game_mode     = -1;
     bool        cli_launcher_disc_check = false;
     /* CLI overrides for running several instances side by side (soak fleet).
      * These win over any game-config value and, crucially, work for the BIOS
@@ -15817,8 +17637,19 @@ int main(int argc, char** argv) {
             cli_launcher_disc_check = true;
         } else if (std::strcmp(argv[i], "--launcher") == 0) {
             force_launcher = true;
+            /* Launchers that boot into the game (pages in the in-game menu)
+             * show their pre-game window again when asked for explicitly. */
+#if defined(_WIN32)
+            _putenv_s("RECOMP_LAUNCHER_PREGAME", "1");
+#else
+            setenv("RECOMP_LAUNCHER_PREGAME", "1", 1);
+#endif
         } else if (std::strcmp(argv[i], "--no-launcher") == 0) {
             force_no_launcher = true;
+        } else if (std::strcmp(argv[i], "--game-mode") == 0) {
+            cli_game_mode = 1;
+        } else if (std::strcmp(argv[i], "--no-game-mode") == 0) {
+            cli_game_mode = 0;
         } else if (std::strcmp(argv[i], "--headless-opengl") == 0) {
             g_headless = 1;
             g_headless_opengl = 1;
@@ -15870,6 +17701,12 @@ int main(int argc, char** argv) {
             g_headless = 1;
             force_no_launcher = true;
         }
+    }
+
+    /* Test hook: a hidden game window that still runs the launcher (and its
+     * in-game menu), unlike --hidden-window. */
+    if (const char *e = std::getenv("PSX_HIDDEN_WINDOW")) {
+        if (*e && *e != '0') g_hidden_window = 1;
     }
 
     std::string default_game_config_storage;
@@ -15925,6 +17762,7 @@ int main(int argc, char** argv) {
      * Release keeps "keyboard" as its pre-launch default (the launcher assigns
      * the selected physical device). */
     std::string player_device[PSX_MAX_PLAYERS];
+    uint32_t player_instance[PSX_MAX_PLAYERS] = {}; /* never persisted */
     int  player_mode[PSX_MAX_PLAYERS];
     int  player_deadzone[PSX_MAX_PLAYERS];
     int  ctrl_locked_mode[PSX_MAX_PLAYERS];
@@ -16009,7 +17847,7 @@ int main(int argc, char** argv) {
 
     if (game_config_path) {
         try {
-            const auto gc = PSXRecompV4::load_game_config(game_config_path);
+            auto gc = PSXRecompV4::load_game_config(game_config_path);
             game_name = gc.name;
             game_id   = gc.id;
             game_region = gc.region;
@@ -16019,6 +17857,8 @@ int main(int argc, char** argv) {
             apply_offline_pad_count(game_players, multitap_enabled);
             game_has_disc_crc = gc.has_disc_crc;
             game_disc_crc     = gc.disc_crc;
+            PSXRecompV4::required_disc_sha256() = gc.required_disc_sha256;
+            PSXRecompV4::required_disc_fps() = gc.required_disc_fps;
             resolved_audio_buffer_ms = gc.runtime.audio_buffer_ms;
             g_netplay_disc_expect.require_cue = gc.netplay_require_cue;
             g_netplay_disc_expect.required_tracks = gc.netplay_required_tracks;
@@ -16043,7 +17883,9 @@ int main(int argc, char** argv) {
                 gc.netplay_local_viewport_state_addr,
                 gc.netplay_local_viewport_state_values.data(),
                 (int)gc.netplay_local_viewport_state_values.size());
-            g_netplay_content_negotiation = gc.netplay_content_negotiation ? 1 : 0;
+            const PSXModNetplayProfile* settings_profile = psx_mod_netplay_profile();
+            g_netplay_content_negotiation = gc.netplay_content_negotiation ||
+                (settings_profile && settings_profile->settings_package_id) ? 1 : 0;
             PSXRecompV4::mod_runtime_set_netplay_content_negotiation(
                 g_netplay_content_negotiation != 0);
             game_discs = gc.discs;
@@ -16111,9 +17953,32 @@ int main(int argc, char** argv) {
                 g_idle_skip_enabled = idle_env
                     ? (idle_env[0] == '1' ? 1 : 0)
                     : (gc.runtime.idle_skip ? 1 : 0);
+                {
+                    psx_idle_skip_set_host_writer(psx_host_write_word);
+                    psx_idle_skip_set_store_tracker(&g_psx_track_last_store,
+                                                    &g_guest_last_store_addr,
+                                                    &g_guest_last_store_val);
+                }
+                const char *ext_env = std::getenv("PSX_IDLE_SKIP_EXT");
+                g_idle_skip_ext = ext_env ? (ext_env[0] == '1' ? 1 : 0)
+                                          : (gc.runtime.idle_skip_store_counters ? 1 : 0);
+                psx_idle_skip_set_store_counter_sites(
+                    gc.runtime.idle_skip_store_counter_sites.data(),
+                    (int)gc.runtime.idle_skip_store_counter_sites.size());
+                const int build_wait_sites = psx_build_idle_wait_configure();
                 std::fprintf(stdout, "psxrecomp: idle_skip %s%s\n",
                              g_idle_skip_enabled ? "enabled" : "disabled",
-                             idle_env ? " (environment override)" : "");
+                             build_wait_sites >= 0 ? " (build-selected wait family)" :
+                             (idle_env ? " (environment override)" : ""));
+                if (g_idle_skip_enabled && g_idle_skip_ext)
+                    std::fprintf(stdout, "psxrecomp: idle_skip store-counter loops on%s, "
+                                 "%zu audited site(s)%s\n",
+                                 ext_env ? " (environment override)" : "",
+                                 build_wait_sites >= 0 ? (size_t)build_wait_sites :
+                                     gc.runtime.idle_skip_store_counter_sites.size(),
+                                 build_wait_sites == 0 || (build_wait_sites < 0 &&
+                                     gc.runtime.idle_skip_store_counter_sites.empty())
+                                     ? " -- none listed, so nothing is skipped" : "");
                 psx_precise_slice_init_from_env();
             }
             for (uint32_t site : gc.vsync_event_horizon_sites)
@@ -16125,14 +17990,28 @@ int main(int argc, char** argv) {
                 gc.runtime.video_depth24_trailing_margin;
             g_video_internal_res = gc.runtime.video_internal_resolution;
             g_video_ref_lines    = gc.runtime.video_resolution_reference_lines;
-            g_video_dynres       = gc.runtime.video_dynamic_resolution ? 1 : 0;
+            g_video_match_max_lines = gc.runtime.video_match_display_max_lines;
+            g_video_ss_disable_at_lines = gc.runtime.video_supersample_disable_at_lines;
+            /* The title's dynamic resolution: its own switch, or Auto. */
+            g_video_dynres       = (gc.runtime.video_dynamic_resolution ||
+                                    psx_ir_is_auto(gc.runtime.video_internal_resolution)) ? 1 : 0;
+            /* The baseline the Internal Resolution mod resolves over. */
+            g_title_resolution.internal_resolution = g_video_internal_res;
+            g_title_resolution.dynamic_resolution = g_video_dynres;
+            g_title_scale = g_video_scale;
             g_video_dynres_min   = gc.runtime.video_dynamic_resolution_min;
             if (gc.runtime.video_window_width > 0) {
                 g_video_win_w = gc.runtime.video_window_width;
             }
             g_video_aa         = gc.runtime.video_antialiasing;
             g_video_post_aa    = gc.runtime.video_antialiasing_mode;
+            g_video_bloom      = gc.runtime.video_bloom;
+            {   /* UTF-8 bytes on every host (C++17: string, C++20: u8string) */
+                const auto u8 = gc.runtime.video_post_shader.u8string();
+                g_video_post_shader.assign(u8.begin(), u8.end());
+            }
             g_video_ss_milli   = gc.runtime.video_supersample_milli;
+            g_title_ss_milli   = g_video_ss_milli;
             g_video_texfilter  = gc.runtime.video_texture_filter;
             g_video_fmv_filter = gc.runtime.video_fmv_filter;
             g_video_geometry_correction   =
@@ -16141,12 +18020,20 @@ int main(int argc, char** argv) {
                 gc.runtime.video_perspective_texturing ? 1 : 0;
             g_video_pgxp_cpu_mode = gc.runtime.video_pgxp_cpu_mode ? 1 : 0;
             g_video_pgxp_tolerance = (float)gc.runtime.video_pgxp_tolerance;
+            g_video_pgxp_tolerance_set = gc.runtime.video_pgxp_tolerance_set;
+            g_video_pgxp_position_fallback_set =
+                gc.runtime.video_pgxp_position_fallback_set;
             g_video_pgxp_position_fallback =
                 gc.runtime.video_pgxp_position_fallback ? 1 : 0;
             g_video_pgxp_preserve_projection =
                 gc.runtime.video_pgxp_preserve_projection ? 1 : 0;
             g_video_pgxp_mod_only = gc.runtime.video_pgxp_mod_only ? 1 : 0;
             g_video_pgxp_depth_buffer = gc.runtime.video_pgxp_depth_buffer ? 1 : 0;
+            g_video_fmv_chroma = gc.runtime.video_fmv_chroma_smoothing ? 1 : 0;
+            g_video_texture_lod = gc.runtime.video_texture_lod;
+            g_video_aniso = gc.runtime.video_anisotropic_filtering;
+            g_video_accurate_blending = gc.runtime.video_accurate_blending ? 1 : 0;
+            g_video_dithering = gc.runtime.video_dithering;
             g_video_pgxp_color_correction = gc.runtime.video_pgxp_color_correction ? 1 : 0;
             g_video_pgxp_seam = gc.runtime.video_pgxp_seam;
             g_video_pgxp_depth_threshold = (float)gc.runtime.video_pgxp_depth_threshold;
@@ -16163,12 +18050,18 @@ int main(int argc, char** argv) {
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_offer_render_pipeline = gc.runtime.video_offer_render_pipeline;
+            g_launcher_quick_controls = gc.runtime.launcher_quick_controls;
             g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
             g_frame_generation_method = gc.runtime.video_frame_generation_method;
             /* [timing] guest_cycle_scale is a title constant from game.toml
              * (no player setting). PSX_GUEST_CYCLE_SCALE overrides it for
              * testing only. */
             psx_guest_cycle_scale_set_gated(gc.runtime.guest_cycle_scale_gated ? 1 : 0);
+            {
+                extern int g_psx_gcs_batch;
+                const char *gb = getenv("PSX_GCS_BATCH");
+                g_psx_gcs_batch = gb ? (gb[0] == '1') : (gc.runtime.guest_cycle_scale_batch ? 1 : 0);
+            }
             psx_guest_cycle_scale_ram_gate_clear();
             psx_guest_cycle_scale_set_ram_reader(gcs_gate_read_ram);
             for (const auto& gp : gc.runtime.guest_cycle_scale_gate)
@@ -16302,6 +18195,35 @@ int main(int argc, char** argv) {
                     (int)addresses.size());
             }
             {
+                // [[widescreen.cull.sxy]]: four slots per site.
+                std::vector<uint32_t> vertices, fold_addresses, fold_expected,
+                    vertex_regs, consumer_addresses, consumer_expected;
+                for (const auto& site : gc.ws_cull_sxy_sites) {
+                    vertices.push_back(site.vertices);
+                    for (size_t k = 0; k < 4; k++) {
+                        const bool used = k < site.vertices;
+                        fold_addresses.push_back(used ? site.fold_addresses[k] : 0u);
+                        fold_expected.push_back(used ? site.fold_expected[k] : 0u);
+                        vertex_regs.push_back(used ? site.vertex_regs[k] : 0u);
+                    }
+                    consumer_addresses.push_back(site.consumer_address);
+                    consumer_expected.push_back(site.consumer_expected);
+                }
+                gpu_ws_set_sxy_cull_sites(
+                    vertices.data(), fold_addresses.data(), fold_expected.data(),
+                    vertex_regs.data(), consumer_addresses.data(),
+                    consumer_expected.data(), (int)vertices.size());
+            }
+            {
+                std::vector<uint32_t> addresses, expected;
+                for (const auto& site : gc.ws_cull_packed_x_sites) {
+                    addresses.push_back(site.address);
+                    expected.push_back(site.expected);
+                }
+                gpu_ws_set_packed_x_sites(addresses.data(), expected.data(),
+                    (int)addresses.size());
+            }
+            {
                 std::vector<uint32_t> addresses, expected, masks;
                 for (const auto& site : gc.ws_cull_masked_reject_sites) {
                     addresses.push_back(site.address);
@@ -16346,6 +18268,24 @@ int main(int argc, char** argv) {
                                                         (int)sites.size());
             }
             {
+                /* [[mod_immediate.sites]]: the interpreter's copy of the
+                 * sites the generated code switches on. */
+                std::vector<PSXModImmediateSite> sites;
+                sites.reserve(gc.mod_immediate_sites.size());
+                for (const auto& site : gc.mod_immediate_sites) {
+                    PSXModImmediateSite out{};
+                    out.address = site.address;
+                    out.expected = site.expected;
+                    out.group = site.group;
+                    out.count = (uint32_t)site.values.size();
+                    for (size_t i = 0; i < site.values.size() &&
+                                       i < PSX_MOD_IMMEDIATE_VALUES_MAX; i++)
+                        out.values[i] = site.values[i];
+                    sites.push_back(out);
+                }
+                (void)psx_mod_immediate_set_sites(sites.data(), (int)sites.size());
+            }
+            {
                 std::vector<uint32_t> addresses, expected, thresholds;
                 std::vector<uint32_t> object_regs, x_regs, z_regs, y_regs;
                 std::vector<uint32_t> queue_guards;
@@ -16381,6 +18321,7 @@ int main(int argc, char** argv) {
                     object_regs.data(), x_regs.data(), z_regs.data(),
                     y_regs.data(), queue_guards.data(), (int)addresses.size(),
                     gc.ws_aspect_cone.forward_addr,
+                    gc.ws_aspect_cone.forward_offsets.data(),
                     gc.ws_aspect_cone.object_type_offset,
                     gc.ws_aspect_cone.hysteresis_pixels,
                     gc.ws_aspect_cone.queue_reserve,
@@ -16395,6 +18336,9 @@ int main(int argc, char** argv) {
              * must never have its live code scanned and rewritten. */
             gpu_ws_set_auto_hooks(gc.ws_auto_screen_x_cull ? 1 : 0,
                                   gc.ws_auto_backdrop_preload ? 1 : 0);
+            gpu_ws_set_cull_screen_x_sites(
+                gc.ws_cull_screen_x_sites.data(),
+                (int)gc.ws_cull_screen_x_sites.size());
             if (!gc.ws_cull_w_imms.empty() || !gc.ws_cull_h_imms.empty())
                 gpu_ws_set_cull_imms(gc.ws_cull_w_imms.data(), (int)gc.ws_cull_w_imms.size(),
                                      gc.ws_cull_h_imms.data(), (int)gc.ws_cull_h_imms.size());
@@ -16409,9 +18353,24 @@ int main(int argc, char** argv) {
                 psx_ws_set_backdrop_sites(gc.ws_backdrop_x_sites.data(),
                                           (int)gc.ws_backdrop_x_sites.size());
             g_audio_spu_hq     = gc.runtime.audio_spu_hq;
+            g_title_look.screen_kind = gc.runtime.video_screen_kind;
+            g_title_look.scanlines = gc.runtime.video_scanlines ? 1 : 0;
+            g_title_look.scanline_strength_pct =
+                (int)(gc.runtime.video_scanline_strength * 100.0 + 0.5);
+            g_title_look.present_linear = gc.runtime.video_antialiasing ? 1 : 0;
+            g_title_look.texture_filter = gc.runtime.video_texture_filter;
+            g_title_look.fmv_filter = gc.runtime.video_fmv_filter;
+            g_title_look.spu_hq = gc.runtime.audio_spu_hq ? 1 : 0;
             g_auto_skip_fmv    = gc.runtime.video_auto_skip_fmv ? 1 : 0;
             /* [controller] game-declared input defaults (settings.toml/launcher
              * still override below). */
+            g_jogcon_ffb = gc.runtime.experimental_jogcon_force_feedback;
+            g_jogcon_ffb_invert =
+                gc.runtime.experimental_jogcon_force_feedback_invert;
+            if (g_jogcon_ffb)
+                std::fprintf(stdout, "psxrecomp: EXPERIMENTAL JogCon force "
+                             "feedback on by the title's default (wheels "
+                             "only; the player setting overrides)\n");
             if (!gc.runtime.direct_shortcut.empty())
                 apply_title_direct_shortcut(gc.runtime.direct_shortcut,
                                             gc.runtime.direct_shortcut_button);
@@ -16572,8 +18531,9 @@ int main(int argc, char** argv) {
             exe_dir_from_argv(argv[0]) / "settings.toml";
 #if defined(RECOMP_LAUNCHER)
         g_lnch_settings_path = settings_path;
+        g_overlay_settings_path = settings_path;
 #endif
-        const PSXRecompV4::UserSettings us =
+        PSXRecompV4::UserSettings us =
             PSXRecompV4::load_user_settings(settings_path);
         user_settings_has_renderer = us.has_renderer;
         if (us.parse_error) {
@@ -16616,27 +18576,12 @@ int main(int argc, char** argv) {
         if (us.has_netplay_lobby_url && !us.netplay_lobby_url.empty())
             g_lnch_lobby_url = us.netplay_lobby_url;
 #endif
-        /* A player's legacy factor outranks the game's shipped preset; their
-         * own preset (written by this build) outranks both. */
-        if (us.has_supersampling) {
-            g_video_scale = us.supersampling;
-            g_video_internal_res = PSX_IR_UNSET;
-        }
-        if (us.has_internal_resolution) g_video_internal_res = us.internal_resolution;
-        if (us.has_dynamic_resolution) g_video_dynres = us.dynamic_resolution ? 1 : 0;
-        if (us.has_dynamic_resolution_min) g_video_dynres_min = us.dynamic_resolution_min;
         if (us.has_window_width)   g_video_win_w     = us.window_width;
-        if (us.has_antialiasing)   g_video_aa        = us.antialiasing;
-        if (us.has_texture_filter) g_video_texfilter = us.texture_filter;
-        if (us.has_fmv_filter)     g_video_fmv_filter = us.fmv_filter;
-        if (us.has_geometry_correction)
-            g_video_geometry_correction = us.geometry_correction ? 1 : 0;
-        if (us.has_perspective_texturing)
-            g_video_perspective_texturing = us.perspective_texturing ? 1 : 0;
-        if (us.has_screen_kind)    g_video_screen    = us.screen_kind;
-        if (us.has_scanlines)      g_video_scanlines = us.scanlines;
-        if (us.has_scanline_strength)
-            g_video_scanline_strength = (float)us.scanline_strength;
+        /* Internal resolution (and supersampling, dynamic resolution), screen
+         * model, scanlines, filtering, the high-quality SPU, rewind and the
+         * PGXP corrections are not settings.toml keys any more: the built-in
+         * mods own them over the title's baseline (host_enhancements.h,
+         * pgxp_session.h). Neither is the audio sample rate (g_audio_freq). */
         /* fov_scale precedence: game.toml < settings.toml < PSX_GTE_FOV_SCALE.
          * Bad values warn and leave the lower layer's value in place. */
         if (us.has_fov_scale) {
@@ -16672,11 +18617,6 @@ int main(int argc, char** argv) {
             g_video_aspect_num = us.aspect_num;
             g_video_aspect_den = us.aspect_den;
         }
-        if (us.has_audio_freq)     g_audio_freq      = us.audio_freq;
-        if (us.has_spu_hq)         g_audio_spu_hq    = us.spu_hq;
-        if (us.has_rewind)        g_rewind_enabled = us.rewind ? 1 : 0;
-        if (us.has_rewind_depth)  g_rewind_depth   = us.rewind_depth;
-        if (us.has_rewind_interval) g_rewind_interval = us.rewind_interval;
         if (us.has_hotkey_pad_rewind)
             g_hotkey_pad_rewind = normalize_hotkey_pad_binding(
                 us.hotkey_pad_rewind,
@@ -16743,6 +18683,8 @@ int main(int argc, char** argv) {
         if (us.has_memcard1_enabled) memcard1_enabled = us.memcard1_enabled;
         if (us.has_memcard2_enabled) memcard2_enabled = us.memcard2_enabled;
         if (us.has_multitap_enabled) multitap_enabled = us.multitap_enabled;
+        if (us.has_jogcon_force_feedback)
+            psx_jogcon_ffb_set_player_enabled(us.jogcon_force_feedback ? 1 : 0);
         if (us.has_multitap_analog) {
             multitap_analog = us.multitap_analog;
             sio_set_multitap_analog(multitap_analog ? 1 : 0);
@@ -17039,7 +18981,19 @@ int main(int argc, char** argv) {
         const char *tk_recompiler = "psxrecomp-game";
         const char *tk_tcc        = "tcc";
 #endif
-        const bool tk_present = std::filesystem::exists(tk_py);
+        bool tk_present = std::filesystem::exists(tk_py);
+        /* A toolchain staged from a different emitter than this runtime writes shards under its
+         * own codegen hash, a cache directory the loader never reads (LoD playtest 2026-10-12:
+         * 27 compile runs, no shard ever loaded, everything interpreted). Refuse it loudly:
+         * autocompile_status reports degraded_reason. An explicit overlay_autocompile_cmd in the
+         * game config, or PSX_OVERLAY_AUTOCOMPILE_CMD, is the author's own choice and stays, and
+         * PSX_OVERLAY_ALLOW_STALE_TOOLCHAIN=1 reproduces the stale-toolchain condition on purpose
+         * (A/B measurements). */
+        const char *allow_stale_tk = std::getenv("PSX_OVERLAY_ALLOW_STALE_TOOLCHAIN");
+        if (tk_present && !(allow_stale_tk && allow_stale_tk[0] && allow_stale_tk[0] != '0') &&
+            !autocompile_check_toolchain_hash((tk_dir / "include").string().c_str(),
+                                              (uint32_t)overlay_loader_codegen_hash()))
+            tk_present = false;
         /* Wave-5 F2: the CLI names the compiler it already has (the wizard's pack on
          * Windows, the native cc on POSIX) in overlay_toolchain/compiler.txt, so a player
          * with nothing on PATH still gets optimised shards instead of tcc's. */
@@ -17182,6 +19136,31 @@ int main(int argc, char** argv) {
      * --no-launcher, or the persisted [launcher] skip_launcher setting — unless
      * --launcher forces it back on (mirrors snesrecomp's SkipLauncher / --launcher).
      * This removes the dismiss-the-launcher round-trip for scripted/debug runs. */
+    /* Game Mode (Steam Deck / gamescope, game_mode.h): straight into the
+     * game, fullscreen, once a disc is set up; the first run keeps the
+     * launcher so the player can pick their disc. --launcher still wins. */
+    {
+        PsxGameModeEnv gm_env{};
+        gm_env.psx_game_mode = std::getenv("PSX_GAME_MODE");
+        gm_env.xdg_current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
+        gm_env.gamescope_display = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+        gm_env.steam_gamepad_ui = std::getenv("SteamGamepadUI");
+        gm_env.cli_game_mode = cli_game_mode;
+        const char *gm_why = "";
+        if (psx_game_mode_detect(&gm_env, &gm_why) && !g_headless && !g_hidden_window) {
+            std::error_code gm_ec;
+            const bool disc_ready = disc_override_path ||
+                (!resolved_disc.empty() && std::filesystem::exists(resolved_disc, gm_ec));
+            if (disc_ready && !force_launcher) force_no_launcher = true;
+            /* Borderless (gamescope owns the display mode), this run only:
+             * set after the launcher would have seeded it, so a desktop
+             * session's saved Fullscreen choice is never rewritten. */
+            if (force_no_launcher) g_fullscreen = 1;
+            std::fprintf(stdout, "psxrecomp: game mode (%s): fullscreen, %s\n", gm_why,
+                         force_no_launcher ? "no launcher"
+                                           : "launcher first (no disc set up yet)");
+        }
+    }
     const bool want_launcher =
         force_launcher ||
         (!std::getenv("PSX_NO_LAUNCHER") && !force_no_launcher && !skip_launcher_setting);
@@ -17219,45 +19198,14 @@ int main(int argc, char** argv) {
             bool match_session_bios_set = false;
             seed.vsync = g_video_vsync; seed.has_vsync = true;
             seed.renderer = g_video_renderer;             seed.has_renderer = true;
-            /* Internal resolution round trip (internal_resolution.h): only a
-             * launcher with the row seeds and returns the preset. An older one
-             * gets the legacy Supersampling row, and a pick there wins. */
-            const int ir_preset_seeded = g_video_internal_res;
-            const int ir_ss_seeded = psx_ir_launcher_seed_supersampling(
-                kLauncherHasInternalResolution, g_video_internal_res, g_video_scale,
-                g_video_ref_lines, psx_sdl_display_pixel_height(nullptr));
-            seed.supersampling = ir_ss_seeded;            seed.has_supersampling = true;
-            int ir_row_result = PSX_IR_UNSET;   /* the row's pick, when it has one */
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-            seed.internal_resolution = internal_resolution_for_launcher();
-            seed.has_internal_resolution = true;
-#endif
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-            seed.dynamic_resolution = dynres_requested() != 0;
-            seed.has_dynamic_resolution = true;
-#endif
+            /* No Internal resolution / Supersampling round trip: the built-in
+             * Internal Resolution mod owns it (psx_launcher_hide_mod_owned_rows
+             * clears the row). */
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
             seed.render_thread = g_render_thread != 0;
             seed.present_thread = g_present_thread != 0;
             seed.frame_generation = g_frame_generation != 0;
 #endif
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-            seed.dynamic_resolution_min = dynres_min_value();
-            seed.has_dynamic_resolution_min = true;
-#endif
-            seed.antialiasing = g_video_aa;               seed.has_antialiasing = true;
-            seed.texture_filter = g_video_texfilter;      seed.has_texture_filter = true;
-            seed.fmv_filter = g_video_fmv_filter;         seed.has_fmv_filter = true;
-            /* Seeded (and marked present) so a launcher save round-trips the
-             * player's hand-edited value instead of dropping the key. */
-            seed.geometry_correction = (g_video_geometry_correction != 0);
-            seed.has_geometry_correction = true;
-            seed.perspective_texturing = (g_video_perspective_texturing != 0);
-            seed.has_perspective_texturing = true;
-            seed.screen_kind = g_video_screen;            seed.has_screen_kind = true;
-            seed.scanlines = g_video_scanlines;           seed.has_scanlines = true;
-            seed.scanline_strength = g_video_scanline_strength;
-            seed.has_scanline_strength = true;
             seed.auto_skip_fmv = (g_auto_skip_fmv != 0);
             seed.has_auto_skip_fmv = skip_fmv_offered;
             seed.turbo_loads = (g_turbo_loads_enabled != 0);
@@ -17271,11 +19219,6 @@ int main(int argc, char** argv) {
             seed.has_frame_interpolation_fps = true;
             seed.aspect_num = g_video_aspect_num;
             seed.aspect_den = g_video_aspect_den;         seed.has_aspect_ratio = true;
-            seed.audio_freq = g_audio_freq;               seed.has_audio_freq = true;
-            seed.spu_hq = g_audio_spu_hq;                 seed.has_spu_hq = true;
-            seed.rewind = g_rewind_enabled != 0;          seed.has_rewind = true;
-            seed.rewind_depth = g_rewind_depth;           seed.has_rewind_depth = true;
-            seed.rewind_interval = g_rewind_interval;     seed.has_rewind_interval = true;
             seed.hotkey_pad_rewind = g_hotkey_pad_rewind;
             seed.has_hotkey_pad_rewind = true;
             seed.hotkey_pad_save_state_menu = g_hotkey_pad_save_state_menu;
@@ -17395,11 +19338,10 @@ int main(int argc, char** argv) {
             ls.window_scale   = std::max(1, std::min(4, g_video_win_w / 320));
             ls.fullscreen     = seed.fullscreen;
             ls.ignore_aspect  = 0;
-            ls.linear_filter  = (seed.texture_filter != 0) ? 1 : 0;
             ls.widescreen     = (seed.aspect_num == 16 && seed.aspect_den == 9) ? 1 : 0;
             ls.widescreen_hud = ls.widescreen;
             ls.enable_audio   = 1;
-            ls.audio_freq     = seed.audio_freq;
+            ls.audio_freq     = g_audio_freq;  /* fixed; the Sample rate row is hidden */
             ls.volume         = host_volume_get();
             {
                 const int n = std::min(PSX_MAX_PLAYERS, RECOMP_LAUNCHER_MAX_PLAYERS);
@@ -17448,37 +19390,19 @@ int main(int argc, char** argv) {
             if (ls.renderer == 0 && !user_settings_has_renderer &&
                 PSXRecompV4::DEFAULT_VIDEO_RENDERER != 0)
                 ls.renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
-            ls.supersampling      = seed.supersampling;
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-            ls.internal_resolution = seed.internal_resolution;
-#endif
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-            ls.dynamic_resolution = seed.dynamic_resolution ? 1 : 0;
-            ls.dynamic_resolution_min = seed.dynamic_resolution_min;
-#endif
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
             ls.render_thread    = seed.render_thread ? 1 : 0;
             ls.present_thread   = seed.present_thread ? 1 : 0;
             ls.frame_generation = seed.frame_generation ? 1 : 0;
 #endif
-            ls.vsync = psx_vsync_to_launcher(seed.vsync);
-            ls.antialiasing       = seed.antialiasing ? 1 : 0;
-            ls.texture_filter     = seed.texture_filter;
-            ls.fmv_filter         = cfg_fmv_filter_to_launcher(seed.fmv_filter);
-            ls.geometry_correction   = seed.geometry_correction ? 1 : 0;
-            ls.perspective_texturing = seed.perspective_texturing ? 1 : 0;
-            ls.screen_kind        = seed.screen_kind;
-#if defined(RECOMP_LAUNCHER_HAS_SCANLINES)
-            ls.scanlines             = seed.scanlines ? 1 : 0;
-            ls.scanline_strength_pct = seed.has_scanline_strength
-                ? (int)(seed.scanline_strength * 100.0 + 0.5) : 50;
+#if defined(RECOMP_LAUNCHER_VSYNC_ADAPTIVE)
+            /* [video] vsync (1 on, 0 off/immediate, -1 adaptive, 2 VRR) <->
+             * the launcher's V-Sync row (1 On, 2 Off, 3 Adaptive). VRR has no
+             * row; it shows as On and is kept unless the player changes it. */
+            ls.vsync = psx_vsync_to_launcher(g_video_vsync);
 #endif
             ls.frame_interp       = seed.frame_interpolation ? 1 : 0;
             ls.frame_interp_fps   = seed.frame_interpolation_fps;
-            ls.spu_hq             = seed.spu_hq ? 1 : 0;
-            ls.rewind_enabled    = seed.rewind ? 1 : 0;
-            ls.rewind_depth      = seed.rewind_depth > 0 ? seed.rewind_depth : 50;
-            ls.rewind_interval   = seed.rewind_interval > 0 ? seed.rewind_interval : 15;
             ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND] =
                 normalize_hotkey_pad_binding(seed.hotkey_pad_rewind,
                     PSX_HOTKEY_PAD_SELECT_R3);
@@ -17535,6 +19459,9 @@ int main(int argc, char** argv) {
 #if defined(RECOMP_LAUNCHER_HAS_MULTITAP_ANALOG)
             ls.multitap_analog = seed.multitap_analog ? 1 : 0;
             g_lnch_multitap_analog = seed.multitap_analog ? 1 : 0;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+            ls.jogcon_force_feedback = psx_jogcon_ffb_player_enabled();
 #endif
 
             /* Region badge: game.toml [game] region wins verbatim; otherwise derive
@@ -17750,17 +19677,14 @@ int main(int argc, char** argv) {
                     default: seed.aspect_num = 4;  seed.aspect_den = 3; break;
                 }
                 seed.has_aspect_ratio = true;
-                /* has_texture_filter is on (PSX profile) so the launcher edits
-                 * ls.texture_filter directly (0=nearest,1=bilinear); ls.linear_filter
-                 * is the legacy fallback field for consoles without the cap and is
-                 * left unused here. */
-                seed.texture_filter = ls.texture_filter ? 1 : 0; seed.has_texture_filter = true;
-                seed.fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
-                seed.has_fmv_filter = true;
                 {
                     const int n = std::min(PSX_MAX_PLAYERS, RECOMP_LAUNCHER_MAX_PLAYERS);
                     const int un = std::min(n, PSXRecompV4::UserSettings::kMaxControllerPlayers);
                     for (int i = 0; i < n; ++i) {
+#if defined(RECOMP_LAUNCHER_HAS_PLAYER_GAMEPAD_INSTANCE)
+                        player_instance[i] = ls.player_src[i] == 2
+                            ? ls.player_gamepad_instance[i] : 0;
+#endif
                         if (ls.player_src[i] == 1) {
                             player_device[i] = "keyboard";
                         } else if (ls.player_src[i] == 0) {
@@ -17805,47 +19729,20 @@ int main(int argc, char** argv) {
                  * fields above), all gated on by the "psx" launcher_profile caps. */
                 seed.window_width          = ls.window_width;          seed.has_window_width          = true;
                 seed.renderer              = ls.renderer;              seed.has_renderer              = true;
-                seed.supersampling         = ls.supersampling;         seed.has_supersampling         = true;
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-                ir_row_result = ls.internal_resolution;
-#endif
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-                seed.dynamic_resolution = ls.dynamic_resolution != 0;
-                seed.has_dynamic_resolution = true;
-                seed.dynamic_resolution_min = ls.dynamic_resolution_min;
-                seed.has_dynamic_resolution_min = true;
-#endif
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
                 seed.render_thread    = ls.render_thread != 0;    seed.has_render_thread    = true;
                 seed.present_thread   = ls.present_thread != 0;   seed.has_present_thread   = true;
                 seed.frame_generation = ls.frame_generation != 0; seed.has_frame_generation = true;
 #endif
-                seed.vsync = psx_vsync_from_launcher(ls.vsync, seed.vsync); seed.has_vsync = true;
-                seed.antialiasing          = ls.antialiasing != 0;     seed.has_antialiasing          = true;
-                seed.geometry_correction   = ls.geometry_correction != 0;
-                seed.has_geometry_correction = true;
-                seed.perspective_texturing = ls.perspective_texturing != 0;
-                seed.has_perspective_texturing = true;
-                seed.fmv_filter            = launcher_fmv_filter_to_cfg(ls.fmv_filter);
-                seed.has_fmv_filter        = true;
-                seed.screen_kind           = ls.screen_kind;           seed.has_screen_kind           = true;
-#if defined(RECOMP_LAUNCHER_HAS_SCANLINES)
-                seed.scanlines             = ls.scanlines != 0;        seed.has_scanlines             = true;
-                if (ls.scanline_strength_pct >= 0) {
-                    seed.scanline_strength = ls.scanline_strength_pct / 100.0;
-                    seed.has_scanline_strength = true;
+#if defined(RECOMP_LAUNCHER_VSYNC_ADAPTIVE)
+                if (ls.vsync >= RECOMP_LAUNCHER_VSYNC_ON && ls.vsync <= RECOMP_LAUNCHER_VSYNC_ADAPTIVE) {
+                    g_video_vsync = psx_vsync_from_launcher(ls.vsync, g_video_vsync);
+                    seed.vsync = g_video_vsync;
+                    seed.has_vsync = true;
                 }
 #endif
                 seed.frame_interpolation   = ls.frame_interp != 0;     seed.has_frame_interpolation   = true;
                 seed.frame_interpolation_fps = ls.frame_interp_fps;    seed.has_frame_interpolation_fps = true;
-                seed.audio_freq            = ls.audio_freq;            seed.has_audio_freq            = true;
-                seed.spu_hq                = ls.spu_hq != 0;           seed.has_spu_hq                = true;
-                seed.rewind                = ls.rewind_enabled != 0;
-                seed.has_rewind            = true;
-                seed.rewind_depth          = ls.rewind_depth > 0 ? ls.rewind_depth : 50;
-                seed.has_rewind_depth      = true;
-                seed.rewind_interval       = ls.rewind_interval > 0 ? ls.rewind_interval : 15;
-                seed.has_rewind_interval   = true;
                 seed.hotkey_pad_rewind = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND],
                     PSX_HOTKEY_PAD_SELECT_R3);
@@ -17909,6 +19806,14 @@ int main(int argc, char** argv) {
                     (void)PSXRecompV4::upsert_game_toml_controller_bool(
                         game_config_path, "multitap_analog", multitap_analog);
                 }
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+                if ((ls.jogcon_force_feedback != 0) != (psx_jogcon_ffb_player_enabled() != 0) ||
+                    seed.has_jogcon_force_feedback) {
+                    seed.jogcon_force_feedback = ls.jogcon_force_feedback != 0;
+                    seed.has_jogcon_force_feedback = true;
+                }
+                psx_jogcon_ffb_set_player_enabled(ls.jogcon_force_feedback);
 #endif
                 if (ls.memcard_path[0][0]) { seed.memcard1_path = ls.memcard_path[0]; seed.has_memcard1_path = true; }
                 if (ls.memcard_path[1][0]) { seed.memcard2_path = ls.memcard_path[1]; seed.has_memcard2_path = true; }
@@ -17996,8 +19901,11 @@ int main(int argc, char** argv) {
 
             if (lr == 1) {
                 /* Keep settings changed and then dismissed with Quit. */
-                PSXRecompV4::save_user_settings(
-                    exe_dir_from_argv(argv[0]) / "settings.toml", seed);
+                {
+                    PSXRecompV4::UserSettings save = seed;
+                    (void)PSXRecompV4::save_user_settings(
+                        exe_dir_from_argv(argv[0]) / "settings.toml", save);
+                }
                 std::fprintf(stdout, "psxrecomp: launcher closed; exiting.\n");
                 if (overlay_init_thread.joinable())
                     overlay_init_thread.join();
@@ -18035,6 +19943,7 @@ int main(int argc, char** argv) {
                     net_cfg.force_input_relay = ls.netplay_launch.force_input_relay ? 1 : 0;
 #if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY)
                     net_cfg.transport_host = ls.netplay_launch.transport_host ? 1 : 0;
+                    net_cfg.transport_ice_hub = ae_np_launch_is_ice_hub(ls.netplay_launch);
 #endif
                     net_cfg.force_turn = ls.netplay_launch.force_turn ? 1 : 0;
                     net_cfg.rollback = ls.netplay_launch.rollback ? 1 : 0;
@@ -18070,21 +19979,8 @@ int main(int argc, char** argv) {
                     g_netplay_from_lobby = 0;
                 }
                 g_video_renderer  = seed.renderer;
-                {
-                    const PsxIrAdopted ir = psx_ir_adopt_launcher(
-                        kLauncherHasInternalResolution, ir_preset_seeded, ir_ss_seeded,
-                        seed.supersampling, ir_row_result, g_video_ref_lines,
-                        psx_sdl_display_pixel_height(nullptr), video_scale_ceiling());
-                    g_video_internal_res = ir.preset;
-                    g_video_scale        = ir.scale;
-                    seed.supersampling   = ir.save_ss;
-                    seed.has_internal_resolution = ir.save_ir != PSX_IR_UNSET;
-                    seed.internal_resolution     = ir.save_ir;
-                }
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-                g_video_dynres = seed.dynamic_resolution ? 1 : 0;
-                g_video_dynres_min = seed.dynamic_resolution_min;
-#endif
+                /* Internal resolution (and with it dynamic resolution) was
+                 * adopted with the write-back above. */
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
                 /* First boot: the pipeline has not started yet. */
                 g_render_thread    = seed.render_thread ? 1 : 0;
@@ -18092,17 +19988,6 @@ int main(int argc, char** argv) {
                 g_frame_generation = seed.frame_generation ? 1 : 0;
 #endif
                 g_video_vsync = seed.vsync;
-                g_video_aa        = seed.antialiasing;
-                g_video_texfilter = seed.texture_filter;
-                g_video_fmv_filter = seed.fmv_filter;
-                g_video_geometry_correction   = seed.geometry_correction ? 1 : 0;
-                g_video_perspective_texturing = seed.perspective_texturing ? 1 : 0;
-                g_video_screen    = seed.screen_kind;
-                if (seed.has_scanlines) g_video_scanlines = seed.scanlines;
-                if (seed.has_scanline_strength)
-                    g_video_scanline_strength = (float)seed.scanline_strength;
-                gl_renderer_set_scanlines(g_video_scanlines ? 1 : 0,
-                                          g_video_scanline_strength);
                 g_auto_skip_fmv = skip_fmv_offered && seed.auto_skip_fmv ? 1 : 0;
                 g_turbo_loads_enabled =
                     turbo_loads_offered && seed.turbo_loads ? 1 : 0;
@@ -18113,13 +19998,6 @@ int main(int argc, char** argv) {
                 g_frame_interpolation_fps = seed.frame_interpolation_fps;
                 g_video_aspect_num = seed.aspect_num;
                 g_video_aspect_den = seed.aspect_den;
-                g_audio_freq      = seed.audio_freq;
-                g_audio_spu_hq    = seed.spu_hq;
-                g_rewind_enabled = seed.has_rewind ? (seed.rewind ? 1 : 0) : 0;
-                g_rewind_depth   = seed.has_rewind_depth && seed.rewind_depth > 0
-                    ? seed.rewind_depth : 50;
-                g_rewind_interval = seed.has_rewind_interval && seed.rewind_interval > 0
-                    ? seed.rewind_interval : 15;
                 g_hotkey_pad_rewind = seed.has_hotkey_pad_rewind
                     ? seed.hotkey_pad_rewind
                     : PSX_HOTKEY_PAD_SELECT_R3;
@@ -18187,8 +20065,11 @@ int main(int argc, char** argv) {
                 }
                 g_video_win_w = seed.window_width;
                 /* Persist the user's choices next to the exe. */
-                PSXRecompV4::save_user_settings(
-                    exe_dir_from_argv(argv[0]) / "settings.toml", seed);
+                {
+                    PSXRecompV4::UserSettings save = seed;
+                    (void)PSXRecompV4::save_user_settings(
+                        exe_dir_from_argv(argv[0]) / "settings.toml", save);
+                }
             }
         }
     }
@@ -18246,16 +20127,21 @@ int main(int argc, char** argv) {
      * renderer and window creation only after session_reboot, so activation
      * precedes them either way. A netplay clear leaves no plan, so nothing
      * activates and the session stays vanilla. */
-    auto start_mod_session = [&](bool netplay) {
+    const int configured_audio_buffer_ms = resolved_audio_buffer_ms;
+    auto start_mod_session = [&](bool netplay) -> bool {
+        mod_runtime_set_progress_hook(starvation_watchdog_heartbeat);
         /* Clear game-owned controller overrides/policies and load/disc-speed
          * choices first so disabling a package cannot leave its prior state
          * latched across a soft return. */
+        psx_audio_sync_set_enabled(0);
         g_mod_controller_mode_override.fill(-1);
         mod_controller_source_reset();
         mod_pad_transform_reset();
         g_direct_shortcut_allowed = 0;
+        std::memset(g_mod_rumble, 0, sizeof g_mod_rumble);
         g_p1_claimed_buttons = 0;
         psx_rewind_set_title_blocked(0);
+        savestate_set_title_blocked(0);
         for (auto& policy : g_mod_controller_policy)
             policy = ModControllerPresentationPolicy{};
         g_mod_load_wall_multiplier = -1;
@@ -18274,11 +20160,50 @@ int main(int argc, char** argv) {
                       "reset_mod_owned_presentation() would clobber a launcher "
                       "setting; restore only when the feature is mod-owned");
         reset_mod_owned_presentation();
+        /* Existing titles cache allocation handles across rematches. Preserve
+         * those process-lifetime resources by default. A title declaring the
+         * session-owned build contract recreates all handles on activation;
+         * retire registrations first, after renderer/audio/window teardown. */
+        if (!mod_texture_banks_begin_session(PSX_MOD_SESSION_RESOURCES) ||
+            !psx_mod_memory_begin_session(PSX_MOD_SESSION_RESOURCES)) {
+            std::fprintf(stderr,
+                         "psxrecomp: cannot reset enhancement resources at session start\n");
+            return false;
+        }
         /* Netplay own-view mods: the widescreen margin follows them into the
          * sandboxed own view only; the shared game keeps the stock cull. */
         gpu_ws_set_local_view_only(
             netplay && PSXRecompV4::mod_runtime_netplay_view_active() ? 1 : 0);
+        psx_mod_immediate_begin_session(netplay ? 1 : 0);
         mod_runtime_activate_plugins();
+        if (const char* error = mod_runtime_activation_error()) {
+            std::fprintf(stderr,"psxrecomp: %s\n",error);
+            return false;
+        }
+        resolved_audio_buffer_ms = psx_audio_sync_target(configured_audio_buffer_ms);
+        func_override_install();
+        if (!psx_mod_immediate_session_valid()) {
+            std::fprintf(stderr, "psxrecomp: immediate-selector enhancements are offline-only\n");
+            return false;
+        }
+        std::string save_scope, save_error;
+        if (!PSXRecompV4::mod_runtime_savestate_scope(save_scope, &save_error) ||
+            !savestate_set_content_scope(save_scope.c_str())) {
+            (void)savestate_set_content_scope("invalid");
+            std::fprintf(stderr, "psxrecomp: cannot establish save-state scope: %s\n", save_error.c_str());
+            return false;
+        }
+        if (netplay && memcard_extension_codec_active()) {
+            std::fprintf(stderr,
+                "psxrecomp: selected mod uses extended memory cards, which are unsupported in netplay\n");
+            return false;
+        }
+        const PSXModNetplayProfile* profile = psx_mod_netplay_profile();
+        if (netplay && profile && profile->fixed_aspect_mask) {
+            const int index = psx_mod_netplay_aspect();
+            (void)psx_mod_set_fixed_display_aspect(index == 2 ? 21u : index == 1 ? 16u : 4u,
+                                                 index ? 9u : 3u);
+        }
         apply_netplay_local_viewport_aspect(netplay);
         for (int i = 0; i < PSX_MAX_PLAYERS; ++i) {
             if (g_mod_controller_mode_override[i] >= 0)
@@ -18306,8 +20231,12 @@ int main(int argc, char** argv) {
                     g_turbo_load_release_frames);
             }
         }
+        return true;
     };
-    start_mod_session(net_cfg.enabled);
+    if (!start_mod_session(net_cfg.enabled)) {
+        SDL_Quit();
+        return 1;
+    }
 
     /* Re-apply the resolved language to the translation layer. text_xlate_init
      * (at config load) only saw the game.toml default; this folds in the
@@ -18341,7 +20270,35 @@ int main(int argc, char** argv) {
     std::string memcard_dir_str  = memcard_dir.string();
     std::string disc_path_str = session_disc_path(resolved_disc);
 
+    struct DiscMenuSession {
+        int *selected;
+        std::string *mounted;
+        std::filesystem::path *resolved;
+        std::filesystem::path settings;
+    };
+    DiscMenuSession disc_menu_session{};
+
 session_reboot:
+    /* A new backend/session must not inherit the prior applied settings or
+     * a refused live request. Capture its boot baseline again on first read. */
+    g_video_boot_valid = false;
+    video_res_set_applied(PSX_IR_UNSET, 1000);
+    g_video_res_live_failed.store(false);
+    g_video_res_live_capable.store(false);
+    g_openxr_ready_execution_generation++;
+    if (g_openxr_ready_execution_generation == 0)
+        g_openxr_ready_execution_generation = 1;
+    mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
+    psx_disc_tray_reset_session();
+    // Check the untouched base, never a mod's derived private image. Covers
+    // CLI, no-launcher, zero-mod builds, and a changed disc on lobby rematch.
+    {
+        std::string identity_error;
+        if (!PSXRecompV4::required_original_disc_matches(resolved_disc, &identity_error)) {
+            std::fprintf(stderr, "psxrecomp: %s\n", identity_error.c_str());
+            return 1;
+        }
+    }
     /* Rematch after lobby soft-return re-enters here with updated net_cfg. */
     static int s_emu_session = 0;
     const bool rematch_session = (++s_emu_session > 1);
@@ -18394,6 +20351,11 @@ session_reboot:
     }
     memory_init(bios_path_str.c_str());
     if (g_headless_opengl) g_video_renderer = 1;
+    if (net_cfg.enabled && !psx_mod_netplay_renderer_allowed(g_video_renderer)) {
+        std::fprintf(stderr, "psxrecomp: this title's netplay profile requires OpenGL "
+                             "retained textures; select the OpenGL renderer\n");
+        return 1;
+    }
 #ifndef PSX_HAVE_VULKAN
     /* Vulkan was not compiled in (PSX_ENABLE_VULKAN=OFF or no SDK found).
      * Refuse a vulkan request from ANY source (config / CLI / launcher seed)
@@ -18456,6 +20418,10 @@ session_reboot:
                      g_headless && g_video_renderer != 0 ? " (headless)" : "");
     }
     gpu_init();
+    /* This session's internal resolution: the title's baseline and the
+     * Internal Resolution mod's request from start_mod_session's activation
+     * (first boot and rematch alike); the env overrides below still win. */
+    session_internal_resolution();
     /* Internal-resolution supersampling (SSAA). Must follow gpu_init.
      * Dual-raster: gr_set_scale(N) arms GL hr FBO @ N× while glb_set_scale
      * keeps SW at 1×. SW-only netplay: force scale 1. Offline: full SSAA. */
@@ -18484,10 +20450,11 @@ session_reboot:
         else if (!std::strcmp(e, "fxaa_hq")) g_video_post_aa = GL_POST_AA_FXAA_HQ;
         else std::fprintf(stdout, "psxrecomp: PSX_AA_MODE=%s not understood (off, fxaa, fxaa_hq)\n", e);
     }
-    if (g_video_ss_milli != 1000)
+    const int effective_ss = display_supersample(nullptr);
+    if (!g_video_ss_disable_at_lines && effective_ss != 1000)
         std::fprintf(stdout, "psxrecomp: supersample %.3gx on the internal-resolution target\n",
-                     g_video_ss_milli / 1000.0);
-    apply_internal_resolution(psx_sdl_display_pixel_height(nullptr));
+                     effective_ss / 1000.0);
+    apply_internal_resolution(match_display_px_h(nullptr));
     if (g_video_scale < 1) g_video_scale = 1;
     if (const char* e = std::getenv("PSX_DYNRES"))
         g_video_dynres_env = (*e && *e != '0') ? 1 : 0;
@@ -18540,6 +20507,14 @@ session_reboot:
                             (net_cfg.enabled && s_netplay_gl_present &&
                              gl_renderer_cpu_auth_dual());
     g_video_scale = gr_scale(); /* reflect any clamp / alloc fallback */
+    /* This session's look: the title's baseline and the host enhancement
+     * mods' requests from start_mod_session's activation, which ran above for
+     * the first boot and for a rematch. The env overrides below still win
+     * for a validation run. */
+    session_host_look();
+    psx_host_enh_set_live_applier(host_look_apply_live);
+    psx_host_enh_set_resolution_applier(host_resolution_apply_live);
+    if (const char* e = std::getenv("PSX_TEXTURE_FILTER")) g_video_texfilter = std::atoi(e);
     gr_set_texture_filter(g_mod_texfilter < 0 ? g_video_texfilter : g_mod_texfilter);
     /* Sub-pixel vertex precision + perspective-correct UVs. Both default off;
      * with both off every setter below leaves the tracking caches disabled and
@@ -18562,6 +20537,8 @@ session_reboot:
     pgxp_cfg.video_cpu_mode = g_video_pgxp_cpu_mode;
     pgxp_cfg.tolerance = g_video_pgxp_tolerance;
     pgxp_cfg.position_fallback = g_video_pgxp_position_fallback;
+    pgxp_cfg.tolerance_set = g_video_pgxp_tolerance_set;
+    pgxp_cfg.position_fallback_set = g_video_pgxp_position_fallback_set;
     pgxp_cfg.preserve_projection = g_video_pgxp_preserve_projection;
     pgxp_cfg.mod_only = g_video_pgxp_mod_only;
     /* Precise culling changes guest NCLIP results from host-only shadows; a
@@ -18577,6 +20554,15 @@ session_reboot:
     if (const char* e = std::getenv("PSX_PGXP_COLOR")) g_video_pgxp_color_correction = (*e && *e != '0');
     if (const char* e = std::getenv("PSX_PGXP_SEAM")) g_video_pgxp_seam = std::atoi(e);
     gl_renderer_set_pgxp_depth(g_video_pgxp_depth_buffer);
+    if (const char* e = std::getenv("PSX_FMV_CHROMA")) g_video_fmv_chroma = (*e && *e != '0');
+    gl_renderer_set_fmv_chroma_smoothing(g_video_fmv_chroma);
+    if (const char* e = std::getenv("PSX_TEXTURE_LOD")) g_video_texture_lod = std::atoi(e);
+    if (const char* e = std::getenv("PSX_ANISO")) g_video_aniso = std::atoi(e);
+    gl_renderer_set_texture_lod(g_video_texture_lod, g_video_aniso);
+    if (const char* e = std::getenv("PSX_ACCURATE_BLENDING")) g_video_accurate_blending = (*e && *e != '0');
+    gl_renderer_set_accurate_blending(g_video_accurate_blending);
+    if (const char* e = std::getenv("PSX_DITHERING")) g_video_dithering = std::atoi(e);
+    gl_renderer_set_dithering(g_video_dithering);
     gl_renderer_set_pgxp_color_perspective(g_video_pgxp_color_correction);
     gl_renderer_set_pgxp_seam(g_video_pgxp_seam);
     if (const char* e = std::getenv("PSX_PGXP_DEPTH_THRESHOLD")) g_video_pgxp_depth_threshold = (float)std::atof(e);
@@ -18627,7 +20613,7 @@ session_reboot:
                      pgxp_arm.culling ? ", precise culling" : "",
                      pgxp_in.mod_enabled ? " (PGXP mod)" : "",
                      (pgxp_arm.geometry && requested_scale < 2)
-                         ? " (needs [video] supersampling >= 2 to be visible)" : "");
+                         ? " (needs an internal resolution of 2x or more to be visible)" : "");
     }
     /* Display aspect. Identity at the default 4:3. The present letterbox uses
      * this aspect; native-wide fills it with a genuinely wider frame (no
@@ -18686,6 +20672,8 @@ session_reboot:
      * ports during early boot. */
     for (int s = 0; s < PSX_MAX_PLAYERS; ++s) {
         set_player_device(g_players[s], player_device[s], player_mode[s]);
+        g_players[s].preferred_instance = player_instance[s]
+            ? (SDL_JoystickID)(player_instance[s] - 1) : -1;
         g_players[s].deadzone = player_deadzone[s];
     }
     /* Multitap stays OFF through BIOS boot: SCPH-1070 on port 1 breaks shell /
@@ -18762,6 +20750,31 @@ session_reboot:
          * which is the mix-up savestate_set_disc_scope() exists to prevent. */
         if (mounted >= 0) selected_disc_index = mounted + 1;
     }
+    if (game_discs.size() > 1) {
+        mod_runtime_set_mounted_disc_resolver(
+            [](void) -> const char* { return cdrom_disc_roster_path(cdrom_disc_selected()); },
+            [](void) -> int { return cdrom_disc_selected(); });
+    }
+    disc_menu_session = { &selected_disc_index, &disc_path_str, &resolved_disc,
+                          exe_dir_from_argv(argv[0]) / "settings.toml" };
+    psx_disc_tray_set_host_hook([](void *ctx, int disc, const char *path) {
+        auto &session = *static_cast<DiscMenuSession*>(ctx);
+        *session.selected = disc;
+        *session.mounted = path;
+        *session.resolved = path;
+        auto settings = PSXRecompV4::load_user_settings(session.settings);
+        if (!settings.parse_error) {
+            settings.disc_index = disc;
+            settings.has_disc_index = true;
+            settings.disc_path = path;
+            settings.has_disc_path = true;
+            PSXRecompV4::save_user_settings(session.settings, settings);
+        }
+        char message[64];
+        snprintf(message, sizeof message, "Disc %d inserted", disc);
+        host_osd_push(message, 2500);
+    }, &disc_menu_session);
+    psx_runtime_menu_init();
     for (const auto& route : warm_cd_routes) {
         cdrom_register_warm_route(route.arm_lba, route.lbas.data(),
                                   (int)route.lbas.size(),
@@ -18836,12 +20849,16 @@ session_reboot:
     {
         std::string mc1 = memcard1_path.string();
         std::string mc2 = memcard2_path.string();
+        /* A one-slot title (MEMCARD_SLOTS 1) never reads port 2: leave it empty
+         * whatever settings.toml or the launcher stored. */
+        const bool slot2_on = memcard2_enabled && PSX_MEMCARD_SLOTS >= 2;
         const MemcardSlotConfig slots[2] = {
             { mc1.empty() ? nullptr : mc1.c_str(), memcard1_enabled ? 1 : 0 },
-            { mc2.empty() ? nullptr : mc2.c_str(), memcard2_enabled ? 1 : 0 },
+            { mc2.empty() ? nullptr : mc2.c_str(), slot2_on ? 1 : 0 },
         };
         memcard_init_slots(memcard_dir_str.c_str(), slots);
     }
+    debug_server_apply_request(debug_port);
     if (!rematch_session) {
         std::atexit(memcard_flush_all);
         /* Persist the game's native OPTION settings on any exit path (belt-and-
@@ -18849,10 +20866,7 @@ session_reboot:
          * armed, so it can't overwrite the saved file with boot defaults. */
         std::atexit(game_options_save_now);
 #ifndef PSX_NO_DEBUG_TOOLS
-        debug_server_init(debug_port);
         host_sampler_start();   /* this is the emulation thread */
-#else
-        (void)debug_port;
 #endif
 #ifdef PSX_COSIM
         cosim_init();  /* first-divergence oracle server */
@@ -18878,6 +20892,7 @@ session_reboot:
   if (g_headless) {
     audio_trace_init();
     psx_set_midframe_audio_pump(sdl_audio_pump_midframe);
+    spu_set_output_gate(spu_output_suppressed);
     sdl_audio_pump_midframe();
   }
 #endif
@@ -18902,6 +20917,8 @@ session_reboot:
         }
         gl_renderer_set_swap_interval(0);
         (void)gl_renderer_set_post_aa(g_video_post_aa);
+        gl_renderer_set_bloom(g_video_bloom);
+        gl_renderer_set_post_shader(g_video_post_shader.c_str());
         g_gl_active = gl_renderer_init_context(s_headless_gl_window) != 0;
         if (!g_gl_active || gr_backend() != GR_BACKEND_OPENGL ||
             !(SDL_GetWindowFlags(s_headless_gl_window) & SDL_WINDOW_HIDDEN)) {
@@ -19014,6 +21031,7 @@ session_reboot:
      * depend on a successful host open (Win↔Linux aux/spu fork). Routed
      * through the gated wrapper so turbo mute/sink still apply. */
     psx_set_midframe_audio_pump(sdl_audio_pump_midframe);
+    spu_set_output_gate(spu_output_suppressed);
     /* Establish the cycle-zero audio epoch before the first device deadline.
      * Otherwise the first D-1 quiet-prefix service becomes the epoch and shifts
      * every nominal 768-cycle sample boundary. */
@@ -19081,17 +21099,22 @@ session_reboot:
         /* Match display: the monitor's pixel height, now that the window says
          * which monitor. glb_set_scale only records the request; the hr
          * surface is allocated at context init below. */
-        if (effective_internal_resolution() == PSX_IR_DISPLAY && g_video_scale_applies) {
-            const int dh = psx_sdl_display_pixel_height(sdl_window);
-            const int s = psx_resolve_internal_scale_ss(PSX_IR_DISPLAY, g_video_ref_lines,
-                                                        dh, GL_MAX_INTERNAL_SCALE,
-                                                        g_video_ss_milli);
+        const int ir = effective_internal_resolution();
+        if (g_video_scale_applies && ir != PSX_IR_UNSET &&
+            (ir == PSX_IR_DISPLAY || g_video_ss_disable_at_lines > 0)) {
+            const int dh = match_display_px_h(sdl_window);
+            const int ss = display_supersample(sdl_window);
+            const int s = psx_resolve_internal_scale_ss_cap(ir, g_video_ref_lines,
+                dh, GL_MAX_INTERNAL_SCALE, ss, g_video_match_max_lines);
             gr_set_scale(s);
             g_video_requested_scale = s;
-            std::fprintf(stdout, "psxrecomp: internal resolution Match display: "
-                         "%d px -> %dx requested\n", dh, s);
+            const char *label = psx_ir_label_for(ir);
+            std::fprintf(stdout, "psxrecomp: internal resolution %s: "
+                         "%d px -> %dx requested (supersample %.3gx)\n",
+                         label ? label : "custom", dh, s, ss / 1000.0);
         }
         gl_renderer_set_swap_interval(present_effective_swap_interval()); /* applied at context init */
+
         /* Dynamic resolution: the surfaces are allocated at the scale above
          * (the ceiling) and the level steps under it (dynres_setup). */
 #ifndef PSX_NO_DEBUG_TOOLS
@@ -19103,7 +21126,7 @@ session_reboot:
         if (dbg_live_scale) {
             const int ds = psx_resolve_internal_scale(
                 PSX_IR_DISPLAY, g_video_ref_lines,
-                psx_sdl_display_pixel_height(sdl_window), GL_MAX_INTERNAL_SCALE);
+                match_display_px_h(sdl_window), GL_MAX_INTERNAL_SCALE);
             if (ds > dbg_start_scale) gr_set_scale(ds);
         }
 #else
@@ -19113,8 +21136,12 @@ session_reboot:
         gl_renderer_set_dynamic_resolution(
             ((dynres_requested() || dbg_live_scale) && g_video_scale_applies) ? 1 : 0);
         (void)gl_renderer_set_post_aa(g_video_post_aa);
+        gl_renderer_set_bloom(g_video_bloom);
+        gl_renderer_set_post_shader(g_video_post_shader.c_str());
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
         dynres_setup();
+        psx_video_current(&g_video_boot);  /* boot snapshot for restart-only rows */
+        recomp_overlay_setup(argv[0], s_picker_game_name);
         if (dbg_live_scale && g_gl_active) {
             if (!dynres_requested()) g_dynres.active = false;
             const int ceil_s = gl_renderer_dynamic_resolution_ceiling();
@@ -19291,6 +21318,12 @@ session_reboot:
     log_present_cadence();
   }
 
+    if (net_cfg.enabled && psx_mod_netplay_requires_texture_banks() &&
+        !psx_mod_texture_banks_supported()) {
+        std::fprintf(stderr, "psxrecomp: this title's netplay profile requires "
+                             "OpenGL retained texture banks; the backend is unavailable\n");
+        return 1;
+    }
     /* Register vblank presentation callback. */
     gpu_set_vblank_callback(sdl_vblank_present);
 
@@ -19392,7 +21425,8 @@ session_reboot:
         // exactly as before.
         if (psx_guest_cycle_scale_config() != 1u) {
             char tag[9];
-            std::snprintf(tag, sizeof tag, "%08x", 0x6C000000u | psx_guest_cycle_scale_config());
+            std::snprintf(tag, sizeof tag, "%08x",
+                          psx_gcs_session_profile(psx_guest_cycle_scale_config(), g_psx_gcs_batch));
             if (std::strlen(net_cfg.content_fingerprint) != 64)
                 std::snprintf(net_cfg.content_fingerprint, sizeof(net_cfg.content_fingerprint),
                               "%s", "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00000000");
@@ -19401,8 +21435,8 @@ session_reboot:
                 auto hv = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
                 *d = "0123456789abcdef"[hv(*d) ^ hv(tag[i])];
             }
-            std::printf("psxrecomp: netplay requires guest_cycle_scale %u on every peer\n",
-                        psx_guest_cycle_scale_config());
+            std::printf("psxrecomp: netplay requires guest_cycle_scale %u, batch profile %d on every peer\n",
+                        psx_guest_cycle_scale_config(), g_psx_gcs_batch != 0);
         }
         const int nrc = psx_netplay_start(&net_cfg);
         if (nrc != 0) {
@@ -19477,6 +21511,12 @@ session_reboot:
         req.have_deliver_event_ret = (psx_bios_image.deliver_event_ret != 0);
         req.have_shell_entry       = (psx_bios_image.shell_entry_phys != 0);
         req.have_game_entry        = (game_entry_pc != 0);
+        const PSXModNetplayProfile* boot_profile = psx_mod_netplay_profile();
+        if (net_cfg.enabled && boot_profile && boot_profile->skip_bios_intro) {
+            req.bios_hle = 0;
+            req.keep_intro = 0;
+            req.fast_boot = 1;
+        }
         const PsxBiosHlePlan plan = psx_bios_hle_plan(req);
 
         /* Call-HLE is a per-image capability, not just a preference: an image
@@ -19550,17 +21590,33 @@ session_reboot:
         psx_rewind_set_depth((uint32_t)g_rewind_depth);
         psx_rewind_set_interval((uint32_t)g_rewind_interval);
         psx_rewind_configure(memory_get_bios_checksum(), game_entry_pc);
-        /* Headless / agent load: PSX_LOAD_SLOT=N stages slot load (0..11)
+        /* Headless load: PSX_LOAD_SLOT=N stages slot load (0..11)
          * at the next safe block boundary after boot. */
-        if (const char *ls = std::getenv("PSX_LOAD_SLOT")) {
-            int slot = atoi(ls);
-            if (slot >= 0 && slot < 12) {
+        if (const char *ls = std::getenv("PSX_LOAD_SLOT"); ls && *ls) {
+            char *end = nullptr;
+            const long parsed = std::strtol(ls, &end, 10);
+            if (!end || *end != '\0' || parsed < 0 || parsed >= SAVESTATE_SLOTS) {
+                openxr_ready_record_load_request(
+                    -1, "state_load_request_invalid");
+                std::fprintf(stderr,
+                             "psxrecomp: PSX_LOAD_SLOT=%s ignored (expected 0..%d)\n",
+                             ls, SAVESTATE_SLOTS - 1);
+            } else {
+                const int slot = static_cast<int>(parsed);
                 if (psx_netplay_active()) {
+                    openxr_ready_record_load_request(
+                        slot, "state_load_unavailable_netplay");
                     std::fprintf(stdout,
                         "psxrecomp: PSX_LOAD_SLOT=%d ignored (use the save-state menu after netplay starts)\n",
                         slot);
                 } else if (savestate_request_load(slot)) {
+                    openxr_ready_record_load_request(slot, nullptr);
                     std::fprintf(stdout, "psxrecomp: PSX_LOAD_SLOT=%d staged\n", slot);
+                } else {
+                    openxr_ready_record_load_request(
+                        slot, "state_load_request_refused");
+                    std::fprintf(stderr,
+                        "psxrecomp: PSX_LOAD_SLOT=%d could not be staged\n", slot);
                 }
             }
         }
@@ -19861,8 +21917,30 @@ soft_return_lobby:
      * the launcher on the LOBBY room so every peer can rematch. */
     teardown_game_session_keep_lobby();
     PSXRecompV4::mod_runtime_end_netplay();
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (const int restart = s_debug_restart_disc.exchange(0)) {
+        if (const int disc = restart - 1) {
+            const char* path = cdrom_disc_roster_path(disc);
+            if (!path || !*path) return 1;
+            selected_disc_index = disc;
+            resolved_disc = path;
+        }
+        mod_runtime_set_mounted_disc_resolver(nullptr, nullptr);
+        std::string error;
+        if (!PSXRecompV4::mod_runtime_commit(resolved_disc, &error)) {
+            std::fprintf(stderr, "psxrecomp: restart preparation failed: %s\n", error.c_str());
+            return 1;
+        }
+        if (!start_mod_session(false)) return 1;
+        disc_path_str = session_disc_path(resolved_disc);
+        g_netplay_from_lobby = 0;
+        std::fprintf(stdout, "psxrecomp: debug soft session restart (disc %d)\n", selected_disc_index);
+        goto session_reboot;
+    }
+#endif
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT)
-    ae_np_prepare_lobby_rematch();
+    if (!g_ovl_launch_to_start) ae_np_prepare_lobby_rematch();
+    g_ovl_launch_to_start = 0;
     /* Say why the match ended on the launcher's status line; the
      * room and browser views both show last_error. Cleared when the player
      * ended the match themselves. */
@@ -19877,7 +21955,8 @@ soft_return_lobby:
          * happens; an automatch room is the server's and cannot. Leave it
          * here, and reopen the launcher on the browser instead. */
         const int rui_resume_room =
-            ae_np_leave_automatch_room_after_match() ? 0 : 1;
+            (ae_np_leave_automatch_room_after_match() || g_ovl_frontend_from_local) ? 0 : 1;
+        g_ovl_frontend_from_local = 0;
 
         ae_rui_set_sidecar_paths(argv[0]);
         g_lnch_expected_serial = game_id;
@@ -19893,30 +21972,16 @@ soft_return_lobby:
         ls.disc_index = selected_disc_index;
         ls.fullscreen = g_fullscreen;
         ls.ignore_aspect = 0;
-        ls.linear_filter = (g_video_texfilter != 0) ? 1 : 0;
         ls.widescreen =
             (g_video_aspect_num == 16 && g_video_aspect_den == 9) ? 1 : 0;
         ls.widescreen_hud = ls.widescreen;
         ls.enable_audio = 1;
-        ls.audio_freq = g_audio_freq;
+        ls.audio_freq = g_audio_freq;  /* fixed; the Sample rate row is hidden */
         ls.volume = host_volume_get();
         ls.window_width = g_video_win_w;
         ls.renderer = g_video_renderer;
         if (ls.renderer < 0 || ls.renderer > (vulkan_offered ? 2 : 1))
             ls.renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
-        /* Internal resolution round trip, as at first boot. */
-        const int ir_preset_seeded = g_video_internal_res;
-        const int ir_ss_seeded = psx_ir_launcher_seed_supersampling(
-            kLauncherHasInternalResolution, g_video_internal_res, g_video_scale,
-            g_video_ref_lines, psx_sdl_display_pixel_height(nullptr));
-        ls.supersampling = ir_ss_seeded;
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-        ls.internal_resolution = internal_resolution_for_launcher();
-#endif
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-        ls.dynamic_resolution = dynres_requested() != 0;
-        ls.dynamic_resolution_min = dynres_min_value();
-#endif
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
         /* The saved choice, not this run's (env A/B or already running). */
         ls.render_thread    = g_render_thread_pref;
@@ -19924,26 +21989,12 @@ soft_return_lobby:
         ls.frame_generation = g_frame_generation_pref;
 #endif
         ls.vsync = psx_vsync_to_launcher(launcher_vsync_preference());
-        ls.antialiasing = g_video_aa ? 1 : 0;
-        ls.texture_filter = g_video_texfilter;
-        ls.fmv_filter = cfg_fmv_filter_to_launcher(g_video_fmv_filter);
-        ls.geometry_correction = g_video_geometry_correction ? 1 : 0;
-        ls.perspective_texturing = g_video_perspective_texturing ? 1 : 0;
-        ls.screen_kind = g_video_screen;
-#if defined(RECOMP_LAUNCHER_HAS_SCANLINES)
-        ls.scanlines             = g_video_scanlines ? 1 : 0;
-        ls.scanline_strength_pct = (int)(g_video_scanline_strength * 100.0f + 0.5f);
-#endif
         ls.frame_interp = g_frame_interpolation ? 1 : 0;
         ls.frame_interp_fps = g_frame_interpolation_fps;
-        ls.spu_hq = g_audio_spu_hq ? 1 : 0;
         ls.assist_fast_forward_multiplier = (int)std::lround(g_fast_forward_preference * 10.0);
         ls.fast_forward_toggle_mode = g_fast_forward_toggle_mode ? 1 : 0;
         ls.auto_skip_fmv = (skip_fmv_offered && g_auto_skip_fmv) ? 1 : 0;
         ls.turbo_loads = (turbo_loads_offered && g_turbo_loads_enabled) ? 1 : 0;
-        ls.rewind_enabled = g_rewind_enabled;
-        ls.rewind_depth = g_rewind_depth;
-        ls.rewind_interval = g_rewind_interval;
         ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND] =
             normalize_hotkey_pad_binding(
                 g_hotkey_pad_rewind,
@@ -20015,6 +22066,9 @@ soft_return_lobby:
 #if defined(RECOMP_LAUNCHER_HAS_MULTITAP_ANALOG)
         ls.multitap_analog = multitap_analog ? 1 : 0;
         g_lnch_multitap_analog = multitap_analog ? 1 : 0;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+        ls.jogcon_force_feedback = psx_jogcon_ffb_player_enabled();
 #endif
         /* Preserve input devices across soft-return. A zeroed ls left every
          * player_src at None, so the rematch UI (and a subsequent writeback)
@@ -20165,6 +22219,7 @@ soft_return_lobby:
                 net_cfg.force_input_relay = ls.netplay_launch.force_input_relay ? 1 : 0;
 #if defined(RECOMP_LAUNCHER_HAS_HOST_RELAY)
                 net_cfg.transport_host = ls.netplay_launch.transport_host ? 1 : 0;
+                net_cfg.transport_ice_hub = ae_np_launch_is_ice_hub(ls.netplay_launch);
 #endif
                 net_cfg.force_turn = ls.netplay_launch.force_turn ? 1 : 0;
                 net_cfg.rollback = ls.netplay_launch.rollback ? 1 : 0;
@@ -20201,6 +22256,10 @@ soft_return_lobby:
             {
                 const int n = std::min(PSX_MAX_PLAYERS, RECOMP_LAUNCHER_MAX_PLAYERS);
                 for (int i = 0; i < n; ++i) {
+#if defined(RECOMP_LAUNCHER_HAS_PLAYER_GAMEPAD_INSTANCE)
+                    player_instance[i] = ls.player_src[i] == 2
+                        ? ls.player_gamepad_instance[i] : 0;
+#endif
                     if (ls.player_src[i] == 1) {
                         player_device[i] = "keyboard";
                     } else if (ls.player_src[i] == 0) {
@@ -20223,15 +22282,6 @@ soft_return_lobby:
                     player_deadzone[i] = ls.deadzone[i] * 32767 / 100;
                 }
             }
-            int ir_row_result = PSX_IR_UNSET;
-#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)
-            ir_row_result = ls.internal_resolution;
-#endif
-            const PsxIrAdopted ir = psx_ir_adopt_launcher(
-                kLauncherHasInternalResolution, ir_preset_seeded, ir_ss_seeded,
-                ls.supersampling, ir_row_result, g_video_ref_lines,
-                psx_sdl_display_pixel_height(nullptr),
-                ls.renderer == 1 ? GL_MAX_INTERNAL_SCALE : SW_MAX_INTERNAL_SCALE);
             /* Persist controller (and rematch video) choices without wiping
              * the rest of settings.toml — merge into the on-disk file. */
             {
@@ -20261,6 +22311,14 @@ soft_return_lobby:
                 us.multitap_enabled = multitap_enabled;
                 us.has_multitap_enabled = true;
                 apply_offline_pad_count(game_players, multitap_enabled);
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK)
+                if ((ls.jogcon_force_feedback != 0) != (psx_jogcon_ffb_player_enabled() != 0) ||
+                    us.has_jogcon_force_feedback) {
+                    us.jogcon_force_feedback = ls.jogcon_force_feedback != 0;
+                    us.has_jogcon_force_feedback = true;
+                }
+                psx_jogcon_ffb_set_player_enabled(ls.jogcon_force_feedback);
 #endif
 #if defined(RECOMP_LAUNCHER_HAS_MULTITAP_ANALOG)
                 multitap_analog = ls.multitap_analog != 0;
@@ -20295,18 +22353,6 @@ soft_return_lobby:
                 }
                 us.renderer = ls.renderer;
                 us.has_renderer = true;
-                us.supersampling = ir.save_ss;
-                us.has_supersampling = true;
-                us.internal_resolution = ir.save_ir;
-                us.has_internal_resolution = ir.save_ir != PSX_IR_UNSET;
-#if defined(RECOMP_LAUNCHER_HAS_DYNAMIC_RESOLUTION)
-                us.dynamic_resolution = ls.dynamic_resolution != 0;
-                us.has_dynamic_resolution = true;
-                us.dynamic_resolution_min = ls.dynamic_resolution_min;
-                us.has_dynamic_resolution_min = true;
-                g_video_dynres = us.dynamic_resolution ? 1 : 0;
-                g_video_dynres_min = us.dynamic_resolution_min;
-#endif
 #if defined(RECOMP_LAUNCHER_HAS_RENDER_PIPELINE)
                 /* Persisted only: the running pipeline keeps its threads;
                  * the new choice applies at next launch. */
@@ -20318,40 +22364,10 @@ soft_return_lobby:
                 g_frame_generation_pref = ls.frame_generation ? 1 : 0;
 #endif
                 us.vsync = psx_vsync_from_launcher(ls.vsync, launcher_vsync_preference()); us.has_vsync = true;
-                us.antialiasing = ls.antialiasing != 0;
-                us.has_antialiasing = true;
-                us.texture_filter = ls.texture_filter;
-                us.has_texture_filter = true;
-                us.fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
-                us.has_fmv_filter = true;
-                us.geometry_correction = ls.geometry_correction != 0;
-                us.has_geometry_correction = true;
-                us.perspective_texturing = ls.perspective_texturing != 0;
-                us.has_perspective_texturing = true;
-                us.screen_kind = ls.screen_kind;
-                us.has_screen_kind = true;
-#if defined(RECOMP_LAUNCHER_HAS_SCANLINES)
-                us.scanlines = ls.scanlines != 0;
-                us.has_scanlines = true;
-                if (ls.scanline_strength_pct >= 0) {
-                    us.scanline_strength = ls.scanline_strength_pct / 100.0;
-                    us.has_scanline_strength = true;
-                }
-#endif
                 us.frame_interpolation = ls.frame_interp != 0;
                 us.has_frame_interpolation = true;
                 us.frame_interpolation_fps = ls.frame_interp_fps;
                 us.has_frame_interpolation_fps = true;
-                us.audio_freq = ls.audio_freq;
-                us.has_audio_freq = true;
-                us.spu_hq = ls.spu_hq != 0;
-                us.has_spu_hq = true;
-                us.rewind = ls.rewind_enabled != 0;
-                us.has_rewind = true;
-                us.rewind_depth = ls.rewind_depth > 0 ? ls.rewind_depth : 50;
-                us.has_rewind_depth = true;
-                us.rewind_interval = ls.rewind_interval > 0 ? ls.rewind_interval : 15;
-                us.has_rewind_interval = true;
                 us.hotkey_pad_rewind = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND],
                     PSX_HOTKEY_PAD_SELECT_R3);
@@ -20397,21 +22413,10 @@ soft_return_lobby:
                 (void)PSXRecompV4::save_user_settings(settings_path, us);
             }
             g_video_renderer = ls.renderer;
-            g_video_internal_res = ir.preset;
-            g_video_scale = ir.scale;
-            g_video_aa = ls.antialiasing;
-            g_video_texfilter = ls.texture_filter;
-            g_video_fmv_filter = launcher_fmv_filter_to_cfg(ls.fmv_filter);
-            g_video_geometry_correction = ls.geometry_correction ? 1 : 0;
-            g_video_perspective_texturing = ls.perspective_texturing ? 1 : 0;
-            g_video_screen = ls.screen_kind;
-#if defined(RECOMP_LAUNCHER_HAS_SCANLINES)
-            g_video_scanlines = ls.scanlines != 0;
-            if (ls.scanline_strength_pct >= 0)
-                g_video_scanline_strength = ls.scanline_strength_pct / 100.0f;
-            gl_renderer_set_scanlines(g_video_scanlines ? 1 : 0,
-                                      g_video_scanline_strength);
-#endif
+            /* The internal resolution, screen model, scanlines, filtering,
+             * high-quality SPU and rewind are the host enhancement mods': the
+             * rematch's session start resolves them again
+             * (session_internal_resolution, session_host_look). */
             /* Load acceleration and FMV skipping are mod-owned on PSX, and the
              * launcher struct these come from was snapshotted BEFORE
              * mod_runtime_activate_plugins() ran. Applying them here would
@@ -20429,34 +22434,6 @@ soft_return_lobby:
             g_video_vsync = psx_vsync_from_launcher(ls.vsync, launcher_vsync_preference());
             g_mod_owned_baseline.values.video_vsync = g_video_vsync;
             apply_present_cadence();
-            g_audio_freq = ls.audio_freq;
-            if (g_audio_spu_hq != (ls.spu_hq != 0)) {
-                g_audio_spu_hq = ls.spu_hq != 0;
-                spu_shadow_set_enabled(g_audio_spu_hq);
-                /* Re-prove only the optional output mix; preserve all guest
-                 * voices, SPU RAM, envelopes and timing. */
-                spu_shadow_reset();
-            }
-            if (ls.rewind_depth > 0) {
-                g_rewind_depth = ls.rewind_depth;
-                psx_rewind_set_depth((uint32_t)g_rewind_depth);
-            }
-            if (ls.rewind_interval > 0) {
-                g_rewind_interval = ls.rewind_interval;
-                psx_rewind_set_interval((uint32_t)g_rewind_interval);
-            }
-            /* Applied live so turning rewind off frees the ring now rather
-             * than next launch — reclaiming it is the point of the setting.
-             * shutdown() also closes the overlay and drops a pending load. */
-            if ((ls.rewind_enabled ? 1 : 0) != g_rewind_enabled) {
-                g_rewind_enabled = ls.rewind_enabled ? 1 : 0;
-                psx_rewind_set_enabled(g_rewind_enabled);
-                if (g_rewind_enabled)
-                    psx_rewind_configure(memory_get_bios_checksum(),
-                                         game_entry_pc);
-                else
-                    psx_rewind_shutdown();
-            }
             g_fast_forward_preference = psx_fast_forward_preference(ls.assist_fast_forward_multiplier / 10.0);
             g_fast_forward_toggle_mode = ls.fast_forward_toggle_mode != 0;
             g_hotkey_pad_rewind = normalize_hotkey_pad_binding(
@@ -20564,7 +22541,10 @@ soft_return_lobby:
                 g_video_aspect_num = 4;
                 g_video_aspect_den = 3;
             }
-            start_mod_session(net_cfg.enabled);
+            if (!start_mod_session(net_cfg.enabled)) {
+                SDL_Quit();
+                return 1;
+            }
             disc_path_str = session_disc_path(resolved_disc);
             std::printf("psxrecomp: rematch from lobby (netplay=%d)\n",
                         net_cfg.enabled ? 1 : 0);

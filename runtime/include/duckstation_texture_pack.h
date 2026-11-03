@@ -40,6 +40,8 @@ typedef struct DuckTexturePackInfo {
     size_t pending_dump_sources;
     size_t pending_palette_records;
     size_t snapshot_bytes;
+    uint64_t decoded_images, decode_evictions;
+    size_t decoded_bytes;
 } DuckTexturePackInfo;
 
 typedef struct DuckTextureMatch {
@@ -168,6 +170,12 @@ int duck_texture_pack_match_parts(DuckTexturePack* pack,
  * Release the lease even after pack destruction. */
 void duck_texture_pack_set_decode_budget(DuckTexturePack* pack, size_t bytes);
 int duck_texture_pack_request_decode(DuckTexturePack* pack, uint64_t entry_id);
+/* Elective full preload with the hd_texture_pack_preload contract: bounded
+ * aggregate decoded bytes and concurrency, pinned images outside the decode
+ * budget, everything not preloaded left to the asynchronous decode path.
+ * Returns 1 complete, 0 partial (see out), -1 on error. */
+int duck_texture_pack_preload(DuckTexturePack* pack, size_t max_bytes,
+                              unsigned max_threads, HdTexturePreloadResult* out);
 int duck_texture_pack_acquire_decoded(DuckTexturePack* pack, uint64_t entry_id,
                                      DuckTexturePixels* out_pixels);
 void duck_texture_pixels_release(DuckTexturePixels* pixels);
@@ -189,6 +197,11 @@ int duck_texture_pack_dump_draw(DuckTexturePack* pack,
 int duck_texture_pack_flush_dumps(DuckTexturePack* pack,
                                   char* error, size_t error_capacity);
 void duck_texture_pack_reset_dump(DuckTexturePack* pack);
+/* Queue changed captures without retiring source/palette observations. Draws
+ * also checkpoint periodically so resident backgrounds appear while playing.
+ * flush_dumps additionally waits for durable files. */
+int duck_texture_pack_checkpoint_dumps(DuckTexturePack* pack,
+                                      char* error, size_t error_capacity);
 
 #ifdef __cplusplus
 }

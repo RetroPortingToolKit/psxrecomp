@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 static PSXModControllerSource s_source[PSX_MAX_PLAYERS];
+static uint8_t s_connected[PSX_MAX_PLAYERS];
 static uint8_t s_release[PSX_MAX_PLAYERS];
 /* One sample per player per frame: the early and the low-latency re-sample in
  * main.cpp share the result so a stateful callback runs once. */
@@ -16,9 +17,19 @@ int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source
     if (s_source[player] && !source) s_release[player] = 1;
     else if (source) s_release[player] = 0;
     s_source[player] = source;
+    s_connected[player] = source ? 1 : 0;
     s_cache_valid[player] = 0;
     s_bad_count[player] = 0;
     return 1;
+}
+int psx_mod_set_controller_source_connected(uint32_t player, int connected) {
+    if (player >= PSX_MAX_PLAYERS || !s_source[player] ||
+        (connected != 0 && connected != 1)) return 0;
+    s_connected[player] = (uint8_t)connected;
+    return 1;
+}
+int mod_controller_source_connected(uint32_t player) {
+    return player < PSX_MAX_PLAYERS && s_source[player] && s_connected[player];
 }
 /* Detach every source but keep a neutral release pending for each port that
  * had one, so held buttons/sticks are cleared even on a port with no device. */
@@ -26,6 +37,7 @@ void mod_controller_source_reset(void) {
     for (uint32_t i = 0; i < PSX_MAX_PLAYERS; i++) {
         if (s_source[i]) s_release[i] = 1;
         s_source[i] = NULL;
+        s_connected[i] = 0;
     }
     memset(s_cache_valid, 0, sizeof s_cache_valid);
     memset(s_bad_count, 0, sizeof s_bad_count);

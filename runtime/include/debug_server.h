@@ -84,6 +84,15 @@ typedef struct {
  * port=0 uses the default (4370). */
 void debug_server_init(int port);
 
+/* The launcher mod requests the listener before session startup. Release
+ * defaults off; PSX_DEBUG_SERVER=0/1 explicitly overrides the mod/build default.
+ * Reset the mod request before activating each new session's plugins. */
+void debug_server_request(int enabled);
+int debug_server_requested(void);
+/* Reconcile listener policy after every session's mod activation. Keeps an
+ * enabled listener, starts a newly enabled one, and closes a disabled one. */
+void debug_server_apply_request(int port);
+
 /* Current listener status for heartbeat diagnostics. error is the platform
  * socket error captured by init, or 0 when the listener is active. */
 void debug_server_get_status(int *listening, int *port, int *error);
@@ -210,6 +219,9 @@ int debug_server_get_axis_override(unsigned char st[4]);
  * -1 follows normal device selection; otherwise 0=digital, 1=DualShock,
  * 2=JogCon. */
 int debug_server_get_pad_type_override(void);
+/* set_input/press connected: -1 leaves device selection unchanged; 0/1
+ * unplug/plug the serial endpoint for that injected sample. */
+int debug_server_get_pad_connected_override(int slot);
 
 /* Host-pad layer (set_input {"layer":"host", buttons, lx..ry, lt, rt}): a
  * virtual P1 gamepad feeding the normal offline input path and host shortcut

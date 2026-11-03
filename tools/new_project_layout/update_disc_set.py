@@ -167,6 +167,19 @@ class TomlSurgeon:
         return "\n".join(self.lines) + "\n"
 
 
+def config_disc_path(cue: Path, project: Path) -> str:
+    """How game.toml names *cue*.
+
+    A disc inside the project is written relative with '/' so one game.toml
+    works on every host; a Windows-style 'disc\\x.cue' does not resolve on
+    Linux/macOS. A disc elsewhere keeps its absolute path.
+    """
+    try:
+        return cue.resolve().relative_to(project.resolve()).as_posix()
+    except ValueError:
+        return str(cue.resolve())
+
+
 def run_verify(probe_jsons: list[Path], out_json: Path) -> tuple[bool, str]:
     tool = HERE / "verify_disc_set.py"
     if not tool.is_file():
@@ -249,7 +262,8 @@ def main() -> int:
         surgeon.replace(section, key, render_array(key, values),
                         anchor_after=anchor_after)
 
-    paths = [str(c) for c in cues]
+    project = game_toml.resolve().parent
+    paths = [config_disc_path(c, project) for c in cues]
     serials = [p.serial or "" for p in probes]
     fps = [p.required_disc_fp or "" for p in probes]
 

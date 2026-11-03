@@ -1,6 +1,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "../third_party/stb_image.h"
 #include "duckstation_texture_pack.h"
+#include "texture_pack_preload.hpp"
+#include <stdexcept>
+#include <atomic>
 #include "../src/png_write.h"
 
 #include <array>
@@ -107,6 +110,98 @@ bool decode_fails(DuckTexturePack* pack, uint64_t id) {
         if (status == HD_TEXTURE_LOOKUP_NONE) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return status == HD_TEXTURE_LOOKUP_ERROR;
+}
+
+void preload(const fs::path& root) {
+    namespace tp = psx_texpreload;
+    const char* name = "texpage-P4-3631D2A04EC85311-9CBCDEA9305D7528-64x256-4-2-8x2-P0-15.png";
+    png(root/"replacements"/name,16,4);
+    std::vector<uint16_t> vram(1024*512);
+    place(vram,65,258,2,words(4)); place(vram,512,400,16,words(16));
+    {
+        auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
+        HdTexturePreloadResult r{};
+        check(duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r) == 1 && r.loaded == 1 &&
+              r.requested == 1 && r.bytes == 16*4*4 && r.failed == 0,"preload decodes the pack");
+        DuckTextureMatch match{};
+        check(duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND,"preloaded fixture matches");
+        DuckTexturePixels pixels{};
+        check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND &&
+              pixels.width == 16,"preloaded image is resident without a decode request");
+        duck_texture_pixels_release(&pixels);
+        duck_texture_pack_set_decode_budget(pack.get(),1);
+        check(duck_texture_pack_preload(pack.get(),256,1,&r) == 1 && r.loaded == 1 &&
+              r.failed == 0 && r.bytes == 256 && r.worker_errors == 0,
+              "repeat counts existing residency without decoding under the reduced budget");
+        check(duck_texture_pack_preload(pack.get(),255,1,&r) == -1 && r.bytes == 256,
+              "a smaller lifetime cap rejects without hiding pinned residency");
+        check(duck_texture_pack_acquire_decoded(pack.get(),match.entry_id,&pixels) == HD_TEXTURE_LOOKUP_FOUND,
+              "a preloaded image survives budget eviction");
+        duck_texture_pixels_release(&pixels);
+    }
+    {   /* Over the aggregate cap: partial, nothing pinned, async path still decodes. */
+        auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
+        HdTexturePreloadResult r{};
+        check(duck_texture_pack_preload(pack.get(),16,4,&r) == 0 && r.loaded == 0 && r.over_budget == 1 &&
+              r.bytes == 0,"oversized image is skipped by the preload cap");
+        DuckTextureMatch match{};
+        check(duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND,"capped fixture matches");
+        DuckTexturePixels pixels = decoded(pack.get(),match.entry_id);
+        check(pixels.width == 16,"an image the preload skipped decodes on demand");
+        duck_texture_pixels_release(&pixels);
+    }
+    {   /* Injected worker failure: caught, reported, image left to the async path. */
+        auto pack = create(root);
+        tp::fault_mode() = 1;
+        HdTexturePreloadResult r{};
+        const int status = duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r);
+        tp::fault_mode() = 0;
+        check(status == 0 && r.worker_errors == 1 && r.failed == 1 && r.loaded == 0,
+              "a throwing decode is caught and reported as a partial preload");
+    }
+    {   /* Publication can fail after retaining a pinned prefix. */
+        auto pack = create(root);
+        tp::fault_mode() = 3;
+        HdTexturePreloadResult r{};
+        const int status = duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r);
+        tp::fault_mode() = 0;
+        check(status == -1 && r.loaded == 1 && r.bytes == 16*4*4,
+              "publication failure still reports every retained byte");
+        check(duck_texture_pack_preload(pack.get(),256,1,&r) == 1 &&
+              r.loaded == 1 && r.failed == 0 && r.bytes == 256,
+              "publication retry accounts the retained prefix without decoding again");
+    }
+    {   /* Malformed image: failed, not pinned, async decode reports failure. */
+        std::ofstream(root/"replacements"/name,std::ios::binary|std::ios::trunc) << "not a png";
+        auto pack = create(root); auto q = query(vram,64,256,0,5,10,2,3);
+        HdTexturePreloadResult r{};
+        check(duck_texture_pack_preload(pack.get(),size_t(64)<<20,4,&r) == 0 && r.failed == 1 &&
+              r.worker_errors == 0,"malformed image fails the preload item");
+        DuckTextureMatch match{};
+        if (duck_texture_pack_match(pack.get(),&q,&match) == HD_TEXTURE_LOOKUP_FOUND)
+            check(decode_fails(pack.get(),match.entry_id),"malformed image still fails on demand");
+    }
+}
+
+void preload_pool() {
+    namespace tp = psx_texpreload;
+    std::atomic<int> ran{0};
+    tp::fault_mode() = 2;   /* the second thread cannot be created */
+    size_t errors = tp::run(32,8,[&](size_t){ ++ran; });
+    check(errors == 0 && ran == 32,"thread creation failure lowers concurrency, all items still run");
+    tp::fault_mode() = 1;   /* the first item throws bad_alloc */
+    ran = 0;
+    errors = tp::run(32,8,[&](size_t){ ++ran; });
+    tp::fault_mode() = 0;
+    check(errors == 1 && ran == 31,"a throwing item is caught and counted");
+    ran = 0;
+    errors = tp::run(32,8,[&](size_t k){ if (k % 4 == 0) throw std::runtime_error("x"); ++ran; });
+    check(errors == 8 && ran == 24,"item exceptions never escape a pool thread");
+    tp::Budget budget(100);
+    check(budget.reserve(60) && !budget.reserve(41) && budget.reserve(40) && !budget.reserve(1),
+          "aggregate budget reservations are bounded");
+    budget.release(50);
+    check(budget.reserve(50),"released bytes are reusable");
 }
 
 void fixed_hash_vectors() {
@@ -538,6 +633,62 @@ void split_coalesce_copy_parts(const fs::path& root) {
     check(duck_texture_pack_match_draw(pack.get(),&q,0,&match) == HD_TEXTURE_LOOKUP_NONE,"single-cover API preserves native fallback for composed draw");
 }
 
+void release_while_another_source_splits(const fs::path& root) {
+    config(root,"MaxVRAMWriteSplits: 4\nDumpC16Textures: true\nDumpTextureWidthThreshold: 1\nDumpTextureHeightThreshold: 1\n");
+    std::vector<uint16_t> vram(1024*512);
+    place(vram,0,0,4,words(16)); place(vram,8,0,8,words(64));
+    auto pack=create(root); char error[512]{};
+    duck_texture_pack_track_upload(pack.get(),0,0,4,4,vram.data(),vram.size());
+    duck_texture_pack_track_upload(pack.get(),8,0,8,8,vram.data(),vram.size());
+    auto first=query(vram,0,0,2,0,3,0,3);
+    auto second=query(vram,0,0,2,8,15,0,7);
+    duck_texture_pack_dump_draw(pack.get(),&first,0,error,sizeof error);
+    duck_texture_pack_dump_draw(pack.get(),&second,0,error,sizeof error);
+    DuckTexturePackInfo before{},after{}; duck_texture_pack_get_info(pack.get(),&before);
+    check(before.pending_dump_sources==2,"both independent source observations are pending");
+    // Retires the first upload entirely, while the second keeps right and lower clips.
+    duck_texture_pack_invalidate(pack.get(),0,0,12,4);
+    duck_texture_pack_get_info(pack.get(),&after);
+    check(after.pending_dump_sources==1 && after.queued_dump_count==1,
+          "released source finalizes even when surviving upload splits keep the total count steady");
+}
+
+void resident_checkpoint(const fs::path& root) {
+    std::vector<uint16_t> vram(1024*512);
+    place(vram,0,0,8,std::vector<uint16_t>(8*16,0x3210));
+    vram[400*1024+1] = 0x001f;
+    auto pack = create(root); char error[512]{};
+    duck_texture_pack_track_upload(pack.get(),0,0,8,16,vram.data(),vram.size());
+    auto q = query(vram,0,0,0,0,15,0,15,0,400);
+    duck_texture_pack_dump_draw(pack.get(),&q,0,error,sizeof(error));
+    check(duck_texture_pack_checkpoint_dumps(pack.get(),error,sizeof(error)) == HD_TEXTURE_LOOKUP_FOUND,
+          "resident background checkpoint queues without retirement");
+    DuckTexturePackInfo info{}; duck_texture_pack_get_info(pack.get(),&info);
+    check(info.queued_dump_count == 1 && info.pending_dump_sources == 0,
+          "checkpoint publishes a still-resident source");
+    duck_texture_pack_dump_draw(pack.get(),&q,0,error,sizeof(error));
+    duck_texture_pack_checkpoint_dumps(pack.get(),error,sizeof(error));
+    duck_texture_pack_get_info(pack.get(),&info);
+    check(info.queued_dump_count == 1,"unchanged resident draws do not requeue PNGs");
+    /* A later disjoint crop must retain the previous crop and captured CLUT.
+     * Its union is 32 wide, rather than a separate right-hand 16-wide image. */
+    q.u_first = 16; q.u_last = 31;
+    duck_texture_pack_dump_draw(pack.get(),&q,1,error,sizeof(error));
+    vram[400*1024+1] = 0x7c00;
+    duck_texture_pack_checkpoint_dumps(pack.get(),error,sizeof(error));
+    flush(pack.get());
+    const auto files = dumps(root);
+    check(files.size() == 2,"resident checkpoint and expanded final crop are durable");
+    bool union_found = false;
+    for (const auto& file : files) {
+        DuckTextureKey key{}; duck_texture_parse_name(file.filename().u8string().c_str(),&key);
+        if (key.width == 32) {
+            const auto pixels = read_png(file,32,16);
+            union_found = key.offset_x == 0 && key.semitransparent && pixels.size() > 8 && pixels[4] == 255 && pixels[6] == 0;
+        }
+    }
+    check(union_found,"checkpoint preserves palette originals and earlier crop union");
+}
 void copied_pack_ownership(const fs::path& root) {
     std::vector<uint16_t> vram(1024*512); place(vram,0,0,8,std::vector<uint16_t>(8*16,0x3210));
     vram[400*1024+1] = 31;
@@ -568,6 +719,8 @@ int main(int argc, char** argv) {
         palettes(root/"palettes"); st_alias_duplicates(root/"keys"); failed_payloads(root/"invalid"); dumping(root/"dump");
         official_binary_oracle(root/"official-oracle"); defaults_and_options(root/"defaults");
         immutable_palettes_and_pages(root/"snapshots"); split_coalesce_copy_parts(root/"lifecycle"); copied_pack_ownership(root/"ownership");
+        resident_checkpoint(root/"resident"); preload(root/"preload"); preload_pool();
+        release_while_another_source_splits(root/"release-split");
         /* Every artifact is created beneath this fresh, explicitly named test
          * root. No user-provided paths participate in recursive cleanup. */
         if (argc > 1 && !std::strcmp(argv[1],"--keep-artifacts")) std::printf("ARTIFACT_ROOT: %s\n",root.u8string().c_str());

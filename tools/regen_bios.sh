@@ -102,7 +102,9 @@ if [ -n "$BUILD" ]; then
         exit 1
     fi
 else
-    for d in recompiler/build-t2 recompiler/build recompiler/cmake-build*; do
+    # ../build-recompiler: where a game repo's tools/ci/build_emitters.sh
+    # builds when the framework is its psxrecomp/ submodule.
+    for d in recompiler/build-t2 recompiler/build recompiler/cmake-build* ../build-recompiler; do
         [ -f "$d/CMakeCache.txt" ] || continue
         # Skip a directory left by a failed configure and keep looking: picking
         # it and dying is strictly worse than using the next candidate that

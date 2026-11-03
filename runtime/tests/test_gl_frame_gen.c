@@ -27,15 +27,24 @@
  * phase 0.5 image's digest (p05=) to compare with master.
  * Original source-owned scene; no retail payload. */
 static void fixture_present(int generated);
+#ifndef GL_PRESENT_TEST_HOOK
 #define GL_PRESENT_TEST_HOOK(gen) fixture_present(gen)
+#endif
 /* argv[6] == "pt": the present thread is on; every image it puts in the
  * window (read back after its copy, before its swap) must be the image the
  * composing side presented, in the same order. */
 static void fixture_window(int slot);
+#ifndef GL_PRESENT_THREAD_TEST_HOOK
 #define GL_PRESENT_THREAD_TEST_HOOK(slot) fixture_window(slot)
+#endif
 #include "gpu_gl_renderer.c"
+#include "gl_postfx_projection_fixture.h"
+#include "gl_fmv_fixture.h"
 #include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
+#include "gl_batch_policy_lle.c"
+#include "gl_batch_policy_hle.c"
+#include "gl_batch_policy_select.c"
 /* gpu_render.c (the facade) observes draws for HD texture packs: no pack here. */
 int gpu_hd_textures_active(void){return 0;}
 int gpu_hd_textures_dump_enabled(void){return 0;}
@@ -50,8 +59,18 @@ void gpu_hd_textures_begin_copy(int sx,int sy,int dx,int dy,int w,int h){
     (void)sx;(void)sy;(void)dx;(void)dy;(void)w;(void)h;}
 void gpu_hd_textures_end_copy(void){}
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t n,uint32_t a){(void)n;(void)a;return 0;}
+/* mod_texture_banks.c refuses inside a netplay host-output hook (mod_runtime.cpp); none here. */
+int psx_mod_host_output_scope(void){return 0;}
 uint32_t psx_mod_read_word(uint32_t a){(void)a;return 0;}
 int g_psx_vram_dirty_tracking=0;
+/* Host menu overlay and video telemetry (psx_host_menu.c, video_telemetry.cpp):
+ * none here. */
+int psx_host_menu_overlay_image(const uint32_t **pixels, int *w, int *h){(void)pixels;(void)w;(void)h;return 0;}
+void psx_video_telemetry_present(int result){(void)result;}
+void psx_video_telemetry_compose(int renderer, int scale, int source_w, int source_h,
+                               int drawable_w, int drawable_h, int viewport_w, int viewport_h){
+    (void)renderer;(void)scale;(void)source_w;(void)source_h;(void)drawable_w;(void)drawable_h;
+    (void)viewport_w;(void)viewport_h;}
 uint64_t s_frame_count=0;
 void gpu_vram_dirty_mark_row_impl(uint32_t y){(void)y;}
 void gpu_vram_dirty_mark_rect(int x,int y,int w,int h){(void)x;(void)y;(void)w;(void)h;}
@@ -87,6 +106,7 @@ int psx_savestate_menu_overlay_image(const uint32_t **p,int *w,int *h){*p=NULL;*
 int present_shot_take(char *out,int n){(void)out;(void)n;return 0;}
 void present_shot_done(int ok){(void)ok;}
 void psx_host_sleep_ms(uint32_t ms){(void)ms;}
+void psx_host_sleep_micros(unsigned us){(void)us;}
 /* Called on every present. On the render thread it also stands in for a slow
  * swap, so replay runs well behind recording and anything it read live from
  * the "guest" (instead of what was recorded) would be a later value. */
@@ -261,6 +281,31 @@ static void backdrop(int g, int bx) {
         }
 }
 
+/* FG_OCCLUDE=1 (reprojection, on the FG_PAN = 6 scene): after the near
+ * triangles (z = 1000) and over the backdrop (z = 2000), a far quad
+ * (z = 3000, moving with the same camera) is drawn last, as a game's sort or
+ * Max Detail's far sections can leave far geometry. The reprojection depth
+ * image must keep the nearest world depth there: painter order put the far
+ * quad's depth over the near triangles, and the warp moved them as distant
+ * scenery (objects through walls, doubled signs). */
+static int g_occlude;
+static void occlude_quad(int g, int bx) {
+    const int T = (g % 9) * g_pan;   /* the triangles' camera: T units at z = 1000 */
+    const int qx = bx + 60 + T / 3, qy = 40, qw = 120, qh = 100, z = 3000;
+    const int xs4[4] = { qx, qx + qw, qx, qx + qw }, ys4[4] = { qy, qy, qy + qh, qy + qh };
+    static const int tri[2][3] = { { 0, 1, 2 }, { 1, 3, 2 } };
+    for (int t = 0; t < 2; t++) {
+        uint32_t id[3]; int32_t pc[9], h[3], xs[3], ys[3];
+        for (int k = 0; k < 3; k++) {
+            const int c = tri[t][k];
+            id[k] = 3000u + (uint32_t)c; xs[k] = xs4[c]; ys[k] = ys4[c];
+            pc[3 * k] = (xs[k] - bx - T / 3) * 3 + T; pc[3 * k + 1] = ys[k] * 3; pc[3 * k + 2] = z; h[k] = 1000;
+        }
+        gl_renderer_fg_source(id, pc, h, xs, ys);
+        gr_draw_flat_triangle(xs[0], ys[0], xs[1], ys[1], xs[2], ys[2], 0x7c1f);
+    }
+}
+
 /* One game frame drawn into buffer bx. Positions move by whole pixels with
  * g; every fifth frame triangle 0 jumps across the screen. */
 static void game_frame_part(int g, int bx, int part) {
@@ -291,6 +336,7 @@ static void game_frame_part(int g, int bx, int part) {
         }
     }
     if (part == 0) return;
+    if (g_occlude) occlude_quad(g, bx);
     gr_draw_flat_rect(bx + 8, 220, 80, 12, 0x7fff);              /* HUD */
     gr_draw_flat_rect(900, 300, 32, 32, (uint16_t)(0x03e0 + g));  /* render to texture */
     gr_copy_rect(bx + 10, 10, 900, 400, 16, 16);                  /* copy out of the display */
@@ -356,6 +402,8 @@ int main(int argc, char **argv) {
         g_pgxp_color = g_pgxp && strstr(e, "color") != NULL;
         g_pgxp_seam = g_pgxp && strstr(e, "seam") != NULL;
     }
+    g_occlude = getenv("FG_OCCLUDE") && getenv("FG_OCCLUDE")[0] == '1';
+    if (g_occlude) g_pan = 6;
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SKIP no video (%s)\n", SDL_GetError());
         return 77;
@@ -446,6 +494,37 @@ int main(int argc, char **argv) {
         SDL_GL_GetDrawableSize(s_win, &ww, &wh);
         uint32_t *img = (uint32_t *)malloc((size_t)ww * wh * 4);
         check(img_last[0] && img_last[1], "two real images kept");
+        if (g_occlude) {
+            /* The reprojection depth image under the wall must hold the
+             * wall's depth (the nearest world surface), whatever the draw
+             * order: painter order left the far quad's depth there, and the
+             * warp moved the wall's pixels as distant scenery. */
+            check(fg_generate(0.5, 0) == 1, "occlusion: generated");
+            check(s_rp_ztex && s_rp_zw > 0 && s_rp_zh > 0, "occlusion: depth image built");
+            float *z = (float *)malloc((size_t)s_rp_zw * s_rp_zh * 4 * sizeof(float));
+            glBindTexture(GL_TEXTURE_2D, s_rp_ztex);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, z);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            long near_px = 0, far_px = 0;
+            /* The quad's box at the newer frame (g = 23: T = 30, +10 px). */
+            for (int y = 45; y < 135; y++)
+                for (int x = 75; x < 185; x++) {
+                    const int zx = x * RP_ZS, zy = y * RP_ZS;
+                    if (zx >= s_rp_zw || zy >= s_rp_zh) continue;
+                    const float *t = &z[((size_t)zy * s_rp_zw + zx) * 4];
+                    if (t[1] != 1.0f || t[0] <= 0.0f) continue;   /* world pixels only */
+                    const float Z = 1.0f / t[0];
+                    near_px += Z < 1500.0f; far_px += Z > 2500.0f;
+                }
+            free(z);
+            printf("occlusion depth_image near=%ld far=%ld reprojected=%llu\n", near_px, far_px,
+                   (unsigned long long)s_rp_frames);
+            check(near_px > 100, "occlusion: the near triangles are in the depth image");
+            check(far_px == 0, "occlusion: the far quad drawn last leaves no depth over nearer world (nearest wins)");
+            free(img);
+            printf(failures ? "FAIL\n" : "PASS\n");
+            return failures ? 1 : 0;
+        }
         check(fg_generate(1.0, 0) == 1, "compose at phase 1");
         uint64_t d1 = read_back(img);
         uint64_t r1 = fnv(img_last[1], (size_t)ww * wh * 4, 0xcbf29ce484222325ull);
@@ -549,6 +628,15 @@ int main(int argc, char **argv) {
                       "reprojection: the warp follows the camera (under half the newer frame's difference)");
             }
             check(none * 100 < (long)ww * wh, "reprojection: no holes, every pixel from a real frame or the redraw (<1%)");
+            /* Edge disocclusion (FG_PAN > 1: near triangles over a backdrop
+             * with parallax): what the in-between camera uncovers at a near
+             * object's trailing edge comes from the older frame's own warp
+             * (two-frame reprojection), not the newer frame's pixels
+             * un-warped. The single-frame warp left 0.5 % here. */
+            if (g_pan > 1) {
+                check(s_rp_older_frames > 0, "reprojection: the older frame was warped too");
+                check(none * 300 < (long)ww * wh, "reprojection: uncovered edges filled by the older frame's warp (<0.33%)");
+            }
             check(hud > 0 && hud_bad == 0, "reprojection: HUD exactly the newer frame's");
             free(ref);
         }
@@ -561,6 +649,46 @@ int main(int argc, char **argv) {
         check(memcmp(before, s_vram, sizeof before) == 0,
               "generated frame leaves native VRAM unchanged under HD authority");
         gl_renderer_set_hd_texture_mode(0);
+        /* A large unprojected triangle after projected geometry must reject
+         * reprojection, while preserving the pre-existing redraw route. */
+        {
+            FgList *b = &s_fg_l[s_fg_pb];
+            FgPrim *unplaced = NULL;
+            int seen = 0;
+            double view_area = 0;
+            for (uint32_t vi = 0; vi < s_fg_fit.nviews; ++vi) {
+                const float *a = s_fg_fit.v[vi].area;
+                double area = (double)(a[2]-a[0])*(a[3]-a[1]);
+                if (area > view_area) view_area = area;
+            }
+            for (uint32_t i = 0; i < b->n; ++i) {
+                int pi = b->rec2prim[i];
+                if (pi < 0) continue;
+                FgPrim *p = &b->prims.v[pi];
+                if (!(p->vid[0] || p->vid[1] || p->vid[2])) continue;
+                double area = 0.5*fabs((double)(p->x[1]-p->x[0])*(p->y[2]-p->y[0])-
+                                      (double)(p->x[2]-p->x[0])*(p->y[1]-p->y[0]));
+                if (seen) { unplaced = p; break; }
+                seen = 1;
+            }
+            check(unplaced != NULL && view_area > 0, "method scope: large geometry witness");
+            if (unplaced) {
+                FgPrim saved = *unplaced;
+                int saved_method = s_fg_reproject;
+                const float *a = s_fg_fit.v[0].area;
+                unplaced->x[0] = a[0]; unplaced->x[1] = a[2]; unplaced->x[2] = a[0];
+                unplaced->y[0] = a[1]; unplaced->y[1] = a[1]; unplaced->y[2] = a[3];
+                memset(unplaced->vid, 0, sizeof(unplaced->vid));
+                memset(unplaced->pz, 0, sizeof(unplaced->pz));
+                check(fg_unplaced_share(b) > fg_max_unplaced(), "method scope: unplaced geometry exceeds threshold");
+                s_fg_reproject = 1;
+                check(fg_generate(0.5, 0) == 0, "method scope: reprojection refuses unplaceable geometry");
+                s_fg_reproject = 0;
+                check(fg_generate(0.5, 0) == 1, "method scope: redraw keeps its original route");
+                *unplaced = saved;
+                s_fg_reproject = saved_method;
+            }
+        }
         free(img);
         check(n_gen > 0, "generated frames were presented");
     }

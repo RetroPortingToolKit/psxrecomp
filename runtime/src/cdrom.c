@@ -153,34 +153,32 @@ static int response_count;
 #define FALLBACK_SECTOR_HEADER_SIZE 12
 #define FALLBACK_WHOLE_SECTOR_SIZE (FALLBACK_SECTOR_HEADER_SIZE + SECTOR_SIZE)
 #define SECTOR_BUFFER_SIZE WHOLE_SECTOR_SIZE
-/* ---- sector buffer ring ------------------------------------------------
- * Hardware has eight rotating sector buffers. One buffer means a sector
- * arriving mid-drain clobbers the FIFO under the guest, and that is
- * measured, not assumed: at the artifact screen psx-runtime drains sector
- * 125113 into BOTH 0x0E2718 and 0x0DCF18 in one frame, while DuckStation
- * drains 125112 then 125113 into the same two buffers. Sector 125112 -- the
- * effect's colour palette -- is read here ([D], not lost) and then
- * overwritten by 125113 before the guest takes it, so raw file bytes end up
- * rendered as vertex colours.
- *
- * THE READ POINTER IS THE PART THAT MATTERS. An earlier attempt latched
- * read = write when an INT1 was PRESENTED, and regressed badly (70 lost
- * sectors, every Setloc retried): this drive free-runs, so by presentation
- * time `write` has advanced past the sector that INT1 was raised for, and
- * the guest was handed a sector seven ahead of the one it asked for. Each
- * INT1 therefore records the slot it announces AT RAISE TIME, and
- * presentation moves the read pointer to exactly that slot -- never to
- * "newest". */
+#define CDROM_REQUEST_BFRD 0x80u
+/* The decoder rotates through eight sector buffers. IRQ presentation selects
+ * the announced slot; BFRD copies that slot into an independent data FIFO.
+ * Keeping these separate prevents a later IRQ from replacing an active drain. */
 #define CDROM_NUM_SECTOR_BUFFERS 8
 typedef struct { uint8_t data[SECTOR_BUFFER_SIZE]; int size; int pos; } CdSectorBuf;
 static CdSectorBuf s_sector_ring[CDROM_NUM_SECTOR_BUFFERS];
-static int s_ring_read;      /* slot the guest is draining */
+static int s_ring_read;      /* slot announced by the current data-ready IRQ */
 static int s_ring_write;     /* slot most recently filled */
+static CdSectorBuf s_data_fifo; /* BFRD-latched bytes; IRQs cannot replace them */
 static uint64_t s_ring_dropped;   /* unread slot overwritten: guest a ring behind */
 
 
-#define RB_ (s_sector_ring[s_ring_read])
+#define RB_ (s_data_fifo)
 static int rb_available(void) { return RB_.size > 0 && RB_.pos < RB_.size; }
+
+/* An explicit BFRD request may reload the retained announced sector after
+ * software clears the FIFO. Automatic refills consume each new slot once. */
+static void load_data_fifo(int requested) {
+    CdSectorBuf *sector = &s_sector_ring[s_ring_read];
+    if (!(request_reg & CDROM_REQUEST_BFRD) || rb_available() ||
+        sector->size <= 0 || (!requested && sector->pos >= sector->size)) return;
+    s_data_fifo = *sector;
+    s_data_fifo.pos = 0;
+    sector->pos = sector->size;
+}
 
 /* Regression tripwire. The ring once stranded a sector in a slot nothing
  * could reach, starving over a million drains; this stays as an O(1) check
@@ -211,6 +209,7 @@ static uint64_t command_history_seq;
 /* Seek target */
 static uint8_t seek_min, seek_sec, seek_sect;
 static int     s_setloc_lba = -1;  /* LBA captured at SetLoc time */
+static uint64_t s_stream_generation = 1;
 static int     setloc_seek_far;
 static int     setloc_pending;   /* a Setloc has been issued and not consumed */
 
@@ -275,7 +274,6 @@ static uint8_t cd_muted;
 
 #define CDROM_SKIP_NONE 0
 #define CDROM_SKIP_XA_AUDIO_REALTIME 1
-#define CDROM_REQUEST_BFRD 0x80u
 
 typedef struct CDROMSectorDelivery {
     uint8_t raw_mode;
@@ -337,6 +335,10 @@ int cdrom_get_setloc_lba(void) { return s_setloc_lba; }
  * carrying sector 125113's bytes was read as "the game asked for 125113"
  * when the open question was precisely WHICH sector's data it drained. */
 int cdrom_get_delivered_lba(void) { return last_sector_lba; }
+uint64_t cdrom_get_stream_generation(void) { return s_stream_generation; }
+/* SetLoc is already reset and serialized with the controller. A second host
+ * copy would retain the newer movie after loading an earlier CD snapshot. */
+int cdrom_get_stream_start_lba(void) { return s_setloc_lba; }
 
 /* Frontend XA-stream probe (FMV auto-skip / turbo-load gating in main.cpp). */
 int cdrom_xa_stream_active(void) { return xa_stream_active; }
@@ -1223,8 +1225,9 @@ static void xa_reset_decode(void) {
 }
 
 /* CD-audio volume matrix ([data_source][output_port], 0x80 = unity) applied
- * to every decoded XA/CD-DA sample, exactly as the CD controller does on
- * real hardware (Beetle PS_CDC::ApplyVolume, cdc.cpp:524). Written via the
+ * to every decoded XA/CD-DA sample, as the CD controller does on real
+ * hardware (PSX-SPX cdromdrive, the ATV0..ATV3 volume registers and
+ * ADPCTL). Written via the
  * index-2/3 register banks and latched by the "apply changes" bit; games
  * drive it CONSTANTLY — X5 fades music between scenes with it (measured
  * 0x7E steady, ramping to 0x00 at transitions on the Beetle oracle). Not
@@ -1436,7 +1439,8 @@ static int maybe_deliver_xa_audio(const uint8_t* raw_data, int lba,
     return 1;
 }
 
-static int read_sector_at(int min, int sec, int sect) {
+static int read_sector_at_with_raw(int min, int sec, int sect,
+                                  const uint8_t* supplied_raw) {
     int lba = msf_to_lba(min, sec, sect);
     uint8_t user_data[SECTOR_SIZE];
     uint8_t raw_data[RAW_SECTOR_SIZE];
@@ -1445,7 +1449,12 @@ static int read_sector_at(int min, int sec, int sect) {
     const uint8_t *history_bytes = user_data;
     int history_size = SECTOR_SIZE;
 
-    if (iso_handle) {
+    if (supplied_raw) {
+        memcpy(raw_data, supplied_raw, sizeof raw_data);
+        memcpy(user_data, raw_data + RAW_USER_DATA_OFFSET, sizeof user_data);
+        have_raw = 1;
+        if (subq_replacements_active) update_last_valid_subq((uint32_t)lba);
+    } else if (iso_handle) {
         have_raw = iso_read_raw_sector(iso_handle, lba, raw_data, RAW_SECTOR_SIZE);
         if (have_raw) {
             memcpy(user_data, raw_data + RAW_USER_DATA_OFFSET, SECTOR_SIZE);
@@ -1542,6 +1551,10 @@ static int read_sector_at(int min, int sec, int sect) {
     return delivery.data_delivered ? 1 : 0;
 }
 
+static int read_sector_at(int min, int sec, int sect) {
+    return read_sector_at_with_raw(min, sec, sect, NULL);
+}
+
 static void advance_msf(int* m, int* s, int* f) {
     (*f)++;
     if (*f >= 75) { *f = 0; (*s)++; }
@@ -1549,6 +1562,7 @@ static void advance_msf(int* m, int* s, int* f) {
 }
 
 static void clear_sector_buffer(void) {
+    memset(&s_data_fifo, 0, sizeof(s_data_fifo));
     for (int i = 0; i < CDROM_NUM_SECTOR_BUFFERS; i++) {
         s_sector_ring[i].size = 0;
         s_sector_ring[i].pos = 0;
@@ -1558,14 +1572,9 @@ static void clear_sector_buffer(void) {
     request_reg &= (uint8_t)~CDROM_REQUEST_BFRD;
 }
 
-/* One-deep asynchronous data-ready notification, mirroring Beetle
- * PS_CDC::SetAIP/CheckAIP (cdc.cpp:829,816): a data sector that comes due
- * while the guest still has an unacked controller INT does NOT stop disc
- * time — the sector buffer is overwritten on schedule (hardware clobbers
- * the FIFO the same way) and its INT1 pends here until the ack clears
- * irq_flag. If ANOTHER data sector lands while one is still pending, the
- * old notification is lost exactly like Beetle's "Previous notification
- * skipped" warning (counted, traced 'P'). */
+/* A sector can arrive while the preceding controller INT is unacknowledged.
+ * Disc time advances and its notification waits here. A later arrival can
+ * replace that pending notification, but cannot overwrite the latched FIFO. */
 static uint8_t  pending_dataready;        /* 0/1: INT1 awaiting presentation */
 static uint8_t  pending_dataready_stat;   /* stat_reg snapshot at pend time */
 static int      pending_dataready_slot;   /* ring slot THIS INT1 announces */
@@ -1643,10 +1652,16 @@ static void start_read_stream(uint8_t cmd) {
         xa_reset_decode();
         spu_cd_audio_reset();
     }
+    /* Setloc names a new destination only until it is consumed. Pause keeps
+     * read_* at the next sector; a later ReadN/ReadS without Setloc resumes
+     * there. Reusing seek_* unconditionally restarts XA dialogue at its first
+     * sector while the game's subtitle clock resumes where it paused. */
+    if (setloc_pending) {
+        read_min = seek_min;
+        read_sec = seek_sec;
+        read_sect = seek_sect;
+    }
     setloc_pending = 0;
-    read_min = seek_min;
-    read_sec = seek_sec;
-    read_sect = seek_sect;
     read_cmd = cmd;
     read_delay = initial_read_delay_cycles();
     s_cd_probe_read_start_count++;
@@ -1877,8 +1892,9 @@ static int data_fifo_ready(void) {
 static uint64_t s_dataready_fires;  /* INT1 (data-ready) raised per streamed sector — FMV dispatch probe */
 uint64_t cdrom_get_dataready_fires(void) { return s_dataready_fires; }
 
-static int deliver_read_sector(void) {
-    int delivered = read_sector_at(read_min, read_sec, read_sect);
+static int deliver_read_sector_with_raw(const uint8_t* supplied_raw) {
+    int delivered = read_sector_at_with_raw(read_min, read_sec, read_sect,
+                                           supplied_raw);
     advance_msf(&read_min, &read_sec, &read_sect);
     if (xa_data_end_pending) {
         xa_data_end_pending = 0;
@@ -1893,39 +1909,31 @@ static int deliver_read_sector(void) {
     response_push(stat_reg);
     /* Delivered immediately: this INT1 announces the slot just filled. */
     s_ring_read = s_ring_write;
+    load_data_fifo(0);
     set_irq(CDIRQ_DATA_READY);
     fire_cdrom_irq();
     s_dataready_fires++;
     return 1;
 }
 
-/* Both callers advance the read pointer, and that is DELIBERATE.
- *
- * Splitting them -- so the "guest has not acked" path parked the sector
- * without advancing -- looked obviously correct (why redirect a drain the
- * guest is still working through?) and regressed hard: int1_lost went 0 -> 70
- * and the game retried every Setloc. Without the advance, sectors pile up
- * behind an unacked INT, each new one replaces the pended notification, and
- * the guest is never told. The reasoning was sound and the measurement said
- * otherwise; it was committed without a verification run, which is how it
- * survived long enough to confuse three later experiments.
- *
- * Do not re-split this without a cd_verify run showing int1_lost stays 0. */
-static int deliver_read_sector_without_irq(void) {
+static int deliver_read_sector(void) {
+    return deliver_read_sector_with_raw(NULL);
+}
+
+/* A continuing DMA needs the newly filled slot immediately. A sector whose
+ * INT1 is merely pending must leave the previously announced slot readable:
+ * Final Bout drains that slot after acknowledging its IRQ. Redirecting it
+ * here substitutes the following file's sector for the requested final one.
+ * present_pending_dataready selects the pending slot when its INT1 is exposed.
+ * Keep DMA continuation separate; delaying that refill previously caused
+ * starvation and lost notifications in multi-sector transfers. */
+static int deliver_read_sector_without_irq(int dma_continuation) {
     int delivered = read_sector_at(read_min, read_sec, read_sect);
     advance_msf(&read_min, &read_sec, &read_sect);
-    if (delivered) {
-        /* Seamless refill for an in-flight multi-sector DMA: no INT1 is
-         * raised because this is a CONTINUATION of the drain already in
-         * progress, not a new notification. The read pointer must therefore
-         * follow it -- with one buffer this refill landed in the very buffer
-         * being drained, and the ring reproduces that only by advancing.
-         *
-         * Measured: leaving the pointer behind starved 1,128,960 drains and
-         * stranded exactly 70 refills -- the same 70 that showed up as
-         * int1_lost, with every Setloc retried. This one line is the whole
-         * difference between the ring regressing and the ring working. */
+    if (delivered && dma_continuation) {
+        /* Multi-sector DMA needs a refill without a second INT1. */
         s_ring_read = s_ring_write;
+        load_data_fifo(0);
     }
     return delivered;
 }
@@ -2137,6 +2145,17 @@ static void exec_command(uint8_t cmd) {
 
     case 0x02: /* SetLoc */
         if (param_count >= 3) {
+            /* Invalid BCD/ranges report INT5(10h) and preserve the existing
+             * target, matching the controller and Beetle Command_Setloc.
+             * They are not an XA successful-stream sentinel. */
+            if ((param_fifo[0] & 0x0Fu) > 9u || param_fifo[0] > 0x99u ||
+                (param_fifo[1] & 0x0Fu) > 9u || param_fifo[1] > 0x59u ||
+                (param_fifo[2] & 0x0Fu) > 9u || param_fifo[2] > 0x74u) {
+                response_push(stat_reg | 1u);
+                response_push(0x10u);
+                set_irq(CDIRQ_ERROR);
+                break;
+            }
             int current_lba = (last_sector_lba >= 0)
                 ? last_sector_lba
                 : msf_to_lba(seek_min, seek_sec, seek_sect);
@@ -2144,6 +2163,7 @@ static void exec_command(uint8_t cmd) {
             seek_sec = bcd_to_bin(param_fifo[1]);
             seek_sect = bcd_to_bin(param_fifo[2]);
             s_setloc_lba = msf_to_lba(seek_min, seek_sec, seek_sect);
+            ++s_stream_generation;
             setloc_pending = 1;
             setloc_seek_far = (abs(current_lba - s_setloc_lba) > 16) ? 1 : 0;
             warm_route_on_setloc(s_setloc_lba);
@@ -2323,14 +2343,14 @@ static void exec_command(uint8_t cmd) {
             lba = (int)cdda_lba;
             track = cdda_track;
             track_lba = (int)iso_cdda_track_start_lba(iso_handle, track);
-        } else if (reading) {
-            /* GetlocP reports the drive/sub-Q position. During a read the
-             * sector stream has already advanced past the data-ready sector. */
-            lba = msf_to_lba(read_min, read_sec, read_sect);
-        } else if (last_sector_lba >= 0) {
-            lba = last_sector_lba;
         } else {
-            lba = msf_to_lba(seek_min, seek_sec, seek_sect);
+            /* GetlocP reports drive/sub-Q position, not the data buffer's
+             * header (GetlocL). SeekL/SeekP update this cursor even though
+             * they leave reading stopped; Pause retains it. SetLoc alone
+             * only changes the target. Returning last_sector_lba here kept
+             * THPS2 polling the previous asset's position after its initial
+             * music seek, so it never issued ReadS to start the track. */
+            lba = msf_to_lba(read_min, read_sec, read_sect);
         }
         if (subq_replacements_active) update_last_valid_subq((uint32_t)lba);
         if (subq_replacements_active && last_valid_subq_available) {
@@ -2438,6 +2458,7 @@ static void exec_command(uint8_t cmd) {
             set_irq(CDIRQ_ERROR);
             break;
         }
+        ++s_stream_generation;
         stop_read_stream();
         xa_reset_decode();
         spu_cd_audio_reset();
@@ -2551,6 +2572,7 @@ static void process_pending(uint32_t cycles) {
             if (delivered) {
                 response_push(stat_reg);
                 s_ring_read = s_ring_write;
+                load_data_fifo(0);
                 set_irq(CDIRQ_DATA_READY);
                 fire_cdrom_irq();
             }
@@ -2745,13 +2767,13 @@ static void process_read_stream(uint32_t cycles) {
              * asserted: refill the buffer so the DMA keeps draining, no new
              * INT (the historical shape; games start the DMA inside the
              * data-ready callback before acking). */
-            if (deliver_read_sector_without_irq())
+            if (deliver_read_sector_without_irq(1))
                 cd_timing_flag(timing_seq, CDT_DATA | CDT_DMA);
         } else {
             /* Guest hasn't acked the previous INT yet. Read the sector on
              * schedule (XA audio + buffer overwrite happen inside), and
              * pend its data-ready INT1 one deep. */
-            int delivered = deliver_read_sector_without_irq();
+            int delivered = deliver_read_sector_without_irq(0);
             if (delivered) {
                 cd_timing_flag(timing_seq, CDT_DATA | CDT_PENDED);
                 if (pending_dataready) {
@@ -2793,6 +2815,7 @@ static void present_pending_dataready(void) {
     response_clear();
     response_push(pending_dataready_stat);
     s_ring_read = pending_dataready_slot;   /* the slot this INT1 announced */
+    load_data_fifo(0);
     set_irq(CDIRQ_DATA_READY);
     fire_cdrom_irq();
     cd_timing_arm_irq(timing_seq);
@@ -2803,6 +2826,7 @@ void cdrom_init(const char* cue_path) {
     memset(param_fifo, 0, sizeof(param_fifo));
     memset(response_fifo, 0, sizeof(response_fifo));
     memset(s_sector_ring, 0, sizeof(s_sector_ring));
+    memset(&s_data_fifo, 0, sizeof(s_data_fifo));
     s_ring_read = 0;
     s_ring_write = 0;
     memset(last_sector_buffer, 0, sizeof(last_sector_buffer));
@@ -2901,8 +2925,9 @@ uint32_t cdrom_read(uint32_t addr) {
     case 0x1F801800: {
         uint8_t s = index_reg & 0x03;
         /* Bit 2 is ADPBUSY (XA-ADPCM playback in progress), NOT "ADPCM
-         * empty" — it must idle at 0. The oracle (beetle cdc.cpp, Read
-         * A==0) never raises it. Raising it permanently made every BIOS
+         * empty" — it must idle at 0 (PSX-SPX cdromdrive, HSTS: "ADPBUSY
+         * ADPCM busy (R, 1=playing XA-ADPCM)"; the Beetle reference never
+         * raises it either). Raising it permanently made every BIOS
          * status poll see "XA busy" and steered the kernel CD driver
          * init down a different branch from real hardware. */
         if (param_count == 0) s |= (1 << 3);
@@ -2980,9 +3005,9 @@ void cdrom_write(uint32_t addr, uint32_t value) {
         if (index_reg == 2) {
             cd_pending_vol[0][1] = val;   /* Left-CD -> Right-SPU */
         } else if (index_reg == 3) {
-            /* Apply-changes latch (bit 5) copies pending -> live, exactly
-             * like Beetle cdc.cpp case 0x0B. (ADPMute bit 0 is not modeled
-             * by the Beetle oracle either.) */
+            /* Apply-changes latch (bit 5) copies pending -> live (PSX-SPX
+             * cdromdrive, ADPCTL bit 5 CHNGATV). (ADPMUTE, bit 0, is not
+             * modeled; the Beetle reference does not model it either.) */
             if (val & 0x20) {
                 memcpy(cd_decode_vol, cd_pending_vol, sizeof(cd_decode_vol));
             }
@@ -2990,6 +3015,9 @@ void cdrom_write(uint32_t addr, uint32_t value) {
             request_reg = val;
             if (!(request_reg & CDROM_REQUEST_BFRD)) {
                 RB_.pos = 0;
+                RB_.size = 0;
+            } else {
+                load_data_fifo(1);
             }
         } else if (index_reg == 1) {
             /* Controller IRQ acknowledge. irq_flag is a single numeric response
@@ -3115,6 +3143,9 @@ uint32_t cdrom_dma_read(void) {
 }
 
 int cdrom_dma_ready(void) {
+    /* A decoder refill can arrive before the previous FIFO is fully drained.
+     * Preserve those bytes, then latch the announced continuation on demand. */
+    if (dma_cdrom_transfer_active()) load_data_fifo(0);
     if (request_reg & CDROM_REQUEST_BFRD) ring_note_starved();
     return (request_reg & CDROM_REQUEST_BFRD) && rb_available() &&
            (RB_.pos + 4 <= RB_.size);
@@ -3262,6 +3293,134 @@ int cdrom_data_read_active(void) {
     return reading && !xa_stream_active;
 }
 
+int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
+    const uint8_t* last_user_data, int (*commit)(void*), void* context) {
+    uint8_t raw[RAW_SECTOR_SIZE];
+    CDROMSectorDelivery delivery;
+    uint32_t last;
+    int next_m, next_s, next_f;
+    CdSectorBuf* slot;
+    /* Only the already-ACKed, untouched first sector of a normal ReadN can
+     * be replaced. An interrupt, DMA or arriving sector keeps full ownership
+     * on the original path. No defaults or ordinary CD timings change. */
+    if (!commit || !last_user_data || !sectors || !has_disc() ||
+        lba >= iso_sector_count(iso_handle) || lba > 0x7FFFFF00u ||
+        sectors > 0x7FFFFF00u - lba ||
+        sectors > iso_sector_count(iso_handle) - lba ||
+        !reading || read_cmd != 0x06 ||
+        (mode_reg != 0x80u && mode_reg != 0xA0u) ||
+        xa_stream_active || cdda_playing ||
+        s_setloc_lba != (int)lba || setloc_pending ||
+        msf_to_lba(read_min, read_sec, read_sect) != (int)lba ||
+        irq_flag || pending.pending ||
+        queued_cmd.pending || pending_dataready || pending_present_due ||
+        param_count || (response_read < response_count) ||
+        dma_cdrom_transfer_active() || rb_available())
+        return 0;
+    last = lba + sectors - 1u;
+    if (!iso_read_raw_sector(iso_handle, last, raw, sizeof raw) ||
+        raw[15] != CDROM_SECTOR_MODE2 ||
+        memcmp(raw + 16, raw + 20, 4) || !(raw[18] & 0x08u) ||
+        (raw[18] & 0x66u) || /* audio, video, Form2, real-time */
+        memcmp(raw + RAW_USER_DATA_OFFSET, last_user_data, SECTOR_SIZE))
+        return 0;
+    /* RAM delivery validates its entire destination before writing. Neither
+     * it nor overlay-capture bookkeeping executes guest code, so the guarded
+     * controller ownership cannot change before this atomic commit. */
+    if (!commit(context)) return 0;
+    delivery = classify_raw_sector(raw, 1);
+    delivery.data_delivered = 1;
+    stop_read_stream();
+    clear_sector_buffer();
+    s_ring_read = s_ring_write = (int)(sectors % CDROM_NUM_SECTOR_BUFFERS);
+    slot = &s_sector_ring[s_ring_write];
+    if (mode_reg & 0x20u) {
+        memcpy(slot->data, raw + WHOLE_SECTOR_OFFSET, WHOLE_SECTOR_SIZE);
+        slot->size = WHOLE_SECTOR_SIZE;
+    } else {
+        memcpy(slot->data, raw + RAW_USER_DATA_OFFSET, SECTOR_SIZE);
+        slot->size = SECTOR_SIZE;
+    }
+    slot->pos = slot->size;
+    s_data_fifo = *slot;
+    /* PsyQ consumes 12 header/subheader bytes before the 2048 user bytes in
+     * whole-sector mode. Retain the ECC tail and BFRD latch just as that
+     * transfer does; a later explicit BFRD can reload the retained sector. */
+    s_data_fifo.pos = (mode_reg & 0x20u) ? 12 + SECTOR_SIZE : SECTOR_SIZE;
+    request_reg |= CDROM_REQUEST_BFRD;
+    memcpy(last_sector_buffer, slot->data, (size_t)slot->size);
+    last_sector_lba = (int)last;
+    last_sector_size = slot->size;
+    last_sector_frame = (uint32_t)s_frame_count;
+    last_sector_mode = mode_reg;
+    last_sector_have_raw = 1;
+    last_sector_raw_mode = delivery.raw_mode;
+    last_sector_xa_file = delivery.xa_file;
+    last_sector_xa_channel = delivery.xa_channel;
+    last_sector_xa_submode = delivery.xa_submode;
+    last_sector_xa_coding = delivery.xa_coding;
+    lba_to_msf((int)(lba + sectors), 150, &next_m, &next_s, &next_f);
+    read_min = next_m; read_sec = next_s; read_sect = next_f;
+    setloc_pending = 0;
+    if (subq_replacements_active) update_last_valid_subq(last);
+    record_sector_history((int)last, slot->size, mode_reg, 1, slot->data, &delivery);
+    trace_cdrom('H', lba, sectors, 0);
+    return 1;
+}
+
+int cdrom_resident_feed_sector(uint32_t lba, const uint8_t* user_data) {
+    uint8_t raw[RAW_SECTOR_SIZE];
+    uint64_t timing_seq;
+    int min, sec, frame;
+    /* The title owns the verified file, callback and destination consumer.
+     * This helper owns one real controller delivery, never guest RAM or a
+     * host-side continuation. A declined call leaves the controller intact. */
+    if (!user_data || !has_disc() || lba >= iso_sector_count(iso_handle) ||
+        lba > 0x7FFFFF00u || !reading || read_cmd != 0x06 ||
+        (mode_reg != 0x80u && mode_reg != 0xA0u) ||
+        xa_stream_active || xa_data_end_pending || cdda_playing ||
+        cdda_data_end_pending || setloc_pending ||
+        msf_to_lba(read_min, read_sec, read_sect) != (int)lba ||
+        irq_flag || pending.pending || queued_cmd.pending ||
+        pending_dataready || pending_present_due || param_count ||
+        response_read < response_count || dma_cdrom_transfer_active())
+        return 0;
+    /* PsyQ reads 12 header bytes and 2048 user bytes, retaining 280 ECC
+     * bytes in whole-sector mode. That tail is not another owner's payload.
+     * A partial header/payload or any other unread FIFO must not be replaced. */
+    if (rb_available() &&
+        !(mode_reg == 0xA0u && RB_.size == WHOLE_SECTOR_SIZE &&
+          RB_.pos == 12 + SECTOR_SIZE && last_sector_mode == mode_reg &&
+          last_sector_have_raw && last_sector_lba >= 0 &&
+          (uint32_t)last_sector_lba + 1u == lba))
+        return 0;
+    if (!iso_read_raw_sector(iso_handle, lba, raw, sizeof raw) ||
+        raw[15] != CDROM_SECTOR_MODE2 ||
+        memcmp(raw + 16, raw + 20, 4) || !(raw[18] & 0x08u) ||
+        (raw[18] & 0x66u) ||
+        memcmp(raw + RAW_USER_DATA_OFFSET, user_data, SECTOR_SIZE))
+        return 0;
+    lba_to_msf((int)lba, 150, &min, &sec, &frame);
+    if (raw[12] != bin_to_bcd(min) || raw[13] != bin_to_bcd(sec) ||
+        raw[14] != bin_to_bcd(frame))
+        return 0;
+
+    /* Keep the stock header/subheader/ECC and supply the verified resident
+     * payload. The ordinary FIFO, status response, IRQ presentation and DMA
+     * paths handle the sector; the guest still executes its original Ready.
+     * There is no saved host pointer or multi-sector grant to invalidate. */
+    memcpy(raw + RAW_USER_DATA_OFFSET, user_data, SECTOR_SIZE);
+    timing_seq = cd_timing_begin_sector((int)lba);
+    (void)deliver_read_sector_with_raw(raw);
+    cd_timing_flag(timing_seq, CDT_DATA);
+    cd_timing_arm_irq(timing_seq);
+    s_accel_block_accum = 0;
+    read_delay = sector_delay_cycles();
+    s_cd_timing_next_due = psx_cycle_count + (uint64_t)read_delay;
+    trace_cdrom('H', lba, 1, 0);
+    return 1;
+}
+
 /* Savestate post-load: authentic CD second-response delays (ReadTOC ~30M
  * cycles, Init ~1.1M, far seeks, etc.) leave the restored frame on screen
  * for up to ~1s+ of wall time. Clamp those timers so the next cdrom_advance
@@ -3334,7 +3493,7 @@ int cdrom_savestate_boost_vblanks_remaining(void) {
 /* LE field wire — PendingCmd/QueuedCmd have host padding. */
 #include "pst_wire.h"
 
-static int cdrom_snap_emit(PstW *w) {
+static int cdrom_snap_emit(PstW *w, int extended) {
 #define W8(f)  do { if (!pst_w_u8(w, (uint8_t)(f))) return 0; } while (0)
 #define WI(f)  do { if (!pst_w_i32(w, (int32_t)(f))) return 0; } while (0)
 #define WU(f)  do { if (!pst_w_u32(w, (uint32_t)(f))) return 0; } while (0)
@@ -3345,20 +3504,10 @@ static int cdrom_snap_emit(PstW *w) {
     WU(cdrom_intc_latched_generation); WI(irq_present_rem_cycles());
     WB(param_fifo); WI(param_count);
     WB(response_fifo); WI(response_read); WI(response_count);
-    /* WIRE FORMAT IS UNCHANGED, deliberately: only the slot the guest is
-     * draining goes out, in the exact layout the single-buffer version used
-     * (bytes, read position, available flag, size).
-     *
-     * Serialising all eight slots grew the section, so every previously saved
-     * state failed its size check -- and boot_state applies sections as it
-     * goes with no rollback, so RAM/CPU/GPU were already overwritten by the
-     * time the CD section was rejected. The load reported failure and left a
-     * half-restored machine that ran to the frame and froze.
-     *
-     * The other slots hold sectors the drive has read ahead; dropping them
-     * costs a re-read the game already knows how to ask for, which is what
-     * the single-buffer version effectively did across a load anyway. */
-    WB(s_sector_ring[s_ring_read].data);
+    /* Keep the legacy single-buffer prefix readable by the new loader.
+     * New states append the decoder ring and notification indices, so a
+     * snapshot between BFRD and DMA retains both the FIFO and pending data. */
+    WB(s_data_fifo.data);
     WI(RB_.pos);
     WI(rb_available());
     WI(RB_.size);
@@ -3384,6 +3533,20 @@ static int cdrom_snap_emit(PstW *w) {
     W8(pending.cmd); WI(pending.pending); WI(pending_rem_cycles()); WI(pending.phase);
     W8(queued_cmd.cmd); WB(queued_cmd.params); WI(queued_cmd.param_count); WI(queued_cmd.pending);
     W8(pending_dataready); W8(pending_dataready_stat);
+    if (extended) {
+        WU(0x32464443u); /* CDF2 */
+        WI(s_ring_read); WI(s_ring_write); WI(pending_dataready_slot);
+        WI(pending_present_due ? cycles_until_due(pending_present_due) + 1 : 0);
+        for (int slot = 0; slot < CDROM_NUM_SECTOR_BUFFERS; slot++) {
+            WB(s_sector_ring[slot].data);
+            WI(s_sector_ring[slot].pos); WI(s_sector_ring[slot].size);
+        }
+        if (extended >= 2) {
+            WU(0x33464443u); /* CDF3: unconsumed Setloc, distinct from drive head */
+            W8(setloc_pending);
+        }
+    }
+
 #undef W8
 #undef WI
 #undef WU
@@ -3392,7 +3555,7 @@ static int cdrom_snap_emit(PstW *w) {
     return 1;
 }
 
-static int cdrom_snap_parse(PstR *r) {
+static int cdrom_snap_parse(PstR *r, int extended) {
     uint8_t b;
     int32_t i;
     uint32_t u;
@@ -3409,26 +3572,20 @@ static int cdrom_snap_parse(PstR *r) {
     RU(cdrom_intc_latched_generation); RI(present_rem);
     RB(param_fifo); RI(param_count);
     RB(response_fifo); RI(response_read); RI(response_count);
-    /* Restore into slot 0 and start the ring clean. See the emitter: the wire
-     * format is the single-buffer one, so states written before the ring
-     * existed still load. */
-    RB(s_sector_ring[0].data);
-    RI(s_sector_ring[0].pos);
-    { int avail; RI(avail); (void)avail; }   /* derived from pos < size now */
-    RI(s_sector_ring[0].size);
-    for (int slot = 1; slot < CDROM_NUM_SECTOR_BUFFERS; slot++) {
-        s_sector_ring[slot].size = 0;
-        s_sector_ring[slot].pos = 0;
-    }
-    s_ring_read = 0;
-    s_ring_write = 0;
-    pending_dataready_slot = 0;
+    RB(s_data_fifo.data);
+    RI(s_data_fifo.pos);
+    { int avail; RI(avail); (void)avail; }
+    RI(s_data_fifo.size);
+    if (s_data_fifo.size < 0 || s_data_fifo.size > SECTOR_BUFFER_SIZE)
+        s_data_fifo.size = 0;
+    if (s_data_fifo.pos < 0 || s_data_fifo.pos > s_data_fifo.size)
+        s_data_fifo.pos = 0;
+    memset(s_sector_ring, 0, sizeof(s_sector_ring));
+    /* Legacy states stored only one sector. Reconstruct that announced
+     * sector; new states restore the exact ring in the extension below. */
+    s_sector_ring[0] = s_data_fifo;
+    s_ring_read = s_ring_write = pending_dataready_slot = 0;
     pending_present_due = 0;
-    /* A size off the wire indexes this buffer: clamp before anything uses it. */
-    if (s_sector_ring[0].size < 0 || s_sector_ring[0].size > SECTOR_BUFFER_SIZE)
-        s_sector_ring[0].size = 0;
-    if (s_sector_ring[0].pos < 0 || s_sector_ring[0].pos > s_sector_ring[0].size)
-        s_sector_ring[0].pos = 0;
 
     RB(last_sector_buffer); RI(last_sector_lba); RI(last_sector_size);
     RB(last_valid_subq); RI(last_valid_subq_available);
@@ -3448,6 +3605,21 @@ static int cdrom_snap_parse(PstR *r) {
     R8(pending.cmd); RI(pending.pending); RI(pending_rem); RI(pending.phase);
     R8(queued_cmd.cmd); RB(queued_cmd.params); RI(queued_cmd.param_count); RI(queued_cmd.pending);
     R8(pending_dataready); R8(pending_dataready_stat);
+    if (extended) {
+        RU(u); /* extension was validated before mutating controller state */
+        RI(s_ring_read); RI(s_ring_write); RI(pending_dataready_slot);
+        RI(i);
+        pending_present_due = i > 0 ? psx_cycle_count + (uint32_t)(i - 1) : 0;
+        for (int slot = 0; slot < CDROM_NUM_SECTOR_BUFFERS; slot++) {
+            RB(s_sector_ring[slot].data);
+            RI(s_sector_ring[slot].pos); RI(s_sector_ring[slot].size);
+        }
+        if (extended >= 2) {
+            RU(u); /* validated CDF3 marker */
+            R8(setloc_pending);
+        }
+    }
+
 #undef R8
 #undef RI
 #undef RU
@@ -3461,23 +3633,63 @@ static int cdrom_snap_parse(PstR *r) {
     return 1;
 }
 
+static uint32_t cdrom_snapshot_legacy_bytes(void) {
+    PstW w;
+    pst_w_init(&w, NULL, 0);
+    (void)cdrom_snap_emit(&w, 0);
+    return (uint32_t)w.written;
+}
+
+int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
+    const uint32_t legacy = cdrom_snapshot_legacy_bytes();
+    const uint32_t current = cdrom_snapshot_bytes();
+    if (!p) return 0;
+    if (len == legacy) return 1;
+    if (len != current && len != current - 5u) return 0; /* CDF3 or CDF2 */
+    PstR r;
+    uint32_t magic;
+    int32_t index, pos, size, delay;
+    pst_r_init(&r, p + legacy, len - legacy);
+    if (!pst_r_u32(&r, &magic) || magic != 0x32464443u) return 0;
+    for (int n = 0; n < 3; n++) {
+        if (!pst_r_i32(&r, &index) || index < 0 || index >= CDROM_NUM_SECTOR_BUFFERS)
+            return 0;
+    }
+    if (!pst_r_i32(&r, &delay) || delay < 0 ||
+        delay > CDROM_PEND_PRESENT_DELAY + 1) return 0;
+    for (int slot = 0; slot < CDROM_NUM_SECTOR_BUFFERS; slot++) {
+        if (!pst_r_bytes(&r, NULL, SECTOR_BUFFER_SIZE) ||
+            !pst_r_i32(&r, &pos) || !pst_r_i32(&r, &size) ||
+            size < 0 || size > SECTOR_BUFFER_SIZE || pos < 0 || pos > size)
+            return 0;
+    }
+    if (len == current) {
+        uint8_t pending_loc;
+        if (!pst_r_u32(&r, &magic) || magic != 0x33464443u ||
+            !pst_r_u8(&r, &pending_loc) || pending_loc > 1) return 0;
+    }
+    return r.p == r.end;
+}
+
 uint32_t cdrom_snapshot_bytes(void) {
     PstW w;
     pst_w_init(&w, NULL, 0);
-    (void)cdrom_snap_emit(&w);
+    (void)cdrom_snap_emit(&w, 2);
     return (uint32_t)w.written;
 }
 void cdrom_snapshot_write(uint8_t *p) {
     PstW w;
     uint32_t n = cdrom_snapshot_bytes();
     pst_w_init(&w, p, n);
-    (void)cdrom_snap_emit(&w);
+    (void)cdrom_snap_emit(&w, 2);
 }
 int cdrom_snapshot_read(const uint8_t *p, uint32_t len) {
     PstR r;
-    if (len != cdrom_snapshot_bytes()) return 0;
+    if (!cdrom_snapshot_validate(p, len)) return 0;
     pst_r_init(&r, p, len);
-    if (!cdrom_snap_parse(&r))
+    const int extended = len == cdrom_snapshot_legacy_bytes() ? 0 :
+                         len == cdrom_snapshot_bytes() ? 2 : 1;
+    if (!cdrom_snap_parse(&r, extended))
         return 0;
     /* Absolute host deadlines are not on the wire — rebuild from restored
      * relative read_delay (psx_cycle_count is resynced by the load caller). */
@@ -3591,6 +3803,7 @@ int cdrom_disc_select(int index_1based) {
     last_sector_lba = -1;
     last_sector_size = 0;
     s_setloc_lba = -1;
+    ++s_stream_generation;
 
     /* A warm route tracks a position on the disc that is no longer mounted.
      * The registered table is configuration and stays; the arming is not. */

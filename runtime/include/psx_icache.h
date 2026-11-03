@@ -14,13 +14,13 @@ void psx_icache_reset(void);
 void psx_icache_fetch(CPUState *cpu, uint32_t addr);
 void psx_icache_fetch_miss(CPUState *cpu, uint32_t addr);
 
-/* BIU / cache control (0xFFFE0130) bits the cache model reads; names and values
- * as Beetle's cpu.cpp BIU_* defines. */
-#define PSX_BIU_ICACHE_ENABLE 0x800u  /* BIU_ENABLE_ICACHE_S1 */
-#define PSX_BIU_DCACHE_ENABLE 0x080u  /* BIU_ENABLE_DCACHE */
-#define PSX_BIU_TAG_TEST      0x004u  /* BIU_TAG_TEST_MODE */
-#define PSX_BIU_INVALIDATE    0x002u  /* BIU_INVALIDATE_MODE */
-#define PSX_BIU_LOCK          0x001u  /* BIU_LOCK_MODE */
+/* BIU / cache control (0xFFFE0130) bits the cache model reads (PSX-SPX
+ * memorycontrol, "FFFE0130h - BCC, BIU/Cache Configuration Register"). */
+#define PSX_BIU_ICACHE_ENABLE 0x800u  /* bit 11, IS1 */
+#define PSX_BIU_DCACHE_ENABLE 0x080u  /* bit 7, DS */
+#define PSX_BIU_TAG_TEST      0x004u  /* bit 2, TAG */
+#define PSX_BIU_INVALIDATE    0x002u  /* bit 1, INV */
+#define PSX_BIU_LOCK          0x001u  /* bit 0, LOCK */
 
 /* A CPU store made while SR.IsC is set, applied to the I-cache model: the
  * I-cache half of Beetle PS_CPU::WriteMemory's IsC branch. With the I-cache

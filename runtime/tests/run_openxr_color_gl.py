@@ -42,7 +42,9 @@ def main():
     loader = function(source, "static int load_modern_gl(void)")
     prefix = source[:source.index("static int load_modern_gl(void)")] + loader
     vs_start = source.index("static const char *PRESENT_VS")
-    vs = source[vs_start:source.index("/* Present sampling", vs_start)]
+    # Extract the shader declaration only. Post-processing helpers now follow
+    # it and require the complete presenter, which this focused fixture omits.
+    vs = source[vs_start:source.index(";\n", vs_start) + 2]
     pair_start = source.index("typedef struct StereoPair")
     pair = source[pair_start:source.index("} StereoPair;", pair_start) + len("} StereoPair;")]
     declarations = """
@@ -52,11 +54,15 @@ static float s_present_gamma=1.0f;
 static GLenum s_last_fbo_status;
 static StereoPair s_stereo_pair[2];
 static int s_stereo_current, s_native_surface_rect[4];
+static GLuint s_xr_surface_program,s_xr_surface_vao,s_xr_surface_vbo,s_xr_surface_tex[2];
+static GLuint pt_target_fbo(void) { return 0; } /* no present thread in fixture */
+#include "xr_surface_math.h"
 """
     signatures = ["static GLuint compile_shader(", "static GLuint build_program_ex(",
                   "static GLuint build_program(", "static GLuint make_tex(",
                   "static int make_fbo(", "static uint32_t pass_gl_errors(",
-                  "static int openxr_color_draw(", "static int openxr_copy_eye(",
+                  "static int openxr_color_draw(", "static int openxr_surface_draw(",
+                  "static int openxr_copy_eye(",
                   "static int openxr_copy_native("]
     header = prefix + vs + pair + declarations + "\n".join(function(source, s) for s in signatures)
     (dest / "openxr_color_fixture_renderer.h").write_text(header, encoding="utf-8")

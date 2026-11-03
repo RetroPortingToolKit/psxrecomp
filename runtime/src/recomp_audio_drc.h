@@ -96,6 +96,8 @@ void rab_config_defaults(rab_config *c);
  * success, non-zero on allocation/parameter failure. */
 int  rab_init(rab_bridge *b, const rab_config *cfg);
 void rab_free(rab_bridge *b);
+/* Resume after intentional accelerated-output discard; never deletes PCM. */
+void rab_resume_after_sink(rab_bridge *b);
 
 /* Producer: append `frames` interleaved int16 source samples. Thread: emu side. */
 void rab_push(rab_bridge *b, const int16_t *interleaved, int frames);
@@ -313,6 +315,12 @@ static void rab__update_controller(rab_bridge *b, int pull_frames) {
     /* A high queue (positive error) must be consumed FASTER -> larger step. */
     b->cur_step = (c->source_rate / c->host_rate) * (1.0 + b->corr);
     b->stats.last_correction = b->corr;
+}
+
+void rab_resume_after_sink(rab_bridge *b) {
+    if (rab_fill_ms(b) < b->cfg.target_ms) b->primed = 0;
+    b->err_lp = b->corr = b->corr_i = 0.0;
+    b->cur_step = b->cfg.source_rate / b->cfg.host_rate;
 }
 
 void rab_pull(rab_bridge *b, int16_t *out, int frames) {

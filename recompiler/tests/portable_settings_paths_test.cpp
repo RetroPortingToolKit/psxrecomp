@@ -99,6 +99,22 @@ int main() {
     }
 #endif
 
+    // A packaged game is its own project root even when an ancestor carries
+    // a root marker (a global ~/.gitignore): its relative [runtime] paths
+    // (memcard_dir = "saves") must stay inside the game folder.
+    {
+        const fs::path home = game.parent_path() / "home";
+        const fs::path pkg = home / "Games" / "R4";
+        fs::create_directories(pkg / "licenses");
+        std::ofstream(home / ".gitignore") << "*.o\n";
+        std::ofstream(pkg / "game.toml") << "\n";
+        check(PSXRecompV4::find_project_root(pkg / "game.toml") == home,
+              "precondition: a plain folder walks up to the marked ancestor");
+        std::ofstream(pkg / "licenses" / "psxrecomp-LICENSE") << "MIT\n";
+        check(PSXRecompV4::find_project_root(pkg / "game.toml") == PSXRecompV4::host_absolute(pkg),
+              "a packaged game folder is its own root");
+    }
+
     fs::remove_all(game.parent_path(), ec);
     if (failures) return 1;
     std::printf("portable_settings_paths_test: all checks passed\n");

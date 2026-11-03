@@ -38,7 +38,9 @@ static int failures;
 #define CHECK(c, m) do { if (!(c)) { fprintf(stderr, "FAIL: %s\n", m); failures++; } } while (0)
 
 /* ---- runtime globals the two units share with the rest of the runtime -- */
+int      g_boot_state_cpu_timing_restored = 0;
 int      g_ls_replay_active = 0;
+int psx_mod_host_output_scope(void) { return 0; }
 int      g_ls_mode = 0;
 int      g_precise_mode = 0;
 int      g_psx_call_bail = 0;
@@ -110,7 +112,8 @@ int  psx_netplay_active(void) { return 0; }
 int  psx_netplay_is_resimulating(void) { return 0; }
 void psx_netplay_local_view_clear(void) {}
 int  psx_netplay_local_view_shed(void) { return 0; }
-void gpu_ws_set_local_view_scope(int on) { (void)on; }
+static int s_local_scope;
+void gpu_ws_set_local_view_scope(int on) { s_local_scope=on; }
 int  psx_selfcheck_resim_active(void) { return 0; }
 int  psx_selfcheck_enabled(void) { return 0; }
 int  psx_rewind_is_open(void) { return 0; }
@@ -207,12 +210,20 @@ uint32_t gl_renderer_stereo_unavailable(void) { return 0; }
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     return gl_renderer_pass_begin(x, y, w, h, 0, 0, reuse);
 }
+uint32_t gl_renderer_local_pair_unavailable(void) { return 0; }
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
+    return gl_renderer_pass_begin(x,y,w,h,0,0,reuse);
+}
+int gl_renderer_local_pair_set_presentation(int enabled) { (void)enabled;return 1; }
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
     gl_renderer_pass_end(0, keep);
     if (keep) s_stereo_mask |= 1u << eye;
     return 1;
 }
 void gl_renderer_stereo_stage_reset(void) { s_stereo_mask = 0; }
+int gl_renderer_stereo_stage_readback_pair(uint32_t w,uint32_t h,uint8_t *rgba) {
+    (void)w;(void)h;(void)rgba;return 0;
+}
 void gl_renderer_stereo_reset(void) { s_stereo_mask = 0; s_stereo_published = 0; }
 int gl_renderer_stereo_set_presentation(uint32_t mode) { return mode <= 1; }
 static int32_t s_view[3];
@@ -220,6 +231,9 @@ void gte_render_view_get(int32_t xyz[3]) { memcpy(xyz, s_view, sizeof s_view); }
 void gte_render_view_set(const int32_t xyz[3]) { memcpy(s_view, xyz, sizeof s_view); }
 static PSXModRenderView s_pose;
 void gte_render_pose_get(PSXModRenderView *v) { *v = s_pose; memcpy(v->translation, s_view, sizeof s_view); }
+int gpu_render_projective_begin(void) { return 1; }
+void gpu_render_projective_end(void) {}
+void psx_mod_set_render_projective(int enabled) { (void)enabled; }
 void gte_render_pose_set(const PSXModRenderView *v) { s_pose = *v; memcpy(s_view, v->translation, sizeof s_view); }
 int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2][3]) {
     (void)cycle; (void)view;
@@ -227,6 +241,13 @@ int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2
     s_stereo_published = id;
     return 1;
 }
+/* Referenced by render_pass.c's frame tracing and stereo shedding. */
+void gl_renderer_runtime_diag(uint64_t out[6]) { memset(out, 0, 6 * sizeof *out); }
+void gl_renderer_scene_prim_counts(uint64_t *prims, uint64_t *textured) {
+    if (prims) *prims = 0;
+    if (textured) *textured = 0;
+}
+uint64_t psx_host_mono_ms(void) { return 1; }
 
 /* ---- an overlay shard's cycle shim (overlay_dispatch_preamble.c.inc) --- */
 static uint32_t s_shard_pending;
@@ -325,6 +346,21 @@ static int span_pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
     (void)alpha_q16;
     s_span_frames = (const Frames *)user;
     return psx_mod_run_guest_span(cpu, 0x800143FCu, 0x8001473Cu);
+}
+
+static int s_device_accesses;
+static int device_read_pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
+    const uint32_t *access = (const uint32_t *)user;
+    (void)alpha_q16;
+    cpu->gpr[8] = 0xBADu;
+    s_ram[0x1000] ^= 0xff;
+    psx_advance_cycles(1000);
+    CHECK(render_pass_mmio_read_allowed(0x1F801070u, 4), "checkpointed IRQ read allowed");
+    CHECK(render_pass_mmio_read_allowed(0x1F801110u, 2), "checkpointed timer read allowed");
+    CHECK(render_pass_mmio_read_allowed(0x1F801814u, 4), "checkpointed GPU read allowed");
+    if (render_pass_mmio_read_allowed(access[0], access[1])) s_device_accesses++;
+    CHECK(0, "unsupported read must unwind before returning a fabricated value");
+    return 1;
 }
 
 static int pass_fn(struct CPUState *cpu, void *user, uint32_t alpha_q16) {
@@ -574,6 +610,55 @@ int main(void) {
     check_live(&live, "after a span watchdog abort");
     CHECK(s_prec_begins > 0 && s_prec_open == 0,
           "precision shadows were checkpointed and rolled back on every pass, aborts included");
+
+    /* Reads can consume a FIFO or ACK while time is frozen. Refuse before
+     * the device access and restore the same live state as a watchdog abort. */
+    {
+        const uint32_t reads[][2] = {{0x1F801040u,1}, {0x1F801044u,2},
+            {0x1F801800u,1}, {0x1F801820u,4}, {0x1F801DA8u,2}};
+        render_pass_reset_session();
+        for (unsigned i=0;i<sizeof reads/sizeof reads[0];++i) {
+            snap(&live);
+            CHECK(render_pass_mmio_read_allowed(reads[i][0],reads[i][1]),
+                  "live device reads remain allowed");
+            CHECK(psx_mod_render_pass(&cpu,&pass,device_read_pass_fn,(void *)reads[i])==0,
+                  "uncheckpointed read discards the entire render image");
+            render_pass_get_stats(&st);
+            CHECK(st.device_reads==i+1 && st.aborted==i+1 && st.watchdog==0,
+                  "device read refusal is distinct from a watchdog");
+            CHECK(st.last_device_read==reads[i][0] && st.last_device_read_width==reads[i][1],
+                  "device read diagnostic identifies the access");
+            CHECK(st.last_failure.reason && strcmp(st.last_failure.reason,"device_read")==0,
+                  "failure reason identifies device read");
+            CHECK(!s_device_accesses && !st.verify_mismatch && !s_open_passes,
+                  "device untouched, machine restored, no image retained");
+            CHECK(cpu.gpr[8]==0x55u && !memcmp(ram_before,s_ram+0x1000,sizeof ram_before),
+                  "CPU and RAM preceding rejected read are restored");
+            check_live(&live,"after rejected device read");
+        }
+        CHECK(psx_mod_render_pass(&cpu,&pass,pass_fn,&clean)==1,
+              "normal drawing recovers after a rejected device read");
+    }
+
+    /* Offline view pairs use the same unwind protection, including the
+     * own-view scope which stereo rendering does not enter. */
+    {
+        PSXModStereoFrame frame={sizeof frame,1,0,0,320,240};
+        uint64_t kept;
+        snap(&live);
+        CHECK(psx_mod_render_local_pair(&cpu,&frame,stereo_draw,NULL)==1,
+              "complete local pair publishes");
+        kept=s_stereo_published;
+        CHECK(psx_mod_render_local_pair(&cpu,&frame,stereo_draw,&runaway)==0,
+              "local second-view watchdog discards the pair");
+        CHECK(s_stereo_published==kept && s_stereo_mask==0,
+              "local abort cannot publish half a pair");
+        CHECK(!s_local_scope && !psx_mod_local_view_scope(),
+              "local abort closes the own-view scope");
+        check_live(&live,"after local second-view watchdog");
+        CHECK(psx_mod_render_local_pair(&cpu,&frame,stereo_draw,NULL)==1,
+              "local pair recovers after watchdog");
+    }
 
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;

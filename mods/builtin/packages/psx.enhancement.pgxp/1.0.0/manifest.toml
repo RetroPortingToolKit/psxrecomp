@@ -15,7 +15,7 @@ game_id = "*"
 [[feature]]
 id = "pgxp"
 name = "PGXP Precision"
-description = "Disabled by default (the faithful floor). Corrections are validated per vertex against the exact packet words the game drew with and clamped to half a pixel, so 2D sprites and UI are never touched and a vertex the tracker cannot prove simply draws the faithful way. Most effective on a build compiled with the PGXP hook variant; on other builds coverage is reduced but never harmful. Needs supersampling >= 2 to be visible."
+description = "Disabled by default (the faithful floor). Corrections are validated per vertex against the exact packet words the game drew with and clamped to half a pixel, so 2D sprites and UI are never touched and a vertex the tracker cannot prove simply draws the faithful way. Most effective on a build compiled with the PGXP hook variant; on other builds coverage is reduced but never harmful. Needs an internal resolution of 2x or more (720p and up) to be visible: set one with the Internal Resolution mod if the game does not."
 group = "Visual"
 default_enabled = false
 

@@ -1,5 +1,7 @@
 #include "cpu_state.h"
 #include "gte.h"
+#include "hle_gte.h"
+#include "execution_profile.h"
 #include "pgxp.h"
 #include "projection_scale.hpp"
 #include "gte_view.h"
@@ -59,11 +61,16 @@ extern "C" void gte_test_execute_reference(CPUState *cpu, uint32_t cmd);
 
 /* gte.cpp runtime dependencies that are irrelevant to register-transfer tests. */
 extern "C" int gpu_ws_present_native_43(void) { return 0; }
+extern "C" void gpu_ws_note_gte_sxy(int32_t, int32_t) {}
 static int g_test_precise_nclip_enabled;
+static int g_test_render_projective;
+extern "C" int gpu_render_projective_enabled(void) { return g_test_render_projective; }
 extern "C" int gpu_ws_precise_nclip_enabled(void) {
     return g_test_precise_nclip_enabled;
 }
 extern "C" void gpu_pgxp_rederive_enable(void) {}
+/* This fixture has ordinary RAM only; no optional GPU DMA arena is allocated. */
+extern "C" int psx_mod_gpu_dma_memory_contains(uint32_t, uint32_t) { return 0; }
 static int g_test_shadow_diff = 0;
 extern "C" int psx_overlay_shadow_diff_active(void) { return g_test_shadow_diff; }
 extern "C" void psx_ws_note_gte_project(int) {}
@@ -476,6 +483,38 @@ int test_projection_override_restores_transform() {
     return 0;
 }
 
+int test_hle_command_contract() {
+    constexpr uint8_t commands[] = {1,6,12,16,17,18,19,20,22,27,28,30,32,40,41,42,45,46,48,61,62,63};
+    for (uint8_t function : commands) {
+        for (unsigned i = 0; i < 96; ++i) {
+            CPUState original;
+            randomize_gte(original);
+            original.gte_ts_done = 1234;
+            CPUState expected = original, actual = original;
+            const uint32_t cmd = (random_u32() & ~63u) | function;
+            gte_execute(&expected, cmd);
+            const uint32_t calls = g_test_gte_set_calls;
+            psx_hle_gte_execute(&actual, cmd);
+            CHECK(same_gte(expected, actual));
+            CHECK(!std::memcmp(original.gpr, actual.gpr, sizeof actual.gpr));
+            CHECK(g_test_gte_set_calls == calls + (PSX_EXECUTION_ENHANCED ? 0 : 1));
+            if (PSX_EXECUTION_ENHANCED) CHECK(actual.gte_ts_done == 1234);
+        }
+    }
+    /* The untimed entry must still visit the camera interpolation observer. */
+    CPUState cpu{};
+    g_psx_projection_command = substitute_projection;
+    projection_callback_calls = 0;
+    psx_hle_gte_execute(&cpu, 0x80001u);
+    g_psx_projection_command = nullptr;
+    CHECK(projection_callback_calls == 1);
+    /* A normal call immediately after HLE still owns faithful latency. */
+    const uint32_t calls = g_test_gte_set_calls;
+    gte_execute(&cpu, 6);
+    CHECK(g_test_gte_set_calls == calls + 1);
+    return 0;
+}
+
 int test_command_marshaling() {
     constexpr std::array<uint8_t, 22> kFunctions = {
         0x01, 0x06, 0x0C, 0x10, 0x11, 0x12, 0x13, 0x14,
@@ -739,6 +778,7 @@ int test_saturated_nclip_keeps_architectural_result() {
     if (cpu.gte_data[24] != 0 || !gte_nclip_native_wide_sign(0, &sign) || sign != 1 ||
         gte_nclip_native_wide_sign(1, &sign))
         return fail_value("saturated winding rescue preserves native zero MAC0",0,6,0,0,cpu.gte_data[24]);
+    CHECK(!gte_nclip_zero_positive(0, 0x80011008u));
     /* Both quad MAC0 values can saturate to the same zero. Keep each exact
      * sign separately: the preceding triangle points forward, latest back. */
     for (unsigned i=0;i<3;i++) {
@@ -767,6 +807,74 @@ int test_saturated_nclip_keeps_architectural_result() {
     gte_execute(&cpu, 6);
     if (gte_nclip_native_wide_sign(0, &sign))
         return fail_value("stale NCLIP projection refuses rescue",0,6,0,0,1);
+    g_test_precise_nclip_enabled = 0;
+    return 0;
+}
+
+int test_zero_nclip_requires_current_safe_projection() {
+    CPUState cpu{};
+    gte_precision_tracking_set(1);
+    g_test_precise_nclip_enabled = 1;
+    pgxp_set_culling(0);
+    gte_nclip_exact_set_enabled(1);
+    /* Captured terrain quad801ACC44, first three vertices. Both first vertices
+     * quantize to (221,45), although their precise face has positive area. */
+    const int16_t rt[] = {3518,0,-2096,-375,4029,-629,2061,732,3460};
+    for (unsigned i = 0; i < 4; ++i)
+        cpu.gte_ctrl[i] = (uint16_t)rt[2*i] | ((uint32_t)(uint16_t)rt[2*i+1] << 16);
+    cpu.gte_ctrl[4] = (uint32_t)(int32_t)rt[8];
+    cpu.gte_ctrl[5] = (uint32_t)-4521; cpu.gte_ctrl[6] = 2122;
+    cpu.gte_ctrl[7] = (uint32_t)-5132;
+    cpu.gte_ctrl[24] = 160u << 16; cpu.gte_ctrl[25] = 120u << 16;
+    cpu.gte_ctrl[26] = 350;
+    const int16_t v[3][3] = {{9970,-1315,6223},{9938,-1315,6172},{9970,-894,6223}};
+    auto project = [&](bool reverse = false) {
+        for (unsigned i = 0; i < 3; ++i) {
+            unsigned j = reverse ? 2-i : i;
+            cpu.gte_data[2*i] = (uint16_t)v[j][0] | ((uint32_t)(uint16_t)v[j][1] << 16);
+            cpu.gte_data[2*i+1] = (uint32_t)(int32_t)v[j][2];
+        }
+        gte_execute(&cpu, 0x00280030u);
+        gte_execute(&cpu, 6);
+    };
+    const uint32_t site = 0x8013FF14u;
+    gte_nclip_stats_reset();
+    project();
+    CHECK(cpu.gte_data[24] == 0);
+    CHECK(gte_nclip_zero_positive(0, site));
+    GteNclipSiteStat stat{};
+    CHECK(gte_nclip_site_stats(&stat, 1) == 1 && stat.pc == site &&
+          stat.evals == 1 && stat.flips == 1 && stat.fallbacks == 0);
+    CHECK(!gte_nclip_zero_positive(-1, site) && !gte_nclip_zero_positive(1, site));
+    CHECK(cpu.gte_data[24] == 0);
+    gte_nclip_exact_set_enabled(0);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    gte_nclip_exact_set_enabled(1);
+    project(true);
+    CHECK(cpu.gte_data[24] == 0 && !gte_nclip_zero_positive(0, site));
+    project();
+    gte_execute(&cpu, 0x2D);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_write_data(&cpu, 24, 0);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_write_ctrl(&cpu, 26, 350);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    cpu.gte_data[17] = 10;
+    gte_execute(&cpu, 6);
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_precision_speculative_begin();
+    CHECK(!gte_nclip_zero_positive(0, site));
+    gte_precision_speculative_end();
+    gte_precision_timeline_invalidate();
+    CHECK(!gte_nclip_zero_positive(0, site));
+    project();
+    gte_test_seed_precise_projection(0, cpu.gte_data[12] ^ 1u, 221 << 16, 45 << 16, 4906);
+    gte_execute(&cpu, 6);
+    CHECK(!gte_nclip_zero_positive(0, site));
     g_test_precise_nclip_enabled = 0;
     return 0;
 }
@@ -1326,11 +1434,13 @@ int main() {
     if (int rc = test_writes()) return rc;
     if (int rc = test_sequence_fuzz()) return rc;
     if (int rc = test_command_marshaling()) return rc;
+    if (int rc = test_hle_command_contract()) return rc;
     if (int rc = test_projection_override_restores_transform()) return rc;
     if (int rc = test_command_timing_hook()) return rc;
     if (int rc = test_precise_sxy_invalidation()) return rc;
     if (int rc = test_precise_nclip_is_title_scoped()) return rc;
     if (int rc = test_saturated_nclip_keeps_architectural_result()) return rc;
+    if (int rc = test_zero_nclip_requires_current_safe_projection()) return rc;
     if (int rc = test_precision_speculative_transaction()) return rc;
     if (int rc = test_pgxp_probe_does_not_count_geometry_lookup()) return rc;
     if (int rc = test_preserve_projection_is_shadow_only()) return rc;
@@ -1377,6 +1487,54 @@ int main() {
         }
     }
     gte_set_fov_scale(1,1);
+    pgxp_set_projection_tracking(0);
+    // VR homogeneous provenance spans the eye plane, including fractional MACs.
+    PSXModRenderView eye = {}; eye.struct_size=sizeof eye; eye.projection=1;
+    eye.rotation_q12[0]=eye.rotation_q12[4]=eye.rotation_q12[8]=4096;
+    eye.fx_q16=200*65536; eye.fy_q16=100*65536;
+    eye.cx_delta_q16=10*65536; eye.cy_delta_q16=-5*65536;
+    gte_render_pose_set(&eye); pgxp_set_projection_tracking(1);
+    for (int depth : {-158,-1,0,1,149,900}) {
+        GTEState native{}, enhanced{};
+        native.RT[0][0]=native.RT[1][1]=native.RT[2][2]=4096;
+        native.RT[0][1]=1; native.V0[0]=100; native.V0[1]=30;
+        native.TR[2]=depth; native.H=400;
+        native.OFX=256*65536; native.OFY=120*65536;
+        enhanced=native;
+        g_test_render_projective=0;
+        PSXRecomp::GTE::gte_rtps(&native,0x0180001u);
+        g_test_render_projective=1;
+        PSXRecomp::GTE::gte_rtps(&enhanced,0x0180001u);
+        PGXPProjection p;
+        CHECK(!std::memcmp(&native,&enhanced,sizeof native));
+        CHECK(pgxp_get_gte_projection(2,enhanced.SXY[2],&p));
+        CHECK(p.z==depth && p.near_z==1);
+        CHECK(std::fabs(p.x-(266.0*depth+(100+30.0/4096)*200))<0.02);
+        CHECK(std::fabs(p.y-(115.0*depth+3000))<0.02);
+    }
+    // A tenth of a camera unit survives even though the architectural pose rounds to zero.
+    eye.precise=1; eye.rotation[0]=eye.rotation[4]=eye.rotation[8]=1;
+    eye.translation[0]=17; // precision replaces the integer pose; never adds it twice.
+    eye.translation_precise[0]=.1; gte_render_pose_set(&eye);
+    GTEState fractional{};
+    fractional.RT[0][0]=fractional.RT[1][1]=fractional.RT[2][2]=4096;
+    fractional.V0[2]=1000; fractional.H=400;
+    PSXRecomp::GTE::gte_rtps(&fractional,0x0180001u);
+    PGXPProjection exact;
+    CHECK(pgxp_get_gte_projection(2,fractional.SXY[2],&exact));
+    CHECK(std::fabs(exact.x-(10*1000+20))<.05);
+    eye.precise=0;eye.translation[0]=0;gte_render_pose_set(&eye);
+    for (int winding : {1,-1}) {
+        GTEState face{};
+        face.RT[0][0]=face.RT[1][1]=face.RT[2][2]=4096;
+        face.V0[0]=-20*winding;face.V0[1]=10;face.V0[2]=100;
+        face.V1[0]=20*winding;face.V1[1]=10;face.V1[2]=100;
+        face.V2[1]=10;face.V2[2]=-10;face.H=400;
+        PSXRecomp::GTE::gte_rtpt(&face,0x0280030u);
+        PSXRecomp::GTE::gte_nclip(&face,0x1400006u);
+        CHECK((face.MAC0>0)-(face.MAC0<0)==winding);
+    }
+    g_test_render_projective=0; eye={}; gte_render_pose_set(&eye);
     pgxp_set_projection_tracking(0);
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
     return 0;

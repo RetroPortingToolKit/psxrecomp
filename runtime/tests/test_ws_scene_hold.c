@@ -9,6 +9,7 @@ int main(void) {
     assert(ws_scene_hold_classify(&s,2,0,0,512)==0); /* normal world */
     for (int i=0;i<300;++i)
         assert(ws_scene_hold_classify(&s,1,1,0,512)==0); /* held loading */
+    assert(!ws_scene_hold_releasing_43(&s,2,0)); /* wide scene keeps proof */
     assert(ws_scene_hold_classify(&s,2,1,0,512)==0); /* backbuffer ready */
     assert(ws_scene_hold_classify(&s,2,1,0,512)==0); /* still same frontbuffer */
     assert(ws_scene_hold_classify(&s,2,1,0,0)==1); /* real title becomes visible */
@@ -16,7 +17,12 @@ int main(void) {
     assert(ws_scene_hold_classify(&s,1,1,0,512)==0);
     assert(ws_scene_hold_classify(&s,0,1,0,512)==1); /* immediate in-place release */
     assert(ws_scene_hold_classify(&s,1,0,0,512)==1); /* retained 4:3 stays 4:3 */
+    assert(!ws_scene_hold_releasing_43(&s,1,0)); /* still drawing overlay */
+    assert(!ws_scene_hold_releasing_43(&s,2,512)); /* same frontbuffer */
+    assert(ws_scene_hold_releasing_43(&s,2,0)); /* discard overlay proof at flip */
+    assert(ws_scene_hold_releasing_43(&s,0,512)); /* explicit in-place release */
     assert(ws_scene_hold_classify(&s,0,0,0,0)==0);
+    assert(!ws_scene_hold_releasing_43(&s,2,512)); /* consume release once */
     assert(ws_scene_hold_classify(&s,1,0,1,0)==1); /* FMV veto */
     assert(ws_scene_hold_classify(&s,2,0,1,0)==1);
     assert(ws_scene_hold_classify(&s,0,0,0,0)==0);

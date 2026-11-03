@@ -61,14 +61,17 @@ Usage (see each subcommand's --help):
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import time
 import urllib.request
 import zipfile
+from pathlib import Path
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
@@ -458,15 +461,21 @@ TOOLCHAIN_PINS = {
                        'download/20250115/cpython-3.13.1%2B20250115-x86_64-unknown-'
                        'linux-gnu-install_only_stripped.tar.gz'),
         'python_sha256': '56817aa976e4886bec1677699c136cb01c1cdfe0495104c0d8ef546541864bbb',
-        # tinycc publishes no prebuilt Linux binary (savannah ships source
-        # tarballs only), so there is no pinned tcc on this platform. The
-        # bundled interpreter plus compile_overlays.py can still drive a gcc
-        # from PATH, which is the common case on Linux; a player with no
-        # compiler at all gets the shipped AOT cache and no autocompile, and
-        # main.cpp says so on stdout rather than silently doing nothing.
-        'tcc_version': None,
+        # tinycc publishes no prebuilt Linux binary, so the packager BUILDS the
+        # pinned, unmodified 0.9.27 source (stage_linux_tcc). SteamOS (Steam
+        # Deck) has no compiler and a read-only root, so without it a Deck
+        # player's overlays stay interpreted. tcc's own headers cover the
+        # freestanding set; the libc headers overlay C needs (stdint, string,
+        # stdio) come from musl's MIT-licensed headers, so nothing from the
+        # player's system is required. Shards link with -nostdlib: their libc
+        # symbols resolve against the running game's glibc at dlopen.
+        'tcc_version': '0.9.27',
         'tcc_url': None,
-        'tcc_sha256': None,
+        'tcc_sha256': 'de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c',
+        'tcc_source_url': 'https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27.tar.bz2',
+        'musl_version': '1.2.5',
+        'musl_url': 'https://musl.libc.org/releases/musl-1.2.5.tar.gz',
+        'musl_sha256': 'a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4',
     },
     # macOS had no pin at all, so stage_toolchain died with "no toolchain pins"
     # (or, before that check, staged the Linux interpreter) and no Mac player
@@ -646,6 +655,93 @@ def stage_tcc_notice(tcc_dir, pins):
     shutil.copy2(TCC_NOTICE, os.path.join(tcc_dir, 'COPYING'))
 
 
+def _run_build(cmd, cwd, what):
+    r = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True)
+    if r.returncode != 0:
+        _die('%s failed (exit %d): %s\n%s'
+             % (what, r.returncode, ' '.join(cmd), r.stdout[-4000:]))
+
+
+def adapt_musl_headers_for_tcc(libc_inc):
+    """musl spells va_list as GCC's __builtin_va_list, which tcc 0.9.27 does
+    not know ("';' expected (got va_list)" in every shard). Use tcc's own
+    stdarg.h, whose x86-64 va_list has GCC's layout, so v*printf calls into
+    the game's glibc agree: drop musl's stdarg.h and define musl's two
+    va_list typedefs from tcc's."""
+    stdarg = os.path.join(libc_inc, 'stdarg.h')
+    if os.path.isfile(stdarg):
+        os.remove(stdarg)
+    path = os.path.join(libc_inc, 'bits', 'alltypes.h')
+    with open(path, encoding='utf-8') as f:
+        text = f.read()
+    a = 'typedef __builtin_va_list va_list;'
+    b = 'typedef __builtin_va_list __isoc_va_list;'
+    if a not in text or b not in text:
+        _die('%s no longer defines va_list as expected; re-check the musl pin'
+             % path)
+    text = text.replace(a, '#include <stdarg.h> /* tcc\'s va_list (psxrecomp) */')
+    text = text.replace(b, 'typedef va_list __isoc_va_list;')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
+def stage_linux_tcc(toolchain, dl_cache, pins, log=print):
+    """Build the pinned TinyCC source and stage it with musl's libc headers as
+    overlay_toolchain/tcc/: tcc, libtcc1.a, include/ (tcc's), libc-include/
+    (musl's) and COPYING. compile_overlays.py recognises this layout and calls
+    tcc with -B<dir> -nostdlib -isystem <dir>/libc-include <dir>/libtcc1.a.
+    Needs a host C compiler and make on the PACKAGING machine only."""
+    work = os.path.join(dl_cache, 'tcc_linux_build')
+    if os.path.isdir(work):
+        shutil.rmtree(work)
+    _mkdirs(work)
+    src = get_pinned_archive(pins['tcc_source_url'], pins['tcc_sha256'],
+                             os.path.join(dl_cache, _url_basename(pins['tcc_source_url'])),
+                             log=log)
+    top = 'tcc-' + pins['tcc_version']
+    _extract_tar_top_level(src, work, top)
+    tcc_src = os.path.join(work, top)
+    inst = os.path.join(work, 'inst')
+    cc = os.environ.get('CC', 'cc')
+    _run_build(['./configure', '--prefix=' + inst, '--cc=' + cc,
+                '--extra-cflags=-O2'], tcc_src, 'tcc configure')
+    # BCHECK_O= : leave out lib/bcheck.o, tcc's legacy bounds-checking runtime
+    # (-b). Shards never use it, and it does not build against current glibc
+    # (it uses __malloc_hook, removed in glibc 2.34: Ubuntu 24.04 fails at
+    # lib/bcheck.c:738). libtcc1.a keeps every other object. Unconditional,
+    # so every build host produces the same bundle.
+    _run_build(['make', '-j%d' % (os.cpu_count() or 2), 'BCHECK_O='], tcc_src, 'tcc build')
+    _run_build(['make', 'install', 'BCHECK_O='], tcc_src, 'tcc install')
+
+    musl = get_pinned_archive(pins['musl_url'], pins['musl_sha256'],
+                              os.path.join(dl_cache, _url_basename(pins['musl_url'])),
+                              log=log)
+    mtop = 'musl-' + pins['musl_version']
+    _extract_tar_top_level(musl, work, mtop)
+    minst = os.path.join(work, 'musl-inst')
+    _run_build(['make', 'install-headers', 'ARCH=x86_64', 'prefix=' + minst],
+               os.path.join(work, mtop), 'musl install-headers')
+
+    dest = os.path.join(toolchain, 'tcc')
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    _mkdirs(dest)
+    shutil.copy2(os.path.join(inst, 'bin', 'tcc'), os.path.join(dest, 'tcc'))
+    os.chmod(os.path.join(dest, 'tcc'), 0o755)
+    libdir = os.path.join(inst, 'lib', 'tcc')
+    shutil.copy2(os.path.join(libdir, 'libtcc1.a'), dest)
+    shutil.copytree(os.path.join(libdir, 'include'), os.path.join(dest, 'include'))
+    shutil.copytree(os.path.join(minst, 'include'), os.path.join(dest, 'libc-include'))
+    adapt_musl_headers_for_tcc(os.path.join(dest, 'libc-include'))
+    shutil.copy2(os.path.join(work, mtop, 'COPYRIGHT'),
+                 os.path.join(dest, 'libc-include', 'COPYRIGHT'))
+    stage_tcc_notice(dest, pins)
+    shutil.rmtree(work)
+    log('TinyCC %s built from source with musl %s headers -> %s'
+        % (pins['tcc_version'], pins['musl_version'], dest))
+
+
 def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
                     platform_tag=None, mingw_bin=None, log=print):
     """Stage the self-contained overlay toolchain (interpreter + recompiler +
@@ -679,6 +775,22 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
         # python-build-standalone: one `python/` top-level directory.
         _extract_tar_top_level(py_archive, toolchain, 'python')
 
+    if platform_tag == 'linux':
+        # Standalone Python includes pip's Windows entry-point resources even
+        # in Linux archives. They are data for installing Windows scripts,
+        # never Linux executables. Omit only these six known resources; keep
+        # the AppImage gate rejecting other mixed-platform binaries.
+        launchers = {'t32.exe', 't64.exe', 't64-arm.exe',
+                     'w32.exe', 'w64.exe', 'w64-arm.exe'}
+        removed = 0
+        for candidate in Path(py_dest).glob(
+                'lib/python*/site-packages/pip/_vendor/distlib/*.exe'):
+            if candidate.name in launchers:
+                candidate.unlink()
+                removed += 1
+        log('Omitted unused pip Windows launcher resources from Linux Python: %d'
+            % removed)
+
     if pins['tcc_url']:
         tcc_archive = get_pinned_archive(
             pins['tcc_url'], pins['tcc_sha256'],
@@ -691,6 +803,8 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
         shutil.copytree(inner if os.path.isdir(inner) else tcc_tmp,
                         os.path.join(toolchain, 'tcc'), dirs_exist_ok=True)
         stage_tcc_notice(os.path.join(toolchain, 'tcc'), pins)
+    elif pins.get('tcc_source_url'):
+        stage_linux_tcc(toolchain, dl_cache, pins, log=log)
 
     recompiler = TOOLCHAIN_RECOMPILER[platform_tag]
     src_recompiler = os.path.join(recomp_dir, recompiler)
@@ -787,7 +901,8 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
             total += st.st_size
     log('Bundled overlay toolchain (pinned python%s + recompiler + BIOS emitter + headers): '
         '~%d MB in %d file(s) + %d symlink(s)'
-        % (' + tcc' if pins['tcc_url'] else '', total // (1 << 20),
+        % (' + tcc' if (pins['tcc_url'] or pins.get('tcc_source_url')) else '',
+           total // (1 << 20),
            sum(len(f) for _r, _d, f in os.walk(toolchain)) - links, links))
     return toolchain
 
@@ -966,6 +1081,64 @@ def cmd_stage_mods(args):
     return 0
 
 
+def stage_execution(binary, manifest=None, output=None):
+    """Bind a build's execution contract to the actual staged executable."""
+    default = os.path.splitext(binary)[0] + '.execution.json'
+    manifest, output = manifest or default, output or default
+    if os.path.normcase(os.path.realpath(binary)) == os.path.normcase(os.path.realpath(output)):
+        _die('execution manifest output must not overwrite the executable')
+    try:
+        with open(manifest, encoding='utf-8') as stream:
+            data = json.load(stream)
+        identity = data['identity']
+        profile = data['profile']
+        shared = data['shared_contract_sha256']
+        families = data['implementations']
+        if data['schema'] != 1 or profile not in ('ENHANCED', 'REFERENCE'):
+            raise ValueError('unsupported execution schema/profile')
+        if not re.fullmatch('[0-9a-f]{64}', identity) or not re.fullmatch('[0-9a-f]{64}', shared):
+            raise ValueError('malformed execution identity')
+        material = 'psx-execution-v1\n%s\nshared:%s\n' % (profile, shared)
+        names = set()
+        for family in sorted(families, key=lambda item: item['name']):
+            name, contract, source = family['name'], family['contract'], family['source_sha256']
+            if (not re.fullmatch('[a-z0-9][a-z0-9_.-]*', name) or name in names or
+                    not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]*', contract) or
+                    not re.fullmatch('[0-9a-f]{64}', source)):
+                raise ValueError('malformed or duplicate implementation family')
+            names.add(name)
+            material += '%s:%s:%s\n' % (name, contract, source)
+        if hashlib.sha256(material.encode()).hexdigest() != identity:
+            raise ValueError('manifest does not match its execution contract')
+        digest, tail, found = hashlib.sha256(), b'', False
+        with open(binary, 'rb') as stream:
+            while True:
+                block = stream.read(1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+                found |= identity.encode('ascii') in tail + block
+                tail = block[-63:]
+        # Runtime startup embeds/reports this exact identity. A sidecar from
+        # another profile or build must not certify the staged executable.
+        if not found:
+            raise ValueError('execution identity is absent from the staged binary')
+        data['binary_sha256'] = digest.hexdigest()
+        with open(output, 'w', encoding='utf-8', newline='\n') as stream:
+            json.dump(data, stream, indent=2)
+            stream.write('\n')
+        return data
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        _die('execution staging failed: %s' % error)
+
+
+def cmd_stage_execution(args):
+    data = stage_execution(args.binary, args.manifest, args.output)
+    print('execution staged: %s %s binary=%s' %
+          (data['profile'], data['identity'], data['binary_sha256']))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(
@@ -973,6 +1146,12 @@ def main(argv=None):
         description='Shared release staging for every psxrecomp title, on every '
                     'platform. See the module docstring and bead beads-eio.3.102.')
     sub = ap.add_subparsers(dest='cmd', required=True)
+
+    p = sub.add_parser('stage-execution', help='verify and bind the execution manifest to a staged binary')
+    p.add_argument('--binary', required=True, help='actual executable being packaged')
+    p.add_argument('--manifest', help='build-published .execution.json (default: beside the binary)')
+    p.add_argument('--output', help='manifest destination (default: beside the binary)')
+    p.set_defaults(func=cmd_stage_execution)
 
     p = sub.add_parser('cg-tag', help='print the overlay codegen cache tag')
     p.add_argument('--runtime-include', required=True)

@@ -20,9 +20,11 @@
 #include "gpu.h"
 #include "gpu_render.h"
 #include "gpu_vk_renderer.h"
+#include "video_telemetry.h"
 #include "gpu_sw_renderer.h"
 #include "host_osd.h"
 #include "psx_savestate_menu.h"
+#include "psx_host_menu.h"
 #include "psx_rewind.h"
 #include "crash_trace.h"
 #include "gpu_vk_upload.h"
@@ -684,6 +686,20 @@ static void img_barrier(VkCommandBuffer cb, VkImage img,
     b.subresourceRange.layerCount = 1;
     b.srcAccessMask = src_access; b.dstAccessMask = dst_access;
     p_vkCmdPipelineBarrier(cb, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &b);
+}
+
+/* Clear a swapchain image (TRANSFER_DST_OPTIMAL) to opaque black, then order
+ * that clear before the next transfer write to the same image. Validation
+ * reported SYNC-HAZARD-WRITE-AFTER-WRITE for clear -> blit without a barrier;
+ * on RDNA3 the clear overlapped the blit and tiles of the frame (24-bit FMV
+ * via vk_renderer_present_cpu) came out black. */
+static void sc_clear_black(VkCommandBuffer cb, VkImage sc) {
+    VkClearColorValue black = {{0, 0, 0, 1}};
+    VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    p_vkCmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+    img_barrier(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 }
 
 /* Map a layout to its (access mask, pipeline stage) for barriers. */
@@ -1576,7 +1592,7 @@ static void vk_osd_blit(VkCommandBuffer cb, VkImage sc) {
     const int have_vol = host_osd_volume_image(&vol_px, &vw, &vh) && vol_px;
     const int have_rw = psx_rewind_overlay_image(&rw_px, &rw, &rh) && rw_px;
     const int have_ssm =
-        psx_savestate_menu_overlay_image(&ssm_px, &sw, &sh) && ssm_px;
+        psx_host_menu_overlay_image(&ssm_px, &sw, &sh) && ssm_px;
     if (!have_text && !have_vol && !have_rw && !have_ssm) {
         host_osd_present_done();
         return;
@@ -1675,7 +1691,10 @@ static void submit_present(VkCommandBuffer cb, uint32_t img_idx, uint32_t fr) {
     pi.swapchainCount = 1; pi.pSwapchains = &s_swapchain;
     pi.pImageIndices = &img_idx;
     uint64_t present_start = SDL_GetPerformanceCounter();
-    p_vkQueuePresentKHR(s_queue, &pi);
+    psx_video_telemetry_compose(PSX_VIDEO_VULKAN, s_scale, 0, 0,
+                               (int)s_sc_extent.width, (int)s_sc_extent.height, 0, 0);
+    const VkResult present_result = p_vkQueuePresentKHR(s_queue, &pi);
+    psx_video_telemetry_present(present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR);
     s_perf_cur.present_us += perf_elapsed_us(present_start);
     s_frame_idx++;
 }
@@ -1930,11 +1949,9 @@ int vk_renderer_present_vram(int disp_x, int disp_y, int w, int h,
 
     img_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     /* clear the swapchain (letterbox bars) to black */
-    VkClearColorValue black = {{0,0,0,1}};
-    VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    p_vkCmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+    sc_clear_black(cb, sc);
 
     VkImageBlit blit = {0};
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1963,10 +1980,8 @@ void vk_renderer_present_blank(void) {
     if (!acquire_present(&sc, &cb, &idx, &fr)) return;
     img_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkClearColorValue black = {{0,0,0,1}};
-    VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    p_vkCmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    sc_clear_black(cb, sc);
     finish_present(cb, sc, idx, fr);
     perf_snapshot_present();
 }
@@ -2037,10 +2052,8 @@ void vk_renderer_present_cpu(const uint32_t *pixels, int src_w, int src_h,
 
     img_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkClearColorValue black = {{0,0,0,1}};
-    VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    p_vkCmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    sc_clear_black(cb, sc);
 
     VkOffset3D dst[2];
     letterbox((int)s_sc_extent.width, (int)s_sc_extent.height, force_4_3 ? 4 : s_aspect_num, force_4_3 ? 3 : s_aspect_den, dst);
@@ -2106,10 +2119,8 @@ int vk_renderer_present_wide(int disp_x, int disp_y, int disp_h, int linear) {
 
     img_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkClearColorValue black = {{0, 0, 0, 1}};
-    VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    p_vkCmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    sc_clear_black(cb, sc);
 
     img_to(cb, s_wide_img[i], &s_wide_layout[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 

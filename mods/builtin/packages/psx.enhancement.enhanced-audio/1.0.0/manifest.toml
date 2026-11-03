@@ -1,0 +1,26 @@
+format_version = 11
+id = "psx.enhancement.enhanced-audio"
+version = "1.0.0"
+name = "Enhanced Audio"
+author = "psxrecomp"
+description = "A higher-quality mix of the console's sound chip output. The game's voices, sound memory and timing are untouched: the same audio is rendered with more precision. In netplay each player keeps their own choice."
+resolver = "declarative"
+save_compatibility = "shared"
+
+# The host's audio output is not a property of any particular disc, so this
+# ships with the framework and applies to every game. The title's [audio]
+# spu_hq is its baseline: with the feature off it applies unchanged.
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "enhanced-audio"
+name = "Enhanced Audio"
+description = "Disabled by default. Mixes the console's audio at higher precision while the output is proven to match the original; if it ever does not, playback falls back to the original mix on its own. Differences can be subtle."
+group = "Audio"
+default_enabled = false
+
+[[plugin]]
+feature = "enhanced-audio"
+id = "psx.enhanced-audio"
+netplay = "host_only"

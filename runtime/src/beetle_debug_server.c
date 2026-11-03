@@ -1758,7 +1758,7 @@ void beetle_debug_server_init(int port) {
     memset(&sin, 0, sizeof(sin));
     sin.sin_family      = AF_INET;
     sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    sin.sin_port        = htons((u_short)s_port);
+    sin.sin_port        = htons((uint16_t)s_port);
     if (bind(s_listen, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
         fprintf(stderr, "[beetle-dbg] bind(%d) failed\n", s_port);
         sock_close(s_listen); s_listen = SOCK_INVALID; return;

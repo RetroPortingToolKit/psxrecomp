@@ -105,6 +105,10 @@ typedef struct PSXPgxpSessionConfig {
     int video_cpu_mode;
     float tolerance;
     int position_fallback;
+    /* Set only for explicit [video] values. Otherwise the runtime chooses
+     * no clamp / dataflow-only in hook builds, 0.5 / cache in base builds. */
+    int tolerance_set;
+    int position_fallback_set;
     int preserve_projection;
     int mod_only;
     int netplay;   /* this session is a netplay match: precise culling off */

@@ -9,6 +9,7 @@
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 int g_ls_replay_active = 0;
 int g_ls_mode = 0;
@@ -112,6 +113,38 @@ int main(void) {
     CHECK(s_cd_events == cd0 + (uint64_t)((12345u % 1000u + 3000u) / 1000u) ||
           s_cd_events >= cd0 + 3u,
           "devices resume on the live clock after the pass");
+
+    uint32_t scale_before[3],scale_after[3];
+    psx_guest_cycle_scale_set(2);psx_guest_cycle_scale_set_gated(1);
+    psx_guest_cycle_scale_gate_open(1);
+    CHECK(psx_cpu_cycles(1)==0, "scaled charge starts with a carried half cycle");
+    psx_guest_cycle_scale_snapshot(scale_before);
+    CHECK(psx_cycle_freeze_begin(&save,0,NULL), "scaled draw freeze begins");
+    psx_cpu_charge(3);
+    psx_cycle_freeze_end(&save);
+    psx_guest_cycle_scale_snapshot(scale_after);
+    CHECK(!memcmp(scale_before,scale_after,sizeof scale_before), "draw freeze restores carried cycle-scale phase");
+    CHECK(psx_cpu_cycles(1)==1, "next authoritative instruction retains its original scaled charge");
+    psx_guest_cycle_scale_set(1);psx_guest_cycle_scale_set(2);psx_guest_cycle_scale_gate_open(1);
+    (void)psx_cpu_cycles(1);psx_guest_cycle_scale_snapshot(scale_before);
+    CHECK(psx_cycle_freeze_begin(&save,0,NULL), "scale gate draw freeze begins");
+    psx_guest_cycle_scale_gate_open(0);psx_cpu_charge(3);
+    psx_cycle_freeze_end(&save);psx_guest_cycle_scale_snapshot(scale_after);
+    CHECK(!memcmp(scale_before,scale_after,sizeof scale_before) && psx_guest_cycle_scale()==2,
+          "draw freeze restores cycle-scale gates as well as phase");
+    psx_guest_cycle_scale_gate_open(1);psx_guest_cycle_scale_set(1);psx_guest_cycle_scale_set(2);
+    (void)psx_cpu_cycles(1);psx_guest_cycle_scale_snapshot(scale_before);
+    if(setjmp(s_jmp)==0) {
+        CHECK(psx_cycle_freeze_begin(&save,100,overrun), "scaled abort freeze begins");
+        psx_guest_cycle_scale_gate_open(0);
+        for(unsigned iteration=0;iteration<4;++iteration)psx_cpu_charge(101);
+        psx_devices_mmio_sync();
+        CHECK(0, "scaled freeze watchdog must abort");
+    }
+    psx_cycle_freeze_end(&save);psx_guest_cycle_scale_snapshot(scale_after);
+    CHECK(!memcmp(scale_before,scale_after,sizeof scale_before) && psx_guest_cycle_scale()==2,
+          "watchdog abort restores cycle-scale gates and phase");
+    psx_guest_cycle_scale_set(1);psx_guest_cycle_scale_set_gated(0);
 
     /* Watchdog: a pass that runs away is cut off. The longjmp skips the
      * bb_defer exits of the generated frames it leaves (their cleanup

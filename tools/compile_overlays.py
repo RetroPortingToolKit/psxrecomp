@@ -21,9 +21,11 @@ Each DLL exports:
 """
 
 import argparse
+import array
 import itertools
 import io
 import contextlib
+import functools
 import contextvars
 import base64
 import binascii
@@ -1033,6 +1035,26 @@ def optional_enrichment_fallback_capture(cap: dict) -> dict | None:
     return fallback
 
 
+def conservative_retry_capture(cap: dict, seed_audit: dict) -> dict | None:
+    """Recipe to retry after the enriched recipe's generated C was rejected.
+
+    Prefer the extractor's declared conservative recipe; either way derived
+    enrichment roots are dropped from the retry (ROOT_ENRICHMENT_OFF_KEY), so
+    a data-as-code root that enrichment introduced can only cost the roots it
+    added, never the region's whole shard.
+    """
+    fallback = optional_enrichment_fallback_capture(cap)
+    if fallback is not None:
+        fallback[ROOT_ENRICHMENT_OFF_KEY] = True
+        return fallback
+    if seed_audit.get('derived_static_roots') and \
+            not cap.get(ROOT_ENRICHMENT_OFF_KEY):
+        fallback = dict(cap)
+        fallback[ROOT_ENRICHMENT_OFF_KEY] = True
+        return fallback
+    return None
+
+
 def _word_at(data: bytes, load_addr: int, addr: int):
     off = addr - load_addr
     if off < 0 or off + 4 > len(data):
@@ -1614,6 +1636,728 @@ def _frameless_dispatch_root_proven(data: bytes, load_addr: int, size: int,
     return plausible_callable_target(data, load_addr, size, addr, producer_hi)
 
 
+# ---------------------------------------------------------------------------
+# Static root derivation (enrichment) and the no-split guard
+# ---------------------------------------------------------------------------
+#
+# A walk root is a hard cap: the walk of the root below it stops there. So a
+# root that sits inside another function's body splits that function. The
+# generated C still passes every audit (a cross-cap fallthrough becomes a call
+# into the next "function"), which is why a mis-split never shows up as a shard
+# failure. On Tomba it changed guest timing by one cycle against the
+# interpreter (bead beads-eio.3.177, root 0x8011B1CC in X00.BIN).
+#
+# Two rules keep that from happening, for every root source:
+#
+#   1. The no-split guard (no_split_partition, applied inside
+#      classify_overlay_seeds). A candidate that a root below it reaches by
+#      fallthrough or branch (never by jal) -- walked without the caps of the
+#      candidates in between -- is inside that function. It is demoted to
+#      DISPATCH_INTERIOR, an alias entry that never caps. Applied to dispatch
+#      entries, captured function entries, static discovery roots, TOML
+#      entries, derived call targets and enrichment alike; only promoted
+#      kernel orphans (DISPATCH_ROOT) are exempt, because they are promoted
+#      precisely when no walk covers them. A candidate that sits in a delay
+#      slot is never a root and never an alias (entering a host at a delay
+#      slot would make the slot a block leader); it is left to the
+#      interpreter.
+#
+#   2. Enrichment evidence is judged per image (derive_enrichment_roots). A
+#      jal or a pointer table is call evidence for the image that is resident
+#      when it executes, and overlay regions are swapped: shared engine code
+#      at 0x80100984 is byte-identical in 12 Tomba area images and calls
+#      0x8011B1CC, which is a function start in exactly one of them. So:
+#        * STRONG: a stack-frame prologue AT a boundary (image/producer
+#          start, after an unconditional transfer's delay slot or a `break`,
+#          or after data), the true start in front of a prologue that loads
+#          come before (walked back over the straight-line preamble to such
+#          a boundary; prologue_function_start), or a jal/table target that
+#          THIS image's bytes also bound (preceding `jr $ra` plus alignment
+#          padding, and the bounded CFG probe). A strong root that turns out
+#          to be inside a function is demoted by rule 1. Ace Combat 3 showed
+#          why the prologue needs the boundary: rooting the `addiu sp` itself
+#          capped 359 functions a few words in (beads-eio.3.191). Captured
+#          entry evidence at a stack adjust (a dispatch PC) keeps its own
+#          gate; the true start's walk absorbs it by rule 1.
+#        * WEAK: a jal/table target with only the CFG probe, or a prologue
+#          whose start the preamble walk cannot prove. It is added only
+#          when no possible function start below it reaches it -- every
+#          capture root, every strong or weak candidate, every prologue and
+#          every word after an unconditional transfer's delay slot, walked
+#          with no caps at all -- and a weak candidate that fails is DROPPED,
+#          never aliased. X00's 0x8011B1CC is reached from the prologue at
+#          host 0x8011AC10, so it is dropped there and kept in X10.
+#      Measured on Tomba (25 AOT images): strong-only enrichment adds zero net
+#      roots after rule 1; the weak class is where the coverage is.
+#
+#   3. Cross-image calls (CrossImageCalls). A jal in the main EXE or in
+#      another captured image that does not overlap this one nominates its
+#      target here, but only as STRONG evidence: the target is rooted only
+#      when this image's own bytes bound it (image_local_entry_proven), never
+#      on the CFG probe alone, and never under strict_producer_ranges (other
+#      images are other producers). The shared-engine `jal 0x8011B1CC` above
+#      is exactly such a call: in X00 the word is mid-body and has no local
+#      boundary, so it is not rooted. Measured on Ace Combat 3
+#      (beads-eio.3.191): every root this adds is jal-referenced and none is
+#      inside another function's body.
+#
+# With both in place a wrong guess can only cost speed (an alias entry or an
+# interpreted PC), never correctness: a surviving weak root inside a function
+# whose start none of the above recognises can only begin a partial walk of
+# an unrooted (interpreted) host; it caps no native walk.
+
+# Tool-owned capture key: set on a conservative retry recipe so enrichment is
+# not derived again after the enriched recipe was rejected.
+ROOT_ENRICHMENT_OFF_KEY = '_root_enrichment_disabled'
+
+
+def root_enrichment_default() -> bool:
+    """Enrichment is on unless PSX_OVERLAY_ROOT_ENRICHMENT=0 (diagnostic).
+
+    Read from the environment so process-pool workers (static mode) inherit
+    the same policy as the parent without extra plumbing."""
+    return os.environ.get('PSX_OVERLAY_ROOT_ENRICHMENT', '1').strip() != '0'
+
+
+def _in_delay_slot(data: bytes, load_addr: int, addr: int) -> bool:
+    """True when the word before ``addr`` is a delayed control transfer."""
+    if addr - 4 < load_addr:
+        return False
+    prev = _word_at(data, load_addr, addr - 4)
+    return _is_valid_mips_word(prev) and _is_control_flow(prev)
+
+
+def _return_precedes(data: bytes, load_addr: int, addr: int) -> bool:
+    """`jr $ra` + delay slot immediately before ``addr``, allowing only zero
+    alignment padding between them (the recompiler's callable_boundary rule:
+    Psy-Q pads leaf routines with one to six NOPs)."""
+    if _is_jr_ra(_word_at(data, load_addr, addr - 8)):
+        return True
+    for back in range(12, 36, 4):
+        if addr - back < load_addr:
+            return False
+        if _word_at(data, load_addr, addr - back + 8) != 0:
+            return False
+        if _is_jr_ra(_word_at(data, load_addr, addr - back)):
+            return True
+    return False
+
+
+# Longest straight-line preamble walked back from a stack-frame prologue to
+# its function's start. Scheduled loads before the frame are 1-5 words on Ace
+# Combat 3 (beads-eio.3.191); a longer run proves nothing more. Zero words
+# (alignment padding, zero fill) are walked but not counted.
+PROLOGUE_PREAMBLE_WORDS = 32
+
+
+@functools.lru_cache(maxsize=8)
+def _local_branch_sources(data: bytes, load_addr: int) -> dict[int, int]:
+    """{target: lowest source pc} of every local branch in the image: a
+    conditional branch or an always-taken `b`, never an absolute j/jal (also
+    how tail calls and calls are encoded) and never a register jump. Compiled
+    code never branches across a function boundary, so a word a branch from
+    BELOW reaches is inside the function that branch belongs to."""
+    hi = load_addr + len(data)
+    sources = {}
+    for pc in range(load_addr, hi, 4):
+        word = _word_at(data, load_addr, pc)
+        if word is None or not _is_control_flow(word) or \
+                (word >> 26) in (0x00, 0x02, 0x03):
+            continue
+        kind, target = _classify_cf(pc, word)
+        if kind in ('branch', 'j') and pc < sources.get(target, hi):
+            sources[target] = pc
+    return sources
+
+
+def _pointer_shaped(word, load_addr: int, hi: int) -> bool:
+    """An aligned RAM (KSEG0) or in-image address: a table entry. As an
+    instruction it is `lb rt,imm(zero|at|v0|v1)`, which real code also uses
+    (`lui v0,0x8010; lb v0,0x5CEC(v0)`), so one such word alone is not data."""
+    return (word is not None and not word & 3 and
+            (load_addr <= word < hi or 0x80000000 <= word < 0x80800000))
+
+
+def _setup_shaped_preamble(data: bytes, load_addr: int, start: int,
+                           end: int) -> bool:
+    """Every word in [start, end) is zero or global-data setup: `lui rt`,
+    `li rt` (addiu/ori from $zero), or a load whose base a preceding `lui`
+    set -- the recompiler's pre-prologue rule (preprologue_window_is_valid).
+    Destination never $zero, $sp or $ra."""
+    bases = set()
+    for pc in range(start, end, 4):
+        word = _word_at(data, load_addr, pc)
+        if word is None:
+            return False
+        if word == 0:
+            continue
+        op, rs, rt = word >> 26, (word >> 21) & 31, (word >> 16) & 31
+        if rt in (0, 29, 31):
+            return False
+        if op == 0x0F and rs == 0:
+            bases.add(rt)
+        elif op in (0x09, 0x0D) and rs == 0:
+            bases.discard(rt)
+        elif 0x20 <= op <= 0x26 and rs in bases:
+            bases.discard(rt)
+        else:
+            return False
+    return True
+
+
+def prologue_function_start(data: bytes, load_addr: int, addr: int,
+                            lo: int | None = None):
+    """The start of the function whose stack-frame prologue is at ``addr``.
+
+    A stack adjust is not a function boundary by itself: compilers schedule
+    loads in front of it (`lui v0; lw v1,..(v0); addiu sp,sp,-24`), and
+    rooting the adjust caps the real function a few words in (Ace Combat 3:
+    359 such roots, 175 with the true start executed). Walk back over the
+    straight-line preamble to the nearest boundary, then step over zero
+    padding. A boundary is ``lo`` (image or producer start), the word after
+    the delay slot of an unconditional transfer (`jr ra`, `jr`, `j`, `b`) or
+    after a `break` trap, or the word after data: an invalid instruction, or
+    the last of two pointer-shaped words (a table). After data the preamble
+    must be global-data setup (_setup_shaped_preamble), since data can decode
+    as valid instructions.
+
+    Returns ``addr`` when the prologue itself is at a boundary, an earlier
+    address when a preamble leads to it, and None when no start is provable:
+    ``addr`` is not a prologue or sits in a delay slot; the walk meets a
+    conditional branch or a call (the prologue is reached by fallthrough from
+    code whose start this walk does not bound) or runs past the window; the
+    preamble after data is not setup; or a local branch from below the start
+    lands in [start, addr] (the start is then a label of the function before
+    it, past an early return or a divide check).
+    """
+    lo = load_addr if lo is None else lo
+    hi = load_addr + len(data)
+    if addr & 3 or not (lo <= addr < hi) or \
+            not _is_addiu_sp_neg(_word_at(data, load_addr, addr)):
+        return None
+    pc = addr
+    preamble = 0
+    after_data = False
+    while pc > lo:
+        prev = _word_at(data, load_addr, pc - 4)
+        if prev is None:
+            return None
+        # A control-transfer shape counts only as a valid instruction: data
+        # like 0x06040200 (REGIMM with no such rt) decodes as a "branch".
+        if _is_valid_mips_word(prev) and _is_control_flow(prev):
+            return None               # pc is a delay slot
+        prev2 = _word_at(data, load_addr, pc - 8) if pc - 8 >= lo else None
+        if (_is_valid_mips_word(prev2) and _is_control_flow(prev2) and
+                _is_valid_mips_word(prev)):
+            kind, _target = _classify_cf(pc - 8, prev2)
+            if kind in ('j', 'jr', 'jr_ra'):
+                break                 # after an unconditional transfer
+            return None               # conditional fallthrough / call return
+        if (prev >> 26) == 0 and (prev & 0x3F) == 0x0D:
+            break                     # after a `break` trap
+        if not _is_valid_mips_word(prev) or (
+                _pointer_shaped(prev, load_addr, hi) and prev2 is not None and
+                (not _is_valid_mips_word(prev2) or
+                 _pointer_shaped(prev2, load_addr, hi))):
+            after_data = True
+            break
+        if prev:                      # zero fill is padding, not preamble
+            preamble += 1
+            if preamble > PROLOGUE_PREAMBLE_WORDS:
+                return None
+        pc -= 4
+    while pc < addr and _word_at(data, load_addr, pc) == 0:
+        pc += 4
+    if after_data and pc < addr and \
+            not _setup_shaped_preamble(data, load_addr, pc, addr):
+        return None
+    sources = _local_branch_sources(bytes(data), load_addr)
+    for label in range(pc, addr + 4, 4):
+        if sources.get(label, pc) < pc:
+            return None
+    return pc
+
+
+def _late_prologue_start_proven(data: bytes, load_addr: int, start: int,
+                                producer_hi: int, hi: int) -> bool:
+    """Proof for the start prologue_function_start found BEFORE a prologue.
+
+    The evidence is the same as for a prologue at a boundary -- a stack frame
+    opened by straight-line code from a boundary -- only relocated to where
+    that code begins, so it needs no more than a prologue does: the checks
+    every root gets (in range, valid non-zero word, not a delay slot or a
+    pointer table). Not the frameless-boundary CFG probe: that stands in for
+    the code evidence a prologue already gives, and it rejects functions that
+    run past a page-sized capture (13 of them on Ace Combat 3) which the
+    prologue itself roots today."""
+    if start & 3 or not (load_addr <= start < min(producer_hi, hi)):
+        return False
+    word = _word_at(data, load_addr, start)
+    if not word or not _is_valid_mips_word(word):
+        return False
+    return not (_dense_local_pointer_table(data, load_addr, start) or
+                _in_delay_slot(data, load_addr, start))
+
+
+def image_local_entry_proven(data: bytes, load_addr: int, size: int,
+                             addr: int, producer_hi: int,
+                             analysis_hi: int | None = None,
+                             producer_lo: int | None = None) -> bool:
+    """Does THIS image's own byte content prove a function boundary at addr?
+
+    Used for every enrichment source (prologue scan, jal targets, pointer
+    tables). A call or pointer elsewhere in the image is not accepted as proof
+    by itself; see the section comment above for why. A stack-frame prologue
+    proves a boundary only when it is at one (prologue_function_start returns
+    it unchanged); a prologue after a preamble proves its true start instead.
+    """
+    hi = load_addr + size if analysis_hi is None else analysis_hi
+    if addr & 3 or not (load_addr <= addr < hi):
+        return False
+    word = _word_at(data, load_addr, addr)
+    if not word or not _is_valid_mips_word(word):
+        return False
+    if _dense_local_pointer_table(data, load_addr, addr):
+        return False
+    if _in_delay_slot(data, load_addr, addr):
+        return False
+    if _is_addiu_sp_neg(word) and prologue_function_start(
+            data, load_addr, addr,
+            load_addr if producer_lo is None else producer_lo) == addr:
+        return True
+    if _return_precedes(data, load_addr, addr):
+        return plausible_callable_target(data, load_addr, size, addr,
+                                         min(producer_hi, hi))
+    return False
+
+
+def derive_static_roots(data: bytes, load_addr: int, size: int,
+                        producer_ranges=(), analysis_hi: int | None = None,
+                        sources: dict | None = None,
+                        weak_out: set | None = None,
+                        strict_producer_ranges: bool = False,
+                        external_call_targets=()) -> set[int]:
+    """Enrichment candidates in one image: the STRONG set is returned.
+
+    Candidates come from three generic sources -- stack-frame prologues,
+    direct jal targets, and runs of three or more in-image pointers. Those
+    passing image_local_entry_proven are STRONG. A jal/table target that only
+    passes the bounded CFG probe (plausible_callable_target, not in a delay
+    slot) is WEAK and goes to ``weak_out`` when given; derive_enrichment_roots
+    decides which weak ones survive. With producer ranges, a jal or table in
+    one producer is only weak evidence about an address in the SAME producer;
+    across producers it can support a STRONG root (never under
+    ``strict_producer_ranges``). ``external_call_targets`` are jal targets
+    found in OTHER images (the main EXE, other captured images; see
+    CrossImageCalls): strong evidence only, like a cross-producer call, so a
+    target is returned only when this image bounds it, and never under
+    ``strict_producer_ranges``. ``sources`` (optional) receives
+    {addr: set of source names} for every returned or weak address.
+    """
+    hi = load_addr + size if analysis_hi is None else analysis_hi
+    ranges = sorted(producer_ranges or ())
+
+    def producer_hi_for(addr: int):
+        if not ranges:
+            return hi
+        for range_lo, range_hi in ranges:
+            if range_lo <= addr < range_hi:
+                return range_hi
+        return None
+
+    candidates: dict[int, set] = {}
+
+    def producer_index(addr: int):
+        if not ranges:
+            return 0
+        for index, (range_lo, range_hi) in enumerate(ranges):
+            if range_lo <= addr < range_hi:
+                return index
+        return None
+
+    def note(addr: int, source: str, source_pc: int | None = None) -> None:
+        # Evidence from one producer about an address in another is the
+        # cross-producer case compile_overlays already treats as weaker:
+        # strict captures reject it outright, others need a local boundary.
+        if source_pc is not None:
+            src = producer_index(source_pc)
+            if src is None:
+                return
+            if src != producer_index(addr):
+                source += '_cross'
+        candidates.setdefault(addr, set()).add(source)
+
+    def producer_lo_for(addr: int):
+        if not ranges:
+            return load_addr
+        for range_lo, range_hi in ranges:
+            if range_lo <= addr < range_hi:
+                return range_lo
+        return None
+
+    # A prologue roots its function's true start (prologue_function_start):
+    # at a boundary it is its own start; after a straight-line preamble the
+    # start is the candidate, and it must pass _late_prologue_start_proven.
+    # A prologue with no provable start is only weak evidence.
+    late_prologues: dict[int, set] = {}
+    pointers = []
+    for addr in range(load_addr, hi, 4):
+        word = _word_at(data, load_addr, addr)
+        if _is_addiu_sp_neg(word) and not _in_delay_slot(data, load_addr, addr):
+            plo = producer_lo_for(addr)
+            start = (None if plo is None else prologue_function_start(
+                data, load_addr, addr, plo))
+            if start == addr:
+                note(addr, 'prologue')
+            elif start is not None:
+                late_prologues.setdefault(start, set()).add(addr)
+            else:
+                note(addr, 'prologue_unbounded')
+        if word is not None and (word >> 26) == 0x03:
+            note(_jump_target(addr, word), 'jal', addr)
+        pointers.append(word if word is not None and not (word & 3) and
+                        load_addr <= word < hi else None)
+    start = 0
+    while start < len(pointers):
+        if pointers[start] is None:
+            start += 1
+            continue
+        end = start + 1
+        while end < len(pointers) and pointers[end] is not None:
+            end += 1
+        if end - start >= 3:
+            for offset in range(start, end):
+                note(pointers[offset], 'pointer_table', load_addr + offset * 4)
+        start = end
+
+    for target in external_call_targets or ():
+        if not target & 3 and load_addr <= target < hi:
+            note(target, 'jal_image')
+
+    for start, prologue_addrs in late_prologues.items():
+        producer_hi = producer_hi_for(start)
+        if producer_hi is not None and _late_prologue_start_proven(
+                data, load_addr, start, producer_hi, hi):
+            note(start, 'prologue_start')
+        else:
+            for addr in prologue_addrs:
+                note(addr, 'prologue_unbounded')
+
+    local = {'prologue', 'jal', 'pointer_table'}
+    # Calls from another producer of this image, or from another image.
+    cross = {'jal_cross', 'pointer_table_cross', 'jal_image'}
+    weak_sources = {'jal', 'pointer_table', 'prologue_unbounded'}
+    roots = set()
+    for addr, why in candidates.items():
+        producer_hi = producer_hi_for(addr)
+        if producer_hi is None:
+            continue
+        strong_evidence = bool(why & local) or (
+            bool(why & cross) and not strict_producer_ranges)
+        if 'prologue_start' in why or (
+                strong_evidence and image_local_entry_proven(
+                    data, load_addr, size, addr, producer_hi, hi,
+                    producer_lo_for(addr))):
+            roots.add(addr)
+            if sources is not None:
+                sources[addr] = set(why)
+        elif (weak_out is not None and why & weak_sources and
+              not addr & 3 and load_addr <= addr < hi and
+              not _in_delay_slot(data, load_addr, addr) and
+              plausible_callable_target(data, load_addr, size, addr,
+                                        min(producer_hi, hi))):
+            weak_out.add(addr)
+            if sources is not None:
+                sources[addr] = set(why) | {'weak'}
+    return roots
+
+
+def possible_function_starts(data: bytes, load_addr: int,
+                             analysis_hi: int, producer_ranges=()) -> set[int]:
+    """Every address a function could plausibly start at, for the WEAK
+    enrichment test: image start, producer starts, stack-frame prologues, and
+    the first non-padding word after an unconditional transfer's delay slot
+    (`jr`, `j`, always-taken branch). Generous on purpose -- a wider host set
+    can only drop more weak candidates."""
+    starts = {load_addr}
+    starts.update(lo for lo, _hi in producer_ranges or ())
+    for addr in range(load_addr, analysis_hi, 4):
+        word = _word_at(data, load_addr, addr)
+        if word is None or not _is_valid_mips_word(word):
+            continue
+        if _is_addiu_sp_neg(word) and not _in_delay_slot(data, load_addr, addr):
+            starts.add(addr)
+        if _is_control_flow(word):
+            kind, _target = _classify_cf(addr, word)
+            if kind in ('j', 'jr', 'jr_ra'):
+                nxt = addr + 8
+                for _ in range(8):
+                    if nxt >= analysis_hi or _word_at(data, load_addr, nxt) != 0:
+                        break
+                    nxt += 4
+                if nxt < analysis_hi:
+                    starts.add(nxt)
+    return starts
+
+
+def derive_enrichment_roots(data: bytes, load_addr: int, size: int,
+                            producer_ranges=(), analysis_hi: int | None = None,
+                            explicit=(), walk=None,
+                            strict_producer_ranges: bool = False,
+                            external_call_targets=()
+                            ) -> tuple[set, dict]:
+    """The enrichment roots compile_overlays adds for one image.
+
+    STRONG candidates are returned as-is (the no-split guard demotes any that
+    lie inside a function). A WEAK candidate is returned only when no other
+    possible function start -- explicit capture roots, strong and weak
+    candidates, possible_function_starts() -- reaches it by an uncapped walk.
+    ``walk(entry, cap)`` is the caller's memoized _walk_overlay_function.
+    Returns (roots, stats).
+    """
+    hi = load_addr + size if analysis_hi is None else analysis_hi
+    if walk is None:
+        cache = {}
+
+        def walk(entry, cap):
+            key = (entry, cap)
+            if key not in cache:
+                cache[key] = _walk_overlay_function(
+                    data, load_addr, size, entry, cap, producer_ranges)
+            return cache[key]
+    weak = set()
+    why = {}
+    strong = derive_static_roots(data, load_addr, size, producer_ranges, hi,
+                                 sources=why, weak_out=weak,
+                                 strict_producer_ranges=strict_producer_ranges,
+                                 external_call_targets=external_call_targets)
+    hosts = ({a for a in explicit if load_addr <= a < hi and not a & 3} |
+             strong | weak |
+             possible_function_starts(data, load_addr, hi, producer_ranges))
+    reached = set()
+    if weak:
+        for host in sorted(hosts):
+            hits = walk(host, load_addr + size)['visited'] & weak
+            hits.discard(host)
+            reached |= hits
+    accepted = weak - reached
+    return strong | accepted, {
+        'strong': len(strong), 'weak': len(weak),
+        'weak_accepted': len(accepted), 'weak_dropped': len(reached),
+        'hosts': len(hosts),
+        'late_prologue_starts': sum('prologue_start' in why.get(a, ())
+                                    for a in strong),
+        'unbounded_prologues_accepted': sum(
+            'prologue_unbounded' in why.get(a, ()) for a in accepted),
+        # Roots a cross-image call nominated, and those it alone nominated.
+        'cross_image_jal_roots': sum('jal_image' in why.get(a, ())
+                                     for a in strong),
+        'cross_image_jal_only': sum(why.get(a) == {'jal_image'}
+                                    for a in strong)}
+
+
+def jal_targets_in(data: bytes, base: int) -> list[int]:
+    """Sorted distinct targets of every jal-shaped word in one image.
+
+    A nomination list only: a data word that happens to decode as jal can
+    name an address, but classify_overlay_seeds roots it only where the
+    target image's own bytes prove a function boundary."""
+    words = array.array('I')
+    words.frombytes(bytes(data[:len(data) & ~3]))
+    if sys.byteorder != 'little':
+        words.byteswap()
+    targets = set()
+    for index, word in enumerate(words):
+        if (word >> 26) == 0x03:
+            pc = base + index * 4
+            targets.add(((pc + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
+    return sorted(targets)
+
+
+def load_main_exe_image(toml_doc: dict, game_toml: str | None,
+                        project_root: str | None = None,
+                        explicit: str | None = None):
+    """(load_addr, text bytes, path) of the title's boot PS-X EXE, or None.
+
+    ``explicit`` (--main-exe) wins. Otherwise [game] exe is resolved against
+    the game.toml directory, then the project root: the same file
+    tools/prepare_disc.py extracts next to the disc image when a title is set
+    up. A missing EXE only removes the EXE's calls from the cross-image
+    evidence; it is reported, never fatal."""
+    rel = (toml_doc.get('game', {}) or {}).get('exe')
+    candidates = []
+    if explicit:
+        candidates.append(explicit)
+    elif rel:
+        for base in (os.path.dirname(os.path.abspath(game_toml))
+                     if game_toml else None, project_root):
+            if base:
+                candidates.append(os.path.join(base, rel))
+    for path in candidates:
+        try:
+            with open(path, 'rb') as f:
+                raw = f.read()
+        except OSError:
+            continue
+        if raw[:8] != b'PS-X EXE' or len(raw) < 0x800:
+            print(f'  WARNING: main EXE {path} is not a PS-X EXE; '
+                  f'cross-image calls use captured images only')
+            return None
+        load = struct.unpack_from('<I', raw, 0x18)[0]
+        size = struct.unpack_from('<I', raw, 0x1C)[0]
+        return load, raw[0x800:0x800 + size], path
+    if explicit or rel:
+        print(f'  note: main EXE not found ({", ".join(candidates) or rel}); '
+              f'cross-image calls use captured images only')
+    return None
+
+
+class CrossImageCalls:
+    """jal edges into an overlay image from code that can be resident with it.
+
+    Sources are the main EXE and every captured image that does not overlap
+    the target image (an overlapping image is an alternative occupant of the
+    same RAM, never co-resident). The index is built on first use, once per
+    distinct image, so a run that classifies nothing pays nothing."""
+
+    def __init__(self, captures, main_exe=None):
+        self._captures = captures
+        self._main_exe = main_exe
+        self._sources = None
+
+    def _build(self):
+        sources = []
+        seen = {}
+        if self._main_exe is not None:
+            load, text, _path = self._main_exe
+            sources.append((load & 0x1FFFFFFF,
+                            (load & 0x1FFFFFFF) + len(text),
+                            sorted({t & 0x1FFFFFFF
+                                    for t in jal_targets_in(text, load)})))
+        for cap in self._captures:
+            try:
+                load = int(cap['load_addr'], 16)
+                data = base64.b64decode(cap['bytes_b64'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            key = (load, hashlib.sha256(data).digest())
+            if key in seen:
+                continue
+            seen[key] = True
+            sources.append((load & 0x1FFFFFFF, (load & 0x1FFFFFFF) + len(data),
+                            sorted({t & 0x1FFFFFFF
+                                    for t in jal_targets_in(data, load)})))
+        self._sources = sources
+
+    def targets_for(self, load_addr: int, size: int,
+                    analysable_hi: int | None = None) -> set[int]:
+        """Targets in [load_addr, analysable_hi) called from non-overlapping
+        sources. Addresses keep the capture's own segment."""
+        if self._sources is None:
+            self._build()
+        lo = load_addr & 0x1FFFFFFF
+        hi = lo + size
+        top = lo + ((analysable_hi if analysable_hi is not None
+                     else load_addr + size) - load_addr)
+        seg = load_addr & ~0x1FFFFFFF
+        out = set()
+        for src_lo, src_hi, phys in self._sources:
+            if src_lo < hi and lo < src_hi:
+                continue          # the same RAM: never co-resident
+            for t in phys[bisect_left(phys, lo):bisect_left(phys, top)]:
+                if not t & 3:
+                    out.add(seg | t)
+        return out
+
+
+def no_split_partition(candidates, exempt, walk, hi: int, droppable=(),
+                       dropped_out: set | None = None):
+    """Fixed point of the no-split guard over one root partition.
+
+    For each root h, ascending:
+      1. Walk h with no cap at all (to the image / producer end). The run of
+         following candidates that this uncapped walk reaches -- stopping at
+         the first one it does not reach, or at an exempt root -- are the
+         candidates that may be inside h.
+      2. Walk h capped at the end of that run. If some candidate in the run
+         is not reached (it is reachable only through a path beyond the
+         run), it stays a root and becomes the cap; shrink the run to it and
+         walk again.
+      3. Every candidate left in the run is reached by h's walk with none of
+         their caps in the way: absorb them all.
+    Absorbing a whole run at once is what lets a switch host whose jump table
+    targets several candidates resolve that table (a table resolves only when
+    all of its targets lie inside the walk), and step 1 keeps a forward tail
+    call over an unrelated function from demoting the tail-call target, which
+    that intervening root would leave hostless. Absorption only removes caps,
+    so whole passes repeat until nothing more is absorbed.
+
+    ``droppable`` candidates (weak evidence: enrichment roots) are also
+    removed when h's walk does NOT reach them but one of h's local branches
+    jumps over them -- an unreached word inside h's body (dead code,
+    embedded data) would cap h and turn that branch into a cross-function
+    exit. They are dropped, never aliased (not reachable from h), and
+    reported in ``dropped_out``. Capture-evidence roots keep their existing
+    behaviour in that position.
+
+    Returns (roots, {absorbed: owner}).
+    """
+    roots = sorted(candidates)
+    absorbed = {}
+    changed = True
+    while changed:
+        changed = False
+        index = 0
+        while index < len(roots):
+            host = roots[index]
+            # Uncapped reach, plus the walk capped at the successor: a wider
+            # range can reject a jump table (more sources may enter its
+            # protected suffix), so the capped walk is not always a subset.
+            reach = walk(host, hi)['visited']
+            if index + 1 < len(roots):
+                reach = reach | walk(host, roots[index + 1])['visited']
+            end = index + 1
+            while (end < len(roots) and roots[end] not in exempt and
+                   (roots[end] in reach or roots[end] in droppable)):
+                end += 1
+            while end > index + 1:
+                cap = roots[end] if end < len(roots) else hi
+                entry_walk = walk(host, cap)
+                inner = entry_walk['visited']
+                spans = entry_walk['local_branch_spans'] if droppable else ()
+                blocked = None
+                for k in range(index + 1, end):
+                    addr = roots[k]
+                    if addr in inner:
+                        continue
+                    # Dropped only when one of h's own local branches (any
+                    # conditional branch, or an always-taken b; never an
+                    # absolute j, which is also how tail calls are encoded)
+                    # jumps over it: compiled code never branches across a
+                    # function boundary, so the word is an unreached part of
+                    # h's body.
+                    if addr in droppable and any(
+                            src < addr < dst for src, dst in spans):
+                        continue
+                    blocked = k
+                    break
+                if blocked is None:
+                    break
+                end = blocked
+            if end > index + 1:
+                inner = walk(host, roots[end] if end < len(roots)
+                             else hi)['visited']
+                for addr in roots[index + 1:end]:
+                    if addr in inner:
+                        absorbed[addr] = host
+                    elif dropped_out is not None:
+                        dropped_out.add(addr)
+                del roots[index + 1:end]
+                changed = True
+            index += 1
+    return set(roots), absorbed
+
+
 def _walk_overlay_function(data: bytes, load_addr: int, size: int,
                            entry: int, hard_cap: int,
                            producer_ranges=(),
@@ -1632,6 +2376,11 @@ def _walk_overlay_function(data: bytes, load_addr: int, size: int,
     forward_branch_targets = set()
     rejected_cross_producer_calls = set()
     accepted_cross_producer_calls = set()
+    # (low, high) of every reached LOCAL branch -- conditional, or an
+    # always-taken b encoded as a branch; never an absolute j (also how tail
+    # calls are encoded). The no-split guard uses these to see an unreached
+    # word inside a function body.
+    local_branch_spans = []
 
     def producer_for(addr: int):
         for range_lo, range_hi in producer_ranges:
@@ -1691,6 +2440,8 @@ def _walk_overlay_function(data: bytes, load_addr: int, size: int,
         kind, target = _classify_cf(pc, word)
         delay = pc + 4
 
+        if kind in ('branch', 'j') and (word >> 26) != 0x02:
+            local_branch_spans.append((min(pc, target), max(pc, target)))
         if kind == 'normal':
             if in_function(pc + 4):
                 work.append(pc + 4)
@@ -1786,6 +2537,7 @@ def _walk_overlay_function(data: bytes, load_addr: int, size: int,
         'forward_branch_targets': forward_branch_targets,
         'rejected_cross_producer_calls': rejected_cross_producer_calls,
         'accepted_cross_producer_calls': accepted_cross_producer_calls,
+        'local_branch_spans': local_branch_spans,
     }
 
 
@@ -1841,10 +2593,42 @@ def _collect_toml_overlay_entries(toml_doc: dict, load_addr: int, crc32: int,
 
 
 def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
-                           crc32: int, toml_doc: dict) -> tuple[list[str], dict]:
+                           crc32: int, toml_doc: dict,
+                           root_enrichment: bool | None = None,
+                           external_call_targets=()
+                           ) -> tuple[list[str], dict]:
+    """Classify one capture's entry evidence into recompiler seed records.
+
+    ``root_enrichment`` None means root_enrichment_default(). A capture that
+    carries ROOT_ENRICHMENT_OFF_KEY (a conservative retry recipe) is never
+    enriched. The no-split guard is not optional. ``external_call_targets``
+    are jal targets from the main EXE and other captured images
+    (CrossImageCalls.targets_for); enrichment roots them only where this
+    image's bytes prove the boundary.
+    """
     lo = load_addr
     hi = load_addr + size
-    region = lambda a: lo <= a < hi and (a & 3) == 0
+    # Trailing delay-slot guard words (capture_guard_bytes) are readable as a
+    # delay slot but are not code of this image: the word after them is not
+    # in it, and the recompiler's analysis ends before them. Evidence there
+    # (a resume PC at a page boundary, a PC attributed to the run by an older
+    # capture writer) is excluded as GUARD_WORD and never requested; the
+    # neighbour variant that holds the word as code serves it.
+    fragment_hi = hi - capture_guard_bytes(cap, size)
+    region = lambda a: lo <= a < fragment_hi and (a & 3) == 0
+    guard_word = lambda a: fragment_hi <= a < hi and (a & 3) == 0
+    guard_word_excluded = set()
+
+    def exclude_outside(addr: int) -> None:
+        if guard_word(addr):
+            guard_word_excluded.add(addr)
+            excluded[addr] = 'GUARD_WORD'
+        else:
+            excluded[addr] = 'UNKNOWN'
+    if root_enrichment is None:
+        root_enrichment = root_enrichment_default()
+    if cap.get(ROOT_ENRICHMENT_OFF_KEY):
+        root_enrichment = False
     producer_ranges = []
     for raw_range in cap.get('producer_ranges', []) or []:
         if not isinstance(raw_range, dict):
@@ -1934,24 +2718,61 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     # validated dispatch evidence separately so executed entries can still use
     # the isolated, audited fragment path without truncating a shared host.
     dispatch_fragment_demands = set()
-    fragment_hi = hi - capture_guard_bytes(cap, size)
     game_text = _game_text_range(toml_doc)
+
+    # Every walk in this classification is a pure function of (entry, cap):
+    # memoize so the no-split guard's owner walks cost nothing extra.
+    walk_cache = {}
+
+    def walk(entry: int, hard_cap: int) -> dict:
+        key = (entry, hard_cap)
+        result = walk_cache.get(key)
+        if result is None:
+            result = _walk_overlay_function(
+                data, load_addr, size, entry, hard_cap, producer_ranges,
+                allow_cross_producer_calls)
+            walk_cache[key] = result
+        return result
+
+    # Enrichment (default on): generic, image-local root evidence. It only
+    # ADDS addresses that no capture evidence classifies; it never upgrades a
+    # captured address's reason (a dispatch entry keeps the dispatch gate that
+    # demotes jump-table case labels and unproven frameless heads). Every
+    # derived root still passes include() and the no-split guard below.
+    derived_static_roots = set()
+    enrichment_stats = {}
+    if root_enrichment:
+        derived_static_roots, enrichment_stats = derive_enrichment_roots(
+            data, load_addr, size, producer_ranges, fragment_hi,
+            explicit=(static_discovery_entries | captured_function_entries |
+                      dispatch_entry_pcs | toml_entries | legacy_seeds),
+            walk=walk,
+            strict_producer_ranges=not allow_cross_producer_calls,
+            external_call_targets=external_call_targets)
+        derived_static_roots -= (static_discovery_entries |
+                                 captured_function_entries |
+                                 dispatch_entry_pcs | toml_entries |
+                                 legacy_seeds)
 
     # A dispatch into dirty RAM can land on a jump-table case label. That
     # proves coverage, not a callable function boundary, so discover those
-    # labels before promoting dispatch entries to seeds.
+    # labels before promoting dispatch entries to seeds. The prepass walks the
+    # guarded partition, so a candidate inside a switch host cannot cap the
+    # host before its jr and hide the table.
     pre_roots = (set(legacy_callable_seeds) | set(captured_function_entries) |
-                 set(static_discovery_entries) | set(toml_entries))
+                 set(static_discovery_entries) | set(toml_entries) |
+                 derived_static_roots)
     pre_roots.update(a for a in dispatch_entry_pcs
                      if region(a) and _callable_legacy_seed(data, load_addr, a))
     jump_table_targets = set()
-    pre_roots_sorted = sorted(a for a in pre_roots if region(a))
+    pre_roots_guarded, _ = no_split_partition(
+        {a for a in pre_roots
+         if region(a) and not _in_delay_slot(data, load_addr, a)},
+        set(), walk, hi, derived_static_roots)
+    pre_roots_sorted = sorted(pre_roots_guarded)
     for i, entry in enumerate(pre_roots_sorted):
         hard_cap = pre_roots_sorted[i + 1] if i + 1 < len(pre_roots_sorted) else hi
-        walk = _walk_overlay_function(
-            data, load_addr, size, entry, hard_cap, producer_ranges,
-            allow_cross_producer_calls)
-        jump_table_targets.update(walk['jump_table_targets'])
+        jump_table_targets.update(walk(entry, hard_cap)['jump_table_targets'])
 
     def impossible_entry_start(addr: int) -> bool:
         word = _word_at(data, load_addr, addr)
@@ -1968,7 +2789,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
 
     def include(addr: int, reason: str):
         if not region(addr):
-            excluded[addr] = 'UNKNOWN'
+            exclude_outside(addr)
             return
         # Composite padding has bytes but no producer identity.  A root there
         # would otherwise get entry_producer=None and could walk through every
@@ -2032,7 +2853,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         include(addr, 'FUNCTION_POINTER_TARGET')
     for addr in static_discovery_entries:
         if not region(addr):
-            excluded[addr] = 'UNKNOWN'
+            exclude_outside(addr)
         elif (_callable_legacy_seed(data, load_addr, addr) or
               plausible_callable_target(data, load_addr, size, addr, hi)):
             include(addr, 'STATIC_DISCOVERY_ROOT')
@@ -2042,6 +2863,12 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             include(addr, 'FUNCTION_POINTER_TARGET')
     for addr in toml_entries:
         include(addr, 'TOML_DECLARED_ENTRY')
+    # Enrichment roots: proven by this image's own bytes. A known jump-table
+    # case label is not a function start, whatever its neighbourhood says.
+    for addr in sorted(derived_static_roots):
+        if addr in included or addr in excluded or addr in jump_table_targets:
+            continue
+        include(addr, 'STATIC_DISCOVERY_ROOT')
 
     legacy_seed_mode = bool(legacy_seeds) and not cap.get('schema')
     if legacy_seed_mode:
@@ -2057,12 +2884,30 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     for addr, _range_lo, _range_hi in static_alias_ranges:
         if region(addr):
             included[addr] = 'DISPATCH_INTERIOR'
+        else:
+            exclude_outside(addr)
 
     # Walk roots: callable entries only. DISPATCH_INTERIOR addresses are NOT
     # roots — as roots they would hard-cap (truncate) the sibling walk that
     # owns them.
-    known = {a for a, r in included.items() if r != 'DISPATCH_INTERIOR'}
-    initial_known = set(known)
+    explicit_candidates = {a for a, r in included.items()
+                           if r != 'DISPATCH_INTERIOR'}
+    # A candidate in a delay slot can neither cap (it would separate a
+    # transfer from its slot's owner) nor alias (the slot would become a block
+    # leader). Leave it to the interpreter.
+    delay_slot_rejected = {}
+    for addr in sorted(explicit_candidates):
+        if _in_delay_slot(data, load_addr, addr):
+            delay_slot_rejected[addr] = included.pop(addr)
+            excluded[addr] = 'DELAY_SLOT'
+    explicit_candidates -= set(delay_slot_rejected)
+    # The explicit universe is fixed; the no-split guard decides, each round
+    # and from scratch, which of it (plus derived targets) actually roots.
+    initial_known = explicit_candidates
+    # Enrichment roots are weak evidence: dropped (not aliased) when a host
+    # walks past them without reaching them.
+    droppable = initial_known & derived_static_roots
+    known, _ = no_split_partition(initial_known, set(), walk, hi, droppable)
     derived_reasons = {}
     promoted_roots = set()
     suppressed_derived = set()
@@ -2102,7 +2947,9 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
                     print('  WARNING: ownership discovery cycle; suppressing '
                           f'{len(unstable)} unstable derived roots'
                           + (f' ({unstable_text})' if unstable_text else ''))
-                    known = initial_known | promoted_roots
+                    known, _ = no_split_partition(
+                        initial_known | promoted_roots, promoted_roots,
+                        walk, hi, droppable)
                     derived_reasons = {}
                     discovery_round = 0
                     seen_states = {}
@@ -2113,7 +2960,9 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
                       + (f' (cycle={len(state_history) - cycle_start}, '
                          f'unstable={unstable_text})'
                          if cycle_start is not None else ' (round limit)'))
-                known = initial_known | promoted_roots
+                known, _ = no_split_partition(
+                    initial_known | promoted_roots, promoted_roots, walk, hi,
+                    droppable)
                 derived_reasons = {}
                 break
             seen_states[state] = len(state_history)
@@ -2121,23 +2970,37 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             next_reasons = {}
             round_branch_targets = set()
             sorted_known = sorted(known)
+
+            def derivable(target: int) -> bool:
+                # An enrichment root is weak evidence; a call from rooted code
+                # is stronger, so it may still derive (and stop being
+                # droppable).
+                if ((target in initial_known and target not in droppable) or
+                        target in suppressed_derived):
+                    return False
+                if guard_word(target):
+                    # A call or branch whose target is this image's guard
+                    # word: the callee is in the next page, not this image.
+                    guard_word_excluded.add(target)
+                    return False
+                if _in_delay_slot(data, load_addr, target):
+                    delay_slot_rejected.setdefault(target, 'DERIVED')
+                    return False
+                return True
+
             for index, entry in enumerate(sorted_known):
                 hard_cap = (sorted_known[index + 1]
                             if index + 1 < len(sorted_known) else hi)
-                walk = _walk_overlay_function(
-                    data, load_addr, size, entry, hard_cap, producer_ranges,
-                    allow_cross_producer_calls)
-                round_branch_targets.update(walk['branch_targets'])
-                round_branch_targets.update(walk['jump_table_targets'])
-                for target in walk['direct_jals']:
-                    if (target not in initial_known and
-                            target not in suppressed_derived):
+                entry_walk = walk(entry, hard_cap)
+                round_branch_targets.update(entry_walk['branch_targets'])
+                round_branch_targets.update(entry_walk['jump_table_targets'])
+                for target in entry_walk['direct_jals']:
+                    if derivable(target):
                         next_reasons[target] = 'DIRECT_JAL_TARGET'
-                for target in walk['static_indirect_targets']:
-                    if (target not in initial_known and
-                            target not in suppressed_derived):
+                for target in entry_walk['static_indirect_targets']:
+                    if derivable(target):
                         next_reasons.setdefault(target, 'STATIC_INDIRECT_TARGET')
-                for target in walk['forward_branch_targets']:
+                for target in entry_walk['forward_branch_targets']:
                     source_reason = (included.get(entry) or
                                      derived_reasons.get(entry) or
                                      ('DISPATCH_ROOT'
@@ -2161,26 +3024,16 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
                     producer_hi = target_range[1] if target_range else hi
                     if plausible_callable_target(
                             data, load_addr, size, target, producer_hi):
-                        if (target not in initial_known and
-                                target not in suppressed_derived):
+                        if derivable(target):
                             next_reasons.setdefault(target, 'STATIC_BRANCH_ROOT')
 
-            normalized = initial_known | promoted_roots | set(next_reasons)
-            roots = sorted(normalized)
-            for target in sorted(next_reasons):
-                if target not in normalized:
-                    continue
-                index = bisect_left(roots, target)
-                if index == len(roots) or roots[index] != target or index == 0:
-                    continue
-                owner = roots[index - 1]
-                hard_cap = roots[index + 1] if index + 1 < len(roots) else hi
-                owner_walk = _walk_overlay_function(
-                    data, load_addr, size, owner, hard_cap, producer_ranges,
-                    allow_cross_producer_calls)
-                if target in owner_walk['visited']:
-                    normalized.remove(target)
-                    roots.pop(index)
+            # The no-split guard over the whole candidate universe: explicit
+            # roots and derived targets alike are absorbed when the root below
+            # reaches them. Promoted kernel orphans are exempt (promoted
+            # precisely because no walk covered them).
+            normalized, _ = no_split_partition(
+                initial_known | promoted_roots | set(next_reasons),
+                promoted_roots, walk, hi, droppable - set(next_reasons))
 
             if normalized == known and next_reasons == derived_reasons:
                 all_branch_targets = round_branch_targets
@@ -2199,10 +3052,7 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         sorted_known = sorted(known)
         for i, entry in enumerate(sorted_known):
             hard_cap = sorted_known[i + 1] if i + 1 < len(sorted_known) else hi
-            walk = _walk_overlay_function(
-                data, load_addr, size, entry, hard_cap, producer_ranges,
-                allow_cross_producer_calls)
-            covered |= walk['visited']
+            covered |= walk(entry, hard_cap)['visited']
         promoted = sorted(a for a, r in included.items()
                           if r == 'DISPATCH_INTERIOR' and a not in covered
                           and _is_valid_mips_word(_word_at(data, load_addr, a)))
@@ -2224,19 +3074,41 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     accepted_cross_producer_calls = set()
     final_covered = set()
     sorted_known = sorted(known)
+    final_walks = {}
     for i, entry in enumerate(sorted_known):
         hard_cap = sorted_known[i + 1] if i + 1 < len(sorted_known) else hi
-        walk = _walk_overlay_function(
-            data, load_addr, size, entry, hard_cap, producer_ranges,
-            allow_cross_producer_calls)
-        all_branch_targets.update(walk['branch_targets'])
-        all_branch_targets.update(walk['jump_table_targets'])
-        all_branch_targets.update(walk['forward_branch_targets'])
-        final_covered.update(walk['visited'])
+        entry_walk = walk(entry, hard_cap)
+        final_walks[entry] = entry_walk
+        all_branch_targets.update(entry_walk['branch_targets'])
+        all_branch_targets.update(entry_walk['jump_table_targets'])
+        all_branch_targets.update(entry_walk['forward_branch_targets'])
+        final_covered.update(entry_walk['visited'])
         rejected_cross_producer_calls.update(
-            walk['rejected_cross_producer_calls'])
+            entry_walk['rejected_cross_producer_calls'])
         accepted_cross_producer_calls.update(
-            walk['accepted_cross_producer_calls'])
+            entry_walk['accepted_cross_producer_calls'])
+
+    # No-split guard outcome for the explicit universe: every candidate the
+    # final partition absorbed becomes an alias entry of its final host. At
+    # the guard's fixed point that host exists by construction; the fallback
+    # branch only keeps a broken invariant from minting a hostless alias.
+    guard_demoted = {}
+    enrichment_shadowed = set()
+    for addr in sorted(initial_known - known):
+        prior = included.get(addr)
+        index = bisect_left(sorted_known, addr)
+        host = sorted_known[index - 1] if index > 0 else None
+        if host is not None and addr in final_walks[host]['visited']:
+            included[addr] = 'DISPATCH_INTERIOR'
+            guard_demoted[addr] = (prior, host)
+        else:
+            included.pop(addr, None)
+            if addr in droppable:
+                enrichment_shadowed.add(addr)
+                excluded[addr] = 'ENRICHMENT_SHADOWED'
+            else:
+                excluded[addr] = ('OBSERVED_PC_ONLY'
+                                  if addr in executed_pcs else 'UNKNOWN')
 
     # A DISPATCH_INTERIOR is emitted only when the final partition has a real
     # CFG host for that exact PC. Reconsider every derived target after all
@@ -2255,12 +3127,39 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
             del included[addr]
             excluded[addr] = ('OBSERVED_PC_ONLY'
                               if addr in executed_pcs else 'UNKNOWN')
+    # Every surviving alias with the final root(s) whose walk reaches it. The
+    # region shard carries all aliases because it compiles every root; a host
+    # compiled instead in a supplemental root fragment (candidate capacity,
+    # region audit fallout) must carry its aliases too, or an address the
+    # no-split guard absorbed loses its callable identity and runs
+    # interpreted where the unguarded build had a (split) native entry.
+    interior_hosts = {
+        addr: {host for host, entry_walk in final_walks.items()
+               if addr in entry_walk['visited']}
+        for addr, reason in included.items()
+        if reason == 'DISPATCH_INTERIOR'
+    }
 
-    candidates = {a for a in (executed_pcs | dispatch_entry_pcs |
-                              captured_function_entries | static_discovery_entries |
-                              legacy_seeds | toml_entries)
-                  if region(a)}
-    for addr in sorted(candidates - set(included)):
+    for addr in delay_slot_rejected:
+        if addr not in included:
+            excluded[addr] = 'DELAY_SLOT'
+    evidence = (executed_pcs | dispatch_entry_pcs | captured_function_entries |
+                static_discovery_entries | legacy_seeds | toml_entries)
+    candidates = {a for a in evidence if region(a)}
+    for addr in sorted(a for a in evidence if guard_word(a)):
+        exclude_outside(addr)
+    for addr in guard_word_excluded:
+        excluded[addr] = 'GUARD_WORD'
+    # Invariant: no seed, alias or fragment demand in the guard word. The
+    # recompiler's analysis ends before it, so any request there comes back
+    # with an empty manifest (beads-eio.3.190).
+    guard_leaks = sorted(a for a in (set(included) | dispatch_fragment_demands)
+                         if not region(a))
+    if guard_leaks:
+        raise RuntimeError(
+            'BUG: classifier kept evidence outside the analysable image: ' +
+            ', '.join(f'0x{a:08X}' for a in guard_leaks))
+    for addr in sorted(candidates - set(included) - set(delay_slot_rejected)):
         if addr in all_branch_targets or addr in jump_table_targets:
             excluded[addr] = 'BRANCH_TARGET_ONLY'
         elif addr in executed_pcs or addr in legacy_seeds:
@@ -2313,13 +3212,25 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
         # the label outside every current code interval; aliases already inside
         # a guarded body remain candidates for the future exact-resume pass.
         'static_interval_fragment_demands': {
-            entry for entry, _lo, _hi in static_alias_ranges
+            entry for entry, _lo, _hi in static_alias_ranges if region(entry)
         },
         'rejected_cross_producer_calls': rejected_cross_producer_calls,
         'accepted_cross_producer_calls': accepted_cross_producer_calls,
         'static_jump_table_proofs': cap.get('static_jump_table_proofs', []),
         'static_call_continuation_pcs': _parse_addr_list(
             cap.get('static_call_continuation_pcs', [])),
+        # No-split guard / enrichment provenance, for audits and retries.
+        'root_enrichment': bool(root_enrichment),
+        'derived_static_roots': derived_static_roots,
+        'enrichment_stats': enrichment_stats,
+        'guard_demoted': guard_demoted,
+        'interior_hosts': interior_hosts,
+        'enrichment_shadowed': enrichment_shadowed,
+        'delay_slot_rejected': delay_slot_rejected,
+        # Evidence at or past the analysable end (the trailing guard word).
+        'analysable_hi': fragment_hi,
+        'guard_word_excluded': guard_word_excluded | {
+            a for a, r in excluded.items() if r == 'GUARD_WORD'},
     }
     # Interior entries carry the 'interior' marker so the recompiler emits
     # them as overlapping aliases, never as walk roots. Promoted kernel
@@ -2333,6 +3244,43 @@ def classify_overlay_seeds(cap: dict, data: bytes, load_addr: int, size: int,
     seeds.extend(seed_line_for_reason(addr, included[addr])
                  for addr in sorted(included))
     return seeds, audit
+
+
+RECOMPILER_GUARD_LINE = re.compile(
+    r'^No-split guard absorbed explicit entries: (\d+)\s*$', re.M)
+
+
+def report_recompiler_guard_absorptions(stdout: str) -> int:
+    """Surface explicit roots the recompiler's own no-split guard absorbed.
+
+    Nonzero means the recompiler's walk reached a root this classifier's walk
+    did not (e.g. a jump table only the C++ resolvers prove). The shard is
+    still split-free -- the recompiler aliased those entries -- but the
+    classifier's view diverged, so say so in the compile log."""
+    total = sum(int(m.group(1)) for m in
+                RECOMPILER_GUARD_LINE.finditer(stdout or ''))
+    if total:
+        print(f'  recompiler no-split guard absorbed {total} explicit '
+              f'root(s) the classifier kept')
+    return total
+
+
+RECOMPILER_SEED_DROP_LINE = re.compile(
+    r'^WARNING: (?:dropped \d+ requested seed\(s\)|entry point 0x[0-9A-F]{8} '
+    r'is at or past Analysis End).*$', re.M)
+
+
+def report_recompiler_seed_drops(stdout: str) -> int:
+    """Surface requested seeds the recompiler could not use.
+
+    A seed at or past Analysis End (the delay-slot guard word) or outside the
+    image produces no function; when it was the whole request the result is
+    an empty manifest. The classifier never writes one, so a line here means
+    a request path broke that invariant (beads-eio.3.190)."""
+    lines = [m.group(0) for m in RECOMPILER_SEED_DROP_LINE.finditer(stdout or '')]
+    for line in lines:
+        print(f'  recompiler {line}')
+    return len(lines)
 
 
 def print_seed_audit(audit: dict) -> None:
@@ -2351,7 +3299,26 @@ def print_seed_audit(audit: dict) -> None:
     print(f'toml_entries_included: {audit["counts"].get("TOML_DECLARED_ENTRY", 0)}')
     print(f'dispatch_interior_included: {audit["counts"].get("DISPATCH_INTERIOR", 0)}')
     print(f'dispatch_roots_promoted: {audit["counts"].get("DISPATCH_ROOT", 0)}')
-    unhosted_dispatch = (audit.get('dispatch_fragment_demands', set()) &
+    stats = audit.get('enrichment_stats') or {}
+    print(f'root_enrichment: {"on" if audit.get("root_enrichment") else "off"}'
+          f' (derived {len(audit.get("derived_static_roots", ()))}'
+          + (f'; strong {stats["strong"]}, weak {stats["weak"]} accepted '
+             f'{stats["weak_accepted"]} dropped {stats["weak_dropped"]}; '
+             f'late-prologue starts {stats.get("late_prologue_starts", 0)}, '
+             f'unbounded prologues kept '
+             f'{stats.get("unbounded_prologues_accepted", 0)}; '
+             f'cross-image jal roots {stats.get("cross_image_jal_roots", 0)} '
+             f'(only evidence {stats.get("cross_image_jal_only", 0)})'
+             if stats else '') + ')')
+    guard_demoted = audit.get('guard_demoted', {})
+    print(f'no_split_guard_demoted: {len(guard_demoted)}')
+    print(f'enrichment_roots_shadowed: '
+          f'{len(audit.get("enrichment_shadowed", ()))}')
+    print(f'delay_slot_roots_rejected: '
+          f'{len(audit.get("delay_slot_rejected", {}))}')
+    for addr, (prior, host) in sorted(guard_demoted.items()):
+        print(f'  {addr:08X}  no-split: {prior} inside 0x{host:08X}')
+    unhosted_dispatch =(audit.get('dispatch_fragment_demands', set()) &
                          audit['executed_pcs']) - set(audit['included_reasons'])
     print(f'unhosted_executed_dispatch_fragment_demands: {len(unhosted_dispatch)}')
     print(f'cross_producer_calls_rejected: '
@@ -2361,11 +3328,16 @@ def print_seed_audit(audit: dict) -> None:
     print(f'branch_targets_excluded: {audit["branch_targets_excluded_count"]}')
     print(f'observed_only_excluded: {audit["excluded_counts"].get("OBSERVED_PC_ONLY", 0)}')
     print(f'unknown_excluded: {audit["excluded_counts"].get("UNKNOWN", 0)}')
+    print(f'guard_word_excluded: {len(audit.get("guard_word_excluded", ()))}')
     for addr in sorted(audit['included_reasons']):
         print(f'  {addr:08X}  {audit["included_reasons"][addr]}')
     for addr in sorted(audit['excluded_reasons']):
         reason = audit['excluded_reasons'][addr]
-        if reason in ('BRANCH_TARGET_ONLY', 'OBSERVED_PC_ONLY', 'UNKNOWN'):
+        if reason == 'GUARD_WORD':
+            print(f'  {addr:08X}  excluded: GUARD_WORD (delay-slot guard '
+                  f'past analysable end 0x{audit["analysable_hi"]:08X}; '
+                  f'never requested)')
+        elif reason in ('BRANCH_TARGET_ONLY', 'OBSERVED_PC_ONLY', 'UNKNOWN'):
             recovery = ('; isolated fragment demand retained'
                         if addr in unhosted_dispatch else '')
             print(f'  {addr:08X}  excluded: {reason}{recovery}')
@@ -2561,10 +3533,20 @@ def patch_generated_c(src: str, load_addr: int, size: int) -> str:
     else:
         src = src[:last_inc] + '\n' + DISPATCH_PREAMBLE + src[last_inc:]
 
-    # 2. Remove out-of-range forward declarations
+    # 2. Remove out-of-range forward declarations. In-range ones carry the
+    #    export attribute too: clang rejects a definition that adds dllexport
+    #    to a function already declared and called without it ("redeclaration
+    #    of 'func_X' cannot add 'dllexport' attribute"), which is what any
+    #    fall-through or intra-shard call ahead of the definition produces.
     def drop_extern(m):
         addr = int(m.group(1), 16)
-        return '' if not in_overlay(addr) else m.group(0)
+        if not in_overlay(addr):
+            return ''
+        return (
+            '#ifdef _WIN32\n__declspec(dllexport)\n#else\n'
+            '__attribute__((visibility("default")))\n#endif\n'
+            + m.group(0)
+        )
     src = re.sub(r'^void func_([0-9A-Fa-f]{8})\(CPUState\* cpu\);\n',
                  drop_extern, src, flags=re.MULTILINE)
 
@@ -4167,6 +5149,32 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         if phys_addr <= (a & 0x1FFFFFFF) < region_hi and
         segment_of(a) == segment_of(load_addr)
     }
+    # Trailing delay-slot guard words in `data` (readable, not discoverable).
+    # Stated by the capture writer where the field exists, reconstructed from
+    # the page-run format otherwise. No demand of any kind may name one: the
+    # recompiler's analysis ends before it and returns an empty manifest.
+    guard_bytes = capture_guard_bytes(capture, size,
+                                      f'region 0x{load_addr:08X}')
+    analysable_hi = region_hi - guard_bytes
+    guard_word_excluded = set()
+
+    def analysable(demands: set) -> set:
+        kept = {a for a in demands if (a & 0x1FFFFFFF) < analysable_hi}
+        guard_word_excluded.update(demands - kept)
+        return kept
+
+    interiors = analysable(interiors)
+    dispatch_roots = analysable(dispatch_roots)
+    observed_dispatch = analysable(observed_dispatch)
+    static_exact_demands = analysable(static_exact_demands)
+    hosted_donor_demands = analysable(hosted_donor_demands)
+    static_interval_demands = analysable(static_interval_demands)
+    forced = analysable(forced)
+    for addr in sorted(guard_word_excluded):
+        print(f'  fragment demand 0x{addr:08X} excluded: GUARD_WORD '
+              f'(past analysable end 0x{analysable_hi | 0x80000000:08X} of '
+              f'region 0x{phys_addr:08X}; never requested)')
+    static_demands = static_exact_demands | static_interval_demands
     if not (((interiors or dispatch_roots) and executed) or observed_dispatch or
             static_demands or forced):
         return None
@@ -4175,11 +5183,8 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         'load_addr': load_addr,
         'size': size,
         'data': data,
-        # Trailing delay-slot guard words in `data` (readable, not
-        # discoverable). Stated by the capture writer where the field exists,
-        # reconstructed from the page-run format otherwise.
-        'guard_bytes': capture_guard_bytes(
-            capture, size, f'region 0x{load_addr:08X}'),
+        'guard_bytes': guard_bytes,
+        'guard_word_excluded': guard_word_excluded,
         'candidates': (interiors | dispatch_roots | observed_dispatch |
                        static_demands | forced),
         'executed': executed,
@@ -4189,6 +5194,19 @@ def make_interior_fragment_job(phys_addr: int, load_addr: int, size: int,
         'included_reasons': {
             addr: {reason}
             for addr, reason in seed_audit['included_reasons'].items()
+        },
+        # DISPATCH_INTERIOR alias -> final host root(s) that reach it; a root
+        # fragment carries the aliases of the hosts it compiles.
+        'interior_hosts': {
+            _canonical_guest_addr(addr): {_canonical_guest_addr(h) for h in hosts}
+            for addr, hosts in seed_audit.get('interior_hosts', {}).items()
+        },
+        # Candidates the no-split guard demoted from a root reason. If none of
+        # their hosts ends up native, they are compiled as the roots they
+        # would have been without the guard (see orphaned_guard_aliases).
+        'guard_demoted_aliases': {
+            _canonical_guest_addr(addr)
+            for addr in seed_audit.get('guard_demoted', {})
         },
         'static_interval_demands': static_interval_demands,
         'forced': forced,
@@ -4217,7 +5235,8 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
     set_fields = (
         'candidates', 'executed', 'static_demands',
         'static_exact_demands', 'hosted_donor_demands',
-        'static_interval_demands', 'forced',
+        'static_interval_demands', 'forced', 'guard_demoted_aliases',
+        'guard_word_excluded',
     )
     for job in jobs:
         key = (
@@ -4232,18 +5251,25 @@ def merge_fragment_jobs_by_recipe(jobs: list[dict],
         if merged is None:
             merged = dict(job)
             for field in set_fields:
-                merged[field] = set(job[field])
+                merged[field] = set(job.get(field, ()))
             merged['included_reasons'] = {
                 addr: set(reasons)
                 for addr, reasons in job.get('included_reasons', {}).items()
             }
+            merged['interior_hosts'] = {
+                addr: set(hosts)
+                for addr, hosts in job.get('interior_hosts', {}).items()
+            }
             grouped[key] = merged
             continue
         for field in set_fields:
-            merged[field].update(job[field])
+            merged[field].update(job.get(field, ()))
         for addr, reasons in job.get('included_reasons', {}).items():
             merged.setdefault('included_reasons', {}).setdefault(
                 addr, set()).update(reasons)
+        for addr, hosts in job.get('interior_hosts', {}).items():
+            merged.setdefault('interior_hosts', {}).setdefault(
+                addr, set()).update(hosts)
         if merged.get('resident_cap') is None and job.get('resident_cap'):
             merged['resident_cap'] = job['resident_cap']
     return [grouped[key] for key in sorted(grouped)]
@@ -4299,6 +5325,9 @@ def select_hosted_interior_demands(job: dict, donor_recipes: dict,
     donor_items = donor_items[:HOSTED_NOMINATION_CAP]
     lo = job['load_addr'] & 0x1FFFFFFF
     hi = lo + job['size']
+    # A sibling recipe may hold as code the word that is this recipe's
+    # delay-slot guard; this recipe cannot analyse it.
+    analysable_hi = hi - job.get('guard_bytes', 0)
     local_reasons = {
         _canonical_guest_addr(addr): set(reasons)
         for addr, reasons in job.get('included_reasons', {}).items()
@@ -4345,6 +5374,9 @@ def select_hosted_interior_demands(job: dict, donor_recipes: dict,
         target_phys = target & 0x1FFFFFFF
         if (target & 3) != 0 or not (lo <= target_phys < hi):
             rejected['target_outside'] += 1
+            continue
+        if target_phys >= analysable_hi:
+            rejected['target_guard_word'] += 1
             continue
         target_producer = _producer_for_job_addr(job, target)
         if target_producer is None:
@@ -4501,6 +5533,59 @@ def partition_strong_root_demands(static_exact: set[int], executed: set[int],
         if (entry & 0x1FFFFFFF) not in current_variant_entries
     }
     return (sorted(missing - isolated), sorted(missing & isolated))
+
+
+def fragment_interior_aliases(job: dict, entries) -> list[int]:
+    """DISPATCH_INTERIOR aliases whose final host is one of ``entries``.
+
+    A strong-root supplement fragment compiles hosts the region shard left
+    out. Their aliases (dispatch interiors and every candidate the no-split
+    guard absorbed) must ride along, or the absorbed address is served by
+    neither shard and dispatches to it fall back to the interpreter.
+    """
+    roots = {_canonical_guest_addr(entry) for entry in entries}
+    return sorted(
+        alias for alias, hosts in job.get('interior_hosts', {}).items()
+        if alias not in roots and hosts & roots)
+
+
+def orphaned_guard_aliases(job: dict, served_phys) -> list[int]:
+    """Guard-absorbed candidates none of whose hosts is native.
+
+    The no-split guard demotes a candidate to an alias only because a host
+    walk reaches it. When every such host fails to compile (a host walk that
+    runs through data audits out as unsupported code) or is otherwise left
+    to the interpreter, the alias has nothing to attach to. Those candidates
+    are compiled as the roots they were before the guard: splitting a host
+    that is interpreted anyway costs nothing, and dropping them would lose
+    native coverage the unguarded build had.
+    """
+    served = {int(entry) & 0x1FFFFFFF for entry in served_phys}
+    hosts_of = job.get('interior_hosts', {})
+    out = []
+    for alias in sorted(job.get('guard_demoted_aliases', ())):
+        if (alias & 0x1FFFFFFF) in served:
+            continue
+        hosts = hosts_of.get(alias, set())
+        if any((host & 0x1FFFFFFF) in served for host in hosts):
+            continue
+        out.append(alias)
+    return out
+
+
+def compile_root_fragment_with_aliases(entries, aliases, build):
+    """Build one root fragment carrying its hosts' aliases.
+
+    ``build(alias_list)`` returns the usual ``(func_ids, status)``. A failing
+    multi-root batch is returned as-is so the caller bisects it; a single root
+    whose aliases break its fragment is rebuilt without them, so an alias can
+    never cost its host its native entry.
+    """
+    frag_ids, status = build(list(aliases))
+    if (not frag_ids and aliases and len(set(entries)) == 1 and
+            not str(status).startswith('candidate-capacity:')):
+        frag_ids, status = build([])
+    return frag_ids, status
 
 
 def compile_batched_fragment_roots(entries, compile_one, on_success,
@@ -4730,7 +5815,7 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
                            producer_ranges=(), cross_call_allow=(),
                            hosted_owners: dict | None = None,
                            manifest_provenance: str | None = None,
-                           *, guard_bytes: int):
+                           *, guard_bytes: int, interior_aliases=()):
     """Compile an ISOLATED interior-entry 'island' fragment that ENTERS at an
     executed orphan DISPATCH_INTERIOR PC (a host that static analysis never
     discovered, e.g. an FMV driver reached via a computed jump) and covers the
@@ -4754,6 +5839,17 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
     })
     if not requested:
         return None, 'no-requested-entries'
+    # Every demand path filters the delay-slot guard word out before it gets
+    # here (classify_overlay_seeds, make_interior_fragment_job, hosted
+    # selection). One that does not is a bug, reported as a failure rather
+    # than spent on a recompile that can only return an empty manifest.
+    analysable_hi = (load_addr & 0x1FFFFFFF) + size - guard_bytes
+    guard_requests = sorted(entry for entry in requested
+                            if (entry & 0x1FFFFFFF) >= analysable_hi)
+    if guard_requests:
+        return None, ('guard-word-request (BUG: demand past analysable end '
+                      f'0x{analysable_hi | 0x80000000:08X}): ' +
+                      ', '.join(f'0x{entry:08X}' for entry in guard_requests))
     if hosted_owners is not None:
         hosted_specs = {
             _canonical_guest_addr(entry): spec
@@ -4784,6 +5880,14 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
             if hosted_specs is None:
                 for entry in requested:
                     f.write(f'dispatch_root 0x{entry:08X}\n')
+                # Alias candidates of the roots compiled here, exactly as the
+                # region shard passes them: never walk roots, emitted only
+                # where the recompiler's own walk of a requested root reaches
+                # the PC (orphans are dropped by the recompiler).
+                for alias in sorted({_canonical_guest_addr(a)
+                                     for a in interior_aliases} -
+                                    set(requested)):
+                    f.write(f'interior 0x{alias:08X}\n')
             else:
                 host_markers = {}
                 for entry, spec in sorted(hosted_specs.items()):
@@ -4810,6 +5914,8 @@ def compile_fragment_batch(requested_entries, data: bytes, load_addr: int,
                            env=sub_env)
         if r.returncode != 0:
             return None, f'recompiler-error: {(r.stderr or r.stdout or "").strip()}'
+        report_recompiler_guard_absorptions(r.stdout)
+        report_recompiler_seed_drops(r.stdout)
         full_c = ranges_src = None
         for fn in os.listdir(out_dir_tmp):
             if fn.endswith('_full.c'):
@@ -5079,6 +6185,25 @@ def _bom_free_incdir(d: str) -> str:
     _TCC_BOMFREE_INC[d] = out
     return out
 
+def _tcc_bundle_args(tcc: str) -> list:
+    """The Linux release bundle (tools/release_stage.py stage_linux_tcc) is a
+    source-built tcc whose compiled-in paths point at the packaging machine:
+    point it at its own directory (-B: tcc's headers and libtcc1.a), give it
+    the bundled musl libc headers, and link no crt/libc of the player's (a
+    SteamOS player has none): libc symbols resolve against the game's glibc
+    when the shard is loaded. Any other tcc (Windows bundle, a system tcc)
+    gets no extra arguments."""
+    d = os.path.dirname(os.path.abspath(tcc))
+    libc_inc = os.path.join(d, 'libc-include')
+    libtcc1 = os.path.join(d, 'libtcc1.a')
+    if not (os.path.isdir(libc_inc) and os.path.isfile(libtcc1)):
+        return []
+    # -nostdinc: only the bundle's headers (tcc's, then musl's); a Linux box
+    # with libc6-dev installed must not change what a shard compiles against.
+    return ['-B' + d, '-nostdinc', '-nostdlib', '-isystem', os.path.join(d, 'include'),
+            '-isystem', libc_inc, libtcc1]
+
+
 def _compile_dll_tcc(c_path: str, out_dll: str, include_dirs, flavor: int,
                      tcc: str) -> bool:
     # Strip a UTF-8 BOM off the overlay C itself (tcc 0.9.27 chokes on it) and
@@ -5106,6 +6231,7 @@ def _compile_dll_tcc(c_path: str, out_dll: str, include_dirs, flavor: int,
            native_path(c_path), '-o', native_path(out_dll)]
     for d in include_dirs:
         cmd.append('-I' + native_path(_bom_free_incdir(d)))
+    cmd += _tcc_bundle_args(tcc)
     print(f'  compile (tcc): {" ".join(cmd)}')
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
@@ -5980,6 +7106,22 @@ def _runtime_valid_shard_pair_locked(dll: str, ranges: str,
         {entry for entry, _crc, _ranges in funcs}))
 
 
+def announce_published_shard(dll: str) -> None:
+    """Tell a live runtime that `dll` (with its .ranges) is committed and loadable.
+
+    The runtime's autocompile pipeline (runtime/src/autocompile.c) maps each announced
+    shard on a worker thread while the compiler is still running and commits it between
+    frames. Without this line every shard compiled during play is first mapped by the
+    EMULATION thread at its first dispatch miss: a synchronous LoadLibrary (measured
+    300 ms on a cold Windows file, antivirus included) plus the batch-end cache rescan.
+    Only a runtime that asked for it (PSX_OVERLAY_LIVE_AUTOCOMPILE=1, set by
+    autocompile_request) receives the line; offline builds keep a quiet stdout.
+    """
+    if os.environ.get('PSX_OVERLAY_LIVE_AUTOCOMPILE') != '1':
+        return
+    print(f'PSX_SHARD_PUBLISHED {os.path.abspath(dll)}', flush=True)
+
+
 def publish_shard_pair(staged_dll: str, staged_ranges: str,
                        final_dll: str, preserve_existing: bool = False,
                        expected_existing_abi: int | None = None,
@@ -6066,6 +7208,7 @@ def publish_shard_pair(staged_dll: str, staged_ranges: str,
             except BaseException:
                 _recover_shard_pair_locked(dll)
                 raise
+    announce_published_shard(dll)
     return True
 
 
@@ -6230,7 +7373,7 @@ def cached_shard_manifest_status(dll_path: str, expected_abi: int | None,
 # ---------------------------------------------------------------------------
 
 def static_capture_job(cap: dict, args, toml: dict, forced_interiors: set,
-                       static_out: str) -> dict:
+                       static_out: str, external_call_targets=()) -> dict:
     """Recompile ONE capture for static mode. Module-level and self-contained so
     it can run in a worker process (ProcessPoolExecutor needs a picklable
     callable and picklable arguments: the capture dict, the argparse Namespace,
@@ -6260,21 +7403,22 @@ def static_capture_job(cap: dict, args, toml: dict, forced_interiors: set,
     with contextlib.redirect_stdout(log):
         try:
             _static_capture_job(cap, args, toml, forced_interiors, static_out,
-                                result)
+                                result, external_call_targets)
         finally:
             result['log'] = log.getvalue()
     return result
 
 
-def _static_capture_job(cap, args, toml, forced_interiors, static_out, result):
+def _static_capture_job(cap, args, toml, forced_interiors, static_out, result,
+                        external_call_targets=()):
     # Runs in a worker process too, so it sets its image segment itself.
     with image_segment(segment_of(int(cap['load_addr'], 16))):
         _static_capture_job_in_segment(cap, args, toml, forced_interiors,
-                                       static_out, result)
+                                       static_out, result, external_call_targets)
 
 
 def _static_capture_job_in_segment(cap, args, toml, forced_interiors,
-                                   static_out, result):
+                                   static_out, result, external_call_targets=()):
     load_addr = int(cap['load_addr'], 16)
     size      = int(cap['size'])
     data      = base64.b64decode(cap['bytes_b64'])
@@ -6291,7 +7435,20 @@ def _static_capture_job_in_segment(cap, args, toml, forced_interiors,
         result['outcome'] = 'fail'
         result['fail'] = (cls, detail)
 
+    # The delay-slot guard word is not code of this image and the recompiler
+    # cannot analyse it (beads-eio.3.190): never a static demand either.
+    analysable_hi = phys_addr + size - guard_bytes
+    for captured_entry in sorted(
+            _parse_addr_list(cap.get('dispatch_entry_pcs', [])) |
+            {forced for forced in forced_interiors
+             if phys_addr <= (forced & 0x1FFFFFFF) < phys_addr + size}):
+        if (captured_entry & 0x1FFFFFFF) >= analysable_hi:
+            print(f'  demand 0x{captured_entry:08X} excluded: GUARD_WORD '
+                  f'(past analysable end 0x{analysable_hi | 0x80000000:08X}; '
+                  f'never requested)')
     for captured_entry in _parse_addr_list(cap.get('dispatch_entry_pcs', [])):
+        if (captured_entry & 0x1FFFFFFF) >= analysable_hi:
+            continue
         entry = _canonical_guest_addr(captured_entry)
         key = (entry, crc32)
         result['requested_entries'].add(key)
@@ -6304,7 +7461,7 @@ def _static_capture_job_in_segment(cap, args, toml, forced_interiors,
     region_hi = phys_addr + size
     for forced_entry in forced_interiors:
         forced_phys = forced_entry & 0x1FFFFFFF
-        if (phys_addr <= forced_phys < region_hi and
+        if (phys_addr <= forced_phys < analysable_hi and
                 segment_of(forced_entry) == segment_of(load_addr)):
             entry = forced_entry
             key = (entry, crc32)
@@ -6312,8 +7469,10 @@ def _static_capture_job_in_segment(cap, args, toml, forced_interiors,
             result['entry_sources'][key] = (
                 data, load_addr, size, phys_addr, guard_bytes)
 
-    seeds, seed_audit = classify_overlay_seeds(cap, data, load_addr, size,
-                                               crc32, toml)
+    seeds, seed_audit = classify_overlay_seeds(
+        cap, data, load_addr, size, crc32, toml,
+        root_enrichment=getattr(args, 'root_enrichment', None),
+        external_call_targets=external_call_targets)
     print(f'Overlay  load=0x{load_addr:08X}  size={size}  crc32=0x{crc32:08X}'
           + (f'  guard={guard_bytes}B (delay-slot only, not analysed)'
              if guard_bytes else ''))
@@ -6365,6 +7524,8 @@ def _static_capture_job_in_segment(cap, args, toml, forced_interiors,
             print(f'  RECOMPILER ERROR:\n{r.stderr or r.stdout}')
             fail('recompiler', r.stderr or r.stdout)
             return
+        report_recompiler_guard_absorptions(r.stdout)
+        report_recompiler_seed_drops(r.stdout)
 
         stem = os.path.basename(psx_path)
         full_c = os.path.join(out_dir_tmp, stem + '_full.c')
@@ -6388,6 +7549,16 @@ def _static_capture_job_in_segment(cap, args, toml, forced_interiors,
         c_audit = audit_generated_c(src, load_addr, size, crc32, toml)
         print_generated_c_audit(load_addr, size, crc32, c_audit)
         if c_audit['unknown_bad'] or c_audit['unsupported_todo_addrs']:
+            retry = conservative_retry_capture(cap, seed_audit)
+            if retry is not None:
+                print('  ENRICHED RECIPE AUDIT REJECTED; '
+                      'retrying conservative recipe\n')
+                # Reset the per-capture result; the retry owns the outcome.
+                result['requested_entries'] = set()
+                result['entry_sources'] = {}
+                _static_capture_job(retry, args, toml, forced_interiors,
+                                    static_out, result)
+                return
             print('  GENERATED-C AUDIT FAILED\n')
             fail('audit', f'{len(c_audit["unknown_bad"])} unknown_bad, '
                           f'{len(c_audit["unsupported_todo_addrs"])} unsupported')
@@ -6634,7 +7805,21 @@ def main():
                          '(e.g. macos-x64). The spawning runtime injects '
                          'PSX_OVERLAY_ARCH_ABI, which wins. Default: this '
                          "interpreter's architecture.")
+    ap.add_argument('--no-root-enrichment', dest='root_enrichment',
+                    action='store_false', default=root_enrichment_default(),
+                    help='DIAGNOSTIC: do not derive image-local static roots '
+                         '(also PSX_OVERLAY_ROOT_ENRICHMENT=0). The no-split '
+                         'guard stays on. Both policies are split-safe, so '
+                         'their shards may share a cache namespace; a default '
+                         'run over an unenriched cache rebuilds any region '
+                         'whose new root demands the cache does not serve.')
+    ap.add_argument('--main-exe', default=None,
+                    help='boot PS-X EXE whose jal targets count as cross-image '
+                         'call evidence (default: [game] exe resolved against '
+                         'the game.toml directory, then --project-root)')
     args = ap.parse_args()
+    print(f'root policy: no-split guard on, enrichment '
+          f'{"on" if args.root_enrichment else "OFF (diagnostic)"}')
     target_os = args.target_os
     if target_os == 'auto':
         if 'mingw' in args.gcc.lower() or 'w64' in args.gcc.lower() or args.gcc.lower().endswith('.exe'):
@@ -6763,6 +7948,22 @@ def main():
 
     with open(args.captures) as f:
         captures = json.load(f)
+    # Cross-image call evidence comes from every capture in the file (and the
+    # main EXE), including captures --only-region leaves out.
+    cross_image_calls = CrossImageCalls(
+        list(captures),
+        load_main_exe_image(toml, args.game_toml,
+                            getattr(args, 'project_root', None),
+                            args.main_exe)
+        if args.root_enrichment else None)
+
+    def external_calls_for(cap):
+        if not args.root_enrichment or cap.get(ROOT_ENRICHMENT_OFF_KEY):
+            return set()
+        load = int(cap['load_addr'], 16)
+        size = int(cap['size'])
+        return cross_image_calls.targets_for(
+            load, size, load + size - capture_guard_bytes(cap, size))
 
     if args.only_region:
         only_regions = {int(value, 0) & 0x1FFFFFFF
@@ -6857,7 +8058,8 @@ def main():
             # Static mode is one self-contained job per capture (see
             # static_capture_job); the sequential and --jobs paths share it.
             _merge_static_result(static_capture_job(
-                cap, args, toml, forced_interiors, static_out))
+                cap, args, toml, forced_interiors, static_out,
+                external_calls_for(cap)))
             return
         seg_cache_dir = segment_cache_dir(cache_dir, segment_of(load_addr))
         # Coverage is per segment: each segment's shards are their own.
@@ -6894,8 +8096,10 @@ def main():
                     print(f'  merged {len(prior_entries)} prior-manifest entries '
                           f'from {prior_ranges_path}')
 
-        seeds, seed_audit = classify_overlay_seeds(cap, data, load_addr, size,
-                                                   crc32, toml)
+        seeds, seed_audit = classify_overlay_seeds(
+            cap, data, load_addr, size, crc32, toml,
+            root_enrichment=args.root_enrichment,
+            external_call_targets=external_calls_for(cap))
         this_ids = None   # region func-ids once recompiled (None if skipped early)
 
         # Record this region's executed dispatch-proven PCs for the decoupled
@@ -7015,6 +8219,8 @@ def main():
                 print(f'  RECOMPILER ERROR:\n{r.stderr or r.stdout}')
                 stats.add_fail(_label, 'recompiler', r.stderr or r.stdout)
                 return
+            report_recompiler_guard_absorptions(r.stdout)
+            report_recompiler_seed_drops(r.stdout)
 
             # Find the generated _full.c
             stem = os.path.basename(psx_path)
@@ -7049,7 +8255,7 @@ def main():
             with open(debug_c, 'w') as f:
                 f.write(src)
             if c_audit['unknown_bad'] or c_audit['unsupported_todo_addrs']:
-                fallback = optional_enrichment_fallback_capture(cap)
+                fallback = conservative_retry_capture(cap, seed_audit)
                 if fallback is not None:
                     print('  OPTIONAL ENRICHMENT AUDIT REJECTED; '
                           'retrying conservative recipe\n')
@@ -7211,7 +8417,7 @@ def main():
                           'interpreter\n')
                     stats.add_skip()
                     return
-                fallback = optional_enrichment_fallback_capture(cap)
+                fallback = conservative_retry_capture(cap, seed_audit)
                 if fallback is not None:
                     print('  OPTIONAL ENRICHMENT COMPILE REJECTED; '
                           'retrying conservative recipe\n')
@@ -7407,11 +8613,15 @@ def main():
                     continue
 
             def compile_strong_batch(entries):
-                return compile_fragment_batch(
-                    entries, data, load_addr, size, phys_addr, cache_dir,
-                    args, frag_env, toml, job['producer_ranges'],
-                    job['cross_call_allow'],
-                    guard_bytes=job['guard_bytes'])
+                def build(alias_list):
+                    return compile_fragment_batch(
+                        entries, data, load_addr, size, phys_addr, cache_dir,
+                        args, frag_env, toml, job['producer_ranges'],
+                        job['cross_call_allow'],
+                        guard_bytes=job['guard_bytes'],
+                        interior_aliases=alias_list)
+                return compile_root_fragment_with_aliases(
+                    entries, fragment_interior_aliases(job, entries), build)
 
             def strong_batch_success(entries, frag_ids, status):
                 strong_handled.update(entries)
@@ -7507,6 +8717,30 @@ def main():
                     strong_shards += 1
                 else:
                     strong_singleton_failure(entry, status)
+            # Guard-absorbed candidates whose every host stayed interpreted
+            # (failed, memoized-doomed, or never compiled) get their root back.
+            orphaned = [
+                entry for entry in orphaned_guard_aliases(
+                    job, current_variant_entries)
+                if fragment_capacity_allows_entry(
+                    candidate_capacity_exhausted, args.force,
+                    job['forced'], entry)
+            ]
+            if orphaned:
+                # Same failure policy as the static root each one was before
+                # the guard: a deterministic audit rejection is a safe skip.
+                job['static_demands'] = set(job['static_demands']) | set(orphaned)
+                orphan_shards = compile_batched_fragment_roots(
+                    orphaned, compile_strong_batch, strong_batch_success,
+                    strong_singleton_failure,
+                    lambda entry: ((entry & 0x1FFFFFFF) not in
+                                   current_variant_entries),
+                    fragment_batch_failure_is_partitionable,
+                    strong_batch_failure)
+                strong_shards += orphan_shards
+                print(f'  guard-alias fallback @0x{phys_addr:08X}: '
+                      f'{len(orphaned)} alias(es) of interpreted hosts -> '
+                      f'{orphan_shards} root shard(s)')
             if strong_candidates:
                 print(f'  strong-root supplement @0x{phys_addr:08X}: '
                       f'{len(strong_candidates)} demand(s) -> '
@@ -7908,6 +9142,8 @@ def main():
                                     itertools.repeat(toml),
                                     itertools.repeat(forced_interiors),
                                     itertools.repeat(static_out),
+                                    [external_calls_for(cap)
+                                     for cap in captures],
                                     chunksize=1):
                     _merge_static_result(res)
         else:

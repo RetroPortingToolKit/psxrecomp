@@ -2,12 +2,27 @@
 
 #include <stdint.h>
 
+/* Session-only title policy; see runtime/include/mod_plugins.h. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void psx_mod_set_savestate_blocked(int blocked);
+#ifdef __cplusplus
+}
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef void (*PSXModVBlankCallback)(void);
 typedef void (*PSXModActivationCallback)(void);
+/* Emulation-thread stereo S16 at 44100 Hz, after SPU/shadow synthesis, before
+ * capture/host mute. Called for every rendered block, including discarded
+ * turbo/rollback output. Add with saturation; never call guest code here.
+ * Keep mutable cursors in allocated guest memory for save/rewind/rollback.
+ * Host audio/device state must not affect sample generation. */
+typedef void (*PSXModPCMCallback)(int16_t* stereo, uint32_t frames);
 struct CPUState;
 typedef void (*PSXModFunctionEntryCallback)(struct CPUState* cpu,
                                             uint32_t address);
@@ -25,6 +40,7 @@ int psx_mod_register_activation_plugin(const char* id,
                                        PSXModActivationCallback callback);
 int psx_mod_register_vblank_plugin(const char* id,
                                    PSXModVBlankCallback callback);
+int psx_mod_register_pcm_plugin(const char* id, PSXModPCMCallback callback);
 /* Runs after successful guest-state restore, before the restored PC resumes.
  * Rebind host hooks here; do not advance guest gameplay as a VBlank would. */
 int psx_mod_register_savestate_plugin(const char* id,
@@ -253,14 +269,14 @@ void psx_mod_set_world_scene_predicate(PSXModWorldScenePredicate predicate);
  * player left it in the launcher (or the manifest default when untouched).
  * Writes a NUL-terminated string into `out` and returns 1; returns 0 with
  * out[0] = '\0' when the plan is not committed, the ids do not resolve, or the
- * value does not fit — the caller then applies its own default rather than
+ * value does not fit â€” the caller then applies its own default rather than
  * treating an empty string as a selection.
  *
  * Why this exists: the manifest schema already carries typed, validated,
  * launcher-rendered, persisted options ([[option]] boolean/choice/integer), but
  * an activation callback takes no arguments and had no way to read them, so a
  * trusted plugin could only ever be an on/off switch. A parameterised feature
- * then had to be modelled as one feature per value — and `constraint` only
+ * then had to be modelled as one feature per value â€” and `constraint` only
  * expresses ordered_integer WITHIN a feature, so those pseudo-features could
  * not even be made mutually exclusive. This closes that gap: one feature, one
  * option, the plugin reads what was chosen.

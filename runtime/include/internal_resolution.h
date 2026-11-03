@@ -1,14 +1,22 @@
-/* internal_resolution.h — the "Internal resolution" setting: presets, their
- * persisted ids, and the integer scale each one asks the renderer for.
+/* internal_resolution.h — the internal resolution: presets, their ids (the
+ * game.toml [video] internal_resolution spellings and the built-in Internal
+ * Resolution mod's option values), and the integer scale each one asks the
+ * renderer for.
  *
- * Pure (no SDL, no GL) so both the config loader and a test can use it.
+ * Pure (no SDL, no GL) so the config loader, the mod plugin and a test can
+ * use it.
  *
- * VALUE ENCODING (shared with recomp-ui's Settings.internal_resolution):
+ * VALUE ENCODING:
  *   0   unset: the legacy [video] supersampling factor stands
  *   1   native (1x)
  *  -1   match display: the target is the monitor's pixel height
- *   N   (N >= 2) a target output height in lines (720, 1080, ... or a
- *       legacy "Nx" entry expressed as reference_lines * N)
+ *  -2   auto: Match display as the ceiling with dynamic resolution on (the
+ *       scale steps down to the title's dynamic_resolution_min floor only
+ *       while the game would miss frames). Every scale helper below resolves
+ *       it exactly like Match display; only the dynamic-resolution switch
+ *       differs, and that is the caller's (psx_ir_is_auto).
+ *  -101..-132 fixed integer scales 1x..32x, independent of reference height
+ *   N   (N >= 2) a target output height in lines (720, 1080, ...)
  *
  * SCALE. The renderer only does integer scales (the pack of the hr surface
  * back to native VRAM is exact only then), so a target height becomes
@@ -25,18 +33,55 @@
 #define PSX_IR_UNSET     0
 #define PSX_IR_NATIVE    1
 #define PSX_IR_DISPLAY  (-1)
+#define PSX_IR_AUTO     (-2)
 #define PSX_IR_DEFAULT_REF_LINES 240
+#define PSX_IR_MAX_SCALE 32
+#define PSX_IR_SCALE_BASE (-100)
+#define PSX_IR_SCALE(scale) (PSX_IR_SCALE_BASE - (scale))
 /* Custom line counts accepted from config (a 16K panel is 8640 lines). */
 #define PSX_IR_MIN_LINES 2
 #define PSX_IR_MAX_LINES 8640
 
 typedef struct PsxIrPreset {
-    const char *id;     /* stable id persisted in settings.toml */
-    const char *label;  /* launcher label */
+    const char *id;     /* stable id: game.toml and the mod option value */
+    const char *label;  /* display label (the mod option's) */
     int         value;  /* encoding above */
 } PsxIrPreset;
 
 static const PsxIrPreset k_psx_ir_presets[] = {
+    /* Fixed scales come first; legacy height ids below remain valid saved choices. */
+    { "1x", "1x (Native)", PSX_IR_SCALE(1) },
+    { "2x", "2x", PSX_IR_SCALE(2) },
+    { "3x", "3x", PSX_IR_SCALE(3) },
+    { "4x", "4x", PSX_IR_SCALE(4) },
+    { "5x", "5x", PSX_IR_SCALE(5) },
+    { "6x", "6x", PSX_IR_SCALE(6) },
+    { "7x", "7x", PSX_IR_SCALE(7) },
+    { "8x", "8x", PSX_IR_SCALE(8) },
+    { "9x", "9x", PSX_IR_SCALE(9) },
+    { "10x", "10x", PSX_IR_SCALE(10) },
+    { "11x", "11x", PSX_IR_SCALE(11) },
+    { "12x", "12x", PSX_IR_SCALE(12) },
+    { "13x", "13x", PSX_IR_SCALE(13) },
+    { "14x", "14x", PSX_IR_SCALE(14) },
+    { "15x", "15x", PSX_IR_SCALE(15) },
+    { "16x", "16x", PSX_IR_SCALE(16) },
+    { "17x", "17x", PSX_IR_SCALE(17) },
+    { "18x", "18x", PSX_IR_SCALE(18) },
+    { "19x", "19x", PSX_IR_SCALE(19) },
+    { "20x", "20x", PSX_IR_SCALE(20) },
+    { "21x", "21x", PSX_IR_SCALE(21) },
+    { "22x", "22x", PSX_IR_SCALE(22) },
+    { "23x", "23x", PSX_IR_SCALE(23) },
+    { "24x", "24x", PSX_IR_SCALE(24) },
+    { "25x", "25x", PSX_IR_SCALE(25) },
+    { "26x", "26x", PSX_IR_SCALE(26) },
+    { "27x", "27x", PSX_IR_SCALE(27) },
+    { "28x", "28x", PSX_IR_SCALE(28) },
+    { "29x", "29x", PSX_IR_SCALE(29) },
+    { "30x", "30x", PSX_IR_SCALE(30) },
+    { "31x", "31x", PSX_IR_SCALE(31) },
+    { "32x", "32x", PSX_IR_SCALE(32) },
     { "native",  "Native",        PSX_IR_NATIVE  },
     { "720p",    "720p",          720            },
     { "1080p",   "1080p",         1080           },
@@ -45,6 +90,7 @@ static const PsxIrPreset k_psx_ir_presets[] = {
     { "5k",      "5K",            2880           },
     { "8k",      "8K",            4320           },
     { "display", "Match display", PSX_IR_DISPLAY },
+    { "auto",    "Auto",          PSX_IR_AUTO    },
 };
 #define PSX_IR_PRESET_COUNT ((int)(sizeof(k_psx_ir_presets) / sizeof(k_psx_ir_presets[0])))
 
@@ -56,15 +102,31 @@ static inline int psx_ir_lower_eq(const char *a, const char *b) {
     return *a == 0 && *b == 0;
 }
 
+/* Fixed scale values do not depend on a title's reference lines or SSAA target. */
+static inline int psx_ir_is_scale(int value) {
+    return value <= PSX_IR_SCALE(1) && value >= PSX_IR_SCALE(PSX_IR_MAX_SCALE);
+}
+
 /* 1 if value is a legal encoding (unset excluded). */
 static inline int psx_ir_value_valid(int value) {
-    return value == PSX_IR_NATIVE || value == PSX_IR_DISPLAY ||
+    return psx_ir_is_scale(value) || value == PSX_IR_NATIVE || value == PSX_IR_DISPLAY || value == PSX_IR_AUTO ||
            (value >= PSX_IR_MIN_LINES && value <= PSX_IR_MAX_LINES);
 }
 
-/* Parse a persisted value: a preset id (case-insensitive) or a decimal line
- * count in [PSX_IR_MIN_LINES, PSX_IR_MAX_LINES]. Returns 1 and stores the
- * value on success; 0 for anything else (the caller keeps its default). */
+/* Auto: Match display with dynamic resolution on. */
+static inline int psx_ir_is_auto(int value) { return value == PSX_IR_AUTO; }
+
+/* The fixed target a value renders at, its ceiling for Auto: Auto resolves
+ * as Match display, everything else as itself. */
+static inline int psx_ir_ceiling(int value) {
+    return value == PSX_IR_AUTO ? PSX_IR_DISPLAY : value;
+}
+
+/* Parse a persisted value: a preset id (case-insensitive, "auto" included) or
+ * a decimal line count in [PSX_IR_MIN_LINES, PSX_IR_MAX_LINES]. Returns 1 and
+ * stores the value on success; 0 for anything else (the caller keeps its
+ * default). A dynamic-resolution floor is a fixed scale/height: callers reject
+ * PSX_IR_AUTO themselves. */
 static inline int psx_ir_parse(const char *s, int *out) {
     if (!s || !*s) return 0;
     for (int i = 0; i < PSX_IR_PRESET_COUNT; i++)
@@ -95,7 +157,9 @@ static inline const char *psx_ir_label_for(int value) {
 /* Unclamped scale a value asks for. display_px_h <= 0 (unknown) makes Match
  * display 1 until the caller can measure the monitor. */
 static inline int psx_ir_scale_for(int value, int ref_lines, int display_px_h) {
+    if (psx_ir_is_scale(value)) return PSX_IR_SCALE_BASE - value;
     if (ref_lines < 1) ref_lines = PSX_IR_DEFAULT_REF_LINES;
+    value = psx_ir_ceiling(value);
     int target;
     if (value == PSX_IR_DISPLAY) target = display_px_h;
     else if (value >= PSX_IR_MIN_LINES) target = value;
@@ -143,11 +207,19 @@ static inline int psx_ss_parse_milli(const char *s) {
     return (int)m;
 }
 
+/* Opt-in display policy; keep the saved factor intact for smaller displays. */
+static inline int psx_ir_display_supersample(int ss_milli, int display_px_h,
+                                            int disable_at_lines) {
+    return disable_at_lines > 0 && display_px_h >= disable_at_lines
+        ? PSX_SS_MILLI_MIN : ss_milli;
+}
+
 /* psx_resolve_internal_scale with the supersample factor on the target. */
 static inline int psx_resolve_internal_scale_ss(int value, int ref_lines,
                                                 int display_px_h, int s_max,
                                                 int ss_milli) {
     ss_milli = psx_ss_milli_clamp(ss_milli);
+    value = psx_ir_ceiling(value);
     if (ss_milli != PSX_SS_MILLI_MIN) {
         if (value == PSX_IR_DISPLAY) {
             if (display_px_h > 0)
@@ -160,86 +232,16 @@ static inline int psx_resolve_internal_scale_ss(int value, int ref_lines,
     return psx_resolve_internal_scale(value, ref_lines, display_px_h, s_max);
 }
 
-/* A legacy [video] supersampling factor as a value the launcher can show:
- * the preset that resolves to the same scale (1 -> Native, 3 -> 720p,
- * 5 -> 1080p, 6 -> 1440p, 9 -> 4K, 12 -> 5K, 18 -> 8K at 240 lines),
- * otherwise ref_lines * n as a custom entry ("2x (480 lines)"). */
-static inline int psx_ir_from_supersampling(int n, int ref_lines) {
-    if (ref_lines < 1) ref_lines = PSX_IR_DEFAULT_REF_LINES;
-    if (n <= 1) return PSX_IR_NATIVE;
-    for (int i = 0; i < PSX_IR_PRESET_COUNT; i++) {
-        int v = k_psx_ir_presets[i].value;
-        if (v >= PSX_IR_MIN_LINES && psx_ir_scale_for(v, ref_lines, 0) == n) return v;
+/* A Match display cap bounds the final target, including supersampling.
+ * Fixed presets and the legacy integer scale retain their own ceilings. */
+static inline int psx_resolve_internal_scale_ss_cap(int value, int ref_lines,
+        int display_px_h, int s_max, int ss_milli, int max_display_lines) {
+    int s = psx_resolve_internal_scale_ss(value, ref_lines, display_px_h, s_max, ss_milli);
+    if (psx_ir_ceiling(value) == PSX_IR_DISPLAY && max_display_lines > 0) {
+        int cap = psx_resolve_internal_scale(max_display_lines, ref_lines, 0, s_max);
+        if (s > cap) s = cap;
     }
-    long lines = (long)ref_lines * n;
-    return lines > PSX_IR_MAX_LINES ? PSX_IR_MAX_LINES : (int)lines;
-}
-
-/* ---- The launcher round trip -------------------------------------------------
- * The host seeds the launcher with its video state, the player may change it,
- * and the host adopts what comes back. A recomp-ui built with the Internal
- * resolution row (RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION) owns the preset.
- * An older one only has the legacy Supersampling row, a 1x..4x cycle that
- * clamps whatever it is seeded with. There a pick in that row must win over
- * any preset, and a preset the player cannot see (game.toml, a hand-edited
- * settings.toml) must survive an untouched row. With no preset the round trip
- * is exactly the historical one: seed the factor, take the factor back. */
-#define PSX_IR_LEGACY_SS_MAX 4   /* the legacy row's range, and settings.toml's
-                                  * supersampling for an older runtime */
-
-/* The value seeded into the legacy Supersampling row. has_row: the launcher
- * shows the Internal resolution row instead (the factor passes through). */
-static inline int psx_ir_launcher_seed_supersampling(int has_row, int preset,
-                                                     int supersampling,
-                                                     int ref_lines,
-                                                     int display_px_h) {
-    if (has_row || preset == PSX_IR_UNSET) return supersampling;
-    /* The preset's scale, as near as the row can show it. */
-    return psx_resolve_internal_scale(preset, ref_lines, display_px_h,
-                                      PSX_IR_LEGACY_SS_MAX);
-}
-
-typedef struct PsxIrAdopted {
-    int preset;   /* the preset kept (PSX_IR_UNSET: the factor stands) */
-    int scale;    /* the scale to request */
-    int save_ss;  /* settings.toml supersampling */
-    int save_ir;  /* settings.toml internal_resolution; PSX_IR_UNSET omits it */
-} PsxIrAdopted;
-
-/* What the host adopts when the launcher returns.
- *   has_row       the launcher showed the Internal resolution row
- *   preset        the host's preset when it seeded the launcher
- *   ss_seed       what psx_ir_launcher_seed_supersampling returned
- *   ss_result     the Supersampling row's value on return
- *   ir_result     the Internal resolution row's value (has_row only)
- *   s_max         the chosen renderer's ceiling */
-static inline PsxIrAdopted psx_ir_adopt_launcher(int has_row, int preset,
-                                                 int ss_seed, int ss_result,
-                                                 int ir_result, int ref_lines,
-                                                 int display_px_h, int s_max) {
-    PsxIrAdopted a;
-    if (has_row) {
-        if (psx_ir_value_valid(ir_result)) a.preset = ir_result;
-        else if (preset != PSX_IR_UNSET) a.preset = preset;
-        else a.preset = psx_ir_from_supersampling(ss_seed < 1 ? 1 : ss_seed, ref_lines);
-    } else {
-        int shown = ss_seed < 1 ? 1 : ss_seed > PSX_IR_LEGACY_SS_MAX
-                                                ? PSX_IR_LEGACY_SS_MAX : ss_seed;
-        a.preset = (preset != PSX_IR_UNSET && ss_result == shown) ? preset
-                                                                  : PSX_IR_UNSET;
-    }
-    if (a.preset == PSX_IR_UNSET) {
-        a.scale = ss_result;
-        a.save_ss = ss_result;
-        a.save_ir = PSX_IR_UNSET;
-    } else {
-        a.scale = psx_resolve_internal_scale(a.preset, ref_lines, display_px_h, s_max);
-        /* An older runtime reading settings.toml only knows supersampling
-         * (1..4): leave it the nearest it can do. */
-        a.save_ss = a.scale < PSX_IR_LEGACY_SS_MAX ? a.scale : PSX_IR_LEGACY_SS_MAX;
-        a.save_ir = a.preset;
-    }
-    return a;
+    return s;
 }
 
 /* ---- Dynamic resolution floor ([video] dynamic_resolution_min) -------------
@@ -251,7 +253,7 @@ static inline PsxIrAdopted psx_ir_adopt_launcher(int has_row, int preset,
 static inline int psx_dynres_floor_scale(int min_value, int selected_ir, int ref_lines,
                                          int display_px_h, int ceiling) {
     const int v = (min_value == PSX_IR_DISPLAY && selected_ir != PSX_IR_UNSET)
-                  ? selected_ir : min_value;
+                  ? psx_ir_ceiling(selected_ir) : min_value;
     int s = psx_resolve_internal_scale(v, ref_lines, display_px_h, ceiling);
     return s > ceiling ? ceiling : s;
 }

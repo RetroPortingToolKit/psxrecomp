@@ -7,7 +7,7 @@
  *   - GP0 command write — ABORTS (not yet implemented)
  *   - GPUREAD — returns last latched value
  *
- * Reference: nocash PSX specs, DuckStation src/core/gpu.cpp
+ * Reference: PSX-SPX, page graphicsprocessingunitgpu (Graphics Processing Unit).
  */
 
 #include "gpu.h"
@@ -26,6 +26,7 @@
 #include "crash_trace.h"
 #include "debug_server.h"
 #include "cpu_state.h"
+#include "gte_nclip_stats.h"
 #include "event_ring.h"
 #include "psx_video_timing.h"
 #include "color_lut.h"
@@ -43,7 +44,9 @@
 #include "ws_backdrop_extent.h"
 #include "ws_prepass_guard.h"
 #include "ws_hud_anchor.h"
+#include "ws_gte_sxy.h"
 #include "ws_repeat_rect.h"
+#include "ws_feedback_rect.h"
 #include "ws_screen_mask.h"
 #include "ws_radial_screen_mask.h"
 #include <stdint.h>
@@ -243,6 +246,7 @@ static WsHudAnchorTag ws_reveal_clear_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsRadialScreenMaskTag ws_radial_screen_mask_tags[WS_RADIAL_MASK_TAG_COUNT];
 static WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
+static WsRepeatRectTag ws_feedback_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
 static uint32_t ws_last_tag_stamp = (uint32_t)-1000; /* frame of newest tag */
 static uint32_t ws_last_3d_stamp  = (uint32_t)-1000; /* frame of newest shaded prim (diagnostic) */
 extern uint64_t s_frame_count;               /* defined in debug_server.c */
@@ -370,6 +374,7 @@ static int ws_gameplay_state_matches(void) {
 static uint32_t ws_gte_prev_verts     = 0;  /* final count of last completed frame */
 static uint32_t ws_last_world3d_stamp = (uint32_t)-1000;
 static uint32_t ws_sust_world3d_stamp = (uint32_t)-1000;
+static WsWorldScaleWitness ws_world_scale = { (uint32_t)-1000, (uint32_t)-1000 };
 
 /* Natural-overhang world signal — the classifier's actual input. GTE volume
  * above proved to be a SECOND false world signal: the task-found/task-clear
@@ -404,6 +409,7 @@ void psx_ws_note_gte_project(int nverts) {
         ws_gte_frame = f; ws_gte_count = 0;
     }
     ws_gte_count += (uint32_t)nverts;
+    ws_world_scale_note(&ws_world_scale, f, ws_gte_count);
     if (ws_gte_game_mode_cfg && ws_gte_count >= WS_GTE_GAME_MODE_MIN_VERTS)
         ws_last_gte_stamp = f;
     if (ws_gte_count >= WS_WORLD3D_MIN_VERTS && ws_last_world3d_stamp != f) {
@@ -469,14 +475,20 @@ static WsSceneLatch ws_scene_latch;
  * that ends inside the native-wide reveal outranks polygon overhang. Widened
  * 2D actor culls place sprite quads past the canonical edge, so such a scene
  * passes the overhang test while its ground stops at the image edge (Tomba's
- * overhead village: a 384px image, fence/sign quads out to x=428). */
+ * overhead village: a 384px image, fence/sign quads out to x=428). A mixed
+ * scene can also place a finite scrolling background behind real terrain;
+ * sustained world-scale projection plus natural overhang distinguishes that
+ * case from sparse props over a pre-rendered floor. */
 static WsBackdropExtent ws_bdx;
 static int ws_2d_only_scene(void) {
     if (ws_mod_world_scene()) return 0;
     if (ws_local_native_split()) return 0;
     if (ws_full_2d_mode() || ws_gte_game_mode_cfg) return 0;
     uint32_t f = (uint32_t)s_frame_count;
-    if (ws_bdx_veto(&ws_bdx, f, WS_2D_SCENE_HYSTERESIS)) {
+    int overhang = f - ws_sust_ovh_stamp <= WS_2D_SCENE_HYSTERESIS;
+    if (ws_backdrop_keeps_native_43(
+            ws_bdx_veto(&ws_bdx, f, WS_2D_SCENE_HYSTERESIS),
+            &ws_world_scale, f, overhang)) {
         ws_scene_latch.confirmed = 0;   /* affirmatively 2D: relearn on exit */
         return 1;
     }
@@ -488,6 +500,7 @@ static int ws_2d_only_scene(void) {
 /* Host-derived presentation evidence is not serialized guest state. Relearn it
  * after reset/load instead of carrying the old scene's classification over. */
 static void ws_reset_scene_history(void) {
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
     uint32_t expired = (uint32_t)s_frame_count - 1000u;
     memset(&ws_scene_latch, 0, sizeof ws_scene_latch);
     ws_bdx_reset(&ws_bdx);
@@ -508,6 +521,7 @@ static uint32_t ws_display_origin(void);
 void psx_mod_set_retained_scene_predicate(PSXModRetainedScenePredicate predicate) {
     s_ws_retained_scene_predicate = predicate;
     ws_scene_hold_reset(&s_ws_scene_hold);
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
 }
 
 void gpu_ws_set_native_scene_predicate(int (*predicate)(void)) {
@@ -518,10 +532,23 @@ int gpu_ws_present_native_43(void) {
     if (!ws_engaged()) return 0;
     if (s_ws_native_scene_predicate && s_ws_native_scene_predicate())
         return 1;
+    int hold_enabled = ws_mode == 2 && s_ws_retained_scene_predicate != NULL;
+    int hold = hold_enabled ? s_ws_retained_scene_predicate() : PSX_MOD_SCENE_RELEASE;
+    uint32_t origin = hold_enabled ? ws_display_origin() : 0;
+    if (hold_enabled && ws_scene_hold_releasing_43(&s_ws_scene_hold, hold, origin)) {
+        /* Do not let a retained UI effect establish world geometry after it
+         * disappears. Fresh scene submissions can immediately prove a world;
+         * already-wide retained scenes keep their existing evidence. */
+        uint32_t expired = (uint32_t)s_frame_count - 1000u;
+        ws_scene_latch.confirmed = 0;
+        ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
+        ws_last_ovh_stamp = ws_sust_ovh_stamp = expired;
+        ws_last_world3d_stamp = ws_sust_world3d_stamp = expired;
+        ws_ovh_count = 0;
+    }
     int game_mode = ws_game_mode();
     if (!game_mode) ws_scene_latch.confirmed = 0;
     int native_43 = !game_mode || ws_2d_only_scene();
-    int hold_enabled = ws_mode == 2 && s_ws_retained_scene_predicate != NULL;
     if (!hold_enabled && native_43) return 1;      /* unchanged default */
     uint32_t f = (uint32_t)s_frame_count;
     if (f != s_ws_fmv_frame_cache) {
@@ -531,8 +558,7 @@ int gpu_ws_present_native_43(void) {
     }
     if (hold_enabled)
         return ws_scene_hold_classify(&s_ws_scene_hold,
-            s_ws_retained_scene_predicate(), native_43, s_ws_fmv_cached,
-            ws_display_origin());
+            hold, native_43, s_ws_fmv_cached, origin);
     return s_ws_fmv_cached;
 }
 
@@ -736,6 +762,8 @@ int gpu_ws_netplay_local_viewport_width(void) {
  * unconditionally so a probe can sweep the cull margin live (0 = force 4:3
  * cull while still stretching; large = over-draw) at a fixed camera position.
  * -1 = normal computed margin. */
+static uint32_t gpu_h_display_width(void);
+static int ws_px_to_320(int px);
 static int ws_margin_override = -1;
 static int ws_cull_guard_pixels = 0;
 static int ws_activation_guard_pixels = 0;
@@ -804,7 +832,20 @@ WS_EXPLICIT_LIST(bltz);
 WS_EXPLICIT_LIST(bgez);
 WS_EXPLICIT_LIST(branch_keep);
 WS_EXPLICIT_LIST(clip_edge_x_load);
+WS_EXPLICIT_LIST(screen_x);
 static uint32_t ws_clip_edge_width = 320;
+
+/* [widescreen.cull] screen_x_sites for interpreted code: native code compiles
+ * the list in (code_generator.cpp); this keeps a dirty-RAM copy of a listed
+ * site on the same semantics. */
+void gpu_ws_set_cull_screen_x_sites(const uint32_t *sites, int nsites) {
+    ws_explicit_screen_x_n = ws_explicit_store(
+        ws_explicit_screen_x_sites, sites, nsites, "screen_x_sites");
+}
+int psx_ws_is_cull_screen_x_site(uint32_t pc) {
+    return ws_explicit_site(ws_explicit_screen_x_sites,
+                            ws_explicit_screen_x_n, pc);
+}
 
 void gpu_ws_set_explicit_cull_sites(const uint32_t *bias, int nbias,
                                     const uint32_t *slti, int nslti,
@@ -1002,6 +1043,7 @@ int psx_ws_masked_reject(uint32_t flags, uint32_t mask) {
 }
 int psx_ws_masked_reject_site(uint32_t pc, uint32_t instr,
     uint32_t flags, int vanilla) {
+    if (psx_ws_x_margin() <= 0) return vanilla;
     for (int i = 0; i < ws_masked_reject_n; ++i) {
         const WsMaskedRejectSite *s = &ws_masked_reject_sites[i];
         if (s->address == (pc & 0x1FFFFFFFu) && s->expected == instr)
@@ -1013,8 +1055,25 @@ int psx_ws_masked_reject_site(uint32_t pc, uint32_t instr,
 static WsMaskedRejectSite ws_nclip_sites[WS_EXPLICIT_CULL_SITES_MAX];
 static uint8_t ws_nclip_previous[WS_EXPLICIT_CULL_SITES_MAX];
 static int ws_nclip_site_count;
+static WsMaskedRejectSite ws_nclip_zero_sites[WS_EXPLICIT_CULL_SITES_MAX];
+static int ws_nclip_zero_site_count;
 static uint64_t ws_nclip_rescues;
 uint64_t gpu_ws_native_wide_nclip_rescues(void) { return ws_nclip_rescues; }
+void psx_mod_set_native_wide_nclip_zero_sites(const uint32_t* addresses,
+    const uint32_t* expected, int count) {
+    if (count < 0 || count > WS_EXPLICIT_CULL_SITES_MAX ||
+        (count && (!addresses || !expected))) abort();
+    for (int i = 0; i < count; ++i) {
+        /* Only BLEZ rs,reject is proved here; positive/negative nonzero
+         * winding and all other branch shapes retain their native result. */
+        if ((addresses[i] & 3u) || expected[i] >> 26 != 6u ||
+            ((expected[i] >> 16) & 31u) != 0u ||
+            ((expected[i] >> 21) & 31u) == 0u) abort();
+        ws_nclip_zero_sites[i].address = addresses[i] & 0x1FFFFFFFu;
+        ws_nclip_zero_sites[i].expected = expected[i];
+    }
+    ws_nclip_zero_site_count = count;
+}
 void psx_mod_set_native_wide_nclip_sites(const uint32_t* addresses,
     const uint32_t* expected, int count) {
     if (count < 0 || count > WS_EXPLICIT_CULL_SITES_MAX) abort();
@@ -1042,6 +1101,15 @@ extern int gte_nclip_native_wide_sign(int32_t mac0, int* sign);
 extern int gte_nclip_native_wide_previous_sign(int32_t mac0, int* sign);
 int psx_ws_nclip_branch(uint32_t pc, uint32_t instr, int32_t mac0, int vanilla) {
     if (psx_ws_x_margin() <= 0 || !gpu_ws_precise_nclip_enabled()) return vanilla;
+    for (int i = 0; i < ws_nclip_zero_site_count; ++i) {
+        if (ws_nclip_zero_sites[i].address != (pc & 0x1FFFFFFFu) ||
+            ws_nclip_zero_sites[i].expected != instr) continue;
+        if (mac0 == 0 && gte_nclip_zero_positive(mac0, pc)) {
+            ++ws_nclip_rescues;
+            return 0;
+        }
+        return vanilla;
+    }
     for (int i = 0; i < ws_nclip_site_count; ++i) {
         if (ws_nclip_sites[i].address != (pc & 0x1FFFFFFFu) ||
             ws_nclip_sites[i].expected != instr) continue;
@@ -1064,6 +1132,29 @@ typedef struct {
     uint32_t expected;
     uint32_t result;
 } WsCullKeepSite;
+typedef struct { uint32_t address, expected; } WsPackedXSite;
+static WsPackedXSite ws_packed_x_sites[WS_EXPLICIT_CULL_SITES_MAX];
+static int ws_packed_x_n;
+void gpu_ws_set_packed_x_sites(const uint32_t *addresses,
+                              const uint32_t *expected, int count) {
+    if (count < 0) count = 0;
+    if (count > WS_EXPLICIT_CULL_SITES_MAX) count = WS_EXPLICIT_CULL_SITES_MAX;
+    ws_packed_x_n = count;
+    for (int i = 0; i < count; ++i) {
+        ws_packed_x_sites[i].address = addresses[i] & 0x1FFFFFFFu;
+        ws_packed_x_sites[i].expected = expected[i];
+    }
+}
+int psx_ws_cull_packed_x_site(uint32_t pc, uint32_t instr, uint32_t x,
+                              uint32_t width, uint32_t *out) {
+    for (int i = 0; i < ws_packed_x_n; ++i) {
+        if (ws_packed_x_sites[i].address != (pc & 0x1FFFFFFFu) ||
+            ws_packed_x_sites[i].expected != instr) continue;
+        if (out) *out = psx_ws_cull_packed_x_value(x, width, psx_ws_x_margin());
+        return 1;
+    }
+    return 0;
+}
 static WsCullKeepSite ws_cull_keep_sites[WS_EXPLICIT_CULL_SITES_MAX];
 static int ws_cull_keep_n = 0;
 void gpu_ws_set_cull_keep_sites(const uint32_t *addresses,
@@ -1094,6 +1185,63 @@ int psx_ws_cull_keep_site(uint32_t pc, uint32_t instr, uint32_t vanilla,
 }
 
 typedef struct {
+    uint32_t vertices;
+    uint32_t fold_address[4];   /* physical */
+    uint32_t fold_expected[4];
+    uint32_t vertex_reg[4];
+    uint32_t consumer_address;  /* physical */
+    uint32_t consumer_expected;
+} WsSxyCullSite;
+static WsSxyCullSite ws_sxy_cull_sites[PSX_WS_SXY_CULL_SITES_MAX];
+int g_psx_ws_sxy_cull_n = 0;
+void gpu_ws_set_sxy_cull_sites(const uint32_t *vertices,
+                               const uint32_t *fold_addresses,
+                               const uint32_t *fold_expected,
+                               const uint32_t *vertex_regs,
+                               const uint32_t *consumer_addresses,
+                               const uint32_t *consumer_expected, int nsites) {
+    int n = 0;
+    if (nsites > PSX_WS_SXY_CULL_SITES_MAX) nsites = PSX_WS_SXY_CULL_SITES_MAX;
+    for (int i = 0; i < nsites; i++) {
+        WsSxyCullSite *site = &ws_sxy_cull_sites[n];
+        if (vertices[i] != 3u && vertices[i] != 4u) continue;
+        site->vertices = vertices[i];
+        for (uint32_t k = 0; k < site->vertices; k++) {
+            site->fold_address[k] = fold_addresses[i * 4 + k] & 0x1FFFFFFFu;
+            site->fold_expected[k] = fold_expected[i * 4 + k];
+            site->vertex_reg[k] = vertex_regs[i * 4 + k] & 31u;
+        }
+        site->consumer_address = consumer_addresses[i] & 0x1FFFFFFFu;
+        site->consumer_expected = consumer_expected[i];
+        n++;
+    }
+    g_psx_ws_sxy_cull_n = n;
+}
+uint32_t psx_ws_cull_sxy_and(uint32_t acc, uint32_t sxy) {
+    return psx_ws_sxy_and_value(acc, sxy, psx_ws_x_margin());
+}
+uint32_t psx_ws_sxy_cull_vertex_reg(uint32_t pc, uint32_t instr,
+                                    uint32_t (*read_word)(uint32_t phys)) {
+    const uint32_t phys = pc & 0x1FFFFFFFu;
+    for (int i = 0; i < g_psx_ws_sxy_cull_n; i++) {
+        const WsSxyCullSite *site = &ws_sxy_cull_sites[i];
+        uint32_t step = site->vertices;
+        for (uint32_t k = 0; k < site->vertices; k++)
+            if (site->fold_address[k] == phys && site->fold_expected[k] == instr)
+                step = k;
+        if (step == site->vertices) continue;
+        /* The rest of the fold and the consumer are part of the identity,
+         * exactly as the recompiler checks them before emitting the helper. */
+        int ok = read_word(site->consumer_address) == site->consumer_expected;
+        for (uint32_t k = 0; ok && k < site->vertices; k++)
+            if (k != step && read_word(site->fold_address[k]) != site->fold_expected[k])
+                ok = 0;
+        if (ok) return site->vertex_reg[step];
+    }
+    return 0;
+}
+
+typedef struct {
     uint32_t address;
     uint32_t expected;
     uint32_t operand;      /* 0 = rs, 1 = rt */
@@ -1119,7 +1267,7 @@ void gpu_ws_set_cull_scale_sites(const uint32_t *addresses,
  * (x < half*z/H) widens to the live view by scaling the bound by
  * (half + margin) / half. 64-bit intermediate; saturates to int32. */
 int32_t psx_ws_cull_scale(int32_t bound, int32_t half_extent) {
-    const int32_t margin = psx_ws_x_margin();
+    const int32_t margin = psx_ws_x_margin_320();
     if (margin <= 0 || half_extent <= 0) return bound;
     int64_t v = (int64_t)bound * (int64_t)(half_extent + margin) / half_extent;
     if (v > INT32_MAX) v = INT32_MAX;
@@ -1175,7 +1323,7 @@ void gpu_ws_set_angle_sites(const uint32_t *addresses,
 
 uint32_t psx_ws_angle_widen(uint32_t vanilla) {
     ws_angle_calls++;
-    const int margin = psx_ws_x_margin();
+    const int margin = psx_ws_x_margin_320();
     if (margin <= 0) {
         ws_angle_43_identity++;
         return vanilla;
@@ -1232,6 +1380,7 @@ typedef struct {
 static WsAspectConeSite ws_aspect_cone_sites[WS_EXPLICIT_CULL_SITES_MAX];
 static int ws_aspect_cone_n = 0;
 static uint32_t ws_aspect_cone_forward_addr = 0;
+static uint32_t ws_aspect_cone_forward_offsets[3] = {0u, 2u, 4u};
 static uint32_t ws_aspect_cone_object_type_offset = 0;
 static uint32_t ws_aspect_cone_hysteresis_pixels = 0;
 static uint32_t ws_aspect_cone_queue_reserve = 0;
@@ -1260,6 +1409,7 @@ void gpu_ws_set_aspect_cone(const uint32_t *addresses,
                             const uint32_t *queue_guards,
                             int nsites,
                             uint32_t forward_addr,
+                            const uint32_t forward_offsets[3],
                             uint32_t object_type_offset,
                             uint32_t hysteresis_pixels,
                             uint32_t queue_reserve,
@@ -1288,6 +1438,9 @@ void gpu_ws_set_aspect_cone(const uint32_t *addresses,
             (uint8_t)(!queue_guards || queue_guards[i] != 0);
     }
     ws_aspect_cone_forward_addr = forward_addr;
+    for (int i = 0; i < 3; i++)
+        ws_aspect_cone_forward_offsets[i] =
+            forward_offsets ? forward_offsets[i] : (uint32_t)i * 2u;
     ws_aspect_cone_object_type_offset = object_type_offset;
     ws_aspect_cone_hysteresis_pixels = hysteresis_pixels;
     ws_aspect_cone_queue_reserve = queue_reserve;
@@ -1398,7 +1551,7 @@ uint32_t psx_ws_aspect_cone_result(uint32_t site_address, uint32_t vanilla,
 
     ws_aspect_cone_calls++;
     site->calls++;
-    const int total_margin = psx_ws_x_margin();
+    const int total_margin = psx_ws_x_margin_320();
     if (total_margin <= 0) {
         ws_aspect_cone_43_identity++;
         site->identity_43++;
@@ -1423,14 +1576,17 @@ uint32_t psx_ws_aspect_cone_result(uint32_t site_address, uint32_t vanilla,
     }
 
     const int visible_margin =
-        (total_margin > ws_cull_guard_pixels)
-            ? total_margin - ws_cull_guard_pixels : 0;
+        (total_margin > ws_px_to_320(ws_cull_guard_pixels))
+            ? total_margin - ws_px_to_320(ws_cull_guard_pixels) : 0;
     const int32_t fx =
-        (int16_t)psx_read_half(ws_aspect_cone_forward_addr + 0u);
+        (int16_t)psx_read_half(ws_aspect_cone_forward_addr +
+                             ws_aspect_cone_forward_offsets[0]);
     const int32_t fz =
-        (int16_t)psx_read_half(ws_aspect_cone_forward_addr + 2u);
+        (int16_t)psx_read_half(ws_aspect_cone_forward_addr +
+                             ws_aspect_cone_forward_offsets[1]);
     const int32_t fy =
-        (int16_t)psx_read_half(ws_aspect_cone_forward_addr + 4u);
+        (int16_t)psx_read_half(ws_aspect_cone_forward_addr +
+                             ws_aspect_cone_forward_offsets[2]);
     const uint32_t threshold = site->cosine_threshold;
 
     const int in_visible =
@@ -1443,7 +1599,7 @@ uint32_t psx_ws_aspect_cone_result(uint32_t site_address, uint32_t vanilla,
         !in_visible && !in_guard && state->active &&
         psx_ws_aspect_cone_contains(
             x, z, y, fx, fz, fy, threshold,
-            total_margin + (int)ws_aspect_cone_hysteresis_pixels);
+            total_margin + ws_px_to_320((int)ws_aspect_cone_hysteresis_pixels));
 
     if (!in_visible && !in_guard && !in_hysteresis) {
         state->active = 0;
@@ -1496,6 +1652,18 @@ void gpu_ws_set_local_view_only(int on) { ws_local_view_only = on ? 1 : 0; }
 void gpu_ws_set_local_view_scope(int on) { ws_local_view_scope = on ? 1 : 0; }
 int gpu_ws_local_view_only(void) { return ws_local_view_only; }
 
+/* Half of the game's current horizontal display width (160 for 320 modes). */
+static int ws_cull_half_width(void) {
+    int src_w = 0;
+    uint32_t w;
+    if (ws_local_viewport_layout(NULL, &src_w, NULL, NULL))
+        w = (uint32_t)src_w;
+    else
+        w = gpu_h_display_width();
+    if (w < 64u) w = 320u;
+    return (int)(w / 2u);
+}
+
 int psx_ws_x_margin(void) {
     if (ws_local_view_only && !ws_local_view_scope) return 0;
     if (ws_margin_override >= 0) return ws_margin_override;
@@ -1514,8 +1682,26 @@ int psx_ws_x_margin(void) {
         return ws_nw_configured_offset() * ((ws_view_camera_addr || ws_view_manual) ? 2 : 1)
                + ws_cull_guard_pixels;
     if (!ws_active()) return 0;
-    return (160 * (ws_xden - ws_xnum) + ws_xnum / 2) / ws_xnum
+    /* The reveal is a fraction of the game's own half-width: a 512-wide mode
+     * (Army Men in-game) hides 256*(1/s-1) px per side, not the 160*(1/s-1)
+     * a 320 mode does. The screen-X compares live in that mode's pixels. */
+    return (ws_cull_half_width() * (ws_xden - ws_xnum) + ws_xnum / 2) / ws_xnum
            + ws_cull_guard_pixels;
+}
+
+/* A pixel quantity of the current display mode on the 320-pixel basis. */
+static int ws_px_to_320(int px) {
+    const int half = ws_cull_half_width();
+    return half == 160 ? px : (int)(((int64_t)px * 160 + half / 2) / half);
+}
+
+/* The same margin on the 320-pixel basis. Camera-space frustum angles, aspect
+ * cones, scaled bounds and gameplay-field scalers are ratios authored against
+ * a 160-pixel half-screen; they must not grow with the display mode. */
+int psx_ws_x_margin_320(void) {
+    const int m = psx_ws_x_margin();
+    const int half = ws_cull_half_width();
+    return half == 160 ? m : (int)(((int64_t)m * 160 + half / 2) / half);
 }
 
 int psx_ws_activation_margin(void) {
@@ -1525,7 +1711,7 @@ int psx_ws_activation_margin(void) {
 
 int32_t psx_ws_player_x_bound(int32_t vanilla)
 {
-    const int margin = psx_ws_x_margin();
+    const int margin = psx_ws_x_margin_320();
     if (margin <= 0) return vanilla;
     return (int32_t)(((int64_t)vanilla * (320 + 2 * margin)) / 320);
 }
@@ -2025,6 +2211,23 @@ int psx_ws_cull_sltiu(uint32_t sx, uint32_t imm) {
             < (uint32_t)((int32_t)imm + 2 * m)) ? 1 : 0;
 }
 
+/* [widescreen.cull] screen_x_sites on `sltu rd, SX, W` with W in a register:
+ * SX is a 16-bit screen X (typically `andi SX, sxy, 0xffff`), W the width the
+ * guest loaded (pair with clip_edge_x_load_sites so W already carries the right
+ * margin). The unsigned compare rejects negative X; while widened the verdict is
+ * -k*m <= (int16)SX < W, so the left band passes too. Identity at margin 0.
+ * These tests check single vertices, so a large near polygon whose corners all
+ * lie past the reveal would still drop: k = 4 margins keeps them (Kula World's
+ * level quads), while an unbounded left side lets every off-screen polygon
+ * through and overflows renderers with fixed primitive lists. */
+#define WS_SLTU_BAND_LEFT_REACH 4
+int psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound) {
+    int m = psx_ws_x_margin();
+    if (m <= 0) return sx < bound ? 1 : 0;
+    int32_t x = (int32_t)(int16_t)(uint16_t)sx;
+    return (x >= -WS_SLTU_BAND_LEFT_REACH * m && x < (int32_t)bound) ? 1 : 0;
+}
+
 /* Signed right-edge widen for the min/max funnel idiom (`slti v, minSX, W`):
  * the paired LEFT edge is a separate bltz (psx_ws_cull_bltz below), so this
  * bound moves out by ONE margin only. Operand is an already sign-extended /
@@ -2476,7 +2679,8 @@ static int ws_hud_command_words(uint32_t command_addr, uint32_t *words,
     if (!words || !out_count) return 0;
     if ((command_addr & 3u) != 0) return 0;
     uint32_t phys = command_addr & 0x1FFFFFFFu;
-    if (phys > psx_ram_live_bytes() - 4u) return 0;
+    if (phys > psx_ram_live_bytes() - 4u &&
+        !psx_mod_gpu_dma_memory_contains(command_addr, 4u)) return 0;
 
     words[0] = psx_read_word(command_addr);
     uint8_t op = (uint8_t)(words[0] >> 24);
@@ -2484,7 +2688,8 @@ static int ws_hud_command_words(uint32_t command_addr, uint32_t *words,
     int count = gp0_command_word_count(op);
     if (count <= 0 || count > 12) return 0;
     uint32_t bytes = (uint32_t)count * 4u;
-    if (phys > psx_ram_live_bytes() - bytes) return 0;
+    if (phys > psx_ram_live_bytes() - bytes &&
+        !psx_mod_gpu_dma_memory_contains(command_addr, bytes)) return 0;
 
     for (int i = 1; i < count; i++)
         words[i] = psx_read_word(command_addr + (uint32_t)i * 4u);
@@ -2512,12 +2717,28 @@ static void ws_tag_stats_note_lookup(GpuWsTagStats *stats, int result) {
     }
 }
 
-void gpu_ws_tag_hud_prim(uint32_t prim, int anchor) {
+/* Positions the GTE projected this and the previous vblank (ws_gte_sxy.h).
+ * Opt-in: nothing is recorded (and every query answers no) until a title
+ * plugin enables it, and only while the squash is engaged, so titles that do
+ * not use the query pay nothing and see no change. */
+static WsGteSxy ws_gte_sxy;
+static int ws_gte_sxy_tracking;   /* opt-in: a title plugin turns it on */
+void gpu_ws_set_gte_sxy_tracking(int on) { ws_gte_sxy_tracking = on ? 1 : 0; }
+void gpu_ws_note_gte_sxy(int32_t x, int32_t y) {
+    if (!ws_gte_sxy_tracking || !ws_active()) return;
+    ws_gte_sxy_note(&ws_gte_sxy, (uint32_t)s_frame_count, x, y);
+}
+int gpu_ws_gte_sxy_recent(int32_t x, int32_t y) {
+    if (!ws_gte_sxy_tracking) return 0;
+    return ws_gte_sxy_recent(&ws_gte_sxy, (uint32_t)s_frame_count, x, y);
+}
+
+static void ws_tag_hud_prim(uint32_t prim, int anchor, int projected) {
     ws_hud_tag_stats.tag_calls++;
     uint32_t command_addr = prim + 4u;
     uint32_t words[12];
     uint32_t word_count = 0;
-    if (!ws_native_wide_configured() ||
+    if (!(ws_native_wide_configured() || ws_configured()) ||
         (prim & 3u) != 0 || prim > UINT32_MAX - 4u ||
         !ws_hud_command_words(command_addr, words, &word_count)) {
         ws_hud_tag_stats.tag_rejected++;
@@ -2526,10 +2747,22 @@ void gpu_ws_tag_hud_prim(uint32_t prim, int anchor) {
 
     WsPrepassPacketGuard guard =
         ws_prepass_packet_guard(words, word_count);
-    ws_hud_anchor_insert(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE,
-                         GPU_RAM_KEY(command_addr), anchor, &guard,
-                         (uint32_t)s_frame_count);
+    if (projected)
+        ws_hud_anchor_insert_projected(ws_hud_anchor_tags,
+                                       WS_HUD_ANCHOR_TABLE_SIZE,
+                                       GPU_RAM_KEY(command_addr), anchor,
+                                       &guard, (uint32_t)s_frame_count);
+    else
+        ws_hud_anchor_insert(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                             GPU_RAM_KEY(command_addr), anchor, &guard,
+                             (uint32_t)s_frame_count);
     ws_hud_tag_stats.last_tag_frame = (uint32_t)s_frame_count;
+}
+void gpu_ws_tag_hud_prim(uint32_t prim, int anchor) {
+    ws_tag_hud_prim(prim, anchor, 0);
+}
+void gpu_ws_tag_hud_prim_projected(uint32_t prim, int anchor) {
+    ws_tag_hud_prim(prim, anchor, 1);
 }
 
 void gpu_ws_tag_background_prim(uint32_t prim) {
@@ -2542,7 +2775,8 @@ void gpu_ws_tag_background_prim(uint32_t prim) {
         return;
     }
     uint32_t op = words[0] >> 24;
-    if (op < 0x20u || op > 0x3Fu || (op & 2u)) {
+    if (!((op >= 0x20u && op <= 0x3Fu && !(op & 2u)) ||
+          op == 0x64u || op == 0x65u)) {
         ws_background_tag_stats.tag_rejected++;
         return;
     }
@@ -2562,13 +2796,18 @@ int gpu_ws_background_stretch_active(void) {
            frame - ws_background_tag_frame <= WS_HUD_ANCHOR_FRESH_FRAMES;
 }
 
+/* Legacy title opt-ins also change background sampling inside the original
+ * viewport. Keep their wide composite intact, just like explicit packet tags. */
+static int ws_nw_phase_backdrop = 0;
+static int ws_nw_flat_backdrop = 0;
 int gpu_ws_background_requires_full_composite(void) {
     /* Freshness governs reuse of a packet address, not the lifetime of the
      * pixels it produced. A slow game frame or a held display buffer can keep
      * those pixels on screen indefinitely. Conservatively keep full mirroring
      * once a composite has been tagged; GPU reset/snapshot restore clears the
      * latch together with the tags. Never modify the packet freshness guard. */
-    return ws_background_tags_used && ws_native_wide_configured();
+    return ws_native_wide_configured() &&
+           (ws_background_tags_used || ws_nw_phase_backdrop || ws_nw_flat_backdrop);
 }
 
 static int ws_nw_explicit_background(void) {
@@ -2612,6 +2851,18 @@ void gpu_ws_tag_repeat_rect(uint32_t prim, int32_t period) {
                               period, &guard, (uint32_t)s_frame_count);
 }
 
+void gpu_ws_tag_feedback_rect(uint32_t prim) {
+    if (!ws_native_wide_configured() || (prim & 3u) || prim > UINT32_MAX - 4u)
+        return;
+    uint32_t words[12], count = 0;
+    if (!ws_hud_command_words(prim + 4u, words, &count)) return;
+    if ((words[0] >> 24) < 0x64u || (words[0] >> 24) > 0x67u) return;
+    WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
+    /* The table only marks the packet; period 1 is the "present" value. */
+    ws_repeat_rect_tag_insert(ws_feedback_rect_tags, GPU_RAM_KEY((prim + 4u)),
+                              1, &guard, (uint32_t)s_frame_count);
+}
+
 void gpu_ws_tag_screen_mask_quad(uint32_t prim) {
     if (!ws_native_wide_configured() || (prim & 3u) || prim > UINT32_MAX - 4u)
         return;
@@ -2648,25 +2899,74 @@ static int ws_nw_radial_mask_transform(int32_t x[4], int32_t y[4]) {
     return 1;
 }
 
-static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
-    if (out_delta) *out_delta = 0;
-    if (!ws_native_wide_active() || gp0_cmd_source_addr == 0xFFFFFFFFu)
+static int ws_explicit_hud_anchor_ex(int *out_anchor, int *out_projected) {
+    if (gp0_cmd_source_addr == 0xFFFFFFFFu)
         return 0;
     if (gp0_words_needed <= 0 || gp0_words_needed > 12)
         return 0;
     uint32_t command_addr = gp0_cmd_source_addr & 0x1FFFFFFFu;
-    if (command_addr >= psx_ram_live_bytes() || (command_addr & 3u)) return 0;
-    int anchor = 0;
-    int result = ws_hud_anchor_lookup_result(
-        ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE, command_addr,
+    if ((command_addr & 3u) ||
+        (command_addr >= psx_ram_live_bytes() &&
+         !psx_mod_gpu_dma_memory_contains(command_addr, 4u))) return 0;
+    int anchor = 0, projected = 0;
+    int result = ws_hud_anchor_lookup_result_ex(
+        ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE, GPU_RAM_KEY(command_addr),
         gp0_cmd_buf, (uint32_t)gp0_words_needed, (uint32_t)s_frame_count,
-        &anchor);
+        &anchor, &projected);
     ws_tag_stats_note_lookup(&ws_hud_tag_stats, result);
     if (result != WS_HUD_ANCHOR_HIT)
         return 0;
-    int32_t off = ws_nw_offset();
+    if (out_anchor) *out_anchor = anchor;
+    if (out_projected) *out_projected = projected;
+    return 1;
+}
+static int ws_explicit_hud_anchor(int *out_anchor) {
+    return ws_explicit_hud_anchor_ex(out_anchor, NULL);
+}
+
+static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
+    if (out_delta) *out_delta = 0;
+    if (!ws_native_wide_active()) return 0;
+    int anchor;
+    if (!ws_explicit_hud_anchor(&anchor)) return 0;
     if (out_delta)
-        *out_delta = ws_hud_anchor_native_delta(1, off, anchor);
+        *out_delta = ws_hud_anchor_native_delta(1, ws_nw_offset(), anchor);
+    return 1;
+}
+
+/* A title can identify one widget whose pieces arrive in separate DMA lists.
+ * Per-list auto grouping cannot see that ownership. Use the same guarded
+ * edge/centre role as native-wide, expressed as a squash pivot here. */
+static int ws_projection_hud_anchor_ex(int32_t *out_anchor, int *out_projected) {
+    if (!ws_active()) return 0;
+    int edge, projected = 0;
+    if (!ws_explicit_hud_anchor_ex(&edge, &projected)) return 0;
+    if (out_projected) *out_projected = projected;
+    if (out_anchor)
+        *out_anchor = ws_disp_x() + (edge < 0 ? 0 : edge > 0 ? ws_disp_w() : ws_disp_w() / 2);
+    return 1;
+}
+
+static int ws_projection_hud_anchor(int32_t *out_anchor) {
+    return ws_projection_hud_anchor_ex(out_anchor, NULL);
+}
+
+/* Shift that takes an X already squashed about the display centre to where
+ * scaling it about the anchor would have put it: (anchor - centre) * (1 - s). */
+static int32_t ws_projected_hud_shift(int32_t anchor) {
+    return ws_scale_about(0, anchor) - ws_scale_about(0, ws_disp_x() + ws_disp_w() / 2);
+}
+
+static int ws_projection_hud_transform(int32_t *x, int count) {
+    int32_t anchor;
+    int projected = 0;
+    if (!ws_projection_hud_anchor_ex(&anchor, &projected)) return 0;
+    if (projected) {
+        const int32_t shift = ws_projected_hud_shift(anchor);
+        for (int i = 0; i < count; i++) x[i] += shift;
+    } else {
+        for (int i = 0; i < count; i++) x[i] = ws_scale_about(x[i], anchor);
+    }
     return 1;
 }
 
@@ -2764,6 +3064,9 @@ static void ws_screen_transform_quad(int32_t vx[4]) {
  * a direct hit too in case a tag site passes the colour-word address. */
 static int ws_tagged_anchor(int32_t *out_ax) {
     if (!ws_active() || gp0_cmd_source_addr == 0xFFFFFFFFu) return 0;
+    /* Explicit screen-space ownership wins over a recycled billboard tag.
+     * The regular UI transform below will apply it exactly once. */
+    if (ws_projection_hud_anchor(NULL)) return 0;
     uint32_t now = (uint32_t)s_frame_count;
     for (int variant = 0; variant < 2; variant++) {
         uint32_t key = GPU_RAM_KEY((gp0_cmd_source_addr - (variant ? 0u : 4u)));
@@ -2794,7 +3097,6 @@ static int ws_tagged_anchor(int32_t *out_ax) {
  * flower-field tiles — the 3D rock/foreground is untagged AND has narrow prims,
  * so tag/narrow heuristics alone mis-stretch and tear it. */
 uint32_t g_ws_backdrop_lo = 0, g_ws_backdrop_hi = 0;
-static int ws_nw_phase_backdrop = 0;
 void gpu_ws_set_nw_phase_backdrop(int on) { ws_nw_phase_backdrop = on ? 1 : 0; }
 static int ws_nw_textured_edges = 0;
 int g_ws_tex_edge_pct = 0;
@@ -3121,6 +3423,7 @@ static int ws_axis_aligned_quad(const int32_t vx[4], const int32_t vy[4]) {
  * quad): squashed with its widget when the prepass admitted it as lying
  * inside that widget (ws_ui_prepass_finish). */
 static int ws_auto_ui_transform_part(int32_t *vx, int32_t *vy, int n) {
+    if (ws_projection_hud_transform(vx, n)) return 1;
     if (ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged()) return 0;
     const WsUiPrepassItem *it = ws_auto_ui_item();
     if (!it) return 0;
@@ -3134,6 +3437,7 @@ static int ws_auto_ui_transform_part(int32_t *vx, int32_t *vy, int n) {
 }
 
 static int ws_auto_ui_transform_quad(int32_t vx[4], int32_t vy[4]) {
+    if (ws_projection_hud_transform(vx, 4)) return 1;
     if (ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged()) return 0;
     if (!ws_axis_aligned_quad(vx, vy)) return ws_auto_ui_transform_part(vx, vy, 4);
 
@@ -3162,7 +3466,19 @@ static int ws_auto_ui_transform_quad(int32_t vx[4], int32_t vy[4]) {
 }
 
 static int ws_auto_ui_transform_rect(int32_t *x, int32_t *y, int *w, int *h) {
-    if (!x || !y || !w || !h || *w <= 0 || ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged())
+    if (!x || !y || !w || !h || *w <= 0) return 0;
+    int32_t explicit_anchor;
+    int explicit_projected = 0;
+    if (ws_projection_hud_anchor_ex(&explicit_anchor, &explicit_projected)) {
+        if (explicit_projected) {
+            *x += ws_projected_hud_shift(explicit_anchor);
+        } else {
+            *x = ws_scale_about(*x, explicit_anchor);
+            *w = (int)ws_scale_len(*w);
+        }
+        return 1;
+    }
+    if (ws_nw_explicit_hud_delta(NULL) || psx_ws_prim_is_tagged())
         return 0;
     int32_t X = ws_disp_x(), W = ws_disp_w(), H = ws_disp_h();
     if ((*x <= X && *x + *w >= X + W && *y <= 0 && *y + *h >= H) ||
@@ -3363,7 +3679,6 @@ static void ws_nw_hud_shift_vertices(int32_t *vx, int count) {
  * Transforms vx[0..3] IN PLACE (pre-draw_offset); returns 1 if it applied. */
 static int ws_nw_backdrop = 0;
 void gpu_ws_set_nw_backdrop(int on) { ws_nw_backdrop = on ? 1 : 0; }
-static int ws_nw_flat_backdrop = 0;
 void gpu_ws_set_nw_flat_backdrop(int on) { ws_nw_flat_backdrop = on ? 1 : 0; }
 int gpu_ws_nw_flat_backdrop_enabled(void) { return ws_nw_flat_backdrop; }
 static int ws_nw_backdrop_stretch_quad(int32_t *vx, const int32_t *vy) {
@@ -3421,6 +3736,14 @@ static uint16_t vram_write_pixels[1024 * 512];
  * gpu_depth24_rgb_limit — declared early so gpu_reset_state can clear it. */
 static uint32_t s_d24_upload_x1 = 0;
 static int      s_d24_present_hold = 0; /* vblanks to skip Swap after GP1(07h) */
+/* Whether the latest guest VBlank was held: presents after it skip their
+ * Swap. Both the count and this flag are guest state, set only at guest
+ * VBlank and carried in the GPU snap (packed into the hold word), and a
+ * present only reads them, so a windowed, headless or frame-skipping run and
+ * a rollback replay hold the same span and restore the same output (#636: a
+ * present-ticked hold stuck at 3 in headless live play and was zeroed by a
+ * rollback load, so replay != live). */
+static int      s_d24_present_skip = 0;
 static uint32_t s_d24_prev_disp_h = 0;  /* last GP1(07h) band height */
 static void depth24_note_upload(uint32_t x, uint32_t w);
 
@@ -3824,6 +4147,7 @@ static void gpu_reset_state(int clear_vram) {
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
+    ws_repeat_rect_tag_clear(ws_feedback_rect_tags);
     polyline_color = 0;
     polyline_prev_x = polyline_prev_y = 0;
     polyline_prev_c = 0;
@@ -3844,6 +4168,7 @@ static void gpu_reset_state(int clear_vram) {
     semi_transparency = 0;
     texpage_colors = 0;
     dither_enabled = 0;
+    gr_set_dither(0);
     draw_to_display = 0;
     set_mask_bit = 0;
     check_mask_bit = 0;
@@ -3890,8 +4215,10 @@ static void gpu_reset_state(int clear_vram) {
     s_ws_fmv_frame_cache = 0xFFFFFFFFu;
     s_ws_fmv_cached = 0;
     ws_scene_hold_reset(&s_ws_scene_hold);
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
     s_d24_upload_x1 = 0;
     s_d24_present_hold = 0;
+    s_d24_present_skip = 0;
     s_d24_prev_disp_h = 0;
 }
 
@@ -4157,6 +4484,9 @@ void gpu_vblank_tick(void) {
      * poll first became reachable in this runtime. */
     if (vertical_interlace)
         interlace_field = (lcf ^ 1) & 1;
+    s_d24_present_skip = s_d24_present_hold > 0;
+    if (s_d24_present_hold > 0)
+        s_d24_present_hold--;
     /* snapshot per-frame draw-offset-Y range for the strobe instrumentation */
     if (g_doff_cnt_this) {
         g_doff_min_last = g_doff_min_this;
@@ -4211,11 +4541,6 @@ const uint16_t* gpu_get_vram(void) {
     return vram;
 }
 
-static uint8_t gpu_vram_byte(uint32_t byte_x, uint32_t y) {
-    uint16_t hw = vram[((y & 511u) * 1024u) + ((byte_x >> 1) & 1023u)];
-    return (byte_x & 1u) ? (uint8_t)(hw >> 8) : (uint8_t)hw;
-}
-
 /* Depth24: note/query/reset the CPU→VRAM upload span tracked above. Used to
  * hide trailing RGB columns when a movie blit doesn't fill the full CRTC
  * width — MotK's Star Wars crawl leaves ~8px of stale VRAM on the right.
@@ -4249,15 +4574,14 @@ void gpu_depth24_upload_span_reset(void) {
 }
 
 int gpu_depth24_present_hold_tick(void) {
-    if (s_d24_present_hold <= 0) return 0;
-    s_d24_present_hold--;
-    return 1;
+    return s_d24_present_skip;
 }
 
 void gpu_depth24_on_savestate_loaded(void) {
     /* Hold skips Swap — after restore we want the restored VRAM visible now.
      * Upload span / prev_h were restored from the GPU snap. */
     s_d24_present_hold = 0;
+    s_d24_present_skip = 0;
 }
 
 /* ---- Present-time screen-colour LUT (verified-enhancement, opt-in) -------
@@ -4321,8 +4645,9 @@ static void gpu_rgb555_to_rgb888(uint16_t c, uint8_t* r, uint8_t* g, uint8_t* b)
     *b = (uint8_t)(((c >> 10) & 0x1Fu) << 3);
 }
 
-void gpu_display_pixel_rgb(const GpuDisplayInfo* di, uint32_t x, uint32_t y,
-                           uint8_t* r, uint8_t* g, uint8_t* b) {
+void gpu_display_pixel_rgb_in(const uint16_t* image, const GpuDisplayInfo* di,
+                              uint32_t x, uint32_t y,
+                              uint8_t* r, uint8_t* g, uint8_t* b) {
     if (di->depth24) {
         uint32_t byte_x = ((di->display_x & 1023u) * 2u) + x * 3u;
         uint32_t vy = (di->display_y + y) & 511u;
@@ -4333,15 +4658,24 @@ void gpu_display_pixel_rgb(const GpuDisplayInfo* di, uint32_t x, uint32_t y,
             *r = *g = *b = 0;
             return;
         }
-        *r = gpu_vram_byte(byte_x + 0u, vy);
-        *g = gpu_vram_byte(byte_x + 1u, vy);
-        *b = gpu_vram_byte(byte_x + 2u, vy);
+        const uint16_t* row = image + (size_t)vy * 1024u;
+        uint8_t px[3];
+        for (uint32_t i = 0; i < 3u; i++) {
+            uint16_t hw = row[((byte_x + i) >> 1) & 1023u];
+            px[i] = ((byte_x + i) & 1u) ? (uint8_t)(hw >> 8) : (uint8_t)hw;
+        }
+        *r = px[0]; *g = px[1]; *b = px[2];
         return;
     }
 
     uint32_t vx = (di->display_x + x) & 1023u;
     uint32_t vy = (di->display_y + y) & 511u;
-    gpu_rgb555_to_rgb888(vram[vy * 1024u + vx], r, g, b);
+    gpu_rgb555_to_rgb888(image[vy * 1024u + vx], r, g, b);
+}
+
+void gpu_display_pixel_rgb(const GpuDisplayInfo* di, uint32_t x, uint32_t y,
+                           uint8_t* r, uint8_t* g, uint8_t* b) {
+    gpu_display_pixel_rgb_in(vram, di, x, y, r, g, b);
 }
 
 uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y) {
@@ -4355,11 +4689,11 @@ uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y
  * output, including the black-fill past the 2048-byte VRAM row), but hoists
  * the per-row invariants (vy, base_byte_x, the "how many pixels are past the
  * row edge" test) out of the per-pixel path instead of recomputing them
- * `count` times and paying three gpu_vram_byte() calls per pixel. The
+ * `count` times and paying three byte extractions per pixel. The
  * per-pixel path was the dominant present-side cost of FMV frames (3x the
  * VRAM touches of the 16-bit path, done as a function-call chain instead of
  * a straight-line loop). Still scalar C — no host-endianness assumptions,
- * same byte-order shifts as gpu_vram_byte. */
+ * same byte-order shifts as gpu_display_pixel_rgb_in. */
 void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out,
                              uint32_t count) {
     uint32_t vy = (di->display_y + y) & 511u;
@@ -4389,17 +4723,52 @@ void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out
         out[x] = 0xFF000000u;
 }
 
+/* Depth24 present staging, shared by every CPU present path: compose the
+ * GP1(07h) intersection with active video into the PAL/NTSC canvas (rows
+ * off-screen are clipping, not a shift), then black-fill the trailing RGB
+ * columns no CPU->VRAM upload has covered since the last span reset, so stale
+ * VRAM from a prior movie never shows past the new blit. With no span yet
+ * (lim == 0) only the last `margin` columns are blanked: blanking [0..w) left
+ * MotK's FMV permanently black after the GP1(07h) hold reset the span.
+ * Returns the source rows staged. */
+uint32_t gpu_depth24_stage_scanout(const GpuDisplayInfo *di, uint32_t *buf,
+                                   uint32_t w, uint32_t margin) {
+    if (!di || !buf || w == 0u || di->screen_height == 0u)
+        return 0u;
+    const size_t count = (size_t)w * di->screen_height;
+    for (size_t i = 0; i < count; i++)
+        buf[i] = 0xFF000000u;
+    if (di->screen_origin_y >= di->screen_height)
+        return 0u;
+    uint32_t rows = di->height;
+    if (rows > di->screen_height - di->screen_origin_y)
+        rows = di->screen_height - di->screen_origin_y;
+    uint32_t *source = buf + (size_t)di->screen_origin_y * w;
+    for (uint32_t y = 0; y < rows; y++)
+        gpu_depth24_present_row(di, di->screen_source_skip_y + y,
+                                source + (size_t)y * w, w);
+    if (rows == 0u || w < 8u || margin == 0u || margin >= w)
+        return rows;
+    uint32_t start = w - margin;
+    uint32_t lim = gpu_depth24_rgb_limit(di->display_x, w);
+    if (lim > 0u && lim < w && lim < start)
+        start = lim;
+    for (uint32_t y = 0; y < rows; y++)
+        for (uint32_t x = start; x < w; x++)
+            source[(size_t)y * w + x] = 0xFF000000u;
+    return rows;
+}
+
 int gpu_display_is_depth24(void) {
     return (int)(display_depth & 1u);
 }
 
-void gpu_get_display_info(GpuDisplayInfo* out) {
-    out->display_x = display_area_x;
-    out->display_y = display_area_y;
-    out->depth24   = (int)(display_depth & 1u);
-    out->disabled  = (int)display_disabled;
-
-    /* Dot-clock divider from GP1(08h) hres (psx-spx / DuckStation). */
+/* Visible horizontal pixel width (GP1(08h) mode + GP1(06h) range). Shared by
+ * gpu_get_display_info and the widescreen cull margin, which is called per
+ * vertex and must not pay for the vertical layout. */
+static uint32_t gpu_h_display_width(void) {
+    /* Dot-clock divider from GP1(08h) hres (PSX-SPX graphicsprocessingunitgpu,
+     * "Horizontal Timings", Dotclocks: /10, /8, /7, /5, /4). */
     uint32_t cycles;
     uint32_t mode_w;
     if (hres2) {
@@ -4420,6 +4789,18 @@ void gpu_get_display_info(GpuDisplayInfo* out) {
         w = ((dots / cycles) + 2u) & ~3u;
         if (w == 0u) w = 4u;
     }
+
+    if (w > 640) w = 640;
+    return w;
+}
+
+void gpu_get_display_info(GpuDisplayInfo* out) {
+    out->display_x = display_area_x;
+    out->display_y = display_area_y;
+    out->depth24   = (int)(display_depth & 1u);
+    out->disabled  = (int)display_disabled;
+
+    uint32_t w = gpu_h_display_width();
 
     /* DuckStation GetFullDisplayResolution: clamp Y1/Y2 to the broadcast
      * active region before taking the difference. Unclamped Y2 past the
@@ -4446,7 +4827,7 @@ void gpu_get_display_info(GpuDisplayInfo* out) {
      * of the video — do not reintroduce it. Right-edge junk is a separate
      * present/filter issue, not a reason to shrink CRTC width. */
 
-    /* Clamp to sane maximums */
+    /* Clamp to sane maximums (gpu_h_display_width clamps too) */
     if (w > 640) w = 640;
     if (out->depth24) {
         if (screen_h > PSX_DISPLAY_PRESENT_MAX_HEIGHT)
@@ -4507,6 +4888,27 @@ static void parse_vertex(uint32_t word, int32_t* x, int32_t* y) {
 extern int gte_geometry_correction_enabled(void);
 static int s_texture_correction_enabled = 0;
 static int s_native_wide_projection_correction = 0;
+static PGXPProjectiveScope s_render_pgxp_scope;
+static int s_render_projective, s_render_scope;
+extern int g_psx_render_pass_active;
+int gpu_render_projective_enabled(void) {
+    return s_render_projective && s_render_scope && g_psx_render_pass_active;
+}
+int gpu_render_projective_begin(void) {
+    if (!s_render_projective || s_render_scope) return 1;
+    if (!pgxp_projective_scope_begin(&s_render_pgxp_scope)) return 0;
+    s_render_scope = 1;
+    return 1;
+}
+void gpu_render_projective_end(void) {
+    if (!s_render_scope) return;
+    pgxp_projective_scope_end(&s_render_pgxp_scope);
+    s_render_scope = 0;
+}
+void psx_mod_set_render_projective(int enabled) {
+    s_render_projective = !!enabled;
+    pgxp_set_projection_tracking(s_render_projective || s_native_wide_projection_correction);
+}
 static uint64_t s_native_wide_projection_vertices = 0;
 extern int gte_precision_load_word(uint32_t addr, uint32_t packed,
                                    int32_t *x16, int32_t *y16, uint16_t *z);
@@ -4523,6 +4925,9 @@ void gpu_pgxp_rederive_enable(void) {
 void psx_mod_set_native_wide_projection_correction(int enabled) {
     s_native_wide_projection_correction = enabled ? 1 : 0;
     s_native_wide_projection_vertices = 0;
+    /* Signed camera-space provenance is required for correct native-wide
+     * faces, including corners behind the camera. Arm it with the mode. */
+    pgxp_set_projection_tracking(s_render_projective || s_native_wide_projection_correction);
     gpu_pgxp_rederive_enable();
 }
 
@@ -4537,7 +4942,9 @@ static int gpu_ws_projective_enabled(void) {
         gl_renderer_projective_supported();
 }
 void psx_mod_set_native_wide_near_clip(int enabled) {
-    pgxp_set_projection_tracking(enabled);
+    /* Compatibility entry point: clipping follows projection correction.
+     * A separate toggle must not disable this mode's correctness fix. */
+    (void)enabled;
 }
 
 /* The PS1 clamps each projected X independently. At a wider FOV that can
@@ -4678,7 +5085,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
     }
     const int idx[3] = { i0, i1, i2 };
     int32_t fx[3], fy[3];
-    uint16_t vz[3] = {0, 0, 0};
+    float vz[3] = {0, 0, 0};
     int any_precise = 0, n_precise = 0;
     PGXPTriRecord rec;
     memset(&rec, 0, sizeof rec);
@@ -4701,8 +5108,13 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
             any_precise = 1;
             n_precise++;
         }
-        /* PGXP depth (G1.14): only a dataflow shadow carries a validated SZ. */
-        vz[i] = src == PGXP_SRC_DATAFLOW ? sz : 0;
+        /* PGXP depth (G1.14): only a value-validated dataflow shadow carries
+         * SZ, also when the seam clamp kept the native position. */
+        vz[i] = sz;
+        if (sz == 65535u) {
+            float full = pgxp_get_unclamped_depth(addr, word);
+            if (full > 0.0f) vz[i] = full;
+        }
         /* Native-wide edge recovery is not PGXP: it does not count in n_precise. */
         if (native_wide_projection_x(addr, word, raw_x, raw_y, &px))
             any_precise = 1;
@@ -4715,6 +5127,7 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         rec.word[i] = word;
         rec.x16[i] = fx[i];
         rec.y16[i] = fy[i];
+        rec.z[i] = sz; /* receipt retains the hardware SZ, not the visual depth */
     }
     if (geometry) {
         pgxp_note_triangle(n_precise);   /* G1.1 crack exposure: mixed share */
@@ -4723,12 +5136,17 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
         rec.op = (uint8_t)(gp0_cmd_buf[0] >> 24);
         pgxp_note_triangle_detail(&rec);
     }
-    if (!any_precise) {
+    const int depth = want_depth && vz[0] && vz[1] && vz[2];
+    if (!any_precise && !depth) {
         gr_set_precise_triangle(0, 0,0, 0,0, 0,0);
         return;
     }
+    /* A triangle with validated depth on every vertex is proven projected
+     * geometry even when the seam clamp left all three at their integers:
+     * fx/fy then are exactly those integers (plus offsets), so the position
+     * is unchanged and only the depth test is added. */
     gr_set_precise_triangle(1, fx[0],fy[0], fx[1],fy[1], fx[2],fy[2]);
-    if (want_depth && vz[0] && vz[1] && vz[2])
+    if (depth)
         gr_set_depth_triangle(1, (float)vz[0], (float)vz[1], (float)vz[2]);
 }
 
@@ -4797,6 +5215,7 @@ static void prepare_texture_triangle(int i0, int i1, int i2) {
     if (gp0_cmd_source_addr == 0xFFFFFFFFu) { s_texcorr.no_source++; return; }
     int indices[3] = { i0, i1, i2 };
     uint16_t z[3];
+    float depth[3];
     for (int i = 0; i < 3; i++) {
         uint32_t addr = GPU_RAM_KEY((gp0_cmd_source_addr + (uint32_t)indices[i] * 4u));
         if (!gte_precision_load_word(addr, gp0_cmd_buf[indices[i]], NULL, NULL, &z[i]) ||
@@ -4804,8 +5223,13 @@ static void prepare_texture_triangle(int i0, int i1, int i2) {
             s_texcorr.no_depth++;
             return;
         }
+        depth[i] = z[i];
+        if (z[i] == 65535u) {
+            float full = pgxp_get_unclamped_depth(addr, gp0_cmd_buf[indices[i]]);
+            if (full > 0.0f) depth[i] = full;
+        }
     }
-    float q[3] = { 1.0f / (float)z[0], 1.0f / (float)z[1], 1.0f / (float)z[2] };
+    float q[3] = { 1.0f / depth[0], 1.0f / depth[1], 1.0f / depth[2] };
     float qmax = q[0];
     if (q[1] > qmax) qmax = q[1];
     if (q[2] > qmax) qmax = q[2];
@@ -5226,7 +5650,8 @@ static uint16_t current_texpage(void) {
  * (GPUSTAT bits 0-8) exactly like GP0(E1) bits 0-8 — the poly's own word, not
  * the last E1, decides its semi-transparency mode, and later rectangle/sprite
  * prims (which carry no texpage word) consume the state the poly left behind.
- * Beetle: SetTPage(CB[4 + ((cc>>4)&1)] >> 16) on every textured poly.
+ * PSX-SPX graphicsprocessingunitgpu, "TPage Attribute (Parameter for textured polygon
+ * commands)": bits 0-8 and 11 are the same as GP0(E1h), bits 9-10 unused.
  * Bits 9-10 (dither / draw-to-display) exist only in E1; bit 11 (texture
  * disable) only latches when GP1(09h) allowed it, which polys can't grant. */
 static void set_tpage_from_poly(uint16_t tpage_word) {
@@ -5252,16 +5677,22 @@ static void setup_textured_draw(uint32_t color24, int semi_trans, int raw_textur
  * Use only intact GTE-derived words, clip their signed homogeneous projection,
  * and submit through the normal ordered GL passes and VRAM authority path. */
 static int native_wide_projective_draw(void) {
-    if (!gpu_ws_projective_enabled() || gp0_cmd_source_addr == UINT32_MAX) return 0;
+    const int render_projective = gpu_render_projective_enabled() &&
+        gr_backend() == GR_BACKEND_OPENGL && gl_renderer_projective_supported();
+    if ((!render_projective && !gpu_ws_projective_enabled()) || gp0_cmd_source_addr == UINT32_MAX) return 0;
+    if (render_projective) psx_mod_counter_add("vr.projective.packet",1);
     const unsigned op=gp0_cmd_buf[0]>>24;
     const unsigned stride=(op&16u)?3u:2u, n=(op&8u)?4u:3u;
     PSXProjectedVertex vertices[4];
-    int needs_clip=0;
+    int needs_clip=render_projective;
     for (unsigned i=0;i<n;++i) {
         const unsigned index=1+stride*i;
         const uint32_t word=gp0_cmd_buf[index];
         PGXPProjection p;
-        if (!pgxp_load_projection(gp0_cmd_source_addr+4*index,word,&p)) return 0;
+        if (!pgxp_load_projection(gp0_cmd_source_addr+4*index,word,&p)) {
+            if (render_projective) psx_mod_counter_add(i==0 ? "vr.projective.miss0" : i==1 ? "vr.projective.miss1" : "vr.projective.miss2",1);
+            return 0;
+        }
         int32_t x,y; parse_vertex(word,&x,&y);
         needs_clip |= p.z<p.near_z || x==-1024 || x==1023 || y==-1024 || y==1023;
         const uint32_t color=gp0_cmd_buf[(op&16u)?index-1:0];
@@ -5271,16 +5702,17 @@ static int native_wide_projective_draw(void) {
             (color&255)/255.0,((color>>8)&255)/255.0,((color>>16)&255)/255.0};
     }
     if (!needs_clip) return 0;
+    if (render_projective) psx_mod_counter_add("vr.projective.draw",1);
     const uint16_t clut=gp0_cmd_buf[2]>>16;
     const uint16_t tpage=gp0_cmd_buf[2+stride]>>16;
     set_tpage_from_poly(tpage);
     const int semi=(op&2u)?(int)semi_transparency:-1;
     gl_renderer_draw_projected_triangle(vertices,tpage&0x1ff,
-        (clut&63)*16,(clut>>6)&511,op&1u,semi,s_texture_correction_enabled);
+        (clut&63)*16,(clut>>6)&511,op&1u,semi,render_projective || s_texture_correction_enabled);
     if (n==4) {
         const PSXProjectedVertex second[3]={vertices[2],vertices[1],vertices[3]};
         gl_renderer_draw_projected_triangle(second,tpage&0x1ff,
-            (clut&63)*16,(clut>>6)&511,op&1u,semi,s_texture_correction_enabled);
+            (clut&63)*16,(clut>>6)&511,op&1u,semi,render_projective || s_texture_correction_enabled);
     }
     return 1;
 }
@@ -5679,6 +6111,46 @@ static void ws_repeat_textured_rect_reveal(int x, int y, int w, int h,
     }
 }
 
+/* The framebuffer whose canonical columns hold VRAM x, or -1. */
+static int ws_fb_base_holding(int32_t vram_x, int width) {
+    for (int i = 0; i < ws_fb_n; i++)
+        if (vram_x >= (int32_t)ws_fb_base[i] && vram_x < (int32_t)ws_fb_base[i] + width)
+            return (int)ws_fb_base[i];
+    return -1;
+}
+
+/* A tagged 15-bit sprite copying another framebuffer continues into the
+ * bands from that buffer's wide surface (it has no band columns in VRAM). */
+static void ws_feedback_rect_reveal(int x, int y, int w, int h, int u, int v,
+                                    uint32_t color24, int semi_trans,
+                                    int raw_texture) {
+    int margin = draw_area_wide_x_margin();
+    int width = (int)ws_disp_w();
+    if (margin <= 0 || gp0_cmd_source_addr == UINT32_MAX ||
+        draw_area_right < draw_area_left ||
+        draw_area_right - draw_area_left + 1u != (uint32_t)width)
+        return;
+    uint32_t address = gp0_cmd_source_addr & 0x1FFFFFFFu;
+    if (address >= psx_ram_live_bytes() || (address & 3u)) return;
+    if (!ws_repeat_rect_tag_lookup(ws_feedback_rect_tags, address, gp0_cmd_buf,
+                                   (uint32_t)gp0_words_needed, (uint32_t)s_frame_count))
+        return;
+    uint16_t tp = current_texpage();
+    if (((tp >> 7) & 3) != 2) return;
+    int32_t src_x0 = (int32_t)(tp & 0xF) * 64 + u;
+    int src_base = ws_fb_base_holding(src_x0, width);
+    if (src_base < 0) return;
+    int32_t src_y = (int32_t)((tp >> 4) & 1) * 256 + v;
+    WsFeedbackSpan spans[2];
+    int count = ws_feedback_rect_spans(x, w, src_x0, (int32_t)draw_area_left,
+                                       width, margin, spans);
+    for (int i = 0; i < count; ++i)
+        gr_wide_feedback_rect(src_base, spans[i].src_x, src_y, spans[i].dst_x, y,
+                              spans[i].w, h, (int)(color24 & 0xFF),
+                              (int)((color24 >> 8) & 0xFF), (int)((color24 >> 16) & 0xFF),
+                              raw_texture, semi_trans ? (int)semi_transparency : -1);
+}
+
 /* Execute textured rectangle (GP0 0x64-0x67) */
 static void gp0_exec_textured_rect(void) {
     uint32_t color24 = gp0_cmd_buf[0] & 0xFFFFFFu;
@@ -5766,6 +6238,7 @@ static void gp0_exec_textured_rect(void) {
     else
         gr_draw_textured_rect(x0, y0, w, h, u0, v0, clut_x, clut_y, current_texpage());
     ws_repeat_textured_rect_reveal(x0, y0, w, h, u0, v0, clut_x, clut_y);
+    ws_feedback_rect_reveal(x0, y0, w, h, u0, v0, color24, semi_trans, raw_texture);
 }
 
 /* Execute 1x1 dot (GP0 0x68-0x6B) */
@@ -5942,6 +6415,7 @@ static void gp0_exec_draw_mode(void) {
     semi_transparency = (param >> 5) & 3;
     texpage_colors    = (param >> 7) & 3;
     dither_enabled    = (param >> 9) & 1;
+    gr_set_dither((int)dither_enabled);
     draw_to_display   = (param >> 10) & 1;
     texture_disable   = (param >> 11) & 1;
     /* Sync semi-transparency to SW renderer — actual blending is per-primitive */
@@ -6274,7 +6748,10 @@ static int gp0_command_word_count(uint8_t opcode) {
         case 0xE6: return 1;  /* mask bits */
 
         default:
-            /* 0x03-0x1E, 0xE7-0xEF, 0xFF: NOP (1 word) per DuckStation */
+            /* 0x03-0x1E, 0xE7-0xEF, 0xFF: NOP (1 word). PSX-SPX graphicsprocessingunitgpu,
+             * "GP0(04h..1Eh,E0h,E7h..EFh) - Mirrors of GP0(00h) - NOP (?)",
+             * lists 04h-1Eh and E7h-EFh; it calls 03h unknown and does not
+             * list FFh. This code also treats 03h and FFh as NOPs. */
             if ((opcode >= 0x03 && opcode <= 0x1E) ||
                 (opcode >= 0xE7 && opcode <= 0xEF) ||
                 opcode == 0xFF) {
@@ -6282,6 +6759,10 @@ static int gp0_command_word_count(uint8_t opcode) {
             }
             return 0;  /* unknown */
     }
+}
+
+int gpu_gp0_command_word_count(uint8_t opcode) {
+    return gp0_command_word_count(opcode);
 }
 
 static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
@@ -7408,8 +7889,9 @@ static void gpu_write_gp0_body(uint32_t val) {
         return;
     }
 
-    /* Polyline terminator rule (Beetle mednafen/psx/gpu.c INCMD_PLINE,
-     * DuckStation gpu.cpp HandleRenderPolyLineCommand/DrawingPolyLine):
+    /* Polyline terminator rule (PSX-SPX graphicsprocessingunitgpu, "GPU Render Line
+     * Commands": at least two vertices; the terminator is tested on the
+     * first word of a vertex, the colour word when shaded):
      *
      *  1. A polyline always has at least two vertices. The words of the first
      *     two vertices are consumed unconditionally — mono [V0][V1], shaded
@@ -7673,8 +8155,10 @@ static void gp1_display_mode(uint32_t val) {
 
 static void gp1_get_info(uint32_t val) {
     /* GP1(10h): Get GPU info — writes result to GPUREAD latch.
-     * Mednafen-psx masks the subcommand to 4 bits (val & 0x0F) and
-     * services cases 2..5, 7, 8. Tomba's ResetGraph() uses param 7 to
+     * PSX-SPX graphicsprocessingunitgpu, "GP1(10h) - Read GPU internal
+     * register" (v2 GPU): indices 10h and up mirror 00h..0Fh, so the
+     * subcommand is val & 0x0F; 02h..05h, 07h and 08h return data.
+     * Tomba's ResetGraph() uses param 7 to
      * read the GPU version (must be 2) to pick its video-mode path —
      * the wrong value here lands the game on a no-draw branch. */
     uint32_t which = val & 0x0F;
@@ -7692,10 +8176,10 @@ static void gp1_get_info(uint32_t val) {
             gpuread_latch = ((uint32_t)draw_offset_x & 0x7FFu) |
                             (((uint32_t)draw_offset_y & 0x7FFu) << 11);
             break;
-        case 7: /* GPU version (real-hw + mednafen return 2) */
+        case 7: /* GPU version: PSX-SPX gives 1 or 2; this models 2 */
             gpuread_latch = 2;
             break;
-        case 8: /* unknown info index, real hw / mednafen return 0 */
+        case 8: /* unknown info index, returns 0 (PSX-SPX) */
             gpuread_latch = 0;
             break;
         default:
@@ -7802,7 +8286,8 @@ static int gpu_snap_emit(PstW *w) {
     WI(vram_read_active); WH(vram_read_x); WH(vram_read_y); WH(vram_read_w); WH(vram_read_h);
     WH(vram_read_col); WH(vram_read_row);
     /* Depth24 present helpers (MotK FMV) — must resume with upload span. */
-    WU(s_d24_upload_x1); WI(s_d24_present_hold); WU(s_d24_prev_disp_h);
+    WU(s_d24_upload_x1); WI(s_d24_present_hold | 0x200 | (s_d24_present_skip ? 0x100 : 0));
+    WU(s_d24_prev_disp_h);
 #undef WU
 #undef WI
 #undef WH
@@ -7836,6 +8321,13 @@ static int gpu_snap_parse(PstR *r) {
     RI(vram_read_active); RH(vram_read_x); RH(vram_read_y); RH(vram_read_w); RH(vram_read_h);
     RH(vram_read_col); RH(vram_read_row);
     RU(s_d24_upload_x1); RI(s_d24_present_hold); RU(s_d24_prev_disp_h);
+    /* Bit 9 marks an explicit skip flag (bit 8). GP1 can arm a positive
+     * count before VBlank, when skip is still false: that state must round
+     * trip exactly. Older snaps without the marker infer skip from count. */
+    s_d24_present_skip = (s_d24_present_hold & 0x200)
+        ? (s_d24_present_hold & 0x100) != 0
+        : (s_d24_present_hold & 0x100) || (s_d24_present_hold & 0xFF) > 0;
+    s_d24_present_hold &= 0xFF;
 #undef RU
 #undef RI
 #undef RH
@@ -7901,6 +8393,7 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     (void)psx_video_timing_set_pal((int)video_mode);
     ws_reset_scene_history();
     ws_scene_hold_reset(&s_ws_scene_hold);
+    ws_world_scale_reset(&ws_world_scale, (uint32_t)s_frame_count);
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_background_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_background_tags_used = 0;
@@ -7908,10 +8401,15 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
+    ws_repeat_rect_tag_clear(ws_feedback_rect_tags);
     /* Sync renderer clip/scissor to restored GP0(E3/E4); vars alone leave GL
      * on a stale draw area after savestate load. */
     gr_set_draw_area((int)draw_area_left, (int)draw_area_top,
                      (int)draw_area_right, (int)draw_area_bottom);
+    /* GP0(E1h) bit 9 is restored with the registers; the renderer only
+     * learns it from E1, so push it now (else dithering keeps the pre-load
+     * setting until the game's next E1). */
+    gr_set_dither((int)dither_enabled);
     /* A state saved mid-A0 resumes streaming its payload into the array. */
     gr_vram_upload_set_open(gp0_state == GP0_VRAM_WRITE);
     ws_nw_sync_target();
@@ -7932,6 +8430,7 @@ typedef struct {
     WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
     WsRadialScreenMaskTag ws_radial_screen_mask_tags[WS_RADIAL_MASK_TAG_COUNT];
     WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
+    WsRepeatRectTag ws_feedback_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
     WsPrimitiveRole ws_primitive_roles[WS_ROLE_BUCKETS];
     WsUiPrepassItem ws_ui_prepass[WS_UI_PREPASS_MAX];
     WsUiPrepassNode ws_ui_prepass_nodes[WS_UI_PREPASS_NODE_MAX];
@@ -7949,6 +8448,7 @@ typedef struct {
     uint32_t ws_ovh_frame, ws_ovh_count, ws_ovh_prev;
     uint32_t ws_last_ovh_stamp, ws_sust_ovh_stamp;
     WsSceneLatch ws_scene_latch;
+    WsWorldScaleWitness ws_world_scale;
     WsBackdropExtent ws_bdx;
     WsSceneHold s_ws_scene_hold;
     uint32_t s_ws_fmv_frame_cache;
@@ -7975,6 +8475,7 @@ static void gpu_pass_provenance_transfer(int restore) {
     PASS_ARRAY(ws_screen_mask_tags);
     PASS_ARRAY(ws_radial_screen_mask_tags);
     PASS_ARRAY(ws_repeat_rect_tags);
+    PASS_ARRAY(ws_feedback_rect_tags);
     PASS_ARRAY(ws_primitive_roles);
     PASS_VALUE(ws_ui_prepass_count);
     PASS_VALUE(ws_ui_prepass_node_count);
@@ -8018,6 +8519,7 @@ static void gpu_pass_scene_transfer(int restore) {
     PASS_VALUE(ws_last_ovh_stamp);
     PASS_VALUE(ws_sust_ovh_stamp);
     PASS_VALUE(ws_scene_latch);
+    PASS_VALUE(ws_world_scale);
     PASS_VALUE(ws_bdx);
     PASS_VALUE(s_ws_scene_hold);
     PASS_VALUE(s_ws_fmv_frame_cache);
@@ -8066,6 +8568,7 @@ void gpu_pass_checkpoint_restore(void) {
                      (int)draw_area_right, (int)draw_area_bottom);
     gr_set_draw_offset(draw_offset_x, draw_offset_y);
     gr_set_mask_bits((int)set_mask_bit, (int)check_mask_bit);
+    gr_set_dither((int)dither_enabled);
     ws_nw_sync_target();
     /* Target sync may classify the scene before render_pass.c restores RAM.
      * Do not retain history learned from the synthetic draw or that query. */

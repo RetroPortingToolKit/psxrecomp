@@ -5,7 +5,7 @@ int pad_ext_live(const PadExtGate *g) {
     return g && !g->injected_input && !g->headless && !g->netplay_active &&
            !g->netplay_resim && !g->selfcheck_locked && !g->selfcheck_resim &&
            !g->render_pass && !g->savestate_menu_open && !g->rewind_open &&
-           !g->input_guard;
+           !g->input_guard && !g->ui_capture;
 }
 
 /* Stage 2b: run the title transform over the resolved pad and pack its
@@ -39,6 +39,7 @@ static void pad_ext_transform(const PadExtHooks *h, int s, int guarded,
         }
     }
     if (h->host_extras) h->host_extras(h->ctx, s, &f.host_flags, &f.host_lt, &f.host_rt);
+    if (from_source) f.host_flags |= PSX_MOD_PAD_HOST_SOURCE;
     if (guarded) f.host_lt = f.host_rt = 0;
     if (!h->pad_transform(h->ctx, s, &f, &stock, &o)) return;
     if (guarded) {

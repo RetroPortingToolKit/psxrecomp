@@ -111,6 +111,20 @@ int render_pass_select(const uint32_t *phases, uint32_t n, double p,
     return 1;
 }
 
+int render_pass_generation_oldest(uint32_t mask,const uint64_t* order,uint32_t count) {
+    int selected=-1;
+    for(uint32_t i=0;i<count && i<32u;++i)
+        if((mask&(1u<<i)) && (selected<0 || order[i]<order[selected]))selected=(int)i;
+    return selected;
+}
+int render_pass_generation_write(uint32_t current,uint32_t valid_mask,
+                                  const uint64_t* order,uint32_t count) {
+    uint32_t available=0;
+    for(uint32_t i=0;i<count && i<32u;++i)if(i!=current && !(valid_mask&(1u<<i)))return (int)i;
+    for(uint32_t i=0;i<count && i<32u;++i)if(i!=current)available|=1u<<i;
+    return render_pass_generation_oldest(available,order,count);
+}
+
 int render_pass_gen_flip_matches(int shown, int gen_x, int gen_y,
                                  int gen_source, int gen_w, int gen_h,
                                  int flip_x, int flip_y, int flip_source,
@@ -125,6 +139,13 @@ int render_pass_gen_select(const uint32_t *phases, uint32_t n, double p,
                            uint32_t *lo, uint32_t *hi, float *t) {
     if (!(p <= RENDER_PASS_GEN_HOLD_MAX)) return 0;
     return render_pass_select(phases, n, p, lo, hi, t);
+}
+
+int render_pass_gen_select_mode(const uint32_t *phases, uint32_t n, double p,
+                                int hold, uint32_t *lo, uint32_t *hi, float *t) {
+    if (!render_pass_gen_select(phases, n, p, lo, hi, t)) return 0;
+    if (hold) { *hi = *lo; *t = 0.0f; }
+    return 1;
 }
 
 double render_pass_ema(double current, double sample) {
@@ -273,8 +294,18 @@ int render_pass_vram_policy(const RenderPassJournal *j, int px, int py,
         if (*x >= j->x[i] && *y >= j->y[i] && *x + *w <= j->x[i] + j->w[i] &&
             *y + *h <= j->y[i] + j->h[i])
             return RENDER_PASS_VRAM_ALLOW;      /* already covered */
-    return j->n < RENDER_PASS_JOURNAL_MAX ? RENDER_PASS_VRAM_JOURNAL
-                                          : RENDER_PASS_VRAM_REFUSE;
+    if (j->n >= RENDER_PASS_JOURNAL_MAX) return RENDER_PASS_VRAM_REFUSE;
+    /* Reserve the last entry for a whole-VRAM spill. A sprite scene can
+     * upload more than 64 disjoint animation/CLUT rectangles in one redraw.
+     * Back up the current contents once, including earlier temporary writes;
+     * reverse-order rollback restores this spill FIRST and then restores
+     * those earlier rectangles to their original contents. Subsequent writes
+     * are covered by the spill, so capacity remains bounded without dropping
+     * legitimate texture uploads or disabling native interpolation. */
+    if (j->n == RENDER_PASS_JOURNAL_MAX - 1) {
+        *x = *y = 0; *w = vram_w; *h = vram_h;
+    }
+    return RENDER_PASS_VRAM_JOURNAL;
 }
 
 int render_pass_journal_add(RenderPassJournal *j, const uint16_t *vram,

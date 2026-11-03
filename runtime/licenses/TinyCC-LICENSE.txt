@@ -3,11 +3,16 @@ Copyright (C) 2001-2004 Fabrice Bellard and the TinyCC contributors.
 
 Release packages for Windows bundle the unmodified upstream TinyCC 0.9.27
 win64 binary distribution under overlay_toolchain/tcc/ (tcc.exe, libtcc.dll,
-its headers and runtime library). It runs as a separate program that compiles
-overlay shards on the player's machine; the game does not link against it.
+its headers and runtime library). Release packages for Linux bundle tcc built
+from the unmodified 0.9.27 source below (default configure, -O2), with its
+headers and runtime library, plus musl 1.2.5's MIT-licensed C headers in
+libc-include/, adapted to use tcc's va_list (notice: libc-include/COPYRIGHT; source
+https://musl.libc.org/releases/musl-1.2.5.tar.gz). tcc runs as a separate
+program that compiles overlay shards on the player's machine; the game does
+not link against it.
 
 TinyCC is licensed under the GNU Lesser General Public License, version 2.1,
-reproduced below. Source code for this exact version:
+reproduced below. Source code for this exact version (SHA-256 de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c):
   https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27.tar.bz2
 Binary distribution shipped (SHA-256 34a721949a2583fdff725312da092fa0f5f1f284b702e6f811c6954714faabb2):
   https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27-win64-bin.zip

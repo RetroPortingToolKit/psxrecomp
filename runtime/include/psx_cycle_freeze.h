@@ -42,6 +42,7 @@ typedef struct PsxCycleFreeze {
      * cleanup handler, which a longjmp out of the pass (the watchdog) skips:
      * end() puts the interrupted code's depth back. */
     int      bb_defer;
+    uint32_t guest_cycle_scale[3];
 } PsxCycleFreeze;
 int  psx_cycle_freeze_begin(PsxCycleFreeze *save, uint64_t watchdog_cycles,
                             void (*overrun)(void));
@@ -58,6 +59,9 @@ void psx_cycle_freeze_end(const PsxCycleFreeze *save);
  * code). end() returns 1 when the span stayed uncharged. Spans do not nest. */
 int  psx_cycle_uncharged_begin(PsxCycleFreeze *save, uint64_t budget_cycles);
 int  psx_cycle_uncharged_end(const PsxCycleFreeze *save);
+/* Guest cycles the current span has executed so far, published or still
+ * batched (0 outside a span). Read it before end(), which discards them. */
+uint64_t psx_cycle_uncharged_counted(void);
 
 #ifdef __cplusplus
 }

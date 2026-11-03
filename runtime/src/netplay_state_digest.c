@@ -1,4 +1,5 @@
 #include "netplay_state_digest.h"
+#include "mod_netplay.h"
 #include "cdrom.h"
 #include "crc32.h"
 #include "dirty_ram_interp.h"
@@ -93,6 +94,12 @@ uint32_t netplay_av_digest(void)
             gcap = gn;
         }
         gpu_snapshot_write(gbuf);
+        /* The last 12 bytes are depth-24 present helpers (upload span,
+         * present hold, previous display height): host presentation state
+         * that a suppressed-present replay leaves different from Live. Not
+         * guest-visible; keep them out of the av comparison. */
+        if (gn >= 12u)
+            memset(gbuf + gn - 12u, 0, 12u);
         crc = crc32_update(crc, gbuf, gn);
     }
     if (vram)
@@ -176,6 +183,13 @@ void netplay_core_digest_parts(const CPUState* cpu, NetplayCoreParts* out)
     fold = crc32_update(fold, (const uint8_t*)&tim_h, sizeof(tim_h));
     fold = crc32_update(fold, (const uint8_t*)&ram_h, sizeof(ram_h));
     fold = crc32_update(fold, (const uint8_t*)&drt_h, sizeof(drt_h));
+    /* Keep vanilla digests byte-for-byte unchanged. Zero is a valid plugin
+     * digest, so presence is separate from its value. */
+    if (psx_mod_netplay_has_state_digest()) {
+        uint32_t mod = psx_mod_netplay_state_digest();
+        fold = crc32_update(fold, (const uint8_t*)&mod, sizeof(mod));
+        if (out) out->mod = mod;
+    }
 
     if (out) {
         out->cpu = cpu_h;

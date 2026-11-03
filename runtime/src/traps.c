@@ -572,8 +572,15 @@ static int psx_change_thread_fiber(CPUState* cpu, uint32_t target_tcb)
 
     HostThreadFiber* current = psx_bind_current_host_thread(cpu, current_tcb);
     int saved_current_context = 0;
-    if (psx_tcb_state(cpu, current_tcb) == 0x4000u) {
+    /* SYS03 saves the outgoing register context before changing the PCB,
+     * including CloseTh(current); ChangeTh(other): CloseTh only marks the TCB
+     * free and does not suppress the exception handler's register stores.
+     * OpenTh initializes PC/SP/FP/GP but keeps the other saved registers when
+     * it reuses the TCB. Saving never reopens the closed TCB. */
+    const uint32_t outgoing_state = psx_tcb_state(cpu, current_tcb);
+    if (outgoing_state == 0x4000u || outgoing_state == 0x1000u)
         psx_save_context_to_tcb(cpu, current_tcb, cpu->gpr[31]);
+    if (outgoing_state == 0x4000u) {
         saved_current_context = 1;
     } else {
         /* 0x1000 is the BIOS closed/free state and must retire the host fiber.
@@ -681,9 +688,13 @@ static int psx_request_thread_switch(CPUState* cpu, uint32_t target_tcb)
     }
     /* Commit the yielding thread's context so it can be re-dispatched later.
      * resume PC = its return address (resume right after the ChangeThread call).
-     * Only a still-running (0x4000) thread keeps a live context; a closed/free
-     * (0x1000) thread is being torn down and must not be saved. */
-    if (psx_tcb_state(cpu, current_tcb) == 0x4000u) {
+     * A closed/free (0x1000) thread is still the current thread until SYS03
+     * switches the PCB, and the BIOS exception handler stores its registers
+     * regardless: CloseTh(current); ChangeTh(other) keeps those stores. OpenTh
+     * initializes PC/SP/FP/GP but keeps the other saved registers when it
+     * reuses the TCB. Saving never reopens the closed TCB. */
+    const uint32_t outgoing_state = psx_tcb_state(cpu, current_tcb);
+    if (outgoing_state == 0x4000u || outgoing_state == 0x1000u) {
         psx_save_context_to_tcb(cpu, current_tcb, cpu->gpr[31]);
     }
     psx_set_current_tcb(cpu, target_tcb);
@@ -720,6 +731,8 @@ void psx_scheduler_top_level_resume_clear(void)
     g_sched_top_level_resume = 0;
 }
 
+static int g_sched_restore_edge_check = 0;
+
 void psx_scheduler_resume_at(uint32_t resume_pc)
 {
     if (!psx_is_dispatchable(resume_pc)) {
@@ -735,6 +748,13 @@ void psx_scheduler_resume_at(uint32_t resume_pc)
     /* longjmp abandons every mid-block CPS frame — sentinel RFE must not
      * treat the new top-level dispatch as a continuable live chain. */
     g_sched_top_level_resume = 1;
+    /* Every caller is a state restore (savestate, rewind, selfcheck, rollback
+     * load). The snap was taken by a poll inside psx_check_interrupts at this
+     * very block edge, and the live run went on to evaluate delivery at that
+     * same edge. The resumed run must do the same before the block executes,
+     * or a pending IRQ (VBlank at a tick boundary) is taken one block later
+     * at a different PC than live (#636). */
+    g_sched_restore_edge_check = 1;
     /* Publish before the longjmp lands in dispatch: sticky I_STAT can deliver
      * on the first edge with take_pc=0 otherwise (LEGACY_SENTINEL fork). */
     {
@@ -893,6 +913,13 @@ void psx_scheduler_run(CPUState* cpu)
         if (from_top_resume) {
             extern void psx_irq_arm_compiled_resume_pc(uint32_t pc);
             psx_irq_arm_compiled_resume_pc(run_pc);
+            if (g_sched_restore_edge_check) {
+                g_sched_restore_edge_check = 0;
+                /* Same edge check the dispatch entry runs (deduped there by
+                 * cycle+PC), so compiled-game entries are not checked twice;
+                 * BIOS ROM and continuation resumes get the check they lacked. */
+                psx_check_interrupts_dispatch_entry(cpu, run_pc);
+            }
         }
         psx_dispatch(cpu, run_pc);
 

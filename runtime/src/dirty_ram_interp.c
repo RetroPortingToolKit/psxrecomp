@@ -38,6 +38,8 @@
 #include "fntrace.h"  /* fntrace_is_game_started / fntrace_mark_game_started */
 #include "psx_segment_miss.h"  /* segment misses in static game code (§5.5) */
 #include "draw_distance.h"    /* [[draw_distance.clamp]] sites */
+#include "mod_plugins.h"       /* instruction guards and effective-address adapters */
+#include "mod_immediate.h"     /* [[mod_immediate.sites]] selectors */
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -572,6 +574,12 @@ static inline uint32_t fetch_word(uint32_t phys) {
          | ((uint32_t)ram[phys + 1] <<  8)
          | ((uint32_t)ram[phys + 2] << 16)
          | ((uint32_t)ram[phys + 3] << 24);
+}
+
+/* Word reader for the [[widescreen.cull.sxy]] whole-fold check: the fold
+ * words around an interpreted PC are in main RAM like the PC itself. */
+static uint32_t sxy_fold_word(uint32_t phys) {
+    return phys < 0x00800000u ? fetch_word(phys) : 0xFFFFFFFFu;
 }
 
 /* Widescreen render-funnel cull detection for the interpreter ([widescreen.cull]
@@ -1135,7 +1143,13 @@ enum { XSITE_INTERP = 0, XSITE_DD = 1 };
 /* XOP_RES path codes (in the `site` field). */
 enum { XRES_EC_BAIL = 2, XRES_EC_PC = 3, XRES_EC_CONTRACT = 4, XRES_EC_RET = 5,
        XRES_OV_BAIL = 6, XRES_OV_PC = 7, XRES_OV_CONTRACT = 8, XRES_OV_RET = 9,
-       XRES_NONLOCAL = 10, XRES_PCCHAIN = 11, XRES_UNDECODABLE = 12 };
+       XRES_NONLOCAL = 10, XRES_PCCHAIN = 11, XRES_UNDECODABLE = 12,
+       /* Appended, NOT slotted into consult order: unlike CRES (which had a
+        * reserved gap at 6) this enum is dense, so inserting would renumber
+        * the codes above and invalidate every previously captured xprobe
+        * trace. The override tier is consulted FIRST at both call sites; the
+        * wire value carries no ordering meaning. */
+       XRES_OVERRIDE = 13 };
 
 int g_mixed_depth = 0;   /* best-effort interp→compiled nesting depth; reset per frame */
 
@@ -1490,7 +1504,7 @@ static void exec_delay_slot(CPUState *cpu, uint32_t pc) {
  * still writes gpr[rt] eagerly, and we roll that write back by one instruction
  * so the delay-slot instruction observes the architecturally-correct value. */
 static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
-                                  uint32_t *next_pc_out);
+                                  uint32_t *next_pc_out, uint32_t original_instruction);
 
 static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
                             uint32_t *next_pc_out) {
@@ -1527,9 +1541,11 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
         }
     }
 
-    extern uint32_t g_psx_mod_instruction_hooks;
-    extern void psx_mod_instruction(CPUState*, uint32_t, uint32_t);
     if (g_psx_mod_instruction_hooks) psx_mod_instruction(cpu, pc, insn);
+    const uint32_t original_instruction = insn;
+    /* [[mod_immediate.sites]]: execute the selected immediate variant. The
+     * guest's bytes (and the guard above) stay the original instruction. */
+    if (g_psx_mod_immediate_live) insn = psx_mod_immediate_patch(pc, insn);
 
     /* op 0x20..0x26 = LB/LH/LWL/LW/LBU/LHU/LWR. LWC2 (GTE, 0x32) targets a COP2
      * register, not a GPR, so it needs no deferral here. */
@@ -1565,7 +1581,7 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
 #endif
 
-    const int rv = exec_one_fetched_inner(cpu, pc, insn, next_pc_out);
+    const int rv = exec_one_fetched_inner(cpu, pc, insn, next_pc_out, original_instruction);
 
     if (is_ld) {
         const uint32_t loaded = cpu->gpr[ld_rt];
@@ -1589,7 +1605,7 @@ static int exec_one_fetched(CPUState *cpu, uint32_t pc, uint32_t insn,
 }
 
 static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
-                                  uint32_t *next_pc_out) {
+                                  uint32_t *next_pc_out, uint32_t original_instruction) {
     exec_pc_table_record(pc);
     uint32_t opc  = op_field(insn);
     uint32_t rs   = rs_field(insn);
@@ -1782,6 +1798,37 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
                 cpu->pc = target;
                 CRET(CRES_PCCHAIN, 1);
             }
+            /* Function-override tier (func_override.h): consulted BEFORE
+             * every game code backend, matching psx_dispatch_impl. It must
+             * precede interp_enter_compiled, not follow it: that tier calls
+             * psx_dispatch_game_compiled -> entry->fn(cpu) directly and
+             * never re-enters psx_dispatch_impl, so a hook consulted after
+             * it is unreachable for any override on a statically-compiled
+             * function called from interpreted code. Registration would
+             * still succeed and the func_override inventory would still
+             * list the entry, so the miss is invisible — the same
+             * registration-is-not-coverage failure the overlay-native and
+             * pc-chain tiers below already had. Handled => the override
+             * completed against guest state; same call contract as a
+             * compiled callee. */
+            {
+                extern int (*g_psx_func_override_hook)(CPUState *cpu,
+                                                       uint32_t phys);
+                if (g_psx_func_override_hook) {
+                    cpu->pc = 0;
+                    if (g_psx_func_override_hook(cpu, target & 0x1FFFFFFFu)) {
+                        if (g_psx_call_bail) CRET(CRES_OVERRIDE, 1);
+                        if (cpu->pc != 0) CRET(CRES_OVERRIDE, 1);
+                        if (rd == 0 || rd == 31) {
+                            if (psx_call_contract(cpu, return_pc, site_sp))
+                                CRET(CRES_OVERRIDE, 1);
+                        }
+                        { int _r = dirty_ram_finish_call_return(cpu, return_pc,
+                                                                next_pc_out);
+                          CRET(CRES_OVERRIDE | (_r ? 0x100u : 0u), _r); }
+                    }
+                }
+            }
 #ifdef PSX_HAS_GAME_DISPATCH
             cpu->pc = 0;
             if (interp_enter_compiled(cpu, target)) {
@@ -1926,7 +1973,15 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
         }
         case 0x24: { /* AND */
             uint32_t a = cpu->gpr[rs], b = cpu->gpr[rt];
-            cpu->gpr[rd] = a & b;
+            /* [[widescreen.cull.sxy]] fold AND: the same helper and the same
+             * whole-fold word check as the recompiled emit. */
+            const uint32_t sxy_v = g_psx_ws_sxy_cull_n > 0
+                ? psx_ws_sxy_cull_vertex_reg(pc, insn, sxy_fold_word) : 0u;
+            if (sxy_v != 0u)
+                cpu->gpr[rd] = psx_ws_cull_sxy_and(rs == sxy_v ? b : a,
+                                                   cpu->gpr[sxy_v]);
+            else
+                cpu->gpr[rd] = a & b;
             psx_pgxp_alu(cpu, insn, cpu->gpr[rd], a, b);
             cpu->gpr[0] = 0;
             return 0;
@@ -1969,8 +2024,13 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
         {
             uint32_t vanilla = (cpu->gpr[rs] < cpu->gpr[rt]) ? 1u : 0u;
             uint32_t kept = vanilla;
-            if (!psx_ws_cull_scale_site(pc, insn, cpu->gpr[rs], cpu->gpr[rt], &kept))
-                (void)psx_ws_cull_keep_site(pc, insn, vanilla, &kept);
+            /* Same precedence as the code generator: packed-X, scale and keep
+             * sites first. */
+            if (!psx_ws_cull_packed_x_site(pc, insn, cpu->gpr[rs], cpu->gpr[rt], &kept) &&
+                !psx_ws_cull_scale_site(pc, insn, cpu->gpr[rs], cpu->gpr[rt], &kept) &&
+                !psx_ws_cull_keep_site(pc, insn, vanilla, &kept) &&
+                psx_ws_is_cull_screen_x_site(pc))
+                kept = (uint32_t)psx_ws_cull_sltu_band(cpu->gpr[rs], cpu->gpr[rt]);
             cpu->gpr[rd] = kept;
             psx_pgxp_alu(cpu, insn, kept, 0, 0);
             cpu->gpr[0] = 0;
@@ -2010,6 +2070,27 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
         /* slice / lockstep-replay / guest span: plain transfer, never execute the
          * callee (a span's runner calls it with the full trampoline). */
         if (g_precise_mode || g_ls_replay_active || span_forced(pc & 0x1FFFFFFFu)) { cpu->pc = target; return 1; }
+        /* Function-override tier: same placement and contract as the JALR
+         * site above — BEFORE interp_enter_compiled, so an override on a
+         * statically-compiled callee is reachable from interpreted code
+         * (reserved CRES_OVERRIDE slot). */
+        {
+            extern int (*g_psx_func_override_hook)(CPUState *cpu,
+                                                   uint32_t phys);
+            if (g_psx_func_override_hook) {
+                cpu->pc = 0;
+                if (g_psx_func_override_hook(cpu, target & 0x1FFFFFFFu)) {
+                    if (g_psx_call_bail) { XRES(XRES_OVERRIDE); return 1; }
+                    if (cpu->pc != 0)    { XRES(XRES_OVERRIDE); return 1; }
+                    if (psx_call_contract(cpu, return_pc, site_sp)) {
+                        XRES(XRES_OVERRIDE); return 1;
+                    }
+                    XRES(XRES_OVERRIDE);
+                    return dirty_ram_finish_call_return(cpu, return_pc,
+                                                        next_pc_out);
+                }
+            }
+        }
 #ifdef PSX_HAS_GAME_DISPATCH
         cpu->pc = 0;
         if (interp_enter_compiled(cpu, target)) {
@@ -2088,8 +2169,11 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             /* Widescreen render-funnel LEFT-edge widen (auto_screen_x): a
              * classified funnel bltz rejects only past the revealed margin.
              * Identity at 4:3 (margin 0). Gated per-game, cheap cached scan. */
-            if (psx_ws_is_cull_bltz_site(pc) ||
-                (psx_ws_auto_cull_on() && ws_cull_bltz_site(pc)))
+            if (psx_ws_is_cull_bltz_site(pc))
+                taken = psx_ws_cull_bltz(cpu->gpr[rs]);
+            else if (psx_ws_is_cull_screen_x_site(pc))
+                taken = psx_ws_cull_bltz_hi(cpu->gpr[rs]);
+            else if (psx_ws_auto_cull_on() && ws_cull_bltz_site(pc))
                 taken = psx_ws_cull_bltz(cpu->gpr[rs]);
             else
                 taken = ((int32_t)cpu->gpr[rs] <  0);
@@ -2109,6 +2193,7 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
         default: return abort_unsupported(pc, insn, "REGIMM rt");
         }
         taken = ws_branch_keep(pc, taken);
+        taken = psx_ws_masked_reject_site(pc, insn, cpu->gpr[rs], taken);
         taken = psx_ws_nclip_branch(pc, insn, (int32_t)cpu->gpr[rs], taken);
         exec_delay_slot(cpu, pc + 4);
         cosim_exec_one_transfer_hook(pc + 4);
@@ -2159,6 +2244,10 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             cpu->gpr[rt] = kept;
         else if (psx_ws_is_cull_depth_site(pc))
             cpu->gpr[rt] = ((int32_t)cpu->gpr[rs] < psx_ws_depth_bound(simm)) ? 1u : 0u;
+        /* screen_x_sites on `slti rt, x, 0` with `x = SX << 16`: the bltz
+         * sign test as a flag (same order as the recompiled emit). */
+        else if (imm == 0u && psx_ws_is_cull_screen_x_site(pc))
+            cpu->gpr[rt] = (uint32_t)psx_ws_cull_bltz_hi(cpu->gpr[rs]);
         /* Widescreen render-funnel RIGHT-edge widen (auto_screen_x) for the
          * signed min/max funnel idiom (`slti v, minSX, W`) — the paired left
          * edge is the bltz above. Identity at 4:3 (margin 0). */
@@ -2196,6 +2285,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
                             ((uint32_t)simm + 2u *
                              (uint32_t)psx_ws_activation_margin())) ? 1u : 0u;
         }
+        else if (psx_ws_is_cull_screen_x_site(pc))
+            cpu->gpr[rt] = (uint32_t)psx_ws_cull_sltiu(cpu->gpr[rs], imm);
         else if (psx_ws_auto_cull_on() && psx_ws_is_cull_w_imm(imm) && ws_cull_site(pc))
             cpu->gpr[rt] = (uint32_t)psx_ws_cull_sltiu(cpu->gpr[rs], imm);
         else
@@ -2231,6 +2322,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     case 0x0F: /* LUI rt, imm */
         if (psx_ws_is_signed_x_bound_site(pc, insn))
             cpu->gpr[rt] = (uint32_t)psx_ws_player_x_bound((int32_t)(imm << 16));
+        else if (psx_ws_is_cull_screen_x_site(pc))
+            cpu->gpr[rt] = psx_ws_cull_lui_hi(imm);
         else
             cpu->gpr[rt] = imm << 16;
         psx_pgxp_alu(cpu, insn, cpu->gpr[rt], 0, 0);
@@ -2263,8 +2356,9 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
             if (rd == 13) {
                 /* Cause register: only the software-interrupt pending bits
                  * [9:8] are writable; hardware IP [15:10], ExcCode [6:2] and
-                 * BD [31] are read-only from software (psx-spx, matches
-                 * PCSX-Redux/Beetle MTC0). */
+                 * BD [31] are read-only from software (PSX-SPX
+                 * cpuspecifications, "cop0r13 - CAUSE - (Read-only, except,
+                 * Bit8-9 are R/W)"). */
                 cpu->cop0[13] = (cpu->cop0[13] & ~0x0300u) | (val & 0x0300u);
             } else {
                 cpu->cop0[rd] = val;
@@ -2368,6 +2462,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
      * accessor (psx_cyc_load_* falls back to a plain read when cycles are off). */
     case 0x20: { /* LB rt, simm(rs) */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         cpu->gpr[rt] = (uint32_t)(int32_t)(int8_t)psx_cyc_load_byte(cpu, addr, rt, 1u << rs);
         psx_pgxp_load(cpu, insn, addr, cpu->gpr[rt]);
         cpu->gpr[0] = 0;
@@ -2375,6 +2471,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x21: { /* LH */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         if (addr & 1) return interp_exception(cpu, 4, addr, pc);  /* LoadAddressError */
         cpu->gpr[rt] = ws_clip_edge_load(pc,
             (uint32_t)(int32_t)(int16_t)psx_cyc_load_half(cpu, addr, rt, 1u << rs));
@@ -2384,6 +2482,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x22: { /* LWL */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         uint32_t word = psx_cyc_load_word(cpu, addr & ~3u, rt, 1u << rs);
         cpu->gpr[rt] = lwl_merge(addr, word, cpu->gpr[rt]);
         psx_pgxp_load(cpu, insn, addr, cpu->gpr[rt]);
@@ -2392,6 +2492,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x23: { /* LW */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         if (addr & 3) return interp_exception(cpu, 4, addr, pc);  /* LoadAddressError */
         if (psx_ws_is_local_viewport_width_site(pc))
             cpu->gpr[rt] = (uint32_t)psx_ws_local_viewport_width((int32_t)psx_cyc_load_word(cpu, addr, rt, 1u << rs));
@@ -2411,6 +2513,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x24: { /* LBU */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         cpu->gpr[rt] = (uint32_t)psx_cyc_load_byte(cpu, addr, rt, 1u << rs);
         psx_pgxp_load(cpu, insn, addr, cpu->gpr[rt]);
         cpu->gpr[0] = 0;
@@ -2418,6 +2522,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x25: { /* LHU */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         if (addr & 1) return interp_exception(cpu, 4, addr, pc);  /* LoadAddressError */
         cpu->gpr[rt] = ws_clip_edge_load(pc,
             (uint32_t)psx_cyc_load_half(cpu, addr, rt, 1u << rs));
@@ -2427,6 +2533,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x26: { /* LWR */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         uint32_t word = psx_cyc_load_word(cpu, addr & ~3u, rt, 1u << rs);
         cpu->gpr[rt] = lwr_merge(addr, word, cpu->gpr[rt]);
         psx_pgxp_load(cpu, insn, addr, cpu->gpr[rt]);
@@ -2435,6 +2543,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x28: { /* SB */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         g_debug_last_store_pc = pc;
         cpu->write_byte(addr, (uint8_t)cpu->gpr[rt]);
         psx_pgxp_store(cpu, insn, addr, cpu->gpr[rt] & 0xFFu);
@@ -2442,6 +2552,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x29: { /* SH */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         if (addr & 1) return interp_exception(cpu, 5, addr, pc);  /* StoreAddressError */
         uint16_t val  = (uint16_t)cpu->gpr[rt];
         /* Widescreen backdrop screenX squash on the interpreter path: mirrors
@@ -2458,6 +2570,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x2A: { /* SWL */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         g_debug_last_store_pc = pc;
         interp_swl(cpu, addr, cpu->gpr[rt]);
         psx_pgxp_store(cpu, insn, addr, cpu->gpr[rt]);
@@ -2465,6 +2579,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x2B: { /* SW */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         if (addr & 3) return interp_exception(cpu, 5, addr, pc);  /* StoreAddressError */
         g_debug_last_store_pc = pc;
         cpu->write_word(addr, cpu->gpr[rt]);
@@ -2473,6 +2589,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x2E: { /* SWR */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
         g_debug_last_store_pc = pc;
         interp_swr(cpu, addr, cpu->gpr[rt]);
         psx_pgxp_store(cpu, insn, addr, cpu->gpr[rt]);
@@ -2480,6 +2598,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x32: { /* LWC2 — §1+DO_LDS charged by exec_one's top step (mask 0) */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
 #ifdef PSX_ENABLE_BLOCK_CYCLES
         psx_gte_stall(cpu);   /* COP2 reg write stalls to GTE completion */
 #endif
@@ -2492,6 +2612,8 @@ static int exec_one_fetched_inner(CPUState *cpu, uint32_t pc, uint32_t insn,
     }
     case 0x3A: { /* SWC2 */
         uint32_t addr = cpu->gpr[rs] + (uint32_t)simm;
+        if (g_psx_mod_instruction_hooks)
+            addr = psx_mod_memory_address(cpu, pc, original_instruction, addr);
 #ifdef PSX_ENABLE_BLOCK_CYCLES
         psx_gte_stall(cpu);   /* COP2 reg read stalls to GTE completion */
 #endif
@@ -3134,7 +3256,12 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
     /* Overlay flow above the kernel window — kernel window stays per-block (see
      * is_local_dirty_target / phys_is_overlay_flow_region). Includes boot-text
      * pages overwritten by a runtime overlay (Tomba 2), not just [FLOOR, RAM). */
-    int allow_local_dirty_flow = phys_is_overlay_flow_region(ram_phys);
+    /* A bounded span's runner owns call/return contracts. Local overlay
+     * chaining can directly enter a native callee and consume its return
+     * continuation past stop_addr (Tomba 2: into the following audio tick).
+     * Surface transfers to the runner; it may still call native callees with
+     * their exact return address. Ordinary overlay execution is unchanged. */
+    int allow_local_dirty_flow = !forced && phys_is_overlay_flow_region(ram_phys);
 
     /* Backend-invariant mod_function_entry hooks: generated code fires
      * psx_mod_function_entry at listed function entries, but a mod-patched
@@ -3147,6 +3274,8 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
         extern int psx_mod_function_entry(CPUState *cpu, uint32_t address);
         if (!forced && g_psx_mod_function_entry_hooks && psx_mod_function_entry(cpu, addr))
             return 1;
+        extern int psx_mod_try_function_replacement(CPUState *, uint32_t);
+        if (!forced && psx_mod_try_function_replacement(cpu, addr)) OV_FPLOG_RET1();
     }
 
     /* Per-PC entry counter (visible via dirty_ram_stats). */
@@ -3543,8 +3672,11 @@ static int dirty_ram_dispatch_inner(CPUState* cpu, uint32_t addr, uint32_t stop_
                 {
                     extern uint32_t g_psx_mod_function_entry_hooks;
                     extern int psx_mod_function_entry(CPUState *, uint32_t);
-                    if (g_psx_mod_function_entry_hooks &&
-                        psx_mod_function_entry(cpu, target)) {
+                    extern int psx_mod_try_function_replacement(CPUState *, uint32_t);
+                    if ((g_psx_mod_function_entry_hooks &&
+                         psx_mod_function_entry(cpu, target)) ||
+                        psx_mod_try_function_replacement(cpu, target)) {
+                        g_dirty_ram_native_handoffs++;
                         g_dirty_ram_blocks_run++;
                         if (pc_entry) pc_entry->insns += (uint64_t)insns_executed;
                         g_dirty_interp_chain_target = cpu->pc;

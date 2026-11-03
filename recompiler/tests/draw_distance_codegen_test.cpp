@@ -347,6 +347,38 @@ void overlay_identity_unchanged() {
           "clamps do not enter the overlay-cache identity");
 }
 
+void memory_addresses() {
+    const uint32_t ops[] = {0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x28,0x29,0x2a,0x2b,0x2e,0x32,0x3a};
+    for (bool overlay : {false, true}) {
+        PSXRecomp::CodeGenConfig config{};
+        config.overlay_mode = overlay;
+        config.mod_instruction_sites.insert(kBase);
+        for (uint32_t op : ops) {
+            const uint32_t word = (op << 26) | (5u << 21) | (3u << 16) | 0xfffcu;
+            const auto code = generate({word, 0u}, config).full_code;
+            const auto callback = code.find("psx_mod_memory_address(cpu, 0x80010000u,");
+            check(callback != std::string::npos, "configured memory opcode has an address adapter");
+            check(code.find("psx_mod_memory_address(cpu,", callback + 1) == std::string::npos,
+                  "guest access and PGXP evaluate the adapter only once");
+            check(code.find("_pgxa = _mod_ea") != std::string::npos,
+                  "PGXP and guest access share the redirected address");
+            check(code.find("cpu->gpr[5] =") == std::string::npos,
+                  "adaptation preserves the base register");
+        }
+        config.mod_instruction_sites.clear();
+        config.mod_instruction_sites.insert(kBase + 4);
+        check(generate({0x10000001u, 0x8ca30014u, 0u}, config).full_code.find(
+                  "psx_mod_memory_address(cpu, 0x80010004u,") != std::string::npos,
+              "branch delay-slot memory access is adapted");
+        check(generate({0u, 0x88a00000u, 0u}, config).full_code.find(
+                  "(void)psx_lwl(cpu, _mod_ea") != std::string::npos,
+              "unaligned load to zero still performs its access");
+    }
+    PSXRecomp::CodeGenConfig plain{};
+    check(generate({0x8ca30014u, 0u}, plain).full_code.find("psx_mod_memory_address(cpu,") == std::string::npos,
+          "unconfigured native memory access has no adapter call");
+}
+
 void runtime_value() {
     check(psx_draw_distance_clamp_value(0x1C0u, 0x1BF) == 0x1BFu, "clamps past max");
     check(psx_draw_distance_clamp_value(0x7FFu, 0x1BF) == 0x1BFu, "clamps far past max");
@@ -366,6 +398,7 @@ int main(int argc, char** argv) {
     reads_classifier();
     loader();
     emission();
+    memory_addresses();
     guards();
     shared_decls();
     overlay_identity_unchanged();

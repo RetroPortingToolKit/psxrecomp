@@ -36,6 +36,7 @@
 #include "pgxp_hooks.h"
 #include "cpu_state.h"
 #include "psx_memory.h"
+#include "mod_memory.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -62,6 +63,7 @@ enum {
      * precise value may sit up to one pixel below or two above it. */
     PGXP_F_DX = 1u << 4,
     PGXP_F_DY = 1u << 5,
+    PGXP_F_UNCLAMPED = 1u << 6, /* exact GTE projection; intact word only */
     PGXP_F_VXY = PGXP_F_VX | PGXP_F_VY,
 };
 
@@ -75,13 +77,21 @@ struct PGXPValue {
 };
 
 /* Shadow covers the host RAM backing so the opt-in 8 MB map tracks its high
- * banks; retail sessions only ever touch the low 2 MiB of it. */
-#define PGXP_RAM_WORDS     (PSX_MAIN_RAM_BACKING_BYTES >> 2)
+ * banks; retail sessions only ever touch the low 2 MiB of it. The same array
+ * continues with the trusted-mod guest regions: the GPU DMA aperture (an
+ * enhancement's enlarged primitive arena, e.g. Crash widescreen) and the
+ * Expansion 1 mod memory. Packets built there are tracked exactly like
+ * packets in RAM; without this every vertex an enlarged arena carried drew
+ * native and had no depth. */
+#define PGXP_RAM_WORDS      (PSX_MAIN_RAM_BACKING_BYTES >> 2)
+#define PGXP_APERTURE_WORDS (PSX_MOD_GPU_DMA_APERTURE_SIZE >> 2)
+#define PGXP_MODMEM_WORDS   (PSX_MOD_MEMORY_SIZE >> 2)
+#define PGXP_SHADOW_WORDS   (PGXP_RAM_WORDS + PGXP_APERTURE_WORDS + PGXP_MODMEM_WORDS)
 #define PGXP_SCRATCH_WORDS (0x400u >> 2)      /* 1 KB scratchpad              */
 #define PGXP_REG_HI        32
 #define PGXP_REG_LO        33
 
-static PGXPValue *s_ram = nullptr;            /* lazily allocated, 72 MiB VA  */
+static PGXPValue *s_ram = nullptr;            /* lazily allocated: RAM + mod regions */
 static PGXPValue  s_scratch[PGXP_SCRATCH_WORDS];
 static PGXPValue  s_gpr[34];                  /* 32 GPRs + HI + LO            */
 static PGXPValue  s_gte[32];                  /* GTE data registers           */
@@ -137,7 +147,7 @@ extern "C" void pgxp_invalidate_all(void) {
     if (++s_gen == 0) {
         ck_wrapped();
         /* generation wrapped: physically clear so stale slots can't revive */
-        if (s_ram) std::memset(s_ram, 0, PGXP_RAM_WORDS * sizeof(PGXPValue));
+        if (s_ram) std::memset(s_ram, 0, PGXP_SHADOW_WORDS * sizeof(PGXPValue));
         std::memset(s_scratch, 0, sizeof(s_scratch));
         std::memset(s_gpr, 0, sizeof(s_gpr));
         std::memset(s_gte, 0, sizeof(s_gte));
@@ -155,7 +165,7 @@ extern "C" void pgxp_set_enabled(int enabled) {
         s_store_ring = (PGXPStoreRecord *)std::calloc(PGXP_STORE_RING_CAP,
                                                       sizeof(PGXPStoreRecord));
     if (enabled && !s_ram) {
-        s_ram = (PGXPValue *)std::calloc(PGXP_RAM_WORDS, sizeof(PGXPValue));
+        s_ram = (PGXPValue *)std::calloc(PGXP_SHADOW_WORDS, sizeof(PGXPValue));
         if (s_ram)
             resized = 1;
         else
@@ -315,11 +325,19 @@ extern "C" uint64_t pgxp_store_ring(const PGXPStoreRecord **ring, uint32_t *cap)
 /* Address mapping + validation                                               */
 /* ------------------------------------------------------------------------- */
 
-/* Guest address -> shadow slot, or NULL for BIOS/MMIO/KSEG2 (untrackable). */
+/* Guest address -> shadow slot, or NULL for BIOS/MMIO/KSEG2 (untrackable).
+ * Unallocated mod-region addresses map too: nothing stores there, and every
+ * consumer validates the shadow against the actual guest word. */
 static inline PGXPValue *pgxp_ptr(uint32_t addr) {
     uint32_t m = addr & 0x1FFFFFFFu;
     if (m < PSX_MAIN_RAM_WINDOW_BYTES)         /* RAM + its mirrors (live map) */
         return s_ram ? &s_ram[psx_ram_canonical_offset(m) >> 2] : nullptr;
+    if (m - PSX_MOD_GPU_DMA_APERTURE_BASE < PSX_MOD_GPU_DMA_APERTURE_SIZE)
+        return s_ram ? &s_ram[PGXP_RAM_WORDS +
+                              ((m - PSX_MOD_GPU_DMA_APERTURE_BASE) >> 2)] : nullptr;
+    if (m - PSX_MOD_MEMORY_BASE < PSX_MOD_MEMORY_SIZE)
+        return s_ram ? &s_ram[PGXP_RAM_WORDS + PGXP_APERTURE_WORDS +
+                              ((m - PSX_MOD_MEMORY_BASE) >> 2)] : nullptr;
     if ((m & 0xFFFFFC00u) == 0x1F800000u)      /* scratchpad                  */
         return &s_scratch[(m & 0x3FCu) >> 2];
     return nullptr;
@@ -340,6 +358,7 @@ static inline PGXPValue *pgxp_ptr(uint32_t addr) {
  * pass, fails closed: rollback invalidates everything. */
 struct PGXPJournalEntry {
     PGXPValue *slot;
+    size_t index;
     PGXPValue old;
 };
 
@@ -356,15 +375,15 @@ static int               s_ck_deferred = 0;
 
 static inline size_t ck_index(const PGXPValue *pv) {
     if (pv >= s_scratch && pv < s_scratch + PGXP_SCRATCH_WORDS)
-        return (size_t)PGXP_RAM_WORDS + (size_t)(pv - s_scratch);
+        return (size_t)PGXP_SHADOW_WORDS + (size_t)(pv - s_scratch);
     return (size_t)(pv - s_ram);
 }
 
 /* Journal a RAM / scratchpad slot before its first mutation in a pass. */
-static inline void ck_note(PGXPValue *pv) {
+static inline void ck_note(PGXPValue *pv, uint32_t addr) {
     if (s_ck_depth == 0 || !pv) return;
-    if (s_ram != s_ck_ram && !(pv >= s_scratch &&
-                               pv < s_scratch + PGXP_SCRATCH_WORDS)) {
+    if (s_ck_lossy || !s_ck_bits) { s_ck_lossy = 1; return; }
+    if (s_ram != s_ck_ram) {
         s_ck_lossy = 1;                        /* shadow RAM appeared mid-pass */
         return;
     }
@@ -381,6 +400,7 @@ static inline void ck_note(PGXPValue *pv) {
     }
     s_ck_bits[i >> 3] |= bit;
     s_ck_log[s_ck_n].slot = pv;
+    s_ck_log[s_ck_n].index = i;
     s_ck_log[s_ck_n].old = *pv;
     s_ck_n++;
 }
@@ -393,15 +413,93 @@ static int ck_in_pass(void) { return s_ck_depth != 0; }
 
 static inline PGXPValue *pgxp_ptr_w(uint32_t addr) {
     PGXPValue *pv = pgxp_ptr(addr);
-    ck_note(pv);
+    ck_note(pv, addr);
     return pv;
+}
+
+static int packet_shadow_address(uint32_t addr, uint32_t *canonical) {
+    if ((addr & 3u) || addr >= 0xC0000000u) return 0;
+    const uint32_t physical = addr & 0x1FFFFFFFu;
+    if (physical < PSX_MAIN_RAM_WINDOW_BYTES) {
+        *canonical = psx_ram_canonical_offset(physical);
+        return 1;
+    }
+    if ((physical & 0xFFFFFC00u) == 0x1F800000u) {
+        *canonical = physical;
+        return 1;
+    }
+    if (psx_mod_gpu_dma_memory_contains(addr, 4u)) {
+        *canonical = physical;
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected,
+                                       PGXPWordShadow *out) {
+    uint32_t canonical;
+    if (!out || !packet_shadow_address(addr, &canonical)) return 0;
+    PGXPWordShadow receipt{};
+    receipt.address = canonical;
+    receipt.value = expected;
+    receipt.source_generation = s_gen;
+    const PGXPValue *source = pgxp_ptr(addr);
+    if (s_enabled && source && source->gen == s_gen && source->value == expected) {
+        receipt.valid = 1;
+        receipt.x16 = source->x16;
+        receipt.y16 = source->y16;
+        receipt.z = source->z;
+        receipt.flags = source->flags;
+        receipt.projection = source->projection;
+    }
+    *out = receipt;
+    return 1;
+}
+
+static int restore_word_shadow(uint32_t addr, uint32_t expected,
+                               const PGXPWordShadow *in, bool relocated) {
+    uint32_t canonical, source;
+    if (!in || !s_ck_depth || s_ck_lossy || !packet_shadow_address(addr, &canonical) ||
+        !packet_shadow_address(in->address, &source) || source != in->address ||
+        (!relocated && in->address != canonical) ||
+        in->value != expected || in->valid > 1u ||
+        in->source_generation != s_ck_gen) return 0;
+    if (in->valid && !s_enabled) return 0;
+    PGXPValue *destination = pgxp_ptr(addr);
+    // With PGXP disabled/unallocated, there is already no RAM shadow to clear.
+    if (!destination) return in->valid == 0u;
+    ck_note(destination, addr);
+    if (s_ck_lossy) return 0;
+    PGXPValue restored{};
+    if (in->valid) {
+        restored.value = in->value;
+        restored.gen = s_gen;
+        restored.x16 = in->x16;
+        restored.y16 = in->y16;
+        restored.z = in->z;
+        restored.flags = in->flags;
+        restored.projection = in->projection;
+    }
+    *destination = restored;
+    return 1;
+}
+
+extern "C" int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected,
+                                       const PGXPWordShadow *in) {
+    return restore_word_shadow(addr, expected, in, false);
+}
+
+extern "C" int pgxp_restore_relocated_word_shadow(uint32_t destination,
+                                                 uint32_t expected,
+                                                 const PGXPWordShadow *in) {
+    return restore_word_shadow(destination, expected, in, true);
 }
 
 extern "C" void pgxp_checkpoint_begin(void) {
     if (s_ck_depth++ != 0) return;             /* the outermost pass journals */
     if (!s_ck_bits) {
         s_ck_bits = (uint8_t *)std::calloc(
-            ((size_t)PGXP_RAM_WORDS + PGXP_SCRATCH_WORDS + 7u) / 8u, 1);
+            ((size_t)PGXP_SHADOW_WORDS + PGXP_SCRATCH_WORDS + 7u) / 8u, 1);
         if (!s_ck_bits) s_ck_lossy = 1;
     }
     s_ck_ram = s_ram;
@@ -423,7 +521,7 @@ extern "C" void pgxp_checkpoint_rollback(void) {
     for (size_t i = s_ck_n; i-- > 0;) {
         PGXPJournalEntry *e = &s_ck_log[i];
         *e->slot = e->old;
-        size_t k = ck_index(e->slot);
+        size_t k = e->index;
         s_ck_bits[k >> 3] &= (uint8_t)~(1u << (k & 7u));
     }
     s_ck_n = 0;
@@ -445,6 +543,29 @@ extern "C" void pgxp_checkpoint_rollback(void) {
     }
 }
 
+extern "C" int pgxp_projective_scope_begin(PGXPProjectiveScope *scope) {
+    if (!scope || scope->active) return 0;
+    scope->saved_enabled = s_enabled;
+    scope->saved_cpu_mode = s_cpu_mode;
+    if (!scope->saved_enabled) {
+        pgxp_set_enabled(1);
+        if (!s_enabled) {
+            s_cpu_mode = scope->saved_cpu_mode;
+            return 0;
+        }
+    }
+    s_cpu_mode = 1;
+    scope->active = 1;
+    return 1;
+}
+
+extern "C" void pgxp_projective_scope_end(PGXPProjectiveScope *scope) {
+    if (!scope || !scope->active) return;
+    s_cpu_mode = scope->saved_cpu_mode;
+    if (!scope->saved_enabled) pgxp_set_enabled(0);
+    scope->active = 0;
+}
+
 static inline int pv_live(const PGXPValue *pv) {
     return pv && pv->gen == s_gen && (pv->flags & PGXP_F_VXY) != 0;
 }
@@ -454,7 +575,7 @@ static inline int pv_live(const PGXPValue *pv) {
 static inline void pv_validate(PGXPValue *pv, uint32_t actual) {
     if (pv->gen != s_gen) return;
     uint32_t diff = pv->value ^ actual;
-    if (diff) pv->flags &= (uint16_t)~PGXP_F_PROJECTION;
+    if (diff) pv->flags &= (uint16_t)~(PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
     if ((pv->flags & PGXP_F_VX) && (diff & 0x0000FFFFu))
         pv->flags &= (uint16_t)~(PGXP_F_VX | PGXP_F_DX | PGXP_F_VZ);
     if ((pv->flags & PGXP_F_VY) && (diff & 0xFFFF0000u))
@@ -599,7 +720,7 @@ extern "C" void psx_pgxp_load(struct CPUState *cpu, uint32_t instr,
          * cpu-mode keeps working. */
         dst->y16 = ((int32_t)value >> 16) << 16;
         dst->flags = PGXP_F_VY;
-        if (src && src->gen == s_gen) {
+        if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED)) {
             uint32_t actual_half = (value & 0xFFFFu) << (hi_half ? 16 : 0);
             uint32_t mask = hi_half ? 0xFFFF0000u : 0x0000FFFFu;
             uint16_t want = hi_half ? PGXP_F_VY : PGXP_F_VX;
@@ -671,7 +792,7 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         if (hi_half) dst->value = (dst->value & 0x0000FFFFu) | (half << 16);
         else         dst->value = (dst->value & 0xFFFF0000u) | half;
         dst->flags &= (uint16_t)~((hi_half ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
-                                  PGXP_F_VZ | PGXP_F_PROJECTION);
+                                  PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
         dst->z = 0;
         int ok = 0, derived = 0;
         int32_t v16 = 0;
@@ -685,7 +806,8 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
              * coordinate half here. */
             if (hi_half) { dst->y16 = v16; dst->flags |= (uint16_t)(PGXP_F_VY | (derived ? PGXP_F_DY : 0)); }
             else         { dst->x16 = v16; dst->flags |= (uint16_t)(PGXP_F_VX | (derived ? PGXP_F_DX : 0)); }
-        } else if (src && src->gen == s_gen && (src->flags & PGXP_F_VX) &&
+        } else if (src && src->gen == s_gen && !(src->flags & PGXP_F_UNCLAMPED) &&
+                   (src->flags & PGXP_F_VX) &&
                    ((src->value ^ value) & 0xFFFFu) == 0) {
             const uint16_t d = (src->flags & PGXP_F_DX) ? (hi_half ? PGXP_F_DY : PGXP_F_DX) : 0;
             if (hi_half) { dst->y16 = src->x16; dst->flags |= (uint16_t)(PGXP_F_VY | d); }
@@ -700,7 +822,7 @@ extern "C" void psx_pgxp_store(struct CPUState *cpu, uint32_t instr,
         dst->value = (dst->value & ~(0xFFu << shift)) |
                      ((value & 0xFFu) << shift);
         dst->flags &= (uint16_t)~(((addr & 2u) ? (PGXP_F_VY | PGXP_F_DY) : (PGXP_F_VX | PGXP_F_DX)) |
-                                  PGXP_F_VZ | PGXP_F_PROJECTION);
+                                  PGXP_F_VZ | PGXP_F_PROJECTION | PGXP_F_UNCLAMPED);
         dst->z = 0;
         return;
     }
@@ -840,7 +962,7 @@ extern "C" void psx_pgxp_cop2(struct CPUState *cpu, uint32_t instr,
  * sub-pixel value; an untracked half contributes its exact integer value
  * (adding an exact offset to a tracked coordinate keeps the fraction). */
 static inline int32_t comp16(const PGXPValue *pv, uint32_t value, int hi_half) {
-    if (pv && pv->gen == s_gen) {
+    if (pv && pv->gen == s_gen && !(pv->flags & PGXP_F_UNCLAMPED)) {
         if (!hi_half && (pv->flags & PGXP_F_VX) &&
             ((pv->value ^ value) & 0x0000FFFFu) == 0)
             return pv->x16;
@@ -854,7 +976,7 @@ static inline int32_t comp16(const PGXPValue *pv, uint32_t value, int hi_half) {
 /* The derived-half marks (PGXP_F_DX / DY) an operand contributes through
  * comp16: a tracked derived half keeps its rounding window in the sum. */
 static inline uint16_t derived_bits(const PGXPValue *pv, uint32_t value) {
-    if (!pv || pv->gen != s_gen) return 0;
+    if (!pv || pv->gen != s_gen || (pv->flags & PGXP_F_UNCLAMPED)) return 0;
     uint16_t d = 0;
     if ((pv->flags & PGXP_F_DX) && (pv->flags & PGXP_F_VX) &&
         ((pv->value ^ value) & 0x0000FFFFu) == 0) d |= PGXP_F_DX;
@@ -864,7 +986,7 @@ static inline uint16_t derived_bits(const PGXPValue *pv, uint32_t value) {
 }
 
 static inline int comp_tracked(const PGXPValue *pv, uint32_t value, int hi_half) {
-    if (!pv || pv->gen != s_gen) return 0;
+    if (!pv || pv->gen != s_gen || (pv->flags & PGXP_F_UNCLAMPED)) return 0;
     if (!hi_half)
         return (pv->flags & PGXP_F_VX) &&
                ((pv->value ^ value) & 0x0000FFFFu) == 0;
@@ -904,6 +1026,17 @@ static inline int half_exact(const PGXPValue *pv, uint32_t value, int hi_half) {
     }
     /* A saturated projection shadow sits beyond the clamped word; it is not
      * the value of that half and must not be carried as one. */
+    if (s_preserve_projection) {
+        const int32_t field = (int32_t)((uint32_t)half << 21) >> 21;
+        const int64_t d = (int64_t)v16 - (int64_t)half * 65536;
+        // Clip metadata uses bits 13..15. Bits 11/12 must still be the
+        // coordinate's sign fill; a real wrapped coordinate stays strict.
+        const uint16_t sign_fill = field < 0 ? 0x1800u : 0;
+        if (field > -0x400 && field < 0x3FF &&
+            (uint16_t(half) & 0x1800u) == sign_fill)
+            return d > -(int64_t)PGXP_PPP_AGREE_BELOW * 65536 &&
+                   d < (int64_t)PGXP_PPP_AGREE_ABOVE * 65536;
+    }
     return (v16 >> 16) == half;
 }
 
@@ -1396,13 +1529,26 @@ extern "C" int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3,
                                     int64_t x_num, int64_t x_den,
                                     int32_t *x16, int32_t *y16) {
     /* Qualify exactly the vertices whose guest projection is the plain
-     * IR * (H / SZ3) of the continuous one: sf=1, no IR1/IR2 clamp (the
-     * stored IR equals MAC >> 12), SZ3 unclamped and nonzero, and no UNR
+     * IR * (H / SZ3) of the continuous one: sf=1, verified IR1/IR2 conversion, SZ3 unclamped and nonzero, and no UNR
      * divide overflow (the GTE saturates the quotient when H >= 2*SZ3). */
     if (shift != 12 || x_den <= 0) return 0;
-    if ((mac1 >> 12) != (int64_t)ir1 || (mac2 >> 12) != (int64_t)ir2) return 0;
+    const int64_t ix = mac1 >> 12, iy = mac2 >> 12;
     const int64_t z_int = mac3 >> 12;
-    if (z_int <= 0 || z_int > 0xFFFF || (uint32_t)z_int != sz3) return 0;
+    if (z_int <= 0) return 0;
+    const bool xy_clamped = ix != ir1 || iy != ir2;
+    const bool z_clamped = z_int > 0xFFFF;
+    const bool unclamped = xy_clamped || z_clamped;
+    if (unclamped) {
+        /* Only the opt-in exact projection may bypass IR saturation. Reject
+         * wrapped accumulators, lm=1 sign clamps and every other mismatch. */
+        const int64_t lo = -(INT64_C(1) << 43), hi = (INT64_C(1) << 43) - 1;
+        const int64_t cx = ix < -32768 ? -32768 : ix > 32767 ? 32767 : ix;
+        const int64_t cy = iy < -32768 ? -32768 : iy > 32767 ? 32767 : iy;
+        if (!s_preserve_projection || mac1 < lo || mac1 > hi ||
+            mac2 < lo || mac2 > hi || mac3 < lo || mac3 > hi ||
+            cx != ir1 || cy != ir2) return 0;
+    }
+    if ((uint32_t)(z_clamped ? 0xFFFF : z_int) != sz3) return 0;
     if ((int64_t)h >= 2 * z_int) return 0;
     /* (MAC/4096) * H / (MAC3/4096): the 4096s cancel. Double keeps ~52 bits,
      * far below the 1/65536 px the shadow carries. Host-only and visual-only,
@@ -1420,7 +1566,7 @@ extern "C" int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3,
     if (fy > lim - 1.0) fy = lim - 1.0;
     *x16 = (int32_t)std::floor(fx);
     *y16 = (int32_t)std::floor(fy);
-    return 1;
+    return unclamped ? 2 : 1;
 }
 
 /* Defined below with the GPU consumer. */
@@ -1452,6 +1598,21 @@ extern "C" void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3,
     pv->value = packed;
     pv->gen = s_gen;
     s_gte[15] = *pv;                           /* SXYP mirrors SXY2           */
+}
+
+extern "C" void pgxp_gte_mark_unclamped(uint32_t depth) {
+    if (!g_pgxp_active) return;
+    s_gte[14].flags |= PGXP_F_UNCLAMPED;
+    s_gte[14].projection.z = (float)depth;
+    s_gte[15] = s_gte[14];
+}
+
+extern "C" float pgxp_get_unclamped_depth(uint32_t addr, uint32_t word) {
+    if (!g_pgxp_active || !s_preserve_projection) return 0.0f;
+    const PGXPValue *pv = pgxp_ptr(addr);
+    if (!pv || pv->gen != s_gen || pv->value != word ||
+        !(pv->flags & PGXP_F_UNCLAMPED) || !(pv->flags & PGXP_F_VZ)) return 0.0f;
+    return pv->projection.z;
 }
 
 extern "C" int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16) {
@@ -1551,9 +1712,9 @@ extern "C" void pgxp_gte_reg_written(int reg, uint32_t value) {
  * packet half, `half` the raw 16-bit half in the word. Exact (integer part
  * equals the native parse) unless preserve-projection is on; then the precise
  * position may sit a bounded distance from it (PGXP_PPP_AGREE_*), except
- * when the half is at or beyond the GTE saturation limits: there the guest
- * integer is a clamp that says nothing about the vertex, or (beyond them) a
- * CPU-modified word the GPU's 11-bit parse wraps. */
+ * when the decoded coordinate is saturated or the word is a genuinely
+ * wrapped coordinate. Known outcode bits 13..15 alone are not saturation;
+ * bits 11/12 must still match the decoded coordinate's sign fill. */
 static inline int pgxp_agrees(int32_t p16, int32_t native, int16_t half,
                               int derived) {
     const int64_t d = (int64_t)p16 - (int64_t)native * 65536;
@@ -1561,7 +1722,9 @@ static inline int pgxp_agrees(int32_t p16, int32_t native, int16_t half,
      * own arithmetic chose, so the value may sit one pixel either side of
      * the truncation window - still bounded, still the same vertex. */
     if (derived) return d > -65536 && d < 2 * 65536;
-    if (!s_preserve_projection || half <= -0x400 || half >= 0x3FF)
+    const uint16_t sign_fill = native < 0 ? 0x1800u : 0;
+    if (!s_preserve_projection || native <= -0x400 || native >= 0x3FF ||
+        (uint16_t(half) & 0x1800u) != sign_fill)
         return (p16 >> 16) == native;
     return d > -(int64_t)PGXP_PPP_AGREE_BELOW * 65536 &&
            d < (int64_t)PGXP_PPP_AGREE_ABOVE * 65536;
@@ -1585,8 +1748,12 @@ static inline int pgxp_accept(int32_t px, int32_t py, int32_t int_x,
                               int32_t int_y, uint32_t word, uint16_t flags) {
     const int dx_derived = (flags & PGXP_F_DX) != 0;
     const int dy_derived = (flags & PGXP_F_DY) != 0;
-    if (!pgxp_agrees(px, int_x, (int16_t)(word & 0xFFFFu), dx_derived) ||
-        !pgxp_agrees(py, int_y, (int16_t)(word >> 16), dy_derived))
+    /* This tag can only ride an intact, value-validated GTE word. Arithmetic
+     * constructs new flags and loses it; the position-cache tier never has it.
+     * Clamped IR is an integer hardware limit, not the enhanced visual vertex. */
+    if (!(s_preserve_projection && (flags & PGXP_F_UNCLAMPED)) &&
+        (!pgxp_agrees(px, int_x, (int16_t)(word & 0xFFFFu), dx_derived) ||
+        !pgxp_agrees(py, int_y, (int16_t)(word >> 16), dy_derived)))
         return 1;
     if (s_tolerance >= 0.0f) {
         if (pgxp_moved(px, int_x, dx_derived) > s_tolerance ||
@@ -1665,17 +1832,26 @@ static int pgxp_get_precise_vertex_impl(uint32_t addr, uint32_t packet_word,
         if (why == 1) {
             if (count) s_stats.trunc_reject++;
             have = 0;
+            pz = 0;
         } else if (why == 2) {
+            /* The seam clamp (G1.10) keeps the native position, but the
+             * shadow still matched this exact word and its integers: its
+             * GTE depth describes this vertex. Depth testing needs only
+             * that, not the sub-pixel position. */
             if (count) s_stats.tolerance_reject++;
+            if (have != PGXP_SRC_DATAFLOW) pz = 0;
             have = 0;
         }
+    } else {
+        pz = 0;
     }
 
     if (!have) {
         if (count) s_stats.native++;
+        if (count && pz != 0) s_stats.depth_only++;
         *x16 = int_x << 16;
         *y16 = int_y << 16;
-        *sz = 0;
+        *sz = pz;
         return PGXP_SRC_NATIVE;
     }
 
@@ -1721,6 +1897,27 @@ extern "C" void pgxp_store_gte_reg(uint32_t addr, uint8_t reg) {
     if (src->gen != s_gen) return;
     s_stats.swc2_stores++;
     *dst = *src;
+}
+
+extern "C" int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
+                                          uint32_t source_word, uint32_t stored_word) {
+    if (!g_pgxp_active || (addr & 3u) || reg < 12 || reg > 15 ||
+        ((source_word ^ stored_word) & 0x07FF07FFu)) return 0;
+    const PGXPValue* src = &s_gte[reg];
+    if (src->gen != s_gen || src->value != source_word || !src->z ||
+        (src->flags & (PGXP_F_VXY | PGXP_F_VZ)) != (PGXP_F_VXY | PGXP_F_VZ)) return 0;
+    const int64_t x = (int64_t)src->x16 +
+        ((int64_t)(int16_t)stored_word - (int16_t)source_word) * 65536;
+    const int64_t y = (int64_t)src->y16 +
+        ((int64_t)(int16_t)(stored_word >> 16) - (int16_t)(source_word >> 16)) * 65536;
+    if (x < INT32_MIN || x > INT32_MAX || y < INT32_MIN || y > INT32_MAX) return 0;
+    PGXPValue* dst = pgxp_ptr_w(addr);
+    if (!dst) return 0;
+    *dst = *src;
+    dst->value = stored_word;
+    dst->x16 = (int32_t)x;
+    dst->y16 = (int32_t)y;
+    return 1;
 }
 
 extern "C" int pgxp_debug_shadow(int space, uint32_t key, int *live,

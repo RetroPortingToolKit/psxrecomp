@@ -7,7 +7,8 @@
  * (the faithful floor, docs/ENHANCEMENTS.md G1.9); enabling arms geometry and
  * texture correction on the value-propagation engine (pgxp.cpp), cpu-mode and
  * precise culling (G1.12) per the mod options. The title's other [video] PGXP
- * keys (the tolerance clamp, default 0.5px) still apply.
+ * keys still apply. Unspecified tuning is dataflow-only/no-clamp in hook
+ * builds, or position-cache/0.5px in base builds (pgxp_session.cpp).
  *
  * Activation only RECORDS the request (pgxp_mod_request). It runs before the
  * renderer setup in main.cpp, whose session arming (pgxp_session.cpp) takes

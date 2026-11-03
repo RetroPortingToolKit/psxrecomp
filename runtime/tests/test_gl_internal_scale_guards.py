@@ -318,38 +318,38 @@ class InternalResolutionGuards(unittest.TestCase):
                                r"effective_internal_resolution\(\) == PSX_IR_DISPLAY\);")
         self.assertRegex(MAIN, r"if \(g_video_hidpi_window\)\s*win_flags \|= PSX_SDL_WINDOW_HIGH_DENSITY;")
 
-    def test_vocabulary_is_optional_abi(self):
-        # Builds against an older recomp-ui must still compile: every use of
-        # the new launcher fields sits behind the capability macro.
-        for field in ("gi->internal_resolution_labels", "ls.internal_resolution",
-                      "= internal_resolution_for_launcher();"):
-            for m in re.finditer(re.escape(field), MAIN):
-                before = MAIN[:m.start()]
-                opened = before.count("#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)")
-                closed = len(re.findall(r"#endif", before[before.rfind(
-                    "#if defined(RECOMP_LAUNCHER_HAS_INTERNAL_RESOLUTION)"):]))
-                self.assertGreater(opened, 0, field)
-                self.assertEqual(closed, 0, field + " outside its #if block")
+    def test_launcher_never_carries_the_internal_resolution(self):
+        # The internal resolution is the built-in Internal Resolution mod's
+        # (psx.enhancement.internal-resolution), not a launcher row: no
+        # launcher seed, adoption or settings.toml write may carry it, and the
+        # row is cleared for an older recomp-ui whose profile still offers it.
+        for field in ("internal_resolution_labels", "ls.internal_resolution",
+                      "seed.internal_resolution", "us.internal_resolution",
+                      "ls.supersampling", "seed.supersampling", "us.supersampling",
+                      "us.supersample_milli"):
+            self.assertNotIn(field, MAIN, field)
+        self.assertIn("gi->has_supersampling = 0;",
+                      body(MAIN, "static void psx_launcher_hide_mod_owned_rows("))
+
+    def test_session_resolves_the_mod_over_the_title(self):
+        # Every session start restores the title's baseline (its value, dynamic
+        # resolution, legacy factor and supersample) and lays the mod's choice
+        # over it, before the env overrides and the scale resolution.
+        fn = body(MAIN, "static void session_internal_resolution(void)")
+        self.assertIn("psx_host_enh_resolve_resolution(&g_title_resolution, &req)", fn)
+        self.assertIn("g_video_scale = g_title_scale;", fn)
+        self.assertIn("g_video_ss_milli = g_title_ss_milli;", fn)
+        call = MAIN.index("    session_internal_resolution();")
+        self.assertLess(call, MAIN.index('std::getenv("PSX_INTERNAL_RESOLUTION")'))
+        self.assertLess(call, MAIN.index("    apply_internal_resolution(match_display_px_h(nullptr));"))
 
     def test_unset_preset_leaves_supersampling(self):
         self.assertIn("if (preset == PSX_IR_UNSET) return;",
                       body(MAIN, "static void apply_internal_resolution(int display_px_h)"))
 
-    def test_launcher_trips_use_the_round_trip_helpers(self):
-        # Both launcher exits (first boot, netplay soft-return) seed and adopt
-        # through internal_resolution.h, whose behaviour with and without the
-        # Internal resolution row is unit-tested (internal_resolution_test).
-        # A bare factor copy next to a sticky preset let the preset override
-        # a pick in an older launcher's Supersampling row.
-        self.assertEqual(MAIN.count("psx_ir_launcher_seed_supersampling("), 2)
-        self.assertEqual(MAIN.count("psx_ir_adopt_launcher("), 2)
-        self.assertEqual(MAIN.count("kLauncherHasInternalResolution, ir_preset_seeded, ir_ss_seeded,"), 2)
-        self.assertNotRegex(MAIN, r"g_video_scale\s*=\s*(seed|ls)\.supersampling;")
-        self.assertIn("g_video_internal_res = ir.preset;", MAIN)
-
     def test_env_override_is_never_persisted(self):
-        # PSX_INTERNAL_RESOLUTION wins for the run only: the launcher shows and
-        # settings.toml saves the configured preset.
+        # PSX_INTERNAL_RESOLUTION wins for the run only, over the session's
+        # choice (the Internal Resolution mod's or the title's).
         self.assertIn("if (psx_ir_parse(e, &v)) g_video_internal_res_env = v;", MAIN)
         self.assertNotRegex(MAIN, r"g_video_internal_res\s*=\s*v;")
         self.assertIn("g_video_internal_res_env != PSX_IR_UNSET ? g_video_internal_res_env",

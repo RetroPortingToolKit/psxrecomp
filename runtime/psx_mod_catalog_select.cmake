@@ -7,6 +7,9 @@
 # it -- by naming the package in EXCLUDE_BUILTIN_MODS on
 # psxrecomp_add_runtime_target() / psxrecomp_add_game_runtime().
 #
+# Internal Resolution is required shared UI: legacy allowlists include it,
+# and an exclusion or title-local override of its id fails configure.
+#
 # An excluded package is ABSENT, not hidden: it is never copied into
 # <exe-dir>/mods/bundled, so the launcher cannot list it, no release packager
 # can ship it, and a stale state.toml naming it has nothing to reach.
@@ -72,6 +75,23 @@ function(psx_select_builtin_mod_ids out_var)
             endif()
         endforeach()
         set(_selected ${_psxsel_ALLOWLIST})
+    endif()
+
+    # Internal Resolution is shared runtime UI, even for older title
+    # allowlists. Its default and complete 1x..32x vocabulary must not be
+    # silently replaced by a title's older copy of this framework package.
+    set(_resolution "psx.enhancement.internal-resolution")
+    if("${_resolution}" IN_LIST _psxsel_AVAILABLE)
+        if("${_resolution}" IN_LIST _psxsel_EXCLUDE OR
+           "${_resolution}" IN_LIST _psxsel_TITLE)
+            message(FATAL_ERROR
+                "Internal Resolution is framework-owned for target '${_psxsel_LABEL}'. "
+                "Remove its EXCLUDE_BUILTIN_MODS entry or title-local package; "
+                "use the shared mod's saved option or disable its feature instead.")
+        endif()
+        if(NOT "${_resolution}" IN_LIST _selected)
+            list(APPEND _selected "${_resolution}")
+        endif()
     endif()
 
     set(_unknown "")

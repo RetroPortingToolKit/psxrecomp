@@ -8,7 +8,9 @@ extern "C" {
 
 /* Test whether a camera-relative vector is inside a rectangular view cone.
  *
- * Coordinates use Tomba 2's X,Z,Y ordering. The camera forward vector is Q12.
+ * Arguments use semantic X,Z,Y ordering: X/Z span the ground plane and Y is
+ * world vertical. Map the title's stored components to those axes before
+ * calling. The camera forward vector is Q12.
  * `threshold` is the game's Q10 cosine threshold (the SLTI immediate after its
  * normalized dot product). `extent_pixels` expands only the horizontal
  * half-angle from the vanilla 160-pixel half-width; the vertical half-angle is

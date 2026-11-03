@@ -17,18 +17,20 @@
  * 3. VRAM journal (render_pass_vram_policy / _journal_add / _rollback, the
  *    CPU side of gpu_gl_renderer.c's out-of-rect journal): writes inside the
  *    pass rect are allowed, writes outside are backed up first and rolled
- *    back exactly, covered writes are not journaled twice, a full journal or
- *    a renderer mode that cannot journal refuses.
+ *    back exactly, covered writes are not journaled twice, the last slot spills
+ *    to a whole-VRAM backup, and a mode that cannot journal refuses.
  *
  * The GPU, presenter and remaining devices are mocks. Build/run:
  * ctest -R render_pass_sandbox_test */
 
+#include "frame_trace.h"
 #include "render_pass.h"
 #include "render_pass_plan.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #include "cpu_state.h"
@@ -53,6 +55,7 @@ static int failures;
 
 /* ---- runtime globals the units share with the rest of the runtime ----- */
 int      g_ls_replay_active = 0;
+int psx_mod_host_output_scope(void) { return 0; }
 int      g_ls_mode = 0;
 int      g_precise_mode = 0;
 int      g_psx_call_bail = 0;
@@ -72,6 +75,7 @@ int      g_dma_cur_ch = -1;
 uint32_t g_dma_cur_madr = 0, g_dma_cur_bcr = 0, g_dma_initiator_pc = 0;
 int      g_dirty_interp_active = 0;
 int      g_exec_phase = 0;
+int      g_boot_state_cpu_timing_restored = 0;
 uint32_t g_dirty_safe_resume_pc = 0;
 
 /* ---- memory and the MMIO devices a pass may reach ----------------------- */
@@ -220,6 +224,9 @@ void gpu_pass_checkpoint_restore(void) {}
 static uint64_t s_ticks;
 uint64_t gl_renderer_perf_ticks(void) { return s_ticks += 1000; }
 uint64_t gl_renderer_perf_frequency(void) { return 1000000000u; }
+/* 1000 ticks per sample and a 1 GHz tick make one runtime sample exactly 1 us,
+ * so a bracketed guest span is the caller's own bump plus a known microsecond. */
+static void tick_bump(uint64_t ticks) { s_ticks += ticks; }
 static uint32_t s_gl_status = PSX_MOD_RENDER_PASS_READY;
 uint32_t gl_renderer_pass_unavailable(void) { return s_gl_status; }
 uint32_t gl_renderer_pass_plan(uint32_t p, uint32_t s, uint32_t *a,
@@ -272,6 +279,11 @@ uint32_t gl_renderer_stereo_unavailable(void) { return s_gl_status; }
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse) {
     return gl_renderer_pass_begin(x, y, w, h, 0, 0, reuse);
 }
+uint32_t gl_renderer_local_pair_unavailable(void) { return s_local_status; }
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse) {
+    return gl_renderer_pass_begin(x,y,w,h,0,0,reuse);
+}
+int gl_renderer_local_pair_set_presentation(int enabled) { (void)enabled;return 1; }
 int gl_renderer_stereo_end(uint32_t eye, int keep) {
     gl_renderer_pass_end(0, keep);
     if (keep && (int)eye == s_capture_fail_eye) return 0;
@@ -279,6 +291,10 @@ int gl_renderer_stereo_end(uint32_t eye, int keep) {
     return 1;
 }
 void gl_renderer_stereo_stage_reset(void) { s_stereo_mask = 0; }
+int gl_renderer_stereo_stage_readback_pair(uint32_t w,uint32_t h,uint8_t *rgba) {
+    if((s_stereo_mask & 3u) != 3u) return 0;
+    memset(rgba,0x5A,(size_t)w*h*8);return 1;
+}
 void gl_renderer_stereo_reset(void) { s_stereo_mask = 0; s_stereo_published = 0; }
 int gl_renderer_stereo_set_presentation(uint32_t mode) { return mode <= 1; }
 static int32_t s_view[3];
@@ -294,6 +310,18 @@ int gl_renderer_stereo_publish(uint64_t id, uint64_t cycle, const int32_t view[2
     s_stereo_published = id;
     return 1;
 }
+
+/* Frame-trace draw/diag inputs and the host clock the stereo shedding and
+ * tracing use. Not GL state this sandbox models, but render_pass.c references
+ * them, so they must exist to link. */
+void gl_renderer_runtime_diag(uint64_t out[6]) { memset(out, 0, 6 * sizeof *out); }
+static uint64_t s_prims_stub;
+void gl_renderer_scene_prim_counts(uint64_t *prims, uint64_t *textured) {
+    if (prims) *prims = s_prims_stub;
+    if (textured) *textured = s_prims_stub / 2u;
+}
+static uint64_t s_host_ms;
+uint64_t psx_host_mono_ms(void) { return s_host_ms; }
 
 /* ---- 1. store policy --------------------------------------------------- */
 static void test_store_policy(void) {
@@ -670,10 +698,16 @@ static void test_journal(void) {
         int k = j.n;
         CHECK(POLICY(400 + 8 * k, 100, 4, 4, 1) == RENDER_PASS_VRAM_JOURNAL, "fill journal");
         render_pass_journal_add(&j, s_vram, VW, x, y, w, h);
-        paint(x, y, w, h, (uint16_t)(0x8000 + k));
+        /* Policy can enlarge the BACKUP, never the actual GPU write. */
+        paint(400 + 8 * k, 100, 4, 4, (uint16_t)(0x8000 + k));
     }
     CHECK(j.n == RENDER_PASS_JOURNAL_MAX && n == 5, "journal full");
-    CHECK(POLICY(900, 400, 4, 4, 1) == RENDER_PASS_VRAM_REFUSE, "full journal refuses");
+    CHECK(j.x[j.n-1] == 0 && j.y[j.n-1] == 0 &&
+          j.w[j.n-1] == VW && j.h[j.n-1] == VH, "last slot protects all VRAM");
+    CHECK(POLICY(900, 400, 4, 4, 1) == RENDER_PASS_VRAM_ALLOW, "spill covers later writes");
+    paint(900, 400, 4, 4, 0x9999);
+    CHECK(POLICY(650, 4, 16, 16, 1) == RENDER_PASS_VRAM_ALLOW, "spill permits overlapping rewrites");
+    paint(650, 4, 16, 16, 0xAAAA);
     CHECK(render_pass_journal_add(&j, s_vram, VW, 900, 400, 4, 4) == -1,
           "add refuses past the limit");
 
@@ -696,6 +730,14 @@ static void test_journal(void) {
 #undef POLICY
 }
 
+static int s_projective_scope, s_projective_refuse;
+int gpu_render_projective_begin(void) {
+    if (s_projective_refuse) return 0;
+    ++s_projective_scope;
+    return 1;
+}
+void gpu_render_projective_end(void) { s_projective_scope=0; }
+void psx_mod_set_render_projective(int enabled) { (void)enabled; }
 static int s_eye_calls, s_eye_decline = -1;
 static int pair_draw(CPUState *cpu, void *user, uint32_t eye) {
     (void)user;
@@ -711,6 +753,15 @@ static int pair_draw(CPUState *cpu, void *user, uint32_t eye) {
     v.projection = 1; v.fx_q16 = 200 << 16; v.fy_q16 = 100 << 16;
     v.translation[0] = eye ? 24 : -24;
     CHECK(psx_mod_render_view(&v), "full scoped pose accepted");
+    v.precise=1; v.rotation[2]=1;v.rotation[4]=1;v.rotation[6]=-1;
+    v.translation_precise[0]=v.translation[0]+.125;
+    CHECK(psx_mod_render_view(&v), "fractional scoped pose accepted");
+    v.translation_precise[1]=NAN;
+    CHECK(!psx_mod_render_view(&v), "nonfinite precise pose rejected");
+    v.translation_precise[1]=0;
+    v.rotation[0]=2;
+    CHECK(!psx_mod_render_view(&v), "unbounded precise rotation rejected");
+
 
     cpu->gpr[8] = eye + 1; s_ram[0x456] = (uint8_t)eye;
     psx_advance_cycles(5000u + eye);
@@ -731,6 +782,13 @@ static void test_stereo(void) {
           "two restored eye transactions form one pair");
     CHECK(stats.eye_cycle[0] == cycle && stats.eye_cycle[1] == cycle &&
           stats.eye_hash[0] == stats.eye_hash[1], "same checkpoint identifiers");
+    /* PR3: the pair captures one machine baseline and the second eye reuses it,
+     * yet both eyes still start from that same checkpoint (checked above). */
+    CHECK(stats.checkpoint_saves == 1 && stats.checkpoint_reuses == 1,
+          "one baseline per pair, reused by the second eye");
+    CHECK(stats.checkpoint_ram_bytes > 0,
+          "the captured baseline reports the RAM it copied");
+    CHECK(s_prec_open == 0 && s_projective_scope == 0, "precision tracking is armed and rolled back per eye");
     CHECK(cpu.gpr[8] == 123 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
           "live state restored after the pair");
     CHECK(s_view[0] == 0 && stats.eye_view[0][0] == -24 && stats.eye_view[1][0] == 24,
@@ -738,6 +796,14 @@ static void test_stereo(void) {
     CHECK(s_pose.struct_size == 0 && !s_pose.projection, "pose restored after pair");
     CHECK(!psx_mod_render_view_offset(1, 0, 0), "view rejected outside render callback");
     published = s_stereo_published;
+    s_projective_refuse = 1;
+    CHECK(!psx_mod_render_stereo(&cpu, &f, pair_draw, NULL) &&
+          s_stereo_published == published && s_stereo_mask == 0,
+          "projective PGXP refusal rolls the checkpoint back without publication");
+    CHECK(s_prec_open == 0 && s_projective_scope == 0 && cpu.gpr[8] == 123 &&
+          s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "projective refusal restores the complete live state");
+    s_projective_refuse = 0;
     s_eye_decline = 1;
     CHECK(!psx_mod_render_stereo(&cpu, &f, pair_draw, NULL) &&
           s_stereo_published == published && s_stereo_mask == 0,
@@ -751,6 +817,175 @@ static void test_stereo(void) {
           "capture failure still restores live state");
     f.period_vblanks = 0;
     CHECK(!psx_mod_render_stereo(&cpu, &f, pair_draw, NULL), "invalid cadence refused");
+
+    /* The headset deadline the OpenXR layer pushes outranks the guest-VBlank
+     * fallback, and dropping it restores the fallback. */
+    f.period_vblanks = 2;
+    psx_mod_stereo_reset_budget();
+    psx_mod_stereo_set_budget_ms(11.1);
+    CHECK(psx_mod_render_stereo(&cpu, &f, pair_draw, NULL) == 1,
+          "pair renders under a headset deadline");
+    render_stereo_get_stats(&stats);
+    CHECK(stats.budget_source == 1 && stats.budget_ms > 11.0 && stats.budget_ms < 11.2,
+          "headset deadline drives the pair budget");
+    psx_mod_stereo_reset_budget();
+    CHECK(psx_mod_render_stereo(&cpu, &f, pair_draw, NULL) == 1,
+          "pair renders after the deadline is dropped");
+    render_stereo_get_stats(&stats);
+    CHECK(stats.budget_source == 0 && stats.budget_ms > 0.0,
+          "guest-VBlank fallback restored when no headset deadline is set");
+
+    /* Tracing is observation only: the same pair must publish the same id and
+     * reach the same guest-state hashes with capture on as with it off. */
+    {
+        uint64_t off_pub, off_hash[2], off_pair;
+        f.period_vblanks = 2;
+        psx_frame_trace_set_enabled(0);
+        render_pass_reset_session(); psx_frame_trace_set_enabled(0);
+        s_gl_status = 0; s_begin_ok = 1; s_eye_calls = 0;
+        cpu.gpr[8] = 123; s_ram[0x456] = 0x77;
+        CHECK(psx_mod_render_stereo(&cpu, &f, pair_draw, NULL) == 1, "pair with tracing off");
+        render_stereo_get_stats(&stats);
+        off_pub = s_stereo_published;
+        off_hash[0] = stats.eye_hash[0]; off_hash[1] = stats.eye_hash[1];
+        off_pair = stats.last_pair_id;
+
+        render_pass_reset_session();
+        psx_frame_trace_set_enabled(1); psx_frame_trace_reset();
+        s_gl_status = 0; s_begin_ok = 1; s_eye_calls = 0;
+        cpu.gpr[8] = 123; s_ram[0x456] = 0x77;
+        CHECK(psx_mod_render_stereo(&cpu, &f, pair_draw, NULL) == 1, "pair with tracing on");
+        render_stereo_get_stats(&stats);
+        CHECK(s_stereo_published == off_pub && stats.last_pair_id == off_pair &&
+              stats.eye_hash[0] == off_hash[0] && stats.eye_hash[1] == off_hash[1],
+              "tracing changes neither the published pair nor the guest state");
+        CHECK(psx_frame_trace_committed() > 0, "the traced pair was recorded");
+        psx_frame_trace_set_enabled(0); psx_frame_trace_reset();
+    }
+
+    /* PSX_STEREO_BASELINE=0 restores the pre-PR3 capture per eye, and a pair
+     * rendered that way must still start both eyes from one checkpoint. */
+    {
+#ifdef _WIN32
+        _putenv("PSX_STEREO_BASELINE=0");
+#else
+        setenv("PSX_STEREO_BASELINE", "0", 1);
+#endif
+        f.period_vblanks = 2;
+        render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1; s_eye_calls = 0;
+        cpu.gpr[8] = 123; s_ram[0x456] = 0x77;
+        CHECK(psx_mod_render_stereo(&cpu, &f, pair_draw, NULL) == 1,
+              "pair renders with baseline reuse disabled");
+        render_stereo_get_stats(&stats);
+        CHECK(stats.checkpoint_saves == 2 && stats.checkpoint_reuses == 0,
+              "reuse off captures a baseline per eye");
+        CHECK(stats.eye_hash[0] == stats.eye_hash[1] && s_eye_calls == 2,
+              "capture-per-eye still starts both eyes from one checkpoint");
+#ifdef _WIN32
+        _putenv("PSX_STEREO_BASELINE=1");
+#else
+        setenv("PSX_STEREO_BASELINE", "1", 1);
+#endif
+        render_pass_reset_session();
+    }
+}
+
+/* ---- 4. per-eye trace counters and guest sub-stage spans ---------------- */
+/* The shape of the game hook's per-eye replay: bracket the guest calls, and let
+ * the runtime time them. See vr/psx_vr_stereo.c vr_draw_scene. */
+static int s_traced_calls;
+static int traced_draw(CPUState *cpu, void *user, uint32_t eye) {
+    (void)user;
+    s_traced_calls++;
+    s_prims_stub += 100u + 100u * eye;          /* 100 prims, then 200 */
+    psx_mod_frame_trace_stage_begin(PSX_TRACE_GAME_TRAVERSE);
+    tick_bump(3000);                            /* 3 us, plus 1 per sample */
+    /* The visibility override runs inside the traversal it belongs to, so its
+     * span nests in that one: it must be timed on its own without truncating
+     * the span it is inside. */
+    psx_mod_frame_trace_stage_begin(PSX_TRACE_GAME_SELECT);
+    tick_bump(2000);
+    psx_mod_frame_trace_stage_end(PSX_TRACE_GAME_SELECT);
+    tick_bump(1000);
+    psx_mod_frame_trace_stage_end(PSX_TRACE_GAME_TRAVERSE);
+    /* An end for a stage that was never opened, and a begin that is never
+     * ended: neither may reach the record. */
+    psx_mod_frame_trace_stage_begin(PSX_TRACE_GAME_ENV);
+    tick_bump(1000);
+    psx_mod_frame_trace_stage_end(PSX_TRACE_GAME_SUBMIT);
+    psx_mod_frame_trace_stage_begin(PSX_TRACE_GAME_ICON);
+    tick_bump(1000);
+    psx_advance_cycles(4000u + 1000u * eye);
+    return 1;
+}
+
+static void test_trace_substages(void) {
+    CPUState cpu = {0};
+    PSXModStereoFrame f = {sizeof f, 2, 0, 240, 320, 240};
+    PSXFrameTraceRecord rec;
+    PSXModRenderPass rect = {sizeof rect, 0, 0, 0, 2, 2};
+    int first = 1, second = 2;
+    uint8_t pixels[32] = {0};
+
+    /* A session reset re-reads PSX_FRAME_TRACE from the env, so enabling the
+     * trace has to come after it (as it does in a real session). */
+    render_pass_reset_session();
+    s_gl_status = 0; s_begin_ok = 1; s_eye_decline = -1; s_eye_calls = 0;
+    s_prims_stub = 0; s_traced_calls = 0;
+    psx_frame_trace_set_enabled(1);
+    psx_frame_trace_reset();
+
+    CHECK(psx_mod_render_stereo(&cpu, &f, traced_draw, NULL) == 1,
+          "the traced pair rendered");
+    CHECK(s_traced_calls == 2, "both eyes replayed the guest draw");
+    CHECK(psx_frame_trace_read(&rec, 1) == 1, "the pair left one record");
+    CHECK(rec.prims_l == 100 && rec.prims_r == 200,
+          "each eye's own primitive delta is recorded");
+    CHECK(rec.prims == 200 && rec.textured_prims == 100,
+          "the pair-level count is still the last eye's");
+    CHECK(rec.eye_cycles_l >= 4000u && rec.eye_cycles_r >= 5000u &&
+          rec.eye_cycles_r > rec.eye_cycles_l,
+          "each eye's own guest cycles are recorded");
+    CHECK(rec.stages_us[PSX_TRACE_GAME_TRAVERSE] == 18,
+          "both eyes' guest spans are recorded (9 us per eye, nesting included)");
+    CHECK(rec.stages_us[PSX_TRACE_GAME_SELECT] == 6,
+          "a nested span is timed on its own (3 us per eye) and stays a subset");
+    CHECK(rec.stages_us[PSX_TRACE_GAME_ENV] == 0 &&
+          rec.stages_us[PSX_TRACE_GAME_SUBMIT] == 0,
+          "an end that does not match an open span records nothing");
+    CHECK(rec.stages_us[PSX_TRACE_GAME_ICON] == 0,
+          "an unpaired begin records nothing rather than leak into the next span");
+
+    /* A HUD capture's guest draws run outside a traced eye: the hook's spans
+     * must not land in the frame they belong to. */
+    psx_frame_trace_reset();
+    s_prims_stub = 0;
+    s_traced_calls = 0;
+    render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1;
+    psx_frame_trace_set_enabled(1);
+    CHECK(psx_frame_trace_open(), "a frame record is open across the capture");
+    CHECK(psx_mod_render_capture_rgba_pair(&cpu, &rect, traced_draw, &first,
+                                           &second, pixels, sizeof pixels),
+          "the capture rendered both mattes");
+    CHECK(s_traced_calls == 2 && psx_frame_trace_read(&rec, 1) == 0,
+          "the capture replayed the draw and left no record of its own");
+    psx_frame_trace_commit();
+    CHECK(psx_frame_trace_read(&rec, 1) == 1 &&
+          rec.stages_us[PSX_TRACE_GAME_TRAVERSE] == 0 &&
+          rec.prims_l == 0 && rec.prims_r == 0,
+          "a capture's guest draws write no per-eye or sub-stage slots");
+
+    /* Same with the trace off: the hook may bracket freely. */
+    psx_frame_trace_set_enabled(0);
+    psx_frame_trace_reset();
+    s_prims_stub = 0;
+    s_traced_calls = 0;
+    render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1;
+    CHECK(psx_mod_render_stereo(&cpu, &f, traced_draw, NULL) == 1,
+          "the pair renders with tracing off");
+    CHECK(s_traced_calls == 2 && psx_frame_trace_committed() == 0,
+          "nothing is recorded while tracing is off");
+    render_pass_reset_session();
 }
 
 static int local_draw(CPUState *cpu, void *user, uint32_t alpha) {
@@ -763,6 +998,70 @@ static int local_draw(CPUState *cpu, void *user, uint32_t alpha) {
     psx_advance_cycles(5000u);
     return 1;
 }
+static int local_pair_draw(CPUState *cpu,void *user,uint32_t seat) {
+    CHECK(psx_mod_local_view_scope() && s_ws_scope,
+          "both local multiplayer views run in the own-view scope");
+    return pair_draw(cpu,user,seat);
+}
+static void test_local_pair(void) {
+    CPUState cpu={0};PSXModStereoFrame f={sizeof f,1,0,240,320,240};
+    uint64_t cycle=psx_cycle_count,published;
+    render_pass_reset_session();s_netplay_active=0;s_eye_calls=0;
+    s_gl_status=PSX_MOD_RENDER_PASS_BACKEND;s_local_status=0;s_begin_ok=1;
+    cpu.gpr[8]=123;s_ram[0x456]=0x77;
+    CHECK(psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL),
+          "dual raster supports a local pair when ordinary stereo is unavailable");
+    CHECK(s_eye_calls==2 && cpu.gpr[8]==123 && s_ram[0x456]==0x77 &&
+          psx_cycle_count==cycle && !psx_mod_local_view_scope(),
+          "two local views restore one common simulation checkpoint and close their scopes");
+    published=s_stereo_published;s_eye_decline=1;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) &&
+          s_stereo_published==published && !s_stereo_mask,
+          "failed second local view cannot publish a partial frame");
+    CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle,
+          "failed local pair preserves live state");
+    s_eye_decline=-1;s_netplay_active=1;psx_mod_set_render_pass_netplay(1);
+    int calls=s_eye_calls;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,
+          "offline local pair is refused online even if temporal replay was permitted");
+    s_netplay_active=0;s_local_status=PSX_MOD_RENDER_PASS_BACKEND;
+    CHECK(!psx_mod_render_local_pair(&cpu,&f,local_pair_draw,NULL) && s_eye_calls==calls,
+          "unsupported local presenter refuses before guest drawing");
+    s_gl_status=s_local_status=0;
+}
+
+static int local_temporal_draw(CPUState *cpu, void *user, uint32_t alpha) {
+    CHECK(alpha == 32768u, "temporal local view receives its phase");
+    return local_draw(cpu, user, 0);
+}
+
+/* Shared-state digest deliberately excludes the local presentation image. */
+static uint64_t shared_digest(const CPUState *cpu) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    const uint8_t *parts[] = { (const uint8_t *)cpu->gpr, s_ram, s_spad };
+    const size_t sizes[] = { sizeof cpu->gpr, s_ram_live, sizeof s_spad };
+    for (size_t p = 0; p < sizeof parts / sizeof parts[0]; ++p)
+        for (size_t i = 0; i < sizes[p]; ++i) {
+            h ^= parts[p][i];
+            h *= 0x100000001b3ull;
+        }
+    h ^= psx_cycle_count;
+    h *= 0x100000001b3ull;
+    h ^= ((uint64_t)i_mask << 32) | i_stat;
+    return h * 0x100000001b3ull;
+}
+
+static int local_temporal_discard(CPUState *cpu, void *user, uint32_t alpha) {
+    (void)local_temporal_draw(cpu, user, alpha);
+    return 0;
+}
+
+static int local_temporal_abort(CPUState *cpu, void *user, uint32_t alpha) {
+    (void)local_temporal_draw(cpu, user, alpha);
+    (void)render_pass_mmio_read_allowed(0x1F801800u, 1);
+    CHECK(0, "device-read abort must not return to guest code");
+    return 0;
+}
 
 /* Netplay local view: forward netplay frames only; guest state restored
  * exactly; a committed image cancels the crop request. */
@@ -771,6 +1070,7 @@ static void test_local_view(void) {
     PSXModRenderPass r;
     RenderPassStats st;
     uint64_t cycle;
+    uint64_t digest;
     render_pass_reset_session(); s_gl_status = 0; s_begin_ok = 1;
     memset(&r, 0, sizeof r);
     r.struct_size = sizeof r;
@@ -792,9 +1092,12 @@ static void test_local_view(void) {
           "no local view while resimulating");
     s_resim = 0;
     s_view_shed = 1;
-    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_FAST_FORWARD &&
-          !psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
-          "a peer behind the match sheds its own view first");
+    CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_READY,
+          "catch-up pressure cannot replace the local seat with the shared view");
+    CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
+          "independent view commits while the peer is behind");
+    CHECK(cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "catch-up redraw preserves the authoritative guest state");
     s_view_shed = 0;
     s_local_status = PSX_MOD_RENDER_PASS_BACKEND;
     CHECK(psx_mod_render_local_view_status() == PSX_MOD_RENDER_PASS_BACKEND &&
@@ -805,13 +1108,37 @@ static void test_local_view(void) {
     CHECK(psx_mod_render_local_view(&cpu, &r, local_draw, NULL) == 1,
           "local view committed");
     render_pass_get_stats(&st);
-    CHECK(st.local_views == 1 && s_local_kept == 1 && s_open_passes == 0 &&
-          st.passes == 0, "one kept local image, transaction closed");
+    CHECK(st.local_views == 2 && s_local_kept == 2 && s_open_passes == 0 &&
+          st.passes == 0, "both local images kept, transactions closed");
     CHECK(s_crop_clears == 1, "the committed image cancels the crop request");
     CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0,
           "own-view scope closed after the local view");
     CHECK(cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
           "guest state restored after the local view");
+    psx_mod_set_render_pass_netplay(1);
+    r.alpha_q16 = 32768u;
+    digest = shared_digest(&cpu);
+    CHECK(psx_mod_render_pass(&cpu, &r, local_temporal_draw, NULL) == 1,
+          "opted-in temporal pass uses own-view scope");
+    CHECK(shared_digest(&cpu) == digest,
+          "actual opted-in temporal pass preserves shared digest");
+    CHECK(!psx_mod_render_pass(&cpu, &r, local_temporal_discard, NULL) &&
+          shared_digest(&cpu) == digest,
+          "discarded temporal pass preserves shared digest");
+    CHECK(!psx_mod_render_pass(&cpu, &r, local_temporal_abort, NULL) &&
+          shared_digest(&cpu) == digest && s_open_passes == 0,
+          "aborted temporal pass restores shared state and closes transaction");
+    CHECK(s_ws_scope == 0 && psx_mod_local_view_scope() == 0 &&
+          cpu.gpr[8] == 7 && s_ram[0x456] == 0x77 && psx_cycle_count == cycle,
+          "temporal local pass restores scope, RAM, registers and clock");
+    s_resim = 1;
+    CHECK(!psx_mod_render_pass(&cpu, &r, never_fn, NULL),
+          "temporal local rendering never runs during rollback replay");
+    s_resim = 0;
+    psx_mod_set_render_pass_netplay(0);
+    CHECK(!psx_mod_render_pass(&cpu, &r, never_fn, NULL) &&
+          shared_digest(&cpu) == digest,
+          "nonparticipating peer refuses temporal pass without shared-state change");
     r.x = 900;
     CHECK(!psx_mod_render_local_view(&cpu, &r, never_fn, NULL),
           "rect outside VRAM refused");
@@ -839,13 +1166,66 @@ static void test_texture_stream_journal(void) {
     render_pass_journal_free(&j);
 }
 
+static void *s_dual_users[2];
+static int s_dual_draws;
+static int isolated_draw(CPUState *cpu,void *user,uint32_t alpha) {
+    CHECK(alpha==0,"isolated capture has no temporal phase");
+    if(s_dual_draws<2)s_dual_users[s_dual_draws]=user;
+    s_dual_draws++;
+    cpu->gpr[8]=0x1234;s_ram[0x456]=0x42;psx_advance_cycles(5000);
+    return 1;
+}
+static void test_isolated_capture(void) {
+    CPUState cpu={0};PSXModRenderPass rect={sizeof rect,0,0,0,2,2};
+    int first=1,second=2;
+    uint8_t pixels[32]={0};
+    render_pass_reset_session();s_gl_status=0;s_begin_ok=1;s_netplay=0;
+    cpu.gpr[8]=123;s_ram[0x456]=0x77;
+    uint64_t cycle=psx_cycle_count,published=s_stereo_published;
+    s_dual_draws=0;
+    CHECK(psx_mod_render_capture_rgba_pair(&cpu,&rect,isolated_draw,&first,&second,
+                                           pixels,sizeof pixels),
+          "isolated dual capture succeeds without publishing a stereo pair");
+    CHECK(s_dual_draws==2 && s_dual_users[0]==&first && s_dual_users[1]==&second,
+          "one transaction per matte, each with its own user");
+    CHECK(cpu.gpr[8]==123 && s_ram[0x456]==0x77 && psx_cycle_count==cycle,
+          "isolated capture restores CPU, RAM and the guest clock");
+    CHECK(s_stereo_published==published && s_stereo_mask==0 &&
+          pixels[0]==0x5A && pixels[31]==0x5A,
+          "both isolated planes copied and temporary staging discarded");
+    /* The two mattes draw from one machine state, so the second one reuses the
+     * checkpoint the first one captured, the way a pair's right eye does. */
+    RenderStereoStats stats;
+    render_stereo_get_stats(&stats);
+    CHECK(stats.checkpoint_saves==1 && stats.checkpoint_reuses==1,
+          "the two mattes of one capture share one checkpoint");
+    s_dual_draws=0;
+    CHECK(!psx_mod_render_capture_rgba_pair(&cpu,&rect,isolated_draw,&first,&second,
+                                            pixels,sizeof pixels-1),
+          "undersized pixel buffer refused");
+    CHECK(s_dual_draws==0 && !psx_mod_render_capture_rgba_pair(&cpu,&rect,isolated_draw,
+                                                               &first,NULL,pixels,sizeof pixels),
+          "a missing second matte is refused before any draw");
+    /* The capture's shared checkpoint is scoped to the capture: the pair that
+     * renders later in the same frame must still capture its first eye. */
+    PSXModStereoFrame f={sizeof f,2,0,240,320,240};
+    render_pass_reset_session();s_gl_status=0;s_begin_ok=1;s_eye_decline=-1;s_eye_calls=0;
+    CHECK(psx_mod_render_stereo(&cpu,&f,pair_draw,NULL)==1,
+          "a pair still renders after a capture");
+    render_stereo_get_stats(&stats);
+    CHECK(stats.checkpoint_saves==1 && stats.checkpoint_reuses==1,
+          "the pair after a capture captures its own baseline");
+}
 int main(void) {
     test_store_policy();
     test_pass();
     test_ram_8mb();
     test_journal();
     test_stereo();
+    test_isolated_capture();
+    test_trace_substages();
     test_local_view();
+    test_local_pair();
     test_texture_stream_journal();
     CHECK(s_prec_open == 0, "precision checkpoints balanced");
     printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);

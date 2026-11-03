@@ -1,0 +1,1237 @@
+{
+  "schema": 1,
+  "package": "generated-native-span-v1",
+  "source_commit": "66388558b39da51db5d158733141186e4b36fa49",
+  "host": {
+    "captured_utc": "2026-10-28T08:59:57.4101011Z",
+    "processors": [
+      {
+        "Name": "AMD Ryzen 7 9800X3D 8-Core Processor           ",
+        "NumberOfCores": 8,
+        "NumberOfLogicalProcessors": 16,
+        "MaxClockSpeed": 4700
+      }
+    ],
+    "os": {
+      "Caption": "Microsoft Windows 11 Home",
+      "Version": "10.0.26200",
+      "BuildNumber": "26200"
+    },
+    "gpu": [
+      {
+        "Name": "Meta Virtual Monitor",
+        "DriverVersion": "11.1.45.729"
+      },
+      {
+        "Name": "NVIDIA GeForce RTX 3080 Ti",
+        "DriverVersion": "32.0.16.1686"
+      },
+      {
+        "Name": "AMD Radeon(TM) Graphics",
+        "DriverVersion": "32.0.21036.18"
+      }
+    ],
+    "gcc": "gcc.exe (Rev9, Built by MSYS2 project) 15.2.0"
+  },
+  "policy": {
+    "declared_before_collection": "2026-10-28T08:59:57.238191+00:00",
+    "packages": [
+      "Ape shared-native-spans-v1 at66388558b",
+      "Tomba shared-native-spans-v1 at66388558b"
+    ],
+    "comparison": "Original instruction timing vs native CPU spans. Same current engine/title sources, existing native waits, enabled geometry/PGXP/settings and private byte-identical machine seed per game. Headless diagnostic/IPO/profile results are separate packages.",
+    "frontend": "Never-shown full presenter, normal pacing, SDL dummy audio output, PSX_DYNRES=0, fixed actual scale. No profiling instrumentation or debug tools in timed binaries.",
+    "order": "Two ABBA blocks per game initially,900guest frames after120frame warmup each; at most one additional block when comparability remains unresolved. Retain every raw run. Do not tune source between these runs.",
+    "observed_host_comparability": {
+      "mean_host_cpu_max_percent": 70,
+      "fraction_sample_intervals_above90percent_max": 0.05,
+      "within_block_A_B_mean_host_cpu_difference_max_points": 8,
+      "within_block_scale_pgxp_and_gameplay_phase": "Must remain fixed and equivalent; exclude the block if actual requested/applied rendering changes or game leaves the intended checkpoint",
+      "background_compilation": "Always recorded and disclosed. Presence alone does not prove saturation. Only actual non-saturating comparable blocks can support loaded-host CPU evidence; do not label them idle/quiet-host results. Earlier compiler-contaminated probe pairs are not retrospectively promoted."
+    },
+    "signal": "Report every block, per-package samples/range/variation and CPUms per useful guest frame, progress, draws and guest-clock cadence. A positive claim needs consistent positive block reductions beyond within-block variation; small/mixed/noisy changes are neutral/inconclusive. A reproducible per-game regression disqualifies adoption for that game; another game's gain cannot offset it.",
+    "cycle_counter": "Raw QueryProcessCycleTime per guest frame is an additional same-host counter. Do not convert it to elapsed time or assume it is an architecture-independent instruction count.",
+    "limits": "This evaluates CPU work in the collected normal-presenter checkpoint, not uncapped FPS, GPU speed, physical-speaker quality, all-title/scene compatibility or cross-host netplay. Current-build lifecycle/actual input/rollback caveats remain separately recorded. No merge or default promotion from timing alone.",
+    "original_hand_entered_timestamp": "2026-10-28T08:35:00Z",
+    "timestamp_correction": "Actual Windows file creation timestamp; criteria unchanged. Written before first collected run."
+  },
+  "packages": {
+    "ape": {
+      "engine_commit": "66388558b39da51db5d158733141186e4b36fa49",
+      "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+      "codegen": "0xe060fa62",
+      "machine_payload_sha256": "5d4e5954d462e14c24f683b2b39c7ccc48f7926efe582cc9b467b65c597760e3",
+      "generated": {
+        "SCUS_944.23_decls.h": "9c2af2d9d7b7a4e4703757db7f97bc5dd278eb463193669a06f33ba48549e016",
+        "SCUS_944.23_dispatch.c": "ad7b5d27d2bb0f0d7ace0db1d3b0475911f389c57d03d9f88fbe9c4bac287cdc",
+        "SCUS_944.23_full.ranges": "9c35392505e93aa3c3ea1efd2187ef4f6ab1049a852883550b7ddc76564ad853",
+        "SCUS_944.23_full_00.c": "17ff56b66b88af4f5ca0beac9e504e5b1f187859893de720431918b83c5754bd",
+        "SCUS_944.23_full_01.c": "2a4050819c15de58ae1b8d584c6949d9a99b845c81086c088038e75baeb4787c",
+        "SCUS_944.23_full_02.c": "45e6d1afdd248b0a3ad49b0ba64d4d15d579ac78d0d90e7827ff823ad930f809",
+        "SCUS_944.23_full_03.c": "f475a9b1713ffa48a7a64d233a07e40807cb2ee8560b73178b5b250191f1c4f1",
+        "SCUS_944.23_full_04.c": "09d0fa8f8b2c1fa898bc4e44f414ba14291a88b0c13bd673e485fb8d76a1c37c",
+        "SCUS_944.23_full_05.c": "f21a0fadda8ebe12919638d21b815650efd56df11327c73afe03107014c520f4",
+        "SCUS_944.23_full_06.c": "d5fe144758e103518afe6ec9467f9a89fbc451b04b5747d5fa00f32513d9dc51",
+        "SCUS_944.23_full_07.c": "d8342ccea8da4d917c9b9231ed03eb36cfb4d302f0806169b7ee98a07b26edd8",
+        "SCUS_944.23_full_08.c": "a148e3d8710d08dfa1fbdd86aff62ac3177fa742c4f81749910d7da342ef6bd4",
+        "SCUS_944.23_full_09.c": "d427ab8cac4258f5199b79d4889e336b96229f33ec521a5ee67ace1e751c0de4",
+        "SCUS_944.23_full_10.c": "5e3c3e0c8f8c08ab4b1d66a7aa9ae69211c97af7ac4d7763f31c68347d3edf12",
+        "SCUS_944.23_full_11.c": "5259eaa1952c6a2c73b0ef3551dc3ccd0933c6645f34991c880b1e9009b18882",
+        "SCUS_944.23_full_12.c": "a38c1a46c6741264cd45f75ece7bf30077cb6343e0150d06216a872b35a4c969",
+        "SCUS_944.23_full_13.c": "12f97e28df7107d0abe56e637900f72940ae47df9225878e14e14d9ccffc8356",
+        "SCUS_944.23_full_14.c": "212015eb1142e8a656b3b69d1c3455062a70e91c2f7138e467a02566d633e4e6",
+        "SCUS_944.23_full_15.c": "7b2b3cd042e26555ce5f0111b2081f14b7a0f38c6045e8d54d38e622837407e0",
+        "SCUS_944.23_full_16.c": "9753f1a3f258f369a33aed68f07d78c34d01523b87e6ae09f3a5277df16dd9ef",
+        "SCUS_944.23_full_17.c": "2d0aeb3ac28faf92156d1df67cb557ec951e65f529e321d9c1fb7141293079cd",
+        "SCUS_944.23_full_18.c": "8cbbc7e339f24fdf578684d8d7d55d483c78686c1cd7369ba892d84d63fb2d3b",
+        "SCUS_944.23_full_19.c": "af9ee5c82506896862612a55e79a692a81f333bd33cf8fb6773c0a7d1def8884",
+        "SCUS_944.23_full_20.c": "50da153b992b62dc3765d7a41f29f8be157722f8a76d776ec101cfa17827dc24",
+        "SCUS_944.23_full_21.c": "1215da966a129e46f4abe7852680a83a01d3a46e60048337d219c15d8e9a8c62",
+        "SCUS_944.23_full_22.c": "c78a6255e94050fbf1776f003c6e3b3c2cbfac5169e4d3b723820ae0da62b20d",
+        "SCUS_944.23_full_23.c": "3d104eea899e5486f3ad331a3154949bd49f2c21422c8bfceaa3c84ada7591cc",
+        "SCUS_944.23_full_24.c": "5c8aa9efac06dd9a38c4679d6e24f90ea67d2be5134a3e83868c22fa437bad7f",
+        "SCUS_944.23_full_25.c": "32fa84d1953647f5c54ed2b691cd8e087b55c4eab49498db0914352e6c4cde72",
+        "SCUS_944.23_full_26.c": "ebf0087fb441d373f5de190a33aa6448041515fddb793c2442883c810085ca2d",
+        "SCUS_944.23_full_27.c": "a47b4cdf8380d2128d3a4797e26e47afaf5c35b8b502879804f1f0586e617ec3",
+        "SCUS_944.23_full_28.c": "4d685fa08d3ca724f3c5ec8d34f7524849090ae1735d876b358ec42e7460adde",
+        "SCUS_944.23_full_29.c": "fa5b18e61c06d6961809fbf5f744747df4625b6c0df2fa25629c902f1054a73e",
+        "SCUS_944.23_full_30.c": "2841e413ded6c7421498a8407e53c35eba26fcf9eb9b17715b6ab71e8bb666ec",
+        "SCUS_944.23_full_31.c": "b4f9dc747b481f317e4e410479256a375766ae60f53f4e2c9cf62722c8fd688e",
+        "SCUS_944.23_full_32.c": "210a40e9372fc717f3790ebd558a92d991c83cfab58b87493c634116c0912b30",
+        "SCUS_944.23_full_33.c": "9ab1acba2e1bfaa398b71890a3ec5aad07687ff3dd20132873545cee4f69588a",
+        "SCUS_944.23_full_34.c": "03c27b7bdaca63910e33c8fcf3abdfc44f51ec90293af4c4f2c610eeaf8c5837",
+        "SCUS_944.23_full_35.c": "adbaa9d24befe0d0542609d97f7fe3d7f735f6abeff34ab516a3a60d5278e8af",
+        "SCUS_944.23_full_36.c": "ce4df468a025b9b9ff46c9727ab2fa7053e3dab9243c6ba2ec5b3a1d27b4652e",
+        "SCUS_944.23_full_37.c": "62e4201ce623fe89c6223f593eefeaa5e8d35115eeba0fb66452514c048a36ed",
+        "SCUS_944.23_full_38.c": "e4c6d1f82641a96e62a91c0fe70ca61d67a6385c25a824235c8a9631e8089b0a",
+        "SCUS_944.23_full_39.c": "f509c92ec2838565f012e0fcb39e9419907b7e21c1c3de50e90288e2a3d13c89",
+        "SCUS_944.23_full_40.c": "c8f7b7b182e30345307ae2624b25b0a16275b5eedc3748abab5eb92679759fd4",
+        "SCUS_944.23_full_41.c": "8a3d32c0864048785c0c72618b7c2f14f2474033843497384065980d829b5f67",
+        "SCUS_944.23_full_42.c": "5fbf7673e00d61bcda3cff2d11675a65f268b68591ef34aec9edfa1f0bdf2580",
+        "SCUS_944.23_full_43.c": "9be6e1dd131ce19803975ba393d86680e0e9163358fb85e26b77ba0dc663579f",
+        "SCUS_944.23_full_44.c": "0ce8d6390bc76f7f9e79138cea9570661b403e073071ff4adc5d8fbb2a585424",
+        "SCUS_944.23_full_45.c": "d147e153c4e56d658df1f6fe2b045123a0c18bd252ea3573b5fba9626026fd8d",
+        "SCUS_944.23_full_46.c": "7ef44d4dde226e65f3d34ed07b7ece8e925663fee12414265ce71205379d5744",
+        "SCUS_944.23_full_47.c": "ac114b6e2891e80ef74577bb38bf74186fd9ce2b4de041f72ce0be5b61fb7419",
+        "SCUS_944.23_full_48.c": "0f0039322722605feaf61a3cb3db65aebc7b7da6d60206b8463e59e8826537fb",
+        "SCUS_944.23_full_49.c": "c2f09e0ce9a078e06a6de75f9787dbff43be77bd09e72209854a76b250e2fa1d",
+        "SCUS_944.23_full_50.c": "d4342f33159b4df78c6dad6075c2da1210d7c3db50fa0008c1bd76fee2dac373",
+        "SCUS_944.23_full_51.c": "019cf76269bbf628009edd6d06c89c62cc09d27f86fd4b8c4e34f1e78270f706",
+        "SCUS_944.23_full_52.c": "3e3824844941f27525953765f1972e16681f3ff1684a6f32fecca8937aa1c472",
+        "SCUS_944.23_full_53.c": "f11c307f90bd64c1c2962c66c17de3281d67978c7c492117290c6cc1ac6680e4",
+        "SCUS_944.23_full_54.c": "b2f4eceef61ce04845da5bddf470a74b0c1118bb5331d42b3457627329db8d86",
+        "SCUS_944.23_full_55.c": "6aebc1d0502efa6b276f955d2a8ae59a2eea261c854d9a2aebd3b56057621937",
+        "SCUS_944.23_full_56.c": "e8872d1b4250f4632a722a5b21c1162e4af0215e5264a47fba6ebf5fe5a4963a",
+        "SCUS_944.23_full_57.c": "7096e960e1949c2107d12660f62c0bafa73ff764a5ad34297ffd3ee008946631"
+      },
+      "fixture_note": "Only private seed metadata is adapted; current-build save/load must be tested independently. No runtime compatibility bypass."
+    },
+    "tomba": {
+      "engine_commit": "66388558b39da51db5d158733141186e4b36fa49",
+      "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+      "machine_payload_sha256": "bea0125822d47ad87a49ce3616311dfbc9c640818a0425c5a175ed4b7c9e8dbd",
+      "fixture_note": "Private header adaptation only: codegen and execution cookie. Legacy implementation18xor54474802 unchanged. Current-build save/load must pass independently."
+    }
+  },
+  "runs": [
+    {
+      "file": "ape-663-full-block1-1-control.json",
+      "sha256": "6c665bc105fd44eeb45ee3de0fef4af692eba503662757ef22307eabe46e4653",
+      "title": "ape",
+      "block": 1,
+      "kind": "control",
+      "frames": 907,
+      "wall_seconds": 15.123918800032698,
+      "cpu_seconds": 5.75,
+      "cpu_ms_per_frame": 6.339581036383683,
+      "guest_hz": 59.97122914981791,
+      "draws_per_frame": 204.39801543550166,
+      "host_cpu_percent": 20.902750871755135,
+      "startup_load_seconds": 1.627878800034523,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 30787555.72216097,
+      "max_host_interval_percent": 62.5,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block1-2-native.json",
+      "sha256": "5a67f91c38d53345205050b7924bc8c8fb1a346e90451174a31374b82da27bb9",
+      "title": "ape",
+      "block": 1,
+      "kind": "native",
+      "frames": 905,
+      "wall_seconds": 15.090655399952084,
+      "cpu_seconds": 4.671875,
+      "cpu_ms_per_frame": 5.162292817679558,
+      "guest_hz": 59.97088767946246,
+      "draws_per_frame": 204.32154696132596,
+      "host_cpu_percent": 18.103002070393376,
+      "startup_load_seconds": 1.3106284000677988,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 24634616.35359116,
+      "max_host_interval_percent": 48.031496062992126,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block1-3-native.json",
+      "sha256": "d5be6ff6de7f9cd2fc0cb1bbbb182b6e136375c79d7b124b6ca867404df6f2f6",
+      "title": "ape",
+      "block": 1,
+      "kind": "native",
+      "frames": 902,
+      "wall_seconds": 15.049359200056642,
+      "cpu_seconds": 4.484375,
+      "cpu_ms_per_frame": 4.971590909090909,
+      "guest_hz": 59.936106780985405,
+      "draws_per_frame": 204.56873614190687,
+      "host_cpu_percent": 14.094917012448132,
+      "startup_load_seconds": 0.911267300019972,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 24343167.494456764,
+      "max_host_interval_percent": 58.59375,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block1-4-control.json",
+      "sha256": "b7b6dfd3bd5f5503b8870bcc3538aadd3f085e4863e45927315eca2e137537bd",
+      "title": "ape",
+      "block": 1,
+      "kind": "control",
+      "frames": 900,
+      "wall_seconds": 15.010745900101028,
+      "cpu_seconds": 5.984375,
+      "cpu_ms_per_frame": 6.649305555555555,
+      "guest_hz": 59.95704717071672,
+      "draws_per_frame": 204.6511111111111,
+      "host_cpu_percent": 27.330729166666668,
+      "startup_load_seconds": 0.911786500015296,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 31116231.97777778,
+      "max_host_interval_percent": 53.90625,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block2-1-control.json",
+      "sha256": "873816317c54d02cc7daa4fd7bef5bd6deec188962157f5e7a2683a39386f042",
+      "title": "ape",
+      "block": 2,
+      "kind": "control",
+      "frames": 900,
+      "wall_seconds": 15.00438220007345,
+      "cpu_seconds": 6.234375,
+      "cpu_ms_per_frame": 6.927083333333333,
+      "guest_hz": 59.98247631919122,
+      "draws_per_frame": 204.27555555555554,
+      "host_cpu_percent": 37.213541666666664,
+      "startup_load_seconds": 0.9109616000205278,
+      "guest_cycles_per_frame": 564314.4533333334,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 33234795.1,
+      "max_host_interval_percent": 100.0,
+      "fraction_host_intervals_above90": 0.015873015873015872,
+      "compiler_observed": true,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block2-2-native.json",
+      "sha256": "afea60a9281d685879fd94c7066b0f825db18b21cfd6303fa3acd4d5373cff42",
+      "title": "ape",
+      "block": 2,
+      "kind": "native",
+      "frames": 902,
+      "wall_seconds": 15.049947099993005,
+      "cpu_seconds": 4.921875,
+      "cpu_ms_per_frame": 5.456624168514413,
+      "guest_hz": 59.93376548150254,
+      "draws_per_frame": 204.67960088691797,
+      "host_cpu_percent": 23.667986241806737,
+      "startup_load_seconds": 0.9112434000708163,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 24896565.920177385,
+      "max_host_interval_percent": 60.483870967741936,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block2-3-native.json",
+      "sha256": "36838cff62a35ea5425b3b32b9037553321cfedf3ab36e635df31b658fe37081",
+      "title": "ape",
+      "block": 2,
+      "kind": "native",
+      "frames": 902,
+      "wall_seconds": 15.048284300020896,
+      "cpu_seconds": 4.65625,
+      "cpu_ms_per_frame": 5.162139689578714,
+      "guest_hz": 59.94038802142697,
+      "draws_per_frame": 204.56873614190687,
+      "host_cpu_percent": 20.75545171339564,
+      "startup_load_seconds": 0.9100337000563741,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 24775361.152993347,
+      "max_host_interval_percent": 60.15625,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block2-4-control.json",
+      "sha256": "357f1a2a818129962013880cb6cbe4e936a5598ece08f6becf379c171e24fd63",
+      "title": "ape",
+      "block": 2,
+      "kind": "control",
+      "frames": 900,
+      "wall_seconds": 15.032355300034396,
+      "cpu_seconds": 5.859375,
+      "cpu_ms_per_frame": 6.510416666666667,
+      "guest_hz": 59.87085736311333,
+      "draws_per_frame": 205.02333333333334,
+      "host_cpu_percent": 18.87748473431207,
+      "startup_load_seconds": 0.9107401999644935,
+      "guest_cycles_per_frame": 564597.8211111111,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 30153275.611111112,
+      "max_host_interval_percent": 60.8,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block3-1-control.json",
+      "sha256": "a1acc4c3378e2198d86f5ccdff1c2495b964cf8f69a6fa1698a8bb4a2d3c402e",
+      "title": "ape",
+      "block": 3,
+      "kind": "control",
+      "frames": 902,
+      "wall_seconds": 15.073007800034247,
+      "cpu_seconds": 9.421875,
+      "cpu_ms_per_frame": 10.445537694013304,
+      "guest_hz": 59.842070804073394,
+      "draws_per_frame": 205.26164079822615,
+      "host_cpu_percent": 94.46965767634855,
+      "startup_load_seconds": 7.585950399981812,
+      "guest_cycles_per_frame": 564758.2361419068,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 48707535.532150775,
+      "max_host_interval_percent": 100.0,
+      "fraction_host_intervals_above90": 0.7522123893805309,
+      "compiler_observed": true,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block3-2-native.json",
+      "sha256": "7dd31a4ef771b8ce6454c2a2eae7681c0460d85337f028448cc177c26fb7d8cf",
+      "title": "ape",
+      "block": 3,
+      "kind": "native",
+      "frames": 902,
+      "wall_seconds": 15.02823079994414,
+      "cpu_seconds": 7.90625,
+      "cpu_ms_per_frame": 8.765243902439025,
+      "guest_hz": 60.020371792756386,
+      "draws_per_frame": 204.3048780487805,
+      "host_cpu_percent": 96.85550935550935,
+      "startup_load_seconds": 2.1350365000544116,
+      "guest_cycles_per_frame": 564297.3181818182,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 39936786.85144124,
+      "max_host_interval_percent": 100.0,
+      "fraction_host_intervals_above90": 0.9469026548672567,
+      "compiler_observed": true,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block3-3-native.json",
+      "sha256": "8daebe9c46a74168742475c2361b01394252951c40adcfba8333155ec1b59172",
+      "title": "ape",
+      "block": 3,
+      "kind": "native",
+      "frames": 904,
+      "wall_seconds": 15.091908799950033,
+      "cpu_seconds": 8.015625,
+      "cpu_ms_per_frame": 8.866841814159292,
+      "guest_hz": 59.89964635904724,
+      "draws_per_frame": 204.84845132743362,
+      "host_cpu_percent": 97.47670807453416,
+      "startup_load_seconds": 1.427169300033711,
+      "guest_cycles_per_frame": 564507.7444690266,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 41156539.911504425,
+      "max_host_interval_percent": 100.0,
+      "fraction_host_intervals_above90": 0.9565217391304348,
+      "compiler_observed": true,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "3d893d0e2eaff6b426272fd372c4001210c5e2abdca587408b07119baddf6719",
+      "execution_identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+      "fixture_sha256": "4275a6d83ea29f72b0dabfc9da2b63b76980cdda32eef42c797530c341755daf",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "484492aaf4e28d1e11327dcb3f5f09e7146eeb2ca8b82b68e12d0b64f15ff6bc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "ape-663-full-block3-4-control.json",
+      "sha256": "29f09a1918f3f7185fea84c74c39ae668a7fa90220792b26d0b06c6269db1835",
+      "title": "ape",
+      "block": 3,
+      "kind": "control",
+      "frames": 906,
+      "wall_seconds": 15.123717700014822,
+      "cpu_seconds": 9.578125,
+      "cpu_ms_per_frame": 10.571881898454746,
+      "guest_hz": 59.90590527877362,
+      "draws_per_frame": 204.7682119205298,
+      "host_cpu_percent": 97.66270661157024,
+      "startup_load_seconds": 1.5239490000531077,
+      "guest_cycles_per_frame": 564552.5794701987,
+      "video_scale": 9,
+      "requested_scale": 9,
+      "pgxp_active": 1,
+      "host_process_cycles_per_guest_frame": 50496224.17218543,
+      "max_host_interval_percent": 100.0,
+      "fraction_host_intervals_above90": 0.9557522123893806,
+      "compiler_observed": true,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "f49e2d19ebad9905ed06d1c98a4c447b85910e36b45321ceaf0e45b5899ddad3",
+      "execution_identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "fixture_sha256": "1959ac33da169c5caf0ecd0c870c1d773e62d3c8beb36bd0cb12ab415d03daa3",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "78e18c9abce68380725b512146269c6405688bc1926e88621439766885224cb6"
+    },
+    {
+      "file": "tomba-663-full-block1-1-control.json",
+      "sha256": "1a9551eff5c6d8c024148386e185b1c751afa048af45ee0c6a34c763fda50649",
+      "title": "tomba",
+      "block": 1,
+      "kind": "control",
+      "frames": 900,
+      "wall_seconds": 15.015943299978971,
+      "cpu_seconds": 3.90625,
+      "cpu_ms_per_frame": 4.340277777777778,
+      "guest_hz": 59.936294511798025,
+      "draws_per_frame": 439.25666666666666,
+      "host_cpu_percent": 27.503902185223726,
+      "startup_load_seconds": 0.9110066000139341,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 20910614.377777778,
+      "max_host_interval_percent": 78.125,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "e5845b2f423c5a4e077e1b3418480be6094cdb4e83e5fab24ba27207636b5a6f",
+      "execution_identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+      "fixture_sha256": "2eca61b2173678f67508cdf6ac6a15f53412daeb48ed5e1f3f44ccf5904c00d2",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    },
+    {
+      "file": "tomba-663-full-block1-2-native.json",
+      "sha256": "9cfb71f796cfa000261a0547ea01b66aaf76c77b5ce4f765dcdc4f7481b4c17d",
+      "title": "tomba",
+      "block": 1,
+      "kind": "native",
+      "frames": 900,
+      "wall_seconds": 15.010128099936992,
+      "cpu_seconds": 3.625,
+      "cpu_ms_per_frame": 4.027777777777778,
+      "guest_hz": 59.95951493603695,
+      "draws_per_frame": 439.2577777777778,
+      "host_cpu_percent": 18.303077623788145,
+      "startup_load_seconds": 0.9117899000411853,
+      "guest_cycles_per_frame": 564470.8044444445,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 19027875.32222222,
+      "max_host_interval_percent": 55.46218487394958,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": true,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "828de1cdeae1499b85e4c48a5354527808e943d2ab961d885eba41d5af3d274d",
+      "execution_identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+      "fixture_sha256": "71a152e46846b923eab4d3eaea4da70387a644f25814c9dc458c99e3adb283fb",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    },
+    {
+      "file": "tomba-663-full-block1-3-native.json",
+      "sha256": "5be3e3d6c2e45d0084f977342e292c0df12389e11e575c8560f71d6fa45f066c",
+      "title": "tomba",
+      "block": 1,
+      "kind": "native",
+      "frames": 904,
+      "wall_seconds": 15.082210600026883,
+      "cpu_seconds": 3.46875,
+      "cpu_ms_per_frame": 3.837112831858407,
+      "guest_hz": 59.9381631760525,
+      "draws_per_frame": 439.2566371681416,
+      "host_cpu_percent": 15.544041450777202,
+      "startup_load_seconds": 0.8104710000334308,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 18693934.933628317,
+      "max_host_interval_percent": 64.0625,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "828de1cdeae1499b85e4c48a5354527808e943d2ab961d885eba41d5af3d274d",
+      "execution_identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+      "fixture_sha256": "71a152e46846b923eab4d3eaea4da70387a644f25814c9dc458c99e3adb283fb",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    },
+    {
+      "file": "tomba-663-full-block1-4-control.json",
+      "sha256": "f616a51026ed961e144286363b20716eb1c8fb8300a7fdbae75fbbab189570a2",
+      "title": "tomba",
+      "block": 1,
+      "kind": "control",
+      "frames": 902,
+      "wall_seconds": 15.043802300002426,
+      "cpu_seconds": 3.796875,
+      "cpu_ms_per_frame": 4.209395787139689,
+      "guest_hz": 59.95824606122712,
+      "draws_per_frame": 439.2560975609756,
+      "host_cpu_percent": 12.98987801712951,
+      "startup_load_seconds": 0.8101834000553936,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 19621945.066518847,
+      "max_host_interval_percent": 47.65625,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "e5845b2f423c5a4e077e1b3418480be6094cdb4e83e5fab24ba27207636b5a6f",
+      "execution_identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+      "fixture_sha256": "2eca61b2173678f67508cdf6ac6a15f53412daeb48ed5e1f3f44ccf5904c00d2",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    },
+    {
+      "file": "tomba-663-full-block2-1-control.json",
+      "sha256": "e5a0ef2dc3c870b4eb5d17cac0f80a5a787a5e098188c5673714281c0769ea96",
+      "title": "tomba",
+      "block": 2,
+      "kind": "control",
+      "frames": 906,
+      "wall_seconds": 15.103540900046937,
+      "cpu_seconds": 4.140625,
+      "cpu_ms_per_frame": 4.570226269315674,
+      "guest_hz": 59.9859334970374,
+      "draws_per_frame": 438.8366445916115,
+      "host_cpu_percent": 19.124587832158788,
+      "startup_load_seconds": 0.8100424000294879,
+      "guest_cycles_per_frame": 564431.1445916115,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 20322443.090507727,
+      "max_host_interval_percent": 89.84375,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "e5845b2f423c5a4e077e1b3418480be6094cdb4e83e5fab24ba27207636b5a6f",
+      "execution_identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+      "fixture_sha256": "2eca61b2173678f67508cdf6ac6a15f53412daeb48ed5e1f3f44ccf5904c00d2",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    },
+    {
+      "file": "tomba-663-full-block2-2-native.json",
+      "sha256": "c9265b149b612c6b70576fe337f918d433eb0d92046d253ae2a2f8be6ff62322",
+      "title": "tomba",
+      "block": 2,
+      "kind": "native",
+      "frames": 906,
+      "wall_seconds": 15.111009199987166,
+      "cpu_seconds": 3.515625,
+      "cpu_ms_per_frame": 3.8803807947019866,
+      "guest_hz": 59.95628670524332,
+      "draws_per_frame": 439.25938189845476,
+      "host_cpu_percent": 13.023255813953488,
+      "startup_load_seconds": 0.8105730999959633,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 18247859.977924943,
+      "max_host_interval_percent": 58.91472868217054,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "828de1cdeae1499b85e4c48a5354527808e943d2ab961d885eba41d5af3d274d",
+      "execution_identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+      "fixture_sha256": "71a152e46846b923eab4d3eaea4da70387a644f25814c9dc458c99e3adb283fb",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    },
+    {
+      "file": "tomba-663-full-block2-3-native.json",
+      "sha256": "083d02e48dd66b2eea99b7e4a30be9a757ba17004848d55713ce8fe1178a7ac7",
+      "title": "tomba",
+      "block": 2,
+      "kind": "native",
+      "frames": 906,
+      "wall_seconds": 15.115715800086036,
+      "cpu_seconds": 3.40625,
+      "cpu_ms_per_frame": 3.7596578366445916,
+      "guest_hz": 59.937618038230326,
+      "draws_per_frame": 439.25938189845476,
+      "host_cpu_percent": 13.40392561983471,
+      "startup_load_seconds": 0.8101821999298409,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 18200561.169977926,
+      "max_host_interval_percent": 52.34375,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": false,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "828de1cdeae1499b85e4c48a5354527808e943d2ab961d885eba41d5af3d274d",
+      "execution_identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+      "fixture_sha256": "71a152e46846b923eab4d3eaea4da70387a644f25814c9dc458c99e3adb283fb",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "edd73cfd9d6f5193bf450f18c92b3602524c252a48229fe9665cf2b27b246a4a",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "cpu-spans",
+            "contract": "generated-native-span-v1",
+            "source_sha256": "bf6a92e7314bea5b7052f20391ad349e5268df0c387620d8ca75da5d22a9d9b9"
+          },
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    },
+    {
+      "file": "tomba-663-full-block2-4-control.json",
+      "sha256": "dfb75e6d231e01376f2461f553a662856df9c57411d03eb8a2a0eb541aee2aaf",
+      "title": "tomba",
+      "block": 2,
+      "kind": "control",
+      "frames": 901,
+      "wall_seconds": 15.0403626000043,
+      "cpu_seconds": 4.109375,
+      "cpu_ms_per_frame": 4.560904550499445,
+      "guest_hz": 59.905470630059305,
+      "draws_per_frame": 439.26193118756936,
+      "host_cpu_percent": 22.589656964656964,
+      "startup_load_seconds": 1.0104713001055643,
+      "guest_cycles_per_frame": 564480.0,
+      "video_scale": 5,
+      "requested_scale": 5,
+      "pgxp_active": 0,
+      "host_process_cycles_per_guest_frame": 20359693.174250834,
+      "max_host_interval_percent": 58.035714285714285,
+      "fraction_host_intervals_above90": 0.0,
+      "compiler_observed": true,
+      "fixed_features_and_phase": true,
+      "binary_sha256": "e5845b2f423c5a4e077e1b3418480be6094cdb4e83e5fab24ba27207636b5a6f",
+      "execution_identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+      "fixture_sha256": "2eca61b2173678f67508cdf6ac6a15f53412daeb48ed5e1f3f44ccf5904c00d2",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+          }
+        ]
+      },
+      "settings": "[video]\nrenderer = \"opengl\"\ninternal_resolution = \"1080p\"\nsupersampling = 5\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n",
+      "config_sha256": "5166ac2f7236b693d5f01f17c31ea35bf063f591be896346dcbb95d9bd4abf54"
+    }
+  ],
+  "blocks": [
+    {
+      "title": "ape",
+      "block": 1,
+      "comparisons": {
+        "mean_host_cpu_below70": true,
+        "saturation_intervals_within_limit": true,
+        "host_difference_within8": false,
+        "features_phase_fixed": true,
+        "scale_pgxp_equivalent": true
+      },
+      "comparable": false,
+      "a_cpu_ms": 6.494443295969619,
+      "b_cpu_ms": 5.0669418633852334,
+      "reduction_percent": 21.98035100976673,
+      "a_cpu_range": [
+        6.339581036383683,
+        6.649305555555555
+      ],
+      "b_cpu_range": [
+        4.971590909090909,
+        5.162292817679558
+      ],
+      "a_cycle_counter": 30951893.849969372,
+      "b_cycle_counter": 24488891.924023964,
+      "cycle_counter_reduction_percent": 20.880796365072197,
+      "host_cpu_difference_points": 8.017780477790147,
+      "a_host_cpu": 24.1167400192109,
+      "b_host_cpu": 16.098959541420754,
+      "guest_hz_range": [
+        59.936106780985405,
+        59.97122914981791
+      ],
+      "draw_range": [
+        204.32154696132596,
+        204.6511111111111
+      ],
+      "compiler_observed": false
+    },
+    {
+      "title": "ape",
+      "block": 2,
+      "comparisons": {
+        "mean_host_cpu_below70": true,
+        "saturation_intervals_within_limit": true,
+        "host_difference_within8": true,
+        "features_phase_fixed": true,
+        "scale_pgxp_equivalent": true
+      },
+      "comparable": true,
+      "a_cpu_ms": 6.71875,
+      "b_cpu_ms": 5.309381929046563,
+      "reduction_percent": 20.97664105605115,
+      "a_cpu_range": [
+        6.510416666666667,
+        6.927083333333333
+      ],
+      "b_cpu_range": [
+        5.162139689578714,
+        5.456624168514413
+      ],
+      "a_cycle_counter": 31694035.355555557,
+      "b_cycle_counter": 24835963.53658537,
+      "cycle_counter_reduction_percent": 21.638367415299975,
+      "host_cpu_difference_points": 5.83379422288818,
+      "a_host_cpu": 28.045513200489367,
+      "b_host_cpu": 22.211718977601187,
+      "guest_hz_range": [
+        59.87085736311333,
+        59.98247631919122
+      ],
+      "draw_range": [
+        204.27555555555554,
+        205.02333333333334
+      ],
+      "compiler_observed": true
+    },
+    {
+      "title": "ape",
+      "block": 3,
+      "comparisons": {
+        "mean_host_cpu_below70": false,
+        "saturation_intervals_within_limit": false,
+        "host_difference_within8": true,
+        "features_phase_fixed": true,
+        "scale_pgxp_equivalent": true
+      },
+      "comparable": false,
+      "a_cpu_ms": 10.508709796234026,
+      "b_cpu_ms": 8.81604285829916,
+      "reduction_percent": 16.10727644740425,
+      "a_cpu_range": [
+        10.445537694013304,
+        10.571881898454746
+      ],
+      "b_cpu_range": [
+        8.765243902439025,
+        8.866841814159292
+      ],
+      "a_cycle_counter": 49601879.8521681,
+      "b_cycle_counter": 40546663.38147283,
+      "cycle_counter_reduction_percent": 18.255792920919834,
+      "host_cpu_difference_points": 1.0999265710623547,
+      "a_host_cpu": 96.0661821439594,
+      "b_host_cpu": 97.16610871502175,
+      "guest_hz_range": [
+        59.842070804073394,
+        60.020371792756386
+      ],
+      "draw_range": [
+        204.3048780487805,
+        205.26164079822615
+      ],
+      "compiler_observed": true
+    },
+    {
+      "title": "tomba",
+      "block": 1,
+      "comparisons": {
+        "mean_host_cpu_below70": true,
+        "saturation_intervals_within_limit": true,
+        "host_difference_within8": true,
+        "features_phase_fixed": true,
+        "scale_pgxp_equivalent": true
+      },
+      "comparable": true,
+      "a_cpu_ms": 4.274836782458733,
+      "b_cpu_ms": 3.932445304818092,
+      "reduction_percent": 8.0094631693449,
+      "a_cpu_range": [
+        4.209395787139689,
+        4.340277777777778
+      ],
+      "b_cpu_range": [
+        3.837112831858407,
+        4.027777777777778
+      ],
+      "a_cycle_counter": 20266279.722148314,
+      "b_cycle_counter": 18860905.12792527,
+      "cycle_counter_reduction_percent": 6.934546515151274,
+      "host_cpu_difference_points": 3.3233305638939434,
+      "a_host_cpu": 20.246890101176618,
+      "b_host_cpu": 16.923559537282674,
+      "guest_hz_range": [
+        59.936294511798025,
+        59.95951493603695
+      ],
+      "draw_range": [
+        439.2560975609756,
+        439.2577777777778
+      ],
+      "compiler_observed": true
+    },
+    {
+      "title": "tomba",
+      "block": 2,
+      "comparisons": {
+        "mean_host_cpu_below70": true,
+        "saturation_intervals_within_limit": true,
+        "host_difference_within8": true,
+        "features_phase_fixed": true,
+        "scale_pgxp_equivalent": true
+      },
+      "comparable": true,
+      "a_cpu_ms": 4.56556540990756,
+      "b_cpu_ms": 3.820019315673289,
+      "reduction_percent": 16.329764822039117,
+      "a_cpu_range": [
+        4.560904550499445,
+        4.570226269315674
+      ],
+      "b_cpu_range": [
+        3.7596578366445916,
+        3.8803807947019866
+      ],
+      "a_cycle_counter": 20341068.13237928,
+      "b_cycle_counter": 18224210.573951434,
+      "cycle_counter_reduction_percent": 10.406816125148277,
+      "host_cpu_difference_points": 7.643531681513775,
+      "a_host_cpu": 20.857122398407874,
+      "b_host_cpu": 13.2135907168941,
+      "guest_hz_range": [
+        59.905470630059305,
+        59.9859334970374
+      ],
+      "draw_range": [
+        438.8366445916115,
+        439.26193118756936
+      ],
+      "compiler_observed": true
+    }
+  ],
+  "reproduction": {
+    "method": "GetProcessTimes, QueryProcessCycleTime, GetSystemTimes and ReadProcessMemory of production progress/draw/phase/scale counters, every100ms; 120frame warmup then900guestframes. ABBA process restarts with same machine payload; full presenter hidden, paced, debugOFF, dummy audio. Raw source receipts/configs/seeds retained privately.",
+    "source_of_raw_data": "campaign beads-wuhs, shared-burndown-20261028",
+    "fixture_note": "Private seed headers adapted only to current codegen/execution identity. Machine payload is byte-identical within each game; hashes above. Own-build save/load checked independently. No fixture or ROM included.",
+    "workload": "Ape Escape SCUS-94423 first-level phase3 idle checkpoint, 9x/PGXP on; Tomba SCUS-94236 retained gameplay checkpoint, 5x/PGXP off variant. Same features within each pair; existing waits/geometry on both. Samples record actual scale, phase, draws and clock progress."
+  },
+  "limitations": [
+    "Ape only one comparable block; repeatability open.",
+    "Short paced checkpoint CPU measurements, not uncappedFPS, GPU timings or all-scene results.",
+    "Compiler processes present in some comparable blocks; actual load policy applies. Not an idle-host claim.",
+    "No default promotion; pending native card/completion, speaker review, Tomba live/restore explanation and appropriate netplay profile qualification."
+  ],
+  "raw_counters": {
+    "file": "native-cpu-spans-20261028.samples.jsonl",
+    "sha256": "1903932d7e51bba667ead9d0a67f3d874342857c6d7122966aae9c504cb2d883",
+    "format": "One JSON object per ABBA run, containing original sampled counters; unrelated process IDs omitted."
+  }
+}

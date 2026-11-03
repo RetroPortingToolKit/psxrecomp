@@ -1,0 +1,1853 @@
+{
+  "schema": 1,
+  "package": "native-openbios-block-read-v1",
+  "campaign": "beads-2wy8.1",
+  "owner_issue": "beads-wuhs",
+  "generated_utc": "2026-10-29T00:39:38.621374+00:00",
+  "engine_base": "ffbd9d1ca4ee698866a2a9d7c58c3cc29a77f111",
+  "selection": "ENHANCED with PSX_NATIVE_OPENBIOS_READ ON vs OFF; default OFF; original BIOS selectable",
+  "source_sha256": {
+    "runtime/src/openbios_read_job.c": "705e6aaadf127be8b87717044e4edf748b4f9913191715bdc951a2ab34f10069",
+    "cmake/psx_openbios_read_job.cmake": "03ae586abbe5a2fa90209e183dfde4753cb2e1ea8fae03e2630ace5c81dc34e8"
+  },
+  "host": {
+    "cpu": "AMD Ryzen 7 9800X3D, 8 physical / 16 logical",
+    "os": "Windows 11 Home 10.0.26200",
+    "gpu": "NVIDIA GeForce RTX 3080 Ti",
+    "driver": "616.86",
+    "backend": "OpenGL 3.3, hidden full presenter"
+  },
+  "protocol": {
+    "order": [
+      "control",
+      "native",
+      "native",
+      "control"
+    ],
+    "cpu_cap_during_timing": false,
+    "audio": "dummy output; emulation retained",
+    "target_pool": "capacity reservations, local physical host; pairs stay on one host/configuration",
+    "historical_quiet_host_gates": "unchanged",
+    "warmups": "excluded; control selects a CD/render checkpoint before timed ABBA"
+  },
+  "limits": [
+    "Bounded cold startup/loading CPU work, not gameplay FPS or load-time qualification.",
+    "Per-game features differ; compare each game only with its own matched control.",
+    "Ape block1 scope prose inherited a 360-frame label; actual frozen policy and raw counters are1560. No timing/counter sample was altered.",
+    "Retained pre-span generated title inputs; no native CPU-span/value package, and no new native-overlay execution qualification.",
+    "Current-build state and final owner adoption are separate gates. No merge/default/release authorization."
+  ],
+  "games": [
+    {
+      "name": "Tomba! (SCUS-94236 USA)",
+      "classification": "bounded startup CPU benefit; block1 overlap, block2 separated; no broad gameplay claim",
+      "blocks": [
+        {
+          "block": 1,
+          "raw": "firmware-jobs-tomba-cold-abba-block1.json",
+          "samples": [
+            {
+              "index": 1,
+              "mode": "control",
+              "engine_commit": "d59493ac8998001a67687ac9a4eb00a066e9592c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "6007de0b95d9f771773bbd418a33b66663c266a8a31aa4394b50128384142f47",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": null,
+              "cpu_seconds": 1.921875,
+              "wall_seconds": 4.970247899997048,
+              "cpu_ms_per_frame": 5.338541666666667,
+              "host_process_cycles": 8948701770,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 181248,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140291,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 49.0657843518879,
+              "host_telemetry": [
+                {
+                  "monotonic": 698868.968,
+                  "system_times": [
+                    56839713593750,
+                    79646321875000,
+                    32172673437500
+                  ],
+                  "gpu": "25, 2059",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698873.984,
+                  "system_times": [
+                    56840122500000,
+                    79646890625000,
+                    32172907500000
+                  ],
+                  "gpu": "28, 2086",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 2,
+              "mode": "native",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "21ded752aea61c1866184162c33af7921a0f8a55f71a5f7fbaa63efe2fe88bb9",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c27ec18a1ab525dafdbf470f33419616768687da08ad84df81bccd2678dde6fd",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                5749,
+                84662543
+              ],
+              "cpu_seconds": 1.53125,
+              "wall_seconds": 4.208862800034694,
+              "cpu_ms_per_frame": 4.253472222222222,
+              "host_process_cycles": 7382391520,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 163840,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140306,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 59.226190476190474,
+              "host_telemetry": [
+                {
+                  "monotonic": 698874.546,
+                  "system_times": [
+                    56840162500000,
+                    79646953437500,
+                    32172932187500
+                  ],
+                  "gpu": "24, 2051",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698878.796,
+                  "system_times": [
+                    56840440781250,
+                    79647427187500,
+                    32173140937500
+                  ],
+                  "gpu": "21, 2088",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 3,
+              "mode": "native",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "21ded752aea61c1866184162c33af7921a0f8a55f71a5f7fbaa63efe2fe88bb9",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c27ec18a1ab525dafdbf470f33419616768687da08ad84df81bccd2678dde6fd",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                5749,
+                84662543
+              ],
+              "cpu_seconds": 1.71875,
+              "wall_seconds": 4.342440200038254,
+              "cpu_ms_per_frame": 4.774305555555555,
+              "host_process_cycles": 7798263030,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 167936,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140306,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 64.87989323843418,
+              "host_telemetry": [
+                {
+                  "monotonic": 698879.359,
+                  "system_times": [
+                    56840477812500,
+                    79647488281250,
+                    32173169843750
+                  ],
+                  "gpu": "19, 2053",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698883.75,
+                  "system_times": [
+                    56840724531250,
+                    79647964531250,
+                    32173396093750
+                  ],
+                  "gpu": "15, 2162",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 4,
+              "mode": "control",
+              "engine_commit": "d59493ac8998001a67687ac9a4eb00a066e9592c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "6007de0b95d9f771773bbd418a33b66663c266a8a31aa4394b50128384142f47",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": null,
+              "cpu_seconds": 1.671875,
+              "wall_seconds": 4.185142800095491,
+              "cpu_ms_per_frame": 4.644097222222222,
+              "host_process_cycles": 8155197010,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 163840,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140291,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 55.79044117647059,
+              "host_telemetry": [
+                {
+                  "monotonic": 698884.296,
+                  "system_times": [
+                    56840762656250,
+                    79648021718750,
+                    32173423906250
+                  ],
+                  "gpu": "12, 2181",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698888.531,
+                  "system_times": [
+                    56841063281250,
+                    79648485312500,
+                    32173640312500
+                  ],
+                  "gpu": "20, 2365",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            }
+          ],
+          "cpu_ms_per_vblank": {
+            "control": [
+              5.338541666666667,
+              4.644097222222222
+            ],
+            "native": [
+              4.253472222222222,
+              4.774305555555555
+            ]
+          },
+          "mean_cpu_reduction_percent": 9.565217391304348,
+          "sample_ranges_overlap": true,
+          "paired_cpu_reduction_percent": [
+            20.32520325203252,
+            -2.8037383177569986
+          ],
+          "paired_host_cycle_reduction_percent": [
+            17.50321208883018,
+            4.376767103999124
+          ],
+          "matched_progress_and_features": true
+        },
+        {
+          "block": 2,
+          "raw": "firmware-jobs-tomba-cold-abba-block2.json",
+          "samples": [
+            {
+              "index": 1,
+              "mode": "control",
+              "engine_commit": "d59493ac8998001a67687ac9a4eb00a066e9592c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "6007de0b95d9f771773bbd418a33b66663c266a8a31aa4394b50128384142f47",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": null,
+              "cpu_seconds": 1.765625,
+              "wall_seconds": 4.367352099972777,
+              "cpu_ms_per_frame": 4.904513888888889,
+              "host_process_cycles": 8192247110,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 163840,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140291,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 46.40017667844523,
+              "host_telemetry": [
+                {
+                  "monotonic": 698940.093,
+                  "system_times": [
+                    56845815625000,
+                    79654635781250,
+                    32175739843750
+                  ],
+                  "gpu": "34, 2046",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698944.515,
+                  "system_times": [
+                    56846194843750,
+                    79655168281250,
+                    32175914843750
+                  ],
+                  "gpu": "41, 2080",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 2,
+              "mode": "native",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "21ded752aea61c1866184162c33af7921a0f8a55f71a5f7fbaa63efe2fe88bb9",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c27ec18a1ab525dafdbf470f33419616768687da08ad84df81bccd2678dde6fd",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                5749,
+                84662543
+              ],
+              "cpu_seconds": 1.4375,
+              "wall_seconds": 4.233392299967818,
+              "cpu_ms_per_frame": 3.9930555555555554,
+              "host_process_cycles": 7111395160,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 163840,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140306,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 46.60127737226277,
+              "host_telemetry": [
+                {
+                  "monotonic": 698945.078,
+                  "system_times": [
+                    56846235781250,
+                    79655225312500,
+                    32175947812500
+                  ],
+                  "gpu": "24, 2045",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698949.359,
+                  "system_times": [
+                    56846601562500,
+                    79655725156250,
+                    32176132968750
+                  ],
+                  "gpu": "27, 2078",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 3,
+              "mode": "native",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "21ded752aea61c1866184162c33af7921a0f8a55f71a5f7fbaa63efe2fe88bb9",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c27ec18a1ab525dafdbf470f33419616768687da08ad84df81bccd2678dde6fd",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                5749,
+                84662543
+              ],
+              "cpu_seconds": 1.609375,
+              "wall_seconds": 4.3494263999164104,
+              "cpu_ms_per_frame": 4.470486111111111,
+              "host_process_cycles": 7871090000,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 169984,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140306,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 60.830205343342904,
+              "host_telemetry": [
+                {
+                  "monotonic": 698949.937,
+                  "system_times": [
+                    56846647343750,
+                    79655790312500,
+                    32176157656250
+                  ],
+                  "gpu": "25, 2043",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698954.343,
+                  "system_times": [
+                    56846924531250,
+                    79656278281250,
+                    32176377343750
+                  ],
+                  "gpu": "29, 2142",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 4,
+              "mode": "control",
+              "engine_commit": "d59493ac8998001a67687ac9a4eb00a066e9592c",
+              "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+              "binary_sha256": "6007de0b95d9f771773bbd418a33b66663c266a8a31aa4394b50128384142f47",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "076cbb8574aa62204fa3c965650784e2cd0af93964e8104489770076c836e9be"
+                  }
+                ]
+              },
+              "config_sha256": "933109e7bf78884ba02ec6f2d8239a2acc19ae36ac2f0ce9b965a577c85d074c",
+              "frame": 360,
+              "guest_cycles": 203212800,
+              "draws": 124,
+              "cd_dma_transfers": 284,
+              "native_jobs": null,
+              "cpu_seconds": 1.921875,
+              "wall_seconds": 4.546897200052626,
+              "cpu_ms_per_frame": 5.338541666666667,
+              "host_process_cycles": 8909876010,
+              "pgxp": 0,
+              "video_scale": 1,
+              "requested_scale": 1,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 264600,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 0,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 177152,
+                  "nonzero": 0,
+                  "audible": 0
+                },
+                {
+                  "frames": 140291,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 60.9906462585034,
+              "host_telemetry": [
+                {
+                  "monotonic": 698954.921,
+                  "system_times": [
+                    56846962500000,
+                    79656344062500,
+                    32176406562500
+                  ],
+                  "gpu": "30, 2086",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 698959.531,
+                  "system_times": [
+                    56847249218750,
+                    79656860000000,
+                    32176625625000
+                  ],
+                  "gpu": "30, 2074",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            }
+          ],
+          "cpu_ms_per_vblank": {
+            "control": [
+              4.904513888888889,
+              5.338541666666667
+            ],
+            "native": [
+              3.9930555555555554,
+              4.470486111111111
+            ]
+          },
+          "mean_cpu_reduction_percent": 17.372881355932222,
+          "sample_ranges_overlap": false,
+          "paired_cpu_reduction_percent": [
+            18.58407079646017,
+            16.260162601626014
+          ],
+          "paired_host_cycle_reduction_percent": [
+            13.193595548169446,
+            11.658815552922608
+          ],
+          "matched_progress_and_features": true
+        }
+      ]
+    },
+    {
+      "name": "Ape Escape (SCUS-94423 USA)",
+      "classification": "neutral/inconclusive within observed variation; no proven CPU gain or reproducible regression",
+      "blocks": [
+        {
+          "block": 1,
+          "raw": "firmware-jobs-ape-cold-abba-block1.json",
+          "samples": [
+            {
+              "index": 1,
+              "mode": "control",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "594927a8ad6d2b6fb90c5207d512249256932ee0d09e4f7a9d5da29e767ec4c7",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": null,
+              "cpu_seconds": 6.609375,
+              "wall_seconds": 24.555824000039138,
+              "cpu_ms_per_frame": 4.236778846153846,
+              "host_process_cycles": 33046059550,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1043456,
+                  "nonzero": 16027,
+                  "audible": 1038
+                },
+                {
+                  "frames": 1010118,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 71.69047619047619,
+              "host_telemetry": [
+                {
+                  "monotonic": 699944.609,
+                  "system_times": [
+                    56896176718750,
+                    79742779218750,
+                    32248318906250
+                  ],
+                  "gpu": "34, 2155",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 699969.234,
+                  "system_times": [
+                    56897291406250,
+                    79744818437500,
+                    32250217187500
+                  ],
+                  "gpu": "43, 2555",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 2,
+              "mode": "native",
+              "engine_commit": "ceaaab9c7ce2d57887a44e5ae0adfe599d4d72be",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "16406c9c317b618c77d2387b069177d2734d7048341c197ef98abac28c5fbd06",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "ab5d4d7f02977115f27fae9707227963d4d372c45bed1b7a613b53bb92cf38e5",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                6401,
+                93763111
+              ],
+              "cpu_seconds": 6.859375,
+              "wall_seconds": 24.317752599949017,
+              "cpu_ms_per_frame": 4.397035256410256,
+              "host_process_cycles": 32488182710,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1041408,
+                  "nonzero": 15583,
+                  "audible": 753
+                },
+                {
+                  "frames": 1010132,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 74.40705128205128,
+              "host_telemetry": [
+                {
+                  "monotonic": 699969.953,
+                  "system_times": [
+                    56897306406250,
+                    79744873906250,
+                    32250279218750
+                  ],
+                  "gpu": "38, 2151",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 699994.328,
+                  "system_times": [
+                    56898304531250,
+                    79746860781250,
+                    32252192343750
+                  ],
+                  "gpu": "25, 2555",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 3,
+              "mode": "native",
+              "engine_commit": "ceaaab9c7ce2d57887a44e5ae0adfe599d4d72be",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "16406c9c317b618c77d2387b069177d2734d7048341c197ef98abac28c5fbd06",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "ab5d4d7f02977115f27fae9707227963d4d372c45bed1b7a613b53bb92cf38e5",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                6401,
+                93763111
+              ],
+              "cpu_seconds": 6.890625,
+              "wall_seconds": 23.994476499967277,
+              "cpu_ms_per_frame": 4.4170673076923075,
+              "host_process_cycles": 31202241090,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1031168,
+                  "nonzero": 16196,
+                  "audible": 1157
+                },
+                {
+                  "frames": 1010132,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 74.1593567251462,
+              "host_telemetry": [
+                {
+                  "monotonic": 699995.0,
+                  "system_times": [
+                    56898321093750,
+                    79746911250000,
+                    32252249375000
+                  ],
+                  "gpu": "33, 2171",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 700019.046,
+                  "system_times": [
+                    56899315312500,
+                    79749058906250,
+                    32253949218750
+                  ],
+                  "gpu": "63, 2730",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 4,
+              "mode": "control",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "594927a8ad6d2b6fb90c5207d512249256932ee0d09e4f7a9d5da29e767ec4c7",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": null,
+              "cpu_seconds": 6.984375,
+              "wall_seconds": 24.3228083999129,
+              "cpu_ms_per_frame": 4.477163461538462,
+              "host_process_cycles": 32725873460,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1044480,
+                  "nonzero": 15712,
+                  "audible": 842
+                },
+                {
+                  "frames": 1010118,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 70.40064102564104,
+              "host_telemetry": [
+                {
+                  "monotonic": 700019.703,
+                  "system_times": [
+                    56899342343750,
+                    79749120000000,
+                    32253993125000
+                  ],
+                  "gpu": "41, 2346",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 700044.078,
+                  "system_times": [
+                    56900496718750,
+                    79751525312500,
+                    32255487812500
+                  ],
+                  "gpu": "52, 2707",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            }
+          ],
+          "cpu_ms_per_vblank": {
+            "control": [
+              4.236778846153846,
+              4.477163461538462
+            ],
+            "native": [
+              4.397035256410256,
+              4.4170673076923075
+            ]
+          },
+          "mean_cpu_reduction_percent": -1.1494252873563315,
+          "sample_ranges_overlap": true,
+          "paired_cpu_reduction_percent": [
+            -3.78250591016549,
+            1.342281879194629
+          ],
+          "paired_host_cycle_reduction_percent": [
+            1.688179612325369,
+            4.655742410855124
+          ],
+          "matched_progress_and_features": true
+        },
+        {
+          "block": 2,
+          "raw": "firmware-jobs-ape-cold-abba-block2.json",
+          "samples": [
+            {
+              "index": 1,
+              "mode": "control",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "594927a8ad6d2b6fb90c5207d512249256932ee0d09e4f7a9d5da29e767ec4c7",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": null,
+              "cpu_seconds": 7.09375,
+              "wall_seconds": 24.35471540002618,
+              "cpu_ms_per_frame": 4.547275641025641,
+              "host_process_cycles": 33404220230,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1044480,
+                  "nonzero": 15676,
+                  "audible": 813
+                },
+                {
+                  "frames": 1010118,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 71.3458466453674,
+              "host_telemetry": [
+                {
+                  "monotonic": 700159.937,
+                  "system_times": [
+                    56907122187500,
+                    79763288906250,
+                    32262254218750
+                  ],
+                  "gpu": "44, 2384",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 700184.343,
+                  "system_times": [
+                    56908243281250,
+                    79765685156250,
+                    32263770468750
+                  ],
+                  "gpu": "51, 2781",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 2,
+              "mode": "native",
+              "engine_commit": "ceaaab9c7ce2d57887a44e5ae0adfe599d4d72be",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "16406c9c317b618c77d2387b069177d2734d7048341c197ef98abac28c5fbd06",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "ab5d4d7f02977115f27fae9707227963d4d372c45bed1b7a613b53bb92cf38e5",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                6401,
+                93763111
+              ],
+              "cpu_seconds": 7.375,
+              "wall_seconds": 24.332390799885616,
+              "cpu_ms_per_frame": 4.727564102564102,
+              "host_process_cycles": 34016666890,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1038336,
+                  "nonzero": 16368,
+                  "audible": 1289
+                },
+                {
+                  "frames": 1010132,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 91.22357463164637,
+              "host_telemetry": [
+                {
+                  "monotonic": 700185.156,
+                  "system_times": [
+                    56908251875000,
+                    79765763281250,
+                    32263819843750
+                  ],
+                  "gpu": "60, 2383",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 700209.562,
+                  "system_times": [
+                    56908594375000,
+                    79767550625000,
+                    32265935000000
+                  ],
+                  "gpu": "33, 2624",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 3,
+              "mode": "native",
+              "engine_commit": "ceaaab9c7ce2d57887a44e5ae0adfe599d4d72be",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "16406c9c317b618c77d2387b069177d2734d7048341c197ef98abac28c5fbd06",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "ab5d4d7f02977115f27fae9707227963d4d372c45bed1b7a613b53bb92cf38e5",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  },
+                  {
+                    "name": "openbios-block-read",
+                    "contract": "openbios-cd-request-v1",
+                    "source_sha256": "09a88c02cb56b35d6cddf37c1499755d5e7ce43c739765fbd58a8e46a9134875"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": [
+                13,
+                13,
+                0,
+                6401,
+                93763111
+              ],
+              "cpu_seconds": 6.390625,
+              "wall_seconds": 24.45290249993559,
+              "cpu_ms_per_frame": 4.096554487179487,
+              "host_process_cycles": 30065602490,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1047552,
+                  "nonzero": 15713,
+                  "audible": 839
+                },
+                {
+                  "frames": 1010132,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 79.7442638623327,
+              "host_telemetry": [
+                {
+                  "monotonic": 700210.468,
+                  "system_times": [
+                    56908594375000,
+                    79767585625000,
+                    32266047500000
+                  ],
+                  "gpu": "23, 2240",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 700234.968,
+                  "system_times": [
+                    56909388906250,
+                    79769525937500,
+                    32268029687500
+                  ],
+                  "gpu": "38, 2627",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            },
+            {
+              "index": 4,
+              "mode": "control",
+              "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+              "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+              "binary_sha256": "594927a8ad6d2b6fb90c5207d512249256932ee0d09e4f7a9d5da29e767ec4c7",
+              "execution": {
+                "schema": 1,
+                "profile": "ENHANCED",
+                "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+                "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+                "implementations": [
+                  {
+                    "name": "idle-wait",
+                    "contract": "audited-store-counter-v2",
+                    "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+                  }
+                ]
+              },
+              "config_sha256": "96ab67c22a84011b066d6df86af0c5640d74a923d3370bac9af7e2d62cb62ad0",
+              "frame": 1560,
+              "guest_cycles": 880588800,
+              "draws": 5683,
+              "cd_dma_transfers": 1253,
+              "native_jobs": null,
+              "cpu_seconds": 6.890625,
+              "wall_seconds": 24.3534075000789,
+              "cpu_ms_per_frame": 4.4170673076923075,
+              "host_process_cycles": 32790674240,
+              "pgxp": 1,
+              "video_scale": 9,
+              "requested_scale": 9,
+              "dummy_audio_underruns": 0,
+              "audio_taps": [
+                {
+                  "frames": 1146600,
+                  "nonzero": 27875,
+                  "audible": 6328
+                },
+                {
+                  "frames": 30576,
+                  "nonzero": 30253,
+                  "audible": 6408
+                },
+                {
+                  "frames": 1046528,
+                  "nonzero": 16360,
+                  "audible": 1288
+                },
+                {
+                  "frames": 1010118,
+                  "nonzero": 0,
+                  "audible": 0
+                }
+              ],
+              "host_cpu_busy_percent": 62.61196417146513,
+              "host_telemetry": [
+                {
+                  "monotonic": 700235.593,
+                  "system_times": [
+                    56909418906250,
+                    79769584375000,
+                    32268068750000
+                  ],
+                  "gpu": "46, 2243",
+                  "gpu_exit": 0
+                },
+                {
+                  "monotonic": 700259.984,
+                  "system_times": [
+                    56910879843750,
+                    79771972187500,
+                    32269588437500
+                  ],
+                  "gpu": "36, 2613",
+                  "gpu_exit": 0
+                }
+              ],
+              "settings_sha256": null
+            }
+          ],
+          "cpu_ms_per_vblank": {
+            "control": [
+              4.547275641025641,
+              4.4170673076923075
+            ],
+            "native": [
+              4.727564102564102,
+              4.096554487179487
+            ]
+          },
+          "mean_cpu_reduction_percent": 1.5642458100558754,
+          "sample_ranges_overlap": true,
+          "paired_cpu_reduction_percent": [
+            -3.96475770925111,
+            7.256235827664403
+          ],
+          "paired_host_cycle_reduction_percent": [
+            -1.833440971778666,
+            8.31050843924337
+          ],
+          "matched_progress_and_features": true
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "caller_contract": "11 generated-reference/native scenarios, base and real PGXP, plus due-IRQ-before-wait; passed",
+    "build_selection": "default OFF, native ON, REFERENCE ON uses original, wrong image/missing body fail; passed",
+    "current_build_state": {
+      "scope": "Current-build correctness diagnostic, not a timed performance run; capped at0.8 physical CPU under1.0 reservation",
+      "tomba": {
+        "windows_per_build": 3,
+        "warm_mismatches": [
+          0,
+          0,
+          0
+        ],
+        "cold_mismatches": [
+          0,
+          0,
+          0
+        ],
+        "shared_restore_drift_per_8": [
+          1,
+          1,
+          0
+        ],
+        "shared_drift_parts": "aux",
+        "introduced_difference_observed": false
+      },
+      "ape": {
+        "windows_per_build_passed": 4,
+        "warm_mismatches": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "cold_mismatches": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "restore_drift": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "later_failure": "Both original and candidate fail fast in window5 ambient prime: unknown dispatch addr=ra=0x4C544954, phys=0x0C544954, a0=0x8013AE90, a1=0x1F801110; owned process exit1 without harness termination. Confirmed with bounded liveness-aware read retry.",
+        "classification": "Pre-existing shared baseline failure, not an introduced native-read regression. Root cause not established; broader lifecycle qualification remains open.",
+        "tracking": "beads-eio.3.66",
+        "native_requests_before_failure": [
+          13,
+          13,
+          0
+        ],
+        "evidence": [
+          "firmware-jobs-ape-selfcheck-retry-1-control.json",
+          "firmware-jobs-ape-selfcheck-retry-2-native.json",
+          "firmware-jobs-ape-control-psx_crash.txt",
+          "firmware-jobs-ape-native-psx_crash.txt"
+        ]
+      },
+      "final_owner_checks": "Bundled at end by owner; no interactive game presented or repeated",
+      "common_netplay_profile": "Not newly qualified by these offline runs"
+    },
+    "owner_adoption": "deferred to end by owner; no interactive launch"
+  },
+  "compiler": "GCC 15.2.0, Release -O3 -DNDEBUG -ffp-contract=off, runtime IPO OFF",
+  "runtime_implementation_commit": "9a5e5d457520e53b11f9d45b65f334f9c3f76d65",
+  "builds": {
+    "tomba": {
+      "control": {
+        "engine_commit": "d59493ac8998001a67687ac9a4eb00a066e9592c",
+        "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+        "binary_sha256": "6007de0b95d9f771773bbd418a33b66663c266a8a31aa4394b50128384142f47",
+        "effective_bios_compile_defines_and_flags": "  DEFINES = -DDEFAULT_DEBUG_PORT=4370 -DFMT_HEADER_ONLY=1 -DLNG_SDL3=1 -DNOMINMAX -DPSX_BUILD_IMPLEMENTATIONS=\\\"tomba_geometry=HLE\\\" -DPSX_BUNDLED_BIOS_PATH=\\\"bios/openbios.bin\\\" -DPSX_DEFAULT_BIOS_PATH=\\\"bios/OpenBIOS.BIN\\\" -DPSX_DEFAULT_GAME_CONFIG_PATH=\\\"game.toml\\\" -DPSX_ENABLE_BLOCK_CYCLES=1 -DPSX_EXECUTION_PROFILE_CONFIG=\\\"$CAMPAIGN/firmware-jobs-tomba-control/psx_execution/psx-runtime/profile.h\\\" -DPSX_EXPECTED_BIOS_STEM=\\\"\\\" -DPSX_HAS_GAME_CODEGEN=1 -DPSX_HAS_GAME_DISPATCH=1 -DPSX_HAS_RBENGINE_SNAP=1 -DPSX_MAX_PLAYERS=1 -DPSX_MEMCARD_SLOTS=2 -DPSX_MOD_DEVELOPER_CHANNEL=1 -DPSX_NATIVE_BUILD=1 -DPSX_NO_DEBUG_TOOLS=1 -DPSX_SAVESTATE_IMPL_TAG=1413957634u -DPSX_SDL3=1 -DPSX_SETUP_BIOS_STEMS=\\\"OpenBIOS\\\" -DPSX_SETUP_FRAMEWORK_REL=\\\"../firmware-jobs\\\" -DPSX_WINDOW_TITLE=\"\\\"Tomba! Recompiled\\\"\" -DRECOMP_LAUNCHER -DRECOMP_UI_ENABLE_MODS=1 -DRECOMP_UI_PSX_HAS_REWIND=1 -DSDL_MAIN_HANDLED\n  FLAGS = -O3 -DNDEBUG -fzero-initialized-in-bss -ffp-contract=off -ffile-prefix-map=$CAMPAIGN/loading-tomba=. -fdebug-prefix-map=$CAMPAIGN/loading-tomba=.",
+        "generated_inputs": {
+          "SCUS_942.36_decls.h": "b94ffd8327ae5bae6e799b70555489ff01ed411328940240b10d9ea0fde96a27",
+          "SCUS_942.36_dispatch.c": "a70d887006104d79d55c8665c4557f01f3050d15bbb77a65cf48e5c9eaa8b498",
+          "SCUS_942.36_full.ranges": "7e852940995e265eefc4fa92e895e588651d65b3c552535aa84470c98c7d68d5",
+          "SCUS_942.36_full_00.c": "57d4f830a7b1b93acf8fece6b7abb1b3a3c1e6a1f465eb9f8e765de92dada356",
+          "SCUS_942.36_full_01.c": "93c6eb8d8e9eb00a7bee2b47b43f72ddacc08ec30e2f3212f0477fa4a6a0fb79",
+          "SCUS_942.36_full_02.c": "701ffc28e2ae1547f6605a3823286ce0e93ea4d32dfa3ac969b85eb6738defeb",
+          "SCUS_942.36_full_03.c": "6773e4bbf0d7cf6d04d0f2545a713a4b241c228c2f3980b3a08ceb71bdcf12ba",
+          "SCUS_942.36_full_04.c": "ed69d1619786a2857b99040c10c533d95a86ccbc2548f182c4557ea4923d4770",
+          "SCUS_942.36_full_05.c": "155fd8553398dc7434a0b0af7be9ebf6e8125639a17324c1240f6d2546027d12",
+          "SCUS_942.36_full_06.c": "2682b5ee27a00a20673c57ffbeee4869768c7c058f8c5c9c6e3d1fbc0f8e5bb0",
+          "SCUS_942.36_full_07.c": "7f8ca982b97aa3e9e6889274d91f791dc3e50b97c6c8db6b84f23ee103122f6c",
+          "SCUS_942.36_full_08.c": "ccbbf9fa6475345f1c638b1fc67c67180d06336e4285906a906ce7ddae6c674e",
+          "SCUS_942.36_full_09.c": "8ee5b5c3e6ac3fe51ca169b4163b88eb64abdc854172510da39619606c94f6b7",
+          "SCUS_942.36_full_10.c": "31bd15d94eda6e44b918385c43811c8dbd62ebed6bdd7bf5dd9d4278c16b7f7e",
+          "SCUS_942.36_full_11.c": "988b7e30a41b9526365b7df3cd8ddfb593152fe105c9dae3b29ccf72364183b7",
+          "SCUS_942.36_full_12.c": "54295a4dc216d4bc97136e07aea665fb9d4815e0e24a1d1a0321430d6bfe3338",
+          "SCUS_942.36_full_13.c": "42162f9a31afbede63b870b521bd3aeab79df8d02e7deb8c5ae24f2574ae411e",
+          "SCUS_942.36_full_14.c": "612838d46a569a37631b43359e16f38103acc0b33d6943c2b4d535d86c0c4b44",
+          "SCUS_942.36_full_15.c": "2cf720f6ab47d4357448cf60ee1cc76a9300613fe30cc911f8356079c3e3cf6a",
+          "SCUS_942.36_full_16.c": "907443dac1f59f5009f5cf0d0b0578a589d9ebf349938d1a93f980c9ea4f55a1",
+          "SCUS_942.36_full_17.c": "5db128b34f2bb54b73fb6e57dde4a16dd0f3f5cf482088bfaf3a5ecb4a70f76b",
+          "SCUS_942.36_full_18.c": "75b3b90ddd6abddc6d2df391a0f4bc6e206254f031322937bb8f91352ebf0b1a",
+          "SCUS_942.36_full_19.c": "ce31463cb550af9d8767539a5264e11985dc617c1de01c1290593b57d6580bc7",
+          "SCUS_942.36_full_20.c": "c15c0773dcc54b8644c97cb2eda605135d5dca7560f532af83ae3de8dba6e9b5",
+          "SCUS_942.36_full_21.c": "10d669f218ba38a0075ab5750d7b861c4ff043dab0413c546ed8363f511d8ccf",
+          "SCUS_942.36_full_22.c": "d2042493d10abdf3b745714c7bd700bf3e9e2bd0db7276593312a1323b0d4148",
+          "SCUS_942.36_full_23.c": "fab4d501c56240685497d5897731d40418b5d343cb98d61fc823277210d0a1e3",
+          "SCUS_942.36_full_24.c": "1a030095d6dfb906726652a79341e6d01d1cd50aaa2ed3de650bfbc69707da45",
+          "SCUS_942.36_full_25.c": "75afc6c96295ce63a34b61d310c757773e5a135fd30fb6212609c50e463fbac1",
+          "SCUS_942.36_full_26.c": "5b23aac7850b2bb590f52a3eaa92b6b1d058e0959e0d8e4c457f7a2b7d917587",
+          "SCUS_942.36_full_27.c": "deff9b0bf2320fb3dc8e08c9440052a8c0f6dbd6e0b5ddd8e05594cbd3befee0",
+          "SCUS_942.36_full_28.c": "4839226dbeede8ad3519d0893b56c386870ba2bd308971e23044ed3eb7deff43",
+          "SCUS_942.36_full_29.c": "f5c7ad13ed2e8b4d9e73bb0b5e3adaaa05e857b32f70e3d6b0ababa841db2019",
+          "SCUS_942.36_full_30.c": "83ec861032be749502b6f152985cc4bcb59930f5eb247fe8038a2c0523c3d2d9",
+          "SCUS_942.36_full_31.c": "8f9abc654187772c77e6433710edab1f50d9494f0ff646187973918f97b17f2e",
+          "SCUS_942.36_full_32.c": "9e41eb76af6f286b58895253383d4f13be61ab138b07cce2966cf24e0362f5c0",
+          "SCUS_942.36_full_33.c": "fafcf16b6399e4a2dd5a46a8c4dde27e093ebb23107b878a959b97144eb925de",
+          "SCUS_942.36_full_34.c": "08bcdf73ffe80f174189e4206e39a60e80bce4dbd0add99f3fbe6f39505b328f",
+          "SCUS_942.36_full_35.c": "84555c78ac18baa83e54032e7ec48591a2d649adb3fdb068da838f7d1c2b9c0d",
+          "SCUS_942.36_full_36.c": "2b68b105cae01cef4c918ebfdb6a3d8cb3d51805178b3bf107a1fda20ee12ab4",
+          "SCUS_942.36_full_37.c": "2c80d8d4a7386cbed36f86d0a0542650d6db4517dad86fe2080de5ce10f063ed",
+          "SCUS_942.36_full_38.c": "6cb2b10f232a467d787c73e76f9336044fe5a3a82878b105c70e1dda1e77497b",
+          "SCUS_942.36_full_39.c": "e6acadbeea2af1019135c5987185b5d050e5c31691b2124fb34f1f7b32943490",
+          "SCUS_942.36_full_40.c": "f0f083d210600e26214376c997e6a93d100c170a193ae244c0be726280203a0f",
+          "SCUS_942.36_full_41.c": "354b4312c050ea432f960c8d621da76443877822e9910e5260ad1b751457d354",
+          "SCUS_942.36_full_42.c": "86efa046e436343cc8db4c650f87da39c3ac5ac03b4e088f09f7aa6130759248",
+          "SCUS_942.36_full_43.c": "e5ee65c1205ee3fc2b0d4c00d387ecbcd2fd5975bc449cf8dc25522608e84bec",
+          "SCUS_942.36_full_44.c": "1d0b07e7f0d4968f637cbf918df1ca8086cc32e3728c77ab78b890b6045968e2",
+          "SCUS_942.36_full_45.c": "8c69a4c3503a8d8b3b723085205cdf12b444038bdf4f92c6655ce166bbc36b50",
+          "SCUS_942.36_full_46.c": "6bb1fd553265c1ba53661db2284135356440a72754ad5250e314621748ad5f20",
+          "SCUS_942.36_full_47.c": "9848622a09f469a5be5abdc8562d02c0381f87bdcebf89b93aaa03f7965db283",
+          "SCUS_942.36_full_48.c": "7e957075b9fd88a82b4dafc9f92883ff28f660c0ef43cf06e5493ccca5a87ac2"
+        }
+      },
+      "native": {
+        "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+        "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+        "binary_sha256": "21ded752aea61c1866184162c33af7921a0f8a55f71a5f7fbaa63efe2fe88bb9",
+        "effective_bios_compile_defines_and_flags": "  DEFINES = -DDEFAULT_DEBUG_PORT=4370 -DFMT_HEADER_ONLY=1 -DLNG_SDL3=1 -DNOMINMAX -DPSX_BUILD_IMPLEMENTATIONS=\\\"tomba_geometry=HLE\\\" -DPSX_BUNDLED_BIOS_PATH=\\\"bios/openbios.bin\\\" -DPSX_DEFAULT_BIOS_PATH=\\\"bios/OpenBIOS.BIN\\\" -DPSX_DEFAULT_GAME_CONFIG_PATH=\\\"game.toml\\\" -DPSX_ENABLE_BLOCK_CYCLES=1 -DPSX_EXECUTION_PROFILE_CONFIG=\\\"$CAMPAIGN/firmware-jobs-tomba-native/psx_execution/psx-runtime/profile.h\\\" -DPSX_EXPECTED_BIOS_STEM=\\\"\\\" -DPSX_HAS_GAME_CODEGEN=1 -DPSX_HAS_GAME_DISPATCH=1 -DPSX_HAS_RBENGINE_SNAP=1 -DPSX_MAX_PLAYERS=1 -DPSX_MEMCARD_SLOTS=2 -DPSX_MOD_DEVELOPER_CHANNEL=1 -DPSX_NATIVE_BUILD=1 -DPSX_NO_DEBUG_TOOLS=1 -DPSX_SAVESTATE_IMPL_TAG=1413957634u -DPSX_SDL3=1 -DPSX_SETUP_BIOS_STEMS=\\\"OpenBIOS\\\" -DPSX_SETUP_FRAMEWORK_REL=\\\"../firmware-jobs\\\" -DPSX_WINDOW_TITLE=\"\\\"Tomba! Recompiled\\\"\" -DRECOMP_LAUNCHER -DRECOMP_UI_ENABLE_MODS=1 -DRECOMP_UI_PSX_HAS_REWIND=1 -DSDL_MAIN_HANDLED\n  FLAGS = -O3 -DNDEBUG -fzero-initialized-in-bss -ffp-contract=off -ffile-prefix-map=$CAMPAIGN/loading-tomba=. -fdebug-prefix-map=$CAMPAIGN/loading-tomba=.",
+        "generated_inputs": {
+          "SCUS_942.36_decls.h": "b94ffd8327ae5bae6e799b70555489ff01ed411328940240b10d9ea0fde96a27",
+          "SCUS_942.36_dispatch.c": "a70d887006104d79d55c8665c4557f01f3050d15bbb77a65cf48e5c9eaa8b498",
+          "SCUS_942.36_full.ranges": "7e852940995e265eefc4fa92e895e588651d65b3c552535aa84470c98c7d68d5",
+          "SCUS_942.36_full_00.c": "57d4f830a7b1b93acf8fece6b7abb1b3a3c1e6a1f465eb9f8e765de92dada356",
+          "SCUS_942.36_full_01.c": "93c6eb8d8e9eb00a7bee2b47b43f72ddacc08ec30e2f3212f0477fa4a6a0fb79",
+          "SCUS_942.36_full_02.c": "701ffc28e2ae1547f6605a3823286ce0e93ea4d32dfa3ac969b85eb6738defeb",
+          "SCUS_942.36_full_03.c": "6773e4bbf0d7cf6d04d0f2545a713a4b241c228c2f3980b3a08ceb71bdcf12ba",
+          "SCUS_942.36_full_04.c": "ed69d1619786a2857b99040c10c533d95a86ccbc2548f182c4557ea4923d4770",
+          "SCUS_942.36_full_05.c": "155fd8553398dc7434a0b0af7be9ebf6e8125639a17324c1240f6d2546027d12",
+          "SCUS_942.36_full_06.c": "2682b5ee27a00a20673c57ffbeee4869768c7c058f8c5c9c6e3d1fbc0f8e5bb0",
+          "SCUS_942.36_full_07.c": "7f8ca982b97aa3e9e6889274d91f791dc3e50b97c6c8db6b84f23ee103122f6c",
+          "SCUS_942.36_full_08.c": "ccbbf9fa6475345f1c638b1fc67c67180d06336e4285906a906ce7ddae6c674e",
+          "SCUS_942.36_full_09.c": "8ee5b5c3e6ac3fe51ca169b4163b88eb64abdc854172510da39619606c94f6b7",
+          "SCUS_942.36_full_10.c": "31bd15d94eda6e44b918385c43811c8dbd62ebed6bdd7bf5dd9d4278c16b7f7e",
+          "SCUS_942.36_full_11.c": "988b7e30a41b9526365b7df3cd8ddfb593152fe105c9dae3b29ccf72364183b7",
+          "SCUS_942.36_full_12.c": "54295a4dc216d4bc97136e07aea665fb9d4815e0e24a1d1a0321430d6bfe3338",
+          "SCUS_942.36_full_13.c": "42162f9a31afbede63b870b521bd3aeab79df8d02e7deb8c5ae24f2574ae411e",
+          "SCUS_942.36_full_14.c": "612838d46a569a37631b43359e16f38103acc0b33d6943c2b4d535d86c0c4b44",
+          "SCUS_942.36_full_15.c": "2cf720f6ab47d4357448cf60ee1cc76a9300613fe30cc911f8356079c3e3cf6a",
+          "SCUS_942.36_full_16.c": "907443dac1f59f5009f5cf0d0b0578a589d9ebf349938d1a93f980c9ea4f55a1",
+          "SCUS_942.36_full_17.c": "5db128b34f2bb54b73fb6e57dde4a16dd0f3f5cf482088bfaf3a5ecb4a70f76b",
+          "SCUS_942.36_full_18.c": "75b3b90ddd6abddc6d2df391a0f4bc6e206254f031322937bb8f91352ebf0b1a",
+          "SCUS_942.36_full_19.c": "ce31463cb550af9d8767539a5264e11985dc617c1de01c1290593b57d6580bc7",
+          "SCUS_942.36_full_20.c": "c15c0773dcc54b8644c97cb2eda605135d5dca7560f532af83ae3de8dba6e9b5",
+          "SCUS_942.36_full_21.c": "10d669f218ba38a0075ab5750d7b861c4ff043dab0413c546ed8363f511d8ccf",
+          "SCUS_942.36_full_22.c": "d2042493d10abdf3b745714c7bd700bf3e9e2bd0db7276593312a1323b0d4148",
+          "SCUS_942.36_full_23.c": "fab4d501c56240685497d5897731d40418b5d343cb98d61fc823277210d0a1e3",
+          "SCUS_942.36_full_24.c": "1a030095d6dfb906726652a79341e6d01d1cd50aaa2ed3de650bfbc69707da45",
+          "SCUS_942.36_full_25.c": "75afc6c96295ce63a34b61d310c757773e5a135fd30fb6212609c50e463fbac1",
+          "SCUS_942.36_full_26.c": "5b23aac7850b2bb590f52a3eaa92b6b1d058e0959e0d8e4c457f7a2b7d917587",
+          "SCUS_942.36_full_27.c": "deff9b0bf2320fb3dc8e08c9440052a8c0f6dbd6e0b5ddd8e05594cbd3befee0",
+          "SCUS_942.36_full_28.c": "4839226dbeede8ad3519d0893b56c386870ba2bd308971e23044ed3eb7deff43",
+          "SCUS_942.36_full_29.c": "f5c7ad13ed2e8b4d9e73bb0b5e3adaaa05e857b32f70e3d6b0ababa841db2019",
+          "SCUS_942.36_full_30.c": "83ec861032be749502b6f152985cc4bcb59930f5eb247fe8038a2c0523c3d2d9",
+          "SCUS_942.36_full_31.c": "8f9abc654187772c77e6433710edab1f50d9494f0ff646187973918f97b17f2e",
+          "SCUS_942.36_full_32.c": "9e41eb76af6f286b58895253383d4f13be61ab138b07cce2966cf24e0362f5c0",
+          "SCUS_942.36_full_33.c": "fafcf16b6399e4a2dd5a46a8c4dde27e093ebb23107b878a959b97144eb925de",
+          "SCUS_942.36_full_34.c": "08bcdf73ffe80f174189e4206e39a60e80bce4dbd0add99f3fbe6f39505b328f",
+          "SCUS_942.36_full_35.c": "84555c78ac18baa83e54032e7ec48591a2d649adb3fdb068da838f7d1c2b9c0d",
+          "SCUS_942.36_full_36.c": "2b68b105cae01cef4c918ebfdb6a3d8cb3d51805178b3bf107a1fda20ee12ab4",
+          "SCUS_942.36_full_37.c": "2c80d8d4a7386cbed36f86d0a0542650d6db4517dad86fe2080de5ce10f063ed",
+          "SCUS_942.36_full_38.c": "6cb2b10f232a467d787c73e76f9336044fe5a3a82878b105c70e1dda1e77497b",
+          "SCUS_942.36_full_39.c": "e6acadbeea2af1019135c5987185b5d050e5c31691b2124fb34f1f7b32943490",
+          "SCUS_942.36_full_40.c": "f0f083d210600e26214376c997e6a93d100c170a193ae244c0be726280203a0f",
+          "SCUS_942.36_full_41.c": "354b4312c050ea432f960c8d621da76443877822e9910e5260ad1b751457d354",
+          "SCUS_942.36_full_42.c": "86efa046e436343cc8db4c650f87da39c3ac5ac03b4e088f09f7aa6130759248",
+          "SCUS_942.36_full_43.c": "e5ee65c1205ee3fc2b0d4c00d387ecbcd2fd5975bc449cf8dc25522608e84bec",
+          "SCUS_942.36_full_44.c": "1d0b07e7f0d4968f637cbf918df1ca8086cc32e3728c77ab78b890b6045968e2",
+          "SCUS_942.36_full_45.c": "8c69a4c3503a8d8b3b723085205cdf12b444038bdf4f92c6655ce166bbc36b50",
+          "SCUS_942.36_full_46.c": "6bb1fd553265c1ba53661db2284135356440a72754ad5250e314621748ad5f20",
+          "SCUS_942.36_full_47.c": "9848622a09f469a5be5abdc8562d02c0381f87bdcebf89b93aaa03f7965db283",
+          "SCUS_942.36_full_48.c": "7e957075b9fd88a82b4dafc9f92883ff28f660c0ef43cf06e5493ccca5a87ac2"
+        }
+      }
+    },
+    "ape": {
+      "control": {
+        "engine_commit": "c608a2eb86bc08e333a3dfdbaaca5834a02ad40c",
+        "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+        "binary_sha256": "594927a8ad6d2b6fb90c5207d512249256932ee0d09e4f7a9d5da29e767ec4c7",
+        "effective_bios_compile_defines_and_flags": "  DEFINES = -DDEFAULT_DEBUG_PORT=4480 -DFMT_HEADER_ONLY=1 -DLNG_SDL3=1 -DNOMINMAX -DPSX_BUNDLED_BIOS_PATH=\\\"bios/openbios.bin\\\" -DPSX_DEFAULT_BIOS_PATH=\\\"bios/OpenBIOS.BIN\\\" -DPSX_DEFAULT_GAME_CONFIG_PATH=\\\"game.toml\\\" -DPSX_ENABLE_BLOCK_CYCLES=1 -DPSX_EXECUTION_PROFILE_CONFIG=\\\"$CAMPAIGN/firmware-jobs-ape-control/psx_execution/psx-runtime/profile.h\\\" -DPSX_EXPECTED_BIOS_STEM=\\\"\\\" -DPSX_HAS_GAME_DISPATCH=1 -DPSX_HAS_RBENGINE_SNAP=1 -DPSX_MAX_PLAYERS=2 -DPSX_MEMCARD_SLOTS=2 -DPSX_MOD_DEVELOPER_CHANNEL=1 -DPSX_NATIVE_BUILD=1 -DPSX_NO_DEBUG_TOOLS=1 -DPSX_OVERLAY_FLAVOR=2 -DPSX_PGXP=1 -DPSX_SDL3=1 -DPSX_SETUP_BIOS_STEMS=\\\"OpenBIOS\\\" -DPSX_SETUP_FRAMEWORK_REL=\\\"../../shared-burndown-20261028/firmware-jobs\\\" -DPSX_WINDOW_TITLE=\\\"ApeEscapeRecomp\\\" -DRECOMP_LAUNCHER -DRECOMP_UI_ENABLE_MODS=1 -DRECOMP_UI_PSX_HAS_REWIND=1 -DSDL_MAIN_HANDLED\n  FLAGS = -O3 -DNDEBUG -std=gnu11 -fzero-initialized-in-bss -ffp-contract=off",
+        "generated_inputs": {
+          "SCUS_944.23_decls.h": "9c2af2d9d7b7a4e4703757db7f97bc5dd278eb463193669a06f33ba48549e016",
+          "SCUS_944.23_dispatch.c": "ad7b5d27d2bb0f0d7ace0db1d3b0475911f389c57d03d9f88fbe9c4bac287cdc",
+          "SCUS_944.23_full.ranges": "9c35392505e93aa3c3ea1efd2187ef4f6ab1049a852883550b7ddc76564ad853",
+          "SCUS_944.23_full_00.c": "80f6cd17e0b0dc5eee794ddc11b12fe771064d25aaa5ca89291740375da81773",
+          "SCUS_944.23_full_01.c": "df4e0514950406c1983065615caaff328bd6894487508dd211ea9d019c2b3706",
+          "SCUS_944.23_full_02.c": "3920e0a5651f06c8e387c4465b56502daa686828797bf0d05587d3f7e6f4c4c1",
+          "SCUS_944.23_full_03.c": "fee72f9e62d9a7f60885c996c4ca85a5b6e777bbb6bf22ae4b6a35452e244f95",
+          "SCUS_944.23_full_04.c": "5516138722cc3a32531f4c38af55adba5c23a3c3c23bc936561d97fce5d13a19",
+          "SCUS_944.23_full_05.c": "b9b21cc42d045ba89fd7b1d708bfc85540cbca16b16fa364bc620ef0b207e414",
+          "SCUS_944.23_full_06.c": "5f5dcf80126f4123afc983674f12123b0bf8699df4ad57b73c18ee87b5f95991",
+          "SCUS_944.23_full_07.c": "a5d5017e2546fadf01c6f44dfcb91ec69edd205062edd4ca8f6f3567e656ebd0",
+          "SCUS_944.23_full_08.c": "c2c45a0f182d7f795e1ac2536b917be4bf966458f3acdeb4c4ab0163a03d81c9",
+          "SCUS_944.23_full_09.c": "4c6f2cf1eb25fd15624d517d419f6266eea770e4c6f1304d750902dc220fdbca",
+          "SCUS_944.23_full_10.c": "05d1d9fd38a4dddb7604238f00ba119c720921cd7f3f1ec6b9e7e4f1eb0b8a0d",
+          "SCUS_944.23_full_11.c": "4e3a8f77b24e842da9409266a9b7b6c7ab28999a1b870f5d64f16fae9b32e620",
+          "SCUS_944.23_full_12.c": "c2d7dbfbf88455c7b5a3030cf51d8b61039525feac17a14cd2aff95c0d22ad51",
+          "SCUS_944.23_full_13.c": "51bc494d87c49c4a5ce92c7e15d679311332db51ee559c499ea629fac0410898",
+          "SCUS_944.23_full_14.c": "653b0a583b2c32b3c6f5d31cafde90e64e660aeb7a795fe2ac91e5b1f9e96783",
+          "SCUS_944.23_full_15.c": "96bb612ac9b7ba3ddf470501e28e2b8eed5c267c661692545159239a56c8bbc7",
+          "SCUS_944.23_full_16.c": "7081c5900212ff326d5752a7b892ef019d3bb846832359e04e1cb62b27b6c830",
+          "SCUS_944.23_full_17.c": "a556021615054e4076395393d29632a1670f2d020474d78e51ebe2b91226be77",
+          "SCUS_944.23_full_18.c": "9491e17da9fc7e44674070a314ab76a9439313517a9acd14d7bc1de9d07b956d",
+          "SCUS_944.23_full_19.c": "3d7364ce9cdbd6f08aed95d930fda024cdd7eac9dd4f870ccbee2555e1df5590",
+          "SCUS_944.23_full_20.c": "a574427ffbb4045eef2cfb726baad3c3cf2b0df2b4152677aa839e1bb1177af6",
+          "SCUS_944.23_full_21.c": "29657ed06972979c98b3a441e0c75e88b8969030174e4c7c7199e3c055855c37",
+          "SCUS_944.23_full_22.c": "dc9f7cf5fc5be54473f4e82f7873806e60e022b9cb68a823c3116d76a7740b7c",
+          "SCUS_944.23_full_23.c": "5e4a1860a0606d31e7cbc4ce13601c244d02e02fefa05aaeba297e9b44305d0a",
+          "SCUS_944.23_full_24.c": "5cae88c2f25e3eb1f347f66477830c7df118adca6886812603405a724f96b725",
+          "SCUS_944.23_full_25.c": "040c50e6d0687e139bc54eaff8a47103249a8c0d37ca188c7542f6fcfcf5196e",
+          "SCUS_944.23_full_26.c": "a6f673c158c534a03ef5ee69634b9a9e3905be38955fedffb6429d36f3bb4646",
+          "SCUS_944.23_full_27.c": "d4bc4c4dc8dfb9aaaf429865529725dd685467c0b28de909c9b604c1c870b794",
+          "SCUS_944.23_full_28.c": "9a8feed86fe1a2a53cd718d7704d841bccf48beeaa5a0b8325400ed8fefe5cb9",
+          "SCUS_944.23_full_29.c": "c60b64d7d12bd96a4ee60a98b6c4ebad30d768e06c9055e931a93dff770ba501",
+          "SCUS_944.23_full_30.c": "6cbde4d5971bbd531b48c4c0596c7be783806bc66cd6ac03e8854c511c9581f5",
+          "SCUS_944.23_full_31.c": "15970397dbb368e492dd9d88297a74b5def0699990b000b071928f05f34c9867",
+          "SCUS_944.23_full_32.c": "53a191ea38280da86c4176b9e489fca315326df373a69a8d818e6424f663ad66",
+          "SCUS_944.23_full_33.c": "1a8f875c2ba889719a318600ec28e923852b3b1e090e0b9551e66aaa4f4b9bd0",
+          "SCUS_944.23_full_34.c": "2756a526e6802569e875be5797f6b2038c49308d66ae512346ab2e3375ec62ac",
+          "SCUS_944.23_full_35.c": "bdd155a4f66c0a9e417ee203fdf4fe99c1799c143391763adf5cb8e9d425bfd1",
+          "SCUS_944.23_full_36.c": "9af1faa7f213a99c51fa8adc65adaa8d719fc1a43ad7dda8e2b6770ac061d72b",
+          "SCUS_944.23_full_37.c": "632b8efa0bd94f76d74960c0ae76f4ba1d0571e5984d6935b4272521ef394e27",
+          "SCUS_944.23_full_38.c": "c23be9e9337e7087ca331294b9ec064a04b02412f0b3dd0774b6ec0ba12893e5",
+          "SCUS_944.23_full_39.c": "16a86b01bb658a0c4d11412cab3d913e37a8cb27c616082a80322603769b94cf",
+          "SCUS_944.23_full_40.c": "7ae95c17cc7891fd5c33242e13f0a4aec5263beb134386db7138f44b5566acf9",
+          "SCUS_944.23_full_41.c": "4342551b298cebe8294b7128edf6dbdf5aa768e4b8af14a934b46d60b40173e4",
+          "SCUS_944.23_full_42.c": "820b8a4ecfae918b80fb5550f89df9cfb5e531213093af4f87cbce6b1b4ba35f",
+          "SCUS_944.23_full_43.c": "afefcb35370a6ebae0b041e901bffcd2cace2b3f2d0e2ef10b805009171894ee",
+          "SCUS_944.23_full_44.c": "9cb323fa45d66f05599a18a34979cf0b0242d450fbeabc8b75e0a972643a52b6",
+          "SCUS_944.23_full_45.c": "a4bcd6e103b86542ea689f4c063867a8fe18ce37e1879b95fe076f0e1caf1887",
+          "SCUS_944.23_full_46.c": "6f0d8b2411a23b1afc4fa80e40883a33e74590394c7b8e413a8e4db3970929e6",
+          "SCUS_944.23_full_47.c": "73c51e3c3cd2736855a812bcd8b4befd0948679292758d38ba28ef28fe40af40",
+          "SCUS_944.23_full_48.c": "112e53945a2ff5b8723ae248b7d2e8cf08aa469bc52ba63f58b8514b5c43a80b",
+          "SCUS_944.23_full_49.c": "4de562d8d981b807875d899b3c8237dc7499ec382a7953ebd5f4ef6b1d496d1c",
+          "SCUS_944.23_full_50.c": "bfa6bdd9e8939d9f12f299749a23eb90c4684c94233ed574c2c664624c61edb4",
+          "SCUS_944.23_full_51.c": "756e692e93972a173f7a41b8474fde7c466438bf2a0eb79cd535c0be3321e2f3",
+          "SCUS_944.23_full_52.c": "3ff1a5e0b839de995ba3afd165e87f4ca0fdb4c95deae91b8b0733a56df5b9d9",
+          "SCUS_944.23_full_53.c": "c47ebd808371fd22451558846eacd6e2316d485e9236a438d4e7f247134baccc"
+        }
+      },
+      "native": {
+        "engine_commit": "ceaaab9c7ce2d57887a44e5ae0adfe599d4d72be",
+        "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+        "binary_sha256": "16406c9c317b618c77d2387b069177d2734d7048341c197ef98abac28c5fbd06",
+        "effective_bios_compile_defines_and_flags": "  DEFINES = -DDEFAULT_DEBUG_PORT=4480 -DFMT_HEADER_ONLY=1 -DLNG_SDL3=1 -DNOMINMAX -DPSX_BUNDLED_BIOS_PATH=\\\"bios/openbios.bin\\\" -DPSX_DEFAULT_BIOS_PATH=\\\"bios/OpenBIOS.BIN\\\" -DPSX_DEFAULT_GAME_CONFIG_PATH=\\\"game.toml\\\" -DPSX_ENABLE_BLOCK_CYCLES=1 -DPSX_EXECUTION_PROFILE_CONFIG=\\\"$CAMPAIGN/firmware-jobs-ape-native/psx_execution/psx-runtime/profile.h\\\" -DPSX_EXPECTED_BIOS_STEM=\\\"\\\" -DPSX_HAS_GAME_DISPATCH=1 -DPSX_HAS_RBENGINE_SNAP=1 -DPSX_MAX_PLAYERS=2 -DPSX_MEMCARD_SLOTS=2 -DPSX_MOD_DEVELOPER_CHANNEL=1 -DPSX_NATIVE_BUILD=1 -DPSX_NO_DEBUG_TOOLS=1 -DPSX_OVERLAY_FLAVOR=2 -DPSX_PGXP=1 -DPSX_SDL3=1 -DPSX_SETUP_BIOS_STEMS=\\\"OpenBIOS\\\" -DPSX_SETUP_FRAMEWORK_REL=\\\"../../shared-burndown-20261028/firmware-jobs\\\" -DPSX_WINDOW_TITLE=\\\"ApeEscapeRecomp\\\" -DRECOMP_LAUNCHER -DRECOMP_UI_ENABLE_MODS=1 -DRECOMP_UI_PSX_HAS_REWIND=1 -DSDL_MAIN_HANDLED\n  FLAGS = -O3 -DNDEBUG -std=gnu11 -fzero-initialized-in-bss -ffp-contract=off",
+        "generated_inputs": {
+          "SCUS_944.23_decls.h": "9c2af2d9d7b7a4e4703757db7f97bc5dd278eb463193669a06f33ba48549e016",
+          "SCUS_944.23_dispatch.c": "ad7b5d27d2bb0f0d7ace0db1d3b0475911f389c57d03d9f88fbe9c4bac287cdc",
+          "SCUS_944.23_full.ranges": "9c35392505e93aa3c3ea1efd2187ef4f6ab1049a852883550b7ddc76564ad853",
+          "SCUS_944.23_full_00.c": "80f6cd17e0b0dc5eee794ddc11b12fe771064d25aaa5ca89291740375da81773",
+          "SCUS_944.23_full_01.c": "df4e0514950406c1983065615caaff328bd6894487508dd211ea9d019c2b3706",
+          "SCUS_944.23_full_02.c": "3920e0a5651f06c8e387c4465b56502daa686828797bf0d05587d3f7e6f4c4c1",
+          "SCUS_944.23_full_03.c": "fee72f9e62d9a7f60885c996c4ca85a5b6e777bbb6bf22ae4b6a35452e244f95",
+          "SCUS_944.23_full_04.c": "5516138722cc3a32531f4c38af55adba5c23a3c3c23bc936561d97fce5d13a19",
+          "SCUS_944.23_full_05.c": "b9b21cc42d045ba89fd7b1d708bfc85540cbca16b16fa364bc620ef0b207e414",
+          "SCUS_944.23_full_06.c": "5f5dcf80126f4123afc983674f12123b0bf8699df4ad57b73c18ee87b5f95991",
+          "SCUS_944.23_full_07.c": "a5d5017e2546fadf01c6f44dfcb91ec69edd205062edd4ca8f6f3567e656ebd0",
+          "SCUS_944.23_full_08.c": "c2c45a0f182d7f795e1ac2536b917be4bf966458f3acdeb4c4ab0163a03d81c9",
+          "SCUS_944.23_full_09.c": "4c6f2cf1eb25fd15624d517d419f6266eea770e4c6f1304d750902dc220fdbca",
+          "SCUS_944.23_full_10.c": "05d1d9fd38a4dddb7604238f00ba119c720921cd7f3f1ec6b9e7e4f1eb0b8a0d",
+          "SCUS_944.23_full_11.c": "4e3a8f77b24e842da9409266a9b7b6c7ab28999a1b870f5d64f16fae9b32e620",
+          "SCUS_944.23_full_12.c": "c2d7dbfbf88455c7b5a3030cf51d8b61039525feac17a14cd2aff95c0d22ad51",
+          "SCUS_944.23_full_13.c": "51bc494d87c49c4a5ce92c7e15d679311332db51ee559c499ea629fac0410898",
+          "SCUS_944.23_full_14.c": "653b0a583b2c32b3c6f5d31cafde90e64e660aeb7a795fe2ac91e5b1f9e96783",
+          "SCUS_944.23_full_15.c": "96bb612ac9b7ba3ddf470501e28e2b8eed5c267c661692545159239a56c8bbc7",
+          "SCUS_944.23_full_16.c": "7081c5900212ff326d5752a7b892ef019d3bb846832359e04e1cb62b27b6c830",
+          "SCUS_944.23_full_17.c": "a556021615054e4076395393d29632a1670f2d020474d78e51ebe2b91226be77",
+          "SCUS_944.23_full_18.c": "9491e17da9fc7e44674070a314ab76a9439313517a9acd14d7bc1de9d07b956d",
+          "SCUS_944.23_full_19.c": "3d7364ce9cdbd6f08aed95d930fda024cdd7eac9dd4f870ccbee2555e1df5590",
+          "SCUS_944.23_full_20.c": "a574427ffbb4045eef2cfb726baad3c3cf2b0df2b4152677aa839e1bb1177af6",
+          "SCUS_944.23_full_21.c": "29657ed06972979c98b3a441e0c75e88b8969030174e4c7c7199e3c055855c37",
+          "SCUS_944.23_full_22.c": "dc9f7cf5fc5be54473f4e82f7873806e60e022b9cb68a823c3116d76a7740b7c",
+          "SCUS_944.23_full_23.c": "5e4a1860a0606d31e7cbc4ce13601c244d02e02fefa05aaeba297e9b44305d0a",
+          "SCUS_944.23_full_24.c": "5cae88c2f25e3eb1f347f66477830c7df118adca6886812603405a724f96b725",
+          "SCUS_944.23_full_25.c": "040c50e6d0687e139bc54eaff8a47103249a8c0d37ca188c7542f6fcfcf5196e",
+          "SCUS_944.23_full_26.c": "a6f673c158c534a03ef5ee69634b9a9e3905be38955fedffb6429d36f3bb4646",
+          "SCUS_944.23_full_27.c": "d4bc4c4dc8dfb9aaaf429865529725dd685467c0b28de909c9b604c1c870b794",
+          "SCUS_944.23_full_28.c": "9a8feed86fe1a2a53cd718d7704d841bccf48beeaa5a0b8325400ed8fefe5cb9",
+          "SCUS_944.23_full_29.c": "c60b64d7d12bd96a4ee60a98b6c4ebad30d768e06c9055e931a93dff770ba501",
+          "SCUS_944.23_full_30.c": "6cbde4d5971bbd531b48c4c0596c7be783806bc66cd6ac03e8854c511c9581f5",
+          "SCUS_944.23_full_31.c": "15970397dbb368e492dd9d88297a74b5def0699990b000b071928f05f34c9867",
+          "SCUS_944.23_full_32.c": "53a191ea38280da86c4176b9e489fca315326df373a69a8d818e6424f663ad66",
+          "SCUS_944.23_full_33.c": "1a8f875c2ba889719a318600ec28e923852b3b1e090e0b9551e66aaa4f4b9bd0",
+          "SCUS_944.23_full_34.c": "2756a526e6802569e875be5797f6b2038c49308d66ae512346ab2e3375ec62ac",
+          "SCUS_944.23_full_35.c": "bdd155a4f66c0a9e417ee203fdf4fe99c1799c143391763adf5cb8e9d425bfd1",
+          "SCUS_944.23_full_36.c": "9af1faa7f213a99c51fa8adc65adaa8d719fc1a43ad7dda8e2b6770ac061d72b",
+          "SCUS_944.23_full_37.c": "632b8efa0bd94f76d74960c0ae76f4ba1d0571e5984d6935b4272521ef394e27",
+          "SCUS_944.23_full_38.c": "c23be9e9337e7087ca331294b9ec064a04b02412f0b3dd0774b6ec0ba12893e5",
+          "SCUS_944.23_full_39.c": "16a86b01bb658a0c4d11412cab3d913e37a8cb27c616082a80322603769b94cf",
+          "SCUS_944.23_full_40.c": "7ae95c17cc7891fd5c33242e13f0a4aec5263beb134386db7138f44b5566acf9",
+          "SCUS_944.23_full_41.c": "4342551b298cebe8294b7128edf6dbdf5aa768e4b8af14a934b46d60b40173e4",
+          "SCUS_944.23_full_42.c": "820b8a4ecfae918b80fb5550f89df9cfb5e531213093af4f87cbce6b1b4ba35f",
+          "SCUS_944.23_full_43.c": "afefcb35370a6ebae0b041e901bffcd2cace2b3f2d0e2ef10b805009171894ee",
+          "SCUS_944.23_full_44.c": "9cb323fa45d66f05599a18a34979cf0b0242d450fbeabc8b75e0a972643a52b6",
+          "SCUS_944.23_full_45.c": "a4bcd6e103b86542ea689f4c063867a8fe18ce37e1879b95fe076f0e1caf1887",
+          "SCUS_944.23_full_46.c": "6f0d8b2411a23b1afc4fa80e40883a33e74590394c7b8e413a8e4db3970929e6",
+          "SCUS_944.23_full_47.c": "73c51e3c3cd2736855a812bcd8b4befd0948679292758d38ba28ef28fe40af40",
+          "SCUS_944.23_full_48.c": "112e53945a2ff5b8723ae248b7d2e8cf08aa469bc52ba63f58b8514b5c43a80b",
+          "SCUS_944.23_full_49.c": "4de562d8d981b807875d899b3c8237dc7499ec382a7953ebd5f4ef6b1d496d1c",
+          "SCUS_944.23_full_50.c": "bfa6bdd9e8939d9f12f299749a23eb90c4684c94233ed574c2c664624c61edb4",
+          "SCUS_944.23_full_51.c": "756e692e93972a173f7a41b8474fde7c466438bf2a0eb79cd535c0be3321e2f3",
+          "SCUS_944.23_full_52.c": "3ff1a5e0b839de995ba3afd165e87f4ca0fdb4c95deae91b8b0733a56df5b9d9",
+          "SCUS_944.23_full_53.c": "c47ebd808371fd22451558846eacd6e2316d485e9236a438d4e7f247134baccc"
+        }
+      }
+    }
+  }
+}

@@ -221,7 +221,8 @@ them.
 
 ### Guarded packed-coordinate rejection
 
-Some polygon funnels combine packed SXY flags and reject on `BNE flags,zero`.
+Some polygon funnels combine packed SXY flags and reject on `BNE flags,zero`,
+or read the GTE error summary with `BLTZ flags`.
 The native-wide GPU can clip horizontal overflow while the game retains its
 vertical rejection bits. Declare only verified render rejection branches:
 
@@ -238,8 +239,29 @@ wide gameplay only the specified flag bits participate in the predicate; guest
 registers, the branch delay slot, vertical/depth/backface tests and timing remain
 intact. Adapters must provide sufficient bounded primitive/capture capacity.
 Changing a site, guard or mask changes the overlay configuration fingerprint.
+For a verified GTE `BLTZ` consumer, mask the underlying error bits rather than
+bit 31 itself. For example, `0x7F87A000` preserves the hardware error constituents
+except horizontal SX saturation. Positive non-summary flags retain their original
+acceptance at 4:3. Link branches and other REGIMM forms are not supported.
 
 ### Guarded widescreen participation comparisons
+
+`[[widescreen.cull.packed_x]]` handles a proven mesh screen-X predicate
+expressed as `SLTU rd, (SX << 16), (width << 16)`:
+
+```toml
+[[widescreen.cull.packed_x]]
+address = "0x801466A0"
+expected = "0x0079C02B"
+```
+
+The complete instruction guards native overlays and the interpreter. While
+wide, X must lie in `[-margin, width + margin)`; both sides widen together.
+At 4:3 the original unsigned comparison is exact. Nonzero low-half operands,
+zero width, and widths above 1024 retain the original comparison. It changes
+only the predicate, preserving GPR operands, vertical, backface, depth and
+ordering-table limits. Sites affect the overlay cache identity; regenerate
+main/native overlays after changing them. Empty lists are inert.
 
 Games may disable a proven object/model cull verdict in widened world views
 without changing true 4:3 behavior:
@@ -261,6 +283,29 @@ result = 1
 - Native generated code and the dirty-RAM interpreter implement the same
   semantics.
 - Regenerate main/overlay native code after changing the list.
+
+### Packed-SXY all-vertices rejects
+
+```toml
+[[widescreen.cull.sxy]]
+kind = "quad"
+vertex_regs = [8, 20, 11, 9]
+fold_addresses = ["0x8001A9B4", "0x8001A9B8", "0x8001A9BC", "0x8001A9C0"]
+fold_expected  = ["0x01110824", "0x02810824", "0x01610824", "0x01210824"]
+consumer_address  = "0x8001A9C4"
+consumer_expected = "0x14200049"
+```
+
+- `kind` is `"tri"` (3 vertices) or `"quad"` (4); `vertex_regs`,
+  `fold_addresses` and `fold_expected` have one entry per vertex.
+- Every `fold_expected` is `and r, ...` into the same `r != $zero`; the first
+  reads `vertex_regs[0]` and a separate mask register, each later one reads
+  its vertex and `r`. `consumer_expected` is `beq`/`bne r, zero`.
+- Addresses are word-aligned, in one segment, strictly increasing, the fold
+  within 16 instructions and the consumer within 4 after it; no address is
+  shared with another sxy site. At most 64 sites.
+- Identity at 4:3; while widened only the X-sign bit of each AND changes. See
+  `docs/WIDESCREEN.md`.
 
 Prefer an aspect-derived cone over `keep` when the original predicate is a
 camera-frustum test. `keep` has no queue policy and is appropriate only for a
@@ -285,12 +330,13 @@ A model-list or per-child cosine rejection can use a horizontal-only envelope:
 
 ```toml
 [widescreen.cull.aspect_cone]
-forward_addr = "0x1F8000E8" # signed Q12 X/Z/Y halfwords
+forward_addr = "0x1F8000E8" # three signed Q12 halfwords
+forward_offsets = [0, 4, 2] # byte offsets for X/Z/Y; this title stores X/Y/Z
 object_type_offset = 12
 object_reg = 19
 x_reg = 16
-z_reg = 17
-y_reg = 18
+z_reg = 18
+y_reg = 17
 hysteresis_pixels = 24
 queue_reserve = 4
 queue_count_addrs = ["0x1F800144", "0x1F800150", "0x1F80015C"]
@@ -307,8 +353,8 @@ expected = "0x0082202A" # signed SLT reject predicate
 cosine_threshold = 856  # required for SLT; Q10
 object_reg = 20         # optional per-site register overrides
 x_reg = 19
-z_reg = 18
-y_reg = 17
+z_reg = 17
+y_reg = 18
 queue_guard = false     # this lower-level predicate appends to no fixed queue
 ```
 
@@ -317,6 +363,12 @@ queue_guard = false     # this lower-level predicate appends to no fixed queue
 - An `SLTI` site derives its Q10 cosine threshold from the immediate unless
   `cosine_threshold` is given. An `SLT` site requires it explicitly.
 - A vanilla keep is always preserved. Only a vanilla rejection is retested.
+- `x_reg`/`z_reg` describe the world ground plane; `y_reg` is world vertical.
+  `forward_offsets` maps the corresponding X/Z/Y forward components from the
+  three halfwords at `forward_addr`. It must be a permutation of `[0, 2, 4]`.
+  Omitting it preserves the legacy `[0, 2, 4]` order. Match both register and
+  forward mappings to the actual camera basis; the title's coordinate names
+  alone are not sufficient evidence.
 - Horizontal reach follows the current client aspect. Vertical reach,
   near/far checks, type dispatch, and the game’s queue-capacity branches are
   unchanged.
@@ -447,6 +499,49 @@ max      = 0x1BF
 - Regenerate after changing the list. With no sites the generated code is
   unchanged.
 
+## Mod immediates (`[mod_immediate]`)
+
+A trusted mod sometimes needs the same compiled instruction to behave
+differently from one session to the next without changing the guest bytes
+(a capacity compared against `slti v0, a0, 32`, a table address formed by
+`addiu a1, a1, 0x6988`, a struct offset in `lbu v0, 0x2E9(v1)`). Patching RAM
+fails for statically compiled code: every function carries a CRC of its
+original bytes and a patched function drops to the interpreter. Listing the
+instruction as a mod immediate site keeps the bytes and the CRC, and moves the
+choice into the generated code:
+
+```toml
+[mod_immediate]
+sites = [
+  { address = "0x80023500", expected = "0x28820020", group = 1, values = [0x40, 0x80] },  # slti v0, a0, 0x20
+  { address = "0x80023B14", expected = "0x24A5AEB1", group = 1, values = [0xAEB1, 0x9000] },
+]
+```
+
+- `expected` is the complete word at `address` and must be an I-type ALU
+  instruction (`ADDI`..`LUI`, opcodes 0x08-0x0F) or a byte/half/word load or
+  store (`LB`..`SW`, 0x20-0x2B). Branches, jumps and R-type instructions are
+  refused. `group` is 0..63; `values` lists up to 15 replacement 16-bit
+  immediates (decimal, hex, or negative), selector 1 first.
+- Selector 0 is the original instruction. A trusted plugin selects variant N of
+  every site in a group with `psx_mod_set_immediate_selector(group, N)` from its
+  activation callback; the selector is 0 again at every session start, so an
+  inactive mod, a disabled feature and netplay all run the stock code.
+- Generated code emits `switch (psx_mod_immediate_select(group))` with one case
+  per value, each translated exactly like the instruction it stands for
+  (cycle accounting, PGXP hooks, load-delay handling), plus the original as the
+  default. The dirty-RAM interpreter substitutes the same word
+  (`psx_mod_immediate_patch`), so native and interpreted execution agree. The
+  forwarder is part of the overlay ABI (v31).
+- A site is keyed by physical address and word. Overlays share load addresses,
+  so one address may carry several sites with different words; a variant whose
+  word differs is left alone in overlay mode and is an error in a main EXE.
+- The sites enter the overlay-cache identity (the hash changes only when the list
+  is non-empty). Regenerate after changing the list; with no sites the generated
+  code is unchanged.
+- The mod owns the consequences: a relocated table needs its own free memory and
+  a save written under one selector is not interchangeable with another's.
+
 ## Runtime block
 
 Consumed by the cmake macro `psxrecomp_v4_add_runtime_target` (eventually)
@@ -492,6 +587,93 @@ overlay_region_floor = "0x10000"   # optional: lowest RAM address treated as ove
                                     # 0x80010000, Driver 2 mission pages) so it is overlay-cache
                                     # eligible. Clamped >= 0x10000; PSX_OVERLAY_REGION_FLOOR overrides.
 ```
+
+`idle_skip` only elides loops with no stores and one interrupt-check edge.
+`idle_skip_store_counters = true` (with `idle_skip`; `PSX_IDLE_SKIP_EXT=0/1`
+overrides it for one run) also elides loops that count a stack timeout down
+by one each pass and span up to eight block edges: PsyQ libetc's `v_wait`,
+the `VSync(0)`/`VSync(n)` spin most PsyQ titles run every frame. The skip
+lowers the counter by the number of passes it skips (several edges per pass are
+accepted only together with such a counter store; the device distance is
+measured from the current cycle, not from the devices' last service) (never to 1 or below, so
+the real timeout test still runs) and lands on the loop's first edge strictly
+before the next device event, so an interrupt is taken at the same edge as
+without it. Guest cycles, device-register writes and scratchpad writes are
+unchanged; the only difference is that the skipped passes' stores to the
+counter word are not individually made (`frame_fingerprint` `wc`/`ws` count
+fewer writes, its judge columns match). In R4 races it removes about a quarter
+of the emulation thread's time. Off under netplay, like `idle_skip`.
+
+#### Developer contract for `idle_skip_store_counters`
+
+**Eligibility is an audited allowlist, not an automatic guarantee.** The
+detector can check a loop's shape over the passes it observes. It cannot prove
+that the loop has no later exit that depends on the counter (for example, an
+exit at `counter == 500`): a skip would jump past it. So the extension only
+skips at sites the title's developer has audited and declared:
+
+```toml
+[runtime]
+idle_skip = true
+idle_skip_store_counters = true
+# Block-edge PCs of each audited loop (the detector anchors on either).
+idle_skip_store_counter_sites = ["0x8008B4D0", "0x8008B518"]
+```
+
+Unlisted sites are never skipped. An empty or missing list turns the
+extension off, and the runtime log says so. Before adding a site, read the
+loop's code and record its exit structure next to the list: every exit that
+depends on the counter must be the final timeout test (the counter reaching
+the value the skip stops short of), and no other code may read the counter.
+
+R4 (SLUS-00797) is the reference audit. PsyQ libetc `v_wait` sits at
+`0x8008B4A8`:
+
+1. It stores `timeout << 15` to `0x10(sp)` and returns at once if the VSync
+   count at `0x800A6548` has already reached the target.
+2. **`0x8008B4D0`:** it loads the counter, subtracts 1, stores it and reloads
+   it. If it equals -1 it takes the timeout path (`0x8008B4F0`: prints
+   "VSync: timeout", calls `ChangeClearPAD(0)` and `ChangeClearRCnt(3, 0)`,
+   then jumps to the exit).
+3. **`0x8008B518`:** it reloads the VSync count and branches back to
+   `0x8008B4D0` while the count is still below the target.
+4. **`0x8008B530`:** the exit.
+
+The only exit that depends on the counter is the `== -1` timeout test. The skip
+never takes the counter to 1 or below, so that test always runs for real. The
+counter is a private stack slot of this frame.
+
+A skip leaves out stores to the counter word that the guest would have made.
+That is invisible only if nothing observes the word between those stores. The
+assumptions, and how each one is enforced:
+
+| Assumption | Enforced by |
+|---|---|
+| The loop makes exactly one guest store per pass: a 4-byte-aligned word in RAM or the scratchpad, at the same address every pass, one lower each pass. | `idle_stores_ok` plus the address/value check at the anchor. Any other store count, any device or BIOS-area address, or a changed pattern resets the detector. |
+| The loop touches no MMIO, so it cannot start DMA, acknowledge an IRQ or poll a device mid-span. | `g_mmio_access_count` must be unchanged across the pass. |
+| Everything else in the pass is a pure function of the registers. Only the counter register and the counter word progress; every other GPR is invariant at the anchor. | The register snapshot is compared at the anchor; one progress register is allowed, and only if it moves in step with the word. |
+| No other observer (IRQ handler, DMA, timer, SPU, CD, GPU, host-side mod or debugger code) runs between two device events. | The skip lands on the anchor strictly before the next scheduled device event, measured from the current cycle. Every IRQ, DMA completion and VBlank callback therefore sees the counter value that unskipped execution would have stored at that same edge. Host mod hooks run only at VBlank or at function entry, and neither happens inside the span. |
+| The loop has no exit that depends on the counter, except the final timeout test. | **Not checkable by the detector.** It is the caller's audit: only the sites listed in `idle_skip_store_counter_sites` are eligible. |
+| The loop's own exit test still runs. | The counter is never lowered to 1 or below, so the `--timeout == -1` path executes for real. |
+| The game does not read the counter word through another pointer, inside or outside the loop. | Partly checked: a read that changes a register or the edge count resets the detector. Otherwise this is part of the site audit. |
+
+What differs from unskipped execution: the guest store count (`frame_fingerprint`
+`wc`/`ws`) and the host time. Guest cycles, device-register writes, scratchpad
+and RAM contents at every device event are the same. That is why the judge
+columns `cyc`, `mmio`, `mc`, `sp`, `sc` and `qc` must match. A title that
+breaks one of the assumptions in a way the detector cannot see (for example, a
+second CPU-side writer driven by a device it does not schedule) must leave
+the key off.
+
+Evidence (R4, OpenBIOS, M4 release build with debug tools, `frame_fingerprint`, key off vs on):
+
+- boot into attract: 9000 frames
+- race from a savestate: 3600 frames
+- all judge columns identical, 0 dispatch misses
+- `wc`/`ws` lower with the key on
+
+The other psxrecomp titles have no disc in this test setup, so they keep the
+key off until they are run the same way.
 
 ### `turbo_loads` / `offer_turbo_loads` — deprecated and ignored
 
@@ -555,54 +737,158 @@ a build compiled with Vulkan support. `offer_vulkan` controls launcher
 visibility only; it defaults to false so game projects must explicitly expose
 Vulkan after validating their visuals and stability.
 
+### The game's look: title baseline and built-in mods
+
+These `[video]` / `[audio]` keys are the title's **baseline**: what a player
+sees and hears with the matching built-in mod at Game default (or off, except
+Internal Resolution, whose disabled state is native 1x). They are not player
+settings any more (no `settings.toml` key, no launcher Settings row, no
+in-game menu row); a player changes them through the framework's built-in
+mods on the Mods page, whose "Game default" option values keep the baseline
+(`runtime/include/host_enhancements.h`, docs/MOD_PACKAGES.md "Built-in host
+enhancements"):
+
+| `game.toml` key | Built-in mod (option) |
+|---|---|
+| `[video] crt_filter` (screen model) | CRT Filter (`psx.enhancement.crt-filter`: Screen model) |
+| `[video] scanlines`, `scanline_strength` | CRT Filter (Scanlines, Scanline strength) |
+| `[video] antialiasing` (linear present) | Image Filtering (`psx.enhancement.image-filtering`: Smoothing) |
+| `[video] texture_filtering` | Image Filtering (Texture filtering) |
+| `[video] fmv_filter` | Image Filtering (FMV filtering) |
+| `[audio] spu_hq` | Enhanced Audio (`psx.enhancement.enhanced-audio`) |
+| `[video] geometry_correction`, `perspective_texturing` | PGXP Precision (`psx.enhancement.pgxp`) |
+
+Local rewind has no `game.toml` key; it is the Rewind mod
+(`psx.feature.rewind`, below).
+
+A `settings.toml` written before this change may still carry `antialiasing`,
+`texture_filtering`, `fmv_filter`, `crt_filter`, `scanlines`,
+`scanline_strength`, `geometry_correction`, `perspective_texturing`, `rewind`,
+`rewind_depth`, `rewind_interval`, `supersampling`, `internal_resolution`,
+`supersample`, `dynamic_resolution`, `dynamic_resolution_min`, `[audio]
+spu_hq`, `[audio] frequency` or the `quality_*` keys. They are ignored, never
+an error, and the next save drops them (an empty `[audio]` table included).
+
+**Audio sample rate.** The host audio device opens at the runtime's built-in
+rate (44.1 kHz, the SPU's own). It is not a player setting: the launcher has no
+Sample rate row for PSX and `settings.toml` has no `[audio] frequency`. Volume
+stays a launcher setting.
+
+**Graphics presets were removed.** A `game.toml` that still has a `[quality]`
+table (`[quality.low]` .. `[quality.ultra]`) fails to load with an error naming
+the table; delete it. No title shipped one.
+
 ### Internal resolution (`internal_resolution`, `supersampling`)
 
-The player picks a preset in Settings → Display → **Internal resolution**:
-Native, 720p, 1080p, 1440p, 4K, 5K, 8K or Match display. It is stored in the
-player's `settings.toml`, and a game may ship a default the same way:
+The internal resolution is the title's `game.toml` baseline, and the player
+changes it with the built-in **Internal Resolution** mod
+(`psx.enhancement.internal-resolution`, docs/MOD_PACKAGES.md "Built-in host
+enhancements"). Fresh profiles enable it at **4x**, with fixed choices from
+**1x through 32x**. Saved selections keep their value, including the retained
+Game default, Native, 720p, 1080p, 1440p, 4K, 5K, 8K, Match display and **Auto**
+choices. It is not a Settings row and not a `settings.toml` key. Disabled means
+native 1x with dynamic resolution off. At Game default, the title's keys apply
+unchanged:
 
 ```toml
 [video]
-internal_resolution = "4k"          # native | 720p | 1080p | 1440p | 4k | 5k | 8k | display, or a number of lines
-resolution_reference_lines = 240    # game.toml only: the title's usual display height (120..1024)
+internal_resolution = "4x"          # 1x..32x | native | 720p | 1080p | 1440p | 4k | 5k | 8k | display | auto, or a number of lines
+resolution_reference_lines = 240    # the title's usual display height (120..1024)
+supersample_disable_at_lines = 0    # supersample 1.0 at/above this display height (0 = off, 240..8640)
+match_display_max_lines = 0         # cap on the display height Match display uses (0 = none, 240..8640)
 ```
 
-A preset is a target height. The runtime renders at the integer scale
+`match_display_max_lines` caps the monitor height that Match display (and
+Auto) and its dynamic-resolution floor (`display`) resolve against. It also caps the final Match display target after supersampling,
+so a larger factor cannot exceed it. Fixed presets keep their own target.
+With no cap, an 8K panel asks 18x (27x with `supersample = 1.5`), which is
+past the full-VRAM surface. The high-resolution window then engages, and
+dynamic resolution cannot step there. A title whose GPU budget is set for
+4K lines sets 2160.
+
+`supersample_disable_at_lines` uses the physical monitor height before the cap.
+At or above its threshold the effective factor is 1.0; the configured factor is
+retained for smaller monitors. Zero preserves the default behaviour.
+
+A fixed `Nx` choice requests exactly N times native resolution per axis,
+independent of reference lines or the legacy supersample multiplier. The
+backend still enforces its texture-size limit and bounded allocation budget;
+32x is a selectable ceiling, not a hardware or frame-rate guarantee. The
+shared mod does not increase the memory budget for low-memory GPUs.
+
+A legacy height preset is a target height. The runtime renders at the integer
+scale
 `S = ceil(target / resolution_reference_lines)`: at the default 240 lines,
 720p is 3x, 1080p is 5x (1200 lines, area-resolved to 1080), 1440p 6x, 4K 9x,
 5K 12x and 8K 18x. A 480-line interlaced screen renders at twice the target
 and is resolved down. **Match display** takes the monitor's pixel height,
 measured from the game window's display when it opens. The backend clamps S
 to what it can allocate (below); `video_info` over TCP reports both numbers.
+PGXP Precision's sub-pixel geometry needs S >= 2 (720p and up at 240 lines) to
+be visible: at native resolution the corrected positions round back to the
+same pixels.
 
-Precedence: the game's `internal_resolution` is the default; a player's legacy
-`supersampling` in `settings.toml` outranks it; the player's own
-`internal_resolution` outranks both. The launcher writes the preset as a stable
-id (`"4k"`) beside `supersampling = min(S, 4)`, so an older runtime reading the
-same file still gets the nearest factor it supports. A legacy factor with no
-matching preset appears in the launcher as its own entry, for example
-"2x (480 lines)". `settings.toml` `window_width` accepts 640 to 7680.
+**Auto** is Match display with dynamic resolution on: the scale starts at the
+monitor's resolution and steps down to the title's `dynamic_resolution_min`
+floor only while the game would miss frames, then back up. The mod's fixed
+choices turn dynamic resolution off; there is no separate Dynamic resolution
+switch or Lowest resolution row. A title may ship `internal_resolution =
+"auto"`, or its own fixed ceiling with `dynamic_resolution = true`; Game default
+keeps either. `PSX_DYNRES=0|1` still overrides dynamic resolution for one run.
 
-A host built against a recomp-ui without the Internal resolution row keeps
-the legacy Supersampling row (1x to 4x) and that row stays in charge: with no
-preset configured the launcher round trip is exactly the historical one, and
-no `internal_resolution` key is written. A preset from `game.toml` or a
-hand-edited `settings.toml` starts the row on the nearest factor it can show
-and survives if the row is left alone; picking a different factor there
-drops the preset.
+Precedence for a session: `PSX_INTERNAL_RESOLUTION` (one run), then a title
+mod's `psx_mod_set_internal_resolution` request, then the Internal Resolution
+mod's effective choice (native when disabled), then the title's
+`internal_resolution` (or its legacy `supersampling` factor) only for an
+explicit Game default choice. Every session start restores the title's values
+before
+the mod's choice applies, so a rematch never inherits the last session's scale.
+The mod's option changes apply live from the in-game menu when the OpenGL
+backend can change its scale on a running game (otherwise at the next start),
+and never during a netplay match. The debug server's `video_set` changes the
+session's effective internal resolution and supersample live; it saves
+nothing.
 
-`PSX_INTERNAL_RESOLUTION=<preset or lines>` overrides every layer for one
-run (validation, and two local netplay peers that share one `settings.toml`).
-It is never written to `settings.toml`: the launcher shows and saves the
-configured preset.
+`PSX_INTERNAL_RESOLUTION=<preset or lines>` overrides every layer for one run
+(validation, and two local netplay peers that share one install).
 
 On OpenGL, any choice above native opens the game window with a
 high-pixel-density drawable (macOS Retina, Wayland scaling), so the window has
 the pixels to show it. Native keeps the window exactly as before.
 
-`supersampling = N` renders at N times the native resolution per axis and
-downsamples to the window. It accepts 1 to 32 in both `game.toml` and the
-player's `settings.toml`; 1 (the default) is native and unchanged.
+`supersampling = N` (game.toml) renders at N times the native resolution per
+axis and downsamples to the window, 1 to 32; 1 (the default) is native and
+unchanged. It is the title's legacy form of the baseline: an
+`internal_resolution`, or the mod's choice, supersedes it. `settings.toml`
+`window_width` accepts 640 to 7680.
+
+### Bloom (`bloom`)
+
+Opt-in glow around lights, OpenGL only. Off (0) changes nothing.
+
+```toml
+[video]
+bloom = 1.0                     # 0.0 (off, default) .. 2.0 strength
+```
+
+Only what 3D primitives (proven from GTE data, so it needs PGXP geometry) and
+additive semi-transparent primitives (blend modes 1 and 3) drew can glow: each
+draw marks its pixels in a spare stencil bit, and a sprite, fill or HUD element
+drawn over them clears the mark. The marks gate both ends of the pass: only
+marked pixels feed the bright pass, and only marked pixels take the glow back,
+so a HUD, sprite or fill pixel is never changed, even right next to a lamp
+(the halo spreads over 3D surroundings only). The pass runs on the composed
+game image like `antialiasing_mode` (before it, sharing its copy texture and
+full-screen pass): a quarter-resolution bright pass, three Gaussian iterations
+and a screen blend.
+It follows 4:3, native-wide, supersample, dynamic resolution, the render
+thread and Smooth motion (generated frames carry the marks of the frame they
+are drawn from). Without PGXP geometry only additive primitives glow.
+Bloom is the built-in `bloom` chain of the post-effect pipeline
+(`docs/POST_EFFECTS.md`), which also loads your own chains through
+`post_shader = "<file>.pfx"` (relative to the game root; `PSX_POST_SHADER`).
+`PSX_BLOOM=<0..2>` overrides it for one run and the `bloom` TCP command reads
+or changes it live.
 
 ### Anti-aliasing (`antialiasing_mode`, `supersample`)
 
@@ -619,12 +905,13 @@ it becomes a scale: Match display on a 1080 px monitor with 2.0 asks for 2160
 lines (S = 9) and the present's area resolve brings it back to 1080, which is
 ordered-grid SSAA of everything, 2D included. Native and the legacy
 `supersampling` factor are left alone. Dynamic resolution takes the result as
-its ceiling and steps under it as before. `PSX_SUPERSAMPLE=<factor>` overrides
-it for one run.
+its ceiling and steps under it as before. It is the title's key only (the
+Internal Resolution mod applies it to the player's choice too);
+`PSX_SUPERSAMPLE=<factor>` overrides it for one run.
 
 To make supersampling the elastic part only, set the dynamic resolution floor
-to the output: `dynamic_resolution_min = "display"` (also `PSX_DYNRES_MIN=display`
-and settings.toml) means the selected internal resolution *without* the
+to the output: `dynamic_resolution_min = "display"` (game.toml, also
+`PSX_DYNRES_MIN=display`) means the selected internal resolution *without* the
 supersample factor, i.e. the monitor's own lines under Match display or the
 preset's lines otherwise. Dynamic resolution then steps between the
 supersampled ceiling and the output and never renders below it:
@@ -646,7 +933,8 @@ filtered. The PS1 HUD is part of the same image and is filtered too. `fxaa` is o
 0.7 / 1.5 ms at 1080p / 1440p / 4K, fence-timed with the copy); `fxaa_hq` lowers the contrast threshold and searches further along
 long edges. `PSX_AA_MODE=off|fxaa|fxaa_hq` overrides it for one run and the
 `post_aa` TCP command switches it live. The older boolean `antialiasing` key is
-unrelated: it is the linear present filter the launcher already persists.
+unrelated: it is the linear present filter, the title's baseline for the
+Image Filtering mod's Smoothing.
 
 Not offered: MSAA. The hi-res surface *is* guest VRAM (texture pages, CLUTs,
 VRAM copies, readbacks and the mask stencil all sample or copy it between
@@ -655,6 +943,130 @@ those and the mask/semi-transparency rules would have to run per sample; that
 is a renderer redesign, not an option. SMAA needs its area/search lookup
 textures and three passes; on an image that is already area-resolved from a
 higher internal resolution it buys little over FXAA, so it is left for later.
+
+### FMV chroma smoothing (`fmv_chroma_smoothing`)
+
+```toml
+[video]
+fmv_chroma_smoothing = false   # default
+fmv_filter = "bicubic"         # optional upscale filter (needs antialiasing on)
+```
+
+MDEC movies are 4:2:0: one colour (Cb/Cr) sample per 2x2 pixels, which the
+decoder replicates, so saturated edges in a 24-bit movie frame show 2-pixel
+colour blocks around sharp luma. With `fmv_chroma_smoothing = true` the
+OpenGL present of a 24-bit frame keeps each sample's luma (from whatever
+`fmv_filter` reconstructs) and takes its chroma from a [1 2 1] tent over the
+3x3 source pixels around it (BT.601), which removes the colour blocks without
+softening luma detail. Guest VRAM and MDEC output are untouched; 15-bit frames
+are never affected. It pairs with the existing `fmv_filter` upscale choice
+(`nearest`, `bilinear`, `sharp`, `bicubic`). OpenGL only.
+`PSX_FMV_CHROMA=0|1` overrides it for one run and the `fmv_chroma` TCP
+command switches it live.
+
+### Texture LOD and anisotropic filtering (`texture_lod`, `anisotropic_filtering`)
+
+```toml
+[video]
+texture_lod = "off"          # off (default) | mipmap
+anisotropic_filtering = 1    # 1..16, taps along the footprint (with mipmap)
+```
+
+PS1 texture pages and CLUTs live in VRAM and are decoded per fetch, so there
+is no GL mip chain to sample, and a far road or wall at high internal scale
+still point-samples one texel per pixel (shimmer). `mipmap` emulates the mip
+level in the textured shader: the screen-space UV footprint is box-averaged
+(opaque texels of the same STP class only), and `anisotropic_filtering` > 1
+spreads up to that many taps along the footprint's long axis so grazing
+surfaces stay sharp across it. Every tap clamps to the primitive's own UV
+bounds (or its texture window), so packed atlases never bleed into each
+other, and a live CLUT change is seen at once (nothing is cached). Only
+proven 3D world primitives are affected; sprites, HUD and magnified textures
+keep their exact texels, and `off` is the historical path. Cost is up to 64
+fetches per minified pixel. OpenGL only. `PSX_TEXTURE_LOD=0|1` and
+`PSX_ANISO=N` override them for one run; the `texture_lod` TCP command
+switches them live.
+### Accurate blending (`accurate_blending`)
+
+```toml
+[video]
+accurate_blending = true     # default: PS1 colour/blend correctness
+```
+
+Accurate blending is enabled by default because it corrects PS1 rendering.
+`false` retains the historical path for diagnosis.
+
+The OpenGL surface holds each 5-bit VRAM channel as an 8-bit value. Uploads,
+copies and untextured primitives store `k*8`, but fills and texels have
+always stored `k*255/31` (full-range white). Semi-transparent blending of two
+operands in different bases, truncated back to 5 bits when the game reads
+VRAM, is off by one step in places: B+F/4 over a fill, B/2+F/2 with an odd
+sum, B+F/4 of a texel. `true` makes every VRAM write use `k*8`, so GL's
+8-bit blend followed by the readback's `>>3` is exactly the PS1's 5-bit
+arithmetic in all four modes (B/2+F/2, B+F, B-F, B+F/4), with set-mask,
+mask check, texel STP and PGXP depth, at any internal scale and on drivers that quantise the blend constant to 8 bits (it uses 128/255 and 64/255, exact in unorm8, instead of 0.5 and 0.25) (checked against
+the formulas and the software rasterizer by `gl_blend_accuracy_test`). The
+visible cost: textured and filled whites present as 248 instead of 255, as
+uploaded images and untextured primitives already do. One divergence
+remains in both settings: a second semi-transparent layer blends with the
+first layer's full 8-bit result where the console would have truncated it to
+5 bits first (at most one 5-bit step). OpenGL only.
+`PSX_ACCURATE_BLENDING=0|1` overrides it for one run and the
+`accurate_blending` TCP command switches it live.
+### Dithering (`dithering`)
+
+```toml
+[video]
+dithering = "on"      # on (default) | fine | off
+```
+
+The PS1 GPU dithers while the game sets GP0(E1h) bit 9: it adds a 4x4
+offset pattern to every pixel of a Gouraud-shaded polygon or line and of a
+texture-modulated polygon, then truncates to 5 bits per channel. Flat
+untextured primitives, raw-texture polygons and all rectangles (sprites) are
+never dithered. Eligibility is decided per primitive from its command and
+carried to the shader, never guessed from colours.
+
+`on` (the default; `scaled` is accepted as an alias) is that hardware
+behaviour with the pattern on the native VRAM grid, so it looks like the
+console at any internal scale and the VRAM a game reads back is identical at
+every scale. `fine` is elective: the pattern per internal-resolution pixel, a
+grain that all but vanishes at high scales (guest VRAM then depends on the
+scale). `off` is the old true-colour output (8 bits per channel, no pattern).
+
+Semi-transparent primitives are an approximation: the pattern is applied to
+the source colour before blending, while the console dithers the blended
+result at its final 8-to-5-bit write. Fixed-function GL blending cannot run
+a shader after the blend (GL 3.3 has no framebuffer fetch, and macOS offers
+none), so a dithered semi-transparent pixel can differ from the console by
+one 5-bit step; opaque pixels match exactly. The dither output follows the
+surface colour basis, so it composes with `accurate_blending`. OpenGL only;
+the software and Vulkan renderers do not dither. `PSX_DITHERING=0|1|2`
+overrides it for one run and the `dithering` TCP command switches it live.
+
+### Texture filtering (`texture_filtering`)
+
+```toml
+[video]
+texture_filtering = "nearest"   # nearest (default) | bilinear | xbr
+```
+
+`nearest` is the PS1's point sampling. `bilinear` blends the four nearest
+texels (opacity-gated, so cutout edges keep their colour). `xbr` (OpenGL
+only) is edge-directed magnification after Hyllian's xBR (MIT; see
+`THIRD_PARTY_ATTRIBUTION.md`): for the texel
+corner nearest each sample it compares weighted colour distances over a 5x5
+neighbourhood, and where an edge runs along that corner's diagonal the corner
+is cut and takes the closer side neighbour, with an anti-aliased boundary one
+output pixel wide. Flat areas, straight edges and gradients stay crisp
+texels; diagonals and curves lose their staircase. It acts only where a
+texel spans two or more output pixels (high internal scale or a magnified
+texture), so a 1:1 draw is exactly nearest; cutouts and STP stay the centre
+texel's. It costs up to 13 texel fetches per pixel. JINC2 is not offered.
+`PSX_TEXTURE_FILTER=0..3` overrides it for one run (2 is the mod-only "stable
+world" minification filter) and the `texture_filter` TCP command switches it
+live. This key is the title's baseline; a player chooses nearest, bilinear or
+xBR through the Image Filtering mod.
 
 The runtime clamps N per backend:
 
@@ -730,33 +1142,33 @@ Vulkan renderers ignore the key.
 `PSX_GL_TEXWIN_BATCH=0|1` overrides it for one run, and the TCP command
 `gl_texwin_batch on=<0|1>` switches it live.
 
-### Local rewind (`settings.toml`)
+### Local rewind (the Rewind mod)
 
-Rewind is a player setting, not a game one: it lives in the user's
-`settings.toml` beside the runtime executable, under `[video]`.
+Rewind is the framework's built-in **Rewind** mod (`psx.feature.rewind`), off
+by default: enabling it on the Mods page turns the ring on, with its **Rewind
+buffer** (snapshots kept: 50 / 100 / 150 / 200, default 50) and **Rewind
+interval** (frames between snapshots: 1 / 4 / 8 / 12 / 15, default 15)
+options; changes apply at the next start. The controller hotkey that opens it
+stays a player setting, `settings.toml [hotkeys] rewind_pad` (the launcher's
+Hotkeys page); the keyboard key is `config.ini [KeyMap] Rewind`. The old
+`[video] rewind / rewind_depth / rewind_interval` keys are ignored.
 
-```toml
-[video]
-rewind          = false   # off by default — see below
-rewind_depth    = 50      # snapshots kept: 50 / 100 / 150 / 200
-rewind_interval = 15      # frames between snapshots: 1 / 4 / 8 / 12 / 15
-```
+**Off by default.** The ring holds whole *machine* snapshots — 2 MB main RAM
++ 1 MB VRAM + 512 KB SPU RAM, stored uncompressed — and captures one every
+interval frames (denser, toward 4, while an FMV runs). At the default depth
+that is a few hundred MB of resident memory plus a periodic multi-megabyte
+copy, which is not a cost to charge every host for a feature a session may
+never open; nothing is allocated until the mod is on.
 
-**`rewind` defaults to `false`.** The ring holds whole *machine* snapshots —
-2 MB main RAM + 1 MB VRAM + 512 KB SPU RAM, stored uncompressed — and captures
-one every `rewind_interval` frames (denser, toward 4, while an FMV runs). At
-the default depth that is a few hundred MB of resident memory plus a periodic
-multi-megabyte copy, which is not a cost to charge every host for a feature a
-session may never open. Turning it on is one click in the launcher's Display
-card; nothing is allocated until it is.
-
-`PSX_REWIND=1` / `PSX_REWIND=0` override the setting either way, and
+`PSX_REWIND=1` / `PSX_REWIND=0` override the mod either way, and
 `PSX_REWIND_DEPTH` / `PSX_REWIND_INTERVAL` / `PSX_REWIND_FMV_INTERVAL` override
-the tuning. A build configured with `-DPSX_REWIND=OFF` has no rewind at all and
-ignores all of these.
+the tuning. A build configured with `-DPSX_REWIND=OFF` has no rewind at all,
+ignores all of these, and does not stage the Rewind package
+(`runtime.cmake` declines it like an `EXCLUDE_BUILTIN_MODS` entry).
 
 Netplay rollback is a separate subsystem with its own ring and is unaffected by
-this setting; rewind is in fact suppressed while a netplay session is active.
+the mod; rewind is in fact suppressed while a netplay session is active (the
+mod is host-only, so it is no part of the netplay plan either).
 
 A title can also block Rewind while it is in a mode that must not be rewound,
 such as local split-screen multiplayer: a trusted mod plugin calls
@@ -766,6 +1178,31 @@ with an OSD note, no snapshots are captured (the ring keeps what it already
 has), and a title-allowed direct Rewind button (`psx_mod_allow_direct_shortcut`)
 is not claimed, so it reaches the game as if Rewind were off. The block clears
 at every mod/session reset; nothing changes for a title that never calls it.
+
+A title that computes vibration but cannot send it over SIO to the presented
+pad (a NeGcon has no motors) can call `psx_mod_set_host_rumble(player, small,
+large)` every frame with DualShock motor values. The runtime drives the host
+pad with the louder of that and the guest's SIO motors; a value lapses 8
+VBlanks after the last call and all are cleared at every mod/session reset.
+`PSX_RUMBLE_TRACE=1` logs every change, headless included.
+
+**EXPERIMENTAL:** JogCon wheel force feedback is a player setting,
+`settings.toml [controller] jogcon_force_feedback` (off by default; the
+launcher / in-game menu toggle writes it via
+`RecompLauncherCSettings.jogcon_force_feedback` (recomp-launcher; read behind
+`RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK`, so other providers still build), applied live through
+`psx_jogcon_ffb_set_player_enabled`). A title may set its default with
+`game.toml [controller] experimental_jogcon_force_feedback` (off when
+absent); the player's setting always wins. When on, it drives a host
+force-feedback wheel's SDL haptics from a presented JogCon's motor commands: a constant force for turn commands 1 and 2, and a centring
+spring for hold. It is off by default. Gamepads and devices without constant
+or spring haptics are never driven. Every force has a 120 ms lifetime and is
+renewed each VBlank, so a pause, stall or crash leaves the wheel slack. The
+Rewind and save-state pause menus, disconnects and session end also stop it
+explicitly. The turn direction has not been checked on JogCon hardware or a
+physical wheel; `experimental_jogcon_force_feedback_invert = true` flips it.
+SDL has no virtual haptic device, so CI covers the driver with a recording
+backend and the SDL backend only against an SDL3 virtual wheel (no haptics).
 
 Bezel artwork is intentionally not a `[video]` key. It is exposed as the
 disabled-by-default `psx.presentation.bezel` mod package, which draws a
@@ -813,6 +1250,22 @@ the `cpu_charge` callback into the same function), the dirty-RAM
 interpreter and the BIOS all charge CPU work through it; mul/div and GTE
 latencies are scaled where their deadline is set. At 1 the CPU charge is
 exactly the device advance and nothing else changes.
+
+`guest_cycle_scale_batch = true` (opt-in; `PSX_GCS_BATCH=0/1` for one run)
+scales each CPU charge where it is made and then batches it like the scale-1
+path, instead of publishing every one-cycle step to the devices. The
+fractional carry and the flush points (stores, MMIO, interrupt checks, device
+deadlines) are the same, so guest-visible timing is unchanged. In R4 races,
+`frame_fingerprint` A/Bs over 9000 frames (boot to attract, 1P race, 2P VS
+race) agree on `cyc`, `mmio` and `mc` on every frame. They also end with
+identical ordered write hashes. The only differences are one-frame VBlank
+straddles of `wc`/`sc`, as documented for batched code.
+
+The scale and selected batching profile are fixed at session startup and
+included in the existing netplay compatibility fingerprint. Peers with
+different batching choices cannot start together. Both paths use portable C;
+this does not authorize compatibility between otherwise different builds or
+replace the existing game/core/config identity checks.
 
 Gates (all present gates must be open; with none the scale always applies):
 
@@ -939,3 +1392,7 @@ ranges. A BIOS with no copies (runs
 entirely from ROM) is valid: normalization degenerates to the KSEG mask.
 Semantic invariants (disjoint windows, no fold-output/input intersection,
 single bless window) are enforced at load; violations refuse to build.
+
+Immediate selector choices are fixed during offline mod activation until the
+next session restart. Non-stock choices isolate savestate slots through the
+existing content scope; live setter calls and nonzero online selection fail.

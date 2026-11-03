@@ -65,6 +65,40 @@ int main(void) {
     assert(!ws_hud_anchor_lookup(tags, WS_HUD_ANCHOR_TABLE_SIZE,
                                  0x80010008u, packet, 4u, 20u, &anchor));
 
+    /* GTE-projected tags keep their edge (native-wide still translates by it)
+     * and carry the projected flag; plain tags do not. */
+    {
+        int projected = 7;
+        ws_hud_anchor_insert_projected(tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                                       0x80010004u, 5, &guard, 20u);
+        anchor = 0;
+        assert(ws_hud_anchor_lookup_result_ex(
+                   tags, WS_HUD_ANCHOR_TABLE_SIZE, 0x80010004u, packet, 4u,
+                   20u, &anchor, &projected) == WS_HUD_ANCHOR_HIT);
+        assert(anchor == 1 && projected == 1);
+        ws_hud_anchor_insert_projected(tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                                       0x80010004u, -3, &guard, 20u);
+        assert(ws_hud_anchor_lookup_result_ex(
+                   tags, WS_HUD_ANCHOR_TABLE_SIZE, 0x80010004u, packet, 4u,
+                   20u, &anchor, &projected) == WS_HUD_ANCHOR_HIT);
+        assert(anchor == -1 && projected == 1);
+        assert(ws_hud_anchor_native_delta(1, 53, anchor) == -53);
+        /* A projected centre tag is not the same as no tag: it must stop
+         * automatic layout from squashing the piece a second time. */
+        ws_hud_anchor_insert_projected(tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                                       0x80010004u, 0, &guard, 20u);
+        assert(ws_hud_anchor_lookup_result_ex(
+                   tags, WS_HUD_ANCHOR_TABLE_SIZE, 0x80010004u, packet, 4u,
+                   20u, &anchor, &projected) == WS_HUD_ANCHOR_HIT);
+        assert(anchor == 0 && projected == 1);
+        ws_hud_anchor_insert(tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                             0x80010004u, -7, &guard, 20u);
+        assert(ws_hud_anchor_lookup_result_ex(
+                   tags, WS_HUD_ANCHOR_TABLE_SIZE, 0x80010004u, packet, 4u,
+                   20u, &anchor, &projected) == WS_HUD_ANCHOR_HIT);
+        assert(anchor == -1 && projected == 0);
+    }
+
     ws_hud_anchor_clear(tags, WS_HUD_ANCHOR_TABLE_SIZE);
     assert(!ws_hud_anchor_lookup(tags, WS_HUD_ANCHOR_TABLE_SIZE,
                                  0x80010004u, packet, 4u, 20u, &anchor));

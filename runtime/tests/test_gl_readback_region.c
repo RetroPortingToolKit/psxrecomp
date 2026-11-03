@@ -1,12 +1,23 @@
 /* Original source-owned GL readback-coherence regression. No retail payload. */
 #include "gpu_gl_renderer.c"
+#include "gl_postfx_projection_fixture.h"
+#include "gl_fmv_fixture.h"
 #include "gpu_hd_texture_stubs.inc"
 #include "mod_texture_banks.c"
+#include "gl_batch_policy_lle.c"
+#include "gl_batch_policy_hle.c"
+/* Both textured-batch tiers in one binary: the fixture selects per scene. */
+static int test_batch_hle;
+GlBatchClass gl_batch_classify(int semi,int mask_check,int bank_batch){
+ return test_batch_hle?gl_batch_policy_hle(semi,mask_check,bank_batch):gl_batch_policy_lle(semi,mask_check,bank_batch);}
+const char *gl_batch_policy_name(void){return test_batch_hle?"HLE":"LLE";}
 #include "gpu_timeline.c"
 uint64_t psx_cycle_count=0;
 static int test_full_composite;
 int gpu_ws_background_requires_full_composite(void){return test_full_composite;}
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t n,uint32_t a){(void)n;(void)a;return 0;}
+/* mod_texture_banks.c refuses inside a netplay host-output hook (mod_runtime.cpp); none here. */
+int psx_mod_host_output_scope(void){return 0;}
 uint32_t psx_mod_read_word(uint32_t a){(void)a;return 0;}
 static uint16_t image[1024*512], oracle[1024*512];
 int g_psx_vram_dirty_tracking=0;
@@ -73,6 +84,98 @@ static void verify_bank_batching(void) {
  }
  psx_mod_set_texture_bank_batching(0);s_tex_filter=0;
  glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+}
+/* HLE textured batching must reproduce the LLE pixels. One scene, drawn by
+ * each tier from the same VRAM: overlapping painter-ordered runs of opaque
+ * prims and every blend mode, 16-bit and 4-bit CLUT pages, raw and modulated
+ * texels with STP=0/STP=1/transparent words, every mask-set/mask-check and
+ * filter combination, and prims that sample a page an earlier queued prim
+ * wrote. Each pass first resets every VRAM word the scene reads; every
+ * hr-surface pixel of the scene and the pages is compared. */
+enum { TB_X=96, TB_Y=288, TB_W=192, TB_H=160 };
+static uint16_t tb_page16[128*64], tb_page4[64*64], tb_clut[16];
+static void tier_batch_scene(int filter,int mask_set,int mask_check){
+ glb_vram_transfer_in(512,0,128,64,tb_page16);
+ glb_vram_transfer_in(640,0,64,64,tb_page4);
+ glb_vram_transfer_in(768,0,16,1,tb_clut);
+ glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);
+ glb_fill_rect(TB_X,TB_Y,TB_W,TB_H,0x2108);
+ glb_fill_rect(512,64,128,64,0x1084);
+ /* A mask-set strip so mask-check scenes have protected pixels to keep. */
+ glb_set_mask_bits(1,0);glb_draw_flat_rect(TB_X+40,TB_Y+30,90,20,0x3def);
+ s_tex_filter=filter;glb_set_mask_bits(mask_set,mask_check);
+ for(int i=0;i<60;++i){
+  const int semi=(i%5)-1, x=TB_X+(i*29)%150, y=TB_Y+(i*17)%120;
+  glb_set_semi_transparency(semi>=0,semi>=0?semi:0);
+  const int four=(i/6)&1, raw=(i/12)&1;
+  const uint16_t tp=four?(uint16_t)0x00A:(uint16_t)0x108;
+  const uint32_t c=raw?0x808080:(i&1?0x60a0c0:0xc08040);
+  glb_draw_shaded_textured_triangle(x,y,(i*7)&31,(i*5)&31,c,
+      x+40,y+3,((i*7)&31)+40,(i*5)&31,0x808080,x+5,y+38,(i*7)&31,((i*5)&31)+30,c,
+      four?768:0,0,tp,raw);
+ }
+ /* Feedback: draw into the 16-bit page, then sample what was just drawn. */
+ for(int i=0;i<6;++i){
+  glb_set_semi_transparency(i&1,i%4);
+  glb_draw_shaded_textured_triangle(514+i*8,66,0,0,0x808080,
+      540+i*8,66,26,0,0x808080,514+i*8,100,0,34,0x808080,0,0,0x108,1);
+  glb_draw_shaded_textured_triangle(TB_X+10+i*25,TB_Y+120,2+i*8,66,0x808080,
+      TB_X+40+i*25,TB_Y+122,30+i*8,66,0x808080,TB_X+12+i*25,TB_Y+156,2+i*8,98,0x808080,0,0,0x108,1);
+ }
+ flush_flat_batch();flush_tex_batch();
+ glb_set_mask_bits(0,0);glb_set_semi_transparency(0,0);s_tex_filter=0;
+}
+static void hr_read(int x,int y,int w,int h,uint32_t *out){
+ flush_flat_batch();flush_tex_batch();hiw_flush_queue();
+ const int S=s_hr_scale;
+ p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,s_hr_fbo);
+ glPixelStorei(GL_PACK_ALIGNMENT,4);
+ glReadPixels(x*S,y*S,w*S,h*S,GL_RGBA,GL_UNSIGNED_BYTE,out);
+ p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,0);
+}
+static void verify_tier_batching(void){
+ for(int i=0;i<128*64;++i){
+  const int x=i&127,y=i>>7;
+  uint16_t v=(uint16_t)(((x*3)&31)|(((y*5)&31)<<5)|(((x^y)&31)<<10));
+  if(((x>>2)^(y>>2))&1)v|=0x8000;   /* STP=1 blocks */
+  if((x+y)%9==0)v=0;               /* transparent */
+  tb_page16[i]=v;
+  if(i<64*64)tb_page4[i]=(uint16_t)(i*0x1357u);
+ }
+ for(int i=0;i<16;++i)tb_clut[i]=(uint16_t)(i==0?0:((i*0x0843u)&0x7fff)|(i&4?0x8000:0));
+ const int S=s_hr_scale;
+ const size_t scene=(size_t)TB_W*TB_H*S*S, page=(size_t)128*128*S*S;
+ uint32_t *ref=malloc((scene+page)*4),*got=malloc((scene+page)*4);
+ if(!ref||!got){check(0,"tier batching alloc");free(ref);free(got);return;}
+ for(int filter=0;filter<2;++filter)for(int mset=0;mset<2;++mset)for(int mcheck=0;mcheck<2;++mcheck){
+  int batches[2];
+  for(test_batch_hle=0;test_batch_hle<2;++test_batch_hle){
+   const int before=s_cw_batches;
+   tier_batch_scene(filter,mset,mcheck);
+   batches[test_batch_hle]=s_cw_batches-before;
+   uint32_t *dst=test_batch_hle?got:ref;
+   hr_read(TB_X,TB_Y,TB_W,TB_H,dst);hr_read(512,0,128,128,dst+scene);
+  }
+  test_batch_hle=0;
+  size_t n=0;
+  for(size_t i=0;i<scene+page;++i){
+   if(ref[i]==got[i])continue;
+   if(n++<8){
+    const int pg=i>=scene;const size_t j=pg?i-scene:i;const int w=(pg?128:TB_W)*S;
+    fprintf(stderr,"  diff at native (%d,%d) sub (%d,%d): LLE %08x HLE %08x\n",
+        (pg?512:TB_X)+(int)(j%w)/S,(pg?0:TB_Y)+(int)(j/w)/S,(int)(j%w)%S,(int)(j/w)%S,ref[i],got[i]);
+   }
+  }
+  char label[96];
+  snprintf(label,sizeof label,"HLE batching pixel equivalence filter=%d mask_set=%d mask_check=%d",filter,mset,mcheck);
+  if(n)fprintf(stderr,"%s: %zu hr pixels differ\n",label,n);
+  check(n==0,label);
+  snprintf(label,sizeof label,"HLE batch reduction filter=%d mask_set=%d mask_check=%d (%d vs %d)",filter,mset,mcheck,batches[1],batches[0]);
+  check(mcheck?batches[1]<=batches[0]:batches[1]*2<batches[0],label);
+  printf("tier batches filter=%d mask_set=%d mask_check=%d: LLE %d HLE %d\n",filter,mset,mcheck,batches[0],batches[1]);
+ }
+ free(ref);free(got);
+ verify("tier batching leaves CPU VRAM coherent");
 }
 static void verify_stereo_transactions(void) {
  uint16_t before[16*16], after[16*16];
@@ -150,6 +253,13 @@ static void verify_stereo_transactions(void) {
  check(glGetError()==GL_NO_ERROR,"stereo transaction GL error");
 }
 
+static void check_wide_green(uint32_t pixel,const char *label) {
+ /* Accurate blending stores each 5-bit channel as k*8, so full green is
+  * 248 in the raw wide surface. The legacy basis expands it to 255. */
+ const uint32_t expected=gl_renderer_accurate_blending()?0xff00f800u:0xff00ff00u;
+ if(pixel!=expected)fprintf(stderr,"%s: got %08x expected %08x\n",label,pixel,expected);
+ check(pixel==expected,label);
+}
 static void verify_oversize_wide_geometry(int scale) {
  /* Captured hallway triangles exceed the PS1 height limit. Proven geometry
   * must use identical canonical/wide passes, including the center-copy edge. */
@@ -189,11 +299,11 @@ static void verify_oversize_wide_geometry(int scale) {
  check(pixels!=NULL,"oversize wide pixels allocation");
  if(pixels) {
   check(glb_render_wide_display(pixels,848*scale*4,0,0,240)>0,"oversize wide readback");
-  check(pixels[(100*scale)*(848*scale)+68*scale]==0xff00ff00u,"left oversize margin drawn in painter order");
-  check(pixels[(100*scale)*(848*scale)+818*scale]==0xff00ff00u,"captured right hallway wall drawn");
-  check(pixels[(100*scale)*(848*scale)+268*scale]==0xff00ff00u,"canonical center retains recovered faces");
-  check(pixels[(100*scale)*(848*scale)+678*scale]==0xff00ff00u,"recovered wall before center-copy boundary");
-  check(pixels[(100*scale)*(848*scale)+680*scale]==0xff00ff00u,"same recovered wall after center-copy boundary");
+  check_wide_green(pixels[(100*scale)*(848*scale)+68*scale],"left oversize margin drawn in painter order");
+  check_wide_green(pixels[(100*scale)*(848*scale)+818*scale],"captured right hallway wall drawn");
+  check_wide_green(pixels[(100*scale)*(848*scale)+268*scale],"canonical center retains recovered faces");
+  check_wide_green(pixels[(100*scale)*(848*scale)+678*scale],"recovered wall before center-copy boundary");
+  check_wide_green(pixels[(100*scale)*(848*scale)+680*scale],"same recovered wall after center-copy boundary");
   free(pixels);
  }
  glb_wide_disable_target();
@@ -227,8 +337,8 @@ static void verify_camera_plane_clip(int scale) {
  check(pixels!=NULL,"camera-plane wide allocation");
  if(pixels) {
   check(glb_render_wide_display(pixels,848*scale*4,0,0,240)>0,"camera-plane wide readback");
-  check(pixels[100*scale*(848*scale)+68*scale]==0xff00ff00u,"crossing wall retained in wide margin");
-  check(pixels[100*scale*(848*scale)+268*scale]==0xff00ff00u,"same crossing wall across center copy");
+  check_wide_green(pixels[100*scale*(848*scale)+68*scale],"crossing wall retained in wide margin");
+  check_wide_green(pixels[100*scale*(848*scale)+268*scale],"same crossing wall across center copy");
   free(pixels);
  }
  /* Perspective UVs must survive intersections without integer rounding.
@@ -495,6 +605,7 @@ int main(int argc,char **argv){
  check(glb_vram_read(482,252)==0x001f,"palette update visible without replacing indices");
  verify("retained indices with animated guest CLUT");
  verify_bank_batching();
+ verify_tier_batching();
  verify_stereo_transactions();
  verify_oversize_wide_geometry(scale);
  verify_camera_plane_clip(scale);
@@ -526,6 +637,29 @@ int main(int argc,char **argv){
  for(test_full_composite=0;test_full_composite<2;test_full_composite++){verify_wide_overlay_band();verify_wide_overlay_order();}
  test_full_composite=0;
  verify_presentation_capture();
+ /* A trusted retained-bank profile permits GL presentation in delay-sync,
+  * while the software authority still samples the original guest texture. */
+ gl_renderer_sync_cpu();
+ gl_renderer_set_cpu_auth_dual(1);
+ check(!gl_renderer_texture_banks_supported(),"dual banks refused without profile");
+ test_title_profile_banks=1;
+ check(!gl_renderer_texture_banks_supported(),"dual banks refused for inactive profile");
+ test_title_profile_active=1;
+ check(gl_renderer_texture_banks_supported(),"trusted dual retained-bank profile allowed");
+ test_title_profile_banks=0;
+ check(!gl_renderer_texture_banks_supported(),"active profile must explicitly request banks");
+ test_title_profile_banks=1;
+ s_hd_native_authority=1;
+ check(!gl_renderer_texture_banks_supported(),"HD authority still refuses retained banks");
+ s_hd_native_authority=0;
+ glb_set_draw_area(0,0,1023,511);
+ glb_vram_write(0,0,0x7c00);
+ check(gl_renderer_select_texture_bank(7),"trusted dual bank selected");
+ glb_draw_shaded_textured_triangle(100,300,0,0,0x808080,132,300,0,0,0x808080,100,332,0,0,0x808080,0,0,0x100,1);
+ check(gl_renderer_select_texture_bank(0),"reset trusted dual bank");
+ check(glb_vram_read(102,302)==0x7c00,"dual software authority samples ordinary VRAM");
+ test_title_profile_active=test_title_profile_banks=0;
+ gl_renderer_set_cpu_auth_dual(0);
  printf("checks=%d failures=%d\n",checks,failures);
  gl_renderer_shutdown();SDL_DestroyWindow(win);SDL_Quit();return failures?1:0;
 }

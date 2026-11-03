@@ -26,6 +26,11 @@ enum {
 };
 extern uint64_t g_render_pass_dropped_writes[RENDER_PASS_DROP_CLASSES];
 
+/* memory.c calls this before a pass reads MMIO. Reads of devices outside the
+ * checkpoint can consume FIFOs/ACKs even with their clock frozen; reject the
+ * entire pass before the access instead of fabricating a device result. */
+int render_pass_mmio_read_allowed(uint32_t phys, uint32_t width);
+
 typedef struct RenderPassFailure {
     const char *reason;       /* static name, NULL until the first refusal */
     uint64_t attempt, plan, guest_cycle;
@@ -49,6 +54,8 @@ typedef struct RenderPassStats {
     uint64_t discarded;       /* passes whose plugin declined the image */
     uint64_t watchdog;        /* of which: guest-cycle watchdog overruns */
     uint64_t vram_leaks;      /* GPU writes outside the declared rect (dropped) */
+    uint64_t device_reads;    /* aborted before reading an uncheckpointed device */
+    uint32_t last_device_read, last_device_read_width;
     uint64_t nesting_repairs; /* aborts whose skipped exits the restore undid */
     char last_abort_detail[192]; /* skipped host exits; latched until session reset */
     uint64_t verify_checks;   /* PSX_RENDER_PASS_VERIFY comparisons */
@@ -68,6 +75,9 @@ typedef struct RenderPassStats {
 } RenderPassStats;
 
 void render_pass_get_stats(RenderPassStats *out);
+/* Whether optional state-preservation verification is enabled. Zero executed
+ * checks still means no coverage even when this is enabled. Not a pixel test. */
+int render_pass_verification_enabled(void);
 /* Clears counters and the sticky fault latch (new mod session). */
 void render_pass_reset_session(void);
 typedef struct RenderStereoStats {
@@ -81,6 +91,22 @@ typedef struct RenderStereoStats {
     uint64_t last_failed_attempt, retained_pair_id;
     int last_failed_eye;
     const char *last_failed_reason; /* latched across later successes */
+    /* Shedding/recovery policy (stereo_shed_policy.c). A shed streak is bounded
+     * by time and count; these report how the last one ended and how stale the
+     * retained pair got. */
+    uint64_t shed_streak, shed_streak_max; /* consecutive sheds now / worst seen */
+    uint32_t shed_streak_ms;               /* wall clock of the current streak */
+    uint64_t stale_frames;                 /* frames that published no new pair */
+    uint64_t budget_resets;                /* estimates reset on scene/mode change */
+    double   budget_ms;                    /* pair budget actually in use */
+    uint32_t budget_source;                /* 0 vblank (fallback), 1 headset, 2 env */
+    uint64_t last_pair_age_ms;             /* age of the retained pair, this frame */
+    int      shedding;                     /* policy is currently suppressing */
+    /* Pair-scoped baseline: how often a machine snapshot was captured, and how
+     * often a later eye of the same pair reused it instead of re-capturing. */
+    uint64_t checkpoint_saves;             /* snapshots captured */
+    uint64_t checkpoint_reuses;            /* eyes that reused the pair baseline */
+    uint64_t checkpoint_ram_bytes;         /* RAM bytes copied by those captures */
 } RenderStereoStats;
 void render_stereo_get_stats(RenderStereoStats *out);
 int render_pass_netplay_enabled(void);

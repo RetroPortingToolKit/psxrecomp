@@ -10,7 +10,10 @@ typedef struct PSXOpenXRStats {
     uint64_t view_flags;
     const char *stage;
     uint64_t waits, submitted, empty, failures, predicted_time;
+    uint64_t session_generation, submitted_session_generation;
     float ipd_m;
+    float origin_up_dot;
+    uint32_t origin_inversion_streak, origin_ambiguous;
     double units_per_meter;
     uint64_t gl_version, min_gl_version, max_gl_version;
     int64_t swapchain_format; /* GL_SRGB8_ALPHA8 preferred; GL_RGBA8 decoded copy */
@@ -25,6 +28,8 @@ typedef struct PSXOpenXRStats {
     uint32_t submitted_source; /* 1 fresh stereo pair, 2 native presentation */
     uint64_t native_submitted, submitted_native_frame;
     uint64_t losses; /* session/instance/swapchain losses torn down and retried */
+    uint32_t submitted_surfaces;
+    uint64_t surface_uploads, surface_failures;
 } PSXOpenXRStats;
 int psx_openxr_enable(int enabled);
 int psx_openxr_begin(int width,int height,double units);
@@ -33,6 +38,9 @@ int psx_openxr_view(uint32_t eye,PSXModRenderView *out);
 typedef int (*PSXOpenXRCopy)(uint32_t eye,uint32_t texture,int w,int h);
 int psx_openxr_end(int keep,PSXOpenXRCopy copy);
 int psx_openxr_quad(double distance_m,double width_m,double height_m);
+int psx_openxr_surface_valid(const PSXModOpenXRSurface *surface);
+int psx_openxr_surface(const PSXModOpenXRSurface *surface);
+int psx_openxr_surface_get(uint32_t id,PSXModOpenXRSurface *out);
 void psx_openxr_pair_metadata(uint64_t pair_id,uint64_t cycle);
 void psx_openxr_native_metadata(uint64_t frame);
 /* Pure gate: presentation-side frame interpolation must be OFF while a headset

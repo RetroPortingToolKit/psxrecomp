@@ -203,6 +203,13 @@ int psx_ws_cull_sltiu(uint32_t sx, uint32_t imm) {
     return ((uint32_t)((int32_t)(int16_t)(uint16_t)sx + m)
             < (uint32_t)((int32_t)imm + 2 * m)) ? 1 : 0;
 }
+/* MUST stay byte-for-byte identical to gpu.c psx_ws_cull_sltu_band. */
+int psx_ws_cull_sltu_band(uint32_t sx, uint32_t bound) {
+    int m = psx_ws_x_margin();
+    if (m <= 0) return sx < bound ? 1 : 0;
+    int32_t x = (int32_t)(int16_t)(uint16_t)sx;
+    return (x >= -4 * m && x < (int32_t)bound) ? 1 : 0;  /* WS_SLTU_BAND_LEFT_REACH */
+}
 /* Signed-funnel variants (min/max + center±halfwidth idioms). Same contract:
  * self-contained, identity at margin 0, MUST stay byte-for-byte identical to
  * the gpu.c implementations. */
@@ -266,9 +273,21 @@ void psx_mod_instruction(CPUState *cpu, uint32_t address, uint32_t word) {
     overlay_flush_cycles();
     if (g_cbs.mod_instruction) g_cbs.mod_instruction(cpu, address, word);
 }
+uint32_t psx_mod_memory_address(const CPUState *cpu, uint32_t pc, uint32_t word, uint32_t address) {
+    overlay_flush_cycles();
+    return g_cbs.mod_memory_address ? g_cbs.mod_memory_address(cpu, pc, word, address) : address;
+}
+uint32_t psx_mod_immediate_select(uint32_t group) {
+    return g_cbs.mod_immediate_select ? g_cbs.mod_immediate_select(group) : 0u;
+}
 int psx_mod_function_entry(CPUState *cpu, uint32_t address) {
     overlay_flush_cycles();
     return g_cbs.mod_function_entry ? g_cbs.mod_function_entry(cpu, address) : 0;
+}
+int psx_mod_try_function_replacement(CPUState *cpu, uint32_t address) {
+    overlay_flush_cycles();
+    return g_cbs.mod_try_function_replacement ?
+        g_cbs.mod_try_function_replacement(cpu, address) : 0;
 }
 int32_t psx_ws_depth_bound(int32_t imm) {
     return g_cbs.ws_depth_bound ? g_cbs.ws_depth_bound(imm) : imm;
@@ -278,6 +297,10 @@ int32_t psx_ws_plane_nx(int32_t nx) {
 }
 uint32_t psx_ws_xclip_bound(uint32_t vanilla) {
     return g_cbs.ws_xclip_bound ? g_cbs.ws_xclip_bound(vanilla) : vanilla;
+}
+/* [[widescreen.cull.sxy]] fold AND (ws_cull_edge.h). MUST match gpu.c. */
+uint32_t psx_ws_cull_sxy_and(uint32_t acc, uint32_t sxy) {
+    return psx_ws_sxy_and_value(acc, sxy, psx_ws_x_margin());
 }
 uint32_t psx_ws_cull_keep_result(uint32_t vanilla, uint32_t forced) {
     return g_cbs.ws_cull_keep_result

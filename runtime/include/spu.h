@@ -8,7 +8,19 @@ extern "C" {
 #endif
 
 void spu_init(void);
-void spu_render(int16_t* out_stereo, int frames);
+/* Guest-clocked SPU: render every whole sample owed up to the current guest
+ * cycle (768 cycles per 44.1 kHz sample) into the output queue. Every SPU
+ * register/DMA/CD-input access does this first; the host pump calls it, then
+ * drains the queue. */
+void spu_catch_up(void);
+uint32_t spu_output_available(void);
+uint32_t spu_output_pop(int16_t* out_stereo, uint32_t max_frames);
+void spu_output_drop(uint32_t frames);   /* oldest first */
+void spu_output_flush(void);
+uint64_t spu_output_overflow_drops(void);
+/* Host gate: while it returns nonzero (rollback resimulation, FMV-skip mute)
+ * rendered samples advance SPU state but are not queued. */
+void spu_set_output_gate(int (*suppressed)(void));
 
 typedef struct SpuDebugInfo {
     uint32_t ctrl;
@@ -138,6 +150,25 @@ void spu_cd_audio_reset(void);
 /* Get pointer to SPU RAM for direct access (512KB) */
 const uint8_t* spu_get_ram(void);
 
+/* Opt-in enhancement assets. Bank 0 is hardware RAM; immutable ADPCM banks
+ * 1..31 reside outside it. A binding is consumed at the next KEYON on that
+ * voice, preserving the native decoder, pitch, envelopes, mixer and KEYOFF.
+ * Bank addresses are byte offsets (the voice registers still use /8 units).
+ * Both active and pending bindings are part of the SPU snapshot wire. */
+int spu_register_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
+/* Host residency generation; zero before init, changes when banks are freed. */
+uint32_t spu_sample_bank_epoch(void);
+int spu_bind_next_voice_bank(unsigned voice, uint32_t bank);
+/* Optional title-owned voices, independent of all 24 hardware channels.
+ * Register order is VOL_L, VOL_R, PITCH, START, ADSR_LO, ADSR_HI, ENV, LOOP.
+ * Mode bits: 0 noise, 1 reverb. Slots 0..23; nonzero immutable bank required.
+ * Decoder/envelope/sweep state is serialized; ordinary snapshots retain their
+ * existing size until this enhancement is used. */
+int spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
+void spu_private_voice_stop(uint32_t mask);
+int spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right);
+uint32_t spu_private_voice_active(void);
+
 /* ---- Verified-enhancement shadow tap (consumed by spu_shadow.c) ---------
  *
  * Present-time, opt-in float SPU re-render. When the shadow is enabled,
@@ -146,7 +177,7 @@ const uint8_t* spu_get_ram(void);
  * fractional phase, envelope level, and per-voice + main volumes). The shadow
  * re-interpolates these in float. The layout MUST match spu.c's internal
  * SpuShadowVoiceTap / SpuShadowFrameTap. */
-#define SPU_SHADOW_MAX_VOICES 24
+#define SPU_SHADOW_MAX_VOICES 48
 
 typedef struct {
     int16_t  s[4];     /* decoded samples sample_idx-1 .. +2 (block-edge clamped) */
@@ -170,6 +201,10 @@ const void* spu_shadow_tap_buffer(void);
 int         spu_shadow_tap_count(void);
 
 uint32_t spu_snapshot_bytes(void);
+int      spu_snapshot_len_ok(uint32_t len);
+/* Optional host-owned implementation, not serialized. The caller owns any
+ * mutable playback state and restores it with its guest snapshot. */
+void spu_set_pcm_overlay(void (*callback)(int16_t* stereo, uint32_t frames));
 void     spu_snapshot_write(uint8_t *p);
 int      spu_snapshot_read(const uint8_t *p, uint32_t len);
 uint8_t *spu_get_ram_ptr(void);

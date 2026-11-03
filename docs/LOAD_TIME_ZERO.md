@@ -386,3 +386,38 @@ rejected on paper.
   `spike/load-shards` (TombaRecomp). Recreate worktrees before E4.
 - `cdrom_bursts` ring (`cdrom.c:311-360`) already measures load
   durations — E0's window boundary source.
+
+
+## Incremental resident sectors
+
+`psx_mod_resident_cd_sector(lba, user_data)` admits exactly one verified data
+sector through the actual controller FIFO and IRQ path. It keeps ReadN active,
+advances the drive cursor by one sector, and restores ordinary timing for the
+next sector. The original guest Ready callback, header/payload DMA, resource
+consumers and final Pause acknowledgement still run. It never writes guest
+RAM, calls a guest callback or retains a host pointer/transfer cursor.
+
+The title must prove its stock file/span, original code and live callback,
+and that the next destination is free of pending consumers. A zero ring
+occupancy byte alone is insufficient when an SDK queue retains its source
+pointer. Check both the software GPU queue and active GPU/SPU DMA before each
+admission. The shared helper checks CD ownership only; it does not know the
+title's upload queues or grant a whole-file transfer.
+
+Admission requires the original ReadN ACK and response to be fully consumed,
+mode 0x80 or 0xA0, the exact next drive LBA, and no pending command, IRQ, CD DMA
+or unread payload. Mode 0xA0 may retain only the already-consumed sector's ECC
+tail. The helper witnesses the real raw sector's mode, submode, duplicate
+subheader and BCD address and compares every user byte with resident data.
+XA, FMV, Form2, realtime, changed bytes and busy ownership decline without
+controller mutation. This first version still reads raw sector metadata from
+the mounted image for verification; it does not claim removal of all host I/O.
+
+No extra snapshot fields are needed: every accepted effect lives in the
+ordinary controller buffers, cursor, status and IRQ state. The real-controller
+`cdrom_resident_sector_test` covers both modes, repeated one-sector admission,
+24 current-format snapshot restores, subsequent original-stream delivery and
+real Pause completion, plus 33 byte-for-byte atomic decline cases. Existing
+FIFO and IRQ-mask tests also pass. These tests qualify the helper's controller
+contract, not a title adapter or load-time improvement. Tron consumer integration
+and measured runtime outcomes remain pending under beads-eio.3.412/eio.27.3.

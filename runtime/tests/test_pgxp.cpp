@@ -113,6 +113,24 @@ int main(void) {
     pgxp_set_tolerance(-1.0f);
     pgxp_set_cpu_mode(0);
 
+    /* PGXP mode is opened after the precision checkpoint and closed before
+     * rollback. The real generation and prior mode must survive the pass. */
+    {
+        pgxp_set_enabled(0);
+        const uint32_t gen = pgxp_test_generation();
+        pgxp_checkpoint_begin();
+        PGXPProjectiveScope scope = {};
+        CHECK(pgxp_projective_scope_begin(&scope));
+        CHECK(pgxp_enabled() && pgxp_cpu_mode());
+        CHECK(!pgxp_projective_scope_begin(&scope));
+        produce_at(ADDR_A);
+        pgxp_projective_scope_end(&scope);
+        pgxp_checkpoint_rollback();
+        CHECK(!pgxp_enabled() && !pgxp_cpu_mode());
+        CHECK(pgxp_test_generation() == gen);
+    }
+    pgxp_set_enabled(1);
+
     /* --- SWC2 produce -> GPU consume (the perspective-texturing spine) --- */
     produce_at(ADDR_A);
     {
@@ -276,12 +294,16 @@ int main(void) {
      * The flag ops rewrite bits 14/15 and 30/31 of the word, never the 11-bit
      * fields GP0 decodes, so the vertex (and its depth) must survive - in
      * BOTH tiers, since bitwise carries are exact. --- */
-    for (int mode = 0; mode < 2; mode++) {
+    for (int exact = 0; exact < 2; exact++) {
+      pgxp_set_preserve_projection(exact);
+      const int32_t expected_x = X16 - (exact ? 65536 : 0);
+      const int32_t expected_y = Y16 + (exact ? 65536 : 0);
+      for (int mode = 0; mode < 2; mode++) {
         pgxp_set_cpu_mode(mode);
         const uint32_t T2 = 10, T4 = 12, T5 = 13, T9 = 25, A3 = 7;
         const uint32_t bounds = (240u << 16) | 128u;       /* x >= 128 -> flag */
         const uint32_t m14 = 0xBFFFBFFFu, m15 = 0x7FFF7FFFu;
-        pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+        pgxp_gte_push_sxy(expected_x, expected_y, SZ3, PACKED);
         psx_pgxp_cop2(nullptr, MFC2(T2, 14), PACKED, 0);
         psx_pgxp_load(nullptr, LW(1, T4), 0x80180000u, bounds);  /* untracked */
         psx_pgxp_alu(nullptr, LUI(T5, 0xBFFF), 0xBFFF0000u, 0, 0);
@@ -303,11 +325,13 @@ int main(void) {
         psx_pgxp_store(nullptr, SW(1, T2), ADDR_B, w);
         int32_t x, y; uint16_t z;
         CHECK(lookup(ADDR_B, w, 160, 80, &x, &y, &z) == PGXP_SRC_DATAFLOW);
-        CHECK(x == X16 && y == Y16 && z == SZ3);
+        CHECK(x == expected_x && y == expected_y && z == SZ3);
         uint16_t wz = 0;
         CHECK(pgxp_load_precise_word(ADDR_B, w, nullptr, nullptr, &wz) == 1);
         CHECK(wz == SZ3);
     }
+      }
+    pgxp_set_preserve_projection(0);
     pgxp_set_cpu_mode(0);
 
     /* --- quad from a projected-vertex table (Spider-Man 0x8007C5D4):
@@ -428,6 +452,34 @@ int main(void) {
     CHECK(lookup(ADDR_A, PACKED, 160, 80, nullptr, nullptr, nullptr) ==
           PGXP_SRC_DATAFLOW);
     pgxp_set_tolerance(-1.0f);
+
+    /* --- the clamp keeps the native position but the validated depth --- */
+    {
+        int32_t x, y; uint16_t z = 0;
+        pgxp_set_tolerance(0.25f);
+        CHECK(lookup(ADDR_A, PACKED, 160, 80, &x, &y, &z) == PGXP_SRC_NATIVE);
+        CHECK(x == (160 << 16) && y == (80 << 16) && z == SZ3);
+        pgxp_set_tolerance(-1.0f);
+        /* a truncation reject (CPU-modified integer) carries no depth */
+        z = 1;
+        CHECK(lookup(ADDR_A, PACKED, 161, 80, &x, &y, &z) == PGXP_SRC_NATIVE);
+        CHECK(z == 0);
+    }
+
+    /* --- trusted-mod guest regions are tracked like RAM --- */
+    {
+        static const uint32_t APERTURE = 0x809D0004u;   /* GPU DMA aperture   */
+        static const uint32_t MODMEM   = 0x9F000040u;   /* Expansion 1 memory */
+        int32_t x, y; uint16_t z;
+        produce_at(APERTURE);
+        CHECK(lookup(APERTURE & 0x00FFFFFFu, PACKED, 160, 80, &x, &y, &z) ==
+              PGXP_SRC_DATAFLOW);                  /* 24-bit DMA tag form   */
+        CHECK(x == X16 && y == Y16 && z == SZ3);
+        CHECK(lookup(0x801D0004u, PACKED, 160, 80, nullptr, nullptr, nullptr) !=
+              PGXP_SRC_DATAFLOW);                  /* never aliases its RAM mirror */
+        produce_at(MODMEM);
+        CHECK(lookup(MODMEM, PACKED, 160, 80, &x, &y, &z) == PGXP_SRC_DATAFLOW);
+    }
 
     /* --- fallback tier: no address -> position cache, never a depth --- */
     g_fb_valid = 1; g_fb_packed = PACKED; g_fb_x16 = X16; g_fb_y16 = Y16;
@@ -586,6 +638,52 @@ int main(void) {
         CHECK(pgxp_project_precise(m1, m2, 151 * 4096, 12, (int32_t)(m1 >> 12),
                                    (int32_t)(m2 >> 12), 151, 300, ofx, ofy, 1, 1,
                                    &x, &y) == 1);
+    }
+
+    /* Far-world projection: exact dataflow may recover IR saturation, while
+     * stale words, lm sign clamps and half writes must stay rejected. */
+    {
+        const int saved_preserve = pgxp_preserve_projection();
+        pgxp_set_preserve_projection(1);
+        pgxp_set_tolerance(-1.0f);
+        int32_t x, y;
+        CHECK(pgxp_project_precise(INT64_C(40000)*4096, INT64_C(-35000)*4096,
+              INT64_C(60000)*4096, 12, 32767, -32768, 60000, 300,
+              160<<16, 120<<16, 1, 1, &x, &y) == 2);
+        /* Fused/non-fused host arithmetic may straddle the final floor by
+         * one 16.16 quantum (less than 0.00002 pixel). */
+        CHECK(std::abs(x - 360*65536) <= 1 && std::abs(y + 55*65536) <= 1);
+        const uint32_t packed = (uint16_t)323 | ((uint32_t)(uint16_t)-44 << 16);
+        pgxp_gte_push_sxy(x, y, 60000, packed);
+        pgxp_gte_mark_unclamped(60000);
+        pgxp_store_gte_reg(0x80005000, 14);
+        int32_t px, py; uint16_t z;
+        CHECK(pgxp_get_precise_vertex(0x80005000, packed, 323, -44, &px, &py, &z));
+        CHECK(px == x && py == y && z == 60000);
+        CHECK(pgxp_get_unclamped_depth(0x80005000, packed) == 60000.0f);
+        CHECK(!pgxp_get_precise_vertex(0x80005000, packed^1u, 322, -44, &px, &py, &z));
+        psx_pgxp_cop2(nullptr, MFC2(2, 14), packed, 0);
+        psx_pgxp_store(nullptr, SH(1, 2), 0x80005000, packed);
+        CHECK(!pgxp_get_precise_vertex(0x80005000, packed, 323, -44, &px, &py, &z));
+        CHECK(pgxp_project_precise(-4096, 0, INT64_C(60000)*4096, 12, 0, 0,
+              60000, 300, 0, 0, 1, 1, &x, &y) == 0);
+        CHECK(pgxp_project_precise(INT64_C(40000)*4096, INT64_C(20000)*4096,
+              INT64_C(100000)*4096, 12, 32767, 20000, 65535, 300,
+              160<<16, 120<<16, 1, 1, &x, &y) == 2);
+        CHECK(x == 280*65536 && y == 180*65536);
+        const uint32_t far_word = 310u | (211u << 16);
+        pgxp_gte_push_sxy(x, y, 65535, far_word);
+        pgxp_gte_mark_unclamped(100000);
+        pgxp_store_gte_reg(0x80005004, 14);
+        CHECK(pgxp_get_precise_vertex(0x80005004, far_word, 310, 211, &px, &py, &z));
+        CHECK(px == x && py == y && z == 65535);
+        CHECK(pgxp_get_unclamped_depth(0x80005004, far_word) == 100000.0f);
+        CHECK(pgxp_get_unclamped_depth(0x80005004, far_word^1) == 0.0f);
+        pgxp_set_preserve_projection(0);
+        CHECK(pgxp_get_unclamped_depth(0x80005004, far_word) == 0.0f);
+        CHECK(pgxp_project_precise(INT64_C(40000)*4096, 0, INT64_C(60000)*4096,
+              12, 32767, 0, 60000, 300, 0, 0, 1, 1, &x, &y) == 0);
+        pgxp_set_preserve_projection(saved_preserve);
     }
 
     /* --- probe: the same decision, not counted --- */

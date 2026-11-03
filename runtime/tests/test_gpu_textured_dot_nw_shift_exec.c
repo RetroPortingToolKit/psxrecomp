@@ -143,7 +143,7 @@ static void test_background_packet_tags(void) {
     assert(!gpu_ws_background_stretch_active());
     assert(!gpu_ws_background_requires_full_composite());
 
-    /* Reject semi-transparent polygons, rectangles, misalignment and RAM
+    /* Reject semi-transparent polygons/rectangles, other commands, misalignment and RAM
      * overflow; a rejected tag must not even enable the full-composite path. */
     const uint32_t bad_prim[] = {addr - 3u, 0xFFFFFFFCu, 0x801FFFFCu,
                                  0x1F800000u};
@@ -153,7 +153,8 @@ static void test_background_packet_tags(void) {
     for (unsigned i = 0; i < sizeof(bad_prim) / sizeof(bad_prim[0]); ++i)
         gpu_ws_tag_background_prim(bad_prim[i]);
     assert(!gpu_ws_background_stretch_active());
-    const uint32_t bad_op[] = {0x2Au, 0x2Eu, 0x3Eu, 0x64u, 0x40u};
+    const uint32_t bad_op[] = {0x2Au, 0x2Eu, 0x3Eu, 0x66u, 0x67u,
+                              0x60u, 0x6Cu, 0x74u, 0x7Cu, 0x40u};
     for (unsigned i = 0; i < sizeof(bad_op) / sizeof(bad_op[0]); ++i) {
         test_ram[addr / 4u] = bad_op[i] << 24;
         gpu_ws_tag_background_prim(addr - 4u);
@@ -169,6 +170,54 @@ static void test_background_packet_tags(void) {
     assert(ws_nw_explicit_background());
     gp0_cmd_buf[8] ^= 0x10000u;
     assert(!ws_nw_explicit_background());
+}
+
+static void test_background_sprite_tags(void) {
+    /* A compound DMA node embeds SPRT after another command, so prim+4
+     * identifies SPRT without relying on a preceding P_TAG. */
+    const uint32_t addr = 0x1001Cu;
+    for (unsigned op = 0x64u; op <= 0x65u; ++op) {
+        const uint32_t packet[] = {(op << 24) | 0x808080u,
+                                  pack_vertex(37, 42), 0x01230A0Bu,
+                                  (24u << 16) | 80u};
+        reset_gpu_state_for_test();
+        memcpy(&test_ram[addr / 4u], packet, sizeof(packet));
+        configure_native_wide_16_9();
+        gpu_ws_tag_background_prim(0x80000000u | (addr - 4u));
+        gp0_cmd_source_addr = addr;
+        gp0_words_needed = 4;
+        memcpy(gp0_cmd_buf, packet, sizeof(packet));
+        s_bg_phase_frame = (uint32_t)s_frame_count;
+        s_bg_phase_over = 1;
+        assert(psx_ws_prim_in_backdrop() == 1);
+        assert(gpu_ws_background_stretch_active());
+        assert(gpu_ws_background_requires_full_composite());
+        /* All four command words, including UV/CLUT and size, are proof. */
+        for (unsigned word = 0; word < 4; ++word) {
+            gp0_cmd_buf[word] ^= 1u;
+            assert(!ws_nw_explicit_background());
+            gp0_cmd_buf[word] ^= 1u;
+        }
+        gp0_cmd_source_addr += 4u;
+        assert(!ws_nw_explicit_background());
+        gp0_cmd_source_addr -= 4u;
+        gp0_words_needed = 3;
+        assert(!ws_nw_explicit_background());
+        gp0_words_needed = 4;
+        /* Explicit background proof reaches the renderer without changing
+         * the canonical sprite coordinates, dimensions or texture footprint. */
+        last_textured_rect.calls = 0;
+        gp0_exec_textured_rect();
+        assert(last_textured_rect.calls == 1);
+        assert(last_textured_rect.x == 37 && last_textured_rect.y == 42);
+        assert(last_textured_rect.w == 80 && last_textured_rect.h == 24);
+        assert(last_textured_rect.u == 0x0B && last_textured_rect.v == 0x0A);
+        assert(memcmp(&test_ram[addr / 4u], packet, sizeof(packet)) == 0);
+        s_frame_count += 2;
+        assert(ws_nw_explicit_background());
+        ++s_frame_count;
+        assert(!ws_nw_explicit_background());
+    }
 }
 
 int main(void) {
@@ -247,6 +296,7 @@ int main(void) {
     }
 
     test_background_packet_tags();
+    test_background_sprite_tags();
     puts("gpu_textured_dot_nw_shift_exec_test: PASS (HUD and background tags)");
     return 0;
 }

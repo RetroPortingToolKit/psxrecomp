@@ -117,10 +117,28 @@ void host_sampler_start(void) {
 
 static pthread_t s_thread;
 
+#if defined(__APPLE__)
+/* The emulation thread's stack, [lo, hi). SIGPROF can land on a thread that
+ * is still being created; pthread_self() there traps (arm64e pointer
+ * authentication), so the handler tells threads apart by the interrupted
+ * stack pointer instead, which needs no thread state at all. */
+static uintptr_t s_stack_lo, s_stack_hi;
+#endif
+
 static void on_prof(int sig, siginfo_t *si, void *uc_) {
     (void)sig; (void)si;
-    if (!pthread_equal(pthread_self(), s_thread)) return;
     ucontext_t *uc = (ucontext_t *)uc_;
+#if defined(__APPLE__)
+    if (!uc || !uc->uc_mcontext) return;
+#if defined(__aarch64__)
+    const uintptr_t sp = (uintptr_t)uc->uc_mcontext->__ss.__sp;
+#else
+    const uintptr_t sp = (uintptr_t)uc->uc_mcontext->__ss.__rsp;
+#endif
+    if (sp < s_stack_lo || sp >= s_stack_hi) return;
+#else
+    if (!pthread_equal(pthread_self(), s_thread)) return;
+#endif
 #if defined(__linux__) && defined(__x86_64__)
     record((uintptr_t)uc->uc_mcontext.gregs[REG_RIP]);
 #elif defined(__linux__) && defined(__aarch64__)
@@ -140,6 +158,10 @@ void host_sampler_start(void) {
     if (dladdr((void *)&host_sampler_start, &info) && info.dli_fbase)
         s_image_base = (uintptr_t)info.dli_fbase;
     s_thread = pthread_self();
+#if defined(__APPLE__)
+    s_stack_hi = (uintptr_t)pthread_get_stackaddr_np(s_thread);
+    s_stack_lo = s_stack_hi - (uintptr_t)pthread_get_stacksize_np(s_thread);
+#endif
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_prof;

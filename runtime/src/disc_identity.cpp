@@ -5,6 +5,7 @@
 // which is what real .bin/.cue and .iso dumps use respectively).
 
 #include "disc_identity.h"
+#include "disc_toc_fingerprint.h"
 
 #include "crc32.h"
 #include "disc_path.h"
@@ -115,16 +116,6 @@ uint32_t crc32_stream(std::ifstream& f) {
     return crc ^ 0xFFFFFFFFu;
 }
 
-std::string hex_sha256(const std::string& canonical) {
-    uint8_t dig[32];
-    psx_sha256_compute(reinterpret_cast<const uint8_t*>(canonical.data()),
-                       canonical.size(), dig);
-    char hex[65];
-    for (int i = 0; i < 32; i++)
-        std::snprintf(hex + i * 2, 3, "%02x", dig[i]);
-    hex[64] = '\0';
-    return std::string(hex);
-}
 
 void fill_toc_from_mount(DiscIdentity& v, const DiscPathResolution& resolved) {
     v.from_cue = resolved.from_cue;
@@ -152,19 +143,7 @@ void fill_toc_from_mount(DiscIdentity& v, const DiscPathResolution& resolved) {
     if (v.track_count < 1) v.track_count = 1;
     v.leadout_lba = reader.GetSectorCount();
 
-    // Canonical TOC string — peers with the same mount geometry share disc_fp.
-    // Version prefix lets us evolve the format without silent collisions.
-    std::ostringstream toc;
-    toc << "psxrecomp-toc-v1\n";
-    toc << "tracks=" << v.track_count << "\n";
-    toc << "leadout=" << v.leadout_lba << "\n";
-    for (int t = 1; t <= v.track_count; t++) {
-        toc << "t=" << t
-            << ",a=" << (reader.TrackIsAudio(t) ? 1 : 0)
-            << ",start=" << reader.TrackStartLBA(t)
-            << ",pregap=" << reader.TrackPregapLBA(t) << "\n";
-    }
-    v.disc_fp = hex_sha256(toc.str());
+    v.disc_fp = disc_toc_fingerprint(reader);
 }
 
 bool is_chd_path(const fs::path& path) {

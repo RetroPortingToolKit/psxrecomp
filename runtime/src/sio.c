@@ -69,8 +69,9 @@ static uint8_t pad_analog_device[PSX_MAX_PLAYERS] = {
 
 /* DualShock command 0x4D maps the six writable bytes in a 0x42 poll onto the
  * two motors: 0x00 = small/high-frequency, 0x01 = large/low-frequency,
- * 0xFF = unused. The map powers up unassigned and is echoed back while a new
- * map is latched, matching the physical pad/Mednafen protocol. */
+ * 0xFF = unused (PSX-SPX controllersandmemorycards, "Config Mode - Command 4Dh").
+ * The map powers up unassigned and is echoed back while a new map is
+ * latched, as on the Mednafen reference. */
 static uint8_t pad_rumble_map[PSX_MAX_PLAYERS][6] = {
     PSX_PAD_INIT({ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF })
 };
@@ -140,6 +141,9 @@ static PSX_BSS uint8_t pad_in_config[PSX_MAX_PLAYERS];
  * the frontend's vibration/force-feedback capabilities. */
 static PSX_BSS int8_t pad_jogcon_last_steering[PSX_MAX_PLAYERS];
 static PSX_BSS uint8_t pad_jogcon_motor_command[PSX_MAX_PLAYERS];
+/* The same motor byte's strength nibble, for host force feedback only (not
+ * echoed to the guest and not savestated: every poll rewrites it). */
+static PSX_BSS uint8_t pad_jogcon_motor_strength[PSX_MAX_PLAYERS];
 
 /* Whether the pad on a logical slot is config-capable (DualShock/JogCon, 1) or a
  * plain digital controller (0). A real SCPH-1080 digital pad (poll id 0x41)
@@ -271,8 +275,9 @@ static uint8_t pad_protocol_id(int logical) {
 }
 
 /* NeGcon (NPC-101) poll payload: buttons, twist, then analog I, II and L
- * (Mednafen psx/input/negcon.cpp). The device has no config mode and no
- * motors; every byte is fixed by the current host sample. */
+ * (PSX-SPX controllersandmemorycards, "neGcon Racing Controller").
+ * The device has no config mode and no motors; every byte is fixed by the
+ * current host sample. */
 static void pad_fill_negcon_poll(int logical, uint8_t out[8]) {
     out[0] = 0x23;
     out[1] = 0x5A;
@@ -854,6 +859,7 @@ void sio_init(void) {
     memset(pad_rumble_large, 0, sizeof(pad_rumble_large));
     memset(pad_jogcon_last_steering, 0, sizeof(pad_jogcon_last_steering));
     memset(pad_jogcon_motor_command, 0, sizeof(pad_jogcon_motor_command));
+    memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
     memset(pad_negcon_analog, 0, sizeof(pad_negcon_analog));
     for (int i = 0; i < PSX_MAX_PLAYERS; i++) {
         pad_analog_device[i] = SIO_PAD_DUALSHOCK;
@@ -1061,6 +1067,7 @@ void sio_set_pad_connected(int slot, int connected) {
         pad_rumble_large[slot] = 0;
         pad_jogcon_last_steering[slot] = 0;
         pad_jogcon_motor_command[slot] = 0;
+        pad_jogcon_motor_strength[slot] = 0;
     }
 }
 
@@ -1075,6 +1082,17 @@ void sio_set_pad_config_capable(int slot, int capable) {
         pad_rumble_small[slot] = 0;
         pad_rumble_large[slot] = 0;
     }
+}
+
+void sio_get_pad_jogcon_motor(int slot, uint8_t *command, uint8_t *strength) {
+    uint8_t c = 0, s = 0;
+    if (slot >= 0 && slot < PSX_MAX_PLAYERS && (pad_connected & (1u << slot)) &&
+        pad_analog[slot] == SIO_PAD_JOGCON) {
+        c = pad_jogcon_motor_command[slot];
+        s = pad_jogcon_motor_strength[slot];
+    }
+    if (command) *command = c;
+    if (strength) *strength = s;
 }
 
 void sio_get_pad_rumble(int slot, uint8_t *small, uint8_t *large) {
@@ -1111,6 +1129,7 @@ static void pad_commit_type(int slot, uint8_t type) {
     if (from != type) {
         pad_jogcon_last_steering[slot] = 0;
         pad_jogcon_motor_command[slot] = 0;
+        pad_jogcon_motor_strength[slot] = 0;
     }
     if (pad_type_is_device_swap(from, type)) {
         pad_in_config[slot] = 0;
@@ -1386,7 +1405,8 @@ static void pad_process_byte(uint8_t tx_byte) {
          * normal mode ID (0x41 digital / 0x73 DualShock / 0xE3 JogCon). */
         const uint8_t cur_id = pad_protocol_id(lp);
         /* A plain digital controller (SCPH-1080) answers ONLY the 0x42 poll; it
-         * ignores every config-mode command (returns hi-z, no ACK). A driver
+         * rejects config commands without ACK or further reply; the ID has
+         * already shifted out during the command byte. A driver
          * that probes with 0x43 to detect a DualShock then classifies it as
          * digital-only and just polls. Gate all config branches on this so a
          * digital-mode pad behaves like real hardware (see pad_supports_config). */
@@ -1394,7 +1414,7 @@ static void pad_process_byte(uint8_t tx_byte) {
         if (pad_analog[lp] == SIO_PAD_NEGCON) {
             /* NeGcon answers only the 0x42 poll. Its ID byte goes out with any
              * command, but for anything else it does not ACK and the
-             * transaction ends (Mednafen negcon.cpp phase 1). */
+             * transaction ends, as on the Mednafen reference. */
             pad_fill_negcon_poll(lp, pad_response);
             sio_rx_data = pad_response[0];
             if (tx_byte == 0x42) {
@@ -1565,13 +1585,18 @@ static void pad_process_byte(uint8_t tx_byte) {
             sio_rx_data = pad_response[0];
             sio_stat |= SIO_STAT_ACK;
         } else {
-            /* Unknown command, or a config command issued OUTSIDE config mode:
-             * a real pad does not respond — return hi-z and end the transaction. */
+            /* Unsupported command: end the transaction without ACK. A plain
+             * digital pad still returns the ID shifted during this byte. */
             pad_state = PAD_IDLE;
             pad_response_len = 0;
             pad_response_idx = 0;
             pad_current_cmd = 0;
-            sio_rx_data = 0xFF;
+            /* A plain digital pad has already shifted its ID while receiving
+             * the command. Unsupported commands terminate without ACK, but
+             * cannot replace that byte with hi-z. Config-capable devices and
+             * multitap transactions retain their own command behavior. */
+            sio_rx_data = (!ds && pad_analog[lp] == SIO_PAD_DIGITAL &&
+                           !selected_is_mtap_port()) ? cur_id : 0xFF;
         }
         }
         break;
@@ -1615,6 +1640,7 @@ static void pad_process_byte(uint8_t tx_byte) {
                     const uint8_t motor = pad_rumble_map[rs][map_index];
                     if (pad_analog[rs] == SIO_PAD_JOGCON && motor == 0x00) {
                         pad_jogcon_motor_command[rs] = (uint8_t)(tx_byte >> 4);
+                        pad_jogcon_motor_strength[rs] = (uint8_t)(tx_byte & 0x0Fu);
                     } else if (motor == 0x00)
                         pad_rumble_small[rs] = tx_byte;
                     else if (motor == 0x01)
@@ -1793,8 +1819,9 @@ static void mc_process_byte(uint8_t tx_byte) {
         } else {
             mc_data_idx = 0;
             mc_state = MC_WRITE_LSB_ECHO;
-            /* Hardware/Beetle echo the high address byte on the address-LSB
-             * transfer (zero for all 1Mbit card sectors), then echo the low
+            /* Hardware echoes the high address byte on the address-LSB
+             * transfer (PSX-SPX controllersandmemorycards, "Writing Data to Memory
+             * Card": reply "pre"; zero for all 1Mbit card sectors), then echo the low
              * address byte while receiving the first payload byte.  Some BIOS
              * card-write paths validate this handshake before they schedule the
              * follow-up directory reads. */
@@ -1890,9 +1917,13 @@ static void mc_process_byte(uint8_t tx_byte) {
         sio_stat |= SIO_STAT_ACK;
 
         if (tx_byte == expected && mc_sector < MEMCARD_SECTORS) {
-            memcard_write_sector(mc_slot, mc_sector, mc_data);
-            memcard_flush(mc_slot);
-            mc_checksum = 0x47; /* Good */
+            if (memcard_write_sector(mc_slot, mc_sector, mc_data) == 0) {
+                memcard_flush(mc_slot);
+                mc_checksum = memcard_last_flush_result(mc_slot) == 0
+                    ? 0x47 : 0x4E; /* Good / write failed */
+            } else {
+                mc_checksum = 0x4E;
+            }
         } else if (mc_sector >= MEMCARD_SECTORS) {
             mc_checksum = 0xFF; /* Bad sector */
         } else {
@@ -2172,6 +2203,7 @@ uint32_t sio_read(uint32_t addr) {
 uint16_t sio_peek_stat(void) { return sio_stat; }
 uint16_t sio_peek_ctrl(void) { return sio_ctrl; }
 uint8_t  sio_peek_rx_data(void) { return sio_rx_data; }
+int      sio_peek_ack_visible_reads(void) { return (int)sio_ack_visible_reads; }
 
 void sio_write(uint32_t addr, uint32_t value) {
     sio_debug_poll_maybe();
@@ -3139,6 +3171,7 @@ static int sio_snap_parse(PstR *r) {
         memset(pad_rumble_large, 0, sizeof(pad_rumble_large));
         memset(pad_jogcon_last_steering, 0, sizeof(pad_jogcon_last_steering));
         memset(pad_jogcon_motor_command, 0, sizeof(pad_jogcon_motor_command));
+        memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
         for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
             pad_rumble_map[s][0] = 0x00;
             pad_rumble_map[s][1] = 0x01;
@@ -3155,6 +3188,7 @@ static int sio_snap_parse(PstR *r) {
     if (r->p == r->end) {
         memset(pad_jogcon_last_steering, 0, sizeof(pad_jogcon_last_steering));
         memset(pad_jogcon_motor_command, 0, sizeof(pad_jogcon_motor_command));
+        memset(pad_jogcon_motor_strength, 0, sizeof(pad_jogcon_motor_strength));
         sio_pad_mode_legacy_defaults();
         return 1;
     }

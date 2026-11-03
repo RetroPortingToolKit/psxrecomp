@@ -14,6 +14,7 @@ void mod_controller_source_reset(void);
 void mod_controller_source_begin_frame(void);
 int mod_controller_source_sample(uint32_t player, PSXModControllerState *state, int *released);
 int mod_controller_source_present(uint32_t player);
+int mod_controller_source_connected(uint32_t player);
 #ifdef __cplusplus
 }
 #endif

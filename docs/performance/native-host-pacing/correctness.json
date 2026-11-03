@@ -1,0 +1,1510 @@
+{
+  "runtime_source": "1bef88d07af830189695b131e4fcba65ed63260c",
+  "qa_build": {
+    "item": "H1",
+    "title": "ape",
+    "mode": "native",
+    "kind": "qa",
+    "options": {
+      "PSXRECOMP_ROOT": "G:/Temp/Codex/psxrecomp/shared-burndown-20261028/deadline-pacing",
+      "RECOMP_NET_ROOT": "G:/Temp/Codex/psxrecomp/native-services-20261026/framework/lib/recomp-net",
+      "RECOMP_RBENGINE_ROOT": "G:/Temp/Codex/psxrecomp/hle-burndown-20261024/dependencies/rbengine",
+      "PSXRECOMP_BIOS_STALE_FATAL": "ON",
+      "PSX_DEBUG_TOOLS": "ON",
+      "PSX_RUNTIME_IPO": "OFF",
+      "PSX_EXECUTION_PROFILE": "ENHANCED",
+      "PSX_NATIVE_HOST_PACING": "ON",
+      "PSX_SHARED_PRESENT_IMAGES": "ON",
+      "PSX_RELEASE_CHANNEL": "",
+      "PSX_PUBLIC_RELEASE": "OFF",
+      "BUILD_TESTING": "OFF",
+      "PSX_GAME_VERSION": "native-capture-ownership",
+      "Python3_EXECUTABLE": "C:\\Users\\Matthew\\.pyenv\\pyenv-win\\versions\\3.12.5\\python.exe"
+    },
+    "argv": [
+      "C:/Program Files/CMake/bin/cmake.exe",
+      "-S",
+      "G:\\Temp\\Codex\\psxrecomp\\native-services-20261026\\ape",
+      "-B",
+      "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa",
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_MAKE_PROGRAM=C:/msys64/mingw64/bin/ninja.exe",
+      "-DCMAKE_C_COMPILER=C:/msys64/mingw64/bin/gcc.exe",
+      "-DCMAKE_CXX_COMPILER=C:/msys64/mingw64/bin/g++.exe",
+      "-DCMAKE_RC_COMPILER=C:/msys64/mingw64/bin/windres.exe",
+      "-DRECOMP_UI_ROOT=G:/Temp/Codex/psxrecomp/native-services-20261026/ui",
+      "-DFETCHCONTENT_SOURCE_DIR_PSX_LIBCHDR=G:/Temp/Codex/psxrecomp/hle-burndown-20261024/dependencies/libchdr",
+      "-DFETCHCONTENT_SOURCE_DIR_PSX_LIBWEBP=G:/Temp/Codex/psxrecomp/hle-burndown-20261024/dependencies/libwebp",
+      "-DPSX_RECOMP_UI=ON",
+      "-DPSX_NETPLAY=ON",
+      "-DPSX_REWIND=ON",
+      "-DPSX_ENABLE_VULKAN=OFF",
+      "-DPSX_PGXP_VARIANT=OFF",
+      "-DPSXRECOMP_BIOS_STEMS=OpenBIOS",
+      "-DAPE_NATIVE_IDLE_WAIT=ON",
+      "-DCMAKE_PROJECT_INCLUDE=",
+      "-DPSXRECOMP_ROOT=G:/Temp/Codex/psxrecomp/shared-burndown-20261028/deadline-pacing",
+      "-DRECOMP_NET_ROOT=G:/Temp/Codex/psxrecomp/native-services-20261026/framework/lib/recomp-net",
+      "-DRECOMP_RBENGINE_ROOT=G:/Temp/Codex/psxrecomp/hle-burndown-20261024/dependencies/rbengine",
+      "-DPSXRECOMP_BIOS_STALE_FATAL=ON",
+      "-DPSX_DEBUG_TOOLS=ON",
+      "-DPSX_RUNTIME_IPO=OFF",
+      "-DPSX_EXECUTION_PROFILE=ENHANCED",
+      "-DPSX_NATIVE_HOST_PACING=ON",
+      "-DPSX_SHARED_PRESENT_IMAGES=ON",
+      "-DPSX_RELEASE_CHANNEL=",
+      "-DPSX_PUBLIC_RELEASE=OFF",
+      "-DBUILD_TESTING=OFF",
+      "-DPSX_GAME_VERSION=native-capture-ownership",
+      "-DPython3_EXECUTABLE=C:\\Users\\Matthew\\.pyenv\\pyenv-win\\versions\\3.12.5\\python.exe"
+    ],
+    "compile_jobs": 2,
+    "engine_head": "1bef88d07af830189695b131e4fcba65ed63260c",
+    "source_sha256": {
+      "runtime/src/frame_pacing.c": "523147c30cd8258272de8bd5183ee836b645496504116f9e6bbbc44cb8effe3d",
+      "runtime/src/host_deadline.c": "ad68f621e68e9f2a980c17788074ede7904573ae021e5a42887b1853f40a7e72",
+      "runtime/include/host_deadline.h": "83b92a7ac589264fa043ea632a2ba6fe585ec9488d0a1f4aee3be915b7f68b6d",
+      "runtime/include/frame_pacing.h": "88d059903d913ed347711a56d2a9eb698304a0d1bfb16707a6fa01e3831e492d",
+      "runtime/src/gpu_gl_renderer.c": "221260ac502503a0fad9637aabb58ab56881463e5d9edb04f598dc6e92d550bf",
+      "runtime/src/host_time.c": "f2b5434424e1d0ffc7606312afbc682682ff8859be94c7256ddaf75c52a1913c",
+      "runtime/include/host_time.h": "fe4ad3ecdf4aeef0e1c0df40db0690d6e85a5772f46e133c89aebb46f21e51ac",
+      "cmake/psx_host_pacing.cmake": "a61385e5c2598744ebcde1dc481e854efdba6683c6738fe7ab018b457af43c8a",
+      "cmake/psx_present_images.cmake": "133ff2e8e9d11dd00b13de23ca9c3fa5d348169cd94d304ba720ff896bb81f1d",
+      "runtime/runtime.cmake": "02f439da625f868845314cc2532544872a84a4e139c4895b6dfe0e7fd7d29f1d"
+    },
+    "title_commit": "345ea8daf5ed92f05183c52f07ec8c22d4ec30b3",
+    "generated": {
+      "SCUS_944.23_decls.h": "9c2af2d9d7b7a4e4703757db7f97bc5dd278eb463193669a06f33ba48549e016",
+      "SCUS_944.23_dispatch.c": "ad7b5d27d2bb0f0d7ace0db1d3b0475911f389c57d03d9f88fbe9c4bac287cdc",
+      "SCUS_944.23_full.ranges": "9c35392505e93aa3c3ea1efd2187ef4f6ab1049a852883550b7ddc76564ad853",
+      "SCUS_944.23_full_00.c": "80f6cd17e0b0dc5eee794ddc11b12fe771064d25aaa5ca89291740375da81773",
+      "SCUS_944.23_full_01.c": "df4e0514950406c1983065615caaff328bd6894487508dd211ea9d019c2b3706",
+      "SCUS_944.23_full_02.c": "3920e0a5651f06c8e387c4465b56502daa686828797bf0d05587d3f7e6f4c4c1",
+      "SCUS_944.23_full_03.c": "fee72f9e62d9a7f60885c996c4ca85a5b6e777bbb6bf22ae4b6a35452e244f95",
+      "SCUS_944.23_full_04.c": "5516138722cc3a32531f4c38af55adba5c23a3c3c23bc936561d97fce5d13a19",
+      "SCUS_944.23_full_05.c": "b9b21cc42d045ba89fd7b1d708bfc85540cbca16b16fa364bc620ef0b207e414",
+      "SCUS_944.23_full_06.c": "5f5dcf80126f4123afc983674f12123b0bf8699df4ad57b73c18ee87b5f95991",
+      "SCUS_944.23_full_07.c": "a5d5017e2546fadf01c6f44dfcb91ec69edd205062edd4ca8f6f3567e656ebd0",
+      "SCUS_944.23_full_08.c": "c2c45a0f182d7f795e1ac2536b917be4bf966458f3acdeb4c4ab0163a03d81c9",
+      "SCUS_944.23_full_09.c": "4c6f2cf1eb25fd15624d517d419f6266eea770e4c6f1304d750902dc220fdbca",
+      "SCUS_944.23_full_10.c": "05d1d9fd38a4dddb7604238f00ba119c720921cd7f3f1ec6b9e7e4f1eb0b8a0d",
+      "SCUS_944.23_full_11.c": "4e3a8f77b24e842da9409266a9b7b6c7ab28999a1b870f5d64f16fae9b32e620",
+      "SCUS_944.23_full_12.c": "c2d7dbfbf88455c7b5a3030cf51d8b61039525feac17a14cd2aff95c0d22ad51",
+      "SCUS_944.23_full_13.c": "51bc494d87c49c4a5ce92c7e15d679311332db51ee559c499ea629fac0410898",
+      "SCUS_944.23_full_14.c": "653b0a583b2c32b3c6f5d31cafde90e64e660aeb7a795fe2ac91e5b1f9e96783",
+      "SCUS_944.23_full_15.c": "96bb612ac9b7ba3ddf470501e28e2b8eed5c267c661692545159239a56c8bbc7",
+      "SCUS_944.23_full_16.c": "7081c5900212ff326d5752a7b892ef019d3bb846832359e04e1cb62b27b6c830",
+      "SCUS_944.23_full_17.c": "a556021615054e4076395393d29632a1670f2d020474d78e51ebe2b91226be77",
+      "SCUS_944.23_full_18.c": "9491e17da9fc7e44674070a314ab76a9439313517a9acd14d7bc1de9d07b956d",
+      "SCUS_944.23_full_19.c": "3d7364ce9cdbd6f08aed95d930fda024cdd7eac9dd4f870ccbee2555e1df5590",
+      "SCUS_944.23_full_20.c": "a574427ffbb4045eef2cfb726baad3c3cf2b0df2b4152677aa839e1bb1177af6",
+      "SCUS_944.23_full_21.c": "29657ed06972979c98b3a441e0c75e88b8969030174e4c7c7199e3c055855c37",
+      "SCUS_944.23_full_22.c": "dc9f7cf5fc5be54473f4e82f7873806e60e022b9cb68a823c3116d76a7740b7c",
+      "SCUS_944.23_full_23.c": "5e4a1860a0606d31e7cbc4ce13601c244d02e02fefa05aaeba297e9b44305d0a",
+      "SCUS_944.23_full_24.c": "5cae88c2f25e3eb1f347f66477830c7df118adca6886812603405a724f96b725",
+      "SCUS_944.23_full_25.c": "040c50e6d0687e139bc54eaff8a47103249a8c0d37ca188c7542f6fcfcf5196e",
+      "SCUS_944.23_full_26.c": "a6f673c158c534a03ef5ee69634b9a9e3905be38955fedffb6429d36f3bb4646",
+      "SCUS_944.23_full_27.c": "d4bc4c4dc8dfb9aaaf429865529725dd685467c0b28de909c9b604c1c870b794",
+      "SCUS_944.23_full_28.c": "9a8feed86fe1a2a53cd718d7704d841bccf48beeaa5a0b8325400ed8fefe5cb9",
+      "SCUS_944.23_full_29.c": "c60b64d7d12bd96a4ee60a98b6c4ebad30d768e06c9055e931a93dff770ba501",
+      "SCUS_944.23_full_30.c": "6cbde4d5971bbd531b48c4c0596c7be783806bc66cd6ac03e8854c511c9581f5",
+      "SCUS_944.23_full_31.c": "15970397dbb368e492dd9d88297a74b5def0699990b000b071928f05f34c9867",
+      "SCUS_944.23_full_32.c": "53a191ea38280da86c4176b9e489fca315326df373a69a8d818e6424f663ad66",
+      "SCUS_944.23_full_33.c": "1a8f875c2ba889719a318600ec28e923852b3b1e090e0b9551e66aaa4f4b9bd0",
+      "SCUS_944.23_full_34.c": "2756a526e6802569e875be5797f6b2038c49308d66ae512346ab2e3375ec62ac",
+      "SCUS_944.23_full_35.c": "bdd155a4f66c0a9e417ee203fdf4fe99c1799c143391763adf5cb8e9d425bfd1",
+      "SCUS_944.23_full_36.c": "9af1faa7f213a99c51fa8adc65adaa8d719fc1a43ad7dda8e2b6770ac061d72b",
+      "SCUS_944.23_full_37.c": "632b8efa0bd94f76d74960c0ae76f4ba1d0571e5984d6935b4272521ef394e27",
+      "SCUS_944.23_full_38.c": "c23be9e9337e7087ca331294b9ec064a04b02412f0b3dd0774b6ec0ba12893e5",
+      "SCUS_944.23_full_39.c": "16a86b01bb658a0c4d11412cab3d913e37a8cb27c616082a80322603769b94cf",
+      "SCUS_944.23_full_40.c": "7ae95c17cc7891fd5c33242e13f0a4aec5263beb134386db7138f44b5566acf9",
+      "SCUS_944.23_full_41.c": "4342551b298cebe8294b7128edf6dbdf5aa768e4b8af14a934b46d60b40173e4",
+      "SCUS_944.23_full_42.c": "820b8a4ecfae918b80fb5550f89df9cfb5e531213093af4f87cbce6b1b4ba35f",
+      "SCUS_944.23_full_43.c": "afefcb35370a6ebae0b041e901bffcd2cace2b3f2d0e2ef10b805009171894ee",
+      "SCUS_944.23_full_44.c": "9cb323fa45d66f05599a18a34979cf0b0242d450fbeabc8b75e0a972643a52b6",
+      "SCUS_944.23_full_45.c": "a4bcd6e103b86542ea689f4c063867a8fe18ce37e1879b95fe076f0e1caf1887",
+      "SCUS_944.23_full_46.c": "6f0d8b2411a23b1afc4fa80e40883a33e74590394c7b8e413a8e4db3970929e6",
+      "SCUS_944.23_full_47.c": "73c51e3c3cd2736855a812bcd8b4befd0948679292758d38ba28ef28fe40af40",
+      "SCUS_944.23_full_48.c": "112e53945a2ff5b8723ae248b7d2e8cf08aa469bc52ba63f58b8514b5c43a80b",
+      "SCUS_944.23_full_49.c": "4de562d8d981b807875d899b3c8237dc7499ec382a7953ebd5f4ef6b1d496d1c",
+      "SCUS_944.23_full_50.c": "bfa6bdd9e8939d9f12f299749a23eb90c4684c94233ed574c2c664624c61edb4",
+      "SCUS_944.23_full_51.c": "756e692e93972a173f7a41b8474fde7c466438bf2a0eb79cd535c0be3321e2f3",
+      "SCUS_944.23_full_52.c": "3ff1a5e0b839de995ba3afd165e87f4ca0fdb4c95deae91b8b0733a56df5b9d9",
+      "SCUS_944.23_full_53.c": "c47ebd808371fd22451558846eacd6e2316d485e9236a438d4e7f247134baccc"
+    },
+    "note": "Supported title build with existing unchanged generated bodies; no emitter/code-generation change in H1. Both choices include qualified G4 shared images; no S7 package.",
+    "status": "built",
+    "rbengine_head": "2a03e73693acee0fb78076ea058642c931bef12e",
+    "rbengine_status": "",
+    "binary_sha256": "36a5f27d051e49803ce69aa22c7dd762a144027b3fde78d8f8de6ecdef8d6774",
+    "execution": {
+      "schema": 1,
+      "profile": "ENHANCED",
+      "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+      "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+      "implementations": [
+        {
+          "name": "idle-wait",
+          "contract": "audited-store-counter-v2",
+          "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+        }
+      ]
+    },
+    "settings": "[video]\nframe_interpolation = true\nframe_interpolation_fps = 120\nvsync = 0\nrenderer = \"opengl\"\ninternal_resolution = \"4k\"\nsupersampling = 9\ndynamic_resolution = false\nantialiasing = true\ntexture_filtering = \"bilinear\"\nfullscreen = 0\nrender_thread = false\npresent_thread = false\nframe_generation = false\n"
+  },
+  "unit_gate": "h1-validation-v2.log: host_deadline_0_test,host_deadline_1_test,frame_pacing_test,host_pacing_policy_test PASS (5 real selector configurations).",
+  "built_lifecycle": [
+    {
+      "build": "h1-ape-native-qa",
+      "binary_sha256": "36a5f27d051e49803ce69aa22c7dd762a144027b3fde78d8f8de6ecdef8d6774",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "argv": [
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\ApeEscapeRecomp.exe",
+        "--debug-port",
+        "23984",
+        "--game",
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\g4-ape-game.toml",
+        "--bios",
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\bios\\openbios.bin",
+        "--memcard-dir",
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa-interp0-rewindpause-lifecycle-state",
+        "--no-launcher",
+        "--hidden-window"
+      ],
+      "input_contract": "PSX active-low mask0xf7ff; verify actual response from captured image. SPU counters do not establish speaker quality.",
+      "note": "Automated never-shown full presenter with dummy audio; inspect actual audio output health. This does not establish physical speaker quality. Initial seed is a private adapted fixture; slot2 must be created and loaded by this binary.",
+      "checks": [
+        {
+          "id": 0,
+          "ok": true
+        },
+        {
+          "id": 0,
+          "ok": true
+        },
+        {
+          "id": 0,
+          "ok": true
+        }
+      ],
+      "frontend": "hidden-window",
+      "audio_driver": "dummy",
+      "seed_load": {
+        "id": 0,
+        "ok": true,
+        "generation": 1,
+        "pending": 0,
+        "last_ok": 1,
+        "last_op": "load",
+        "last_slot": 1,
+        "polls": 1,
+        "wait": ""
+      },
+      "before": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 97
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 71371,
+              "nonzero": 71371,
+              "audible": 70223,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 88064,
+              "nonzero": 63488,
+              "audible": 62449,
+              "peak": 29924,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 71370,
+          "pump_skips": 0,
+          "underruns": 0,
+          "queue_hiwater": 199,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 72774,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 184.9,
+            "target_ms": 180.0,
+            "underruns": 0,
+            "overflow_drops": 0,
+            "correction": 0.0008
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        },
+        "gpu": {
+          "id": 0,
+          "ok": true,
+          "display_x": 0,
+          "display_y": 0,
+          "width": 384,
+          "height": 240,
+          "screen_offset_y": 0,
+          "depth": 15,
+          "depth24": 0,
+          "disabled": 0,
+          "h_display": [
+            539,
+            3227
+          ],
+          "v_display": [
+            16,
+            256
+          ],
+          "hres1": 0,
+          "hres2": 1,
+          "gpustat": "0x5601020F",
+          "gp0_writes": 181554,
+          "gp0_nop": 287,
+          "gp0_fill": 0,
+          "gp0_draw": 20763,
+          "gp0_env": 1421,
+          "gp0_copy": 287,
+          "draw_area": [
+            0,
+            256,
+            383,
+            495
+          ],
+          "draw_offset": [
+            0,
+            256
+          ],
+          "vertical_split": {
+            "active": 0,
+            "left_age": 255,
+            "right_age": 255
+          },
+          "ws": {
+            "configured": 0,
+            "active": 0,
+            "game_mode": 1,
+            "present_native_43": 0,
+            "x_margin": 0,
+            "activation_margin": 0,
+            "squash": [
+              1,
+              1
+            ],
+            "mode": 0,
+            "nw_extra": 0,
+            "view_anchor": 0,
+            "view_left": 0,
+            "view_right": 0,
+            "view_shift": 0,
+            "view_padding": [
+              0,
+              0
+            ],
+            "bg2d_generations": 0,
+            "cur_frame": 98,
+            "last_tag_frame": 4294966296,
+            "last_3d_frame": 97,
+            "gte_verts": 0,
+            "last_world3d_frame": 4294966296,
+            "ovh_prims": 0,
+            "last_ovh_frame": 4294966296,
+            "auto_ui": {
+              "configured": 1,
+              "in_place": 0,
+              "dense": 0,
+              "ot_rank": 4294967295,
+              "candidates": 0,
+              "transforms": 0
+            },
+            "aspect_cone": {
+              "calls": 0,
+              "identity_43": 0,
+              "vanilla_keep": 0,
+              "visible_keep": 0,
+              "guard_keep": 0,
+              "hysteresis_keep": 0,
+              "outside_reject": 0,
+              "queue_reject": 0,
+              "queue_highwater": [
+                0,
+                0,
+                0
+              ]
+            },
+            "terrain_angle": {
+              "calls": 0,
+              "identity_43": 0,
+              "max_vanilla": 0,
+              "max_widened": 0
+            },
+            "backdrop": {
+              "veto": 0,
+              "eval_frame": 0,
+              "rects": 0,
+              "full": 0,
+              "short": 0,
+              "x": [
+                0,
+                0
+              ],
+              "reveal": 0,
+              "canon_pct": 0,
+              "left_pct": 0,
+              "right_pct": 0,
+              "last_short": 0,
+              "evaluations": 0,
+              "short_frames": 0
+            }
+          }
+        },
+        "overlay": {
+          "id": 0,
+          "ok": true,
+          "active": 1,
+          "registered": 0,
+          "regions_checked": 1,
+          "last_crc": "0x00000000",
+          "file_found": 0,
+          "cache_dir": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\cache",
+          "game_id": "SCUS-94423",
+          "last_msg": "",
+          "checked": [
+            "0x00000000"
+          ],
+          "regions": 0,
+          "loads": 0,
+          "invalidations": 0,
+          "revalidations": 0,
+          "unregistered_funcs": 0,
+          "dispatch_native": 0,
+          "dispatch_interp_fallback": 100,
+          "stale_blocked": 0,
+          "last_write_pc": "0x00000000",
+          "last_write_addr": "0x00000000",
+          "last_write_size": 0,
+          "r0_valid": 0,
+          "r0_writes_since_invalid": 0,
+          "r0_fn_lo": "0x00000000",
+          "r0_fn_hi": "0x00000000",
+          "r0_crc_live": "0x00000000",
+          "reval_attempts": 0,
+          "reval_crc_miss": 0,
+          "last_reval_crc": "0x00000000",
+          "gen_fastpath": 0,
+          "range_links": 0,
+          "range_index_overflow": 0,
+          "lazy_manifests": 0,
+          "lazy_manifest_overflow": 0,
+          "candidate_overflow": 0,
+          "pair_aliases": 0,
+          "segment_alias_interp": 100,
+          "segment_native": 0,
+          "irq_need_defer": 0,
+          "irq_need_delivery": 0,
+          "irq_skip_none": 0,
+          "irq_skip_sr": 0,
+          "irq_skip_cooldown": 0,
+          "irq_skip_nested": 0,
+          "ci_skip_unit": 0,
+          "ci_skip_supp": 0,
+          "ci_skip_none": 0,
+          "ci_skip_sr": 0,
+          "ci_skip_deliv": 0,
+          "ci_enter": 0,
+          "call_unit_depth": 0,
+          "image_warm_loaded": 0,
+          "image_warm_pending": 0
+        }
+      },
+      "before_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp0-rewindpause-before.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "save": {
+        "id": 0,
+        "ok": true,
+        "generation": 2,
+        "pending": 0,
+        "last_ok": 1,
+        "last_op": "save",
+        "last_slot": 2,
+        "polls": 1,
+        "wait": ""
+      },
+      "jump_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp0-rewindpause-jump.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "after_input": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 275
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 202385,
+              "nonzero": 202385,
+              "audible": 199478,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 219136,
+              "nonzero": 194560,
+              "audible": 191749,
+              "peak": 29924,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 202384,
+          "pump_skips": 0,
+          "underruns": 0,
+          "queue_hiwater": 204,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 206334,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 192.7,
+            "target_ms": 180.0,
+            "underruns": 0,
+            "overflow_drops": 0,
+            "correction": 0.00097
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        }
+      },
+      "after_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp0-rewindpause-after.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "load": {
+        "id": 0,
+        "ok": true,
+        "generation": 3,
+        "pending": 0,
+        "last_ok": 1,
+        "last_op": "load",
+        "last_slot": 2,
+        "polls": 1,
+        "wait": ""
+      },
+      "after_restore": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 407
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 299546,
+              "nonzero": 299546,
+              "audible": 295053,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 317440,
+              "nonzero": 292864,
+              "audible": 288516,
+              "peak": 29924,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 299544,
+          "pump_skips": 0,
+          "underruns": 0,
+          "queue_hiwater": 204,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 305294,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 166.7,
+            "target_ms": 180.0,
+            "underruns": 0,
+            "overflow_drops": 0,
+            "correction": -0.0015
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        },
+        "snapshot": {
+          "id": 0,
+          "ok": true,
+          "callback_active": false,
+          "host_call_depth": 0,
+          "site": 0,
+          "pc": "0x00000000",
+          "safe": true
+        },
+        "overlay": {
+          "id": 0,
+          "ok": true,
+          "active": 1,
+          "registered": 0,
+          "regions_checked": 1,
+          "last_crc": "0x00000000",
+          "file_found": 0,
+          "cache_dir": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\cache",
+          "game_id": "SCUS-94423",
+          "last_msg": "",
+          "checked": [
+            "0x00000000"
+          ],
+          "regions": 0,
+          "loads": 0,
+          "invalidations": 0,
+          "revalidations": 0,
+          "unregistered_funcs": 0,
+          "dispatch_native": 0,
+          "dispatch_interp_fallback": 412,
+          "stale_blocked": 0,
+          "last_write_pc": "0x00000000",
+          "last_write_addr": "0x00000000",
+          "last_write_size": 0,
+          "r0_valid": 0,
+          "r0_writes_since_invalid": 0,
+          "r0_fn_lo": "0x00000000",
+          "r0_fn_hi": "0x00000000",
+          "r0_crc_live": "0x00000000",
+          "reval_attempts": 0,
+          "reval_crc_miss": 0,
+          "last_reval_crc": "0x00000000",
+          "gen_fastpath": 0,
+          "range_links": 0,
+          "range_index_overflow": 0,
+          "lazy_manifests": 0,
+          "lazy_manifest_overflow": 0,
+          "candidate_overflow": 0,
+          "pair_aliases": 0,
+          "segment_alias_interp": 412,
+          "segment_native": 0,
+          "irq_need_defer": 0,
+          "irq_need_delivery": 0,
+          "irq_skip_none": 0,
+          "irq_skip_sr": 0,
+          "irq_skip_cooldown": 0,
+          "irq_skip_nested": 0,
+          "ci_skip_unit": 0,
+          "ci_skip_supp": 0,
+          "ci_skip_none": 0,
+          "ci_skip_sr": 0,
+          "ci_skip_deliv": 0,
+          "ci_enter": 0,
+          "call_unit_depth": 0,
+          "image_warm_loaded": 0,
+          "image_warm_pending": 0
+        }
+      },
+      "restored_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp0-rewindpause-restored.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "rewind_before_pause": {
+        "id": 0,
+        "ok": true,
+        "enabled": true,
+        "open": false,
+        "title_blocked": false,
+        "snaps": 50
+      },
+      "pause": {
+        "id": 0,
+        "ok": true
+      },
+      "rewind_paused": {
+        "id": 0,
+        "ok": true,
+        "enabled": true,
+        "open": true,
+        "title_blocked": false,
+        "snaps": 50
+      },
+      "paused_before": {
+        "id": 0,
+        "ok": true,
+        "frame": 416
+      },
+      "paused_after": {
+        "id": 0,
+        "ok": true,
+        "frame": 416
+      },
+      "pause_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp0-rewindpause-pause.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "continue": {
+        "id": 0,
+        "ok": true
+      },
+      "rewind_resumed": {
+        "id": 0,
+        "ok": true,
+        "enabled": true,
+        "open": false,
+        "title_blocked": false,
+        "snaps": 50
+      },
+      "resume_seconds": 2.077999999979511,
+      "after_resume": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 539
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 396912,
+              "nonzero": 396912,
+              "audible": 391169,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 445440,
+              "nonzero": 396228,
+              "audible": 390473,
+              "peak": 29924,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 396910,
+          "pump_skips": 0,
+          "underruns": 3,
+          "queue_hiwater": 204,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 404679,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 46.8,
+            "target_ms": 180.0,
+            "underruns": 25032,
+            "overflow_drops": 0,
+            "correction": -0.005
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        }
+      },
+      "own_state_files": {
+        "state_800A3660_slot02.pst": "192f43968a60851da56c7ef6273ed9848c831fde72e243d4d1faf07ec229dee1"
+      },
+      "status": "passed-gameplay-own-save-load-pause-resume-progress",
+      "interpolation_requested": 0,
+      "actual_startup_pacing": [
+        "psxrecomp: GL temporal frame blending disabled (host 165.0 Hz)",
+        "psxrecomp: present cadence: wall-clock pacer (16.6834 ms/frame)"
+      ],
+      "qa_feature_scope": "Rewind enabled interval1/depth50 only in separate lifecycle QA so the known TCP-servicing F8 host pause loop is available; production timing keeps rewind OFF. Framecounter freeze and actual rewind status establish pause, screenshot_hires captures the underlying held game image rather than a composited panel UI."
+    },
+    {
+      "build": "h1-ape-native-qa",
+      "binary_sha256": "36a5f27d051e49803ce69aa22c7dd762a144027b3fde78d8f8de6ecdef8d6774",
+      "execution": {
+        "schema": 1,
+        "profile": "ENHANCED",
+        "identity": "c7df19269f44f88a51f7a31f245e50ae4861b719a79bd054385aaf8f2a135f89",
+        "shared_contract_sha256": "d92994e4230be2d211cac8c5e9e258d8d022a1ba694efe4fa213c43ba9fbf1ca",
+        "implementations": [
+          {
+            "name": "idle-wait",
+            "contract": "audited-store-counter-v2",
+            "source_sha256": "9f66868bcddb8658e9d52b66750586bc62f3b63bb3ff9cecd3eb707fee2bd5eb"
+          }
+        ]
+      },
+      "argv": [
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\ApeEscapeRecomp.exe",
+        "--debug-port",
+        "23984",
+        "--game",
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\g4-ape-game.toml",
+        "--bios",
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\bios\\openbios.bin",
+        "--memcard-dir",
+        "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa-interp1-rewindpause-lifecycle-state",
+        "--no-launcher",
+        "--hidden-window"
+      ],
+      "input_contract": "PSX active-low mask0xf7ff; verify actual response from captured image. SPU counters do not establish speaker quality.",
+      "note": "Automated never-shown full presenter with dummy audio; inspect actual audio output health. This does not establish physical speaker quality. Initial seed is a private adapted fixture; slot2 must be created and loaded by this binary.",
+      "checks": [
+        {
+          "id": 0,
+          "ok": true
+        },
+        {
+          "id": 0,
+          "ok": true
+        },
+        {
+          "id": 0,
+          "ok": true
+        }
+      ],
+      "frontend": "hidden-window",
+      "audio_driver": "dummy",
+      "seed_load": {
+        "id": 0,
+        "ok": true,
+        "generation": 1,
+        "pending": 0,
+        "last_ok": 1,
+        "last_op": "load",
+        "last_slot": 1,
+        "polls": 1,
+        "wait": ""
+      },
+      "before": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 91
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 67619,
+              "nonzero": 67619,
+              "audible": 66526,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 84992,
+              "nonzero": 59392,
+              "audible": 58384,
+              "peak": 29564,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 67618,
+          "pump_skips": 0,
+          "underruns": 0,
+          "queue_hiwater": 202,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 68958,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 193.8,
+            "target_ms": 180.0,
+            "underruns": 0,
+            "overflow_drops": 0,
+            "correction": 0.00118
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        },
+        "gpu": {
+          "id": 0,
+          "ok": true,
+          "display_x": 0,
+          "display_y": 256,
+          "width": 384,
+          "height": 240,
+          "screen_offset_y": 0,
+          "depth": 15,
+          "depth24": 0,
+          "disabled": 0,
+          "h_display": [
+            539,
+            3227
+          ],
+          "v_display": [
+            16,
+            256
+          ],
+          "hres1": 0,
+          "hres2": 1,
+          "gpustat": "0x5601020F",
+          "gp0_writes": 170490,
+          "gp0_nop": 269,
+          "gp0_fill": 0,
+          "gp0_draw": 19500,
+          "gp0_env": 1334,
+          "gp0_copy": 269,
+          "draw_area": [
+            0,
+            0,
+            383,
+            239
+          ],
+          "draw_offset": [
+            0,
+            0
+          ],
+          "vertical_split": {
+            "active": 0,
+            "left_age": 255,
+            "right_age": 255
+          },
+          "ws": {
+            "configured": 0,
+            "active": 0,
+            "game_mode": 1,
+            "present_native_43": 0,
+            "x_margin": 0,
+            "activation_margin": 0,
+            "squash": [
+              1,
+              1
+            ],
+            "mode": 0,
+            "nw_extra": 0,
+            "view_anchor": 0,
+            "view_left": 0,
+            "view_right": 0,
+            "view_shift": 0,
+            "view_padding": [
+              0,
+              0
+            ],
+            "bg2d_generations": 0,
+            "cur_frame": 92,
+            "last_tag_frame": 4294966296,
+            "last_3d_frame": 91,
+            "gte_verts": 0,
+            "last_world3d_frame": 4294966296,
+            "ovh_prims": 0,
+            "last_ovh_frame": 4294966296,
+            "auto_ui": {
+              "configured": 1,
+              "in_place": 0,
+              "dense": 0,
+              "ot_rank": 4294967295,
+              "candidates": 0,
+              "transforms": 0
+            },
+            "aspect_cone": {
+              "calls": 0,
+              "identity_43": 0,
+              "vanilla_keep": 0,
+              "visible_keep": 0,
+              "guard_keep": 0,
+              "hysteresis_keep": 0,
+              "outside_reject": 0,
+              "queue_reject": 0,
+              "queue_highwater": [
+                0,
+                0,
+                0
+              ]
+            },
+            "terrain_angle": {
+              "calls": 0,
+              "identity_43": 0,
+              "max_vanilla": 0,
+              "max_widened": 0
+            },
+            "backdrop": {
+              "veto": 0,
+              "eval_frame": 0,
+              "rects": 0,
+              "full": 0,
+              "short": 0,
+              "x": [
+                0,
+                0
+              ],
+              "reveal": 0,
+              "canon_pct": 0,
+              "left_pct": 0,
+              "right_pct": 0,
+              "last_short": 0,
+              "evaluations": 0,
+              "short_frames": 0
+            }
+          }
+        },
+        "overlay": {
+          "id": 0,
+          "ok": true,
+          "active": 1,
+          "registered": 0,
+          "regions_checked": 1,
+          "last_crc": "0x00000000",
+          "file_found": 0,
+          "cache_dir": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\cache",
+          "game_id": "SCUS-94423",
+          "last_msg": "",
+          "checked": [
+            "0x00000000"
+          ],
+          "regions": 0,
+          "loads": 0,
+          "invalidations": 0,
+          "revalidations": 0,
+          "unregistered_funcs": 0,
+          "dispatch_native": 0,
+          "dispatch_interp_fallback": 93,
+          "stale_blocked": 0,
+          "last_write_pc": "0x00000000",
+          "last_write_addr": "0x00000000",
+          "last_write_size": 0,
+          "r0_valid": 0,
+          "r0_writes_since_invalid": 0,
+          "r0_fn_lo": "0x00000000",
+          "r0_fn_hi": "0x00000000",
+          "r0_crc_live": "0x00000000",
+          "reval_attempts": 0,
+          "reval_crc_miss": 0,
+          "last_reval_crc": "0x00000000",
+          "gen_fastpath": 0,
+          "range_links": 0,
+          "range_index_overflow": 0,
+          "lazy_manifests": 0,
+          "lazy_manifest_overflow": 0,
+          "candidate_overflow": 0,
+          "pair_aliases": 0,
+          "segment_alias_interp": 93,
+          "segment_native": 0,
+          "irq_need_defer": 0,
+          "irq_need_delivery": 0,
+          "irq_skip_none": 0,
+          "irq_skip_sr": 0,
+          "irq_skip_cooldown": 0,
+          "irq_skip_nested": 0,
+          "ci_skip_unit": 0,
+          "ci_skip_supp": 0,
+          "ci_skip_none": 0,
+          "ci_skip_sr": 0,
+          "ci_skip_deliv": 0,
+          "ci_enter": 0,
+          "call_unit_depth": 0,
+          "image_warm_loaded": 0,
+          "image_warm_pending": 0
+        }
+      },
+      "before_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp1-rewindpause-before.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "save": {
+        "id": 0,
+        "ok": true,
+        "generation": 2,
+        "pending": 0,
+        "last_ok": 1,
+        "last_op": "save",
+        "last_slot": 2,
+        "polls": 1,
+        "wait": ""
+      },
+      "jump_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp1-rewindpause-jump.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "after_input": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 269
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 197912,
+              "nonzero": 197912,
+              "audible": 195002,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 223232,
+              "nonzero": 197603,
+              "audible": 194658,
+              "peak": 29564,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 197911,
+          "pump_skips": 0,
+          "underruns": 3,
+          "queue_hiwater": 202,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 201790,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 44.8,
+            "target_ms": 180.0,
+            "underruns": 202,
+            "overflow_drops": 0,
+            "correction": -0.005
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        }
+      },
+      "after_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp1-rewindpause-after.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "load": {
+        "id": 0,
+        "ok": true,
+        "generation": 3,
+        "pending": 0,
+        "last_ok": 1,
+        "last_op": "load",
+        "last_slot": 2,
+        "polls": 1,
+        "wait": ""
+      },
+      "after_restore": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 395
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 291794,
+              "nonzero": 291794,
+              "audible": 287429,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 321536,
+              "nonzero": 292195,
+              "audible": 287541,
+              "peak": 29564,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 291792,
+          "pump_skips": 0,
+          "underruns": 10,
+          "queue_hiwater": 202,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 297444,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 46.6,
+            "target_ms": 180.0,
+            "underruns": 4838,
+            "overflow_drops": 0,
+            "correction": -0.005
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        },
+        "snapshot": {
+          "id": 0,
+          "ok": true,
+          "callback_active": false,
+          "host_call_depth": 0,
+          "site": 0,
+          "pc": "0x00000000",
+          "safe": true
+        },
+        "overlay": {
+          "id": 0,
+          "ok": true,
+          "active": 1,
+          "registered": 0,
+          "regions_checked": 1,
+          "last_crc": "0x00000000",
+          "file_found": 0,
+          "cache_dir": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\h1-ape-native-qa\\cache",
+          "game_id": "SCUS-94423",
+          "last_msg": "",
+          "checked": [
+            "0x00000000"
+          ],
+          "regions": 0,
+          "loads": 0,
+          "invalidations": 0,
+          "revalidations": 0,
+          "unregistered_funcs": 0,
+          "dispatch_native": 0,
+          "dispatch_interp_fallback": 399,
+          "stale_blocked": 0,
+          "last_write_pc": "0x00000000",
+          "last_write_addr": "0x00000000",
+          "last_write_size": 0,
+          "r0_valid": 0,
+          "r0_writes_since_invalid": 0,
+          "r0_fn_lo": "0x00000000",
+          "r0_fn_hi": "0x00000000",
+          "r0_crc_live": "0x00000000",
+          "reval_attempts": 0,
+          "reval_crc_miss": 0,
+          "last_reval_crc": "0x00000000",
+          "gen_fastpath": 0,
+          "range_links": 0,
+          "range_index_overflow": 0,
+          "lazy_manifests": 0,
+          "lazy_manifest_overflow": 0,
+          "candidate_overflow": 0,
+          "pair_aliases": 0,
+          "segment_alias_interp": 399,
+          "segment_native": 0,
+          "irq_need_defer": 0,
+          "irq_need_delivery": 0,
+          "irq_skip_none": 0,
+          "irq_skip_sr": 0,
+          "irq_skip_cooldown": 0,
+          "irq_skip_nested": 0,
+          "ci_skip_unit": 0,
+          "ci_skip_supp": 0,
+          "ci_skip_none": 0,
+          "ci_skip_sr": 0,
+          "ci_skip_deliv": 0,
+          "ci_enter": 0,
+          "call_unit_depth": 0,
+          "image_warm_loaded": 0,
+          "image_warm_pending": 0
+        }
+      },
+      "restored_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp1-rewindpause-restored.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "rewind_before_pause": {
+        "id": 0,
+        "ok": true,
+        "enabled": true,
+        "open": false,
+        "title_blocked": false,
+        "snaps": 50
+      },
+      "pause": {
+        "id": 0,
+        "ok": true
+      },
+      "rewind_paused": {
+        "id": 0,
+        "ok": true,
+        "enabled": true,
+        "open": true,
+        "title_blocked": false,
+        "snaps": 50
+      },
+      "paused_before": {
+        "id": 0,
+        "ok": true,
+        "frame": 400
+      },
+      "paused_after": {
+        "id": 0,
+        "ok": true,
+        "frame": 400
+      },
+      "pause_image": {
+        "id": 0,
+        "ok": true,
+        "path": "G:\\Temp\\Codex\\psxrecomp\\shared-burndown-20261028\\evidence\\h1-ape-native-qa-interp1-rewindpause-pause.png",
+        "width": 3456,
+        "height": 2160,
+        "scale": 9
+      },
+      "continue": {
+        "id": 0,
+        "ok": true
+      },
+      "rewind_resumed": {
+        "id": 0,
+        "ok": true,
+        "enabled": true,
+        "open": false,
+        "title_blocked": false,
+        "snaps": 50
+      },
+      "resume_seconds": 2.047000000020489,
+      "after_resume": {
+        "frame": {
+          "id": 0,
+          "ok": true,
+          "frame": 521
+        },
+        "audio": {
+          "id": 0,
+          "ok": true,
+          "taps": [
+            {
+              "name": "spu_out",
+              "frames": 383674,
+              "nonzero": 383674,
+              "audible": 378088,
+              "peak": 29561,
+              "rate": 44100
+            },
+            {
+              "name": "cd_in",
+              "frames": 0,
+              "nonzero": 0,
+              "audible": 0,
+              "peak": 0,
+              "rate": 44100
+            },
+            {
+              "name": "host",
+              "frames": 447488,
+              "nonzero": 385608,
+              "audible": 379499,
+              "peak": 29564,
+              "rate": 44100
+            }
+          ],
+          "pump_calls": 383672,
+          "pump_skips": 0,
+          "underruns": 19,
+          "queue_hiwater": 202,
+          "queue_lowater": 0,
+          "mutes": 0,
+          "unmutes": 0,
+          "events_total": 391207,
+          "out": {
+            "active": 1,
+            "mode": "bridge-pull",
+            "host_rate": 44100,
+            "fill_ms": 42.3,
+            "target_ms": 180.0,
+            "underruns": 38171,
+            "overflow_drops": 0,
+            "correction": -0.005
+          },
+          "spu_out": {
+            "queued": 0,
+            "drops": 0
+          }
+        }
+      },
+      "own_state_files": {
+        "state_800A3660_slot02.pst": "7b315ead0b9686e8090a14a5c1c0e8d6f68666aa4fad1079c2355b056b446551"
+      },
+      "status": "passed-gameplay-own-save-load-pause-resume-progress",
+      "interpolation_requested": 1,
+      "actual_startup_pacing": [
+        "psxrecomp: GL temporal frame blending enabled: 120.0 presents/s from 59.940 guest frames/s on the render thread (linear blend; no motion vectors)",
+        "psxrecomp: present cadence: wall-clock pacer (16.6834 ms/frame)"
+      ],
+      "qa_feature_scope": "Rewind enabled interval1/depth50 only in separate lifecycle QA so the known TCP-servicing F8 host pause loop is available; production timing keeps rewind OFF. Framecounter freeze and actual rewind status establish pause, screenshot_hires captures the underlying held game image rather than a composited panel UI."
+    }
+  ],
+  "harness_findings": {
+    "item": "H1",
+    "findings": [
+      {
+        "kind": "standalone-test setup",
+        "evidence": "evidence/h1-validation.log",
+        "finding": "New Python policy test initially missing from required registration; fixed before final four passing gates.",
+        "runtime_defect": false
+      },
+      {
+        "kind": "passive frame-stamp reader",
+        "evidence": "evidence/h1-ape-block1-interp0-pool.log",
+        "finding": "Generic ctypes reader mistook the FrameSlot.value payload field for a scalar value property. Failed after first control timing endpoints, before accepted sample persistence/comparison; exact owned process closed. Fixed with explicit Structure handling. Fresh block2 profiles used; no result accepted from failed block1.",
+        "runtime_defect": false
+      },
+      {
+        "kind": "stale debug-client pause documentation",
+        "evidence": "evidence/h1-ape-lifecycle-pool.log",
+        "finding": "First QA run passed its own save/load and gameplay, then rejected removed pause command still listed in debug_client.py help. No runtime defect or timing sample failure. Original result/log/profile retained; replacement uses supported runtime_menu open/close API, actual frozen frame counter, resumed120vblank progress, fresh menu-labeled profiles.",
+        "runtime_defect": false
+      },
+      {
+        "kind": "unsupported multidisc runtime menu in single-disc title",
+        "evidence": "evidence/h1-ape-menu-lifecycle-pool.log",
+        "finding": "runtime_menu open correctly rejects this single-disc title because its UI is initialized only for a multidisc roster. First menu attempt passed own save/load then rejected open; retained unchanged. Use source-confirmed default F7 save-state host menu, verify actual guestframefreeze and screenshot, Escape close and resumed120vblanks. No binary/source/production timing change.",
+        "runtime_defect": false
+      },
+      {
+        "kind": "existing save-state menu does not service debug TCP",
+        "evidence": "evidence/h1-ape-hostmenu-lifecycle-pool.log",
+        "finding": "F7 entered actual save-state pause; next TCP frame query timed out because savestate_menu_host_pause_loop has no debug_server_poll, unlike rewind_host_pause_loop. Shared base has the same body. No introduced pacing softlock; exact owned process terminated. Use known S7-qualified F8 panel with capture enabled for QA only, frame freeze/status/screenshot, secondF8 close and resumed120frames. Production timings unchanged.",
+        "runtime_defect": false
+      }
+    ]
+  },
+  "image_observation": "Inspected temporal1 jumping image: airborne character, scene and HUD. Inspected temporal0 paused underlying game image: coherent scene/HUD. These are bounded automated observations, not owner adoption.",
+  "audio_caveat": "Instrumented save/load/pause captures include bridge underruns, retained in each audio endpoint. Production ordinary timed intervals remain0/0. No speaker-quality or all-menu claim.",
+  "remaining": "Owner visual/audio adoption and combined integration at campaign end; no merge/release or physical speaker/cross-host claim."
+}

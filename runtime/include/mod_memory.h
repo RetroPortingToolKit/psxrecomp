@@ -18,6 +18,18 @@ extern "C" {
 #define PSX_MOD_GPU_DMA_APERTURE_SIZE (8u * 1024u * 1024u)
 #define PSX_MOD_GPU_DMA_GUEST_BASE    0x80800000u
 
+/* Trusted-mod guest memory in Expansion 1 (psx_mod_memory_alloc; KSEG0
+ * 0x9F000000). Open bus until the first allocation. */
+/* Fixed title build contract, not a player preference. Legacy titles retain
+ * process-lifetime cached handles unless their runtime target declares that
+ * every plugin recreates its enhancement resources on each activation. */
+#ifndef PSX_MOD_SESSION_RESOURCES
+#define PSX_MOD_SESSION_RESOURCES 0
+#endif
+
+#define PSX_MOD_MEMORY_BASE 0x1F000000u
+#define PSX_MOD_MEMORY_SIZE (1u * 1024u * 1024u)
+
 static inline int psx_mod_gpu_dma_aperture_offset_for(
     uint32_t address, uint32_t width, uint32_t used, uint32_t *offset) {
     /* CPU addresses retain all physical bits after KSEG normalization. The
@@ -68,7 +80,20 @@ static inline uint32_t psx_gpu_packet_key_for(uint32_t address, uint32_t used) {
 uint32_t psx_gpu_packet_key(uint32_t address);
 uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t size, uint32_t alignment);
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address);
+/* A complete range in the allocated GPU packet aperture (CPU or tag address).
+ * Unallocated bytes, BIOS aliases and a range crossing its end are refused. */
+int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes);
 uint32_t psx_mod_memory_alloc(uint32_t size, uint32_t alignment);
+/* Runtime session boundary only, after guest/render stacks and renderer work
+ * have stopped, before any plugin activation. Discard the previous session's
+ * page journal and zero both enhancement arenas, restoring allocation bases.
+ * Reject an active render pass without changing bytes/layout. Texture-bank
+ * and packet registrations must be retired first. Ordinary memory_init()
+ * deliberately preserves the new session's already-activated allocations. */
+int psx_mod_memory_reset_session(void);
+/* Runtime session boundary: zero preserves process-lifetime allocations;
+ * nonzero selects the explicit session-owned contract and resets them. */
+int psx_mod_memory_begin_session(int session_owned);
 /* Allocations are fixed during activation. Snapshot allocated bytes, never
  * host pointers; immutable host assets are reconstructed separately. */
 uint32_t psx_mod_memory_snapshot_bytes(void);

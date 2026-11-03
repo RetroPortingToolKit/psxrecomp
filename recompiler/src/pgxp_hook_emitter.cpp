@@ -47,14 +47,14 @@ bool emission_ends_on_preprocessor_directive(const std::string& code) {
     return false;  /* blank final line -- appending is already safe */
 }
 
-void append_pgxp_hooks(uint32_t instr, std::string& code) {
+void append_pgxp_hooks(uint32_t instr, std::string& code, const std::string& memory_addr) {
     const uint32_t opcode = (instr >> 26) & 0x3F;
     const uint32_t rs = get_rs(instr);
     const uint32_t rt = get_rt(instr);
     const uint32_t rd = get_rd(instr);
     const int16_t offset = get_imm16(instr);
     const auto addr_expr = [&]() {
-        return (offset == 0) ? reg_name(rs)
+        return !memory_addr.empty() ? memory_addr : (offset == 0) ? reg_name(rs)
                              : fmt::format("{} + {}", reg_name(rs), offset);
     };
 

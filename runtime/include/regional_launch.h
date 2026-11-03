@@ -3,7 +3,7 @@
  * A profile switch is a process handoff, never a live code/config transplant. */
 #include "disc_identity.h"
 #include "disc_path.h"
-#include "host_sha256.h"
+#include "psx_sha256_file.h"
 #include <toml.hpp>
 #include <cstdio>
 #include <fstream>
@@ -12,6 +12,13 @@
 #include <vector>
 #include <stdexcept>
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>   /* GetModuleFileNameW, MoveFileExW, GetCurrentProcessId */
 #include <process.h>
 #endif
 
@@ -20,6 +27,9 @@ namespace regional {
 namespace fs = std::filesystem;
 struct Profile { std::string id, sha256; uint64_t size; fs::path backend; };
 inline fs::path root, self;
+/* Catalog `disc_selection_locked`: the packaged entry has already chosen and
+ * verified the disc, so the launcher must not offer another one. */
+inline bool disc_selection_locked=false;
 inline std::vector<Profile> profiles;
 inline std::string selected_disc, pending_disc;
 inline const Profile* pending = nullptr;
@@ -47,6 +57,7 @@ inline void load(const char* argv0) {
         if(!fs::is_regular_file(file)) continue;
         root=fs::weakly_canonical(folder);
         const auto config=toml::parse(file.string());
+        disc_selection_locked=toml::find_or<bool>(config,"disc_selection_locked",false);
         for(const auto& entry:toml::find(config,"profile").as_array()) {
             Profile p{toml::find<std::string>(entry,"id"),toml::find<std::string>(entry,"sha256"),
                 toml::find<uint64_t>(entry,"size"),inside(toml::find<std::string>(entry,"backend"))};
@@ -59,15 +70,17 @@ inline void load(const char* argv0) {
         return;
     }
 }
-inline const Profile* identify(const fs::path& picked) {
+/* require_backend=false identifies a disc whose regional backend is not
+ * installed, so a caller can name the missing package. */
+inline const Profile* identify(const fs::path& picked, bool require_backend = true) {
     auto disc=resolve_disc_path(picked);
     auto id=identify_disc(picked,"",0,false,false);
     if(!id.opened || !id.has_header || disc.cue_fallback) return nullptr;
     for(const auto& p:profiles) {
         if(id.detected_serial!=p.id || fs::file_size(disc.data)!=p.size) continue;
-        uint8_t digest[32];if(!host_sha256_file(disc.data,digest)) return nullptr;
+        uint8_t digest[32];if(psx_sha256_file(disc.data,digest)!=PsxFileHashResult::Ok) return nullptr;
         char hex[65];for(int i=0;i<32;++i) std::snprintf(hex+i*2,3,"%02x",digest[i]);
-        if(p.sha256==hex && fs::is_regular_file(p.backend)) return &p;
+        if(p.sha256==hex && (!require_backend || fs::is_regular_file(p.backend))) return &p;
     }
     return nullptr;
 }

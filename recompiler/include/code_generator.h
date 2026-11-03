@@ -67,6 +67,9 @@ struct CodeGenConfig {
     // Only explicitly listed guest functions call the runtime dispatcher.
     std::set<uint32_t> mod_function_entry_funcs;
     std::set<uint32_t> mod_instruction_sites;
+    // [[mod_immediate.sites]]: guarded instructions whose immediate a trusted mod
+    // selects at run time; emitted as a selector switch over every variant.
+    std::vector<PSXRecompV4::ModImmediateSite> mod_immediate_sites;
 
     // [recompiler] hot_funcs: emit __attribute__((hot)) on these guest
     // addresses (MotK VLC leaves, etc.). Host locality hint only.
@@ -174,7 +177,10 @@ struct CodeGenConfig {
     // Exact, full-word-guarded comparison sites whose result is forced only
     // while widescreen reveals extra world. 4:3 evaluates the original compare.
     std::vector<PSXRecompV4::WidescreenCullKeepSite> ws_cull_keep_sites;
+    // [[widescreen.cull.sxy]] packed-SXY AND folds (left edge widened).
+    std::vector<PSXRecompV4::WidescreenSxyCullSite> ws_cull_sxy_sites;
     std::vector<PSXRecompV4::WidescreenMaskedRejectSite> ws_cull_masked_reject_sites;
+    std::vector<PSXRecompV4::WidescreenPackedXSite> ws_cull_packed_x_sites;
     std::vector<PSXRecompV4::WidescreenCullScaleSite> ws_cull_scale_sites;
 
     // Exact `addi[u] rt,zero,imm` 12-bit angular half-extents. The runtime
@@ -490,10 +496,19 @@ private:
 
     // Instruction translation
     std::string translate_instruction(uint32_t addr, uint32_t instr);
-    std::string translate_instruction_core(uint32_t addr, uint32_t instr);
+    std::string translate_instruction_core(uint32_t addr, uint32_t instr,
+        const std::string& memory_addr = "", uint32_t original_instruction = 0);
     // The [[draw_distance.clamp]] statement for (addr, instr), or "".
     std::string draw_distance_clamp_prefix(uint32_t addr, uint32_t instr) const;
     std::string mod_instruction_call(uint32_t addr, uint32_t instr) const;
+    // The [[mod_immediate.sites]] entry for (addr, instr), or nullptr. In a main
+    // EXE a word mismatch at a listed address is a hard error; overlay code may
+    // hold unrelated words at a shared load address and is left unchanged.
+    const PSXRecompV4::ModImmediateSite* find_mod_immediate_site(uint32_t addr, uint32_t instr) const;
+    // The instruction translated once per selector: `switch (psx_mod_immediate_select(group))`
+    // with case N running the word whose imm16 is values[N-1] and default the original.
+    std::string mod_immediate_translation(uint32_t addr, uint32_t instr,
+                                          const PSXRecompV4::ModImmediateSite& site);
 
     // Register name mapping
     static std::string reg_name(int reg_num);
@@ -547,14 +562,14 @@ private:
     std::string translate_srav(uint32_t instr);
 
     // Load/store instructions
-    std::string translate_lw(uint32_t instr);
-    std::string translate_sw(uint32_t instr);
-    std::string translate_lb(uint32_t instr);
-    std::string translate_lbu(uint32_t instr);
-    std::string translate_lh(uint32_t instr);
-    std::string translate_lhu(uint32_t instr);
-    std::string translate_lwl(uint32_t instr);
-    std::string translate_lwr(uint32_t instr);
+    std::string translate_lw(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_sw(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lb(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lbu(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lh(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lhu(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lwl(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_lwr(uint32_t instr, const std::string& memory_addr = "");
     //
     // LWL/LWR take their destination register as BOTH input (the merge base)
     // and output. Unlike every other load, they read that input late enough to
@@ -584,10 +599,10 @@ private:
     }
     uint32_t    lwlr_merge_reg_ = 0xFFFFFFFFu;
     std::string lwlr_merge_temp_;
-    std::string translate_swl(uint32_t instr);
-    std::string translate_swr(uint32_t instr);
-    std::string translate_sb(uint32_t instr);
-    std::string translate_sh(uint32_t instr);
+    std::string translate_swl(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_swr(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_sb(uint32_t instr, const std::string& memory_addr = "");
+    std::string translate_sh(uint32_t instr, const std::string& memory_addr = "");
 
     // Immediate instructions
     std::string translate_addiu(uint32_t instr);

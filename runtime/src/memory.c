@@ -39,8 +39,11 @@
 #define RAM_SIZE        PSX_MAIN_RAM_BACKING_BYTES
 #define SCRATCHPAD_SIZE 1024
 #define BIOS_ROM_SIZE   (512 * 1024)
-#define MOD_MEMORY_BASE 0x1F000000u
-#define MOD_MEMORY_SIZE (1u * 1024u * 1024u)
+#define MOD_MEMORY_BASE PSX_MOD_MEMORY_BASE
+#define MOD_MEMORY_SIZE PSX_MOD_MEMORY_SIZE
+#define RP_MOD_PAGE 4096u
+static int rp_mod_journal(uint8_t *base, uint32_t page_base, uint32_t off,
+                          uint32_t width);
 
 static uint8_t ram[RAM_SIZE];
 static uint8_t scratchpad[SCRATCHPAD_SIZE];
@@ -90,6 +93,14 @@ int psx_mod_memory_snapshot_read(const uint8_t* data, uint32_t size) {
     if (!psx_mod_memory_snapshot_validate(data, size)) return 0;
     cpu_bytes = mod_memory_used;
     dma_bytes = mod_gpu_dma_memory_used;
+    // Draw-entry replay may restore an earlier image inside a frozen pass.
+    // Journal the completed live image first so rollback never retains that
+    // earlier arena or backs up already-restored primitive tags.
+    if (g_psx_render_pass_active &&
+        ((cpu_bytes && !rp_mod_journal(mod_memory, 0, 0, cpu_bytes)) ||
+         (dma_bytes && !rp_mod_journal(mod_gpu_dma_memory,
+                                      MOD_MEMORY_SIZE / RP_MOD_PAGE, 0, dma_bytes))))
+        return 0;
     memcpy(mod_memory, data + 16u, cpu_bytes);
     memcpy(mod_gpu_dma_memory, data + 16u + cpu_bytes, dma_bytes);
     return 1;
@@ -143,6 +154,10 @@ static int mod_gpu_dma_memory_offset(uint32_t phys, uint32_t width,
 uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
     return psx_mod_gpu_dma_resolve_address_for(
         address, mod_gpu_dma_memory_used);
+}
+
+int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes) {
+    return bytes!=0 && mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,NULL);
 }
 
 uint32_t psx_gpu_packet_key(uint32_t address) {
@@ -1027,6 +1042,13 @@ uint64_t g_mmio_access_count = 0;
  * ANY store is not a pure poll loop. CPU stores and in-flight DMA writes
  * both funnel through the psx_write_*_raw chokepoints. */
 uint64_t g_guest_store_count = 0;
+/* The last guest word store, for the idle-loop detector's store-counter
+ * loops (psx_cycles.c, [runtime] idle_skip_store_counters). Recorded only
+ * while that option is on (g_psx_track_last_store); main.cpp hands these to
+ * the detector with psx_idle_skip_set_store_tracker. */
+int      g_psx_track_last_store = 0;
+uint32_t g_guest_last_store_addr = 0xFFFFFFFFu;
+uint32_t g_guest_last_store_val = 0;
 
 /* ---- Card protocol trace: tracks I_MASK bit 7 transitions ---- */
 #define IMASK_TRACE_CAP 4096
@@ -1271,7 +1293,10 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
         return ram_size_reg;
     }
     /* Interrupts: 0x1F801070, 0x1F801074 */
-    if (addr == 0x1F801070u) { sio_tick(0); return i_stat; }
+    if (addr == 0x1F801070u) {
+        if (!g_psx_render_pass_active) sio_tick(0);
+        return i_stat;
+    }
     if (addr == 0x1F801074u) return i_mask;
     /* DMA: 0x1F801080..0x1F8010FF */
     if (addr >= 0x1F801080u && addr <= 0x1F8010FFu) {
@@ -1306,6 +1331,7 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
  * single (side-effecting) read. Callers use mmio_read32; the body is _impl, so
  * the device read executes exactly once. */
 static uint32_t mmio_read32(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 4)) return 0;
     psx_devices_mmio_sync();
     uint32_t v = mmio_read32_impl(addr);
     debug_server_trace_mmio_read(addr, v, 4);
@@ -1397,7 +1423,7 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
     }
     /* Interrupts */
     if (addr >= 0x1F801070u && addr <= 0x1F801072u) {
-        sio_tick(0);
+        if (!g_psx_render_pass_active) sio_tick(0);
         uint32_t shift = (addr & 2u) ? 16u : 0u;
         return (uint16_t)(i_stat >> shift);
     }
@@ -1428,6 +1454,7 @@ static uint16_t mmio_read16_impl(uint32_t addr) {
 }
 
 static uint16_t mmio_read16(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 2)) return 0;
     psx_devices_mmio_sync();
     uint16_t v = mmio_read16_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 2);
@@ -1513,7 +1540,7 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
     }
     /* Interrupts: 0x1F801070..0x1F801077 (I_STAT, I_MASK) */
     if (addr >= 0x1F801070u && addr <= 0x1F801077u) {
-        if (addr < 0x1F801074u) sio_tick(0);
+        if (addr < 0x1F801074u && !g_psx_render_pass_active) sio_tick(0);
         uint32_t val = (addr < 0x1F801074u) ? i_stat : i_mask;
         return (uint8_t)(val >> (8 * (addr & 3)));
     }
@@ -1547,6 +1574,7 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
 }
 
 static uint8_t mmio_read8(uint32_t addr) {
+    if (g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, 1)) return 0;
     psx_devices_mmio_sync();
     uint8_t v = mmio_read8_impl(addr);
     debug_server_trace_mmio_read(addr, (uint32_t)v, 1);
@@ -1659,10 +1687,20 @@ uint32_t psx_read_word(uint32_t addr) {
     if (!psx_get_in_exception()) ls_read_hook(addr, 4, v);
     return v;
 }
+/* Untraced word peek for HOST-SIDE inspection: same address decode as a guest
+ * read, but no lockstep record, no lockstep-replay substitution, and no
+ * data-shard/DuckStation capture. Use this for anything the guest did not
+ * actually execute — residency guards, host-side checks, diagnostics — so a
+ * host inspection can never appear in a guest read stream (which would both
+ * dirty every divergence comparison and, under replay, return replayed data
+ * instead of resident bytes). Never use it to service a guest load. */
+uint32_t psx_peek_word_untraced(uint32_t addr) {
+    return psx_read_word_raw(addr);
+}
 /* Physical address of a CPU/DMA main-RAM access. Fold KUSEG/KSEG0/KSEG1 first
  * (0x1FFFFFFF), then fold the 2nd-4th main-RAM mirrors: real hardware mirrors the
- * 2 MB DRAM across the WHOLE 0..0x7FFFFF physical window (Beetle libretro.cpp:874
- * `A < 0x00800000` routes to main RAM; psx-spx "2048K RAM ... mirrored 4x"). A game
+ * 2 MB DRAM across the WHOLE 0..0x7FFFFF physical window (PSX-SPX memorymap,
+ * "Memory Mirrors": "2MB RAM can be mirrored to the first 8MB"). A game
  * may legitimately place its stack at the top of that window — Tsumu Light computes
  * sp = (ramtop-8)|0x80000000 with its ramtop constant 0x00800000, giving sp=0x807FFFF8
  * (top of the 4th mirror). Without this fold those accesses miss DRAM (`< RAM_SIZE`
@@ -1673,9 +1711,9 @@ static uint32_t psx_read_word_raw(uint32_t addr) {
     /* KSEG2 cache control — before physical translation. */
     if (addr == 0xFFFE0130u) return cache_ctrl;
     /* KSEG2 (0xC0000000+): only cache control (0xFFFE0130, above where
-     * applicable) exists there. Real hardware maps NOTHING else — Beetle
-     * (cpu.cpp addr_mask[6..7]=0xFFFFFFFF) leaves KSEG2 addresses unmasked
-     * so they fall to unmapped space and the access is a no-op. Our flat
+     * applicable) exists there. PSX-SPX memorymap ("Memory Map") lists only
+     * the cache control registers at FFFE0000h in KSEG2; every other KSEG2
+     * access is unmapped and is a no-op here, as on the Beetle reference. Our flat
      * 0x1FFFFFFF masking routed KSEG2 garbage onto LIVE registers: Tomba2's
      * attract runs a BIOS bzero over a wild 0xDF80xxxx pointer, which zeroed
      * the SIO/memctrl I/O block byte-by-byte and then hit the unmapped-MMIO
@@ -1848,7 +1886,6 @@ static void render_pass_mmio_write(uint32_t phys, uint32_t val,
  * (an extended draw distance) has its passes build their packets there. Each
  * arena page a pass writes is backed up on its first write and put back by
  * render_pass_mod_arenas_rollback(), with the rest of the pass restore. */
-#define RP_MOD_PAGE 4096u
 #define RP_MOD_PAGES ((MOD_MEMORY_SIZE + PSX_MOD_GPU_DMA_APERTURE_SIZE) / RP_MOD_PAGE)
 typedef struct { uint8_t *page; uint32_t index; uint8_t data[RP_MOD_PAGE]; } RpModPage;
 static uint8_t  s_rp_mod_bits[RP_MOD_PAGES / 8u];
@@ -1912,6 +1949,24 @@ void render_pass_mod_arenas_rollback(void) {
     s_rp_mod_lossy = 0;
 }
 
+int psx_mod_memory_begin_session(int session_owned) {
+    return !session_owned || psx_mod_memory_reset_session();
+}
+
+int psx_mod_memory_reset_session(void) {
+    if (g_psx_render_pass_active) return 0;
+    /* An interrupted previous draw can leave journal pages behind. Retire
+     * them before reusing their addresses, so a future pass cannot restore
+     * the previous session's primitives over its replacement allocations. */
+    render_pass_mod_arenas_rollback();
+    memset(s_rp_mod_bits, 0, sizeof s_rp_mod_bits);
+    memset(mod_memory, 0, sizeof mod_memory);
+    memset(mod_gpu_dma_memory, 0, sizeof mod_gpu_dma_memory);
+    mod_memory_used = mod_gpu_dma_memory_used = 0;
+    g_render_pass_mod_pages = 0;
+    return 1;
+}
+
 /* FNV-1a over the used part of both arenas (PSX_RENDER_PASS_VERIFY). */
 uint64_t render_pass_mod_arenas_hash(void) {
     uint64_t h = 1469598103934665603ULL;
@@ -1956,6 +2011,10 @@ void psx_write_word(uint32_t addr, uint32_t val) {
 }
 static void psx_write_word_raw(uint32_t addr, uint32_t val) {
     g_guest_store_count++;
+    if (g_psx_track_last_store) {
+        g_guest_last_store_addr = addr;
+        g_guest_last_store_val = val;
+    }
     /* (pgxp) CPU stores carry their shadow through the PGXP_STORE hook;
      * DMA and host stores drop it below (pgxp_untracked_store). */
     /* IsC first, before any decode (cpu_store_isolated). */
@@ -2167,6 +2226,7 @@ void psx_write_half(uint32_t addr, uint16_t val) {
 }
 static void psx_write_half_raw(uint32_t addr, uint16_t val) {
     g_guest_store_count++;
+    if (g_psx_track_last_store) g_guest_last_store_addr = 0xFFFFFFFFu;
     if (cpu_store_isolated()) { isc_store(addr, val, 2); return; }
 
         /* KSEG2 guard — see psx_read_word_raw. */
@@ -2536,6 +2596,7 @@ void psx_host_write_byte(uint32_t addr, uint8_t val) {
 
 static void psx_write_byte_raw(uint32_t addr, uint8_t val) {
     g_guest_store_count++;
+    if (g_psx_track_last_store) g_guest_last_store_addr = 0xFFFFFFFFu;
     if (cpu_store_isolated()) { isc_store(addr, val, 1); return; }
 
         /* KSEG2 guard — see psx_read_word_raw. */

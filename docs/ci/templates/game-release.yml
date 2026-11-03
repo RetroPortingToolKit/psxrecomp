@@ -23,6 +23,12 @@
 # overlay_toolchain/ compiles anything else from the player's disc at
 # runtime. Do not set PSX_PGO in CI.
 #
+# This is the explicit no-disc PREBUILT CI path, including macOS. It does
+# not run selective PGO or establish optimized-release qualification. Official
+# optimized Windows/Linux releases use scripts/package_release.sh --channel
+# public|playtest with the title disc and packaging/release.toml. Do not acquire
+# or upload a disc to this workflow.
+#
 # Shared (do not fork these into the title):
 #   ./psxrecomp/.github/actions/{build-emitters,fetch-toolchain}
 #   psxrecomp/tools/ci/{check_boot_exe,check_generated,record_pins}.sh
@@ -30,7 +36,7 @@
 #   psxrecomp/tools/release_stage.py  (mod catalog + overlay toolchain staging)
 #
 # Title-owned:
-#   CMakeLists.txt flags, the thin scripts/package_release.sh wrapper
+#   CMakeLists.txt flags, the explicit scripts/package_prebuilt_release.sh wrapper
 #
 # Release hosts always build with PSX_HAVE_VULKAN (headers + glslc); the
 # runtime still loads the ICD dynamically via SDL.
@@ -65,6 +71,13 @@ on:
         required: true
         type: boolean
         default: true
+      channel:
+        description: 'Release channel: public (diagnostics off) or playtest (diagnostics on, -playtest names)'
+        required: true
+        type: choice
+        options:
+          - public
+          - playtest
       reuse_cached_emitters:
         description: 'Skip emitter rebuild when build-recompiler cache hits (psxrecomp SHA)'
         required: false
@@ -502,6 +515,7 @@ jobs:
             -DPSXRECOMP_ALLOW_NO_BIOS=OFF \
             -DPSX_SETUP_WIZARD=ON \
             -DPSX_GAME_VERSION="${RELEASE_VERSION}" \
+            -DPSX_RELEASE_CHANNEL="${{ github.event_name == 'push' && 'public' || github.event.inputs.channel }}" \
             "${EXTRA[@]}" 2>&1 | tee build-ci-configure.log
           # Assert the configure took the FULL path, not the setup-host one.
           if ! grep -q 'linking generated game C (full runtime)' build-ci-configure.log; then
@@ -574,13 +588,13 @@ jobs:
           WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
           set -euo pipefail
-          chmod +x scripts/package_release.sh
+          chmod +x scripts/package_prebuilt_release.sh
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             export PSXRECOMP_RUNTIME_BIN_DIR=/mingw64/bin
             export BPE_RUNTIME_BIN_DIR=/mingw64/bin
           fi
           export RELEASE_VERSION
-          scripts/package_release.sh build-ci "${{ matrix.artifact }}" build-recompiler
+          scripts/package_prebuilt_release.sh build-ci "${{ matrix.artifact }}" build-recompiler
           ls -la dist/
 
       - name: Verify zip contents

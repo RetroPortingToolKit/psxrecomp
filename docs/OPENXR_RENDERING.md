@@ -55,6 +55,10 @@ frame without recycling an old pair. Private swapchains receive eye textures;
 guest execution, simulation time and guest TR registers are not owned by XR.
 `psx_mod_openxr_recenter` establishes the shared pose origin. World scale,
 native camera/body mapping, aiming and gameplay policy belong to the plugin.
+An inverted relative head pose can be a deliberate sustained roll, so the
+backend reports its up-dot and inversion streak through `openxr_stats` without
+changing the origin. Explicit recenter and OpenXR reference-space change events
+own origin changes.
 
 ## Offline actions and controller snapshots
 

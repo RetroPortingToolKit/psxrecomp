@@ -18,6 +18,7 @@ name = "CD Speed"
 description = "Disabled by default. Divides the emulated sector delay, so the drive delivers data sooner while the game itself keeps running at normal speed. Unlike host pacing this changes WHEN the game receives CD interrupts, so a high value can expose timing bugs -- raise it gradually and back off if a load stalls. FMV and CD audio always keep authentic timing."
 group = "Quality of Life"
 default_enabled = false
+hidden = true
 
 [[option]]
 feature = "cd-speed"

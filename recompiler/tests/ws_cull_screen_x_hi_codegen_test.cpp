@@ -110,12 +110,15 @@ bool exits_with_failure(F&& body) {
 }
 
 constexpr uint32_t kSltiuV0 = 0x2C620200u;   // sltiu v0, v1, 0x200
+constexpr uint32_t kSltuV0 = 0x0064102Bu;    // sltu v0, v1, a0 (width in a register)
 constexpr uint32_t kLuiS6 = 0x3C160200u;     // lui   s6, 0x200
 constexpr uint32_t kLuiZero = 0x3C000200u;   // lui   zero, 0x200
 constexpr uint32_t kBltzT0 = 0x05000002u;    // bltz  t0, +2
 constexpr uint32_t kBgezT0 = 0x05010002u;    // bgez  t0, +2
 constexpr uint32_t kBltzalT0 = 0x05100002u;  // bltzal t0, +2
 constexpr uint32_t kAddiuV0 = 0x24820070u;   // addiu v0, a0, 0x70
+constexpr uint32_t kSltiAtS6 = 0x2AC10000u;  // slti  at, s6, 0 (s6 = SX << 16)
+constexpr uint32_t kSltiAtS6Imm = 0x2AC10010u; // slti at, s6, 0x10
 
 const char* const kLuiHelper =
     "cpu->gpr[22] = psx_ws_cull_lui_hi(0x0200u); "
@@ -163,6 +166,49 @@ void listed_sites_emit_the_helpers() {
               "cpu->gpr[2] = psx_ws_cull_sltiu(cpu->gpr[3], 512); "
               "/* ws explicit screen-x cull */"),
           "a screen_x site on sltiu still routes through psx_ws_cull_sltiu");
+}
+
+// sltu with the width in a register: the unsigned compare rejects negative X,
+// the band helper also accepts the left reveal.
+void listed_sltu_emits_the_band_helper() {
+    PSXRecomp::CodeGenConfig config{};
+    config.emit_comments = true;
+    check(!has(generate_first_instruction(kSltuV0, config), "psx_ws_cull_sltu_band"),
+          "an unlisted sltu stays vanilla");
+    config.ws_cull_screen_x_sites.insert(kBase);
+    check(has(generate_first_instruction(kSltuV0, config),
+              "cpu->gpr[2] = psx_ws_cull_sltu_band(cpu->gpr[3], cpu->gpr[4]); "
+              "/* ws explicit screen-x band */"),
+          "a screen_x site on sltu routes through psx_ws_cull_sltu_band");
+    check(!exits_with_failure([&] { generate_first_instruction(kSltuV0, config); }),
+          "a screen_x site on sltu generates");
+}
+
+// slti rt,x,0 on `SX << 16` is the bltz sign test as a flag: set only while
+// SX < -margin through the same helper. Any other slti immediate is not this
+// form and fails the main-EXE build; an overlay variant keeps its code.
+void listed_slti_zero_emits_the_high_half_test() {
+    PSXRecomp::CodeGenConfig config{};
+    config.emit_comments = true;
+    const auto plain = generate_first_instruction(kSltiAtS6, config);
+    check(!has(plain, "psx_ws_cull_bltz_hi"), "an unlisted slti stays vanilla");
+    config.ws_cull_screen_x_sites.insert(kBase);
+    check(has(generate_first_instruction(kSltiAtS6, config),
+              "cpu->gpr[1] = (uint32_t)psx_ws_cull_bltz_hi(cpu->gpr[22]); "
+              "/* ws explicit screen-x left edge (high half) */"),
+          "a screen_x site on slti rt,rs,0 routes through psx_ws_cull_bltz_hi");
+    check(!exits_with_failure([&] { generate_first_instruction(kSltiAtS6, config); }),
+          "a screen_x site on slti rt,rs,0 generates");
+    check(exits_with_failure([&] { generate_first_instruction(kSltiAtS6Imm, config); }),
+          "a screen_x site on slti with a nonzero immediate fails main-EXE generation");
+    config.overlay_mode = true;
+    check(!has(generate_first_instruction(kSltiAtS6Imm, config), "psx_ws_cull_"),
+          "an overlay slti with a nonzero immediate at a screen_x site stays vanilla");
+    for (int32_t x : {-1000, -54, -53, -1, 0, 1, 319}) {
+        const uint32_t v = (uint32_t)x << 16;
+        check(psx_ws_cull_bltz_hi_value(v, 0) == (((int32_t)v < 0) ? 1 : 0),
+              "the slti form is the vanilla slti at margin 0");
+    }
 }
 
 // bltz_sites is the low-half form and keeps its meaning when an address is in
@@ -275,6 +321,27 @@ void runtime_math() {
 
 }  // namespace
 
+static void packed_x_forms() {
+    PSXRecomp::CodeGenConfig config;
+    config.ws_cull_packed_x_sites.push_back({kBase, 0x0079C02Bu});
+    const auto emitted = generate_first_instruction(0x0079C02Bu, config);
+    check(has(emitted, "psx_ws_cull_packed_x_value"), "packed X emits the shared predicate");
+    config.overlay_mode = true;
+    const auto alias = generate_first_instruction(0x0079C02Au, config);
+    check(!has(alias, "psx_ws_cull_packed_x_value"), "different overlay opcode stays vanilla");
+    for (int sx = -32768; sx <= 32767; ++sx) {
+        const uint32_t x = (uint32_t)sx << 16;
+        const uint32_t w = 320u << 16;
+        check(psx_ws_cull_packed_x_value(x, w, 0) == (x < w), "packed X 4:3 identity");
+        check(psx_ws_cull_packed_x_value(x, w, 120) == (sx >= -120 && sx < 440),
+              "packed X covers exactly the expanded horizontal range");
+    }
+    check(psx_ws_cull_packed_x_value(0xFFFF0001u, 320u << 16, 120) == 0,
+          "nonzero packed low half stays vanilla");
+    check(psx_ws_cull_packed_x_value(0xFFFF0000u, 2048u << 16, 120) == 0,
+          "non-screen width stays vanilla");
+}
+
 int main(int argc, char** argv) {
     g_self = argv[0];
     if (argc == 3 && std::string(argv[1]) == "--exit-probe") {
@@ -283,10 +350,13 @@ int main(int argc, char** argv) {
     }
     unlisted_instructions_stay_vanilla();
     listed_sites_emit_the_helpers();
+    listed_sltu_emits_the_band_helper();
+    listed_slti_zero_emits_the_high_half_test();
     bltz_sites_wins_over_screen_x_sites();
     main_exe_guard_and_overlay_variants();
     declarations_only_when_the_key_is_used();
     runtime_math();
+    packed_x_forms();
 
     if (g_exit_probe >= 0) return 3;  // no call had that probe index
     if (failures != 0) {

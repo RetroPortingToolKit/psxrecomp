@@ -3,6 +3,7 @@
 #include <SDL3/SDL_main.h>
 #endif
 #include <cstdio>
+#include <cstring>
 
 static int failures;
 static void check(bool ok, const char* message) {
@@ -28,20 +29,34 @@ int main() {
 #endif
     for (int i = 0; i < 3; ++i) {
         check(psx_window_fullscreen_set(window, &state, 1) == 0, "enter borderless");
-#if defined(_WIN32) && defined(PSX_SDL3)
+#if defined(_WIN32)
         check(!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN), "borderless never arms native fullscreen");
-        check((SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) != 0, "borderless has no decorations");
+        /* SDL's dummy driver has no SetWindowBordered implementation. It
+         * still exposes fullscreen flags and geometry, so headless runs
+         * verify that borderless never invokes native fullscreen. */
+        if (std::strcmp(SDL_GetCurrentVideoDriver(), "dummy") != 0)
+            check((SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) != 0, "borderless has no decorations");
+#if defined(PSX_SDL3)
         check(SDL_GetWindowFullscreenMode(window) == nullptr, "borderless has no exclusive display mode");
+#endif
         SDL_Rect bounds{};
+#if defined(PSX_SDL3)
         SDL_GetDisplayBounds(SDL_GetDisplayForWindow(window), &bounds);
+#else
+        SDL_GetDisplayBounds(SDL_GetWindowDisplayIndex(window), &bounds);
+#endif
         int full_w, full_h; SDL_GetWindowSize(window, &full_w, &full_h);
         check(full_w == bounds.w && full_h == bounds.h, "borderless covers the current display");
+#if defined(PSX_SDL3)
         check(!SDL_CursorVisible(), "fullscreen cursor hidden");
         SDL_DisplayMode current{};
         check(SDL_GetCurrentDisplayMode(original_display, &current) == 0 &&
               current.w == original_mode.w && current.h == original_mode.h &&
               current.refresh_rate == original_mode.refresh_rate,
               "borderless does not change the desktop display mode");
+#else
+        check(SDL_ShowCursor(SDL_QUERY) == SDL_DISABLE, "fullscreen cursor hidden");
+#endif
 #endif
         check(psx_window_fullscreen_set(window, &state, 0) == 0, "leave borderless");
         int x, y, w, h;
@@ -54,10 +69,23 @@ int main() {
         check(SDL_CursorVisible(), "windowed cursor visibility restored");
 #endif
     }
-    check(psx_window_fullscreen_set(window, &state, 2) == 0, "enter exclusive");
+    bool exclusive_supported=true;
 #if defined(PSX_SDL3)
-    check(SDL_GetWindowFullscreenMode(window) != nullptr, "exclusive selects an explicit display mode");
+    SDL_DisplayMode candidate{};
+    exclusive_supported=std::strcmp(SDL_GetCurrentVideoDriver(),"dummy")!=0 ||
+        SDL_GetClosestFullscreenDisplayMode(original_display,original_mode.w,
+            original_mode.h,original_mode.refresh_rate,true,&candidate);
 #endif
+    if(exclusive_supported) {
+        check(psx_window_fullscreen_set(window, &state, 2) == 0, "enter exclusive");
+#if defined(PSX_SDL3)
+        check(SDL_GetWindowFullscreenMode(window) != nullptr, "exclusive selects an explicit display mode");
+#endif
+    } else {
+        std::puts("SDL dummy driver has no exclusive display modes; checking refusal instead.");
+        check(psx_window_fullscreen_set(window,&state,2)==-1 && state.mode==0,
+              "unsupported exclusive mode leaves windowed state unchanged");
+    }
     check(psx_window_fullscreen_set(window, &state, 1) == 0, "exclusive to borderless");
     check(psx_window_fullscreen_set(window, &state, 0) == 0, "borderless to windowed");
     check(psx_window_fullscreen_set(window, &state, 3) == -1 && state.mode == 0, "invalid mode leaves window unchanged");

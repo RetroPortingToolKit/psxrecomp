@@ -220,6 +220,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     std::set<uint32_t>    ws_tag_funcs;         // [widescreen] sprite_tag_funcs
     std::set<uint32_t>    ds_funcs;             // [data_shards] funcs
     std::set<uint32_t>    mod_instruction_sites;
+    std::vector<PSXRecompV4::ModImmediateSite> mod_immediate_sites; // [[mod_immediate.sites]]
     std::set<uint32_t>    mod_entry_funcs;      // trusted game-mod entry hooks
     std::vector<PSXRecompV4::WidescreenMaskedRejectSite> ws_cull_masked_reject;
     std::set<uint32_t>    hot_funcs;            // [recompiler] hot_funcs
@@ -244,6 +245,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
     std::set<uint32_t>    ws_cull_clip_edge_x_load; // [widescreen.cull] clip_edge_x_load_sites
     uint32_t              ws_cull_clip_edge_width = 0; // [widescreen.cull] clip_edge_width
     std::vector<PSXRecompV4::WidescreenCullKeepSite> ws_cull_keep;
+    std::vector<PSXRecompV4::WidescreenSxyCullSite> ws_cull_sxy;
+    std::vector<PSXRecompV4::WidescreenPackedXSite> ws_cull_packed_x;
     std::vector<PSXRecompV4::WidescreenCullScaleSite> ws_cull_scale;
     std::vector<PSXRecompV4::WidescreenAngleSite> ws_cull_angle;
     std::vector<PSXRecompV4::DrawDistanceClampSite> draw_distance_clamps; // [[draw_distance.clamp]]
@@ -289,6 +292,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
         mod_entry_funcs.insert(cfg.mod_function_entry_funcs.begin(),
                                cfg.mod_function_entry_funcs.end());
         mod_instruction_sites.insert(cfg.mod_instruction_sites.begin(), cfg.mod_instruction_sites.end());
+        mod_immediate_sites = cfg.mod_immediate_sites;
         hot_funcs.insert(cfg.hot_funcs.begin(), cfg.hot_funcs.end());
         if (cfg.load_charge_batch) {
             load_charge_batch_funcs.insert(cfg.load_charge_batch_funcs.begin(),
@@ -322,6 +326,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
         if (!cfg.ws_cull_clip_edge_x_load_sites.empty())
             ws_cull_clip_edge_width = PSXRecompV4::ws_cull_clip_edge_width(cfg);
         ws_cull_keep = cfg.ws_cull_keep_sites;
+        ws_cull_sxy = cfg.ws_cull_sxy_sites;
+        ws_cull_packed_x = cfg.ws_cull_packed_x_sites;
         ws_cull_masked_reject = cfg.ws_cull_masked_reject_sites;
         ws_cull_scale = cfg.ws_cull_scale_sites;
         ws_cull_angle = cfg.ws_cull_angle_sites;
@@ -407,6 +413,15 @@ static int psxrecomp_game_main(int argc, char** argv) {
         mod_entry_funcs.insert(wscfg.mod_function_entry_funcs.begin(),
                                wscfg.mod_function_entry_funcs.end());
         mod_instruction_sites.insert(wscfg.mod_instruction_sites.begin(), wscfg.mod_instruction_sites.end());
+        // Same TOML as --config adds nothing; a distinct one adds its own sites.
+        for (const auto& site : wscfg.mod_immediate_sites) {
+            const bool known = std::any_of(mod_immediate_sites.begin(), mod_immediate_sites.end(),
+                [&](const PSXRecompV4::ModImmediateSite& have) {
+                    return (have.address & 0x1FFFFFFFu) == (site.address & 0x1FFFFFFFu) &&
+                           have.expected == site.expected;
+                });
+            if (!known) mod_immediate_sites.push_back(site);
+        }
         ws_cull_bias.insert(wscfg.ws_cull_bias_sites.begin(), wscfg.ws_cull_bias_sites.end());
         ws_cull_bias_lower.insert(wscfg.ws_cull_bias_lower_sites.begin(), wscfg.ws_cull_bias_lower_sites.end());
         ws_cull_range.insert(wscfg.ws_cull_range_sites.begin(), wscfg.ws_cull_range_sites.end());
@@ -431,6 +446,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
         if (!wscfg.ws_cull_clip_edge_x_load_sites.empty() && !ws_cull_clip_edge_width)
             ws_cull_clip_edge_width = PSXRecompV4::ws_cull_clip_edge_width(wscfg);
         if (ws_cull_keep.empty()) ws_cull_keep = wscfg.ws_cull_keep_sites;
+        if (ws_cull_sxy.empty()) ws_cull_sxy = wscfg.ws_cull_sxy_sites;
+        if (ws_cull_packed_x.empty()) ws_cull_packed_x = wscfg.ws_cull_packed_x_sites;
         if (ws_cull_masked_reject.empty()) ws_cull_masked_reject = wscfg.ws_cull_masked_reject_sites;
         if (ws_cull_scale.empty()) ws_cull_scale = wscfg.ws_cull_scale_sites;
         if (ws_cull_angle.empty()) ws_cull_angle = wscfg.ws_cull_angle_sites;
@@ -588,6 +605,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
     if (!exe->header.entry_in_range()) {
         fmt::print(stderr, "⚠ Warning: Entry point 0x{:08X} is outside loaded code range!\n\n",
                    exe->header.initial_pc);
+    } else if (exe->header.initial_pc >= exe->analysis_end_address()) {
+        fmt::print("WARNING: entry point 0x{:08X} is at or past Analysis End 0x{:08X} (delay-slot guard bytes, not analysable); it cannot produce a function\n", exe->header.initial_pc, exe->analysis_end_address());
     }
 
     // Config code sites are code identities, and code identity is the full
@@ -659,6 +678,30 @@ static int psxrecomp_game_main(int argc, char** argv) {
         check("widescreen.bg2d.bufbase_site", ws_bg2d_bufbase_site);
         check("widescreen.bg2d.cap_site", ws_bg2d_cap_site);
         check("widescreen.bg2d.init_func", ws_bg2d_init_func);
+        // [[widescreen.cull.sxy]] sites are matched physically, and every
+        // word of each fold and its consumer is part of the identity: check
+        // them all against the image up front, so a stale address fails the
+        // build even when no discovered function reaches the fold.
+        for (const auto& site : ws_cull_sxy) {
+            for (size_t i = 0; i <= site.vertices; i++) {
+                const bool consumer = i == site.vertices;
+                const uint32_t phys = (consumer ? site.consumer_address
+                                                : site.fold_addresses[i]) &
+                                      PSXRecomp::kPhysMask;
+                const uint32_t want = consumer ? site.consumer_expected
+                                               : site.fold_expected[i];
+                const uint32_t a = exe->link_segment() | phys;
+                if (!exe->contains_phys(a)) continue;
+                const auto got = exe->read_word(a);
+                if (!got || *got != want) {
+                    fmt::print(stderr,
+                        "ERROR: [[widescreen.cull.sxy]] expected 0x{:08X} at "
+                        "0x{:08X}, found 0x{:08X}\n",
+                        want, a, got ? *got : 0u);
+                    return 1;
+                }
+            }
+        }
         if (!foreign.empty()) {
             fmt::print(stderr,
                 "ERROR: {} config code site(s) name this image's bytes in another "
@@ -817,6 +860,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
         if (ef.is_open()) {
             const uint32_t seed_lo = exe->header.load_address;
             const uint32_t seed_hi = exe->analysis_end_address();
+            std::vector<uint32_t> dropped_past_analysis_end;
+            std::vector<uint32_t> dropped_outside_image;
             // The directive lines below name code by PC too, so they follow
             // the seed rule (§5.3): an address that names this image's bytes
             // in another segment is refused with its link-segment spelling,
@@ -965,6 +1010,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
                 if (phys < (seed_lo & PSXRecomp::kPhysMask) ||
                     phys >= (seed_lo & PSXRecomp::kPhysMask) + (seed_hi - seed_lo)) {
                     ++outside_seeds;
+                    if (exe->contains_phys(addr)) dropped_past_analysis_end.push_back(addr);
+                    else dropped_outside_image.push_back(addr);
                 } else if (!PSXRecomp::maps_physical(addr)) {
                     // Only KUSEG below 0x20000000, KSEG0 and KSEG1 alias the
                     // image's bytes; a variant in any other segment would
@@ -991,6 +1038,27 @@ static int psxrecomp_game_main(int argc, char** argv) {
                     file_seeds.push_back(addr);
                     exact_entries.push_back(addr);
                 }
+            }
+            auto list_seeds = [](const std::vector<uint32_t>& seeds) {
+                std::string text;
+                for (size_t i = 0; i < seeds.size() && i < 16; i++)
+                    text += fmt::format("{}0x{:08X}", i ? ", " : "", seeds[i]);
+                if (seeds.size() > 16) text += ", ...";
+                return text;
+            };
+            if (!dropped_past_analysis_end.empty()) {
+                fmt::print("WARNING: dropped {} requested seed(s) at or past "
+                           "Analysis End 0x{:08X} (delay-slot guard bytes, "
+                           "not analysable): {}\n",
+                           dropped_past_analysis_end.size(), seed_hi,
+                           list_seeds(dropped_past_analysis_end));
+            }
+            if (!dropped_outside_image.empty()) {
+                fmt::print("WARNING: dropped {} requested seed(s) outside the "
+                           "image 0x{:08X}..0x{:08X}: {}\n",
+                           dropped_outside_image.size(), seed_lo,
+                           exe->end_address(),
+                           list_seeds(dropped_outside_image));
             }
             std::sort(producer_ranges.begin(), producer_ranges.end());
             for (size_t i = 1; i < producer_ranges.size(); i++) {
@@ -1161,8 +1229,15 @@ static int psxrecomp_game_main(int argc, char** argv) {
         {
             PSXRecomp::FunctionAnalyzer analyzer(*exe);
             std::vector<uint32_t> roots_vec(roots.begin(), roots.end());
+            // Overlay mode enforces the no-split guard on explicit roots too
+            // (compile_overlays.py applies the same rule first; this catches
+            // walk proofs only this analyzer makes). Classifier-promoted
+            // dispatch roots are exempt. Main-EXE reachable discovery keeps
+            // its existing partition.
             analysis_result = analyzer.analyze_exact_entries(
-                roots_vec, producer_ranges, cross_call_allow);
+                roots_vec, producer_ranges, cross_call_allow,
+                /*no_split_guard=*/overlay_mode,
+                overlay_mode ? trusted_root_seeds : std::set<uint32_t>{});
         }
 
         std::vector<AliasEntry> alias_entries;
@@ -1474,6 +1549,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     codegen_config.mod_function_entry_funcs = mod_entry_funcs;
     codegen_config.ws_cull_masked_reject_sites = ws_cull_masked_reject;
     codegen_config.mod_instruction_sites = mod_instruction_sites;
+    codegen_config.mod_immediate_sites = mod_immediate_sites;
     codegen_config.hot_funcs = hot_funcs;
     codegen_config.load_charge_batch_funcs = load_charge_batch_funcs;
     codegen_config.vsync_query_hle_funcs = vsync_query_hle_funcs;
@@ -1504,6 +1580,8 @@ static int psxrecomp_game_main(int argc, char** argv) {
     else if (!ws_cull_w_imms.empty())
         codegen_config.ws_cull_clip_edge_width = ws_cull_w_imms.front();
     codegen_config.ws_cull_keep_sites = ws_cull_keep;
+    codegen_config.ws_cull_sxy_sites = ws_cull_sxy;
+    codegen_config.ws_cull_packed_x_sites = ws_cull_packed_x;
     codegen_config.ws_cull_scale_sites = ws_cull_scale;
     codegen_config.ws_cull_angle_sites = ws_cull_angle;
     codegen_config.draw_distance_clamp_sites = draw_distance_clamps;
@@ -1731,7 +1809,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
                 out_dir / fmt::format("{}_full_{:02d}.c", exe_stem, shard_index);
             std::string body = fmt::format(
                 "/* Generated by PSXRecomp - full.c shard {}. DO NOT EDIT. */\n"
-                "#include \"{}\"\n\n{}",
+                "#include \"{}\"\n#include \"psx_native_span.h\"\n\n{}",
                 shard_index, decls_basename, shard_buf.str());
             if (write_file_if_changed(shard_filename, body)) {
                 fmt::print("✓ Saved shard {} ({} lines) to {}\n",

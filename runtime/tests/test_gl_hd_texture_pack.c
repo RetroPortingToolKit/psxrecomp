@@ -21,6 +21,7 @@ int host_osd_needs_present(void) { return 0; }
 int psx_present_vsync_owns_cadence(void) { return 0; }
 void latency_ring_mark(LatencyStage stage) { (void)stage; }
 void psx_host_sleep_ms(unsigned ms) { SDL_Delay(ms); }
+void psx_host_sleep_micros(unsigned us) { SDL_Delay((us + 999u) / 1000u); }
 int present_shot_take(char* out,int n) { (void)out; (void)n; return 0; }
 int host_osd_image(const uint32_t** p,int* w,int* h) { (void)p; (void)w; (void)h; return 0; }
 int host_osd_volume_image(const uint32_t** p,int* w,int* h) { return host_osd_image(p,w,h); }
@@ -62,7 +63,7 @@ static void part_png(const char* root,const DuckTextureKey* key,int width,int he
 static void pack_config(const char* root,int linear) {
     char path[2048];snprintf(path,sizeof(path),"%s/config.yaml",root);
     FILE* file=fopen(path,"wb");check(file!=NULL,"open fixture config");
-    if(file){fprintf(file,"DumpC16Textures: true\nMaxVRAMWriteSplits: 16\nReplacementScaleLinearFilter: %s\n",linear?"true":"false");fclose(file);}
+    if(file){fprintf(file,"DumpC16Textures: true\nMaxVRAMWriteSplits: 16\nMaxReplacementCacheVRAMUsage: 1\nReplacementScaleLinearFilter: %s\n",linear?"true":"false");fclose(file);}
 }
 static void pack_parts(const char* root) {
     for(int y=0;y<2;++y) for(int x=0;x<8;++x)
@@ -325,6 +326,69 @@ static void capture(void) {
 }
 static const uint8_t* sample(int x,int y) { return pixels+(y*64+x)*4; }
 
+static void replacement_pass_scene(void) {
+    if (s_hiw) return; /* Window surfaces deliberately refuse render passes. */
+    uint8_t baseline[sizeof pixels], retained[sizeof pixels];
+    memcpy(baseline,pixels,sizeof pixels);
+    const uint64_t native=fnv(vram,sizeof vram,0xcbf29ce484222325ull);
+    GpuHdTextureDiag before,after;
+    gpu_hd_textures_get_diag(&before);
+    gl_renderer_set_interpolation(1,120.0,120.0,60.0,2);
+    gl_renderer_set_interpolation_source(1);
+    s_interp_valid=2; /* The first real frame has been presented. */
+    s_interp_w=s_interp_h=64;
+    s_interp_source_path=GL_PRES_VRAM;
+    s_pass_verify=1;
+    int opened=gl_renderer_pass_begin(0,0,16,16,1,2,0);
+    check(opened,"replacement draw pass opens under HD authority");
+    if (!opened) {
+        gl_renderer_set_interpolation(0,120.0,120.0,60.0,2);
+        return;
+    }
+    gr_draw_textured_rect(8,4,4,4,0,0,0,0,texture_page); capture();
+    check(sample(32,16)[0]>200 && sample(33,16)[2]>200,
+          "draw inside the pass uses actual red/blue replacement pixels");
+    gpu_hd_textures_get_diag(&after);
+    check(after.applied_draws>before.applied_draws,
+          "pass draw applies a decoded replacement");
+    gl_renderer_pass_end(32768,1);
+    check(gl_renderer_pass_verify_vram() &&
+          fnv(vram,sizeof vram,0xcbf29ce484222325ull)==native,
+          "kept replacement pass restores GPU and native CPU VRAM");
+    capture();
+    check(memcmp(pixels,baseline,sizeof pixels)==0,
+          "kept replacement pass restores canonical display pixels");
+    PassGen* g=&s_pgen[s_pgen_write];
+    check(g->n==2,"replacement pass retains its subframe");
+    if (g->n==2) {
+        GLint bound=0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D,&bound);
+        glBindTexture(GL_TEXTURE_2D,s_pgen_tex[s_pgen_write][1]);
+        glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,retained);
+        glBindTexture(GL_TEXTURE_2D,(GLuint)bound);
+        int red=0,blue=0;
+        for(int y=0;y<64;++y) for(int x=32;x<48;++x) {
+            const uint8_t* p=retained+(y*64+x)*4;
+            red+=p[0]>200 && p[1]<20 && p[2]<20;
+            blue+=p[2]>200 && p[0]<20 && p[1]<20;
+        }
+        check(red>0 && blue>0,"retained subframe contains replacement detail");
+    }
+    opened=gl_renderer_pass_begin(0,0,16,16,0,2,0);
+    check(opened,"discarded replacement pass opens");
+    if (opened) {
+        gr_draw_textured_rect(8,8,4,4,0,0,0,0,texture_page);
+        gl_renderer_pass_end(49152,0);
+        check(gl_renderer_pass_verify_vram() && g->n==2 &&
+              fnv(vram,sizeof vram,0xcbf29ce484222325ull)==native,
+              "discarded replacement pass preserves native VRAM and retained frame");
+        capture();
+        check(memcmp(pixels,baseline,sizeof pixels)==0,
+              "discarded replacement pass restores canonical display pixels");
+    }
+    gl_renderer_set_interpolation(0,120.0,120.0,60.0,2);
+}
+
 static void composition_scene(const char* root) {
     const uint16_t tp=12u|(2u<<7);
     const int bounds[4]={0,0,7,1};
@@ -358,8 +422,9 @@ static void composition_scene(const char* root) {
     check(sample(20,8)[0]>200 && sample(20,8)[2]<20,"composed all-zero ST cutout retains destination");
     check(sample(24,8)[0]>200 && sample(24,8)[1]<20,"native transparent hole remains cutout");
     check(sample(32,8)[0]<20 && sample(32,8)[2]>200,"uncovered native opaque texel retains native color");
+    /* Textured draws preserve the source STP bit in canonical guest VRAM. */
     uint16_t output[8];gr_vram_transfer_out(2,2,8,1,output);
-    check(output[0]==0x03e0 && output[2]==0x03ff && output[6]==0x7c00,
+    check(output[0]==0x03e0 && output[2]==0x83ff && output[6]==0x7c00,
           "composition does not change guest native draw or STP behavior");
     GpuHdTextureImage first={0},again={0};
     check(gpu_hd_textures_acquire_draw(tp,0,0,bounds,0,1,&first),"composed cache acquire");
@@ -423,6 +488,91 @@ static void composition_scene(const char* root) {
     }
 }
 
+static void cache_pressure_scene(const char* root) {
+    uint16_t pressure_words[16]; for(int i=0;i<16;++i) pressure_words[i]=0x1234;
+    DuckTextureKey key={0}; key.kind=DUCK_TEXTURE_UPLOAD;key.depth=HD_TEXTURE_DEPTH_16BPP;
+    key.source_hash=duck_texture_hash_words_le(pressure_words,16);
+    key.source_width_words=key.width=16; key.source_height=key.height=1;
+    char stem[256],path[2048],error[256]={0};
+    check(duck_texture_format_name(&key,stem,sizeof(stem)),"eviction fixture identity");
+    snprintf(path,sizeof(path),"%s/replacements/%s.png",root,stem);
+    uint8_t* rgba=(uint8_t*)malloc(1024*256*4);memset(rgba,255,1024*256*4);
+    FILE* file=fopen(path,"wb");check(file!=NULL,"eviction fixture PNG opens");
+    if(file){check(png_write_rgba(file,rgba,1024,256),"eviction fixture PNG writes");fclose(file);}free(rgba);
+    pack_config(root,0);check(gpu_hd_textures_reload(error,sizeof(error)),"eviction fixture reload");
+    state();gr_vram_transfer_in(512,0,4,4,source_words);gr_vram_transfer_in(768,0,8,2,part_words);
+    wait_ready(0);wait_ready(1);
+    const int bounds[4]={0,0,3,3},parts[4]={0,0,7,1},pressure[4]={0,64,15,64};
+    const uint16_t tp=12u|(2u<<7);GpuHdTextureImage image={0};uint64_t composed_key=0;
+    for(int i=0;i<2000 && !composed_key;++i) {
+        if(gpu_hd_textures_acquire_draw(tp,0,0,parts,0,1,&image) && image.width==32 && image.rgba[24*4]>200)
+            composed_key=image.cache_key;
+        gpu_hd_textures_release_image(&image);if(!composed_key) SDL_Delay(1);
+    }
+    check(composed_key!=0,"complete composition ready before cache pressure");
+    gr_fill_rect(0,0,16,16,0x03e0);gr_draw_textured_rect(2,2,4,4,0,0,0,0,texture_page);capture();
+    GpuHdTextureDiag before,after;gpu_hd_textures_get_diag(&before);
+    gr_vram_transfer_in(640,64,16,1,pressure_words);int ready=0;
+    for(int i=0;i<2000 && !ready;++i) {
+        ready=gpu_hd_textures_acquire_draw(10u|(2u<<7),0,0,pressure,0,0,&image);
+        gpu_hd_textures_release_image(&image);if(!ready) SDL_Delay(1);
+    }
+    check(ready,"full CPU budget pressure image decoded");gpu_hd_textures_get_diag(&after);
+    /* All fixture images fit in the bounded preload and remain pinned.
+     * The configured 1 MiB on-demand budget must not evict that preload.
+     * decoded_bytes accounts only the on-demand cache; pinned bytes are
+     * separately bounded and are not charged against this budget. */
+    check(before.decoded_images>=7 && before.decoded_bytes==0 &&
+          after.decoded_bytes==before.decoded_bytes &&
+          after.decoded_images==before.decoded_images &&
+          after.decode_evictions==before.decode_evictions,
+          "cache pressure retains pinned preloaded replacements");
+    check(gpu_hd_textures_acquire_gl_draw(texture_page,0,0,bounds,0,0,&image) && !image.rgba,
+          "GPU-resident replacement remains ready under cache pressure");gpu_hd_textures_release_image(&image);
+    check(gpu_hd_textures_acquire_draw(tp,0,0,parts,0,1,&image) && image.cache_key==composed_key,
+          "complete composition remains warm under cache pressure");gpu_hd_textures_release_image(&image);
+    gr_draw_textured_rect(2,2,4,4,0,0,0,0,texture_page);capture();
+    check(sample(8,8)[0]>200,"GPU-resident replacement still draws original HD detail");
+    SDL_Delay(20);gpu_hd_textures_get_diag(&before);
+    check(before.decoded_images==after.decoded_images && before.gl_uploads==after.gl_uploads,
+          "warm draws do not decode or upload again under cache pressure");
+    pack_config(root,0);check(gpu_hd_textures_reload(error,sizeof(error)),"eviction fixture cleanup reload");
+    state();gr_vram_transfer_in(512,0,4,4,source_words);wait_ready(0);wait_ready(1);
+}
+
+/* Indexed replacements choose a live CLUT entry rather than a baked RGB
+ * palette. Exercise the real upload/match/decode/shader path. */
+static void indexed_palette_scene(const char* root) {
+    char dir[2048],path[2304],error[256]={0};
+    snprintf(dir,sizeof dir,"%s/beetle",root);
+    uint16_t words[16],palette[16]={0};
+    for(int n=0;n<16;++n) words[n]=0x1111;
+    palette[1]=0x03e0; palette[2]=0x7c00;
+    snprintf(path,sizeof path,"%s/demo-texture-replacements/%x-index.png",dir,
+        hd_texture_crc32_words_le(words,16));
+    uint8_t rgba[64*16*4];
+    for(int n=0;n<64*16;++n) {
+        rgba[n*4]=2; rgba[n*4+1]=rgba[n*4+2]=0; rgba[n*4+3]=255;
+    }
+    FILE* f=fopen(path,"wb");check(f!=NULL,"indexed GPU fixture opens");
+    if(f){check(png_write_rgba(f,rgba,64,16),"indexed GPU fixture writes");fclose(f);}
+    check(gpu_hd_textures_configure(dir,1,0,error,sizeof error),"indexed GPU session opens");
+    state();gr_vram_transfer_in(0,300,16,1,palette);gr_vram_transfer_in(512,0,4,4,words);
+    const int bounds[4]={0,0,7,3};GpuHdTextureImage image={0};int ready=0;
+    for(int n=0;n<2000&&!ready;++n) {
+        ready=gpu_hd_textures_acquire_draw(8u,0,300,bounds,0,0,&image) && image.alpha_mode==5;
+        gpu_hd_textures_release_image(&image);if(!ready)SDL_Delay(1);
+    }
+    check(ready,"indexed GPU path selects decoded palette-independent replacement");
+    gr_fill_rect(0,0,16,16,0x001f);gr_draw_textured_rect(2,2,8,4,0,0,0,300,8u);capture();
+    check(sample(8,8)[2]>200&&sample(8,8)[1]<20,"indexed shader uses replacement index and live blue CLUT entry");
+    gr_vram_write(2,300,0x001f);
+    gr_draw_textured_rect(2,2,8,4,0,0,0,300,8u);capture();
+    check(sample(8,8)[0]>200&&sample(8,8)[2]<20,"indexed shader follows live CLUT change without changing replacement");
+    uint16_t native[8];gr_vram_transfer_out(2,2,8,1,native);
+    check(native[0]==0x03e0,"indexed presentation preserves native source-index RGB");
+}
+
 int main(int argc,char** argv) {
     if(argc==2 && !strcmp(argv[1],"--native-baseline")) {
         char* native_args[]={"hd-baseline","4","twin","1"};
@@ -475,6 +625,7 @@ int main(int argc,char** argv) {
     check(sample(16,24)[1]>200,"non-ST alpha127 cuts out black");
     check(sample(17,24)[0]==0 && sample(17,24)[1]==0 && sample(17,24)[2]==0,
           "non-ST alpha128 retains opaque black");
+    replacement_pass_scene();
 
     /* ST alpha bytes encode PSX classes, including alpha0 with colored RGB.
      * Mode 1 is additive, so the green destination survives STP texels. */
@@ -491,6 +642,7 @@ int main(int argc,char** argv) {
           "ST black alpha127 remains occupied semitransparent black");
     gr_set_semi_transparency(0,0);
     composition_scene(argv[1]);state();wait_ready(0);wait_ready(1);
+    cache_pressure_scene(argv[1]);
 
     /* A queued draw must consume its source before a later source overwrite.
      * The next draw falls back because upload identity has been invalidated. */
@@ -556,7 +708,7 @@ int main(int argc,char** argv) {
     gr_fill_rect(0,0,16,16,0x03e0);
     gr_draw_textured_rect(4,4,2,4,5,0,0,0,texture_page); capture();
     check(sample(16,16)[2]>200 && sample(16,16)[0]<20,"Beetle partial draw keeps upload-relative UV origin");
-    check(vram[4*1024+4]==0x03e0 && vram[517]==0x83e0,
+    check(vram[4*1024+4]==0x83e0 && vram[517]==0x83e0,
           "Beetle image preserves native draw RGB and source STP");
     gr_draw_textured_rect(8,4,4,4,4,0,0,0,texture_page); capture();
     check(sample(44,16)[1]>200,"Beetle native transparent zero still cuts out replacement");
@@ -816,6 +968,7 @@ int main(int argc,char** argv) {
             check(fg_gen_hud_hd>0 && fg_gen_hud_bad==0,"Smooth motion + HD: generated HUD is the HD replacement");
         }
     }
+    indexed_palette_scene(argv[1]);
     memcpy(reference,vram,sizeof(vram));
     gl_renderer_set_cpu_auth_dual(1);
     gpu_hd_textures_shutdown();

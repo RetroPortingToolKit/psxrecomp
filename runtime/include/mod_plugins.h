@@ -2,12 +2,20 @@
 
 #include <stdint.h>
 
+#include "func_override.h" /* FO_CREDIT_SELF for the credit argument below */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef void (*PSXModVBlankCallback)(void);
 typedef void (*PSXModActivationCallback)(void);
+/* Emulation-thread stereo S16 at 44100 Hz, after SPU/shadow synthesis, before
+ * capture/host mute. Called for every rendered block, including discarded
+ * turbo/rollback output. Add with saturation; never call guest code here.
+ * Keep mutable cursors in allocated guest memory for save/rewind/rollback.
+ * Host audio/device state must not affect sample generation. */
+typedef void (*PSXModPCMCallback)(int16_t* stereo, uint32_t frames);
 struct CPUState;
 /* A callback that runs guest code inside psx_mod_render_pass() can be
  * abandoned by a watchdog longjmp; see the note at psx_mod_render_pass(). */
@@ -23,10 +31,19 @@ typedef int (*PSXModFunctionFilterCallback)(struct CPUState* cpu,
  * manifests select implementations by this stable id; archives never provide
  * native code or symbol names.
  */
+/* Activation runs during host setup, before guest scheduling. It must not
+ * enter guest execution that may escape via scheduler/watchdog longjmp.
+ * Ordinary returns and C++ exceptions restore plugin ownership. */
 int psx_mod_register_activation_plugin(const char* id,
                                        PSXModActivationCallback callback);
+/* Host-only cleanup before each plan activates, including plans that omit this
+ * plugin, and when netplay clears the offline plan. Runs with emulation stopped
+ * and without a current feature/resource context. Never mutate guest state. */
+int psx_mod_register_session_reset_plugin(const char* id,
+                                          PSXModActivationCallback callback);
 int psx_mod_register_vblank_plugin(const char* id,
                                    PSXModVBlankCallback callback);
+int psx_mod_register_pcm_plugin(const char* id, PSXModPCMCallback callback);
 /* Runs after successful guest-state restore, before the restored PC resumes.
  * Rebind host hooks here; do not advance guest gameplay as a VBlank would. */
 int psx_mod_register_savestate_plugin(const char* id,
@@ -53,6 +70,19 @@ int psx_mod_register_instruction_plugin(const char* id, uint32_t address,
                                          uint32_t expected, PSXModFunctionEntryCallback callback);
 void psx_mod_instruction(struct CPUState* cpu, uint32_t address, uint32_t instruction);
 extern uint32_t g_psx_mod_instruction_hooks;
+/* Redirect one audited load/store's effective address without changing its
+ * base register, destination, data, branch state or timing. Registration and
+ * live RAM must match the complete instruction. Native code instruments sites
+ * listed in mod_instruction_sites; dirty-RAM execution uses the same table.
+ * Return the original address to decline. Callbacks run in plan order, cannot
+ * re-enter guest execution, and must preserve the low two address bits (also
+ * preserving unaligned merge lanes). The CPU argument is read-only. */
+typedef uint32_t (*PSXModMemoryAddressCallback)(const struct CPUState* cpu,
+    uint32_t pc, uint32_t instruction, uint32_t effective_address);
+int psx_mod_register_memory_address_plugin(const char* id, uint32_t pc,
+    uint32_t expected, PSXModMemoryAddressCallback callback);
+uint32_t psx_mod_memory_address(const struct CPUState* cpu, uint32_t pc,
+    uint32_t instruction, uint32_t effective_address);
 /* Called from generated functions listed by the game config and from every
  * interpreted entry, so the hook contract does not depend on the backend.
  * Hooks match by code address (segment bits ignored) and run only for plugins
@@ -84,6 +114,20 @@ extern uint32_t g_psx_mod_function_entry_hooks;
  * kept, further names are counted in an overflow bucket. Emulation-thread only.
  * TCP: {"cmd":"mod_counters"} lists every counter with its last frame. */
 void psx_mod_counter_add(const char* name, uint32_t delta);
+/* Named debug commands for trusted plugins (test benches, tuning): `fn` gets the
+ * argument string and writes a short text reply (truncated to `cap`); it runs on
+ * the debug-server thread, so it must only touch state it guards itself. Up to 16
+ * names (1..63 bytes, copied by the registry); callbacks have process lifetime.
+ * Re-registering a name replaces its callback, allowing restart registration.
+ * This debug-control registry is independent of package activation. It must
+ * not directly mutate guest/shared simulation state from the server thread:
+ * signal a guarded control request for the plugin's existing emulation hook.
+ * Callbacks must not throw. TCP: {"cmd":"mod_cmd","name":"<name>","args":"..."}. */
+typedef int (*PSXModCommandFn)(const char* args, char* reply, int cap);
+int psx_mod_register_command(const char* name, PSXModCommandFn fn);
+/* Runs a registered command; -1 for unknown name/invalid output, otherwise the
+ * callback result. Valid replies are always terminated within cap bytes. */
+int psx_mod_run_command(const char* name, const char* args, char* reply, int cap);
 /* Presentation-only filtering: 0 nearest, 1 bilinear, 2 stable minification.
  * Mode 2 uses a bounded palette-aware footprint for proven 3D polygons on
  * OpenGL; untracked UI stays nearest. Other backends use bilinear. A session
@@ -92,6 +136,19 @@ void psx_mod_set_texture_filter(int mode);
 /* Entry callbacks can make nested guest calls while retaining host registers.
  * Save/load and rewind must wait until that host context has returned. */
 int psx_mod_function_entry_active(void);
+/* Opt-in native implementation of an explicitly hooked function. Register
+ * during activation. A callback returns nonzero only after completing the
+ * function's caller-visible effects; the dispatcher publishes pc=$ra. A zero
+ * result must leave state untouched and falls through to the original body.
+ * No emulated cycles are credited automatically. Unregister with NULL.
+ * Registration is active-plan configuration, not savestate payload. */
+typedef int (*PSXModFunctionReplacement)(struct CPUState* cpu, uint32_t address);
+int psx_mod_set_function_replacement(uint32_t address, PSXModFunctionReplacement callback);
+int psx_mod_try_function_replacement(struct CPUState* cpu, uint32_t address);
+void psx_mod_clear_function_replacements(void);
+/* Live replacement callbacks also block capture of an unresumable C stack. */
+uint32_t psx_mod_function_replacement_depth(void);
+void psx_mod_function_replacement_restore_depth(uint32_t depth);
 
 /* [timing] guest_cycle_scale mod gate (docs/config_schema.md, Timing block).
  * With guest_cycle_scale_gated = true in game.toml the scale applies only
@@ -103,6 +160,37 @@ int psx_mod_function_entry_active(void);
 void psx_mod_set_guest_cycle_scale_gate(int open);
 /* Live scale: the configured one while every gate is open, else 1. */
 uint32_t psx_mod_guest_cycle_scale(void);
+
+/*
+ * Package-gated function override (see runtime/include/func_override.h for
+ * the full contract). Registration queues the override under the plugin id;
+ * it is ARMED into the dispatcher tier only when a resolved package plan
+ * selects that plugin — the same gating as vblank/activation callbacks. The
+ * callback obeys the guest ABI (args cpu->gpr[4..7], result cpu->gpr[2]);
+ * return 1 = handled (guest resumes at $ra), 0 = decline (original runs).
+ * The owning plugin resource context is active throughout the callback and
+ * restored across nested callbacks. Snapshots wait until its native stack
+ * unwinds. Wrap semantics via func_override_call_original(); optional residency
+ * guard via expected_words (NULL/0 = unguarded).
+ *
+ * `id` may carry an optional ":label" suffix ("pkg.feature:aim") that names
+ * the override in the `func_override` TCP inventory; gating and manifest
+ * matching use only the part before the ':', so several overrides can sit
+ * under one [[plugin]] entry and still read apart in diagnostics.
+ *
+ * `credit` is the REQUIRED guest-cycle policy (func_override.h, CYCLE
+ * ACCOUNTING): >= 0 cycles charged per handled call, or FO_CREDIT_SELF when
+ * the body charges its own. For a mod whose behavior has no hardware analog
+ * an explicit 0 is the honest value; a wrap that runs the original via
+ * func_override_call_original must pass FO_CREDIT_SELF (the original
+ * self-charges by executing — a fixed credit would double-count).
+ */
+typedef int (*PSXModFunctionOverrideFn)(struct CPUState* cpu);
+int psx_mod_register_function_override(const char* id, uint32_t address,
+                                       PSXModFunctionOverrideFn fn,
+                                       const uint32_t* expected_words,
+                                       int n_words, int32_t credit);
+
 /* Narrow guest services available to trusted plugin callbacks. */
 int psx_mod_game_started(void);
 /* Read an original mounted-disc file without changing guest CD state/timing.
@@ -110,6 +198,21 @@ int psx_mod_game_started(void);
  * otherwise capacity must hold the entire file. Active sector mods apply. */
 int psx_mod_read_disc_file(const char* path, void* buffer, uint32_t capacity,
                            uint32_t* size);
+/* 1-based roster index of the disc image the guest drive has mounted, or 0
+ * for a single-image session. It changes when the player swaps discs; the
+ * psx_mod_read_disc_file / psx_mod_disc_file_extent calls read that image. */
+int psx_mod_mounted_disc(void);
+/* Optional automatic disc changes. A trusted title provider reads its verified
+ * guest request state: return a 1-based roster disc throughout the request
+ * episode, or 0 when no request exists. Set *ready only once the guest is
+ * waiting for the lid, after its old-disc reads finish. Do not write guest RAM.
+ * The host polls at VBlank, attempts once per episode, and preserves manual
+ * switching after failure. A readiness change does not rearm a failed request.
+ * Register only from an active offline plugin's activation callback.
+ * NULL clears the provider; a new plan or activation clears it too.
+ * Providers are never called in netplay or before the game starts. */
+typedef int (*PSXModDiscRequestProvider)(int *ready);
+void psx_mod_set_disc_request_provider(PSXModDiscRequestProvider provider);
 /* Effective-disc LBA and byte size of a file (directory records patched by
  * active mods apply, so a relocated file reports its new extent). */
 int psx_mod_disc_file_extent(const char* path, uint32_t* lba, uint32_t* size);
@@ -123,6 +226,10 @@ int psx_mod_texture_banks_supported(void);
 int psx_mod_define_texture_bank(uint16_t id, uint32_t width, uint32_t height,
                                 const uint16_t* pixels);
 void psx_mod_set_texture_bank_resolver(PSXModTextureBankResolver resolver);
+/* Forget only the caller's owned ID range when restoring a timeline. Pending
+ * GL submissions are drained first; a registered resolver can rebuild saved
+ * IDs before drawing. Never use this from inside a bank resolver. */
+int psx_mod_forget_texture_bank_range(uint16_t first, uint32_t count);
 /* Default-off GL optimization: batch immutable-bank semi triangles in painter
  * order on the single-pass dual-source path only. Ordinary VRAM, subtractive
  * blending and destination-mask checks retain per-primitive isolation. Call
@@ -180,6 +287,14 @@ uint32_t psx_mod_call_guest_uncharged(struct CPUState* cpu, uint32_t function,
                                       uint32_t return_address, uint32_t a0,
                                       uint32_t a1, uint32_t a2, uint32_t a3,
                                       uint32_t budget_cycles, int* charged);
+/* psx_mod_call_guest_uncharged that also reports the guest cycles the callee
+ * executed (*counted_cycles; 0 when time was already frozen, so the call ran
+ * inside an outer span). An adapter can then charge its own estimate, e.g. a
+ * share of the measured cost, instead of nothing. */
+uint32_t psx_mod_call_guest_uncharged_counted(struct CPUState* cpu,
+        uint32_t function, uint32_t return_address, uint32_t a0, uint32_t a1,
+        uint32_t a2, uint32_t a3, uint32_t budget_cycles, int* charged,
+        uint64_t* counted_cycles);
 /* Deliver disc sectors into RAM exactly as a completed CD-ROM DMA would
  * (overlay capture, executable-page invalidation, CD DMA log when lba >= 0).
  * Word-aligned address and length. Returns 0 when the span leaves RAM. */
@@ -196,6 +311,17 @@ int psx_mod_host_write_ram(uint32_t address, const void* data, uint32_t bytes);
  * Library bookkeeping (transfer callbacks, busy flags) stays the caller's. */
 int psx_mod_spu_upload(uint32_t spu_address, uint32_t guest_source,
                        uint32_t bytes, int stop_after);
+/* Private immutable ADPCM residency for opt-in title mods. Does not upload
+ * into or expand the 512 KiB hardware RAM. Bind before the original driver
+ * queues a voice; the bank is latched when its next KEYON reaches the SPU. */
+int psx_mod_spu_sample_bank(uint32_t bank, const void *adpcm, uint32_t bytes);
+/* Immutable banks prepared before hardware init must bind after this changes. */
+uint32_t psx_mod_spu_sample_bank_epoch(void);
+int psx_mod_spu_bind_voice_bank(unsigned voice, uint32_t bank);
+int psx_mod_spu_private_voice_play(unsigned slot,uint32_t bank,const uint16_t regs[8],unsigned mode);
+void psx_mod_spu_private_voice_stop(uint32_t mask);
+int psx_mod_spu_private_voice_volume(unsigned slot,uint16_t left,uint16_t right);
+uint32_t psx_mod_spu_private_voice_active(void);
 /* PsyQ LoadImage completed synchronously: texture-cache flush, GP0 A0h
  * rectangle copy of w*h 16-bit pixels from guest RAM (provenance attributed
  * per word), then GP1(04h) DMA direction CPU->GP0 for uploads the library
@@ -235,15 +361,14 @@ int32_t psx_mod_widescreen_view_x_margin(void);
  * No guest camera, projection or packet coordinates are changed. */
 void psx_mod_set_widescreen_view_anchor(int enabled, int32_t shift);
 
-/* Opt into render-only recovery of saturated horizontal GTE projections in
- * native-wide gameplay. Requires exact packet-address/word provenance and
- * depth; never changes guest SXY, vertical coordinates, or the 4:3 path. */
+/* Enable render-only recovery of saturated horizontal GTE projections and
+ * camera-plane clipping in native-wide gameplay. Requires exact packet-address/
+ * word provenance and depth; never changes guest SXY or the 4:3 path. */
 void psx_mod_set_native_wide_projection_correction(int enabled);
-/* Separately qualify near-camera world clipping for a title. The GL path
- * carries signed, unclamped projection through exact PGXP word transport,
- * clips at the camera/view planes, and preserves ordered GPU/VRAM writes.
- * Requires projection correction above; 4:3, software and untracked UI stay
- * on their existing paths. No architectural GTE or gameplay changes. */
+/* Deprecated compatibility entry point; enabled is ignored. Camera/view-plane
+ * clipping is automatic with projection correction above. The GL path requires
+ * signed projection through exact PGXP word transport; 4:3, software and
+ * untracked UI stay on their existing paths. No guest GTE/gameplay changes. */
 void psx_mod_set_native_wide_near_clip(int enabled);
 /* Bind render-only NCLIP branch consumers to full instruction words. These
  * recover winding only when valid horizontal projections saturated; guest
@@ -262,9 +387,28 @@ void psx_mod_set_native_wide_nclip_previous_site(uint32_t address, uint32_t expe
 void psx_mod_tag_hud_primitive(uint32_t primitive, int edge);
 /* Packet-guarded screen-space anchor: -1 left, +1 right, 0 stays centred.
  * Unlike the legacy role tag above, zero explicitly protects centred text
- * from automatic layout transforms. Word immediately before the GP0 colour
- * command; for a compound E1+SPRT packet this is its E1 word (P_TAG+4). */
+ * from automatic layout transforms. Native-wide translates the group;
+ * projection-and-stretch squashes around the selected screen anchor. This
+ * works across separate DMA lists and is inert at native 4:3. Title code
+ * owns classification and must tag each completed packet. Pass the word
+ * immediately before the GP0 colour command; for a compound E1+SPRT packet
+ * this is its E1 word (P_TAG+4). */
 void psx_mod_anchor_hud_primitive(uint32_t primitive, int edge);
+/* As psx_mod_anchor_hud_primitive, for a packet whose X coordinates came out
+ * of the GTE (so they already carry the widescreen squash about the display
+ * centre, and the guest wrote them verbatim). Projection-and-stretch moves the
+ * piece to the selected edge by translation, keeping its proportions; scaling
+ * it about the edge again would squash it twice. */
+void psx_mod_anchor_hud_primitive_projected(uint32_t primitive, int edge);
+/* Did the GTE project a vertex at screen (x, y) in this or the previous
+ * vblank? Under the widescreen squash a primitive whose every vertex answers
+ * yes was built from projected geometry (already squashed); one that does not
+ * carries authored screen coordinates. Always 0 while the squash is off. */
+int psx_mod_gte_sxy_recent(int32_t x, int32_t y);
+/* Opt in to (1) or out of (0) the recent-projection record behind
+ * psx_mod_gte_sxy_recent. Off by default: until a plugin enables it nothing is
+ * recorded and the query answers 0. Call from an activation callback. */
+void psx_mod_set_gte_sxy_tracking(int enabled);
 /* Screen-space masks identified by their title's producer, P_TAG addresses.
  * Flat panels extend only their exterior boundaries. Radial flat/Gouraud
  * quads scale around the display centre for an aspect-aware iris transition.
@@ -274,6 +418,10 @@ void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale);
 /* Exclude a known world packet from screen-space backdrop stretching, even
  * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
 void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
+/* A 15-bit sprite (P_TAG address) that copies a framebuffer 1:1, such as a
+ * motion trail: native-wide continues it into the bands. Tag it each frame
+ * after the title built it; inert at native 4:3. */
+void psx_mod_tag_feedback_rect(uint32_t primitive);
 /* Enable aspect-derived column selection for a title that opted into the
  * auto_backdrop detector. No effect on titles that did not opt in. */
 void psx_mod_set_adaptive_backdrop_preload(int enabled);
@@ -358,6 +506,44 @@ int psx_mod_option_value(const char* package_id, const char* feature_id,
 int psx_mod_current_option_value(const char* option_id,
                                  char* out, uint32_t out_size);
 /*
+ * Live option changes (in-game overlay P5). A trusted plugin that can re-read
+ * an option on a running game registers an option-changed callback under its
+ * plugin id; it runs in that plugin's context (psx_mod_current_option_value
+ * already answers the new value) and returns 1 if the change took effect now.
+ *
+ * psx_mod_set_option_live records a new value for a committed feature's
+ * option for the rest of the session and notifies its plugin. Returns 1 when
+ * a plugin applied it live; 0 when the feature has no live-capable plugin (or
+ * is not in the plan) -- then nothing changes until the next start; -1 when
+ * refused: during netplay the plan is negotiated between peers and must not
+ * change, except a host-only feature's (psx_mod_option_live_host_only). Persisting the choice stays
+ * the mod provider's job (mods/state.toml).
+ */
+typedef int (*PSXModOptionChangedCallback)(const char* option_id, const char* value);
+int psx_mod_register_option_changed_plugin(const char* id,
+                                           PSXModOptionChangedCallback callback);
+int psx_mod_set_option_live(const char* package_id, const char* feature_id,
+                            const char* option_id, const char* value);
+/* 1 when the committed feature's plugin registered an option-changed callback
+ * (so a live set can take effect now). Read-only; any thread. */
+int psx_mod_option_live_capable(const char* package_id, const char* feature_id);
+/* 1 when the committed feature is host-only (every plugin it activates
+ * declares netplay = "host_only"): it is the player's own in a match, so its
+ * options may change live during netplay (psx_mod_set_option_live), unlike
+ * every other feature's. Read-only; any thread, like
+ * psx_mod_option_live_capable. */
+int psx_mod_option_live_host_only(const char* package_id, const char* feature_id);
+/* Write the player's current selection (feature switches and option values,
+ * as edited through the launcher mod provider) to mods/state.toml now,
+ * without re-resolving the running plan. Main thread. 1 on success. */
+int psx_mod_save_selection(void);
+/* Switch a feature on/off or set one of its options in the selection (not
+ * the committed plan; psx_mod_save_selection persists it). Main thread.
+ * Returns 1 on success. Used by the in-game menu host. */
+int psx_mod_feature_enable(const char* package_id, const char* feature_id, int enabled);
+int psx_mod_feature_set_option(const char* package_id, const char* feature_id,
+                               const char* option_id, const char* value);
+/*
  * Read the committed owner-selected path for a resource declared by the
  * package feature whose trusted plugin is currently running. Returns 0 when
  * the feature has no selected path for that resource; plugins then leave the
@@ -389,6 +575,13 @@ int psx_mod_current_resource_bytes(const char* resource_id,
  * no host path or donor data is saved into guest RAM/savestates. */
 int psx_mod_append_disc_extent(const char* resource_id, uint64_t byte_offset,
                                uint32_t sector_count, uint32_t* first_lba);
+/* Activation-only derived assets. Copies the payload into an immutable mounted
+ * Mode-2 extent and updates its ISO directory record. Host asset readers and
+ * the guest CD controller see the same replacement. Title adapters must update
+ * any private LBA/size tables of their own. Derived bytes must depend only on
+ * the committed resources and trusted adapter, never on host clocks/paths. */
+int psx_mod_replace_disc_file(const char* path, const void* bytes, uint32_t size,
+                               uint32_t* first_lba);
 
 /* Optional CD-DA playlist, built only during activation. Audio has a separate
  * TOC/timeline (track 1 is a data placeholder); data/XA LBAs are unchanged.
@@ -436,6 +629,14 @@ int psx_mod_set_adaptive_display_aspect(uint32_t max_numerator,
  * title's setting before activation.
  */
 int psx_mod_set_widescreen_hud_size(int proportional);
+/* Request an internal rendering height for this mod session (120..8192).
+ * The existing resolution resolver selects an integer raster scale and the
+ * backend applies its normal allocation limits. Zero clears the request.
+ * It wins over the built-in Internal Resolution mod's choice and the title's
+ * baseline (both left unchanged); explicit PSX_INTERNAL_RESOLUTION overrides
+ * win over it, and each session clears this request before activating its
+ * committed mod plan. */
+int psx_mod_set_internal_resolution(uint32_t target_lines);
 /*
  * Set the wall-clock cadence of simulated guest VBlanks. A value of zero
  * removes frontend pacing; 60 and higher request that many native guest
@@ -546,6 +747,20 @@ uint32_t psx_mod_render_pass_plan(uint32_t period_vblanks,
  * partially updated plugin state) across guest code, or tolerate the abort. */
 int psx_mod_render_pass(struct CPUState* cpu, const PSXModRenderPass* pass,
                         PSXModRenderPassFn fn, void* user);
+/* Isolated dual-matte draw/readback using the stereo-capable rollback
+ * transaction. Draws two mattes of the same slice, the first into eye 0 of the
+ * stage surface and the second into eye 1, so both planes of a frame cost one
+ * readback instead of two. Never publishes an eye pair or changes presentation.
+ * Returns native-sized bottom-to-top RGBA8 pixels (alpha remains the PSX mask
+ * bit, not coverage). Call outside another pass. rgba_bytes must cover
+ * 2*rect->w*rect->h*4; the first matte arrives in the buffer's first half and
+ * the second in its second half. */
+int psx_mod_render_capture_rgba_pair(struct CPUState *cpu,
+                                     const PSXModRenderPass *rect,
+                                     PSXModRenderPassFn fn,void *user_first,
+                                     void *user_second,uint8_t *rgba,
+                                     uint32_t rgba_bytes);
+#define PSX_MOD_RENDER_CAPTURE_RGBA_PAIR 1
 /*
  * Why passes cannot run right now, the host-time budget aside (a plan that
  * returns 0 while this says READY was shed for time). A plugin that relies on
@@ -619,7 +834,47 @@ typedef struct PSXModStereoFrame {
 typedef int (*PSXModStereoFn)(struct CPUState*, void*, uint32_t eye);
 int psx_mod_render_stereo(struct CPUState *cpu, const PSXModStereoFrame *frame,
                           PSXModStereoFn fn, void *user);
+/* Offline local multiplayer: draw views0/1 from one checkpoint, using the
+ * reversible local-view sandbox. Both must succeed before publication.
+ * Callbacks run with psx_mod_local_view_scope()==1. This never advances the
+ * world or enables stereo/VR. Presentation uses two native4:3 views (8:3).
+ * Unsupported backends refuse and leave ordinary presentation available. */
+int psx_mod_render_local_pair(struct CPUState *cpu, const PSXModStereoFrame *frame,
+                              PSXModStereoFn fn, void *user);
+/* Keep an 8:3 session canvas until disabled/reset. A fresh complete pair uses
+ * its two views; canonical menu, movie and unavailable-pair frames are shown
+ * in both 4:3 panes. Does not change the guest's aspect or retain stale views. */
+int psx_mod_set_local_pair_presentation(int enabled);
 uint32_t psx_mod_render_stereo_status(void);
+/* Annotate the current frame's trace record with a short tag (scene transition,
+ * state change). Only meaningful while PSX_FRAME_TRACE is on and a traced frame
+ * is open (a headset frame, opened by psx_mod_openxr_begin); a no-op otherwise. */
+void psx_mod_frame_trace_note(const char *tag);
+/* Bracket one guest call of a stereo eye's replay with a frame-trace sub-stage,
+ * so a hitch can be aimed at the call that grew instead of at the whole eye
+ * (the PSX_TRACE_GAME_* stages in frame_trace.h). The runtime does the timing,
+ * with the same clock and conversion as the eye's own stages, so the parts sum
+ * against eye_guest. A no-op unless PSX_FRAME_TRACE is on AND the call is made
+ * inside a traced stereo eye: a HUD capture's guest draws, the flat path and
+ * anything outside the eye's callback are ignored. A begin without a matching
+ * end (or an eye aborted mid-entry) contributes nothing; the unmeasured time
+ * stays visible as the difference between eye_guest and the sub-stages.
+ * Spans may nest: each stage keeps its own start tick, so a stage bracketed
+ * inside another is timed on its own and reports a subset of the outer span's
+ * wall time rather than a sibling of it. The hook's visibility override nests
+ * inside the guest traversal it is part of (game_select in game_traverse). */
+void psx_mod_frame_trace_stage_begin(uint32_t stage);
+void psx_mod_frame_trace_stage_end(uint32_t stage);
+/* Drop the stereo shedding policy's pair-time estimate and derived budget. Call
+ * on a scene/mode transition so a new scene does not inherit the previous one's
+ * timing; cheap and idempotent. Shedding itself is unchanged. */
+void psx_mod_stereo_reset_budget(void);
+/* Set the stereo pair budget from a real headset deadline in milliseconds,
+ * pushed by the OpenXR layer from the target display period (11.1 ms at 90 Hz,
+ * 8.3 ms at 120 Hz). 0 clears it. The guest-VBlank-derived value is only a
+ * fallback: a PSX redraw budget is not an OpenXR display deadline, and the two
+ * disagree on every non-60 Hz headset. PSX_STEREO_SHED_BUDGET_MS still wins. */
+void psx_mod_stereo_set_budget_ms(double ms);
 /* 0 disables stereo output; 1 shows a complete pair side by side. Capture
  * itself does not enable presentation. Default 0; applies to this session. */
 int psx_mod_set_stereo_presentation(uint32_t mode);
@@ -642,8 +897,15 @@ typedef struct PSXModRenderView {
     uint32_t projection;
     uint32_t projection_h_ref; /* 0 absolute FOV; otherwise scale focal lengths by guest H/ref */
     int32_t fx_q16, fy_q16, cx_delta_q16, cy_delta_q16;
+    /* Optional host-only pose for projective replay. The ordinary path uses
+     * Q12/integer values; precise 1 preserves sub-unit movement inside replay. */
+    uint32_t precise;
+    double rotation[9], translation_precise[3];
 } PSXModRenderView;
 int psx_mod_render_view(const PSXModRenderView *view);
+/* Signed homogeneous projection and near clipping for replayed 3D packets.
+ * Requires intact PGXP provenance; native gameplay stays architectural. */
+void psx_mod_set_render_projective(int enabled);
 /* Begin locates both views at one predicted time. End submits only a fresh
  * complete pair; failed/shed redraws submit zero layers. */
 int psx_mod_openxr_enable(int enabled);
@@ -655,6 +917,21 @@ int psx_mod_openxr_end(int pair_rendered);
  * Dimensions and distance are meters; zero distance restores projection.
  * Requests reset at begin/end and never affect faithful guest rendering. */
 int psx_mod_openxr_quad(double distance_m, double width_m, double height_m);
+/* Additive, frame-local LOCAL-space surface. Called between XR begin/end and
+ * outside guest replay. Pixels are tightly packed bottom-to-top sRGB RGBA8,
+ * straight alpha, copied synchronously; caller retains ownership. IDs 0..1.
+ * Pose is raw XR LOCAL meters/quaternion x,y,z,w, not recentered game units.
+ * Missing requests disappear next frame. Returns 0 without replacing scene UI. */
+typedef struct PSXModOpenXRSurface {
+    uint32_t struct_size, id, width_px, height_px, flags;
+    float position_m[3], orientation_xyzw[4], size_m[2];
+    const uint8_t *rgba;
+} PSXModOpenXRSurface;
+#define PSX_MOD_OPENXR_SURFACES 1
+/* Ignore surface orientation: aim at predicted eye midpoint, upright in LOCAL
+ * space. Both eyes use the same plane. Position remains caller-controlled. */
+#define PSX_MOD_OPENXR_SURFACE_FACE_HEAD 1u
+int psx_mod_openxr_surface(const PSXModOpenXRSurface *surface);
 /* Opt-in native presentation surface for boot, videos and menus. Copies the
  * freshly drawn desktop content before host overlays, without guest replay.
  * Zero distance disables it. Applications disable it before scene begin and
@@ -828,6 +1105,21 @@ int psx_mod_set_disc_speed(uint32_t divisor,
 int psx_mod_set_draw_distance_clamp(int enabled);
 int psx_mod_draw_distance_clamp_enabled(void);
 
+/*
+ * Select the immediate variant of one [[mod_immediate.sites]] group
+ * (mod_immediate.h). Selector 0 runs the stock instructions; N runs
+ * values[N-1] of every site in `group`. The instruction bytes in RAM never
+ * change, so static and cached native code stay valid. Returns 1 when the
+ * title configured sites, 0 otherwise (nothing the guest sees changes), and
+ * rejects a group >= 64 or a selector > 15. Reset to 0 at every session start:
+ * call it from activation, before the guest runs. The caller owns the memory
+ * layout the selector implies (a savestate or card written under another
+ * selector is not interchangeable). Only offline activation may select a value;
+ * the host seals choices before guest execution. Later setter calls fail.
+ */
+int psx_mod_set_immediate_selector(uint32_t group, uint32_t selector);
+uint32_t psx_mod_immediate_selector(uint32_t group);
+
 /* Controller presentation values exposed to trusted game-owned plugins. */
 enum {
     PSX_MOD_CONTROLLER_ANALOG = 1,
@@ -927,6 +1219,10 @@ typedef struct PSXModControllerState {
 } PSXModControllerState;
 typedef int (*PSXModControllerSource)(PSXModControllerState *state);
 int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source);
+/* Presence of an attached offline source (default connected). A diagnostic
+ * source may explicitly emulate an unplugged pad without falling back to a
+ * physical controller assigned to that port. Cleared on detach/session reset. */
+int psx_mod_set_controller_source_connected(uint32_t player, int connected);
 
 /* Title pad transform (stage 2b above). Offline local play only: never under
  * netplay or rollback resim (the session is vanilla), selfcheck replay or a
@@ -942,7 +1238,8 @@ int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source
  * host_flags bit 0 = a
  * gamepad is assigned, bit 1 / bit 2 = it has a left / right trigger axis;
  * host_lt / host_rt are those triggers, 0 released .. 255 fully pressed
- * (0 when absent or while the savestate input guard is armed).
+ * (0 when absent or while the savestate input guard is armed). Bit 3 marks
+ * axes/type supplied by an offline input source (PSX_MOD_PAD_HOST_SOURCE).
  *
  * The output arrives pre-filled with the stock pad (what the player gets
  * without a transform, so a digital pad keeps its fold and centred sticks;
@@ -969,7 +1266,10 @@ enum {
 enum {
     PSX_MOD_PAD_HOST_GAMEPAD = 1u << 0,
     PSX_MOD_PAD_HOST_LT = 1u << 1,
-    PSX_MOD_PAD_HOST_RT = 1u << 2
+    PSX_MOD_PAD_HOST_RT = 1u << 2,
+    /* Axes/type came from an offline input source, rather than the host.
+     * Transforms can preserve already transformed diagnostic recordings. */
+    PSX_MOD_PAD_HOST_SOURCE = 1u << 3
 };
 typedef struct PSXModPadFrame {
     uint32_t struct_size, player, buttons, lx, ly, rx, ry, type;
@@ -1010,6 +1310,21 @@ int psx_mod_allow_direct_shortcut(uint32_t shortcut);
  * when the mode starts and 0 when it ends (setting it every frame from the
  * title's state is fine). Cleared at every mod/session reset. */
 void psx_mod_set_rewind_blocked(int blocked);
+/* Refuse saves and loads while trusted host gameplay state cannot be restored
+ * by the guest serializer. Includes synchronized netplay state operations;
+ * pending requests are cancelled. Cleared before each session's activation. */
+void psx_mod_set_savestate_blocked(int blocked);
+
+/* Title-supplied host rumble for one guest port (0-based): DualShock motor
+ * values (small: 0 off / nonzero on, large: 0..255) for a title that
+ * computes vibration but cannot send it over SIO to the presented pad (e.g. a
+ * NeGcon has no motors). The runtime drives the host pad with the louder of
+ * this and the guest's own SIO motors. Online only the local seat's value
+ * is used (this peer's local port, on its pad) and calls during a rollback resim are
+ * ignored, so a netplay = "host_output" plugin can call it for every seat.
+ * Opt-in: call every frame while it applies; a value lapses 8 VBlanks after the last call, and all are cleared
+ * at every mod/session reset (psx_host_rumble.h). Returns 0 for a bad seat. */
+int psx_mod_set_host_rumble(uint32_t player, uint32_t small, uint32_t large);
 
 /* Local P1 mouse policy. The runtime delivers ordered events on the SDL owner
  * (main) thread, owns relative capture and folds the resulting right-stick
@@ -1048,6 +1363,14 @@ typedef struct PSXModMousePolicy {
     void (*sample)(uint64_t now_ns, PSXModMouseOutput* output);
 } PSXModMousePolicy;
 int psx_mod_set_local_mouse_policy(const PSXModMousePolicy* policy);
+/* Optional action-game capture: click once to capture, Escape to release.
+ * Later clicks reach the normal bindings. Existing hold-to-look is default. */
+int psx_mod_set_local_mouse_persistent_capture(int enabled);
+/* Optional persistent-capture companion: keep existing capture through title
+ * eligibility changes (menus/cutscenes/loading), Start and host stalls, while
+ * clearing mouse motion and suspending output. Focus loss, host UI, disconnect,
+ * native right-stick takeover and Escape still release. Never auto-acquires. */
+int psx_mod_set_local_mouse_capture_across_transitions(int enabled);
 
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.

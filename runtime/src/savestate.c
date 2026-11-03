@@ -7,6 +7,8 @@
  * restores the full machine then unwinds to the scheduler and re-dispatches. */
 
 #include "savestate.h"
+#include "mod_netplay.h"
+#include "mod_snapshot.h"
 #include "boot_state.h"
 #include "cdrom.h"
 #include "gpu.h"
@@ -55,12 +57,17 @@ static uint32_t s_openbios_wordsum;   /* bundled OpenBIOS wordsum for migrate */
 static uint32_t s_bios_checksum;
 static uint32_t s_entry_pc;
 static int      s_configured   = 0;
+static int      s_title_blocked;
+static int      s_content_scope_valid = 1;
+static char     s_content_token[71]; /* "_mods_" + complete SHA-256 + NUL */
 static int      s_save_pending = -1;   /* slot, or -1 */
 static int      s_load_pending = -1;
+int g_psx_savestate_pending = 0;
 static int      s_load_completed = 0;
 static int      s_load_failed = 0;
 static uint32_t s_status_generation = 0;
-static int      s_status_pending = 0;
+static uint32_t s_status_polls;
+static const char* s_status_wait = "";
 static int      s_status_last_ok = 0;
 static int      s_status_last_load = 0;
 static int      s_status_last_slot = -1;
@@ -191,6 +198,32 @@ static void clear_load_blob(void) {
     free(s_load_blob);
     s_load_blob = NULL;
     s_load_blob_len = 0;
+}
+
+static void cancel_pending_states(void) {
+    if (s_save_pending >= 0 || s_save_defer_slot >= 0) s_save_failed = 1;
+    if (s_load_pending >= 0) s_load_failed = 1;
+    s_save_pending = s_load_pending = s_save_defer_slot = -1;
+    s_last_save_pc = 0;
+    g_psx_savestate_pending = 0;
+    clear_load_blob();
+}
+
+int savestate_title_blocked(void) { return s_title_blocked; }
+void savestate_set_title_blocked(int blocked) {
+    s_title_blocked = blocked != 0;
+    if (s_title_blocked) cancel_pending_states();
+}
+
+static int title_save_request_blocked(int is_load, int slot) {
+    const char* reason;
+    if (s_content_scope_valid && !s_title_blocked && psx_mod_netplay_savestates_supported()) return 0;
+    reason = !s_content_scope_valid ? "Save states require a verified content plan" :
+             s_title_blocked ? "Save states are unavailable in this game mode" :
+                              "Save states are unavailable in this netplay mode";
+    fprintf(stderr, "savestate: %s\n", reason);
+    psx_frontend_on_savestate_refused(is_load, slot, reason);
+    return 1;
 }
 
 /* Peek .pst header bios_checksum (BOOT_STATE wire: magic, version, checksum). */
@@ -369,6 +402,24 @@ void savestate_set_disc_scope(int disc_number) {
         s_disc_token[0] = '\0';
 }
 
+int savestate_set_content_scope(const char* fingerprint) {
+    char token[sizeof(s_content_token)] = {0};
+    size_t i;
+    int valid = 1;
+    if (fingerprint && fingerprint[0]) {
+        if (strlen(fingerprint) != 64) valid = 0;
+        for (i = 0; valid && i < 64; ++i)
+            if (!((fingerprint[i] >= '0' && fingerprint[i] <= '9') ||
+                  (fingerprint[i] >= 'a' && fingerprint[i] <= 'f'))) valid = 0;
+        if (valid) snprintf(token, sizeof(token), "_mods_%s", fingerprint);
+    }
+    if (valid != s_content_scope_valid || strcmp(token, s_content_token))
+        cancel_pending_states();
+    s_content_scope_valid = valid;
+    memcpy(s_content_token, token, sizeof(token));
+    return valid;
+}
+
 /* Count state_*.pst sitting directly in the BIOS directory once per-disc
  * scoping is active. They predate the split and cannot be placed: every disc
  * of a set shares one entry_pc, so nothing in the file says which disc it was
@@ -469,35 +520,33 @@ void savestate_get_integrity(uint32_t* bios_checksum, uint32_t* entry_pc) {
     if (entry_pc) *entry_pc = s_entry_pc;
 }
 
-int savestate_slot_path(int slot, char* out, size_t cap) {
-    if (!s_configured || !out || cap == 0) return 0;
+static int savestate_format_slot_path(int slot, const char* extension, char* out, size_t cap) {
+    int length;
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!s_configured || !s_content_scope_valid) return 0;
     if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
     /* Keyed by entry_pc so slots from different games in a shared dir never
      * collide; boot_state_load also rejects a mismatched entry_pc internally. */
-    snprintf(out, cap, "%s%sstate_%08X%s_slot%02d.pst",
+    length = snprintf(out, cap, "%s%sstate_%08X%s%s_slot%02d.%s",
              s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
-             s_disc_token, slot);
+             s_disc_token, s_content_token, slot, extension);
+    if (length < 0 || (size_t)length >= cap) { out[0] = '\0'; return 0; }
     return 1;
 }
 
+int savestate_slot_path(int slot, char* out, size_t cap) {
+    return savestate_format_slot_path(slot, "pst", out, cap);
+}
+
 static int savestate_thumb_path(int slot, char* out, size_t cap) {
-    if (!s_configured || !out || cap == 0) return 0;
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
-    snprintf(out, cap, "%s%sstate_%08X%s_slot%02d.thumb",
-             s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
-             s_disc_token, slot);
-    return 1;
+    return savestate_format_slot_path(slot, "thumb", out, cap);
 }
 
 /* HD texture-pack residency sidecar (gpu_hd_textures.h): host metadata next
  * to the slot, never part of the .pst, so states stay renderer-independent. */
 static int savestate_hd_path(int slot, char* out, size_t cap) {
-    if (!s_configured || !out || cap == 0) return 0;
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
-    snprintf(out, cap, "%s%sstate_%08X%s_slot%02d.hdres",
-             s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
-             s_disc_token, slot);
-    return 1;
+    return savestate_format_slot_path(slot, "hdres", out, cap);
 }
 static void savestate_write_hd_residency(int slot) {
     char path[600];
@@ -731,6 +780,7 @@ static int netplay_user_blocked(void) {
 }
 
 static int request_save_inner(int slot) {
+    if (title_save_request_blocked(0, slot)) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: not configured\n");
         psx_frontend_on_savestate_refused(0, slot, "Save states are not available yet");
@@ -741,13 +791,16 @@ static int request_save_inner(int slot) {
     s_last_save_pc = 0; /* block netplay transfer until this write stamps a PC */
     s_save_defer_slot = -1;
     s_save_pending = slot;
-    s_status_pending = 1;
+    s_status_polls = 0;
+    s_status_wait = "boundary";
+    g_psx_savestate_pending = 1;
     s_status_last_load = 0;
     s_status_last_slot = slot;
     return 1;
 }
 
 static int request_load_inner(int slot) {
+    if (title_save_request_blocked(1, slot)) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: not configured\n");
         psx_frontend_on_savestate_refused(1, slot, "Save states are not available yet");
@@ -766,7 +819,9 @@ static int request_load_inner(int slot) {
     s_load_failed = 0;
     s_load_completed = 0;
     s_load_pending = slot;
-    s_status_pending = 1;
+    s_status_polls = 0;
+    s_status_wait = "boundary";
+    g_psx_savestate_pending = 1;
     s_status_last_load = 1;
     s_status_last_slot = slot;
     return 1;
@@ -795,6 +850,7 @@ int savestate_request_load_protocol(int slot) {
 
 int savestate_request_load_blob_protocol(const void* data, size_t size) {
     uint8_t* copy;
+    if (title_save_request_blocked(1, -1)) return 0;
     if (!s_configured) {
         fprintf(stderr, "savestate: load_blob — not configured\n");
         return 0;
@@ -817,6 +873,7 @@ int savestate_request_load_blob_protocol(const void* data, size_t size) {
     s_load_failed = 0;
     s_load_completed = 0;
     s_load_pending = 0; /* non-negative: poll will prefer the blob */
+    g_psx_savestate_pending = 1;
     return 1;
 }
 
@@ -824,14 +881,24 @@ int savestate_pending(void) {
     return (s_save_pending >= 0 || s_load_pending >= 0) ? 1 : 0;
 }
 
+void savestate_get_status(PSXSavestateStatus* out) {
+    if (!out) return;
+    out->generation = s_status_generation;
+    out->pending = g_psx_savestate_pending;
+    out->last_ok = s_status_last_ok;
+    out->last_load = s_status_last_load;
+    out->last_slot = s_status_last_slot;
+}
+
 void savestate_status_json(char* buf, size_t cap) {
     if (!buf || cap == 0) return;
     snprintf(buf, cap,
              "\"generation\":%u,\"pending\":%d,\"last_ok\":%d,"
-             "\"last_op\":\"%s\",\"last_slot\":%d",
-             (unsigned)s_status_generation, s_status_pending,
+             "\"last_op\":\"%s\",\"last_slot\":%d,"
+             "\"polls\":%u,\"wait\":\"%s\"",
+             (unsigned)s_status_generation, g_psx_savestate_pending,
              s_status_last_ok, s_status_last_load ? "load" : "save",
-             s_status_last_slot);
+             s_status_last_slot, s_status_polls, g_psx_savestate_pending ? s_status_wait : "");
 }
 
 int savestate_take_load_completed(void) {
@@ -859,7 +926,13 @@ uint32_t savestate_last_save_pc(void) {
 void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
     if (s_save_pending < 0 && s_load_pending < 0) return;   /* hot path: nothing staged */
     extern int psx_mod_function_entry_active(void);
-    if (psx_mod_function_entry_active()) return;
+    ++s_status_polls;
+    if (psx_mod_function_entry_active()) { s_status_wait = "mod_callback"; return; }
+    /* A title may temporarily project another actor into guest globals.
+     * Its C callback cannot be resumed by loading a block-leader PC. Keep
+     * both requests pending until the title restores the canonical context. */
+    if (!psx_mod_snapshot_ready()) { s_status_wait = "mod_snapshot"; return; }
+    s_status_wait = "resume_pc";
 
     if (s_save_pending >= 0) {
         int slot = s_save_pending;
@@ -892,10 +965,11 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             if (now - s_save_defer_t0 < 2000.0)
                 return;
             s_save_pending = -1;
+            g_psx_savestate_pending = s_load_pending >= 0;
             s_save_defer_slot = -1;
             s_last_save_pc = 0;
             s_save_failed = 1;
-            s_status_pending = 0;
+            g_psx_savestate_pending = 0;
             s_status_last_ok = 0;
             s_status_generation++;
             fprintf(stderr,
@@ -912,6 +986,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             psx_frontend_on_savestate_notify(0, slot, 0);
         } else {
             s_save_pending = -1;
+            g_psx_savestate_pending = s_load_pending >= 0;
             s_save_defer_slot = -1;
             if (pc != resume_pc && resume_pc == 0u) {
                 fprintf(stderr,
@@ -934,7 +1009,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                     s_last_save_pc = 0;
                     s_save_failed = 1;
                 }
-                s_status_pending = 0;
+                g_psx_savestate_pending = 0;
                 s_status_last_ok = ok ? 1 : 0;
                 s_status_generation++;
                 fprintf(stderr, "savestate: %s slot %d @ pc=0x%08X -> %s\n",
@@ -943,7 +1018,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             } else {
                 s_last_save_pc = 0;
                 s_save_failed = 1;
-                s_status_pending = 0;
+                g_psx_savestate_pending = 0;
                 s_status_last_ok = 0;
                 s_status_generation++;
                 psx_frontend_on_savestate_notify(0, slot, 0);
@@ -952,6 +1027,11 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
     }
 
     if (s_load_pending >= 0) {
+        /* The provider and function-entry guards do not cover every guest
+         * adapter stack. Wait until the shared continuation context can be
+         * abandoned safely before consuming a pending restore. */
+        const uint32_t pc = savestate_resolve_resume_pc(cpu, resume_pc);
+        if (!psx_irq_resume_context_snapshot_safe_at(pc)) return;
         int slot = s_load_pending;
         int loaded = 0;
 #if defined(PSX_HAS_RECOMP_NET)
@@ -960,6 +1040,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             (s_load_blob && s_load_blob_len > 0) ? "blob" : "file";
 #endif
         s_load_pending = -1;
+        g_psx_savestate_pending = s_save_pending >= 0;
         char path[600];
         const double t_load0 = savestate_mono_ms();
         double t_after_boot = t_load0;
@@ -978,10 +1059,16 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
         savestate_load_trace("before_apply", load_trace_generation, slot,
                              load_trace_source, cpu);
 #endif
-        if (s_load_blob && s_load_blob_len > 0) {
+        if (!have_rollback) {
+            clear_load_blob();
+            s_load_failed = 1;
+            fprintf(stderr, "savestate: LOAD FAILED slot %d (cannot capture rollback)\n", slot);
+            psx_frontend_on_savestate_notify(1, slot, 0);
+        } else if (s_load_blob && s_load_blob_len > 0) {
             const size_t blob_len = s_load_blob_len;
-            loaded = boot_state_load_buffer(s_load_blob, blob_len,
-                                            s_bios_checksum, s_entry_pc, cpu);
+            loaded = boot_state_load_buffer_checked(s_load_blob, blob_len,
+                                            s_bios_checksum, s_entry_pc, cpu,
+                                            savestate_resume_pc_ok);
             clear_load_blob();
             if (!loaded) {
                 fprintf(stderr,
@@ -991,7 +1078,8 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                 psx_frontend_on_savestate_notify(1, slot, 0);
             }
         } else if (savestate_slot_path(slot, path, sizeof(path))) {
-            loaded = boot_state_load(path, s_bios_checksum, s_entry_pc, cpu);
+            loaded = boot_state_load_checked(path, s_bios_checksum, s_entry_pc,
+                                             cpu, savestate_resume_pc_ok);
             if (!loaded) {
                 fprintf(stderr,
                         "savestate: LOAD FAILED slot %d %s\n",
@@ -1004,20 +1092,11 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             s_load_failed = 1;
             psx_frontend_on_savestate_notify(1, slot, 0);
         }
-        if (loaded && !savestate_resume_pc_ok(cpu->pc)) {
-            fprintf(stderr,
-                    "savestate: LOAD FAILED slot %d — resume pc=0x%08X "
-                    "(null/undispatchable)%s\n",
-                    slot, (unsigned)cpu->pc, path[0] ? "" : " [blob]");
-            loaded = 0;
-            s_load_failed = 1;
-            /* Restoring this build's own just-written state cannot fail short
-             * of allocation failure; s_load_failed already reports the load. */
-            if (have_rollback)
-                (void)boot_state_load_buffer(rollback, rollback_len,
-                                             s_bios_checksum, s_entry_pc, cpu);
-            psx_frontend_on_savestate_notify(1, slot, 0);
-        }
+        /* A post-apply resume-PC refusal has not notified observers. Restore
+         * the original machine silently, without splitting its input stream. */
+        if (!loaded && have_rollback)
+            (void)boot_state_load_buffer_quiet(rollback, rollback_len,
+                                              s_bios_checksum, s_entry_pc, cpu);
 #if defined(PSX_HAS_RECOMP_NET)
         if (loaded)
             savestate_load_trace("after_restore", load_trace_generation, slot,
@@ -1025,7 +1104,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
 #endif
         free(rollback);
         if (!loaded) {
-            s_status_pending = 0;
+            g_psx_savestate_pending = 0;
             s_status_last_ok = 0;
             s_status_generation++;
         }
@@ -1042,7 +1121,7 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
             cdrom_accelerate_after_savestate();
             /* Netplay post-load barrier observes this before the longjmp. */
             s_load_completed = 1;
-            s_status_pending = 0;
+            g_psx_savestate_pending = 0;
             s_status_last_ok = 1;
             s_status_generation++;
             /* Restage FBO/present latch so the restored frame is visible

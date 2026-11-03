@@ -11,6 +11,13 @@ static inline void ws_scene_hold_reset(WsSceneHold* state) {
     state->valid = 0; state->native_43 = 1; state->awaiting_flip = 0;
     state->held_origin = 0;
 }
+/* A retained 4:3 overlay can submit apparent world overhang. When its real
+ * frontbuffer is replaced, that evidence must not seed the following scene. */
+static inline int ws_scene_hold_releasing_43(const WsSceneHold* state, int hold,
+                                             uint32_t display_origin) {
+    return state->valid && state->native_43 && state->awaiting_flip &&
+           hold != 1 && (hold != 2 || display_origin != state->held_origin);
+}
 static inline int ws_scene_hold_classify(WsSceneHold* state, int hold,
                                         int native_43, int fmv,
                                         uint32_t display_origin) {

@@ -77,11 +77,22 @@ static int g_failures = 0;
 
 static int g_geometry = -1;
 static int g_texture = -1;
+extern "C" int psx_netplay_active(void) { return 0; }
+/* No external HD pack is configured by the PGXP session fixture. */
+extern "C" void gpu_hd_textures_shutdown(void) {}
+extern "C" int gpu_hd_textures_configure(const char*, int, int, char*, size_t) { return 0; }
+extern "C" int gpu_hd_textures_reload(char*, size_t) { return 0; }
+extern "C" void gpu_hd_textures_set_dump_enabled(int) {}
+extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) { *out = GpuHdTextureDiag{}; }
 extern "C" void gte_geometry_correction_set(int enabled) { g_geometry = enabled; }
 extern "C" void gpu_texture_correction_set(int enabled) { g_texture = enabled; }
 /* pgxp.cpp's position-cache tier lives in gte.cpp. */
-extern "C" int gte_geometry_correction_lookup(uint32_t, int32_t*, int32_t*) {
-    return 0;
+static bool g_cached_hud_vertex = false;
+extern "C" int gte_geometry_correction_lookup(uint32_t, int32_t* x, int32_t* y) {
+    if (!g_cached_hud_vertex) return 0;
+    *x = (160 << 16) + 0x4000;
+    *y = (80 << 16) + 0x4000;
+    return 1;
 }
 
 /* The session harness has no GTE backend; pre-draw probes must link as a no-op. */
@@ -103,6 +114,8 @@ extern "C" void psx_write_half(uint32_t a, uint16_t v) {
     ram[o] = (uint8_t)v;
     ram[o + 1] = (uint8_t)(v >> 8);
 }
+/* Side-effect-free peek (memory.c); host-output observation reads. */
+extern "C" int psx_peek_word(uint32_t, uint32_t* out) { *out = 0; return 0; }
 extern "C" uint32_t psx_read_word(uint32_t a) {
     const uint32_t o = a & 0x1fffffu;
     return (uint32_t)ram[o] | ((uint32_t)ram[o + 1] << 8) |
@@ -115,6 +128,18 @@ extern "C" void psx_write_word(uint32_t a, uint32_t v) {
 extern "C" void psx_host_write_byte(uint32_t a, uint8_t v) { psx_write_byte(a, v); }
 extern "C" void psx_host_write_half(uint32_t a, uint16_t v) { psx_write_half(a, v); }
 extern "C" void psx_host_write_word(uint32_t a, uint32_t v) { psx_write_word(a, v); }
+/* This fixture installs presentation policy; it never dispatches guest code,
+ * credits guest cycles, or installs an audio callback. Fail on accidental use. */
+extern "C" uint32_t psx_peek_word_untraced(uint32_t a) { return psx_read_word(a); }
+extern "C" {
+uint64_t psx_cycle_count=0, psx_next_service_cycle=0;
+int psx_in_device_service=0, g_event_step_conservative=0, g_ls_replay_active=0;
+uint32_t g_psx_cyc_batch=0, g_psx_cyc_batch_limit=0;
+void psx_devices_service_to_now(void) { std::abort(); }
+void psx_advance_cycles_slow(uint32_t) { std::abort(); }
+}
+extern "C" void psx_dispatch_call(CPUState*, uint32_t, uint32_t) { std::abort(); }
+extern "C" void spu_set_pcm_overlay(PSXModPCMCallback callback) { if (callback) std::abort(); }
 extern "C" uint32_t psx_mod_memory_alloc(uint32_t, uint32_t) { return 0; }
 extern "C" uint32_t psx_mod_gpu_dma_memory_alloc(uint32_t, uint32_t) { return 0; }
 extern "C" int psx_ws_x_margin(void) { return 0; }
@@ -122,21 +147,19 @@ extern "C" void gpu_get_display_info(GpuDisplayInfo* out) { *out = GpuDisplayInf
 extern "C" void dirty_ram_mark_executable_range(uint32_t, uint32_t) {}
 extern "C" int fntrace_is_game_started(void) { return 1; }
 extern "C" void gpu_ws_tag_hud_primitive(uint32_t, int) {}
+extern "C" void gpu_ws_tag_hud_prim_projected(uint32_t, int) {}
+extern "C" void gpu_ws_set_gte_sxy_tracking(int) {}
+extern "C" int gpu_ws_gte_sxy_recent(int32_t, int32_t) { return 0; }
 extern "C" void gpu_ws_tag_world_primitive(uint32_t, int) {}
 extern "C" void gpu_ws_set_adaptive_backdrop_preload(int) {}
 extern "C" void psx_projection_reset_session(void) {}
 extern "C" void gpu_ws_set_native_scene_predicate(int (*)(void)) {}
 extern "C" int gpu_ws_configured_x_reveal(void) { return 0; }
-extern "C" int psx_netplay_active(void) { return 0; }
-extern "C" void gpu_hd_textures_shutdown(void) {}
-extern "C" int gpu_hd_textures_configure(const char*, int, int, char*, size_t) { return 1; }
-extern "C" void gpu_hd_textures_set_dump_enabled(int) {}
-extern "C" void gpu_hd_textures_get_diag(GpuHdTextureDiag* out) { *out = {}; }
-extern "C" int gpu_hd_textures_reload(char*, size_t) { return 1; }
 extern "C" void gpu_ws_set_manual_view_anchor(int, int) {}
 extern "C" void gpu_ws_tag_hud_prim(uint32_t, int) {}
 extern "C" void gpu_ws_tag_screen_mask_quad(uint32_t) {}
 extern "C" void gpu_ws_tag_radial_screen_mask_quad(uint32_t, float) {}
+extern "C" void gpu_ws_tag_feedback_rect(uint32_t) {}
 /* mod_runtime.cpp's lobby netplay commit reads the negotiated match caps.
  * This test drives netplay through mod_runtime_clear_for_netplay, so no
  * lobby match is ever negotiated. */
@@ -227,6 +250,70 @@ int main(void) {
                           "PSX_PGXP_CPU_MODE", "PSX_PGXP_CULLING"})
         test_unsetenv(v);
     g_cfg = PSXPgxpSessionConfig{};
+    /* No title tuning: session arming must choose the build's defaults,
+     * including resetting values left by a previous session/debug toggle. */
+    pgxp_set_tolerance(2.0f);
+    pgxp_set_position_fallback(0);
+    CHECK(armed(session(), 0, 0, 0, 0));
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(pgxp_tolerance() < 0.0f && pgxp_position_fallback() == 0);
+#else
+    CHECK(pgxp_tolerance() == 0.5f && pgxp_position_fallback() == 1);
+#endif
+    CHECK(pgxp_preserve_projection() == 0);
+    /* Run those defaults through the real engine: a proven world vertex
+     * retains its 0.75px fraction, while a HUD coordinate sharing its integer
+     * position cannot borrow a different projection from the cache. */
+    pgxp_set_enabled(1);
+    const uint32_t packed = (80u << 16) | 160u;
+    const uint32_t addr = 0x80100000u;
+    const int32_t precise_x = (160 << 16) + 0xc000;
+    pgxp_gte_push_sxy(precise_x, 80 << 16, 100, packed);
+    psx_pgxp_cop2(nullptr, (0x3au << 26) | (14u << 16), packed, addr);
+    int32_t x, y;
+    uint16_t z;
+    const int world = pgxp_get_precise_vertex(addr, packed, 160, 80, &x, &y, &z);
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(world == PGXP_SRC_DATAFLOW && x == precise_x && z == 100);
+#else
+    CHECK(world == PGXP_SRC_NATIVE && x == (160 << 16) && z == 100);
+#endif
+    g_cached_hud_vertex = true;
+    const int hud = pgxp_get_precise_vertex(0xffffffffu, packed, 160, 80, &x, &y, &z);
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(hud == PGXP_SRC_NATIVE && x == (160 << 16) && z == 0);
+#else
+    CHECK(hud == PGXP_SRC_FALLBACK && x == (160 << 16) + 0x4000 && z == 0);
+#endif
+    g_cached_hud_vertex = false;
+    pgxp_set_enabled(0);
+    /* Each explicit compatibility override is independent of the other. */
+    g_cfg.tolerance = 0.25f;
+    g_cfg.tolerance_set = 1;
+    CHECK(armed(session(), 0, 0, 0, 0));
+    CHECK(pgxp_tolerance() == 0.25f);
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(pgxp_position_fallback() == 0);
+#else
+    CHECK(pgxp_position_fallback() == 1);
+#endif
+    g_cfg.tolerance_set = 0;
+    g_cfg.position_fallback = 1;
+    g_cfg.position_fallback_set = 1;
+    CHECK(armed(session(), 0, 0, 0, 0));
+#if defined(PSX_PGXP) && PSX_PGXP
+    CHECK(pgxp_tolerance() < 0.0f);
+#else
+    CHECK(pgxp_tolerance() == 0.5f);
+#endif
+    CHECK(pgxp_position_fallback() == 1);
+    /* Explicit compatibility tuning wins even in the hook flavor. */
+    g_cfg.tolerance = 0.5f;
+    g_cfg.tolerance_set = 1;
+    g_cfg.position_fallback = 1;
+    g_cfg.position_fallback_set = 1;
+    CHECK(armed(session(), 0, 0, 0, 0));
+    CHECK(pgxp_tolerance() == 0.5f && pgxp_position_fallback() == 1);
     g_cfg.tolerance = -1.0f;
     g_cfg.position_fallback = 0;
     g_cfg.preserve_projection = 1;

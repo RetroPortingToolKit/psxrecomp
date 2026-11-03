@@ -5,12 +5,23 @@
 # performs the same comparison at configure (PSXRECOMP_BIOS_STALE_FATAL in
 # CI); this runs first so the failure is readable.
 #
-# Usage: check_bios_stamps.sh [--framework psxrecomp] [stem...]   (default: OpenBIOS SCPH1001)
+# Usage: check_bios_stamps.sh [--framework psxrecomp] [stem...]
+# Default: every stem that has a generated/<stem>.emitter.sha. Retail backends
+# (SCPH1001, ...) are gitignored -- generated from a dump, never committed -- so
+# a CI checkout carries only the OpenBIOS stamp and must not demand the others.
+# Name a stem explicitly to require it.
 set -euo pipefail
 FRAMEWORK="psxrecomp"
 if [[ "${1:-}" == "--framework" ]]; then FRAMEWORK="${2:?}"; shift 2; fi
-STEMS=("$@"); [[ ${#STEMS[@]} -gt 0 ]] || STEMS=(OpenBIOS SCPH1001)
 FRAMEWORK="$(cd "${FRAMEWORK}" && pwd)"
+STEMS=("$@")
+if [[ ${#STEMS[@]} -eq 0 ]]; then
+  for f in "${FRAMEWORK}"/generated/*.emitter.sha; do
+    [[ -f "${f}" ]] || continue
+    b="$(basename "${f}")"; STEMS+=("${b%.emitter.sha}")
+  done
+  [[ ${#STEMS[@]} -gt 0 ]] || { echo "error: no generated/*.emitter.sha in ${FRAMEWORK}" >&2; exit 1; }
+fi
 rc=0
 for stem in "${STEMS[@]}"; do
   stamp_file="${FRAMEWORK}/generated/${stem}.emitter.sha"

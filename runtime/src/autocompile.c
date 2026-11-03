@@ -4,6 +4,7 @@
  * and pick every shard up with the batch-end cache rescan. The manual
  * compile_overlays.py flow still works everywhere. */
 #include "autocompile.h"
+#include "host_span_ring.h"
 #include "overlay_loader.h"
 
 #include <stdarg.h>   /* autocompile_set_degraded takes a format + varargs */
@@ -45,6 +46,9 @@ static char s_cwd[512];
  * the loader's READ location, regardless of what the configured command says. */
 static char s_cache_dir[512];
 static char s_captures[512];
+#ifdef _WIN32
+#include "autocompile_child_env.h"
+#endif
 
 enum { AC_IDLE = 0, AC_RUNNING = 1, AC_DONE = 2 };
 #ifdef _WIN32
@@ -158,6 +162,32 @@ static void autocompile_set_degraded(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(s_degraded, sizeof(s_degraded), fmt, ap);
     va_end(ap);
+}
+
+int autocompile_check_toolchain_hash(const char *toolchain_include_dir, uint32_t runtime_hash) {
+    if (!toolchain_include_dir || !toolchain_include_dir[0] || runtime_hash == 0) return 1;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/overlay_codegen_hash.h", toolchain_include_dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 1;
+    char text[1024];
+    size_t n = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[n] = '\0';
+    const char *key = strstr(text, "PSX_OVERLAY_CODEGEN_HASH");
+    if (!key) return 1;
+    key += strlen("PSX_OVERLAY_CODEGEN_HASH");
+    char *end = NULL;
+    unsigned long tk = strtoul(key, &end, 0);
+    if (end == key) return 1;
+    if ((uint32_t)tk == runtime_hash) return 1;
+    autocompile_set_degraded(
+        "stale overlay toolchain: %s names codegen hash 0x%08lx but this runtime was built with "
+        "0x%08x, so compiled shards would land in a cache directory the runtime never reads and "
+        "every overlay would stay interpreted. Restage overlay_toolchain/ from the framework this "
+        "runtime was built against (psxrecomp_cli.py rebuild, or tools/release_stage.py).",
+        path, tk, (unsigned)runtime_hash);
+    return 0;
 }
 
 const char *autocompile_degraded_reason(void) {
@@ -389,7 +419,9 @@ static DWORD WINAPI publish_prepare_thread_main(LPVOID unused) {
         int attempts = 0;
         for (;;) {
             QueryPerformanceCounter(&q0);
+            const uint64_t span_t0 = host_span_begin();
             item->image = overlay_loader_prepare_published(item->path);
+            host_span_end(HSPAN_AC_PREPARE_IMAGE, span_t0, item->image ? 1u : 0u);
             QueryPerformanceCounter(&q1);
             attempts++;
             if (item->image || attempts >= AC_PREPARE_ATTEMPTS) break;
@@ -608,6 +640,7 @@ typedef struct { HANDLE read_pipe; HANDLE proc; } WatchCtx;
 
 static DWORD WINAPI watch_thread(LPVOID arg) {
     WatchCtx *ctx = (WatchCtx *)arg;
+    const uint64_t watch_t0 = host_span_begin();
     char buf[1024];
     DWORD got;
     while (ReadFile(ctx->read_pipe, buf, sizeof(buf), &got, NULL) && got > 0)
@@ -616,6 +649,7 @@ static DWORD WINAPI watch_thread(LPVOID arg) {
     WaitForSingleObject(ctx->proc, INFINITE);
     DWORD code = (DWORD)-1;
     GetExitCodeProcess(ctx->proc, &code);
+    host_span_end(HSPAN_AC_CHILD, watch_t0, (uint32_t)code);
     EnterCriticalSection(&s_out_lock);
     /* A marker/result line cut off by child termination is not trustworthy.
      * Completion will force the idempotent directory rescan instead. */
@@ -1050,7 +1084,15 @@ int autocompile_toolchain_available(void) {
     return found;
 }
 
+static int autocompile_request_impl(void);
 int autocompile_request(void) {
+    const uint64_t span_t0 = host_span_begin();
+    int started = autocompile_request_impl();
+    if (started) host_span_end(HSPAN_AC_REQUEST, span_t0, 0);
+    return started;
+}
+
+static int autocompile_request_impl(void) {
     /* DONE owns an unconsumed cache rescan/result. Only the emulation-thread
      * poll may return it to IDLE; never overwrite it with another child. */
     if (!autocompile_configured() || ac_state_load() != AC_IDLE) return 0;
@@ -1152,10 +1194,18 @@ int autocompile_request(void) {
     /* Compilation is opportunistic: it must never outrank the interpreter that
      * keeps the current frame alive. cmd -> python -> gcc inherit below-normal
      * priority, while the live compile script also defaults to one worker. */
+    char *child_env = s_cache_dir[0] ? ac_child_environment(s_cache_dir) : NULL;
+    if (s_cache_dir[0] && !child_env) {
+        if (job) CloseHandle(job);
+        CloseHandle(rd); CloseHandle(wr);
+        autocompile_note_failure();
+        return 0;
+    }
     BOOL ok = CreateProcessA(NULL, full, NULL, NULL, TRUE,
                              CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS |
                                  CREATE_SUSPENDED,
-                             NULL, s_cwd[0] ? s_cwd : NULL, &si, &pi);
+                             child_env, s_cwd[0] ? s_cwd : NULL, &si, &pi);
+    free(child_env);
     CloseHandle(wr);
     if (!ok) {
         if (job) CloseHandle(job);
@@ -1396,6 +1446,7 @@ void autocompile_poll_main(void) {
     }
 #else
     if (publish_pending()) return;
+    const uint64_t join_t0 = host_span_begin();
     /* DONE is published immediately before the preparer returns. Join both
      * per-run workers before exposing IDLE, so a new run cannot inherit a live
      * consumer of the shared FIFO. Neither worker needs the emulation thread. */
@@ -1415,6 +1466,7 @@ void autocompile_poll_main(void) {
         CloseHandle(s_job);
         s_job = NULL;
     }
+    host_span_end(HSPAN_AC_DONE_JOIN, join_t0, 0);
 #endif
     /* Streaming parsing survives arbitrarily large chained post-processing
      * output.  Retain the tail scan as a compatibility fallback for output

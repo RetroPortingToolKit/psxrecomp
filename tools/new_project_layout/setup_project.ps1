@@ -80,7 +80,41 @@ function Assert-Cmd([string]$cmd) {
     }
 }
 Assert-Cmd git
-Assert-Cmd python
+
+# Windows-native Python only. An MSYS2/Cygwin python (e.g. devkitPro's, often
+# first on PATH) ignores the Windows-style PYTHONPATH set below, so every
+# sibling helper import fails.
+function Resolve-Python {
+    if ($env:PSXRECOMP_PYTHON) {
+        if (Test-Path -LiteralPath $env:PSXRECOMP_PYTHON) { return $env:PSXRECOMP_PYTHON }
+        throw "PSXRECOMP_PYTHON does not exist: $env:PSXRECOMP_PYTHON"
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $exe = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $exe) { return ([string]$exe).Trim() }
+    }
+    foreach ($c in @(Get-Command python -All -CommandType Application -ErrorAction SilentlyContinue)) {
+        if ($c.Source -notmatch '(?i)[\\/](msys64|msys2|msys|cygwin64|cygwin|devkitPro)[\\/]') {
+            return $c.Source
+        }
+    }
+    throw "No Windows-native Python 3 found (MSYS2/Cygwin pythons cannot import the scaffold helpers). Install Python from python.org or set PSXRECOMP_PYTHON."
+}
+$Python = Resolve-Python
+
+# Windows PowerShell 5.1 writes a BOM for -Encoding UTF8 and UTF-16LE for
+# Tee-Object/Out-File. Block files are spliced mid-CMakeLists.txt, where a BOM
+# is a CMake parse error, so every file this script writes goes through here.
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+function Resolve-OutPath([string]$Path) {
+    return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+function Write-TextFile([string]$Path, [string]$Value) {
+    [System.IO.File]::WriteAllText((Resolve-OutPath $Path), $Value + [Environment]::NewLine, $Utf8NoBom)
+}
+function Add-TextFile([string]$Path, [string]$Value) {
+    [System.IO.File]::AppendAllText((Resolve-OutPath $Path), $Value + [Environment]::NewLine, $Utf8NoBom)
+}
 
 function Test-Interactive {
     return [Environment]::UserInteractive -and -not $Yes -and -not ($env:PSXRECOMP_SETUP_YES -eq "1")
@@ -136,7 +170,7 @@ if ($Players -lt 1 -or $Players -gt 8) {
 }
 
 $env:PYTHONPATH = "$ScriptDir" + $(if ($env:PYTHONPATH) { ";$env:PYTHONPATH" } else { "" })
-$derivedZip = (python -c "from fill_tokens import derive_zip_prefix; import sys; print(derive_zip_prefix(sys.argv[1]))" $Name).Trim()
+$derivedZip = (& $Python -c "from fill_tokens import derive_zip_prefix; import sys; print(derive_zip_prefix(sys.argv[1]))" $Name).Trim()
 if (-not $ZipPrefix) {
     if ($interactive) {
         $ZipPrefix = Prompt-Line "Zip / CI artifact prefix" $derivedZip
@@ -152,7 +186,7 @@ if (-not $GithubOwner) {
         $GithubOwner = "RetroPortingToolKit"
     }
 }
-$derivedRepo = (python -c "from fill_tokens import sanitize_github_name; import sys; print(sanitize_github_name(sys.argv[1]))" $Name).Trim()
+$derivedRepo = (& $Python -c "from fill_tokens import sanitize_github_name; import sys; print(sanitize_github_name(sys.argv[1]))" $Name).Trim()
 if (-not $GithubRepo) {
     if ($interactive) {
         $GithubRepo = Prompt-Line "GitHub repo name (README download badges)" $derivedRepo
@@ -160,8 +194,8 @@ if (-not $GithubRepo) {
         $GithubRepo = $derivedRepo
     }
 }
-$GithubOwner = (python -c "from fill_tokens import sanitize_github_name; import sys; print(sanitize_github_name(sys.argv[1]))" $GithubOwner).Trim()
-$GithubRepo = (python -c "from fill_tokens import sanitize_github_name; import sys; print(sanitize_github_name(sys.argv[1]))" $GithubRepo).Trim()
+$GithubOwner = (& $Python -c "from fill_tokens import sanitize_github_name; import sys; print(sanitize_github_name(sys.argv[1]))" $GithubOwner).Trim()
+$GithubRepo = (& $Python -c "from fill_tokens import sanitize_github_name; import sys; print(sanitize_github_name(sys.argv[1]))" $GithubRepo).Trim()
 
 if (-not $PSBoundParameters.ContainsKey("Description")) {
     if ($interactive) { $Description = Prompt-Line "Short game description (optional)" "" }
@@ -282,20 +316,20 @@ $RecompUiBlockFile = Join-Path $env:TEMP "psxrecomp_recomp_ui_block.cmake"
 $CodegenArgFile = Join-Path $env:TEMP "psxrecomp_codegen_arg.cmake"
 
 if ($useRecompUi) {
-    Set-Content -Encoding UTF8 -Path $RecompUiBlockFile -Value "# recomp-ui submodule present (PSX_RECOMP_UI defaults ON)."
-    Set-Content -Encoding UTF8 -Path $CodegenArgFile -Value '    CODEGEN_SETUP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/codegen_setup.c"'
+    Write-TextFile $RecompUiBlockFile "# recomp-ui submodule present (PSX_RECOMP_UI defaults ON)."
+    Write-TextFile $CodegenArgFile '    CODEGEN_SETUP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/codegen_setup.c"'
 } else {
-    Set-Content -Encoding UTF8 -Path $RecompUiBlockFile -Value @"
+    Write-TextFile $RecompUiBlockFile @"
 set(PSX_RECOMP_UI OFF CACHE BOOL
     "No recomp-ui submodule in this scaffold" FORCE)
 "@
-    Set-Content -Encoding UTF8 -Path $CodegenArgFile -Value "    # CODEGEN_SETUP_SOURCES -- add with recomp-ui / wizard later"
+    Write-TextFile $CodegenArgFile "    # CODEGEN_SETUP_SOURCES -- add with recomp-ui / wizard later"
 }
 
 if ($useNetplay) {
     # PSX_NETPLAY defaults RNET_ENABLE_ICE=ON; recomp-net FetchContents
     # libjuice via pinned URL (not git) so Retro AppImage builds configure.
-    Set-Content -Encoding UTF8 -Path $NetplayBlockFile -Value @"
+    Write-TextFile $NetplayBlockFile @"
 if(EXISTS "`${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
     set(PSX_NETPLAY ON CACHE BOOL
         "Link recomp-net delay-sync (opt-in; needs recomp-net)" FORCE)
@@ -304,7 +338,7 @@ endif()
     $NetplayRuntimeArg = "    ENABLE_NETPLAY_IF_PRESENT"
     $NetplayLobbyUrlArg = "    NETPLAY_LOBBY_URL `"$NetplayLobbyWs`""
 } else {
-    Set-Content -Encoding UTF8 -Path $NetplayBlockFile -Value @"
+    Write-TextFile $NetplayBlockFile @"
 # Full netplay UI -- enable after adding recomp-ui + testing:
 # if(EXISTS "`${PSXRECOMP_ROOT}/lib/recomp-net/CMakeLists.txt")
 #     set(PSX_NETPLAY ON CACHE BOOL "..." FORCE)
@@ -315,26 +349,26 @@ endif()
 }
 
 if ($useWizard) {
-    Set-Content -Encoding UTF8 -Path $WizardBlockFile -Value @"
+    Write-TextFile $WizardBlockFile @"
 set(PSX_SETUP_WIZARD ON CACHE BOOL
     "Advertise first-run setup wizard + Generate & rebuild in recomp-ui" FORCE)
 "@
     $WizardRuntimeArg = "    ENABLE_SETUP_WIZARD"
 } else {
-    Set-Content -Encoding UTF8 -Path $WizardBlockFile -Value @"
+    Write-TextFile $WizardBlockFile @"
 # First-run setup wizard -- enable after testing:
 # set(PSX_SETUP_WIZARD ON CACHE BOOL "..." FORCE)
 "@
     $WizardRuntimeArg = "    # ENABLE_SETUP_WIZARD"
 }
 
-Set-Content -Encoding UTF8 -Path $BoxartBlockFile -Value '    # LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"'
+Write-TextFile $BoxartBlockFile '    # LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"'
 $HasBoxart = $false
 $AppIconBlockFile = Join-Path $env:TEMP "psxrecomp_app_icon_block.cmake"
-Set-Content -Encoding UTF8 -Path $AppIconBlockFile -Value '    APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico"'
+Write-TextFile $AppIconBlockFile '    APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/psxrecomp.ico"'
 
 function Fill-Template([string]$src, [string]$dst) {
-    python $FillTokens $src $dst `
+    & $Python $FillTokens $src $dst `
         --set "PROJECT_CMAKE_NAME=$ProjectCmakeName" `
         --set "WINDOW_TITLE=$WindowTitle" `
         --set "BOOT_EXE=$BootExe" `
@@ -400,7 +434,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Root "tools") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "mods\preloaded\packages") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "assets") | Out-Null
 # Empty mod catalog tree (build stages mods/preloaded/packages -> <exe>/mods/bundled).
-@'
+$PreloadedReadme = @'
 # Preloaded mods
 
 Ship reviewed, default-disabled packages here:
@@ -420,7 +454,8 @@ launcher owns and no build ever touches. Install them through the launcher Mods
 manager rather than committing them here.
 
 See `psxrecomp/docs/MOD_PACKAGES.md`.
-'@ | Set-Content -Encoding utf8 (Join-Path $Root "mods\preloaded\README.md")
+'@
+Write-TextFile (Join-Path $Root "mods\preloaded\README.md") $PreloadedReadme
 New-Item -ItemType File -Force -Path (Join-Path $Root "mods\preloaded\packages\.gitkeep") | Out-Null
 Copy-Item (Join-Path $ScriptDir "sync_symbols.py") (Join-Path $Root "tools\sync_symbols.py")
 
@@ -460,7 +495,9 @@ if (Test-Path "psxrecomp\lib\recomp-net") {
 Write-Host "== Framework pins =="
 $PinsPath = Join-Path $Root "framework_pins.txt"
 if (Test-Path "psxrecomp\tools\ci\record_pins.sh") {
-    bash psxrecomp/tools/ci/record_pins.sh --root $Root | Tee-Object -FilePath $PinsPath
+    $pinLines = @(bash psxrecomp/tools/ci/record_pins.sh --root $Root)
+    Write-TextFile $PinsPath ($pinLines -join [Environment]::NewLine)
+    $pinLines
 } else {
     $lines = @("psxrecomp=$(git -C psxrecomp rev-parse HEAD)")
     if ($useRecompUi) {
@@ -468,7 +505,8 @@ if (Test-Path "psxrecomp\tools\ci\record_pins.sh") {
     } else {
         $lines += "recomp-ui=<not added>"
     }
-    $lines | Tee-Object -FilePath $PinsPath
+    Write-TextFile $PinsPath ($lines -join [Environment]::NewLine)
+    $lines
 }
 
 if ($useNetplay -and -not (Test-Path "psxrecomp\lib\recomp-net\CMakeLists.txt")) {
@@ -477,6 +515,11 @@ if ($useNetplay -and -not (Test-Path "psxrecomp\lib\recomp-net\CMakeLists.txt"))
 
 Write-Host "== Packager stub =="
 Fill-Template (Join-Path $TemplateDir "package_release.sh.in") (Join-Path $Root "scripts\package_release.sh")
+Fill-Template (Join-Path $TemplateDir "package_prebuilt_release.sh.in") (Join-Path $Root "scripts\package_prebuilt_release.sh")
+Fill-Template (Join-Path $TemplateDir "release.toml.in") (Join-Path $Root "packaging\release.toml")
+Fill-Template (Join-Path $TemplateDir "START_HERE.txt.in") (Join-Path $Root "packaging\release\START_HERE.txt")
+Fill-Template (Join-Path $TemplateDir "AppRun.in") (Join-Path $Root "packaging\linux\AppRun")
+Fill-Template (Join-Path $TemplateDir "app.desktop.in") (Join-Path $Root "packaging\linux\${ZipPrefix}.desktop")
 
 if ($useCi) {
     Write-Host "== CI release workflow =="
@@ -484,7 +527,7 @@ if ($useCi) {
     $WfDst = Join-Path $Root ".github\workflows\release.yml"
     if (Test-Path -LiteralPath $WfSrc) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $WfDst) | Out-Null
-        python $FillTokens $WfSrc $WfDst `
+        & $Python $FillTokens $WfSrc $WfDst `
             --ci-placeholders `
             --set "ZIP_PREFIX=$ZipPrefix" `
             --set "GAME_TITLE=$WindowTitle" `
@@ -532,10 +575,11 @@ for m in re.finditer(r'FILE\s+"([^"]+)"', text, re.I):
 print("  disc staged under disc/ (gitignored -- never commit dumps)")
 '@
     $pyFile = Join-Path $env:TEMP "psxrecomp_stage_disc.py"
-    Set-Content -Encoding UTF8 -Path $pyFile -Value $py
-    python $pyFile $DiscAbs $DiscOut
+    Write-TextFile $pyFile $py
+    & $Python $pyFile $DiscAbs $DiscOut
     $ProbeCue = Join-Path $DiscOut $DiscBasename
     $DiscTomlPath = "disc/$DiscBasename"
+    $GenDiscHint = $ProbeCue
     } else {
     Write-Host "== External disc (no full copy) =="
     Write-Host "  cue remains at: $DiscAbs"
@@ -547,30 +591,41 @@ $SeedCount = 0
 if ($DiscBasename -match '\.cue$') {
     Write-Host "== Probing disc (identity + seeds + TOC fp) =="
     try {
-        python $ProbeDisc $ProbeCue `
-            --json-out (Join-Path $Root "disc_probe.json") `
-            --write-game-toml (Join-Path $Root "game.toml") `
-            --write-catalog (Join-Path $Root "catalog_identity.json") `
-            --write-seeds (Join-Path $Root "seeds\ghidra_funcs.txt") `
-            --write-boot-exe $DiscOut `
-            --disc-rel $DiscTomlPath `
-            --out-dir disc `
-            --players $Players `
-            --display-name $GameName `
-            --description $Description `
-            --publisher $Publisher `
-            --year $Year `
-            --region $Region
+        # Windows PowerShell 5.1 drops empty-string arguments to native
+        # commands, so an empty value would leave its flag without one and
+        # argparse would reject the whole call. Pass marketing flags only
+        # when they carry a value.
+        $ProbeArgs = @(
+            $ProbeDisc, $ProbeCue,
+            "--json-out", (Join-Path $Root "disc_probe.json"),
+            "--write-game-toml", (Join-Path $Root "game.toml"),
+            "--write-catalog", (Join-Path $Root "catalog_identity.json"),
+            "--write-seeds", (Join-Path $Root "seeds\ghidra_funcs.txt"),
+            "--write-boot-exe", $DiscOut,
+            "--disc-rel", $DiscTomlPath,
+            "--out-dir", "disc",
+            "--players", $Players
+        )
+        foreach ($Pair in @(
+                @("--display-name", $GameName),
+                @("--description", $Description),
+                @("--publisher", $Publisher),
+                @("--year", $Year),
+                @("--region", $Region))) {
+            if (-not [string]::IsNullOrWhiteSpace($Pair[1])) { $ProbeArgs += $Pair }
+        }
+        & $Python @ProbeArgs
+        if ($LASTEXITCODE -ne 0) { throw "probe_disc.py exited $LASTEXITCODE" }
         $Probed = $true
         $SeedCount = (Select-String -Path (Join-Path $Root "seeds\ghidra_funcs.txt") -Pattern '^0x').Count
-        $BootFromToml = python -c @"
+        $BootFromToml = & $Python -c @"
 import re,sys
 t=open(sys.argv[1],encoding='utf-8').read()
 m=re.search(r'boot_exe\s*=\s*\"([^\"]+)\"', t)
 print(m.group(1) if m else '')
 "@ (Join-Path $Root "game.toml")
         $BootFromToml = $BootFromToml.Trim()
-        $EntryFromToml = python -c @"
+        $EntryFromToml = & $Python -c @"
 import re,sys
 t=open(sys.argv[1],encoding='utf-8').read()
 m=re.search(r'entry_pc\s*=\s*\"([^\"]+)\"', t)
@@ -599,9 +654,9 @@ print(m.group(1) if m else '')
     Write-Warning "-Disc is not a .cue; skipped probe autofill."
 }
 
-# Community metadata (https://recomp.fyi/spec) — serial from the probe if it ran.
+# Community metadata (https://recomp.fyi/spec) -- serial from the probe if it ran.
 Write-Host "== Writing .recomp.json =="
-python $WriteRecompJson (Join-Path $Root ".recomp.json") `
+& $Python $WriteRecompJson (Join-Path $Root ".recomp.json") `
     --game $GameName `
     --project $Name `
     --region $Region `
@@ -613,23 +668,23 @@ if ($doBoxart) {
     $cueHint = if ($DiscBasename) { $DiscBasename } else { $GameName }
     $prevPy = $env:PYTHONPATH
     try {
-        python $FetchBoxartPy `
+        & $Python $FetchBoxartPy `
             --out (Join-Path $Root "launcher_assets\img\boxart.tga") `
             --cue-stem $cueHint `
             --display-name $GameName
         if ($LASTEXITCODE -eq 0) {
             $HasBoxart = $true
-            Set-Content -Encoding UTF8 -Path $BoxartBlockFile -Value '    LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"'
+            Write-TextFile $BoxartBlockFile '    LAUNCHER_BOXART "${CMAKE_CURRENT_SOURCE_DIR}/launcher_assets/img/boxart.tga"'
             Fill-Template (Join-Path $TemplateDir "CMakeLists.txt.in") (Join-Path $Root "CMakeLists.txt")
             Write-Host "  wired LAUNCHER_BOXART in CMakeLists.txt"
             $env:PYTHONPATH = $ScriptDir
-            python -c "from pathlib import Path; import sys; from project_studio.readme_metrics import inject_readme_boxart; inject_readme_boxart(Path(sys.argv[1]), sys.argv[2])" (Join-Path $Root "README.md") $GameName
+            & $Python -c "from pathlib import Path; import sys; from project_studio.readme_metrics import inject_readme_boxart; inject_readme_boxart(Path(sys.argv[1]), sys.argv[2])" (Join-Path $Root "README.md") $GameName
             Write-Host "  injected boxart into README.md"
         } else {
-            Write-Warning "boxart fetch failed — leave LAUNCHER_BOXART commented."
+            Write-Warning "boxart fetch failed -- leave LAUNCHER_BOXART commented."
         }
     } catch {
-        Write-Warning "boxart fetch failed — leave LAUNCHER_BOXART commented."
+        Write-Warning "boxart fetch failed -- leave LAUNCHER_BOXART commented."
     } finally {
         if ($null -eq $prevPy) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $prevPy }
     }
@@ -637,10 +692,29 @@ if ($doBoxart) {
 
 Write-Host "== Sync symbols header =="
 Push-Location $Root
-try { python tools/sync_symbols.py --game $GameName } catch { Write-Warning "sync_symbols failed" }
+try { & $Python tools/sync_symbols.py --game $GameName } catch { Write-Warning "sync_symbols failed" }
 Pop-Location
 
-git add CMakeLists.txt game.toml codegen_setup.c codegen_setup.h .gitignore VERSION README.md seeds scripts tools mods framework_pins.txt symbols.toml psx_symbols.h 2>$null
+# Every emitted text file must be BOM-less UTF-8: a U+FEFF spliced into
+# CMakeLists.txt is a configure-time parse error, and UTF-16 pins break tools.
+$TextExt = @(".txt", ".toml", ".json", ".md", ".c", ".h", ".cmake", ".sh", ".yml", ".yaml", ".py", ".ps1", ".gitignore")
+$Bad = @()
+Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
+    Where-Object { $_.FullName -notmatch '[\\/](psxrecomp|recomp-ui|disc|\.git)[\\/]' -and ($TextExt -contains $_.Extension.ToLower() -or $_.Name -eq "VERSION") } |
+    ForEach-Object {
+        $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+        $utf16 = $bytes.Length -ge 2 -and (($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) -or ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF))
+        $bom = $false
+        for ($i = 0; $i + 2 -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 0xEF -and $bytes[$i + 1] -eq 0xBB -and $bytes[$i + 2] -eq 0xBF) { $bom = $true; break }
+        }
+        if ($utf16 -or $bom) { $Bad += $_.FullName.Substring($Root.Length + 1) }
+    }
+if ($Bad.Count -gt 0) {
+    throw "Scaffold emitted BOM/UTF-16 text (must be BOM-less UTF-8): $($Bad -join ', ')"
+}
+
+git add CMakeLists.txt game.toml game_options.toml codegen_setup.c codegen_setup.h .gitignore VERSION README.md seeds scripts tools mods framework_pins.txt symbols.toml psx_symbols.h 2>$null
 if (Test-Path (Join-Path $Root ".github")) {
     git add .github 2>$null
 }
@@ -680,8 +754,8 @@ if ($createGithub) {
             default { "--private" }
         }
         $ghSlug = "$GithubOwner/$GithubRepo"
-        $ghDesc = (python -c "from fill_tokens import GITHUB_ABOUT_DESCRIPTION; print(GITHUB_ABOUT_DESCRIPTION)").Trim()
-        $ghHome = (python -c "from fill_tokens import GITHUB_ABOUT_HOMEPAGE; print(GITHUB_ABOUT_HOMEPAGE)").Trim()
+        $ghDesc = (& $Python -c "from fill_tokens import GITHUB_ABOUT_DESCRIPTION; print(GITHUB_ABOUT_DESCRIPTION)").Trim()
+        $ghHome = (& $Python -c "from fill_tokens import GITHUB_ABOUT_HOMEPAGE; print(GITHUB_ABOUT_HOMEPAGE)").Trim()
         try {
             gh repo create $ghSlug $vis --source=$Root --remote=origin --description "$ghDesc" --homepage "$ghHome"
             Write-Host "  created origin ($GithubVisibility); push deferred until end"
@@ -706,7 +780,7 @@ if ($createGithub) {
                 gh repo edit $ghSlug --description "$ghDesc" --homepage "$ghHome"
                 Write-Host "  GitHub About: R.A.I.D. description + Discord homepage"
             } catch {
-                Write-Warning "gh repo edit (About) failed — set description/homepage by hand."
+                Write-Warning "gh repo edit (About) failed -- set description/homepage by hand."
             }
         }
     }
@@ -729,7 +803,8 @@ if ($doGenerate) {
             $BiosAbs = (Resolve-Path -LiteralPath $Bios).Path
             $genArgs += @("--bios", $BiosAbs)
         }
-        python @genArgs
+        & $Python @genArgs
+        if ($LASTEXITCODE -ne 0) { throw "psxrecomp_cli generate failed (exit $LASTEXITCODE)" }
         $GeneratedOk = $true
         # Release CI builds the compiled game from this tree, so it is part
         # of the repo, not a local by-product.
@@ -752,8 +827,8 @@ if ($doBuild -and $GeneratedOk) {
     Write-Host "== Configure & build psx-runtime =="
     Push-Location $Root
     try {
-        cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-        cmake --build build-release --target psx-runtime
+        & $Python psxrecomp\psxrecomp_cli.py rebuild --config game.toml --project-root . --build-dir build-release --no-pgo
+        if ($LASTEXITCODE -ne 0) { throw "psxrecomp_cli rebuild failed (exit $LASTEXITCODE)" }
         $BuildOk = $true
         Write-Host "  build OK -> build-release/ (gitignored)"
     } catch {
@@ -794,7 +869,7 @@ function Ensure-ActionsRegistersReleaseYml([string]$OwnerRepo) {
 
     Write-Host "  Actions has not listed release.yml yet -- nudging with a follow-up commit..."
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
-    Add-Content -Encoding utf8 -Path $wfPath -Value "`n# Actions registration nudge ($stamp UTC)"
+    Add-TextFile $wfPath "`n# Actions registration nudge ($stamp UTC)"
     git add $wfPath 2>$null
     try {
         git -c user.email=setup@localhost -c user.name=setup `
@@ -848,8 +923,7 @@ $Step2 = if ($BuildOk) {
 @"
 Build playable runtime:
 
-       cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-       cmake --build build-release --target psx-runtime
+       python psxrecomp\psxrecomp_cli.py rebuild --config game.toml --project-root . --build-dir build-release --no-pgo
 "@
 } else {
 @"
@@ -858,8 +932,7 @@ Build emitters, Generate (and commit it -- release CI builds from generated/), t
        bash psxrecomp/tools/ci/build_emitters.sh
        python psxrecomp\psxrecomp_cli.py generate --config game.toml --project-root . --disc $GenDiscHint
        git add generated; git commit -m "Add generated game C"
-       cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-       cmake --build build-release --target psx-runtime
+       python psxrecomp\psxrecomp_cli.py rebuild --config game.toml --project-root . --build-dir build-release --no-pgo
 "@
 }
 $CiNote = if ($useCi) {

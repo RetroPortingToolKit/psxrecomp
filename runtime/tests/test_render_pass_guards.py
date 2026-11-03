@@ -53,6 +53,14 @@ assert "g_psx_render_pass_active" in b, (
     "delayed DMA completion would never arrive in frozen time")
 
 mem = (SRC / "memory.c").read_text(encoding="utf-8")
+for bits,width in ((8,1),(16,2),(32,4)):
+    b = body(mem, f"static uint{bits}_t mmio_read{bits}(uint32_t addr) {{")
+    guard = f"g_psx_render_pass_active && !render_pass_mmio_read_allowed(addr, {width})"
+    assert guard in b and b.index(guard) < b.index("psx_devices_mmio_sync();"), (
+        "device reads must be refused before effects at every access width")
+assert mem.count("if (!g_psx_render_pass_active) sio_tick(0);") == 2 and \
+    "if (addr < 0x1F801074u && !g_psx_render_pass_active) sio_tick(0);" in mem, (
+        "I_STAT reads must not advance the uncheckpointed SIO countdown in a pass")
 for fn in ("void psx_write_word(uint32_t addr, uint32_t val) {",
            "void psx_write_half(uint32_t addr, uint16_t val) {",
            "void psx_write_byte(uint32_t addr, uint8_t val) {"):
@@ -147,8 +155,8 @@ assert re.search(r"if \(want && s_pass_cost_w == s_interp_w && "
 # A frame on screen longer than planned (a lagging tick) must hold its newest
 # pass image, never fall back to the older capture (render_pass_plan_test).
 pgp = definition(gl, "pass_gen_present")
-assert "render_pass_gen_select(g->phase, g->n, p, &lo, &hi, &t)" in pgp, (
-    "pass images must be selected through the tested late-flip rule")
+assert "render_pass_gen_select_mode(g->phase, g->n, p, s_interp_hold, &lo, &hi, &t)" in pgp, (
+    "pass images must honor HOLD through the tested late-flip selection rule")
 assert "render_pass_select(" not in pgp and "0.5 / (double)g->period" not in pgp, (
     "no early expiry of a late frame's images")
 cls = body(plan, "int render_pass_mmio_class(")

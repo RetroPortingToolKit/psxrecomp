@@ -62,7 +62,8 @@ int  pgxp_position_fallback(void);
  * near geometry. Guest-visible SXY, MAC0 and FLAG are unchanged either way.
  * Because that position can then differ from the guest integer by more than
  * the fraction, truncation agreement becomes a window (PGXP_PPP_AGREE_*) and
- * a vertex at the GTE's saturation limit must still agree exactly. One
+ * unclamped IR projections need an intact, value-validated GTE word; halves
+ * and cache fallbacks keep the strict saturation checks. One
  * consumer is not visual: [widescreen] precise_nclip takes its branch sign
  * from these shadows, so in a title that sets both, that (already
  * non-faithful) widescreen sign follows the exact projection too. */
@@ -91,6 +92,7 @@ int  pgxp_preserve_projection(void);
  * when none). Returns 1 with the position in x16/y16 when the vertex
  * qualifies (sf=1, IR1/IR2 not saturated, SZ3 not saturated and nonzero, and
  * no divide overflow: H < 2*SZ3), else 0 and the caller keeps the IR path. */
+/* Return 2 for an opt-in IR-unclamped projection, 1 for ordinary precision. */
 int pgxp_project_precise(int64_t mac1, int64_t mac2, int64_t mac3, int shift,
                          int32_t ir1, int32_t ir2, uint32_t sz3, uint32_t h,
                          int32_t ofx, int32_t ofy, int64_t x_num, int64_t x_den,
@@ -164,6 +166,11 @@ void pgxp_suppress_end(void);
 /* Called at the RTPS/RTPT projection with the pre-truncation 16.16 screen
  * coordinates, the projected depth (SZ3), and the packed SXY word the guest
  * sees. Shifts the shadow FIFO exactly like push_sxy (regs 12..15). */
+/* Tag only immediately after push_sxy of a qualified unclamped projection. */
+void pgxp_gte_mark_unclamped(uint32_t depth);
+/* Full positive MAC3 depth of an intact, validated exact-projection word;
+ * zero when unavailable. The legacy SZ APIs keep their hardware u16 value. */
+float pgxp_get_unclamped_depth(uint32_t addr, uint32_t word);
 void pgxp_gte_push_sxy(int32_t x16, int32_t y16, uint16_t sz3, uint32_t packed);
 
 /* Host-only homogeneous screen projection, before SZ/SXY/divider saturation.
@@ -228,6 +235,7 @@ typedef struct PGXPStats {
     uint64_t value_mismatch;     /* shadow present but wrong word (stale)    */
     uint64_t trunc_reject;       /* integer part disagreed with native parse */
     uint64_t tolerance_reject;
+    uint64_t depth_only;         /* tolerance-clamped to native, depth kept   */
     uint64_t w_valid;            /* lookups that also carried a usable depth */
     uint64_t produced;           /* RTPS/RTPT projections pushed into shadows */
     uint64_t swc2_stores;        /* GTE reg shadows copied to RAM shadows     */
@@ -284,6 +292,13 @@ void pgxp_note_nclip(int disagree, int corrected);
 
 /* SWC2 site: copy the GTE register shadow (regs 12..15) to the RAM shadow. */
 void pgxp_store_gte_reg(uint32_t addr, uint8_t reg);
+/* After a title's original store: retain a projected SXY's precision/depth
+ * when only clip/outcode bits outside the GPU's two 11-bit fields changed.
+ * The caller supplies the current GTE word and actual stored word. Changed
+ * coordinates, clamping, stale sources and unmapped destinations fail closed.
+ * Host shadow only; no guest memory/register write. */
+int pgxp_store_flagged_gte_sxy(uint32_t addr, uint8_t reg,
+                              uint32_t source_word, uint32_t stored_word);
 
 /* Address-keyed precise-word lookup (perspective texturing path). Returns
  * nonzero when the tracked word matches `packed` AND carries a depth. */
@@ -295,6 +310,47 @@ int pgxp_load_precise_word(uint32_t addr, uint32_t packed,
  * gte_precision_checkpoint_begin / _rollback (which also cover gte.cpp). */
 void pgxp_checkpoint_begin(void);
 void pgxp_checkpoint_rollback(void);
+
+/* Scoped PGXP mode change for an exact-projection render pass. Open after the
+ * precision checkpoint and close before rollback so the restored generation
+ * remains the pre-pass generation. */
+typedef struct PGXPProjectiveScope {
+    int saved_enabled, saved_cpu_mode, active;
+} PGXPProjectiveScope;
+int  pgxp_projective_scope_begin(PGXPProjectiveScope *scope);
+void pgxp_projective_scope_end(PGXPProjectiveScope *scope);
+
+/* Exact address-keyed packet precision, for a renderer preserving completed
+ * static packets around a smaller interpolated drawing section. `expected`
+ * MUST be the actual destination RAM/scratchpad word, read by the caller
+ * immediately before either operation (the same convention as the lookups
+ * above). Neither operation reads MMIO or changes guest memory.
+ *
+ * Capture also succeeds for an absent/stale/value-mismatched shadow, recording
+ * a valid no-shadow state. Restore is allowed only in an active checkpoint,
+ * only at the captured canonical address, and only when the capture generation
+ * equals that checkpoint's ENTRY generation. It may then rebind live metadata
+ * to the sandbox's current generation. This never promotes an older timeline's
+ * stale metadata. All restores, including clearing a shadow, are journaled.
+ * Receipts are runtime-only host data: do not persist them in game saves. */
+typedef struct PGXPWordShadow {
+    uint32_t address, value, source_generation, valid;
+    int32_t x16, y16;
+    uint16_t z, flags;
+    PGXPProjection projection;
+} PGXPWordShadow;
+int pgxp_capture_word_shadow(uint32_t addr, uint32_t expected, PGXPWordShadow *out);
+int pgxp_restore_word_shadow(uint32_t addr, uint32_t expected, const PGXPWordShadow *in);
+
+/* Explicit packet relocation variant. The caller owns and validates both
+ * packet ranges and their relocation map, writes the destination guest word,
+ * then supplies that word's current value as expected. The captured source
+ * must still name canonical RAM/scratchpad, but need not equal the destination.
+ * All other restore rules above apply, including checkpoint ENTRY generation.
+ * Only destination metadata changes; an absent receipt clears its shadow.
+ * Rollback restores the destination's previous metadata. */
+int pgxp_restore_relocated_word_shadow(uint32_t destination, uint32_t expected,
+                                       const PGXPWordShadow *in);
 
 /* Refused precise-word lookups, newest at (seq - 1) % cap (TCP pgxp_miss_ring). */
 enum {
@@ -357,6 +413,7 @@ typedef struct PGXPTriRecord {
     uint32_t word[3];       /* the packet words                               */
     int32_t  x16[3];        /* position handed to the rasterizer (16.16,     */
     int32_t  y16[3];        /* draw offset and widescreen already applied)   */
+    uint16_t z[3];          /* validated GTE depth handed on (0 = none)       */
 } PGXPTriRecord;
 void pgxp_note_triangle_detail(const PGXPTriRecord *rec);
 /* Returns the total number of triangles ever recorded. */

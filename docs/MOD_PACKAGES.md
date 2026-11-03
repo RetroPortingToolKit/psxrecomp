@@ -1,16 +1,35 @@
 # PSXRecomp mod packages and features
 
+For a hands-on guide to making mods with ordinary tools, start with
+[`../psxmod.md`](../psxmod.md).
+
 A `.psxmod` is a versioned installation, provenance, and trust boundary. A
 package may contribute any number of independently configurable **features**.
 The launcher presents those features as the primary Mods list; package
 installation, version selection, and removal are a secondary management view.
 
-Feature identity is always `(package_id, feature_id)`. Enabling one feature
-never enables, disables, or reconfigures another feature.
+Feature identity is always `(package_id, feature_id)`. Player selections are
+independent. Explicit `[[requirement]]` declarations can additionally activate
+required features for a session without changing saved player selections.
 
 The player selects a verified stock BIN/CUE. Resolution produces guarded native
 operations and sparse disc overlays without rewriting or replacing that stock
 image.
+
+## Save-state isolation
+
+An active package with `save_compatibility = "isolated"` gives normal save slots
+and their thumbnail/HD-residency sidecars a namespace derived from the complete
+committed, verified content-plan fingerprint. Disabling it returns to the
+historical slot paths; a different plan uses different slots. Memory-card files
+are unaffected. Preparation and preview do not establish a save-state scope.
+
+The runtime refuses to start an isolated session without a qualified content
+identity. Invalid scopes and truncated paths fail closed, and changing scope
+cancels pending slot operations. There is no automatic import from ordinary
+slots. This is filename isolation, not a new state-header compatibility guard;
+explicit developer blob/path loading and manually copied files are outside it.
+Packages using the default compatibility policy retain their existing paths.
 
 ## Where packages live
 
@@ -83,6 +102,14 @@ game catalog. A target built with `COSIM` stages nothing: it has no launcher,
 and it shares an output directory with the real runtime.
 
 ### Declining a framework builtin (`EXCLUDE_BUILTIN_MODS`)
+
+Internal Resolution (`psx.enhancement.internal-resolution`) is required shared
+UI. It is included even when an older title sets `PSX_BUILTIN_MOD_ALLOWLIST`.
+Excluding it or providing a title-local package with that id fails configure:
+remove the stale exclusion/package and use the shared mod's saved option or
+its disabled state instead. This keeps fresh-profile 4x and the complete
+1x..32x selector consistent for current titles and newly scaffolded games.
+Player-installed packages and saved selections are not removed by staging.
 
 Every package under the framework's `mods/builtin/packages` targets
 `game_id = "*"`, so by default every title ships all of them. A title that does
@@ -158,12 +185,12 @@ stale the moment either side gains a mod.
 
 ## Feature manifest
 
-Write new manifests at the current format version, which is **7**. Older
+Write new manifests at the current format version, which is **11**. Older
 versions stay readable so installed packages survive an update, and each
 section below notes the version a field first required.
 
 ```toml
-format_version = 7
+format_version = 11
 id = "example.localization"
 version = "1.2.0"
 name = "Example Localization Pack"
@@ -231,6 +258,15 @@ feature-local: `when = { option = "value", ... }` requires every listed option
 to match. The legacy `when_option`/`when_value` pair remains accepted for a
 single condition.
 
+Format10 also permits these conditions on `[[resource]]`. Only matching
+resources appear in the feature's file pickers, preparation inputs/outputs,
+and resolved plan. A required resource is required only while its condition
+matches. Unselected media is not read, verified or added to the session
+identity; the selected option and active resource bytes identify the plan.
+For example, `when = { subtitles = "en" }` can select a verified English
+movie pack while keeping the Japanese donor and Spanish pack inactive.
+Conditions must refer to valid values of the owning feature's options.
+
 A feature with `hidden = true` is left out of the launcher's lists while it is
 disabled; while enabled it is listed so the player can turn it off. A title that
 sets `[runtime] hide_hidden_mod_features = true` in `game.toml` never shows it:
@@ -239,6 +275,33 @@ summary, "Enable all" / "Disable all" leave it alone, and a package whose every
 feature is hidden is not listed under "Installed packages". Either way it runs
 exactly as `default_enabled` and `mods/state.toml` say, so a hidden default-on
 feature is simply active. (recomp-ui `launcher_mod_visibility.h`.)
+
+A feature with `quick = true` is offered in the launcher dashboard's Quick Mods
+card when the title enables `[launcher] quick_controls = true` in `game.toml`.
+The player can add or remove any listed feature from the Mods page ("Show in
+Quick Mods"); that choice is saved under `[quick_mods]` in `mods/state.toml`
+and overrides the manifest. Quick membership is presentation only: it never
+changes activation, preparation or the execution fingerprint.
+
+A feature whose plugin presents with driver vsync off -- frame interpolation
+(`psx_mod_set_frame_interpolation`), native VBlank pacing above the panel rate
+or uncapped (`psx_mod_set_native_vblank_rate`) -- declares it (format 11):
+
+```toml
+[[feature]]
+id = "smooth-motion"
+vsync = "off"
+```
+
+The launcher's VSync row is then shown disabled, at Off, with one line naming
+the feature while it is enabled, instead of offering a choice that would not
+apply; the player's saved VSync choice is untouched and applies again with the
+feature off (recomp-ui `launcher_model_vsync_forced_off_by`). `"off"` is the
+only value. A feature that forces vsync off without declaring it is named on
+stdout when it does (`mod ... forces vsync off but its manifest does not
+declare ...`), and the launcher's mod provider reports it as forcing vsync off
+for the rest of that process (an in-session or rematch launcher), but a fresh
+launch cannot know before its first session.
 
 ## Bounded integer patches
 
@@ -519,6 +582,22 @@ frames. Trusted callbacks receive only the narrow C services exposed by
 `runtime/include/mod_plugins.h`. Games should continue to use declarative
 patches and overlays when those operations are sufficient.
 
+An implementation may also register **function overrides** under a plugin id
+(`psx_mod_register_function_override`): hand-written C that replaces or wraps
+a guest function at a given address, with an optional prologue-word residency
+guard. Registration only queues the override; it is ARMED into the dispatcher
+tier when the resolved plan selects that plugin — the same gating as the other
+callback kinds, so an override-only plugin id counts as available to the
+resolver. Every registration states a required guest-cycle `credit` (a fixed
+per-handled-call charge, `0` for a mod with no hardware analog, or
+`FO_CREDIT_SELF` when the body — or a wrapped original — accounts for its own
+time). The full execution contract (guest ABI, decline semantics,
+`func_override_call_original` wrap primitive, `func_override_guest_call`,
+determinism and cycle-accounting policy) is documented in
+`runtime/include/func_override.h`. Overrides registered directly through
+`func_override_add` (game `EXTRAS_SOURCES` constructors, the progressive-
+decompilation idiom) bypass package gating and are always active; packages
+are the right home for anything a player should be able to toggle.
 ### Session starts and mod-owned state
 
 What a plugin sets up should last only for a session whose resolved plan
@@ -555,6 +634,7 @@ defensive, for the state listed here.
 | Frame-interpolation blend mode | `psx_mod_set_frame_interpolation_blend` | default | every session |
 | Native VBlank pacing and its rate | `psx_mod_set_native_vblank_rate` | off, 0 | every session |
 | PGXP request (`psx.enhancement.pgxp`) | the builtin `psx.pgxp` activation (`pgxp_mod_request`) | none | every session |
+| Host enhancement requests (CRT Filter, Image Filtering, Enhanced Audio, Rewind, Internal Resolution) | the builtin activations (`psx_host_enh_request_*`) | none | every session |
 | Frame period, if native VBlank pacing was on | `psx_mod_set_native_vblank_rate` | first-session value | later sessions |
 | Frame interpolation and its rate | `psx_mod_set_frame_interpolation` | first-session value | later sessions |
 | Vsync forced off | `psx_mod_set_frame_interpolation`, `psx_mod_set_native_vblank_rate` | first-session value | later sessions |
@@ -604,9 +684,20 @@ Not reset, and why:
   before a rematch.
 - **Guest memory, GPU-DMA memory, texture-packet arenas and defined texture
   banks** (`psx_mod_alloc_guest_memory`, `psx_mod_alloc_gpu_dma_memory`,
-  `psx_mod_alloc_texture_packet_memory`, `psx_mod_define_texture_bank`) live
-  for the process. A bank ID is read only from packets in a plugin's own arena,
-  which stock game code does not use.
+  `psx_mod_alloc_texture_packet_memory`, `psx_mod_define_texture_bank`) retain
+  **process lifetime by default**. Existing titles may cache their handles in
+  static variables and reuse them on a lobby rematch; resetting these arenas
+  would invalidate those handles.
+
+  A title whose complete plugin set recreates its handles during every
+  activation can declare session-owned resources in its authored CMake:
+  `set_property(TARGET psx-runtime PROPERTY PSX_MOD_SESSION_RESOURCES TRUE)`.
+  Set it on each runtime target that needs this contract. This is a fixed title
+  capability, not a player option. Only those targets retire texture/packet
+  registrations and enhancement arenas after renderer teardown and before
+  activation, including lobby rematches. Ordinary `memory_init()` runs later
+  and preserves the new activation's allocations. A bank ID is read only from
+  packets in a plugin's own arena, which stock game code does not use.
 
 **A rematch is a full session start.** It re-enters below the first session's
 setup block, so after its commit or netplay clear it runs the same sequence as
@@ -674,6 +765,23 @@ direct indexed lookup rather than scanning every installed mod.
 
 Feature disc overlays require an exact `disc_sha256` on every target entry.
 `expected_sha256` can additionally guard the replaced stock range.
+
+Format 10 also supports an overlay sourced from a verified same-feature
+`[[resource]]` with `format = "file"`. Declare exactly one of `file` or
+`resource`. Resource overlays require `size`, a nonnegative `resource_offset`
+(default zero), the slice's `sha256`, and the stock range's `expected_sha256`.
+The source must have a fixed nonzero size and SHA-256 and cannot be input-only.
+The complete resource is verified once into immutable bytes during resolution;
+all its slices and the runtime resource share that snapshot. Slices may span
+sectors. A diagnostic launcher preview defers preparer-owned resource overlays,
+while execution rejects missing, corrupt, out-of-range or mismatched content.
+No generated media needs to be written into a bundled package directory.
+
+Trusted preparers may use `ModPrepareContext::progress(fraction, message)` when
+it is provided. A false result requests cancellation: stop between bounded work
+units and before publishing outputs. Keep previously verified cache entries and
+publish new entries atomically. The manager checks cancellation before applying
+derived resource bindings. Older preparers may leave this callback unused.
 
 ## State and migration
 
@@ -756,6 +864,37 @@ belong inside one feature as option values. A relationship that holds only for
 some selections of one feature is a `[[requirement]]`, not a dependency.
 
 ## Implicit requirements across packages
+
+Game-owned save metadata can use the memory-card extension transport in
+`memcard.h`. A trusted activation plugin registers both load and save callbacks
+with `memcard_set_extension_codec()`. Initialization/reload passes the standard
+128 KiB base plus its optional tail to the loader. A flush gives the encoder the
+current base and publishes both parts together through an exclusive temporary
+and atomic replacement. Tails are bounded to 128 KiB; rejected load/encode,
+oversized tails and I/O errors leave the original file intact and writes dirty.
+`memcard_last_flush_result()` and debug `mc_status` expose failure.
+SIO reports a failed write to the guest instead of acknowledging a rejected
+flush as saved.
+
+Each mod session clears the codec before activation. Without a codec, loaded
+tails are preserved opaquely; their game-specific binding can become stale when
+native saves change. Raw export exposes only the standard base, and explicit
+raw import replaces the image and clears its tail. The title owns format
+validation, save-slot identity, native fallback characters, and restore/rewind
+synchronization. Transport alone does not make additional party members safe.
+
+Install codecs during plugin activation. Until extended metadata has a negotiated
+transport, a session selecting a codec is refused before netplay starts. Ordinary
+raw-card synchronization is unchanged; a package identity alone cannot synchronize
+an opaque tail.
+
+Trusted graphics plugins can call `psx_mod_set_internal_resolution(lines)` to
+request a rendering height for their session. Values from 120 through 8192 use
+the existing integer-scale resolver and backend allocation limits; zero clears
+the request. `PSX_INTERNAL_RESOLUTION` takes precedence. It wins over the
+built-in Internal Resolution mod's choice and the title's baseline, which stay
+unchanged, and every new session clears the request before its mod plan
+activates, including rematches and sessions without that mod.
 
 The shared PGXP plugin uses `psx_mod_set_pgxp_precision(enabled, cpu_mode)`.
 This stores a session selection as well as setting live correction flags, so
@@ -992,6 +1131,138 @@ re-enter guest execution, because pending branch/load state is live.
 do not change guest behavior. Function entry replacement remains the separate
 `psx_mod_register_function_entry_plugin` interface.
 
+### Guarded immediate selectors
+
+A plugin that must change a constant, offset or address inside compiled game
+code (a capacity compare, a relocated table) lists the instruction under
+`[mod_immediate]` in `game.toml` and picks the variant with
+`psx_mod_set_immediate_selector(group, selector)` from its activation
+callback. The instruction bytes stay original, so static AOT code, cached
+overlays and the interpreter keep matching their guards and run the same
+variant. Selection is accepted only during offline activation, then sealed until
+restart; later attempts, including switching back to selector 0, are refused.
+Every new session starts at selector 0 (the stock instruction). Nonzero online
+activation is refused and invalidates the launch even if a plugin ignores the
+setter result. This capability does not negotiate online variants.
+
+Non-stock frozen selections join the existing save-state content scope, including
+for packages declaring shared saves. A state made with a different selection is
+outside the session's slot namespace; the chosen values do not rewind or switch
+mid-session. Memory-card paths/formats are unchanged by this selector policy. Existing
+unscoped states are not automatically assigned a non-stock selection: they do
+not record which variant created them. Config rules and the emitted switch: docs/config_schema.md "Mod
+immediates".
+
+### Built-in host enhancements
+
+Five framework packages replace what used to be Settings rows (owner decision,
+beads-eio.3.398; the rule is recomp-ui's docs/SETTINGS_STANDARD.md: anything
+that changes the game's picture, sound or play is a mod). Each targets
+`game_id = "*"`, keeps save states shared, and declares its plugin
+`netplay = "host_only"` (below). Internal Resolution is enabled at fixed 4x on
+fresh profiles; the other four are default-off. Each
+changes only what this machine shows, plays or keeps, so it is the player's own
+in every netplay mode and never part of the plan fingerprint.
+
+| Package (feature) | Plugin | Options (default) |
+|---|---|---|
+| `psx.enhancement.crt-filter` (CRT Filter) | `psx.crt-filter` | `screen_model`: default / crt / composite / trinitron (default); `scanlines`: default / on / off (default); `scanline_strength`: 1..100 (50) |
+| `psx.enhancement.image-filtering` (Image Filtering) | `psx.image-filtering` | `smoothing`: default / smooth / sharp (default); `texture_filtering`: default / nearest / bilinear / xbr (default); `fmv_filtering`: default / nearest / bilinear / sharp / bicubic (default) |
+| `psx.enhancement.enhanced-audio` (Enhanced Audio) | `psx.enhanced-audio` | none: enabled = the high-quality SPU mix |
+| `psx.feature.rewind` (Rewind) | `psx.rewind` | `buffer`: 50 / 100 / 150 / 200 (50); `interval`: 1 / 4 / 8 / 12 / 15 (15) |
+| `psx.enhancement.internal-resolution` (Internal Resolution) | `psx.internal-resolution` | `resolution`: 1x..32x (4x); retained choices default / native / 720p / 1080p / 1440p / 4k / 5k / 8k / display / auto |
+
+**The title's keys stay its baseline.** `[video] crt_filter`, `scanlines`,
+`scanline_strength`, `antialiasing` (the linear present scale; Smoothing is
+not the `antialiasing_mode` FXAA pass), `texture_filtering`, `fmv_filter` and
+`[audio] spu_hq`, and `[video] internal_resolution` (or the legacy
+`supersampling` factor) with `dynamic_resolution`, are what the title ships.
+With a mod on, each option replaces its part, and an option at `default`
+("Game default" in the launcher) keeps the baseline value. Disabled Internal
+Resolution selects native 1x and turns dynamic resolution off; the other
+mods leave their title baseline unchanged when disabled. Saved feature and
+option choices win over manifest defaults, including explicit Off, Game
+default and the previous height presets; no profile migration is needed.
+Scanline strength applies to the player's own scanlines
+(Scanlines = On); Game default keeps the title's scanlines and their strength.
+Enhanced Audio turns the high-quality mix on; with it off the title's `spu_hq`
+stands. Internal Resolution's 1x..32x choices request an exact integer factor,
+independent of title reference height and the legacy supersample multiplier.
+The renderer still clamps to hardware texture limits and its bounded memory
+budget; selecting 32x does not guarantee an admitted 32x surface or a frame
+rate. No memory-budget increase is implied. Auto is Match display with dynamic
+resolution
+(floor: the title's `dynamic_resolution_min`); a fixed choice turns dynamic
+resolution off. PGXP Precision needs 2x or more (720p and up at 240 lines) to
+be visible. A title mod's `psx_mod_set_internal_resolution` request still wins
+over the Internal Resolution mod, and `PSX_INTERNAL_RESOLUTION` over both
+(docs/config_schema.md "Internal resolution").
+
+**Activation only records.** Each plugin's activation records a request
+(`psx_host_enh_request_*`, `runtime/include/host_enhancements.h`); the
+renderer setup at the session start resolves the requests over the baseline
+after activation (`session_host_look` and `session_internal_resolution` in
+main.cpp) and arms the rewind ring when the machine is configured. Applying at activation would be undone by the
+renderer setup, which is why the PGXP request works the same way. The env
+overrides (`PSX_TEXTURE_FILTER`, `PSX_SCANLINES`, `PSX_AUDIO_SHADOW`,
+`PSX_REWIND`, `PSX_INTERNAL_RESOLUTION`, `PSX_SUPERSAMPLE`, ...) still win for
+a validation run, and the debug TCP commands (`scanline`, `texture_filter`,
+`post_aa`, `dynres`, `video_set`) change the session's effective values.
+
+**Live changes.** CRT Filter, Image Filtering and Internal Resolution register
+option-changed callbacks: an in-game menu option change
+(`psx_mod_set_option_live`) records the new request and re-applies it at once.
+Internal Resolution changes the scale through the same live path as the debug
+server's `video_set` (`gl_renderer_set_internal_scale_live`); when the backend
+cannot change its scale on a running game, or during a netplay match (the
+scale is held), the callback refuses and the saved choice applies at the next
+start. Enhanced Audio and Rewind, and switching any feature on or off, apply at
+the next start. Because these features are host-only, the in-game menu accepts
+their option changes during a netplay match too (`mh_mod_set` asks
+`psx_mod_option_live_host_only`); every other feature stays fixed for the
+match.
+
+**Rewind** keeps `psx_mod_set_rewind_blocked` and the netplay suppression
+(rewind never runs in a match). Its hotkey stays a player setting
+(`[hotkeys] rewind_pad`). A build configured with `-DPSX_REWIND=OFF` does not
+stage `psx.feature.rewind`: `runtime.cmake` declines it like an
+`EXCLUDE_BUILTIN_MODS` entry, so it is absent and recorded as excluded for the
+release packager.
+
+### Host-only plugins (`netplay = "host_only"`)
+
+Format 11 adds a fourth plugin class beside `local_view`, `input` and
+`host_output` (docs/NETPLAY.md "Own-view mods"):
+
+```toml
+format_version = 11
+
+[[plugin]]
+feature = "crt-filter"
+id = "psx.crt-filter"
+netplay = "host_only"
+```
+
+A host-only plugin never touches guest execution: it sets host presentation,
+audio output or host-tool state from its activation (and option-changed)
+callbacks only. Its feature may contribute nothing else -- no other plugin,
+patch, overlay, resource or `[[requirement]]` -- or the manifest is rejected;
+such a feature is host-only (`ModFeature::host_only`). Then:
+
+- **The plan fingerprint leaves it out.** `canonical_resolution` skips
+  host-only features, their options and their plugins, and a package made of
+  nothing else. Two players who differ only in, say, the CRT Filter resolve
+  the same fingerprint, so isolated save states, the derived-disc cache and
+  netplay plan checks are unaffected by it.
+- **It is the player's own in every netplay mode.** A vanilla match keeps it
+  with the own-view features (`mod_runtime_commit_netplay_view`); an explicit
+  empty host plan keeps the player's host-only features and nothing else; a
+  host never publishes one in its lobby plan, and a host's plan never
+  switches a guest's (`apply_host_mod_plan`); a direct/LAN match keeps the
+  local selection, whose fingerprint does not include it.
+- **Its options may change live in a match** (`psx_mod_set_option_live`),
+  where every other feature's plan is fixed with the peers.
+
 ### Presentation bezel packages
 
 The framework registers `psx.bezel`, a trusted presentation plugin for OpenGL
@@ -1078,3 +1349,10 @@ existing post-commit path, not the preparation worker.
 The `prepare_resources` method is separate from read-only `resolve`, so editing
 launcher settings does not trigger conversions. Runtime activation still sees
 only fully verified immutable resources.
+
+Function-override package arming is transactional and runs before activation
+callbacks. Address collisions or capacity failures reject the launch through
+`mod_runtime_activation_error()` and remove all package entries, retaining
+always-on direct implementations. Every session rearms its selected plan.
+Replacement overrides cannot be selected as netplay local-view plugins: they
+change shared execution rather than only sandboxed presentation.

@@ -1,25 +1,27 @@
-/* rewind_settings_test — [video] rewind opt-in plumbing.
+/* rewind_settings_test — local rewind is the built-in Rewind mod.
  *
  * Local rewind keeps whole-machine snapshots (2 MB main RAM + 1 MB VRAM +
  * 512 KB SPU RAM, uncompressed) in a ring and captures one every
- * rewind_interval frames. At the default depth that is a few hundred MB
- * resident plus a periodic multi-megabyte copy, so the feature is opt-in and
- * nothing is allocated until a player asks for it.
+ * rewind_interval frames, so it is opt-in. The switch, the buffer depth and
+ * the interval used to be settings.toml [video] keys; they are now the
+ * built-in Rewind mod's feature and options (mods/builtin/packages/
+ * psx.feature.rewind, runtime/src/mod_builtin_rewind.c). What stays a player
+ * setting is the controller hotkey that opens it.
  *
- * What this pins is the decision layer, not the ring itself:
+ * What this pins is the settings.toml side of that move:
  *
- *   1. `rewind` defaults OFF, and stays off when settings.toml says nothing;
- *   2. settings.toml turns it on, and can spell an explicit off;
- *   3. an absent key stays absent, so layering cannot force a value;
- *   4. save_user_settings round-trips it — a launcher save that dropped the key
- *      would read as "the toggle does nothing";
- *   5. the tuning keys stay independent of the enable.
+ *   1. the old rewind / rewind_depth / rewind_interval keys are ignored, not
+ *      errors -- an old file keeps every other setting;
+ *   2. a save drops them, so they cannot come back as a hidden override of
+ *      the mod;
+ *   3. the [hotkeys] rewind_pad binding still reads and round-trips.
  */
 #include "config_loader.h"
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -40,90 +42,50 @@ static fs::path write_temp(const std::string& name, const std::string& body) {
     return p;
 }
 
-/* The default is the whole point of the change: a host that has never opened
- * the settings window must not be paying for the ring. */
-static void test_default_off() {
-    PSXRecompV4::UserSettings fresh;
-    check(!fresh.rewind, "rewind defaults OFF in UserSettings");
-    check(!fresh.has_rewind, "a fresh UserSettings has no opinion on rewind");
-
-    fs::path p = write_temp("psxrecomp_rewind_absent.toml",
-        "[video]\n"
-        "supersampling = 2\n");
-    auto us = PSXRecompV4::load_user_settings(p);
-    check(!us.parse_error, "settings.toml parses");
-    check(!us.has_rewind, "absent rewind leaves has_rewind false");
-    check(!us.rewind, "absent rewind leaves the value off");
-    fs::remove(p);
+static std::string read_text(const fs::path& p) {
+    std::ifstream f(p);   // closed on return: Windows cannot delete an open file
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
-static void test_opt_in_and_explicit_off() {
-    fs::path on = write_temp("psxrecomp_rewind_on.toml",
+static void test_old_keys_ignored_and_dropped() {
+    fs::path p = write_temp("psxrecomp_rewind_retired.toml",
         "[video]\n"
-        "rewind = true\n");
-    auto us_on = PSXRecompV4::load_user_settings(on);
-    check(us_on.has_rewind && us_on.rewind,
-          "settings.toml rewind = true is read");
-    fs::remove(on);
-
-    /* Explicit false must be distinguishable from absent: one is a player who
-     * turned it off, the other is a file that never mentioned it. */
-    fs::path off = write_temp("psxrecomp_rewind_off.toml",
-        "[video]\n"
-        "rewind = false\n");
-    auto us_off = PSXRecompV4::load_user_settings(off);
-    check(us_off.has_rewind, "explicit rewind = false still sets has_rewind");
-    check(!us_off.rewind, "explicit rewind = false reads as off");
-    fs::remove(off);
-}
-
-static void test_round_trip() {
-    PSXRecompV4::UserSettings out;
-    out.rewind = true;            out.has_rewind = true;
-    out.rewind_depth = 100;       out.has_rewind_depth = true;
-    out.rewind_interval = 4;      out.has_rewind_interval = true;
-
-    fs::path p = fs::temp_directory_path() / "psxrecomp_rewind_roundtrip.toml";
-    check(PSXRecompV4::save_user_settings(p, out), "save_user_settings writes");
-
-    auto back = PSXRecompV4::load_user_settings(p);
-    check(!back.parse_error, "written settings.toml re-parses");
-    check(back.has_rewind && back.rewind,
-          "rewind survives a save/load round trip");
-    check(back.has_rewind_depth && back.rewind_depth == 100,
-          "rewind_depth survives a save/load round trip");
-    check(back.has_rewind_interval && back.rewind_interval == 4,
-          "rewind_interval survives a save/load round trip");
-    fs::remove(p);
-}
-
-/* Depth/interval describe a ring that only exists once rewind is on, but they
- * are still their own keys: a player may tune them while it is off and expect
- * the values to be there when they turn it on. */
-static void test_tuning_independent_of_enable() {
-    fs::path p = write_temp("psxrecomp_rewind_tuning_only.toml",
-        "[video]\n"
+        "window_width = 1600\n"
+        "rewind = true\n"
         "rewind_depth = 150\n"
-        "rewind_interval = 8\n");
+        "rewind_interval = 8\n"
+        "[hotkeys]\n"
+        "rewind_pad = 1272\n");
     auto us = PSXRecompV4::load_user_settings(p);
-    check(!us.has_rewind, "tuning keys alone do not imply an enable");
-    check(us.has_rewind_depth && us.rewind_depth == 150,
-          "rewind_depth is read without rewind being set");
-    check(us.has_rewind_interval && us.rewind_interval == 8,
-          "rewind_interval is read without rewind being set");
+    check(!us.parse_error, "a settings.toml with the old rewind keys still parses");
+    check(us.has_window_width && us.window_width == 1600,
+          "the player's other settings survive the retired keys");
+    check(us.has_hotkey_pad_rewind && us.hotkey_pad_rewind == 1272,
+          "the Rewind controller hotkey is still a setting");
     fs::remove(p);
+
+    fs::path out = fs::temp_directory_path() / "psxrecomp_rewind_retired_saved.toml";
+    check(PSXRecompV4::save_user_settings(out, us), "save_user_settings writes");
+    const std::string text = read_text(out);
+    check(text.find("rewind =") == std::string::npos &&
+          text.find("rewind_depth") == std::string::npos &&
+          text.find("rewind_interval") == std::string::npos,
+          "a save drops the retired rewind keys");
+    check(text.find("rewind_pad = 1272") != std::string::npos,
+          "a save keeps the Rewind hotkey");
+    auto back = PSXRecompV4::load_user_settings(out);
+    check(back.has_hotkey_pad_rewind && back.hotkey_pad_rewind == 1272,
+          "the Rewind hotkey survives a save/load round trip");
+    fs::remove(out);
 }
 
 int main() {
-    test_default_off();
-    test_opt_in_and_explicit_off();
-    test_round_trip();
-    test_tuning_independent_of_enable();
+    test_old_keys_ignored_and_dropped();
 
     if (failures) {
         std::fprintf(stderr, "rewind_settings_test: %d failure(s)\n", failures);
         return 1;
     }
-    std::printf("PASS: [video] rewind opt-in plumbing\n");
+    std::printf("PASS: rewind is the Rewind mod; settings.toml keeps only its hotkey\n");
     return 0;
 }

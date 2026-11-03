@@ -25,10 +25,12 @@ int vr_pose_to_view(const double q[4], const double p[3],
     for(int row=0;row<3;row++) {
         for(int col=0;col<3;col++) {
             double a=0;for(int k=0;k<3;k++)a+=e[k*3+row]*o[k*3+col];
-            v.rotation_q12[row*3+col]=(int32_t)lround(a*sign[row]*sign[col]*4096);
+            v.rotation[row*3+col]=a*sign[row]*sign[col];
+            v.rotation_q12[row*3+col]=(int32_t)lround(v.rotation[row*3+col]*4096);
         }
         double a=0;for(int k=0;k<3;k++)a+=e[k*3+row]*(op[k]-p[k]);
         a*=sign[row]*units;if(fabs(a)>65536) return 0;
+        v.translation_precise[row]=a;
         v.translation[row]=(int32_t)lround(a);
     }
     double fx=w/(r-l),fy=h/(u-d),cx=-l*fx-w*.5,cy=u*fy-h*.5;
@@ -36,6 +38,7 @@ int vr_pose_to_view(const double q[4], const double p[3],
     for(int i=0;i<4;i++) if(!isfinite(pix[i]) || fabs(pix[i])>32767) return 0;
     v.fx_q16=(int32_t)lround(fx*65536);v.fy_q16=(int32_t)lround(fy*65536);
     v.cx_delta_q16=(int32_t)lround(cx*65536);v.cy_delta_q16=(int32_t)lround(cy*65536);
+    v.precise=1;
     *out=v;return 1;
 }
 int vr_pose_to_transform(const double q[4],const double p[3],

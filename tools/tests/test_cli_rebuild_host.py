@@ -114,5 +114,57 @@ class RebuildConfigureFlagsTest(unittest.TestCase):
                          [('generate', 'ON'), ('use', 'OFF')])
 
 
+class CmakeBuildToolTest(unittest.TestCase):
+    """Build must run the cmake that configured the tree, never a PATH cmake.
+
+    On Windows a PATH ``cmake`` is often MSYS2's, which rewrites the Windows
+    build directory as ``/f/.../F:/...`` and fails.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.build = Path(self.tmp.name) / 'build-release'
+        self.build.mkdir()
+        self.configured = Path(self.tmp.name) / 'toolchain' / 'bin' / 'cmake.exe'
+        self.configured.parent.mkdir(parents=True)
+        self.configured.write_text('')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def build_cmd(self):
+        calls = []
+
+        def run(cmd, **_):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch.object(cli.subprocess, 'run', side_effect=run):
+            cli._cmake_build(self.build, 'psx-runtime', mock.Mock())
+        return calls[0]
+
+    def test_uses_cmake_command_from_cache(self):
+        (self.build / 'CMakeCache.txt').write_text(
+            'CMAKE_GENERATOR:INTERNAL=Ninja\n'
+            f'CMAKE_COMMAND:INTERNAL={self.configured}\n')
+        with mock.patch.object(cli, '_which_tool', return_value=Path('/msys/usr/bin/cmake')):
+            self.assertEqual(self.build_cmd()[0], str(self.configured))
+
+    def test_falls_back_to_path_without_cache(self):
+        with mock.patch.object(cli, '_which_tool', return_value=Path('/usr/bin/cmake')):
+            self.assertEqual(self.build_cmd()[0], str(Path('/usr/bin/cmake')))
+
+    def test_stale_cache_entry_falls_back_to_path(self):
+        (self.build / 'CMakeCache.txt').write_text(
+            f'CMAKE_COMMAND:INTERNAL={self.configured.parent / "gone.exe"}\n')
+        with mock.patch.object(cli, '_which_tool', return_value=Path('/usr/bin/cmake')):
+            self.assertEqual(self.build_cmd()[0], str(Path('/usr/bin/cmake')))
+
+    def test_no_cmake_anywhere_is_an_error(self):
+        with mock.patch.object(cli, '_which_tool', return_value=None):
+            with self.assertRaises(RuntimeError):
+                cli._cmake_build(self.build, 'psx-runtime', mock.Mock())
+
+
 if __name__ == '__main__':
     unittest.main()

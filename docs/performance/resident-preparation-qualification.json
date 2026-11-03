@@ -1,0 +1,571 @@
+{
+  "schema": 1,
+  "items": [
+    "E4",
+    "S4"
+  ],
+  "status": "qualified-scoped-startup-package-pending-final-owner-adoption",
+  "title": "Tomba!",
+  "revision": "USA SCUS-94236",
+  "engine_implementation_commit": "86b719cca21ca73c7a8a66645f3c12caeb9efd57",
+  "title_commit": "cf6171b93d75b902b1f940daad4f0f5677d0951f",
+  "package": "G4/H1 fixed ON; native resident preparation OFF/ON only; no H2/E2/E3/S5/S7 package",
+  "configuration": {
+    "execution": "ENHANCED",
+    "debug_tools": false,
+    "ipo": false,
+    "pgo": "",
+    "cpu_spans": false,
+    "gl_batch": "LLE",
+    "renderer": "OpenGL",
+    "internal_scale": 1,
+    "pgxp": false,
+    "rewind": false,
+    "interpolation": false,
+    "audio_emulated": true,
+    "output": "dummy",
+    "window": "hidden full presenter"
+  },
+  "host": {
+    "alias": "windows-test-host",
+    "physical_cores": 8,
+    "logical_cpus": 16,
+    "cpu_budget_physical_core_equivalents": 0.5,
+    "windows_job_cpu_rate_10000": 625,
+    "scope": "All launches on one physical host, identical hard cap over observer and children. First sample and continuation use separate capacity leases; reservations0.6/0.5, actual cap unchanged0.5."
+  },
+  "identities": {
+    "binaries": {
+      "control": "aaa26cf6adc859a632bec714b8ac16dee742459ebeb06ffaab961f4a0251bc93",
+      "native": "15c1e457e47bb20d5074349087488341b29d663a13ab336f99f1f7e6b29ac8b6"
+    },
+    "simulation_identity": "48620e7f460d25867edf97df486b854ba5f36aceccd2404c2825ef83bc4ac3cc",
+    "source_manifest_sha256": "60c96da8a784b8dffd0304be25d22cf6873451b27d4726909369e3bf64d4a3e8",
+    "private_original_build_receipt_sha256": "5ee846f3d140965fad133d55a9d7934aeaa5642cd5d2b8ab8a118a3930749b12",
+    "private_original_comparison_receipt_sha256": "376f6feadf9071537d5e82f04bc9747ab2d9fe73f474b811cdb634be1d088532",
+    "private_first_sample_receipt_sha256": "5744ce2002649ac020da0ae0f06b48d2d2db792a7a7bd9405d6167cdd728ea02"
+  },
+  "method": {
+    "schedule": "control/native cold then native/control verified; reverse order in block2",
+    "cold": "New empty private application pack; OS/file caches are not flushed.",
+    "timer": "Actual complete shared preparation service: key/checks, read, derivation, allocation/copies, dedup, publication and prune.",
+    "cpu": "Process CPU to passively observed ready includes engine/GL startup and polling granularity, not exclusive preparation CPU.",
+    "observation": "Read-only exact-binary PE/module/symbol/Record ABI observer, stable repeated ready view; endpoint before disk header/hash. No product writes, suspension, injection, TCP server or debug rebuild.",
+    "negatives": "Original productionTCP attempt invalid and retained, no performance credit. First successful passive launch recovered only a stdout/stderr postcheck error; numeric data unchanged, no cold launch repeated.",
+    "privacy": "Owner paths/hostname and lease tokens aliased. All launch numeric samples preserved here; complete polling/raw logs, binaries, recipes and source manifests remain in private campaign evidence."
+  },
+  "conclusions": {
+    "cold_memory": "Repeated lower peak and retained process commit in both cold pairs.",
+    "cold_timing": "Block2 comparable:40.5258% less whole-preparation wall. Block1 supporting50.7890% lower is load-confounded, not a second comparable timing result.",
+    "verified": "Mixed/overlapping wall and startup CPU results are neutral/inconclusive. Both verified pairs exceed the8point load-comparability threshold.",
+    "limits": "Fixed capacity-constrained startup profile only; no unrestricted wall, exclusive preparation CPU, FPS/GPU, physical audio, every-gameplay or all-title claim. Final combined owner adoption remains pending."
+  },
+  "samples": [
+    {
+      "sample": 1,
+      "block": 1,
+      "choice": "control",
+      "cache_state": "cold",
+      "whole_preparation_wall_ms": 714.8272,
+      "startup_cpu_to_observed_ready_seconds": 0.6875,
+      "startup_wall_to_observed_ready_seconds": 0.984000000054948,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 79636,
+        "PeakWorkingSetSize": 148631552,
+        "WorkingSetSize": 148287488,
+        "QuotaPeakPagedPoolUsage": 1563840,
+        "QuotaPagedPoolUsage": 1563720,
+        "QuotaPeakNonPagedPoolUsage": 11136,
+        "QuotaNonPagedPoolUsage": 10752,
+        "PagefileUsage": 806350848,
+        "PeakPagefileUsage": 871698432,
+        "PrivateUsage": 806350848
+      },
+      "startup_system_times_before": [
+        64723698750000,
+        90093805937500,
+        35285167187500
+      ],
+      "startup_system_times_ready": [
+        64723723125000,
+        90093892343750,
+        35285238281250
+      ],
+      "startup_host_busy_percent": 84.52380952380952,
+      "gpu_before": "20, 2252, 12288, 1485, 96.01",
+      "gpu_after": "33, 2259, 12288, 1230, 97.46",
+      "actual_features": {
+        "frame": 403,
+        "draws": 253,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 403,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.037 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=1.718 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "aaa26cf6adc859a632bec714b8ac16dee742459ebeb06ffaab961f4a0251bc93",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": true,
+      "lease_alias": "first-sample"
+    },
+    {
+      "sample": 2,
+      "block": 1,
+      "choice": "native",
+      "cache_state": "cold",
+      "whole_preparation_wall_ms": 351.7734,
+      "startup_cpu_to_observed_ready_seconds": 0.5625,
+      "startup_wall_to_observed_ready_seconds": 0.7029999999795109,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 36858,
+        "PeakWorkingSetSize": 126271488,
+        "WorkingSetSize": 126271488,
+        "QuotaPeakPagedPoolUsage": 1563848,
+        "QuotaPagedPoolUsage": 1563728,
+        "QuotaPeakNonPagedPoolUsage": 11952,
+        "QuotaNonPagedPoolUsage": 11568,
+        "PagefileUsage": 760881152,
+        "PeakPagefileUsage": 760881152,
+        "PrivateUsage": 760881152
+      },
+      "startup_system_times_before": [
+        64749940000000,
+        90136352031250,
+        35311586093750
+      ],
+      "startup_system_times_ready": [
+        64749986250000,
+        90136420781250,
+        35311632343750
+      ],
+      "startup_host_busy_percent": 59.78260869565217,
+      "gpu_before": "29, 2280, 12288, 1965, 191.98",
+      "gpu_after": "28, 2340, 12288, 1785, 177.20",
+      "actual_features": {
+        "frame": 402,
+        "draws": 250,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 402,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.023 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=1.025 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "15c1e457e47bb20d5074349087488341b29d663a13ab336f99f1f7e6b29ac8b6",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": false,
+      "lease_alias": "remaining-samples"
+    },
+    {
+      "sample": 3,
+      "block": 1,
+      "choice": "native",
+      "cache_state": "verified",
+      "whole_preparation_wall_ms": 62.9004,
+      "startup_cpu_to_observed_ready_seconds": 0.28125,
+      "startup_wall_to_observed_ready_seconds": 0.42099999997299165,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 32909,
+        "PeakWorkingSetSize": 111599616,
+        "WorkingSetSize": 111599616,
+        "QuotaPeakPagedPoolUsage": 1563848,
+        "QuotaPagedPoolUsage": 1563728,
+        "QuotaPeakNonPagedPoolUsage": 11080,
+        "QuotaNonPagedPoolUsage": 10752,
+        "PagefileUsage": 750153728,
+        "PeakPagefileUsage": 750153728,
+        "PrivateUsage": 750153728
+      },
+      "startup_system_times_before": [
+        64750293281250,
+        90136992187500,
+        35312078437500
+      ],
+      "startup_system_times_ready": [
+        64750302343750,
+        90137020625000,
+        35312117500000
+      ],
+      "startup_host_busy_percent": 86.57407407407408,
+      "gpu_before": "45, 2318, 12288, 1965, 183.30",
+      "gpu_after": "26, 2339, 12288, 1770, 144.17",
+      "actual_features": {
+        "frame": 401,
+        "draws": 247,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 401,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.025 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=1.662 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "15c1e457e47bb20d5074349087488341b29d663a13ab336f99f1f7e6b29ac8b6",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": false,
+      "lease_alias": "remaining-samples"
+    },
+    {
+      "sample": 4,
+      "block": 1,
+      "choice": "control",
+      "cache_state": "verified",
+      "whole_preparation_wall_ms": 60.5921,
+      "startup_cpu_to_observed_ready_seconds": 0.28125,
+      "startup_wall_to_observed_ready_seconds": 0.2970000000204891,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 40997,
+        "PeakWorkingSetSize": 144736256,
+        "WorkingSetSize": 144736256,
+        "QuotaPeakPagedPoolUsage": 1563824,
+        "QuotaPagedPoolUsage": 1563704,
+        "QuotaPeakNonPagedPoolUsage": 11080,
+        "QuotaNonPagedPoolUsage": 10752,
+        "PagefileUsage": 750149632,
+        "PeakPagefileUsage": 750149632,
+        "PrivateUsage": 750149632
+      },
+      "startup_system_times_before": [
+        64750516718750,
+        90137532968750,
+        35312597656250
+      ],
+      "startup_system_times_ready": [
+        64750534687500,
+        90137558750000,
+        35312619375000
+      ],
+      "startup_host_busy_percent": 62.171052631578945,
+      "gpu_before": "27, 2304, 12288, 1770, 144.89",
+      "gpu_after": "32, 2333, 12288, 1425, 106.54",
+      "actual_features": {
+        "frame": 402,
+        "draws": 250,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 402,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.040 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=2.293 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "aaa26cf6adc859a632bec714b8ac16dee742459ebeb06ffaab961f4a0251bc93",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": false,
+      "lease_alias": "remaining-samples"
+    },
+    {
+      "sample": 5,
+      "block": 2,
+      "choice": "native",
+      "cache_state": "cold",
+      "whole_preparation_wall_ms": 351.4435,
+      "startup_cpu_to_observed_ready_seconds": 0.59375,
+      "startup_wall_to_observed_ready_seconds": 0.5779999999795109,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 43939,
+        "PeakWorkingSetSize": 155262976,
+        "WorkingSetSize": 155262976,
+        "QuotaPeakPagedPoolUsage": 1563848,
+        "QuotaPagedPoolUsage": 1563728,
+        "QuotaPeakNonPagedPoolUsage": 11952,
+        "QuotaNonPagedPoolUsage": 11696,
+        "PagefileUsage": 760893440,
+        "PeakPagefileUsage": 760893440,
+        "PrivateUsage": 760893440
+      },
+      "startup_system_times_before": [
+        64750840937500,
+        90138075625000,
+        35313045000000
+      ],
+      "startup_system_times_ready": [
+        64750877656250,
+        90138131406250,
+        35313084062500
+      ],
+      "startup_host_busy_percent": 61.28500823723229,
+      "gpu_before": "36, 2295, 12288, 1845, 140.99",
+      "gpu_after": "23, 1966, 12288, 750, 60.88",
+      "actual_features": {
+        "frame": 403,
+        "draws": 253,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 403,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.040 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=1.717 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "15c1e457e47bb20d5074349087488341b29d663a13ab336f99f1f7e6b29ac8b6",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": false,
+      "lease_alias": "remaining-samples"
+    },
+    {
+      "sample": 6,
+      "block": 2,
+      "choice": "control",
+      "cache_state": "cold",
+      "whole_preparation_wall_ms": 590.9175,
+      "startup_cpu_to_observed_ready_seconds": 0.625,
+      "startup_wall_to_observed_ready_seconds": 0.8290000000270084,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 79351,
+        "PeakWorkingSetSize": 148660224,
+        "WorkingSetSize": 147050496,
+        "QuotaPeakPagedPoolUsage": 1563840,
+        "QuotaPagedPoolUsage": 1563720,
+        "QuotaPeakNonPagedPoolUsage": 11136,
+        "QuotaNonPagedPoolUsage": 10752,
+        "PagefileUsage": 806334464,
+        "PeakPagefileUsage": 871731200,
+        "PrivateUsage": 806334464
+      },
+      "startup_system_times_before": [
+        64751127500000,
+        90138684375000,
+        35313491250000
+      ],
+      "startup_system_times_ready": [
+        64751184062500,
+        90138776093750,
+        35313532031250
+      ],
+      "startup_host_busy_percent": 57.31132075471698,
+      "gpu_before": "17, 1932, 12288, 690, 60.40",
+      "gpu_after": "45, 2296, 12288, 1875, 160.10",
+      "actual_features": {
+        "frame": 400,
+        "draws": 244,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 400,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.037 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=1.738 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "aaa26cf6adc859a632bec714b8ac16dee742459ebeb06ffaab961f4a0251bc93",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": false,
+      "lease_alias": "remaining-samples"
+    },
+    {
+      "sample": 7,
+      "block": 2,
+      "choice": "control",
+      "cache_state": "verified",
+      "whole_preparation_wall_ms": 65.3109,
+      "startup_cpu_to_observed_ready_seconds": 0.234375,
+      "startup_wall_to_observed_ready_seconds": 0.4220000000204891,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 28705,
+        "PeakWorkingSetSize": 94400512,
+        "WorkingSetSize": 94400512,
+        "QuotaPeakPagedPoolUsage": 1563840,
+        "QuotaPagedPoolUsage": 1563720,
+        "QuotaPeakNonPagedPoolUsage": 11080,
+        "QuotaNonPagedPoolUsage": 10752,
+        "PagefileUsage": 750145536,
+        "PeakPagefileUsage": 750145536,
+        "PrivateUsage": 750145536
+      },
+      "startup_system_times_before": [
+        64751448750000,
+        90139375937500,
+        35313977187500
+      ],
+      "startup_system_times_ready": [
+        64751460156250,
+        90139410468750,
+        35314010156250
+      ],
+      "startup_host_busy_percent": 83.10185185185185,
+      "gpu_before": "52, 2278, 12288, 1965, 189.23",
+      "gpu_after": "43, 2288, 12288, 1920, 164.29",
+      "actual_features": {
+        "frame": 402,
+        "draws": 250,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 402,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.038 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=1.687 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "aaa26cf6adc859a632bec714b8ac16dee742459ebeb06ffaab961f4a0251bc93",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": false,
+      "lease_alias": "remaining-samples"
+    },
+    {
+      "sample": 8,
+      "block": 2,
+      "choice": "native",
+      "cache_state": "verified",
+      "whole_preparation_wall_ms": 63.5361,
+      "startup_cpu_to_observed_ready_seconds": 0.25,
+      "startup_wall_to_observed_ready_seconds": 0.2970000000204891,
+      "memory_at_observed_ready_bytes": {
+        "PageFaultCount": 28178,
+        "PeakWorkingSetSize": 92233728,
+        "WorkingSetSize": 92233728,
+        "QuotaPeakPagedPoolUsage": 1563848,
+        "QuotaPagedPoolUsage": 1563728,
+        "QuotaPeakNonPagedPoolUsage": 11080,
+        "QuotaNonPagedPoolUsage": 10752,
+        "PagefileUsage": 750145536,
+        "PeakPagefileUsage": 750145536,
+        "PrivateUsage": 750145536
+      },
+      "startup_system_times_before": [
+        64751734375000,
+        90139992500000,
+        35314403125000
+      ],
+      "startup_system_times_ready": [
+        64751747187500,
+        90140022187500,
+        35314420937500
+      ],
+      "startup_host_busy_percent": 73.02631578947368,
+      "gpu_before": "42, 2258, 12288, 1965, 183.01",
+      "gpu_after": "29, 2318, 12288, 1605, 115.35",
+      "actual_features": {
+        "frame": 403,
+        "draws": 253,
+        "pgxp": 0,
+        "scale": 1,
+        "interpolation": 0,
+        "rewind_count": 0,
+        "backend": 1
+      },
+      "frame_at_ready": 0,
+      "frame_after": 403,
+      "close_exit_code": 0,
+      "service_batch_log": [
+        "seamless: batch=1 frame=316 files=1 ms=0.037 cycles=264 area=0/0 fallbacks=0",
+        "seamless: batch=2 frame=316 files=2 ms=1.553 cycles=656 area=0/0 fallbacks=0"
+      ],
+      "pack_sha256": "a151b3136350d9bfff2daefc3a97e795dc7bb5b3ee44ecb002ab564644069788",
+      "pack_bytes": 74498804,
+      "binary_sha256": "15c1e457e47bb20d5074349087488341b29d663a13ab336f99f1f7e6b29ac8b6",
+      "settings_sha256": "1fa6c70351e853c506eb561ce06b00734ff4f8fd0a4321caea940d8745143d0e",
+      "mods_state_sha256": "f04b35df620b2ce633c46b5867784ecaf4af0905dcf88d10f03daaa4db650193",
+      "recovered_postcheck": false,
+      "lease_alias": "remaining-samples"
+    }
+  ],
+  "paired_blocks": [
+    {
+      "cache_state": "cold",
+      "block": 1,
+      "control_sample": 1,
+      "native_sample": 2,
+      "preparation_wall_reduction_percent": 50.7890298522496,
+      "startup_cpu_reduction_percent": 18.181818181818176,
+      "peak_pagefile_usage_reduction_bytes": 110817280,
+      "private_usage_at_ready_reduction_bytes": 45469696,
+      "startup_host_busy_difference_points": 24.741200828157346,
+      "timing_load_comparable": false
+    },
+    {
+      "cache_state": "cold",
+      "block": 2,
+      "control_sample": 6,
+      "native_sample": 5,
+      "preparation_wall_reduction_percent": 40.52579251756803,
+      "startup_cpu_reduction_percent": 5.000000000000004,
+      "peak_pagefile_usage_reduction_bytes": 110837760,
+      "private_usage_at_ready_reduction_bytes": 45441024,
+      "startup_host_busy_difference_points": 3.9736874825153095,
+      "timing_load_comparable": true
+    },
+    {
+      "cache_state": "verified",
+      "block": 1,
+      "control_sample": 4,
+      "native_sample": 3,
+      "preparation_wall_reduction_percent": -3.8095725350334453,
+      "startup_cpu_reduction_percent": 0.0,
+      "peak_pagefile_usage_reduction_bytes": -4096,
+      "private_usage_at_ready_reduction_bytes": -4096,
+      "startup_host_busy_difference_points": 24.40302144249513,
+      "timing_load_comparable": false
+    },
+    {
+      "cache_state": "verified",
+      "block": 2,
+      "control_sample": 7,
+      "native_sample": 8,
+      "preparation_wall_reduction_percent": 2.7174637005461633,
+      "startup_cpu_reduction_percent": -6.666666666666665,
+      "peak_pagefile_usage_reduction_bytes": 0,
+      "private_usage_at_ready_reduction_bytes": 0,
+      "startup_host_busy_difference_points": 10.075536062378163,
+      "timing_load_comparable": false
+    }
+  ]
+}

@@ -130,7 +130,8 @@ User has visually confirmed: world geometry, characters, HUD, menus, FMVs, and
 proportions on the 16:9 stretch.
 
 **Live diagnostics (TCP debug server, committed `1e28a94`/earlier):**
-`ws_aspect num den` (toggle the GTE squash on/off in place — `1 1` = off),
+`ws_aspect num den` (set the GTE squash for a target aspect in place: `4 3` = off/identity, `16 9` = 0.75x;
+note `1 1` is NOT off, it expands X by 4/3),
 `ws_far_threshold [t]` (set the SZ depth split + read the backdrop driver's SZ
 stats so the split is data-driven), `ws_census on|off|<start> <end>` (always-on
 per-prim draw ring → CSV), `ws_margin <v|-1>` (force the cull margin), and the
@@ -299,13 +300,29 @@ are non-empty, so titles that do not use them keep their caches.
 
 `screen_x_sites` is the explicit form of the `auto_screen_x` compare, for a
 title whose width is not in `screen_w_imms` or whose function has no paired
-height compare. It takes three instructions:
+height compare. It takes five instructions:
 
 | Instruction at the site | While widened |
 |---|---|
 | `sltiu rt, SX, W` | `rt = -m <= SX < W + m` |
 | `lui rt, W` (a screen edge kept as `W << 16`) | `rt = (W + m) << 16`; a negative `W` moves left instead |
 | `bltz x, outside` where `x` is `SX << 16` | taken while `SX < -m` |
+| `slti rt, x, 0` where `x` is `SX << 16` | `rt = SX < -m` (the `bltz` test as a flag) |
+| `sltu rd, SX, W` with `W` in a register | `rd = -4m <= (int16)SX < W` |
+
+The `sltu` form covers a renderer that compares a 16-bit screen X
+(`andi SX, sxy, 0xffff`) against a width it keeps in a register, typically a
+clip bound loaded from RAM. The unsigned compare rejects every negative X, so
+widening the bound (`clip_edge_x_load_sites`) only reveals the right band; the
+band helper `psx_ws_cull_sltu_band` also accepts negative X. Its left reach
+is four margins: these tests check single vertices, so a large near polygon
+whose corners all lie past one margin would still drop, while an unbounded
+left side lets every off-screen polygon through and overflows a renderer's
+fixed primitive lists (Kula World's world-10 intro stalled for 5 s). Pair it with the
+load site so `W` already carries the right margin. A bound derived from the
+loaded one (`x + r < W + 2r` bounding-sphere tests) works the same way.
+Kula World (SCES-01000) is the first user: its object, level-quad and sky
+tests use this shape, and forcing them true instead overflowed its renderer.
 
 The last two cover a renderer that keeps a screen X in the high half of a
 register (`sll x, sx, 16`), tests the sign of differences against a `lui`-held
@@ -325,10 +342,60 @@ screen_x_sites = [
 ]
 ```
 
-`screen_x_sites` is applied when code is generated: native code and overlay
-shards. The dirty-RAM interpreter does not consult this list. In the main EXE
+`screen_x_sites` is applied when code is generated (native code and overlay
+shards) and, at runtime, by the dirty-RAM interpreter: code that runs from
+RAM through the interpreter (including under `PSX_FORCE_INTERP=1`) widens the
+same five instruction forms at the listed addresses, with the same helpers and
+the same identity at 4:3. A listed `bltz` follows the precedence `bltz_sites`,
+then `screen_x_sites`, then the `auto_screen_x` classifier. In the main EXE
 a listed address holding another non-branch instruction is a hard build error;
-a branch other than `bltz` at a listed address is left as it is.
+a branch other than `bltz` at a listed address is left as it is, and a
+`slti` with a nonzero immediate is a build error (it is not this form).
+
+### Packed-SXY all-vertices reject (`[[widescreen.cull.sxy]]`)
+
+Some renderers trivially reject a whole triangle or quad by ANDing the packed
+GTE `SXY` words of its vertices (Y in the high half, X in the low half) with a
+sign mask and branching on the result:
+
+```
+and   at, t0, s1        ; s1 = 0x80008000
+and   at, s4, at
+and   at, t3, at        ; (and at, t1, at for a quad)
+bne   at, zero, reject  ; bit 31: all above, bit 15: all left of the screen
+```
+
+`screen_x_sites`, `bltz_sites` and the packed-coordinate helpers test one
+value at a time and cannot widen this fold. Listing it widens only the left
+reject: each AND of the fold becomes `psx_ws_cull_sxy_and(acc, sxy)`, the
+vanilla AND except that bit 15 also needs this vertex's `X < -m`. Bit 31 (the
+vertical reject) and every other bit are the vanilla AND, the guest's own
+branch decides, and right/bottom rejects (a separate chain) are untouched.
+At 4:3 (`m = 0`) every AND produces the vanilla word.
+
+```toml
+[[widescreen.cull.sxy]]
+kind = "tri"                                  # or "quad" (4 vertices)
+vertex_regs = [8, 20, 11]                     # the SXY operand of each AND
+fold_addresses = ["0x8001A7F0", "0x8001A7F8", "0x8001A800"]
+fold_expected  = ["0x01110824", "0x02810824", "0x01610824"]
+consumer_address  = "0x8001A808"
+consumer_expected = "0x14200034"              # bne at, zero, reject
+```
+
+The loader derives the shape from the words and refuses anything else: one
+AND per vertex, in increasing address order within 16 instructions, all into
+one register `r`; the first combines `vertex_regs[0]` with a separate mask
+register, each later one combines its vertex with `r`; the consumer is
+`beq`/`bne r, zero` within four instructions after the last AND. Every word
+of the fold and the consumer is part of the identity: the main-EXE build
+fails on any mismatch (checked against the image up front and again when the
+AND is emitted), and a captured overlay or interpreted variant with any other
+word in the fold is left vanilla. Native code, overlay shards and the
+dirty-RAM interpreter use the same helper and the same whole-fold check.
+Changing a site changes the overlay-cache identity; regenerate after a change.
+Wild 9 (SLUS-00425) is the first user: its triangle and quad rejects use this
+shape, and its shifted-X lower edge is the `slti` form of `screen_x_sites`.
 
 ---
 
@@ -517,3 +584,15 @@ To enable 21:9 later: widen the backdrop generation, then promote the launcher's
 2-state toggle to a 3-way Off / 16:9 / 21:9 (the `cycle_aspect` callback already
 cycles `aspect_index` 0/1/2 and is the scaffold). Full feasibility analysis in
 the session memory `native_wide_fov_autocull.md`.
+
+## Cull margin follows the display width (2026-10-24)
+
+`psx_ws_x_margin()` on the squash path was `160 * (1/s - 1)`, correct only for
+320-pixel modes. The reveal is a fraction of the game's own half-width, so it
+is now `(W/2) * (1/s - 1)` with `W` the live horizontal display width (512 in
+Army Men's gameplay, 368 in Ape Escape): pixel-domain screen-X culls
+(`[widescreen.cull]`) get that margin. Ratio-style consumers (terrain angle,
+aspect cone, `cull_scale`, the gameplay-field scaler) read
+`psx_ws_x_margin_320()`, the same reveal on the 320 basis, and keep their
+behaviour in every mode. 320-wide titles are unchanged bit for bit.
+Test: `ws_cull_margin_width_test`.

@@ -434,12 +434,15 @@ supersampling         = 2      # REQUIRED for geometry_correction to be visible
 
 Both default **false** (the faithful floor). They are independent — a title may
 want stable geometry without changing texture mapping. Settable per-game in
-`game.toml` and per-player in `settings.toml` (the player's file wins, and a
-launcher save round-trips both keys rather than dropping them).
+`game.toml`. (Until 2026-10-24 also per-player in `settings.toml` and a
+launcher row; since then the player's switch is the PGXP Precision mod, see
+S1 below.)
 
-`geometry_correction` needs `supersampling >= 2`: at native resolution the
-corrected position rounds back to the pixel it started on, so there is nothing
-to see. The runtime prints a note at startup when it is on at scale 1.
+`geometry_correction` needs an internal scale of 2x or more (720p and up at
+240 lines; the title's `internal_resolution`/`supersampling`, or the Internal
+Resolution mod): at native resolution the corrected position rounds back to
+the pixel it started on, so there is nothing to see. The runtime prints a note
+at startup when it is on at scale 1.
 
 ### How it works
 
@@ -758,8 +761,8 @@ is the line intended for review and eventual merge.
 
 | setting | default | player-reachable? | verdict |
 |---|---|---|---|
-| `perspective_texturing` | false | **yes** — Display row in the launcher | ships |
-| `geometry_correction` | false | **no** — `game.toml` / `settings.toml` only | known broken, hidden |
+| `perspective_texturing` | false | **yes** — the PGXP Precision mod (was a Display row until S1) | ships |
+| `geometry_correction` | false | **no** — `game.toml` only (`settings.toml` until S1) | known broken, hidden |
 
 `geometry_correction` is deliberately still *compiled in*. It was not excised,
 because the setting is only worth keeping if the code behind it still runs, and
@@ -882,10 +885,11 @@ the formal Crash/Tomba2 A/B.
 ### G1.11 — PGXP as a title's default: hook build, mod at session start, dataflow only, exact projection (2026-10-01)
 
 Ridge Racer Type 4 turns PGXP on by default. Getting there took framework
-changes that are all opt-in. With PGXP off, nothing changes for any title.
-With PGXP on, two changes apply without a new option: the
-`psx.enhancement.pgxp` mod now actually arms PGXP (item 2), and fully precise
-axis-aligned quads take the triangle path (item 4).
+changes within the elective PGXP enhancement. With PGXP off, nothing changes
+for any title. With PGXP on, its correctness fixes apply without a new option:
+the mod arms PGXP (item 2), hook builds default to dataflow-only precision
+without a tolerance clamp (item 3), and fully precise axis-aligned quads take
+the triangle path (item 4).
 
 **What R4 got from G1.10 as shipped: nothing.** Base flavor, PGXP mod on:
 0% dataflow hits, 3.6% position-cache hits, 0 of 282k textured triangles with
@@ -921,12 +925,18 @@ sub-vertex with RTPT.
    own manifest (default-on override, netplay clear with and without the
    reset, the off switch, options, env overrides). R4's `r4_pgxp_boot`
    boots the built runtime and fails if main.cpp stops calling the arming.
-3. **Two `[video]` keys** (game.toml; live over the TCP `pgxp` verb):
+3. **Automatic hook-build defaults and `[video]` overrides** (game.toml;
+   live over the TCP `pgxp` verb). A runtime built with `PSX_PGXP=1` selects
+   `pgxp_tolerance = -1.0` and `pgxp_position_fallback = false` when those keys
+   are absent. The runtime and overlay ABI enforce the matching hook flavor.
+   Base builds keep 0.5 and true for their limited dataflow coverage. Explicit
+   title tuning wins independently for each key, including Ape's validated
+   clamp. PGXP remains elective; exact-projection shadows remain separate:
 
    ```toml
    [video]
-   pgxp_tolerance = -1.0            # existing key: no clamp
-   pgxp_position_fallback = false   # default true
+   pgxp_tolerance = -1.0            # hook-build default: no clamp
+   pgxp_position_fallback = false   # hook-build default: dataflow only
    pgxp_preserve_projection = true  # default false
    ```
 
@@ -957,8 +967,10 @@ sub-vertex with RTPT.
      (the G1.10 Ape result). At hook-build coverage the clamp is harmful: on
      R4 it keeps 26% of vertices, leaves 52% of drawn triangles mixed (a
      4K capture shows a hairline across the road) and shakes more than stock
-     (tables below). The default stays 0.5 because changing it would change
-     every title that already arms PGXP through `[video]`.
+     (tables below). The old universal default stayed 0.5 to avoid changing
+     every title that already arms PGXP through `[video]`. This historical
+     default is now retained only in base builds; hook builds automatically
+     disable the clamp unless a title supplies an explicit value.
 4. **Fully precise axis-aligned textured quads skip the 2D rectangle
    shortcut.** `gp0_exec_textured_quad` draws a quad whose integer vertices
    and UVs form an axis-aligned rectangle with `gr_draw_textured_rect`, at the
@@ -1311,15 +1323,49 @@ order and requires the in-between frame at phase 1 to equal the real one,
 with each feature (depth, colour) alone and together; each changes the real
 image there.
 
+## S1 — Enhancement settings become built-in mods (2026-10-24, beads-eio.3.398)
+
+The launcher's Settings page keeps PC/system controls only (window size,
+fullscreen, renderer, VSync, audio volume, hotkeys, BIOS, multitap; recomp-ui
+docs/SETTINGS_STANDARD.md). The game's look moved to five framework built-in
+mods, all default-off, all `game_id = "*"`, all host-only
+(`[[plugin]] netplay = "host_only"`: never in the plan fingerprint, the
+player's own in netplay):
+
+| Mod | Replaces | Options (Game default = the title's `game.toml` value) |
+|---|---|---|
+| CRT Filter (`psx.enhancement.crt-filter`) | Screen model, Scanlines rows | Screen model, Scanlines, Scanline strength |
+| Image Filtering (`psx.enhancement.image-filtering`) | Antialiasing (linear present), Texture filtering, FMV filtering rows | Smoothing, Texture filtering, FMV filtering |
+| Enhanced Audio (`psx.enhancement.enhanced-audio`) | High-quality SPU row | (on = high-quality SPU) |
+| Rewind (`psx.feature.rewind`) | Rewind / buffer / interval rows | Rewind buffer, Rewind interval |
+| Internal Resolution (`psx.enhancement.internal-resolution`) | Internal resolution row (launcher and in-game), Dynamic resolution / Lowest resolution rows | Internal resolution: Game default, Native … 8K, Match display, Auto |
+
+The title's `[video]` / `[audio]` keys stay its baseline: mod off is exactly
+what the title ships. Activation only records the request
+(`host_enhancements.h`); the renderer setup resolves it over the baseline
+after activation, the G1.11 lesson. Perspective textures left Settings for
+the PGXP Precision mod; the Dynamic resolution checkbox and Lowest resolution
+row became the Internal Resolution mod's Auto (Match display with dynamic
+resolution, the title's floor). Its option changes apply live through the same
+`gl_renderer_set_internal_scale_live` path the debug server's `video_set` uses,
+and never during a netplay match. The player's `settings.toml` no longer has
+`internal_resolution`, `supersampling` or `supersample`. The audio Sample rate
+row left too: the device opens at the runtime's built-in 44.1 kHz (old
+`[audio] frequency` keys are ignored); Volume stays. Graphics presets
+(`[quality.*]`, hardware detection, Re-detect) were removed outright. A mod
+that presents with vsync off declares `[[feature]] vsync = "off"` and the
+launcher shows its VSync row overridden.
+
 ## IR1 — Internal resolution presets (Native … 8K) and the GL scale ceiling (2026-09-26)
 
-**What the player gets.** Settings → Display → **Internal resolution**: Native,
-720p, 1080p, 1440p, 4K, 5K, 8K, Match display. A preset is a target height and
-resolves to an integer scale over the title's reference height
+**What the player gets.** Internal resolution presets: Native, 720p, 1080p,
+1440p, 4K, 5K, 8K, Match display (and, since S1, Auto). A preset is a target
+height and resolves to an integer scale over the title's reference height
 (`[video] resolution_reference_lines`, 240 by default): 3x, 5x (1200 lines,
-area-resolved to 1080), 6x, 9x, 12x, 18x. It is a Settings row, not a mod,
-because it needs no game hooks; it is presentation-only, so it also applies in
-netplay (each peer its own). Keys and precedence: `docs/config_schema.md`.
+area-resolved to 1080), 6x, 9x, 12x, 18x. It was a Settings row until S1
+(2026-10-24); it is now the built-in Internal Resolution mod over the title's
+`internal_resolution`. It is presentation-only, so it also applies in netplay
+(each peer its own). Keys and precedence: `docs/config_schema.md`.
 
 **Why the old ceiling was 4.** The software renderer keeps a CPU mirror of
 1 MiB·S², so it caps at 4, and every backend inherited that cap. OpenGL keeps
@@ -1436,24 +1482,28 @@ native code and the dirty-RAM interpreter agree
 (`draw_distance_codegen_test`, `draw_distance_interp_test`). First user: R4's
 course renderers (RidgeRacerType4Recomp, Max Detail).
 
-### Opt-in camera-plane clipping for native-wide textured worlds
+### Default camera-plane clipping for native-wide textured worlds
 
-`psx_mod_set_native_wide_near_clip(1)` complements horizontal projection
-recovery. A large face can remain visible while a corner crosses the camera
-plane: unsigned SZ, the capped H/Z divider and saturated SXY cannot represent
-that face. PGXP now optionally carries the signed homogeneous projection from
-RTPS/RTPT through exact full-word copies. CPU arithmetic, partial writes,
+`psx_mod_set_native_wide_projection_correction(1)` automatically enables both
+horizontal projection recovery and camera-plane clipping. A large face can
+remain visible while a corner crosses the camera plane: unsigned SZ, the capped
+H/Z divider and saturated SXY cannot represent that face. PGXP carries the
+signed homogeneous projection from RTPS/RTPT through exact full-word copies. CPU arithmetic, partial writes,
 stale words and timeline invalidation discard the association; sandbox
 rollback restores it with the rest of the precision shadow.
 
-Opted-in native-wide OpenGL sessions clip proven textured faces at depth 1
-and the visible bounds before perspective division. UV and color attributes
+Native-wide OpenGL sessions with projection correction clip proven textured
+faces at depth 1 and the visible bounds before perspective division. UV and color attributes
 follow each intersection, and ordinary GPU batches, painter order, masking,
 texture filtering and canonical/wide readback remain in use. The existing
 guest GTE registers, gameplay state and title culling branches do not change.
 Software/CPU-authoritative rendering, 4:3 and missing provenance use the
 original path. The larger PGXP value increases the full 8 MiB RAM shadow
-from 40 to 72 MiB; projection calculations are disabled unless a title opts in.
+from 40 to 72 MiB; projection calculations run only while projection correction
+is enabled. Session start resets that mode before the new plan's activation.
+The old `psx_mod_set_native_wide_near_clip` entry point remains for source/ABI
+compatibility, but its argument no longer changes clipping. The enhanced view
+is elective; clipping its proven geometry correctly needs no separate opt-in.
 
 MediEvil II's title hallway provided the camera-crossing reproduction. The
 GL authority/order fixture passes 197 checks at 1x and 4x; provenance tests
@@ -1461,3 +1511,22 @@ cover negative depth, stale packets, identical partial writes, rollback and
 mode guards. Live captures remove the previously observed triangular holes;
 the owner confirmed the hallway walls stay intact. Broader map coverage
 remains separate from this reproduction.
+
+### Precision in expanded primitive buffers (2026-10-07)
+
+The draw-distance enhancements can move primitive storage to the allocated
+GPU-DMA aperture (`0x80800000` CPU pointers, `0x00800000` packet keys). PGXP
+now tracks those words separately from main RAM, with sparse stable pages
+created only when a tracked store writes them. Reads refuse unallocated ranges,
+invalid aliases and stale words. Position, depth and projection receipts retain
+the aperture address; checkpoint journaling restores their old shadows without
+copying whole arrays or aliasing the low main-RAM word.
+
+THPS2 exposed the gap: correction was enabled, but every recorded texture-depth
+lookup missed the expanded primitive buffers and no textured triangle received
+perspective correction. The focused packet-shadow fixture covers allocation
+bounds, CPU/DMA aliases, separation from RAM, stale words, generation changes,
+relocated receipts and rollback including a page created during a checkpoint.
+The existing PGXP propagation fixture still passes. The rebuilt title now
+records actual dataflow hits and perspective-corrected triangles. These are
+coverage checks; broader visible texture/geometry quality remains owner-reviewed.

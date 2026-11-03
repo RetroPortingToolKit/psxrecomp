@@ -94,9 +94,14 @@ int main(void) {
     psx_devices_service_to_now();
     psx_devices_mmio_sync();
     CHECK(psx_cycle_count - cyc0 == 1005000u, "cycles are counted inside the span");
+    g_psx_cyc_batch = 25;
+    CHECK(psx_cycle_uncharged_counted() == 1005025u,
+          "counted cost includes the span's unpublished batch");
+    g_psx_cyc_batch = 0;
     CHECK(s_cd_phase_total() == dev0 && s_cd_events == cd0,
           "no device advanced and no device event fired");
     CHECK(psx_cycle_uncharged_end(&save) == 1, "span stayed uncharged");
+    CHECK(psx_cycle_uncharged_counted() == 0, "no span, nothing counted");
     CHECK(g_psx_guest_time_frozen == 0, "time is live again");
     CHECK(psx_cycle_count == cyc0 && psx_next_service_cycle == next0,
           "clock and service deadline restored exactly: zero guest time");

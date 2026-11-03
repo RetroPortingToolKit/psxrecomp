@@ -124,8 +124,13 @@
  *      entry hooks, guarded pre-instruction callback.
  * v30: the two lines merged. OverlayCallbacks keeps the master layout, which
  *      already holds every release-line callback; shards built against either
- *      v28 or v29 are rejected and recompiled. */
-#define PSX_OVERLAY_ABI_VERSION 30
+ *      v28 or v29 are rejected and recompiled.
+ * v31/v32: reserved for the experimental selector/adapter stack.
+ * v33: guarded load/store effective-address adapter on the master layout.
+ * v34: frozen, activation-only immediate selectors on the v33 layout.
+ * v35: append native replacement forwarding to v34; old X6 v31 and
+ *      experimental v32 caches remain incompatible. */
+#define PSX_OVERLAY_ABI_VERSION 35
 
 /* Process-lifetime overlay candidate capacity.  Every accepted manifest F
  * record consumes one slot, even when another DLL carries an identical
@@ -387,6 +392,12 @@ typedef struct OverlayCallbacks {
     int32_t (*nclip_exact_sign)(int32_t native_mac0, uint32_t pc);
     /* Guarded pre-instruction mod callback (ABI v27). */
     void (*mod_instruction)(CPUState*, uint32_t, uint32_t);
+    /* Guarded load/store effective-address adapters (ABI v33). */
+    uint32_t (*mod_memory_address)(const CPUState*, uint32_t, uint32_t, uint32_t);
+    /* [[mod_immediate.sites]] selector of a group (ABI v34); NULL = stock. */
+    uint32_t (*mod_immediate_select)(uint32_t group);
+    /* Native function replacements (ABI v35). */
+    int (*mod_try_function_replacement)(CPUState *cpu, uint32_t address);
 } OverlayCallbacks;
 
 #ifdef __cplusplus

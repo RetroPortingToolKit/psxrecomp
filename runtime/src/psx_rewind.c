@@ -3,12 +3,14 @@
 #include "psx_rewind.h"
 
 #include "boot_state.h"
+#include "capture_ring.h"
 #include "cdrom.h"
 #include "gpu.h"
 #include "host_keymap.h"
 #include "host_osd.h"
 #include "interrupts.h"
 #include "mdec.h"
+#include "mod_snapshot.h"
 #include "psx_cycles.h"
 #include "psx_netplay.h"
 #include "psx_netplay_rb.h"
@@ -122,6 +124,7 @@ void psx_rewind_configure(uint32_t bios_checksum, uint32_t entry_pc)
     (void)entry_pc;
 }
 void psx_rewind_shutdown(void) {}
+uint32_t psx_rewind_discard_history(void) { return 0; }
 int  psx_rewind_enabled(void) { return 0; }
 int  psx_rewind_is_open(void) { return 0; }
 int  psx_rewind_needs_present(void) { return 0; }
@@ -463,6 +466,19 @@ void psx_rewind_shutdown(void)
     s_capture_due = 0;
 }
 
+uint32_t psx_rewind_discard_history(void)
+{
+    uint32_t dropped = s_count;
+    if (!s_configured || !s_ring) return 0;
+    rbe_snap_ring_clear(s_ring);
+    s_count = 0;
+    s_sel = 0;
+    s_load_pending = 0;
+    s_last_capture_frame = 0xffffffffu;
+    s_panel_dirty = 1;
+    return dropped;
+}
+
 int psx_rewind_enabled(void)
 {
     return rewind_wanted() && s_configured && s_ring != NULL;
@@ -498,8 +514,10 @@ void psx_rewind_note_frame(void)
 
 static int do_capture(CPUState *cpu, uint32_t resume_pc)
 {
+#if !PSX_NATIVE_CAPTURE_JOBS
     uint8_t *blob = NULL;
     size_t len = 0;
+#endif
     uint32_t thumb[RW_THUMB_W * RW_THUMB_H];
     CPUState snap;
     uint32_t tick = s_frame;
@@ -512,6 +530,10 @@ static int do_capture(CPUState *cpu, uint32_t resume_pc)
         return 0;
     snap = *cpu;
     snap.pc = pc;
+#if PSX_NATIVE_CAPTURE_JOBS
+    if (!psx_capture_ring_save(s_ring, tick, &snap, s_bios, s_entry))
+        return 0;
+#else
     if (!boot_state_save_buffer_raw(&snap, s_bios, s_entry, &blob, &len) ||
         !blob || !len)
         return 0;
@@ -519,6 +541,7 @@ static int do_capture(CPUState *cpu, uint32_t resume_pc)
         free(blob);
         return 0;
     }
+#endif
     capture_thumb(thumb);
     list_push(tick, thumb);
     s_last_capture_frame = s_frame;
@@ -530,6 +553,9 @@ static int do_load(CPUState *cpu, uint32_t tick)
 {
     size_t size = 0;
     const uint8_t *data;
+    uint8_t *rollback = NULL;
+    size_t rollback_size = 0;
+    int loaded;
 
     if (!cpu || !s_ring)
         return 0;
@@ -540,10 +566,20 @@ static int do_load(CPUState *cpu, uint32_t tick)
     data = rbe_snap_ring_peek(s_ring, tick, &size);
     if (!data || !size)
         return 0;
-    if (!boot_state_load_buffer(data, size, s_bios, s_entry, cpu))
+    /* Dispatchability depends on the restored RAM. Hold the live machine
+     * first so a rejected resume PC cannot leave a half-applied rewind, and
+     * keep diagnostic observers silent until the state is accepted. */
+    if (!boot_state_save_buffer_raw(cpu, s_bios, s_entry, &rollback, &rollback_size) ||
+        !rollback || !rollback_size) {
+        free(rollback);
         return 0;
-    if (!resume_pc_ok(cpu->pc))
-        return 0;
+    }
+    loaded = boot_state_load_buffer_checked(data, size, s_bios, s_entry, cpu,
+                                            resume_pc_ok);
+    if (!loaded)
+        (void)boot_state_load_buffer_quiet(rollback, rollback_size, s_bios, s_entry, cpu);
+    free(rollback);
+    if (!loaded) return 0;
     rbe_snap_ring_drop_after(s_ring, tick);
     list_drop_after(tick);
     s_frame = tick;
@@ -561,7 +597,15 @@ void psx_rewind_poll(CPUState *cpu, uint32_t resume_pc)
 {
     if (!psx_rewind_enabled())
         return;
+    /* Keep capture/load requests staged until projected title callbacks have
+     * unwound; a guest PC cannot recreate their host C stacks. */
+    if (!psx_mod_snapshot_ready()) return;
     if (s_load_pending) {
+        /* Restoring a PC cannot resume a live host callback/adapter stack.
+         * Capture already uses this gate; loads must wait for it too, before
+         * consuming the selected tick or changing the rewind history. */
+        const uint32_t pc = rewind_resolve_resume_pc(cpu, resume_pc);
+        if (!psx_irq_resume_context_snapshot_safe_at(pc)) return;
         uint32_t tick = s_load_tick;
         s_load_pending = 0;
         s_open = 0;

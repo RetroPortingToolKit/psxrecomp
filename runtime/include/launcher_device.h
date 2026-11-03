@@ -8,6 +8,11 @@
 
 namespace PSXRecompV4 {
 
+inline bool launcher_controller_can_share(bool developer_build,
+                                          bool exact_guid_match) {
+    return developer_build && exact_guid_match;
+}
+
 inline std::string trim_launcher_device(const std::string& device) {
     const auto first = std::find_if_not(device.begin(), device.end(),
         [](unsigned char c) { return std::isspace(c) != 0; });

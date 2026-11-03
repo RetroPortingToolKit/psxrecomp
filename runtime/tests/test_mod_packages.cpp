@@ -14,6 +14,7 @@ namespace fs = std::filesystem;
 using namespace PSXRecompV4;
 
 static int failures;
+static int session_resets;
 
 static void check(bool value, const char* message) {
     if (!value) {
@@ -321,6 +322,16 @@ int main() {
     check(mod_register_vblank_plugin(
               "test.vblank", +[]() {}),
           "test plugin must register");
+    check(mod_register_session_reset_plugin(
+              "test.vblank", +[]() { ++session_resets; }),
+          "session cleanup must register independently of active features");
+    check(!mod_register_session_reset_plugin("test.vblank", +[]() {}),
+          "duplicate session cleanup must be rejected");
+    // No manifest or active plan exists yet: deselected plugins still clean
+    // up the host state left by the previous session.
+    mod_reset_plugin_sessions();
+    mod_reset_plugin_sessions();
+    check(session_resets == 2, "each session boundary must invoke registered cleanup");
     write_text(root / "packages/plugin.mod/1.0.0/manifest.toml",
                "format_version = 5\n"
                "id = \"plugin.mod\"\n"
@@ -457,6 +468,7 @@ int main() {
                    "id = \"retranslation\"\n"
                    "name = \"Retranslation\"\n"
                    "group = \"Localization\"\n"
+                   "quick = true\n"
                    "\n[[feature]]\n"
                    "id = \"title-collision\"\n"
                    "name = \"Title Collision\"\n"
@@ -591,6 +603,40 @@ int main() {
     check(feature_reload.resolve("SLUS-TEST").fingerprint ==
               partial_compatible.fingerprint,
           "feature state must resolve deterministically after reload");
+    {
+        /* Quick Mods membership: manifest default, then the player's saved
+         * choice; never activation or the execution fingerprint. */
+        const auto fingerprint = feature_reload.resolve("SLUS-TEST").fingerprint;
+        check(!feature_reload.quick_visible("features.mod", "title-screen") &&
+                  feature_reload.quick_visible("features.mod", "retranslation"),
+              "unsaved quick membership must follow the manifest quick flag");
+        check(feature_reload.set_quick_visible("features.mod", "title-screen", true, &error),
+              error.c_str());
+        check(feature_reload.set_quick_visible("features.mod", "retranslation", false, &error),
+              error.c_str());
+        check(!feature_reload.set_quick_visible("unknown.mod", "unknown", true, &error),
+              "quick membership of an unknown feature must be rejected");
+        ModPackageManager quick_reload(root);
+        check(quick_reload.scan(&error) && quick_reload.load_state(&error), error.c_str());
+        check(quick_reload.quick_visible("features.mod", "title-screen") &&
+                  !quick_reload.quick_visible("features.mod", "retranslation"),
+              "saved quick membership must survive reload and override the manifest");
+        check(quick_reload.feature_enabled("features.mod", "title-screen") &&
+                  quick_reload.feature_enabled("features.mod", "retranslation") &&
+                  quick_reload.resolve("SLUS-TEST").fingerprint == fingerprint,
+              "quick membership must not change activation or the fingerprint");
+        check(quick_reload.set_feature_enabled("features.mod", "title-screen", false, &error) &&
+                  quick_reload.save_state(&error),
+              error.c_str());
+        ModPackageManager after_toggle(root);
+        check(after_toggle.scan(&error) && after_toggle.load_state(&error), error.c_str());
+        check(after_toggle.quick_visible("features.mod", "title-screen") &&
+                  !after_toggle.feature_enabled("features.mod", "title-screen"),
+              "activation edits must preserve quick membership");
+        check(after_toggle.set_feature_enabled("features.mod", "title-screen", true, &error) &&
+                  after_toggle.save_state(&error),
+              error.c_str());
+    }
 
     fs::create_directories(root / "selected", ec);
     write_text(root / "selected/bezel.png", "not a decoded image");
@@ -1798,6 +1844,21 @@ int main() {
               "both absent packages must be reported as dormant selections");
         check(std::find(dormant.begin(), dormant.end(), "kept.mod") == dormant.end(),
               "a present package is never dormant");
+        // Strong title policy also suppresses stale bundles and installed
+        // copies. Preserve the user's choice and files for a later re-enable.
+        write_text(stale_root / "installed/kept.mod/1.0.0/manifest.toml", kept);
+        stale.set_disabled_packages({"kept.mod"});
+        check(stale.scan(&error), error.c_str());
+        const auto disabled = stale.resolve("SLUS-TEST");
+        check(disabled.ok && disabled.ordered.empty() && disabled.writes.empty(),
+              "a title-disabled package must not resolve from either catalog");
+        check(stale.packages().count("kept.mod") == 0 && stale.dormant_selections().size() == 3,
+              "title-disabled packages must be hidden and their saved choices dormant");
+        check(fs::exists(stale_root / "bundled/kept.mod/1.0.0/manifest.toml") &&
+              fs::exists(stale_root / "installed/kept.mod/1.0.0/manifest.toml"),
+              "disabling never deletes catalog files");
+        stale.set_disabled_packages({});
+        check(stale.scan(&error), error.c_str());
 
         /* Saving (every launch commit does) must keep the dormant choices. */
         check(stale.save_state(&error), error.c_str());
@@ -2320,6 +2381,8 @@ int main() {
         }
         ModPackageManager manager(folder);
         check(manager.scan(&error) && manager.scan_errors().empty(), "source/preparation catalog parses");
+        check(!manager.set_generated_feature_resource_default("cars", "content", "source", "generated/source", &error),
+              "generated defaults cannot appoint shared user sources");
         check(manager.set_feature_resource_path("cars", "content", "source", source, &error), error.c_str());
         check(manager.feature_resource_path("music", "content", "source") == source, "source picker prefills sibling package");
         check(manager.set_feature_resource_path("music", "content", "source", replacement, &error), error.c_str());
@@ -2346,9 +2409,240 @@ int main() {
         auto prepared = reload.resolve("SLUS-TEST");
         check(prepared.ok && prepared.resources.size()==1 && prepared.resources[0].id=="asset", "only derived assets enter runtime plan");
         const auto before = reload.feature_resource_path("cars", "content", "asset");
+        int progress_calls=0;
+        check(!reload.prepare_resources("SLUS-TEST",source,folder/"cache",&error,false,
+            [&](float,const std::string&){return ++progress_calls<2;}),"cancel after provider prevents selection publication");
+        check(reload.feature_resource_path("cars","content","asset")==before,"cancel retains prior derived binding");
         fail=true;check(!reload.prepare_resources("SLUS-TEST", source, folder/"cache", &error), "failed preparation refuses launch");
         check(reload.feature_resource_path("cars", "content", "asset")==before, "failed preparation preserves prior bindings");
         write_bytes(asset, {4,3,2,1});check(!reload.resolve("SLUS-TEST").ok, "corrupt derived output fails engine verification");
+    }
+
+    {
+        const auto folder=root/"resource-overlays";
+        const auto asset=folder/"local"/"derived.dat";
+        const auto manifest_path=folder/"bundled/prepared.overlay/1.0.0/manifest.toml";
+        const std::vector<uint8_t> bytes={1,2,3,4,5,6};
+        const std::vector<uint8_t> slice={3,4,5};
+        const std::string disc_hash(64,'a');
+        auto make_manifest=[&](const std::string& source_fields,const std::string& feature="active") {
+            return "format_version = 10\nid = \"prepared.overlay\"\nversion = \"1.0.0\"\nname = \"Prepared overlay\"\nprepare = \"test.overlay\"\n"
+                "[[target]]\ngame_id = \"SLUS-TEST\"\ndisc_sha256 = \""+disc_hash+"\"\n"
+                "[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n"
+                "[[feature]]\nid = \"other\"\nname = \"Other\"\n"
+                "[[resource]]\nfeature = \""+feature+"\"\nid = \"asset\"\nlabel = \"Derived asset\"\nformat = \"file\"\nrequired = true\nhidden = true\nsize = 6\nsha256 = \""+sha256_hex(bytes)+"\"\n"
+                "[[overlay]]\nfeature = \"active\"\ntarget = \"disc_raw\"\noffset = 2340\n"+source_fields+
+                "sha256 = \""+sha256_hex(slice)+"\"\nexpected_sha256 = \""+sha256_hex({0,0,0})+"\"\n";
+        };
+        const std::string fields="resource = \"asset\"\nresource_offset = 2\nsize = 3\n";
+        write_text(manifest_path,make_manifest(fields));
+        ModPackageManager manager(folder);
+        check(manager.scan(&error) && manager.scan_errors().empty(),"resource overlay scans before generated file exists");
+        check(manager.resolve("SLUS-TEST",{},disc_hash,true).ok,"preview defers prepared resource overlay");
+        check(!manager.resolve("SLUS-TEST",{},disc_hash).ok,"runtime refuses missing overlay source");
+        write_bytes(asset,bytes);
+        check(manager.set_feature_resource_path("prepared.overlay","active","asset",asset,&error),error.c_str());
+        const auto plan=manager.resolve("SLUS-TEST",{},disc_hash);
+        check(plan.ok && plan.overlays.size()==1 && plan.resources.size()==1,"verified resource overlay resolves");
+        if(plan.overlays.size()==1) {
+            check(plan.overlays[0].payload==slice && plan.overlays[0].location==2340,"overlay selects exact declared slice and target offset");
+        }
+        write_bytes(asset,{1,2,3,4,5,7});
+        check(!manager.resolve("SLUS-TEST",{},disc_hash).ok,"mutated resource rejected even when selected slice did not change");
+        write_text(manifest_path,make_manifest("resource = \"asset\"\nresource_offset = 4\nsize = 3\n"));
+        ModPackageManager bounds(folder);bounds.scan(&error);
+        check(!bounds.scan_errors().empty(),"resource slice beyond declared extent rejected");
+        write_text(manifest_path,make_manifest(fields+"file = \"payload.dat\"\n"));
+        ModPackageManager both(folder);both.scan(&error);
+        check(!both.scan_errors().empty(),"ambiguous file and resource sources rejected");
+        write_text(manifest_path,make_manifest(fields,"other"));
+        ModPackageManager ownership(folder);ownership.scan(&error);
+        check(!ownership.scan_errors().empty(),"cross-feature overlay source rejected");
+        write_text(manifest_path,make_manifest("resource = \"asset\"\nresource_offset = -1\nsize = 3\n"));
+        ModPackageManager negative(folder);negative.scan(&error);
+        check(!negative.scan_errors().empty(),"negative resource slice rejected");
+    }
+    {
+        /* [[plugin]] netplay = "host_only" (format 11): a feature made only of
+         * such plugins changes nothing the guest executes, so it is left out
+         * of the plan fingerprint (two peers that differ only in, say, the CRT
+         * Filter run the same game), and it may own nothing else. A feature
+         * may also declare vsync = "off" for the launcher's VSync row. */
+        const fs::path folder = root / "host-only";
+        mod_clear_plugins_for_tests();
+        check(mod_register_activation_plugin("test.look", +[]() {}),
+              "host-only test plugin must register");
+        check(mod_register_activation_plugin("test.sim", +[]() {}),
+              "simulation test plugin must register");
+        const auto head = [](const std::string& id, int format) {
+            return "format_version = " + std::to_string(format) + "\nid = \"" + id +
+                   "\"\nversion = \"1.0.0\"\nname = \"" + id +
+                   "\"\nresolver = \"declarative\"\n[[target]]\ngame_id = \"*\"\n";
+        };
+        write_text(folder / "packages/look.mod/1.0.0/manifest.toml",
+            head("look.mod", 11) +
+            "[[feature]]\nid = \"look\"\nname = \"Look\"\n"
+            "[[option]]\nfeature = \"look\"\nid = \"tone\"\nlabel = \"Tone\"\n"
+            "type = \"choice\"\ndefault = \"a\"\n"
+            "[[option.choice]]\nvalue = \"a\"\nlabel = \"A\"\n"
+            "[[option.choice]]\nvalue = \"b\"\nlabel = \"B\"\n"
+            "[[plugin]]\nfeature = \"look\"\nid = \"test.look\"\nnetplay = \"host_only\"\n");
+        write_text(folder / "packages/sim.mod/1.0.0/manifest.toml",
+            head("sim.mod", 11) +
+            "[[feature]]\nid = \"sim\"\nname = \"Sim\"\nvsync = \"off\"\n"
+            "[[plugin]]\nfeature = \"sim\"\nid = \"test.sim\"\n");
+        ModPackageManager host(folder);
+        check(host.scan(&error) && host.scan_errors().empty(), "host-only catalog scans");
+        check(host.load_state(&error), error.c_str());
+        const ModPackage& look = host.packages().at("look.mod").at("1.0.0");
+        const ModPackage& sim = host.packages().at("sim.mod").at("1.0.0");
+        check(look.features.size() == 1 && look.features[0].host_only &&
+                  !look.features[0].vsync_off,
+              "a feature made only of host_only plugins is host-only");
+        check(sim.features.size() == 1 && !sim.features[0].host_only &&
+                  sim.features[0].vsync_off,
+              "vsync = \"off\" is read; an ordinary plugin's feature is not host-only");
+        check(host.set_feature_enabled("sim.mod", "sim", true, &error), error.c_str());
+        const ModResolution base = host.resolve("SLUS-TEST");
+        check(base.ok, "simulation-only plan resolves");
+        check(host.set_feature_enabled("look.mod", "look", true, &error), error.c_str());
+        const ModResolution with_look = host.resolve("SLUS-TEST");
+        check(with_look.ok && with_look.plugins.size() == 2,
+              "the host-only feature still activates its plugin");
+        bool host_only_flag = false;
+        for (const auto& plugin : with_look.plugins)
+            if (plugin.id == "test.look") host_only_flag = plugin.netplay_host_only;
+        check(host_only_flag, "the resolved plugin carries netplay_host_only");
+        check(with_look.fingerprint == base.fingerprint,
+              "enabling a host-only feature must not change the plan fingerprint");
+        check(host.set_feature_option("look.mod", "look", "tone", "b", &error), error.c_str());
+        check(host.resolve("SLUS-TEST").fingerprint == base.fingerprint,
+              "a host-only feature's options must not change the plan fingerprint");
+        check(host.set_feature_enabled("sim.mod", "sim", false, &error), error.c_str());
+        check(host.resolve("SLUS-TEST").fingerprint != base.fingerprint,
+              "an ordinary plugin feature still changes the fingerprint");
+
+        const auto rejects = [&](const std::string& body, const char* what) {
+            const fs::path bad = root / "host-only-bad";
+            fs::remove_all(bad, ec);
+            write_text(bad / "packages/bad.mod/1.0.0/manifest.toml", body);
+            ModPackageManager probe(bad);
+            (void)probe.scan(&error);
+            check(!probe.scan_errors().empty(), what);
+            fs::remove_all(bad, ec);
+        };
+        rejects(head("bad.mod", 10) +
+                "[[feature]]\nid = \"f\"\nname = \"F\"\n"
+                "[[plugin]]\nfeature = \"f\"\nid = \"test.look\"\nnetplay = \"host_only\"\n",
+                "netplay = \"host_only\" requires format_version 11");
+        rejects(head("bad.mod", 10) + "[[feature]]\nid = \"f\"\nname = \"F\"\nvsync = \"off\"\n",
+                "feature vsync requires format_version 11");
+        rejects(head("bad.mod", 11) + "[[feature]]\nid = \"f\"\nname = \"F\"\nvsync = \"on\"\n",
+                "feature vsync accepts only \"off\"");
+        rejects(head("bad.mod", 11) +
+                "[[feature]]\nid = \"f\"\nname = \"F\"\n"
+                "[[plugin]]\nfeature = \"f\"\nid = \"test.look\"\nnetplay = \"host_only\"\n"
+                "[[plugin]]\nfeature = \"f\"\nid = \"test.sim\"\n",
+                "a host_only feature may not also carry an ordinary plugin");
+        rejects(head("bad.mod", 11) +
+                "[[feature]]\nid = \"f\"\nname = \"F\"\n"
+                "[[plugin]]\nfeature = \"f\"\nid = \"test.look\"\nnetplay = \"host_only\"\n"
+                "[[patch]]\nfeature = \"f\"\ntarget = \"main_exe\"\naddress = 2147487744\n"
+                "expected = \"01 02 03 04\"\nreplace = \"05 06 07 08\"\n",
+                "a host_only feature may not patch the game");
+        mod_clear_plugins_for_tests();
+    }
+
+    {
+        const auto folder=root/"conditional-resources";
+        const std::vector<uint8_t> english{1,2,3},spanish{4,5};
+        const auto en=folder/"english.dat",es=folder/"spanish.dat";
+        write_bytes(en,english);write_bytes(es,spanish);
+        const std::string manifest=
+            "format_version = 10\nid = \"movies\"\nversion = \"1.0.0\"\nname = \"Movies\"\n"
+            "[[target]]\ngame_id = \"SLUS-TEST\"\n"
+            "[[feature]]\nid = \"media\"\nname = \"Media\"\ndefault_enabled = true\n"
+            "[[option]]\nfeature = \"media\"\nid = \"language\"\nlabel = \"Language\"\n"
+            "type = \"choice\"\ndefault = \"none\"\n"
+            "[[option.choice]]\nvalue = \"none\"\nlabel = \"None\"\n"
+            "[[option.choice]]\nvalue = \"en\"\nlabel = \"English\"\n"
+            "[[option.choice]]\nvalue = \"es\"\nlabel = \"Spanish\"\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"english\"\nlabel = \"English\"\n"
+            "when = { language = \"en\" }\nrequired = true\nsize = 3\nsha256 = \""+sha256_hex(english)+"\"\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"spanish\"\nlabel = \"Spanish\"\n"
+            "when = { language = \"es\" }\nrequired = true\nsize = 2\nsha256 = \""+sha256_hex(spanish)+"\"\n";
+        const auto path=folder/"bundled/movies/1.0.0/manifest.toml";
+        write_text(path,manifest);
+        ModPackageManager manager(folder);
+        check(manager.scan(&error) && manager.scan_errors().empty(),"conditional resource catalog parses");
+        auto none=manager.resolve("SLUS-TEST");
+        check(none.ok && none.resources.empty(),"inactive required media is neither requested nor loaded");
+        check(!manager.feature_resource_active("movies","media","english"),"inactive picker hidden");
+        check(manager.set_feature_option("movies","media","language","en",&error),error.c_str());
+        check(manager.feature_resource_active("movies","media","english") &&
+              !manager.feature_resource_active("movies","media","spanish"),"only selected language picker active");
+        check(!manager.resolve("SLUS-TEST").ok,"selected required resource still required");
+        check(manager.set_feature_resource_path("movies","media","english",en,&error),error.c_str());
+        auto selected_en=manager.resolve("SLUS-TEST");
+        check(selected_en.ok && selected_en.resources.size()==1 &&
+              selected_en.resources[0].id=="english","only selected immutable movie data resolves");
+        check(manager.set_feature_resource_path("movies","media","spanish",es,&error),error.c_str());
+        fs::remove(es,ec);
+        check(manager.resolve("SLUS-TEST").fingerprint==selected_en.fingerprint,
+              "inactive missing file does not change selected session identity");
+        check(manager.set_feature_option("movies","media","language","es",&error),error.c_str());
+        check(!manager.resolve("SLUS-TEST").ok,"switching to missing selected media rejects");
+        write_bytes(es,spanish);
+        check(manager.set_feature_resource_path("movies","media","spanish",es,&error),error.c_str());
+        write_bytes(en,{9,9,9});
+        auto selected_es=manager.resolve("SLUS-TEST");
+        check(selected_es.ok && selected_es.resources.size()==1 && selected_es.resources[0].id=="spanish" &&
+              selected_es.fingerprint!=selected_en.fingerprint && selected_es.fingerprint!=none.fingerprint,
+              "inactive corruption ignored; active language and bytes identify session");
+        write_bytes(es,{0,0});check(!manager.resolve("SLUS-TEST").ok,"active corrupt media rejects");
+        ModPackage invalid;
+        auto malformed=manifest;malformed.replace(malformed.find("language = \"en\""),15,"unknown = \"en\"");
+        write_text(path,malformed);check(!ModPackageManager::read_manifest(path,invalid,&error),"unknown resource condition option rejects");
+        malformed=manifest;malformed.replace(malformed.find("language = \"en\""),15,"language = \"de\"");
+        write_text(path,malformed);check(!ModPackageManager::read_manifest(path,invalid,&error),"invalid resource condition value rejects");
+        malformed=manifest;malformed.replace(malformed.find("= 10"),4,"= 9");
+        write_text(path,malformed);check(!ModPackageManager::read_manifest(path,invalid,&error),"conditional resources require new manifest version");
+    }
+
+    {
+        const auto folder=root/"conditional-preparation";
+        const auto source=folder/"source.dat",asset=folder/"asset.dat";
+        const std::vector<uint8_t> bytes{6,7,8};
+        write_bytes(source,bytes);write_bytes(asset,bytes);
+        write_text(folder/"bundled/prepared/1.0.0/manifest.toml",
+            "format_version = 10\nid = \"prepared\"\nversion = \"1.0.0\"\nname = \"Prepared\"\nprepare = \"test.conditional\"\n"
+            "[[target]]\ngame_id = \"SLUS-TEST\"\n"
+            "[[feature]]\nid = \"media\"\nname = \"Media\"\ndefault_enabled = true\n"
+            "[[option]]\nfeature = \"media\"\nid = \"enabled\"\nlabel = \"Prepare\"\ntype = \"boolean\"\ndefault = false\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"source\"\nlabel = \"Source\"\ninput_only = true\nrequired = true\nwhen = { enabled = \"true\" }\n"
+            "[[resource]]\nfeature = \"media\"\nid = \"asset\"\nlabel = \"Asset\"\nhidden = true\nrequired = true\n"
+            "when = { enabled = \"true\" }\nsize = 3\nsha256 = \""+sha256_hex(bytes)+"\"\n");
+        bool unexpected_output=false;
+        check(mod_register_media_preparer("test.conditional",[&](const ModPrepareContext& context,
+            std::map<std::string,fs::path>& output,std::string&) {
+            if(context.inputs.count("source"))check(context.inputs.at("source")==source,"only matching input passed to preparer");
+            if(!context.inputs.empty() || unexpected_output)output["asset"]=asset;
+            return true;
+        }),"conditional preparer registered");
+        ModPackageManager manager(folder);check(manager.scan(&error),error.c_str());
+        check(manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error) && manager.resolve("SLUS-TEST").ok,
+              "inactive preparation neither asks for inputs nor requires outputs");
+        check(manager.set_feature_option("prepared","media","enabled","true",&error),error.c_str());
+        check(!manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error),"matching input becomes required");
+        check(manager.set_feature_resource_path("prepared","media","source",source,&error),error.c_str());
+        check(manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error) &&
+              manager.resolve("SLUS-TEST").resources.size()==1,"matching prepared asset resolves");
+        check(manager.set_feature_option("prepared","media","enabled","false",&error),error.c_str());
+        fs::remove(asset,ec);
+        check(manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error) &&
+              manager.resolve("SLUS-TEST").resources.empty(),"inactive stale output is not read");
+        unexpected_output=true;
+        check(!manager.prepare_resources("SLUS-TEST",source,folder/"cache",&error),"preparer may not emit an inactive output");
     }
 
     fs::remove_all(root, ec);

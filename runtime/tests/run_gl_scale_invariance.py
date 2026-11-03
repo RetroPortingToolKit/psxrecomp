@@ -40,7 +40,8 @@ final level. "chain" draws, then steps through a list: each step must leave
 the native VRAM unchanged and rescale the displayed rect, the draw area and
 the wide margins from their own pixels (the fixture checks every pixel); the
 scene drawn again at the final level must equal the fixed-scale run there.
-The window mode refuses steps.
+The window mode refuses steps. A held full-composite case checks both buffer
+banks through 3x -> 5x -> 3x, including their centre pixels before any redraw.
 
 macOS/Linux/Windows (MinGW): pass the SDL3 include directory and static
 library (for example from a runtime build tree's _deps/sdl3-src/include and
@@ -100,6 +101,8 @@ def main():
     ap.add_argument("--fixture", type=pathlib.Path)
     ap.add_argument("--scales", default="1,2,3,5,9")
     ap.add_argument("--window-scales", default="2,3,5,9,18")
+    ap.add_argument("--steps-only", action="store_true",
+                    help="Run only canonical and held full-composite 3x/5x scale-step checks")
     args = ap.parse_args()
     # ';'-separated when CMake hands over a target's include list.
     sdl_includes = [str(pathlib.Path(d).resolve()) for d in args.sdl_include.split(";") if d]
@@ -154,6 +157,9 @@ def main():
     if passes:
         sections.append("-DPSX_TEST_RENDER_PASSES=1")
     objs = []
+    # The renderer calls the in-game overlay hook (host_overlay.c) at present.
+    if (framework / "runtime/src" / "host_overlay.c").exists():
+        sources.append(("hov", framework / "runtime/src" / "host_overlay.c"))
     for name, src in sources:
         o = dest / (name + ".o")
         r = run([args.cc, "-std=gnu11", "-O1", "-DPSX_SDL3=1", "-DPSX_NO_DEBUG_TOOLS=1",
@@ -184,6 +190,21 @@ def main():
     if r.returncode == SKIP_EXIT:
         print("SKIP:", r.stderr.strip()[-600:])
         return SKIP_EXIT
+
+    if args.steps_only:
+        env = os.environ.copy()
+        env["PSX_GL_HIRES_WINDOW"] = "0"
+        ok = r.returncode == 0
+        for case in ([probe, 5, "steps", "3,5,3", "chain"],
+                     [probe, 5, "composite-steps"]):
+            r = run(case, env=env)
+            parsed = parse_run(r.stdout)
+            print(f"{case[2]}: exit={r.returncode}", r.stdout.strip().splitlines()[-8:],
+                  r.stderr.strip()[-1200:])
+            if r.returncode or not parsed or parsed[1]:
+                ok = False
+        print("PASS" if ok else "FAIL")
+        return 0 if ok else 1
 
     ok = True
     digests = {}
@@ -248,6 +269,16 @@ def main():
     if not digests_agree({k: v[0] for k, v in sbs.items()}):
         print("FAIL sbs native VRAM digest differs across scales/modes:", sbs)
         ok = False
+    # Backdrop policies must not detach world ropes from textured props.
+    for s in (1, 5):
+        for window in ("0", "1"):
+            e = dict(env, PSX_GL_HIRES_WINDOW=window)
+            r = run([probe, s, "backdrop-lines"], env=e)
+            parsed = parse_run(r.stdout)
+            print(f"backdrop lines {s}x window={window}: exit={r.returncode}",
+                  r.stdout.strip().splitlines()[-1:])
+            if r.returncode or not parsed or parsed[1]:
+                ok = False
     # Lines batched with triangles: (label, scale, env).
     lines = {}
     for label, s, extra in (("full", 1, {}), ("full", 9, {}),
@@ -396,6 +427,12 @@ def main():
             print(f"FAIL {label}: frame/wide surface differ from the fixed {final}x run:",
                   got, hires_full.get(final))
             ok = False
+    r = run([probe, 5, "composite-steps"], env=env)
+    parsed = parse_run(r.stdout)
+    print(f"held full composite 3x -> 5x -> 3x: exit={r.returncode}",
+          r.stdout.strip().splitlines()[-6:], r.stderr.strip()[-600:])
+    if r.returncode or not parsed or parsed[1]:
+        ok = False
     if not digests_agree(digests):
         print("FAIL native VRAM digest differs across steps:", digests)
         ok = False

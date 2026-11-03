@@ -21,6 +21,9 @@ void host_osd_push(const char *msg, int duration_ms);
 
 /* Persistent top-left status text. Passing NULL/empty clears it. */
 void host_osd_set_status(const char *msg);
+/* Independent diagnostic rows; NULL/empty clears a row. Host presentation
+ * only, retaining runtime toasts/status and leaving guest VRAM untouched. */
+void host_osd_set_diagnostics(const char *first, const char *second);
 
 /* Right-side vertical volume bar (percent clamped 0..100). */
 void host_osd_show_volume(int percent, int duration_ms);

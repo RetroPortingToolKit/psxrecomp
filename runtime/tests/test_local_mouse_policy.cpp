@@ -31,6 +31,23 @@ int main() {
     uint8_t x=99,y=77; policy.update(0,host); policy.sample(0,x,y); CHECK(x==99 && y==77);
     PSXModMousePolicy callbacks{sizeof(PSXModMousePolicy),PSX_MOD_MOUSE_HOLD_RIGHT,eligible,event,sample};
     CHECK(policy.install(&callbacks)); CHECK(!policy.install(&callbacks));
+    CHECK(policy.persistent_capture(true));
+    policy.update(5*Ms,host);
+    CHECK(policy.control(5*Ms,5*Ms,psx::MouseControl::Left,true,false));
+    CHECK(policy.control(6*Ms,6*Ms,psx::MouseControl::Left,false,false));
+    CHECK(policy.captured());
+    CHECK(!policy.control(7*Ms,7*Ms,psx::MouseControl::Left,true,false));
+    CHECK(!policy.control(8*Ms,8*Ms,psx::MouseControl::Left,false,false));
+    CHECK(policy.captured());
+    CHECK(!policy.control(9*Ms,9*Ms,psx::MouseControl::Left,true,false));
+    CHECK(!policy.control(11*Ms,10*Ms,psx::MouseControl::Left,false,false));
+    CHECK(!policy.captured());
+    policy.update(11*Ms,host);
+    CHECK(policy.control(11*Ms,11*Ms,psx::MouseControl::Left,true,false));
+    CHECK(policy.control(0,12*Ms,psx::MouseControl::Left,false,false));
+    CHECK(policy.captured()); // lost up reconciles without turning capture off
+    CHECK(policy.control(12*Ms,12*Ms,psx::MouseControl::Escape,true,false));
+    CHECK(policy.persistent_capture(false));
     policy.update(10*Ms,host);
     CHECK(policy.control(10*Ms,10*Ms,psx::MouseControl::Left,true,false));
     CHECK(policy.captured() && suppressed==psx::MouseControl::Left && !active);
@@ -261,6 +278,49 @@ int main() {
         lost.clear();
     }
 
+    // Action games retain relative capture across native menus, cutscenes,
+    // Start and loading stalls, but discard all motion from those intervals.
+    {
+        psx::LocalMousePolicy game({nullptr,capture,suppress,notice});
+        CHECK(game.install(&callbacks));
+        CHECK(game.persistent_capture(true));
+        CHECK(game.capture_across_transitions(true));
+        uint64_t now=20000*Ms;
+        game.update(now,host);
+        CHECK(game.control(now,now,psx::MouseControl::Left,true,false));
+        CHECK(game.control(now+Ms,now+Ms,psx::MouseControl::Left,false,false));
+        for(int gate=0;gate<3;++gate) {
+            now+=10*Ms;game.update(now,host);game.motion(now,now,30,0);CHECK(active);
+            auto off=host;
+            if(gate==0)guest=false;
+            if(gate==1)off.start=true;
+            if(gate==2)now+=300*Ms;
+            game.update(now+Ms,off);CHECK(game.captured() && !active);
+            game.control(now-Ms,now+Ms,psx::MouseControl::Left,false,false);
+            CHECK(game.captured()); // queued release cannot expose the cursor
+            if(gate!=2)game.motion(now+2*Ms,now+2*Ms,30,0);
+            CHECK(!active && game.captured());
+            game.control(now+2*Ms,now+2*Ms,psx::MouseControl::Left,false,false);
+            CHECK(game.captured());
+            guest=true;game.update(now+3*Ms,host);
+            game.motion(now+2*Ms,now+3*Ms,30,0);CHECK(!active && game.captured());
+            game.sample(now+3*Ms,x,y);CHECK(x==128 && y==128);
+            game.motion(now+4*Ms,now+4*Ms,30,0);CHECK(active);
+        }
+        for(int gate=0;gate<5;++gate) {
+            now+=10*Ms;auto off=host;
+            if(gate==0)off.focused=false;if(gate==1)off.live=false;
+            if(gate==2)off.connected=false;if(gate==3)off.analog=false;
+            if(gate==4)off.native_right=true;
+            game.update(now,off);CHECK(!game.captured() && !active);
+            game.update(now+Ms,host);CHECK(!game.captured());
+            CHECK(game.control(now+2*Ms,now+2*Ms,psx::MouseControl::Left,true,false));
+            game.control(now+3*Ms,now+3*Ms,psx::MouseControl::Left,false,false);
+        }
+        CHECK(game.control(now+4*Ms,now+4*Ms,psx::MouseControl::Escape,true,false));
+        game.update(now+5*Ms,host);CHECK(!game.captured());
+        game.clear();
+    }
     policy.reset();host.hold_conflict=false;capture_ok=false;CHECK(acquire());CHECK(!policy.captured());
     const unsigned failure_notices=notices;CHECK(acquire());CHECK(notices==failure_notices);
     policy.clear(); CHECK(!policy.installed() && !policy.captured());

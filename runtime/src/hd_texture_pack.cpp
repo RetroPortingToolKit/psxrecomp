@@ -1,10 +1,12 @@
 #include "hd_texture_pack.h"
+#include "texture_pack_preload.hpp"
 
 #ifndef HD_TEXTURE_PACK_DISABLE_PNG_DECODE
 #include "../third_party/stb_image.h" /* declarations only; implementation is shared */
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <condition_variable>
 #include <cctype>
@@ -113,6 +115,10 @@ bool parse_key_text(const std::string& text,
     const size_t dash = text.find('-');
     if (dash == std::string::npos || text.find('-', dash + 1) != std::string::npos)
         return false;
+    if (ascii_lower(text.substr(dash + 1)) == "index") {
+        *palette_hash = HD_TEXTURE_PALETTE_INDEXED;
+        return parse_hex_component(text.substr(0, dash), texture_hash);
+    }
     return parse_hex_component(text.substr(0, dash), texture_hash) &&
            parse_hex_component(text.substr(dash + 1), palette_hash);
 }
@@ -448,6 +454,7 @@ struct DecodeItem {
     std::shared_ptr<DecodedImage> image;
     size_t bytes = 0;
     uint64_t last_used = 0;
+    bool pinned = false;   /* preloaded: never evicted */
 };
 
 struct DecodeCache {
@@ -480,7 +487,7 @@ void evict_decode_cache(DecodeCache& cache, size_t incoming = 0) {
     while (cache.used + incoming > cache.budget) {
         auto victim = cache.items.end();
         for (auto it = cache.items.begin(); it != cache.items.end(); ++it) {
-            if (it->second.state != DecodeState::Ready) continue;
+            if (it->second.state != DecodeState::Ready || it->second.pinned) continue;
             if (victim == cache.items.end() ||
                 it->second.last_used < victim->second.last_used)
                 victim = it;
@@ -511,38 +518,46 @@ void decode_worker(DecodeCache* cache) {
             path = it->second.path;
         }
 
-        std::vector<uint8_t> encoded;
-        {
-            std::ifstream input(path, std::ios::binary | std::ios::ate);
-            std::streamoff length = -1;
-            if (input) length = static_cast<std::streamoff>(input.tellg());
-            if (length > 0 && static_cast<uint64_t>(length) <= kMaxPngFileBytes &&
-                static_cast<uint64_t>(length) <=
-                    static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-                encoded.resize(static_cast<size_t>(length));
-                input.seekg(0);
-                if (!input.read(reinterpret_cast<char*>(encoded.data()), length))
-                    encoded.clear();
-            }
-        }
-        int width = 0;
-        int height = 0;
-        int components = 0;
-        stbi_uc* loaded = encoded.empty() ? nullptr : stbi_load_from_memory(
-            encoded.data(), static_cast<int>(encoded.size()),
-            &width, &height, &components, 4);
         std::shared_ptr<DecodedImage> decoded;
         size_t bytes = 0;
-        if (loaded && width > 0 && height > 0 &&
-            static_cast<uint64_t>(width) * static_cast<uint64_t>(height) <=
-                std::numeric_limits<size_t>::max() / 4) {
-            bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-            decoded = std::make_shared<DecodedImage>();
-            decoded->width = static_cast<uint32_t>(width);
-            decoded->height = static_cast<uint32_t>(height);
-            decoded->rgba.assign(loaded, loaded + bytes);
+        /* Allocation failure (encoded buffer, RGBA copy) must not escape the
+         * thread entry: the item fails like an undecodable image. */
+        try {
+            std::vector<uint8_t> encoded;
+            {
+                std::ifstream input(path, std::ios::binary | std::ios::ate);
+                std::streamoff length = -1;
+                if (input) length = static_cast<std::streamoff>(input.tellg());
+                if (length > 0 && static_cast<uint64_t>(length) <= kMaxPngFileBytes &&
+                    static_cast<uint64_t>(length) <=
+                        static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+                    encoded.resize(static_cast<size_t>(length));
+                    input.seekg(0);
+                    if (!input.read(reinterpret_cast<char*>(encoded.data()), length))
+                        encoded.clear();
+                }
+            }
+            int width = 0;
+            int height = 0;
+            int components = 0;
+            std::unique_ptr<stbi_uc, void (*)(void*)> loaded(
+                encoded.empty() ? nullptr : stbi_load_from_memory(
+                    encoded.data(), static_cast<int>(encoded.size()),
+                    &width, &height, &components, 4),
+                stbi_image_free);
+            if (loaded && width > 0 && height > 0 &&
+                static_cast<uint64_t>(width) * static_cast<uint64_t>(height) <=
+                    std::numeric_limits<size_t>::max() / 4) {
+                bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+                decoded = std::make_shared<DecodedImage>();
+                decoded->width = static_cast<uint32_t>(width);
+                decoded->height = static_cast<uint32_t>(height);
+                decoded->rgba.assign(loaded.get(), loaded.get() + bytes);
+            }
+        } catch (...) {
+            decoded.reset();
+            bytes = 0;
         }
-        if (loaded) stbi_image_free(loaded);
 
         std::lock_guard<std::mutex> lock(cache->mutex);
         auto it = cache->items.find(key);
@@ -1070,6 +1085,35 @@ int hd_texture_pack_track_upload(HdTexturePack* pack,
     return 1;
 }
 
+/* Debug: uploads whose live fragments cover VRAM (x, y), newest first, as
+ * JSON objects: serial, texture hash, size, fragment rect and source offset,
+ * and whether the pack holds any replacement for that hash. */
+int hd_texture_pack_debug_uploads_at(const HdTexturePack* pack, unsigned x, unsigned y,
+                                     char* out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    size_t pos = 0;
+    int n = 0;
+    out[0] = '\0';
+    if (!pack) return 0;
+    for (auto it = pack->uploads.rbegin(); it != pack->uploads.rend(); ++it) {
+        for (const Fragment& f : it->fragments) {
+            if (x < f.rect.x || x >= f.rect.x + f.rect.width ||
+                y < f.rect.y || y >= f.rect.y + f.rect.height) continue;
+            const int w = std::snprintf(out + pos, cap - pos,
+                "%s{\"serial\":%llu,\"hash\":\"%08x\",\"w\":%u,\"h\":%u,"
+                "\"rect\":[%u,%u,%u,%u],\"src\":[%u,%u],\"in_pack\":%d}",
+                n ? "," : "", (unsigned long long)it->serial, it->hash,
+                it->width, it->height, f.rect.x, f.rect.y, f.rect.width, f.rect.height,
+                f.source_x, f.source_y, pack->texture_hashes.count(it->hash) ? 1 : 0);
+            if (w < 0 || (size_t)w >= cap - pos) return n;
+            pos += (size_t)w;
+            ++n;
+            break;
+        }
+    }
+    return n;
+}
+
 void hd_texture_pack_reset_tracking(HdTexturePack* pack) {
     if (pack) {
         pack->uploads.clear();
@@ -1212,7 +1256,9 @@ int hd_texture_pack_match(HdTexturePack* pack,
         if (indexed == pack->upload_by_serial.end() || !indexed->second)
             continue;
         const Upload& upload = *indexed->second;
-        const auto record = pack->entries.find(make_key(upload.hash, palette_hash));
+        auto record = pack->entries.find(make_key(upload.hash, palette_hash));
+        if (record == pack->entries.end() && query->depth != HD_TEXTURE_DEPTH_16BPP)
+            record = pack->entries.find(make_key(upload.hash, HD_TEXTURE_PALETTE_INDEXED));
         if (record == pack->entries.end()) continue;
         if (!covered_by_upload(upload, wanted)) continue;
         if (record->second.ambiguous) return HD_TEXTURE_LOOKUP_AMBIGUOUS;
@@ -1280,6 +1326,120 @@ void hd_texture_pack_set_decode_budget(HdTexturePack* pack,
     std::lock_guard<std::mutex> lock(pack->decode.mutex);
     pack->decode.budget = budget_bytes;
     evict_decode_cache(pack->decode);
+}
+
+int hd_texture_pack_preload(HdTexturePack* pack, size_t max_bytes, unsigned max_threads,
+                            HdTexturePreloadResult* out) {
+    HdTexturePreloadResult r{};
+    if (out) *out = r;
+#ifdef HD_TEXTURE_PACK_DISABLE_PNG_DECODE
+    (void)pack; (void)max_bytes; (void)max_threads;
+    return -1;
+#else
+    if (!pack) return -1;
+    try {
+        namespace tp = psx_texpreload;
+        std::vector<std::pair<uint64_t, std::string>> work_items;
+        size_t per_image = 0;
+        {
+            std::lock_guard<std::mutex> lock(pack->decode.mutex);
+            per_image = pack->decode.budget;
+            for (const auto& item : pack->decode.items)
+                if (item.second.pinned) r.bytes += item.second.bytes;
+            for (const auto& entry : pack->entries) {
+                if (entry.second.ambiguous) continue;
+                ++r.requested;
+                const auto it = pack->decode.items.find(entry.first);
+                if (it != pack->decode.items.end() && it->second.pinned) ++r.loaded;
+            }
+            if (r.bytes > max_bytes) {
+                r.failed = r.requested - r.loaded;
+                if (out) *out = r;
+                return -1;
+            }
+            for (const auto& entry : pack->entries) {
+                if (entry.second.ambiguous) continue;
+                const auto it = pack->decode.items.find(entry.first);
+                if (it == pack->decode.items.end() || !it->second.pinned)
+                    work_items.emplace_back(entry.first, entry.second.replacement_path);
+            }
+        }
+        std::vector<std::shared_ptr<DecodedImage>> images(work_items.size());
+        std::vector<unsigned char> status(work_items.size(), tp::kPending);
+        tp::Budget budget(max_bytes - r.bytes);
+        r.worker_errors = static_cast<int>(tp::run(work_items.size(), max_threads, [&](size_t k) {
+            status[k] = tp::kFailed;
+            std::ifstream input(work_items[k].second, std::ios::binary | std::ios::ate);
+            const std::streamoff length = input ? static_cast<std::streamoff>(input.tellg()) : -1;
+            if (length <= 0 || static_cast<uint64_t>(length) > kMaxPngFileBytes ||
+                static_cast<uint64_t>(length) > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+                return;
+            std::vector<uint8_t> encoded(static_cast<size_t>(length));
+            input.seekg(0);
+            if (!input.read(reinterpret_cast<char*>(encoded.data()), length)) return;
+            int width = 0, height = 0, components = 0;
+            if (!stbi_info_from_memory(encoded.data(), static_cast<int>(encoded.size()),
+                                       &width, &height, &components) ||
+                width <= 0 || height <= 0 ||
+                static_cast<uint64_t>(width) * static_cast<uint64_t>(height) >
+                    static_cast<uint64_t>(per_image) / 4)
+                return;
+            const size_t need = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+            if (!budget.reserve(need)) { status[k] = tp::kOverBudget; return; }
+            struct Reservation {
+                tp::Budget& b; size_t n; bool keep = false;
+                ~Reservation() { if (!keep) b.release(n); }
+            } reservation{budget, need};
+            int lw = 0, lh = 0, lc = 0;
+            std::unique_ptr<stbi_uc, void (*)(void*)> loaded(
+                stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()),
+                                      &lw, &lh, &lc, 4),
+                stbi_image_free);
+            if (!loaded || lw != width || lh != height) return;
+            auto image = std::make_shared<DecodedImage>();
+            image->width = static_cast<uint32_t>(width);
+            image->height = static_cast<uint32_t>(height);
+            image->rgba.assign(loaded.get(), loaded.get() + need);
+            images[k] = std::move(image);
+            reservation.keep = true;
+            status[k] = tp::kLoaded;
+        }));
+        std::lock_guard<std::mutex> lock(pack->decode.mutex);
+        for (size_t k = 0; k < work_items.size(); ++k) {
+            if (status[k] == tp::kOverBudget) { ++r.over_budget; continue; }
+            if (status[k] != tp::kLoaded) continue;
+            auto it = pack->decode.items.find(work_items[k].first);
+            if (it != pack->decode.items.end()) {
+                /* Already pinned, or an on-demand decode in flight: leave it. */
+                if (it->second.pinned || it->second.state == DecodeState::Queued ||
+                    it->second.state == DecodeState::Loading) continue;
+            }
+            const size_t previous_bytes = it != pack->decode.items.end() &&
+                it->second.state == DecodeState::Ready ? it->second.bytes : 0;
+            DecodeItem item;
+            /* Prepare throwing metadata before touching an existing entry. */
+            item.path = work_items[k].second;
+            item.bytes = images[k]->rgba.size();
+            item.image = std::move(images[k]);
+            item.state = DecodeState::Ready; item.pinned = true;
+            item.last_used = ++pack->decode.tick;
+            const size_t bytes = item.bytes;
+            if (it == pack->decode.items.end())
+                pack->decode.items.emplace(work_items[k].first, std::move(item));
+            else it->second = std::move(item);
+            pack->decode.used -= previous_bytes;
+            r.bytes += bytes; ++r.loaded;
+            tp::after_publish(r.loaded);
+        }
+        r.failed = r.requested - r.loaded - r.over_budget;
+        if (out) *out = r;
+        return r.loaded == r.requested ? 1 : 0;
+    } catch (...) {
+        r.failed = r.requested - r.loaded - r.over_budget;
+        if (out) *out = r;  /* Account the pinned prefix even on publication failure. */
+        return -1;
+    }
+#endif
 }
 
 int hd_texture_pack_request_decode(HdTexturePack* pack,

@@ -11,6 +11,10 @@ int main(void) {
     CHECK(v.rotation_q12[0]==4096 && v.rotation_q12[4]==4096 && v.rotation_q12[8]==4096);
     CHECK(v.fx_q16==256*65536 && v.fy_q16==240*65536);
     CHECK(v.cx_delta_q16==0 && v.cy_delta_q16==0);
+    CHECK(v.precise && fabs(v.translation_precise[0]-33.5)<1e-12);
+    const double tiny[3]={.0001,0,0};
+    CHECK(vr_pose_to_view(q,tiny,q,origin,f,1000,512,240,&v));
+    CHECK(v.translation[0]==0 && fabs(v.translation_precise[0]+.1)<1e-12);
     double move[3]={0,.1,-.2};
     CHECK(vr_pose_to_view(q,move,q,origin,f,1000,512,240,&v));
     CHECK(v.translation[1]==100 && v.translation[2]==-200);

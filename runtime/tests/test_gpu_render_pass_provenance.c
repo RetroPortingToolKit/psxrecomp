@@ -109,6 +109,51 @@ static void test_pass_only_tags_and_phase(void) {
     assert(psx_ws_prim_in_backdrop() == 1); /* Original early-backdrop phase. */
 }
 
+static void test_aperture_hud_anchor(void) {
+    start_scene();
+    test_aperture_used = 64;
+    memcpy(test_aperture + 1, canonical, sizeof(canonical));
+    gp0_words_needed = 5;
+    memcpy(gp0_cmd_buf, canonical, sizeof(canonical));
+    const uint32_t packet = PSX_MOD_GPU_DMA_GUEST_BASE;
+    for (int edge = -1; edge <= 1; ++edge) {
+        gpu_ws_tag_hud_prim(packet, edge);
+        for (unsigned alias = 0; alias < 2; ++alias) {
+            gp0_cmd_source_addr = (alias ? packet & 0xFFFFFFu : packet) + 4;
+            int32_t delta;
+            assert(ws_nw_explicit_hud_delta(&delta));
+            assert(delta == edge * ws_nw_offset());
+        }
+    }
+    gpu_ws_set_view_anchor(4, 8, 12, 16);
+    for (int side = -1; side <= 1; ++side) {
+        ws_view = (WsViewAnchor){0, 0, side * ws_nw_offset(), 7, 9};
+        ws_view_frame = (uint32_t)s_frame_count;
+        gp0_cmd_buf[0] = canonical[0];
+        gp0_execute_command();
+        assert(fixture_wide_view.shift == 0);
+        assert(fixture_wide_view.left == 0 && fixture_wide_view.right == 0);
+        gp0_cmd_buf[0] ^= 1;
+        gp0_execute_command();
+        assert(fixture_wide_view.shift == ws_view.shift);
+        assert(fixture_wide_view.left == 7 && fixture_wide_view.right == 9);
+    }
+    gpu_ws_set_view_anchor(0, 0, 0, 0);
+    gp0_cmd_buf[0] = canonical[0];
+    gp0_cmd_buf[1] = 1;
+    assert(!ws_nw_explicit_hud_delta(NULL));
+    gp0_cmd_buf[1] = canonical[1];
+    gp0_cmd_source_addr = 4;
+    assert(!ws_nw_explicit_hud_delta(NULL));
+    GpuWsTagStats before, after;
+    gpu_ws_get_tag_stats(&before, NULL);
+    test_aperture_used = 16;
+    gpu_ws_tag_hud_prim(packet, 1);
+    gpu_ws_get_tag_stats(&after, NULL);
+    assert(after.tag_rejected == before.tag_rejected + 1);
+    test_aperture_used = 0;
+}
+
 static void test_hud_dot_draw(void) {
     start_scene();
     set_dot_packet(command_addr, 20, 20);
@@ -245,6 +290,7 @@ static void test_auto_ui_prepass(void) {
 int main(void) {
     test_retagged_canonical_packet();
     test_pass_only_tags_and_phase();
+    test_aperture_hud_anchor();
     test_hud_dot_draw();
     test_screen_mask_packet();
     test_repeat_rect_packet();

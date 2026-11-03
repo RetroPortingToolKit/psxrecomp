@@ -46,3 +46,10 @@ assert "(resume_pc == 0u && !pc_matches_cpu) || !snapshot_safe || !pc_ok" in STA
 assert "!psx_irq_resume_context_snapshot_safe_at(pc) || !resume_pc_ok(pc)" in REWIND
 assert "psx_check_interrupts_at(cpu, pc)" in DIRTY
 print("savestate status protocol guard passed")
+
+# The debug server names an out-of-range slot instead of the generic refusal.
+_handler = SERVER[SERVER.index("static void handle_savestate(int id"):]
+_handler = _handler[:_handler.index("\n}\n")]
+assert "slot >= SAVESTATE_SLOTS" in _handler
+assert _handler.index("slot >= SAVESTATE_SLOTS") < _handler.index("savestate_request_save(slot)")
+assert "out of range (0..%d)" in _handler

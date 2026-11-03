@@ -1,0 +1,103 @@
+format_version = 11
+id = "psx.enhancement.image-filtering"
+version = "1.0.0"
+name = "Image Filtering"
+author = "psxrecomp"
+description = "How the picture is scaled and sampled: smooth or sharp scaling to the window, texture filtering and FMV filtering. Presentation only: the game runs exactly the same, and in netplay each player keeps their own choice."
+resolver = "declarative"
+save_compatibility = "shared"
+
+# How the host scales and samples the picture is not a property of any
+# particular disc, so this ships with the framework and applies to every game.
+# The title's [video] antialiasing / texture_filtering / fmv_filter stay its
+# baseline: with the feature off they apply unchanged, and "Game default"
+# keeps them.
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "image-filtering"
+name = "Image Filtering"
+description = "Disabled by default: the game keeps its own filtering. Turn it on to choose; anything left at Game default keeps the game's setting."
+group = "Visual"
+default_enabled = false
+
+[[option]]
+feature = "image-filtering"
+id = "smoothing"
+label = "Smoothing"
+description = "How the finished picture is scaled to the window: Smooth blends neighbouring pixels, Sharp keeps hard pixel edges. Sharp also presents FMVs with hard pixels."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "smooth"
+label = "Smooth"
+
+[[option.choice]]
+value = "sharp"
+label = "Sharp"
+
+[[option]]
+feature = "image-filtering"
+id = "texture_filtering"
+label = "Texture filtering"
+description = "How the 3D renderer samples game textures: Nearest is the console's native look, Bilinear softens, xBR rounds pixel art edges."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "nearest"
+label = "Nearest"
+
+[[option.choice]]
+value = "bilinear"
+label = "Bilinear"
+
+[[option.choice]]
+value = "xbr"
+label = "xBR"
+
+[[option]]
+feature = "image-filtering"
+id = "fmv_filtering"
+label = "FMV filtering"
+description = "How a full-motion video is reconstructed when it is scaled up to the window. Applies while scaling is Smooth."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "nearest"
+label = "Nearest"
+
+[[option.choice]]
+value = "bilinear"
+label = "Bilinear"
+
+[[option.choice]]
+value = "sharp"
+label = "Sharp bilinear"
+
+[[option.choice]]
+value = "bicubic"
+label = "Bicubic"
+
+[[plugin]]
+feature = "image-filtering"
+id = "psx.image-filtering"
+netplay = "host_only"

@@ -122,6 +122,15 @@ static inline uint32_t psx_gcs_recip_for(uint32_t scale) {
     if (scale > 64u) scale = 64u;
     return (uint32_t)((65536u + scale / 2u) / scale);
 }
+/* [timing] guest_cycle_scale_batch: batch scaled CPU charges (psx_cyc.h). */
+extern int g_psx_gcs_batch;
+/* Fixed session timing profile. Both implementations are portable C and are
+ * present in every build; peers must agree on the selected one before frame 0.
+ * Preserve the existing scale-only tag for the unbatched path. */
+static inline uint32_t psx_gcs_session_profile(uint32_t scale, int batch) {
+    if (scale <= 1u) return 0u;
+    return 0x6C000000u | (batch ? 0x00800000u : 0u) | scale;
+}
 static inline uint32_t psx_gcs_scale(uint32_t cpu_cycles) {
     uint64_t t = (uint64_t)cpu_cycles * g_psx_gcs_recip_q16 + g_psx_gcs_frac;
     g_psx_gcs_frac = (uint32_t)(t & 0xFFFFu);
@@ -254,9 +263,25 @@ uint64_t psx_get_cycle_count(void);
 struct CPUState;
 void psx_idle_note_check(struct CPUState *cpu, uint32_t check_pc);
 int  psx_idle_skip_is_enabled(void);
+/* Target-generated build policy. Unbound titles retain their existing config;
+ * declared audited wait families select native induction or original polling
+ * through PSX_EXECUTION_PROFILE, with distinct execution identities. */
+/* Returns -1 for config-owned behavior, otherwise the selected anchor count. */
+int psx_build_idle_wait_configure(void);
 /* Cycles until the nearest IRQ-observable device event (mask-aware); the bound an idle skip may not cross. */
 uint32_t psx_idle_cycles_to_next_observable_event(void);
 extern int      g_idle_skip_enabled;
+/* [runtime] idle_skip_store_counters (psx_cycles.c): 1 on, 0 off, -1 env. */
+extern int      g_idle_skip_ext;
+/* [runtime] idle_skip_store_counter_sites: the audited anchor PCs where the
+ * store-counter extension may skip (at most 16). Unlisted sites never are. */
+void psx_idle_skip_set_store_counter_sites(const uint32_t *pcs, int n);
+/* The host write that lowers a skipped loop counter (psx_host_write_word);
+ * the store-counter extension stays off until one is installed. */
+void psx_idle_skip_set_host_writer(void (*w)(uint32_t addr, uint32_t val));
+/* The store path's last-word-store record (memory.c): the gate the detector
+ * sets while the extension is on, and the address/value it reads. */
+void psx_idle_skip_set_store_tracker(int *gate, const uint32_t *addr, const uint32_t *val);
 extern uint64_t g_idle_skip_count;
 extern uint64_t g_idle_skip_cycles;
 extern uint32_t g_idle_skip_last_pc;

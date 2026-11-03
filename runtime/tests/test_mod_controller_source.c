@@ -25,6 +25,14 @@ int main(void) {
     CHECK(!psx_mod_set_controller_source(PSX_MAX_PLAYERS,source));
     CHECK(!mod_controller_source_sample(0,&p,&rel) && rel==0);
     CHECK(psx_mod_set_controller_source(0,source));
+    CHECK(mod_controller_source_connected(0));
+    CHECK(!psx_mod_set_controller_source_connected(PSX_MAX_PLAYERS,0));
+    CHECK(!psx_mod_set_controller_source_connected(1,0));
+    CHECK(!psx_mod_set_controller_source_connected(0,2));
+    CHECK(psx_mod_set_controller_source_connected(0,0));
+    CHECK(!mod_controller_source_connected(0));
+    CHECK(mod_controller_source_present(0)); /* absent source still owns port */
+    CHECK(psx_mod_set_controller_source_connected(0,1));
     CHECK(mod_controller_source_sample(0,&p,&rel) && p.lx==200 && p.ly==5 && !rel);
     mod_controller_source_begin_frame();
     mode=1;CHECK(mod_controller_source_sample(0,&p,NULL) && p.buttons==0xffff && p.lx==128);
@@ -45,6 +53,7 @@ int main(void) {
     CHECK(mod_controller_source_sample(0,&p,NULL) && calls==2);
     /* Detach: one neutral release frame, shared by both passes of that frame. */
     CHECK(psx_mod_set_controller_source(0,0));
+    CHECK(!mod_controller_source_connected(0));
     CHECK(mod_controller_source_sample(0,&p,&rel) && rel==1 && p.buttons==0xffff && p.lx==128);
     CHECK(mod_controller_source_sample(0,&p,&rel) && rel==1);
     mod_controller_source_begin_frame();

@@ -47,11 +47,15 @@ void psx_netplay_rb_cold_reset(void);
  * without longjmp. Call psx_netplay_rb_flush_resume() afterward from a C BB-edge
  * (or after all C++ RAII in the vblank path has been destroyed). */
 void psx_netplay_rb_poll(struct CPUState *cpu, uint32_t resume_pc);
+/* psx_netplay.c: the one resume-PC rule for Live and Replay tick snaps. */
+uint32_t psx_netplay_snap_resume_hint(const struct CPUState *cpu);
 
 /* If a baseline snap was applied without resume, longjmp to the scheduler
  * (same as savestate_poll). No-op when nothing is pending. Never returns on
  * success. */
 void psx_netplay_rb_flush_resume(void);
+/* psx_netplay.c: admit the Live tick a realign resumes into (1 = admitted). */
+int psx_netplay_live_realign_admit(void);
 
 /* 1 after flush_resume longjmp until finish_frame / abort — top-level
  * dispatch has no native call chain under the resume PC. */

@@ -1,0 +1,85 @@
+format_version = 11
+id = "psx.enhancement.crt-filter"
+version = "1.0.0"
+name = "CRT Filter"
+author = "psxrecomp"
+description = "A CRT look for the presented picture: a screen colour model and scanlines. Presentation only: the game runs exactly the same, and in netplay each player keeps their own choice."
+resolver = "declarative"
+save_compatibility = "shared"
+
+# How the host presents the picture is not a property of any particular disc,
+# so this ships with the framework and applies to every game. The title's
+# [video] screen_kind / scanlines / scanline_strength stay its baseline: with
+# the feature off they apply unchanged, and "Game default" keeps them.
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "crt-filter"
+name = "CRT Filter"
+description = "Disabled by default: the game keeps its own look. Turn it on to pick a screen colour model and scanlines; anything left at Game default keeps the game's setting."
+group = "Visual"
+default_enabled = false
+
+[[option]]
+feature = "crt-filter"
+id = "screen_model"
+label = "Screen model"
+description = "The colour response of a period display, applied when the picture is presented."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "crt"
+label = "CRT"
+
+[[option.choice]]
+value = "composite"
+label = "Composite"
+
+[[option.choice]]
+value = "trinitron"
+label = "Trinitron"
+
+[[option]]
+feature = "crt-filter"
+id = "scanlines"
+label = "Scanlines"
+description = "Darkens the gaps between display lines, at the console's own line pitch. Cleanest when the window is at least twice the console's line count tall."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "on"
+label = "On"
+
+[[option.choice]]
+value = "off"
+label = "Off"
+
+[[option]]
+feature = "crt-filter"
+id = "scanline_strength"
+label = "Scanline strength"
+description = "How dark the gaps are, in percent. Used while Scanlines is On."
+group = "Visual"
+type = "integer"
+min = 1
+max = 100
+step = 1
+default = 50
+
+[[plugin]]
+feature = "crt-filter"
+id = "psx.crt-filter"
+netplay = "host_only"

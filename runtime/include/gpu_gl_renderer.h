@@ -26,10 +26,17 @@ int gl_renderer_select_texture_bank(uint16_t id);
 /* Retain texture indices while sampling current guest CLUTs (fades/animation). */
 int gl_renderer_select_texture_bank_live_clut(uint16_t id);
 int gl_renderer_texture_banks_supported(void);
+/* Emulation/GL owning thread: drain draws and invalidate an owned ID range. */
+void gl_renderer_forget_texture_bank_range(uint16_t first, uint32_t count);
 /* HD texture presentation uses an independent native SW VRAM authority.
  * Both entry points drain pending draws before changing or deleting textures. */
 void gl_renderer_set_hd_texture_mode(int enabled);
 void gl_renderer_clear_hd_texture_cache(void);
+/* Drain the presenter before reading its HD movie diagnostics. */
+int gl_renderer_fmv_hd_debug_json(char *out, size_t capacity);
+/* Only on the renderer thread, before the immediately following HD draw. */
+int gl_renderer_hd_texture_cached(uint64_t key, uint64_t generation,
+                                 uint32_t* width, uint32_t* height);
 
 /* Set the GL swap interval / vsync mode (1=vsync, 0=immediate, -1=adaptive).
  * Safe before or after context creation; applies live when a context exists. */
@@ -132,12 +139,16 @@ int gl_renderer_local_view_end(int keep);
 /* Stereo shares the VRAM transaction, not the temporal generation/schedule. */
 uint32_t gl_renderer_stereo_unavailable(void);
 int gl_renderer_stereo_begin(int x, int y, int w, int h, int reuse_backup);
+int gl_renderer_local_pair_begin(int x, int y, int w, int h, int reuse_backup);
+uint32_t gl_renderer_local_pair_unavailable(void);
 int gl_renderer_stereo_end(uint32_t eye, int keep);
 void gl_renderer_stereo_stage_reset(void);
+int gl_renderer_stereo_stage_readback_pair(uint32_t width,uint32_t height,uint8_t *rgba);
 int gl_renderer_stereo_publish(uint64_t pair_id, uint64_t guest_cycle,
                                 const int32_t eye_view[2][3]);
 void gl_renderer_stereo_reset(void);
 int gl_renderer_stereo_set_presentation(uint32_t mode);
+int gl_renderer_local_pair_set_presentation(int enabled);
 void gl_renderer_stereo_dump_arm(const char *dir, int pairs);
 /* Bounded metadata for explicitly requested PNG evidence, queried over TCP. */
 typedef struct GLRenderStereoCapture {
@@ -161,6 +172,9 @@ void gl_renderer_interpolation_diag(int *enabled, int *suspended,
 /* Cumulative CPU-upload diagnostics: calls, rects, pixels, conversion ticks,
  * texture-upload ticks, FBO-draw ticks. Active only with PSX_RUNTIME_PERF_DIAG. */
 void gl_renderer_runtime_diag(uint64_t out[6]);
+/* Cumulative scene primitive counters (pre double-draw): all submitted, and of
+ * those textured. Callers take deltas; the counters are never reset here. */
+void gl_renderer_scene_prim_counts(uint64_t *prims, uint64_t *textured);
 
 /* Present an ARGB8888 image (BGRA byte order) as a letterboxed quad + swap.
  * Used for 24-bit (FMV) frames and the PSX_GL_FORCE_CPU_PRESENT diagnostic.
@@ -170,7 +184,10 @@ void gl_renderer_runtime_diag(uint64_t out[6]);
  * (left-aligned in the letterbox; the rest stays cleared black). Used to hide
  * a trailing depth24 margin without changing CRTC width / stretching. */
 void gl_renderer_present(const uint32_t *pixels, int src_w, int src_h, int linear,
-                         int force_4_3, int content_w);
+                         int force_4_3, int content_w, uint64_t guest_cycle,
+                         uint64_t guest_frame, uint64_t guest_epoch,
+                         uint64_t stream_generation, int stream_lba, int delivered_lba,
+                         uint32_t decode_serial);
 
 /* Bezel art shown in the letterbox/pillarbox margins. Takes RGBA8 pixels; the
  * caller owns them and may free them on return. Passing NULL clears it.
@@ -182,6 +199,30 @@ int  gl_renderer_has_bezel(void);
  * filtered and guest VRAM is never touched. Takes effect at the next present;
  * safe to call from any thread. */
 enum { GL_POST_AA_OFF = 0, GL_POST_AA_FXAA = 1, GL_POST_AA_FXAA_HQ = 2 };
+/* Post-effect pipeline (gl_postfx.inc, docs/POST_EFFECTS.md). All elective,
+ * off by default; safe from any thread, effective at the next present.
+ * Bloom ([video] bloom, 0 = off .. 2; PSX_BLOOM overrides) is the built-in
+ * "bloom" chain: glow from 3D and additive primitives only, never the HUD. */
+void  gl_renderer_set_bloom(float strength);
+float gl_renderer_get_bloom(void);
+/* [video] post_shader: a .pfx chain file run after bloom and before AA
+ * ("" = none; PSX_POST_SHADER overrides). A preset that fails to load or
+ * compile is logged and skipped. */
+void  gl_renderer_set_post_shader(const char *path);
+int   gl_renderer_post_shader_loaded(void);
+/* Debug: path, last load outcome and live uniforms of the user chain (JSON members). */
+int   gl_renderer_post_shader_debug(char *out, int cap);
+typedef struct {
+    float strength, threshold;
+    uint64_t passes, us_n;
+    double us_mean;     /* glFinish-bracketed pass cost on real frames while timing, then reset */
+    double gen_us_mean; /* the same on Smooth motion generated frames */
+    uint64_t gen_us_n;
+    uint64_t reused;    /* passes generated frames took from the last real frame */
+} GlBloomInfo;
+/* Debug: negative arguments keep the current value. */
+void  gl_renderer_bloom_debug(float strength, float threshold, int time,
+                              GlBloomInfo *out);
 int  gl_renderer_set_post_aa(int mode);
 int  gl_renderer_post_aa(void);
 uint64_t gl_renderer_post_aa_passes(void);
@@ -227,6 +268,14 @@ void gl_renderer_set_cpu_auth_dual(int on);
  * config enum VIDEO_FMV_FILTER_* (0 nearest, 1 bilinear, 2 sharp, 3 bicubic).
  * Only consulted while video antialiasing is on; AA off is always nearest. */
 void gl_renderer_set_fmv_filter(int cfg_value);
+/* [video] fmv_chroma_smoothing: on 24-bit (MDEC) presents, keep each sample's
+ * luma and smooth its chroma over the 3x3 source pixels around it, hiding the
+ * 2x2 colour blocks of 4:2:0 video. Off by default. main.cpp notes whether
+ * the next gl_renderer_present is a 24-bit scanout. */
+void gl_renderer_set_fmv_chroma_smoothing(int on);
+int  gl_renderer_fmv_chroma_smoothing(void);
+uint64_t gl_renderer_fmv_chroma_frames(void);
+void gl_renderer_note_present_depth24(int d24);
 int  gl_renderer_cpu_auth_dual(void);
 
 /* Post-savestate freeze probe: skip/swap/dirty-mark counters (GL present path).
@@ -283,12 +332,34 @@ void gl_renderer_set_wide_fast(int on);
  * gr_set_depth_triangle (no extra command per triangle otherwise). Any thread. */
 int  gl_renderer_pgxp_render_wanted(void);
 void gl_renderer_set_pgxp_depth(int on);
+/* [video] texture_lod / anisotropic_filtering: mip-level emulation (box
+ * average of the screen footprint, clamped to the primitive's UV bounds) for
+ * minified world textures, with up to `aniso` taps along the footprint's
+ * major axis. mode 0 (default) leaves sampling exactly as before. */
+void gl_renderer_set_texture_lod(int mode, int aniso);
+int  gl_renderer_texture_lod(void);
+int  gl_renderer_anisotropy(void);
+/* [video] accurate_blending: store every VRAM write in the k*8/255 basis so
+ * 8-bit GL blending truncated to 5 bits is exactly the PS1's semi-transparency
+ * arithmetic (whites of fills and textures become 248 instead of 255, as
+ * uploads and untextured primitives already are). On by default. */
+void gl_renderer_set_accurate_blending(int on);
+int  gl_renderer_accurate_blending(void);
+/* [video] dithering: 1 (default) PS1 dither pattern on the native VRAM grid
+ * (guest VRAM identical at every internal scale), 2 elective pattern per
+ * internal-resolution pixel, 0 off (true colour). Applies to eligible
+ * primitives (Gouraud, texture-modulated polygons) while GP0(E1h) bit 9 is set. */
+void gl_renderer_set_dithering(int mode);
+int  gl_renderer_dithering(void);
 int  gl_renderer_get_pgxp_depth(void);
 void gl_renderer_set_pgxp_color_perspective(int on);
 int  gl_renderer_get_pgxp_color_perspective(void);
 void gl_renderer_set_pgxp_seam(int mode);
 int  gl_renderer_get_pgxp_seam(void);
 void gl_renderer_set_pgxp_depth_threshold(float sz);
+/* Cumulative depth clears by cause: config, drawing-area change, fill,
+ * average-SZ jump-back threshold, displayed frame. */
+void gl_renderer_pgxp_depth_clear_reasons(uint64_t out[5]);
 void gl_renderer_pgxp_render_stats(uint64_t *depth_tris, uint64_t *depth_clears,
                                    uint64_t *seam_tris);
 
@@ -340,6 +411,14 @@ int  gl_renderer_request_internal_scale(int scale);
  * 0 when refused or deferred (inside a render pass; it then applies after
  * the next present). Never call it inside a render pass. */
 int  gl_renderer_step_internal_scale_now(int scale);
+/* Live Internal resolution / Supersampling change: the scale to step to at
+ * a context-owned sync point (the new ceiling). Returns the scale applied, 0 when
+ * the backend cannot change it live. */
+int  gl_renderer_set_internal_scale_live(int scale);
+/* 1 when gl_renderer_set_internal_scale_live can apply on this session (no
+ * windowed high-resolution mode, no CPU-authoritative dual rendering, a live
+ * raster context). 0 means a resolution change needs a relaunch. */
+int  gl_renderer_internal_scale_live_capable(void);
 typedef struct GlDynresStats {
     int      level, ceiling, pending;   /* pending: requested level, 0 = none */
     uint64_t steps, deferred, refused;
@@ -526,6 +605,10 @@ void gl_renderer_draw_projected_triangle(const PSXProjectedVertex vertices[3],
 /* Cumulative textured-batch diagnostics: total, then flushes caused by
  * isolation, blend-mode, mask, filter, backdrop-gate, texture-window, capacity. */
 void gl_renderer_batch_diag(uint64_t out[9]);
+/* Cumulative flushes of non-empty batches by caller source line in
+ * gpu_gl_renderer.c (kind 0 textured, 1 flat/gouraud). Returns entries
+ * written; diff two reads to attribute a window. */
+int gl_renderer_batch_sites(int kind, int *lines, uint64_t *counts, int cap);
 
 /* Texture-window batching ([video] texture_window_batching; default off).
  * On: textured prims with different GP0(E2h) texture windows share a batch
@@ -548,6 +631,7 @@ int  gl_renderer_get_texture_window_batching(void);
 int  gl_renderer_render_thread_start(int max_frames);
 void gl_renderer_render_thread_stop(void);
 int  gl_renderer_render_thread_active(void);
+int  gl_renderer_vendor_is_nvidia(void);
 void gl_renderer_render_thread_frame_boundary(void);
 void gl_renderer_render_thread_sync(const char *reason);
 int  gl_renderer_render_thread_json(char *out, size_t cap);

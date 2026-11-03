@@ -61,6 +61,9 @@ void gr_set_precise_triangle(int enabled,
  * perspective_texturing). q[i] is the normalized 1/z homogeneous weight at
  * vertex i. enabled == 0 restores the PS1's affine UV interpolation. */
 void gr_set_perspective_triangle(int enabled, float q0, float q1, float q2);
+/* GP0(E1h) bit 9 (dither enable). Only a backend with [video] dithering
+ * implements it; the default renderers stay true colour. */
+void gr_set_dither(int enabled);
 /* PGXP depth for the NEXT triangle (docs/ENHANCEMENTS.md G1.14): the GTE SZ
  * of each vertex (1..65535), taken from validated dataflow shadows. Only a
  * backend with a PGXP depth buffer / perspective-correct colour uses it;
@@ -141,6 +144,11 @@ void gr_wide_disable_target(void);
 void gr_wide_clear(int base_x, int y, int h, uint16_t color);
 /* sides: bit 0 = left synthetic margin, bit 1 = right. */
 void gr_wide_clear_margins(int base_x, int y, int h, uint16_t color, int sides);
+/* Draws a 15-bit framebuffer copy into the current wide surface only, sampling
+ * the wide surface of src_base (VRAM coordinates; x may lie in a band). semi
+ * is the PS1 mode 0..3 or -1 for opaque. */
+void gr_wide_feedback_rect(int src_base, int src_x, int src_y, int dst_x, int dst_y,
+                           int w, int h, int r, int g, int b, int raw, int semi);
 int  gr_wide_dump_full(uint32_t *out, int cap_pixels, int *ow, int *oh, int base_x);
 int  gr_render_wide_display(uint32_t *out, int pitch, int base_x,
                             int disp_y, int disp_h);
@@ -167,6 +175,7 @@ typedef struct GpuRenderBackend {
                                  int32_t x1, int32_t y1,
                                  int32_t x2, int32_t y2);
     void (*set_perspective_triangle)(int enabled, float q0, float q1, float q2);
+    void (*set_dither)(int enabled);   /* optional: GP0(E1h) bit 9 */
     void (*fill_rect)(int x, int y, int w, int h, uint16_t color);
     void (*copy_rect)(int src_x, int src_y, int dst_x, int dst_y, int w, int h);
     void (*draw_flat_triangle)(int x0, int y0, int x1, int y1, int x2, int y2,
@@ -234,6 +243,10 @@ typedef struct GpuRenderBackend {
     /* A GP0(A0) payload is (1) or is no longer (0) streaming into gpu.c's
      * array, whatever the HD state. NULL = the backend does not care. */
     void (*vram_upload_open)(int open);
+    /* Appended: gr_wide_feedback_rect. NULL = the bands keep no feedback. */
+    void (*wide_feedback_rect)(int src_base, int src_x, int src_y, int dst_x,
+                               int dst_y, int w, int h, int r, int g, int b,
+                               int raw, int semi);
 } GpuRenderBackend;
 
 enum { GR_HD_NOTE_INVALIDATE = 0, GR_HD_NOTE_TRACK_UPLOAD = 1,

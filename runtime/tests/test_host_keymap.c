@@ -26,6 +26,10 @@ int main(int argc, char **argv) {
 
     memset(keys, 0, sizeof(keys));
     host_keymap_load(NULL);
+    check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_l, mod_ctrl()),
+          "menu primary matches recomp-ui Ctrl+L default");
+    check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_F10, 0),
+          "menu also accepts F10");
     check(host_keymap_match(HOST_KEYMAP_FULLSCREEN, (int)SDLK_RETURN, mod_alt()),
           "default fullscreen includes Alt+Return");
     check(host_keymap_match(HOST_KEYMAP_FULLSCREEN, (int)SDLK_f, mod_ctrl()),
@@ -62,11 +66,16 @@ int main(int argc, char **argv) {
           "Turbo = Q\n"
           "VolumeUp = Up\n"
           "VolumeDown = Down\n"
-          "DisplayPerf = F10\n",
+          "DisplayPerf = F10\n"
+          "OpenLauncher = Ctrl+O\n",
           f);
     fclose(f);
 
     host_keymap_load(cfg);
+    check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_o, mod_ctrl()),
+          "menu accepts its rebind");
+    check(!host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_F10, 0),
+          "menu rebind removes the default alias");
     check(!host_keymap_match(HOST_KEYMAP_FULLSCREEN, (int)SDLK_f, mod_ctrl()),
           "fullscreen rebind disables Ctrl+F fallback");
     check(host_keymap_match(HOST_KEYMAP_FULLSCREEN, (int)SDLK_F11, 0),
@@ -100,7 +109,8 @@ int main(int argc, char **argv) {
     check(f != NULL, "create temporary explicit-unbind config.ini");
     if (!f) return 1;
     fputs("[KeyMap]\n"
-          "SaveStateMenu = None\n",
+          "SaveStateMenu = None\n"
+          "OpenLauncher = None\n",
           f);
     fclose(f);
 
@@ -112,6 +122,9 @@ int main(int argc, char **argv) {
     check(host_keymap_label(HOST_KEYMAP_SAVE_STATE_MENU, label,
                             sizeof(label))[0] == 0,
           "explicit save-state-menu unbind has no fallback label");
+    check(!host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_l, mod_ctrl()) &&
+          !host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_F10, 0),
+          "explicit menu unbind removes both defaults");
     check(host_keymap_match(HOST_KEYMAP_FULLSCREEN, (int)SDLK_RETURN,
                             mod_alt()),
           "missing fullscreen line still keeps default after explicit unbind");

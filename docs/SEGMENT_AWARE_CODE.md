@@ -1255,6 +1255,15 @@ fetch before each of its instructions.
   them. Use a warm/cold A/B with the #417 procedure (seeded,
   `PSX_OVERLAY_AUTOCOMPILE_OFF=1`, compare cyc/mc/sp plus an order-independent
   write sum).
+  - **Kula World (SCES-01000): done, passed** (#671, `bce31aff`, SCPH-1001,
+    971 functions). Attract demo without input to frame 10,000, cold cache
+    against warm cache (5 shards: 4 in `seg-kuseg/`, 1 in `seg-kseg1/`):
+    every judge column and both locators are identical at every frame.
+    `segment_alias_interp` 172,863 → 733, `segment_native` 0 → 59,524,
+    0 dispatch misses, 0 segment misses. Both demos end with Beetle's timer
+    and score (3603 / 9950, 3017 / 6845). Memory card and the ending FMV
+    run too (macOS arm64).
+  - Alien Resurrection: open.
 - **KSEG0 titles:** byte-identical regeneration (§5.2).
 
 ## 8. Rollout

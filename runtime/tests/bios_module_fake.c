@@ -27,9 +27,13 @@
 #endif
 
 static int s_dispatch_calls;
+static PsxBiosModuleCallbacks s_callbacks;
 static void fake_dispatch(struct CPUState *cpu, uint32_t addr) {
     (void)cpu; (void)addr;
     s_dispatch_calls++;
+    if (s_callbacks.mod_guest_functions && *s_callbacks.mod_guest_functions &&
+        s_callbacks.mod_dispatch_guest_function)
+        s_callbacks.mod_dispatch_guest_function(cpu, addr);
 }
 static void fake_dispatch_call(struct CPUState *cpu, uint32_t addr, uint32_t ra) {
     (void)cpu; (void)addr; (void)ra;
@@ -59,6 +63,7 @@ FAKE_EXPORT uint32_t psx_bios_module_codegen_hash(void) { return (uint32_t)FAKE_
 FAKE_EXPORT int psx_bios_module_init(const OverlayCallbacks *cbs,
                                      const PsxBiosModuleCallbacks *bcbs) {
     if (!cbs || !bcbs || bcbs->size < sizeof(PsxBiosModuleCallbacks)) return 0;
+    s_callbacks = *bcbs;
     s_init_bcbs_size = bcbs->size;
     s_seen_depth = bcbs->dispatch_depth;
     s_init_ok = 1;

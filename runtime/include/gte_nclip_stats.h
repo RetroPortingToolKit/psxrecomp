@@ -48,6 +48,14 @@ void gte_nclip_stats_reset(void);
  * guest just read from MAC0), else the native sign. */
 int32_t gte_nclip_exact_sign(int32_t native_mac0, uint32_t pc);
 
+/* Opt-in thin-face rescue for exact-word BLEZ consumers. Unlike the separate
+ * horizontal-saturation policy, this only changes an architectural zero to a
+ * validated positive winding. Registration is host-side; the existing overlay
+ * ws_nclip_branch callback and its ABI remain unchanged. */
+void psx_mod_set_native_wide_nclip_zero_sites(const uint32_t *addresses,
+                                             const uint32_t *expected, int count);
+int gte_nclip_zero_positive(int32_t native_mac0, uint32_t pc);
+
 /* Kill switch for the exact-site consumer (default on): off makes every exact
  * site test the native sign, for same-build/same-state A/B and diagnosis. */
 void gte_nclip_exact_set_enabled(int on);

@@ -1,3 +1,4 @@
+#include "xr_origin_diagnostics.h"
 /* Opt-in Win32 OpenXR lifecycle. No guest state, console diagnostics or timing
  * phases: located poses and projection submission belong to one host frame.
  *
@@ -9,10 +10,17 @@
 #include "psx_openxr.h"
 #include "vr_pose_math.h"
 #include "openxr_color.h"
+#include "frame_trace.h"
+#include "gpu_gl_renderer.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
 static PSXOpenXRStats s_stats;
+static PSXModOpenXRSurface s_surfaces[2];
+static uint8_t *s_surface_pixels[2];
+static size_t s_surface_capacity[2];
+static unsigned s_surface_mask;
+
 static uint64_t s_pair_id,s_pair_cycle;
 static uint32_t s_source;
 static uint64_t s_native_frame;
@@ -35,6 +43,41 @@ static int valid_pose_numbers(const double q[4],const double p[3]) {
     for(int i=0;i<4;i++){if(!isfinite(q[i]))return 0;n+=q[i]*q[i];}
     for(int i=0;i<3;i++)if(!isfinite(p[i]) || fabs(p[i])>100)return 0;
     return n>=.5 && n<=1.5;
+}
+/* Test-only synthetic head motion: translation in room-space metres and an optional pitch, added to
+ * both eyes after the origin is established so it reads as the head moving in the world. The
+ * translation checks that the world shifts rigidly with the head. The pitch exists because the
+ * defects that only appear when looking down cannot be reached by translation, and because the only
+ * other look path is unwired. Armed by the first override call; default off, so shipped behaviour
+ * is unchanged. */
+static int s_pose_bob_armed;
+static double s_pose_bob_m[3];
+static double s_pose_bob_pitch_deg;
+void psx_openxr_pose_bob(double q[2][4],double p[2][3]) {
+    if(!s_pose_bob_armed)return;
+    for(int i=0;i<2;i++)for(int j=0;j<3;j++)p[i][j]+=s_pose_bob_m[j];
+    if(s_pose_bob_pitch_deg!=0.0) {
+        double h=s_pose_bob_pitch_deg*(3.141592653589793/180.0)*0.5,sq=sin(h),cq=cos(h);
+        for(int i=0;i<2;i++) {
+            double x=q[i][0],y=q[i][1],z=q[i][2],w=q[i][3];
+            /* Left multiply by a rotation about the XR X axis: a look up or down. */
+            q[i][0]=sq*w+cq*x;q[i][1]=cq*y-sq*z;q[i][2]=sq*y+cq*z;q[i][3]=cq*w-sq*x;
+        }
+    }
+}
+int psx_openxr_pose_override(double x_m,double y_m,double z_m) {
+    if(!isfinite(x_m)||!isfinite(y_m)||!isfinite(z_m))return 0;
+    if(fabs(x_m)>10.0||fabs(y_m)>10.0||fabs(z_m)>10.0)return 0;
+    s_pose_bob_m[0]=x_m;s_pose_bob_m[1]=y_m;s_pose_bob_m[2]=z_m;s_pose_bob_armed=1;
+    return 1;
+}
+int psx_openxr_pose_pitch_override(double pitch_deg) {
+    if(!isfinite(pitch_deg) || fabs(pitch_deg)>90.0)return 0;
+    s_pose_bob_pitch_deg=pitch_deg;s_pose_bob_armed=1;
+    return 1;
+}
+void psx_openxr_pose_clear(void) {
+    s_pose_bob_m[0]=s_pose_bob_m[1]=s_pose_bob_m[2]=0.0;s_pose_bob_pitch_deg=0.0;s_pose_bob_armed=0;
 }
 int psx_openxr_hands_override(const PSXModOpenXRHands *hands) {
     if(!hands){s_hands_override=0;hands_clear();return 1;}
@@ -77,6 +120,17 @@ int psx_openxr_input_override(const PSXModOpenXRInput *input) {
 void psx_openxr_input_snapshot(PSXModOpenXRInput *out) { if(out)*out=s_input; }
 void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;s_source=1;s_native_frame=0;}
 void psx_openxr_native_metadata(uint64_t frame){s_pair_id=s_pair_cycle=0;s_source=2;s_native_frame=frame;}
+int psx_openxr_surface_valid(const PSXModOpenXRSurface *v) {
+    if(!v || v->struct_size!=sizeof *v || v->id>=2 || !v->rgba ||
+       !v->width_px || !v->height_px || v->width_px>1024 || v->height_px>1024)return 0;
+    if(v->flags&~PSX_MOD_OPENXR_SURFACE_FACE_HEAD)return 0;
+    double norm=0;
+    for(int i=0;i<3;i++)if(!isfinite(v->position_m[i]) || fabs(v->position_m[i])>100)return 0;
+    for(int i=0;i<4;i++){if(!isfinite(v->orientation_xyzw[i]))return 0;norm+=v->orientation_xyzw[i]*v->orientation_xyzw[i];}
+    if(fabs(norm-1)>.01)return 0;
+    for(int i=0;i<2;i++)if(!isfinite(v->size_m[i]) || v->size_m[i]<.001f || v->size_m[i]>2)return 0;
+    return 1;
+}
 #if defined(PSX_OPENXR)
 #include "host_time.h"
 #define WIN32_LEAN_AND_MEAN
@@ -87,6 +141,17 @@ void psx_openxr_native_metadata(uint64_t frame){s_pair_id=s_pair_cycle=0;s_sourc
 #define XR_USE_GRAPHICS_API_OPENGL
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+
+/* Frame-trace stage helper: perf ticks -> microseconds (CPU submission/wait
+ * wall time only, never GPU execution time). */
+static uint64_t xr_trace_us(uint64_t ticks) {
+    static double inv = 0.0;
+    if (inv == 0.0) {
+        double f = (double)gl_renderer_perf_frequency();
+        inv = f > 0.0 ? 1000000.0 / f : 1.0;
+    }
+    return (uint64_t)((double)ticks * inv);
+}
 static XrInstance s_instance;
 static XrSystemId s_system;
 static XrSession s_session;
@@ -99,6 +164,7 @@ static XrAction s_pose_action[2];
 static XrSpace s_pose_space[2][2];
 static XrPath s_hand[2];
 static XrTime s_origin_reset_time;
+static unsigned s_origin_inversion_streak;
 static XrSwapchain s_chain[2];
 static XrSwapchainImageOpenGLKHR *s_images[2];
 static uint32_t s_count[2];
@@ -107,6 +173,13 @@ static XrView s_views[2];
 static PSXModRenderView s_render[2];
 static double s_oq[4],s_op[3];
 static XrTime s_time;
+/* Cadence telemetry for the frame trace: the runtime's own predicted display
+ * time delta between submissions (what the compositor actually saw), and when
+ * the pose for the current frame was sampled (xrLocateViews return). */
+static XrTime s_prev_display_time;
+static int s_prev_display_valid;
+static uint32_t s_display_delta_us;
+static uint64_t s_pose_sample_ticks;
 /* Loss handling. A lost session/instance (or an unusable swapchain) is only
  * flagged where it is detected; service_loss() tears the stack down at the end
  * of the public call so no caller loses handles mid-sequence. */
@@ -230,6 +303,7 @@ static int initialize(void) {
     if(!binding.hDC || !binding.hGLRC){s_stats.stage="opengl_context";return 0;}
     XrSessionCreateInfo sci={XR_TYPE_SESSION_CREATE_INFO};sci.next=&binding;sci.systemId=s_system;
     if(!check(xrCreateSession(s_instance,&sci,&s_session),"session"))return 0;
+    if(++s_stats.session_generation==0)s_stats.session_generation=1;
     if(!input_initialize())return 0;
     XrReferenceSpaceCreateInfo space={XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     space.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_LOCAL;space.poseInReferenceSpace.orientation.w=1;
@@ -338,6 +412,9 @@ static void hands_locate(int focused) {
 /* Destroy every XR object (children before parents). Safe on a partially
  * initialised stack and on a lost session: destroy calls need no live session. */
 static void xr_destroy(void) {
+    /* A new session must not inherit the previous one's display times: the
+     * first delta after a re-init would be meaningless. */
+    s_prev_display_valid=0;s_prev_display_time=0;
     for(int eye=0;eye<2;eye++) {
         for(int k=0;k<2;k++) {
             if(s_pose_space[eye][k])xrDestroySpace(s_pose_space[eye][k]);
@@ -353,7 +430,9 @@ static void xr_destroy(void) {
     s_trigger=s_squeeze=XR_NULL_HANDLE;memset(s_click,0,sizeof s_click);
     memset(s_pose_action,0,sizeof s_pose_action);
     if(s_instance)xrDestroyInstance(s_instance);s_instance=XR_NULL_HANDLE;
-    s_origin_valid=0;s_origin_reset_time=0;s_stats.state=0;
+    s_origin_valid=0;s_origin_reset_time=0;s_origin_inversion_streak=0;
+    s_stats.origin_inversion_streak=s_stats.origin_ambiguous=0;s_stats.origin_up_dot=1.0f;
+    s_stats.state=0;
     s_stats.initialized=s_stats.running=s_stats.tracking=s_stats.frame_open=0;
 }
 /* Act on a flagged loss. A lost session/instance or an unusable swapchain tears
@@ -409,7 +488,8 @@ void psx_openxr_stats(PSXOpenXRStats *out) {
 void psx_openxr_recenter(void) {
     hands_clear();
 #if defined(PSX_OPENXR)
-    s_origin_valid=0;
+    s_origin_valid=0;s_origin_inversion_streak=0;
+    s_stats.origin_inversion_streak=s_stats.origin_ambiguous=0;
 #endif
 }
 void psx_openxr_shutdown(void) {
@@ -418,6 +498,8 @@ void psx_openxr_shutdown(void) {
     xr_destroy();
     s_reset_pending=s_exit_pending=s_recovering=0;s_reset_stage=NULL;s_retry_ms=0;
 #endif
+    for(int i=0;i<2;i++){free(s_surface_pixels[i]);s_surface_pixels[i]=NULL;s_surface_capacity[i]=0;}
+    s_surface_mask=0;
     s_stats.enabled=0;
     s_quad_distance=s_quad_width=s_quad_height=0;
     memset(&s_input,0,sizeof s_input);
@@ -505,6 +587,7 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
 int psx_openxr_begin(int width,int height,double units) {
 #if defined(PSX_OPENXR)
     if(!s_stats.enabled || s_stats.frame_open)return 0;
+    s_surface_mask=0;
     s_quad_distance=s_quad_width=s_quad_height=0;
     s_pair_id=s_pair_cycle=s_native_frame=0;s_source=0;
     hands_clear();
@@ -528,11 +611,48 @@ int psx_openxr_begin(int width,int height,double units) {
         s_recovering=0;
     }
     if(!events() || !s_stats.running){(void)service_loss();return 0;}
+    /* Open this frame's trace record before the blocking waits. The record is
+     * committed by psx_openxr_end(); the two failure returns below commit it
+     * themselves so a lost session cannot leave a record open forever. */
+    psx_frame_trace_open();
+    /* Cleared so a frame that never reaches xrLocateViews (no render request,
+     * lost tracking, bad view maths) cannot report a stale pose age. */
+    s_pose_sample_ticks=0;
+    uint64_t trace_t = gl_renderer_perf_ticks();
     XrFrameWaitInfo wait={XR_TYPE_FRAME_WAIT_INFO};XrFrameState fs={XR_TYPE_FRAME_STATE};
-    if(!check(xrWaitFrame(s_session,&wait,&fs),"wait_frame")){(void)service_loss();return 0;}
+    if(!check(xrWaitFrame(s_session,&wait,&fs),"wait_frame")){
+        psx_frame_trace_add(PSX_TRACE_XR_WAIT_FRAME, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
+        /* Session-level submission failure: the stereo cadence context is gone,
+         * so drop any stale pair-time estimate rather than carrying it into the
+         * recovery attempt. */
+        psx_mod_stereo_reset_budget();
+        (void)service_loss();psx_frame_trace_commit();return 0;}
+    psx_frame_trace_add(PSX_TRACE_XR_WAIT_FRAME, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
     s_stats.waits++;s_time=fs.predictedDisplayTime;s_stats.predicted_time=(uint64_t)s_time;
+    /* The runtime's own clock between submissions. This is the cadence the
+     * compositor saw, independent of our frame timing: delta / display period
+     * is how many granted periods one presented frame consumed. */
+    s_display_delta_us=0;
+    if(s_prev_display_valid && s_time>s_prev_display_time) {
+        uint64_t d=(uint64_t)(s_time-s_prev_display_time)/1000u;
+        s_display_delta_us=d>0xFFFFFFFFull?0xFFFFFFFFu:(uint32_t)d;
+    }
+    s_prev_display_time=s_time;s_prev_display_valid=1;
+    /* Record the runtime display period with its name for cadence analysis. */
+    /* What the runtime wants us to hit is the only true deadline for the pair.
+     * Hand it to stereo shedding (PSX VBlank is a guest redraw budget, not a
+     * compositor deadline) and record it with the runtime name so a trace can be
+     * read without guessing the headset's refresh. */
+    psx_mod_stereo_set_budget_ms(fs.predictedDisplayPeriod>0?(double)fs.predictedDisplayPeriod/1e6:0.0);
+    psx_frame_trace_session(s_stats.runtime,
+                            fs.predictedDisplayPeriod>0?(uint32_t)(fs.predictedDisplayPeriod/1000):0u);
+    trace_t = gl_renderer_perf_ticks();
     XrFrameBeginInfo begin={XR_TYPE_FRAME_BEGIN_INFO};
-    if(!check(xrBeginFrame(s_session,&begin),"begin_frame")){(void)service_loss();return 0;}
+    if(!check(xrBeginFrame(s_session,&begin),"begin_frame")){
+        psx_frame_trace_add(PSX_TRACE_XR_BEGIN_FRAME, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
+        psx_mod_stereo_reset_budget();
+        (void)service_loss();psx_frame_trace_commit();return 0;}
+    psx_frame_trace_add(PSX_TRACE_XR_BEGIN_FRAME, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
     s_stats.frame_open=1;s_stats.tracking=0;
     if(!fs.shouldRender){psx_openxr_end(0,NULL);return 0;}
     XrViewLocateInfo loc={XR_TYPE_VIEW_LOCATE_INFO};loc.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -540,6 +660,7 @@ int psx_openxr_begin(int width,int height,double units) {
     XrViewState vs={XR_TYPE_VIEW_STATE};uint32_t count=0;
     memset(s_views,0,sizeof s_views);s_views[0].type=s_views[1].type=XR_TYPE_VIEW;
     int located=check(xrLocateViews(s_session,&loc,&vs,2,&count,s_views),"locate_views");
+    s_pose_sample_ticks=gl_renderer_perf_ticks();
     s_stats.view_flags=(uint64_t)vs.viewStateFlags;
     if(!located || count!=2 ||
        (vs.viewStateFlags&(XR_VIEW_STATE_ORIENTATION_VALID_BIT|XR_VIEW_STATE_POSITION_VALID_BIT))!=
@@ -552,17 +673,30 @@ int psx_openxr_begin(int width,int height,double units) {
         q[i][0]=v->orientation.x;q[i][1]=v->orientation.y;q[i][2]=v->orientation.z;q[i][3]=v->orientation.w;
         p[i][0]=v->position.x;p[i][1]=v->position.y;p[i][2]=v->position.z;
     }
-    if(s_origin_reset_time && s_time>=s_origin_reset_time) {
-        s_origin_valid=0;s_origin_reset_time=0;
+    if(xr_origin_reference_reset_due(s_origin_reset_time!=0,s_origin_reset_time,s_time)) {
+        s_origin_valid=0;s_origin_reset_time=0;s_origin_inversion_streak=0;
     }
     if(!s_origin_valid) {
         memcpy(s_oq,q[0],sizeof s_oq);
         for(int j=0;j<3;j++)s_op[j]=(p[0][j]+p[1][j])*.5;
         s_origin_valid=1;
+        s_origin_inversion_streak=0;
     }
+    /* A sustained roll can be a legitimate headset pose. Report the ambiguous
+     * case without changing the reference; explicit recenter or the OpenXR
+     * reference-space change event owns origin recovery. */
+    double origin_up_dot=1.0;
+    s_origin_inversion_streak=xr_origin_observe_inversion(
+        s_origin_inversion_streak,s_origin_valid,s_oq,q[0],&origin_up_dot);
+    s_stats.origin_up_dot=(float)origin_up_dot;
+    s_stats.origin_inversion_streak=s_origin_inversion_streak;
+    s_stats.origin_ambiguous=s_origin_inversion_streak>=10u;
     double separation=0;
     for(int j=0;j<3;j++)separation+=(p[1][j]-p[0][j])*(p[1][j]-p[0][j]);
     s_stats.ipd_m=(float)sqrt(separation);
+#ifndef PSX_NO_DEBUG_TOOLS
+    psx_openxr_pose_bob(q, p);   /* test-only synthetic head motion; no-op unless armed */
+#endif
     for(int i=0;i<2;i++) {
         XrFovf *v=&s_views[i].fov;
         double f[4]={v->angleLeft,v->angleRight,v->angleUp,v->angleDown};
@@ -600,26 +734,37 @@ int psx_openxr_quad(double distance,double width,double height) {
 int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
 #if defined(PSX_OPENXR)
     if(!s_stats.frame_open)return 0;
+    /* Defensive open: normally psx_openxr_begin() already opened the record. */
+    psx_frame_trace_open();
+    uint64_t trace_t;
     XrCompositionLayerProjectionView pv[2]={{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     int complete=keep && copy && s_stats.tracking;
     int quad=s_quad_distance>0;
     for(int eye=0;eye<(quad?1:2) && complete;eye++) {
         uint32_t index=0;
+        trace_t = gl_renderer_perf_ticks();
         XrSwapchainImageAcquireInfo ai={XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         if(!check(xrAcquireSwapchainImage(s_chain[eye],&ai,&index),"acquire")){complete=0;break;}
+        psx_frame_trace_add(PSX_TRACE_XR_ACQUIRE, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
         XrSwapchainImageWaitInfo wi={XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wi.timeout=1000000000;
+        trace_t = gl_renderer_perf_ticks();
         XrResult wr=xrWaitSwapchainImage(s_chain[eye],&wi);
         /* A timeout leaves ownership acquired: wait again (bounded) before
          * releasing. Only XR_SUCCESS means the image is writable; the timeout
          * code is a success code and must not be mistaken for it. */
         if(wr==XR_TIMEOUT_EXPIRED){wi.timeout=2000000000;wr=xrWaitSwapchainImage(s_chain[eye],&wi);}
+        psx_frame_trace_add(PSX_TRACE_XR_WAIT_IMAGE, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
         int writable=check(wr,"wait_image") && wr==XR_SUCCESS;
         if(writable) {
+            trace_t = gl_renderer_perf_ticks();
             if(index>=s_count[eye] || !copy(eye,s_images[eye][index].image,s_w[eye],s_h[eye])) {
                 s_stats.stage="copy_image";s_stats.failures++;complete=0;
             }
+            psx_frame_trace_add(PSX_TRACE_XR_COPY, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
+            trace_t = gl_renderer_perf_ticks();
             XrSwapchainImageReleaseInfo ri={XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             if(!check(xrReleaseSwapchainImage(s_chain[eye],&ri),"release"))complete=0;
+            psx_frame_trace_add(PSX_TRACE_XR_RELEASE, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
         } else {
             /* Acquired but never writable. Release it best-effort so the acquire
              * count cannot leak; a runtime that refuses (the wait never completed)
@@ -646,8 +791,16 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
     XrFrameEndInfo end={XR_TYPE_FRAME_END_INFO};end.displayTime=s_time;
     end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     end.layerCount=complete?1:0;end.layers=complete?layers:NULL;
+    trace_t = gl_renderer_perf_ticks();
     int ok=check(xrEndFrame(s_session,&end),"end_frame");s_stats.frame_open=0;
+    psx_frame_trace_add(PSX_TRACE_XR_END_FRAME, xr_trace_us(gl_renderer_perf_ticks()-trace_t));
+    if(s_pose_sample_ticks)
+        psx_frame_trace_add(PSX_TRACE_POSE_AGE,
+                            xr_trace_us(gl_renderer_perf_ticks()-s_pose_sample_ticks));
+    psx_frame_trace_xr_cadence(s_display_delta_us, complete);
     if(ok && complete) {
+        s_stats.submitted_session_generation=s_stats.session_generation;
+        s_stats.submitted_surfaces=quad?0:((s_surface_mask&1)!=0)+((s_surface_mask&2)!=0);
         s_stats.submitted++;s_stats.submitted_pair_id=s_pair_id;
         s_stats.submitted_guest_cycle=s_pair_cycle;s_stats.submitted_predicted_time=(uint64_t)s_time;
         s_stats.submitted_layer=quad?2:1;
@@ -655,12 +808,39 @@ int psx_openxr_end(int keep,PSXOpenXRCopy copy) {
         if(s_source==2)s_stats.native_submitted++;
         if(quad){s_stats.quad_submitted++;s_stats.quad_distance_m=s_quad_distance;
             s_stats.quad_width_m=s_quad_width;s_stats.quad_height_m=s_quad_height;}
-    } else s_stats.empty++;
+        /* A fresh stereo pair already labelled the record source 1; only
+         * annotate native presentation when nothing else claimed it. */
+        psx_frame_trace_source(2);
+    } else {
+        s_stats.empty++;s_stats.submitted_surfaces=0;
+        psx_frame_trace_flag(PSX_FRAME_TRACE_XR_EMPTY);
+        psx_frame_trace_flag(PSX_FRAME_TRACE_STALE_PAIR);
+        psx_frame_trace_source(2);
+    }
     if(ok && complete)s_stats.stage="submitted";
     s_quad_distance=s_quad_width=s_quad_height=0;
+    psx_frame_trace_commit();
     (void)service_loss(); /* after the frame is closed: lost session / bad swapchain */
     return ok && complete;
 #else
     return 0;
 #endif
+}
+
+int psx_openxr_surface(const PSXModOpenXRSurface *v) {
+    if(!psx_openxr_surface_valid(v))return 0;
+    if(!s_stats.frame_open || !s_stats.tracking || s_quad_distance>0)return 0;
+    size_t bytes=(size_t)v->width_px*v->height_px*4;
+    if(s_surface_capacity[v->id]<bytes) {
+        uint8_t *buffer=realloc(s_surface_pixels[v->id],bytes);
+        if(!buffer){s_stats.surface_failures++;return 0;}
+        s_surface_pixels[v->id]=buffer;s_surface_capacity[v->id]=bytes;
+    }
+    memcpy(s_surface_pixels[v->id],v->rgba,bytes);
+    s_surfaces[v->id]=*v;s_surfaces[v->id].rgba=s_surface_pixels[v->id];
+    s_surface_mask|=1u<<v->id;s_stats.surface_uploads++;return 1;
+}
+int psx_openxr_surface_get(uint32_t id,PSXModOpenXRSurface *out) {
+    if(!out || id>=2 || !(s_surface_mask&(1u<<id)) || !s_stats.frame_open || s_quad_distance>0)return 0;
+    *out=s_surfaces[id];return 1;
 }

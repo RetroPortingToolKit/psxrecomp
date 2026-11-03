@@ -53,6 +53,22 @@ class RetailBiosProfileTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "SCPH5552.*exit 2"):
                     cli.regen_bios_profile(fw, "bios/SCPH5552.toml", progress=progress)
 
+    def test_successful_regen_writes_emitter_stamp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fw = Path(temporary)
+            (fw / "bios").mkdir()
+            (fw / "bios/OpenBIOS.toml").write_text(
+                '[recompiler]\nout_dir = "generated"\nout_stem = "OpenBIOS"\n', encoding="utf-8")
+            with patch.object(cli, "framework_root", return_value=fw), \
+                 patch.object(cli, "find_psxrecomp_bios", return_value=fw / "bios-tool"), \
+                 patch.object(cli.shutil, "which", return_value="cmake"), \
+                 patch.object(cli.subprocess, "run") as run:
+                run.side_effect = [subprocess.CompletedProcess([], 0, "", ""),
+                                   subprocess.CompletedProcess([], 0, "abc123\n", "")]
+                cli.regen_bios_profile(fw, "bios/OpenBIOS.toml", progress=Mock())
+            self.assertEqual((fw / "generated/OpenBIOS.emitter.sha").read_text(encoding="utf-8"),
+                             "abc123\n")
+
 
 if __name__ == "__main__":
     unittest.main()

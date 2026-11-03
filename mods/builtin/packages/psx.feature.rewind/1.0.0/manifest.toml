@@ -1,0 +1,80 @@
+format_version = 11
+id = "psx.feature.rewind"
+version = "1.0.0"
+name = "Rewind"
+author = "psxrecomp"
+description = "Step back to an earlier moment and continue from it. Uses the Rewind hotkey (F8, or Select+R3 by default; change it under Settings > Hotkeys). Keeps recent snapshots in memory while you play; off in netplay."
+resolver = "declarative"
+save_compatibility = "shared"
+
+# Local rewind is a host tool, not a property of any particular disc, so this
+# ships with the framework and applies to every game. A build configured with
+# -DPSX_REWIND=OFF does not stage this package at all (runtime.cmake).
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "rewind"
+name = "Rewind"
+description = "Disabled by default: each snapshot is a copy of the whole console (about 3.5 MB), taken on a frame cadence. Turning it off frees the history at the next start."
+group = "Quality of Life"
+default_enabled = false
+
+[[option]]
+feature = "rewind"
+id = "buffer"
+label = "Rewind buffer"
+description = "How many snapshots to keep. More history uses more memory."
+group = "Quality of Life"
+type = "choice"
+default = "50"
+
+[[option.choice]]
+value = "50"
+label = "50 snapshots"
+
+[[option.choice]]
+value = "100"
+label = "100 snapshots"
+
+[[option.choice]]
+value = "150"
+label = "150 snapshots"
+
+[[option.choice]]
+value = "200"
+label = "200 snapshots"
+
+[[option]]
+feature = "rewind"
+id = "interval"
+label = "Rewind interval"
+description = "Frames between snapshots. Smaller intervals give finer control when choosing a moment."
+group = "Quality of Life"
+type = "choice"
+default = "15"
+
+[[option.choice]]
+value = "1"
+label = "Every frame"
+
+[[option.choice]]
+value = "4"
+label = "Every 4 frames"
+
+[[option.choice]]
+value = "8"
+label = "Every 8 frames"
+
+[[option.choice]]
+value = "12"
+label = "Every 12 frames"
+
+[[option.choice]]
+value = "15"
+label = "Every 15 frames"
+
+[[plugin]]
+feature = "rewind"
+id = "psx.rewind"
+netplay = "host_only"

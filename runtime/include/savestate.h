@@ -26,6 +26,12 @@ extern "C" {
 #define SAVESTATE_THUMB_W 128
 #define SAVESTATE_THUMB_H 96
 
+/* Session-only trusted-title policy. Blocking cancels pending requests and
+ * refuses user and synchronized-protocol save/load; it never alters files.
+ * main resets this before each mod activation (including soft returns). */
+void savestate_set_title_blocked(int blocked);
+int savestate_title_blocked(void);
+
 /* Configure the slot directory + integrity key (from main, after config load).
  *
  * When bios_token is non-empty (e.g. "openbios" / "scph1001"):
@@ -55,6 +61,12 @@ void savestate_configure(const char* dir, uint32_t bios_checksum, uint32_t entry
  * disc_number is 1-based; 0 disables scoping. Single-disc titles must pass 0
  * so their existing paths are untouched. */
 void savestate_set_disc_scope(int disc_number);
+
+/* Namespace slot files and their sidecars by a committed content-plan SHA-256.
+ * NULL/empty restores historical paths; invalid input blocks saves/loads rather
+ * than falling back to shared slots. Changing scope cancels pending requests.
+ * Memory-card paths and the configured save root are unaffected. */
+int savestate_set_content_scope(const char* fingerprint);
 
 /* Current slot directory (empty if not configured). */
 const char* savestate_dir(void);
@@ -114,8 +126,17 @@ int savestate_request_load_blob_protocol(const void* data, size_t size);
 /* 1 while a staged save/load has not yet been consumed by savestate_poll. */
 int savestate_pending(void);
 
+/* Read-only hot-path hint for interrupt maintenance. Updated with staged
+ * requests; actual execution still passes every savestate_poll safety gate. */
+extern int g_psx_savestate_pending;
+
 /* Machine-readable lifecycle receipt for deterministic debug harnesses. */
 void savestate_status_json(char* buf, size_t cap);
+typedef struct PSXSavestateStatus {
+    uint32_t generation;
+    int pending, last_ok, last_load, last_slot;
+} PSXSavestateStatus;
+void savestate_get_status(PSXSavestateStatus* out);
 
 /* 1 once after a successful load restore (before scheduler longjmp). Clears. */
 int savestate_take_load_completed(void);
@@ -148,6 +169,9 @@ void psx_frontend_on_savestate_refused(int is_load, int slot, const char *reason
  * pending, serialize with cpu->pc = resume_pc; if a load is pending, restore and
  * longjmp to the scheduler (never returns in that case). Near-free when idle. */
 void savestate_poll(CPUState* cpu, uint32_t resume_pc);
+/* Host request latch for the IRQ maintenance fast paths. Read-only outside
+ * savestate.c: a staged request must not wait thousands of quiet block edges. */
+extern int g_psx_savestate_pending;
 
 #ifdef __cplusplus
 }

@@ -17,7 +17,7 @@ int main(void) {
         ws_cfg_num = aspects[i];
         int extra = gpu_ws_configured_x_reveal();
         gpu_ws_set_manual_view_anchor(1, -extra);
-        assert(g_test_view_enabled && g_test_view_shift == -extra);
+        assert(fixture_wide_view.enabled && fixture_wide_view.shift == -extra);
         WsViewAnchor v = ws_view_current();
         assert(ws_view_enabled() && v.left == 0 && v.right == 2 * extra);
         assert(v.shift == -extra && v.pad_left == 0 && v.pad_right == 0);
@@ -43,7 +43,7 @@ int main(void) {
         s_frame_count += 2;
         assert(ws_view_current().shift == 0); /* stale scene proof expires */
         gpu_ws_set_manual_view_anchor(0, 0);
-        assert(!g_test_view_enabled);
+        assert(!fixture_wide_view.enabled);
         assert(!ws_view_enabled() && psx_ws_x_margin() == extra + ws_cull_guard_pixels);
     }
     configure_native_wide_16_9();

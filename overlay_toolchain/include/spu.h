@@ -8,7 +8,19 @@ extern "C" {
 #endif
 
 void spu_init(void);
-void spu_render(int16_t* out_stereo, int frames);
+/* Guest-clocked SPU: render every whole sample owed up to the current guest
+ * cycle (768 cycles per 44.1 kHz sample) into the output queue. Every SPU
+ * register/DMA/CD-input access does this first; the host pump calls it, then
+ * drains the queue. */
+void spu_catch_up(void);
+uint32_t spu_output_available(void);
+uint32_t spu_output_pop(int16_t* out_stereo, uint32_t max_frames);
+void spu_output_drop(uint32_t frames);   /* oldest first */
+void spu_output_flush(void);
+uint64_t spu_output_overflow_drops(void);
+/* Host gate: while it returns nonzero (rollback resimulation, FMV-skip mute)
+ * rendered samples advance SPU state but are not queued. */
+void spu_set_output_gate(int (*suppressed)(void));
 
 typedef struct SpuDebugInfo {
     uint32_t ctrl;
@@ -170,6 +182,7 @@ const void* spu_shadow_tap_buffer(void);
 int         spu_shadow_tap_count(void);
 
 uint32_t spu_snapshot_bytes(void);
+int      spu_snapshot_len_ok(uint32_t len);
 void     spu_snapshot_write(uint8_t *p);
 int      spu_snapshot_read(const uint8_t *p, uint32_t len);
 uint8_t *spu_get_ram_ptr(void);

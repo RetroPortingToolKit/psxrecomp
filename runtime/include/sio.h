@@ -202,6 +202,9 @@ void sio_set_pad_config_capable(int slot, int capable);
  * motor byte; `large` is the variable-strength low-frequency motor byte.
  * The frontend translates these values to its host controller API. */
 void sio_get_pad_rumble(int slot, uint8_t *small, uint8_t *large);
+/* JogCon motor: last command nibble and strength (0..15) the guest sent; 0, 0
+ * unless the slot is a connected JogCon. Host force feedback reads it. */
+void sio_get_pad_jogcon_motor(int slot, uint8_t *command, uint8_t *strength);
 
 /* Return current pad button state (for debug server). _slot targets a logical
  * pad 0 .. PSX_MAX_PLAYERS-1. */
@@ -215,6 +218,8 @@ uint16_t sio_get_pad_buttons_slot(int slot);
 uint16_t sio_peek_stat(void);
 uint16_t sio_peek_ctrl(void);
 uint8_t  sio_peek_rx_data(void);
+/* SIO_STAT reads left before a visible ACK clears (side-effect free). */
+int      sio_peek_ack_visible_reads(void);
 
 /* Debug accessors: is a logical pad connected, and is it in analog mode. */
 int sio_get_pad_connected(int slot);

@@ -26,6 +26,7 @@
  */
 
 #include "interrupts.h"
+#include "savestate.h"
 #include "mod_runtime.h"
 #include "psx_memory.h"
 #include "sio.h"
@@ -145,14 +146,13 @@ extern uint32_t i_mask;
  * again sees a pending interrupt that no longer exists and can spin in its
  * event scan forever.
  *
- * Verified against the independent Beetle oracle rather than asserted:
- * beetle-psx/mednafen/psx/irq.cpp defines
- *     #define Recalc() PSX_CPU->AssertIRQ(0, (bool)(Status & Mask))
- * and calls it from IRQ_Assert (raise), from IRQ_Write for BOTH the Status ack
- * and the Mask write, and at power-on; cpu.cpp's AssertIRQ clears bit (10+n)
- * unconditionally and re-sets it only when the level is asserted. So the line
- * is recomputed at every point (I_STAT & I_MASK) can change, which is exactly
- * the set of call sites below.
+ * PSX-SPX interrupts, "PSX specific COP0 Notes": cop0r13.bit10 "is NOT a
+ * latch, ie. it gets automatically cleared as soon as (I_STAT AND
+ * I_MASK)=zero", and "Interrupt Request / Execution": it is set while
+ * (I_STAT AND I_MASK) is nonzero. So the bit is recomputed at every point
+ * (I_STAT & I_MASK) can change: a raise, a Status ack, a Mask write and
+ * power-on, which is exactly the set of call sites below. The Beetle
+ * reference behaves the same.
  *
  * Ownership: this function is the ONLY writer of CAUSE bit 10. The delivery
  * path no longer ORs it in separately — one owner, no divergence.
@@ -173,7 +173,7 @@ void psx_irq_refresh_cause_ip2(void)
 void psx_irq_set_cause_ptr(uint32_t *p)
 {
     s_cause_ptr = p;
-    /* Power-on recompute, mirroring Beetle's IRQ_Power() -> Recalc(). Without
+    /* Power-on recompute (the Beetle reference also recomputes here). Without
      * this the first mirror only happens at the first raise/ack, so a CAUSE
      * read before any interrupt activity would show a stale bit. */
     psx_irq_refresh_cause_ip2();
@@ -657,6 +657,13 @@ void psx_snapshot_host_call_reset(void) { s_snapshot_host_call_depth = 0; }
 unsigned psx_snapshot_host_call_depth(void) { return s_snapshot_host_call_depth; }
 void psx_snapshot_host_call_restore(unsigned depth) { s_snapshot_host_call_depth = depth; }
 
+static void reset_dirty_snapshot_scope(void)
+{
+    g_dirty_safe_resume_pc = 0;
+    /* A restore can abandon the dirty pump's scoped epilogue via longjmp. */
+    g_cosim_dirty_pump_site = 0;
+}
+
 uint32_t psx_irq_resume_context_snapshot_pc(void)
 {
     return g_dirty_safe_resume_pc;
@@ -892,10 +899,7 @@ void interrupts_init(void) {
     g_rfe_escape_pending = 0;
     g_pending_exception_longjmp = 0;
     s_fast_maintenance = 0;
-    {
-        extern uint32_t g_dirty_safe_resume_pc;
-        g_dirty_safe_resume_pc = 0;
-    }
+    reset_dirty_snapshot_scope();
 }
 
 void interrupts_resync_after_restore(void) {
@@ -937,10 +941,7 @@ void interrupts_resync_after_restore(void) {
     s_last_interrupt_check_cycle = UINT64_MAX;
     s_fast_maintenance = 0;
     total_checks = 0;
-    {
-        extern uint32_t g_dirty_safe_resume_pc;
-        g_dirty_safe_resume_pc = 0;
-    }
+    reset_dirty_snapshot_scope();
     /* Load longjmp from mid-path abandons PSX_CHECK_INTERRUPTS_RETURN's
      * g_ls_suppress_record-- — clamp so suppress cannot accumulate. */
     {
@@ -1119,6 +1120,15 @@ int psx_interrupt_delivery_needed(const CPUState* cpu) {
     return 1;
 }
 
+static void poll_staged_user_snapshot(CPUState* cpu) {
+    extern uint32_t g_dirty_safe_resume_pc;
+    if (!in_exception && g_psx_savestate_pending) {
+        uint32_t pc = g_dirty_safe_resume_pc ? g_dirty_safe_resume_pc
+                                           : s_compiled_interrupt_resume_pc;
+        savestate_poll(cpu, pc);
+    }
+}
+
 void psx_check_interrupts(CPUState* cpu) {
     /* Frozen guest time (psx_cycle_freeze.h): no delivery, and no
      * check-boundary bookkeeping that the stock timeline would not do. */
@@ -1198,6 +1208,12 @@ void psx_check_interrupts(CPUState* cpu) {
         }
     }
 
+    /* Quiet native/HLE gameplay may execute far fewer than 0x4000 BB checks
+     * in a frame. A staged user snapshot must not wait for that amortized
+     * maintenance counter: short actions/voices can finish before capture.
+     * Keep exception, host-adapter and resume-PC gates in savestate_poll, and
+     * retain the canonical netplay edge gate above. Idle work stays amortized. */
+    poll_staged_user_snapshot(cpu);
     s_irq_path_entry++;
 
     /* MotK VLC / FMV hot edge: sticky unmasked I_STAT (CD/VBlank) while
@@ -1209,7 +1225,7 @@ void psx_check_interrupts(CPUState* cpu) {
         uint32_t sr = cpu->cop0[COP0_SR];
         if (!(sr & 0x01u) || !(sr & (1u << 10))) {
             s_irq_path_fast_sr++;
-            if ((++s_fast_maintenance & 0x3FFFu) == 0) {
+            if ((++s_fast_maintenance & 0x3FFFu) == 0 || g_psx_savestate_pending) {
                 extern void savestate_poll(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_netplay_poll_snap(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_selfcheck_poll(CPUState* cpu, uint32_t resume_pc);
@@ -1263,7 +1279,7 @@ void psx_check_interrupts(CPUState* cpu) {
         }
         if ((i_stat & i_mask) == 0 && sw_pending == 0) {
             s_irq_path_fast_none++;
-            if ((++s_fast_maintenance & 0x3FFFu) == 0) {
+            if ((++s_fast_maintenance & 0x3FFFu) == 0 || g_psx_savestate_pending) {
                 extern void savestate_poll(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_netplay_poll_snap(CPUState* cpu, uint32_t resume_pc);
                 extern void psx_selfcheck_poll(CPUState* cpu, uint32_t resume_pc);
@@ -1292,7 +1308,7 @@ void psx_check_interrupts(CPUState* cpu) {
         s_last_interrupt_check_cycle = psx_get_cycle_count();
         g_ls_suppress_record++;
         total_checks++;
-        if ((total_checks & 0x3FFFu) == 0) {
+        if ((total_checks & 0x3FFFu) == 0 || g_psx_savestate_pending) {
             extern void savestate_poll(CPUState* cpu, uint32_t resume_pc);
             extern void psx_netplay_poll_snap(CPUState* cpu, uint32_t resume_pc);
             extern void psx_selfcheck_poll(CPUState* cpu, uint32_t resume_pc);
@@ -1686,12 +1702,15 @@ irq_deliver_eval:
         }
     }
 
+    /* Keep this delivery's EPC stable across nested handler dispatches. */
+    const uint32_t delivered_epc = g_exception_real_epc;
+
     /* Save the interrupted code's full register state.
      *
-     * On real hardware, the exception handler saves all GPRs to the
-     * TCB save area at entry, and ReturnFromException restores them
-     * before jumping back to EPC.  The interrupted code always gets
-     * its exact pre-exception register values back.
+     * The BIOS handler saves the interrupted context to the TCB and restores
+     * it before returning to EPC. Kernel scratch registers may instead retain
+     * the handler's architectural result: the qualified real-RFE path below
+     * keeps its post-handler k0. Other host-restored values use this snapshot.
      *
      * In our model, the recompiled handler runs as a C function and
      * its `return;` goes back here — not to EPC.  The handler's
@@ -1699,9 +1718,9 @@ irq_deliver_eval:
      * kernel jmpbuf (intended for longjmp to WaitEvent's caller),
      * which corrupts the interrupted code's registers.
      *
-     * We save all GPRs/HI/LO before the handler and restore them
-     * after, so the interrupted code resumes with its original state
-     * — matching real hardware behaviour. */
+     * Save all GPRs/HI/LO before the handler for the host restore policy
+     * below. Its qualified RFE path preserves the actual handler k0 result
+     * rather than overwriting it with the interrupted snapshot. */
     uint32_t saved_gpr[32];
     uint32_t saved_hi, saved_lo;
     for (int i = 0; i < 32; i++) saved_gpr[i] = cpu->gpr[i];
@@ -1907,9 +1926,9 @@ irq_deliver_eval:
      * interrupted — either the LEGACY sentinel exit, OR a real-EPC RFE that
      * resumes at exactly the PC we installed as EPC (no ChangeThread happened).
      *
-     * Real hardware saves and restores ALL GPRs across every exception, so a
-     * transparent same-thread interrupt must give the interrupted code its exact
-     * pre-exception registers back. The original Fix B skipped this for all
+     * The host restore preserves the interrupted context across a transparent
+     * same-thread interrupt, except for architectural post-handler k0 on the
+     * qualified real-RFE path below. The original Fix B skipped this for all
      * real-EPC resumes, trusting the recompiled BIOS handler's TCB restore — but
      * for a same-thread compiled resume that restore is incomplete, so a live
      * value held in a register across a block-leader IRQ check gets clobbered by
@@ -2040,8 +2059,20 @@ irq_deliver_eval:
             }
         }
     }
+    /* A real same-thread RFE leaves the handler's jump register live.
+     * Preserve its actual result only for the primary mode-1 return; legacy,
+     * syscall, nested, changed-target/global-EPC and other restore modes keep
+     * the old copy. A RestoreState redirect that returns to the original EPC
+     * with the same TCB can still qualify. */
+    const int keep_handler_k0 = do_restore && s_str_mode == 1 &&
+        same_thread_resume && g_exc_escape_reason == PSX_EXC_ESCAPE_RFE_RETURN &&
+        prev_in_exception == 0 && entry_tcb != 0u && entry_tcb == exit_tcb &&
+        delivered_epc != 0u && delivered_epc != (uint32_t)PSX_EXC_SENTINEL_PC &&
+        same_guest_pc(cpu->pc, delivered_epc) &&
+        same_guest_pc(g_exception_real_epc, delivered_epc);
     if (do_restore) {
-        for (int i = 0; i < 32; i++) cpu->gpr[i] = saved_gpr[i];
+        for (int i = 0; i < 32; i++)
+            if (i != 26 || !keep_handler_k0) cpu->gpr[i] = saved_gpr[i];
         cpu->hi = saved_hi;
         cpu->lo = saved_lo;
     }
