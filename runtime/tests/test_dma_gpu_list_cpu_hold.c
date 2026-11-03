@@ -199,7 +199,7 @@ int main(void) {
     /* Mixed native/host/native chain: exact output and order, while only
      * complete draw nodes in a declared aperture span consume host time. */
     {
-        uint32_t expected[8];uint64_t native_cost,host_cost,nodes,words;
+        uint32_t expected[8]={0};uint64_t native_cost=0,host_cost,nodes,words;
         for(int host=0;host<5;++host) {
             dma_init();s_gp0_n=0;psx_cycle_count=1000;s_serviced_to=1000;
             psx_next_service_cycle=UINT64_MAX;build_list();
