@@ -978,15 +978,20 @@ fi
 
 if [ "${DO_BUILD:-0}" -eq 1 ] && [ "$GENERATED_OK" -eq 1 ]; then
     echo "== Configure & build psx-runtime =="
+    # Same entry point as setup_project.ps1: `rebuild` configures, builds and
+    # then stages overlay_toolchain/ beside the product (pinned Python +
+    # recompiler + headers + compiler.txt). A bare cmake build skips that
+    # stage, so the runtime's autocompile gate stays false and every overlay
+    # gap is interpreted forever ("tcc tier active but no bundled toolchain").
     if (
         cd "$ROOT"
-        cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-        cmake --build build-release --target psx-runtime
+        python3 psxrecomp/psxrecomp_cli.py rebuild --config game.toml \
+            --project-root . --build-dir build-release --no-pgo
     ); then
         BUILD_OK=1
         echo "  build OK → build-release/ (gitignored)"
     else
-        echo "warning: build failed — fix and re-run cmake by hand." >&2
+        echo "warning: build failed — fix and re-run psxrecomp_cli.py rebuild by hand." >&2
     fi
 fi
 
@@ -1083,7 +1088,7 @@ else
     STEP1="Edit game.toml / re-run probe_disc.py --write-seeds."
 fi
 
-BUILD_HINT="cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release --target psx-runtime"
+BUILD_HINT="python3 psxrecomp/psxrecomp_cli.py rebuild --config game.toml --project-root . --build-dir build-release --no-pgo"
 if [ "$BUILD_OK" -eq 1 ]; then
     STEP2="Runtime already built under build-release/ — soak offline boot."
 elif [ "$GENERATED_OK" -eq 1 ]; then
