@@ -2226,6 +2226,67 @@ int main(int argc, char** argv) {
     }
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
     {
+        const auto independent_root = root / "disc-independent";
+        const auto manifest_path = independent_root / "bundled/display/1.0.0/manifest.toml";
+        const std::string manifest =
+            "format_version = 5\nid = \"display\"\nversion = \"1.0.0\"\nname = \"Display\"\n"
+            "[[target]]\ngame_id = \"READER\"\n"
+            "[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n";
+        write_text(manifest_path, manifest);
+        write_text(independent_root / "bundled/optional/1.0.0/manifest.toml",
+            "format_version = 9\nid = \"optional\"\nversion = \"1.0.0\"\nname = \"Optional\"\n"
+            "prepare = \"not.registered\"\n[[target]]\ngame_id = \"READER\"\n"
+            "[[feature]]\nid = \"content\"\nname = \"Content\"\ndefault_enabled = false\n");
+        write_text(independent_root / "bundled/optional/1.0.0/inactive.dat",
+                   std::string(5 * 1024 * 1024, 'x'));
+        const auto hashes = startup_counter("startup.disc_hash");
+        const auto reused = startup_counter("startup.plan_reuse");
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(iso_path),
+              "disc-independent defaults preload without persistent file identities");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(iso_path, &error) &&
+              PSXRecompV4::mod_runtime_commit(iso_path, &error) &&
+              startup_counter("startup.plan_reuse") == reused + 2 &&
+              startup_counter("startup.disc_hash") == hashes,
+              "display-only provider and runtime reuse the plan without raw disc hashes");
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(iso_path) &&
+              startup_counter("startup.disc_hash") == hashes,
+              "new display-only launch remains hash-free with disabled optional content");
+        check(PSXRecompV4::mod_runtime_plan_fingerprint_portable(iso_path, &error).size() == 64 &&
+              startup_counter("startup.disc_hash") == hashes + 1,
+              "an explicit portable fingerprint still measures the actual disc");
+        const auto state_path = independent_root / "state.toml";
+        const std::string external_selection =
+            "format_version = 2\n[[feature]]\npackage_id = \"display\"\nid = \"active\"\nenabled = false\n";
+        write_text(state_path, external_selection);
+        check(!PSXRecompV4::mod_runtime_commit(iso_path, &error),
+              "external saved-selection changes invalidate a prepared plan");
+        std::ifstream state_file(state_path);
+        check(std::string(std::istreambuf_iterator<char>(state_file), {}) == external_selection,
+              "failed stale-plan commit preserves the owner's saved selections");
+        state_file.close();
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(iso_path),
+              "explicit reload accepts the changed saved selections");
+        const auto time = fs::last_write_time(manifest_path);
+        write_text(manifest_path, manifest + "\n# changed manifest\n");
+        fs::last_write_time(manifest_path, time);
+        check(!PSXRecompV4::mod_runtime_commit(iso_path, &error),
+              "restored-mtime manifest changes invalidate a display-only plan");
+        write_text(manifest_path,
+            "format_version = 5\nid = \"display\"\nversion = \"1.0.0\"\nname = \"Display\"\n"
+            "[[target]]\ngame_id = \"READER\"\ndisc_sha256 = \"" + std::string(64, '0') + "\"\n"
+            "[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n");
+        write_text(state_path, "format_version = 2\n");
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error),
+              "declared disc-target fixture loads");
+        const auto constrained_hashes = startup_counter("startup.disc_hash");
+        check(!PSXRecompV4::mod_runtime_prepare_for_launcher(iso_path, &error) &&
+              startup_counter("startup.disc_hash") == constrained_hashes + 1,
+              "declared disc SHA targets still hash and reject the wrong source");
+    }
+    {
         const auto cached_root = root / "audited-cache";
         const auto output_path = root / "audited-output.z64";
         const auto input_path = root / "audited-input.bin";
@@ -2400,7 +2461,7 @@ int main(int argc, char** argv) {
         // Catalog changes cannot certify stale in-memory parsed manifests.
         write_text(manifest_path, manifest + "\n# external catalog mutation\n");
         check(!PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
-              error.find("catalog changed") != std::string::npos,
+              error.find("reopen the launcher") != std::string::npos,
               "changed manifest requires rescan instead of resealing stale package");
         check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error), "explicit initialize rescans changed catalog");
         const int before_netplay = prepare_calls;

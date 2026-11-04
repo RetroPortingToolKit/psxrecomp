@@ -141,8 +141,10 @@ void close_recording() {
 }
 
 std::string plan_identity() {
-    auto portable = PSXRecompV4::mod_runtime_plan_fingerprint_portable();
-    return portable.empty() ? PSXRecompV4::mod_runtime_fingerprint() : portable;
+    // Replays already require the exact execution and executable identity.
+    // Observe the committed plan; diagnostics must not prepare content or
+    // request the whole-disc verification needed for a new netplay offer.
+    return PSXRecompV4::mod_runtime_fingerprint();
 }
 
 uint32_t state_digest(uint32_t seq) {
