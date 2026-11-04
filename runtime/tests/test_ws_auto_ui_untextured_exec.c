@@ -18,6 +18,7 @@
 
 #define GPU_EXEC_REAL_UI_GROUP
 #define GPU_EXEC_RECORD_SHADED_TEXTURED
+#define GPU_EXEC_RECORD_TEXTURED
 #include "../src/gpu.c"
 
 #include "gpu_exec_stubs.inc"
@@ -294,12 +295,80 @@ static void test_explicit_projection_widget(void) {
     ws_hud_anchor_clear(ws_hud_anchor_tags, WS_HUD_ANCHOR_TABLE_SIZE);
 }
 
+static void test_draw_offset_hud(void) {
+    /* Equivalent display positions must produce equivalent frames/fills even
+     * with centre-relative vertices and a relocated VRAM display buffer. */
+    for (int origin = 0; origin <= 512; origin += 512) {
+        for (int offset = 0; offset <= 256; offset += 256) {
+            for (int side = 0; side < 3; side++) {
+                for (int in_place = 0; in_place < 2; in_place++) {
+                    reset_state(in_place);
+                    hres1 = 2; /* 512x240 */
+                    display_area_x = (uint32_t)origin;
+                    draw_offset_x = origin + offset;
+                    const int x = side == 0 ? 60 : side == 1 ? 220 : 384;
+                    const int anchor = in_place ? x + 34 : side * 256;
+                    build_hud((int16_t)(x - offset), (int16_t)(x + 68 - offset),
+                              (int16_t)(x + 4 - offset), (int16_t)(x + 60 - offset));
+                    int gmin, gmax, fmin, fmax;
+                    run_fills(&gmin, &gmax, &fmin, &fmax);
+                    assert(gmin == origin + ws_scale_about(x + 4, anchor));
+                    assert(gmax == origin + ws_scale_about(x + 60, anchor));
+                    assert(fmin == gmin && fmax == gmax);
+                    gpu_exec_reset_triangles();
+                    load_packet(NODE_RING, 9);
+                    gp0_exec_textured_quad();
+                    assert(gpu_exec_triangles.min_x == origin + ws_scale_about(x, anchor));
+                    assert(gpu_exec_triangles.max_x == origin + ws_scale_about(x + 68, anchor));
+                }
+            }
+        }
+    }
+    /* E5 inside the OT affects subsequent packets, without changing live GPU
+     * state during the prepass. */
+    reset_state(0);
+    hres1 = 2;
+    build_hud(-196, -128, -192, -136);
+    const uint32_t offset_command = 0xE5000100u;
+    put_node(NODE_PANEL, NODE_RING, &offset_command, 1);
+    test_ram[OT_HEAD / 4u] = NODE_PANEL;
+    gpu_ws_prepass_linked_list(OT_HEAD);
+    assert(draw_offset_x == 0);
+    assert(ws_ui_prepass_count == 3);
+    assert(ws_ui_prepass[0].group.x == 60);
+    assert(ws_ui_prepass[0].group.anchor == -256);
+
+    /* Four translucent 128x128 rain tiles must not unite left/right widgets
+     * into one centred screen-sized run. A smaller sprite remains eligible. */
+    for (int offset = 0; offset <= 256; offset += 256) {
+        reset_state(0);
+        hres1 = 2; draw_offset_x = offset;
+        build_hud((int16_t)(60-offset), (int16_t)(128-offset),
+                  (int16_t)(64-offset), (int16_t)(120-offset));
+        for (int i = 0; i < 4; i++) {
+            const uint32_t rain[4] = {
+                0x66808080u, pack_vertex((int16_t)(128*i-offset), 0), 0, 0x00800080u};
+            put_node(rear_node(i), i == 3 ? NODE_RING : rear_node(i+1), rain, 4);
+        }
+        test_ram[OT_HEAD / 4u] = rear_node(0);
+        gpu_ws_prepass_linked_list(OT_HEAD);
+        assert(ws_ui_prepass_count == 3 && ws_ui_reject.too_big == 4);
+        assert(ws_ui_prepass[0].group.anchor == -offset);
+        const uint32_t small[4] = {
+            0x66808080u, pack_vertex((int16_t)(20-offset), 100), 0, 0x00400040u};
+        put_node(rear_node(0), NODE_RING, small, 4);
+        gpu_ws_prepass_linked_list(OT_HEAD);
+        assert(ws_ui_prepass_count == 4 && ws_ui_reject.too_big == 0);
+    }
+}
+
 int main(void) {
     int gmin, gmax, fmin, fmax;
 
     test_wall_behind_front_layer(0);
     test_wall_behind_front_layer(1);
     test_explicit_projection_widget();
+    test_draw_offset_hud();
 
     /* A real HUD remains eligible when its last drawing layer is followed
      * by an empty OT bucket, as in Ape's memory-card menu. */

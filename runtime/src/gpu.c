@@ -141,6 +141,9 @@ typedef struct {
      * the texpage, the 24px Y band, or the poly-vs-rect family. */
     int32_t  y;
     int32_t  h;
+    /* Packet drawing coordinates -> display columns. E5 can change within
+     * the OT, so each admitted packet retains its own conversion. */
+    int32_t  display_offset_x;
     uint8_t  op;
     uint8_t  full_draw_area;
     uint8_t  shared_split_ui;
@@ -6768,7 +6771,7 @@ int gpu_gp0_command_word_count(uint8_t opcode) {
 
 static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
                               uint32_t source_addr, uint16_t rank,
-                              int full_draw_area) {
+                              int full_draw_area, int32_t offset_x) {
     if (rank == 0xFFFFu) return;
     if (ws_ui_prepass_count >= WS_UI_PREPASS_MAX) { ws_ui_reject.cap++; return; }
     uint32_t op = words[0] >> 24;
@@ -6867,14 +6870,20 @@ static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
 
     int32_t width = max_x - min_x, height = max_y - min_y;
     int32_t X = ws_disp_x(), W = ws_disp_w(), H = ws_disp_h();
+    const int32_t display_offset_x = offset_x - (int32_t)display_area_x;
+    min_x += display_offset_x;
+    max_x += display_offset_x;
     /* Anything spanning the display width (to within W/64 of each edge) is a
      * full-width overlay -- letterbox bars, fade strips, menu band rules --
      * not a widget: it widens with the image. Squashed as UI, a cutscene's
      * bars left the revealed margins showing whatever the frame cleared to,
      * and the pause menu's rules (x 2..510 of 512) stopped short of the band
      * they frame (Spider-Man). */
+    /* Quarter-width, half-height tiles can cover the display together (rain
+     * and tint overlays); admitting each tile joins otherwise separate HUDs. */
     if ((min_x <= X + W / 64 && max_x >= X + W - W / 64) ||
-        (width > W / 2 && height > H / 4)) {
+        (width > W / 2 && height > H / 4) ||
+        (width >= W / 4 && height >= H / 2)) {
         ws_ui_reject.too_big++;
         return;
     }
@@ -6892,6 +6901,7 @@ static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
     item->ot_rank = rank;
     item->y  = min_y;
     item->h  = height;
+    item->display_offset_x = display_offset_x;
     item->op = (uint8_t)op;
     item->full_draw_area = full_draw_area ? 1 : 0;
     item->shared_split_ui = 0;
@@ -6940,6 +6950,7 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
     uint16_t max_rank = 0xFFFFu;
     const uint32_t max_nodes = 0x40000u;
     int area_left = (int)draw_area_left, area_right = (int)draw_area_right;
+    int32_t offset_x = draw_offset_x;
     GpuDisplayInfo di;
     gpu_get_display_info(&di);
 
@@ -7003,9 +7014,10 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
                 ws_ui_prepass_add(words, (uint32_t)count,
                     psx_mod_gpu_dma_resolve_address(
                         word_addr + offset * 4u), rank,
-                    area_right - area_left + 1 >= (int)di.width);
+                    area_right - area_left + 1 >= (int)di.width, offset_x);
                 if (op == 0xE3u) area_left = (int)(words[0] & 0x3FFu);
                 if (op == 0xE4u) area_right = (int)(words[0] & 0x3FFu);
+                if (op == 0xE5u) offset_x = sign_extend(words[0] & 0x7FFu, 11);
                 offset += (uint32_t)count;
             }
         }
@@ -7143,7 +7155,8 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
     ws_ui_group_assign(groups, ws_ui_prepass_count, ws_disp_w(),
                        ws_auto_ui_dense, ws_auto_ui_in_place);
     for (uint32_t i = 0; i < ws_ui_prepass_count; i++) {
-        ws_ui_prepass[i].group.anchor = group_origin + groups[i].anchor;
+        ws_ui_prepass[i].group.anchor = group_origin + groups[i].anchor -
+            ws_ui_prepass[i].display_offset_x;
         ws_ui_prepass[i].group.root = groups[i].root;
     }
     /* Vertical anchor per run (auto_ui_size): its top edge in the upper half
@@ -7194,7 +7207,8 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
             if (full && x0 < seam && x1 > seam &&
                 x1 - x0 <= W / 2 && y1 - y0 <= H / 4) {
                 ws_ui_prepass[i].shared_split_ui = 1;
-                ws_ui_prepass[i].group.anchor = group_origin + seam;
+                ws_ui_prepass[i].group.anchor = group_origin + seam -
+                    ws_ui_prepass[i].display_offset_x;
             }
         }
     }
