@@ -97,7 +97,7 @@ jobs:
             if [ -n "$PREV" ] && git cat-file -e "$PREV^{commit}" 2>/dev/null; then
               echo "### Changes since previous nightly (${PREV})"
               echo
-              git log --no-merges --format='- %h %s' "$PREV..HEAD" | head -200
+              git log --no-merges --max-count=200 --format='- %h %s' "$PREV..HEAD"
               n=$(git rev-list --count --no-merges "$PREV..HEAD")
               if [ "$n" -gt 200 ]; then echo "- ... and $((n-200)) more"; fi
             else
