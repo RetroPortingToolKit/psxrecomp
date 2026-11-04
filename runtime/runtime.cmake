@@ -845,12 +845,18 @@ endif()
 option(PSXRECOMP_ALLOW_NO_BIOS
     "Allow linking the runtime with no recompiled BIOS backends (setup host)"
     OFF)
-if(NOT _psxrt_bios_linked)
-    if(PSXRECOMP_ALLOW_NO_BIOS)
+list(LENGTH _psxrt_bios_linked _psxrt_bios_count)
+
+# Discovery and registry generation are independent of a target's setup/full
+# mode. Validate only when a runtime is declared, after the high-level helper
+# has inspected its generated-game marker.
+function(_psxrt_validate_bios)
+    if(_psxrt_bios_linked)
+        message(STATUS "BIOS backends linked: ${_psxrt_bios_linked}")
+    elseif(PSXRECOMP_ALLOW_NO_BIOS)
         message(STATUS
             "BIOS backends linked: (none) — setup host; Generate & rebuild "
             "will emit BIOS C locally")
-        set(_psxrt_bios_count 0)
     else()
         message(FATAL_ERROR
             "No recompiled BIOS backend available. Wanted: ${PSXRECOMP_BIOS_STEMS}, "
@@ -861,10 +867,7 @@ if(NOT _psxrt_bios_linked)
             "(OpenBIOS is bundled and MIT-licensed, so this needs no BIOS dump.)\n"
             "Or configure a setup host with -DPSXRECOMP_ALLOW_NO_BIOS=ON.")
     endif()
-else()
-    message(STATUS "BIOS backends linked: ${_psxrt_bios_linked}")
-    list(LENGTH _psxrt_bios_linked _psxrt_bios_count)
-endif()
+endfunction()
 
 # ISO C requires at least one initializer. A setup host can intentionally have
 # zero linked BIOS backends, so give the generated array one unused null entry
@@ -1566,6 +1569,8 @@ function(psxrecomp_add_runtime_target target)
     set(multiValueArgs EXTRAS_SOURCES GAME_GENERATED_FULL_C EXCLUDE_BUILTIN_MODS
         AUDIT_MOD_DIRS NATIVE_IDLE_WAIT_SITES)
     cmake_parse_arguments(PSXRT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    _psxrt_validate_bios()
 
     # DEBUG_PORT and WINDOW_TITLE were previously required cmake-time defaults.
     # game.toml's [runtime] block is now the source of truth at run time; the
@@ -2901,8 +2906,9 @@ function(psxrecomp_add_game_runtime target)
     endif()
 
     if(NOT _psxg_has_game_c)
-        set(PSXRECOMP_ALLOW_NO_BIOS ON CACHE BOOL
-            "Allow runtime with no BIOS backends (setup host)" FORCE)
+        # Inferred policy belongs to this target only. Caching it made a later
+        # full-runtime reconfigure silently retain the setup host's allowance.
+        set(PSXRECOMP_ALLOW_NO_BIOS ON)
     endif()
 
     if(PSXRECOMP_REQUIRE_GAME_C AND NOT _psxg_has_game_c)
