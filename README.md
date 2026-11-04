@@ -17,8 +17,8 @@ Bundled open-source **OpenBIOS** is the default; a compatible retail BIOS is
 optional. Each game verifies the player's own disc image. No commercial
 disc or BIOS data is included.
 
-**[Play a game](#games)** · **[Create your first port](docs/GETTING_STARTED.md)**
-— a focused Windows setup with no AI required.
+**[Play a game](#games)** · **[First-time setup](docs/GETTING_STARTED.md)**
+— downloads, folders, tool checks and your first Windows game build.
 
 ## Mega Man X4: X and Zero in co-op
 
@@ -142,10 +142,11 @@ and game code (`game.toml`, seeds, CMake) at the repo root. See
 
 ## Getting Started
 
-For one recommended setup and a first game project, follow
-[Your first PSXRecomp port](docs/GETTING_STARTED.md). It uses the bundled
-toolchain and OpenBIOS, and keeps advanced choices for later. The sections
-below are the broader reference.
+**New to PSXRecomp? Start with [Getting started with PSXRecomp](docs/GETTING_STARTED.md).**
+It explains what to download, which folders you create, how to use your own
+drive/path, and how to check the tools before building a first game project.
+The source ZIP has no installer; the guide walks through obtaining the source
+and building an executable. The sections below are the broader reference.
 
 ### Build requirements
 
@@ -165,7 +166,10 @@ of these for the compiler, CMake, and Ninja:
 - **Bundled toolchain (recommended).** Download `cmake-clang-v1-windows-x64.zip`
   from [retcomm-toolchains](https://github.com/RetroPortingToolKit/RetroPorting-Toolchains/releases/latest),
   unzip it (for example to `C:\retcomm-toolchain`), and in the PowerShell
-  window you will run the setup from:
+  window you will run the setup from, set the paths below. You choose/create
+  the extraction folder; it must contain `bin\cmake.exe`. See the
+  [first-time guide](docs/GETTING_STARTED.md#2-install-and-check-the-tools)
+  for the extraction steps and version checks.
 
   ```powershell
   $env:PSXRECOMP_TOOLCHAIN_DIR = "C:\retcomm-toolchain"
@@ -200,7 +204,11 @@ MSYS2 notes, and troubleshooting are in [`docs/BUILDING.md`](docs/BUILDING.md).
 
 #### Source Code Required
 
-Clone the master branch of this repo with submodules, or download one of the latest nightly releases.  You store this wherever you like on your project space, as it's own project - you do NOT build your recomp game data inside the psxrecomp folder.
+Clone this repository with `git clone --recurse-submodules` as shown in the
+[first-time guide](docs/GETTING_STARTED.md#3-download-the-framework-and-prepare-your-disc).
+GitHub's **Code > Download ZIP** archive contains source code, has no installer,
+and omits submodule contents. Keep the framework checkout and your generated
+game project in separate folders inside a workspace you choose.
 
 #### New Project Scaffolding
 
@@ -264,6 +272,7 @@ These are the 3 most important folders to be aware of:
 
 | Path | Doc |
 |------|-----|
+| **First-time setup** (downloads, folders, tool checks, first build) | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) |
 | How a game runs | [`docs/EXECUTION_MODEL.md`](docs/EXECUTION_MODEL.md) |
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | **AOT overlay sharding** (disc discovery, per-game recipes, validation) | [`docs/AOT_SHARDING.md`](docs/AOT_SHARDING.md) |
