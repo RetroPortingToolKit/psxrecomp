@@ -519,6 +519,14 @@ int main(int argc,char **argv){
   glb_vram_write(23,20+row*9,0x7654);verify("odd coordinates width and row stride");
  }
  glb_draw_flat_rect(40,40,16,16,0x4321);glb_vram_write(900,400,0x7117);glb_draw_flat_rect(600,410,13,7,0x2222);verify("disjoint upload inside readback union");
+ /* A display-ring peek between a queued draw and the next CPU read must not
+  * consume that draw's pack dirt: the readback then serves a stale mirror. */
+ glb_draw_flat_rect(700,300,8,8,0x5555);
+ check(gl_renderer_fbo_peek(0,0,1024,512,oracle),"peek with queued draw");
+ check(oracle[307*1024+707]==0x5555,"peek realises queued draw");
+ gl_renderer_sync_cpu();
+ check(image[307*1024+707]==0x5555,"readback after peek keeps queued draw");
+ verify("peek between queued draw and readback");
  glb_draw_flat_rect(512,0,16,16,0x1234);
  glb_draw_textured_rect(90,90,16,16,0,0,0,0,0x108);verify("texture pack does not clear CPU debt");
  glb_fill_rect(1016,508,24,8,0x3210);verify("wrapping fill");
