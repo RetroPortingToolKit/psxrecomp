@@ -23,6 +23,14 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(digital_pad_snapshot_test tests/test_digital_pad_snapshot.c)
+    target_include_directories(digital_pad_snapshot_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(digital_pad_snapshot_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(digital_pad_snapshot_test PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME digital_pad_snapshot_test COMMAND digital_pad_snapshot_test)
     foreach(_native IN ITEMS 0 1)
         add_executable(host_deadline_${_native}_test tests/test_host_deadline.c)
         target_include_directories(host_deadline_${_native}_test PRIVATE include)
@@ -43,6 +51,9 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME psx_${_span_mode}_span_test COMMAND psx_${_span_mode}_span_test)
     endforeach()
+    add_executable(audio_sync_target_test tests/test_audio_sync_target.c src/audio_sync.c)
+    target_include_directories(audio_sync_target_test PRIVATE include)
+    add_test(NAME audio_sync_target_test COMMAND audio_sync_target_test)
     add_executable(gpu_fmv_hd_test tests/test_gpu_fmv_hd.cpp src/gpu_fmv_hd.c)
     target_include_directories(gpu_fmv_hd_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(gpu_fmv_hd_test PRIVATE SDL_MAIN_HANDLED PSX_FMV_HD_TESTING=1
@@ -400,6 +411,11 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dma_mdec_jobs.py"
                 --cc "${CMAKE_C_COMPILER}")
             set_tests_properties(dma_mdec_jobs_test PROPERTIES RUN_SERIAL TRUE)
+        endif()
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME resolved_pad_guard_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resolved_pad_guard.py"
+                --cxx "${CMAKE_CXX_COMPILER}")
         endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME menu_video_snapshot_test COMMAND ${Python3_EXECUTABLE}

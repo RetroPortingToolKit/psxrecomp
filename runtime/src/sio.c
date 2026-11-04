@@ -13,6 +13,8 @@
  */
 
 #include "sio.h"
+#include "digital_pad_snapshot.h"
+#include "psx_cycle_freeze.h"
 #include "psx_bss.h"
 #include "memcard.h"
 #include "debug_server.h"
@@ -46,6 +48,7 @@ static void sio_debug_poll_maybe(void) {
 /* Pad state: 0=pressed, 1=released (PS1 convention). Indexed by LOGICAL pad
  * 0 .. PSX_MAX_PLAYERS-1 (not physical SIO slot). */
 static uint16_t pad_buttons[PSX_MAX_PLAYERS] = { PSX_PAD_INIT(0xFFFF) };
+static PSXResolvedDigitalPad pad_input_history[PSX_MAX_PLAYERS];
 
 /* Per-logical-pad type + analog stick state. Values are SIO_PAD_*; sticks are
  * 0..255, 0x80 centred. JogCon uses left-X as a signed wheel position; NeGcon
@@ -864,6 +867,7 @@ void sio_init(void) {
     for (int i = 0; i < PSX_MAX_PLAYERS; i++) {
         pad_analog_device[i] = SIO_PAD_DUALSHOCK;
         pad_buttons[i] = 0xFFFF;
+        digital_pad_history_reset(&pad_input_history[i],pad_buttons[i]);
         pad_analog[i] = 0;
         pad_stick[i][0] = pad_stick[i][1] = pad_stick[i][2] = pad_stick[i][3] = 0x80;
         pad_in_config[i] = 0;
@@ -1059,6 +1063,8 @@ void sio_netplay_canonicalize_session_pads(int slot_count)
 
 void sio_set_pad_connected(int slot, int connected) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    if (!!connected != !!(pad_connected & (1u<<slot)))
+        digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
     if (connected) {
         pad_connected |= (uint8_t)(1u << slot);
     } else {
@@ -1106,11 +1112,14 @@ void sio_get_pad_rumble(int slot, uint8_t *small, uint8_t *large) {
 }
 
 void sio_set_pad_state(uint16_t buttons) {
-    pad_buttons[0] = buttons;
+    sio_set_pad_state_slot(0,buttons);
 }
 
 void sio_set_pad_state_slot(int slot, uint16_t buttons) {
-    if (slot >= 0 && slot < PSX_MAX_PLAYERS) pad_buttons[slot] = buttons;
+    if (slot >= 0 && slot < PSX_MAX_PLAYERS) {
+        digital_pad_history_record(&pad_input_history[slot],buttons);
+        pad_buttons[slot] = buttons;
+    }
 }
 
 /* Entering or leaving NeGcon swaps the controller on the port; it is not the
@@ -1127,6 +1136,7 @@ static int pad_type_is_device_swap(uint8_t from, uint8_t to) {
 static void pad_commit_type(int slot, uint8_t type) {
     const uint8_t from = pad_analog[slot];
     if (from != type) {
+        digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
         pad_jogcon_last_steering[slot] = 0;
         pad_jogcon_motor_command[slot] = 0;
         pad_jogcon_motor_strength[slot] = 0;
@@ -1217,6 +1227,12 @@ void sio_request_pad_type(int slot, int type) {
 
 uint16_t sio_get_pad_buttons(void) {
     return pad_buttons[0];
+}
+
+int sio_get_resolved_digital_pad(int slot,PSXResolvedDigitalPad *out) {
+    if(!out || slot<0 || slot>=PSX_MAX_PLAYERS || !sio_get_pad_connected(slot) ||
+       sio_get_pad_analog(slot)!=SIO_PAD_DIGITAL)return 0;
+    *out=pad_input_history[slot];return 1;
 }
 
 uint16_t sio_get_pad_buttons_slot(int slot) {
@@ -3084,6 +3100,11 @@ void sio_snapshot_section_ends(uint32_t out[5]) {
 }
 
 static int sio_snap_parse(PstR *r) {
+    /* A real state load invalidates input history; restoring a render-only
+     * checkpoint must not discard host presses captured by normal polling. */
+    if (!g_psx_render_pass_active)
+        for(int slot=0;slot<PSX_MAX_PLAYERS;++slot)
+            digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
     uint32_t u;
     int32_t i;
     int16_t tr;

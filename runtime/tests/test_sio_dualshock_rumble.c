@@ -201,3 +201,9 @@ int main(void) {
     fprintf(stderr, "DualShock rumble protocol: passed\n");
     return 0;
 }
+
+/* Standalone device test: not executing a render-only checkpoint. */
+int g_psx_render_pass_active;
+
+/* Match the current SIO flush-status query in this no-file fixture. */
+int memcard_last_flush_result(int card) { (void)card;return 0; }

@@ -56,7 +56,7 @@ typedef struct {
 typedef struct {
     uint64_t pushed_frames;
     uint64_t pulled_frames;
-    uint64_t underrun_events;   /* times the ring ran dry mid-pull            */
+    uint64_t underrun_events;   /* depletion episodes; excludes re-prime silence */
     uint64_t overflow_drops;    /* source frames dropped on ring overflow     */
     double   last_fill_ms;
     double   last_correction;   /* applied ratio correction (signed)          */
@@ -85,6 +85,9 @@ typedef struct rab_bridge {
     int    primed;          /* set once fill first reaches target              */
     float  last_out[2];     /* last emitted sample per channel (for holds)     */
 
+    /* Host-only declick join after intentional output discard, not a queue. */
+    float resume_from[2];
+    int resume_left, resume_total;
     rab_stats stats;
 } rab_bridge;
 
@@ -258,8 +261,15 @@ void rab_push(rab_bridge *b, const int16_t *in, int frames) {
         }
         int64_t w = (int64_t)(b->in_count % (uint64_t)b->cap);
         float *slot = b->ring + w * ch;
-        for (int c = 0; c < ch; ++c)
-            slot[c] = (float)in[f * ch + c] * (1.0f / 32768.0f);
+        for (int c = 0; c < ch; ++c) {
+            float sample = (float)in[f * ch + c] * (1.0f / 32768.0f);
+            if (b->resume_left > 0) {
+                const float mix = 1.0f - (float)b->resume_left / (float)b->resume_total;
+                sample = b->resume_from[c] + (sample - b->resume_from[c]) * mix;
+            }
+            slot[c] = sample;
+        }
+        if (b->resume_left > 0) --b->resume_left;
         b->in_count++;
         fill += 1.0;
     }
@@ -318,7 +328,20 @@ static void rab__update_controller(rab_bridge *b, int pull_frames) {
 }
 
 void rab_resume_after_sink(rab_bridge *b) {
-    if (rab_fill_ms(b) < b->cfg.target_ms) b->primed = 0;
+    /* A below-target ring can still contain playable audio. Do not stop it
+     * merely to refill: only a truly depleted/unprimed bridge needs priming. */
+    const int64_t newest_needed = (int64_t)floor(b->out_pos) + b->half;
+    const int playable = b->primed && newest_needed < (int64_t)b->in_count;
+    if (!playable) b->primed = 0;
+    b->resume_left = b->resume_total = 0;
+    if (playable && b->in_count) {
+        const int64_t last = (int64_t)((b->in_count - 1u) % (uint64_t)b->cap);
+        for (int c = 0; c < b->cfg.channels; ++c)
+            b->resume_from[c] = b->ring[last * b->cfg.channels + c];
+        b->resume_total = (int)(b->cfg.source_rate * 0.003);
+        if (b->resume_total < 1) b->resume_total = 1;
+        b->resume_left = b->resume_total;
+    }
     b->err_lp = b->corr = b->corr_i = 0.0;
     b->cur_step = b->cfg.source_rate / b->cfg.host_rate;
 }
@@ -356,8 +379,14 @@ void rab_pull(rab_bridge *b, int16_t *out, int frames) {
             /* underrun / not yet primed: hold last sample, let gain fade it out */
             s[0] = b->last_out[0];
             if (ch == 2) s[1] = b->last_out[1];
-            if (b->primed && newest_needed >= (int64_t)b->in_count)
+            if (b->primed && newest_needed >= (int64_t)b->in_count) {
+                /* Rebuild the existing target after a true depletion. Staying
+                 * primed here resumes with one tiny block and can starve again
+                 * on every small producer jitter. Count one depletion episode;
+                 * intentional startup/refill silence is not another underrun. */
                 b->stats.underrun_events++;
+                b->primed = 0;
+            }
         }
 
         /* smooth gate: fade toward 1 when delivering real audio, toward 0 else */
