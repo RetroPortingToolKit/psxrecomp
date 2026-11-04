@@ -9863,8 +9863,11 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 #ifndef PSX_SDL_NO_RENDER
             /* After savestate load, always restage once even if we blanked
              * earlier in the session — otherwise the window keeps a stale
-             * pre-load frame while vblanks (and FPS) keep advancing. */
-            if (!s_disabled_frame_presented || s_force_present_after_load) {
+             * pre-load frame while vblanks (and FPS) keep advancing. An open
+             * overlay (menu, a title's own page) over a blanked display is
+             * live: present it every vblank. */
+            if (!s_disabled_frame_presented || s_force_present_after_load ||
+                psx_host_ui_capture_active()) {
                 s_disabled_frame_presented = true;
                 s_force_present_after_load = false;
                 if (g_gl_active) {
