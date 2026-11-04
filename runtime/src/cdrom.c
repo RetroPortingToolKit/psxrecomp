@@ -192,6 +192,9 @@ static void ring_note_starved(void) {
 
 static uint8_t last_sector_buffer[SECTOR_BUFFER_SIZE];
 static int last_sector_lba;
+/* Set from a read's seek until its first sector arrives: the last sector's header
+ * no longer says where the drive is, so GetlocL has nothing to report. */
+static uint8_t last_sector_header_stale;
 static int last_sector_size;
 static uint32_t last_sector_frame;
 static uint8_t last_sector_mode;
@@ -1528,6 +1531,7 @@ static int read_sector_at_with_raw(int min, int sec, int sect,
         }
     }
     last_sector_lba = lba;
+    last_sector_header_stale = 0;
     last_sector_size = delivery.data_delivered ? wb->size : history_size;
     last_sector_frame = (uint32_t)s_frame_count;
     last_sector_mode = mode_reg;
@@ -1660,6 +1664,7 @@ static void start_read_stream(uint8_t cmd) {
         read_min = seek_min;
         read_sec = seek_sec;
         read_sect = seek_sect;
+        last_sector_header_stale = 1;
     }
     setloc_pending = 0;
     read_cmd = cmd;
@@ -2318,6 +2323,14 @@ static void exec_command(uint8_t cmd) {
         break;
 
     case 0x10: { /* GetlocL */
+        /* Hardware answers NOT READY during a seek. A game polling this for the end of a
+         * stream would read the old header as past the end and stop the stream at once. */
+        if (last_sector_header_stale) {
+            response_push(stat_reg | CDSTAT_ERROR);
+            response_push(0x80u);
+            set_irq(CDIRQ_ERROR);
+            break;
+        }
         int lba = (last_sector_lba >= 0)
             ? last_sector_lba
             : msf_to_lba(read_min, read_sec, read_sect);
@@ -2849,6 +2862,7 @@ void cdrom_init(const char* cue_path) {
     response_read = 0;
     response_count = 0;
     last_sector_lba = -1;
+    last_sector_header_stale = 0;
     last_sector_size = 0;
     last_sector_frame = 0;
     last_sector_mode = 0;
@@ -3693,6 +3707,7 @@ int cdrom_snapshot_read(const uint8_t *p, uint32_t len) {
         return 0;
     /* Absolute host deadlines are not on the wire — rebuild from restored
      * relative read_delay (psx_cycle_count is resynced by the load caller). */
+    last_sector_header_stale = 0;
     cdrom_resync_deadlines_after_restore();
     /* The snapshot wire predates the timed-lid helper. Reconstruct its short
      * host-side deadline from the saved hardware status instead of changing
@@ -3801,6 +3816,7 @@ int cdrom_disc_select(int index_1based) {
     /* Buffered sectors and the seek position describe the old disc. */
     clear_sector_buffer();
     last_sector_lba = -1;
+    last_sector_header_stale = 0;
     last_sector_size = 0;
     s_setloc_lba = -1;
     ++s_stream_generation;
