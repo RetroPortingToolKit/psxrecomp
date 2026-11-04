@@ -34,6 +34,45 @@ if(WIN32)
     endif()
 endif()
 
+# GNU drivers can append default-manifest.o independently of our RC object.
+# Recent binutils retains both ID-1 entries and still exits successfully. Scope
+# the endfile override to executables carrying our manifest, preserving every
+# other CRT/endfile token and leaving Clang/MSVC untouched.
+function(_psxrecomp_manifest_gnu_specs lang out)
+    set(${out} "" PARENT_SCOPE)
+    if(NOT CMAKE_${lang}_COMPILER_ID STREQUAL "GNU")
+        return()
+    endif()
+    execute_process(COMMAND "${CMAKE_${lang}_COMPILER}" -dumpspecs
+        RESULT_VARIABLE _rc OUTPUT_VARIABLE _specs ERROR_QUIET)
+    if(NOT _rc EQUAL 0 OR NOT _specs MATCHES "\n\\*endfile:\n([^\n]+)")
+        return()
+    endif()
+    set(_endfile "${CMAKE_MATCH_1}")
+    set(_injection "%:if-exists(default-manifest.o%s)")
+    string(FIND "${_endfile}" "${_injection}" _found)
+    if(_found EQUAL -1)
+        return()
+    endif()
+    execute_process(COMMAND "${CMAKE_${lang}_COMPILER}" -print-file-name=default-manifest.o
+        RESULT_VARIABLE _rc OUTPUT_VARIABLE _default OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT _rc EQUAL 0 OR NOT EXISTS "${_default}")
+        return()
+    endif()
+    string(REPLACE "${_injection}" "" _endfile "${_endfile}")
+    set(_content "*endfile:\n${_endfile}\n")
+    set(_path "${CMAKE_BINARY_DIR}/psx_manifest_${lang}.specs")
+    set(_old "")
+    if(EXISTS "${_path}")
+        file(READ "${_path}" _old)
+    endif()
+    if(NOT _old STREQUAL _content)
+        file(WRITE "${_path}" "${_content}")
+    endif()
+    set(${out} "${_path}" PARENT_SCOPE)
+endfunction()
+
 function(psxrecomp_windows_manifest target)
     if(NOT WIN32)
         return()
@@ -43,7 +82,15 @@ function(psxrecomp_windows_manifest target)
         target_sources(${target} PRIVATE "${PSXRECOMP_WINDOWS_MANIFEST}")
     else()
         # MinGW: RT_MANIFEST (24) resource with CREATEPROCESS_MANIFEST_RESOURCE_ID
-        # (1). binutils and lld let it replace the toolchain's default-manifest.o.
+        # (1). GNU drivers need their injected default suppressed explicitly.
+        foreach(_lang IN ITEMS C CXX)
+            _psxrecomp_manifest_gnu_specs(${_lang} _specs)
+            if(_specs)
+                target_link_options(${target} PRIVATE
+                    "$<$<LINK_LANG_AND_ID:${_lang},GNU>:-specs=${_specs}>")
+                set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${_specs}")
+            endif()
+        endforeach()
         string(REPLACE "\\" "/" _manifest_fwd "${PSXRECOMP_WINDOWS_MANIFEST}")
         set(_rc "${CMAKE_CURRENT_BINARY_DIR}/${target}_manifest.rc")
         set(_content "1 24 \"${_manifest_fwd}\"\n")
