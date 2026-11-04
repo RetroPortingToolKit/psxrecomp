@@ -338,6 +338,20 @@ static void test_draw_offset_hud(void) {
     assert(ws_ui_prepass[0].group.x == 60);
     assert(ws_ui_prepass[0].group.anchor == -256);
 
+    /* Horizontal double buffering displays the front buffer while drawing
+     * the back buffer. E3/E4/E5 in the OT select that different target. */
+    reset_state(0);
+    hres1 = 2;
+    build_hud(-196, -128, -192, -136);
+    const uint32_t back_buffer[3] = {0xE3000200u, 0xE40003FFu, 0xE5000300u};
+    put_node(NODE_PANEL, NODE_RING, back_buffer, 3);
+    test_ram[OT_HEAD / 4u] = NODE_PANEL;
+    gpu_ws_prepass_linked_list(OT_HEAD);
+    assert(draw_offset_x == 0 && draw_area_left == 0);
+    assert(ws_ui_prepass_count == 3);
+    assert(ws_ui_prepass[0].group.x == 60);
+    assert(ws_ui_prepass[0].group.anchor == -256);
+
     /* Four translucent 128x128 rain tiles must not unite left/right widgets
      * into one centred screen-sized run. A smaller sprite remains eligible. */
     for (int offset = 0; offset <= 256; offset += 256) {

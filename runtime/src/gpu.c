@@ -6771,7 +6771,8 @@ int gpu_gp0_command_word_count(uint8_t opcode) {
 
 static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
                               uint32_t source_addr, uint16_t rank,
-                              int full_draw_area, int32_t offset_x) {
+                              int full_draw_area, int32_t offset_x,
+                              int32_t target_x) {
     if (rank == 0xFFFFu) return;
     if (ws_ui_prepass_count >= WS_UI_PREPASS_MAX) { ws_ui_reject.cap++; return; }
     uint32_t op = words[0] >> 24;
@@ -6870,7 +6871,7 @@ static void ws_ui_prepass_add(const uint32_t *words, uint32_t word_count,
 
     int32_t width = max_x - min_x, height = max_y - min_y;
     int32_t X = ws_disp_x(), W = ws_disp_w(), H = ws_disp_h();
-    const int32_t display_offset_x = offset_x - (int32_t)display_area_x;
+    const int32_t display_offset_x = offset_x - target_x;
     min_x += display_offset_x;
     max_x += display_offset_x;
     /* Anything spanning the display width (to within W/64 of each edge) is a
@@ -7011,10 +7012,22 @@ void gpu_ws_prepass_linked_list(uint32_t start_addr) {
                         psx_mod_gpu_dma_resolve_address(
                             word_addr + (offset + (uint32_t)i) * 4u));
                 }
+                /* Group within the buffer being DRAWN, which can differ from
+                 * GP1's currently displayed front buffer. Full-width draw
+                 * areas identify even a back buffer not displayed yet;
+                 * scissored draws can reuse the learned framebuffer bases. */
+                int32_t target_x = (int32_t)di.display_x;
+                if (area_right - area_left + 1 == (int)di.width ||
+                    ws_is_fb_base((uint32_t)area_left)) {
+                    target_x = area_left;
+                } else {
+                    const int known = ws_fb_base_holding(area_left, (int)di.width);
+                    if (known >= 0) target_x = known;
+                }
                 ws_ui_prepass_add(words, (uint32_t)count,
                     psx_mod_gpu_dma_resolve_address(
                         word_addr + offset * 4u), rank,
-                    area_right - area_left + 1 >= (int)di.width, offset_x);
+                    area_right - area_left + 1 >= (int)di.width, offset_x, target_x);
                 if (op == 0xE3u) area_left = (int)(words[0] & 0x3FFu);
                 if (op == 0xE4u) area_right = (int)(words[0] & 0x3FFu);
                 if (op == 0xE5u) offset_x = sign_extend(words[0] & 0x7FFu, 11);
