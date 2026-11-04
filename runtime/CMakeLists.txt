@@ -2503,6 +2503,9 @@ if(BUILD_TESTING)
         add_test(NAME bios_registry_zero_entry_guard_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_registry_zero_entry.py)
+        add_test(NAME game_runtime_bios_test
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_runtime_bios.py)
         # Exercises runtime/psx_check_mod_catalog.cmake -- the build-time guard
         # that fails a build when a title's mod packages land in the legacy
         # mods/packages layout instead of mods/bundled (bead beads-eio.3.101).
