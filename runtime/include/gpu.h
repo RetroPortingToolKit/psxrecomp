@@ -120,6 +120,10 @@ void gpu_ws_set_local_viewport_native_wide(int enabled);
 int psx_ws_is_local_viewport_width_site(uint32_t pc);
 void gpu_vertical_split_debug(int *active, int *left_age, int *right_age);
 uint16_t gpu_vram_peek(int x, int y);
+/* Host-side CPU->VRAM copy (raw 16-bit words, row-major), sent as a GP0 A0
+ * transfer so every renderer sees it. 0 when the rectangle leaves VRAM or the
+ * guest is mid-command. */
+int gpu_host_write_vram(int x, int y, int w, int h, const uint16_t *pixels);
 
 /* Shaded quad vertex capture (Phase 4.5 debug). */
 typedef struct {

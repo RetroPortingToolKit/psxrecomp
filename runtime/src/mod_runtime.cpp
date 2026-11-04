@@ -3768,6 +3768,10 @@ extern "C" int psx_mod_read_vram(int x, int y, int w, int h, uint16_t* out) {
     return 1;
 }
 
+extern "C" int psx_mod_write_vram(int x, int y, int w, int h, const uint16_t* pixels) {
+    return gpu_host_write_vram(x, y, w, h, pixels);
+}
+
 extern "C" int psx_mod_current_resource_bytes(const char* resource_id,
                                                const uint8_t** bytes,
                                                uint64_t* size) {

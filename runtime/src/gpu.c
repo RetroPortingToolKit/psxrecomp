@@ -8046,6 +8046,23 @@ void gpu_write_gp0(uint32_t val) {
     g_exec_phase = prev_phase;
 }
 
+int gpu_host_write_vram(int x, int y, int w, int h, const uint16_t *pixels) {
+    if (!pixels || x < 0 || y < 0 || w < 1 || h < 1 || x + w > 1024 || y + h > 512) return 0;
+    /* Only between commands, so the guest's GP0 stream is never split. */
+    if (gp0_state != GP0_IDLE) return 0;
+    const uint32_t saved_set = set_mask_bit, saved_check = check_mask_bit;
+    set_mask_bit = check_mask_bit = 0;
+    gpu_write_gp0(0xA0000000u);
+    gpu_write_gp0(((uint32_t)y << 16) | (uint32_t)x);
+    gpu_write_gp0(((uint32_t)h << 16) | (uint32_t)w);
+    const int n = w * h;
+    for (int i = 0; i < n; i += 2)
+        gpu_write_gp0((uint32_t)pixels[i] | (i + 1 < n ? (uint32_t)pixels[i + 1] << 16 : 0u));
+    set_mask_bit = saved_set;
+    check_mask_bit = saved_check;
+    return 1;
+}
+
 /* ---- GP1 write (0x1F801814 write) ---- */
 
 static void gp1_reset(void) {

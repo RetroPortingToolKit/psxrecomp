@@ -254,6 +254,10 @@ void psx_mod_write_word(uint32_t address, uint32_t value);
  * title can present its own fonts and palettes outside the guest frame.
  * Returns 0 when the rectangle leaves 1024x512. */
 int psx_mod_read_vram(int x, int y, int w, int h, uint16_t* out);
+/* Write a VRAM rectangle (raw 16-bit words, row-major, w*h), e.g. glyphs a
+ * title's font lacks. Mask bits are ignored for the copy. Returns 0 when the
+ * rectangle leaves 1024x512 or the GPU is mid-command (try again later). */
+int psx_mod_write_vram(int x, int y, int w, int h, const uint16_t* pixels);
 /*
  * Replace one guest instruction and route that address through the runtime's
  * executable-RAM path. Use this instead of psx_mod_write_word for code so a
