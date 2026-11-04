@@ -20,6 +20,17 @@
 
 namespace PSXRecomp {
 
+// Match translate_basic_block's outgoing C paths. A conditional branch emits
+// both outcomes explicitly (goto or terminating transfer), even when neither
+// target belongs to this CFG. A direct jump likewise terminates unless its
+// target is unavailable. Empty in-function successor metadata alone does not
+// mean that execution can fall out of the emitted block.
+static bool block_needs_fallthrough(const BasicBlock& block) {
+    return block.exit_instr.type == ControlFlowType::None ||
+           (block.exit_instr.type == ControlFlowType::Jump &&
+            block.successors.empty() && block.exit_instr.target == 0);
+}
+
 /* Reserved MIPS-II branch-likely words often appear when discovery sweeps
  * ASCII/data as code. Emit the RI raise every time (faithfulness), but do not
  * spam one WARNING per revisit of the same PC — product Generate was flooding
@@ -3279,34 +3290,10 @@ GeneratedFunction CodeGenerator::generate_function(
 
     body_ss << blocks_ss.str();
 
-    // Emit fallthrough call if the function ends without explicit control flow.
-    // A MIPS function truly falls through when:
-    //   1. It has NO jr/jr $ra block anywhere (no explicit return or indirect jump)
-    //   2. Its last basic block (by address) ends with no control flow (ControlFlowType::None)
-    //      OR it ends with a branch/jump whose targets are all outside this function
-    //      (indicating a split-function where the branch targets are in the next piece)
-    // Functions that have dead code after a jr $ra (e.g., padding) must NOT get a
-    // fallthrough call — condition 1 guards against that.
+    // Only a reachable, unterminated final C block needs a safety-net transfer.
     if (!fallthrough_name.empty() && !cfg.block_order.empty()) {
         const BasicBlock& last_block = cfg.blocks.at(cfg.block_order.back());
-        bool needs_fallthrough = false;
-
-        if (last_block.exit_instr.type == ControlFlowType::None) {
-            needs_fallthrough = true;
-        } else if ((last_block.exit_instr.type == ControlFlowType::Branch ||
-                    last_block.exit_instr.type == ControlFlowType::Jump) &&
-                   last_block.successors.empty()) {
-            // Branch/jump with no in-function successors — likely a split-function bug.
-            // All targets are in the next function piece. Emit fallthrough as a safety net.
-            fmt::print("  WARNING: func_{:08X} has out-of-function {} at block_{:08X}, "
-                       "emitting fallthrough to {}\n",
-                       func.start_addr,
-                       last_block.exit_instr.type == ControlFlowType::Branch ? "branch" : "jump",
-                       last_block.start_addr, fallthrough_name);
-            needs_fallthrough = true;
-        }
-
-        if (needs_fallthrough) {
+        if (block_needs_fallthrough(last_block)) {
             // Incoming edges alone do not prove reachability: unreachable
             // padding/loops can have predecessors too. This final safety net
             // uses declared-entry reachability; block-level CPS/indirect entry
@@ -3314,6 +3301,11 @@ GeneratedFunction CodeGenerator::generate_function(
             const BasicBlock& last = cfg.blocks.at(cfg.block_order.back());
             bool is_reachable = last.is_entry || last.is_reachable;
             if (is_reachable) {
+                if (last_block.exit_instr.type == ControlFlowType::Jump) {
+                    fmt::print("  WARNING: func_{:08X} has an unresolved jump at block_{:08X}, "
+                               "emitting fallthrough to {}\n",
+                               func.start_addr, last_block.start_addr, fallthrough_name);
+                }
                 body_ss << emit_stale_static_guard_named(fallthrough_name, code_seg_, "    ");
                 body_ss << fmt::format("    {}(cpu);  /* fallthrough to next function */\n",
                                        fallthrough_name);
@@ -3326,11 +3318,7 @@ GeneratedFunction CodeGenerator::generate_function(
         // entry-switch's consumed cpu->pc == 0, which the top-level trampoline
         // reads as "program ended".
         const BasicBlock& last_block = cfg.blocks.at(cfg.block_order.back());
-        bool runs_off_end =
-            last_block.exit_instr.type == ControlFlowType::None ||
-            ((last_block.exit_instr.type == ControlFlowType::Branch ||
-              last_block.exit_instr.type == ControlFlowType::Jump) &&
-             last_block.successors.empty());
+        bool runs_off_end = block_needs_fallthrough(last_block);
         bool is_reachable = last_block.is_entry || last_block.is_reachable;
         if (runs_off_end && is_reachable) {
             body_ss << fmt::format(
@@ -3568,11 +3556,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
     if (!fallthrough_name.empty() && !cfg.block_order.empty() &&
         live_blocks.count(cfg.block_order.back())) {
         const BasicBlock& last_block = cfg.blocks.at(cfg.block_order.back());
-        bool needs_fallthrough =
-            (last_block.exit_instr.type == ControlFlowType::None) ||
-            ((last_block.exit_instr.type == ControlFlowType::Branch ||
-              last_block.exit_instr.type == ControlFlowType::Jump) &&
-             last_block.successors.empty());
+        bool needs_fallthrough = block_needs_fallthrough(last_block);
         if (needs_fallthrough) {
             body << emit_stale_static_guard_named(fallthrough_name, code_seg_, "    ");
             body << fmt::format("    {}(cpu);  /* fallthrough to next function */\n",
@@ -3585,11 +3569,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_alias_group(
         // tail-transfer to its continuation PC instead of falling off the C
         // body with cpu->pc still consumed to 0.
         const BasicBlock& last_block = cfg.blocks.at(cfg.block_order.back());
-        bool runs_off_end =
-            (last_block.exit_instr.type == ControlFlowType::None) ||
-            ((last_block.exit_instr.type == ControlFlowType::Branch ||
-              last_block.exit_instr.type == ControlFlowType::Jump) &&
-             last_block.successors.empty());
+        bool runs_off_end = block_needs_fallthrough(last_block);
         if (runs_off_end) {
             body << fmt::format(
                 "    cpu->pc = 0x{:08X}u; return;  /* image-edge fallthrough: tail-transfer */\n",
