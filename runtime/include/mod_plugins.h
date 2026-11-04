@@ -250,6 +250,10 @@ uint16_t psx_mod_read_half(uint32_t address);
 void psx_mod_write_half(uint32_t address, uint16_t value);
 uint32_t psx_mod_read_word(uint32_t address);
 void psx_mod_write_word(uint32_t address, uint32_t value);
+/* Copy a VRAM rectangle (raw 16-bit words, row-major, w*h) into out, so a
+ * title can present its own fonts and palettes outside the guest frame.
+ * Returns 0 when the rectangle leaves 1024x512. */
+int psx_mod_read_vram(int x, int y, int w, int h, uint16_t* out);
 /*
  * Replace one guest instruction and route that address through the runtime's
  * executable-RAM path. Use this instead of psx_mod_write_word for code so a

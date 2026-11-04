@@ -3761,6 +3761,13 @@ extern "C" uint8_t psx_mod_read_byte(uint32_t address) {
     return psx_read_byte(address);
 }
 
+extern "C" int psx_mod_read_vram(int x, int y, int w, int h, uint16_t* out) {
+    if (!out || x < 0 || y < 0 || w < 1 || h < 1 || x + w > 1024 || y + h > 512) return 0;
+    for (int row = 0; row < h; ++row)
+        for (int col = 0; col < w; ++col) out[row * w + col] = gpu_vram_peek(x + col, y + row);
+    return 1;
+}
+
 extern "C" int psx_mod_current_resource_bytes(const char* resource_id,
                                                const uint8_t** bytes,
                                                uint64_t* size) {
