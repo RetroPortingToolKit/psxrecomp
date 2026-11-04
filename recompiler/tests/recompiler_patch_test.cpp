@@ -1339,6 +1339,30 @@ void cfg_fallthrough_reachability_test() {
     f.alias_walk_lo = base; f.start_addr = base + 16;
     f.alias_group_entries = {base + 16};
     check_tail(true, "independent alias entry");
+
+    // Explicit split transfers already terminate every C path. Exercise both
+    // ordinary and shared-alias bodies, with and without an in-image successor.
+    exe.code_data.clear();
+    exe.header.file_size = 8;
+    append_word(exe.code_data, 0x14800005u); // bne a0,zero,outside
+    append_word(exe.code_data, 0);
+    f = {};
+    f.start_addr = base; f.end_addr = base + 8; f.size = 8;
+    for (uint32_t word : {0x14800005u, 0x08004010u}) {
+        write_word(exe, base, word);
+        const auto cfg = PSXRecomp::ControlFlowAnalyzer(exe).analyze_function(f);
+        for (const std::string next : {std::string("func_80010008"), std::string()}) {
+            PSXRecomp::CodeGenerator generator(exe);
+            const auto single = generator.generate_function(f, cfg, next).full_code;
+            const auto aliases = generator.generate_alias_group({&f}, cfg, next);
+            for (const auto& code : {single, aliases.at(0).full_code}) {
+                check(code.find("/* fallthrough to next function */") == std::string::npos,
+                      "terminated split block has no dead named fallthrough");
+                check(code.find("/* image-edge fallthrough: tail-transfer */") == std::string::npos,
+                      "terminated split block has no dead image-edge transfer");
+            }
+        }
+    }
 }
 
 } // namespace

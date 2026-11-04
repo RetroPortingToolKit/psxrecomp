@@ -1057,6 +1057,10 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_cross_page_delay_codegen.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(NAME split_transfer_fallthrough
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_split_transfer_fallthrough.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>)
         # The overlay capture format's trailing delay-slot guard word: legal
         # to READ (a branch at the run's last word emits its slot from it),
         # illegal to ANALYSE (the word after it does not exist). Also pins
