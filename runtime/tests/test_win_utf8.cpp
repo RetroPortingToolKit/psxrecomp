@@ -126,11 +126,44 @@ static void test_manifest_code_page() {
     DeleteFileW(wide.c_str());
 }
 
+static BOOL CALLBACK count_manifest(HMODULE, LPCWSTR, LPWSTR name, LONG_PTR data) {
+    ++*reinterpret_cast<unsigned*>(data);
+    CHECK(IS_INTRESOURCE(name) && reinterpret_cast<ULONG_PTR>(name) == 1);
+    return TRUE;
+}
+
+static void test_manifest_resource() {
+    HMODULE module = GetModuleHandleW(nullptr);
+    unsigned count = 0;
+    CHECK(EnumResourceNamesW(module, MAKEINTRESOURCEW(24), count_manifest,
+                             reinterpret_cast<LONG_PTR>(&count)) != 0);
+    CHECK(count == 1);  // ld can exit 0 while retaining duplicate ID-1 entries.
+    HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(24));
+    CHECK(resource != nullptr);
+    if (!resource) return;
+    HGLOBAL loaded = LoadResource(module, resource);
+    const char* bytes = loaded ? static_cast<const char*>(LockResource(loaded)) : nullptr;
+    CHECK(bytes != nullptr);
+    if (!bytes) return;
+    const std::string xml(bytes, SizeofResource(module, resource));
+    CHECK(xml.find(">UTF-8</activeCodePage>") != std::string::npos);
+    CHECK(xml.find(">true</longPathAware>") != std::string::npos);
+    CHECK(xml.find("level=\"asInvoker\"") != std::string::npos);
+    for (const char* id : {"e2011457-1546-43c5-a5fe-008deee3d3f0",
+                           "35138b9a-5d96-4fbd-8e2d-a2440225f93a",
+                           "4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38",
+                           "1f676c76-80e1-4239-95bb-83d0f6d0da78",
+                           "8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a"}) {
+        CHECK(xml.find(id) != std::string::npos);
+    }
+}
+
 int main(int argc, char** argv) {
     test_from_utf8();
     test_multi_sz();
     test_filesystem_narrow_is_utf8();
     if (argc > 1 && std::strcmp(argv[1], "--expect-utf8-acp") == 0) {
+        test_manifest_resource();
         test_manifest_code_page();
     }
     if (g_failures) {
