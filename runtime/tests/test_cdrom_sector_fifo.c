@@ -326,9 +326,9 @@ static void snapshot_setloc_and_paused_head(void) {
     /* CDF2 states remain readable and retain the paused drive position. */
     exec_command(0x09);ack();
     PstW writer;pst_w_init(&writer,wire,size);
-    CHECK(cdrom_snap_emit(&writer,1) && writer.written==size-5);
+    CHECK(cdrom_snap_emit(&writer,1) && writer.written==size-6);
     read_sec=9;
-    CHECK(cdrom_snapshot_read(wire,size-5));
+    CHECK(cdrom_snapshot_read(wire,size-6));
     exec_command(0x06);
     CHECK(msf_to_lba(read_min,read_sec,read_sect)==151);
     free(wire);

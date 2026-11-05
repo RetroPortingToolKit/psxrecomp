@@ -192,6 +192,9 @@ static void ring_note_starved(void) {
 
 static uint8_t last_sector_buffer[SECTOR_BUFFER_SIZE];
 static int last_sector_lba;
+/* Set from a read's seek until its first sector arrives: the last sector's header
+ * no longer says where the drive is, so GetlocL has nothing to report. */
+static uint8_t last_sector_header_stale;
 static int last_sector_size;
 static uint32_t last_sector_frame;
 static uint8_t last_sector_mode;
@@ -1528,6 +1531,7 @@ static int read_sector_at_with_raw(int min, int sec, int sect,
         }
     }
     last_sector_lba = lba;
+    last_sector_header_stale = 0;
     last_sector_size = delivery.data_delivered ? wb->size : history_size;
     last_sector_frame = (uint32_t)s_frame_count;
     last_sector_mode = mode_reg;
@@ -1660,6 +1664,7 @@ static void start_read_stream(uint8_t cmd) {
         read_min = seek_min;
         read_sec = seek_sec;
         read_sect = seek_sect;
+        last_sector_header_stale = 1;
     }
     setloc_pending = 0;
     read_cmd = cmd;
@@ -2318,6 +2323,14 @@ static void exec_command(uint8_t cmd) {
         break;
 
     case 0x10: { /* GetlocL */
+        /* Hardware answers NOT READY during a seek. A game polling this for the end of a
+         * stream would read the old header as past the end and stop the stream at once. */
+        if (last_sector_header_stale) {
+            response_push(stat_reg | CDSTAT_ERROR);
+            response_push(0x80u);
+            set_irq(CDIRQ_ERROR);
+            break;
+        }
         int lba = (last_sector_lba >= 0)
             ? last_sector_lba
             : msf_to_lba(read_min, read_sec, read_sect);
@@ -2849,6 +2862,7 @@ void cdrom_init(const char* cue_path) {
     response_read = 0;
     response_count = 0;
     last_sector_lba = -1;
+    last_sector_header_stale = 0;
     last_sector_size = 0;
     last_sector_frame = 0;
     last_sector_mode = 0;
@@ -3350,6 +3364,7 @@ int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
     request_reg |= CDROM_REQUEST_BFRD;
     memcpy(last_sector_buffer, slot->data, (size_t)slot->size);
     last_sector_lba = (int)last;
+    last_sector_header_stale = 0;
     last_sector_size = slot->size;
     last_sector_frame = (uint32_t)s_frame_count;
     last_sector_mode = mode_reg;
@@ -3542,8 +3557,9 @@ static int cdrom_snap_emit(PstW *w, int extended) {
             WI(s_sector_ring[slot].pos); WI(s_sector_ring[slot].size);
         }
         if (extended >= 2) {
-            WU(0x33464443u); /* CDF3: unconsumed Setloc, distinct from drive head */
+            WU(0x34464443u); /* CDF4: Setloc and decoded-header validity */
             W8(setloc_pending);
+            W8(last_sector_header_stale);
         }
     }
 
@@ -3588,6 +3604,7 @@ static int cdrom_snap_parse(PstR *r, int extended) {
     pending_present_due = 0;
 
     RB(last_sector_buffer); RI(last_sector_lba); RI(last_sector_size);
+    last_sector_header_stale = 0;
     RB(last_valid_subq); RI(last_valid_subq_available);
     RU(last_sector_frame); R8(last_sector_mode); R8(last_sector_have_raw);
     R8(last_sector_raw_mode); R8(last_sector_xa_file); R8(last_sector_xa_channel);
@@ -3615,8 +3632,9 @@ static int cdrom_snap_parse(PstR *r, int extended) {
             RI(s_sector_ring[slot].pos); RI(s_sector_ring[slot].size);
         }
         if (extended >= 2) {
-            RU(u); /* validated CDF3 marker */
+            RU(u); /* validated CDF4 marker */
             R8(setloc_pending);
+            R8(last_sector_header_stale);
         }
     }
 
@@ -3645,7 +3663,7 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
     const uint32_t current = cdrom_snapshot_bytes();
     if (!p) return 0;
     if (len == legacy) return 1;
-    if (len != current && len != current - 5u) return 0; /* CDF3 or CDF2 */
+    if (len != current && len != current - 6u) return 0; /* CDF4 or CDF2 */
     PstR r;
     uint32_t magic;
     int32_t index, pos, size, delay;
@@ -3664,9 +3682,10 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
             return 0;
     }
     if (len == current) {
-        uint8_t pending_loc;
-        if (!pst_r_u32(&r, &magic) || magic != 0x33464443u ||
-            !pst_r_u8(&r, &pending_loc) || pending_loc > 1) return 0;
+        uint8_t pending_loc, stale_header;
+        if (!pst_r_u32(&r, &magic) || magic != 0x34464443u ||
+            !pst_r_u8(&r, &pending_loc) || pending_loc > 1 ||
+            !pst_r_u8(&r, &stale_header) || stale_header > 1) return 0;
     }
     return r.p == r.end;
 }
@@ -3801,6 +3820,7 @@ int cdrom_disc_select(int index_1based) {
     /* Buffered sectors and the seek position describe the old disc. */
     clear_sector_buffer();
     last_sector_lba = -1;
+    last_sector_header_stale = 0;
     last_sector_size = 0;
     s_setloc_lba = -1;
     ++s_stream_generation;
