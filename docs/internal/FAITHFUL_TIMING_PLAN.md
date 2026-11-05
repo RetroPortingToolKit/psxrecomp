@@ -213,6 +213,17 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-11-05 — full symbol-corpus follow-up.** Audited all 115 archives,
+  including private CPE envelopes. Against v0.3.5-alpha, 90 qualified reference
+  views recover 377 additional executable-hash/address entry instances, with
+  zero lost explicit entries. Generic fixes cover argument/pre-frame setup,
+  packed tail wrappers and referenced leaves; constant reference propagation
+  now preserves full ADDIU/ORI values. Resolved switch cases retain their host
+  ownership. Full CTest: 147 passed, the same 13 baseline failures, 3 disabled.
+  Five ambiguous boundaries and two unsupported symbol files remain explicit
+  limitations. Consumer regeneration changes output, so matched built-runtime
+  qualification is required before integration. No timing model is changed.
+
 - **2026-11-05 — symbol-guided discovery.** Eight private symbol/executable
   references exposed omitted `$gp` loads before frame allocation. The shared
   recognizer recovers 35 explicit function entries across four unrelated
