@@ -190,6 +190,71 @@ void check_scheduled_switch() {
 } // namespace
 
 int main() {
+    // Scheduled small-data loads belong to the function entry, even though
+    // the compiler allocates the frame later. These are synthetic programs;
+    // no proprietary executable bytes or addresses are used.
+    for (uint32_t load_op : {0x83820010u, 0x87820010u, 0x8F820010u,
+                             0x93820010u, 0x97820010u}) {
+        auto image = make_exe_buffer(0x400);
+        put32(image, 2048, 0x03E00008u);
+        put32(image, 2048 + 0x100, load_op);       // load v0,16(gp)
+        put32(image, 2048 + 0x104, 0x27BDFFE8u); // addiu sp,sp,-24
+        put32(image, 2048 + 0x108, 0xAFBF0010u); // sw ra,16(sp)
+        put32(image, 2048 + 0x10C, 0x8FBF0010u); // lw ra,16(sp)
+        put32(image, 2048 + 0x110, 0x00000000u);
+        put32(image, 2048 + 0x114, 0x03E00008u);
+        put32(image, 2048 + 0x118, 0x27BD0018u);
+        // Address-taken callbacks must retain the same entry as scanning.
+        put32(image, 2048 + 0x300, kLoad + 0x100);
+        auto exe = parse(image);
+        auto result = PSXRecomp::FunctionAnalyzer(exe).analyze();
+        auto found = starts(result);
+        CHECK(found.count(kLoad + 0x100) == 1,
+              "gp-relative pre-frame load is part of the callback entry");
+        CHECK(found.count(kLoad + 0x104) == 0,
+              "stack allocation does not split a gp-relative callback");
+    }
+
+    for (bool pointer_ref : {false, true}) {
+        auto image = make_exe_buffer(0x400);
+        put32(image, 2048, 0x03E00008u);
+        put32(image, 2048 + 0x100, 0x87820010u); // lh v0,16(gp)
+        put32(image, 2048 + 0x104, 0x93830020u); // lbu v1,32(gp)
+        put32(image, 2048 + 0x108, 0x27BDFFE8u);
+        put32(image, 2048 + 0x10C, 0xAFBF0010u);
+        put32(image, 2048 + 0x110, 0x8FBF0010u);
+        put32(image, 2048 + 0x114, 0x00000000u);
+        put32(image, 2048 + 0x118, 0x03E00008u);
+        put32(image, 2048 + 0x11C, 0x27BD0018u);
+        if (pointer_ref) put32(image, 2048 + 0x300, kLoad + 0x100);
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK(found.count(kLoad + 0x100) == 1 &&
+                  found.count(kLoad + 0x108) == 0,
+              "multiple gp loads retain the full prelude with or without a pointer");
+    }
+
+    // An arbitrary base, a store, or a write to architectural frame/link/gp
+    // state is not evidence for moving a function entry backwards.
+    for (uint32_t rejected : {0x8C820010u, 0xAF820010u, 0x8F9C0010u,
+                              0x8F9D0010u, 0x8F9F0010u, 0x3C1C8001u,
+                              0x241C0001u}) {
+        auto image = make_exe_buffer(0x400);
+        put32(image, 2048, 0x03E00008u);
+        put32(image, 2048 + 0x100, rejected);
+        put32(image, 2048 + 0x104, 0x27BDFFE8u);
+        put32(image, 2048 + 0x108, 0xAFBF0010u);
+        put32(image, 2048 + 0x10C, 0x8FBF0010u);
+        put32(image, 2048 + 0x110, 0x00000000u);
+        put32(image, 2048 + 0x114, 0x03E00008u);
+        put32(image, 2048 + 0x118, 0x27BD0018u);
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK(found.count(kLoad + 0x104) == 1 &&
+                  found.count(kLoad + 0x100) == 0,
+              "unsafe pre-frame instruction does not move the entry");
+    }
+
     check_scheduled_switch();
     auto image = make_exe_buffer(0x2000);
     const size_t text = 2048;

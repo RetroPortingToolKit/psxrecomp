@@ -244,7 +244,11 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         }
     }
 
-    std::set<uint32_t> global_base_regs;
+    // o32 small-data accesses use the incoming $gp directly; they need no
+    // preceding LUI. Compilers can schedule these loads before the frame
+    // allocation, just like absolute global loads. Do not accept a prelude
+    // that overwrites $gp and then treats the new value as the incoming base.
+    std::set<uint32_t> global_base_regs{28u};
     bool saw_global_load = false;
 
     for (uint32_t addr = start_addr; addr < prologue_addr; addr += 4) {
@@ -255,12 +259,12 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         if (FunctionAnalyzer::is_branch_or_jump(instr)) return false;
 
         uint32_t rt = 0;
-        if (is_lui(instr, rt) && rt != 0 && rt != 29 && rt != 31) {
+        if (is_lui(instr, rt) && rt != 0 && rt != 28 && rt != 29 && rt != 31) {
             global_base_regs.insert(rt);
             continue;
         }
 
-        if (is_load_imm_zero(instr, rt) && rt != 29 && rt != 31) {
+        if (is_load_imm_zero(instr, rt) && rt != 28 && rt != 29 && rt != 31) {
             continue;
         }
 
@@ -268,7 +272,7 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         for (uint32_t base_reg : global_base_regs) {
             uint32_t load_rt = 0;
             if (is_load_from_reg_base(instr, base_reg, load_rt) &&
-                load_rt != 0 && load_rt != 29 && load_rt != 31) {
+                load_rt != 0 && load_rt != 28 && load_rt != 29 && load_rt != 31) {
                 valid_load = true;
                 saw_global_load = true;
                 break;

@@ -155,6 +155,42 @@ silently merged.
 
 ---
 
+## Symbol-reference qualification (2026-11-05)
+
+Eight independent executable/symbol pairs were compared with **unaided**
+analysis: Croc, Croc 2, THPS2, Soul Reaver, Driver 2, Quake II, Abe's Oddysee
+and 3D Lemmings. Symbols were comparison references, never entry seeds.
+The baseline was `81dea78f4606a1e984d52f3ba0fa58aa2528bd2c`.
+
+The comparison exposed one shared discovery defect: incoming o32 `$gp` loads
+scheduled before stack allocation were omitted from function entries. The
+pre-frame recognizer now accepts those loads and rejects preludes that
+overwrite `$gp`, `$sp` or `$ra`. This also removes redundant interior starts.
+The exact-entry traversal and instruction translation are unchanged.
+
+| Explicit function records | Baseline entries found | Fixed entries found |
+|---|---:|---:|
+| THPS2 | 1643 / 1646 | 1646 / 1646 |
+| Soul Reaver | 2256 / 2274 | 2274 / 2274 |
+| Driver 2 | 970 / 977 | 977 / 977 |
+| Quake II | 1030 / 1037 | 1037 / 1037 |
+
+No previously recognized named entry was lost across the eight inputs. The
+other four inputs supply untyped labels rather than explicit function records;
+they cannot establish complete function recall or precision. A Wipeout XL
+pair with inconsistent symbol/disassembly addresses was excluded, not counted
+as an analyzer failure. Names alone also do not prove function sizes, switch
+targets, or code/data classification.
+
+Machine-readable identities and counts are in
+[`accuracy/symbol_reference_results.json`](../accuracy/symbol_reference_results.json).
+Original archives, normalized references, comparison script and raw runs stay
+in the private qualification workspace, outside the source repository. Synthetic
+positive and rejection cases live in the registered `reachable_discovery_test`
+and `reachable_discovery_codegen` tests. No game code or SDK content is required
+to run those regressions. Consumers need a framework pin bump and regeneration
+to use corrected whole-image discovery; no runtime setting enables it.
+
 ## Naming loop
 
 `symbols.toml` (see [SYMBOLS.md](SYMBOLS.md)) is the persistence layer. Both
