@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
              {"scanline_strength", "50"}}}},
         {"psx.enhancement.image-filtering", {"image-filtering", "psx.image-filtering",
             {{"smoothing", "default"}, {"texture_filtering", "default"},
-             {"fmv_filtering", "default"}}}},
+             {"fmv_filtering", "default"}, {"dithering", "default"}}}},
         {"psx.enhancement.enhanced-audio", {"enhanced-audio", "psx.enhanced-audio", {}}},
         {"psx.feature.rewind", {"rewind", "psx.rewind",
             {{"buffer", "50"}, {"interval", "15"}}}},
@@ -202,6 +202,25 @@ int main(int argc, char** argv) {
               "saved enabled 32x choice survives reload");
     }
 
+    // Old config spellings map to the new choice without losing saved choices.
+    for (const auto& spelling : std::map<std::string, std::string>{
+            {"on", "native"}, {"scaled", "native"}, {"fine", "fine"}, {"off", "off"}}) {
+        const fs::path dither_root = scratch / ("dither-" + spelling.first);
+        const fs::path manifest = dither_root / "bundled/psx.enhancement.image-filtering/1.0.0/manifest.toml";
+        fs::create_directories(manifest.parent_path());
+        fs::copy_file(root / "psx.enhancement.image-filtering/1.0.0/manifest.toml", manifest);
+        const fs::path settings = dither_root / "settings.toml";
+        { std::ofstream file(settings); file << "[video]\ndithering = \"" << spelling.first << "\"\n"; }
+        ModPackageManager imported(dither_root);
+        check(imported.scan(&error) && imported.load_state(&error) &&
+                  migrate_legacy_video_settings(imported, settings, &error), error);
+        ModPackageManager saved(dither_root);
+        check(saved.scan(&error) && saved.load_state(&error) &&
+                  saved.feature_enabled("psx.enhancement.image-filtering", "image-filtering") &&
+                  saved.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "dithering") == spelling.second,
+              "legacy dithering survives normal state reload: " + spelling.first);
+    }
+
     // Exercise migration against the shipped manifests, then reload real state.
     const fs::path legacy_root = scratch / "legacy";
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
@@ -214,7 +233,7 @@ int main(int argc, char** argv) {
     const std::string old_settings =
         "[video]\ninternal_resolution = \"4k\"\ndynamic_resolution = true\n"
         "dynamic_resolution_min = \"native\"\nsupersample = 1.333\n"
-        "texture_filtering = \"bilinear\"\nantialiasing = false\n"
+        "texture_filtering = \"bilinear\"\nantialiasing = false\ndithering = \"fine\"\n"
         "crt_filter = \"raw\"\nscanlines = true\nscanline_strength = 0.35\n"
         "geometry_correction = false\nperspective_texturing = true\n"
         "rewind = true\nrewind_depth = 200\nrewind_interval = 4\n"
@@ -224,13 +243,15 @@ int main(int argc, char** argv) {
     check(legacy.scan(&error) && legacy.load_state(&error), "legacy fixture loads: " + error);
     check(legacy.set_feature_enabled("psx.enhancement.image-filtering", "image-filtering", false, &error), error);
     check(legacy.set_feature_option("psx.enhancement.image-filtering", "image-filtering", "texture_filtering", "xbr", &error), error);
+    check(legacy.set_feature_option("psx.enhancement.image-filtering", "image-filtering", "dithering", "off", &error), error);
     check(migrate_legacy_video_settings(legacy, legacy_settings, &error), "legacy video migration: " + error);
     check(legacy.feature_option_value(id, feature, "resolution") == "4k" &&
           legacy.feature_option_value(id, feature, "minimum") == "native" &&
           legacy.feature_option_value(id, feature, "dynamic_resolution") == "on" &&
           legacy.feature_option_value(id, feature, "supersample") == "1.333", "resolution choices retain their exact meaning");
     check(!legacy.feature_enabled("psx.enhancement.image-filtering", "image-filtering") &&
-          legacy.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "texture_filtering") == "xbr",
+          legacy.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "texture_filtering") == "xbr" &&
+          legacy.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "dithering") == "off",
           "newer explicit mod choices win over old settings");
     check(legacy.feature_option_value("psx.enhancement.crt-filter", "crt-filter", "screen_model") == "raw" &&
           legacy.feature_option_value("psx.enhancement.crt-filter", "crt-filter", "scanline_strength") == "35", "CRT choices migrate");

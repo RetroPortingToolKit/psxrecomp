@@ -1390,6 +1390,10 @@ static int           g_video_fmv_chroma = 0;   /* [video] fmv_chroma_smoothing /
 static int           g_video_texture_lod = 0, g_video_aniso = 1;
 static int           g_video_accurate_blending = 1;   /* [video] accurate_blending / PSX_ACCURATE_BLENDING */
 static int           g_video_dithering = 1;   /* [video] dithering / PSX_DITHERING */
+static int resolve_host_dithering(int mode) {
+    if (const char* value = std::getenv("PSX_DITHERING")) return std::atoi(value);
+    return mode;
+}
 static int           g_video_pgxp_color_correction = 0;
 static int           g_video_pgxp_seam = 0;
 static float         g_video_pgxp_depth_threshold = 4096.0f;
@@ -1523,7 +1527,7 @@ static int           g_rewind_interval = 15; /* frames between snaps (1/4/8/12/1
  * [audio] spu_hq, captured when the config loads. The CRT Filter, Image
  * Filtering and Enhanced Audio mods resolve over it at every session start
  * (session_host_look); with them off it is exactly what the title ships. */
-static PsxHostLook   g_title_look = {0, 0, 50, 1, 0, 0, 0};
+static PsxHostLook   g_title_look = {0, 0, 50, 1, 0, 0, 0, 1};
 static std::string g_title_post_shader;
 static PsxHostPostLook g_title_post_look = {0, 0.0f, nullptr};
 static int           g_hotkey_pad_rewind = 1272;       /* select + r3 */
@@ -10561,6 +10565,7 @@ static void session_host_look(void) {
     g_video_aa = look.present_linear != 0;
     g_video_texfilter = look.texture_filter;
     g_video_fmv_filter = look.fmv_filter;
+    g_video_dithering = resolve_host_dithering(look.dithering);
     g_audio_spu_hq = look.spu_hq != 0;
     const PsxHostPostLook post = psx_host_enh_resolve_post(&g_title_post_look, &req);
     g_video_post_aa = g_video_post_aa_env >= 0 ? g_video_post_aa_env : post.antialiasing;
@@ -10590,6 +10595,8 @@ static void host_look_apply_live(void) {
     if (g_mod_texfilter < 0) gr_set_texture_filter(g_video_texfilter);
     g_video_fmv_filter = look.fmv_filter;
     if (g_gl_active) gl_renderer_set_fmv_filter(g_video_fmv_filter);
+    g_video_dithering = resolve_host_dithering(look.dithering);
+    if (g_gl_active) gl_renderer_set_dithering(g_video_dithering);
     const PsxHostPostLook post = psx_host_enh_resolve_post(&g_title_post_look, &req);
     g_video_post_aa = g_video_post_aa_env >= 0 ? g_video_post_aa_env : post.antialiasing;
     g_video_bloom = post.bloom;
@@ -18511,6 +18518,7 @@ int main(int argc, char** argv) {
             g_title_look.texture_filter = gc.runtime.video_texture_filter;
             g_title_look.fmv_filter = gc.runtime.video_fmv_filter;
             g_title_look.spu_hq = gc.runtime.audio_spu_hq ? 1 : 0;
+            g_title_look.dithering = gc.runtime.video_dithering;
             g_title_post_shader = g_video_post_shader;
             g_title_post_look = {g_video_post_aa, g_video_bloom, g_title_post_shader.c_str()};
             g_auto_skip_fmv    = gc.runtime.video_auto_skip_fmv ? 1 : 0;
@@ -20713,7 +20721,6 @@ session_reboot:
     gl_renderer_set_texture_lod(g_video_texture_lod, g_video_aniso);
     if (const char* e = std::getenv("PSX_ACCURATE_BLENDING")) g_video_accurate_blending = (*e && *e != '0');
     gl_renderer_set_accurate_blending(g_video_accurate_blending);
-    if (const char* e = std::getenv("PSX_DITHERING")) g_video_dithering = std::atoi(e);
     gl_renderer_set_dithering(g_video_dithering);
     gl_renderer_set_pgxp_color_perspective(g_video_pgxp_color_correction);
     gl_renderer_set_pgxp_seam(g_video_pgxp_seam);

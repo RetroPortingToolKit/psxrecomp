@@ -4561,6 +4561,10 @@ bool migrate_legacy_video_settings(ModPackageManager& manager,
         };
         move("texture_filtering", "texture_filtering");
         move("fmv_filter", "fmv_filtering");
+        auto dithering = text(video, "dithering");
+        if (dithering == "on" || dithering == "scaled") dithering = "native";
+        if (dithering == "off" || dithering == "native" || dithering == "fine")
+            values["dithering"] = dithering;
         if (auto v = flag(video, "antialiasing")) values["smoothing"] = *v ? "smooth" : "sharp";
         if (!values.empty()) seed("psx.enhancement.image-filtering", "image-filtering", values);
         values.clear();
