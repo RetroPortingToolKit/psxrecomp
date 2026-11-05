@@ -6,6 +6,7 @@
 #include "video_texture_filter.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 static PsxHostEnhRequests s_req;
@@ -72,6 +73,7 @@ static int is(const char* a, const char* b) {
 }
 
 int psx_host_enh_parse_screen_kind(const char* text) {
+    if (is(text, "raw")) return 0;
     if (is(text, "crt")) return 1;
     if (is(text, "composite")) return 2;
     if (is(text, "trinitron")) return 3;
@@ -133,6 +135,43 @@ int psx_host_enh_parse_internal_resolution(const char* text) {
     for (int i = 0; i < PSX_IR_PRESET_COUNT; i++)
         if (is(text, k_psx_ir_presets[i].id)) return k_psx_ir_presets[i].value;
     return PSX_HOST_ENH_RESOLUTION_DEFAULT;
+}
+
+void psx_host_enh_request_resolution_options(int minimum, int supersample_milli, int dynamic) {
+    s_req.resolution_min = minimum;
+    s_req.resolution_supersample = supersample_milli;
+    s_req.resolution_dynamic = dynamic;
+}
+
+void psx_host_enh_request_post(int aa, int bloom, int strength, int shader_mode,
+                               const char* shader) {
+    s_req.post = 1;
+    s_req.post_antialiasing = aa;
+    s_req.post_bloom = bloom;
+    s_req.post_bloom_pct = strength;
+    s_req.post_shader_mode = shader_mode;
+    snprintf(s_req.post_shader, sizeof s_req.post_shader, "%s", shader ? shader : "");
+}
+
+int psx_host_enh_parse_resolution_min(const char* text) {
+    int value = PSX_IR_UNSET;
+    if (text && psx_ir_parse(text, &value) && !psx_ir_is_auto(value)) return value;
+    return PSX_IR_UNSET;
+}
+
+int psx_host_enh_parse_supersample(const char* text) {
+    if (!text || !*text || is(text, "default")) return 0;
+    char* end;
+    double value = strtod(text, &end);
+    if (*end || !(value >= 1.0 && value <= 4.0)) return 0;
+    return (int)(value * 1000.0 + 0.5);
+}
+
+int psx_host_enh_parse_post_aa(const char* text) {
+    if (is(text, "off")) return 0;
+    if (is(text, "fxaa")) return 1;
+    if (is(text, "fxaa_hq")) return 2;
+    return PSX_HOST_ENH_DEFAULT;
 }
 
 int psx_host_enh_parse_rewind_interval(const char* text) {

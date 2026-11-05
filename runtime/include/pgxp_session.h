@@ -56,6 +56,9 @@ typedef struct PSXPgxpSessionInputs {
     int mod_culling;
     int mod_only;
     int netplay;
+    int mod_corrections_set;
+    int mod_geometry;
+    int mod_texture;
 } PSXPgxpSessionInputs;
 
 typedef struct PSXPgxpSessionArm {
@@ -74,12 +77,13 @@ static inline PSXPgxpSessionArm psx_pgxp_session_resolve(
         const PSXPgxpSessionInputs* in) {
     PSXPgxpSessionArm arm;
     const int use_video = in->mod_only ? 0 : 1;
+    const int chosen = in->mod_enabled && in->mod_corrections_set;
     arm.geometry = psx_pgxp_session_pick(in->env_geometry,
-                                         use_video && in->video_geometry,
-                                         in->mod_enabled);
+                                         !chosen && use_video && in->video_geometry,
+                                         in->mod_enabled && (!chosen || in->mod_geometry));
     arm.texture = psx_pgxp_session_pick(in->env_texture,
-                                        use_video && in->video_texture,
-                                        in->mod_enabled);
+                                        !chosen && use_video && in->video_texture,
+                                        in->mod_enabled && (!chosen || in->mod_texture));
     arm.cpu_mode = psx_pgxp_session_pick(in->env_cpu_mode,
                                          use_video && in->video_cpu_mode,
                                          in->mod_enabled && in->mod_cpu_mode);
@@ -116,6 +120,8 @@ typedef struct PSXPgxpSessionConfig {
 
 /* Session start, before plugin activation: forget any mod request. */
 void psx_pgxp_session_reset(void);
+/* An enabled precision mod can choose geometry and textures independently. */
+void psx_pgxp_session_request_corrections(int geometry, int texture);
 
 /* The renderer setup's arming, once per session after activation: reads the
  * env overrides, takes the mod request, resolves, and applies the result to

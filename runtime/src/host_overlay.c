@@ -169,6 +169,7 @@ unsigned psx_host_video_live_changes(const PsxHostVideoSettings *a,
                                      const PsxHostVideoSettings *b) {
     unsigned m = 0;
     if (!a || !b) return 0;
+    if (a->vsync != b->vsync) m |= PSX_VIDEO_LIVE_VSYNC;
     if (a->fullscreen != b->fullscreen) m |= PSX_VIDEO_LIVE_FULLSCREEN;
     if (a->frame_generation != b->frame_generation) m |= PSX_VIDEO_LIVE_FRAME_GEN;
     if (a->internal_resolution != b->internal_resolution ||
