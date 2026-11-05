@@ -826,6 +826,22 @@ void psx_request_return_to_lobby(void)
     longjmp(g_scheduler_jmpbuf, 1);
 }
 
+int psx_scheduler_can_resume_at(uint32_t resume_pc)
+{
+    return g_in_scheduler_run && psx_hle_scheduler_enabled() &&
+           psx_is_dispatchable(resume_pc);
+}
+
+void psx_scheduler_rfe_resume(CPUState* cpu, uint32_t resume_pc)
+{
+    g_sched_escape.target_tcb = 0;
+    g_sched_escape.resume_pc  = resume_pc;
+    g_sched_escape.reason     = PSX_RUN_RESUME_CURRENT;
+    sched_escape_ring_log(cpu, PSX_RUN_RESUME_CURRENT, psx_current_tcb_ptr(cpu), 0,
+                          resume_pc);
+    longjmp(g_scheduler_jmpbuf, 1); /* unwind to psx_scheduler_run; never returns */
+}
+
 void psx_scheduler_run(CPUState* cpu)
 {
     extern int g_psx_dispatch_depth;
