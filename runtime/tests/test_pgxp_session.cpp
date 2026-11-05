@@ -246,6 +246,19 @@ static void netplay_clear(void) {
 }
 
 int main(void) {
+    {
+        PSXPgxpSessionInputs in{};
+        in.video_geometry = in.video_texture = 1;
+        in.env_geometry = in.env_texture = in.env_cpu_mode = in.env_culling = -1;
+        in.mod_enabled = in.mod_corrections_set = 1;
+        in.mod_texture = 1;
+        auto arm = psx_pgxp_session_resolve(&in);
+        CHECK(!arm.geometry && arm.texture);
+        in.mod_geometry = 1; in.mod_texture = 0;
+        arm = psx_pgxp_session_resolve(&in);
+        CHECK(arm.geometry && !arm.texture);
+    }
+
     for (const char* v : {"PSX_GEOMETRY_CORRECTION", "PSX_PERSPECTIVE_TEXTURING",
                           "PSX_PGXP_CPU_MODE", "PSX_PGXP_CULLING"})
         test_unsetenv(v);

@@ -1155,18 +1155,18 @@ immediates".
 
 ### Built-in host enhancements
 
-Five framework packages replace what used to be Settings rows (owner decision,
+Six framework packages replace what used to be Settings rows (owner decision,
 beads-eio.3.398; the rule is recomp-ui's docs/SETTINGS_STANDARD.md: anything
 that changes the game's picture, sound or play is a mod). Each targets
 `game_id = "*"`, keeps save states shared, and declares its plugin
 `netplay = "host_only"` (below). Internal Resolution is enabled at fixed 4x on
-fresh profiles; the other four are default-off. Each
+fresh profiles; the other five are default-off. Each
 changes only what this machine shows, plays or keeps, so it is the player's own
 in every netplay mode and never part of the plan fingerprint.
 
 | Package (feature) | Plugin | Options (default) |
 |---|---|---|
-| `psx.enhancement.crt-filter` (CRT Filter) | `psx.crt-filter` | `screen_model`: default / crt / composite / trinitron (default); `scanlines`: default / on / off (default); `scanline_strength`: 1..100 (50) |
+| `psx.enhancement.crt-filter` (CRT Filter) | `psx.crt-filter` | `screen_model`: default / raw / crt / composite / trinitron (default); `scanlines`: default / on / off (default); `scanline_strength`: 1..100 (50) |
 | `psx.enhancement.image-filtering` (Image Filtering) | `psx.image-filtering` | `smoothing`: default / smooth / sharp (default); `texture_filtering`: default / nearest / bilinear / xbr (default); `fmv_filtering`: default / nearest / bilinear / sharp / bicubic (default) |
 | `psx.enhancement.enhanced-audio` (Enhanced Audio) | `psx.enhanced-audio` | none: enabled = the high-quality SPU mix |
 | `psx.feature.rewind` (Rewind) | `psx.rewind` | `buffer`: 50 / 100 / 150 / 200 (50); `interval`: 1 / 4 / 8 / 12 / 15 (15) |
@@ -1229,6 +1229,30 @@ stage `psx.feature.rewind`: `runtime.cmake` declines it like an
 `EXCLUDE_BUILTIN_MODS` entry, so it is absent and recorded as excluded for the
 release packager.
 
+The Internal Resolution mod also owns `minimum` (Game default, Native,
+720p, 1080p, 1440p or Match display), `dynamic_resolution` (follow the
+resolution choice, on or off), and `supersample` (a decimal factor from 1.0
+through 4.0, or `default`). Explicit dynamic resolution can run below a fixed
+ceiling; Auto remains Match display with dynamic resolution enabled.
+
+Post Processing (`psx.enhancement.post-processing`, plugin
+`psx.post-processing`) provides OpenGL FXAA/FXAA HQ, bloom with strength,
+and a custom `.pfx` preset resource. Each effect can keep the title baseline.
+Its file picker appears for Custom preset; referenced GLSL files resolve
+beside that preset. These choices stay local in netplay.
+
+Before the launcher opens, legacy `settings.toml` picture/audio/rewind choices
+seed the replacement mods only where the feature has no explicit selection.
+Existing mod choices, including disabled features, always win. Migration saves
+normal `mods/state.toml` and leaves the original settings file untouched; the
+normal Settings writer drops obsolete keys later. Sample rate, graphics
+presets and failed frame interpolation are never imported.
+
+A bounded decimal `[[option]]` uses `type = "decimal"`, integer `min`/`max`
+bounds and a string `default`. A `default = "default"` also permits that
+baseline sentinel. The launcher edits its text; the host rejects nonfinite,
+out-of-range and malformed values without changing the saved choice.
+
 ### Host-only plugins (`netplay = "host_only"`)
 
 Format 11 adds a fourth plugin class beside `local_view`, `input` and
@@ -1245,12 +1269,13 @@ netplay = "host_only"
 
 A host-only plugin never touches guest execution: it sets host presentation,
 audio output or host-tool state from its activation (and option-changed)
-callbacks only. Its feature may contribute nothing else -- no other plugin,
-patch, overlay, resource or `[[requirement]]` -- or the manifest is rejected;
+callbacks only. Its feature may also own local `format = "file"` resources
+(for example a post-effect preset). Other plugins, patches, overlays, prepared
+resources and `[[requirement]]` entries are rejected;
 such a feature is host-only (`ModFeature::host_only`). Then:
 
 - **The plan fingerprint leaves it out.** `canonical_resolution` skips
-  host-only features, their options and their plugins, and a package made of
+  host-only features, their options, local files and plugins, and a package made of
   nothing else. Two players who differ only in, say, the CRT Filter resolve
   the same fingerprint, so isolated save states, the derived-disc cache and
   netplay plan checks are unaffected by it.

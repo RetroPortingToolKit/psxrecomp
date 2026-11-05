@@ -82,11 +82,40 @@ static int res_applier(void) { ++g_res_applied; return g_res_answer; }
 #define RWD "psx.feature.rewind"
 #define IR  "psx.enhancement.internal-resolution"
 
+int psx_mod_current_resource_path(const char* id, char* out, unsigned cap) {
+    (void)id;
+    snprintf(out, cap, "%s", "custom.pfx");
+    return 1;
+}
+
+static void test_post_processing(void) {
+    const PsxHostPostLook base = {1, 0.37f, "title.pfx"};
+    PsxHostEnhRequests req;
+    psx_host_enh_reset();
+    activate("psx.post-processing");
+    psx_host_enh_requests(&req);
+    PsxHostPostLook out = psx_host_enh_resolve_post(&base, &req);
+    CHECK(out.antialiasing == 1 && out.bloom == 0.37f && !strcmp(out.shader, "title.pfx"));
+    psx_host_enh_request_post(2, 1, 150, 1, "custom.pfx");
+    psx_host_enh_requests(&req);
+    out = psx_host_enh_resolve_post(&base, &req);
+    CHECK(out.antialiasing == 2 && out.bloom == 1.5f && !strcmp(out.shader, "custom.pfx"));
+    psx_host_enh_request_post(0, 0, 150, 0, "ignored.pfx");
+    psx_host_enh_requests(&req);
+    out = psx_host_enh_resolve_post(&base, &req);
+    CHECK(out.antialiasing == 0 && out.bloom == 0 && !*out.shader);
+    CHECK(psx_host_enh_parse_post_aa("fxaa_hq") == 2);
+    CHECK(psx_host_enh_parse_supersample("1.333") == 1333);
+    CHECK(psx_host_enh_parse_supersample("nan") == 0);
+    CHECK(psx_host_enh_parse_supersample("5") == 0);
+    CHECK(psx_host_enh_parse_resolution_min("native") == PSX_IR_NATIVE);
+}
+
 static void test_resolution(void) {
     PsxHostEnhRequests req;
     memset(&req, 0, sizeof req);
     /* A title shipping 1080p with dynamic resolution on under it. */
-    const PsxHostResolution base = {1080, 1};
+    const PsxHostResolution base = {1080, 1, 720, 1500};
     PsxHostResolution r = psx_host_enh_resolve_resolution(&base, &req);
     CHECK(r.internal_resolution == PSX_IR_NATIVE && r.dynamic_resolution == 0); /* mod off */
     req.resolution = 1;
@@ -107,6 +136,12 @@ static void test_resolution(void) {
     req.resolution_value = PSX_IR_UNSET;
     r = psx_host_enh_resolve_resolution(&legacy, &req);
     CHECK(r.internal_resolution == PSX_IR_UNSET && r.dynamic_resolution == 0);
+    req.resolution_min = PSX_IR_NATIVE;
+    req.resolution_supersample = 1333;
+    req.resolution_dynamic = 2;
+    r = psx_host_enh_resolve_resolution(&base, &req);
+    CHECK(r.dynamic_resolution_min == PSX_IR_NATIVE && r.supersample_milli == 1333 && r.dynamic_resolution);
+    req.resolution_min = req.resolution_supersample = req.resolution_dynamic = 0;
     req.resolution = 0;
     req.resolution_value = PSX_IR_NATIVE;                                /* mod off again */
     r = psx_host_enh_resolve_resolution(&base, &req);
@@ -214,6 +249,7 @@ static void test_resolve(void) {
 }
 
 static void test_parsers(void) {
+    CHECK(psx_host_enh_parse_screen_kind("raw") == 0);
     CHECK(psx_host_enh_parse_screen_kind("crt") == 1);
     CHECK(psx_host_enh_parse_screen_kind("composite") == 2);
     CHECK(psx_host_enh_parse_screen_kind("trinitron") == 3);
@@ -301,6 +337,7 @@ static void test_plugins(void) {
 }
 
 int main(void) {
+    test_post_processing();
     test_resolve();
     test_parsers();
     test_plugins();

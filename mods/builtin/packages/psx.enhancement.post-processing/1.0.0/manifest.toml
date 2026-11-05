@@ -1,0 +1,113 @@
+format_version = 11
+id = "psx.enhancement.post-processing"
+version = "1.0.0"
+name = "Post Processing"
+author = "psxrecomp"
+description = "OpenGL picture effects: FXAA, bloom and a custom .pfx shader preset. Each option can keep the game default. Other renderers keep these choices for your next OpenGL session."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "*"
+
+[[feature]]
+id = "post-processing"
+name = "Post Processing"
+description = "Choose OpenGL anti-aliasing, glow and custom shader effects. Disabled by default."
+group = "Visual"
+default_enabled = false
+
+[[option]]
+feature = "post-processing"
+id = "antialiasing"
+label = "Anti-aliasing"
+description = "FXAA smooths jagged edges in the finished frame. Separate from Image Filtering smoothing."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "off"
+label = "Off"
+
+[[option.choice]]
+value = "fxaa"
+label = "FXAA"
+
+[[option.choice]]
+value = "fxaa_hq"
+label = "FXAA HQ"
+
+[[option]]
+feature = "post-processing"
+id = "bloom"
+label = "Bloom"
+description = "Add glow to bright areas. Uses the strength below while On."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "off"
+label = "Off"
+
+[[option.choice]]
+value = "on"
+label = "On"
+
+[[option]]
+feature = "post-processing"
+id = "bloom_strength"
+label = "Bloom strength (%)"
+description = "Glow intensity while Bloom is On."
+group = "Visual"
+type = "integer"
+min = 1
+max = 200
+step = 1
+default = 25
+
+[[option]]
+feature = "post-processing"
+id = "shader"
+label = "Shader"
+description = "Use the game default, no custom shader, or the selected .pfx preset. Referenced GLSL files stay beside the preset."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "off"
+label = "None"
+
+[[option.choice]]
+value = "on"
+label = "Custom preset"
+
+[[resource]]
+feature = "post-processing"
+id = "shader"
+label = "Shader preset"
+description = "Select a .pfx post-effect preset. Its referenced shader files are resolved beside it."
+format = "file"
+file_patterns = "*.pfx"
+file_description = "Post-effect presets"
+required = false
+when = { shader = "on" }
+
+[[plugin]]
+feature = "post-processing"
+id = "psx.post-processing"
+netplay = "host_only"

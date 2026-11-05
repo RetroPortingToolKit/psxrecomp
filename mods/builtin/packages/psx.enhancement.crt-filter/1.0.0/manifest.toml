@@ -35,6 +35,10 @@ value = "default"
 label = "Game default"
 
 [[option.choice]]
+value = "raw"
+label = "Raw"
+
+[[option.choice]]
 value = "crt"
 label = "CRT"
 

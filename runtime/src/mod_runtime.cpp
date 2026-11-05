@@ -1167,6 +1167,9 @@ int provider_option_get(void*, const char* package_id, int index,
     out->type = option.type == ModOptionType::Boolean ? RECOMP_MOD_OPTION_BOOLEAN :
                 option.type == ModOptionType::Choice ? RECOMP_MOD_OPTION_CHOICE :
                                                        RECOMP_MOD_OPTION_INTEGER;
+#ifdef RECOMP_LAUNCHER_HAS_MOD_OPTION_TEXT
+    if (option.type == ModOptionType::Decimal) out->type = RECOMP_MOD_OPTION_TEXT;
+#endif
     out->min_value = option.min_value;
     out->max_value = option.max_value;
     out->step = option.step;
@@ -1329,6 +1332,9 @@ int provider_feature_option_get(void*, const char* package_id,
         ? RECOMP_MOD_OPTION_BOOLEAN
         : option.type == ModOptionType::Choice
             ? RECOMP_MOD_OPTION_CHOICE : RECOMP_MOD_OPTION_INTEGER;
+#ifdef RECOMP_LAUNCHER_HAS_MOD_OPTION_TEXT
+    if (option.type == ModOptionType::Decimal) out->type = RECOMP_MOD_OPTION_TEXT;
+#endif
     out->min_value = option.min_value;
     out->max_value = option.max_value;
     out->step = option.step;
@@ -1760,6 +1766,9 @@ bool mod_runtime_initialize(const std::filesystem::path& root,
         if (error) *error = s.error;
         return false;
     }
+    std::string migration_error;
+    if (!migrate_legacy_video_settings(s.manager, root.parent_path() / "settings.toml", &migration_error))
+        std::fprintf(stderr, "psxrecomp: %s\n", migration_error.c_str());
     /* A manifest that fails to parse used to be skipped in silence, so a mod
      * author's typo produced a mod that simply did not exist. Name every one. */
     for (const std::string& scan_error : s.manager.scan_errors())
