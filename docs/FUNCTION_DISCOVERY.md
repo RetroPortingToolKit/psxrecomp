@@ -242,7 +242,7 @@ their eight extension bytes remain opaque. The five ambiguous unreferenced
 boundaries retain their prior explicit-entry/rejection disposition. No raw
 loader inference or general SYM importer is added to the product.
 
-Seventeen synthetic cases cover argument joins, branch/load delays, unreachable
+Nineteen synthetic cases cover argument joins, branch/load delays, unreachable
 reads, uncertain outward transfers and scheduled frames. Frozen consumer
 regeneration preserves native code for Ape Escape, Tomba and Tomba 2; Tomba's
 only file differences are generated annotation comments. Counts and limits:

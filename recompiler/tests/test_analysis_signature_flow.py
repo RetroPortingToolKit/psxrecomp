@@ -51,6 +51,11 @@ def main():
                               0x27BDFFE8, 0x03E00008, 0x27BD0018], 0, True),
         ("return_before_other_frame", [0x03E00008, 0, 0x27BDFFE8,
                                        0x03E00008, 0x27BD0018], 0, True),
+        ("call_delay_load_commits_in_callee", [0x0C000000 | (((load + 0x100) >> 2) & 0x3FFFFFF),
+                                              0x8C850000, 0x00A01021,
+                                              0x03E00008, 0], 1, True),
+        ("conditional_call_keeps_not_taken_delay", [0x04D0FABF, 0x8C850000,
+                                                    0x00A01021, 0x03E00008, 0], 7, False),
     ]
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -58,6 +63,7 @@ def main():
         image[:2048] = bytes(2048)
         image[:8] = b"PS-X EXE"
         struct.pack_into("<IIII", image, 16, load, 0, load, 0x2000)
+        struct.pack_into("<II", image, 2048 + 0x100, 0x03E00008, 0)
         entries = {}
         for i, (name, words, mask, confident) in enumerate(cases):
             pc = load + 0x400 + i * 0x100

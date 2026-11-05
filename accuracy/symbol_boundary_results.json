@@ -103,7 +103,7 @@
       "code_changes": []
     }
   ],
-  "synthetic_signature_cases": 17,
+  "synthetic_signature_cases": 19,
   "targeted_tests": {
     "passed": 3,
     "failed": 0

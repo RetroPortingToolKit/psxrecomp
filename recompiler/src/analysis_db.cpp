@@ -174,6 +174,15 @@ ArgumentFlow argument_flow(const std::vector<DecodedInstruction>& code) {
                 (d.opcode == 0u && d.funct == 0x09u && d.rd != REG_ZERO) ||
                 (d.opcode == 0x01u && (d.rt == 0x10u || d.rt == 0x11u));
             if (call) {
+                // A taken call executes guest instructions before returning,
+                // so a load in its delay slot has committed on resumption.
+                // Conditional REGIMM links also have a not-taken path: keep
+                // the pending state unless the zero-register test is always
+                // true. Calls themselves remain opaque prototype hints.
+                if (d.opcode != 0x01u || (d.rt == 0x11u && d.rs == REG_ZERO)) {
+                    uint8_t committed = state >> 4u;
+                    state = static_cast<uint8_t>(committed | (committed << 4u));
+                }
                 enqueue(d.address + 8u, state);
             } else if (d.is_jr_ra) {
                 // Return delay-slot reads belong to this function too.
