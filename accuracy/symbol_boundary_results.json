@@ -1,0 +1,158 @@
+{
+  "baseline": "d9605697e25ee244fd9ea3d200c8ceb92ca1d08d",
+  "codegen_hash": "afba3f37",
+  "images_compared": 174,
+  "existing_qualified_views": 90,
+  "previous_matched_explicit_starts": 105724,
+  "previous_explicit_starts": 105729,
+  "lost_named_entries": 0,
+  "additional_discovered_entries": 0,
+  "removed_false_entry_instances": 7,
+  "string_fragments": 5,
+  "numeric_data_fragments": 2,
+  "raw_payloads": {
+    "total": 14,
+    "linked_images": 3,
+    "code_modules": 8,
+    "mapped_data_only_modules": 3,
+    "linked_explicit_entries": 4729,
+    "retained_linked_entries": 4729,
+    "synthetic_roots_excluded": true
+  },
+  "frames": {
+    "nonzero_reference_records": 3316,
+    "mismatches_before": 381,
+    "mismatches_after": 0,
+    "per_image": [
+      {
+        "file": "DIABPSX.BIN",
+        "exe_sha256": "d8d759f01de845703ca30bf7579eb9b89b678c303879997c56dd2a6123833a5c",
+        "frames": 1477,
+        "mismatches_before": 216,
+        "mismatches_after": 0
+      },
+      {
+        "file": "BECODE_Z.BIN",
+        "exe_sha256": "da10c491b48a72bfdf0117821916381552a201cd25ba09e91fb81da6b9ae6dad",
+        "frames": 1561,
+        "mismatches_before": 150,
+        "mismatches_after": 0
+      },
+      {
+        "file": "FECODE_Z.BIN",
+        "exe_sha256": "81c2f9726aa9c03d0673b2c395e0d0a07a7a431e6eebb3d0c9d893d0e51a1bd7",
+        "frames": 278,
+        "mismatches_before": 15,
+        "mismatches_after": 0
+      }
+    ]
+  },
+  "overlays": {
+    "groups": 167,
+    "qualified_groups": 1,
+    "qualified_entries": 12,
+    "retained_entries": 12,
+    "unqualified_groups": 166,
+    "unqualified_not_scored_as_misses": true
+  },
+  "metadata_extension": {
+    "tag": "0x9c",
+    "files": 2,
+    "qualified_entries": 187,
+    "retained_entries": 187,
+    "eight_extra_bytes_opaque": true,
+    "private_comparison_only": true
+  },
+  "typed_data_exact_start_collisions": 0,
+  "ambiguous_unreferenced_boundaries": 5,
+  "consumer_emission": [
+    {
+      "game": "ape",
+      "frozen_head": "347942fd4cc2b46479ecea7aa3aa332d751252b0",
+      "files": 61,
+      "identical": true,
+      "changed_files": [],
+      "code_identical": true,
+      "code_changes": []
+    },
+    {
+      "game": "tomba",
+      "frozen_head": "05d82b96d31c2bab59256095cdfec82ccd328310",
+      "files": 54,
+      "identical": false,
+      "changed_files": [
+        "SCUS_942.36_full_00.c",
+        "SCUS_942.36_full_01.c",
+        "SCUS_942.36_full_03.c",
+        "SCUS_942.36_full_09.c",
+        "SCUS_942.36_full_12.c",
+        "SCUS_942.36_full_18.c",
+        "SCUS_942.36_full_20.c",
+        "SCUS_942.36_full_30.c"
+      ],
+      "code_identical": true,
+      "code_changes": []
+    },
+    {
+      "game": "tomba2",
+      "frozen_head": "24ca4b7dfeef7a13225b8e7f44f4f08d27cc0442",
+      "files": 10,
+      "identical": true,
+      "changed_files": [],
+      "code_identical": true,
+      "code_changes": []
+    }
+  ],
+  "synthetic_signature_cases": 19,
+  "targeted_tests": {
+    "passed": 3,
+    "failed": 0
+  },
+  "full_ctest": {
+    "total": 165,
+    "qualified_passed": 149,
+    "existing_failures": [
+      "aot_overlay_discovery",
+      "bundled_release_layout",
+      "compile_overlays_static_tail",
+      "frame_interpolation_flip_source",
+      "gl_internal_scale_guards",
+      "gpu_frame",
+      "interp_cop0_read_sample",
+      "interp_refused_game_text",
+      "mod_owned_display_controls",
+      "native_wide_line_batching",
+      "overlay_candidate_capacity",
+      "overlay_segment_gate",
+      "overlay_segment_keys"
+    ],
+    "disabled": 3,
+    "introduced_failures": 0,
+    "first_run": {
+      "passed": 148,
+      "failed": 14,
+      "disabled": 3
+    },
+    "setup_failure_rerun": {
+      "test": "runtime_hot_pgo_contract",
+      "reason": "Existing MinGW profile path-length guard in long scratch directory",
+      "existing_option": "PSX_RUNTIME_HOT_PGO_TEST_SCRATCH_ROOT",
+      "short_scratch_result": "passed"
+    },
+    "additional_registered_tests": [
+      "analysis_signature_flow",
+      "disc_identity_test"
+    ]
+  },
+  "implementation_commit": "4ee1bb6fe7fe51d4906cfead3c69b83a18b59dc8",
+  "packaged_cli": {
+    "workflow": 42123250752,
+    "source": "4ee1bb6fe7fe51d4906cfead3c69b83a18b59dc8",
+    "archive_sha256": "3dcd0c91cdd03cc6852a2b118efe843f11cf8e1afe67d656003d591d7c36c9e4",
+    "windows_packaging_and_boot": "passed",
+    "linux_boot": "passed",
+    "standalone_tools": 5,
+    "bare_windows_path": true,
+    "signature_cases_passed": 19
+  }
+}

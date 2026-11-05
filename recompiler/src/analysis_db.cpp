@@ -109,6 +109,108 @@ RegEffect reg_effect(const DecodedInstruction& d) {
     return e;
 }
 
+struct ArgumentFlow {
+    uint8_t inputs = 0;
+    bool complete = true;
+};
+
+ArgumentFlow argument_flow(const std::vector<DecodedInstruction>& code) {
+    ArgumentFlow result;
+    if (code.empty()) return result;
+    const uint32_t begin = code.front().address;
+    const uint32_t end = code.back().address + 4u;
+    // Each half is a MAY set of original a0..a3 values: available now, and
+    // after the pending load commits. Union at joins retains an argument
+    // written on only one predecessor. Separate halves preserve load delays
+    // when one predecessor has already written a register and another has a
+    // pending write to that same register.
+    std::vector<uint8_t> incoming(code.size(), 0);
+    std::vector<bool> reached(code.size(), false);
+    std::queue<size_t> work;
+    auto enqueue = [&](uint32_t pc, uint8_t state) {
+        if (pc < begin || pc >= end || ((pc - begin) & 3u)) {
+            result.complete = false;
+            return;
+        }
+        size_t i = (pc - begin) / 4u;
+        uint8_t joined = incoming[i] | state;
+        if (!reached[i] || joined != incoming[i]) {
+            reached[i] = true;
+            incoming[i] = joined;
+            work.push(i);
+        }
+    };
+    auto apply = [&](const DecodedInstruction& d, uint8_t state) {
+        RegEffect e = reg_effect(d);
+        result.inputs |= static_cast<uint8_t>((e.reads >> REG_A0) & state & 15u);
+        const uint8_t writes = static_cast<uint8_t>((e.writes >> REG_A0) & 15u);
+        const bool delayed = (d.opcode >= 0x20u && d.opcode <= 0x26u) ||
+            (d.opcode == 0x10u && d.rs == 0u) ||
+            (d.opcode == 0x12u && (d.rs == 0u || d.rs == 2u));
+        const uint8_t now = static_cast<uint8_t>((state >> 4u) &
+                                               ~(delayed ? 0u : writes));
+        const uint8_t after = static_cast<uint8_t>(now & ~(delayed ? writes : 0u));
+        // Partial-load merging can forward another pending load. Without a
+        // value model its read mask remains a conservative prototype hint.
+        if (d.opcode == 0x22u || d.opcode == 0x26u) result.complete = false;
+        if (d.format == InstrFormat::UNKNOWN || d.is_syscall || d.is_break)
+            result.complete = false;
+        return static_cast<uint8_t>(now | (after << 4u));
+    };
+    enqueue(begin, 0xFFu);
+    while (!work.empty()) {
+        size_t i = work.front(); work.pop();
+        const auto& d = code[i];
+        uint8_t state = apply(d, incoming[i]);
+        if (d.is_branch || d.is_jump) {
+            if (i + 1u >= code.size()) { result.complete = false; continue; }
+            const auto& delay = code[i + 1u];
+            state = apply(delay, state);
+            if (delay.is_branch || delay.is_jump) {
+                result.complete = false;
+                continue;
+            }
+            const bool call = d.opcode == 0x03u ||
+                (d.opcode == 0u && d.funct == 0x09u && d.rd != REG_ZERO) ||
+                (d.opcode == 0x01u && (d.rt == 0x10u || d.rt == 0x11u));
+            if (call) {
+                // A taken call executes guest instructions before returning,
+                // so a load in its delay slot has committed on resumption.
+                // Conditional REGIMM links also have a not-taken path: keep
+                // the pending state unless the zero-register test is always
+                // true. Calls themselves remain opaque prototype hints.
+                if (d.opcode != 0x01u || (d.rt == 0x11u && d.rs == REG_ZERO)) {
+                    uint8_t committed = state >> 4u;
+                    state = static_cast<uint8_t>(committed | (committed << 4u));
+                }
+                enqueue(d.address + 8u, state);
+            } else if (d.is_jr_ra) {
+                // Return delay-slot reads belong to this function too.
+            } else if (d.opcode == 0x02u) {
+                if (d.jump_target <= d.address) result.complete = false;
+                enqueue(d.jump_target, state);
+            } else if (d.is_branch) {
+                bool taken = true, fallthrough = true;
+                if (d.opcode == 0x04u && d.rs == d.rt) fallthrough = false;
+                if (d.opcode == 0x05u && d.rs == d.rt) taken = false;
+                if ((d.opcode == 0x06u || (d.opcode == 0x01u && d.rt == 1u)) &&
+                    d.rs == REG_ZERO) fallthrough = false;
+                if ((d.opcode == 0x07u || (d.opcode == 0x01u && d.rt == 0u)) &&
+                    d.rs == REG_ZERO) taken = false;
+                if (taken) enqueue(d.branch_target, state);
+                if (fallthrough) enqueue(d.address + 8u, state);
+            } else {
+                // An unresolved indirect transfer can reach an unobserved
+                // body; never publish its local fragment as a confident ABI.
+                result.complete = false;
+            }
+        } else {
+            enqueue(d.address + 4u, state);
+        }
+    }
+    return result;
+}
+
 int mem_width(uint8_t opcode) {
     switch (opcode) {
     case 0x20: case 0x24: case 0x28: return 1;
@@ -621,8 +723,6 @@ AnalysisDb build_analysis_db(const PS1Executable& exe,
         }
 
         // Signature scan + edge/ref collection in one walk.
-        uint32_t defined = 0;         // registers written so far
-        uint32_t arg_mask = 0;
         bool saw_backward_branch = false;
         uint32_t hi_val[32] = {0};
         bool     hi_ok[32] = {false};
@@ -637,14 +737,9 @@ AnalysisDb build_analysis_db(const PS1Executable& exe,
             if (d.mnemonic) db.stats.opcode_histogram[d.mnemonic]++;
 
             RegEffect e = reg_effect(d);
-            for (uint8_t r = REG_A0; r <= REG_A3; ++r) {
-                if ((e.reads & (1u << r)) && !(defined & (1u << r)))
-                    arg_mask |= (1u << (r - REG_A0));
-            }
             if (e.reads & (1u << REG_GP)) f.sig.reads_gp = true;
             if (e.writes & (1u << REG_V0)) f.sig.returns_v0 = true;
             if (e.writes & (1u << REG_V1)) f.sig.returns_v1 = true;
-            defined |= e.writes;
 
             if (d.is_branch && d.branch_target <= d.address)
                 saw_backward_branch = true;
@@ -737,12 +832,13 @@ AnalysisDb build_analysis_db(const PS1Executable& exe,
             }
         }
 
-        f.sig.arg_mask = static_cast<uint8_t>(arg_mask);
+        ArgumentFlow args = argument_flow(code);
+        f.sig.arg_mask = args.inputs;
         f.sig.arg_count = 0;
         for (int i = 0; i < 4; ++i) {
-            if (arg_mask & (1u << i)) f.sig.arg_count = i + 1;
+            if (args.inputs & (1u << i)) f.sig.arg_count = i + 1;
         }
-        f.sig.sig_confident = !saw_backward_branch && !f.partial;
+        f.sig.sig_confident = args.complete && !saw_backward_branch && !f.partial;
     }
 
     // ---- pass 2.5: PSY-Q kernel dispatch thunks ---------------------------
