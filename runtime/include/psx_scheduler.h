@@ -87,7 +87,7 @@ int psx_is_dispatchable(uint32_t pc);
  * exit-diagnostic dump then runs. Forward-declared for main.cpp (C++). */
 struct CPUState;
 int psx_scheduler_can_resume_at(uint32_t resume_pc);
-void psx_scheduler_rfe_resume(struct CPUState* cpu, uint32_t resume_pc);
+void psx_scheduler_rfe_resume(struct CPUState* cpu, uint32_t resume_pc, uint32_t tcb);
 void psx_scheduler_run(struct CPUState* cpu);
 
 /*

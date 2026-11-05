@@ -1,21 +1,4 @@
-/* Guest machine shared by the exception-context regression ReturnFromException fixtures
- * (test_rfe_irq_context.c, test_rfe_syscall_depth.c).
- *
- * Production interrupts.c, traps.c and psx_bios_backend.c run unchanged. This
- * header supplies the seams they link against and a small guest:
- *   - a kernel exception vector that saves the interrupted context in the
- *     current TCB and calls one installed handler,
- *   - B0(17h) ReturnFromException, which reloads that TCB and returns to its
- *     saved EPC,
- *   - a dispatch trampoline with the contract of the generated one (tail
- *     dispatch, call return address, the exception-return check after every
- *     function).
- * Guest functions are C bodies written the way the recompiler emits them: a
- * continuation switch on entry, a poll at each block leader, and a call as
- * "set cpu->pc, return".
- *
- * Kernel behaviour is from PSX-SPX (BIOS exception handling; TCB layout: +0x08
- * R0-R31, +0x88 EPC, +0x8C HI, +0x90 LO, +0x94 SR, +0x98 CAUSE). */
+/* Synthetic guest RAM, TCB and flat-dispatch fixture for exception returns. */
 #ifndef RFE_GUEST_FIXTURE_H
 #define RFE_GUEST_FIXTURE_H
 

@@ -808,7 +808,7 @@ static void rfe_outside_window_unwind(CPUState* cpu);
 
 void psx_rfe_mark_escape(void) {
     if (!in_exception) {
-        /* Outside the handler window (PS1B-324): the paired jump is checked
+        /* Outside the handler window, the paired jump is checked
          * once, in psx_rfe_escape_check, for host frames that the return must
          * not leave behind. Exception entry clears the flag. */
         g_rfe_escape_pending = 1;
@@ -833,20 +833,20 @@ void psx_rfe_mark_escape(void) {
  * longjmp back to psx_check_interrupts (cpu->pc preserved across the longjmp). */
 static void rfe_outside_window_unwind(CPUState* cpu) {
     extern int g_call_unit_depth;
-    extern uint32_t psx_read_word(uint32_t addr);   /* memory.c (plain RAM read) */
     extern int overlay_loader_shadow_native_thread_switch_bail(void);
     if (g_psx_dispatch_depth <= 1 && g_call_unit_depth == 0) return;
-    uint32_t pcb = psx_read_word(0x108u);
-    uint32_t tcb = pcb ? psx_read_word(pcb & 0x1FFFFFFFu) : 0u;
-    if (tcb == 0u) return;
-    if (!same_guest_pc(cpu->pc, psx_read_word((tcb & 0x1FFFFFFFu) + 0x88u))) return;
     if (!psx_scheduler_can_resume_at(cpu->pc)) return;
-    /* A native-only shadow pass must not escape past the authoritative restore. */
+    /* Host continuation inspection must not consume guest/lockstep reads. */
+    uint32_t pcb, tcb, saved_epc;
+    if (!psx_peek_word(0x108u, &pcb) || !pcb ||
+        !psx_peek_word(pcb & 0x1FFFFFFFu, &tcb) || !tcb ||
+        !psx_peek_word((tcb & 0x1FFFFFFFu) + 0x88u, &saved_epc) ||
+        !same_guest_pc(cpu->pc, saved_epc)) return;
     if (overlay_loader_shadow_native_thread_switch_bail()) return;
-    psx_cyc_batch_flush();   /* the unwind drops any unpublished cycle batch */
+    psx_cyc_batch_flush();
     s_compiled_interrupt_resume_pc = 0;
     g_dirty_interp_active = 0;
-    psx_scheduler_rfe_resume(cpu, cpu->pc);
+    psx_scheduler_rfe_resume(cpu, cpu->pc, tcb);
 }
 
 void psx_rfe_escape_check(CPUState* cpu) {
@@ -2066,24 +2066,10 @@ irq_deliver_eval:
             }
         }
     }
-    /* Same-thread return to a PC the handler chose (PS1B-324).
-     *
-     * Discworld II's VBlank handler copies the saved context out of the TCB,
-     * rewrites the TCB's EPC and sp to start a task, and calls
-     * ReturnFromException. Hardware resumes at the TCB's EPC with the TCB's
-     * registers (PSX-SPX, BIOS exception handling). A compiled block-leader
-     * poll never re-reads cpu->pc, so returning from here ran the interrupted
-     * block on the task's stack: VSync read a frame it never built, timed out
-     * and returned to PC 0.
-     *
-     * The interrupted block cannot continue, so keep the TCB's registers and
-     * resume at cpu->pc through the scheduler (below, after the epilogue).
-     * The test is exact: the return went to the TCB's saved EPC, and that is
-     * no longer the EPC this delivery installed. Not taken for:
-     *   - a sentinel delivery, whose post-return PC is only approximate;
-     *   - a dirty-interpreter pump, which re-reads cpu->pc on return;
-     *   - a nested delivery, whose outer handler frame is still live;
-     *   - the kernel's own step over an interrupted GTE command. */
+    /* A handler may resume its current TCB at a new PC and stack. The
+     * interrupted native block cannot continue in that restored context.
+     * Exclude sentinel, interpreter, nested and interrupted-GTE step paths. */
+    uint32_t rfe_tcb_epc;
     int rfe_redirect =
         prev_in_exception == 0 && saved_dirty_resume_pc == 0u &&
         (g_exc_escape_reason == PSX_EXC_ESCAPE_RFE_RETURN ||
@@ -2091,9 +2077,10 @@ irq_deliver_eval:
         delivered_epc != 0u && delivered_epc != (uint32_t)PSX_EXC_SENTINEL_PC &&
         entry_tcb != 0u && entry_tcb == exit_tcb &&
         cpu->pc != 0u && !same_guest_pc(cpu->pc, delivered_epc) &&
-        same_guest_pc(cpu->pc, psx_read_word((exit_tcb & 0x1FFFFFFFu) + 0x88u)) &&
-        !rfe_steps_over_gte_command(cpu->pc, delivered_epc) &&
-        psx_scheduler_can_resume_at(cpu->pc);
+        psx_scheduler_can_resume_at(cpu->pc) &&
+        psx_peek_word((exit_tcb & 0x1FFFFFFFu) + 0x88u, &rfe_tcb_epc) &&
+        same_guest_pc(cpu->pc, rfe_tcb_epc) &&
+        !rfe_steps_over_gte_command(cpu->pc, delivered_epc);
     if (rfe_redirect)
         same_thread_resume = 0;   /* the TCB's registers are the context */
     int do_restore =
@@ -2195,7 +2182,7 @@ irq_deliver_eval:
         psx_cyc_batch_flush();   /* the unwind drops any unpublished cycle batch */
         s_compiled_interrupt_resume_pc = 0;
         g_dirty_interp_active = 0;
-        psx_scheduler_rfe_resume(cpu, cpu->pc); /* never returns */
+        psx_scheduler_rfe_resume(cpu, cpu->pc, exit_tcb); /* never returns */
     }
 
 

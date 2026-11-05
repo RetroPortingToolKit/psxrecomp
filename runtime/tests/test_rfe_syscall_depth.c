@@ -1,17 +1,4 @@
-/* exception-context regression: a handler-driven exception return leaves no host frames behind.
- *
- * Wing Commander IV (SLUS-00270) yields by executing `syscall` in a loop. Its
- * exception handler does the game's work, advances the saved EPC by 4 and
- * calls B0(17h) ReturnFromException itself. On hardware the loop resumes at
- * EPC+4 and nothing accumulates (PSX-SPX, BIOS exception handling). In the
- * runtime every round kept the host frames of the exception entry and of the
- * kernel's handler call, until the dispatch recursion guard stopped the game
- * at depth 257.
- *
- * Production traps.c takes the SYSCALL exception and runs the scheduler;
- * rfe_guest_fixture.h is the guest. 10,000 rounds must run at a constant
- * host depth: the dispatch depth stays at its first-round value and the
- * handler always runs at the same host stack address. */
+/* Repeated synthetic handler-driven returns must unwind host continuations while retaining the guest TCB context. No BIOS or media is used. */
 #include "rfe_guest_fixture.h"
 
 #define YIELD_ENTRY  0x80010000u

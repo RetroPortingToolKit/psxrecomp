@@ -1,23 +1,4 @@
-/* exception-context regression: an exception return resumes the context the TCB holds.
- *
- * Discworld II (SCUS-94605) waits in VSync() with a live stack frame. Its
- * VBlank handler copies the saved context out of the TCB, rewrites the TCB's
- * EPC and sp to start a task on another stack, and calls B0(17h)
- * ReturnFromException. The task later puts the saved context back and calls
- * ReturnFromException again, outside any exception. On hardware each return
- * resumes at the TCB's EPC with every register from the TCB (PSX-SPX, BIOS
- * exception handling). The runtime took the registers but kept running the
- * interrupted compiled block, so VSync read a frame it never built, timed out
- * and returned to PC 0.
- *
- * Production interrupts.c and traps.c deliver the interrupt and run the
- * scheduler; rfe_guest_fixture.h is the guest. Two cases, in one run:
- *   - a plain handler: the interrupted block continues with every register
- *     it had (the interrupted context);
- *   - a redirecting handler: the task runs at the new EPC on the new stack
- *     with the other registers of the interrupted context, the interrupted
- *     block does not run meanwhile, and the second return resumes it on its
- *     own frame. */
+/* A synthetic interrupt handler redirects its TCB to a task on another stack, then restores the interrupted context. Production IRQ and scheduler modules own the returns; no BIOS or media is used. */
 #include "rfe_guest_fixture.h"
 
 #define WAIT_ENTRY   0x80010000u /* the waiting function */
