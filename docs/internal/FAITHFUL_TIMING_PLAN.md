@@ -218,8 +218,10 @@ on a fixed region -> next.
   groups have explicit dispositions. Across 174 loaded images, seven false
   entries are removed without losing a matched named entry. Corrected all 381
   frame mismatches in 3,316 resident records and argument reads across branch/
-  load delays. Seventeen synthetic cases pass. Three frozen consumers retain
-  identical native code; full CTest is running. Tracking: `beads-eio.3.441`,
+  load delays. Nineteen synthetic cases pass. Three frozen consumers retain
+  identical native code. Qualified 149 test passes, 13 existing failures and
+  3 disabled checks; the PGO path guard passes with short scratch. Windows/
+  Linux release checks and five standalone tool helps pass. Tracking: `beads-eio.3.441`,
   `SYMBOL_BOUNDARY_OVERLAY_BURNDOWN.md`, `accuracy/symbol_boundary_results.json`.
 
 - **2026-11-05 — full symbol-corpus follow-up.** Audited all 115 archives,

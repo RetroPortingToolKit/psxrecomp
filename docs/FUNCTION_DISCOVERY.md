@@ -249,6 +249,11 @@ only file differences are generated annotation comments. Counts and limits:
 [`accuracy/symbol_boundary_results.json`](../accuracy/symbol_boundary_results.json),
 [`boundary/overlay burndown`](internal/SYMBOL_BOUNDARY_OVERLAY_BURNDOWN.md).
 
+Qualification retains the 13 known baseline failures and 3 disabled tests, with
+149 passing checks. The PGO fixture initially hit its Windows path-length guard;
+its supported shorter-scratch rerun passes. Windows packaging/boot and Linux
+boot checks pass, as do all five packaged tools with Windows-only PATH.
+
 ### Initial eight-build qualification
 
 Eight independent executable/symbol pairs were compared with **unaided**
