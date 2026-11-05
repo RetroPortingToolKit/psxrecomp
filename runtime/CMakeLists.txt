@@ -1917,6 +1917,10 @@ if(BUILD_TESTING)
     target_include_directories(cdrom_sector_fifo_test PRIVATE include src)
     add_test(NAME cdrom_sector_fifo_test COMMAND cdrom_sector_fifo_test)
 
+    add_executable(cdrom_getlocl_test tests/test_cdrom_getlocl.c)
+    target_include_directories(cdrom_getlocl_test PRIVATE include src)
+    add_test(NAME cdrom_getlocl_test COMMAND cdrom_getlocl_test)
+
     add_executable(cdrom_resident_sector_test tests/test_cdrom_resident_sector.c)
     target_include_directories(cdrom_resident_sector_test PRIVATE include src)
     add_test(NAME cdrom_resident_sector_test COMMAND cdrom_resident_sector_test)

@@ -3364,6 +3364,7 @@ int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
     request_reg |= CDROM_REQUEST_BFRD;
     memcpy(last_sector_buffer, slot->data, (size_t)slot->size);
     last_sector_lba = (int)last;
+    last_sector_header_stale = 0;
     last_sector_size = slot->size;
     last_sector_frame = (uint32_t)s_frame_count;
     last_sector_mode = mode_reg;
@@ -3556,8 +3557,9 @@ static int cdrom_snap_emit(PstW *w, int extended) {
             WI(s_sector_ring[slot].pos); WI(s_sector_ring[slot].size);
         }
         if (extended >= 2) {
-            WU(0x33464443u); /* CDF3: unconsumed Setloc, distinct from drive head */
+            WU(0x34464443u); /* CDF4: Setloc and decoded-header validity */
             W8(setloc_pending);
+            W8(last_sector_header_stale);
         }
     }
 
@@ -3602,6 +3604,7 @@ static int cdrom_snap_parse(PstR *r, int extended) {
     pending_present_due = 0;
 
     RB(last_sector_buffer); RI(last_sector_lba); RI(last_sector_size);
+    last_sector_header_stale = 0;
     RB(last_valid_subq); RI(last_valid_subq_available);
     RU(last_sector_frame); R8(last_sector_mode); R8(last_sector_have_raw);
     R8(last_sector_raw_mode); R8(last_sector_xa_file); R8(last_sector_xa_channel);
@@ -3629,8 +3632,9 @@ static int cdrom_snap_parse(PstR *r, int extended) {
             RI(s_sector_ring[slot].pos); RI(s_sector_ring[slot].size);
         }
         if (extended >= 2) {
-            RU(u); /* validated CDF3 marker */
+            RU(u); /* validated CDF4 marker */
             R8(setloc_pending);
+            R8(last_sector_header_stale);
         }
     }
 
@@ -3659,7 +3663,7 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
     const uint32_t current = cdrom_snapshot_bytes();
     if (!p) return 0;
     if (len == legacy) return 1;
-    if (len != current && len != current - 5u) return 0; /* CDF3 or CDF2 */
+    if (len != current && len != current - 6u) return 0; /* CDF4 or CDF2 */
     PstR r;
     uint32_t magic;
     int32_t index, pos, size, delay;
@@ -3678,9 +3682,10 @@ int cdrom_snapshot_validate(const uint8_t *p, uint32_t len) {
             return 0;
     }
     if (len == current) {
-        uint8_t pending_loc;
-        if (!pst_r_u32(&r, &magic) || magic != 0x33464443u ||
-            !pst_r_u8(&r, &pending_loc) || pending_loc > 1) return 0;
+        uint8_t pending_loc, stale_header;
+        if (!pst_r_u32(&r, &magic) || magic != 0x34464443u ||
+            !pst_r_u8(&r, &pending_loc) || pending_loc > 1 ||
+            !pst_r_u8(&r, &stale_header) || stale_header > 1) return 0;
     }
     return r.p == r.end;
 }
@@ -3707,7 +3712,6 @@ int cdrom_snapshot_read(const uint8_t *p, uint32_t len) {
         return 0;
     /* Absolute host deadlines are not on the wire — rebuild from restored
      * relative read_delay (psx_cycle_count is resynced by the load caller). */
-    last_sector_header_stale = 0;
     cdrom_resync_deadlines_after_restore();
     /* The snapshot wire predates the timed-lid helper. Reconstruct its short
      * host-side deadline from the saved hardware status instead of changing
