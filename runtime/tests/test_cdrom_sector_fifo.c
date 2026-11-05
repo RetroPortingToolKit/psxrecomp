@@ -66,6 +66,7 @@ static void resident_header_cursor_and_restore(void) {
         resident_setup(modes[n]);
         CHECK(cdrom_resident_complete_read(100,3,payload,resident_copy,&test_copy_calls));
         CHECK(test_copy_calls==1 && !reading && !irq_flag && !i_stat);
+        CHECK((stat_reg&(CDSTAT_READ|CDSTAT_SEEK))==CDSTAT_READ);
         CHECK(last_sector_lba==102 && msf_to_lba(read_min,read_sec,read_sect)==103);
         CHECK(s_setloc_lba==100 && !setloc_pending);
         CHECK(s_ring_read==s_ring_write && s_ring_write==3);

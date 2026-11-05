@@ -42,6 +42,8 @@ static void seek_read(uint8_t cmd) {
     exec_command(0x02);
     query_header(1, 100);
     exec_command(cmd);
+    /* The status says Seek, not Read, so a game checking Read does not poll yet. */
+    CHECK((stat_reg & (CDSTAT_READ | CDSTAT_SEEK)) == CDSTAT_SEEK);
     query_header(0, 0);
     /* Subchannel position stays available while the header is invalid. */
     exec_command(0x11);
@@ -57,11 +59,13 @@ static void read_seek_and_restore(uint8_t cmd) {
     cdrom_snapshot_write(wire);
     CHECK(cdrom_snapshot_validate(wire, size));
     sector();
+    CHECK((stat_reg & (CDSTAT_READ | CDSTAT_SEEK)) == CDSTAT_READ);
     query_header(1, 20);
     CHECK(cdrom_snapshot_read(wire, size));
     /* A load must not resurrect the stale pre-seek header. */
     cdrom_snapshot_write(again);
     CHECK(!memcmp(wire, again, size));
+    CHECK((stat_reg & (CDSTAT_READ | CDSTAT_SEEK)) == CDSTAT_SEEK);
     query_header(0, 0);
     sector();
     query_header(1, 20);
@@ -75,6 +79,7 @@ static void read_seek_and_restore(uint8_t cmd) {
     exec_command(0x09);
     query_header(1, 21);
     exec_command(cmd); /* Pause/resume without Setloc keeps the current header. */
+    CHECK((stat_reg & (CDSTAT_READ | CDSTAT_SEEK)) == CDSTAT_READ);
     query_header(1, 21);
     sector();
     query_header(1, 22);
@@ -87,9 +92,35 @@ static void read_seek_and_restore(uint8_t cmd) {
     free(wire); free(again);
 }
 
+static void read_seek_interrupted(void) {
+    /* AutoPause on an end-of-file first sector ends the seek with the read. */
+    setup();
+    reading = 0;
+    mode_reg = 0x82;
+    seek_min = 0; seek_sec = 3; seek_sect = 25;
+    setloc_pending = 1;
+    exec_command(0x06);
+    CHECK((stat_reg & (CDSTAT_READ | CDSTAT_SEEK)) == CDSTAT_SEEK);
+    test_submode = XA_SUBMODE_EOF | XA_SUBMODE_AUDIO;
+    sector();
+    CHECK(!reading);
+    CHECK((stat_reg & (CDSTAT_READ | CDSTAT_SEEK)) == CDSTAT_READ);
+    /* Pause during the seek leaves neither bit, and a stale sector cannot bring one back. */
+    setup();
+    reading = 0;
+    seek_min = 0; seek_sec = 3; seek_sect = 25;
+    setloc_pending = 1;
+    exec_command(0x06);
+    exec_command(0x09);
+    CHECK(!(stat_reg & (CDSTAT_READ | CDSTAT_SEEK)));
+    read_seek_landed();
+    CHECK(!(stat_reg & (CDSTAT_READ | CDSTAT_SEEK)));
+}
+
 int main(void) {
     read_seek_and_restore(0x06);
     read_seek_and_restore(0x1B);
+    read_seek_interrupted();
     puts("PASS: GetlocL seek errors, sector headers, pause/resume and snapshots");
     return 0;
 }
