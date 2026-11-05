@@ -38,7 +38,7 @@
  * Activation only records: it runs before the renderer setup, which applies
  * the baseline and would otherwise undo whatever activation had applied.
  *
- * All five are host-only (their [[plugin]] declares netplay = "host_only"):
+ * All six are host-only (their [[plugin]] declares netplay = "host_only"):
  * they change what this machine shows, plays or keeps, never guest execution,
  * so they stay each player's own in netplay and never enter the plan
  * fingerprint (docs/MOD_PACKAGES.md "Host-only plugins").
@@ -186,6 +186,22 @@ static inline PsxHostResolution psx_host_enh_resolve_resolution(
             out.dynamic_resolution = req->resolution_dynamic == 2;
     }
     return out;
+}
+
+/* An explicit mod factor also scales native/fixed/legacy targets. Title
+ * defaults retain their historical fixed-scale behavior. */
+static inline int psx_host_enh_render_scale(int value, int ref_lines,
+        int display_px_h, int s_max, int ss_milli, int max_display_lines,
+        int legacy_scale, int explicit_factor) {
+    if (explicit_factor && (psx_ir_is_scale(value) || value == PSX_IR_NATIVE ||
+                            value == PSX_IR_UNSET)) {
+        const int base = psx_ir_is_scale(value) ? PSX_IR_SCALE_BASE - value
+            : value == PSX_IR_NATIVE ? 1 : legacy_scale > 0 ? legacy_scale : 1;
+        const long long scaled = ((long long)base * psx_ss_milli_clamp(ss_milli) + 999) / 1000;
+        return scaled > s_max ? s_max : scaled < 1 ? 1 : (int)scaled;
+    }
+    return psx_resolve_internal_scale_ss_cap(value, ref_lines, display_px_h,
+                                            s_max, ss_milli, max_display_lines);
 }
 
 /* Session start, before plugin activation: forget every request. */

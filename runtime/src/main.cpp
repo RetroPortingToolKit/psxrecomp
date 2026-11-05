@@ -1271,6 +1271,7 @@ static int           g_video_post_aa = 0;   /* [video] antialiasing_mode / PSX_A
 static float         g_video_bloom = 0.0f;  /* [video] bloom (PSX_BLOOM overrides) */
 static std::string   g_video_post_shader;   /* [video] post_shader (PSX_POST_SHADER overrides) */
 static int           g_video_ss_milli = 1000; /* [video] supersample / PSX_SUPERSAMPLE */
+static bool          g_video_mod_supersample_chosen = false;
 
 /* [video] match_display_max_lines (0 = none): the display height Match
  * display and its dynamic-resolution floor resolve
@@ -1489,9 +1490,10 @@ static int effective_internal_resolution(void) {
  * the window exists). No-op while unset. */
 static void apply_internal_resolution(int display_px_h) {
     const int preset = effective_internal_resolution();
-    if (preset == PSX_IR_UNSET) return;
-    g_video_scale = psx_resolve_internal_scale_ss_cap(preset, g_video_ref_lines,
-        display_px_h, video_scale_ceiling(), display_supersample(nullptr), g_video_match_max_lines);
+    if (preset == PSX_IR_UNSET && !g_video_mod_supersample_chosen) return;
+    g_video_scale = psx_host_enh_render_scale(preset, g_video_ref_lines,
+        display_px_h, video_scale_ceiling(), display_supersample(nullptr), g_video_match_max_lines,
+        g_title_scale, g_video_mod_supersample_chosen);
 }
 
 static std::string   g_bezel_path;      /* mod-owned OpenGL margin artwork */
@@ -10569,6 +10571,7 @@ static void session_internal_resolution(void) {
     PsxHostEnhRequests req;
     psx_host_enh_requests(&req);
     const PsxHostResolution r = psx_host_enh_resolve_resolution(&g_title_resolution, &req);
+    g_video_mod_supersample_chosen = req.resolution && req.resolution_supersample > 0;
     g_video_internal_res = r.internal_resolution;
     g_video_dynres = r.dynamic_resolution;
     g_video_scale = g_title_scale;
@@ -10776,6 +10779,7 @@ static int host_resolution_apply_live(void) {
     PsxHostEnhRequests req;
     psx_host_enh_requests(&req);
     const PsxHostResolution r = psx_host_enh_resolve_resolution(&g_title_resolution, &req);
+    g_video_mod_supersample_chosen = req.resolution && req.resolution_supersample > 0;
     g_video_dynres_min = r.dynamic_resolution_min;
     return video_resolution_apply_live(r.internal_resolution, r.dynamic_resolution, r.supersample_milli);
 }
@@ -21211,8 +21215,9 @@ session_reboot:
             (ir == PSX_IR_DISPLAY || g_video_ss_disable_at_lines > 0)) {
             const int dh = match_display_px_h(sdl_window);
             const int ss = display_supersample(sdl_window);
-            const int s = psx_resolve_internal_scale_ss_cap(ir, g_video_ref_lines,
-                dh, GL_MAX_INTERNAL_SCALE, ss, g_video_match_max_lines);
+            const int s = psx_host_enh_render_scale(ir, g_video_ref_lines,
+                dh, GL_MAX_INTERNAL_SCALE, ss, g_video_match_max_lines,
+                g_title_scale, g_video_mod_supersample_chosen);
             gr_set_scale(s);
             g_video_requested_scale = s;
             const char *label = psx_ir_label_for(ir);

@@ -336,7 +336,17 @@ static void test_plugins(void) {
     CHECK(option_changed("psx.rewind", "buffer", "100") == -1);
 }
 
+static void test_explicit_supersampling(void) {
+    CHECK(psx_host_enh_render_scale(PSX_IR_SCALE(4), 240, 1080, 32, 1333, 0, 2, 1) == 6);
+    CHECK(psx_host_enh_render_scale(PSX_IR_SCALE(4), 240, 1080, 32, 1333, 0, 2, 0) == 4);
+    CHECK(psx_host_enh_render_scale(PSX_IR_SCALE(32), 480, 1080, 32, 4000, 0, 2, 1) == 32);
+    CHECK(psx_host_enh_render_scale(PSX_IR_NATIVE, 240, 1080, 32, 1333, 0, 2, 1) == 2);
+    CHECK(psx_host_enh_render_scale(PSX_IR_UNSET, 240, 1080, 32, 1333, 0, 2, 1) == 3);
+    CHECK(psx_host_enh_render_scale(720, 240, 1080, 32, 1333, 0, 2, 1) == 4);
+}
+
 int main(void) {
+    test_explicit_supersampling();
     test_post_processing();
     test_resolve();
     test_parsers();
