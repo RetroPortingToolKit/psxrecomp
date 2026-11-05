@@ -1086,7 +1086,11 @@ extern "C" void psx_frontend_on_savestate_notify(int is_load, int slot, int ok) 
         psx_savestate_menu_note_slots_changed();
     if (is_load && ok)
         savestate_input_guard_arm();
-    if (is_load) {
+    if (slot == SAVESTATE_QUICK_SLOT) {
+        snprintf(buf, sizeof(buf), "%s", is_load
+                 ? (ok ? "Quick loaded" : "Quick load failed")
+                 : (ok ? "Quick saved" : "Quick save failed"));
+    } else if (is_load) {
         if (ok)
             snprintf(buf, sizeof(buf), "Loaded slot %d", disp);
         else
@@ -2977,6 +2981,18 @@ static std::filesystem::path exe_dir_from_argv(const char* argv0) {
     // we never silently resolve against an unrelated cwd deeper in the tree.
     if (exe_dir.empty()) exe_dir = fs::path(".");
     return exe_dir;
+}
+
+static void load_host_keymap(const char *argv0) {
+    namespace fs = std::filesystem;
+    const fs::path config = exe_dir_from_argv(argv0) / "config.ini";
+    std::error_code ec;
+    if (fs::is_regular_file(config, ec))
+        host_keymap_load(config.string().c_str());
+    else if (fs::is_regular_file(fs::path("config.ini"), ec))
+        host_keymap_load("config.ini");
+    else
+        host_keymap_load(nullptr);
 }
 
 static std::filesystem::path resolve_existing_runtime_path(const char* requested,
@@ -8313,9 +8329,16 @@ static int savestate_submit_slot(int slot, int save) {
         host_osd_push("Save states are unavailable in this game mode", 1800);
         return 0;
     }
+    if (slot == SAVESTATE_QUICK_SLOT && psx_netplay_active()) {
+        host_osd_push("Use the Save states menu during netplay", 1800);
+        return 0;
+    }
     if (!save && !savestate_slot_exists(slot)) {
         char msg[32];
-        snprintf(msg, sizeof(msg), "Slot %d is empty", slot + 1);
+        if (slot == SAVESTATE_QUICK_SLOT)
+            snprintf(msg, sizeof(msg), "No quick save exists");
+        else
+            snprintf(msg, sizeof(msg), "Slot %d is empty", slot + 1);
         host_osd_push(msg, 1200);
         return 0;
     }
@@ -8757,7 +8780,7 @@ static void host_pause_loop(void) {
 
 /* Debug: inject a host key / gamepad button as an SDL event, so scripted
  * runs can drive host UI (the overlay) through the real event path. */
-extern "C" int psx_debug_push_host_key(const char *name, int down) {
+extern "C" int psx_debug_push_host_key(const char *name, int down, int mod) {
     const SDL_Scancode sc = SDL_GetScancodeFromName(name ? name : "");
     if (sc == SDL_SCANCODE_UNKNOWN) return 0;
     SDL_Event ev;
@@ -8766,12 +8789,14 @@ extern "C" int psx_debug_push_host_key(const char *name, int down) {
     ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
     ev.key.scancode = sc;
     ev.key.key = SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false);
+    ev.key.mod = (SDL_Keymod)mod;
     ev.key.down = down != 0;
     ev.key.windowID = sdl_window ? SDL_GetWindowID(sdl_window) : 0;
 #else
     ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
     ev.key.keysym.scancode = sc;
     ev.key.keysym.sym = SDL_GetKeyFromScancode(sc);
+    ev.key.keysym.mod = (Uint16)mod;
     ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
 #endif
     return SDL_PushEvent(&ev) ? 1 : 0;
@@ -9066,6 +9091,20 @@ static bool drain_host_events() {
                 const int rc = psx_disc_tray_cycle(0, PSX_DISC_TRAY_ORIGIN_HOTKEY_REINSERT);
                 host_osd_push(rc == PSX_DISC_TRAY_OK ? "CD reinsert" :
                               "Disc changes are unavailable in this game mode.", 1500);
+            }
+            else if (!key_repeat &&
+                     (host_keymap_match_event(HOST_KEYMAP_QUICK_SAVE,
+                                              (int)key, (int)scancode, (int)mod) ||
+                      host_keymap_match_event(HOST_KEYMAP_QUICK_LOAD,
+                                              (int)key, (int)scancode, (int)mod))) {
+                const int save = host_keymap_match_event(HOST_KEYMAP_QUICK_SAVE,
+                                                        key, scancode, mod);
+                const int load = host_keymap_match_event(HOST_KEYMAP_QUICK_LOAD,
+                                                        key, scancode, mod);
+                if (save && load)
+                    host_osd_push("Quick save/load bindings conflict", 2000);
+                else
+                    savestate_submit_slot(SAVESTATE_QUICK_SLOT, save);
             }
             else if (!key_repeat &&
                      host_keymap_match_event(HOST_KEYMAP_TURBO_TOGGLE,
@@ -17456,6 +17495,7 @@ static void host_pause_service(void) {
     if (g_ovl_reload_binds.exchange(0)) {
         psx_keybinds_init(g_ovl_argv0.c_str());
         load_input_config(g_ovl_argv0.c_str());
+        load_host_keymap(g_ovl_argv0.c_str());
     }
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
     /* The frontend loop is not running during a game: pump the lobby here,
@@ -21615,18 +21655,7 @@ session_reboot:
     /* Host hotkeys: config.ini [KeyMap] next to the exe (VolumeUp/Down).
      * Prefer exe-dir file; if missing, fall back to cwd config.ini so a
      * launcher edit made before config_path was wired still applies. */
-    {
-        namespace fs = std::filesystem;
-        const fs::path exe_cfg = exe_dir_from_argv(argv[0]) / "config.ini";
-        std::error_code ec;
-        if (fs::is_regular_file(exe_cfg, ec)) {
-            host_keymap_load(exe_cfg.string().c_str());
-        } else if (fs::is_regular_file(fs::path("config.ini"), ec)) {
-            host_keymap_load("config.ini");
-        } else {
-            host_keymap_load(nullptr);
-        }
-    }
+    load_host_keymap(argv[0]);
 
     /* User save states: slots live under
      * <memcard>/<openbios|scph1001>/, keyed by entry_pc + boot_state integrity
