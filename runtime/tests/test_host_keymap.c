@@ -26,6 +26,15 @@ int main(int argc, char **argv) {
 
     memset(keys, 0, sizeof(keys));
     host_keymap_load(NULL);
+    check(host_keymap_match(HOST_KEYMAP_QUICK_SAVE, (int)SDLK_F5, 0),
+          "F5 quick saves by default");
+    check(!host_keymap_match(HOST_KEYMAP_QUICK_SAVE, (int)SDLK_F5, KMOD_LSHIFT),
+          "Shift+F5 cannot overwrite the quick save");
+    check(host_keymap_match(HOST_KEYMAP_QUICK_LOAD, (int)SDLK_F5, KMOD_LSHIFT) &&
+          host_keymap_match(HOST_KEYMAP_QUICK_LOAD, (int)SDLK_F5, KMOD_RSHIFT),
+          "either Shift+F5 quick loads");
+    check(!host_keymap_match(HOST_KEYMAP_QUICK_LOAD, (int)SDLK_F5, 0),
+          "plain F5 cannot load");
     check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_l, mod_ctrl()),
           "menu primary matches recomp-ui Ctrl+L default");
     check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_F10, 0),
@@ -67,11 +76,20 @@ int main(int argc, char **argv) {
           "VolumeUp = Up\n"
           "VolumeDown = Down\n"
           "DisplayPerf = F10\n"
-          "OpenLauncher = Ctrl+O\n",
+          "OpenLauncher = Ctrl+O\n"
+          "QuickSave = Ctrl+F3\n"
+          "QuickLoad = F4\n",
           f);
     fclose(f);
 
     host_keymap_load(cfg);
+    check(host_keymap_match_event(HOST_KEYMAP_QUICK_SAVE, SDLK_UNKNOWN,
+                                  SDL_SCANCODE_F3, KMOD_RCTRL),
+          "quick save rebind accepts physical scancode and one-sided Ctrl");
+    check(host_keymap_match(HOST_KEYMAP_QUICK_LOAD, SDLK_F4, 0) &&
+          !host_keymap_match(HOST_KEYMAP_QUICK_SAVE, SDLK_F5, 0) &&
+          !host_keymap_match(HOST_KEYMAP_QUICK_LOAD, SDLK_F5, KMOD_SHIFT),
+          "quick rebinds replace both defaults");
     check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_o, mod_ctrl()),
           "menu accepts its rebind");
     check(!host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_F10, 0),
@@ -110,11 +128,16 @@ int main(int argc, char **argv) {
     if (!f) return 1;
     fputs("[KeyMap]\n"
           "SaveStateMenu = None\n"
-          "OpenLauncher = None\n",
+          "OpenLauncher = None\n"
+          "QuickSave = None\n"
+          "QuickLoad = None\n",
           f);
     fclose(f);
 
     host_keymap_load(cfg);
+    check(!host_keymap_match(HOST_KEYMAP_QUICK_SAVE, SDLK_F5, 0) &&
+          !host_keymap_match(HOST_KEYMAP_QUICK_LOAD, SDLK_F5, KMOD_SHIFT),
+          "quick actions can both be explicitly unbound");
     check(!host_keymap_match_event(HOST_KEYMAP_SAVE_STATE_MENU,
                                    (int)SDLK_UNKNOWN,
                                    (int)SDL_SCANCODE_F7, 0),

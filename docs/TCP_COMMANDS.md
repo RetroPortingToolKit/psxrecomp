@@ -687,7 +687,7 @@ Regenerate with `python tools/gen_tcp_commands.py`; `--check` fails if this bloc
 | `history` | ✓ | ✓ | ✓ |
 | `hle_dump` | ✓ |  | ✓ |
 | `host_button` | ✓ |  |  |
-| `host_key` | ✓ |  |  |
+| `host_key` | ✓ |  | `name` (SDL scancode name), `down` (optional; omitted sends press/release), `mod` (optional SDL modifier mask) |
 | `host_launch_timings` | ✓ |  | ✓ |
 | `host_mouse` | ✓ |  |  |
 | `host_osd_shot` | ✓ |  |  |
