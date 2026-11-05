@@ -213,6 +213,13 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-11-05 — symbol-guided discovery.** Eight private symbol/executable
+  references exposed omitted `$gp` loads before frame allocation. The shared
+  recognizer recovers 35 explicit function entries across four unrelated
+  builds, with no lost named entries across the eight inputs. No timing,
+  instruction translation or runtime behavior is changed. Qualification and
+  limits: `docs/FUNCTION_DISCOVERY.md`, `accuracy/symbol_reference_results.json`.
+
 - **2026-10-24 — scoped render-pass qualification.** The sandbox now compares
   shared RAM/register/clock/interrupt digests before and after an actual
   opted-in local temporal pass, discard, device-read abort, rollback refusal,
