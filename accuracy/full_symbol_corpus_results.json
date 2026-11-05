@@ -28,7 +28,329 @@
       "preexisting_failed": 13,
       "disabled": 3
     },
-    "consumer_runtime": "pending"
+    "consumer_runtime": [
+      {
+        "game": "ape",
+        "source_head": "347942fd4cc2b46479ecea7aa3aa332d751252b0",
+        "input_sha256": {
+          "game.toml": "dbc9a50673540edd3f4d81a60495c929ded5ff0c86c390069bc226b789852a56",
+          "exe": "993b4e23509f23f38a196791c6c2a45eeb96c68a6b650da7787948abc6c25700",
+          "seeds": "d6d8a2674a1f2462678969cb46a3ceafe4f1bc7e15e859bbc0831a83ccfc778f"
+        },
+        "gameplay_movement": "passed baseline and candidate; screenshots reviewed",
+        "current_build_in_process_save_load": "passed baseline and candidate",
+        "builds": {
+          "baseline": {
+            "exe_sha256": "14868c2028a35e153ee3b86afed4d317feb8b9a447021855d06d6c1cfd790b36",
+            "generated_files": 61,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 7.708,
+                "primitives": 352
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 7.344,
+                "primitives": 352
+              },
+              {
+                "vblanks_per_second": 60.2,
+                "process_cpu_ms_per_vblank": 7.683,
+                "primitives": 354
+              }
+            ]
+          },
+          "candidate": {
+            "exe_sha256": "bcb3fe612f0403b9a2294fda143221efd7de789f45f61475ba9bc6a36a32a7d4",
+            "generated_files": 61,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 4,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 5,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 8.385,
+                "primitives": 744
+              },
+              {
+                "vblanks_per_second": 60.2,
+                "process_cpu_ms_per_vblank": 7.164,
+                "primitives": 765
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 7.031,
+                "primitives": 778
+              }
+            ]
+          }
+        },
+        "runtime_assessment": "No observed regression in brief paced samples; no proven optimization claim."
+      },
+      {
+        "game": "tomba",
+        "source_head": "05d82b96d31c2bab59256095cdfec82ccd328310",
+        "input_sha256": {
+          "game.toml": "b7cc32f42987dc9e4afb4594e2fadab8f9aae6885c184931277bbe228099c1c1",
+          "exe": "c45cd788df40a540d8641dc9682007c80e6ab8a4bcdd0e4a4e2c14c5108aa10b",
+          "seeds": "bb72606a87e21ac1b26aa3f058652594f9d816838ad07ddffbb01a64fced35f6"
+        },
+        "gameplay_movement": "passed baseline and candidate; screenshots reviewed",
+        "current_build_in_process_save_load": "passed baseline and candidate",
+        "builds": {
+          "baseline": {
+            "exe_sha256": "bd9ff80bca5d27e5baac73d75d5e7d88a24aef82c34362e6e5b3dc4111ddb6ed",
+            "generated_files": 54,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.875,
+                "primitives": 844
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.875,
+                "primitives": 844
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.667,
+                "primitives": 844
+              }
+            ]
+          },
+          "candidate": {
+            "exe_sha256": "4a6419a060b1461ef326c77f0f2ce38f5c6e44fece9e30f98afa453879ee8a38",
+            "generated_files": 54,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.875,
+                "primitives": 843
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 5.469,
+                "primitives": 844
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 5.312,
+                "primitives": 844
+              }
+            ]
+          }
+        },
+        "runtime_assessment": "No observed regression in brief paced samples; no proven optimization claim."
+      },
+      {
+        "game": "tomba2",
+        "source_head": "24ca4b7dfeef7a13225b8e7f44f4f08d27cc0442",
+        "input_sha256": {
+          "game.toml": "96e19336a9a878b1d632801cfe44c73eac9cfdd7cbff49c68b143af0609e80c1",
+          "exe": "1800c1e24ef8f7c139255c451f07326cc71522b56bec35df8e0e44a039405fdf",
+          "seeds": "b61584fc93603fe7dd209b4d496eafe2359e56f3bb5ea8de5985481d40afd916"
+        },
+        "gameplay_movement": "passed baseline and candidate; screenshots reviewed",
+        "current_build_in_process_save_load": "passed baseline and candidate",
+        "builds": {
+          "baseline": {
+            "exe_sha256": "c6b9fea5995d7b9efc79ab9dd2482cf22439c810ba2d9564879c504dfec50982",
+            "generated_files": 10,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 45.4,
+                "process_cpu_ms_per_vblank": 23.197,
+                "primitives": 1234
+              },
+              {
+                "vblanks_per_second": 47.6,
+                "process_cpu_ms_per_vblank": 21.665,
+                "primitives": 1246
+              },
+              {
+                "vblanks_per_second": 48.4,
+                "process_cpu_ms_per_vblank": 21.565,
+                "primitives": 1300
+              }
+            ]
+          },
+          "candidate": {
+            "exe_sha256": "6d860d4ae6d67d27b68421f6e277cab1271f83cbe06fe29392a6e065254185de",
+            "generated_files": 10,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 54.8,
+                "process_cpu_ms_per_vblank": 18.362,
+                "primitives": 1304
+              },
+              {
+                "vblanks_per_second": 57.4,
+                "process_cpu_ms_per_vblank": 18.184,
+                "primitives": 1255
+              },
+              {
+                "vblanks_per_second": 56.2,
+                "process_cpu_ms_per_vblank": 18.294,
+                "primitives": 1231
+              }
+            ]
+          }
+        },
+        "runtime_assessment": "No observed regression in brief paced samples; no proven optimization claim."
+      }
+    ],
+    "candidate_source_commit": "395bcd2fd573e871e44e37cc8274a5d8dd32cc02",
+    "shared_launcher_commit": "839a6f98c3014e7586ac942a66395ddaa6fc5bc5",
+    "synthetic_execution": "Generated o32 argument-home callback executes at O0/O2 with production CPUState; memory/debug seams, timing disabled.",
+    "runtime_limits": [
+      "Brief representative gameplay, not complete game qualification.",
+      "Tomba 2 cold-snapshot timing pair rejected: native coverage and draw workload differed; fresh-boot samples used instead.",
+      "Ape Escape samples use the same field with different selected gadgets; small cost differences remain inconclusive.",
+      "Ape isolated CMake catalog declaration migrated equally on both sides; original consumer worktrees untouched."
+    ]
   },
   "archives": [
     {

@@ -207,6 +207,16 @@ discovery reports are available without building the analyzer separately.
 Archive/input identities, correspondence decisions and counts are recorded in
 [`accuracy/full_symbol_corpus_results.json`](../accuracy/full_symbol_corpus_results.json).
 
+Consumer regeneration was built and exercised in isolated baseline/candidate
+Ape Escape, Tomba and Tomba 2 worktrees. All six builds reached gameplay,
+responded to movement and completed current-build in-process save/load.
+Short serial runtime samples showed no observed regression. Tomba 2 used fresh
+boots because its cold-snapshot pair had different native coverage and draw
+workloads; those snapshot timings were rejected. Ape Escape's different selected
+gadgets also limit performance inference. These are representative smoke checks,
+not complete-game qualification or a proven optimization result. Full CTest
+finished with 147 passes, the same 13 pre-existing failures and 3 disabled tests.
+
 ### Initial eight-build qualification
 
 Eight independent executable/symbol pairs were compared with **unaided**

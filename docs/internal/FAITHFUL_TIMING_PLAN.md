@@ -221,8 +221,11 @@ on a fixed region -> next.
   now preserves full ADDIU/ORI values. Resolved switch cases retain their host
   ownership. Full CTest: 147 passed, the same 13 baseline failures, 3 disabled.
   Five ambiguous boundaries and two unsupported symbol files remain explicit
-  limitations. Consumer regeneration changes output, so matched built-runtime
-  qualification is required before integration. No timing model is changed.
+  limitations. All six baseline/candidate Ape Escape, Tomba and Tomba 2 builds
+  pass representative gameplay movement and current-build in-process save/load.
+  Serial paced runtime samples show no observed regression; Tomba 2 cold-snapshot
+  timings were rejected for different workloads and replaced with fresh boots.
+  Owner visual review remains before integration. No timing model is changed.
 
 - **2026-11-05 — symbol-guided discovery.** Eight private symbol/executable
   references exposed omitted `$gp` loads before frame allocation. The shared
