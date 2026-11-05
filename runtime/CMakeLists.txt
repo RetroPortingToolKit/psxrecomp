@@ -1953,6 +1953,10 @@ if(BUILD_TESTING)
     # Bug B: the pacing decision must take ONE counter sample, so the unsigned
     # subtraction cannot underflow into a ~24.7-day SDL_Delay.
     add_executable(frame_pacing_test tests/test_frame_pacing.c)
+    add_executable(launcher_vsync_vrr_test tests/test_launcher_vsync.c)
+    target_include_directories(launcher_vsync_vrr_test PRIVATE include)
+    target_compile_definitions(launcher_vsync_vrr_test PRIVATE RECOMP_LAUNCHER_HAS_VSYNC_VRR=1)
+    add_test(NAME launcher_vsync_vrr_test COMMAND launcher_vsync_vrr_test)
     add_executable(launcher_vsync_test tests/test_launcher_vsync.c)
     target_include_directories(launcher_vsync_test PRIVATE include)
     add_test(NAME launcher_vsync_test COMMAND launcher_vsync_test)
@@ -2040,7 +2044,8 @@ if(BUILD_TESTING)
         src/mod_builtin_image_filtering.c
         src/mod_builtin_enhanced_audio.c
         src/mod_builtin_rewind.c
-        src/mod_builtin_internal_resolution.c)
+        src/mod_builtin_internal_resolution.c
+        src/mod_builtin_post_processing.c)
     target_include_directories(host_enhancements_test PRIVATE include)
     add_test(NAME host_enhancements_test COMMAND host_enhancements_test)
 

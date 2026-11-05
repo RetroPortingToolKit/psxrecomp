@@ -2486,6 +2486,8 @@ int main() {
             "type = \"choice\"\ndefault = \"a\"\n"
             "[[option.choice]]\nvalue = \"a\"\nlabel = \"A\"\n"
             "[[option.choice]]\nvalue = \"b\"\nlabel = \"B\"\n"
+            "[[resource]]\nfeature = \"look\"\nid = \"shader\"\nlabel = \"Shader\"\n"
+            "format = \"file\"\nrequired = false\n"
             "[[plugin]]\nfeature = \"look\"\nid = \"test.look\"\nnetplay = \"host_only\"\n");
         write_text(folder / "packages/sim.mod/1.0.0/manifest.toml",
             head("sim.mod", 11) +
@@ -2518,6 +2520,13 @@ int main() {
         check(host.set_feature_option("look.mod", "look", "tone", "b", &error), error.c_str());
         check(host.resolve("SLUS-TEST").fingerprint == base.fingerprint,
               "a host-only feature's options must not change the plan fingerprint");
+        const auto shader = folder / "local.pfx";
+        write_text(shader, "pfx 1\npass local\nshader builtin:copy\n");
+        check(host.set_feature_resource_path("look.mod", "look", "shader", shader, &error), error.c_str());
+        const auto local_shader = host.resolve("SLUS-TEST");
+        check(local_shader.ok && local_shader.resources.size() == 1 &&
+              local_shader.fingerprint == base.fingerprint,
+              "a host shader is available to its plugin without changing netplay identity");
         check(host.set_feature_enabled("sim.mod", "sim", false, &error), error.c_str());
         check(host.resolve("SLUS-TEST").fingerprint != base.fingerprint,
               "an ordinary plugin feature still changes the fingerprint");

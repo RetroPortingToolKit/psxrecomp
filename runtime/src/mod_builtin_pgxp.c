@@ -24,6 +24,7 @@
  */
 #include "mod_plugins.h"
 #include "pgxp.h"
+#include "pgxp_session.h"
 
 #include <string.h>
 
@@ -38,6 +39,12 @@ static int pgxp_option_flag(const char* feature, const char* id) {
 static void builtin_pgxp_activate(void) {
     pgxp_mod_request(1, pgxp_option_flag("pgxp", "cpu_mode"),
                      pgxp_option_flag("pgxp", "culling"));
+    char geometry[16] = "", texture[16] = "";
+    (void)psx_mod_option_value(PKG_PGXP, "pgxp", "geometry", geometry, sizeof geometry);
+    (void)psx_mod_option_value(PKG_PGXP, "pgxp", "perspective", texture, sizeof texture);
+    /* Missing options preserve manifests shipped before the split. */
+    psx_pgxp_session_request_corrections(strcmp(geometry, "false") != 0,
+                                         strcmp(texture, "false") != 0);
 }
 
 PSX_MOD_CONSTRUCTOR(psx_register_builtin_pgxp_plugin) {

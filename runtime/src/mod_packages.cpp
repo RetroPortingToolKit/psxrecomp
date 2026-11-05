@@ -10,10 +10,13 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -785,6 +788,15 @@ std::string canonical_resolution(const std::vector<const ModPackage*>& ordered,
             << plugin.feature_id << '\n';
     }
     for (const ModResolution::Resource& resource : resources) {
+        const bool local = std::any_of(ordered.begin(), ordered.end(),
+            [&](const ModPackage* package) {
+                return package->id == resource.package_id &&
+                    std::any_of(package->features.begin(), package->features.end(),
+                        [&](const ModFeature& feature) {
+                            return feature.id == resource.feature_id && feature.host_only;
+                        });
+            });
+        if (local) continue;
         out << "resource:" << resource.package_id << ':' << resource.feature_id
             << ':' << resource.id << '=';
         if (resource.bytes)
@@ -1349,6 +1361,14 @@ bool integer_step_aligned(int64_t value, int64_t minimum, int64_t step) {
 }
 
 bool valid_option_value(const ModOption& option, const std::string& value) {
+    if (option.type == ModOptionType::Decimal) {
+        if (value == "default" && option.default_value == "default") return true;
+        if (value.empty() || value.size() > 32 || !std::isdigit(static_cast<unsigned char>(value[0]))) return false;
+        char* end = nullptr;
+        const double number = std::strtod(value.c_str(), &end);
+        return end == value.c_str() + value.size() && std::isfinite(number) &&
+               number >= option.min_value && number <= option.max_value;
+    }
     if (option.type == ModOptionType::Boolean)
         return value == "true" || value == "false";
     if (option.type == ModOptionType::Choice)
@@ -1963,6 +1983,13 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                         [&](const ModChoice& c) { return c.value == option.default_value; });
                     if (found == option.choices.end())
                         throw std::runtime_error("choice default is not declared");
+                } else if (type == "decimal") {
+                    option.type = ModOptionType::Decimal;
+                    option.min_value = toml::find<int64_t>(v, "min");
+                    option.max_value = toml::find<int64_t>(v, "max");
+                    option.default_value = toml::find<std::string>(v, "default");
+                    if (option.min_value > option.max_value || !valid_option_value(option, option.default_value))
+                        throw std::runtime_error("invalid decimal bounds/default");
                 } else if (type == "integer") {
                     option.type = ModOptionType::Integer;
                     option.min_value = toml::find<int64_t>(v, "min");
@@ -2775,11 +2802,16 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 return std::any_of(list.begin(), list.end(),
                     [&](const auto& item) { return item.feature_id == feature.id; });
             };
+            const bool prepared_resource = std::any_of(out.resources.begin(), out.resources.end(),
+                [&](const ModResource& resource) {
+                    return resource.feature_id == feature.id &&
+                           (resource.format != "file" || resource.input_only);
+                });
             if (other_plugin || owns(out.patches) || owns(out.overlays) ||
-                owns(out.resources) || owns(out.requirements))
+                prepared_resource || owns(out.requirements))
                 throw std::runtime_error(
                     "feature " + feature.id + ": a netplay = \"host_only\" plugin's "
-                    "feature may contribute nothing but host_only plugins");
+                    "feature may contribute only host_only plugins and local files");
             feature.host_only = true;
         }
         return true;
@@ -4468,3 +4500,117 @@ extern "C" int psx_mod_register_savestate_plugin(
     return id &&
         PSXRecompV4::mod_register_savestate_plugin(id, callback) ? 1 : 0;
 }
+
+namespace PSXRecompV4 {
+
+bool migrate_legacy_video_settings(ModPackageManager& manager,
+                                   const fs::path& path, std::string* error) {
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return true;
+    const auto previous = manager.selections();
+    try {
+        const auto doc = toml::parse(path.string());
+        const auto table = [&](const char* name) {
+            return doc.contains(name) && toml::find(doc, name).is_table()
+                ? toml::find(doc, name) : toml::value(toml::table{});
+        };
+        const auto text = [](const toml::value& t, const char* key) -> std::string {
+            if (!t.contains(key)) return {};
+            const auto& value = toml::find(t, key);
+            if (value.is_string()) return value.as_string().str;
+            if (value.is_integer()) return std::to_string(value.as_integer());
+            if (value.is_floating()) {
+                std::ostringstream out;
+                out << std::setprecision(12) << value.as_floating();
+                return out.str();
+            }
+            return {};
+        };
+        const auto flag = [](const toml::value& t, const char* key) -> std::optional<bool> {
+            if (t.contains(key) && toml::find(t, key).is_boolean())
+                return toml::find<bool>(t, key);
+            return {};
+        };
+        bool changed = false;
+        const auto seed = [&](const char* package_id, const char* feature_id,
+                              const std::map<std::string, std::string>& values,
+                              bool enabled = true) {
+            const auto selected = previous.find(package_id);
+            if (selected != previous.end() && selected->second.features.count(feature_id)) return;
+            const auto* package = manager.selected_package(package_id);
+            if (!package || !manager.selected_feature(package_id, feature_id)) return;
+            std::map<std::string, std::string> supported;
+            for (const auto& value : values) {
+                const auto* option = find_option(*package, feature_id, value.first);
+                if (option && valid_option_value(*option, value.second)) supported.insert(value);
+            }
+            if (!values.empty() && supported.empty()) return;
+            std::string reason;
+            if (!manager.set_feature_enabled(package_id, feature_id, enabled, &reason))
+                throw std::runtime_error(reason);
+            for (const auto& value : supported)
+                if (!manager.set_feature_option(package_id, feature_id, value.first, value.second, &reason))
+                    throw std::runtime_error(reason);
+            changed = true;
+        };
+        const auto video = table("video");
+        std::map<std::string, std::string> values;
+        const auto move = [&](const char* old_key, const char* option) {
+            const auto value = text(video, old_key);
+            if (!value.empty()) values[option] = value;
+        };
+        move("texture_filtering", "texture_filtering");
+        move("fmv_filter", "fmv_filtering");
+        if (auto v = flag(video, "antialiasing")) values["smoothing"] = *v ? "smooth" : "sharp";
+        if (!values.empty()) seed("psx.enhancement.image-filtering", "image-filtering", values);
+        values.clear();
+        move("crt_filter", "screen_model");
+        if (auto v = flag(video, "scanlines")) values["scanlines"] = *v ? "on" : "off";
+        if (video.contains("scanline_strength")) {
+            const auto raw = text(video, "scanline_strength");
+            if (!raw.empty()) {
+                const double strength = std::stod(raw);
+                if (std::isfinite(strength) && strength >= 0 && strength <= 1) {
+                    values["scanline_strength"] = std::to_string(std::max(1, (int)std::lround(strength * 100)));
+                    if (strength == 0 && values["scanlines"] == "on") values["scanlines"] = "off";
+                }
+            }
+        }
+        if (!values.empty()) seed("psx.enhancement.crt-filter", "crt-filter", values);
+        values.clear();
+        move("internal_resolution", "resolution");
+        if (!values.count("resolution")) {
+            const auto scale = text(video, "supersampling");
+            if (!scale.empty()) values["resolution"] = scale + "x";
+        }
+        move("dynamic_resolution_min", "minimum");
+        move("supersample", "supersample");
+        if (auto v = flag(video, "dynamic_resolution")) values["dynamic_resolution"] = *v ? "on" : "off";
+        if (!values.empty()) seed("psx.enhancement.internal-resolution", "internal-resolution", values);
+        const auto geometry = flag(video, "geometry_correction");
+        const auto perspective = flag(video, "perspective_texturing");
+        if (geometry || perspective)
+            seed("psx.enhancement.pgxp", "pgxp",
+                 {{"geometry", geometry.value_or(false) ? "true" : "false"},
+                  {"perspective", perspective.value_or(false) ? "true" : "false"}},
+                 geometry.value_or(false) || perspective.value_or(false));
+        values.clear();
+        move("rewind_depth", "buffer");
+        move("rewind_interval", "interval");
+        const auto rewind = flag(video, "rewind");
+        if (rewind || !values.empty()) seed("psx.feature.rewind", "rewind", values, rewind.value_or(true));
+        if (auto v = flag(table("audio"), "spu_hq"))
+            seed("psx.enhancement.enhanced-audio", "enhanced-audio", {}, *v);
+        if (changed && !manager.save_state(error)) {
+            manager.exchange_selections(previous);
+            return false;
+        }
+        return true;
+    } catch (const std::exception& ex) {
+        manager.exchange_selections(previous);
+        set_error(error, std::string("legacy video settings: ") + ex.what());
+        return false;
+    }
+}
+
+} // namespace PSXRecompV4
