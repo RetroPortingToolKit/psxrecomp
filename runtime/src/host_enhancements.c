@@ -29,6 +29,11 @@ void psx_host_enh_request_image(int smoothing, int texture_filter, int fmv_filte
     s_req.image_smoothing = smoothing;
     s_req.image_texture_filter = texture_filter;
     s_req.image_fmv_filter = fmv_filter;
+    s_req.image_dithering = PSX_HOST_ENH_DEFAULT;
+}
+
+void psx_host_enh_request_image_dithering(int mode) {
+    s_req.image_dithering = mode >= 0 && mode <= 2 ? mode : PSX_HOST_ENH_DEFAULT;
 }
 
 void psx_host_enh_request_audio(void) {
@@ -102,6 +107,13 @@ int psx_host_enh_parse_strength(const char* text) {
 int psx_host_enh_parse_smoothing(const char* text) {
     if (is(text, "smooth")) return 1;
     if (is(text, "sharp")) return 0;
+    return PSX_HOST_ENH_DEFAULT;
+}
+
+int psx_host_enh_parse_dithering(const char* text) {
+    if (is(text, "off")) return 0;
+    if (is(text, "native")) return 1;
+    if (is(text, "fine")) return 2;
     return PSX_HOST_ENH_DEFAULT;
 }
 
