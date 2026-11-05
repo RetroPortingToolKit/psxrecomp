@@ -6421,7 +6421,8 @@ static void gp0_exec_draw_mode(void) {
     dither_enabled    = (param >> 9) & 1;
     gr_set_dither((int)dither_enabled);
     draw_to_display   = (param >> 10) & 1;
-    texture_disable   = (param >> 11) & 1;
+    /* GP1(09h) is unsupported and halts, so permission stays reset. */
+    texture_disable   = 0;
     /* Sync semi-transparency to SW renderer — actual blending is per-primitive */
 }
 
