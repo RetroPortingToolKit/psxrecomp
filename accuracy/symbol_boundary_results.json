@@ -108,5 +108,51 @@
     "passed": 3,
     "failed": 0
   },
-  "full_ctest": "pending"
+  "full_ctest": {
+    "total": 165,
+    "qualified_passed": 149,
+    "existing_failures": [
+      "aot_overlay_discovery",
+      "bundled_release_layout",
+      "compile_overlays_static_tail",
+      "frame_interpolation_flip_source",
+      "gl_internal_scale_guards",
+      "gpu_frame",
+      "interp_cop0_read_sample",
+      "interp_refused_game_text",
+      "mod_owned_display_controls",
+      "native_wide_line_batching",
+      "overlay_candidate_capacity",
+      "overlay_segment_gate",
+      "overlay_segment_keys"
+    ],
+    "disabled": 3,
+    "introduced_failures": 0,
+    "first_run": {
+      "passed": 148,
+      "failed": 14,
+      "disabled": 3
+    },
+    "setup_failure_rerun": {
+      "test": "runtime_hot_pgo_contract",
+      "reason": "Existing MinGW profile path-length guard in long scratch directory",
+      "existing_option": "PSX_RUNTIME_HOT_PGO_TEST_SCRATCH_ROOT",
+      "short_scratch_result": "passed"
+    },
+    "additional_registered_tests": [
+      "analysis_signature_flow",
+      "disc_identity_test"
+    ]
+  },
+  "implementation_commit": "4ee1bb6fe7fe51d4906cfead3c69b83a18b59dc8",
+  "packaged_cli": {
+    "workflow": 42123250752,
+    "source": "4ee1bb6fe7fe51d4906cfead3c69b83a18b59dc8",
+    "archive_sha256": "3dcd0c91cdd03cc6852a2b118efe843f11cf8e1afe67d656003d591d7c36c9e4",
+    "windows_packaging_and_boot": "passed",
+    "linux_boot": "passed",
+    "standalone_tools": 5,
+    "bare_windows_path": true,
+    "signature_cases_passed": 19
+  }
 }

@@ -13,7 +13,7 @@ is part of this work. Original binaries and symbols stay outside the repository.
 | Three raw linked images with SYM metadata | Establish load mapping independently of discovery; compare resident starts/ends; implement or reject concrete shared defects | Mapped from linker origins and frame/end instruction agreement; all 4,729 resident named starts already present in v0.3.6 |
 | Eleven raw modules with MAP metadata | Account for each module's stored bytes, code/data sections and overlapping load region; evaluate code-bearing modules | Eight code-bearing modules analyzed byte-for-byte; three groups have only mapped data/rdata and no established executable evidence |
 | Function extent and false-code candidates | Check debug ends and explicit data evidence against generated control flow; resolve demonstrated defects with regressions | Seven false entries removed: five string fragments and two numeric-data fragments. Shared heuristic fix preserves direct calls/explicit entries. Blanket debug-end merging rejected: native partitions retain branch/fallthrough continuations |
-| ABI/control-flow candidates | Evaluate frame/register/return metadata and actual instructions; resolve demonstrated translation/partition errors | Reachable original-argument reads include forward joins and load delays; dead reads after jumps excluded, outward fragments uncertain. All 3,316 nonzero resident reference frames now match, correcting 381 mismatches, including seven branch-delay allocations. Nineteen cases cover these paths, including call-delay load commitment; final rebuild/check pending |
+| ABI/control-flow candidates | Evaluate frame/register/return metadata and actual instructions; resolve demonstrated translation/partition errors | Reachable original-argument reads include forward joins and load delays; dead reads after jumps excluded, outward fragments uncertain. All 3,316 nonzero resident reference frames now match, correcting 381 mismatches, including seven branch-delay allocations. All nineteen cases pass, including taken-call load commitment and the conditional call's not-taken path |
 | Remaining metadata gaps | Bound work on the two unsupported symbol files and additional trustworthy pairings; reject absent/wrong-revision references explicitly | Observed 9c function variant supplies 187 independently validated references, all already discovered. Of 167 overlay groups, one has matched retained loaded bytes; 166 remain unqualified |
 
 Count outcomes by validated framework fixes and evidence-backed rejections.
@@ -30,7 +30,12 @@ merge approval remains required; deliver the next framework release after
 accepted changes are complete and validated. Frozen regeneration has identical
 native code for all three previously cleared consumers (125 C/header/range
 files). Tomba differs only in annotation comments in eight files; no game is
-relaunched for a duplicate visual check. Full CTest is in progress.
+relaunched for a duplicate visual check. The 165-check local suite qualifies
+149 passes, the same 13 baseline failures and 3 disabled checks. Its initial
+run had one additional PGO path-length guard failure; rerunning that unchanged
+contract with the existing shorter-scratch option passes. Raw logs retain both
+results. Windows packaging/boot and Linux boot pass in workflow `42123250752`;
+all five downloaded tools and nineteen cases pass with Windows-only PATH.
 
 The three linked images are `DIABPSX.BIN` at `80010000` and `BECODE_Z.BIN` /
 `FECODE_Z.BIN` at `8005952c`. Loaded-image envelopes preserve all original bytes.
