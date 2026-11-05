@@ -1272,6 +1272,7 @@ static int           g_video_scale = 1;     /* internal-resolution SSAA factor *
  * antialiasing, or the Image Filtering mod's Smoothing (session_host_look). */
 static bool          g_video_aa    = true;
 static int           g_video_post_aa = 0;   /* [video] antialiasing_mode / PSX_AA_MODE (GL_POST_AA_*) */
+static int           g_video_post_aa_env = -1; /* one-run override survives mod resolution */
 static float         g_video_bloom = 0.0f;  /* [video] bloom (PSX_BLOOM overrides) */
 static std::string   g_video_post_shader;   /* [video] post_shader (PSX_POST_SHADER overrides) */
 static int           g_video_ss_milli = 1000; /* [video] supersample / PSX_SUPERSAMPLE */
@@ -10562,7 +10563,7 @@ static void session_host_look(void) {
     g_video_fmv_filter = look.fmv_filter;
     g_audio_spu_hq = look.spu_hq != 0;
     const PsxHostPostLook post = psx_host_enh_resolve_post(&g_title_post_look, &req);
-    g_video_post_aa = post.antialiasing;
+    g_video_post_aa = g_video_post_aa_env >= 0 ? g_video_post_aa_env : post.antialiasing;
     g_video_bloom = post.bloom;
     g_video_post_shader = post.shader ? post.shader : "";
     g_rewind_enabled = req.rewind ? 1 : 0;
@@ -10590,7 +10591,7 @@ static void host_look_apply_live(void) {
     g_video_fmv_filter = look.fmv_filter;
     if (g_gl_active) gl_renderer_set_fmv_filter(g_video_fmv_filter);
     const PsxHostPostLook post = psx_host_enh_resolve_post(&g_title_post_look, &req);
-    g_video_post_aa = post.antialiasing;
+    g_video_post_aa = g_video_post_aa_env >= 0 ? g_video_post_aa_env : post.antialiasing;
     g_video_bloom = post.bloom;
     g_video_post_shader = post.shader ? post.shader : "";
     if (g_gl_active) {
@@ -20596,9 +20597,9 @@ session_reboot:
         else std::fprintf(stdout, "psxrecomp: PSX_SUPERSAMPLE=%s not understood (1.0..4.0)\n", e);
     }
     if (const char* e = std::getenv("PSX_AA_MODE")) {
-        if (!std::strcmp(e, "off")) g_video_post_aa = GL_POST_AA_OFF;
-        else if (!std::strcmp(e, "fxaa")) g_video_post_aa = GL_POST_AA_FXAA;
-        else if (!std::strcmp(e, "fxaa_hq")) g_video_post_aa = GL_POST_AA_FXAA_HQ;
+        if (!std::strcmp(e, "off")) g_video_post_aa_env = GL_POST_AA_OFF;
+        else if (!std::strcmp(e, "fxaa")) g_video_post_aa_env = GL_POST_AA_FXAA;
+        else if (!std::strcmp(e, "fxaa_hq")) g_video_post_aa_env = GL_POST_AA_FXAA_HQ;
         else std::fprintf(stdout, "psxrecomp: PSX_AA_MODE=%s not understood (off, fxaa, fxaa_hq)\n", e);
     }
     const int effective_ss = display_supersample(nullptr);
