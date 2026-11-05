@@ -12,7 +12,8 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TOOLS = ("psxrecomp", "psxrecomp-toml", "psxrecomp-game", "psxrecomp-bios")
+TOOLS = ("psxrecomp", "psxrecomp-toml", "psxrecomp-game", "psxrecomp-bios",
+         "psxrecomp-analyze")
 
 
 def run(command: list[str]) -> None:

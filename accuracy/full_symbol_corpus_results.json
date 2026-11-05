@@ -1,0 +1,4076 @@
+{
+  "schema": 1,
+  "scope": "115 archives in debugging-games/DebuggingGames/PlayStation",
+  "baseline_commit": "3e3438763fd207751c94b2f986266dc7a1f659ba",
+  "candidate_emitter_hash": "0df37b5a",
+  "analyzer_sha256": "41f81182845020b94944798658b3e5aef9369730769fa3b6f758a5a71fa4ced6",
+  "summary": {
+    "qualified_views": 90,
+    "unique_recovered": 377,
+    "unique_lost": 0,
+    "unique_remaining": 5
+  },
+  "method": {
+    "symbols_used_as_seeds": false,
+    "deduplication": "executable SHA-256 plus entry address; revisions and containers may repeat implementations",
+    "qualification": "Frozen baseline pair choices: prefer normalized matching basename, >=90% explicit-entry agreement and >=90% debug-frame/instruction agreement; one reference per executable view.",
+    "cpe": "18 CPE inputs wrapped privately in PS-X EXE headers; loaded segment bytes preserved.",
+    "excluded": "Active-overlay records and pure declarations in zero-filled nonresident space.",
+    "limits": [
+      "Entry recall does not prove precision, extent or runtime correctness.",
+      "Two 0x9c symbol files unsupported.",
+      "Five views need existing explicit-entry input; automatic boundary inference rejected."
+    ]
+  },
+  "validation": {
+    "ctest": {
+      "passed": 147,
+      "preexisting_failed": 13,
+      "disabled": 3
+    },
+    "consumer_runtime": [
+      {
+        "game": "ape",
+        "source_head": "347942fd4cc2b46479ecea7aa3aa332d751252b0",
+        "input_sha256": {
+          "game.toml": "dbc9a50673540edd3f4d81a60495c929ded5ff0c86c390069bc226b789852a56",
+          "exe": "993b4e23509f23f38a196791c6c2a45eeb96c68a6b650da7787948abc6c25700",
+          "seeds": "d6d8a2674a1f2462678969cb46a3ceafe4f1bc7e15e859bbc0831a83ccfc778f"
+        },
+        "gameplay_movement": "passed baseline and candidate; screenshots reviewed",
+        "current_build_in_process_save_load": "passed baseline and candidate",
+        "builds": {
+          "baseline": {
+            "exe_sha256": "14868c2028a35e153ee3b86afed4d317feb8b9a447021855d06d6c1cfd790b36",
+            "generated_files": 61,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 7.708,
+                "primitives": 352
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 7.344,
+                "primitives": 352
+              },
+              {
+                "vblanks_per_second": 60.2,
+                "process_cpu_ms_per_vblank": 7.683,
+                "primitives": 354
+              }
+            ]
+          },
+          "candidate": {
+            "exe_sha256": "bcb3fe612f0403b9a2294fda143221efd7de789f45f61475ba9bc6a36a32a7d4",
+            "generated_files": 61,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 4,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 5,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 8.385,
+                "primitives": 744
+              },
+              {
+                "vblanks_per_second": 60.2,
+                "process_cpu_ms_per_vblank": 7.164,
+                "primitives": 765
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 7.031,
+                "primitives": 778
+              }
+            ]
+          }
+        },
+        "runtime_assessment": "No observed regression in brief paced samples; no proven optimization claim."
+      },
+      {
+        "game": "tomba",
+        "source_head": "05d82b96d31c2bab59256095cdfec82ccd328310",
+        "input_sha256": {
+          "game.toml": "b7cc32f42987dc9e4afb4594e2fadab8f9aae6885c184931277bbe228099c1c1",
+          "exe": "c45cd788df40a540d8641dc9682007c80e6ab8a4bcdd0e4a4e2c14c5108aa10b",
+          "seeds": "bb72606a87e21ac1b26aa3f058652594f9d816838ad07ddffbb01a64fced35f6"
+        },
+        "gameplay_movement": "passed baseline and candidate; screenshots reviewed",
+        "current_build_in_process_save_load": "passed baseline and candidate",
+        "builds": {
+          "baseline": {
+            "exe_sha256": "bd9ff80bca5d27e5baac73d75d5e7d88a24aef82c34362e6e5b3dc4111ddb6ed",
+            "generated_files": 54,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.875,
+                "primitives": 844
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.875,
+                "primitives": 844
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.667,
+                "primitives": 844
+              }
+            ]
+          },
+          "candidate": {
+            "exe_sha256": "4a6419a060b1461ef326c77f0f2ce38f5c6e44fece9e30f98afa453879ee8a38",
+            "generated_files": 54,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 6.875,
+                "primitives": 843
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 5.469,
+                "primitives": 844
+              },
+              {
+                "vblanks_per_second": 60.0,
+                "process_cpu_ms_per_vblank": 5.312,
+                "primitives": 844
+              }
+            ]
+          }
+        },
+        "runtime_assessment": "No observed regression in brief paced samples; no proven optimization claim."
+      },
+      {
+        "game": "tomba2",
+        "source_head": "24ca4b7dfeef7a13225b8e7f44f4f08d27cc0442",
+        "input_sha256": {
+          "game.toml": "96e19336a9a878b1d632801cfe44c73eac9cfdd7cbff49c68b143af0609e80c1",
+          "exe": "1800c1e24ef8f7c139255c451f07326cc71522b56bec35df8e0e44a039405fdf",
+          "seeds": "b61584fc93603fe7dd209b4d496eafe2359e56f3bb5ea8de5985481d40afd916"
+        },
+        "gameplay_movement": "passed baseline and candidate; screenshots reviewed",
+        "current_build_in_process_save_load": "passed baseline and candidate",
+        "builds": {
+          "baseline": {
+            "exe_sha256": "c6b9fea5995d7b9efc79ab9dd2482cf22439c810ba2d9564879c504dfec50982",
+            "generated_files": 10,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 45.4,
+                "process_cpu_ms_per_vblank": 23.197,
+                "primitives": 1234
+              },
+              {
+                "vblanks_per_second": 47.6,
+                "process_cpu_ms_per_vblank": 21.665,
+                "primitives": 1246
+              },
+              {
+                "vblanks_per_second": 48.4,
+                "process_cpu_ms_per_vblank": 21.565,
+                "primitives": 1300
+              }
+            ]
+          },
+          "candidate": {
+            "exe_sha256": "6d860d4ae6d67d27b68421f6e277cab1271f83cbe06fe29392a6e065254185de",
+            "generated_files": 10,
+            "save_load_evidence": {
+              "save": {
+                "id": 0,
+                "ok": true,
+                "generation": 1,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "save",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              },
+              "load": {
+                "id": 0,
+                "ok": true,
+                "generation": 2,
+                "pending": 0,
+                "last_ok": 1,
+                "last_op": "load",
+                "last_slot": 0,
+                "polls": 1,
+                "wait": ""
+              }
+            },
+            "runtime_samples": [
+              {
+                "vblanks_per_second": 54.8,
+                "process_cpu_ms_per_vblank": 18.362,
+                "primitives": 1304
+              },
+              {
+                "vblanks_per_second": 57.4,
+                "process_cpu_ms_per_vblank": 18.184,
+                "primitives": 1255
+              },
+              {
+                "vblanks_per_second": 56.2,
+                "process_cpu_ms_per_vblank": 18.294,
+                "primitives": 1231
+              }
+            ]
+          }
+        },
+        "runtime_assessment": "No observed regression in brief paced samples; no proven optimization claim."
+      }
+    ],
+    "candidate_source_commit": "395bcd2fd573e871e44e37cc8274a5d8dd32cc02",
+    "shared_launcher_commit": "839a6f98c3014e7586ac942a66395ddaa6fc5bc5",
+    "synthetic_execution": "Generated o32 argument-home callback executes at O0/O2 with production CPUState; memory/debug seams, timing disabled.",
+    "runtime_limits": [
+      "Brief representative gameplay, not complete game qualification.",
+      "Tomba 2 cold-snapshot timing pair rejected: native coverage and draw workload differed; fresh-boot samples used instead.",
+      "Ape Escape samples use the same field with different selected gadgets; small cost differences remain inconclusive.",
+      "Ape isolated CMake catalog declaration migrated equally on both sides; original consumer worktrees untouched."
+    ]
+  },
+  "archives": [
+    {
+      "id": "001",
+      "archive": "DebuggingGames/PlayStation/[PSX] 3D Lemmings (Europe) [1995-09-07].7z",
+      "archive_sha256": "d052c8f2a600bf9402f9c304830c068bac955c475492899a6e83495b6bca1d6d",
+      "references": [
+        {
+          "file": "ICON_GFX.SYM",
+          "symbols": 23,
+          "functions": 0
+        },
+        {
+          "file": "LEMM_GFX.SYM",
+          "symbols": 589,
+          "functions": 0
+        },
+        {
+          "file": "LM.SYM",
+          "symbols": 4015,
+          "functions": 0
+        },
+        {
+          "file": "SINE.SYM",
+          "symbols": 3,
+          "functions": 0
+        },
+        {
+          "file": "SOUND_FX.SYM",
+          "symbols": 75,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCES_000.09",
+          "sha256": "f0d31e9c432dc3bce6239be96d3832cfa82c80c192ffe91b3e1feaa1d99e25f3",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "002",
+      "archive": "DebuggingGames/PlayStation/[PSX] 3D Lemmings (USA) [1995-09-14].7z",
+      "archive_sha256": "a77948a58f659561158623ab2f24732f381c09b538d72bda11e245a07698048c",
+      "references": [
+        {
+          "file": "ICON_GFX.SYM",
+          "symbols": 23,
+          "functions": 0
+        },
+        {
+          "file": "LEMM_GFX.SYM",
+          "symbols": 589,
+          "functions": 0
+        },
+        {
+          "file": "LM.SYM",
+          "symbols": 3951,
+          "functions": 0
+        },
+        {
+          "file": "SINE.SYM",
+          "symbols": 3,
+          "functions": 0
+        },
+        {
+          "file": "SOUND_FX.SYM",
+          "symbols": 75,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCUS_946.01",
+          "sha256": "b319429297229945f0e512dfde8894486ffb10e9191a865dc151c8e1f8400e52",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "003",
+      "archive": "DebuggingGames/PlayStation/[PSX] Abe a GoGo (Japan) [1997-03-06].7z",
+      "archive_sha256": "8a78ffc1b9ec5856b95bcd55e2c60b55c2fac2cb646e949693c5e862476e12d4",
+      "references": [
+        {
+          "file": "D6.OVL",
+          "symbols": 17141,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPS_011.18",
+          "sha256": "b5a8db7fca980e97c780d3f82e181eae58f393f4eeebd0b329439c406215a1a9",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "004",
+      "archive": "DebuggingGames/PlayStation/[PSX] AirAssault - The Red Mercury Missions (Japan) [1996-07-23].7z",
+      "archive_sha256": "aa9cb35b5043e763bb56f0ee29ab08d6d0cc7c78f1577e2db54dce123ffe9fa1",
+      "references": [
+        {
+          "file": "PSX.SYM",
+          "symbols": 2257,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SIPS_600.05",
+          "sha256": "4ebf523ff5cde523c7c042dfb2ad8a0d5c3e60d7dcc5c6f9a1a7a817e1df434f",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "005",
+      "archive": "DebuggingGames/PlayStation/[PSX] Albaria no Otome - Uruwashi no Seikishitachi (Japan) [1998-08-18].7z",
+      "archive_sha256": "4e183f1a6d054f4fad79d6d2a820dc31e47916344963417c3b68b9570819d2f4",
+      "references": [],
+      "executables": [
+        {
+          "file": "SLPS_015.78",
+          "sha256": "62e892f97a5f2451dca8e0a911dac5f8ac51b3939bab97f0d44b94679ec333bf",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "006",
+      "archive": "DebuggingGames/PlayStation/[PSX] Battle Konchuuden (Japan) [1998-12-12].7z",
+      "archive_sha256": "96b2b128b18061bb7c8500f0a96a5c28c7a1d32c76eb7b56d867fae1b270149c",
+      "references": [
+        {
+          "file": "sir.map",
+          "symbols": 3049,
+          "functions": 0
+        },
+        {
+          "file": "sir.sym",
+          "symbols": 5829,
+          "functions": 780
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPS_017.79",
+          "sha256": "9fa1bb0707caddcc509e8307a4169bcb89c492e6f420552c199a6e82a9a87e3e",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "sir.sym",
+          "explicit_resident_entries": 157,
+          "baseline_matched": 156,
+          "candidate_matched": 157,
+          "frame_matches": 114,
+          "frame_samples": 115,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "007",
+      "archive": "DebuggingGames/PlayStation/[PSX] Blood Lines (Tribal) [1998-06-21].7z",
+      "archive_sha256": "3521d491dc422a375b793b23d262dc0528c37823fae809e6bcd6346717303641",
+      "references": [
+        {
+          "file": "MAN.MAP",
+          "symbols": 4957,
+          "functions": 0
+        },
+        {
+          "file": "MAN.SYM",
+          "symbols": 20838,
+          "functions": 3056
+        },
+        {
+          "file": "MANO.MAP",
+          "symbols": 4913,
+          "functions": 0
+        },
+        {
+          "file": "MANO.SYM",
+          "symbols": 12406,
+          "functions": 2958
+        },
+        {
+          "file": "MANOR.MAP",
+          "symbols": 4370,
+          "functions": 0
+        },
+        {
+          "file": "MANOR.SYM",
+          "symbols": 9850,
+          "functions": 2195
+        }
+      ],
+      "executables": [
+        {
+          "file": "PSX.EXE",
+          "sha256": "ecfb79bd0d14289d2e31824e206a0b919ec89250f3e72853272eee3b4aa879b4",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MANOR.SYM",
+          "explicit_resident_entries": 2195,
+          "baseline_matched": 2193,
+          "candidate_matched": 2195,
+          "frame_matches": 1547,
+          "frame_samples": 1550,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "MAN.CPE.exe",
+          "sha256": "8c293ee682adbafbbb70b6bfad37292687561310dd61858201e11269298cff64",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAN.SYM",
+          "explicit_resident_entries": 3056,
+          "baseline_matched": 3046,
+          "candidate_matched": 3056,
+          "frame_matches": 2386,
+          "frame_samples": 2387,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "MANO.CPE.exe",
+          "sha256": "e3be9bf488b00c5ad43941cef1c7e01b524b1aa886eab36d3d4506a6da740cf4",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MANO.SYM",
+          "explicit_resident_entries": 2958,
+          "baseline_matched": 2946,
+          "candidate_matched": 2958,
+          "frame_matches": 1996,
+          "frame_samples": 2000,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "MANOR.CPE.exe",
+          "sha256": "cd477d8b06c8beb5aea3bf06b4d2bd45779c783cef15c02e7d80378487cff498",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MANOR.SYM",
+          "explicit_resident_entries": 2195,
+          "baseline_matched": 2193,
+          "candidate_matched": 2195,
+          "frame_matches": 1547,
+          "frame_samples": 1550,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "008",
+      "archive": "DebuggingGames/PlayStation/[PSX] Box-Champions (Germany) [1998-11-08].7z",
+      "archive_sha256": "bf0c25344a30937c02cc1802d9db02367edebfc15d3cb549289d261c1d7a158b",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 3825,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_014.51",
+          "sha256": "71af86bed00df01f9d3286c0b47ecf20e4b4a22da213f22058585e4697d835d8",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "009",
+      "archive": "DebuggingGames/PlayStation/[PSX] Brunswick Circuit Pro Bowling 2 (Europe) [1999-12-17].7z",
+      "archive_sha256": "8227b304df747fc8a74bab99f3c8ec1f200af7588f718c18d5e8c680685d7a5c",
+      "references": [
+        {
+          "file": "THQB2.SYM",
+          "symbols": 3099,
+          "functions": 0
+        },
+        {
+          "file": "THQB2R.MAP",
+          "symbols": 2887,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_026.18",
+          "sha256": "420250b65037b23643b25bf695167b634d4fbd4994958682130aa6babd4bd256",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "010",
+      "archive": "DebuggingGames/PlayStation/[PSX] Brunswick Circuit Pro Bowling 2 (USA) [1999-12-17].7z",
+      "archive_sha256": "44cca976bdbedab8daee961d5ecceba98216e872ed2344f2780c145cae4beb24",
+      "references": [
+        {
+          "file": "THQB2.SYM",
+          "symbols": 3097,
+          "functions": 0
+        },
+        {
+          "file": "THQB2R.MAP",
+          "symbols": 2885,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_008.56",
+          "sha256": "76337ae8bdf95da2aeeae8c99bea0147f79728a7fca72f11035e35504bd77dc0",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "011",
+      "archive": "DebuggingGames/PlayStation/[PSX] Buggy (Europe) [1998-06-30].7z",
+      "archive_sha256": "9705dca2f7c4bd941734fe979eaeb7fbc0a817c68050372d3b5ece854960c473",
+      "references": [
+        {
+          "file": "NEW.SYM",
+          "symbols": 2491,
+          "functions": 326
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_001.74",
+          "sha256": "0f538203800f3d8d4bc23b29ee41bd3d01f5442bfe7a1f136a556e2aa77fac0b",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "NEW.SYM",
+          "explicit_resident_entries": 31,
+          "baseline_matched": 30,
+          "candidate_matched": 31,
+          "frame_matches": 22,
+          "frame_samples": 23,
+          "nonresident_declarations": 8,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "012",
+      "archive": "DebuggingGames/PlayStation/[PSX] Cardinal Syn (Europe) [1998-04-29].7z",
+      "archive_sha256": "088a9c4797f686d6ae38bb9677202b23d62622c78ef87ccbc64cd75e8ad58cb1",
+      "references": [
+        {
+          "file": "SYN.SYM",
+          "symbols": 2890,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCES_010.43",
+          "sha256": "9a01724ea41e60e30137ae7a92612470eaa6859c0e61419729161ab92b00a9d5",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "013",
+      "archive": "DebuggingGames/PlayStation/[PSX] Cardinal Syn (France) [1998-04-29].7z",
+      "archive_sha256": "51c7020437a7d54de2d6de671532bca2ef846568254403a072b35fbe30d1695e",
+      "references": [
+        {
+          "file": "SYN.SYM",
+          "symbols": 2890,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCES_010.77",
+          "sha256": "9bd415ead58bd9a8ff02482dae9af568911b18b1388113b5090a5de5222c65e2",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "014",
+      "archive": "DebuggingGames/PlayStation/[PSX] Cardinal Syn (Germany) (Demo) [1998-02-27].7z",
+      "archive_sha256": "fe360648e4f0d08cd600ce1734c8e0b181cceff8a7b0ff19a0bc459439c7394b",
+      "references": [
+        {
+          "file": "SYN.SYM",
+          "symbols": 2543,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SYN.EXE",
+          "sha256": "7c971232419d9143e7716362e8096216c2cf52da7d5f282259a0af0caf3ac52b",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "015",
+      "archive": "DebuggingGames/PlayStation/[PSX] Cardinal Syn (USA) (Beta) [1997-12-14].7z",
+      "archive_sha256": "8c9e2dbf59da03e861db193bf15293edc55a1c67b0803227dc3e41838868d485",
+      "references": [
+        {
+          "file": "SYN.SYM",
+          "symbols": 2580,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCUS_941.56",
+          "sha256": "54241d02b29558a14123c5e465c861a6acc76d4f4c493d4a6da8f30dfd85dba4",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "016",
+      "archive": "DebuggingGames/PlayStation/[PSX] Cardinal Syn (USA) (OPSM #09 Demo) [1998-03-23].7z",
+      "archive_sha256": "0a095490ad53847ccc4863402c2406514f14933db31d9306d1e403d6f812bd97",
+      "references": [
+        {
+          "file": "SYN.SYM",
+          "symbols": 2543,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SYN.EXE",
+          "sha256": "05f66d5e84e8b796b6d9e4844320945c6306d5bdce8482b88046974eed3888c7",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "017",
+      "archive": "DebuggingGames/PlayStation/[PSX] Cardinal Syn (USA) (PSUnderground Vol. 2 Issue 2 Demo) [1998-05-08].7z",
+      "archive_sha256": "b34faf3120d329acd3255b89557300b961b43dd62fa4f091d7086f38c4da19ea",
+      "references": [
+        {
+          "file": "SYN.SYM",
+          "symbols": 2543,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SYN.EXE",
+          "sha256": "05f66d5e84e8b796b6d9e4844320945c6306d5bdce8482b88046974eed3888c7",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "018",
+      "archive": "DebuggingGames/PlayStation/[PSX] Cardinal Syn (USA) [1998-07-09].7z",
+      "archive_sha256": "fdd4a5cb1537027e0cdaf54e5e8168b45d8d1d96296746858695ae3304b0f119",
+      "references": [
+        {
+          "file": "SYN.SYM",
+          "symbols": 2807,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCUS_941.56",
+          "sha256": "a3a7920dab9fc1c58ebaddaca3e2019c98a06d4c6ea30b541eafef8d83d7e80b",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "019",
+      "archive": "DebuggingGames/PlayStation/[PSX] Castrol Honda Superbike Racing (USA) [1999-04-20].7z",
+      "archive_sha256": "16acd153f75945d25e68f604bc1bb7873da118220dcc8e4d0b77a46577e203a6",
+      "references": [
+        {
+          "file": "BIKE.MAP",
+          "symbols": 3340,
+          "functions": 0
+        },
+        {
+          "file": "BIKE.SYM",
+          "symbols": 3416,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_008.82",
+          "sha256": "a41fd900281b9583518aa18c507f3e974225fd6a88dcf4e7c8daa2dbdb58e83e",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "020",
+      "archive": "DebuggingGames/PlayStation/[PSX] Chicken Run (Prototype) [2000-06-21].7z",
+      "archive_sha256": "cd91236a175030f2f9821049c4dc1d7f34e32024e14e0ec2519ea28b10cf836a",
+      "references": [
+        {
+          "file": "CRTEST.MAP",
+          "symbols": 943,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_000.00",
+          "sha256": "fbf0d694a5ef7ac430684ee4f9c66f60dcf100f506817713ef40b6b316270c33",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "021",
+      "archive": "DebuggingGames/PlayStation/[PSX] Colin McRae Rally 2 (Germany) (Demo) [1997-08-00].7z",
+      "archive_sha256": "cddf40d2fc95eb3e044aa61a429971baf5f7122bdc81ec63d6d1f68a97b37456",
+      "references": [
+        {
+          "file": "GAMEFLOW.MAP",
+          "symbols": 2861,
+          "functions": 0
+        },
+        {
+          "file": "GAMEFLOW.SYM",
+          "symbols": 9862,
+          "functions": 1745
+        }
+      ],
+      "executables": [
+        {
+          "file": "GAMEFLOW.EXE",
+          "sha256": "2ff9da76a056440cc8e22211518105616706ff2e39c0faccca257d5e36d365d6",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "022",
+      "archive": "DebuggingGames/PlayStation/[PSX] Croc - Legend of the Gobbos (Europe) (Demo) [1997-09-17].7z",
+      "archive_sha256": "82a79471dc0326b769b625727d4cc1579404e416a3fbab8e40cafe903a31c783",
+      "references": [
+        {
+          "file": "CROC.SYM",
+          "symbols": 1804,
+          "functions": 0
+        },
+        {
+          "file": "DEMOFMV.SYM",
+          "symbols": 594,
+          "functions": 21
+        }
+      ],
+      "executables": [
+        {
+          "file": "CROC.EXE",
+          "sha256": "68aa6147d8d28a715dd456ad81783860ca16eb6de464f68cf91fdd5e1f471f6a",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "SLED_000.38",
+          "sha256": "ca73d36707d68f263adbc444d46bbe00757b6ca353853e9c588277edab40138d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "DEMOFMV.SYM",
+          "explicit_resident_entries": 21,
+          "baseline_matched": 21,
+          "candidate_matched": 21,
+          "frame_matches": 10,
+          "frame_samples": 10,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "023",
+      "archive": "DebuggingGames/PlayStation/[PSX] Croc 2 (Germany) (Demo) [1999-05-12].7z",
+      "archive_sha256": "6abcdb9d822982cec15f1b6a8598c1b9aaad0e1134881ef5f49798bae42ed163",
+      "references": [
+        {
+          "file": "CROC2.MAP",
+          "symbols": 1732,
+          "functions": 0
+        },
+        {
+          "file": "FMV.MAP",
+          "symbols": 727,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "CROC2.EXE",
+          "sha256": "8eecac736e1ddebf9739c1adf1ce912b7c83b7a0ee0b04ae73b9df0cde0f3ad2",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "FMV.EXE",
+          "sha256": "64d787457b0c1f318c075f2d4b9c4b76756b1ee5b94be40ad1e474c8b0938e95",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "024",
+      "archive": "DebuggingGames/PlayStation/[PSX] Crow, The - City of Angels (Europe) [1997-01-06].7z",
+      "archive_sha256": "da354d64efb87404118e2cc8c7077465d9df855df49808ec62425dac53e91ad1",
+      "references": [
+        {
+          "file": "CROW.SYM",
+          "symbols": 1802,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_002.79",
+          "sha256": "09ec8d5f3ab3beba0627a4e267491ef820f9ce0ebc2f54805ce80dbd16bf74ba",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "025",
+      "archive": "DebuggingGames/PlayStation/[PSX] Crow, The - City of Angels (Japan) [1997-01-06].7z",
+      "archive_sha256": "886c5546a1911b8224e92b61d06497d3d70fd4e521a397410269c11c35793424",
+      "references": [
+        {
+          "file": "CROW.SYM",
+          "symbols": 1801,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPS_007.69",
+          "sha256": "9a649eb9a235b2bf204576b2f03c6aa2a96c1a19c978672c80ec13af876fbba1",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "026",
+      "archive": "DebuggingGames/PlayStation/[PSX] Crow, The - City of Angels (USA) [1996-12-10].7z",
+      "archive_sha256": "8ca9abbdee6620f22d88209677f815052b01e61c23eb763f010151f4dcee8d77",
+      "references": [
+        {
+          "file": "CROW.SYM",
+          "symbols": 1799,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_002.42",
+          "sha256": "1b413748ee044b2d456713b4ecc25a2210144befb75337f9c7714378d00cd740",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "027",
+      "archive": "DebuggingGames/PlayStation/[PSX] CyberTiger (Australia) [1999-10-20].7z",
+      "archive_sha256": "fab5c9aecf19b532ab78a337765d1adc99c30d4e9d79d2b1ac74f8d0a6167c65",
+      "references": [
+        {
+          "file": "GOLFCD_A.SYM",
+          "symbols": 14761,
+          "functions": 1426
+        }
+      ],
+      "executables": [
+        {
+          "file": "GOLF_A.EXE",
+          "sha256": "dd60cb4de3b79af6bfb7d2deae971ee7fb45dbf61c94b59b5a834e8cb2c43377",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_A.SYM",
+          "explicit_resident_entries": 918,
+          "baseline_matched": 914,
+          "candidate_matched": 918,
+          "frame_matches": 695,
+          "frame_samples": 697,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "SLES_023.71",
+          "sha256": "f5362506423548d0984fba411ba0ce7edb7a91f1d994fae889250621c97303b5",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "028",
+      "archive": "DebuggingGames/PlayStation/[PSX] CyberTiger (Europe) [1999-10-20].7z",
+      "archive_sha256": "4233afc8d9b64cf894ae3961307561ab6a5c851047a4f9755f4b999b249dc9d4",
+      "references": [
+        {
+          "file": "GOLFCD_F.SYM",
+          "symbols": 14808,
+          "functions": 1436
+        },
+        {
+          "file": "GOLFCD_G.SYM",
+          "symbols": 14808,
+          "functions": 1436
+        },
+        {
+          "file": "GOLFCD_S.SYM",
+          "symbols": 14816,
+          "functions": 1437
+        },
+        {
+          "file": "GOLFCD_U.SYM",
+          "symbols": 14761,
+          "functions": 1426
+        },
+        {
+          "file": "GOLFCD_W.SYM",
+          "symbols": 14810,
+          "functions": 1437
+        }
+      ],
+      "executables": [
+        {
+          "file": "GOLF_F.EXE",
+          "sha256": "248ca1f242481064fbbe964bbeed577018f109f62e2a2c42fc6e7228c409c82b",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_F.SYM",
+          "explicit_resident_entries": 927,
+          "baseline_matched": 923,
+          "candidate_matched": 927,
+          "frame_matches": 699,
+          "frame_samples": 701,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_G.EXE",
+          "sha256": "9292197c08f3de8939e8ca665777703fffbd936bf4f4c0c2bbd739766bdc7d93",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_G.SYM",
+          "explicit_resident_entries": 927,
+          "baseline_matched": 923,
+          "candidate_matched": 927,
+          "frame_matches": 699,
+          "frame_samples": 701,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_S.EXE",
+          "sha256": "db94bdc778e868a2f39d4828e55d690987b94ef962b6bec16d5a73b07809e506",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_S.SYM",
+          "explicit_resident_entries": 927,
+          "baseline_matched": 923,
+          "candidate_matched": 927,
+          "frame_matches": 699,
+          "frame_samples": 701,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_U.EXE",
+          "sha256": "27977a961e068580981aac3c1f2147a01a3c1fda5d96f2ca426b7f4eb96bf29d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_U.SYM",
+          "explicit_resident_entries": 918,
+          "baseline_matched": 914,
+          "candidate_matched": 918,
+          "frame_matches": 695,
+          "frame_samples": 697,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_W.EXE",
+          "sha256": "89611552d0d5151e0d4bbf413c292a87b45bf74bba9d25959dfb03c104f7c00a",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_W.SYM",
+          "explicit_resident_entries": 927,
+          "baseline_matched": 923,
+          "candidate_matched": 927,
+          "frame_matches": 699,
+          "frame_samples": 701,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "SLES_023.70",
+          "sha256": "df863e1832203dade0218281be84e35584eaa460430fa5b29aab1657d1315336",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "029",
+      "archive": "DebuggingGames/PlayStation/[PSX] CyberTiger (USA) [1999-10-02].7z",
+      "archive_sha256": "67fc80e034351c8eecd3587860d8c98b7485aa7778f883ec7d6a07647ad7a78a",
+      "references": [
+        {
+          "file": "GOLF.SYM",
+          "symbols": 14741,
+          "functions": 1426
+        }
+      ],
+      "executables": [
+        {
+          "file": "GOLFCD.EXE",
+          "sha256": "093ceb0bd8001143faa58817ce8fda436ef21b855a274a213a08d783feda06b2",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLF.SYM",
+          "explicit_resident_entries": 918,
+          "baseline_matched": 915,
+          "candidate_matched": 918,
+          "frame_matches": 695,
+          "frame_samples": 696,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "SLUS_010.04",
+          "sha256": "503d0dbb8e64b4b963875d60639423f9b94b54ad0ade748c0bd7886e53cb3389",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "030",
+      "archive": "DebuggingGames/PlayStation/[PSX] Darkstalkers 3 (Prototype) [1998-05-25].7z",
+      "archive_sha256": "366b8447c616ecc0ed3d5e56c9ee403d46aec33e4d522c93eaf2a81736a82d03",
+      "references": [
+        {
+          "file": "VS.MAP",
+          "symbols": 3378,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "VS.EXE",
+          "sha256": "f933f98f1c35ce6a7d285e0e1f3e5d06006434f145b2a72608decb60d61634ca",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "031",
+      "archive": "DebuggingGames/PlayStation/[PSX] Deka Yonku - Tough the Truck (Japan) [1997-04-09].7z",
+      "archive_sha256": "eb250153c74451418d3227782f8c02b2d4cd8abccd2dc5eb2c2ff02d04e8b56b",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 3876,
+          "functions": 480
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPS_008.64",
+          "sha256": "e9c58abe75b43f10e217aeed550743076e5e66f5ea6c1f6731a351828b834315",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 110,
+          "baseline_matched": 109,
+          "candidate_matched": 110,
+          "frame_matches": 91,
+          "frame_samples": 91,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "032",
+      "archive": "DebuggingGames/PlayStation/[PSX] Destruction Derby (Japan) [1995-11-28].7z",
+      "archive_sha256": "39c7bb12322739b741b6618a1f05fccc0e58c63b9496e0b89eada25f335c8cd1",
+      "references": [
+        {
+          "file": "DEMOLISH.SYM",
+          "symbols": 2846,
+          "functions": 359
+        }
+      ],
+      "executables": [
+        {
+          "file": "DEMOLISH.EXE",
+          "sha256": "8ac806d278c9217a02657250dbd4a518615f9c39e7e8f8b43883d410d0fc5feb",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "DEMOLISH.SYM",
+          "explicit_resident_entries": 359,
+          "baseline_matched": 359,
+          "candidate_matched": 359,
+          "frame_matches": 304,
+          "frame_samples": 305,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "033",
+      "archive": "DebuggingGames/PlayStation/[PSX] Diablo (Japan) [1998-05-29].7z",
+      "archive_sha256": "a943cfdf8772b157958ef0badb00b4ec73f36b494f8db99f6629f32a00aecb13",
+      "references": [
+        {
+          "file": "DIABPSX.MAP",
+          "symbols": 10793,
+          "functions": 0
+        },
+        {
+          "file": "DIABPSX.SYM",
+          "symbols": 19602,
+          "functions": 2866
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPS_014.16",
+          "sha256": "ded675e3cd88860528c97c61e50ef200c93b3a0ba3c98637ed00b49ed4daf029",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "034",
+      "archive": "DebuggingGames/PlayStation/[PSX] Disney's 101 Dalmatians II - Patch's London Adventure (USA) [2003-09-06].7z",
+      "archive_sha256": "da00cf5fd591ae9333fced5335ed08228a173f9d8f8a448ecc5c7f6f388ac4ed",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 3311,
+          "functions": 0
+        },
+        {
+          "file": "MAIN.SYM",
+          "symbols": 7301,
+          "functions": 1218
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_015.74",
+          "sha256": "948604b119ec82c56ed919b9a3a8386f32062b3646d95a38aabd0944b183f614",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "035",
+      "archive": "DebuggingGames/PlayStation/[PSX] Divide, The - Enemies Within (USA) [1996-10-04].7z",
+      "archive_sha256": "8e18e885ea1d25ef384f091a301e6043386d8e86937d9705523c65c3ef513f01",
+      "references": [
+        {
+          "file": "GAME.SYM",
+          "symbols": 15229,
+          "functions": 4429
+        }
+      ],
+      "executables": [
+        {
+          "file": "GAME.EXE",
+          "sha256": "612221fe5887a5f1dbfc99a4036eb096035371341788e7a960006ed407710058",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "SLUS_003.17",
+          "sha256": "da80e8d08cd94922d02444a196b743996b18e1c39b6b877f947832e0aa88a815",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "036",
+      "archive": "DebuggingGames/PlayStation/[PSX] Dora the Explorer - Barnyard Buddies (Europe) [2004-10-07].7z",
+      "archive_sha256": "3a12de04e387fdfa6a1bf88f01fb1707aa401030554f6df428f34006e959089e",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 3436,
+          "functions": 0
+        },
+        {
+          "file": "MAIN.SYM",
+          "symbols": 7641,
+          "functions": 1287
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_041.73",
+          "sha256": "7e7d7acc0355015794f03f327f9cbf8f0097f131cc8ee073269737294830aa0d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 1287,
+          "baseline_matched": 1283,
+          "candidate_matched": 1286,
+          "frame_matches": 719,
+          "frame_samples": 719,
+          "nonresident_declarations": 0,
+          "remaining_entries": [
+            {
+              "address": "0x80042B30",
+              "name": "DrawCineX"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "037",
+      "archive": "DebuggingGames/PlayStation/[PSX] Dora the Explorer - Barnyard Buddies (USA) [2003-10-07].7z",
+      "archive_sha256": "17ea7ecfa1ed3d5ae8d36e1ce2ed075b913ee2d039ef6b0cd0818631761d9452",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 3436,
+          "functions": 0
+        },
+        {
+          "file": "MAIN.SYM",
+          "symbols": 7616,
+          "functions": 1282
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_015.76",
+          "sha256": "868dbc902bf3bd74b7d5810bcb654d26003e47ac194e3ebf2564e62b23b9fae7",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 1282,
+          "baseline_matched": 1278,
+          "candidate_matched": 1281,
+          "frame_matches": 714,
+          "frame_samples": 714,
+          "nonresident_declarations": 0,
+          "remaining_entries": [
+            {
+              "address": "0x80042378",
+              "name": "DrawCineX"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "038",
+      "archive": "DebuggingGames/PlayStation/[PSX] Dragon Quest Characters - Torneko no Daibouken 2 - Fushigi no Dungeon (Japan) [1999-08-12].7z",
+      "archive_sha256": "77b20b9b532c66059a64553b6fcadf875ff7f853df17f1754b9281a79882de4c",
+      "references": [
+        {
+          "file": "FPS.SYM",
+          "symbols": 12889,
+          "functions": 1576
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPM_862.93",
+          "sha256": "1d0701828e0d05180c8a83dee678f5cd689c9854730cd987be6db2a332a88b9c",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "FPS.SYM",
+          "explicit_resident_entries": 1291,
+          "baseline_matched": 1290,
+          "candidate_matched": 1291,
+          "frame_matches": 1057,
+          "frame_samples": 1057,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "039",
+      "archive": "DebuggingGames/PlayStation/[PSX] Driver 2 - Back on the Streets (Italy) [2000-10-16].7z",
+      "archive_sha256": "4a7412816fe6b8ffa1abd9bb015bd13e519f26f6215240b021d7fdb35db5b689",
+      "references": [
+        {
+          "file": "ITALIAN.SYM",
+          "symbols": 7383,
+          "functions": 1182
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_029.96",
+          "sha256": "653e35f6bd1ac960399d41de22d835e397d3436d84f401b9c140a20aeb34533d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "ITALIAN.SYM",
+          "explicit_resident_entries": 977,
+          "baseline_matched": 977,
+          "candidate_matched": 977,
+          "frame_matches": 711,
+          "frame_samples": 713,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "040",
+      "archive": "DebuggingGames/PlayStation/[PSX] Driver 2 - Back on the Streets (Spain) [2000-10-17].7z",
+      "archive_sha256": "24d945bd20f016cc15fc9e18d830121080b2910f29cab906e6866ec034561efa",
+      "references": [
+        {
+          "file": "SPANISH.SYM",
+          "symbols": 7383,
+          "functions": 1182
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_029.97",
+          "sha256": "c9b6897fdf359874d7bc14b3cab757168e0fd2a2bd1542387e9010e07774f013",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "SPANISH.SYM",
+          "explicit_resident_entries": 977,
+          "baseline_matched": 977,
+          "candidate_matched": 977,
+          "frame_matches": 711,
+          "frame_samples": 713,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "041",
+      "archive": "DebuggingGames/PlayStation/[PSX] Euro 2000 (Germany) (Demo) [1999-02-28].7z",
+      "archive_sha256": "4a5ae878ccf8bdb31bdb6cfe684d3a51b8ede22489d72ded32b19f5a93d80627",
+      "references": [
+        {
+          "file": "BECODE_Z.SYM",
+          "symbols": 5386,
+          "functions": 2213
+        },
+        {
+          "file": "E2000_Z.SYM",
+          "symbols": 1607,
+          "functions": 259
+        },
+        {
+          "file": "FECODE_Z.SYM",
+          "symbols": 1225,
+          "functions": 448
+        }
+      ],
+      "executables": [
+        {
+          "file": "E2000_Z.EXE",
+          "sha256": "efbb95f954936c880375fe5ff2afb1607d0734de1b4343f5826f9df8a12b9e8e",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "E2000_Z.SYM",
+          "explicit_resident_entries": 259,
+          "baseline_matched": 259,
+          "candidate_matched": 259,
+          "frame_matches": 196,
+          "frame_samples": 196,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "042",
+      "archive": "DebuggingGames/PlayStation/[PSX] Fear Effect (Germany) [2000-02-10].7z",
+      "archive_sha256": "5637b0b077ee7817e67215e1f3296560929ad271f5069e8f91c84ca64dfffd77",
+      "references": [
+        {
+          "file": "FEARPAL.SYM",
+          "symbols": 6342,
+          "functions": 1226
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_021.68",
+          "sha256": "968bbb0d1db7e44ce668f5315b76abe723fb8c7e35df1e83c8501bea40ecac3e",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "FEARPAL.SYM",
+          "explicit_resident_entries": 999,
+          "baseline_matched": 998,
+          "candidate_matched": 999,
+          "frame_matches": 722,
+          "frame_samples": 723,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "043",
+      "archive": "DebuggingGames/PlayStation/[PSX] Fear Effect (Prototype) [1999-12-28].7z",
+      "archive_sha256": "76eccee8bb73227260e0a1c63a308514fb9ef545a403e839ab76646e481224da",
+      "references": [
+        {
+          "file": "FEAR.SYM",
+          "symbols": 6212,
+          "functions": 1193
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_009.20",
+          "sha256": "ef959145b66d60852f5e136235e1087adf27de26b11b86d112dbd30088b683e6",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "FEAR.SYM",
+          "explicit_resident_entries": 981,
+          "baseline_matched": 980,
+          "candidate_matched": 981,
+          "frame_matches": 777,
+          "frame_samples": 778,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "044",
+      "archive": "DebuggingGames/PlayStation/[PSX] Felony 11-79 (Europe) (Demo) [1997-10-13].7z",
+      "archive_sha256": "09eeb2d11c0219499455cceca997a17897092e4896b1cd9f55a935bb832e5031",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 3597,
+          "functions": 510
+        }
+      ],
+      "executables": [
+        {
+          "file": "FELONY.PSX",
+          "sha256": "ef225ba486b8f017ef74f67eed151286d8bf1e8c206aeb151e19d370afb9946a",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 510,
+          "baseline_matched": 510,
+          "candidate_matched": 510,
+          "frame_matches": 388,
+          "frame_samples": 390,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "045",
+      "archive": "DebuggingGames/PlayStation/[PSX] Fighting Force (Prototype) [1997-07-04].7z",
+      "archive_sha256": "fd4f0640106fa14fb194ae7ad4ebeb4862a24452d008ee3dbb4b0c4204da3531",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 1412,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "MAIN.EXE",
+          "sha256": "f610ac9ccffc0ca1c4957d68bcb05a9fd82b7e0ab613eab26aa7288aa6b7ffd6",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "046",
+      "archive": "DebuggingGames/PlayStation/[PSX] Final Fantasy V (Japan) [1998-02-09].7z",
+      "archive_sha256": "30a1ad96957bb71ad986243e353e5e8680e6b1931ed38078744f3a0537c7ab9d",
+      "references": [
+        {
+          "file": "FAKE.DAT",
+          "symbols": 20185,
+          "functions": 3925
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPM_860.81",
+          "sha256": "8e77c08462128dd5cf22a995d636c43c3e6b1a16149fdd44fc6ab5e2fe05f5ed",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "047",
+      "archive": "DebuggingGames/PlayStation/[PSX] Flintstones, Die - Bedrock Bowling (Germany) [2000-11-21].7z",
+      "archive_sha256": "38be06638837d1dac1e31634a584c1dd052b7865cfbecc6420f803d84afcd95c",
+      "references": [
+        {
+          "file": "FLINTR.SYM",
+          "symbols": 2336,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_033.20",
+          "sha256": "2f22a6942c3d452f9a576656f0bbbd880bbcccc63a2aabd4c6c10d1b1578fc94",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "048",
+      "archive": "DebuggingGames/PlayStation/[PSX] Flintstones, The - Bedrock Bowling (Europe) [2000-06-20].7z",
+      "archive_sha256": "001271959387a2ed6e9a210264ca5a2a81a0d0f3908a3f7cdfc3de44be0ff347",
+      "references": [
+        {
+          "file": "FLINTR.SYM",
+          "symbols": 2335,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_023.45",
+          "sha256": "40db584ab086283caa8f72e09bc0359c5ec34db0d7a31d217af26e75fb297b15",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "049",
+      "archive": "DebuggingGames/PlayStation/[PSX] Flintstones, The - Bedrock Bowling (USA) [2000-03-14].7z",
+      "archive_sha256": "11c942acf523ba074465c4111f4f501eedd8f743e3acb1c0a115ecede889f0c9",
+      "references": [
+        {
+          "file": "FLINTR.SYM",
+          "symbols": 2331,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_009.31",
+          "sha256": "343907dfb63a24e025c1fb9b72cd76a815794d2bb9517b61f209da5bf711a17d",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "050",
+      "archive": "DebuggingGames/PlayStation/[PSX] Gangway Monsters (Japan) (PSUnderground 3.1 Demo) [1999-02-11].7z",
+      "archive_sha256": "72368e455622ce3ddf8ec905d034870c8ef708f07e5919029b278a9c6461b422",
+      "references": [
+        {
+          "file": "GYAMON.SYM",
+          "symbols": 3583,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "GYAMON.EXE",
+          "sha256": "5e3e487c94cddcbbf74e1a8b42ebe0a7b29d2bfcfdf359f494b3e1763cbef8cb",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "051",
+      "archive": "DebuggingGames/PlayStation/[PSX] Gangway Monsters (Japan) (PSUnderground Jampack Summer '99 Demo) [1999-04-06].7z",
+      "archive_sha256": "948eed9b2fe87bc220c4b537d52af07d31138471d88fc04c51c89b41432da524",
+      "references": [
+        {
+          "file": "GYAMON.SYM",
+          "symbols": 3583,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "GYAMON.EXE",
+          "sha256": "5e3e487c94cddcbbf74e1a8b42ebe0a7b29d2bfcfdf359f494b3e1763cbef8cb",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "052",
+      "archive": "DebuggingGames/PlayStation/[PSX] Granstream Denki (Japan) (Demo) [1997-07-25].7z",
+      "archive_sha256": "8eb8393f1c16a0968a79fdd41e7b66e0128fcf3481a70958e2f9f932200d4b0b",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 2388,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "PCPX_960.87",
+          "sha256": "1e38a0202d5eb88e3dfd3ff512c0a1f1d1c7509a63b320b27396f94cc8601437",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "053",
+      "archive": "DebuggingGames/PlayStation/[PSX] Grid Run (Europe) [1996-09-10].7z",
+      "archive_sha256": "500f452d64042c69a681919676a7ddaf9a228ab692511b2f8484db7a15aaf628",
+      "references": [
+        {
+          "file": "SLES0381.SYM",
+          "symbols": 6838,
+          "functions": 1477
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_003.81",
+          "sha256": "067a7832d119e54a0969433b0979df884b616805eec94d53eed644e511f4b51c",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "SLES0381.SYM",
+          "explicit_resident_entries": 1477,
+          "baseline_matched": 1471,
+          "candidate_matched": 1477,
+          "frame_matches": 1138,
+          "frame_samples": 1143,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "054",
+      "archive": "DebuggingGames/PlayStation/[PSX] Grid Runner (Japan) [1996-09-06].7z",
+      "archive_sha256": "1c4f3cdc0ef150d6833fbce3296ce025c0be0c33603fd24e797f7a86c4a2b94f",
+      "references": [
+        {
+          "file": "SLPS0659.SYM",
+          "symbols": 6821,
+          "functions": 1474
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPS_006.59",
+          "sha256": "34d30db553ce45896af6378f62fadf19035d2ae5e39a17756864aa3e972a67a0",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "SLPS0659.SYM",
+          "explicit_resident_entries": 1474,
+          "baseline_matched": 1468,
+          "candidate_matched": 1474,
+          "frame_matches": 1137,
+          "frame_samples": 1142,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "055",
+      "archive": "DebuggingGames/PlayStation/[PSX] Grid Runner (USA) [1996-08-21].7z",
+      "archive_sha256": "b7e024e1384a622cdb3c9fddcabf5bd4900e2e5616cd4723856f67647ed0fb97",
+      "references": [
+        {
+          "file": "SLUS0323.SYM",
+          "symbols": 6859,
+          "functions": 1480
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_003.23",
+          "sha256": "0b3ff89ef1b41e900d100bee7729ea49a72c90d2917e3164eb3d661286ed025e",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "SLUS0323.SYM",
+          "explicit_resident_entries": 1480,
+          "baseline_matched": 1474,
+          "candidate_matched": 1480,
+          "frame_matches": 1151,
+          "frame_samples": 1156,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "056",
+      "archive": "DebuggingGames/PlayStation/[PSX] Hardcore 4x4 (Europe) [1996-11-10].7z",
+      "archive_sha256": "8c87a629e25b44de538498cc228f16a82141727a76d49f10565f3e6b123c5764",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 3922,
+          "functions": 506
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_002.61",
+          "sha256": "870a7ec5a9d65c7d86eabdc54f2e05a8722a4d7c1adb0fd1d584e6f190aad45a",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 110,
+          "baseline_matched": 109,
+          "candidate_matched": 110,
+          "frame_matches": 92,
+          "frame_samples": 92,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "057",
+      "archive": "DebuggingGames/PlayStation/[PSX] Hi-Octane (Europe) [1995-11-09].7z",
+      "archive_sha256": "9be1eace881111a1225dae4e8a4bd1e3e090898e0c4d2cc7913168a6f0e220d3",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 4577,
+          "functions": 900
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_001.15",
+          "sha256": "699cf154a7f6665d8e09fdba4c687ff0340aa1837cb9cdc30a149c3d976f5331",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 900,
+          "baseline_matched": 895,
+          "candidate_matched": 900,
+          "frame_matches": 506,
+          "frame_samples": 513,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "058",
+      "archive": "DebuggingGames/PlayStation/[PSX] International Moto X (Europe) [1996-09-27].7z",
+      "archive_sha256": "a5d4965634eca595d81b43fefe578c4e8277d7fc8026c771859f92debd28463a",
+      "references": [
+        {
+          "file": "PSX.SYM",
+          "symbols": 2345,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_000.99",
+          "sha256": "aaa50ec416d93423961039fea68500193a7f524e8b03815f4e5fde5eb8946006",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "059",
+      "archive": "DebuggingGames/PlayStation/[PSX] International Rally Championship (Prototype) [1999-05-07].7z",
+      "archive_sha256": "196f9c1de165185c0d9b3604a87bc648aab5d1d147352bf98b9e15bea86e7d6d",
+      "references": [
+        {
+          "file": "RALLY.MAP",
+          "symbols": 2638,
+          "functions": 0
+        },
+        {
+          "file": "RALLY.SYM",
+          "symbols": 2808,
+          "functions": 1
+        }
+      ],
+      "executables": [
+        {
+          "file": "RALLY.EXE",
+          "sha256": "f53f95530ce27ff4720c2bc78cb75f9be5310a824bd6f22ee344d42fd583700d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RALLY.SYM",
+          "explicit_resident_entries": 1,
+          "baseline_matched": 1,
+          "candidate_matched": 1,
+          "frame_matches": 1,
+          "frame_samples": 1,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RALLY.CPE.exe",
+          "sha256": "12340ad966a2f2f5af4e44ca2dfef730769fe6e15dd9285b7175abb85f053412",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RALLY.SYM",
+          "explicit_resident_entries": 1,
+          "baseline_matched": 1,
+          "candidate_matched": 1,
+          "frame_matches": 1,
+          "frame_samples": 1,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "060",
+      "archive": "DebuggingGames/PlayStation/[PSX] Jackie Chan Stuntmaster (Prototype) [1999-09-13].7z",
+      "archive_sha256": "0123a6e21e8b794c7c850969d31b5933b851e210c2da78271481e271cfee41f3",
+      "references": [
+        {
+          "file": "GAME_REL.MAP",
+          "symbols": 6464,
+          "functions": 0
+        },
+        {
+          "file": "GAME_REL.SYM",
+          "symbols": 15580,
+          "functions": 3651
+        }
+      ],
+      "executables": [
+        {
+          "file": "GAME.EXE",
+          "sha256": "cda4bcb6ab57723d5f9424b58ca2127cb854d51e8a85d1bcd3d466326008d7c5",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME_REL.SYM",
+          "explicit_resident_entries": 3190,
+          "baseline_matched": 3147,
+          "candidate_matched": 3190,
+          "frame_matches": 2372,
+          "frame_samples": 2379,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GAME_REL.CPE.exe",
+          "sha256": "c1046c21c5824f32356bf8cac1ad43818328a599bffb8d1ab98a5a7f3879d632",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME_REL.SYM",
+          "explicit_resident_entries": 3190,
+          "baseline_matched": 3147,
+          "candidate_matched": 3190,
+          "frame_matches": 2372,
+          "frame_samples": 2379,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "061",
+      "archive": "DebuggingGames/PlayStation/[PSX] Jackie Chan Stuntmaster (Prototype) [1999-12-12].7z",
+      "archive_sha256": "5574b923017e58d914a9ed182867908a5b4fc6b28344c07f0940ee2e8131fe67",
+      "references": [
+        {
+          "file": "GAME_REL.SYM",
+          "symbols": 16808,
+          "functions": 4014
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_006.84",
+          "sha256": "bcbc4fc80e01d93addd974951d54f70cd3fba272715e73c191adafe5152705a7",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME_REL.SYM",
+          "explicit_resident_entries": 3480,
+          "baseline_matched": 3440,
+          "candidate_matched": 3480,
+          "frame_matches": 2590,
+          "frame_samples": 2597,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GAME_REL.CPE.exe",
+          "sha256": "3420021ac79b094b121c1fd40150be91477ef8b32e5a5eb36316f4f555e92b0a",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME_REL.SYM",
+          "explicit_resident_entries": 3480,
+          "baseline_matched": 3440,
+          "candidate_matched": 3480,
+          "frame_matches": 2590,
+          "frame_samples": 2597,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "062",
+      "archive": "DebuggingGames/PlayStation/[PSX] Jackie Chan Stuntmaster (USA) [1999-11-11].7z",
+      "archive_sha256": "d6c9d8288d3ba01320c7fc0084eafa1716b679c2300c08b8d0c90e1a60458327",
+      "references": [
+        {
+          "file": "GAME_REL.SYM",
+          "symbols": 16657,
+          "functions": 3963
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_006.84",
+          "sha256": "5aae79f0d603bf95bdcf9a2c278d1891dcbd9e835a59d4673d6e6dbd82665c64",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME_REL.SYM",
+          "explicit_resident_entries": 3437,
+          "baseline_matched": 3397,
+          "candidate_matched": 3437,
+          "frame_matches": 2548,
+          "frame_samples": 2555,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "063",
+      "archive": "DebuggingGames/PlayStation/[PSX] Knockout Kings (USA) [1998-10-24].7z",
+      "archive_sha256": "000ed9d9be5c4befcee27b338daad43acee041b83ef7e13f8abdf25f7113b5bc",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 3824,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.37",
+          "sha256": "367317e9b26a7b8123fe12bd893cc0676abd9734dd7706e7e99724f8db2fdc25",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "064",
+      "archive": "DebuggingGames/PlayStation/[PSX] Knockout Kings 99 (Europe) [1998-10-26].7z",
+      "archive_sha256": "684f0f72dc65e1ea17f5639ed4183df16a377a2078021761014b55f43f7fcd4c",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 3825,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_014.48",
+          "sha256": "64f375f1592a0cce5a84b7fcfb16a0b96f062ce5f65eea9272962ce1d296582f",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "065",
+      "archive": "DebuggingGames/PlayStation/[PSX] Knockout Kings 99 (France) [1998-11-10].7z",
+      "archive_sha256": "ebf339e2453bc6cc6c8e998d8efc7f1abbbd673a82b2ce4a8cff42a636674e0c",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 3825,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_014.50",
+          "sha256": "1094eb161d5b1b05949a6eab5e08fa65ca2c12c77e79c66a9221c2c85012d506",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "066",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain - Soul Reaver (France) [1999-07-06].7z",
+      "archive_sha256": "10678604cb512540b806eb16cc74bc8ff164054b211ec007fd39e53e9d3ea348",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 3449,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8495,
+          "functions": 2268
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_020.24",
+          "sha256": "c83aa1f7c78ff4e09b1d6f92bc8f63c065c2d867ee4d87531dcce4fd9bf7ba03",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "067",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain - Soul Reaver (Germany) [1999-07-06].7z",
+      "archive_sha256": "ab59006ab7cbbdf345c172e7c6d578c1af5b1cdd433912cc2b01b8e7a194d6cd",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 3449,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8495,
+          "functions": 2268
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_020.25",
+          "sha256": "c83aa1f7c78ff4e09b1d6f92bc8f63c065c2d867ee4d87531dcce4fd9bf7ba03",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "068",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain - Soul Reaver (Italy) [1999-07-06].7z",
+      "archive_sha256": "1e4c0e259e55c46501591942fee0c0b0ab183306cfae2797a4ab3116b2b715ed",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 3449,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8495,
+          "functions": 2268
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_020.27",
+          "sha256": "c83aa1f7c78ff4e09b1d6f92bc8f63c065c2d867ee4d87531dcce4fd9bf7ba03",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "069",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain - Soul Reaver (Spain) [1999-07-06].7z",
+      "archive_sha256": "2382f1f17ce7392bdc5fe06f45014afd6c98a9e561a7e4b9012f83b7233c7f42",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 3449,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8495,
+          "functions": 2268
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_020.26",
+          "sha256": "c83aa1f7c78ff4e09b1d6f92bc8f63c065c2d867ee4d87531dcce4fd9bf7ba03",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "070",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain Soul Reaver [1999-06-01].7z",
+      "archive_sha256": "f60e43f44f73ed433505565bb8a0666877c23ca74f52e3b38f593fad73e0bddc",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 2511,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8597,
+          "functions": 2278
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.08",
+          "sha256": "4253e6c54ef5fa1b77ccdb48a8b2f86db13b35b2079378d2c9e912e18a799246",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2278,
+          "baseline_matched": 2278,
+          "candidate_matched": 2278,
+          "frame_matches": 1663,
+          "frame_samples": 1663,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "KAIN2.CPE.exe",
+          "sha256": "c6287a5979291e34a7dc34cda6bc0ded09d488a0476327641a1951409376f104",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2278,
+          "baseline_matched": 2278,
+          "candidate_matched": 2278,
+          "frame_matches": 1663,
+          "frame_samples": 1663,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "071",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain Soul Reaver [1999-06-10].7z",
+      "archive_sha256": "ef7d3bd16bb97425903c16b9264f285a2b440d423ad4ccf31e3f981f1cabca36",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 2523,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8628,
+          "functions": 2288
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.08",
+          "sha256": "269011ff2cc96dad72d84842bbe026963759773f0c97ada46b9440b26baf16b7",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2288,
+          "baseline_matched": 2288,
+          "candidate_matched": 2288,
+          "frame_matches": 1670,
+          "frame_samples": 1670,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "KAIN2.CPE.exe",
+          "sha256": "dbca008bf6197cdeed66eada72cd6a345eb15a8af6dcc5f06c9951fa22ceaa71",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2288,
+          "baseline_matched": 2288,
+          "candidate_matched": 2288,
+          "frame_matches": 1670,
+          "frame_samples": 1670,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "072",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain Soul Reaver [1999-06-18].7z",
+      "archive_sha256": "bbe227a70b180e4f92588381cfcf9a2deb11431f32639cbe6bac2c535c83f412",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 2528,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8650,
+          "functions": 2296
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.08",
+          "sha256": "76f606dd375b9f36e3708720a9eab9c9af2ce43f4aabcde83fd22450403b5522",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2296,
+          "baseline_matched": 2296,
+          "candidate_matched": 2296,
+          "frame_matches": 1682,
+          "frame_samples": 1682,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "KAIN2.CPE.exe",
+          "sha256": "241e86ff80d2f9944c6b7c0d5864d3fbc56d0481e2dd10efbab4f519b523ac19",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2296,
+          "baseline_matched": 2296,
+          "candidate_matched": 2296,
+          "frame_matches": 1682,
+          "frame_samples": 1682,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "073",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain Soul Reaver [1999-07-02].7z",
+      "archive_sha256": "f9c2e34bbd55cb950430b5d88c82e2aa2783be26390dbbff2c1d4f26d2f2266d",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 2499,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8586,
+          "functions": 2278
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.08",
+          "sha256": "3f5b5d9570e23fc8677590ec2f69a39e81f96641353565ebaa04b002cfd85e52",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2278,
+          "baseline_matched": 2278,
+          "candidate_matched": 2278,
+          "frame_matches": 1666,
+          "frame_samples": 1666,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "KAIN2.CPE.exe",
+          "sha256": "e4dc16f1514bb9596936a80a31210841cbe5f1f93f623244ffa92a520e61b07d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2278,
+          "baseline_matched": 2278,
+          "candidate_matched": 2278,
+          "frame_matches": 1666,
+          "frame_samples": 1666,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "074",
+      "archive": "DebuggingGames/PlayStation/[PSX] Legacy of Kain Soul Reaver [1999-07-14].7z",
+      "archive_sha256": "da1cf85210ac27635902b7de8e3df0dfebee0f8750409eeaa9f5600c880b686f",
+      "references": [
+        {
+          "file": "KAIN2.MAP",
+          "symbols": 3482,
+          "functions": 0
+        },
+        {
+          "file": "KAIN2.SYM",
+          "symbols": 8567,
+          "functions": 2274
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.08",
+          "sha256": "652339609587b5e8224deec9d06dc6a8796d158a04555a0b771e3c1ddee62baf",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2274,
+          "baseline_matched": 2274,
+          "candidate_matched": 2274,
+          "frame_matches": 1661,
+          "frame_samples": 1661,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "KAIN2.CPE.exe",
+          "sha256": "870e25b55261bf043e441fa4d779709d45ccb5d3a1b80dd197ccf55ae2ed5b99",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "KAIN2.SYM",
+          "explicit_resident_entries": 2274,
+          "baseline_matched": 2274,
+          "candidate_matched": 2274,
+          "frame_matches": 1661,
+          "frame_samples": 1661,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "075",
+      "archive": "DebuggingGames/PlayStation/[PSX] MTV Sports - Snowboarding (USA) [1999-09-16].7z",
+      "archive_sha256": "8e8b3d7427256c658f23ff935586b47580c6b6a36afe34882816108d84ce2ff8",
+      "references": [
+        {
+          "file": "PSX.SYM",
+          "symbols": 11251,
+          "functions": 3160
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_009.90",
+          "sha256": "bdbd4ca2fff58acca968eb003ff44bdd8ff648c6509dabfe6be66c101b869356",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "076",
+      "archive": "DebuggingGames/PlayStation/[PSX] Mawatte Mucho! (Japan) (Demo) [1998-04-12].7z",
+      "archive_sha256": "0c8e7a629324c32f1014456b71ff8e494dc2c24975e06d446c49fdcdb46fa5ac",
+      "references": [
+        {
+          "file": "BONA.MAP",
+          "symbols": 1161,
+          "functions": 0
+        },
+        {
+          "file": "BONA.SYM",
+          "symbols": 1409,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLPM_802.32",
+          "sha256": "e6b4a320d5f7f5cb4f7c8e5df956816c88cf61b3c572fdeaad616d4159620c98",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "077",
+      "archive": "DebuggingGames/PlayStation/[PSX] Motorhead (USA) [1998-10-20].7z",
+      "archive_sha256": "1cf57d26cc18ab56c389b2b18bbfd52e19e780bf9a696ea34e0c0deaee6754a3",
+      "references": [
+        {
+          "file": "MOTOHEAD.SYM",
+          "symbols": 3458,
+          "functions": 407
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.17",
+          "sha256": "33de0ce23d624d2a6e789f329521038d353ec3f6fd2d2ecd8eab26eda65c9a02",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MOTOHEAD.SYM",
+          "explicit_resident_entries": 152,
+          "baseline_matched": 151,
+          "candidate_matched": 151,
+          "frame_matches": 88,
+          "frame_samples": 88,
+          "nonresident_declarations": 0,
+          "remaining_entries": [
+            {
+              "address": "0x80015550",
+              "name": "league_SaveLoad"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "078",
+      "archive": "DebuggingGames/PlayStation/[PSX] NBA Basketball 2000 (Prototype) [1999-05-22].7z",
+      "archive_sha256": "022ff3303c9ede91b785e9689f74d0d1a5274cf08a8885c8313151f62ac1b9e4",
+      "references": [
+        {
+          "file": "FRONT.SYM",
+          "symbols": 4640,
+          "functions": 1681
+        },
+        {
+          "file": "GAME.SYM",
+          "symbols": 6042,
+          "functions": 2380
+        },
+        {
+          "file": "RUNFIRST.SYM",
+          "symbols": 400,
+          "functions": 66
+        },
+        {
+          "file": "RUNFRONT.SYM",
+          "symbols": 532,
+          "functions": 88
+        },
+        {
+          "file": "RUNGAME.SYM",
+          "symbols": 512,
+          "functions": 84
+        },
+        {
+          "file": "SKIPFE.SYM",
+          "symbols": 536,
+          "functions": 87
+        }
+      ],
+      "executables": [
+        {
+          "file": "FRONT.EXE",
+          "sha256": "bf4e9e4a9809e1c2f6f15c6696c13325370b122ba8c8150137f65f6c7e615a38",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "FRONT.SYM",
+          "explicit_resident_entries": 1681,
+          "baseline_matched": 1679,
+          "candidate_matched": 1681,
+          "frame_matches": 1285,
+          "frame_samples": 1285,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GAME.EXE",
+          "sha256": "62e1074d3e0f22718bf091f111db1f4bf16126c2a9290a045b889d7f2869fe50",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME.SYM",
+          "explicit_resident_entries": 2380,
+          "baseline_matched": 2376,
+          "candidate_matched": 2380,
+          "frame_matches": 1728,
+          "frame_samples": 1730,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNFIRST.EXE",
+          "sha256": "323cd769f89a26e85190fb4b9908c491f1facdb881d429bfb5cbc7ec5d03026c",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFIRST.SYM",
+          "explicit_resident_entries": 66,
+          "baseline_matched": 66,
+          "candidate_matched": 66,
+          "frame_matches": 43,
+          "frame_samples": 43,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNFRONT.EXE",
+          "sha256": "50040178345923824c476994f9fc07eaf7746856adb3d86fb93962eb49ede3eb",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFRONT.SYM",
+          "explicit_resident_entries": 88,
+          "baseline_matched": 88,
+          "candidate_matched": 88,
+          "frame_matches": 58,
+          "frame_samples": 58,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNGAME.EXE",
+          "sha256": "ed66a9d17f878030b246c19b7eacb875a3010b37b1aef5e6a30099ee1d62515e",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNGAME.SYM",
+          "explicit_resident_entries": 84,
+          "baseline_matched": 84,
+          "candidate_matched": 84,
+          "frame_matches": 55,
+          "frame_samples": 55,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "SKIPFE.EXE",
+          "sha256": "30422c658b784d129b73e602001615b28b5d660a066f04a5c8d8bbe41da3ada7",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "SKIPFE.SYM",
+          "explicit_resident_entries": 87,
+          "baseline_matched": 87,
+          "candidate_matched": 87,
+          "frame_matches": 57,
+          "frame_samples": 57,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "SLUS_009.26",
+          "sha256": "323cd769f89a26e85190fb4b9908c491f1facdb881d429bfb5cbc7ec5d03026c",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFIRST.SYM",
+          "explicit_resident_entries": 66,
+          "baseline_matched": 66,
+          "candidate_matched": 66,
+          "frame_matches": 43,
+          "frame_samples": 43,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "079",
+      "archive": "DebuggingGames/PlayStation/[PSX] NFL Quarterback Club 97 (Europe) [1996-10-30].7z",
+      "archive_sha256": "05866497454520971296ab42d09ce2d20f12604e7915b98cef6e52e45444e383",
+      "references": [
+        {
+          "file": "QBC97PAL.MAP",
+          "symbols": 3700,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_004.49",
+          "sha256": "81ef7b382c8e3871e0aad8ee8da8d2eec77d78b58d86d3e127373bcfc18388c6",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "080",
+      "archive": "DebuggingGames/PlayStation/[PSX] NHL PowerPlay 98 (Prototype) [1997-05-27].7z",
+      "archive_sha256": "611a4126bf02637903c22a62f1b99b3ae75da4ccdffec35470fd51a05d939bfa",
+      "references": [
+        {
+          "file": "FRONT.SYM",
+          "symbols": 6556,
+          "functions": 1463
+        },
+        {
+          "file": "GAME.SYM",
+          "symbols": 9545,
+          "functions": 2225
+        },
+        {
+          "file": "RUNFIRST.SYM",
+          "symbols": 1135,
+          "functions": 216
+        },
+        {
+          "file": "RUNFRONT.SYM",
+          "symbols": 884,
+          "functions": 157
+        },
+        {
+          "file": "RUNGAME.SYM",
+          "symbols": 884,
+          "functions": 157
+        }
+      ],
+      "executables": [
+        {
+          "file": "FRONT.EXE",
+          "sha256": "3fc3462cdbc257a5477a1f0b357133de112bcd62bc30892c872a8979f44741d1",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "FRONT.SYM",
+          "explicit_resident_entries": 1463,
+          "baseline_matched": 1458,
+          "candidate_matched": 1463,
+          "frame_matches": 1121,
+          "frame_samples": 1125,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GAME.EXE",
+          "sha256": "9166f2ba68ce34c469760b266c8d08729e7032c7483f4d13bc970beb21c85792",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME.SYM",
+          "explicit_resident_entries": 2225,
+          "baseline_matched": 2218,
+          "candidate_matched": 2224,
+          "frame_matches": 1565,
+          "frame_samples": 1572,
+          "nonresident_declarations": 0,
+          "remaining_entries": [
+            {
+              "address": "0x80095EE4",
+              "name": "set_field_of_view"
+            }
+          ]
+        },
+        {
+          "file": "PSX.EXE",
+          "sha256": "37878d057f45019b400bcde09feb13a6b3bdd02844950c7757e86089cc339725",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFIRST.SYM",
+          "explicit_resident_entries": 216,
+          "baseline_matched": 213,
+          "candidate_matched": 216,
+          "frame_matches": 161,
+          "frame_samples": 161,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNFIRST.EXE",
+          "sha256": "37878d057f45019b400bcde09feb13a6b3bdd02844950c7757e86089cc339725",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFIRST.SYM",
+          "explicit_resident_entries": 216,
+          "baseline_matched": 213,
+          "candidate_matched": 216,
+          "frame_matches": 161,
+          "frame_samples": 161,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNFRONT.EXE",
+          "sha256": "100282e50ab9c15181caaacbbbc031133a421a1c0e372827e7843e67b92c78fc",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFRONT.SYM",
+          "explicit_resident_entries": 157,
+          "baseline_matched": 154,
+          "candidate_matched": 157,
+          "frame_matches": 109,
+          "frame_samples": 109,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNGAME.EXE",
+          "sha256": "0c8455c73c229ce077a74d214d77a924658562b33e293955a52cd01ac232768d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNGAME.SYM",
+          "explicit_resident_entries": 157,
+          "baseline_matched": 154,
+          "candidate_matched": 157,
+          "frame_matches": 109,
+          "frame_samples": 109,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "FRONT.CPE.exe",
+          "sha256": "3f8b80c4ca0afa95d3f3a6b6ac9e38b00673d2ff795ec4dc45ef59aa91482e4d",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "FRONT.SYM",
+          "explicit_resident_entries": 1463,
+          "baseline_matched": 1458,
+          "candidate_matched": 1463,
+          "frame_matches": 1121,
+          "frame_samples": 1125,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GAME.CPE.exe",
+          "sha256": "85f414c449d94c2cf76fa53ab3e33ccf5889225f22e7007f85468f4807d8b561",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GAME.SYM",
+          "explicit_resident_entries": 2225,
+          "baseline_matched": 2218,
+          "candidate_matched": 2224,
+          "frame_matches": 1565,
+          "frame_samples": 1572,
+          "nonresident_declarations": 0,
+          "remaining_entries": [
+            {
+              "address": "0x80095EE4",
+              "name": "set_field_of_view"
+            }
+          ]
+        },
+        {
+          "file": "RUNFIRST.CPE.exe",
+          "sha256": "db5a16b08d51258c449d3479d3f41aa65642b740aaefa5fb316e3bd7bdf90238",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFIRST.SYM",
+          "explicit_resident_entries": 216,
+          "baseline_matched": 213,
+          "candidate_matched": 216,
+          "frame_matches": 161,
+          "frame_samples": 161,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNFRONT.CPE.exe",
+          "sha256": "cbe72a1f5e1aef4369bcb6a18b2d2b0743e96f72528b8cad45a69c133d533734",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNFRONT.SYM",
+          "explicit_resident_entries": 157,
+          "baseline_matched": 154,
+          "candidate_matched": 157,
+          "frame_matches": 109,
+          "frame_samples": 109,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNGAME.CPE.exe",
+          "sha256": "a3ab4fc531108aa9cac5cd18d1c4ccb4b31373498f5cf9abbcd46c64c25b84d5",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RUNGAME.SYM",
+          "explicit_resident_entries": 157,
+          "baseline_matched": 154,
+          "candidate_matched": 157,
+          "frame_matches": 109,
+          "frame_samples": 109,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "081",
+      "archive": "DebuggingGames/PlayStation/[PSX] NHL Powerplay '96 (USA) [1996-06-01].7z",
+      "archive_sha256": "6f470e7062ef9a88784d8c9879478d637b71062a10009c51d1af77c276053439",
+      "references": [
+        {
+          "file": "FRONT.SYM",
+          "symbols": 6073,
+          "functions": 1125
+        },
+        {
+          "file": "GAME.SYM",
+          "symbols": 10861,
+          "functions": 2605
+        },
+        {
+          "file": "PSX.SYM",
+          "symbols": 671,
+          "functions": 85
+        },
+        {
+          "file": "RUNFRONT.SYM",
+          "symbols": 593,
+          "functions": 62
+        },
+        {
+          "file": "RUNGAME.SYM",
+          "symbols": 590,
+          "functions": 61
+        }
+      ],
+      "executables": [
+        {
+          "file": "FRONT.EXE",
+          "sha256": "be30a29526c857f36c62c8b25378386ab34d902fdf6feb46c454c838e9635831",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "FRONT.SYM",
+          "explicit_resident_entries": 1125,
+          "baseline_matched": 1125,
+          "candidate_matched": 1125,
+          "frame_matches": 744,
+          "frame_samples": 744,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GAME.EXE",
+          "sha256": "5c4f6854c71d782be31d646d8ceb6503089d712ea893ed5f9530f24853ce7a9b",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "PSX.EXE",
+          "sha256": "01f69b503d29356d8867c0c15cdd971861cab147f789727ac7438f0ed90699dd",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "RUNFRONT.EXE",
+          "sha256": "f09f5bb3e4d9380551f463616559a1568826d104caa02253a545dab25ff07bbf",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "RUNGAME.EXE",
+          "sha256": "e25398ac0178b14d89567d6be36316c0cc0be9aecde3cbbae3e83032ee81403c",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "SLUS_002.27",
+          "sha256": "01f69b503d29356d8867c0c15cdd971861cab147f789727ac7438f0ed90699dd",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "082",
+      "archive": "DebuggingGames/PlayStation/[PSX] NHL Powerplay (Europe) [1996-12-11].7z",
+      "archive_sha256": "e1144b890fe775700202572b4b772e00b1b21eb0a57d516d64a93d7d6dfb62ca",
+      "references": [
+        {
+          "file": "FRONT.SYM",
+          "symbols": 6074,
+          "functions": 1125
+        },
+        {
+          "file": "GAME.SYM",
+          "symbols": 10864,
+          "functions": 2606
+        },
+        {
+          "file": "PSX.SYM",
+          "symbols": 665,
+          "functions": 84
+        },
+        {
+          "file": "RUNFRONT.SYM",
+          "symbols": 593,
+          "functions": 62
+        },
+        {
+          "file": "RUNGAME.SYM",
+          "symbols": 590,
+          "functions": 61
+        }
+      ],
+      "executables": [
+        {
+          "file": "FRONT.EXE",
+          "sha256": "318c7fd62c7f4905009e9873a05d669af9710727e3f24e3b7cecbaa1e5beebb7",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "GAME.EXE",
+          "sha256": "c97ff707db891abae7df2facb524796be2daa9137616eb1e38bd39d1b2155cc0",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "PSX.EXE",
+          "sha256": "8869e468591dbb1575c4b10853eb4c0c28f1381133b0d3f2426dec7823a68fc1",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "PSX.SYM",
+          "explicit_resident_entries": 84,
+          "baseline_matched": 84,
+          "candidate_matched": 84,
+          "frame_matches": 61,
+          "frame_samples": 61,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "RUNFRONT.EXE",
+          "sha256": "8c12236c8806763dfa335f3a8659df995e70c423994366a133fb9db035730c9f",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "RUNGAME.EXE",
+          "sha256": "6c68105a337713e0a99e61a98b7c461e3ffc2e959a95c73e470e814c7155cb12",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "SLES_003.13",
+          "sha256": "8869e468591dbb1575c4b10853eb4c0c28f1381133b0d3f2426dec7823a68fc1",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "PSX.SYM",
+          "explicit_resident_entries": 84,
+          "baseline_matched": 84,
+          "candidate_matched": 84,
+          "frame_matches": 61,
+          "frame_samples": 61,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "083",
+      "archive": "DebuggingGames/PlayStation/[PSX] Need for Speed High Stakes 9.0 [1999-02-23].7z",
+      "archive_sha256": "6582678ad55dab664516d03e075e4269ba2f3adf134c61c01f61bd83283aa4cc",
+      "references": [
+        {
+          "file": "NFS4.MAP",
+          "symbols": 4629,
+          "functions": 0
+        },
+        {
+          "file": "NFS4.SYM",
+          "symbols": 11305,
+          "functions": 2581
+        }
+      ],
+      "executables": [
+        {
+          "file": "NFS4.EXE",
+          "sha256": "b98d54da26dab4e4139b94e43cc6f39b08a93143cbc389fcfff7d38d5756db91",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "PSX.EXE",
+          "sha256": "f6857043d5e7f029e36a77f7804e75ebd48911d664037e301edb88089bf148c4",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "NFS4.CPE.exe",
+          "sha256": "bf74755dbb977b67c215d77e3d2271eb6cf25894836aafe167f691d616e25f30",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "084",
+      "archive": "DebuggingGames/PlayStation/[PSX] Next Wave Herbst '98 (Germany) [1998-09-14].7z",
+      "archive_sha256": "24313751b34231d166f2981ffe4b88871bd4b30362d8fb2b574270d233588429",
+      "references": [
+        {
+          "file": "DTK_MENU.SYM",
+          "error": "ValueError('unsupported tag 9c at 7fc0')"
+        },
+        {
+          "file": "DTK_STUB.SYM",
+          "error": "ValueError('unsupported tag 9c at 5dcc')"
+        }
+      ],
+      "executables": [
+        {
+          "file": "DTK_MENU.EXE",
+          "sha256": "1f460016eeb962b3e901d03659bce057881944180c464c00572fa3202a7c374b",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "SLED_015.12",
+          "sha256": "bc4f4f1a3c58d4823e15647f0bf19de1852776e9f89fc27e241cba54e0727ff8",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "085",
+      "archive": "DebuggingGames/PlayStation/[PSX] Oddworld - Abe's Oddysee (USA) (v1.1) [1997-03-06].7z",
+      "archive_sha256": "50e1f59fc1fa5a68202823d7eb9d72ceb2c7e797a445d6740dc374ecaf994559",
+      "references": [
+        {
+          "file": "D6.OVL",
+          "symbols": 17147,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_001.90",
+          "sha256": "fe715c1f66583aaf0e047c2a4f1a265fe1ad2d1f44452517d1cb8e334f897115",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "086",
+      "archive": "DebuggingGames/PlayStation/[PSX] Pierrafeu, Les - Bedrock Bowling (France) [2000-11-19].7z",
+      "archive_sha256": "12477243d296f8171f3777d84cc638be97ae4bf3de063417f5e709c994c04985",
+      "references": [
+        {
+          "file": "FLINTR.SYM",
+          "symbols": 2336,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_033.19",
+          "sha256": "ceeac24417579f5958e10ec71b8000c2d8c8da7f16f07d63a98cc5d656c19864",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "087",
+      "archive": "DebuggingGames/PlayStation/[PSX] PoPoRoGue [1998-11-26].7z",
+      "archive_sha256": "f1f6590a28d6a8107d0fa902b69a888d10b37e388b29d697773bc586b98faee1",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 6278,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCPS_100.50",
+          "sha256": "2a2530fd3ddd98467347e926b9af7b1770226a5877f20401f1690278779517d4",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "088",
+      "archive": "DebuggingGames/PlayStation/[PSX] Quake II (USA) [1999-09-23].7z",
+      "archive_sha256": "bfb048cdc623bb343aed1786f424e9a2cfe8686e7df017452735fc45c1049d6d",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 6170,
+          "functions": 1037
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_007.57",
+          "sha256": "b07204f7de3864f3d000a1e945573fbc242e65c841f15693942b1a458ced5638",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 1037,
+          "baseline_matched": 1037,
+          "candidate_matched": 1037,
+          "frame_matches": 750,
+          "frame_samples": 755,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "089",
+      "archive": "DebuggingGames/PlayStation/[PSX] RC Revenge (Europe) [2000-06-29].7z",
+      "archive_sha256": "31f17663a9f4a5cfbbf96a2e658256f060b2452eed42c74c7b7e529b2a1cb3b8",
+      "references": [
+        {
+          "file": "RELEASE.SYM",
+          "symbols": 4803,
+          "functions": 1308
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_028.24",
+          "sha256": "aeccd7e8fae67da8662df3a94d587cbb300980a986680c5bd76002ace3b0278f",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RELEASE.SYM",
+          "explicit_resident_entries": 1308,
+          "baseline_matched": 1307,
+          "candidate_matched": 1308,
+          "frame_matches": 976,
+          "frame_samples": 984,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "090",
+      "archive": "DebuggingGames/PlayStation/[PSX] RC Revenge (Prototype) [2000-07-16].7z",
+      "archive_sha256": "fe8af8f0e316e1e3e857e409bcb80b81b85609aec66a48f6f36be7d5ebef2d79",
+      "references": [
+        {
+          "file": "RELEASE.SYM",
+          "symbols": 4803,
+          "functions": 1308
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_028.24",
+          "sha256": "ab7be5914074ab98d15c63a51458699840fa96865babb97ec16035e07ae3eebe",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RELEASE.SYM",
+          "explicit_resident_entries": 1308,
+          "baseline_matched": 1307,
+          "candidate_matched": 1308,
+          "frame_matches": 976,
+          "frame_samples": 984,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "091",
+      "archive": "DebuggingGames/PlayStation/[PSX] RC Revenge (USA) [2000-06-29].7z",
+      "archive_sha256": "ba602d4afd4d3b1a7948ac57073a7bfa99af93a76e4368346914a660ba5d8f33",
+      "references": [
+        {
+          "file": "RELEASE.SYM",
+          "symbols": 4801,
+          "functions": 1308
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_011.68",
+          "sha256": "b0cdc0ebe2c7a07d0c234dcb17760b7d633baaf5f481f4f6ed319ac3103d178b",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "RELEASE.SYM",
+          "explicit_resident_entries": 1308,
+          "baseline_matched": 1307,
+          "candidate_matched": 1308,
+          "frame_matches": 976,
+          "frame_samples": 984,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "092",
+      "archive": "DebuggingGames/PlayStation/[PSX] Radikal Bikers (Germany) (Demo) [2000-05-00].7z",
+      "archive_sha256": "36a2d3912295e75b656514cdba50199355970e06948229dba31a7c349fb6aa92",
+      "references": [
+        {
+          "file": "RADIKAL.MAP",
+          "symbols": 2262,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "RADIKAL.EXE",
+          "sha256": "c1ec3ee55d8fa563001457bc82c3ed4a139f727b963c8439baa2501f7592900f",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "093",
+      "archive": "DebuggingGames/PlayStation/[PSX] Resident Evil 2 [PlayStation] [Beta 2].7z",
+      "archive_sha256": "449eeec22d4ddba95b627b52faf3472e3ea4bf08199bc1f2f7529e48bb5115c6",
+      "references": [
+        {
+          "file": "main.sym",
+          "symbols": 20887,
+          "functions": 3830
+        }
+      ],
+      "executables": [
+        {
+          "file": "psx.exe",
+          "sha256": "4ce3934cd80c693337ee9a148345eedb75c0befa7acd2d9be717fb51b290d8cb",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "main.sym",
+          "explicit_resident_entries": 1121,
+          "baseline_matched": 1119,
+          "candidate_matched": 1121,
+          "frame_matches": 776,
+          "frame_samples": 780,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "main.cpe.exe",
+          "sha256": "5ea9badd106cebc1968c061ad6ed6e7f2b474212156faa34c757e10b8334e000",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "main.sym",
+          "explicit_resident_entries": 1121,
+          "baseline_matched": 1119,
+          "candidate_matched": 1121,
+          "frame_matches": 776,
+          "frame_samples": 780,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "094",
+      "archive": "DebuggingGames/PlayStation/[PSX] S.C.A.R.S. (Germany) (Demo) [1998-11-06].7z",
+      "archive_sha256": "a867aad0a08862aaeef17a22d98154edb7f2cc3c9fc094f21864006239c1383e",
+      "references": [
+        {
+          "file": "SCARSPAL.SYM",
+          "symbols": 2233,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCARSPAL.EXE",
+          "sha256": "724f9844b6b0a1b2f822548ed229890744484d68d8a80927911c66eced80f099",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "095",
+      "archive": "DebuggingGames/PlayStation/[PSX] Sled Storm (USA) (OPSM #24 Demo) [1999-06-08].7z",
+      "archive_sha256": "5edb062e9e7c42f0bb4f0f530501e398dcb4bf11099ec3c2cb670e28ebe72f89",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 2151,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "PSX.EXE",
+          "sha256": "41c7ba19fa2556ce0acb235df91ba3e2722c7f7ba588805855d8650428f7d396",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "096",
+      "archive": "DebuggingGames/PlayStation/[PSX] Sled Storm (USA) (Pizza Hut #2 Demo) [1999-09-16].7z",
+      "archive_sha256": "f0acfb1e557cb2ae8909ed1ea155626e22092a119c95363ed0f10073f5ce7976",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 2151,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "PSX.EXE",
+          "sha256": "41c7ba19fa2556ce0acb235df91ba3e2722c7f7ba588805855d8650428f7d396",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "097",
+      "archive": "DebuggingGames/PlayStation/[PSX] SnoCross Championship Racing (Europe) (Demo) [2020-07-03].7z",
+      "archive_sha256": "0b8e0bf8d11c4552e6c46a6d52f545c47f0f0dc61ecea85becd71f29e9aec372",
+      "references": [
+        {
+          "file": "SNOW.MAP",
+          "symbols": 2584,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SNOW.EXE",
+          "sha256": "511e6708924a863d9c18f530939036b98a4451041e500b4c7dcb3f2106414ac4",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "098",
+      "archive": "DebuggingGames/PlayStation/[PSX] SnoCross Championship Racing (Europe) [2020-07-03].7z",
+      "archive_sha256": "81c5e6e6b3ba2ce2a4716e37de9be54c8e8f9700041ab5db4863272b49d63765",
+      "references": [
+        {
+          "file": "EXE.MAP",
+          "symbols": 2584,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "EXE1.EXE",
+          "sha256": "7dd23634943815139cb6b2f64e5a96c2f2c47db1376c21d1dcc9581137b407cf",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        },
+        {
+          "file": "EXE2.EXE",
+          "sha256": "ac09ed9d731440af483d3abedc319ff7cc30bcefb7ec2bccdc34b2d28396ced3",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "099",
+      "archive": "DebuggingGames/PlayStation/[PSX] Soccer '97 (Europe) [1997-01-28].7z",
+      "archive_sha256": "eb9cfde3ee9795ac57eefafa7214af490f5c7b78ff42a712741eff935d51ef72",
+      "references": [
+        {
+          "file": "OLYSOCC.SYM",
+          "symbols": 2243,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_006.91",
+          "sha256": "b201b189b085fb2a9e48033bd1865f7bb5b86136451710fdfa8a144c4ee0ee7a",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "100",
+      "archive": "DebuggingGames/PlayStation/[PSX] Syndicate Wars (Germany) [1997-06-02].7z",
+      "archive_sha256": "26bd0a697906f068532e2d675b11e501f7e9808fdfcee4d47da2b22df8e7e373",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 5767,
+          "functions": 1081
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_002.12",
+          "sha256": "39e23738307a74cc9587f4701e994b28faf7c5c9a09ba9841707b3b7dc6154fa",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 1081,
+          "baseline_matched": 1080,
+          "candidate_matched": 1081,
+          "frame_matches": 750,
+          "frame_samples": 755,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "101",
+      "archive": "DebuggingGames/PlayStation/[PSX] Syndicate Wars (Prototype) [1997-06-02].7z",
+      "archive_sha256": "6ec19bfd13429597990e0d516b7463e2799d6fe1cae95309b69965d007a4bb06",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 5767,
+          "functions": 1081
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_002.62",
+          "sha256": "eadbff689d0d69c024df293602a2ad509b501b3300ebdf0e3c0f77ddc4718f25",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 1081,
+          "baseline_matched": 1080,
+          "candidate_matched": 1081,
+          "frame_matches": 750,
+          "frame_samples": 755,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "102",
+      "archive": "DebuggingGames/PlayStation/[PSX] Syphon Filter 2 (Prototype) [2000-01-17].7z",
+      "archive_sha256": "3d1f72fd0957b5615d75ece53cf05010c6e517ecf5b5d3874414d98b87a2ac56",
+      "references": [
+        {
+          "file": "SYPHON.MAP",
+          "symbols": 7569,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "PSRM0135.10",
+          "sha256": "0ab032eeb7462744428f860ab1b15327c35527cbfd080fb890a5fe2103bedf62",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "103",
+      "archive": "DebuggingGames/PlayStation/[PSX] TNN Motor Sports HardCore 4X4 (USA) [1996-11-11].7z",
+      "archive_sha256": "37a0635fda1e7ade637d3ef78ec658d3fc0153977262543c811e7a74e2ac36f1",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 3924,
+          "functions": 506
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_000.89",
+          "sha256": "0616c4d881f603d2c2de5f478efd50ae5af9726fa394fa078198715e23487ee1",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 110,
+          "baseline_matched": 109,
+          "candidate_matched": 110,
+          "frame_matches": 92,
+          "frame_samples": 92,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "104",
+      "archive": "DebuggingGames/PlayStation/[PSX] Team Losi RC Racer (USA) [1998-09-07].7z",
+      "archive_sha256": "90c52539864599da305d479dee2cc0cbfc3266ce715818a180358dd056177f4e",
+      "references": [
+        {
+          "file": "NEW.SYM",
+          "symbols": 2537,
+          "functions": 338
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_006.66",
+          "sha256": "5e01d286c99cb435b535029b5ffde4932124f89a789ec036e031a9ceeee2bab7",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "NEW.SYM",
+          "explicit_resident_entries": 38,
+          "baseline_matched": 37,
+          "candidate_matched": 38,
+          "frame_matches": 29,
+          "frame_samples": 30,
+          "nonresident_declarations": 14,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "105",
+      "archive": "DebuggingGames/PlayStation/[PSX] Tiger Woods PGA Tour 2000 (Europe) [2000-01-12].7z",
+      "archive_sha256": "220427f21c0eee1af737378886f95dc55bf2e873807c5a2a78670ea9a08740dc",
+      "references": [
+        {
+          "file": "GOLFCD_A.SYM",
+          "symbols": 13732,
+          "functions": 1412
+        },
+        {
+          "file": "GOLFCD_F.SYM",
+          "symbols": 13779,
+          "functions": 1421
+        },
+        {
+          "file": "GOLFCD_G.SYM",
+          "symbols": 13777,
+          "functions": 1420
+        },
+        {
+          "file": "GOLFCD_S.SYM",
+          "symbols": 13781,
+          "functions": 1420
+        },
+        {
+          "file": "GOLFCD_U.SYM",
+          "symbols": 13732,
+          "functions": 1412
+        },
+        {
+          "file": "GOLFCD_W.SYM",
+          "symbols": 13777,
+          "functions": 1420
+        }
+      ],
+      "executables": [
+        {
+          "file": "GOLF_A.EXE",
+          "sha256": "333b7ed06d357e75d74f4760480f3e5f61267e4cc0e01e0a7e3ed8ecfa2557b6",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_A.SYM",
+          "explicit_resident_entries": 904,
+          "baseline_matched": 900,
+          "candidate_matched": 904,
+          "frame_matches": 694,
+          "frame_samples": 696,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_F.EXE",
+          "sha256": "3302e8b260f7c9326ed913dfadf441568c9450398680a7fb30e71ac41d88e5dc",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_F.SYM",
+          "explicit_resident_entries": 913,
+          "baseline_matched": 909,
+          "candidate_matched": 913,
+          "frame_matches": 698,
+          "frame_samples": 700,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_G.EXE",
+          "sha256": "584de879b21a086c345de0ca69d0f8667f1b01e7677df73d98673a129c0288c6",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_G.SYM",
+          "explicit_resident_entries": 913,
+          "baseline_matched": 909,
+          "candidate_matched": 913,
+          "frame_matches": 698,
+          "frame_samples": 700,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_S.EXE",
+          "sha256": "55d7f5b0671e10ab5a485be0aa2dcdb6ebe54b393bdb397ae992d49809b6ce0a",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_S.SYM",
+          "explicit_resident_entries": 913,
+          "baseline_matched": 909,
+          "candidate_matched": 913,
+          "frame_matches": 698,
+          "frame_samples": 700,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_U.EXE",
+          "sha256": "4697317370720ca2e0c974fbe6f95e3c5e082d0dc0b005b0d4a840b412d117a8",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_U.SYM",
+          "explicit_resident_entries": 904,
+          "baseline_matched": 900,
+          "candidate_matched": 904,
+          "frame_matches": 694,
+          "frame_samples": 696,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "GOLF_W.EXE",
+          "sha256": "9c264b3a750d06c04639813be8d2a2727d6eed1a5029f6a41c29a9177179431a",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "GOLFCD_W.SYM",
+          "explicit_resident_entries": 913,
+          "baseline_matched": 909,
+          "candidate_matched": 913,
+          "frame_matches": 698,
+          "frame_samples": 700,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        },
+        {
+          "file": "SLES_025.51",
+          "sha256": "a92cb0fe244c0dc83d98137860d79b58d60fbd14095c92455f7bbf1a25aa4122",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "106",
+      "archive": "DebuggingGames/PlayStation/[PSX] Tomb Raider Chronicles [2000-10-27].7z",
+      "archive_sha256": "9290ec80292eac84c826cab86601a1afe6553b96d6c8ebeaed470a2b8d673f83",
+      "references": [
+        {
+          "file": "MAIN.MAP",
+          "symbols": 2129,
+          "functions": 0
+        },
+        {
+          "file": "MAIN.SYM",
+          "symbols": 5273,
+          "functions": 890
+        }
+      ],
+      "executables": [
+        {
+          "file": "MAIN.EXE",
+          "sha256": "7918245280b4fea81f8e26d8a238195ac4373f85e97e06fdbdb5d826f0bfc8dc",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 890,
+          "baseline_matched": 890,
+          "candidate_matched": 890,
+          "frame_matches": 641,
+          "frame_samples": 641,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "107",
+      "archive": "DebuggingGames/PlayStation/[PSX] Tony Hawk's Pro Skater 2 (Demo) [2000-06-02].7z",
+      "archive_sha256": "c2e296110e0062a68f4bcd7a7afcea13dd2d34d2c88bff17788a8a1ebed7caae",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 7934,
+          "functions": 1646
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLUS_900.86",
+          "sha256": "a48cdeeda479e6841f9137492a80cbda4675d24f0d65361e0971edaf47a1034f",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 1646,
+          "baseline_matched": 1646,
+          "candidate_matched": 1646,
+          "frame_matches": 1160,
+          "frame_samples": 1164,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "108",
+      "archive": "DebuggingGames/PlayStation/[PSX] Tony Hawk's Pro Skater 2 (Europe) (Demo) [1999-02-28].7z",
+      "archive_sha256": "d5032b250cf203e322cfec5b232dca651234ab8463592a2a11d1fce54878436f",
+      "references": [
+        {
+          "file": "MAIN.SYM",
+          "symbols": 7927,
+          "functions": 1645
+        }
+      ],
+      "executables": [
+        {
+          "file": "PROSKATE.EXE",
+          "sha256": "bb0f75e1727246881ee5e6039da47a90b9e5452cc6c9dd39746da6859bce25b6",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "MAIN.SYM",
+          "explicit_resident_entries": 1645,
+          "baseline_matched": 1645,
+          "candidate_matched": 1645,
+          "frame_matches": 1160,
+          "frame_samples": 1164,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "109",
+      "archive": "DebuggingGames/PlayStation/[PSX] True Pinball (Europe) [1996-03-07].7z",
+      "archive_sha256": "b47ee3528ab527f5f47b851936c82825a38994210e47bcd9f5f57e46575171fb",
+      "references": [
+        {
+          "file": "PINBALL.SYM",
+          "symbols": 2132,
+          "functions": 251
+        }
+      ],
+      "executables": [
+        {
+          "file": "SLES_000.52",
+          "sha256": "2ba450e70695dddbb0538858a3a7b461798bd5ca4bec6faa90f7785108cc6077",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "110",
+      "archive": "DebuggingGames/PlayStation/[PSX] True Pinball (USA) [1996-04-09].7z",
+      "archive_sha256": "ef7cb9489898bc63fdae5d61521a6f1b3be7d3c932ab4e9c4bdb6ce36297c71f",
+      "references": [],
+      "executables": [
+        {
+          "file": "SLUS_003.37",
+          "sha256": "5a7e146cebd70cf66d2bb8c2ebff3ee258918e3dee2044affae9d1f96bbfa26c",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "111",
+      "archive": "DebuggingGames/PlayStation/[PSX] Twisted Metal (Beta) [1995-08-17].7z",
+      "archive_sha256": "d726e5bc94282fc6b9f67c8aa27c7f21df318d283ac1d19dcda67715ea4b3c26",
+      "references": [
+        {
+          "file": "PSX.SYM",
+          "symbols": 2019,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "PSX.EXE",
+          "sha256": "7655b7eb4ed539ae28cdefc934456f501cc81091ca4d52addb2c12541e6511bd",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "112",
+      "archive": "DebuggingGames/PlayStation/[PSX] Twisted Metal - Small Brawl (Prototype) [2001-10-15].7z",
+      "archive_sha256": "7d6226d39718cd21335dcba58f0e8a81c667df617ad0319475f914014f916ac5",
+      "references": [
+        {
+          "file": "TMSB.SYM",
+          "symbols": 3983,
+          "functions": 94
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCUS_946.42",
+          "sha256": "b15b446504f2c221a5451f5be7caad89763bd80ab3a6984e06233014a8ca7bb4",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "TMSB.SYM",
+          "explicit_resident_entries": 94,
+          "baseline_matched": 94,
+          "candidate_matched": 94,
+          "frame_matches": 59,
+          "frame_samples": 59,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "113",
+      "archive": "DebuggingGames/PlayStation/[PSX] Twisted Metal - Small Brawl (USA) (OPSM #54 Demo) [2002-04-00].7z",
+      "archive_sha256": "28af8e53a463fa4bea5bd8a1982538c4fe084921291aaf08ea65f1d1e1ec973f",
+      "references": [
+        {
+          "file": "TM.SYM",
+          "symbols": 4100,
+          "functions": 135
+        }
+      ],
+      "executables": [
+        {
+          "file": "TM.EXE",
+          "sha256": "e663ccc9c9815a7bce3cbfbc505257bd73caed4303e1e11f36b35b123aad2b50",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    },
+    {
+      "id": "114",
+      "archive": "DebuggingGames/PlayStation/[PSX] WarGames - Defcon 1 (Prototype) [1998-02-26].7z",
+      "archive_sha256": "31a105990e413b8440e3737d78282a74674ce9a7a9eb8a264869711a8ab187c7",
+      "references": [
+        {
+          "file": "WARGAMES.MAP",
+          "symbols": 2326,
+          "functions": 0
+        },
+        {
+          "file": "WARGAMES.SYM",
+          "symbols": 5150,
+          "functions": 777
+        }
+      ],
+      "executables": [
+        {
+          "file": "WARGAMES.EXE",
+          "sha256": "298aee87d3e8f271ca1b013b00f78b6286bca91f2364aabbe77a8fddf2ec959c",
+          "analyzer_exit": 0,
+          "status": "qualified",
+          "reference": "WARGAMES.SYM",
+          "explicit_resident_entries": 777,
+          "baseline_matched": 776,
+          "candidate_matched": 777,
+          "frame_matches": 573,
+          "frame_samples": 584,
+          "nonresident_declarations": 0,
+          "remaining_entries": []
+        }
+      ]
+    },
+    {
+      "id": "115",
+      "archive": "DebuggingGames/PlayStation/[PSX] Wipeout XL (USA) (Beta) [1996-07-30].7z",
+      "archive_sha256": "13cc01ca54f9e5b4752177ae7c2ca56cf30991fd29bfc8e1cc94964981d61005",
+      "references": [
+        {
+          "file": "NTSC.SYM",
+          "symbols": 1964,
+          "functions": 0
+        }
+      ],
+      "executables": [
+        {
+          "file": "SCUS_943.51",
+          "sha256": "f42ae6e5a0ca258ac63e78a71a16f190e62977bbd3209c2694d00c65f343e1de",
+          "analyzer_exit": 0,
+          "status": "unqualified reference correspondence or untyped labels"
+        }
+      ]
+    }
+  ]
+}
