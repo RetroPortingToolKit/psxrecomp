@@ -225,4 +225,11 @@ void LocalMousePolicy::sample(uint64_t now, uint8_t& rx, uint8_t& ry) {
     }
     if (out.override_right) { rx = uint8_t(out.rx); ry = uint8_t(out.ry); }
 }
+bool LocalMousePolicy::wheel(uint64_t t, uint64_t now, double dx, double dy) {
+    if (!captured_ || !allowed() || !std::isfinite(dx) || !std::isfinite(dy) ||
+        std::abs(dx) > 1e6 || std::abs(dy) > 1e6 ||
+        (dx == 0 && dy == 0) || !valid_time(t, now)) return false;
+    dispatch(PSX_MOD_MOUSE_WHEEL, t, dx, dy);
+    return true;
+}
 } // namespace psx
