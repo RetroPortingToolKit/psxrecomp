@@ -430,14 +430,14 @@ def write_fixture(work: pathlib.Path, memory_source: pathlib.Path) -> pathlib.Pa
 
 
 def build(cc: str, work: pathlib.Path, memory_source: pathlib.Path, name: str,
-          defines: tuple[str, ...], trace_source: str) -> pathlib.Path:
+          defines: tuple[str, ...], trace_source: str, optimization: str = "-O2") -> pathlib.Path:
     work = work.resolve()
     memory_copy = write_fixture(work, memory_source)
     exe = work / (name + ".exe")
     cmd = [
         cc,
         "-std=c11",
-        "-O2",
+        optimization,
         "-fno-lto",
         "-ffunction-sections",
         "-fdata-sections",
