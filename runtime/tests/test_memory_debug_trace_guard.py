@@ -140,6 +140,10 @@ uint32_t g_dirty_ram_dispatch_seg_bitmap[PSX_CODE_SEGMENT_COUNT][DIRTY_RAM_EXEC_
 int g_psx_render_pass_active = 0;
 
 /* These services are inactive in the ordinary RAM/scratchpad trace probes. */
+int psx_mod_host_output_scope(void) { abort(); }
+int render_pass_mmio_read_allowed(uint32_t address, uint32_t width) {
+    (void)address; (void)width; abort();
+}
 void psx_icache_isc_store(uint32_t biu, uint32_t addr, uint32_t value) {
     (void)biu; (void)addr; (void)value; abort();
 }
