@@ -14,6 +14,7 @@
 #include "mod_disc_read_session.h"
 #include "psx_sha256.h"
 #include "host_sha256.h"
+#include "psx_memory.h"
 
 #include <algorithm>
 #include <array>
@@ -600,9 +601,48 @@ extern "C" const uint8_t* psx_resident_derived(const PSXResidentPack* p, uint32_
     return blob_data(*p, d.blob);
 }
 
+extern "C" uint8_t* memory_get_ram_ptr(void);
+extern "C" {
+extern int g_ls_mode, g_ls_replay_active, g_ram_read_watch_active;
+extern volatile int g_ds_recording;
+}
+
 extern "C" int psx_resident_guest_ranges_match(const PSXResidentRange* ranges, uint32_t count,
                                                const char* sha256) {
     if (!ranges || !count || !sha256) return 0;
+    /* Pure, contiguous RAM guards can use the same SDK/portable digest as
+     * resident blobs. Rehash every byte on every call; never retain trust
+     * across writes or snapshot restores. Keep read observers and all other
+     * address/geometry cases on the original callback path below. */
+    constexpr uint32_t kBulkGuardLimit = 64u * 1024u;
+    const uint8_t* ram = memory_get_ram_ptr();
+    bool bulk = ram && !g_ls_mode && !g_ls_replay_active &&
+                !g_ds_recording && !g_ram_read_watch_active;
+    uint32_t total = 0;
+    for (uint32_t r = 0; bulk && r < count; ++r) {
+        const uint32_t size = ranges[r].hi - ranges[r].lo;
+        if (ranges[r].hi < ranges[r].lo || size > kBulkGuardLimit - total ||
+            (size && !psx_ram_resolve(ranges[r].lo, size, nullptr))) bulk = false;
+        else total += size;
+    }
+    if (bulk) {
+        try {
+            Bytes bytes(total);
+            uint32_t at = 0;
+            for (uint32_t r = 0; r < count; ++r) {
+                const uint32_t size = ranges[r].hi - ranges[r].lo;
+                uint32_t offset;
+                if (size) {
+                    psx_ram_resolve(ranges[r].lo, size, &offset);
+                    std::memcpy(bytes.data() + at, ram + offset, size);
+                    at += size;
+                }
+            }
+            return hex(sha(bytes.data(), bytes.size()).data()) == sha256;
+        } catch (const std::bad_alloc&) {
+            /* An optional fast path must not add an allocation requirement. */
+        }
+    }
     psx_sha256_ctx ctx;
     psx_sha256_init(&ctx);
     uint8_t chunk[256];

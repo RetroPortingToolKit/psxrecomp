@@ -24,8 +24,16 @@ namespace fs = std::filesystem;
 
 static std::array<uint8_t, 2 * 1024 * 1024> ram;
 static int failures;
+static unsigned guard_reads;
+static bool ram_available = true;
+extern "C" {
+uint32_t g_psx_ram_size = 0x200000u, g_psx_ram_mask = 0x1fffffu;
+int g_ls_mode = 0, g_ram_read_watch_active = 0;
+volatile int g_ds_recording = 0;
+}
+extern "C" uint8_t* memory_get_ram_ptr(void) { return ram_available ? ram.data() : nullptr; }
 
-extern "C" uint8_t psx_read_byte(uint32_t a) { return ram[a & 0x1fffffu]; }
+extern "C" uint8_t psx_read_byte(uint32_t a) { ++guard_reads; return ram[a & 0x1fffffu]; }
 extern "C" void psx_write_byte(uint32_t a, uint8_t v) { ram[a & 0x1fffffu] = v; }
 extern "C" uint16_t psx_read_half(uint32_t a) {
     return (uint16_t)(ram[a & 0x1fffffu] | ram[(a + 1) & 0x1fffffu] << 8);
@@ -350,9 +358,43 @@ int main() {
     std::vector<uint8_t> guarded(ram.begin() + 0x1000, ram.begin() + 0x1040);
     const std::string guard = sha_hex(guarded.data(), guarded.size());
     const PSXResidentRange ranges[2] = {{0x80001000u, 0x80001020u}, {0x80001020u, 0x80001040u}};
+    guard_reads = 0;
     check(psx_resident_guest_ranges_match(ranges, 2, guard.c_str()), "guard matches");
+    check(!guard_reads, "contiguous RAM guard avoids byte callbacks");
     ram[0x1030] ^= 1;
     check(!psx_resident_guest_ranges_match(ranges, 2, guard.c_str()), "guard detects a changed byte");
+    ram[0x1030] ^= 1;
+    const PSXResidentRange mirrored[2] = {{0xa0201000u, 0xa0201020u}, {0x00401020u, 0x00401040u}};
+    check(psx_resident_guest_ranges_match(mirrored, 2, guard.c_str()), "live retail mirror geometry matches");
+    for (int mode = 0; mode < 5; ++mode) {
+        ram_available = mode != 0;
+        g_ls_mode = mode == 1;
+        g_ls_replay_active = mode == 2;
+        g_ds_recording = mode == 3;
+        g_ram_read_watch_active = mode == 4;
+        guard_reads = 0;
+        check(psx_resident_guest_ranges_match(ranges, 2, guard.c_str()) && guard_reads == 64,
+              "unavailable RAM/read observer preserves callback guard");
+    }
+    ram_available = true; g_ls_mode = g_ls_replay_active = g_ram_read_watch_active = g_ds_recording = 0;
+    const PSXResidentRange mmio[] = {{0x1f801000u, 0x1f801040u}};
+    guard_reads = 0;
+    check(psx_resident_guest_ranges_match(mmio, 1, guard.c_str()) && guard_reads == 64,
+          "non-RAM range preserves callback guard");
+    ram[0x1fffffu] = 0x5a; ram[0] = 0xa5;
+    const uint8_t edge_bytes[] = {0x5a, 0xa5};
+    const PSXResidentRange edge[] = {{0x801fffffu, 0x80200001u}};
+    guard_reads = 0;
+    check(psx_resident_guest_ranges_match(edge, 1, sha_hex(edge_bytes, 2).c_str()) && guard_reads == 2,
+          "mirror boundary preserves callback reads");
+    const PSXResidentRange large[] = {{0x80010000u, 0x80020001u}};
+    guard_reads = 0;
+    check(psx_resident_guest_ranges_match(large, 1, sha_hex(ram.data()+0x10000u, 65537).c_str()) && guard_reads == 65537,
+          "bulk allocation bound preserves large callback guards");
+    const PSXResidentRange empty[] = {{0x80001000u, 0x80001000u}};
+    check(psx_resident_guest_ranges_match(empty, 1, sha_hex(nullptr, 0).c_str()), "empty guard unchanged");
+    const PSXResidentRange invalid[] = {{0x80001001u, 0x80001000u}};
+    check(!psx_resident_guest_ranges_match(invalid, 1, guard.c_str()), "reversed guard rejected");
 
     /* Invalid specs are refused before any disc access. */
     PSXResidentSpec bad = spec;
