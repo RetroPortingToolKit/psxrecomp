@@ -1742,6 +1742,14 @@ extern "C" uint64_t pgxp_load_source(uint32_t address, uint32_t expected) {
     const PGXPValue *pv = pgxp_ptr(address);
     return pv && pv->gen == s_gen && pv->value == expected ? source_get(pv) : 0;
 }
+extern "C" int pgxp_tag_word_source(uint32_t address, uint32_t expected, uint64_t token) {
+    if (!g_pgxp_active || !s_source_tracking || (address & 3u)) return 0;
+    PGXPValue *pv = pgxp_ptr_w(address);
+    if (!pv) return 0;
+    if (pv->gen != s_gen || pv->value != expected) pv_reset(pv, expected);
+    source_set(pv, token);
+    return 1;
+}
 
 extern "C" int pgxp_get_gte_sxy_checked(uint32_t index, uint32_t expect,
                                         int check, int32_t *x16, int32_t *y16) {

@@ -140,8 +140,31 @@ int main(void) {
     psx_pgxp_alu(nullptr, ADDIU(2, 3, 1), PACKED + 1, PACKED, 0);
     psx_pgxp_store(nullptr, SW(1, 3), ADDR_B, PACKED + 1);
     CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == 0);
+    // Explicit derivations need not acquire unrelated precision or guessed
+    // provenance from another word with the same packed position.
+    CHECK(pgxp_tag_word_source(ADDR_B, PACKED + 1, 404));
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == 404);
+    CHECK(pgxp_load_source(ADDR_B + 4, PACKED + 1) == 0);
+    psx_pgxp_load(nullptr, LW(1, 4), ADDR_B, PACKED + 1);
+    psx_pgxp_store(nullptr, SW(1, 4), ADDR_A, PACKED + 1);
+    CHECK(pgxp_load_source(ADDR_A, PACKED + 1) == 404);
+    CHECK(!pgxp_tag_word_source(ADDR_B + 1, PACKED + 1, 505));
+    pgxp_suppress_begin();
+    CHECK(!pgxp_tag_word_source(ADDR_B, PACKED + 1, 505));
+    pgxp_suppress_end();
     pgxp_invalidate_word(ADDR_A);
-    CHECK(pgxp_load_source(ADDR_A, PACKED) == 0);
+    CHECK(pgxp_load_source(ADDR_A, PACKED + 1) == 0);
+    // A descriptor lifetime witness uses this same exact-word transport.
+    // An untracked rewrite invalidates it even when the guest value agrees.
+    const uint64_t life = UINT64_C(0x8000000000000001);
+    CHECK(pgxp_tag_word_source(ADDR_B, PACKED + 1, life));
+    pgxp_checkpoint_begin();
+    CHECK(pgxp_tag_word_source(ADDR_B, PACKED + 1, life + 1));
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == life + 1);
+    pgxp_checkpoint_rollback();
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == life);
+    pgxp_invalidate_word(ADDR_B);
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == 0);
     pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
     psx_pgxp_cop2(nullptr, SWC2(14), PACKED, ADDR_A);
     CHECK(pgxp_load_source(ADDR_A, PACKED) == 0);
