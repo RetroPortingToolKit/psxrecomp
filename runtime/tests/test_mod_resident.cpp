@@ -25,6 +25,7 @@ namespace fs = std::filesystem;
 static std::array<uint8_t, 8 * 1024 * 1024> ram;
 static int failures;
 static unsigned guard_reads;
+static unsigned kseg2_reads;
 static bool ram_available = true;
 extern "C" {
 uint32_t g_psx_ram_size = 0x200000u, g_psx_ram_mask = 0x1fffffu;
@@ -33,7 +34,11 @@ volatile int g_ds_recording = 0;
 }
 extern "C" uint8_t* memory_get_ram_ptr(void) { return ram_available ? ram.data() : nullptr; }
 
-extern "C" uint8_t psx_read_byte(uint32_t a) { ++guard_reads; return ram[a & 0x1fffffu]; }
+extern "C" uint8_t psx_read_byte(uint32_t a) {
+    ++guard_reads;
+    if (a >= 0xc0000000u) { ++kseg2_reads; return 0; }
+    return ram[a & 0x1fffffu];
+}
 extern "C" void psx_write_byte(uint32_t a, uint8_t v) { ram[a & 0x1fffffu] = v; }
 extern "C" uint16_t psx_read_half(uint32_t a) {
     return (uint16_t)(ram[a & 0x1fffffu] | ram[(a + 1) & 0x1fffffu] << 8);
@@ -387,6 +392,12 @@ int main() {
     guard_reads = 0;
     check(psx_resident_guest_ranges_match(mmio, 1, guard.c_str()) && guard_reads == 64,
           "non-RAM range preserves callback guard");
+    const PSXResidentRange kseg2[] = {{0xc0001000u, 0xc0001040u}};
+    const uint8_t zeros[64] = {};
+    guard_reads = kseg2_reads = 0;
+    check(psx_resident_guest_ranges_match(kseg2, 1, sha_hex(zeros, sizeof zeros).c_str()) &&
+          guard_reads == 64 && kseg2_reads == 64, "KSEG2 keeps zero reads and callback accounting");
+    check(!psx_resident_guest_ranges_match(kseg2, 1, guard.c_str()), "KSEG2 never aliases low RAM");
     ram[0x1fffffu] = 0x5a; ram[0] = 0xa5;
     const uint8_t edge_bytes[] = {0x5a, 0xa5};
     const PSXResidentRange edge[] = {{0x801fffffu, 0x80200001u}};

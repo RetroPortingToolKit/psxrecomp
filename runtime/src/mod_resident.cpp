@@ -621,7 +621,8 @@ extern "C" int psx_resident_guest_ranges_match(const PSXResidentRange* ranges, u
     uint32_t total = 0;
     for (uint32_t r = 0; bulk && r < count; ++r) {
         const uint32_t size = ranges[r].hi - ranges[r].lo;
-        if (ranges[r].hi < ranges[r].lo || size > kBulkGuardLimit - total ||
+        if (ranges[r].lo >= 0xc0000000u || ranges[r].hi > 0xc0000000u ||
+            ranges[r].hi < ranges[r].lo || size > kBulkGuardLimit - total ||
             (size && !psx_ram_resolve(ranges[r].lo, size, nullptr))) bulk = false;
         else total += size;
     }
