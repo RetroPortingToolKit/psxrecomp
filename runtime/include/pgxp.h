@@ -183,6 +183,15 @@ void pgxp_gte_set_projection(const PGXPProjection *projection);
 int pgxp_load_projection(uint32_t addr, uint32_t packed, PGXPProjection *out);
 int pgxp_get_gte_projection(uint32_t index, uint32_t packed, PGXPProjection *out);
 
+/* Explicit producer lineage, transported only by intact word copies. Tokens
+ * name host-owned source vertices; they are never inferred from position,
+ * depth, caller or matching values. Arithmetic and partial/untracked writes
+ * discard them. This transport can run with precision correction disabled.
+ * Changing its mode invalidates history; restore/reset must do so as well. */
+int pgxp_set_source_tracking(int enabled);
+int pgxp_tag_gte_source(uint32_t index, uint32_t expected, uint64_t token);
+uint64_t pgxp_load_source(uint32_t address, uint32_t expected);
+
 /* Current SXY FIFO shadow (index 0..3 selects GTE data regs 12..15).
  * Returns nonzero when the shadow is live and carries X/Y precision. */
 int pgxp_get_gte_sxy(uint32_t index, int32_t *x16, int32_t *y16);

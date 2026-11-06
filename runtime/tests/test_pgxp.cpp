@@ -109,6 +109,47 @@ static int lookup(uint32_t addr, uint32_t word, int32_t ix, int32_t iy,
 }
 
 int main(void) {
+    /* Presentation lineage works while correction is off and carries only
+     * explicit source IDs, including two vertices at the same position. */
+    pgxp_set_enabled(0);
+    CHECK(pgxp_set_source_tracking(1));
+    pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+    CHECK(pgxp_tag_gte_source(2, PACKED, 101));
+    psx_pgxp_cop2(nullptr, SWC2(14), PACKED, ADDR_A);
+    pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+    CHECK(pgxp_tag_gte_source(2, PACKED, 202));
+    psx_pgxp_cop2(nullptr, SWC2(14), PACKED, ADDR_B);
+    CHECK(pgxp_load_source(ADDR_A, PACKED) == 101);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 202);
+    CHECK(pgxp_load_source(ADDR_A + 4, PACKED) == 0);
+    CHECK(pgxp_load_source(ADDR_A, PACKED ^ 1) == 0);
+    CHECK(!pgxp_tag_gte_source(2, PACKED ^ 1, 303));
+    psx_pgxp_load(nullptr, LW(1, 2), ADDR_A, PACKED);
+    psx_pgxp_alu(nullptr, OR(2, 0, 2), PACKED, PACKED, 0);
+    psx_pgxp_alu(nullptr, OR(2, 0, 3), PACKED, PACKED, 0);
+    psx_pgxp_store(nullptr, SW(1, 3), ADDR_B, PACKED);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 101);
+    pgxp_checkpoint_begin();
+    pgxp_invalidate_word(ADDR_B);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 0);
+    pgxp_checkpoint_rollback();
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 101);
+    // Even an unchanged partial write loses the whole-vertex provenance.
+    psx_pgxp_store(nullptr, SH(1, 3), ADDR_B, PACKED);
+    CHECK(pgxp_load_source(ADDR_B, PACKED) == 0);
+    psx_pgxp_alu(nullptr, ADDIU(2, 3, 1), PACKED + 1, PACKED, 0);
+    psx_pgxp_store(nullptr, SW(1, 3), ADDR_B, PACKED + 1);
+    CHECK(pgxp_load_source(ADDR_B, PACKED + 1) == 0);
+    pgxp_invalidate_word(ADDR_A);
+    CHECK(pgxp_load_source(ADDR_A, PACKED) == 0);
+    pgxp_gte_push_sxy(X16, Y16, SZ3, PACKED);
+    psx_pgxp_cop2(nullptr, SWC2(14), PACKED, ADDR_A);
+    CHECK(pgxp_load_source(ADDR_A, PACKED) == 0);
+    CHECK(!pgxp_enabled());
+    uint32_t native_sxy[3] = {PACKED, PACKED, PACKED}; int64_t cross = 0;
+    CHECK(!pgxp_gte_nclip_precise(native_sxy, &cross));
+    pgxp_set_source_tracking(0);
+    CHECK(!pgxp_active());
     pgxp_set_enabled(1);
     pgxp_set_tolerance(-1.0f);
     pgxp_set_cpu_mode(0);

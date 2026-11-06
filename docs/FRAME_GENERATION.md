@@ -19,8 +19,21 @@ runtime builds, its catalog CTest passes, and isolated muted software/headless
 boot advances from frame 191 to 904 and exits normally with all four old enable
 environment switches set. Debug queries report interpolation disabled, no
 captures/swaps, and frame generation retired. This is a retirement smoke test,
-not gameplay or new-interpolation qualification. Ape hooks,
-complete renderer integration, actual-game correctness, cadence and latency
+not gameplay or new-interpolation qualification. Ape now has a development-only,
+read-only producer for skeletal/rigid projection tuples and bounded copies of
+original ordering-table commands. Explicit vertex tokens travel through intact
+CPU/GTE word copies using the address-keyed transport in `pgxp.cpp`; source
+tracking works independently of precision correction, allocates its RAM token
+table only when enabled, and never uses the position fallback. Arithmetic,
+partial/untracked writes and generation changes discard tokens. Its unit checks
+cover identical coordinates with different source IDs, copy lineage, rejection,
+reset and checkpoint rollback. Original-disc software/headless capture exercises
+both projection paths and complete polygon lineage, while leaving unknown
+polygons explicitly untracked. This is source-transport qualification only.
+
+Actual object lifetimes and camera domains (including rigid UI producers),
+remaining geometry paths, immutable texture versions, complete renderer
+integration, actual-game correctness, cadence and latency
 qualification and owner visual approval are outstanding. This branch does not
 claim that enabling interpolation is ready or that all consumers are migrated.
 Stereo and netplay local-view VRAM transactions are separate features and remain.
