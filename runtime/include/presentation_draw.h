@@ -35,6 +35,13 @@ void psx_presentation_draw_destroy(PsxPresentationDraw *draw);
 int psx_presentation_draw_build(PsxPresentationDraw *draw,
     const PsxPresentationScene *old_scene, const PsxPresentationScene *new_scene,
     double alpha, const PsxPresentationViewport *viewport);
+/* Explicit indexed producers may assemble triangle corners from sampled
+ * semantic vertices. This clips their view-space samples without pairing
+ * primitives. camera supplies projection parameters; its pose is already
+ * applied to the samples. Input samples are copied into the bounded workspace. */
+int psx_presentation_draw_samples(PsxPresentationDraw *draw,
+    const PsxPresentationSample *samples,uint32_t count,
+    const PsxPresentationCamera *camera,const PsxPresentationViewport *viewport);
 /* The returned array is owned by draw, valid until the next build/destroy.
  * Resource indices refer to new_scene, which must remain sealed and alive
  * through backend consumption. No resource pointer is borrowed by draw. A

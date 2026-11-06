@@ -18,6 +18,14 @@ typedef struct PsxPresentationPose {
     double rotation[4]; /* quaternion w,x,y,z, normalized on ingestion */
     double scale[3];
 } PsxPresentationPose;
+/* Convert an explicit row-major affine matrix to TRS. Refuse singular, sheared
+ * or invalid inputs; tolerate only small fixed-point rotation roundoff. rigid
+ * additionally requires a proper unit-scale rotation (camera convention).
+ * No camera fitting or correspondence inference is performed. */
+int psx_presentation_pose_from_matrix(PsxPresentationPose *pose,
+    const double linear[9],const double translation[3],int rigid);
+int psx_presentation_pose_point(const PsxPresentationPose *pose,
+    const double point[3],int inverse,double result[3]);
 typedef struct PsxPresentationVertex {
     double position[3]; /* stable corresponding local-space animated vertex */
     float uv[2];

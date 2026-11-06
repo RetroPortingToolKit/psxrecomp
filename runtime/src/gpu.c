@@ -7826,6 +7826,12 @@ void gpu_get_draw_area(GpuDrawArea* out) {
     out->offset_x = draw_offset_x;
     out->offset_y = draw_offset_y;
 }
+void gpu_get_drawing_environment(GpuDrawingEnvironment* out) {
+    gpu_get_draw_area(&out->area);
+    out->texture_window=texture_window_value;
+    out->mode=texpage_x | texpage_y<<4 | semi_transparency<<5 | texpage_colors<<7 |
+        dither_enabled<<9 | set_mask_bit<<11 | check_mask_bit<<12 | texture_disable<<15;
+}
 
 uint16_t gpu_vram_peek(int x, int y) {
     if (x < 0 || x >= 1024 || y < 0 || y >= 512) return 0;

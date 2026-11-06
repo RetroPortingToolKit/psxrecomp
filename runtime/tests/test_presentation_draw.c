@@ -134,6 +134,22 @@ int main(void) {
     vertices[0].position[0]=DBL_MAX;vertices[0].position[2]=1;
     PsxPresentationScene *huge=scene(1,14,vertices,0,DBL_MAX);
     assert(!psx_presentation_draw_build(d,NULL,huge,1,&viewport));
+    PsxPresentationSample explicit_samples[3]={0};
+    for(unsigned i=0;i<3;++i) {
+        explicit_samples[i].identity=55;explicit_samples[i].resource=7;
+        explicit_samples[i].view[2]=2;explicit_samples[i].rgba=0xFFFFFFFFu;
+    }
+    explicit_samples[1].view[0]=2;explicit_samples[2].view[1]=2;
+    assert(psx_presentation_draw_samples(d,explicit_samples,3,&c,&viewport));
+    t=psx_presentation_draw_triangles(d,&count);assert(count==1 && t[0].resource==7);
+    near(t[0].vertices[1].x,1);near(t[0].vertices[2].y,1);
+    assert(!psx_presentation_draw_samples(d,explicit_samples,2,&c,&viewport));
+    explicit_samples[1].identity=56;
+    assert(!psx_presentation_draw_samples(d,explicit_samples,3,&c,&viewport));
+    explicit_samples[1].identity=55;explicit_samples[1].uv[0]=NAN;
+    assert(!psx_presentation_draw_samples(d,explicit_samples,3,&c,&viewport));
+    assert(psx_presentation_draw_samples(d,NULL,0,&c,&viewport));
+    assert(psx_presentation_draw_triangles(d,&count) && count==0);
     psx_presentation_scene_destroy(perspective);psx_presentation_scene_destroy(affine);
     psx_presentation_scene_destroy(a);psx_presentation_scene_destroy(b);
     psx_presentation_scene_destroy(cut);psx_presentation_scene_destroy(mode);

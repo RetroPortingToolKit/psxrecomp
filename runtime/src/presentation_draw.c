@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct ClipVertex {
     double x, y, z; /* homogeneous projection X/Y and W (view Z) */
@@ -92,11 +93,30 @@ int psx_presentation_draw_build(PsxPresentationDraw *d,
     if (!psx_presentation_scene_sample(old_scene, new_scene, alpha, &camera,
         d->samples, d->source_cap)) return 0;
     const uint32_t n = psx_presentation_scene_vertices(new_scene);
+    return psx_presentation_draw_samples(d,d->samples,n,&camera,p);
+}
+int psx_presentation_draw_samples(PsxPresentationDraw *d,
+    const PsxPresentationSample *samples,uint32_t n,const PsxPresentationCamera *projection,
+    const PsxPresentationViewport *p) {
+    if(!d)return 0;
+    d->valid=0;d->count=0;
+    if(n>d->source_cap || n%3 || (n && !samples) || !projection || !p ||
+        !isfinite(p->left) || !isfinite(p->top) || !isfinite(p->right) || !isfinite(p->bottom) ||
+        p->left>=p->right || p->top>=p->bottom ||
+        !isfinite(projection->focal_x) || !isfinite(projection->focal_y) ||
+        !isfinite(projection->center_x) || !isfinite(projection->center_y) ||
+        !isfinite(projection->near_z) || projection->near_z<=0 ||
+        projection->focal_x<=0 || projection->focal_y<=0)return 0;
+    const PsxPresentationCamera camera=*projection;
+    if(n && samples!=d->samples)memcpy(d->samples,samples,(size_t)n*sizeof *samples);
     for (uint32_t first=0; first<n; first+=3) {
         ClipVertex poly[2][10]; unsigned count=3, side=0;
         const PsxPresentationSample *sample = d->samples + first;
         for (unsigned i=0; i<3; ++i) {
-            if (sample[i].identity != sample->identity ||
+            if (!sample[i].identity || !isfinite(sample[i].view[0]) || !isfinite(sample[i].view[1]) ||
+                !isfinite(sample[i].view[2]) || !isfinite(sample[i].uv[0]) || !isfinite(sample[i].uv[1]) ||
+                (sample[i].flags&~(PSX_PRESENTATION_CUT|PSX_PRESENTATION_NATIVE|PSX_PRESENTATION_AFFINE_UV)) ||
+                sample[i].identity != sample->identity ||
                 sample[i].resource != sample->resource ||
                 sample[i].flags != sample->flags) return 0;
             ClipVertex *v = &poly[0][i];

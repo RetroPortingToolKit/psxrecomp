@@ -25,6 +25,38 @@ static PsxPresentationScene *scene(uint64_t epoch,uint64_t tick,
 }
 static void close_to(double a,double b){assert(fabs(a-b)<1e-9);}
 int main(void) {
+    const double matrix[9]={0,0,2,0,3,0,-4,0,0},translation[3]={10,20,30},point[3]={1,2,3};
+    PsxPresentationPose converted;double transformed[3],original[3];
+    assert(psx_presentation_pose_from_matrix(&converted,matrix,translation,0));
+    assert(psx_presentation_pose_point(&converted,point,0,transformed));
+    close_to(transformed[0],16);close_to(transformed[1],26);close_to(transformed[2],26);
+    assert(psx_presentation_pose_point(&converted,transformed,1,original));
+    for(unsigned i=0;i<3;++i)close_to(original[i],point[i]);
+    assert(!psx_presentation_pose_from_matrix(&converted,matrix,translation,1));
+    const double reflection[9]={-2,0,0,0,3,0,0,0,4};
+    assert(psx_presentation_pose_from_matrix(&converted,reflection,translation,0));
+    assert(psx_presentation_pose_point(&converted,point,0,transformed));
+    close_to(transformed[0],8);close_to(transformed[1],26);close_to(transformed[2],42);
+    assert(psx_presentation_pose_point(&converted,transformed,1,original));
+    for(unsigned i=0;i<3;++i)close_to(original[i],point[i]);
+    const double rotation[9]={0,0,1,0,1,0,-1,0,0};
+    assert(psx_presentation_pose_from_matrix(&converted,rotation,translation,1));
+    assert(psx_presentation_pose_point(&converted,point,0,transformed));
+    assert(psx_presentation_pose_point(&converted,transformed,1,original));
+    for(unsigned i=0;i<3;++i)close_to(original[i],point[i]);
+    const double shear[9]={1,.1,0,0,1,0,0,0,1},singular[9]={1,0,0,0,0,0,0,0,1};
+    assert(!psx_presentation_pose_from_matrix(&converted,shear,translation,0));
+    assert(!psx_presentation_pose_from_matrix(&converted,singular,translation,0));
+    const double rounded[9]={1,1.0/4096,0,-1.0/4096,1,0,0,0,1};
+    assert(psx_presentation_pose_from_matrix(&converted,rounded,translation,1));
+    /* Original Ape camera after removing the separately authored Y lens.
+     * Its integer normalization leaves up to ~14 Q12 units of length error,
+     * while the rotation axes remain orthogonal. Keep unit camera scale. */
+    const double ape_camera[9]={4107./4096,0,0,0,2893./3040,-941./3040,
+        0,1263./4096,3909./4096};
+    assert(psx_presentation_pose_from_matrix(&converted,ape_camera,translation,1));
+    for(unsigned k=0;k<3;++k)close_to(converted.scale[k],1);
+    for(unsigned i=0;i<3;++i)close_to(converted.scale[i],1);
     double phase=-1;
     /* Native 30 Hz endpoints with a 60 Hz midpoint: only generate when the
      * next scene is available early enough; never delay the native timeline. */
@@ -36,6 +68,13 @@ int main(void) {
     assert(psx_presentation_phase(UINT64_MAX-100,UINT64_MAX,0,UINT64_MAX-50,&phase));
     close_to(phase,.5);
     PsxPresentationCamera c=camera(),sample_camera;
+    PsxPresentationCamera empty_camera=c;empty_camera.pose.position[0]=20;
+    PsxPresentationScene *empty_a=scene(5,1,&c),*empty_b=scene(5,2,&empty_camera);
+    assert(psx_presentation_scene_seal(empty_a) && psx_presentation_scene_seal(empty_b));
+    PsxPresentationSample empty_result[1];
+    assert(psx_presentation_scene_sample(empty_a,empty_b,.5,&sample_camera,empty_result,1));
+    close_to(sample_camera.pose.position[0],10);assert(psx_presentation_scene_vertices(empty_b)==0);
+    psx_presentation_scene_destroy(empty_a);psx_presentation_scene_destroy(empty_b);
     PsxPresentationVertex vertices[3]={{{1,0,10},{0,0},0xffffffff},
         {{0,1,10},{1,0},0xffffffff},{{0,0,10},{0,1},0xffffffff}};
     PsxPresentationSample result[12];

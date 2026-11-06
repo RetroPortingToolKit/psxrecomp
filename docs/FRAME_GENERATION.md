@@ -41,8 +41,25 @@ attribute, resource and failure-path tests pass; no GPU presentation is enabled
 by this module. The Ape producer now also covers world quarter-turns, terrain
 source indices and explicit parent recipes for recursive GT4 subdivision.
 
+`presentation_gpu.h` and `presentation_gpu.inc` now provide a separate OpenGL
+target and retained native-word texture versions. GPU-to-GPU copies use explicit
+raw-mirror write epochs; referenced versions cannot be overwritten by cache
+turnover. Separate program/VAO/buffer ownership and a complete state bracket
+protect the native renderer. Ordinary PS1 texture/CLUT, transparency, masking and
+dither shader semantics are shared with the rasterizer. Actual Ape retained-pair
+phase exports passed same-command CPU/RAM/VRAM and native-image invariance.
+Debug/export readback is separate from regular GPU capture and rendering.
+
+The current GPU API serializes with the GL owner and renders a native-resolution
+geometry reference. It is development integration, not the asynchronous 60 FPS
+presenter. The Ape adapter can sample explicit world-root/camera/local-vertex
+bindings into this target. Its first phase exports expose visible terrain and
+component coverage defects, so visual qualification has failed. Complete source
+coverage, all-command endpoint qualification, display integration, widescreen,
+scheduling and latency gates remain open.
+
 Actual object lifetimes and camera domains (including rigid UI producers),
-remaining geometry paths, immutable texture versions, complete renderer
+remaining geometry paths, complete resource and renderer
 integration, actual-game correctness, cadence and latency
 qualification and owner visual approval are outstanding. This branch does not
 claim that enabling interpolation is ready or that all consumers are migrated.

@@ -80,6 +80,7 @@
 #include "gpu_sw_renderer.h"
 #include "gpu_fmv_hd.h"
 #include "gpu_gl_renderer.h"
+#include "presentation_gpu.h"
 #include "video_telemetry.h"
 #include "gpu_hd_textures.h"
 #include "mod_texture_banks.h"
@@ -735,6 +736,8 @@ static GLuint        s_hr_tex = 0, s_hr_fbo = 0, s_hr_rb = 0;
 static int           s_hr_alloc = 0;
 /* Native raw-1555 sampling mirror + readback source. */
 static GLuint        s_raw_tex = 0, s_raw_fbo = 0;
+static uint64_t s_pgpu_raw_epoch = 1;
+static void presentation_gpu_shutdown(void);
 /* CPU->VRAM upload staging (native RGBA8). */
 static GLuint        s_up_tex = 0;
 /* copy_rect staging (hr-sized RGBA8). */
@@ -2514,6 +2517,7 @@ static void flush_cpu_upload(void) {
         glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h,
                         PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT,
                         s_vram + (size_t)y * VRAM_W + x);
+        ++s_pgpu_raw_epoch;
         glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, 0);
         if (diag) s_rt_up_diag[4] += SDL_GetPerformanceCounter() - t0;
     }
@@ -3150,6 +3154,7 @@ static void pack_flush(void) {
                            GL_UNSIGNED_SHORT, s_vram + (size_t)y * VRAM_W + x);
         }
         glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, 0);
+        ++s_pgpu_raw_epoch;
         return;
     }
 
@@ -3170,6 +3175,7 @@ static void pack_flush(void) {
     p_glUseProgram(0);
     glDisable(GL_SCISSOR_TEST);
     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    ++s_pgpu_raw_epoch;
 }
 
 /* Make sure the raw mirror is current for a textured draw that samples the
@@ -6142,6 +6148,7 @@ static int init_gpu_raster(void) {
 
     s_up_tex      = make_tex(GL_RGBA8, VRAM_W, VRAM_H, GL_RGBA, GL_UNSIGNED_BYTE);
     s_raw_tex     = make_tex(PSXGL_R16UI, VRAM_W, VRAM_H, PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT);
+    ++s_pgpu_raw_epoch;
     /* Force the driver's first texture-upload allocation while the renderer is
      * initializing. NVIDIA otherwise defers it until the first MDEC frame,
      * producing a measured ~33 ms glTexSubImage hitch and an audible underrun. */
@@ -6640,6 +6647,7 @@ static void present_image_ring_gl_forget(void);
 static void fmv_hd_release(void);
 void gl_renderer_shutdown(void) {
     gl_renderer_render_thread_stop();   /* drains; the context comes back to this thread */
+    presentation_gpu_shutdown();
     fmv_hd_release();
     psx_host_set_hud_draw_cb(NULL, NULL);
     /* After the worker has stopped (it presents, and captures, on its own
@@ -12185,3 +12193,5 @@ static void rth_ring_capture_now(const int32_t *a) { (void)a; }
 #endif
 
 const GpuRenderBackend *gl_backend_get(void) { return s_rth_on ? &GL_RT_BACKEND : &GL_BACKEND; }
+
+#include "presentation_gpu.inc"

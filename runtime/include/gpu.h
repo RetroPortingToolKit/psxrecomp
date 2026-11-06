@@ -109,6 +109,12 @@ typedef struct {
     int32_t offset_x, offset_y;
 } GpuDrawArea;
 void gpu_get_draw_area(GpuDrawArea* out);
+typedef struct GpuDrawingEnvironment {
+    GpuDrawArea area;
+    uint32_t mode, texture_window;
+} GpuDrawingEnvironment;
+/* Read-only host observation; no GPUSTAT polling or guest cycle side effects. */
+void gpu_get_drawing_environment(GpuDrawingEnvironment* out);
 /* Non-zero when the frame that just reached vblank used two side-by-side draw
  * areas. Presentation-only helpers use this to expand a local split-screen
  * viewport without changing the underlying framebuffer or netplay hashes. */

@@ -131,7 +131,7 @@ int psx_presentation_scene_append(PsxPresentationScene *s,
     s->lookup[slot]=++s->object_count;return 1;
 }
 int psx_presentation_scene_seal(PsxPresentationScene *s) {
-    if(!s || !s->building || s->failed || !s->object_count)return 0;
+    if(!s || !s->building || s->failed)return 0;
     s->sealed=1;return 1;
 }
 const void *psx_presentation_scene_resource_data(const PsxPresentationScene *s,
@@ -170,6 +170,55 @@ static void rotate(const double q[4],const double v[3],double out[3],int inverse
     out[0]=v[0]+q[0]*t[0]+y*t[2]-z*t[1];
     out[1]=v[1]+q[0]*t[1]+z*t[0]-x*t[2];
     out[2]=v[2]+q[0]*t[2]+x*t[1]-y*t[0];
+}
+int psx_presentation_pose_from_matrix(PsxPresentationPose *out,
+    const double m[9],const double translation[3],int rigid) {
+    if(!out || !m || !translation || !finite_array(m,9) || !finite_array(translation,3))return 0;
+    PsxPresentationPose p={0};double r[9];
+    for(unsigned col=0;col<3;++col) {
+        double length=hypot(hypot(m[col],m[3+col]),m[6+col]);
+        /* Native Q12 camera construction may accumulate several integer
+         * normalization steps. Bound length roundoff to 16 Q12 units; the
+         * independent orthogonality/shear check below remains stricter. */
+        if(!isfinite(length) || length<1e-12 || (rigid && fabs(length-1)>16.0/4096.0))return 0;
+        p.scale[col]=rigid?1:length;
+        for(unsigned row=0;row<3;++row)r[row*3+col]=m[row*3+col]/length;
+    }
+    for(unsigned a=0;a<3;++a)for(unsigned b=a+1;b<3;++b) {
+        double dot=0;for(unsigned row=0;row<3;++row)dot+=r[row*3+a]*r[row*3+b];
+        if(fabs(dot)>.002)return 0;
+    }
+    const double det=r[0]*(r[4]*r[8]-r[5]*r[7])-r[1]*(r[3]*r[8]-r[5]*r[6])+r[2]*(r[3]*r[7]-r[4]*r[6]);
+    if(!isfinite(det) || fabs(det)<.99 || (rigid && det<0))return 0;
+    if(det<0) {p.scale[0]=-p.scale[0];for(unsigned row=0;row<3;++row)r[row*3]=-r[row*3];}
+    double *q=p.rotation,s;
+    const double trace=r[0]+r[4]+r[8];
+    if(trace>0) {
+        s=2*sqrt(trace+1);q[0]=s/4;q[1]=(r[7]-r[5])/s;q[2]=(r[2]-r[6])/s;q[3]=(r[3]-r[1])/s;
+    } else if(r[0]>r[4] && r[0]>r[8]) {
+        s=2*sqrt(1+r[0]-r[4]-r[8]);q[0]=(r[7]-r[5])/s;q[1]=s/4;q[2]=(r[1]+r[3])/s;q[3]=(r[2]+r[6])/s;
+    } else if(r[4]>r[8]) {
+        s=2*sqrt(1+r[4]-r[0]-r[8]);q[0]=(r[2]-r[6])/s;q[1]=(r[1]+r[3])/s;q[2]=s/4;q[3]=(r[5]+r[7])/s;
+    } else {
+        s=2*sqrt(1+r[8]-r[0]-r[4]);q[0]=(r[3]-r[1])/s;q[1]=(r[2]+r[6])/s;q[2]=(r[5]+r[7])/s;q[3]=s/4;
+    }
+    for(unsigned i=0;i<3;++i)p.position[i]=translation[i];
+    return pose_copy(out,&p);
+}
+int psx_presentation_pose_point(const PsxPresentationPose *source,
+    const double point[3],int inverse,double result[3]) {
+    PsxPresentationPose p;double v[3],rotated[3];
+    if(!source || !point || !result || !pose_copy(&p,source) || !finite_array(point,3))return 0;
+    if(inverse) {
+        for(unsigned i=0;i<3;++i)v[i]=point[i]-p.position[i];
+        rotate(p.rotation,v,rotated,1);
+        for(unsigned i=0;i<3;++i)result[i]=rotated[i]/p.scale[i];
+    } else {
+        for(unsigned i=0;i<3;++i)v[i]=point[i]*p.scale[i];
+        rotate(p.rotation,v,rotated,0);
+        for(unsigned i=0;i<3;++i)result[i]=rotated[i]+p.position[i];
+    }
+    return finite_array(result,3);
 }
 int psx_presentation_scene_sample(const PsxPresentationScene *a,
     const PsxPresentationScene *b,double alpha,PsxPresentationCamera *camera,
