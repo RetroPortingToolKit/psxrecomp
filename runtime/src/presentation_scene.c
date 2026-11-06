@@ -111,7 +111,7 @@ int psx_presentation_scene_append(PsxPresentationScene *s,
     if(!o || !o->identity || !o->vertices || !o->vertex_count ||
         o->vertex_count%3 || o->vertex_count>s->vertex_cap-s->vertex_count ||
         s->object_count==s->object_cap || o->resource>=s->resource_count ||
-        (o->flags&~(PSX_PRESENTATION_CUT|PSX_PRESENTATION_NATIVE)) ||
+        (o->flags&~(PSX_PRESENTATION_CUT|PSX_PRESENTATION_NATIVE|PSX_PRESENTATION_AFFINE_UV)) ||
         !pose_copy(&pose,&o->pose) || find(s,o->identity)) {
         s->failed=1;return 0;
     }
@@ -191,6 +191,7 @@ int psx_presentation_scene_sample(const PsxPresentationScene *a,
         int match=p && p->data.lifetime==o->data.lifetime &&
             p->data.topology==o->data.topology &&
             p->data.vertex_count==o->data.vertex_count &&
+            !((p->data.flags^o->data.flags)&PSX_PRESENTATION_AFFINE_UV) &&
             !(o->data.flags&(PSX_PRESENTATION_CUT|PSX_PRESENTATION_NATIVE)) &&
             !(p->data.flags&PSX_PRESENTATION_NATIVE);
         if(match) for(unsigned k=0;k<3;++k)
@@ -212,6 +213,7 @@ int psx_presentation_scene_sample(const PsxPresentationScene *a,
             if(!finite_array(s->view,3))return 0;
             s->identity=o->data.identity;s->vertex_index=j;s->resource=o->data.resource;
             s->uv[0]=v->uv[0];s->uv[1]=v->uv[1];s->rgba=v->rgba;
+            s->flags=o->data.flags;
             s->interpolated=match;
         }
     }

@@ -21,7 +21,7 @@ typedef struct PsxPresentationPose {
 typedef struct PsxPresentationVertex {
     double position[3]; /* stable corresponding local-space animated vertex */
     float uv[2];
-    uint32_t rgba;
+    uint32_t rgba; /* R in low byte, then G, B, A */
 } PsxPresentationVertex;
 typedef struct PsxPresentationObject {
     uint64_t identity, lifetime, topology;
@@ -31,7 +31,10 @@ typedef struct PsxPresentationObject {
     uint32_t resource; /* index in this snapshot, not a guest address */
     uint32_t flags;
 } PsxPresentationObject;
-enum { PSX_PRESENTATION_CUT = 1, PSX_PRESENTATION_NATIVE = 2 };
+enum {
+    PSX_PRESENTATION_CUT = 1, PSX_PRESENTATION_NATIVE = 2,
+    PSX_PRESENTATION_AFFINE_UV = 4
+};
 typedef struct PsxPresentationCamera {
     PsxPresentationPose pose; /* camera-to-world; scale must be one */
     double focal_x, focal_y, center_x, center_y, near_z;
@@ -42,6 +45,7 @@ typedef struct PsxPresentationSample {
     double view[3]; /* project only after near-plane clipping */
     float uv[2];
     uint32_t rgba;
+    uint32_t flags;
     int interpolated;
 } PsxPresentationSample;
 

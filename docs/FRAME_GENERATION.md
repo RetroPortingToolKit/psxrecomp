@@ -31,6 +31,16 @@ reset and checkpoint rollback. Original-disc software/headless capture exercises
 both projection paths and complete polygon lineage, while leaving unknown
 polygons explicitly untracked. This is source-transport qualification only.
 
+The fresh `presentation_draw.c` renderer front end consumes sampled scenes,
+clips in homogeneous coordinates before dividing by depth, preserves draw order
+and resource indices, and prepares triangles for a separate presentation target.
+Near/viewport clipping distinguishes affine PS1 texture coordinates and colour
+from perspective-correct texture coordinates. Fixed capacities and invalid
+coordinates refuse the entire draw stream. Its geometry-phase, clipping,
+attribute, resource and failure-path tests pass; no GPU presentation is enabled
+by this module. The Ape producer now also covers world quarter-turns, terrain
+source indices and explicit parent recipes for recursive GT4 subdivision.
+
 Actual object lifetimes and camera domains (including rigid UI producers),
 remaining geometry paths, immutable texture versions, complete renderer
 integration, actual-game correctness, cadence and latency

@@ -2008,6 +2008,17 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME presentation_scene_test COMMAND presentation_scene_test)
 
+    add_executable(presentation_draw_test tests/test_presentation_draw.c
+        src/presentation_scene.c src/presentation_draw.c)
+    target_include_directories(presentation_draw_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(presentation_draw_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(presentation_draw_test PRIVATE -UNDEBUG)
+        target_link_libraries(presentation_draw_test PRIVATE m)
+    endif()
+    add_test(NAME presentation_draw_test COMMAND presentation_draw_test)
+
     add_executable(retired_render_pass_test
         tests/test_retired_render_pass.c src/render_pass_frame.c)
     target_include_directories(retired_render_pass_test PRIVATE include)
