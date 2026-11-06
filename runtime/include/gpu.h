@@ -588,6 +588,14 @@ void gpu_ws_tag_feedback_rect(uint32_t prim);
  * letterbox panels to adaptive edges, preserving the interior opening.
  * Packet guarded, cleared on reset/load, inert outside native-wide gameplay. */
 void gpu_ws_tag_screen_mask_quad(uint32_t prim);
+/* Title-identified axis-aligned flat quad, or textured quad whose four UVs
+ * name one texel: grow an outer vertical boundary that lies on or beyond the
+ * canonical display edge into the visible reveal. edges: 1 left, 2 right,
+ * 3 both. Only the part outside the quad is drawn, in its OT position with
+ * its colour, CLUT, texture page and blend; the tagged quad skips automatic
+ * UI layout. Packet guarded, expires after two frames, cleared on
+ * reset/load, inert outside native-wide. */
+void gpu_ws_tag_reveal_edge_quad(uint32_t prim, int edges);
 /* Title-owned flat/Gouraud radial screen mask. Render-only scale about the
  * display centre; guest coordinates and timing stay unchanged. Scale >= 1,
  * inert at 4:3, packet guarded and reset alongside other transient tags. */
