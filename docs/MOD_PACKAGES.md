@@ -253,7 +253,25 @@ expected_sha256 = "..."
 Every `[[option]]`, `[[patch]]`, and `[[overlay]]` in a feature-style manifest
 must name its owning feature. Ambiguous operations are rejected.
 
-Option types are `boolean`, `choice`, and bounded `integer`. Conditions are
+Option types are `boolean`, `choice`, bounded `integer`, and (format 12)
+`binding`. Format 12 integers may declare `slider = true` to use a slider.
+Binding defaults and values are comma-separated lists of one to three tokens:
+`none`, `key:1` through `key:511` (SDL physical scancodes), `mouse:1` through
+`mouse:5` (left, middle, right, X1, X2), or `wheel:up` / `wheel:down`.
+Wheel tokens require `allow_wheel = true` on that binding option. Empty tokens,
+whitespace, leading zeroes, and out-of-range inputs are rejected. The launcher
+provides three click-to-capture buttons per action; right-click clears a slot,
+Escape cancels capture, and Reset restores that action's manifest default.
+Bindings use the normal persisted feature options and live-change callbacks.
+Hosts interpret their own actions; these options never alter saved pad profiles.
+
+Format 13 integer sliders may specify `display_divisor = 100` to display a
+stored value of 125 as **1.25**, with min/max scaled the same way. Selection and
+persistence remain exact integers. The divisor must be a power of ten from 1
+to 1000000; it defaults to 1 and requires `slider = true`. For example, bounds
+100..250 and default 125 display as 1.00..2.50, default 1.25.
+
+Conditions are
 feature-local: `when = { option = "value", ... }` requires every listed option
 to match. The legacy `when_option`/`when_value` pair remains accepted for a
 single condition.
