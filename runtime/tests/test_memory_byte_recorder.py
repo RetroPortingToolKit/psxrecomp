@@ -13,6 +13,9 @@ DRIVER = r'''
 #include "harness_common.h"
 #include <stdio.h>
 uint8_t *memory_get_ram_ptr(void);
+uint8_t psx_read_byte(uint32_t);
+uint16_t psx_read_half(uint32_t);
+uint32_t psx_read_word(uint32_t);
 void psx_write_byte(uint32_t,uint8_t);
 void psx_write_half(uint32_t,uint16_t);
 void psx_write_word(uint32_t,uint32_t);
