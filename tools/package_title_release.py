@@ -975,6 +975,7 @@ def stage_payload(ctx):
         if notice_file.is_file():
             copy(notice_file, licenses / notice_file.name)
     copy(FRAMEWORK / 'LICENSE', licenses / 'psxrecomp-LICENSE')
+    copy(FRAMEWORK / 'PERMISSIONS.md', licenses / 'psxrecomp-PERMISSIONS.md')
     if (FRAMEWORK / 'THIRD_PARTY_ATTRIBUTION.md').is_file():
         copy(FRAMEWORK / 'THIRD_PARTY_ATTRIBUTION.md', licenses / 'psxrecomp-THIRD_PARTY_ATTRIBUTION.md')
     ui_root = Path(ctx.cache.get('RECOMP_UI_ROOT') or (config.root / 'recomp-ui'))

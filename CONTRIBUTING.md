@@ -269,9 +269,12 @@ out when not needed. Avoid cleverness unless it's clearly justified.
 
 ## Licensing
 
-By contributing, you agree your contribution is licensed under the same license as
-the project. Do not submit code you don't have the right to contribute, and do not
-copy from incompatible licenses or proprietary sources.
+By contributing, you license your contribution under the project's
+[PolyForm Noncommercial License 1.0.0](LICENSE), grant the
+[additional permissions in `PERMISSIONS.md`](PERMISSIONS.md) for the rights you
+control in your contribution, and authorize Matthew Stanley to grant those same
+additional permissions for it. Do not submit code you don't have the right to
+contribute, and do not copy from incompatible licenses or proprietary sources.
 
 Runtime comments cite hardware facts to PSX-SPX, and emulators are used only as
 black-box references whose outputs we compare. See

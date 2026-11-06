@@ -239,7 +239,7 @@ fi
 
 # Surface the player-facing docs beside the .app too, so they are readable
 # without opening the bundle. Mirrors the flat Windows package layout.
-for doc in START_HERE.txt README.md LICENSE RELEASE_NOTES.md; do
+for doc in START_HERE.txt README.md LICENSE PERMISSIONS.md RELEASE_NOTES.md; do
     if [ -f "$REPO/$doc" ]; then
         cp "$REPO/$doc" "$STAGE/$doc"
     fi
