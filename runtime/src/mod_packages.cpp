@@ -29,7 +29,7 @@ namespace PSXRecompV4 {
 namespace {
 
 constexpr uint32_t kMinFormatVersion = 1;
-constexpr uint32_t kMaxFormatVersion = 12;
+constexpr uint32_t kMaxFormatVersion = 13;
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
 
@@ -1970,6 +1970,17 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 const std::string type = toml::find<std::string>(v, "type");
                 option.slider = toml::find_or<bool>(v, "slider", false);
                 option.allow_wheel = toml::find_or<bool>(v, "allow_wheel", false);
+                option.display_divisor = toml::find_or<int64_t>(v, "display_divisor", 1);
+                if (v.contains("display_divisor")) {
+                    if (out.format_version < 13 || type != "integer" || !option.slider)
+                        throw std::runtime_error("display_divisor requires a format-13 integer slider");
+                    int64_t divisor = option.display_divisor;
+                    if (divisor < 1 || divisor > 1000000)
+                        throw std::runtime_error("display_divisor must be a power of ten from 1 to 1000000");
+                    while (divisor > 1 && divisor % 10 == 0) divisor /= 10;
+                    if (divisor != 1)
+                        throw std::runtime_error("display_divisor must be a power of ten from 1 to 1000000");
+                }
                 if ((option.slider || type == "binding" || option.allow_wheel) && out.format_version < 12)
                     throw std::runtime_error("binding/slider options require format_version 12");
                 if (option.slider && type != "integer")

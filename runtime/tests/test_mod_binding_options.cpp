@@ -93,6 +93,38 @@ default = 5
     std::string bad = manifest;
     bad.replace(bad.find("mouse:1,key:40"), 14, "wheel:up");
     rejects(bad);
+    std::string decimal = manifest;
+    decimal.replace(decimal.find("12"), 2, "13");
+    const auto bounds = decimal.find("min = 1\nmax = 10\ndefault = 5");
+    decimal.replace(bounds, std::string("min = 1\nmax = 10\ndefault = 5").size(),
+                    "min = 100\nmax = 250\ndefault = 125\ndisplay_divisor = 100");
+    write(decimal);
+    ModPackageManager scaled(root);
+    check(scaled.scan(&error), error.c_str());
+    check(scaled.set_feature_enabled("input.test", "input", true, &error), error.c_str());
+    const auto* scaled_package = scaled.selected_package("input.test");
+    check(scaled_package && scaled_package->options[2].display_divisor == 100,
+          "decimal display scale reaches provider metadata");
+    for (const char* value : {"100", "125", "250"})
+        check(scaled.set_feature_option("input.test", "input", "sensitivity", value, &error),
+              "decimal slider accepts bounds and fractional default");
+    check(!scaled.set_feature_option("input.test", "input", "sensitivity", "251", &error),
+          "decimal slider rejects above maximum");
+    check(scaled.save_state(&error), error.c_str());
+    ModPackageManager decimal_reload(root);
+    check(decimal_reload.scan(&error) && decimal_reload.load_state(&error), error.c_str());
+    check(decimal_reload.feature_option_value("input.test", "input", "sensitivity") == "250",
+          "decimal slider selection survives restart");
+    std::string older = decimal;
+    older.replace(older.find("13"), 2, "12");
+    rejects(older);
+    for (const char* divisor : {"0", "25", "10000000"}) {
+        std::string invalid = decimal;
+        const auto pos = invalid.find("display_divisor = 100");
+        invalid.replace(pos, std::string("display_divisor = 100").size(),
+                        std::string("display_divisor = ") + divisor);
+        rejects(invalid);
+    }
     fs::remove_all(root);
     if (!failures) std::cout << "mod binding options: PASS\n";
     return failures ? 1 : 0;

@@ -265,6 +265,12 @@ Escape cancels capture, and Reset restores that action's manifest default.
 Bindings use the normal persisted feature options and live-change callbacks.
 Hosts interpret their own actions; these options never alter saved pad profiles.
 
+Format 13 integer sliders may specify `display_divisor = 100` to display a
+stored value of 125 as **1.25**, with min/max scaled the same way. Selection and
+persistence remain exact integers. The divisor must be a power of ten from 1
+to 1000000; it defaults to 1 and requires `slider = true`. For example, bounds
+100..250 and default 125 display as 1.00..2.50, default 1.25.
+
 Conditions are
 feature-local: `when = { option = "value", ... }` requires every listed option
 to match. The legacy `when_option`/`when_value` pair remains accepted for a
