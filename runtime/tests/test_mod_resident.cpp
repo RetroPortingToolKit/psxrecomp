@@ -22,7 +22,7 @@
 
 namespace fs = std::filesystem;
 
-static std::array<uint8_t, 2 * 1024 * 1024> ram;
+static std::array<uint8_t, 8 * 1024 * 1024> ram;
 static int failures;
 static unsigned guard_reads;
 static bool ram_available = true;
@@ -366,6 +366,12 @@ int main() {
     ram[0x1030] ^= 1;
     const PSXResidentRange mirrored[2] = {{0xa0201000u, 0xa0201020u}, {0x00401020u, 0x00401040u}};
     check(psx_resident_guest_ranges_match(mirrored, 2, guard.c_str()), "live retail mirror geometry matches");
+    g_psx_ram_size = 0x800000u; g_psx_ram_mask = 0x7fffffu;
+    check(!psx_resident_guest_ranges_match(mirrored, 2, guard.c_str()), "expanded RAM mirrors stay unique");
+    std::memcpy(ram.data()+0x201000u, guarded.data(), 32);
+    std::memcpy(ram.data()+0x401020u, guarded.data()+32, 32);
+    check(psx_resident_guest_ranges_match(mirrored, 2, guard.c_str()), "expanded RAM ranges match actual bytes");
+    g_psx_ram_size = 0x200000u; g_psx_ram_mask = 0x1fffffu;
     for (int mode = 0; mode < 5; ++mode) {
         ram_available = mode != 0;
         g_ls_mode = mode == 1;
