@@ -19,7 +19,6 @@
 #include "gpu.h"
 #include "gpu_hd_textures.h"
 #include "psx_memory.h"
-#include "render_pass_projection.h"
 #include "psx_sha256.h"
 #include "psx_sha256_file.h"
 #include "cpu_state.h"
@@ -3434,7 +3433,6 @@ extern "C" void mod_runtime_activate_plugins(void) {
     for (auto& pending : function_override_plugins()) pending.armed = false;
     s.ticket_ready = false;
     psx_mod_set_disc_request_provider(nullptr);
-    psx_projection_reset_session();
     gpu_ws_set_native_scene_predicate(nullptr);
     psx_ram_reset_size_request();
     psx_mod_clear_function_replacements();

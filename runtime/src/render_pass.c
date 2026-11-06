@@ -539,25 +539,9 @@ int psx_mod_run_guest_span(CPUState *cpu, uint32_t start_pc, uint32_t stop_pc) {
 uint32_t psx_mod_render_pass_plan(uint32_t period_vblanks,
                                   uint32_t shown_after_vblanks,
                                   uint32_t *alpha_q16, uint32_t max) {
-    uint32_t wanted = 0, n;
-    s_open_generation = 0;
-    if (!alpha_q16 || max == 0 || period_vblanks == 0 || period_vblanks > 8 ||
-        shown_after_vblanks > 8)
-        return 0;
-    if (!passes_allowed()) return 0;
-    n = gl_renderer_pass_plan(period_vblanks, shown_after_vblanks,
-                              alpha_q16, max, &wanted);
-    s_stats.wanted += wanted;
-    if (!n) {
-        if (wanted) s_stats.refused++;
-        return 0;
-    }
-    s_stats.plans++;
-    s_stats.planned += n;
-    s_plan_serial++;
-    s_open_generation = 1;
-    s_plan_period = period_vblanks;
-    return n;
+    (void)period_vblanks; (void)shown_after_vblanks;
+    (void)alpha_q16; (void)max;
+    return 0; /* retired interpolation; stereo/local-view transactions remain */
 }
 
 /* FNV-1a step over 64-bit words, then the tail bytes. Each step is a
@@ -1122,7 +1106,8 @@ uint32_t psx_mod_render_local_view_status(void) {
 
 int psx_mod_render_pass(struct CPUState *cpu, const PSXModRenderPass *pass,
                         PSXModRenderPassFn fn, void *user) {
-    return render_transaction(cpu, pass, fn, user, -1);
+    (void)cpu; (void)pass; (void)fn; (void)user;
+    return 0; /* never execute guest drawing for an intermediate frame */
 }
 
 typedef struct StereoCallback {

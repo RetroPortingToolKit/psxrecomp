@@ -656,14 +656,9 @@ int psx_mod_set_internal_resolution(uint32_t target_lines);
  */
 int psx_mod_set_native_vblank_rate(uint32_t frames_per_second);
 
-/*
- * Enable presentation-only frame interpolation while leaving guest VBlank,
- * game logic, timers, and audio at their stock cadence. The OpenGL presenter
- * temporally blends completed guest frames at the requested output rate on its
- * owning render thread/context. It does not derive motion vectors or generate
- * true intermediate object positions.
- * A value of zero follows the measured host-display refresh rate.
- */
+/* Retired temporal-blend APIs. All return 0 without modifying renderer,
+ * VSync, guest pacing or presentation state. Old packages must remove their
+ * interpolation feature; these IDs do not select the fresh scene renderer. */
 int psx_mod_set_frame_interpolation(uint32_t frames_per_second);
 /*
  * Choose how the OpenGL presenter combines completed frames. Linear is a

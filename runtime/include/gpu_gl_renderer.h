@@ -431,20 +431,10 @@ typedef struct GlDynresStats {
     uint64_t hr_reallocs, wide_reallocs; /* surfaces reallocated at a step */
 } GlDynresStats;
 void gl_renderer_dynres_stats(GlDynresStats *out);
-/* Frame generation ([video] frame_generation, docs/FRAME_GENERATION.md):
- * in-between frames drawn by the render thread from the last two game
- * frames' draw lists when it has time to spare. Off by default; with it off
- * nothing changes. set: a sync point. configure: the display's refresh and
- * the guest's frame rate (any thread). hold: pause generation for `secs`
- * (not a breaker trip), e.g. while dynamic resolution is over budget.
- * json: the debug server's {"cmd":"frame_gen"} fields (no sync point). */
+/* Retired frame-generation ABI: setters ignore requests, enabled/generated
+ * queries report zero, real_share is 1. Old settings cannot activate it.
+ * The independent replacement uses presentation_scene.h. */
 void gl_renderer_set_frame_generation(int on);
-/* The sources of the next triangle's vertices (gte_fg_source_lookup: id,
- * camera-space x/y/z, projection distance H; id 0 = none) and the integer
- * positions it will be drawn at; recorded for frame generation only, never
- * drawn. */
-void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int32_t h[3],
-                           const int32_t x[3], const int32_t y[3]);
 int  gl_renderer_frame_generation(void);
 void gl_renderer_frame_gen_configure(double refresh_hz, double guest_hz);
 double gl_renderer_frame_gen_real_share(void);

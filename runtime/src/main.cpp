@@ -27,7 +27,6 @@
 #include "psx_interpreter.h"
 #include "cdrom.h"
 #include "fntrace.h"
-#include "render_pass_projection.h"
 #include "text_xlate.h"
 #include "boot_state.h"
 #include "bios_hle.h"
@@ -522,22 +521,6 @@ static void mod_call_frame_hooks() {
     for (size_t i = 0; i < count; i++) hooks[i]();
 }
 
-/* Presentation-only interpolation for software-rendered content that repeats
- * each guest image for two vblanks. This never changes guest or audio timing. */
-static std::atomic<int> g_smooth_60fps{0};
-
-struct Smooth60State {
-    std::vector<uint32_t> previous_source;
-    uint64_t source_hash = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    bool have_source = false;
-    bool previous_was_duplicate = false;
-    bool announced = false;
-};
-
-static Smooth60State g_smooth_60_state;
-
 /* Present-path session state — must reset on rematch (function-local statics
  * survive soft-return and poison FMV/FPS after session_reboot). */
 static bool     s_disabled_frame_presented = false;
@@ -626,14 +609,7 @@ static int      s_d24_cutover_blank = 0;
  * psx_frontend_on_savestate_loaded can set it). */
 static int      g_audio_cycle_resync = 0;
 
-static void smooth_60_reset(void) {
-    g_smooth_60_state.previous_source.clear();
-    g_smooth_60_state.source_hash = 0;
-    g_smooth_60_state.width = 0;
-    g_smooth_60_state.height = 0;
-    g_smooth_60_state.have_source = false;
-    g_smooth_60_state.previous_was_duplicate = false;
-}
+
 
 /* Declared early: present_session_reset zeros it on rematch. */
 static int sdl_audio_fadein_left = 0;
@@ -658,7 +634,6 @@ static void present_session_reset(void) {
     /* Soft-exit can leave deferred present / flush reentrancy armed; gpu_init
      * does not clear them. Rematch then no-ops every flush → black window. */
     gpu_vblank_clear_deferred_present();
-    smooth_60_reset();
 }
 
 static int fps_telemetry_enabled(void) {
@@ -1108,7 +1083,6 @@ extern "C" void psx_frontend_on_savestate_refused(int is_load, int slot,
 
 extern "C" void psx_frontend_on_savestate_loaded(void) {
     ++s_fmv_timeline_epoch;
-    psx_projection_reset_session();
     psx_local_mouse_reset();
     mod_runtime_on_savestate_loaded();
     dynres_note_savestate_loaded();
@@ -1117,7 +1091,6 @@ extern "C" void psx_frontend_on_savestate_loaded(void) {
 #endif
     s_disabled_frame_presented = false;
     s_force_present_after_load = true;
-    smooth_60_reset();
     /* Re-anchor wall pacing + FPS baseline: admit may have blocked for seconds
      * in the load barrier with next_deadline in the past. */
     s_frame_pacer = FramePacer{ 0 };
@@ -1172,95 +1145,6 @@ extern "C" void psx_frontend_on_rb_snap_loaded(void) {
     /* §63: guest SIO came from the snap — drop Live pad-edge trackers. */
     psx_netplay_on_rb_snap_loaded();
 }
-
-static uint64_t smooth_60_frame_hash(const uint32_t* pixels, size_t count) {
-    uint64_t hash = 1469598103934665603ull;
-    const size_t step = std::max<size_t>(1, count / 4096u);
-    for (size_t i = 0; i < count; i += step) {
-        hash ^= pixels[i];
-        hash *= 1099511628211ull;
-    }
-    hash ^= count;
-    return hash * 1099511628211ull;
-}
-
-static bool smooth_60_scene_cut(const uint32_t* current,
-                                const uint32_t* previous,
-                                size_t count) {
-    const size_t step = std::max<size_t>(1, count / 4096u);
-    uint64_t difference = 0;
-    size_t samples = 0;
-    size_t large_changes = 0;
-    for (size_t i = 0; i < count; i += step) {
-        const uint32_t a = current[i];
-        const uint32_t b = previous[i];
-        const unsigned dr = (unsigned)std::abs((int)((a >> 16) & 0xFFu) -
-                                               (int)((b >> 16) & 0xFFu));
-        const unsigned dg = (unsigned)std::abs((int)((a >> 8) & 0xFFu) -
-                                               (int)((b >> 8) & 0xFFu));
-        const unsigned db = (unsigned)std::abs((int)(a & 0xFFu) -
-                                               (int)(b & 0xFFu));
-        const unsigned pixel_difference = dr + dg + db;
-        difference += pixel_difference;
-        if (pixel_difference > 320u) large_changes++;
-        samples++;
-    }
-    return samples && large_changes * 4u > samples * 3u &&
-           difference > (uint64_t)samples * 360u;
-}
-
-static void smooth_60_present(uint32_t* pixels, uint32_t width, uint32_t height,
-                              bool eligible) {
-    if (!eligible || !pixels || !g_smooth_60fps.load(std::memory_order_acquire)) {
-        if (g_smooth_60_state.have_source) smooth_60_reset();
-        return;
-    }
-    Smooth60State& state = g_smooth_60_state;
-    const size_t count = (size_t)width * height;
-    if (!count) { smooth_60_reset(); return; }
-    const uint64_t hash = smooth_60_frame_hash(pixels, count);
-    if (!state.have_source || state.width != width || state.height != height) {
-        state.previous_source.assign(pixels, pixels + count);
-        state.source_hash = hash;
-        state.width = width;
-        state.height = height;
-        state.have_source = true;
-        state.previous_was_duplicate = false;
-        return;
-    }
-    const bool duplicate = hash == state.source_hash &&
-        std::memcmp(pixels, state.previous_source.data(), count * sizeof(uint32_t)) == 0;
-    if (duplicate) { state.previous_was_duplicate = true; return; }
-    const bool interpolate = state.previous_was_duplicate &&
-        !smooth_60_scene_cut(pixels, state.previous_source.data(), count);
-    state.previous_was_duplicate = false;
-    state.source_hash = hash;
-    if (!interpolate) {
-        std::copy(pixels, pixels + count, state.previous_source.begin());
-        return;
-    }
-    if (!state.announced) {
-        std::fprintf(stdout,
-            "psxrecomp: 60 FPS smoothing active (guest timing preserved)\n");
-        state.announced = true;
-    }
-    for (size_t i = 0; i < count; i++) {
-        const uint32_t current = pixels[i];
-        const uint32_t previous = state.previous_source[i];
-        state.previous_source[i] = current;
-        pixels[i] = 0xFF000000u |
-            (((current & 0x00FEFEFEu) >> 1) + ((previous & 0x00FEFEFEu) >> 1));
-    }
-}
-
-extern "C" void psx_smooth_60fps_set(int enabled) {
-    g_smooth_60fps.store(enabled ? 1 : 0, std::memory_order_release);
-}
-#if defined(PSX_WEB)
-extern "C" EMSCRIPTEN_KEEPALIVE void psx_web_set_smooth_60fps(int enabled) {
-    psx_smooth_60fps_set(enabled);
-}
-#endif
 
 /* [video] options, resolved from the game config (defaults: native + AA). */
 static int           g_video_scale = 1;     /* internal-resolution SSAA factor */
@@ -1619,7 +1503,7 @@ static bool          g_offer_render_pipeline = true;
 static bool          g_launcher_quick_controls = false;  /* game.toml [launcher] quick_controls */
 static int           g_render_thread_frames = 2;
 /* [video] frame_generation (docs/FRAME_GENERATION.md), with the render thread. */
-static int           g_frame_generation = 0;
+static int           g_frame_generation = 0; /* retired legacy presentation */
 static int           g_frame_generation_method = 0;   /* [video] frame_generation_method: 0 redraw, 1 reprojection */
 /* [video] present_thread (docs/RENDER_THREAD.md), with the render thread. */
 static int           g_present_thread = 0;
@@ -1633,7 +1517,7 @@ static int           g_frame_generation_pref = 0;
 static int           g_present_thread_slots = 3;
 static int           s_render_thread_tried = 0;
 static int           g_video_vsync        = 1;
-static int           g_frame_interpolation = 0;
+static int           g_frame_interpolation = 0; /* retired legacy presentation */
 static int           g_frame_interpolation_fps = 0;
 static int           g_frame_interpolation_blend =
     PSX_MOD_FRAME_INTERPOLATION_LINEAR;
@@ -1895,7 +1779,7 @@ static void reset_mod_owned_presentation(void) {
     const int first = psx_mod_session_baseline_apply(
         &g_mod_owned_baseline, &live, g_mod_native_vblank_rate ? 1 : 0);
     g_video_vsync = live.video_vsync;
-    g_frame_interpolation = live.frame_interpolation;
+    g_frame_interpolation = 0; /* retired legacy presentation */
     g_frame_interpolation_fps = live.frame_interpolation_fps;
     g_auto_skip_fmv = live.auto_skip_fmv;
     g_guest_frame_period_ms = live.guest_frame_period_ms;
@@ -1993,75 +1877,22 @@ extern "C" int psx_mod_set_native_vblank_rate(
 
 extern "C" int psx_mod_set_frame_interpolation(
     uint32_t frames_per_second) {
-    if (frames_per_second != 0 &&
-        (frames_per_second < 60 || frames_per_second > 1000)) {
-        std::fprintf(stderr,
-            "psxrecomp: mod rejected invalid interpolated frame rate %u FPS\n",
-            (unsigned)frames_per_second);
-        return 0;
-    }
-
-    /*
-     * Interpolation is a presentation feature of the OpenGL renderer. Mods are
-     * activated before the game window and renderer are created, so selecting
-     * it here is deterministic and does not require a live backend switch.
-     */
-    g_video_renderer = 1;
-    g_video_vsync = 0;
-    mod_runtime_note_vsync_forced_off();   /* the launcher's VSync row */
-    g_frame_interpolation = 1;
-    g_frame_interpolation_fps =
-        frames_per_second ? (int)frames_per_second : 0;
-
-    if (frames_per_second) {
-        std::fprintf(stdout,
-            "psxrecomp: mod selected presentation-only temporal blending at "
-            "%u presents/s; guest timing remains stock (no motion vectors)\n",
-            (unsigned)frames_per_second);
-    } else {
-        std::fprintf(stdout,
-            "psxrecomp: mod selected display-refresh presentation-only temporal "
-            "blending; guest timing remains stock (no motion vectors)\n");
-    }
-    return 1;
+    /* Retired enhancement API: reject without changing renderer or pacing. */
+    (void)frames_per_second;
+    return 0;
 }
 
 extern "C" int psx_mod_set_frame_interpolation_blend(
     uint32_t blend_mode) {
-    if (blend_mode != PSX_MOD_FRAME_INTERPOLATION_LINEAR &&
-        blend_mode != PSX_MOD_FRAME_INTERPOLATION_MOTION_ADAPTIVE &&
-        blend_mode != PSX_MOD_FRAME_INTERPOLATION_HOLD) {
-        std::fprintf(stderr,
-            "psxrecomp: mod rejected invalid frame-interpolation blend %u\n",
-            (unsigned)blend_mode);
-        return 0;
-    }
-    g_frame_interpolation_blend = (int)blend_mode;
-    /* Live when the presenter is already configured (a later call from a
-     * hook); before that, session start hands it over with the rates. */
-    gl_renderer_set_interpolation_blend(g_frame_interpolation_blend);
-    std::fprintf(stdout, "psxrecomp: frame-interpolation blend = %s\n",
-        blend_mode == PSX_MOD_FRAME_INTERPOLATION_MOTION_ADAPTIVE
-            ? "motion-adaptive clarity"
-        : blend_mode == PSX_MOD_FRAME_INTERPOLATION_HOLD
-            ? "hold (render passes supply in-between frames)"
-            : "linear crossfade");
-    return 1;
+    /* Retired enhancement API: reject without changing renderer or pacing. */
+    (void)blend_mode;
+    return 0;
 }
 
 extern "C" int psx_mod_set_frame_interpolation_source(uint32_t source) {
-    if (source != PSX_MOD_FRAME_SOURCE_VBLANK &&
-        source != PSX_MOD_FRAME_SOURCE_FLIP) {
-        std::fprintf(stderr,
-            "psxrecomp: mod rejected invalid frame-interpolation source %u\n",
-            (unsigned)source);
-        return 0;
-    }
-    g_frame_interpolation_source = (int)source;
-    std::fprintf(stdout, "psxrecomp: frame-interpolation source = %s\n",
-        source == PSX_MOD_FRAME_SOURCE_FLIP
-            ? "guest frame flips" : "every guest VBlank");
-    return 1;
+    /* Retired enhancement API: reject without changing renderer or pacing. */
+    (void)source;
+    return 0;
 }
 
 extern "C" int psx_mod_set_auto_skip_fmv(int enabled) {
@@ -9930,7 +9761,6 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         depth24_frame = di.depth24 != 0;
         depth24_cutover_tick(depth24_frame ? 1 : 0);
         if (di.disabled || di.width == 0 || di.height == 0) {
-            smooth_60_present(nullptr, 0, 0, false);
             present_ring_commit(PRES_PATH_BLANK, (uint16_t)di.width,
                                 (uint16_t)di.height, 0);
 #ifndef PSX_SDL_NO_RENDER
@@ -10204,55 +10034,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             local_viewport_crop_applied = true;
         }
 
-        smooth_60_present(sdl_pixel_buf,
-                          (uint32_t)present_px_w,
-                          (uint32_t)present_px_h,
-                          !g_gl_active && !g_vk_active && !di.depth24 && !fmv_frame);
 
-        /* Frame blending (CRT-persistence masker for 30fps double-buffered
-         * content). Some games (e.g. Crash Bash menus/characters) leave a
-         * dynamic object in only one of the two display buffers per 30fps cycle,
-         * so it strobes on/off as the display alternates buffers — the static
-         * background, present in both, stays put. Real CRTs hid this via phosphor
-         * persistence; accurate emulators either time it away (cycle accuracy) or
-         * offer a "blend frames" option that averages the last two presented
-         * frames. This is the latter: presentation only, game logic untouched.
-         * Guarded to the plain software present path (no GL/VK/wide/hires/FMV) so
-         * the buffer is a simple present_w*h ARGB grid. PSX_FRAME_BLEND=0 off. */
-        {
-            static int blend_cfg = -1;   /* -1 unresolved, 0 off, 1 on */
-            if (blend_cfg < 0) {
-                const char* e = getenv("PSX_FRAME_BLEND");
-                blend_cfg = (e && e[0] == '1') ? 1 : 0;   /* default off (masker only) */
-            }
-            const bool simple_sw = !g_gl_active && !g_vk_active && !wide_present &&
-                                   !di.depth24 && active_scale == 1;
-            if (blend_cfg && simple_sw &&
-                !g_smooth_60fps.load(std::memory_order_acquire)) {
-                static uint32_t prev_buf[640 * 512];
-                static uint32_t prev_px = 0;
-                const uint32_t npx = (local_viewport_crop_applied ||
-                                      game_view_applied)
-                                       ? (uint32_t)(present_px_w * present_px_h)
-                                       : present_w * h;
-                if (npx <= (uint32_t)(640 * 512)) {
-                    if (prev_px == npx) {
-                        for (uint32_t i = 0; i < npx; i++) {
-                            const uint32_t a = sdl_pixel_buf[i];
-                            const uint32_t b = prev_buf[i];
-                            prev_buf[i] = a;   /* store this frame (pre-blend) */
-                            sdl_pixel_buf[i] =
-                                0xFF000000u |
-                                (((a & 0xFEFEFEu) >> 1) + ((b & 0xFEFEFEu) >> 1));
-                        }
-                    } else {
-                        /* Resolution changed / first frame: seed, no blend. */
-                        for (uint32_t i = 0; i < npx; i++) prev_buf[i] = sdl_pixel_buf[i];
-                        prev_px = npx;
-                    }
-                }
-            }
-        }
     }
 
     /* Update only the active display rectangle. The backing texture is sized
@@ -10744,7 +10526,7 @@ extern "C" unsigned psx_video_apply_live(const PsxHostVideoSettings *next) {
         (void)video_resolution_apply_live(ir, dynres, next->supersample_milli);
     }
     if ((m & PSX_VIDEO_LIVE_FRAME_GEN) && g_gl_active) {
-        g_frame_generation = next->frame_generation ? 1 : 0;
+        g_frame_generation = 0; /* retired legacy presentation */
         gl_renderer_set_frame_generation(g_frame_generation);
     }
     /* Persist the player settings the menu shows, live or not, like the
@@ -10861,7 +10643,7 @@ static int debug_toggle_key(int key, char *out, int cap) {
         break; }
     case SDLK_4: {
         const int on = !gl_renderer_frame_generation();
-        g_frame_generation = on;
+        g_frame_generation = 0; /* retired legacy presentation */
         gl_renderer_set_frame_generation(on);
         std::snprintf(msg, sizeof msg, "Frame generation: %s%s", on ? "on" : "off",
                       on && !g_render_thread ? " (inert: render thread off)" : "");
@@ -18155,7 +17937,7 @@ int main(int argc, char** argv) {
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_offer_render_pipeline = gc.runtime.video_offer_render_pipeline;
             g_launcher_quick_controls = gc.runtime.launcher_quick_controls;
-            g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
+            g_frame_generation = 0; /* retired legacy presentation */
             g_frame_generation_method = gc.runtime.video_frame_generation_method;
             /* [timing] guest_cycle_scale is a title constant from game.toml
              * (no player setting). PSX_GUEST_CYCLE_SCALE overrides it for
@@ -18184,7 +17966,7 @@ int main(int argc, char** argv) {
                         psx_guest_cycle_scale_config());
             g_present_thread = gc.runtime.video_present_thread ? 1 : 0;
             g_video_vsync       = gc.runtime.video_vsync;
-            g_frame_interpolation = gc.runtime.video_frame_interpolation ? 1 : 0;
+            g_frame_interpolation = 0; /* retired legacy presentation */
             g_frame_interpolation_fps = gc.runtime.video_frame_interpolation_fps;
             g_fmv_skip_total_table = gc.runtime.video_fmv_skip_total_table;
             g_fmv_skip_movie_id    = gc.runtime.video_fmv_skip_movie_id;
@@ -18818,10 +18600,10 @@ int main(int argc, char** argv) {
         if (us.has_low_latency_input) g_low_latency_input = us.low_latency_input ? 1 : 0;
         if (us.has_render_thread)     g_render_thread     = us.render_thread ? 1 : 0;
         if (us.has_present_thread)    g_present_thread    = us.present_thread ? 1 : 0;
-        if (us.has_frame_generation)  g_frame_generation  = us.frame_generation ? 1 : 0;
+        if (us.has_frame_generation)  g_frame_generation = 0; /* retired legacy presentation */
         if (us.has_vsync)             g_video_vsync       = us.vsync;
         if (us.has_frame_interpolation)
-            g_frame_interpolation = us.frame_interpolation ? 1 : 0;
+            g_frame_interpolation = 0; /* retired legacy presentation */
         if (us.has_frame_interpolation_fps)
             g_frame_interpolation_fps = us.frame_interpolation_fps;
     }
@@ -18883,7 +18665,7 @@ int main(int argc, char** argv) {
         std::fprintf(stdout,
             "psxrecomp: Frame interpolation is mod-owned for this title; "
             "ignoring the legacy Settings value\n");
-        g_frame_interpolation = 0;
+        g_frame_interpolation = 0; /* retired legacy presentation */
         g_frame_interpolation_fps = 0;
     }
 
@@ -18910,14 +18692,7 @@ int main(int argc, char** argv) {
      * PSX_FRAME_INTERPOLATION=0/1; PSX_FRAME_INTERPOLATION_FPS=0|90+. */
     if (const char *e = std::getenv("PSX_LOW_LATENCY_INPUT")) g_low_latency_input = atoi(e) ? 1 : 0;
     if (const char *e = std::getenv("PSX_VSYNC"))             g_video_vsync       = atoi(e);
-    if (const char *e = std::getenv("PSX_SMOOTH_60FPS"))
-        psx_smooth_60fps_set(atoi(e) ? 1 : 0);
-    if (const char *e = std::getenv("PSX_FRAME_INTERPOLATION"))
-        g_frame_interpolation = atoi(e) ? 1 : 0;
-    if (const char *e = std::getenv("PSX_FRAME_INTERPOLATION_FPS")) {
-        int fps = atoi(e);
-        if (fps == 0 || fps >= 90) g_frame_interpolation_fps = fps;
-    }
+    /* Legacy image-blending environment switches are retired. */
 
     /* Apply writable-state isolation before game-options and launcher setup,
      * not with the later renderer/port overrides. Explicit slot paths from a
@@ -20096,7 +19871,7 @@ int main(int argc, char** argv) {
                 /* First boot: the pipeline has not started yet. */
                 g_render_thread    = seed.render_thread ? 1 : 0;
                 g_present_thread   = seed.present_thread ? 1 : 0;
-                g_frame_generation = seed.frame_generation ? 1 : 0;
+                g_frame_generation = 0; /* retired legacy presentation */
 #endif
                 g_video_vsync = seed.vsync;
                 g_auto_skip_fmv = skip_fmv_offered && seed.auto_skip_fmv ? 1 : 0;
@@ -20105,7 +19880,7 @@ int main(int argc, char** argv) {
                 fast_boot = seed.fast_boot;
                 bios_hle  = seed.bios_hle;
                 g_fullscreen      = seed.fullscreen;
-                g_frame_interpolation = seed.frame_interpolation ? 1 : 0;
+                g_frame_interpolation = 0; /* retired legacy presentation */
                 g_frame_interpolation_fps = seed.frame_interpolation_fps;
                 g_video_aspect_num = seed.aspect_num;
                 g_video_aspect_den = seed.aspect_den;
@@ -20693,7 +20468,7 @@ session_reboot:
     if (const char* e = std::getenv("PSX_PRESENT_THREAD_SLOTS"))
         g_present_thread_slots = std::atoi(e) > 0 ? std::atoi(e) : 3;
     if (const char* e = std::getenv("PSX_FRAME_GEN"))
-        g_frame_generation = (*e && *e != '0') ? 1 : 0;
+        g_frame_generation = 0; /* retired legacy presentation */
     /* PSX_FRAME_GEN_METHOD=redraw|reprojection overrides [video]
      * frame_generation_method for one run. */
     if (const char* e = std::getenv("PSX_FRAME_GEN_METHOD")) {
@@ -22541,7 +22316,7 @@ soft_return_lobby:
             if (skip_fmv_offered)     g_auto_skip_fmv = ls.auto_skip_fmv ? 1 : 0;
             if (turbo_loads_offered)  g_turbo_loads_enabled = ls.turbo_loads ? 1 : 0;
             g_fullscreen = ls.fullscreen;
-            g_frame_interpolation = ls.frame_interp ? 1 : 0;
+            g_frame_interpolation = 0; /* retired legacy presentation */
             g_frame_interpolation_fps = ls.frame_interp_fps;
             g_video_vsync = psx_vsync_from_launcher(ls.vsync, launcher_vsync_preference());
             g_mod_owned_baseline.values.video_vsync = g_video_vsync;

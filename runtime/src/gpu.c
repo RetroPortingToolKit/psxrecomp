@@ -5044,39 +5044,6 @@ static void prepare_precise_triangle(int i0, int i1, int i2,
             ws_native_wide_active() &&
             psx_gpu_triangle_oversize(raw_x,raw_y,0,1,2));
     }
-    if (gr_backend() == GR_BACKEND_OPENGL &&
-        gl_renderer_frame_generation() != gte_fg_source_enabled())
-        gte_fg_source_set(gl_renderer_frame_generation());   /* from the next projection */
-    if (gr_backend() == GR_BACKEND_OPENGL && gte_fg_source_enabled()) {
-        /* Frame generation re-projects vertices from their camera-space source. */
-        uint32_t id[3] = { 0, 0, 0 };
-        int32_t pc[9] = { 0 }, hd[3] = { 0, 0, 0 };
-        const int ix[3] = { i0, i1, i2 };
-        GteFgSrc c[3][2];
-        int nc[3];
-        for (int k = 0; k < 3; k++) nc[k] = gte_fg_source_lookup(gp0_cmd_buf[ix[k]], c[k]);
-        /* Two points on one pixel: the one projected by the same function as
-         * a vertex with one source, else the one nearest its depth. */
-        for (int k = 0; k < 3; k++) {
-            int pick = nc[k] == 1 ? 0 : -1;
-            if (nc[k] == 2) {
-                for (int m = 0; m < 3 && pick < 0; m++)
-                    if (m != k && nc[m] == 1)
-                        for (int q = 0; q < 2; q++)
-                            if (c[k][q].ra == c[m][0].ra) { pick = q; break; }
-                if (pick < 0)
-                    for (int m = 0; m < 3 && pick < 0; m++)
-                        if (m != k && nc[m] == 1) {
-                            const int32_t z = c[m][0].p[2];
-                            pick = abs(c[k][0].p[2] - z) <= abs(c[k][1].p[2] - z) ? 0 : 1;
-                        }
-            }
-            if (pick < 0) continue;
-            id[k] = c[k][pick].id; hd[k] = c[k][pick].h;
-            for (int q = 0; q < 3; q++) pc[3 * k + q] = c[k][pick].p[q];
-        }
-        gl_renderer_fg_source(id, pc, hd, vx, vy);
-    }
     gr_set_perspective_triangle(0, 0.0f, 0.0f, 0.0f);
     /* PGXP depth (G1.14) only reaches the renderer while a PGXP renderer
      * feature is on: with them off no depth command is sent per triangle. */

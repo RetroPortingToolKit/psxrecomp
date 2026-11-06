@@ -569,20 +569,6 @@ if(BUILD_TESTING)
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-render-thread-results")
         set_tests_properties(gl_render_thread_test PROPERTIES
             LABELS "gpu;opengl;hardware" TIMEOUT 300 SKIP_RETURN_CODE 77)
-        # Frame generation ([video] frame_generation): the real presented
-        # images are identical with it off and on (VRAM and native-wide
-        # presents), generated frames are presented, and an in-between frame
-        # at phase 1 / 0 equals the newer / older real frame.
-        add_test(NAME gl_frame_gen_test
-            COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_frame_gen.py"
-                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_frame_gen.c"
-                --cc "${CMAKE_C_COMPILER}"
-                --sdl-include "${_gl_scale_sdl_inc}"
-                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
-                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-frame-gen-results")
-        set_tests_properties(gl_frame_gen_test PROPERTIES
-            LABELS "gpu;opengl;hardware" TIMEOUT 300 SKIP_RETURN_CODE 77)
         add_test(NAME gl_shared_present_images_test
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
@@ -2009,6 +1995,29 @@ if(BUILD_TESTING)
     target_include_directories(freeze_dump_policy_test PRIVATE src)
     add_test(NAME freeze_dump_policy_test COMMAND freeze_dump_policy_test)
 
+    add_executable(presentation_scene_test
+        tests/test_presentation_scene.c src/presentation_scene.c)
+    target_include_directories(presentation_scene_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(presentation_scene_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(presentation_scene_test PRIVATE -UNDEBUG)
+    endif()
+    if(NOT MSVC)
+        target_link_libraries(presentation_scene_test PRIVATE m)
+    endif()
+    add_test(NAME presentation_scene_test COMMAND presentation_scene_test)
+
+    add_executable(retired_render_pass_test
+        tests/test_retired_render_pass.c src/render_pass_frame.c)
+    target_include_directories(retired_render_pass_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(retired_render_pass_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(retired_render_pass_test PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME retired_render_pass_test COMMAND retired_render_pass_test)
+
     add_executable(frame_interpolation_schedule_test
         tests/test_frame_interpolation_schedule.c
         src/frame_interpolation.c)
@@ -2056,26 +2065,6 @@ if(BUILD_TESTING)
     add_test(NAME memcard_extensions_test COMMAND memcard_extensions_test
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/memcard_extensions_scratch)
 
-    # Motion kit and per-frame driver for render-pass plugins: blending,
-    # identity matching, limits and the crossfade fallback, on mock RAM.
-    add_executable(render_pass_motion_test
-        tests/test_render_pass_motion.c
-        src/render_pass_motion.c
-        src/render_pass_frame.c)
-    target_include_directories(render_pass_motion_test PRIVATE include)
-    if(NOT MSVC)
-        target_link_libraries(render_pass_motion_test PRIVATE m)
-    endif()
-    add_test(NAME render_pass_motion_test COMMAND render_pass_motion_test)
-    add_executable(render_pass_projection_test
-        tests/test_render_pass_projection.cpp
-        src/render_pass_projection.cpp
-        src/render_pass_motion.c)
-    target_include_directories(render_pass_projection_test PRIVATE include)
-    if(NOT MSVC)
-        target_link_libraries(render_pass_projection_test PRIVATE m)
-    endif()
-    add_test(NAME render_pass_projection_test COMMAND render_pass_projection_test)
     # Dynamic resolution's controller against synthetic load: step rules,
     # hysteresis, transient spikes, CPU-bound stretches, holds, the floor.
     add_executable(dynamic_resolution_test
@@ -2099,13 +2088,6 @@ if(BUILD_TESTING)
         target_link_libraries(dynamic_resolution_rt_test PRIVATE m)
     endif()
     add_test(NAME dynamic_resolution_rt_test COMMAND dynamic_resolution_rt_test)
-    # Frame generation's matching, interpolation, plan and breaker.
-    add_executable(frame_gen_test tests/test_frame_gen.c src/frame_gen.c)
-    target_include_directories(frame_gen_test PRIVATE include)
-    if(NOT MSVC)
-        target_link_libraries(frame_gen_test PRIVATE m)
-    endif()
-    add_test(NAME frame_gen_test COMMAND frame_gen_test)
 
     # Post-effect chain presets (postfx_chain.c alone; no GL).
     add_executable(postfx_chain_test tests/test_postfx_chain.c src/postfx_chain.c)
@@ -2470,9 +2452,6 @@ if(BUILD_TESTING)
         add_test(NAME sbi_registry_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_sbi_registry.py)
         add_test(NAME perf_campaign_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_perf_campaign.py)
         add_test(NAME perf_host_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_perf_host.py)
-        add_test(NAME frame_interpolation_context_ownership_test
-                 COMMAND ${Python3_EXECUTABLE}
-                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frame_interpolation_context_ownership.py)
         add_test(NAME host_pacing_policy_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_host_pacing_policy.py

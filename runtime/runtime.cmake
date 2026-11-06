@@ -397,7 +397,6 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/gpu_render.c
     ${PSXRECOMP_ROOT}/runtime/src/render_thread.c
     ${PSXRECOMP_ROOT}/runtime/src/present_thread.c
-    ${PSXRECOMP_ROOT}/runtime/src/frame_gen.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_gl_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_fmv_hd.c
     ${PSXRECOMP_ROOT}/runtime/src/gl_batch_policy_lle.c
@@ -423,10 +422,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_video_timing.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_pacing.c
     ${PSXRECOMP_ROOT}/runtime/src/frame_interpolation.c
+    ${PSXRECOMP_ROOT}/runtime/src/presentation_scene.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass.c
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_plan.c
-    ${PSXRECOMP_ROOT}/runtime/src/render_pass_motion.c
-    ${PSXRECOMP_ROOT}/runtime/src/render_pass_projection.cpp
     ${PSXRECOMP_ROOT}/runtime/src/render_pass_frame.c
     ${PSXRECOMP_ROOT}/runtime/src/dynamic_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/host_time.c
@@ -1721,8 +1719,7 @@ function(psxrecomp_add_runtime_target target)
         "${PSXRECOMP_ROOT}/runtime/include/hle_gte.h"
         "${PSXRECOMP_ROOT}/runtime/include/cpu_state.h"
         "${PSXRECOMP_ROOT}/runtime/include/gte.h"
-        "${PSXRECOMP_ROOT}/runtime/include/pgxp.h"
-        "${PSXRECOMP_ROOT}/runtime/include/render_pass_projection.h")
+        "${PSXRECOMP_ROOT}/runtime/include/pgxp.h")
     if(PSXRT_ORACLE)
         psxrecomp_execution_profile(${target} PROFILE REFERENCE CONTRACT_FILES ${_execution_contract})
     else()

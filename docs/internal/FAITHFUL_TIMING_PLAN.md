@@ -213,6 +213,13 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- 2026-11-06, beads-eio.3.445: isolated presentation replacement from released
+  engine 5f664a69; removed software blending and GL blend/reprojection/draw-list
+  algorithms, reject old activation APIs. Fresh owned geometry snapshots pass
+  unit tests. Guest timing core unchanged. Full build and Ape render metadata,
+  gameplay, latency and owner acceptance remain in progress.
+
+
 - **2026-10-24 — scoped render-pass qualification.** The sandbox now compares
   shared RAM/register/clock/interrupt digests before and after an actual
   opted-in local temporal pass, discard, device-read abort, rollback refusal,
