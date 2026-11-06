@@ -61,7 +61,7 @@ SECTION_KEYS = {
     'feature': {'id', 'name', 'author', 'description', 'group', 'default_enabled', 'hidden',
                 'channel'},
     'option': {'feature', 'id', 'label', 'description', 'group', 'type', 'default', 'choice',
-               'min', 'max', 'step'},
+               'min', 'max', 'step', 'slider', 'allow_wheel'},
     'target': {'game_id', 'disc_sha256', 'exe_sha256'},
 }
 

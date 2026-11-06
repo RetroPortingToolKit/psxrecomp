@@ -253,7 +253,19 @@ expected_sha256 = "..."
 Every `[[option]]`, `[[patch]]`, and `[[overlay]]` in a feature-style manifest
 must name its owning feature. Ambiguous operations are rejected.
 
-Option types are `boolean`, `choice`, and bounded `integer`. Conditions are
+Option types are `boolean`, `choice`, bounded `integer`, and (format 12)
+`binding`. Format 12 integers may declare `slider = true` to use a slider.
+Binding defaults and values are comma-separated lists of one to three tokens:
+`none`, `key:1` through `key:511` (SDL physical scancodes), `mouse:1` through
+`mouse:5` (left, middle, right, X1, X2), or `wheel:up` / `wheel:down`.
+Wheel tokens require `allow_wheel = true` on that binding option. Empty tokens,
+whitespace, leading zeroes, and out-of-range inputs are rejected. The launcher
+provides three click-to-capture buttons per action; right-click clears a slot,
+Escape cancels capture, and Reset restores that action's manifest default.
+Bindings use the normal persisted feature options and live-change callbacks.
+Hosts interpret their own actions; these options never alter saved pad profiles.
+
+Conditions are
 feature-local: `when = { option = "value", ... }` requires every listed option
 to match. The legacy `when_option`/`when_value` pair remains accepted for a
 single condition.

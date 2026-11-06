@@ -4,6 +4,7 @@
 #include "crc32.h"
 #include "mod_plugins.h"
 #include "mod_media.h"
+#include "mod_input_binding.h"
 #include "psx_sha256.h"
 #include "toml.hpp"
 
@@ -28,7 +29,7 @@ namespace PSXRecompV4 {
 namespace {
 
 constexpr uint32_t kMinFormatVersion = 1;
-constexpr uint32_t kMaxFormatVersion = 11;
+constexpr uint32_t kMaxFormatVersion = 12;
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
 
@@ -1369,6 +1370,13 @@ bool valid_option_value(const ModOption& option, const std::string& value) {
         return end == value.c_str() + value.size() && std::isfinite(number) &&
                number >= option.min_value && number <= option.max_value;
     }
+    if (option.type == ModOptionType::Binding) {
+        PSXModInputBindings bindings;
+        if (!psx_mod_parse_input_bindings(value.c_str(), &bindings)) return false;
+        for (int i = 0; i < bindings.count; ++i)
+            if (bindings.input[i].kind == PSX_MOD_BIND_WHEEL && !option.allow_wheel) return false;
+        return true;
+    }
     if (option.type == ModOptionType::Boolean)
         return value == "true" || value == "false";
     if (option.type == ModOptionType::Choice)
@@ -1960,6 +1968,14 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 option.disabled_by =
                     v.contains("disabled_by") ? toml::find<std::string>(v, "disabled_by") : "";
                 const std::string type = toml::find<std::string>(v, "type");
+                option.slider = toml::find_or<bool>(v, "slider", false);
+                option.allow_wheel = toml::find_or<bool>(v, "allow_wheel", false);
+                if ((option.slider || type == "binding" || option.allow_wheel) && out.format_version < 12)
+                    throw std::runtime_error("binding/slider options require format_version 12");
+                if (option.slider && type != "integer")
+                    throw std::runtime_error("slider requires an integer option");
+                if (option.allow_wheel && type != "binding")
+                    throw std::runtime_error("allow_wheel requires a binding option");
                 if (!find_feature(out, option.feature_id))
                     throw std::runtime_error("option references unknown feature");
                 if (!valid_id(option.id) ||
@@ -1990,6 +2006,11 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                     option.default_value = toml::find<std::string>(v, "default");
                     if (option.min_value > option.max_value || !valid_option_value(option, option.default_value))
                         throw std::runtime_error("invalid decimal bounds/default");
+                } else if (type == "binding") {
+                    option.type = ModOptionType::Binding;
+                    option.default_value = toml::find<std::string>(v, "default");
+                    if (!valid_option_value(option, option.default_value))
+                        throw std::runtime_error("invalid input binding default");
                 } else if (type == "integer") {
                     option.type = ModOptionType::Integer;
                     option.min_value = toml::find<int64_t>(v, "min");
