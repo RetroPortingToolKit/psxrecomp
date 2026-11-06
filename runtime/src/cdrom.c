@@ -193,7 +193,8 @@ static void ring_note_starved(void) {
 static uint8_t last_sector_buffer[SECTOR_BUFFER_SIZE];
 static int last_sector_lba;
 /* Set from a read's seek until its first sector arrives: the last sector's header
- * no longer says where the drive is, so GetlocL has nothing to report. */
+ * no longer says where the drive is, so GetlocL has nothing to report. The status
+ * says Seek instead of Read for the same span, as DuckStation does. */
 static uint8_t last_sector_header_stale;
 static int last_sector_size;
 static uint32_t last_sector_frame;
@@ -954,6 +955,7 @@ static void set_irq(int type) {
 
 static void fire_cdrom_irq(void);
 static void stop_read_stream(void);
+static void read_seek_landed(void);
 
 static void present_lid_open_irq_if_ready(void)
 {
@@ -1531,7 +1533,7 @@ static int read_sector_at_with_raw(int min, int sec, int sect,
         }
     }
     last_sector_lba = lba;
-    last_sector_header_stale = 0;
+    read_seek_landed();
     last_sector_size = delivery.data_delivered ? wb->size : history_size;
     last_sector_frame = (uint32_t)s_frame_count;
     last_sector_mode = mode_reg;
@@ -1642,6 +1644,12 @@ static int read_continues_current_stream(void) {
     return 1;
 }
 
+static void read_seek_landed(void) {
+    if (last_sector_header_stale && (stat_reg & CDSTAT_SEEK))
+        stat_reg = (uint8_t)((stat_reg & ~CDSTAT_SEEK) | CDSTAT_READ);
+    last_sector_header_stale = 0;
+}
+
 static void start_read_stream(uint8_t cmd) {
     cdda_playing = 0;
     cdda_track = 0;
@@ -1674,7 +1682,13 @@ static void start_read_stream(uint8_t cmd) {
     s_cd_timing_next_due = psx_cycle_count + (uint64_t)read_delay;
     s_cd_timing_stream_starts++;
     reading = 1;
-    stat_reg |= CDSTAT_READ;
+    /* ENIGMA checks Read before polling GetlocL for a voice line's end, and gives up on
+     * the line after 10 NOT READY answers. Those can all land inside one seek, and then
+     * the voice plays on past its end, so Read has to wait for the first sector. */
+    if (last_sector_header_stale)
+        stat_reg = (uint8_t)((stat_reg & ~CDSTAT_READ) | CDSTAT_SEEK);
+    else
+        stat_reg |= CDSTAT_READ;
     /* ENQUEUE: sector-read stream scheduled (due in read_delay cycles). A
      * content load that happens in OFF but not ON shows up as a missing
      * SRC_CD_READ enqueue here. */
@@ -2247,7 +2261,7 @@ static void exec_command(uint8_t cmd) {
         stop_cdda_playback();
         xa_reset_decode();
         spu_cd_audio_reset();
-        stat_reg &= ~(CDSTAT_READ | CDSTAT_PLAY);
+        stat_reg &= ~(CDSTAT_READ | CDSTAT_PLAY | CDSTAT_SEEK);
         response_push(stat_reg);
         set_irq(CDIRQ_ACK);
         pending_arm(0x09, complete_delay, 1);
@@ -3364,7 +3378,7 @@ int cdrom_resident_complete_read(uint32_t lba, uint32_t sectors,
     request_reg |= CDROM_REQUEST_BFRD;
     memcpy(last_sector_buffer, slot->data, (size_t)slot->size);
     last_sector_lba = (int)last;
-    last_sector_header_stale = 0;
+    read_seek_landed();
     last_sector_size = slot->size;
     last_sector_frame = (uint32_t)s_frame_count;
     last_sector_mode = mode_reg;
