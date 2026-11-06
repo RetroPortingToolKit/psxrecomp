@@ -48,7 +48,8 @@ static const char *const s_stage_names[PSX_TRACE_STAGE_COUNT] = {
     "xr_copy", "xr_release", "xr_end_frame", "pose_age", "hud_capture",
     "hud_draw", "hud_readback",
     "game_env", "game_world", "game_text", "game_traverse", "game_icon",
-    "game_submit", "game_laser", "game_select"
+    "game_submit", "game_laser", "game_select",
+    "snapshot_extract", "snapshot_publish", "xr_locate", "host_prep"
 };
 
 static const struct { uint32_t bit; const char *name; } s_flag_names[] = {
@@ -233,6 +234,15 @@ void psx_frame_trace_gpu(uint64_t tex_upload_bytes, uint32_t vram_leaks) {
     r->vram_leaks = leaks > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)leaks;
 }
 
+void psx_frame_trace_gpu_sample(uint32_t scene_us, uint32_t present_us,
+                                uint32_t age_frames) {
+    if (!s_have_open) return;
+    PSXFrameTraceRecord *r = open_record();
+    r->gpu_scene_us = scene_us;
+    r->gpu_present_us = present_us;
+    r->gpu_sample_age_frames = age_frames;
+}
+
 void psx_frame_trace_xr_cadence(uint32_t display_delta_us, int submit_fresh) {
     if (!s_have_open) return;
     PSXFrameTraceRecord *r = open_record();
@@ -357,6 +367,8 @@ static int rec_json(char *buf, int cap, int off, const PSXFrameTraceRecord *r) {
               "\"prims_l\":%u,\"prims_r\":%u,\"tex_prims_l\":%u,"
               "\"tex_prims_r\":%u,\"cycles_l\":%u,\"cycles_r\":%u,"
               "\"vram_leaks\":%u,\"tex_bytes\":%llu,\"flags\":%u,"
+              "\"gpu_scene_us\":%u,\"gpu_present_us\":%u,"
+              "\"gpu_sample_age_frames\":%u,"
               "\"xr_display_delta_us\":%u,\"xr_submit_fresh\":%u,"
               "\"failure\":\"%s\",\"note\":\"%s\",\"stages_us\":{",
               (unsigned long long)r->seq, (unsigned long long)r->open_ms,
@@ -369,6 +381,7 @@ static int rec_json(char *buf, int cap, int off, const PSXFrameTraceRecord *r) {
               r->prims_l, r->prims_r, r->tex_prims_l, r->tex_prims_r,
               r->eye_cycles_l, r->eye_cycles_r,
               r->vram_leaks, (unsigned long long)r->tex_upload_bytes, r->flags,
+              r->gpu_scene_us, r->gpu_present_us, r->gpu_sample_age_frames,
               r->xr_display_delta_us, (unsigned)r->xr_submit_fresh,
               jstr(r->failure, t1, sizeof t1), jstr(r->note, t2, sizeof t2));
     for (uint32_t s = 0; s < PSX_TRACE_STAGE_COUNT; ++s)
@@ -430,7 +443,8 @@ int psx_frame_trace_to_csv(char *buf, int cap, uint32_t max_records) {
                   "pair_age_ms,source,eye_failed,flags,shed,streak_ms,prims,"
                   "tex_prims,prims_l,prims_r,tex_prims_l,tex_prims_r,cycles_l,"
                   "cycles_r,vram_leaks,tex_bytes,xr_display_delta_us,"
-                  "xr_submit_fresh");
+                  "xr_submit_fresh,gpu_scene_us,gpu_present_us,"
+                  "gpu_sample_age_frames");
     for (uint32_t s = 0; s < PSX_TRACE_STAGE_COUNT; ++s)
         off = app(buf, cap, off, ",%s", s_stage_names[s]);
     off = app(buf, cap, off, ",failure,note\n");
@@ -441,7 +455,7 @@ int psx_frame_trace_to_csv(char *buf, int cap, uint32_t max_records) {
         emitted++;
         off = app(buf, cap, off,
                   "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%d,\"%s\",%u,%u,%u,"
-                  "%u,%u,%u,%u,%u,%u,%u,%u,%llu,%u,%u",
+                  "%u,%u,%u,%u,%u,%u,%u,%u,%llu,%u,%u,%u,%u,%u",
                   (unsigned long long)r->seq, (unsigned long long)r->open_ms,
                   (unsigned long long)r->guest_frame,
                   (unsigned long long)r->guest_cycle,
@@ -453,7 +467,9 @@ int psx_frame_trace_to_csv(char *buf, int cap, uint32_t max_records) {
                   r->prims_l, r->prims_r, r->tex_prims_l, r->tex_prims_r,
                   r->eye_cycles_l, r->eye_cycles_r,
                   r->vram_leaks, (unsigned long long)r->tex_upload_bytes,
-                  r->xr_display_delta_us, (unsigned)r->xr_submit_fresh);
+                  r->xr_display_delta_us, (unsigned)r->xr_submit_fresh,
+                  r->gpu_scene_us, r->gpu_present_us,
+                  r->gpu_sample_age_frames);
         for (uint32_t s = 0; s < PSX_TRACE_STAGE_COUNT; ++s)
             off = app(buf, cap, off, ",%u", r->stages_us[s]);
         off = app(buf, cap, off, ",\"%s\",\"%s\"\n", r->failure, r->note);

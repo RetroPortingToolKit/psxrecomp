@@ -362,6 +362,42 @@ int main(void) {
                         "game_laser") == 0);
     }
 
+    /* ---- snapshot/host stages and later-retrieved GPU samples --------------
+     * GPU timer results arrive after the frame they bracket; they must stay in
+     * dedicated fields with an age and never be folded into the CPU stages. */
+    psx_frame_trace_reset();
+    psx_frame_trace_set_enabled(1);
+    {
+        PSXFrameTraceRecord recs[2];
+        static char buf[1 << 16];
+
+        CHECK(psx_frame_trace_open());
+        psx_frame_trace_ids(100, 0);
+        psx_frame_trace_add(PSX_TRACE_SNAPSHOT_EXTRACT, 900);
+        psx_frame_trace_add(PSX_TRACE_SNAPSHOT_PUBLISH, 120);
+        psx_frame_trace_add(PSX_TRACE_XR_LOCATE, 300);
+        psx_frame_trace_add(PSX_TRACE_HOST_PREP, 700);
+        psx_frame_trace_gpu_sample(5000, 1000, 3);
+        psx_frame_trace_commit();
+
+        CHECK(psx_frame_trace_read(recs, 2) == 1);
+        CHECK(recs[0].stages_us[PSX_TRACE_SNAPSHOT_EXTRACT] == 900);
+        CHECK(recs[0].stages_us[PSX_TRACE_SNAPSHOT_PUBLISH] == 120);
+        CHECK(recs[0].gpu_scene_us == 5000 && recs[0].gpu_present_us == 1000);
+        CHECK(recs[0].gpu_sample_age_frames == 3);
+        CHECK(strcmp(psx_frame_trace_stage_name(PSX_TRACE_SNAPSHOT_EXTRACT),
+                     "snapshot_extract") == 0);
+        CHECK(strcmp(psx_frame_trace_stage_name(PSX_TRACE_HOST_PREP),
+                     "host_prep") == 0);
+        CHECK(psx_frame_trace_to_json(buf, sizeof buf, 0) > 0);
+        CHECK(strstr(buf, "\"snapshot_extract\":900") != NULL);
+        CHECK(strstr(buf, "\"gpu_scene_us\":5000") != NULL);
+        CHECK(strstr(buf, "\"gpu_sample_age_frames\":3") != NULL);
+        CHECK(psx_frame_trace_to_csv(buf, sizeof buf, 0) > 0);
+        CHECK(strstr(buf, "gpu_scene_us,gpu_present_us,"
+                          "gpu_sample_age_frames") != NULL);
+    }
+
     psx_frame_trace_set_enabled(0);
     printf("frame_trace_test: all checks passed\n");
     return 0;

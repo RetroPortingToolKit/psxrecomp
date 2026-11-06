@@ -7625,7 +7625,8 @@ typedef struct {
     double   wide_sets;       /* glb_wide_set_target calls this frame          */
     double   fbo_creates;     /* wide FBO+tex creations this frame             */
     int      wide;            /* 1 = native-wide (16:9) present, 0 = 4:3       */
-    uint64_t frame;
+    uint64_t frame;           /* perf sample index                             */
+    uint64_t guest_frame;     /* guest frame this sample bracketed             */
 } GlPerfSample;
 
 /* Native-wide mirror-pass GPU attribution: the scene TIME_ELAPSED query spans
@@ -7655,6 +7656,7 @@ static double   s_pf_buf_pwall[GLPERF_NBUF];
 static double   s_pf_buf_prims[GLPERF_NBUF];
 static int      s_pf_buf_wide[GLPERF_NBUF];
 static uint64_t s_pf_buf_frame[GLPERF_NBUF];
+static uint64_t s_pf_buf_guest_frame[GLPERF_NBUF];
 static uint64_t s_pf_prims_last = 0;
 static double   s_pf_prims_pending = 0.0;
 static double   s_pf_cw_pending[5];            /* flush_ms, wide_ms, batches, wide_sets, fbo_creates */
@@ -7670,9 +7672,6 @@ static void gl_perf_yield(void) {
 }
 
 static void gl_perf_init(void) {
-#ifdef PSX_NO_DEBUG_TOOLS
-    return;
-#else
     /* Timer queries are intentionally available in diagnostics builds, but a
      * driver may serialize command submission while collecting them.  Keep an
      * escape hatch so frame cadence can be A/B tested without rebuilding or
@@ -7681,6 +7680,14 @@ static void gl_perf_init(void) {
         const char *enabled = getenv("PSX_GL_PERF");
         if (enabled && enabled[0] == '0') return;
     }
+#ifdef PSX_NO_DEBUG_TOOLS
+    /* Production builds enable the ring only for an explicitly traced frame,
+     * where the M0 contract needs asynchronous GPU completion times. */
+    {
+        const char *trace = getenv("PSX_FRAME_TRACE");
+        if (!(trace && trace[0] && trace[0] != '0')) return;
+    }
+#endif
     if (!p_glGenQueries || !p_glBeginQuery || !p_glEndQuery || !p_glGetQueryObjectui64v) return;
     p_glGenQueries(GLPERF_NBUF, s_pf_scene_q);
     p_glGenQueries(GLPERF_NBUF, s_pf_present_q);
@@ -7696,7 +7703,6 @@ static void gl_perf_init(void) {
     s_pf_b = 0; s_pf_scene_active = 0; s_pf_count = 0; s_pf_ring_seq = 0;
     s_pf_last_enter = 0;
     s_pf_on = 1;
-#endif
 }
 
 /* Bracket ONE native-wide mirror pass (called from the wide-mirror draw sites).
@@ -7762,6 +7768,7 @@ static void gl_perf_present_exit(int wide) {
     for (int ci = 0; ci < 5; ci++) s_pf_buf_cw[s_pf_b][ci] = s_pf_cw_pending[ci];
     s_pf_buf_wide[s_pf_b]  = wide;
     s_pf_buf_frame[s_pf_b] = s_pf_count;
+    s_pf_buf_guest_frame[s_pf_b] = s_frame_count;
     int rd = (s_pf_b + 1) % GLPERF_NBUF;   /* oldest buffer (frame count+1-NBUF), now done */
     if (s_pf_count >= (uint64_t)GLPERF_NBUF) {
         GLuint64 sc = 0, pr = 0;
@@ -7789,6 +7796,7 @@ static void gl_perf_present_exit(int wide) {
         s->fbo_creates     = s_pf_buf_cw[rd][4];
         s->wide            = s_pf_buf_wide[rd];
         s->frame           = s_pf_buf_frame[rd];
+        s->guest_frame     = s_pf_buf_guest_frame[rd];
         s_pf_ring_seq++;
     }
     s_mq_n[rd] = 0; s_mq_over[rd] = 0;   /* rd becomes the next frame's buffer */
@@ -7850,6 +7858,21 @@ int gl_renderer_perf_aggregate(int wide_filter, double out[18]) {
     }
     out[0] = (double)n;
     return n;
+}
+
+int gl_renderer_perf_latest_gpu(double *scene_ms, double *present_ms,
+                                uint32_t *age_frames) {
+    GL_RT_SYNC("perf_latest_gpu");
+    if (!s_pf_on || !s_pf_ring_seq) return 0;
+    const GlPerfSample *s = &s_pf_ring[(s_pf_ring_seq - 1u) % GLPERF_RING];
+    if (scene_ms) *scene_ms = s->scene_gpu_ms;
+    if (present_ms) *present_ms = s->present_gpu_ms;
+    if (age_frames) {
+        const uint64_t age = s_frame_count > s->guest_frame
+                                 ? s_frame_count - s->guest_frame : 0;
+        *age_frames = age > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)age;
+    }
+    return 1;
 }
 
 /* Native-wide mirror ablation (perf attribution): see s_ws_ablate. */
