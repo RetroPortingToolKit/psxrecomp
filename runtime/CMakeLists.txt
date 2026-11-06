@@ -1083,6 +1083,17 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME openxr_input_test COMMAND openxr_input_test)
 
+    add_executable(openxr_override_release_test
+        tests/test_openxr_override_release.c src/psx_openxr.c)
+    target_include_directories(openxr_override_release_test PRIVATE include)
+    target_compile_definitions(openxr_override_release_test PRIVATE
+        PSX_NO_DEBUG_TOOLS=1)
+    if(NOT MSVC)
+        target_link_libraries(openxr_override_release_test PRIVATE m)
+    endif()
+    add_test(NAME openxr_override_release_test
+             COMMAND openxr_override_release_test)
+
     add_executable(vr_pose_math_test tests/test_vr_pose_math.c src/vr_pose_math.c)
     target_include_directories(vr_pose_math_test PRIVATE include)
     if(NOT MSVC)
