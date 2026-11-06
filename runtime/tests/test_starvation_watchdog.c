@@ -61,6 +61,56 @@ int main(void) {
     CHECK(starvation_watchdog_stale(1, UINT64_MAX, TIMEOUT) == 1,
           "tiny heartbeat vs max clock fires");
 
+    /* Host pressure can consume many wall seconds without giving the guest
+     * its CPU budget. A real busy guest loop must still exhaust both. */
+    CHECK(!starvation_watchdog_budget_stale(T, T + 6000000, TIMEOUT, 1,
+                                           1000000, 1100000),
+          "six wall seconds but only100ms emu CPU does not abort");
+    CHECK(!starvation_watchdog_budget_stale(T, T + 6000000, TIMEOUT, 1,
+                                           0, TIMEOUT),
+          "CPU clock can start at zero and exact budget does not abort");
+    CHECK(starvation_watchdog_budget_stale(T, T + 6000000, TIMEOUT, 1,
+                                          0, TIMEOUT + 1),
+          "real CPU stall past both deadlines aborts");
+    CHECK(!starvation_watchdog_budget_stale(T, T + 6000000, TIMEOUT, 1,
+                                           5000000, 4000000),
+          "newer concurrent CPU stamp does not underflow");
+    CHECK(starvation_watchdog_budget_stale(T, T + 6000000, TIMEOUT, 0, 0, 0),
+          "unavailable CPU clock preserves wall fallback");
+    CHECK(!starvation_watchdog_budget_stale(T, T + 402, TIMEOUT, 1, 0, TIMEOUT + 1),
+          "expired CPU budget alone cannot abort with fresh wall heartbeat");
+    CHECK(!starvation_watchdog_budget_stale(0, T, TIMEOUT, 1, 0, TIMEOUT + 1),
+          "CPU budget does not arm an uninitialized watchdog");
+    CHECK(!starvation_watchdog_budget_stale(T, T + 6000000, 0, 1, 0, 6000000),
+          "disabled watchdog ignores both budgets");
+
+    /* A delayed IO writer sampled (wall T, CPU 1s) before a newer heartbeat
+     * (wall T+5s, CPU 6s), but publishes after it. Neither stamp may regress. */
+    _Atomic uint64_t wall_stamp = 0, cpu_stamp = 0;
+    starvation_watchdog_publish_max(&cpu_stamp, 6000000);
+    starvation_watchdog_publish_max(&wall_stamp, T + 5000000);
+    starvation_watchdog_publish_max(&cpu_stamp, 1000000);
+    starvation_watchdog_publish_max(&wall_stamp, T);
+    CHECK(atomic_load(&wall_stamp) == T + 5000000 &&
+          atomic_load(&cpu_stamp) == 6000000,
+          "delayed heartbeat writer cannot regress either published stamp");
+    CHECK(!starvation_watchdog_budget_stale(atomic_load(&wall_stamp), T + 10000000,
+                                           TIMEOUT, 1, atomic_load(&cpu_stamp),
+                                           6100000),
+          "out-of-order publication cannot turn 100ms CPU into a timeout");
+    /* A writer descheduled between wall and CPU sampling publishes a later
+     * CPU stamp with an older wall stamp, which must remain conservative. */
+    starvation_watchdog_publish_max(&cpu_stamp, 7000000);
+    starvation_watchdog_publish_max(&wall_stamp, T + 4000000);
+    CHECK(!starvation_watchdog_budget_stale(atomic_load(&wall_stamp), T + 11000000,
+                                           TIMEOUT, 1, atomic_load(&cpu_stamp),
+                                           7100000),
+          "wall-before-CPU sampling tolerates descheduling within a heartbeat");
+    CHECK(starvation_watchdog_budget_stale(atomic_load(&wall_stamp), T + 11000000,
+                                          TIMEOUT, 1, atomic_load(&cpu_stamp),
+                                          11000001),
+          "genuine CPU starvation still expires after delayed publication");
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all starvation watchdog checks passed\n");
     return 0;

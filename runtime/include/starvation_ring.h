@@ -14,6 +14,20 @@
 #define PSXRECOMP_STARVATION_RING_H
 
 #include <stdint.h>
+#ifndef __cplusplus
+#include <stdatomic.h>
+
+/* Multiple heartbeat writers can finish out of order. Publishing the maximum
+ * prevents a descheduled writer from restoring a stale CPU or wall stamp. */
+static inline void starvation_watchdog_publish_max(_Atomic uint64_t *stamp,
+                                                   uint64_t sample) {
+    uint64_t old = atomic_load_explicit(stamp, memory_order_relaxed);
+    while (sample > old &&
+           !atomic_compare_exchange_weak_explicit(stamp, &old, sample,
+                                                 memory_order_release,
+                                                 memory_order_relaxed)) {}
+}
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -91,9 +105,9 @@ void starvation_ring_record(uint8_t kind, uint8_t tx, uint8_t rx,
                             int g_sio_timing_active);
 
 /* Watchdog: call from debug_server_poll() to refresh the heartbeat.
- * If too much wall-time passes without a refresh AND the BIOS is
- * actively running (post-boot), the ring is dumped and the process
- * aborts. */
+ * After the wall timeout, require the same budget of actual emulation-thread
+ * CPU time where its clock is available. Host descheduling alone must not kill
+ * a progressing guest. Unsupported/failed clocks retain the wall fallback. */
 void starvation_watchdog_heartbeat(void);
 
 /* Run watchdog check from a hot path (e.g. psx_advance_cycles). */
@@ -116,6 +130,18 @@ static inline int starvation_watchdog_stale(uint64_t last, uint64_t now,
     if (last == 0 || timeout == 0) return 0;
     if (now <= last) return 0;
     return (now - last) > timeout;
+}
+
+/* Pure budget decision. CPU counters can legitimately start at zero; a newer
+ * concurrent CPU stamp is conservative just like a newer wall stamp. */
+static inline int starvation_watchdog_budget_stale(uint64_t last, uint64_t now,
+                                                   uint64_t timeout,
+                                                   int cpu_valid,
+                                                   uint64_t last_cpu,
+                                                   uint64_t now_cpu) {
+    if (!starvation_watchdog_stale(last, now, timeout)) return 0;
+    if (!cpu_valid) return 1;
+    return now_cpu > last_cpu && now_cpu - last_cpu > timeout;
 }
 
 /* Manual dump-to-file (for testing / TCP probe). Filename can be NULL. */

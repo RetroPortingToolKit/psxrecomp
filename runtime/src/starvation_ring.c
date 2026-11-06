@@ -2,13 +2,16 @@
  *
  * Always-on ring of the last 16K SIO/MMIO events with full SIO state
  * snapshot at each event. Watchdog flushes the ring to a file and
- * aborts cleanly when host wall-clock since the last
- * debug_server_poll exceeds the threshold (TCP listener has stopped
+ * aborts cleanly when wall time and emulation-thread CPU time since the last
+ * debug_server_poll exceed the threshold (TCP listener has stopped
  * draining the connection — symptom of dispatch-loop starvation).
  *
  * The dumped file is plain JSON-lines (one event per line) so it can
  * be inspected with grep/jq even after the process terminated. */
 
+#if defined(__linux__) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "starvation_ring.h"
 #include "psx_bss.h"
 #include "psx_cycles.h"
@@ -31,6 +34,12 @@ static uint64_t host_us_now(void) {
 }
 #else
 #include <sys/time.h>
+#if defined(__linux__)
+#include <pthread.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/thread_info.h>
+#endif
 static uint64_t host_us_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -52,13 +61,87 @@ static uint64_t        s_seq = 0;
  * (send_all_blocking); read by the emu thread's watchdog. Atomic so the
  * cross-thread store/load is single-copy atomic on every target. */
 static _Atomic uint64_t s_last_heartbeat_us = 0;
+static _Atomic uint64_t s_last_heartbeat_cpu_us = 0;
+/* 0 = not bound, 1 = available, -1 = unavailable for this process. The release
+ * publication also makes the immutable native owner reference safe to read. */
+static _Atomic int s_cpu_clock_state = 0;
 static int             s_dump_done = 0;
 
-static uint64_t heartbeat_load(void) {
-    return atomic_load_explicit(&s_last_heartbeat_us, memory_order_relaxed);
+/* Bind at the existing emulation-thread reset, not at a heartbeat: the IO and
+ * diagnostic threads stamp heartbeats too. The runtime keeps one emulation
+ * thread across rematches; keep its native reference for the process lifetime
+ * so a concurrent heartbeat can never race a closed handle/port. Unsupported
+ * or failed clocks retain the original wall-clock watchdog. */
+#if defined(_WIN32)
+static HANDLE s_cpu_owner;
+static int watchdog_bind_cpu_clock_native(void) {
+    return DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                           GetCurrentProcess(), &s_cpu_owner,
+                           THREAD_QUERY_INFORMATION, FALSE, 0) != 0;
+}
+static int watchdog_cpu_us_native(uint64_t *out) {
+    FILETIME created, exited, kernel, user;
+    if (!s_cpu_owner ||
+        !GetThreadTimes(s_cpu_owner, &created, &exited, &kernel, &user)) return 0;
+    const uint64_t k = ((uint64_t)kernel.dwHighDateTime << 32) | kernel.dwLowDateTime;
+    const uint64_t u = ((uint64_t)user.dwHighDateTime << 32) | user.dwLowDateTime;
+    *out = (k + u) / 10u;
+    return 1;
+}
+#elif defined(__linux__) && defined(CLOCK_THREAD_CPUTIME_ID)
+static clockid_t s_cpu_clock;
+static int watchdog_bind_cpu_clock_native(void) {
+    return pthread_getcpuclockid(pthread_self(), &s_cpu_clock) == 0;
+}
+static int watchdog_cpu_us_native(uint64_t *out) {
+    struct timespec ts;
+    if (clock_gettime(s_cpu_clock, &ts) != 0) return 0;
+    *out = (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+    return 1;
+}
+#elif defined(__APPLE__)
+static mach_port_t s_cpu_owner = MACH_PORT_NULL;
+static int watchdog_bind_cpu_clock_native(void) {
+    s_cpu_owner = mach_thread_self();
+    return s_cpu_owner != MACH_PORT_NULL;
+}
+static int watchdog_cpu_us_native(uint64_t *out) {
+    thread_basic_info_data_t info;
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    if (s_cpu_owner == MACH_PORT_NULL ||
+        thread_info(s_cpu_owner, THREAD_BASIC_INFO,
+                    (thread_info_t)&info, &count) != KERN_SUCCESS) return 0;
+    *out = ((uint64_t)info.user_time.seconds + (uint64_t)info.system_time.seconds) * 1000000u
+         + (uint64_t)info.user_time.microseconds + (uint64_t)info.system_time.microseconds;
+    return 1;
+}
+#else
+static int watchdog_bind_cpu_clock_native(void) { return 0; }
+static int watchdog_cpu_us_native(uint64_t *out) { (void)out; return 0; }
+#endif
+
+static void watchdog_bind_cpu_clock(void) {
+    if (atomic_load_explicit(&s_cpu_clock_state, memory_order_acquire) != 0) return;
+    atomic_store_explicit(&s_cpu_clock_state,
+                          watchdog_bind_cpu_clock_native() ? 1 : -1,
+                          memory_order_release);
 }
 
-/* Watchdog threshold: 4 seconds of wall-clock without a heartbeat is
+static int watchdog_cpu_us(uint64_t *out) {
+    if (atomic_load_explicit(&s_cpu_clock_state, memory_order_acquire) != 1) return 0;
+    if (watchdog_cpu_us_native(out)) return 1;
+    /* Never pair a later heartbeat with an older CPU stamp after a failed
+     * sample. Retain the original wall-clock policy for the process instead. */
+    atomic_store_explicit(&s_cpu_clock_state, -1, memory_order_release);
+    return 0;
+}
+
+static uint64_t heartbeat_load(void) {
+    return atomic_load_explicit(&s_last_heartbeat_us, memory_order_acquire);
+}
+
+/* Watchdog threshold: 4 seconds of wall time AND emulation-thread CPU time
+ * without a heartbeat (wall time alone if the CPU clock is unavailable) is
  * "TCP died, BIOS still running" territory. Real BIOS pad polling
  * fires VBlank ~60Hz so debug_server_poll runs at ~60Hz. 4 seconds
  * is well past any normal stall.
@@ -79,14 +162,25 @@ static uint64_t starvation_timeout_us(void) {
 }
 
 void starvation_watchdog_heartbeat(void) {
-    atomic_store_explicit(&s_last_heartbeat_us, host_us_now(),
-                          memory_order_relaxed);
+    /* Sample wall first: any scheduling gap before the CPU sample makes the
+     * budget conservative. Delayed IO/diagnostic writers must not regress
+     * either stamp after a newer heartbeat has already been published. */
+    const uint64_t wall = host_us_now();
+    uint64_t cpu;
+    if (watchdog_cpu_us(&cpu))
+        starvation_watchdog_publish_max(&s_last_heartbeat_cpu_us, cpu);
+    starvation_watchdog_publish_max(&s_last_heartbeat_us, wall);
 }
 
 void starvation_ring_reset(void) {
+    watchdog_bind_cpu_clock();
+    uint64_t cpu;
+    if (watchdog_cpu_us(&cpu))
+        starvation_watchdog_publish_max(&s_last_heartbeat_cpu_us, cpu);
     memset(s_ring, 0, sizeof(s_ring));
     s_seq = 0;
-    atomic_store_explicit(&s_last_heartbeat_us, 0, memory_order_relaxed);
+    /* The owner CPU clock is process-lifetime monotonic, including rematches. */
+    atomic_store_explicit(&s_last_heartbeat_us, 0, memory_order_release);
     s_dump_done = 0;
 }
 
@@ -264,13 +358,25 @@ void starvation_watchdog_check(void) {
     if (timeout == 0) return;              /* watchdog disabled (renderer bring-up) */
     uint64_t now = host_us_now();
     if (starvation_watchdog_stale(last, now, timeout)) {
+        const uint64_t last_cpu = atomic_load_explicit(&s_last_heartbeat_cpu_us,
+                                                       memory_order_relaxed);
+        uint64_t now_cpu = 0;
+        const int cpu_valid = watchdog_cpu_us(&now_cpu) &&
+            atomic_load_explicit(&s_cpu_clock_state, memory_order_acquire) == 1;
+        if (!starvation_watchdog_budget_stale(last, now, timeout,
+                                             cpu_valid, last_cpu, now_cpu)) return;
+        /* A concurrent IO heartbeat or rematch wins over the old observation. */
+        if (heartbeat_load() != last) return;
         starvation_ring_dump(NULL);
         /* Abort cleanly so the dump file is preserved and the user knows
          * the runtime starved. Tag the exit so psx_last_run_report.json
          * says "starvation_watchdog" instead of atexit/unknown. */
-        fprintf(stderr, "starvation_watchdog: %llu us without heartbeat — "
+        fprintf(stderr, "starvation_watchdog: %llu us without heartbeat "
+                "(emu CPU %llu us, clock %s) — "
                 "ring dumped to starvation_dump.jsonl, aborting\n",
-                (unsigned long long)(now - last));
+                (unsigned long long)(now - last),
+                (unsigned long long)(cpu_valid ? now_cpu - last_cpu : 0),
+                cpu_valid ? "available" : "unavailable");
         fflush(stderr);
         psx_crash_trace_set_exit_origin("starvation_watchdog");
         exit(2);
