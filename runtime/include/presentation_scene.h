@@ -46,7 +46,14 @@ enum {
 typedef struct PsxPresentationCamera {
     PsxPresentationPose pose; /* camera-to-world; scale must be one */
     double focal_x, focal_y, center_x, center_y, near_z;
+    /* Optional explicit native view/lens adjustment AFTER the proper camera
+     * rotation, BEFORE clipping/projection. Row-major 3x3; not a fitted pose.
+     * The flag clear means identity. Source producers retain its exact native
+     * endpoint effect without putting scale/shear into the camera rotation. */
+    double view_linear[9];
+    uint32_t flags;
 } PsxPresentationCamera;
+enum { PSX_PRESENTATION_CAMERA_VIEW_LINEAR = 1 };
 typedef struct PsxPresentationSample {
     uint64_t identity;
     uint32_t vertex_index, resource;

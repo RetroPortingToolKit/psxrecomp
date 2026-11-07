@@ -24,7 +24,40 @@ static PsxPresentationScene *scene(uint64_t epoch,uint64_t tick,
     memset(tex,0,sizeof tex);return s;
 }
 static void close_to(double a,double b){assert(fabs(a-b)<1e-9);}
+static void view_linear_tests(void) {
+    PsxPresentationCamera a=camera(),b=camera(),sampled;
+    b.flags=PSX_PRESENTATION_CAMERA_VIEW_LINEAR;
+    const double lens[9]={2,.25,0,0,1,0,0,0,1};memcpy(b.view_linear,lens,sizeof lens);
+    PsxPresentationScene *sa=scene(91,1,&a),*sb=scene(91,2,&b);
+    PsxPresentationVertex v[3]={{{1,2,10},{0,0},0},{{2,2,10},{0,0},0},{{1,3,10},{0,0},0}};
+    PsxPresentationObject o=object(1,v);
+    assert(psx_presentation_scene_append(sa,&o));assert(psx_presentation_scene_append(sb,&o));
+    o.identity=2;o.flags=PSX_PRESENTATION_NATIVE;
+    assert(psx_presentation_scene_append(sa,&o));assert(psx_presentation_scene_append(sb,&o));
+    assert(psx_presentation_scene_seal(sa));assert(psx_presentation_scene_seal(sb));
+    PsxPresentationSample result[6];
+    assert(psx_presentation_scene_sample(sa,sb,0,&sampled,result,6));close_to(result[0].view[0],1);
+    assert(psx_presentation_scene_sample(sa,sb,1,&sampled,result,6));close_to(result[0].view[0],2.5);
+    assert(psx_presentation_scene_sample(sa,sb,.5,&sampled,result,6));close_to(result[0].view[0],1.75);
+    for(unsigned k=0;k<3;++k){close_to(result[0].view[k],result[3].view[k]);close_to(sampled.pose.scale[k],1);}
+    close_to(v[0].position[0],1); /* native calibration never deforms source vertices */
+    PsxPresentationScene *bad=psx_presentation_scene_create(1,3,1,4);assert(bad);
+    b.view_linear[0]=NAN;assert(!psx_presentation_scene_begin(bad,91,3,&b));
+    memcpy(b.view_linear,lens,sizeof lens);b.view_linear[0]=0;
+    assert(!psx_presentation_scene_begin(bad,91,3,&b));
+    b.view_linear[0]=-1;assert(!psx_presentation_scene_begin(bad,91,3,&b));
+    memcpy(b.view_linear,lens,sizeof lens);b.flags=2;
+    assert(!psx_presentation_scene_begin(bad,91,3,&b));
+    b.flags=PSX_PRESENTATION_CAMERA_VIEW_LINEAR;memset(b.view_linear,0,sizeof b.view_linear);
+    b.view_linear[0]=b.view_linear[4]=-1;b.view_linear[8]=1;
+    PsxPresentationScene *flip=scene(91,3,&b);assert(psx_presentation_scene_append(flip,&o));
+    assert(psx_presentation_scene_seal(flip));
+    assert(!psx_presentation_scene_sample(sa,flip,.5,&sampled,result,6)); /* singular intermediate lens refuses */
+    psx_presentation_scene_destroy(sa);psx_presentation_scene_destroy(sb);
+    psx_presentation_scene_destroy(bad);psx_presentation_scene_destroy(flip);
+}
 int main(void) {
+    view_linear_tests();
     const double matrix[9]={0,0,2,0,3,0,-4,0,0},translation[3]={10,20,30},point[3]={1,2,3};
     PsxPresentationPose converted;double transformed[3],original[3];
     assert(psx_presentation_pose_from_matrix(&converted,matrix,translation,0));

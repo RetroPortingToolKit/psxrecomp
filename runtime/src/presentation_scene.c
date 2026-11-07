@@ -40,6 +40,11 @@ static int pose_copy(PsxPresentationPose *to, const PsxPresentationPose *from) {
     for (unsigned i=0;i<3;++i) if (from->scale[i]==0) return 0;
     return 1;
 }
+static int view_linear_valid(const double m[9]) {
+    if(!finite_array(m,9))return 0;
+    const double det=m[0]*(m[4]*m[8]-m[5]*m[7])-m[1]*(m[3]*m[8]-m[5]*m[6])+m[2]*(m[3]*m[7]-m[4]*m[6]);
+    return isfinite(det) && det>1e-12;
+}
 static int camera_copy(PsxPresentationCamera *to,const PsxPresentationCamera *from) {
     if (!from || !pose_copy(&to->pose,&from->pose) ||
         !isfinite(from->focal_x) || !isfinite(from->focal_y) ||
@@ -47,7 +52,14 @@ static int camera_copy(PsxPresentationCamera *to,const PsxPresentationCamera *fr
         !isfinite(from->near_z) || from->focal_x<=0 || from->focal_y<=0 ||
         from->near_z<=0) return 0;
     for(unsigned i=0;i<3;++i) if(from->pose.scale[i]!=1) return 0;
-    PsxPresentationPose pose=to->pose; *to=*from; to->pose=pose; return 1;
+    if(from->flags&~PSX_PRESENTATION_CAMERA_VIEW_LINEAR)return 0;
+    if((from->flags&PSX_PRESENTATION_CAMERA_VIEW_LINEAR) && !view_linear_valid(from->view_linear))return 0;
+    PsxPresentationPose pose=to->pose; *to=*from; to->pose=pose;
+    if(!(from->flags&PSX_PRESENTATION_CAMERA_VIEW_LINEAR)) {
+        memset(to->view_linear,0,sizeof to->view_linear);
+        to->view_linear[0]=to->view_linear[4]=to->view_linear[8]=1;
+    }
+    to->flags=PSX_PRESENTATION_CAMERA_VIEW_LINEAR;return 1;
 }
 PsxPresentationScene *psx_presentation_scene_create(uint32_t objects,
     uint32_t vertices,uint32_t resources,size_t bytes) {
@@ -234,6 +246,10 @@ int psx_presentation_scene_sample(const PsxPresentationScene *a,
         a->camera.center_y!=b->camera.center_y || a->camera.near_z!=b->camera.near_z)) {
         pair=0;*camera=b->camera;
     }
+    if(pair)for(unsigned i=0;i<9;++i)
+        camera->view_linear[i]=alpha==0?a->camera.view_linear[i]:alpha==1?b->camera.view_linear[i]:
+            a->camera.view_linear[i]*(1-alpha)+b->camera.view_linear[i]*alpha;
+    if(!view_linear_valid(camera->view_linear))return 0;
     uint32_t n=0;
     for(uint32_t i=0;i<b->object_count;++i) {
         const Object *o=&b->objects[i],*p=pair?find(a,o->data.identity):NULL;
@@ -258,7 +274,11 @@ int psx_presentation_scene_sample(const PsxPresentationScene *a,
             for(unsigned k=0;k<3;++k)
                 relative[k]=world[k]+pose.position[k]-camera->pose.position[k];
             PsxPresentationSample *s=&out[n++];
-            rotate(camera->pose.rotation,relative,s->view,1);
+            double view[3];rotate(camera->pose.rotation,relative,view,1);
+            for(unsigned row=0;row<3;++row) {
+                s->view[row]=0;
+                for(unsigned col=0;col<3;++col)s->view[row]+=camera->view_linear[row*3+col]*view[col];
+            }
             if(!finite_array(s->view,3))return 0;
             s->identity=o->data.identity;s->vertex_index=j;s->resource=o->data.resource;
             s->uv[0]=v->uv[0];s->uv[1]=v->uv[1];s->rgba=v->rgba;
