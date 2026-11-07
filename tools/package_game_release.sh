@@ -412,6 +412,7 @@ if [[ -d "${FRAMEWORK}/runtime/licenses" ]]; then
 fi
 [[ -f "${FRAMEWORK}/THIRD_PARTY_ATTRIBUTION.md" ]] && cp -a "${FRAMEWORK}/THIRD_PARTY_ATTRIBUTION.md" "${STAGE}/licenses/"
 [[ -f "${FRAMEWORK}/LICENSE" ]] && cp -a "${FRAMEWORK}/LICENSE" "${STAGE}/licenses/psxrecomp-LICENSE"
+cp -a "${FRAMEWORK}/PERMISSIONS.md" "${STAGE}/licenses/psxrecomp-PERMISSIONS.md"
 # recomp-ui: the executable links it (MIT) and assets/ carries its fonts and
 # images (OFL-1.1, CC BY-SA 4.0), so its license and asset notices ship too.
 # The build's RECOMP_UI_ROOT says which tree it linked; <root>/recomp-ui is the

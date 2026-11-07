@@ -27,13 +27,15 @@ static void image_option(const char* id, char* out, unsigned size) {
 }
 
 static void image_request(void) {
-    char smoothing[16], texture[16], fmv[16];
+    char smoothing[16], texture[16], fmv[16], dithering[16];
     image_option("smoothing", smoothing, sizeof smoothing);
     image_option("texture_filtering", texture, sizeof texture);
     image_option("fmv_filtering", fmv, sizeof fmv);
+    image_option("dithering", dithering, sizeof dithering);
     psx_host_enh_request_image(psx_host_enh_parse_smoothing(smoothing),
                                psx_host_enh_parse_texture_filter(texture),
                                psx_host_enh_parse_fmv_filter(fmv));
+    psx_host_enh_request_image_dithering(psx_host_enh_parse_dithering(dithering));
 }
 
 static void builtin_image_filtering_activate(void) {

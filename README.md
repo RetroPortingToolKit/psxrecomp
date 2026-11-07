@@ -838,8 +838,16 @@ for build failures); design discussion happens in the **R.A.I.D.** Discord
 
 ## License
 
-PolyForm Noncommercial 1.0.0. See `LICENSE`. Copyright © 2026 Matthew
-Stanley; commercial licensing inquiries go to him at <https://1379.tech>.
+PolyForm Noncommercial 1.0.0, with [additional permissions](PERMISSIONS.md)
+for voluntary donations and advertising revenue. See [`LICENSE`](LICENSE) for
+the standard license and [`PERMISSIONS.md`](PERMISSIONS.md) for the grant and
+its conditions. Payment must not buy access to the software, games built with
+it, or their updates, features, or game content, including early access.
+
+Copyright © 2026 Matthew Stanley. Matthew Stanley has authority from the relevant
+copyright holders to grant the additional permissions for PSXRecomp's project
+code, as stated in [`PERMISSIONS.md`](PERMISSIONS.md). Licensing inquiries go to
+him at <https://1379.tech>.
 
 Third-party components vendored into the runtime keep their own terms, and
 their notices ship with every release under `licenses/` in the package

@@ -36,7 +36,7 @@ typedef struct { const char* id; PSXModOptionChangedCallback cb; } Opt;
 static Act g_act[8]; static int g_nact;
 static Opt g_opt[8]; static int g_nopt;
 typedef struct { const char* pkg; const char* feature; const char* option; const char* value; } Val;
-static Val g_val[16]; static int g_nval;
+static Val g_val[32]; static int g_nval;
 
 int psx_mod_register_activation_plugin(const char* id, PSXModActivationCallback cb) {
     g_act[g_nact].id = id; g_act[g_nact].cb = cb; g_nact++;
@@ -198,7 +198,7 @@ static void test_resolution(void) {
 
 static void test_resolve(void) {
     /* A Tomba-like title: nearest, no smoothing, composite, no scanlines. */
-    const PsxHostLook base = {2, 0, 30, 0, PSX_TEXTURE_FILTER_NEAREST, 0, 0};
+    const PsxHostLook base = {2, 0, 30, 0, PSX_TEXTURE_FILTER_NEAREST, 0, 0, 1};
     PsxHostEnhRequests req;
     memset(&req, 0, sizeof req);
     PsxHostLook out = psx_host_enh_resolve(&base, &req);
@@ -212,6 +212,7 @@ static void test_resolve(void) {
     req.image_smoothing = PSX_HOST_ENH_DEFAULT;
     req.image_texture_filter = PSX_HOST_ENH_DEFAULT;
     req.image_fmv_filter = PSX_HOST_ENH_DEFAULT;
+    req.image_dithering = PSX_HOST_ENH_DEFAULT;
     out = psx_host_enh_resolve(&base, &req);
     CHECK(!memcmp(&out, &base, sizeof out));   /* all Game default: the baseline */
 
@@ -242,6 +243,18 @@ static void test_resolve(void) {
     req.image_smoothing = 0;
     out = psx_host_enh_resolve(&smooth, &req);
     CHECK(out.present_linear == 0);
+    /* Dithering choices replace only their part; default keeps each title. */
+    req.image_dithering = 0;
+    out = psx_host_enh_resolve(&base, &req);
+    CHECK(out.dithering == 0 && out.texture_filter == PSX_TEXTURE_FILTER_XBR);
+    req.image_dithering = 2;
+    out = psx_host_enh_resolve(&base, &req);
+    CHECK(out.dithering == 2);
+    PsxHostLook fine = base;
+    fine.dithering = 2;
+    req.image_dithering = PSX_HOST_ENH_DEFAULT;
+    out = psx_host_enh_resolve(&fine, &req);
+    CHECK(out.dithering == 2);
     /* The mod off again: nothing it asked for survives. */
     req.crt = req.image = req.audio = 0;
     out = psx_host_enh_resolve(&base, &req);
@@ -261,6 +274,12 @@ static void test_parsers(void) {
     CHECK(psx_host_enh_parse_strength("0") == 50 && psx_host_enh_parse_strength("101") == 50);
     CHECK(psx_host_enh_parse_strength("5x") == 50 && psx_host_enh_parse_strength("") == 50);
     CHECK(psx_host_enh_parse_smoothing("smooth") == 1 && psx_host_enh_parse_smoothing("sharp") == 0);
+    CHECK(psx_host_enh_parse_dithering("off") == 0);
+    CHECK(psx_host_enh_parse_dithering("native") == 1);
+    CHECK(psx_host_enh_parse_dithering("fine") == 2);
+    CHECK(psx_host_enh_parse_dithering("default") == PSX_HOST_ENH_DEFAULT);
+    CHECK(psx_host_enh_parse_dithering(NULL) == PSX_HOST_ENH_DEFAULT);
+    CHECK(psx_host_enh_parse_dithering("invalid") == PSX_HOST_ENH_DEFAULT);
     CHECK(psx_host_enh_parse_texture_filter("nearest") == PSX_TEXTURE_FILTER_NEAREST);
     CHECK(psx_host_enh_parse_texture_filter("bilinear") == PSX_TEXTURE_FILTER_BILINEAR);
     CHECK(psx_host_enh_parse_texture_filter("xbr") == PSX_TEXTURE_FILTER_XBR);
@@ -288,7 +307,8 @@ static void test_plugins(void) {
           req.crt_scanlines == PSX_HOST_ENH_DEFAULT && req.crt_strength_pct == 50);
     CHECK(req.image && req.image_smoothing == PSX_HOST_ENH_DEFAULT &&
           req.image_texture_filter == PSX_HOST_ENH_DEFAULT &&
-          req.image_fmv_filter == PSX_HOST_ENH_DEFAULT);
+          req.image_fmv_filter == PSX_HOST_ENH_DEFAULT &&
+          req.image_dithering == PSX_HOST_ENH_DEFAULT);
     CHECK(req.audio);
     CHECK(req.rewind && req.rewind_depth == 50 && req.rewind_interval == 15);
 
@@ -299,6 +319,7 @@ static void test_plugins(void) {
     set_opt(IMG, "image-filtering", "smoothing", "sharp");
     set_opt(IMG, "image-filtering", "texture_filtering", "bilinear");
     set_opt(IMG, "image-filtering", "fmv_filtering", "bicubic");
+    set_opt(IMG, "image-filtering", "dithering", "fine");
     set_opt(RWD, "rewind", "buffer", "200");
     set_opt(RWD, "rewind", "interval", "1");
     psx_host_enh_reset();
@@ -308,7 +329,7 @@ static void test_plugins(void) {
     psx_host_enh_requests(&req);
     CHECK(req.crt_screen_kind == 3 && req.crt_scanlines == 1 && req.crt_strength_pct == 35);
     CHECK(req.image_smoothing == 0 && req.image_texture_filter == PSX_TEXTURE_FILTER_BILINEAR &&
-          req.image_fmv_filter == 3);
+          req.image_fmv_filter == 3 && req.image_dithering == 2);
     CHECK(!req.audio);   /* not activated this session */
     CHECK(req.rewind_depth == 200 && req.rewind_interval == 1);
 
@@ -329,6 +350,10 @@ static void test_plugins(void) {
     CHECK(option_changed("psx.image-filtering", "texture_filtering", "xbr") == 1 && g_applied == 2);
     psx_host_enh_requests(&req);
     CHECK(req.image && req.image_texture_filter == PSX_TEXTURE_FILTER_XBR);
+    set_opt(IMG, "image-filtering", "dithering", "off");
+    CHECK(option_changed("psx.image-filtering", "dithering", "off") == 1 && g_applied == 3);
+    psx_host_enh_requests(&req);
+    CHECK(req.image_dithering == 0);
     psx_host_enh_set_live_applier(NULL);
     CHECK(psx_host_enh_apply_live() == 0);
     /* Enhanced Audio and Rewind change at the next start (no live callback). */

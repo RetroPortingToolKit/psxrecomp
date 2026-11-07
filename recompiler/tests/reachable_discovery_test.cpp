@@ -190,6 +190,174 @@ void check_scheduled_switch() {
 } // namespace
 
 int main() {
+    auto check_prelude = [](const std::vector<uint32_t>& prefix,
+                            bool accepted, bool called_frame = false) {
+        auto image = make_exe_buffer(0x800);
+        const uint32_t frame = 0x100u + static_cast<uint32_t>(prefix.size()) * 4u;
+        put32(image, 2048, called_frame ? jal(kLoad + frame) : 0x03E00008u);
+        if (called_frame) put32(image, 2048 + 8u, 0x03E00008u);
+        put32(image, 2048 + 0xF8, 0x03E00008u);
+        uint32_t pc = 0x100u;
+        for (uint32_t word : prefix) {
+            put32(image, 2048 + pc, word);
+            pc += 4u;
+        }
+        for (uint32_t word : {0x27BDFFE8u, 0xAFBF0010u, 0x8FBF0010u,
+                              0u, 0x03E00008u, 0x27BD0018u}) {
+            put32(image, 2048 + pc, word);
+            pc += 4u;
+        }
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK((found.count(kLoad + 0x100) != 0) == accepted,
+              "boundary-anchored prelude acceptance matches the instruction contract");
+        if (called_frame)
+            CHECK(found.count(kLoad + frame) == 1,
+                  "a scheduled prelude never moves an exact JAL target");
+    };
+    check_prelude({0x00802821u, 0x8F840010u}, true); // move then gp load
+    check_prelude({0x8C820000u, 0u, 0x8CA30004u}, true); // argument loads
+    check_prelude({0x3C028001u, 0x8C420600u, 0u, 0x24420001u,
+                   0x3C018001u, 0xAC220600u}, true); // global counter update
+    std::vector<uint32_t> arithmetic(80u, 0x24420001u);
+    arithmetic.front() = 0x00850018u; // mult a0,a1; before a late frame
+    check_prelude(arithmetic, true);
+    check_prelude({0x8F820010u}, true, true);
+    check_prelude({0x80010080u}, false, true); // inline pointer, not LB code
+    check_prelude({0x40026000u, 0xAF420000u}, false, true); // exception context
+    check_prelude({0xAFA40004u}, false); // wrong argument home slot
+    check_prelude({0x8F9C0010u}, false); // clobbers incoming gp
+    check_prelude({0x1000001Fu, 0u, 0x8F820010u}, false); // escapes prelude
+
+    for (bool spin : {false, true}) {
+        auto image = make_exe_buffer(0x100);
+        put32(image, 2048, 0x03E00008u);
+        uint32_t target = kLoad + (spin ? 8u : 0x40u);
+        put32(image, 2048 + 8u, 0x08000000u | ((target >> 2) & 0x03FFFFFFu));
+        put32(image, 2048 + 0x10, 0x34020001u);
+        put32(image, 2048 + 0x14, 0xA3820010u);
+        put32(image, 2048 + 0x18, 0x03E00008u);
+        put32(image, 2048 + 0x40, 0x03E00008u);
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK(found.count(kLoad + 8u) && found.count(kLoad + 0x10u),
+              "terminal J wrapper and following frameless body keep separate entries");
+    }
+
+    // Materialized callback addresses count as independent static references,
+    // including a low half in a call delay slot. A link-register clobber must
+    // invalidate the high half before that delay slot executes.
+    for (bool link_clobber : {false, true}) {
+        for (bool invalid_leaf_delay : {false, true}) {
+            auto image = make_exe_buffer(0x800);
+            for (size_t offset = 0; offset < 0x800; offset += 4u)
+                put32(image, 2048 + offset, 0xFFFFFFFFu);
+            uint32_t base = link_clobber ? 31u : 4u;
+            put32(image, 2048, 0x3C008001u | (base << 16));
+            put32(image, 2048 + 4u, jal(kLoad + 0x80));
+            put32(image, 2048 + 8u, 0x24040580u | (base << 21));
+            put32(image, 2048 + 12u, 0x03E00008u);
+            put32(image, 2048 + 16u, 0u);
+            put32(image, 2048 + 0x80, 0x03E00008u);
+            put32(image, 2048 + 0x84, 0u);
+            put32(image, 2048 + 0x580, 0x308400FFu); // andi a0,a0,255
+            put32(image, 2048 + 0x584, 0x10800003u); // conditional second return
+            put32(image, 2048 + 0x588, 0u);
+            put32(image, 2048 + 0x58C, 0x03E00008u);
+            put32(image, 2048 + 0x590, invalid_leaf_delay ? 0x279C0004u : 0u);
+            put32(image, 2048 + 0x594, 0x03E00008u);
+            put32(image, 2048 + 0x598, 0u);
+            auto exe = parse(image);
+            auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+            CHECK((found.count(kLoad + 0x580) != 0) ==
+                      (!link_clobber && !invalid_leaf_delay),
+                  "callback proof respects link writes and leaf delay-slot ABI effects");
+        }
+    }
+
+    // Scheduled small-data loads belong to the function entry, even though
+    // the compiler allocates the frame later. These are synthetic programs;
+    // no proprietary executable bytes or addresses are used.
+    for (uint32_t load_op : {0x83820010u, 0x87820010u, 0x8F820010u,
+                             0x93820010u, 0x97820010u, 0x8C820010u}) {
+        auto image = make_exe_buffer(0x400);
+        put32(image, 2048, 0x03E00008u);
+        put32(image, 2048 + 0x100, load_op);       // load v0,16(gp)
+        put32(image, 2048 + 0x104, 0x27BDFFE8u); // addiu sp,sp,-24
+        put32(image, 2048 + 0x108, 0xAFBF0010u); // sw ra,16(sp)
+        put32(image, 2048 + 0x10C, 0x8FBF0010u); // lw ra,16(sp)
+        put32(image, 2048 + 0x110, 0x00000000u);
+        put32(image, 2048 + 0x114, 0x03E00008u);
+        put32(image, 2048 + 0x118, 0x27BD0018u);
+        // Address-taken callbacks must retain the same entry as scanning.
+        put32(image, 2048 + 0x300, kLoad + 0x100);
+        auto exe = parse(image);
+        auto result = PSXRecomp::FunctionAnalyzer(exe).analyze();
+        auto found = starts(result);
+        CHECK(found.count(kLoad + 0x100) == 1,
+              "gp-relative pre-frame load is part of the callback entry");
+        CHECK(found.count(kLoad + 0x104) == 0,
+              "stack allocation does not split a gp-relative callback");
+    }
+
+    for (bool pointer_ref : {false, true}) {
+        auto image = make_exe_buffer(0x400);
+        put32(image, 2048, 0x03E00008u);
+        put32(image, 2048 + 0x100, 0x87820010u); // lh v0,16(gp)
+        put32(image, 2048 + 0x104, 0x93830020u); // lbu v1,32(gp)
+        put32(image, 2048 + 0x108, 0x27BDFFE8u);
+        put32(image, 2048 + 0x10C, 0xAFBF0010u);
+        put32(image, 2048 + 0x110, 0x8FBF0010u);
+        put32(image, 2048 + 0x114, 0x00000000u);
+        put32(image, 2048 + 0x118, 0x03E00008u);
+        put32(image, 2048 + 0x11C, 0x27BD0018u);
+        if (pointer_ref) put32(image, 2048 + 0x300, kLoad + 0x100);
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK(found.count(kLoad + 0x100) == 1 &&
+                  found.count(kLoad + 0x108) == 0,
+              "multiple gp loads retain the full prelude with or without a pointer");
+    }
+
+    // An arbitrary base, a store, or a write to architectural frame/link/gp
+    // state is not evidence for moving a function entry backwards.
+    for (uint32_t rejected : {0x8D820010u, 0xAF820010u, 0x8F9C0010u,
+                              0x8F9D0010u, 0x8F9F0010u, 0x3C1C8001u,
+                              0x241C0001u}) {
+        auto image = make_exe_buffer(0x400);
+        put32(image, 2048, 0x03E00008u);
+        put32(image, 2048 + 0x100, rejected);
+        put32(image, 2048 + 0x104, 0x27BDFFE8u);
+        put32(image, 2048 + 0x108, 0xAFBF0010u);
+        put32(image, 2048 + 0x10C, 0x8FBF0010u);
+        put32(image, 2048 + 0x110, 0x00000000u);
+        put32(image, 2048 + 0x114, 0x03E00008u);
+        put32(image, 2048 + 0x118, 0x27BD0018u);
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK(found.count(kLoad + 0x104) == 1 &&
+                  found.count(kLoad + 0x100) == 0,
+              "unsafe pre-frame instruction does not move the entry");
+    }
+
+    for (uint32_t first_arg : {4u, 5u, 6u}) {
+        auto image = make_exe_buffer(0x400);
+        put32(image, 2048, 0x03E00008u);
+        uint32_t pc = 0x100;
+        for (uint32_t arg = first_arg; arg <= 7u; ++arg, pc += 4u)
+            put32(image, 2048 + pc, 0xAFA00000u | (arg << 16) | ((arg - 4u) * 4u));
+        const uint32_t frame = pc;
+        for (uint32_t word : {0x27BDFFE8u, 0xAFBF0010u, 0x8FBF0010u,
+                              0u, 0x03E00008u, 0x27BD0018u}) {
+            put32(image, 2048 + pc, word);
+            pc += 4u;
+        }
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK(found.count(kLoad + 0x100) == 1 && !found.count(kLoad + frame),
+              "variadic argument home-slot spills belong to the function entry");
+    }
+
     check_scheduled_switch();
     auto image = make_exe_buffer(0x2000);
     const size_t text = 2048;

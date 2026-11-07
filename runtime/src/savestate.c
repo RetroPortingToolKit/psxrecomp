@@ -527,10 +527,15 @@ static int savestate_format_slot_path(int slot, const char* extension, char* out
     if (!out || cap == 0) return 0;
     out[0] = '\0';
     if (!s_configured || !s_content_scope_valid) return 0;
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
+    if (slot < 0 || slot > SAVESTATE_QUICK_SLOT) return 0;
     /* Keyed by entry_pc so slots from different games in a shared dir never
      * collide; boot_state_load also rejects a mismatched entry_pc internally. */
-    length = snprintf(out, cap, "%s%sstate_%08X%s%s_slot%02d.%s",
+    if (slot == SAVESTATE_QUICK_SLOT)
+        length = snprintf(out, cap, "%s%sstate_%08X%s%s_quick.%s",
+                 s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
+                 s_disc_token, s_content_token, extension);
+    else
+        length = snprintf(out, cap, "%s%sstate_%08X%s%s_slot%02d.%s",
              s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
              s_disc_token, s_content_token, slot, extension);
     if (length < 0 || (size_t)length >= cap) { out[0] = '\0'; return 0; }
@@ -788,7 +793,7 @@ static int request_save_inner(int slot) {
         psx_frontend_on_savestate_refused(0, slot, "Save states are not available yet");
         return 0;
     }
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
+    if (slot < 0 || slot > SAVESTATE_QUICK_SLOT) return 0;
     s_save_failed = 0;
     s_last_save_pc = 0; /* block netplay transfer until this write stamps a PC */
     s_save_defer_slot = -1;
@@ -808,7 +813,7 @@ static int request_load_inner(int slot) {
         psx_frontend_on_savestate_refused(1, slot, "Save states are not available yet");
         return 0;
     }
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
+    if (slot < 0 || slot > SAVESTATE_QUICK_SLOT) return 0;
     if (!psx_hle_scheduler_enabled()) {
         /* LLE (host-fiber) mode: the restore longjmp target lives on the
          * scheduler fiber; cross-fiber unwind is unsafe. HLE is the default. */

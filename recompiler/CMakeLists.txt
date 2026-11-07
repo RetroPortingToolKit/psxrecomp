@@ -1339,6 +1339,12 @@ if(BUILD_TESTING)
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         endforeach()
 
+        # Address-reference semantics are checked through the analyzer's JSON.
+        add_test(NAME analysis_reference_constants
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analysis_reference_constants.py
+                    --analyzer $<TARGET_FILE:psxrecomp-analyze>)
+
         # test_aot_overlay_discovery.py had no add_test() entry at all. It runs
         # far enough to exercise real discovery, then fails in
         # check_real_batched_fragment_publication: that check reaches

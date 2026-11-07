@@ -94,6 +94,29 @@ int main(void) {
     };
     memset(&cpu, 0, sizeof(cpu));
     s_configured = 1; /* No configure/filesystem needed to test request staging. */
+    {
+        char quick[700], manual[700], sidecar[700];
+        assert(savestate_slot_path(SAVESTATE_QUICK_SLOT, quick, sizeof quick));
+        assert(strstr(quick, "_quick.pst"));
+        for (int slot = 0; slot < SAVESTATE_SLOTS; ++slot) {
+            assert(savestate_slot_path(slot, manual, sizeof manual));
+            assert(strcmp(manual, quick));
+        }
+        assert(savestate_thumb_path(SAVESTATE_QUICK_SLOT, sidecar, sizeof sidecar));
+        assert(strstr(sidecar, "_quick.thumb"));
+        assert(savestate_request_save(SAVESTATE_QUICK_SLOT) &&
+               s_save_pending == SAVESTATE_QUICK_SLOT);
+        assert(savestate_request_load(SAVESTATE_QUICK_SLOT) &&
+               s_load_pending == SAVESTATE_QUICK_SLOT);
+        savestate_set_title_blocked(1);
+        assert(!savestate_pending());
+        assert(!savestate_request_save(SAVESTATE_QUICK_SLOT));
+        assert(!savestate_request_load(SAVESTATE_QUICK_SLOT));
+        savestate_set_title_blocked(0);
+        assert(!savestate_slot_path(SAVESTATE_QUICK_SLOT + 1, quick, sizeof quick));
+        assert(!savestate_request_save(SAVESTATE_QUICK_SLOT + 1));
+        refusals = 0;
+    }
     assert(!savestate_title_blocked());
     assert(savestate_request_save(2) && savestate_pending());
     check_pending_status(1);

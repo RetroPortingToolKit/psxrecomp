@@ -71,7 +71,7 @@ if [ -d "$payload/overlay_toolchain" ]; then
         ln -sfn "$payload/overlay_toolchain" "$data_dir/overlay_toolchain"
     fi
 fi
-for file in game.toml game_options.toml LICENSE README.md START_HERE.txt AOT_CACHE_AUDIT.json VERSION RELEASE_NOTES.md RELEASE_MANIFEST.json; do
+for file in game.toml game_options.toml LICENSE PERMISSIONS.md README.md START_HERE.txt AOT_CACHE_AUDIT.json VERSION RELEASE_NOTES.md RELEASE_MANIFEST.json; do
     if [ -f "$payload/$file" ]; then
         cp -f "$payload/$file" "$data_dir/$file"
         chmod u+rw "$data_dir/$file"

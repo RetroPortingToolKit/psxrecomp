@@ -155,6 +155,104 @@ silently merged.
 
 ---
 
+## Symbol-reference qualification (2026-11-05)
+
+### Complete archive-directory follow-up
+
+The follow-up audited all 115 archives in the PlayStation directory, including
+18 CPE inputs converted privately into PS-X EXE envelopes without changing
+their loaded bytes. The corpus contains 173 executable views and 163 unique
+input hashes. Symbols remain comparison references, never discovery seeds.
+
+Against release v0.3.5-alpha (`3e3438763fd207751c94b2f986266dc7a1f659ba`),
+the shared analyzer recovers **377 additional function-entry instances** with
+**zero previously matched explicit entries lost**. Recoveries occur in 32
+archives. Instances are deduplicated by executable SHA-256 and entry address;
+regional revisions and different executable containers can still contain the
+same implementation. This is not a count of distinct source functions.
+
+The evidence supports these general changes:
+
+- Recognize argument loads, register moves and canonical o32 argument home-slot
+  stores before frame allocation. Longer arithmetic preludes require an
+  independent return boundary or static address reference, with protected
+  registers and control flow checked.
+- Preserve exact direct-call and forced entries when an earlier prelude also
+  qualifies. Recognize packed terminal-jump wrappers without absorbing the next
+  frameless routine.
+- Recognize bounded, ABI-preserving leaf callbacks referenced by pointer data
+  or `LUI` plus `ADDIU`/`ORI`, including a low half in a call delay slot. Keep
+  resolved switch cases owned by their host function.
+- Track the complete materialized constant in reference analysis, invalidate
+  clobbers and recognize `ORI` address references.
+
+Ninety executable/reference views meet the correspondence checks: matching
+basenames where available, at least 90% baseline explicit-entry agreement and
+at least 90% agreement between debug frame records and resident instructions.
+Those views improve from 105,344/105,729 to 105,724/105,729 explicit starts.
+These totals count views; the 377 recovery total removes duplicate input hashes.
+Pure function declarations pointing into zero-filled nonresident overlay space
+are excluded and recorded. Active-overlay records are not boot-image entries.
+
+Five views retain an ambiguous unreferenced boundary. All five work with the
+existing explicit-entry interface; automatic promotion was rejected without
+independent boundary evidence. Two symbol files use an unsupported `0x9c`
+record and remain explicitly unqualified. Mismatched revisions, untyped MAP
+labels and unsupported references do not count as discovery failures or proof
+of complete recall. Explicit records establish entry recall, not overall
+precision, function extents, switch completeness or gameplay correctness.
+
+The developer CLI archive now includes `libexec/psxrecomp-analyze`, so these
+discovery reports are available without building the analyzer separately.
+Archive/input identities, correspondence decisions and counts are recorded in
+[`accuracy/full_symbol_corpus_results.json`](../accuracy/full_symbol_corpus_results.json).
+
+Consumer regeneration was built and exercised in isolated baseline/candidate
+Ape Escape, Tomba and Tomba 2 worktrees. All six builds reached gameplay,
+responded to movement and completed current-build in-process save/load.
+Short serial runtime samples showed no observed regression. Tomba 2 used fresh
+boots because its cold-snapshot pair had different native coverage and draw
+workloads; those snapshot timings were rejected. Ape Escape's different selected
+gadgets also limit performance inference. These are representative smoke checks,
+not complete-game qualification or a proven optimization result. Full CTest
+finished with 147 passes, the same 13 pre-existing failures and 3 disabled tests.
+
+### Initial eight-build qualification
+
+Eight independent executable/symbol pairs were compared with **unaided**
+analysis: Croc, Croc 2, THPS2, Soul Reaver, Driver 2, Quake II, Abe's Oddysee
+and 3D Lemmings. Symbols were comparison references, never entry seeds.
+The baseline was `81dea78f4606a1e984d52f3ba0fa58aa2528bd2c`.
+
+The comparison exposed one shared discovery defect: incoming o32 `$gp` loads
+scheduled before stack allocation were omitted from function entries. The
+pre-frame recognizer now accepts those loads and rejects preludes that
+overwrite `$gp`, `$sp` or `$ra`. This also removes redundant interior starts.
+The exact-entry traversal and instruction translation are unchanged.
+
+| Explicit function records | Baseline entries found | Fixed entries found |
+|---|---:|---:|
+| THPS2 | 1643 / 1646 | 1646 / 1646 |
+| Soul Reaver | 2256 / 2274 | 2274 / 2274 |
+| Driver 2 | 970 / 977 | 977 / 977 |
+| Quake II | 1030 / 1037 | 1037 / 1037 |
+
+No previously recognized named entry was lost across the eight inputs. The
+other four inputs supply untyped labels rather than explicit function records;
+they cannot establish complete function recall or precision. A Wipeout XL
+pair with inconsistent symbol/disassembly addresses was excluded, not counted
+as an analyzer failure. Names alone also do not prove function sizes, switch
+targets, or code/data classification.
+
+Machine-readable identities and counts are in
+[`accuracy/symbol_reference_results.json`](../accuracy/symbol_reference_results.json).
+Original archives, normalized references, comparison script and raw runs stay
+in the private qualification workspace, outside the source repository. Synthetic
+positive and rejection cases live in the registered `reachable_discovery_test`
+and `reachable_discovery_codegen` tests. No game code or SDK content is required
+to run those regressions. Consumers need a framework pin bump and regeneration
+to use corrected whole-image discovery; no runtime setting enables it.
+
 ## Naming loop
 
 `symbols.toml` (see [SYMBOLS.md](SYMBOLS.md)) is the persistence layer. Both

@@ -229,6 +229,24 @@ static bool is_load_imm_zero(uint32_t instr, uint32_t& rt_out) {
     return rt_out != 0;
 }
 
+static bool anchored_preprologue_is_valid(const PS1Executable& exe,
+                                          uint32_t start, uint32_t frame,
+                                          bool reject_delay = true);
+
+static bool follows_return(const PS1Executable& exe, uint32_t start,
+                           uint32_t lo) {
+    // A previous return and optional alignment NOPs give a boundary independent
+    // of the new function's instruction shape. Never start in its delay slot.
+    for (uint32_t gap = 0; gap <= 32u; gap += 4u) {
+        if (start < lo + gap + 8u) break;
+        auto ret = exe.read_word(start - gap - 8u);
+        if (ret && FunctionAnalyzer::is_jr_ra(*ret)) return true;
+        auto padding = exe.read_word(start - gap - 4u);
+        if (!padding || *padding != 0u) break;
+    }
+    return false;
+}
+
 static bool preprologue_window_is_valid(const PS1Executable& exe,
                                         uint32_t start_addr,
                                         uint32_t prologue_addr,
@@ -244,8 +262,13 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         }
     }
 
-    std::set<uint32_t> global_base_regs;
+    // o32 small-data accesses use the incoming $gp directly; they need no
+    // preceding LUI. Compilers can schedule these loads before the frame
+    // allocation, just like absolute global loads. Do not accept a prelude
+    // that overwrites $gp and then treats the new value as the incoming base.
+    std::set<uint32_t> global_base_regs{4u, 5u, 6u, 7u, 28u};
     bool saw_global_load = false;
+    bool saw_argument_spill = false;
 
     for (uint32_t addr = start_addr; addr < prologue_addr; addr += 4) {
         auto word_opt = exe.read_word(addr);
@@ -253,14 +276,38 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         uint32_t instr = *word_opt;
 
         if (FunctionAnalyzer::is_branch_or_jump(instr)) return false;
+        // Padding is not an entry, but a load-delay NOP inside a prelude is.
+        if (instr == 0u && addr != start_addr) continue;
+
+        uint32_t op = instr >> 26;
+        uint32_t rs = (instr >> 21) & 31u;
+        uint32_t dst = (instr >> 16) & 31u;
+        // o32 variadic callees spill the incoming argument registers into
+        // their caller-provided home slots before allocating their own frame.
+        if (op == 0x2Bu && rs == 29u && dst >= 4u && dst <= 7u &&
+            (instr & 0xFFFFu) == (dst - 4u) * 4u) {
+            saw_argument_spill = true;
+            continue;
+        }
+        // Register moves can be scheduled ahead of the memory setup too.
+        // A callee-saved/frame/link destination is not a safe pre-frame move.
+        if (op == 0u && ((instr & 63u) == 0x21u || (instr & 63u) == 0x25u)) {
+            uint32_t rt = (instr >> 16) & 31u;
+            uint32_t rd = (instr >> 11) & 31u;
+            bool scratch = (rd >= 2u && rd <= 15u) || rd == 24u || rd == 25u;
+            if (scratch && (rs == 0u || rt == 0u)) {
+                global_base_regs.erase(rd);
+                continue;
+            }
+        }
 
         uint32_t rt = 0;
-        if (is_lui(instr, rt) && rt != 0 && rt != 29 && rt != 31) {
+        if (is_lui(instr, rt) && rt != 0 && rt != 28 && rt != 29 && rt != 31) {
             global_base_regs.insert(rt);
             continue;
         }
 
-        if (is_load_imm_zero(instr, rt) && rt != 29 && rt != 31) {
+        if (is_load_imm_zero(instr, rt) && rt != 28 && rt != 29 && rt != 31) {
             continue;
         }
 
@@ -268,7 +315,7 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         for (uint32_t base_reg : global_base_regs) {
             uint32_t load_rt = 0;
             if (is_load_from_reg_base(instr, base_reg, load_rt) &&
-                load_rt != 0 && load_rt != 29 && load_rt != 31) {
+                load_rt != 0 && load_rt != 28 && load_rt != 29 && load_rt != 31) {
                 valid_load = true;
                 saw_global_load = true;
                 break;
@@ -279,14 +326,14 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         return false;
     }
 
-    return saw_global_load;
+    return saw_global_load || saw_argument_spill;
 }
 
 static bool find_preprologue_setup_start(const PS1Executable& exe,
                                          uint32_t prologue_addr,
                                          uint32_t exe_start,
                                          uint32_t& setup_start_out) {
-    constexpr uint32_t max_setup_insns = 6;
+    constexpr uint32_t max_setup_insns = 128;
     bool found = false;
     uint32_t best_start = prologue_addr;
 
@@ -294,7 +341,10 @@ static bool find_preprologue_setup_start(const PS1Executable& exe,
         uint32_t bytes = count * 4u;
         if (prologue_addr < exe_start + bytes) break;
         uint32_t candidate = prologue_addr - bytes;
-        if (preprologue_window_is_valid(exe, candidate, prologue_addr, exe_start)) {
+        if ((count <= 6u && preprologue_window_is_valid(
+                 exe, candidate, prologue_addr, exe_start)) ||
+            (follows_return(exe, candidate, exe_start) &&
+             anchored_preprologue_is_valid(exe, candidate, prologue_addr))) {
             best_start = candidate;
             found = true;
         }
@@ -310,7 +360,7 @@ static bool pointer_target_has_near_prologue(const PS1Executable& exe,
                                              uint32_t exe_start,
                                              uint32_t exe_end,
                                              uint32_t& prologue_addr_out) {
-    constexpr uint32_t max_prelude_bytes = 32;
+    constexpr uint32_t max_prelude_bytes = 512;
     for (uint32_t addr = target;
          addr < exe_end && addr <= target + max_prelude_bytes;
          addr += 4) {
@@ -328,6 +378,10 @@ static bool pointer_target_has_near_prologue(const PS1Executable& exe,
         uint32_t setup_start = 0;
         if (find_preprologue_setup_start(exe, addr, exe_start, setup_start) &&
             setup_start == target) {
+            prologue_addr_out = addr;
+            return true;
+        }
+        if (anchored_preprologue_is_valid(exe, target, addr, false)) {
             prologue_addr_out = addr;
             return true;
         }
@@ -391,6 +445,21 @@ uint32_t FunctionAnalyzer::find_function_start(uint32_t return_addr) {
             // their exact target addresses; this only normalizes starts inferred
             // from the previous function's trailing gap.
             return skip_leading_padding_nops(exe_, search_addr + 8, return_addr);
+        }
+
+        // Packed tail-jump wrappers have no jr $ra of their own. A one-J
+        // wrapper immediately following a return must not absorb the next
+        // frameless routine merely because that routine has several exits.
+        if ((instr >> 26) == 0x02u &&
+            follows_return(exe_, search_addr, exe_.load_address())) {
+            uint32_t target = ((search_addr + 4u) & 0xF0000000u) |
+                              ((instr & 0x03FFFFFFu) << 2);
+            if (target <= search_addr || target > return_addr) {
+                auto delay = exe_.read_word(search_addr + 4u);
+                if (delay && !is_branch_or_jump(*delay))
+                    return skip_leading_padding_nops(exe_, search_addr + 8u,
+                                                     return_addr);
+            }
         }
 
         // Packed Psy-Q BIOS thunks tail-jump through A0/B0/C0 and therefore do
@@ -760,6 +829,117 @@ static ExactCf exact_classify_cf(uint32_t pc, uint32_t instr) {
 }
 
 } // namespace
+
+static bool anchored_preprologue_is_valid(const PS1Executable& exe,
+                                          uint32_t start, uint32_t frame,
+                                          bool reject_delay) {
+    if (start >= frame || frame - start > 512u) return false;
+    auto first = exe.read_word(start);
+    if (!first || *first == 0u) return false;
+    if (reject_delay && start >= exe.load_address() + 4u) {
+        auto previous = exe.read_word(start - 4u);
+        if (previous && FunctionAnalyzer::is_branch_or_jump(*previous))
+            return false;
+    }
+    for (uint32_t pc = start; pc < frame; pc += 4u) {
+        auto word = exe.read_word(pc);
+        if (!word || !FunctionAnalyzer::is_valid_mips_word(*word)) return false;
+        const uint32_t instr = *word;
+        const uint32_t op = instr >> 26;
+        // Exception-entry assembly and absolute-through-zero memory words
+        // are not compiler setup evidence. In particular an inline code
+        // pointer often happens to decode as LB $r,negative($zero).
+        if (op == 0x10u || op == 0x11u) return false;
+        if (op >= 0x20u && ((instr >> 21) & 31u) == 0u) return false;
+        // Keep frame/link/global and callee-saved state intact until the
+        // compiler's frame allocation. Arithmetic in caller-saved registers
+        // (including HI/LO) is otherwise independent of frame layout.
+        for (uint32_t reg : {16u,17u,18u,19u,20u,21u,22u,23u,28u,29u,30u,31u})
+            if (exact_instruction_writes_gpr(instr, reg)) return false;
+        if (op >= 0x28u && op <= 0x2Eu && ((instr >> 21) & 31u) == 29u) {
+            uint32_t rt = (instr >> 16) & 31u;
+            if (op != 0x2Bu || rt < 4u || rt > 7u ||
+                (instr & 0xFFFFu) != (rt - 4u) * 4u) return false;
+        }
+        ExactCf cf = exact_classify_cf(pc, instr);
+        if (cf.kind == ExactCfKind::Normal) continue;
+        if (cf.kind != ExactCfKind::Branch &&
+            cf.kind != ExactCfKind::BranchNever) return false;
+        // A division guard may branch within the prelude; an exit or a jump
+        // into the framed body cannot establish a single frame entry.
+        if (cf.kind == ExactCfKind::Branch &&
+            (cf.target < start || cf.target > frame)) return false;
+    }
+    return true;
+}
+
+static bool pointer_target_is_leaf(const PS1Executable& exe,
+                                           uint32_t entry, uint32_t& ret) {
+    // A reference into a zero-filled gap is not evidence for a new function
+    // merely because a later routine eventually returns. Keep short explicit
+    // NOP entry sequences, but reject long padding runs.
+    bool starts_in_padding = true;
+    for (uint32_t offset = 0; offset < 12u; offset += 4u) {
+        auto word = exe.read_word(entry + offset);
+        if (!word || *word != 0u) { starts_in_padding = false; break; }
+    }
+    if (starts_in_padding) return false;
+    auto preserves_frame = [](uint32_t word) {
+        uint32_t op = word >> 26;
+        if (op == 0x10u || op == 0x11u ||
+            (op >= 0x20u && ((word >> 21) & 31u) == 0u)) return false;
+        for (uint32_t reg : {16u,17u,18u,19u,20u,21u,22u,23u,28u,29u,30u,31u})
+            if (exact_instruction_writes_gpr(word, reg)) return false;
+        if (op >= 0x28u && op <= 0x2Eu && ((word >> 21) & 31u) == 29u) {
+            uint32_t rt = (word >> 16) & 31u;
+            if (op != 0x2Bu || rt < 4u || rt > 7u ||
+                (word & 0xFFFFu) != (rt - 4u) * 4u) return false;
+        }
+        return true;
+    };
+    std::queue<uint32_t> work;
+    std::set<uint32_t> seen;
+    work.push(entry);
+    bool returned = false;
+    auto in_leaf = [&](uint32_t pc) {
+        return pc >= entry && pc < entry + 256u &&
+               pc < exe.analysis_end_address() && (pc & 3u) == 0u;
+    };
+    auto valid = [&](uint32_t pc) {
+        auto word = exe.read_word(pc);
+        return in_leaf(pc) && word &&
+               FunctionAnalyzer::is_valid_mips_word(*word) && preserves_frame(*word);
+    };
+    while (!work.empty()) {
+        uint32_t pc = work.front(); work.pop();
+        if (seen.count(pc)) continue;
+        if (!valid(pc)) return false;
+        seen.insert(pc);
+        uint32_t word = *exe.read_word(pc);
+        ExactCf cf = exact_classify_cf(pc, word);
+        if (cf.kind == ExactCfKind::Normal) {
+            // Traps are not evidence for a bounded returning leaf.
+            if ((word >> 26) == 0u && ((word & 63u) == 12u || (word & 63u) == 13u))
+                return false;
+            work.push(pc + 4u);
+            continue;
+        }
+        if (!valid(pc + 4u) || FunctionAnalyzer::is_branch_or_jump(*exe.read_word(pc + 4u)))
+            return false;
+        if (cf.kind == ExactCfKind::JrRa) {
+            returned = true;
+            ret = std::max(ret, pc);
+        } else if (cf.kind == ExactCfKind::Branch) {
+            if (!in_leaf(cf.target)) return false;
+            work.push(cf.target); work.push(pc + 8u);
+        } else if (cf.kind == ExactCfKind::BranchNever) {
+            work.push(pc + 8u);
+        } else if (cf.kind == ExactCfKind::Jump && in_leaf(cf.target)) {
+            work.push(cf.target);
+        } else return false;
+    }
+    return returned;
+}
 
 bool resolve_exact_bounded_jump_table(
     const PS1Executable& exe,
@@ -1927,6 +2107,8 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
     fmt::print("Analyzing function boundaries...\n");
 
     std::set<uint32_t> function_starts; // Use set to avoid duplicates
+    std::set<uint32_t> explicit_entries(forced_entry_points_.begin(),
+                                        forced_entry_points_.end());
     std::map<uint32_t, uint32_t> function_last_return;
 
     for (uint32_t return_addr : return_addresses) {
@@ -1961,16 +2143,9 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
 
             // Only add if target is within EXE range and word-aligned
             if (target >= exe_start && target < exe_end && (target & 3) == 0) {
-                auto target_word = exe_.read_word(target);
-                int32_t target_stack_size = 0;
-                if (target_word.has_value() &&
-                    is_prologue(*target_word, target_stack_size)) {
-                    uint32_t setup_start = 0;
-                    if (find_preprologue_setup_start(exe_, target, exe_start,
-                                                     setup_start)) {
-                        target = setup_start;
-                    }
-                }
+                // A direct call establishes the exact entry PC. A heuristic
+                // pre-frame setup may add an earlier entry, never replace it.
+                explicit_entries.insert(target);
                 function_starts.insert(target);
             }
         }
@@ -2033,7 +2208,7 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
         }
 
         if (saves_ra && function_starts.insert(entry_addr).second) {
-            if (entry_addr != addr) {
+            if (entry_addr != addr && !explicit_entries.count(addr)) {
                 function_starts.erase(addr);
             }
             strong_prologues++;
@@ -2108,6 +2283,20 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
                "({} candidates skipped: already discovered / inside a function)\n\n",
                result.bios_thunk_count, bios_thunks_skipped);
 
+    // Preserve a packed terminal-J wrapper even when return scanning now
+    // correctly starts the following frameless routine after its delay slot.
+    for (uint32_t addr = exe_start; addr + 8u <= exe_end; addr += 4u) {
+        auto word = exe_.read_word(addr);
+        if (!word || (*word >> 26) != 0x02u ||
+            !follows_return(exe_, addr, exe_start)) continue;
+        auto delay = exe_.read_word(addr + 4u);
+        if (!delay || !is_valid_mips_word(*delay) || is_branch_or_jump(*delay)) continue;
+        uint32_t target = ((addr + 4u) & 0xF0000000u) | ((*word & 0x03FFFFFFu) << 2);
+        if (target < exe_start || target >= exe_end) continue;
+        if (function_starts.insert(addr).second)
+            function_last_return[addr] = addr; // terminal transfer plus delay slot
+    }
+
     // Pass 2.6: discover continuations saved by setjmp/SaveState-style helpers.
     //
     // Some games save the caller's $ra into an application context object and
@@ -2152,17 +2341,82 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
     // as first-class function starts, and collapse the later prologue-only
     // start when it belongs to that prelude.
     fmt::print("Finding executable pointer-table function entries...\n");
+    // Switch tables also contain executable addresses, but their cases belong
+    // to the existing host function. Reuse the emitter's checked resolvers so
+    // callback discovery cannot split them into independent leaf functions.
+    std::set<uint32_t> switch_cases;
+    for (uint32_t pc = exe_start; pc + 4u <= exe_end; pc += 4u) {
+        auto word = exe_.read_word(pc);
+        if (!word || (*word >> 26) != 0u || (*word & 63u) != 8u) continue;
+        uint32_t reg = (*word >> 21) & 31u;
+        if (reg == 0u || reg == 31u) continue;
+        auto next = function_starts.upper_bound(pc);
+        uint32_t cap = next == function_starts.end() ? exe_end : *next;
+        if (next == function_starts.begin()) continue;
+        uint32_t host = *std::prev(next);
+        ExactJumpTable table;
+        if (resolve_exact_bounded_jump_table(exe_, host, cap, pc, reg, table) ||
+            resolve_computed_stride_jump(exe_, host, cap, pc, reg, table) ||
+            resolve_self_limited_jump_table(exe_, host, cap, pc, reg, table)) {
+            for (const auto& target : table.targets)
+                if (target.second >= host && target.second < cap)
+                    switch_cases.insert(target.second);
+        }
+    }
     std::map<uint32_t, uint32_t> pointer_refs;
+    std::set<uint32_t> reference_targets;
     for (uint32_t addr = exe_start; addr < exe_end; addr += 4) {
         auto word_opt = exe_.read_word(addr);
         if (!word_opt.has_value()) break;
-        uint32_t target = *word_opt;
+        uint32_t word = *word_opt;
+        if ((word >> 26) == 0x0Fu) {
+            uint32_t base = (word >> 16) & 31u;
+            uint32_t high = (word & 0xFFFFu) << 16;
+            auto record_low = [&](uint32_t low) {
+                uint32_t op = low >> 26;
+                if ((op != 9u && op != 13u) || ((low >> 21) & 31u) != base ||
+                    ((low >> 16) & 31u) == 0u) return;
+                uint32_t value = op == 9u
+                    ? high + static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(low)))
+                    : high | (low & 0xFFFFu);
+                if (value >= exe_start && value < exe_end && (value & 3u) == 0u)
+                    reference_targets.insert(value);
+            };
+            if (base != 0u) for (uint32_t pc = addr + 4u;
+                                pc < exe_end && pc <= addr + 32u; pc += 4u) {
+                auto next = exe_.read_word(pc);
+                if (!next) break;
+                record_low(*next);
+                if (is_branch_or_jump(*next)) {
+                    // The low half is often a callback argument in a JAL's
+                    // delay slot. It executes before the called function.
+                    auto delay = exe_.read_word(pc + 4u);
+                    if (delay && !is_branch_or_jump(*delay) &&
+                        !exact_instruction_writes_gpr(*next, base)) record_low(*delay);
+                    break;
+                }
+                if (exact_instruction_writes_gpr(*next, base)) break;
+            }
+        }
+        uint32_t target = word;
         if ((target & 3u) != 0) continue;
         if (target < exe_start || target >= exe_end) continue;
+        reference_targets.insert(target);
+    }
+    for (uint32_t target : reference_targets) {
+        if (switch_cases.count(target) && !explicit_entries.count(target)) continue;
 
         uint32_t prologue_addr = 0;
         if (!pointer_target_has_near_prologue(exe_, target, exe_start, exe_end,
                                               prologue_addr)) {
+            uint32_t ret = 0;
+            if (pointer_target_is_leaf(exe_, target, ret)) {
+                pointer_refs[target]++;
+                // Existing bodies keep their established extent. This new
+                // evidence only supplies an entry absent from return scanning.
+                if (!function_starts.count(target))
+                    function_last_return[target] = ret;
+            }
             continue;
         }
 
@@ -2170,7 +2424,8 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
 
         if (prologue_addr != target) {
             auto prologue_it = function_starts.find(prologue_addr);
-            if (prologue_it != function_starts.end()) {
+            if (prologue_it != function_starts.end() &&
+                !explicit_entries.count(prologue_addr)) {
                 auto ret_it = function_last_return.find(prologue_addr);
                 if (ret_it != function_last_return.end()) {
                     auto dst_it = function_last_return.find(target);

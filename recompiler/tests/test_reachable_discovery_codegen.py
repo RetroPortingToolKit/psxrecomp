@@ -53,6 +53,14 @@ def make_psxexe():
             jal(LOAD + 0x100), 0,
             0x03E00008, 0x27BD0010)):
         put32(text, 0x300 + i * 4, word)
+    # Unseeded callback with a small-data load scheduled before its frame.
+    # Whole-image discovery must emit the load entry, not just the later
+    # stack allocation; a pointer table supplies its external entry address.
+    for i, word in enumerate((
+            0x8F820010, 0x27BDFFE8, 0xAFBF0010, 0x8FBF0010,
+            0, 0x03E00008, 0x27BD0018)):
+        put32(text, 0x500 + i * 4, word)
+    put32(text, 0x800, LOAD + 0x500)
     return bytes(header + text)
 
 
@@ -175,6 +183,12 @@ def main():
                 failures.append("fail-closed data stub leaked into game dispatch")
             if "{0x80010320u," in default_dispatch:
                 failures.append("fail-closed stub continuation leaked into game dispatch")
+            if "void func_80010500(CPUState* cpu)\n{" not in default_full:
+                failures.append("gp-relative callback entry was not emitted")
+            if "void func_80010504(CPUState* cpu)\n{" in default_full:
+                failures.append("gp-relative callback was split at stack allocation")
+            if "{0x80010500u," not in default_dispatch:
+                failures.append("gp-relative callback entry missing from dispatch")
 
         write_config(config, discovery="invent-functions")
         invalid_mode = run(args.recompiler, config)

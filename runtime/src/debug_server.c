@@ -9596,15 +9596,16 @@ static void handle_menu_host(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,%s}", id, body);
 }
 
-/* host_key name=<SDL scancode name> down=<1|0> (both when omitted). */
-extern int psx_debug_push_host_key(const char *name, int down);
+/* host_key name=<SDL scancode name> down=<1|0> (both when omitted), mod=<SDL mask>. */
+extern int psx_debug_push_host_key(const char *name, int down, int mod);
 static void handle_host_key(int id, const char *json)
 {
     char name[64] = "";
     json_get_str(json, "name", name, sizeof name);
     int down = json_get_int(json, "down", -1);
-    int ok = down < 0 ? (psx_debug_push_host_key(name, 1) && psx_debug_push_host_key(name, 0))
-                      : psx_debug_push_host_key(name, down);
+    int mod = json_get_int(json, "mod", 0);
+    int ok = down < 0 ? (psx_debug_push_host_key(name, 1, mod) && psx_debug_push_host_key(name, 0, mod))
+                      : psx_debug_push_host_key(name, down, mod);
     send_fmt("{\"id\":%d,\"ok\":%s}", id, ok ? "true" : "false");
 }
 

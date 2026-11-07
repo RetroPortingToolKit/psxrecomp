@@ -106,6 +106,10 @@ static void apply_defaults(void) {
 #endif
     if (want_default(HOST_KEYMAP_SAVE_STATE_MENU))
         add_bind(HOST_KEYMAP_SAVE_STATE_MENU, (int)SDLK_F7, (int)SDL_SCANCODE_F7, 0);
+    if (want_default(HOST_KEYMAP_QUICK_SAVE))
+        add_bind(HOST_KEYMAP_QUICK_SAVE, (int)SDLK_F5, (int)SDL_SCANCODE_F5, 0);
+    if (want_default(HOST_KEYMAP_QUICK_LOAD))
+        add_bind(HOST_KEYMAP_QUICK_LOAD, (int)SDLK_F5, (int)SDL_SCANCODE_F5, KMOD_SHIFT);
     if (want_default(HOST_KEYMAP_SCANLINES))
         add_bind(HOST_KEYMAP_SCANLINES, (int)SDLK_F6, (int)SDL_SCANCODE_F6, 0);
     if (want_default(HOST_KEYMAP_TURBO_TOGGLE))
@@ -174,6 +178,8 @@ static HostKeymapAction action_for_key(const char *name) {
     if (ieq(name, "DisplayPerf")) return HOST_KEYMAP_DISPLAY_PERF;
     if (ieq(name, "Rewind")) return HOST_KEYMAP_REWIND;
     if (ieq(name, "SaveStateMenu")) return HOST_KEYMAP_SAVE_STATE_MENU;
+    if (ieq(name, "QuickSave")) return HOST_KEYMAP_QUICK_SAVE;
+    if (ieq(name, "QuickLoad")) return HOST_KEYMAP_QUICK_LOAD;
     if (ieq(name, "Scanlines")) return HOST_KEYMAP_SCANLINES;
     if (ieq(name, "TurboToggle")) return HOST_KEYMAP_TURBO_TOGGLE;
     if (ieq(name, "OpenLauncher")) return HOST_KEYMAP_OPEN_LAUNCHER;

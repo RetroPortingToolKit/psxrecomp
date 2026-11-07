@@ -662,7 +662,7 @@ AnalysisDb build_analysis_db(const PS1Executable& exe,
             // --- constant tracking for data refs / address-taken ------------
             if (d.opcode == 0x0F) {                       // LUI
                 hi_val[d.rt] = static_cast<uint32_t>(d.uimm16) << 16;
-                hi_ok[d.rt] = true;
+                hi_ok[d.rt] = d.rt != 0;
             } else {
                 uint32_t resolved = 0;
                 bool have = false;
@@ -670,6 +670,10 @@ AnalysisDb build_analysis_db(const PS1Executable& exe,
 
                 if (d.opcode == 0x09 && hi_ok[d.rs]) {    // ADDIU rt, rs(hi), imm
                     resolved = hi_val[d.rs] + static_cast<uint32_t>(d.sign_ext_imm);
+                    have = true;
+                    materialize = true;
+                } else if (d.opcode == 0x0D && hi_ok[d.rs]) { // ORI low half
+                    resolved = hi_val[d.rs] | static_cast<uint32_t>(d.uimm16);
                     have = true;
                     materialize = true;
                 } else if ((is_load_op(d.opcode) || is_store_op(d.opcode))) {
@@ -707,12 +711,16 @@ AnalysisDb build_analysis_db(const PS1Executable& exe,
                     }
                 }
 
-                // Invalidate any hi constant this instruction clobbers.
+                // Track the complete value after materialization, including
+                // same-register ADDIU/ORI. Later loads use that full address,
+                // rather than reusing the original LUI high half.
                 for (uint8_t r = 1; r < 32; ++r)
-                    if ((e.writes & (1u << r)) && !(d.opcode == 0x09 && r == d.rt && hi_ok[d.rs]))
+                    if (e.writes & (1u << r))
                         hi_ok[r] = false;
-                if (d.opcode == 0x09 && hi_ok[d.rs] && d.rt != d.rs)
-                    hi_ok[d.rt] = false; // the sum is an address, not a hi part
+                if (materialize && d.rt != 0) {
+                    hi_val[d.rt] = resolved;
+                    hi_ok[d.rt] = true;
+                }
             }
 
             // --- call edges --------------------------------------------------

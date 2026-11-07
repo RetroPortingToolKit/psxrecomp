@@ -1167,7 +1167,7 @@ in every netplay mode and never part of the plan fingerprint.
 | Package (feature) | Plugin | Options (default) |
 |---|---|---|
 | `psx.enhancement.crt-filter` (CRT Filter) | `psx.crt-filter` | `screen_model`: default / raw / crt / composite / trinitron (default); `scanlines`: default / on / off (default); `scanline_strength`: 1..100 (50) |
-| `psx.enhancement.image-filtering` (Image Filtering) | `psx.image-filtering` | `smoothing`: default / smooth / sharp (default); `texture_filtering`: default / nearest / bilinear / xbr (default); `fmv_filtering`: default / nearest / bilinear / sharp / bicubic (default) |
+| `psx.enhancement.image-filtering` (Image Filtering) | `psx.image-filtering` | `smoothing`: default / smooth / sharp (default); `texture_filtering`: default / nearest / bilinear / xbr (default); `fmv_filtering`: default / nearest / bilinear / sharp / bicubic (default); `dithering`: default / off / native / fine (default, OpenGL only) |
 | `psx.enhancement.enhanced-audio` (Enhanced Audio) | `psx.enhanced-audio` | none: enabled = the high-quality SPU mix |
 | `psx.feature.rewind` (Rewind) | `psx.rewind` | `buffer`: 50 / 100 / 150 / 200 (50); `interval`: 1 / 4 / 8 / 12 / 15 (15) |
 | `psx.enhancement.internal-resolution` (Internal Resolution) | `psx.internal-resolution` | `resolution`: 1x..32x (4x); retained choices default / native / 720p / 1080p / 1440p / 4k / 5k / 8k / display / auto |

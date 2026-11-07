@@ -23,6 +23,8 @@ extern "C" {
  */
 
 #define SAVESTATE_SLOTS 12
+/* Independent quick-save file; the manual menu still has twelve slots. */
+#define SAVESTATE_QUICK_SLOT SAVESTATE_SLOTS
 #define SAVESTATE_THUMB_W 128
 #define SAVESTATE_THUMB_H 96
 
@@ -83,7 +85,7 @@ uint32_t savestate_openbios_wordsum(void);
 /* Integrity key last passed to savestate_configure (for sandbox rebind). */
 void savestate_get_integrity(uint32_t* bios_checksum, uint32_t* entry_pc);
 
-/* Build the on-disk path for slot [0..SAVESTATE_SLOTS-1]. Returns 1 on success. */
+/* Path for a manual slot or SAVESTATE_QUICK_SLOT. Returns 1 on success. */
 int savestate_slot_path(int slot, char* out, size_t cap);
 
 /* Read/write a slot file (malloc'd buffer for read). Returns 1 on success. */
@@ -106,7 +108,7 @@ int savestate_read_thumb(int slot, uint32_t* out_argb,
  * load probe so incompatible saves never enter the post-load barrier. */
 int savestate_slot_compatible(int slot, char* reason, size_t reason_cap);
 
-/* Stage a save/load of slot [0..SAVESTATE_SLOTS-1]. Executed at the next safe
+/* Stage a save/load of a manual slot or SAVESTATE_QUICK_SLOT. Executed at the next safe
  * boundary by savestate_poll (called every block from psx_check_interrupts).
  * Safe to call from the SDL key handler or a debug-server command.
  * Returns 1 if staged, 0 if refused (not configured, bad slot, LLE load, or

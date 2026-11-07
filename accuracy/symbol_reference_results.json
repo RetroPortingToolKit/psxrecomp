@@ -1,0 +1,404 @@
+{
+  "baseline_commit": "81dea78f4606a1e984d52f3ba0fa58aa2528bd2c",
+  "candidate_function_analysis_sha256": "ae2f62eb39879b5c247979c909f7828f28ccf237e89448e8425dfb126a35b211",
+  "inputs": [
+    {
+      "id": "01",
+      "executable": "CROC.EXE",
+      "exe_sha256": "68aa6147d8d28a715dd456ad81783860ca16eb6de464f68cf91fdd5e1f471f6a",
+      "archive_sha256": "82a79471dc0326b769b625727d4cc1579404e416a3fbab8e40cafe903a31c783",
+      "explicit_function_entries": 0,
+      "baseline_matched_functions": 0,
+      "candidate_matched_functions": 0,
+      "lost_named_entries": 0,
+      "baseline_functions": 1075,
+      "candidate_functions": 1075,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x80012894",
+          "target": "0x800531e4",
+          "symbol": "VBLoading"
+        },
+        {
+          "site": "0x8005d7f8",
+          "target": "0x80058f58",
+          "symbol": "VSyncCallback"
+        },
+        {
+          "site": "0x80012900",
+          "target": "0x8005a128",
+          "symbol": "__main"
+        },
+        {
+          "site": "0x80069170",
+          "target": "0x80058ec8",
+          "symbol": "ResetCallback"
+        },
+        {
+          "site": "0x80012938",
+          "target": "0x800128ac",
+          "symbol": "VBInit"
+        }
+      ],
+      "sections_checked": 0
+    },
+    {
+      "id": "02",
+      "executable": "CROC2.EXE",
+      "exe_sha256": "8eecac736e1ddebf9739c1adf1ce912b7c83b7a0ee0b04ae73b9df0cde0f3ad2",
+      "archive_sha256": "6abcdb9d822982cec15f1b6a8598c1b9aaad0e1134881ef5f49798bae42ed163",
+      "explicit_function_entries": 0,
+      "baseline_matched_functions": 0,
+      "candidate_matched_functions": 0,
+      "lost_named_entries": 0,
+      "baseline_functions": 1147,
+      "candidate_functions": 1131,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x8005ba8c",
+          "target": "0x800510d0",
+          "symbol": "VSyncCallback"
+        },
+        {
+          "site": "0x800630c4",
+          "target": "0x800553e4",
+          "symbol": "printf"
+        },
+        {
+          "site": "0x8003a648",
+          "target": "0x800498a8",
+          "symbol": "SFX_StartSound"
+        },
+        {
+          "site": "0x8003b6e4",
+          "target": "0x8002e9dc",
+          "symbol": "InitFade"
+        },
+        {
+          "site": "0x80049d20",
+          "target": "0x800498c0",
+          "symbol": "ResetSoundSystem"
+        }
+      ],
+      "sections_checked": 6
+    },
+    {
+      "id": "03",
+      "executable": "SLUS_900.86",
+      "exe_sha256": "a48cdeeda479e6841f9137492a80cbda4675d24f0d65361e0971edaf47a1034f",
+      "archive_sha256": "c2e296110e0062a68f4bcd7a7afcea13dd2d34d2c88bff17788a8a1ebed7caae",
+      "explicit_function_entries": 1646,
+      "baseline_matched_functions": 1643,
+      "candidate_matched_functions": 1646,
+      "lost_named_entries": 0,
+      "baseline_functions": 2348,
+      "candidate_functions": 2281,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x8008cf18",
+          "target": "0x8009ebdc",
+          "symbol": "TransMatrix"
+        },
+        {
+          "site": "0x8007d86c",
+          "target": "0x8009ea3c",
+          "symbol": "ApplyMatrixLV"
+        },
+        {
+          "site": "0x8001d5f0",
+          "target": "0x8009ed2c",
+          "symbol": "RotMatrixYXZ"
+        },
+        {
+          "site": "0x80090258",
+          "target": "0x8009ec1c",
+          "symbol": "MulMatrix"
+        },
+        {
+          "site": "0x8006277c",
+          "target": "0x8001d634",
+          "symbol": "FRUVectorsFromRotMatrix__6CBruce"
+        }
+      ],
+      "sections_checked": 0
+    },
+    {
+      "id": "04",
+      "executable": "SLUS_007.08",
+      "exe_sha256": "652339609587b5e8224deec9d06dc6a8796d158a04555a0b771e3c1ddee62baf",
+      "archive_sha256": "da1cf85210ac27635902b7de8e3df0dfebee0f8750409eeaa9f5600c880b686f",
+      "explicit_function_entries": 2274,
+      "baseline_matched_functions": 2256,
+      "candidate_matched_functions": 2274,
+      "lost_named_entries": 0,
+      "baseline_functions": 2933,
+      "candidate_functions": 2813,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x800b61b8",
+          "target": "0x80034648",
+          "symbol": "INSTANCE_Query"
+        },
+        {
+          "site": "0x80012d98",
+          "target": "0x800b4140",
+          "symbol": "RAZIEL_TurnHead"
+        },
+        {
+          "site": "0x80012db0",
+          "target": "0x8007f250",
+          "symbol": "MONAPI_TurnHead"
+        },
+        {
+          "site": "0x80012df8",
+          "target": "0x8007f32c",
+          "symbol": "MONAPI_OkToLookAround"
+        },
+        {
+          "site": "0x80012e08",
+          "target": "0x800b4458",
+          "symbol": "RAZIEL_OkToLookAround"
+        }
+      ],
+      "sections_checked": 6
+    },
+    {
+      "id": "05",
+      "executable": "SLES_029.96",
+      "exe_sha256": "653e35f6bd1ac960399d41de22d835e397d3436d84f401b9c140a20aeb34533d",
+      "archive_sha256": "4a7412816fe6b8ffa1abd9bb015bd13e519f26f6215240b021d7fdb35db5b689",
+      "explicit_function_entries": 977,
+      "baseline_matched_functions": 970,
+      "candidate_matched_functions": 977,
+      "lost_named_entries": 0,
+      "baseline_functions": 1580,
+      "candidate_functions": 1514,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x756a8",
+          "target": "0x1346c",
+          "symbol": "sdGetCell"
+        },
+        {
+          "site": "0x137e8",
+          "target": "0x130d4",
+          "symbol": "sdHeightOnPlane"
+        },
+        {
+          "site": "0x82490",
+          "target": "0x8c770",
+          "symbol": "ratan2"
+        },
+        {
+          "site": "0x1391c",
+          "target": "0x138f0",
+          "symbol": "FindRoadInBSP"
+        },
+        {
+          "site": "0x135fc",
+          "target": "0x13848",
+          "symbol": "sdGetBSP"
+        }
+      ],
+      "sections_checked": 0
+    },
+    {
+      "id": "06",
+      "executable": "SLUS_007.57",
+      "exe_sha256": "b07204f7de3864f3d000a1e945573fbc242e65c841f15693942b1a458ced5638",
+      "archive_sha256": "bfb048cdc623bb343aed1786f424e9a2cfe8686e7df017452735fc45c1049d6d",
+      "explicit_function_entries": 1037,
+      "baseline_matched_functions": 1030,
+      "candidate_matched_functions": 1037,
+      "lost_named_entries": 0,
+      "baseline_functions": 1749,
+      "candidate_functions": 1722,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x800990fc",
+          "target": "0x80082ba4",
+          "symbol": "EnterCriticalSection"
+        },
+        {
+          "site": "0x80099148",
+          "target": "0x80082b94",
+          "symbol": "FlushCache"
+        },
+        {
+          "site": "0x800990a8",
+          "target": "0x80082b84",
+          "symbol": "ExitCriticalSection"
+        },
+        {
+          "site": "0x80018870",
+          "target": "0x80071a18",
+          "symbol": "CdCheckMusic"
+        },
+        {
+          "site": "0x80018878",
+          "target": "0x80031b50",
+          "symbol": "NewPadRead"
+        }
+      ],
+      "sections_checked": 0
+    },
+    {
+      "id": "07",
+      "executable": "SLUS_001.90",
+      "exe_sha256": "fe715c1f66583aaf0e047c2a4f1a265fe1ad2d1f44452517d1cb8e334f897115",
+      "archive_sha256": "50e1f59fc1fa5a68202823d7eb9d72ceb2c7e797a445d6740dc374ecaf994559",
+      "explicit_function_entries": 0,
+      "baseline_matched_functions": 0,
+      "candidate_matched_functions": 0,
+      "lost_named_entries": 0,
+      "baseline_functions": 1450,
+      "candidate_functions": 1450,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x8006590c",
+          "target": "0x80065f40",
+          "symbol": "RemoveObject__3BagPv"
+        },
+        {
+          "site": "0x8004e4a8",
+          "target": "0x80024328",
+          "symbol": "KillAllGofers__5GoferPv"
+        },
+        {
+          "site": "0x8005a454",
+          "target": "0x80020298",
+          "symbol": "_._5Extra"
+        },
+        {
+          "site": "0x80056980",
+          "target": "0x80020140",
+          "symbol": "__5Extra"
+        },
+        {
+          "site": "0x800699d4",
+          "target": "0x80065ea4",
+          "symbol": "AddObject__3BagPv"
+        }
+      ],
+      "sections_checked": 0
+    },
+    {
+      "id": "08",
+      "executable": "SCES_000.09",
+      "exe_sha256": "f0d31e9c432dc3bce6239be96d3832cfa82c80c192ffe91b3e1feaa1d99e25f3",
+      "archive_sha256": "d052c8f2a600bf9402f9c304830c068bac955c475492899a6e83495b6bca1d6d",
+      "explicit_function_entries": 0,
+      "baseline_matched_functions": 0,
+      "candidate_matched_functions": 0,
+      "lost_named_entries": 0,
+      "baseline_functions": 1034,
+      "candidate_functions": 1034,
+      "direct_call_pairing_samples": [
+        {
+          "site": "0x80011714",
+          "target": "0x80045318",
+          "symbol": "__main"
+        },
+        {
+          "site": "0x80044af4",
+          "target": "0x80045f1c",
+          "symbol": "SetDispMask"
+        },
+        {
+          "site": "0x80011760",
+          "target": "0x8002fe54",
+          "symbol": "install_controls"
+        },
+        {
+          "site": "0x80011768",
+          "target": "0x8001336c",
+          "symbol": "init_my_system"
+        },
+        {
+          "site": "0x80011770",
+          "target": "0x8001d704",
+          "symbol": "clut_load"
+        }
+      ],
+      "sections_checked": 0
+    }
+  ],
+  "reference_method": "MND 0x8c function starts and function-typed 0x94/0x96 records; other symbols remain untyped labels. No sizes inferred from adjacent labels. References are never supplied to analysis.",
+  "reference_format_source": "https://psx-spx.consoledev.net/cdromfileformats/#cdrom-file-psyq-sym-files-debug-information",
+  "analysis_arguments": [
+    "<exe>",
+    "--out",
+    "<output>",
+    "--no-refs",
+    "--quiet"
+  ],
+  "baseline_analyzer_sha256": "bd1d05fec51b1cf4dd31e4e931f86442bd94a38cce6ff54e1132139d5a4e19d7",
+  "candidate_analyzer_sha256": "178890110ddbec39c9c6b1afb2390982f008471f91bfbbee29503b6aea360539",
+  "dispositions": [
+    {
+      "candidate": "Incoming gp-relative loads before stack allocation",
+      "status": "accepted pending integration gates",
+      "confirmed_missed_entries": 35,
+      "remaining_confirmed_missed_entries": 0
+    },
+    {
+      "candidate": "Use Wipeout XL archive as a symbol reference",
+      "status": "rejected",
+      "reason": "Sampled main, DrawSync and VSync addresses do not agree with executable disassembly; not evidence of analyzer defects."
+    },
+    {
+      "candidate": "Treat all unmatched untyped labels as missing functions",
+      "status": "rejected",
+      "reason": "Untyped labels also name data and interior locations; no complete function precision or recall claim is justified."
+    }
+  ],
+  "private_evidence": "G:/psxrecomp-symbol-burndown: compare.py, corpus.json, corpus/*/reference.json, baseline, candidate, consumers, gp-before.log, gp-final.log",
+  "validation": {
+    "registered_tests": 162,
+    "passed": 146,
+    "baseline_failures": [
+      "aot_overlay_discovery",
+      "bundled_release_layout",
+      "compile_overlays_static_tail",
+      "frame_interpolation_flip_source",
+      "gl_internal_scale_guards",
+      "gpu_frame",
+      "interp_cop0_read_sample",
+      "interp_refused_game_text",
+      "mod_owned_display_controls",
+      "native_wide_line_batching",
+      "overlay_candidate_capacity",
+      "overlay_segment_gate",
+      "overlay_segment_keys"
+    ],
+    "candidate_failures": [
+      "aot_overlay_discovery",
+      "bundled_release_layout",
+      "compile_overlays_static_tail",
+      "frame_interpolation_flip_source",
+      "gl_internal_scale_guards",
+      "gpu_frame",
+      "interp_cop0_read_sample",
+      "interp_refused_game_text",
+      "mod_owned_display_controls",
+      "native_wide_line_batching",
+      "overlay_candidate_capacity",
+      "overlay_segment_gate",
+      "overlay_segment_keys"
+    ],
+    "new_failures": [],
+    "disabled": 3,
+    "consumer_regeneration": {
+      "Ape Escape": 61,
+      "Tomba": 54,
+      "Tomba 2": 10
+    },
+    "consumer_generated_files_byte_identical": true,
+    "OpenBIOS_generated_C_byte_identical": true,
+    "generated_callback_execution": [
+      "O0 passed",
+      "O2 passed"
+    ],
+    "generated_callback_execution_limits": "Production CPUState/load headers; block timing disabled; isolated memory and debug/interrupt seams; verifies gp load, stack restoration and return PC, not gameplay or performance."
+  }
+}
