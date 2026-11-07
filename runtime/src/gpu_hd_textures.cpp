@@ -1,3 +1,4 @@
+#include "psx_path_utf8.h"
 #include "gpu_hd_textures.h"
 #include "gpu_gl_renderer.h"
 #include "hd_texture_pack.h"
@@ -80,7 +81,7 @@ bool is_beetle_root(const std::filesystem::path& root) {
     std::error_code error;
     if (std::filesystem::exists(root / "Hashes.ini", error)) return true;
     if (std::filesystem::exists(root.parent_path() / "Hashes.ini", error)) return true;
-    const auto name = root.filename().u8string();
+    const auto name = psx_path::utf8(root.filename());
     const std::string suffix = "-texture-replacements";
     return name.size() >= suffix.size() &&
            name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
@@ -290,7 +291,7 @@ extern "C" int gpu_hd_textures_configure(const char* root, int replacements,
         }
         if (!next->beetle) {
             auto directory = std::filesystem::u8path(root);
-            if (directory.filename().u8string() == "replacements") directory = directory.parent_path();
+            if (psx_path::utf8(directory.filename()) == "replacements") directory = directory.parent_path();
             std::filesystem::create_directories(directory / "replacements");
             std::filesystem::create_directories(directory / "dumps");
         }

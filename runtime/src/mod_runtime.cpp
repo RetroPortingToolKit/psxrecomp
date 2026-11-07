@@ -1,3 +1,4 @@
+#include "psx_path_utf8.h"
 #include "mod_runtime.h"
 #include "host_launch_timing.h"
 #include "host_overlay.h"
@@ -1057,10 +1058,10 @@ static bool texture_install_check(const ModPackage& package,const std::string& f
         if(resource.feature_id!=feature||resource.texture_game_id.empty())continue;
         auto path=state().manager.feature_resource_path(package.id,feature,resource.id);
         char resolved[4096]{},message[1024]{};
-        const std::string key=resource.texture_game_id+"\n"+path.u8string();
+        const std::string key=resource.texture_game_id+"\n"+psx_path::utf8(path);
         auto found=texture_install_status.find(key);
         if(fresh||found==texture_install_status.end()) {
-            bool ok=gpu_hd_textures_validate_install(path.u8string().c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
+            bool ok=gpu_hd_textures_validate_install(psx_path::utf8(path).c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
             found=texture_install_status.insert_or_assign(key,std::make_pair(ok,std::string(message))).first;
         }
         if(!found->second.first){error=found->second.second;return false;}
@@ -1099,7 +1100,7 @@ int feature_set_option_impl(const char* package_id, const char* feature_id,
             if(package)for(const auto& r:package->resources)if(r.feature_id==feature_id&&!r.texture_game_id.empty()) {
                 auto path=state().manager.feature_resource_path(package_id,feature_id,r.id);
                 char resolved[4096]{},message[1024]{};
-                if(!gpu_hd_textures_validate_install(path.u8string().c_str(),r.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)){error=message;return false;}
+                if(!gpu_hd_textures_validate_install(psx_path::utf8(path).c_str(),r.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)){error=message;return false;}
             }
         }
         return state().manager.set_feature_option(
@@ -1430,7 +1431,7 @@ int provider_feature_resource_get(void*, const char* package_id,
         copy_text(out->label, sizeof(out->label), resource.label);
         copy_text(out->description, sizeof(out->description),
                   resource.description);
-        copy_text(out->path, sizeof(out->path), path.u8string());
+        copy_text(out->path, sizeof(out->path), psx_path::utf8(path));
         copy_text(out->status, sizeof(out->status),
                   path.empty() ? "Not selected" :
                       (verified ? "Selected" : "Selected path is missing"));
@@ -1439,11 +1440,11 @@ int provider_feature_resource_get(void*, const char* package_id,
         copy_text(out->file_description, sizeof(out->file_description),
                   resource.file_description);
         if(!resource.texture_game_id.empty()) {
-            const std::string key=resource.texture_game_id+"\n"+path.u8string();
+            const std::string key=resource.texture_game_id+"\n"+psx_path::utf8(path);
             auto found=texture_install_status.find(key);
             if(found==texture_install_status.end()) {
                 char resolved[4096]{},message[1024]{};
-                bool ok=gpu_hd_textures_validate_install(path.u8string().c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
+                bool ok=gpu_hd_textures_validate_install(psx_path::utf8(path).c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
                 found=texture_install_status.emplace(key,std::make_pair(ok,std::string(message))).first;
             }
             verified=found->second.first;
@@ -3695,7 +3696,7 @@ extern "C" int psx_mod_current_resource_path(const char* resource_id,
             resource.feature_id != s.current_plugin->feature_id ||
             resource.id != resource_id)
             continue;
-        const std::string text = resource.path.u8string();
+        const std::string text = psx_path::utf8(resource.path);
         if (text.empty() || text.size() + 1 > (size_t)out_size) return 0;
         std::memcpy(out, text.c_str(), text.size() + 1);
         return 1;

@@ -211,6 +211,7 @@ extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 #include <exception>
 #include <array>
 #include <filesystem>
+#include "psx_path_utf8.h"
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -16930,7 +16931,7 @@ namespace {
          * per backend; elsewhere the launcher uses <exe dir>/artwork. */
         static std::string regional_artwork;
         regional_artwork = PSXRecompV4::regional::root.empty()
-            ? std::string() : (PSXRecompV4::regional::root / "artwork").u8string();
+            ? std::string() : psx_path::utf8(PSXRecompV4::regional::root / "artwork");
         gi->artwork_root = regional_artwork.empty() ? nullptr : regional_artwork.c_str();
         gi->disc_selection_locked = PSXRecompV4::regional::disc_selection_locked ? 1 : 0;
         gi->dashboard_quick_controls = g_launcher_quick_controls ? 1 : 0;
@@ -17401,7 +17402,7 @@ static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     const char* e = std::getenv("PSX_OVERLAY");
     const PsxMenuProvider* p = psx_menu_provider();
     g_menu_host.default_selection = 0;
-#if defined(PSX_MENU_HAS_DEFAULT_PROVIDER)
+#if defined(RECOMP_LAUNCHER) && defined(PSX_MENU_HAS_DEFAULT_PROVIDER)
     /* No title choice: the UI the title is built with (recomp-ui) provides the
      * menu, and decides from default_selection what to offer by default. */
     if (!p) {

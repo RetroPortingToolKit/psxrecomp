@@ -990,6 +990,17 @@ if(BUILD_TESTING)
     target_link_libraries(duckstation_texture_pack_test PRIVATE Threads::Threads)
     target_link_libraries(duckstation_texture_pack_test PRIVATE psx_texture_image_decode)
     add_test(NAME duckstation_texture_pack_test COMMAND duckstation_texture_pack_test)
+    # Exercise real discovery/decode (including its Unicode directory) with
+    # char8_t enabled, as in newer default consumer compiler dialects (#823).
+    add_executable(duckstation_texture_pack_cpp20_test
+        tests/test_duckstation_texture_pack.cpp
+        src/duckstation_texture_pack.cpp)
+    target_include_directories(duckstation_texture_pack_cpp20_test PRIVATE include)
+    set_target_properties(duckstation_texture_pack_cpp20_test PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+    target_link_libraries(duckstation_texture_pack_cpp20_test PRIVATE
+        Threads::Threads psx_texture_image_decode)
+    add_test(NAME duckstation_texture_pack_cpp20_test COMMAND duckstation_texture_pack_cpp20_test)
     add_executable(texture_image_decode_test tests/test_texture_image_decode.cpp)
     target_link_libraries(texture_image_decode_test PRIVATE psx_texture_image_decode)
     add_test(NAME texture_image_decode_test COMMAND texture_image_decode_test
