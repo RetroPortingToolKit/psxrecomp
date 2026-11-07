@@ -96,6 +96,14 @@ enum {
     PSX_TRACE_GAME_SUBMIT,
     PSX_TRACE_GAME_LASER,
     PSX_TRACE_GAME_SELECT,
+    /* Pair snapshot work: the baseline checkpoint (extraction) and the pair
+     * publish. These are the existing transactional pair's snapshot spans, not
+     * the future four-slot scene mailbox; keep them separate from eye_begin. */
+    PSX_TRACE_SNAPSHOT_EXTRACT,
+    PSX_TRACE_SNAPSHOT_PUBLISH,
+    /* xrLocateViews and the host preparation after it (view math + hands). */
+    PSX_TRACE_XR_LOCATE,
+    PSX_TRACE_HOST_PREP,
     PSX_TRACE_STAGE_COUNT
 };
 
@@ -146,6 +154,13 @@ typedef struct PSXFrameTraceRecord {
     uint32_t eye_cycles_l, eye_cycles_r;
     uint32_t vram_leaks;       /* GPU writes outside the pass rect this eye */
     uint64_t tex_upload_bytes; /* texture bytes uploaded (0 = not measured) */
+    /* Asynchronous GPU timer results retrieved LATER than this frame's CPU
+     * spans. Never add these to any CPU stage: they may describe an older
+     * frame, and `gpu_sample_age_frames` says how much older. 0 age with 0
+     * times means no sample was available (not zero GPU cost). */
+    uint32_t gpu_scene_us;
+    uint32_t gpu_present_us;
+    uint32_t gpu_sample_age_frames;
     /* Microseconds between this submission's XrFrameState.predictedDisplayTime
      * and the previous one, from the runtime's clock. Divided by the session's
      * target_period_us this is how many granted display periods one presented
@@ -200,6 +215,12 @@ void psx_frame_trace_draw(int eye, uint32_t prims, uint32_t textured);
 /* Guest cycles one eye's replay executed (the transaction's own delta). */
 void psx_frame_trace_eye_cycles(int eye, uint32_t cycles);
 void psx_frame_trace_gpu(uint64_t tex_upload_bytes, uint32_t vram_leaks);
+/* Attach an asynchronous GL timer sample retrieved after it was issued.
+ * `age_frames` is the host vblank distance from the sample's frame to the
+ * present that retrieved it, so a reader cannot mistake it for this frame's
+ * CPU time. */
+void psx_frame_trace_gpu_sample(uint32_t scene_us, uint32_t present_us,
+                                uint32_t age_frames);
 /* XR cadence annotation (open record): the runtime's predicted-display-time
  * delta for this submission and whether it carried a newly rendered pair. A
  * repeat also sets PSX_FRAME_TRACE_XR_REPEAT. No-op when closed. */

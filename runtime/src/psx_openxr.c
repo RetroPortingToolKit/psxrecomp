@@ -659,8 +659,11 @@ int psx_openxr_begin(int width,int height,double units) {
     loc.displayTime=s_time;loc.space=s_space;
     XrViewState vs={XR_TYPE_VIEW_STATE};uint32_t count=0;
     memset(s_views,0,sizeof s_views);s_views[0].type=s_views[1].type=XR_TYPE_VIEW;
+    uint64_t locate_t=gl_renderer_perf_ticks();
     int located=check(xrLocateViews(s_session,&loc,&vs,2,&count,s_views),"locate_views");
+    psx_frame_trace_add(PSX_TRACE_XR_LOCATE, xr_trace_us(gl_renderer_perf_ticks()-locate_t));
     s_pose_sample_ticks=gl_renderer_perf_ticks();
+    uint64_t prep_t=s_pose_sample_ticks;
     s_stats.view_flags=(uint64_t)vs.viewStateFlags;
     if(!located || count!=2 ||
        (vs.viewStateFlags&(XR_VIEW_STATE_ORIENTATION_VALID_BIT|XR_VIEW_STATE_POSITION_VALID_BIT))!=
@@ -712,6 +715,7 @@ int psx_openxr_begin(int width,int height,double units) {
         s_stats.view[i]=s_render[i];
     }
     hands_locate(s_stats.state==XR_SESSION_STATE_FOCUSED && sync_actions());
+    psx_frame_trace_add(PSX_TRACE_HOST_PREP, xr_trace_us(gl_renderer_perf_ticks()-prep_t));
     s_stats.tracking=1;s_stats.stage="located";return 1;
 #endif
     return 0;

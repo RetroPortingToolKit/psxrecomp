@@ -51,15 +51,28 @@ counts and the worst frames.
                                     the hook through
                                     psx_mod_frame_trace_stage_begin/end, which
                                     only accepts them inside a traced stereo eye.
+    snapshot_extract / snapshot_publish
+                                    the existing transactional pair's baseline
+                                    checkpoint and pair publish. Not the future
+                                    four-slot scene mailbox.
+    xr_locate / host_prep
+                                    xrLocateViews and the host view math + hand
+                                    location after it. CPU spans, not GPU time.
 
 Per frame: `seq`, `open_ms`, guest frame/cycle, stereo attempt id, published
 pair id, `pair_age_ms` (age of the retained whole pair), `source` (1 pair / 2
 native), `eye_failed`, shed skipped/streak, `prims`/`tex_prims` (the last eye's
 own count), `prims_l`/`prims_r`, `tex_prims_l`/`tex_prims_r`,
 `cycles_l`/`cycles_r` (guest cycles each eye's replay executed, separating
-emulated machine work from host submission time), `vram_leaks`, `tex_bytes`, and
+emulated machine work from host submission time), `vram_leaks`, `tex_bytes`,
+`gpu_scene_us`/`gpu_present_us`/`gpu_sample_age_frames` (asynchronous
+`GL_TIME_ELAPSED` results retrieved later; never added to CPU stages), and
 flags (`published`, `stale`, `shed`, `failed`, `xr_empty`, `scene`, `io`,
 `no_telemetry`).
+
+The GPU timer ring is enabled for diagnostics builds and for
+`PSX_FRAME_TRACE=1`; `PSX_GL_PERF=0` disables it. Results may describe a frame
+several presents old, so `gpu_sample_age_frames` is part of the reading.
 
 ## Guarantees
 
