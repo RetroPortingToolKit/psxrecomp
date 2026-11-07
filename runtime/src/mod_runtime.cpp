@@ -4202,6 +4202,29 @@ extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     return game_netplay_function_entry(cpu, address);
 }
 
+static bool game_netplay_hooks_enabled() {
+    if (psx_netplay_active()) return true;
+    static const bool offline_probe = [] {
+        const char* e = std::getenv("PSX_GAME_FILTER_OFFLINE_PROBE");
+        return e && std::strcmp(e, "1") == 0;
+    }();
+    return offline_probe;
+}
+
+extern "C" int psx_mod_function_entry_has_hook(uint32_t address) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_function_entry_hooks) return 0;
+    const uint32_t key = function_entry_key(address);
+    auto has_key = [key](const auto& table) {
+        auto it = std::lower_bound(
+            table.begin(), table.end(), key,
+            [](const auto& hook, uint32_t value) { return hook.key < value; });
+        return it != table.end() && it->key == key;
+    };
+    return has_key(active_function_entry_hooks()) ||
+           (has_key(game_netplay_entry_hooks()) && game_netplay_hooks_enabled());
+}
+
 static int register_game_netplay_hook(uint32_t address,
                                       PSXModFunctionEntryCallback callback,
                                       PSXModFunctionFilterCallback filter) {
@@ -4236,14 +4259,7 @@ static int game_netplay_function_entry(CPUState* cpu, uint32_t address) {
     using namespace PSXRecompV4;
     const auto& table = game_netplay_entry_hooks();
     if (table.empty()) return 0;
-    if (!psx_netplay_active()) {
-        static int offline_probe = -1;
-        if (offline_probe < 0) {
-            const char* e = std::getenv("PSX_GAME_FILTER_OFFLINE_PROBE");
-            offline_probe = (e && std::strcmp(e, "1") == 0) ? 1 : 0;
-        }
-        if (!offline_probe) return 0;
-    }
+    if (!game_netplay_hooks_enabled()) return 0;
     const uint32_t key = function_entry_key(address);
     auto it = std::lower_bound(
         table.begin(), table.end(), key,
