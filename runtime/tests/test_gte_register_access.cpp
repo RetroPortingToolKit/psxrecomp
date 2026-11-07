@@ -75,8 +75,6 @@ extern "C" int gpu_ws_precise_nclip_enabled(void) {
     return g_test_precise_nclip_enabled;
 }
 extern "C" void gpu_pgxp_rederive_enable(void) {}
-/* This fixture has ordinary RAM only; no optional GPU DMA arena is allocated. */
-extern "C" int psx_mod_gpu_dma_memory_contains(uint32_t, uint32_t) { return 0; }
 static int g_test_shadow_diff = 0;
 extern "C" int psx_overlay_shadow_diff_active(void) { return g_test_shadow_diff; }
 extern "C" void psx_ws_note_gte_project(int) {}
