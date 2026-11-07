@@ -1304,6 +1304,8 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.direct_shortcut_button =
                 toml::find<std::string>(ct, "direct_shortcut_button");
         }
+        if (ct.contains("select_shortcuts"))
+            rt.select_shortcuts = toml::find<bool>(ct, "select_shortcuts");
         if (ct.contains("experimental_jogcon_force_feedback"))
             rt.experimental_jogcon_force_feedback =
                 toml::find<bool>(ct, "experimental_jogcon_force_feedback");
