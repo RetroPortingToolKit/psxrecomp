@@ -85,7 +85,7 @@ def main():
     # The fixture #includes gpu_gl_renderer.c and drives it through the real
     # facade (gpu_render.c) and render thread (render_thread.c).
     sources = [("probe", fixture), ("sw", src / "gpu_sw_renderer.c"),
-               ("fi", src / "frame_interpolation.c"), ("rp", src / "render_pass_plan.c"),
+               ("rp", src / "render_pass_plan.c"),
                ("xr", src / "psx_openxr.c"), ("rth", src / "render_thread.c"), ("pth", src / "present_thread.c"),
                ("facade", src / "gpu_render.c"), ("fg", src / "frame_gen.c")]
     sections = [] if platform.system() == "Darwin" else ["-ffunction-sections", "-fdata-sections"]

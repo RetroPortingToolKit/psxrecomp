@@ -38,10 +38,13 @@ def main():
         if r.returncode: raise subprocess.CalledProcessError(r.returncode,command)
     flags=['-std=gnu11','-O'+args.optimization,'-DPSX_SDL3=1',*([] if args.debug_tools else ['-DPSX_NO_DEBUG_TOOLS=1']),
            '-ffunction-sections','-fdata-sections','-I',fw/'runtime/include','-I',fw/'runtime/src']
+    # MinGW reports undefined symbols even from sections it would discard.
+    # Match the other standalone GL runners: eliminate them before PE linking.
+    if platform.system()=='Windows': flags.append('-flto')
     for include in args.sdl_include.split(';'):
         if include: flags+=['-I',include]
     sources=[('probe',args.fixture.resolve() if args.fixture else fw/'runtime/tests/test_gl_texture_filter.c'),
-             ('sw',fw/'runtime/src/gpu_sw_renderer.c'),('fi',fw/'runtime/src/frame_interpolation.c'),
+             ('sw',fw/'runtime/src/gpu_sw_renderer.c'),
              ('rp',fw/'runtime/src/render_pass_plan.c')]
     if (fw/'runtime/src/psx_openxr.c').exists():
         sources.append(('xr',fw/'runtime/src/psx_openxr.c'))
@@ -71,7 +74,7 @@ def main():
     exe=out/('filter.exe' if platform.system()=='Windows' else 'filter')
     libraries=['-lm']
     if platform.system()=='Windows':
-        libraries+=['-static','-lopengl32']+['-l'+x for x in ('kernel32','user32','gdi32','winmm','imm32',
+        libraries+=['-flto','-static','-lopengl32']+['-l'+x for x in ('kernel32','user32','gdi32','winmm','imm32',
             'ole32','oleaut32','version','uuid','advapi32','setupapi','shell32','dinput8')]
     elif platform.system()=='Darwin':
         from run_gl_scale_invariance import MAC_FRAMEWORKS

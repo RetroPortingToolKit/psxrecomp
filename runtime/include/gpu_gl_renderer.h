@@ -74,11 +74,8 @@ uint32_t gl_renderer_pass_plan(uint32_t period_vblanks,
                                uint32_t shown_after_vblanks,
                                uint32_t *alpha_q16, uint32_t max,
                                uint32_t *wanted);
-/* Open the VRAM transaction for rect; open_gen first captures the game's own
- * image of it as a new generation. reuse_backup: the caller guarantees that
- * no guest code ran since the previous pass ended (its restore left VRAM as
- * backed up), so the backup of that pass is reused when it covers the same
- * rect at the same scale. Returns 0 when refused (nothing changed). */
+/* Retired temporal replay ABI: always refuses without changing the renderer.
+ * Stereo and own-view transactions have separate entry points below. */
 int      gl_renderer_pass_begin(int x, int y, int w, int h, int open_gen,
                                 uint32_t period_vblanks, int reuse_backup);
 /* Snapshot at the last begin attempt, never reconstructed by a TCP query.
@@ -93,10 +90,9 @@ typedef struct GLRenderPassBeginDiag {
     int generation_x, generation_y, generation_w, generation_h;
 } GLRenderPassBeginDiag;
 void gl_renderer_pass_begin_diag(GLRenderPassBeginDiag *out);
-/* Generations opened from now on are for a frame already on screen (1) or
- * for the next flip (0, default); render_pass_gen_flip_matches. */
+/* Retired temporal compatibility control; ignored. */
 void     gl_renderer_pass_set_flip_shown(int shown);
-/* Capture the drawn rect at alpha_q16 (keep) and roll the rect back. */
+/* Retired temporal compatibility call; ignored. */
 void     gl_renderer_pass_end(uint32_t alpha_q16, int keep);
 uint32_t gl_renderer_pass_leaks(void);
 int      gl_renderer_pass_verify_vram(void);

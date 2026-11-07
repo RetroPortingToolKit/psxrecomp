@@ -33,8 +33,7 @@
  *     the window runs' native frame (lband) against the 1x run's, so the 1x
  *     surface draws exactly what 1x draws, in painter order, and their frame
  *     and wide surface at S against the full-VRAM run at the same scale.
- *   - mode "capture" (with or without the window): the frame-blend history and
- *     hold-last captures of the displayed frame. Outside the window mode they
+ *   - mode "capture" (with or without the window): the native hold-last captures of the displayed frame. Outside the window mode they
  *     stay at the source scale (FRAME_W*S x FRAME_H*S); in the window mode they
  *     are taken at the presented letterbox size instead, each texel the source
  *     pixel under its centre (nearest filtering).
@@ -55,12 +54,8 @@
  *     into both page depths: every pixel must be the texel the PS1 window rule
  *     picks from the VRAM as read back, in the native VRAM and at S, so a
  *     window decode error both settings share still fails.
- *   - mode "passes" (built only where the renderer has render passes, the
- *     frame-rate stack; the runner defines PSX_TEST_RENDER_PASSES): with the
- *     flip-aware frame blend ready, the full-VRAM surface offers render passes
- *     and the window mode refuses them (PSX_MOD_RENDER_PASS_BACKEND), and
- *     gl_renderer_pass_begin opens nothing there: a pass backs up and restores
- *     only the authoritative surface, never the window's tiles.
+ *   - mode "passes": retired temporal controls cannot enable replay or own
+ *     native deadlines, with either full-VRAM or windowed surfaces.
  *   - mode "steps" (dynamic resolution, argv: scale = the ceiling, then a
  *     comma list of levels, then "fresh" or "chain"): the scale steps at run
  *     time between the ceiling and 1x; the hr and native-wide surfaces are
@@ -379,7 +374,7 @@ static int lines_main(int scale, int window) {
     return failures ? 1 : 0;
 }
 
-/* ---- mode "capture": blend-history and hold-last capture size ------------ */
+/* ---- mode "capture": native hold-last capture size ------------ */
 /* Read back texture `tex` when its storage is w x h (else -1), and count the
  * texels that are not the source pixel under their centre (nearest), the
  * source being sw x sh RGBA8. */
@@ -754,72 +749,14 @@ static int wmask_main(int scale, int window, int fast) {
 #if defined(PSX_TEST_RENDER_PASSES)
 /* Mode "passes": see the header. */
 static int passes_main(int scale, int window) {
-    (void)scale;
-    gl_renderer_set_interpolation(1, 120.0, 120.0, 60.0, 2);
+    (void)scale;(void)window;
+    gl_renderer_set_interpolation(1,120,120,60,2);
     gl_renderer_set_interpolation_source(1);
-    s_interp_valid = 2;                    /* as after the first presented frame */
-    uint32_t why = gl_renderer_pass_unavailable();
-    printf("passes: unavailable=%u\n", (unsigned)why);
-    if (window) {
-        check(why == PSX_MOD_RENDER_PASS_BACKEND, "window mode refuses render passes");
-        check(!gl_renderer_pass_begin(0, 0, FRAME_W, FRAME_H, 1, 1, 0) && !s_pass_active,
-              "window mode: pass_begin opens nothing");
-    } else {
-        check(why == PSX_MOD_RENDER_PASS_READY, "full-VRAM surface offers render passes");
-        gl_renderer_set_hd_texture_mode(1);
-        check(s_hd_native_authority, "HD authority enabled");
-        check(gl_renderer_pass_unavailable() == PSX_MOD_RENDER_PASS_READY,
-              "HD presentation surface offers render passes");
-        s_interp_w = FRAME_W * scale;
-        s_interp_h = FRAME_H * scale;
-        s_interp_source_path = GL_PRES_VRAM;
-        s_pass_verify = 1;
-        uint64_t before = fnv(vram, sizeof vram, 0xcbf29ce484222325ull);
-        int fw = FRAME_W * scale, fh = FRAME_H * scale, ow = 0, oh = 0;
-        uint32_t *pixels = (uint32_t *)malloc((size_t)fw * fh * 4u);
-        int count = pixels ? gl_renderer_read_display_hires(0, 0, FRAME_W,
-                         FRAME_H, pixels, fw * fh, &ow, &oh) : 0;
-        check(count == fw * fh && ow == fw && oh == fh,
-              "HD pass baseline display readback");
-        uint64_t frame_before = count == fw * fh
-            ? fnv(pixels, (size_t)fw * fh * 4u, 0xcbf29ce484222325ull) : 0;
-        int opened = gl_renderer_pass_begin(0, 0, FRAME_W, FRAME_H, 1, 2, 0);
-        check(opened, "HD pass opens");
-        if (opened) {
-            glb_set_draw_area(0, 0, FRAME_W - 1, FRAME_H - 1);
-            glb_draw_flat_rect(10, 10, 40, 40, 0x7fff);
-            flush_flat_batch();
-            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
-                  "HD pass draw leaves authoritative CPU VRAM untouched");
-            gl_renderer_pass_end(32768, 1);
-            check(gl_renderer_pass_verify_vram(), "HD pass restores GPU and CPU VRAM");
-            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
-                  "HD pass leaves native VRAM identical");
-        }
-        opened = gl_renderer_pass_begin(0, 0, FRAME_W, FRAME_H, 1, 2, 0);
-        check(opened, "HD discard pass opens");
-        if (opened) {
-            glb_draw_flat_rect(20, 20, 32, 32, 0x03e0);
-            flush_flat_batch();
-            gl_renderer_pass_end(0, 0); /* callback failed: keep no image */
-            check(gl_renderer_pass_verify_vram(),
-                  "discarded HD pass restores GPU and CPU VRAM");
-            check(fnv(vram, sizeof vram, 0xcbf29ce484222325ull) == before,
-                  "discarded HD pass preserves authoritative CPU digest");
-            ow = oh = 0;
-            count = pixels ? gl_renderer_read_display_hires(0, 0, FRAME_W,
-                             FRAME_H, pixels, fw * fh, &ow, &oh) : 0;
-            check(count == fw * fh && ow == fw && oh == fh &&
-                  fnv(pixels, (size_t)fw * fh * 4u,
-                      0xcbf29ce484222325ull) == frame_before,
-                  "discarded HD pass restores presented pixel digest");
-        }
-        free(pixels);
-        gl_renderer_set_hd_texture_mode(0);
-    }
-    check(glGetError() == GL_NO_ERROR, "GL error");
-    printf("checks=%d failures=%d\n", checks, failures);
-    return failures ? 1 : 0;
+    check(gl_renderer_pass_unavailable()==PSX_MOD_RENDER_PASS_NO_PRESENTER,"retired temporal presenter is unavailable");
+    check(!gl_renderer_pass_begin(0,0,FRAME_W,FRAME_H,1,2,0) && !s_pass_active,"retired replay cannot open a transaction");
+    check(!gl_renderer_interpolation_owns_cadence(),"retired temporal controls cannot own native deadlines");
+    printf("checks=%d failures=%d\n",checks,failures);
+    return failures?1:0;
 }
 #endif
 
@@ -850,21 +787,7 @@ static int capture_main(int scale, int window) {
     glReadPixels(sx * S, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, src);
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
 
-    /* Blend history: nearest filtering (linear = 0), a 4:3 present. */
-    s_interp_enabled = 1;
-    s_interp_suspended = 0;
-    check(interp_capture(fbo, sx, 0, FRAME_W, FRAME_H, 0, 1, GL_PRES_VRAM,
-                         0, 0, 1) == 1,
-          "blend history captured");
-    if (s_interp_w != cw || s_interp_h != ch)
-        fprintf(stderr, "blend capture %dx%d want %dx%d (source %dx%d)\n",
-                s_interp_w, s_interp_h, cw, ch, sw, sh);
-    check(s_interp_w == cw && s_interp_h == ch, "blend capture size");
-    check(s_interp_src_w == sw && s_interp_src_h == sh, "blend source band at the output scale");
-    long bad = capture_check(s_interp_tex[s_interp_cur], cap, cw, ch, src, sw, sh);
-    if (bad) fprintf(stderr, "blend capture: %ld of %d texels differ (-1: storage size)\n",
-                     bad, cw * ch);
-    check(bad >= 0 && bad * 1000 <= (long)cw * ch, "blend capture holds the source (nearest)");
+    long bad;
 
     /* Hold-last snapshot of the same band. */
     hold_capture_native_fbo(fbo, sx, 0, FRAME_W, FRAME_H, 1, 0);

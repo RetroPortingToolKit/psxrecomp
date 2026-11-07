@@ -17,7 +17,7 @@ Line runs (mode lines) batch lines with triangles over native-wide: the window
 runs' native frame must equal the 1x run's (the 1x authoritative surface draws
 its lines as GL_LINES, in painter order), and their frame and wide surface at S
 the full-VRAM run's at the same scale.
-Capture runs (mode capture) check the frame-blend history and hold-last
+Capture runs (mode capture) check the native hold-last
 captures: at the source scale outside the window mode, at the presented
 (letterbox) size in it.
 Mask runs (mode mask) change the GP0(E6) mask-check bit after a line, a flat
@@ -30,9 +30,8 @@ S and the wide surface must be the same both ways, at 1x, above it and in the
 window mode, and on must draw in fewer batches. Each of those runs also checks
 raw rects drawn through every window against the PS1 window rule computed in C
 from the VRAM, so a decode error both ways share still fails.
-Pass runs (mode passes, where the renderer has the frame-rate stack's render
-passes) check that the window mode refuses them and the full-VRAM surface
-offers them.
+Pass runs (mode passes) verify that retired temporal controls cannot enable
+a replay presenter or open a transaction.
 Step runs (mode steps, dynamic resolution) keep the surfaces at a ceiling and
 change the scale at run time. "fresh" steps before drawing: the native VRAM,
 the frame at S and the wide surface must equal the fixed-scale run at the
@@ -131,8 +130,7 @@ def main():
     # sources the renderer calls into. render_pass_plan.c exists once the
     # frame-rate render passes have landed, and the renderer calls it from then
     # on, so it is linked whenever it is there.
-    sources = [("probe", fixture), ("sw", framework / "runtime/src/gpu_sw_renderer.c"),
-               ("fi", framework / "runtime/src/frame_interpolation.c")]
+    sources = [("probe", fixture), ("sw", framework / "runtime/src/gpu_sw_renderer.c")]
     if (framework / "runtime/src/render_pass_plan.c").exists():
         sources.append(("rp", framework / "runtime/src/render_pass_plan.c"))
     if (framework / "runtime/src/psx_openxr.c").exists():
@@ -303,7 +301,7 @@ def main():
         print("FAIL lines window 9x frame/wide surface differ from the full-VRAM run:",
               lines[("window", 9)][1:], lines[("full", 9)][1:])
         ok = False
-    # Frame-blend and hold-last captures: (label, scale, env, windowed).
+    # Native hold-last captures: (label, scale, env, windowed).
     for label, s, extra, windowed in (("full", 9, {}, False),
                                       ("window", 9, {"PSX_GL_HIRES_WINDOW": "1"}, True),
                                       ("window", 18, {"PSX_GL_HIRES_WINDOW": "1"}, True)):

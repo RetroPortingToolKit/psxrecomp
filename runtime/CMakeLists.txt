@@ -569,16 +569,6 @@ if(BUILD_TESTING)
                 --output "${CMAKE_CURRENT_BINARY_DIR}/gl-render-thread-results")
         set_tests_properties(gl_render_thread_test PROPERTIES
             LABELS "gpu;opengl;hardware" TIMEOUT 300 SKIP_RETURN_CODE 77)
-        add_test(NAME gl_shared_present_images_test
-            COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_render_thread.py" --single
-                --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_shared_present_images.c"
-                --cc "${CMAKE_C_COMPILER}"
-                --sdl-include "${_gl_scale_sdl_inc}"
-                --sdl-library "$<TARGET_FILE:SDL3::SDL3>"
-                --output "${CMAKE_CURRENT_BINARY_DIR}/gl-shared-present-images-results")
-        set_tests_properties(gl_shared_present_images_test PROPERTIES
-            LABELS "gpu;opengl;hardware" TIMEOUT 180 SKIP_RETURN_CODE 77)
         # [video] texture_lod / anisotropic_filtering: off and untracked/
         # magnified prims are unchanged; minified world textures average
         # inside their UV bounds; render thread and PGXP depth agree.
@@ -2032,16 +2022,6 @@ if(BUILD_TESTING)
         target_compile_options(retired_render_pass_test PRIVATE -UNDEBUG)
     endif()
     add_test(NAME retired_render_pass_test COMMAND retired_render_pass_test)
-
-    add_executable(frame_interpolation_schedule_test
-        tests/test_frame_interpolation_schedule.c
-        src/frame_interpolation.c)
-    target_include_directories(frame_interpolation_schedule_test PRIVATE include)
-    if(NOT MSVC)
-        target_link_libraries(frame_interpolation_schedule_test PRIVATE m)
-    endif()
-    add_test(NAME frame_interpolation_schedule_test
-             COMMAND frame_interpolation_schedule_test)
 
     add_executable(render_pass_plan_test
         tests/test_render_pass_plan.c
