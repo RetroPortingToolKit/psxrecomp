@@ -48,6 +48,7 @@
 #include "ws_repeat_rect.h"
 #include "ws_feedback_rect.h"
 #include "ws_screen_mask.h"
+#include "ws_reveal_edge.h"
 #include "ws_radial_screen_mask.h"
 #include <stdint.h>
 #include <math.h>
@@ -247,6 +248,8 @@ static uint32_t ws_background_tag_frame;
 static int ws_background_tags_used;
 static WsHudAnchorTag ws_reveal_clear_tags[WS_HUD_ANCHOR_TABLE_SIZE];
 static WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
+static WsHudAnchorTag ws_reveal_edge_tags[WS_HUD_ANCHOR_TABLE_SIZE];
+static int ws_reveal_edge_tags_used;   /* skip the lookup until a title tags */
 static WsRadialScreenMaskTag ws_radial_screen_mask_tags[WS_RADIAL_MASK_TAG_COUNT];
 static WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
 static WsRepeatRectTag ws_feedback_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
@@ -2878,6 +2881,21 @@ void gpu_ws_tag_screen_mask_quad(uint32_t prim) {
                          (uint32_t)s_frame_count);
 }
 
+void gpu_ws_tag_reveal_edge_quad(uint32_t prim, int edges) {
+    edges &= WS_REVEAL_EDGE_BOTH;
+    if (!edges || !ws_native_wide_configured() || (prim & 3u) ||
+        prim > UINT32_MAX - 4u)
+        return;
+    uint32_t words[12], count = 0;
+    if (!ws_hud_command_words(prim + 4u, words, &count) ||
+        !ws_reveal_edge_packet_ok(words, count)) return;
+    WsPrepassPacketGuard guard = ws_prepass_packet_guard(words, count);
+    ws_hud_anchor_insert(ws_reveal_edge_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                         GPU_RAM_KEY(prim + 4u), ws_reveal_edge_to_anchor(edges),
+                         &guard, (uint32_t)s_frame_count);
+    ws_reveal_edge_tags_used = 1;
+}
+
 void gpu_ws_tag_radial_screen_mask_quad(uint32_t prim, float scale) {
     if (!ws_native_wide_configured() || (prim & 3u) || prim > UINT32_MAX - 4u)
         return;
@@ -2925,6 +2943,21 @@ static int ws_explicit_hud_anchor_ex(int *out_anchor, int *out_projected) {
 }
 static int ws_explicit_hud_anchor(int *out_anchor) {
     return ws_explicit_hud_anchor_ex(out_anchor, NULL);
+}
+
+/* Sides the executing quad may grow into the reveal (0 when untagged). An
+ * explicit HUD anchor on the same packet wins: a moved widget never grows. */
+static int ws_nw_reveal_edges(uint32_t word_count) {
+    if (!ws_reveal_edge_tags_used || !ws_native_wide_active() ||
+        gp0_cmd_source_addr == UINT32_MAX)
+        return 0;
+    int anchor = 0;
+    if (!ws_hud_anchor_lookup(ws_reveal_edge_tags, WS_HUD_ANCHOR_TABLE_SIZE,
+                              GPU_RAM_KEY(gp0_cmd_source_addr), gp0_cmd_buf,
+                              word_count, (uint32_t)s_frame_count, &anchor) ||
+        ws_explicit_hud_anchor(NULL))
+        return 0;
+    return ws_reveal_edge_from_anchor(anchor);
 }
 
 static int ws_nw_explicit_hud_delta(int32_t *out_delta) {
@@ -4148,6 +4181,8 @@ static void gpu_reset_state(int clear_vram) {
     ws_background_tags_used = 0;
     ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_hud_anchor_clear(ws_reveal_edge_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_reveal_edge_tags_used = 0;
     ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     ws_repeat_rect_tag_clear(ws_feedback_rect_tags);
@@ -5475,7 +5510,24 @@ static void gp0_exec_mono_quad(void) {
         ws_hud_anchor_lookup(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE,
             GPU_RAM_KEY(gp0_cmd_source_addr), gp0_cmd_buf, 5u,
             (uint32_t)s_frame_count, NULL);
-    if (!radial_mask && !screen_mask) ws_auto_ui_transform_quad(vx, vy);
+    const int reveal_edges = radial_mask || screen_mask ? 0 : ws_nw_reveal_edges(5u);
+    if (!radial_mask && !screen_mask && !reveal_edges) ws_auto_ui_transform_quad(vx, vy);
+
+    /* Reveal edges: only the part outside the authored quad, in its own OT
+     * position, colour and blend; canonical VRAM clips it away. */
+    if (reveal_edges) {
+        WsScreenMaskBand bands[2];
+        int count = ws_reveal_edge_bands(vx, vy, ws_disp_w(), ws_disp_h(),
+                                         draw_area_wide_x_margin(),
+                                         reveal_edges, bands);
+        if (count) {
+            gr_set_semi_transparency(semi_trans, (int)semi_transparency);
+            for (int i = 0; i < count; i++)
+                gr_draw_flat_rect(bands[i].x + draw_offset_x,
+                                  bands[i].y + draw_offset_y,
+                                  bands[i].w, bands[i].h, color);
+        }
+    }
 
     /* Each added band is outside the original screen and executes in the
      * mask's own OT position/blend mode. Canonical VRAM clips it away. */
@@ -5515,7 +5567,7 @@ static void gp0_exec_mono_quad(void) {
         gr_draw_flat_rect(x, y, w, h, color);
         return;
     }
-    if (!radial_mask && !screen_mask) {
+    if (!radial_mask && !screen_mask && !reveal_edges) {
         ws_nw_backdrop_stretch_quad(vx, vy);
         ws_nw_hud_shift_vertices(vx, 4);
     }
@@ -5797,9 +5849,29 @@ static void gp0_exec_textured_quad(void) {
         if (ws_tagged_anchor(&ws_ax))
             for (int i = 0; i < 4; i++) vx[i] = ws_scale_about(vx[i], ws_ax);
     }
-    ws_auto_ui_transform_quad(vx, vy);
-    ws_nw_backdrop_stretch_quad(vx, vy);   /* full-frame 2D backdrop image stretch (no-op else) */
-    ws_nw_hud_shift_vertices(vx, 4);
+    const int reveal_edges = ws_nw_reveal_edges(9u);
+    WsScreenMaskBand reveal_bands[2];
+    int reveal_count = 0;
+    if (reveal_edges) {
+        /* One-texel quad: each band samples that texel with the quad's own
+         * CLUT, texture page, modulation and blend, outside the quad only. */
+        reveal_count = ws_reveal_edge_bands(vx, vy, ws_disp_w(), ws_disp_h(),
+                                            draw_area_wide_x_margin(),
+                                            reveal_edges, reveal_bands);
+    } else {
+        ws_auto_ui_transform_quad(vx, vy);
+        ws_nw_backdrop_stretch_quad(vx, vy);   /* full-frame 2D backdrop image stretch (no-op else) */
+        ws_nw_hud_shift_vertices(vx, 4);
+    }
+    if (reveal_count) {
+        setup_textured_draw(color24, semi_trans, raw_texture);
+        for (int i = 0; i < reveal_count; i++)
+            gr_draw_textured_rect_scaled(reveal_bands[i].x + draw_offset_x,
+                                         reveal_bands[i].y + draw_offset_y,
+                                         reveal_bands[i].w, reveal_bands[i].h,
+                                         u[0], v[0], u[0], v[0],
+                                         clut_x, clut_y, tpage);
+    }
 
     for (int i = 0; i < 4; i++) {
         vx[i] += draw_offset_x;
@@ -8428,6 +8500,8 @@ int gpu_snapshot_read(const uint8_t *p, uint32_t len) {
     ws_background_tags_used = 0;
     ws_hud_anchor_clear(ws_reveal_clear_tags, WS_HUD_ANCHOR_TABLE_SIZE);
     ws_hud_anchor_clear(ws_screen_mask_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_hud_anchor_clear(ws_reveal_edge_tags, WS_HUD_ANCHOR_TABLE_SIZE);
+    ws_reveal_edge_tags_used = 0;
     ws_radial_mask_clear(ws_radial_screen_mask_tags);
     ws_repeat_rect_tag_clear(ws_repeat_rect_tags);
     ws_repeat_rect_tag_clear(ws_feedback_rect_tags);
@@ -8457,6 +8531,7 @@ typedef struct {
     WsHudAnchorTag ws_background_tags[WS_HUD_ANCHOR_TABLE_SIZE];
     WsHudAnchorTag ws_reveal_clear_tags[WS_HUD_ANCHOR_TABLE_SIZE];
     WsHudAnchorTag ws_screen_mask_tags[WS_HUD_ANCHOR_TABLE_SIZE];
+    WsHudAnchorTag ws_reveal_edge_tags[WS_HUD_ANCHOR_TABLE_SIZE];
     WsRadialScreenMaskTag ws_radial_screen_mask_tags[WS_RADIAL_MASK_TAG_COUNT];
     WsRepeatRectTag ws_repeat_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
     WsRepeatRectTag ws_feedback_rect_tags[WS_REPEAT_RECT_TAG_TABLE_SIZE];
@@ -8468,6 +8543,7 @@ typedef struct {
     int ws_auto_ui_dense, ws_shared_ui_copy;
     uint32_t ws_background_tag_frame, ws_last_tag_stamp;
     int ws_background_tags_used;
+    int ws_reveal_edge_tags_used;
     uint32_t s_bg_phase_frame;
     int s_bg_phase_over;
     /* Synthetic GTE/GP0 draws update these signals, and native-wide target
@@ -8502,6 +8578,7 @@ static void gpu_pass_provenance_transfer(int restore) {
     PASS_ARRAY(ws_background_tags);
     PASS_ARRAY(ws_reveal_clear_tags);
     PASS_ARRAY(ws_screen_mask_tags);
+    PASS_ARRAY(ws_reveal_edge_tags);
     PASS_ARRAY(ws_radial_screen_mask_tags);
     PASS_ARRAY(ws_repeat_rect_tags);
     PASS_ARRAY(ws_feedback_rect_tags);
@@ -8513,6 +8590,7 @@ static void gpu_pass_provenance_transfer(int restore) {
     PASS_VALUE(ws_shared_ui_copy);
     PASS_VALUE(ws_background_tag_frame);
     PASS_VALUE(ws_background_tags_used);
+    PASS_VALUE(ws_reveal_edge_tags_used);
     PASS_VALUE(ws_last_tag_stamp);
     PASS_VALUE(s_bg_phase_frame);
     PASS_VALUE(s_bg_phase_over);

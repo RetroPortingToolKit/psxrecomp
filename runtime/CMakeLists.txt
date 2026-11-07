@@ -1407,6 +1407,25 @@ if(BUILD_TESTING)
         target_link_libraries(ws_screen_mask_test PRIVATE m)
     endif()
     add_test(NAME ws_screen_mask_test COMMAND ws_screen_mask_test)
+    add_executable(ws_reveal_edge_test tests/test_ws_reveal_edge.c)
+    target_include_directories(ws_reveal_edge_test PRIVATE include)
+    add_test(NAME ws_reveal_edge_test COMMAND ws_reveal_edge_test)
+    # Reveal-edge quads through the real GP0 flat/textured quad handlers.
+    add_executable(ws_reveal_edge_exec_test
+        tests/test_ws_reveal_edge_exec.c
+        src/psx_video_timing.c
+        src/gpu_timeline.c)
+    target_include_directories(ws_reveal_edge_exec_test PRIVATE include src)
+    if(UNIX)
+        target_link_libraries(ws_reveal_edge_exec_test PRIVATE m)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(ws_reveal_edge_exec_test PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(ws_reveal_edge_exec_test PRIVATE
+            $<IF:$<PLATFORM_ID:Darwin>,-Wl$<COMMA>-dead_strip,-Wl$<COMMA>--gc-sections>)
+    endif()
+    add_test(NAME ws_reveal_edge_exec_test COMMAND ws_reveal_edge_exec_test)
 
     add_executable(mod_gpu_dma_aperture_test
         tests/test_mod_gpu_dma_aperture.c
