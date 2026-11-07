@@ -2307,6 +2307,8 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 static uint8_t psx_read_byte_raw(uint32_t addr);
 uint8_t psx_read_byte(uint32_t addr) {
     if (g_ls_mode == 2) return (uint8_t)ls_read_hook(addr, 1, 0u);
+    if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
+        ds_note_read(addr, 1);
     if (g_ls_mode != 1 || s_ls_op_active || g_ls_suppress_record || g_dma_exec_depth > 0) return psx_read_byte_raw(addr);
     s_ls_op_active = 1;
     uint8_t v = psx_read_byte_raw(addr);
@@ -2584,6 +2586,10 @@ void psx_write_byte(uint32_t addr, uint8_t val) {
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 1); return; }
     if (g_ls_mode == 2) { ls_write_hook(addr, 1, val); return; }
+    if (g_ds_recording) {
+        if (g_dma_exec_depth > 0) ds_note_dma_write();
+        else if (!psx_get_in_exception()) ds_note_write(addr, 1);
+    }
     if (g_ls_mode != 1 || s_ls_op_active || g_ls_suppress_record || g_dma_exec_depth > 0) { psx_write_byte_raw(addr, val); return; }
     if (!psx_get_in_exception()) ls_write_hook(addr, 1, val);
     s_ls_op_active = 1;
