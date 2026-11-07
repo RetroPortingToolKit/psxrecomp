@@ -1680,6 +1680,13 @@ if(BUILD_TESTING)
     add_executable(mod_command_startup_test tests/test_mod_command_startup.cpp)
     target_include_directories(mod_command_startup_test PRIVATE include)
     add_test(NAME mod_command_startup_test COMMAND mod_command_startup_test)
+    add_executable(mod_binding_options_test
+        tests/test_mod_binding_options.cpp src/mod_packages.cpp src/mod_media.cpp
+        src/iso_reader.cpp src/cue_sheet.cpp src/crc32.c src/psx_sha256.c)
+    target_include_directories(mod_binding_options_test PRIVATE
+        include ../recompiler/include ../recompiler/lib/toml11)
+    target_link_libraries(mod_binding_options_test PRIVATE chdr-static)
+    add_test(NAME mod_binding_options_test COMMAND mod_binding_options_test)
 
     add_executable(builtin_mod_manifests_test
         tests/test_builtin_mod_manifests.cpp

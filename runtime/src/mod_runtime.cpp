@@ -1168,10 +1168,14 @@ int provider_option_get(void*, const char* package_id, int index,
     copy_text(out->default_value, sizeof(out->default_value), option.default_value);
     out->type = option.type == ModOptionType::Boolean ? RECOMP_MOD_OPTION_BOOLEAN :
                 option.type == ModOptionType::Choice ? RECOMP_MOD_OPTION_CHOICE :
+                option.type == ModOptionType::Binding ? RECOMP_MOD_OPTION_BINDING :
                                                        RECOMP_MOD_OPTION_INTEGER;
 #ifdef RECOMP_LAUNCHER_HAS_MOD_OPTION_TEXT
     if (option.type == ModOptionType::Decimal) out->type = RECOMP_MOD_OPTION_TEXT;
 #endif
+    out->slider = option.slider;
+    out->allow_wheel = option.allow_wheel;
+    out->display_divisor = option.display_divisor;
     out->min_value = option.min_value;
     out->max_value = option.max_value;
     out->step = option.step;
@@ -1333,10 +1337,14 @@ int provider_feature_option_get(void*, const char* package_id,
     out->type = option.type == ModOptionType::Boolean
         ? RECOMP_MOD_OPTION_BOOLEAN
         : option.type == ModOptionType::Choice
-            ? RECOMP_MOD_OPTION_CHOICE : RECOMP_MOD_OPTION_INTEGER;
+            ? RECOMP_MOD_OPTION_CHOICE : option.type == ModOptionType::Binding
+                ? RECOMP_MOD_OPTION_BINDING : RECOMP_MOD_OPTION_INTEGER;
 #ifdef RECOMP_LAUNCHER_HAS_MOD_OPTION_TEXT
     if (option.type == ModOptionType::Decimal) out->type = RECOMP_MOD_OPTION_TEXT;
 #endif
+    out->slider = option.slider;
+    out->allow_wheel = option.allow_wheel;
+    out->display_divisor = option.display_divisor;
     out->min_value = option.min_value;
     out->max_value = option.max_value;
     out->step = option.step;

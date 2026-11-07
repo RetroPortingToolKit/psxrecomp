@@ -48,6 +48,7 @@ enum class ModOptionType {
     Choice,
     Integer,
     Decimal,
+    Binding,
 };
 
 struct ModChoice {
@@ -66,6 +67,9 @@ struct ModOption {
     int64_t min_value = 0;
     int64_t max_value = 0;
     int64_t step = 1;
+    bool slider = false;
+    bool allow_wheel = false;
+    int64_t display_divisor = 1;
     std::vector<ModChoice> choices;
     /* Optional id of a BOOLEAN option in the same feature that overrides this
      * one. While that option is true this control is inert: the launcher greys
