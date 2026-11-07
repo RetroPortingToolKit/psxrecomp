@@ -658,6 +658,12 @@ int  psx_ws_backdrop_ring_json(char *buf, int cap);
  * y, h) alongside its union-find root and final anchor — enough to tell whether
  * two HUD primitives shared a run, and which key component split them if not. */
 int  psx_ws_ui_groups_json(char *buf, int cap);
+/* Copy the ordinary auto-UI transform for one exact packet in the current
+ * linked-list prepass. Read-only: coordinates precede the draw offset, just
+ * as in native GP0 processing. rectangle distinguishes sprite sizing/rounding from polygon corners.
+ * Returns one only for a guarded current-list UI entry; never pairs frames. */
+int gpu_ws_copy_presented_ui(uint32_t source,const uint32_t *words,uint32_t count,
+    int32_t x[4],int32_t y[4],unsigned vertices,int rectangle);
 
 /* Live-tunable backdrop widen amount (ws_backdrop_margin command): <0 whole-row,
  * 0 off, >0 N-column widen. g_ws_bd_from_interp is the interp's one-shot

@@ -85,6 +85,8 @@ int  rt_on_render_thread(void);
  * rt_* call. op 0 is reserved. */
 void *rt_cmd_begin(uint16_t op, uint16_t flags, uint32_t payload_bytes);
 void  rt_cmd_commit(void);
+/* Wake the consumer for committed work without draining or adding a frame. */
+void rt_kick(void);
 
 /* Close a guest frame: enqueue a frame marker, then block while more than
  * max_frames closed frames are unconsumed. */

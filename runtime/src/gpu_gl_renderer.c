@@ -468,7 +468,8 @@ enum {
     RTH_WIDE_DISABLE, RTH_WIDE_CLEAR, RTH_WIDE_CLEAR_MARGINS, RTH_PROJ_TRI,
     RTH_WIDE_RECOVERY, RTH_INTERP_SUSPENDED, RTH_PRESENT_VRAM,
     RTH_PRESENT_WIDE, RTH_STATE, RTH_PEEK, RTH_RING_CAPTURE, RTH_DYN_STEP,
-    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER, RTH_WIDE_FEEDBACK
+    RTH_FRAME, RTH_FG_SRC, RTH_DEPTH, RTH_HD_NOTE, RTH_DITHER, RTH_WIDE_FEEDBACK,
+    RTH_PRESENTATION_CAPTURE
 };
 /* GP0(A0) whose payload gpu.c is still streaming into its array (the
  * facade's vram_upload_open, emulation thread), tracked whatever the HD
@@ -484,6 +485,9 @@ static int s_rth_a0_open = 0;
 static int s_hd_authority_pending = 0;
 
 static int  rth_record_mode(void);
+static int presentation_gpu_source(int x,int y,int w,int h,int repeated,int crop[4],
+    GLuint *fbo,GLuint *texture,int *scale);
+static void presentation_gpu_capture_record(const void *payload);
 /* Render-thread frame cost (dynamic resolution; defined with GL_RT_BACKEND). */
 static uint64_t s_rthf_swap_ns = 0;        /* render thread: time in the swap */
 static uint64_t host_now_ns_rthf(void);
@@ -1417,7 +1421,7 @@ static void pres_record(int path, int dx, int dy, int w, int h,
                                drawable_w, drawable_h, lw, lh);
     /* The composed game image, before hold-last capture and the OSD: the
      * post-effect chains (bloom, [video] post_shader, AA; gl_postfx.inc). */
-    if ((path == GL_PRES_VRAM || path == GL_PRES_WIDE || path == GL_PRES_INTERP) && postfx_active())
+    if ((path == GL_PRES_VRAM || path == GL_PRES_WIDE || path == GL_PRES_INTERP || path==GL_PRES_GEOMETRY) && postfx_active())
         postfx_present(path != GL_PRES_INTERP, 1, lx, ly, lw, lh);
     /* Local split remains a paired canvas through shared/fallback frames. */
     if (path != GL_PRES_STEREO)
@@ -10382,7 +10386,13 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
     flush_tex_batch();
     flush_cpu_upload();
     if (stereo_present(w, h)) return;
+    int geometry_crop[4]={0},geometry_scale=1;GLuint geometry_fbo=0,geometry_tex=0;
+    const int native_repeated=(s_last_present_path==GL_PRES_VRAM || s_last_present_path==GL_PRES_GEOMETRY) &&
+        s_last_dx==disp_x && s_last_dy==disp_y && s_last_dw==w && s_last_dh==h;
+    const int geometry=presentation_gpu_source(disp_x,disp_y,w,h,native_repeated,
+        geometry_crop,&geometry_fbo,&geometry_tex,&geometry_scale);
     if (!s_native_surface_enabled && s_force_present_remaining <= 0 &&
+        !geometry &&
         s_last_present_path == GL_PRES_VRAM &&
         s_last_dx == disp_x && s_last_dy == disp_y &&
         s_last_dw == w && s_last_dh == h &&
@@ -10413,7 +10423,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
      * window cannot hold presents from the 1x surface without temporal
      * blending (whose captures assume the S-scaled source). */
     GLuint src_fbo = s_hr_fbo, src_tex = s_hr_tex, interp_fbo = s_hr_fbo;
-    int src_tw = VRAM_W, src_x = disp_x, src_scale = s_out_scale;
+    int src_tw = VRAM_W, src_x = disp_x, src_y=disp_y,src_scale = s_out_scale;
     if (s_hiw) {
         const HiwTile *T = hiw_ensure(disp_x, disp_x + w);
         s_hiw_last_x0 = disp_x; s_hiw_last_x1 = disp_x + w;
@@ -10426,6 +10436,10 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
         }
     }
 
+    if(geometry) {
+        src_fbo=geometry_fbo;src_tex=geometry_tex;src_tw=VRAM_W;
+        src_x=geometry_crop[0];src_y=geometry_crop[1];src_scale=geometry_scale;
+    }
     p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, ww, wh);
@@ -10442,11 +10456,11 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
             th = present_alloc_extent(VRAM_H, s_hr_scale);
         }
         present_target_quad(src_tex, tw, th,
-                            src_x, disp_y, w, h, linear, lx, ly, lw, lh, 1, 1, src_scale);
-        postfx_note_source(src_fbo, src_tex, tw, th, src_x, disp_y, w, h);
+                            src_x, src_y, w, h, linear, lx, ly, lw, lh, 1, 1, src_scale);
+        postfx_note_source(src_fbo, src_tex, tw, th, src_x, src_y, w, h);
     }
-    pres_record(GL_PRES_VRAM, disp_x, disp_y, w, h, lx, ly, lw, lh);
-    gpu_timeline_note(GTL_PRESENT, GTL_PATH_VRAM_FBO,
+    pres_record(geometry?GL_PRES_GEOMETRY:GL_PRES_VRAM, disp_x, disp_y, w, h, lx, ly, lw, lh);
+    gpu_timeline_note(GTL_PRESENT, geometry?GTL_PATH_GEOMETRY:GTL_PATH_VRAM_FBO,
                       (uint32_t)disp_x | ((uint32_t)disp_y << 16));
     hold_capture_drawable();
     latency_ring_mark(LAT_SWAP_BEGIN);
@@ -10456,7 +10470,7 @@ static void present_vram_impl(int disp_x, int disp_y, int w, int h, int linear,
     gl_perf_present_exit(0);
     present_dirty_rect(disp_x, disp_y, disp_x + w - 1, disp_y + h - 1, 0);
     present_force_consumed();
-    s_last_present_path = GL_PRES_VRAM;
+    s_last_present_path = geometry?GL_PRES_GEOMETRY:GL_PRES_VRAM;
     s_last_dx = disp_x; s_last_dy = disp_y; s_last_dw = w; s_last_dh = h;
     coh_record(GL_COH_PRESENT, disp_x, disp_y, disp_x + w - 1, disp_y + h - 1);
 }
@@ -11370,6 +11384,7 @@ static int rth_record_mode(void) {
 
 /* Present records carry the host overlays the emulation thread rasterized. */
 typedef struct RthOvHdr {
+    uint64_t latency_frame;
     int32_t needs_present, has, w[4], h[4];
     float   slide;
     int32_t args[8], nargs;
@@ -11380,6 +11395,7 @@ static int rth_record_present(uint16_t op, int n, const int32_t *v) {
     int w[4] = { 0 }, h[4] = { 0 };
     RthOvHdr hd;
     memset(&hd, 0, sizeof hd);
+    hd.latency_frame=latency_ring_current_frame();
     hd.needs_present = host_osd_needs_present();
     for (int i = 0; i < 4; i++) {
         if (ov_image(i, &px[i], &w[i], &h[i]) && px[i] && w[i] > 0 && h[i] > 0) {
@@ -11447,10 +11463,12 @@ static void rth_present_payload(uint16_t op, const uint8_t *p) {
             q += (size_t)hd.w[i] * hd.h[i] * 4u;
         }
     const int32_t *a = hd.args;
+    latency_ring_replay_frame(hd.latency_frame);
     if (op == RTH_PRESENT_VRAM)
         gl_renderer_present_vram(a[0], a[1], a[2], a[3], a[4], a[5]);
     else
         (void)gl_renderer_present_wide_fbo(a[0], a[1], a[2], a[3]);
+    latency_ring_replay_frame(UINT64_MAX);
     s_rth_ov.valid = 0;
 }
 
@@ -11919,6 +11937,7 @@ static void gl_rth_exec(void *user, const RtCmd *c, const void *payload) {
     if (!s_rthf_open && (atomic_load_explicit(&s_rthf_want, memory_order_relaxed) || 0))
         rthf_begin();
     switch (c->op) {
+    case RTH_PRESENTATION_CAPTURE: presentation_gpu_capture_record(payload);break;
     case RTH_SEMI:      glb_set_semi_transparency(v[0], v[1]); break;
     case RTH_DITHER:    glb_set_dither(v[0]); break;
     case RTH_MASK:      glb_set_mask_bits(v[0], v[1]); break;

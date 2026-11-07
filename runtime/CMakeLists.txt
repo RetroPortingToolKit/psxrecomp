@@ -1968,6 +1968,10 @@ if(BUILD_TESTING)
     # The fixture itself uses POSIX threads and nanosleep (MinGW has both;
     # the core takes its Win32 path there).
     if(NOT MSVC)
+        add_executable(latency_ring_test tests/test_latency_ring.c src/latency_ring.c)
+        target_include_directories(latency_ring_test PRIVATE include)
+        target_compile_definitions(latency_ring_test PRIVATE PSX_LATENCY_RING_TEST=1)
+        add_test(NAME latency_ring_test COMMAND latency_ring_test)
         add_executable(render_thread_test tests/test_render_thread.c src/render_thread.c)
         target_include_directories(render_thread_test PRIVATE include)
         find_package(Threads REQUIRED)

@@ -5,10 +5,11 @@
 #include "pgxp.h"
 #include "projection_scale.hpp"
 #include "gte_view.h"
+#include "gte_presentation.h"
 #include "gte_nclip_stats.h"
-#include "render_pass_projection.h"
 #include <limits>
 extern "C" void gte_set_fov_scale(int, int);
+extern "C" void gte_set_display_aspect(int,int);
 
 #include <array>
 #include <cmath>
@@ -69,8 +70,6 @@ extern "C" int gpu_ws_precise_nclip_enabled(void) {
     return g_test_precise_nclip_enabled;
 }
 extern "C" void gpu_pgxp_rederive_enable(void) {}
-/* This fixture has ordinary RAM only; no optional GPU DMA arena is allocated. */
-extern "C" int psx_mod_gpu_dma_memory_contains(uint32_t, uint32_t) { return 0; }
 static int g_test_shadow_diff = 0;
 extern "C" int psx_overlay_shadow_diff_active(void) { return g_test_shadow_diff; }
 extern "C" void psx_ws_note_gte_project(int) {}
@@ -432,57 +431,6 @@ int test_sequence_fuzz() {
     return 0;
 }
 
-static unsigned projection_callback_calls;
-static int substitute_projection(CPUState *cpu, uint32_t) {
-    ++projection_callback_calls;
-    cpu->gte_ctrl[0] = 0x1000u;
-    cpu->gte_ctrl[1] = 0u;
-    cpu->gte_ctrl[2] = 0x1000u;
-    cpu->gte_ctrl[3] = 0u;
-    cpu->gte_ctrl[4] = 0x1000u;
-    cpu->gte_ctrl[5] = 32u;
-    cpu->gte_ctrl[6] = 16u;
-    cpu->gte_ctrl[7] = 1024u;
-    return 1;
-}
-
-int test_projection_override_restores_transform() {
-    for (uint32_t command : {0x80001u, 0x80030u}) {
-        CPUState actual{};
-        actual.gte_ctrl[0] = 0x800u;
-        actual.gte_ctrl[2] = 0x800u;
-        actual.gte_ctrl[4] = 0x800u;
-        actual.gte_ctrl[5] = 80u;
-        actual.gte_ctrl[6] = 40u;
-        actual.gte_ctrl[7] = 2048u;
-        actual.gte_ctrl[26] = 256u;
-        actual.gte_data[0] = 0x00100020u;
-        actual.gte_data[1] = 64u;
-        actual.gte_data[2] = 0x00300040u;
-        actual.gte_data[3] = 96u;
-        actual.gte_data[4] = 0x00500060u;
-        actual.gte_data[5] = 128u;
-        CPUState original = actual, expected = actual;
-        substitute_projection(&expected, command);
-        gte_test_execute_reference(&expected, command);
-        projection_callback_calls = 0;
-        g_psx_projection_command = substitute_projection;
-        gte_execute(&actual, command);
-        g_psx_projection_command = nullptr;
-        if (projection_callback_calls != 1 ||
-            std::memcmp(actual.gte_ctrl, original.gte_ctrl, 8 * sizeof(uint32_t)) ||
-            std::memcmp(actual.gte_data, expected.gte_data, sizeof(actual.gte_data))) {
-            std::fprintf(stderr, "FAIL: projection override leaked transform or changed output (%x)\n", command);
-            return 1;
-        }
-        g_psx_projection_command = substitute_projection;
-        gte_execute(&actual, 0x06u);
-        g_psx_projection_command = nullptr;
-        if (projection_callback_calls != 1) return 1;
-    }
-    return 0;
-}
-
 int test_hle_command_contract() {
     constexpr uint8_t commands[] = {1,6,12,16,17,18,19,20,22,27,28,30,32,40,41,42,45,46,48,61,62,63};
     for (uint8_t function : commands) {
@@ -501,13 +449,7 @@ int test_hle_command_contract() {
             if (PSX_EXECUTION_ENHANCED) CHECK(actual.gte_ts_done == 1234);
         }
     }
-    /* The untimed entry must still visit the camera interpolation observer. */
     CPUState cpu{};
-    g_psx_projection_command = substitute_projection;
-    projection_callback_calls = 0;
-    psx_hle_gte_execute(&cpu, 0x80001u);
-    g_psx_projection_command = nullptr;
-    CHECK(projection_callback_calls == 1);
     /* A normal call immediately after HLE still owns faithful latency. */
     const uint32_t calls = g_test_gte_set_calls;
     gte_execute(&cpu, 6);
@@ -1435,7 +1377,6 @@ int main() {
     if (int rc = test_sequence_fuzz()) return rc;
     if (int rc = test_command_marshaling()) return rc;
     if (int rc = test_hle_command_contract()) return rc;
-    if (int rc = test_projection_override_restores_transform()) return rc;
     if (int rc = test_command_timing_hook()) return rc;
     if (int rc = test_precise_sxy_invalidation()) return rc;
     if (int rc = test_precise_nclip_is_title_scoped()) return rc;
@@ -1488,6 +1429,29 @@ int main() {
     }
     gte_set_fov_scale(1,1);
     pgxp_set_projection_tracking(0);
+    // Metadata records the actual authored host projection, independently of
+    // PGXP precision and the architectural H. FIFO validation is exact.
+    gte_presentation_capture(1);
+    gte_set_fov_scale(1,2);
+    gte_set_display_aspect(16,9);
+    GTEState presentation{};
+    presentation.RT[0][0]=presentation.RT[1][1]=presentation.RT[2][2]=4096;
+    presentation.H=400;presentation.OFX=192*65536;presentation.OFY=120*65536;
+    presentation.V0[0]=20;presentation.V0[2]=1000;
+    presentation.V1[0]=40;presentation.V1[2]=1000;
+    presentation.V2[0]=60;presentation.V2[2]=1000;
+    PSXRecomp::GTE::gte_rtpt(&presentation,0x0280030u);
+    GtePresentationProjection projection{};
+    for(unsigned i=0;i<3;++i) {
+        CHECK(gte_presentation_projection(i,uint32_t(presentation.SXY[i]),presentation.SZ[i+1],&projection));
+        CHECK(projection.focal_x==150 && projection.focal_y==200);
+        CHECK(projection.center_x==192 && projection.center_y==120 && projection.near_z==100);
+    }
+    CHECK(!gte_presentation_projection(2,uint32_t(presentation.SXY[2])+1,1000,&projection));
+    CHECK(!gte_presentation_projection(2,uint32_t(presentation.SXY[2]),999,&projection));
+    gte_presentation_capture(0);
+    CHECK(!gte_presentation_projection(2,uint32_t(presentation.SXY[2]),1000,&projection));
+    gte_set_fov_scale(1,1);gte_set_display_aspect(4,3);
     // VR homogeneous provenance spans the eye plane, including fractional MACs.
     PSXModRenderView eye = {}; eye.struct_size=sizeof eye; eye.projection=1;
     eye.rotation_q12[0]=eye.rotation_q12[4]=eye.rotation_q12[8]=4096;

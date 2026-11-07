@@ -480,4 +480,3 @@ void gl_renderer_fg_source(const uint32_t id[3], const int32_t pc[9], const int3
 }
 void gte_fg_source_set(int enabled) { (void)enabled; }
 int gte_fg_source_enabled(void) { return 0; }
-int gte_fg_source_lookup(uint32_t packed, GteFgSrc out[2]) { (void)packed; (void)out; return 0; }

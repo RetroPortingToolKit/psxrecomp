@@ -167,9 +167,20 @@ static void run_fills(int *gouraud_min, int *gouraud_max,
 
     gpu_exec_reset_triangles();
     load_packet(NODE_FILL, 8);
+    int32_t px[4],py[4];
+    for(unsigned i=0;i<4;++i) {
+        px[i]=(int16_t)gp0_cmd_buf[1+i*2];
+        py[i]=(int16_t)(gp0_cmd_buf[1+i*2]>>16);
+    }
+    assert(gpu_ws_copy_presented_ui(NODE_FILL+4,gp0_cmd_buf,8,px,py,4,0));
+    for(unsigned i=0;i<4;++i) {px[i]+=draw_offset_x;py[i]+=draw_offset_y;}
     gp0_exec_shaded_quad();
     assert(gpu_exec_triangles.calls == 2);
     *gouraud_min = gpu_exec_triangles.min_x;
+    if(px[0]!=gpu_exec_triangles.min_x || px[1]!=gpu_exec_triangles.max_x)
+        fprintf(stderr,"UI snapshot mismatch copied=%d/%d native=%d/%d offset=%d\n",px[0],px[1],gpu_exec_triangles.min_x,gpu_exec_triangles.max_x,draw_offset_x);
+    for(unsigned i=0;i<4;++i)assert(px[i]>=gpu_exec_triangles.min_x && px[i]<=gpu_exec_triangles.max_x);
+    assert(px[0]==gpu_exec_triangles.min_x && px[1]==gpu_exec_triangles.max_x);
     *gouraud_max = gpu_exec_triangles.max_x;
 
     gpu_exec_reset_triangles();

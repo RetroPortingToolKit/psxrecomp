@@ -21,19 +21,41 @@ typedef struct PsxPresentationMaterial {
 } PsxPresentationMaterial;
 
 /* Development renderer integration. All entry points serialize with the GL
- * owner; this is not the eventual asynchronous cadence interface. They return
+ * owner, including ordered async snapshots below. They return
  * failure with a non-GL backend. The game continues on its ordinary presenter.
  * Snapshot copies stay on the GPU. No guest VRAM or GTE/CPU state is written.
  * A successful snapshot owns one reference; release every acquired reference.
  * Handles cannot revive after eviction or context recreation. */
 uint64_t psx_presentation_gpu_snapshot(void);
+/* Transfer user to callback on success. The ordered render-thread record
+ * captures resources before subsequent native drawing, then calls ready on
+ * the GL owner. Bounded to four queued captures. Zero means no transfer.
+ * With no render thread, executes immediately on the current GL owner. */
+typedef void (*PsxPresentationSnapshotReady)(void *user,uint64_t version);
+int psx_presentation_gpu_snapshot_async(PsxPresentationSnapshotReady ready,void *user);
+/* Lifecycle/debug mutation only: acquire before locking producer-owned data. */
+void psx_presentation_gpu_acquire(void);
 int psx_presentation_gpu_retain(uint64_t version);
 void psx_presentation_gpu_release(uint64_t version);
-/* Draw into a private 1024x512 target at native resolution. Commands keep their
+/* Draw into a private VRAM-space target at the current output resolution.
+ * Resolution changes reject old output until freshly rendered. Commands keep their
  * input order. Resource indices select materials; no correspondence is inferred.
  * Failed validation leaves the previous completed output intact. */
 int psx_presentation_gpu_render(const PsxPresentationTriangle *triangles,
     uint32_t count, const PsxPresentationMaterial *materials, uint32_t material_count);
+uint64_t psx_presentation_gpu_output_version(void);
+/* Nonblocking completion check for exactly that private output generation. */
+int psx_presentation_gpu_output_ready(uint64_t output_version);
+/* Optional title producer, invoked on the GL owner at the ordinary native
+ * present boundary. repeated means the same native display region was shown
+ * last time. Select an already prepared, GPU-ready private target; output_crop
+ * is x,y,width,height in that target. Never execute guest code, read mutable
+ * guest state, wait for a scene, or shift the native presentation deadline.
+ * A zero result keeps the ordinary native display. Register before starting
+ * the renderer or while holding its context. */
+typedef int (*PsxPresentationProvider)(void *user,int display_x,int display_y,
+    int width,int height,int repeated,int output_crop[4]);
+void psx_presentation_gpu_set_provider(PsxPresentationProvider provider,void *user);
 /* Debug/export only: RGBA bytes, row zero is native VRAM row y. This explicit
  * readback is never part of snapshot capture or regular intermediate rendering. */
 int psx_presentation_gpu_read_rgba(uint8_t *out, size_t capacity,

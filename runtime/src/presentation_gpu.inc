@@ -12,7 +12,19 @@ static uint64_t s_pgpu_next_id = 1;
 static GLuint s_pgpu_tex_prog, s_pgpu_geo_prog, s_pgpu_tex_vao, s_pgpu_geo_vao;
 static GLuint s_pgpu_tex_vbo, s_pgpu_geo_vbo, s_pgpu_color, s_pgpu_fbo, s_pgpu_stencil;
 static int s_pgpu_output,s_pgpu_ready,s_pgpu_init_failed;
+static int s_pgpu_scale;
 static GLint s_pgpu_maskset,s_pgpu_semimode,s_pgpu_semipass;
+static PsxPresentationProvider s_pgpu_provider;
+static void *s_pgpu_provider_user;
+static uint64_t s_pgpu_output_version=1;
+static void *s_pgpu_output_fence;
+typedef GLenum (APIENTRY *PgpuClientWait)(void*,GLbitfield,uint64_t);
+static PgpuClientWait pgpu_client_wait;
+typedef struct PgpuCapture {
+    PsxPresentationSnapshotReady ready;
+    void *user;
+} PgpuCapture;
+static _Atomic unsigned s_pgpu_pending_captures;
 
 typedef void (APIENTRY *PgpuStencilFuncSeparate)(GLenum,GLenum,GLint,GLuint);
 typedef void (APIENTRY *PgpuStencilMaskSeparate)(GLenum,GLuint);
@@ -103,6 +115,28 @@ static PgpuVersion *pgpu_version(uint64_t id) {
         if(s_pgpu_versions[i].id==id && s_pgpu_versions[i].references)return &s_pgpu_versions[i];
     return NULL;
 }
+void psx_presentation_gpu_set_provider(PsxPresentationProvider provider,void *user) {
+    GL_RT_SYNC("presentation_provider");s_pgpu_provider=provider;s_pgpu_provider_user=user;
+}
+uint64_t psx_presentation_gpu_output_version(void) {
+    GL_RT_SYNC("presentation_output_version");return s_pgpu_output?s_pgpu_output_version:0;
+}
+int psx_presentation_gpu_output_ready(uint64_t version) {
+    GL_RT_SYNC("presentation_output_ready");
+    if(!s_pgpu_output || version!=s_pgpu_output_version || !s_pgpu_output_fence)return 0;
+    if(!pgpu_client_wait)pgpu_client_wait=(PgpuClientWait)SDL_GL_GetProcAddress("glClientWaitSync");
+    if(!pgpu_client_wait)return 0;
+    const GLenum result=pgpu_client_wait(s_pgpu_output_fence,0,0);
+    return result==0x911A || result==0x911C; /* ALREADY_SIGNALED / CONDITION_SATISFIED */
+}
+static int presentation_gpu_source(int x,int y,int w,int h,int repeated,int crop[4],
+    GLuint *fbo,GLuint *texture,int *scale) {
+    if(!s_pgpu_provider || !pgpu_available() || psx_openxr_session_active() ||
+        !s_pgpu_provider(s_pgpu_provider_user,x,y,w,h,repeated,crop) || !s_pgpu_output ||
+        crop[0]<0 || crop[1]<0 || crop[2]!=w || crop[3]!=h ||
+        crop[0]>VRAM_W-w || crop[1]>VRAM_H-h || s_pgpu_scale!=s_out_scale)return 0;
+    *fbo=s_pgpu_fbo;*texture=s_pgpu_color;*scale=s_pgpu_scale;return 1;
+}
 static void pgpu_uniform_i(GLuint p,const char *name,int value) {
     p_glUniform1i(p_glGetUniformLocation(p,name),value);
 }
@@ -119,24 +153,37 @@ static void pgpu_layout(GLuint *vao,GLuint *vbo,const unsigned *sizes,unsigned c
     }
 }
 static int pgpu_init(void) {
-    if(s_pgpu_ready)return 1;
+    if(s_pgpu_ready && s_pgpu_scale==s_out_scale)return 1;
     if(s_pgpu_init_failed)return 0;
-    s_pgpu_init_failed=1;
-    s_pgpu_geo_prog=build_program(GEO_VS,GEO_FS);
-    s_pgpu_tex_prog=build_program_ex(TEX_VS,TEX_FS,1);
-    if(!s_pgpu_geo_prog || !s_pgpu_tex_prog)return 0;
-    const unsigned textured[14]={2,2,4,2,2,1,1,4,1,1,1,4,1,1},flat[2]={2,4};
-    pgpu_layout(&s_pgpu_tex_vao,&s_pgpu_tex_vbo,textured,14,TEXV);
-    pgpu_layout(&s_pgpu_geo_vao,&s_pgpu_geo_vbo,flat,2,6);
-    s_pgpu_color=make_tex(GL_RGBA8,VRAM_W,VRAM_H,GL_RGBA,GL_UNSIGNED_BYTE);
-    p_glGenRenderbuffers(1,&s_pgpu_stencil);p_glBindRenderbuffer(PSXGL_RENDERBUFFER,s_pgpu_stencil);
-    p_glRenderbufferStorage(PSXGL_RENDERBUFFER,PSXGL_DEPTH24_STENCIL8,VRAM_W,VRAM_H);
+    if(!s_pgpu_ready) {
+        s_pgpu_init_failed=1;
+        s_pgpu_geo_prog=build_program(GEO_VS,GEO_FS);
+        s_pgpu_tex_prog=build_program_ex(TEX_VS,TEX_FS,1);
+        if(!s_pgpu_geo_prog || !s_pgpu_tex_prog)return 0;
+        const unsigned textured[14]={2,2,4,2,2,1,1,4,1,1,1,4,1,1},flat[2]={2,4};
+        pgpu_layout(&s_pgpu_tex_vao,&s_pgpu_tex_vbo,textured,14,TEXV);
+        pgpu_layout(&s_pgpu_geo_vao,&s_pgpu_geo_vbo,flat,2,6);
+        s_pgpu_maskset=p_glGetUniformLocation(s_pgpu_tex_prog,"u_maskset");
+        s_pgpu_semimode=p_glGetUniformLocation(s_pgpu_tex_prog,"u_semimode");
+        s_pgpu_semipass=p_glGetUniformLocation(s_pgpu_tex_prog,"u_semipass");
+        s_pgpu_ready=1;s_pgpu_init_failed=0;
+    }
+    const int scale=s_out_scale;
+    if(scale<1 || (s_gl_max_dim>0 && (scale>s_gl_max_dim/VRAM_W || scale>s_gl_max_dim/VRAM_H)))return 0;
+    GLuint color=make_tex(GL_RGBA8,VRAM_W*scale,VRAM_H*scale,GL_RGBA,GL_UNSIGNED_BYTE),stencil=0,fbo=0;
+    p_glGenRenderbuffers(1,&stencil);p_glBindRenderbuffer(PSXGL_RENDERBUFFER,stencil);
+    p_glRenderbufferStorage(PSXGL_RENDERBUFFER,PSXGL_DEPTH24_STENCIL8,VRAM_W*scale,VRAM_H*scale);
     p_glBindRenderbuffer(PSXGL_RENDERBUFFER,0);
-    if(!make_fbo(&s_pgpu_fbo,s_pgpu_color,s_pgpu_stencil))return 0;
-    s_pgpu_maskset=p_glGetUniformLocation(s_pgpu_tex_prog,"u_maskset");
-    s_pgpu_semimode=p_glGetUniformLocation(s_pgpu_tex_prog,"u_semimode");
-    s_pgpu_semipass=p_glGetUniformLocation(s_pgpu_tex_prog,"u_semipass");
-    s_pgpu_ready=1;
+    if(!make_fbo(&fbo,color,stencil)) {
+        if(fbo)p_glDeleteFramebuffers(1,&fbo);if(color)glDeleteTextures(1,&color);
+        if(stencil)p_glDeleteRenderbuffers(1,&stencil);return 0;
+    }
+    if(s_pgpu_output_fence && p_glDeleteSync)p_glDeleteSync(s_pgpu_output_fence);
+    s_pgpu_output_fence=NULL;s_pgpu_output=0;++s_pgpu_output_version;
+    if(s_pgpu_fbo)p_glDeleteFramebuffers(1,&s_pgpu_fbo);
+    if(s_pgpu_color)glDeleteTextures(1,&s_pgpu_color);
+    if(s_pgpu_stencil)p_glDeleteRenderbuffers(1,&s_pgpu_stencil);
+    s_pgpu_fbo=fbo;s_pgpu_color=color;s_pgpu_stencil=stencil;s_pgpu_scale=scale;
     return 1;
 }
 uint64_t psx_presentation_gpu_snapshot(void) {
@@ -169,6 +216,24 @@ uint64_t psx_presentation_gpu_snapshot(void) {
     v->epoch=s_pgpu_raw_epoch;v->id=s_pgpu_next_id++;v->references=1;
     pgpu_state_restore(&saved);return v->id;
 }
+void psx_presentation_gpu_acquire(void) {GL_RT_SYNC("presentation_owner");}
+static void presentation_gpu_capture_record(const void *payload) {
+    PgpuCapture capture;memcpy(&capture,payload,sizeof capture);
+    capture.ready(capture.user,psx_presentation_gpu_snapshot());
+    atomic_fetch_sub(&s_pgpu_pending_captures,1);
+}
+int psx_presentation_gpu_snapshot_async(PsxPresentationSnapshotReady ready,void *user) {
+    if(!ready)return 0;
+    if(rth_record_mode()) {
+        if(atomic_load(&s_pgpu_pending_captures)>=4)return 0;
+        PgpuCapture *capture=(PgpuCapture *)rt_cmd_begin(RTH_PRESENTATION_CAPTURE,0,sizeof(PgpuCapture));
+        if(!capture)return 0;
+        capture->ready=ready;capture->user=user;
+        atomic_fetch_add(&s_pgpu_pending_captures,1);rt_cmd_commit();rt_kick();return 1;
+    }
+    if(!pgpu_available())return 0;
+    ready(user,psx_presentation_gpu_snapshot());return 1;
+}
 int psx_presentation_gpu_retain(uint64_t id) {
     GL_RT_SYNC("presentation_retain");
     PgpuVersion *v=pgpu_version(id);if(!v || v->references==UINT32_MAX)return 0;
@@ -200,21 +265,36 @@ static int pgpu_validate(const PsxPresentationTriangle *tri,uint32_t count,
     return 1;
 }
 static void pgpu_program_state(GLuint p) {
-    p_glUseProgram(p);pgpu_uniform_f(p,"u_shift",0.5f-1.0f/64.0f);
+    p_glUseProgram(p);pgpu_uniform_f(p,"u_shift",0.5f/s_pgpu_scale-1.0f/64.0f);
     pgpu_uniform_f(p,"u_xoff",0);pgpu_uniform_f(p,"u_xhalf",512);
     pgpu_uniform_f(p,"u_xscale",1);pgpu_uniform_f(p,"u_xcenter",0);pgpu_uniform_f(p,"u_zbias",0);
     pgpu_uniform_i(p,"u_bcls",0);pgpu_uniform_i(p,"u_badd",0);
     pgpu_uniform_i(p,"u_dither",s_dither_mode);pgpu_uniform_i(p,"u_accurate",s_accurate_blend);
 }
-int psx_presentation_gpu_render(const PsxPresentationTriangle *tri,uint32_t count,
-    const PsxPresentationMaterial *mat,uint32_t materials) {
+static void pgpu_texture_vertices(float *vertices,const PsxPresentationTriangle *tri,const PsxPresentationMaterial *m) {
+    memset(vertices,0,3*TEXV*sizeof(float));
+    for(unsigned j=0;j<3;++j) {
+        const PsxPresentationDrawVertex *v=&tri->vertices[j];float *out=vertices+j*TEXV;
+        out[0]=(float)v->x;out[1]=(float)v->y;out[2]=v->uv[0];out[3]=v->uv[1];
+        for(unsigned k=0;k<3;++k)out[4+k]=v->color[k];out[7]=1;
+        out[8]=(m->texpage&15)*64;out[9]=((m->texpage>>4)&1)*256;
+        out[10]=m->clut_x;out[11]=m->clut_y;out[12]=(m->texpage>>7)&3;
+        out[13]=(m->flags&PSX_PRESENTATION_RAW_TEXTURE)!=0;
+        for(unsigned k=0;k<4;++k)out[14+k]=m->uv_limits[k];
+        out[18]=(m->semi<0?0:m->semi+1)+((m->flags&PSX_PRESENTATION_DITHER)?8:0);
+        out[19]=(tri->flags&PSX_PRESENTATION_AFFINE_UV)?0:(float)v->reciprocal_z;
+        out[20]=(float)m->texture_window;out[26]=m->filter;
+    }
+}
+static int pgpu_render(const PsxPresentationTriangle *tri,uint32_t count,
+    const PsxPresentationMaterial *mat,uint32_t materials,int strict) {
     GL_RT_SYNC("presentation_render");
     if(!pgpu_available() || !pgpu_validate(tri,count,mat,materials))return 0;
     PgpuState saved;pgpu_state_save(&saved);
     p_glBindBuffer(0x88EC,0);
     p_glActiveTexture(PSXGL_TEXTURE0);
     if(!pgpu_init()) { pgpu_state_restore(&saved);return 0; }
-    p_glBindFramebuffer(PSXGL_FRAMEBUFFER,s_pgpu_fbo);glViewport(0,0,VRAM_W,VRAM_H);
+    p_glBindFramebuffer(PSXGL_FRAMEBUFFER,s_pgpu_fbo);glViewport(0,0,VRAM_W*s_pgpu_scale,VRAM_H*s_pgpu_scale);
     glDisable(GL_SCISSOR_TEST);glDisable(GL_DEPTH_TEST);glDisable(GL_CULL_FACE);
     glDisable(0x8DB9);glDisable(0x8C89);glDepthMask(GL_FALSE);
     glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glStencilMask(0xFF);
@@ -222,24 +302,29 @@ int psx_presentation_gpu_render(const PsxPresentationTriangle *tri,uint32_t coun
     pgpu_program_state(s_pgpu_geo_prog);pgpu_program_state(s_pgpu_tex_prog);
     pgpu_uniform_i(s_pgpu_tex_prog,"u_vram",0);pgpu_uniform_i(s_pgpu_tex_prog,"u_palette",1);
     pgpu_uniform_i(s_pgpu_tex_prog,"u_hd_texture",2);pgpu_uniform_i(s_pgpu_tex_prog,"u_aniso",1);
+    int needs_stencil=strict;
+    for(uint32_t i=0;i<count && !needs_stencil;++i)
+        needs_stencil=(mat[tri[i].resource].flags&PSX_PRESENTATION_MASK_CHECK)!=0;
     for(uint32_t i=0;i<count;++i) {
         const PsxPresentationMaterial *m=&mat[tri[i].resource];
         if(m->clip[2]<m->clip[0] || m->clip[3]<m->clip[1])continue;
-        glEnable(GL_SCISSOR_TEST);glScissor(m->clip[0],m->clip[1],m->clip[2]-m->clip[0]+1,m->clip[3]-m->clip[1]+1);
+        glEnable(GL_SCISSOR_TEST);glScissor(m->clip[0]*s_pgpu_scale,m->clip[1]*s_pgpu_scale,
+            (m->clip[2]-m->clip[0]+1)*s_pgpu_scale,(m->clip[3]-m->clip[1]+1)*s_pgpu_scale);
         const int mask=(m->flags&PSX_PRESENTATION_MASK_SET)!=0,check=(m->flags&PSX_PRESENTATION_MASK_CHECK)!=0;
         if(m->flags&PSX_PRESENTATION_TEXTURED) {
-            float vertices[3*TEXV]={0};
-            for(unsigned j=0;j<3;++j) {
-                const PsxPresentationDrawVertex *v=&tri[i].vertices[j];float *out=vertices+j*TEXV;
-                out[0]=(float)v->x;out[1]=(float)v->y;out[2]=v->uv[0];out[3]=v->uv[1];
-                for(unsigned k=0;k<3;++k)out[4+k]=v->color[k];out[7]=1;
-                out[8]=(m->texpage&15)*64;out[9]=((m->texpage>>4)&1)*256;
-                out[10]=m->clut_x;out[11]=m->clut_y;out[12]=(m->texpage>>7)&3;
-                out[13]=(m->flags&PSX_PRESENTATION_RAW_TEXTURE)!=0;
-                for(unsigned k=0;k<4;++k)out[14+k]=m->uv_limits[k];
-                out[18]=(m->semi<0?0:m->semi+1)+((m->flags&PSX_PRESENTATION_DITHER)?8:0);
-                out[19]=(tri[i].flags&PSX_PRESENTATION_AFFINE_UV)?0:(float)v->reciprocal_z;
-                out[20]=(float)m->texture_window;out[26]=m->filter;
+            float vertices[128*3*TEXV];uint32_t batch=1;
+            pgpu_texture_vertices(vertices,&tri[i],m);
+            if(!needs_stencil && m->semi<0) {
+                // Preserve command order. When this entire private image has
+                // no destination-mask reads, opaque STP classes can share one
+                // draw; alpha still comes from the exact shader STP/mask bit.
+                while(batch<128 && i+batch<count) {
+                    const PsxPresentationMaterial *next=&mat[tri[i+batch].resource];
+                    if(!(next->flags&PSX_PRESENTATION_TEXTURED) || next->semi>=0 ||
+                        next->texture_version!=m->texture_version ||
+                        ((next->flags^m->flags)&PSX_PRESENTATION_MASK_SET) || memcmp(next->clip,m->clip,sizeof m->clip))break;
+                    pgpu_texture_vertices(vertices+batch*3*TEXV,&tri[i+batch],next);++batch;
+                }
             }
             p_glUseProgram(s_pgpu_tex_prog);
             p_glUniform1i(s_pgpu_maskset,mask);p_glUniform1i(s_pgpu_semimode,m->semi<0?0:m->semi);
@@ -247,7 +332,12 @@ int psx_presentation_gpu_render(const PsxPresentationTriangle *tri,uint32_t coun
             p_glActiveTexture(PSXGL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,version->tex);
             p_glActiveTexture(PSXGL_TEXTURE0+1);glBindTexture(GL_TEXTURE_2D,version->tex);
             p_glBindVertexArray(s_pgpu_tex_vao);p_glBindBuffer(PSXGL_ARRAY_BUFFER,s_pgpu_tex_vbo);
-            p_glBufferData(PSXGL_ARRAY_BUFFER,sizeof vertices,vertices,PSXGL_STREAM_DRAW);
+            p_glBufferData(PSXGL_ARRAY_BUFFER,batch*3*TEXV*sizeof(float),vertices,PSXGL_STREAM_DRAW);
+            if(!needs_stencil && m->semi<0) {
+                glDisable(GL_BLEND);glDisable(GL_STENCIL_TEST);
+                p_glUniform1i(s_pgpu_semipass,0);glDrawArrays(GL_TRIANGLES,0,(GLsizei)(batch*3));
+                i+=batch-1;continue;
+            }
             // Explicit STP classes keep the private stencil exact, including
             // destination masking, without deferred native-stencil state.
             glDisable(GL_BLEND);mask_stencil_ex(mask,check);
@@ -270,7 +360,13 @@ int psx_presentation_gpu_render(const PsxPresentationTriangle *tri,uint32_t coun
             mask_stencil_ex(mask,check);glDrawArrays(GL_TRIANGLES,0,3);
         }
     }
-    s_pgpu_output=1;pgpu_state_restore(&saved);return 1;
+    if(s_pgpu_output_fence && p_glDeleteSync)p_glDeleteSync(s_pgpu_output_fence);
+    s_pgpu_output_fence=p_glFenceSync?p_glFenceSync(0x9117,0):NULL;
+    ++s_pgpu_output_version;s_pgpu_output=1;pgpu_state_restore(&saved);return 1;
+}
+int psx_presentation_gpu_render(const PsxPresentationTriangle *tri,uint32_t count,
+    const PsxPresentationMaterial *mat,uint32_t materials) {
+    return pgpu_render(tri,count,mat,materials,0);
 }
 int psx_presentation_gpu_read_rgba(uint8_t *out,size_t capacity,int x,int y,int w,int h) {
     GL_RT_SYNC("presentation_read");
@@ -279,11 +375,28 @@ int psx_presentation_gpu_read_rgba(uint8_t *out,size_t capacity,int x,int y,int 
     PgpuState saved;pgpu_state_save(&saved);
     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,s_pgpu_fbo);p_glBindBuffer(0x88EB,0);
     glPixelStorei(PSXGL_PACK_ROW_LENGTH,0);glPixelStorei(GL_PACK_ALIGNMENT,1);
+    GLuint tex=0,fbo=0;
+    if(s_pgpu_scale>1) {
+        // Debug exports retain their native-pixel contract. Resolve only the
+        // requested rectangle; regular presentation samples the full surface.
+        tex=make_tex(GL_RGBA8,w,h,GL_RGBA,GL_UNSIGNED_BYTE);
+        if(!make_fbo(&fbo,tex,0)) {
+            if(fbo)p_glDeleteFramebuffers(1,&fbo);if(tex)glDeleteTextures(1,&tex);
+            pgpu_state_restore(&saved);return 0;
+        }
+        glDisable(GL_SCISSOR_TEST);p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,s_pgpu_fbo);
+        p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER,fbo);
+        p_glBlitFramebuffer(x*s_pgpu_scale,y*s_pgpu_scale,(x+w)*s_pgpu_scale,(y+h)*s_pgpu_scale,
+            0,0,w,h,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+        p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,fbo);x=y=0;
+    }
     glReadPixels(x,y,w,h,GL_RGBA,GL_UNSIGNED_BYTE,out);
+    if(fbo)p_glDeleteFramebuffers(1,&fbo);if(tex)glDeleteTextures(1,&tex);
     pgpu_state_restore(&saved);return 1;
 }
 static void presentation_gpu_shutdown(void) {
     if(s_ctx) {
+        if(s_pgpu_output_fence && p_glDeleteSync)p_glDeleteSync(s_pgpu_output_fence);
         for(unsigned i=0;i<PGPU_VERSIONS;++i) {
             if(s_pgpu_versions[i].fbo)p_glDeleteFramebuffers(1,&s_pgpu_versions[i].fbo);
             if(s_pgpu_versions[i].tex)glDeleteTextures(1,&s_pgpu_versions[i].tex);
@@ -301,7 +414,8 @@ static void presentation_gpu_shutdown(void) {
     memset(s_pgpu_versions,0,sizeof s_pgpu_versions);
     s_pgpu_tex_prog=s_pgpu_geo_prog=s_pgpu_tex_vao=s_pgpu_geo_vao=0;
     s_pgpu_tex_vbo=s_pgpu_geo_vbo=s_pgpu_color=s_pgpu_fbo=s_pgpu_stencil=0;
-    s_pgpu_output=s_pgpu_ready=s_pgpu_init_failed=0;++s_pgpu_raw_epoch;
+    s_pgpu_output=s_pgpu_ready=s_pgpu_init_failed=s_pgpu_scale=0;++s_pgpu_raw_epoch;
+    s_pgpu_output_fence=NULL;pgpu_client_wait=NULL;++s_pgpu_output_version;
     pgpu_stencil_func=NULL;pgpu_stencil_mask=NULL;pgpu_stencil_op=NULL;
 }
 int psx_presentation_gpu_write_png(const char *path,int x,int y,int w,int h) {
@@ -320,7 +434,9 @@ int psx_presentation_gpu_test_versions(void) {
     GL_RT_SYNC("presentation_version_test");
     if(!pgpu_available())return 0;
     const uint16_t original=gr_vram_read(960,496);
-    gr_vram_write(960,496,0x7FFF);const uint64_t white=psx_presentation_gpu_snapshot();
+    const uint16_t original_next=gr_vram_read(961,496);
+    gr_vram_write(961,496,0x001F);
+    gr_vram_write(960,496,0xFFFF);const uint64_t white=psx_presentation_gpu_snapshot();
     gr_vram_write(960,496,0x001F);const uint64_t red=psx_presentation_gpu_snapshot();
     int ok=white && red && white!=red;
     // Force cache turnover while two old versions remain retained.
@@ -344,8 +460,28 @@ int psx_presentation_gpu_test_versions(void) {
     ok=ok && psx_presentation_gpu_render(&triangle,1,&material,1) &&
         psx_presentation_gpu_read_rgba(b,sizeof b,20,20,1,1);
     ok=ok && a[0]>240 && a[1]>240 && a[2]>240 && b[0]>240 && b[1]<8 && b[2]<8;
+    // Ordered opaque batching must preserve overlapping STP0/STP1 texels,
+    // mask-set alpha and the strict fallback when any later draw reads masks.
+    PsxPresentationTriangle overlap[4];PsxPresentationMaterial mixed[2]={material,material};
+    mixed[0].texture_version=mixed[1].texture_version=white;
+    mixed[0].uv_limits[0]=mixed[1].uv_limits[0]=0;
+    mixed[0].uv_limits[2]=mixed[1].uv_limits[2]=1;
+    mixed[1].flags|=PSX_PRESENTATION_MASK_SET;
+    for(unsigned i=0;i<4;++i) {
+        overlap[i]=triangle;overlap[i].resource=i/2;
+        for(unsigned j=0;j<3;++j) {
+            overlap[i].vertices[j].x+=i*2;overlap[i].vertices[j].uv[0]=(float)(i&1);
+        }
+    }
+    uint8_t batched[48*40*4],strict[48*40*4];
+    for(unsigned masks=0;masks<2 && ok;++masks) {
+        if(masks)mixed[1].flags|=PSX_PRESENTATION_MASK_CHECK;
+        ok=pgpu_render(overlap,4,mixed,2,0) && psx_presentation_gpu_read_rgba(batched,sizeof batched,8,8,48,40) &&
+            pgpu_render(overlap,4,mixed,2,1) && psx_presentation_gpu_read_rgba(strict,sizeof strict,8,8,48,40) &&
+            !memcmp(batched,strict,sizeof batched);
+    }
     psx_presentation_gpu_release(white);psx_presentation_gpu_release(red);
-    gr_vram_write(960,496,original);flush_cpu_upload();
+    gr_vram_write(960,496,original);gr_vram_write(961,496,original_next);flush_cpu_upload();
     return ok;
 #else
     return 0;

@@ -342,6 +342,7 @@ void rt_cmd_commit(void) {
     R.unwoken_records++;
     wake_render(0);
 }
+void rt_kick(void) { if(rt_running())wake_render(1); }
 
 static void commit_marker(uint16_t flags) {
     uint64_t w = atomic_load_explicit(&R.wpos, memory_order_relaxed);

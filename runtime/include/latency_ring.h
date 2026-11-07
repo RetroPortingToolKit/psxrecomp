@@ -10,9 +10,9 @@
  * the same SWAP_BEGIN/SWAP_END boundary, so their latency is directly
  * comparable.  Query through the debug server ("latency" command).
  *
- * Single writer (the emu/vblank thread) marks; the debug-server IO thread reads
- * best-effort.  Timestamps are monotonic and a torn read only blurs one frame's
- * diagnostic, so no locking is used (matches the other always-on rings). */
+ * The emulation thread begins slots. Render-thread present records carry the
+ * originating slot, so a delayed swap cannot stamp a later input frame.
+ * Atomic fields allow best-effort diagnostic reads without a data race. */
 
 #include <stdint.h>
 
@@ -35,6 +35,11 @@ void latency_ring_frame_begin(void);
 /* Stamp the current frame slot at `stage` (no-op for LAT_INPUT — use
  * latency_ring_frame_begin for that). */
 void latency_ring_mark(LatencyStage stage);
+/* Stable input slot to retain in an asynchronous present record. UINT64_MAX
+ * means none. A replay override is thread-local; clear it after that present. */
+uint64_t latency_ring_current_frame(void);
+void latency_ring_replay_frame(uint64_t frame);
+int latency_ring_mark_frame(uint64_t frame,LatencyStage stage);
 
 /* Re-stamp the current slot's LAT_INPUT to now.  Used by the low-latency
  * present path, which re-samples the pad AFTER the pacer wait: the input the

@@ -1,5 +1,6 @@
 #include <cmath>
 #include "gte.h"
+#include "gte_presentation.h"
 #include "gte_projection_publication.hpp"
 #include "gte_view.h"
 #include "cpu_state.h"
@@ -660,6 +661,23 @@ static inline int gte_sxx(int32_t p){ int v=p&0xFFFF; return v>=0x8000? v-0x1000
 static inline int gte_syy(int32_t p){ int v=(p>>16)&0xFFFF; return v>=0x8000? v-0x10000:v; }
 
 static int32_t gte_h_scaled(const GTEState* gte);
+static bool s_presentation_capture;
+static struct {
+    GtePresentationProjection projection;
+    uint32_t xy,z;
+    bool valid;
+} s_presentation_fifo[3];
+extern "C" void gte_presentation_capture(int enabled) {
+    s_presentation_capture=enabled!=0;
+    std::memset(s_presentation_fifo,0,sizeof s_presentation_fifo);
+}
+extern "C" int gte_presentation_projection(unsigned fifo,uint32_t xy,uint32_t z,
+    GtePresentationProjection *out) {
+    if(!s_presentation_capture || fifo>=3 || !out)return 0;
+    const auto& p=s_presentation_fifo[fifo];
+    if(!p.valid || p.xy!=xy || p.z!=z)return 0;
+    *out=p.projection;return 1;
+}
 extern "C" int gpu_render_projective_enabled(void);
 static int32_t s_render_view[3];
 static PSXModRenderView s_render_pose;
@@ -1145,6 +1163,16 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0, uint32_t instr) 
     int64_t sx = sx16 >> 16;
     int64_t sy = sy16 >> 16;
     gte->push_sxy(sx, sy);
+    if(s_presentation_capture && !s_gte_replay_sandbox) {
+        s_presentation_fifo[0]=s_presentation_fifo[1];
+        s_presentation_fifo[1]=s_presentation_fifo[2];
+        auto& p=s_presentation_fifo[2];
+        const double h=gte_h_scaled(gte);
+        p.projection={h*double(x_num)/double(x_den),h,
+            gte->OFX/65536.0,gte->OFY/65536.0,std::max(1.0,h*.5)};
+        p.xy=uint32_t(gte->SXY[2]);p.z=gte->SZ[3];
+        p.valid=!proj_override && shift==12 && !lm;
+    }
     gpu_ws_note_gte_sxy((int16_t)(gte->SXY[2] & 0xFFFF),
                         (int16_t)((uint32_t)gte->SXY[2] >> 16));
     if (!s_gte_replay_sandbox) {

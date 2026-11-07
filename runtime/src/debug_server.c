@@ -11558,7 +11558,7 @@ extern uint64_t gl_renderer_pres_total(void);
 
 static void handle_gl_present_ring(int id, const char *json)
 {
-    static const char *path_name[6] = { "vram", "wide", "cpu", "blank", "interp", "stereo" };
+    static const char *path_name[7] = { "vram", "wide", "cpu", "blank", "interp", "stereo", "geometry" };
     int n = json_get_int(json, "n", 300);
     if (n < 1) n = 1;
     if (n > 4096) n = 4096;
@@ -11577,7 +11577,7 @@ static void handle_gl_present_ring(int id, const char *json)
         pos += snprintf(buf + pos, bufsz - pos,
                         "%s[%llu,%u,\"%s\",%u,[%d,%d,%d,%d],[%d,%d,%d,%d],[%u,%u,%u],%u,[%u,%u,%u,%u]]",
                         first ? "" : ",", (unsigned long long)s, e.frame,
-                        e.path < 6 ? path_name[e.path] : "?", e.t_ms,
+                        e.path < 7 ? path_name[e.path] : "?", e.t_ms,
                         e.dx, e.dy, e.w, e.h, e.lx, e.ly, e.lw, e.lh,
                         e.px_r, e.px_g, e.px_b, e.glerr,
                         e.src_r, e.src_g, e.src_b, e.src_valid);

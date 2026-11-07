@@ -542,6 +542,7 @@ enum {
     GL_PRES_BLANK = 3,   /* display-disabled black present                     */
     GL_PRES_INTERP = 4,  /* host-refresh interpolation sub-present              */
     GL_PRES_STEREO = 5,  /* simultaneous left/right side-by-side pair           */
+    GL_PRES_GEOMETRY = 6, /* private source-geometry presentation               */
 };
 
 typedef struct {

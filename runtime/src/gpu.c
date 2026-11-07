@@ -3361,6 +3361,37 @@ static int32_t ws_ui_y(int32_t y, int32_t ay, double s) {
     if (s >= 1.0) return y;
     return ay + (int32_t)lround((double)(y - ay) * s);
 }
+static int32_t ws_shared_ui_delta(void);
+int gpu_ws_copy_presented_ui(uint32_t source,const uint32_t *words,uint32_t count,
+    int32_t x[4],int32_t y[4],unsigned vertices,int rectangle) {
+    if(!words || !x || !y || vertices<3 || vertices>4 || !ws_auto_ui_squash || !ws_active())return 0;
+    const WsUiPrepassItem *it=NULL;
+    for(uint32_t i=0;i<ws_ui_prepass_count;++i)
+        if(ws_ui_prepass[i].src_addr==GPU_RAM_KEY(source)) {it=&ws_ui_prepass[i];break;}
+    if(!it || !ws_prepass_packet_matches(&it->packet_guard,words,count))return 0;
+    int32_t lo_x=x[0],hi_x=x[0],lo_y=y[0],hi_y=y[0];
+    for(unsigned i=1;i<vertices;++i) {
+        if(x[i]<lo_x)lo_x=x[i];
+        if(x[i]>hi_x)hi_x=x[i];
+        if(y[i]<lo_y)lo_y=y[i];
+        if(y[i]>hi_y)hi_y=y[i];
+    }
+    const int32_t X=ws_disp_x(),W=ws_disp_w(),H=ws_disp_h();
+    if((lo_x<=X && hi_x>=X+W && lo_y<=0 && hi_y>=H) || (hi_x-lo_x>W/2 && hi_y-lo_y>H/4))return 0;
+    const double s=ws_auto_ui_size();
+    const int delta=ws_shared_ui_delta();
+    if(rectangle && s>=1) {
+        const int32_t left=ws_scale_about(lo_x,it->group.anchor)+delta;
+        const int32_t width=(int32_t)ws_scale_len(hi_x-lo_x);
+        for(unsigned i=0;i<vertices;++i)x[i]=left+(x[i]==hi_x?width:0);
+    } else {
+        for(unsigned i=0;i<vertices;++i) {
+            x[i]=ws_ui_x(x[i],it->group.anchor,s)+delta;
+            y[i]=ws_ui_y(y[i],it->anchor_y,s);
+        }
+    }
+    return 1;
+}
 
 static int ws_shared_ui_packet(void) {
     uint32_t op = gp0_cmd_buf[0] >> 24;
