@@ -15,6 +15,8 @@ extern "C" void gte_set_fov_scale(int, int);
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <string>
 
 #define CHECK(expr) do { \
     if (!(expr)) { \
@@ -65,6 +67,10 @@ extern "C" void gpu_ws_note_gte_sxy(int32_t, int32_t) {}
 static int g_test_precise_nclip_enabled;
 static int g_test_render_projective;
 extern "C" int gpu_render_projective_enabled(void) { return g_test_render_projective; }
+static std::map<std::string, uint64_t> g_test_mod_counters;
+extern "C" void psx_mod_counter_add(const char *name, uint32_t delta) {
+    g_test_mod_counters[name] += delta;
+}
 extern "C" int gpu_ws_precise_nclip_enabled(void) {
     return g_test_precise_nclip_enabled;
 }
@@ -1524,6 +1530,7 @@ int main() {
     CHECK(pgxp_get_gte_projection(2,fractional.SXY[2],&exact));
     CHECK(std::fabs(exact.x-(10*1000+20))<.05);
     eye.precise=0;eye.translation[0]=0;gte_render_pose_set(&eye);
+    g_test_mod_counters.clear();
     for (int winding : {1,-1}) {
         GTEState face{};
         face.RT[0][0]=face.RT[1][1]=face.RT[2][2]=4096;
@@ -1534,6 +1541,12 @@ int main() {
         PSXRecomp::GTE::gte_nclip(&face,0x1400006u);
         CHECK((face.MAC0>0)-(face.MAC0<0)==winding);
     }
+    CHECK(g_test_mod_counters["vr.nclip.render.total"] == 2);
+    CHECK(g_test_mod_counters["vr.nclip.render.precise"] == 2);
+    CHECK(g_test_mod_counters["vr.nclip.render.miss"] == 0);
+    CHECK(g_test_mod_counters["vr.nclip.render.positive"] == 1);
+    CHECK(g_test_mod_counters["vr.nclip.render.negative"] == 1);
+    CHECK(g_test_mod_counters["vr.nclip.render.zero"] == 0);
     g_test_render_projective=0; eye={}; gte_render_pose_set(&eye);
     pgxp_set_projection_tracking(0);
     std::puts("PASS: canonical GTE register helpers match GTEState transfer oracle");
