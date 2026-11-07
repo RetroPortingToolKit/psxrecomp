@@ -979,6 +979,13 @@ if(BUILD_TESTING)
                     --emitter $<TARGET_FILE:psxrecomp-bios>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+        # Both compiler tiers must name the module's expected codegen hash.
+        add_test(
+            NAME bios_module_codegen_hash
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_module_codegen_hash.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
         # The tcc build of a BIOS module sees a BOM-stripped copy of the
         # include directory. That copy must hold the .c.inc fragments the
         # module's glue.c includes, or the tcc build stops at "not found".

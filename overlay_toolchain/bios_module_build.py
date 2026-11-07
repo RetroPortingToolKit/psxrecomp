@@ -151,6 +151,7 @@ def compile_module(sources: list[str], out: str, include_dirs: list[str],
                "-o", co.native_path(out)]
         for d in include_dirs:
             cmd.append("-I" + co.native_path(co._bom_free_incdir(d)))
+        cmd += co._tcc_bundle_args(tcc)
         env = None
     else:
         env, tc_dir = co._toolchain_env(gcc)

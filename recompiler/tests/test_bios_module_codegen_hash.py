@@ -63,6 +63,10 @@ def load_compile_module():
         _TCC_COMPAT_PREFIX = b''
         _TCC_BOMFREE_INC = {}
 
+        @staticmethod
+        def _tcc_bundle_args(tcc):
+            return ['-Bfixture-bundle', '-nostdinc']
+
         def __getattr__(self, name):
             return lambda *a, **k: None
 
@@ -125,6 +129,11 @@ def main():
             # The stale form: a module built without this define exports 0u on
             # any compiler without __has_include, which is the reported failure.
             assert '-DPSX_OVERLAY_CODEGEN_HASH=0x00000000u' not in cmd
+            if compiler == 'tcc':
+                assert '-Bfixture-bundle' in cmd and '-nostdinc' in cmd, (
+                    'a bundled Linux compiler must use its own headers/runtime')
+            else:
+                assert '-Bfixture-bundle' not in cmd
 
         # ---- the self-check COMPARES the hash, it does not just print it ----
         with open(BUILDER, encoding='utf-8') as f:
