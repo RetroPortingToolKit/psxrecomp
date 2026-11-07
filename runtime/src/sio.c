@@ -172,7 +172,9 @@ static uint8_t pad_supports_config[PSX_MAX_PLAYERS] = {
  * desync the game's pad driver -> phantom/garbage button reads). Instead the
  * host REQUESTS a type via pad_type_req[] and the change is applied atomically
  * only when the bus is idle (PAD_IDLE) and the pad is NOT in config mode. A
- * request raised during config is held until config exits. -1 = no request. */
+ * absolute request raised during config is held until config exits.
+ * -1 = no request; -2 = one manual Analog-button press, applied at idle
+ * even in config mode, or consumed by a game lock. */
 static int8_t pad_type_req[PSX_MAX_PLAYERS] = {
     PSX_PAD_INIT(-1)
 };
@@ -1181,6 +1183,21 @@ void sio_set_pad_analog(int slot, int enabled,
                      lx, ly, rx, ry);
 }
 
+void sio_reset_dualshock(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    pad_analog_device[slot] = SIO_PAD_DUALSHOCK;
+    pad_in_config[slot] = 0;
+    analog_mode_locked[slot] = 0;
+    pad_rumble_small[slot] = pad_rumble_large[slot] = 0;
+    memset(pad_rumble_map[slot], 0xFF, sizeof pad_rumble_map[slot]);
+    memset(pad_negcon_analog[slot], 0, sizeof pad_negcon_analog[slot]);
+    pad_jogcon_last_steering[slot] = 0;
+    pad_jogcon_motor_command[slot] = pad_jogcon_motor_strength[slot] = 0;
+    pad_buttons[slot] = 0xFFFFu;
+    sio_set_pad_config_capable(slot, 1);
+    sio_set_pad_type(slot, SIO_PAD_DIGITAL, 0x80, 0x80, 0x80, 0x80);
+}
+
 /* Per-frame stick update (does not touch the reported pad type). */
 void sio_set_pad_sticks(int slot, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
@@ -1206,6 +1223,23 @@ void sio_get_pad_negcon(int slot, uint8_t out[3]) {
 
 int sio_get_pad_mode_locked(int slot) {
     return (slot >= 0 && slot < PSX_MAX_PLAYERS) ? analog_mode_locked[slot] : 0;
+}
+
+int sio_get_pad_config_mode(int slot) {
+    return slot >= 0 && slot < PSX_MAX_PLAYERS ? pad_in_config[slot] : 0;
+}
+
+int sio_toggle_pad_mode(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS ||
+        !(pad_connected & (1u << slot)) || !pad_supports_config[slot] ||
+        analog_mode_locked[slot] || sio_tap_force_digital(slot) ||
+        pad_analog_device[slot] != SIO_PAD_DUALSHOCK ||
+        pad_analog[slot] > SIO_PAD_DUALSHOCK)
+        return 0;
+    /* -2 is a queued button press, distinct from a requested absolute mode.
+     * Two presses before the bus becomes idle cancel each other. */
+    pad_type_req[slot] = pad_type_req[slot] == -2 ? -1 : -2;
+    return 1;
 }
 
 /* Per-frame type request (the emulated controller type). The flip is
@@ -1329,6 +1363,15 @@ static void pad_process_byte(uint8_t tx_byte) {
      * mid-transaction. A request raised during config stays pending until exit. */
     if (pad_state == PAD_IDLE) {
         for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+            if (pad_type_req[s] == -2) {
+                /* A game lock consumes the press, including a lock acquired
+                 * after it was queued. Never replay it after unlocking. */
+                if (analog_mode_locked[s]) pad_type_req[s] = -1;
+                else {
+                    pad_commit_type(s, pad_analog[s] ^ 1u);
+                    pad_type_req[s] = -1;
+                }
+            }
             /* A game-LOCKED analog mode (0x44 ..03) ignores the physical analog
              * button — and our hybrid auto-flip IS that button — so a locked slot
              * holds the pending host request instead of applying it. A device

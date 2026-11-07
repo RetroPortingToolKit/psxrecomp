@@ -228,6 +228,9 @@ if(BUILD_TESTING)
     add_executable(mdec_snapshot_capacity_test tests/test_mdec_snapshot_capacity.c)
     target_include_directories(mdec_snapshot_capacity_test PRIVATE include src)
     add_test(NAME mdec_snapshot_capacity_test COMMAND mdec_snapshot_capacity_test)
+    add_executable(mdec_mono_packing_test tests/test_mdec_mono_packing.c src/mdec.c)
+    target_include_directories(mdec_mono_packing_test PRIVATE include)
+    add_test(NAME mdec_mono_packing_test COMMAND mdec_mono_packing_test)
     add_executable(mod_texture_banks_test tests/test_mod_texture_banks.c src/mod_texture_banks.c)
     target_include_directories(mod_texture_banks_test PRIVATE include)
     add_test(NAME mod_texture_banks_test COMMAND mod_texture_banks_test)
@@ -395,6 +398,11 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            add_test(NAME rfe_host_reads_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_host_reads.py --cc ${CMAKE_C_COMPILER})
+            add_test(NAME rfe_irq_context_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_irq_context.py --cc ${CMAKE_C_COMPILER})
+            add_test(NAME rfe_syscall_depth_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_syscall_depth.py --cc ${CMAKE_C_COMPILER})
+        endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             add_test(NAME display_ring_capture_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_ring_capture.py"
@@ -990,6 +998,17 @@ if(BUILD_TESTING)
     target_link_libraries(duckstation_texture_pack_test PRIVATE Threads::Threads)
     target_link_libraries(duckstation_texture_pack_test PRIVATE psx_texture_image_decode)
     add_test(NAME duckstation_texture_pack_test COMMAND duckstation_texture_pack_test)
+    # Exercise real discovery/decode (including its Unicode directory) with
+    # char8_t enabled, as in newer default consumer compiler dialects (#823).
+    add_executable(duckstation_texture_pack_cpp20_test
+        tests/test_duckstation_texture_pack.cpp
+        src/duckstation_texture_pack.cpp)
+    target_include_directories(duckstation_texture_pack_cpp20_test PRIVATE include)
+    set_target_properties(duckstation_texture_pack_cpp20_test PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+    target_link_libraries(duckstation_texture_pack_cpp20_test PRIVATE
+        Threads::Threads psx_texture_image_decode)
+    add_test(NAME duckstation_texture_pack_cpp20_test COMMAND duckstation_texture_pack_cpp20_test)
     add_executable(texture_image_decode_test tests/test_texture_image_decode.cpp)
     target_link_libraries(texture_image_decode_test PRIVATE psx_texture_image_decode)
     add_test(NAME texture_image_decode_test COMMAND texture_image_decode_test
@@ -1083,12 +1102,32 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME openxr_input_test COMMAND openxr_input_test)
 
+    add_executable(openxr_override_release_test
+        tests/test_openxr_override_release.c src/psx_openxr.c)
+    target_include_directories(openxr_override_release_test PRIVATE include)
+    target_compile_definitions(openxr_override_release_test PRIVATE
+        PSX_NO_DEBUG_TOOLS=1)
+    if(NOT MSVC)
+        target_link_libraries(openxr_override_release_test PRIVATE m)
+    endif()
+    add_test(NAME openxr_override_release_test
+             COMMAND openxr_override_release_test)
+
     add_executable(vr_pose_math_test tests/test_vr_pose_math.c src/vr_pose_math.c)
     target_include_directories(vr_pose_math_test PRIVATE include)
     if(NOT MSVC)
         target_link_libraries(vr_pose_math_test PRIVATE m)
     endif()
     add_test(NAME vr_pose_math_test COMMAND vr_pose_math_test)
+
+    add_executable(vr_geometry_math_test
+        tests/test_vr_geometry_math.c
+        src/vr_geometry_math.c)
+    target_include_directories(vr_geometry_math_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(vr_geometry_math_test PRIVATE m)
+    endif()
+    add_test(NAME vr_geometry_math_test COMMAND vr_geometry_math_test)
 
     add_executable(projection_scale_config_test
         tests/test_projection_scale_config.cpp src/projection_scale_config.cpp)
@@ -1388,6 +1427,25 @@ if(BUILD_TESTING)
         target_link_libraries(ws_screen_mask_test PRIVATE m)
     endif()
     add_test(NAME ws_screen_mask_test COMMAND ws_screen_mask_test)
+    add_executable(ws_reveal_edge_test tests/test_ws_reveal_edge.c)
+    target_include_directories(ws_reveal_edge_test PRIVATE include)
+    add_test(NAME ws_reveal_edge_test COMMAND ws_reveal_edge_test)
+    # Reveal-edge quads through the real GP0 flat/textured quad handlers.
+    add_executable(ws_reveal_edge_exec_test
+        tests/test_ws_reveal_edge_exec.c
+        src/psx_video_timing.c
+        src/gpu_timeline.c)
+    target_include_directories(ws_reveal_edge_exec_test PRIVATE include src)
+    if(UNIX)
+        target_link_libraries(ws_reveal_edge_exec_test PRIVATE m)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(ws_reveal_edge_exec_test PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(ws_reveal_edge_exec_test PRIVATE
+            $<IF:$<PLATFORM_ID:Darwin>,-Wl$<COMMA>-dead_strip,-Wl$<COMMA>--gc-sections>)
+    endif()
+    add_test(NAME ws_reveal_edge_exec_test COMMAND ws_reveal_edge_exec_test)
 
     add_executable(mod_gpu_dma_aperture_test
         tests/test_mod_gpu_dma_aperture.c
@@ -1461,6 +1519,9 @@ if(BUILD_TESTING)
     add_executable(spu_fidelity_test tests/test_spu_fidelity.c src/crc32.c)
     target_include_directories(spu_fidelity_test PRIVATE include)
     add_test(NAME spu_fidelity_test COMMAND spu_fidelity_test)
+    add_executable(spu_irq_enable_test tests/test_spu_irq_enable.c src/crc32.c)
+    target_include_directories(spu_irq_enable_test PRIVATE include)
+    add_test(NAME spu_irq_enable_test COMMAND spu_irq_enable_test)
     add_executable(spu_signed_nibble_test tests/test_spu_signed_nibble.c src/crc32.c)
     target_include_directories(spu_signed_nibble_test PRIVATE include)
     add_test(NAME spu_signed_nibble_test COMMAND spu_signed_nibble_test)
@@ -1627,6 +1688,16 @@ if(BUILD_TESTING)
         ../recompiler/lib/toml11)
     target_link_libraries(mod_packages_test PRIVATE chdr-static)
     add_test(NAME mod_packages_test COMMAND mod_packages_test)
+    add_executable(mod_command_startup_test tests/test_mod_command_startup.cpp)
+    target_include_directories(mod_command_startup_test PRIVATE include)
+    add_test(NAME mod_command_startup_test COMMAND mod_command_startup_test)
+    add_executable(mod_binding_options_test
+        tests/test_mod_binding_options.cpp src/mod_packages.cpp src/mod_media.cpp
+        src/iso_reader.cpp src/cue_sheet.cpp src/crc32.c src/psx_sha256.c)
+    target_include_directories(mod_binding_options_test PRIVATE
+        include ../recompiler/include ../recompiler/lib/toml11)
+    target_link_libraries(mod_binding_options_test PRIVATE chdr-static)
+    add_test(NAME mod_binding_options_test COMMAND mod_binding_options_test)
 
     add_executable(builtin_mod_manifests_test
         tests/test_builtin_mod_manifests.cpp
@@ -1916,6 +1987,10 @@ if(BUILD_TESTING)
     add_executable(cdrom_sector_fifo_test tests/test_cdrom_sector_fifo.c)
     target_include_directories(cdrom_sector_fifo_test PRIVATE include src)
     add_test(NAME cdrom_sector_fifo_test COMMAND cdrom_sector_fifo_test)
+
+    add_executable(cdrom_read_motor_test tests/test_cdrom_read_motor.c)
+    target_include_directories(cdrom_read_motor_test PRIVATE include src)
+    add_test(NAME cdrom_read_motor_test COMMAND cdrom_read_motor_test)
 
     add_executable(cdrom_getlocl_test tests/test_cdrom_getlocl.c)
     target_include_directories(cdrom_getlocl_test PRIVATE include src)
@@ -2394,6 +2469,10 @@ if(BUILD_TESTING)
     add_test(NAME spu_pitch_zero_test
              COMMAND spu_pitch_zero_test)
 
+    add_executable(spu_pitch_modulation_test tests/test_spu_pitch_modulation.c)
+    target_include_directories(spu_pitch_modulation_test PRIVATE include)
+    add_test(NAME spu_pitch_modulation_test COMMAND spu_pitch_modulation_test)
+
     # Guest-clocked SPU: accesses advance it to the current cycle (beads-eio.3.321).
     add_executable(spu_guest_clock_test tests/test_spu_guest_clock.c)
     target_include_directories(spu_guest_clock_test PRIVATE include)
@@ -2429,6 +2508,10 @@ if(BUILD_TESTING)
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_memory_debug_trace_guard.py
                              --cc ${CMAKE_C_COMPILER})
+            add_test(NAME memory_byte_recorder_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_memory_byte_recorder.py
+                             --cc ${CMAKE_C_COMPILER})
             # The frame-trace record path must stay allocation- and IO-free, or
             # it perturbs the frame it measures and no functional test notices.
             add_test(NAME frame_trace_guard_test
@@ -2459,6 +2542,7 @@ if(BUILD_TESTING)
                                  --compiler ${CMAKE_C_COMPILER}
                                  --recomp-net ${_RNET_ROOT})
             endif()
+            add_test(NAME overlay_abi_message_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_abi_message.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
@@ -2744,4 +2828,16 @@ if(BUILD_TESTING)
         target_link_libraries(audio_sink_resume_test PRIVATE m)
     endif()
     add_test(NAME audio_sink_resume_test COMMAND audio_sink_resume_test)
+endif()
+
+# Focused GPUSTAT fixture: whole-program optimization discards unused renderer paths.
+if(BUILD_TESTING AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    add_executable(gpu_texture_disable_status_test tests/test_gpu_texture_disable_status.c)
+    target_include_directories(gpu_texture_disable_status_test PRIVATE include)
+    target_compile_definitions(gpu_texture_disable_status_test PRIVATE PSX_ENABLE_BLOCK_CYCLES=1 PSX_NO_DEBUG_TOOLS=1)
+    target_compile_options(gpu_texture_disable_status_test PRIVATE -O2 -fwhole-program)
+    if(NOT WIN32)
+        target_link_libraries(gpu_texture_disable_status_test PRIVATE m)
+    endif()
+    add_test(NAME gpu_texture_disable_status_test COMMAND gpu_texture_disable_status_test)
 endif()

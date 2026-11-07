@@ -213,6 +213,17 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-11-05 — raw images and boundary follow-up.** The follow-up to
+  v0.3.6-alpha accounts for all 14 raw BINs and 167 overlay symbol
+  groups have explicit dispositions. Across 174 loaded images, seven false
+  entries are removed without losing a matched named entry. Corrected all 381
+  frame mismatches in 3,316 resident records and argument reads across branch/
+  load delays. Nineteen synthetic cases pass. Three frozen consumers retain
+  identical native code. Qualified 149 test passes, 13 existing failures and
+  3 disabled checks; the PGO path guard passes with short scratch. Windows/
+  Linux release checks and five standalone tool helps pass. Tracking: `beads-eio.3.441`,
+  `SYMBOL_BOUNDARY_OVERLAY_BURNDOWN.md`, `accuracy/symbol_boundary_results.json`.
+
 - **2026-11-05 — full symbol-corpus follow-up.** Audited all 115 archives,
   including private CPE envelopes. Against v0.3.5-alpha, 90 qualified reference
   views recover 377 additional executable-hash/address entry instances, with

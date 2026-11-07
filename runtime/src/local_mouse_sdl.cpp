@@ -178,6 +178,10 @@ bool psx_local_mouse_event(const SDL_Event& ev) {
         if (ev.motion.which == SDL_PEN_MOUSEID) return false;
 #endif
         state().motion(t, now, ev.motion.xrel, ev.motion.yrel);
+    } else if (ev.type == SDL_MOUSEWHEEL) {
+        if (!window_ || ev.wheel.windowID != SDL_GetWindowID(window_)) return false;
+        const double sign = ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0 : 1.0;
+        return state().wheel(t, now, sign * ev.wheel.x, sign * ev.wheel.y);
     } else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP) {
         if (ev.button.which == SDL_TOUCH_MOUSEID) return false;
 #if defined(PSX_SDL3)

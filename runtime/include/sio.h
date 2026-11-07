@@ -174,6 +174,14 @@ void sio_set_pad_negcon(int slot, uint8_t i, uint8_t ii, uint8_t l);
 void sio_get_pad_negcon(int slot, uint8_t out[3]);
 /* 1 while the game has locked the pad's analog mode (0x44 lock byte 0x03). */
 int sio_get_pad_mode_locked(int slot);
+/* Configuration replies carry stick axes even when analog mode is off. */
+int sio_get_pad_config_mode(int slot);
+/* Press the Analog button once. Returns 0 for a plain pad, locked mode or
+ * a special peripheral; accepted presses wait for an idle bus boundary. */
+int sio_toggle_pad_mode(int slot);
+/* Boot/device replacement: digital-start DualShock, unlocked, neutral inputs.
+ * The caller owns the port's connection and peripheral selection. */
+void sio_reset_dualshock(int slot);
 
 /* Connect / disconnect a logical pad (0 .. PSX_MAX_PLAYERS-1). By default no
  * pads are connected during initial BIOS boot. */

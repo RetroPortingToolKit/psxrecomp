@@ -70,6 +70,7 @@ extern "C" int gpu_ws_configured_x_reveal(void) { return 0; }
 extern "C" void gpu_ws_set_manual_view_anchor(int, int) {}
 extern "C" void gpu_ws_tag_hud_prim(uint32_t, int) {}
 extern "C" void gpu_ws_tag_screen_mask_quad(uint32_t) {}
+extern "C" void gpu_ws_tag_reveal_edge_quad(uint32_t, int) {}
 extern "C" { uint64_t s_frame_count = 0; }
 static uint64_t cycles;
 extern "C" uint64_t psx_get_cycle_count(void) { return cycles; }

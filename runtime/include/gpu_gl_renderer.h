@@ -582,6 +582,13 @@ int gl_renderer_pres_get(uint64_t seq, GlPresEvent *out);
  * GL_TIME_ELAPSED times (CPU-overhead independent). Returns the count. */
 int gl_renderer_perf_aggregate(int wide_filter, double out[18]);
 
+/* Newest completed asynchronous GPU timer sample (GL_TIME_ELAPSED), with the
+ * guest frame it bracketed. Used by the frame trace to record GPU work that is
+ * retrieved later than the CPU frame it belongs to. Returns 0 when no sample is
+ * available (timers disabled/unsupported), never a fabricated zero. */
+int gl_renderer_perf_latest_gpu(double *scene_ms, double *present_ms,
+                                uint32_t *age_frames);
+
 /* Native-wide mirror ablation (perf attribution, debug cmd gl_ws_ablate):
  * 0 = normal, 1 = skip the whole mirror pass (incl. wide_clear), 2 = full mirror
  * state churn without the draw calls, 3 = mirror draws stay on the hr FBO (no

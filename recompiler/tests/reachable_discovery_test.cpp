@@ -190,6 +190,40 @@ void check_scheduled_switch() {
 } // namespace
 
 int main() {
+    // Static addresses passed as data are not proof of callable entries.
+    // These format strings decode as ALU words with unused shift bits set,
+    // immediately before an ordinary global-load/frame prefix. Preserve a
+    // direct call to those same bytes: only heuristic promotion is restricted.
+    for (bool called_string : {false, true}) {
+        auto image = make_exe_buffer(0x1000);
+        for (size_t off = 0; off < 0x1000; off += 4u)
+            put32(image, 2048 + off, 0xFFFFFFFFu);
+        const std::vector<uint32_t> root = {
+            0x3C048001u, 0x24840580u, 0x3C058001u, 0x24A50584u,
+            jal(kLoad + 0x100u), 0u,
+            jal(kLoad + (called_string ? 0x580u : 0x588u)), 0u,
+            0x03E00008u, 0u};
+        for (size_t i = 0; i < root.size(); ++i)
+            put32(image, 2048 + i * 4u, root[i]);
+        put32(image, 2048 + 0x100u, 0x03E00008u);
+        put32(image, 2048 + 0x104u, 0u);
+        put32(image, 2048 + 0x580u, 0x000A7325u); // "%s\n\0"
+        put32(image, 2048 + 0x584u, 0x00732520u); // " %s\0"
+        const std::vector<uint32_t> body = {
+            0x3C028001u, 0x90450600u, 0x27BDFFE8u, 0xAFBF0010u,
+            0x8FBF0010u, 0u, 0x03E00008u, 0x27BD0018u};
+        for (size_t i = 0; i < body.size(); ++i)
+            put32(image, 2048 + 0x588u + i * 4u, body[i]);
+        auto exe = parse(image);
+        auto found = starts(PSXRecomp::FunctionAnalyzer(exe).analyze());
+        CHECK((found.count(kLoad + 0x580u) != 0) == called_string,
+              "noncanonical string words need independent call evidence");
+        CHECK(!found.count(kLoad + 0x584u),
+              "addressed format string is not a compiler prelude");
+        if (!called_string)
+            CHECK(found.count(kLoad + 0x588u), "real scheduled entry remains");
+    }
+
     auto check_prelude = [](const std::vector<uint32_t>& prefix,
                             bool accepted, bool called_frame = false) {
         auto image = make_exe_buffer(0x800);

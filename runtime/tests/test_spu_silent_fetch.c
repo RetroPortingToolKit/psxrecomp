@@ -102,7 +102,7 @@ int main(void) {
     voices[SPU_VOICE_COUNT].active = 0;
     voices[SPU_VOICE_COUNT].cur_addr = 0x1234;
     voices[SPU_VOICE_COUNT].sample_idx = SPU_BLOCK_SAMPLES;
-    CHECK(!voice_next_sample(SPU_VOICE_COUNT));
+    CHECK(!voice_next_sample(SPU_VOICE_COUNT, 0));
     CHECK(voices[SPU_VOICE_COUNT].cur_addr == 0x1234);
     spu_init(); stage(18, 0x1000, 0);
     spu_regs[reg_index(0x1F801DAA)] = 0xC000; /* silent clock runs with IRQ off */

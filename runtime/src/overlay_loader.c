@@ -6,6 +6,7 @@
 #include "crc32.h"
 #include "dirty_ram_interp.h"
 #include "interrupts.h"
+#include "mod_plugins.h"
 #include "debug_server.h"
 #include "psx_cycles.h"
 #include "overlay_unit_defer.h"
@@ -2743,9 +2744,10 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
      * (wrong ABI, or a different-flavor cache e.g. widescreen vs base) is
      * rejected so autocompile can replace it for THIS build. */
     if (abi != PSX_OVERLAY_ABI_TAG) {
-        loader_log("ABI/flavor mismatch in %s: dll=0x%X runtime=0x%X — rejecting "
-                   "without pathname deletion", dll_path, abi,
-                   PSX_OVERLAY_ABI_TAG);
+        /* Keep both tags visible when a long cache path truncates the log. */
+        loader_log("ABI/flavor mismatch: dll=0x%X runtime=0x%X — rejecting "
+                   "without pathname deletion: %s", abi, PSX_OVERLAY_ABI_TAG,
+                   dll_path);
         FreeLibrary(h);
         return 0;
     }
@@ -2890,9 +2892,10 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
     AbiFn abi_fn = (AbiFn)psx_overlay_posix_library_symbol(h, "overlay_abi");
     int abi = abi_fn ? abi_fn() : 0;
     if (abi != PSX_OVERLAY_ABI_TAG) {
-        loader_log("ABI/flavor mismatch in %s: dll=0x%X runtime=0x%X — rejecting "
-                   "without pathname deletion", dll_path, abi,
-                   PSX_OVERLAY_ABI_TAG);
+        /* Keep both tags visible when a long cache path truncates the log. */
+        loader_log("ABI/flavor mismatch: dll=0x%X runtime=0x%X — rejecting "
+                   "without pathname deletion: %s", abi, PSX_OVERLAY_ABI_TAG,
+                   dll_path);
         psx_overlay_posix_library_close(h);
         return 0;
     }
@@ -3940,6 +3943,13 @@ static int overlay_loader_dispatch_seg(CPUState *cpu, uint32_t addr) {
     const uint32_t phys = addr & 0x1FFFFFFFu;
     const uint32_t seg = addr & 0xE0000000u;
     if (psx_code_segment_index(addr) < 0) {
+        s_disp_interp++;
+        return 0;
+    }
+    /* Generated and interpreted backends both invoke configured function-entry
+     * hooks, but cached overlay shards predate that contract. Keep a hooked
+     * entry on the interpreter so native overlay execution cannot bypass it. */
+    if (psx_mod_function_entry_has_hook(addr)) {
         s_disp_interp++;
         return 0;
     }

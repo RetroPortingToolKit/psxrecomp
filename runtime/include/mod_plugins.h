@@ -90,6 +90,9 @@ uint32_t psx_mod_memory_address(const struct CPUState* cpu, uint32_t pc,
 int psx_mod_register_function_filter_plugin(
     const char* id, uint32_t address, PSXModFunctionFilterCallback callback);
 int psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+/* Backend routing guard for hooks above. Native overlay candidates must leave
+ * these entries to the interpreter so the hook runs exactly once. */
+int psx_mod_function_entry_has_hook(uint32_t address);
 /* Trusted game code (not a mod package) may hook guest functions for netplay
  * only. These are independent of the mod package plan, which every online
  * match clears, and run only while netplay is active; offline execution stays
@@ -426,6 +429,24 @@ void psx_mod_set_gte_sxy_tracking(int enabled);
  * Both services are render-only, word guarded and inert at native 4:3. */
 void psx_mod_tag_screen_mask_quad(uint32_t primitive);
 void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale);
+/* Frame pieces identified by their title's producer, P_TAG addresses: an
+ * axis-aligned flat quad (GP0 0x28-0x2B) or a textured quad (0x2C-0x2F)
+ * whose four UVs name one texel, such as a menu bar, divider line or tint
+ * panel. A requested outer vertical boundary that lies on or beyond the
+ * canonical display edge grows to the visible native-wide edge; interior
+ * boundaries stay put. Only the part outside the quad is drawn, right where
+ * the packet executes, with its colour, CLUT, texture page and blend, so a
+ * translucent piece never blends twice. Word guarded, expires after two
+ * frames, cleared on reset/load, inert at native 4:3 and in squash mode.
+ * edges is PSX_MOD_REVEAL_EDGE_LEFT, PSX_MOD_REVEAL_EDGE_RIGHT or both
+ * OR-ed together. A tagged quad bypasses automatic UI layout even when no
+ * band is drawn; an explicit HUD anchor on the same packet takes precedence
+ * over the tag. */
+enum {
+    PSX_MOD_REVEAL_EDGE_LEFT = 1,
+    PSX_MOD_REVEAL_EDGE_RIGHT = 2
+};
+void psx_mod_tag_reveal_edge_quad(uint32_t primitive, int edges);
 /* Exclude a known world packet from screen-space backdrop stretching, even
  * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
 void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
@@ -1371,7 +1392,8 @@ enum {
     PSX_MOD_MOUSE_ACQUIRED = 1,
     PSX_MOD_MOUSE_MOTION = 2,
     PSX_MOD_MOUSE_HOLD_PRESS = 3,
-    PSX_MOD_MOUSE_HOLD_RELEASE = 4
+    PSX_MOD_MOUSE_HOLD_RELEASE = 4,
+    PSX_MOD_MOUSE_WHEEL = 5 /* dx/dy = scroll detents; positive dy scrolls up */
 };
 typedef struct PSXModMouseEvent {
     uint32_t struct_size;

@@ -88,7 +88,7 @@ static void test_end_without_repeat_is_silent(void) {
     fill_block(0x310u, 0x00u, 0x77u);
     SpuVoice *v = stage_end_boundary(0x01u, repeat_addr);
 
-    int16_t sample = voice_next_sample(0);
+    int16_t sample = voice_next_sample(0, 0);
 
     CHECK(sample == 0, "END without REPEAT emits silence at the boundary");
     CHECK(v->env_level == 0, "END without REPEAT forces the envelope to zero");
@@ -105,7 +105,7 @@ static void test_end_without_repeat_is_silent(void) {
     CHECK(event.addr == repeat_addr,
           "END stop event reports the redirected repeat address");
 
-    (void)voice_next_sample(0);
+    (void)voice_next_sample(0, 0);
     CHECK(spu_event_total() == 1,
           "an inactive one-shot does not retrigger its END transition");
 }
@@ -116,7 +116,7 @@ static void test_end_with_repeat_keeps_playing(void) {
     fill_block(repeat_addr, 0x00u, 0x11u);
     SpuVoice *v = stage_end_boundary(0x03u, repeat_addr);
 
-    int16_t sample = voice_next_sample(0);
+    int16_t sample = voice_next_sample(0, 0);
 
     CHECK(sample != 0, "END with REPEAT remains audible");
     CHECK(v->env_level != 0, "END with REPEAT preserves the envelope");

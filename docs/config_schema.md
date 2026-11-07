@@ -1179,6 +1179,14 @@ has), and a title-allowed direct Rewind button (`psx_mod_allow_direct_shortcut`)
 is not claimed, so it reaches the game as if Rewind were off. The block clears
 at every mod/session reset; nothing changes for a title that never calls it.
 
+The host's controller shortcuts default to Select combinations (Rewind
+Select + R3, save-state menu Select + R1, fast forward Select + L1). A title
+that reads Select combinations itself, such as a soft-reset chord, sets
+`game.toml [controller] select_shortcuts = false`: those three then start
+unbound, and the launcher's reset to default leaves them unbound. A binding the
+player saves in `settings.toml [hotkeys]` still wins, and a title's
+`direct_shortcut` keeps its one-button default.
+
 A title that computes vibration but cannot send it over SIO to the presented
 pad (a NeGcon has no motors) can call `psx_mod_set_host_rumble(player, small,
 large)` every frame with DualShock motor values. The runtime drives the host

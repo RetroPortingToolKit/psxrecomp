@@ -868,6 +868,12 @@ if(BUILD_TESTING)
     target_link_libraries(jogcon_ffb_settings_test PRIVATE fmt)
     add_test(NAME jogcon_ffb_settings_test COMMAND jogcon_ffb_settings_test)
 
+    add_executable(select_shortcuts_config_test
+        tests/select_shortcuts_config_test.cpp src/config_loader.cpp src/ps1_exe_parser.cpp)
+    target_include_directories(select_shortcuts_config_test PRIVATE
+        include src lib/fmt/include lib/toml11)
+    target_link_libraries(select_shortcuts_config_test PRIVATE fmt)
+    add_test(NAME select_shortcuts_config_test COMMAND select_shortcuts_config_test)
     add_executable(required_disc_config_test
         tests/required_disc_config_test.cpp src/config_loader.cpp src/ps1_exe_parser.cpp)
     target_include_directories(required_disc_config_test PRIVATE
@@ -1350,6 +1356,11 @@ if(BUILD_TESTING)
         add_test(NAME analysis_reference_constants
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analysis_reference_constants.py
+                    --analyzer $<TARGET_FILE:psxrecomp-analyze>)
+
+        add_test(NAME analysis_signature_flow
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analysis_signature_flow.py
                     --analyzer $<TARGET_FILE:psxrecomp-analyze>)
 
         # test_aot_overlay_discovery.py had no add_test() entry at all. It runs

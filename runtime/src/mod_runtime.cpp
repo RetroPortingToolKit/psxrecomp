@@ -1,4 +1,6 @@
+#include "psx_path_utf8.h"
 #include "mod_runtime.h"
+#include "mod_command_registry.h"
 #include "host_launch_timing.h"
 #include "host_overlay.h"
 #include "cpu_state.h"
@@ -1057,10 +1059,10 @@ static bool texture_install_check(const ModPackage& package,const std::string& f
         if(resource.feature_id!=feature||resource.texture_game_id.empty())continue;
         auto path=state().manager.feature_resource_path(package.id,feature,resource.id);
         char resolved[4096]{},message[1024]{};
-        const std::string key=resource.texture_game_id+"\n"+path.u8string();
+        const std::string key=resource.texture_game_id+"\n"+psx_path::utf8(path);
         auto found=texture_install_status.find(key);
         if(fresh||found==texture_install_status.end()) {
-            bool ok=gpu_hd_textures_validate_install(path.u8string().c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
+            bool ok=gpu_hd_textures_validate_install(psx_path::utf8(path).c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
             found=texture_install_status.insert_or_assign(key,std::make_pair(ok,std::string(message))).first;
         }
         if(!found->second.first){error=found->second.second;return false;}
@@ -1099,7 +1101,7 @@ int feature_set_option_impl(const char* package_id, const char* feature_id,
             if(package)for(const auto& r:package->resources)if(r.feature_id==feature_id&&!r.texture_game_id.empty()) {
                 auto path=state().manager.feature_resource_path(package_id,feature_id,r.id);
                 char resolved[4096]{},message[1024]{};
-                if(!gpu_hd_textures_validate_install(path.u8string().c_str(),r.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)){error=message;return false;}
+                if(!gpu_hd_textures_validate_install(psx_path::utf8(path).c_str(),r.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)){error=message;return false;}
             }
         }
         return state().manager.set_feature_option(
@@ -1166,10 +1168,14 @@ int provider_option_get(void*, const char* package_id, int index,
     copy_text(out->default_value, sizeof(out->default_value), option.default_value);
     out->type = option.type == ModOptionType::Boolean ? RECOMP_MOD_OPTION_BOOLEAN :
                 option.type == ModOptionType::Choice ? RECOMP_MOD_OPTION_CHOICE :
+                option.type == ModOptionType::Binding ? RECOMP_MOD_OPTION_BINDING :
                                                        RECOMP_MOD_OPTION_INTEGER;
 #ifdef RECOMP_LAUNCHER_HAS_MOD_OPTION_TEXT
     if (option.type == ModOptionType::Decimal) out->type = RECOMP_MOD_OPTION_TEXT;
 #endif
+    out->slider = option.slider;
+    out->allow_wheel = option.allow_wheel;
+    out->display_divisor = option.display_divisor;
     out->min_value = option.min_value;
     out->max_value = option.max_value;
     out->step = option.step;
@@ -1331,10 +1337,14 @@ int provider_feature_option_get(void*, const char* package_id,
     out->type = option.type == ModOptionType::Boolean
         ? RECOMP_MOD_OPTION_BOOLEAN
         : option.type == ModOptionType::Choice
-            ? RECOMP_MOD_OPTION_CHOICE : RECOMP_MOD_OPTION_INTEGER;
+            ? RECOMP_MOD_OPTION_CHOICE : option.type == ModOptionType::Binding
+                ? RECOMP_MOD_OPTION_BINDING : RECOMP_MOD_OPTION_INTEGER;
 #ifdef RECOMP_LAUNCHER_HAS_MOD_OPTION_TEXT
     if (option.type == ModOptionType::Decimal) out->type = RECOMP_MOD_OPTION_TEXT;
 #endif
+    out->slider = option.slider;
+    out->allow_wheel = option.allow_wheel;
+    out->display_divisor = option.display_divisor;
     out->min_value = option.min_value;
     out->max_value = option.max_value;
     out->step = option.step;
@@ -1430,7 +1440,7 @@ int provider_feature_resource_get(void*, const char* package_id,
         copy_text(out->label, sizeof(out->label), resource.label);
         copy_text(out->description, sizeof(out->description),
                   resource.description);
-        copy_text(out->path, sizeof(out->path), path.u8string());
+        copy_text(out->path, sizeof(out->path), psx_path::utf8(path));
         copy_text(out->status, sizeof(out->status),
                   path.empty() ? "Not selected" :
                       (verified ? "Selected" : "Selected path is missing"));
@@ -1439,11 +1449,11 @@ int provider_feature_resource_get(void*, const char* package_id,
         copy_text(out->file_description, sizeof(out->file_description),
                   resource.file_description);
         if(!resource.texture_game_id.empty()) {
-            const std::string key=resource.texture_game_id+"\n"+path.u8string();
+            const std::string key=resource.texture_game_id+"\n"+psx_path::utf8(path);
             auto found=texture_install_status.find(key);
             if(found==texture_install_status.end()) {
                 char resolved[4096]{},message[1024]{};
-                bool ok=gpu_hd_textures_validate_install(path.u8string().c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
+                bool ok=gpu_hd_textures_validate_install(psx_path::utf8(path).c_str(),resource.texture_game_id.c_str(),resolved,sizeof resolved,message,sizeof message)!=0;
                 found=texture_install_status.emplace(key,std::make_pair(ok,std::string(message))).first;
             }
             verified=found->second.first;
@@ -3695,7 +3705,7 @@ extern "C" int psx_mod_current_resource_path(const char* resource_id,
             resource.feature_id != s.current_plugin->feature_id ||
             resource.id != resource_id)
             continue;
-        const std::string text = resource.path.u8string();
+        const std::string text = psx_path::utf8(resource.path);
         if (text.empty() || text.size() + 1 > (size_t)out_size) return 0;
         std::memcpy(out, text.c_str(), text.size() + 1);
         return 1;
@@ -3850,38 +3860,12 @@ size_t g_mod_counter_count = 0;
 uint64_t g_mod_counter_overflow = 0;
 }  // namespace
 
-namespace {
-struct ModCommand { char name[64]; PSXModCommandFn fn; };
-std::mutex g_mod_commands_lock;
-ModCommand g_mod_commands[16];
-int g_mod_command_count = 0;
-}  // namespace
-
 extern "C" int psx_mod_register_command(const char* name, PSXModCommandFn fn) {
-    if (!name || !name[0] || std::strlen(name) >= sizeof(g_mod_commands[0].name) || !fn) return 0;
-    std::lock_guard<std::mutex> lock(g_mod_commands_lock);
-    for (int i = 0; i < g_mod_command_count; ++i)
-        if (std::strcmp(g_mod_commands[i].name, name) == 0) { g_mod_commands[i].fn = fn; return 1; }
-    if (g_mod_command_count >= 16) return 0;
-    auto& entry = g_mod_commands[g_mod_command_count++];
-    std::memcpy(entry.name, name, std::strlen(name) + 1);
-    entry.fn = fn;
-    return 1;
+    return psx::mod_command_registry().add(name, fn);
 }
 
 extern "C" int psx_mod_run_command(const char* name, const char* args, char* reply, int cap) {
-    if (!reply || cap <= 0) return -1;
-    PSXModCommandFn fn = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_mod_commands_lock);
-        for (int i = 0; i < g_mod_command_count; ++i)
-            if (name && std::strcmp(g_mod_commands[i].name, name) == 0) fn = g_mod_commands[i].fn;
-    }
-    if (cap > 0) reply[0] = '\0';
-    if (!fn) return -1;
-    const int result = fn(args ? args : "", reply, cap);
-    reply[cap - 1] = '\0';
-    return result;
+    return psx::mod_command_registry().run(name, args, reply, cap);
 }
 
 extern "C" void psx_mod_counter_add(const char* name, uint32_t delta) {
@@ -3946,6 +3930,9 @@ extern "C" void psx_mod_anchor_hud_primitive_projected(uint32_t primitive, int e
 }
 extern "C" void psx_mod_tag_screen_mask_quad(uint32_t primitive) {
     gpu_ws_tag_screen_mask_quad(primitive);
+}
+extern "C" void psx_mod_tag_reveal_edge_quad(uint32_t primitive, int edges) {
+    gpu_ws_tag_reveal_edge_quad(primitive, edges);
 }
 extern "C" void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale) {
     gpu_ws_tag_radial_screen_mask_quad(primitive, scale);
@@ -4215,6 +4202,29 @@ extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     return game_netplay_function_entry(cpu, address);
 }
 
+static bool game_netplay_hooks_enabled() {
+    if (psx_netplay_active()) return true;
+    static const bool offline_probe = [] {
+        const char* e = std::getenv("PSX_GAME_FILTER_OFFLINE_PROBE");
+        return e && std::strcmp(e, "1") == 0;
+    }();
+    return offline_probe;
+}
+
+extern "C" int psx_mod_function_entry_has_hook(uint32_t address) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_function_entry_hooks) return 0;
+    const uint32_t key = function_entry_key(address);
+    auto has_key = [key](const auto& table) {
+        auto it = std::lower_bound(
+            table.begin(), table.end(), key,
+            [](const auto& hook, uint32_t value) { return hook.key < value; });
+        return it != table.end() && it->key == key;
+    };
+    return has_key(active_function_entry_hooks()) ||
+           (has_key(game_netplay_entry_hooks()) && game_netplay_hooks_enabled());
+}
+
 static int register_game_netplay_hook(uint32_t address,
                                       PSXModFunctionEntryCallback callback,
                                       PSXModFunctionFilterCallback filter) {
@@ -4249,14 +4259,7 @@ static int game_netplay_function_entry(CPUState* cpu, uint32_t address) {
     using namespace PSXRecompV4;
     const auto& table = game_netplay_entry_hooks();
     if (table.empty()) return 0;
-    if (!psx_netplay_active()) {
-        static int offline_probe = -1;
-        if (offline_probe < 0) {
-            const char* e = std::getenv("PSX_GAME_FILTER_OFFLINE_PROBE");
-            offline_probe = (e && std::strcmp(e, "1") == 0) ? 1 : 0;
-        }
-        if (!offline_probe) return 0;
-    }
+    if (!game_netplay_hooks_enabled()) return 0;
     const uint32_t key = function_entry_key(address);
     auto it = std::lower_bound(
         table.begin(), table.end(), key,

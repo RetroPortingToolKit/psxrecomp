@@ -247,6 +247,20 @@ static bool follows_return(const PS1Executable& exe, uint32_t start,
     return false;
 }
 
+static bool has_canonical_shift_field(uint32_t instr) {
+    if ((instr >> 26) != 0u || (instr & 0x7C0u) == 0u) return true;
+    switch (instr & 63u) {
+    case 0x00u: case 0x02u: case 0x03u: // fixed shifts use this field
+    case 0x0Cu: case 0x0Du:             // syscall/break carry a code here
+        return true;
+    default:
+        // Ignored/reserved operand bits may execute on hardware, but are not
+        // compiler-entry evidence. Format strings such as "%s\n" happen to
+        // decode as OR/ADD with nonzero shift fields beside real framed code.
+        return false;
+    }
+}
+
 static bool preprologue_window_is_valid(const PS1Executable& exe,
                                         uint32_t start_addr,
                                         uint32_t prologue_addr,
@@ -275,6 +289,7 @@ static bool preprologue_window_is_valid(const PS1Executable& exe,
         if (!word_opt.has_value()) return false;
         uint32_t instr = *word_opt;
 
+        if (!has_canonical_shift_field(instr)) return false;
         if (FunctionAnalyzer::is_branch_or_jump(instr)) return false;
         // Padding is not an entry, but a load-delay NOP inside a prelude is.
         if (instr == 0u && addr != start_addr) continue;
@@ -387,6 +402,49 @@ static bool pointer_target_has_near_prologue(const PS1Executable& exe,
         }
     }
     return false;
+}
+
+static void annotate_entry_frame(const PS1Executable& exe, Function& function) {
+    function.has_prologue = false;
+    function.stack_frame_size = 0;
+    auto word = exe.read_word(function.start_addr);
+    if (word && FunctionAnalyzer::is_prologue(*word, function.stack_frame_size)) {
+        function.has_prologue = true;
+        return;
+    }
+    // Entry discovery already recognizes compiler setup before allocation.
+    // Retain that frame information too, without scanning into another body
+    // or treating an arbitrary later stack adjustment as an entry prologue.
+    uint32_t frame = 0;
+    if (!function.is_data_section && pointer_target_has_near_prologue(
+            exe, function.start_addr, exe.load_address(), function.end_addr, frame)) {
+        word = exe.read_word(frame);
+        if (word)
+            function.has_prologue = FunctionAnalyzer::is_prologue(
+                *word, function.stack_frame_size);
+    }
+    if (function.has_prologue || function.is_data_section) return;
+    // An allocation in the first transfer's delay slot executes on both
+    // paths. Discovery intentionally rejects an outward pre-frame branch,
+    // but an already known entry can still report this unconditional frame.
+    for (uint32_t pc = function.start_addr + 4u;
+         pc < function.end_addr && pc - function.start_addr <= 512u; pc += 4u) {
+        auto allocation = exe.read_word(pc);
+        auto transfer = exe.read_word(pc - 4u);
+        int32_t size = 0;
+        if (!allocation || !transfer ||
+            !FunctionAnalyzer::is_prologue(*allocation, size)) continue;
+        const uint32_t op = *transfer >> 26;
+        const uint32_t rt = (*transfer >> 16) & 31u;
+        const bool branch_or_jump = op == 2u || (op >= 4u && op <= 7u) ||
+                                    (op == 1u && rt <= 1u);
+        if (branch_or_jump && (pc - 4u == function.start_addr ||
+            anchored_preprologue_is_valid(exe, function.start_addr, pc - 4u, false))) {
+            function.has_prologue = true;
+            function.stack_frame_size = size;
+            return;
+        }
+    }
 }
 
 uint32_t FunctionAnalyzer::find_function_start(uint32_t return_addr) {
@@ -843,7 +901,8 @@ static bool anchored_preprologue_is_valid(const PS1Executable& exe,
     }
     for (uint32_t pc = start; pc < frame; pc += 4u) {
         auto word = exe.read_word(pc);
-        if (!word || !FunctionAnalyzer::is_valid_mips_word(*word)) return false;
+        if (!word || !FunctionAnalyzer::is_valid_mips_word(*word) ||
+            !has_canonical_shift_field(*word)) return false;
         const uint32_t instr = *word;
         const uint32_t op = instr >> 26;
         // Exception-entry assembly and absolute-through-zero memory words
@@ -908,7 +967,8 @@ static bool pointer_target_is_leaf(const PS1Executable& exe,
     auto valid = [&](uint32_t pc) {
         auto word = exe.read_word(pc);
         return in_leaf(pc) && word &&
-               FunctionAnalyzer::is_valid_mips_word(*word) && preserves_frame(*word);
+               FunctionAnalyzer::is_valid_mips_word(*word) &&
+               has_canonical_shift_field(*word) && preserves_frame(*word);
     };
     while (!work.empty()) {
         uint32_t pc = work.front(); work.pop();
@@ -1978,16 +2038,8 @@ FunctionAnalysisResult FunctionAnalyzer::analyze_exact_entries(
             func.producer_hi = producer.second;
         }
 
-        auto first_instr = exe_.read_word(func.start_addr);
-        if (first_instr.has_value()) {
-            int32_t stack_size;
-            func.has_prologue = is_prologue(*first_instr, stack_size);
-            func.stack_frame_size = func.has_prologue ? stack_size : 0;
-            if (func.has_prologue) result.prologue_count++;
-        } else {
-            func.has_prologue = false;
-            func.stack_frame_size = 0;
-        }
+        annotate_entry_frame(exe_, func);
+        if (func.has_prologue) result.prologue_count++;
 
         func.has_epilogue = wr.jr_ra_count > 0;
         func.is_data_section = false;
@@ -2671,16 +2723,7 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
         func.size = func.end_addr - func.start_addr;
         func.name = fmt::format("func_{:08X}", func.start_addr);
 
-        // Check for prologue at start
-        auto first_instr = exe_.read_word(func.start_addr);
-        if (first_instr.has_value()) {
-            int32_t stack_size;
-            func.has_prologue = is_prologue(*first_instr, stack_size);
-            func.stack_frame_size = func.has_prologue ? stack_size : 0;
-        } else {
-            func.has_prologue = false;
-            func.stack_frame_size = 0;
-        }
+        annotate_entry_frame(exe_, func);
 
         // Check for jr $ra before end
         func.has_epilogue = false;

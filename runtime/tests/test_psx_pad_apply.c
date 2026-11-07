@@ -68,6 +68,7 @@ void memcard_flush(int card) { (void)card; }
 #define CTRL_SLOT       (1u << 13)
 
 #include "psx_netplay.h"
+#include "psx_stick_fold.h"
 
 static int failures;
 #define EXPECT(label, expected, actual) do {                                  \
@@ -105,8 +106,127 @@ static void fresh(void) {
     sio_set_pad_type(0, SIO_PAD_DIGITAL, 0x80, 0x80, 0x80, 0x80);
 }
 
+static void command(uint8_t cmd, uint8_t value, uint8_t lock) {
+    sio_write(SIO_CTRL, 0);
+    xchg(1); xchg(cmd); xchg(0); xchg(value); xchg(lock);
+    for (int i = 5; i < 9; ++i) xchg(0);
+    sio_write(SIO_CTRL, 0);
+}
+
 int main(void) {
     uint8_t a[9], b[9];
+
+#ifdef PSX_TEST_LOCAL_RETENTION
+    fresh();
+    sio_set_pad_config_capable(0, 1);
+    sio_set_pad_type(0, SIO_PAD_DUALSHOCK, 128, 128, 128, 128);
+    command(0x43, 1, 0);
+    command(0x44, 0, 2);
+    command(0x43, 0, 0);
+    PsxNetPad held = { 0xFFFFu, 0x80, 0x80, 0x80, 0x80, SIO_PAD_DUALSHOCK, 1 };
+    for (int i = 0; i < 100; ++i) PSX_TEST_LOCAL_INPUT(0, &held);
+    poll_bytes(b);
+    EXPECT("game.digital.mode.survives.100.host.samples", 0x41, b[1]);
+    return failures ? 1 : 0;
+#else
+    /* A local input sample never requests a mode. A digital-start DualShock
+     * still accepts game configuration and the Analog button. */
+    fresh();
+    sio_set_pad_config_capable(0, 1);
+    PsxNetPad local = { 0xFFFFu, 0x10, 0x80, 0x80, 0x80, SIO_PAD_DUALSHOCK, 1 };
+    psx_pad_update_input(0, &local);
+    poll_bytes(b);
+    EXPECT("local.digital.start", 0x41, b[1]);
+    EXPECT("local.toggle.accepted", 1, sio_toggle_pad_mode(0));
+    poll_bytes(b);
+    EXPECT("local.toggle.analog", 0x73, b[1]);
+    command(0x43, 1, 0);
+    command(0x44, 0, 2);
+    command(0x43, 0, 0);
+    for (int i = 0; i < 100; ++i) psx_pad_update_input(0, &local);
+    poll_bytes(b);
+    EXPECT("local.game.mode.survives.samples", 0x41, b[1]);
+    EXPECT("local.toggle.back.accepted", 1, sio_toggle_pad_mode(0));
+    poll_bytes(b);
+    EXPECT("local.toggle.back.analog", 0x73, b[1]);
+    command(0x43, 1, 0);
+    command(0x44, 1, 3);
+    command(0x43, 0, 0);
+    EXPECT("local.game.lock", 1, sio_get_pad_mode_locked(0));
+    EXPECT("local.locked.press.consumed", 0, sio_toggle_pad_mode(0));
+    command(0x43, 1, 0);
+    command(0x44, 1, 2);
+    command(0x43, 0, 0);
+    poll_bytes(b);
+    EXPECT("local.unlock.no.delayed.toggle", 0x73, b[1]);
+    EXPECT("local.digital.press", 1, sio_toggle_pad_mode(0));
+    poll_bytes(b);
+    EXPECT("local.back.digital", 0x41, b[1]);
+    local.buttons = psx_fold_left_stick_to_dpad(0xFFFFu, local.lx, local.ly, 3277);
+    psx_pad_update_input(0, &local);
+    poll_bytes(b);
+    EXPECT("local.digital.stick.left", 0x7F, b[3]);
+    sio_set_pad_config_capable(0, 0);
+    EXPECT("local.plain.pad.no.toggle", 0, sio_toggle_pad_mode(0));
+
+    fresh();
+    sio_set_pad_config_capable(0, 1);
+    xchg(1);
+    EXPECT("local.inflight.digital.id", 0x41, xchg(0x42));
+    EXPECT("local.inflight.press.queued", 1, sio_toggle_pad_mode(0));
+    EXPECT("local.inflight.mode.stable", 0, sio_get_pad_analog(0));
+    {
+        const uint32_t bytes = sio_snapshot_bytes();
+        uint8_t *image = (uint8_t*)malloc(bytes);
+        if (!image) return 1;
+        sio_snapshot_write(image);
+        EXPECT("local.pending.restore", 1, sio_snapshot_read(image, bytes));
+        free(image);
+    }
+    for (int i = 2; i < 9; ++i) xchg(0);
+    sio_write(SIO_CTRL, 0);
+    poll_bytes(b);
+    EXPECT("local.pending.restored.toggle", 0x73, b[1]);
+    sio_write(SIO_CTRL, 0);
+    EXPECT("local.two.presses.first", 1, sio_toggle_pad_mode(0));
+    EXPECT("local.two.presses.second", 1, sio_toggle_pad_mode(0));
+    poll_bytes(b);
+    EXPECT("local.two.presses.cancel", 0x73, b[1]);
+    command(0x43, 1, 0);
+    EXPECT("local.config.observed", 1, sio_get_pad_config_mode(0));
+    local.buttons = 0xFFFFu;
+    local.rx = 0x40;
+    psx_pad_update_input(0, &local);
+    EXPECT("local.config.press", 1, sio_toggle_pad_mode(0));
+    poll_bytes(b);
+    EXPECT("local.config.reply.stable", 0xF3, b[1]);
+    EXPECT("local.config.axes", 0x40, b[5]);
+    EXPECT("local.config.mode.changed", 0, sio_get_pad_analog(0));
+    command(0x43, 0, 0);
+    EXPECT("local.config.exit.observed", 0, sio_get_pad_config_mode(0));
+    poll_bytes(b);
+    EXPECT("local.config.exit.digital", 0x41, b[1]);
+    fresh();
+    sio_set_pad_type(0, SIO_PAD_JOGCON, 0x10, 0x20, 0x30, 0x40);
+    command(0x43, 1, 0);
+    command(0x44, 0, 3);
+    command(0x43, 0, 0);
+    EXPECT("replacement.old.lock", 1, sio_get_pad_mode_locked(0));
+    sio_reset_dualshock(0);
+    EXPECT("replacement.unlocked", 0, sio_get_pad_mode_locked(0));
+    EXPECT("replacement.digital", 0, sio_get_pad_analog(0));
+    EXPECT("replacement.config.off", 0, sio_get_pad_config_mode(0));
+    EXPECT("replacement.toggle.accepted", 1, sio_toggle_pad_mode(0));
+    poll_bytes(b);
+    EXPECT("replacement.dualshock.not.jogcon", 0x73, b[1]);
+    sio_set_pad_type(0, SIO_PAD_NEGCON, 0, 0, 0, 0);
+    sio_reset_dualshock(0);
+    poll_bytes(b);
+    EXPECT("replacement.negcon.to.digital", 0x41, b[1]);
+    EXPECT("replacement.buttons.released", 0xFF, b[3]);
+    EXPECT("replacement.negcon.toggle", 1, sio_toggle_pad_mode(0));
+    poll_bytes(b);
+    EXPECT("replacement.negcon.to.dualshock", 0x73, b[1]);
 
     /* A DualShock pad through the shared apply produces exactly the bytes of
      * the pre-NeGcon path (state + sticks + request). */
@@ -177,6 +297,7 @@ int main(void) {
     }
     fprintf(stderr, "psx_pad_apply: passed\n");
     return 0;
+#endif
 }
 
 int g_psx_render_pass_active;

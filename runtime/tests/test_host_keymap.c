@@ -35,6 +35,8 @@ int main(int argc, char **argv) {
           "either Shift+F5 quick loads");
     check(!host_keymap_match(HOST_KEYMAP_QUICK_LOAD, (int)SDLK_F5, 0),
           "plain F5 cannot load");
+    check(host_keymap_match(HOST_KEYMAP_ANALOG_MODE, (int)SDLK_F3, 0),
+          "Analog button defaults to F3");
     check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_l, mod_ctrl()),
           "menu primary matches recomp-ui Ctrl+L default");
     check(host_keymap_match(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_F10, 0),
