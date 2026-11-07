@@ -427,7 +427,8 @@ static inline int16_t chan_volume(uint16_t raw, const SweepEnv *sw) {
  * writes). `addr`/`len` describe the accessed byte range; the compare is at
  * 8-byte-unit granularity because that is the IRQ address register's unit. */
 static void spu_irq_check(uint32_t addr, uint32_t len) {
-    if (!(RREG(0x1F801DAAu) & 0x0040u)) return;   /* SPUCNT.6 IRQ enable */
+    /* IRQ9 needs both the unit and its IRQ enabled (SPUCNT.15 and .6). */
+    if ((RREG(0x1F801DAAu) & 0x8040u) != 0x8040u) return;
     if (len == 0) return;
     uint32_t target = RREG(0x1F801DA4u);          /* in 8-byte units */
     uint32_t a = addr & (SPU_RAM_SIZE - 1u);
