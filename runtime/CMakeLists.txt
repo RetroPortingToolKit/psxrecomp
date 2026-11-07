@@ -2456,6 +2456,7 @@ if(BUILD_TESTING)
                                  --compiler ${CMAKE_C_COMPILER}
                                  --recomp-net ${_RNET_ROOT})
             endif()
+            add_test(NAME overlay_abi_message_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_abi_message.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
