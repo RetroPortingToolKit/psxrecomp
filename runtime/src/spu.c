@@ -1131,7 +1131,8 @@ void spu_init(void) {
     s_shadow_tap_on = 0;
     s_shadow_tap_frame = 0;
     spu_shadow_reset();
-    s_clock_valid = 0;
+    s_clock = psx_get_cycle_count();
+    s_clock_valid = 1;
     s_clock_carry = 0;
     spu_output_flush();
 }
