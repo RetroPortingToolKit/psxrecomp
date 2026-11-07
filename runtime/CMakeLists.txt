@@ -2419,6 +2419,9 @@ if(BUILD_TESTING)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME replay_observation_compare_test
+                 COMMAND ${Python3_EXECUTABLE} -B
+                         ${PSXRECOMP_ROOT}/tools/tasreplays/test_stream_compare.py)
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC
            AND NOT CMAKE_CROSSCOMPILING)
             add_test(NAME audio_trace_pcm_guard_test
