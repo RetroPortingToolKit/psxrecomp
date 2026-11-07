@@ -4,6 +4,9 @@
 
 # PSXRecomp
 
+Local controller startup and the in-game Analog button are described in
+[Controller mode](docs/CONTROLLER_MODE.md).
+
 > ℹ️ **Note from mstan:** This repo and I are now part of [RetroPortingToolkit](https://retroportingtoolkit.com/). I remain a primary maintainer of psxrecomp alongside the team. [More info](https://1379.tech/forming-a-collective-retro-porting-toolkit/).
 
 **A beta static-recompilation framework for the PlayStation 1.** PSXRecomp
