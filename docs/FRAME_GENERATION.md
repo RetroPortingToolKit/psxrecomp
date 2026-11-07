@@ -32,10 +32,10 @@ independent display-rate scheduling is not implemented.
 
 Focused scene/draw, source-transport and title-producer checks cover identity,
 discontinuities, clipping and state preservation. Actual-game 60 FPS checks have
-qualified a limited 1x workload, including current-build save/load and matching
-guest fingerprints. A separate 3x GL fixture checks stereo restoration, native
-surface preservation and full-resolution geometry PNG export. Higher-resolution
-actual-game qualification, broader scene coverage, display-rate support and
+qualified opening-level movement, camera turns, actual jumps and current-build
+save/load at 3x, including matching Native/60 FPS guest fingerprints. A separate
+3x GL fixture checks stereo restoration, native
+surface preservation and full-resolution geometry PNG export. Broader scene coverage, display-rate support and
 remaining consumer migration are still open. No complete replacement release
 is claimed by these development checks.
 
