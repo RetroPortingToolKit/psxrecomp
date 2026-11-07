@@ -1546,6 +1546,10 @@ static uint32_t      g_p1_claim_latched = 0;
  * the launcher captures that action as one button and defaults it there. */
 static int           g_title_direct_shortcut = -1;
 static int           g_title_direct_button = -1;
+/* [controller] select_shortcuts = false: the title uses Select combinations
+ * itself, so the Select + button shortcuts start unbound (saved settings
+ * still win). */
+static int           g_title_select_shortcuts = 1;
 
 extern "C" int psx_mod_allow_direct_shortcut(uint32_t shortcut) {
     if (shortcut > PSX_MOD_SHORTCUT_FAST_FORWARD_TOGGLE) return 0;
@@ -8299,6 +8303,20 @@ static int* hotkey_pad_binding_slot(int shortcut) {
     case PSX_ASSIST_BIND_FAST_FORWARD: return &g_hotkey_pad_fast_forward;
     case PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE: return &g_hotkey_pad_fast_forward_toggle;
     default: return nullptr;
+    }
+}
+
+/* A shortcut's pad binding before the player picks one: the title's direct
+ * button, else its Select combination unless the title turned those off. */
+static int title_pad_default(int shortcut) {
+    if (shortcut == g_title_direct_shortcut)
+        return PSX_HOTKEY_PAD_BUTTON_COMBO((uint32_t)1u << g_title_direct_button);
+    if (!g_title_select_shortcuts) return 0;
+    switch (shortcut) {
+    case PSX_ASSIST_BIND_REWIND: return PSX_HOTKEY_PAD_SELECT_R3;
+    case PSX_ASSIST_BIND_SAVE_STATE_MENU: return PSX_HOTKEY_PAD_SELECT_R1;
+    case PSX_ASSIST_BIND_FAST_FORWARD: return PSX_HOTKEY_PAD_SELECT_L1;
+    default: return 0;
     }
 }
 
@@ -17011,21 +17029,19 @@ namespace {
         gi->assist_fast_forward_divisor = 10;
 #endif
 #if defined(RECOMP_LAUNCHER_HAS_DIRECT_ASSIST_BIND)
-        /* Title-declared direct shortcut: captured as one button, defaulted
-         * to the title's button; the other shortcuts keep their defaults. */
-        if (g_title_direct_shortcut >= 0) {
+        /* Title-declared defaults: a direct shortcut is captured as one
+         * button and defaulted to the title's button, and a title without
+         * Select shortcuts resets them to unbound. */
+        if (g_title_direct_shortcut >= 0 || !g_title_select_shortcuts) {
             /* recomp-ui copies RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS entries. */
             static int pad_defaults[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS];
             static const int key_defaults[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS] = {};
-            pad_defaults[PSX_ASSIST_BIND_REWIND] = PSX_HOTKEY_PAD_SELECT_R3;
-            pad_defaults[PSX_ASSIST_BIND_SAVE_STATE_MENU] = PSX_HOTKEY_PAD_SELECT_R1;
-            pad_defaults[PSX_ASSIST_BIND_FAST_FORWARD] = PSX_HOTKEY_PAD_SELECT_L1;
-            pad_defaults[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE] = 0;
-            pad_defaults[g_title_direct_shortcut] = PSX_HOTKEY_PAD_BUTTON_COMBO(
-                (uint32_t)1u << g_title_direct_button);
+            for (int i = 0; i < PSX_ASSIST_BIND_COUNT; ++i)
+                pad_defaults[i] = title_pad_default(i);
             gi->assist_default_pad_bind = pad_defaults;
             gi->assist_default_key_bind = key_defaults;
-            gi->assist_direct_pad_bind_action = g_title_direct_shortcut + 1;
+            if (g_title_direct_shortcut >= 0)
+                gi->assist_direct_pad_bind_action = g_title_direct_shortcut + 1;
         }
 #endif
         gi->has_skip_fmv = skip_fmv_offered_b ? 1 : 0;
@@ -18566,6 +18582,12 @@ int main(int argc, char** argv) {
                 std::fprintf(stdout, "psxrecomp: EXPERIMENTAL JogCon force "
                              "feedback on by the title's default (wheels "
                              "only; the player setting overrides)\n");
+            if (!gc.runtime.select_shortcuts) {
+                g_title_select_shortcuts = 0;
+                g_hotkey_pad_rewind = 0;
+                g_hotkey_pad_save_state_menu = 0;
+                g_hotkey_pad_fast_forward = 0;
+            }
             if (!gc.runtime.direct_shortcut.empty())
                 apply_title_direct_shortcut(gc.runtime.direct_shortcut,
                                             gc.runtime.direct_shortcut_button);
@@ -18815,11 +18837,11 @@ int main(int argc, char** argv) {
         if (us.has_hotkey_pad_rewind)
             g_hotkey_pad_rewind = normalize_hotkey_pad_binding(
                 us.hotkey_pad_rewind,
-                PSX_HOTKEY_PAD_SELECT_R3);
+                title_pad_default(PSX_ASSIST_BIND_REWIND));
         if (us.has_hotkey_pad_save_state_menu)
             g_hotkey_pad_save_state_menu = normalize_hotkey_pad_binding(
                 us.hotkey_pad_save_state_menu,
-                PSX_HOTKEY_PAD_SELECT_R1);
+                title_pad_default(PSX_ASSIST_BIND_SAVE_STATE_MENU));
         if (us.has_fast_forward_speed)
             g_fast_forward_preference = psx_fast_forward_preference(us.fast_forward_speed);
         if (us.has_fast_forward_mode)
@@ -18827,7 +18849,7 @@ int main(int argc, char** argv) {
         if (us.has_hotkey_pad_fast_forward)
             g_hotkey_pad_fast_forward = normalize_hotkey_pad_binding(
                 us.hotkey_pad_fast_forward,
-                PSX_HOTKEY_PAD_SELECT_L1);
+                title_pad_default(PSX_ASSIST_BIND_FAST_FORWARD));
         if (us.has_hotkey_pad_fast_forward_toggle)
             g_hotkey_pad_fast_forward_toggle = normalize_hotkey_pad_binding(
                 us.hotkey_pad_fast_forward_toggle, 0);
@@ -19600,13 +19622,13 @@ int main(int argc, char** argv) {
             ls.frame_interp_fps   = seed.frame_interpolation_fps;
             ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND] =
                 normalize_hotkey_pad_binding(seed.hotkey_pad_rewind,
-                    PSX_HOTKEY_PAD_SELECT_R3);
+                    title_pad_default(PSX_ASSIST_BIND_REWIND));
             ls.assist_pad_bind[PSX_ASSIST_BIND_SAVE_STATE_MENU] =
                 normalize_hotkey_pad_binding(seed.hotkey_pad_save_state_menu,
-                    PSX_HOTKEY_PAD_SELECT_R1);
+                    title_pad_default(PSX_ASSIST_BIND_SAVE_STATE_MENU));
             ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD] =
                 normalize_hotkey_pad_binding(seed.hotkey_pad_fast_forward,
-                    PSX_HOTKEY_PAD_SELECT_L1);
+                    title_pad_default(PSX_ASSIST_BIND_FAST_FORWARD));
             ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE] =
                 normalize_hotkey_pad_binding(seed.hotkey_pad_fast_forward_toggle, 0);
             ls.assist_fast_forward_multiplier = (int)std::lround(seed.fast_forward_speed * 10.0);
@@ -19940,15 +19962,15 @@ int main(int argc, char** argv) {
                 seed.frame_interpolation_fps = ls.frame_interp_fps;    seed.has_frame_interpolation_fps = true;
                 seed.hotkey_pad_rewind = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND],
-                    PSX_HOTKEY_PAD_SELECT_R3);
+                    title_pad_default(PSX_ASSIST_BIND_REWIND));
                 seed.has_hotkey_pad_rewind = true;
                 seed.hotkey_pad_save_state_menu = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_SAVE_STATE_MENU],
-                    PSX_HOTKEY_PAD_SELECT_R1);
+                    title_pad_default(PSX_ASSIST_BIND_SAVE_STATE_MENU));
                 seed.has_hotkey_pad_save_state_menu = true;
                 seed.hotkey_pad_fast_forward = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD],
-                    PSX_HOTKEY_PAD_SELECT_L1);
+                    title_pad_default(PSX_ASSIST_BIND_FAST_FORWARD));
                 seed.has_hotkey_pad_fast_forward = true;
                 seed.hotkey_pad_fast_forward_toggle = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE], 0);
@@ -20195,13 +20217,13 @@ int main(int argc, char** argv) {
                 g_video_aspect_den = seed.aspect_den;
                 g_hotkey_pad_rewind = seed.has_hotkey_pad_rewind
                     ? seed.hotkey_pad_rewind
-                    : PSX_HOTKEY_PAD_SELECT_R3;
+                    : title_pad_default(PSX_ASSIST_BIND_REWIND);
                 g_hotkey_pad_save_state_menu = seed.has_hotkey_pad_save_state_menu
                     ? seed.hotkey_pad_save_state_menu
-                    : PSX_HOTKEY_PAD_SELECT_R1;
+                    : title_pad_default(PSX_ASSIST_BIND_SAVE_STATE_MENU);
                 g_hotkey_pad_fast_forward = seed.has_hotkey_pad_fast_forward
                     ? seed.hotkey_pad_fast_forward
-                    : PSX_HOTKEY_PAD_SELECT_L1;
+                    : title_pad_default(PSX_ASSIST_BIND_FAST_FORWARD);
                 g_hotkey_pad_fast_forward_toggle = seed.has_hotkey_pad_fast_forward_toggle
                     ? seed.hotkey_pad_fast_forward_toggle
                     : 0;
@@ -22182,15 +22204,15 @@ soft_return_lobby:
         ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND] =
             normalize_hotkey_pad_binding(
                 g_hotkey_pad_rewind,
-                PSX_HOTKEY_PAD_SELECT_R3);
+                title_pad_default(PSX_ASSIST_BIND_REWIND));
         ls.assist_pad_bind[PSX_ASSIST_BIND_SAVE_STATE_MENU] =
             normalize_hotkey_pad_binding(
                 g_hotkey_pad_save_state_menu,
-                PSX_HOTKEY_PAD_SELECT_R1);
+                title_pad_default(PSX_ASSIST_BIND_SAVE_STATE_MENU));
         ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD] =
             normalize_hotkey_pad_binding(
                 g_hotkey_pad_fast_forward,
-                PSX_HOTKEY_PAD_SELECT_L1);
+                title_pad_default(PSX_ASSIST_BIND_FAST_FORWARD));
         ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE] =
             normalize_hotkey_pad_binding(g_hotkey_pad_fast_forward_toggle, 0);
         ls.aspect_index = (g_video_aspect_num * 9 == g_video_aspect_den * 21) ? 2
@@ -22554,15 +22576,15 @@ soft_return_lobby:
                 us.has_frame_interpolation_fps = true;
                 us.hotkey_pad_rewind = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND],
-                    PSX_HOTKEY_PAD_SELECT_R3);
+                    title_pad_default(PSX_ASSIST_BIND_REWIND));
                 us.has_hotkey_pad_rewind = true;
                 us.hotkey_pad_save_state_menu = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_SAVE_STATE_MENU],
-                    PSX_HOTKEY_PAD_SELECT_R1);
+                    title_pad_default(PSX_ASSIST_BIND_SAVE_STATE_MENU));
                 us.has_hotkey_pad_save_state_menu = true;
                 us.hotkey_pad_fast_forward = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD],
-                    PSX_HOTKEY_PAD_SELECT_L1);
+                    title_pad_default(PSX_ASSIST_BIND_FAST_FORWARD));
                 us.has_hotkey_pad_fast_forward = true;
                 us.hotkey_pad_fast_forward_toggle = normalize_hotkey_pad_binding(
                     ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE], 0);
@@ -22622,13 +22644,13 @@ soft_return_lobby:
             g_fast_forward_toggle_mode = ls.fast_forward_toggle_mode != 0;
             g_hotkey_pad_rewind = normalize_hotkey_pad_binding(
                 ls.assist_pad_bind[PSX_ASSIST_BIND_REWIND],
-                PSX_HOTKEY_PAD_SELECT_R3);
+                title_pad_default(PSX_ASSIST_BIND_REWIND));
             g_hotkey_pad_save_state_menu = normalize_hotkey_pad_binding(
                 ls.assist_pad_bind[PSX_ASSIST_BIND_SAVE_STATE_MENU],
-                PSX_HOTKEY_PAD_SELECT_R1);
+                title_pad_default(PSX_ASSIST_BIND_SAVE_STATE_MENU));
             g_hotkey_pad_fast_forward = normalize_hotkey_pad_binding(
                 ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD],
-                PSX_HOTKEY_PAD_SELECT_L1);
+                title_pad_default(PSX_ASSIST_BIND_FAST_FORWARD));
             g_hotkey_pad_fast_forward_toggle = normalize_hotkey_pad_binding(
                 ls.assist_pad_bind[PSX_ASSIST_BIND_FAST_FORWARD_TOGGLE], 0);
             switch (ls.aspect_index) {
