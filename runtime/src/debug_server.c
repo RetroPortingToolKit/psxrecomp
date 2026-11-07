@@ -9263,12 +9263,16 @@ static void handle_openxr_hands_override(int id,const char *json) {
     int e=!strcmp(hand,"left")?0:!strcmp(hand,"right")?1:-1;
     int k=!strcmp(pose,"grip")?0:!strcmp(pose,"aim")?1:-1;
     int active=json_get_int(json,"active",1),focused=json_get_int(json,"focused",1),flags=json_get_int(json,"flags",15);
-    if(e<0 || k<0 || active<0 || active>1 || focused<0 || focused>1 || flags<0 || flags>15) {
+    int age_ms=json_get_int(json,"age_ms",0);
+    int origin_valid=json_get_int(json,"origin_valid",-1);
+    if(e<0 || k<0 || active<0 || active>1 || focused<0 || focused>1 || flags<0 || flags>15 ||
+       age_ms<0 || age_ms>1000000 || origin_valid<-1 || origin_valid>1) {
         send_err(id,"invalid hand, pose, focus, activity or flags");return;
     }
     PSXModOpenXRHands s={0};s.struct_size=sizeof s;(void)psx_openxr_hands(&s);
     if(!s.synthetic){memset(&s,0,sizeof s);s.struct_size=sizeof s;s.origin_valid=1;s.origin_orientation_xyzw[3]=1;}
-    s.focused=(uint32_t)focused;s.predicted_time=0;
+    if(origin_valid>=0) s.origin_valid=(uint32_t)origin_valid;
+    s.focused=(uint32_t)focused;s.predicted_time=0;s.age_ms=(uint32_t)age_ms;
     PSXModTrackedPose *v=&s.pose[e][k];memset(v,0,sizeof *v);
     v->active=(uint32_t)active;v->flags=(uint32_t)flags;
     const char *pn[3]={"px_mm","py_mm","pz_mm"},*qn[4]={"qx","qy","qz","qw"};
@@ -9281,6 +9285,38 @@ static void handle_openxr_hands_override(int id,const char *json) {
         int value=json_get_int(json,qn[i],i==3?1000000:0);
         if(value < -1000000 || value > 1000000){send_err(id,"quaternion components must be -1000000..1000000");return;}
         v->orientation_xyzw[i]=(float)value/1000000;
+    }
+    const int sentinel=-100001;
+    const int ox=json_get_int(json,"ox_mm",sentinel);
+    const int oy=json_get_int(json,"oy_mm",sentinel);
+    const int oz=json_get_int(json,"oz_mm",sentinel);
+    if(ox!=sentinel || oy!=sentinel || oz!=sentinel) {
+        if(ox==sentinel || oy==sentinel || oz==sentinel ||
+           ox<-100000 || ox>100000 || oy<-100000 || oy>100000 ||
+           oz<-100000 || oz>100000) {
+            send_err(id,"origin position must provide all ox_mm, oy_mm, oz_mm in -100000..100000");
+            return;
+        }
+        s.origin_position_m[0]=(double)ox/1000;
+        s.origin_position_m[1]=(double)oy/1000;
+        s.origin_position_m[2]=(double)oz/1000;
+    }
+    const int qsentinel=1000001;
+    const int oqx=json_get_int(json,"oqx",qsentinel);
+    const int oqy=json_get_int(json,"oqy",qsentinel);
+    const int oqz=json_get_int(json,"oqz",qsentinel);
+    const int oqw=json_get_int(json,"oqw",qsentinel);
+    if(oqx!=qsentinel || oqy!=qsentinel || oqz!=qsentinel || oqw!=qsentinel) {
+        if(oqx==qsentinel || oqy==qsentinel || oqz==qsentinel || oqw==qsentinel ||
+           oqx<-1000000 || oqx>1000000 || oqy<-1000000 || oqy>1000000 ||
+           oqz<-1000000 || oqz>1000000 || oqw<-1000000 || oqw>1000000) {
+            send_err(id,"origin quaternion must provide all oqx/oqy/oqz/oqw in -1000000..1000000");
+            return;
+        }
+        s.origin_orientation_xyzw[0]=(double)oqx/1000000;
+        s.origin_orientation_xyzw[1]=(double)oqy/1000000;
+        s.origin_orientation_xyzw[2]=(double)oqz/1000000;
+        s.origin_orientation_xyzw[3]=(double)oqw/1000000;
     }
     if(!psx_openxr_hands_override(&s)){send_err(id,"invalid synthetic pose numbers");return;}
     handle_openxr_hands(id,json);
