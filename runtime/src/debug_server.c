@@ -7189,12 +7189,14 @@ static void handle_spu_voices(int id, const char *json)
         "\"ctrl\":\"0x%04X\",\"main_l\":\"0x%04X\",\"main_r\":\"0x%04X\","
         "\"kon\":\"0x%06X\",\"koff\":\"0x%06X\","
         "\"pmon\":\"0x%06X\",\"non\":\"0x%06X\",\"eon\":\"0x%06X\","
+        "\"noise_lfsr\":\"0x%04X\","
         "\"endx\":\"0x%06X\",\"active_mask\":\"0x%06X\","
         "\"voices\":[",
         id,
         g.ctrl, g.main_vol_l, g.main_vol_r,
         g.kon_latch, g.koff_latch,
         g.pmon, g.non, g.eon,
+        g.noise_lfsr,
         g.endx, g.active_mask);
     if (n > 0) off += (size_t)n;
 

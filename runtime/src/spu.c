@@ -10,8 +10,8 @@
  * SPU RAM IRQ address compare (I_STAT bit 9, SPUSTAT bit 6).
  *
  * The reverb/noise/sweep/IRQ model is a CLEAN-ROOM implementation from
- * hardware documentation only (psx-spx register map + documented algorithm);
- * no emulator source was consulted. Points where the documentation is silent
+ * hardware documentation and black-box output qualification;
+ * no emulator implementation source was consulted. Points where the documentation is silent
  * are flagged inline with "DOCUMENTED-GAP" comments so the Beetle runtime
  * oracle comparison can quantify them from OUTPUT, not source.
  */
@@ -93,7 +93,7 @@ static uint8_t irq_flag;
  * divider derivation. Voices with their NON bit set (0x1F801D94/96) output
  * the live LFSR value in place of their interpolated ADPCM sample. */
 static uint16_t noise_lfsr;   /* self-seeds from 0 via the xor-1 parity term */
-static int32_t  noise_timer;
+static int32_t  noise_timer; /* packed divider phase (14 bits) + step phase (3 bits) */
 
 /* ---- Reverb engine state ------------------------------------------------
  * The engine runs at 22050 Hz (one step per TWO 44100 Hz output frames).
@@ -623,29 +623,26 @@ static void decode_block(SpuVoice *v) {
  * (bit15 XOR bit12 XOR bit11 XOR bit10 XOR 1) and the register shifts left.
  * The XOR-with-1 makes the all-zero state self-starting.
  *
- * Clock rate derivation from SPUCNT bits 8-13 (step = 4 + bits8-9,
- * shift = bits10-13): a down-counter is decremented by `step` once per
- * 44100 Hz sample cycle and the LFSR clocks on underflow, whereupon the
- * counter is topped up by (0x20000 >> shift) — reloading twice if a single
- * reload does not clear the deficit (only reachable at the largest shifts).
- * shift=0 gives the slowest clock (lowest frequency), shift=15 the fastest,
- * and the 4..7 step scales the rate within a shift octave.
- *
- * DOCUMENTED-GAP: this divider wiring is the least precisely documented part
- * of the noise unit; the shift/step semantics above are the documented
- * reading, but the exact counter width/reload behaviour is a candidate for
- * oracle verification against Beetle's audio OUTPUT. */
+ * The clock has a 14-bit divider followed by an eighth-step accumulator.
+ * Pack both phases in noise_timer's existing 17-bit range. The divider keeps
+ * only phase representable at the selected frequency, and shift 15 saturates
+ * at one noise update per output sample without advancing fractional step.
+ * Scaling a reload countdown by the selected shift leaves its residual in the
+ * OLD shift's units, holding noise for over 400 ms on a slow-to-fast change.
+ * A single ideal-rate accumulator also loses the divider's quantized edges.
+ * Both distinctions are qualified against black-box reference PCM. */
 static void noise_clock(uint16_t ctrl) {
-    int     step   = 4 + ((ctrl >> 8) & 3);
-    int     shift  = (ctrl >> 10) & 0x0F;
-    int32_t reload = (int32_t)(0x20000u >> shift);
-    noise_timer -= step;
-    if (noise_timer < 0) {
+    unsigned shift = (ctrl >> 10) & 0x0F;
+    unsigned step = shift == 15u ? 4u : 4u + ((ctrl >> 8) & 3u);
+    uint32_t phase = (uint32_t)noise_timer;
+    uint32_t quantum = 1u << shift;
+    uint32_t divider = ((phase & 0x3FFFu) & ~(quantum - 1u)) + quantum;
+    uint32_t count = ((phase >> 14) & 7u) + (divider >> 14) * step;
+    noise_timer = (int32_t)((divider & 0x3FFFu) | ((count & 7u) << 14));
+    if (count >= 8u) {
         uint16_t parity = (uint16_t)(((noise_lfsr >> 15) ^ (noise_lfsr >> 12) ^
                                       (noise_lfsr >> 11) ^ (noise_lfsr >> 10) ^ 1u) & 1u);
         noise_lfsr = (uint16_t)((noise_lfsr << 1) | parity);
-        noise_timer += reload;
-        if (noise_timer < 0) noise_timer += reload;  /* worst case: step 7, reload 4 */
     }
 }
 
