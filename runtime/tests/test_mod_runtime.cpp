@@ -2192,6 +2192,9 @@ int main(int argc, char** argv) {
     check(psx_game_register_netplay_function_filter(
               0x80005000u, test_game_netplay_filter) == 1,
           "trusted game netplay filter must register");
+    check(!psx_mod_function_entry_has_hook(0x80004000u) &&
+              !psx_mod_function_entry_has_hook(0xA0005000u),
+          "inactive game netplay hooks must not divert native execution");
     CPUState game_cpu{};
     psx_mod_function_entry(&game_cpu, 0x80004000u);
     game_cpu.gpr[31] = 0x80006000u;
@@ -2201,6 +2204,11 @@ int main(int argc, char** argv) {
           "game netplay hook must not run offline");
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
     test_netplay_active = 1;
+    check(psx_mod_function_entry_has_hook(0x80004000u) &&
+              psx_mod_function_entry_has_hook(0xA0004000u) &&
+              psx_mod_function_entry_has_hook(0xA0005000u) &&
+              !psx_mod_function_entry_has_hook(0x80004004u),
+          "active game netplay hooks must route both code aliases only");
     psx_mod_function_entry(&game_cpu, 0xA0004000u);
     check(game_netplay_entry_hits == 1 && g_psx_mod_function_entry_hooks == 2,
           "game hook must survive netplay mod clear and match code aliases");
@@ -2212,6 +2220,9 @@ int main(int argc, char** argv) {
     check(game_netplay_entry_hits == 1,
           "game hook must ignore other addresses");
     test_netplay_active = 0;
+    check(!psx_mod_function_entry_has_hook(0xA0004000u) &&
+              !psx_mod_function_entry_has_hook(0x80005000u),
+          "stopped game netplay hooks must restore native execution");
     psx_mod_function_entry(&game_cpu, 0x80004000u);
     check(game_netplay_entry_hits == 1,
           "game hook must disarm when netplay stops");
