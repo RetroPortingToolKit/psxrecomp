@@ -2743,9 +2743,10 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
      * (wrong ABI, or a different-flavor cache e.g. widescreen vs base) is
      * rejected so autocompile can replace it for THIS build. */
     if (abi != PSX_OVERLAY_ABI_TAG) {
-        loader_log("ABI/flavor mismatch in %s: dll=0x%X runtime=0x%X — rejecting "
-                   "without pathname deletion", dll_path, abi,
-                   PSX_OVERLAY_ABI_TAG);
+        /* Keep both tags visible when a long cache path truncates the log. */
+        loader_log("ABI/flavor mismatch: dll=0x%X runtime=0x%X — rejecting "
+                   "without pathname deletion: %s", abi, PSX_OVERLAY_ABI_TAG,
+                   dll_path);
         FreeLibrary(h);
         return 0;
     }
@@ -2890,9 +2891,10 @@ static int load_overlay_dll(const char *dll_path, ManFn *man, int man_n, int dll
     AbiFn abi_fn = (AbiFn)psx_overlay_posix_library_symbol(h, "overlay_abi");
     int abi = abi_fn ? abi_fn() : 0;
     if (abi != PSX_OVERLAY_ABI_TAG) {
-        loader_log("ABI/flavor mismatch in %s: dll=0x%X runtime=0x%X — rejecting "
-                   "without pathname deletion", dll_path, abi,
-                   PSX_OVERLAY_ABI_TAG);
+        /* Keep both tags visible when a long cache path truncates the log. */
+        loader_log("ABI/flavor mismatch: dll=0x%X runtime=0x%X — rejecting "
+                   "without pathname deletion: %s", abi, PSX_OVERLAY_ABI_TAG,
+                   dll_path);
         psx_overlay_posix_library_close(h);
         return 0;
     }
