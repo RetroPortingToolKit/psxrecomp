@@ -1,6 +1,6 @@
 # Symbol boundary and overlay follow-up
 
-Owner issue: `beads-eio.3.441`. Baseline: v0.3.6-alpha,
+Baseline: v0.3.6-alpha,
 `d9605697e25ee244fd9ea3d200c8ceb92ca1d08d`.
 
 The previous pass scored PS-X EXE/CPE entries. This pass evaluates raw loaded
@@ -68,28 +68,3 @@ failures. Original symbols, names and code remain private. Known MND layouts:
 [psx-spx](https://psx-spx.consoledev.net/dev/ps1/cdr/cdromfileformats/executables/).
 Load-delay behavior:
 [R3000 specification notes](https://psx-spx.consoledev.net/cpuspecifications/).
-
-## Future-session handoff (owner request, 2026-11-05)
-
-Leave [PR #828](https://github.com/RetroPortingToolKit/psxrecomp/pull/828) open.
-The owner requested validation/review and merge in a future session; merge and
-release are deferred. This request is not merge approval. Keep `beads-eio.3.441`
-open until the approved merge and next framework release are delivered.
-
-Implementation commit: `4ee1bb6fe7fe51d4906cfead3c69b83a18b59dc8`.
-Worktree: `G:/psxrecomp-symbol-followup-20261105/source`, branch
-`fix/symbol-boundaries-overlays-20261105`. The final qualification and this
-handoff add documentation only. Private evidence, current CLI package and
-cleanup notes are in `G:/psxrecomp-symbol-followup-20261105/RETENTION.txt`.
-
-The automated validation above is already complete; reuse it. In the future
-session, fetch the PR/base heads, review this evidence and resolve any concrete
-findings. Repeat affected checks only if code/base changes or an unresolved
-finding justifies it. Previously cleared games retain identical native code;
-do not relaunch them for a routine duplicate check. Preserve the older task's
-owner-played saves/settings and live dependencies.
-
-After the owner explicitly approves the merge, merge the reviewed head and
-deliver the next framework release through the established GitHub channel,
-retaining normal release gates. Verify the current next version then; the
-prepared local release notes are a draft, not a published release.

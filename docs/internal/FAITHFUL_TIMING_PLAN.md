@@ -213,8 +213,8 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
-- **2026-11-05 — raw images and boundary follow-up.** Owner authorized the next
-  corpus burndown after v0.3.6-alpha. All 14 raw BINs and 167 overlay symbol
+- **2026-11-05 — raw images and boundary follow-up.** The follow-up to
+  v0.3.6-alpha accounts for all 14 raw BINs and 167 overlay symbol
   groups have explicit dispositions. Across 174 loaded images, seven false
   entries are removed without losing a matched named entry. Corrected all 381
   frame mismatches in 3,316 resident records and argument reads across branch/
