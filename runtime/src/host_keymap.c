@@ -88,6 +88,8 @@ static void add_bind(HostKeymapAction action, int keycode, int scancode, int mod
 }
 
 static void apply_defaults(void) {
+    if (want_default(HOST_KEYMAP_ANALOG_MODE))
+        add_bind(HOST_KEYMAP_ANALOG_MODE, (int)SDLK_F3, (int)SDL_SCANCODE_F3, 0);
     if (want_default(HOST_KEYMAP_FULLSCREEN)) {
         add_bind(HOST_KEYMAP_FULLSCREEN, (int)SDLK_RETURN, (int)SDL_SCANCODE_RETURN, KMOD_ALT);
         add_bind(HOST_KEYMAP_FULLSCREEN, (int)SDLK_f, (int)SDL_SCANCODE_F, KMOD_CTRL);
@@ -182,6 +184,7 @@ static HostKeymapAction action_for_key(const char *name) {
     if (ieq(name, "QuickLoad")) return HOST_KEYMAP_QUICK_LOAD;
     if (ieq(name, "Scanlines")) return HOST_KEYMAP_SCANLINES;
     if (ieq(name, "TurboToggle")) return HOST_KEYMAP_TURBO_TOGGLE;
+    if (ieq(name, "AnalogMode")) return HOST_KEYMAP_ANALOG_MODE;
     if (ieq(name, "OpenLauncher")) return HOST_KEYMAP_OPEN_LAUNCHER;
     if (ieq(name, "CaptureMark")) return HOST_KEYMAP_CAPTURE_MARK;
     return HOST_KEYMAP_ACTION_COUNT;

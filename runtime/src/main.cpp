@@ -486,6 +486,7 @@ static int g_offline_pad_count = 2;
 /* Set when [controller] lock_mode pins every seat to digital — blocks the
  * DualShock-on-tap hack from settings.toml / Lobby Settings / match_caps. */
 static int g_force_digital_pads = 0;
+static bool g_controller_mode_locked = false;
 /* Offline seat ceiling from game.toml players, optionally capped at 2 when
  * the launcher Multitap toggle is off (3+ player titles). Netplay ignores
  * this and arms multitap whenever session slot_count > 2. */
@@ -5977,8 +5978,8 @@ static void update_controller_rumble(void) {
     }
 }
 
-/* The pad type a mode reports before any input has been sampled (boot /
- * hotplug). analog pins DualShock; digital starts as a plain digital pad. */
+/* Initial wire mode at boot/hotplug. Configuration capability is selected
+ * separately, so a DualShock can start digital without becoming a plain pad. */
 static int pad_mode_boot_analog(int mode) {
     return mode == PSXRecompV4::PAD_MODE_ANALOG ? 1 : 0;
 }
@@ -6002,6 +6003,31 @@ static int effective_player_mode(const PlayerInput& p) {
     return p.mode;
 }
 
+/* Local DualShock mode changes are owned by the controller. Explicit title
+ * presentation, special peripherals and synchronized input keep their own
+ * existing contracts. */
+static bool live_pad_mode(int s) {
+    const PlayerInput& p = g_players[s];
+#ifndef PSX_NO_DEBUG_TOOLS
+    if (debug_server_get_pad_type_override() >= 0) return false;
+#endif
+    return !g_controller_mode_locked && !p.steering_wheel &&
+        !g_mod_controller_policy[s].callback &&
+        g_mod_controller_mode_override[s] < 0 &&
+        !mod_controller_source_present((uint32_t)s) &&
+        mod_pad_transform_initial_type((uint32_t)s) < 0 &&
+        !sio_pad_on_multitap(s) && !psx_netplay_active() &&
+        !psx_selfcheck_input_locked() && !psx_start_consumer_enabled();
+}
+
+static int sampled_pad_mode(int s) {
+    /* Configuration packets carry axes too; do not fold those axes into
+     * digital buttons while the game is configuring the controller. */
+    return sio_get_pad_analog(s) == SIO_PAD_DUALSHOCK || sio_get_pad_config_mode(s)
+        ? (int)PSXRecompV4::PAD_MODE_ANALOG
+        : (int)PSXRecompV4::PAD_MODE_DIGITAL;
+}
+
 /* Pad mode for the SIO seat this sample will drive. Multitap taps stay digital
  * unless the DualShock-on-tap hack (sio_get_multitap_analog) is armed. */
 static int effective_player_mode_for_sio(const PlayerInput& p, int sio_slot) {
@@ -6018,17 +6044,15 @@ static int assert_sio_pad_profile(int s, bool dev_here) {
     const PlayerInput& p = g_players[s];
     const int mode = effective_player_mode_for_sio(p, s);
     const ModControllerPresentationPolicy& policy = g_mod_controller_policy[s];
-    const int boot_mode = policy.callback ? policy.initial_mode : mode;
+    const int boot_mode = live_pad_mode(s) ? (int)PSXRecompV4::PAD_MODE_DIGITAL
+        : (policy.callback ? policy.initial_mode : mode);
     sio_set_pad_connected(s, (p.kind != 0 || dev_here) ? 1 : 0);
-    /* DIGITAL mode == a plain digital controller that ignores the DualShock
-     * config-mode commands (real SCPH-1080 behaviour); ANALOG or an
-     * explicitly config-capable mod policy == a config-capable DualShock.
-     * A digital pad that wrongly answered 0x43 sent Tomba 2's pad driver
-     * down the config path -> phantom 0x00 reads.
-     * Multitap taps are always digital (see sio_pad_on_multitap). */
+    /* A local DualShock stays config-capable while digital. Explicit title
+     * locks and mod policies can still select a plain digital controller.
+     * Multitap taps retain their separate capability policy. */
     sio_set_pad_config_capable(
         s, policy.callback ? policy.config_capable
-                           : (p.steering_wheel ||
+                           : (live_pad_mode(s) || p.steering_wheel ||
                               mode != PSXRecompV4::PAD_MODE_DIGITAL));
     return boot_mode;
 }
@@ -6038,6 +6062,12 @@ static int assert_sio_pad_profile(int s, bool dev_here) {
  * While delay-sync netplay is active, SIO connection/type are owned by
  * psx_netplay (session slots stay plugged); only refresh host SDL handles. */
 static void refresh_player_devices(void) {
+    struct Presentation {
+        int source = -1, device = -1;
+        SDL_JoystickID instance = 0;
+        bool automatic = false;
+    };
+    static Presentation presented[PSX_MAX_PLAYERS];
     psx_local_mouse_reset();
     const int netplay = psx_netplay_active();
     for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
@@ -6058,8 +6088,16 @@ static void refresh_player_devices(void) {
                 p.guid, active_guid))
             close_player(p);
         if (p.kind == 2) open_player(p, s);
-        if (netplay) continue;
+        if (netplay || psx_selfcheck_input_locked()) continue;
+        const bool automatic = live_pad_mode(s);
+        const int device = p.steering_wheel ? SIO_PAD_JOGCON : SIO_PAD_DUALSHOCK;
+        /* An unrelated hotplug must not reset another controller's mode. */
+        if (automatic && presented[s].automatic && presented[s].source == p.kind &&
+            presented[s].device == device && presented[s].instance == p.instance)
+            continue;
+        presented[s] = { p.kind, device, p.instance, automatic };
         const int boot_mode = assert_sio_pad_profile(s, false);
+        if (automatic) { sio_reset_dualshock(s); continue; }
         const int boot_type = pad_type_boot_for_slot(s, p, boot_mode);
         if (boot_type == SIO_PAD_DUALSHOCK || boot_type == SIO_PAD_JOGCON)
             sio_set_pad_config_capable(s, 1);
@@ -6810,7 +6848,8 @@ static int capture_host_layer_pad(PsxNetPad* out, uint16_t word,
                                   bool host_view, int present_sio_slot = 0) {
     const int present = present_sio_slot >= 0 && present_sio_slot < PSX_MAX_PLAYERS
         ? present_sio_slot : 0;
-    const int mode = effective_player_mode_for_sio(g_players[0], present);
+    const int mode = live_pad_mode(present) ? sampled_pad_mode(present)
+        : effective_player_mode_for_sio(g_players[0], present);
     const bool analog = mode != PSXRecompV4::PAD_MODE_DIGITAL;
     const bool sticks = analog || host_view;
     out->buttons = host_layer_release_claimed(word, g_p1_claimed_buttons);
@@ -6856,18 +6895,13 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     const bool dev_here = (dev_any_input_enabled() && s == 0);
     if (p.kind == 0 && !dev_here) return 0;  /* no device in this port */
 
-    /* Resolve the pad type this frame FIRST — the effective analog/digital
-     * state gates how the left stick is read for BOTH the button word and the
-     * analog axes below. An assigned device keeps its configured mode (a
-     * launcher-selected analog DualShock stays analog, so its input path / SIO
-     * handshake cadence is preserved exactly). A P1 with no assigned device
-     * keeps the game's resolved mode while dev-any-input merges the keyboard and
-     * all connected controllers. */
+    /* Mapping follows the live controller mode for ordinary local play. */
     /* One source set, consumed by the presentation policy, the button merge and the
      * stick fold below — see pad_sources_for(). */
     const PadSources src = pad_sources_for(p, dev_here);
 
-    const int mode = effective_player_mode_for_sio(p, s);
+    const int mode = live_pad_mode(s) ? sampled_pad_mode(s)
+        : effective_player_mode_for_sio(p, s);
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
     if (mode == PSXRecompV4::PAD_MODE_ANALOG || p.steering_wheel ||
         g_mod_controller_policy[s].callback || host_view) {
@@ -7010,7 +7044,8 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
 }
 
 static void apply_pad_slot_to_sio(int s, const PsxNetPad& pad) {
-    psx_pad_apply_to_sio(s, &pad);
+    if (live_pad_mode(s)) psx_pad_update_input(s, &pad);
+    else psx_pad_apply_to_sio(s, &pad);
     /* Solo resim self-check records exactly what was applied this boundary. */
     psx_selfcheck_note_pad(s, pad.buttons, pad.lx, pad.ly, pad.rx, pad.ry,
                            pad.analog);
@@ -7798,11 +7833,7 @@ static void sample_pad_into_sio(int override) {
     for (int s = 0; s < n; s++) {
         PsxNetPad pad;
         if (!pad_ext_resolve(&hooks, s, &pad)) continue;  /* no device in this port */
-        /* Push sticks every frame; request the pad type (digital/analog) through
-         * the coherent channel so a policy switch is applied only at an idle,
-         * non-config bus boundary (never mid-poll / mid-handshake). This is the
-         * fix for the v0.5.0 phantom-input regression: slamming the type each
-         * frame raced Tomba's DualShock config handshake -> garbage reads. */
+        /* Ordinary input updates leave mode and configuration to the pad. */
         apply_pad_slot_to_sio(s, pad);
         if (psx_start_consumer_enabled())
             psx_start_consumer_note(s, consumer_sim, pad.buttons);
@@ -9087,6 +9118,17 @@ static void recover_disconnected_controllers() {
     }
 }
 
+static void toggle_live_pad_mode(int s) {
+    if (s < 0 || s >= PSX_MAX_PLAYERS || !live_pad_mode(s) ||
+        !sio_get_pad_connected(s) || savestate_menu_open || psx_rewind_is_open() ||
+        psx_runtime_menu_is_open() || savestate_input_guard_active()) return;
+    if (!sio_toggle_pad_mode(s))
+        host_osd_push("Controller mode is locked by the game", 1500);
+    else
+        host_osd_push(sio_get_pad_analog(s) ? "Digital mode requested" :
+                                               "Analog mode requested", 1500);
+}
+
 static bool drain_host_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -9116,6 +9158,18 @@ static bool drain_host_events() {
                 close_controller();
                 refresh_player_devices();
             }
+        } else if (ev.type == SDL_CONTROLLERBUTTONDOWN) {
+#if defined(PSX_SDL3)
+            const auto button = ev.gbutton.button;
+            const auto instance = ev.gbutton.which;
+#else
+            const auto button = ev.cbutton.button;
+            const auto instance = ev.cbutton.which;
+#endif
+            if (button == SDL_CONTROLLER_BUTTON_MISC1 && host_hotkey_input_focused())
+                for (int s = 0; s < PSX_MAX_PLAYERS; ++s)
+                    if (g_players[s].kind == 2 && g_players[s].instance == instance)
+                        toggle_live_pad_mode(s);
         } else if (ev.type == SDL_KEYDOWN) {
 #if defined(PSX_SDL3)
             const SDL_Keymod mod = ev.key.mod;
@@ -9128,6 +9182,11 @@ static bool drain_host_events() {
             const SDL_Scancode scancode = ev.key.keysym.scancode;
             const int key_repeat = ev.key.repeat ? 1 : 0;
 #endif
+            if (!key_repeat && host_hotkey_input_focused() &&
+                host_keymap_match_event(HOST_KEYMAP_ANALOG_MODE, key, scancode, mod)) {
+                toggle_live_pad_mode(0);
+                continue;
+            }
             if (!key_repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scancode, mod) &&
                 !savestate_menu_open && !psx_rewind_is_open() && psx_runtime_menu_open()) continue;
             if (key == SDLK_ESCAPE && psx_netplay_active()) {
@@ -18941,6 +19000,7 @@ int main(int argc, char** argv) {
      * locked_mode. Clamp to the game-declared modes here, after every
      * config/settings source has been applied, so a locked game can never boot
      * a pad type it doesn't support. */
+    g_controller_mode_locked = ctrl_lock_mode;
     g_force_digital_pads = 0;
     if (ctrl_lock_mode) {
         int all_digital = 1;
@@ -20909,10 +20969,9 @@ session_reboot:
             /* Dev-any-input keeps P1 connected even with no assigned controller so the
              * keyboard / any plugged-in controller can drive port 1 standalone. */
             const bool dev_p1 = (dev_any_input_enabled() && s == 0);
-            const int mode = effective_player_mode_for_sio(g_players[s], s);
-            sio_set_pad_connected(s, (g_players[s].kind != 0 || dev_p1) ? 1 : 0);
-            sio_set_pad_analog(s, pad_mode_boot_analog(mode), 0x80, 0x80, 0x80, 0x80);
-            sio_set_pad_config_capable(s, mode != PSXRecompV4::PAD_MODE_DIGITAL);
+            const int mode = assert_sio_pad_profile(s, dev_p1);
+            if (live_pad_mode(s)) sio_reset_dualshock(s);
+            else sio_set_pad_analog(s, pad_mode_boot_analog(mode), 0x80, 0x80, 0x80, 0x80);
         }
     }
     /* SPU float-shadow gate must be set before spu_init() (which runs
