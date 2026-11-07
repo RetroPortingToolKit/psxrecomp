@@ -33,7 +33,6 @@ static void hands_clear(void) {
     s_hands.sequence=++s_hands_sequence;s_hands.age_ms=UINT32_MAX;
     s_hands_sample_ms=0;
 }
-#ifndef PSX_NO_DEBUG_TOOLS
 static int s_input_override;
 static PSXModOpenXRInput s_injected;
 static int s_hands_override;
@@ -116,7 +115,6 @@ int psx_openxr_input_override(const PSXModOpenXRInput *input) {
     }
     s_injected=*input; s_input_override=1; return 1;
 }
-#endif
 void psx_openxr_input_snapshot(PSXModOpenXRInput *out) { if(out)*out=s_input; }
 void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;s_source=1;s_native_frame=0;}
 void psx_openxr_native_metadata(uint64_t frame){s_pair_id=s_pair_cycle=0;s_source=2;s_native_frame=frame;}
