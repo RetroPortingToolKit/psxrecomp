@@ -111,7 +111,7 @@ static void test_pitch_zero_holds_the_voice(void) {
     SpuVoice *v = stage_voice(0x0000u);
 
     /* First call decodes the staged block and leaves the voice on sample 0. */
-    int16_t first = voice_next_sample(0);
+    int16_t first = voice_next_sample(0, 0);
     uint32_t addr_after_first = v->cur_addr;
     CHECK(addr_after_first == VOICE_START + 0x10u,
           "the first call decodes exactly one block");
@@ -119,7 +119,7 @@ static void test_pitch_zero_holds_the_voice(void) {
 
     int drifted_sample = 0, drifted_addr = 0, drifted_phase = 0;
     for (int i = 0; i < 500; i++) {
-        if (voice_next_sample(0) != first) drifted_sample = 1;
+        if (voice_next_sample(0, 0) != first) drifted_sample = 1;
         if (v->cur_addr != addr_after_first) drifted_addr = 1;
         if (v->phase != 0) drifted_phase = 1;
     }
@@ -142,11 +142,11 @@ static void test_nonzero_pitch_still_advances(void) {
     stage_ram();
     SpuVoice *v = stage_voice(0x1000u);   /* one decoded sample per output */
 
-    (void)voice_next_sample(0);           /* decode the first block */
+    (void)voice_next_sample(0, 0);           /* decode the first block */
     uint32_t addr_after_first = v->cur_addr;
 
     for (int i = 0; i < SPU_BLOCK_SAMPLES; i++)
-        (void)voice_next_sample(0);
+        (void)voice_next_sample(0, 0);
 
     CHECK(v->cur_addr == addr_after_first + 0x10u,
           "pitch 0x1000 decodes the next block after 28 samples");
@@ -158,9 +158,9 @@ static void test_half_pitch_advances_half_as_fast(void) {
     stage_ram();
     SpuVoice *v = stage_voice(0x0800u);   /* half rate */
 
-    (void)voice_next_sample(0);
+    (void)voice_next_sample(0, 0);
     for (int i = 0; i < SPU_BLOCK_SAMPLES; i++)
-        (void)voice_next_sample(0);
+        (void)voice_next_sample(0, 0);
 
     CHECK(v->sample_idx == SPU_BLOCK_SAMPLES / 2,
           "pitch 0x0800 advances one sample every two outputs");
@@ -170,7 +170,7 @@ static void test_pitch_zero_still_steps_the_envelope(void) {
     spu_init();
     stage_ram();
     SpuVoice *v = stage_voice(0x0000u);
-    (void)voice_next_sample(0);
+    (void)voice_next_sample(0, 0);
 
     /* Key-off on a parked voice must still release and retire it — otherwise
      * holding the sample would trade one stuck voice for another. Rr = 0 with
@@ -180,12 +180,12 @@ static void test_pitch_zero_still_steps_the_envelope(void) {
     spu_regs[5] = 0x0000u;
 
     uint16_t before = v->env_level;
-    (void)voice_next_sample(0);
+    (void)voice_next_sample(0, 0);
     CHECK(v->env_level < before,
           "the envelope still steps while the voice is held");
 
     for (int i = 0; i < 4096 && v->active; i++)
-        (void)voice_next_sample(0);
+        (void)voice_next_sample(0, 0);
 
     CHECK(!v->active, "a held voice still retires once Release reaches zero");
     CHECK(v->env_level == 0, "Release drives the envelope to zero");

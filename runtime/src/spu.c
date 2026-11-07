@@ -900,15 +900,33 @@ int         spu_shadow_tap_count(void)  { return s_shadow_tap_frame; }
 static int voice_needs_clock(int idx) {
     const SpuVoice *v = &voices[idx];
     return v->active || (idx < SPU_VOICE_COUNT &&
-        ((voice_reg(idx, 2) & 0x3FFFu) || v->sample_idx >= SPU_BLOCK_SAMPLES));
+        (voice_reg(idx, 2) || v->sample_idx >= SPU_BLOCK_SAMPLES));
 }
 
-static int16_t voice_next_sample(int idx) {
+/* PMON uses the preceding hardware voice's current post-ADSR sample, before
+ * its left/right volume. A muted modulator must still affect its successor.
+ * PSX-SPX, SPU ADPCM Pitch / Pitch Counter:
+ * https://psx-spx.consoledev.net/soundprocessingunitspu/#spu-adpcm-pitch
+ * Keep the full pitch register until after modulation, including its signed
+ * multiply quirk, then saturate the resulting step to four samples. */
+static uint32_t voice_pitch_step(int idx, int16_t previous_sample) {
+    uint32_t pitch = voice_reg(idx, 2);
+    if (idx > 0 && idx < SPU_VOICE_COUNT &&
+        (spu_regs[reg_index(idx < 16 ? 0x1F801D90u : 0x1F801D92u)] &
+         (1u << (idx & 15)))) {
+        int32_t factor = (int32_t)previous_sample + 0x8000;
+        pitch = (uint16_t)(((int32_t)(int16_t)pitch * factor) >> 15);
+    }
+    return pitch > 0x3FFFu ? 0x4000u : pitch;
+}
+
+static int16_t voice_next_sample(int idx, int16_t previous_sample) {
     SpuVoice *v = &voices[idx];
     if (!voice_needs_clock(idx)) return 0;
     const int audible = v->active;
 
     if (v->sample_idx >= SPU_BLOCK_SAMPLES) {
+        int next_sample = v->sample_idx - SPU_BLOCK_SAMPLES;
         if (v->flags & 0x01u) {
             /* END flag: the decode pointer jumps to the latched repeat
              * address in BOTH the loop and stop cases — Beetle spu.cpp:333
@@ -939,6 +957,7 @@ static int16_t voice_next_sample(int idx) {
             }
         }
         decode_block(v);
+        v->sample_idx = next_sample;
     }
 
     /* Noise mode (NON bit set): the voice outputs the live noise LFSR value
@@ -1003,13 +1022,13 @@ static int16_t voice_next_sample(int idx) {
      * bytes past their own repeat address and turned the menu into a
      * continuous mid-band buzz. DuckStation and Beetle both just add the
      * pitch to the counter, so zero holds. */
-    uint32_t pitch = voice_reg(idx, 2) & 0x3FFFu;
+    uint32_t pitch = voice_pitch_step(idx, previous_sample);
     v->phase += pitch;
-    while (v->phase >= 0x1000u) {
-        v->phase -= 0x1000u;
-        v->sample_idx++;
-        if (v->sample_idx >= SPU_BLOCK_SAMPLES) break;
-    }
+    /* A step can cross a block by up to three samples. Retain that integer
+     * overshoot for the next decode instead of leaving whole samples in the
+     * fractional counter and interpolating the wrong point in the new block. */
+    v->sample_idx += v->phase >> 12;
+    v->phase &= 0xFFFu;
     return (int16_t)shaped;
 }
 
@@ -1314,8 +1333,10 @@ static void spu_render_block(int16_t* out_stereo, int frames) {
             }
 
             if (any_voice) {
+                int16_t previous_sample = 0;
                 for (int v = 0; v < mix_voices; v++) {
-                    int16_t s = voice_next_sample(v);
+                    int16_t s = voice_next_sample(v, previous_sample);
+                    previous_sample = s;
                     if (v == 1) v1_out = s;
                     if (v == 3) v3_out = s;
                     int16_t vl = chan_volume(voice_reg(v, 0), &sweep_voice_env[v][0]);

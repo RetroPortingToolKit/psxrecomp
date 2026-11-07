@@ -47,21 +47,21 @@ int main(void) {
             (uint32_t)upload[at+2]<<16|(uint32_t)upload[at+3]<<24;
         spu_dma_write(word);
     }
-    for(unsigned i=0;i<3;++i)voice_next_sample(i);
+    for(unsigned i=0;i<3;++i)voice_next_sample(i, 0);
     CHECK(voices[0].samples[0]==4096 && voices[1].samples[0]==12288 && voices[2].samples[0]==28672);
     CHECK(voices[0].repeat_addr==0 && voices[1].repeat_addr==0);
     spu_snapshot_write(snapshot);int16_t pcm[3][70];
-    for(unsigned i=0;i<3;++i)for(unsigned j=0;j<70;++j)pcm[i][j]=voice_next_sample(i);
+    for(unsigned i=0;i<3;++i)for(unsigned j=0;j<70;++j)pcm[i][j]=voice_next_sample(i, 0);
     CHECK(spu_snapshot_read(snapshot,n));
-    for(unsigned i=0;i<3;++i)for(unsigned j=0;j<70;++j)CHECK(pcm[i][j]==voice_next_sample(i));
+    for(unsigned i=0;i<3;++i)for(unsigned j=0;j<70;++j)CHECK(pcm[i][j]==voice_next_sample(i, 0));
     /* KEYOFF retains the asset through release. The next ordinary KEYON
      * reuses the voice on hardware RAM; bindings cannot leak to music/SFX. */
     key_off(1);CHECK(voices[0].sample_bank==1 && voices[0].adsr_phase==ADSR_RELEASE);
-    key_on(1);ready_voice(0);voice_next_sample(0);
+    key_on(1);ready_voice(0);voice_next_sample(0, 0);
     CHECK(!voices[0].sample_bank && voices[0].samples[0]==28672);
     /* Invalid bank addresses terminate silently instead of reading stage RAM. */
     CHECK(spu_bind_next_voice_bank(0,1));spu_regs[3]=0x100;key_on(1);ready_voice(0);
-    voice_next_sample(0);CHECK(voices[0].flags==1 && voices[0].samples[0]==0);
+    voice_next_sample(0, 0);CHECK(voices[0].flags==1 && voices[0].samples[0]==0);
     /* The same logical channel in two seats must mix independently. P2 is
      * not a second binding on P1's hardware KEYON register. */
     memset(voices,0,sizeof voices);memset(spu_regs,0,sizeof spu_regs);
