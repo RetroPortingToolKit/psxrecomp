@@ -118,9 +118,21 @@ MODULE_DEFINES = [
 
 
 def compile_module(sources: list[str], out: str, include_dirs: list[str],
-                   stem: str, flavor: int, compiler: str, gcc: str, tcc: str) -> bool:
+                   stem: str, flavor: int, codegen_hash: int,
+                   compiler: str, gcc: str, tcc: str) -> bool:
     defines = MODULE_DEFINES + [f"-DPSX_OVERLAY_FLAVOR={int(flavor)}",
-                                f"-DPSX_BIOS_MODULE_STEM={stem}"]
+                                f"-DPSX_BIOS_MODULE_STEM={stem}",
+                                # overlay_api.h only defines this through
+                                # `#if defined(__has_include)`, and tcc 0.9.27
+                                # has no __has_include at all: it silently fell
+                                # back to 0u, so every tcc-built module exported
+                                # codegen hash 00000000 and the host rejected
+                                # the module it had just built. Passing the
+                                # value the runtime header names removes the
+                                # compiler's preprocessor from the contract.
+                                # gcc/clang accept the identical redefinition
+                                # (the header #define is the same token list).
+                                "-DPSX_OVERLAY_CODEGEN_HASH=0x%08xu" % (codegen_hash & 0xFFFFFFFF)]
     if int(flavor) & 2:
         defines.append("-DPSX_PGXP=1")
     if compiler == "tcc":
@@ -139,6 +151,7 @@ def compile_module(sources: list[str], out: str, include_dirs: list[str],
                "-o", co.native_path(out)]
         for d in include_dirs:
             cmd.append("-I" + co.native_path(co._bom_free_incdir(d)))
+        cmd += co._tcc_bundle_args(tcc)
         env = None
     else:
         env, tc_dir = co._toolchain_env(gcc)
@@ -158,10 +171,13 @@ def compile_module(sources: list[str], out: str, include_dirs: list[str],
     return True
 
 
-def self_check(path: str, flavor: int) -> bool:
+def self_check(path: str, flavor: int, codegen_hash: int) -> bool:
     """Load the fresh module in this interpreter: proves it is self-contained
-    (RTLD_NOW resolves every symbol or fails) and that its ABI tag names the
-    flavor asked for. The host repeats the gate with its own tag."""
+    (RTLD_NOW resolves every symbol or fails), that its ABI tag names the
+    flavor asked for, and that it carries the codegen hash the host will
+    demand. The hash check is not redundant with the compile flag: the whole
+    failure this guards against was a module that compiled cleanly and
+    exported the wrong hash, and only the host noticed, long after."""
     try:
         lib = ctypes.CDLL(co.native_path(path))
     except OSError as exc:
@@ -175,6 +191,10 @@ def self_check(path: str, flavor: int) -> bool:
         return False
     if (abi >> 16) & 0xFFFF != int(flavor) & 0xFFFF:
         print(f"  self-check: ABI flavor {(abi >> 16) & 0xFFFF} != requested {flavor}")
+        return False
+    if h != (codegen_hash & 0xFFFFFFFF):
+        print(f"  self-check: codegen hash 0x{h:08x} != host 0x{codegen_hash:08x}; "
+              f"the module would be rejected on load")
         return False
     print(f"  self-check: abi=0x{abi:08x} codegen_hash=0x{h:08x} ok")
     return True
@@ -311,16 +331,29 @@ def main(argv=None) -> int:
         tmp_out = os.path.join(out_dir, "." + os.path.basename(args.out) + ".tmp")
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
+        # The codegen hash the module must export is the one in the include
+        # tree it compiles against. Read it here rather than leaving it to
+        # overlay_api.h's __has_include probe: tcc has no __has_include, so the
+        # probe silently yields 0u and every tcc-built module was rejected by
+        # the host as "codegen hash 00000000 != host ...". A build that cannot
+        # name the hash has no business publishing a module the host will
+        # refuse, so a missing header is a hard error here.
+        codegen_hash = co.codegen_hash(include)
+        if codegen_hash == 0:
+            die(f"{os.path.join(include, 'overlay_codegen_hash.h')} is missing or names 0; "
+                f"the module would export a hash the host rejects. Stage the "
+                f"toolchain from a built runtime include tree.")
         include_dirs = [include]
         fmt_inc = os.path.join(tk, "lib", "fmt", "include")   # dev-tree layout only
         if os.path.isdir(fmt_inc):
             include_dirs.append(fmt_inc)
         if not compile_module([full_c, disp_c, glue_c], tmp_out, include_dirs,
-                              args.stem, args.flavor, args.compiler, args.gcc, args.tcc):
+                              args.stem, args.flavor, codegen_hash,
+                              args.compiler, args.gcc, args.tcc):
             if os.path.exists(tmp_out):
                 os.remove(tmp_out)
             die("compile failed")
-        if not self_check(tmp_out, args.flavor):
+        if not self_check(tmp_out, args.flavor, codegen_hash):
             os.remove(tmp_out)
             die("self-check failed")
         os.replace(tmp_out, args.out)
