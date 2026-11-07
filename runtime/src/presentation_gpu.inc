@@ -419,13 +419,24 @@ static void presentation_gpu_shutdown(void) {
     pgpu_stencil_func=NULL;pgpu_stencil_mask=NULL;pgpu_stencil_op=NULL;
 }
 int psx_presentation_gpu_write_png(const char *path,int x,int y,int w,int h) {
-    if(!path || w<=0 || h<=0 || w>VRAM_W || h>VRAM_H)return 0;
-    const size_t pixels=(size_t)w*h;
+    GL_RT_SYNC("presentation_write_png");
+    if(!pgpu_available() || !s_pgpu_output || !path || x<0 || y<0 || w<=0 || h<=0 ||
+        x>VRAM_W-w || y>VRAM_H-h || s_pgpu_scale<1)return 0;
+    const int width=w*s_pgpu_scale,height=h*s_pgpu_scale;
+    const size_t pixels=(size_t)width*height;
+    if(pixels>SIZE_MAX/4)return 0;
     uint8_t *rgba=(uint8_t *)malloc(pixels*4),*rgb=(uint8_t *)malloc(pixels*3);
     int ok=0;
-    if(rgba && rgb && psx_presentation_gpu_read_rgba(rgba,pixels*4,x,y,w,h)) {
+    if(rgba && rgb) {
+        // Export the actual internal-resolution pixels. The native-sized RGBA
+        // readback API remains separate for exact texel/resource assertions.
+        PgpuState saved;pgpu_state_save(&saved);
+        p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER,s_pgpu_fbo);p_glBindBuffer(0x88EB,0);
+        glPixelStorei(PSXGL_PACK_ROW_LENGTH,0);glPixelStorei(GL_PACK_ALIGNMENT,1);
+        glReadPixels(x*s_pgpu_scale,y*s_pgpu_scale,width,height,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+        pgpu_state_restore(&saved);
         for(size_t i=0;i<pixels;++i)memcpy(rgb+i*3,rgba+i*4,3);
-        FILE *f=fopen(path,"wb");if(f) { ok=png_write_rgb(f,rgb,(uint32_t)w,(uint32_t)h);fclose(f); }
+        FILE *f=fopen(path,"wb");if(f) { ok=png_write_rgb(f,rgb,(uint32_t)width,(uint32_t)height);fclose(f); }
     }
     free(rgba);free(rgb);return ok;
 }

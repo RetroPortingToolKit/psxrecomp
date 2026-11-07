@@ -60,6 +60,8 @@ void psx_presentation_gpu_set_provider(PsxPresentationProvider provider,void *us
  * readback is never part of snapshot capture or regular intermediate rendering. */
 int psx_presentation_gpu_read_rgba(uint8_t *out, size_t capacity,
     int x, int y, int width, int height);
+/* Export the requested native-coordinate rectangle at the private target's
+ * actual internal resolution, preserving its raster pixels without downsampling. */
 int psx_presentation_gpu_write_png(const char *path,int x,int y,int width,int height);
 /* Debug-only qualification: temporarily changes one native texel, proves old
  * and new retained versions by rendered pixels, then restores that texel. */
