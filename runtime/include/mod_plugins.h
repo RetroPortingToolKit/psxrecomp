@@ -1389,7 +1389,8 @@ enum {
     PSX_MOD_MOUSE_ACQUIRED = 1,
     PSX_MOD_MOUSE_MOTION = 2,
     PSX_MOD_MOUSE_HOLD_PRESS = 3,
-    PSX_MOD_MOUSE_HOLD_RELEASE = 4
+    PSX_MOD_MOUSE_HOLD_RELEASE = 4,
+    PSX_MOD_MOUSE_WHEEL = 5 /* dx/dy = scroll detents; positive dy scrolls up */
 };
 typedef struct PSXModMouseEvent {
     uint32_t struct_size;

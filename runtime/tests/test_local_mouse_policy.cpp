@@ -9,6 +9,7 @@ constexpr uint64_t Ms=1000000;
 bool guest=true, capture_ok=true, active=false, held=false;
 unsigned captures=0, releases=0, notices=0, resets=0;
 unsigned hold_presses=0, hold_releases=0;
+unsigned wheel_events=0;
 psx::MouseControl suppressed=psx::MouseControl::None;
 bool capture(void*,bool on) { if(on) ++captures; else ++releases; return !on || capture_ok; }
 void suppress(void*,psx::MouseControl c) { suppressed=c; }
@@ -17,6 +18,7 @@ int eligible(uint32_t buttons) { return guest && (buttons&9)==9; }
 void event(const PSXModMouseEvent* e) {
     if(e->type==PSX_MOD_MOUSE_RESET || e->type==PSX_MOD_MOUSE_ACQUIRED) { active=held=false; ++resets; }
     if(e->type==PSX_MOD_MOUSE_MOTION) active=true;
+    if(e->type==PSX_MOD_MOUSE_WHEEL) ++wheel_events;
     if(e->type==PSX_MOD_MOUSE_HOLD_PRESS) { ++hold_presses;held=true;active=false; }
     if(e->type==PSX_MOD_MOUSE_HOLD_RELEASE) { ++hold_releases;active=held=false; }
 }
@@ -36,6 +38,7 @@ int main() {
     CHECK(policy.control(5*Ms,5*Ms,psx::MouseControl::Left,true,false));
     CHECK(policy.control(6*Ms,6*Ms,psx::MouseControl::Left,false,false));
     CHECK(policy.captured());
+    CHECK(policy.wheel(6*Ms,6*Ms,0,1) && wheel_events==1);
     CHECK(!policy.control(7*Ms,7*Ms,psx::MouseControl::Left,true,false));
     CHECK(!policy.control(8*Ms,8*Ms,psx::MouseControl::Left,false,false));
     CHECK(policy.captured());
@@ -47,6 +50,7 @@ int main() {
     CHECK(policy.control(0,12*Ms,psx::MouseControl::Left,false,false));
     CHECK(policy.captured()); // lost up reconciles without turning capture off
     CHECK(policy.control(12*Ms,12*Ms,psx::MouseControl::Escape,true,false));
+    CHECK(!policy.wheel(12*Ms,12*Ms,0,-1) && wheel_events==1);
     CHECK(policy.persistent_capture(false));
     policy.update(10*Ms,host);
     CHECK(policy.control(10*Ms,10*Ms,psx::MouseControl::Left,true,false));
