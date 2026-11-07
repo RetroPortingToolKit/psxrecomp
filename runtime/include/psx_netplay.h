@@ -58,6 +58,9 @@ typedef struct PsxNetPad {
  * multitap seat without the analog-on-tap hack is made config-inert, as SIO
  * then forces it digital. Callers own connection and other policy. */
 void psx_pad_apply_to_sio(int port, const PsxNetPad *pad);
+/* Ordinary local input changes buttons/axes only. Device identity and live
+ * digital/analog mode belong to SIO, not to each host input sample. */
+void psx_pad_update_input(int port, const PsxNetPad *pad);
 typedef struct PsxNetplayConfig {
     int         enabled;
     int         local_slot;    /* 0 .. slot_count-1 */
