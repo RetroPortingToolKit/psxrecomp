@@ -2,7 +2,10 @@
 """Regression guards for the self-contained CLI project pipeline."""
 
 from pathlib import Path
+import os
+import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +14,37 @@ ROOT = Path(__file__).resolve().parents[2]
 def require(source: str, needle: str, message: str) -> None:
     if needle not in source:
         raise AssertionError(message)
+
+
+def check_packaged_codegen_hash() -> None:
+    # Exercise the real staging path without rebuilding the tools. The runtime
+    # recomputes this hash from the shipped sources; missing inputs must not
+    # silently give a different cache identity from psxrecomp-game.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        tools = root / "tools"
+        tools.mkdir()
+        for name in ("psxrecomp", "psxrecomp-game", "psxrecomp-bios",
+                     "psxrecomp-analyze", "psxrecomp-toml"):
+            (tools / (name + (".exe" if os.name == "nt" else ""))).touch()
+        subprocess.run([
+            sys.executable, str(ROOT / "tools/build_cli.py"), "--skip-build",
+            "--build-dir", str(tools), "--dist-dir", str(root / "dist"),
+        ], check=True)
+        frameworks = list((root / "dist").glob("*/framework"))
+        assert len(frameworks) == 1, frameworks
+        hashes = []
+        for index, source in enumerate((ROOT, frameworks[0])):
+            header = root / f"hash-{index}.h"
+            subprocess.run([
+                "cmake", f"-DOUT={header}",
+                f"-DPSXRECOMP_CODEGEN_HASH_ROOT={source}",
+                "-P", str(source / "runtime/hash_codegen.cmake"),
+            ], check=True)
+            hashes.append(header.read_bytes())
+        assert hashes[0] == hashes[1], (
+            "packaged framework codegen hash differs from the tool build; "
+            "a canonical input is missing or changed")
 
 
 def main() -> int:
@@ -78,6 +112,7 @@ def main() -> int:
     require(bios, 'a == "--out-dir"',
             "psxrecomp-bios config mode lacks the output override")
 
+    check_packaged_codegen_hash()
     print("PASS: CLI profiles, stage order, BIOS overrides, and UI isolation agree")
     return 0
 

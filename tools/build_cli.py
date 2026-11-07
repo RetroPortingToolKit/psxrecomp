@@ -114,6 +114,10 @@ def main() -> int:
         "*.exe", "*.obj", "*.pdb", "*.lib")
     shutil.copytree(ROOT / "runtime", framework / "runtime", ignore=source_ignore)
     shutil.copytree(ROOT / "recompiler", framework / "recompiler", ignore=source_ignore)
+    # This policy source is a canonical codegen-hash input and a dependency of
+    # the runtime's hash target, even when a generated project uses no overlays.
+    (framework / "tools").mkdir()
+    shutil.copy2(ROOT / "tools" / "compile_overlays.py", framework / "tools")
     bios_profiles = {
         "OpenBIOS.toml": ROOT / "bios" / "OpenBIOS.toml",
         "SCPH1001.toml": ROOT / "bios" / "SCPH1001.toml",
