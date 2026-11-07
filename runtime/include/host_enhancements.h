@@ -38,7 +38,7 @@
  * Activation only records: it runs before the renderer setup, which applies
  * the baseline and would otherwise undo whatever activation had applied.
  *
- * All five are host-only (their [[plugin]] declares netplay = "host_only"):
+ * All six are host-only (their [[plugin]] declares netplay = "host_only"):
  * they change what this machine shows, plays or keeps, never guest execution,
  * so they stay each player's own in netplay and never enter the plan
  * fingerprint (docs/MOD_PACKAGES.md "Host-only plugins").
@@ -70,7 +70,14 @@ typedef struct PsxHostLook {
     int texture_filter;         /* PSX_TEXTURE_FILTER_* (video_texture_filter.h) */
     int fmv_filter;             /* VIDEO_FMV_FILTER_* (config value) */
     int spu_hq;                 /* [audio] spu_hq: SPU float shadow 0/1 */
+    int dithering;              /* 0 off, 1 native PS1 grid, 2 fine (OpenGL) */
 } PsxHostLook;
+
+typedef struct PsxHostPostLook {
+    int antialiasing;           /* 0 off, 1 FXAA, 2 FXAA HQ */
+    float bloom;               /* 0..2 */
+    const char* shader;        /* post-effect preset path, empty for none */
+} PsxHostPostLook;
 
 /* This session's requests: zero-initialized (reset) means no mod enabled. */
 typedef struct PsxHostEnhRequests {
@@ -82,6 +89,7 @@ typedef struct PsxHostEnhRequests {
     int image_smoothing;        /* PSX_HOST_ENH_DEFAULT, 0 sharp or 1 smooth */
     int image_texture_filter;   /* PSX_HOST_ENH_DEFAULT or PSX_TEXTURE_FILTER_* */
     int image_fmv_filter;       /* PSX_HOST_ENH_DEFAULT or VIDEO_FMV_FILTER_* */
+    int image_dithering;        /* PSX_HOST_ENH_DEFAULT or 0..2 */
     int audio;                  /* Enhanced Audio enabled */
     int rewind;                 /* Rewind enabled */
     int rewind_depth;           /* 50 / 100 / 150 / 200 */
@@ -91,6 +99,15 @@ typedef struct PsxHostEnhRequests {
                                  * value (internal_resolution.h), Auto included;
                                  * not PSX_HOST_ENH_DEFAULT, which is
                                  * PSX_IR_DISPLAY's encoding */
+    int resolution_min;         /* PSX_IR_UNSET keeps the title's floor */
+    int resolution_supersample; /* 0 keeps the title's factor, else milli */
+    int resolution_dynamic;     /* 0 follows resolution, 1 off, 2 on */
+    int post;
+    int post_antialiasing;      /* PSX_HOST_ENH_DEFAULT or 0..2 */
+    int post_bloom;             /* Game default, off or on */
+    int post_bloom_pct;         /* 1..200 */
+    int post_shader_mode;       /* Game default, off or custom */
+    char post_shader[4096];
 } PsxHostEnhRequests;
 
 /* The session's internal resolution in main.cpp's terms: the value
@@ -99,6 +116,8 @@ typedef struct PsxHostEnhRequests {
 typedef struct PsxHostResolution {
     int internal_resolution;
     int dynamic_resolution;
+    int dynamic_resolution_min;
+    int supersample_milli;
 } PsxHostResolution;
 
 #define PSX_HOST_ENH_STRENGTH_DEFAULT 50
@@ -128,28 +147,65 @@ static inline PsxHostLook psx_host_enh_resolve(const PsxHostLook* baseline,
             out.texture_filter = req->image_texture_filter;
         if (req->image_fmv_filter != PSX_HOST_ENH_DEFAULT)
             out.fmv_filter = req->image_fmv_filter;
+        if (req->image_dithering != PSX_HOST_ENH_DEFAULT)
+            out.dithering = req->image_dithering;
     }
     if (req->audio) out.spu_hq = 1;
     return out;
 }
 
-/* The effective internal resolution: native when disabled, the saved title
- * baseline for Game default, or the enabled mod's fixed scale/height choice. Auto is
- * Match display with dynamic resolution on; any fixed choice turns it off.
- * Pure. */
+/* Resolve host post effects over the title baseline. */
+static inline PsxHostPostLook psx_host_enh_resolve_post(
+        const PsxHostPostLook* baseline, const PsxHostEnhRequests* req) {
+    PsxHostPostLook out = *baseline;
+    if (req->post) {
+        if (req->post_antialiasing != PSX_HOST_ENH_DEFAULT)
+            out.antialiasing = req->post_antialiasing;
+        if (req->post_bloom != PSX_HOST_ENH_DEFAULT)
+            out.bloom = req->post_bloom ? req->post_bloom_pct / 100.0f : 0.0f;
+        if (req->post_shader_mode != PSX_HOST_ENH_DEFAULT)
+            out.shader = req->post_shader_mode ? req->post_shader : "";
+    }
+    return out;
+}
+
+/* Native when disabled; Game default preserves the title baseline. Auto
+ * enables dynamic resolution, with an explicit dynamic choice taking priority. */
 static inline PsxHostResolution psx_host_enh_resolve_resolution(
         const PsxHostResolution* baseline, const PsxHostEnhRequests* req) {
     /* Off is the native reference; an explicitly saved Game default still
      * opts into the title baseline. Fresh enabled profiles select fixed 4x. */
-    PsxHostResolution out = {PSX_IR_NATIVE, 0};
+    PsxHostResolution out = {PSX_IR_NATIVE, 0, baseline->dynamic_resolution_min, 1000};
     if (req->resolution) {
         out = *baseline;
         if (req->resolution_value != PSX_IR_UNSET) {
             out.internal_resolution = req->resolution_value;
             out.dynamic_resolution = psx_ir_is_auto(req->resolution_value) ? 1 : 0;
         }
+        if (req->resolution_min != PSX_IR_UNSET)
+            out.dynamic_resolution_min = req->resolution_min;
+        if (req->resolution_supersample > 0)
+            out.supersample_milli = req->resolution_supersample;
+        if (req->resolution_dynamic)
+            out.dynamic_resolution = req->resolution_dynamic == 2;
     }
     return out;
+}
+
+/* An explicit mod factor also scales native/fixed/legacy targets. Title
+ * defaults retain their historical fixed-scale behavior. */
+static inline int psx_host_enh_render_scale(int value, int ref_lines,
+        int display_px_h, int s_max, int ss_milli, int max_display_lines,
+        int legacy_scale, int explicit_factor) {
+    if (explicit_factor && (psx_ir_is_scale(value) || value == PSX_IR_NATIVE ||
+                            value == PSX_IR_UNSET)) {
+        const int base = psx_ir_is_scale(value) ? PSX_IR_SCALE_BASE - value
+            : value == PSX_IR_NATIVE ? 1 : legacy_scale > 0 ? legacy_scale : 1;
+        const long long scaled = ((long long)base * psx_ss_milli_clamp(ss_milli) + 999) / 1000;
+        return scaled > s_max ? s_max : scaled < 1 ? 1 : (int)scaled;
+    }
+    return psx_resolve_internal_scale_ss_cap(value, ref_lines, display_px_h,
+                                            s_max, ss_milli, max_display_lines);
 }
 
 /* Session start, before plugin activation: forget every request. */
@@ -160,9 +216,13 @@ void psx_host_enh_reset(void);
  * by the parsers below before they get here. */
 void psx_host_enh_request_crt(int screen_kind, int scanlines, int strength_pct);
 void psx_host_enh_request_image(int smoothing, int texture_filter, int fmv_filter);
+void psx_host_enh_request_image_dithering(int mode);
 void psx_host_enh_request_audio(void);
 void psx_host_enh_request_rewind(int depth, int interval);
 void psx_host_enh_request_resolution(int value);
+void psx_host_enh_request_resolution_options(int minimum, int supersample_milli, int dynamic);
+void psx_host_enh_request_post(int aa, int bloom, int strength, int shader_mode,
+                               const char* shader);
 
 /* A copy of this session's requests. */
 void psx_host_enh_requests(PsxHostEnhRequests* out);
@@ -191,11 +251,15 @@ int psx_host_enh_parse_strength(const char* text);      /* "1".."100" */
 int psx_host_enh_parse_smoothing(const char* text);     /* default smooth sharp */
 int psx_host_enh_parse_texture_filter(const char* text);/* default nearest bilinear xbr */
 int psx_host_enh_parse_fmv_filter(const char* text);    /* default nearest bilinear sharp bicubic */
+int psx_host_enh_parse_dithering(const char* text);     /* default off native fine */
 int psx_host_enh_parse_rewind_depth(const char* text);  /* "50" "100" "150" "200" */
 int psx_host_enh_parse_rewind_interval(const char* text);/* "1" "4" "8" "12" "15" */
 /* "default" -> PSX_IR_UNSET; fixed 1x..32x and legacy height ids are retained.
  * Missing/unknown option text uses the shared 4x default. */
 int psx_host_enh_parse_internal_resolution(const char* text);
+int psx_host_enh_parse_resolution_min(const char* text);
+int psx_host_enh_parse_supersample(const char* text);
+int psx_host_enh_parse_post_aa(const char* text);
 
 #ifdef __cplusplus
 }

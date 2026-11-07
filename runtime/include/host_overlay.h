@@ -99,7 +99,9 @@ typedef struct PsxHostVideoSettings {
     int render_thread;         /* restart */
     int present_thread;        /* restart */
     int supersample_milli;     /* session, live: 1000 off .. 4000; not saved */
+    int vsync;                 /* config values: 1 on, 0 off, -1 adaptive, 2 VRR */
 } PsxHostVideoSettings;
+#define PSX_HOST_VIDEO_HAS_VSYNC 1
 /* PsxHostVideoSettings no longer carries texture_filter, fmv_filter,
  * scanlines, scanline_strength_pct, present_linear or dynamic_resolution: a
  * menu provider can test this to stay source-compatible with both shapes. */
@@ -114,6 +116,7 @@ typedef struct PsxHostVideoSettings {
 #define PSX_VIDEO_RESTART_NETPLAY     (1u << 3)
 
 #define PSX_VIDEO_LIVE_FULLSCREEN     (1u << 0)
+#define PSX_VIDEO_LIVE_VSYNC          (1u << 8)
 /* Bits 1..5 were texture filter, FMV filter, scanlines, linear present and
  * dynamic resolution (now mod options / PSX_IR_AUTO); left unused. */
 #define PSX_VIDEO_LIVE_FRAME_GEN      (1u << 6)

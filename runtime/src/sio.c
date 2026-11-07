@@ -13,6 +13,8 @@
  */
 
 #include "sio.h"
+#include "digital_pad_snapshot.h"
+#include "psx_cycle_freeze.h"
 #include "psx_bss.h"
 #include "memcard.h"
 #include "debug_server.h"
@@ -46,6 +48,7 @@ static void sio_debug_poll_maybe(void) {
 /* Pad state: 0=pressed, 1=released (PS1 convention). Indexed by LOGICAL pad
  * 0 .. PSX_MAX_PLAYERS-1 (not physical SIO slot). */
 static uint16_t pad_buttons[PSX_MAX_PLAYERS] = { PSX_PAD_INIT(0xFFFF) };
+static PSXResolvedDigitalPad pad_input_history[PSX_MAX_PLAYERS];
 
 /* Per-logical-pad type + analog stick state. Values are SIO_PAD_*; sticks are
  * 0..255, 0x80 centred. JogCon uses left-X as a signed wheel position; NeGcon
@@ -169,7 +172,9 @@ static uint8_t pad_supports_config[PSX_MAX_PLAYERS] = {
  * desync the game's pad driver -> phantom/garbage button reads). Instead the
  * host REQUESTS a type via pad_type_req[] and the change is applied atomically
  * only when the bus is idle (PAD_IDLE) and the pad is NOT in config mode. A
- * request raised during config is held until config exits. -1 = no request. */
+ * absolute request raised during config is held until config exits.
+ * -1 = no request; -2 = one manual Analog-button press, applied at idle
+ * even in config mode, or consumed by a game lock. */
 static int8_t pad_type_req[PSX_MAX_PLAYERS] = {
     PSX_PAD_INIT(-1)
 };
@@ -864,6 +869,7 @@ void sio_init(void) {
     for (int i = 0; i < PSX_MAX_PLAYERS; i++) {
         pad_analog_device[i] = SIO_PAD_DUALSHOCK;
         pad_buttons[i] = 0xFFFF;
+        digital_pad_history_reset(&pad_input_history[i],pad_buttons[i]);
         pad_analog[i] = 0;
         pad_stick[i][0] = pad_stick[i][1] = pad_stick[i][2] = pad_stick[i][3] = 0x80;
         pad_in_config[i] = 0;
@@ -1059,6 +1065,8 @@ void sio_netplay_canonicalize_session_pads(int slot_count)
 
 void sio_set_pad_connected(int slot, int connected) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    if (!!connected != !!(pad_connected & (1u<<slot)))
+        digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
     if (connected) {
         pad_connected |= (uint8_t)(1u << slot);
     } else {
@@ -1106,11 +1114,14 @@ void sio_get_pad_rumble(int slot, uint8_t *small, uint8_t *large) {
 }
 
 void sio_set_pad_state(uint16_t buttons) {
-    pad_buttons[0] = buttons;
+    sio_set_pad_state_slot(0,buttons);
 }
 
 void sio_set_pad_state_slot(int slot, uint16_t buttons) {
-    if (slot >= 0 && slot < PSX_MAX_PLAYERS) pad_buttons[slot] = buttons;
+    if (slot >= 0 && slot < PSX_MAX_PLAYERS) {
+        digital_pad_history_record(&pad_input_history[slot],buttons);
+        pad_buttons[slot] = buttons;
+    }
 }
 
 /* Entering or leaving NeGcon swaps the controller on the port; it is not the
@@ -1127,6 +1138,7 @@ static int pad_type_is_device_swap(uint8_t from, uint8_t to) {
 static void pad_commit_type(int slot, uint8_t type) {
     const uint8_t from = pad_analog[slot];
     if (from != type) {
+        digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
         pad_jogcon_last_steering[slot] = 0;
         pad_jogcon_motor_command[slot] = 0;
         pad_jogcon_motor_strength[slot] = 0;
@@ -1171,6 +1183,21 @@ void sio_set_pad_analog(int slot, int enabled,
                      lx, ly, rx, ry);
 }
 
+void sio_reset_dualshock(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
+    pad_analog_device[slot] = SIO_PAD_DUALSHOCK;
+    pad_in_config[slot] = 0;
+    analog_mode_locked[slot] = 0;
+    pad_rumble_small[slot] = pad_rumble_large[slot] = 0;
+    memset(pad_rumble_map[slot], 0xFF, sizeof pad_rumble_map[slot]);
+    memset(pad_negcon_analog[slot], 0, sizeof pad_negcon_analog[slot]);
+    pad_jogcon_last_steering[slot] = 0;
+    pad_jogcon_motor_command[slot] = pad_jogcon_motor_strength[slot] = 0;
+    pad_buttons[slot] = 0xFFFFu;
+    sio_set_pad_config_capable(slot, 1);
+    sio_set_pad_type(slot, SIO_PAD_DIGITAL, 0x80, 0x80, 0x80, 0x80);
+}
+
 /* Per-frame stick update (does not touch the reported pad type). */
 void sio_set_pad_sticks(int slot, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
     if (slot < 0 || slot >= PSX_MAX_PLAYERS) return;
@@ -1198,6 +1225,23 @@ int sio_get_pad_mode_locked(int slot) {
     return (slot >= 0 && slot < PSX_MAX_PLAYERS) ? analog_mode_locked[slot] : 0;
 }
 
+int sio_get_pad_config_mode(int slot) {
+    return slot >= 0 && slot < PSX_MAX_PLAYERS ? pad_in_config[slot] : 0;
+}
+
+int sio_toggle_pad_mode(int slot) {
+    if (slot < 0 || slot >= PSX_MAX_PLAYERS ||
+        !(pad_connected & (1u << slot)) || !pad_supports_config[slot] ||
+        analog_mode_locked[slot] || sio_tap_force_digital(slot) ||
+        pad_analog_device[slot] != SIO_PAD_DUALSHOCK ||
+        pad_analog[slot] > SIO_PAD_DUALSHOCK)
+        return 0;
+    /* -2 is a queued button press, distinct from a requested absolute mode.
+     * Two presses before the bus becomes idle cancel each other. */
+    pad_type_req[slot] = pad_type_req[slot] == -2 ? -1 : -2;
+    return 1;
+}
+
 /* Per-frame type request (the emulated controller type). The flip is
  * deferred and applied atomically at the next idle, non-config boundary, so it
  * can never split a poll or a config handshake. A no-op if already that type. */
@@ -1217,6 +1261,12 @@ void sio_request_pad_type(int slot, int type) {
 
 uint16_t sio_get_pad_buttons(void) {
     return pad_buttons[0];
+}
+
+int sio_get_resolved_digital_pad(int slot,PSXResolvedDigitalPad *out) {
+    if(!out || slot<0 || slot>=PSX_MAX_PLAYERS || !sio_get_pad_connected(slot) ||
+       sio_get_pad_analog(slot)!=SIO_PAD_DIGITAL)return 0;
+    *out=pad_input_history[slot];return 1;
 }
 
 uint16_t sio_get_pad_buttons_slot(int slot) {
@@ -1313,6 +1363,15 @@ static void pad_process_byte(uint8_t tx_byte) {
      * mid-transaction. A request raised during config stays pending until exit. */
     if (pad_state == PAD_IDLE) {
         for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+            if (pad_type_req[s] == -2) {
+                /* A game lock consumes the press, including a lock acquired
+                 * after it was queued. Never replay it after unlocking. */
+                if (analog_mode_locked[s]) pad_type_req[s] = -1;
+                else {
+                    pad_commit_type(s, pad_analog[s] ^ 1u);
+                    pad_type_req[s] = -1;
+                }
+            }
             /* A game-LOCKED analog mode (0x44 ..03) ignores the physical analog
              * button — and our hybrid auto-flip IS that button — so a locked slot
              * holds the pending host request instead of applying it. A device
@@ -3084,6 +3143,11 @@ void sio_snapshot_section_ends(uint32_t out[5]) {
 }
 
 static int sio_snap_parse(PstR *r) {
+    /* A real state load invalidates input history; restoring a render-only
+     * checkpoint must not discard host presses captured by normal polling. */
+    if (!g_psx_render_pass_active)
+        for(int slot=0;slot<PSX_MAX_PLAYERS;++slot)
+            digital_pad_history_reset(&pad_input_history[slot],pad_buttons[slot]);
     uint32_t u;
     int32_t i;
     int16_t tr;

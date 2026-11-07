@@ -158,6 +158,7 @@ extern "C" int gpu_ws_configured_x_reveal(void) { return 0; }
 extern "C" void gpu_ws_set_manual_view_anchor(int, int) {}
 extern "C" void gpu_ws_tag_hud_prim(uint32_t, int) {}
 extern "C" void gpu_ws_tag_screen_mask_quad(uint32_t) {}
+extern "C" void gpu_ws_tag_reveal_edge_quad(uint32_t, int) {}
 extern "C" void gpu_ws_tag_radial_screen_mask_quad(uint32_t, float) {}
 extern "C" void gpu_ws_tag_feedback_rect(uint32_t) {}
 /* mod_runtime.cpp's lobby netplay commit reads the negotiated match caps.
@@ -246,6 +247,19 @@ static void netplay_clear(void) {
 }
 
 int main(void) {
+    {
+        PSXPgxpSessionInputs in{};
+        in.video_geometry = in.video_texture = 1;
+        in.env_geometry = in.env_texture = in.env_cpu_mode = in.env_culling = -1;
+        in.mod_enabled = in.mod_corrections_set = 1;
+        in.mod_texture = 1;
+        auto arm = psx_pgxp_session_resolve(&in);
+        CHECK(!arm.geometry && arm.texture);
+        in.mod_geometry = 1; in.mod_texture = 0;
+        arm = psx_pgxp_session_resolve(&in);
+        CHECK(arm.geometry && !arm.texture);
+    }
+
     for (const char* v : {"PSX_GEOMETRY_CORRECTION", "PSX_PERSPECTIVE_TEXTURING",
                           "PSX_PGXP_CPU_MODE", "PSX_PGXP_CULLING"})
         test_unsetenv(v);

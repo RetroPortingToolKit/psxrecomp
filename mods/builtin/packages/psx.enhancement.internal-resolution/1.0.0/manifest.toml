@@ -196,6 +196,71 @@ label = "Match display"
 value = "auto"
 label = "Auto"
 
+[[option]]
+feature = "internal-resolution"
+id = "minimum"
+label = "Lowest resolution"
+description = "The lower limit while dynamic resolution is enabled. Game default keeps the title's floor."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Game default"
+
+[[option.choice]]
+value = "native"
+label = "Native"
+
+[[option.choice]]
+value = "720p"
+label = "720p"
+
+[[option.choice]]
+value = "1080p"
+label = "1080p"
+
+[[option.choice]]
+value = "1440p"
+label = "1440p"
+
+[[option.choice]]
+value = "display"
+label = "Match display"
+
+[[option]]
+feature = "internal-resolution"
+id = "supersample"
+label = "Supersample factor"
+description = "Enter 1.0 through 4.0, or default to keep the game's factor. OpenGL renders above the selected internal resolution and downsamples to reduce jagged edges. Higher values cost more GPU time and memory."
+group = "Visual"
+type = "decimal"
+min = 1
+max = 4
+default = "default"
+
+[[option]]
+feature = "internal-resolution"
+id = "dynamic_resolution"
+label = "Dynamic resolution"
+description = "Follow the resolution choice (Auto enables it), explicitly enable it below a fixed resolution, or disable it."
+group = "Visual"
+type = "choice"
+default = "default"
+
+[[option.choice]]
+value = "default"
+label = "Follow resolution choice"
+
+[[option.choice]]
+value = "on"
+label = "On"
+
+[[option.choice]]
+value = "off"
+label = "Off"
+
 [[plugin]]
 feature = "internal-resolution"
 id = "psx.internal-resolution"

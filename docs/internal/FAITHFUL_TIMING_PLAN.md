@@ -213,6 +213,38 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
+- **2026-11-05 — raw images and boundary follow-up.** The follow-up to
+  v0.3.6-alpha accounts for all 14 raw BINs and 167 overlay symbol
+  groups have explicit dispositions. Across 174 loaded images, seven false
+  entries are removed without losing a matched named entry. Corrected all 381
+  frame mismatches in 3,316 resident records and argument reads across branch/
+  load delays. Nineteen synthetic cases pass. Three frozen consumers retain
+  identical native code. Qualified 149 test passes, 13 existing failures and
+  3 disabled checks; the PGO path guard passes with short scratch. Windows/
+  Linux release checks and five standalone tool helps pass. Tracking: `beads-eio.3.441`,
+  `SYMBOL_BOUNDARY_OVERLAY_BURNDOWN.md`, `accuracy/symbol_boundary_results.json`.
+
+- **2026-11-05 — full symbol-corpus follow-up.** Audited all 115 archives,
+  including private CPE envelopes. Against v0.3.5-alpha, 90 qualified reference
+  views recover 377 additional executable-hash/address entry instances, with
+  zero lost explicit entries. Generic fixes cover argument/pre-frame setup,
+  packed tail wrappers and referenced leaves; constant reference propagation
+  now preserves full ADDIU/ORI values. Resolved switch cases retain their host
+  ownership. Full CTest: 147 passed, the same 13 baseline failures, 3 disabled.
+  Five ambiguous boundaries and two unsupported symbol files remain explicit
+  limitations. All six baseline/candidate Ape Escape, Tomba and Tomba 2 builds
+  pass representative gameplay movement and current-build in-process save/load.
+  Serial paced runtime samples show no observed regression; Tomba 2 cold-snapshot
+  timings were rejected for different workloads and replaced with fresh boots.
+  Owner visual review remains before integration. No timing model is changed.
+
+- **2026-11-05 — symbol-guided discovery.** Eight private symbol/executable
+  references exposed omitted `$gp` loads before frame allocation. The shared
+  recognizer recovers 35 explicit function entries across four unrelated
+  builds, with no lost named entries across the eight inputs. No timing,
+  instruction translation or runtime behavior is changed. Qualification and
+  limits: `docs/FUNCTION_DISCOVERY.md`, `accuracy/symbol_reference_results.json`.
+
 - **2026-10-24 — scoped render-pass qualification.** The sandbox now compares
   shared RAM/register/clock/interrupt digests before and after an actual
   opted-in local temporal pass, discard, device-read abort, rollback refusal,

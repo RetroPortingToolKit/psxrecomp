@@ -156,3 +156,6 @@ int main(void) {
     printf("ALL PASS (%d checks)\n", g_checks);
     return 0;
 }
+
+/* Standalone device test: not executing a render-only checkpoint. */
+int g_psx_render_pass_active;

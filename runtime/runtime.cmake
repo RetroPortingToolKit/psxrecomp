@@ -85,15 +85,16 @@ if(NOT DEFINED CMAKE_C_COMPILER_LAUNCHER)
     endif()
 endif()
 
-# PSX_DEBUG_TOOLS: TCP debug server + heartbeat + per-block recording.
+# PSX_DEBUG_TOOLS: development diagnostics and per-block recording.
 # Defaults ON for Debug/RelWithDebInfo, OFF for Release/MinSizeRel so
 # a plain cmake -DCMAKE_BUILD_TYPE=Release gives a lean production binary
-# with no TCP server and no debug console. Override explicitly with
+# with no automatic TCP listener and no debug console. Production can opt in
+# via the TCP Debug Server mod or PSX_DEBUG_SERVER=1. Override explicitly with
 # -DPSX_DEBUG_TOOLS=ON/OFF to force either way regardless of build type.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
-    option(PSX_DEBUG_TOOLS "Build with TCP debug server + heartbeat + per-block recording" OFF)
+    option(PSX_DEBUG_TOOLS "Build with development diagnostics + per-block recording" OFF)
 else()
-    option(PSX_DEBUG_TOOLS "Build with TCP debug server + heartbeat + per-block recording" ON)
+    option(PSX_DEBUG_TOOLS "Build with development diagnostics + per-block recording" ON)
 endif()
 
 # A title may opt in only after auditing every trusted media preparer used by
@@ -364,6 +365,7 @@ endif()
 # PSX_RECOMP_UI: wire the shared Dear ImGui launcher from the *game* repo's
 # root recomp-ui submodule (CMAKE_SOURCE_DIR/recomp-ui). Not vendored in
 # psxrecomp — games that need the launcher own the pin.
+option(PSX_MEMORY_CARD_MANAGER "Offer the optional PS1 memory-card editor" OFF)
 option(PSX_RECOMP_UI "Build the shared recomp-ui Dear ImGui launcher" ON)
 option(PSX_SHELLWIN_INTERP "Default the shell-window dirty-RAM interpreter to ON ( BIOS without shell seeds )" OFF)
 set(RECOMP_UI_ROOT "" CACHE PATH
@@ -412,6 +414,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/psx_menu_host.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_pad_transform.c
     ${PSXRECOMP_ROOT}/runtime/src/vr_pose_math.c
+    ${PSXRECOMP_ROOT}/runtime/src/vr_geometry_math.c
     ${PSXRECOMP_ROOT}/runtime/src/gpu_vk_renderer.c
     ${PSXRECOMP_ROOT}/runtime/src/dma_gpu_ll.c
     ${PSXRECOMP_ROOT}/runtime/src/dma.c
@@ -514,6 +517,9 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/game_options.c
     ${PSXRECOMP_ROOT}/runtime/src/audio_sync.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_speed.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_debug.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug_bulk_write.c
+    ${PSXRECOMP_ROOT}/runtime/src/debug_server_policy.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_pgxp.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_internal_resolution.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_bezel.c
@@ -525,6 +531,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_enhanced_audio.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_rewind.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_internal_resolution.c
+    ${PSXRECOMP_ROOT}/runtime/src/mod_builtin_post_processing.c
     ${PSXRECOMP_ROOT}/runtime/src/mod_packages.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_media.cpp
     ${PSXRECOMP_ROOT}/runtime/src/mod_runtime.cpp
@@ -549,8 +556,8 @@ set(PSXRECOMP_RUNTIME_SOURCES
     # (sljit Tier-2 in-process JIT backend removed 2026-07-15 — was disabled by
     # default since 2026-06-25; gaps fall to the interpreter, gcc/tcc unaffected.)
 )
-# TCP `disasm` command only (debug_server.c); stripped with the rest of the TCP
-# server when PSX_DEBUG_TOOLS is OFF.
+# TCP `disasm` command only (debug_server.c); development-only even when the
+# production TCP listener is opted in.
 if(PSX_DEBUG_TOOLS)
     list(APPEND PSXRECOMP_RUNTIME_SOURCES
         ${PSXRECOMP_ROOT}/recompiler/src/mips_decoder.cpp
@@ -840,12 +847,18 @@ endif()
 option(PSXRECOMP_ALLOW_NO_BIOS
     "Allow linking the runtime with no recompiled BIOS backends (setup host)"
     OFF)
-if(NOT _psxrt_bios_linked)
-    if(PSXRECOMP_ALLOW_NO_BIOS)
+list(LENGTH _psxrt_bios_linked _psxrt_bios_count)
+
+# Discovery and registry generation are independent of a target's setup/full
+# mode. Validate only when a runtime is declared, after the high-level helper
+# has inspected its generated-game marker.
+function(_psxrt_validate_bios)
+    if(_psxrt_bios_linked)
+        message(STATUS "BIOS backends linked: ${_psxrt_bios_linked}")
+    elseif(PSXRECOMP_ALLOW_NO_BIOS)
         message(STATUS
             "BIOS backends linked: (none) — setup host; Generate & rebuild "
             "will emit BIOS C locally")
-        set(_psxrt_bios_count 0)
     else()
         message(FATAL_ERROR
             "No recompiled BIOS backend available. Wanted: ${PSXRECOMP_BIOS_STEMS}, "
@@ -856,10 +869,7 @@ if(NOT _psxrt_bios_linked)
             "(OpenBIOS is bundled and MIT-licensed, so this needs no BIOS dump.)\n"
             "Or configure a setup host with -DPSXRECOMP_ALLOW_NO_BIOS=ON.")
     endif()
-else()
-    message(STATUS "BIOS backends linked: ${_psxrt_bios_linked}")
-    list(LENGTH _psxrt_bios_linked _psxrt_bios_count)
-endif()
+endfunction()
 
 # ISO C requires at least one initializer. A setup host can intentionally have
 # zero linked BIOS backends, so give the generated array one unused null entry
@@ -1562,6 +1572,8 @@ function(psxrecomp_add_runtime_target target)
         AUDIT_MOD_DIRS NATIVE_IDLE_WAIT_SITES)
     cmake_parse_arguments(PSXRT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
+    _psxrt_validate_bios()
+
     # DEBUG_PORT and WINDOW_TITLE were previously required cmake-time defaults.
     # game.toml's [runtime] block is now the source of truth at run time; the
     # cmake-time values only survive as fallback when --game is not passed.
@@ -1696,6 +1708,12 @@ function(psxrecomp_add_runtime_target target)
         ${PSXRT_EXTRAS_SOURCES}
     )
     target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode)
+    if(PSX_MEMORY_CARD_MANAGER)
+        target_compile_definitions(${target} PRIVATE PSX_MEMORY_CARD_MANAGER=1)
+        if(WIN32)
+            target_link_libraries(${target} PRIVATE advapi32)
+        endif()
+    endif()
     psxrecomp_windows_manifest(${target})
     psxrecomp_sha256_file(${target})
     set(_execution_contract
@@ -2890,8 +2908,9 @@ function(psxrecomp_add_game_runtime target)
     endif()
 
     if(NOT _psxg_has_game_c)
-        set(PSXRECOMP_ALLOW_NO_BIOS ON CACHE BOOL
-            "Allow runtime with no BIOS backends (setup host)" FORCE)
+        # Inferred policy belongs to this target only. Caching it made a later
+        # full-runtime reconfigure silently retain the setup host's allowance.
+        set(PSXRECOMP_ALLOW_NO_BIOS ON)
     endif()
 
     if(PSXRECOMP_REQUIRE_GAME_C AND NOT _psxg_has_game_c)

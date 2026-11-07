@@ -90,6 +90,9 @@ uint32_t psx_mod_memory_address(const struct CPUState* cpu, uint32_t pc,
 int psx_mod_register_function_filter_plugin(
     const char* id, uint32_t address, PSXModFunctionFilterCallback callback);
 int psx_mod_function_entry(struct CPUState* cpu, uint32_t address);
+/* Backend routing guard for hooks above. Native overlay candidates must leave
+ * these entries to the interpreter so the hook runs exactly once. */
+int psx_mod_function_entry_has_hook(uint32_t address);
 /* Trusted game code (not a mod package) may hook guest functions for netplay
  * only. These are independent of the mod package plan, which every online
  * match clears, and run only while netplay is active; offline execution stays
@@ -342,6 +345,17 @@ uint32_t psx_mod_alloc_guest_memory(uint32_t size, uint32_t alignment);
  * without an allocation the aperture remains unmapped and DMA stays faithful.
  */
 uint32_t psx_mod_alloc_gpu_dma_memory(uint32_t size, uint32_t alignment);
+/* Declare complete, immutable host-rendered draw packets inside an owned GPU
+ * aperture allocation. Their GPU linked-list nodes are host work, so the CPU
+ * hold drains them without emulated word-transfer cycles. Ordinary packets,
+ * VRAM transfers and other devices retain their native paths. Two slots;
+ * bytes=0 clears one. Restore callbacks must republish snapshot-owned spans.
+ * Off by default and cleared by DMA/session initialization. */
+int psx_mod_set_host_gpu_draw_range(unsigned slot,uint32_t start,uint32_t bytes);
+/* Copy finished host packet bytes into allocated GPU-DMA backing storage.
+ * Never writes RAM/MMIO or advances guest time. Honors render-pass rollback;
+ * unavailable from a host-output callback. The caller owns packet metadata. */
+int psx_mod_write_gpu_draw_memory(uint32_t address,const void *data,uint32_t bytes);
 
 /*
  * Opt into expanded 8 MiB main RAM for this launch. Default runtime behavior
@@ -415,6 +429,24 @@ void psx_mod_set_gte_sxy_tracking(int enabled);
  * Both services are render-only, word guarded and inert at native 4:3. */
 void psx_mod_tag_screen_mask_quad(uint32_t primitive);
 void psx_mod_tag_radial_screen_mask_quad(uint32_t primitive, float scale);
+/* Frame pieces identified by their title's producer, P_TAG addresses: an
+ * axis-aligned flat quad (GP0 0x28-0x2B) or a textured quad (0x2C-0x2F)
+ * whose four UVs name one texel, such as a menu bar, divider line or tint
+ * panel. A requested outer vertical boundary that lies on or beyond the
+ * canonical display edge grows to the visible native-wide edge; interior
+ * boundaries stay put. Only the part outside the quad is drawn, right where
+ * the packet executes, with its colour, CLUT, texture page and blend, so a
+ * translucent piece never blends twice. Word guarded, expires after two
+ * frames, cleared on reset/load, inert at native 4:3 and in squash mode.
+ * edges is PSX_MOD_REVEAL_EDGE_LEFT, PSX_MOD_REVEAL_EDGE_RIGHT or both
+ * OR-ed together. A tagged quad bypasses automatic UI layout even when no
+ * band is drawn; an explicit HUD anchor on the same packet takes precedence
+ * over the tag. */
+enum {
+    PSX_MOD_REVEAL_EDGE_LEFT = 1,
+    PSX_MOD_REVEAL_EDGE_RIGHT = 2
+};
+void psx_mod_tag_reveal_edge_quad(uint32_t primitive, int edges);
 /* Exclude a known world packet from screen-space backdrop stretching, even
  * if it sorts before the first shaded polygon. Zero clears a recycled tag. */
 void psx_mod_tag_world_primitive(uint32_t primitive, int is_world);
@@ -1219,6 +1251,27 @@ typedef struct PSXModControllerState {
 } PSXModControllerState;
 typedef int (*PSXModControllerSource)(PSXModControllerState *state);
 int psx_mod_set_controller_source(uint32_t player, PSXModControllerSource source);
+
+/* Optional low-latency digital reader. Reads already resolved local SIO input;
+ * never polls SDL, writes a packet, changes controller routing or runs guest
+ * input/rumble code. Main thread, standalone offline digital P1 only. Other
+ * controller policies/sources, UI/input guards, resim and multitap decline.
+ * Caller initializes only struct_size (other fields zero), keeps one reader
+ * per input-consumer and does not persist/copy it into a savestate. Repeated
+ * reads within a guest frame are idempotent. Captured short taps are latched
+ * until the next original-rate read, with release/press separation; a skipped
+ * frame, device/session generation change or excessive backlog re-primes from
+ * legacy_buttons rather than replaying old actions. Return 0: keep the full
+ * original read result. Return 1: buttons receives active-high 16-bit buttons.
+ * This does not increase guest input/simulation frequency. */
+typedef struct PSXModDigitalPadReader {
+    uint32_t struct_size, generation, held, valid;
+    uint64_t frame;
+    uint32_t last_press[16], pending[16]; /* private reader state */
+} PSXModDigitalPadReader;
+int psx_mod_read_digital_pad(uint32_t player, PSXModDigitalPadReader *reader,
+                             uint32_t legacy_buttons, uint32_t *buttons);
+
 /* Presence of an attached offline source (default connected). A diagnostic
  * source may explicitly emulate an unplugged pad without falling back to a
  * physical controller assigned to that port. Cleared on detach/session reset. */
@@ -1339,7 +1392,8 @@ enum {
     PSX_MOD_MOUSE_ACQUIRED = 1,
     PSX_MOD_MOUSE_MOTION = 2,
     PSX_MOD_MOUSE_HOLD_PRESS = 3,
-    PSX_MOD_MOUSE_HOLD_RELEASE = 4
+    PSX_MOD_MOUSE_HOLD_RELEASE = 4,
+    PSX_MOD_MOUSE_WHEEL = 5 /* dx/dy = scroll detents; positive dy scrolls up */
 };
 typedef struct PSXModMouseEvent {
     uint32_t struct_size;

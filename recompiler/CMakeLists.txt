@@ -868,6 +868,12 @@ if(BUILD_TESTING)
     target_link_libraries(jogcon_ffb_settings_test PRIVATE fmt)
     add_test(NAME jogcon_ffb_settings_test COMMAND jogcon_ffb_settings_test)
 
+    add_executable(select_shortcuts_config_test
+        tests/select_shortcuts_config_test.cpp src/config_loader.cpp src/ps1_exe_parser.cpp)
+    target_include_directories(select_shortcuts_config_test PRIVATE
+        include src lib/fmt/include lib/toml11)
+    target_link_libraries(select_shortcuts_config_test PRIVATE fmt)
+    add_test(NAME select_shortcuts_config_test COMMAND select_shortcuts_config_test)
     add_executable(required_disc_config_test
         tests/required_disc_config_test.cpp src/config_loader.cpp src/ps1_exe_parser.cpp)
     target_include_directories(required_disc_config_test PRIVATE
@@ -979,6 +985,13 @@ if(BUILD_TESTING)
                     --emitter $<TARGET_FILE:psxrecomp-bios>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+        # Both compiler tiers must name the module's expected codegen hash.
+        add_test(
+            NAME bios_module_codegen_hash
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_module_codegen_hash.py
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
         # The tcc build of a BIOS module sees a BOM-stripped copy of the
         # include directory. That copy must hold the .c.inc fragments the
         # module's glue.c includes, or the tcc build stops at "not found".
@@ -1057,6 +1070,10 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_cross_page_delay_codegen.py
                     --recompiler $<TARGET_FILE:psxrecomp-game>
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        add_test(NAME split_transfer_fallthrough
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_split_transfer_fallthrough.py
+                    --recompiler $<TARGET_FILE:psxrecomp-game>)
         # The overlay capture format's trailing delay-slot guard word: legal
         # to READ (a branch at the run's last word emits its slot from it),
         # illegal to ANALYSE (the word after it does not exist). Also pins
@@ -1334,6 +1351,17 @@ if(BUILD_TESTING)
                         --recompiler $<TARGET_FILE:psxrecomp-game>
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
         endforeach()
+
+        # Address-reference semantics are checked through the analyzer's JSON.
+        add_test(NAME analysis_reference_constants
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analysis_reference_constants.py
+                    --analyzer $<TARGET_FILE:psxrecomp-analyze>)
+
+        add_test(NAME analysis_signature_flow
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analysis_signature_flow.py
+                    --analyzer $<TARGET_FILE:psxrecomp-analyze>)
 
         # test_aot_overlay_discovery.py had no add_test() entry at all. It runs
         # far enough to exercise real discovery, then fails in

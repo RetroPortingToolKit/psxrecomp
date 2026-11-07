@@ -25,6 +25,9 @@ typedef enum HostKeymapAction {
     HOST_KEYMAP_TURBO_TOGGLE,     /* default F9; latches Turbo until pressed again */
     HOST_KEYMAP_CAPTURE_MARK,     /* default Ctrl+M; freezes the debug capture rings */
     HOST_KEYMAP_OPEN_LAUNCHER,    /* Ctrl+L / F10: shared in-game menu */
+    HOST_KEYMAP_QUICK_SAVE,       /* default F5; separate from manual slots */
+    HOST_KEYMAP_QUICK_LOAD,       /* default Shift+F5 */
+    HOST_KEYMAP_ANALOG_MODE,     /* default F3: controller Analog button */
     HOST_KEYMAP_ACTION_COUNT
 } HostKeymapAction;
 

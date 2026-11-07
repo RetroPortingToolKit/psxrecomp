@@ -12,7 +12,8 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TOOLS = ("psxrecomp", "psxrecomp-toml", "psxrecomp-game", "psxrecomp-bios")
+TOOLS = ("psxrecomp", "psxrecomp-toml", "psxrecomp-game", "psxrecomp-bios",
+         "psxrecomp-analyze")
 
 
 def run(command: list[str]) -> None:
@@ -128,9 +129,11 @@ def main() -> int:
     shutil.copy2(ROOT / "bios" / "OpenBIOS.LICENSE", framework / "bios")
     shutil.copy2(ROOT / ".gitignore", framework)
     shutil.copy2(ROOT / "LICENSE", framework)
+    shutil.copy2(ROOT / "PERMISSIONS.md", framework)
     shutil.copy2(ROOT / "THIRD_PARTY_ATTRIBUTION.md", framework)
     shutil.copy2(ROOT / "README.md", stage)
     shutil.copy2(ROOT / "LICENSE", stage)
+    shutil.copy2(ROOT / "PERMISSIONS.md", stage)
     shutil.copy2(ROOT / "THIRD_PARTY_ATTRIBUTION.md", stage)
 
     shutil.make_archive(str(archive.with_suffix("")), "zip", dist_dir, package)

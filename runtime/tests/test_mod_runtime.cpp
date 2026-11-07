@@ -210,6 +210,7 @@ extern "C" int gpu_ws_configured_x_reveal(void) { return 0; }
 extern "C" void gpu_ws_set_manual_view_anchor(int, int) {}
 extern "C" void gpu_ws_tag_hud_prim(uint32_t, int) {}
 extern "C" void gpu_ws_tag_screen_mask_quad(uint32_t) {}
+extern "C" void gpu_ws_tag_reveal_edge_quad(uint32_t, int) {}
 extern "C" void gpu_ws_tag_radial_screen_mask_quad(uint32_t, float) {}
 extern "C" void gpu_ws_tag_feedback_rect(uint32_t) {}
 
@@ -898,6 +899,8 @@ int main(int argc, char** argv) {
     psx_mod_function_entry(&entry_cpu, 0x80003000u);
     check(g_psx_mod_function_entry_hooks == 0 && active_entry_hits == 0,
           "function-entry hooks must not run before plugin activation");
+    check(!psx_mod_function_entry_has_hook(0x80003000u),
+          "native overlay routing has no hook guard before activation");
     psx_host_set_hud_draw_cb(old_session_hud, nullptr);
     mod_runtime_activate_plugins();
     psx_host_hud_draw(64, 64);
@@ -941,6 +944,10 @@ int main(int argc, char** argv) {
           "only active PCM plugins mix every stereo sample");
     check(g_psx_mod_function_entry_hooks == 1,
           "activation must flatten exactly the active plan's entry hooks");
+    check(psx_mod_function_entry_has_hook(0x80003000u) &&
+              psx_mod_function_entry_has_hook(0xA0003000u) &&
+              !psx_mod_function_entry_has_hook(0x80003004u),
+          "native overlay routing guards every active hook alias, not other addresses");
     psx_mod_function_entry(&entry_cpu, 0x80003000u);
     check(active_entry_hits == 1 && active_entry_last == 0x80003000u,
           "active plan's function-entry hook must run at its address");
@@ -956,6 +963,8 @@ int main(int argc, char** argv) {
           "hooks of plugins the plan does not activate must never run");
     /* A replaced plan drops every hook until its own activation. */
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
+    check(!psx_mod_function_entry_has_hook(0x80003000u),
+          "clearing the active plan releases native overlay hook guards");
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 2 && !g_psx_mod_instruction_hooks, "clearing removes instruction hooks");
     check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30014u, 0x80004000u) == 0x80004000u,
@@ -2184,6 +2193,9 @@ int main(int argc, char** argv) {
     check(psx_game_register_netplay_function_filter(
               0x80005000u, test_game_netplay_filter) == 1,
           "trusted game netplay filter must register");
+    check(!psx_mod_function_entry_has_hook(0x80004000u) &&
+              !psx_mod_function_entry_has_hook(0xA0005000u),
+          "inactive game netplay hooks must not divert native execution");
     CPUState game_cpu{};
     psx_mod_function_entry(&game_cpu, 0x80004000u);
     game_cpu.gpr[31] = 0x80006000u;
@@ -2193,6 +2205,11 @@ int main(int argc, char** argv) {
           "game netplay hook must not run offline");
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
     test_netplay_active = 1;
+    check(psx_mod_function_entry_has_hook(0x80004000u) &&
+              psx_mod_function_entry_has_hook(0xA0004000u) &&
+              psx_mod_function_entry_has_hook(0xA0005000u) &&
+              !psx_mod_function_entry_has_hook(0x80004004u),
+          "active game netplay hooks must route both code aliases only");
     psx_mod_function_entry(&game_cpu, 0xA0004000u);
     check(game_netplay_entry_hits == 1 && g_psx_mod_function_entry_hooks == 2,
           "game hook must survive netplay mod clear and match code aliases");
@@ -2204,6 +2221,9 @@ int main(int argc, char** argv) {
     check(game_netplay_entry_hits == 1,
           "game hook must ignore other addresses");
     test_netplay_active = 0;
+    check(!psx_mod_function_entry_has_hook(0xA0004000u) &&
+              !psx_mod_function_entry_has_hook(0x80005000u),
+          "stopped game netplay hooks must restore native execution");
     psx_mod_function_entry(&game_cpu, 0x80004000u);
     check(game_netplay_entry_hits == 1,
           "game hook must disarm when netplay stops");
@@ -2225,6 +2245,67 @@ int main(int argc, char** argv) {
         check(!PSXRecompV4::host_file_identity(root / "absent.bin", after), "missing identity is a cache miss");
     }
 #if defined(PSX_LAUNCHER_MOD_COMMIT_WORKER_SAFE)
+    {
+        const auto independent_root = root / "disc-independent";
+        const auto manifest_path = independent_root / "bundled/display/1.0.0/manifest.toml";
+        const std::string manifest =
+            "format_version = 5\nid = \"display\"\nversion = \"1.0.0\"\nname = \"Display\"\n"
+            "[[target]]\ngame_id = \"READER\"\n"
+            "[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n";
+        write_text(manifest_path, manifest);
+        write_text(independent_root / "bundled/optional/1.0.0/manifest.toml",
+            "format_version = 9\nid = \"optional\"\nversion = \"1.0.0\"\nname = \"Optional\"\n"
+            "prepare = \"not.registered\"\n[[target]]\ngame_id = \"READER\"\n"
+            "[[feature]]\nid = \"content\"\nname = \"Content\"\ndefault_enabled = false\n");
+        write_text(independent_root / "bundled/optional/1.0.0/inactive.dat",
+                   std::string(5 * 1024 * 1024, 'x'));
+        const auto hashes = startup_counter("startup.disc_hash");
+        const auto reused = startup_counter("startup.plan_reuse");
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(iso_path),
+              "disc-independent defaults preload without persistent file identities");
+        check(PSXRecompV4::mod_runtime_prepare_for_launcher(iso_path, &error) &&
+              PSXRecompV4::mod_runtime_commit(iso_path, &error) &&
+              startup_counter("startup.plan_reuse") == reused + 2 &&
+              startup_counter("startup.disc_hash") == hashes,
+              "display-only provider and runtime reuse the plan without raw disc hashes");
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(iso_path) &&
+              startup_counter("startup.disc_hash") == hashes,
+              "new display-only launch remains hash-free with disabled optional content");
+        check(PSXRecompV4::mod_runtime_plan_fingerprint_portable(iso_path, &error).size() == 64 &&
+              startup_counter("startup.disc_hash") == hashes + 1,
+              "an explicit portable fingerprint still measures the actual disc");
+        const auto state_path = independent_root / "state.toml";
+        const std::string external_selection =
+            "format_version = 2\n[[feature]]\npackage_id = \"display\"\nid = \"active\"\nenabled = false\n";
+        write_text(state_path, external_selection);
+        check(!PSXRecompV4::mod_runtime_commit(iso_path, &error),
+              "external saved-selection changes invalidate a prepared plan");
+        std::ifstream state_file(state_path);
+        check(std::string(std::istreambuf_iterator<char>(state_file), {}) == external_selection,
+              "failed stale-plan commit preserves the owner's saved selections");
+        state_file.close();
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error) &&
+              PSXRecompV4::mod_runtime_try_prepare_cached(iso_path),
+              "explicit reload accepts the changed saved selections");
+        const auto time = fs::last_write_time(manifest_path);
+        write_text(manifest_path, manifest + "\n# changed manifest\n");
+        fs::last_write_time(manifest_path, time);
+        check(!PSXRecompV4::mod_runtime_commit(iso_path, &error),
+              "restored-mtime manifest changes invalidate a display-only plan");
+        write_text(manifest_path,
+            "format_version = 5\nid = \"display\"\nversion = \"1.0.0\"\nname = \"Display\"\n"
+            "[[target]]\ngame_id = \"READER\"\ndisc_sha256 = \"" + std::string(64, '0') + "\"\n"
+            "[[feature]]\nid = \"active\"\nname = \"Active\"\ndefault_enabled = true\n");
+        write_text(state_path, "format_version = 2\n");
+        check(PSXRecompV4::mod_runtime_initialize(independent_root, "READER", 0, {}, &error),
+              "declared disc-target fixture loads");
+        const auto constrained_hashes = startup_counter("startup.disc_hash");
+        check(!PSXRecompV4::mod_runtime_prepare_for_launcher(iso_path, &error) &&
+              startup_counter("startup.disc_hash") == constrained_hashes + 1,
+              "declared disc SHA targets still hash and reject the wrong source");
+    }
     {
         const auto cached_root = root / "audited-cache";
         const auto output_path = root / "audited-output.z64";
@@ -2400,7 +2481,7 @@ int main(int argc, char** argv) {
         // Catalog changes cannot certify stale in-memory parsed manifests.
         write_text(manifest_path, manifest + "\n# external catalog mutation\n");
         check(!PSXRecompV4::mod_runtime_prepare_for_launcher(disc, &error) &&
-              error.find("catalog changed") != std::string::npos,
+              error.find("reopen the launcher") != std::string::npos,
               "changed manifest requires rescan instead of resealing stale package");
         check(PSXRecompV4::mod_runtime_initialize(cached_root, "READER", 0, {}, &error), "explicit initialize rescans changed catalog");
         const int before_netplay = prepare_calls;

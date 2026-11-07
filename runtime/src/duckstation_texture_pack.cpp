@@ -1,3 +1,4 @@
+#include "psx_path_utf8.h"
 #include "duckstation_texture_pack.h"
 #include "texture_image_decode.h"
 #include "texture_pack_preload.hpp"
@@ -394,7 +395,7 @@ void add_entry(DuckTexturePack& p, const DuckTextureKey& key, const fs::path& pa
         group.texels = {key.offset_x, key.offset_y, key.width, key.height};
         group.hashes[key.source_hash].push_back(p.entries.size());
     }
-    p.entries.push_back({key, path.u8string(), false});
+    p.entries.push_back({key, psx_path::utf8(path), false});
 }
 uint64_t cached_hash(DuckTexturePack& p, const HdTextureDrawQuery& q, Rect r) {
     for (const auto& saved : p.rect_cache)
@@ -414,7 +415,7 @@ std::string unquote(std::string s) {
     return comment == std::string::npos ? s : trim(s.substr(0, comment));
 }
 bool image_extension(const fs::path& path) {
-    const std::string ext = lower(path.extension().u8string());
+    const std::string ext = lower(psx_path::utf8(path.extension()));
     return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp";
 }
 bool option(DuckTexturePack& p, const std::string& key, const std::string& value) {
@@ -764,9 +765,9 @@ int duck_texture_pack_create(const char* root, DuckTexturePack** out, char* erro
         if (ec || (fs::exists(input, ec) && !fs::is_directory(input, ec))) {
             error_text(error, capacity, "texture pack root is not a directory"); return 0;
         }
-        if (lower(input.filename().u8string()) == "replacements") { p->replacements = input; input = input.parent_path(); }
+        if (lower(psx_path::utf8(input.filename())) == "replacements") { p->replacements = input; input = input.parent_path(); }
         else p->replacements = input / "replacements";
-        p->root = input.u8string(); p->dumps = input / "dumps";
+        p->root = psx_path::utf8(input); p->dumps = input / "dumps";
         std::vector<fs::path> paths;
         if (fs::is_directory(p->replacements, ec)) {
             size_t scanned = 0;
@@ -775,7 +776,7 @@ int duck_texture_pack_create(const char* root, DuckTexturePack** out, char* erro
                 if (++scanned > kMaxEntries * 4) throw std::runtime_error("texture replacement directory scan limit exceeded");
                 if (it.depth() >= 16) { if (it->is_directory(ec)) it.disable_recursion_pending(); note(*p, "replacement nesting exceeds 16 levels"); }
                 if (it->is_regular_file(ec)) {
-                    const std::string name = it->path().filename().u8string();
+                    const std::string name = psx_path::utf8(it->path().filename());
                     if (name.rfind("texupload-", 0) != 0 && name.rfind("texpage-", 0) != 0 && name.rfind("vram-write-", 0) != 0) continue;
                     if (!image_extension(it->path())) { note(*p, "unsupported replacement image format"); continue; }
                     if (paths.size() >= kMaxEntries) throw std::runtime_error("texture replacement file limit (262144) exceeded");
@@ -789,7 +790,7 @@ int duck_texture_pack_create(const char* root, DuckTexturePack** out, char* erro
         std::sort(paths.begin(), paths.end());
         for (const auto& path : paths) {
             DuckTextureKey k{};
-            if (duck_texture_parse_name(path.filename().u8string().c_str(), &k)) add_entry(*p, k, path);
+            if (duck_texture_parse_name(psx_path::utf8(path.filename()).c_str(), &k)) add_entry(*p, k, path);
             else note(*p, "invalid or unsupported replacement filename");
         }
         load_config(*p, input / "config.yaml");

@@ -423,9 +423,16 @@ After scaffold (or a manual clone):
   ```
 6. **Build the playable runtime**:
   ```bash
-   cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-   cmake --build build-release --target psx-runtime -j"$(nproc)"
+   python3 psxrecomp/psxrecomp_cli.py rebuild \
+     --config game.toml --project-root . --build-dir build-release --no-pgo
   ```
+  `rebuild` also stages `overlay_toolchain/` beside the runtime (pinned Python,
+  recompiler, headers and `compiler.txt`). A bare `cmake --build` skips that,
+  so the runtime logs `tcc tier active but no bundled toolchain` and every
+  overlay gap stays interpreted. That was the default outcome of
+  `setup_project.sh` before it switched to `rebuild` (verified on macOS arm64,
+  where the staged toolchain drives the system clang; Linux takes the same
+  code path but stages tcc/musl from source and is untested here).
 7. **Soak** — offline boot → LAN netplay → lobby. Tune `[runtime]` quirks only
   after you have evidence (see MotK `game.toml` comments for the pattern).
 

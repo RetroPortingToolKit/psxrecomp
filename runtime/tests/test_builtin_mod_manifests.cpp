@@ -12,6 +12,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <map>
 #include <string>
 
@@ -51,13 +52,16 @@ int main(int argc, char** argv) {
              {"scanline_strength", "50"}}}},
         {"psx.enhancement.image-filtering", {"image-filtering", "psx.image-filtering",
             {{"smoothing", "default"}, {"texture_filtering", "default"},
-             {"fmv_filtering", "default"}}}},
+             {"fmv_filtering", "default"}, {"dithering", "default"}}}},
         {"psx.enhancement.enhanced-audio", {"enhanced-audio", "psx.enhanced-audio", {}}},
         {"psx.feature.rewind", {"rewind", "psx.rewind",
             {{"buffer", "50"}, {"interval", "15"}}}},
         {"psx.enhancement.internal-resolution", {"internal-resolution",
-            "psx.internal-resolution", {{"resolution", "4x"}}}},
+            "psx.internal-resolution", {{"resolution", "4x"}, {"minimum", "default"}, {"supersample", "default"}, {"dynamic_resolution", "default"}}}},
+        {"psx.enhancement.post-processing", {"post-processing", "psx.post-processing",
+            {{"antialiasing", "default"}, {"bloom", "default"}, {"bloom_strength", "25"}, {"shader", "default"}}}},
     };
+    bool saw_debug_server = false;
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
         if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml")
             continue;
@@ -72,6 +76,18 @@ int main(int argc, char** argv) {
               entry.path().string() + ": version does not match its directory");
         check(package.id == version_dir.parent_path().filename().string(),
               entry.path().string() + ": id does not match its directory");
+        if (package.id == "psx.integration.debug-server") {
+            saw_debug_server = true;
+            check(package.features.size() == 1 &&
+                      package.features[0].id == "debug-server" &&
+                      !package.features[0].default_enabled && !package.features[0].hidden,
+                  "TCP server is visible in the launcher and disabled by default");
+            check(package.plugins.size() == 1 && package.plugins[0].id == "psx.debug-server" &&
+                      package.plugins[0].feature_id == "debug-server",
+                  "TCP server feature activates the registered plugin");
+            check(package.targets.size() == 1 && package.targets[0].game_id == "*",
+                  "TCP server package applies to every game");
+        }
         if (package.id == "psx.enhancement.8mb-ram") {
             saw_8mb = true;
             check(package.features.size() == 1 && package.features[0].id == "8mb-ram",
@@ -116,7 +132,7 @@ int main(int argc, char** argv) {
         /* Internal Resolution offers Game default and exactly the runtime's
          * preset vocabulary (internal_resolution.h), Auto included, and every
          * choice parses to the value the runtime resolves. */
-        if (package.id == "psx.enhancement.internal-resolution" && package.options.size() == 1) {
+        if (package.id == "psx.enhancement.internal-resolution") {
             const ModOption& option = package.options[0];
             check(option.choices.size() == (size_t)PSX_IR_PRESET_COUNT + 1,
                   "Internal Resolution offers Game default plus every preset");
@@ -185,7 +201,75 @@ int main(int argc, char** argv) {
               saved.feature_option_value(id, feature, "resolution") == "32x",
               "saved enabled 32x choice survives reload");
     }
+
+    // Old config spellings map to the new choice without losing saved choices.
+    for (const auto& spelling : std::map<std::string, std::string>{
+            {"on", "native"}, {"scaled", "native"}, {"fine", "fine"}, {"off", "off"}}) {
+        const fs::path dither_root = scratch / ("dither-" + spelling.first);
+        const fs::path manifest = dither_root / "bundled/psx.enhancement.image-filtering/1.0.0/manifest.toml";
+        fs::create_directories(manifest.parent_path());
+        fs::copy_file(root / "psx.enhancement.image-filtering/1.0.0/manifest.toml", manifest);
+        const fs::path settings = dither_root / "settings.toml";
+        { std::ofstream file(settings); file << "[video]\ndithering = \"" << spelling.first << "\"\n"; }
+        ModPackageManager imported(dither_root);
+        check(imported.scan(&error) && imported.load_state(&error) &&
+                  migrate_legacy_video_settings(imported, settings, &error), error);
+        ModPackageManager saved(dither_root);
+        check(saved.scan(&error) && saved.load_state(&error) &&
+                  saved.feature_enabled("psx.enhancement.image-filtering", "image-filtering") &&
+                  saved.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "dithering") == spelling.second,
+              "legacy dithering survives normal state reload: " + spelling.first);
+    }
+
+    // Exercise migration against the shipped manifests, then reload real state.
+    const fs::path legacy_root = scratch / "legacy";
+    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+        if (!entry.is_regular_file() || entry.path().filename() != "manifest.toml") continue;
+        const auto destination = legacy_root / "bundled" / fs::relative(entry.path(), root);
+        fs::create_directories(destination.parent_path());
+        fs::copy_file(entry.path(), destination);
+    }
+    const fs::path legacy_settings = legacy_root / "settings.toml";
+    const std::string old_settings =
+        "[video]\ninternal_resolution = \"4k\"\ndynamic_resolution = true\n"
+        "dynamic_resolution_min = \"native\"\nsupersample = 1.333\n"
+        "texture_filtering = \"bilinear\"\nantialiasing = false\ndithering = \"fine\"\n"
+        "crt_filter = \"raw\"\nscanlines = true\nscanline_strength = 0.35\n"
+        "geometry_correction = false\nperspective_texturing = true\n"
+        "rewind = true\nrewind_depth = 200\nrewind_interval = 4\n"
+        "[audio]\nspu_hq = true\nfrequency = 48000\n";
+    { std::ofstream file(legacy_settings); file << old_settings; }
+    ModPackageManager legacy(legacy_root);
+    check(legacy.scan(&error) && legacy.load_state(&error), "legacy fixture loads: " + error);
+    check(legacy.set_feature_enabled("psx.enhancement.image-filtering", "image-filtering", false, &error), error);
+    check(legacy.set_feature_option("psx.enhancement.image-filtering", "image-filtering", "texture_filtering", "xbr", &error), error);
+    check(legacy.set_feature_option("psx.enhancement.image-filtering", "image-filtering", "dithering", "off", &error), error);
+    check(migrate_legacy_video_settings(legacy, legacy_settings, &error), "legacy video migration: " + error);
+    check(legacy.feature_option_value(id, feature, "resolution") == "4k" &&
+          legacy.feature_option_value(id, feature, "minimum") == "native" &&
+          legacy.feature_option_value(id, feature, "dynamic_resolution") == "on" &&
+          legacy.feature_option_value(id, feature, "supersample") == "1.333", "resolution choices retain their exact meaning");
+    check(!legacy.feature_enabled("psx.enhancement.image-filtering", "image-filtering") &&
+          legacy.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "texture_filtering") == "xbr" &&
+          legacy.feature_option_value("psx.enhancement.image-filtering", "image-filtering", "dithering") == "off",
+          "newer explicit mod choices win over old settings");
+    check(legacy.feature_option_value("psx.enhancement.crt-filter", "crt-filter", "screen_model") == "raw" &&
+          legacy.feature_option_value("psx.enhancement.crt-filter", "crt-filter", "scanline_strength") == "35", "CRT choices migrate");
+    check(legacy.feature_option_value("psx.enhancement.pgxp", "pgxp", "geometry") == "false" &&
+          legacy.feature_option_value("psx.enhancement.pgxp", "pgxp", "perspective") == "true", "independent PGXP choices migrate");
+    check(legacy.feature_enabled("psx.feature.rewind", "rewind") &&
+          legacy.feature_option_value("psx.feature.rewind", "rewind", "buffer") == "200", "rewind migrates");
+    check(legacy.feature_enabled("psx.enhancement.enhanced-audio", "enhanced-audio"), "SPU mix choice migrates");
+    check(!legacy.set_feature_option(id, feature, "supersample", "nan", &error) &&
+          !legacy.set_feature_option(id, feature, "supersample", "4.01", &error), "invalid supersample input is rejected");
+    ModPackageManager reloaded(legacy_root);
+    error.clear();
+    check(reloaded.scan(&error) && reloaded.load_state(&error), "migrated state reloads: " + error);
+    { std::ofstream file(legacy_settings); file << "[video]\ninternal_resolution = \"720p\"\nsupersample = 2.0\n"; }
+    check(migrate_legacy_video_settings(reloaded, legacy_settings, &error) &&
+          reloaded.feature_option_value(id, feature, "supersample") == "1.333", "migration never overwrites an existing mod choice on later starts");
     fs::remove_all(scratch); // Only this test's unique fixture and state.
+    check(saw_debug_server, "psx.integration.debug-server builtin package missing");
     if (failures == 0)
         std::cout << "PASS builtin mod manifests (" << parsed << " packages)\n";
     return failures ? 1 : 0;

@@ -10,8 +10,17 @@
 extern "C" void gte_geometry_correction_set(int enabled);
 extern "C" void gpu_texture_correction_set(int enabled);
 
+static int s_corrections_set, s_geometry, s_texture;
+
+extern "C" void psx_pgxp_session_request_corrections(int geometry, int texture) {
+    s_corrections_set = 1;
+    s_geometry = geometry != 0;
+    s_texture = texture != 0;
+}
+
 extern "C" void psx_pgxp_session_reset(void) {
     pgxp_mod_request(0, 0, 0);
+    s_corrections_set = 0;
 }
 
 extern "C" PSXPgxpSessionArm psx_pgxp_session_arm(
@@ -32,6 +41,10 @@ extern "C" PSXPgxpSessionArm psx_pgxp_session_arm(
     in.netplay = config->netplay ? 1 : 0;
     /* Take, not peek: the request belongs to this session alone. */
     in.mod_enabled = pgxp_mod_request_take(&in.mod_cpu_mode, &in.mod_culling);
+    in.mod_corrections_set = s_corrections_set;
+    in.mod_geometry = s_geometry;
+    in.mod_texture = s_texture;
+    s_corrections_set = 0;
 
     const PSXPgxpSessionArm arm = psx_pgxp_session_resolve(&in);
     /* The hook flavor tracks the full-word dataflow. A coordinate cache can

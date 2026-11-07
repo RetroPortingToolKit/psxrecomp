@@ -53,13 +53,14 @@ constexpr uint8_t REG_A0 = 4, REG_A3 = 7, REG_S0 = 16, REG_S7 = 23;
 constexpr uint8_t REG_GP = 28, REG_SP = 29, REG_FP = 30, REG_RA = 31;
 
 // Inferred calling-convention usage. Every field here is a HEURISTIC derived
-// from a linear read-before-write scan over the function's own range; loops
-// that read a register before the backward edge writes it will over-report an
-// argument. Treat as a starting hypothesis for a decomp, not as ground truth —
-// `sig_confident` is false whenever the scan hit a construct that weakens it.
+// from the function's own range. Incoming argument reads follow reachable
+// control flow, including branch and load delays. Calls are opaque; there is
+// no interprocedural prototype proof. Treat as a starting hypothesis for a
+// decomp, not ground truth. Incomplete transfers, loops and partial decoding
+// clear `sig_confident`.
 struct Signature {
-    uint8_t  arg_mask = 0;        // bit i set => $a<i> read before written
-    int      arg_count = 0;       // highest contiguous $a register used, + 1
+    uint8_t  arg_mask = 0;        // bit i set => original incoming $a<i> read
+    int      arg_count = 0;       // highest used argument register index + 1
     bool     returns_v0 = false;  // $v0 written on some path to a jr $ra
     bool     returns_v1 = false;
     uint32_t saved_mask = 0;      // registers stored to the stack frame

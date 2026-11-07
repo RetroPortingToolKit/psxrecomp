@@ -57,6 +57,25 @@ static void stage_voice0(void) {
     spu_write(VOICE0(0xE), 0x1070u >> 3);        /* repeat address */
 }
 
+/* Initialization is a guest-clock boundary even before the first register
+ * access. A host pump must not silently discard that initial interval. */
+static void test_initial_clock_boundary(void) {
+    g_cycle = 0;
+    spu_init();
+    g_cycle = 767;
+    spu_catch_up();
+    CHECK(spu_output_available() == 0u, "initial sample is not produced early");
+    g_cycle++;
+    spu_catch_up();
+    CHECK(spu_output_available() == 1u, "first sample is due 768 cycles after init");
+    g_cycle = 768u * 37u + 123u;
+    spu_init();
+    CHECK(spu_output_available() == 0u, "reinitialization clears pending output");
+    g_cycle += 768u;
+    spu_catch_up();
+    CHECK(spu_output_available() == 1u, "nonzero init anchors to its own guest epoch");
+}
+
 static void test_envelope_rises_between_accesses(void) {
     stage_voice0();
     g_cycle = 768u * 10u + 100u;
@@ -163,6 +182,7 @@ static void test_pcm_overlay_uses_guest_clock(void) {
 }
 
 int main(void) {
+    test_initial_clock_boundary();
     test_envelope_rises_between_accesses();
     test_snapshot_keeps_clock_phase();
     test_gate_and_rewind();

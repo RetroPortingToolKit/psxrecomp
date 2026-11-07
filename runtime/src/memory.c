@@ -159,6 +159,21 @@ uint32_t psx_mod_gpu_dma_resolve_address(uint32_t address) {
 int psx_mod_gpu_dma_memory_contains(uint32_t address,uint32_t bytes) {
     return bytes!=0 && mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,NULL);
 }
+const uint8_t *psx_mod_gpu_dma_read_view(uint32_t address,uint32_t bytes) {
+    uint32_t offset;
+    if(!bytes || !mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,&offset))return NULL;
+    return mod_gpu_dma_memory+offset;
+}
+int psx_mod_write_gpu_draw_memory(uint32_t address,const void *data,uint32_t bytes) {
+    extern int psx_mod_host_output_scope(void);
+    uint32_t offset;
+    if(psx_mod_host_output_scope() || address>=0xC0000000u || !data || !bytes ||
+       !mod_gpu_dma_memory_offset(address&0x1FFFFFFFu,bytes,&offset))return 0;
+    if(g_psx_render_pass_active && !rp_mod_journal(mod_gpu_dma_memory,
+            MOD_MEMORY_SIZE/RP_MOD_PAGE,offset,bytes))return 0;
+    memmove(mod_gpu_dma_memory+offset,data,bytes);
+    return 1;
+}
 
 uint32_t psx_gpu_packet_key(uint32_t address) {
     return psx_gpu_packet_key_for(address, mod_gpu_dma_memory_used);
@@ -2292,6 +2307,8 @@ static void psx_write_half_raw(uint32_t addr, uint16_t val) {
 static uint8_t psx_read_byte_raw(uint32_t addr);
 uint8_t psx_read_byte(uint32_t addr) {
     if (g_ls_mode == 2) return (uint8_t)ls_read_hook(addr, 1, 0u);
+    if (g_ds_recording && g_dma_exec_depth == 0 && !psx_get_in_exception())
+        ds_note_read(addr, 1);
     if (g_ls_mode != 1 || s_ls_op_active || g_ls_suppress_record || g_dma_exec_depth > 0) return psx_read_byte_raw(addr);
     s_ls_op_active = 1;
     uint8_t v = psx_read_byte_raw(addr);
@@ -2569,6 +2586,10 @@ void psx_write_byte(uint32_t addr, uint8_t val) {
     if (g_overlay_flush_pending_cycles) g_overlay_flush_pending_cycles();
     if (g_psx_render_pass_active) { render_pass_store(addr, val, 1); return; }
     if (g_ls_mode == 2) { ls_write_hook(addr, 1, val); return; }
+    if (g_ds_recording) {
+        if (g_dma_exec_depth > 0) ds_note_dma_write();
+        else if (!psx_get_in_exception()) ds_note_write(addr, 1);
+    }
     if (g_ls_mode != 1 || s_ls_op_active || g_ls_suppress_record || g_dma_exec_depth > 0) { psx_write_byte_raw(addr, val); return; }
     if (!psx_get_in_exception()) ls_write_hook(addr, 1, val);
     s_ls_op_active = 1;

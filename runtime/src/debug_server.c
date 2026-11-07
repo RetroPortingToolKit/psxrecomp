@@ -17,6 +17,7 @@
 #endif
 #include <time.h>
 #include "debug_server.h"
+#include "debug_bulk_write.h"
 #include "host_launch_timing.h"
 #include "host_sampler.h"
 #include "savestate.h"
@@ -136,6 +137,9 @@ static sock_t s_listen  = SOCK_INVALID;
 static sock_t s_client  = SOCK_INVALID;
 static int    s_port    = DEFAULT_DEBUG_PORT;
 static int    s_listen_err = 0;   /* platform socket error captured by init */
+#ifdef _WIN32
+static int    s_wsa_started;
+#endif
 
 #define RECV_BUF_SIZE 8192
 static PSX_BSS char s_recv_buf[RECV_BUF_SIZE];
@@ -5353,6 +5357,13 @@ static void handle_write_ram(int id, const char *json)
     send_ok(id);
 }
 
+static void handle_write_bulk(int id, const char *json)
+{
+    const char *error = debug_bulk_write(json);
+    if (error) send_err(id, error);
+    else send_ok(id);
+}
+
 /* geom_correction — is [video] geometry_correction / perspective_texturing
  * actually doing anything on THIS title?
  *
@@ -9252,12 +9263,16 @@ static void handle_openxr_hands_override(int id,const char *json) {
     int e=!strcmp(hand,"left")?0:!strcmp(hand,"right")?1:-1;
     int k=!strcmp(pose,"grip")?0:!strcmp(pose,"aim")?1:-1;
     int active=json_get_int(json,"active",1),focused=json_get_int(json,"focused",1),flags=json_get_int(json,"flags",15);
-    if(e<0 || k<0 || active<0 || active>1 || focused<0 || focused>1 || flags<0 || flags>15) {
+    int age_ms=json_get_int(json,"age_ms",0);
+    int origin_valid=json_get_int(json,"origin_valid",-1);
+    if(e<0 || k<0 || active<0 || active>1 || focused<0 || focused>1 || flags<0 || flags>15 ||
+       age_ms<0 || age_ms>1000000 || origin_valid<-1 || origin_valid>1) {
         send_err(id,"invalid hand, pose, focus, activity or flags");return;
     }
     PSXModOpenXRHands s={0};s.struct_size=sizeof s;(void)psx_openxr_hands(&s);
     if(!s.synthetic){memset(&s,0,sizeof s);s.struct_size=sizeof s;s.origin_valid=1;s.origin_orientation_xyzw[3]=1;}
-    s.focused=(uint32_t)focused;s.predicted_time=0;
+    if(origin_valid>=0) s.origin_valid=(uint32_t)origin_valid;
+    s.focused=(uint32_t)focused;s.predicted_time=0;s.age_ms=(uint32_t)age_ms;
     PSXModTrackedPose *v=&s.pose[e][k];memset(v,0,sizeof *v);
     v->active=(uint32_t)active;v->flags=(uint32_t)flags;
     const char *pn[3]={"px_mm","py_mm","pz_mm"},*qn[4]={"qx","qy","qz","qw"};
@@ -9270,6 +9285,38 @@ static void handle_openxr_hands_override(int id,const char *json) {
         int value=json_get_int(json,qn[i],i==3?1000000:0);
         if(value < -1000000 || value > 1000000){send_err(id,"quaternion components must be -1000000..1000000");return;}
         v->orientation_xyzw[i]=(float)value/1000000;
+    }
+    const int sentinel=-100001;
+    const int ox=json_get_int(json,"ox_mm",sentinel);
+    const int oy=json_get_int(json,"oy_mm",sentinel);
+    const int oz=json_get_int(json,"oz_mm",sentinel);
+    if(ox!=sentinel || oy!=sentinel || oz!=sentinel) {
+        if(ox==sentinel || oy==sentinel || oz==sentinel ||
+           ox<-100000 || ox>100000 || oy<-100000 || oy>100000 ||
+           oz<-100000 || oz>100000) {
+            send_err(id,"origin position must provide all ox_mm, oy_mm, oz_mm in -100000..100000");
+            return;
+        }
+        s.origin_position_m[0]=(double)ox/1000;
+        s.origin_position_m[1]=(double)oy/1000;
+        s.origin_position_m[2]=(double)oz/1000;
+    }
+    const int qsentinel=1000001;
+    const int oqx=json_get_int(json,"oqx",qsentinel);
+    const int oqy=json_get_int(json,"oqy",qsentinel);
+    const int oqz=json_get_int(json,"oqz",qsentinel);
+    const int oqw=json_get_int(json,"oqw",qsentinel);
+    if(oqx!=qsentinel || oqy!=qsentinel || oqz!=qsentinel || oqw!=qsentinel) {
+        if(oqx==qsentinel || oqy==qsentinel || oqz==qsentinel || oqw==qsentinel ||
+           oqx<-1000000 || oqx>1000000 || oqy<-1000000 || oqy>1000000 ||
+           oqz<-1000000 || oqz>1000000 || oqw<-1000000 || oqw>1000000) {
+            send_err(id,"origin quaternion must provide all oqx/oqy/oqz/oqw in -1000000..1000000");
+            return;
+        }
+        s.origin_orientation_xyzw[0]=(double)oqx/1000000;
+        s.origin_orientation_xyzw[1]=(double)oqy/1000000;
+        s.origin_orientation_xyzw[2]=(double)oqz/1000000;
+        s.origin_orientation_xyzw[3]=(double)oqw/1000000;
     }
     if(!psx_openxr_hands_override(&s)){send_err(id,"invalid synthetic pose numbers");return;}
     handle_openxr_hands(id,json);
@@ -9585,15 +9632,16 @@ static void handle_menu_host(int id, const char *json)
     send_fmt("{\"id\":%d,\"ok\":true,%s}", id, body);
 }
 
-/* host_key name=<SDL scancode name> down=<1|0> (both when omitted). */
-extern int psx_debug_push_host_key(const char *name, int down);
+/* host_key name=<SDL scancode name> down=<1|0> (both when omitted), mod=<SDL mask>. */
+extern int psx_debug_push_host_key(const char *name, int down, int mod);
 static void handle_host_key(int id, const char *json)
 {
     char name[64] = "";
     json_get_str(json, "name", name, sizeof name);
     int down = json_get_int(json, "down", -1);
-    int ok = down < 0 ? (psx_debug_push_host_key(name, 1) && psx_debug_push_host_key(name, 0))
-                      : psx_debug_push_host_key(name, down);
+    int mod = json_get_int(json, "mod", 0);
+    int ok = down < 0 ? (psx_debug_push_host_key(name, 1, mod) && psx_debug_push_host_key(name, 0, mod))
+                      : psx_debug_push_host_key(name, down, mod);
     send_fmt("{\"id\":%d,\"ok\":%s}", id, ok ? "true" : "false");
 }
 
@@ -12374,15 +12422,20 @@ static void handle_dma_hold_stats(int id, const char *json)
 {
     (void)json;
     DMAGpuHoldStats st;
+    uint64_t host_nodes,host_words;
+    extern void dma_debug_host_draw(uint64_t*,uint64_t*);
+    dma_debug_host_draw(&host_nodes,&host_words);
     dma_debug_get_gpu_hold(&st, NULL);
     send_fmt("{\"id\":%d,\"ok\":true,\"frame\":%llu,\"count\":%llu,\"held_cycles\":%llu,"
              "\"host_us\":%llu,\"words\":%llu,\"steps\":%llu,\"exc_count\":%llu,"
-             "\"exc_held_cycles\":%llu,\"exc_host_us\":%llu}",
+             "\"exc_held_cycles\":%llu,\"exc_host_us\":%llu,"
+             "\"host_draw_nodes\":%llu,\"host_draw_words\":%llu}",
              id, (unsigned long long)s_frame_count,
              (unsigned long long)st.count, (unsigned long long)st.held_cycles,
              (unsigned long long)st.host_us, (unsigned long long)st.words,
              (unsigned long long)st.steps, (unsigned long long)st.exc_count,
-             (unsigned long long)st.exc_held_cycles, (unsigned long long)st.exc_host_us);
+             (unsigned long long)st.exc_held_cycles, (unsigned long long)st.exc_host_us,
+             (unsigned long long)host_nodes,(unsigned long long)host_words);
 }
 
 /* dma_hold_ring: newest `count` held kicks (default 256, max ring cap),
@@ -16470,6 +16523,7 @@ static const CmdEntry s_commands[] = {
     { "read_ram",          handle_read_ram },
     { "dump_ram",          handle_read_ram },   /* alias: one request, one response */
     { "write_ram",         handle_write_ram },
+    { "write_bulk",        handle_write_bulk },
     { "gpu_state",         handle_gpu_state },
     { "geom_correction",   handle_geom_correction },
     { "pgxp",              handle_pgxp },
@@ -16958,6 +17012,7 @@ malformed:
 
 void debug_server_init(int port)
 {
+    if (s_listen != SOCK_INVALID) return;
     if (port > 0) s_port = port;
 
     /* Deterministic cold-boot controller probe. Unlike a TCP set_input command,
@@ -17055,13 +17110,16 @@ void debug_server_init(int port)
 
 #ifdef _WIN32
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    s_listen_err = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (s_listen_err) return;
+    s_wsa_started = 1;
 #endif
 
     s_listen = socket(AF_INET, SOCK_STREAM, 0);
     if (s_listen == SOCK_INVALID) {
         s_listen_err = sock_error();
         fprintf(stdout, "psxrecomp: debug server socket() FAILED\n");
+        debug_server_shutdown();
         return;
     }
 #ifdef _WIN32
@@ -17101,6 +17159,7 @@ void debug_server_init(int port)
         fprintf(stdout, "psxrecomp: debug server bind(%d) FAILED\n", s_port);
         sock_close(s_listen);
         s_listen = SOCK_INVALID;
+        debug_server_shutdown();
         return;
     }
 
@@ -17134,6 +17193,10 @@ void debug_server_init(int port)
         io_set_running(1);
         s_io_thread = SDL_CreateThread(io_thread_main, "psx-dbg-io", NULL);
         if (!s_io_thread) io_set_running(0);
+    }
+    if (!s_io_thread) {
+        debug_server_shutdown();
+        return;
     }
 
     if (!s_frame_history) {
@@ -17576,8 +17639,10 @@ void debug_server_record_frame(void)
         s_frame_count++;
         return;
     }
-    if (!s_frame_history) return;
-    if (!s_cpu) return;
+    if (!s_frame_history || !s_cpu) {
+        ++s_frame_count;
+        return;
+    }
 
     uint32_t idx = (uint32_t)(s_frame_count % FRAME_HISTORY_CAP);
     PSXFrameRecord *r = &s_frame_history[idx];
@@ -17704,8 +17769,15 @@ void debug_server_shutdown(void)
         sock_close(s_client);
         s_client = SOCK_INVALID;
     }
+    if (s_io_mutex) { SDL_DestroyMutex(s_io_mutex); s_io_mutex = NULL; }
+    if (s_io_req_cv) { SDL_DestroyCond(s_io_req_cv); s_io_req_cv = NULL; }
+    if (s_io_resp_cv) { SDL_DestroyCond(s_io_resp_cv); s_io_resp_cv = NULL; }
+    free(s_resp_buf);
+    s_resp_buf = NULL;
+    s_resp_cap = s_resp_len = 0;
+    s_io_state = IO_IDLE;
 #ifdef _WIN32
-    WSACleanup();
+    if (s_wsa_started) { WSACleanup(); s_wsa_started = 0; }
 #endif
 }
 
@@ -17741,6 +17813,14 @@ static int input_route_next(unsigned port)
         return current;
     }
     return -1;
+}
+
+/* Read-only admission check: guest observers must never advance timed input.
+ * Keep deferred routes excluded too; they belong to an injected-input session. */
+int debug_server_input_override_active(void)
+{
+    return s_input_override >= 0 || s_axis_override || s_host_layer ||
+        (s_input_route_active && s_input_route_port == 1);
 }
 
 int debug_server_get_input_override(void)

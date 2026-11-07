@@ -27,6 +27,19 @@ static void resolution_request(void) {
     (void)psx_mod_option_value(PKG_RESOLUTION, "internal-resolution", "resolution",
                                value, sizeof value);
     psx_host_enh_request_resolution(psx_host_enh_parse_internal_resolution(value));
+    value[0] = '\0';
+    (void)psx_mod_option_value(PKG_RESOLUTION, "internal-resolution", "minimum",
+                               value, sizeof value);
+    const int minimum = psx_host_enh_parse_resolution_min(value);
+    value[0] = '\0';
+    (void)psx_mod_option_value(PKG_RESOLUTION, "internal-resolution", "supersample",
+                               value, sizeof value);
+    const int supersample = psx_host_enh_parse_supersample(value);
+    value[0] = '\0';
+    (void)psx_mod_option_value(PKG_RESOLUTION, "internal-resolution", "dynamic_resolution",
+                               value, sizeof value);
+    psx_host_enh_request_resolution_options(minimum, supersample,
+                                            psx_host_enh_parse_tristate(value) + 1);
 }
 
 static void builtin_internal_resolution_activate(void) {

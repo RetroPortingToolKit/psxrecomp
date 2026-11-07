@@ -14,6 +14,8 @@
 #include "gpu.h"
 #include "gpu_hd_textures.h"
 #include "interrupts.h"
+#include "func_override.h"
+#include "psx_cycle_freeze.h"
 #include "psx_cycles.h"
 #include "psx_netplay.h"
 #include "psx_netplay_rb.h"
@@ -525,10 +527,15 @@ static int savestate_format_slot_path(int slot, const char* extension, char* out
     if (!out || cap == 0) return 0;
     out[0] = '\0';
     if (!s_configured || !s_content_scope_valid) return 0;
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
+    if (slot < 0 || slot > SAVESTATE_QUICK_SLOT) return 0;
     /* Keyed by entry_pc so slots from different games in a shared dir never
      * collide; boot_state_load also rejects a mismatched entry_pc internally. */
-    length = snprintf(out, cap, "%s%sstate_%08X%s%s_slot%02d.%s",
+    if (slot == SAVESTATE_QUICK_SLOT)
+        length = snprintf(out, cap, "%s%sstate_%08X%s%s_quick.%s",
+                 s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
+                 s_disc_token, s_content_token, extension);
+    else
+        length = snprintf(out, cap, "%s%sstate_%08X%s%s_slot%02d.%s",
              s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
              s_disc_token, s_content_token, slot, extension);
     if (length < 0 || (size_t)length >= cap) { out[0] = '\0'; return 0; }
@@ -786,7 +793,7 @@ static int request_save_inner(int slot) {
         psx_frontend_on_savestate_refused(0, slot, "Save states are not available yet");
         return 0;
     }
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
+    if (slot < 0 || slot > SAVESTATE_QUICK_SLOT) return 0;
     s_save_failed = 0;
     s_last_save_pc = 0; /* block netplay transfer until this write stamps a PC */
     s_save_defer_slot = -1;
@@ -806,7 +813,7 @@ static int request_load_inner(int slot) {
         psx_frontend_on_savestate_refused(1, slot, "Save states are not available yet");
         return 0;
     }
-    if (slot < 0 || slot >= SAVESTATE_SLOTS) return 0;
+    if (slot < 0 || slot > SAVESTATE_QUICK_SLOT) return 0;
     if (!psx_hle_scheduler_enabled()) {
         /* LLE (host-fiber) mode: the restore longjmp target lives on the
          * scheduler fiber; cross-fiber unwind is unsafe. HLE is the default. */
@@ -932,6 +939,14 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
      * Its C callback cannot be resumed by loading a block-leader PC. Keep
      * both requests pending until the title restores the canonical context. */
     if (!psx_mod_snapshot_ready()) { s_status_wait = "mod_snapshot"; return; }
+    /* Both operations must wait for host continuations. Loading here can
+     * longjmp past a caller's register/clock restore, leaking frozen time.
+     * The save-only resume-PC check below does not protect loads. */
+    if (psx_snapshot_host_call_depth() || func_override_active() ||
+        g_psx_guest_time_frozen) {
+        s_status_wait = "host_continuation";
+        return;
+    }
     s_status_wait = "resume_pc";
 
     if (s_save_pending >= 0) {

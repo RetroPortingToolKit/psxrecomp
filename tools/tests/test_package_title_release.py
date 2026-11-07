@@ -573,6 +573,89 @@ class VerifyZipTests(unittest.TestCase):
         with self.assertRaisesRegex(ptr.PackagingError, 'sha256'):
             ptr.verify_artifact(artifact, self.config, 'public', 'v1.2.3')
 
+    def test_self_consistent_forbidden_package_zip_is_rejected(self):
+        artifact = self.build('public')
+        stage = self.fixture.root / 'stage-public'
+        package_id = 'psx.enhancement.fast-loading'
+        package = stage / 'mods/bundled' / package_id / '1.0.0'
+        package.mkdir(parents=True)
+        (package / 'manifest.toml').write_text('id = "%s"\n' % package_id)
+        # An empty consumer exclusion list and truthful release manifest used
+        # to let this artifact pass. Neither can override the release policy.
+        (stage / 'psx_mod_catalog_psx-runtime.excluded.txt').write_text('')
+        refresh_manifest(stage)
+        zip_stage(stage, artifact)
+        with self.assertRaisesRegex(ptr.PackagingError, 'forbidden loading mod'):
+            ptr.verify_artifact(artifact, self.config, 'public', 'v1.2.3')
+
+
+def refresh_manifest(stage):
+    manifest = json.loads((stage / 'RELEASE_MANIFEST.json').read_text())
+    manifest['mod_packages'] = ptr.staged_mod_ids(stage)
+    manifest['files'] = {p.relative_to(stage).as_posix(): ptr.sha256(p)
+                         for p in sorted(stage.rglob('*'))
+                         if p.is_file() and p.name != 'RELEASE_MANIFEST.json'}
+    (stage / 'RELEASE_MANIFEST.json').write_text(json.dumps(manifest))
+
+
+class PublicModPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = Fixture()
+        self.addCleanup(self.fixture.close)
+        self.config = self.fixture.config()
+        self.stage = self.fixture.root / 'stage'
+        write_stage(self.stage, 'public')
+
+    def verify(self, channel='public'):
+        return ptr.verify_payload(self.stage, None, self.config, channel, 'windows', 'v1.2.3')
+
+    def test_both_ids_are_rejected_even_under_renamed_package_directories(self):
+        for package_id in sorted(ptr.PUBLIC_FORBIDDEN_MODS):
+            with self.subTest(package_id=package_id):
+                package = self.stage / 'mods/bundled/renamed/1.0.0'
+                package.mkdir(parents=True)
+                (package / 'manifest.toml').write_text('id = "%s"\n' % package_id)
+                refresh_manifest(self.stage)
+                with self.assertRaisesRegex(ptr.PackagingError, 'forbidden loading mod'):
+                    self.verify()
+                shutil.rmtree(package.parent)
+
+    def test_physical_paths_without_manifests_are_rejected(self):
+        for package_id in sorted(ptr.PUBLIC_FORBIDDEN_MODS):
+            with self.subTest(package_id=package_id):
+                package = self.stage / 'mods/bundled' / package_id.upper()
+                package.mkdir()
+                # No catalog id or file hash claims this empty leftover path.
+                with self.assertRaisesRegex(ptr.PackagingError, 'forbidden loading mod package path'):
+                    self.verify()
+                package.rmdir()
+
+    def test_manifest_only_claim_is_rejected(self):
+        manifest_path = self.stage / 'RELEASE_MANIFEST.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['mod_packages'].append('psx.enhancement.cd-speed')
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ptr.PackagingError, 'forbidden loading mod'):
+            self.verify()
+
+    def test_authored_title_loading_package_is_allowed(self):
+        package = self.stage / 'mods/bundled/fixture.fast-loading/1.0.0'
+        package.mkdir(parents=True)
+        (package / 'manifest.toml').write_text('id = "fixture.fast-loading"\n')
+        refresh_manifest(self.stage)
+        self.verify()
+
+    def test_non_public_catalog_policy_is_unchanged(self):
+        # Development/playtest packages retain their existing policy. This
+        # release gate neither edits manifests nor changes runtime defaults.
+        self.stage = self.fixture.root / 'stage-playtest'
+        write_stage(self.stage, 'playtest')
+        package = self.stage / 'mods/bundled/psx.enhancement.fast-loading/1.0.0'
+        package.mkdir(parents=True)
+        (package / 'manifest.toml').write_text('id = "psx.enhancement.fast-loading"\n')
+        refresh_manifest(self.stage)
+        self.verify('playtest')
+
 
 if __name__ == '__main__':
     unittest.main()

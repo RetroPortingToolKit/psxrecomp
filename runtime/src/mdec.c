@@ -420,12 +420,12 @@ static int decode_rle_block(int16_t *block, const uint8_t *quant,
                             uint32_t *pos, uint32_t end) {
     memset(block, 0, 64 * sizeof(int16_t));
     if (*pos >= end) return 0;
-    mdec.decode_blocks++;
-
     uint16_t word = mdec.input[(*pos)++];
     while (word == 0xFE00u && *pos < end) {
         word = mdec.input[(*pos)++];
     }
+    if (word == 0xFE00u) return 0;
+    mdec.decode_blocks++;
 
     /* Dequant in Beetle's <<4 fixed-point domain (mdec.cpp:439-485), clamp
      * ±0x4000. DC uses quant[0] with no qscale; AC uses qscale*quant[k]. Each
@@ -506,6 +506,20 @@ static uint8_t *emit_rgb_pixel(uint8_t *out, int y, int cr, int cb) {
 }
 
 static void append_luma_block(const int16_t *yblk) {
+    if (mdec.output_depth == 0) {
+        uint8_t *out = output_reserve(32u);
+        if (!out) return;
+        for (unsigned i = 0; i < 64; i += 2) {
+            unsigned low = (unsigned)(clamp_int(yblk[i], -128, 127) + 136) >> 4;
+            unsigned high = (unsigned)(clamp_int(yblk[i+1], -128, 127) + 136) >> 4;
+            if (low > 15) low = 15;
+            if (high > 15) high = 15;
+            out[i/2] = (uint8_t)((low | (high << 4)) ^
+                                  (mdec.output_signed ? 0x88u : 0u));
+        }
+        mdec.output_size += 32u;
+        return;
+    }
     uint8_t *out = output_reserve(64u);
     if (!out) return;
     for (int i = 0; i < 64; i++) out[i] = to_output_u8(yblk[i]);
@@ -1167,7 +1181,9 @@ int mdec_snapshot_validate(const uint8_t *p, uint32_t len) {
         mdec_wire_u32(p, 0u) != MDEC_SNAP_VER_V1) return 0;
     input_count = mdec_wire_u32(p, MDEC_SNAP_OFF_COUNTS);
     output_size = mdec_wire_u32(p, MDEC_SNAP_OFF_COUNTS + 4u);
-    if (input_count > MDEC_SNAP_INPUT_MAX || output_size > MDEC_SNAP_OUTPUT_MAX)
+    if (input_count > MDEC_SNAP_INPUT_MAX ||
+        mdec_wire_u32(p, 8u) > MDEC_SNAP_INPUT_MAX || /* expected_halfwords */
+        output_size > MDEC_SNAP_OUTPUT_MAX)
         return 0;
     if (mdec_wire_u32(p, MDEC_SNAP_OFF_OUTPUT_POS) > output_size) return 0;
     return (uint64_t)len - mdec_snap_fixed_bytes() >=
@@ -1223,7 +1239,11 @@ int mdec_snapshot_read(const uint8_t *p, uint32_t len) {
     if ((size_t)(r.end - r.p) <
         (size_t)input_count * 2u + (size_t)output_size)
         return 0;
-    if (!ensure_input_capacity(input_count ? input_count : 1u)) return 0;
+    /* Continued MMIO/DMA writes fill the complete command, not just the
+     * prefix already present when the snapshot was saved. */
+    uint32_t input_capacity = input_count > mdec.expected_halfwords
+                            ? input_count : mdec.expected_halfwords;
+    if (!ensure_input_capacity(input_capacity ? input_capacity : 1u)) return 0;
     if (!ensure_output_capacity(output_size ? output_size : 1u)) return 0;
     mdec.input_count = input_count;
     mdec.output_size = output_size;

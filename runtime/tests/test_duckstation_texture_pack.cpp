@@ -1,3 +1,4 @@
+#include "psx_path_utf8.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "../third_party/stb_image.h"
 #include "duckstation_texture_pack.h"
@@ -28,7 +29,7 @@ void check(bool ok, const char* what) {
 using Pack = std::unique_ptr<DuckTexturePack,decltype(&duck_texture_pack_destroy)>;
 Pack create(const fs::path& root) {
     DuckTexturePack* pack = nullptr; char error[512]{};
-    check(duck_texture_pack_create(root.u8string().c_str(),&pack,error,sizeof(error)) == 1,error);
+    check(duck_texture_pack_create(psx_path::utf8(root).c_str(),&pack,error,sizeof(error)) == 1,error);
     return Pack(pack,&duck_texture_pack_destroy);
 }
 std::vector<uint16_t> words(size_t n) {
@@ -506,7 +507,7 @@ void defaults_and_options(const fs::path& root) {
     duck_texture_pack_dump_draw(pack.get(),&q,1,error,sizeof(error)); flush(pack.get());
     const auto files = dumps(root/"options"); check(files.size() == 1,"full page force-alpha emits one page");
     if (!files.empty()) {
-        DuckTextureKey key{}; duck_texture_parse_name(files[0].filename().u8string().c_str(),&key);
+        DuckTextureKey key{}; duck_texture_parse_name(psx_path::utf8(files[0].filename()).c_str(),&key);
         check(key.width == 256 && key.height == 256 && !key.semitransparent,"fullpage and force-alpha filename conventions");
         const auto pixels = read_png(files[0],256,256);
         check(pixels.size() == 256*256*4 && pixels[0] == 0 && pixels[3] == 255,"force-alpha preserves opaque native zero");
@@ -533,7 +534,7 @@ void immutable_palettes_and_pages(const fs::path& root) {
     const auto files = dumps(root/"upload"); check(files.size() == 2,"palette versions keep separate lifetime records");
     bool old_red = false, saved_green = false;
     for (const auto& file : files) {
-        DuckTextureKey key{}; duck_texture_parse_name(file.filename().u8string().c_str(),&key);
+        DuckTextureKey key{}; duck_texture_parse_name(psx_path::utf8(file.filename()).c_str(),&key);
         check(key.width == 32 && key.height == 16 && key.semitransparent && key.palette_min == 0 && key.palette_max == 3,
               "nested crops union, ordinary+semi aggregate, palette bounds reduced");
         const auto pixels = read_png(file,32,16);
@@ -553,7 +554,7 @@ void immutable_palettes_and_pages(const fs::path& root) {
     const auto pagefiles = dumps(root/"page"); check(pagefiles.size() == 2,"changing CLUT B does not fragment CLUT A lifetime");
     bool a_union = false, b_original = false;
     for (const auto& file : pagefiles) {
-        DuckTextureKey key{}; duck_texture_parse_name(file.filename().u8string().c_str(),&key);
+        DuckTextureKey key{}; duck_texture_parse_name(psx_path::utf8(file.filename()).c_str(),&key);
         const auto pixels = read_png(file,key.width,key.height);
         if (!pixels.empty()) { a_union |= key.width == 32 && pixels[0] == 255;
             b_original |= key.width == 16 && pixels[1] == 255 && pixels[2] == 0; }
@@ -590,7 +591,7 @@ void split_coalesce_copy_parts(const fs::path& root) {
     duck_texture_pack_track_upload(pack.get(),0,8,4,8,vram.data(),vram.size());
     q = query(vram,0,0,0,0,15,0,15,0,400); duck_texture_pack_dump_draw(pack.get(),&q,0,error,sizeof(error)); flush(pack.get());
     const auto coalesced = dumps(root/"coalesce"); check(coalesced.size() == 1,"unused adjacent writes coalesce before authoring use");
-    if (!coalesced.empty()) { DuckTextureKey k{}; duck_texture_parse_name(coalesced[0].filename().u8string().c_str(),&k);
+    if (!coalesced.empty()) { DuckTextureKey k{}; duck_texture_parse_name(psx_path::utf8(coalesced[0].filename()).c_str(),&k);
         check(k.source_width_words == 4 && k.source_height == 16,"coalesced original extent retained in filename"); }
 
     config(root/"copy","ConvertCopiesToWrites: true\nDumpC16Textures: true\nDumpTextureWidthThreshold: 1\nDumpTextureHeightThreshold: 1\n");
@@ -681,7 +682,7 @@ void resident_checkpoint(const fs::path& root) {
     check(files.size() == 2,"resident checkpoint and expanded final crop are durable");
     bool union_found = false;
     for (const auto& file : files) {
-        DuckTextureKey key{}; duck_texture_parse_name(file.filename().u8string().c_str(),&key);
+        DuckTextureKey key{}; duck_texture_parse_name(psx_path::utf8(file.filename()).c_str(),&key);
         if (key.width == 32) {
             const auto pixels = read_png(file,32,16);
             union_found = key.offset_x == 0 && key.semitransparent && pixels.size() > 8 && pixels[4] == 255 && pixels[6] == 0;
@@ -723,7 +724,7 @@ int main(int argc, char** argv) {
         release_while_another_source_splits(root/"release-split");
         /* Every artifact is created beneath this fresh, explicitly named test
          * root. No user-provided paths participate in recursive cleanup. */
-        if (argc > 1 && !std::strcmp(argv[1],"--keep-artifacts")) std::printf("ARTIFACT_ROOT: %s\n",root.u8string().c_str());
+        if (argc > 1 && !std::strcmp(argv[1],"--keep-artifacts")) std::printf("ARTIFACT_ROOT: %s\n",psx_path::utf8(root).c_str());
         else fs::remove_all(root);
     } catch (const std::exception& e) { check(false,e.what()); }
     if (failures) { std::fprintf(stderr,"test_duckstation_texture_pack: %d failure(s)\n",failures); return 1; }

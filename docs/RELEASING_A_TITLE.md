@@ -80,6 +80,11 @@ No step warns and then continues.
    - `game.toml` and `game_options.toml`
    - the mod catalog, checked against the build's own catalog list.
      Developer-channel features are removed from public packages.
+     Public packages also reject `psx.enhancement.cd-speed` and
+     `psx.enhancement.fast-loading`, including physical leftover package
+     paths, independently of the title's exclusion list. Pass
+     `EXCLUDE_BUILTIN_MODS` to `psxrecomp_add_game_runtime` to omit them;
+     hiding or disabling their features does not remove their packages.
    - for AOT mode `cache`, the original-disc AOT cache with
      `AOT_CACHE_AUDIT.json`
    - the overlay toolchain, if the title ships it

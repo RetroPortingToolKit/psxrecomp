@@ -84,6 +84,15 @@ typedef struct {
  * port=0 uses the default (4370). */
 void debug_server_init(int port);
 
+/* The launcher mod requests the listener before session startup. Release
+ * defaults off; PSX_DEBUG_SERVER=0/1 explicitly overrides the mod/build default.
+ * Reset the mod request before activating each new session's plugins. */
+void debug_server_request(int enabled);
+int debug_server_requested(void);
+/* Reconcile listener policy after every session's mod activation. Keeps an
+ * enabled listener, starts a newly enabled one, and closes a disabled one. */
+void debug_server_apply_request(int port);
+
 /* Current listener status for heartbeat diagnostics. error is the platform
  * socket error captured by init, or 0 when the listener is active. */
 void debug_server_get_status(int *listening, int *port, int *error);
@@ -198,6 +207,8 @@ void debug_server_check_watchpoints(void);
 /* Returns >= 0 if the debug server wants to override pad input,
  * -1 if no override is active. Value is PS1 16-bit button mask. */
 int debug_server_get_input_override(void);
+/* Read-only P1 injection/session check; does not consume a press or route. */
+int debug_server_input_override_active(void);
 /* Port-2 override word (set_input/press "port":2), or -1. */
 int debug_server_get_input_override_port2(void);
 

@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 # ---- Native/oracle runtime targets ----
 
-set(PSXRECOMP_ROOT "${CMAKE_SOURCE_DIR}/..")
+get_filename_component(PSXRECOMP_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
 include("${CMAKE_SOURCE_DIR}/runtime.cmake")
 
 psxrecomp_add_runtime_target(psx-runtime
@@ -23,6 +23,14 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(digital_pad_snapshot_test tests/test_digital_pad_snapshot.c)
+    target_include_directories(digital_pad_snapshot_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(digital_pad_snapshot_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(digital_pad_snapshot_test PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME digital_pad_snapshot_test COMMAND digital_pad_snapshot_test)
     foreach(_native IN ITEMS 0 1)
         add_executable(host_deadline_${_native}_test tests/test_host_deadline.c)
         target_include_directories(host_deadline_${_native}_test PRIVATE include)
@@ -43,6 +51,9 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME psx_${_span_mode}_span_test COMMAND psx_${_span_mode}_span_test)
     endforeach()
+    add_executable(audio_sync_target_test tests/test_audio_sync_target.c src/audio_sync.c)
+    target_include_directories(audio_sync_target_test PRIVATE include)
+    add_test(NAME audio_sync_target_test COMMAND audio_sync_target_test)
     add_executable(gpu_fmv_hd_test tests/test_gpu_fmv_hd.cpp src/gpu_fmv_hd.c)
     target_include_directories(gpu_fmv_hd_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
     target_compile_definitions(gpu_fmv_hd_test PRIVATE SDL_MAIN_HANDLED PSX_FMV_HD_TESTING=1
@@ -130,6 +141,30 @@ if(BUILD_TESTING)
         add_test(NAME sha256_file_${_hash_variant}_test
             COMMAND sha256_file_${_hash_variant}_test)
     endforeach()
+    add_executable(debug_server_policy_test tests/test_debug_server_policy.c src/debug_server_policy.c)
+    target_include_directories(debug_server_policy_test PRIVATE include)
+    target_compile_definitions(debug_server_policy_test PRIVATE PSX_NO_DEBUG_TOOLS=1)
+    add_test(NAME debug_server_policy_test COMMAND debug_server_policy_test)
+    add_executable(debug_bulk_write_test tests/test_debug_bulk_write.c src/debug_bulk_write.c)
+    target_include_directories(debug_bulk_write_test PRIVATE include)
+    add_test(NAME debug_bulk_write_test COMMAND debug_bulk_write_test)
+    # Run the real production executable, including persisted mod activation.
+    # A static Windows player can be copied to a disposable profile without
+    # inheriting the developer's settings, DLL lookup paths or native saves.
+    if(NOT PSX_DEBUG_TOOLS AND WIN32 AND PSX_STATIC_RUNTIME
+       AND "OpenBIOS" IN_LIST _psxrt_bios_linked)
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+        if(Python3_FOUND)
+            add_test(NAME debug_server_opt_in_test
+                COMMAND "${Python3_EXECUTABLE}" -I -B
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_debug_server_opt_in.py"
+                    --runtime "$<TARGET_FILE:psx-runtime>"
+                    --bios "${PSXRECOMP_ROOT}/bios/OpenBIOS.BIN"
+                    --manifest "${PSXRECOMP_ROOT}/mods/builtin/packages/psx.integration.debug-server/1.0.0/manifest.toml"
+                    --scratch "${CMAKE_CURRENT_BINARY_DIR}")
+            set_tests_properties(debug_server_opt_in_test PROPERTIES TIMEOUT 90)
+        endif()
+    endif()
     find_package(Threads REQUIRED)
     add_executable(host_launch_timing_test
         tests/test_host_launch_timing.cpp tests/host_launch_timing_helper.cpp)
@@ -190,6 +225,12 @@ if(BUILD_TESTING)
     add_executable(mdec_snapshot_activity_test tests/test_mdec_snapshot_activity.c)
     target_include_directories(mdec_snapshot_activity_test PRIVATE include src)
     add_test(NAME mdec_snapshot_activity_test COMMAND mdec_snapshot_activity_test)
+    add_executable(mdec_snapshot_capacity_test tests/test_mdec_snapshot_capacity.c)
+    target_include_directories(mdec_snapshot_capacity_test PRIVATE include src)
+    add_test(NAME mdec_snapshot_capacity_test COMMAND mdec_snapshot_capacity_test)
+    add_executable(mdec_mono_packing_test tests/test_mdec_mono_packing.c src/mdec.c)
+    target_include_directories(mdec_mono_packing_test PRIVATE include)
+    add_test(NAME mdec_mono_packing_test COMMAND mdec_mono_packing_test)
     add_executable(mod_texture_banks_test tests/test_mod_texture_banks.c src/mod_texture_banks.c)
     target_include_directories(mod_texture_banks_test PRIVATE include)
     add_test(NAME mod_texture_banks_test COMMAND mod_texture_banks_test)
@@ -358,10 +399,31 @@ if(BUILD_TESTING)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            add_test(NAME rfe_host_reads_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_host_reads.py --cc ${CMAKE_C_COMPILER})
+            add_test(NAME rfe_irq_context_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_irq_context.py --cc ${CMAKE_C_COMPILER})
+            add_test(NAME rfe_syscall_depth_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_syscall_depth.py --cc ${CMAKE_C_COMPILER})
+        endif()
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME display_ring_capture_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_display_ring_capture.py"
+                --cc "${CMAKE_C_COMPILER}" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/display-ring-fixture")
+            set_tests_properties(display_ring_capture_test PROPERTIES RUN_SERIAL TRUE)
+        endif()
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            add_test(NAME kseg2_inline_load_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kseg2_inline_load.py"
+                --cc "${CMAKE_C_COMPILER}")
+        endif()
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             add_test(NAME dma_mdec_jobs_test COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dma_mdec_jobs.py"
                 --cc "${CMAKE_C_COMPILER}")
             set_tests_properties(dma_mdec_jobs_test PROPERTIES RUN_SERIAL TRUE)
+        endif()
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            add_test(NAME resolved_pad_guard_test COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resolved_pad_guard.py"
+                --cxx "${CMAKE_CXX_COMPILER}")
         endif()
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             add_test(NAME menu_video_snapshot_test COMMAND ${Python3_EXECUTABLE}
@@ -936,6 +998,17 @@ if(BUILD_TESTING)
     target_link_libraries(duckstation_texture_pack_test PRIVATE Threads::Threads)
     target_link_libraries(duckstation_texture_pack_test PRIVATE psx_texture_image_decode)
     add_test(NAME duckstation_texture_pack_test COMMAND duckstation_texture_pack_test)
+    # Exercise real discovery/decode (including its Unicode directory) with
+    # char8_t enabled, as in newer default consumer compiler dialects (#823).
+    add_executable(duckstation_texture_pack_cpp20_test
+        tests/test_duckstation_texture_pack.cpp
+        src/duckstation_texture_pack.cpp)
+    target_include_directories(duckstation_texture_pack_cpp20_test PRIVATE include)
+    set_target_properties(duckstation_texture_pack_cpp20_test PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+    target_link_libraries(duckstation_texture_pack_cpp20_test PRIVATE
+        Threads::Threads psx_texture_image_decode)
+    add_test(NAME duckstation_texture_pack_cpp20_test COMMAND duckstation_texture_pack_cpp20_test)
     add_executable(texture_image_decode_test tests/test_texture_image_decode.cpp)
     target_link_libraries(texture_image_decode_test PRIVATE psx_texture_image_decode)
     add_test(NAME texture_image_decode_test COMMAND texture_image_decode_test
@@ -1029,12 +1102,32 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME openxr_input_test COMMAND openxr_input_test)
 
+    add_executable(openxr_override_release_test
+        tests/test_openxr_override_release.c src/psx_openxr.c)
+    target_include_directories(openxr_override_release_test PRIVATE include)
+    target_compile_definitions(openxr_override_release_test PRIVATE
+        PSX_NO_DEBUG_TOOLS=1)
+    if(NOT MSVC)
+        target_link_libraries(openxr_override_release_test PRIVATE m)
+    endif()
+    add_test(NAME openxr_override_release_test
+             COMMAND openxr_override_release_test)
+
     add_executable(vr_pose_math_test tests/test_vr_pose_math.c src/vr_pose_math.c)
     target_include_directories(vr_pose_math_test PRIVATE include)
     if(NOT MSVC)
         target_link_libraries(vr_pose_math_test PRIVATE m)
     endif()
     add_test(NAME vr_pose_math_test COMMAND vr_pose_math_test)
+
+    add_executable(vr_geometry_math_test
+        tests/test_vr_geometry_math.c
+        src/vr_geometry_math.c)
+    target_include_directories(vr_geometry_math_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(vr_geometry_math_test PRIVATE m)
+    endif()
+    add_test(NAME vr_geometry_math_test COMMAND vr_geometry_math_test)
 
     add_executable(projection_scale_config_test
         tests/test_projection_scale_config.cpp src/projection_scale_config.cpp)
@@ -1334,6 +1427,25 @@ if(BUILD_TESTING)
         target_link_libraries(ws_screen_mask_test PRIVATE m)
     endif()
     add_test(NAME ws_screen_mask_test COMMAND ws_screen_mask_test)
+    add_executable(ws_reveal_edge_test tests/test_ws_reveal_edge.c)
+    target_include_directories(ws_reveal_edge_test PRIVATE include)
+    add_test(NAME ws_reveal_edge_test COMMAND ws_reveal_edge_test)
+    # Reveal-edge quads through the real GP0 flat/textured quad handlers.
+    add_executable(ws_reveal_edge_exec_test
+        tests/test_ws_reveal_edge_exec.c
+        src/psx_video_timing.c
+        src/gpu_timeline.c)
+    target_include_directories(ws_reveal_edge_exec_test PRIVATE include src)
+    if(UNIX)
+        target_link_libraries(ws_reveal_edge_exec_test PRIVATE m)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(ws_reveal_edge_exec_test PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(ws_reveal_edge_exec_test PRIVATE
+            $<IF:$<PLATFORM_ID:Darwin>,-Wl$<COMMA>-dead_strip,-Wl$<COMMA>--gc-sections>)
+    endif()
+    add_test(NAME ws_reveal_edge_exec_test COMMAND ws_reveal_edge_exec_test)
 
     add_executable(mod_gpu_dma_aperture_test
         tests/test_mod_gpu_dma_aperture.c
@@ -1407,6 +1519,12 @@ if(BUILD_TESTING)
     add_executable(spu_fidelity_test tests/test_spu_fidelity.c src/crc32.c)
     target_include_directories(spu_fidelity_test PRIVATE include)
     add_test(NAME spu_fidelity_test COMMAND spu_fidelity_test)
+    add_executable(spu_irq_enable_test tests/test_spu_irq_enable.c src/crc32.c)
+    target_include_directories(spu_irq_enable_test PRIVATE include)
+    add_test(NAME spu_irq_enable_test COMMAND spu_irq_enable_test)
+    add_executable(spu_signed_nibble_test tests/test_spu_signed_nibble.c src/crc32.c)
+    target_include_directories(spu_signed_nibble_test PRIVATE include)
+    add_test(NAME spu_signed_nibble_test COMMAND spu_signed_nibble_test)
     # Same story as sio_dualshock_rumble_test: registered but unlinkable on
     # origin/master (crc32_update undefined), so it never ran. With crc32 linked
     # it now runs 137 checks and fails 4, all in one ADSR sweep region
@@ -1570,6 +1688,16 @@ if(BUILD_TESTING)
         ../recompiler/lib/toml11)
     target_link_libraries(mod_packages_test PRIVATE chdr-static)
     add_test(NAME mod_packages_test COMMAND mod_packages_test)
+    add_executable(mod_command_startup_test tests/test_mod_command_startup.cpp)
+    target_include_directories(mod_command_startup_test PRIVATE include)
+    add_test(NAME mod_command_startup_test COMMAND mod_command_startup_test)
+    add_executable(mod_binding_options_test
+        tests/test_mod_binding_options.cpp src/mod_packages.cpp src/mod_media.cpp
+        src/iso_reader.cpp src/cue_sheet.cpp src/crc32.c src/psx_sha256.c)
+    target_include_directories(mod_binding_options_test PRIVATE
+        include ../recompiler/include ../recompiler/lib/toml11)
+    target_link_libraries(mod_binding_options_test PRIVATE chdr-static)
+    add_test(NAME mod_binding_options_test COMMAND mod_binding_options_test)
 
     add_executable(builtin_mod_manifests_test
         tests/test_builtin_mod_manifests.cpp
@@ -1860,6 +1988,14 @@ if(BUILD_TESTING)
     target_include_directories(cdrom_sector_fifo_test PRIVATE include src)
     add_test(NAME cdrom_sector_fifo_test COMMAND cdrom_sector_fifo_test)
 
+    add_executable(cdrom_read_motor_test tests/test_cdrom_read_motor.c)
+    target_include_directories(cdrom_read_motor_test PRIVATE include src)
+    add_test(NAME cdrom_read_motor_test COMMAND cdrom_read_motor_test)
+
+    add_executable(cdrom_getlocl_test tests/test_cdrom_getlocl.c)
+    target_include_directories(cdrom_getlocl_test PRIVATE include src)
+    add_test(NAME cdrom_getlocl_test COMMAND cdrom_getlocl_test)
+
     add_executable(cdrom_resident_sector_test tests/test_cdrom_resident_sector.c)
     target_include_directories(cdrom_resident_sector_test PRIVATE include src)
     add_test(NAME cdrom_resident_sector_test COMMAND cdrom_resident_sector_test)
@@ -1892,6 +2028,10 @@ if(BUILD_TESTING)
     # Bug B: the pacing decision must take ONE counter sample, so the unsigned
     # subtraction cannot underflow into a ~24.7-day SDL_Delay.
     add_executable(frame_pacing_test tests/test_frame_pacing.c)
+    add_executable(launcher_vsync_vrr_test tests/test_launcher_vsync.c)
+    target_include_directories(launcher_vsync_vrr_test PRIVATE include)
+    target_compile_definitions(launcher_vsync_vrr_test PRIVATE RECOMP_LAUNCHER_HAS_VSYNC_VRR=1)
+    add_test(NAME launcher_vsync_vrr_test COMMAND launcher_vsync_vrr_test)
     add_executable(launcher_vsync_test tests/test_launcher_vsync.c)
     target_include_directories(launcher_vsync_test PRIVATE include)
     add_test(NAME launcher_vsync_test COMMAND launcher_vsync_test)
@@ -1979,7 +2119,8 @@ if(BUILD_TESTING)
         src/mod_builtin_image_filtering.c
         src/mod_builtin_enhanced_audio.c
         src/mod_builtin_rewind.c
-        src/mod_builtin_internal_resolution.c)
+        src/mod_builtin_internal_resolution.c
+        src/mod_builtin_post_processing.c)
     target_include_directories(host_enhancements_test PRIVATE include)
     add_test(NAME host_enhancements_test COMMAND host_enhancements_test)
 
@@ -2346,6 +2487,9 @@ if(BUILD_TESTING)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME replay_observation_compare_test
+                 COMMAND ${Python3_EXECUTABLE} -B
+                         ${PSXRECOMP_ROOT}/tools/tasreplays/test_stream_compare.py)
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC
            AND NOT CMAKE_CROSSCOMPILING)
             add_test(NAME audio_trace_pcm_guard_test
@@ -2363,6 +2507,10 @@ if(BUILD_TESTING)
             add_test(NAME memory_debug_trace_guard_test
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_memory_debug_trace_guard.py
+                             --cc ${CMAKE_C_COMPILER})
+            add_test(NAME memory_byte_recorder_test
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_memory_byte_recorder.py
                              --cc ${CMAKE_C_COMPILER})
             # The frame-trace record path must stay allocation- and IO-free, or
             # it perturbs the frame it measures and no functional test notices.
@@ -2394,6 +2542,7 @@ if(BUILD_TESTING)
                                  --compiler ${CMAKE_C_COMPILER}
                                  --recomp-net ${_RNET_ROOT})
             endif()
+            add_test(NAME overlay_abi_message_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_abi_message.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME overlay_retry_c11_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay_retry_c11.py --compiler ${CMAKE_C_COMPILER})
         endif()
         add_test(NAME setup_bios_assets_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_bios_assets.py)
@@ -2450,6 +2599,9 @@ if(BUILD_TESTING)
         add_test(NAME bios_registry_zero_entry_guard_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bios_registry_zero_entry.py)
+        add_test(NAME game_runtime_bios_test
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_runtime_bios.py)
         # Exercises runtime/psx_check_mod_catalog.cmake -- the build-time guard
         # that fails a build when a title's mod packages land in the legacy
         # mods/packages layout instead of mods/bundled (bead beads-eio.3.101).
@@ -2676,4 +2828,16 @@ if(BUILD_TESTING)
         target_link_libraries(audio_sink_resume_test PRIVATE m)
     endif()
     add_test(NAME audio_sink_resume_test COMMAND audio_sink_resume_test)
+endif()
+
+# Focused GPUSTAT fixture: whole-program optimization discards unused renderer paths.
+if(BUILD_TESTING AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    add_executable(gpu_texture_disable_status_test tests/test_gpu_texture_disable_status.c)
+    target_include_directories(gpu_texture_disable_status_test PRIVATE include)
+    target_compile_definitions(gpu_texture_disable_status_test PRIVATE PSX_ENABLE_BLOCK_CYCLES=1 PSX_NO_DEBUG_TOOLS=1)
+    target_compile_options(gpu_texture_disable_status_test PRIVATE -O2 -fwhole-program)
+    if(NOT WIN32)
+        target_link_libraries(gpu_texture_disable_status_test PRIVATE m)
+    endif()
+    add_test(NAME gpu_texture_disable_status_test COMMAND gpu_texture_disable_status_test)
 endif()

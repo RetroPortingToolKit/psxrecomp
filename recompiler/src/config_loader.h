@@ -880,6 +880,13 @@ struct RuntimeConfig {
     std::string           direct_shortcut;
     std::string           direct_shortcut_button;
 
+    // select_shortcuts: false when the title reads Select combinations
+    // itself (a soft-reset chord, a debug menu), so the host's Select + R3 /
+    // R1 / L1 shortcuts would take buttons the game needs. They then start
+    // unbound, including after "reset to default"; a binding the player saves
+    // still wins, and direct_shortcut is unaffected.
+    bool                  select_shortcuts = true;
+
     // experimental_jogcon_force_feedback: EXPERIMENTAL. Drive a host wheel's
     // SDL haptics (constant force / centring spring) from a presented
     // JogCon's motor commands. Opt-in; gamepads are never driven; direction

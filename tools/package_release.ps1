@@ -37,6 +37,7 @@ New-Item -ItemType Directory -Force (Join-Path $Stage "saves") | Out-Null
 Copy-Item (Join-Path $BuildPath "PSXRecomp.exe") (Join-Path $Stage "PSXRecomp.exe")
 Copy-Item (Join-Path $Root "README.md") $Stage
 Copy-Item (Join-Path $Root "LICENSE") $Stage
+Copy-Item (Join-Path $Root "PERMISSIONS.md") $Stage
 $BundledBiosSrc = Join-Path $BuildPath "bios"
 $BundledBiosDst = Join-Path $Stage "bios"
 New-Item -ItemType Directory -Force $BundledBiosDst | Out-Null

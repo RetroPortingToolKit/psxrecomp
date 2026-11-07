@@ -24,7 +24,7 @@
 extern "C" {
 #endif
 
-#define PSX_MENU_ABI_VERSION 1
+#define PSX_MENU_ABI_VERSION 2
 /* PsxMenuHost.default_selection is present (appended, ABI-compatible). */
 #define PSX_MENU_HOST_HAS_DEFAULT_SELECTION 1
 

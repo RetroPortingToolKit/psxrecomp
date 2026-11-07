@@ -47,6 +47,8 @@ enum class ModOptionType {
     Boolean,
     Choice,
     Integer,
+    Decimal,
+    Binding,
 };
 
 struct ModChoice {
@@ -65,6 +67,9 @@ struct ModOption {
     int64_t min_value = 0;
     int64_t max_value = 0;
     int64_t step = 1;
+    bool slider = false;
+    bool allow_wheel = false;
+    int64_t display_divisor = 1;
     std::vector<ModChoice> choices;
     /* Optional id of a BOOLEAN option in the same feature that overrides this
      * one. While that option is true this control is inert: the launcher greys
@@ -248,9 +253,8 @@ struct ModPlugin {
     bool netplay_host_output = false;
     /* netplay = "host_only" (format 11): the plugin never touches guest
      * execution at all -- it only sets host presentation, audio output or
-     * host-tool state from its activation (the framework's CRT Filter, Image
-     * Filtering, Enhanced Audio and Rewind). Its feature may own nothing
-     * else (ModFeature::host_only). It stays on per player in every netplay
+     * host-tool state from its activation. Its feature may also own local file
+     * resources, but no patches, overlays or prepared media (ModFeature::host_only). It stays on per player in every netplay
      * mode, is never published in a lobby plan, and is not part of the plan
      * fingerprint. */
     bool netplay_host_only = false;
@@ -708,5 +712,11 @@ struct ModPluginAudit {
 };
 ModPluginAudit mod_audit_registered_plugins(
     const std::vector<std::filesystem::path>& manifest_roots);
+
+/* Import old Settings choices only for features with no explicit mod selection.
+ * Newer mod choices always win; the original settings file is never rewritten here. */
+bool migrate_legacy_video_settings(ModPackageManager& manager,
+                                   const std::filesystem::path& settings_path,
+                                   std::string* error = nullptr);
 
 } // namespace PSXRecompV4

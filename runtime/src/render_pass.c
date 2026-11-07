@@ -926,6 +926,9 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
      * equals the baseline captured for it skips re-capturing that state. */
     int reuse_baseline = eye >= 0 && s_baseline_ready && baseline_reuse_enabled() &&
                          (!s_capture_only || s_capture_pair);
+    const int trace_extract = eye >= 0 && !reuse_baseline &&
+                              psx_frame_trace_enabled();
+    const uint64_t extract_t0 = trace_extract ? gl_renderer_perf_ticks() : 0;
     if (!checkpoint_save(cpu, reuse_baseline)) {
         gl_renderer_pass_begin_diag(&s_attempt.gl);
         s_stats.checkpoint_refused++;
@@ -934,6 +937,9 @@ static int render_transaction(struct CPUState *cpu, const PSXModRenderPass *pass
         transaction_end(eye, 0, 0);
         return pass_refuse(s_checkpoint_failure ? s_checkpoint_failure : "checkpoint", status);
     }
+    if (trace_extract)
+        psx_frame_trace_add(PSX_TRACE_SNAPSHOT_EXTRACT,
+                            trace_ticks_to_us(gl_renderer_perf_ticks() - extract_t0));
     if (eye >= 0 && !s_capture_only && !gpu_render_projective_begin()) {
         gl_renderer_pass_begin_diag(&s_attempt.gl);
         status = transaction_status(transaction_kind(eye));
@@ -1253,8 +1259,27 @@ static int render_pair(CPUState *cpu, const PSXModStereoFrame *frame,
     elapsed = (double)(gl_renderer_perf_ticks() - t0) * 1000.0 /
               (double)gl_renderer_perf_frequency();
     s_stereo.last_pair_ms = elapsed;
+    const uint64_t publish_t0 = psx_frame_trace_enabled()
+                                    ? gl_renderer_perf_ticks() : 0;
     if (ok && !gl_renderer_stereo_publish(s_stereo.attempts, cycle, s_stereo.eye_view)) {
         ok = 0; s_stereo.last_failure = "pair_publish";
+    }
+    if (publish_t0) {
+        const uint64_t pub_ticks = gl_renderer_perf_ticks() - publish_t0;
+        uint64_t pub_us = trace_ticks_to_us(pub_ticks);
+        /* Publish is usually sub-microsecond; keep a lower bound visible rather
+         * than letting the 1 us stage resolution report "never ran". */
+        if (pub_ticks && !pub_us) pub_us = 1;
+        psx_frame_trace_add(PSX_TRACE_SNAPSHOT_PUBLISH, pub_us);
+    }
+    if (psx_frame_trace_enabled()) {
+        double gpu_scene_ms = 0.0, gpu_present_ms = 0.0;
+        uint32_t gpu_age = 0;
+        if (gl_renderer_perf_latest_gpu(&gpu_scene_ms, &gpu_present_ms,
+                                        &gpu_age))
+            psx_frame_trace_gpu_sample(
+                (uint32_t)(gpu_scene_ms * 1000.0),
+                (uint32_t)(gpu_present_ms * 1000.0), gpu_age);
     }
     if (ok) {
         s_stereo.pairs++;
