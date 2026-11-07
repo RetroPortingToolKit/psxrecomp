@@ -33,7 +33,6 @@ static void hands_clear(void) {
     s_hands.sequence=++s_hands_sequence;s_hands.age_ms=UINT32_MAX;
     s_hands_sample_ms=0;
 }
-#ifndef PSX_NO_DEBUG_TOOLS
 static int s_input_override;
 static PSXModOpenXRInput s_injected;
 static int s_hands_override;
@@ -116,7 +115,6 @@ int psx_openxr_input_override(const PSXModOpenXRInput *input) {
     }
     s_injected=*input; s_input_override=1; return 1;
 }
-#endif
 void psx_openxr_input_snapshot(PSXModOpenXRInput *out) { if(out)*out=s_input; }
 void psx_openxr_pair_metadata(uint64_t id,uint64_t cycle){s_pair_id=id;s_pair_cycle=cycle;s_source=1;s_native_frame=0;}
 void psx_openxr_native_metadata(uint64_t frame){s_pair_id=s_pair_cycle=0;s_source=2;s_native_frame=frame;}
@@ -459,9 +457,7 @@ static int service_loss(void) {
 #endif
 int psx_openxr_hands(PSXModOpenXRHands *out) {
     if(!out || out->struct_size!=sizeof *out)return 0;
-#ifndef PSX_NO_DEBUG_TOOLS
     if(s_hands_override){*out=s_injected_hands;return 1;}
-#endif
     *out=s_hands;out->struct_size=sizeof *out;out->age_ms=UINT32_MAX;
 #if defined(PSX_OPENXR)
     if(s_hands_sample_ms) {
@@ -504,10 +500,8 @@ void psx_openxr_shutdown(void) {
     s_quad_distance=s_quad_width=s_quad_height=0;
     memset(&s_input,0,sizeof s_input);
     hands_clear();
-#ifndef PSX_NO_DEBUG_TOOLS
     s_input_override=0;
     s_hands_override=0;memset(&s_injected_hands,0,sizeof s_injected_hands);
-#endif
 }
 int psx_openxr_enable(int enabled) {
     psx_openxr_shutdown();memset(&s_stats,0,sizeof s_stats);
@@ -527,7 +521,6 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
     if(!out || out->struct_size!=sizeof *out)return 0;
     uint64_t seq=s_input.sequence+1;
     memset(&s_input,0,sizeof s_input);s_input.struct_size=sizeof s_input;s_input.sequence=seq;
-#ifndef PSX_NO_DEBUG_TOOLS
     if(s_input_override) {
         s_input=s_injected;s_input.sequence=seq;s_input.synthetic=1;
         for(int e=0;e<2;e++) if(!s_input.focused || !s_input.active[e])
@@ -540,7 +533,6 @@ int psx_openxr_input(PSXModOpenXRInput *out) {
         if(!s_input.focused)hands_clear();
         *out=s_input;return 1;
     }
-#endif
 #if defined(PSX_OPENXR)
     if(s_stats.enabled && s_stats.initialized && !s_stats.frame_open && events() && s_stats.running) {
         if(sync_actions() && s_stats.state==XR_SESSION_STATE_FOCUSED) {
