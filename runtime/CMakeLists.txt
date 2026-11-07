@@ -1109,6 +1109,15 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME vr_pose_math_test COMMAND vr_pose_math_test)
 
+    add_executable(vr_geometry_math_test
+        tests/test_vr_geometry_math.c
+        src/vr_geometry_math.c)
+    target_include_directories(vr_geometry_math_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(vr_geometry_math_test PRIVATE m)
+    endif()
+    add_test(NAME vr_geometry_math_test COMMAND vr_geometry_math_test)
+
     add_executable(projection_scale_config_test
         tests/test_projection_scale_config.cpp src/projection_scale_config.cpp)
     target_include_directories(projection_scale_config_test PRIVATE
