@@ -88,6 +88,10 @@ use), then get scored:
 | `data` | classified as data masquerading as code |
 
 Every row also carries `confidence_reason`, so a claim can be argued with.
+Address-taken bytes still need plausible compiler-entry evidence. For example,
+format strings can decode as ALU words with nonzero unused shift fields; these
+do not establish a pre-frame or leaf entry. Direct calls and explicit entries
+retain their stronger evidence, without restricting hardware instruction decoding.
 
 **Jump tables.** `resolve_exact_bounded_jump_table()` in `function_analysis.cpp`
 is tried first and is authoritative when it fires, but it accepts exactly one
@@ -117,11 +121,15 @@ functions in any image. They are detected by exact pattern and named from the
 A0/B0/C0 tables (`bios_call_names.cpp`, sourced from psx-spx), so
 `func_800749DC` with 41 callers reads as `bios_A0_3F_printf` instead.
 
-**Signatures** are inferred by a read-before-write scan: arguments in `$a0–$a3`,
-return in `$v0/$v1`, callee-saved set from the prologue's stores, leaf/non-leaf,
-GTE/MMIO/syscall use, frame size. This is a **heuristic** — a loop that reads a
-register before the backward edge writes it over-reports an argument — so each
-record carries `sig.confident`, false whenever the scan hit such a construct.
+**Signatures** report incoming `$a0–$a3` reads along reachable paths, merging
+forward joins and respecting branch and R3000 load delays. Reads of the old
+argument in a load-delay slot count; unreachable words after a jump do not.
+Return-register writes, saved registers, leaf/GTE/MMIO/syscall use and frame
+size remain local-body hints. Frame metadata includes validated setup before
+allocation and allocation in a branch delay slot. Calls are opaque: this is a
+**heuristic**, not an interprocedural prototype proof. Loops, partial decoding
+and transfers outside the reported range clear `sig.confident`; split native
+pieces need not have the exclusive bounds of a source-language function.
 
 ### Measured on three titles
 
@@ -216,6 +224,35 @@ workloads; those snapshot timings were rejected. Ape Escape's different selected
 gadgets also limit performance inference. These are representative smoke checks,
 not complete-game qualification or a proven optimization result. Full CTest
 finished with 147 passes, the same 13 pre-existing failures and 3 disabled tests.
+
+### Raw-image, boundary and ABI follow-up
+
+Against v0.3.6, the follow-up compares 174 loaded images, including eleven
+byte-preserving raw code images. It retains all 105,724 previously matched
+explicit starts and 4,928 additional qualified reference entries; these were
+already discovered, so this pass claims **zero additional entry recoveries**.
+Seven false entries disappear (five string fragments and two numeric-data
+fragments). Scheduled-frame reporting corrects 381 mismatches: all 3,316 nonzero
+resident frame records in the three raw linked images now agree.
+
+All fourteen raw BIN payloads are accounted for. One of 167 overlay groups has
+matching retained loaded bytes; 166 remain unqualified. The two `0x9c` streams
+now provide 187 verified reference entries through a private comparison reader;
+their eight extension bytes remain opaque. The five ambiguous unreferenced
+boundaries retain their prior explicit-entry/rejection disposition. No raw
+loader inference or general SYM importer is added to the product.
+
+Nineteen synthetic cases cover argument joins, branch/load delays, unreachable
+reads, uncertain outward transfers and scheduled frames. Frozen consumer
+regeneration preserves native code for Ape Escape, Tomba and Tomba 2; Tomba's
+only file differences are generated annotation comments. Counts and limits:
+[`accuracy/symbol_boundary_results.json`](../accuracy/symbol_boundary_results.json),
+[`boundary/overlay burndown`](internal/SYMBOL_BOUNDARY_OVERLAY_BURNDOWN.md).
+
+Qualification retains the 13 known baseline failures and 3 disabled tests, with
+149 passing checks. The PGO fixture initially hit its Windows path-length guard;
+its supported shorter-scratch rerun passes. Windows packaging/boot and Linux
+boot checks pass, as do all five packaged tools with Windows-only PATH.
 
 ### Initial eight-build qualification
 
