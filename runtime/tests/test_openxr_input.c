@@ -144,6 +144,10 @@ int main(void) {
     h.pose[1][1].orientation_xyzw[3]=1;h.pose[1][1].position_m[0]=.3f;
     CHECK(psx_openxr_hands_override(&h));
     CHECK(psx_openxr_hands(&got) && got.synthetic && got.age_ms==0 && got.pose[1][1].position_m[0]==.3f);
+    h.age_ms=151;CHECK(psx_openxr_hands_override(&h));
+    CHECK(psx_openxr_hands(&got) && got.synthetic && got.age_ms==151);
+    h.age_ms=0;CHECK(psx_openxr_hands_override(&h));
+    CHECK(psx_openxr_hands(&got) && got.age_ms==0);
     uint64_t hands_seq=got.sequence;
     CHECK(psx_openxr_hands(&got) && got.sequence==hands_seq); /* Read only. */
     h.pose[1][1].orientation_xyzw[3]=0;CHECK(!psx_openxr_hands_override(&h));

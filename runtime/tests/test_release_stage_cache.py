@@ -377,6 +377,10 @@ class ToolchainStagingTest(unittest.TestCase):
         touch(os.path.join(self.tools, 'compile_overlays.py'))
         touch(os.path.join(self.tools, 'bios_module_build.py'))
         touch(os.path.join(self.include, 'overlay_api.h'))
+        # The BIOS module builder reads the codegen hash from this header, so a
+        # stageable toolchain must carry one (see the two tests below).
+        touch(os.path.join(self.include, 'overlay_codegen_hash.h'),
+              '#define PSX_OVERLAY_CODEGEN_HASH 0xecd487f7u\n')
         touch(os.path.join(self.include, 'overlay_dispatch_preamble.c.inc'))
         touch(os.path.join(self.include, 'psx_bios_module_glue.c.inc'))
         touch(os.path.join(self.include, 'psx_bios_module.h'))
@@ -425,6 +429,30 @@ class ToolchainStagingTest(unittest.TestCase):
             self.stage, 'overlay_toolchain', 'bios', 'SCPH1001.toml')))
         self.assertTrue(os.path.isfile(os.path.join(
             self.stage, 'overlay_toolchain', 'tcc', 'COPYING')))
+
+    def test_stages_the_codegen_hash_header(self):
+        """The builder reads the hash from the STAGED include tree, so the
+        header has to travel with it."""
+        rs.stage_toolchain(self.stage, self.recomp, self.tools, self.include,
+                           self.cache, platform_tag='win',
+                           mingw_bin=self.mingw, log=lambda *_a: None)
+        staged = os.path.join(self.stage, 'overlay_toolchain', 'include',
+                              'overlay_codegen_hash.h')
+        self.assertTrue(os.path.isfile(staged))
+        self.assertEqual(rs.co.codegen_hash(os.path.dirname(staged)), 0xecd487f7)
+
+    def test_include_tree_without_a_codegen_hash_fails_loudly(self):
+        """An unbuilt include tree would ship a toolchain whose every
+        player-side BIOS build is refused on load, and nothing in the package
+        would show it: the player meets it at a one-time setup step."""
+        os.remove(os.path.join(self.include, 'overlay_codegen_hash.h'))
+        with self.assertRaises(rs.StageError) as cm:
+            rs.stage_toolchain(self.stage, self.recomp, self.tools, self.include,
+                               self.cache, platform_tag='win',
+                               mingw_bin=self.mingw, log=lambda *_a: None)
+        msg = str(cm.exception)
+        self.assertIn('overlay_codegen_hash.h', msg)
+        self.assertIn('runtime BUILD', msg)
 
 
 class TinyccNoticeTest(unittest.TestCase):

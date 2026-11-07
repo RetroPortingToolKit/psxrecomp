@@ -4215,6 +4215,20 @@ extern "C" int psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     return game_netplay_function_entry(cpu, address);
 }
 
+extern "C" int psx_mod_function_entry_has_hook(uint32_t address) {
+    using namespace PSXRecompV4;
+    if (!g_psx_mod_function_entry_hooks) return 0;
+    const uint32_t key = function_entry_key(address);
+    auto has_key = [key](const auto& table) {
+        auto it = std::lower_bound(
+            table.begin(), table.end(), key,
+            [](const auto& hook, uint32_t value) { return hook.key < value; });
+        return it != table.end() && it->key == key;
+    };
+    return has_key(active_function_entry_hooks()) ||
+           has_key(game_netplay_entry_hooks());
+}
+
 static int register_game_netplay_hook(uint32_t address,
                                       PSXModFunctionEntryCallback callback,
                                       PSXModFunctionFilterCallback filter) {

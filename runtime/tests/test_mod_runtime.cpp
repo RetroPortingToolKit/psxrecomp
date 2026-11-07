@@ -898,6 +898,8 @@ int main(int argc, char** argv) {
     psx_mod_function_entry(&entry_cpu, 0x80003000u);
     check(g_psx_mod_function_entry_hooks == 0 && active_entry_hits == 0,
           "function-entry hooks must not run before plugin activation");
+    check(!psx_mod_function_entry_has_hook(0x80003000u),
+          "native overlay routing has no hook guard before activation");
     psx_host_set_hud_draw_cb(old_session_hud, nullptr);
     mod_runtime_activate_plugins();
     psx_host_hud_draw(64, 64);
@@ -941,6 +943,10 @@ int main(int argc, char** argv) {
           "only active PCM plugins mix every stereo sample");
     check(g_psx_mod_function_entry_hooks == 1,
           "activation must flatten exactly the active plan's entry hooks");
+    check(psx_mod_function_entry_has_hook(0x80003000u) &&
+              psx_mod_function_entry_has_hook(0xA0003000u) &&
+              !psx_mod_function_entry_has_hook(0x80003004u),
+          "native overlay routing guards every active hook alias, not other addresses");
     psx_mod_function_entry(&entry_cpu, 0x80003000u);
     check(active_entry_hits == 1 && active_entry_last == 0x80003000u,
           "active plan's function-entry hook must run at its address");
@@ -956,6 +962,8 @@ int main(int argc, char** argv) {
           "hooks of plugins the plan does not activate must never run");
     /* A replaced plan drops every hook until its own activation. */
     check(PSXRecompV4::mod_runtime_clear_for_netplay(&error), error.c_str());
+    check(!psx_mod_function_entry_has_hook(0x80003000u),
+          "clearing the active plan releases native overlay hook guards");
     psx_mod_instruction(&entry_cpu, 0x80003004u, 0x90A30014u);
     check(instruction_hits == 2 && !g_psx_mod_instruction_hooks, "clearing removes instruction hooks");
     check(psx_mod_memory_address(&entry_cpu, 0x80003008u, 0x8CA30014u, 0x80004000u) == 0x80004000u,
