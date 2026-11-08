@@ -79,7 +79,7 @@ def _open_package(path):
     return zipfile.ZipFile(path)
 
 
-def audit(path, game_id, diagnostics_id, public, replay_helper=True):
+def audit(path, game_id, diagnostics_id, public, replay_helper=True, allow_hd_textures=False):
     """public=True: a public production release (Playtest Diagnostics ship off).
     public=False: a playtest/pre-release package (they ship on). Either way the
     source manifests keep the production default, off."""
@@ -162,7 +162,7 @@ def audit(path, game_id, diagnostics_id, public, replay_helper=True):
             # title's CMake exclusion controls whether it reaches runtime.
             if lower.startswith("mods/") and suffix in {".toml", ".json"}:
                 text = read(name).decode("utf-8-sig")
-                if HD_SURFACE.search(text) or HD_SURFACE.search(name):
+                if not allow_hd_textures and (HD_SURFACE.search(text) or HD_SURFACE.search(name)):
                     raise ValueError("HD texture surface in title/runtime catalog: " + name)
                 if leaf == "manifest.toml":
                     manifest = tomllib.loads(text)
@@ -209,10 +209,13 @@ def main():
     parser.add_argument("--no-replay-helper", action="store_true",
                         help="the title records with its own diagnostics package and ships "
                              "no replay-diagnostics.py")
+    parser.add_argument("--allow-hd-textures", action="store_true",
+                        help="the title explicitly retains HD texture controls in its catalog")
     args = parser.parse_args()
     try:
         count = audit(args.zip, args.game_id, args.diagnostics_id, args.mode == "public",
-                      replay_helper=not args.no_replay_helper)
+                      replay_helper=not args.no_replay_helper,
+                      allow_hd_textures=args.allow_hd_textures)
     except (ValueError, OSError, zipfile.BadZipFile, KeyError, UnicodeError) as error:
         sys.exit("diagnostics package audit failed: " + str(error))
     print("Diagnostics package audit passed: {} ({} runtime manifest(s), {} mode)".format(

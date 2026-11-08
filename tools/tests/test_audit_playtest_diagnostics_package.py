@@ -244,6 +244,28 @@ class ArchiveTests(unittest.TestCase):
                     self.check()
                 del self.files[name]
 
+    def test_explicit_hd_catalog_policy_keeps_other_gates(self):
+        self.files["mods/bundled/psx.enhancement.hd-textures/1.0.0/manifest.toml"] = 'id="psx.enhancement.hd-textures"'
+        self.write()
+        with self.assertRaisesRegex(ValueError, "HD texture"):
+            audit.audit(self.zip, GAME, DIAG, True)
+        self.assertEqual(audit.audit(self.zip, GAME, DIAG, True, allow_hd_textures=True), 1)
+        command = [sys.executable, str(SCRIPT), str(self.zip), "--game-id", GAME,
+                   "--diagnostics-id", DIAG, "--mode", "public", "--allow-hd-textures"]
+        self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
+        for name, content in (("saves/card1.mcd", "private"),
+                              (MANIFEST, PLAYTEST_TEXT), ("disc/game.cue", "disc")):
+            with self.subTest(file=name):
+                original = self.files.get(name)
+                self.files[name] = content
+                self.write()
+                with self.assertRaises(ValueError):
+                    audit.audit(self.zip, GAME, DIAG, True, allow_hd_textures=True)
+                if original is None:
+                    del self.files[name]
+                else:
+                    self.files[name] = original
+
     def test_retail_only_recipe_rejects_openbios(self):
         self.files["game.toml"] += '[runtime]\nopenbios=false\n'
         self.assertEqual(self.check(), 1)
