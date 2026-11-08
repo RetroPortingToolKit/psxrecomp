@@ -172,6 +172,23 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ptr.PackagingError, 'pgo_train_seconds'):
                 self.fixture.config()
 
+    def test_diagnostics_hd_policy_is_explicit_and_forwarded(self):
+        path = self.fixture.root / 'release.toml'
+        for enabled in (False, True):
+            path.write_text(CONFIG.format(extra='').replace(
+                '[diagnostics]', '[diagnostics]\nallow_hd_textures = ' + str(enabled).lower()))
+            config = self.fixture.config()
+            self.assertIs(config.diagnostics['allow_hd_textures'], enabled)
+            with mock.patch.object(ptr, 'run') as run:
+                ptr.diagnostics_audit(SimpleNamespace(config=config, channel='public'), 'release.zip')
+            self.assertEqual('--allow-hd-textures' in run.call_args.args[0], enabled)
+        path.write_text(CONFIG.format(extra=''))
+        self.assertFalse(self.fixture.config().diagnostics['allow_hd_textures'])
+        path.write_text(CONFIG.format(extra='').replace(
+            '[diagnostics]', '[diagnostics]\nallow_hd_textures = "true"'))
+        with self.assertRaisesRegex(ptr.PackagingError, 'allow_hd_textures'):
+            self.fixture.config()
+
     def test_owned_cmake_flags_are_refused(self):
         for flag in ('PSX_PUBLIC_RELEASE', 'PSX_RELEASE_CHANNEL', 'PSX_DEBUG_TOOLS',
                      'PSXRECOMP_BIOS_STEMS', 'CMAKE_BUILD_TYPE', 'PSX_PGO',

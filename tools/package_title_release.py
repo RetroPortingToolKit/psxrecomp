@@ -190,7 +190,7 @@ class Config:
                   'binary_identity', 'selective_pgo', 'pgo_train_seconds'},
         'aot': {'mode', 'profile', 'cps'},
         'overlay_toolchain': {'ship'},
-        'diagnostics': {'game_id', 'package_id', 'replay_helper'},
+        'diagnostics': {'game_id', 'package_id', 'replay_helper', 'allow_hd_textures'},
         'payload': {'start_here', 'files', 'build_files'},
         'linux': {'app_run', 'desktop_file', 'icon', 'payload_dir', 'env_prefix',
                   'prune_unreferenced_libs'},
@@ -251,7 +251,8 @@ class Config:
         if diag:
             self.diagnostics = dict(game_id=self._str(diag, 'game_id', required=True),
                                     package_id=self._str(diag, 'package_id', required=True),
-                                    replay_helper=self._bool(diag, 'replay_helper', True))
+                                    replay_helper=self._bool(diag, 'replay_helper', True),
+                                    allow_hd_textures=self._bool(diag, 'allow_hd_textures', False))
 
         payload = self._table(data, 'payload', required=True)
         self.start_here = self._file(payload, 'start_here', required=True)
@@ -1178,6 +1179,8 @@ def diagnostics_audit(ctx, target):
                '--mode', ctx.channel]
     if not diag['replay_helper']:
         command.append('--no-replay-helper')
+    if diag['allow_hd_textures']:
+        command.append('--allow-hd-textures')
     run(command, 'Playtest Diagnostics package audit (%s)' % ctx.channel)
 
 
