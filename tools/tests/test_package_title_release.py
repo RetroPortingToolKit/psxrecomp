@@ -350,6 +350,12 @@ class SelectiveReleasePgoTests(unittest.TestCase):
         self.assertEqual(selected.call_count, 1)
         self.assertEqual([call.args[1] for call in commands.call_args_list], ['runtime configure'])
 
+    def test_initial_configure_clears_project_hook_without_an_empty_path(self):
+        commands, _ = self.configure(enabled=False)
+        configure = commands.call_args_list[0].args[0]
+        self.assertIn('-UCMAKE_PROJECT_INCLUDE', configure)
+        self.assertNotIn('-DCMAKE_PROJECT_INCLUDE=', configure)
+
     def test_shared_emitters_still_configure_and_build_current_sources(self):
         ctx = self.ctx
         ctx.recompiler_build = ctx.root / 'shared-emitters'

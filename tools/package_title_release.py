@@ -750,7 +750,10 @@ def configure_and_build(ctx):
         'PSX_RUNTIME_IPO': 'OFF', 'PSX_PGO': '',
         'CMAKE_EXPORT_COMPILE_COMMANDS': 'ON', 'CMAKE_PROJECT_INCLUDE': '',
     }
-    args = ['-D%s=%s' % kv for kv in owned.items()] + native_toolchain_args(ctx.tc)
+    # An empty project-include path is an error on CMake 3.x. Remove a stale
+    # PGO hook instead; a later PGO configure can still supply its real path.
+    args = ['-D%s=%s' % kv for kv in owned.items() if kv[0] != 'CMAKE_PROJECT_INCLUDE']
+    args += ['-UCMAKE_PROJECT_INCLUDE'] + native_toolchain_args(ctx.tc)
     args += ctx.config.cmake_args + ctx.config.platform_cmake_args[ctx.platform]
     if ctx.platform == 'linux':
         # The interpreter running this script; WSL otherwise finds the Windows
@@ -768,7 +771,7 @@ def configure_and_build(ctx):
         if match:
             expected.setdefault(match.group(1), match.group(2))
     for key, want in expected.items():
-        got = cache.get(key)
+        got = cache.get(key, '' if key == 'CMAKE_PROJECT_INCLUDE' else None)
         if key == 'PSXRECOMP_ROOT':
             same = got is not None and Path(got).resolve() == FRAMEWORK
         else:
