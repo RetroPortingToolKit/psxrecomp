@@ -19,6 +19,9 @@
 
 #pragma once
 
+// Canonicalize five-letter boot filenames after a known territory prefix.
+#define PSX_DISC_BOOT_SERIAL_VERSION 2
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
