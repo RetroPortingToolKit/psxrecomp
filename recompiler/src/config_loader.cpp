@@ -1,6 +1,8 @@
 // config_loader.cpp — see config_loader.h for the contract.
 
 #include "config_loader.h"
+#include "player_settings.h"
+#include <iomanip>
 
 #include <unordered_set>
 #include <algorithm>
@@ -320,6 +322,7 @@ int pad_mode_from_settings_string(const std::string& s, int fallback) {
     std::string l;
     l.reserve(s.size());
     for (char c : s) l.push_back((char)std::tolower((unsigned char)c));
+    if (l == "negcon")  return PAD_MODE_NEGCON;
     if (l == "hybrid")  return PAD_MODE_ANALOG;
     if (l == "analog")  return PAD_MODE_ANALOG;
     if (l == "digital") return PAD_MODE_DIGITAL;
@@ -330,6 +333,7 @@ const char* pad_mode_to_string(int mode) {
     /* Never writes "hybrid": the mod requests it at runtime and it is not
      * persisted as a user preference. */
     switch (mode) {
+        case PAD_MODE_NEGCON: return "negcon";
         case PAD_MODE_DIGITAL: return "digital";
         default:               return "analog";
     }
@@ -3482,6 +3486,17 @@ UserSettings load_user_settings(const fs::path& path) {
             s.multitap_analog = toml::find<bool>(ct, "multitap_analog");
             s.has_multitap_analog = true;
         });
+        if (ct.contains("mouse_sensitivity")) try_get([&]{
+            const auto& value = toml::find(ct, "mouse_sensitivity");
+            const double scale = value.is_integer() ? (double)value.as_integer() : value.as_floating();
+            if (scale >= 0.05 && scale <= 10.0) {
+                s.mouse_sensitivity = scale; s.has_mouse_sensitivity = true;
+            }
+        });
+        if (ct.contains("mouse_capture")) try_get([&]{
+            s.mouse_capture = toml::find<bool>(ct, "mouse_capture");
+            s.has_mouse_capture = true;
+        });
         if (ct.contains("jogcon_force_feedback")) try_get([&]{
             s.jogcon_force_feedback = toml::find<bool>(ct, "jogcon_force_feedback");
             s.has_jogcon_force_feedback = true;
@@ -3499,6 +3514,27 @@ UserSettings load_user_settings(const fs::path& path) {
                     }
                 }
             }
+        });
+    }
+    for (const auto& spec : kExtraPlayerSettings) {
+        if (!doc.contains(spec.section)) continue;
+        const auto& section=toml::find(doc,spec.section);
+        if (!section.contains(spec.key)) continue;
+        try_get([&] {
+            const auto& raw=toml::find(section,spec.key);
+            std::string value;
+            if (spec.kind==PlayerSettingKind::Boolean) value=raw.as_boolean()?"true":"false";
+            else if (spec.kind==PlayerSettingKind::Text || spec.kind==PlayerSettingKind::Choice ||
+                     (spec.kind==PlayerSettingKind::ResolutionFloor && raw.is_string())) value=raw.as_string().str;
+            else {
+                std::ostringstream text;
+                text << std::setprecision(17);
+                if (raw.is_integer()) text << raw.as_integer();
+                else if (raw.is_floating()) text << raw.as_floating();
+                else return;
+                value=text.str();
+            }
+            if (player_setting_valid(spec,value)) s.extra_player_settings[player_setting_id(spec)]=value;
         });
     }
     return s;
@@ -3538,6 +3574,25 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     f << "# psxrecomp user settings - written by the launcher. Safe to hand-edit.\n";
     f << "# Overrides the bundled game.toml; the command line overrides this file.\n\n";
 
+    auto has_extra = [&](const char* section) {
+        for (const auto& spec:kExtraPlayerSettings)
+            if (!std::strcmp(spec.section,section) && s.extra_player_settings.count(player_setting_id(spec))) return true;
+        return false;
+    };
+    auto write_extra = [&](const char* section, bool heading) {
+        if (!has_extra(section)) return;
+        if (heading) f << "\n[" << section << "]\n";
+        for (const auto& spec:kExtraPlayerSettings) {
+            if (std::strcmp(spec.section,section)) continue;
+            auto item=s.extra_player_settings.find(player_setting_id(spec));
+            if (item==s.extra_player_settings.end() || !player_setting_valid(spec,item->second)) continue;
+            f << spec.key << " = ";
+            if (spec.kind==PlayerSettingKind::Text || spec.kind==PlayerSettingKind::Choice ||
+                spec.kind==PlayerSettingKind::ResolutionFloor) f << std::quoted(item->second);
+            else f << item->second;
+            f << "\n";
+        }
+    };
     f << "[video]\n";
     if (s.has_renderer)
         f << "renderer          = \""
@@ -3578,6 +3633,9 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
         f << "aspect_ratio      = \"" << s.aspect_num << ":" << s.aspect_den << "\"\n";
     if (s.has_adaptive_view)
         f << "adaptive_view     = " << (s.adaptive_view ? "true" : "false") << "\n";
+    write_extra("video",false);
+    write_extra("runtime",true);
+    write_extra("audio",true);
     if (s.has_hotkey_pad_rewind || s.has_hotkey_pad_save_state_menu ||
         s.has_hotkey_pad_fast_forward || s.has_hotkey_pad_fast_forward_toggle ||
         s.has_fast_forward_speed || s.has_fast_forward_mode) {
@@ -3634,7 +3692,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     }
 
     {
-        bool any_ctrl = s.has_deadzone || s.has_multitap_enabled ||
+        bool any_ctrl = has_extra("controller") || s.has_mouse_sensitivity || s.has_mouse_capture ||
+                        s.has_deadzone || s.has_multitap_enabled ||
                         s.has_multitap_analog || s.has_jogcon_force_feedback;
         for (int i = 0; i < UserSettings::kMaxControllerPlayers; ++i) {
             if (s.has_p_device[i] || s.has_p_mode[i] || s.has_p_deadzone[i])
@@ -3649,6 +3708,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
                 "p1_deadzone", "p2_deadzone", "p3_deadzone", "p4_deadzone",
                 "p5_deadzone"};
             f << "\n[controller]\n";
+            write_extra("controller",false);
             for (int i = 0; i < UserSettings::kMaxControllerPlayers; ++i) {
                 if (s.has_p_device[i])
                     f << kDevKeys[i] << " = \"" << s.p_device[i] << "\"\n";
@@ -3664,6 +3724,10 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             if (s.has_multitap_analog)
                 f << "multitap_analog = "
                   << (s.multitap_analog ? "true" : "false") << "\n";
+            if (s.has_mouse_sensitivity)
+                f << "mouse_sensitivity = " << s.mouse_sensitivity << "\n";
+            if (s.has_mouse_capture)
+                f << "mouse_capture = " << (s.mouse_capture ? "true" : "false") << "\n";
             if (s.has_jogcon_force_feedback)
                 f << "jogcon_force_feedback = "
                   << (s.jogcon_force_feedback ? "true" : "false") << "\n";

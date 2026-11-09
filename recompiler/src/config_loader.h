@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <array>
+#include <map>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -33,7 +34,7 @@ namespace PSXRecompV4 {
 //   analog  — always present a DualShock/analog pad (id 0x73). The D-pad is
 //             independent from both sticks, matching real hardware. Default.
 //   digital — always present a digital pad (id 0x41); sticks disabled.
-enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2 };
+enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2, PAD_MODE_NEGCON = 3 };
 
 // Renderer IDs shared by game.toml/settings parsing and runtime startup.
 // OpenGL is the default because the Windows software/SDL_Renderer path is slow
@@ -1566,6 +1567,7 @@ inline uint32_t ws_cull_clip_edge_width(const GameConfig& c) {
 // Unlike game.toml, paths here are stored verbatim (the user picked them); they
 // are NOT resolved against a project root.
 struct UserSettings {
+    std::map<std::string,std::string> extra_player_settings;
     // Set when the file existed but failed to parse as TOML: every field below
     // is defaults and the caller must warn loudly — silently dropping a user's
     // hand-edited settings looks like the settings "don't work", and a later
@@ -1636,6 +1638,8 @@ struct UserSettings {
     bool has_netplay_lobby_url = false; std::string netplay_lobby_url;
     bool has_aspect_ratio   = false; int  aspect_num     = 4; // display aspect W:H
                                      int  aspect_den     = 3; // (4:3 = native)
+    // Preserved legacy field; no ordinary runtime consumer. No GUI checkbox
+    // until an implemented adaptive-view behavior is available.
     bool has_adaptive_view  = false; bool adaptive_view  = false;
     // Local rewind (on/off, buffer depth, interval) is the built-in Rewind
     // mod (psx.feature.rewind); the old [video] rewind keys are ignored. Its
@@ -1676,6 +1680,8 @@ struct UserSettings {
     // device is one of:
     //   "none"     — no pad in this port (port not connected)
     //   "keyboard" — driven by the keyboard map (input.ini)
+    //   "mouse"    — a Sony PS1 Mouse in this port, driven by the host mouse
+    //                (PS1B-279; pN_mode does not apply)
     //   "<GUID>"   — an SDL game-controller GUID (SDL_JoystickGetGUIDString)
     // Modes (see PadMode): analog / digital. Hybrid is mod-only. Defaults: P1 keyboard,
     // P2–P5 none. Deadzone default is 10% (3277/32767). TOML keys:
@@ -1703,6 +1709,9 @@ struct UserSettings {
     // DualShock-on-tap hack (settings.toml [controller] multitap_analog).
     // Default on when unset; game.toml / global prefs may override.
     bool has_multitap_analog = false; bool multitap_analog = true;
+    // Relative host motion scale and initial capture for a native Mouse seat.
+    bool has_mouse_sensitivity = false; double mouse_sensitivity = 1.0;
+    bool has_mouse_capture = false; bool mouse_capture = true;
     // EXPERIMENTAL JogCon wheel force feedback, the player's choice
     // (settings.toml [controller] jogcon_force_feedback). Unset = the title's
     // game.toml experimental_jogcon_force_feedback default (off).
@@ -1712,6 +1721,8 @@ struct UserSettings {
     // settings.toml [localization].language.
     bool has_language = false; std::string language = "en";
 
+    // Preserved authoring stubs. These three fields have no runtime consumer
+    // and are deliberately not presented as working player controls.
     bool has_parappa_timing_mode = false; std::string parappa_timing_mode = "stock";
     bool has_parappa_timing_extra_early = false; int parappa_timing_extra_early = 0;
     bool has_parappa_timing_extra_late = false; int parappa_timing_extra_late = 0;

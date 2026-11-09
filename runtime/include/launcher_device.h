@@ -28,16 +28,28 @@ inline std::string normalize_launcher_device(const std::string& device) {
     return normalized;
 }
 
-inline int launcher_source_from_device(const std::string& device) {
+// Older launcher headers cannot display pointer sources. Preserve a hidden
+// Mouse/GunCon assignment when that launcher returns its unchanged None seat.
+inline bool launcher_device_is_mouse(const std::string& device) {
+    return normalize_launcher_device(device) == "mouse";
+}
+
+inline int launcher_source_from_device(const std::string& device, bool native_mouse = false, bool native_guncon = false) {
     const std::string normalized = normalize_launcher_device(device);
     if (normalized.empty() || normalized == "none") return 0;
+    if (normalized == "mouse") return native_mouse ? 3 : 0;
+    if (normalized == "guncon") return native_guncon ? 4 : 0;
     if (normalized == "keyboard") return 1;
     return 2;
 }
 
 inline std::string launcher_device_from_source(
-    int source, const std::string& previous_device) {
-    if (source <= 0) return "none";
+    int source, const std::string& previous_device, bool native_mouse = false, bool native_guncon = false) {
+    if (source == 4 && native_guncon) return "guncon";
+    if (source == 3 && native_mouse) return "mouse";
+    if ((source <= 0 || source == 4) && !native_guncon && normalize_launcher_device(previous_device)=="guncon") return "guncon";
+    if (source <= 0 || source == 3 || source == 4)
+        return !native_mouse && launcher_device_is_mouse(previous_device) ? "mouse" : "none";
     if (source == 1) return "keyboard";
 
     // recomp-ui's C ABI currently returns a source category, not the selected
@@ -47,6 +59,19 @@ inline std::string launcher_device_from_source(
         return trim_launcher_device(previous_device);
     }
     return "gamepad";
+}
+
+inline int launcher_pad_mode_to_launcher(int mode, bool negcon_mode) {
+    return (!negcon_mode && mode == 3) ? 1
+                                                            : mode;
+}
+
+inline int launcher_pad_mode_from_launcher(int launcher_mode, int previous_mode,
+                                           bool negcon_mode) {
+    if (!negcon_mode && previous_mode == 3 &&
+        launcher_mode == 1)
+        return 3;
+    return launcher_mode;
 }
 
 // Pad mode for one seat on the way OUT of the launcher.

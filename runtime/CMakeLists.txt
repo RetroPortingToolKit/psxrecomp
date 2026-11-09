@@ -23,6 +23,51 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(pgxp_player_preferences_test tests/test_pgxp_player_preferences.c)
+    target_include_directories(pgxp_player_preferences_test PRIVATE include)
+    add_test(NAME pgxp_player_preferences_test COMMAND pgxp_player_preferences_test)
+    if(PSX_RECOMP_UI AND EXISTS "${RECOMP_UI_ROOT}/src/recomp_launcher.h")
+        add_executable(player_settings_provider_test tests/test_player_settings_provider.cpp
+            ../recompiler/src/config_loader.cpp ../recompiler/src/ps1_exe_parser.cpp)
+        target_include_directories(player_settings_provider_test PRIVATE include ../recompiler/src
+            ../recompiler/include ../recompiler/lib/fmt/include ../recompiler/lib/toml11 "${RECOMP_UI_ROOT}/src")
+        target_compile_definitions(player_settings_provider_test PRIVATE RECOMP_LAUNCHER FMT_HEADER_ONLY=1)
+        target_compile_options(player_settings_provider_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+        add_test(NAME player_settings_provider_test COMMAND player_settings_provider_test)
+        if(EXISTS "${RECOMP_UI_ROOT}/tests/psx_settings_draw_test.cpp")
+            # The runtime target included this inside its function scope.
+            # Initialize UI source/asset variables in this fixture's scope too.
+            set(RECOMP_UI_SDL3 ${PSX_SDL3})
+            include("${RECOMP_UI_ROOT}/recomp_ui.cmake")
+            add_executable(player_settings_presets_test tests/test_player_settings_presets.cpp
+                ../recompiler/src/config_loader.cpp ../recompiler/src/ps1_exe_parser.cpp
+                src/mod_packages.cpp src/mod_media.cpp src/iso_reader.cpp src/cue_sheet.cpp
+                src/crc32.c src/psx_sha256.c)
+            target_include_directories(player_settings_presets_test PRIVATE include tests
+                ../recompiler/src ../recompiler/include ../recompiler/lib/fmt/include
+                ../recompiler/lib/toml11 "${RECOMP_UI_ROOT}/tests")
+            target_compile_definitions(player_settings_presets_test PRIVATE FMT_HEADER_ONLY=1
+                PSX_SETTINGS_UI_ROOT="${RECOMP_UI_ROOT}")
+            target_compile_options(player_settings_presets_test PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG> $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+            target_link_libraries(player_settings_presets_test PRIVATE chdr-static ${PSX_SDL_LIBRARIES})
+            recomp_target_launcher_ui(player_settings_presets_test CONSOLE psx)
+            get_target_property(_preset_sources player_settings_presets_test SOURCES)
+            list(FILTER _preset_sources EXCLUDE REGEX "common/backends/imgui/launcher_imgui.cpp$")
+            set_property(TARGET player_settings_presets_test PROPERTY SOURCES "${_preset_sources}")
+            if(WIN32 AND TARGET SDL3::SDL3-shared)
+                add_custom_command(TARGET player_settings_presets_test POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        $<TARGET_FILE:SDL3::SDL3-shared>
+                        $<TARGET_FILE_DIR:player_settings_presets_test>)
+            endif()
+            add_test(NAME player_settings_presets_test COMMAND player_settings_presets_test
+                "${CMAKE_CURRENT_BINARY_DIR}/player-preset-fixture" "${PSXRECOMP_ROOT}")
+        else()
+            message(STATUS "Preset render integration test unavailable: paired UI draw fixture is absent")
+        endif()
+    endif()
     add_executable(digital_pad_snapshot_test tests/test_digital_pad_snapshot.c)
     target_include_directories(digital_pad_snapshot_test PRIVATE include)
     if(MSVC)
@@ -398,6 +443,12 @@ if(BUILD_TESTING)
     set(PSX_GL_READBACK_COMPILER_BIN "${_gl_test_default_bin}" CACHE PATH "GCC/MinGW bin for GL fixture")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        if(PSX_RECOMP_UI AND EXISTS "${RECOMP_UI_ROOT}/src/recomp_launcher.h")
+            add_test(NAME player_settings_composition COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_player_settings_composition.py"
+                --compiler "${CMAKE_CXX_COMPILER}" --ui "${RECOMP_UI_ROOT}"
+                --work "${CMAKE_CURRENT_BINARY_DIR}/player-settings-composition")
+        endif()
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             add_test(NAME rfe_host_reads_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_host_reads.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_irq_context_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_irq_context.py --cc ${CMAKE_C_COMPILER})
@@ -1047,6 +1098,36 @@ if(BUILD_TESTING)
         src/sio.c)
     target_include_directories(sio_jogcon_protocol_test PRIVATE include)
     add_test(NAME sio_jogcon_protocol_test COMMAND sio_jogcon_protocol_test)
+    add_executable(guncon_keybinds_test tests/test_guncon_keybinds.c src/psx_keybinds.c)
+    target_include_directories(guncon_keybinds_test PRIVATE include ${PSX_SDL_INCLUDE_DIRS})
+    target_compile_definitions(guncon_keybinds_test PRIVATE SDL_MAIN_HANDLED $<$<BOOL:${PSX_SDL3}>:PSX_SDL3=1>)
+    target_link_libraries(guncon_keybinds_test PRIVATE ${PSX_SDL_LIBRARIES})
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/guncon-keybinds-scratch")
+    add_test(NAME guncon_keybinds_test COMMAND guncon_keybinds_test "${CMAKE_CURRENT_BINARY_DIR}/guncon-keybinds-scratch")
+    if(Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        add_test(NAME native_mouse_host_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_mouse_host.py
+            --cc ${CMAKE_C_COMPILER} --cxx ${CMAKE_CXX_COMPILER})
+        add_test(NAME native_guncon_host_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_guncon_host.py
+            --cc ${CMAKE_C_COMPILER} --cxx ${CMAKE_CXX_COMPILER})
+    endif()
+    add_executable(guncon_map_test tests/test_guncon_map.c)
+    target_include_directories(guncon_map_test PRIVATE include)
+    if(NOT MSVC)
+        target_link_libraries(guncon_map_test PRIVATE m)
+    endif()
+    add_test(NAME guncon_map_test COMMAND guncon_map_test)
+    foreach(players 2 5)
+        add_executable(sio_guncon_p${players}_test tests/test_sio_guncon.c src/sio.c)
+        target_include_directories(sio_guncon_p${players}_test PRIVATE include)
+        target_compile_definitions(sio_guncon_p${players}_test PRIVATE PSX_MAX_PLAYERS=${players})
+        add_test(NAME sio_guncon_p${players}_test COMMAND sio_guncon_p${players}_test)
+        add_executable(sio_mouse_p${players}_test tests/test_sio_mouse.c src/sio.c)
+        target_include_directories(sio_mouse_p${players}_test PRIVATE include)
+        target_compile_definitions(sio_mouse_p${players}_test PRIVATE PSX_MAX_PLAYERS=${players})
+        add_test(NAME sio_mouse_p${players}_test COMMAND sio_mouse_p${players}_test)
+    endforeach()
     add_executable(sio_negcon_protocol_test
         tests/test_sio_negcon_protocol.c
         src/sio.c)

@@ -127,6 +127,25 @@ void         psx_keybinds_reset_player(int player);
  * psx_keybinds_init; call that first). */
 void         psx_keybinds_save(void);
 
+/* ── GunCon controls (PS1B-305) ────────────────────────────────────────────── */
+/* The light-gun seat's host controls, in keybinds.ini [guncon]. The pointer
+ * aims; these press the gun's trigger and its side buttons A (left side) and
+ * B (right side). no_light holds "no light" (aim off-screen, e.g. to reload);
+ * offscreen_shot holds no light and the trigger together (RE Survivor walks
+ * on it). Each control has a primary and an optional alt binding, keys or
+ * Mouse1..5, like the pad binds. A file without [guncon] keeps the defaults:
+ * trigger = Mouse1; a = Mouse3 (right button), A; b = Mouse2 (middle), D;
+ * no_light = Mouse4; offscreen_shot = W. */
+enum PsxGunconControl {
+    PSX_GC_TRIGGER = 0, PSX_GC_A, PSX_GC_B, PSX_GC_NO_LIGHT, PSX_GC_OFFSCREEN_SHOT,
+    PSX_GC_COUNT
+};
+/* 1 while the control's primary or alt binding is held. */
+int          psx_keybinds_guncon_held(const uint8_t *keys, int control);
+/* The control's primary (alt == 0) or alt binding; UNKNOWN when unbound. */
+SDL_Scancode psx_keybinds_guncon_get(int control, int alt);
+const char  *psx_keybinds_guncon_name(int control);        /* ini key */
+
 #ifdef __cplusplus
 }
 #endif
