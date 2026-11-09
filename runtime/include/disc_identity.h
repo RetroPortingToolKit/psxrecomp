@@ -5,6 +5,8 @@
 // PlayStation boot serial (from the actual SYSTEM.CNF directory entry, with
 // an early-image scan as fallback), derives the region from the
 // serial prefix, and optionally compares against an expected serial / CRC32.
+// Boot filenames with a fifth letter after a known territory prefix (for
+// example SLUSP012.06) use the same canonical serial form (SLUS-01206).
 //
 // Also mounts the resolved path via ISOReader to capture TOC geometry
 // (track count, lead-out, per-track LBAs) and a stable disc_fp fingerprint
