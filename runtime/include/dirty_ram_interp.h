@@ -232,6 +232,7 @@ int      dirty_ram_text_image_registered(void);
 void     dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len);
 uint64_t dirty_ram_text_native_blocked(void);
 uint32_t dirty_ram_text_diverged_pages(void);
+int      dirty_ram_text_image_range(uint32_t *lo, uint32_t *hi);
 
 /* Counters for visibility / TCP debug.  Increment in interpreter; expose
  * via debug_server.c if helpful. */

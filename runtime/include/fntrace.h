@@ -97,6 +97,8 @@ void fntrace_restore_game_started(int started);
  * Performs dirty-image baseline clear, low-boot scratch clear, CD speed
  * switch, and boot-state capture. */
 void fntrace_mark_game_started(CPUState* cpu);
+/* Host-only report before game entry moves interpreter rows. */
+extern void (*g_fntrace_game_entry_hook)(void);
 /* Entry-pc-exact latch for the interpreter path: calls
  * fntrace_mark_game_started() only when addr matches the armed game entry
  * (fntrace_set_game_range lo).  No-op before the range is armed and after

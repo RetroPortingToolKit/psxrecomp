@@ -129,6 +129,7 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "debug_server.h"
 #include "host_sampler.h"
 #include "crash_trace.h"
+#include "bios_phase_report.h"
 #include "freeze_heartbeat.h"
 #include "config_loader.h"
 #include "game_mode.h"
@@ -17784,6 +17785,7 @@ int main(int argc, char** argv) {
     /* Install crash handlers early so they catch issues during init too.
      * Writes psx_last_run_report.json on signal/SEH/atexit/fail-fast. */
     psx_crash_trace_install_handlers();
+    bios_phase_report_install();
 #if defined(RECOMP_LAUNCHER)
     launcher_boot_timing_mark("host:crash_handlers");
 #endif

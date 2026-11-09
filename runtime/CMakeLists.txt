@@ -23,6 +23,12 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(interp_report_test tests/test_interp_report.c src/interp_report.c)
+    target_include_directories(interp_report_test PRIVATE include)
+    add_test(NAME interp_report_test COMMAND interp_report_test)
+    add_executable(bios_phase_report_test tests/test_bios_phase_report.c src/bios_phase_report.c)
+    target_include_directories(bios_phase_report_test PRIVATE include)
+    add_test(NAME bios_phase_report_test COMMAND bios_phase_report_test)
     add_executable(digital_pad_snapshot_test tests/test_digital_pad_snapshot.c)
     target_include_directories(digital_pad_snapshot_test PRIVATE include)
     if(MSVC)

@@ -36,6 +36,7 @@
 #include "lockstep.h"
 #include "starvation_ring.h"
 #include "fntrace.h"  /* fntrace_is_game_started / fntrace_mark_game_started */
+#include "interp_report.h"
 #include "psx_segment_miss.h"  /* segment misses in static game code (§5.5) */
 #include "draw_distance.h"    /* [[draw_distance.clamp]] sites */
 #include "mod_plugins.h"       /* instruction guards and effective-address adapters */
@@ -257,6 +258,27 @@ static DirtyRamPcEntry *pc_table_get_or_insert_in(DirtyRamPcEntry *table, uint32
         if (e->pc == 0) { e->pc = pc; return e; }
     }
     return NULL;
+}
+
+static PsxInterpPreload s_pc_table_preload;
+
+void dirty_ram_pc_table_game_load(void) {
+    extern void overlay_loader_get_miss_reasons(uint64_t above_kernel[PSX_INTERP_MISS_REASONS],
+                                                uint64_t kernel[PSX_INTERP_MISS_REASONS]);
+    uint64_t interpreter[5] = { g_dirty_ram_blocks_run, g_dirty_ram_insns_run,
+                                g_dirty_ram_aborts, g_dirty_ram_guard_yields,
+                                g_dirty_ram_native_handoffs };
+    uint64_t miss[2][PSX_INTERP_MISS_REASONS];
+    overlay_loader_get_miss_reasons(miss[0], miss[1]);
+    psx_interp_preload_counters(&s_pc_table_preload, interpreter, miss);
+    psx_interp_preload_close(g_dirty_ram_pc_table, DIRTY_RAM_PC_TABLE_SIZE,
+                             DIRTY_RAM_KERNEL_WINDOW_END, g_text_image_lo,
+                             g_overlay_region_floor, s_frame_count,
+                             &s_pc_table_preload);
+}
+
+void dirty_ram_pc_table_preload(PsxInterpPreload *out) {
+    if (out) *out = s_pc_table_preload;
 }
 
 static DirtyRamPcEntry *pc_table_get_or_insert(uint32_t pc) {
