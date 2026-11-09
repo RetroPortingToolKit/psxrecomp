@@ -33,7 +33,7 @@ namespace PSXRecompV4 {
 //   analog  — always present a DualShock/analog pad (id 0x73). The D-pad is
 //             independent from both sticks, matching real hardware. Default.
 //   digital — always present a digital pad (id 0x41); sticks disabled.
-enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2 };
+enum PadMode { PAD_MODE_ANALOG = 1, PAD_MODE_DIGITAL = 2, PAD_MODE_NEGCON = 3 };
 
 // Renderer IDs shared by game.toml/settings parsing and runtime startup.
 // OpenGL is the default because the Windows software/SDL_Renderer path is slow
@@ -1676,6 +1676,8 @@ struct UserSettings {
     // device is one of:
     //   "none"     — no pad in this port (port not connected)
     //   "keyboard" — driven by the keyboard map (input.ini)
+    //   "mouse"    — a Sony PS1 Mouse in this port, driven by the host mouse
+    //                (PS1B-279; pN_mode does not apply)
     //   "<GUID>"   — an SDL game-controller GUID (SDL_JoystickGetGUIDString)
     // Modes (see PadMode): analog / digital. Hybrid is mod-only. Defaults: P1 keyboard,
     // P2–P5 none. Deadzone default is 10% (3277/32767). TOML keys:
@@ -1703,6 +1705,9 @@ struct UserSettings {
     // DualShock-on-tap hack (settings.toml [controller] multitap_analog).
     // Default on when unset; game.toml / global prefs may override.
     bool has_multitap_analog = false; bool multitap_analog = true;
+    // Relative host motion scale and initial capture for a native Mouse seat.
+    bool has_mouse_sensitivity = false; double mouse_sensitivity = 1.0;
+    bool has_mouse_capture = false; bool mouse_capture = true;
     // EXPERIMENTAL JogCon wheel force feedback, the player's choice
     // (settings.toml [controller] jogcon_force_feedback). Unset = the title's
     // game.toml experimental_jogcon_force_feedback default (off).

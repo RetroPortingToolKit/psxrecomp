@@ -236,6 +236,24 @@ int sio_get_pad_connected(int slot);
 int sio_get_pad_analog(int slot);
 void sio_get_pad_sticks(int slot, uint8_t out[4]);
 
+/* Native PS1 Mouse port. Device kind is a host preference, retained across
+ * sio_init; default pad ports retain their existing wire/snapshot layout. */
+#define SIO_DEVICE_PAD 0
+#define SIO_DEVICE_MOUSE 1
+#define SIO_DEVICE_GUNCON 3
+#define SIO_GUNCON_NO_LIGHT_X 0x0001u
+#define SIO_GUNCON_NO_LIGHT_Y 0x000Au
+/* Native GunCon: active-low A/trigger/B and little-endian 8-MHz X/scanline Y. */
+void sio_set_guncon_state(int slot,uint16_t buttons,uint16_t x,uint16_t y);
+#define SIO_MOUSE_ACCUM_MAX 1024
+void sio_set_port_device(int slot, int kind);
+int sio_get_port_device(int slot);
+/* Relative counts: +X right, +Y down. Each poll drains at most one signed byte
+ * per axis; accumulated excess carries, bounded to +/-1024 counts. */
+void sio_mouse_add_motion(int slot, int dx, int dy);
+void sio_set_mouse_buttons(int slot, int left, int right);
+void sio_mouse_clear_motion(int slot);
+
 /* ---- SIO byte-level trace ring buffer ----
  * 1M entries × ~28 B ≈ 32 MB.  At ~600 byte/sec that's ~30 min of history. */
 #define SIO_TRACE_CAP (1 << 20)

@@ -135,6 +135,8 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 #include "bios_rom_alias.h"
 #include "host_path.h"
 #include "launcher_device.h"
+#include "guncon_map.h"
+
 #include "fast_forward.h"
 #include "game_options.h"
 #include "mod_plugins.h"
@@ -165,6 +167,16 @@ extern "C" uint32_t g_guest_last_store_addr, g_guest_last_store_val;
 
 #if defined(RECOMP_LAUNCHER)
 #include "recomp_launcher.h"   /* shared recomp-ui Dear ImGui launcher */
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+static constexpr bool kLauncherNativeGuncon=true, kLauncherNegconMode=true;
+#else
+static constexpr bool kLauncherNativeGuncon=false, kLauncherNegconMode=false;
+#endif
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+static constexpr bool kLauncherNativeMouse = true;
+#else
+static constexpr bool kLauncherNativeMouse = false;
+#endif
 #include "launcher_vsync.h"
 #include "launcher_profile.h"  /* per-system variant profile (theme/caps bundle) */
 #include "launcher_boot_timing.h" /* PSX_LAUNCHER_BOOT_TIMING stamps */
@@ -455,7 +467,7 @@ static SDL_Texture*  sdl_texture;
  * [controller] settings the launcher writes; the runtime opens the matching
  * SDL controller (or uses the keyboard) and feeds each PSX pad slot. */
 struct PlayerInput {
-    int   kind = 0;            /* 0=none, 1=keyboard, 2=controller */
+    int   kind = 0;            /* 0=none, 1=keyboard, 2=controller, 3=PS1 Mouse, 4=GunCon */
     char  guid[40] = {0};      /* SDL joystick GUID string when kind==controller */
     /* Pad input mode (PSXRecompV4::PadMode): 1=analog (default), 2=digital.
      * Game-owned plugins may register a trusted per-sample presentation policy
@@ -481,6 +493,13 @@ struct PlayerInput {
 static bool g_jogcon_ffb = false;
 static bool g_jogcon_ffb_invert = false;
 static PlayerInput g_players[PSX_MAX_PLAYERS];
+static double g_mouse_sensitivity = 1.0;
+static bool   g_mouse_sensitivity_set = false;
+static bool   g_mouse_capture_wanted = true;   /* mouse_capture; MouseCapture hotkey toggles */
+static bool   g_mouse_capture_set = false;
+static bool   g_mouse_captured = false;        /* SDL relative mode is on */
+static double g_mouse_frac[2] = { 0.0, 0.0 };  /* sub-count remainder per axis */
+
 /* Offline SIO sample loop bound (from game.toml players; clamped). */
 static int g_offline_pad_count = 2;
 /* Set when [controller] lock_mode pins every seat to digital — blocks the
@@ -5986,6 +6005,7 @@ static int pad_mode_boot_analog(int mode) {
 
 static int pad_type_boot(const PlayerInput& p, int mode) {
     return p.steering_wheel ? SIO_PAD_JOGCON
+         : mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
          : (pad_mode_boot_analog(mode) ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 }
 
@@ -6011,7 +6031,7 @@ static bool live_pad_mode(int s) {
 #ifndef PSX_NO_DEBUG_TOOLS
     if (debug_server_get_pad_type_override() >= 0) return false;
 #endif
-    return !g_controller_mode_locked && !p.steering_wheel &&
+    return !g_controller_mode_locked && p.mode != PSXRecompV4::PAD_MODE_NEGCON && !p.steering_wheel &&
         !g_mod_controller_policy[s].callback &&
         g_mod_controller_mode_override[s] < 0 &&
         !mod_controller_source_present((uint32_t)s) &&
@@ -6046,6 +6066,8 @@ static int assert_sio_pad_profile(int s, bool dev_here) {
     const ModControllerPresentationPolicy& policy = g_mod_controller_policy[s];
     const int boot_mode = live_pad_mode(s) ? (int)PSXRecompV4::PAD_MODE_DIGITAL
         : (policy.callback ? policy.initial_mode : mode);
+    sio_set_port_device(s, p.kind == 3 ? SIO_DEVICE_MOUSE :
+                           p.kind == 4 ? SIO_DEVICE_GUNCON : SIO_DEVICE_PAD);
     sio_set_pad_connected(s, (p.kind != 0 || dev_here) ? 1 : 0);
     /* A local DualShock stays config-capable while digital. Explicit title
      * locks and mod policies can still select a plain digital controller.
@@ -6101,18 +6123,22 @@ static void refresh_player_devices(void) {
         const int boot_type = pad_type_boot_for_slot(s, p, boot_mode);
         if (boot_type == SIO_PAD_DUALSHOCK || boot_type == SIO_PAD_JOGCON)
             sio_set_pad_config_capable(s, 1);
-        sio_set_pad_type(s, boot_type, 0x80, 0x80, 0x80, 0x80);
+        const uint8_t released = boot_type == SIO_PAD_NEGCON ? 0 : 0x80;
+        sio_set_pad_type(s, boot_type, 0x80, released, released, released);
     }
 }
 
 /* Parse a [controller] device string into a player slot:
- *   "none" -> no pad; "keyboard" -> keyboard map; otherwise an SDL GUID. */
+ *   "none" -> no pad; "keyboard" -> keyboard map; "mouse" -> a PS1 Mouse
+ *   driven by the host pointer; otherwise an SDL GUID. */
 static void set_player_device(PlayerInput& p, const std::string& dev, int mode) {
     p.mode = mode;
     p.guid[0] = '\0';
     std::string d = lower_copy(trim_copy(dev));
     if (d.empty() || d == "none") { p.kind = 0; }
     else if (d == "keyboard")     { p.kind = 1; }
+    else if (d == "mouse")        { p.kind = 3; }
+    else if (d == "guncon")       { p.kind = 4; }
     else if (d == "auto" || d == "gamepad" || d == "controller") {
         /* First available SDL game controller (guid empty -> open_player falls
          * back to the first connected pad). Lets a user default to "my
@@ -6893,7 +6919,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     /* Opt-in dev merge: P1 is driven by the keyboard AND every connected
      * controller (PSX_DEV_INPUT=1). Default is strict per-slot routing. */
     const bool dev_here = (dev_any_input_enabled() && s == 0);
-    if (p.kind == 0 && !dev_here) return 0;  /* no device in this port */
+    if ((p.kind == 0 && !dev_here) || p.kind == 3 || p.kind == 4) return 0;
 
     /* Mapping follows the live controller mode for ordinary local play. */
     /* One source set, consumed by the presentation policy, the button merge and the
@@ -6903,7 +6929,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     const int mode = live_pad_mode(s) ? sampled_pad_mode(s)
         : effective_player_mode_for_sio(p, s);
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
-    if (mode == PSXRecompV4::PAD_MODE_ANALOG || p.steering_wheel ||
+    if ((mode == PSXRecompV4::PAD_MODE_ANALOG || mode == PSXRecompV4::PAD_MODE_NEGCON) || p.steering_wheel ||
         g_mod_controller_policy[s].callback || host_view) {
         pad_sticks_for(p, player, st);
     }
@@ -6912,8 +6938,9 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     const int effective_mode = controller_policy_resolve_mode(
         s, player, mode, src, p, policy_buttons, st);
     const int eff_analog =
-        effective_mode == PSXRecompV4::PAD_MODE_ANALOG ? 1 : 0;
+        (effective_mode == PSXRecompV4::PAD_MODE_ANALOG || effective_mode == PSXRecompV4::PAD_MODE_NEGCON) ? 1 : 0;
     int frame_type = p.steering_wheel ? SIO_PAD_JOGCON
+                   : effective_mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
                    : (eff_analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 #ifndef PSX_NO_DEBUG_TOOLS
     const int debug_type = debug_server_get_pad_type_override();
@@ -6923,6 +6950,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     if (guarded) {
         out->buttons = 0xFFFFu;
         out->lx = out->ly = out->rx = out->ry = 0x80u;
+        if(frame_type==SIO_PAD_NEGCON) out->ly=out->rx=out->ry=0;
         out->analog = (uint8_t)frame_type;
         out->connected = 1;
         return 1;
@@ -6968,6 +6996,16 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
         st[0] = st[1] = st[2] = st[3] = 0x80;
     }
 
+    if(frame_type==SIO_PAD_NEGCON) {
+        int r=0,l=0;
+        if(p.kind==2 && p.handle) {
+            r=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+            l=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        }
+        st[1]=(btn&0x0400u)?0:255;
+        st[2]=(btn&0x4000u)?(uint8_t)(r<=0?0:r>=32767?255:(r*255+16383)/32767):255;
+        st[3]=(btn&0x8000u)?(uint8_t)(l<=0?0:l>=32767?255:(l*255+16383)/32767):255;
+    }
     out->buttons = btn;
     out->lx = st[0]; out->ly = st[1]; out->rx = st[2]; out->ry = st[3];
     if (psx_host_ui_capture_active()) {
@@ -6975,6 +7013,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
          * peer simulates identically. */
         out->buttons = 0xFFFFu;
         out->lx = out->ly = out->rx = out->ry = 0x80u;
+        if (frame_type == SIO_PAD_NEGCON) out->ly = out->rx = out->ry = 0;
     }
     out->analog = (uint8_t)frame_type;
     out->connected = 1;
@@ -7010,6 +7049,7 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     const int  player  = s + 1;             /* keybinds.ini section (1..5) */
     const bool dev_here = false;
     if (p.kind == 0) return 0;  /* no device in this port */
+    if (p.kind == 3 || p.kind == 4) return 0; /* netplay carries pads only */
 
     /* Same predicate as capture_pad_slot, with dev-any-input disabled:
      * netplay must stay exclusive so peers hash-agree. */
@@ -7017,7 +7057,7 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     const int sio_slot = (present_sio_slot >= 0) ? present_sio_slot : s;
     int mode = effective_player_mode_for_sio(p, sio_slot);
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
-    if (mode == PSXRecompV4::PAD_MODE_ANALOG || p.steering_wheel ||
+    if ((mode == PSXRecompV4::PAD_MODE_ANALOG || mode == PSXRecompV4::PAD_MODE_NEGCON) || p.steering_wheel ||
         g_mod_controller_policy[s].callback) {
         pad_sticks_for(p, player, st);
     }
@@ -7025,8 +7065,9 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
     const int effective_mode = controller_policy_resolve_mode(
         s, player, mode, src, p, policy_buttons, st);
     const int eff_analog =
-        effective_mode == PSXRecompV4::PAD_MODE_ANALOG ? 1 : 0;
+        (effective_mode == PSXRecompV4::PAD_MODE_ANALOG || effective_mode == PSXRecompV4::PAD_MODE_NEGCON) ? 1 : 0;
     const int frame_type = p.steering_wheel ? SIO_PAD_JOGCON
+                   : effective_mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
                          : (eff_analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 
     const bool suppress_stick = (eff_analog != 0) || p.steering_wheel;
@@ -7036,6 +7077,16 @@ static int capture_pad_slot_exclusive(int s, PsxNetPad* out, int present_sio_slo
         st[0] = st[1] = st[2] = st[3] = 0x80;
     }
 
+    if(frame_type==SIO_PAD_NEGCON) {
+        int r=0,l=0;
+        if(p.kind==2 && p.handle) {
+            r=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+            l=SDL_GameControllerGetAxis(p.handle,SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        }
+        st[1]=(btn&0x0400u)?0:255;
+        st[2]=(btn&0x4000u)?(uint8_t)(r<=0?0:r>=32767?255:(r*255+16383)/32767):255;
+        st[3]=(btn&0x8000u)?(uint8_t)(l<=0?0:l>=32767?255:(l*255+16383)/32767):255;
+    }
     out->buttons = btn;
     out->lx = st[0]; out->ly = st[1]; out->rx = st[2]; out->ry = st[3];
     out->analog = (uint8_t)frame_type;
@@ -7165,6 +7216,7 @@ static void capture_override_pad(int override_word, PsxNetPad* out) {
         eff_analog = 1;
 #endif
     int frame_type = p.steering_wheel ? SIO_PAD_JOGCON
+                   : effective_mode == PSXRecompV4::PAD_MODE_NEGCON ? SIO_PAD_NEGCON
                    : (eff_analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL);
 #ifndef PSX_NO_DEBUG_TOOLS
     if (debug_type >= SIO_PAD_DIGITAL && debug_type <= SIO_PAD_JOGCON)
@@ -7809,6 +7861,10 @@ static void apply_input_override_port2(int override_word) {
 #endif
 }
 
+static void sample_mouse_ports(void);
+static bool mouse_seat_configured(void);
+static void sample_guncon_ports(void);
+
 static void sample_pad_into_sio(int override) {
     /* Selfcheck fighter mash owns P1 when enabled (headless-safe). */
     if (override < 0) {
@@ -7825,6 +7881,7 @@ static void sample_pad_into_sio(int override) {
     restore_input_override_profile(0);
 #endif
     int n = g_offline_pad_count;
+    if(mouse_seat_configured() && n<2) n=2;
     if (n < 1) n = 1;
     if (n > PSX_MAX_PLAYERS) n = PSX_MAX_PLAYERS;
     const uint32_t consumer_sim =
@@ -7846,6 +7903,8 @@ static void sample_pad_into_sio(int override) {
                                  0, 0);
         }
     }
+    sample_mouse_ports();
+    sample_guncon_ports();
 }
 
 /* Measurement aid, release builds included: PSX_HOLD_PADS="p1[,p2]" holds
@@ -8689,6 +8748,159 @@ static int runtime_menu_chord_down(void) {
            p1_host_button_down(nullptr, SDL_CONTROLLER_BUTTON_LEFTSTICK);
 }
 static int runtime_menu_chord_was;
+static bool mouse_seat_configured(void) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++)
+        if (g_players[s].kind == 3) return true;
+    return false;
+}
+
+static void mouse_set_relative(bool on) {
+    if (on == g_mouse_captured || !sdl_window) return;
+#if defined(PSX_SDL3)
+    SDL_SetWindowRelativeMouseMode(sdl_window, on);
+#else
+    SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+#endif
+    g_mouse_captured = on;
+}
+
+/* Capture while the player wants it, the window has focus and no host menu
+ * is open; release otherwise so the pointer is usable. */
+static void mouse_capture_sync(void) {
+    if (g_headless || psx_netplay_active() || !mouse_seat_configured()) {
+        mouse_set_relative(false);
+        return;
+    }
+    const bool menu = savestate_menu_open || psx_runtime_menu_is_open() ||
+                      psx_rewind_is_open();
+    mouse_set_relative(g_mouse_capture_wanted && host_hotkey_input_focused() &&
+                       !menu);
+}
+
+static void mouse_capture_toggle(void) {
+    if (!mouse_seat_configured()) return;
+    g_mouse_capture_wanted = !g_mouse_capture_wanted;
+    mouse_capture_sync();
+    char key[32];
+    char msg[80];
+    host_keymap_label(HOST_KEYMAP_MOUSE_CAPTURE, key, sizeof(key));
+    if (g_mouse_capture_wanted)
+        std::snprintf(msg, sizeof(msg), "Mouse captured (%s releases)", key);
+    else
+        std::snprintf(msg, sizeof(msg), "Mouse released (%s captures)", key);
+    host_osd_push(msg, 1500);
+}
+
+/* Feed host pointer motion and buttons into every mouse seat. Motion is
+ * scaled by mouse_sensitivity; the sub-count remainder carries to the next
+ * frame. Released capture or lost focus feeds nothing and drops unread
+ * motion, and both buttons read released. */
+static void sample_mouse_ports(void) {
+    if (g_headless || !mouse_seat_configured()) return;
+    mouse_capture_sync();
+    float fx = 0.0f, fy = 0.0f;
+#if defined(PSX_SDL3)
+    const SDL_MouseButtonFlags buttons = SDL_GetRelativeMouseState(&fx, &fy);
+#else
+    int ix = 0, iy = 0;
+    const Uint32 buttons = SDL_GetRelativeMouseState(&ix, &iy);
+    fx = (float)ix;
+    fy = (float)iy;
+#endif
+    const bool live = g_mouse_captured;
+    int dx = 0, dy = 0;
+    if (live) {
+        const double x = (double)fx * g_mouse_sensitivity + g_mouse_frac[0];
+        const double y = (double)fy * g_mouse_sensitivity + g_mouse_frac[1];
+        dx = (int)x;
+        dy = (int)y;
+        g_mouse_frac[0] = x - dx;
+        g_mouse_frac[1] = y - dy;
+    } else {
+        g_mouse_frac[0] = g_mouse_frac[1] = 0.0;
+    }
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        if (g_players[s].kind != 3) continue;
+        if (!live) {
+            sio_mouse_clear_motion(s);
+            sio_set_mouse_buttons(s, 0, 0);
+            continue;
+        }
+        sio_mouse_add_motion(s, dx, dy);
+        sio_set_mouse_buttons(s, (buttons & SDL_BUTTON_LMASK) != 0,
+                              (buttons & SDL_BUTTON_RMASK) != 0);
+    }
+}
+
+static bool guncon_seat_configured(void) {
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++)
+        if (g_players[s].kind == 4) return true;
+    return false;
+}
+
+static SDL_Cursor* g_guncon_cursor = nullptr;
+static bool g_guncon_cursor_on = false;
+
+static void guncon_cursor_sync(bool on) {
+    if (on == g_guncon_cursor_on) return;
+    if (on) {
+        if (!g_guncon_cursor)
+            g_guncon_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+        if (g_guncon_cursor) SDL_SetCursor(g_guncon_cursor);
+    } else {
+        SDL_SetCursor(SDL_GetDefaultCursor());
+    }
+    g_guncon_cursor_on = on;
+}
+
+/* Aim every GunCon seat at the host pointer. The pointer's place over the
+ * letterboxed game image becomes X/Y through the game's GP1(06h)/(07h)
+ * display range (guncon_map.h). Outside the image, with the side button held
+ * (off-screen reload), without focus, in a host menu or while a PS1 Mouse
+ * holds the pointer captured, the gun sees no light and its buttons read
+ * released. Left button = trigger, right = A, middle = B. */
+static void sample_guncon_ports(void) {
+    if (g_headless || !guncon_seat_configured() || !sdl_window) return;
+    const bool menu = savestate_menu_open || psx_host_ui_capture_active() ||
+                      psx_rewind_is_open();
+    const bool live = host_hotkey_input_focused() && !psx_netplay_active() && !menu && !g_mouse_captured;
+    guncon_cursor_sync(live);
+    uint16_t gx = (uint16_t)SIO_GUNCON_NO_LIGHT_X, gy = (uint16_t)SIO_GUNCON_NO_LIGHT_Y;
+    uint16_t btn = 0xFFFFu;
+    if (live) {
+#if defined(PSX_SDL3)
+        float mx = 0.0f, my = 0.0f;
+        (void)SDL_GetMouseState(&mx, &my);
+#else
+        int mx = 0, my = 0;
+        (void)SDL_GetMouseState(&mx, &my);
+#endif
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+        auto held = [&](int c) { return psx_keybinds_guncon_held(keys, c); };
+        int no_light = 0;
+        btn = guncon_host_buttons(held(PSX_GC_TRIGGER), held(PSX_GC_A), held(PSX_GC_B),
+                                  held(PSX_GC_NO_LIGHT), held(PSX_GC_OFFSCREEN_SHOT),
+                                  &no_light);
+        int ww = 0, wh = 0;
+        SDL_GetWindowSize(sdl_window, &ww, &wh);
+        int rx = 0, ry = 0, rw = 0, rh = 0;
+        guncon_letterbox(ww, wh, g_video_aspect_num, g_video_aspect_den,
+                         &rx, &ry, &rw, &rh);
+        if (rw > 0 && rh > 0 && !no_light) {
+            uint32_t x1 = 0, x2 = 0, y1 = 0, y2 = 0, hr1 = 0, hr2 = 0;
+            gpu_get_crtc_debug(&x1, &x2, &y1, &y2, &hr1, &hr2);
+            guncon_map_pointer(((double)mx - rx) / (double)rw,
+                               ((double)my - ry) / (double)rh,
+                               x1, x2, y1, y2, psx_video_timing_is_pal(),
+                               &gx, &gy);
+        }
+    }
+    for (int s = 0; s < PSX_MAX_PLAYERS; s++) {
+        if (g_players[s].kind != 4) continue;
+        sio_set_guncon_state(s, btn, gx, gy);
+    }
+}
+
 static void runtime_menu_poll_toggle(void) {
     const int down = runtime_menu_chord_down();
     if (down && !runtime_menu_chord_was && host_hotkey_input_focused() && !savestate_menu_open &&
@@ -9189,6 +9401,11 @@ static bool drain_host_events() {
             }
             if (!key_repeat && host_keymap_match_event(HOST_KEYMAP_OPEN_LAUNCHER, key, scancode, mod) &&
                 !savestate_menu_open && !psx_rewind_is_open() && psx_runtime_menu_open()) continue;
+            if (!key_repeat && mouse_seat_configured() && !psx_netplay_active() &&
+                host_keymap_match_event(HOST_KEYMAP_MOUSE_CAPTURE, key, scancode, mod)) {
+                mouse_capture_toggle();
+                continue;
+            }
             if (key == SDLK_ESCAPE && psx_netplay_active()) {
                 netplay_soft_exit("netplay_escape");
                 return false;
@@ -9412,7 +9629,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
 #endif
     host_frame_stamp((uint32_t)s_frame_count, (uint32_t)g_dirty_ram_insns_run, stamp_static_checks);
 
-    psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+    psx_local_mouse_begin(sdl_window, !mouse_seat_configured() && local_mouse_live(override));
     {
         /* Outside every debug guard on purpose: production must be measurable. */
         extern uint64_t s_frame_count;
@@ -9581,6 +9798,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         fast_forward_toggle_poll_buttons();
         psx_rewind_note_frame();
         psx_rewind_present_tick((uint32_t)SDL_GetTicks());
+        mouse_capture_sync();
         if (psx_runtime_menu_is_open()) runtime_menu_host_loop();
         if (savestate_menu_open)
             savestate_menu_host_pause_loop();
@@ -17036,6 +17254,12 @@ namespace {
         (void)ws_offered_b;
         (void)ws_ultrawide_offered_b;
         launcher_profile_apply("psx", gi);
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+        gi->has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi->has_native_guncon=1; gi->has_native_negcon=1;
+#endif
+#endif
         psx_launcher_hide_mod_owned_rows(gi);
 #if defined(RECOMP_LAUNCHER_HAS_ARTWORK_GALLERY)
         /* A regional package keeps its covers beside the shared entry, not
@@ -17462,6 +17686,12 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
     if (!out) return;
     RecompLauncherCGameInfo& gi = *out;
     launcher_profile_apply("psx", &gi);
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+    gi.has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi.has_native_guncon=1; gi.has_native_negcon=1;
+#endif
+#endif
     psx_launcher_hide_mod_owned_rows(&gi);
     gi.name = g_ovl_name.c_str();
     gi.keybinds_path = g_ovl_keybinds.c_str();
@@ -18979,6 +19209,14 @@ int main(int argc, char** argv) {
             }
             if (us.has_deadzone) resolved_deadzone = us.deadzone;
         }
+        if (us.has_mouse_sensitivity) {
+            g_mouse_sensitivity = us.mouse_sensitivity;
+            g_mouse_sensitivity_set = true;
+        }
+        if (us.has_mouse_capture) {
+            g_mouse_capture_wanted = us.mouse_capture;
+            g_mouse_capture_set = true;
+        }
         apply_offline_pad_count(game_players, multitap_enabled);
         if (us.has_low_latency_input) g_low_latency_input = us.low_latency_input ? 1 : 0;
         if (us.has_render_thread)     g_render_thread     = us.render_thread ? 1 : 0;
@@ -19569,6 +19807,11 @@ int main(int argc, char** argv) {
             seed.memcard2_enabled = memcard2_enabled; seed.has_memcard2_enabled = true;
             seed.multitap_enabled = multitap_enabled; seed.has_multitap_enabled = true;
             seed.multitap_analog = multitap_analog; seed.has_multitap_analog = true;
+            /* No launcher control yet: carry hand-edited mouse keys through. */
+            seed.mouse_sensitivity = g_mouse_sensitivity;
+            seed.has_mouse_sensitivity = g_mouse_sensitivity_set;
+            seed.mouse_capture = g_mouse_capture_wanted;
+            seed.has_mouse_capture = g_mouse_capture_set;
             if (!memcard1_path.empty()) { seed.memcard1_path = memcard1_path; seed.has_memcard1_path = true; }
             if (!memcard2_path.empty()) { seed.memcard2_path = memcard2_path; seed.has_memcard2_path = true; }
             seed.language = resolved_language; seed.has_language = true;
@@ -19625,7 +19868,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < n; ++i) {
                     const std::string& d = player_device[i];
                     ls.player_src[i] =
-                        PSXRecompV4::launcher_source_from_device(d);
+                        PSXRecompV4::launcher_source_from_device(d, kLauncherNativeMouse, kLauncherNativeGuncon);
                     /* Round to the nearest launcher percent. Truncation turned a
                      * saved 20% value (6553/32767) into 19%, which the launcher's
                      * 5% normalization then silently reduced to 15%. */
@@ -19637,7 +19880,7 @@ int main(int argc, char** argv) {
                      * and the launcher then handed the lie back for us to
                      * persist. The keyboard's runtime behaviour does not
                      * depend on this value (effective_player_mode). */
-                    ls.pad_mode[i] = player_mode[i];
+                    ls.pad_mode[i] = PSXRecompV4::launcher_pad_mode_to_launcher(player_mode[i],kLauncherNegconMode);
                     ls.player_gamepad_guid[i][0] = '\0';
                     if (ls.player_src[i] == 2 && !d.empty() && d != "auto" &&
                         d != "gamepad" && d != "controller") {
@@ -19785,6 +20028,12 @@ int main(int argc, char** argv) {
             }
 
             RecompLauncherCGameInfo gi{};
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+        gi.has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi.has_native_guncon=1; gi.has_native_negcon=1;
+#endif
+#endif
             ae_fill_psx_launcher_game_info(
                 &gi,
                 game_name.empty() ? nullptr : game_name.c_str(),
@@ -19962,10 +20211,18 @@ int main(int argc, char** argv) {
                         player_instance[i] = ls.player_src[i] == 2
                             ? ls.player_gamepad_instance[i] : 0;
 #endif
-                        if (ls.player_src[i] == 1) {
+                        if (ls.player_src[i] == 4 && kLauncherNativeGuncon) {
+                            player_device[i]="guncon";
+                        } else if (ls.player_src[i] == 3 && kLauncherNativeMouse) {
+                            player_device[i] = "mouse";
+                        } else if (ls.player_src[i] == 1) {
                             player_device[i] = "keyboard";
                         } else if (ls.player_src[i] == 0) {
-                            player_device[i] = "none";
+                            /* A PS1 Mouse seat shows as None; left there, it
+                             * stays a mouse (launcher_device.h). */
+                            player_device[i] =
+                                PSXRecompV4::launcher_device_from_source(0, player_device[i],
+                                    kLauncherNativeMouse, kLauncherNativeGuncon);
                         } else if (ls.player_gamepad_guid[i][0]) {
                             player_device[i] = ls.player_gamepad_guid[i];
                         } else if (PSXRecompV4::launcher_source_from_device(
@@ -19985,7 +20242,7 @@ int main(int argc, char** argv) {
                          * depend on that to boot the declared pad type. */
                         player_mode[i] =
                             PSXRecompV4::resolve_player_mode_after_launcher(
-                                ls.pad_mode[i], ctrl_lock_mode,
+                                PSXRecompV4::launcher_pad_mode_from_launcher(ls.pad_mode[i],player_mode[i],kLauncherNegconMode), ctrl_lock_mode,
                                 ctrl_locked_mode[i],
                                 g_mod_controller_mode_override[i]);
                         player_deadzone[i] = ls.deadzone[i] * 32767 / 100;
@@ -20971,7 +21228,7 @@ session_reboot:
             const bool dev_p1 = (dev_any_input_enabled() && s == 0);
             const int mode = assert_sio_pad_profile(s, dev_p1);
             if (live_pad_mode(s)) sio_reset_dualshock(s);
-            else sio_set_pad_analog(s, pad_mode_boot_analog(mode), 0x80, 0x80, 0x80, 0x80);
+            else sio_set_pad_type(s, pad_type_boot_for_slot(s,g_players[s],mode), 0x80, 0x80, 0x80, 0x80);
         }
     }
     /* SPU float-shadow gate must be set before spu_init() (which runs
@@ -22343,11 +22600,11 @@ soft_return_lobby:
             for (int i = 0; i < n; ++i) {
                 const std::string& d = player_device[i];
                 ls.player_src[i] =
-                    PSXRecompV4::launcher_source_from_device(d);
+                    PSXRecompV4::launcher_source_from_device(d, kLauncherNativeMouse, kLauncherNativeGuncon);
                 ls.deadzone[i] =
                     (player_deadzone[i] * 100 + 32767 / 2) / 32767;
                 /* Verbatim, as in the first launcher entry above. */
-                ls.pad_mode[i] = player_mode[i];
+                ls.pad_mode[i] = PSXRecompV4::launcher_pad_mode_to_launcher(player_mode[i],kLauncherNegconMode);
                 ls.player_gamepad_guid[i][0] = '\0';
                 if (ls.player_src[i] == 2 && !d.empty() && d != "auto" &&
                     d != "gamepad" && d != "controller") {
@@ -22380,6 +22637,12 @@ soft_return_lobby:
         }
 
         RecompLauncherCGameInfo gi{};
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_MOUSE_CAP)
+        gi.has_native_mouse = 1;
+#if defined(RECOMP_LAUNCHER_HAS_NATIVE_PERIPHERAL_CAPS)
+        gi.has_native_guncon=1; gi.has_native_negcon=1;
+#endif
+#endif
         ae_fill_psx_launcher_game_info(
             &gi,
             game_name.empty() ? nullptr : game_name.c_str(),
@@ -22525,10 +22788,16 @@ soft_return_lobby:
                     player_instance[i] = ls.player_src[i] == 2
                         ? ls.player_gamepad_instance[i] : 0;
 #endif
-                    if (ls.player_src[i] == 1) {
+                    if (ls.player_src[i] == 4 && kLauncherNativeGuncon) {
+                            player_device[i]="guncon";
+                        } else if (ls.player_src[i] == 3 && kLauncherNativeMouse) {
+                            player_device[i] = "mouse";
+                        } else if (ls.player_src[i] == 1) {
                         player_device[i] = "keyboard";
                     } else if (ls.player_src[i] == 0) {
-                        player_device[i] = "none";
+                        player_device[i] =
+                            PSXRecompV4::launcher_device_from_source(0, player_device[i],
+                                kLauncherNativeMouse, kLauncherNativeGuncon);
                     } else if (ls.player_gamepad_guid[i][0]) {
                         player_device[i] = ls.player_gamepad_guid[i];
                     } else if (PSXRecompV4::launcher_source_from_device(
@@ -22541,7 +22810,7 @@ soft_return_lobby:
                      * and applies the new session's override over this. */
                     player_mode[i] =
                         PSXRecompV4::resolve_player_mode_after_launcher(
-                            ls.pad_mode[i], ctrl_lock_mode,
+                            PSXRecompV4::launcher_pad_mode_from_launcher(ls.pad_mode[i],player_mode[i],kLauncherNegconMode), ctrl_lock_mode,
                             ctrl_locked_mode[i],
                             g_mod_controller_mode_override[i]);
                     player_deadzone[i] = ls.deadzone[i] * 32767 / 100;
