@@ -15,6 +15,7 @@
 #include "regional_launch.h"
 #include "projection_scale.hpp"
 #include "projection_scale_config.hpp"
+#include "player_settings.h"
 #include "mod_controller_source.h"
 #include "window_size.h"     /* default game-window size */
 #include "internal_resolution.h" /* the Internal Resolution mod and [video] internal_resolution */
@@ -227,6 +228,7 @@ extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -466,6 +468,7 @@ static SDL_Texture*  sdl_texture;
 /* Per-player input device routing (PSX ports 1 & 2). Seeded from the
  * [controller] settings the launcher writes; the runtime opens the matching
  * SDL controller (or uses the keyboard) and feeds each PSX pad slot. */
+static bool g_offer_frame_interpolation=true;
 struct PlayerInput {
     int   kind = 0;            /* 0=none, 1=keyboard, 2=controller, 3=PS1 Mouse, 4=GunCon */
     char  guid[40] = {0};      /* SDL joystick GUID string when kind==controller */
@@ -1361,11 +1364,12 @@ extern "C" void psx_mod_set_texture_filter(int mode) {
  * GameInfo cannot clear: an older recomp-ui still draws it, and the runtime
  * ignores what it returns.) */
 static void psx_launcher_hide_mod_owned_rows(RecompLauncherCGameInfo* gi) {
+    gi->has_frame_interp=g_offer_frame_interpolation?1:0;
 #ifdef RECOMP_LAUNCHER_HAS_VSYNC_VRR
     gi->has_vsync_vrr = 1;
 #endif
 #ifdef RECOMP_LAUNCHER_HAS_FRAME_GENERATION_HIDDEN
-    gi->frame_generation_hidden = 1;
+    gi->frame_generation_hidden = 0; /* Supported host presentation preference. */
 #endif
     gi->has_supersampling = 0;       /* Internal Resolution (and the legacy
                                       * Supersampling cycle) */
@@ -14049,8 +14053,10 @@ namespace {
         std::snprintf(out, cap, "%s", in ? in : "");
     }
 
+#include "launcher_player_settings.inc"
+
     static const RecompLauncherCModProvider* ae_mod_provider(void) {
-        return PSXRecompV4::mod_runtime_launcher_provider();
+        return player_settings_provider(PSXRecompV4::mod_runtime_launcher_provider());
     }
 
     static int ae_mod_package_get_by_id(const char* id,
@@ -17347,7 +17353,7 @@ namespace {
 #if defined(PSX_MEMORY_CARD_MANAGER) && defined(RECOMP_LAUNCHER_HAS_CARD_MANAGER)
         gi->card_manager = psx_card_manager::launcher_service();
 #endif
-        gi->mods = PSXRecompV4::mod_runtime_launcher_provider();
+        gi->mods = player_settings_provider(PSXRecompV4::mod_runtime_launcher_provider());
         gi->bios_verify = ae_bios_verify;
         /* Launcher window icon: the SAME file psx_apply_window_icon() puts on
          * the game window (assets/psxrecomp.png beside the exe, which
@@ -17701,7 +17707,7 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
     gi.num_renderers = g_launcher_vulkan_available ? 3 : 2;
     gi.has_render_pipeline = 1;
     gi.has_vsync = 1;
-    gi.mods = PSXRecompV4::mod_runtime_launcher_provider();
+    gi.mods = player_settings_provider(PSXRecompV4::mod_runtime_launcher_provider());
 #if defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
     /* The same lobby the pre-game launcher drives, so the menu can host/join. */
     gi.netplay_supported = g_lnch_netplay_available ? 1 : 0;
@@ -17949,6 +17955,9 @@ static void host_pause_service(void) {
         }
     }
 }
+
+static int g_player_title_select_allowed=1;
+#include "player_startup_settings.inc"
 
 int main(int argc, char** argv) {
     g_main_argc = argc;
@@ -18274,7 +18283,7 @@ int main(int argc, char** argv) {
      * activation plugins apply them after launcher/settings resolution. */
     constexpr bool ws_offered = false;
     constexpr bool ws_ultrawide_offered = false;
-    constexpr bool frame_interpolation_offered = false;
+
     constexpr bool skip_fmv_offered = false;
     /* Load acceleration is likewise mod-owned (Fast Loading / CD Speed). The
      * former game.toml `offer_turbo_loads` opt-out is deprecated and ignored:
@@ -18538,10 +18547,13 @@ int main(int argc, char** argv) {
             g_video_aspect_den = gc.runtime.video_aspect_den;
             g_fov_scale = psx_projection_scale_load_config(game_config_path);
             g_low_latency_input = gc.runtime.video_low_latency_input ? 1 : 0;
+            g_player_texture_window_batching=gc.runtime.video_texture_window_batching ? 1 : 0;
+            gl_renderer_set_texture_window_batching(g_player_texture_window_batching);
             gl_renderer_set_texture_window_batching(
                 gc.runtime.video_texture_window_batching ? 1 : 0);
             g_render_thread = gc.runtime.video_render_thread ? 1 : 0;
             g_offer_render_pipeline = gc.runtime.video_offer_render_pipeline;
+            g_offer_frame_interpolation=gc.runtime.video_offer_frame_interpolation;
             g_launcher_quick_controls = gc.runtime.launcher_quick_controls;
             g_frame_generation = gc.runtime.video_frame_generation ? 1 : 0;
             g_frame_generation_method = gc.runtime.video_frame_generation_method;
@@ -19042,6 +19054,8 @@ int main(int argc, char** argv) {
         PSXRecompV4::UserSettings us =
             PSXRecompV4::load_user_settings(settings_path);
         user_settings_has_renderer = us.has_renderer;
+        g_player_title_select_allowed=g_title_select_shortcuts;
+        apply_extra_player_settings(us,bios_hle_keep_intro,resolved_audio_buffer_ms);
         if (us.parse_error) {
             /* The file exists but is not valid TOML: every setting in it (the
              * user's renderer choice, BIOS/disc paths, ...) is being ignored,
@@ -19279,39 +19293,14 @@ int main(int argc, char** argv) {
             "ignoring the legacy value\n");
         g_turbo_loads_enabled = 0;
     }
-    /* Treat presentation interpolation the same way when a title moves it to
-     * Mods. Both the boolean and target rate are cleared so launcher-less
-     * starts cannot revive an old generic Settings selection. */
-    if (!frame_interpolation_offered &&
-        (g_frame_interpolation || g_frame_interpolation_fps)) {
-        std::fprintf(stdout,
-            "psxrecomp: Frame interpolation is mod-owned for this title; "
-            "ignoring the legacy Settings value\n");
-        g_frame_interpolation = 0;
-        g_frame_interpolation_fps = 0;
-    }
-
-    /* Widescreen/View mode is mod-owned on PSX. Clamp the generic display
-     * aspect to native 4:3 so neither a legacy game.toml offer/default nor a
-     * stale settings.toml value can engage it before trusted mod activation. */
-    if (!ws_offered && (g_video_aspect_num != 4 || g_video_aspect_den != 3)) {
-        std::fprintf(stdout, "psxrecomp: widescreen is mod-owned on PSX; "
-                     "clamping display aspect %d:%d -> 4:3\n",
-                     g_video_aspect_num, g_video_aspect_den);
-        g_video_aspect_num = 4;
-        g_video_aspect_den = 3;
-    }
-    if (!ws_ultrawide_offered && g_video_aspect_num * 9 == g_video_aspect_den * 21) {
-        std::fprintf(stdout, "psxrecomp: 21:9 is not offered for this title; clamping to %s\n",
-                     ws_offered ? "16:9" : "4:3");
-        g_video_aspect_num = ws_offered ? 16 : 4;
-        g_video_aspect_den = ws_offered ? 9 : 3;
-    }
+    /* Fixed display aspect and interpolation are player preferences.
+     * World projection and gameplay timing remain owned by title/mod policy. */
 
     /* Latency knobs: env overrides win over config (for A/B measurement).
      * PSX_LOW_LATENCY_INPUT=0/1 ; PSX_VSYNC=1(vsync)/0(immediate)/-1(adaptive)
      * (vsync XOR wall-clock pacer — vsync clocks only ~60 Hz panels);
      * PSX_FRAME_INTERPOLATION=0/1; PSX_FRAME_INTERPOLATION_FPS=0|90+. */
+    auto apply_player_presentation_environment = [&]() {
     if (const char *e = std::getenv("PSX_LOW_LATENCY_INPUT")) g_low_latency_input = atoi(e) ? 1 : 0;
     if (const char *e = std::getenv("PSX_VSYNC"))             g_video_vsync       = atoi(e);
     if (const char *e = std::getenv("PSX_SMOOTH_60FPS"))
@@ -19322,6 +19311,8 @@ int main(int argc, char** argv) {
         int fps = atoi(e);
         if (fps == 0 || fps >= 90) g_frame_interpolation_fps = fps;
     }
+    };
+    apply_player_presentation_environment();
 
     /* Apply writable-state isolation before game-options and launcher setup,
      * not with the later renderer/port overrides. Explicit slot paths from a
@@ -19676,6 +19667,8 @@ int main(int argc, char** argv) {
                                            : "launcher first (no disc set up yet)");
         }
     }
+    player_settings_configure(exe_dir_from_argv(argv[0])/"settings.toml",
+        player_settings_baseline(fast_boot,bios_hle,bios_hle_keep_intro,resolved_audio_buffer_ms,memcard_dir));
     const bool want_launcher =
         force_launcher ||
         (!std::getenv("PSX_NO_LAUNCHER") && !force_no_launcher && !skip_launcher_setting);
@@ -20436,6 +20429,7 @@ int main(int argc, char** argv) {
             if (lr == 1) {
                 /* Keep settings changed and then dismissed with Quit. */
                 {
+                    player_settings_merge(seed);
                     PSXRecompV4::UserSettings save = seed;
                     (void)PSXRecompV4::save_user_settings(
                         exe_dir_from_argv(argv[0]) / "settings.toml", save);
@@ -20512,6 +20506,16 @@ int main(int argc, char** argv) {
                 } else {
                     g_netplay_from_lobby = 0;
                 }
+                player_settings_merge(seed);
+                apply_extra_player_settings(seed,bios_hle_keep_intro,resolved_audio_buffer_ms);
+                if (seed.has_fov_scale) g_fov_scale=seed.fov_scale;
+                if (const char* e=std::getenv("PSX_GTE_FOV_SCALE")) {
+                    double value; if (psx_projection_scale_parse(e,&value)) g_fov_scale=value;
+                }
+                if (seed.has_low_latency_input) g_low_latency_input=seed.low_latency_input;
+                if (seed.has_mouse_sensitivity) { g_mouse_sensitivity=seed.mouse_sensitivity; g_mouse_sensitivity_set=1; }
+                if (seed.has_mouse_capture) { g_mouse_capture_wanted=seed.mouse_capture; g_mouse_capture_set=1; }
+                if (seed.has_memcard_dir && !cli_memcard_dir) memcard_dir=anchor_on_exe_dir(argv[0],seed.memcard_dir);
                 g_video_renderer  = seed.renderer;
                 /* Internal resolution (and with it dynamic resolution) was
                  * adopted with the write-back above. */
@@ -20600,6 +20604,7 @@ int main(int argc, char** argv) {
                 g_video_win_w = seed.window_width;
                 /* Persist the user's choices next to the exe. */
                 {
+                    player_settings_merge(seed);
                     PSXRecompV4::UserSettings save = seed;
                     (void)PSXRecompV4::save_user_settings(
                         exe_dir_from_argv(argv[0]) / "settings.toml", save);
@@ -20687,13 +20692,9 @@ int main(int argc, char** argv) {
         g_turbo_load_release_frames = TURBO_LOADS_RELEASE_FRAMES;
         if (!turbo_loads_offered)
             g_turbo_loads_enabled = 0;
-        /* The helper restores interpolation and Skip FMVs to their
-         * pre-activation values, which is only right while no launcher
-         * control owns them. */
-        static_assert(!frame_interpolation_offered && !skip_fmv_offered,
-                      "reset_mod_owned_presentation() would clobber a launcher "
-                      "setting; restore only when the feature is mod-owned");
+        /* Restore player presentation preferences before plugin activation. */
         reset_mod_owned_presentation();
+        apply_player_presentation_environment();
         /* Existing titles cache allocation handles across rematches. Preserve
          * those process-lifetime resources by default. A title declaring the
          * session-owned build contract recreates all handles on activation;
@@ -21066,6 +21067,8 @@ session_reboot:
      * stay the player's settings: the mod never leaks into a launcher seed.
      * With [video] pgxp_mod_only the mod is the one switch (pgxp_session.h). */
     PSXPgxpSessionConfig pgxp_cfg{};
+    pgxp_cfg.player_geometry_set=g_player_geometry_set;
+    pgxp_cfg.player_texture_set=g_player_texture_set;
     pgxp_cfg.video_geometry = g_video_geometry_correction;
     pgxp_cfg.video_texture = g_video_perspective_texturing;
     pgxp_cfg.video_cpu_mode = g_video_pgxp_cpu_mode;
@@ -22511,8 +22514,8 @@ soft_return_lobby:
         ls.frame_generation = g_frame_generation_pref;
 #endif
         ls.vsync = psx_vsync_to_launcher(launcher_vsync_preference());
-        ls.frame_interp = g_frame_interpolation ? 1 : 0;
-        ls.frame_interp_fps = g_frame_interpolation_fps;
+        ls.frame_interp = g_mod_owned_baseline.captured ? g_mod_owned_baseline.values.frame_interpolation : g_frame_interpolation;
+        ls.frame_interp_fps = g_mod_owned_baseline.captured ? g_mod_owned_baseline.values.frame_interpolation_fps : g_frame_interpolation_fps;
         ls.assist_fast_forward_multiplier = (int)std::lround(g_fast_forward_preference * 10.0);
         ls.fast_forward_toggle_mode = g_fast_forward_toggle_mode ? 1 : 0;
         ls.auto_skip_fmv = (skip_fmv_offered && g_auto_skip_fmv) ? 1 : 0;
@@ -22823,6 +22826,7 @@ soft_return_lobby:
                     exe_dir_from_argv(argv[0]) / "settings.toml";
                 PSXRecompV4::UserSettings us =
                     PSXRecompV4::load_user_settings(settings_path);
+                apply_extra_player_settings(us,bios_hle_keep_intro,resolved_audio_buffer_ms);
                 const int un = std::min(PSX_MAX_PLAYERS,
                                         PSXRecompV4::UserSettings::kMaxControllerPlayers);
                 for (int i = 0; i < un; ++i) {
@@ -22967,6 +22971,7 @@ soft_return_lobby:
             g_frame_interpolation_fps = ls.frame_interp_fps;
             g_video_vsync = psx_vsync_from_launcher(ls.vsync, launcher_vsync_preference());
             g_mod_owned_baseline.values.video_vsync = g_video_vsync;
+            psx_mod_session_baseline_set_frame_interpolation(&g_mod_owned_baseline,g_frame_interpolation,g_frame_interpolation_fps);
             apply_present_cadence();
             g_fast_forward_preference = psx_fast_forward_preference(ls.assist_fast_forward_multiplier / 10.0);
             g_fast_forward_toggle_mode = ls.fast_forward_toggle_mode != 0;
