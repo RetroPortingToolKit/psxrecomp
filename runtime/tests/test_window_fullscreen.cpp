@@ -46,7 +46,8 @@ int main() {
         SDL_GetDisplayBounds(SDL_GetWindowDisplayIndex(window), &bounds);
 #endif
         int full_w, full_h; SDL_GetWindowSize(window, &full_w, &full_h);
-        check(full_w == bounds.w && full_h == bounds.h, "borderless covers the current display");
+        check(full_w == bounds.w && full_h == bounds.h + 1,
+              "borderless covers the current display (one row over: stays composed)");
 #if defined(PSX_SDL3)
         check(!SDL_CursorVisible(), "fullscreen cursor hidden");
         SDL_DisplayMode current{};
