@@ -3290,9 +3290,15 @@ UserSettings load_user_settings(const fs::path& path) {
         // rewind / rewind_depth / rewind_interval moved to the built-in
         // Rewind mod (psx.feature.rewind); the old keys are ignored.
     }
-    // [audio] holds no player setting: frequency (the output sample rate) is
-    // the runtime's built-in rate and spu_hq is the built-in Enhanced Audio
-    // mod. Both old keys are ignored and the next save drops them.
+    // Only host volume is a player audio setting. Sample rate and HQ remain
+    // owned by the runtime and the Enhanced Audio mod.
+    if (doc.contains("audio")) {
+        const auto& a = toml::find(doc, "audio");
+        if (a.contains("volume")) try_get([&] {
+            s.volume = std::max(0, std::min(100, toml::find<int>(a, "volume")));
+            s.has_volume = true;
+        });
+    }
     if (doc.contains("hotkeys")) {
         const toml::value& h = toml::find(doc, "hotkeys");
         if (h.contains("rewind_pad")) try_get([&]{
@@ -3595,6 +3601,7 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             f << "fast_forward_toggle_pad = "
               << s.hotkey_pad_fast_forward_toggle << "\n";
     }
+    if (s.has_volume) f << "\n[audio]\nvolume = " << std::max(0, std::min(100, s.volume)) << "\n";
     if (s.has_skip_launcher)
         f << "\n[launcher]\nskip_launcher = " << (s.skip_launcher ? "true" : "false") << "\n";
     if ((s.has_netplay_player_name && !s.netplay_player_name.empty()) ||

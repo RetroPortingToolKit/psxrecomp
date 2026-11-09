@@ -27,6 +27,8 @@ extern "C" {
 #define PSX_MENU_ABI_VERSION 1
 /* PsxMenuHost.default_selection is present (appended, ABI-compatible). */
 #define PSX_MENU_HOST_HAS_DEFAULT_SELECTION 1
+/* PsxMenuHost.state_* (save-state slots) are present (appended). */
+#define PSX_MENU_HOST_HAS_SAVE_STATES 1
 
 /* request_exit */
 enum {
@@ -84,6 +86,21 @@ typedef struct PsxMenuHost {
      * provider keeps the title's default presentation: it may decline to
      * attach when it would only add a menu the title did not have. */
     int default_selection;
+    /* Save states: the runtime's slots (savestate.h), the same files as its
+     * own save-state hotkey menu. slot_count is 0 without save states.
+     * available is 0 while save/load is refused (netplay, a title block).
+     * info returns 1 when the slot holds a state and sets *mtime (seconds
+     * since the Unix epoch); thumb fills w*h ARGB pixels (1 = had one).
+     * save/load validate now and queue the request for the main thread
+     * (1 = queued, 0 = refused: unavailable, bad slot, or an empty slot to
+     * load). The request runs at the guest's next safe boundary, so a
+     * provider closes its menu (drops its pause) after asking. */
+    int  (*state_slot_count)(void);
+    int  (*state_available)(void);
+    int  (*state_info)(int slot, long long *mtime);
+    int  (*state_thumb)(int slot, unsigned *argb, int w, int h);
+    int  (*state_save)(int slot);
+    int  (*state_load)(int slot);
 } PsxMenuHost;
 
 typedef struct PsxMenuProvider {
