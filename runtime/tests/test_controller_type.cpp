@@ -42,6 +42,32 @@ int main() {
             return 1;
         }
     }
+    /* Steam desktop-layout guard: physical Valve pads only, never Steam
+     * Input's virtual pad (28DE:11FF) or another vendor. */
+    if (!psx_controller_is_physical_valve_pad(0x28DE, 0x1304) ||
+        !psx_controller_is_physical_valve_pad(0x28DE, 0x1102) ||
+        psx_controller_is_physical_valve_pad(0x28DE, 0x11FF) ||
+        psx_controller_is_physical_valve_pad(0x045E, 0x0B12)) {
+        std::fprintf(stderr, "valve pad classification failed\n");
+        return 1;
+    }
+    if (!psx_keyboard_seat_should_adopt_pad(0, 1, false, false) ||
+        psx_keyboard_seat_should_adopt_pad(1, 1, false, false) ||
+        psx_keyboard_seat_should_adopt_pad(0, 2, false, false) ||
+        psx_keyboard_seat_should_adopt_pad(0, 0, false, false) ||
+        psx_keyboard_seat_should_adopt_pad(0, 1, true, false) ||
+        psx_keyboard_seat_should_adopt_pad(0, 1, false, true)) {
+        std::fprintf(stderr, "keyboard seat adoption policy failed\n");
+        return 1;
+    }
+    if (psx_steam_desktop_echo_active(false, true, 1000, 1000, 150) ||
+        !psx_steam_desktop_echo_active(true, true, 1000, 0, 150) ||
+        !psx_steam_desktop_echo_active(true, false, 1100, 1000, 150) ||
+        psx_steam_desktop_echo_active(true, false, 1200, 1000, 150) ||
+        psx_steam_desktop_echo_active(true, false, 1000, 0, 150)) {
+        std::fprintf(stderr, "steam desktop echo policy failed\n");
+        return 1;
+    }
     std::puts("controller type classification: passed");
     if (!psx_controller_recovery_needed(true, true, false, 10, 0) ||
         psx_controller_recovery_needed(true, true, true, 1000, 0) ||

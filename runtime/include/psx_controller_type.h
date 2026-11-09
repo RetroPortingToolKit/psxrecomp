@@ -49,4 +49,40 @@ inline bool psx_controller_recovery_needed(bool selected, bool open,
                         (!open && now_ms - last_retry_ms >= 500));
 }
 
+/* A physical Valve controller (Steam Controller 2015 / 2026, Steam Deck) seen
+ * directly through SDL's HIDAPI driver, i.e. NOT Steam Input's virtual pad
+ * (28DE:11FF). Outside a Steam launch the Steam client still applies its
+ * Desktop Configuration to such a pad and injects keyboard/mouse input
+ * (B = Escape, Back = Tab, A = Enter, triggers = mouse clicks) next to the
+ * gamepad reports SDL reads. */
+inline bool psx_controller_is_physical_valve_pad(unsigned vendor,
+                                                 unsigned product) {
+    return vendor == 0x28DEu && product != 0x11FFu;
+}
+
+/* Keyboard seat adopts a gamepad: Player 1 left on "keyboard" (the release
+ * default) also takes the first connected pad when no other seat routes a
+ * pad, so a controller works without a launcher visit. Keybinds stay live
+ * on a pad seat, so keyboard play is unchanged. Never under netplay. */
+inline bool psx_keyboard_seat_should_adopt_pad(int seat, int seat_kind,
+                                               bool other_seat_has_pad,
+                                               bool netplay) {
+    return seat == 0 && seat_kind == 1 && !other_seat_has_pad && !netplay;
+}
+
+/* Steam desktop-layout echo guard: while P1's pad is a physical Valve pad
+ * and it has input held (or released within the trailing window), keyboard
+ * and mouse input is Steam's synthesized echo of that same press and must
+ * not reach the game, the host hotkeys (Tab turbo) or the menu (Escape). */
+inline bool psx_steam_desktop_echo_active(bool p1_physical_valve_pad,
+                                          bool pad_input_held,
+                                          unsigned long long now_ms,
+                                          unsigned long long last_held_ms,
+                                          unsigned long long window_ms) {
+    if (!p1_physical_valve_pad) return false;
+    if (pad_input_held) return true;
+    return last_held_ms != 0 && now_ms >= last_held_ms &&
+           now_ms - last_held_ms <= window_ms;
+}
+
 #endif
