@@ -1244,6 +1244,31 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
                 toml::find<std::string>(ct, "p2_mode"), PAD_MODE_ANALOG);
             rt.has_default_mode = true;
         }
+        if (ct.contains("reel")) {
+            rt.reel = toml::find<std::string>(ct, "reel");
+            if (rt.reel != "ab" && rt.reel != "cross" && rt.reel != "circle" &&
+                rt.reel != "off")
+                throw std::runtime_error(fmt::format(
+                    "[controller] reel must be ab, cross, circle or off, got '{}'",
+                    rt.reel));
+            rt.has_reel = true;
+        }
+        if (ct.contains("reel_hold_ms")) {
+            const auto n = toml::find<int64_t>(ct, "reel_hold_ms");
+            if (n < 50 || n > 5000)
+                throw std::runtime_error(fmt::format(
+                    "[controller] reel_hold_ms out of range (50..5000): {}", n));
+            rt.reel_hold_ms = static_cast<int>(n);
+            rt.has_reel_hold_ms = true;
+        }
+        if (ct.contains("reel_pulse_ms")) {
+            const auto n = toml::find<int64_t>(ct, "reel_pulse_ms");
+            if (n < 10 || n > 1000)
+                throw std::runtime_error(fmt::format(
+                    "[controller] reel_pulse_ms out of range (10..1000): {}", n));
+            rt.reel_pulse_ms = static_cast<int>(n);
+            rt.has_reel_pulse_ms = true;
+        }
         if (ct.contains("p1_device")) {
             rt.default_p1_device = toml::find<std::string>(ct, "p1_device");
             if (!rt.default_p1_device.empty())

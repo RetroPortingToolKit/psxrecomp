@@ -466,6 +466,13 @@ struct PlayerInput {
     SDL_GameController* handle = nullptr;
     SDL_JoystickID      instance = -1;
     SDL_JoystickID      preferred_instance = -1; /* live launcher choice only */
+    /* "auto"/"gamepad": follow whichever connected pad sends input. An
+     * explicit GUID leaves this false and pins the device. */
+    bool                auto_pick = false;
+    SDL_JoystickID      auto_target = -1; /* one-shot reopen target */
+    uint64_t            reel_active_since = 0; /* right-stick hold timer */
+    uint64_t            button_reel_started = 0; /* A/B pulse phase origin */
+    uint16_t            button_reel_word = 0xFFFF; /* synthetic A/B bits */
     uint8_t rumble_small = 0;
     uint8_t rumble_large = 0;
     bool    rumble_known = false;
@@ -481,6 +488,15 @@ struct PlayerInput {
 static bool g_jogcon_ffb = false;
 static bool g_jogcon_ffb_invert = false;
 static PlayerInput g_players[PSX_MAX_PLAYERS];
+/* Most recent gamepad activity, used by auto_pick to follow the pad the
+ * player is actually holding. Instance -1 means none yet. */
+static SDL_JoystickID g_last_pad_input_instance = -1;
+static uint64_t       g_last_pad_input_ms = 0;
+/* The title only accepts Start while the pad is a plain digital device. The
+ * first digital Start also arms the synthetic button reel; the 250 ms delay
+ * lets the title transition finish before the gesture starts tapping A/B. */
+static bool     g_reel_armed = false;
+static uint64_t g_reel_arm_at = 0;
 /* Offline SIO sample loop bound (from game.toml players; clamped). */
 static int g_offline_pad_count = 2;
 /* Set when [controller] lock_mode pins every seat to digital — blocks the
@@ -1736,6 +1752,13 @@ static double        g_fov_scale = 1.0;
  * initial window; after the game window exists these values follow its live
  * aspect, clamped to 4:3..the widest mode offered by the title. */
 static bool          g_ws_adaptive_view = false;
+/* [widescreen] adaptive_view from game.toml: the title opts into the live,
+ * resize-driven aspect. The user's settings.toml choice can turn it off. */
+static bool          g_ws_adaptive_supported = false;
+static bool          g_ws_adaptive_title_default = false;
+static int           g_ws_adaptive_user_choice = -1; /* -1 title, 0 off, 1 on */
+static int           g_ws_adaptive_title_max_num = 16;
+static int           g_ws_adaptive_title_max_den = 9;
 static int           g_ws_adaptive_max_num = 16;
 static int           g_ws_adaptive_max_den = 9;
 static bool ensure_sdl_pixel_buf_capacity(size_t pixels) {
@@ -1926,9 +1949,11 @@ static void reset_mod_owned_presentation(void) {
     }
     /* Fit / capped resize-driven aspect. The fixed aspect is the launcher's
      * (and netplay's) to set, so it is left alone here. */
-    g_ws_adaptive_view = false;
-    g_ws_adaptive_max_num = 16;
-    g_ws_adaptive_max_den = 9;
+    g_ws_adaptive_view =
+        g_ws_adaptive_user_choice >= 0 ? (g_ws_adaptive_user_choice != 0)
+                                       : g_ws_adaptive_title_default;
+    g_ws_adaptive_max_num = g_ws_adaptive_title_max_num;
+    g_ws_adaptive_max_den = g_ws_adaptive_title_max_den;
     gpu_ws_set_auto_ui_proportional(g_ws_auto_ui_proportional_cfg ? 1 : 0);
     psx_mod_set_world_scene_predicate(nullptr);
     gpu_ws_set_native_scene_predicate(nullptr);
@@ -2336,6 +2361,9 @@ static void refresh_widescreen_projection() {
  * sidecar width from it, just as the fixed 16:9/21:9 modes do. */
 static void update_adaptive_widescreen() {
     if (!g_ws_adaptive_view || !sdl_window) return;
+    /* Netplay keeps its synchronized presentation: the host window must not
+     * change the guest-visible projection mid-match. */
+    if (psx_netplay_active()) return;
 
     int width = 0, height = 0;
     SDL_GetWindowSize(sdl_window, &width, &height);
@@ -2716,7 +2744,10 @@ static int ensure_sw_sdl_present(void) {
         return -1;
     if (!sdl_renderer) {
 #ifdef _WIN32
-        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+        /* D3D11 is the reliable SDL presenter on Windows, including remote
+         * sessions where WGL context creation fails. */
+        SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "direct3d11",
+                                SDL_HINT_OVERRIDE);
 #endif
         Uint32 rflags = SDL_RENDERER_ACCELERATED |
                         (present_effective_swap_interval() != 0
@@ -5847,6 +5878,11 @@ static void open_player(PlayerInput& p, int self_slot) {
                 g_players[o].preferred_instance == inst) reserved = true;
         }
         if (reserved && p.preferred_instance != inst && !shared) continue;
+        if (p.auto_pick) {
+            if (p.auto_target == inst) { chosen = i; break; }
+            if (fallback < 0) fallback = i;
+            continue;
+        }
         if (p.preferred_instance == inst &&
             (!p.guid[0] || std::strcmp(buf, p.guid) == 0)) {
             chosen = i;
@@ -5863,6 +5899,7 @@ static void open_player(PlayerInput& p, int self_slot) {
         SDL_Joystick* joy = SDL_GameControllerGetJoystick(p.handle);
         p.instance = joy ? SDL_JoystickInstanceID(joy) : -1;
         p.preferred_instance = p.instance;
+        p.auto_target = -1;
         /* Persist the GUID of the pad we actually opened so per-device
          * [mapping.<guid>] lookups match the live hardware (including the
          * first-available fallback when the saved GUID is offline). */
@@ -5882,6 +5919,268 @@ static void open_player(PlayerInput& p, int self_slot) {
         p.rumble_known = false;
         p.rumble_warned = false;
     }
+}
+
+/* True when the pad has no pressed button and its sticks/triggers are inside
+ * the deadzone: safe to hand P1 to another pad without losing held input. */
+static bool controller_pad_idle(SDL_GameController* h, int deadzone_raw) {
+    if (!h || !SDL_GameControllerGetAttached(h)) return true;
+    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; ++b)
+        if (SDL_GameControllerGetButton(h, (SDL_GameControllerButton)b))
+            return false;
+    const int dz = deadzone_raw > 0 ? deadzone_raw : controller_deadzone;
+    const SDL_GameControllerAxis axes[] = {
+        SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY,
+        SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY,
+    };
+    for (SDL_GameControllerAxis a : axes) {
+        const int v = (int)SDL_GameControllerGetAxis(h, a);
+        if (v > dz || v < -dz) return false;
+    }
+    if (SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > dz ||
+        SDL_GameControllerGetAxis(h, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > dz)
+        return false;
+    return true;
+}
+
+/* "auto"/"gamepad" seats follow the pad being used. When a different pad
+ * sends input and the assigned pad is idle, reopen the slot on that pad. */
+static void auto_switch_player_device(int s) {
+    if (s != 0 || psx_netplay_active()) return;  /* one physical player */
+    PlayerInput& p = g_players[s];
+    if (p.kind != 2 || !p.auto_pick) return;
+    if (g_last_pad_input_instance < 0 ||
+        g_last_pad_input_instance == p.instance) return;
+    const uint64_t now = SDL_GetTicks64();
+    if (g_last_pad_input_ms == 0 || now - g_last_pad_input_ms > 1000) return;
+    if (p.handle && !controller_pad_idle(p.handle, p.deadzone)) return;
+
+    close_player(p);
+    p.auto_target = g_last_pad_input_instance;
+    open_player(p, s);
+    p.auto_target = -1;
+    if (p.handle) {
+        const char* name = SDL_GameControllerName(p.handle);
+        std::fprintf(stdout,
+                     "psxrecomp runtime: auto-switched controller for slot %d "
+                     "(instance %d): %s\n",
+                     s + 1, (int)p.instance, name ? name : "(unnamed)");
+        std::fflush(stdout);
+        g_last_pad_input_instance = p.instance;
+    }
+}
+
+/* Digital at boot (the title accepts Start only from 0x41). The game's
+ * native reel is a right-stick rotation, but the packaged pad is digital and
+ * delivers no stick axes. Translate the same deliberate gesture into the
+ * pad's own A/B (Cross/Circle) buttons instead of switching to DualShock:
+ * 42% radius held for 300 ms arms it, then a 50 ms press / 50 ms release
+ * alternates Cross and Circle at ~10 presses/s while the stick stays held.
+ * Synthetic bits are ANDed into the active-low word, so a real button press
+ * is never released early. The arm gate is the first digital Start, so the
+ * title/attract sequence cannot be disturbed by a stick resting off-centre.
+ * Menus share the pad, so a deliberate rotation in a menu also taps A/B;
+ * there is no reliable gameplay flag to distinguish them. The analog pad
+ * and its native reel remain available through the normal controller-mode
+ * toggle. */
+static int host_pad_layer(uint16_t* buttons, uint8_t st[4], uint8_t* lt,
+                          uint8_t* rt);
+
+/* Current right-stick sample for the reel gesture: the synthetic host pad
+ * when a test/harness drives one, otherwise the assigned SDL controller or
+ * the keyboard's rs_* binds. */
+static bool current_right_stick(int s, int* rx, int* ry) {
+    uint8_t host_st[4];
+    if (s == 0 && host_pad_layer(nullptr, host_st, nullptr, nullptr)) {
+        *rx = ((int)host_st[2] - 128) * 257;
+        *ry = ((int)host_st[3] - 128) * 257;
+        return true;
+    }
+    PlayerInput& p = g_players[s];
+    bool have = false;
+    if (p.kind == 2 && p.handle) {
+        *rx = SDL_GameControllerGetAxis(p.handle, SDL_CONTROLLER_AXIS_RIGHTX);
+        *ry = SDL_GameControllerGetAxis(p.handle, SDL_CONTROLLER_AXIS_RIGHTY);
+        have = true;
+    }
+    /* Keyboard rs_* binds work in either seat kind: a keyboard player must
+     * be able to reel, and a pad seat may have no controller attached. */
+    if ((p.kind == 1 || p.kind == 2) && host_hotkey_input_focused()) {
+        uint8_t kb_st[4] = { 0x80, 0x80, 0x80, 0x80 };
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+        psx_keybinds_sticks(keys, s + 1, kb_st);
+        if (kb_st[2] != 0x80 || kb_st[3] != 0x80) {
+            *rx = ((int)kb_st[2] - 128) * 257;
+            *ry = ((int)kb_st[3] - 128) * 257;
+            return true;
+        }
+    }
+    return have;
+}
+
+/* Shared right-stick-to-buttons reel configuration. Defaults match the
+ * common A/B gesture; a port selects its own gesture with
+ * [controller] reel = "ab" | "cross" | "circle" | "off" and the timings with
+ * reel_hold_ms / reel_pulse_ms. The env vars stay as per-run overrides. */
+struct ButtonReelConfig {
+    bool enabled = true;
+    bool hold = false;              /* hold one button instead of pulsing */
+    uint64_t hold_ms = 300;
+    uint64_t pulse_ms = 50;
+    uint16_t button_a = 0xBFFFu;
+    uint16_t button_b = 0xDFFFu;
+};
+
+static ButtonReelConfig g_button_reel_cfg;
+static bool g_button_reel_cfg_ready = false;
+
+static void button_reel_env_overrides(ButtonReelConfig& cfg) {
+    if (const char* value = std::getenv("PSX_RECOMP_REEL"))
+        cfg.enabled = !(value[0] == '\0' || value[0] == '0');
+    if (const char* value = std::getenv("PSX_RECOMP_REEL_HOLD_MS")) {
+        const unsigned long long parsed = std::strtoull(value, nullptr, 0);
+        if (parsed != 0u) cfg.hold_ms = parsed;
+    }
+    if (const char* value = std::getenv("PSX_RECOMP_REEL_PULSE_MS")) {
+        const unsigned long long parsed = std::strtoull(value, nullptr, 0);
+        if (parsed != 0u) cfg.pulse_ms = parsed;
+    }
+    if (const char* value = std::getenv("PSX_RECOMP_REEL_BUTTON_A"))
+        cfg.button_a = static_cast<uint16_t>(std::strtoul(value, nullptr, 0));
+    if (const char* value = std::getenv("PSX_RECOMP_REEL_BUTTON_B"))
+        cfg.button_b = static_cast<uint16_t>(std::strtoul(value, nullptr, 0));
+}
+
+static const ButtonReelConfig& button_reel_config(void) {
+    if (!g_button_reel_cfg_ready) {
+        g_button_reel_cfg = ButtonReelConfig{};
+        button_reel_env_overrides(g_button_reel_cfg);
+        g_button_reel_cfg_ready = true;
+    }
+    return g_button_reel_cfg;
+}
+
+/* Apply the title's [controller] reel selection before the first frame.
+ * A title that omits the keys keeps the historical A/B gesture. */
+static void apply_button_reel_config(const PSXRecompV4::RuntimeConfig& rc) {
+    ButtonReelConfig cfg;
+    if (rc.has_reel) {
+        if (rc.reel == "off") {
+            cfg.enabled = false;
+        } else if (rc.reel == "cross") {
+            cfg.hold = true;
+            cfg.button_a = 0xBFFFu;
+        } else if (rc.reel == "circle") {
+            cfg.hold = true;
+            cfg.button_a = 0xDFFFu;
+        }
+    }
+    if (rc.has_reel_hold_ms) cfg.hold_ms = static_cast<uint64_t>(rc.reel_hold_ms);
+    if (rc.has_reel_pulse_ms) cfg.pulse_ms = static_cast<uint64_t>(rc.reel_pulse_ms);
+    button_reel_env_overrides(cfg);
+    g_button_reel_cfg = cfg;
+    g_button_reel_cfg_ready = true;
+    if (cfg.enabled) {
+        std::fprintf(stdout,
+                     "psxrecomp runtime: right-stick reel %s (hold=%llu ms "
+                     "pulse=%llu ms)\n",
+                     cfg.hold ? "holds one button" : "pulses A/B",
+                     (unsigned long long)cfg.hold_ms,
+                     (unsigned long long)cfg.pulse_ms);
+        std::fflush(stdout);
+    }
+}
+
+/* Refresh the synthetic A/B word for one frame. Slot 0 only: P1 owns the
+ * title's pad gate and the host layer. */
+static void update_button_reel(int s) {
+    if (s != 0 || s >= PSX_MAX_PLAYERS) return;
+    const ButtonReelConfig& cfg = button_reel_config();
+    PlayerInput& p = g_players[s];
+    p.button_reel_word = 0xFFFFu;
+    if (!cfg.enabled || psx_netplay_active() ||
+        p.mode != PSXRecompV4::PAD_MODE_DIGITAL || !g_reel_armed) {
+        p.reel_active_since = 0;
+        p.button_reel_started = 0;
+        return;
+    }
+    int rx = 0, ry = 0;
+    if (!current_right_stick(s, &rx, &ry)) {
+        p.reel_active_since = 0;
+        p.button_reel_started = 0;
+        return;
+    }
+    const long long threshold = 13762; /* ~42% of 32767 */
+    const bool active =
+        (long long)rx * rx + (long long)ry * ry >= threshold * threshold;
+    const uint64_t now = SDL_GetTicks64();
+    if (!active) {
+        p.reel_active_since = 0;
+        p.button_reel_started = 0;
+        return;
+    }
+    if (p.reel_active_since == 0) {
+        p.reel_active_since = now;
+        return;
+    }
+    if (now - p.reel_active_since < cfg.hold_ms) return;
+
+    if (p.button_reel_started == 0) {
+        p.button_reel_started = now;
+        std::fprintf(stdout,
+                     "psxrecomp runtime: right-stick reel -> buttons for slot "
+                     "%d (%s, hold=%llu ms pulse=%llu ms)\n", s + 1,
+                     cfg.hold ? "hold" : "pulse",
+                     (unsigned long long)cfg.hold_ms,
+                     (unsigned long long)cfg.pulse_ms);
+        std::fflush(stdout);
+    }
+    if (cfg.hold) {
+        p.button_reel_word = cfg.button_a;
+        return;
+    }
+    /* Even pulse = press, odd = release; each press pair alternates the two
+     * configured buttons, so one full cycle produces one press of each. */
+    const uint64_t step = (now - p.button_reel_started) / cfg.pulse_ms;
+    if ((step & 1u) == 0u)
+        p.button_reel_word = ((step >> 1) & 1u) ? cfg.button_b : cfg.button_a;
+}
+
+/* The synthetic bits to merge into the active-low pad word, or 0xFFFF when
+ * no reel press is active. Re-checks the gates so a stale word can never
+ * leak through a netplay resim or a mode switch. */
+static uint16_t button_reel_word(int s) {
+    if (s != 0 || s >= PSX_MAX_PLAYERS || psx_netplay_active()) return 0xFFFFu;
+    const PlayerInput& p = g_players[s];
+    if (!button_reel_config().enabled ||
+        p.mode != PSXRecompV4::PAD_MODE_DIGITAL || !g_reel_armed)
+        return 0xFFFFu;
+    return p.button_reel_word;
+}
+
+/* The first digital Start is the title's Start: after it, arm the synthetic
+ * button reel. The short delay lets the title transition finish before the
+ * gesture starts tapping A/B. */
+static void note_digital_start_for_reel(uint16_t buttons) {
+    if (g_reel_armed || g_reel_arm_at != 0) return;
+    if (buttons & 0x0008u) return;  /* Start is active-low */
+    g_reel_arm_at = SDL_GetTicks64() + 250u;
+    std::fprintf(stdout,
+                 "psxrecomp runtime: digital Start seen; arming the button "
+                 "reel for slot 1\n");
+    std::fflush(stdout);
+}
+
+/* Arm the reel once the title Start has been consumed. */
+static void apply_reel_arm_gate(void) {
+    if (g_reel_armed || g_reel_arm_at == 0) return;
+    if (SDL_GetTicks64() < g_reel_arm_at) return;
+    g_reel_armed = true;
+    g_reel_arm_at = 0;
+    std::fprintf(stdout,
+                 "psxrecomp runtime: digital title passed; button reel armed "
+                 "for slot 1\n");
+    std::fflush(stdout);
 }
 
 /* Forward the emulated DualShock's two motors to the SDL controller assigned
@@ -6083,10 +6382,14 @@ static void refresh_player_devices(void) {
         }
         /* The launcher may change GUID while the old handle remains attached;
          * pure policy covers that and unplug paths with mockable inputs. */
-        if (psx_controller_handle_needs_close(
-                p.kind == 2, p.handle != nullptr, attached,
-                p.guid, active_guid))
+        if (p.auto_pick) {
+            /* Auto seats follow input; only an unplug closes the handle. */
+            if (p.handle && !attached) close_player(p);
+        } else if (psx_controller_handle_needs_close(
+                       p.kind == 2, p.handle != nullptr, attached,
+                       p.guid, active_guid)) {
             close_player(p);
+        }
         if (p.kind == 2) open_player(p, s);
         if (netplay || psx_selfcheck_input_locked()) continue;
         const bool automatic = live_pad_mode(s);
@@ -6110,14 +6413,16 @@ static void refresh_player_devices(void) {
 static void set_player_device(PlayerInput& p, const std::string& dev, int mode) {
     p.mode = mode;
     p.guid[0] = '\0';
+    p.auto_pick = false;
+    p.auto_target = -1;
     std::string d = lower_copy(trim_copy(dev));
     if (d.empty() || d == "none") { p.kind = 0; }
     else if (d == "keyboard")     { p.kind = 1; }
     else if (d == "auto" || d == "gamepad" || d == "controller") {
-        /* First available SDL game controller (guid empty -> open_player falls
-         * back to the first connected pad). Lets a user default to "my
-         * controller" without pinning a specific GUID. */
-        p.kind = 2;  /* p.guid already cleared above */
+        /* Follow whichever connected pad sends input; open_player uses the
+         * first available pad until auto_switch_player_device sees activity. */
+        p.kind = 2;
+        p.auto_pick = true;
     }
     else {
         p.kind = 2;
@@ -6396,7 +6701,12 @@ static PadSources pad_sources_for(const PlayerInput& p, bool dev_here) {
      * consumes the binds through pad_buttons_for/pad_sticks_for, and applying
      * them twice is idempotent. */
     (void)dev_here;
-    s.keybinds = true;
+    /* SDL's cached keyboard state can latch a key whose key-up went to another
+     * window. A stale Start/face button then ANDs into the pad word and can
+     * mask a real controller press (the game sees the button as already held).
+     * Keyboard binds are real input only while the game window holds keyboard
+     * focus; the gamepad path is unaffected. */
+    s.keybinds = host_hotkey_input_focused();
     s.all_pads = dev_here;
     return s;
 }
@@ -6682,6 +6992,8 @@ static void apply_input_override_to_sio(int override_word) {
 #endif
     PlayerInput& p = g_players[0];
     const uint16_t w = (uint16_t)override_word;
+    if (p.mode == PSXRecompV4::PAD_MODE_DIGITAL)
+        note_digital_start_for_reel(w);
     sio_set_pad_state_slot(0, w);
 
     uint8_t st[4] = { 0x80, 0x80, 0x80, 0x80 };
@@ -6860,6 +7172,10 @@ static int capture_host_layer_pad(PsxNetPad* out, uint16_t word,
     out->rx = sticks ? st[2] : 0x80; out->ry = sticks ? st[3] : 0x80;
     out->analog = analog ? SIO_PAD_DUALSHOCK : SIO_PAD_DIGITAL;
     out->connected = 1;
+    if (present == 0) {
+        out->buttons &= button_reel_word(0);
+        note_digital_start_for_reel(out->buttons);
+    }
     if (guarded) {
         out->buttons = 0xFFFFu;
         out->lx = out->ly = out->rx = out->ry = 0x80u;
@@ -6881,6 +7197,9 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
     out->connected = 0;
 
     if (s == 0) {
+        auto_switch_player_device(0);
+        apply_reel_arm_gate();
+        update_button_reel(0);
         uint16_t host_word;
         uint8_t host_st[4], host_lt, host_rt;
         if (host_pad_layer(&host_word, host_st, &host_lt, &host_rt))
@@ -6947,6 +7266,10 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
         btn &= pad_from_keyboard(player);
     if (src.all_pads)
         btn &= dev_all_controllers_buttons(suppress_stick);
+    if (s == 0 && p.mode == PSXRecompV4::PAD_MODE_DIGITAL)
+        note_digital_start_for_reel(btn);
+    if (s == 0)
+        btn &= button_reel_word(0);
 
     /* Analog axes. ANALOG and plugin-selected analog feed the raw stick only;
      * the D-pad is never folded in, matching a real DualShock, which keeps
@@ -9135,6 +9458,33 @@ static bool drain_host_events() {
         if (psx_local_mouse_event(ev)) continue;
         /* In-game overlay provider sees events first (host_overlay.h P3). */
         if (psx_host_input_sink_dispatch(&ev)) continue;
+#if defined(PSX_SDL3)
+        if (ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+            g_last_pad_input_instance = ev.gbutton.which;
+            g_last_pad_input_ms = SDL_GetTicks64();
+            auto_switch_player_device(0);
+        } else if (ev.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+            const int dz = controller_deadzone > 0 ? controller_deadzone : 8000;
+            if (ev.gaxis.value > dz || ev.gaxis.value < -dz) {
+                g_last_pad_input_instance = ev.gaxis.which;
+                g_last_pad_input_ms = SDL_GetTicks64();
+                auto_switch_player_device(0);
+            }
+        }
+#else
+        if (ev.type == SDL_CONTROLLERBUTTONDOWN) {
+            g_last_pad_input_instance = ev.cbutton.which;
+            g_last_pad_input_ms = SDL_GetTicks64();
+            auto_switch_player_device(0);
+        } else if (ev.type == SDL_CONTROLLERAXISMOTION) {
+            const int dz = controller_deadzone > 0 ? controller_deadzone : 8000;
+            if (ev.caxis.value > dz || ev.caxis.value < -dz) {
+                g_last_pad_input_instance = ev.caxis.which;
+                g_last_pad_input_ms = SDL_GetTicks64();
+                auto_switch_player_device(0);
+            }
+        }
+#endif
         if (ev.type == SDL_QUIT) {
             if (psx_netplay_active()) {
                 netplay_soft_exit("sdl_window_close");
@@ -18351,6 +18701,16 @@ int main(int argc, char** argv) {
             g_fmv_skip_no_xa       = gc.runtime.video_fmv_skip_no_xa ? 1 : 0;
             g_fmv_skip_no_xa_hold  = gc.runtime.video_fmv_skip_no_xa_hold;
             g_ws_anchor_addr   = gc.ws_sprite_anchor_addr;
+            /* [widescreen] adaptive_view: the title opts into a live,
+             * resize-driven aspect. Its [video] aspect_ratio shapes the first
+             * window; offer_ultrawide raises the live cap from 16:9 to 21:9. */
+            g_ws_adaptive_supported = gc.ws_adaptive_view;
+            g_ws_adaptive_title_default = gc.ws_adaptive_view;
+            g_ws_adaptive_view = gc.ws_adaptive_view;
+            g_ws_adaptive_title_max_num = gc.ws_ultrawide_offered ? 21 : 16;
+            g_ws_adaptive_title_max_den = 9;
+            g_ws_adaptive_max_num = g_ws_adaptive_title_max_num;
+            g_ws_adaptive_max_den = g_ws_adaptive_title_max_den;
             g_ws_hud_sprt      = gc.ws_hud_sprt_squash;
             gpu_ws_set_auto_ui_squash(gc.ws_auto_ui_squash ? 1 : 0);
             gpu_ws_set_auto_ui_in_place(gc.ws_auto_ui_in_place ? 1 : 0);
@@ -18658,6 +19018,7 @@ int main(int argc, char** argv) {
                     if (i >= 2) player_mode[i] = gc.runtime.default_p1_mode;
                 }
             }
+            apply_button_reel_config(gc.runtime);
             if (gc.runtime.has_default_p1_device)
                 player_device[0] = gc.runtime.default_p1_device;
             if (PSX_MAX_PLAYERS >= 2 && gc.runtime.has_default_p2_device)
@@ -18893,6 +19254,10 @@ int main(int argc, char** argv) {
             g_video_aspect_num = us.aspect_num;
             g_video_aspect_den = us.aspect_den;
         }
+        if (us.has_adaptive_view && g_ws_adaptive_supported) {
+            g_ws_adaptive_user_choice = us.adaptive_view ? 1 : 0;
+            g_ws_adaptive_view = us.adaptive_view;
+        }
         if (us.has_hotkey_pad_rewind)
             g_hotkey_pad_rewind = normalize_hotkey_pad_binding(
                 us.hotkey_pad_rewind,
@@ -19055,15 +19420,19 @@ int main(int argc, char** argv) {
 
     /* Widescreen/View mode is mod-owned on PSX. Clamp the generic display
      * aspect to native 4:3 so neither a legacy game.toml offer/default nor a
-     * stale settings.toml value can engage it before trusted mod activation. */
-    if (!ws_offered && (g_video_aspect_num != 4 || g_video_aspect_den != 3)) {
+     * stale settings.toml value can engage it before trusted mod activation.
+     * A title that opts into [widescreen] adaptive_view owns its default
+     * aspect, so its [video] aspect_ratio is the initial window shape. */
+    if (!ws_offered && !g_ws_adaptive_view &&
+        (g_video_aspect_num != 4 || g_video_aspect_den != 3)) {
         std::fprintf(stdout, "psxrecomp: widescreen is mod-owned on PSX; "
                      "clamping display aspect %d:%d -> 4:3\n",
                      g_video_aspect_num, g_video_aspect_den);
         g_video_aspect_num = 4;
         g_video_aspect_den = 3;
     }
-    if (!ws_ultrawide_offered && g_video_aspect_num * 9 == g_video_aspect_den * 21) {
+    if (!ws_ultrawide_offered && !g_ws_adaptive_view &&
+        g_video_aspect_num * 9 == g_video_aspect_den * 21) {
         std::fprintf(stdout, "psxrecomp: 21:9 is not offered for this title; clamping to %s\n",
                      ws_offered ? "16:9" : "4:3");
         g_video_aspect_num = ws_offered ? 16 : 4;
@@ -21219,11 +21588,13 @@ session_reboot:
      * window is resized; nearest preserves crisp pixels otherwise. */
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, g_video_aa ? "1" : "0");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-    /* Prefer SDL's own HIDAPI driver over platform-native so Steam's virtual
-     * Xbox controller (injected by Steam Input / Remote Play) is enumerated
-     * as a game controller rather than a raw HID device. */
+    /* Keep HIDAPI on for Steam's virtual Xbox controller, but do NOT disable
+     * Windows RAWINPUT: DirectInput-mode pads such as the Logitech F710 in
+     * "D" mode enumerate and open through HIDAPI yet deliver no button
+     * reports there. RAWINPUT is the working Windows input path for those
+     * pads, while XInput keeps handling X-mode pads. */
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
-    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
     /* SDL3 aliases the SDL2-era PS5 rumble hint to enhanced reports. Enabling
      * it also preserves DualSense rumble on the explicit SDL2 fallback. */
     SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1",
@@ -21352,6 +21723,13 @@ session_reboot:
     if (!sdl_window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 1;
+    }
+    {
+        const Uint32 flags = SDL_GetWindowFlags(sdl_window);
+        std::fprintf(stdout, "psxrecomp: game window %dx%d resizable=%d\n",
+                     game_w, game_h,
+                     (flags & SDL_WINDOW_RESIZABLE) ? 1 : 0);
+        std::fflush(stdout);
     }
     psx_apply_window_icon(sdl_window, argv[0]);
     s_window_fullscreen = {};
@@ -21532,13 +21910,14 @@ session_reboot:
      * Note: the freeze became prevalent only after the FMV-speed fix
      * (commit b486c13) raised cycle throughput. Before that, the slower
      * MDEC/DMA workload was below whatever GDI threshold trips the bug. */
-    /* The OpenGL force above is a Windows-only workaround for the GDI
+    /* The D3D11 force above is a Windows-only workaround for the GDI
      * presentation hang; macOS/Linux have no GDI path, so let SDL choose its
      * native backend (Metal on Apple Silicon). PRESENTVSYNC removes tearing;
      * fall back progressively if a driver can't provide vsync/accel. */
   if (!g_gl_active && !g_vk_active) {
 #ifdef _WIN32
-    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+    SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "direct3d11",
+                            SDL_HINT_OVERRIDE);
 #endif
     /* PRESENTVSYNC only when driver vsync owns cadence; otherwise the
      * wall-clock pacer holds 59.94Hz (may tear). */

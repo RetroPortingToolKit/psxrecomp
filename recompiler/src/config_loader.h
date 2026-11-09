@@ -834,6 +834,17 @@ struct RuntimeConfig {
     int                   default_p1_mode  = PAD_MODE_ANALOG;
     int                   default_p2_mode  = PAD_MODE_ANALOG;
 
+    // reel: the right-stick-to-buttons reel gesture for a title that uses it.
+    // "ab" (default) pulses Cross then Circle, "cross"/"circle" hold one
+    // button while the stick stays deflected, "off" disables it. The runtime
+    // reads this after the digital Start gate; env vars still override a run.
+    bool                  has_reel = false;
+    std::string           reel = "ab";
+    bool                  has_reel_hold_ms = false;
+    int                   reel_hold_ms = 300;
+    bool                  has_reel_pulse_ms = false;
+    int                   reel_pulse_ms = 50;
+
     // p1_device / p2_device: optional per-game default input sources for
     // fresh settings and launcher-less boots. Same vocabulary as settings.toml:
     // "none", "keyboard", "auto"/"gamepad"/"controller", or an SDL GUID.

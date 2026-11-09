@@ -184,18 +184,25 @@ expected = "0x28A21C01"                # SLT/SLTU/SLTI/SLTIU only
 result   = 1                           # forced comparison result, 0 or 1
 ```
 
-**`offer`, `offer_ultrawide` and `adaptive_view` are inert on PSX.** They are
-still parsed, but the runtime no longer offers widescreen in Settings
-(`main.cpp` pins `ws_offered`/`ws_ultrawide_offered` false) and nothing reads
-`adaptive_view`. Widescreen is owned by each title's mod catalog: a trusted
-plugin selects the view on activation with `psx_mod_set_fixed_display_aspect()`
-(which also shapes the first window) and, for Fit to Window,
-`psx_mod_set_adaptive_display_aspect(0, 0)` (follow every resize from 4:3 with
-no upper limit; pass a maximum to cap it). Once the game window exists,
-resizing it updates the projection, cull margins, wide render target and
-present aspect. BIOS, FMV, menus and other title-classified 2D frames keep
-their 4:3 pillarbox policy. TombaRecomp's and RidgeRacerType4Recomp's
-`*.enhancement.widescreen` packages are worked examples.
+**`offer` and `offer_ultrawide` are inert on PSX.** They are still parsed, but
+the runtime no longer offers widescreen in Settings (`main.cpp` pins
+`ws_offered`/`ws_ultrawide_offered` false). Widescreen is owned by each title's
+mod catalog: a trusted plugin selects the view on activation with
+`psx_mod_set_fixed_display_aspect()` (which also shapes the first window) and,
+for Fit to Window, `psx_mod_set_adaptive_display_aspect(0, 0)` (follow every
+resize from 4:3 with no upper limit; pass a maximum to cap it). Once the game
+window exists, resizing it updates the projection, cull margins, wide render
+target and present aspect. BIOS, FMV, menus and other title-classified 2D
+frames keep their 4:3 pillarbox policy. TombaRecomp's and
+RidgeRacerType4Recomp's `*.enhancement.widescreen` packages are worked
+examples.
+
+A title can also opt in without a plugin: `[widescreen] adaptive_view = true`
+makes the title's `[video] aspect_ratio` the initial window shape and follows
+every later resize from 4:3 up to 16:9 (`21:9` when `offer_ultrawide = true`).
+This is the title's default; a `settings.toml [video] adaptive_view` value
+turns it off or on per install. It is skipped during netplay, where the
+synchronized presentation keeps its own aspect.
 
 The native-wide draw-area early-out correction was independently identified
 and contributed by **OpokXeno** in
