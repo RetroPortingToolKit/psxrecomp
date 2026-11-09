@@ -84,6 +84,18 @@ static void test_round_trip() {
 }
 
 static void test_pointer_settings() {
+    PSXRecompV4::UserSettings only;
+    only.has_mouse_capture = true;
+    only.mouse_capture = false;
+    only.has_mouse_sensitivity = true;
+    only.mouse_sensitivity = 1.5;
+    fs::path isolated = fs::temp_directory_path()/"psxrecomp_pointer_only.toml";
+    check(PSXRecompV4::save_user_settings(isolated,only), "isolated pointer preferences save");
+    auto isolated_back = PSXRecompV4::load_user_settings(isolated);
+    check(isolated_back.has_mouse_capture && !isolated_back.mouse_capture &&
+          isolated_back.has_mouse_sensitivity && isolated_back.mouse_sensitivity == 1.5,
+          "pointer preferences alone create their controller section");
+    fs::remove(isolated);
     fs::path p = write_temp("psxrecomp_pointer_settings.toml",
         "[controller]\np1_device = \"mouse\"\np2_device = \"guncon\"\n"
         "mouse_sensitivity = 2\nmouse_capture = false\n"
