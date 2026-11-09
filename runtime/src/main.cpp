@@ -17176,6 +17176,7 @@ void mh_launcher_settings_get(RecompLauncherCSettings* out) {
     mh_video_get(&v);
     RecompLauncherCSettings& ls = *out;
     ls.fullscreen = v.fullscreen;
+    ls.volume = host_volume_get();
     ls.frame_generation = v.frame_generation;
     ls.renderer = v.renderer;
     ls.render_thread = v.render_thread;
@@ -17360,6 +17361,7 @@ static void host_pause_service(void) {
     if (have_video) (void)psx_video_apply_live(&video);
 #if defined(RECOMP_LAUNCHER)
     if (have_ls) {
+        host_volume_set(post.volume);
         const PsxHostVideoSettings v = ovl_video_from(post);
         (void)psx_video_apply_live(&v);
 #if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK) && \
