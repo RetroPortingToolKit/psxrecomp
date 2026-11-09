@@ -213,13 +213,6 @@ on a fixed region -> next.
 
 ## 5. Status / Log (update every session)
 
-- **2026-11-03 — HD replacement coverage.** Beetle-keyed RGBA artwork now
-  supplies its own coverage instead of inheriting holes from native texels;
-  native STP and guest VRAM remain authoritative for blending and simulation.
-  The real GL HD-pack fixture passes 233 full-surface, 219 windowed and 19
-  native-baseline checks, including replacement/native coverage disagreement.
-  This is a presentation fix; no timing or code-generation behavior changes.
-
 - **2026-10-24 — scoped render-pass qualification.** The sandbox now compares
   shared RAM/register/clock/interrupt digests before and after an actual
   opted-in local temporal pass, discard, device-read abort, rollback refusal,
