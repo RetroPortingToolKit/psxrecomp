@@ -958,6 +958,10 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
     case BS_SEC_MODMEM:
         return psx_mod_memory_snapshot_read(p, len);
     case BS_SEC_GAME_START:
+        if (p[0] && !fntrace_is_game_started()) {
+            extern void dirty_ram_pc_table_game_load(void);
+            dirty_ram_pc_table_game_load();
+        }
         fntrace_restore_game_started(p[0]);
         return 1;
     case BS_SEC_SPUCD: {
