@@ -2417,8 +2417,13 @@ extern "C" int psx_debug_display_aspect(int num, int den, int adaptive) {
  * in --hidden-window runs. */
 extern "C" int psx_debug_window_size(int w, int h) {
     if (!sdl_window || w < 64 || h < 64 || w > 16384 || h > 16384) return 0;
-    SDL_SetWindowSize(sdl_window, w, h);
-    return 1;
+    /* Cocoa replaces the drawable during resize. Drain rendering before
+     * changing it, including HUD framebuffer readbacks on the render thread. */
+    const bool held = rt_held() != 0;
+    rt_acquire("window_size");
+    const bool resized = SDL_SetWindowSize(sdl_window, w, h);
+    if (!held) rt_release();
+    return resized ? 1 : 0;
 }
 
 static bool          g_gl_active = false;    /* GL context live -> GL present path */
