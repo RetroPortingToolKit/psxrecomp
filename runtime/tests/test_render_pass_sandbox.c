@@ -224,6 +224,10 @@ void gpu_pass_checkpoint_restore(void) {}
 static uint64_t s_ticks;
 uint64_t gl_renderer_perf_ticks(void) { return s_ticks += 1000; }
 uint64_t gl_renderer_perf_frequency(void) { return 1000000000u; }
+int gl_renderer_perf_latest_gpu(double *scene_ms, double *present_ms, uint32_t *age_frames) {
+    (void)scene_ms; (void)present_ms; (void)age_frames;
+    return 0; /* This fixture has no GPU timer samples. */
+}
 /* 1000 ticks per sample and a 1 GHz tick make one runtime sample exactly 1 us,
  * so a bracketed guest span is the caller's own bump plus a known microsecond. */
 static void tick_bump(uint64_t ticks) { s_ticks += ticks; }

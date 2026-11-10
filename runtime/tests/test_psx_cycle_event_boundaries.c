@@ -7,6 +7,8 @@
 #include "psx_cycles.h"
 
 #include <stdint.h>
+int g_boot_state_cpu_timing_restored;
+int psx_mod_host_output_scope(void) { return 0; }
 #include <stdio.h>
 
 int g_ls_replay_active = 0;
