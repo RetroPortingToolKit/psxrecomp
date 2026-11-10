@@ -657,6 +657,19 @@ if(BUILD_TESTING)
         message(STATUS "gl_scale_invariance_test: not registered (needs macOS, Linux or MinGW, Python 3 and SDL3)")
     endif()
     if(Python3_Interpreter_FOUND AND TARGET SDL3::SDL3-static)
+        foreach(_depth_window 0 1)
+            add_test(NAME gl_depth_clear_${_depth_window}_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_texture_filter.py"
+                    --fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_depth_clear.c"
+                    --cc "${CMAKE_C_COMPILER}"
+                    --sdl-include "$<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>"
+                    --sdl-library "$<TARGET_FILE:SDL3::SDL3-static>"
+                    --output "${CMAKE_CURRENT_BINARY_DIR}/gl-depth-clear-${_depth_window}")
+            set_tests_properties(gl_depth_clear_${_depth_window}_test PROPERTIES
+                LABELS "gpu;opengl;hardware" TIMEOUT 180
+                ENVIRONMENT "PSX_GL_HIRES_WINDOW=${_depth_window}")
+        endforeach()
         add_test(NAME gl_texture_filter_test
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_gl_texture_filter.py"
