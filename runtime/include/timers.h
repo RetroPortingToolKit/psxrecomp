@@ -10,6 +10,9 @@ extern "C" {
 #define TIMER_BASE 0x1F801100
 
 void timers_init(void);
+/* Snapshot mode bits 0..12 are guest mode; bit 16 is the one-shot latch and
+ * bits 17..18 are the post-target dwell. Pass complete words back on restore.
+ * Guest mode reads never expose these snapshot-only bits. */
 void timers_get_snapshot(uint16_t counter[3], uint32_t mode[3],
                          uint16_t target[3], int32_t irq_line[3],
                          uint32_t frac[3]);
