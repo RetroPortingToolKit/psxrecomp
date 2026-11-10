@@ -152,7 +152,20 @@ int main(int argc, char** argv) {
     check(!native.find("TEXT.BIN",found_lba,found_size),"donor file extent cannot escape snapshot");
     dual(dir+2,21);mode2_files[21*2336+2]=0x20;
     check(!native.read("TEXT.BIN",found) && found.empty(),"ordinary file reads cannot consume Form-2 XA payload");
-    for (const char* file : {"rom.z64", "disc.iso", "disc.bin", "disc.cue", "audio.bin"})
+    const auto prepared = root / "prepared.bin";
+    write(prepared, std::vector<uint8_t>{1, 2, 3, 4});
+    check(!load_mod_media(prepared, "file", 0, "", bytes, &error),
+          "ordinary donors still require their declared identity");
+    check(load_mod_media(prepared, "file", 0, "", bytes, &error, true) &&
+          *bytes == std::vector<uint8_t>({1, 2, 3, 4}),
+          "trusted preparation can freeze a content-derived identity");
+    const auto frozen = bytes;
+    write(prepared, std::vector<uint8_t>{9, 8});
+    check(*frozen == std::vector<uint8_t>({1, 2, 3, 4}),
+          "replacing a prepared file cannot mutate a frozen snapshot");
+    check(!load_mod_media(prepared, "n64-rom", 0, "", bytes, &error, true),
+          "derived files cannot weaken cartridge donor guards");
+    for (const char* file : {"rom.z64", "disc.iso", "disc.bin", "disc.cue", "audio.bin", "prepared.bin"})
         fs::remove(root / file);
     fs::remove(root);
     return failures ? 1 : 0;

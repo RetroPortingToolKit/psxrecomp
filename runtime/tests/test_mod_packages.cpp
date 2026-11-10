@@ -2419,6 +2419,75 @@ int main() {
     }
 
     {
+        const auto folder = root / "prepared-content";
+        const auto manifest_path = folder / "bundled/movies/1.0.0/manifest.toml";
+        const auto input = folder / "local/input.mp4";
+        const auto asset = folder / "local/movie.str";
+        const auto moved = folder / "local/renamed.str";
+        const std::vector<uint8_t> original{1, 2, 3, 4};
+        write_bytes(input, {0});
+        write_bytes(asset, original);
+        const auto manifest = [](int version, const std::string& prepare,
+                                 const std::string& fields) {
+            return "format_version = " + std::to_string(version) +
+                "\nid = \"movies\"\nversion = \"1.0.0\"\nname = \"Movies\"\n" + prepare +
+                "[[target]]\ngame_id = \"SLUS-TEST\"\n"
+                "[[feature]]\nid = \"content\"\nname = \"Movies\"\ndefault_enabled = false\n"
+                "[[resource]]\nfeature = \"content\"\nid = \"source\"\nlabel = \"MP4\"\ninput_only = true\n"
+                "[[resource]]\nfeature = \"content\"\nid = \"movie\"\nlabel = \"Movie\"\nhidden = true\n" + fields;
+        };
+        const std::string preparer = "prepare = \"test.dynamicmovies\"\n";
+        const std::string fields = "prepared_content = true\n";
+        write_text(manifest_path, manifest(14, preparer, fields));
+        ModPackageManager movies(folder);
+        check(movies.scan(&error) && movies.scan_errors().empty(), "prepared user content schema parses");
+        int calls = 0;
+        fs::path output = asset;
+        check(mod_register_media_preparer("test.dynamicmovies", [&](const ModPrepareContext& context,
+            std::map<std::string, fs::path>& outputs, std::string&) {
+            ++calls;
+            if (!context.inputs.at("source").empty()) outputs["movie"] = output;
+            return true;
+        }), "dynamic media preparer registered");
+        check(movies.prepare_resources("SLUS-TEST", {}, folder/"cache", &error) && calls == 0,
+              "default-off movie import never runs the converter");
+        check(movies.set_feature_enabled("movies", "content", true, &error), error.c_str());
+        check(movies.prepare_resources("SLUS-TEST", {}, folder/"cache", &error), error.c_str());
+        const auto empty = movies.resolve("SLUS-TEST");
+        check(empty.ok && empty.resources.empty(), "unset optional movies retain original content");
+        check(movies.set_feature_resource_path("movies", "content", "source", input, &error), error.c_str());
+        check(movies.prepare_resources("SLUS-TEST", {}, folder/"cache", &error), error.c_str());
+        const auto first = movies.resolve("SLUS-TEST");
+        check(first.ok && first.resources.size() == 1, "prepared movie becomes a frozen resource");
+        if (first.resources.size() == 1) {
+            check(first.resources[0].bytes && *first.resources[0].bytes == original &&
+                  first.resources[0].sha256 == sha256_hex(original),
+                  "prepared movie identity attests actual bytes");
+            write_bytes(asset, {9, 8, 7, 6});
+            check(*first.resources[0].bytes == original, "running plan survives replacement of cache file");
+            const auto changed = movies.resolve("SLUS-TEST");
+            check(changed.ok && changed.fingerprint != first.fingerprint,
+                  "different movie bytes change compatibility identity");
+            write_bytes(moved, {9, 8, 7, 6}); output = moved;
+            check(movies.prepare_resources("SLUS-TEST", {}, folder/"cache", &error), error.c_str());
+            check(movies.resolve("SLUS-TEST").fingerprint == changed.fingerprint,
+                  "moving identical prepared content keeps compatibility identity");
+        }
+        check(movies.set_feature_resource_path("movies", "content", "source", {}, &error), error.c_str());
+        check(movies.prepare_resources("SLUS-TEST", {}, folder/"cache", &error), error.c_str());
+        const auto cleared = movies.resolve("SLUS-TEST");
+        check(cleared.ok && cleared.resources.empty() && cleared.fingerprint == empty.fingerprint,
+              "clearing source removes the old prepared movie instead of replaying it");
+        for (const auto& bad : {manifest(13, preparer, fields), manifest(14, "", fields),
+                               manifest(14, preparer, fields + "format = \"n64-rom\"\n")}) {
+            write_text(manifest_path, bad);
+            ModPackageManager invalid(folder);
+            invalid.scan(&error);
+            check(!invalid.scan_errors().empty(), "invalid prepared media declarations reject");
+        }
+    }
+
+    {
         const auto folder=root/"resource-overlays";
         const auto asset=folder/"local"/"derived.dat";
         const auto manifest_path=folder/"bundled/prepared.overlay/1.0.0/manifest.toml";

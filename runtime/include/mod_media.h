@@ -17,7 +17,8 @@ bool load_mod_media(const std::filesystem::path& path,
                     const std::string& format, uint64_t expected_size,
                     const std::string& expected_sha256,
                     std::shared_ptr<const std::vector<uint8_t>>& bytes,
-                    std::string* error = nullptr);
+                    std::string* error = nullptr,
+                    bool derive_identity = false);
 
 /* Bounded ISO9660 access to an already verified immutable psx-mode2 snapshot.
  * Does not reopen paths or touch the guest drive. Stream files expose their

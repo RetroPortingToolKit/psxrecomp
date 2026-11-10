@@ -281,6 +281,9 @@ struct ModResource {
     // Package-relative path used when the player has not selected one (for
     // example a pack folder the package ships). A selection always wins.
     std::string default_path;
+    // Trusted preparation output: freeze the actual bytes and their hash.
+    // Unlike a fixed donor, the author cannot predeclare user-created media.
+    bool prepared_content = false;
 };
 
 struct ModDerivedDisc {

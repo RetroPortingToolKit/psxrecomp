@@ -30,7 +30,7 @@ namespace PSXRecompV4 {
 namespace {
 
 constexpr uint32_t kMinFormatVersion = 1;
-constexpr uint32_t kMaxFormatVersion = 13;
+constexpr uint32_t kMaxFormatVersion = 14;
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
 
@@ -2104,6 +2104,12 @@ bool ModPackageManager::read_manifest(const fs::path& path, ModPackage& out,
                 }
                 resource.shared_source = toml::find_or<std::string>(v, "shared_source", "");
                 resource.input_only = toml::find_or<bool>(v, "input_only", false);
+                resource.prepared_content = toml::find_or<bool>(v, "prepared_content", false);
+                if (resource.prepared_content &&
+                    (out.format_version < 14 || out.prepare.empty() ||
+                     resource.input_only || resource.format != "file" ||
+                     resource.size || !resource.sha256.empty()))
+                    throw std::runtime_error("prepared content requires format 14, a trusted preparer and a derived file identity");
                 resource.hidden = toml::find_or<bool>(v, "hidden", false);
                 resource.default_path = toml::find_or<std::string>(v, "default", "");
                 if (!resource.default_path.empty() &&
@@ -3470,6 +3476,11 @@ bool ModPackageManager::set_feature_resource_path(
         return false;
     }
     if (path.empty()) {
+        if (resource->input_only && !resource->required) {
+            if (!resource->shared_source.empty()) sources_[resource->shared_source] = fs::path{};
+            else selections_[package_id].features[feature_id].resources.erase(resource_id);
+            return true;
+        }
         set_error(error, "resource path is empty");
         return false;
     }
@@ -3778,6 +3789,11 @@ bool ModPackageManager::prepare_resources(const std::string& game_id,
                     context.inputs[r.id] = path;
                 }
                 std::map<std::string, fs::path> outputs;
+                // Optional outputs disappear when their source is cleared or
+                // rejected; an older successful import must not stay selected.
+                for (const auto& r : package->resources)
+                    if (r.feature_id == feature.id && r.prepared_content)
+                        pending[id].features[feature.id].resources.erase(r.id);
                 std::string reason;
                 {
                     HostLaunchTimingScope timing(HOST_LAUNCH_MEDIA_PROVIDER,
@@ -3789,7 +3805,8 @@ bool ModPackageManager::prepare_resources(const std::string& game_id,
                 }
                 for (const auto& [name, path] : outputs) {
                     const auto* resource = find_resource(*package, feature.id, name);
-                    if (!resource || resource->input_only || resource->sha256.empty() ||
+                    if (!resource || resource->input_only ||
+                        (resource->sha256.empty() && !resource->prepared_content) ||
                         !conditions_match(*package, effective[id], feature.id, resource->when))
                         throw std::runtime_error("preparer returned an undeclared or unverified output");
                     pending[id].features[feature.id].resources[name] = psx_path::utf8(path);
@@ -3942,7 +3959,7 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
             const auto found=resource_snapshots.find(key);
             if(found!=resource_snapshots.end()) { bytes=found->second; return true; }
             const auto path=effective_resource_path(*package,selected,resource.feature_id,resource.id);
-            if(!load_mod_media(path,resource.format,resource.size,resource.sha256,bytes,&reason))
+            if(!load_mod_media(path,resource.format,resource.size,resource.sha256,bytes,&reason,resource.prepared_content))
                 return false;
             resource_snapshots.emplace(key,bytes);
             return true;
@@ -4296,12 +4313,22 @@ ModResolution ModPackageManager::resolve(const std::string& game_id,
             resolved.path = path;
             resolved.format = resource.format;
             resolved.sha256 = resource.sha256;
-            if (!resource.sha256.empty()) {
+            if (!resource.sha256.empty() || resource.prepared_content) {
                 std::string media_error;
                 if (!load_resource(resource, resolved.bytes, media_error)) {
                     result.errors.push_back(package->id + "/" + resource.feature_id +
                                             ": " + resource.id + ": " + media_error);
                     continue;
+                }
+                if (resource.prepared_content) {
+                    uint8_t digest[32];
+                    psx_sha256_compute(resolved.bytes->data(), resolved.bytes->size(), digest);
+                    static const char hex[] = "0123456789abcdef";
+                    resolved.sha256.resize(64);
+                    for (size_t i = 0; i < 32; ++i) {
+                        resolved.sha256[2*i] = hex[digest[i] >> 4];
+                        resolved.sha256[2*i+1] = hex[digest[i] & 15];
+                    }
                 }
             }
             result.resources.push_back(std::move(resolved));

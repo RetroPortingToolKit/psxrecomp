@@ -38,13 +38,18 @@ bool load_mod_media(const std::filesystem::path& path,
                     const std::string& format, uint64_t expected_size,
                     const std::string& expected_sha256,
                     std::shared_ptr<const std::vector<uint8_t>>& bytes,
-                    std::string* error) {
+                    std::string* error, bool derive_identity) {
     bytes.reset();
     if (error) error->clear();
     try {
+        if (derive_identity) {
+            if (format != "file" || expected_size || !expected_sha256.empty())
+                throw std::runtime_error("derived identity requires a prepared file");
+            expected_size = std::filesystem::file_size(path);
+        }
         const uint64_t limit = format == "psx-mode2" ? 450000ull * 2336 : kMaxMediaBytes;
         if (!expected_size || expected_size > limit ||
-            expected_sha256.size() != 64 ||
+            (!derive_identity && expected_sha256.size() != 64) ||
             !std::all_of(expected_sha256.begin(), expected_sha256.end(),
                          [](char c) { return (c >= '0' && c <= '9') ||
                                              (c >= 'a' && c <= 'f'); }))
@@ -132,7 +137,7 @@ bool load_mod_media(const std::filesystem::path& path,
             actual[i * 2] = hex[digest[i] >> 4];
             actual[i * 2 + 1] = hex[digest[i] & 15];
         }
-        if (actual != expected_sha256)
+        if (!derive_identity && actual != expected_sha256)
             throw std::runtime_error("donor SHA-256 does not match");
         bytes = std::move(data);
         return true;
