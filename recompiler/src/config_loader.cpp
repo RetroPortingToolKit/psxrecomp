@@ -320,6 +320,7 @@ int pad_mode_from_settings_string(const std::string& s, int fallback) {
     std::string l;
     l.reserve(s.size());
     for (char c : s) l.push_back((char)std::tolower((unsigned char)c));
+    if (l == "negcon")  return PAD_MODE_NEGCON;
     if (l == "hybrid")  return PAD_MODE_ANALOG;
     if (l == "analog")  return PAD_MODE_ANALOG;
     if (l == "digital") return PAD_MODE_DIGITAL;
@@ -330,6 +331,7 @@ const char* pad_mode_to_string(int mode) {
     /* Never writes "hybrid": the mod requests it at runtime and it is not
      * persisted as a user preference. */
     switch (mode) {
+        case PAD_MODE_NEGCON: return "negcon";
         case PAD_MODE_DIGITAL: return "digital";
         default:               return "analog";
     }
@@ -3482,6 +3484,17 @@ UserSettings load_user_settings(const fs::path& path) {
             s.multitap_analog = toml::find<bool>(ct, "multitap_analog");
             s.has_multitap_analog = true;
         });
+        if (ct.contains("mouse_sensitivity")) try_get([&]{
+            const auto& value = toml::find(ct, "mouse_sensitivity");
+            const double scale = value.is_integer() ? (double)value.as_integer() : value.as_floating();
+            if (scale >= 0.05 && scale <= 10.0) {
+                s.mouse_sensitivity = scale; s.has_mouse_sensitivity = true;
+            }
+        });
+        if (ct.contains("mouse_capture")) try_get([&]{
+            s.mouse_capture = toml::find<bool>(ct, "mouse_capture");
+            s.has_mouse_capture = true;
+        });
         if (ct.contains("jogcon_force_feedback")) try_get([&]{
             s.jogcon_force_feedback = toml::find<bool>(ct, "jogcon_force_feedback");
             s.has_jogcon_force_feedback = true;
@@ -3634,7 +3647,8 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
     }
 
     {
-        bool any_ctrl = s.has_deadzone || s.has_multitap_enabled ||
+        bool any_ctrl = s.has_mouse_sensitivity || s.has_mouse_capture ||
+                        s.has_deadzone || s.has_multitap_enabled ||
                         s.has_multitap_analog || s.has_jogcon_force_feedback;
         for (int i = 0; i < UserSettings::kMaxControllerPlayers; ++i) {
             if (s.has_p_device[i] || s.has_p_mode[i] || s.has_p_deadzone[i])
@@ -3664,6 +3678,10 @@ bool save_user_settings(const fs::path& path, const UserSettings& s) {
             if (s.has_multitap_analog)
                 f << "multitap_analog = "
                   << (s.multitap_analog ? "true" : "false") << "\n";
+            if (s.has_mouse_sensitivity)
+                f << "mouse_sensitivity = " << s.mouse_sensitivity << "\n";
+            if (s.has_mouse_capture)
+                f << "mouse_capture = " << (s.mouse_capture ? "true" : "false") << "\n";
             if (s.has_jogcon_force_feedback)
                 f << "jogcon_force_feedback = "
                   << (s.jogcon_force_feedback ? "true" : "false") << "\n";

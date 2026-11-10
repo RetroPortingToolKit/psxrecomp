@@ -69,6 +69,10 @@ int main(int argc, char **argv) {
                                   (int)SDL_SCANCODE_F, 0),
           "default display perf accepts its physical scancode");
 
+    check(host_keymap_match(HOST_KEYMAP_MOUSE_CAPTURE, SDLK_F10, KMOD_LCTRL),
+          "native Mouse capture uses Ctrl+F10");
+    check(!host_keymap_match(HOST_KEYMAP_MOUSE_CAPTURE, SDLK_F10, 0),
+          "plain F10 remains the launcher hotkey");
     f = fopen(cfg, "wb");
     check(f != NULL, "create temporary config.ini");
     if (!f) return 1;
@@ -80,7 +84,8 @@ int main(int argc, char **argv) {
           "DisplayPerf = F10\n"
           "OpenLauncher = Ctrl+O\n"
           "QuickSave = Ctrl+F3\n"
-          "QuickLoad = F4\n",
+          "QuickLoad = F4\n"
+          "MouseCapture = Ctrl+M\n",
           f);
     fclose(f);
 
@@ -124,6 +129,9 @@ int main(int argc, char **argv) {
                                   (int)SDLK_UNKNOWN,
                                   (int)SDL_SCANCODE_F10, 0),
           "display perf rebind accepts the F10 scancode");
+    check(host_keymap_match(HOST_KEYMAP_MOUSE_CAPTURE, (int)SDLK_m, mod_ctrl()) &&
+          !host_keymap_match(HOST_KEYMAP_MOUSE_CAPTURE, (int)SDLK_F10, 0),
+          "mouse capture rebind uses Ctrl+M and drops F10");
 
     f = fopen(cfg, "wb");
     check(f != NULL, "create temporary explicit-unbind config.ini");

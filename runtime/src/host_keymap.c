@@ -116,6 +116,8 @@ static void apply_defaults(void) {
         add_bind(HOST_KEYMAP_SCANLINES, (int)SDLK_F6, (int)SDL_SCANCODE_F6, 0);
     if (want_default(HOST_KEYMAP_TURBO_TOGGLE))
         add_bind(HOST_KEYMAP_TURBO_TOGGLE, (int)SDLK_F9, (int)SDL_SCANCODE_F9, 0);
+    if (want_default(HOST_KEYMAP_MOUSE_CAPTURE))
+        add_bind(HOST_KEYMAP_MOUSE_CAPTURE, (int)SDLK_F10, (int)SDL_SCANCODE_F10, KMOD_CTRL);
     if (want_default(HOST_KEYMAP_OPEN_LAUNCHER)) {
         /* Primary matches recomp-ui's Hotkeys page; F10 is a convenience bind. */
         add_bind(HOST_KEYMAP_OPEN_LAUNCHER, (int)SDLK_l, (int)SDL_SCANCODE_L, KMOD_CTRL);
@@ -186,6 +188,7 @@ static HostKeymapAction action_for_key(const char *name) {
     if (ieq(name, "TurboToggle")) return HOST_KEYMAP_TURBO_TOGGLE;
     if (ieq(name, "AnalogMode")) return HOST_KEYMAP_ANALOG_MODE;
     if (ieq(name, "OpenLauncher")) return HOST_KEYMAP_OPEN_LAUNCHER;
+    if (ieq(name, "MouseCapture")) return HOST_KEYMAP_MOUSE_CAPTURE;
     if (ieq(name, "CaptureMark")) return HOST_KEYMAP_CAPTURE_MARK;
     return HOST_KEYMAP_ACTION_COUNT;
 }
