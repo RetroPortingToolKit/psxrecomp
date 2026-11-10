@@ -10421,16 +10421,17 @@ static uint16_t     *s_disp_ring_px = NULL;   /* one block for all entries */
 
 static void disp_ring_capture(void)
 {
-    /* Full-VRAM GL readback is intentionally expensive and can perturb the
-     * performance issue being measured. Keep the forensic ring default-on, but
-     * allow a controlled acceptance run to disable continuous capture while
-     * retaining the TCP server and one-shot screenshot command. */
+    /* Continuous forensic readback serializes threaded rendering with the
+     * guest. Keep it opt-in there; TCP telemetry and one-shot screenshots do
+     * not require the ring. Follow live render ownership when no override is
+     * supplied, including after a renderer restart. */
     static int enabled = -1;
     if (enabled < 0) {
         const char *e = getenv("PSX_DISPLAY_RING");
-        enabled = (!e || !*e || *e != '0') ? 1 : 0;
+        enabled = (e && *e) ? (*e != '0') : 2;
     }
-    if (!enabled || s_capture_frozen) return;
+    if (!enabled || (enabled == 2 && gl_renderer_render_thread_active()) ||
+        s_capture_frozen) return;
     if (!s_disp_ring_px) {
         size_t vram = (size_t)1024 * 512;
         s_disp_ring_px = (uint16_t *)malloc(DISP_RING_CAP * vram * sizeof(uint16_t));
@@ -17662,7 +17663,7 @@ void debug_server_record_frame(void)
     /* Last function */
     strcpy(r->last_func, "(no tracking)");
 
-    /* Always-on display ring: raw display-area pixels for THIS frame number
+    /* Optional display ring: raw display-area pixels for THIS frame number
      * (pre-increment, matching what the `frame` command reports right now). */
     disp_ring_capture();
 
