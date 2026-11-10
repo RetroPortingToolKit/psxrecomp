@@ -383,6 +383,29 @@ int main(int argc, char **argv) {
         check(st.acquires >= 2 && st.acquires <= (uint64_t)frames + 4, "acquires bounded");
         check(st.bytes > ((uint64_t)32 << 20), "ring wrapped (more than its size recorded)");
     }
+    /* Native HD raster readback must preserve exact command order and the
+     * guest mirror without moving the GL context to the producer. Exercise
+     * full snapshots and transfers wrapping both VRAM axes. */
+    gl_renderer_set_hd_texture_mode(1);
+    gl_renderer_render_thread_frame_boundary();
+    gr_fill_rect(0, 0, 1024, 512, 31);
+    RtStats read_before, read_after;
+    rt_get_stats(&read_before);
+    gr_vram_transfer_out(0, 0, 1024, 512, native);
+    rt_get_stats(&read_after);
+    check(native[0] == 31 && native[1024 * 512 - 1] == 31,
+          "HD snapshot observes queued native fill");
+    check(memcmp(native, vram, sizeof native) == 0, "HD snapshot publishes guest mirror");
+    if (threaded) check(!rt_held() && read_after.acquires == read_before.acquires,
+                        "HD snapshot retains render context ownership");
+    gr_fill_rect(0, 0, 1024, 512, 0x03e0);
+    uint16_t wrapped[16];
+    gr_vram_transfer_out(1022, 510, 4, 4, wrapped);
+    int wrap_ok = 1;
+    for (int i = 0; i < 16; ++i) if (wrapped[i] != 0x03e0) wrap_ok = 0;
+    check(wrap_ok, "HD wrapped transfer observes following fill");
+    check(native[0] == 31, "later draws do not mutate returned snapshot");
+    gl_renderer_render_thread_sync("fixture_final_check");
     check(glGetError() == GL_NO_ERROR, "GL error");
     printf("rb=%016llx\n", (unsigned long long)rb_digest);
     printf("digest=%016llx\n", (unsigned long long)digest);
