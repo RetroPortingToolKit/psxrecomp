@@ -194,6 +194,12 @@ static void frame(int f, int buf_x) {
     mask_bits(0, 0);
     /* Many primitives with tags that change per primitive. */
     for (int i = 0; i < 600; i++) {
+        /* GP0 display lists can repeat the same clip/offset before drawing.
+         * These must preserve pixels without ending the current GL batch. */
+        if (i % 7 == 0) {
+            gr_set_draw_area(buf_x, 0, buf_x + FRAME_W - 1, FRAME_H - 1);
+            gr_set_draw_offset(buf_x, 0);
+        }
         g_prim_id = f * 1000 + i;
         if (i == 300) g_bg_full = (f & 1);          /* stream latch flips mid-frame */
         int x = buf_x + (int)(rnd() % 420) - 50, y = (int)(rnd() % 240);
@@ -384,6 +390,9 @@ int main(int argc, char **argv) {
         check(st.bytes > ((uint64_t)32 << 20), "ring wrapped (more than its size recorded)");
     }
     check(glGetError() == GL_NO_ERROR, "GL error");
+    uint64_t batch_diag[9];
+    gl_renderer_batch_diag(batch_diag);
+    printf("gl_batches=%llu\n", (unsigned long long)batch_diag[0]);
     printf("rb=%016llx\n", (unsigned long long)rb_digest);
     printf("digest=%016llx\n", (unsigned long long)digest);
     printf("hires=%016llx\n", (unsigned long long)hires);

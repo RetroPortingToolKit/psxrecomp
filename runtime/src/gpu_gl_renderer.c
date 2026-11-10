@@ -3686,14 +3686,29 @@ static GLuint hd_gl_texture(const GpuHdTextureImage* image) {
     return texture->texture;
 }
 
+/* Sampler units are program state, not batch state. This retains the old
+ * per-batch writes for exact-output comparisons. */
+static int sampler_units_once_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("PSX_GL_SAMPLER_UNITS_ONCE");
+        enabled = !(e && !strcmp(e, "0"));
+    }
+    return enabled;
+}
 static void bind_textured_resources(GLuint source, GLuint palette, GLuint hd) {
     p_glActiveTexture(PSXGL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, source); p_glUniform1i(s_uVram, 0);
+    glBindTexture(GL_TEXTURE_2D, source);
     p_glActiveTexture(PSXGL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, palette); p_glUniform1i(s_uPalette, 1);
+    glBindTexture(GL_TEXTURE_2D, palette);
     p_glActiveTexture(PSXGL_TEXTURE0 + 2);
-    glBindTexture(GL_TEXTURE_2D, hd ? hd : s_up_tex); p_glUniform1i(s_uHdTexture, 2);
+    glBindTexture(GL_TEXTURE_2D, hd ? hd : s_up_tex);
     p_glActiveTexture(PSXGL_TEXTURE0);
+    if (!sampler_units_once_on()) {
+        p_glUniform1i(s_uVram, 0);
+        p_glUniform1i(s_uPalette, 1);
+        p_glUniform1i(s_uHdTexture, 2);
+    }
 }
 static int   s_tb_twin[4] = {0, 0, 0, 0};
 static uint64_t s_batch_total = 0, s_batch_reason[8];
@@ -4082,8 +4097,10 @@ static void hiw_replay_wide(void) {
             p_glUseProgram(s_tex_prog);
             p_glUniform1f(s_tex_uShift, s_shift_hi);
             p_glUniform1f(s_tex_uXhalf, (float)g_wide_w / 2.0f);
-            p_glUniform1i(s_uVram, 0);
-            p_glUniform1i(s_uPalette, 1);
+            if (!sampler_units_once_on()) {
+                p_glUniform1i(s_uVram, 0);
+                p_glUniform1i(s_uPalette, 1);
+            }
             p_glActiveTexture(PSXGL_TEXTURE0);
             bound = c->wfbo;
             cur = 0;
@@ -4171,7 +4188,7 @@ static void hiw_flush_queue(void) {
                 p_glUniform1f(s_tex_uShift, s_shift_hi);
                 p_glUniform1f(s_tex_uXoff, (float)(-T->x0));
                 p_glUniform1f(s_tex_uXhalf, (float)ww / 2.0f);
-                p_glUniform1i(s_uVram, 0);
+                if (!sampler_units_once_on()) p_glUniform1i(s_uVram, 0);
                 p_glActiveTexture(PSXGL_TEXTURE0);
                 bound = 1;
             }
@@ -6239,6 +6256,12 @@ static int init_gpu_raster(void) {
     accurate_apply_uniforms();
     s_uLimits   = p_glGetUniformLocation(s_tex_prog, "u_limits");
     s_uHdTexture = p_glGetUniformLocation(s_tex_prog, "u_hd_texture");
+    if (sampler_units_once_on()) {
+        p_glUseProgram(s_tex_prog);
+        p_glUniform1i(s_uVram, 0);
+        p_glUniform1i(s_uPalette, 1);
+        p_glUniform1i(s_uHdTexture, 2);
+    }
     s_tex_uBcls = p_glGetUniformLocation(s_tex_prog, "u_bcls");
     s_geo_uBcls = p_glGetUniformLocation(s_geo_prog, "u_bcls");
     s_geo_uBadd = p_glGetUniformLocation(s_geo_prog, "u_badd");
