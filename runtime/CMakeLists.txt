@@ -23,6 +23,10 @@ psxrecomp_add_runtime_target(psx-runtime
 # (docs/ENHANCEMENTS.md G1.10). Titles get their <exe>_pgxp the same way.
 
 if(BUILD_TESTING)
+    add_executable(timers_test tests/test_timers.c src/timers.c src/psx_video_timing.c)
+    target_include_directories(timers_test PRIVATE include)
+    target_compile_definitions(timers_test PRIVATE PSX_ENABLE_BLOCK_CYCLES=1)
+    add_test(NAME timers_test COMMAND timers_test)
     add_executable(digital_pad_snapshot_test tests/test_digital_pad_snapshot.c)
     target_include_directories(digital_pad_snapshot_test PRIVATE include)
     if(MSVC)

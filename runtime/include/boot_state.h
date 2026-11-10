@@ -46,18 +46,16 @@ extern "C" {
  * v5 = v4 + CD-ROM Sub-Q replacement state;
  * v6 = v5 + per-word GPU DMA2 linked-list progress;
  * v7 = v6 + pending XA DATA_END IRQ state. */
-#define BOOT_STATE_VERSION 10u
-/* No host snapshot providers: keep the v9 writer and section layout exactly.
- * v10 adds required trusted-title host state. Older readers must reject it
- * rather than restoring guest RAM without its matching host state. */
-#define BOOT_STATE_VERSION_WITHOUT_HOST 9u
+#define BOOT_STATE_VERSION 12u
+/* v11 adds timer one-shot/reset state; v12 also requires trusted-title host
+ * state. Older execution snapshots do not contain the new timer latches. */
+#define BOOT_STATE_VERSION_WITHOUT_HOST 11u
 /* v8 added allocated enhancement memory (vanilla v8-era writers kept v7); older
  * runtimes must not accept enhanced snapshots while ignoring their arenas. */
 /* v9 persists the BIOS-to-game handoff latch. Engine overlays may have
  * replaced the original entry code by the time a gameplay state is loaded. */
-/* v7 intentionally breaks older savestates after the CD-ROM wire grew. Reject
- * them at the header before any section changes the live machine. */
-#define BOOT_STATE_VERSION_MIN_READ 7u
+/* Reject older snapshots at the header before changing the live machine. */
+#define BOOT_STATE_VERSION_MIN_READ 11u
 /* Section pad bit0: payload is u32 LE uncompressed_len + zlib deflate bytes. */
 #define BOOT_STATE_SEC_ZLIB 1u
 
@@ -68,7 +66,7 @@ extern "C" {
  */
 typedef struct {
     uint32_t magic;          /* BOOT_STATE_MAGIC                                  */
-    uint32_t version;        /* writer v9 without providers, v10 with host state */
+    uint32_t version;        /* writer v11 without providers, v12 with host state */
     /* ---- integrity key (every field must match to accept) ---- */
     uint32_t bios_checksum;  /* sum of all uint32 words in the BIOS ROM           */
     uint32_t entry_pc;       /* game PS-EXE entry PC                              */

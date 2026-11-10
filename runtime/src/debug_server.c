@@ -6122,6 +6122,7 @@ static void handle_timers_state(int id, const char *json)
     uint32_t mode[3], frac[3];
     int32_t irq_line[3];
     timers_get_snapshot(counter, mode, target, irq_line, frac);
+    for (int t = 0; t < 3; ++t) mode[t] &= 0x1FFFu;
     send_fmt("{\"id\":%d,\"ok\":true,\"timers\":["
              "{\"ch\":0,\"counter\":%u,\"mode\":\"0x%04X\",\"target\":%u,"
              "\"irq_line\":%d,\"frac\":%u},"
