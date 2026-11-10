@@ -218,6 +218,44 @@ std::vector<Rect> physical_rects(unsigned x,
     return result;
 }
 
+/* The per-primitive hot paths (every GPU draw invalidates, every textured
+ * draw queries) run on the render thread thousands of times per frame and
+ * almost always miss: no heap use on that path. A VRAM rectangle wraps into
+ * at most four physical pieces; a draw query covers at most four of them. */
+struct RectList {
+    std::array<Rect, 16> items{};
+    unsigned count = 0;
+    void add(const Rect& r) { if (count < items.size()) items[count++] = r; }
+    const Rect* begin() const { return items.data(); }
+    const Rect* end() const { return items.data() + count; }
+};
+
+/* The same pieces, in the same order, as physical_rects. */
+void physical_rect_list(unsigned x, unsigned y, unsigned width, unsigned height,
+                        RectList& out) {
+    if (width == 0 || height == 0 || width > kVramWidth || height > kVramHeight)
+        return;
+    const unsigned px = x & (kVramWidth - 1);
+    const unsigned py = y & (kVramHeight - 1);
+    const unsigned first_w = std::min(width, kVramWidth - px);
+    const unsigned first_h = std::min(height, kVramHeight - py);
+    const unsigned xs[2][2] = {{px, first_w}, {0, width - first_w}};
+    const unsigned ys[2][2] = {{py, first_h}, {0, height - first_h}};
+    for (const auto& yspan : ys) {
+        if (yspan[1] == 0) continue;
+        for (const auto& xspan : xs)
+            if (xspan[1] != 0) out.add({xspan[0], yspan[0], xspan[1], yspan[1]});
+    }
+}
+
+/* Broad-phase candidates without allocating; `overflow` set when more than
+ * the list holds were indexed (the caller then takes the vector path). */
+struct SerialList {
+    std::array<uint64_t, 64> items{};
+    unsigned count = 0;
+    bool overflow = false;
+};
+
 std::vector<Fragment> subtract_fragment(const Fragment& original,
                                         const Rect& cut) {
     if (!intersects(original.rect, cut)) return {original};
@@ -615,6 +653,29 @@ void parse_hashes_ini(const fs::path& path,
     }
 }
 
+void query_rect_list(const HdTextureDrawQuery& query, RectList& out) {
+    const unsigned pixels_per_word = query.depth == HD_TEXTURE_DEPTH_4BPP ? 4u :
+                                     query.depth == HD_TEXTURE_DEPTH_8BPP ? 2u : 1u;
+    const unsigned u_ranges[2][2] = {
+        {query.u_first, query.u_first <= query.u_last ? query.u_last : 255u},
+        {0u, query.u_last}};
+    const unsigned v_ranges[2][2] = {
+        {query.v_first, query.v_first <= query.v_last ? query.v_last : 255u},
+        {0u, query.v_last}};
+    const unsigned nu = query.u_first <= query.u_last ? 1u : 2u;
+    const unsigned nv = query.v_first <= query.v_last ? 1u : 2u;
+    for (unsigned vi = 0; vi < nv; ++vi) {
+        for (unsigned ui = 0; ui < nu; ++ui) {
+            const unsigned first_word = u_ranges[ui][0] / pixels_per_word;
+            const unsigned last_word = u_ranges[ui][1] / pixels_per_word;
+            physical_rect_list(unsigned{query.page_x} + first_word,
+                               unsigned{query.page_y} + v_ranges[vi][0],
+                               last_word - first_word + 1,
+                               v_ranges[vi][1] - v_ranges[vi][0] + 1, out);
+        }
+    }
+}
+
 std::vector<Rect> query_rectangles(const HdTextureDrawQuery& query) {
     const unsigned pixels_per_word = query.depth == HD_TEXTURE_DEPTH_4BPP ? 4u :
                                      query.depth == HD_TEXTURE_DEPTH_8BPP ? 2u : 1u;
@@ -784,6 +845,35 @@ void upload_index_collect(const HdTexturePack* pack,
     std::sort(out_serials->begin(), out_serials->end());
     out_serials->erase(std::unique(out_serials->begin(), out_serials->end()),
                        out_serials->end());
+}
+
+void upload_index_collect(const HdTexturePack* pack, const RectList& query,
+                          SerialList& out) {
+    out.count = 0; out.overflow = false;
+    if (!pack) return;
+    for (const Rect& rect : query) {
+        if (rect.width == 0 || rect.height == 0) continue;
+        const unsigned first_x = rect.x / kUploadIndexTileSize;
+        const unsigned first_y = rect.y / kUploadIndexTileSize;
+        const unsigned last_x = std::min(
+            kUploadIndexCols - 1,
+            (rect.x + rect.width - 1) / kUploadIndexTileSize);
+        const unsigned last_y = std::min(
+            kUploadIndexRows - 1,
+            (rect.y + rect.height - 1) / kUploadIndexTileSize);
+        for (unsigned ty = first_y; ty <= last_y; ++ty) {
+            for (unsigned tx = first_x; tx <= last_x; ++tx) {
+                const auto& bucket = pack->upload_index[upload_index_cell(tx, ty)];
+                for (const uint64_t serial : bucket) {
+                    if (out.count < out.items.size()) out.items[out.count++] = serial;
+                    else out.overflow = true;
+                }
+            }
+        }
+    }
+    std::sort(out.items.begin(), out.items.begin() + out.count);
+    out.count = static_cast<unsigned>(
+        std::unique(out.items.begin(), out.items.begin() + out.count) - out.items.begin());
 }
 
 extern "C" {
@@ -1241,17 +1331,41 @@ int hd_texture_pack_match(HdTexturePack* pack,
     if (!pack || !query || query->depth > HD_TEXTURE_DEPTH_16BPP ||
         !query->vram || query->vram_word_count < kVramWords)
         return HD_TEXTURE_LOOKUP_ERROR;
-    const std::vector<Rect> wanted = query_rectangles(*query);
-    if (wanted.empty()) return HD_TEXTURE_LOOKUP_ERROR;
+    RectList wanted_list;
+    query_rect_list(*query, wanted_list);
+    if (wanted_list.count == 0) return HD_TEXTURE_LOOKUP_ERROR;
+    /* Broad phase first: a draw over VRAM no tracked upload touches (the
+     * common case) ends here, before the CLUT is hashed or anything is
+     * allocated. */
+    SerialList serials;
+    upload_index_collect(pack, wanted_list, serials);
+    std::vector<uint64_t> overflow_serials;
+    std::vector<Rect> wanted;
+    if (serials.overflow) {
+        wanted = query_rectangles(*query);
+        upload_index_collect(pack, wanted, &overflow_serials);
+    }
+    const uint64_t* candidate_serials = serials.overflow ? overflow_serials.data() : serials.items.data();
+    const size_t candidate_count = serials.overflow ? overflow_serials.size() : serials.count;
+    if (candidate_count == 0) return HD_TEXTURE_LOOKUP_NONE;
+    /* No candidate upload has a replacement under any palette: the entry
+     * lookups below would all fail, so the CLUT need not be hashed. */
+    bool any_replaceable = false;
+    for (size_t ci = 0; ci < candidate_count && !any_replaceable; ++ci) {
+        const auto indexed = pack->upload_by_serial.find(candidate_serials[ci]);
+        if (indexed != pack->upload_by_serial.end() && indexed->second &&
+            pack->texture_hashes.count(indexed->second->hash))
+            any_replaceable = true;
+    }
+    if (!any_replaceable) return HD_TEXTURE_LOOKUP_NONE;
     const uint32_t palette_hash = hd_texture_hash_clut(
         query->vram, query->vram_word_count, query->clut_x, query->clut_y,
         query->depth);
 
-    std::vector<uint64_t> candidate_serials;
-    upload_index_collect(pack, wanted, &candidate_serials);
     const Upload* candidate = nullptr;
     const EntryRecord* candidate_entry = nullptr;
-    for (const uint64_t serial : candidate_serials) {
+    for (size_t ci = 0; ci < candidate_count; ++ci) {
+        const uint64_t serial = candidate_serials[ci];
         const auto indexed = pack->upload_by_serial.find(serial);
         if (indexed == pack->upload_by_serial.end() || !indexed->second)
             continue;
@@ -1260,6 +1374,7 @@ int hd_texture_pack_match(HdTexturePack* pack,
         if (record == pack->entries.end() && query->depth != HD_TEXTURE_DEPTH_16BPP)
             record = pack->entries.find(make_key(upload.hash, HD_TEXTURE_PALETTE_INDEXED));
         if (record == pack->entries.end()) continue;
+        if (wanted.empty()) wanted.assign(wanted_list.begin(), wanted_list.end());
         if (!covered_by_upload(upload, wanted)) continue;
         if (record->second.ambiguous) return HD_TEXTURE_LOOKUP_AMBIGUOUS;
         if (candidate) return HD_TEXTURE_LOOKUP_AMBIGUOUS;

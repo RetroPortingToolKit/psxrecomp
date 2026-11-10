@@ -577,11 +577,14 @@ static int acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
     if (!make_query(tp, cx, cy, limits, window, query)) return 0;
     dump_query(query, semi);
     if (!session->replacements) return 0;
-    auto lease = std::unique_ptr<Lease>(new (std::nothrow) Lease);
-    if (!lease) return 0;
+    /* The lease is made only for a draw that matched: most textured draws
+     * (world geometry) miss, thousands per frame on the render thread. */
+    std::unique_ptr<Lease> lease;
     if (session->beetle) {
         HdTextureMatch match{};
         if (hd_texture_pack_match(session->beetle, &query, &match) != HD_TEXTURE_LOOKUP_FOUND) return 0;
+        lease.reset(new (std::nothrow) Lease);
+        if (!lease) return 0;
         ++session->diag.matched_draws;
         hd_texture_pack_request_decode(session->beetle, match.entry.texture_hash, match.entry.palette_hash);
         if (hd_texture_pack_acquire_decoded(session->beetle, match.entry.texture_hash,
@@ -599,6 +602,8 @@ static int acquire_draw(uint16_t tp, uint16_t cx, uint16_t cy,
         try {
             std::array<DuckTextureMatch,kMaxParts> matches{}; size_t count = 0;
             if (duck_texture_pack_match_parts(session->duck, &query, semi, matches.data(), matches.size(), &count) != HD_TEXTURE_LOOKUP_FOUND || !count) return 0;
+            lease.reset(new (std::nothrow) Lease);
+            if (!lease) return 0;
             ++session->diag.matched_draws;
             const auto& match = matches[0];
             if (count == 1 && match.clip_u <= query.u_first && match.clip_v <= query.v_first &&
