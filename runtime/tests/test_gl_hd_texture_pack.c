@@ -686,8 +686,8 @@ int main(int argc,char** argv) {
     check(gl_renderer_stereo_unavailable()!=PSX_MOD_RENDER_PASS_READY,"stereo refuses HD authority");
     GpuHdTextureDiag diag; gpu_hd_textures_get_diag(&diag);
     check(diag.applied_draws>0,"replacement diagnostics record actual GL submissions");
-    /* Preserve the established Beetle numeric-key path with source origin
-     * offset, native cutout and native STP authority. */
+    /* Beetle numeric keys retain upload-relative UVs and native STP, but
+     * replacement alpha owns coverage, including over native zero texels. */
     char beetle_root[2048],beetle_png[2304],hashes[2304];
     snprintf(beetle_root,sizeof(beetle_root),"%s/beetle",argv[1]);
     snprintf(hashes,sizeof(hashes),"%s/Hashes.ini",beetle_root);
@@ -698,6 +698,7 @@ int main(int argc,char** argv) {
     for(int y=0;y<16;++y) for(int x=0;x<16;++x) {
         uint8_t* at=beetle_rgba+(y*16+x)*4;
         at[0]=x<4?255:0; at[1]=x>=8?255:0; at[2]=x>=4&&x<8?255:0; at[3]=255;
+        if(y>=12 && x<4) at[3]=0;
     }
     FILE* bf=fopen(beetle_png,"wb"); check(bf!=NULL,"Beetle PNG open");
     if(bf){check(png_write_rgba(bf,beetle_rgba,16,16),"Beetle PNG fixture");fclose(bf);}
@@ -710,8 +711,15 @@ int main(int argc,char** argv) {
     check(sample(16,16)[2]>200 && sample(16,16)[0]<20,"Beetle partial draw keeps upload-relative UV origin");
     check(vram[4*1024+4]==0x83e0 && vram[517]==0x83e0,
           "Beetle image preserves native draw RGB and source STP");
+    gr_fill_rect(0,0,16,16,0x4210);
     gr_draw_textured_rect(8,4,4,4,4,0,0,0,texture_page); capture();
-    check(sample(44,16)[1]>200,"Beetle native transparent zero still cuts out replacement");
+    check(sample(44,16)[1]>200 && sample(44,16)[0]<20,
+          "Beetle opaque replacement fills native transparent holes");
+    check(sample(32,28)[0]>100 && sample(32,28)[0]<160 &&
+          sample(32,28)[1]>100 && sample(32,28)[1]<160,
+          "Beetle replacement alpha cuts out over occupied native texels");
+    check(vram[4*1024+11]==0x4210 && vram[7*1024+8]==0x03e0,
+          "Beetle replacement coverage never changes native VRAM");
     /* Render thread: residency follows the recorded command stream and the
      * render thread's VRAM copy. The emulation thread writes its array and
      * records the overwrite before the first draw has been replayed; that
