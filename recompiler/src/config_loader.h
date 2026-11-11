@@ -1566,6 +1566,8 @@ inline uint32_t ws_cull_clip_edge_width(const GameConfig& c) {
 // Unlike game.toml, paths here are stored verbatim (the user picked them); they
 // are NOT resolved against a project root.
 struct UserSettings {
+    // Host master volume, independent of the emulated audio hardware.
+    bool has_volume = false; int volume = 100;
     // Set when the file existed but failed to parse as TOML: every field below
     // is defaults and the caller must warn loudly — silently dropping a user's
     // hand-edited settings looks like the settings "don't work", and a later

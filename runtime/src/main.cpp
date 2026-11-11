@@ -17288,6 +17288,7 @@ std::atomic<int> g_ovl_pause_wanted{0};
 bool g_ovl_pause_held = false;
 std::atomic<int> g_ovl_reload_binds{0};
 std::atomic<int> g_ovl_exit{0};            /* PSX_MENU_EXIT_* + 1; 0 = none */
+std::atomic<int> g_ovl_state_req{0};       /* menu save/load: slot + 1, | 0x100 = save; 0 = none */
 bool g_ovl_video_pending = false;
 PsxHostVideoSettings g_ovl_video_post{};
 PsxHostVideoSettings g_ovl_video_current{}, g_ovl_video_boot{};
@@ -17314,6 +17315,9 @@ bool g_ovl_ls_pending = false;
 RecompLauncherCSettings g_ovl_ls_post{};
 #endif
 std::string g_ovl_argv0, g_ovl_name, g_ovl_keybinds, g_ovl_config, g_ovl_assets;
+std::string g_ovl_disc_path;
+bool g_ovl_lock_mode = false, g_ovl_lock_device = false;
+int g_ovl_locked_modes[PSX_MAX_PLAYERS]{};
 
 bool ovl_open(void) { return g_ovl && g_ovl->is_open && g_ovl->is_open(g_ovl->ctx); }
 
@@ -17405,6 +17409,30 @@ int disc_cycle_now(int n) { const PsxMenuDiscOps* d = psx_menu_disc_ops(); retur
  * queued, -1 when there is no disc to change to, or the policy's netplay
  * refusal up front. */
 std::atomic<int> g_ovl_disc_req{0};
+/* Save states from the menu: the hotkey menu's slots and rules
+ * (savestate_submit_slot), applied on the main thread. */
+int mh_state_slot_count(void) { return SAVESTATE_SLOTS; }
+int mh_state_available(void) {
+    return !mh_netplay_active() && !savestate_title_blocked() && psx_mod_netplay_savestates_supported() ? 1 : 0;
+}
+int mh_state_info(int slot, long long* mtime) {
+    if (slot < 0 || slot >= SAVESTATE_SLOTS || !savestate_slot_exists(slot)) return 0;
+    int64_t t = 0;
+    if (mtime) *mtime = savestate_slot_mtime(slot, &t) ? (long long)t : 0;
+    return 1;
+}
+int mh_state_thumb(int slot, unsigned* argb, int w, int h) {
+    if (slot < 0 || slot >= SAVESTATE_SLOTS || !argb || w <= 0 || h <= 0) return 0;
+    return savestate_read_thumb(slot, reinterpret_cast<uint32_t*>(argb), w, h);
+}
+int mh_state_request(int slot, int save) {
+    if (slot < 0 || slot >= SAVESTATE_SLOTS || !mh_state_available()) return 0;
+    if (!save && !savestate_slot_exists(slot)) return 0;
+    g_ovl_state_req = (slot + 1) | (save ? 0x100 : 0);
+    return 1;
+}
+int mh_state_save(int slot) { return mh_state_request(slot, 1); }
+int mh_state_load(int slot) { return mh_state_request(slot, 0); }
 int mh_disc_insert(int n) {
     if (n < 1 || n > mh_disc_count()) return -1;
     if (psx_netplay_active()) return 3;  /* PSX_DISC_TRAY_ERR_NETPLAY */
@@ -17434,6 +17462,7 @@ void mh_launcher_settings_get(RecompLauncherCSettings* out) {
     mh_video_get(&v);
     RecompLauncherCSettings& ls = *out;
     ls.fullscreen = v.fullscreen;
+    ls.volume = host_volume_get();
     ls.frame_generation = v.frame_generation;
     ls.renderer = v.renderer;
     ls.vsync = psx_vsync_to_launcher(v.vsync);
@@ -17445,7 +17474,11 @@ void mh_launcher_settings_get(RecompLauncherCSettings* out) {
 #endif
     for (int i = 0; i < PSX_MAX_PLAYERS && i < RECOMP_LAUNCHER_MAX_PLAYERS; ++i) {
         ls.player_src[i] = g_players[i].kind;
-        ls.pad_mode[i] = PSXRecompV4::PAD_MODE_ANALOG;
+        ls.pad_mode[i] = g_players[i].mode;
+        ls.deadzone[i] = (g_players[i].deadzone * 100 + 16383) / 32767;
+        std::snprintf(ls.player_gamepad_guid[i], sizeof ls.player_gamepad_guid[i],
+                      "%s", g_players[i].guid);
+        ls.player_gamepad_instance[i] = g_players[i].preferred_instance;
     }
 }
 unsigned mh_launcher_settings_apply(const RecompLauncherCSettings* s) {
@@ -17467,6 +17500,16 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
     gi.keybinds_path = g_ovl_keybinds.c_str();
     gi.config_path = g_ovl_config.c_str();
     gi.num_players = PSX_MAX_PLAYERS < 4 ? PSX_MAX_PLAYERS : 4;
+    gi.pad_mode_selectable = !g_ovl_lock_mode;
+    gi.lock_device = g_ovl_lock_device;
+    gi.locked_pad_mode = g_ovl_lock_mode ? g_ovl_locked_modes[0] : 0;
+    gi.disc_verify = ae_disc_verify;
+    static RecompLauncherCDisc mounted{};
+    mounted.number = 1;
+    mounted.label = "Game disc";
+    mounted.path = g_ovl_disc_path.c_str();
+    gi.discs = &mounted;
+    gi.num_discs = g_ovl_disc_path.empty() ? 0 : 1;
     gi.renderer_labels = kOvlRenderers;
     gi.num_renderers = g_launcher_vulkan_available ? 3 : 2;
     gi.has_render_pipeline = 1;
@@ -17493,6 +17536,7 @@ PsxMenuHost g_menu_host = {
 #endif
     nullptr,
     0,
+    mh_state_slot_count, mh_state_available, mh_state_info, mh_state_thumb, mh_state_save, mh_state_load,
 };
 
 int ovl_sink(const void* ev, void*) { return g_ovl && g_ovl->event ? g_ovl->event(g_ovl->ctx, ev) : 0; }
@@ -17507,7 +17551,9 @@ void ovl_draw(int w, int h, void*) { if (g_ovl && g_ovl->draw) g_ovl->draw(g_ovl
 #endif
 #endif
 
-static void recomp_overlay_setup(const char* argv0, const std::string& title) {
+static void recomp_overlay_setup(const char* argv0, const std::string& title,
+                                 const std::string& disc, bool lock_mode, bool lock_device,
+                                 const int* locked_modes) {
     const char* e = std::getenv("PSX_OVERLAY");
     const PsxMenuProvider* p = psx_menu_provider();
     g_menu_host.default_selection = 0;
@@ -17527,6 +17573,10 @@ static void recomp_overlay_setup(const char* argv0, const std::string& title) {
     if (!p || g_ovl_on || !g_gl_active || g_headless || (e && *e == '0')) return;
     const std::filesystem::path dir = exe_dir_from_argv(argv0);
     g_ovl_name = title;
+    g_ovl_disc_path = disc;
+    g_ovl_lock_mode = lock_mode;
+    g_ovl_lock_device = lock_device;
+    for (int i = 0; i < PSX_MAX_PLAYERS; ++i) g_ovl_locked_modes[i] = locked_modes[i];
     g_ovl_argv0 = argv0 ? argv0 : "";
     g_ovl_keybinds = (dir / "keybinds.ini").string();
     g_ovl_config = (dir / "config.ini").string();
@@ -17551,12 +17601,18 @@ extern "C" int psx_debug_menu_host_json(char* out, size_t cap) {
         "\"provider\":\"%s\",\"attached\":%d,\"default_selection\":%d,\"open\":%d,"
         "\"paused\":%d,\"pause_depth\":%d,\"ui_capture\":%d,\"netplay\":%d,"
         "\"internal_resolution\":%d,\"fullscreen\":%d,"
-        "\"render_thread\":%d,\"frame_generation\":%d,\"disc_count\":%d,\"disc_mounted\":%d",
+        "\"render_thread\":%d,\"frame_generation\":%d,\"disc_count\":%d,\"disc_mounted\":%d,"
+        "\"volume\":%d,\"p1_deadzone\":%d,\"p2_device\":%d,"
+        "\"p1_cross_scancode\":%d,\"p1_cross_button\":%d",
         p && p->name ? p->name : "", g_ovl_on ? 1 : 0, g_menu_host.default_selection,
         ovl_open() ? 1 : 0, g_ovl_pause_held ? 1 : 0, psx_host_pause_depth(),
         psx_host_ui_capture_active(), mh_netplay_active(), v.internal_resolution,
         v.fullscreen, v.render_thread, v.frame_generation, mh_disc_count(),
-        mh_disc_mounted());
+        mh_disc_mounted(), host_volume_get(), g_players[0].deadzone,
+        g_players[1].kind,
+        (int)psx_keybinds_get()->player[0].cross,
+        controller_map[4].sources.empty() || controller_map[4].sources[0].kind != ControllerSource::Kind::Button
+            ? -1 : controller_map[4].sources[0].id);
 }
 
 #ifndef PSX_NO_DEBUG_TOOLS
@@ -17619,6 +17675,51 @@ static void host_pause_service(void) {
     if (have_video) (void)psx_video_apply_live(&video);
 #if defined(RECOMP_LAUNCHER)
     if (have_ls) {
+        const auto settings_path = exe_dir_from_argv(g_ovl_argv0.c_str()) / "settings.toml";
+        auto settings = PSXRecompV4::load_user_settings(settings_path);
+        bool controls_changed = false;
+        for (int i = 0; i < PSX_MAX_PLAYERS && i < RECOMP_LAUNCHER_MAX_PLAYERS; ++i) {
+            PlayerInput& p = g_players[i];
+            const int kind = std::max(0, std::min(2, post.player_src[i]));
+            const int configured_kind = p.kind;
+            const std::string guid = kind == 2 ? post.player_gamepad_guid[i] : "";
+            const int instance = kind == 2 ? post.player_gamepad_instance[i] : -1;
+            const int mode = PSXRecompV4::resolve_player_mode_after_launcher(
+                post.pad_mode[i], g_ovl_lock_mode, g_ovl_locked_modes[i],
+                g_mod_controller_mode_override[i]);
+            const int deadzone = std::max(0, std::min(100, post.deadzone[i])) * 32767 / 100;
+            const bool device_changed = !g_ovl_lock_device &&
+                (configured_kind != kind || (kind == 2 &&
+                 (guid != p.guid || instance != p.preferred_instance)));
+            // Netplay owns guest pad types; a local device change must not alter them.
+            const bool mode_changed = !psx_netplay_active() && p.mode != mode;
+            const bool deadzone_changed = (p.deadzone * 100 + 16383) / 32767 != post.deadzone[i];
+            if (!device_changed && !mode_changed && !deadzone_changed) continue;
+            const std::string device = kind == 0 ? "none" : kind == 1 ? "keyboard" :
+                                       guid.empty() ? "gamepad" : guid;
+            if (device_changed) {
+                close_player(p);
+                set_player_device(p, device, p.mode);
+                p.preferred_instance = instance;
+            }
+            if (mode_changed) p.mode = mode;
+            if (deadzone_changed) p.deadzone = deadzone;
+            if (i < PSXRecompV4::UserSettings::kMaxControllerPlayers) {
+                if (device_changed) { settings.p_device[i] = device; settings.has_p_device[i] = true; }
+                settings.p_mode[i] = p.mode; settings.has_p_mode[i] = true;
+                settings.p_deadzone[i] = p.deadzone; settings.has_p_deadzone[i] = true;
+            }
+            controls_changed = true;
+        }
+        if (controls_changed) {
+            refresh_player_devices();
+            controller_deadzone = g_players[0].deadzone;
+        }
+        const bool volume_changed = post.volume != host_volume_get();
+        if (volume_changed) { settings.volume = post.volume; settings.has_volume = true; }
+        if ((controls_changed || volume_changed) && !settings.parse_error)
+            (void)PSXRecompV4::save_user_settings(settings_path, settings);
+        host_volume_set(post.volume);
         const PsxHostVideoSettings v = ovl_video_from(post);
         (void)psx_video_apply_live(&v);
 #if defined(RECOMP_LAUNCHER_HAS_JOGCON_FORCE_FEEDBACK) && \
@@ -17647,6 +17748,10 @@ static void host_pause_service(void) {
             }
         }
         (void)psx_mod_save_selection();
+    }
+    if (const int req = g_ovl_state_req.exchange(0)) {
+        const int slot = (req & 0xff) - 1;
+        (void)savestate_submit_slot(slot, (req & 0x100) ? 1 : 0);
     }
     if (g_ovl_reload_binds.exchange(0)) {
         psx_keybinds_init(g_ovl_argv0.c_str());
@@ -18811,6 +18916,7 @@ int main(int argc, char** argv) {
 #endif
         PSXRecompV4::UserSettings us =
             PSXRecompV4::load_user_settings(settings_path);
+        if (us.has_volume) host_volume_set(us.volume);
         user_settings_has_renderer = us.has_renderer;
         if (us.parse_error) {
             /* The file exists but is not valid TOML: every setting in it (the
@@ -19473,6 +19579,7 @@ int main(int argc, char** argv) {
             /* Netplay session BIOS is match-only; never overwrite seed/bios.cfg. */
             std::filesystem::path match_session_bios_path;
             bool match_session_bios_set = false;
+            seed.volume = host_volume_get(); seed.has_volume = true;
             seed.vsync = g_video_vsync; seed.has_vsync = true;
             seed.renderer = g_video_renderer;             seed.has_renderer = true;
             /* No Internal resolution / Supersampling round trip: the built-in
@@ -20044,6 +20151,7 @@ int main(int argc, char** argv) {
                 seed.turbo_loads = ls.turbo_loads != 0;
                 seed.has_turbo_loads = turbo_loads_offered;
                 host_volume_set(ls.volume);
+                seed.volume = ls.volume; seed.has_volume = true;
                 /* Bundled-BIOS builds ignore any launcher-supplied path (the
                  * picker is hidden, but a stale settings file could still
                  * carry one) — resolve_bios_for_runtime would reject it and
@@ -21417,7 +21525,8 @@ session_reboot:
         g_gl_active = (gl_renderer_init_context(sdl_window) != 0);
         dynres_setup();
         psx_video_current(&g_video_boot);  /* boot snapshot for restart-only rows */
-        recomp_overlay_setup(argv[0], s_picker_game_name);
+        recomp_overlay_setup(argv[0], s_picker_game_name, disc_path_str,
+                             ctrl_lock_mode, ctrl_lock_device, ctrl_locked_mode);
         if (dbg_live_scale && g_gl_active) {
             if (!dynres_requested()) g_dynres.active = false;
             const int ceil_s = gl_renderer_dynamic_resolution_ceiling();
