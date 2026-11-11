@@ -305,14 +305,18 @@ static int rewind_wanted(void)
     return s_enabled;
 }
 
-/* Same heuristic as netplay rb_fmv_media_active — denser snaps while media runs. */
+/* Denser snaps while a movie plays: a 24-bit display or recent MDEC output.
+ * An XA stream alone is not a movie. Many titles stream their in-game music
+ * as XA (R4's race soundtrack), and densifying there captures four times as
+ * often during gameplay. That shrinks the rewind window to a quarter of the
+ * user's pick, and every capture reads all of VRAM, which under the render
+ * thread waits for the queued high-resolution frames to finish on the GPU.
+ * Netplay rollback keeps its own heuristic (rb_fmv_media_active). */
 static int rewind_fmv_media_active(void)
 {
     if (gpu_display_is_depth24())
         return 1;
     if (mdec_recently_active(RW_FMV_MDEC_HYSTERESIS))
-        return 1;
-    if (cdrom_xa_stream_active())
         return 1;
     return 0;
 }
