@@ -8345,11 +8345,12 @@ static void handle_rewind_status(int id, const char *json)
 {
     (void)json;
     send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%s,\"open\":%s,"
-             "\"title_blocked\":%s,\"snaps\":%u}\n",
+             "\"title_blocked\":%s,\"snaps\":%u,\"hd_residency_bytes\":%u}\n",
              id, psx_rewind_enabled() ? "true" : "false",
              psx_rewind_is_open() ? "true" : "false",
              psx_rewind_title_blocked() ? "true" : "false",
-             (unsigned)psx_rewind_snap_count());
+             (unsigned)psx_rewind_snap_count(),
+             (unsigned)psx_rewind_hd_residency_bytes());
 }
 
 static void handle_overlay_status(int id, const char *json)
