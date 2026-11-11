@@ -725,11 +725,13 @@ std::string CodeGenerator::translate_div(uint32_t instr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
 
-    // MIPS division: quotient in LO, remainder in HI
-    // Handle division by zero (MIPS behavior: result is unpredictable but doesn't trap)
-    return fmt::format("if ({} != 0) {{ cpu->lo = (uint32_t)((int32_t){} / (int32_t){}); cpu->hi = (uint32_t)((int32_t){} % (int32_t){}); }} else {{ cpu->lo = ((int32_t){} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){}; }}"
+    // MIPS division: quotient in LO, remainder in HI. DIV never traps
+    // (PSX-SPX "CPU Specifications", Multiply/divide): x/0 gives HI=x and
+    // LO=-1 (x>=0) or +1 (x<0); -80000000h/-1 gives HI=0, LO=-80000000h.
+    // The second case is undefined in C and faults on x86 hosts.
+    return fmt::format("if ({1} == 0) {{ cpu->lo = ((int32_t){0} >= 0) ? 0xFFFFFFFF : 1; cpu->hi = (uint32_t){0}; }} else if ({0} == 0x80000000u && {1} == 0xFFFFFFFFu) {{ cpu->lo = 0x80000000u; cpu->hi = 0u; }} else {{ cpu->lo = (uint32_t)((int32_t){0} / (int32_t){1}); cpu->hi = (uint32_t)((int32_t){0} % (int32_t){1}); }}"
                       "\n#ifdef PSX_ENABLE_BLOCK_CYCLES\n    psx_muldiv_set(cpu, 37u);\n#endif",
-                      reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rt), reg_name(rs), reg_name(rs));
+                      reg_name(rs), reg_name(rt));
 }
 
 std::string CodeGenerator::translate_divu(uint32_t instr) {
