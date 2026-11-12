@@ -1651,6 +1651,18 @@ static void pad_process_byte(uint8_t tx_byte) {
             pad_state = PAD_SEND_RESPONSE;
             sio_rx_data = pad_response[0];
             sio_stat |= SIO_STAT_ACK;
+        } else if (ds && !g_pad_legacy_cfg && pad_analog[lp] != SIO_PAD_JOGCON &&
+                   (tx_byte == 0x44 || tx_byte == 0x45 || tx_byte == 0x46 ||
+                    tx_byte == 0x47 || tx_byte == 0x4C || tx_byte == 0x4D)) {
+            /* A DualShock config command OUTSIDE config mode: the pad answers
+             * the command byte with its ID, then gives no /ACK, so the
+             * transaction ends (FF 41 in digital mode). 48h-4Bh and 4Fh keep
+             * the hi-z answer below. */
+            pad_state = PAD_IDLE;
+            pad_response_len = 0;
+            pad_response_idx = 0;
+            pad_current_cmd = 0;
+            sio_rx_data = cur_id;
         } else {
             /* Unsupported command: end the transaction without ACK. A plain
              * digital pad still returns the ID shifted during this byte. */
@@ -2786,8 +2798,16 @@ static void sio_fire_ack_irq(void) {
     }
 
     /* The device IRQ latch is independent of INTC acknowledgement. Do not
-     * queue an ACK for replay when the guest later clears I_STAT.7. */
+     * queue an ACK for replay when the guest later clears I_STAT.7. I_STAT
+     * bit 7 is raised only on the 0->1 edge of JOY_STAT bit 9: while the latch
+     * is still set, a new /ACK does not re-raise IRQ7, even if the guest has
+     * cleared I_STAT bit 7. */
     sio_pending_ack_irq_en = 0;
+    if (sio_stat & SIO_STAT_IRQ) {
+        if (!sio_shift_active && !sio_tx_buffered && !sio_pending_ack)
+            g_sio_timing_active = 0;
+        return;
+    }
     sio_stat |= SIO_STAT_IRQ;
 
     uint32_t i_stat_before = i_stat;
@@ -2957,11 +2977,14 @@ void sio_tick(int cycles) {
             sio_irq_pending = 0;
             sio_stat |= SIO_STAT_ACK;
             sio_ack_visible_reads = 2;
-            sio_stat |= SIO_STAT_IRQ;
             /* Restore TX_RDY — the byte transfer is complete.
              * This unblocks the BIOS pad polling loop that spins
              * on TX_RDY before writing the next byte. */
             sio_stat |= SIO_STAT_TX_RDY | SIO_STAT_TX_EMPTY;
+            /* IRQ7 only on the 0->1 edge of JOY_STAT bit 9; see
+             * sio_fire_ack_irq. */
+            if (sio_stat & SIO_STAT_IRQ) return;
+            sio_stat |= SIO_STAT_IRQ;
             uint32_t i_stat_before = i_stat;
             psx_irq_raise(IRQ_SIO0, 1); /* SIO shift IRQ */
             event_ring_record_aux(EV_DEQ, (uint8_t)SRC_SIO, 1u); /* SIO shift IRQ fired */
