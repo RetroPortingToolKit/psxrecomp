@@ -204,6 +204,11 @@ static uint32_t last_sector_frame;
 static uint8_t last_sector_mode;
 static uint8_t last_sector_have_raw;
 static uint8_t last_sector_raw_mode;
+/* last_sector_have_raw also marks whether GetlocL has a header to report:
+ * GETLOCL_NO_HEADER means no data-sector header has been decoded since the
+ * last completed SeekL/SeekP, Init or power-on. A decoded sector stores 0 or
+ * 1 there. The mode byte cannot carry the mark: a raw header may hold FFh. */
+#define GETLOCL_NO_HEADER 0xFFu
 static uint8_t last_sector_xa_file;
 static uint8_t last_sector_xa_channel;
 static uint8_t last_sector_xa_submode;
@@ -2348,9 +2353,15 @@ static void exec_command(uint8_t cmd) {
         break;
 
     case 0x10: { /* GetlocL */
-        /* Hardware answers NOT READY during a seek. A game polling this for the end of a
-         * stream would read the old header as past the end and stop the stream at once. */
-        if (last_sector_header_stale) {
+        /* INT5 (status | error, error byte 80h) while the drive is seeking,
+         * including a ReadN/ReadS before its first data sector, or on an audio
+         * sector (psx-spx "GetlocL"). Also while no data-sector header has
+         * been decoded since the last completed SeekL/SeekP, Init or power-on.
+         * A game polling this for the end of a stream would otherwise read an
+         * old header. Otherwise INT3 with the newest sector's header and
+         * subheader. */
+        if (last_sector_header_stale || (stat_reg & CDSTAT_SEEK) || cdda_playing ||
+            last_sector_have_raw == GETLOCL_NO_HEADER) {
             response_push(stat_reg | CDSTAT_ERROR);
             response_push(0x80u);
             set_irq(CDIRQ_ERROR);
@@ -2639,6 +2650,7 @@ static void process_pending(uint32_t cycles) {
         break;
 
     case 0x0A: /* Init complete */
+        last_sector_have_raw = GETLOCL_NO_HEADER;
         response_push(stat_reg);
         set_irq(CDIRQ_COMPLETE);
         fire_cdrom_irq();
@@ -2649,7 +2661,8 @@ static void process_pending(uint32_t cycles) {
         stat_reg &= ~CDSTAT_SEEK;
         stat_reg |= CDSTAT_READ;   /* PSX-CD-003: GT1 waits for READ after seek */
         setloc_seek_far = 0;
-    setloc_pending = 0;
+        setloc_pending = 0;
+        last_sector_have_raw = GETLOCL_NO_HEADER;
         response_push(stat_reg);
         set_irq(CDIRQ_COMPLETE);
         fire_cdrom_irq();
@@ -2891,7 +2904,7 @@ void cdrom_init(const char* cue_path) {
     last_sector_size = 0;
     last_sector_frame = 0;
     last_sector_mode = 0;
-    last_sector_have_raw = 0;
+    last_sector_have_raw = GETLOCL_NO_HEADER;
     last_sector_raw_mode = 0;
     last_sector_xa_file = 0;
     last_sector_xa_channel = 0;
@@ -3431,7 +3444,7 @@ int cdrom_resident_feed_sector(uint32_t lba, const uint8_t* user_data) {
     if (rb_available() &&
         !(mode_reg == 0xA0u && RB_.size == WHOLE_SECTOR_SIZE &&
           RB_.pos == 12 + SECTOR_SIZE && last_sector_mode == mode_reg &&
-          last_sector_have_raw && last_sector_lba >= 0 &&
+          last_sector_have_raw == 1 && last_sector_lba >= 0 &&
           (uint32_t)last_sector_lba + 1u == lba))
         return 0;
     if (!iso_read_raw_sector(iso_handle, lba, raw, sizeof raw) ||
