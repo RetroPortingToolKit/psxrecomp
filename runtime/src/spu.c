@@ -1192,8 +1192,8 @@ static void spu_render_block(int16_t* out_stereo, int frames) {
 
     /* MotK intro FMV (and other XA-only scenes): active_mask stays 0 while
      * CD/XA plays. Keep capture / noise / reverb / main sweeps (issue #103
-     * fidelity — FMV is exactly the CD-with-reverb case) but skip the
-     * 24-voice walk and per-voice sweep steps only when no hardware slot needs
+     * fidelity — FMV is exactly the CD-with-reverb case) and the voice
+     * volume sweeps, but skip the 24-voice walk only when no hardware slot needs
      * pitch-driven fetching. Silent released slots can still trigger IRQs.
      * Shadow tap stays on the
      * general path. */
@@ -1224,6 +1224,11 @@ static void spu_render_block(int16_t* out_stereo, int frames) {
                            spu_regs[reg_index(0x1F801D80u)]);
             sweep_env_step(&sweep_main_env[1],
                            spu_regs[reg_index(0x1F801D82u)]);
+            /* Voice volume sweeps run with no voice keyed on. */
+            for (int v = 0; v < mix_voices; v++) {
+                sweep_env_step(&sweep_voice_env[v][0], voice_reg(v, 0));
+                sweep_env_step(&sweep_voice_env[v][1], voice_reg(v, 1));
+            }
 
             int16_t cd_l = 0;
             int16_t cd_r = 0;
@@ -1320,15 +1325,14 @@ static void spu_render_block(int16_t* out_stereo, int frames) {
             int16_t v3_out = 0;   /* voice 3 post-envelope output (capture) */
 
             /* Volume sweeps step once per 44100 Hz sample on the same rate
-             * machinery as ADSR; no-ops for direct-mode registers. Voice
-             * sweeps only matter while a voice is active. */
+             * machinery as ADSR; no-ops for direct-mode registers. A voice's
+             * volume sweep runs while the SPU is enabled whether or not the
+             * voice is keyed on. */
             sweep_env_step(&sweep_main_env[0], spu_regs[reg_index(0x1F801D80u)]);
             sweep_env_step(&sweep_main_env[1], spu_regs[reg_index(0x1F801D82u)]);
-            if (any_voice) {
-                for (int v = 0; v < mix_voices; v++) {
-                    sweep_env_step(&sweep_voice_env[v][0], voice_reg(v, 0));
-                    sweep_env_step(&sweep_voice_env[v][1], voice_reg(v, 1));
-                }
+            for (int v = 0; v < mix_voices; v++) {
+                sweep_env_step(&sweep_voice_env[v][0], voice_reg(v, 0));
+                sweep_env_step(&sweep_voice_env[v][1], voice_reg(v, 1));
             }
 
             if (any_voice) {

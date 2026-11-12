@@ -1529,13 +1529,6 @@ if(BUILD_TESTING)
     add_executable(spu_signed_nibble_test tests/test_spu_signed_nibble.c src/crc32.c)
     target_include_directories(spu_signed_nibble_test PRIVATE include)
     add_test(NAME spu_signed_nibble_test COMMAND spu_signed_nibble_test)
-    # Same story as sio_dualshock_rumble_test: registered but unlinkable on
-    # origin/master (crc32_update undefined), so it never ran. With crc32 linked
-    # it now runs 137 checks and fails 4, all in one ADSR sweep region
-    # (mid > 0, late > mid, fall_mid < 0x7FFE, fall_late < fall_mid). Rebuilding
-    # it against a zero-returning crc32 stub reproduces exactly those 4, so the
-    # crc32 linkage is not the cause — the envelope sweep genuinely disagrees.
-    set_tests_properties(spu_fidelity_test PROPERTIES DISABLED TRUE)
 
     add_executable(overlay_capture_retry_test
         tests/test_overlay_capture_retry.cpp
