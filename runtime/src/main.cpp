@@ -2872,10 +2872,11 @@ extern "C" void psx_frontend_netplay_force_sw_gpu(void) {
 /* Vsync self-heal state (see SDL_RenderPresent wrapper in
  * sdl_vblank_present). C linkage: freeze_heartbeat.c includes both in
  * the freeze dump so a slow-frames wedge can be attributed to driver
- * present backpressure from the dump alone. */
+ * present backpressure from the dump alone. Defined in gpu_gl_renderer.c,
+ * whose OpenGL swap applies the same self-heal. */
 extern "C" {
-uint32_t g_present_slow_count = 0;     /* presents that blocked >250ms */
-int      g_present_vsync_disabled = 0; /* 1 once self-heal tripped */
+extern uint32_t g_present_slow_count;     /* presents that blocked >250ms */
+extern int      g_present_vsync_disabled; /* 1 once self-heal tripped */
 }
 
 /* Turbo-through-loads (step 4). C linkage: debug_server.c reads/toggles the

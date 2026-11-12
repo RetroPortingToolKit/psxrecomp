@@ -6674,8 +6674,16 @@ int gl_renderer_init_context(SDL_Window *win) {
 /* Set the GL swap interval (vsync mode): 1=vsync, 0=immediate, -1=adaptive.
  * Safe to call before or after context creation; applies live when a context
  * exists. Adaptive falls back to vsync if unsupported. */
+/* Vsync self-heal state, shared with the SDL_Renderer present in main.cpp
+ * and reported by freeze_heartbeat.c. Defined here because every product
+ * build links this renderer, and the GL test harnesses link it without
+ * main.cpp. Once tripped, driver vsync stays off. */
+uint32_t g_present_slow_count = 0;     /* presents that blocked >250ms */
+int      g_present_vsync_disabled = 0; /* 1 once self-heal tripped */
+
 void gl_renderer_set_swap_interval(int interval) {
     GL_RT_SYNC("set_swap_interval");
+    if (g_present_vsync_disabled) interval = 0;
     s_swap_interval = interval;
     s_pt_interval_gen++;   /* the present thread's context applies it */
     if (s_ctx) {
@@ -10157,13 +10165,33 @@ void gl_renderer_swap_timing_json(char *out, int cap) {
                          (unsigned long long)atomic_load(&s_swap_gap_ms[i]));
     if (used < cap) snprintf(out + used, (size_t)(cap - used), "]");
 }
+/* A wedged Windows/NVIDIA swap queue can block a swap for about 1.5 s per
+ * present: audio keeps playing while emulation and input look frozen. The
+ * SDL_Renderer present in main.cpp already drops driver vsync after three
+ * such presents; apply the same rule to the OpenGL swap. It runs on the
+ * thread that owns the current context, so the interval change lands on that
+ * context. The wall-clock pacer keeps the frame rate once vsync is off. */
+static void gl_swap_self_heal(Uint64 t0) {
+    const Uint64 t1 = SDL_GetPerformanceCounter();
+    const Uint64 freq = SDL_GetPerformanceFrequency();
+    const Uint64 swap_ms = (t1 >= t0 && freq) ? ((t1 - t0) * 1000u) / freq : 0;
+    if (g_present_vsync_disabled || s_swap_interval == 0 || swap_ms <= 250) return;
+    g_present_slow_count++;
+    if (g_present_slow_count >= 3 && SDL_GL_SetSwapInterval(0) == 0) {
+        g_present_vsync_disabled = 1;
+        fprintf(stderr, "psxrecomp: OpenGL swap blocked repeatedly; disabled driver vsync\n");
+    }
+}
+
 static void gl_window_swap(void) {
+    const Uint64 swap_t0 = SDL_GetPerformanceCounter();
 #if defined(PSX_SDL3)
     psx_video_telemetry_present(SDL_GL_SwapWindow(s_win) ? 1 : 0);
 #else
     SDL_GL_SwapWindow(s_win);
     psx_video_telemetry_present(-1); // SDL2 exposes no swap result.
 #endif
+    gl_swap_self_heal(swap_t0);
     if (s_swap_timing < 0) {
         const char *env = getenv("PSX_PRESENT_TIMING");
         s_swap_timing = env && env[0] == '1';
@@ -10182,7 +10210,10 @@ static void *pt_cb_present(void *user, int slot, void *ready) {
     (void)user;
     if (s_ptp_interval_gen != s_pt_interval_gen) {
         s_ptp_interval_gen = s_pt_interval_gen;
-        if (SDL_GL_SetSwapInterval(s_swap_interval) != 0 && s_swap_interval < 0)
+        /* A context rebind re-applies the interval; keep a tripped
+         * self-heal's vsync off. */
+        const int interval = g_present_vsync_disabled ? 0 : s_swap_interval;
+        if (SDL_GL_SetSwapInterval(interval) != 0 && interval < 0)
             SDL_GL_SetSwapInterval(1);
     }
     if (ready) { p_glWaitSync(ready, 0, PT_TIMEOUT_IGNORED); p_glDeleteSync(ready); }
