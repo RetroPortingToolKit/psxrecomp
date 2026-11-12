@@ -550,6 +550,8 @@ static uint64_t exception_reentry_blocks;
  * synchronous-handler recursion is so the nested-delivery path (hardware
  * IEc-re-enabled semantics, see the gate below) can cap host-stack use. */
 static int exception_nest_depth;
+/* Delivery-owned notification; not guest or serialized timing state. */
+static int s_changethread_in_handler_switch;
 /* Nested-delivery gate veto attribution (freeze_check). One counter per guard
  * in the refinement gate below; first-true-wins ordering matches the gate. */
 uint64_t g_nestgate_depth, g_nestgate_rfepend, g_nestgate_escreason, g_nestgate_iec;
@@ -760,6 +762,10 @@ static int same_guest_pc(uint32_t a, uint32_t b) {
 }
 
 int psx_get_in_exception(void) { return in_exception; }
+int psx_exception_nest_depth(void) { return exception_nest_depth; }
+void psx_note_changethread_in_handler_switch(void) {
+    s_changethread_in_handler_switch = 1;
+}
 
 /* Co-sim (COSIM_ORACLE.md): fold the GENUINE guest-timing interrupt statics into the
  * state hash. Deliberately EXCLUDES total_checks / dispatch_count / post_exception_
@@ -907,6 +913,7 @@ void interrupts_init(void) {
     dispatch_count = 0;
     in_exception = 0;
     exception_nest_depth = 0;
+    s_changethread_in_handler_switch = 0;
     g_psx_dispatch_depth = 0;
     total_checks = 0;
     post_exception_cooldown_until = 0;
@@ -955,6 +962,7 @@ void interrupts_resync_after_restore(void) {
     dispatch_count = 0;
     in_exception = 0;
     exception_nest_depth = 0;
+    s_changethread_in_handler_switch = 0;
     last_sio_seq_seen = sio_get_seq();
     last_sio_progress_cycle = psx_get_cycle_count();
     s_defer_switch_pending = 0;
@@ -2131,6 +2139,8 @@ irq_deliver_eval:
         cpu->hi = saved_hi;
         cpu->lo = saved_lo;
     }
+    const int changethread_at_call = s_changethread_in_handler_switch;
+    s_changethread_in_handler_switch = 0;
     g_rfe_escape_pending = 0;
     g_exc_escape_reason  = PSX_EXC_ESCAPE_NONE;
 
@@ -2219,7 +2229,9 @@ irq_deliver_eval:
         entry_tcb != 0u && exit_tcb != 0u && entry_tcb != exit_tcb) {
         extern uint32_t psx_read_word(uint32_t addr);   /* memory.c (plain RAM read) */
         uint32_t new_state = psx_read_word(exit_tcb & 0x1FFFFFFFu);
-        if (new_state == 0x4000u) {   /* the new current thread must be runnable */
+        /* Explicit ChangeThread takes any valid block, regardless of its state.
+         * A handler that moved PCB[0] directly still requires a runnable block. */
+        if (new_state == 0x4000u || changethread_at_call) {
             /* A native-only shadow pass must never commit the handler's TCB/RAM
              * changes or escape past the authoritative restore. Bail before
              * configuring either immediate or deferred scheduler state. */
@@ -2252,7 +2264,10 @@ irq_deliver_eval:
              * starve a target thread by re-entering the same VBlank EPC forever.
              * (Card-guard overrides were tried for Ape LOAD and did not help —
              * tip already defers like master; the hang is post-probe arming.) */
-            int can_defer = defer_switch_enabled() && !low_kernel_epc && !at_outermost &&
+            /* The game holds the interrupted context; executing more of that
+             * thread before an explicit switch would repeat its work later. */
+            int can_defer = defer_switch_enabled() && !changethread_at_call &&
+                            !low_kernel_epc && !at_outermost &&
                             g_exception_real_epc != 0u &&
                             (g_exception_real_epc & 0x3u) == 0u &&
                             g_exception_real_epc != (uint32_t)PSX_EXC_SENTINEL_PC &&

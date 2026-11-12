@@ -406,6 +406,7 @@ if(BUILD_TESTING)
             add_test(NAME rfe_host_reads_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_host_reads.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_irq_context_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_irq_context.py --cc ${CMAKE_C_COMPILER})
             add_test(NAME rfe_syscall_depth_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rfe_syscall_depth.py --cc ${CMAKE_C_COMPILER})
+            add_test(NAME changethread_in_handler_test COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_changethread_in_handler.py --cc ${CMAKE_C_COMPILER})
         endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             add_test(NAME display_ring_capture_test COMMAND "${Python3_EXECUTABLE}"

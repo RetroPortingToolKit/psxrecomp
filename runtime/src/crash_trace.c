@@ -434,6 +434,30 @@ void psx_crash_trace_dump(const char *reason, void *seh_info) {
         g_dirty_ram_last_unsupported_entry_sp,
         g_dirty_ram_last_unsupported_insns);
 
+    /* A ChangeThread that a game calls inside an exception handler
+     * switches threads at the call. `switches` counts the calls that named
+     * another block of the thread table, `same_thread` the calls that named
+     * the current thread, `not_taken` the calls that named another thread and
+     * were left as a return (a target outside the table, a nested delivery,
+     * the fiber bridge). Of the first switch: `first_epc` is where the thread
+     * was interrupted, `first_frame` the frame, `first_target` the block it
+     * named. A release start shows here whether its title uses this form. */
+    {
+        extern void psx_changethread_in_handler_stats(uint32_t out[6]);
+        uint32_t ct[6] = {0};
+        psx_changethread_in_handler_stats(ct);
+        append_fmt(buf, sizeof(buf), &pos,
+            "  \"changethread_in_handler\": {\n"
+            "    \"switches\": %u,\n"
+            "    \"same_thread\": %u,\n"
+            "    \"not_taken\": %u,\n"
+            "    \"first_epc\": \"0x%08X\",\n"
+            "    \"first_frame\": %u,\n"
+            "    \"first_target\": \"0x%08X\"\n"
+            "  },\n",
+            ct[0], ct[1], ct[2], ct[3], ct[5], ct[4]);
+    }
+
 #ifdef _WIN32
     if (seh_info) {
         EXCEPTION_POINTERS *info = (EXCEPTION_POINTERS *)seh_info;
