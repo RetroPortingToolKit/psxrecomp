@@ -49,6 +49,15 @@ int fetch_texel(int u, int v) {
     }
     return vram_at(v_tpage.x + u, v_tpage.y + v);
 }
+/* Clamp in the base texel's page before fetch_texel wraps: a neighbour past
+ * u/v=255 must not wrap to 0 and blend the far side of the prim. */
+int neighbour_texel(ivec2 base, ivec2 p) {
+    if ((pc.u_twin.x | pc.u_twin.y) == 0) {
+        ivec2 pg = base & ivec2(~255);
+        p = clamp(p, pg + v_limits.xy, pg + v_limits.zw);
+    }
+    return fetch_texel(p.x, p.y);
+}
 vec3 col5(int raw) {
     return vec3(float(raw & 31), float((raw >> 5) & 31), float((raw >> 10) & 31)) / 31.0;
 }
@@ -77,9 +86,10 @@ void main() {
         fx = abs(fx); fy = abs(fy);
         int c00 = fetch_texel(iu, iv);
         if (c00 == 0) discard;
-        int c10 = fetch_texel(iu + sx, iv);
-        int c01 = fetch_texel(iu, iv + sy);
-        int c11 = fetch_texel(iu + sx, iv + sy);
+        ivec2 b = ivec2(iu, iv);
+        int c10 = neighbour_texel(b, ivec2(iu + sx, iv));
+        int c01 = neighbour_texel(b, ivec2(iu, iv + sy));
+        int c11 = neighbour_texel(b, ivec2(iu + sx, iv + sy));
         float w00 = (c00 == 0 ? 0.0 : 1.0) * (1.0 - fx) * (1.0 - fy);
         float w10 = (c10 == 0 ? 0.0 : 1.0) * fx * (1.0 - fy);
         float w01 = (c01 == 0 ? 0.0 : 1.0) * (1.0 - fx) * fy;

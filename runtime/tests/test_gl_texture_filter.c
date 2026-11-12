@@ -87,6 +87,53 @@ static void atlas_edge(int depth) {
     check(gl_renderer_fbo_peek(0,0,64,64,peek),"atlas-edge readback");
     check((peek[21*64+21]&0x7fff)==0x7c00,"footprint clamps before wrapping into far atlas row");
 }
+/* Bilinear neighbours at a 256-texel page edge. A sprite whose last texel is
+ * u/v=255 is red there and blue only on its own first column/row: wrapping a
+ * neighbour to 0 before the prim clamp lands on that blue edge (#719). A
+ * sprite that genuinely wraps past 255 must keep reading the wrapped texels. */
+static void page_edge(int depth) {
+    uint16_t page[256*256], palette[256];
+    const int word_pixels=depth==0?4:depth==1?2:1, pitch=256/word_pixels;
+    for(int i=0;i<256;++i) palette[i]=0x001f;
+    palette[1]=0x7c00; palette[2]=0x03e0;
+    for(int y=0;y<256;++y) for(int x=0;x<256;++x) {
+        const int index=(x==224 || y==224) ? 1 : x<16 ? 2 : 3;
+        const uint16_t texel=depth==2 ? palette[index] : (uint16_t)index;
+        uint16_t* word=&page[y*pitch+x/word_pixels];
+        if(depth==2) *word=texel;
+        else {
+            const int bits=16/word_pixels, shift=(x%word_pixels)*bits;
+            if(x%word_pixels==0) *word=0;
+            *word|=(uint16_t)(texel<<shift);
+        }
+    }
+    glb_vram_transfer_in(512,0,pitch,256,page);
+    glb_vram_transfer_in(512,256,256,1,palette);
+    glb_set_draw_area(0,0,319,239); glb_set_draw_offset(0,0);
+    glb_set_mask_bits(0,0); glb_set_semi_transparency(0,0);
+    glb_set_color_modulation(128,128,128,1);
+    const uint16_t tp=(uint16_t)(8|(depth<<7));
+    for(int mode=0;mode<2;++mode) {
+        glb_set_texture_filter(mode);
+        glb_fill_rect(0,0,128,64,0);
+        /* 2x magnified, so the edge pixels' footprints reach past 255. */
+        glb_draw_textured_rect_scaled(20,0,64,64,224,224,256,256,512,256,tp);
+        glb_draw_textured_rect_scaled(90,40,32,8,248,0,264,4,512,256,tp);
+        gl_renderer_sync_cpu();
+        check(gl_renderer_fbo_peek(0,0,128,64,peek),"page-edge readback");
+        int seam=0, wrapped=0;
+        for(int i=4;i<64;++i) {
+            seam+=(peek[i*128+83]&0x7fff)!=0x001f;
+            seam+=(peek[63*128+20+i]&0x7fff)!=0x001f;
+        }
+        for(int y=40;y<48;++y) for(int x=108;x<120;++x)
+            wrapped+=(peek[y*128+x]&0x7fff)!=0x03e0;
+        printf("page-edge depth=%d filter=%d seam=%d wrapped=%d\n",depth,mode,seam,wrapped);
+        check(seam==0,"page-edge neighbours do not wrap to the prim's far side");
+        check(wrapped==0,"a sprite past u=255 still samples the wrapped texels");
+    }
+    glb_set_texture_filter(0);
+}
 static void native_hold_images(void) {
     GLuint textures[2];
     const uint8_t colors[2][4] = {{255,0,0,255},{0,0,255,255}};
@@ -209,11 +256,14 @@ int main(void) {
         for(int i=0;i<width*8;++i) patch[i]=depth==0?0x2222:depth==1?0x0202:0x7c00;
         glb_vram_transfer_in(512+32/word_pixels,32,width,8,patch);
         glb_set_texture_window(31u | (31u<<5) | (4u<<10) | (4u<<15));
-        triangle(2,depth,0,1);
-        for(int y=21;y<26;++y) for(int x=21;x<26;++x)
-            check((peek[y*64+x]&0x7fff)==0x7c00,"all filter taps respect texture window");
+        for(int mode=1;mode<3;++mode) {
+            triangle(mode,depth,0,1);
+            for(int y=21;y<26;++y) for(int x=21;x<26;++x)
+                check((peek[y*64+x]&0x7fff)==0x7c00,"all filter taps respect texture window");
+        }
         glb_set_texture_window(0);
         atlas_edge(depth);
+        page_edge(depth);
     }
     // A different CLUT after a prior draw must immediately change the filtered
     // result. No stale mip chain or palette-index averaging may survive it.
