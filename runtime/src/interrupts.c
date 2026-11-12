@@ -742,6 +742,8 @@ void psx_irq_arm_compiled_resume_pc(uint32_t pc)
  * transparently, and honor it at the next outermost block-leader boundary (top
  * of psx_check_interrupts) where the thread can be re-saved cleanly. */
 static int      s_defer_switch_pending = 0;
+/* A thread switch taken in an exception handler waits for a site-0 poll. */
+int psx_defer_switch_pending(void) { return s_defer_switch_pending; }
 static uint32_t s_defer_switch_target  = 0;  /* TCB PCB[0] should name after the switch */
 static uint32_t s_defer_switch_from    = 0;  /* the interrupted thread to re-save cleanly */
 
