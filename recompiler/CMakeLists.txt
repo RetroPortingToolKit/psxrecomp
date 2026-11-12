@@ -1549,6 +1549,11 @@ if(BUILD_TESTING AND Python3_Interpreter_FOUND AND CMAKE_C_COMPILER_ID STREQUAL 
         COMMAND ${Python3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_syscall_change_thread_self.py"
             --cc ${CMAKE_C_COMPILER})
+    # A deferred thread switch is taken while an interpreted thread spins.
+    add_test(NAME deferred_switch_interp_spin_test
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/tests/test_deferred_switch_interp_spin.py"
+            --cc ${CMAKE_C_COMPILER})
     # CloseTh(current); ChangeTh(other) still saves the outgoing registers.
     add_test(NAME syscall_closed_thread_context
         COMMAND ${Python3_EXECUTABLE}
