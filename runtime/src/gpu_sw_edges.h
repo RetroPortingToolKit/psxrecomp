@@ -7,20 +7,23 @@
  * and right edges. Float-truncated inclusive spans make adjacent polygons
  * disagree by a pixel and draw a shared diagonal twice. */
 static inline int64_t psx_edge_fp(int x) {
-    return ((int64_t)x << 32) + ((1LL << 32) - (1 << 11));
+    return (int64_t)x * (INT64_C(1) << 32) + ((INT64_C(1) << 32) - (1 << 11));
 }
 
 static inline int64_t psx_edge_step(int dx, int dy) {
-    int64_t rounding = dx < 0 ? -(int64_t)(dy - 1)
-                              : (dx > 0 ? (int64_t)(dy - 1) : 0);
-    return (((int64_t)dx << 32) + rounding) / dy;
+    /* dy is positive. Round the 32.32 quotient away from zero. Adding
+     * a bias before division can overflow when dx is INT32_MIN. */
+    int64_t scaled = (int64_t)dx * (INT64_C(1) << 32);
+    int64_t step = scaled / dy;
+    return step + (scaled % dy != 0 ? (dx < 0 ? -1 : 1) : 0);
 }
 
 static inline int psx_edge_unfp(int64_t fp) {
     return (int)((uint64_t)fp >> 32);
 }
 
-/* Vertices must already be sorted by Y. y is in [y0,y2). */
+/* Vertices are sorted by Y; y is in [y0,y2), with y0 < y2.
+ * Coordinate differences must fit int (32 bits on supported targets). */
 static inline void psx_triangle_edges_at_y(int x0, int y0, int x1, int y1,
                                            int x2, int y2, int y,
                                            int *long_x, int *short_x) {
