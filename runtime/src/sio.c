@@ -37,6 +37,11 @@ static uint16_t sio_stat;
 static uint16_t sio_mode;
 static uint16_t sio_ctrl;
 static uint16_t sio_baud;
+/* SIO1 (serial port, 0x1F801050..5F). No device is attached; MODE, CTRL and
+ * BAUD are plain latches so a driver reads back what it programmed. */
+static uint16_t sio1_mode;
+static uint16_t sio1_ctrl;
+static uint16_t sio1_baud;
 static uint32_t sio_debug_poll_counter;
 
 static void sio_debug_poll_maybe(void) {
@@ -854,6 +859,9 @@ void sio_init(void) {
     sio_mode = 0;
     sio_ctrl = 0;
     sio_baud = 0;
+    sio1_mode = 0;
+    sio1_ctrl = 0;
+    sio1_baud = 0;
     pad_state = PAD_IDLE;
     pad_response_len = 0;
     pad_response_idx = 0;
@@ -1591,7 +1599,8 @@ static void pad_process_byte(uint8_t tx_byte) {
              * responses; only valid while in config mode (a digital pad ignores
              * them, handled by the else branch below). */
             static const uint8_t r_def[8] = { 0xF3,0x5A,0x00,0x00,0x00,0x00,0x00,0x00 };
-            static const uint8_t r_45[8]  = { 0xF3,0x5A,0x03,0x02,0x01,0x02,0x01,0x00 };
+            /* 0x45 "query model": type 01 (DualShock), 02, analog flag, 02 01 00. */
+            static const uint8_t r_45[8]  = { 0xF3,0x5A,0x01,0x02,0x00,0x02,0x01,0x00 };
             static const uint8_t r_46[8]  = { 0xF3,0x5A,0x00,0x00,0x01,0x02,0x00,0x0A };
             static const uint8_t r_47[8]  = { 0xF3,0x5A,0x00,0x00,0x02,0x00,0x01,0x00 };
             static const uint8_t r_4c[8]  = { 0xF3,0x5A,0x00,0x00,0x00,0x04,0x00,0x00 };
@@ -1613,7 +1622,8 @@ static void pad_process_byte(uint8_t tx_byte) {
                         { 0xF3, 0x5A, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00 };
                     memcpy(pad_response, jogcon_45, sizeof(jogcon_45));
                 } else {
-                    pad_response[3] = pad_analog[lp] ? 0x01 : 0x00;
+                    /* The analog flag is the fifth byte; [3] is the constant 02. */
+                    pad_response[4] = pad_analog[lp] ? 0x01 : 0x00;
                 }
             }
             /* JogCon config commands are not the DualShock's canned tables:
@@ -1643,6 +1653,18 @@ static void pad_process_byte(uint8_t tx_byte) {
             pad_state = PAD_SEND_RESPONSE;
             sio_rx_data = pad_response[0];
             sio_stat |= SIO_STAT_ACK;
+        } else if (ds && !g_pad_legacy_cfg && pad_analog[lp] != SIO_PAD_JOGCON &&
+                   (tx_byte == 0x44 || tx_byte == 0x45 || tx_byte == 0x46 ||
+                    tx_byte == 0x47 || tx_byte == 0x4C || tx_byte == 0x4D)) {
+            /* A DualShock config command OUTSIDE config mode: the pad answers
+             * the command byte with its ID, then gives no /ACK, so the
+             * transaction ends (FF 41 in digital mode). 48h-4Bh and 4Fh keep
+             * the hi-z answer below. */
+            pad_state = PAD_IDLE;
+            pad_response_len = 0;
+            pad_response_idx = 0;
+            pad_current_cmd = 0;
+            sio_rx_data = cur_id;
         } else {
             /* Unsupported command: end the transaction without ACK. A plain
              * digital pad still returns the ID shifted during this byte. */
@@ -1690,6 +1712,21 @@ static void pad_process_byte(uint8_t tx_byte) {
                         if (tx_byte == 0x00) pad_response[5] = 0x04;
                         else if (tx_byte == 0x01) pad_response[4] = 0x03;
                     }
+                } else if (!g_pad_legacy_cfg && pad_response_idx == 2 &&
+                           tx_byte != 0x00 &&
+                           (pad_current_cmd == 0x46 || pad_current_cmd == 0x47 ||
+                            pad_current_cmd == 0x4C)) {
+                    /* DualShock 0x46, 0x47 and 0x4C choose their reply by the
+                     * data byte that arrives with response index 2. The canned
+                     * tables hold the 00 variant; 46 01 and 4C 01 have their own
+                     * reply, and any other byte answers zeros. */
+                    static const uint8_t ds_46_01[5] = { 0x00,0x01,0x01,0x01,0x14 };
+                    static const uint8_t ds_4c_01[5] = { 0x00,0x00,0x07,0x00,0x00 };
+                    static const uint8_t ds_zero[5]  = { 0x00,0x00,0x00,0x00,0x00 };
+                    const uint8_t *v = ds_zero;
+                    if (tx_byte == 0x01 && pad_current_cmd == 0x46) v = ds_46_01;
+                    else if (tx_byte == 0x01 && pad_current_cmd == 0x4C) v = ds_4c_01;
+                    memcpy(&pad_response[3], v, 5);
                 }
                 /* The six data bytes after 0x42's leading 0x00 occupy response
                  * indexes 2..7. Route each through the map negotiated by 0x4D. */
@@ -2245,6 +2282,15 @@ uint32_t sio_read(uint32_t addr) {
     case 0x1F80104E: /* SIO_BAUD */
         return sio_baud;
 
+    case 0x1F801058: /* SIO1_MODE */
+        return sio1_mode;
+
+    case 0x1F80105A: /* SIO1_CTRL */
+        return sio1_ctrl;
+
+    case 0x1F80105E: /* SIO1_BAUD */
+        return sio1_baud;
+
     default:
         return 0;
     }
@@ -2595,6 +2641,18 @@ void sio_write(uint32_t addr, uint32_t value) {
         sr_record(SR_EVT_BAUD_WRITE, (uint8_t)(value & 0xFF), (uint8_t)((value >> 8) & 0xFF));
         break;
 
+    case 0x1F801058: /* SIO1_MODE */
+        sio1_mode = (uint16_t)value;
+        break;
+
+    case 0x1F80105A: /* SIO1_CTRL: ACK (bit 4) and RESET (bit 6) are strobes */
+        sio1_ctrl = (uint16_t)value & (uint16_t)~(SIO_CTRL_ACK | SIO_CTRL_RESET);
+        break;
+
+    case 0x1F80105E: /* SIO1_BAUD */
+        sio1_baud = (uint16_t)value;
+        break;
+
     default:
         break;
     }
@@ -2757,8 +2815,16 @@ static void sio_fire_ack_irq(void) {
     }
 
     /* The device IRQ latch is independent of INTC acknowledgement. Do not
-     * queue an ACK for replay when the guest later clears I_STAT.7. */
+     * queue an ACK for replay when the guest later clears I_STAT.7. I_STAT
+     * bit 7 is raised only on the 0->1 edge of JOY_STAT bit 9: while the latch
+     * is still set, a new /ACK does not re-raise IRQ7, even if the guest has
+     * cleared I_STAT bit 7. */
     sio_pending_ack_irq_en = 0;
+    if (sio_stat & SIO_STAT_IRQ) {
+        if (!sio_shift_active && !sio_tx_buffered && !sio_pending_ack)
+            g_sio_timing_active = 0;
+        return;
+    }
     sio_stat |= SIO_STAT_IRQ;
 
     uint32_t i_stat_before = i_stat;
@@ -2928,11 +2994,14 @@ void sio_tick(int cycles) {
             sio_irq_pending = 0;
             sio_stat |= SIO_STAT_ACK;
             sio_ack_visible_reads = 2;
-            sio_stat |= SIO_STAT_IRQ;
             /* Restore TX_RDY — the byte transfer is complete.
              * This unblocks the BIOS pad polling loop that spins
              * on TX_RDY before writing the next byte. */
             sio_stat |= SIO_STAT_TX_RDY | SIO_STAT_TX_EMPTY;
+            /* IRQ7 only on the 0->1 edge of JOY_STAT bit 9; see
+             * sio_fire_ack_irq. */
+            if (sio_stat & SIO_STAT_IRQ) return;
+            sio_stat |= SIO_STAT_IRQ;
             uint32_t i_stat_before = i_stat;
             psx_irq_raise(IRQ_SIO0, 1); /* SIO shift IRQ */
             event_ring_record_aux(EV_DEQ, (uint8_t)SRC_SIO, 1u); /* SIO shift IRQ fired */
