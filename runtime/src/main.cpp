@@ -7809,7 +7809,27 @@ static void apply_input_override_port2(int override_word) {
 #endif
 }
 
+/* Live port swap (Ctrl+F6): the first pad answers on console Port 2 and the
+ * second on Port 1 (sio_set_pads_swapped). Like moving the plugs, it is host
+ * state and is not saved in a save state. It needs no second player: in a
+ * one-player title the pad moves to Port 2 and Port 1 is empty. */
+static bool g_controller_ports_swapped = false;
+
+/* Not in netplay (every peer keeps the plain layout), not with a multitap,
+ * not under the self-check input lock and not while a mod controller source
+ * owns port 1 or 2. */
+static bool controller_port_swap_available(void) {
+    return !psx_netplay_active() && !sio_get_multitap() &&
+           !psx_selfcheck_input_locked() &&
+           !mod_controller_source_present(0u) && !mod_controller_source_present(1u);
+}
+
+static void controller_port_swap_sync(void) {
+    sio_set_pads_swapped(g_controller_ports_swapped && controller_port_swap_available());
+}
+
 static void sample_pad_into_sio(int override) {
+    controller_port_swap_sync();
     /* Selfcheck fighter mash owns P1 when enabled (headless-safe). */
     if (override < 0) {
         uint16_t mash = 0xFFFFu;
@@ -9021,6 +9041,23 @@ struct NetplayVblankEpilogue {
     int override = -1;
 };
 
+/* Ctrl+F6: move controller 1 to console Port 2, or back. Held buttons are
+ * released, as after a pad reconnect. */
+static void controller_port_swap_toggle(void) {
+    if (!controller_port_swap_available()) {
+        host_osd_push(psx_netplay_active() ? "Port swap is unavailable during netplay"
+                                           : "Port swap is unavailable with this input setup",
+                      1800);
+        return;
+    }
+    g_controller_ports_swapped = !g_controller_ports_swapped;
+    controller_port_swap_sync();
+    savestate_input_guard_arm();
+    host_osd_push(g_controller_ports_swapped ? "Controller 1 is in console port 2"
+                                             : "Controller 1 is in console port 1",
+                  1800);
+}
+
 /* Called from gpu_vblank_tick() at each simulated vblank. */
 #ifndef PSX_NO_DEBUG_TOOLS
 /* Headless has no present surface, but automated A/B runs still need the
@@ -9211,6 +9248,12 @@ static bool drain_host_events() {
                                              (int)mod)) {
                 psx_local_mouse_reset();
                 savestate_menu_toggle(key);
+            }
+            else if (!key_repeat &&
+                     host_keymap_match_event(HOST_KEYMAP_SWAP_CONTROLLER_PORTS,
+                                             (int)key, (int)scancode,
+                                             (int)mod)) {
+                controller_port_swap_toggle();
             }
             else if (key == SDLK_c && (mod & KMOD_CTRL)) {
                 const int rc = psx_disc_tray_cycle(0, PSX_DISC_TRAY_ORIGIN_HOTKEY_REINSERT);

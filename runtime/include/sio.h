@@ -121,6 +121,13 @@ int  sio_get_multitap(void);
 /* phys_port: 0 = console Port 1, 1 = console Port 2. Default 0. */
 void sio_set_multitap_port(int phys_port);
 int  sio_get_multitap_port(void);
+/* Swap which console port each of the first two pads answers on: logical
+ * pad 0 on Port 2 and logical pad 1 on Port 1, as if the plugs were swapped.
+ * The pads keep their buttons, type and rumble; memory cards stay on their
+ * ports. Works in a one-player build: pad 0 moves to Port 2 and Port 1 is
+ * empty. Ignored while a multitap is on. Host state, not saved in a state. */
+void sio_set_pads_swapped(int swapped);
+int  sio_get_pads_swapped(void);
 /* Tomba-only legacy pad config path ([controller] legacy_pad_config). */
 void sio_set_legacy_cfg(int enabled);
 int  sio_get_legacy_cfg(void);

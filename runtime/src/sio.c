@@ -97,6 +97,8 @@ static uint8_t pad_connected = 0;
 static int sio_multitap_enabled = 0;
 /* Physical SIO port hosting the tap: 0 = console Port 1, 1 = Port 2. */
 static int sio_multitap_port = 0;
+/* Host port swap (sio_set_pads_swapped): pads 0 and 1 trade console ports. */
+static int sio_pads_swapped = 0;
 /* Opt-in DualShock on tap seats (default off — faithful digital taps). */
 static int sio_multitap_analog_hack = 0;
 
@@ -231,7 +233,8 @@ static int pad_logical_for_port(int phys_port) {
             return (sio_multitap_port == 0) ? 0 : 1;
         return mtap_standalone_logical();
     }
-    return phys_port;
+    const int logical = sio_pads_swapped ? phys_port ^ 1 : phys_port;
+    return logical < PSX_MAX_PLAYERS ? logical : -1;
 }
 
 /* Physical port answers when a device is present. Multitap itself is present
@@ -243,7 +246,8 @@ static int pad_port_has_device(int phys_port) {
         if (phys_port == sio_multitap_port) return 1;
         return (pad_connected & (1u << mtap_standalone_logical())) ? 1 : 0;
     }
-    return (pad_connected & (1u << phys_port)) ? 1 : 0;
+    const int logical = pad_logical_for_port(phys_port);
+    return (logical >= 0 && (pad_connected & (1u << logical))) ? 1 : 0;
 }
 
 static int selected_is_mtap_port(void) {
@@ -965,6 +969,14 @@ void sio_set_multitap_port(int phys_port) {
 #endif
 }
 
+void sio_set_pads_swapped(int swapped) {
+    sio_pads_swapped = swapped ? 1 : 0;
+}
+
+int sio_get_pads_swapped(void) {
+    return sio_pads_swapped;
+}
+
 int sio_get_multitap_port(void) {
 #if PSX_MAX_PLAYERS >= 5
     return sio_multitap_port;
@@ -1017,6 +1029,7 @@ void sio_netplay_canonicalize_session_pads(int slot_count)
         sio_set_multitap(1);
     else
         sio_set_multitap(0);
+    sio_pads_swapped = 0;
 
     /* Idle the pad bus — dig0 snaps otherwise capture mid-poll FSM / response
      * bytes that differ when peers finish present dig at different host times. */
