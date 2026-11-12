@@ -1599,7 +1599,8 @@ static void pad_process_byte(uint8_t tx_byte) {
              * responses; only valid while in config mode (a digital pad ignores
              * them, handled by the else branch below). */
             static const uint8_t r_def[8] = { 0xF3,0x5A,0x00,0x00,0x00,0x00,0x00,0x00 };
-            static const uint8_t r_45[8]  = { 0xF3,0x5A,0x03,0x02,0x01,0x02,0x01,0x00 };
+            /* 0x45 "query model": type 01 (DualShock), 02, analog flag, 02 01 00. */
+            static const uint8_t r_45[8]  = { 0xF3,0x5A,0x01,0x02,0x00,0x02,0x01,0x00 };
             static const uint8_t r_46[8]  = { 0xF3,0x5A,0x00,0x00,0x01,0x02,0x00,0x0A };
             static const uint8_t r_47[8]  = { 0xF3,0x5A,0x00,0x00,0x02,0x00,0x01,0x00 };
             static const uint8_t r_4c[8]  = { 0xF3,0x5A,0x00,0x00,0x00,0x04,0x00,0x00 };
@@ -1621,7 +1622,8 @@ static void pad_process_byte(uint8_t tx_byte) {
                         { 0xF3, 0x5A, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00 };
                     memcpy(pad_response, jogcon_45, sizeof(jogcon_45));
                 } else {
-                    pad_response[3] = pad_analog[lp] ? 0x01 : 0x00;
+                    /* The analog flag is the fifth byte; [3] is the constant 02. */
+                    pad_response[4] = pad_analog[lp] ? 0x01 : 0x00;
                 }
             }
             /* JogCon config commands are not the DualShock's canned tables:
@@ -1710,6 +1712,21 @@ static void pad_process_byte(uint8_t tx_byte) {
                         if (tx_byte == 0x00) pad_response[5] = 0x04;
                         else if (tx_byte == 0x01) pad_response[4] = 0x03;
                     }
+                } else if (!g_pad_legacy_cfg && pad_response_idx == 2 &&
+                           tx_byte != 0x00 &&
+                           (pad_current_cmd == 0x46 || pad_current_cmd == 0x47 ||
+                            pad_current_cmd == 0x4C)) {
+                    /* DualShock 0x46, 0x47 and 0x4C choose their reply by the
+                     * data byte that arrives with response index 2. The canned
+                     * tables hold the 00 variant; 46 01 and 4C 01 have their own
+                     * reply, and any other byte answers zeros. */
+                    static const uint8_t ds_46_01[5] = { 0x00,0x01,0x01,0x01,0x14 };
+                    static const uint8_t ds_4c_01[5] = { 0x00,0x00,0x07,0x00,0x00 };
+                    static const uint8_t ds_zero[5]  = { 0x00,0x00,0x00,0x00,0x00 };
+                    const uint8_t *v = ds_zero;
+                    if (tx_byte == 0x01 && pad_current_cmd == 0x46) v = ds_46_01;
+                    else if (tx_byte == 0x01 && pad_current_cmd == 0x4C) v = ds_4c_01;
+                    memcpy(&pad_response[3], v, 5);
                 }
                 /* The six data bytes after 0x42's leading 0x00 occupy response
                  * indexes 2..7. Route each through the map negotiated by 0x4D. */
