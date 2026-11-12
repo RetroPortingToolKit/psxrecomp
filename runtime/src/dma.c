@@ -1116,6 +1116,10 @@ static void try_execute(int ch) {
     /* Transfer starts when bit 24 (start/busy) is set AND channel is enabled in DPCR */
     if (!((chcr >> 24) & 1)) return;
     if (!channel_enabled(ch)) return;
+    /* PSX-SPX "D#_CHCR": bit 28 is the manual start for SyncMode 0, and OTC
+     * has no DREQ, so channel 6 waits with bit 24 set until bit 28 is set.
+     * The other channels start on bit 24 alone. */
+    if (ch == 6 && !((chcr >> 28) & 1u)) return;
 
     channels[ch].chcr &= ~(1u << 28);
     trace_dma('S', ch, transfer_word_count(ch), dicr, i_stat);
