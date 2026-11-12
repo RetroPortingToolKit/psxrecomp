@@ -2872,10 +2872,11 @@ extern "C" void psx_frontend_netplay_force_sw_gpu(void) {
 /* Vsync self-heal state (see SDL_RenderPresent wrapper in
  * sdl_vblank_present). C linkage: freeze_heartbeat.c includes both in
  * the freeze dump so a slow-frames wedge can be attributed to driver
- * present backpressure from the dump alone. */
+ * present backpressure from the dump alone. Defined in gpu_gl_renderer.c,
+ * whose OpenGL swap applies the same self-heal. */
 extern "C" {
-uint32_t g_present_slow_count = 0;     /* presents that blocked >250ms */
-int      g_present_vsync_disabled = 0; /* 1 once self-heal tripped */
+extern uint32_t g_present_slow_count;     /* presents that blocked >250ms */
+extern int      g_present_vsync_disabled; /* 1 once self-heal tripped */
 }
 
 /* Turbo-through-loads (step 4). C linkage: debug_server.c reads/toggles the
@@ -6158,6 +6159,9 @@ static bool controller_source_pressed_h(SDL_GameController* h, const ControllerS
  * (arrows=d-pad, X/S/Z/A=Cross/Circle/Square/Triangle, Q/W/E/R=L1/R1/L2/R2,
  * Return=Start, RShift=Select) plus T/Y=L3/R3 stick clicks. */
 static uint16_t pad_from_keyboard(int player) {
+    /* Without input focus the keyboard reads as released: SDL's cached key
+     * array can hold keys pressed while another application had focus. */
+    if (!host_hotkey_input_focused()) return 0xFFFF;
     const Uint8* keys = SDL_GetKeyboardState(NULL);
     return psx_keybinds_pad_word(keys, player);
 }
@@ -6266,7 +6270,9 @@ static void pad_sticks_for(const PlayerInput& p, int player, uint8_t out[4]) {
     if (p.kind == 1) {
         /* Keyboard analog: the configurable left/right stick-direction binds
          * (default = arrow keys on the LEFT stick; RIGHT stick unbound), so the
-         * old keyboard analog behaviour is preserved unless the user rebinds. */
+         * old keyboard analog behaviour is preserved unless the user rebinds.
+         * Without input focus the sticks stay centred. */
+        if (!host_hotkey_input_focused()) return;
         const Uint8* keys = SDL_GetKeyboardState(NULL);
         psx_keybinds_sticks(keys, player, out);
         return;
@@ -6440,7 +6446,7 @@ static bool controller_policy_dpad_active(const PlayerInput& p, int player,
                 return true;
         }
     }
-    if (src.keybinds) {
+    if (src.keybinds && host_hotkey_input_focused()) {
         const Uint8* keys = SDL_GetKeyboardState(NULL);
         if (psx_keybinds_dpad_active(keys, player)) return true;
     }
@@ -6626,7 +6632,8 @@ static int any_controller_button_down(void) {
 
 static int savestate_resume_inputs_held(void) {
     const Uint8* keys = SDL_GetKeyboardState(NULL);
-    if (keys) {
+    /* A key latched across a focus change must not hold the resume guard. */
+    if (keys && host_hotkey_input_focused()) {
         if (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] ||
             keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_L])
             return 1;
@@ -6784,8 +6791,10 @@ extern "C" int psx_mod_read_local_pad_sticks(uint32_t player,
         pad_sticks_for(p, (int)player + 1, out);
         return 1;
     }
-    const Uint8* keys = SDL_GetKeyboardState(NULL);
-    psx_keybinds_sticks(keys, (int)player + 1, out);
+    if (host_hotkey_input_focused()) {
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+        psx_keybinds_sticks(keys, (int)player + 1, out);
+    }
     dev_any_controller_sticks(out);
     return 1;
 }
@@ -6957,7 +6966,7 @@ static int capture_pad_slot_view(int s, PsxNetPad* out, bool guarded,
      * inside pad_sticks_for; psx_keybinds_sticks only widens a deflection, so
      * applying it twice is idempotent. */
     if (eff_analog || host_view) {
-        if (src.keybinds) {
+        if (src.keybinds && host_hotkey_input_focused()) {
             const Uint8* keys = SDL_GetKeyboardState(NULL);
             psx_keybinds_sticks(keys, player, st);
         }
@@ -8520,12 +8529,14 @@ static void savestate_menu_poll_nav(uint32_t now_ms) {
     if (host_pad_layer(&host_word, sticks, &lt, &rt)) buttons = host_word;
     const int lx = p1_host_axis_value(nullptr, SDL_CONTROLLER_AXIS_LEFTX);
     const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    /* Without input focus the held arrows read as released. */
+    const int kb = host_hotkey_input_focused() ? 1 : 0;
     /* Merge event taps and held keyboard-as-pad arrows before stepping.
      * Moving in both the event handler and this poll skipped two slots. */
-    prev = savestate_menu_key_direction < 0 || keys[SDL_SCANCODE_LEFT] ||
-        keys[SDL_SCANCODE_UP] || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
-    next = savestate_menu_key_direction > 0 || keys[SDL_SCANCODE_RIGHT] ||
-        keys[SDL_SCANCODE_DOWN] || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
+    prev = savestate_menu_key_direction < 0 || (kb && keys[SDL_SCANCODE_LEFT]) ||
+        (kb && keys[SDL_SCANCODE_UP]) || !(buttons & PAD_LEFT) || !(buttons & PAD_UP) || lx < -16000;
+    next = savestate_menu_key_direction > 0 || (kb && keys[SDL_SCANCODE_RIGHT]) ||
+        (kb && keys[SDL_SCANCODE_DOWN]) || !(buttons & PAD_RIGHT) || !(buttons & PAD_DOWN) || lx > 16000;
     savestate_menu_key_direction = 0;
     load = !(buttons & PAD_CROSS);
     save = !(buttons & PAD_SQUARE);
@@ -8627,13 +8638,16 @@ static void fast_forward_toggle_poll_buttons(void) {
 
 static void rewind_poll_nav(uint32_t now_ms) {
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    int left = keys[SDL_SCANCODE_LEFT] ? 1 : 0;
-    int right = keys[SDL_SCANCODE_RIGHT] ? 1 : 0;
+    /* Without input focus the direct keys read as released, so a key latched
+     * across a focus change cannot keep the rewind cursor moving. */
+    const int kb = host_hotkey_input_focused() ? 1 : 0;
+    int left = (kb && keys[SDL_SCANCODE_LEFT]) ? 1 : 0;
+    int right = (kb && keys[SDL_SCANCODE_RIGHT]) ? 1 : 0;
     /* Direct menu keys supplement the configured pad bindings below. Letter
      * aliases conflict with remaps: X is Cross by default, so treating X as
      * Cancel sets both edges and silently cancels every keyboard load. */
-    int acc = (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE]) ? 1 : 0;
-    int can = (keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_BACKSPACE]) ? 1 : 0;
+    int acc = (kb && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE])) ? 1 : 0;
+    int can = (kb && (keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_BACKSPACE])) ? 1 : 0;
     /* Honor remapped Cross/Circle (and Select/R3) via the same pad path as
      * gameplay — GameController A/B alone miss keyboard-as-pad and remaps. */
     uint16_t btn = pad_buttons_for(g_players[0], 1, true);
