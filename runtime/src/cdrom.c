@@ -2403,7 +2403,8 @@ static void exec_command(uint8_t cmd) {
         }
         if (subq_replacements_active) update_last_valid_subq((uint32_t)lba);
         if (subq_replacements_active && last_valid_subq_available) {
-            for (int i = 1; i <= 8; ++i) response_push(last_valid_subq[i]);
+            for (int i = 1; i <= 5; ++i) response_push(last_valid_subq[i]);
+            for (int i = 7; i <= 9; ++i) response_push(last_valid_subq[i]);
         } else {
             int rm, rs, rf;
             int am, as, af;
