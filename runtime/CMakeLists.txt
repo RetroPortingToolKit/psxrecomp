@@ -2849,3 +2849,12 @@ if(BUILD_TESTING AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
     endif()
     add_test(NAME gpu_texture_disable_status_test COMMAND gpu_texture_disable_status_test)
 endif()
+
+# Focused memory-map fixture: whole-program optimization discards unused device paths.
+if(BUILD_TESTING AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    add_executable(memory_cd_register_mirror_test tests/test_memory_cd_register_mirror.c)
+    target_include_directories(memory_cd_register_mirror_test PRIVATE include)
+    target_compile_definitions(memory_cd_register_mirror_test PRIVATE PSX_ENABLE_BLOCK_CYCLES=1 PSX_NO_DEBUG_TOOLS=1)
+    target_compile_options(memory_cd_register_mirror_test PRIVATE -O2 -fwhole-program)
+    add_test(NAME memory_cd_register_mirror_test COMMAND memory_cd_register_mirror_test)
+endif()

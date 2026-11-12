@@ -1321,9 +1321,9 @@ static uint32_t mmio_read32_impl(uint32_t addr) {
     if (addr >= 0x1F801100u && addr <= 0x1F80112Fu) {
         return timers_read(addr);
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        return cdrom_read(addr);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        return cdrom_read(0x1F801800u | (addr & 3u));
     }
     /* GPU: 0x1F801810 (GPUREAD), 0x1F801814 (GPUSTAT) */
     if (addr == 0x1F801810u) return gpu_read_gpuread();
@@ -1385,9 +1385,9 @@ static void mmio_write32(uint32_t addr, uint32_t val) {
         timers_write(addr, val);
         return;
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        cdrom_write(addr, val);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        cdrom_write(0x1F801800u | (addr & 3u), val);
         return;
     }
     /* GPU GP0: 0x1F801810, GP1: 0x1F801814 */
@@ -1576,9 +1576,9 @@ static uint8_t mmio_read8_impl(uint32_t addr) {
         uint32_t val = mdec_read(addr & ~3u);
         return (uint8_t)(val >> (8 * (addr & 3)));
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        return (uint8_t)cdrom_read(addr);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        return (uint8_t)cdrom_read(0x1F801800u | (addr & 3u));
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */
     if (addr >= 0x1F802000u && addr <= 0x1F802FFFu) {
@@ -1663,9 +1663,9 @@ static void mmio_write8(uint32_t addr, uint8_t val) {
         mdec_write(aligned, cur);
         return;
     }
-    /* CDROM: 0x1F801800..0x1F801803 */
-    if (addr >= 0x1F801800u && addr <= 0x1F801803u) {
-        cdrom_write(addr, val);
+    /* CDROM register block: four mirrors of the four byte registers. */
+    if (addr >= 0x1F801800u && addr <= 0x1F80180Fu) {
+        cdrom_write(0x1F801800u | (addr & 3u), val);
         return;
     }
     /* Expansion 2 / POST: 0x1F802000..0x1F802FFF */
