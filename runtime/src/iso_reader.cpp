@@ -544,8 +544,8 @@ bool ISOReader::LoadSBICompanion(const std::string& image_path) {
         std::array<uint8_t, 12> subq = {};
         std::memcpy(subq.data(), record + 4, 10);
         const uint16_t invalid_crc = static_cast<uint16_t>(subq_crc(subq.data()) ^ 0xffff);
-        subq[10] = static_cast<uint8_t>(invalid_crc);
-        subq[11] = static_cast<uint8_t>(invalid_crc >> 8);
+        subq[10] = static_cast<uint8_t>(invalid_crc >> 8);
+        subq[11] = static_cast<uint8_t>(invalid_crc);
         if (!subq_replacements_.emplace(lba, subq).second) return false;
     }
     return !subq_replacements_.empty();
@@ -562,25 +562,30 @@ bool ISOReader::ReadSubChannelQ(uint32_t lba, uint8_t* buffer, bool* valid) cons
 
     int track = 1;
     for (const CDTrack& candidate : tracks_) {
-        if (candidate.start_lba > lba) break;
+        // INDEX 00 belongs to the following track. CD-DA auto-pause compares
+        // this track number even when playback starts within its pregap.
+        if (candidate.pregap_lba > lba) break;
         track = candidate.number;
     }
     const uint32_t track_lba = TrackStartLBA(track);
-    const uint32_t relative = lba >= track_lba ? lba - track_lba : 0;
+    const bool pregap = lba < track_lba;
+    const uint32_t relative = pregap ? track_lba - lba : lba - track_lba;
     const uint32_t absolute = lba + 150;
     std::memset(buffer, 0, 12);
     buffer[0] = TrackIsAudio(track) ? 0x01 : 0x41;
     buffer[1] = binary_to_bcd(static_cast<uint32_t>(track));
-    buffer[2] = 0x01;
+    buffer[2] = pregap ? 0x00 : 0x01;
     buffer[3] = binary_to_bcd(relative / CD_FRAMES_PER_MINUTE);
     buffer[4] = binary_to_bcd((relative / CD_FRAMES_PER_SECOND) % 60);
     buffer[5] = binary_to_bcd(relative % CD_FRAMES_PER_SECOND);
-    buffer[6] = binary_to_bcd(absolute / CD_FRAMES_PER_MINUTE);
-    buffer[7] = binary_to_bcd((absolute / CD_FRAMES_PER_SECOND) % 60);
-    buffer[8] = binary_to_bcd(absolute % CD_FRAMES_PER_SECOND);
+    // Raw twelve-byte Q includes a reserved zero between relative and
+    // absolute positions. GetlocP omits this byte when forming its response.
+    buffer[7] = binary_to_bcd(absolute / CD_FRAMES_PER_MINUTE);
+    buffer[8] = binary_to_bcd((absolute / CD_FRAMES_PER_SECOND) % 60);
+    buffer[9] = binary_to_bcd(absolute % CD_FRAMES_PER_SECOND);
     const uint16_t crc = subq_crc(buffer);
-    buffer[10] = static_cast<uint8_t>(crc);
-    buffer[11] = static_cast<uint8_t>(crc >> 8);
+    buffer[10] = static_cast<uint8_t>(crc >> 8);
+    buffer[11] = static_cast<uint8_t>(crc);
     *valid = true;
     return true;
 }
