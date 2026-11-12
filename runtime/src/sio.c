@@ -37,6 +37,11 @@ static uint16_t sio_stat;
 static uint16_t sio_mode;
 static uint16_t sio_ctrl;
 static uint16_t sio_baud;
+/* SIO1 (serial port, 0x1F801050..5F). No device is attached; MODE, CTRL and
+ * BAUD are plain latches so a driver reads back what it programmed. */
+static uint16_t sio1_mode;
+static uint16_t sio1_ctrl;
+static uint16_t sio1_baud;
 static uint32_t sio_debug_poll_counter;
 
 static void sio_debug_poll_maybe(void) {
@@ -854,6 +859,9 @@ void sio_init(void) {
     sio_mode = 0;
     sio_ctrl = 0;
     sio_baud = 0;
+    sio1_mode = 0;
+    sio1_ctrl = 0;
+    sio1_baud = 0;
     pad_state = PAD_IDLE;
     pad_response_len = 0;
     pad_response_idx = 0;
@@ -2245,6 +2253,15 @@ uint32_t sio_read(uint32_t addr) {
     case 0x1F80104E: /* SIO_BAUD */
         return sio_baud;
 
+    case 0x1F801058: /* SIO1_MODE */
+        return sio1_mode;
+
+    case 0x1F80105A: /* SIO1_CTRL */
+        return sio1_ctrl;
+
+    case 0x1F80105E: /* SIO1_BAUD */
+        return sio1_baud;
+
     default:
         return 0;
     }
@@ -2593,6 +2610,18 @@ void sio_write(uint32_t addr, uint32_t value) {
     case 0x1F80104E: /* SIO_BAUD */
         sio_baud = (uint16_t)value;
         sr_record(SR_EVT_BAUD_WRITE, (uint8_t)(value & 0xFF), (uint8_t)((value >> 8) & 0xFF));
+        break;
+
+    case 0x1F801058: /* SIO1_MODE */
+        sio1_mode = (uint16_t)value;
+        break;
+
+    case 0x1F80105A: /* SIO1_CTRL: ACK (bit 4) and RESET (bit 6) are strobes */
+        sio1_ctrl = (uint16_t)value & (uint16_t)~(SIO_CTRL_ACK | SIO_CTRL_RESET);
+        break;
+
+    case 0x1F80105E: /* SIO1_BAUD */
+        sio1_baud = (uint16_t)value;
         break;
 
     default:
