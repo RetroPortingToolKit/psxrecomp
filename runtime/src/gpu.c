@@ -4119,6 +4119,9 @@ static uint32_t v_display_y2;
 
 /* GPUREAD latch (GP1(10h) get-info result, or VRAM read data) */
 static uint32_t gpuread_latch;
+/* Last word on the GPUREAD bus (a VRAM read word or an info result); its
+ * upper bits survive in the partial GP1(10h) fields. */
+static uint32_t gpuread_data_last;
 
 /* C0 (VRAM→CPU) history: an always-on ring of the most recent reads
  * (it used to keep only the first 32 since boot, so gameplay readbacks were
@@ -4249,6 +4252,7 @@ static void gpu_reset_state(int clear_vram) {
     v_display_y2 = 0x100;
 
     gpuread_latch = 0;
+    gpuread_data_last = 0;
     gpustat_poll_count = 0;
     s_ws_fmv_frame_cache = 0xFFFFFFFFu;
     s_ws_fmv_cached = 0;
@@ -4385,12 +4389,10 @@ uint32_t gpu_read_gpuread(void) {
         value |= (uint32_t)gr_vram_read((int)rx, (int)ry) << (i * 16);
 
         if (++vram_read_col == vram_read_w) {
-            vram_read_col = 0;
-            if (++vram_read_row == vram_read_h) {
-                /* Transfer complete */
-                vram_read_active = 0;
-                break;
-            }
+            /* Complete both halves of an odd-width final word; its high half
+             * is the next X on the final row, not another row. */
+            if (vram_read_row + 1 == vram_read_h) vram_read_active = 0;
+            else { ++vram_read_row; vram_read_col = 0; }
         }
     }
 
@@ -4403,7 +4405,9 @@ uint32_t gpu_read_gpuread(void) {
             c0_capture_slot_fwd = -1;  /* transfer complete */
     }
 
-    gpuread_latch = value;
+    /* A VRAM read does not overwrite the info latch that idle reads return;
+     * it only becomes the last bus word. */
+    gpuread_data_last = value;
     return value;
 }
 
@@ -8264,17 +8268,23 @@ static void gp1_get_info(uint32_t val) {
      * the wrong value here lands the game on a no-draw branch. */
     uint32_t which = val & 0x0F;
     switch (which) {
+        /* 02h-04h return a 20-bit field and 05h a 22-bit field under the
+         * upper bits of the last word on the GPUREAD bus. */
         case 2: /* texture window */
-            gpuread_latch = texture_window_value;
+            gpuread_latch = (gpuread_data_last & 0xFFF00000u) |
+                            (texture_window_value & 0xFFFFFu);
             break;
         case 3: /* draw area top-left */
-            gpuread_latch = draw_area_left | (draw_area_top << 10);
+            gpuread_latch = (gpuread_data_last & 0xFFF00000u) |
+                            draw_area_left | (draw_area_top << 10);
             break;
         case 4: /* draw area bottom-right */
-            gpuread_latch = draw_area_right | (draw_area_bottom << 10);
+            gpuread_latch = (gpuread_data_last & 0xFFF00000u) |
+                            draw_area_right | (draw_area_bottom << 10);
             break;
         case 5: /* draw offset */
-            gpuread_latch = ((uint32_t)draw_offset_x & 0x7FFu) |
+            gpuread_latch = (gpuread_data_last & 0xFFC00000u) |
+                            ((uint32_t)draw_offset_x & 0x7FFu) |
                             (((uint32_t)draw_offset_y & 0x7FFu) << 11);
             break;
         case 7: /* GPU version: PSX-SPX gives 1 or 2; this models 2 */
@@ -8285,8 +8295,9 @@ static void gp1_get_info(uint32_t val) {
             break;
         default:
             /* N=0,1,6,9..15: leave latch unchanged */
-            break;
+            return;
     }
+    gpuread_data_last = gpuread_latch;
 }
 
 void gpu_write_gp1(uint32_t val) {
@@ -8410,6 +8421,8 @@ static int gpu_snap_parse(PstR *r) {
     RU(display_area_x); RU(display_area_y);
     RU(h_display_x1); RU(h_display_x2); RU(v_display_y1); RU(v_display_y2);
     RU(gpuread_latch);
+    /* The snapshot keeps the info latch only; take it as the last bus word. */
+    gpuread_data_last = gpuread_latch;
     if (!pst_r_u32(r, &u)) return 0;
     gp0_state = (Gp0State)u;
     for (int k = 0; k < 16; k++) RU(gp0_cmd_buf[k]);
