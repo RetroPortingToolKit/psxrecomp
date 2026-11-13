@@ -37,8 +37,10 @@ enum {
     PSX_MENU_SESSION_CONTROLLER_PORT = 3, /* 0: controller 1 in port 1; 1: in port 2 */
     PSX_MENU_SESSION_REINSERT_DISC = 4    /* set to 1: lid cycle with the same disc */
 };
-/* Restart game (enabled only; the provider asks for PSX_MENU_EXIT_RELAUNCH,
- * which restarts straight into the mounted disc) and the look rows. A
+/* Restart game (the provider sets it to 1, then asks for
+ * PSX_MENU_EXIT_RELAUNCH, which restarts straight into the mounted disc; the
+ * 1 makes that restart a cold boot, without the save state or replay the game
+ * was started from) and the look rows. A
  * session_set that returns PSX_MENU_SESSION_AT_RESTART was saved and takes
  * effect with the quick restart when the menu closes. */
 #define PSX_MENU_HOST_HAS_LOOK_ROWS 1

@@ -17530,6 +17530,8 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
  * posted value, so the row does not jump back. */
 std::atomic<int> g_ovl_sess_scale{0}, g_ovl_sess_volume{-1}, g_ovl_sess_port{-1},
     g_ovl_sess_reinsert{0};
+/* Restart game: the next relaunch is a cold boot. */
+std::atomic<int> g_ovl_restart_cold{0};
 /* The look rows. Each is one mod feature or option, or one runtime [video]
  * setting; every change is saved (mods/state.toml, settings.toml) as the
  * launcher would save it. A row answers its posted value until the session
@@ -17701,6 +17703,10 @@ int mh_session_set(int setting, int value) {
         if (value != 1) return 0;
         g_ovl_sess_reinsert = 1;
         return 1;
+    case PSX_MENU_SESSION_RESTART_GAME:
+        if (value != 1) return 0;
+        g_ovl_restart_cold = 1;
+        return 1;
     }
     if (setting >= PSX_MENU_SESSION_INTERNAL_RESOLUTION && setting <= PSX_MENU_SESSION_DITHERING)
         return ovl_look_set(setting, value);
@@ -17736,6 +17742,19 @@ std::string g_ovl_session_disc;
  * mounted disc (a later --disc wins), so a quick restart neither shows the
  * launcher nor falls back to disc 1 of a multi-disc game. */
 void ovl_relaunch_into_game(void) {
+    /* The relaunched process inherits this environment. A start from a save
+     * state or a replay (PSX_LOAD_SLOT, PSX_REPLAY_FILE, set by the launcher's
+     * Start from or by the player) would repeat at every restart; Restart game
+     * is a cold boot, so it drops them. A settings restart keeps them. */
+    if (g_ovl_restart_cold.exchange(0)) {
+        for (const char* name : {"PSX_LOAD_SLOT", "PSX_REPLAY_FILE"}) {
+#if defined(_WIN32)
+            _putenv_s(name, "");
+#else
+            unsetenv(name);
+#endif
+        }
+    }
     std::string disc;
     const int mounted = mh_disc_mounted();
     if (mounted > 0 && mh_disc_path(mounted)) disc = mh_disc_path(mounted);
