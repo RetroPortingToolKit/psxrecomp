@@ -37,6 +37,21 @@ enum {
     PSX_MENU_SESSION_CONTROLLER_PORT = 3, /* 0: controller 1 in port 1; 1: in port 2 */
     PSX_MENU_SESSION_REINSERT_DISC = 4    /* set to 1: lid cycle with the same disc */
 };
+/* Restart game (enabled only; the provider asks for PSX_MENU_EXIT_RELAUNCH,
+ * which restarts straight into the mounted disc) and the look rows. A
+ * session_set that returns PSX_MENU_SESSION_AT_RESTART was saved and takes
+ * effect with the quick restart when the menu closes. */
+#define PSX_MENU_HOST_HAS_LOOK_ROWS 1
+enum { PSX_MENU_SESSION_RESTART_GAME = 5,
+       PSX_MENU_SESSION_INTERNAL_RESOLUTION = 6,  /* 0..6: 1x 2x 3x 4x 5x 6x 8x */
+       PSX_MENU_SESSION_PGXP = 7,                 /* 0/1, restart */
+       PSX_MENU_SESSION_CRT_FILTER = 8,           /* 0/1, restart */
+       PSX_MENU_SESSION_ANTIALIASING = 9,         /* 0 off, 1 FXAA, 2 FXAA HQ */
+       PSX_MENU_SESSION_SCANLINES = 10,           /* 0 off, 1 on */
+       PSX_MENU_SESSION_SMOOTHING = 11,           /* 0 game, 1 smooth, 2 sharp */
+       PSX_MENU_SESSION_TEXTURE_FILTERING = 12,   /* 0 game, 1 nearest, 2 bilinear, 3 xBR */
+       PSX_MENU_SESSION_DITHERING = 14 };         /* 0 off, 1 console, 2 fine */
+#define PSX_MENU_SESSION_AT_RESTART 2
 
 /* request_exit */
 enum {

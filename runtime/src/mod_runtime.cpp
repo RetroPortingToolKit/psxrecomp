@@ -4400,6 +4400,20 @@ extern "C" void mod_runtime_patch_disc_sector(uint32_t lba, int raw_sector,
 extern "C" int psx_mod_feature_enable(const char* package_id, const char* feature_id, int enabled) {
     return PSXRecompV4::feature_enable_impl(package_id, feature_id, enabled);
 }
+extern "C" int psx_mod_feature_selected(const char* package_id, const char* feature_id) {
+    using namespace PSXRecompV4;
+    if (!package_id || !feature_id || !state().initialized) return 0;
+    return state().manager.feature_enabled(package_id, feature_id) ? 1 : 0;
+}
+extern "C" int psx_mod_feature_active(const char* package_id, const char* feature_id) {
+    using namespace PSXRecompV4;
+    if (!package_id || !feature_id) return 0;
+    RuntimeMods& s = state();
+    if (!s.initialized || !s.plan.ok) return 0;
+    for (const ModResolution::Plugin& plugin : s.plan.plugins)
+        if (plugin.package_id == package_id && plugin.feature_id == feature_id) return 1;
+    return 0;
+}
 extern "C" int psx_mod_feature_set_option(const char* package_id, const char* feature_id,
                                           const char* option_id, const char* value) {
     return PSXRecompV4::feature_set_option_impl(package_id, feature_id, option_id, value);
