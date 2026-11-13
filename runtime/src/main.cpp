@@ -17720,6 +17720,59 @@ static void host_pause_service(void) {
     }
 }
 
+/* Live display and audio rows of the in-game menu (psx_runtime_menu.h). The
+ * launcher reads the same globals back when the session returns to it, so a
+ * change made here is kept the way a launcher change is. */
+static int runtime_menu_window_width(void) {
+    int w = g_video_win_w;
+    if (w <= 0 && sdl_window) SDL_GetWindowSize(sdl_window, &w, nullptr);
+    return w;
+}
+static int runtime_menu_setting_get(void*, int setting, int* value_out) {
+    switch (setting) {
+    case PSX_MENU_SETTING_FULLSCREEN:
+        *value_out = s_window_fullscreen.mode;
+        return 1;
+    case PSX_MENU_SETTING_WINDOW_SCALE:
+        *value_out = std::max(1, std::min(4, (runtime_menu_window_width() + 160) / 320));
+        return 1;
+    case PSX_MENU_SETTING_VOLUME:
+        *value_out = host_volume_get();
+        return 1;
+    }
+    return 0;
+}
+static int runtime_menu_setting_set(void*, int setting, int value) {
+    switch (setting) {
+    case PSX_MENU_SETTING_FULLSCREEN:
+        if (!sdl_window || value < 0 || value > 2) return 0;
+        if (psx_window_fullscreen_set(sdl_window, &s_window_fullscreen, value) != 0) return 0;
+        g_fullscreen = value;
+        apply_present_cadence();
+        return 1;
+    case PSX_MENU_SETTING_WINDOW_SCALE: {
+        if (!sdl_window || s_window_fullscreen.mode != 0 || value < 1 || value > 4) return 0;
+        const int w = value * 320;
+        SDL_SetWindowSize(sdl_window, w, w * g_video_aspect_den / std::max(1, g_video_aspect_num));
+        g_video_win_w = w;
+        return 1;
+    }
+    case PSX_MENU_SETTING_VOLUME:
+        if (value < 0 || value > 100) return 0;
+        host_volume_set(value);
+        return 1;
+    }
+    return 0;
+}
+static int runtime_menu_setting_enabled(void*, int setting) {
+    /* Fullscreen owns the window size; leave windowed mode to resize. */
+    if (setting == PSX_MENU_SETTING_WINDOW_SCALE) return s_window_fullscreen.mode == 0;
+    return 1;
+}
+static const PsxRuntimeMenuHost kRuntimeMenuHost = {
+    nullptr, runtime_menu_setting_get, runtime_menu_setting_set, runtime_menu_setting_enabled,
+};
+
 int main(int argc, char** argv) {
     g_main_argc = argc;
     g_main_argv = argv;
@@ -21049,6 +21102,7 @@ session_reboot:
         snprintf(message, sizeof message, "Disc %d inserted", disc);
         host_osd_push(message, 2500);
     }, &disc_menu_session);
+    psx_runtime_menu_set_host(&kRuntimeMenuHost);
     psx_runtime_menu_init();
     for (const auto& route : warm_cd_routes) {
         cdrom_register_warm_route(route.arm_lba, route.lbas.data(),
