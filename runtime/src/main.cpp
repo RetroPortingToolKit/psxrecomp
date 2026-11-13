@@ -17523,6 +17523,93 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
 }
 #endif  /* RECOMP_LAUNCHER */
 
+/* Session rows of the in-game menu (PsxMenuHost session_*): window size,
+ * volume, the controller 1 port and a same-disc reinsert. The provider may
+ * call from its draw thread, so a change is posted here and applied on the
+ * main thread at the next host_pause_service; until then get answers the
+ * posted value, so the row does not jump back. */
+std::atomic<int> g_ovl_sess_scale{0}, g_ovl_sess_volume{-1}, g_ovl_sess_port{-1},
+    g_ovl_sess_reinsert{0};
+int ovl_window_scale_now(void) {
+    int w = g_video_win_w;
+    if (w <= 0 && sdl_window) SDL_GetWindowSize(sdl_window, &w, nullptr);
+    return std::max(1, std::min(4, (w + 160) / 320));
+}
+int mh_session_enabled(int setting) {
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE: return sdl_window && s_window_fullscreen.mode == 0;
+    case PSX_MENU_SESSION_VOLUME: return 1;
+    case PSX_MENU_SESSION_CONTROLLER_PORT: return controller_port_swap_available() ? 1 : 0;
+    case PSX_MENU_SESSION_REINSERT_DISC: return !psx_netplay_active() && cdrom_has_disc();
+    }
+    return 0;
+}
+int mh_session_get(int setting, int* out) {
+    if (!out) return 0;
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE: {
+        const int posted = g_ovl_sess_scale.load();
+        *out = posted ? posted : ovl_window_scale_now();
+        return 1;
+    }
+    case PSX_MENU_SESSION_VOLUME: {
+        const int posted = g_ovl_sess_volume.load();
+        *out = posted >= 0 ? posted : host_volume_get();
+        return 1;
+    }
+    case PSX_MENU_SESSION_CONTROLLER_PORT: {
+        const int posted = g_ovl_sess_port.load();
+        *out = posted >= 0 ? posted : (g_controller_ports_swapped ? 1 : 0);
+        return 1;
+    }
+    }
+    return 0;
+}
+int mh_session_set(int setting, int value) {
+    if (!mh_session_enabled(setting)) return 0;
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE:
+        if (value < 1 || value > 4) return 0;
+        g_ovl_sess_scale = value;
+        return 1;
+    case PSX_MENU_SESSION_VOLUME:
+        if (value < 0 || value > 100) return 0;
+        g_ovl_sess_volume = value;
+        return 1;
+    case PSX_MENU_SESSION_CONTROLLER_PORT:
+        if (value != 0 && value != 1) return 0;
+        g_ovl_sess_port = value;
+        return 1;
+    case PSX_MENU_SESSION_REINSERT_DISC:
+        if (value != 1) return 0;
+        g_ovl_sess_reinsert = 1;
+        return 1;
+    }
+    return 0;
+}
+/* Main thread: apply what the menu posted. The launcher reads the window
+ * width and volume back when the session returns to it, so they are kept the
+ * way a launcher change is; the port swap is host state, as with Ctrl+F6. */
+void ovl_session_service(void) {
+    if (const int scale = g_ovl_sess_scale.exchange(0)) {
+        if (sdl_window && s_window_fullscreen.mode == 0) {
+            const int w = scale * 320;
+            SDL_SetWindowSize(sdl_window, w,
+                              w * g_video_aspect_den / std::max(1, g_video_aspect_num));
+            g_video_win_w = w;
+        }
+    }
+    const int volume = g_ovl_sess_volume.exchange(-1);
+    if (volume >= 0) host_volume_set(volume);
+    const int port = g_ovl_sess_port.exchange(-1);
+    if (port >= 0 && (port != 0) != g_controller_ports_swapped) controller_port_swap_toggle();
+    if (g_ovl_sess_reinsert.exchange(0)) {
+        const int rc = disc_cycle_now(0);
+        host_osd_push(rc == 0 ? "Current disc reinserted"
+                              : "Disc changes are unavailable in this game mode.", 1800);
+    }
+}
+
 PsxMenuHost g_menu_host = {
     PSX_MENU_ABI_VERSION, mh_set_paused, mh_netplay_active, mh_video_get, mh_video_apply,
     mh_mod_set, mh_reload_bindings, mh_request_exit,
@@ -17536,6 +17623,7 @@ PsxMenuHost g_menu_host = {
 #endif
     nullptr,
     0,
+    mh_session_get, mh_session_set, mh_session_enabled,
 };
 
 int ovl_sink(const void* ev, void*) { return g_ovl && g_ovl->event ? g_ovl->event(g_ovl->ctx, ev) : 0; }
@@ -17632,6 +17720,7 @@ static void recomp_overlay_detach(void) {
 static void host_pause_service(void) {
     if (!g_ovl_on) return;
     mh_refresh_snapshot();
+    ovl_session_service();
     if (const int disc = g_ovl_disc_req.exchange(0)) {
         const int rc = disc_cycle_now(disc);
         if (rc != PSX_DISC_TRAY_OK) {

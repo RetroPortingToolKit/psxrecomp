@@ -28,6 +28,16 @@ extern "C" {
 /* PsxMenuHost.default_selection is present (appended, ABI-compatible). */
 #define PSX_MENU_HOST_HAS_DEFAULT_SELECTION 1
 
+/* PsxMenuHost.session_* are present (appended, ABI-compatible). */
+#define PSX_MENU_HOST_HAS_SESSION 1
+/* session_* settings. */
+enum {
+    PSX_MENU_SESSION_WINDOW_SCALE = 1,    /* 1..4, x 320 pixels wide; windowed only */
+    PSX_MENU_SESSION_VOLUME = 2,          /* 0..100 */
+    PSX_MENU_SESSION_CONTROLLER_PORT = 3, /* 0: controller 1 in port 1; 1: in port 2 */
+    PSX_MENU_SESSION_REINSERT_DISC = 4    /* set to 1: lid cycle with the same disc */
+};
+
 /* request_exit */
 enum {
     PSX_MENU_EXIT_QUIT = 0,         /* leave the game (netplay: back to the lobby) */
@@ -84,6 +94,14 @@ typedef struct PsxMenuHost {
      * provider keeps the title's default presentation: it may decline to
      * attach when it would only add a menu the title did not have. */
     int default_selection;
+    /* Session rows (PSX_MENU_SESSION_*); NULL when the runtime offers none.
+     * get returns 0 for a setting the runtime does not have. set queues the
+     * change for the main thread and returns 0 when refused. enabled is 0
+     * while the setting cannot change (window size in fullscreen, port swap
+     * under netplay or a multitap, reinsert without a disc). */
+    int  (*session_get)(int setting, int *value_out);
+    int  (*session_set)(int setting, int value);
+    int  (*session_enabled)(int setting);
 } PsxMenuHost;
 
 typedef struct PsxMenuProvider {
