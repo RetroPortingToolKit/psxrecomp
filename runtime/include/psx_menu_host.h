@@ -28,6 +28,33 @@ extern "C" {
 /* PsxMenuHost.default_selection is present (appended, ABI-compatible). */
 #define PSX_MENU_HOST_HAS_DEFAULT_SELECTION 1
 
+/* PsxMenuHost.session_* are present (appended, ABI-compatible). */
+#define PSX_MENU_HOST_HAS_SESSION 1
+/* session_* settings. */
+enum {
+    PSX_MENU_SESSION_WINDOW_SCALE = 1,    /* 1..4, x 320 pixels wide; windowed only */
+    PSX_MENU_SESSION_VOLUME = 2,          /* 0..100 */
+    PSX_MENU_SESSION_CONTROLLER_PORT = 3, /* 0: controller 1 in port 1; 1: in port 2 */
+    PSX_MENU_SESSION_REINSERT_DISC = 4    /* set to 1: lid cycle with the same disc */
+};
+/* Restart game (the provider sets it to 1, then asks for
+ * PSX_MENU_EXIT_RELAUNCH, which restarts straight into the mounted disc; the
+ * 1 makes that restart a cold boot, without the save state or replay the game
+ * was started from) and the look rows. A
+ * session_set that returns PSX_MENU_SESSION_AT_RESTART was saved and takes
+ * effect with the quick restart when the menu closes. */
+#define PSX_MENU_HOST_HAS_LOOK_ROWS 1
+enum { PSX_MENU_SESSION_RESTART_GAME = 5,
+       PSX_MENU_SESSION_INTERNAL_RESOLUTION = 6,  /* 0..6: 1x 2x 3x 4x 5x 6x 8x */
+       PSX_MENU_SESSION_PGXP = 7,                 /* 0/1, restart */
+       PSX_MENU_SESSION_CRT_FILTER = 8,           /* 0/1, restart */
+       PSX_MENU_SESSION_ANTIALIASING = 9,         /* 0 off, 1 FXAA, 2 FXAA HQ */
+       PSX_MENU_SESSION_SCANLINES = 10,           /* 0 off, 1 on */
+       PSX_MENU_SESSION_SMOOTHING = 11,           /* 0 game, 1 smooth, 2 sharp */
+       PSX_MENU_SESSION_TEXTURE_FILTERING = 12,   /* 0 game, 1 nearest, 2 bilinear, 3 xBR */
+       PSX_MENU_SESSION_DITHERING = 14 };         /* 0 off, 1 console, 2 fine */
+#define PSX_MENU_SESSION_AT_RESTART 2
+
 /* request_exit */
 enum {
     PSX_MENU_EXIT_QUIT = 0,         /* leave the game (netplay: back to the lobby) */
@@ -84,6 +111,14 @@ typedef struct PsxMenuHost {
      * provider keeps the title's default presentation: it may decline to
      * attach when it would only add a menu the title did not have. */
     int default_selection;
+    /* Session rows (PSX_MENU_SESSION_*); NULL when the runtime offers none.
+     * get returns 0 for a setting the runtime does not have. set queues the
+     * change for the main thread and returns 0 when refused. enabled is 0
+     * while the setting cannot change (window size in fullscreen, port swap
+     * under netplay or a multitap, reinsert without a disc). */
+    int  (*session_get)(int setting, int *value_out);
+    int  (*session_set)(int setting, int value);
+    int  (*session_enabled)(int setting);
 } PsxMenuHost;
 
 typedef struct PsxMenuProvider {

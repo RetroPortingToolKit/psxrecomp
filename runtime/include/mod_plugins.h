@@ -573,6 +573,10 @@ int psx_mod_save_selection(void);
  * the committed plan; psx_mod_save_selection persists it). Main thread.
  * Returns 1 on success. Used by the in-game menu host. */
 int psx_mod_feature_enable(const char* package_id, const char* feature_id, int enabled);
+/* The player's saved choice for a feature (what the next session runs), and
+ * whether this session's committed plan runs it. In-game menu. */
+int psx_mod_feature_selected(const char* package_id, const char* feature_id);
+int psx_mod_feature_active(const char* package_id, const char* feature_id);
 int psx_mod_feature_set_option(const char* package_id, const char* feature_id,
                                const char* option_id, const char* value);
 /*

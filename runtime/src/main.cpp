@@ -17523,6 +17523,246 @@ void mh_launcher_game_info(RecompLauncherCGameInfo* out) {
 }
 #endif  /* RECOMP_LAUNCHER */
 
+/* Session rows of the in-game menu (PsxMenuHost session_*): window size,
+ * volume, the controller 1 port and a same-disc reinsert. The provider may
+ * call from its draw thread, so a change is posted here and applied on the
+ * main thread at the next host_pause_service; until then get answers the
+ * posted value, so the row does not jump back. */
+std::atomic<int> g_ovl_sess_scale{0}, g_ovl_sess_volume{-1}, g_ovl_sess_port{-1},
+    g_ovl_sess_reinsert{0};
+/* Restart game: the next relaunch is a cold boot. */
+std::atomic<int> g_ovl_restart_cold{0};
+/* The look rows. Each is one mod feature or option, or one runtime [video]
+ * setting; every change is saved (mods/state.toml, settings.toml) as the
+ * launcher would save it. A row answers its posted value until the session
+ * ends, so a change that waits for the restart does not jump back. */
+struct OvlLookRow { const char* p; const char* f; const char* o; const char* const* values; int n; };
+const char* const kOvlIres[] = {"1x", "2x", "3x", "4x", "5x", "6x", "8x"};
+const char* const kOvlOnOff[] = {"off", "on"};
+const char* const kOvlSmooth[] = {"default", "smooth", "sharp"};
+const char* const kOvlTexture[] = {"default", "nearest", "bilinear", "xbr"};
+const char* const kOvlPgxp = "psx.enhancement.pgxp";
+const char* const kOvlCrt = "psx.enhancement.crt-filter";
+const char* const kOvlImage = "psx.enhancement.image-filtering";
+const char* const kOvlIresPkg = "psx.enhancement.internal-resolution";
+const OvlLookRow* ovl_look_row(int setting) {
+    static const OvlLookRow rows[] = {
+        {kOvlIresPkg, "internal-resolution", "resolution", kOvlIres, 7},
+        {kOvlPgxp, "pgxp", nullptr, nullptr, 2},
+        {kOvlCrt, "crt-filter", nullptr, nullptr, 2},
+        {nullptr, nullptr, nullptr, nullptr, 3},  /* antialiasing: runtime */
+        {kOvlCrt, "crt-filter", "scanlines", kOvlOnOff, 2},
+        {kOvlImage, "image-filtering", "smoothing", kOvlSmooth, 3},
+        {kOvlImage, "image-filtering", "texture_filtering", kOvlTexture, 4},
+    };
+    if (setting < PSX_MENU_SESSION_INTERNAL_RESOLUTION || setting > PSX_MENU_SESSION_TEXTURE_FILTERING)
+        return nullptr;
+    return &rows[setting - PSX_MENU_SESSION_INTERNAL_RESOLUTION];
+}
+std::atomic<int> g_ovl_look_posted[PSX_MENU_SESSION_DITHERING + 1];
+std::atomic<bool> g_ovl_look_posted_init{false};
+void ovl_look_posted_reset(void) {
+    for (auto& v : g_ovl_look_posted) v = -1;
+    g_ovl_look_posted_init = true;
+}
+std::atomic<int> g_ovl_sess_aa{-1}, g_ovl_sess_dither{-1};
+int ovl_look_get(int setting, int* out) {
+    if (!g_ovl_look_posted_init) ovl_look_posted_reset();
+    const int posted = g_ovl_look_posted[setting].load();
+    if (posted >= 0) { *out = posted; return 1; }
+    switch (setting) {
+    case PSX_MENU_SESSION_ANTIALIASING: *out = g_video_post_aa; return 1;
+    case PSX_MENU_SESSION_DITHERING: *out = gl_renderer_dithering(); return 1;
+    }
+    const OvlLookRow* row = ovl_look_row(setting);
+    if (!row) return 0;
+    if (!row->o) { *out = psx_mod_feature_selected(row->p, row->f); return 1; }
+    /* A feature that is off shows its first choice (1x, Off, Game default). */
+    if (!psx_mod_feature_selected(row->p, row->f)) { *out = 0; return 1; }
+    char value[64];
+    if (!psx_mod_option_value(row->p, row->f, row->o, value, sizeof value)) { *out = 0; return 1; }
+    for (int i = 0; i < row->n; ++i)
+        if (!std::strcmp(value, row->values[i])) { *out = i; return 1; }
+    *out = 0;
+    return 1;
+}
+int ovl_look_set(int setting, int value) {
+    if (!g_ovl_look_posted_init) ovl_look_posted_reset();
+    int rc = 1;
+    switch (setting) {
+    case PSX_MENU_SESSION_ANTIALIASING:
+        if (value < 0 || value > 2) return 0;
+        g_ovl_sess_aa = value;
+        break;
+    case PSX_MENU_SESSION_DITHERING:
+        if (value < 0 || value > 2) return 0;
+        g_ovl_sess_dither = value;
+        break;
+    default: {
+        const OvlLookRow* row = ovl_look_row(setting);
+        if (!row || value < 0 || value >= row->n) return 0;
+        if (!row->o) {
+            /* A feature switch runs from the next session. */
+            if (!mh_mod_set(row->p, row->f, nullptr, value ? "true" : "false") &&
+                psx_netplay_active())
+                return 0;
+            rc = (value != 0) == (psx_mod_feature_active(row->p, row->f) != 0)
+                     ? 1 : PSX_MENU_SESSION_AT_RESTART;
+            break;
+        }
+        /* An option of a feature that is off turns the feature on too (which
+         * waits for the restart), except Off/1x/Game default, which leaves it. */
+        const bool active = psx_mod_feature_active(row->p, row->f) != 0;
+        if (!psx_mod_feature_selected(row->p, row->f)) {
+            if (value == 0) break;
+            if (psx_netplay_active()) return 0;
+            (void)mh_mod_set(row->p, row->f, nullptr, "true");
+        }
+        const int live = mh_mod_set(row->p, row->f, row->o, row->values[value]);
+        if (!live && psx_netplay_active()) return 0;
+        rc = live && active ? 1 : PSX_MENU_SESSION_AT_RESTART;
+        break;
+    }
+    }
+    g_ovl_look_posted[setting] = value;
+    return rc;
+}
+/* Main thread: the runtime [video] rows, applied live for this session (the
+ * title's config.toml [video] keeps the default; settings.toml has no player
+ * key for them). */
+void ovl_look_service(void) {
+    const int aa = g_ovl_sess_aa.exchange(-1);
+    const int dither = g_ovl_sess_dither.exchange(-1);
+    if (aa < 0 && dither < 0) return;
+    if (aa >= 0) { g_video_post_aa = aa; (void)gl_renderer_set_post_aa(aa); }
+    if (dither >= 0) { g_video_dithering = dither; gl_renderer_set_dithering(dither); }
+}
+
+int ovl_window_scale_now(void) {
+    int w = g_video_win_w;
+    if (w <= 0 && sdl_window) SDL_GetWindowSize(sdl_window, &w, nullptr);
+    return std::max(1, std::min(4, (w + 160) / 320));
+}
+int mh_session_enabled(int setting) {
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE: return sdl_window && s_window_fullscreen.mode == 0;
+    case PSX_MENU_SESSION_VOLUME: return 1;
+    case PSX_MENU_SESSION_CONTROLLER_PORT: return controller_port_swap_available() ? 1 : 0;
+    case PSX_MENU_SESSION_REINSERT_DISC: return !psx_netplay_active() && cdrom_has_disc();
+    case PSX_MENU_SESSION_RESTART_GAME:
+    case PSX_MENU_SESSION_PGXP:
+    case PSX_MENU_SESSION_CRT_FILTER: return !psx_netplay_active();
+    case PSX_MENU_SESSION_INTERNAL_RESOLUTION:
+    case PSX_MENU_SESSION_ANTIALIASING:
+    case PSX_MENU_SESSION_SCANLINES:
+    case PSX_MENU_SESSION_SMOOTHING:
+    case PSX_MENU_SESSION_TEXTURE_FILTERING:
+    case PSX_MENU_SESSION_DITHERING: return 1;
+    }
+    return 0;
+}
+int mh_session_get(int setting, int* out) {
+    if (!out) return 0;
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE: {
+        const int posted = g_ovl_sess_scale.load();
+        *out = posted ? posted : ovl_window_scale_now();
+        return 1;
+    }
+    case PSX_MENU_SESSION_VOLUME: {
+        const int posted = g_ovl_sess_volume.load();
+        *out = posted >= 0 ? posted : host_volume_get();
+        return 1;
+    }
+    case PSX_MENU_SESSION_CONTROLLER_PORT: {
+        const int posted = g_ovl_sess_port.load();
+        *out = posted >= 0 ? posted : (g_controller_ports_swapped ? 1 : 0);
+        return 1;
+    }
+    }
+    if (setting >= PSX_MENU_SESSION_INTERNAL_RESOLUTION && setting <= PSX_MENU_SESSION_DITHERING)
+        return ovl_look_get(setting, out);
+    return 0;
+}
+int mh_session_set(int setting, int value) {
+    if (!mh_session_enabled(setting)) return 0;
+    switch (setting) {
+    case PSX_MENU_SESSION_WINDOW_SCALE:
+        if (value < 1 || value > 4) return 0;
+        g_ovl_sess_scale = value;
+        return 1;
+    case PSX_MENU_SESSION_VOLUME:
+        if (value < 0 || value > 100) return 0;
+        g_ovl_sess_volume = value;
+        return 1;
+    case PSX_MENU_SESSION_CONTROLLER_PORT:
+        if (value != 0 && value != 1) return 0;
+        g_ovl_sess_port = value;
+        return 1;
+    case PSX_MENU_SESSION_REINSERT_DISC:
+        if (value != 1) return 0;
+        g_ovl_sess_reinsert = 1;
+        return 1;
+    case PSX_MENU_SESSION_RESTART_GAME:
+        if (value != 1) return 0;
+        g_ovl_restart_cold = 1;
+        return 1;
+    }
+    if (setting >= PSX_MENU_SESSION_INTERNAL_RESOLUTION && setting <= PSX_MENU_SESSION_DITHERING)
+        return ovl_look_set(setting, value);
+    return 0;
+}
+/* Main thread: apply what the menu posted. The launcher reads the window
+ * width and volume back when the session returns to it, so they are kept the
+ * way a launcher change is; the port swap is host state, as with Ctrl+F6. */
+void ovl_session_service(void) {
+    if (const int scale = g_ovl_sess_scale.exchange(0)) {
+        if (sdl_window && s_window_fullscreen.mode == 0) {
+            const int w = scale * 320;
+            SDL_SetWindowSize(sdl_window, w,
+                              w * g_video_aspect_den / std::max(1, g_video_aspect_num));
+            g_video_win_w = w;
+        }
+    }
+    const int volume = g_ovl_sess_volume.exchange(-1);
+    if (volume >= 0) host_volume_set(volume);
+    const int port = g_ovl_sess_port.exchange(-1);
+    if (port >= 0 && (port != 0) != g_controller_ports_swapped) controller_port_swap_toggle();
+    if (g_ovl_sess_reinsert.exchange(0)) {
+        const int rc = disc_cycle_now(0);
+        host_osd_push(rc == 0 ? "Current disc reinserted"
+                              : "Disc changes are unavailable in this game mode.", 1800);
+    }
+    ovl_look_service();
+}
+/* The disc this session booted (the launcher's choice included), for the
+ * menu's restart straight back into the game. */
+std::string g_ovl_session_disc;
+/* Restart into the game: the original arguments, then --no-launcher and the
+ * mounted disc (a later --disc wins), so a quick restart neither shows the
+ * launcher nor falls back to disc 1 of a multi-disc game. */
+void ovl_relaunch_into_game(void) {
+    /* The relaunched process inherits this environment. A start from a save
+     * state or a replay (PSX_LOAD_SLOT, PSX_REPLAY_FILE, set by the launcher's
+     * Start from or by the player) would repeat at every restart; Restart game
+     * is a cold boot, so it drops them. A settings restart keeps them. */
+    if (g_ovl_restart_cold.exchange(0)) {
+        for (const char* name : {"PSX_LOAD_SLOT", "PSX_REPLAY_FILE"}) {
+#if defined(_WIN32)
+            _putenv_s(name, "");
+#else
+            unsetenv(name);
+#endif
+        }
+    }
+    std::string disc;
+    const int mounted = mh_disc_mounted();
+    if (mounted > 0 && mh_disc_path(mounted)) disc = mh_disc_path(mounted);
+    if (disc.empty()) disc = g_ovl_session_disc;
+    const char* extra[3] = {"--no-launcher", "--disc", disc.c_str()};
+    psx_relaunch_self_with(g_main_argc, g_main_argv, extra, disc.empty() ? 1 : 3);
+}
+
 PsxMenuHost g_menu_host = {
     PSX_MENU_ABI_VERSION, mh_set_paused, mh_netplay_active, mh_video_get, mh_video_apply,
     mh_mod_set, mh_reload_bindings, mh_request_exit,
@@ -17536,6 +17776,7 @@ PsxMenuHost g_menu_host = {
 #endif
     nullptr,
     0,
+    mh_session_get, mh_session_set, mh_session_enabled,
 };
 
 int ovl_sink(const void* ev, void*) { return g_ovl && g_ovl->event ? g_ovl->event(g_ovl->ctx, ev) : 0; }
@@ -17632,6 +17873,7 @@ static void recomp_overlay_detach(void) {
 static void host_pause_service(void) {
     if (!g_ovl_on) return;
     mh_refresh_snapshot();
+    ovl_session_service();
     if (const int disc = g_ovl_disc_req.exchange(0)) {
         const int rc = disc_cycle_now(disc);
         if (rc != PSX_DISC_TRAY_OK) {
@@ -17723,6 +17965,21 @@ static void host_pause_service(void) {
              * provider's own lobby view asking once its match started) keeps
              * the launch and resumes the room; any other request from a local
              * game is a plain return: the launcher opens as at boot. */
+#if !(defined(RECOMP_LAUNCHER) && defined(PSX_HAS_LOBBY_CLIENT))
+            /* No in-process frontend loop in this build (it lives with the
+             * lobby client): relaunch with --launcher, so the launcher opens
+             * as at boot even when skip_launcher is set. */
+            if (!psx_netplay_active()) {
+                std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch to the launcher\n");
+                std::fflush(stdout);
+                psx_crash_trace_set_exit_origin("menu_to_launcher");
+                shutdown_runtime();
+                const char* extra[1] = {"--launcher"};
+                psx_relaunch_self_with(g_main_argc, g_main_argv, extra, 1);
+                std::fprintf(stderr, "psxrecomp: relaunch failed (%s)\n", std::strerror(errno));
+                std::exit(0);
+            }
+#endif
             bool for_launch = false;
 #if defined(RECOMP_LAUNCHER) && defined(PSX_HAS_RECOMP_NET) && defined(PSX_HAS_LOBBY_CLIENT)
             for_launch = g_lnch_netplay_available && g_lnch_netplay_callbacks.launch_pending &&
@@ -17744,12 +18001,12 @@ static void host_pause_service(void) {
             return;
         }
         if (how == PSX_MENU_EXIT_RELAUNCH) {
-            std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch for restart-only settings\n");
+            std::fprintf(stdout, "psxrecomp: in-game menu -> relaunch into the game\n");
             std::fflush(stdout);
             psx_crash_trace_set_exit_origin("menu_relaunch");
             shutdown_runtime();
             std::fprintf(stderr, "psxrecomp: relaunching\n");
-            psx_relaunch_self(g_main_argc, g_main_argv);
+            ovl_relaunch_into_game();
             std::fprintf(stderr, "psxrecomp: relaunch failed (%s)\n", std::strerror(errno));
             std::exit(0); /* relaunch failed: leave rather than run torn down */
         }
@@ -20599,6 +20856,8 @@ int main(int argc, char** argv) {
     DiscMenuSession disc_menu_session{};
 
 session_reboot:
+    g_ovl_session_disc = resolved_disc.string();
+    ovl_look_posted_reset();
     /* A new backend/session must not inherit the prior applied settings or
      * a refused live request. Capture its boot baseline again on first read. */
     g_video_boot_valid = false;
