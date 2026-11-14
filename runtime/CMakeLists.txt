@@ -217,6 +217,12 @@ if(BUILD_TESTING)
     add_executable(ws_mixed_world_test tests/test_ws_mixed_world.c)
     target_include_directories(ws_mixed_world_test PRIVATE include)
     add_test(NAME ws_mixed_world COMMAND ws_mixed_world_test)
+    # Why a start ended before the first frame, for the run report.
+    add_executable(start_refusal_test
+        tests/test_start_refusal.c
+        src/start_refusal.c)
+    target_include_directories(start_refusal_test PRIVATE include)
+    add_test(NAME start_refusal_test COMMAND start_refusal_test)
     add_executable(mod_function_replacements_test tests/test_mod_function_replacements.c src/mod_function_replacements.c)
     target_include_directories(mod_function_replacements_test PRIVATE include)
     add_test(NAME mod_function_replacements_test COMMAND mod_function_replacements_test)
