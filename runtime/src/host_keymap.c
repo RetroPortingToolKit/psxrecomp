@@ -123,6 +123,9 @@ static void apply_defaults(void) {
     }
     if (want_default(HOST_KEYMAP_CAPTURE_MARK))
         add_bind(HOST_KEYMAP_CAPTURE_MARK, (int)SDLK_m, (int)SDL_SCANCODE_M, KMOD_CTRL);
+    if (want_default(HOST_KEYMAP_SWAP_CONTROLLER_PORTS))
+        add_bind(HOST_KEYMAP_SWAP_CONTROLLER_PORTS, (int)SDLK_F6,
+                 (int)SDL_SCANCODE_F6, KMOD_CTRL);
 }
 
 /* Parse one "Ctrl+Alt+PageUp" token into key+mods. */
@@ -187,6 +190,8 @@ static HostKeymapAction action_for_key(const char *name) {
     if (ieq(name, "AnalogMode")) return HOST_KEYMAP_ANALOG_MODE;
     if (ieq(name, "OpenLauncher")) return HOST_KEYMAP_OPEN_LAUNCHER;
     if (ieq(name, "CaptureMark")) return HOST_KEYMAP_CAPTURE_MARK;
+    if (ieq(name, "SwapControllerPorts"))
+        return HOST_KEYMAP_SWAP_CONTROLLER_PORTS;
     return HOST_KEYMAP_ACTION_COUNT;
 }
 

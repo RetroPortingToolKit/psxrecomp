@@ -1041,6 +1041,16 @@ if(BUILD_TESTING)
         PSX_MAX_PLAYERS=8)
     add_test(NAME sio_digital_command_dual_multitap_test
              COMMAND sio_digital_command_dual_multitap_test)
+    foreach(players 1 2 5)
+        add_executable(sio_port_swap_${players}p_test
+            tests/test_sio_port_swap.c
+            src/sio.c)
+        target_include_directories(sio_port_swap_${players}p_test PRIVATE include)
+        target_compile_definitions(sio_port_swap_${players}p_test PRIVATE
+            PSX_MAX_PLAYERS=${players})
+        add_test(NAME sio_port_swap_${players}p_test
+                 COMMAND sio_port_swap_${players}p_test)
+    endforeach()
     add_executable(sio_dualshock_rumble_test
         tests/test_sio_dualshock_rumble.c
         src/sio.c)
