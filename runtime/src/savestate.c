@@ -19,6 +19,8 @@
 #include "psx_cycles.h"
 #include "psx_netplay.h"
 #include "psx_netplay_rb.h"
+#include "psx_rewind.h"
+#include "psx_savestate_menu.h"
 #include "psx_scheduler.h"
 #if defined(PSX_HAS_RECOMP_NET)
 #include "netplay_state_digest.h"
@@ -395,13 +397,32 @@ static void migrate_legacy_pst_by_bios(const char* root, uint32_t openbios_words
  * token separates them without adding a directory level to browse, back up and
  * migrate. Empty leaves the historical name byte-for-byte, so single-disc
  * titles keep every existing state. */
-static char s_disc_token[16];
+static int s_disc_number;   /* the mounted disc, as named in the files; 0 = off */
+/* The discs of the set a load may mount (savestate_set_disc_roster). */
+static int s_disc_roster[SAVESTATE_MAX_DISCS];
+static int s_disc_roster_count;
+static int s_cross_disc_off;
 
 void savestate_set_disc_scope(int disc_number) {
-    if (disc_number >= 1)
-        snprintf(s_disc_token, sizeof(s_disc_token), "_disc%d", disc_number);
-    else
-        s_disc_token[0] = '\0';
+    s_disc_number = disc_number >= 1 ? disc_number : 0;
+}
+
+int savestate_disc_scope(void) {
+    return s_disc_number;
+}
+
+void savestate_set_disc_roster(const int* disc_numbers, int count) {
+    int i;
+    s_disc_roster_count = 0;
+    for (i = 0; disc_numbers && i < count; i++) {
+        if (disc_numbers[i] < 1 || s_disc_roster_count >= SAVESTATE_MAX_DISCS)
+            continue;
+        s_disc_roster[s_disc_roster_count++] = disc_numbers[i];
+    }
+}
+
+void savestate_set_cross_disc(int enabled) {
+    s_cross_disc_off = !enabled;
 }
 
 int savestate_set_content_scope(const char* fingerprint) {
@@ -491,7 +512,7 @@ void savestate_configure(const char* dir, uint32_t bios_checksum, uint32_t entry
             s_dir[sizeof(s_dir) - 1] = '\0';
         }
         ensure_dir(s_dir);
-        if (s_disc_token[0]) note_unscoped_legacy_states(s_dir);
+        if (s_disc_number >= 1) note_unscoped_legacy_states(s_dir);
     } else {
         /* Netplay guest sandbox / already-scoped path: do not clear the
          * personal root/token remembered from the last bios-scoped configure. */
@@ -522,24 +543,35 @@ void savestate_get_integrity(uint32_t* bios_checksum, uint32_t* entry_pc) {
     if (entry_pc) *entry_pc = s_entry_pc;
 }
 
-static int savestate_format_slot_path(int slot, const char* extension, char* out, size_t cap) {
+/* A slot's file for one disc of the set (0 = the name without a disc token). */
+static int slot_file_path(int slot, int disc, const char* extension, char* out, size_t cap) {
     int length;
+    char disc_token[16];
     if (!out || cap == 0) return 0;
     out[0] = '\0';
     if (!s_configured || !s_content_scope_valid) return 0;
     if (slot < 0 || slot > SAVESTATE_QUICK_SLOT) return 0;
+    if (disc >= 1)
+        snprintf(disc_token, sizeof(disc_token), "_disc%d", disc);
+    else
+        disc_token[0] = '\0';
     /* Keyed by entry_pc so slots from different games in a shared dir never
      * collide; boot_state_load also rejects a mismatched entry_pc internally. */
     if (slot == SAVESTATE_QUICK_SLOT)
         length = snprintf(out, cap, "%s%sstate_%08X%s%s_quick.%s",
                  s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
-                 s_disc_token, s_content_token, extension);
+                 disc_token, s_content_token, extension);
     else
         length = snprintf(out, cap, "%s%sstate_%08X%s%s_slot%02d.%s",
              s_dir, (s_dir[0] ? "/" : ""), (unsigned)s_entry_pc,
-             s_disc_token, s_content_token, slot, extension);
+             disc_token, s_content_token, slot, extension);
     if (length < 0 || (size_t)length >= cap) { out[0] = '\0'; return 0; }
     return 1;
+}
+
+/* Writes, and everything netplay reads, use the mounted disc's name. */
+static int savestate_format_slot_path(int slot, const char* extension, char* out, size_t cap) {
+    return slot_file_path(slot, s_disc_number, extension, out, cap);
 }
 
 int savestate_slot_path(int slot, char* out, size_t cap) {
@@ -586,23 +618,9 @@ static void savestate_read_hd_residency(int slot) {
     fclose(f);
 }
 
-int savestate_slot_exists(int slot) {
-    char path[600];
-    FILE* f;
-    long sz;
-    if (!savestate_slot_path(slot, path, sizeof(path))) return 0;
-    f = fopen(path, "rb");
-    if (!f) return 0;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
-    sz = ftell(f);
-    fclose(f);
-    return sz > 0;
-}
-
-int savestate_slot_mtime(int slot, int64_t* out_time) {
-    char path[600];
+/* 1 and the modified time when `path` is a non-empty file. */
+static int file_mtime(const char* path, int64_t* out_time) {
     if (out_time) *out_time = 0;
-    if (!savestate_slot_path(slot, path, sizeof(path))) return 0;
 #ifdef _WIN32
     {
         struct _stat64 st;
@@ -618,6 +636,53 @@ int savestate_slot_mtime(int slot, int64_t* out_time) {
         return 1;
     }
 #endif
+}
+
+int savestate_slot_disc(int slot) {
+    char path[600];
+    int64_t when = 0, best_when = 0;
+    int best = 0;
+    int i;
+    if (s_disc_number < 1) return 0;
+    if (slot_file_path(slot, s_disc_number, "pst", path, sizeof(path)) &&
+        file_mtime(path, NULL))
+        return s_disc_number;
+    /* Netplay peers exchange the mounted disc's file and cannot change disc. */
+    if (s_cross_disc_off || psx_netplay_active()) return 0;
+    for (i = 0; i < s_disc_roster_count; i++) {
+        const int disc = s_disc_roster[i];
+        if (disc == s_disc_number) continue;
+        if (!slot_file_path(slot, disc, "pst", path, sizeof(path)) ||
+            !file_mtime(path, &when))
+            continue;
+        if (!best || when > best_when) {
+            best = disc;
+            best_when = when;
+        }
+    }
+    return best;
+}
+
+/* The disc whose files a read of this slot uses: the state the slot shows,
+ * or the mounted disc when the slot is empty. */
+static int slot_view_disc(int slot) {
+    const int disc = savestate_slot_disc(slot);
+    return disc >= 1 ? disc : s_disc_number;
+}
+
+int savestate_slot_exists(int slot) {
+    char path[600];
+    if (!slot_file_path(slot, slot_view_disc(slot), "pst", path, sizeof(path)))
+        return 0;
+    return file_mtime(path, NULL);
+}
+
+int savestate_slot_mtime(int slot, int64_t* out_time) {
+    char path[600];
+    if (out_time) *out_time = 0;
+    if (!slot_file_path(slot, slot_view_disc(slot), "pst", path, sizeof(path)))
+        return 0;
+    return file_mtime(path, out_time);
 }
 
 int savestate_capture_thumb(int slot) {
@@ -667,7 +732,8 @@ int savestate_read_thumb(int slot, uint32_t* out_argb, int out_w, int out_h) {
     if (!out_argb || out_w != SAVESTATE_THUMB_W ||
         out_h != SAVESTATE_THUMB_H)
         return 0;
-    if (!savestate_thumb_path(slot, path, sizeof(path))) return 0;
+    if (!slot_file_path(slot, slot_view_disc(slot), "thumb", path, sizeof(path)))
+        return 0;
     f = fopen(path, "rb");
     if (!f) return 0;
     if (fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr) ||
@@ -705,6 +771,20 @@ int savestate_slot_compatible(int slot, char* reason, size_t reason_cap) {
                                  reason, reason_cap);
     free(data);
     return ok;
+}
+
+/* 1 when the file's header carries this build's integrity key. Reads the
+ * header only; no machine state is touched. */
+static int state_file_header_ok(const char* path) {
+    uint8_t head[256];
+    char reason[160];
+    size_t got;
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    got = fread(head, 1, sizeof(head), f);
+    fclose(f);
+    return boot_state_check_buffer(head, got, s_bios_checksum, s_entry_pc,
+                                   reason, sizeof(reason));
 }
 
 int savestate_read_slot(int slot, uint8_t** data_out, size_t* size_out) {
@@ -1092,15 +1172,52 @@ void savestate_poll(CPUState* cpu, uint32_t resume_pc) {
                 s_load_failed = 1;
                 psx_frontend_on_savestate_notify(1, slot, 0);
             }
-        } else if (savestate_slot_path(slot, path, sizeof(path))) {
-            loaded = boot_state_load_checked(path, s_bios_checksum, s_entry_pc,
-                                             cpu, savestate_resume_pc_ok);
+        } else if (slot_file_path(slot, slot_view_disc(slot), "pst", path,
+                                  sizeof(path))) {
+            /* The slot may show a state taken on another disc of the set. A
+             * state restores the drive's registers and buffers but not the
+             * image in the drive, so that disc is mounted first, with no lid
+             * event. Nothing is mounted for a state this build cannot load. */
+            const int state_disc = slot_view_disc(slot);
+            char refusal[160];
+            refusal[0] = '\0';
+            if (state_disc == s_disc_number) {
+                loaded = boot_state_load_checked(path, s_bios_checksum, s_entry_pc,
+                                                 cpu, savestate_resume_pc_ok);
+            } else if (!state_file_header_ok(path)) {
+                fprintf(stderr, "savestate: slot %d (disc %d) is not a state of this build\n",
+                        slot, state_disc);
+            } else if (!cdrom_disc_restore_begin(state_disc)) {
+                snprintf(refusal, sizeof(refusal),
+                         "This state needs disc %d, which could not be mounted",
+                         state_disc);
+            } else {
+                loaded = boot_state_load_checked(path, s_bios_checksum, s_entry_pc,
+                                                 cpu, savestate_resume_pc_ok);
+                /* A refused load puts the previous disc back before the
+                 * rollback below restores the machine that ran on it. */
+                cdrom_disc_restore_end(loaded);
+                if (loaded) {
+                    /* States saved from here on are named for this disc. Every
+                     * rewind snapshot was taken with the previous disc in. */
+                    savestate_set_disc_scope(state_disc);
+                    (void)psx_rewind_discard_history();
+                    psx_savestate_menu_note_slots_changed();
+                    fprintf(stderr, "savestate: slot %d mounted disc %d for its state\n",
+                            slot, state_disc);
+                }
+            }
             if (!loaded) {
                 fprintf(stderr,
                         "savestate: LOAD FAILED slot %d %s\n",
                         slot, path);
                 s_load_failed = 1;
-                psx_frontend_on_savestate_notify(1, slot, 0);
+                if (refusal[0]) {
+                    fprintf(stderr, "savestate: %s\n", refusal);
+                    psx_frontend_on_savestate_refused(1, slot, refusal);
+                } else {
+                    psx_frontend_on_savestate_notify(1, slot, 0);
+                }
             }
         } else {
             fprintf(stderr, "savestate: LOAD FAILED slot %d (no path)\n", slot);

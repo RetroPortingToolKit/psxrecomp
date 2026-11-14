@@ -3871,3 +3871,52 @@ int cdrom_disc_select(int index_1based) {
     trace_cdrom('M', (uint32_t)index_1based, 1u, 0);
     return 1;
 }
+
+/* The image and roster index in the drive before a restore mount. */
+static void *s_restore_previous;
+static int   s_restore_previous_selected;
+static int   s_restore_index;
+static int   s_restore_open;
+
+int cdrom_disc_restore_begin(int index_1based) {
+    const char *path = cdrom_disc_roster_path(index_1based);
+    void *replacement;
+    if (!path || !path[0] || s_restore_open) return 0;
+    replacement = iso_open(path);
+    if (!replacement) return 0;
+    s_restore_previous = iso_handle;
+    s_restore_previous_selected = s_disc_selected;
+    s_restore_index = index_1based;
+    s_restore_open = 1;
+    iso_handle = replacement;
+    subq_replacements_active = iso_has_subq_replacements(iso_handle);
+    return 1;
+}
+
+void cdrom_disc_restore_end(int keep) {
+    if (!s_restore_open) return;
+    s_restore_open = 0;
+    if (keep) {
+        if (s_restore_previous) iso_close(s_restore_previous);
+        s_restore_previous = NULL;
+        /* The loaded state restored the drive's registers and buffers; what
+         * is left is the host state that described the previous disc. */
+        last_valid_subq_available = 0;
+        if (subq_replacements_active) update_last_valid_subq(0);
+        s_warm_route_armed = 0;
+        s_warm_route_armed_lba = -1;
+        s_warm_route_active = 0;
+        s_warm_route_active_index = -1;
+        s_warm_route_next = 0;
+        s_warm_route_last_lba = -1;
+        s_disc_selected = s_restore_index;
+        trace_cdrom('M', (uint32_t)s_restore_index, 2u, 0);
+    } else {
+        iso_close(iso_handle);
+        iso_handle = s_restore_previous;
+        s_restore_previous = NULL;
+        s_disc_selected = s_restore_previous_selected;
+        subq_replacements_active =
+            iso_handle ? iso_has_subq_replacements(iso_handle) : 0;
+    }
+}

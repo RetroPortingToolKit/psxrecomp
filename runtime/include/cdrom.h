@@ -108,6 +108,23 @@ int  cdrom_disc_selected(void);
 const char *cdrom_disc_roster_path(int index_1based);
 int  cdrom_disc_select(int index_1based);
 
+/* Put another disc of the roster in the drive for a save-state load, without
+ * a lid event.
+ *
+ * A save state restores the drive's registers and buffers but not the image
+ * the drive reads, so a state taken on another disc of the set needs that
+ * disc mounted before it is applied. Unlike cdrom_disc_select() this changes
+ * no guest-visible drive state: the load that follows restores it, and a
+ * refused load must leave the running game as it was.
+ *
+ * cdrom_disc_restore_begin() opens the roster image and makes it the mounted
+ * disc; the previous image stays open. It returns 0, and changes nothing,
+ * when the index is outside the roster, the image will not open or a begin is
+ * already open. cdrom_disc_restore_end(1) keeps the new disc and releases the
+ * previous image; cdrom_disc_restore_end(0) puts the previous image back. */
+int  cdrom_disc_restore_begin(int index_1based);
+void cdrom_disc_restore_end(int keep);
+
 /* TOC of the image currently mounted; 0 when the drive is empty. Two images
  * of a set have different TOCs, so this is how a caller confirms that a disc
  * change reached the reader instead of only moving an index. */

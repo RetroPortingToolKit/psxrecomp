@@ -21024,6 +21024,13 @@ session_reboot:
          * 1. That put the savestate disc token at _disc1 whatever was mounted,
          * which is the mix-up savestate_set_disc_scope() exists to prevent. */
         if (mounted >= 0) selected_disc_index = mounted + 1;
+        /* A slot may show a state another disc of the set left there; loading
+         * it mounts that disc. A recorded input replay restores its baseline
+         * from the mounted disc's file, so it sees only that disc. */
+        std::vector<int> state_discs;
+        for (int i = 1; i <= (int)roster.size(); ++i) state_discs.push_back(i);
+        savestate_set_disc_roster(state_discs.data(), (int)state_discs.size());
+        savestate_set_cross_disc(std::getenv("PSX_DIAGNOSTIC_REPLAY") == nullptr);
     }
     if (game_discs.size() > 1) {
         mod_runtime_set_mounted_disc_resolver(

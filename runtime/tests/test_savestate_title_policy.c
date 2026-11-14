@@ -35,6 +35,10 @@ int psx_irq_resume_context_snapshot_site(void) { return 0; }
 void interrupts_resync_after_restore(void) { assert(0); }
 void psx_cycles_resync_after_restore(struct CPUState* cpu) { (void)cpu; assert(0); }
 void cdrom_accelerate_after_savestate(void) { assert(0); }
+int cdrom_disc_restore_begin(int disc) { (void)disc; assert(0); return 0; }
+void cdrom_disc_restore_end(int keep) { (void)keep; assert(0); }
+uint32_t psx_rewind_discard_history(void) { assert(0); return 0; }
+void psx_savestate_menu_note_slots_changed(void) { assert(0); }
 void psx_scheduler_resume_at(uint32_t pc) { (void)pc; assert(0); }
 void psx_frontend_on_savestate_loaded(void) { assert(0); }
 void psx_frontend_on_savestate_notify(int load, int slot, int ok) {

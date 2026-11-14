@@ -124,6 +124,13 @@ if(BUILD_TESTING)
         src/mod_netplay.c src/psx_sha256.c)
     target_include_directories(savestate_title_policy_test PRIVATE include)
     add_test(NAME savestate_title_policy_test COMMAND savestate_title_policy_test)
+    # A state of another disc of the set: its slot shows it, and a load mounts
+    # that disc first with no lid event, or is refused with disc 1 still in.
+    add_executable(savestate_disc_scope_test tests/test_savestate_disc_scope.c
+        src/mod_netplay.c src/psx_sha256.c)
+    target_include_directories(savestate_disc_scope_test PRIVATE include)
+    add_test(NAME savestate_disc_scope_test
+             COMMAND savestate_disc_scope_test ${CMAKE_CURRENT_BINARY_DIR})
     add_executable(mod_capcom_bg2d_test tests/test_mod_capcom_bg2d.c)
     target_include_directories(mod_capcom_bg2d_test PRIVATE include)
     add_test(NAME mod_capcom_bg2d_test COMMAND mod_capcom_bg2d_test)

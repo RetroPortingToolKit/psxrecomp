@@ -271,6 +271,15 @@ static void rasterize_panel(void)
         }
         format_slot_status(i, buf, sizeof(buf));
         draw_text(s_panel, SSM_ROWS_X + 278, y + 42, buf, sub, 1);
+        {
+            /* A state another disc of the set left here: loading it mounts
+             * that disc, so the row says which one. */
+            const int disc = savestate_slot_disc(i);
+            if (disc >= 1 && disc != savestate_disc_scope()) {
+                snprintf(buf, sizeof(buf), "DISC %d", disc);
+                draw_text(s_panel, SSM_ROWS_X + 278, y + 62, buf, sub, 1);
+            }
+        }
         if (sel)
             draw_text(s_panel, SSM_ROWS_X + SSM_ROWS_W - 88, y + 82,
                       "SELECT", 0xFFFFD24Du, 1);
