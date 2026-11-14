@@ -11934,8 +11934,7 @@ namespace {
         }
         {
             /* The row's verdict and its reason, for the run report: a red
-             * row blocks Play, and the start then ends as "launcher closed"
-             *. */
+             * row blocks Play, and the start then ends as "launcher closed". */
             const char* why =
                 !identity_error.empty() ? identity_error.c_str()
                 : !companion.ready ? companion.message.c_str()
