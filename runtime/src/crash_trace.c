@@ -456,6 +456,11 @@ void psx_crash_trace_dump(const char *reason, void *seh_info) {
         append_str(buf, sizeof(buf), &pos, refusal);
         append_str(buf, sizeof(buf), &pos, ",\n  \"launcher_status\": ");
         append_str(buf, sizeof(buf), &pos, rows);
+        static char disc_warning[6 * PSX_START_REFUSAL_TEXT_CAP + 4];
+        if (psx_disc_warning_json(disc_warning, sizeof(disc_warning)) <= 0)
+            snprintf(disc_warning, sizeof(disc_warning), "null");
+        append_str(buf, sizeof(buf), &pos, ",\n  \"disc_warning\": ");
+        append_str(buf, sizeof(buf), &pos, disc_warning);
         append_str(buf, sizeof(buf), &pos, ",\n");
     }
 

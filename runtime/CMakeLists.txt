@@ -223,6 +223,12 @@ if(BUILD_TESTING)
         src/start_refusal.c)
     target_include_directories(start_refusal_test PRIVATE include)
     add_test(NAME start_refusal_test COMMAND start_refusal_test)
+    # The missing-SBI warning in the run report.
+    add_executable(missing_sbi_report_test
+        ${PSXRECOMP_ROOT}/tools/tests/test_missing_sbi_report.cpp
+        src/start_refusal.c)
+    target_include_directories(missing_sbi_report_test PRIVATE include)
+    add_test(NAME missing_sbi_report_test COMMAND missing_sbi_report_test)
     add_executable(mod_function_replacements_test tests/test_mod_function_replacements.c src/mod_function_replacements.c)
     target_include_directories(mod_function_replacements_test PRIVATE include)
     add_test(NAME mod_function_replacements_test COMMAND mod_function_replacements_test)
@@ -2571,6 +2577,11 @@ if(BUILD_TESTING)
         add_test(NAME sbi_registry_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_sbi_registry.py)
         add_test(NAME perf_campaign_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_perf_campaign.py)
         add_test(NAME perf_host_test COMMAND ${Python3_EXECUTABLE} ${PSXRECOMP_ROOT}/tools/tests/test_perf_host.py)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+            add_test(NAME missing_sbi_reason_test COMMAND ${Python3_EXECUTABLE}
+                ${PSXRECOMP_ROOT}/tools/tests/test_missing_sbi_reason.py
+                --cxx ${CMAKE_CXX_COMPILER})
+        endif()
         add_test(NAME frame_interpolation_context_ownership_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frame_interpolation_context_ownership.py)

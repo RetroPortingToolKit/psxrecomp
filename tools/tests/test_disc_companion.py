@@ -196,10 +196,92 @@ class CompanionTests(unittest.TestCase):
         self.assertIn("subchannel: unknown", message)
         proc = subprocess.run([sys.executable, str(ROOT / "psxrecomp_cli.py"),
                                "verify-disc", "--config", str(self.config), "--disc", str(source),
-                               "--json-progress"], capture_output=True, text=True)
+                               "--json-progress"], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         events = [json.loads(line) for line in proc.stdout.splitlines()]
         self.assertEqual(events[-1]["subchannel"]["status"], "unknown")
+
+
+class MissingSbiWarningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.image = self.root / "authored disc.bin"
+        self.image.write_bytes(prepare.iso_to_bin(cooked_disc()))
+        self.sha1 = hashlib.sha1(self.image.read_bytes()).hexdigest()
+        self.rules = patch.dict(dc.REQUIRED_SBI, {}, clear=True)
+        self.rules.start()
+        self.addCleanup(self.rules.stop)
+
+    def verify(self):
+        output = io.StringIO()
+        result = cli.verify_disc_path(self.image, {}, skip_hash=True,
+                                     progress=ProgressReporter(json_progress=True, stream=output))
+        return result, output.getvalue()
+
+    def test_known_missing_is_one_sentence_in_setup_identity_and_progress(self):
+        with patch.dict(dc.KNOWN_LIBCRYPT_TRACKS, {self.sha1: "SCES-02105"}):
+            identity, output = self.verify()
+        warning = identity["subchannel"]["warning"]
+        self.assertIn("Missing SBI: SCES-02105", warning)
+        self.assertIn(self.image.name, warning)
+        self.assertNotIn(str(self.root), warning)
+        self.assertNotIn("\n", warning)
+        self.assertFalse(identity["subchannel"]["required"])
+        self.assertEqual(identity["subchannel"]["status"], "unknown")
+        self.assertTrue(any(json.loads(line).get("message") == warning for line in output.splitlines()))
+
+    def test_supplied_synthetic_sbi_removes_warning_without_qualifying_it(self):
+        self.image.with_suffix(".sbi").write_bytes(SBI)
+        with patch.dict(dc.KNOWN_LIBCRYPT_TRACKS, {self.sha1: "SLES-02965"}):
+            identity, output = self.verify()
+        self.assertNotIn("warning", identity["subchannel"])
+        self.assertNotIn("Missing SBI", output)
+        self.assertEqual(identity["subchannel"]["status"], "format_valid_unqualified")
+
+    def test_known_config_serial_does_not_select_warning_for_unknown_track(self):
+        config = self.root / "game.toml"
+        config.write_text(f'[game]\nid="SCES-02105"\n[prepare_disc]\nboot_exe="{BOOT}"\n', encoding="utf-8")
+        output = io.StringIO()
+        args = ["prepare_disc.py", str(self.image), "--config", str(config),
+                "--out-dir", str(self.root / "output"), "--cue-name", "renamed.cue"]
+        with patch.dict(dc.KNOWN_LIBCRYPT_TRACKS, {}, clear=True):
+            identity, _ = self.verify()
+            with patch.object(sys, "argv", args), patch.object(prepare, "_configure_stdio"), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                code = prepare.main()
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertNotIn("warning", identity["subchannel"])
+        self.assertNotIn("Missing SBI", output.getvalue())
+
+    def test_prepare_prints_warning_and_preserves_unknown_qualification(self):
+        config = self.root / "game.toml"
+        config.write_text(f'[game]\nid="SCUS-99999"\n[prepare_disc]\nboot_exe="{BOOT}"\n', encoding="utf-8")
+        output = io.StringIO()
+        args = ["prepare_disc.py", str(self.image), "--config", str(config),
+                "--out-dir", str(self.root / "output"), "--cue-name", "renamed.cue"]
+        with patch.dict(dc.KNOWN_LIBCRYPT_TRACKS, {self.sha1: "SLES-12965"}), \
+                patch.object(sys, "argv", args), patch.object(prepare, "_configure_stdio"), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            code = prepare.main()
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertIn("Missing SBI: SLES-12965", output.getvalue())
+        receipt = json.loads((self.root / "output/renamed.disc-receipt.json").read_text())
+        self.assertIn("Missing SBI", receipt["subchannel"]["warning"])
+        self.assertFalse(receipt["subchannel"]["required"])
+
+    def test_cue_uses_mounted_basename_and_other_sbi_does_not_suppress(self):
+        cue = self.root / "mounted.cue"
+        cue.write_text(f'FILE "{self.image.name}" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n')
+        self.image.with_suffix(".sbi").write_bytes(SBI)
+        with patch.dict(dc.KNOWN_LIBCRYPT_TRACKS, {self.sha1: "SLES-22965"}):
+            result = cli.verify_disc_path(cue, {}, skip_hash=True, progress=ProgressReporter())
+            self.assertIn(cue.name, result["subchannel"]["warning"])
+            cue.with_suffix(".sbi").write_bytes(SBI)
+            result = cli.verify_disc_path(cue, {}, skip_hash=True, progress=ProgressReporter())
+        self.assertNotIn("warning", result["subchannel"])
 
 
 if __name__ == "__main__":

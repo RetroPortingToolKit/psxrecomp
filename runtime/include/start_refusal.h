@@ -55,13 +55,19 @@ void psx_start_note_launcher(const char *row, const char *text);
 int psx_start_refusal_json(char *out, size_t cap);
 int psx_start_launcher_status_json(char *out, size_t cap);
 
+/* Nonfatal mounted-disc warning, retained after the first guest instruction.
+ * Set an empty string on a warning-free mount. It is separate from refusals. */
+void psx_disc_warning_set(const char *message);
+int psx_disc_warning_json(char *out, size_t cap);
+
 /* `src` with every full path cut to its base name (what the report stores).
  * A path starts at a drive ("C:\"), a share ("\\server") or a rooted path of
  * two parts or more, and runs to the end of its line. */
 void psx_start_refusal_without_folders(char *dst, size_t cap, const char *src);
 
-/* Forget everything. The runtime calls it when the game starts to run, so a
- * start that ran reports `null` for both values; tests call it between cases. */
+/* Forget the refusal and launcher rows; a disc warning stays. The runtime
+ * calls it when the game starts to run, so a start that ran reports `null`
+ * for both values; tests call it between cases. */
 void psx_start_refusal_reset(void);
 
 #ifdef __cplusplus
