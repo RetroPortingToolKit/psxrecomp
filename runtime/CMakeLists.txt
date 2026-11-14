@@ -944,6 +944,19 @@ if(BUILD_TESTING)
             target_compile_options(runtime_disc_menu_test PRIVATE -UNDEBUG)
         endif()
         add_test(NAME runtime_disc_menu_test COMMAND runtime_disc_menu_test)
+
+        add_executable(runtime_menu_settings_test
+            tests/test_runtime_menu_settings.c src/psx_runtime_menu.c src/psx_disc_tray.c
+            "${RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c")
+        target_include_directories(runtime_menu_settings_test PRIVATE
+            include "${RECOMP_UI_ROOT}/src")
+        target_compile_definitions(runtime_menu_settings_test PRIVATE RECOMP_LAUNCHER=1)
+        if(MSVC)
+            target_compile_options(runtime_menu_settings_test PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(runtime_menu_settings_test PRIVATE -UNDEBUG)
+        endif()
+        add_test(NAME runtime_menu_settings_test COMMAND runtime_menu_settings_test)
     endif()
 
     add_executable(host_keymap_test
