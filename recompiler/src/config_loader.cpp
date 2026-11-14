@@ -1897,6 +1897,24 @@ GameConfig load_game_config(const fs::path& config_path_in) {
     std::vector<std::string> disc_serials;
     if (game.contains("disc_serials"))
         disc_serials = toml::find<std::vector<std::string>>(game, "disc_serials");
+    /* The set positions this build boots; see GameConfig::program_discs. A
+     * value outside the roster or listed twice is a kit error: refuse it, so a
+     * program can never be left with no disc of its own. */
+    std::vector<int> program_discs;
+    if (game.contains("program_discs")) {
+        program_discs = toml::find<std::vector<int>>(game, "program_discs");
+        for (size_t i = 0; i < program_discs.size(); ++i) {
+            const int n = program_discs[i];
+            bool repeated = false;
+            for (size_t j = 0; j < i; ++j)
+                if (program_discs[j] == n) repeated = true;
+            if (n < 1 || n > (int)discs.size() || repeated)
+                throw std::runtime_error(
+                    "[game] program_discs must list distinct 1-based positions "
+                    "in [game] discs; got " + std::to_string(n) + " with " +
+                    std::to_string(discs.size()) + " disc(s)");
+        }
+    }
 
     // Optional expected disc identity (launcher verification badge).
     bool has_disc_crc = false;
@@ -3002,6 +3020,7 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*stack_base*/       stack_base,
         /*discs*/            discs,
         /*disc_serials*/     disc_serials,
+        /*program_discs*/    program_discs,
         /*has_disc_crc*/     has_disc_crc,
         /*disc_crc*/         disc_crc,
         /*disc_sha1*/        disc_sha1,
